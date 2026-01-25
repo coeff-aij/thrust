@@ -6,16 +6,6 @@ struct Range {
     end: i64,//usize,
 }
 
-fn next(r: &mut Range) -> Option<i64> {
-    if r.start < r.end {
-        let item = r.start;
-        r.start += 1;
-        Some(item)
-    } else {
-        None
-    }
-}
-
 fn main() {
     let mut range = Range {
         start: 0,
@@ -27,15 +17,23 @@ fn main() {
     loop {
         // assert!(range.start <= range.end);
         // assert!(count == range.start);
-        
-        let Some(i) = next(&mut range) else {
-            break;
+
+        let item = if range.start < range.end {
+            let i = range.start;
+            range.start += 1;
+            Some(i)
+        } else {
+            None
         };
 
-        // assert!(i + 1 == range.start);
-
-        count += 1;
-        sum += i;
+        match item {
+            Some(i) => {
+                // assert!(i + 1 == range.start);
+                count += 1;
+                sum += i;
+            },
+            None => break,
+        };
     }
     // assert!(count == range.start);
 
