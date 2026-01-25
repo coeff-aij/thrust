@@ -1,21 +1,11 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
 
-// error: verification error: Timeout(30s)
+// error: verification error: Unknown { stdout: "unknown\n" }
 
 struct Range {
     start: i64,//usize,
     end: i64,//usize,
-}
-
-fn next(r: &mut Range) -> Option<i64> {
-    if r.start < r.end {
-        let item = r.start;
-        r.start += 1;
-        Some(item)
-    } else {
-        None
-    }
 }
 
 fn main() {
@@ -26,14 +16,24 @@ fn main() {
 
     let mut count = 0;
     let mut sum = 0;
-    while let Some(i) = next(&mut range) {
-        // assert!(i + 1 == range.start);
+    let mut item = None;
+    loop {
+        if range.start < range.end {
+            let i = range.start;
+            range.start += 1;
+            item = Some(i);
+        } else {
+            item = None;
+        }
+
+        let Some(i) = item else {
+            break;
+        };
 
         count += 1;
         sum += i;
     }
-    // assert!(count == range.start);
-
+    
     assert!(count == 5);
     assert!(sum == 10);
     // dbg!(count, sum);

@@ -26,11 +26,13 @@ fn main() {
 
     let mut count = 0;
     let mut sum = 0;
-    while let Some(i) = next(&mut range) {
+    let mut item = next(&mut range);
+    while let Some(i) = item {
         // assert!(i + 1 == range.start);
 
         count += 1;
         sum += i;
+        item = next(&mut range);
     }
     // assert!(count == range.start);
 
