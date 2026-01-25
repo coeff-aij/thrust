@@ -1,3 +1,6 @@
+//@check-pass
+//@compile-flags: -C debug-assertions=off
+
 trait Iterator<T> {
     type Item = T;
     
