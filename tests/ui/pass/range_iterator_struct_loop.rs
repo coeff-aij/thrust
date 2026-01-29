@@ -10,8 +10,8 @@ struct Range {
 impl Range {
     #[thrust::requires(true)]
     #[thrust::ensures(
-        (exists i:int. (result == std::option::Option::<int>::Some(i)) && step(*self, i, ^self))
-        || ((result == std::option::Option::<int>::None()) && completed(*self))
+        (completed(*self) || (exists i:int. (result == std::option::Option::<int>::Some(i)) && step(*self, i, ^self)))
+        && (!completed(*self) || (result == std::option::Option::<int>::None() && *self == ^self))
     )]
     fn next(&mut self) -> Option<i64> {
         if self.start < self.end {
@@ -35,6 +35,8 @@ impl Range {
 
     #[thrust::predicate]
     fn step(self, item: i64, dist: Self) -> bool {
+        // self.end == dist.end && self.start == item && self.start + 1 == dist.start
+        // is written as following:
         "(and
             (= (tuple_proj<Int-Int>.1 self) (tuple_proj<Int-Int>.1 dist))
             (= (tuple_proj<Int-Int>.0 self) item)
@@ -57,7 +59,7 @@ fn main() {
         sum += i;
     }
 
-    // assert!(count == 5);
+    assert!(count == 5);
     // assert!(sum == 10);
     assert!(range.start > 0);
 }
