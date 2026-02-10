@@ -609,6 +609,19 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         .iterate_to_fixpoint()
         .into_results_cursor(&tmp_body);
 
+        let mut zst_locals = BitSet::new_empty(self.body.local_decls.len());
+        for (local, local_decl) in self.body.local_decls.iter_enumerated() {
+            let ty = local_decl.ty;
+            if self
+                .tcx
+                .layout_of(mir_ty::ParamEnv::reveal_all().and(ty))
+                .map(|l| l.is_zst())
+                .unwrap_or(false)
+            {
+                zst_locals.insert(local);
+            }
+        }
+
         for (block, data) in mir::traversal::preorder(&tmp_body) {
             for statement_index in 0..=data.statements.len() {
                 let loc = mir::Location {
@@ -624,9 +637,16 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     .map(|p| results.analysis().move_data().move_paths[p].place.local)
                     .collect();
                 let mut_locals = self.mut_locals(data.visitable(statement_index));
-                tracing::info!(?init_locals, ?mut_locals, ?statement_index, ?block, stmt = ?data.statements.get(statement_index));
+                tracing::info!(
+                    ?init_locals,
+                    ?mut_locals,
+                    ?zst_locals,
+                    ?statement_index,
+                    ?block,
+                    stmt = ?data.statements.get(statement_index),
+                );
                 for mut_local in mut_locals.iter() {
-                    if init_locals.contains(&mut_local) {
+                    if init_locals.contains(&mut_local) || zst_locals.contains(mut_local) {
                         self.body.local_decls[mut_local].mutability = mir::Mutability::Mut;
                         tracing::info!(?mut_local, ?statement_index, ?block, "marking mut");
                     }
@@ -754,8 +774,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let mut subst = HashMap::new();
         for (param_idx, param_ty) in bb_ty.as_ref().params.iter_enumerated() {
             if let Some(param_local) = bb_ty.local_of_param(param_idx) {
-                // unit return may use _0 without preceeding def
-                if param_local == mir::RETURN_PLACE {
+                // BBs may use locals without preceding def when they're ZST
+                if param_local == mir::RETURN_PLACE || param_local > self.body.arg_count.into() {
                     subst.extend(
                         bb_ty
                             .as_ref()
@@ -764,7 +784,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                             .skip_while(|idx| idx.index() <= param_idx.index())
                             .map(|idx| (idx, idx + 1)),
                     );
-                    if bb_ty.as_ref().params.len() == 1 {
+                    if bb_ty.as_ref().params.len() - 1 == param_idx.index() {
                         params.push(rty::RefinedType::new(
                             rty::Type::unit(),
                             param_ty.refinement.clone(),
