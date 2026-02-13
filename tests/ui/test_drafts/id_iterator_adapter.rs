@@ -27,12 +27,6 @@ struct Range {
 impl Iterator for Range {
     type Item = i64;
 
-    // #[thrust::trusted]
-    // #[thrust::requires(true)]
-    // #[thrust::ensures(
-    //     (Self::completed(*self) || (exists i:int. (result == std::option::Option::<int>::Some(i)) && Self::step(*self, i, ^self)))
-    //     && (!Self::completed(*self) || (result == std::option::Option::<int>::None() && *self == ^self))
-    // )]
     fn next(&mut self) -> Option<Self::Item> {
         if self.start < self.end {
             let item = self.start;
@@ -69,12 +63,6 @@ impl Iterator for Id
 {
     type Item = <Range as Iterator>::Item;
 
-    // #[thrust::trusted]
-    // #[thrust::requires(true)]
-    // #[thrust::ensures(
-    //     (Self::completed(*self) || (exists i:int. (result == std::option::Option::<int>::Some(i)) && Self::step(*self, i, ^self)))
-    //     && (!Self::completed(*self) || (result == std::option::Option::<int>::None() && *self == ^self))
-    // )]
     fn next(&mut self) -> Option<<Range as Iterator>::Item> {
         self.iter.next()
     }
@@ -108,7 +96,6 @@ fn main() {
 
     let mut count = 0;
     let mut sum = 0;
-    // while let Some(i) = range.next() {
     while let Some(i) = adapter.next() {
         count += 1;
         sum += i;
