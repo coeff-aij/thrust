@@ -34,6 +34,6 @@ fn main() {
     }
 
     assert!(count == 5);
-    // assert!(sum == 10);
+    assert!(sum == 10);
     assert!(range.start > 0);
 }

@@ -1,6 +1,6 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
+//@rustc-env: THRUST_SOLVER=.experimental/thrust-preprocessed-spacer-wrapper
 
 struct Range {
     start: i64,
@@ -60,6 +60,6 @@ fn main() {
     }
 
     assert!(count == 5);
-    // assert!(sum == 10);
+    assert!(sum == 10);
     assert!(range.start > 0);
 }
