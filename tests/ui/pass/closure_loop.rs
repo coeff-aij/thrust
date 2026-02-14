@@ -1,5 +1,6 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 fn apply<F: Fn(i32) -> i32>(f: F, x: i32) -> i32 {
     f(x)
@@ -14,15 +15,6 @@ fn main() {
         i += 1;
     }
     assert!(s > 0);
-
-    // let mut i = 0;
-    // let mut s = 0;
-    // while i < 10 {
-    //     let f = |x| -1 * (i + x);
-    //     s += apply(f, i * i);
-    //     i += 1;
-    // }
-    // assert!(s > 0);
 
     let mut i = 0;
     let mut j = 1;

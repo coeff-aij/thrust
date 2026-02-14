@@ -1,6 +1,6 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=thrust-pcsat-wrapper
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 struct Range {
     start: i64,
@@ -10,9 +10,8 @@ struct Range {
 impl Range {
     #[thrust::requires(true)]
     #[thrust::ensures(
-        (forall i:int. step(*self, i, ^self) <==> result == std::option::Option::<int>::Some(i))
-        && (completed(*self) <==> result == std::option::Option::<int>::None())
-        && (result == std::option::Option::<int>::None() ==> *self == ^self)
+        (Self::completed(*self) || (exists i:int. (result == std::option::Option::<int>::Some(i)) && Self::step(*self, i, ^self)))
+        && (!Self::completed(*self) || (result == std::option::Option::<int>::None() && *self == ^self))
     )]
     fn next(&mut self) -> Option<i64> {
         if self.start < self.end {
@@ -37,7 +36,6 @@ impl Range {
     #[thrust::predicate]
     fn step(self, item: i64, dist: Self) -> bool {
         // self.end == dist.end && self.start == item && self.start + 1 == dist.start
-        // is written as following:
         "(and
             (= (tuple_proj<Int-Int>.1 self) (tuple_proj<Int-Int>.1 dist))
             (= (tuple_proj<Int-Int>.0 self) item)
@@ -52,15 +50,7 @@ fn main() {
         end: 5,
     };
 
-    let mut count = 0;
-    let mut sum = 0;
-    while let Some(i) = range.next() {
-        // assert!(range.start == i + 1 && range.start <= range.end);
-        count += 1;
-        sum += i;
-    }
-
-    assert!(count == 5);
-    // assert!(sum == 10);
-    assert!(range.start > 0);
+    let opt = range.next();
+    assert!(matches!(opt, Some(0)));
+    assert!(range.start == 1 && range.end == 5)
 }

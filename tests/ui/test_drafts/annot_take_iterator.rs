@@ -55,31 +55,43 @@ impl Iterator for Range {
     }
 }
 
-struct Id {
-    iter: Range,
+struct Take<I> {
+    iter: I,
+    n: i64,
 }
 
-impl Iterator for Id
+impl<I> Iterator for Take<I>
+where
+    I: Iterator,
 {
-    type Item = <Range as Iterator>::Item;
+    type Item = I::Item;
 
-    fn next(&mut self) -> Option<<Range as Iterator>::Item> {
-        self.iter.next()
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.n > 0 {
+            self.n -= 1;
+            self.iter.next()
+        } else {
+            None
+        }
     }
     
     #[thrust::predicate]
     fn completed(self) -> bool {
-        // self.iter.completed()
-        "(Range_completed (tuple_proj<Tuple<Int-Int>>.0 self))"; true
+        // n <= 0 || { self.iter.completed() } is written as following:
+        "(or
+            (<= (tuple_proj<Int-Int>.1 self) 0)
+            (self_iter_completed())
+        ))"; true
     }
 
     #[thrust::predicate]
     fn step(self, item: Self::Item, dist: Self) -> bool {
-        // self.iter.step(item, dist)
-        "(Range_step
-            (tuple_proj<Tuple<Int-Int>>.0 self)
+        // self.iter.step(self.iter, item, dist.iter)
+        // is written as following:
+        "(self_iter_step(
+            (tuple_proj<Int-Int>.0 self)
             item
-            (tuple_proj<Tuple<Int-Int>>.0 dist)
+            (tuple_proj<Int-Int>.0 dist)
         )"; true
     }
 }
@@ -90,17 +102,19 @@ fn main() {
         end: 5,
     };
 
-    let mut adapter = Id {
+    let mut taken = Take {
         iter: range,
+        n: 3,
     };
 
     let mut count = 0;
     let mut sum = 0;
-    while let Some(i) = adapter.next() {
+    while let Some(i) = taken.next() {
         count += 1;
         sum += i;
     }
 
-    assert!(count == 5);
+    assert!(count == 3);
     // assert!(sum == 10);
+    assert!(taken.n == 0);
 }

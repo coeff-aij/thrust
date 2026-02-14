@@ -1,13 +1,14 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 trait Iterator {
     type Item;
     
     #[thrust::requires(true)]
     #[thrust::ensures(
-        (completed(*self) || (exists i:int. (result == std::option::Option::<int>::Some(i)) && step(*self, i, ^self)))
-        && (!completed(*self) || (result == std::option::Option::<int>::None() && *self == ^self))
+        (Self::completed(*self) || (exists i:int. (result == std::option::Option::<int>::Some(i)) && Self::step(*self, i, ^self)))
+        && (!Self::completed(*self) || (result == std::option::Option::<int>::None() && *self == ^self))
     )]
     fn next(&mut self) -> Option<Self::Item>;
     
@@ -17,11 +18,12 @@ trait Iterator {
     fn step(self, item: Self::Item, dist: Self) -> bool;
 }
 
-
 struct Range {
     start: i64,
     end: i64,
 }
+
+
 
 impl Iterator for Range {
     type Item = i64;
@@ -38,6 +40,8 @@ impl Iterator for Range {
     
     #[thrust::predicate]
     fn completed(self) -> bool {
+        // (tuple_proj<Int-Int>.0 self) is equivalent to self.start
+        // self.start < self.end is written as following:
         "(not (<
             (tuple_proj<Int-Int>.0 self)
             (tuple_proj<Int-Int>.1 self)
@@ -46,51 +50,12 @@ impl Iterator for Range {
 
     #[thrust::predicate]
     fn step(self, item: Self::Item, dist: Self) -> bool {
+        // self.end == dist.end && self.start == item && self.start + 1 == dist.start
+        // is written as following:
         "(and
             (= (tuple_proj<Int-Int>.1 self) (tuple_proj<Int-Int>.1 dist))
             (= (tuple_proj<Int-Int>.0 self) item)
             (= (+ (tuple_proj<Int-Int>.0 self) 1) (tuple_proj<Int-Int>.0 dist))
-        )"; true
-    }
-}
-
-struct Take<I> {
-    iter: I,
-    n: i64,
-}
-
-impl<I> Iterator for Take<I>
-where
-    I: Iterator,
-{
-    type Item = I::Item;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.n > 0 {
-            self.n -= 1;
-            self.iter.next()
-        } else {
-            None
-        }
-    }
-    
-    #[thrust::predicate]
-    fn completed(self) -> bool {
-        // n <= 0 || { self.iter.completed() } is written as following:
-        "(or
-            (<= (tuple_proj<Int-Int>.1 self) 0)
-            (self_iter_completed())
-        ))"; true
-    }
-
-    #[thrust::predicate]
-    fn step(self, item: Self::Item, dist: Self) -> bool {
-        // self.iter.step(self.iter, item, dist.iter)
-        // is written as following:
-        "(self_iter_step(
-            (tuple_proj<Int-Int>.0 self)
-            item
-            (tuple_proj<Int-Int>.0 dist)
         )"; true
     }
 }
@@ -101,19 +66,15 @@ fn main() {
         end: 5,
     };
 
-    let mut taken = Take {
-        iter: range,
-        n: 3,
-    };
-
     let mut count = 0;
     let mut sum = 0;
-    while let Some(i) = taken.next() {
+    while let Some(i) = range.next() {
+        // assert!(range.start == i + 1 && range.start <= range.end);
         count += 1;
         sum += i;
     }
 
-    assert!(count == 3);
+    assert!(count == 5);
     // assert!(sum == 10);
-    assert!(taken.n == 0);
+    assert!(range.start == count);
 }

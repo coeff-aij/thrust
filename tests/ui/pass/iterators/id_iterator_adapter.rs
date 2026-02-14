@@ -1,14 +1,15 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=thrust-pcsat-wrapper
 
 struct Range {
     start: i64,
     end: i64,
 }
 
-impl Range {
-    fn next(&mut self) -> Option<i64> {
+impl Iterator for Range {
+    type Item = i64;
+
+    fn next(&mut self) -> Option<Self::Item> {
         if self.start < self.end {
             let item = self.start;
             self.start += 1;
@@ -19,20 +20,36 @@ impl Range {
     }
 }
 
+struct Id {
+    iter: Range,
+}
+
+impl Iterator for Id
+{
+    type Item = <Range as Iterator>::Item;
+
+    fn next(&mut self) -> Option<<Range as Iterator>::Item> {
+        self.iter.next()
+    }
+}
+
 fn main() {
     let mut range = Range {
         start: 0,
         end: 5,
     };
 
+    let mut adapter = Id {
+        iter: range,
+    };
+
     let mut count = 0;
     let mut sum = 0;
-    while let Some(i) = range.next() {
+    while let Some(i) = adapter.next() {
         count += 1;
         sum += i;
     }
 
     assert!(count == 5);
     // assert!(sum == 10);
-    assert!(range.start > 0);
 }

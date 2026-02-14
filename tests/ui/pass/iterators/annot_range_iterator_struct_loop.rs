@@ -1,6 +1,6 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=thrust-pcsat-wrapper
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 struct Range {
     start: i64,
@@ -10,8 +10,8 @@ struct Range {
 impl Range {
     #[thrust::requires(true)]
     #[thrust::ensures(
-        (completed(*self) || (exists i:int. (result == std::option::Option::<int>::Some(i)) && step(*self, i, ^self)))
-        && (!completed(*self) || (result == std::option::Option::<int>::None() && *self == ^self))
+        (Self::completed(*self) || (exists i:int. (result == std::option::Option::<int>::Some(i)) && Self::step(*self, i, ^self)))
+        && (!Self::completed(*self) || (result == std::option::Option::<int>::None() && *self == ^self))
     )]
     fn next(&mut self) -> Option<i64> {
         if self.start < self.end {
