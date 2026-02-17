@@ -1,0 +1,30 @@
+#!/bin/bash
+
+COAR_IMAGE=${COAR_IMAGE:-ghcr.io/hiroshi-unno/coar:main}
+TIME_STAMP=$(date +"%Y-%m-%d_%H-%M-%S-%N")
+CONTAINER_NAME="thrust-solver-${TIME_STAMP}"
+
+TIMEOUT=30
+
+# cleanup() {
+#     rc=$?
+#     echo "signal received."
+#     if docker ps -q -f name="^${CONTAINER_NAME}$" >/dev/null; then
+#         echo "Forwarding ${RECEIVED_SIG:-TERM} to container $CONTAINER_NAME"
+#         sig=${RECEIVED_SIG:-TERM}
+#         docker stop -s "$sig" "$CONTAINER_NAME" >/dev/null
+#     fi
+#     exit $rc
+# }
+# trap cleanup EXIT INT TERM HUP
+
+# smt2=$(mktemp -p . --suffix .smt2)
+# trap 'rm -f $smt2' EXIT
+# cp "$1" "$smt2"
+out=$(
+docker run --rm -v "$1:/mnt/problem.smt2" -w /root/coar --name "$CONTAINER_NAME" "$COAR_IMAGE" \
+    timeout "${TIMEOUT}" main.exe -c ./config/solver/dbg_pcsat_tbq_ar.json -p pcsp "/mnt/problem.smt2"
+)
+exit_code=$?
+echo "${out%,*}"
+exit "$exit_code"
