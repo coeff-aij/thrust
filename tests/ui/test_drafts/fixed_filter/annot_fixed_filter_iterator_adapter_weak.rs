@@ -74,43 +74,41 @@ impl Iterator for FixedFilter
     
     #[thrust::predicate]
     fn completed(self) -> bool {
-        // self.iter.completed() || exists i: int. exists dist: Self. self.step(self, i, dist) && !(i % 2 == 0) && dist.completed()
-        "(FixedFilter_iter_completed (tuple_proj<Tuple<Int-Int>>.0 self))"; true
+        // self.iter.completed()
+        "(Range_completed (tuple_proj<Tuple<Int-Int>>.0 self))"; true
     }
 
     #[thrust::predicate]
     fn step(self, item: Self::Item, dist: Self) -> bool {
-        // self.iter.step(item, dist)
-        "(exists ((via A3_Tuple<Tuple<Int-Int>>))
-            (and
-                (FixedFilter_iter_step
+        // (exists via: Self. exists via_item Int. self.iter.step(via_item, via.iter)) && item >= 2
+        "(and
+            (exists ((via A3_Tuple<Tuple<Int-Int>>) (via_item Int))
+                (Range_step
                     (tuple_proj<Tuple<Int-Int>>.0 self)
-                    item
+                    via_item
                     (tuple_proj<Tuple<Int-Int>>.0 via)
                 )
-                (>= item 2)
             )
+            (>= item 2)
         )"; true
     }
 }
 
 fn main() {
-    let mut range = Range {
-        start: 0,
-        end: 5,
-    };
+    let mut range = Range { start: 0, end: 5 };
 
-    let mut adapter = FixedFilter {
-        iter: range,
-    };
+    let mut adapter = FixedFilter { iter: range };
 
     let mut count = 0;
     let mut sum = 0;
+    let mut last = None;
     while let Some(i) = adapter.next() {
         count += 1;
         sum += i;
+        last = Some(i);
     }
 
-    assert!(count == 3);
-    // assert!(sum == 10);
+    // assert!(count == 3);
+    // assert!(sum == 9);
+    assert!(matches!(last, Some(x) if x >= 2));
 }

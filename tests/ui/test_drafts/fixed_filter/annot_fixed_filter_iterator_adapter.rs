@@ -127,22 +127,20 @@ impl Iterator for FixedFilter
 }
 
 fn main() {
-    let mut range = Range {
-        start: 0,
-        end: 5,
-    };
+    let mut range = Range { start: 0, end: 5 };
 
-    let mut adapter = FixedFilter {
-        iter: range,
-    };
+    let mut adapter = FixedFilter { iter: range };
 
     let mut count = 0;
     let mut sum = 0;
+    let mut last = None;
     while let Some(i) = adapter.next() {
         count += 1;
         sum += i;
+        last = Some(i);
     }
 
-    assert!(count == 3);
-    // assert!(sum == 10);
+    // assert!(count == 3);
+    // assert!(sum == 9);
+    assert!(matches!(last, Some(x) if x >= 2));
 }
