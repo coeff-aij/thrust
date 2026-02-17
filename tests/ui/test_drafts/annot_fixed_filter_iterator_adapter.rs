@@ -2,6 +2,46 @@
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
+#![feature(custom_inner_attributes)]
+#![thrust::raw_command("(define-funs-rec
+    (
+        (FixedFilter_completed_rec ((self A3_Tuple<Tuple<Int-Int>>)) Bool)
+        (FixedFilter_step_rec ((self A3_Tuple<Tuple<Int-Int>>) (item Int) (dist A3_Tuple<Tuple<Int-Int>>)) Bool)
+    )
+    (
+        (or
+            (Range_completed (tuple_proj<Tuple<Int-Int>>.0 self))
+            (exists ((i Int) (via A3_Tuple<Tuple<Int-Int>>))
+                (and
+                    (FixedFilter_step self i via)
+                    (not (>= i 2))
+                    (FixedFilter_completed via)
+                )
+            )
+        )
+        (or
+            (and
+                (Range_step
+                    (tuple_proj<Tuple<Int-Int>>.0 self)
+                    item
+                    (tuple_proj<Tuple<Int-Int>>.0 dist)
+                )
+                (>= item 2)
+            )
+            (exists ((via A3_Tuple<Tuple<Int-Int>>))
+                (and
+                    (Range_step
+                        (tuple_proj<Tuple<Int-Int>>.0 self)
+                        item
+                        (tuple_proj<Tuple<Int-Int>>.0 via)
+                    )
+                    (FixedFilter_step via item dist)
+                )
+            )
+        )
+    )
+)")]
+
 trait Iterator {
     type Item;
     
@@ -75,40 +115,14 @@ impl Iterator for FixedFilter
     #[thrust::predicate]
     fn completed(self) -> bool {
         // self.iter.completed() || exists i: int. exists dist: Self. self.step(self, i, dist) && !(i % 2 == 0) && dist.completed()
-        "(or
-            (Range_completed (tuple_proj<Tuple<Int-Int>>.0 self))
-            (exisits ((i Int) (dist A3_Tuple<Tuple<Int-Int>>))
-                (and
-                    (FixedFilter_step (tuple_proj<Tuple<Int-Int>>.0 self) i dist)
-                    (FixedFilter_completed dist)
-                )
-            )
-        )"; true
+        "(FixedFilter_step_rec self)"; true
     }
 
     #[thrust::predicate]
     fn step(self, item: Self::Item, dist: Self) -> bool {
         // self.iter.step(item, dist)
-        "(or
-            (and
-                (Range_step
-                    (tuple_proj<Tuple<Int-Int>>.0 self)
-                    item
-                    (tuple_proj<Tuple<Int-Int>>.0 dist)
-                )
-                (<= item 2)
-            )
-            (exists ((via A3_Tuple<Tuple<Int-Int>>))
-                (and
-                    (Range_step
-                        (tuple_proj<Tuple<Int-Int>>.0 self)
-                        item
-                        (tuple_proj<Tuple<Int-Int>>.0 via)
-                    )
-                    (FixedFilter_step via item dist)
-                )
-            )
-        )"; true
+        // item >= 2 && exists s: Seq states, i: Seq items
+        "(FixedFilter_step_rec self item dist)"; true
     }
 }
 
