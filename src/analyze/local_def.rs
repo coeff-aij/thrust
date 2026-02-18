@@ -147,7 +147,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .iter()
             .map(|ident| ident.to_string());
 
-        let sig = self.ctx.local_fn_sig(local_def_id);
+        let sig = self.ctx.fn_sig(local_def_id.to_def_id());
         let arg_sorts = sig
             .inputs()
             .iter()
@@ -258,7 +258,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     pub fn expected_ty(&mut self) -> rty::RefinedType {
         let sig = self
             .ctx
-            .local_fn_sig_with_body(self.local_def_id, &self.body);
+            .fn_sig_with_body(self.local_def_id.to_def_id(), &self.body);
 
         let mut param_resolver = analyze::annot::ParamResolver::default();
         for (input_ident, input_ty) in self
@@ -387,7 +387,16 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         rustc_hir::def::DefKind::Fn | rustc_hir::def::DefKind::AssocFn
                     ) {
                         assert!(self.inner_def_id.is_none(), "invalid extern_spec_fn");
-                        self.inner_def_id = Some(def_id);
+
+                        let args = typeck_result.node_args(hir_id);
+                        let param_env = self.tcx.param_env(self.outer_def_id);
+                        let instance =
+                            mir_ty::Instance::resolve(self.tcx, param_env, def_id, args).unwrap();
+                        if let Some(instance) = instance {
+                            self.inner_def_id = Some(instance.def_id());
+                        } else {
+                            self.inner_def_id = Some(def_id);
+                        }
                     }
                 }
             }
