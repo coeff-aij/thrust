@@ -31,7 +31,9 @@ impl Iterator for Range {
     #[thrust::trusted]
     #[thrust::requires(true)]
     #[thrust::ensures(
-        (exists i:int. (!(result == std::option::Option::<int>::Some(i)) || Self::step(*self, i, ^self)))
+        // (Self::completed(*self, ^self) || (exists i:int. (result == std::option::Option::<int>::Some(i)) && Self::step(*self, i, ^self)))
+        // && (!Self::completed(*self, ^self) || (result == std::option::Option::<int>::None()))
+        (result == std::option::Option::<int>::None() || (exists i:int. ((result == std::option::Option::<int>::Some(i)) && Self::step(*self, i, ^self))))
         && (!(result == std::option::Option::<int>::None()) || Self::completed(*self, ^self))
     )]
     fn next(&mut self) -> Option<Self::Item> {
