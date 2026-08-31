@@ -408,8 +408,8 @@ impl<'ctx, 'a> Clause<'ctx, 'a> {
 }
 
 /// A node of the equivalence relation derived from the top-level equality atoms of a clause
-/// body. Only clause variables and ground constants participate (var-var/var-const
-/// equalities); compound terms are not expanded yet.
+/// body. Only clause variables and ground constants participate; compound terms are
+/// decomposed into them via structural equality rules (see [`add_term_equality`]).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum EqNode {
     Var(chc::TermVarIdx),
@@ -502,8 +502,53 @@ fn add_equality_atom(atom: &chc::Atom, uf: &mut EqUnionFind) {
     let [lhs, rhs] = &atom.args[..] else {
         return;
     };
+    add_term_equality(lhs, rhs, uf);
+}
+
+/// Returns the sub-term that `term` projects to when it is a datatype selector applied
+/// directly to its constructor, e.g. `mut_final(mut(c, f))` projects to `f`. Selectors are
+/// not injective, so no other forms are considered.
+fn projected_term(term: &chc::Term) -> Option<&chc::Term> {
+    match term {
+        chc::Term::MutFinal(inner) => match &**inner {
+            chc::Term::Mut(_, final_) => Some(final_),
+            _ => None,
+        },
+        chc::Term::MutCurrent(inner) => match &**inner {
+            chc::Term::Mut(current, _) => Some(current),
+            _ => None,
+        },
+        chc::Term::BoxCurrent(inner) => match &**inner {
+            chc::Term::Box(x) => Some(x),
+            _ => None,
+        },
+        chc::Term::TupleProj(t, i) => match &**t {
+            chc::Term::Tuple(ts) => ts.get(*i),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Decomposes an equality between two terms into elementary equivalences over clause
+/// variables and ground constants. Beyond var-var/var-const equalities, structural
+/// equalities are decomposed using the datatype rules: constructors are injective, and a
+/// selector applied to its constructor reduces to the projected argument. All of these are
+/// exact, so the resulting classes are implied by the clause's assumptions.
+fn add_term_equality(lhs: &chc::Term, rhs: &chc::Term, uf: &mut EqUnionFind) {
+    if let (chc::Term::Var(a), chc::Term::Var(b)) = (lhs, rhs) {
+        uf.union(EqNode::Var(*a), EqNode::Var(*b));
+        return;
+    }
+    if let Some(proj) = projected_term(lhs) {
+        add_term_equality(proj, rhs, uf);
+        return;
+    }
+    if let Some(proj) = projected_term(rhs) {
+        add_term_equality(lhs, proj, uf);
+        return;
+    }
     match (lhs, rhs) {
-        (chc::Term::Var(a), chc::Term::Var(b)) => uf.union(EqNode::Var(*a), EqNode::Var(*b)),
         (chc::Term::Var(a), other) => {
             if let Some(c) = EqConst::of(other) {
                 uf.union(EqNode::Var(*a), EqNode::Const(c));
@@ -512,6 +557,18 @@ fn add_equality_atom(atom: &chc::Atom, uf: &mut EqUnionFind) {
         (other, chc::Term::Var(b)) => {
             if let Some(c) = EqConst::of(other) {
                 uf.union(EqNode::Const(c), EqNode::Var(*b));
+            }
+        }
+        (chc::Term::Mut(a1, a2), chc::Term::Mut(b1, b2)) => {
+            add_term_equality(a1, b1, uf);
+            add_term_equality(a2, b2, uf);
+        }
+        (chc::Term::Box(a), chc::Term::Box(b)) => add_term_equality(a, b, uf),
+        (chc::Term::DatatypeCtor(_, sym1, args1), chc::Term::DatatypeCtor(_, sym2, args2))
+            if sym1 == sym2 && args1.len() == args2.len() =>
+        {
+            for (a, b) in args1.iter().zip(args2) {
+                add_term_equality(a, b, uf);
             }
         }
         _ => {}
