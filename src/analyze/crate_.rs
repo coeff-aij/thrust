@@ -106,7 +106,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         }
     }
 
-    #[tracing::instrument(skip(self), fields(def_id = %self.tcx.def_path_str(local_def_id)))]
+    #[tracing::instrument(skip(self, local_def_id), fields(def_id = %self.tcx.def_path_str(local_def_id)))]
     fn refine_fn_def(&mut self, local_def_id: LocalDefId) {
         let sig = self.ctx.fn_sig(local_def_id.to_def_id());
 

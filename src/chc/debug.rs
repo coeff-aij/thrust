@@ -87,20 +87,46 @@ impl DebugInfo {
     }
 
     fn context_from_formatted_fields(&mut self, fields: &str) {
-        let mut value = None;
-        for field in fields.rsplit("\x1b[2m=\x1b[0m") {
-            let field = strip_ansi_colors(field);
-            if let Some(prev_value) = value {
-                if let Some((next_value, key)) = field.rsplit_once(' ') {
-                    self.context(key, prev_value);
-                    value = Some(next_value.to_owned());
+        // `tracing_subscriber::fmt` renders span fields as `key=value` pairs. When ANSI colors
+        // are enabled the `=` is dim-styled (`\x1b[2m=\x1b[0m`), which unambiguously separates
+        // the key from the value even when a value contains spaces. When colors are disabled
+        // (e.g. `NO_COLOR`), the pairs are plain `key=value` tokens separated by whitespace.
+        // Handle both layouts, but keep only fields that are useful for tracing a clause back
+        // to its function and MIR basic block. Other fields (e.g. auto-captured arguments
+        // whose debug output contains spaces) would be corrupted by the plain layout parse.
+        const DIM_EQ: &str = "\x1b[2m=\x1b[0m";
+        let mut context = |key: &str, value: String| {
+            // When a function's body is analyzed from within another function (e.g. deferred
+            // calls and closures), several ancestor spans carry `def`/`bb`. The innermost one
+            // is the function the clause actually belongs to, so keep only the first.
+            if matches!(key, "def" | "def_id" | "bb")
+                && !self.contexts.iter().any(|(k, _)| k == key)
+            {
+                self.context(key, value);
+            }
+        };
+        if fields.contains(DIM_EQ) {
+            let mut value: Option<String> = None;
+            for field in fields.rsplit(DIM_EQ) {
+                let field = strip_ansi_colors(field);
+                if let Some(prev_value) = value {
+                    if let Some((next_value, key)) = field.rsplit_once(' ') {
+                        context(key, prev_value.to_owned());
+                        value = Some(next_value.to_owned());
+                    } else {
+                        context(&field, prev_value.to_owned());
+                        break;
+                    }
                 } else {
-                    self.context(&field, prev_value);
-                    break;
+                    value = Some(field);
+                    continue;
                 }
-            } else {
-                value = Some(field);
-                continue;
+            }
+        } else {
+            for field in fields.split_ascii_whitespace() {
+                if let Some((key, value)) = field.split_once('=') {
+                    context(key, value.to_owned());
+                }
             }
         }
     }
