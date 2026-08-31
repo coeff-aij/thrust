@@ -6,6 +6,8 @@
 //! such as naming convention and solver-specific workarounds.
 //! The output of this module is what gets passed to the external CHC solver.
 
+use std::collections::HashMap;
+
 use crate::chc::{self, format_context::FormatContext};
 
 /// A helper struct to display a list of items.
@@ -377,6 +379,9 @@ impl<'ctx, 'a> std::fmt::Display for Clause<'ctx, 'a> {
         if !self.inner.debug_info.is_empty() {
             writeln!(f, "{}", self.inner.debug_info.display("; "))?;
         }
+        for line in equivalent_classes(self.inner) {
+            writeln!(f, "{}", line)?;
+        }
         let body = Body::new(self.ctx, self.inner, &self.inner.body);
         let head = Atom::new(self.ctx, self.inner, &self.inner.head);
         if !self.inner.vars.is_empty() {
@@ -400,6 +405,183 @@ impl<'ctx, 'a> Clause<'ctx, 'a> {
     pub fn new(ctx: &'ctx FormatContext, inner: &'a chc::Clause) -> Self {
         Self { ctx, inner }
     }
+}
+
+/// A node of the equivalence relation derived from the top-level equality atoms of a clause
+/// body. Only clause variables and ground constants participate (var-var/var-const
+/// equalities); compound terms are not expanded yet.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum EqNode {
+    Var(chc::TermVarIdx),
+    Const(EqConst),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum EqConst {
+    Null,
+    Int(i64),
+    Bool(bool),
+    Str(String),
+}
+
+impl EqConst {
+    fn of(term: &chc::Term) -> Option<EqConst> {
+        match term {
+            chc::Term::Null => Some(EqConst::Null),
+            chc::Term::Int(i) => Some(EqConst::Int(*i)),
+            chc::Term::Bool(b) => Some(EqConst::Bool(*b)),
+            chc::Term::String(s) => Some(EqConst::Str(s.clone())),
+            _ => None,
+        }
+    }
+}
+
+/// A union-find over [`EqNode`]s.
+#[derive(Default)]
+struct EqUnionFind {
+    parent: HashMap<EqNode, EqNode>,
+}
+
+impl EqUnionFind {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn find(&mut self, node: EqNode) -> EqNode {
+        if self.parent.get(&node) == Some(&node) {
+            return node;
+        }
+        if let Some(parent) = self.parent.get(&node).cloned() {
+            let root = self.find(parent);
+            self.parent.insert(node, root.clone());
+            return root;
+        }
+        self.parent.insert(node.clone(), node.clone());
+        node
+    }
+
+    fn union(&mut self, a: EqNode, b: EqNode) {
+        let ra = self.find(a);
+        let rb = self.find(b);
+        if ra != rb {
+            // Deterministic parent: variables before constants, lower index first.
+            let (parent, child) = if rank(&ra) < rank(&rb) {
+                (ra, rb)
+            } else {
+                (rb, ra)
+            };
+            self.parent.insert(child, parent);
+        }
+    }
+}
+
+/// An ordering of [`EqNode`]s that places variables (by ascending index) before constants.
+fn rank(node: &EqNode) -> (u8, usize) {
+    match node {
+        EqNode::Var(v) => (0, v.index()),
+        EqNode::Const(_) => (1, 0),
+    }
+}
+
+fn render_eq_node(node: &EqNode) -> String {
+    match node {
+        EqNode::Var(v) => v.to_string(),
+        EqNode::Const(c) => match c {
+            EqConst::Null => "null".to_owned(),
+            EqConst::Int(i) => i.to_string(),
+            EqConst::Bool(b) => b.to_string(),
+            EqConst::Str(s) => format!("\"{}\"", s.escape_default()),
+        },
+    }
+}
+
+fn add_equality_atom(atom: &chc::Atom, uf: &mut EqUnionFind) {
+    if atom.guard.is_some() || atom.pred != chc::KnownPred::EQUAL.into() {
+        return;
+    }
+    let [lhs, rhs] = &atom.args[..] else {
+        return;
+    };
+    match (lhs, rhs) {
+        (chc::Term::Var(a), chc::Term::Var(b)) => uf.union(EqNode::Var(*a), EqNode::Var(*b)),
+        (chc::Term::Var(a), other) => {
+            if let Some(c) = EqConst::of(other) {
+                uf.union(EqNode::Var(*a), EqNode::Const(c));
+            }
+        }
+        (other, chc::Term::Var(b)) => {
+            if let Some(c) = EqConst::of(other) {
+                uf.union(EqNode::Const(c), EqNode::Var(*b));
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Collects the top-level (unguarded) equality atoms of a clause body into the union-find.
+fn collect_top_level_equalities(body: &chc::Body, uf: &mut EqUnionFind) {
+    for atom in &body.atoms {
+        add_equality_atom(atom, uf);
+    }
+    match &body.formula {
+        chc::Formula::And(fs) => {
+            for fo in fs {
+                if let chc::Formula::Atom(atom) = fo {
+                    add_equality_atom(atom, uf);
+                }
+            }
+        }
+        fo => {
+            if let chc::Formula::Atom(atom) = fo {
+                add_equality_atom(atom, uf);
+            }
+        }
+    }
+}
+
+/// Returns the equivalence classes among clause variables implied by the top-level equality
+/// atoms of the body, as supplementary comment lines like `; v0=v1=v5, v7=false`. The clause
+/// body itself is left untouched.
+fn equivalent_classes(clause: &chc::Clause) -> Vec<String> {
+    let mut uf = EqUnionFind::new();
+    collect_top_level_equalities(&clause.body, &mut uf);
+    if uf.parent.is_empty() {
+        return Vec::new();
+    }
+
+    let nodes: Vec<EqNode> = uf.parent.keys().cloned().collect();
+    let mut classes: HashMap<EqNode, Vec<EqNode>> = HashMap::new();
+    for node in nodes {
+        classes.entry(uf.find(node.clone())).or_default().push(node);
+    }
+
+    let mut members_list: Vec<Vec<EqNode>> = classes.into_values().collect();
+    members_list.retain(|members| members.len() >= 2);
+    members_list.sort_by_key(|members| members.iter().map(rank).min());
+
+    let mut lines: Vec<String> = Vec::new();
+    let mut current = String::from("; ");
+    for members in members_list {
+        let mut members = members;
+        members.sort_by_key(rank);
+        let rendered = members
+            .iter()
+            .map(render_eq_node)
+            .collect::<Vec<_>>()
+            .join("=");
+        if current.len() + rendered.len() + 2 > 100 {
+            lines.push(std::mem::take(&mut current));
+            current.push_str("; ");
+        }
+        if current.len() > 2 {
+            current.push_str(", ");
+        }
+        current.push_str(&rendered);
+    }
+    if current.len() > 2 {
+        lines.push(current);
+    }
+    lines
 }
 
 /// A wrapper around a [`chc::RawCommand`] that provides a [`std::fmt::Display`] implementation in SMT-LIB2 format.
