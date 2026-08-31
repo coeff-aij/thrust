@@ -141,6 +141,7 @@ pub struct Analyzer<'tcx, 'ctx> {
     tcx: TyCtxt<'tcx>,
 
     local_def_id: LocalDefId,
+    analysis_key: analyze::AnalysisKey<'tcx>,
     drop_points: DropPoints,
     basic_block: BasicBlock,
     body: Cow<'tcx, Body<'tcx>>,
@@ -175,7 +176,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
     fn basic_block_ty_with_precondition(&self, bb: BasicBlock) -> &BasicBlockType {
         self.ctx
-            .basic_block_ty_with_precondition(self.local_def_id, bb)
+            .basic_block_ty_with_precondition(self.analysis_key, bb)
     }
 
     fn bind_local(&mut self, local: Local, rty: rty::RefinedType<Var>) {
@@ -799,7 +800,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         bb: BasicBlock,
         outer_fn_param_vars: &HashMap<rty::FunctionParamIdx, Var>,
     ) {
-        let bty = self.ctx.basic_block_ty(self.local_def_id, bb);
+        let bty = self.ctx.basic_block_ty(self.analysis_key, bb);
 
         let mut capture = PrecondCapture::default();
         for (param_idx, param_rty) in bty.as_ref().params.iter_enumerated() {
@@ -823,7 +824,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let precondition = capture.finish(&self.env);
 
         self.ctx
-            .register_basic_block_precondition(self.local_def_id, bb, precondition);
+            .register_basic_block_precondition(self.analysis_key, bb, precondition);
     }
 
     fn with_assumptions<F, T>(&mut self, assumptions: Vec<impl Into<Assumption>>, callback: F) -> T
@@ -1635,10 +1636,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     pub fn new(
         ctx: &'ctx mut analyze::Analyzer<'tcx>,
-        local_def_id: LocalDefId,
+        analysis_key: analyze::AnalysisKey<'tcx>,
         basic_block: BasicBlock,
-        owner_fn_id: DefId,
     ) -> Self {
+        let local_def_id = analysis_key.local_def_id;
+        let owner_fn_id = analysis_key.owner_fn_id;
         let tcx = ctx.tcx;
         let drop_points = DropPoints::default();
         let body = Cow::Borrowed(tcx.optimized_mir(local_def_id.to_def_id()));
@@ -1650,6 +1652,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             ctx,
             tcx,
             local_def_id,
+            analysis_key,
             drop_points,
             basic_block,
             body,

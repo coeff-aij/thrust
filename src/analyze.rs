@@ -194,6 +194,34 @@ struct InstantiationKey<'tcx> {
     caller_def_id: DefId,
 }
 
+/// Identifies one analysis instance of a function body.
+///
+/// A def may be analyzed more than once: the placeholder analysis (with the
+/// type parameters left as forall sorts) and, when a generic def is called at
+/// concrete type arguments, one analysis per instantiation. Each instance owns
+/// its own basic-block types so that nested analyses of the same def (e.g. a
+/// recursive generic function) do not clobber each other.
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+pub struct AnalysisKey<'tcx> {
+    local_def_id: LocalDefId,
+    generic_args: mir_ty::GenericArgsRef<'tcx>,
+    owner_fn_id: DefId,
+}
+
+impl<'tcx> AnalysisKey<'tcx> {
+    pub fn new(
+        local_def_id: LocalDefId,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
+        owner_fn_id: DefId,
+    ) -> Self {
+        Self {
+            local_def_id,
+            generic_args,
+            owner_fn_id,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 enum DefTy<'tcx> {
     Concrete(rty::RefinedType),
@@ -270,7 +298,7 @@ pub struct Analyzer<'tcx> {
     /// Resulting CHC system.
     system: Rc<RefCell<chc::System>>,
 
-    basic_blocks: HashMap<LocalDefId, HashMap<BasicBlock, BasicBlockDef>>,
+    basic_blocks: HashMap<AnalysisKey<'tcx>, HashMap<BasicBlock, BasicBlockDef>>,
     def_ids: did_cache::DefIdCache<'tcx>,
 
     enum_defs: Rc<RefCell<EnumDefs>>,
@@ -572,7 +600,18 @@ impl<'tcx> Analyzer<'tcx> {
                     Self::instantiate_generic_args(&mut def_ty, generic_args, &type_builder);
                     return Some(def_ty);
                 }
-                DefTy::Generic(generic) => (generic.local_def_id, Rc::clone(&generic.cache), None),
+                DefTy::Generic(generic) => (
+                    generic.local_def_id,
+                    Rc::clone(&generic.cache),
+                    Some(DeferredDefMode::Analyze).filter(|_| {
+                        // A call with type parameters still present is a call from
+                        // inside a generic context; its contract is the template that
+                        // the placeholder analysis constrains. Re-running the body here
+                        // would collide with that analysis (same def, same args).
+                        use mir_ty::TypeVisitableExt as _;
+                        !generic_args.types().any(|ty| ty.has_param())
+                    }),
+                ),
                 DefTy::Deferred(deferred) => (
                     deferred.local_def_id,
                     Rc::clone(&deferred.cache),
@@ -627,12 +666,12 @@ impl<'tcx> Analyzer<'tcx> {
 
     pub fn register_basic_block_ty_with_precondition(
         &mut self,
-        def_id: LocalDefId,
+        key: AnalysisKey<'tcx>,
         bb: BasicBlock,
         rty: BasicBlockType,
     ) {
         self.register_basic_block_def(
-            def_id,
+            key,
             bb,
             BasicBlockDef {
                 ty: rty,
@@ -643,12 +682,12 @@ impl<'tcx> Analyzer<'tcx> {
 
     pub fn register_basic_block_ty_without_precondition(
         &mut self,
-        def_id: LocalDefId,
+        key: AnalysisKey<'tcx>,
         bb: BasicBlock,
         rty: BasicBlockType,
     ) {
         self.register_basic_block_def(
-            def_id,
+            key,
             bb,
             BasicBlockDef {
                 ty: rty,
@@ -657,26 +696,31 @@ impl<'tcx> Analyzer<'tcx> {
         );
     }
 
-    fn register_basic_block_def(&mut self, def_id: LocalDefId, bb: BasicBlock, def: BasicBlockDef) {
+    fn register_basic_block_def(
+        &mut self,
+        key: AnalysisKey<'tcx>,
+        bb: BasicBlock,
+        def: BasicBlockDef,
+    ) {
         tracing::debug!(
-            def_id = ?def_id,
+            def_id = ?key.local_def_id,
             ?bb,
             rty = %def.ty.display(),
             has_precondition = def.has_precondition,
             "register_basic_block_def",
         );
-        self.basic_blocks.entry(def_id).or_default().insert(bb, def);
+        self.basic_blocks.entry(key).or_default().insert(bb, def);
     }
 
     pub fn register_basic_block_precondition(
         &mut self,
-        def_id: LocalDefId,
+        key: AnalysisKey<'tcx>,
         bb: BasicBlock,
         precondition: rty::Refinement<rty::FunctionParamIdx>,
     ) {
         let bb_def = &mut self
             .basic_blocks
-            .get_mut(&def_id)
+            .get_mut(&key)
             .unwrap()
             .get_mut(&bb)
             .unwrap();
@@ -688,16 +732,16 @@ impl<'tcx> Analyzer<'tcx> {
         bb_def.ty.set_precondition(precondition);
     }
 
-    pub fn basic_block_ty(&self, def_id: LocalDefId, bb: BasicBlock) -> &BasicBlockType {
-        &self.basic_blocks[&def_id][&bb].ty
+    pub fn basic_block_ty(&self, key: AnalysisKey<'tcx>, bb: BasicBlock) -> &BasicBlockType {
+        &self.basic_blocks[&key][&bb].ty
     }
 
     pub fn basic_block_ty_with_precondition(
         &self,
-        def_id: LocalDefId,
+        key: AnalysisKey<'tcx>,
         bb: BasicBlock,
     ) -> &BasicBlockType {
-        let def = &self.basic_blocks[&def_id][&bb];
+        let def = &self.basic_blocks[&key][&bb];
         assert!(
             def.has_precondition,
             "basic block does not have precondition"
@@ -737,11 +781,10 @@ impl<'tcx> Analyzer<'tcx> {
 
     pub fn basic_block_analyzer(
         &mut self,
-        local_def_id: LocalDefId,
+        key: AnalysisKey<'tcx>,
         bb: BasicBlock,
-        owner_fn_id: DefId,
     ) -> basic_block::Analyzer<'tcx, '_> {
-        basic_block::Analyzer::new(self, local_def_id, bb, owner_fn_id)
+        basic_block::Analyzer::new(self, key, bb)
     }
 
     pub fn type_builder(&self, def_ids: DefIdCache<'tcx>, owner_fn_id: DefId) -> TypeBuilder<'tcx> {
