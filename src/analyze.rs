@@ -14,7 +14,7 @@ use rustc_hir::lang_items::LangItem;
 use rustc_index::IndexVec;
 use rustc_middle::mir::{self, BasicBlock, Local};
 use rustc_middle::ty::{self as mir_ty, TyCtxt};
-use rustc_span::def_id::{DefId, LocalDefId};
+use rustc_span::def_id::{DefId, LocalDefId, LOCAL_CRATE};
 use rustc_span::Symbol;
 
 use crate::analyze;
@@ -244,6 +244,9 @@ pub struct Analyzer<'tcx> {
     def_ids: did_cache::DefIdCache<'tcx>,
 
     enum_defs: Rc<RefCell<EnumDefs>>,
+
+    /// Defs whose MIR is collected for the `THRUST_DUMP_MIR` output, in analysis order.
+    mir_dump_defs: Vec<DefId>,
 }
 
 impl<'tcx> crate::refine::TemplateRegistry for Analyzer<'tcx> {
@@ -279,6 +282,7 @@ impl<'tcx> Analyzer<'tcx> {
             basic_blocks,
             def_ids: did_cache::DefIdCache::new(tcx),
             enum_defs,
+            mir_dump_defs: Default::default(),
         }
     }
 
@@ -663,6 +667,75 @@ impl<'tcx> Analyzer<'tcx> {
     pub fn solve(&mut self) {
         if let Err(err) = self.system.borrow().solve() {
             self.tcx.dcx().err(format!("verification error: {:?}", err));
+        }
+    }
+
+    /// Records `def_id` for the MIR dump when the `THRUST_DUMP_MIR` environment
+    /// variable is set.
+    ///
+    /// The value of the variable acts as a substring filter on the def path: when
+    /// it is `all` (or `1`/`true`), every analyzed def is collected; otherwise,
+    /// only defs whose path contains the value are collected. Collected defs are
+    /// written out together by [`Self::flush_mir_dump`].
+    pub fn collect_mir_dump(&mut self, def_id: LocalDefId) {
+        let Some(filter) = std::env::var("THRUST_DUMP_MIR")
+            .ok()
+            .filter(|f| !f.is_empty())
+        else {
+            return;
+        };
+        let def_id = def_id.to_def_id();
+        let def_path_str = self.tcx.def_path_str(def_id);
+        let is_all = matches!(filter.as_str(), "all" | "1" | "true");
+        if !is_all && !def_path_str.contains(&filter) {
+            return;
+        }
+        if !self.mir_dump_defs.contains(&def_id) {
+            self.mir_dump_defs.push(def_id);
+        }
+    }
+
+    /// Writes the MIR collected by [`Self::collect_mir_dump`] into a single
+    /// `<crate>.mir` file, mirroring rustc's `--emit mir` output.
+    ///
+    /// Files are written to the directory given by `THRUST_OUTPUT_DIR` if set,
+    /// else to `mir_dump` in the current directory.
+    pub fn flush_mir_dump(&self) {
+        use rustc_middle::mir::pretty::MirWriter;
+        use std::io::Write as _;
+
+        if self.mir_dump_defs.is_empty() {
+            return;
+        }
+
+        let dir = std::env::var("THRUST_OUTPUT_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| std::path::PathBuf::from("mir_dump"));
+        let crate_name = self.tcx.crate_name(LOCAL_CRATE);
+        let path = dir.join(format!("{crate_name}.mir"));
+
+        tracing::info!(?path, "dumping MIR");
+        let result = std::fs::create_dir_all(&dir).and_then(|_| {
+            let mut file = std::fs::File::create(&path)?;
+            writeln!(
+                file,
+                "// WARNING: This output format is intended for human consumers only
+// and is subject to change without notice. Knock yourself out.
+// HINT: See also -Z dump-mir for MIR at specific points during compilation."
+            )?;
+            let writer = MirWriter::new(self.tcx);
+            for def_id in &self.mir_dump_defs {
+                writeln!(file)?;
+                writer.write_mir_fn(self.tcx.optimized_mir(*def_id), &mut file)?;
+                for body in self.tcx.promoted_mir(*def_id) {
+                    writeln!(file)?;
+                    writer.write_mir_fn(body, &mut file)?;
+                }
+            }
+            Ok(())
+        });
+        if let Err(err) = result {
+            tracing::warn!(?path, ?err, "failed to dump MIR");
         }
     }
 

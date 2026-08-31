@@ -141,6 +141,7 @@ Several environment variables are used by Thrust to configure its behavior:
 - `THRUST_SOLVER_ARGS`: Whitespace-separated command-line flags passed to the solver. The default is `fp.spacer.global=true fp.validate=true` when the solver is `z3`.
 - `THRUST_SOLVER_TIMEOUT_SECS`: Timeout for waiting on results from the solver. Default: `30`
 - `THRUST_OUTPUT_DIR`: When configured, Thrust outputs intermediate smtlib2 files into this directory.
+- `THRUST_DUMP_MIR`: When set, Thrust writes the optimized MIR of every analyzed function into a single `<crate>.mir` file, mirroring rustc's `--emit mir` output. The value is a substring filter on the def path; use `all` (or `1`/`true`) to include every analyzed def. Files are written to `THRUST_OUTPUT_DIR` when set, else to `mir_dump` in the current directory.
 - `THRUST_ENUM_EXPANSION_DEPTH_LIMIT`: When Thrust works with enums, it "expands" the structure of the enum value onto its environment. This configuration value sets the limit on the depth of recursion during this expansion to handle enums that are defined recursively. It is our future work to discover a sensible value for this automatically. Default: `2`
 
 ## Development

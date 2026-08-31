@@ -1164,6 +1164,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let span = tracing::info_span!("def", def = %self.tcx.def_path_str(self.local_def_id));
         let _guard = span.enter();
 
+        self.ctx.collect_mir_dump(self.local_def_id);
         self.unelaborate_derefs();
         analyze::reconstruct_slice_indexing::reconstruct(self.tcx, &mut self.body);
         self.reassign_local_mutabilities();

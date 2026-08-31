@@ -66,6 +66,7 @@ impl Callbacks for CompilerCalls {
         let mut ctx = thrust::Analyzer::new(tcx);
         ctx.register_well_known_defs();
         ctx.crate_analyzer().run();
+        ctx.flush_mir_dump();
         ctx.solve();
         Compilation::Stop
     }
