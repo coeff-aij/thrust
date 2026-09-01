@@ -152,8 +152,11 @@ impl Config {
             preproc_config.load_timeout("THRUST_PREPROCESSOR_TIMEOUT_SECS");
             config.preprocessor = Some(preproc_config);
         }
-        if let Ok(dir) = std::env::var("THRUST_OUTPUT_DIR") {
-            config.output_dir = Some(dir.into());
+        if std::env::var("THRUST_DUMP_SMT2").is_ok_and(|v| !v.is_empty()) {
+            let dir = std::env::var("THRUST_OUTPUT_DIR")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            config.output_dir = Some(dir);
         }
         config
     }

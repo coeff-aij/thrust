@@ -698,8 +698,8 @@ impl<'tcx> Analyzer<'tcx> {
     /// Writes the MIR collected by [`Self::collect_mir_dump`] into a single
     /// `<crate>.mir` file, mirroring rustc's `--emit mir` output.
     ///
-    /// Files are written to the directory given by `THRUST_OUTPUT_DIR` if set,
-    /// else to `mir_dump` in the current directory.
+    /// The file is written to the directory given by `THRUST_OUTPUT_DIR` if set,
+    /// else to the current directory.
     pub fn flush_mir_dump(&self) {
         use rustc_middle::mir::pretty::MirWriter;
         use std::io::Write as _;
@@ -709,13 +709,19 @@ impl<'tcx> Analyzer<'tcx> {
         }
 
         let dir = std::env::var("THRUST_OUTPUT_DIR")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|_| std::path::PathBuf::from("mir_dump"));
+            .ok()
+            .map(std::path::PathBuf::from);
         let crate_name = self.tcx.crate_name(LOCAL_CRATE);
-        let path = dir.join(format!("{crate_name}.mir"));
+        let path = match &dir {
+            Some(dir) => dir.join(format!("{crate_name}.mir")),
+            None => std::path::PathBuf::from(format!("{crate_name}.mir")),
+        };
 
         tracing::info!(?path, "dumping MIR");
-        let result = std::fs::create_dir_all(&dir).and_then(|_| {
+        let result = (|| -> std::io::Result<()> {
+            if let Some(dir) = &dir {
+                std::fs::create_dir_all(dir)?;
+            }
             let mut file = std::fs::File::create(&path)?;
             writeln!(
                 file,
@@ -733,7 +739,7 @@ impl<'tcx> Analyzer<'tcx> {
                 }
             }
             Ok(())
-        });
+        })();
         if let Err(err) = result {
             tracing::warn!(?path, ?err, "failed to dump MIR");
         }
