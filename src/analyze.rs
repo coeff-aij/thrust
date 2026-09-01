@@ -710,18 +710,14 @@ impl<'tcx> Analyzer<'tcx> {
 
         let dir = std::env::var("THRUST_OUTPUT_DIR")
             .ok()
-            .map(std::path::PathBuf::from);
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::env::current_dir().expect("could not get current directory"));
         let crate_name = self.tcx.crate_name(LOCAL_CRATE);
-        let path = match &dir {
-            Some(dir) => dir.join(format!("{crate_name}.mir")),
-            None => std::path::PathBuf::from(format!("{crate_name}.mir")),
-        };
+        let path = dir.join(format!("{crate_name}.mir"));
 
         tracing::info!(?path, "dumping MIR");
         let result = (|| -> std::io::Result<()> {
-            if let Some(dir) = &dir {
-                std::fs::create_dir_all(dir)?;
-            }
+            std::fs::create_dir_all(&dir)?;
             let mut file = std::fs::File::create(&path)?;
             writeln!(
                 file,

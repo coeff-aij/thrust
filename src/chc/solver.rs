@@ -155,7 +155,9 @@ impl Config {
         if std::env::var("THRUST_DUMP_SMT2").is_ok_and(|v| !v.is_empty()) {
             let dir = std::env::var("THRUST_OUTPUT_DIR")
                 .map(std::path::PathBuf::from)
-                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+                .unwrap_or_else(|_| {
+                    std::env::current_dir().expect("could not get current directory")
+                });
             config.output_dir = Some(dir);
         }
         config
