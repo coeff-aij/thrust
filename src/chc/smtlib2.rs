@@ -704,16 +704,16 @@ impl<'a> std::fmt::Display for System<'a> {
             }
             writeln!(f, "(declare-forall-sort {})\n", forall_sort_def.idx)?;
         }
+        let used_forall_defaults = self.inner.used_forall_default_sorts();
         for forall_sort_def in &self.inner.forall_sorts {
+            if !used_forall_defaults.contains(&forall_sort_def.idx) {
+                continue;
+            }
             writeln!(
                 f,
                 "(declare-const default_{} {})\n",
                 forall_sort_def.idx, forall_sort_def.idx
             )?;
-        }
-
-        for pred in &self.inner.forall_pred_vars {
-            writeln!(f, "{}\n", ForallPredDef::new(&self.ctx, pred))?;
         }
 
         writeln!(f, "{}\n", Datatypes::new(&self.ctx, self.ctx.datatypes()))?;
@@ -744,6 +744,11 @@ impl<'a> std::fmt::Display for System<'a> {
                               (+ ({len} s) (- ({len} t) 1)) \
                               (select ({array} t) (- ({len} t) 1)))))\n",
             )?;
+        }
+        writeln!(f)?;
+
+        for pred in &self.inner.forall_pred_vars {
+            writeln!(f, "{}\n", ForallPredDef::new(&self.ctx, pred))?;
         }
 
         // insert command from #![thrust::raw_command()] here
