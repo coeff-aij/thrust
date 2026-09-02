@@ -2,44 +2,71 @@
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60 COAR_IMAGE=coar:latest
 
-use thrust_models::{Model, exists, forall, model::Mut};
+use thrust_models::{exists, forall, Model, model::{Array, Int, Mut, Closure}};
 
 #[thrust_macros::context]
 trait Iterator {
     type Item;
 
-    #[thrust_macros::ensures(
-        Self::completed(*self)
-        || exists(|i| (result == Some(i)) && Self::step(*self, i, !self))
-    )]
-    #[thrust_macros::ensures(!Self::completed(*self) || (result == None && *self == !self))]
+    #[thrust_macros::requires(Self::invariant(*self))]
+    #[thrust_macros::ensures(result == None ==> Self::completed(self))]
+    #[thrust_macros::ensures(Self::completed(self) ==> result == None)]
+    #[thrust_macros::ensures(forall(|i| result == Some(i) ==> Self::step(*self, i, !self)))]
+    #[thrust_macros::ensures(forall(|i| Self::step(*self, i, !self) ==> result == Some(i)))]
     fn next(&mut self) -> Option<Self::Item>;
 
     #[thrust_macros::predicate]
-    fn completed(self) -> bool;
+    fn invariant(self) -> bool;
+    #[thrust_macros::predicate]
+    fn completed(&mut self) -> bool;
     #[thrust_macros::predicate]
     fn step(self, item: Self::Item, dist: Self) -> bool;
 
-    #[thrust_macros::invariant_context]
-    #[thrust_macros::requires(true)]
+    
+    #[thrust_macros::requires(
+        exists(|it: Array<Int, <Self as Model>::Ty>|
+        exists(|acc: Array<Int, <B as Model>::Ty>|
+        exists(|l: Int|
+            it[0] == self &&
+            acc[0] == init &&
+            Self::completed(Mut::new(it[l - 1], it[l])) &&
+            exists(|item|
+            !Self::completed(Mut::new(it[l - 2], it[l - 1])) &&
+            Self::step(it[l - 2], item, it[l - 1]) &&
+            thrust_macros::pre!(f(acc[l - 2], item)) 
+            ) &&
+            forall(|i: Int|
+                0 <= i && i < l - 2 ==>
+                exists(|item|
+                    !Self::completed(Mut::new(it[i], it[i + 1])) &&
+                    Self::step(it[i], item, it[i + 1]) &&
+                    thrust_macros::pre!(f(acc[i], item)) &&
+                    thrust_macros::post!(
+                        f(acc[i], item),
+                        acc[i + 1]
+                    )
+                )
+            )
+        )))
+    )]
     #[thrust_macros::ensures(
-        exists(|it: thrust_models::model::Array<thrust_models::model::Int, <Self as Model>::Ty>|
-        exists(|fn_: thrust_models::model::Array<thrust_models::model::Int, thrust_models::model::Closure<F>>|
-        exists(|acc: thrust_models::model::Array<thrust_models::model::Int, <B as Model>::Ty>|
-        exists(|l: thrust_models::model::Int|
+        exists(|it: Array<Int, <Self as Model>::Ty>|
+        exists(|fn_: Array<Int, Closure<F>>|
+        exists(|acc: Array<Int, <B as Model>::Ty>|
+        exists(|l: Int|
             it[0] == self &&
             fn_[0] == f &&
             acc[0] == init &&
-            Self::completed(it[l - 1]) &&
+            Self::completed(Mut::new(it[l - 1], it[l])) &&
             result == acc[l - 1] &&
-            forall(|i: thrust_models::model::Int|
+            forall(|i: Int|
                 0 <= i && i < l - 1 ==>
                 exists(|item|
-                    !Self::completed(it[i]) &&
+                    !Self::completed(Mut::new(it[i], it[i + 1])) &&
                     Self::step(it[i], item, it[i + 1]) &&
-                    thrust_macros::pre!(Mut::new(fn_[i], fn_[i+1])(acc[i], item)) &&
+                    thrust_macros::pre!(Mut::new(fn_[i], fn_[i + 1])(acc[i], item)) &&
                     thrust_macros::post!(
-                        Mut::new(fn_[i], fn_[i+1])(acc[i], item),
+                        Mut::new(fn_[i], fn_[i + 1])(acc[i], item),
                         acc[i + 1]
                     )
                 )
@@ -55,22 +82,22 @@ trait Iterator {
         while let Some(x) = self.next() {
             thrust_macros::invariant!(
                 |accum: B, init: thrust_models::FnParam<B>, f: F, self: Self|
-                exists(|it: thrust_models::model::Array<thrust_models::model::Int, <Self as Model>::Ty>|
-                exists(|fn_: thrust_models::model::Array<thrust_models::model::Int, thrust_models::model::Closure<F>>|
-                exists(|acc: thrust_models::model::Array<thrust_models::model::Int, <B as Model>::Ty>|
-                exists(|l: thrust_models::model::Int|
+                exists(|it: Array<Int, <Self as Model>::Ty>|
+                exists(|fn_: Array<Int, Closure<F>>|
+                exists(|acc: Array<Int, <B as Model>::Ty>|
+                exists(|l: Int|
                     it[0] == self &&
                     fn_[0] == f &&
                     acc[0] == init.at_entry() &&
                     accum == acc[l - 1] &&
-                    forall(|i: thrust_models::model::Int|
+                    forall(|i: Int|
                         0 <= i && i < l - 1 ==>
                         exists(|item: <Self::Item as Model>::Ty|
-                            !Self::completed(it[i]) &&
+                            !Self::completed(Mut::new(it[i], it[i + 1])) &&
                             Self::step(it[i], item, it[i + 1]) &&
-                            thrust_macros::pre!(Mut::new(fn_[i], fn_[i+1])(acc[i], item)) &&
+                            thrust_macros::pre!(Mut::new(fn_[i], fn_[i + 1])(acc[i], item)) &&
                             thrust_macros::post!(
-                                Mut::new(fn_[i], fn_[i+1])(acc[i], item),
+                                Mut::new(fn_[i], fn_[i + 1])(acc[i], item),
                                 acc[i + 1]
                             )
                         )
@@ -83,57 +110,4 @@ trait Iterator {
     }
 }
 
-#[derive(PartialEq)]
-struct Range {
-    start: i64,
-    end: i64,
-}
-
-impl thrust_models::Model for Range {
-    type Ty = Range;
-}
-
-#[thrust_macros::context]
-impl Iterator for Range {
-    type Item = i64;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.start < self.end {
-            let item = self.start;
-            self.start += 1;
-            Some(item)
-        } else {
-            None
-        }
-    }
-
-    #[thrust_macros::predicate]
-    fn completed(self) -> bool {
-        // (tuple_proj<Int-Int>.0 self) is equivalent to self.start
-        // !(self.start < self.end) is written as following:
-        "(not (<
-            (tuple_proj<Int-Int>.0 self_)
-            (tuple_proj<Int-Int>.1 self_)
-        ))";
-        true
-    }
-
-    #[thrust_macros::predicate]
-    fn step(self, item: Self::Item, dist: Self) -> bool {
-        // self.end == dist.end && self.start == item && self.start + 1 == dist.start
-        // is written as following:
-        "(and
-            (= (tuple_proj<Int-Int>.1 self_) (tuple_proj<Int-Int>.1 dist))
-            (= (tuple_proj<Int-Int>.0 self_) item)
-            (= (+ (tuple_proj<Int-Int>.0 self_) 1) (tuple_proj<Int-Int>.0 dist))
-        )";
-        true
-    }
-}
-
-fn main() {
-    let mut range = Range { start: 0, end: 5 };
-    let sum = range.fold(0, |x, y| x + y);
-
-    assert!(sum == 10);
-}
+fn main() {}

@@ -1,20 +1,23 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:latest
+use thrust_models::forall;
 
 #[thrust_macros::context]
 trait Iterator {
     type Item;
 
-    #[thrust_macros::ensures(
-        Self::completed(*self)
-        || thrust_models::exists(|i| (result == Some(i)) && Self::step(*self, i, !self))
-    )]
-    #[thrust_macros::ensures(!Self::completed(*self) || (result == None && *self == !self))]
+    #[thrust_macros::requires(Self::invariant(*self))]
+    #[thrust_macros::ensures(result == None ==> Self::completed(self))]
+    #[thrust_macros::ensures(Self::completed(self) ==> result == None)]
+    #[thrust_macros::ensures(forall(|i| result == Some(i) ==> Self::step(*self, i, !self)))]
+    #[thrust_macros::ensures(forall(|i| Self::step(*self, i, !self) ==> result == Some(i)))]
     fn next(&mut self) -> Option<Self::Item>;
 
     #[thrust_macros::predicate]
-    fn completed(self) -> bool;
+    fn invariant(self) -> bool;
+    #[thrust_macros::predicate]
+    fn completed(&mut self) -> bool;
     #[thrust_macros::predicate]
     fn step(self, item: Self::Item, dist: Self) -> bool;
 }
@@ -43,13 +46,22 @@ impl Iterator for Range {
     }
 
     #[thrust_macros::predicate]
-    fn completed(self) -> bool {
+    fn invariant(self) -> bool {
+        "true";
+        true
+    }
+
+    #[thrust_macros::predicate]
+    fn completed(&mut self) -> bool {
         // (tuple_proj<Int-Int>.0 self) is equivalent to self.start
-        // !(self.start < self.end) is written as following:
-        "(not (<
-            (tuple_proj<Int-Int>.0 self_)
-            (tuple_proj<Int-Int>.1 self_)
-        ))";
+        // !(*self.start < *self.end) && *self == !self is written as following:
+        "(and
+            (not (<
+                (tuple_proj<Int-Int>.0 (mut_current<Tuple<Int-Int>> self_))
+                (tuple_proj<Int-Int>.1 (mut_current<Tuple<Int-Int>> self_))
+            ))
+            (=  (mut_current<Tuple<Int-Int>> self_) (mut_final<Tuple<Int-Int>> self_))
+        )";
         true
     }
 
