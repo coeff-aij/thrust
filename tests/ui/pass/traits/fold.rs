@@ -25,29 +25,31 @@ trait Iterator {
     
     #[thrust_macros::requires(
         exists(|it: Array<Int, <Self as Model>::Ty>|
+        exists(|fn_: Array<Int, Closure<F>>|
         exists(|acc: Array<Int, <B as Model>::Ty>|
         exists(|l: Int|
             it[0] == self &&
+            fn_[0] == f &&
             acc[0] == init &&
             Self::completed(Mut::new(it[l - 1], it[l])) &&
             exists(|item|
             !Self::completed(Mut::new(it[l - 2], it[l - 1])) &&
             Self::step(it[l - 2], item, it[l - 1]) &&
-            thrust_macros::pre!(f(acc[l - 2], item)) 
+            thrust_macros::pre!(Mut::new(fn_[l - 2], fn_[l - 1])(acc[l - 2], item)) 
             ) &&
             forall(|i: Int|
                 0 <= i && i < l - 2 ==>
                 exists(|item|
                     !Self::completed(Mut::new(it[i], it[i + 1])) &&
                     Self::step(it[i], item, it[i + 1]) &&
-                    thrust_macros::pre!(f(acc[i], item)) &&
+                    thrust_macros::pre!(Mut::new(fn_[i], fn_[i + 1])(acc[i], item)) &&
                     thrust_macros::post!(
-                        f(acc[i], item),
+                        Mut::new(fn_[i], fn_[i + 1])(acc[i], item),
                         acc[i + 1]
                     )
                 )
             )
-        )))
+        ))))
     )]
     #[thrust_macros::ensures(
         exists(|it: Array<Int, <Self as Model>::Ty>|
