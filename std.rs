@@ -310,6 +310,12 @@ mod thrust_models {
     int_model!(usize);
     int_model!(u32);
     int_model!(u64);
+    int_model!(i8);
+    int_model!(i16);
+    int_model!(i128);
+    int_model!(u8);
+    int_model!(u16);
+    int_model!(u128);
 
     impl Model for bool {
         type Ty = bool;
