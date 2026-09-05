@@ -1,4 +1,6 @@
 //@ignore-on-host: work in progress, not yet verifiable
+//@edition: 2024
+#![feature(new_range_api)]
 // Adapted from rust-lang/rust
 // commit: 89a99936d9e76a50e8df622e7242190841fd871b
 // Licensed under MIT OR Apache-2.0
@@ -1215,30 +1217,43 @@ use std::num::NonZeroUsize;
 use std::ops::{Add, AddAssign};
 use std::range::RangeInclusive;
 
-use bitflags::bitflags;
-
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 // #[cfg_attr(feature = "nightly", derive(Encodable_NoContext, Decodable_NoContext, StableHash))]
 pub struct ReprFlags(u8);
 
-bitflags! {
-    impl ReprFlags: u8 {
-        const IS_C               = 1 << 0;
-        const IS_SIMD            = 1 << 1;
-        const IS_TRANSPARENT     = 1 << 2;
+// Hand-written replacement for the `bitflags!` invocation in rustc_abi, since
+// external crates are not available under ui_test.
+impl ReprFlags {
+    pub const IS_C: ReprFlags = ReprFlags(1 << 0);
+    pub const IS_SIMD: ReprFlags = ReprFlags(1 << 1);
+    pub const IS_TRANSPARENT: ReprFlags = ReprFlags(1 << 2);
 
-        const IS_LINEAR          = 1 << 3;
+    pub const IS_LINEAR: ReprFlags = ReprFlags(1 << 3);
 
-        const RANDOMIZE_LAYOUT   = 1 << 4;
+    pub const RANDOMIZE_LAYOUT: ReprFlags = ReprFlags(1 << 4);
 
-        const PASS_INDIRECTLY_IN_NON_RUSTIC_ABIS = 1 << 5;
-        const IS_SCALABLE        = 1 << 6;
+    pub const PASS_INDIRECTLY_IN_NON_RUSTIC_ABIS: ReprFlags = ReprFlags(1 << 5);
+    pub const IS_SCALABLE: ReprFlags = ReprFlags(1 << 6);
 
-        const FIELD_ORDER_UNOPTIMIZABLE = ReprFlags::IS_C.bits()
-                                 | ReprFlags::IS_SIMD.bits()
-                                 | ReprFlags::IS_SCALABLE.bits()
-                                 | ReprFlags::IS_LINEAR.bits();
-        const ABI_UNOPTIMIZABLE = ReprFlags::IS_C.bits() | ReprFlags::IS_SIMD.bits();
+    pub const FIELD_ORDER_UNOPTIMIZABLE: ReprFlags = ReprFlags(
+        ReprFlags::IS_C.bits()
+            | ReprFlags::IS_SIMD.bits()
+            | ReprFlags::IS_SCALABLE.bits()
+            | ReprFlags::IS_LINEAR.bits(),
+    );
+    pub const ABI_UNOPTIMIZABLE: ReprFlags =
+        ReprFlags(ReprFlags::IS_C.bits() | ReprFlags::IS_SIMD.bits());
+
+    pub const fn bits(&self) -> u8 {
+        self.0
+    }
+
+    pub const fn contains(&self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    pub const fn intersects(&self, other: Self) -> bool {
+        self.0 & other.0 != 0
     }
 }
 
