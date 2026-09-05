@@ -716,7 +716,9 @@ impl<'a> std::fmt::Display for System<'a> {
             )?;
         }
 
-        writeln!(f, "{}\n", Datatypes::new(&self.ctx, self.ctx.datatypes()))?;
+        for group in self.ctx.datatype_groups() {
+            writeln!(f, "{}\n", Datatypes::new(&self.ctx, group))?;
+        }
         for datatype in self.ctx.datatypes() {
             writeln!(f, "{}", DatatypeDiscrFun::new(&self.ctx, datatype))?;
             writeln!(f, "{}", MatcherPredFun::new(&self.ctx, datatype))?;

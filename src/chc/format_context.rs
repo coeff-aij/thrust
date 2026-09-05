@@ -5,7 +5,7 @@
 //! monomorphization of polymorphic datatypes and applying solver-specific workarounds.
 //! The [`super::smtlib2`] module uses this context to perform the final rendering to the SMT-LIB2 format.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use crate::chc::{self, hoice::HoiceDatatypeRenamer};
 
@@ -21,6 +21,8 @@ use crate::chc::{self, hoice::HoiceDatatypeRenamer};
 pub struct FormatContext {
     renamer: HoiceDatatypeRenamer,
     datatypes: Vec<chc::Datatype>,
+    /// Sizes of the consecutive groups in `datatypes`; see [`group_by_dependency`].
+    datatype_group_sizes: Vec<usize>,
     int_array_elem_sorts: BTreeSet<chc::Sort>,
 }
 
@@ -285,6 +287,109 @@ fn monomorphize_datatype(
     Some(mono_datatype)
 }
 
+/// Groups the datatypes into strongly connected components of their
+/// selector-sort dependency graph, dependencies first. Each group becomes one
+/// `declare-datatypes`: SMT-LIB2 permits any order inside a group, but pcsat
+/// resolves a datatype mentioned inside an array sort only against groups
+/// declared earlier. Datatypes in one group keep their relative order.
+fn group_by_dependency(datatypes: Vec<chc::Datatype>) -> Vec<Vec<chc::Datatype>> {
+    let index: HashMap<_, usize> = datatypes
+        .iter()
+        .enumerate()
+        .map(|(i, d)| (d.symbol.clone(), i))
+        .collect();
+    let deps: Vec<Vec<usize>> = datatypes
+        .iter()
+        .map(|d| {
+            let mut deps = Vec::new();
+            for selector in d.selectors() {
+                selector.sort.walk(|sort| {
+                    // Builtin sorts (tuples, Mut, Box) and monomorphized datatypes are
+                    // declared under the symbol SortSymbol prints for them.
+                    let symbol = SortSymbol::new(sort).to_symbol();
+                    if let Some(j) = index.get(&symbol) {
+                        if !deps.contains(j) {
+                            deps.push(*j);
+                        }
+                    }
+                });
+            }
+            deps
+        })
+        .collect();
+
+    // Tarjan's algorithm emits every component after the components it depends on.
+    struct Tarjan<'a> {
+        deps: &'a [Vec<usize>],
+        index: Vec<Option<usize>>,
+        lowlink: Vec<usize>,
+        on_stack: Vec<bool>,
+        stack: Vec<usize>,
+        next_index: usize,
+        components: Vec<Vec<usize>>,
+    }
+    impl Tarjan<'_> {
+        fn connect(&mut self, v: usize) {
+            self.index[v] = Some(self.next_index);
+            self.lowlink[v] = self.next_index;
+            self.next_index += 1;
+            self.stack.push(v);
+            self.on_stack[v] = true;
+            for &w in &self.deps[v] {
+                match self.index[w] {
+                    None => {
+                        self.connect(w);
+                        self.lowlink[v] = self.lowlink[v].min(self.lowlink[w]);
+                    }
+                    Some(w_index) if self.on_stack[w] => {
+                        self.lowlink[v] = self.lowlink[v].min(w_index);
+                    }
+                    Some(_) => {}
+                }
+            }
+            if self.lowlink[v] == self.index[v].unwrap() {
+                let mut component = Vec::new();
+                loop {
+                    let w = self.stack.pop().unwrap();
+                    self.on_stack[w] = false;
+                    component.push(w);
+                    if w == v {
+                        break;
+                    }
+                }
+                component.sort_unstable();
+                self.components.push(component);
+            }
+        }
+    }
+    let n = datatypes.len();
+    let mut tarjan = Tarjan {
+        deps: &deps,
+        index: vec![None; n],
+        lowlink: vec![0; n],
+        on_stack: vec![false; n],
+        stack: Vec::new(),
+        next_index: 0,
+        components: Vec::new(),
+    };
+    for v in 0..n {
+        if tarjan.index[v].is_none() {
+            tarjan.connect(v);
+        }
+    }
+    let mut slots: Vec<Option<chc::Datatype>> = datatypes.into_iter().map(Some).collect();
+    tarjan
+        .components
+        .into_iter()
+        .map(|component| {
+            component
+                .into_iter()
+                .map(|i| slots[i].take().unwrap())
+                .collect()
+        })
+        .collect()
+}
+
 impl FormatContext {
     pub fn from_system(system: &chc::System) -> Self {
         let type_params_reverse = system.type_params_reverse.clone();
@@ -342,16 +447,30 @@ impl FormatContext {
             .chain(datatypes)
             .filter(|d| d.params == 0)
             .collect();
+        let groups = group_by_dependency(datatypes);
+        let datatype_group_sizes = groups.iter().map(Vec::len).collect();
+        let datatypes: Vec<_> = groups.into_iter().flatten().collect();
         let renamer = HoiceDatatypeRenamer::new(&datatypes);
         FormatContext {
             renamer,
             datatypes,
+            datatype_group_sizes,
             int_array_elem_sorts,
         }
     }
 
     pub fn datatypes(&self) -> &[chc::Datatype] {
         &self.datatypes
+    }
+
+    /// The datatypes split into the groups to declare, dependencies first.
+    pub fn datatype_groups(&self) -> impl Iterator<Item = &[chc::Datatype]> {
+        let mut rest = &self.datatypes[..];
+        self.datatype_group_sizes.iter().map(move |&size| {
+            let (group, tail) = rest.split_at(size);
+            rest = tail;
+            group
+        })
     }
 
     pub fn int_array_elem_sorts(&self) -> &BTreeSet<chc::Sort> {
