@@ -432,7 +432,6 @@ impl<'a, I: Idx, T> Index<I> for IndexSlice<'a, I, T> {
 // //== ./../rustc_index/src/vec.rs
 
 use std::ops::Deref;
-use std::{slice, vec};
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 #[repr(transparent)]
@@ -505,11 +504,6 @@ impl<I: Idx, T> IndexVec<I, T> {
     pub fn iter_enumerated(&self) -> IterEnumerated<'_, I, T> {
         self.as_slice().iter_enumerated()
     }
-
-    #[inline]
-    pub fn iter_mut(&mut self) -> slice::IterMut<'_, T> {
-        self.raw.iter_mut()
-    }
 }
 
 impl<I: Idx, J: Idx> IndexVec<I, J> {
@@ -551,16 +545,6 @@ impl<I: Idx, T> FromIterator<T> for IndexVec<I, T> {
     }
 }
 
-impl<I: Idx, T> IntoIterator for IndexVec<I, T> {
-    type Item = T;
-    type IntoIter = vec::IntoIter<T>;
-
-    #[inline]
-    fn into_iter(self) -> vec::IntoIter<T> {
-        self.raw.into_iter()
-    }
-}
-
 impl<'a, I: Idx, T> IntoIterator for &'a IndexVec<I, T> {
     type Item = &'a T;
     type IntoIter = SliceIter<'a, T>;
@@ -568,16 +552,6 @@ impl<'a, I: Idx, T> IntoIterator for &'a IndexVec<I, T> {
     #[inline]
     fn into_iter(self) -> SliceIter<'a, T> {
         self.iter()
-    }
-}
-
-impl<'a, I: Idx, T> IntoIterator for &'a mut IndexVec<I, T> {
-    type Item = &'a mut T;
-    type IntoIter = slice::IterMut<'a, T>;
-
-    #[inline]
-    fn into_iter(self) -> slice::IterMut<'a, T> {
-        self.iter_mut()
     }
 }
 
@@ -589,8 +563,6 @@ impl<I: Idx, T, const N: usize> From<[T; N]> for IndexVec<I, T> {
 }
 
 // //== ./src/layout/coroutine.rs
-
-use std::iter;
 
 #[derive(Clone, Debug, PartialEq)]
 enum SavedLocalEligibility<VariantIdx, FieldIdx> {
@@ -670,8 +642,10 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
             }
         }
         if used_variants.count() < 2 {
-            for assignment in assignments.iter_mut() {
-                *assignment = Ineligible(None);
+            let mut i = 0;
+            while i < assignments.len() {
+                assignments.raw[i] = Ineligible(None);
+                i += 1;
             }
             ineligible_locals.insert_all();
         }
@@ -741,7 +715,8 @@ pub fn layout<
 
             let mut in_memory_order_a = IndexVec::<u32, FieldIdx>::new();
             let mut in_memory_order_b = IndexVec::<u32, FieldIdx>::new();
-            for i in in_memory_order {
+            let mut in_memory_order_iter = in_memory_order.iter();
+            while let Some(&i) = in_memory_order_iter.next() {
                 if let Some(j) = i.index().checked_sub(b_start.index()) {
                     in_memory_order_b.push(FieldIdx::new(j));
                 } else {
@@ -796,14 +771,16 @@ pub fn layout<
             let mut combined_in_memory_order =
                 IndexVec::from_elem_n(FieldIdx::new(invalid_field_idx), invalid_field_idx);
 
-            let mut offsets_and_memory_index = iter::zip(offsets, memory_index);
+            let mut offsets_iter = offsets.iter();
+            let mut memory_index_iter = memory_index.iter();
             let combined_offsets = variant_fields
                 .iter_enumerated()
                 .map(|(i, local)| {
                     let (offset, memory_index) = match assignments[*local] {
                         Unassigned => unreachable!(),
                         Assigned(_) => {
-                            let (offset, memory_index) = offsets_and_memory_index.next().unwrap();
+                            let offset = *offsets_iter.next().unwrap();
+                            let memory_index = *memory_index_iter.next().unwrap();
                             (offset, promoted_memory_index.len() as u32 + memory_index)
                         }
                         Ineligible(field_idx) => {
