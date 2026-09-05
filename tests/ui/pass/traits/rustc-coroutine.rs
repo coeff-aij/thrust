@@ -207,7 +207,6 @@ fn count_ones(words: &[Word]) -> usize {
 // //== ./../rustc_index/src/idx.rs
 use std::fmt::Debug;
 use std::hash::Hash;
-use std::slice::SliceIndex;
 
 pub trait Idx: Copy + 'static + Eq + PartialEq + Debug + Hash {
     fn new(idx: usize) -> Self;
@@ -279,19 +278,6 @@ impl<I: Idx> Iterator for IdxRange<I> {
         } else {
             None
         }
-    }
-}
-
-pub trait IntoSliceIdx<I, T: ?Sized> {
-    type Output: SliceIndex<T>;
-    fn into_slice_idx(self) -> Self::Output;
-}
-
-impl<I: Idx, T> IntoSliceIdx<I, [T]> for I {
-    type Output = usize;
-    #[inline]
-    fn into_slice_idx(self) -> Self::Output {
-        self.index()
     }
 }
 
@@ -378,19 +364,21 @@ impl<I: Idx, J: Idx> IndexSlice<I, J> {
     }
 }
 
-impl<I: Idx, T, R: IntoSliceIdx<I, [T]>> Index<R> for IndexSlice<I, T> {
-    type Output = <R::Output as SliceIndex<[T]>>::Output;
+// The original goes through `IntoSliceIdx<I, [T]>`, whose only impl used
+// here maps `I: Idx` to `usize`; this is that instance written out.
+impl<I: Idx, T> Index<I> for IndexSlice<I, T> {
+    type Output = T;
 
     #[inline]
-    fn index(&self, index: R) -> &Self::Output {
-        &self.raw[index.into_slice_idx()]
+    fn index(&self, index: I) -> &T {
+        &self.raw[index.index()]
     }
 }
 
-impl<I: Idx, T, R: IntoSliceIdx<I, [T]>> IndexMut<R> for IndexSlice<I, T> {
+impl<I: Idx, T> IndexMut<I> for IndexSlice<I, T> {
     #[inline]
-    fn index_mut(&mut self, index: R) -> &mut Self::Output {
-        &mut self.raw[index.into_slice_idx()]
+    fn index_mut(&mut self, index: I) -> &mut T {
+        &mut self.raw[index.index()]
     }
 }
 
