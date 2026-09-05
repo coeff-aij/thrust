@@ -834,7 +834,8 @@ pub fn layout<
             let keep = match assignments[*local] {
                 Unassigned => unreachable!(),
                 Assigned(v) if v == index => true,
-                Assigned(_) => unreachable!("assignment does not match variant"),
+                // message dropped: format arguments are not modeled
+                Assigned(_) => unreachable!(),
                 Ineligible(_) => false,
             };
             if keep {
@@ -2204,7 +2205,8 @@ impl<FieldIdx: Idx> VariantLayout<FieldIdx> {
             in_memory_order,
         } = layout.fields
         else {
-            panic!("Layout of fields should be Arbitrary for variants");
+            // message dropped: format arguments are not modeled
+            panic!();
         };
 
         Self {
