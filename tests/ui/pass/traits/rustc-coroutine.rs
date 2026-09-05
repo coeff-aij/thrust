@@ -105,7 +105,10 @@ pub struct BitIter<'a, T: Idx> {
 
     offset: usize,
 
-    iter: slice::Iter<'a, Word>,
+    // Position-based replacement for `slice::Iter<'a, Word>`, whose raw
+    // pointer fields have no model in Thrust.
+    words: &'a [Word],
+    pos: usize,
 
     marker: PhantomData<T>,
 }
@@ -116,7 +119,8 @@ impl<'a, T: Idx> BitIter<'a, T> {
         BitIter {
             word: 0,
             offset: usize::MAX - (WORD_BITS - 1),
-            iter: words.iter(),
+            words,
+            pos: 0,
             marker: PhantomData,
         }
     }
@@ -132,7 +136,11 @@ impl<'a, T: Idx> Iterator for BitIter<'a, T> {
                 return Some(T::new(bit_pos + self.offset));
             }
 
-            self.word = *self.iter.next()?;
+            if self.pos >= self.words.len() {
+                return None;
+            }
+            self.word = self.words[self.pos];
+            self.pos += 1;
             self.offset = self.offset.wrapping_add(WORD_BITS);
         }
     }
