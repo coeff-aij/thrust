@@ -49,11 +49,18 @@ const WORD_BYTES: usize = size_of::<Word>();
 const WORD_BITS: usize = WORD_BYTES * 8;
 
 // #[cfg_attr(feature = "nightly", derive(Decodable_NoContext, Encodable_NoContext))]
-#[derive(Eq, PartialEq)]
+#[derive(Eq)]
 pub struct DenseBitSet<T> {
     domain_size: usize,
     words: Vec<Word>,
     marker: PhantomData<T>,
+}
+
+// Written out instead of `#[derive(PartialEq)]`; see the note on IndexVec.
+impl<T> PartialEq for DenseBitSet<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.domain_size == other.domain_size && self.words == other.words
+    }
 }
 
 impl<T: Idx> DenseBitSet<T> {
@@ -172,12 +179,21 @@ impl<'a, T: Idx> Iterator for BitIter<'a, T> {
 }
 
 // #[cfg_attr(feature = "nightly", derive(Decodable_NoContext, Encodable_NoContext))]
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone, Eq)]
 pub struct BitMatrix<R: Idx, C: Idx> {
     num_rows: usize,
     num_columns: usize,
     words: Vec<Word>,
     marker: PhantomData<(R, C)>,
+}
+
+// Written out instead of `#[derive(PartialEq)]`; see the note on IndexVec.
+impl<R: Idx, C: Idx> PartialEq for BitMatrix<R, C> {
+    fn eq(&self, other: &Self) -> bool {
+        self.num_rows == other.num_rows
+            && self.num_columns == other.num_columns
+            && self.words == other.words
+    }
 }
 
 impl<R: Idx, C: Idx> BitMatrix<R, C> {
@@ -330,10 +346,17 @@ use std::ops::{Index, IndexMut};
 // to the backing Vec (every IndexSlice here comes from an IndexVec); `&IndexSlice<I, T>`
 // in the original corresponds to `IndexSlice<'_, I, T>` here. Mutation goes
 // through IndexVec directly (the only place it happened in this code).
-#[derive(PartialEq, Eq)]
+#[derive(Eq)]
 pub struct IndexSlice<'a, I: Idx, T> {
     _marker: PhantomData<fn(&I)>,
     pub raw: &'a Vec<T>,
+}
+
+// Written out instead of `#[derive(PartialEq)]`; see the note on IndexVec.
+impl<'a, I: Idx, T: PartialEq> PartialEq for IndexSlice<'a, I, T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.raw == other.raw
+    }
 }
 
 impl<'a, I: Idx, T> Clone for IndexSlice<'a, I, T> {
@@ -471,11 +494,21 @@ impl<'a, I: Idx, T> Index<I> for IndexSlice<'a, I, T> {
 
 use std::ops::Deref;
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Eq)]
 #[repr(transparent)]
 pub struct IndexVec<I: Idx, T> {
     pub raw: Vec<T>,
     _marker: PhantomData<fn(&I)>,
+}
+
+// Written out instead of `#[derive(PartialEq)]`: the derived impl also
+// compares the PhantomData field, which Thrust's generic PartialEq::eq spec
+// cannot bind (unit-modeled arguments). PhantomData values are always equal,
+// so this is the same relation.
+impl<I: Idx, T: PartialEq> PartialEq for IndexVec<I, T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.raw == other.raw
+    }
 }
 
 impl<I: Idx, T> IndexVec<I, T> {
