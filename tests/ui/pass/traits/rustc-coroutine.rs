@@ -555,13 +555,6 @@ impl<'a, I: Idx, T> IntoIterator for &'a IndexVec<I, T> {
     }
 }
 
-impl<I: Idx, T, const N: usize> From<[T; N]> for IndexVec<I, T> {
-    #[inline]
-    fn from(array: [T; N]) -> Self {
-        IndexVec::from_raw(array.into())
-    }
-}
-
 // //== ./src/layout/coroutine.rs
 
 #[derive(Clone, Debug, PartialEq)]
@@ -858,8 +851,8 @@ impl<FieldIdx: Idx, VariantIdx: Idx> LayoutData<FieldIdx, VariantIdx> {
                 index: VariantIdx::new(0),
             },
             fields: FieldsShape::Arbitrary {
-                offsets: [Size::ZERO, b_offset].into(),
-                in_memory_order: [FieldIdx::new(0), FieldIdx::new(1)].into(),
+                offsets: IndexVec::from_raw(vec![Size::ZERO, b_offset]),
+                in_memory_order: IndexVec::from_raw(vec![FieldIdx::new(0), FieldIdx::new(1)]),
             },
             backend_repr: BackendRepr::ScalarPair(a, b),
             largest_niche,
