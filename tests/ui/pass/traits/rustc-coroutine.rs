@@ -7,9 +7,16 @@
 
 // //== ./../rustc_hashes/src/lib.rs
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Hash64 {
     inner: u64,
+}
+
+// Written out instead of `#[derive(Default)]`; same value.
+impl Default for Hash64 {
+    fn default() -> Self {
+        Hash64 { inner: 0 }
+    }
 }
 
 impl Hash64 {
@@ -40,7 +47,7 @@ const WORD_BYTES: usize = size_of::<Word>();
 const WORD_BITS: usize = WORD_BYTES * 8;
 
 // #[cfg_attr(feature = "nightly", derive(Decodable_NoContext, Encodable_NoContext))]
-#[derive(Eq, PartialEq, Hash)]
+#[derive(Eq, PartialEq)]
 pub struct DenseBitSet<T> {
     domain_size: usize,
     words: Vec<Word>,
@@ -147,7 +154,7 @@ impl<'a, T: Idx> Iterator for BitIter<'a, T> {
 }
 
 // #[cfg_attr(feature = "nightly", derive(Decodable_NoContext, Encodable_NoContext))]
-#[derive(Clone, Eq, PartialEq, Hash)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct BitMatrix<R: Idx, C: Idx> {
     num_rows: usize,
     num_columns: usize,
@@ -250,7 +257,6 @@ impl Idx for u32 {
 
 /// Own iterator standing in for `(start..end).map(I::new)`: yields
 /// `I::new(start)`, `I::new(start + 1)`, ..., `I::new(end - 1)`.
-#[derive(Clone)]
 pub struct IdxRange<I: Idx> {
     start: usize,
     end: usize,
@@ -292,7 +298,7 @@ use std::ops::{Index, IndexMut};
 // to the backing Vec (every IndexSlice here comes from an IndexVec); `&IndexSlice<I, T>`
 // in the original corresponds to `IndexSlice<'_, I, T>` here. Mutation goes
 // through IndexVec directly (the only place it happened in this code).
-#[derive(PartialEq, Eq, Hash)]
+#[derive(PartialEq, Eq)]
 pub struct IndexSlice<'a, I: Idx, T> {
     _marker: PhantomData<fn(&I)>,
     pub raw: &'a Vec<T>,
@@ -433,7 +439,7 @@ impl<'a, I: Idx, T> Index<I> for IndexSlice<'a, I, T> {
 
 use std::ops::Deref;
 
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq)]
 #[repr(transparent)]
 pub struct IndexVec<I: Idx, T> {
     pub raw: Vec<T>,
@@ -1281,9 +1287,16 @@ use std::num::NonZeroUsize;
 use std::ops::{Add, AddAssign};
 use std::range::RangeInclusive;
 
-#[derive(Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 // #[cfg_attr(feature = "nightly", derive(Encodable_NoContext, Decodable_NoContext, StableHash))]
 pub struct ReprFlags(u8);
+
+// Written out instead of `#[derive(Default)]`; same value.
+impl Default for ReprFlags {
+    fn default() -> Self {
+        ReprFlags(0)
+    }
+}
 
 // Hand-written replacement for the `bitflags!` invocation in rustc_abi, since
 // external crates are not available under ui_test.
@@ -1337,7 +1350,7 @@ pub enum ScalableElt {
     Container,
 }
 
-#[derive(Copy, Clone, /*Debug,*/ Eq, PartialEq, Default)]
+#[derive(Copy, Clone, /*Debug,*/ Eq, PartialEq)]
 // #[cfg_attr(feature = "nightly", derive(Encodable_NoContext, Decodable_NoContext, StableHash))]
 pub struct ReprOptions {
     pub int: Option<IntegerType>,
@@ -1348,6 +1361,20 @@ pub struct ReprOptions {
     pub scalable: Option<ScalableElt>,
 
     pub field_shuffle_seed: Hash64,
+}
+
+// Written out instead of `#[derive(Default)]`; same value.
+impl Default for ReprOptions {
+    fn default() -> Self {
+        ReprOptions {
+            int: None,
+            align: None,
+            pack: None,
+            flags: ReprFlags::default(),
+            scalable: None,
+            field_shuffle_seed: Hash64::default(),
+        }
+    }
 }
 
 impl ReprOptions {
@@ -1472,10 +1499,47 @@ pub enum Endian {
     Big,
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Copy, Clone, PartialEq, Eq)]
 // #[cfg_attr(feature = "nightly", derive(Encodable_NoContext, Decodable_NoContext, StableHash))]
 pub struct Size {
     raw: u64,
+}
+
+impl PartialOrd for Size {
+    fn partial_cmp(&self, other: &Size) -> Option<cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+// Written out instead of `#[derive(PartialOrd, Ord)]`, which would call std
+// comparison functions; same ordering (by `raw`).
+impl Ord for Size {
+    fn cmp(&self, other: &Size) -> cmp::Ordering {
+        if self.raw < other.raw {
+            cmp::Ordering::Less
+        } else if self.raw > other.raw {
+            cmp::Ordering::Greater
+        } else {
+            cmp::Ordering::Equal
+        }
+    }
+
+    // Same results as the defaults, without going through std's bodies.
+    fn max(self, other: Size) -> Size {
+        if other.raw >= self.raw {
+            other
+        } else {
+            self
+        }
+    }
+
+    fn min(self, other: Size) -> Size {
+        if other.raw < self.raw {
+            other
+        } else {
+            self
+        }
+    }
 }
 
 impl Size {
@@ -1557,13 +1621,52 @@ impl AddAssign for Size {
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Copy, Clone, PartialEq, Eq)]
 // #[cfg_attr(feature = "nightly", derive(Encodable_NoContext, Decodable_NoContext, StableHash))]
 pub struct Align {
     pow2: u8,
 }
 
+impl PartialOrd for Align {
+    fn partial_cmp(&self, other: &Align) -> Option<cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+// Written out instead of `#[derive(PartialOrd, Ord)]`, which would call std
+// comparison functions; same ordering (by `pow2`). Still needed for
+// `Option<Align>::max` in univariant_biased.
+impl Ord for Align {
+    fn cmp(&self, other: &Align) -> cmp::Ordering {
+        if self.pow2 < other.pow2 {
+            cmp::Ordering::Less
+        } else if self.pow2 > other.pow2 {
+            cmp::Ordering::Greater
+        } else {
+            cmp::Ordering::Equal
+        }
+    }
+}
+
 impl Align {
+    // The original uses Ord::max/min; these compute the same without going
+    // through std's bodies (method resolution prefers the inherent ones).
+    pub fn max(self, other: Align) -> Align {
+        if other.pow2 >= self.pow2 {
+            other
+        } else {
+            self
+        }
+    }
+
+    pub fn min(self, other: Align) -> Align {
+        if other.pow2 < self.pow2 {
+            other
+        } else {
+            self
+        }
+    }
+
     pub const ONE: Align = Align { pow2: 0 };
     pub const EIGHT: Align = Align { pow2: 3 };
 
@@ -1575,7 +1678,7 @@ impl Align {
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Hash /*Debug*/)]
+#[derive(Copy, Clone, PartialEq, Eq /*Debug*/)]
 // #[cfg_attr(feature = "nightly", derive(StableHash))]
 pub struct AbiAlign {
     pub abi: Align,
@@ -1610,7 +1713,7 @@ impl Deref for AbiAlign {
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash /*Debug*/)]
+#[derive(Copy, Clone, PartialEq, Eq /*Debug*/)]
 // #[cfg_attr(feature = "nightly", derive(Encodable_NoContext, Decodable_NoContext, StableHash))]
 pub enum Integer {
     I8,
@@ -1659,7 +1762,7 @@ impl Integer {
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash /*Debug*/)]
+#[derive(Copy, Clone, PartialEq, Eq /*Debug*/)]
 // #[cfg_attr(feature = "nightly", derive(StableHash))]
 pub enum Float {
     F16,
@@ -1693,7 +1796,7 @@ impl Float {
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Hash /*Debug*/)]
+#[derive(Copy, Clone, PartialEq, Eq /*Debug*/)]
 // #[cfg_attr(feature = "nightly", derive(StableHash))]
 pub enum Primitive {
     Int(Integer, bool),
@@ -1725,14 +1828,14 @@ impl Primitive {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 // #[cfg_attr(feature = "nightly", derive(StableHash))]
 pub struct WrappingRange {
     pub start: u128,
     pub end: u128,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash /*Debug*/)]
+#[derive(Clone, Copy, PartialEq, Eq /*Debug*/)]
 // #[cfg_attr(feature = "nightly", derive(StableHash))]
 pub enum Scalar {
     Initialized {
@@ -1761,7 +1864,7 @@ impl Scalar {
     }
 }
 
-#[derive(PartialEq, Eq, Hash, Clone /*Debug*/)]
+#[derive(PartialEq, Eq, Clone /*Debug*/)]
 // #[cfg_attr(feature = "nightly", derive(StableHash))]
 pub enum FieldsShape<FieldIdx: Idx> {
     Primitive,
@@ -1780,15 +1883,15 @@ pub enum FieldsShape<FieldIdx: Idx> {
     },
 }
 
-#[derive(Copy, Clone, /*Debug,*/ PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Copy, Clone, /*Debug,*/ PartialEq, Eq)]
 // #[cfg_attr(feature = "nightly", derive(StableHash))]
 pub struct AddressSpace(pub u32);
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash /*Debug*/)]
+#[derive(Clone, Copy, PartialEq, Eq /*Debug*/)]
 // #[cfg_attr(feature = "nightly", derive(StableHash))]
 pub struct NumScalableVectors(pub u8);
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash /*Debug*/)]
+#[derive(Clone, Copy, PartialEq, Eq /*Debug*/)]
 // #[cfg_attr(feature = "nightly", derive(StableHash))]
 pub enum BackendRepr {
     Scalar(Scalar),
@@ -1821,7 +1924,7 @@ impl BackendRepr {
     }
 }
 
-#[derive(PartialEq, Eq, Hash, Clone /*Debug*/)]
+#[derive(PartialEq, Eq, Clone /*Debug*/)]
 // #[cfg_attr(feature = "nightly", derive(StableHash))]
 pub enum Variants<FieldIdx: Idx, VariantIdx: Idx> {
     Empty,
@@ -1838,7 +1941,7 @@ pub enum Variants<FieldIdx: Idx, VariantIdx: Idx> {
     },
 }
 
-#[derive(PartialEq, Eq, Hash, Copy, Clone /*Debug*/)]
+#[derive(PartialEq, Eq, Copy, Clone /*Debug*/)]
 // #[cfg_attr(feature = "nightly", derive(StableHash))]
 pub enum TagEncoding<VariantIdx: Idx> {
     Direct,
@@ -1852,7 +1955,7 @@ pub enum TagEncoding<VariantIdx: Idx> {
     },
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash /*Debug*/)]
+#[derive(Clone, Copy, PartialEq, Eq /*Debug*/)]
 // #[cfg_attr(feature = "nightly", derive(StableHash))]
 pub struct Niche {
     pub offset: Size,
@@ -1892,7 +1995,7 @@ impl Niche {
     }
 }
 
-#[derive(PartialEq, Eq, Hash, Clone)]
+#[derive(PartialEq, Eq, Clone)]
 // #[cfg_attr(feature = "nightly", derive(StableHash))]
 pub struct LayoutData<FieldIdx: Idx, VariantIdx: Idx> {
     pub fields: FieldsShape<FieldIdx>,
@@ -1947,7 +2050,7 @@ pub enum StructKind {
     Prefixed(Size, Align),
 }
 
-#[derive(PartialEq, Eq, Hash, Clone /*Debug*/)]
+#[derive(PartialEq, Eq, Clone /*Debug*/)]
 // #[cfg_attr(feature = "nightly", derive(StableHash))]
 pub struct VariantLayout<FieldIdx: Idx> {
     pub size: Size,
