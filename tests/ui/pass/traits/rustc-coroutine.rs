@@ -623,13 +623,6 @@ impl<I: Idx, T> IndexMut<I> for IndexVec<I, T> {
     }
 }
 
-impl<I: Idx, T> Extend<T> for IndexVec<I, T> {
-    #[inline]
-    fn extend<J: IntoIterator<Item = T>>(&mut self, iter: J) {
-        self.raw.extend(iter);
-    }
-}
-
 impl<I: Idx, T> FromIterator<T> for IndexVec<I, T> {
     #[inline]
     fn from_iter<J>(iter: J) -> Self
@@ -780,9 +773,13 @@ pub fn layout<
         },
     };
 
-    let promoted_layouts = ineligible_locals.iter().map(|local| local_layouts[local]);
+    // `prefix_layouts.extend(ineligible_locals.iter().map(|local| local_layouts[local]))`
+    // written as the loop it performs; the lazy map ran after the tag push, as here.
+    let mut promoted_locals = ineligible_locals.iter();
     prefix_layouts.push(tag_to_layout(tag));
-    prefix_layouts.extend(promoted_layouts);
+    while let Some(local) = promoted_locals.next() {
+        prefix_layouts.raw.push(local_layouts[local]);
+    }
     let prefix = calc.univariant(
         prefix_layouts.as_slice(),
         &ReprOptions::default(),
