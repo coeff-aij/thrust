@@ -306,6 +306,27 @@ impl<'a, I: Idx, T> Clone for IndexSlice<'a, I, T> {
 
 impl<'a, I: Idx, T> Copy for IndexSlice<'a, I, T> {}
 
+/// Own iterator standing in for `slice::Iter<'a, T>` (whose raw pointer
+/// fields have no model in Thrust): yields `&raw[0]`, ..., `&raw[len - 1]`.
+pub struct SliceIter<'a, T> {
+    raw: &'a Vec<T>,
+    pos: usize,
+}
+
+impl<'a, T> Iterator for SliceIter<'a, T> {
+    type Item = &'a T;
+
+    fn next(&mut self) -> Option<&'a T> {
+        if self.pos < self.raw.len() {
+            let item = &self.raw[self.pos];
+            self.pos += 1;
+            Some(item)
+        } else {
+            None
+        }
+    }
+}
+
 impl<'a, I: Idx, T> IndexSlice<'a, I, T> {
     #[inline]
     pub const fn from_raw(raw: &'a Vec<T>) -> Self {
@@ -326,8 +347,11 @@ impl<'a, I: Idx, T> IndexSlice<'a, I, T> {
     }
 
     #[inline]
-    pub fn iter(&self) -> slice::Iter<'a, T> {
-        self.raw.iter()
+    pub fn iter(&self) -> SliceIter<'a, T> {
+        SliceIter {
+            raw: self.raw,
+            pos: 0,
+        }
     }
 
     #[inline]
@@ -447,7 +471,7 @@ impl<I: Idx, T> IndexVec<I, T> {
     }
 
     #[inline]
-    pub fn iter(&self) -> slice::Iter<'_, T> {
+    pub fn iter(&self) -> SliceIter<'_, T> {
         self.as_slice().iter()
     }
 
@@ -513,10 +537,10 @@ impl<I: Idx, T> IntoIterator for IndexVec<I, T> {
 
 impl<'a, I: Idx, T> IntoIterator for &'a IndexVec<I, T> {
     type Item = &'a T;
-    type IntoIter = slice::Iter<'a, T>;
+    type IntoIter = SliceIter<'a, T>;
 
     #[inline]
-    fn into_iter(self) -> slice::Iter<'a, T> {
+    fn into_iter(self) -> SliceIter<'a, T> {
         self.iter()
     }
 }
@@ -564,7 +588,8 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
     let mut ineligible_locals = DenseBitSet::new_empty(nb_locals);
 
     for (variant_index, fields) in variant_fields.iter_enumerated() {
-        for local in fields {
+        let mut locals = fields.iter();
+        while let Some(local) = locals.next() {
             match assignments[*local] {
                 Unassigned => {
                     assignments[*local] = Assigned(variant_index);
@@ -611,7 +636,8 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
 
     {
         let mut used_variants = DenseBitSet::new_empty(variant_fields.len());
-        for assignment in &assignments {
+        let mut assignments_iter = assignments.iter();
+        while let Some(assignment) = assignments_iter.next() {
             if let Assigned(idx) = assignment {
                 used_variants.insert(*idx);
             }
