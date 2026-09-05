@@ -39,7 +39,7 @@ where
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
         // self.iter.is_none()
-        // || self.iter.is_some()
+        //   or self.iter.is_some()
         // && self.iter.unwrap().invariant()
         "(or
             ((_ is std.option.Option.None<a0>)
