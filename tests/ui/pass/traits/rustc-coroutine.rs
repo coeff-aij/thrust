@@ -776,11 +776,15 @@ pub fn layout<
     while let Some(local) = promoted_locals.next() {
         prefix_layouts.raw.push(local_layouts[local]);
     }
-    let prefix = calc.univariant(
+    // `?` written out (same error type, so its From conversion is the identity)
+    let prefix = match calc.univariant(
         prefix_layouts.as_slice(),
         &ReprOptions::default(),
         StructKind::AlwaysSized,
-    )?;
+    ) {
+        Ok(prefix) => prefix,
+        Err(err) => return Err(err),
+    };
 
     let (prefix_size, prefix_align) = (prefix.size, prefix.align);
 
@@ -843,11 +847,15 @@ pub fn layout<
             }
         }
 
-        let mut variant = calc.univariant(
+        // `?` written out (same error type, so its From conversion is the identity)
+        let mut variant = match calc.univariant(
             variant_only_tys.as_slice(),
             &ReprOptions::default(),
             StructKind::Prefixed(prefix_size, prefix_align.abi),
-        )?;
+        ) {
+            Ok(variant) => variant,
+            Err(err) => return Err(err),
+        };
 
         let FieldsShape::Arbitrary {
             offsets,
