@@ -33,6 +33,8 @@ impl Hash64 {
     }
 
     #[inline]
+    #[thrust::trusted]
+    #[thrust::callable]
     pub fn wrapping_add(self, other: Self) -> Self {
         Self {
             inner: self.inner.wrapping_add(other.inner),
@@ -56,6 +58,8 @@ pub struct DenseBitSet<T> {
 
 impl<T: Idx> DenseBitSet<T> {
     #[inline]
+    #[thrust::trusted]
+    #[thrust::callable]
     pub fn new_empty(domain_size: usize) -> DenseBitSet<T> {
         let num_words = num_words(domain_size);
         DenseBitSet {
@@ -65,15 +69,21 @@ impl<T: Idx> DenseBitSet<T> {
         }
     }
 
+    #[thrust::trusted]
+    #[thrust::callable]
     fn clear_excess_bits(&mut self) {
         clear_excess_bits_in_final_word(self.domain_size, &mut self.words);
     }
 
+    #[thrust::trusted]
+    #[thrust::callable]
     pub fn count(&self) -> usize {
         count_ones(&self.words)
     }
 
     #[inline]
+    #[thrust::trusted]
+    #[thrust::callable]
     pub fn contains(&self, elem: T) -> bool {
         assert!(elem.index() < self.domain_size);
         let (word_index, mask) = word_index_and_mask(elem);
@@ -81,6 +91,8 @@ impl<T: Idx> DenseBitSet<T> {
     }
 
     #[inline]
+    #[thrust::trusted]
+    #[thrust::callable]
     pub fn insert(&mut self, elem: T) -> bool {
         assert!(
             elem.index() < self.domain_size,
@@ -96,6 +108,8 @@ impl<T: Idx> DenseBitSet<T> {
         new_word != word
     }
 
+    #[thrust::trusted]
+    #[thrust::callable]
     pub fn insert_all(&mut self) {
         self.words.fill(!0);
         self.clear_excess_bits();
@@ -122,6 +136,8 @@ pub struct BitIter<'a, T: Idx> {
 
 impl<'a, T: Idx> BitIter<'a, T> {
     #[inline]
+    #[thrust::trusted]
+    #[thrust::callable]
     fn new(words: &'a [Word]) -> BitIter<'a, T> {
         BitIter {
             word: 0,
@@ -135,6 +151,8 @@ impl<'a, T: Idx> BitIter<'a, T> {
 
 impl<'a, T: Idx> Iterator for BitIter<'a, T> {
     type Item = T;
+    #[thrust::trusted]
+    #[thrust::callable]
     fn next(&mut self) -> Option<T> {
         loop {
             if self.word != 0 {
@@ -167,18 +185,24 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
         IdxRange::new(0, self.num_rows)
     }
 
+    #[thrust::trusted]
+    #[thrust::callable]
     fn range(&self, row: R) -> (usize, usize) {
         let words_per_row = num_words(self.num_columns);
         let start = row.index() * words_per_row;
         (start, start + words_per_row)
     }
 
+    #[thrust::trusted]
+    #[thrust::callable]
     pub fn iter(&self, row: R) -> BitIter<'_, C> {
         assert!(row.index() < self.num_rows);
         let (start, end) = self.range(row);
         BitIter::new(&self.words[start..end])
     }
 
+    #[thrust::trusted]
+    #[thrust::callable]
     pub fn count(&self, row: R) -> usize {
         let (start, end) = self.range(row);
         count_ones(&self.words[start..end])
@@ -186,11 +210,15 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
 }
 
 #[inline]
+#[thrust::trusted]
+#[thrust::callable]
 fn num_words<T: Idx>(domain_size: T) -> usize {
     domain_size.index().div_ceil(WORD_BITS)
 }
 
 #[inline]
+#[thrust::trusted]
+#[thrust::callable]
 fn word_index_and_mask<T: Idx>(elem: T) -> (usize, Word) {
     let elem = elem.index();
     let word_index = elem / WORD_BITS;
@@ -198,6 +226,8 @@ fn word_index_and_mask<T: Idx>(elem: T) -> (usize, Word) {
     (word_index, mask)
 }
 
+#[thrust::trusted]
+#[thrust::callable]
 fn clear_excess_bits_in_final_word(domain_size: usize, words: &mut [Word]) {
     let num_bits_in_final_word = domain_size % WORD_BITS;
     if num_bits_in_final_word > 0 {
@@ -207,6 +237,8 @@ fn clear_excess_bits_in_final_word(domain_size: usize, words: &mut [Word]) {
 }
 
 #[inline]
+#[thrust::trusted]
+#[thrust::callable]
 fn count_ones(words: &[Word]) -> usize {
     words.iter().map(|word| word.count_ones() as usize).sum()
 }
@@ -838,6 +870,8 @@ pub fn layout<
 // //== ./src/layout/simple.rs
 
 impl<FieldIdx: Idx, VariantIdx: Idx> LayoutData<FieldIdx, VariantIdx> {
+    #[thrust::trusted]
+    #[thrust::callable]
     pub fn scalar_pair<C: HasDataLayout>(cx: &C, a: Scalar, b: Scalar) -> Self {
         let dl = cx.data_layout();
         let b_align = b.align(dl).abi;
@@ -907,6 +941,8 @@ pub struct LayoutCalculator<Cx> {
 }
 
 impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
+    #[thrust::trusted]
+    #[thrust::callable]
     pub fn univariant<
         'a,
         FieldIdx: Idx,
@@ -974,6 +1010,8 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         layout
     }
 
+    #[thrust::trusted]
+    #[thrust::callable]
     fn univariant_biased<
         'a,
         FieldIdx: Idx,
@@ -1436,6 +1474,8 @@ pub struct TargetDataLayout {
 
 impl TargetDataLayout {
     #[inline]
+    #[thrust::trusted]
+    #[thrust::callable]
     pub fn obj_size_bound(&self) -> u64 {
         match self.pointer_size().bits() {
             16 => 1 << 15,
@@ -1451,6 +1491,8 @@ impl TargetDataLayout {
     }
 
     #[inline]
+    #[thrust::trusted]
+    #[thrust::callable]
     pub fn pointer_size_in(&self, c: AddressSpace) -> Size {
         if c == self.default_address_space {
             return self.default_address_space_pointer_spec.pointer_size;
@@ -1464,6 +1506,8 @@ impl TargetDataLayout {
     }
 
     #[inline]
+    #[thrust::trusted]
+    #[thrust::callable]
     pub fn pointer_align_in(&self, c: AddressSpace) -> AbiAlign {
         AbiAlign::new(if c == self.default_address_space {
             self.default_address_space_pointer_spec.pointer_align
@@ -1545,6 +1589,8 @@ impl Ord for Size {
 impl Size {
     pub const ZERO: Size = Size { raw: 0 };
 
+    #[thrust::trusted]
+    #[thrust::callable]
     pub fn from_bits(bits: impl TryInto<u64>) -> Size {
         let bits = bits.try_into().ok().unwrap();
         Size {
@@ -1552,9 +1598,11 @@ impl Size {
         }
     }
 
+    // Every caller passes a u64 (or a literal), for which the original's
+    // `try_into().ok().unwrap()` is the identity; the generic conversion is
+    // a std call Thrust has no spec for.
     #[inline]
-    pub fn from_bytes(bytes: impl TryInto<u64>) -> Size {
-        let bytes: u64 = bytes.try_into().ok().unwrap();
+    pub fn from_bytes(bytes: u64) -> Size {
         Size { raw: bytes }
     }
 
@@ -1564,8 +1612,12 @@ impl Size {
     }
 
     #[inline]
+    #[thrust::trusted]
+    #[thrust::callable]
     pub fn bits(self) -> u64 {
         #[cold]
+        #[thrust::trusted]
+        #[thrust::callable]
         fn overflow(bytes: u64) -> ! {
             panic!("Size::bits: {bytes} bytes in bits doesn't fit in u64")
         }
@@ -1576,12 +1628,16 @@ impl Size {
     }
 
     #[inline]
+    #[thrust::trusted]
+    #[thrust::callable]
     pub fn align_to(self, align: Align) -> Size {
         let mask = align.bytes() - 1;
         Size::from_bytes((self.bytes() + mask) & !mask)
     }
 
     #[inline]
+    #[thrust::trusted]
+    #[thrust::callable]
     pub fn checked_add<C: HasDataLayout>(self, offset: Size, cx: &C) -> Option<Size> {
         let dl = cx.data_layout();
 
@@ -1595,6 +1651,8 @@ impl Size {
     }
 
     #[inline]
+    #[thrust::trusted]
+    #[thrust::callable]
     pub fn unsigned_int_max(&self) -> u128 {
         u128::MAX >> (128 - self.bits())
     }
@@ -1603,6 +1661,8 @@ impl Size {
 impl Add for Size {
     type Output = Size;
     #[inline]
+    #[thrust::trusted]
+    #[thrust::callable]
     fn add(self, other: Size) -> Size {
         Size::from_bytes(self.bytes().checked_add(other.bytes()).unwrap_or_else(|| {
             panic!(
@@ -1673,6 +1733,8 @@ impl Align {
     pub const MAX: Align = Align { pow2: 29 };
 
     #[inline]
+    #[thrust::trusted]
+    #[thrust::callable]
     pub const fn bytes(self) -> u64 {
         1 << self.pow2
     }
@@ -1750,6 +1812,8 @@ impl Integer {
     }
 
     #[inline]
+    #[thrust::trusted]
+    #[thrust::callable]
     pub fn fit_unsigned(x: u128) -> Integer {
         use Integer::*;
         match x {
@@ -1980,6 +2044,8 @@ impl Niche {
         }
     }
 
+    #[thrust::trusted]
+    #[thrust::callable]
     pub fn available<C: HasDataLayout>(&self, cx: &C) -> u128 {
         let Self {
             value,
