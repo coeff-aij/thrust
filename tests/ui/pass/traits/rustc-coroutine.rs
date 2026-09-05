@@ -557,7 +557,7 @@ impl<'a, I: Idx, T> IntoIterator for &'a IndexVec<I, T> {
 
 // //== ./src/layout/coroutine.rs
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, /*Debug,*/ PartialEq)]
 enum SavedLocalEligibility<VariantIdx, FieldIdx> {
     Unassigned,
     Assigned(VariantIdx),
@@ -1329,7 +1329,7 @@ pub enum IntegerType {
     Fixed(Integer, bool),
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, /*Debug,*/ Eq, PartialEq)]
 // #[cfg_attr(feature = "nightly", derive(Encodable_NoContext, Decodable_NoContext, StableHash))]
 pub enum ScalableElt {
     ElementCount(u16),
@@ -1432,7 +1432,7 @@ impl TargetDataLayout {
         if let Some(e) = self.address_space_info.iter().find(|(a, _)| a == &c) {
             e.1.pointer_size
         } else {
-            panic!("Use of unknown address space {c:?}");
+            panic!("Use of unknown address space");
         }
     }
 
@@ -1443,7 +1443,7 @@ impl TargetDataLayout {
         } else if let Some(e) = self.address_space_info.iter().find(|(a, _)| a == &c) {
             e.1.pointer_align
         } else {
-            panic!("Use of unknown address space {c:?}");
+            panic!("Use of unknown address space");
         })
     }
 }
@@ -1780,7 +1780,7 @@ pub enum FieldsShape<FieldIdx: Idx> {
     },
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Copy, Clone, /*Debug,*/ PartialEq, Eq, PartialOrd, Ord, Hash)]
 // #[cfg_attr(feature = "nightly", derive(StableHash))]
 pub struct AddressSpace(pub u32);
 
