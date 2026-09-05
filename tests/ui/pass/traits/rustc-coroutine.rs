@@ -2216,6 +2216,127 @@ impl<FieldIdx: Idx> VariantLayout<FieldIdx> {
     }
 }
 
+// //== Thrust model declarations
+//
+// Every user-defined type is modeled by itself (field by field). Without these,
+// projections such as `<&Size as thrust_models::Model>::Ty` in the injected
+// std specs cannot be normalized and are treated as opaque sorts.
+
+impl thrust_models::Model for Hash64 {
+    type Ty = Self;
+}
+impl<T> thrust_models::Model for DenseBitSet<T> {
+    type Ty = Self;
+}
+impl<'a, T: Idx> thrust_models::Model for BitIter<'a, T> {
+    type Ty = Self;
+}
+impl<R: Idx, C: Idx> thrust_models::Model for BitMatrix<R, C> {
+    type Ty = Self;
+}
+impl<I: Idx> thrust_models::Model for IdxRange<I> {
+    type Ty = Self;
+}
+impl<'a, T> thrust_models::Model for SliceIter<'a, T> {
+    type Ty = Self;
+}
+impl<'a, I: Idx, T> thrust_models::Model for IterEnumerated<'a, I, T> {
+    type Ty = Self;
+}
+impl<'a, I: Idx, T> thrust_models::Model for IndexSlice<'a, I, T> {
+    type Ty = Self;
+}
+impl<I: Idx, T> thrust_models::Model for IndexVec<I, T> {
+    type Ty = Self;
+}
+impl<VariantIdx, FieldIdx> thrust_models::Model for SavedLocalEligibility<VariantIdx, FieldIdx> {
+    type Ty = Self;
+}
+impl<F> thrust_models::Model for LayoutCalculatorError<F> {
+    type Ty = Self;
+}
+impl<Cx> thrust_models::Model for LayoutCalculator<Cx> {
+    type Ty = Self;
+}
+impl thrust_models::Model for NicheBias {
+    type Ty = Self;
+}
+impl thrust_models::Model for ReprFlags {
+    type Ty = Self;
+}
+impl thrust_models::Model for IntegerType {
+    type Ty = Self;
+}
+impl thrust_models::Model for ScalableElt {
+    type Ty = Self;
+}
+impl thrust_models::Model for ReprOptions {
+    type Ty = Self;
+}
+impl thrust_models::Model for PointerSpec {
+    type Ty = Self;
+}
+impl thrust_models::Model for TargetDataLayout {
+    type Ty = Self;
+}
+impl thrust_models::Model for Endian {
+    type Ty = Self;
+}
+impl thrust_models::Model for Size {
+    type Ty = Self;
+}
+impl thrust_models::Model for Align {
+    type Ty = Self;
+}
+impl thrust_models::Model for AbiAlign {
+    type Ty = Self;
+}
+impl thrust_models::Model for Integer {
+    type Ty = Self;
+}
+impl thrust_models::Model for Float {
+    type Ty = Self;
+}
+impl thrust_models::Model for Primitive {
+    type Ty = Self;
+}
+impl thrust_models::Model for WrappingRange {
+    type Ty = Self;
+}
+impl thrust_models::Model for Scalar {
+    type Ty = Self;
+}
+impl<FieldIdx: Idx> thrust_models::Model for FieldsShape<FieldIdx> {
+    type Ty = Self;
+}
+impl thrust_models::Model for AddressSpace {
+    type Ty = Self;
+}
+impl thrust_models::Model for NumScalableVectors {
+    type Ty = Self;
+}
+impl thrust_models::Model for BackendRepr {
+    type Ty = Self;
+}
+impl<FieldIdx: Idx, VariantIdx: Idx> thrust_models::Model for Variants<FieldIdx, VariantIdx> {
+    type Ty = Self;
+}
+impl<VariantIdx: Idx> thrust_models::Model for TagEncoding<VariantIdx> {
+    type Ty = Self;
+}
+impl thrust_models::Model for Niche {
+    type Ty = Self;
+}
+impl<FieldIdx: Idx, VariantIdx: Idx> thrust_models::Model for LayoutData<FieldIdx, VariantIdx> {
+    type Ty = Self;
+}
+impl thrust_models::Model for StructKind {
+    type Ty = Self;
+}
+impl<FieldIdx: Idx> thrust_models::Model for VariantLayout<FieldIdx> {
+    type Ty = Self;
+}
+
 fn main() {}
 
 trait Unwrap<T> {
