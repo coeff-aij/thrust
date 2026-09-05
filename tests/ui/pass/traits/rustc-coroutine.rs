@@ -286,26 +286,33 @@ impl<I: Idx> Iterator for IdxRange<I> {
 use std::marker::PhantomData;
 use std::ops::{Index, IndexMut};
 
+// The original is a `#[repr(transparent)]` DST wrapping `[T]`, reached through
+// an unsafe pointer cast from `&[T]`. Thrust has no model for unsized struct
+// fields and generic slices are not modeled yet, so the view holds a reference
+// to the backing Vec (every IndexSlice here comes from an IndexVec); `&IndexSlice<I, T>`
+// in the original corresponds to `IndexSlice<'_, I, T>` here. Mutation goes
+// through IndexVec directly (the only place it happened in this code).
 #[derive(PartialEq, Eq, Hash)]
-#[repr(transparent)]
-pub struct IndexSlice<I: Idx, T> {
+pub struct IndexSlice<'a, I: Idx, T> {
     _marker: PhantomData<fn(&I)>,
-    pub raw: [T],
+    pub raw: &'a Vec<T>,
 }
 
-impl<I: Idx, T> IndexSlice<I, T> {
-    #[inline]
-    pub const fn from_raw(raw: &[T]) -> &Self {
-        let ptr: *const [T] = raw;
-
-        unsafe { &*(ptr as *const Self) }
+impl<'a, I: Idx, T> Clone for IndexSlice<'a, I, T> {
+    fn clone(&self) -> Self {
+        *self
     }
+}
 
+impl<'a, I: Idx, T> Copy for IndexSlice<'a, I, T> {}
+
+impl<'a, I: Idx, T> IndexSlice<'a, I, T> {
     #[inline]
-    pub fn from_raw_mut(raw: &mut [T]) -> &mut Self {
-        let ptr: *mut [T] = raw;
-
-        unsafe { &mut *(ptr as *mut Self) }
+    pub const fn from_raw(raw: &'a Vec<T>) -> Self {
+        IndexSlice {
+            _marker: PhantomData,
+            raw,
+        }
     }
 
     #[inline]
@@ -319,12 +326,14 @@ impl<I: Idx, T> IndexSlice<I, T> {
     }
 
     #[inline]
-    pub fn iter(&self) -> slice::Iter<'_, T> {
+    pub fn iter(&self) -> slice::Iter<'a, T> {
         self.raw.iter()
     }
 
     #[inline]
-    pub fn iter_enumerated(&self) -> impl DoubleEndedIterator<Item = (I, &T)> + ExactSizeIterator {
+    pub fn iter_enumerated(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = (I, &'a T)> + ExactSizeIterator + use<'a, I, T> {
         let _ = I::new(self.len());
         self.raw.iter().enumerate().map(|(n, t)| (I::new(n), t))
     }
@@ -334,14 +343,9 @@ impl<I: Idx, T> IndexSlice<I, T> {
         let _ = I::new(self.len());
         IdxRange::new(0, self.len())
     }
-
-    #[inline]
-    pub fn iter_mut(&mut self) -> slice::IterMut<'_, T> {
-        self.raw.iter_mut()
-    }
 }
 
-impl<I: Idx, J: Idx> IndexSlice<I, J> {
+impl<'a, I: Idx, J: Idx> IndexSlice<'a, I, J> {
     pub fn invert_bijective_mapping(&self) -> IndexVec<J, I> {
         debug_assert_eq!(
             self.iter().map(|x| x.index() as u128).sum::<u128>(),
@@ -366,7 +370,7 @@ impl<I: Idx, J: Idx> IndexSlice<I, J> {
 
 // The original goes through `IntoSliceIdx<I, [T]>`, whose only impl used
 // here maps `I: Idx` to `usize`; this is that instance written out.
-impl<I: Idx, T> Index<I> for IndexSlice<I, T> {
+impl<'a, I: Idx, T> Index<I> for IndexSlice<'a, I, T> {
     type Output = T;
 
     #[inline]
@@ -375,17 +379,9 @@ impl<I: Idx, T> Index<I> for IndexSlice<I, T> {
     }
 }
 
-impl<I: Idx, T> IndexMut<I> for IndexSlice<I, T> {
-    #[inline]
-    fn index_mut(&mut self, index: I) -> &mut T {
-        &mut self.raw[index.index()]
-    }
-}
-
 // //== ./../rustc_index/src/vec.rs
 
-use std::borrow::{Borrow, BorrowMut};
-use std::ops::{Deref, DerefMut};
+use std::ops::Deref;
 use std::{slice, vec};
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -410,7 +406,7 @@ impl<I: Idx, T> IndexVec<I, T> {
     }
 
     #[inline]
-    pub fn from_elem<S>(elem: T, universe: &IndexSlice<I, S>) -> Self
+    pub fn from_elem<S>(elem: T, universe: IndexSlice<'_, I, S>) -> Self
     where
         T: Clone,
     {
@@ -426,13 +422,8 @@ impl<I: Idx, T> IndexVec<I, T> {
     }
 
     #[inline]
-    pub fn as_slice(&self) -> &IndexSlice<I, T> {
+    pub fn as_slice(&self) -> IndexSlice<'_, I, T> {
         IndexSlice::from_raw(&self.raw)
-    }
-
-    #[inline]
-    pub fn as_mut_slice(&mut self) -> &mut IndexSlice<I, T> {
-        IndexSlice::from_raw_mut(&mut self.raw)
     }
 
     #[inline]
@@ -441,33 +432,55 @@ impl<I: Idx, T> IndexVec<I, T> {
         self.raw.push(d);
         idx
     }
-}
 
-impl<I: Idx, T> Deref for IndexVec<I, T> {
-    type Target = IndexSlice<I, T>;
+    // The original reaches the following through `Deref<Target = IndexSlice>`;
+    // with IndexSlice a by-value view, spell the deref-then-call out.
 
     #[inline]
-    fn deref(&self) -> &Self::Target {
-        self.as_slice()
+    pub fn len(&self) -> usize {
+        self.as_slice().len()
     }
-}
 
-impl<I: Idx, T> DerefMut for IndexVec<I, T> {
     #[inline]
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.as_mut_slice()
+    pub fn next_index(&self) -> I {
+        self.as_slice().next_index()
+    }
+
+    #[inline]
+    pub fn iter(&self) -> slice::Iter<'_, T> {
+        self.as_slice().iter()
+    }
+
+    #[inline]
+    pub fn iter_enumerated(&self) -> impl DoubleEndedIterator<Item = (I, &T)> + ExactSizeIterator {
+        self.as_slice().iter_enumerated()
+    }
+
+    #[inline]
+    pub fn iter_mut(&mut self) -> slice::IterMut<'_, T> {
+        self.raw.iter_mut()
     }
 }
 
-impl<I: Idx, T> Borrow<IndexSlice<I, T>> for IndexVec<I, T> {
-    fn borrow(&self) -> &IndexSlice<I, T> {
-        self
+impl<I: Idx, J: Idx> IndexVec<I, J> {
+    pub fn invert_bijective_mapping(&self) -> IndexVec<J, I> {
+        self.as_slice().invert_bijective_mapping()
     }
 }
 
-impl<I: Idx, T> BorrowMut<IndexSlice<I, T>> for IndexVec<I, T> {
-    fn borrow_mut(&mut self) -> &mut IndexSlice<I, T> {
-        self
+impl<I: Idx, T> Index<I> for IndexVec<I, T> {
+    type Output = T;
+
+    #[inline]
+    fn index(&self, index: I) -> &T {
+        &self.raw[index.index()]
+    }
+}
+
+impl<I: Idx, T> IndexMut<I> for IndexVec<I, T> {
+    #[inline]
+    fn index_mut(&mut self, index: I) -> &mut T {
+        &mut self.raw[index.index()]
     }
 }
 
@@ -538,7 +551,7 @@ enum SavedLocalEligibility<VariantIdx, FieldIdx> {
 
 fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: Idx>(
     nb_locals: usize,
-    variant_fields: &IndexSlice<VariantIdx, IndexVec<FieldIdx, LocalIdx>>,
+    variant_fields: IndexSlice<'_, VariantIdx, IndexVec<FieldIdx, LocalIdx>>,
     storage_conflicts: &BitMatrix<LocalIdx, LocalIdx>,
 ) -> (
     DenseBitSet<LocalIdx>,
@@ -629,9 +642,9 @@ pub fn layout<
     LocalIdx: Idx,
 >(
     calc: &LayoutCalculator<impl HasDataLayout>,
-    local_layouts: &IndexSlice<LocalIdx, F>,
+    local_layouts: IndexSlice<'_, LocalIdx, F>,
     mut prefix_layouts: IndexVec<FieldIdx, F>,
-    variant_fields: &IndexSlice<VariantIdx, IndexVec<FieldIdx, LocalIdx>>,
+    variant_fields: IndexSlice<'_, VariantIdx, IndexVec<FieldIdx, LocalIdx>>,
     storage_conflicts: &BitMatrix<LocalIdx, LocalIdx>,
     tag_to_layout: impl Fn(Scalar) -> F,
 ) -> LayoutCalculatorResult<FieldIdx, VariantIdx, F> {
@@ -656,7 +669,7 @@ pub fn layout<
     prefix_layouts.push(tag_to_layout(tag));
     prefix_layouts.extend(promoted_layouts);
     let prefix = calc.univariant(
-        &prefix_layouts,
+        prefix_layouts.as_slice(),
         &ReprOptions::default(),
         StructKind::AlwaysSized,
     )?;
@@ -712,7 +725,7 @@ pub fn layout<
                 .map(|local| local_layouts[*local]);
 
             let mut variant = calc.univariant(
-                &variant_only_tys.collect::<IndexVec<_, _>>(),
+                variant_only_tys.collect::<IndexVec<_, _>>().as_slice(),
                 &ReprOptions::default(),
                 StructKind::Prefixed(prefix_size, prefix_align.abi),
             )?;
@@ -872,7 +885,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         F: Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + /*fmt::Debug +*/ Copy,
     >(
         &self,
-        fields: &IndexSlice<FieldIdx, F>,
+        fields: IndexSlice<'_, FieldIdx, F>,
         repr: &ReprOptions,
         kind: StructKind,
     ) -> LayoutCalculatorResult<FieldIdx, VariantIdx, F> {
@@ -939,7 +952,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         F: Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + /*fmt::Debug +*/ Copy,
     >(
         &self,
-        fields: &IndexSlice<FieldIdx, F>,
+        fields: IndexSlice<'_, FieldIdx, F>,
         repr: &ReprOptions,
         kind: StructKind,
         niche_bias: NicheBias,
