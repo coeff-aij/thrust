@@ -745,11 +745,15 @@ pub fn layout<
     let promoted_layouts = ineligible_locals.iter().map(|local| local_layouts[local]);
     prefix_layouts.push(tag_to_layout(tag));
     prefix_layouts.extend(promoted_layouts);
-    let prefix = calc.univariant(
+    // `?` written out (same error type, so its From conversion is the identity)
+    let prefix = match calc.univariant(
         &prefix_layouts,
         &ReprOptions::default(),
         StructKind::AlwaysSized,
-    )?;
+    ) {
+        Ok(prefix) => prefix,
+        Err(err) => return Err(err),
+    };
 
     let (prefix_size, prefix_align) = (prefix.size, prefix.align);
 
@@ -803,11 +807,15 @@ pub fn layout<
                 })
                 .map(|local| local_layouts[*local]);
 
-            let mut variant = calc.univariant(
+            // `?` written out (same error type, so its From conversion is the identity)
+            let mut variant = match calc.univariant(
                 &variant_only_tys.collect::<IndexVec<_, _>>(),
                 &ReprOptions::default(),
                 StructKind::Prefixed(prefix_size, prefix_align.abi),
-            )?;
+            ) {
+                Ok(variant) => variant,
+                Err(err) => return Err(err),
+            };
 
             let FieldsShape::Arbitrary {
                 offsets,
