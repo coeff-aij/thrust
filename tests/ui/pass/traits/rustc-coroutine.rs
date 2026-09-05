@@ -684,7 +684,8 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
             continue;
         }
 
-        for local_b in storage_conflicts.iter(local_a) {
+        let mut conflicts = storage_conflicts.iter(local_a);
+        while let Some(local_b) = conflicts.next() {
             if ineligible_locals.contains(local_b) || assignments[local_a] == assignments[local_b] {
                 continue;
             }
@@ -723,8 +724,13 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
     }
 
     {
-        for (idx, local) in ineligible_locals.iter().enumerate() {
+        // `for (idx, local) in ineligible_locals.iter().enumerate()` with the
+        // enumeration counter kept by hand.
+        let mut ineligible = ineligible_locals.iter();
+        let mut idx = 0;
+        while let Some(local) = ineligible.next() {
             assignments[local] = Ineligible(Some(FieldIdx::new(idx)));
+            idx += 1;
         }
     }
     // debug!("coroutine saved local assignments: {:?}", assignments);
@@ -896,7 +902,19 @@ pub fn layout<
 
     size = size.align_to(align.abi);
 
-    let uninhabited = prefix.uninhabited || variants.iter().all(|v| v.is_uninhabited());
+    // `variants.iter().all(|v| v.is_uninhabited())` as a short-circuiting loop,
+    // still only evaluated when `prefix.uninhabited` is false.
+    let uninhabited = prefix.uninhabited || {
+        let mut all_variants_uninhabited = true;
+        let mut variants_iter = variants.iter();
+        while let Some(v) = variants_iter.next() {
+            if !v.is_uninhabited() {
+                all_variants_uninhabited = false;
+                break;
+            }
+        }
+        all_variants_uninhabited
+    };
     let abi = BackendRepr::Memory { sized: true };
 
     Ok(LayoutData {
