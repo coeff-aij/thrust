@@ -513,18 +513,6 @@ pub struct IndexVec<I: Idx, T> {
     _marker: PhantomData<fn(&I)>,
 }
 
-// Written out instead of `#[derive(Clone)]`: the derived impl also clones the
-// PhantomData field through the generic Clone::clone spec, which cannot bind
-// unit-modeled arguments (same limitation as for PartialEq below).
-impl<I: Idx, T: Clone> Clone for IndexVec<I, T> {
-    fn clone(&self) -> Self {
-        IndexVec {
-            raw: self.raw.clone(),
-            _marker: PhantomData,
-        }
-    }
-}
-
 // Written out instead of `#[derive(PartialEq)]`: the derived impl also
 // compares the PhantomData field, which Thrust's generic PartialEq::eq spec
 // cannot bind (unit-modeled arguments). PhantomData values are always equal,
@@ -635,7 +623,9 @@ impl<'a, I: Idx, T> IntoIterator for &'a IndexVec<I, T> {
 
 // //== ./src/layout/coroutine.rs
 
-#[derive(Clone, /*Debug,*/ PartialEq)]
+// Copy added (all fields are Copy) so that the derived Clone is a plain copy
+// and does not call Clone::clone on the type parameters.
+#[derive(Clone, Copy, /*Debug,*/ PartialEq)]
 enum SavedLocalEligibility<VariantIdx, FieldIdx> {
     Unassigned,
     Assigned(VariantIdx),
@@ -1997,7 +1987,7 @@ impl Scalar {
     }
 }
 
-#[derive(PartialEq, Eq, Clone /*Debug*/)]
+#[derive(PartialEq, Eq /*, Clone, Debug*/)]
 // #[cfg_attr(feature = "nightly", derive(StableHash))]
 pub enum FieldsShape<FieldIdx: Idx> {
     Primitive,
@@ -2057,7 +2047,7 @@ impl BackendRepr {
     }
 }
 
-#[derive(PartialEq, Eq, Clone /*Debug*/)]
+#[derive(PartialEq, Eq /*, Clone, Debug*/)]
 // #[cfg_attr(feature = "nightly", derive(StableHash))]
 pub enum Variants<FieldIdx: Idx, VariantIdx: Idx> {
     Empty,
@@ -2130,7 +2120,7 @@ impl Niche {
     }
 }
 
-#[derive(PartialEq, Eq, Clone)]
+#[derive(PartialEq, Eq /*, Clone*/)]
 // #[cfg_attr(feature = "nightly", derive(StableHash))]
 pub struct LayoutData<FieldIdx: Idx, VariantIdx: Idx> {
     pub fields: FieldsShape<FieldIdx>,
@@ -2185,7 +2175,7 @@ pub enum StructKind {
     Prefixed(Size, Align),
 }
 
-#[derive(PartialEq, Eq, Clone /*Debug*/)]
+#[derive(PartialEq, Eq /*, Clone, Debug*/)]
 // #[cfg_attr(feature = "nightly", derive(StableHash))]
 pub struct VariantLayout<FieldIdx: Idx> {
     pub size: Size,
