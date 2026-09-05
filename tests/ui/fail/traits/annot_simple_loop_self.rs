@@ -1,4 +1,4 @@
-//@check-pass
+//@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60 COAR_IMAGE=coar:latest
 
@@ -20,7 +20,7 @@ fn target<T: A>(a: &T, x: i64) -> i64 {
     let mut i = 0;
     while i < 3 {
         thrust_macros::invariant!(|a: &T, v: i64| T::p(*a, v));
-        v = a.f(v);
+        v = a.f(v) + 1;
         i += 1;
     }
 
