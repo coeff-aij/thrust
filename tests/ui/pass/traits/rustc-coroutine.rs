@@ -895,9 +895,16 @@ pub fn layout<
             combined_offsets.raw.push(offset);
         }
 
-        combined_in_memory_order
-            .raw
-            .retain(|&i| i.index() != invalid_field_idx);
+        // `combined_in_memory_order.raw.retain(|&i| i.index() != invalid_field_idx)`
+        // written as the filtering copy it performs (order preserved).
+        let mut retained: IndexVec<u32, FieldIdx> = IndexVec::new();
+        let mut combined_iter = combined_in_memory_order.iter();
+        while let Some(&i) = combined_iter.next() {
+            if i.index() != invalid_field_idx {
+                retained.raw.push(i);
+            }
+        }
+        let combined_in_memory_order = retained;
 
         variant.fields = FieldsShape::Arbitrary {
             offsets: combined_offsets,
