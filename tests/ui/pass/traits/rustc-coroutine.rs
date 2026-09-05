@@ -623,16 +623,6 @@ impl<I: Idx, T> IndexMut<I> for IndexVec<I, T> {
     }
 }
 
-impl<I: Idx, T> FromIterator<T> for IndexVec<I, T> {
-    #[inline]
-    fn from_iter<J>(iter: J) -> Self
-    where
-        J: IntoIterator<Item = T>,
-    {
-        IndexVec::from_raw(Vec::from_iter(iter))
-    }
-}
-
 impl<'a, I: Idx, T> IntoIterator for &'a IndexVec<I, T> {
     type Item = &'a T;
     type IntoIter = SliceIter<'a, T>;
@@ -824,77 +814,85 @@ pub fn layout<
 
     let mut size = prefix.size;
     let mut align = prefix.align;
-    let variants = variant_fields
-        .iter_enumerated()
-        .map(|(index, variant_fields)| {
-            let variant_only_tys = variant_fields
-                .iter()
-                .filter(|local| match assignments[**local] {
-                    Unassigned => unreachable!(),
-                    Assigned(v) if v == index => true,
-                    Assigned(_) => unreachable!("assignment does not match variant"),
-                    Ineligible(_) => false,
-                })
-                .map(|local| local_layouts[*local]);
-
-            let mut variant = calc.univariant(
-                variant_only_tys.collect::<IndexVec<_, _>>().as_slice(),
-                &ReprOptions::default(),
-                StructKind::Prefixed(prefix_size, prefix_align.abi),
-            )?;
-
-            let FieldsShape::Arbitrary {
-                offsets,
-                in_memory_order,
-            } = variant.fields
-            else {
-                unreachable!();
+    // Originally `variant_fields.iter_enumerated().map(|(index, variant_fields)| { .. })
+    //     .collect::<Result<IndexVec<VariantIdx, _>, _>>()?`:
+    // each Ok is pushed, the first Err is returned from layout().
+    let mut variants: IndexVec<VariantIdx, VariantLayout<FieldIdx>> = IndexVec::new();
+    let mut variant_entries = variant_fields.iter_enumerated();
+    while let Some((index, variant_fields)) = variant_entries.next() {
+        // Originally `variant_fields.iter().filter(|local| match ..).map(|local| local_layouts[*local])
+        //     .collect::<IndexVec<_, _>>()`.
+        let mut variant_only_tys: IndexVec<FieldIdx, F> = IndexVec::new();
+        let mut variant_locals = variant_fields.iter();
+        while let Some(local) = variant_locals.next() {
+            let keep = match assignments[*local] {
+                Unassigned => unreachable!(),
+                Assigned(v) if v == index => true,
+                Assigned(_) => unreachable!("assignment does not match variant"),
+                Ineligible(_) => false,
             };
+            if keep {
+                variant_only_tys.raw.push(local_layouts[*local]);
+            }
+        }
 
-            let memory_index = in_memory_order.invert_bijective_mapping();
-            let invalid_field_idx = promoted_memory_index.len() + memory_index.len();
-            let mut combined_in_memory_order =
-                IndexVec::from_elem_n(FieldIdx::new(invalid_field_idx), invalid_field_idx);
+        let mut variant = calc.univariant(
+            variant_only_tys.as_slice(),
+            &ReprOptions::default(),
+            StructKind::Prefixed(prefix_size, prefix_align.abi),
+        )?;
 
-            let mut offsets_iter = offsets.iter();
-            let mut memory_index_iter = memory_index.iter();
-            let combined_offsets = variant_fields
-                .iter_enumerated()
-                .map(|(i, local)| {
-                    let (offset, memory_index) = match assignments[*local] {
-                        Unassigned => unreachable!(),
-                        Assigned(_) => {
-                            let offset = *offsets_iter.next().unwrap();
-                            let memory_index = *memory_index_iter.next().unwrap();
-                            (offset, promoted_memory_index.len() as u32 + memory_index)
-                        }
-                        Ineligible(field_idx) => {
-                            let field_idx = field_idx.unwrap();
-                            (
-                                promoted_offsets[field_idx],
-                                promoted_memory_index[field_idx],
-                            )
-                        }
-                    };
-                    combined_in_memory_order[memory_index] = i;
-                    offset
-                })
-                .collect();
+        let FieldsShape::Arbitrary {
+            offsets,
+            in_memory_order,
+        } = variant.fields
+        else {
+            unreachable!();
+        };
 
-            combined_in_memory_order
-                .raw
-                .retain(|&i| i.index() != invalid_field_idx);
+        let memory_index = in_memory_order.invert_bijective_mapping();
+        let invalid_field_idx = promoted_memory_index.len() + memory_index.len();
+        let mut combined_in_memory_order =
+            IndexVec::from_elem_n(FieldIdx::new(invalid_field_idx), invalid_field_idx);
 
-            variant.fields = FieldsShape::Arbitrary {
-                offsets: combined_offsets,
-                in_memory_order: combined_in_memory_order,
+        let mut offsets_iter = offsets.iter();
+        let mut memory_index_iter = memory_index.iter();
+        // Originally `variant_fields.iter_enumerated().map(|(i, local)| { .. }).collect()`.
+        let mut combined_offsets: IndexVec<FieldIdx, Size> = IndexVec::new();
+        let mut field_entries = variant_fields.iter_enumerated();
+        while let Some((i, local)) = field_entries.next() {
+            let (offset, memory_index) = match assignments[*local] {
+                Unassigned => unreachable!(),
+                Assigned(_) => {
+                    let offset = *offsets_iter.next().unwrap();
+                    let memory_index = *memory_index_iter.next().unwrap();
+                    (offset, promoted_memory_index.len() as u32 + memory_index)
+                }
+                Ineligible(field_idx) => {
+                    let field_idx = field_idx.unwrap();
+                    (
+                        promoted_offsets[field_idx],
+                        promoted_memory_index[field_idx],
+                    )
+                }
             };
+            combined_in_memory_order[memory_index] = i;
+            combined_offsets.raw.push(offset);
+        }
 
-            size = size.max(variant.size);
-            align = align.max(variant.align);
-            Ok(VariantLayout::from_layout(variant))
-        })
-        .collect::<Result<IndexVec<VariantIdx, _>, _>>()?;
+        combined_in_memory_order
+            .raw
+            .retain(|&i| i.index() != invalid_field_idx);
+
+        variant.fields = FieldsShape::Arbitrary {
+            offsets: combined_offsets,
+            in_memory_order: combined_in_memory_order,
+        };
+
+        size = size.max(variant.size);
+        align = align.max(variant.align);
+        variants.raw.push(VariantLayout::from_layout(variant));
+    }
 
     size = size.align_to(align.abi);
 
@@ -1086,7 +1084,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
             dl.aggregate_align
         };
         let mut max_repr_align = repr.align;
-        let mut in_memory_order: IndexVec<u32, FieldIdx> = fields.indices().collect();
+        let mut in_memory_order: IndexVec<u32, FieldIdx> = IndexVec::from_raw(fields.indices().collect());
         let optimize_field_order = !repr.inhibit_struct_field_reordering();
         let end = if let StructKind::MaybeUnsized = kind {
             fields.len() - 1
