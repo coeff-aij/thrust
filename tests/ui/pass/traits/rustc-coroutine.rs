@@ -327,6 +327,29 @@ impl<'a, T> Iterator for SliceIter<'a, T> {
     }
 }
 
+/// Own iterator standing in for
+/// `raw.iter().enumerate().map(|(n, t)| (I::new(n), t))`: yields
+/// `(I::new(0), &raw[0])`, ..., `(I::new(len - 1), &raw[len - 1])`.
+pub struct IterEnumerated<'a, I: Idx, T> {
+    raw: &'a Vec<T>,
+    pos: usize,
+    marker: PhantomData<I>,
+}
+
+impl<'a, I: Idx, T> Iterator for IterEnumerated<'a, I, T> {
+    type Item = (I, &'a T);
+
+    fn next(&mut self) -> Option<(I, &'a T)> {
+        if self.pos < self.raw.len() {
+            let n = self.pos;
+            self.pos += 1;
+            Some((I::new(n), &self.raw[n]))
+        } else {
+            None
+        }
+    }
+}
+
 impl<'a, I: Idx, T> IndexSlice<'a, I, T> {
     #[inline]
     pub const fn from_raw(raw: &'a Vec<T>) -> Self {
@@ -355,11 +378,13 @@ impl<'a, I: Idx, T> IndexSlice<'a, I, T> {
     }
 
     #[inline]
-    pub fn iter_enumerated(
-        &self,
-    ) -> impl DoubleEndedIterator<Item = (I, &'a T)> + ExactSizeIterator + use<'a, I, T> {
+    pub fn iter_enumerated(&self) -> IterEnumerated<'a, I, T> {
         let _ = I::new(self.len());
-        self.raw.iter().enumerate().map(|(n, t)| (I::new(n), t))
+        IterEnumerated {
+            raw: self.raw,
+            pos: 0,
+            marker: PhantomData,
+        }
     }
 
     #[inline]
@@ -378,7 +403,8 @@ impl<'a, I: Idx, J: Idx> IndexSlice<'a, I, J> {
         );
 
         let mut inverse = IndexVec::from_elem_n(Idx::new(0), self.len());
-        for (i1, &i2) in self.iter_enumerated() {
+        let mut entries = self.iter_enumerated();
+        while let Some((i1, &i2)) = entries.next() {
             inverse[i2] = i1;
         }
 
@@ -476,7 +502,7 @@ impl<I: Idx, T> IndexVec<I, T> {
     }
 
     #[inline]
-    pub fn iter_enumerated(&self) -> impl DoubleEndedIterator<Item = (I, &T)> + ExactSizeIterator {
+    pub fn iter_enumerated(&self) -> IterEnumerated<'_, I, T> {
         self.as_slice().iter_enumerated()
     }
 
@@ -587,7 +613,8 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
 
     let mut ineligible_locals = DenseBitSet::new_empty(nb_locals);
 
-    for (variant_index, fields) in variant_fields.iter_enumerated() {
+    let mut variants = variant_fields.iter_enumerated();
+    while let Some((variant_index, fields)) = variants.next() {
         let mut locals = fields.iter();
         while let Some(local) = locals.next() {
             match assignments[*local] {
