@@ -751,6 +751,13 @@ fn _extern_spec_i32_is_negative(x: i32) -> bool {
 
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
+#[thrust_macros::ensures((x >= y && result == Some(x - y)) || (x < y && result == None))]
+fn _extern_spec_usize_checked_sub(x: usize, y: usize) -> Option<usize> {
+    usize::checked_sub(x, y)
+}
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
 #[thrust_macros::ensures(result.length == 0)]
 fn _extern_spec_vec_new<T>() -> Vec<T> where T: thrust_models::Model, T::Ty: PartialEq {
     Vec::<T>::new()
@@ -1015,6 +1022,30 @@ fn _extern_spec_slice_index_mut<T>(slice: &mut [T], index: usize) -> &mut T
     <[T] as std::ops::IndexMut<usize>>::index_mut(slice, index)
 }
 
+// `vec![elem; n]` expands to a call to this function.
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(
+    result.length == n
+        && thrust_models::forall(|i: thrust_models::model::Int| (0 <= i && i < n) ==> result.array[i] == elem)
+)]
+fn _extern_spec_vec_from_elem<T>(elem: T, n: usize) -> Vec<T>
+    where T: thrust_models::Model + Clone, T::Ty: PartialEq
+{
+    std::vec::from_elem(elem, n)
+}
+
+// Only the lengths are specified; the element-wise description of the two
+// halves needs quantifiers the solvers do not handle well yet.
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(at <= (*vec).length)]
+#[thrust_macros::ensures((!vec).length == at && result.length == (*vec).length - at)]
+fn _extern_spec_vec_split_off<T>(vec: &mut Vec<T>, at: usize) -> Vec<T>
+    where T: thrust_models::Model, T::Ty: PartialEq
+{
+    Vec::split_off(vec, at)
+}
+
 // TODO: The following specs of some trait methods are too restrictive; we should allow for a
 //       per-impl spec once we can describe the spec of blanket impls.
 
@@ -1025,6 +1056,16 @@ fn _extern_spec_partialeq_eq<T>(x: &T, y: &T) -> bool
   where T: thrust_models::Model + PartialEq, T::Ty: PartialEq
 {
     PartialEq::eq(x, y)
+}
+
+// Values are modeled purely, so a clone is the same value in the model.
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(result == *x)]
+fn _extern_spec_clone<T>(x: &T) -> T
+  where T: thrust_models::Model + Clone, T::Ty: PartialEq
+{
+    Clone::clone(x)
 }
 
 #[thrust::extern_spec_fn]
