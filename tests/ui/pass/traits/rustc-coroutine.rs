@@ -797,7 +797,8 @@ pub fn layout<
                 .filter(|local| match assignments[**local] {
                     Unassigned => unreachable!(),
                     Assigned(v) if v == index => true,
-                    Assigned(_) => unreachable!("assignment does not match variant"),
+                    // message dropped: format arguments are not modeled
+                    Assigned(_) => unreachable!(),
                     Ineligible(_) => false,
                 })
                 .map(|local| local_layouts[*local]);
@@ -2020,7 +2021,8 @@ impl<FieldIdx: Idx> VariantLayout<FieldIdx> {
             in_memory_order,
         } = layout.fields
         else {
-            panic!("Layout of fields should be Arbitrary for variants");
+            // message dropped: format arguments are not modeled
+            panic!();
         };
 
         Self {
