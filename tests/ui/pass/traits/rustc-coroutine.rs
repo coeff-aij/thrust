@@ -156,8 +156,8 @@ pub struct BitMatrix<R: Idx, C: Idx> {
 }
 
 impl<R: Idx, C: Idx> BitMatrix<R, C> {
-    pub fn rows(&self) -> impl Iterator<Item = R> {
-        (0..self.num_rows).map(R::new)
+    pub fn rows(&self) -> IdxRange<R> {
+        IdxRange::new(0, self.num_rows)
     }
 
     fn range(&self, row: R) -> (usize, usize) {
@@ -249,6 +249,39 @@ impl Idx for u32 {
     }
 }
 
+/// Own iterator standing in for `(start..end).map(I::new)`: yields
+/// `I::new(start)`, `I::new(start + 1)`, ..., `I::new(end - 1)`.
+#[derive(Clone)]
+pub struct IdxRange<I: Idx> {
+    start: usize,
+    end: usize,
+    marker: PhantomData<I>,
+}
+
+impl<I: Idx> IdxRange<I> {
+    fn new(start: usize, end: usize) -> IdxRange<I> {
+        IdxRange {
+            start,
+            end,
+            marker: PhantomData,
+        }
+    }
+}
+
+impl<I: Idx> Iterator for IdxRange<I> {
+    type Item = I;
+
+    fn next(&mut self) -> Option<I> {
+        if self.start < self.end {
+            let n = self.start;
+            self.start += 1;
+            Some(I::new(n))
+        } else {
+            None
+        }
+    }
+}
+
 pub trait IntoSliceIdx<I, T: ?Sized> {
     type Output: SliceIndex<T>;
     fn into_slice_idx(self) -> Self::Output;
@@ -311,11 +344,9 @@ impl<I: Idx, T> IndexSlice<I, T> {
     }
 
     #[inline]
-    pub fn indices(
-        &self,
-    ) -> impl DoubleEndedIterator<Item = I> + ExactSizeIterator + Clone + 'static {
+    pub fn indices(&self) -> IdxRange<I> {
         let _ = I::new(self.len());
-        (0..self.len()).map(|n| I::new(n))
+        IdxRange::new(0, self.len())
     }
 
     #[inline]
@@ -550,7 +581,8 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
         }
     }
 
-    for local_a in storage_conflicts.rows() {
+    let mut rows = storage_conflicts.rows();
+    while let Some(local_a) = rows.next() {
         let conflicts_a = storage_conflicts.count(local_a);
         if ineligible_locals.contains(local_a) {
             continue;
