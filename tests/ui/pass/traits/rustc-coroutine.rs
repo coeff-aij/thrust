@@ -179,12 +179,24 @@ impl<'a, T: Idx> Iterator for BitIter<'a, T> {
 }
 
 // #[cfg_attr(feature = "nightly", derive(Decodable_NoContext, Encodable_NoContext))]
-#[derive(Clone, Eq)]
+#[derive(Eq)]
 pub struct BitMatrix<R: Idx, C: Idx> {
     num_rows: usize,
     num_columns: usize,
     words: Vec<Word>,
     marker: PhantomData<(R, C)>,
+}
+
+// Written out instead of `#[derive(Clone)]`; see the note on IndexVec.
+impl<R: Idx, C: Idx> Clone for BitMatrix<R, C> {
+    fn clone(&self) -> Self {
+        BitMatrix {
+            num_rows: self.num_rows,
+            num_columns: self.num_columns,
+            words: self.words.clone(),
+            marker: PhantomData,
+        }
+    }
 }
 
 // Written out instead of `#[derive(PartialEq)]`; see the note on IndexVec.
@@ -494,11 +506,23 @@ impl<'a, I: Idx, T> Index<I> for IndexSlice<'a, I, T> {
 
 use std::ops::Deref;
 
-#[derive(Clone, Eq)]
+#[derive(Eq)]
 #[repr(transparent)]
 pub struct IndexVec<I: Idx, T> {
     pub raw: Vec<T>,
     _marker: PhantomData<fn(&I)>,
+}
+
+// Written out instead of `#[derive(Clone)]`: the derived impl also clones the
+// PhantomData field through the generic Clone::clone spec, which cannot bind
+// unit-modeled arguments (same limitation as for PartialEq below).
+impl<I: Idx, T: Clone> Clone for IndexVec<I, T> {
+    fn clone(&self) -> Self {
+        IndexVec {
+            raw: self.raw.clone(),
+            _marker: PhantomData,
+        }
+    }
 }
 
 // Written out instead of `#[derive(PartialEq)]`: the derived impl also
