@@ -670,6 +670,18 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 op_pty.ty = expected_ty;
                 op_pty
             }
+            Rvalue::Cast(mir::CastKind::IntToInt, operand, _ty) => {
+                // Every integer width shares the Int model and overflow is out of
+                // scope, so an integer-to-integer cast is the identity on the term.
+                let operand_ty = self.operand_type(operand);
+
+                let mut builder = PlaceTypeBuilder::default();
+                let (operand_ty, operand_term) = builder.subsume(operand_ty);
+                match &operand_ty {
+                    rty::Type::Int => builder.build(rty::Type::Int, operand_term),
+                    _ => unimplemented!("int cast from ty={}", operand_ty.display()),
+                }
+            }
             Rvalue::Discriminant(place) => {
                 let place = self.elaborate_place(&place);
                 let ty = self.env.place_type(place);
