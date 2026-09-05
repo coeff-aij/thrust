@@ -1257,7 +1257,13 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
             };
             offset = offset.align_to(field_align.abi);
             align = align.max(field_align.abi);
-            max_repr_align = max_repr_align.max(field.max_repr_align);
+            // `max_repr_align.max(field.max_repr_align)` on Option<Align>
+            // (None is the smallest) written out, as Align no longer implements Ord.
+            max_repr_align = match (max_repr_align, field.max_repr_align) {
+                (Some(a), Some(b)) => Some(a.max(b)),
+                (Some(a), None) => Some(a),
+                (None, b) => b,
+            };
 
             // debug!("univariant offset: {:?} field: {:#?}", offset, field);
             offsets[i] = offset;
@@ -1331,7 +1337,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
 
                 (Some((i, a)), Some((j, b)), None) => match (a.backend_repr, b.backend_repr) {
                     (BackendRepr::Scalar(a), BackendRepr::Scalar(b)) => {
-                        let ((i, a), (j, b)) = if offsets[i] < offsets[j] {
+                        let ((i, a), (j, b)) = if offsets[i].bytes() < offsets[j].bytes() {
                             ((i, a), (j, b))
                         } else {
                             ((j, b), (i, a))
@@ -1647,27 +1653,13 @@ pub struct Size {
     raw: u64,
 }
 
-impl PartialOrd for Size {
-    fn partial_cmp(&self, other: &Size) -> Option<cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-// Written out instead of `#[derive(PartialOrd, Ord)]`, which would call std
-// comparison functions; same ordering (by `raw`).
-impl Ord for Size {
-    fn cmp(&self, other: &Size) -> cmp::Ordering {
-        if self.raw < other.raw {
-            cmp::Ordering::Less
-        } else if self.raw > other.raw {
-            cmp::Ordering::Greater
-        } else {
-            cmp::Ordering::Equal
-        }
-    }
-
-    // Same results as the defaults, without going through std's bodies.
-    fn max(self, other: Size) -> Size {
+impl Size {
+    // The original derives Ord and uses Ord::max/min; these compute the same
+    // (ordering by `raw`) without going through std's bodies. The derive is
+    // dropped: cmp::Ordering (repr(i8), negative discriminant) is not
+    // handled by Thrust, and the one remaining `<` on Size in the trusted
+    // univariant_biased compares bytes() directly.
+    pub fn max(self, other: Size) -> Size {
         if other.raw >= self.raw {
             other
         } else {
@@ -1675,16 +1667,14 @@ impl Ord for Size {
         }
     }
 
-    fn min(self, other: Size) -> Size {
+    pub fn min(self, other: Size) -> Size {
         if other.raw < self.raw {
             other
         } else {
             self
         }
     }
-}
 
-impl Size {
     pub const ZERO: Size = Size { raw: 0 };
 
     #[thrust::trusted]
@@ -1785,30 +1775,11 @@ pub struct Align {
     pow2: u8,
 }
 
-impl PartialOrd for Align {
-    fn partial_cmp(&self, other: &Align) -> Option<cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-// Written out instead of `#[derive(PartialOrd, Ord)]`, which would call std
-// comparison functions; same ordering (by `pow2`). Still needed for
-// `Option<Align>::max` in univariant_biased.
-impl Ord for Align {
-    fn cmp(&self, other: &Align) -> cmp::Ordering {
-        if self.pow2 < other.pow2 {
-            cmp::Ordering::Less
-        } else if self.pow2 > other.pow2 {
-            cmp::Ordering::Greater
-        } else {
-            cmp::Ordering::Equal
-        }
-    }
-}
-
 impl Align {
-    // The original uses Ord::max/min; these compute the same without going
-    // through std's bodies (method resolution prefers the inherent ones).
+    // The original derives Ord and uses Ord::max/min; these compute the same
+    // (ordering by `pow2`) without going through std's bodies. See Size for
+    // why the derive is dropped; `Option<Align>::max` in univariant_biased
+    // is written out there.
     pub fn max(self, other: Align) -> Align {
         if other.pow2 >= self.pow2 {
             other
