@@ -1038,11 +1038,16 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                                 outer_generic_args = ?self.generic_args,
                                 "resolving predicate call in formula"
                             );
-                            let (mut is_unresolved_args, generic_args) =
-                                match self.instantiate_generics(generic_args, self.generic_args) {
-                                    Some(args) => (false, args),
-                                    None => (true, generic_args),
-                                };
+                            // `self.generic_args` is empty only when the owner has no generics,
+                            // so the predicate's own args are already concrete and there is
+                            // nothing to instantiate. In both cases `Instance::try_resolve`
+                            // decides the routing: it resolves a call on a concrete type to the
+                            // impl's predicate, and returns `None` for a call that still
+                            // depends on the owner's type parameters (an `ImplSource::Param`),
+                            // which is the only case that needs the forall predicate.
+                            let generic_args = self
+                                .instantiate_generics(generic_args, self.generic_args)
+                                .unwrap_or(generic_args);
 
                             let instance = mir_ty::Instance::try_resolve(
                                 self.tcx,
@@ -1051,11 +1056,9 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                                 generic_args,
                             )
                             .unwrap();
-                            let pred_def_id = if let Some(instance) = instance {
-                                instance.def_id()
-                            } else {
-                                is_unresolved_args = true;
-                                def_id
+                            let (is_unresolved_args, pred_def_id) = match instance {
+                                Some(instance) => (false, instance.def_id()),
+                                None => (true, def_id),
                             };
 
                             let pred = if is_unresolved_args {

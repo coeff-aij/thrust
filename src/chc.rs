@@ -2535,4 +2535,49 @@ mod tests {
         assert!(smt.contains("; type_param=ParamTy T/#0 (decl=DefId(...))"));
         assert!(smt.contains("(declare-forall-sort a0)"));
     }
+
+    #[test]
+    fn declares_sorts_used_only_in_forall_pred_signatures() {
+        let mut system = System::default();
+        let idx = system.new_forall_sort(DebugInfo::default());
+        let tuple = Sort::tuple(vec![Sort::forall(idx), Sort::int()]);
+        system.register_forall_pred(ForallPred::new(
+            "q".into(),
+            vec![Sort::forall(idx)],
+            vec![tuple, Sort::int()],
+        ));
+
+        let smt = system.smtlib2().to_string();
+        let declared = smt
+            .find("(A0_Tuple<a0-Int> 0)")
+            .expect("tuple datatype declared");
+        let used = smt
+            .find("(declare-forall-fun q<a0> (A0_Tuple<a0-Int> Int) Bool)")
+            .expect("forall pred declared with the renamed sort");
+        assert!(declared < used);
+        assert!(!smt.contains(" Tuple<a0-Int>"));
+        assert!(!smt.contains("(Tuple<a0-Int>"));
+    }
+
+    #[test]
+    fn declares_sorts_used_only_in_user_defined_pred_signatures() {
+        let mut system = System::default();
+        let tuple = Sort::tuple(vec![Sort::int(), Sort::int()]);
+        system.push_pred_define(
+            UserDefinedPred::new("p".into()),
+            vec![("self_".into(), tuple), ("x".into(), Sort::int())],
+            "true".into(),
+        );
+
+        let smt = system.smtlib2().to_string();
+        let declared = smt
+            .find("(A0_Tuple<Int-Int> 0)")
+            .expect("tuple datatype declared");
+        let used = smt
+            .find("(define-fun p ((self_ A0_Tuple<Int-Int>) (x Int)) Bool true)")
+            .expect("user-defined pred defined with the renamed sort");
+        assert!(declared < used);
+        assert!(!smt.contains(" Tuple<Int-Int>"));
+        assert!(!smt.contains("(Tuple<Int-Int>"));
+    }
 }
