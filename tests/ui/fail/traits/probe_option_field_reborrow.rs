@@ -1,4 +1,4 @@
-//@check-pass
+//@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60 COAR_IMAGE=coar:latest
 
@@ -33,16 +33,16 @@ where
 {
     #[thrust_macros::predicate]
     fn p(self) -> bool {
-        // self.iter == None || I::p(self.iter.unwrap())
+        // self.iter == None || !I::p(self.iter.unwrap())  (fail: contradicts the precondition of it.f())
         "(or
             ((_ is std.option.Option.None<a0>)
                 (tuple_proj<std.option.Option<a0>>.0 self_))
             (and
                 ((_ is std.option.Option.Some<a0>)
                     (tuple_proj<std.option.Option<a0>>.0 self_))
-                (q_p_94601a6d803116c8e4204f321a4d65e6<a0>
+                (not (q_p_94601a6d803116c8e4204f321a4d65e6<a0>
                     (_getstd.option.Option.Some.0<a0>
-                        (tuple_proj<std.option.Option<a0>>.0 self_)))))";
+                        (tuple_proj<std.option.Option<a0>>.0 self_))))))";
         true
     }
 

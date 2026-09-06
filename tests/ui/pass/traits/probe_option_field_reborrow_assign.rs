@@ -1,4 +1,4 @@
-// FIXME: flaky with pcsat: verifies in ~50s on some runs, Timeout(180s) on others (match &mut self.iter + reassignment)
+//@check-pass
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60 COAR_IMAGE=coar:latest
 
