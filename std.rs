@@ -1058,6 +1058,28 @@ fn _extern_spec_partialeq_eq<T>(x: &T, y: &T) -> bool
     PartialEq::eq(x, y)
 }
 
+// Hashing has no model; the spec only records that hashing itself does not
+// panic, which lets derived Hash impls be analyzed (they hash field by field).
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(true)]
+fn _extern_spec_hash<T, H>(x: &T, state: &mut H)
+  where T: std::hash::Hash + thrust_models::Model + ?Sized, T::Ty: PartialEq, H: std::hash::Hasher + thrust_models::Model, H::Ty: PartialEq
+{
+    std::hash::Hash::hash(x, state)
+}
+
+// Default values of foreign types are not modeled; the spec only records that
+// constructing one does not panic, which lets derived Default impls be analyzed.
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(true)]
+fn _extern_spec_default<T>() -> T
+  where T: Default + thrust_models::Model, T::Ty: PartialEq
+{
+    T::default()
+}
+
 // Values are modeled purely, so a clone is the same value in the model.
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
