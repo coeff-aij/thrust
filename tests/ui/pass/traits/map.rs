@@ -1,3 +1,4 @@
+//@check-pass
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:latest
 use thrust_models::forall;
 
@@ -9,7 +10,10 @@ trait Iterator {
     #[thrust_macros::ensures(result == None ==> Self::completed(self))]
     #[thrust_macros::ensures(Self::completed(self) ==> result == None)]
     #[thrust_macros::ensures(forall(|i| result == Some(i) ==> Self::step(*self, i, !self)))]
-    #[thrust_macros::ensures(forall(|i| Self::step(*self, i, !self) ==> result == Some(i)))]
+    // `step(*self, i, !self) ==> result == Some(i)` cannot hold for `Map`: its `step`
+    // relates `item` to the closure's postcondition, an arbitrary relation, so `step`
+    // does not determine `i`. The weaker direction below is what `Map` can guarantee.
+    #[thrust_macros::ensures(forall(|i| Self::step(*self, i, !self) ==> !(result == None)))]
     fn next(&mut self) -> Option<Self::Item>;
 
     #[thrust_macros::predicate]
@@ -48,51 +52,27 @@ where <I as thrust_models::Model>::Ty: PartialEq
 
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
-        // self.iter.invariant() && (
-        //     exists(|dist: I| self.iter.completed(Mut::new(self, dist))) ||
-        //     (exists(|i: Self::Item| exists(|dist: I|
-        //         self.iter.step(i, dist)
-        //     )) && 
-        //     forall(|i: Self::Item| forall(|dist: I|
-        //         self.iter.step(i, dist) ==>
-        //         exists(|f: F| call_pre!(Mut::new(self.func, f)(i)))
-        //     )))
-        // )
+        // self.iter.invariant() &&
+        // forall(|i: I::Item, dist: I| self.iter.step(i, dist) ==>
+        //     forall(|f: F| pre!(Mut::new(self.func, f)(i))))
+        // The closure precondition is checked at the call site against a fresh
+        // prophecy for the closure's final state, so it has to hold for every `f`.
         "(and
             (q_invariant_ae8bdb3b1e3ae00bdd84dd265c9192eb<a0> (tuple_proj<a0-a1>.0 self_))
-            (or
-                (exists ((dist a0))
-                    (q_completed_ae8bdb3b1e3ae00b46c4745e3c9b07d6<a0>
-                        (mut<a0>
-                            (tuple_proj<a0-a1>.0 self_)
-                            dist
-                        )
+            (forall ((i a3) (dist a0))
+                (=>
+                    (q_step_ae8bdb3b1e3ae00b8dd88201ff820b9d<a0>
+                        (tuple_proj<a0-a1>.0 self_)
+                        i
+                        dist
                     )
-                )
-                (and
-                    (exists ((i a3) (dist a0))
-                        (q_step_ae8bdb3b1e3ae00b8dd88201ff820b9d<a0>
-                            (tuple_proj<a0-a1>.0 self_)
+                    (forall ((f a1))
+                        (q_pre_next_ae8bdb3b1e3ae00b81f4915ba90d746f<a1>
+                            (mut<a1>
+                                (tuple_proj<a0-a1>.1 self_)
+                                f
+                            )
                             i
-                            dist
-                        )
-                    )
-                    (forall ((i a3) (dist a0))
-                        (=>
-                            (q_step_ae8bdb3b1e3ae00b8dd88201ff820b9d<a0>
-                                (tuple_proj<a0-a1>.0 self_)
-                                i
-                                dist
-                            )
-                            (exists ((f a1))
-                                (q_pre_next_ae8bdb3b1e3ae00b81f4915ba90d746f<a1>
-                                    (mut<a1>
-                                        (tuple_proj<a0-a1>.1 self_)
-                                        f
-                                    )
-                                    i
-                                )
-                            )
                         )
                     )
                 )

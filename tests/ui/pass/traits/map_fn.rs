@@ -1,3 +1,4 @@
+//@check-pass
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:latest
 use thrust_models::forall;
 
@@ -9,7 +10,10 @@ trait Iterator {
     #[thrust_macros::ensures(result == None ==> Self::completed(self))]
     #[thrust_macros::ensures(Self::completed(self) ==> result == None)]
     #[thrust_macros::ensures(forall(|i| result == Some(i) ==> Self::step(*self, i, !self)))]
-    #[thrust_macros::ensures(forall(|i| Self::step(*self, i, !self) ==> result == Some(i)))]
+    // `step(*self, i, !self) ==> result == Some(i)` cannot hold for `Map`: its `step`
+    // relates `item` to the closure's postcondition, an arbitrary relation, so `step`
+    // does not determine `i`. The weaker direction below is what `Map` can guarantee.
+    #[thrust_macros::ensures(forall(|i| Self::step(*self, i, !self) ==> !(result == None)))]
     fn next(&mut self) -> Option<Self::Item>;
 
     #[thrust_macros::predicate]
@@ -49,43 +53,19 @@ where <I as thrust_models::Model>::Ty: PartialEq
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
         // self.iter.invariant() &&
-        // forall(|i: Self::Item| forall(|dist: I|
-        //     self.iter.step(i, dist) ==>
-        //     exists(|f: F| call_pre!(Mut::new(self.func, f)(i)))
-        // )))
+        // forall(|i: I::Item, dist: I| self.iter.step(i, dist) ==> pre!(self.func(i)))
         "(and
             (q_invariant_7301c9248155c50d8ab3300ff35fd085<a0> (tuple_proj<a0-a1>.0 self_))
-            (or
-                (exists ((dist a0))
-                    (q_completed_7301c9248155c50da4cf4c72232b5d2b<a0>
-                        (mut<a0>
-                            (tuple_proj<a0-a1>.0 self_)
-                            dist
-                        )
+            (forall ((i a3) (dist a0))
+                (=>
+                    (q_step_7301c9248155c50d139c4cfe897a4790<a0>
+                        (tuple_proj<a0-a1>.0 self_)
+                        i
+                        dist
                     )
-                )
-                (and
-                    (exists ((i a3) (dist a0))
-                        (q_step_7301c9248155c50d139c4cfe897a4790<a0>
-                            (tuple_proj<a0-a1>.0 self_)
-                            i
-                            dist
-                        )
-                    )
-                    (forall ((i a3) (dist a0))
-                        (=>
-                            (q_step_7301c9248155c50d139c4cfe897a4790<a0>
-                                (tuple_proj<a0-a1>.0 self_)
-                                i
-                                dist
-                            )
-                            (exists ((f a1))
-                                (q_pre_next_7301c9248155c50de744744ab31cecba<a1>
-                                    (tuple_proj<a0-a1>.1 self_)
-                                    i
-                                )
-                            )
-                        )
+                    (q_pre_next_7301c9248155c50de744744ab31cecba<a1>
+                        (tuple_proj<a0-a1>.1 self_)
+                        i
                     )
                 )
             )
