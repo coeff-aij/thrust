@@ -435,7 +435,8 @@ impl<I: Idx, J: Idx> IndexSlice<I, J> {
         );
 
         let mut inverse = IndexVec::from_elem_n(Idx::new(0), self.len());
-        for (i1, &i2) in self.iter_enumerated() {
+        let mut entries = self.iter_enumerated();
+        while let Some((i1, &i2)) = entries.next() {
             inverse[i2] = i1;
         }
 
@@ -633,8 +634,10 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
 
     let mut ineligible_locals = DenseBitSet::new_empty(nb_locals);
 
-    for (variant_index, fields) in variant_fields.iter_enumerated() {
-        for local in fields {
+    let mut variants = variant_fields.iter_enumerated();
+    while let Some((variant_index, fields)) = variants.next() {
+        let mut locals = fields.into_iter();
+        while let Some(local) = locals.next() {
             match assignments[*local] {
                 Unassigned => {
                     assignments[*local] = Assigned(variant_index);
@@ -659,7 +662,8 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
             continue;
         }
 
-        for local_b in storage_conflicts.iter(local_a) {
+        let mut conflicts = storage_conflicts.iter(local_a);
+        while let Some(local_b) = conflicts.next() {
             if ineligible_locals.contains(local_b) || assignments[local_a] == assignments[local_b] {
                 continue;
             }
@@ -681,13 +685,15 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
 
     {
         let mut used_variants = DenseBitSet::new_empty(variant_fields.len());
-        for assignment in &assignments {
+        let mut assignments_iter = (&assignments).into_iter();
+        while let Some(assignment) = assignments_iter.next() {
             if let Assigned(idx) = assignment {
                 used_variants.insert(*idx);
             }
         }
         if used_variants.count() < 2 {
-            for assignment in assignments.iter_mut() {
+            let mut assignments_iter_mut = assignments.iter_mut();
+            while let Some(assignment) = assignments_iter_mut.next() {
                 *assignment = Ineligible(None);
             }
             ineligible_locals.insert_all();
@@ -695,7 +701,8 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
     }
 
     {
-        for (idx, local) in ineligible_locals.iter().enumerate() {
+        let mut ineligible = ineligible_locals.iter().enumerate();
+        while let Some((idx, local)) = ineligible.next() {
             assignments[local] = Ineligible(Some(FieldIdx::new(idx)));
         }
     }
@@ -758,7 +765,8 @@ pub fn layout<
 
             let mut in_memory_order_a = IndexVec::<u32, FieldIdx>::new();
             let mut in_memory_order_b = IndexVec::<u32, FieldIdx>::new();
-            for i in in_memory_order {
+            let mut in_memory_order_iter = in_memory_order.into_iter();
+            while let Some(i) = in_memory_order_iter.next() {
                 if let Some(j) = i.index().checked_sub(b_start.index()) {
                     in_memory_order_b.push(FieldIdx::new(j));
                 } else {
