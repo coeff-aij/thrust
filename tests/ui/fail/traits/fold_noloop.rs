@@ -1,4 +1,4 @@
-//@check-pass
+//@error-in-other-file: Unsat
 //@compile-flags: -Aunused_mut -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60 COAR_IMAGE=coar:latest
 
@@ -49,6 +49,7 @@ trait Iterator {
         F: FnMut(B, Self::Item) -> B,
     {
         let mut accum = init;
+        self.next();
         if let Some(x) = self.next() {
             accum = f(accum, x);
         }
