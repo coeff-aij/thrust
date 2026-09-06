@@ -231,6 +231,18 @@ fn collect_sorts(system: &chc::System) -> BTreeSet<chc::Sort> {
         sorts.extend(def.sig.clone());
     }
 
+    // Forall predicates and user-defined predicates are emitted with their signatures
+    // (`declare-forall-fun` / `define-fun`), so the sorts appearing there need declaring
+    // even when no clause mentions them
+    for pred in &system.forall_pred_vars {
+        sorts.extend(pred.type_parameters.clone());
+        sorts.extend(pred.params.clone());
+    }
+
+    for def in &system.user_defined_pred_defs {
+        sorts.extend(def.sig.iter().map(|(_, sort)| sort.clone()));
+    }
+
     for clause in &system.clauses {
         sorts.extend(clause.vars.clone());
         atom_sorts(clause, &clause.head, &mut sorts);
