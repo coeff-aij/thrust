@@ -100,12 +100,39 @@ impl<T: Idx> DenseBitSet<T> {
     }
 }
 
+/// Own iterator standing in for `slice::Iter<'a, Word>` (whose raw pointer
+/// fields have no model in Thrust): yields `&words[0]`, ..., `&words[len - 1]`.
+pub struct WordIter<'a> {
+    words: &'a [Word],
+    pos: usize,
+}
+
+impl<'a> WordIter<'a> {
+    fn new(words: &'a [Word]) -> WordIter<'a> {
+        WordIter { words, pos: 0 }
+    }
+}
+
+impl<'a> Iterator for WordIter<'a> {
+    type Item = &'a Word;
+
+    fn next(&mut self) -> Option<&'a Word> {
+        if self.pos < self.words.len() {
+            let item = &self.words[self.pos];
+            self.pos += 1;
+            Some(item)
+        } else {
+            None
+        }
+    }
+}
+
 pub struct BitIter<'a, T: Idx> {
     word: Word,
 
     offset: usize,
 
-    iter: slice::Iter<'a, Word>,
+    iter: WordIter<'a>,
 
     marker: PhantomData<T>,
 }
@@ -116,7 +143,7 @@ impl<'a, T: Idx> BitIter<'a, T> {
         BitIter {
             word: 0,
             offset: usize::MAX - (WORD_BITS - 1),
-            iter: words.iter(),
+            iter: WordIter::new(words),
             marker: PhantomData,
         }
     }
