@@ -62,3 +62,20 @@ BitIter::next の列挙仕様、段階 4 では IdxRange/WordIter/SliceIter の 
 `ensures(forall(|i| !mem(result, i)))` のような無条件の全称仮定があると fail 側が Unknown/Timeout
 になる。const 配列との等式（`(as const (Array Int Int)) 0`）や store 等式で書き直すと決定的になる。
 また本体無しの述語（declare-forall-fun）は解の自由度になり、fail 側が空虚に SAT になり得る。
+
+## 段階 1（values.rs）で見つかった制限
+
+- `#[thrust_macros::predicate]` の本体は SMT 文字列のみ（thrust-macros/src/spec.rs:18-21、
+  local_def.rs:152）。docs/annotations の「Rust 論理式でも書ける」は誤り。requires/ensures の式は
+  Rust 構文で書けるので、述語は requires にインライン展開した。
+- struct モデル内の Vec フィールド（`dl.address_space_info`）は仕様式で Rust の `Vec` 型のままになり
+  `.length` / `.array` が使えない（E0609）。トップレベル引数の `&Vec<T>` だけが Seq として見える。
+- トレイトレベルの `ensures(*result == *self)` は `<Self as Model>::Ty` と具体型の不一致で型エラー。
+  述語 `dl_of(&self, dl)` に逃がすと pcsat が Unknown を返す（本体を "true" にしても同じ）。
+  そのため Primitive::size/align が trusted のまま。
+- 18 フィールドの struct（TargetDataLayout）の derive(PartialEq) は `&&` 連鎖が長く、それだけで
+  ソルバが 60 秒タイムアウトする。
+- 外部トレイトの impl メソッド（`impl Add for Size`）にも仕様が付けられない（Iterator と同じ）。
+- 関連定数（`Align::EIGHT`）は newtype 定数の ICE（feat/newtype-scalar-consts で修正）。
+- values.rs では AbiAlign::min/max を一時的にコメントアウトしている（Align の Ord が無いため）。
+  fix/enum-discriminants が入ったら derive を戻して復元する。
