@@ -595,18 +595,17 @@ impl<'tcx> TypeBuilder<'tcx> {
         } else {
             param_ty
         };
-        let mut predicates = self
-            .tcx
-            .predicates_of(local_def_id.to_def_id())
-            .predicates
-            .iter()
-            .map(|(clause, _)| {
-                if !generic_args.is_empty() {
-                    mir_ty::EarlyBinder::bind(*clause).instantiate(self.tcx, generic_args)
-                } else {
-                    *clause
-                }
-            });
+        // `predicates_of(..).predicates` holds only the predicates written on the
+        // function itself; a bound such as `F: FnMut(..)` on the enclosing impl or
+        // trait lives in the parent's predicates. `instantiate` and
+        // `instantiate_identity` walk the parent chain, so go through them.
+        let generic_predicates = self.tcx.predicates_of(local_def_id.to_def_id());
+        let predicates = if !generic_args.is_empty() {
+            generic_predicates.instantiate(self.tcx, generic_args)
+        } else {
+            generic_predicates.instantiate_identity(self.tcx)
+        };
+        let mut predicates = predicates.predicates.into_iter();
 
         let mut params = predicates.clone().find_map(|clause| {
             self.closure_trait_args(param_ty, clause.as_trait_clause()?.skip_binder())
