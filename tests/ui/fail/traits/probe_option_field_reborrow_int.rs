@@ -1,4 +1,4 @@
-//@check-pass
+//@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60 COAR_IMAGE=coar:latest
 
@@ -21,7 +21,7 @@ impl Fz {
         match &mut self.iter {
             None => {}
             Some(x) => {
-                *x += 1;
+                *x += 2;
             }
         }
     }
