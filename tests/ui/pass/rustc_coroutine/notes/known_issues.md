@@ -43,3 +43,22 @@ fix/singleton-spec-params（forall-sort base）。
   fail 側は「requires を 1 つ落とす」形にするのが安定。
 - forall/exists のクロージャ引数型: 具体フィールド（i64）と比較するときは Rust 型、
   `Option<usize>` 引数と比較するときは `thrust_models::model::Int` を明示する必要がある。
+
+## std トレイトの impl メソッドには仕様が付けられない
+
+`impl Iterator for BitIter { #[thrust_macros::ensures(..)] fn next(..) }` は
+`error[E0407]: method '_thrust_requires_next' is not a member of trait 'Iterator'` になる
+（companion 関数がトレイトのメンバである必要がある）。自前イテレータの next の仕様は、
+自前トレイトに載せるか、extern spec で impl を指すか、マクロ側の対応が要る。段階 3 では
+BitIter::next の列挙仕様、段階 4 では IdxRange/WordIter/SliceIter の next 仕様がこれで書けない。
+
+## 述語の本体と bool 値の混在
+
+`result == Self::mem(..)` は annot_fn.rs:739 で unwrap panic、`result ==> ..` は `expected a formula`。
+`(result == true) ==> pred` と `pred ==> (result == true)` の 2 本に分ける。
+
+## 未ガードの forall 仮定は反証側を壊す
+
+`ensures(forall(|i| !mem(result, i)))` のような無条件の全称仮定があると fail 側が Unknown/Timeout
+になる。const 配列との等式（`(as const (Array Int Int)) 0`）や store 等式で書き直すと決定的になる。
+また本体無しの述語（declare-forall-fun）は解の自由度になり、fail 側が空虚に SAT になり得る。
