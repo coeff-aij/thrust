@@ -1,4 +1,4 @@
-//@check-pass
+//@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60 COAR_IMAGE=coar:latest
 
@@ -28,7 +28,7 @@ fn target<T: A>(a: &mut T, x: i64) -> i64 {
             |b: &mut T, v: i64, a: thrust_models::FnParam<&mut T>|
             T::p(*b, v) && !b == !a.at_entry()
         );
-        v = b.f(v);
+        v = b.f(v) + 1;
         i += 1;
     }
 
