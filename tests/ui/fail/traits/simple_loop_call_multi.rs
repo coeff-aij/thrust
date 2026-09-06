@@ -1,4 +1,4 @@
-//@check-pass
+//@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60 COAR_IMAGE=coar:latest
 
@@ -84,8 +84,6 @@ impl A for Y {
 fn target() -> (X, Y) {
     let (mut x, mut y) = (X(1), Y(-1));
     repeat(&mut x, 3);
-    // `Y(-1)` does not satisfy `repeat`'s precondition `T::p(*x)`; `g` establishes it.
-    y.g();
     repeat(&mut y, 5);
     (x, y)
 }
