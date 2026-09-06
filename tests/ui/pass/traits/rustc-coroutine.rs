@@ -4,6 +4,25 @@
 // Adapted from rust-lang/rust
 // commit: 89a99936d9e76a50e8df622e7242190841fd871b
 // Licensed under MIT OR Apache-2.0
+//
+// Verification target: panic safety of `layout()`. The code is kept as close to
+// rustc's as possible; the only rewrites are desugarings (for -> while let,
+// `?` -> match), expansion of the external `bitflags!` macro, own iterator
+// structs standing in for std's slice iterators (to be replaced by the std
+// iterator model once slices are supported), dropped panic messages, trusted
+// markers and Model declarations.
+//
+// Thrust does not yet analyze this file end to end. Constructs it currently
+// stops at, in order of appearance:
+// - generic slices `[T]` (IndexSlice's unsized `raw` field and the
+//   `IntoSliceIdx<I, [T]>` trait argument)
+// - std iterator types with raw pointers (vec::IntoIter, slice::IterMut) and
+//   the std iterator adapter chains in layout() and univariant_biased
+// - integer `as` casts
+// - derives on generic types (Hash, Clone), derived PartialOrd/Ord
+//   (cmp::Ordering's negative discriminant), derived PartialEq/Clone over
+//   PhantomData fields, and Debug (Formatter holds a dyn Write)
+// - const-generic arrays (`From<[T; N]>`)
 
 // //== ./../rustc_hashes/src/lib.rs
 
