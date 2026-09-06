@@ -1,4 +1,4 @@
-//@check-pass
+//@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:latest
 use thrust_models::forall;
@@ -72,7 +72,8 @@ where
     }
 
     fn next(&mut self) -> Option<I::Item> {
-        self.iter.next()
+        self.iter.next();
+        None
     }
 }
 
