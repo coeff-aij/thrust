@@ -409,6 +409,22 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     chc::Term::bool(val.try_to_bool().unwrap()),
                 )
             }
+            // A struct whose layout is a single scalar (a newtype, possibly nested) is
+            // represented as a scalar constant rather than an allocation. Materialize its
+            // bytes so that it is decomposed field by field like any other aggregate.
+            (mir_ty::TyKind::Adt(def, _), ConstValue::Scalar(Scalar::Int(val)))
+                if def.is_struct() =>
+            {
+                // TODO: see target endianness
+                let size = val.size().bytes() as usize;
+                let bytes = val.to_bits(val.size()).to_ne_bytes();
+                let alloc = mir::interpret::Allocation::from_bytes_byte_aligned_immutable(
+                    &bytes[..size],
+                    (),
+                );
+                let alloc = self.tcx.mk_const_alloc(alloc);
+                self.const_bytes_ty(*ty, alloc, 0..size)
+            }
             (mir_ty::TyKind::Tuple(tys), _) if tys.is_empty() => {
                 PlaceType::with_ty_and_term(rty::Type::unit(), chc::Term::tuple(vec![]))
             }
