@@ -28,3 +28,18 @@ feat/unsigned-param-nonneg で作成中（notes/unsigned_nonneg.md）。
 先頭コメントの一覧を参照。ブランチ側の状況: `as` は feat/int-casts、newtype 定数は
 feat/newtype-scalar-consts、負の判別子は作成中、ICE 2 件は fix/trait-item-ty-owner と
 fix/singleton-spec-params（forall-sort base）。
+
+## probe で見つかった追加の制限（rustc_coroutine/probe_*.rs 作成時）
+
+- `vec![1, 2, 3]`（要素列挙形）で作った Vec を添字アクセスや仕様付き関数に渡すと
+  `template.rs:442: not implemented: unrefined_ty: *mut u8`（`<[_]>::into_vec(Box<[T]>)` 経由）。
+  `Vec::new()` + `push` なら問題なし。`vec![e; n]` は std.rs の from_elem 仕様で対応済み。
+- `&Vec<T>` 引数の仕様で `v.length` と書くと `annot_fn.rs:846: named field access on a non-ADT type`。
+  `(*v).length` と書く必要がある（std.rs の慣習どおり）。
+- `&self` 受け手のトレイトメソッドで `requires(Self::pred(*self))` と書くと
+  `template.rs:145: unknown type param idx`（非ジェネリック impl でも）。`&mut self` なら通る。
+  fix/trait-item-ty-owner の修正で直るか要確認。
+- 存在量化された配列事実の否定方向（assert を反転した fail 側）は pcsat が Unknown を返すことがある。
+  fail 側は「requires を 1 つ落とす」形にするのが安定。
+- forall/exists のクロージャ引数型: 具体フィールド（i64）と比較するときは Rust 型、
+  `Option<usize>` 引数と比較するときは `thrust_models::model::Int` を明示する必要がある。
