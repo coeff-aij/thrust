@@ -121,3 +121,20 @@ ensures を付けたジェネリック関数も通る。ジェネリック関数
 generic_spec_in_generic_caller.rs で、ジェネリックな呼び出し側の解析の後に同じ impl メソッドを
 具体的に呼ぶと、トレイトから継承した ensures が落ちる（main 内の順序で fail 側の結果が変わる）。
 最初の（ジェネリック owner での）実体化がキャッシュされて再利用されている疑い。
+
+## 段階 5〜7 の下書きで見つかった制限
+
+- `impl Trait` 型の引数（layout() の `calc: &LayoutCalculator<impl HasDataLayout>`、
+  `tag_to_layout: impl Fn(Scalar) -> F`）があると、その関数には requires/ensures が付けられない。
+  formula_fn の引数型を `<T as Model>::Ty` に埋め込む際に `error[E0562]: impl Trait is not allowed in paths`。
+  式が当該引数に触れなくても起きる。シグネチャを変えられないので、マクロ側で impl Trait 引数を
+  名前付き型パラメタに脱糖する対応が要る。
+- 仕様の無い関数が残ると analyzer の `is_fully_annotated()` assert で落ちる場面がある（layout.rs）。
+- `#[thrust_macros::invariant_context]` は存在しない（docs/annotations/11 が古い）。自由関数には
+  `#[thrust_macros::context]` を直接付ける。
+- unsized な IndexSlice（`raw: [T]`）は `type Ty = Self` が書けない（Ty に暗黙の Sized 境界）。
+  下書きでは `type Ty = <[T] as Model>::Ty` で代用しているが、`[T]` の解析自体が未対応。
+- 述語の引数は Model::Ty（Int）に下がるので、実 Vec の添字（usize）と述語呼び出しを 1 つの式で混ぜる
+  には `exists(|li: Int| li == l && ..)` の橋渡しが要る。
+- `IndexVec::from_elem_n` の要素ごとの ensures は `T: PartialEq<<T as Model>::Ty>` 相当の境界が
+  ジェネリックには満たせず書けない。
