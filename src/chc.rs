@@ -1956,7 +1956,7 @@ pub struct DatatypeSelector {
 pub struct DatatypeCtor {
     pub symbol: DatatypeSymbol,
     pub selectors: Vec<DatatypeSelector>,
-    pub discriminant: u32,
+    pub discriminant: i64,
 }
 
 /// A datatype definition.

@@ -506,6 +506,16 @@ impl<'ctx, 'a> Datatypes<'ctx, 'a> {
     }
 }
 
+/// Formats an integer as an SMT-LIB2 term. Negative numbers are not numerals in SMT-LIB2, so they
+/// have to be written as an application of unary minus.
+fn int_literal(n: i64) -> String {
+    if n < 0 {
+        format!("(- {})", n.unsigned_abs())
+    } else {
+        n.to_string()
+    }
+}
+
 /// A wrapper around a [`chc::Datatype`] that provides a [`std::fmt::Display`] implementation for the
 /// discriminant function in SMT-LIB2 format.
 #[derive(Debug, Clone)]
@@ -525,7 +535,7 @@ impl<'ctx, 'a> std::fmt::Display for DatatypeDiscrFun<'ctx, 'a> {
                 format!(
                     "(ite ((_ is {ctor}) x) {discr} {acc})",
                     ctor = &ctor.symbol,
-                    discr = ctor.discriminant,
+                    discr = int_literal(ctor.discriminant),
                 )
             });
         write!(
