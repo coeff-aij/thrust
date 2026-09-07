@@ -12,6 +12,7 @@
 
 use std::convert::TryInto;
 use std::ops::{Add, AddAssign, Deref};
+use thrust_models::forall;
 
 #[derive(Copy, Clone, /*Debug,*/ PartialEq, Eq)]
 pub struct PointerSpec {
@@ -138,28 +139,48 @@ impl TargetDataLayout {
     }
 }
 
-// No trait-level spec. Two formulations were tried and neither works:
+// `ensures(*result == *self)` (the spec the `TargetDataLayout` impl wants)
+// does not typecheck at the trait level -- `*self` has the opaque type
+// `<Self as Model>::Ty` there, so rustc reports "expected `TargetDataLayout`,
+// found associated type `<Self as thrust_models::Model>::Ty`". The same spec
+// would be ill-typed for the `&TargetDataLayout` impl anyway, so the two
+// impls cannot share it.
 //
-// * `ensures(*result == *self)` (the spec the `TargetDataLayout` impl wants)
-//   does not typecheck at the trait level -- `*self` has the opaque type
-//   `<Self as Model>::Ty` there, so rustc reports "expected `TargetDataLayout`,
-//   found associated type `<Self as thrust_models::Model>::Ty`". The same spec
-//   would be ill-typed for the `&TargetDataLayout` impl anyway, so the two
-//   impls cannot share it.
-// * Introducing a trait predicate to stand in for the equality,
-//     #[thrust_macros::predicate] fn dl_of(&self, dl: TargetDataLayout) -> bool;
-//     #[thrust_macros::ensures(Self::dl_of(self, *result))]
-//   typechecks and each impl can define it as `"(= self_ dl)"`, but the backend
-//   solver then answers `verification error: Unknown { stdout: "unknown" }` for
-//   the whole file -- already with the predicate body `"true"`, so it is the
-//   forall-pred over the `TargetDataLayout` sort itself, not its definition.
+// The by-value trait predicate below sidesteps that: `dl_of`'s own arguments
+// are lowered per its own (fresh) signature, so `Self::dl_of(*self, *result)`
+// typechecks for both impls, and each defines it as `"(= self_ dl)"`. Calling
+// `dl_of` directly (as `data_layout`'s own `ensures` does) verifies.
+//
+// Relating a *generic* `cx: &C` to the layout `dl_of` names needs quantifying
+// over it, e.g.
+//   requires(forall(|dl: TargetDataLayout| C::dl_of(*cx, dl) ==> prim_wf(self, dl)))
+// This typechecks and does not crash the backend (an earlier note here about
+// a hard SMT2 parser failure came from a stale local `coar:latest` tag and
+// does not reproduce with the pinned image), but it does not verify either:
+// isolated to a minimal repro with the same shape (a trusted, `requires`-only
+// pointer-size lookup called from a generic `size` guarded by exactly this
+// forall), pcsat answers `verification error: Unknown { stdout: "unknown" }`
+// once the callee's precondition actually has to be discharged through the
+// quantifier (as opposed to a body that ignores `dl` -- see `dl_of`'s
+// standalone use above, which has no such quantifier and does verify). So
+// this stays out of reach for `Primitive::size`/`align` in practice, which
+// remain trusted below.
 #[thrust_macros::context]
 pub trait HasDataLayout {
+    #[thrust_macros::predicate]
+    fn dl_of(self, dl: TargetDataLayout) -> bool;
+
+    #[thrust_macros::ensures(Self::dl_of(*self, *result))]
     fn data_layout(&self) -> &TargetDataLayout;
 }
 
 #[thrust_macros::context]
 impl HasDataLayout for TargetDataLayout {
+    #[thrust_macros::predicate]
+    fn dl_of(self, dl: TargetDataLayout) -> bool {
+        "(= self_ dl)"; true
+    }
+
     #[inline]
     fn data_layout(&self) -> &TargetDataLayout {
         self
@@ -168,6 +189,11 @@ impl HasDataLayout for TargetDataLayout {
 
 #[thrust_macros::context]
 impl HasDataLayout for &TargetDataLayout {
+    #[thrust_macros::predicate]
+    fn dl_of(self, dl: TargetDataLayout) -> bool {
+        "(= self_ dl)"; true
+    }
+
     #[inline]
     fn data_layout(&self) -> &TargetDataLayout {
         (**self).data_layout()
@@ -464,9 +490,16 @@ pub enum Primitive {
 impl Primitive {
     // Trusted. The body's `dl.pointer_size_in(a)` needs
     // `a == (*dl).default_address_space`, and `dl` comes out of the generic
-    // `cx.data_layout()`; with no trait-level spec on `data_layout` (see the
-    // note on `HasDataLayout`) there is nothing to relate `a` to `dl`, so the
-    // call's `requires` is unprovable and the body reports `Unsat`.
+    // `cx.data_layout()`. `data_layout` now has a trait-level postcondition
+    // (`Self::dl_of(*self, *result)`, see the note on `HasDataLayout`), but
+    // relating a generic `cx: &C` to the layout `dl_of` names needs a
+    // `requires(forall(|dl: TargetDataLayout| C::dl_of(*cx, dl) ==> ..))`.
+    // That typechecks, but a minimal repro of the same shape (a trusted,
+    // `requires`-only callee gated by exactly this forall, called from a
+    // generic function) gets `verification error: Unknown { stdout: "unknown"
+    // }` from pcsat once the callee's precondition actually needs discharging
+    // through the quantifier -- see the note on `HasDataLayout` for the
+    // repro. So this stays unprovable in practice.
     #[thrust::trusted]
     #[thrust::callable]
     pub fn size<C: HasDataLayout>(self, cx: &C) -> Size {
