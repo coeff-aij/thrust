@@ -129,7 +129,10 @@ generic_spec_in_generic_caller.rs で、ジェネリックな呼び出し側の�
   formula_fn の引数型を `<T as Model>::Ty` に埋め込む際に `error[E0562]: impl Trait is not allowed in paths`。
   式が当該引数に触れなくても起きる。シグネチャを変えられないので、マクロ側で impl Trait 引数を
   名前付き型パラメタに脱糖する対応が要る。
-- 仕様の無い関数が残ると analyzer の `is_fully_annotated()` assert で落ちる場面がある（layout.rs）。
+- `is_fully_annotated()` assert（crate_.rs:116, 121）は `#[thrust::trusted]` または `#[thrust::extern_spec_fn]`
+  の関数に requires/ensures（または callable）が無いときに落ちる。layout.rs の下書きでは impl Trait 引数の
+  せいで仕様を付けられない trusted 関数が残ったのが原因。impl Trait の脱糖は feat/spec-with-impl-trait-args
+  で対応（companion にのみ `__ThrustApitN` を追加し末尾に並べるので analyzer 側の変更は不要）。
 - `#[thrust_macros::invariant_context]` は存在しない（docs/annotations/11 が古い）。自由関数には
   `#[thrust_macros::context]` を直接付ける。
 - unsized な IndexSlice（`raw: [T]`）は `type Ty = Self` が書けない（Ty に暗黙の Sized 境界）。
