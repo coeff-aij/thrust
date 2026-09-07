@@ -24,6 +24,48 @@ mod drop_point;
 mod visitor;
 pub use drop_point::DropPoints;
 
+/// `2^bits` as a term. [`chc::Term::int`] takes an `i64`, so a modulus of `2^63`
+/// or more is built as a product of representable factors instead of overflowing.
+fn pow2<V>(bits: u64) -> chc::Term<V> {
+    if bits < 63 {
+        chc::Term::int(1i64 << bits)
+    } else {
+        let half = bits / 2;
+        pow2(half).mul(pow2(bits - half))
+    }
+}
+
+/// Rust's integer-to-integer `as`: keep the low `dst_bits` bits of the value and
+/// read them with the destination type's signedness.
+///
+/// The cast is the identity whenever the destination type's range contains the
+/// source type's range. Otherwise it is encoded exactly, on the mathematical
+/// integers Thrust models every integer width with: `x as uN` is `x mod 2^N`,
+/// and `x as iN` is `((x + 2^(N-1)) mod 2^N) - 2^(N-1)` (SMT-LIB `mod` is
+/// Euclidean, hence non-negative for a positive modulus).
+fn int_cast_term<V: Clone>(
+    term: chc::Term<V>,
+    (src_bits, src_signed): (u64, bool),
+    (dst_bits, dst_signed): (u64, bool),
+) -> chc::Term<V> {
+    let value_preserving = match (src_signed, dst_signed) {
+        (false, false) | (true, true) => src_bits <= dst_bits,
+        // the destination spends its top bit on the sign, so it must be wider
+        (false, true) => src_bits < dst_bits,
+        // a negative value always wraps around
+        (true, false) => false,
+    };
+    if value_preserving {
+        return term;
+    }
+    if dst_signed {
+        let half = pow2(dst_bits - 1);
+        term.add(half.clone()).modulo(pow2(dst_bits)).sub(half)
+    } else {
+        term.modulo(pow2(dst_bits))
+    }
+}
+
 /// Whether a basic block needs a precondition of its own, rather than
 /// inheriting its predecessor's outgoing env state.
 ///
@@ -664,6 +706,36 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 }
                 op_pty.ty = expected_ty;
                 op_pty
+            }
+            Rvalue::Cast(mir::CastKind::IntToInt, operand, ty) => {
+                let operand_mir_ty = operand.ty(&self.local_decls, self.tcx);
+                if !matches!(
+                    operand_mir_ty.kind(),
+                    mir_ty::TyKind::Int(_) | mir_ty::TyKind::Uint(_)
+                ) || !matches!(ty.kind(), mir_ty::TyKind::Int(_) | mir_ty::TyKind::Uint(_))
+                {
+                    unimplemented!(
+                        "integer cast from {} to {}: only casts between integer types are \
+                         supported (`bool` and `char` are not)",
+                        operand_mir_ty,
+                        ty
+                    );
+                }
+                let (src_size, src_signed) = operand_mir_ty.int_size_and_signed(self.tcx);
+                let (dst_size, dst_signed) = ty.int_size_and_signed(self.tcx);
+
+                let operand_ty = self.operand_type(operand);
+                let mut builder = PlaceTypeBuilder::default();
+                let (operand_ty, operand_term) = builder.subsume(operand_ty);
+                if !matches!(operand_ty, rty::Type::Int) {
+                    unimplemented!("integer cast of ty={}", operand_ty.display());
+                }
+                let term = int_cast_term(
+                    operand_term,
+                    (src_size.bits(), src_signed),
+                    (dst_size.bits(), dst_signed),
+                );
+                builder.build(rty::Type::Int, term)
             }
             Rvalue::Discriminant(place) => {
                 let place = self.elaborate_place(&place);

@@ -398,6 +398,7 @@ impl Function {
             Self::ADD => Sort::int(),
             Self::SUB => Sort::int(),
             Self::MUL => Sort::int(),
+            Self::MOD => Sort::int(),
             Self::EQ => Sort::bool(),
             Self::GE => Sort::bool(),
             Self::GT => Sort::bool(),
@@ -422,6 +423,7 @@ impl Function {
     pub const ADD: Function = Function::infix("+");
     pub const SUB: Function = Function::infix("-");
     pub const MUL: Function = Function::infix("*");
+    pub const MOD: Function = Function::infix("mod");
     pub const EQ: Function = Function::infix("=");
     pub const GE: Function = Function::infix(">=");
     pub const GT: Function = Function::infix(">");
@@ -786,6 +788,12 @@ impl<V> Term<V> {
 
     pub fn mul(self, other: Self) -> Self {
         Term::App(Function::MUL, vec![self, other])
+    }
+
+    /// Euclidean modulo, as SMT-LIB's `mod`: for a positive `other`, the result
+    /// is always in `[0, other)`.
+    pub fn modulo(self, other: Self) -> Self {
+        Term::App(Function::MOD, vec![self, other])
     }
 
     pub fn eq(self, other: Self) -> Self {
