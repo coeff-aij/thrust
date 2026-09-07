@@ -86,3 +86,16 @@ fail/vec_from_elem.rs は環境によって pcsat が Unknown を返す（同じ
 あるだけで、無関係な `assert!(1 == 2)` すら反証できない）。`Vec::new()` + push で作ると即 Unsat。
 述語本体側に全称量化子を埋め込む形が pcsat の反証を阻害している。std.rs の from_elem 仕様を
 const 配列等式（`(as const (Array Int T)) elem`）で書き直せるか、または量化子無しに弱めるか検討。
+
+## forall-sort: impl のジェネリック引数と呼び出し先の `Self` が別のソート記号になる
+
+idx.rs で自前 Iterator トレイト経由に `IdxRange<I>::next` の仕様を書くと、本体の `I::new(n)` が
+要求する `I::can_new(n)` が `q_can_new_<hash><a1>`（Idx::new 側の Self）として現れ、requires で
+仮定した `q_can_new_<hash><a0>`（IdxRange<I> の I）と結び付かず、述語本体が "true" でも Unsat になる。
+呼び出し側のジェネリック引数と呼び出し先トレイトの Self を同一視する処理が欠けている可能性。
+ICE 1（trait_item_ty の owner 不整合）と同根かもしれないので fix/trait-item-ty-owner 後に再確認。
+
+## `Option<&'a u64>` を含む仕様の型付け
+
+`<&'a u64 as Model>::Ty` 同士の `==` が E0277（PartialEq 不成立）。`&T` の blanket PartialEq と
+`model::Int` の `PartialEq<T: Model<Ty = Self>>` 実装が噛み合わない。WordIter::next の仕様が書けない原因。
