@@ -13,10 +13,14 @@
 //! On an `impl`/`trait`, each method is stamped with the enclosing header — which is what
 //! method-level `requires`/`ensures` read to recover the outer generics — and with this
 //! attribute, so a method's body is threaded by an expansion of its own.
+//!
+//! On an `impl Trait for Ty`, the method-level `requires`/`ensures` are additionally
+//! moved out to a sibling inherent `impl Ty` as extern-spec wrappers
+//! (see [`extern_spec_impl`]), since their expansion cannot live in a trait impl.
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
-use quote::{quote, ToTokens as _};
+use quote::{format_ident, quote, ToTokens as _};
 use syn::{
     parse::{Parse, ParseStream},
     visit_mut::VisitMut,
@@ -53,7 +57,18 @@ impl Parse for ContextItem {
 }
 
 /// Hands each method the enclosing header, and the attribute that puts it to use.
+/// For a trait impl, also emits the sibling impl carrying the methods' specifications.
 fn expand_outer(mut outer_item: FnOuterItem) -> TokenStream {
+    let extern_specs = match &mut outer_item {
+        FnOuterItem::ItemImpl(item_impl) if item_impl.trait_.is_some() => {
+            match extern_spec_impl(item_impl) {
+                Ok(tokens) => tokens,
+                Err(e) => return e.to_compile_error().into(),
+            }
+        }
+        _ => TokenStream2::new(),
+    };
+
     let header = outer_item.clone().into_header_only();
     let method_attrs: [syn::Attribute; 2] = [
         syn::parse_quote!(#[thrust::_outer_context(#header)]),
@@ -77,7 +92,177 @@ fn expand_outer(mut outer_item: FnOuterItem) -> TokenStream {
             }
         }
     }
-    outer_item.into_token_stream().into()
+    quote! {
+        #outer_item
+        #extern_specs
+    }
+    .into()
+}
+
+/// Moves the `requires`/`ensures` of each specified method of `impl Trait for Ty` into a
+/// sibling inherent `impl Ty`, and returns that impl (empty when no method is specified).
+///
+/// The expansion of a specification is not a single item: it needs the two
+/// `#[thrust::formula_fn]` companions and the `#[thrust::extern_spec_fn]` wrapper that
+/// links them to the specified function. Emitted in place, none of the three is a member
+/// of the trait (E0407), so instead the wrapper is emitted next to the impl, in an
+/// inherent impl of the same self type and generics — where the companions, which name
+/// `Self` and the outer generics, still resolve. The wrapper's body is a tail call to the
+/// specified method, which is how `#[thrust::extern_spec_fn]` names its target; only the
+/// wrapper is skipped from the analysis, so the trait impl's own body is still verified
+/// against the specification, and static call sites of the method use it.
+fn extern_spec_impl(item_impl: &mut syn::ItemImpl) -> syn::Result<TokenStream2> {
+    let Some((trait_path, _)) = &item_impl.trait_ else {
+        return Ok(TokenStream2::new());
+    };
+    let trait_path = trait_path.clone();
+    let self_ty = (*item_impl.self_ty).clone();
+    // `Self::Assoc` is ill-formed in an inherent impl (E0223), so the wrapper signatures
+    // spell out what this impl declares the projection to be.
+    let assoc_types: Vec<(syn::Ident, syn::Type)> = item_impl
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            syn::ImplItem::Type(ty) if ty.generics.params.is_empty() => {
+                Some((ty.ident.clone(), ty.ty.clone()))
+            }
+            _ => None,
+        })
+        .collect();
+
+    let trusted_path: syn::Path = syn::parse_quote!(thrust::trusted);
+    let mut wrappers = Vec::new();
+    for item in &mut item_impl.items {
+        let syn::ImplItem::Fn(method) = item else {
+            continue;
+        };
+        let specs = take_spec_attrs(&mut method.attrs);
+        if specs.is_empty() {
+            continue;
+        }
+        // A trusted body is not verified against the specification the wrapper now
+        // carries, mirroring what an inherent impl's expansion does with the attribute.
+        for attr in &mut method.attrs {
+            if attr.path() == &trusted_path {
+                *attr = syn::parse_quote!(#[thrust::ignored]);
+            }
+        }
+        wrappers.push(extern_spec_wrapper(
+            method,
+            &specs,
+            &self_ty,
+            &trait_path,
+            &assoc_types,
+        )?);
+    }
+    if wrappers.is_empty() {
+        return Ok(TokenStream2::new());
+    }
+
+    let (impl_generics, _, where_clause) = item_impl.generics.split_for_impl();
+    Ok(quote! {
+        #[::thrust_macros::context]
+        impl #impl_generics #self_ty #where_clause {
+            #(#wrappers)*
+        }
+    })
+}
+
+/// The extern-spec wrapper for one specified method of a trait impl: the method's own
+/// signature, under a fresh name and with the `Self::Assoc` projections resolved, over a
+/// body that tail-calls the method.
+fn extern_spec_wrapper(
+    method: &syn::ImplItemFn,
+    specs: &[syn::Attribute],
+    self_ty: &syn::Type,
+    trait_path: &syn::Path,
+    assoc_types: &[(syn::Ident, syn::Type)],
+) -> syn::Result<TokenStream2> {
+    let name = method.sig.ident.clone();
+    let turbofish = crate::spec::generic_turbofish(&method.sig.generics);
+
+    let mut sig = method.sig.clone();
+    sig.ident = format_ident!("_thrust_extern_spec_{}", name);
+    SelfAssocResolver { assoc_types }.visit_signature_mut(&mut sig);
+
+    let mut args = Vec::new();
+    for arg in &sig.inputs {
+        match arg {
+            syn::FnArg::Receiver(_) => args.push(quote!(self)),
+            syn::FnArg::Typed(pat_type) => match &*pat_type.pat {
+                syn::Pat::Ident(pat_ident) => {
+                    let ident = &pat_ident.ident;
+                    args.push(quote!(#ident));
+                }
+                pat => {
+                    return Err(syn::Error::new_spanned(
+                        pat,
+                        "a specified method of a trait impl takes each parameter by name",
+                    ))
+                }
+            },
+        }
+    }
+
+    Ok(quote! {
+        #[thrust::extern_spec_fn]
+        #[allow(dead_code)]
+        #(#specs)*
+        #sig {
+            <#self_ty as #trait_path>::#name #turbofish(#(#args),*)
+        }
+    })
+}
+
+/// Takes the specification attributes off a method, keeping their order.
+fn take_spec_attrs(attrs: &mut Vec<syn::Attribute>) -> Vec<syn::Attribute> {
+    let (specs, rest) = std::mem::take(attrs).into_iter().partition(is_spec_attr);
+    *attrs = rest;
+    specs
+}
+
+fn is_spec_attr(attr: &syn::Attribute) -> bool {
+    let segments = &attr.path().segments;
+    let mut idents = segments.iter().rev().map(|segment| &segment.ident);
+    let Some(name) = idents.next() else {
+        return false;
+    };
+    matches!(
+        name.to_string().as_str(),
+        "requires" | "ensures" | "_requires_ensures"
+    ) && idents
+        .next()
+        .is_some_and(|module| module == "thrust_macros")
+}
+
+/// Rewrites the `Self::Assoc` projections a trait impl declares into their definitions,
+/// so a signature copied out of the impl still means the same in an inherent impl.
+struct SelfAssocResolver<'a> {
+    assoc_types: &'a [(syn::Ident, syn::Type)],
+}
+
+impl VisitMut for SelfAssocResolver<'_> {
+    fn visit_type_mut(&mut self, ty: &mut syn::Type) {
+        syn::visit_mut::visit_type_mut(self, ty);
+
+        let syn::Type::Path(type_path) = &*ty else {
+            return;
+        };
+        if type_path.qself.is_some() || type_path.path.segments.len() != 2 {
+            return;
+        }
+        let mut segments = type_path.path.segments.iter();
+        if segments
+            .next()
+            .is_none_or(|segment| segment.ident != "Self")
+        {
+            return;
+        }
+        let projected = &segments.next().expect("two segments").ident;
+        if let Some((_, definition)) = self.assoc_types.iter().find(|(name, _)| name == projected) {
+            *ty = definition.clone();
+        }
+    }
 }
 
 /// Rewrites each spec macro in the body into its context-carrying counterpart and extends
