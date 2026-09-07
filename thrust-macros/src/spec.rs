@@ -13,7 +13,7 @@ use syn::{
     parse_macro_input, punctuated::Punctuated, FnArg, GenericParam, Generics, WherePredicate,
 };
 
-use crate::{fn_outer_item::FnOuterItem, FormulaFnTypeLowering};
+use crate::{apit, fn_outer_item::FnOuterItem, FormulaFnTypeLowering};
 
 pub fn expand_predicate(item: TokenStream) -> TokenStream {
     // Predicate bodies are consumed by the plugin as a raw SMT-LIB string literal
@@ -29,14 +29,15 @@ pub fn expand_predicate(item: TokenStream) -> TokenStream {
     };
 
     let name = &func.sig().ident;
-    let def_generics = generic_params_tokens(&func.sig().generics);
+    let sig = apit::desugar_signature(func.sig());
+    let def_generics = generic_params_tokens(&sig.generics);
     let type_lowering = if let Some(outer_context) = &outer_context {
-        FormulaFnTypeLowering::with_outer_context(func.sig(), outer_context)
+        FormulaFnTypeLowering::with_outer_context(&sig, outer_context)
     } else {
-        FormulaFnTypeLowering::new(func.sig())
+        FormulaFnTypeLowering::new(&sig)
     };
-    let model_ty_params = type_lowering.lower_params(&func.sig().inputs);
-    let model_ret = type_lowering.lower_return_type(&func.sig().output);
+    let model_ty_params = type_lowering.lower_params(&sig.inputs);
+    let model_ret = type_lowering.lower_return_type(&sig.output);
 
     let model_preds = type_lowering.model_where_predicates();
     let extended_where = extended_where_clause(&func, &model_preds);
@@ -262,6 +263,11 @@ fn extract_outer_context(func: &FnItemWithSignature) -> syn::Result<Option<FnOut
 
 struct ExpandedTokens {
     func: FnItemWithSignature,
+    /// `func`'s signature with argument-position `impl Trait` desugared into named
+    /// generic parameters (see [`mod@crate::apit`]); the source of every generated
+    /// companion's parameters and generics. Equal to `func`'s own signature unless it
+    /// has such a parameter.
+    sig: syn::Signature,
 
     requires_name: syn::Ident,
     ensures_name: syn::Ident,
@@ -269,7 +275,12 @@ struct ExpandedTokens {
     ens_expr: syn::Expr,
 
     def_generics: TokenStream2,
+    /// Turbofish instantiating a companion, over `sig`'s generics.
     turbofish: TokenStream2,
+    /// Turbofish for the call to the annotated function itself: empty when it takes an
+    /// argument-position `impl Trait`, since rustc rejects explicit generic arguments
+    /// for such a function and infers them from the call's arguments instead.
+    target_turbofish: TokenStream2,
 
     outer_context: Option<FnOuterItem>,
 }
@@ -290,9 +301,14 @@ impl ExpandedTokens {
         let requires_name = format_ident!("_thrust_requires_{}", name);
         let ensures_name = format_ident!("_thrust_ensures_{}", name);
 
-        let generics = &func.sig().generics;
-        let def_generics = generic_params_tokens(generics);
-        let turbofish = generic_turbofish(generics);
+        let sig = apit::desugar_signature(func.sig());
+        let def_generics = generic_params_tokens(&sig.generics);
+        let turbofish = generic_turbofish(&sig.generics);
+        let target_turbofish = if apit::has_arg_position_impl_trait(func.sig()) {
+            quote!()
+        } else {
+            turbofish.clone()
+        };
 
         if func.sig().receiver().is_some() {
             rewrite_self_in_expr(&mut req_expr);
@@ -301,12 +317,14 @@ impl ExpandedTokens {
 
         Self {
             func,
+            sig,
             req_expr,
             ens_expr,
             requires_name,
             ensures_name,
             def_generics,
             turbofish,
+            target_turbofish,
             outer_context: None,
         }
     }
@@ -318,9 +336,9 @@ impl ExpandedTokens {
 
     fn type_lowering(&self) -> FormulaFnTypeLowering<'_> {
         if let Some(outer_context) = &self.outer_context {
-            FormulaFnTypeLowering::with_outer_context(self.func.sig(), outer_context)
+            FormulaFnTypeLowering::with_outer_context(&self.sig, outer_context)
         } else {
-            FormulaFnTypeLowering::new(self.func.sig())
+            FormulaFnTypeLowering::new(&self.sig)
         }
     }
 
@@ -340,7 +358,7 @@ impl ExpandedTokens {
     fn requires_fn(&self) -> TokenStream2 {
         let requires_name = &self.requires_name;
         let def_generics = &self.def_generics;
-        let model_ty_params = self.type_lowering().lower_params(&self.func.sig().inputs);
+        let model_ty_params = self.type_lowering().lower_params(&self.sig.inputs);
         let extended_where = self.extended_where_clause();
         let req_expr = &self.req_expr;
 
@@ -357,11 +375,9 @@ impl ExpandedTokens {
     fn ensures_fn(&self) -> TokenStream2 {
         let ensures_name = &self.ensures_name;
         let def_generics = &self.def_generics;
-        let model_ty_params = &self.type_lowering().lower_params(&self.func.sig().inputs);
+        let model_ty_params = &self.type_lowering().lower_params(&self.sig.inputs);
         let extended_where = self.extended_where_clause();
-        let ret_model_ty = &self
-            .type_lowering()
-            .lower_return_type(&self.func.sig().output);
+        let ret_model_ty = &self.type_lowering().lower_return_type(&self.sig.output);
         let ens_expr = &self.ens_expr;
 
         quote! {
@@ -402,7 +418,8 @@ impl ExpandedTokens {
         let path_prefix = self.path_prefix();
 
         let name = &self.func.sig().ident;
-        let (extern_spec_inputs, call_args) = rewrite_inputs_for_call(&self.func.sig().inputs);
+        let target_turbofish = &self.target_turbofish;
+        let (extern_spec_inputs, call_args) = rewrite_inputs_for_call(&self.sig.inputs);
 
         quote! {
             #func
@@ -419,7 +436,7 @@ impl ExpandedTokens {
                 #[thrust::ensures_path]
                 #path_prefix #ensures_name #turbofish;
 
-                #path_prefix #name #turbofish(#call_args)
+                #path_prefix #name #target_turbofish(#call_args)
             }
         }
     }
@@ -431,6 +448,9 @@ impl ExpandedTokens {
         let path_prefix = self.path_prefix();
 
         let mut func = self.func.clone();
+        // The marker statements below turbofish the companions with the fresh
+        // `impl Trait` parameters, which only a desugared signature can name.
+        *func.sig_mut() = self.sig.clone();
         let func_tokens = if let Some(block) = func.block_mut() {
             let orig_stmts = block.stmts.drain(..).collect::<Vec<_>>();
             *block = syn::parse_quote!({
