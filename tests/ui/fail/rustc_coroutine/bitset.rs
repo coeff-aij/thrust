@@ -148,10 +148,9 @@ impl<T: Idx> DenseBitSet<T> {
     }
 
     // A deterministic enumeration spec (`elems(set, seq, n)` plus a `next`
-    // that returns `seq[k]` on its k-th call) is not expressible: it would
-    // have to sit on `BitIter::next`, which implements `std::iter::Iterator`,
-    // and a spec on an impl method must be declared on the trait (see the
-    // report).
+    // that returns `seq[k]` on its k-th call) would need `next` to know which
+    // bit it is at; only the weaker index bound below is stated, on
+    // `BitIter::next` itself.
     #[inline]
     pub fn iter(&self) -> BitIter<'_, T> {
         BitIter::new(&self.words)
@@ -195,10 +194,46 @@ pub struct BitIter<'a, T: Idx> {
     marker: PhantomData<T>,
 }
 
+// The bit bound below has to be written in raw SMT-LIB2: `self.iter.words`
+// has the slice type `&'a [Word]`, and both `BitIter` and `WordIter` model as
+// themselves, so in a `requires`/`ensures` -- compiled as an ordinary Rust
+// function -- the field keeps that Rust type and the `Seq` accessors are
+// rejected (`error[E0609]: no field `length` on type `[u64]``, likewise
+// `array`), while `.len()` reaches
+// `not implemented: unsupported method call in formula: ... len#0`
+// (src/analyze/annot_fn.rs:915). A `predicate` body must be a raw string
+// literal anyway, so these project the model tuples by hand:
+// `BitIter = (word, offset, iter, marker)` and `WordIter = (words, pos)`,
+// with `words = (array, length)`.
+#[thrust_macros::context]
 impl<'a, T: Idx> BitIter<'a, T> {
+    /// `n == self.iter.words.length * WORD_BITS`: the number of bits the
+    /// underlying word array holds. Every index this iterator yields is
+    /// `bit_pos + offset` for some bit of some word of that array, so this is
+    /// a bound on it -- an abstraction, since `next`'s body is trusted and
+    /// the wrapping `offset` arithmetic is not modelled.
+    #[thrust_macros::predicate]
+    fn bit_bound(self, n: usize) -> bool {
+        "(= n (* 64 (tuple_proj<Array<Int-Int>-Int>.1 (tuple_proj<Tuple<Array<Int-Int>-Int>-Int>.0 (tuple_proj<Int-Int-Tuple<Tuple<Array<Int-Int>-Int>-Int>-Tuple>.2 self_)))))";
+        true
+    }
+
+    /// `dist.iter.words == self.iter.words`: `next` never replaces the word
+    /// array, so the bound above survives a call.
+    #[thrust_macros::predicate]
+    fn same_words(self, dist: Self) -> bool {
+        "(= (tuple_proj<Tuple<Array<Int-Int>-Int>-Int>.0 (tuple_proj<Int-Int-Tuple<Tuple<Array<Int-Int>-Int>-Int>-Tuple>.2 dist)) (tuple_proj<Tuple<Array<Int-Int>-Int>-Int>.0 (tuple_proj<Int-Int-Tuple<Tuple<Array<Int-Int>-Int>-Int>-Tuple>.2 self_)))";
+        true
+    }
+
     #[inline]
     #[thrust::trusted]
     #[thrust::callable]
+    // `WORD_BITS` (a named `const`) is not usable in a formula:
+    // `not implemented: unsupported path in formula: ... Def(Const, ..
+    // WORD_BITS)` (src/analyze/annot_fn.rs:809), so the literal 64 is used
+    // here and in `bit_bound`'s SMT body.
+    #[thrust_macros::ensures(Self::bit_bound(result, (*words).length * 64))]
     fn new(words: &'a [Word]) -> BitIter<'a, T> {
         BitIter {
             word: 0,
@@ -211,8 +246,7 @@ impl<'a, T: Idx> BitIter<'a, T> {
 
 impl<'a, T: Idx> Iterator for BitIter<'a, T> {
     type Item = T;
-    #[thrust::trusted]
-    #[thrust::callable]
+    #[thrust::ignored]
     fn next(&mut self) -> Option<T> {
         loop {
             if self.word != 0 {
@@ -224,6 +258,38 @@ impl<'a, T: Idx> Iterator for BitIter<'a, T> {
             self.word = *self.iter.next()?;
             self.offset = self.offset.wrapping_add(WORD_BITS);
         }
+    }
+}
+
+// `next` implements the real `std::iter::Iterator`, so its spec cannot be
+// attached to the impl method: `requires`/`ensures` expand into companion
+// items next to the method, and in an `impl Trait for Ty` every item must be
+// a trait member (`error[E0407]: method `_thrust_requires_next` is not a
+// member of trait `Iterator``). The spec goes on a sibling *inherent* impl as
+// an `#[thrust::extern_spec_fn]` wrapper tail-calling the impl method; Thrust
+// registers the contract under the impl method's `DefId` and uses it at
+// static call sites (see
+// tests/ui/pass/rustc_coroutine/notes/foreign_trait_impl_specs.md). The body
+// keeps its own `#[thrust::trusted]`, so the contract is assumed, not proved.
+#[thrust_macros::context]
+impl<'a, T: Idx> BitIter<'a, T> {
+    #[thrust::extern_spec_fn]
+    #[thrust_macros::requires(true)]
+    #[thrust_macros::ensures(Self::same_words(*it, !it))]
+    // The weak, safe form: *any* yielded element's index is below the bound.
+    // Written as one universal over the payload rather than
+    // `result == None || exists(|e| result == Some(e) && ..)`: with the
+    // existential, pcsat answers `unknown` on the failing twin instead of
+    // `Unsat`.
+    #[thrust_macros::ensures(forall(|n: Int, e: <T as thrust_models::Model>::Ty, i: Int|
+        Self::bit_bound(*it, n) && result == Some(e) && <T as Idx>::index_is(e, i)
+            ==> i < n))]
+    fn _extern_spec_next(it: &mut BitIter<'a, T>) -> Option<T>
+    where
+        T: thrust_models::Model,
+        <T as thrust_models::Model>::Ty: PartialEq,
+    {
+        <BitIter<'a, T> as Iterator>::next(it)
     }
 }
 
@@ -253,10 +319,10 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
         (start, start + words_per_row)
     }
 
-    // `every yielded C satisfies c.index() < self.num_columns` is not
-    // expressible: it is a property of `BitIter::next`, which implements
-    // `std::iter::Iterator`, and specs on impl methods must be declared on the
-    // trait (see the report).
+    // `every yielded C satisfies c.index() < self.num_columns` is still not
+    // stated here: `BitIter::next`'s contract bounds the yielded index by the
+    // *word array* size (`BitIter::bit_bound`), and relating that to
+    // `num_columns` needs `range`/`num_words`, both trusted and unspecified.
     #[thrust::trusted]
     #[thrust_macros::requires(forall(|i: Int| <R as Idx>::index_is(row, i) ==> i < (*self).num_rows))]
     pub fn iter(&self, row: R) -> BitIter<'_, C> {
@@ -408,5 +474,29 @@ fn main() {
     let mut set: DenseBitSet<usize> = DenseBitSet::new_empty(5);
     set.insert(3);
     assert!(set.contains(3));
-    assert!(set.contains(2));
+    assert!(!set.contains(2));
+
+    // `DenseBitSet::new_empty` says nothing about the length of its word
+    // array, so the bound is exercised on an iterator built over a word slice
+    // of known length: `BitIter::new`'s ensures turns that into
+    // `bit_bound(it, 2 * WORD_BITS)`, `next`'s ensures bounds every yielded
+    // index by it, and `same_words` carries the bound to the second call.
+    let mut it: BitIter<'static, usize> = BitIter::new(words());
+    match it.next() {
+        // Broken narrowly: `BitIter::next`'s contract bounds the yielded
+        // index by `words.length * 64 == 128`, not by 127.
+        Some(e) => assert!(e.index() < 127),
+        None => {}
+    }
+    match it.next() {
+        Some(e) => assert!(e.index() < 128),
+        None => {}
+    }
+}
+
+#[thrust::trusted]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures((*result).length == 2)]
+fn words() -> &'static [Word] {
+    unimplemented!()
 }

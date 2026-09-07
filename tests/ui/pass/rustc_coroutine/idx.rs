@@ -10,6 +10,10 @@ use std::fmt::Debug;
 use std::hash::Hash;
 use std::marker::PhantomData;
 
+use thrust_models::exists;
+use thrust_models::forall;
+use thrust_models::model::Int;
+
 // //== ./../rustc_index/src/idx.rs
 
 #[thrust_macros::context]
@@ -109,14 +113,16 @@ impl Idx for u32 {
 /// Own iterator standing in for `(start..end).map(I::new)`: yields
 /// `I::new(start)`, `I::new(start + 1)`, ..., `I::new(end - 1)`.
 // `Clone` commented out (/* Debug-style */ marker, see CLAUDE.md/agent brief):
-// deriving it on this generic struct panics Thrust with `unbound var $0` in
-// src/chc/clause_builder.rs:113 as soon as any requires/ensures on
-// `IdxRange<I>` references `Self::Item` (repro: derive `Clone` on a generic
-// struct `S<I>`, give it a local shadow `Iterator` impl with `type Item = I`
-// and any predicate mentioning `Option<Self::Item>` or `forall(|x| ...)`
-// over it -- the same construct without the `Clone` derive verifies fine).
-// tests/ui/pass/rustc_coroutine/bitset.rs already hit and commented out the
-// same derive on its own copy of IdxRange for the same reason.
+// deriving it on this generic struct panics Thrust with `unbound var $0`
+// (src/chc/clause_builder.rs:113) while analysing
+// `<IdxRange<I> as Clone>::clone`, on the inner
+// `<PhantomData<I> as Clone>::clone` call whose std spec is
+// `{ () | true /\ nu = *$0 }` with `generic_args=[PhantomData<I/#0>]` -- i.e.
+// the unit-modelled `&PhantomData<I>` argument. Re-checked after moving
+// `next`'s spec onto the `extern_spec_fn` wrapper below: the ICE is
+// independent of that (it needs no requires/ensures mentioning `Self::Item`
+// at all, just the derive). `bitset.rs`'s own copy of `IdxRange` and its
+// `DenseBitSet`/`BitMatrix` comment out the same derives for the same reason.
 // #[derive(Clone)]
 pub struct IdxRange<I: Idx> {
     start: usize,
@@ -141,66 +147,67 @@ impl<I: Idx> IdxRange<I> {
     }
 }
 
-// `next()` is left unspecified here (see the report): the real
-// `std::iter::Iterator` cannot carry requires/ensures at all (it is defined
-// outside this crate, and Thrust rejects requires/ensures attached only to
-// an impl method when the trait declaration itself has none -- E0407 "method
-// `_thrust_requires_next` is not a member of trait `Iterator`" -- so any
-// spec has to live on the trait declaration, shared by every implementor).
-// A local shadow trait (matching the technique in
-// tests/ui/pass/traits/{take,fuse,id}.rs and
-// tests/ui/pass/iterators/annot_range_{next,loop}.rs, each of which keeps
-// its own private copy of `trait Iterator` for the same reason) does let a
-// spec be declared, using the invariant/completed/step predicate
-// abstraction those tests use. That was tried here with `Item = I` (this
-// impl's own generic parameter) and a requires of
-// `self.start < self.end ==> I::can_new(self.start)`: the file compiles
-// and produces no ICE, but the generic verification of `next`'s own body
-// (checked once, abstractly over `I: Idx`, independently of any call site)
-// comes back Unsat even with `main` empty and even with every predicate
-// body replaced by a trivial `"true"`. Reducing further shows the call
-// `I::new(n)` inside the body needs `I::can_new(n)`, and the solver ends up
-// with two distinct declared symbols for it --
-// `q_can_new_<hash><a0>` (from `IdxRange<I>`'s own generic parameter `I`)
-// and `q_can_new_<hash><a1>` (from `Idx::new`'s own generic `Self`, called
-// here as `I::new`) -- that are never unified, so the fact assumed via the
-// first can never discharge the obligation stated in terms of the second.
-// This looks like a genuine gap in connecting an enclosing impl's generic
-// parameter to a differently-scoped generic `Self` at a call site, distinct
-// from (and found on top of) the E0407 restriction; not re-investigated
-// further here per the time box. `IdxRange`'s own copy in
-// tests/ui/pass/rustc_coroutine/bitset.rs hits the same wall and also
-// leaves `next` unspecified (there via `#[thrust::trusted] #[thrust::callable]`).
-mod idx_range_iter {
-    use super::{Idx, IdxRange};
+// `next` implements the real `std::iter::Iterator`, so its spec cannot be
+// written as attributes on the impl method itself: `requires`/`ensures`
+// expand into companion items placed next to the method, and in an
+// `impl Trait for Ty` every item must be a trait member
+// (`error[E0407]: method `_thrust_requires_next` is not a member of trait
+// `Iterator``). The spec therefore lives on a sibling *inherent* impl, as an
+// `#[thrust::extern_spec_fn]` wrapper whose body tail-calls the impl method.
+// Thrust resolves the wrapper's target through `Instance::try_resolve`,
+// registers the contract under the impl method's `DefId`, checks the impl
+// body against it and uses it at static call sites; see
+// tests/ui/pass/rustc_coroutine/notes/foreign_trait_impl_specs.md. Written
+// this way, the `I::can_new(n)` obligation inside the body *is* discharged
+// from the wrapper's `requires` -- the two-forall-sorts mismatch reported for
+// the earlier local-shadow-trait attempt does not occur here (dropping the
+// `requires` clause below turns the file `Unsat`, so the body is really
+// checked against this contract).
+impl<I: Idx> Iterator for IdxRange<I> {
+    type Item = I;
 
-    #[thrust_macros::context]
-    pub(super) trait Iterator {
-        type Item;
-        fn next(&mut self) -> Option<Self::Item>;
-    }
-
-    #[thrust_macros::context]
-    impl<I: Idx> Iterator for IdxRange<I> {
-        type Item = I;
-
-        // Body left `trusted`: proving the internal call `I::new(n)`
-        // satisfies its own `Idx::can_new` precondition hits the gap
-        // described above.
-        #[thrust::trusted]
-        #[thrust::callable]
-        fn next(&mut self) -> Option<I> {
-            if self.start < self.end {
-                let n = self.start;
-                self.start += 1;
-                Some(I::new(n))
-            } else {
-                None
-            }
+    fn next(&mut self) -> Option<I> {
+        if self.start < self.end {
+            let n = self.start;
+            self.start += 1;
+            Some(I::new(n))
+        } else {
+            None
         }
     }
 }
-use idx_range_iter::Iterator as _;
+
+#[thrust_macros::context]
+impl<I: Idx> IdxRange<I> {
+    // `Idx::can_new` / `Idx::index_is` take `Int`, but `IdxRange`'s model is
+    // the struct itself, so `(*it).start` keeps its Rust type `usize` in a
+    // formula and cannot be passed to them (`error[E0308]: expected `Int`,
+    // found `usize``). The `s == (*it).start` guard under `forall` -- `Int`
+    // on the left, where `impl<T: Model<Ty = Int>> PartialEq<T> for Int`
+    // applies -- is what bridges the two.
+    #[thrust::extern_spec_fn]
+    #[thrust_macros::requires(
+        forall(|s: Int| s == (*it).start && s < (*it).end ==> <I as Idx>::can_new(s))
+    )]
+    #[thrust_macros::ensures(
+        forall(|s: Int| s == (*it).start && s < (*it).end
+            ==> exists(|x: <I as thrust_models::Model>::Ty|
+                    result == Some(x) && <I as Idx>::index_is(x, s))
+                && s + 1 == (!it).start
+                && (!it).end == (*it).end)
+    )]
+    #[thrust_macros::ensures(
+        !((*it).start < (*it).end)
+            ==> result == None && (!it).start == (*it).start && (!it).end == (*it).end
+    )]
+    fn _extern_spec_next(it: &mut IdxRange<I>) -> Option<I>
+    where
+        I: thrust_models::Model,
+        <I as thrust_models::Model>::Ty: PartialEq,
+    {
+        <IdxRange<I> as Iterator>::next(it)
+    }
+}
 
 type Word = u64;
 
@@ -215,79 +222,116 @@ impl<'a> thrust_models::Model for WordIter<'a> {
     type Ty = Self;
 }
 
+// The `words` field has the slice type `&'a [Word]`, and `WordIter`'s model
+// is the struct itself, so in a `requires`/`ensures` -- which is compiled as
+// an ordinary Rust function -- the field keeps that Rust type: the `Seq`
+// accessors are rejected (`error[E0609]: no field `length` on type `[u64]``,
+// likewise `array`) and `.len()` reaches
+// `not implemented: unsupported method call in formula: ... len#0`
+// (src/analyze/annot_fn.rs:915; only the `Seq`/`Array` model methods are
+// handled there). The three predicates below are therefore the only way to
+// name `words`' length and elements; a predicate body must be a raw SMT-LIB2
+// string literal, so they project the model tuple
+// `(words: (array, length), pos)` by hand.
 #[thrust_macros::context]
 impl<'a> WordIter<'a> {
+    /// `self.words.length == n`.
+    #[thrust_macros::predicate]
+    fn words_len_is(self, n: Int) -> bool {
+        "(= n (tuple_proj<Array<Int-Int>-Int>.1
+                  (tuple_proj<Tuple<Array<Int-Int>-Int>-Int>.0 self_)))";
+        true
+    }
+
+    /// `self.words.array[i] == w`.
+    #[thrust_macros::predicate]
+    fn word_is(self, i: Int, w: Int) -> bool {
+        "(= w (select (tuple_proj<Array<Int-Int>-Int>.0
+                          (tuple_proj<Tuple<Array<Int-Int>-Int>-Int>.0 self_))
+                      i))";
+        true
+    }
+
+    /// `dist.words == self.words`.
+    #[thrust_macros::predicate]
+    fn same_words(self, dist: Self) -> bool {
+        "(= (tuple_proj<Tuple<Array<Int-Int>-Int>-Int>.0 dist)
+            (tuple_proj<Tuple<Array<Int-Int>-Int>-Int>.0 self_))";
+        true
+    }
+
     #[thrust_macros::requires(true)]
     #[thrust_macros::ensures(result.pos == 0)]
+    #[thrust_macros::ensures(Self::words_len_is(result, (*words).length))]
+    #[thrust_macros::ensures(forall(|i: Int| Self::word_is(result, i, (*words).array[i])))]
     fn new(words: &'a [Word]) -> WordIter<'a> {
         WordIter { words, pos: 0 }
     }
 }
 
-// Same E0407 restriction as `IdxRange` above: the real `std::iter::Iterator`
-// cannot carry requires/ensures, so any spec has to go through a local
-// shadow trait declaring it once for every implementor. Attempting the
-// invariant/completed/step abstraction here (mirroring `IdxRange`'s
-// attempt) additionally hits `error[E0277]: can't compare`
-// `<&'a u64 as thrust_models::Model>::Ty` `with` `<&'a u64 as
-// thrust_models::Model>::Ty`, `` `PartialEq` `not implemented`'' at the
-// `#[thrust_macros::predicate]` expansion for `step`/the trait's `next`,
-// even with an explicit `where <&'a Word as thrust_models::Model>::Ty:
-// PartialEq` bound on the impl (std.rs's blanket `impl<'a, T: ?Sized> Model
-// for &'a T` gives `Ty = &'a <T as Model>::Ty`, and `model::Int`'s own
-// `PartialEq` impl -- `impl<T> PartialEq<T> for Int where T: Model<Ty =
-// Self>` -- does not appear to satisfy what the reference blanket
-// `PartialEq` impl needs here). `Option<&'a Word>` equality (needed for
-// `result == Some(i)` in the shared `next` ensures) is therefore left
-// unexpressed, matching `IdxRange` above; `next` is left unspecified with a
-// bare shadow-trait signature and a `#[thrust::trusted] #[thrust::callable]`
-// body.
-mod word_iter_iter {
-    use super::{Word, WordIter};
+// Same `extern_spec_fn` idiom as `IdxRange::next` above. `Option<&'a Word>`
+// models as `Option<&'a Int>`, so the yielded word has to be named by
+// `exists(|x: Int| result == Some(&x) && ..)`: writing the closure parameter
+// at the Rust element type instead gives
+// `error[E0308]: mismatched types ... expected `&Int`, found `&u64``
+// (`Option`'s `PartialEq` needs both sides at the same model type). No
+// `<&u64 as Model>::Ty` `PartialEq` bound is needed with this shape.
+impl<'a> Iterator for WordIter<'a> {
+    type Item = &'a Word;
 
-    #[thrust_macros::context]
-    pub(super) trait Iterator {
-        type Item;
-        fn next(&mut self) -> Option<Self::Item>;
-    }
-
-    #[thrust_macros::context]
-    impl<'a> Iterator for WordIter<'a> {
-        type Item = &'a Word;
-
-        #[thrust::trusted]
-        #[thrust::callable]
-        fn next(&mut self) -> Option<&'a Word> {
-            if self.pos < self.words.len() {
-                let item = &self.words[self.pos];
-                self.pos += 1;
-                Some(item)
-            } else {
-                None
-            }
+    fn next(&mut self) -> Option<&'a Word> {
+        if self.pos < self.words.len() {
+            let item = &self.words[self.pos];
+            self.pos += 1;
+            Some(item)
+        } else {
+            None
         }
     }
 }
-use word_iter_iter::Iterator as _;
+
+#[thrust_macros::context]
+impl<'a> WordIter<'a> {
+    #[thrust::extern_spec_fn]
+    #[thrust_macros::requires(true)]
+    #[thrust_macros::ensures(Self::same_words(*it, !it))]
+    #[thrust_macros::ensures(forall(|n: Int, p: Int|
+        Self::words_len_is(*it, n) && p == (*it).pos
+            ==> (p < n ==> exists(|x: Int| result == Some(&x) && Self::word_is(*it, p, x))
+                    && p + 1 == (!it).pos)
+                && (n <= p ==> result == None && (!it).pos == (*it).pos)))]
+    fn _extern_spec_next(it: &mut WordIter<'a>) -> Option<&'a Word> {
+        <WordIter<'a> as Iterator>::next(it)
+    }
+}
 
 fn main() {
     let mut range: IdxRange<usize> = IdxRange::new(0, 3);
     // Verified via `IdxRange::new`'s own ensures.
     assert!(range.start == 0 && range.end == 3);
-    // `next()`'s return value carries no verified relationship to the
-    // input (see the comment above), so it isn't asserted on here; the
-    // calls below only exercise that Thrust accepts the (trusted) code.
-    let _a = range.next();
-    let _b = range.next();
-    let _c = range.next();
-    let _d = range.next();
+    // Verified via the `next` contract above: `Idx for usize` reads
+    // `index_is(self, i)` as `self == i`, so the k-th call yields `Some(k)`.
+    let a = range.next();
+    assert!(a.unwrap() == 0);
+    assert!(range.start == 1);
+    let b = range.next();
+    assert!(b.unwrap() == 1);
+    let c = range.next();
+    assert!(c.unwrap() == 2);
+    assert!(range.start == 3);
+    let d = range.next();
+    assert!(d.is_none());
 
     let mut wi: WordIter<'static> = WordIter::new(words());
     // Verified via `WordIter::new`'s own ensures.
     assert!(wi.pos == 0);
-    // Same caveat as `IdxRange::next` above: exercised only structurally.
-    let _w0 = wi.next();
-    let _w1 = wi.next();
+    // Verified via the `next` contract above.
+    let w0 = wi.next();
+    assert!(*w0.unwrap() == 10);
+    assert!(wi.pos == 1);
+    let w1 = wi.next();
+    assert!(*w1.unwrap() == 20);
+    assert!(wi.pos == 2);
 }
 
 #[thrust::trusted]
