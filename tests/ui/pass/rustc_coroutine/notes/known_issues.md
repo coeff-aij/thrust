@@ -79,3 +79,10 @@ BitIter::next の列挙仕様、段階 4 では IdxRange/WordIter/SliceIter の 
 - 関連定数（`Align::EIGHT`）は newtype 定数の ICE（feat/newtype-scalar-consts で修正）。
 - values.rs では AbiAlign::min/max を一時的にコメントアウトしている（Align の Ord が無いため）。
   fix/enum-discriminants が入ったら derive を戻して復元する。
+
+## `vec![e; n]` の forall 仕様が入った関数では反証が Unknown になることがある
+
+fail/vec_from_elem.rs は環境によって pcsat が Unknown を返す（同じ関数に `vec![e; n]` の呼び出しが
+あるだけで、無関係な `assert!(1 == 2)` すら反証できない）。`Vec::new()` + push で作ると即 Unsat。
+述語本体側に全称量化子を埋め込む形が pcsat の反証を阻害している。std.rs の from_elem 仕様を
+const 配列等式（`(as const (Array Int T)) elem`）で書き直せるか、または量化子無しに弱めるか検討。
