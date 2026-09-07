@@ -141,3 +141,17 @@ generic_spec_in_generic_caller.rs で、ジェネリックな呼び出し側の�
   には `exists(|li: Int| li == l && ..)` の橋渡しが要る。
 - `IndexVec::from_elem_n` の要素ごとの ensures は `T: PartialEq<<T as Model>::Ty>` 相当の境界が
   ジェネリックには満たせず書けない。
+
+## next() 仕様の適用（idx.rs / bitset.rs）で見つかった制限
+
+- extern_spec ラッパを付けた対象は本体が解析される。trusted のままにはできず、BitIter::next は
+  `#[thrust::ignored]` に置き換えた（spec.rs のマクロが行う書き換えと同じ）。
+- 仕様式では struct フィールドのスライス/Vec に `.length`/`.array` が無く、`.len()` も
+  `annot_fn.rs:915 unsupported method call in formula`。生 SMT の述語で代用。
+- 名前付き const（WORD_BITS）は仕様式で使えない（`annot_fn.rs:809 unsupported path in formula`）。
+- 実行コードの `assert!(d == Some(0))` は `basic_block.rs:381 const bytes ty: Option<usize>` で落ちる。
+  `d.unwrap() == 0` / `d.is_none()` にする。
+- 事後条件の `exists` は fail 側を Unknown にしやすい。payload を全称量化する形に書き換えると決定的。
+- `Option<&u64>` の payload は `exists(|x: Int| result == Some(&x))` の形で書ける。
+- CI 固定の coar イメージ（ghcr.io/hiroshi-unno/coar:main と同一）は `declare-forall-sort` を
+  パースできない。このブランチのテストはローカルビルドの coar:latest（a21d2d712532）が必要。
