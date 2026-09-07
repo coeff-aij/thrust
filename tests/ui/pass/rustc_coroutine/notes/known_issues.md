@@ -100,14 +100,21 @@ ICE 1（trait_item_ty の owner 不整合）と同根かもしれないので fi
 `<&'a u64 as Model>::Ty` 同士の `==` が E0277（PartialEq 不成立）。`&T` の blanket PartialEq と
 `model::Int` の `PartialEq<T: Model<Ty = Self>>` 実装が噛み合わない。WordIter::next の仕様が書けない原因。
 
-## forall-sort: ジェネリック関数の本体が検査されていない可能性（要確認、重大）
+## forall-sort: ジェネリック関数の本体が実質検査されていない（別セッションが CHC で確認、重大）
 
 fix/trait-item-ty-owner の作業中の観察（ベースライン ce6bcae でも同じ）:
 `fn g<V>(_t: V) -> i64 { let n = 3i64; assert!(n == 4); 1 }` が verify を通り、意図的に偽の
 ensures を付けたジェネリック関数も通る。ジェネリック関数の戻り値 refinement が呼び出し側に
 伝わらない点は別セッションの報告（戻り値述語に定義節が無い）と一致する。rustc_coroutine の
 ジェネリック関数（layout、eligibility、Idx の default method など）の pass 結果は、この問題が
-直るまで信用できない。最優先で再現テストを作って確認すべき。
+直るまで信用できない。
+
+根本原因（iterator-adapters 先端で確認）: ジェネリック関数 g の呼び出し箇所は Int ソートの新しい述語
+（前提 p8、戻り値 p9）を生成するが、g 本体側の forall ソート述語 p0/p1 と結ぶ節が無い。p0 に定義節が
+無いのでソルバが p0 = false と取り、本体の assert のゴール節が空虚に満たされる。単相な同型関数では
+呼び出し側が `p6 ∧ v1 = 0 => p0(v1)` を出すので正しく Unsat になる。呼ばれない場合も両者同じ挙動なので、
+問題は「ジェネリック関数の forall ソート述語変数が呼び出し箇所で実体化されない（入口・戻り値とも）」
+点に限定される。ユーザーの fix/generic-fn-return-tracking が同じ問題を扱う。
 
 ## def_ty_with_args のキャッシュ
 
