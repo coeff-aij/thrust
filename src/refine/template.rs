@@ -323,6 +323,7 @@ impl<'tcx> TypeBuilder<'tcx> {
             param_refinement: None,
             ret_rty: None,
             abi,
+            signature_params: true,
         }
     }
 }
@@ -485,6 +486,7 @@ where
                 self.inner.build(ret_ty).vacuous(),
             )),
             abi: Default::default(),
+            signature_params: false,
         }
         .build();
         BasicBlockType {
@@ -512,6 +514,34 @@ where
     }
 }
 
+/// Attaches the known fact `v >= 0` to a function parameter of an unsigned integer type.
+///
+/// Thrust models every integer type as the unbounded mathematical integer, so nothing else in
+/// the model records that a `usize` cannot be negative. A parameter is a binding point at which
+/// an unsigned value enters the model from the outside, and such a value is non-negative by the
+/// definition of its type, so assuming it rules out only states the program cannot reach.
+///
+/// This must *not* be done anywhere a value is computed rather than bound. Overflow is not
+/// modelled, so `x - 1` for `x: usize` really can be negative in the model; asserting `>= 0` of
+/// it would rule out a reachable state and let anything be derived from it.
+///
+/// Parameters behind a reference (`&u32`, `&mut u32`) are not covered: the fact would have to go
+/// on the pointee's refinement, and an immutable reference does not admit it there without
+/// making the borrow at the call site unprovable.
+fn attach_unsigned_nonneg<FV>(ty: mir_ty::Ty<'_>, rty: &mut rty::RefinedType<FV>) {
+    if !matches!(ty.kind(), mir_ty::TyKind::Uint(_)) {
+        return;
+    }
+    let atom = chc::Atom::new(
+        chc::KnownPred::GREATER_THAN_OR_EQUAL.into(),
+        vec![
+            chc::Term::var(rty::RefinedTypeVar::Value),
+            chc::Term::int(0),
+        ],
+    );
+    rty.refinement.push_conj(chc::Formula::Atom(atom).into());
+}
+
 /// A builder for function template types.
 pub struct FunctionTemplateTypeBuilder<'tcx, 'a, R> {
     inner: TypeBuilder<'tcx>,
@@ -522,6 +552,11 @@ pub struct FunctionTemplateTypeBuilder<'tcx, 'a, R> {
     param_rtys: HashMap<rty::FunctionParamIdx, rty::RefinedType<rty::FunctionParamIdx>>,
     ret_rty: Option<rty::RefinedType<rty::FunctionParamIdx>>,
     abi: rty::FunctionAbi,
+    /// Whether `param_tys` are the parameters of a function signature.
+    ///
+    /// Only then does [`attach_unsigned_nonneg`] apply; the parameters of a basic block type
+    /// are live locals, whose values may well be negative in the model (see the note there).
+    signature_params: bool,
 }
 
 impl<'tcx, 'a, R> FunctionTemplateTypeBuilder<'tcx, 'a, R> {
@@ -604,7 +639,7 @@ where
         let mut builder = rty::TemplateBuilder::default();
         let mut param_rtys = IndexVec::<rty::FunctionParamIdx, _>::new();
         for (idx, param_ty) in self.param_tys.iter().enumerate() {
-            let param_rty = self
+            let mut param_rty = self
                 .param_rtys
                 .get(&idx.into())
                 .cloned()
@@ -630,6 +665,9 @@ where
                         )
                     }
                 });
+            if self.signature_params {
+                attach_unsigned_nonneg(param_ty.ty, &mut param_rty);
+            }
             let param_rty = if param_ty.mutbl.is_mut() {
                 // elaboration: treat mutabully declared variables as own
                 param_rty.boxed()
