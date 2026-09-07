@@ -394,15 +394,16 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             }
             mir_ty::TyKind::Uint(_) => {
                 // TODO: see target endianness
-                let val = match bytes.len() {
-                    1 => u8::from_ne_bytes(bytes.try_into().unwrap()) as i64,
-                    2 => u16::from_ne_bytes(bytes.try_into().unwrap()) as i64,
-                    4 => u32::from_ne_bytes(bytes.try_into().unwrap()) as i64,
-                    8 => u64::from_ne_bytes(bytes.try_into().unwrap())
-                        .try_into()
-                        .unwrap(),
+                let val: u64 = match bytes.len() {
+                    1 => u8::from_ne_bytes(bytes.try_into().unwrap()) as u64,
+                    2 => u16::from_ne_bytes(bytes.try_into().unwrap()) as u64,
+                    4 => u32::from_ne_bytes(bytes.try_into().unwrap()) as u64,
+                    8 => u64::from_ne_bytes(bytes.try_into().unwrap()),
                     _ => unimplemented!("const uint bytes len: {}", bytes.len()),
                 };
+                let val: i64 = val.try_into().unwrap_or_else(|_| {
+                    panic!("const value {val} of type {ty:?} does not fit in an i64")
+                });
                 PlaceType::with_ty_and_term(rty::Type::int(), chc::Term::int(val))
             }
             mir_ty::TyKind::Tuple(tys) => {
@@ -435,15 +436,19 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     fn const_value_ty(&self, val: &mir::ConstValue, ty: &mir_ty::Ty<'tcx>) -> PlaceType {
         use mir::{interpret::Scalar, ConstValue, Mutability};
         match (ty.kind(), val) {
-            (
-                mir_ty::TyKind::Int(_) | mir_ty::TyKind::Uint(_),
-                ConstValue::Scalar(Scalar::Int(val)),
-            ) => {
-                let val = val.to_int(val.size());
-                PlaceType::with_ty_and_term(
-                    rty::Type::int(),
-                    chc::Term::int(val.try_into().unwrap()),
-                )
+            (mir_ty::TyKind::Int(_), ConstValue::Scalar(Scalar::Int(scalar))) => {
+                let val = scalar.to_int(scalar.size());
+                let val: i64 = val.try_into().unwrap_or_else(|_| {
+                    panic!("const value {val} of type {ty:?} does not fit in an i64")
+                });
+                PlaceType::with_ty_and_term(rty::Type::int(), chc::Term::int(val))
+            }
+            (mir_ty::TyKind::Uint(_), ConstValue::Scalar(Scalar::Int(scalar))) => {
+                let val = scalar.to_uint(scalar.size());
+                let val: i64 = val.try_into().unwrap_or_else(|_| {
+                    panic!("const value {val} of type {ty:?} does not fit in an i64")
+                });
+                PlaceType::with_ty_and_term(rty::Type::int(), chc::Term::int(val))
             }
             (mir_ty::TyKind::Bool, ConstValue::Scalar(Scalar::Int(val))) => {
                 PlaceType::with_ty_and_term(
