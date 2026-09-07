@@ -1044,6 +1044,44 @@ where
                 .with_scope(&builder)
                 .build_refined(self.ret_ty)
         });
-        rty::FunctionType::new(param_rtys, ret_rty).with_abi(self.abi)
+        let fn_ty = rty::FunctionType::new(param_rtys, ret_rty).with_abi(self.abi);
+        subst_singleton_params(fn_ty)
+    }
+}
+
+/// Replaces every reference to a singleton-sorted parameter with that sort's only
+/// value.
+///
+/// A variable of a singleton sort is never a clause variable: the rest of the
+/// analyzer substitutes the sort's inhabitant for it instead (see `rty::subtyping`,
+/// `refine::env`, and `add_mapped_var` in
+/// `analyze::basic_block`). An annotation, however, is elaborated against the
+/// signature it was written for, where such a parameter may still be a type
+/// parameter of an unknown sort; the sort only turns out to be a singleton once
+/// the signature is instantiated here. Those references would then reach the CHC
+/// builder as unbound variables, so they are discharged while the function type is
+/// assembled.
+fn subst_singleton_params(fn_ty: rty::FunctionType) -> rty::FunctionType {
+    let singletons: HashMap<_, _> = fn_ty
+        .params
+        .iter_enumerated()
+        .filter_map(|(idx, param_rty)| {
+            let sort = param_rty.ty.to_sort();
+            sort.is_singleton()
+                .then(|| (idx, chc::Term::default_for(&sort)))
+        })
+        .collect();
+    if singletons.is_empty() {
+        return fn_ty;
+    }
+    let subst = |idx: rty::FunctionParamIdx| match singletons.get(&idx) {
+        Some(term) => term.clone(),
+        None => chc::Term::var(idx),
+    };
+    let rty::FunctionType { params, ret, abi } = fn_ty;
+    rty::FunctionType {
+        params: params.into_iter().map(|rty| rty.subst_var(subst)).collect(),
+        ret: Box::new(ret.subst_var(subst)),
+        abi,
     }
 }
