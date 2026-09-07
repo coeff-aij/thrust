@@ -99,3 +99,18 @@ ICE 1（trait_item_ty の owner 不整合）と同根かもしれないので fi
 
 `<&'a u64 as Model>::Ty` 同士の `==` が E0277（PartialEq 不成立）。`&T` の blanket PartialEq と
 `model::Int` の `PartialEq<T: Model<Ty = Self>>` 実装が噛み合わない。WordIter::next の仕様が書けない原因。
+
+## forall-sort: ジェネリック関数の本体が検査されていない可能性（要確認、重大）
+
+fix/trait-item-ty-owner の作業中の観察（ベースライン ce6bcae でも同じ）:
+`fn g<V>(_t: V) -> i64 { let n = 3i64; assert!(n == 4); 1 }` が verify を通り、意図的に偽の
+ensures を付けたジェネリック関数も通る。ジェネリック関数の戻り値 refinement が呼び出し側に
+伝わらない点は別セッションの報告（戻り値述語に定義節が無い）と一致する。rustc_coroutine の
+ジェネリック関数（layout、eligibility、Idx の default method など）の pass 結果は、この問題が
+直るまで信用できない。最優先で再現テストを作って確認すべき。
+
+## def_ty_with_args のキャッシュ
+
+generic_spec_in_generic_caller.rs で、ジェネリックな呼び出し側の解析の後に同じ impl メソッドを
+具体的に呼ぶと、トレイトから継承した ensures が落ちる（main 内の順序で fail 側の結果が変わる）。
+最初の（ジェネリック owner での）実体化がキャッシュされて再利用されている疑い。
