@@ -392,6 +392,19 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 };
                 PlaceType::with_ty_and_term(rty::Type::int(), chc::Term::int(val))
             }
+            mir_ty::TyKind::Uint(_) => {
+                // TODO: see target endianness
+                let val = match bytes.len() {
+                    1 => u8::from_ne_bytes(bytes.try_into().unwrap()) as i64,
+                    2 => u16::from_ne_bytes(bytes.try_into().unwrap()) as i64,
+                    4 => u32::from_ne_bytes(bytes.try_into().unwrap()) as i64,
+                    8 => u64::from_ne_bytes(bytes.try_into().unwrap())
+                        .try_into()
+                        .unwrap(),
+                    _ => unimplemented!("const uint bytes len: {}", bytes.len()),
+                };
+                PlaceType::with_ty_and_term(rty::Type::int(), chc::Term::int(val))
+            }
             mir_ty::TyKind::Tuple(tys) => {
                 let mut pts = Vec::new();
                 for (i, field_ty) in tys.iter().enumerate() {
@@ -437,6 +450,22 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     rty::Type::bool(),
                     chc::Term::bool(val.try_to_bool().unwrap()),
                 )
+            }
+            // A struct whose layout is a single scalar (a newtype, possibly nested) is
+            // represented as a scalar constant rather than an allocation. Materialize its
+            // bytes so that it is decomposed field by field like any other aggregate.
+            (mir_ty::TyKind::Adt(def, _), ConstValue::Scalar(Scalar::Int(val)))
+                if def.is_struct() =>
+            {
+                // TODO: see target endianness
+                let size = val.size().bytes() as usize;
+                let bytes = val.to_bits(val.size()).to_ne_bytes();
+                let alloc = mir::interpret::Allocation::from_bytes_byte_aligned_immutable(
+                    &bytes[..size],
+                    (),
+                );
+                let alloc = self.tcx.mk_const_alloc(alloc);
+                self.const_bytes_ty(*ty, alloc, 0..size)
             }
             (mir_ty::TyKind::Tuple(tys), _) if tys.is_empty() => {
                 PlaceType::with_ty_and_term(rty::Type::unit(), chc::Term::tuple(vec![]))
