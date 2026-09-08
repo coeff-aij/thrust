@@ -12,10 +12,6 @@ trait A {
     fn p(self, x: i64) -> bool;
 }
 
-// The loop invariant is `T::p(*b, v)` plus the prophecy link `!b == !a` between
-// the loop's `&mut` and the entry `a`; PCSat does not infer the latter, so it is
-// spelled out. `a` is rebound to `b` because an `invariant!` cannot name both the
-// current value and the `FnParam` entry value of the same `&mut` parameter.
 #[thrust_macros::context]
 #[thrust_macros::requires(T::p(*a, x))]
 #[thrust_macros::ensures(T::p(!a, result))]

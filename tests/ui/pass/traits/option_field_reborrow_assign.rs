@@ -2,14 +2,12 @@
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60 COAR_IMAGE=coar:latest
 
-// Probe: reborrowing an Option<I> field and then overwriting the field (the Fuse pattern).
 #[thrust_macros::context]
 trait A {
     #[thrust_macros::requires(Self::p(*self))]
     #[thrust_macros::ensures(Self::p(!self))]
     fn f(&mut self);
 
-    // Same precondition, no postcondition: used by the `fail` twin.
     #[thrust_macros::requires(Self::p(*self))]
     fn g(&mut self);
 

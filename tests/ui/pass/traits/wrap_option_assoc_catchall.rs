@@ -2,7 +2,6 @@
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60 COAR_IMAGE=coar:latest
 
-// Probe: Option<Self::Item> flowing through a generic wrapper, via a catch-all arm (fuse.rs pattern).
 #[thrust_macros::context]
 trait A {
     type Item;
@@ -10,7 +9,6 @@ trait A {
     #[thrust_macros::ensures(thrust_models::forall(|i| result == Some(i) ==> Self::ok(*self, i)))]
     fn get(&mut self) -> Option<Self::Item>;
 
-    // No postcondition: used by the `fail` twin.
     fn other(&mut self) -> Option<Self::Item>;
 
     #[thrust_macros::predicate]

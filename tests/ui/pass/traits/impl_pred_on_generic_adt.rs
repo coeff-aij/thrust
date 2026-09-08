@@ -2,10 +2,6 @@
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60 COAR_IMAGE=coar:latest
 
-// A generic function whose spec calls the predicate of a generic impl on a type that
-// still contains the type parameter (`<Bar<T> as Foo>::valid`). `Instance::try_resolve`
-// resolves this to the impl item, so the impl's `define-fun` body is used, not a forall
-// predicate; only a call on the type parameter itself (`T::valid`) needs the latter.
 use thrust_models::Model;
 
 #[thrust_macros::context]
