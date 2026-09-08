@@ -1,6 +1,6 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -Adead_code -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:latest
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:latest THRUST_SOLVER_TIMEOUT_SECS=120
 
 // Extracted from tests/ui/pass/traits/rustc-coroutine.rs (rustc's
 // rustc_index::bit_set and rustc_index::idx, adapted).
