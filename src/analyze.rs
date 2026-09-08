@@ -188,6 +188,18 @@ struct GenericDefTy<'tcx> {
     rty: Option<rty::RefinedType>,
 }
 
+// TODO: key this on the callee and its arguments alone, once analyzing a body no longer
+// depends on who is calling.
+//
+// `caller_def_id` is here because the body of a generic def is re-analyzed under the
+// caller's `owner_fn_id`, and that owner is what interprets a `ParamTy`'s index: without
+// it, `TypeBuilder::param_def_id` resolves index 0 of one def and index 0 of another to
+// the same declaration site. It also selects the `TypingEnv` normalization runs in and
+// mints the closure pre/post forall-pred identities. So a body is analyzed once per
+// (type arguments, calling function) rather than once per monomorphization, which is
+// superlinear in call sites -- the shape that a small generic function called from many
+// places runs into. Giving the body analysis the callee as its owner would make it
+// caller-independent and let this be a monomorphization cache.
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 struct InstantiationKey<'tcx> {
     generic_args: mir_ty::GenericArgsRef<'tcx>,
