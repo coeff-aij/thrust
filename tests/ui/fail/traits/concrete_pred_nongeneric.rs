@@ -2,9 +2,6 @@
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60 COAR_IMAGE=coar:latest
 
-// A non-generic function's specification calls a trait predicate on a concrete type. The
-// call must resolve to the impl's predicate body, not to an unconstrained forall predicate.
-
 #[thrust_macros::context]
 trait A {
     #[thrust_macros::predicate]

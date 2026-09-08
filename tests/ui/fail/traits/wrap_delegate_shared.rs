@@ -2,14 +2,12 @@
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60 COAR_IMAGE=coar:latest
 
-// Probe: delegation through a field of generic type, via a shared reference.
 #[thrust_macros::context]
 trait A {
     #[thrust_macros::requires(Self::p(*self, x))]
     #[thrust_macros::ensures(Self::p(*self, result))]
     fn f(&self, x: i64) -> i64;
 
-    // Same precondition, no postcondition: used by the `fail` twin.
     #[thrust_macros::requires(Self::p(*self, x))]
     fn g(&self, x: i64) -> i64;
 

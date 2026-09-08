@@ -15,9 +15,6 @@ trait A {
     fn p(self) -> bool;
 }
 
-// PCSat times out inferring the loop invariant, so it is spelled out as in
-// simple_loop_self_mut.rs: `T::p(*b)` plus the prophecy link `!b == !x` between the
-// loop's `&mut` and the entry `x`, with `x` rebound to `b` so both can be named.
 #[thrust_macros::context]
 #[thrust_macros::requires(T::p(*x) && n > 0)]
 #[thrust_macros::ensures(T::p(!x))]
@@ -84,7 +81,6 @@ impl A for Y {
 fn target() -> (X, Y) {
     let (mut x, mut y) = (X(1), Y(-1));
     repeat(&mut x, 3);
-    // `Y(-1)` does not satisfy `repeat`'s precondition `T::p(*x)`; `g` establishes it.
     y.g();
     repeat(&mut y, 5);
     (x, y)

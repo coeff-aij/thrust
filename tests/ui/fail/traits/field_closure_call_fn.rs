@@ -2,9 +2,6 @@
 //@compile-flags: -Aunused_parens -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60 COAR_IMAGE=coar:latest
 
-// Probe: calling an `Fn` closure stored in a struct field through `&self`, with pre!/post! on the field.
-// The field must be modelled as `model::Closure<F>` for `pre!`/`post!` to accept it as a receiver.
-// The `F: Fn` bound is only on the impl header; `build_closure_type_for_param` has to find it there.
 struct S<F> {
     func: F,
 }

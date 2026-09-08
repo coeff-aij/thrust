@@ -2,7 +2,6 @@
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60 COAR_IMAGE=coar:latest
 
-// Probe: a usize counter decremented behind &mut self (the Take counter pattern).
 struct C {
     n: usize,
 }
