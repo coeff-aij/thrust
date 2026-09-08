@@ -37,7 +37,7 @@ where
     #[thrust_macros::predicate]
     fn ok(self, i: Self::Item) -> bool {
         // I::ok(self.inner, i)
-        "(q_ok_337bddb8da64d77e1943225dec707dbb<a0> (tuple_proj<a0>.0 self_) i)";
+        "(q_ok_b9f69d98bde4a0eaae50a022705885a1<a0> (tuple_proj<a0>.0 self_) i)";
         true
     }
 
