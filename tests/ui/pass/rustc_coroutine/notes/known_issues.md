@@ -116,6 +116,13 @@ ensures を付けたジェネリック関数も通る。ジェネリック関数
 問題は「ジェネリック関数の forall ソート述語変数が呼び出し箇所で実体化されない（入口・戻り値とも）」
 点に限定される。ユーザーの fix/generic-fn-return-tracking が同じ問題を扱う。
 
+候補修正（別セッションからの情報）: ローカルブランチ experiment/skip-placeholder-analysis の
+9769fbe「fix: track generic fn call results by re-analyzing bodies at concrete args」が、具体的な
+実体化ごとに単相化した本体を再解析する（DefTy::Generic -> DeferredDefMode::Analyze、AnalysisKey ごとの
+基本ブロック型）。コミットメッセージによれば黙って通っていた fail テスト 18 件が Unsat になる。現在の
+forall-sort 先端に cherry-pick が衝突なしで当たる（dry run）。後続の 16e9c17 は placeholder 解析を
+飛ばす別実験で traits/map を退行させるため候補外。適用はユーザーの判断待ち。
+
 ## def_ty_with_args のキャッシュ
 
 generic_spec_in_generic_caller.rs で、ジェネリックな呼び出し側の解析の後に同じ impl メソッドを
