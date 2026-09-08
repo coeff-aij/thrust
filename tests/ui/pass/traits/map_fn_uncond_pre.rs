@@ -57,9 +57,9 @@ where <I as thrust_models::Model>::Ty: PartialEq
         // reachability-conditioned form is what made the `FnMut` invariant
         // non-inductive.
         "(and
-            (q_invariant_62915fdcdc6c54c8413e4376cbb24748<a0> (tuple_proj<a0-a1>.0 self_))
+            (q_invariant_597ac4b22488a2bc34d254b9ac53a96e<a0> (tuple_proj<a0-a1>.0 self_))
             (forall ((i a3))
-                (q_pre_next_62915fdcdc6c54c86c447a319ee07915<a1>
+                (q_pre_next_597ac4b22488a2bc3015b2bc3056d418<a1>
                     (tuple_proj<a0-a1>.1 self_)
                     i
                 )
@@ -72,7 +72,7 @@ where <I as thrust_models::Model>::Ty: PartialEq
     fn completed(&mut self) -> bool {
         // self.iter.completed() && *self.func == !self.func
         "(and
-            (q_completed_62915fdcdc6c54c8387296b19d9ced6e<a0>
+            (q_completed_597ac4b22488a2bcd79190db0c73456e<a0>
                 (mut<a0>
                     (tuple_proj<a0-a1>.0 (mut_current<Tuple<a0-a1>> self_))
                     (tuple_proj<a0-a1>.0 (mut_final<Tuple<a0-a1>> self_))
@@ -92,16 +92,16 @@ where <I as thrust_models::Model>::Ty: PartialEq
         // pre!(self.func(i)) && post!(self.func(i), item) && self.func == dist.func
         "(exists ((i a3))
             (and
-                (q_step_62915fdcdc6c54c8d4f82b9a1215e76c<a0>
+                (q_step_597ac4b22488a2bc6c728c715e62f635<a0>
                     (tuple_proj<a0-a1>.0 self_)
                     i
                     (tuple_proj<a0-a1>.0 dist)
                 )
-                (q_pre_next_62915fdcdc6c54c86c447a319ee07915<a1>
+                (q_pre_next_597ac4b22488a2bc3015b2bc3056d418<a1>
                     (tuple_proj<a0-a1>.1 self_)
                     i
                 )
-                (q_post_next_62915fdcdc6c54c86c447a319ee07915<a1>
+                (q_post_next_597ac4b22488a2bc3015b2bc3056d418<a1>
                     (tuple_proj<a0-a1>.1 self_)
                     i
                     item
