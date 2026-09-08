@@ -162,3 +162,14 @@ generic_spec_in_generic_caller.rs で、ジェネリックな呼び出し側の�
 - `Option<&u64>` の payload は `exists(|x: Int| result == Some(&x))` の形で書ける。
 - CI 固定の coar イメージ（ghcr.io/hiroshi-unno/coar:main と同一）は `declare-forall-sort` を
   パースできない。このブランチのテストはローカルビルドの coar:latest（a21d2d712532）が必要。
+
+## 環境要因（別セッションからの注意、2026-09-09）
+
+- coar:latest イメージは再ビルドされた（旧 c887fbe8b726 は 2025-12 ビルドで upstream より 9 か月古い）。
+  以前のソルバ判定（Unsat/Unknown/Timeout）は暫定扱いで、再ビルド後に再測定する。
+- ワークツリーごとの target/debug/deps に古い libthrust_macros-<hash>.so が複数残ると、ドライバが
+  最初に見つけたものを読み込み、偽の E0433/E0401 や偽の Unsat が出る。ローカルの失敗を信じる前に
+  `ls target/debug/deps/libthrust_macros-*.so` で 1 個だけか確認し、複数なら削除して再ビルド。
+- 手書き `invariant!` の注意: 囲む関数に `#[thrust_macros::context]` が要る、`&mut` 引数は
+  `let a = x;` で再束縛して `a: &mut T` と `x: FnParam<&mut T>` を `!a == !x.at_entry()` で結ぶ、
+  invariant は推論述語を置き換えるのでループ後に必要な事実をすべて書き直す。
