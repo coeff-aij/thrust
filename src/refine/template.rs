@@ -340,6 +340,18 @@ impl<'tcx> TypeBuilder<'tcx> {
             return Some(self.build(tupled_upvars_ty));
         }
 
+        // TODO: keep this in step with `impl<T: Model> Model for Ghost<T>` in std.rs, which
+        // resolves a `Ghost<T>` to its content as well.
+        //
+        // Which of the two applies is not evident from the source: a concrete `Ghost<i64>`
+        // normalizes and never reaches here, while a generic one does, because
+        // `resolve_model_ty` either fails to normalize it or discards the partly normalized
+        // result. See that impl for why it cannot be a fixed point like the models above.
+        if Some(adt.did()) == self.def_ids.ghost_model() {
+            let content_ty = args.type_at(0);
+            return Some(self.build(content_ty));
+        }
+
         None
     }
 
@@ -726,6 +738,13 @@ where
         if Some(adt.did()) == self.inner.def_ids.closure_model() {
             let tupled_upvars_ty = args.type_at(0);
             return Some(self.build(tupled_upvars_ty));
+        }
+
+        // TODO: keep in step with `impl Model for Ghost` in std.rs; see
+        // `TypeBuilder::model_adt`.
+        if Some(adt.did()) == self.inner.def_ids.ghost_model() {
+            let content_ty = args.type_at(0);
+            return Some(self.build(content_ty));
         }
 
         None
