@@ -1006,14 +1006,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             let input_ty = self.expand_model_projection(input_ty);
             tracing::debug!(?ident, ?input_ty, "resolving");
 
-            // The synthetic `__thrust_self` parameter (emitted when an invariant refers to the receiver
-            // `self`) maps to the loop-carried receiver, which appears as `self` in debug info.
-            let name = if ident.name.as_str() == "__thrust_self" {
-                rustc_span::Symbol::intern("self")
-            } else {
-                ident.name
-            };
-            tracing::debug!("{:?}", input_ty.ty_adt_def());
+            let name = analyze::annot_fn::lifted_param_source_name(ident);
+
             if input_ty
                 .ty_adt_def()
                 .is_some_and(|def| Some(def.did()) == self.ctx.def_ids().fn_param_wrapper())
