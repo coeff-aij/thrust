@@ -6,6 +6,7 @@ trait Iterator {
     type Item;
 
     #[thrust_macros::requires(Self::invariant(*self))]
+    #[thrust_macros::ensures(Self::invariant(!self))]
     #[thrust_macros::ensures(result == None ==> Self::completed(self))]
     #[thrust_macros::ensures(forall(|i| result == Some(i) ==> Self::step(*self, i, !self)))]
     fn next(&mut self) -> Option<Self::Item>;

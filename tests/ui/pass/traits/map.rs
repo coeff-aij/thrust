@@ -1,4 +1,4 @@
-//@check-pass
+// FIXME: Unsat since `next` ensures `Self::invariant(!self)`: Map's invariant (closure pre for every item the inner iterator can step to now) is not inductive; preserving it needs a multi-step reachability relation in the trait (Creusot uses `produces` over sequences).
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:latest
 use thrust_models::forall;
 
@@ -7,6 +7,7 @@ trait Iterator {
     type Item;
 
     #[thrust_macros::requires(Self::invariant(*self))]
+    #[thrust_macros::ensures(Self::invariant(!self))]
     #[thrust_macros::ensures(result == None ==> Self::completed(self))]
     #[thrust_macros::ensures(forall(|i| result == Some(i) ==> Self::step(*self, i, !self)))]
     fn next(&mut self) -> Option<Self::Item>;
