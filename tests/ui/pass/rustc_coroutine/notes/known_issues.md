@@ -173,3 +173,6 @@ generic_spec_in_generic_caller.rs で、ジェネリックな呼び出し側の�
 - 手書き `invariant!` の注意: 囲む関数に `#[thrust_macros::context]` が要る、`&mut` 引数は
   `let a = x;` で再束縛して `a: &mut T` と `x: FnParam<&mut T>` を `!a == !x.at_entry()` で結ぶ、
   invariant は推論述語を置き換えるのでループ後に必要な事実をすべて書き直す。
+- 再ビルド後の coar:latest（e8a1748680a3）で rustc_coroutine の段階ファイルを再測定: probe 7 組は変化なし、
+  values/idx/bitset の pass 側 3 件は 30 秒でタイムアウトし、150 秒では verify。旧ローカルイメージ
+  （a21d2d712532）では 1〜3 秒だったので新イメージは遅い。3 組のヘッダを THRUST_SOLVER_TIMEOUT_SECS=120 にした。
