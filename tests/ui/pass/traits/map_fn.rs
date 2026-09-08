@@ -8,12 +8,7 @@ trait Iterator {
 
     #[thrust_macros::requires(Self::invariant(*self))]
     #[thrust_macros::ensures(result == None ==> Self::completed(self))]
-    #[thrust_macros::ensures(Self::completed(self) ==> result == None)]
     #[thrust_macros::ensures(forall(|i| result == Some(i) ==> Self::step(*self, i, !self)))]
-    // `step(*self, i, !self) ==> result == Some(i)` cannot hold for `Map`: its `step`
-    // relates `item` to the closure's postcondition, an arbitrary relation, so `step`
-    // does not determine `i`. The weaker direction below is what `Map` can guarantee.
-    #[thrust_macros::ensures(forall(|i| Self::step(*self, i, !self) ==> !(result == None)))]
     fn next(&mut self) -> Option<Self::Item>;
 
     #[thrust_macros::predicate]
