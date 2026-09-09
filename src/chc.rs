@@ -2471,6 +2471,10 @@ fn collect_forall_defaults(term: &Term<TermVarIdx>, used: &mut HashSet<ForallSor
             }
         }
         Term::TupleProj(t, _) => collect_forall_defaults(t, used),
+        // An empty array carries no default of its own in the AST: the SMT-LIB2
+        // writer synthesises `default_for(elem)` for it at print time, so ask the
+        // same function which defaults that will reference.
+        Term::ArrayEmpty(_, elem) => collect_forall_defaults(&Term::default_for(elem), used),
         Term::DatatypeCtor(_, _, args) => {
             for t in args {
                 collect_forall_defaults(t, used);
@@ -2482,7 +2486,6 @@ fn collect_forall_defaults(term: &Term<TermVarIdx>, used: &mut HashSet<ForallSor
         | Term::Bool(_)
         | Term::Int(_)
         | Term::String(_)
-        | Term::ArrayEmpty(_, _)
         | Term::FormulaQuantifiedVar(_, _) => {}
     }
 }
@@ -2510,6 +2513,27 @@ mod tests {
         let smt = system.smtlib2().to_string();
         assert_eq!(smt.matches("(declare-const default_a0 a0)").count(), 1);
         assert_eq!(smt.matches("default_a0").count(), 2);
+    }
+
+    #[test]
+    fn declares_forall_default_reached_only_through_an_empty_array() {
+        let mut system = System::default();
+        let idx = system.new_forall_sort(DebugInfo::default());
+        let seq_sort = Sort::array(Sort::int(), Sort::forall(idx));
+        let empty = Term::default_for(&seq_sort);
+        let body = Atom::new(
+            Pred::Known(KnownPred::EQUAL),
+            vec![empty, Term::var(0usize.into())],
+        );
+        system.push_clause(Clause {
+            vars: [seq_sort].into_iter().collect(),
+            head: Atom::new(Pred::UserDefined(UserDefinedPred::new("p".into())), vec![]),
+            body: body.into(),
+            debug_info: DebugInfo::default(),
+        });
+
+        let smt = system.smtlib2().to_string();
+        assert_eq!(smt.matches("(declare-const default_a0 a0)").count(), 1);
     }
 
     #[test]
