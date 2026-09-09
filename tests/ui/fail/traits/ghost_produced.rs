@@ -14,7 +14,6 @@ trait Iterator {
     #[thrust_macros::ensures(Self::invariant(!self))]
     #[thrust_macros::ensures(result == None ==> Self::completed(self))]
     #[thrust_macros::ensures(forall(|i| result == Some(i) ==> Self::step(*self, i, !self)))]
-    #[thrust_macros::ensures(forall(|i| result == Some(i) ==> Self::item_ok(i)))]
     fn next(&mut self) -> Option<Self::Item>;
 
     #[thrust_macros::predicate]
@@ -45,7 +44,7 @@ where
 }
 
 #[thrust_macros::context]
-#[thrust_macros::requires(I::invariant((*r).0))]
+#[thrust_macros::requires(I::invariant((*r).0) && (*r).1.len() == 0)]
 #[thrust_macros::ensures(
     forall(|k: Int| 0 <= k && k < (!r).1.len() ==> I::item_ok((!r).1[k]))
 )]
