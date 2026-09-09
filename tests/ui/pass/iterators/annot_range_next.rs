@@ -8,10 +8,9 @@ trait Iterator {
     type Item;
 
     #[thrust_macros::requires(Self::invariant(*self))]
+    #[thrust_macros::ensures(Self::invariant(!self))]
     #[thrust_macros::ensures(result == None ==> Self::completed(self))]
-    #[thrust_macros::ensures(Self::completed(self) ==> result == None)]
     #[thrust_macros::ensures(forall(|i| result == Some(i) ==> Self::step(*self, i, !self)))]
-    #[thrust_macros::ensures(forall(|i| Self::step(*self, i, !self) ==> result == Some(i)))]
     fn next(&mut self) -> Option<Self::Item>;
 
     #[thrust_macros::predicate]
