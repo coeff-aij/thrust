@@ -1,4 +1,4 @@
-//@check-pass
+//@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60 COAR_IMAGE=coar:latest
 use thrust_models::forall;
@@ -23,25 +23,26 @@ trait Iterator {
     fn step(self, item: Self::Item, dist: Self) -> bool;
 }
 
-// Creusot's `MapExt`: the closure receives the ghost history of items produced
-// so far (`Ghost<Seq<Item>>`), so its precondition can depend on what has come
-// before instead of being stated unconditionally over the whole item type
-// (contrast `map_fn_uncond_pre.rs`). The history lives in a ghost `produced`
+// A variation on Creusot's `MapExt`, not `MapExt` itself -- the difference is
+// in the second paragraph. The closure receives the ghost history of items
+// produced so far (`Ghost<Seq<Item>>`), so its precondition can depend on what
+// has come before instead of being stated unconditionally over the whole item
+// type (contrast `map_fn_uncond_pre.rs`). The history lives in a ghost `produced`
 // field updated by `next` itself -- no existential witness array in `step`.
 //
 // The precondition here is conditioned on the history alone, not on what the
 // inner iterator can still actually produce (Creusot's `next_precondition`,
 // which quantifies over `self.iter.produces(...)`): that reachability-
-// conditioned form was tried first and is NOT inductive on its own -- Creusot
-// pairs it with a `preservation` law justified by `produces_trans`, untried
-// here. What DOES verify is `preservation` stated as a fact about the closure
-// alone, quantified over an arbitrary history: for ANY history, if the closure
-// accepted one more item, its precondition still holds for ANY next item at
-// the extended history. That is enough to make the per-position "precondition
-// holds for the current history" conjunct inductive, without needing
-// `produces`/`produces_refl`/`produces_trans` at all -- at the cost of
-// requiring the precondition to hold for every possible next item, not just
-// producible ones.
+// conditioned form was tried first and is NOT inductive on its own (see the
+// commit report) -- Creusot pairs it with a `preservation` law justified by
+// `produces_trans`, untried here. What DOES verify is `preservation` stated as
+// a fact about the closure alone, quantified over an arbitrary history: for
+// ANY history, if the closure accepted one more item, its precondition still
+// holds for ANY next item at the extended history. That is enough to make the
+// per-position "precondition holds for the current history" conjunct
+// inductive, without needing `produces`/`produces_refl`/`produces_trans` at
+// all -- at the cost of requiring the precondition to hold for every possible
+// next item, not just producible ones.
 struct Map<I, F> {
     iter: I,
     func: F,
@@ -96,10 +97,13 @@ where
         // name -- confirmed with several). Workaround: quantify over the
         // tuple's own FIELDS (an `Array Int Int` and an `Int` length) and
         // reconstruct the tuple inline via the `tuple<...>` constructor.
+        // Break: drop the `self.iter.invariant()` conjunct -- `next`'s own
+        // `requires(Self::invariant(*self))` no longer implies the inner
+        // iterator's precondition, so `self.iter.next()` cannot be called.
         "(and
-            (q_invariant_ba0eaac98551ecefc7c3f60d84642d71<a0> (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.0 self_))
+            true
             (forall ((e Int))
-                (q_pre_next_ba0eaac98551ecef51cc7519802c17fc<a1>
+                (q_pre_next_bedbd733d3f248d989e85efaa8d1bc7<a1>
                     (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.1 self_)
                     e
                     (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.2 self_)
@@ -111,19 +115,19 @@ where
                         (forall ((b Int))
                             (=>
                                 (and
-                                    (q_pre_next_ba0eaac98551ecef51cc7519802c17fc<a1>
+                                    (q_pre_next_bedbd733d3f248d989e85efaa8d1bc7<a1>
                                         (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.1 self_)
                                         e1
                                         (tuple<Array<Int-Int>-Int> harr hlen)
                                     )
-                                    (q_post_next_ba0eaac98551ecef51cc7519802c17fc<a1>
+                                    (q_post_next_bedbd733d3f248d989e85efaa8d1bc7<a1>
                                         (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.1 self_)
                                         e1
                                         (tuple<Array<Int-Int>-Int> harr hlen)
                                         b
                                     )
                                 )
-                                (q_pre_next_ba0eaac98551ecef51cc7519802c17fc<a1>
+                                (q_pre_next_bedbd733d3f248d989e85efaa8d1bc7<a1>
                                     (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.1 self_)
                                     e2
                                     (tuple<Array<Int-Int>-Int> (store harr hlen e1) (+ hlen 1))
@@ -141,7 +145,7 @@ where
     fn completed(&mut self) -> bool {
         // self.iter.completed() && *self.func == !self.func && *self.produced == !self.produced
         "(and
-            (q_completed_ba0eaac98551ecef271f2229ea30f2fb<a0>
+            (q_completed_bedbd733d3f248d6f3ca13bf4a6f7f6<a0>
                 (mut<a0>
                     (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.0 (mut_current<Tuple<a0-a1-Tuple<Array<Int-Int>-Int>>> self_))
                     (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.0 (mut_final<Tuple<a0-a1-Tuple<Array<Int-Int>-Int>>> self_))
@@ -166,17 +170,17 @@ where
         // self.func == dist.func && dist.produced == self.produced.push(i)
         "(exists ((i Int))
             (and
-                (q_step_ba0eaac98551ecef4caae14c2d1fe8e7<a0>
+                (q_step_bedbd733d3f248d84d555206bfaa09e<a0>
                     (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.0 self_)
                     i
                     (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.0 dist)
                 )
-                (q_pre_next_ba0eaac98551ecef51cc7519802c17fc<a1>
+                (q_pre_next_bedbd733d3f248d989e85efaa8d1bc7<a1>
                     (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.1 self_)
                     i
                     (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.2 self_)
                 )
-                (q_post_next_ba0eaac98551ecef51cc7519802c17fc<a1>
+                (q_post_next_bedbd733d3f248d989e85efaa8d1bc7<a1>
                     (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.1 self_)
                     i
                     (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.2 self_)
