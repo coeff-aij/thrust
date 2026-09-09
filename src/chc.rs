@@ -265,7 +265,7 @@ impl Sort {
         }
     }
 
-    fn deref(self) -> Self {
+    pub fn deref(self) -> Self {
         match self {
             Sort::Box(s) => *s,
             Sort::Mut(s) => *s,
