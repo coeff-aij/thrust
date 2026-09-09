@@ -326,6 +326,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 }
                 _ => None,
             };
+            // No resolution here: `sig` comes from the body, which `Self::generic_args`
+            // has already instantiated, so `param_ty` is a parameter of the caller
+            // already -- applying the arguments a second time would be out of range.
             if let Some(param_ty) = param_ty {
                 if let Some(fun_ty) = self.type_builder.build_closure_type_for_param(
                     param_ty,
@@ -391,15 +394,20 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             let mir_ty::TyKind::Param(p) = trait_ref.self_ty().kind() else {
                 continue;
             };
+            // `p` is declared by the impl block. Only the parameter this analysis's
+            // arguments map it to lives in the index space `param_local_idx` reads.
+            let Some(p) = self.type_builder.resolve_param_ty(*p, self.generic_args) else {
+                continue;
+            };
             if let Some(fun_ty) = self.type_builder.build_closure_type_for_param(
-                *p,
+                p,
                 impl_local_def_id,
-                self.tcx.mk_args(&[]),
+                self.generic_args,
             ) {
                 self.type_builder.register_closure_type_param(
                     analyze::TypeParam::GenericType {
-                        param_def_id: self.type_builder.param_def_id(p),
-                        local_idx: self.type_builder.param_local_idx(p),
+                        param_def_id: self.type_builder.param_def_id(&p),
+                        local_idx: self.type_builder.param_local_idx(&p),
                     },
                     fun_ty,
                 );
