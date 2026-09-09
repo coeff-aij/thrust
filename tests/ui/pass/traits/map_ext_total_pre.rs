@@ -53,12 +53,17 @@ impl<I, F> Model for Map<I, F> {
     type Ty = Map<I, F>;
 }
 
-// Obstacle: `ghost!` cannot be called directly inside a method of a generic
-// trait impl whose contract mentions `Self` (rustc reports E0282 on the
-// unrelated `Seq` calls -- `thrust-macros/src/formula_fn_lifting.rs:156-162`
-// rewrites `Self` to the impl's concrete self type, marked
-// `// TODO: Support generic/trait impl`). Workaround: do the push in a free
-// function with no `Self` in its own signature, which `next` merely calls.
+// Obstacle: a `Ghost`-typed FIELD has no model-level accessor in a `ghost!`
+// body. `Map`'s model is the struct itself, so `s.produced` stays
+// `Ghost<Seq<Int>>` there and `push` is not found (E0599); reaching it through
+// a `&mut Map` the way `fold_fn_ghost_call_law.rs` reaches `Run`'s tuple model
+// is not available. A `Ghost<T>` PARAMETER is modelled as `T`, so the push has
+// to happen in a function that takes one. Binding the field to a local first
+// does not help either -- the ghost term then reports the item as not live.
+//
+// This is NOT the `Self`-in-a-generic-trait-impl gap that forall-sort c0cfee5
+// fixed; `ghost_in_generic_impl.rs` shows `ghost!` working directly in such an
+// impl now. Only the field access keeps this workaround.
 #[thrust_macros::ensures(result == produced.push(x))]
 fn push_produced(produced: Ghost<Seq<Int>>, x: i64) -> Ghost<Seq<Int>> {
     thrust_macros::ghost!(|produced: Ghost<Seq<Int>>, x: i64| -> Seq<Int> { produced.push(x) })
