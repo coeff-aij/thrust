@@ -596,17 +596,41 @@ impl<'tcx> TypeBuilder<'tcx> {
     /// Returns `None` if `param_ty` has no `Fn` / `FnMut` / `FnOnce` trait bound.
     /// As a side effect, the closure pre/post forall predicates are registered
     /// with the [`chc::System`].
+    /// Resolves `param_ty`, declared by some other item, at the generic arguments
+    /// this analysis runs with.
+    ///
+    /// Returns the type parameter those arguments map it to -- which is the one the
+    /// current [`Self::param_local_idx`] can read -- or `None` when it maps to a
+    /// concrete type, which carries its own contract and needs no parameter-keyed one.
+    pub fn resolve_param_ty(
+        &self,
+        param_ty: mir_ty::ParamTy,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
+    ) -> Option<mir_ty::ParamTy> {
+        if generic_args.is_empty() {
+            return Some(param_ty);
+        }
+        // Bind the *type*, not the `ParamTy`: instantiating a `ParamTy` can only ever
+        // return a `ParamTy`, so it cannot substitute a concrete argument.
+        let ty =
+            mir_ty::EarlyBinder::bind(param_ty.to_ty(self.tcx)).instantiate(self.tcx, generic_args);
+        match ty.kind() {
+            mir_ty::TyKind::Param(p) => Some(*p),
+            _ => None,
+        }
+    }
+
+    /// Builds the contract of a closure-typed parameter from its `Fn` bound.
+    ///
+    /// `param_ty` must already be resolved for the current analysis
+    /// ([`Self::resolve_param_ty`]); `generic_args` instantiates `local_def_id`'s
+    /// predicates so the bound is found at those same arguments.
     pub fn build_closure_type_for_param(
         &self,
         param_ty: mir_ty::ParamTy,
         local_def_id: rustc_hir::def_id::LocalDefId,
         generic_args: mir_ty::GenericArgsRef<'tcx>,
     ) -> Option<rty::FunctionType> {
-        let param_ty = if !generic_args.is_empty() {
-            mir_ty::EarlyBinder::bind(param_ty).instantiate(self.tcx, generic_args)
-        } else {
-            param_ty
-        };
         // `predicates_of(..).predicates` holds only the predicates written on the
         // function itself; a bound such as `F: FnMut(..)` on the enclosing impl or
         // trait lives in the parent's predicates. `instantiate` and
