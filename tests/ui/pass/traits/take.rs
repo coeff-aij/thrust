@@ -1,4 +1,6 @@
+//@check-pass
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:latest
+//@compile-flags: -C debug-assertions=off
 use thrust_models::forall;
 
 #[thrust_macros::context]
@@ -6,10 +8,9 @@ trait Iterator {
     type Item;
 
     #[thrust_macros::requires(Self::invariant(*self))]
+    #[thrust_macros::ensures(Self::invariant(!self))]
     #[thrust_macros::ensures(result == None ==> Self::completed(self))]
-    #[thrust_macros::ensures(Self::completed(self) ==> result == None)]
     #[thrust_macros::ensures(forall(|i| result == Some(i) ==> Self::step(*self, i, !self)))]
-    #[thrust_macros::ensures(forall(|i| Self::step(*self, i, !self) ==> result == Some(i)))]
     fn next(&mut self) -> Option<Self::Item>;
 
     #[thrust_macros::predicate]

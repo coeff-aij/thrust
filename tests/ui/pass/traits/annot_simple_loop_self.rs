@@ -12,7 +12,7 @@ trait A {
     fn p(self, x: i64) -> bool;
 }
 
-#[thrust_macros::invariant_context]
+#[thrust_macros::context]
 #[thrust_macros::requires(T::p(*a, x))]
 #[thrust_macros::ensures(T::p(*a, result))]
 fn target<T: A>(a: &T, x: i64) -> i64 {
