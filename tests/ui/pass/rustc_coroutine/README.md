@@ -14,13 +14,32 @@
 
 | 段階 | 内容 | ファイル | 状態 |
 |---|---|---|---|
-| 1 | 値型（Size/Align/Integer/Primitive/Scalar/Niche/TargetDataLayout） | values.rs | 作成中 |
-| 2 | Idx トレイト、IndexSlice/IndexVec | idx.rs | Idx のみ作成中。IndexSlice は `[T]` 待ち |
-| 3 | DenseBitSet/BitMatrix/BitIter の集合抽象（trusted） | bitset.rs | 作成中 |
-| 4 | 自前イテレータの仕様 | idx.rs（IdxRange/WordIter） | SliceIter/IterEnumerated は `[T]` 待ち |
-| 5 | coroutine_saved_local_eligibility | eligibility.rs | 未着手（段階 2 待ち） |
-| 6 | univariant の trusted 仕様 | univariant.rs | 未着手 |
-| 7 | layout() 統合 | layout.rs | 未着手（adapter 対応待ち） |
+| 1 | 値型（Size/Align/Integer/Primitive/Scalar/Niche/TargetDataLayout） | values.rs | **緑**（pass/fail）。obj_size_bound・pointer_size_in に dl_wf の requires、data_layout に述語 dl_of の ensures。Primitive::size/align は trusted のまま（forall 経由の前提で pcsat が Unknown） |
+| 2 | Idx トレイト、IndexSlice/IndexVec | idx.rs | **Idx は緑**（can_new/index_is、plus/increment_by 検証）。IndexSlice/IndexVec はジェネリック `[T]` 待ちで未着手 |
+| 3 | DenseBitSet/BitMatrix/BitIter の集合抽象（trusted） | bitset.rs | **緑**（pass/fail）。mem/inserted/no_mem で insert/contains/insert_all、BitIter::next に添字上界 |
+| 4 | 自前イテレータの仕様 | idx.rs（IdxRange/WordIter） | **緑**。next の仕様は隣接 inherent impl の extern_spec ラッパで記述。SliceIter/IterEnumerated は `[T]` 待ち |
+| 5 | coroutine_saved_local_eligibility | eligibility.rs | **下書き**（ignore-on-host）。requires/ensures と各ループの invariant! を転記。IndexSlice の `[T]` で解析が止まる |
+| 6 | univariant の trusted 仕様 | univariant.rs | **下書き**（ignore-on-host）。置換の契約は IndexSlice の要素アクセスが書けず requires/ensures(true)。`[T]` で止まる |
+| 7 | layout() 統合 | layout.rs | **下書き**（ignore-on-host）。各 panic 箇所に TODO(proof)。impl Trait 引数のため仕様が付けられない（feat/spec-with-impl-trait-args で解消予定） |
+
+verify 済みの数値は coar:latest = e8a1748680a3 で測定（values/idx/bitset は 120 秒の solver timeout が必要）。
+coar:latest はその後 dfad2b27d12e（develop 933d14b48）に付け替わっており、新イメージでは未再測定。
+見つけた制限は notes/known_issues.md に、調査メモは notes/ の各ファイルにある。
+
+### 残り 3 段階が止まっている場所
+
+- **ジェネリックなスライス `[T]`**（IndexSlice の `raw: [T]` と `IntoSliceIdx<I, [T]>`）: 段階 2 の
+  IndexSlice/IndexVec、段階 5〜6 の解析がここで止まる。スライス対応は別作業。
+- **std のイテレータ adapter 連鎖**（map/filter/collect/zip/enumerate/extend/retain/all）と
+  `vec::IntoIter` / `slice::IterMut`: 段階 7 の本体。Vec/slice イテレータの定義は別作業に差し替え。
+- **forall-sort のジェネリック関数の未検査問題**: 直るまで、ジェネリック関数を含む pass は fail 側の
+  Unsat で裏取りする（notes/known_issues.md）。
+- **Thrust 側の修正ブランチ**（main ベース: feat/int-casts、fix/enum-discriminants、
+  feat/newtype-scalar-consts、fix/unsigned-const-sign、feat/unsigned-param-nonneg、
+  feat/spec-on-trait-impl-methods、feat/spec-with-impl-trait-args、feat/int-model-all-widths、
+  feat/std-specs-clone-vec-checked-sub、fix/datatype-decl-order、統合 integration/thrust-fixes、
+  forall-sort ベース: fix/trait-item-ty-owner、fix/singleton-spec-params）はレビュー待ちで未マージ。
+  values.rs でコメントアウトした derive と AbiAlign::min/max は fix/enum-discriminants が入れば戻せる。
 
 ## Thrust 側の前提（未対応）
 
