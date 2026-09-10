@@ -85,6 +85,37 @@ pub struct TypeBuilder<'tcx> {
     system: Rc<RefCell<chc::System>>,
 }
 
+// TODO: Fold `TypeBuilder::closure_trait_ret` into `closure_trait_call` so that one function
+// resolves a closure-typed parameter's whole call signature instead of two halves reporting the
+// parameters and the return type separately.
+/// What a `Fn`/`FnMut`/`FnOnce` bound says about calling a closure-typed parameter: the parameters
+/// of the call, and which of the three traits the bound is. The return type comes separately, from
+/// [`TypeBuilder::closure_trait_ret`].
+struct ClosureTraitCall {
+    params: IndexVec<rty::FunctionParamIdx, rty::RefinedType<rty::FunctionParamIdx>>,
+    kind: mir_ty::ClosureKind,
+}
+
+/// The sort a closure precondition takes its upvars in.
+///
+/// An `FnMut` closure receives its upvars behind a `&mut`, whose prophecy is still unconstrained
+/// where the precondition has to be discharged; the precondition therefore names their current
+/// value rather than the `Mut` pair. `Fn` and `FnOnce` carry no prophecy to drop.
+fn pre_upvars_sort(upvars: chc::Sort, closure_kind: mir_ty::ClosureKind) -> chc::Sort {
+    match closure_kind {
+        mir_ty::ClosureKind::FnMut => upvars.deref(),
+        mir_ty::ClosureKind::Fn | mir_ty::ClosureKind::FnOnce => upvars,
+    }
+}
+
+/// The upvars term matching [`pre_upvars_sort`].
+fn pre_upvars_term<V>(upvars: chc::Term<V>, closure_kind: mir_ty::ClosureKind) -> chc::Term<V> {
+    match closure_kind {
+        mir_ty::ClosureKind::FnMut => upvars.mut_current(),
+        mir_ty::ClosureKind::Fn | mir_ty::ClosureKind::FnOnce => upvars,
+    }
+}
+
 impl<'tcx> TypeBuilder<'tcx> {
     pub fn new(
         tcx: mir_ty::TyCtxt<'tcx>,
@@ -340,6 +371,18 @@ impl<'tcx> TypeBuilder<'tcx> {
             return Some(self.build(tupled_upvars_ty));
         }
 
+        // TODO: keep this in step with `impl<T: Model> Model for Ghost<T>` in std.rs, which
+        // resolves a `Ghost<T>` to its content as well.
+        //
+        // Which of the two applies is not evident from the source: a concrete `Ghost<i64>`
+        // normalizes and never reaches here, while a generic one does, because
+        // `resolve_model_ty` either fails to normalize it or discards the partly normalized
+        // result. See that impl for why it cannot be a fixed point like the models above.
+        if Some(adt.did()) == self.def_ids.ghost_model() {
+            let content_ty = args.type_at(0);
+            return Some(self.build(content_ty));
+        }
+
         None
     }
 
@@ -507,7 +550,7 @@ impl<'tcx> TypeBuilder<'tcx> {
         }
     }
 
-    /// Extracts the parameter list for a `Fn` / `FnMut` / `FnOnce` trait predicate
+    /// Extracts the [`ClosureTraitCall`] of a `Fn` / `FnMut` / `FnOnce` trait predicate
     /// whose `Self` type matches `param_ty`. Returns `None` otherwise.
     ///
     /// The first parameter is the closure value (wrapped in a `&` / `&mut` pointer
@@ -515,11 +558,11 @@ impl<'tcx> TypeBuilder<'tcx> {
     /// as a single tuple matching the call-site shape produced by
     /// `<F as Fn<(A,)>>::call(...)`.
     #[tracing::instrument(skip(self))]
-    fn closure_trait_args(
+    fn closure_trait_call(
         &self,
         param_ty: mir_ty::ParamTy,
         pred: mir_ty::TraitPredicate<'tcx>,
-    ) -> Option<IndexVec<rty::FunctionParamIdx, rty::RefinedType<rty::FunctionParamIdx>>> {
+    ) -> Option<ClosureTraitCall> {
         let trait_ref = pred.trait_ref;
         if trait_ref.self_ty() != param_ty.to_ty(self.tcx) {
             return None;
@@ -548,7 +591,10 @@ impl<'tcx> TypeBuilder<'tcx> {
             .collect();
 
         tracing::debug!("found the signature for closure trait: {params:#?}");
-        Some(params)
+        Some(ClosureTraitCall {
+            params,
+            kind: closure_kind,
+        })
     }
 
     /// Extracts the return type refinement for `<F as FnOnce>::Output` projection
@@ -584,32 +630,58 @@ impl<'tcx> TypeBuilder<'tcx> {
     /// Returns `None` if `param_ty` has no `Fn` / `FnMut` / `FnOnce` trait bound.
     /// As a side effect, the closure pre/post forall predicates are registered
     /// with the [`chc::System`].
+    /// Resolves `param_ty`, declared by some other item, at the generic arguments
+    /// this analysis runs with.
+    ///
+    /// Returns the type parameter those arguments map it to -- which is the one the
+    /// current [`Self::param_local_idx`] can read -- or `None` when it maps to a
+    /// concrete type, which carries its own contract and needs no parameter-keyed one.
+    pub fn resolve_param_ty(
+        &self,
+        param_ty: mir_ty::ParamTy,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
+    ) -> Option<mir_ty::ParamTy> {
+        if generic_args.is_empty() {
+            return Some(param_ty);
+        }
+        // Bind the *type*, not the `ParamTy`: instantiating a `ParamTy` can only ever
+        // return a `ParamTy`, so it cannot substitute a concrete argument.
+        let ty =
+            mir_ty::EarlyBinder::bind(param_ty.to_ty(self.tcx)).instantiate(self.tcx, generic_args);
+        match ty.kind() {
+            mir_ty::TyKind::Param(p) => Some(*p),
+            _ => None,
+        }
+    }
+
+    /// Builds the contract of a closure-typed parameter from its `Fn` bound.
+    ///
+    /// `param_ty` must already be resolved for the current analysis
+    /// ([`Self::resolve_param_ty`]); `generic_args` instantiates `local_def_id`'s
+    /// predicates so the bound is found at those same arguments.
     pub fn build_closure_type_for_param(
         &self,
         param_ty: mir_ty::ParamTy,
         local_def_id: rustc_hir::def_id::LocalDefId,
         generic_args: mir_ty::GenericArgsRef<'tcx>,
     ) -> Option<rty::FunctionType> {
-        let param_ty = if !generic_args.is_empty() {
-            mir_ty::EarlyBinder::bind(param_ty).instantiate(self.tcx, generic_args)
+        // `predicates_of(..).predicates` holds only the predicates written on the
+        // function itself; a bound such as `F: FnMut(..)` on the enclosing impl or
+        // trait lives in the parent's predicates. `instantiate` and
+        // `instantiate_identity` walk the parent chain, so go through them.
+        let generic_predicates = self.tcx.predicates_of(local_def_id.to_def_id());
+        let predicates = if !generic_args.is_empty() {
+            generic_predicates.instantiate(self.tcx, generic_args)
         } else {
-            param_ty
+            generic_predicates.instantiate_identity(self.tcx)
         };
-        let mut predicates = self
-            .tcx
-            .predicates_of(local_def_id.to_def_id())
-            .predicates
-            .iter()
-            .map(|(clause, _)| {
-                if !generic_args.is_empty() {
-                    mir_ty::EarlyBinder::bind(*clause).instantiate(self.tcx, generic_args)
-                } else {
-                    *clause
-                }
-            });
+        let mut predicates = predicates.predicates.into_iter();
 
-        let mut params = predicates.clone().find_map(|clause| {
-            self.closure_trait_args(param_ty, clause.as_trait_clause()?.skip_binder())
+        let ClosureTraitCall {
+            mut params,
+            kind: closure_kind,
+        } = predicates.clone().find_map(|clause| {
+            self.closure_trait_call(param_ty, clause.as_trait_clause()?.skip_binder())
         })?;
         let mut ret = predicates.find_map(|clause| {
             self.closure_trait_ret(param_ty, clause.as_projection_clause()?.skip_binder())
@@ -628,11 +700,14 @@ impl<'tcx> TypeBuilder<'tcx> {
         let mut params_sort: Vec<chc::Sort> = params.iter().map(|rty| rty.ty.to_sort()).collect();
         let ret_sort = ret.ty.to_sort();
 
+        let mut pre_params_sort = params_sort.clone();
+        pre_params_sort[0] = pre_upvars_sort(pre_params_sort[0].clone(), closure_kind);
+
         let pre_pred = refine::closure_pre_forall_pred(
             self.tcx,
             self.owner_fn_id,
             type_params.clone(),
-            params_sort.clone(),
+            pre_params_sort,
         );
         self.system
             .borrow_mut()
@@ -649,12 +724,14 @@ impl<'tcx> TypeBuilder<'tcx> {
             .last()
             .expect("Closure should have at least one argument.")
             .extend_refinement({
+                // This refinement rides on the closure's last parameter, so `value` names that
+                // parameter here and `free(idx)` the earlier ones: a closure taking no logical
+                // argument has its upvars in the `value` slot.
                 let (args_front, _args_last) = args.split_at(args.len() - 1);
-                chc::Atom::new(
-                    pre_pred.into(),
-                    [args_front, std::slice::from_ref(&value.clone())].concat(),
-                )
-                .into()
+                let mut pre_args: Vec<_> =
+                    [args_front, std::slice::from_ref(&value.clone())].concat();
+                pre_args[0] = pre_upvars_term(pre_args[0].clone(), closure_kind);
+                chc::Atom::new(pre_pred.into(), pre_args).into()
             });
 
         ret.extend_refinement(
@@ -727,6 +804,13 @@ where
         if Some(adt.did()) == self.inner.def_ids.closure_model() {
             let tupled_upvars_ty = args.type_at(0);
             return Some(self.build(tupled_upvars_ty));
+        }
+
+        // TODO: keep in step with `impl Model for Ghost` in std.rs; see
+        // `TypeBuilder::model_adt`.
+        if Some(adt.did()) == self.inner.def_ids.ghost_model() {
+            let content_ty = args.type_at(0);
+            return Some(self.build(content_ty));
         }
 
         None

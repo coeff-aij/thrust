@@ -265,7 +265,7 @@ impl Sort {
         }
     }
 
-    fn deref(self) -> Self {
+    pub fn deref(self) -> Self {
         match self {
             Sort::Box(s) => *s,
             Sort::Mut(s) => *s,
@@ -2471,6 +2471,10 @@ fn collect_forall_defaults(term: &Term<TermVarIdx>, used: &mut HashSet<ForallSor
             }
         }
         Term::TupleProj(t, _) => collect_forall_defaults(t, used),
+        // An empty array carries no default of its own in the AST: the SMT-LIB2
+        // writer synthesises `default_for(elem)` for it at print time, so ask the
+        // same function which defaults that will reference.
+        Term::ArrayEmpty(_, elem) => collect_forall_defaults(&Term::default_for(elem), used),
         Term::DatatypeCtor(_, _, args) => {
             for t in args {
                 collect_forall_defaults(t, used);
@@ -2482,7 +2486,6 @@ fn collect_forall_defaults(term: &Term<TermVarIdx>, used: &mut HashSet<ForallSor
         | Term::Bool(_)
         | Term::Int(_)
         | Term::String(_)
-        | Term::ArrayEmpty(_, _)
         | Term::FormulaQuantifiedVar(_, _) => {}
     }
 }
@@ -2513,6 +2516,27 @@ mod tests {
     }
 
     #[test]
+    fn declares_forall_default_reached_only_through_an_empty_array() {
+        let mut system = System::default();
+        let idx = system.new_forall_sort(DebugInfo::default());
+        let seq_sort = Sort::array(Sort::int(), Sort::forall(idx));
+        let empty = Term::default_for(&seq_sort);
+        let body = Atom::new(
+            Pred::Known(KnownPred::EQUAL),
+            vec![empty, Term::var(0usize.into())],
+        );
+        system.push_clause(Clause {
+            vars: [seq_sort].into_iter().collect(),
+            head: Atom::new(Pred::UserDefined(UserDefinedPred::new("p".into())), vec![]),
+            body: body.into(),
+            debug_info: DebugInfo::default(),
+        });
+
+        let smt = system.smtlib2().to_string();
+        assert_eq!(smt.matches("(declare-const default_a0 a0)").count(), 1);
+    }
+
+    #[test]
     fn does_not_declare_default_for_unused_forall_sort() {
         let mut system = System::default();
         system.new_forall_sort(DebugInfo::default());
@@ -2534,5 +2558,50 @@ mod tests {
         let smt = system.smtlib2().to_string();
         assert!(smt.contains("; type_param=ParamTy T/#0 (decl=DefId(...))"));
         assert!(smt.contains("(declare-forall-sort a0)"));
+    }
+
+    #[test]
+    fn declares_sorts_used_only_in_forall_pred_signatures() {
+        let mut system = System::default();
+        let idx = system.new_forall_sort(DebugInfo::default());
+        let tuple = Sort::tuple(vec![Sort::forall(idx), Sort::int()]);
+        system.register_forall_pred(ForallPred::new(
+            "q".into(),
+            vec![Sort::forall(idx)],
+            vec![tuple, Sort::int()],
+        ));
+
+        let smt = system.smtlib2().to_string();
+        let declared = smt
+            .find("(A0_Tuple<a0-Int> 0)")
+            .expect("tuple datatype declared");
+        let used = smt
+            .find("(declare-forall-fun q<a0> (A0_Tuple<a0-Int> Int) Bool)")
+            .expect("forall pred declared with the renamed sort");
+        assert!(declared < used);
+        assert!(!smt.contains(" Tuple<a0-Int>"));
+        assert!(!smt.contains("(Tuple<a0-Int>"));
+    }
+
+    #[test]
+    fn declares_sorts_used_only_in_user_defined_pred_signatures() {
+        let mut system = System::default();
+        let tuple = Sort::tuple(vec![Sort::int(), Sort::int()]);
+        system.push_pred_define(
+            UserDefinedPred::new("p".into()),
+            vec![("self_".into(), tuple), ("x".into(), Sort::int())],
+            "true".into(),
+        );
+
+        let smt = system.smtlib2().to_string();
+        let declared = smt
+            .find("(A0_Tuple<Int-Int> 0)")
+            .expect("tuple datatype declared");
+        let used = smt
+            .find("(define-fun p ((self_ A0_Tuple<Int-Int>) (x Int)) Bool true)")
+            .expect("user-defined pred defined with the renamed sort");
+        assert!(declared < used);
+        assert!(!smt.contains(" Tuple<Int-Int>"));
+        assert!(!smt.contains("(Tuple<Int-Int>"));
     }
 }

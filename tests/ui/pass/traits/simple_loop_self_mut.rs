@@ -4,25 +4,27 @@
 
 #[thrust_macros::context]
 trait A {
-    #[thrust_macros::requires(Self::p(*self, !self, x))]
-    #[thrust_macros::ensures(Self::p(*self, !self, result))]
+    #[thrust_macros::requires(Self::p(*self, x))]
+    #[thrust_macros::ensures(Self::p(!self, result))]
     fn f(&mut self, x: i64) -> i64;
 
     #[thrust_macros::predicate]
-    fn p(self, after: Self, x: i64) -> bool;
+    fn p(self, x: i64) -> bool;
 }
 
-// impl thrust_models::Model for A {
-//     type Ty = A;
-// }
-
-#[thrust_macros::requires(T::p(*a, !a, x))]
-#[thrust_macros::ensures(T::p(*a, !a, result))]
+#[thrust_macros::context]
+#[thrust_macros::requires(T::p(*a, x))]
+#[thrust_macros::ensures(T::p(!a, result))]
 fn target<T: A>(a: &mut T, x: i64) -> i64 {
+    let b = a;
     let mut v = x;
     let mut i = 0;
     while i < 3 {
-        v = a.f(v);
+        thrust_macros::invariant!(
+            |b: &mut T, v: i64, a: thrust_models::FnParam<&mut T>|
+            T::p(*b, v) && !b == !a.at_entry()
+        );
+        v = b.f(v);
         i += 1;
     }
 

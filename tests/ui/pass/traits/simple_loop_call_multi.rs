@@ -15,12 +15,17 @@ trait A {
     fn p(self) -> bool;
 }
 
+#[thrust_macros::context]
 #[thrust_macros::requires(T::p(*x) && n > 0)]
 #[thrust_macros::ensures(T::p(!x))]
 fn repeat<T: A>(x: &mut T, n: u64) {
+    let b = x;
     let mut i = 0;
     while i < n {
-        x.f();
+        thrust_macros::invariant!(
+            |b: &mut T, x: thrust_models::FnParam<&mut T>| T::p(*b) && !b == !x.at_entry()
+        );
+        b.f();
         i += 1;
     }
 }
@@ -76,6 +81,7 @@ impl A for Y {
 fn target() -> (X, Y) {
     let (mut x, mut y) = (X(1), Y(-1));
     repeat(&mut x, 3);
+    y.g();
     repeat(&mut y, 5);
     (x, y)
 }

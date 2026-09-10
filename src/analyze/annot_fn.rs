@@ -22,6 +22,20 @@ pub struct FormulaFn<'tcx> {
     formula: chc::Formula<rty::FunctionParamIdx>,
 }
 
+/// The source name a parameter of a formula function lifted out of a function body
+/// (`invariant!`, `ghost!`) refers to.
+///
+/// The lifted function is free, where `self` is not a legal parameter name, so a formula
+/// naming the receiver gets a synthetic parameter instead. It stands for the value that
+/// debug info records as `self`.
+pub fn lifted_param_source_name(ident: rustc_span::symbol::Ident) -> rustc_span::Symbol {
+    if ident.name.as_str() == "__thrust_self" {
+        rustc_span::Symbol::intern("self")
+    } else {
+        ident.name
+    }
+}
+
 impl<'a, D> Pretty<'a, D, termcolor::ColorSpec> for &FormulaFn<'_>
 where
     D: pretty::DocAllocator<'a, termcolor::ColorSpec>,
@@ -1038,11 +1052,16 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                                 outer_generic_args = ?self.generic_args,
                                 "resolving predicate call in formula"
                             );
-                            let (mut is_unresolved_args, generic_args) =
-                                match self.instantiate_generics(generic_args, self.generic_args) {
-                                    Some(args) => (false, args),
-                                    None => (true, generic_args),
-                                };
+                            // `self.generic_args` is empty only when the owner has no generics,
+                            // so the predicate's own args are already concrete and there is
+                            // nothing to instantiate. In both cases `Instance::try_resolve`
+                            // decides the routing: it resolves a call on a concrete type to the
+                            // impl's predicate, and returns `None` for a call that still
+                            // depends on the owner's type parameters (an `ImplSource::Param`),
+                            // which is the only case that needs the forall predicate.
+                            let generic_args = self
+                                .instantiate_generics(generic_args, self.generic_args)
+                                .unwrap_or(generic_args);
 
                             let instance = mir_ty::Instance::try_resolve(
                                 self.tcx,
@@ -1051,11 +1070,9 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                                 generic_args,
                             )
                             .unwrap();
-                            let pred_def_id = if let Some(instance) = instance {
-                                instance.def_id()
-                            } else {
-                                is_unresolved_args = true;
-                                def_id
+                            let (is_unresolved_args, pred_def_id) = match instance {
+                                Some(instance) => (false, instance.def_id()),
+                                None => (true, def_id),
                             };
 
                             let pred = if is_unresolved_args {
