@@ -22,8 +22,10 @@
 | 6 | univariant の trusted 仕様 | univariant.rs | **下書き**（ignore-on-host）。置換の契約は IndexSlice の要素アクセスが書けず requires/ensures(true)。`[T]` で止まる |
 | 7 | layout() 統合 | layout.rs | **下書き**（ignore-on-host）。各 panic 箇所に TODO(proof)。impl Trait 引数のため仕様が付けられない（feat/spec-with-impl-trait-args で解消予定） |
 
-verify 済みの数値は coar:latest = e8a1748680a3 で測定（values/idx/bitset は 120 秒の solver timeout が必要）。
-coar:latest はその後 dfad2b27d12e（develop 933d14b48）に付け替わっており、新イメージでは未再測定。
+最新の測定（2026-09-10、forall-sort 1128385 を merge した 3b0b3c4、coar:latest = dfad2b27d12e、
+dylib 1 本）: rustc_coroutine の 20 本（段階 3 組 + probe 7 組）と std.rs 仕様のテスト 14 本のうち
+33 本 ok、1 本 FAILED（fail/vec_from_elem.rs、既知の Unknown）。values/idx/bitset は 120 秒の
+solver timeout 指定のまま。
 見つけた制限は notes/known_issues.md に、調査メモは notes/ の各ファイルにある。
 
 ### 残り 3 段階が止まっている場所
