@@ -2,6 +2,10 @@
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:latest
 
+// A required method carries its postcondition into each impl, where `produces` is concrete
+// and the witness exists. The `fail` twin keeps `nonempty` a default method, whose
+// postcondition is checked against the abstract predicate for every implementor instead.
+
 #[thrust_macros::context]
 trait Source {
     type Item;
