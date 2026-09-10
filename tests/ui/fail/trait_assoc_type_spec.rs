@@ -10,7 +10,7 @@ trait Source {
     fn produces(self, x: Self::Item) -> bool;
 
     #[thrust_macros::ensures(thrust_models::exists(|x| Self::produces(*self, x)))]
-    fn nonempty(&self) {}
+    fn nonempty(&self);
 }
 
 #[derive(PartialEq)]
@@ -31,6 +31,8 @@ impl Source for S {
         "false";
         false
     }
+
+    fn nonempty(&self) {}
 }
 
 fn main() {
