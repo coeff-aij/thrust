@@ -1310,9 +1310,32 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     }
 
     pub fn generic_args(&mut self, generic_args: mir_ty::GenericArgsRef<'tcx>) -> &mut Self {
+        use mir_ty::TypeVisitableExt as _;
+
         self.generic_args = generic_args;
-        self.body =
-            mir_ty::EarlyBinder::bind(self.body.clone()).instantiate(self.tcx, generic_args);
+        let body = mir_ty::EarlyBinder::bind(self.body.clone());
+        // Substitution on its own leaves `<I as Iterator>::Item` behind as
+        // `<Range as Iterator>::Item`. Resolving that projection has to happen here, while
+        // the arguments still carry the real closure type: once the type builder has
+        // swapped a closure for its model the impl no longer applies, the projection can
+        // never be resolved, and it degrades into a fresh abstract sort that the rest of
+        // the signature disagrees with.
+        //
+        // Arguments that still mention type parameters describe the generic template,
+        // where there is nothing to resolve and a monomorphized environment would not
+        // apply, so those keep the plain substitution.
+        let resolved = if generic_args.has_param() {
+            None
+        } else {
+            self.tcx
+                .try_instantiate_and_normalize_erasing_regions(
+                    generic_args,
+                    mir_ty::TypingEnv::fully_monomorphized(),
+                    body.clone(),
+                )
+                .ok()
+        };
+        self.body = resolved.unwrap_or_else(|| body.instantiate(self.tcx, generic_args));
         self
     }
 
