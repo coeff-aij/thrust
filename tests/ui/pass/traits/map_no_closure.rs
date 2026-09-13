@@ -87,7 +87,7 @@ where
                                 i
                                 dist
                             )
-                            (exists ((f Mut<a1>))
+                            (exists ((f a1))
                                 (q_pre_next_99f65cdf49763625952b80f71d0217f8<a1>
                                     f
                                     i
