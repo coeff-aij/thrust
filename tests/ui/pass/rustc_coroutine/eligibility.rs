@@ -1,4 +1,4 @@
-//@ignore-on-host: draft, blocked on generic slices and std iterator adapters (see README.md)
+//@ignore-on-host: draft, stops at the generic slice in `IndexSlice`'s `raw: [T]` (see README.md)
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:latest
 
@@ -429,7 +429,10 @@ impl<I: Idx, T> IntoSliceIdx<I, [T]> for I {
 
 // //== ./../rustc_index/src/slice.rs (new for this stage)
 
-#[derive(PartialEq, Eq, Hash)]
+// `PartialEq, Eq` commented out: the derived `eq` compares the `PhantomData`
+// field, whose model is the unit sort, and Thrust panics with
+// `unbound var $0` -- the same reason bitset.rs drops them from `DenseBitSet`.
+#[derive(/* PartialEq, Eq, */ Hash)]
 #[repr(transparent)]
 pub struct IndexSlice<I: Idx, T> {
     _marker: PhantomData<fn(&I)>,
@@ -480,8 +483,14 @@ impl<'a, I: Idx, T> Iterator for IterEnumerated<'a, I, T> {
     }
 }
 
+#[thrust_macros::context]
 impl<I: Idx, T> IndexSlice<I, T> {
+    // The reinterpretation through a raw pointer has no model; it is the
+    // identity on the sequence, which is what the contract says.
     #[inline]
+    #[thrust::trusted]
+    #[thrust_macros::requires(true)]
+    #[thrust_macros::ensures(*result == *raw)]
     pub const fn from_raw(raw: &[T]) -> &Self {
         let ptr: *const [T] = raw;
 
@@ -489,6 +498,9 @@ impl<I: Idx, T> IndexSlice<I, T> {
     }
 
     #[inline]
+    #[thrust::trusted]
+    #[thrust_macros::requires(true)]
+    #[thrust_macros::ensures(*result == *raw && !result == !raw)]
     pub fn from_raw_mut(raw: &mut [T]) -> &mut Self {
         let ptr: *mut [T] = raw;
 
@@ -530,7 +542,11 @@ impl<I: Idx, T> IndexSlice<I, T> {
     }
 }
 
+#[thrust_macros::context]
 impl<I: Idx, J: Idx> IndexSlice<I, J> {
+    // The two `debug_assert_eq!`s sum `as u128` casts, which have no model.
+    #[thrust::trusted]
+    #[thrust::callable]
     pub fn invert_bijective_mapping(&self) -> IndexVec<J, I> {
         debug_assert_eq!(
             self.iter().map(|x| x.index() as u128).sum::<u128>(),
@@ -607,7 +623,7 @@ impl<I: Idx, T> IndexVec<I, T> {
     // Stage 5 needs this: `IndexVec::from_elem_n(Unassigned, nb_locals)` gives
     // an `assignments` vector of exactly `nb_locals` entries, all `Unassigned`.
     #[inline]
-    #[thrust_macros::ensures(result.raw.len() == n)]
+    #[thrust_macros::ensures(result.length == n)]
     // TODO(spec): the intended second clause, `forall i < n: result.raw[i] ==
     // elem`, does not typecheck generically: `elem`'s top-level parameter
     // type is lowered to `<T as Model>::Ty` (per `lower_params`) but
@@ -690,6 +706,7 @@ impl<I: Idx, T> IntoIterator for IndexVec<I, T> {
     type IntoIter = vec::IntoIter<T>;
 
     #[inline]
+    #[thrust::ignored]
     fn into_iter(self) -> vec::IntoIter<T> {
         self.raw.into_iter()
     }
@@ -710,6 +727,7 @@ impl<'a, I: Idx, T> IntoIterator for &'a mut IndexVec<I, T> {
     type IntoIter = slice::IterMut<'a, T>;
 
     #[inline]
+    #[thrust::ignored]
     fn into_iter(self) -> slice::IterMut<'a, T> {
         self.iter_mut()
     }
@@ -717,6 +735,7 @@ impl<'a, I: Idx, T> IntoIterator for &'a mut IndexVec<I, T> {
 
 impl<I: Idx, T> IndexSlice<I, T> {
     #[inline]
+    #[thrust::ignored]
     pub fn iter_mut(&mut self) -> slice::IterMut<'_, T> {
         self.raw.iter_mut()
     }
@@ -724,7 +743,7 @@ impl<I: Idx, T> IndexSlice<I, T> {
 
 // //== ./src/layout/coroutine.rs
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, /*Debug,*/ PartialEq)]
 enum SavedLocalEligibility<VariantIdx, FieldIdx> {
     Unassigned,
     Assigned(VariantIdx),
@@ -736,8 +755,8 @@ enum SavedLocalEligibility<VariantIdx, FieldIdx> {
 // `IndexVec`'s model is the struct itself (field-by-field), so `.raw` reaches
 // the underlying `Vec<T>` (which in turn has the built-in `Vec` model:
 // `.raw.length` / `.raw.array[i]`, as used above and in values.rs / bitset.rs).
-impl<I: Idx, T> thrust_models::Model for IndexVec<I, T> {
-    type Ty = Self;
+impl<I: Idx, T: thrust_models::Model> thrust_models::Model for IndexVec<I, T> {
+    type Ty = <[T] as thrust_models::Model>::Ty;
 }
 
 // `IndexSlice<I, T>` cannot get `type Ty = Self`: its `raw: [T]` field makes
@@ -808,13 +827,19 @@ impl<I: Idx> thrust_models::Model for IdxRange<I> {
 // need literal, valid Rust: real `.len()` / real `[usize]` indexing on a
 // plain `Vec<T>` field (confirmed empirically: `.raw.array[i]`/`.raw.length`
 // on an `IndexVec`'s real `Vec` field is `error[E0609]`, no such field).
-// `IndexSlice`'s own model (`Seq`, see the `impl Model for IndexSlice` above)
-// *does* have real `.array`/`.length` fields, so those two are kept as-is.
+// `IndexVec` and `IndexSlice` share one model, the slice's `(array, length)`
+// pair, so element access below reads `.array[..]` and the length `.length`.
+// An element is then `<LocalIdx as Model>::Ty`, not a real `LocalIdx`, so
+// `Idx::index()` is not callable on it (and would not translate in a formula
+// anyway): the `Idx::index_is` predicate carries the same fact, with an
+// `exists(|i: Int| i == l && ..)` bridge where the position is a `usize`.
 #[thrust_macros::requires(
     forall(|v: usize, f: usize|
         !(0 <= v && v < (*variant_fields).length
-            && 0 <= f && f < (*variant_fields).array[v].raw.len())
-        || (*variant_fields).array[v].raw[f].index() < nb_locals)
+            && 0 <= f && f < (*variant_fields).array[v].length)
+        || forall(|i: Int|
+            !<LocalIdx as Idx>::index_is((*variant_fields).array[v].array[f], i)
+                || i < nb_locals))
     && (*storage_conflicts).num_rows == nb_locals
     && (*storage_conflicts).num_columns == nb_locals
     && forall(|n: Int| !(0 <= n && n <= nb_locals) || FieldIdx::can_new(n))
@@ -822,11 +847,13 @@ impl<I: Idx> thrust_models::Model for IdxRange<I> {
 )]
 #[thrust_macros::ensures(
     // 1. Unassigned locals never appear in any variant's field list.
-    forall(|l: usize| !(0 <= l && l < nb_locals && result.1.raw[l] == SavedLocalEligibility::Unassigned)
+    forall(|l: usize| !(0 <= l && l < nb_locals && result.1.array[l] == SavedLocalEligibility::Unassigned)
         || forall(|v: usize, f: usize|
             !(0 <= v && v < (*variant_fields).length
-                && 0 <= f && f < (*variant_fields).array[v].raw.len())
-            || !((*variant_fields).array[v].raw[f].index() == l)))
+                && 0 <= f && f < (*variant_fields).array[v].length)
+            || !thrust_models::exists(|i: Int|
+                i == l
+                    && <LocalIdx as Idx>::index_is((*variant_fields).array[v].array[f], i))))
     // 2. Assigned(v) locals appear only under variant v, and only there.
     // TODO(spec): "exists f: variant_fields[v][f] == l" and the "not under
     // any other assigned variant" half are folded into one nested forall/
@@ -834,11 +861,13 @@ impl<I: Idx> thrust_models::Model for IdxRange<I> {
     // checked against the solver (this file does not verify, see header).
     && forall(|l: usize, v: usize|
         !(0 <= l && l < nb_locals
-            && result.1.raw[l] == SavedLocalEligibility::Assigned(VariantIdx::new(v)))
+            && result.1.array[l] == SavedLocalEligibility::Assigned(VariantIdx::new(v)))
         || (v < (*variant_fields).length
             && thrust_models::exists(|f: usize|
-                0 <= f && f < (*variant_fields).array[v].raw.len()
-                    && (*variant_fields).array[v].raw[f].index() == l)))
+                0 <= f && f < (*variant_fields).array[v].length
+                    && thrust_models::exists(|i: Int|
+                        i == l
+                            && <LocalIdx as Idx>::index_is((*variant_fields).array[v].array[f], i)))))
     // 4. Membership in `inel` matches being `Ineligible(_)`.
     // TODO(spec): `DenseBitSet::elem_at`/`mem` are uninterpreted here, see
     // above; written as an `<==>` via two `==>` for the annotation grammar.
@@ -849,9 +878,9 @@ impl<I: Idx> thrust_models::Model for IdxRange<I> {
     // (`Int: PartialEq<T> where T: Model<Ty = Int>`, and `usize` is one).
     && forall(|l: usize| !(0 <= l && l < nb_locals) ||
         (!thrust_models::exists(|li: Int| li == l && DenseBitSet::<LocalIdx>::mem(result.0, li))
-            || thrust_models::exists(|x: Option<FieldIdx>| result.1.raw[l] == SavedLocalEligibility::Ineligible(x))))
+            || thrust_models::exists(|x: Option<FieldIdx>| result.1.array[l] == SavedLocalEligibility::Ineligible(x))))
     && forall(|l: usize| !(0 <= l && l < nb_locals) ||
-        (!thrust_models::exists(|x: Option<FieldIdx>| result.1.raw[l] == SavedLocalEligibility::Ineligible(x))
+        (!thrust_models::exists(|x: Option<FieldIdx>| result.1.array[l] == SavedLocalEligibility::Ineligible(x))
             || thrust_models::exists(|li: Int| li == l && DenseBitSet::<LocalIdx>::mem(result.0, li))))
 )]
 #[thrust_macros::context]

@@ -1,4 +1,4 @@
-//@ignore-on-host: draft, blocked on generic slices and std iterator adapters (see README.md)
+//@ignore-on-host: draft, stops at the generic slice in `IndexSlice`'s `raw: [T]` (see README.md)
 //@edition: 2024
 #![feature(new_range_api)]
 //@compile-flags: -Adead_code -C debug-assertions=off
@@ -501,7 +501,7 @@ impl TargetDataLayout {
         if let Some(e) = self.address_space_info.iter().find(|(a, _)| a == &c) {
             e.1.pointer_size
         } else {
-            panic!("Use of unknown address space {c:?}");
+            panic!("Use of unknown address space");
         }
     }
 
@@ -518,7 +518,7 @@ impl TargetDataLayout {
         } else if let Some(e) = self.address_space_info.iter().find(|(a, _)| a == &c) {
             e.1.pointer_align
         } else {
-            panic!("Use of unknown address space {c:?}");
+            panic!("Use of unknown address space");
         })
     }
 }
@@ -866,7 +866,7 @@ impl Scalar {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Copy, Clone, /*Debug,*/ PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct AddressSpace(pub u32);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash /*Debug*/)]
@@ -963,7 +963,7 @@ pub enum IntegerType {
     Fixed(Integer, bool),
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, /*Debug,*/ Eq, PartialEq)]
 pub enum ScalableElt {
     ElementCount(u16),
 

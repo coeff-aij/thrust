@@ -1,4 +1,4 @@
-//@ignore-on-host: draft, blocked on generic slices and std iterator adapters (see README.md)
+//@ignore-on-host: draft, stops at the generic slice in `IndexSlice`'s `raw: [T]` (see README.md)
 //@edition: 2024
 #![feature(new_range_api)]
 //@compile-flags: -Adead_code -C debug-assertions=off
@@ -174,6 +174,7 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
     }
 
     #[thrust::trusted]
+    #[thrust::callable]
     pub fn iter(&self, row: R) -> BitIter<'_, C> {
         assert!(row.index() < self.num_rows);
         let (start, end) = self.range(row);
@@ -326,7 +327,10 @@ impl<I: Idx, T> IntoSliceIdx<I, [T]> for I {
 
 // //== ./../rustc_index/src/slice.rs (from eligibility.rs / univariant.rs)
 
-#[derive(PartialEq, Eq, Hash)]
+// `PartialEq, Eq` commented out: the derived `eq` compares the `PhantomData`
+// field, whose model is the unit sort, and Thrust panics with
+// `unbound var $0` -- the same reason bitset.rs drops them from `DenseBitSet`.
+#[derive(/* PartialEq, Eq, */ Hash)]
 #[repr(transparent)]
 pub struct IndexSlice<I: Idx, T> {
     _marker: PhantomData<fn(&I)>,
@@ -372,8 +376,14 @@ impl<'a, I: Idx, T> Iterator for IterEnumerated<'a, I, T> {
     }
 }
 
+#[thrust_macros::context]
 impl<I: Idx, T> IndexSlice<I, T> {
+    // The reinterpretation through a raw pointer has no model; it is the
+    // identity on the sequence, which is what the contract says.
     #[inline]
+    #[thrust::trusted]
+    #[thrust_macros::requires(true)]
+    #[thrust_macros::ensures(*result == *raw)]
     pub const fn from_raw(raw: &[T]) -> &Self {
         let ptr: *const [T] = raw;
 
@@ -381,6 +391,9 @@ impl<I: Idx, T> IndexSlice<I, T> {
     }
 
     #[inline]
+    #[thrust::trusted]
+    #[thrust_macros::requires(true)]
+    #[thrust_macros::ensures(*result == *raw && !result == !raw)]
     pub fn from_raw_mut(raw: &mut [T]) -> &mut Self {
         let ptr: *mut [T] = raw;
 
@@ -422,6 +435,7 @@ impl<I: Idx, T> IndexSlice<I, T> {
     }
 
     #[inline]
+    #[thrust::ignored]
     pub fn iter_mut(&mut self) -> slice::IterMut<'_, T> {
         self.raw.iter_mut()
     }
@@ -566,6 +580,7 @@ impl<I: Idx, T> IntoIterator for IndexVec<I, T> {
     type IntoIter = vec::IntoIter<T>;
 
     #[inline]
+    #[thrust::ignored]
     fn into_iter(self) -> vec::IntoIter<T> {
         self.raw.into_iter()
     }
@@ -586,6 +601,7 @@ impl<'a, I: Idx, T> IntoIterator for &'a mut IndexVec<I, T> {
     type IntoIter = slice::IterMut<'a, T>;
 
     #[inline]
+    #[thrust::ignored]
     fn into_iter(self) -> slice::IterMut<'a, T> {
         self.iter_mut()
     }
@@ -603,7 +619,7 @@ impl<I: Idx, T, const N: usize> From<[T; N]> for IndexVec<I, T> {
 // length/domain facts `layout()`'s own panics need, not the full stage 5
 // contract -- see eligibility.rs for that).
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, /*Debug,*/ PartialEq)]
 enum SavedLocalEligibility<VariantIdx, FieldIdx> {
     Unassigned,
     Assigned(VariantIdx),
@@ -875,20 +891,30 @@ pub fn layout<
 // `in_memory_order_b`: `order[k] - b_start` for each `order[k] >= b_start`)
 // has exactly `n - b_start` entries, and those entries are themselves a
 // permutation of `0..n - b_start`.
+// An element of the shared `(array, length)` model is
+// `<FieldIdx as Model>::Ty`, not a real `FieldIdx`, so `Idx::index()` is not
+// callable on it; `Idx::index_is` carries the same fact.
 #[thrust::trusted]
 #[thrust_macros::requires(
-    order.raw.len() == n
-        && forall(|k: usize| !(0 <= k && k < n) || order.raw[k].index() < n)
-        && forall(|k: usize, k2: usize| !(0 <= k && k < n && 0 <= k2 && k2 < n && !(k == k2))
-            || !(order.raw[k].index() == order.raw[k2].index()))
+    order.length == n
+        && forall(|k: usize, i: Int|
+            !(0 <= k && k < n && <FieldIdx as Idx>::index_is(order.array[k], i))
+                || i < n)
+        && forall(|k: usize, k2: usize, i: Int|
+            !(0 <= k && k < n && 0 <= k2 && k2 < n && !(k == k2)
+                && <FieldIdx as Idx>::index_is(order.array[k], i))
+                || !<FieldIdx as Idx>::index_is(order.array[k2], i))
         && b_start <= n
 )]
 #[thrust_macros::ensures(
-    result.raw.len() == n - b_start
-        && forall(|k: usize| !(0 <= k && k < result.raw.len()) || result.raw[k].index() < n - b_start)
-        && forall(|k: usize, k2: usize|
-            !(0 <= k && k < result.raw.len() && 0 <= k2 && k2 < result.raw.len() && !(k == k2))
-            || !(result.raw[k].index() == result.raw[k2].index()))
+    result.length == n - b_start
+        && forall(|k: usize, i: Int|
+            !(0 <= k && k < result.length && <FieldIdx as Idx>::index_is(result.array[k], i))
+                || i < n - b_start)
+        && forall(|k: usize, k2: usize, i: Int|
+            !(0 <= k && k < result.length && 0 <= k2 && k2 < result.length && !(k == k2)
+                && <FieldIdx as Idx>::index_is(result.array[k], i))
+                || !<FieldIdx as Idx>::index_is(result.array[k2], i))
 )]
 fn lemma_permutation_split<FieldIdx: Idx>(
     order: IndexVec<u32, FieldIdx>,
@@ -966,7 +992,7 @@ impl TargetDataLayout {
         if let Some(e) = self.address_space_info.iter().find(|(a, _)| a == &c) {
             e.1.pointer_size
         } else {
-            panic!("Use of unknown address space {c:?}");
+            panic!("Use of unknown address space");
         }
     }
 
@@ -983,7 +1009,7 @@ impl TargetDataLayout {
         } else if let Some(e) = self.address_space_info.iter().find(|(a, _)| a == &c) {
             e.1.pointer_align
         } else {
-            panic!("Use of unknown address space {c:?}");
+            panic!("Use of unknown address space");
         })
     }
 }
@@ -1309,7 +1335,7 @@ impl Scalar {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Copy, Clone, /*Debug,*/ PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct AddressSpace(pub u32);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash /*Debug*/)]
@@ -1397,7 +1423,7 @@ pub enum IntegerType {
     Fixed(Integer, bool),
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, /*Debug,*/ Eq, PartialEq)]
 pub enum ScalableElt {
     ElementCount(u16),
     Container,
@@ -1726,8 +1752,8 @@ impl<'a, T> thrust_models::Model for SliceIter<'a, T> {
 impl<'a, I: Idx, T> thrust_models::Model for IterEnumerated<'a, I, T> {
     type Ty = Self;
 }
-impl<I: Idx, T> thrust_models::Model for IndexVec<I, T> {
-    type Ty = Self;
+impl<I: Idx, T: thrust_models::Model> thrust_models::Model for IndexVec<I, T> {
+    type Ty = <[T] as thrust_models::Model>::Ty;
 }
 // See eligibility.rs/univariant.rs for why `type Ty = Self` is impossible for
 // `IndexSlice` (unsized `raw: [T]`) and why the `[T]` model is reused.
