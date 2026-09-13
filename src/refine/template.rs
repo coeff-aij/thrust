@@ -13,6 +13,26 @@ use crate::chc;
 use crate::refine;
 use crate::rty;
 
+/// The model of a contiguous sequence of `elem_ty`: the `(elements, length)` pair that
+/// `thrust_models` gives to `Vec<T>`, `[T]` and `[T; N]` alike.
+///
+/// A concrete element type never needs this: `<Vec<i64> as Model>::Ty` normalizes all the way
+/// to `model::Seq<model::Int>`, whose fields are traversed as a struct into the very same pair.
+///
+/// A generic element type does not get that far, in either of two ways. Where the element type
+/// is bounded by `Model`, the projection normalizes to `Seq<<T as Model>::Ty>` but the nested
+/// alias it leaves behind makes `resolve_model_ty` discard the normalization and hand back the
+/// original type. Where it is not, the projection does not normalize at all, since `T: Model`
+/// is not provable. Neither leaves an ADT to traverse, so the pair is spelled out here instead.
+fn seq_model_type<V>(elem_ty: rty::Type<V>) -> rty::Type<V> {
+    let array_ty = rty::ArrayType::new(rty::Type::int(), elem_ty);
+    rty::TupleType::new(vec![
+        rty::PointerType::own(rty::Type::Array(array_ty)).into(),
+        rty::PointerType::own(rty::Type::int()).into(),
+    ])
+    .into()
+}
+
 pub trait TemplateRegistry {
     fn register_template<V>(&mut self, tmpl: rty::Template<V>) -> rty::RefinedType<V>;
 }
@@ -421,6 +441,10 @@ impl<'tcx> TypeBuilder<'tcx> {
                 let ret = rty::RefinedType::unrefined(self.build(sig.output()));
                 rty::FunctionType::new(params, ret.vacuous()).into()
             }
+            mir_ty::TyKind::Slice(elem_ty) | mir_ty::TyKind::Array(elem_ty, _) => {
+                let elem_ty = self.build(*elem_ty);
+                seq_model_type(elem_ty)
+            }
             mir_ty::TyKind::Adt(def, params) => {
                 if let Some(model_ty) = self.model_adt(def, params) {
                     return model_ty;
@@ -432,15 +456,7 @@ impl<'tcx> TypeBuilder<'tcx> {
                 }
                 if Some(def.did()) == self.def_ids.vec() {
                     let elem_ty = self.build(params.type_at(0));
-                    // Vec is represented as a tuple of (Array<Int, T>, Int) in the model
-                    let idx_ty = rty::Type::int();
-                    let array_ty = rty::ArrayType::new(idx_ty, elem_ty.clone());
-                    let len_ty = rty::Type::int();
-                    return rty::TupleType::new(vec![
-                        rty::PointerType::own(rty::Type::Array(array_ty)).into(),
-                        rty::PointerType::own(len_ty).into(),
-                    ])
-                    .into();
+                    return seq_model_type(elem_ty);
                 }
                 if def.is_enum() {
                     let sym = refine::datatype_symbol(self.tcx, def.did());
@@ -845,6 +861,10 @@ where
                 let ty = self.inner.for_function_template(self.registry, sig).build();
                 rty::Type::function(ty)
             }
+            mir_ty::TyKind::Slice(elem_ty) | mir_ty::TyKind::Array(elem_ty, _) => {
+                let elem_ty = self.build(*elem_ty);
+                seq_model_type(elem_ty)
+            }
             mir_ty::TyKind::Adt(def, params) => {
                 if let Some(model_ty) = self.model_adt(def, params) {
                     return model_ty;
@@ -856,15 +876,7 @@ where
                 }
                 if Some(def.did()) == self.inner.def_ids.vec() {
                     let elem_ty = self.build(params.type_at(0));
-                    // Vec is represented as a tuple of (Array<Int, T>, Int) in the model
-                    let idx_ty = rty::Type::int();
-                    let array_ty = rty::ArrayType::new(idx_ty, elem_ty.clone());
-                    let len_ty = rty::Type::int();
-                    return rty::TupleType::new(vec![
-                        rty::PointerType::own(rty::Type::Array(array_ty)).into(),
-                        rty::PointerType::own(len_ty).into(),
-                    ])
-                    .into();
+                    return seq_model_type(elem_ty);
                 }
                 if def.is_enum() {
                     let sym = refine::datatype_symbol(self.inner.tcx, def.did());
