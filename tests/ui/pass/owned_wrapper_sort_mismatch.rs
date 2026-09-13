@@ -20,10 +20,6 @@ where
     #[thrust_macros::requires(Self::invariant(*self))]
     #[thrust_macros::ensures(Self::invariant(!self))]
     #[thrust_macros::ensures(result == None ==> Self::completed(self))]
-    // A generic caller cannot unfold `completed`, so without this the iterator's final
-    // value stays unconstrained once `next` reports exhaustion, and a `&mut` loop can say
-    // nothing about the iterator it leaves behind.
-    #[thrust_macros::ensures(result == None ==> !self == *self)]
     #[thrust_macros::ensures(forall(|i| forall(|s: Seq<<Self::Item as Model>::Ty>| result == Some(i) && s.len() == 1 && s[0] == i ==> Self::produces(*self, s, !self))))]
     #[thrust_macros::ensures(forall(|i| result == Some(i) ==> Self::step(*self, i, !self)))]
     fn next(&mut self) -> Option<Self::Item>;
@@ -42,6 +38,17 @@ where
         b: Ghost<<Self as Model>::Ty>,
         i: Ghost<<Self::Item as Model>::Ty>,
         c: Ghost<<Self as Model>::Ty>,
+    );
+
+    // What a generic caller needs when `next` reports exhaustion. `completed` is abstract
+    // there, so nothing on its own connects the iterator handed back to the state the loop
+    // invariant had reached; an iterator that legitimately writes to itself on the exhausted
+    // path (setting a flag, emptying a slot) still preserves every history that led to it.
+    #[thrust_macros::requires(Self::completed(thrust_models::model::Mut::new(cur, fin)))]
+    #[thrust_macros::ensures(forall(|b: <Self as Model>::Ty| forall(|s: Seq<<Self::Item as Model>::Ty>| Self::produces(b, s, cur) ==> Self::produces(b, s, fin))))]
+    fn exhaustion_preserves_produces(
+        cur: Ghost<<Self as Model>::Ty>,
+        fin: Ghost<<Self as Model>::Ty>,
     );
 
     #[thrust_macros::predicate]
@@ -81,6 +88,8 @@ impl Iterator for Range {
     fn produces_refl(a: &Range) {}
 
     fn produces_step(a: Ghost<Range>, ab: Ghost<Seq<Int>>, b: Ghost<Range>, i: Ghost<Int>, c: Ghost<Range>) {}
+
+    fn exhaustion_preserves_produces(cur: Ghost<Range>, fin: Ghost<Range>) {}
 
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
@@ -164,15 +173,20 @@ where
         );
         let pre = thrust_macros::ghost!(|rr: &mut Run<I>| -> <I as Model>::Ty { (*rr).0 });
         let before = thrust_macros::ghost!(|rr: &mut Run<I>| -> Seq<Int> { (*rr).1 });
-        match rr.iter.next() {
+        // The snapshot is taken before the match so that `rr` is still live on the exit arm.
+        let outcome = rr.iter.next();
+        let post = thrust_macros::ghost!(|rr: &mut Run<I>| -> <I as Model>::Ty { (*rr).0 });
+        match outcome {
             Some(x) => {
                 let item = thrust_macros::ghost!(|x: i64| -> Int { x });
-                let post = thrust_macros::ghost!(|rr: &mut Run<I>| -> <I as Model>::Ty { (*rr).0 });
                 I::produces_step(init, before, pre, item, post);
                 rr.produced = thrust_macros::ghost!(|rr: &mut Run<I>, x: i64| -> Seq<Int> { (*rr).1.push(x) });
                 let _keep: i64 = x + 0;
             }
-            None => break,
+            None => {
+                I::exhaustion_preserves_produces(pre, post);
+                break;
+            }
         }
     }
 }
