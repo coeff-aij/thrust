@@ -66,9 +66,12 @@ impl Iterator for Range {
 
     #[thrust_macros::predicate]
     fn step(self, item: Self::Item, dist: Self) -> bool {
-        // self.end == dist.end && self.start == item && self.start + 1 == dist.start
-        // is written as following:
+        // A step happens only while the range is non-empty, which is what bounds
+        // the loop counter from above:
+        // self.start < self.end && self.end == dist.end && self.start == item
+        // && self.start + 1 == dist.start is written as following:
         "(and
+            (< (tuple_proj<Int-Int>.0 self_) (tuple_proj<Int-Int>.1 self_))
             (= (tuple_proj<Int-Int>.1 self_) (tuple_proj<Int-Int>.1 dist))
             (= (tuple_proj<Int-Int>.0 self_) item)
             (= (+ (tuple_proj<Int-Int>.0 self_) 1) (tuple_proj<Int-Int>.0 dist))
