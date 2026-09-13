@@ -984,6 +984,13 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// live variables) into a precondition refinement over `bty`'s parameters.
     /// Each formula parameter names a live variable at the loop header and is
     /// mapped to the corresponding basic-block parameter.
+    ///
+    /// A parameter typed `FnParam<..>` instead names the enclosing function's
+    /// parameter of that name, and stands for its value on entry rather than the
+    /// loop-carried one. The receiver participates under the name `self`, the name
+    /// its debug info carries; the lifted formula function spells it
+    /// `__thrust_self`, which [`analyze::annot_fn::lifted_param_source_name`] maps
+    /// back before the lookup.
     fn build_invariant_precondition(
         &self,
         formula_def_id: LocalDefId,
