@@ -519,6 +519,21 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     (rty::Type::Int, mir::BinOp::Mul) => {
                         builder.build(lhs_ty, lhs_term.mul(rhs_term))
                     }
+                    (rty::Type::Int, mir::BinOp::Div) => {
+                        builder.build(lhs_ty, lhs_term.div_trunc(rhs_term))
+                    }
+                    (rty::Type::Int, mir::BinOp::Rem) => {
+                        builder.build(lhs_ty, lhs_term.rem_trunc(rhs_term))
+                    }
+                    // On `bool` these are the non-short-circuiting connectives, and rustc
+                    // builds the overflow guard of `/` and `%` out of one of them. They stay
+                    // unsupported on integers, where they really are bitwise.
+                    (rty::Type::Bool, mir::BinOp::BitAnd) => {
+                        builder.build(rty::Type::Bool, lhs_term.and(rhs_term))
+                    }
+                    (rty::Type::Bool, mir::BinOp::BitOr) => {
+                        builder.build(rty::Type::Bool, lhs_term.or(rhs_term))
+                    }
                     (rty::Type::Int | rty::Type::Bool, mir::BinOp::Ge) => {
                         builder.build(rty::Type::Bool, lhs_term.ge(rhs_term))
                     }

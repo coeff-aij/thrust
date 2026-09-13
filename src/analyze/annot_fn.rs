@@ -736,6 +736,16 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                         let rhs = self.to_term(rhs);
                         return FormulaOrTerm::Term(lhs.mul(rhs));
                     }
+                    rustc_hir::BinOpKind::Div => {
+                        let lhs = self.to_term(lhs);
+                        let rhs = self.to_term(rhs);
+                        return FormulaOrTerm::Term(lhs.div_trunc(rhs));
+                    }
+                    rustc_hir::BinOpKind::Rem => {
+                        let lhs = self.to_term(lhs);
+                        let rhs = self.to_term(rhs);
+                        return FormulaOrTerm::Term(lhs.rem_trunc(rhs));
+                    }
                     _ => {}
                 }
 

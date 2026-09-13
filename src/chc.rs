@@ -476,6 +476,8 @@ impl Function {
             Self::ADD => Sort::int(),
             Self::SUB => Sort::int(),
             Self::MUL => Sort::int(),
+            Self::EUCLIDEAN_DIV => Sort::int(),
+            Self::EUCLIDEAN_REM => Sort::int(),
             Self::EQ => Sort::bool(),
             Self::GE => Sort::bool(),
             Self::GT => Sort::bool(),
@@ -500,6 +502,12 @@ impl Function {
     pub const ADD: Function = Function::infix("+");
     pub const SUB: Function = Function::infix("-");
     pub const MUL: Function = Function::infix("*");
+    /// SMT-LIB's integer division: the remainder it leaves is never negative, so this is
+    /// *not* Rust's `/`. See [`Term::div_trunc`].
+    pub const EUCLIDEAN_DIV: Function = Function::new("div");
+    /// SMT-LIB's integer modulus, likewise never negative, so this is *not* Rust's `%`.
+    /// See [`Term::rem_trunc`].
+    pub const EUCLIDEAN_REM: Function = Function::new("mod");
     pub const EQ: Function = Function::infix("=");
     pub const GE: Function = Function::infix(">=");
     pub const GT: Function = Function::infix(">");
@@ -870,6 +878,63 @@ impl<V> Term<V> {
 
     pub fn mul(self, other: Self) -> Self {
         Term::App(Function::MUL, vec![self, other])
+    }
+
+    /// Rust's `/`, which truncates toward zero.
+    ///
+    /// See [`Term::reflect_nonnegative_dividend`] for why this is not SMT-LIB's `div`.
+    pub fn div_trunc(self, other: Self) -> Self
+    where
+        V: Clone,
+    {
+        Term::reflect_nonnegative_dividend(Function::EUCLIDEAN_DIV, self, other)
+    }
+
+    /// Rust's `%`, whose result takes the sign of the dividend.
+    ///
+    /// See [`Term::reflect_nonnegative_dividend`] for why this is not SMT-LIB's `mod`.
+    pub fn rem_trunc(self, other: Self) -> Self
+    where
+        V: Clone,
+    {
+        Term::reflect_nonnegative_dividend(Function::EUCLIDEAN_REM, self, other)
+    }
+
+    /// Express a truncating integer operation through its Euclidean counterpart.
+    ///
+    /// Rust truncates toward zero and lets `%` take the sign of the dividend, while SMT-LIB
+    /// rounds so that the remainder is never negative. The two coincide exactly when the
+    /// dividend is non-negative: there the truncated quotient and remainder already satisfy
+    /// `a = b*q + r` with `0 <= r < |b|`, and that pair is what Euclidean division uniquely
+    /// denotes.
+    ///
+    /// Both operations are odd in the dividend -- truncation is, so `(-a)/b == -(a/b)`, and
+    /// `(-a)%b == -(a%b)` follows -- so a negative dividend is reflected through zero to land
+    /// in the agreeing range and the result reflected back. That holds for a divisor of
+    /// either sign, which an `abs` on the divisor alone would not achieve.
+    ///
+    /// A zero divisor is deliberately left alone: SMT-LIB leaves division by zero
+    /// unspecified, and rustc emits an assertion that has to be discharged before the
+    /// division is reached.
+    fn reflect_nonnegative_dividend(f: Function, dividend: Self, divisor: Self) -> Self
+    where
+        V: Clone,
+    {
+        let direct = |a, b| Term::App(f, vec![a, b]);
+        // A literal dividend settles the sign test here rather than leaving an `ite` behind.
+        if let Term::Int(n) = dividend {
+            if n >= 0 {
+                return direct(dividend, divisor);
+            }
+            if let Some(m) = n.checked_neg() {
+                return direct(Term::int(m), divisor).neg();
+            }
+        }
+        Term::ite(
+            dividend.clone().ge(Term::int(0)),
+            direct(dividend.clone(), divisor.clone()),
+            direct(dividend.neg(), divisor).neg(),
+        )
     }
 
     pub fn eq(self, other: Self) -> Self {
