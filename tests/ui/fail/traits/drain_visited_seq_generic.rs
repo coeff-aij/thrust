@@ -10,21 +10,33 @@ use thrust_models::{Ghost, Model};
 #[thrust_macros::context]
 trait Iterator
 where
+    Self: Model,
     Self::Item: Model,
+    <Self as Model>::Ty: Model<Ty = <Self as Model>::Ty>,
+    <Self::Item as Model>::Ty: Model<Ty = <Self::Item as Model>::Ty>,
 {
     type Item;
 
     #[thrust_macros::requires(Self::invariant(*self))]
     #[thrust_macros::ensures(Self::invariant(!self))]
     #[thrust_macros::ensures(result == None ==> Self::completed(self))]
-    // `completed` is abstract here, so a caller reasoning about `!self` needs the resolution
-    // spelled out: an exhausted iterator is left untouched.
-    #[thrust_macros::ensures(result == None ==> *self == !self)]
     #[thrust_macros::ensures(forall(|i| forall(|s: Seq<<Self::Item as Model>::Ty>| result == Some(i) && s.len() == 1 && s[0] == i ==> Self::produces(*self, s, !self))))]
     #[thrust_macros::ensures(forall(|a: <Self as Model>::Ty| forall(|s: Seq<<Self::Item as Model>::Ty>| forall(|i|
         forall(|t: Seq<<Self::Item as Model>::Ty>|
             result == Some(i) && Self::produces(a, s, *self) && t == s.push(i) ==> Self::produces(a, t, !self))))))]
     fn next(&mut self) -> Option<Self::Item>;
+
+    // What a generic caller needs when `next` reports exhaustion. `completed` is abstract
+    // there, so nothing on its own connects the iterator handed back to the state the loop
+    // invariant had reached. Resolution is too strong to demand of every iterator -- one may
+    // legitimately write to itself on the exhausted path -- but every history that led to the
+    // iterator still leads to the one it hands back.
+    #[thrust_macros::requires(Self::completed(thrust_models::model::Mut::new(cur, fin)))]
+    #[thrust_macros::ensures(forall(|b: <Self as Model>::Ty| forall(|s: Seq<<Self::Item as Model>::Ty>| Self::produces(b, s, cur) ==> Self::produces(b, s, fin))))]
+    fn exhaustion_preserves_produces(
+        cur: Ghost<<Self as Model>::Ty>,
+        fin: Ghost<<Self as Model>::Ty>,
+    );
 
     #[thrust_macros::predicate]
     fn invariant(self) -> bool;
@@ -57,6 +69,8 @@ impl Iterator for Range {
             None
         }
     }
+
+    fn exhaustion_preserves_produces(cur: Ghost<Range>, fin: Ghost<Range>) {}
 
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
@@ -103,6 +117,8 @@ impl Iterator for Range {
 struct Run<I: Iterator + Model>
 where
     I::Item: Model,
+    <I as Model>::Ty: Model<Ty = <I as Model>::Ty>,
+    <I::Item as Model>::Ty: Model<Ty = <I::Item as Model>::Ty>,
 {
     iter: I,
     init: Ghost<Seq<<I as Model>::Ty>>,
@@ -112,6 +128,8 @@ where
 impl<I: Iterator + Model> Model for Run<I>
 where
     I::Item: Model,
+    <I as Model>::Ty: Model<Ty = <I as Model>::Ty>,
+    <I::Item as Model>::Ty: Model<Ty = <I::Item as Model>::Ty>,
 {
     type Ty = (<I as Model>::Ty, Seq<<I as Model>::Ty>, Seq<<I::Item as Model>::Ty>);
 }
@@ -124,11 +142,11 @@ where
 fn drain<I: Iterator + Model>(r: &mut Run<I>)
 where
     I::Item: Model,
-    <I as Model>::Ty: Model + PartialEq,
-    <I::Item as Model>::Ty: PartialEq,
+    <I as Model>::Ty: Model<Ty = <I as Model>::Ty> + PartialEq,
+    <I::Item as Model>::Ty: Model<Ty = <I::Item as Model>::Ty> + PartialEq,
 {
     let rr = r;
-    while let Some(x) = rr.iter.next() {
+    loop {
         thrust_macros::invariant!(
             |rr: &mut Run<I>, r: thrust_models::FnParam<&mut Run<I>>|
             I::invariant((*rr).0)
@@ -136,9 +154,21 @@ where
                 && (*rr).1 == (*r.at_entry()).1
                 && I::produces((*rr).1[0], (*rr).2, (*rr).0)
         );
-        rr.produced = thrust_macros::ghost!(
-            |rr: &mut Run<I>, x: I::Item| -> Seq<<I::Item as Model>::Ty> { (*rr).2.push(x) }
-        );
+        let pre = thrust_macros::ghost!(|rr: &mut Run<I>| -> <I as Model>::Ty { (*rr).0 });
+        // The snapshot is taken before the match so that `rr` is still live on the exit arm.
+        let outcome = rr.iter.next();
+        let post = thrust_macros::ghost!(|rr: &mut Run<I>| -> <I as Model>::Ty { (*rr).0 });
+        match outcome {
+            Some(x) => {
+                rr.produced = thrust_macros::ghost!(
+                    |rr: &mut Run<I>, x: I::Item| -> Seq<<I::Item as Model>::Ty> { (*rr).2.push(x) }
+                );
+            }
+            None => {
+                I::exhaustion_preserves_produces(pre, post);
+                break;
+            }
+        }
     }
 }
 
