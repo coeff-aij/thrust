@@ -616,12 +616,25 @@ impl<'tcx> Analyzer<'tcx> {
                     generic.local_def_id,
                     Rc::clone(&generic.cache),
                     Some(DeferredDefMode::Analyze).filter(|_| {
-                        // A call with type parameters still present is a call from
-                        // inside a generic context; its contract is the template that
-                        // the placeholder analysis constrains. Re-running the body here
-                        // would collide with that analysis (same def, same args).
                         use mir_ty::TypeVisitableExt as _;
-                        !generic_args.types().any(|ty| ty.has_param())
+                        if !generic_args.types().any(|ty| ty.has_param()) {
+                            return true;
+                        }
+                        // The type arguments are the caller's own type parameters, so
+                        // the contract minted just below lives on the caller's abstract
+                        // sorts while the placeholder analysis constrains one on the
+                        // callee's. Analyzing the body here, under the caller as its
+                        // owner, is what puts a defining clause under that contract;
+                        // without it the contract is free and the caller is vacuous
+                        // from this call onwards.
+                        //
+                        // Two shapes are kept out:
+                        // - a call that lands back on the def whose analysis we are
+                        //   inside, which would re-enter that same analysis instance;
+                        // - a def whose contract comes from a separate spec function,
+                        //   whose body is analyzed under its own owner and so would be
+                        //   typed over sorts the call site does not share.
+                        def_id != caller_def_id && generic.local_def_id.to_def_id() == def_id
                     }),
                 ),
                 DefTy::Deferred(deferred) => (
