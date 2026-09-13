@@ -614,6 +614,61 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         chc::Term::datatype_ctor(d_sym, sort_args, v_sym, field_terms)
     }
 
+    /// The value of a constant named in a formula.
+    ///
+    /// A constant stands for its value, and rustc computes that value, so a path to one
+    /// translates to the same term its value would have written out as a literal. This is
+    /// the only reading available: the term language has no name to give a constant, and
+    /// the clauses are emitted per instantiation anyway.
+    ///
+    /// Only integers and booleans have such a term. A constant of any other type, and one
+    /// whose value still depends on a generic parameter and so does not exist yet, stops
+    /// here.
+    fn const_value_term(
+        &self,
+        hir: &'tcx rustc_hir::Expr<'tcx>,
+        const_did: rustc_span::def_id::DefId,
+    ) -> FormulaOrTerm<rty::FunctionParamIdx> {
+        use rustc_middle::mir::{interpret::Scalar, ConstValue, UnevaluatedConst};
+
+        let args = mir_ty::EarlyBinder::bind(self.typeck.node_args(hir.hir_id))
+            .instantiate(self.tcx, self.generic_args);
+        let typing_env = mir_ty::TypingEnv::fully_monomorphized();
+        let unevaluated = UnevaluatedConst::new(const_did, args);
+        let value = self
+            .tcx
+            .const_eval_resolve(typing_env, unevaluated, hir.span)
+            .unwrap_or_else(|err| {
+                panic!(
+                    "constant in formula has no value: {}: {:?}",
+                    self.tcx.def_path_str(const_did),
+                    err
+                )
+            });
+
+        let ty = self.expr_ty(hir);
+        let scalar = match value {
+            ConstValue::Scalar(Scalar::Int(scalar)) => scalar,
+            _ => unimplemented!("unsupported constant in formula: {:?}: {:?}", ty, value),
+        };
+        match ty.kind() {
+            mir_ty::TyKind::Int(_) => {
+                let n = scalar.to_int(scalar.size());
+                FormulaOrTerm::Term(chc::Term::int(
+                    i64::try_from(n).expect("integer constant out of i64 range in formula"),
+                ))
+            }
+            mir_ty::TyKind::Uint(_) => {
+                let n = scalar.to_uint(scalar.size());
+                FormulaOrTerm::Term(chc::Term::int(
+                    i64::try_from(n).expect("integer constant out of i64 range in formula"),
+                ))
+            }
+            mir_ty::TyKind::Bool => FormulaOrTerm::Literal(scalar.try_to_bool().unwrap()),
+            _ => unimplemented!("unsupported constant in formula: {:?}: {:?}", ty, value),
+        }
+    }
+
     fn to_formula_with_quantified_vars(
         &self,
         closure: &rustc_hir::Body<'tcx>,
@@ -768,6 +823,10 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 ) => {
                     FormulaOrTerm::Term(self.variant_ctor_term(ctor_did, self.expr_ty(hir), vec![]))
                 }
+                rustc_hir::def::Res::Def(
+                    rustc_hir::def::DefKind::Const | rustc_hir::def::DefKind::AssocConst,
+                    const_did,
+                ) => self.const_value_term(hir, const_did),
                 _ => unimplemented!("unsupported path in formula: {:?}", qpath),
             },
             ExprKind::Tup(exprs) => {
