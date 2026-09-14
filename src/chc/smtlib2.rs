@@ -698,7 +698,11 @@ impl<'a> std::fmt::Display for System<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "(set-logic HORN)\n")?;
 
+        let used_forall_sorts = self.inner.used_forall_sorts();
         for forall_sort_def in &self.inner.forall_sorts {
+            if !used_forall_sorts.contains(&forall_sort_def.idx) {
+                continue;
+            }
             if !forall_sort_def.debug_info.is_empty() {
                 writeln!(f, "{}", forall_sort_def.debug_info.display("; "))?;
             }

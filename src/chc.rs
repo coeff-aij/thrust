@@ -2314,6 +2314,61 @@ impl System {
         used
     }
 
+    /// The set of forall sorts the SMT-LIB2 output actually mentions. Only these
+    /// need a `declare-forall-sort` line.
+    ///
+    /// `declare-forall-sort` is a CoAR extension. A solver that does not know it
+    /// answers `unsupported` for the line, and because a verdict is read by
+    /// matching the solver's whole output against `sat`/`unsat`, that stray word
+    /// turns an otherwise good answer into `Unknown` with nothing to point at.
+    /// Declaring a sort nothing refers to therefore costs a query its portability
+    /// and buys nothing, so leave those lines out.
+    ///
+    /// A sort counts as mentioned when it appears in a declared signature, in a
+    /// clause, in a datatype the output monomorphizes, or as the sort of a
+    /// `default_` constant. [`format_context::collect_sorts`] gathers the first
+    /// three from the same system the emitter reads. It can still report a sort
+    /// the finished query never names, because monomorphizing a datatype
+    /// substitutes the `Sort::Forall` standing in for one of its parameters, so
+    /// the answer errs towards keeping a declaration and never towards dropping
+    /// one the query goes on to use.
+    ///
+    /// The bodies of `#[thrust_macros::predicate]` and `#![thrust::raw_command]`
+    /// are raw SMT-LIB2 that the analyzer never parses. They are searched for the
+    /// sort's printed name as a plain substring, the way
+    /// [`Self::populate_user_defined_pred_dependencies`] searches them for
+    /// `ForallPred` names. A substring match also fires on names that merely
+    /// contain the sort's, which keeps a declaration that could have been
+    /// dropped -- the harmless direction of a wrong guess.
+    pub fn used_forall_sorts(&self) -> HashSet<ForallSortIdx> {
+        let mut used = self.used_forall_default_sorts();
+
+        for sort in format_context::collect_sorts(self) {
+            sort.walk(|s| {
+                if let Sort::Forall(idx) = s {
+                    used.insert(*idx);
+                }
+            });
+        }
+
+        let opaque: Vec<&str> = self
+            .user_defined_pred_defs
+            .iter()
+            .map(|d| d.body.as_str())
+            .chain(self.raw_commands.iter().map(|c| c.command.as_str()))
+            .collect();
+        if !opaque.is_empty() {
+            for def in &self.forall_sorts {
+                let name = def.idx.to_string();
+                if opaque.iter().any(|body| body.contains(name.as_str())) {
+                    used.insert(def.idx);
+                }
+            }
+        }
+
+        used
+    }
+
     pub fn push_clause(&mut self, clause: Clause) -> Option<ClauseId> {
         if clause.is_nop() {
             return None;
@@ -2544,16 +2599,44 @@ mod tests {
 
         let smt = system.smtlib2().to_string();
         assert_eq!(smt.matches("(declare-const default_").count(), 0);
+        assert_eq!(smt.matches("(declare-forall-sort").count(), 0);
+    }
+
+    #[test]
+    fn declares_only_the_forall_sorts_something_refers_to() {
+        let mut system = System::default();
+        let used = system.new_forall_sort(DebugInfo::default());
+        system.new_forall_sort(DebugInfo::default());
+        system.register_forall_pred(ForallPred::new(
+            "q".into(),
+            vec![],
+            vec![Sort::forall(used)],
+        ));
+
+        let smt = system.smtlib2().to_string();
         assert_eq!(smt.matches("(declare-forall-sort a0)").count(), 1);
-        assert_eq!(smt.matches("(declare-forall-sort a1)").count(), 1);
+        assert_eq!(smt.matches("(declare-forall-sort a1)").count(), 0);
+    }
+
+    #[test]
+    fn declares_a_forall_sort_named_only_by_a_raw_command() {
+        let mut system = System::default();
+        system.new_forall_sort(DebugInfo::default());
+        system.push_raw_command(RawCommand {
+            command: "(declare-fun opaque (a0) Bool)".to_string(),
+        });
+
+        let smt = system.smtlib2().to_string();
+        assert_eq!(smt.matches("(declare-forall-sort a0)").count(), 1);
     }
 
     #[test]
     fn emits_forall_sort_debug_info() {
         let mut system = System::default();
-        system.new_forall_sort(
+        let idx = system.new_forall_sort(
             DebugInfo::default().with_context("type_param", "ParamTy T/#0 (decl=DefId(...))"),
         );
+        system.register_forall_pred(ForallPred::new("q".into(), vec![], vec![Sort::forall(idx)]));
 
         let smt = system.smtlib2().to_string();
         assert!(smt.contains("; type_param=ParamTy T/#0 (decl=DefId(...))"));

@@ -224,7 +224,7 @@ fn builtin_sort_datatype(s: chc::Sort) -> Option<chc::Datatype> {
     Some(d)
 }
 
-fn collect_sorts(system: &chc::System) -> BTreeSet<chc::Sort> {
+pub(super) fn collect_sorts(system: &chc::System) -> BTreeSet<chc::Sort> {
     let mut sorts = BTreeSet::new();
 
     for def in &system.pred_vars {
