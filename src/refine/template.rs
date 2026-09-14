@@ -33,6 +33,36 @@ fn seq_model_type<V>(elem_ty: rty::Type<V>) -> rty::Type<V> {
     .into()
 }
 
+/// The model of an iterator over a contiguous sequence: the `(base, cursor)` pair, where the
+/// cursor is the position of the element the next `next` will return, and the base is the
+/// whole sequence the iterator was made from -- a `Seq` pair for `slice::Iter` and
+/// `vec::IntoIter`, and its prophecy pair for `slice::IterMut`.
+///
+/// Spelling the pair out here is what lets the element type be a type parameter, the same way
+/// `seq_model_type` does for the sequence types themselves. Unlike those, though, the struct
+/// traversal is not merely unhelpful for these three but impossible: every one of them reaches
+/// a `*const T` through `NonNull`, which has no model at any element type at all.
+fn seq_iter_model_type<V>(base_ty: rty::Type<V>) -> rty::Type<V> {
+    rty::TupleType::new(vec![
+        rty::PointerType::own(base_ty).into(),
+        rty::PointerType::own(rty::Type::int()).into(),
+    ])
+    .into()
+}
+
+/// The element type of one of the three sequence iterators.
+///
+/// It is the first type argument, but not the first argument: `slice::Iter` and
+/// `slice::IterMut` take a lifetime ahead of it and `vec::IntoIter` an allocator behind it.
+fn iterated_elem_ty<'tcx>(
+    ty: mir_ty::Ty<'tcx>,
+    args: &'tcx mir_ty::List<mir_ty::GenericArg<'tcx>>,
+) -> mir_ty::Ty<'tcx> {
+    args.types()
+        .next()
+        .unwrap_or_else(|| panic!("sequence iterator without an element type: {ty:?}"))
+}
+
 pub trait TemplateRegistry {
     fn register_template<V>(&mut self, tmpl: rty::Template<V>) -> rty::RefinedType<V>;
 }
@@ -458,6 +488,17 @@ impl<'tcx> TypeBuilder<'tcx> {
                     let elem_ty = self.build(params.type_at(0));
                     return seq_model_type(elem_ty);
                 }
+                if Some(def.did()) == self.def_ids.slice_iter()
+                    || Some(def.did()) == self.def_ids.vec_into_iter()
+                {
+                    let elem_ty = self.build(iterated_elem_ty(ty, params));
+                    return seq_iter_model_type(seq_model_type(elem_ty));
+                }
+                if Some(def.did()) == self.def_ids.slice_iter_mut() {
+                    let elem_ty = self.build(iterated_elem_ty(ty, params));
+                    let base_ty = rty::PointerType::mut_to(seq_model_type(elem_ty)).into();
+                    return seq_iter_model_type(base_ty);
+                }
                 if def.is_enum() {
                     let sym = refine::datatype_symbol(self.tcx, def.did());
                     let args: IndexVec<_, _> = params
@@ -877,6 +918,17 @@ where
                 if Some(def.did()) == self.inner.def_ids.vec() {
                     let elem_ty = self.build(params.type_at(0));
                     return seq_model_type(elem_ty);
+                }
+                if Some(def.did()) == self.inner.def_ids.slice_iter()
+                    || Some(def.did()) == self.inner.def_ids.vec_into_iter()
+                {
+                    let elem_ty = self.build(iterated_elem_ty(ty, params));
+                    return seq_iter_model_type(seq_model_type(elem_ty));
+                }
+                if Some(def.did()) == self.inner.def_ids.slice_iter_mut() {
+                    let elem_ty = self.build(iterated_elem_ty(ty, params));
+                    let base_ty = rty::PointerType::mut_to(seq_model_type(elem_ty)).into();
+                    return seq_iter_model_type(base_ty);
                 }
                 if def.is_enum() {
                     let sym = refine::datatype_symbol(self.inner.tcx, def.did());

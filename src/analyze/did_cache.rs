@@ -12,6 +12,9 @@ use rustc_span::symbol::Symbol;
 struct DefIds {
     unique: OnceCell<Option<DefId>>,
     nonnull: OnceCell<Option<DefId>>,
+    slice_iter: OnceCell<Option<DefId>>,
+    slice_iter_mut: OnceCell<Option<DefId>>,
+    vec_into_iter: OnceCell<Option<DefId>>,
 
     model_ty: OnceCell<Option<DefId>>,
     int_model: OnceCell<Option<DefId>>,
@@ -99,6 +102,46 @@ impl<'tcx> DefIdCache<'tcx> {
                 .expect("expected Unique to contain NonNull");
             Some(nonnull_def.did())
         })
+    }
+
+    /// The sibling of `anchor` named `name` in the module that defines it.
+    ///
+    /// `Vec` and `slice::Iter` are the only two of the sequence types with a diagnostic item.
+    /// The rest are reached the way `unique` and `nonnull` reach theirs: by walking from an
+    /// anchor that is addressable to the one that is not. Here the walk is sideways, from a
+    /// type to the module it is declared in, rather than through a field.
+    fn sibling_of(&self, anchor: DefId, name: &str) -> Option<DefId> {
+        let module = self.tcx.parent(anchor);
+        let name = Symbol::intern(name);
+        self.tcx
+            .module_children(module)
+            .iter()
+            .find(|child| child.ident.name == name)
+            .and_then(|child| child.res.opt_def_id())
+    }
+
+    /// `core::slice::Iter`, the iterator `<[T]>::iter` returns.
+    pub fn slice_iter(&self) -> Option<DefId> {
+        *self
+            .def_ids
+            .slice_iter
+            .get_or_init(|| self.tcx.get_diagnostic_item(Symbol::intern("SliceIter")))
+    }
+
+    /// `core::slice::IterMut`, the iterator `<[T]>::iter_mut` returns.
+    pub fn slice_iter_mut(&self) -> Option<DefId> {
+        *self
+            .def_ids
+            .slice_iter_mut
+            .get_or_init(|| self.sibling_of(self.slice_iter()?, "IterMut"))
+    }
+
+    /// `alloc::vec::IntoIter`, the iterator `<Vec<T> as IntoIterator>::into_iter` returns.
+    pub fn vec_into_iter(&self) -> Option<DefId> {
+        *self
+            .def_ids
+            .vec_into_iter
+            .get_or_init(|| self.sibling_of(self.vec()?, "IntoIter"))
     }
 
     fn annotated_def(&self, path: &[Symbol]) -> Option<DefId> {
