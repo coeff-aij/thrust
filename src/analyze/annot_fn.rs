@@ -407,6 +407,22 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         }
     }
 
+    /// Whether `ty`'s model is `model::Seq` -- the `(array, length)` pair that
+    /// `Vec<T>`, `[T]` and `[T; N]` all lower to, as well as `Seq` itself.
+    /// A formula that reaches such a value through a field of an ADT sees the
+    /// real Rust type rather than the model type, so `.array` / `.length` are
+    /// not spellable there; `.len()` and indexing are.
+    fn is_seq_modeled(&self, ty: mir_ty::Ty<'tcx>) -> bool {
+        match ty.kind() {
+            mir_ty::TyKind::Slice(_) | mir_ty::TyKind::Array(_, _) => true,
+            mir_ty::TyKind::Adt(adt, _) => {
+                Some(adt.did()) == self.def_ids.seq_model()
+                    || self.tcx.is_diagnostic_item(rustc_span::sym::Vec, adt.did())
+            }
+            _ => false,
+        }
+    }
+
     fn expr_ty(&self, expr: &'tcx rustc_hir::Expr<'tcx>) -> mir_ty::Ty<'tcx> {
         let ty = self.typeck.expr_ty(expr);
         let instantiated = self
@@ -872,9 +888,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 let array_ty = self.expr_ty(array);
                 let array_term = self.to_term(array);
                 let index_term = self.to_term(index);
-                let is_seq = array_ty
-                    .ty_adt_def()
-                    .is_some_and(|adt| Some(adt.did()) == self.def_ids.seq_model());
+                let is_seq = self.is_seq_modeled(array_ty);
                 let array_inner = if is_seq {
                     array_term.tuple_proj(0)
                 } else {
@@ -925,6 +939,13 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                         let new_len = a_len.add(b_len);
                         return FormulaOrTerm::Term(chc::Term::tuple(vec![new_arr, new_len]));
                     }
+                }
+                if method.ident.name == rustc_span::sym::len
+                    && args.is_empty()
+                    && self.is_seq_modeled(self.expr_ty(receiver))
+                {
+                    let t = self.to_term(receiver);
+                    return FormulaOrTerm::Term(t.tuple_proj(1));
                 }
                 unimplemented!("unsupported method call in formula: {:?}", method)
             }
