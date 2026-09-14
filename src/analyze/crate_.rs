@@ -112,12 +112,20 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let mut analyzer = self.ctx.local_def_analyzer(local_def_id);
 
         if analyzer.is_annotated_as_trusted() {
-            assert!(analyzer.is_fully_annotated());
+            assert!(
+                analyzer.is_fully_annotated(),
+                "`#[thrust::trusted]` needs both `requires` and `ensures` (or `#[thrust::callable]`) on `{}`",
+                self.tcx.def_path_str(local_def_id)
+            );
             self.skip_analysis.insert(local_def_id);
         }
 
         if analyzer.is_annotated_as_extern_spec_fn() {
-            assert!(analyzer.is_fully_annotated());
+            assert!(
+                analyzer.is_fully_annotated(),
+                "an extern spec needs both `requires` and `ensures` (or `#[thrust::callable]`) on `{}`",
+                self.tcx.def_path_str(local_def_id)
+            );
             self.skip_analysis.insert(local_def_id);
         }
 
