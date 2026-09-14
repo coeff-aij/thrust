@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use rustc_hir::def::DefKind;
 use rustc_index::IndexVec;
@@ -715,11 +715,13 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     fn type_return(
         &mut self,
         expected_fn: &rty::FunctionType,
-        outer_fn_param_vars: &HashMap<rty::FunctionParamIdx, Var>,
+        outer_fn_param_vars: &BTreeMap<rty::FunctionParamIdx, Var>,
     ) {
         let mut builder = self.env.build_clause();
         let mut clauses = Vec::new();
 
+        // Iterated to introduce clause variables, so the map is ordered by parameter
+        // index to keep the numbering of the emitted variables stable.
         for (&param_idx, &param_var) in outer_fn_param_vars {
             let sort = expected_fn.params[param_idx].ty.to_sort();
             if sort.is_singleton() {
@@ -746,7 +748,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     fn type_goto(
         &mut self,
         bb: BasicBlock,
-        outer_fn_param_vars: &HashMap<rty::FunctionParamIdx, Var>,
+        outer_fn_param_vars: &BTreeMap<rty::FunctionParamIdx, Var>,
     ) {
         if !needs_own_precondition(&self.body, bb) {
             self.install_inherited_bb_ty(bb, outer_fn_param_vars);
@@ -792,7 +794,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     fn install_inherited_bb_ty(
         &mut self,
         bb: BasicBlock,
-        outer_fn_param_vars: &HashMap<rty::FunctionParamIdx, Var>,
+        outer_fn_param_vars: &BTreeMap<rty::FunctionParamIdx, Var>,
     ) {
         let bty = self.ctx.basic_block_ty(self.local_def_id, bb);
 
@@ -847,7 +849,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         &mut self,
         discr: Operand<'tcx>,
         targets: mir::SwitchTargets,
-        outer_fn_param_vars: &HashMap<rty::FunctionParamIdx, Var>,
+        outer_fn_param_vars: &BTreeMap<rty::FunctionParamIdx, Var>,
         mut callback: F,
     ) where
         F: FnMut(&mut Self, BasicBlock),
@@ -1363,7 +1365,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         &mut self,
         term: &mir::Terminator<'tcx>,
         expected_fn: &rty::FunctionType,
-        outer_fn_param_vars: &HashMap<rty::FunctionParamIdx, Var>,
+        outer_fn_param_vars: &BTreeMap<rty::FunctionParamIdx, Var>,
     ) {
         match &term.kind {
             TerminatorKind::Return => {
@@ -1451,7 +1453,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         struct EnumCollector<'tcx> {
             tcx: mir_ty::TyCtxt<'tcx>,
             builder: TypeBuilder<'tcx>,
-            enums: std::collections::HashSet<DefId>,
+            // The registration order of the collected enums reaches the emitted
+            // datatype declarations, so keep them in the order they are visited.
+            enums: rustc_data_structures::fx::FxIndexSet<DefId>,
             visited: std::collections::HashSet<mir_ty::Ty<'tcx>>,
         }
         impl<'tcx> mir_ty::TypeVisitor<mir_ty::TyCtxt<'tcx>> for EnumCollector<'tcx> {
@@ -1473,7 +1477,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let mut visitor = EnumCollector {
             tcx: self.tcx,
             builder: self.type_builder.clone(),
-            enums: std::collections::HashSet::new(),
+            enums: Default::default(),
             visited: std::collections::HashSet::new(),
         };
         for local_decl in &self.local_decls {
@@ -1490,11 +1494,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     fn bind_locals(
         &mut self,
         expected_params: &IndexVec<rty::FunctionParamIdx, rty::RefinedType<rty::FunctionParamIdx>>,
-    ) -> HashMap<rty::FunctionParamIdx, Var> {
+    ) -> BTreeMap<rty::FunctionParamIdx, Var> {
         let mut param_terms = HashMap::<rty::FunctionParamIdx, chc::Term<PlaceTypeVar>>::new();
         let mut assumption = Assumption::default();
 
-        let mut outer_fn_param_vars = HashMap::new();
+        let mut outer_fn_param_vars = BTreeMap::new();
 
         let bb_ty = self
             .basic_block_ty_with_precondition(self.basic_block)
