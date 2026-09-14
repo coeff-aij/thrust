@@ -41,6 +41,16 @@ pub fn user_defined_pred(tcx: mir_ty::TyCtxt<'_>, did: DefId) -> UserDefinedPred
     UserDefinedPred::new(stable_def_id_symbol(tcx, did, "p"))
 }
 
+/// The symbol for the copy of `did`'s predicate emitted at the instantiation
+/// `instance` of the declaring item's type parameters.
+pub fn user_defined_pred_at_instance(
+    tcx: mir_ty::TyCtxt<'_>,
+    did: DefId,
+    instance: Vec<Sort>,
+) -> UserDefinedPred {
+    UserDefinedPred::at_instance(stable_def_id_symbol(tcx, did, "p"), instance)
+}
+
 pub fn trait_forall_pred(
     tcx: mir_ty::TyCtxt<'_>,
     did: DefId,
