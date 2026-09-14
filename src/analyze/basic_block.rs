@@ -633,6 +633,19 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     mir::AggregateKind::Adt { .. }
                     | mir::AggregateKind::Tuple
                     | mir::AggregateKind::Closure { .. } => {
+                        // A struct that the model lowering makes transparent is its live field
+                        // in the logic, so building it out of that field is the identity --
+                        // the same lowering `elaborate_place` gives the field access.
+                        if let mir::AggregateKind::Adt(did, _, args, _, _) = *kind {
+                            let adt_ty = mir_ty::Ty::new_adt(self.tcx, self.tcx.adt_def(did), args);
+                            let transparent = fields.iter_enumerated().find(|(idx, _)| {
+                                self.type_builder
+                                    .is_transparent_field(adt_ty, idx.as_usize())
+                            });
+                            if let Some((_, operand)) = transparent {
+                                return self.operand_type(operand.clone());
+                            }
+                        }
                         // elaboration: all fields are boxed
                         let field_tys: Vec<_> = fields
                             .into_iter()
@@ -1138,7 +1151,25 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         if self.is_mut_local(place.local) {
             projection.push(mir::PlaceElem::Deref);
         }
+        let mut base = mir::PlaceTy::from_ty(self.local_decls[place.local].ty);
         for elem in place.projection {
+            let elaborated = match elem {
+                // A struct that the model lowering makes transparent has no projection to
+                // make: its live field is the value itself, so the access is the identity.
+                mir::PlaceElem::Field(idx, _)
+                    if base.variant_index.is_none()
+                        && self
+                            .type_builder
+                            .is_transparent_field(base.ty, idx.as_usize()) =>
+                {
+                    false
+                }
+                _ => true,
+            };
+            base = base.projection_ty(self.tcx, elem);
+            if !elaborated {
+                continue;
+            }
             projection.push(elem);
             // elaboration: all fields are boxed
             if matches!(elem, mir::PlaceElem::Field { .. }) {
