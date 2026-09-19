@@ -30,6 +30,7 @@ mod basic_block;
 mod crate_;
 mod did_cache;
 mod local_def;
+mod pred_inst;
 mod reconstruct_slice_indexing;
 
 // TODO: organize structure and remove cross dependency between refine
@@ -322,6 +323,14 @@ pub struct Analyzer<'tcx> {
 
     type_params: Rc<RefCell<TypeParamMap<'tcx>>>,
     closure_type_params: Rc<RefCell<HashMap<TypeParam, rty::FunctionType>>>,
+
+    /// Where each [`chc::ForallPred`] standing for a trait predicate came from,
+    /// so that an instantiation of the item that quantified over it can say
+    /// which impl's predicate it resolves to.
+    forall_pred_origins: Rc<RefCell<HashMap<chc::ForallPred, pred_inst::ForallPredOrigin<'tcx>>>>,
+    /// Predicate definitions an instantiation asked for and that
+    /// [`Analyzer::emit_pending_pred_instances`] has yet to emit.
+    pending_pred_instances: Rc<RefCell<Vec<pred_inst::PendingPredInstance<'tcx>>>>,
 }
 
 impl<'tcx> crate::refine::TemplateRegistry for Analyzer<'tcx> {
@@ -351,6 +360,8 @@ impl<'tcx> Analyzer<'tcx> {
         let enum_defs = Default::default();
         let type_params = Default::default();
         let closure_type_params = Default::default();
+        let forall_pred_origins = Default::default();
+        let pending_pred_instances = Default::default();
         Self {
             tcx,
             defs,
@@ -361,6 +372,8 @@ impl<'tcx> Analyzer<'tcx> {
             enum_defs,
             type_params,
             closure_type_params,
+            forall_pred_origins,
+            pending_pred_instances,
         }
     }
 

@@ -277,6 +277,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.analyze_raw_command_annot();
         self.refine_local_defs();
         self.analyze_local_defs();
+        self.ctx.emit_pending_pred_instances();
         self.assert_callable_entry();
     }
 }
