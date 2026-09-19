@@ -369,6 +369,8 @@ impl<'tcx> analyze::Analyzer<'tcx> {
             fn_ty.precondition_formula(&call_args)
         };
 
+        tracing::debug!(?symbol, ?params, ?formula, "closure contract instantiated");
+
         let sig: chc::UserDefinedPredSig = vars
             .iter_enumerated()
             .map(|(v, s)| (v.to_string(), s.clone()))
@@ -395,8 +397,15 @@ impl<'tcx> analyze::Analyzer<'tcx> {
 }
 
 /// The upvars argument a closure contract takes, given the sort the predicate
-/// declares for it: an `FnMut` precondition is declared over the current half of
-/// the prophecy pair, while the contract itself reads plain upvars.
+/// declares for it.
+///
+/// An `FnMut` precondition is declared over the current upvars alone (see
+/// `pre_upvars_sort` in `refine::template`), while the contract's formula reads
+/// each capture through the `&mut` receiver pair, as `build_env_from_captures`
+/// laid it out. The pair is rebuilt around the current value here. The predicate
+/// does not receive the final half, which is unconstrained where a precondition
+/// is discharged, so the current value stands in for it: a precondition naming
+/// a capture's prophecy reads the capture's current value instead.
 fn closure_upvars_term(
     term: chc::Term<chc::TermVarIdx>,
     declared: &chc::Sort,
@@ -408,6 +417,11 @@ fn closure_upvars_term(
     if declared == &contract_sort {
         term
     } else {
-        term.mut_current()
+        assert_eq!(
+            contract_sort,
+            chc::Sort::mut_(declared.clone()),
+            "closure contract reads its upvars in an unexpected shape"
+        );
+        chc::Term::mut_(term.clone(), term)
     }
 }
