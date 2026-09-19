@@ -3,7 +3,7 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60 COAR_IMAGE=coar:latest
 use thrust_models::forall;
 use thrust_models::model::Seq;
-use thrust_models::{Ghost, Model};
+use thrust_models::Model;
 
 // Creusot's `common.rs` iterator spec: ternary `produces(self, visited, o)`, `completed`, and the
 // laws applied as ensures on `next`; reflexivity is also a callable law (`produces_refl`).
@@ -85,8 +85,8 @@ where
         true
     }
 
-    // (*self.n == 0 && *self == !self)
-    // || (*self.n > 0 && *self.n == !self.n + 1 && self.iter.completed())
+    // (*self.n == 0 && *self == !self) ||
+    // (*self.n > 0 && *self.n == !self.n + 1 && self.iter.completed())
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
         "(or
