@@ -325,14 +325,21 @@ impl<'tcx> TypeBuilder<'tcx> {
                 orig_ty,
                 normalized_ty
             );
-            let contains_model_ty_alias = normalized_ty.walk().any(|arg| {
+            // A partly normalized result is still progress: `build` expands the
+            // `Model::Ty` projections left inside it. Only a result that still
+            // projects `ty` itself has to be rejected, or `build` would come back here.
+            let stuck_on_ty = normalized_ty.walk().any(|arg| {
                 if let mir_ty::GenericArgKind::Type(t) = arg.kind() {
-                    matches!(t.kind(), mir_ty::TyKind::Alias(_, alias_ty) if alias_ty.def_id == model_ty_def_id)
+                    matches!(
+                        t.kind(),
+                        mir_ty::TyKind::Alias(_, alias_ty)
+                            if alias_ty.def_id == model_ty_def_id && alias_ty.args.type_at(0) == ty
+                    )
                 } else {
                     false
                 }
             });
-            if !contains_model_ty_alias {
+            if !stuck_on_ty {
                 return normalized_ty;
             }
         }
