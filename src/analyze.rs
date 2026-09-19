@@ -290,7 +290,12 @@ pub enum TypeParam {
 
 #[derive(Debug, Clone)]
 struct DeferredFormulaFnDef<'tcx> {
-    cache: Rc<RefCell<HashMap<mir_ty::GenericArgsRef<'tcx>, annot_fn::FormulaFn<'tcx>>>>,
+    // Keyed on the owner as well as the type arguments: a lifted formula is translated
+    // under the owner's `TypeBuilder`, which is what turns a `ParamTy` into a forall sort.
+    // Two functions each declaring a first type parameter are indistinguishable by their
+    // `GenericArgsRef` alone, so dropping the owner hands one function's translation --
+    // its forall sorts, and the trait predicate instances named after them -- to the other.
+    cache: Rc<RefCell<HashMap<InstantiationKey<'tcx>, annot_fn::FormulaFn<'tcx>>>>,
 }
 
 #[derive(Clone)]
@@ -566,8 +571,12 @@ impl<'tcx> Analyzer<'tcx> {
     ) -> Option<annot_fn::FormulaFn<'tcx>> {
         let deferred_formula_fn = self.formula_fns.get(&local_def_id)?;
 
+        let key = InstantiationKey {
+            generic_args,
+            caller_def_id: owner_fn_id,
+        };
         let deferred_formula_fn_cache = Rc::clone(&deferred_formula_fn.cache);
-        if let Some(formula_fn) = deferred_formula_fn_cache.borrow().get(&generic_args) {
+        if let Some(formula_fn) = deferred_formula_fn_cache.borrow().get(&key) {
             return Some(formula_fn.clone());
         }
 
@@ -577,7 +586,7 @@ impl<'tcx> Analyzer<'tcx> {
         let formula_fn = translator.to_formula_fn();
         deferred_formula_fn_cache
             .borrow_mut()
-            .insert(generic_args, formula_fn.clone());
+            .insert(key, formula_fn.clone());
 
         tracing::info!(?local_def_id, formula_fn = %formula_fn.display(), ?generic_args, "formula_fn_with_args");
         Some(formula_fn)
