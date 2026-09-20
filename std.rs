@@ -376,6 +376,31 @@ mod thrust_models {
         type Ty = model::Seq<<T as Model>::Ty>;
     }
 
+    // An iterator over a contiguous sequence is a `(base, cursor)` pair: the sequence it was
+    // made from, and the position of the element the next `next` returns. The alternative --
+    // the sequence of items still to come -- would shift the whole sequence on every step, and
+    // carry the universal quantifier that describes the shift into every loop invariant.
+    //
+    // None of the three has a field that survives translation, so, unlike `Vec` and `[T]`, they
+    // are not merely better served by a model than by their fields: they cannot be traversed at
+    // any element type at all. The refinement type builder knows all three by name for that
+    // reason.
+
+    impl<'a, T> Model for core::slice::Iter<'a, T> where T: Model {
+        type Ty = (model::Seq<<T as Model>::Ty>, model::Int);
+    }
+
+    // The first component is the prophecy pair of the `&mut [T]` the iterator was made from, so
+    // the final value of every element is already fixed here; `next` hands out the element at
+    // the cursor as the `Mut` pair of the two arrays at that position.
+    impl<'a, T> Model for core::slice::IterMut<'a, T> where T: Model {
+        type Ty = (model::Mut<model::Seq<<T as Model>::Ty>>, model::Int);
+    }
+
+    impl<T> Model for std::vec::IntoIter<T> where T: Model {
+        type Ty = (model::Seq<<T as Model>::Ty>, model::Int);
+    }
+
     impl<T> Model for Option<T> where T: Model {
         type Ty = Option<<T as Model>::Ty>;
     }
@@ -862,6 +887,15 @@ fn _extern_spec_vec_deref<T>(vec: &Vec<T>) -> &[T]
 
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
+#[thrust_macros::ensures(*result == *vec && !result == !vec)]
+fn _extern_spec_vec_deref_mut<T>(vec: &mut Vec<T>) -> &mut [T]
+    where T: thrust_models::Model, T::Ty: PartialEq
+{
+    <Vec<T> as std::ops::DerefMut>::deref_mut(vec)
+}
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
 #[thrust_macros::ensures(*result == *vec)]
 fn _extern_spec_vec_as_ref<T>(vec: &Vec<T>) -> &[T]
     where T: thrust_models::Model, T::Ty: PartialEq
@@ -1015,6 +1049,110 @@ fn _extern_spec_slice_index_mut<T>(slice: &mut [T], index: usize) -> &mut T
     where T: thrust_models::Model, T::Ty: PartialEq
 {
     <[T] as std::ops::IndexMut<usize>>::index_mut(slice, index)
+}
+
+// `<[T]>::iter`, `<[T]>::iter_mut` and `Vec`'s three `into_iter`s all start a fresh iterator at
+// position 0 over the sequence they are given. The `next`s below are each total: the second
+// disjunct covers every position at or past the end, so a caller owes nothing on entry and a
+// loop that runs to exhaustion needs no invariant about the cursor to leave the loop.
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(result.0 == *slice && result.1 == 0)]
+fn _extern_spec_slice_iter<T>(slice: &[T]) -> core::slice::Iter<'_, T>
+    where T: thrust_models::Model, T::Ty: PartialEq
+{
+    <[T]>::iter(slice)
+}
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(
+    ((*it).1 < (*it).0.length
+        && result == Some(&(*it).0.array[(*it).1])
+        && (!it).0 == (*it).0
+        && (!it).1 == (*it).1 + 1)
+    || ((*it).1 >= (*it).0.length && result == None && !it == *it)
+)]
+fn _extern_spec_slice_iter_next<'a, T>(it: &mut core::slice::Iter<'a, T>) -> Option<&'a T>
+    where T: thrust_models::Model + 'a, T::Ty: PartialEq
+{
+    <core::slice::Iter<'a, T> as std::iter::Iterator>::next(it)
+}
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(result.0 == slice && result.1 == 0)]
+fn _extern_spec_slice_iter_mut<T>(slice: &mut [T]) -> core::slice::IterMut<'_, T>
+    where T: thrust_models::Model, T::Ty: PartialEq
+{
+    <[T]>::iter_mut(slice)
+}
+
+// The element handed out is the `Mut` pair of the current and final arrays at the cursor. The
+// tail the loop has not reached yet keeps its prophecy unconstrained, so dropping the iterator
+// early leaves the caller unable to say the untouched elements are unchanged; running it to
+// exhaustion is what the specification supports.
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(
+    ((*it).1 < (*(*it).0).length
+        && result == Some(thrust_models::model::Mut::new(
+            (*(*it).0).array[(*it).1],
+            (!(*it).0).array[(*it).1],
+        ))
+        && (!it).0 == (*it).0
+        && (!it).1 == (*it).1 + 1)
+    || ((*it).1 >= (*(*it).0).length && result == None && !it == *it)
+)]
+fn _extern_spec_slice_iter_mut_next<'a, T>(
+    it: &mut core::slice::IterMut<'a, T>,
+) -> Option<&'a mut T>
+    where T: thrust_models::Model + 'a, T::Ty: PartialEq
+{
+    <core::slice::IterMut<'a, T> as std::iter::Iterator>::next(it)
+}
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(result.0 == vec && result.1 == 0)]
+fn _extern_spec_vec_into_iter<T>(vec: Vec<T>) -> std::vec::IntoIter<T>
+    where T: thrust_models::Model, T::Ty: PartialEq
+{
+    <Vec<T> as std::iter::IntoIterator>::into_iter(vec)
+}
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(
+    ((*it).1 < (*it).0.length
+        && result == Some((*it).0.array[(*it).1])
+        && (!it).0 == (*it).0
+        && (!it).1 == (*it).1 + 1)
+    || ((*it).1 >= (*it).0.length && result == None && !it == *it)
+)]
+fn _extern_spec_vec_into_iter_next<T>(it: &mut std::vec::IntoIter<T>) -> Option<T>
+    where T: thrust_models::Model, T::Ty: PartialEq
+{
+    <std::vec::IntoIter<T> as std::iter::Iterator>::next(it)
+}
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(result.0 == *vec && result.1 == 0)]
+fn _extern_spec_vec_ref_into_iter<'a, T>(vec: &'a Vec<T>) -> core::slice::Iter<'a, T>
+    where T: thrust_models::Model + 'a, T::Ty: PartialEq
+{
+    <&Vec<T> as std::iter::IntoIterator>::into_iter(vec)
+}
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(result.0 == vec && result.1 == 0)]
+fn _extern_spec_vec_mut_into_iter<'a, T>(vec: &'a mut Vec<T>) -> core::slice::IterMut<'a, T>
+    where T: thrust_models::Model + 'a, T::Ty: PartialEq
+{
+    <&mut Vec<T> as std::iter::IntoIterator>::into_iter(vec)
 }
 
 // TODO: The following specs of some trait methods are too restrictive; we should allow for a
