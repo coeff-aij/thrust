@@ -87,8 +87,8 @@ impl<'a> FormulaFnTypeLowering<'a> {
     /// `T: Model` / `<T as Model>::Ty: PartialEq` predicates for every type param
     /// in scope for `sig` (its own, plus the outer `impl`/`trait`'s and, for a
     /// trait, `Self`) that does not carry an `Fn`/`FnOnce`/`FnMut` bound, plus the
-    /// same for any generic associated-type projection appearing in `sig` and for
-    /// every associated type (`Self::Item`) declared by the outer `impl`/`trait`.
+    /// same for any generic associated-type projection appearing in `sig` and,
+    /// in a trait, for every associated type (`Self::Item`) it declares.
     pub fn model_where_predicates(&self) -> Vec<syn::WherePredicate> {
         let mut generic_type_params: Vec<syn::Ident> = Vec::new();
         for param in &self.sig.generics.params {
@@ -154,8 +154,27 @@ impl<'a> FormulaFnTypeLowering<'a> {
             predicates.extend(model_predicates(&tp));
         }
 
-        if let Some(outer_context) = &self.outer_context {
-            for assoc in outer_context.associated_type_idents() {
+        // Only a trait declares the bounds on its associated types; a trait impl's
+        // method inherits them. Spelling them again on the impl side is not
+        // neutral: there `Self::Item` normalizes to the impl's concrete type, and
+        // the trait's `Self::Item: Model` bound lands in the impl's environment as
+        // a where-clause on that concrete type. The where-clause shadows its
+        // `Model` impl, so `<Concrete as Model>::Ty` stays rigid on the impl
+        // method while the trait method's copy of the bound normalizes through
+        // the impl, and rustc rejects the impl method's bound as stricter (E0276)
+        // whenever the two differ, e.g. `Item = &'a mut T` or `Item = Box<T>`.
+        if let Some(FnOuterItem::ItemTrait(item_trait)) = &self.outer_context {
+            for item in &item_trait.items {
+                // TODO: handle generic associated types. We only emit bounds for a
+                // bare `Self::Assoc` projection, so a GAT (`type Item<U>;`) is skipped
+                // to avoid fabricating an ill-formed `Self::Item: Model` bound (E0107).
+                let syn::TraitItem::Type(ty) = item else {
+                    continue;
+                };
+                if !ty.generics.params.is_empty() {
+                    continue;
+                }
+                let assoc = &ty.ident;
                 let projection = quote!(Self::#assoc);
                 predicates.extend(model_predicates(&projection));
             }

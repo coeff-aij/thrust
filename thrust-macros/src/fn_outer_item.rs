@@ -59,33 +59,4 @@ impl FnOuterItem {
             FnOuterItem::ItemTrait(item_trait) => &item_trait.generics,
         }
     }
-
-    /// The names of the associated types declared in this `impl`/`trait` header.
-    pub fn associated_type_idents(&self) -> Vec<syn::Ident> {
-        // TODO: handle generic associated types. We only emit bounds for a bare
-        // `Self::Assoc` projection, so a GAT (`type Item<U>;`) is skipped to avoid
-        // fabricating an ill-formed `Self::Item: Model` bound (E0107).
-        match self {
-            FnOuterItem::ItemImpl(item_impl) => item_impl
-                .items
-                .iter()
-                .filter_map(|item| match item {
-                    syn::ImplItem::Type(ty) if ty.generics.params.is_empty() => {
-                        Some(ty.ident.clone())
-                    }
-                    _ => None,
-                })
-                .collect(),
-            FnOuterItem::ItemTrait(item_trait) => item_trait
-                .items
-                .iter()
-                .filter_map(|item| match item {
-                    syn::TraitItem::Type(ty) if ty.generics.params.is_empty() => {
-                        Some(ty.ident.clone())
-                    }
-                    _ => None,
-                })
-                .collect(),
-        }
-    }
 }
