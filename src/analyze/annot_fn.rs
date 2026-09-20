@@ -640,6 +640,14 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 mir_ty::EarlyBinder::bind(generic_args).instantiate(self.tcx, self.generic_args);
         }
         let elem_ty = generic_args.type_at(idx);
+        // Normalize before the type builder swaps a closure for its model: once that has
+        // happened an `Fn`-bounded impl no longer applies and a projection through it
+        // cannot be resolved any more.
+        let typing_env = mir_ty::TypingEnv::fully_monomorphized();
+        let elem_ty = self
+            .tcx
+            .try_normalize_erasing_regions(typing_env, elem_ty)
+            .unwrap_or(elem_ty);
         self.type_builder.build(elem_ty)
     }
 
