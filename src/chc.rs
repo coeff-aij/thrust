@@ -249,6 +249,7 @@ impl Sort {
             Sort::Forall(idx) => f(*idx).unwrap_or_else(|| self.clone()),
             Sort::Box(s) => Sort::Box(Box::new(s.subst_forall(f))),
             Sort::Mut(s) => Sort::Mut(Box::new(s.subst_forall(f))),
+            Sort::Seq(s) => Sort::Seq(Box::new(s.subst_forall(f))),
             Sort::Tuple(ss) => Sort::Tuple(ss.iter().map(|s| s.subst_forall(f)).collect()),
             Sort::Array(s1, s2) => {
                 Sort::Array(Box::new(s1.subst_forall(f)), Box::new(s2.subst_forall(f)))
