@@ -1156,11 +1156,11 @@ fn _extern_spec_slice_iter<T>(slice: &[T]) -> core::slice::Iter<'_, T>
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(
-    ((*it).1 < (*it).0.length
-        && result == Some(&(*it).0.array[(*it).1])
+    ((*it).1 < (*it).0.len()
+        && result == Some(&(*it).0[(*it).1])
         && (!it).0 == (*it).0
         && (!it).1 == (*it).1 + 1)
-    || ((*it).1 >= (*it).0.length && result == None && !it == *it)
+    || ((*it).1 >= (*it).0.len() && result == None && !it == *it)
 )]
 fn _extern_spec_slice_iter_next<'a, T>(it: &mut core::slice::Iter<'a, T>) -> Option<&'a T>
     where T: thrust_models::Model + 'a, T::Ty: PartialEq
@@ -1184,14 +1184,14 @@ fn _extern_spec_slice_iter_mut<T>(slice: &mut [T]) -> core::slice::IterMut<'_, T
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(
-    ((*it).1 < (*(*it).0).length
+    ((*it).1 < (*(*it).0).len()
         && result == Some(thrust_models::model::Mut::new(
-            (*(*it).0).array[(*it).1],
-            (!(*it).0).array[(*it).1],
+            (*(*it).0)[(*it).1],
+            (!(*it).0)[(*it).1],
         ))
         && (!it).0 == (*it).0
         && (!it).1 == (*it).1 + 1)
-    || ((*it).1 >= (*(*it).0).length && result == None && !it == *it)
+    || ((*it).1 >= (*(*it).0).len() && result == None && !it == *it)
 )]
 fn _extern_spec_slice_iter_mut_next<'a, T>(
     it: &mut core::slice::IterMut<'a, T>,
@@ -1213,11 +1213,11 @@ fn _extern_spec_vec_into_iter<T>(vec: Vec<T>) -> std::vec::IntoIter<T>
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(
-    ((*it).1 < (*it).0.length
-        && result == Some((*it).0.array[(*it).1])
+    ((*it).1 < (*it).0.len()
+        && result == Some((*it).0[(*it).1])
         && (!it).0 == (*it).0
         && (!it).1 == (*it).1 + 1)
-    || ((*it).1 >= (*it).0.length && result == None && !it == *it)
+    || ((*it).1 >= (*it).0.len() && result == None && !it == *it)
 )]
 fn _extern_spec_vec_into_iter_next<T>(it: &mut std::vec::IntoIter<T>) -> Option<T>
     where T: thrust_models::Model, T::Ty: PartialEq
