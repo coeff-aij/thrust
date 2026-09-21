@@ -6,8 +6,8 @@
 // of the element the next `next` returns, so the element `next` hands back is named without a
 // quantifier and without a loop.
 
-#[thrust_macros::requires((*s).length > 0)]
-#[thrust_macros::ensures(result == (*s).array[0])]
+#[thrust_macros::requires((*s).len() > 0)]
+#[thrust_macros::ensures(result == (*s)[0])]
 fn head<T>(s: &[T]) -> T
     where T: thrust_models::Model + Copy, T::Ty: PartialEq
 {

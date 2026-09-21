@@ -8,10 +8,10 @@ use thrust_models::forall;
 use thrust_models::model::Int;
 
 #[thrust_macros::context]
-#[thrust_macros::requires((*v).length >= 0)]
+#[thrust_macros::requires((*v).len() >= 0)]
 #[thrust_macros::ensures(
-    (!v).length == (*v).length
-        && forall(|i: Int| (0 <= i && i < (!v).length) ==> ((!v).array[i] == 0))
+    (!v).len() == (*v).len()
+        && forall(|i: Int| (0 <= i && i < (!v).len()) ==> ((!v)[i] == 0))
 )]
 fn all_zero(v: &mut Vec<usize>) {
     let mut it = v.iter_mut();
@@ -19,8 +19,8 @@ fn all_zero(v: &mut Vec<usize>) {
         thrust_macros::invariant!(
             |it: core::slice::IterMut<'_, usize>, v: thrust_models::FnParam<&mut Vec<usize>>|
                 it.0 == v.at_entry()
-                    && it.1 <= (*it.0).length
-                    && forall(|j: Int| (0 <= j && j < it.1) ==> ((!it.0).array[j] == 0))
+                    && it.1 <= (*it.0).len()
+                    && forall(|j: Int| (0 <= j && j < it.1) ==> ((!it.0)[j] == 0))
         );
         *x = 1;
     }

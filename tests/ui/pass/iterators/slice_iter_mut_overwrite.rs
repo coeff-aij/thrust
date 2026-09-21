@@ -16,10 +16,10 @@ use thrust_models::forall;
 use thrust_models::model::Int;
 
 #[thrust_macros::context]
-#[thrust_macros::requires((*s).length >= 0)]
+#[thrust_macros::requires((*s).len() >= 0)]
 #[thrust_macros::ensures(
-    (!s).length == (*s).length
-        && forall(|j: Int| (0 <= j && j < (!s).length) ==> ((!s).array[j] == v))
+    (!s).len() == (*s).len()
+        && forall(|j: Int| (0 <= j && j < (!s).len()) ==> ((!s)[j] == v))
 )]
 fn overwrite<T>(s: &mut [T], v: T)
     where T: thrust_models::Model + Copy, T::Ty: PartialEq
@@ -29,8 +29,8 @@ fn overwrite<T>(s: &mut [T], v: T)
         thrust_macros::invariant!(
             |it: core::slice::IterMut<'_, T>, v: T, s: thrust_models::FnParam<&mut [T]>|
                 it.0 == s.at_entry()
-                    && it.1 <= (*it.0).length
-                    && forall(|j: Int| (0 <= j && j < it.1) ==> ((!it.0).array[j] == v))
+                    && it.1 <= (*it.0).len()
+                    && forall(|j: Int| (0 <= j && j < it.1) ==> ((!it.0)[j] == v))
         );
         *x = v;
     }

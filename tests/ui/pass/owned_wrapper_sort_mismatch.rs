@@ -123,13 +123,13 @@ impl Iterator for Range {
         "(and
             (= (tuple_proj<Int-Int>.1 self_) (tuple_proj<Int-Int>.1 o))
             (<= (tuple_proj<Int-Int>.0 self_) (tuple_proj<Int-Int>.0 o))
-            (=> (> (tuple_proj<Array<Int-Int>-Int>.1 visited) 0)
+            (=> (> (seq.len visited) 0)
                 (<= (tuple_proj<Int-Int>.0 o) (tuple_proj<Int-Int>.1 o)))
-            (= (tuple_proj<Array<Int-Int>-Int>.1 visited)
+            (= (seq.len visited)
                (- (tuple_proj<Int-Int>.0 o) (tuple_proj<Int-Int>.0 self_)))
             (forall ((zi Int))
-                (=> (and (<= 0 zi) (< zi (tuple_proj<Array<Int-Int>-Int>.1 visited)))
-                    (= (select (tuple_proj<Array<Int-Int>-Int>.0 visited) zi)
+                (=> (and (<= 0 zi) (< zi (seq.len visited)))
+                    (= (seq.nth visited zi)
                        (+ (tuple_proj<Int-Int>.0 self_) zi))))
         )";
         true
