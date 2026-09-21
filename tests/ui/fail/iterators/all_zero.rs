@@ -1,6 +1,6 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:latest
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // The loop writes `1`, so the claim that every element ends up zero is false of every
 // non-empty vector.

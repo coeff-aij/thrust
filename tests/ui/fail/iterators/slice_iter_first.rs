@@ -1,6 +1,6 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:latest
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // The element `next` hands back is the one at the cursor, which starts at 0: claiming the
 // element at 1 is false of every slice with a different pair of leading elements.

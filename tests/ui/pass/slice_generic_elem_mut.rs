@@ -1,6 +1,6 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:latest
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // The prophecy pair of a `&mut [T]` at a type parameter element type, and the call site that
 // instantiates it.

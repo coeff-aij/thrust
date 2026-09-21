@@ -1,6 +1,6 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:latest
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // The loop steps the count by two per element, so it no longer counts the elements of the
 // vector it consumed.

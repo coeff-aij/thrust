@@ -1,6 +1,6 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:latest
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // `slice::IterMut` at a type parameter element type. Its first component is the prophecy pair
 // of the `&mut [T]` it was made from, so the final value of every element is fixed the moment

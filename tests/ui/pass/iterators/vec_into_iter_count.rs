@@ -1,6 +1,6 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:latest
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // `vec::IntoIter` at a type parameter element type: the consuming `into_iter`, which starts at
 // position 0 over the sequence the vector held. The vector is gone by the loop header, so the

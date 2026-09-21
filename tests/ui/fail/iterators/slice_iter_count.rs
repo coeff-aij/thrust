@@ -1,6 +1,6 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:latest
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // The loop visits each element of the slice exactly once, so it counts the length and not one
 // more than the length. A slice of length 0 already refutes the claim.
