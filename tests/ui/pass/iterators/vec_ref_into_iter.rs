@@ -4,7 +4,8 @@
 
 // `IntoIterator` on a borrowed `Vec` hands back the two slice iterators rather than
 // `vec::IntoIter`: a shared borrow yields `slice::Iter` and leaves the vector alone, a mutable
-// one yields `slice::IterMut` and carries the vector's prophecy pair into the iterator.
+// one yields `slice::IterMut` and carries both halves of the vector's prophecy pair into the
+// iterator.
 
 #[thrust_macros::context]
 #[thrust_macros::requires((*v).length >= 0)]
@@ -29,7 +30,10 @@ fn zero(v: &mut Vec<i64>) {
     while let Some(x) = it.next() {
         thrust_macros::invariant!(
             |it: core::slice::IterMut<'_, i64>, v: thrust_models::FnParam<&mut Vec<i64>>|
-                it.0 == v.at_entry() && it.1 <= (*it.0).length);
+                it.0 == *v.at_entry()
+                    && it.1 == !v.at_entry()
+                    && it.1.length == it.0.length
+                    && it.2 <= it.0.length);
         *x = 0;
     }
 }

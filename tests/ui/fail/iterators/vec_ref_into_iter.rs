@@ -28,7 +28,10 @@ fn zero(v: &mut Vec<i64>) {
     while let Some(x) = it.next() {
         thrust_macros::invariant!(
             |it: core::slice::IterMut<'_, i64>, v: thrust_models::FnParam<&mut Vec<i64>>|
-                it.0 == v.at_entry() && it.1 <= (*it.0).length);
+                it.0 == *v.at_entry()
+                    && it.1 == !v.at_entry()
+                    && it.1.length == it.0.length
+                    && it.2 <= it.0.length);
         *x = 0;
     }
 }

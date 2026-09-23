@@ -2,10 +2,11 @@
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:latest
 
-// `slice::IterMut` at a type parameter element type. Its first component is the prophecy pair
-// of the `&mut [T]` it was made from, so the final value of every element is fixed the moment
-// the iterator is made, and `next` hands out the element at the cursor as the `Mut` pair of the
-// two arrays there. Writing through that element is what pins the final array down.
+// `slice::IterMut` at a type parameter element type. Its first two components are the entry
+// and final sequences of the `&mut [T]` it was made from, so the final value of every element
+// is fixed the moment the iterator is made, and `next` hands out the element at the cursor as
+// the `Mut` pair of the two sequences there. Writing through that element is what pins the
+// final sequence down.
 //
 // Because the final array is a term of the model rather than a sequence that shifts as the
 // iterator advances, a statement about every element it will ever hold is writable directly:
@@ -28,9 +29,11 @@ fn overwrite<T>(s: &mut [T], v: T)
     while let Some(x) = it.next() {
         thrust_macros::invariant!(
             |it: core::slice::IterMut<'_, T>, v: T, s: thrust_models::FnParam<&mut [T]>|
-                it.0 == s.at_entry()
-                    && it.1 <= (*it.0).length
-                    && forall(|j: Int| (0 <= j && j < it.1) ==> ((!it.0).array[j] == v))
+                it.0 == *s.at_entry()
+                    && it.1 == !s.at_entry()
+                    && it.1.length == it.0.length
+                    && it.2 <= it.0.length
+                    && forall(|j: Int| (0 <= j && j < it.2) ==> (it.1.array[j] == v))
         );
         *x = v;
     }

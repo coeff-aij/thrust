@@ -34,9 +34,8 @@ fn seq_model_type<V>(elem_ty: rty::Type<V>) -> rty::Type<V> {
 }
 
 /// The model of an iterator over a contiguous sequence: the `(base, cursor)` pair, where the
-/// cursor is the position of the element the next `next` will return, and the base is the
-/// whole sequence the iterator was made from -- a `Seq` pair for `slice::Iter` and
-/// `vec::IntoIter`, and its prophecy pair for `slice::IterMut`.
+/// cursor is the position of the element the next `next` will return and the base is the whole
+/// sequence the iterator was made from.
 ///
 /// Spelling the pair out here is what lets the element type be a type parameter, the same way
 /// `seq_model_type` does for the sequence types themselves. Unlike those, though, the struct
@@ -45,6 +44,25 @@ fn seq_model_type<V>(elem_ty: rty::Type<V>) -> rty::Type<V> {
 fn seq_iter_model_type<V>(base_ty: rty::Type<V>) -> rty::Type<V> {
     rty::TupleType::new(vec![
         rty::PointerType::own(base_ty).into(),
+        rty::PointerType::own(rty::Type::int()).into(),
+    ])
+    .into()
+}
+
+/// The model of `slice::IterMut`: the two halves of the `&mut [T]` it was made from, as
+/// separate sequences, and the cursor.
+///
+/// The two halves are named rather than carried as one `Mut`, because a `Mut` here would not
+/// be a borrow of the iterator's own. The drop rule resolves every `Mut` it finds while
+/// walking a dying local's model, which is right for a borrow that ends there and wrong for a
+/// second name of a pair the caller still holds: the iterator freezes its base, so the pair's
+/// current half stops following the writes, and resolving it would equate what the caller
+/// passed in with what the writes produced. `iter_mut` relates the two sequences to the
+/// reference itself, and states the length preservation that the drop rule used to supply.
+fn mut_seq_iter_model_type<V: Clone>(seq_ty: rty::Type<V>) -> rty::Type<V> {
+    rty::TupleType::new(vec![
+        rty::PointerType::own(seq_ty.clone()).into(),
+        rty::PointerType::own(seq_ty).into(),
         rty::PointerType::own(rty::Type::int()).into(),
     ])
     .into()
@@ -496,8 +514,7 @@ impl<'tcx> TypeBuilder<'tcx> {
                 }
                 if Some(def.did()) == self.def_ids.slice_iter_mut() {
                     let elem_ty = self.build(iterated_elem_ty(ty, params));
-                    let base_ty = rty::PointerType::mut_to(seq_model_type(elem_ty)).into();
-                    return seq_iter_model_type(base_ty);
+                    return mut_seq_iter_model_type(seq_model_type(elem_ty));
                 }
                 if def.is_enum() {
                     let sym = refine::datatype_symbol(self.tcx, def.did());
@@ -927,8 +944,7 @@ where
                 }
                 if Some(def.did()) == self.inner.def_ids.slice_iter_mut() {
                     let elem_ty = self.build(iterated_elem_ty(ty, params));
-                    let base_ty = rty::PointerType::mut_to(seq_model_type(elem_ty)).into();
-                    return seq_iter_model_type(base_ty);
+                    return mut_seq_iter_model_type(seq_model_type(elem_ty));
                 }
                 if def.is_enum() {
                     let sym = refine::datatype_symbol(self.inner.tcx, def.did());
