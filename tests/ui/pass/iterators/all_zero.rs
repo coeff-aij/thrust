@@ -3,7 +3,8 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:latest
 
 // Creusot's `all_zero`: every element of the vector is set to zero through `iter_mut`. The
-// iterator's first component is the vector's prophecy pair, so the invariant quantifies over the
+// iterator's first two components are the vector's entry and final sequences, so the invariant
+// quantifies over the
 // positions already passed and the postcondition over all of them.
 use thrust_models::forall;
 use thrust_models::model::Int;
@@ -19,9 +20,11 @@ fn all_zero(v: &mut Vec<usize>) {
     while let Some(x) = it.next() {
         thrust_macros::invariant!(
             |it: core::slice::IterMut<'_, usize>, v: thrust_models::FnParam<&mut Vec<usize>>|
-                it.0 == v.at_entry()
-                    && it.1 <= (*it.0).length
-                    && forall(|j: Int| (0 <= j && j < it.1) ==> ((!it.0).array[j] == 0))
+                it.0 == *v.at_entry()
+                    && it.1 == !v.at_entry()
+                    && it.1.length == it.0.length
+                    && it.2 <= it.0.length
+                    && forall(|j: Int| (0 <= j && j < it.2) ==> (it.1.array[j] == 0))
         );
         *x = 0;
     }

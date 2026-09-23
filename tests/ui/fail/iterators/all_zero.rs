@@ -18,9 +18,11 @@ fn all_zero(v: &mut Vec<usize>) {
     while let Some(x) = it.next() {
         thrust_macros::invariant!(
             |it: core::slice::IterMut<'_, usize>, v: thrust_models::FnParam<&mut Vec<usize>>|
-                it.0 == v.at_entry()
-                    && it.1 <= (*it.0).length
-                    && forall(|j: Int| (0 <= j && j < it.1) ==> ((!it.0).array[j] == 0))
+                it.0 == *v.at_entry()
+                    && it.1 == !v.at_entry()
+                    && it.1.length == it.0.length
+                    && it.2 <= it.0.length
+                    && forall(|j: Int| (0 <= j && j < it.2) ==> (it.1.array[j] == 0))
         );
         *x = 1;
     }
