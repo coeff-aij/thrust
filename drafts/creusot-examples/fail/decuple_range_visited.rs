@@ -88,6 +88,8 @@ where
         I::produces_refl(&a.iter);
     }
 
+    // `F`'s contract is `q_pre_produces_refl_*` / `q_post_produces_refl_*`: the closure call in
+    // `next` is emitted under the name of this impl's other method, not `next`'s.
     // self.iter.invariant() && forall e. self.iter.produces1(e) ==> pre!(self.func(e))
     // Creusot's `next_precondition` with the unary guard; `preservation` and `reinitialize` are
     // true for `F: Fn`.
@@ -97,7 +99,7 @@ where
         (q_invariant_f4da186d326a37408a3525430033677c<a0> (tuple_proj<a0-a1>.0 self_))
         (forall ((e a5))
         (=> (q_produces1_f4da186d326a37401b2eaa2672dbeeac<a0> (tuple_proj<a0-a1>.0 self_) e)
-            (q_pre_next_f4da186d326a3740c92411d8a88a56fd<a1> (tuple_proj<a0-a1>.1 self_) e)))
+            (q_pre_produces_refl_f4da186d326a3740800c641d1fc96e06<a1> (tuple_proj<a0-a1>.1 self_) e)))
     )";
         true
     }
@@ -124,14 +126,14 @@ where
                 (q_produces_f4da186d326a374066294f8cadcb7d04<a0> (tuple_proj<a0-a1>.0 self_) (tuple<Array<Int-a5>-Int> sa sl) (tuple_proj<a0-a1>.0 o))
                 (forall ((k Int))
                     (=> (and (<= 0 k) (< k sl))
-                        (q_post_next_f4da186d326a3740c92411d8a88a56fd<a1> (tuple_proj<a0-a1>.1 self_) (select sa k) (select (tuple_proj<Array<Int-a2>-Int>.0 visited) k)))))))";
+                        (q_post_produces_refl_f4da186d326a3740800c641d1fc96e06<a1> (tuple_proj<a0-a1>.1 self_) (select sa k) (select (tuple_proj<Array<Int-a2>-Int>.0 visited) k)))))))";
         true
     }
     #[thrust_macros::predicate]
     fn produces1(self, item: Self::Item) -> bool {
         "(exists ((j a5))
         (and (q_produces1_f4da186d326a37401b2eaa2672dbeeac<a0> (tuple_proj<a0-a1>.0 self_) j)
-             (q_pre_next_f4da186d326a3740c92411d8a88a56fd<a1> (tuple_proj<a0-a1>.1 self_) j)))";
+             (q_pre_produces_refl_f4da186d326a3740800c641d1fc96e06<a1> (tuple_proj<a0-a1>.1 self_) j)))";
         true
     }
 }

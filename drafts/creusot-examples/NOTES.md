@@ -28,7 +28,7 @@ the example sources are in `~/Remotes/artifact_creusot/benchmarks/src/examples/`
 | example | file | stage | form | pass / twin (develop-3d34b93de) | blocker |
 | --- | --- | --- | --- | --- | --- |
 | decuple_range | `tests/ui/{pass,fail}/examples/decuple_range.rs` | S4 (position-free property) | `step` | sat 46-58 s 3/3 / unsat 1.8 s 3/3 | positional property needs history: the step form |
-| decuple_range | `decuple_range_visited.rs` | S3 | `produces` + unary guard | unsat 0.8 s 3/3 / unsat 0.8 s 3/3 | unexplained unsat localized to `Map::produces_refl` |
+| decuple_range | `decuple_range_visited.rs` | S3 | `produces` + unary guard | unknown 0.8 s 3/3 / unsat 0.8 s 3/3 | call site of `collect` at `Map<Range, _>` (the form (c) call-site Unknown) |
 | skip_take | `skip_take.rs` (generic `I`) | S2 | `produces` | parse: unification failure | B9/B11: no instance at a type-parameter call site |
 | skip_take | `skip_take_range.rs` | S2 | `produces` | parse: `.. is not bound` | B9: nested instances emitted out of order; reordered by hand: unknown 3/3 / unknown 3/3 |
 | counter | `counter.rs` | S3 | `step` + unary guard + ghost `produced` | timeout 120 s 3/3 / timeout 120 s 3/3 | not localized (the probe it is built from is Timeout on latest); `x == v`, `cnt == x.len()` not expressible in the step form; B20 for `v.iter()` |
@@ -100,23 +100,21 @@ Annotations: copied spec 6 / 12 / 0 (laws: empty, singleton, one-step-trans, `pr
 `produces1`-monotone ensures of `next`, and the callable `produces_refl`; predicates: 4 declared on
 the trait, 4 bodies each for `Map` and `Range`); the example adds 0 / 0 / 1 (`from_iter`'s loop).
 
-Verdicts: pass unsat 0.8 / 0.7 / 0.8 s (3/3, develop-3d34b93de), unsat 1.3 s on `coar:latest`
-(1/1); the twin (`v[k] == 10 * k + 1`) unsat 0.9 / 0.7 / 0.9 s (3/3), which says nothing while the
-pass is unsat.
+The hand-written bodies of `Map::invariant`, `Map::produces` and `Map::produces1` name `F`'s
+contract `q_pre_produces_refl_*` / `q_post_produces_refl_*`, because that is the symbol the closure
+call in `Map::next` is emitted with once the impl has a second method (see the findings at the end).
 
-Bisection (develop-3d34b93de, 1/1 each): the call site's ensures replaced by `true` stays unsat; a
-call site that only calls `m.next()` is unsat; dropping `collect`/`FromIterator` too is still unsat;
-dropping the callable `produces_refl` from trait and impls as well gives unknown, the same as the
-form (c) probe it was built from. The refutation therefore comes with `Map::produces_refl`, whose
-goal clause is `forall s. s.len() == 0 ==> Map::produces(a, s, a)` from the inner law's
-`forall s. s.len() == 0 ==> I::produces(a.iter, s, a.iter)`, which is valid (any length-0 `s` is the
-witness of `Map::produces`'s inner sequence). Removing `func == o.func` from `Map::produces` leaves it unsat (1/1). Not resolved; the post-call
-predicate of the law call is
-a `declare-dep-exists-fun` over the inner `q_produces` forall-fun. Bisection files are in the session
-scratchpad, not on the branch.
+Verdicts (develop-3d34b93de): pass unknown 0.9 / 0.8 / 0.8 s (3/3), `coar:latest` unknown 63.4 s
+(1/1); twin (`v[k] == 10 * k + 1`) unsat 0.8 / 0.8 / 0.8 s (3/3), `coar:latest` unsat 1.4 s (1/1).
 
-Blocker: the unexplained unsat above; behind it, the Unknown of the form (c) call site (B15/B12 in
-the status note, the `∃ Seq` witness family).
+Localized (develop-3d34b93de, 3/3 each): without the call site (trait, `Map`, `Range`, `collect`,
+`from_iter`) sat 0.5-0.6 s (`coar:latest` sat 0.7 s); with the call site's ensures replaced by `true`
+unknown 0.8-0.9 s (`coar:latest` unknown 1.3 s). The generic spec is consistent, the twin's unsat
+comes from the positional property, and the Unknown is in the call site consuming `collect`'s
+`exists pre. Map::produces(..) && ..` at `Map<Range, _>`.
+
+Blocker: the form (c) call-site Unknown (B15/B12 in the status note, the `∃ Seq` witness family).
+
 ## skip_take
 
 Creusot:
@@ -306,6 +304,16 @@ Annotations: copied spec 4 / 9 / 0; the example adds 0 / 0 / 1.
   `decuple_range_visited.rs`, and removing an item from a file renumbers them again. A wrong number is
   not a parse error: the instance substitution silently maps it to another sort. Check every binder
   sort against the `declare-forall-fun` signatures of the file's own dump.
+- The forall-fun that stands for an impl's closure parameter `F` is named `q_pre_<method>_<hash>`
+  after one method of the impl, and which one depends on the impl's other methods: with
+  `produces_refl` (or any second method, even an empty one without a contract) next to `next`, the
+  closure call in `next` is emitted as `q_pre_produces_refl_*` while `q_pre_next_*` is still declared.
+  A hand-written body that names `q_pre_next_*` then speaks about an unrelated forall-fun, and since
+  `q_pre_produces_refl_*` occurs in no clause body, the call's precondition clause is refuted
+  (`unsat`, not a solver fault). Minimal: `Map` with `next`, an empty second method and the unary
+  guard naming `q_pre_next_*` is unsat (develop-3d34b93de 3/3, `coar:latest` 1/1); naming the other
+  method's symbol, or dropping the second method, is sat (3/3, 1/1). Take the closure symbols from the
+  file's own dump, and re-take them when a method is added.
 - Thrust's `Vec` model does not know `len() >= 0`. It shows up as an unsat call site (a negative
   length makes a length equation false) and as an Unknown loop (a `push` at `len1 + pushed.len()`
   cannot be told apart from an index below `len1`).
