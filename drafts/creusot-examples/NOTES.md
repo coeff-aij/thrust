@@ -31,7 +31,7 @@ the example sources are in `~/Remotes/artifact_creusot/benchmarks/src/examples/`
 | decuple_range | `decuple_range_visited.rs` | S3 | `produces` + unary guard | unsat 0.8 s 3/3 / unsat 0.8 s 3/3 | unexplained unsat localized to `Map::produces_refl` |
 | skip_take | `skip_take.rs` (generic `I`) | S2 | `produces` | parse: unification failure | B9/B11: no instance at a type-parameter call site |
 | skip_take | `skip_take_range.rs` | S2 | `produces` | parse: `.. is not bound` | B9: nested instances emitted out of order; reordered by hand: unknown 3/3 / unknown 3/3 |
-| counter | `counter.rs` | S3 | `step` + unary guard + ghost `produced` | timeout 120 s COUNTER_PASS / timeout 120 s COUNTER_FAIL | not localized (the probe it is built from is Timeout on latest); `x == v`, `cnt == x.len()` not expressible in the step form; B20 for `v.iter()` |
+| counter | `counter.rs` | S3 | `step` + unary guard + ghost `produced` | timeout 120 s 3/3 / timeout 120 s 3/3 | not localized (the probe it is built from is Timeout on latest); `x == v`, `cnt == x.len()` not expressible in the step form; B20 for `v.iter()` |
 | extend | `extend.rs` | S3 | `produces` | unknown 0.7 s 3/3 / unsat 0.8 s 3/3 | call site consuming `extend`'s `exists pre s` ensures |
 | (extra) take_count | `take_count.rs` | S3 | `produces` | unknown 0.4 s 3/3 / unsat 0.4 s 3/3 | not localized |
 
@@ -110,7 +110,8 @@ dropping the callable `produces_refl` from trait and impls as well gives unknown
 form (c) probe it was built from. The refutation therefore comes with `Map::produces_refl`, whose
 goal clause is `forall s. s.len() == 0 ==> Map::produces(a, s, a)` from the inner law's
 `forall s. s.len() == 0 ==> I::produces(a.iter, s, a.iter)`, which is valid (any length-0 `s` is the
-witness of `Map::produces`'s inner sequence). Not resolved; the post-call predicate of the law call is
+witness of `Map::produces`'s inner sequence). Removing `func == o.func` from `Map::produces` leaves it unsat (1/1). Not resolved; the post-call
+predicate of the law call is
 a `declare-dep-exists-fun` over the inner `q_produces` forall-fun. Bisection files are in the session
 scratchpad, not on the branch.
 
@@ -214,6 +215,19 @@ What is checked: the closure's history-dependent precondition `cnt == produced.l
 at every call inside `collect`, and each element is one the range produces. Creusot's two
 assertions are not stated: `x == v` needs the position of each element and `cnt == x.len()` needs the
 final closure state after `collect`, and the step form's `collect` gives neither.
+
+Annotations: copied spec 3 / 12 / 0 (laws: `step`, `produces1` and `produces1`-monotone ensures of
+`next`; predicates: 4 declared on the trait, 4 bodies each for `Map` and `Range`); the example adds
+0 / 0 / 1 (`from_iter`'s loop).
+
+Stage: S3. Verdicts (develop-3d34b93de): pass no answer in 120 s (3/3), twin (`start < v[k]`) no
+answer in 120 s (3/3). With the call site's ensures replaced by `true` it is still no answer in 60 s
+(1/1), so the time goes to the adapter, `from_iter` or the closure's precondition, not the element
+property. The probe this is built from (one `next` call) is recorded as Timeout on `coar:latest`.
+
+Blockers: the Timeout (not localized further); Creusot's two assertions need the `produces` form of
+`MapInv`, which is the Creusot-form Map that does not verify on any image (status note, map row); B20
+for the `v.iter()` source.
 
 ## extend
 
