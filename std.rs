@@ -459,6 +459,27 @@ mod thrust_models {
         type Ty = <T as Model>::Ty;
     }
 
+    // A lifted formula function receives a `Ghost<T>` parameter as `<T as Model>::Ty`
+    // already, but a `Ghost<T>` field of a struct whose model is the struct itself keeps its
+    // surface type. These two impls let a formula use such a field as its content too:
+    // `Deref` for method calls and `*g`, `PartialEq` for `==`. In the logic both are the
+    // identity on the content, as the `ghost_model` arm of `model_adt` has it.
+    impl<T: ?Sized> std::ops::Deref for Ghost<T> where T: Model {
+        type Target = <T as Model>::Ty;
+
+        #[thrust::ignored]
+        fn deref(&self) -> &Self::Target {
+            unimplemented!()
+        }
+    }
+
+    impl<T: ?Sized, U> PartialEq<U> for Ghost<T> where T: Model, U: Model<Ty = <T as Model>::Ty> {
+        #[thrust::ignored]
+        fn eq(&self, _other: &U) -> bool {
+            unimplemented!()
+        }
+    }
+
     #[doc(hidden)]
     #[thrust::def::ghost_marker]
     #[thrust::ignored]

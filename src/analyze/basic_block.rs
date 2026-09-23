@@ -933,12 +933,41 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         }
     }
 
+    /// Whether the call needs `Ghost`'s `PartialEq` or `Deref` impl, directly (`g == h`, `*g`)
+    /// or through a generic callee's bound.
+    ///
+    /// Those impls exist so that a formula can use a `Ghost` field as its content. A `Ghost`
+    /// value has no content at run time, so executable code must not observe it through
+    /// them; otherwise `g == h` would take the blanket `PartialEq::eq` spec and verify.
+    fn needs_ghost_formula_impl(&self, def_id: DefId, args: mir_ty::GenericArgsRef<'tcx>) -> bool {
+        let lang_items = self.tcx.lang_items();
+        let formula_traits = [lang_items.eq_trait(), lang_items.deref_trait()];
+        let ghost_model = self.ctx.def_ids().ghost_model();
+        self.tcx
+            .predicates_of(def_id)
+            .instantiate(self.tcx, args)
+            .predicates
+            .iter()
+            .filter_map(|clause| clause.as_trait_clause())
+            .any(|pred| {
+                let pred = pred.skip_binder();
+                formula_traits.contains(&Some(pred.def_id()))
+                    && pred.self_ty().ty_adt_def().map(|adt| adt.did()) == ghost_model
+            })
+    }
+
     fn callable_ty(
         &mut self,
         def_id: DefId,
         args: mir_ty::GenericArgsRef<'tcx>,
     ) -> rty::Type<rty::Closed> {
         let caller_def_id = self.type_builder.owner_fn_id();
+        if self.needs_ghost_formula_impl(def_id, args) {
+            panic!(
+                "a Ghost value cannot be used in executable code: {:?}, args: {:?}",
+                def_id, args
+            );
+        }
         match self.resolve_callable(def_id, args) {
             ResolvedCallable::Generic(type_param) => {
                 tracing::debug!(?type_param, ?self.ctx.closure_type_params);
