@@ -390,11 +390,17 @@ mod thrust_models {
         type Ty = (model::Seq<<T as Model>::Ty>, model::Int);
     }
 
-    // The first component is the prophecy pair of the `&mut [T]` the iterator was made from, so
-    // the final value of every element is already fixed here; `next` hands out the element at
-    // the cursor as the `Mut` pair of the two arrays at that position.
+    // The two halves of the `&mut [T]` the iterator was made from, kept apart, and the cursor.
+    // The final value of every element is already fixed here; `next` hands out the element at
+    // the cursor as the `Mut` pair of the two sequences at that position. They are not a `Mut`
+    // themselves: the pair belongs to the caller's reference, and a `Mut` in the model of a
+    // local is resolved when that local dies.
     impl<'a, T> Model for core::slice::IterMut<'a, T> where T: Model {
-        type Ty = (model::Mut<model::Seq<<T as Model>::Ty>>, model::Int);
+        type Ty = (
+            model::Seq<<T as Model>::Ty>,
+            model::Seq<<T as Model>::Ty>,
+            model::Int,
+        );
     }
 
     impl<T> Model for std::vec::IntoIter<T> where T: Model {
@@ -1080,9 +1086,14 @@ fn _extern_spec_slice_iter_next<'a, T>(it: &mut core::slice::Iter<'a, T>) -> Opt
     <core::slice::Iter<'a, T> as std::iter::Iterator>::next(it)
 }
 
+// The length preservation is stated here because nothing else supplies it: the iterator's
+// components are plain sequences, so no drop resolves them.
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
-#[thrust_macros::ensures(result.0 == slice && result.1 == 0)]
+#[thrust_macros::ensures(
+    result.0 == *slice && result.1 == !slice && result.2 == 0
+        && (!slice).length == (*slice).length
+)]
 fn _extern_spec_slice_iter_mut<T>(slice: &mut [T]) -> core::slice::IterMut<'_, T>
     where T: thrust_models::Model, T::Ty: PartialEq
 {
@@ -1096,14 +1107,15 @@ fn _extern_spec_slice_iter_mut<T>(slice: &mut [T]) -> core::slice::IterMut<'_, T
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(
-    ((*it).1 < (*(*it).0).length
+    ((*it).2 < (*it).0.length
         && result == Some(thrust_models::model::Mut::new(
-            (*(*it).0).array[(*it).1],
-            (!(*it).0).array[(*it).1],
+            (*it).0.array[(*it).2],
+            (*it).1.array[(*it).2],
         ))
         && (!it).0 == (*it).0
-        && (!it).1 == (*it).1 + 1)
-    || ((*it).1 >= (*(*it).0).length && result == None && !it == *it)
+        && (!it).1 == (*it).1
+        && (!it).2 == (*it).2 + 1)
+    || ((*it).2 >= (*it).0.length && result == None && !it == *it)
 )]
 fn _extern_spec_slice_iter_mut_next<'a, T>(
     it: &mut core::slice::IterMut<'a, T>,
@@ -1148,7 +1160,10 @@ fn _extern_spec_vec_ref_into_iter<'a, T>(vec: &'a Vec<T>) -> core::slice::Iter<'
 
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
-#[thrust_macros::ensures(result.0 == vec && result.1 == 0)]
+#[thrust_macros::ensures(
+    result.0 == *vec && result.1 == !vec && result.2 == 0
+        && (!vec).length == (*vec).length
+)]
 fn _extern_spec_vec_mut_into_iter<'a, T>(vec: &'a mut Vec<T>) -> core::slice::IterMut<'a, T>
     where T: thrust_models::Model + 'a, T::Ty: PartialEq
 {

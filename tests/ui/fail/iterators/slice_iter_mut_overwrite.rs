@@ -23,9 +23,11 @@ fn overwrite<T>(s: &mut [T], v: T)
     while let Some(x) = it.next() {
         thrust_macros::invariant!(
             |it: core::slice::IterMut<'_, T>, v: T, s: thrust_models::FnParam<&mut [T]>|
-                it.0 == s.at_entry()
-                    && it.1 <= (*it.0).length
-                    && forall(|j: Int| (0 <= j && j < it.1) ==> ((!it.0).array[j] == v))
+                it.0 == *s.at_entry()
+                    && it.1 == !s.at_entry()
+                    && it.1.length == it.0.length
+                    && it.2 <= it.0.length
+                    && forall(|j: Int| (0 <= j && j < it.2) ==> (it.1.array[j] == v))
         );
         *x = v;
     }
