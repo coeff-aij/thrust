@@ -1,14 +1,16 @@
 # Call-site examples of Creusot's iterator benchmark
 
-Drafts of the `examples/` rows of `creusot-benchmark-status.md` (fse2027-notes), written on
-`call-site-drafts` (base `creusot-adapters` a01f5be, plus the Creusot-form Skip commits e4eebf0 and
-e9df3b0 cherry-picked as c483b8f and dade088). Stages, spec forms and blocker IDs are the status
-note's. Every file here is self-contained: the iterator trait, its laws and the adapters are copied
-from the tracked files named in each section, because Thrust has no cross-file specs.
+Drafts of the `examples/` rows of `docs/notes/creusot-benchmark-status.md` on the unpushed branch
+`fse2027-notes`, written on the unpushed branch `call-site-drafts` (base `creusot-adapters` at
+unpushed a01f5be, plus the Creusot-form Skip commits e4eebf0 and e9df3b0 from the unpushed branch
+`skip-produces`, cherry-picked here as c483b8f and dade088). Stages, spec forms and blocker IDs are
+the status note's. Every file here is self-contained: the iterator trait, its laws and the adapters
+are copied from the tracked files named in each section, because Thrust has no cross-file specs.
 
-Measured on `coar:develop-3d34b93de` = image `f63bb238c55e` (fptprove develop 3d34b93de), config
-`pcsat_tbq_ar.json`, through `~/.claude/bin/coar-run` (2 CPUs, 8 GiB), driver built from this
-branch. Walls are for single runs, `n/N` is how many of `N` runs gave the verdict.
+Measured with image `f63bb238c55e` (fptprove develop 3d34b93de), config `pcsat_tbq_ar.json`, 2 CPUs
+and 8 GiB, driver built from this branch. Walls are for single runs, `n/N` is how many of `N` runs
+gave the verdict. A second image, `d547097023f5` (fptprove develop 536d39c7d), is cited where a
+verdict on it differs.
 
 Layout: `<name>.rs` is the pass file, `fail/<name>.rs` its twin. A file's hand-written SMT predicate
 bodies name `q_*` symbols whose hash includes the crate name, i.e. the file stem, so a file keeps
@@ -20,18 +22,18 @@ closure contracts and `proof_assert!` are not counted), so the Thrust count is s
 copied iterator spec and adapters carry and what the example adds. Laws are the `next` ensures other
 than `invariant(!self)` and `None ==> completed`, plus body-less callable laws.
 
-Creusot's std specs cited below are in `~/Remotes/creusot/creusot-std/src/std/iter/` (3620de437);
-the example sources are in `~/Remotes/artifact_creusot/benchmarks/src/examples/`.
+Creusot's std specs cited below are in the Creusot repository's `creusot-std/src/std/iter/` at
+commit 3620de437; the example sources are in the Creusot artifact's `benchmarks/src/examples/`.
 
 ## Summary
 
-| example | file | stage | form | pass / twin (develop-3d34b93de) | blocker |
+| example | file | stage | form | pass / twin (3d34b93de) | blocker |
 | --- | --- | --- | --- | --- | --- |
 | decuple_range | `tests/ui/{pass,fail}/examples/decuple_range.rs` | S4 (position-free property) | `step` | sat 46-58 s 3/3 / unsat 1.8 s 3/3 | positional property needs history: the step form |
 | decuple_range | `decuple_range_visited.rs` | S3 | `produces` + unary guard | unknown 0.8 s 3/3 / unsat 0.8 s 3/3 | call site of `collect` at `Map<Range, _>` (the form (c) call-site Unknown) |
 | skip_take | `skip_take.rs` (generic `I`) | S2 | `produces` | parse: unification failure | B9/B11: no instance at a type-parameter call site |
 | skip_take | `skip_take_range.rs` | S2 | `produces` | parse: `.. is not bound` | B9: nested instances emitted out of order; reordered by hand: unknown 3/3 / unknown 3/3 |
-| counter | `counter.rs` | S3 | `step` + unary guard + ghost `produced` | timeout 120 s 3/3 / timeout 120 s 3/3 | not localized (the probe it is built from is Timeout on latest); `x == v`, `cnt == x.len()` not expressible in the step form; B20 for `v.iter()` |
+| counter | `counter.rs` | S3 | `step` + unary guard + ghost `produced` | timeout 120 s 3/3 / timeout 120 s 3/3 | not localized (the probe it is built from is Timeout on 536d39c7d); `x == v`, `cnt == x.len()` not expressible in the step form; B20 for `v.iter()` |
 | extend | `extend.rs` | S3 | `produces` | unknown 0.7 s 3/3 / unsat 0.8 s 3/3 | call site consuming `extend`'s `exists pre s` ensures |
 | (extra) take_count | `take_count.rs` | S3 | `produces` | unknown 0.4 s 3/3 / unsat 0.4 s 3/3 | not localized |
 
@@ -73,7 +75,7 @@ Annotations: copied spec 3 / 12 / 0 (laws: the `step`, `produces` and `produces`
 of `next`; predicates: 4 declared on the trait, 4 bodies each for `Map` and `Range`); the example
 adds 0 / 0 / 1 (the loop invariant of `from_iter`, whose Creusot counterpart is a trusted std spec).
 
-Verdicts (develop-3d34b93de): pass sat 58.3 / 47.0 / 45.8 s (3/3); fail twin `1 <= v[k]` (the
+Verdicts (3d34b93de): pass sat 58.3 / 47.0 / 45.8 s (3/3); fail twin `1 <= v[k]` (the
 first element is `0`) unsat 1.8 / 1.9 / 1.8 s (3/3). Through the ui harness both files pass (header
 timeout 120 s, since the pass is close to 60 s). A twin claiming `v[k] <= 80` gives no answer in 120 s
 (1/1).
@@ -82,9 +84,9 @@ Blocker for Creusot's positional property: the step form itself (no history); se
 
 ### decuple_range_visited.rs: `produces` + unary guard, Creusot's property
 
-Stage: S3. Form: `produces` + unary guard (trait and `Map` from the form (c) probe
-`.experimental/map/creusot-guard/v3-bisect/B-unary/`, `collect` and `FromIterator for Vec<i64>`
-from `traits/collect_visited_seq_i64.rs`). The call site states Creusot's `v[k] == 10 * k`.
+Stage: S3. Form: `produces` + unary guard (trait and `Map` from the form (c) probe, `collect` and
+`FromIterator for Vec<i64>` from `traits/collect_visited_seq_i64.rs`). The call site states
+Creusot's `v[k] == 10 * k`.
 
 Correspondence:
 
@@ -104,12 +106,12 @@ The hand-written bodies of `Map::invariant`, `Map::produces` and `Map::produces1
 contract `q_pre_produces_refl_*` / `q_post_produces_refl_*`, because that is the symbol the closure
 call in `Map::next` is emitted with once the impl has a second method (see the findings at the end).
 
-Verdicts (develop-3d34b93de): pass unknown 0.9 / 0.8 / 0.8 s (3/3), `coar:latest` unknown 63.4 s
-(1/1); twin (`v[k] == 10 * k + 1`) unsat 0.8 / 0.8 / 0.8 s (3/3), `coar:latest` unsat 1.4 s (1/1).
+Verdicts (3d34b93de): pass unknown 0.9 / 0.8 / 0.8 s (3/3), 536d39c7d unknown 63.4 s
+(1/1); twin (`v[k] == 10 * k + 1`) unsat 0.8 / 0.8 / 0.8 s (3/3), 536d39c7d unsat 1.4 s (1/1).
 
-Localized (develop-3d34b93de, 3/3 each): without the call site (trait, `Map`, `Range`, `collect`,
-`from_iter`) sat 0.5-0.6 s (`coar:latest` sat 0.7 s); with the call site's ensures replaced by `true`
-unknown 0.8-0.9 s (`coar:latest` unknown 1.3 s). The generic spec is consistent, the twin's unsat
+Localized (3d34b93de, 3/3 each): without the call site (trait, `Map`, `Range`, `collect`,
+`from_iter`) sat 0.5-0.6 s (536d39c7d sat 0.7 s); with the call site's ensures replaced by `true`
+unknown 0.8-0.9 s (536d39c7d unknown 1.3 s). The generic spec is consistent, the twin's unsat
 comes from the positional property, and the Unknown is in the call site consuming `collect`'s
 `exists pre. Map::produces(..) && ..` at `Map<Range, _>`.
 
@@ -128,10 +130,11 @@ pub fn skip_take<I: Iterator>(iter: I, n: usize) {
 ```
 
 Form: `produces`. The trait, `Take` and `Range` are `traits/take.rs`'s, `Skip` is `traits/skip.rs`'s
-from `skip-produces` (e4eebf0 + e9df3b0, cherry-picked here as c483b8f + dade088). The only change
-to the adapters is `Take`'s model, now `(<I as Model>::Ty, Int)` like `Skip`'s, so that
-`Skip<Take<I>>` meets `Skip`'s `PartialEq` bound on its inner model. The adapter is built with struct
-literals (`Skip { iter: Take { iter, n }, n }`); there is no `take`/`skip` constructor on the trait.
+from the unpushed branch `skip-produces` (e4eebf0 + e9df3b0, cherry-picked here as c483b8f +
+dade088). The only change to the adapters is `Take`'s model, now `(<I as Model>::Ty, Int)` like
+`Skip`'s, so that `Skip<Take<I>>` meets `Skip`'s `PartialEq` bound on its inner model. The adapter
+is built with struct literals (`Skip { iter: Take { iter, n }, n }`); there is no `take`/`skip`
+constructor on the trait.
 
 Correspondence (both adapters in Creusot's form):
 
@@ -154,7 +157,7 @@ the example adds 0 / 0 / 0.
 
 ### skip_take.rs: generic `I`, as Creusot writes it
 
-Stage: S2 (the query Thrust emits is ill-sorted and rejected at parse). Verdict (develop-3d34b93de,
+Stage: S2 (the query Thrust emits is ill-sorted and rejected at parse). Verdict (3d34b93de,
 1/1, 0.3 s): `unification failure: A8_Tuple<a2-Int> = A4_Tuple<Tuple<a4-Int>-Int>`. At a call site
 generic in `I`, Thrust emits no instance of `Skip`'s and `Take`'s predicates for `Skip<Take<I>>` and
 applies `Skip`'s generic definitions (over `Skip`'s own forall-sort `a2`) to the call site's
@@ -164,18 +167,18 @@ applies `Skip`'s generic definitions (over `Skip`'s own forall-sort `a2`) to the
 
 ### skip_take_range.rs: `Skip<Take<Range>>`
 
-Stage: S2 (the emitted query refers to a definition before it). Verdict (0.3 s; develop-3d34b93de
-pass and twin, `coar:latest` pass): `p_invariant_…<Tuple<Box<Int>-
+Stage: S2 (the emitted query refers to a definition before it). Verdict (0.3 s; 3d34b93de
+pass and twin, 536d39c7d pass): `p_invariant_…<Tuple<Box<Int>-
 Box<Int>>> is not bound`. The instance of `Skip`'s predicates at `Take<Range>` is emitted before the
 instance of `Take`'s predicates at `Range` that its bodies call (instances come out in discovery
 order, not dependency order). Blocker: B9 (emission order of nested instances); no ID in the status
 note yet.
 
-With the `define-fun`s of the dump reordered by hand (diagnostic only, `toposort.py` in the session
-scratchpad): pass unknown 1.0 / 0.8 / 0.8 s (3/3), twin unknown 0.8 / 0.8 / 0.8 s (3/3); `coar:latest`
-unknown 1.3 s (1/1). Spelling `next`'s singleton ensures as `s == Seq::singleton(i)` instead of by
-length and index gives the same (pass unknown 0.8 s, twin unknown 0.9 s). This is the Skip call-site
-Unknown the status note records (the `∃ Seq` witness under `Skip::produces`'s second disjunct).
+With the `define-fun`s of the dump reordered by hand (diagnostic only): pass unknown 1.0 / 0.8 / 0.8 s
+(3/3), twin unknown 0.8 / 0.8 / 0.8 s (3/3); 536d39c7d unknown 1.3 s (1/1). Spelling `next`'s
+singleton ensures as `s == Seq::singleton(i)` instead of by length and index gives the same (pass
+unknown 0.8 s, twin unknown 0.9 s). This is the Skip call-site Unknown the status note records (the
+`∃ Seq` witness under `Skip::produces`'s second disjunct).
 
 ## counter
 
@@ -194,10 +197,10 @@ pub fn counter(v: Vec<u32>) {
 ```
 
 Form: `step` with a unary `produces1` guard and `MapInv`'s ghost `produced` (trait and adapter from
-the FnMut probe `.experimental/map/mapinv/v5_counter/`, which needs `fnmut-capture-deref` 474a333,
-on the base), `collect` from `tests/ui/pass/examples/decuple_range.rs` with `produces1`. The source is `Range { start, end }`
+the FnMut probe, which needs the unpushed `fnmut-capture-deref` fix, 474a333, on the base), `collect`
+from `tests/ui/pass/examples/decuple_range.rs` with `produces1`. The source is `Range { start, end }`
 instead of `v.iter()`: a local `Iterator` impl for `slice::Iter` has `Item = &'a T`, which is B20 on
-this base (`predicate-assoc-bound` 19a98ca is not on it).
+this base (the unpushed `predicate-assoc-bound` fix, 19a98ca, is not on it).
 
 Correspondence:
 
@@ -218,10 +221,10 @@ Annotations: copied spec 3 / 12 / 0 (laws: `step`, `produces1` and `produces1`-m
 `next`; predicates: 4 declared on the trait, 4 bodies each for `Map` and `Range`); the example adds
 0 / 0 / 1 (`from_iter`'s loop).
 
-Stage: S3. Verdicts (develop-3d34b93de): pass no answer in 120 s (3/3), twin (`start < v[k]`) no
+Stage: S3. Verdicts (3d34b93de): pass no answer in 120 s (3/3), twin (`start < v[k]`) no
 answer in 120 s (3/3). With the call site's ensures replaced by `true` it is still no answer in 60 s
 (1/1), so the time goes to the adapter, `from_iter` or the closure's precondition, not the element
-property. The probe this is built from (one `next` call) is recorded as Timeout on `coar:latest`.
+property. The probe this is built from (one `next` call) is recorded as Timeout on 536d39c7d.
 
 Blockers: the Timeout (not localized further); Creusot's two assertions need the `produces` form of
 `MapInv`, which is the Creusot-form Map that does not verify on any image (status note, map row); B20
@@ -261,7 +264,7 @@ the callable `produces_refl`; predicates: 3 declared on the trait, 3 bodies for 
 example adds 0 / 0 / 1 (the loop invariant of `extend`, whose Creusot counterpart is a trusted std
 spec).
 
-Stage: S3. Verdicts (develop-3d34b93de): pass unknown 0.7 / 0.8 / 0.7 s (3/3), `coar:latest`
+Stage: S3. Verdicts (3d34b93de): pass unknown 0.7 / 0.8 / 0.7 s (3/3), 536d39c7d
 unknown 0.7 s (1/1); twin (`result.len() == v1.len() + v2.len() + 1`) unsat 0.7 / 0.9 / 0.8 s (3/3).
 
 Localized (1/1 each): the `IntoIter` impl alone is sat (0.3 s); the impl plus the generic `extend`
@@ -286,7 +289,7 @@ read the counter as `t.1`. The loop invariant is `cnt + t.1 == n && t.1 >= 0 &&
 Take::<Range>::invariant(t)`; the counting comes from `Take::produces` applied to `next`'s singleton
 ensures. Fail twin: `result < n`.
 
-Stage: S3. Verdicts: pass unknown 0.4 s (3/3 develop-3d34b93de; 1/1 `coar:latest`, 0.5 s), twin
+Stage: S3. Verdicts: pass unknown 0.4 s (3/3, 3d34b93de; 1/1, 536d39c7d, 0.5 s), twin
 unsat 0.4 s (3/3). Not localized further; the tracked `traits/take.rs` call site (two `next` calls,
 no loop) verifies.
 
@@ -311,7 +314,7 @@ Annotations: copied spec 4 / 9 / 0; the example adds 0 / 0 / 1.
   A hand-written body that names `q_pre_next_*` then speaks about an unrelated forall-fun, and since
   `q_pre_produces_refl_*` occurs in no clause body, the call's precondition clause is refuted
   (`unsat`, not a solver fault). Minimal: `Map` with `next`, an empty second method and the unary
-  guard naming `q_pre_next_*` is unsat (develop-3d34b93de 3/3, `coar:latest` 1/1); naming the other
+  guard naming `q_pre_next_*` is unsat (3d34b93de 3/3, 536d39c7d 1/1); naming the other
   method's symbol, or dropping the second method, is sat (3/3, 1/1). Take the closure symbols from the
   file's own dump, and re-take them when a method is added.
 - Thrust's `Vec` model does not know `len() >= 0`. It shows up as an unsat call site (a negative
