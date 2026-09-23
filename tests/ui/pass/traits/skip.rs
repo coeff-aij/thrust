@@ -124,7 +124,7 @@ where
     }
 
     // (visited.len() == 0 && self == o)
-    // or (o.n == 0 && exists t. t.len() == self.n + visited.len()
+    // or (o.n == 0 && visited.len() > 0 && exists t. t.len() == self.n + visited.len()
     //     && (forall k. self.n <= k < t.len() ==> t[k] == visited[k - self.n])
     //     && self.iter.produces(t, o.iter))
     // `t` is Creusot's `s.concat(visited)` with `s.len() == self.n`, written without `concat`.
@@ -136,6 +136,7 @@ where
                 (= self_ o))
             (and
                 (= (tuple_proj<a0-Int>.1 o) 0)
+                (> (tuple_proj<Array<Int-a1>-Int>.1 visited) 0)
                 (exists ((ta (Array Int a1)) (tl Int))
                     (and
                         (= tl (+ (tuple_proj<a0-Int>.1 self_) (tuple_proj<Array<Int-a1>-Int>.1 visited)))
