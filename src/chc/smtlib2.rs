@@ -615,8 +615,85 @@ impl<'ctx, 'a> std::fmt::Display for UserDefinedPredDef<'ctx, 'a> {
             f,
             "(define-fun {name} {params} Bool {body})",
             name = self.inner.symbol,
-            body = &self.inner.body,
+            body = self.body(),
         )
+    }
+}
+
+impl<'ctx, 'a> UserDefinedPredDef<'ctx, 'a> {
+    /// The definition's body in SMT-LIB2.
+    ///
+    /// A body the analyzer built is printed from its formula. A body taken from
+    /// the source is text, and is printed with the definition's forall sorts
+    /// replaced by the sorts of the instantiation it is emitted for.
+    ///
+    /// A forall sort reads two ways in that text. Inside the `<...>` that
+    /// decorates a constructor, selector or predicate name it is part of the
+    /// symbol, spelled the way the emitter spells sorts there; standing alone it
+    /// is a binder's sort, which must be the declared datatype name. The scan
+    /// tracks which of the two it is in, taking a `<` for a decoration only when
+    /// it follows a symbol character, so that a comparison operator is left
+    /// alone.
+    fn body(&self) -> std::borrow::Cow<'a, str> {
+        use std::borrow::Cow;
+        let body = match &self.inner.body {
+            chc::UserDefinedPredBody::Formula(clause) => {
+                return Cow::Owned(Formula::new(self.ctx, clause, &clause.body.formula).to_string())
+            }
+            chc::UserDefinedPredBody::Smt(body) => body,
+        };
+        if self.inner.sort_subst.is_empty() {
+            return Cow::Borrowed(body);
+        }
+        let bytes = body.as_bytes();
+        let is_symbol_char = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+        let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+        let mut depth = 0usize;
+        let mut i = 0;
+        while i < bytes.len() {
+            let c = bytes[i];
+            if is_symbol_char(c) {
+                let start = i;
+                while i < bytes.len() && is_symbol_char(bytes[i]) {
+                    i += 1;
+                }
+                let token = &body[start..i];
+                match self.substitute_token(token, depth) {
+                    Some(replacement) => out.extend_from_slice(replacement.as_bytes()),
+                    None => out.extend_from_slice(token.as_bytes()),
+                }
+                continue;
+            }
+            if c == b'<' && start_of_decoration(bytes, i) {
+                depth += 1;
+            } else if c == b'>' && depth > 0 {
+                depth -= 1;
+            }
+            out.push(c);
+            i += 1;
+        }
+        Cow::Owned(String::from_utf8(out).expect("substitution preserves UTF-8 boundaries"))
+    }
+
+    fn substitute_token(&self, token: &str, depth: usize) -> Option<String> {
+        let idx = token.strip_prefix('a')?.parse::<usize>().ok()?;
+        let (_, sort) = self
+            .inner
+            .sort_subst
+            .iter()
+            .find(|(from, _)| from.index() == idx)?;
+        Some(if depth == 0 {
+            self.ctx.fmt_sort(sort).to_string()
+        } else {
+            super::format_context::format_sort_symbol(sort)
+        })
+    }
+}
+
+fn start_of_decoration(bytes: &[u8], i: usize) -> bool {
+    match i.checked_sub(1).map(|j| bytes[j]) {
+        Some(c) => c.is_ascii_alphanumeric() || c == b'_' || c == b'>',
+        None => false,
     }
 }
 
@@ -713,9 +790,16 @@ impl<'a> std::fmt::Display for System<'a> {
             if !used_forall_defaults.contains(&forall_sort_def.idx) {
                 continue;
             }
+            // The padding of an empty array at an abstract element sort: an arbitrary but
+            // fixed value that nothing is allowed to observe. Under `(set-logic HORN)` a
+            // top-level `declare-const` names something the solver must *build*, and an
+            // abstract sort has no value the solver can build, so that spelling stops the
+            // query at the parser. A nullary `declare-forall-fun` is the universal reading:
+            // the clauses have to hold whatever the padding is, which is what "nothing may
+            // observe it" means.
             writeln!(
                 f,
-                "(declare-const default_{} {})\n",
+                "(declare-forall-fun default_{} () {})\n",
                 forall_sort_def.idx, forall_sort_def.idx
             )?;
         }

@@ -30,6 +30,7 @@ mod basic_block;
 mod crate_;
 mod did_cache;
 mod local_def;
+mod pred_inst;
 mod reconstruct_slice_indexing;
 
 // TODO: organize structure and remove cross dependency between refine
@@ -86,13 +87,12 @@ pub fn function_param_of_local(local: Local) -> rty::FunctionParamIdx {
     rty::FunctionParamIdx::from(local.as_usize() - 1)
 }
 
-pub fn resolve_discr(tcx: TyCtxt<'_>, discr: mir_ty::VariantDiscr) -> u32 {
-    match discr {
-        mir_ty::VariantDiscr::Relative(i) => i,
-        mir_ty::VariantDiscr::Explicit(did) => {
-            let val = tcx.const_eval_poly(did).unwrap();
-            val.try_to_scalar_int().unwrap().to_u32()
-        }
+fn discr_value<'tcx>(tcx: TyCtxt<'tcx>, discr: mir_ty::util::Discr<'tcx>) -> i64 {
+    let (size, signed) = discr.ty.int_size_and_signed(tcx);
+    if signed {
+        size.sign_extend(discr.val).try_into().unwrap()
+    } else {
+        discr.val.try_into().unwrap()
     }
 }
 
@@ -290,7 +290,12 @@ pub enum TypeParam {
 
 #[derive(Debug, Clone)]
 struct DeferredFormulaFnDef<'tcx> {
-    cache: Rc<RefCell<HashMap<mir_ty::GenericArgsRef<'tcx>, annot_fn::FormulaFn<'tcx>>>>,
+    // Keyed on the owner as well as the type arguments: a lifted formula is translated
+    // under the owner's `TypeBuilder`, which is what turns a `ParamTy` into a forall sort.
+    // Two functions each declaring a first type parameter are indistinguishable by their
+    // `GenericArgsRef` alone, so dropping the owner hands one function's translation --
+    // its forall sorts, and the trait predicate instances named after them -- to the other.
+    cache: Rc<RefCell<HashMap<InstantiationKey<'tcx>, annot_fn::FormulaFn<'tcx>>>>,
 }
 
 #[derive(Clone)]
@@ -317,6 +322,14 @@ pub struct Analyzer<'tcx> {
 
     type_params: Rc<RefCell<TypeParamMap<'tcx>>>,
     closure_type_params: Rc<RefCell<HashMap<TypeParam, rty::FunctionType>>>,
+
+    /// Where each [`chc::ForallPred`] standing for a trait predicate came from,
+    /// so that an instantiation of the item that quantified over it can say
+    /// which impl's predicate it resolves to.
+    forall_pred_origins: Rc<RefCell<HashMap<chc::ForallPred, pred_inst::ForallPredOrigin<'tcx>>>>,
+    /// Predicate definitions an instantiation asked for and that
+    /// [`Analyzer::emit_pending_pred_instances`] has yet to emit.
+    pending_pred_instances: Rc<RefCell<Vec<pred_inst::PendingPredInstance<'tcx>>>>,
 }
 
 impl<'tcx> crate::refine::TemplateRegistry for Analyzer<'tcx> {
@@ -346,6 +359,8 @@ impl<'tcx> Analyzer<'tcx> {
         let enum_defs = Default::default();
         let type_params = Default::default();
         let closure_type_params = Default::default();
+        let forall_pred_origins = Default::default();
+        let pending_pred_instances = Default::default();
         Self {
             tcx,
             defs,
@@ -356,6 +371,8 @@ impl<'tcx> Analyzer<'tcx> {
             enum_defs,
             type_params,
             closure_type_params,
+            forall_pred_origins,
+            pending_pred_instances,
         }
     }
 
@@ -381,9 +398,9 @@ impl<'tcx> Analyzer<'tcx> {
         let variants: IndexVec<_, _> = adt
             .variants()
             .iter()
-            .map(|variant| {
-                // TODO: consider using TyCtxt::tag_for_variant
-                let discr = resolve_discr(self.tcx, variant.discr);
+            .zip(adt.discriminants(self.tcx))
+            .map(|(variant, (_, discr))| {
+                let discr = discr_value(self.tcx, discr);
                 let field_tys = variant
                     .fields
                     .iter()
@@ -566,8 +583,12 @@ impl<'tcx> Analyzer<'tcx> {
     ) -> Option<annot_fn::FormulaFn<'tcx>> {
         let deferred_formula_fn = self.formula_fns.get(&local_def_id)?;
 
+        let key = InstantiationKey {
+            generic_args,
+            caller_def_id: owner_fn_id,
+        };
         let deferred_formula_fn_cache = Rc::clone(&deferred_formula_fn.cache);
-        if let Some(formula_fn) = deferred_formula_fn_cache.borrow().get(&generic_args) {
+        if let Some(formula_fn) = deferred_formula_fn_cache.borrow().get(&key) {
             return Some(formula_fn.clone());
         }
 
@@ -577,7 +598,7 @@ impl<'tcx> Analyzer<'tcx> {
         let formula_fn = translator.to_formula_fn();
         deferred_formula_fn_cache
             .borrow_mut()
-            .insert(generic_args, formula_fn.clone());
+            .insert(key, formula_fn.clone());
 
         tracing::info!(?local_def_id, formula_fn = %formula_fn.display(), ?generic_args, "formula_fn_with_args");
         Some(formula_fn)

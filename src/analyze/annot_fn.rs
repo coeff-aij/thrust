@@ -1070,8 +1070,9 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                                 generic_args,
                             )
                             .unwrap();
-                            let (is_unresolved_args, pred_def_id) = match instance {
-                                Some(instance) => (false, instance.def_id()),
+                            let resolved = instance.map(|i| (i.def_id(), i.args));
+                            let (is_unresolved_args, pred_def_id) = match resolved {
+                                Some((pred_def_id, _)) => (false, pred_def_id),
                                 None => (true, def_id),
                             };
 
@@ -1096,9 +1097,24 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                                     params,
                                 );
                                 self.register_forall_pred(pred.clone());
+                                // Recorded so that an instantiation of the owner can
+                                // resolve this reference to the impl's own predicate.
+                                self.analyzer.register_forall_pred_origin(
+                                    pred.clone(),
+                                    pred_def_id,
+                                    generic_args,
+                                );
                                 pred.into()
                             } else {
-                                refine::user_defined_pred(self.tcx, pred_def_id).into()
+                                let (pred_def_id, pred_args) =
+                                    resolved.expect("a resolved predicate call");
+                                self.analyzer
+                                    .user_defined_pred_at_args(
+                                        pred_def_id,
+                                        pred_args,
+                                        self.type_builder.owner_fn_id(),
+                                    )
+                                    .into()
                             };
                             tracing::debug!("resolved predicate call in formula: {:?}", pred);
                             let arg_terms = args.iter().map(|e| self.to_term(e)).collect();

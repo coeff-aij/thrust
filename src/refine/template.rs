@@ -13,6 +13,74 @@ use crate::chc;
 use crate::refine;
 use crate::rty;
 
+/// The model of a contiguous sequence of `elem_ty`: the `(elements, length)` pair that
+/// `thrust_models` gives to `Vec<T>`, `[T]` and `[T; N]` alike.
+///
+/// A concrete element type never needs this: `<Vec<i64> as Model>::Ty` normalizes all the way
+/// to `model::Seq<model::Int>`, whose fields are traversed as a struct into the very same pair.
+///
+/// A generic element type does not get that far, in either of two ways. Where the element type
+/// is bounded by `Model`, the projection normalizes to `Seq<<T as Model>::Ty>` but the nested
+/// alias it leaves behind makes `resolve_model_ty` discard the normalization and hand back the
+/// original type. Where it is not, the projection does not normalize at all, since `T: Model`
+/// is not provable. Neither leaves an ADT to traverse, so the pair is spelled out here instead.
+fn seq_model_type<V>(elem_ty: rty::Type<V>) -> rty::Type<V> {
+    let array_ty = rty::ArrayType::new(rty::Type::int(), elem_ty);
+    rty::TupleType::new(vec![
+        rty::PointerType::own(rty::Type::Array(array_ty)).into(),
+        rty::PointerType::own(rty::Type::int()).into(),
+    ])
+    .into()
+}
+
+/// The model of an iterator over a contiguous sequence: the `(base, cursor)` pair, where the
+/// cursor is the position of the element the next `next` will return and the base is the whole
+/// sequence the iterator was made from.
+///
+/// Spelling the pair out here is what lets the element type be a type parameter, the same way
+/// `seq_model_type` does for the sequence types themselves. Unlike those, though, the struct
+/// traversal is not merely unhelpful for these three but impossible: every one of them reaches
+/// a `*const T` through `NonNull`, which has no model at any element type at all.
+fn seq_iter_model_type<V>(base_ty: rty::Type<V>) -> rty::Type<V> {
+    rty::TupleType::new(vec![
+        rty::PointerType::own(base_ty).into(),
+        rty::PointerType::own(rty::Type::int()).into(),
+    ])
+    .into()
+}
+
+/// The model of `slice::IterMut`: the two halves of the `&mut [T]` it was made from, as
+/// separate sequences, and the cursor.
+///
+/// The two halves are named rather than carried as one `Mut`, because a `Mut` here would not
+/// be a borrow of the iterator's own. The drop rule resolves every `Mut` it finds while
+/// walking a dying local's model, which is right for a borrow that ends there and wrong for a
+/// second name of a pair the caller still holds: the iterator freezes its base, so the pair's
+/// current half stops following the writes, and resolving it would equate what the caller
+/// passed in with what the writes produced. `iter_mut` relates the two sequences to the
+/// reference itself, and states the length preservation that the drop rule used to supply.
+fn mut_seq_iter_model_type<V: Clone>(seq_ty: rty::Type<V>) -> rty::Type<V> {
+    rty::TupleType::new(vec![
+        rty::PointerType::own(seq_ty.clone()).into(),
+        rty::PointerType::own(seq_ty).into(),
+        rty::PointerType::own(rty::Type::int()).into(),
+    ])
+    .into()
+}
+
+/// The element type of one of the three sequence iterators.
+///
+/// It is the first type argument, but not the first argument: `slice::Iter` and
+/// `slice::IterMut` take a lifetime ahead of it and `vec::IntoIter` an allocator behind it.
+fn iterated_elem_ty<'tcx>(
+    ty: mir_ty::Ty<'tcx>,
+    args: &'tcx mir_ty::List<mir_ty::GenericArg<'tcx>>,
+) -> mir_ty::Ty<'tcx> {
+    args.types()
+        .next()
+        .unwrap_or_else(|| panic!("sequence iterator without an element type: {ty:?}"))
+}
+
 pub trait TemplateRegistry {
     fn register_template<V>(&mut self, tmpl: rty::Template<V>) -> rty::RefinedType<V>;
 }
@@ -325,14 +393,21 @@ impl<'tcx> TypeBuilder<'tcx> {
                 orig_ty,
                 normalized_ty
             );
-            let contains_model_ty_alias = normalized_ty.walk().any(|arg| {
+            // A partly normalized result is still progress: `build` expands the
+            // `Model::Ty` projections left inside it. Only a result that still
+            // projects `ty` itself has to be rejected, or `build` would come back here.
+            let stuck_on_ty = normalized_ty.walk().any(|arg| {
                 if let mir_ty::GenericArgKind::Type(t) = arg.kind() {
-                    matches!(t.kind(), mir_ty::TyKind::Alias(_, alias_ty) if alias_ty.def_id == model_ty_def_id)
+                    matches!(
+                        t.kind(),
+                        mir_ty::TyKind::Alias(_, alias_ty)
+                            if alias_ty.def_id == model_ty_def_id && alias_ty.args.type_at(0) == ty
+                    )
                 } else {
                     false
                 }
             });
-            if !contains_model_ty_alias {
+            if !stuck_on_ty {
                 return normalized_ty;
             }
         }
@@ -421,6 +496,10 @@ impl<'tcx> TypeBuilder<'tcx> {
                 let ret = rty::RefinedType::unrefined(self.build(sig.output()));
                 rty::FunctionType::new(params, ret.vacuous()).into()
             }
+            mir_ty::TyKind::Slice(elem_ty) | mir_ty::TyKind::Array(elem_ty, _) => {
+                let elem_ty = self.build(*elem_ty);
+                seq_model_type(elem_ty)
+            }
             mir_ty::TyKind::Adt(def, params) => {
                 if let Some(model_ty) = self.model_adt(def, params) {
                     return model_ty;
@@ -432,15 +511,17 @@ impl<'tcx> TypeBuilder<'tcx> {
                 }
                 if Some(def.did()) == self.def_ids.vec() {
                     let elem_ty = self.build(params.type_at(0));
-                    // Vec is represented as a tuple of (Array<Int, T>, Int) in the model
-                    let idx_ty = rty::Type::int();
-                    let array_ty = rty::ArrayType::new(idx_ty, elem_ty.clone());
-                    let len_ty = rty::Type::int();
-                    return rty::TupleType::new(vec![
-                        rty::PointerType::own(rty::Type::Array(array_ty)).into(),
-                        rty::PointerType::own(len_ty).into(),
-                    ])
-                    .into();
+                    return seq_model_type(elem_ty);
+                }
+                if Some(def.did()) == self.def_ids.slice_iter()
+                    || Some(def.did()) == self.def_ids.vec_into_iter()
+                {
+                    let elem_ty = self.build(iterated_elem_ty(ty, params));
+                    return seq_iter_model_type(seq_model_type(elem_ty));
+                }
+                if Some(def.did()) == self.def_ids.slice_iter_mut() {
+                    let elem_ty = self.build(iterated_elem_ty(ty, params));
+                    return mut_seq_iter_model_type(seq_model_type(elem_ty));
                 }
                 if def.is_enum() {
                     let sym = refine::datatype_symbol(self.tcx, def.did());
@@ -845,6 +926,10 @@ where
                 let ty = self.inner.for_function_template(self.registry, sig).build();
                 rty::Type::function(ty)
             }
+            mir_ty::TyKind::Slice(elem_ty) | mir_ty::TyKind::Array(elem_ty, _) => {
+                let elem_ty = self.build(*elem_ty);
+                seq_model_type(elem_ty)
+            }
             mir_ty::TyKind::Adt(def, params) => {
                 if let Some(model_ty) = self.model_adt(def, params) {
                     return model_ty;
@@ -856,15 +941,17 @@ where
                 }
                 if Some(def.did()) == self.inner.def_ids.vec() {
                     let elem_ty = self.build(params.type_at(0));
-                    // Vec is represented as a tuple of (Array<Int, T>, Int) in the model
-                    let idx_ty = rty::Type::int();
-                    let array_ty = rty::ArrayType::new(idx_ty, elem_ty.clone());
-                    let len_ty = rty::Type::int();
-                    return rty::TupleType::new(vec![
-                        rty::PointerType::own(rty::Type::Array(array_ty)).into(),
-                        rty::PointerType::own(len_ty).into(),
-                    ])
-                    .into();
+                    return seq_model_type(elem_ty);
+                }
+                if Some(def.did()) == self.inner.def_ids.slice_iter()
+                    || Some(def.did()) == self.inner.def_ids.vec_into_iter()
+                {
+                    let elem_ty = self.build(iterated_elem_ty(ty, params));
+                    return seq_iter_model_type(seq_model_type(elem_ty));
+                }
+                if Some(def.did()) == self.inner.def_ids.slice_iter_mut() {
+                    let elem_ty = self.build(iterated_elem_ty(ty, params));
+                    return mut_seq_iter_model_type(seq_model_type(elem_ty));
                 }
                 if def.is_enum() {
                     let sym = refine::datatype_symbol(self.inner.tcx, def.did());

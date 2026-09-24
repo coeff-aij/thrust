@@ -47,7 +47,9 @@ fn term_sorts(clause: &chc::Clause, t: &chc::Term, sorts: &mut BTreeSet<chc::Sor
                 term_sorts(clause, arg, sorts);
             }
         }
-        chc::Term::ArrayEmpty(_, _) => {}
+        // The writer synthesises `default_for(elem)` for an empty array at print time, so the
+        // sorts that term mentions have to be declared even though no clause spells it out.
+        chc::Term::ArrayEmpty(_, elem) => term_sorts(clause, &chc::Term::default_for(elem), sorts),
         chc::Term::SeqConcat(_, t) => {
             for arg in t.iter_args() {
                 term_sorts(clause, arg, sorts);
@@ -140,6 +142,18 @@ impl<'a> SortSymbols<'a> {
     pub fn new(inner: &'a [chc::Sort]) -> Self {
         Self { inner }
     }
+}
+
+/// The `<S1-S2-...>` suffix that decorates a symbol standing for one
+/// instantiation of a generic item. Empty for an empty list.
+pub fn format_sort_symbols(sorts: &[chc::Sort]) -> String {
+    SortSymbols::new(sorts).to_string()
+}
+
+/// A sort as it is spelled inside a decorated symbol name, without the
+/// surrounding angle brackets.
+pub fn format_sort_symbol(sort: &chc::Sort) -> String {
+    SortSymbol::new(sort).to_string()
 }
 
 /// SMT-LIB2 representation of a [`chc::ForallPred`]'s identifier as it appears
@@ -241,6 +255,15 @@ fn collect_sorts(system: &chc::System) -> BTreeSet<chc::Sort> {
 
     for def in &system.user_defined_pred_defs {
         sorts.extend(def.sig.iter().map(|(_, sort)| sort.clone()));
+        // A body binder can name a sort the signature never mentions, and after
+        // substitution that sort has to be declared like any other.
+        sorts.extend(def.sort_subst.iter().map(|(_, sort)| sort.clone()));
+        if let chc::UserDefinedPredBody::Formula(clause) = &def.body {
+            sorts.extend(clause.vars.clone());
+            for a in clause.body.formula.iter_atoms() {
+                atom_sorts(clause, a, &mut sorts);
+            }
+        }
     }
 
     for clause in &system.clauses {
