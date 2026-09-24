@@ -302,11 +302,17 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .associated_item(self.local_def_id.to_def_id())
             .trait_item_def_id
             .unwrap();
-        self.ctx.def_ty_with_args(
-            trait_item_did,
-            trait_item_args,
-            self.local_def_id.to_def_id(),
-        )
+        // The trait method's type must be built under this analysis's actual owner
+        // (`self.owner_fn_id`), not under the impl item itself: when the impl item is
+        // being re-analyzed as a generic callee (`Analyzer::def_ty_with_args`'s `Analyze`
+        // mode, for a call whose type arguments are the caller's own type parameters),
+        // `owner_fn_id` has been overridden to the caller so this contract is typed over
+        // the caller's abstract sorts. Passing `local_def_id` here instead reintroduces
+        // the impl item's own, independently-numbered sorts, which then disagree with
+        // the sorts the rest of `expected_ty` (and the caller's own translation of the
+        // call) used for the same type parameter.
+        self.ctx
+            .def_ty_with_args(trait_item_did, trait_item_args, self.owner_fn_id)
     }
 
     // TODO: Remove this eager precompute together with
