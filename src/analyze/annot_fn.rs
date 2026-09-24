@@ -371,6 +371,17 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         }
     }
 
+    /// The type a field access or an index on `ty` resolves in: a `Ghost<T>` autoderefs to
+    /// `<T as Model>::Ty`, the identity in the logic, and any other type is taken as is.
+    fn ghost_deref_target_ty(&self, ty: mir_ty::Ty<'tcx>) -> mir_ty::Ty<'tcx> {
+        match ty.kind() {
+            mir_ty::TyKind::Adt(def, args) if Some(def.did()) == self.def_ids.ghost_model() => {
+                self.type_builder.resolve_model_ty(args.type_at(0))
+            }
+            _ => ty,
+        }
+    }
+
     fn build_env_from_pat(
         &mut self,
         param: chc::Term<rty::FunctionParamIdx>,
@@ -801,6 +812,8 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                         FormulaOrTerm::Term(term.mut_current())
                     } else if Some(adt.did()) == self.def_ids.box_model() {
                         FormulaOrTerm::Term(term.box_current())
+                    } else if Some(adt.did()) == self.def_ids.ghost_model() {
+                        FormulaOrTerm::Term(term)
                     } else {
                         unimplemented!(
                             "unsupported deref operand type in formula: {:?}",
@@ -870,7 +883,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                     Ok(index) => index,
                     Err(_) => {
                         let adt = self
-                            .expr_ty(expr)
+                            .ghost_deref_target_ty(self.expr_ty(expr))
                             .ty_adt_def()
                             .expect("named field access on a non-ADT type");
                         adt.non_enum_variant()
@@ -885,7 +898,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             }
             ExprKind::Index(array, index, _) => {
                 let index_term = self.to_term(index);
-                let is_seq = self.is_seq_modeled(self.expr_ty(array));
+                let is_seq = self.is_seq_modeled(self.ghost_deref_target_ty(self.expr_ty(array)));
                 let term = if is_seq {
                     self.to_term(array).seq_nth(index_term)
                 } else {
