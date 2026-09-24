@@ -1,5 +1,6 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -A unused-variables
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60 COAR_IMAGE=coar:develop-3d34b93de
 
 // The whole-ADT comparison against the entry state tracks the entry value, not the
 // current one: the loop raises `lo`, so the current bounds leave the entry bounds behind.
