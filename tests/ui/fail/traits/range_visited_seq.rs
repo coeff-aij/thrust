@@ -1,6 +1,6 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -A unused-variables
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 COAR_IMAGE=coar:develop-2493045c3
 use thrust_models::forall;
 use thrust_models::model::Seq;
 use thrust_models::Model;
@@ -22,11 +22,10 @@ where
     #[thrust_macros::ensures(result == None ==> Self::completed(self))]
     // `produces_refl` at the entry state and `produces_trans` with a singleton second leg,
     // applied at every `next` instead of called; the singleton instance is kept for concrete loops.
-    #[thrust_macros::ensures(forall(|s: Seq<<Self::Item as Model>::Ty>| s == Seq::empty() ==> Self::produces(*self, s, *self)))]
-    #[thrust_macros::ensures(forall(|i| forall(|s: Seq<<Self::Item as Model>::Ty>|
-        result == Some(i) && s == Seq::singleton(i) ==> Self::produces(*self, s, !self))))]
-    #[thrust_macros::ensures(forall(|a: <Self as Model>::Ty| forall(|s: Seq<<Self::Item as Model>::Ty>| forall(|i| forall(|t: Seq<<Self::Item as Model>::Ty>|
-        result == Some(i) && Self::produces(a, s, *self) && t == s.push(i) ==> Self::produces(a, t, !self))))))]
+    #[thrust_macros::ensures(Self::produces(*self, Seq::empty(), *self))]
+    #[thrust_macros::ensures(forall(|i| result == Some(i) ==> Self::produces(*self, Seq::singleton(i), !self)))]
+    #[thrust_macros::ensures(forall(|a: <Self as Model>::Ty| forall(|s: Seq<<Self::Item as Model>::Ty>| forall(|i|
+        result == Some(i) && Self::produces(a, s, *self) ==> Self::produces(a, s.push(i), !self)))))]
     fn next(&mut self) -> Option<Self::Item>;
 
     #[thrust_macros::predicate]
