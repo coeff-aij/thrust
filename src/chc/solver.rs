@@ -13,10 +13,92 @@ pub enum CheckSatError {
     Error { stdout: String, stderr: String },
     #[error("unknown output: {stdout}")]
     Unknown { stdout: String },
+    /// The solver answered `sat`, but only after rejecting one or more lines
+    /// of the query as unsupported (a solver that does not implement one of
+    /// `declare-forall-sort`/`declare-forall-fun`/`declare-dep-exists-fun`
+    /// answers `unsupported` for it and carries on). A rejected line can be
+    /// an assertion the query needed, so a `sat` reached this way is not
+    /// trusted: see [`read_verdict`] for why `sat` and `unsat` are not
+    /// symmetric here.
+    #[error(
+        "solver reported sat, but not before rejecting part of the query as unsupported \
+         (rejected: {rejected:?}), so it is not trusted: {stdout}"
+    )]
+    UnsoundSat {
+        stdout: String,
+        rejected: Vec<String>,
+    },
+    /// Neither `sat`, `unsat`, nor `unknown` could be found as a standalone
+    /// line anywhere in the solver's output (or more than one was found),
+    /// which is different from the solver itself reporting `unknown`.
+    #[error("no verdict found in solver output: {stdout}")]
+    NoVerdict { stdout: String },
     #[error("timed out after {0:?}")]
     Timeout(std::time::Duration),
     #[error("io error")]
     Io(#[from] std::io::Error),
+}
+
+/// One of the three answers a solver can give `(check-sat)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Verdict {
+    Sat,
+    Unsat,
+    Unknown,
+}
+
+/// Finds the solver's verdict in its raw stdout, tolerating whatever else got
+/// printed around it, and separately reports every line that is not the
+/// verdict (almost always `unsupported`, once per declaration the solver
+/// would not process).
+///
+/// `(check-sat)` is always the last command Thrust sends, so on a solver that
+/// implements everything the query uses, its answer is also the *entire*
+/// output. A solver that rejects a `declare-forall-sort` / `declare-forall-fun`
+/// / `declare-dep-exists-fun` line does not stop there, though: it prints
+/// `unsupported` for that line and keeps processing the rest of the file, so
+/// the verdict can be one line among several rather than the whole output.
+///
+/// Returns `None` when accounting for the output does not come out to
+/// exactly one verdict-shaped line: zero means `(check-sat)` was never
+/// answered, and more than one means some other line happens to read `sat`,
+/// `unsat`, or `unknown`, which makes picking one a guess this function
+/// declines to make.
+///
+/// This does not by itself decide whether a `sat`/`unsat` verdict reached
+/// alongside rejected lines should be trusted; [`Config::check_sat`] does,
+/// and the two directions are not symmetric. Every rejected line drops
+/// whatever the query used it to assert, which can only *relax* the problem
+/// (remove a constraint), never add one. Relaxing a problem can only make
+/// `sat` easier to reach and `unsat` harder: an `unsat` verdict for the
+/// relaxed problem holds for the original, stricter one too (adding back a
+/// dropped constraint cannot turn an unsatisfiable problem satisfiable), but
+/// a `sat` verdict for the relaxed problem says nothing about the original,
+/// because the very constraint that got dropped could be the one the
+/// witness violates. So an `unsat` reached this way is safe to accept
+/// unconditionally, while a `sat` reached this way is not: accepting it
+/// could turn an unprovable program into a verified one.
+fn read_verdict(stdout: &str) -> Option<(Verdict, Vec<String>)> {
+    let mut verdict = None;
+    let mut rejected = Vec::new();
+    for line in stdout.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let this_line = match line {
+            "sat" => Some(Verdict::Sat),
+            "unsat" => Some(Verdict::Unsat),
+            "unknown" => Some(Verdict::Unknown),
+            _ => None,
+        };
+        match this_line {
+            Some(v) if verdict.is_none() => verdict = Some(v),
+            Some(_) => return None,
+            None => rejected.push(line.to_owned()),
+        }
+    }
+    verdict.map(|v| (v, rejected))
 }
 
 /// A configuration for running a command-line CHC solver.
@@ -183,10 +265,76 @@ impl Config {
 
         let output = self.solver.run(file.path(), std::process::Stdio::piped())?;
         drop(file);
-        match output.trim() {
-            "sat" => Ok(()),
-            "unsat" => Err(CheckSatError::Unsat),
-            _ => Err(CheckSatError::Unknown { stdout: output }),
+        match read_verdict(&output) {
+            Some((Verdict::Sat, rejected)) if rejected.is_empty() => Ok(()),
+            Some((Verdict::Sat, rejected)) => {
+                tracing::warn!(
+                    ?rejected,
+                    "solver reported sat after rejecting part of the query; not trusting it"
+                );
+                Err(CheckSatError::UnsoundSat {
+                    stdout: output,
+                    rejected,
+                })
+            }
+            Some((Verdict::Unsat, rejected)) => {
+                if !rejected.is_empty() {
+                    tracing::warn!(
+                        ?rejected,
+                        "solver reported unsat after rejecting part of the query; \
+                         accepting it, since dropping constraints cannot turn an \
+                         unsatisfiable problem satisfiable"
+                    );
+                }
+                Err(CheckSatError::Unsat)
+            }
+            Some((Verdict::Unknown, rejected)) => {
+                if !rejected.is_empty() {
+                    tracing::warn!(?rejected, "solver reported unknown, alongside other output");
+                }
+                Err(CheckSatError::Unknown { stdout: output })
+            }
+            None => Err(CheckSatError::NoVerdict { stdout: output }),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clean_verdicts_have_nothing_rejected() {
+        assert_eq!(read_verdict("sat\n"), Some((Verdict::Sat, vec![])));
+        assert_eq!(read_verdict("unsat\n"), Some((Verdict::Unsat, vec![])));
+        assert_eq!(read_verdict("unknown\n"), Some((Verdict::Unknown, vec![])));
+    }
+
+    #[test]
+    fn verdict_can_follow_rejected_lines() {
+        assert_eq!(
+            read_verdict("unsupported\nunsupported\nsat\n"),
+            Some((
+                Verdict::Sat,
+                vec!["unsupported".into(), "unsupported".into()]
+            ))
+        );
+        assert_eq!(
+            read_verdict("unsupported\nunsat\n"),
+            Some((Verdict::Unsat, vec!["unsupported".into()]))
+        );
+    }
+
+    #[test]
+    fn no_verdict_line_is_not_a_verdict() {
+        assert_eq!(read_verdict(""), None);
+        assert_eq!(read_verdict("unsupported\n"), None);
+        assert_eq!(read_verdict("(error \"boom\")\n"), None);
+    }
+
+    #[test]
+    fn conflicting_verdict_lines_are_not_a_verdict() {
+        assert_eq!(read_verdict("sat\nunsat\n"), None);
+        assert_eq!(read_verdict("unsat\nunsat\n"), None);
     }
 }
