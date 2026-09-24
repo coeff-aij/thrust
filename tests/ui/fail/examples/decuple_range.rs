@@ -88,13 +88,13 @@ where <I as thrust_models::Model>::Ty: PartialEq
         // forall(|i: I::Item| self.iter.produces(i) ==> pre!(self.func(i)))
         "(and
             (q_invariant_535b65d6c851059a677a5e46c08a789<a0> (tuple_proj<a0-a1>.0 self_))
-            (forall ((i a8))
+            (forall ((i a7))
                 (=>
                     (q_produces_535b65d6c851059ae4cb460e863daa8c<a0>
                         (tuple_proj<a0-a1>.0 self_)
                         i
                     )
-                    (q_pre_next_535b65d6c851059acdbe805e2dde91bc<a1>
+                    (q_pre_F_535b65d6c851059ad5d0a5796474cec<a1>
                         (tuple_proj<a0-a1>.1 self_)
                         i
                     )
@@ -127,18 +127,18 @@ where <I as thrust_models::Model>::Ty: PartialEq
         // exists(|i: I::Item| self.iter.step(i, dist.iter)
         //     && pre!(self.func(i)) && post!(self.func(i), item))
         // && self.func == dist.func
-        "(exists ((i a8))
+        "(exists ((i a7))
             (and
                 (q_step_535b65d6c851059abc1b6209b963f472<a0>
                     (tuple_proj<a0-a1>.0 self_)
                     i
                     (tuple_proj<a0-a1>.0 dist)
                 )
-                (q_pre_next_535b65d6c851059acdbe805e2dde91bc<a1>
+                (q_pre_F_535b65d6c851059ad5d0a5796474cec<a1>
                     (tuple_proj<a0-a1>.1 self_)
                     i
                 )
-                (q_post_next_535b65d6c851059acdbe805e2dde91bc<a1>
+                (q_post_F_535b65d6c851059ad5d0a5796474cec<a1>
                     (tuple_proj<a0-a1>.1 self_)
                     i
                     item
@@ -153,17 +153,17 @@ where <I as thrust_models::Model>::Ty: PartialEq
     fn produces(self, item: Self::Item) -> bool {
         // exists(|j: I::Item| self.iter.produces(j)
         //     && pre!(self.func(j)) && post!(self.func(j), item))
-        "(exists ((j a8))
+        "(exists ((j a7))
             (and
                 (q_produces_535b65d6c851059ae4cb460e863daa8c<a0>
                     (tuple_proj<a0-a1>.0 self_)
                     j
                 )
-                (q_pre_next_535b65d6c851059acdbe805e2dde91bc<a1>
+                (q_pre_F_535b65d6c851059ad5d0a5796474cec<a1>
                     (tuple_proj<a0-a1>.1 self_)
                     j
                 )
-                (q_post_next_535b65d6c851059acdbe805e2dde91bc<a1>
+                (q_post_F_535b65d6c851059ad5d0a5796474cec<a1>
                     (tuple_proj<a0-a1>.1 self_)
                     j
                     item

@@ -84,7 +84,7 @@ where
                         (q_reaches_b665189a22a9bc20b75324461c8c5287<a0> (tuple_proj<a0-a1>.0 self_) zm)
                         (q_step_b665189a22a9bc20645f008c4b764e02<a0> zm ze zn)
                     )
-                    (q_pre_next_b665189a22a9bc20c4ab4a1a92847345<a1> (tuple_proj<a0-a1>.1 self_) ze)
+                    (q_pre_F_b665189a22a9bc204fcdb12194c626e0<a1> (tuple_proj<a0-a1>.1 self_) ze)
                 )
             )
         )";
@@ -117,8 +117,8 @@ where
         "(exists ((zi Int))
             (and
                 (q_step_b665189a22a9bc20645f008c4b764e02<a0> (tuple_proj<a0-a1>.0 self_) zi (tuple_proj<a0-a1>.0 dist))
-                (q_pre_next_b665189a22a9bc20c4ab4a1a92847345<a1> (tuple_proj<a0-a1>.1 self_) zi)
-                (q_post_next_b665189a22a9bc20c4ab4a1a92847345<a1> (tuple_proj<a0-a1>.1 self_) zi item)
+                (q_pre_F_b665189a22a9bc204fcdb12194c626e0<a1> (tuple_proj<a0-a1>.1 self_) zi)
+                (q_post_F_b665189a22a9bc204fcdb12194c626e0<a1> (tuple_proj<a0-a1>.1 self_) zi item)
                 (= (tuple_proj<a0-a1>.1 self_) (tuple_proj<a0-a1>.1 dist))
             )
         )";

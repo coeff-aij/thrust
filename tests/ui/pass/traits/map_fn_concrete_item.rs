@@ -59,7 +59,7 @@ where
         "(and
             (q_invariant_4d8c188fb84596fee9a2d9c5fc98ae25<a0> (tuple_proj<a0-a1>.0 self_))
             (forall ((i Int))
-                (q_pre_next_4d8c188fb84596fecd3dcc87543efe66<a1>
+                (q_pre_F_4d8c188fb84596fe8444c07d945085d7<a1>
                     (tuple_proj<a0-a1>.1 self_)
                     i
                 )
@@ -97,11 +97,11 @@ where
                     i
                     (tuple_proj<a0-a1>.0 dist)
                 )
-                (q_pre_next_4d8c188fb84596fecd3dcc87543efe66<a1>
+                (q_pre_F_4d8c188fb84596fe8444c07d945085d7<a1>
                     (tuple_proj<a0-a1>.1 self_)
                     i
                 )
-                (q_post_next_4d8c188fb84596fecd3dcc87543efe66<a1>
+                (q_post_F_4d8c188fb84596fe8444c07d945085d7<a1>
                     (tuple_proj<a0-a1>.1 self_)
                     i
                     item
