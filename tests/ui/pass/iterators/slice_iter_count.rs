@@ -1,6 +1,6 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:develop-2493045c3
 
 // A `while let Some(_) = it.next()` over `<[T]>::iter` at a type parameter element type. The
 // loop leaves through the second disjunct of `next`'s postcondition, which puts the cursor at

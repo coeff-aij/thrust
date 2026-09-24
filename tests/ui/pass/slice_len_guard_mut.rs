@@ -1,6 +1,6 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off -C opt-level=2
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:develop-2493045c3
 
 // At `-C opt-level=1` and above rustc reads slice metadata straight off the `&mut [i32]`
 // local (`_len = PtrMetadata(copy _v)`) instead of through a shared reborrow, so this pins

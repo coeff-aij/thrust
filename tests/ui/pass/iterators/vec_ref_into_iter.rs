@@ -1,6 +1,6 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:develop-2493045c3
 
 // `IntoIterator` on a borrowed `Vec` hands back the two slice iterators rather than
 // `vec::IntoIter`: a shared borrow yields `slice::Iter` and leaves the vector alone, a mutable
