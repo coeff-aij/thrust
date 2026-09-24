@@ -331,6 +331,12 @@ mod thrust_models {
     int_model!(usize);
     int_model!(u32);
     int_model!(u64);
+    int_model!(i8);
+    int_model!(i16);
+    int_model!(i128);
+    int_model!(u8);
+    int_model!(u16);
+    int_model!(u128);
 
     impl Model for bool {
         type Ty = bool;
@@ -805,6 +811,13 @@ fn _extern_spec_i32_is_negative(x: i32) -> bool {
 
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
+#[thrust_macros::ensures((x >= y && result == Some(x - y)) || (x < y && result == None))]
+fn _extern_spec_usize_checked_sub(x: usize, y: usize) -> Option<usize> {
+    usize::checked_sub(x, y)
+}
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
 #[thrust_macros::ensures(result.len() == 0)]
 fn _extern_spec_vec_new<T>() -> Vec<T> where T: thrust_models::Model, T::Ty: PartialEq {
     Vec::<T>::new()
@@ -1258,6 +1271,30 @@ fn _extern_spec_vec_mut_into_iter<'a, T>(vec: &'a mut Vec<T>) -> core::slice::It
     <&mut Vec<T> as std::iter::IntoIterator>::into_iter(vec)
 }
 
+// `vec![elem; n]` expands to a call to this function.
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(
+    result.len() == n
+        && thrust_models::forall(|i: thrust_models::model::Int| (0 <= i && i < n) ==> result[i] == elem)
+)]
+fn _extern_spec_vec_from_elem<T>(elem: T, n: usize) -> Vec<T>
+    where T: thrust_models::Model + Clone, T::Ty: PartialEq
+{
+    std::vec::from_elem(elem, n)
+}
+
+// Only the lengths are specified; the element-wise description of the two
+// halves needs quantifiers the solvers do not handle well yet.
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(at <= (*vec).len())]
+#[thrust_macros::ensures((!vec).len() == at && result.len() == (*vec).len() - at)]
+fn _extern_spec_vec_split_off<T>(vec: &mut Vec<T>, at: usize) -> Vec<T>
+    where T: thrust_models::Model, T::Ty: PartialEq
+{
+    Vec::split_off(vec, at)
+}
+
 // TODO: The following specs of some trait methods are too restrictive; we should allow for a
 //       per-impl spec once we can describe the spec of blanket impls.
 
@@ -1268,6 +1305,38 @@ fn _extern_spec_partialeq_eq<T>(x: &T, y: &T) -> bool
   where T: thrust_models::Model + PartialEq, T::Ty: PartialEq
 {
     PartialEq::eq(x, y)
+}
+
+// Hashing has no model; the spec only records that hashing itself does not
+// panic, which lets derived Hash impls be analyzed (they hash field by field).
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(true)]
+fn _extern_spec_hash<T, H>(x: &T, state: &mut H)
+  where T: std::hash::Hash + thrust_models::Model + ?Sized, T::Ty: PartialEq, H: std::hash::Hasher + thrust_models::Model, H::Ty: PartialEq
+{
+    std::hash::Hash::hash(x, state)
+}
+
+// Default values of foreign types are not modeled; the spec only records that
+// constructing one does not panic, which lets derived Default impls be analyzed.
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(true)]
+fn _extern_spec_default<T>() -> T
+  where T: Default + thrust_models::Model, T::Ty: PartialEq
+{
+    T::default()
+}
+
+// Values are modeled purely, so a clone is the same value in the model.
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(result == *x)]
+fn _extern_spec_clone<T>(x: &T) -> T
+  where T: thrust_models::Model + Clone, T::Ty: PartialEq
+{
+    Clone::clone(x)
 }
 
 #[thrust::extern_spec_fn]
