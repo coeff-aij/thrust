@@ -1,6 +1,6 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:latest
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // A `while let Some(_) = it.next()` over `<[T]>::iter` at a type parameter element type. The
 // loop leaves through the second disjunct of `next`'s postcondition, which puts the cursor at
@@ -10,8 +10,8 @@
 // the bound has to be assumed on entry.
 
 #[thrust_macros::context]
-#[thrust_macros::requires((*s).length >= 0)]
-#[thrust_macros::ensures(result == (*s).length)]
+#[thrust_macros::requires((*s).len() >= 0)]
+#[thrust_macros::ensures(result == (*s).len())]
 fn count<T>(s: &[T]) -> usize
     where T: thrust_models::Model, T::Ty: PartialEq
 {
@@ -19,7 +19,7 @@ fn count<T>(s: &[T]) -> usize
     let mut n = 0;
     while let Some(_x) = it.next() {
         thrust_macros::invariant!(|it: core::slice::Iter<'_, T>, n: usize, s: &[T]|
-            it.0 == *s && n == it.1 && it.1 <= it.0.length);
+            it.0 == *s && n == it.1 && it.1 <= it.0.len());
         n = n + 1;
     }
     assert!(n == s.len());

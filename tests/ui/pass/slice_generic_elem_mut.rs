@@ -1,12 +1,12 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:latest
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // The prophecy pair of a `&mut [T]` at a type parameter element type, and the call site that
 // instantiates it.
 
-#[thrust_macros::requires((*s).length > 0)]
-#[thrust_macros::ensures((!s).array[0] == v && (!s).length == (*s).length)]
+#[thrust_macros::requires((*s).len() > 0)]
+#[thrust_macros::ensures((!s)[0] == v && (!s).len() == (*s).len())]
 fn set_head<T>(s: &mut [T], v: T)
     where T: thrust_models::Model, T::Ty: PartialEq
 {
@@ -15,7 +15,7 @@ fn set_head<T>(s: &mut [T], v: T)
 
 #[thrust::trusted]
 #[thrust_macros::requires(true)]
-#[thrust_macros::ensures((*result).length == 2)]
+#[thrust_macros::ensures((*result).len() == 2)]
 fn slice() -> &'static mut [i64] {
     unimplemented!()
 }

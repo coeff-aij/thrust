@@ -1,6 +1,6 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -A unused-variables
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60 COAR_IMAGE=coar:latest
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60
 use thrust_models::forall;
 use thrust_models::model::{Int, Seq};
 use thrust_models::{Ghost, Model};
@@ -109,33 +109,33 @@ where
             true
             (forall ((e Int))
                 (q_pre_next_bedbd733d3f248d989e85efaa8d1bc7<a1>
-                    (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.1 self_)
+                    (tuple_proj<a0-a1-Seq<Int>>.1 self_)
                     e
-                    (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.2 self_)
+                    (tuple_proj<a0-a1-Seq<Int>>.2 self_)
                 )
             )
-            (forall ((harr (Array Int Int)) (hlen Int))
+            (forall ((h (Seq Int)))
                 (forall ((e1 Int))
                     (forall ((e2 Int))
                         (forall ((b Int))
                             (=>
                                 (and
                                     (q_pre_next_bedbd733d3f248d989e85efaa8d1bc7<a1>
-                                        (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.1 self_)
+                                        (tuple_proj<a0-a1-Seq<Int>>.1 self_)
                                         e1
-                                        (tuple<Array<Int-Int>-Int> harr hlen)
+                                        h
                                     )
                                     (q_post_next_bedbd733d3f248d989e85efaa8d1bc7<a1>
-                                        (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.1 self_)
+                                        (tuple_proj<a0-a1-Seq<Int>>.1 self_)
                                         e1
-                                        (tuple<Array<Int-Int>-Int> harr hlen)
+                                        h
                                         b
                                     )
                                 )
                                 (q_pre_next_bedbd733d3f248d989e85efaa8d1bc7<a1>
-                                    (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.1 self_)
+                                    (tuple_proj<a0-a1-Seq<Int>>.1 self_)
                                     e2
-                                    (tuple<Array<Int-Int>-Int> (store harr hlen e1) (+ hlen 1))
+                                    (seq.++ h (seq.unit e1))
                                 )
                             )
                         )
@@ -152,17 +152,17 @@ where
         "(and
             (q_completed_bedbd733d3f248d6f3ca13bf4a6f7f6<a0>
                 (mut<a0>
-                    (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.0 (mut_current<Tuple<a0-a1-Tuple<Array<Int-Int>-Int>>> self_))
-                    (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.0 (mut_final<Tuple<a0-a1-Tuple<Array<Int-Int>-Int>>> self_))
+                    (tuple_proj<a0-a1-Seq<Int>>.0 (mut_current<Tuple<a0-a1-Seq<Int>>> self_))
+                    (tuple_proj<a0-a1-Seq<Int>>.0 (mut_final<Tuple<a0-a1-Seq<Int>>> self_))
                 )
             )
             (=
-                (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.1 (mut_current<Tuple<a0-a1-Tuple<Array<Int-Int>-Int>>> self_))
-                (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.1 (mut_final<Tuple<a0-a1-Tuple<Array<Int-Int>-Int>>> self_))
+                (tuple_proj<a0-a1-Seq<Int>>.1 (mut_current<Tuple<a0-a1-Seq<Int>>> self_))
+                (tuple_proj<a0-a1-Seq<Int>>.1 (mut_final<Tuple<a0-a1-Seq<Int>>> self_))
             )
             (=
-                (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.2 (mut_current<Tuple<a0-a1-Tuple<Array<Int-Int>-Int>>> self_))
-                (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.2 (mut_final<Tuple<a0-a1-Tuple<Array<Int-Int>-Int>>> self_))
+                (tuple_proj<a0-a1-Seq<Int>>.2 (mut_current<Tuple<a0-a1-Seq<Int>>> self_))
+                (tuple_proj<a0-a1-Seq<Int>>.2 (mut_final<Tuple<a0-a1-Seq<Int>>> self_))
             )
         )";
         true
@@ -176,35 +176,28 @@ where
         "(exists ((i Int))
             (and
                 (q_step_bedbd733d3f248d84d555206bfaa09e<a0>
-                    (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.0 self_)
+                    (tuple_proj<a0-a1-Seq<Int>>.0 self_)
                     i
-                    (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.0 dist)
+                    (tuple_proj<a0-a1-Seq<Int>>.0 dist)
                 )
                 (q_pre_next_bedbd733d3f248d989e85efaa8d1bc7<a1>
-                    (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.1 self_)
+                    (tuple_proj<a0-a1-Seq<Int>>.1 self_)
                     i
-                    (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.2 self_)
+                    (tuple_proj<a0-a1-Seq<Int>>.2 self_)
                 )
                 (q_post_next_bedbd733d3f248d989e85efaa8d1bc7<a1>
-                    (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.1 self_)
+                    (tuple_proj<a0-a1-Seq<Int>>.1 self_)
                     i
-                    (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.2 self_)
+                    (tuple_proj<a0-a1-Seq<Int>>.2 self_)
                     item
                 )
                 (=
-                    (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.1 self_)
-                    (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.1 dist)
+                    (tuple_proj<a0-a1-Seq<Int>>.1 self_)
+                    (tuple_proj<a0-a1-Seq<Int>>.1 dist)
                 )
                 (=
-                    (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.2 dist)
-                    (tuple<Array<Int-Int>-Int>
-                        (store
-                            (tuple_proj<Array<Int-Int>-Int>.0 (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.2 self_))
-                            (tuple_proj<Array<Int-Int>-Int>.1 (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.2 self_))
-                            i
-                        )
-                        (+ (tuple_proj<Array<Int-Int>-Int>.1 (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.2 self_)) 1)
-                    )
+                    (tuple_proj<a0-a1-Seq<Int>>.2 dist)
+                    (seq.++ (tuple_proj<a0-a1-Seq<Int>>.2 self_) (seq.unit i))
                 )
             )
         )";

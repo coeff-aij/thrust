@@ -1,6 +1,6 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:latest
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // A slice whose element type is a type parameter. `<[T] as Model>::Ty` is of no use here: with
 // a `Model` bound it normalizes to a `Seq` that still carries `<T as Model>::Ty`, and without
@@ -8,15 +8,15 @@
 // same `(elements, length)` pair a `Vec` gets.
 
 #[thrust_macros::requires(true)]
-#[thrust_macros::ensures(result == (*s).length)]
+#[thrust_macros::ensures(result == (*s).len())]
 fn size<T>(s: &[T]) -> usize
     where T: thrust_models::Model, T::Ty: PartialEq
 {
     s.len()
 }
 
-#[thrust_macros::requires((*s).length > 0)]
-#[thrust_macros::ensures(*result == (*s).array[0])]
+#[thrust_macros::requires((*s).len() > 0)]
+#[thrust_macros::ensures(*result == (*s)[0])]
 fn head<T>(s: &[T]) -> &T
     where T: thrust_models::Model, T::Ty: PartialEq
 {
@@ -24,7 +24,7 @@ fn head<T>(s: &[T]) -> &T
 }
 
 #[thrust_macros::requires(true)]
-#[thrust_macros::ensures(result == (*a).length)]
+#[thrust_macros::ensures(result == (*a).len())]
 fn size_fixed<T>(a: &[T; 3]) -> usize
     where T: thrust_models::Model, T::Ty: PartialEq
 {
