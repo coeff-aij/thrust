@@ -179,6 +179,18 @@ impl<'a> SortSymbols<'a> {
     }
 }
 
+/// The `<S1-S2-...>` suffix that decorates a symbol standing for one
+/// instantiation of a generic item. Empty for an empty list.
+pub fn format_sort_symbols(sorts: &[chc::Sort]) -> String {
+    SortSymbols::new(sorts).to_string()
+}
+
+/// A sort as it is spelled inside a decorated symbol name, without the
+/// surrounding angle brackets.
+pub fn format_sort_symbol(sort: &chc::Sort) -> String {
+    SortSymbol::new(sort).to_string()
+}
+
 /// SMT-LIB2 representation of a [`chc::ForallPred`]'s identifier as it appears
 /// in atoms (e.g. `q_completed_8cab…<a0>`). Used by the SMT emitter and by
 /// [`chc::System::populate_user_defined_pred_dependencies`] to substring-match
@@ -278,6 +290,9 @@ fn collect_sorts(system: &chc::System) -> BTreeSet<chc::Sort> {
 
     for def in &system.user_defined_pred_defs {
         sorts.extend(def.sig.iter().map(|(_, sort)| sort.clone()));
+        // A body binder can name a sort the signature never mentions, and after
+        // substitution that sort has to be declared like any other.
+        sorts.extend(def.sort_subst.iter().map(|(_, sort)| sort.clone()));
         if let chc::UserDefinedPredBody::Formula(formula) = &def.body {
             let var_sorts = def.sig.iter().map(|(_, sort)| sort.clone()).collect();
             formula_sorts(&var_sorts, formula, &mut sorts);

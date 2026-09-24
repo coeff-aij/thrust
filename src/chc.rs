@@ -10,7 +10,7 @@ use crate::pretty::PrettyDisplayExt as _;
 
 mod clause_builder;
 pub mod debug;
-mod format_context;
+pub(crate) mod format_context;
 mod hoice;
 mod smtlib2;
 mod solver;
@@ -240,6 +240,25 @@ impl Sort {
 
     fn walk<'a>(&'a self, f: impl FnMut(&'a Sort)) {
         self.walk_impl(Box::new(f))
+    }
+
+    /// This sort with every forall sort `f` gives a value to replaced by it.
+    pub fn subst_forall(&self, f: &impl Fn(ForallSortIdx) -> Option<Sort>) -> Sort {
+        match self {
+            Sort::Null | Sort::Int | Sort::Bool | Sort::String | Sort::Param(_) => self.clone(),
+            Sort::Forall(idx) => f(*idx).unwrap_or_else(|| self.clone()),
+            Sort::Box(s) => Sort::Box(Box::new(s.subst_forall(f))),
+            Sort::Mut(s) => Sort::Mut(Box::new(s.subst_forall(f))),
+            Sort::Seq(s) => Sort::Seq(Box::new(s.subst_forall(f))),
+            Sort::Tuple(ss) => Sort::Tuple(ss.iter().map(|s| s.subst_forall(f)).collect()),
+            Sort::Array(s1, s2) => {
+                Sort::Array(Box::new(s1.subst_forall(f)), Box::new(s2.subst_forall(f)))
+            }
+            Sort::Datatype(sort) => Sort::Datatype(DatatypeSort {
+                symbol: sort.symbol.clone(),
+                args: sort.args.iter().map(|s| s.subst_forall(f)).collect(),
+            }),
+        }
     }
 
     fn walk_impl<'a, 'b>(&'a self, mut f: Box<dyn FnMut(&'a Sort) + 'b>) {
@@ -1206,6 +1225,10 @@ impl MatcherPred {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct UserDefinedPred {
     inner: String,
+    /// The sorts this predicate was emitted at. Empty for the definition read
+    /// straight off the source, whose parameter sorts are the declaring item's
+    /// own; non-empty for a copy emitted at one instantiation of them.
+    instance: Vec<Sort>,
 }
 
 impl std::fmt::Display for UserDefinedPred {
@@ -1222,7 +1245,7 @@ impl std::fmt::Display for UserDefinedPred {
                 c => f.write_str(c.encode_utf8(&mut [0; 4]))?,
             }
         }
-        Ok(())
+        f.write_str(&format_context::format_sort_symbols(&self.instance))
     }
 }
 
@@ -1237,7 +1260,18 @@ where
 
 impl UserDefinedPred {
     pub fn new(inner: String) -> Self {
-        Self { inner }
+        Self {
+            inner,
+            instance: Vec::new(),
+        }
+    }
+
+    pub fn at_instance(inner: String, instance: Vec<Sort>) -> Self {
+        Self { inner, instance }
+    }
+
+    pub fn instance(&self) -> &[Sort] {
+        &self.instance
     }
 }
 
@@ -1289,6 +1323,19 @@ impl ForallPred {
             type_parameters,
             params,
         }
+    }
+
+    /// The symbol without the `<...>` that names the sorts it stands over.
+    pub fn inner(&self) -> &str {
+        &self.inner
+    }
+
+    pub fn type_parameters(&self) -> &[Sort] {
+        &self.type_parameters
+    }
+
+    pub fn params(&self) -> &[Sort] {
+        &self.params
     }
 }
 
@@ -2184,6 +2231,11 @@ pub struct UserDefinedPredDef {
     symbol: UserDefinedPred,
     sig: UserDefinedPredSig,
     body: UserDefinedPredBody,
+    /// Forall sorts to replace in `body` when the definition is emitted. A copy
+    /// of a generic item's predicate emitted at one instantiation keeps the
+    /// source's body text and carries the substitution here, because the sort
+    /// names a binder needs are only settled once the datatype renaming is.
+    pub sort_subst: Vec<(ForallSortIdx, Sort)>,
     /// `ForallPred`s referenced from `body`. Populated just before dependency
     /// analysis by `System::populate_user_defined_pred_dependencies`.
     pub dependencies: HashSet<ForallPred>,
@@ -2282,6 +2334,10 @@ impl System {
         self.forall_pred_vars.insert(pred);
     }
 
+    pub fn forall_preds(&self) -> impl Iterator<Item = &ForallPred> {
+        self.forall_pred_vars.iter()
+    }
+
     pub fn new_forall_sort(&mut self, debug_info: DebugInfo) -> ForallSortIdx {
         let new_idx = self.num_forall_sort_idx;
         self.num_forall_sort_idx += 1;
@@ -2314,6 +2370,7 @@ impl System {
             symbol,
             sig,
             body: UserDefinedPredBody::Raw(body),
+            sort_subst: Vec::new(),
             dependencies,
         })
     }
@@ -2332,8 +2389,33 @@ impl System {
             symbol,
             sig,
             body: UserDefinedPredBody::Formula(formula),
+            sort_subst: Vec::new(),
             dependencies: HashSet::new(),
         })
+    }
+
+    /// Defines `symbol` as `body` read under `sort_subst`, the substitution that
+    /// takes the declaring item's forall sorts to one instantiation of them.
+    pub fn push_pred_define_at_instance(
+        &mut self,
+        symbol: UserDefinedPred,
+        sig: UserDefinedPredSig,
+        body: String,
+        sort_subst: Vec<(ForallSortIdx, Sort)>,
+    ) {
+        self.user_defined_pred_defs.push(UserDefinedPredDef {
+            symbol,
+            sig,
+            body: UserDefinedPredBody::Raw(body),
+            sort_subst,
+            dependencies: HashSet::new(),
+        })
+    }
+
+    pub fn is_pred_defined(&self, symbol: &UserDefinedPred) -> bool {
+        self.user_defined_pred_defs
+            .iter()
+            .any(|d| &d.symbol == symbol)
     }
 
     /// Scans every [`UserDefinedPredDef`]'s body for references to registered

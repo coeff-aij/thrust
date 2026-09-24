@@ -1077,6 +1077,13 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                                         params,
                                     );
                                     self.register_forall_pred(pred.clone());
+                                    // Recorded so that an instantiation of the owner can
+                                    // resolve this reference to the impl's own predicate.
+                                    self.analyzer.register_forall_pred_origin(
+                                        pred.clone(),
+                                        def_id,
+                                        generic_args,
+                                    );
                                     pred.into()
                                 }
                                 Some(instance) => self

@@ -177,11 +177,16 @@ fn unbox_user_defined_pred_def(user_defined_pred_def: UserDefinedPredDef) -> Use
         symbol,
         sig,
         body,
+        sort_subst,
         dependencies,
     } = user_defined_pred_def;
     let sig = sig
         .into_iter()
         .map(|(name, sort)| (name, unbox_sort(sort)))
+        .collect();
+    let sort_subst = sort_subst
+        .into_iter()
+        .map(|(idx, sort)| (idx, unbox_sort(sort)))
         .collect();
     let body = match body {
         UserDefinedPredBody::Raw(s) => UserDefinedPredBody::Raw(s),
@@ -193,6 +198,7 @@ fn unbox_user_defined_pred_def(user_defined_pred_def: UserDefinedPredDef) -> Use
         symbol,
         sig,
         body,
+        sort_subst,
         dependencies,
     }
 }

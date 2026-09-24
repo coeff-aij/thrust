@@ -30,6 +30,7 @@ mod basic_block;
 mod crate_;
 mod did_cache;
 mod local_def;
+mod pred_inst;
 mod reconstruct_slice_indexing;
 
 // TODO: organize structure and remove cross dependency between refine
@@ -293,7 +294,12 @@ pub enum TypeParam {
 
 #[derive(Debug, Clone)]
 struct DeferredFormulaFnDef<'tcx> {
-    cache: Rc<RefCell<HashMap<mir_ty::GenericArgsRef<'tcx>, annot_fn::FormulaFn<'tcx>>>>,
+    // Keyed on the owner as well as the type arguments: a lifted formula is translated
+    // under the owner's `TypeBuilder`, which is what turns a `ParamTy` into a forall sort.
+    // Two functions each declaring a first type parameter are indistinguishable by their
+    // `GenericArgsRef` alone, so dropping the owner hands one function's translation --
+    // its forall sorts, and the trait predicate instances named after them -- to the other.
+    cache: Rc<RefCell<HashMap<InstantiationKey<'tcx>, annot_fn::FormulaFn<'tcx>>>>,
 }
 
 #[derive(Clone)]
@@ -322,6 +328,14 @@ pub struct Analyzer<'tcx> {
 
     type_params: Rc<RefCell<TypeParamMap<'tcx>>>,
     closure_type_params: Rc<RefCell<HashMap<TypeParam, rty::FunctionType>>>,
+
+    /// Where each [`chc::ForallPred`] standing for a trait predicate came from,
+    /// so that an instantiation of the item that quantified over it can say
+    /// which impl's predicate it resolves to.
+    forall_pred_origins: Rc<RefCell<HashMap<chc::ForallPred, pred_inst::ForallPredOrigin<'tcx>>>>,
+    /// Predicate definitions an instantiation asked for and that
+    /// [`Analyzer::emit_pending_pred_instances`] has yet to emit.
+    pending_pred_instances: Rc<RefCell<Vec<pred_inst::PendingPredInstance<'tcx>>>>,
 }
 
 impl<'tcx> crate::refine::TemplateRegistry for Analyzer<'tcx> {
@@ -351,6 +365,8 @@ impl<'tcx> Analyzer<'tcx> {
         let enum_defs = Default::default();
         let type_params = Default::default();
         let closure_type_params = Default::default();
+        let forall_pred_origins = Default::default();
+        let pending_pred_instances = Default::default();
         Self {
             tcx,
             defs,
@@ -362,6 +378,8 @@ impl<'tcx> Analyzer<'tcx> {
             enum_defs,
             type_params,
             closure_type_params,
+            forall_pred_origins,
+            pending_pred_instances,
         }
     }
 
@@ -580,7 +598,7 @@ impl<'tcx> Analyzer<'tcx> {
             .as_local()
             .filter(|id| self.formula_fns.contains_key(id))
         else {
-            return refine::user_defined_pred(self.tcx, def_id);
+            return self.user_defined_pred_at_args(def_id, generic_args, owner_fn_id);
         };
         use mir_ty::TypeVisitableExt as _;
         let key = (
@@ -627,8 +645,12 @@ impl<'tcx> Analyzer<'tcx> {
     ) -> Option<annot_fn::FormulaFn<'tcx>> {
         let deferred_formula_fn = self.formula_fns.get(&local_def_id)?;
 
+        let key = InstantiationKey {
+            generic_args,
+            caller_def_id: owner_fn_id,
+        };
         let deferred_formula_fn_cache = Rc::clone(&deferred_formula_fn.cache);
-        if let Some(formula_fn) = deferred_formula_fn_cache.borrow().get(&generic_args) {
+        if let Some(formula_fn) = deferred_formula_fn_cache.borrow().get(&key) {
             return Some(formula_fn.clone());
         }
 
@@ -638,7 +660,7 @@ impl<'tcx> Analyzer<'tcx> {
         let formula_fn = translator.to_formula_fn();
         deferred_formula_fn_cache
             .borrow_mut()
-            .insert(generic_args, formula_fn.clone());
+            .insert(key, formula_fn.clone());
 
         tracing::info!(?local_def_id, formula_fn = %formula_fn.display(), ?generic_args, "formula_fn_with_args");
         Some(formula_fn)

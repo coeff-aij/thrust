@@ -131,19 +131,19 @@ pub struct Analyzer<'tcx, 'ctx> {
 
 impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     pub fn analyze_predicate_definition(&self) {
-        self.define_as_predicate(refine::user_defined_pred(
-            self.tcx,
-            self.local_def_id.to_def_id(),
-        ));
+        let (sig, body) = self.predicate_definition();
+        self.ctx.system.borrow_mut().push_pred_define(
+            refine::user_defined_pred(self.tcx, self.local_def_id.to_def_id()),
+            sig,
+            body,
+        );
     }
 
-    fn define_as_predicate(&self, pred: chc::UserDefinedPred) {
-        let sig = self.ctx.fn_sig(self.local_def_id.to_def_id());
-        let arg_sorts = sig
-            .inputs()
-            .iter()
-            .map(|input_ty| self.type_builder.build(*input_ty).to_sort());
-
+    /// The signature and the SMT-LIB2 body of a `#[thrust_macros::predicate]`.
+    ///
+    /// The signature is read off the (possibly instantiated) body, so setting
+    /// [`Self::generic_args`] first yields the signature at that instantiation.
+    pub fn predicate_definition(&self) -> (chc::UserDefinedPredSig, String) {
         // function's body
         use rustc_hir::{Block, Expr, ExprKind};
 
@@ -172,13 +172,20 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     .to_string()
             });
 
+        let sig = self
+            .ctx
+            .fn_sig_with_body(self.local_def_id.to_def_id(), &self.body);
+        let arg_sorts = sig
+            .inputs()
+            .iter()
+            .map(|input_ty| self.type_builder.build(*input_ty).to_sort());
+
         let arg_name_and_sorts = arg_names.into_iter().zip(arg_sorts).collect::<Vec<_>>();
 
-        self.ctx.system.borrow_mut().push_pred_define(
-            pred,
+        (
             chc::UserDefinedPredSig::from(arg_name_and_sorts),
             predicate_body,
-        );
+        )
     }
 
     pub fn is_annotated_as_trusted(&self) -> bool {
@@ -1310,9 +1317,32 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     }
 
     pub fn generic_args(&mut self, generic_args: mir_ty::GenericArgsRef<'tcx>) -> &mut Self {
+        use mir_ty::TypeVisitableExt as _;
+
         self.generic_args = generic_args;
-        self.body =
-            mir_ty::EarlyBinder::bind(self.body.clone()).instantiate(self.tcx, generic_args);
+        let body = mir_ty::EarlyBinder::bind(self.body.clone());
+        // Substitution on its own leaves `<I as Iterator>::Item` behind as
+        // `<Range as Iterator>::Item`. Resolving that projection has to happen here, while
+        // the arguments still carry the real closure type: once the type builder has
+        // swapped a closure for its model the impl no longer applies, the projection can
+        // never be resolved, and it degrades into a fresh abstract sort that the rest of
+        // the signature disagrees with.
+        //
+        // Arguments that still mention type parameters describe the generic template,
+        // where there is nothing to resolve and a monomorphized environment would not
+        // apply, so those keep the plain substitution.
+        let resolved = if generic_args.has_param() {
+            None
+        } else {
+            self.tcx
+                .try_instantiate_and_normalize_erasing_regions(
+                    generic_args,
+                    mir_ty::TypingEnv::fully_monomorphized(),
+                    body.clone(),
+                )
+                .ok()
+        };
+        self.body = resolved.unwrap_or_else(|| body.instantiate(self.tcx, generic_args));
         self
     }
 
