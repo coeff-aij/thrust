@@ -293,9 +293,32 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let _guard = span.enter();
 
         self.analyze_raw_command_annot();
+        self.register_trait_laws();
         self.refine_local_defs();
         self.analyze_local_defs();
         self.ctx.emit_pending_pred_instances();
+        self.ctx.emit_pending_laws();
         self.assert_callable_entry();
+    }
+
+    /// Records every `#[thrust::law]` function declared in a local trait.
+    fn register_trait_laws(&mut self) {
+        for item_id in self.tcx.hir_crate_items(()).trait_items() {
+            let def_id = item_id.owner_id.to_def_id();
+            let is_law = self
+                .tcx
+                .get_attrs_by_path(def_id, &analyze::annot::law_path())
+                .next()
+                .is_some();
+            if !is_law {
+                continue;
+            }
+            let trait_def_id = self
+                .tcx
+                .opt_associated_item(def_id)
+                .and_then(|item| item.trait_container(self.tcx))
+                .expect("a trait item has a trait");
+            self.ctx.register_trait_law(trait_def_id, def_id);
+        }
     }
 }

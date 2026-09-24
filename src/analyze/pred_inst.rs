@@ -36,6 +36,16 @@ pub struct ForallPredOrigin<'tcx> {
     pub generic_args: mir_ty::GenericArgsRef<'tcx>,
 }
 
+/// One use of a trait predicate through a type parameter, whose trait's laws are
+/// to be stated for that predicate.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PendingLaw<'tcx> {
+    pred: chc::ForallPred,
+    trait_def_id: DefId,
+    generic_args: mir_ty::GenericArgsRef<'tcx>,
+    owner_fn_id: DefId,
+}
+
 /// One predicate definition waiting to be emitted at an instantiation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PendingPredInstance<'tcx> {
@@ -52,7 +62,22 @@ impl<'tcx> analyze::Analyzer<'tcx> {
         pred: chc::ForallPred,
         def_id: DefId,
         generic_args: mir_ty::GenericArgsRef<'tcx>,
+        owner_fn_id: DefId,
     ) {
+        let trait_def_id = self
+            .tcx()
+            .opt_associated_item(def_id)
+            .and_then(|item| item.trait_container(self.tcx()));
+        if let Some(trait_def_id) = trait_def_id {
+            if self.trait_laws.borrow().contains_key(&trait_def_id) {
+                self.pending_laws.borrow_mut().push(PendingLaw {
+                    pred: pred.clone(),
+                    trait_def_id,
+                    generic_args,
+                    owner_fn_id,
+                });
+            }
+        }
         self.forall_pred_origins.borrow_mut().insert(
             pred,
             ForallPredOrigin {
@@ -60,6 +85,79 @@ impl<'tcx> analyze::Analyzer<'tcx> {
                 generic_args,
             },
         );
+    }
+
+    /// Records that `law_def_id`, a function of the trait `trait_def_id`, is a
+    /// `#[thrust::law]`.
+    pub fn register_trait_law(&self, trait_def_id: DefId, law_def_id: DefId) {
+        self.trait_laws
+            .borrow_mut()
+            .entry(trait_def_id)
+            .or_default()
+            .push(law_def_id);
+    }
+
+    /// States the laws of every trait predicate used through a type parameter.
+    ///
+    /// A law is a trait function without a body whose `requires` and `ensures`
+    /// hold of every implementation: each implementation proves them with an
+    /// empty body, and here they become premises of the clauses that depend on
+    /// the trait's predicates at that type parameter. The law is read at the
+    /// use's generic arguments, so its `Self::produces` resolves to the same
+    /// forall predicate the clauses use, and closed under a `forall` over its
+    /// parameters, so it holds in any clause it is added to.
+    pub fn emit_pending_laws(&mut self) {
+        let mut seen = HashSet::new();
+        loop {
+            let pending: Vec<_> = std::mem::take(&mut *self.pending_laws.borrow_mut());
+            if pending.is_empty() {
+                break;
+            }
+            for request in pending {
+                if !seen.insert(request.clone()) {
+                    continue;
+                }
+                self.emit_laws(request);
+            }
+        }
+    }
+
+    fn emit_laws(&mut self, request: PendingLaw<'tcx>) {
+        let PendingLaw {
+            pred,
+            trait_def_id,
+            generic_args,
+            owner_fn_id,
+        } = request;
+        let laws = self
+            .trait_laws
+            .borrow()
+            .get(&trait_def_id)
+            .cloned()
+            .unwrap_or_default();
+        for law_def_id in laws {
+            let Some(def_ty) = self.def_ty_with_args(law_def_id, generic_args, owner_fn_id) else {
+                tracing::warn!(?law_def_id, ?generic_args, "law has no type at this use");
+                continue;
+            };
+            let Some(fn_ty) = def_ty.ty.as_function() else {
+                continue;
+            };
+            let vars: Vec<(String, chc::Sort)> = fn_ty
+                .params
+                .iter_enumerated()
+                .map(|(idx, param)| (format!("law_{}", idx.index()), param.ty.to_sort()))
+                .collect();
+            let args: Vec<chc::Term<chc::TermVarIdx>> = vars
+                .iter()
+                .map(|(name, sort)| chc::Term::FormulaQuantifiedVar(sort.clone(), name.clone()))
+                .collect();
+            let pre = fn_ty.precondition_formula(&args);
+            let post = fn_ty.postcondition_formula(&args, chc::Term::tuple(vec![]));
+            let law = chc::Formula::forall(vars, pre.implies(post));
+            tracing::debug!(?pred, ?law_def_id, "law stated");
+            self.system.borrow_mut().add_law(pred.clone(), law);
+        }
     }
 
     /// The symbol a reference to `pred_def_id` at `generic_args` must use, and,

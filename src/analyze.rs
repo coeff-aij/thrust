@@ -336,6 +336,11 @@ pub struct Analyzer<'tcx> {
     /// Predicate definitions an instantiation asked for and that
     /// [`Analyzer::emit_pending_pred_instances`] has yet to emit.
     pending_pred_instances: Rc<RefCell<Vec<pred_inst::PendingPredInstance<'tcx>>>>,
+    /// The `#[thrust::law]` functions of each trait, keyed by the trait.
+    trait_laws: Rc<RefCell<HashMap<DefId, Vec<DefId>>>>,
+    /// Uses of a trait predicate through a type parameter whose laws
+    /// [`Analyzer::emit_pending_laws`] has yet to state.
+    pending_laws: Rc<RefCell<Vec<pred_inst::PendingLaw<'tcx>>>>,
 }
 
 impl<'tcx> crate::refine::TemplateRegistry for Analyzer<'tcx> {
@@ -367,6 +372,8 @@ impl<'tcx> Analyzer<'tcx> {
         let closure_type_params = Default::default();
         let forall_pred_origins = Default::default();
         let pending_pred_instances = Default::default();
+        let trait_laws = Default::default();
+        let pending_laws = Default::default();
         Self {
             tcx,
             defs,
@@ -380,6 +387,8 @@ impl<'tcx> Analyzer<'tcx> {
             closure_type_params,
             forall_pred_origins,
             pending_pred_instances,
+            trait_laws,
+            pending_laws,
         }
     }
 

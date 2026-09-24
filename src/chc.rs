@@ -1,6 +1,6 @@
 //! A multi-sorted CHC system with tuples.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::hash::Hash;
 
 use pretty::{termcolor, Pretty};
@@ -2363,6 +2363,10 @@ pub struct System {
     // `declare-forall-fun` blocks in `smtlib2::System::fmt`, so its
     // iteration order is the emitted order.
     forall_pred_vars: BTreeSet<ForallPred>,
+    /// The laws stated of each forall predicate: closed formulas that hold of
+    /// every interpretation the clauses are meant for. [`Self::insert_law_premises`]
+    /// adds them to the body of every clause that depends on the predicate.
+    laws: BTreeMap<ForallPred, Vec<Formula<TermVarIdx>>>,
 }
 
 impl System {
@@ -2399,6 +2403,87 @@ impl System {
 
     pub fn forall_preds(&self) -> impl Iterator<Item = &ForallPred> {
         self.forall_pred_vars.iter()
+    }
+
+    pub fn add_law(&mut self, pred: ForallPred, law: Formula<TermVarIdx>) {
+        self.laws.entry(pred).or_default().push(law);
+    }
+
+    pub fn laws_of(&self, pred: &ForallPred) -> &[Formula<TermVarIdx>] {
+        self.laws.get(pred).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    /// The forall predicates a clause depends on: those its atoms name and those
+    /// named by the definitions of the user-defined predicates it calls, through
+    /// any chain of such calls.
+    fn forall_preds_reachable_from(&self, clause: &Clause) -> BTreeSet<ForallPred> {
+        let mut preds = BTreeSet::new();
+        let mut pending_defs: Vec<&UserDefinedPred> = Vec::new();
+        for atom in clause
+            .body
+            .iter_atoms()
+            .chain(std::iter::once(&clause.head))
+        {
+            match &atom.pred {
+                Pred::ForallPred(p) => {
+                    preds.insert(p.clone());
+                }
+                Pred::UserDefined(p) => pending_defs.push(p),
+                _ => {}
+            }
+        }
+        let mut seen_defs: HashSet<&UserDefinedPred> = HashSet::new();
+        while let Some(symbol) = pending_defs.pop() {
+            if !seen_defs.insert(symbol) {
+                continue;
+            }
+            for def in self
+                .user_defined_pred_defs
+                .iter()
+                .filter(|d| &d.symbol == symbol)
+            {
+                preds.extend(def.dependencies.iter().cloned());
+                if let UserDefinedPredBody::Formula(formula) = &def.body {
+                    for atom in formula.iter_atoms() {
+                        match &atom.pred {
+                            Pred::ForallPred(p) => {
+                                preds.insert(p.clone());
+                            }
+                            Pred::UserDefined(p) => pending_defs.push(p),
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+        preds
+    }
+
+    /// Adds the laws of every forall predicate a clause depends on to that
+    /// clause's body. A law is universal in every clause, so it cannot be a
+    /// top-level assertion; as a premise it reads "for every interpretation
+    /// satisfying the law", which is what a law means. Call after
+    /// [`Self::populate_user_defined_pred_dependencies`].
+    pub fn insert_law_premises(&mut self) {
+        if self.laws.is_empty() {
+            return;
+        }
+        let premises: Vec<Vec<Formula<TermVarIdx>>> = self
+            .clauses
+            .iter()
+            .map(|clause| {
+                self.forall_preds_reachable_from(clause)
+                    .iter()
+                    .flat_map(|pred| self.laws_of(pred).iter().cloned())
+                    .collect()
+            })
+            .collect();
+        for (clause, laws) in self.clauses.iter_mut().zip(premises) {
+            for law in laws {
+                let formula = std::mem::take(&mut clause.body.formula);
+                clause.body.formula = law.and(formula);
+            }
+        }
     }
 
     pub fn new_forall_sort(&mut self, debug_info: DebugInfo) -> ForallSortIdx {
@@ -2733,7 +2818,10 @@ impl System {
     /// variables
     /// (see <https://github.com/coord-e/thrust?tab=readme-ov-file#configuration>).
     pub fn solve(&self) -> Result<(), CheckSatError> {
-        let mut system = unbox(self.clone());
+        let mut system = self.clone();
+        system.populate_user_defined_pred_dependencies();
+        system.insert_law_premises();
+        let mut system = unbox(system);
         system.populate_user_defined_pred_dependencies();
         if let Ok(file) = std::env::var("THRUST_PRETTY_OUTPUT") {
             let mut f = std::fs::File::create(file).unwrap();

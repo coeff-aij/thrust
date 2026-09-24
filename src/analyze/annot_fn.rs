@@ -1134,6 +1134,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                                         pred.clone(),
                                         def_id,
                                         generic_args,
+                                        self.type_builder.owner_fn_id(),
                                     );
                                     pred.into()
                                 }

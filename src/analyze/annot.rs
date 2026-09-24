@@ -26,6 +26,10 @@ pub fn predicate_path() -> [Symbol; 2] {
     [Symbol::intern("thrust"), Symbol::intern("predicate")]
 }
 
+pub fn law_path() -> [Symbol; 2] {
+    [Symbol::intern("thrust"), Symbol::intern("law")]
+}
+
 pub fn ignored_path() -> [Symbol; 2] {
     [Symbol::intern("thrust"), Symbol::intern("ignored")]
 }

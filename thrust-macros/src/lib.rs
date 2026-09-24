@@ -112,6 +112,14 @@ pub fn predicate(_attr: TokenStream, item: TokenStream) -> TokenStream {
     spec::expand_predicate(item)
 }
 
+/// Marks a trait function as a law: its `requires`/`ensures` are assumed of every
+/// implementation wherever the trait's predicates are used through a type parameter, and
+/// each implementation proves them with an empty body.
+#[proc_macro_attribute]
+pub fn law(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    spec::expand_law(item)
+}
+
 #[proc_macro_attribute]
 pub fn requires(attr: TokenStream, item: TokenStream) -> TokenStream {
     spec::expand_requires(attr, item)
