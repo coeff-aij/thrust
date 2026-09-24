@@ -154,7 +154,8 @@ impl<'tcx> analyze::Analyzer<'tcx> {
                 .collect();
             let pre = fn_ty.precondition_formula(&args);
             let post = fn_ty.postcondition_formula(&args, chc::Term::tuple(vec![]));
-            let law = chc::Formula::forall(vars, pre.implies(post));
+            let mut law = chc::Formula::forall(vars, pre.implies(post));
+            law.simplify();
             tracing::debug!(?pred, ?law_def_id, "law stated");
             self.system.borrow_mut().add_law(pred.clone(), law);
         }
