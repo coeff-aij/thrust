@@ -148,6 +148,27 @@ impl BasicBlockType {
         });
     }
 
+    /// Adds `refinement` to the block's precondition, keeping what is there. On a block
+    /// built for inference that is the template's predicate variable, so a written
+    /// invariant then seeds inference instead of replacing it.
+    pub fn conjoin_precondition(&mut self, refinement: rty::Refinement<rty::FunctionParamIdx>) {
+        let last_param_idx = self.ty.params.last_index().unwrap();
+        let mapped = refinement.map_var(|v| {
+            if v == rty::RefinedTypeVar::Free(last_param_idx) {
+                rty::RefinedTypeVar::Value
+            } else {
+                v
+            }
+        });
+        self.ty
+            .params
+            .raw
+            .last_mut()
+            .unwrap()
+            .refinement
+            .push_conj(mapped);
+    }
+
     /// Inner function type of BasicBlockType contains extra parameters that carry original
     /// function parameter values. `truncate_outer_fn_params` removes these extra parameters
     /// to subtype output of [`BasicBlockType::to_function_ty`] against the function type.
