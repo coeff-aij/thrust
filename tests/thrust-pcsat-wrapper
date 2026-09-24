@@ -2,6 +2,24 @@
 
 COAR_IMAGE=${COAR_IMAGE:-ghcr.io/hiroshi-unno/coar:main}
 
+# At most THRUST_PCSAT_SLOTS containers at a time on this machine (default 2). PCSat's
+# validity checks run under wall-clock budgets, so a query that answers on an idle machine
+# times out when the test harness starts eight containers at once; the slots keep a sweep's
+# verdicts the same as a single run's.
+slots=${THRUST_PCSAT_SLOTS:-2}
+lock_dir=${TMPDIR:-/tmp}/thrust-pcsat-slots
+mkdir -p "$lock_dir"
+while :; do
+    for ((i = 0; i < slots; i++)); do
+        exec {slot_fd}<>"$lock_dir/slot.$i"
+        if flock -n "$slot_fd"; then
+            break 2
+        fi
+        exec {slot_fd}<&-
+    done
+    sleep 0.5
+done
+
 smt2=$(mktemp -p . --suffix .smt2)
 solver_out=$(mktemp)
 trap 'rm -f "$smt2" "$solver_out"' EXIT
