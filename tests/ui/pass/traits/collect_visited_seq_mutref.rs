@@ -6,9 +6,8 @@ use thrust_models::model::Mut;
 use thrust_models::model::{Int, Seq};
 use thrust_models::Model;
 
-// Creusot's `common.rs`/`range.rs` iterator spec plus a `FromIterator<i64> for Vec<i64>` collect.
-// A generic `impl<T> FromIterator<T> for Vec<T>` needs `Seq::singleton` at an abstract Item, which
-// the solver cannot yet synthesize a default element for; the impl here is `Vec<i64>`.
+// The `&mut` variant of `collect_visited_seq`: `collect(&mut self)` / `from_iter(iter: &mut I)`
+// and a concrete `FromIterator<i64> for Vec<i64>`, on Creusot's `common.rs`/`range.rs` spec.
 // Seq literals are bound before use (`t == s.push(i) ==> ..`): the solver rejects them as arguments.
 #[thrust_macros::context]
 trait Iterator
