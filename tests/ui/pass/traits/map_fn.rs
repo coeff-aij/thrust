@@ -1,5 +1,5 @@
 // FIXME: Unsat since `next` ensures `Self::invariant(!self)`: Map's invariant (closure pre for every item the inner iterator can step to now) is not inductive; preserving it needs a multi-step reachability relation in the trait (Creusot uses `produces` over sequences).
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:latest
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:develop-2493045c3
 use thrust_models::forall;
 
 #[thrust_macros::context]

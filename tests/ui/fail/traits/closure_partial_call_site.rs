@@ -1,6 +1,6 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -Aunused_parens -A unused-variables -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60 COAR_IMAGE=coar:latest
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60 COAR_IMAGE=coar:develop-2493045c3
 
 // The closure is narrower than what the call site can establish: `seeded` only
 // promises a positive seed, so a mapper undefined at 1 must be rejected there.

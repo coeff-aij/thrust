@@ -1,6 +1,6 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:latest
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:develop-2493045c3
 #[thrust_macros::requires(x > 0)]
 #[thrust_macros::ensures((result == x) && (result > 0))]
 fn pass_positive<T>(x: i32, _dummy: T) -> i32 {

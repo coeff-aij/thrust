@@ -1,6 +1,6 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:latest
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:develop-2493045c3
 // A closure that declares only `ensures`; its precondition stays inferred as a
 // predicate variable, so the caller has nothing to establish.
 #[thrust_macros::requires(thrust_macros::pre!(f(x)))]

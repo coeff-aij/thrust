@@ -2,7 +2,7 @@
 //@edition: 2024
 #![feature(new_range_api)]
 //@compile-flags: -Adead_code -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:latest
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:develop-2493045c3
 
 // Extracted from tests/ui/pass/traits/rustc-coroutine.rs (rustc's
 // rustc_abi::layout::coroutine::layout, adapted). Stage 7 of the
