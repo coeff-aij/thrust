@@ -108,7 +108,7 @@ where
     fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool {
         "(and
             (= (tuple_proj<a0-Int>.1 self_)
-               (+ (tuple_proj<a0-Int>.1 o) (tuple_proj<Array<Int-a1>-Int>.1 visited)))
+               (+ (tuple_proj<a0-Int>.1 o) (seq.len visited)))
             (q_produces_ee0fcd4f4ccedd1818561914c5c5c98<a0> (tuple_proj<a0-Int>.0 self_) visited (tuple_proj<a0-Int>.0 o)))";
         true
     }
@@ -183,13 +183,13 @@ where
     fn completed(&mut self) -> bool {
         "(and
             (= (tuple_proj<a2-Int>.1 (mut_final<Tuple<a2-Int>> self_)) 0)
-            (exists ((sa (Array Int a3)) (sl Int) (zj a2))
+            (exists ((sa (Seq a3)) (zj a2))
                 (and
-                    (<= 0 sl)
-                    (<= sl (tuple_proj<a2-Int>.1 (mut_current<Tuple<a2-Int>> self_)))
+                    (<= 0 (seq.len sa))
+                    (<= (seq.len sa) (tuple_proj<a2-Int>.1 (mut_current<Tuple<a2-Int>> self_)))
                     (q_produces_ee0fcd4f4ccedd1818561914c5c5c98<a2>
                         (tuple_proj<a2-Int>.0 (mut_current<Tuple<a2-Int>> self_))
-                        (tuple<Array<Int-a3>-Int> sa sl)
+                        sa
                         zj)
                     (q_completed_ee0fcd4f4ccedd181877f2dbee5a2d04<a2>
                         (mut<a2> zj (tuple_proj<a2-Int>.0 (mut_final<Tuple<a2-Int>> self_)))))))";
@@ -205,20 +205,20 @@ where
     fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool {
         "(or
             (and
-                (= (tuple_proj<Array<Int-a3>-Int>.1 visited) 0)
+                (= (seq.len visited) 0)
                 (= self_ o))
             (and
                 (= (tuple_proj<a2-Int>.1 o) 0)
-                (> (tuple_proj<Array<Int-a3>-Int>.1 visited) 0)
-                (exists ((ta (Array Int a3)) (tl Int))
+                (> (seq.len visited) 0)
+                (exists ((ta (Seq a3)))
                     (and
-                        (= tl (+ (tuple_proj<a2-Int>.1 self_) (tuple_proj<Array<Int-a3>-Int>.1 visited)))
+                        (= (seq.len ta) (+ (tuple_proj<a2-Int>.1 self_) (seq.len visited)))
                         (forall ((zk Int))
-                            (=> (and (<= (tuple_proj<a2-Int>.1 self_) zk) (< zk tl))
-                                (= (select ta zk)
-                                   (select (tuple_proj<Array<Int-a3>-Int>.0 visited)
+                            (=> (and (<= (tuple_proj<a2-Int>.1 self_) zk) (< zk (seq.len ta)))
+                                (= (seq.nth ta zk)
+                                   (seq.nth visited
                                            (- zk (tuple_proj<a2-Int>.1 self_))))))
-                        (q_produces_ee0fcd4f4ccedd1818561914c5c5c98<a2> (tuple_proj<a2-Int>.0 self_) (tuple<Array<Int-a3>-Int> ta tl) (tuple_proj<a2-Int>.0 o))))))";
+                        (q_produces_ee0fcd4f4ccedd1818561914c5c5c98<a2> (tuple_proj<a2-Int>.0 self_) ta (tuple_proj<a2-Int>.0 o))))))";
         true
     }
 }
@@ -275,13 +275,13 @@ impl Iterator for Range {
         "(and
             (= (tuple_proj<Int-Int>.1 self_) (tuple_proj<Int-Int>.1 o))
             (<= (tuple_proj<Int-Int>.0 self_) (tuple_proj<Int-Int>.0 o))
-            (=> (> (tuple_proj<Array<Int-Int>-Int>.1 visited) 0)
+            (=> (> (seq.len visited) 0)
                 (<= (tuple_proj<Int-Int>.0 o) (tuple_proj<Int-Int>.1 o)))
-            (= (tuple_proj<Array<Int-Int>-Int>.1 visited)
+            (= (seq.len visited)
                (- (tuple_proj<Int-Int>.0 o) (tuple_proj<Int-Int>.0 self_)))
             (forall ((zi Int))
-                (=> (and (<= 0 zi) (< zi (tuple_proj<Array<Int-Int>-Int>.1 visited)))
-                    (= (select (tuple_proj<Array<Int-Int>-Int>.0 visited) zi)
+                (=> (and (<= 0 zi) (< zi (seq.len visited)))
+                    (= (seq.nth visited zi)
                        (+ (tuple_proj<Int-Int>.0 self_) zi))))
         )";
         true

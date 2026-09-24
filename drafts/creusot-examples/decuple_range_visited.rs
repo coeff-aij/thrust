@@ -120,13 +120,13 @@ where
     fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool {
         "(and
         (= (tuple_proj<a0-a1>.1 self_) (tuple_proj<a0-a1>.1 o))
-        (exists ((sa (Array Int a5)) (sl Int))
+        (exists ((sa (Seq a5)))
             (and
-                (= sl (tuple_proj<Array<Int-a2>-Int>.1 visited))
-                (q_produces_f4da186d326a374066294f8cadcb7d04<a0> (tuple_proj<a0-a1>.0 self_) (tuple<Array<Int-a5>-Int> sa sl) (tuple_proj<a0-a1>.0 o))
+                (= (seq.len sa) (seq.len visited))
+                (q_produces_f4da186d326a374066294f8cadcb7d04<a0> (tuple_proj<a0-a1>.0 self_) sa (tuple_proj<a0-a1>.0 o))
                 (forall ((k Int))
-                    (=> (and (<= 0 k) (< k sl))
-                        (q_post_produces_refl_f4da186d326a3740800c641d1fc96e06<a1> (tuple_proj<a0-a1>.1 self_) (select sa k) (select (tuple_proj<Array<Int-a2>-Int>.0 visited) k)))))))";
+                    (=> (and (<= 0 k) (< k (seq.len sa)))
+                        (q_post_produces_refl_f4da186d326a3740800c641d1fc96e06<a1> (tuple_proj<a0-a1>.1 self_) (seq.nth sa k) (seq.nth visited k)))))))";
         true
     }
     #[thrust_macros::predicate]
@@ -190,13 +190,13 @@ impl Iterator for Range {
         "(and
             (= (tuple_proj<Int-Int>.1 self_) (tuple_proj<Int-Int>.1 o))
             (<= (tuple_proj<Int-Int>.0 self_) (tuple_proj<Int-Int>.0 o))
-            (=> (> (tuple_proj<Array<Int-Int>-Int>.1 visited) 0)
+            (=> (> (seq.len visited) 0)
                 (<= (tuple_proj<Int-Int>.0 o) (tuple_proj<Int-Int>.1 o)))
-            (= (tuple_proj<Array<Int-Int>-Int>.1 visited)
+            (= (seq.len visited)
                (- (tuple_proj<Int-Int>.0 o) (tuple_proj<Int-Int>.0 self_)))
             (forall ((zi Int))
-                (=> (and (<= 0 zi) (< zi (tuple_proj<Array<Int-Int>-Int>.1 visited)))
-                    (= (select (tuple_proj<Array<Int-Int>-Int>.0 visited) zi)
+                (=> (and (<= 0 zi) (< zi (seq.len visited)))
+                    (= (seq.nth visited zi)
                        (+ (tuple_proj<Int-Int>.0 self_) zi))))
         )";
         true

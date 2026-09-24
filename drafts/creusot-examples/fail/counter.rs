@@ -86,20 +86,20 @@ where
     //        && pre!(self.func(e1, h)) && post!(self.func(e1, h), b) ==> pre!(self.func(e2, h.push(e1))))
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
-        "(and (q_invariant_70773323ab54f8f52546ff7eb9bf2990<a0> (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.0 self_)) (forall ((e Int)) (=> (q_produces1_70773323ab54f8f5ebeed520b2c74355<a0> (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.0 self_) e) (q_pre_next_70773323ab54f8f5e0f0df431c6ab55<a1> (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.1 self_) e (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.2 self_)))) (forall ((harr (Array Int Int)) (hlen Int) (e1 Int) (e2 Int) (b Int) (g a1) (g2 a1))
-            (=> (and (q_produces1_70773323ab54f8f5ebeed520b2c74355<a0> (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.0 self_) e1) (q_produces1_70773323ab54f8f5ebeed520b2c74355<a0> (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.0 self_) e2)
-                     (q_pre_next_70773323ab54f8f5e0f0df431c6ab55<a1> g e1 (tuple<Array<Int-Int>-Int> harr hlen))
-                     (q_post_next_70773323ab54f8f5e0f0df431c6ab55<a1> (mut<a1> g g2) e1 (tuple<Array<Int-Int>-Int> harr hlen) b))
-                (q_pre_next_70773323ab54f8f5e0f0df431c6ab55<a1> g2 e2 (tuple<Array<Int-Int>-Int> (store harr hlen e1) (+ hlen 1))))))";
+        "(and (q_invariant_70773323ab54f8f52546ff7eb9bf2990<a0> (tuple_proj<a0-a1-Seq<Int>>.0 self_)) (forall ((e Int)) (=> (q_produces1_70773323ab54f8f5ebeed520b2c74355<a0> (tuple_proj<a0-a1-Seq<Int>>.0 self_) e) (q_pre_next_70773323ab54f8f5e0f0df431c6ab55<a1> (tuple_proj<a0-a1-Seq<Int>>.1 self_) e (tuple_proj<a0-a1-Seq<Int>>.2 self_)))) (forall ((harr (Seq Int)) (e1 Int) (e2 Int) (b Int) (g a1) (g2 a1))
+            (=> (and (q_produces1_70773323ab54f8f5ebeed520b2c74355<a0> (tuple_proj<a0-a1-Seq<Int>>.0 self_) e1) (q_produces1_70773323ab54f8f5ebeed520b2c74355<a0> (tuple_proj<a0-a1-Seq<Int>>.0 self_) e2)
+                     (q_pre_next_70773323ab54f8f5e0f0df431c6ab55<a1> g e1 harr)
+                     (q_post_next_70773323ab54f8f5e0f0df431c6ab55<a1> (mut<a1> g g2) e1 harr b))
+                (q_pre_next_70773323ab54f8f5e0f0df431c6ab55<a1> g2 e2 (seq.++ harr (seq.unit e1))))))";
         true
     }
 
     // self.iter.completed() && *self.func == !self.func && *self.produced == !self.produced
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
-        "(and (q_completed_70773323ab54f8f530f1c291ef06cef3<a0> (mut<a0> (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.0 (mut_current<Tuple<a0-a1-Tuple<Array<Int-Int>-Int>>> self_)) (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.0 (mut_final<Tuple<a0-a1-Tuple<Array<Int-Int>-Int>>> self_))))
-            (= (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.1 (mut_current<Tuple<a0-a1-Tuple<Array<Int-Int>-Int>>> self_)) (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.1 (mut_final<Tuple<a0-a1-Tuple<Array<Int-Int>-Int>>> self_)))
-            (= (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.2 (mut_current<Tuple<a0-a1-Tuple<Array<Int-Int>-Int>>> self_)) (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.2 (mut_final<Tuple<a0-a1-Tuple<Array<Int-Int>-Int>>> self_))))";
+        "(and (q_completed_70773323ab54f8f530f1c291ef06cef3<a0> (mut<a0> (tuple_proj<a0-a1-Seq<Int>>.0 (mut_current<Tuple<a0-a1-Seq<Int>>> self_)) (tuple_proj<a0-a1-Seq<Int>>.0 (mut_final<Tuple<a0-a1-Seq<Int>>> self_))))
+            (= (tuple_proj<a0-a1-Seq<Int>>.1 (mut_current<Tuple<a0-a1-Seq<Int>>> self_)) (tuple_proj<a0-a1-Seq<Int>>.1 (mut_final<Tuple<a0-a1-Seq<Int>>> self_)))
+            (= (tuple_proj<a0-a1-Seq<Int>>.2 (mut_current<Tuple<a0-a1-Seq<Int>>> self_)) (tuple_proj<a0-a1-Seq<Int>>.2 (mut_final<Tuple<a0-a1-Seq<Int>>> self_))))";
         true
     }
 
@@ -109,18 +109,18 @@ where
     #[thrust_macros::predicate]
     fn step(self, item: Self::Item, dist: Self) -> bool {
         "(exists ((i Int))
-        (and (q_step_70773323ab54f8f5ad42ca680bcd726f<a0> (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.0 self_) i (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.0 dist))
-             (q_pre_next_70773323ab54f8f5e0f0df431c6ab55<a1> (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.1 self_) i (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.2 self_))
-             (q_post_next_70773323ab54f8f5e0f0df431c6ab55<a1> (mut<a1> (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.1 self_) (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.1 dist)) i (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.2 self_) item)
-             (= (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.2 dist) (tuple<Array<Int-Int>-Int> (store (tuple_proj<Array<Int-Int>-Int>.0 (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.2 self_)) (tuple_proj<Array<Int-Int>-Int>.1 (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.2 self_)) i) (+ (tuple_proj<Array<Int-Int>-Int>.1 (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.2 self_)) 1)))))";
+        (and (q_step_70773323ab54f8f5ad42ca680bcd726f<a0> (tuple_proj<a0-a1-Seq<Int>>.0 self_) i (tuple_proj<a0-a1-Seq<Int>>.0 dist))
+             (q_pre_next_70773323ab54f8f5e0f0df431c6ab55<a1> (tuple_proj<a0-a1-Seq<Int>>.1 self_) i (tuple_proj<a0-a1-Seq<Int>>.2 self_))
+             (q_post_next_70773323ab54f8f5e0f0df431c6ab55<a1> (mut<a1> (tuple_proj<a0-a1-Seq<Int>>.1 self_) (tuple_proj<a0-a1-Seq<Int>>.1 dist)) i (tuple_proj<a0-a1-Seq<Int>>.2 self_) item)
+             (= (tuple_proj<a0-a1-Seq<Int>>.2 dist) (seq.++ (tuple_proj<a0-a1-Seq<Int>>.2 self_) (seq.unit i)))))";
         true
     }
 
     // exists(|j| self.iter.produces1(j) && pre!(self.func(j, self.produced)) && post!(self.func(j, self.produced), item))
     #[thrust_macros::predicate]
     fn produces1(self, item: Self::Item) -> bool {
-        "(exists ((j Int) (harr (Array Int Int)) (hlen Int) (g a1) (g2 a1))
-        (and (q_produces1_70773323ab54f8f5ebeed520b2c74355<a0> (tuple_proj<a0-a1-Tuple<Array<Int-Int>-Int>>.0 self_) j) (q_pre_next_70773323ab54f8f5e0f0df431c6ab55<a1> g j (tuple<Array<Int-Int>-Int> harr hlen)) (q_post_next_70773323ab54f8f5e0f0df431c6ab55<a1> (mut<a1> g g2) j (tuple<Array<Int-Int>-Int> harr hlen) item)))";
+        "(exists ((j Int) (harr (Seq Int)) (g a1) (g2 a1))
+        (and (q_produces1_70773323ab54f8f5ebeed520b2c74355<a0> (tuple_proj<a0-a1-Seq<Int>>.0 self_) j) (q_pre_next_70773323ab54f8f5e0f0df431c6ab55<a1> g j harr) (q_post_next_70773323ab54f8f5e0f0df431c6ab55<a1> (mut<a1> g g2) j harr item)))";
         true
     }
 }

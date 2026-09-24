@@ -55,7 +55,7 @@ impl Iterator for std::vec::IntoIter<i64> {
     // 0 <= self.1 (not `self.1 <= self.0.len()`: the Vec model does not know `len() >= 0`)
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
-        "(<= 0 (tuple_proj<Tuple<Array<Int-Int>-Int>-Int>.1 self_))";
+        "(<= 0 (tuple_proj<Seq<Int>-Int>.1 self_))";
         true
     }
 
@@ -63,9 +63,9 @@ impl Iterator for std::vec::IntoIter<i64> {
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
         "(and
-            (= (mut_current<Tuple<Tuple<Array<Int-Int>-Int>-Int>> self_) (mut_final<Tuple<Tuple<Array<Int-Int>-Int>-Int>> self_))
-            (>= (tuple_proj<Tuple<Array<Int-Int>-Int>-Int>.1 (mut_current<Tuple<Tuple<Array<Int-Int>-Int>-Int>> self_))
-                (tuple_proj<Array<Int-Int>-Int>.1 (tuple_proj<Tuple<Array<Int-Int>-Int>-Int>.0 (mut_current<Tuple<Tuple<Array<Int-Int>-Int>-Int>> self_)))))";
+            (= (mut_current<Tuple<Seq<Int>-Int>> self_) (mut_final<Tuple<Seq<Int>-Int>> self_))
+            (>= (tuple_proj<Seq<Int>-Int>.1 (mut_current<Tuple<Seq<Int>-Int>> self_))
+                (seq.len (tuple_proj<Seq<Int>-Int>.0 (mut_current<Tuple<Seq<Int>-Int>> self_)))))";
         true
     }
 
@@ -75,18 +75,18 @@ impl Iterator for std::vec::IntoIter<i64> {
     #[thrust_macros::predicate]
     fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool {
         "(and
-            (= (tuple_proj<Tuple<Array<Int-Int>-Int>-Int>.0 self_) (tuple_proj<Tuple<Array<Int-Int>-Int>-Int>.0 o))
-            (<= (tuple_proj<Tuple<Array<Int-Int>-Int>-Int>.1 self_) (tuple_proj<Tuple<Array<Int-Int>-Int>-Int>.1 o))
-            (=> (> (tuple_proj<Array<Int-Int>-Int>.1 visited) 0)
-                (<= (tuple_proj<Tuple<Array<Int-Int>-Int>-Int>.1 o)
-                    (tuple_proj<Array<Int-Int>-Int>.1 (tuple_proj<Tuple<Array<Int-Int>-Int>-Int>.0 o))))
-            (= (tuple_proj<Array<Int-Int>-Int>.1 visited)
-               (- (tuple_proj<Tuple<Array<Int-Int>-Int>-Int>.1 o) (tuple_proj<Tuple<Array<Int-Int>-Int>-Int>.1 self_)))
+            (= (tuple_proj<Seq<Int>-Int>.0 self_) (tuple_proj<Seq<Int>-Int>.0 o))
+            (<= (tuple_proj<Seq<Int>-Int>.1 self_) (tuple_proj<Seq<Int>-Int>.1 o))
+            (=> (> (seq.len visited) 0)
+                (<= (tuple_proj<Seq<Int>-Int>.1 o)
+                    (seq.len (tuple_proj<Seq<Int>-Int>.0 o))))
+            (= (seq.len visited)
+               (- (tuple_proj<Seq<Int>-Int>.1 o) (tuple_proj<Seq<Int>-Int>.1 self_)))
             (forall ((zk Int))
-                (=> (and (<= 0 zk) (< zk (tuple_proj<Array<Int-Int>-Int>.1 visited)))
-                    (= (select (tuple_proj<Array<Int-Int>-Int>.0 visited) zk)
-                       (select (tuple_proj<Array<Int-Int>-Int>.0 (tuple_proj<Tuple<Array<Int-Int>-Int>-Int>.0 self_))
-                               (+ (tuple_proj<Tuple<Array<Int-Int>-Int>-Int>.1 self_) zk))))))";
+                (=> (and (<= 0 zk) (< zk (seq.len visited)))
+                    (= (seq.nth visited zk)
+                       (seq.nth (tuple_proj<Seq<Int>-Int>.0 self_)
+                               (+ (tuple_proj<Seq<Int>-Int>.1 self_) zk))))))";
         true
     }
 }

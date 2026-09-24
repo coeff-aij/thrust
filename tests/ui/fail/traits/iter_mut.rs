@@ -58,10 +58,10 @@ where
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
         "(and
-            (<= 0 (tuple_proj<Tuple<Array<Int-a0>-Int>-Tuple<Array<Int-a0>-Int>-Int>.2 self_))
-            (<= (tuple_proj<Tuple<Array<Int-a0>-Int>-Tuple<Array<Int-a0>-Int>-Int>.2 self_)
-                (tuple_proj<Array<Int-a0>-Int>.1
-                    (tuple_proj<Tuple<Array<Int-a0>-Int>-Tuple<Array<Int-a0>-Int>-Int>.0 self_))))";
+            (<= 0 (tuple_proj<Seq<a0>-Seq<a0>-Int>.2 self_))
+            (<= (tuple_proj<Seq<a0>-Seq<a0>-Int>.2 self_)
+                (seq.len
+                    (tuple_proj<Seq<a0>-Seq<a0>-Int>.0 self_))))";
         true
     }
 
@@ -69,13 +69,13 @@ where
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
         "(and
-            (>= (tuple_proj<Tuple<Array<Int-a0>-Int>-Tuple<Array<Int-a0>-Int>-Int>.2
-                    (mut_current<Tuple<Tuple<Array<Int-a0>-Int>-Tuple<Array<Int-a0>-Int>-Int>> self_))
-                (tuple_proj<Array<Int-a0>-Int>.1
-                    (tuple_proj<Tuple<Array<Int-a0>-Int>-Tuple<Array<Int-a0>-Int>-Int>.0
-                        (mut_current<Tuple<Tuple<Array<Int-a0>-Int>-Tuple<Array<Int-a0>-Int>-Int>> self_))))
-            (= (mut_current<Tuple<Tuple<Array<Int-a0>-Int>-Tuple<Array<Int-a0>-Int>-Int>> self_)
-               (mut_final<Tuple<Tuple<Array<Int-a0>-Int>-Tuple<Array<Int-a0>-Int>-Int>> self_)))";
+            (>= (tuple_proj<Seq<a0>-Seq<a0>-Int>.2
+                    (mut_current<Tuple<Seq<a0>-Seq<a0>-Int>> self_))
+                (seq.len
+                    (tuple_proj<Seq<a0>-Seq<a0>-Int>.0
+                        (mut_current<Tuple<Seq<a0>-Seq<a0>-Int>> self_))))
+            (= (mut_current<Tuple<Seq<a0>-Seq<a0>-Int>> self_)
+               (mut_final<Tuple<Seq<a0>-Seq<a0>-Int>> self_)))";
         true
     }
 
@@ -85,22 +85,20 @@ where
     #[thrust_macros::predicate]
     fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool {
         "(and
-            (= (tuple_proj<Tuple<Array<Int-a0>-Int>-Tuple<Array<Int-a0>-Int>-Int>.0 o)
-               (tuple_proj<Tuple<Array<Int-a0>-Int>-Tuple<Array<Int-a0>-Int>-Int>.0 self_))
-            (= (tuple_proj<Tuple<Array<Int-a0>-Int>-Tuple<Array<Int-a0>-Int>-Int>.1 o)
-               (tuple_proj<Tuple<Array<Int-a0>-Int>-Tuple<Array<Int-a0>-Int>-Int>.1 self_))
-            (= (tuple_proj<Tuple<Array<Int-a0>-Int>-Tuple<Array<Int-a0>-Int>-Int>.2 o)
-               (+ (tuple_proj<Tuple<Array<Int-a0>-Int>-Tuple<Array<Int-a0>-Int>-Int>.2 self_)
-                  (tuple_proj<Array<Int-Mut<a0>>-Int>.1 visited)))
+            (= (tuple_proj<Seq<a0>-Seq<a0>-Int>.0 o)
+               (tuple_proj<Seq<a0>-Seq<a0>-Int>.0 self_))
+            (= (tuple_proj<Seq<a0>-Seq<a0>-Int>.1 o)
+               (tuple_proj<Seq<a0>-Seq<a0>-Int>.1 self_))
+            (= (tuple_proj<Seq<a0>-Seq<a0>-Int>.2 o)
+               (+ (tuple_proj<Seq<a0>-Seq<a0>-Int>.2 self_)
+                  (seq.len visited)))
             (forall ((k Int))
-                (=> (and (<= 0 k) (< k (tuple_proj<Array<Int-Mut<a0>>-Int>.1 visited)))
-                    (= (select (tuple_proj<Array<Int-Mut<a0>>-Int>.0 visited) k)
+                (=> (and (<= 0 k) (< k (seq.len visited)))
+                    (= (seq.nth visited k)
                        (mut<a0>
-                           (select (tuple_proj<Array<Int-a0>-Int>.0
-                                       (tuple_proj<Tuple<Array<Int-a0>-Int>-Tuple<Array<Int-a0>-Int>-Int>.0 self_))
+                           (seq.nth (tuple_proj<Seq<a0>-Seq<a0>-Int>.0 self_)
                                    k)
-                           (select (tuple_proj<Array<Int-a0>-Int>.0
-                                       (tuple_proj<Tuple<Array<Int-a0>-Int>-Tuple<Array<Int-a0>-Int>-Int>.1 self_))
+                           (seq.nth (tuple_proj<Seq<a0>-Seq<a0>-Int>.1 self_)
                                    k))))))";
         true
     }
