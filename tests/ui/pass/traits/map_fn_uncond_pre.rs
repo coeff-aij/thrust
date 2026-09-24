@@ -59,7 +59,7 @@ where <I as thrust_models::Model>::Ty: PartialEq
         "(and
             (q_invariant_597ac4b22488a2bc34d254b9ac53a96e<a0> (tuple_proj<a0-a1>.0 self_))
             (forall ((i a3))
-                (q_pre_next_597ac4b22488a2bc3015b2bc3056d418<a1>
+                (q_pre_F_597ac4b22488a2bc3546143568fc8705<a1>
                     (tuple_proj<a0-a1>.1 self_)
                     i
                 )
@@ -97,11 +97,11 @@ where <I as thrust_models::Model>::Ty: PartialEq
                     i
                     (tuple_proj<a0-a1>.0 dist)
                 )
-                (q_pre_next_597ac4b22488a2bc3015b2bc3056d418<a1>
+                (q_pre_F_597ac4b22488a2bc3546143568fc8705<a1>
                     (tuple_proj<a0-a1>.1 self_)
                     i
                 )
-                (q_post_next_597ac4b22488a2bc3015b2bc3056d418<a1>
+                (q_post_F_597ac4b22488a2bc3546143568fc8705<a1>
                     (tuple_proj<a0-a1>.1 self_)
                     i
                     item

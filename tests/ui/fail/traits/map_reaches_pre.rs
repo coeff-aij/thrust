@@ -119,7 +119,7 @@ impl<F: Fn(i64) -> i64> Iterator for Map<F> {
                         (< (tuple_proj<Int-Int>.0 (tuple_proj<Tuple<Int-Int>-a0>.0 self_)) e)
                         (< e (tuple_proj<Int-Int>.1 (tuple_proj<Tuple<Int-Int>-a0>.0 self_)))
                     )
-                    (q_pre_next_d12f2014f51a8bc8febe2115a8ed8d4<a0> (tuple_proj<Tuple<Int-Int>-a0>.1 self_) e)
+                    (q_pre_F_d12f2014f51a8bc85f1f69b32dcf4fec<a0> (tuple_proj<Tuple<Int-Int>-a0>.1 self_) e)
                 )
             )
         )";
@@ -155,8 +155,8 @@ impl<F: Fn(i64) -> i64> Iterator for Map<F> {
                     i
                     (tuple_proj<Tuple<Int-Int>-a0>.0 dist)
                 )
-                (q_pre_next_d12f2014f51a8bc8febe2115a8ed8d4<a0> (tuple_proj<Tuple<Int-Int>-a0>.1 self_) i)
-                (q_post_next_d12f2014f51a8bc8febe2115a8ed8d4<a0> (tuple_proj<Tuple<Int-Int>-a0>.1 self_) i item)
+                (q_pre_F_d12f2014f51a8bc85f1f69b32dcf4fec<a0> (tuple_proj<Tuple<Int-Int>-a0>.1 self_) i)
+                (q_post_F_d12f2014f51a8bc85f1f69b32dcf4fec<a0> (tuple_proj<Tuple<Int-Int>-a0>.1 self_) i item)
                 (=
                     (tuple_proj<Tuple<Int-Int>-a0>.1 self_)
                     (tuple_proj<Tuple<Int-Int>-a0>.1 dist)
