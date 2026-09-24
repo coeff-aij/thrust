@@ -21,13 +21,13 @@ where
 }
 
 #[thrust_macros::context]
-#[thrust_macros::ensures(result == (*v).length)]
+#[thrust_macros::ensures(result == (*v).len())]
 fn size(v: &IndexVec<Idx, i64>) -> usize {
     v.raw.len() + 1
 }
 
 #[thrust_macros::context]
-#[thrust_macros::ensures(result.length == raw.length)]
+#[thrust_macros::ensures(result.len() == raw.len())]
 fn wrap(raw: Vec<i64>) -> IndexVec<Idx, i64> {
     IndexVec {
         raw,
@@ -36,7 +36,7 @@ fn wrap(raw: Vec<i64>) -> IndexVec<Idx, i64> {
 }
 
 #[thrust_macros::context]
-#[thrust_macros::ensures((!v).length == (*v).length + 1)]
+#[thrust_macros::ensures((!v).len() == (*v).len() + 1)]
 fn push(v: &mut IndexVec<Idx, i64>, x: i64) {
     v.raw.push(x);
 }
