@@ -1,4 +1,4 @@
-//@check-pass
+//@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60 COAR_IMAGE=coar:integration-planned-fixes
 use thrust_models::model::{Int, Seq};
@@ -104,12 +104,12 @@ where
         true
     }
 
-    // (!self).n == 0
+    // (!self).n == 1
     // && exists s j. s.len() <= (*self).n && (*self).iter.produces(s, j) && I::completed(Mut::new(j, (!self).iter))
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
         "(and
-            (= (tuple_proj<a0-Int>.1 (mut_final<Tuple<a0-Int>> self_)) 0)
+            (= (tuple_proj<a0-Int>.1 (mut_final<Tuple<a0-Int>> self_)) 1)
             (exists ((sa (Array Int a1)) (sl Int) (zj a0))
                 (and
                     (<= 0 sl)
