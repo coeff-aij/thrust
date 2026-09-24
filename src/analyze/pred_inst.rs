@@ -113,23 +113,28 @@ impl<'tcx> analyze::Analyzer<'tcx> {
 
     /// Emits every predicate definition requested during analysis, and every one
     /// those definitions request in turn.
+    ///
+    /// A definition is emitted after every instance its body refers to, since
+    /// the solver reads a `define-fun` only against what precedes it: the
+    /// requests are drained depth-first and each definition is pushed once its
+    /// own requests are. Requests that do not depend on one another keep the
+    /// order they were made in.
     pub fn emit_pending_pred_instances(&mut self) {
         let mut seen = HashSet::new();
-        loop {
-            let pending: Vec<_> = std::mem::take(&mut *self.pending_pred_instances.borrow_mut());
-            if pending.is_empty() {
-                break;
-            }
-            for request in pending {
-                if !seen.insert(request) {
-                    continue;
-                }
-                self.emit_pred_instance(request);
-            }
+        let mut in_progress = Vec::new();
+        let pending: Vec<_> = std::mem::take(&mut *self.pending_pred_instances.borrow_mut());
+        for request in pending {
+            self.emit_pred_instance(request, &mut seen, &mut in_progress);
         }
+        assert!(self.pending_pred_instances.borrow().is_empty());
     }
 
-    fn emit_pred_instance(&mut self, request: PendingPredInstance<'tcx>) {
+    fn emit_pred_instance(
+        &mut self,
+        request: PendingPredInstance<'tcx>,
+        seen: &mut HashSet<PendingPredInstance<'tcx>>,
+        in_progress: &mut Vec<chc::UserDefinedPred>,
+    ) {
         let PendingPredInstance {
             pred_def_id,
             generic_args,
@@ -140,7 +145,15 @@ impl<'tcx> analyze::Analyzer<'tcx> {
             return;
         };
         let symbol = refine::user_defined_pred_at_instance(self.tcx(), pred_def_id, instance);
-        if self.system.borrow().is_pred_defined(&symbol) {
+        if let Some(start) = in_progress.iter().position(|s| s == &symbol) {
+            let cycle: Vec<_> = in_progress[start..].iter().map(|s| s.to_string()).collect();
+            panic!(
+                "predicate instances refer to each other in a cycle, which no order of \
+                 `define-fun`s can state: {} -> {symbol}",
+                cycle.join(" -> "),
+            );
+        }
+        if !seen.insert(request) || self.system.borrow().is_pred_defined(&symbol) {
             return;
         }
 
@@ -153,6 +166,13 @@ impl<'tcx> analyze::Analyzer<'tcx> {
 
         let sort_subst = self.forall_sort_substitution(pred_def_id, generic_args, owner_fn_id);
         let body = self.substitute_forall_preds(&body, &sort_subst, generic_args, owner_fn_id);
+
+        in_progress.push(symbol.clone());
+        let referenced: Vec<_> = std::mem::take(&mut *self.pending_pred_instances.borrow_mut());
+        for dependency in referenced {
+            self.emit_pred_instance(dependency, seen, in_progress);
+        }
+        in_progress.pop();
 
         self.system.borrow_mut().push_pred_define_at_instance(
             symbol,
