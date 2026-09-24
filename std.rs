@@ -53,6 +53,24 @@ mod thrust_models {
             }
         }
 
+        impl<T> std::ops::Div<T> for Int where T: super::Model<Ty = Self> {
+            type Output = Self;
+
+            #[thrust::ignored]
+            fn div(self, _rhs: T) -> Self::Output {
+                unimplemented!()
+            }
+        }
+
+        impl<T> std::ops::Rem<T> for Int where T: super::Model<Ty = Self> {
+            type Output = Self;
+
+            #[thrust::ignored]
+            fn rem(self, _rhs: T) -> Self::Output {
+                unimplemented!()
+            }
+        }
+
         impl std::ops::Neg for Int {
             type Output = Self;
 
@@ -319,6 +337,24 @@ mod thrust_models {
 
                 #[thrust::ignored]
                 fn mul(self, _rhs: model::Int) -> Self::Output {
+                    unimplemented!()
+                }
+            }
+
+            impl std::ops::Div<model::Int> for $T {
+                type Output = model::Int;
+
+                #[thrust::ignored]
+                fn div(self, _rhs: model::Int) -> Self::Output {
+                    unimplemented!()
+                }
+            }
+
+            impl std::ops::Rem<model::Int> for $T {
+                type Output = model::Int;
+
+                #[thrust::ignored]
+                fn rem(self, _rhs: model::Int) -> Self::Output {
                     unimplemented!()
                 }
             }
