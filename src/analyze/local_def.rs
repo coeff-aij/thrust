@@ -1112,15 +1112,30 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 // the block type without a precondition pvar and install the
                 // invariant as its precondition. Multiple `invariant!` calls at
                 // the same header are AND'd in source order.
-                let mut bty = self
-                    .type_builder
-                    .build_basic_block(&self.body, live_locals, ret_ty);
+                //
+                // With `THRUST_INVARIANT_HINTS` set, the written invariant is
+                // instead a hint: the block keeps the template's predicate
+                // variable and the invariant is conjoined to it, so inference
+                // fills in what the annotation leaves out.
+                let hints = std::env::var_os("THRUST_INVARIANT_HINTS").is_some();
+                let mut bty = if hints {
+                    self.type_builder
+                        .for_template(&mut self.ctx)
+                        .build_basic_block(&self.body, live_locals, ret_ty)
+                } else {
+                    self.type_builder
+                        .build_basic_block(&self.body, live_locals, ret_ty)
+                };
                 let mut inv = rty::Refinement::top();
                 for &(formula_def_id, generic_args) in invariants {
                     let one = self.build_invariant_precondition(formula_def_id, generic_args, &bty);
                     inv.push_conj(one);
                 }
-                bty.set_precondition(inv);
+                if hints {
+                    bty.conjoin_precondition(inv);
+                } else {
+                    bty.set_precondition(inv);
+                }
                 self.ctx
                     .register_basic_block_ty_with_precondition(self.analysis_key(), bb, bty);
             } else if analyze::basic_block::needs_own_precondition(&self.body, bb) {
