@@ -415,6 +415,54 @@ impl<'tcx> TypeBuilder<'tcx> {
         ty
     }
 
+    /// Whether the field `field_idx` of the struct `ty` *is* the whole value in the logic, so
+    /// that reading it -- or building the struct out of it -- is the identity rather than a
+    /// projection.
+    ///
+    /// A struct whose `Model::Ty` is the model of one of its fields does not survive as a
+    /// struct here: [`build`](Self::build) resolves it to that model and the struct's own
+    /// fields are never traversed. A field access then has nothing to project out of, and the
+    /// field index would otherwise be read as an index into the model -- the first field of
+    /// `IndexVec { raw: Vec<T>, _marker: PhantomData<I> }` and the first component of the
+    /// `(elements, length)` pair its model is are both `0`, so `.raw` would silently come back
+    /// as the element array instead of the whole sequence.
+    ///
+    /// The two conditions are checked rather than declared, because the struct is user code
+    /// that cannot be marked -- unlike `Closure<T>` and `Ghost<T>`, which are lowered through
+    /// their content by an attribute. Checking also keeps the answer in step with the lowering
+    /// actually chosen: where the model cannot be resolved and the struct is traversed after
+    /// all, the field really is a projection and this says so.
+    pub fn is_transparent_field(&self, ty: mir_ty::Ty<'tcx>, field_idx: usize) -> bool {
+        let mir_ty::TyKind::Adt(def, args) = ty.kind() else {
+            return false;
+        };
+        if !def.is_struct() {
+            return false;
+        }
+        let fields: Vec<_> = def.all_fields().collect();
+        let Some(field) = fields.get(field_idx) else {
+            return false;
+        };
+
+        let model_sort = self.build(ty).to_sort();
+        if model_sort.is_singleton() {
+            return false;
+        }
+        if self.build(field.ty(self.tcx, args)).to_sort() != model_sort {
+            return false;
+        }
+
+        // Every other field has to be inert, or the struct would carry something the model
+        // does not and the identity would drop it.
+        fields.iter().enumerate().all(|(idx, other)| {
+            idx == field_idx
+                || self
+                    .build(other.ty(self.tcx, args))
+                    .to_sort()
+                    .is_singleton()
+        })
+    }
+
     // TODO: consolidate two impls
     fn model_adt(
         &self,
