@@ -1,14 +1,12 @@
 //@error-in-other-file: Unsat
-//@compile-flags: -C debug-assertions=off -A unused-variables -A unused_parens
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60 COAR_IMAGE=coar:develop-2493045c3
+//@compile-flags: -C debug-assertions=off -A unused-variables -A unused_parens -A dead_code
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 COAR_IMAGE=coar:develop-2493045c3
 
-// The paper's running example: a generic `Map` adapter (Rust-syntax predicate bodies, #114)
-// over a `Range` source, consumed by a generic `count` with a written loop invariant. The call
-// site's closure is defined on every value a `1..5` range can still produce, which is exactly
-// what `Map::invariant` requires at that instantiation. The companion file
-// `running_example_inferred.rs` carries the same `count` in isolation (no `Map`), with its loop
-// invariant inferred instead of written; composing the two, an inferred invariant over the
-// `Map`-wrapped call site, currently times out on this build.
+// The inferred-invariant half of the paper's running example (see `running_example.rs` for the
+// written-invariant, composed-with-`Map` half). `count` is generic over any `Iterator`, and its
+// loop invariant is inferred rather than written; verified here in isolation, over the abstract
+// `I`, with no call site (`Map` and `Range` are unused). Composing this inference with the
+// `Map`-wrapped call site of `running_example.rs` currently times out on this build.
 use thrust_models::model::{Closure, Mut};
 use thrust_models::{forall, Model};
 
@@ -92,16 +90,16 @@ where
         "(and
             (exists ((i a6))
                 (and
-                    (q_step_eea9e2afb6eaca40b1a4a543d69a876<a0>
+                    (q_step_80a678896b59f2fe43807b7a6c151bd<a0>
                         (tuple_proj<a0-a1>.0 self_)
                         i
                         (tuple_proj<a0-a1>.0 dist)
                     )
-                    (q_pre_next_eea9e2afb6eaca4011a8320e527efe68<a1>
+                    (q_pre_next_80a678896b59f2f8a00f12b3b2834c2<a1>
                         (tuple_proj<a0-a1>.1 self_)
                         i
                     )
-                    (q_post_next_eea9e2afb6eaca4011a8320e527efe68<a1>
+                    (q_post_next_80a678896b59f2f8a00f12b3b2834c2<a1>
                         (tuple_proj<a0-a1>.1 self_)
                         i
                         item
@@ -119,15 +117,15 @@ where
         //     && pre!(self.func(j)) && post!(self.func(j), item))
         "(exists ((j a6))
             (and
-                (q_produces_eea9e2afb6eaca4081fc747a03d38f0b<a0>
+                (q_produces_80a678896b59f2fe3bec549d2dd6563<a0>
                     (tuple_proj<a0-a1>.0 self_)
                     j
                 )
-                (q_pre_next_eea9e2afb6eaca4011a8320e527efe68<a1>
+                (q_pre_next_80a678896b59f2f8a00f12b3b2834c2<a1>
                     (tuple_proj<a0-a1>.1 self_)
                     j
                 )
-                (q_post_next_eea9e2afb6eaca4011a8320e527efe68<a1>
+                (q_post_next_80a678896b59f2f8a00f12b3b2834c2<a1>
                     (tuple_proj<a0-a1>.1 self_)
                     j
                     item
@@ -186,40 +184,21 @@ impl Iterator for Range {
     }
 }
 
-// A generic consumer over any `Iterator`, with a written loop invariant.
+// A generic consumer over any `Iterator`, with an inferred (not written) loop invariant.
 #[thrust_macros::context]
 #[thrust_macros::requires(I::invariant(*it))]
-#[thrust_macros::ensures(I::invariant(!it) && result >= 0)]
+#[thrust_macros::ensures(I::invariant(!it) && result > 0)]
 fn count<I: Iterator + thrust_models::Model>(it: &mut I) -> i64
 where
     I::Item: thrust_models::Model,
     <I::Item as thrust_models::Model>::Ty: PartialEq,
     <I as thrust_models::Model>::Ty: PartialEq,
 {
-    let b = it;
     let mut n = 0;
-    while let Some(_) = b.next() {
-        thrust_macros::invariant!(
-            |b: &mut I, n: i64, it: thrust_models::FnParam<&mut I>|
-            I::invariant(*b) && n >= 0 && !b == !it.at_entry()
-        );
+    while let Some(_) = it.next() {
         n += 1;
     }
     n
 }
 
-// The call site: the mapper is defined on every positive value, and every item a `1..5` range
-// can still produce is positive, so `Map`'s invariant holds at this instantiation.
-fn main() {
-    let f = thrust_macros::closure!(
-        requires(x > 1),
-        ensures(result == x + 1),
-        |x: i64| -> i64 { x + 1 },
-    );
-    let mut m = Map {
-        iter: Range { start: 1, end: 5 },
-        func: f,
-    };
-    let n = count(&mut m);
-    assert!(n >= 0);
-}
+fn main() {}
