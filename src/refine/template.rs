@@ -304,6 +304,23 @@ impl<'tcx> TypeBuilder<'tcx> {
             }
         }
 
+        // `<T as Model>::Ty` that rustc cannot normalize because `T` contains a
+        // projection that is stuck (an associated type of an instantiation that
+        // satisfies no impl, such as `<Map<Range, Closure<..>> as Iterator>::Item`
+        // where the closure model does not implement `Fn`). The model of `T` is
+        // what `build` computes structurally, so take it rather than standing a
+        // forall sort for the whole of `T`'s model: a `Seq<..>` binder would
+        // otherwise lose its sequence sort.
+        if Some(ty.def_id) == self.def_ids.model_ty() {
+            let modeled = ty.args.type_at(0);
+            tracing::debug!(
+                "alias projection {:#?} is the model of {:#?}; built structurally",
+                projection,
+                modeled
+            );
+            return self.build(modeled);
+        }
+
         let args: Vec<rty::Type<rty::Closed>> = ty.args.types().map(|t| self.build(t)).collect();
         let mut type_params = self.type_params.borrow_mut();
         tracing::debug!(?type_params);
@@ -376,18 +393,26 @@ impl<'tcx> TypeBuilder<'tcx> {
     }
 
     pub fn resolve_model_ty(&self, orig_ty: mir_ty::Ty<'tcx>) -> mir_ty::Ty<'tcx> {
-        let ty = self.replace_closure_model(orig_ty);
+        let replaced = self.replace_closure_model(orig_ty);
 
         let Some(model_ty_def_id) = self.def_ids.model_ty() else {
-            return ty;
+            return replaced;
         };
-        let args = self.tcx.mk_args(&[ty.into()]);
-        tracing::debug!("generic args are {:#?}.", args);
-        let projection_ty = mir_ty::Ty::new_projection(self.tcx, model_ty_def_id, args);
-        if let Ok(normalized_ty) = self
-            .tcx
-            .try_normalize_erasing_regions(self.typing_env, projection_ty)
-        {
+        // Normalize with the closure types intact first: an impl bound such as
+        // `F: Fn(..)` holds of the closure itself and not of its `Closure<..>`
+        // model, so a projection through such an impl (`<Map<Range, {closure}>
+        // as Iterator>::Item`) resolves only on the original type. The closure
+        // models are put in place on the result.
+        for ty in [orig_ty, replaced] {
+            let args = self.tcx.mk_args(&[ty.into()]);
+            tracing::debug!("generic args are {:#?}.", args);
+            let projection_ty = mir_ty::Ty::new_projection(self.tcx, model_ty_def_id, args);
+            let Ok(normalized_ty) = self
+                .tcx
+                .try_normalize_erasing_regions(self.typing_env, projection_ty)
+            else {
+                continue;
+            };
             tracing::debug!(
                 "the type {:#?} is normalized as the type {:#?}.",
                 orig_ty,
@@ -408,11 +433,15 @@ impl<'tcx> TypeBuilder<'tcx> {
                 }
             });
             if !stuck_on_ty {
-                return normalized_ty;
+                return self.replace_closure_model(normalized_ty);
             }
         }
-        tracing::debug!("the type {:#?} is replaced as the {:#?}.", orig_ty, ty);
-        ty
+        tracing::debug!(
+            "the type {:#?} is replaced as the {:#?}.",
+            orig_ty,
+            replaced
+        );
+        replaced
     }
 
     /// Whether the field `field_idx` of the struct `ty` *is* the whole value in the logic, so
@@ -839,9 +868,14 @@ impl<'tcx> TypeBuilder<'tcx> {
         let mut pre_params_sort = params_sort.clone();
         pre_params_sort[0] = pre_upvars_sort(pre_params_sort[0].clone(), closure_kind);
 
+        // The contract stands for the closure `param_ty` is instantiated with, so it
+        // is one symbol per type parameter: named after the parameter's own def id,
+        // which every method of an impl that declares `F` shares. Naming it after the
+        // method would give each method its own copy, and nothing would relate them.
+        let contract_owner = self.param_def_id(&param_ty);
         let pre_pred = refine::closure_pre_forall_pred(
             self.tcx,
-            self.owner_fn_id,
+            contract_owner,
             type_params.clone(),
             pre_params_sort,
         );
@@ -850,7 +884,7 @@ impl<'tcx> TypeBuilder<'tcx> {
             .register_forall_pred(pre_pred.clone());
         params_sort.push(ret_sort);
         let post_pred =
-            refine::closure_post_forall_pred(self.tcx, self.owner_fn_id, type_params, params_sort);
+            refine::closure_post_forall_pred(self.tcx, contract_owner, type_params, params_sort);
         self.system
             .borrow_mut()
             .register_forall_pred(post_pred.clone());

@@ -85,6 +85,12 @@ fn is_raw_smt2_body(block: &syn::Block) -> bool {
     })
 }
 
+pub fn expand_law(item: TokenStream) -> TokenStream {
+    let mut func = parse_macro_input!(item as FnItemWithSignature);
+    func.attrs_mut().push(syn::parse_quote!(#[thrust::law]));
+    func.into_token_stream().into()
+}
+
 pub fn expand_requires(attr: TokenStream, item: TokenStream) -> TokenStream {
     let expr = crate::formula::expand(attr.into());
     let mut func = parse_macro_input!(item as FnItemWithSignature);
