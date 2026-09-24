@@ -521,8 +521,9 @@ impl Function {
             Self::SEQ_LEN => Sort::int(),
             Self::SEQ_UNIT => Sort::seq(args.into_iter().next().unwrap()),
             Self::SEQ_NTH => {
-                let Sort::Seq(elem) = args.into_iter().next().unwrap() else {
-                    panic!("invalid SEQ_NTH sort");
+                let first = args.into_iter().next().unwrap();
+                let Sort::Seq(elem) = first else {
+                    panic!("invalid SEQ_NTH sort: {first:?}");
                 };
                 *elem
             }

@@ -304,6 +304,23 @@ impl<'tcx> TypeBuilder<'tcx> {
             }
         }
 
+        // `<T as Model>::Ty` that rustc cannot normalize because `T` contains a
+        // projection that is stuck (an associated type of an instantiation that
+        // satisfies no impl, such as `<Map<Range, Closure<..>> as Iterator>::Item`
+        // where the closure model does not implement `Fn`). The model of `T` is
+        // what `build` computes structurally, so take it rather than standing a
+        // forall sort for the whole of `T`'s model: a `Seq<..>` binder would
+        // otherwise lose its sequence sort.
+        if Some(ty.def_id) == self.def_ids.model_ty() {
+            let modeled = ty.args.type_at(0);
+            tracing::debug!(
+                "alias projection {:#?} is the model of {:#?}; built structurally",
+                projection,
+                modeled
+            );
+            return self.build(modeled);
+        }
+
         let args: Vec<rty::Type<rty::Closed>> = ty.args.types().map(|t| self.build(t)).collect();
         let mut type_params = self.type_params.borrow_mut();
         tracing::debug!(?type_params);
