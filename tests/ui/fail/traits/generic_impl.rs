@@ -24,7 +24,7 @@ where
 
     #[thrust_macros::predicate]
     fn valid(self, x: Self::Item) -> bool {
-        "true"; true
+        true
     }
 }
 
