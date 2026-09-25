@@ -92,7 +92,6 @@ impl<T: Idx> DenseBitSet<T> {
     // ensures clause that uses it below is marked accordingly.
     #[thrust_macros::predicate]
     fn elem_at(self, k: usize, l: T) -> bool {
-        "true";
         true
     }
 
@@ -354,13 +353,11 @@ impl Idx for usize {
     #[thrust_macros::predicate]
     fn index_is(self, i: usize) -> bool {
         // i == self
-        "(= i self_)";
-        true
+        i == self
     }
 
     #[thrust_macros::predicate]
     fn can_new(idx: usize) -> bool {
-        "true";
         true
     }
 
