@@ -39,8 +39,7 @@ impl<F: Fn(i64) -> i64> Seeded for S<F> {
 
     #[thrust_macros::predicate]
     fn seeded(s: Self::Seed) -> bool {
-        "(> s 0)";
-        true
+        s > 0
     }
 }
 
