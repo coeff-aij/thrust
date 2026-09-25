@@ -1,6 +1,8 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -Adead_code -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 COAR_IMAGE=coar:develop-2493045c3
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300 COAR_IMAGE=coar:develop-2493045c3
+// The refutation takes about 100 s on fptprove develop 2493045c3 (8 GB, 2 CPUs), so the
+// timeout leaves room above the 120 s of the other stage files.
 
 // Extracted from tests/ui/pass/traits/rustc-coroutine.rs (rustc's
 // rustc_index::bit_set and rustc_index::idx, adapted).
@@ -73,10 +75,23 @@ impl<T: Idx> DenseBitSet<T> {
         true
     }
 
+    /// The abstraction reads the word sequence as one entry per element, so
+    /// it holds `domain_size` entries. Under native sequences `seq.nth` and
+    /// `seq.store` are unspecified or no-ops outside `0..seq.len`, so without
+    /// this length the entries `mem` and `inserted` talk about need not exist.
+    #[thrust_macros::predicate]
+    fn one_entry_per_elem(self) -> bool {
+        // self.words.len() == self.domain_size
+        "(= (seq.len (tuple_proj<Int-Seq<Int>-Tuple>.1 self_))
+            (tuple_proj<Int-Seq<Int>-Tuple>.0 self_))";
+        true
+    }
+
     #[inline]
     #[thrust::trusted]
     #[thrust_macros::ensures(result.domain_size == domain_size)]
     #[thrust_macros::ensures(Self::no_mem(result))]
+    #[thrust_macros::ensures(Self::one_entry_per_elem(result))]
     pub fn new_empty(domain_size: usize) -> DenseBitSet<T> {
         let num_words = num_words(domain_size);
         DenseBitSet {
@@ -137,6 +152,7 @@ impl<T: Idx> DenseBitSet<T> {
 
     #[thrust::trusted]
     #[thrust_macros::ensures((!self).domain_size == (*self).domain_size)]
+    #[thrust_macros::ensures(Self::one_entry_per_elem(*self) ==> Self::one_entry_per_elem(!self))]
     #[thrust_macros::ensures(forall(|i: Int| i < (*self).domain_size ==> Self::mem(!self, i)))]
     pub fn insert_all(&mut self) {
         self.words.fill(!0);
