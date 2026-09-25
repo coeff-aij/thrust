@@ -190,17 +190,10 @@ pub struct BitIter<'a, T: Idx> {
     marker: PhantomData<T>,
 }
 
-// The bit bound below has to be written in raw SMT-LIB2: `self.iter.words`
-// has the slice type `&'a [Word]`, and both `BitIter` and `WordIter` model as
-// themselves, so in a `requires`/`ensures` -- compiled as an ordinary Rust
-// function -- the field keeps that Rust type and the `Seq` accessors are
-// rejected (`error[E0609]: no field `length` on type `[u64]``, likewise
-// `array`), while `.len()` reaches
-// `not implemented: unsupported method call in formula: ... len#0`
-// (src/analyze/annot_fn.rs:915). A `predicate` body must be a raw string
-// literal anyway, so these project the model tuples by hand:
-// `BitIter = (word, offset, iter, marker)` and `WordIter = (words, pos)`,
-// with `words = (array, length)`.
+// `BitIter` and `WordIter` model as themselves, and `self.iter.words` has the
+// slice type `&'a [Word]`, so its length is spelled through a deref,
+// `(*self.iter.words).len()`, and sequence equality as
+// `dist.iter.words == self.iter.words`.
 #[thrust_macros::context]
 impl<'a, T: Idx> BitIter<'a, T> {
     /// `n == self.iter.words.len() * WORD_BITS`: the number of bits the
@@ -210,16 +203,16 @@ impl<'a, T: Idx> BitIter<'a, T> {
     /// the wrapping `offset` arithmetic is not modelled.
     #[thrust_macros::predicate]
     fn bit_bound(self, n: usize) -> bool {
-        "(= n (* 64 (seq.len (tuple_proj<Seq<Int>-Int>.0 (tuple_proj<Int-Int-Tuple<Seq<Int>-Int>-Tuple>.2 self_)))))";
-        true
+        // n == self.iter.words.len() * 64
+        n == 64 * (*self.iter.words).len()
     }
 
     /// `dist.iter.words == self.iter.words`: `next` never replaces the word
     /// array, so the bound above survives a call.
     #[thrust_macros::predicate]
     fn same_words(self, dist: Self) -> bool {
-        "(= (tuple_proj<Seq<Int>-Int>.0 (tuple_proj<Int-Int-Tuple<Seq<Int>-Int>-Tuple>.2 dist)) (tuple_proj<Seq<Int>-Int>.0 (tuple_proj<Int-Int-Tuple<Seq<Int>-Int>-Tuple>.2 self_)))";
-        true
+        // dist.iter.words == self.iter.words
+        dist.iter.words == self.iter.words
     }
 
     #[inline]
@@ -399,8 +392,7 @@ impl Idx for usize {
     #[thrust_macros::predicate]
     fn index_is(self, i: usize) -> bool {
         // i == self
-        "(= i self_)";
-        true
+        i == self
     }
 
     #[inline]
