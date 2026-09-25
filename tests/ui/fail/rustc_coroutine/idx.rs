@@ -12,7 +12,7 @@ use std::marker::PhantomData;
 
 use thrust_models::exists;
 use thrust_models::forall;
-use thrust_models::model::Int;
+use thrust_models::model::{Int, Seq};
 
 // //== ./../rustc_index/src/idx.rs
 
@@ -215,37 +215,37 @@ pub struct WordIter<'a> {
 }
 
 impl<'a> thrust_models::Model for WordIter<'a> {
-    type Ty = Self;
+    type Ty = (&'a Seq<Int>, Int);
 }
 
-// The `words` field has the slice type `&'a [Word]`, so its length is spelled
-// through a deref, `(*self.words).len()`, and an element as `self.words[i]`.
+// `WordIter`'s model is the `(words, pos)` pair: `words` is the `&[Word]`
+// field's model (`&Seq<Int>`), so the predicates read `self.0` (the sequence)
+// and `self.1` (the cursor) and can index by the model `Int`.
 #[thrust_macros::context]
 impl<'a> WordIter<'a> {
     /// `self.words.len() == n`.
     #[thrust_macros::predicate]
     fn words_len_is(self, n: Int) -> bool {
         // self.words.len() == n
-        n == (*self.words).len()
+        n == self.0.len()
     }
 
     /// `self.words[i] == w`.
     #[thrust_macros::predicate]
     fn word_is(self, i: Int, w: Int) -> bool {
-        "(= w (seq.nth (tuple_proj<Seq<Int>-Int>.0 self_)
-                      i))";
-        true
+        // self.words[i] == w
+        w == self.0[i]
     }
 
     /// `dist.words == self.words`.
     #[thrust_macros::predicate]
     fn same_words(self, dist: Self) -> bool {
         // dist.words == self.words
-        dist.words == self.words
+        *dist.0 == *self.0
     }
 
     #[thrust_macros::requires(true)]
-    #[thrust_macros::ensures(result.pos == 0)]
+    #[thrust_macros::ensures(result.1 == 0)]
     #[thrust_macros::ensures(Self::words_len_is(result, (*words).len()))]
     #[thrust_macros::ensures(forall(|i: Int| Self::word_is(result, i, (*words)[i])))]
     fn new(words: &'a [Word]) -> WordIter<'a> {
@@ -280,10 +280,10 @@ impl<'a> WordIter<'a> {
     #[thrust_macros::requires(true)]
     #[thrust_macros::ensures(Self::same_words(*it, !it))]
     #[thrust_macros::ensures(forall(|n: Int, p: Int|
-        Self::words_len_is(*it, n) && p == (*it).pos
+        Self::words_len_is(*it, n) && p == (*it).1
             ==> (p < n ==> exists(|x: Int| result == Some(&x) && Self::word_is(*it, p, x))
-                    && p + 1 == (!it).pos)
-                && (n <= p ==> result == None && (!it).pos == (*it).pos)))]
+                    && p + 1 == (!it).1)
+                && (n <= p ==> result == None && (!it).1 == (*it).1)))]
     fn _extern_spec_next(it: &mut WordIter<'a>) -> Option<&'a Word> {
         <WordIter<'a> as Iterator>::next(it)
     }
