@@ -929,7 +929,10 @@ impl<'a> std::fmt::Display for System<'a> {
         writeln!(f)?;
         let dependencies = self.inner.compute_dependency();
         for (p, def) in self.inner.pred_vars.iter_enumerated() {
-            if dependencies.contains_key(&p) && !dependencies[&p].is_empty() {
+            // A plain `declare-fun` means "every forall pred declared before it" to the
+            // solver, so an unknown whose computed set is empty must still be declared
+            // with the explicit, empty list.
+            if dependencies.contains_key(&p) {
                 writeln!(
                     f,
                     "{}\n",
