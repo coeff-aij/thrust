@@ -1853,6 +1853,14 @@ impl<V> Formula<V> {
         }
     }
 
+    /// The conjuncts of `self`, with nested conjunctions flattened; `[self]` if it is not a conjunction.
+    pub fn into_conjuncts(self) -> Vec<Self> {
+        match self {
+            Formula::And(fs) => fs.into_iter().flat_map(Formula::into_conjuncts).collect(),
+            f => vec![f],
+        }
+    }
+
     pub fn or(self, other: Self) -> Self {
         match (self, other) {
             (Formula::Or(mut fs), Formula::Or(others)) => {

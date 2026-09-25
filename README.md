@@ -181,6 +181,7 @@ Several environment variables are used by Thrust to configure its behavior:
 - `THRUST_SOLVER_TIMEOUT_SECS`: Timeout for waiting on results from the solver. Default: `30`
 - `THRUST_OUTPUT_DIR`: When configured, Thrust outputs intermediate smtlib2 files into this directory.
 - `THRUST_ENUM_EXPANSION_DEPTH_LIMIT`: When Thrust works with enums, it "expands" the structure of the enum value onto its environment. This configuration value sets the limit on the depth of recursion during this expansion to handle enums that are defined recursively. It is our future work to discover a sensible value for this automatically. Default: `2`
+- `THRUST_SPLIT_GOALS`: When set, a clause whose head is a conjunction of formulas (for example the `ensures` of a function) is emitted as one goal clause per conjunct instead of one clause for the whole conjunction. The two are equivalent; the split lets the solver decide each conjunct on its own. Default: unset
 
 ### PCSat
 

@@ -140,9 +140,24 @@ impl ClauseBuilder {
             .map(|atom| self.clause(atom, &origin))
             .collect::<Vec<_>>();
         if !formula.is_top() {
-            let mut builder = self.clone();
-            builder.body.push_conj(formula.not());
-            clauses.push(builder.clause(Atom::bottom(), &origin));
+            // With `THRUST_SPLIT_GOALS` set, a head formula that is a conjunction becomes one goal
+            // clause per conjunct (`body ∧ ¬cᵢ ⇒ ⊥`), which is equivalent to the single clause
+            // `body ∧ ¬(c₁ ∧ … ∧ cₙ) ⇒ ⊥`. A solver then asks each conjunct on its own: the
+            // conjunction of a function's `ensures` can be undecided by z3 as one query while
+            // each conjunct is decided at once.
+            let conjuncts = if std::env::var_os("THRUST_SPLIT_GOALS").is_some() {
+                formula.into_conjuncts()
+            } else {
+                vec![formula]
+            };
+            for conjunct in conjuncts {
+                if conjunct.is_top() {
+                    continue;
+                }
+                let mut builder = self.clone();
+                builder.body.push_conj(conjunct.not());
+                clauses.push(builder.clause(Atom::bottom(), &origin));
+            }
         }
         clauses
     }
