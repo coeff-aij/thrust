@@ -1,5 +1,6 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:develop-2493045c3
-use thrust_models::forall;
+use thrust_models::model::{Closure, Mut};
+use thrust_models::{exists, forall};
 
 #[thrust_macros::context]
 trait Iterator {
@@ -26,16 +27,18 @@ struct Map<I, F> {
     func: F,
 }
 
-impl<I, F> thrust_models::Model for Map<I, F> {
-    type Ty = Map<I, F>;
+impl<I: thrust_models::Model, F> thrust_models::Model for Map<I, F> {
+    type Ty = Map<<I as thrust_models::Model>::Ty, Closure<F>>;
 }
 
 #[thrust_macros::context]
 impl<I: Iterator + thrust_models::Model, B: thrust_models::Model, F: FnMut(I::Item) -> B> Iterator for Map<I, F>
-where 
+where
     <B as thrust_models::Model>::Ty: PartialEq,
     I: Iterator + thrust_models::Model,
     <I as Iterator>::Item: thrust_models::Model,
+    <<I as Iterator>::Item as thrust_models::Model>::Ty:
+        thrust_models::Model<Ty = <<I as Iterator>::Item as thrust_models::Model>::Ty> + PartialEq,
     <I as thrust_models::Model>::Ty: PartialEq,
 {
     type Item = <I as Iterator>::Item;
@@ -61,79 +64,29 @@ where
         //         exists(|f: F| call_pre!(Mut::new(self.func, f)(i)))
         //     )))
         // )
-        "(and
-            (q_invariant_99f65cdf4976362522ac567242ed1838<a0> (tuple_proj<a0-a1>.0 self_))
-            (or
-                (exists ((dist a0))
-                    (q_completed_99f65cdf497636256ec9953086464b7d<a0>
-                        (mut<a0>
-                            (tuple_proj<a0-a1>.0 self_)
-                            dist
-                        )
-                    )
-                )
-                (and
-                    (exists ((i a2) (dist a0))
-                        (q_step_99f65cdf4976362561bb73a005eacf63<a0>
-                            (tuple_proj<a0-a1>.0 self_)
-                            i
-                            dist
-                        )
-                    )
-                    (forall ((i a2) (dist a0))
-                        (=>
-                            (q_step_99f65cdf4976362561bb73a005eacf63<a0>
-                                (tuple_proj<a0-a1>.0 self_)
-                                i
-                                dist
-                            )
-                            (exists ((f a1))
-                                (q_pre_F_99f65cdf497636254dd7446f04aabf8f<a1>
-                                    f
-                                    i
-                                )
-                            )
-                        )
-                    )
-                )
-            )
-        )";
-        true
+        I::invariant(self.iter)
+            && (exists(|dist: <I as thrust_models::Model>::Ty|
+                    I::completed(Mut::new(self.iter, dist)))
+                || (exists(|i: <<I as Iterator>::Item as thrust_models::Model>::Ty|
+                        exists(|dist: <I as thrust_models::Model>::Ty|
+                            I::step(self.iter, i, dist)))
+                    && forall(|i: <<I as Iterator>::Item as thrust_models::Model>::Ty|
+                        forall(|dist: <I as thrust_models::Model>::Ty|
+                            !I::step(self.iter, i, dist)
+                                || exists(|f: Closure<F>|
+                                    thrust_macros::pre!((f)(i)))))))
     }
 
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
         // self.iter.completed() && *self.func == !self.func
-        "(and
-            (q_completed_99f65cdf497636256ec9953086464b7d<a0>
-                (mut<a0>
-                    (tuple_proj<a0-a1>.0 (mut_current<Tuple<a0-a1>> self_))
-                    (tuple_proj<a0-a1>.0 (mut_final<Tuple<a0-a1>> self_))
-                )
-            )
-            (=
-                (tuple_proj<a0-a1>.1 (mut_current<Tuple<a0-a1>> self_))
-                (tuple_proj<a0-a1>.1 (mut_final<Tuple<a0-a1>> self_))
-            )
-        )";
-        true
+        I::completed(Mut::new((*self).iter, (!self).iter)) && (*self).func == (!self).func
     }
 
     #[thrust_macros::predicate]
     fn step(self, item: Self::Item, dist: Self) -> bool {
         // self.iter.step(item, dist.iter) && self.func == dist.func
-        "(and
-            (q_step_99f65cdf4976362561bb73a005eacf63<a0>
-                (tuple_proj<a0-a1>.0 self_)
-                item
-                (tuple_proj<a0-a1>.0 dist)
-            )
-            (=
-                (tuple_proj<a0-a1>.1 self_)
-                (tuple_proj<a0-a1>.1 self_)
-            )
-        )";
-        true
+        I::step(self.iter, item, dist.iter) && self.func == self.func
     }
 }
 
