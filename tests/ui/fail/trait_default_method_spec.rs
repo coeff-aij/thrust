@@ -33,8 +33,7 @@ impl Source for S {
     #[thrust_macros::predicate]
     fn produces(self, x: Self::Item) -> bool {
         // x == self.v
-        "(= x (tuple_proj<Int>.0 self_))";
-        true
+        x == self.v
     }
 }
 

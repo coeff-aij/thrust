@@ -40,7 +40,7 @@ impl thrust_models::Model for Counter {
 impl Gauge for Counter {
     #[thrust_macros::predicate]
     fn invariant(x: i32) -> bool {
-        "(>= x 0)"; true
+        x >= 0
     }
 
     fn update(&mut self) -> i32 {

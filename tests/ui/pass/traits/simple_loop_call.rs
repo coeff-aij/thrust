@@ -40,7 +40,7 @@ impl A for B {
 
     #[thrust_macros::predicate]
     fn p(x: i64) -> bool {
-        "(> x 0)"; true
+        x > 0
     }
 }
 
