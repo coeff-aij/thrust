@@ -57,15 +57,13 @@ pub trait Idx: Copy + 'static + Eq + PartialEq + Debug + Hash {
 impl Idx for usize {
     #[thrust_macros::predicate]
     fn can_new(idx: thrust_models::model::Int) -> bool {
-        "true";
         true
     }
 
     #[thrust_macros::predicate]
     fn index_is(self, i: thrust_models::model::Int) -> bool {
-        // self == i
-        "(= self_ i)";
-        true
+        // i == self
+        i == self
     }
 
     #[inline]
@@ -83,16 +81,14 @@ impl Idx for usize {
 impl Idx for u32 {
     #[thrust_macros::predicate]
     fn can_new(idx: thrust_models::model::Int) -> bool {
-        // idx <= u32::MAX as usize
-        "(<= idx 4294967295)";
-        true
+        // idx <= u32::MAX
+        idx <= 4294967295usize
     }
 
     #[thrust_macros::predicate]
     fn index_is(self, i: thrust_models::model::Int) -> bool {
-        // self == i
-        "(= self_ i)";
-        true
+        // i == self
+        i == self
     }
 
     #[inline]
@@ -222,25 +218,15 @@ impl<'a> thrust_models::Model for WordIter<'a> {
     type Ty = Self;
 }
 
-// The `words` field has the slice type `&'a [Word]`, and `WordIter`'s model
-// is the struct itself, so in a `requires`/`ensures` -- which is compiled as
-// an ordinary Rust function -- the field keeps that Rust type: the `Seq`
-// accessors are rejected (`error[E0609]: no field `length` on type `[u64]``,
-// likewise `array`) and `.len()` reaches
-// `not implemented: unsupported method call in formula: ... len#0`
-// (src/analyze/annot_fn.rs:915; only the `Seq`/`Array` model methods are
-// handled there). The three predicates below are therefore the only way to
-// name `words`' length and elements; a predicate body must be a raw SMT-LIB2
-// string literal, so they project the model tuple
-// `(words: (array, length), pos)` by hand.
+// The `words` field has the slice type `&'a [Word]`, so its length is spelled
+// through a deref, `(*self.words).len()`, and an element as `self.words[i]`.
 #[thrust_macros::context]
 impl<'a> WordIter<'a> {
     /// `self.words.len() == n`.
     #[thrust_macros::predicate]
     fn words_len_is(self, n: Int) -> bool {
-        "(= n (seq.len
-                  (tuple_proj<Seq<Int>-Int>.0 self_)))";
-        true
+        // self.words.len() == n
+        n == (*self.words).len()
     }
 
     /// `self.words[i] == w`.
@@ -254,9 +240,8 @@ impl<'a> WordIter<'a> {
     /// `dist.words == self.words`.
     #[thrust_macros::predicate]
     fn same_words(self, dist: Self) -> bool {
-        "(= (tuple_proj<Seq<Int>-Int>.0 dist)
-            (tuple_proj<Seq<Int>-Int>.0 self_))";
-        true
+        // dist.words == self.words
+        dist.words == self.words
     }
 
     #[thrust_macros::requires(true)]
