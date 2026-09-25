@@ -95,13 +95,12 @@ pub trait Idx: Copy + 'static + Eq + PartialEq + Debug + Hash {
 impl Idx for usize {
     #[thrust_macros::predicate]
     fn index_is(self, i: usize) -> bool {
-        "(= i self_)";
-        true
+        // i == self
+        i == self
     }
 
     #[thrust_macros::predicate]
     fn can_new(idx: usize) -> bool {
-        "true";
         true
     }
 
@@ -124,15 +123,14 @@ impl Idx for usize {
 impl Idx for u32 {
     #[thrust_macros::predicate]
     fn index_is(self, i: usize) -> bool {
-        "(= i self_)";
-        true
+        // i == self
+        i == self
     }
 
     #[thrust_macros::predicate]
     fn can_new(idx: usize) -> bool {
         // idx <= u32::MAX
-        "(<= idx 4294967295)";
-        true
+        idx <= 4294967295
     }
 
     #[thrust::trusted]
