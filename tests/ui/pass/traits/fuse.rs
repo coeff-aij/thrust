@@ -1,6 +1,7 @@
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60 COAR_IMAGE=coar:develop-2493045c3
-use thrust_models::forall;
+use thrust_models::model::Mut;
+use thrust_models::{exists, forall};
 
 #[thrust_macros::context]
 trait Iterator {
@@ -24,8 +25,8 @@ pub struct Fuse<I> {
     iter: Option<I>,
 }
 
-impl<I> thrust_models::Model for Fuse<I> {
-    type Ty = Fuse<I>;
+impl<I: thrust_models::Model> thrust_models::Model for Fuse<I> {
+    type Ty = Fuse<<I as thrust_models::Model>::Ty>;
 }
 
 #[thrust_macros::context]
@@ -34,80 +35,35 @@ where
     I: Iterator + thrust_models::Model,
     <I as Iterator>::Item: thrust_models::Model,
     <I as thrust_models::Model>::Ty: PartialEq,
+    <<I as Iterator>::Item as thrust_models::Model>::Ty:
+        thrust_models::Model<Ty = <<I as Iterator>::Item as thrust_models::Model>::Ty> + PartialEq,
 {
     type Item = I::Item;
 
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
-        // self.iter.is_none()
-        //   or self.iter.is_some()
-        // && self.iter.unwrap().invariant()
-        "(or
-            ((_ is std.option.Option.None<a0>)
-                (tuple_proj<std.option.Option<a0>>.0 self_))
-            (and
-                ((_ is std.option.Option.Some<a0>)
-                    (tuple_proj<std.option.Option<a0>>.0 self_))
-                (q_invariant_3ce756bf7a32ffadf2e7f51c913e5b2a<a0>
-                    (_getstd.option.Option.Some.0<a0>
-                        (tuple_proj<std.option.Option<a0>>.0 self_)))))";
-        true
+        // self.iter == None || exists(|i| self.iter == Some(i) && I::invariant(i))
+        self.iter == None
+            || exists(|i: <I as thrust_models::Model>::Ty| self.iter == Some(i) && I::invariant(i))
     }
 
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
-        // *self.iter.is_none() || *self.iter.is_some() && !self.iter.is_none() && exists(|i: I| Self::completed(Mut::new(*self.iter.unwrap(), i)))
-        "(or
-            ((_ is std.option.Option.None<a0>)
-                (tuple_proj<std.option.Option<a0>>.0
-                    (mut_current<Tuple<std.option.Option<a0>>> self_)
-                )
-            )
-            (and
-                ((_ is std.option.Option.Some<a0>)
-                    (tuple_proj<std.option.Option<a0>>.0 
-                        (mut_current<Tuple<std.option.Option<a0>>> self_)
-                    )
-                )
-                ((_ is std.option.Option.None<a0>)
-                    (tuple_proj<std.option.Option<a0>>.0 
-                        (mut_final<Tuple<std.option.Option<a0>>> self_)
-                    )
-                )
-                (exists ((i a0))
-                    (q_completed_3ce756bf7a32ffadc7440a2381da7e0f<a0>
-                        (mut<a0>
-                            (_getstd.option.Option.Some.0<a0>
-                                (tuple_proj<std.option.Option<a0>>.0
-                                    (mut_current<Tuple<std.option.Option<a0>>> self_)
-                                )
-                            )
-                            i
-                        )
-                    )
-                )
-            )
-        )";
-        true
+        // (*self).iter == None
+        //     || (!self).iter == None && exists(|cur, i|
+        //         (*self).iter == Some(cur) && I::completed(Mut::new(cur, i)))
+        (*self).iter == None
+            || ((!self).iter == None
+                && exists(|cur: <I as thrust_models::Model>::Ty| exists(|i: <I as thrust_models::Model>::Ty|
+                    (*self).iter == Some(cur) && I::completed(Mut::new(cur, i)))))
     }
 
     #[thrust_macros::predicate]
     fn step(self, item: Self::Item, dist: Self) -> bool {
-        // self.iter.is_some()
-        // && dist.iter.is_some()
-        // && self.iter.unwrap().step(item, dist.iter.unwrap())
-        "(and
-            ((_ is std.option.Option.Some<a0>)
-                (tuple_proj<std.option.Option<a0>>.0 self_))
-            ((_ is std.option.Option.Some<a0>)
-                (tuple_proj<std.option.Option<a0>>.0 dist))
-            (q_step_3ce756bf7a32ffad416eeec40eaf9c1a<a0>
-                (_getstd.option.Option.Some.0<a0>
-                    (tuple_proj<std.option.Option<a0>>.0 self_))
-                item
-                (_getstd.option.Option.Some.0<a0>
-                    (tuple_proj<std.option.Option<a0>>.0 dist))))";
-        true
+        // exists(|i, d| self.iter == Some(i) && dist.iter == Some(d)
+        //     && I::step(i, item, d))
+        exists(|i: <I as thrust_models::Model>::Ty| exists(|d: <I as thrust_models::Model>::Ty|
+            self.iter == Some(i) && dist.iter == Some(d) && I::step(i, item, d)))
     }
 
     fn next(&mut self) -> Option<Self::Item> {
