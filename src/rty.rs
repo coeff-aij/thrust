@@ -1869,8 +1869,7 @@ impl<FV> RefinedType<FV> {
         let refinement_has = self
             .refinement
             .body
-            .atoms
-            .iter()
+            .iter_atoms()
             .any(|atom| matches!(atom.pred, chc::Pred::Var(_)));
         refinement_has
             || match &self.ty {
