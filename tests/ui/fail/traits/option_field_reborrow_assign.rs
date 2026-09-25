@@ -19,8 +19,8 @@ struct Fz<I> {
     iter: Option<I>,
 }
 
-impl<I> thrust_models::Model for Fz<I> {
-    type Ty = Fz<I>;
+impl<I: thrust_models::Model> thrust_models::Model for Fz<I> {
+    type Ty = Fz<<I as thrust_models::Model>::Ty>;
 }
 
 #[thrust_macros::context]
@@ -31,17 +31,10 @@ where
 {
     #[thrust_macros::predicate]
     fn p(self) -> bool {
-        // self.iter == None || !I::p(self.iter.unwrap())
-        "(or
-            ((_ is std.option.Option.None<a0>)
-                (tuple_proj<std.option.Option<a0>>.0 self_))
-            (and
-                ((_ is std.option.Option.Some<a0>)
-                    (tuple_proj<std.option.Option<a0>>.0 self_))
-                (not (q_p_4a4688a7e8150671723414f2215c50b5<a0>
-                    (_getstd.option.Option.Some.0<a0>
-                        (tuple_proj<std.option.Option<a0>>.0 self_))))))";
-        true
+        // self.iter == None || exists(|i| self.iter == Some(i) && !I::p(i))
+        self.iter == None
+            || thrust_models::exists(|i: <I as thrust_models::Model>::Ty|
+                self.iter == Some(i) && !I::p(i))
     }
 
     fn g(&mut self) {}
