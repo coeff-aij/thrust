@@ -929,10 +929,14 @@ impl<'a> std::fmt::Display for System<'a> {
         writeln!(f)?;
         let dependencies = self.inner.compute_dependency();
         for (p, def) in self.inner.pred_vars.iter_enumerated() {
-            // A plain `declare-fun` means "every forall pred declared before it" to the
-            // solver, so an unknown whose computed set is empty must still be declared
-            // with the explicit, empty list.
-            if dependencies.contains_key(&p) {
+            // To a dependency-aware solver a plain `declare-fun` means "every forall pred
+            // declared before it", so an unknown whose computed set is empty is declared
+            // with the explicit, empty list. Any other solver keeps the plain form for it.
+            let explicit = self.ctx.capabilities().dependency_aware_declarations;
+            if dependencies
+                .get(&p)
+                .is_some_and(|deps| explicit || !deps.is_empty())
+            {
                 writeln!(
                     f,
                     "{}\n",
@@ -964,8 +968,8 @@ impl<'a> std::fmt::Display for System<'a> {
 }
 
 impl<'a> System<'a> {
-    pub fn new(inner: &'a chc::System) -> Self {
-        let ctx = FormatContext::from_system(inner);
+    pub fn new(inner: &'a chc::System, capabilities: chc::Capabilities) -> Self {
+        let ctx = FormatContext::from_system(inner, capabilities);
         Self { ctx, inner }
     }
 }
