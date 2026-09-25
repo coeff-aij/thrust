@@ -1,6 +1,6 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -A unused-variables
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 COAR_IMAGE=coar:develop-2493045c3
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 COAR_IMAGE=coar:f2710d2f1 THRUST_SPLIT_GOALS=1
 use thrust_models::model::{Int, Seq};
 use thrust_models::{exists, forall, Model};
 
@@ -9,6 +9,8 @@ use thrust_models::{exists, forall, Model};
 // The generic `Skip` follows Creusot's `skip.rs`: `next` drains up to `n` items in a loop whose
 // invariant carries the skipped prefix, then answers with the inner iterator's result.
 // `skip_step.rs` is the same adapter in the step form of the iterator spec.
+// `THRUST_SPLIT_GOALS` checks the conjuncts of `next`'s ensures as separate goal clauses: each is
+// decided at once, while their conjunction as one clause is not decided by the solver.
 #[thrust_macros::context]
 trait Iterator
 where
@@ -123,10 +125,10 @@ where
     }
 
     // (visited.len() == 0 && self == o)
-    // or (o.n == 0 && visited.len() > 0 && exists t. t.len() == self.n + visited.len()
-    //     && (forall k. self.n <= k < t.len() ==> t[k] == visited[k - self.n])
-    //     && self.iter.produces(t, o.iter))
-    // `t` is Creusot's `s.concat(visited)` with `s.len() == self.n`, written without `concat`.
+    // or (o.n == 0 && visited.len() > 0 && exists s. s.len() == self.n
+    //     && self.iter.produces(s.concat(visited), o.iter))
+    // Creusot's statement: the inner iterator produces the `self.n` skipped items `s` followed by
+    // `visited`, as one concatenated sequence.
     #[thrust_macros::predicate]
     fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool {
         "(or
@@ -136,15 +138,13 @@ where
             (and
                 (= (tuple_proj<a0-Int>.1 o) 0)
                 (> (seq.len visited) 0)
-                (exists ((ta (Seq a1)))
+                (exists ((sa (Seq a1)))
                     (and
-                        (= (seq.len ta) (+ (tuple_proj<a0-Int>.1 self_) (seq.len visited)))
-                        (forall ((zk Int))
-                            (=> (and (<= (tuple_proj<a0-Int>.1 self_) zk) (< zk (seq.len ta)))
-                                (= (seq.nth ta zk)
-                                   (seq.nth visited
-                                           (- zk (tuple_proj<a0-Int>.1 self_))))))
-                        (q_produces_5131ffd98a13a537a51f870d9cbfdf2c<a0> (tuple_proj<a0-Int>.0 self_) ta (tuple_proj<a0-Int>.0 o))))))";
+                        (= (seq.len sa) (tuple_proj<a0-Int>.1 self_))
+                        (q_produces_5131ffd98a13a537a51f870d9cbfdf2c<a0>
+                            (tuple_proj<a0-Int>.0 self_)
+                            (seq.++ sa visited)
+                            (tuple_proj<a0-Int>.0 o))))))";
         true
     }
 }
