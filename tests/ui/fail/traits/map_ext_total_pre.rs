@@ -1,9 +1,8 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60 COAR_IMAGE=coar:develop-2493045c3
-use thrust_models::forall;
-use thrust_models::model::{Int, Seq};
-use thrust_models::{Ghost, Model};
+use thrust_models::model::{Closure, Int, Mut, Seq};
+use thrust_models::{exists, forall, Ghost, Model};
 
 #[thrust_macros::context]
 trait Iterator {
@@ -49,8 +48,8 @@ struct Map<I, F> {
     produced: Ghost<Seq<Int>>,
 }
 
-impl<I, F> Model for Map<I, F> {
-    type Ty = Map<I, F>;
+impl<I: Model, F> Model for Map<I, F> {
+    type Ty = (<I as Model>::Ty, Closure<F>, Seq<Int>);
 }
 
 // Obstacle: a `Ghost`-typed FIELD has no model-level accessor in a `ghost!`
@@ -105,103 +104,36 @@ where
         // Break: drop the `self.iter.invariant()` conjunct -- `next`'s own
         // `requires(Self::invariant(*self))` no longer implies the inner
         // iterator's precondition, so `self.iter.next()` cannot be called.
-        "(and
-            true
-            (forall ((e Int))
-                (q_pre_F_bedbd733d3f248d1a34bf1e144f65f0<a1>
-                    (tuple_proj<a0-a1-Seq<Int>>.1 self_)
-                    e
-                    (tuple_proj<a0-a1-Seq<Int>>.2 self_)
-                )
-            )
-            (forall ((h (Seq Int)))
-                (forall ((e1 Int))
-                    (forall ((e2 Int))
-                        (forall ((b Int))
-                            (=>
-                                (and
-                                    (q_pre_F_bedbd733d3f248d1a34bf1e144f65f0<a1>
-                                        (tuple_proj<a0-a1-Seq<Int>>.1 self_)
-                                        e1
-                                        h
-                                    )
-                                    (q_post_F_bedbd733d3f248d1a34bf1e144f65f0<a1>
-                                        (tuple_proj<a0-a1-Seq<Int>>.1 self_)
-                                        e1
-                                        h
-                                        b
-                                    )
-                                )
-                                (q_pre_F_bedbd733d3f248d1a34bf1e144f65f0<a1>
-                                    (tuple_proj<a0-a1-Seq<Int>>.1 self_)
-                                    e2
-                                    (seq.++ h (seq.unit e1))
-                                )
-                            )
-                        )
-                    )
-                )
-            )
-        )";
         true
+            && forall(|e: Int| thrust_macros::pre!((self.1)(e, self.2)))
+            && forall(|h: Seq<Int>|
+                forall(|e1: Int|
+                    forall(|e2: Int|
+                        forall(|b: Int|
+                            !(thrust_macros::pre!((self.1)(e1, h))
+                                && thrust_macros::post!((self.1)(e1, h), b))
+                                || thrust_macros::pre!((self.1)(e2, h.push(e1)))))))
     }
 
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
         // self.iter.completed() && *self.func == !self.func && *self.produced == !self.produced
-        "(and
-            (q_completed_bedbd733d3f248d6f3ca13bf4a6f7f6<a0>
-                (mut<a0>
-                    (tuple_proj<a0-a1-Seq<Int>>.0 (mut_current<Tuple<a0-a1-Seq<Int>>> self_))
-                    (tuple_proj<a0-a1-Seq<Int>>.0 (mut_final<Tuple<a0-a1-Seq<Int>>> self_))
-                )
-            )
-            (=
-                (tuple_proj<a0-a1-Seq<Int>>.1 (mut_current<Tuple<a0-a1-Seq<Int>>> self_))
-                (tuple_proj<a0-a1-Seq<Int>>.1 (mut_final<Tuple<a0-a1-Seq<Int>>> self_))
-            )
-            (=
-                (tuple_proj<a0-a1-Seq<Int>>.2 (mut_current<Tuple<a0-a1-Seq<Int>>> self_))
-                (tuple_proj<a0-a1-Seq<Int>>.2 (mut_final<Tuple<a0-a1-Seq<Int>>> self_))
-            )
-        )";
-        true
+        I::completed(Mut::new((*self).0, (!self).0))
+            && (*self).1 == (!self).1
+            && (*self).2 == (!self).2
     }
 
     #[thrust_macros::predicate]
     fn step(self, item: Self::Item, dist: Self) -> bool {
         // exists(|i: i64| self.iter.step(i, dist.iter)) &&
         // pre!(self.func(i, self.produced)) && post!(self.func(i, self.produced), item) &&
-        // self.func == dist.func && dist.produced == self.produced.push(i)
-        "(exists ((i Int))
-            (and
-                (q_step_bedbd733d3f248d84d555206bfaa09e<a0>
-                    (tuple_proj<a0-a1-Seq<Int>>.0 self_)
-                    i
-                    (tuple_proj<a0-a1-Seq<Int>>.0 dist)
-                )
-                (q_pre_F_bedbd733d3f248d1a34bf1e144f65f0<a1>
-                    (tuple_proj<a0-a1-Seq<Int>>.1 self_)
-                    i
-                    (tuple_proj<a0-a1-Seq<Int>>.2 self_)
-                )
-                (q_post_F_bedbd733d3f248d1a34bf1e144f65f0<a1>
-                    (tuple_proj<a0-a1-Seq<Int>>.1 self_)
-                    i
-                    (tuple_proj<a0-a1-Seq<Int>>.2 self_)
-                    item
-                )
-                (=
-                    (tuple_proj<a0-a1-Seq<Int>>.1 self_)
-                    (tuple_proj<a0-a1-Seq<Int>>.1 dist)
-                )
-                (=
-                    (tuple_proj<a0-a1-Seq<Int>>.2 dist)
-                    (seq.++ (tuple_proj<a0-a1-Seq<Int>>.2 self_) (seq.unit i))
-                )
-            )
-        )";
-        true
+        // self.1 == dist.1 && dist.2 == self.2.push(i)
+        exists(|i: Int|
+            I::step(self.0, i, dist.0)
+                && thrust_macros::pre!((self.1)(i, self.2))
+                && thrust_macros::post!((self.1)(i, self.2), item)
+                && self.1 == dist.1
+                && dist.2 == self.2.push(i))
     }
 }
 
