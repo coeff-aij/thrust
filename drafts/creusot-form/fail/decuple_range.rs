@@ -2,10 +2,12 @@ use thrust_models::model::{Closure, Int, Mut, Seq};
 use thrust_models::{exists, forall, Model};
 
 // Creusot's `examples/decuple_range` with its positional property `v[i] == 10 * i`, in Creusot's
-// own form: the trait, `Map` and `Range` of `map_creusot.rs` (Rust-syntax predicate bodies,
-// `produces_refl` / `produces_trans` as laws, the direct spelling of `next`'s ensures), and
-// `collect` / `FromIterator for Vec<i64>` of `tests/ui/pass/traits/collect_visited_seq_mutref.rs`.
-// Creusot's example uses `map_inv`; the closure ignores the history, so this is `map`.
+// own form: the `Map` and `Range` of `map_creusot.rs` (Rust-syntax predicate bodies,
+// `produces_refl` / `produces_trans` as laws), and `collect` / `FromIterator for Vec<i64>` of
+// `tests/ui/pass/traits/collect_visited_seq_mutref.rs`. `next`'s ensures are Creusot's extern spec
+// of `Iterator::next` (creusot-std `iter.rs`): `None => completed`, `Some(v) => produces(*self,
+// [v], ^self)`, with the invariant maintained. Creusot's example uses `map_inv`; the closure
+// ignores the history, so this is `map`.
 #[thrust_macros::context]
 trait Iterator
 where
@@ -18,10 +20,7 @@ where
     #[thrust_macros::requires(Self::invariant(*self))]
     #[thrust_macros::ensures(Self::invariant(!self))]
     #[thrust_macros::ensures(result == None ==> Self::completed(self))]
-    #[thrust_macros::ensures(Self::produces(*self, Seq::empty(), *self))]
     #[thrust_macros::ensures(forall(|i| result == Some(i) ==> Self::produces(*self, Seq::singleton(i), !self)))]
-    #[thrust_macros::ensures(forall(|a: <Self as Model>::Ty| forall(|s: Seq<<Self::Item as Model>::Ty>| forall(|i|
-        result == Some(i) && Self::produces(a, s, *self) ==> Self::produces(a, s.push(i), !self)))))]
     fn next(&mut self) -> Option<Self::Item>;
 
     // Reflexivity as a callable law: an adapter that answers without touching its inner

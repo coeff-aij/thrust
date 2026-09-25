@@ -22,6 +22,8 @@ cargo run -- -Adead_code -C debug-assertions=off -A unused-variables drafts/creu
 | `take_call_value.rs` | the same with `assert!(matches!(first, Some(0)))` | timeout |
 | `take_law.rs` | `Take<I>` with the two laws, both assertions | timeout |
 | `map_creusot.rs` | Creusot's `Map` in Creusot's form (`produces` with an existential input sequence; `next_precondition`, `preservation`, `reinitialize`), laws, a `Range` call site with a partial closure | timeout at 120 s |
+| `decuple_range.rs` | Creusot's `decuple_range` with its positional property `v[k] == 10 * k`: `map_creusot.rs`'s `Map` and `Range` with Creusot's `next` spec (singleton `produces`, no one-step ensures), `collect` / `from_iter` in the `produces` form; fail twin in `fail/` | timeout (pending repeat) |
+| `decuple_range_trusted_map.rs` | the same with `Map`'s `next` and law bodies trusted (`loop {}`); fail twin in `fail/` | sat 15 s 2/2, fail Unsat 33 s |
 
 The direct spelling of the ensures is the one the tracked tests use. The two frontend defects
 these drafts exposed (a stuck `Model::Ty` projection, and closure contracts named per method)

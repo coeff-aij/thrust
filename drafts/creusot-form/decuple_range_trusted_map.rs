@@ -8,6 +8,11 @@ use thrust_models::{exists, forall, Model};
 // of `Iterator::next` (creusot-std `iter.rs`): `None => completed`, `Some(v) => produces(*self,
 // [v], ^self)`, with the invariant maintained. Creusot's example uses `map_inv`; the closure
 // ignores the history, so this is `map`.
+// The same program with `Map`'s `next`, `produces_refl` and `produces_trans` bodies replaced by
+// `loop {}`: a diverging body meets any `ensures`, so this trusts `Map`'s contract and checks only
+// the rest (`Range`, `collect`, `from_iter` and the call site). It is the trust base of Creusot's
+// example, which uses creusot-std's adapter, verified there with the witnesses of the `exists`
+// given by hand. `#[thrust::trusted]` is not usable on a trait impl method (it panics).
 #[thrust_macros::context]
 trait Iterator
 where
@@ -122,15 +127,12 @@ where
     type Item = B;
 
     fn next(&mut self) -> Option<B> {
-        match self.iter.next() {
-            Some(v) => Some((self.func)(v)),
-            None => None,
-        }
+        loop {}
     }
 
-    fn produces_refl(a: &Map<I, F>) {}
+    fn produces_refl(a: &Map<I, F>) { loop {} }
 
-    fn produces_trans(a: &Map<I, F>, ab: Seq<<Self::Item as Model>::Ty>, b: &Map<I, F>, bc: Seq<<Self::Item as Model>::Ty>, c: &Map<I, F>) {}
+    fn produces_trans(a: &Map<I, F>, ab: Seq<<Self::Item as Model>::Ty>, b: &Map<I, F>, bc: Seq<<Self::Item as Model>::Ty>, c: &Map<I, F>) { loop {} }
 
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
