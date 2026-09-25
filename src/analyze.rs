@@ -171,6 +171,20 @@ impl DeferredDefMode {
     }
 }
 
+/// Whether a type argument contains a closure of kind `FnMut`.
+fn has_fn_mut_closure(generic_args: mir_ty::GenericArgsRef<'_>) -> bool {
+    generic_args.types().any(|ty| {
+        ty.walk().any(|arg| {
+            arg.as_type().is_some_and(|ty| match ty.kind() {
+                mir_ty::TyKind::Closure(_, args) => {
+                    args.as_closure().kind() == mir_ty::ClosureKind::FnMut
+                }
+                _ => false,
+            })
+        })
+    })
+}
+
 #[derive(Debug, Clone)]
 struct DeferredDefTy<'tcx> {
     // the def that provides the spec (`expected_ty`). this is different from a key in defs when
@@ -745,23 +759,29 @@ impl<'tcx> Analyzer<'tcx> {
             return Some(rty.clone());
         }
 
-        let mut analyzer = self.local_def_analyzer(local_def_id);
-        analyzer
-            .owner_fn_id(caller_def_id)
-            .generic_args(generic_args);
-
-        let expected = analyzer.expected_ty();
+        let expected = {
+            let mut analyzer = self.local_def_analyzer(local_def_id);
+            analyzer
+                .owner_fn_id(caller_def_id)
+                .generic_args(generic_args);
+            analyzer.expected_ty()
+        };
         instantiated_ty_cache
             .borrow_mut()
             .insert(key, expected.clone());
         tracing::info!(?def_id, rty = %expected.display(), ?generic_args, "deferred def");
 
         // A generic def's body has been checked once over forall sorts against this contract.
-        // Analyzing it again at the instance is needed only to define the unknowns minted in
-        // `expected` just above (an unannotated or partly annotated contract); a contract without
-        // unknowns is used as instantiated.
+        // Analyzing it again at the instance is needed to define the unknowns minted in
+        // `expected` just above (an unannotated or partly annotated contract, or a closure's
+        // unknown contract, possibly reached through a predicate's definition), and when the
+        // instance is not faithful to the generic check: an `FnMut` closure among the type
+        // arguments, whose by-value receiver the instantiated `pre!` reads at a final state equal
+        // to the current one. Otherwise the contract is used as instantiated.
         let analyze_body = deferred_ty_mode.is_some_and(|mode| mode.should_analyze())
-            && (!is_generic || expected.has_pred_var());
+            && (!is_generic
+                || has_fn_mut_closure(generic_args)
+                || self.may_have_pred_var(&expected, generic_args, caller_def_id));
         if is_generic && deferred_ty_mode.is_some() {
             tracing::info!(
                 ?def_id,
@@ -771,8 +791,12 @@ impl<'tcx> Analyzer<'tcx> {
             );
         }
         if analyze_body {
-            let mut body_analyzer = if analyzer.local_def_id().to_def_id() == def_id {
-                analyzer
+            let mut body_analyzer = if local_def_id.to_def_id() == def_id {
+                let mut body_analyzer = self.local_def_analyzer(local_def_id);
+                body_analyzer
+                    .owner_fn_id(caller_def_id)
+                    .generic_args(generic_args);
+                body_analyzer
             } else {
                 let body_local_def_id = def_id
                     .as_local()
@@ -784,6 +808,58 @@ impl<'tcx> Analyzer<'tcx> {
             body_analyzer.run(&expected);
         }
         Some(expected)
+    }
+
+    /// Whether a refinement in `rty`, a contract at `generic_args` made from `caller_def_id`,
+    /// may name a predicate variable: directly, through the definition of a user-defined
+    /// predicate it calls, or through a predicate instance not defined yet. Such an instance's
+    /// body can name a predicate variable only through the contract of a closure among
+    /// `generic_args`, so it is taken to have one when such a contract does or is not known.
+    fn may_have_pred_var(
+        &self,
+        rty: &rty::RefinedType,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
+        caller_def_id: DefId,
+    ) -> bool {
+        let reach = self.pred_var_reach(rty);
+        if reach.found {
+            return true;
+        }
+        if !reach.undefined {
+            return false;
+        }
+        generic_args.types().any(|ty| {
+            ty.walk().any(|arg| {
+                let Some(mir_ty::TyKind::Closure(closure_def_id, closure_args)) =
+                    arg.as_type().map(|ty| ty.kind())
+                else {
+                    return false;
+                };
+                let Some(fn_ty) = self.known_function_ty_with_args(
+                    *closure_def_id,
+                    self.tcx.mk_args(closure_args.as_closure().parent_args()),
+                    caller_def_id,
+                ) else {
+                    return true;
+                };
+                let reach = self.pred_var_reach(&rty::RefinedType::unrefined(fn_ty.into()));
+                reach.found || reach.undefined
+            })
+        })
+    }
+
+    fn pred_var_reach(&self, rty: &rty::RefinedType) -> chc::PredVarReach {
+        let system = self.system.borrow();
+        let mut reach = chc::PredVarReach::default();
+        rty.any_pred(&mut |pred| {
+            match pred {
+                chc::Pred::Var(_) => reach.found = true,
+                chc::Pred::UserDefined(p) => reach.join(system.pred_var_reach_of(p)),
+                _ => {}
+            }
+            reach.found
+        });
+        reach
     }
 
     pub fn register_formula_fn(&mut self, local_def_id: LocalDefId) {

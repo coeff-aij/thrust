@@ -1863,15 +1863,10 @@ impl<FV> RefinedType<FV> {
 }
 
 impl<FV> RefinedType<FV> {
-    /// Whether a predicate variable occurs in a refinement anywhere in this type, i.e. whether
-    /// the type is a template that still has unknowns for the solver to find.
-    pub fn has_pred_var(&self) -> bool {
-        let refinement_has = self
-            .refinement
-            .body
-            .iter_atoms()
-            .any(|atom| matches!(atom.pred, chc::Pred::Var(_)));
-        refinement_has
+    /// Whether `f` holds of the predicate of some atom in a refinement anywhere in this type,
+    /// nested formulas included.
+    pub fn any_pred(&self, f: &mut impl FnMut(&chc::Pred) -> bool) -> bool {
+        self.refinement.body.iter_atoms().any(|atom| f(&atom.pred))
             || match &self.ty {
                 Type::Int
                 | Type::Bool
@@ -1879,14 +1874,14 @@ impl<FV> RefinedType<FV> {
                 | Type::Never
                 | Type::Param(_)
                 | Type::Alias(_) => false,
-                Type::Pointer(ty) => ty.elem.has_pred_var(),
+                Type::Pointer(ty) => ty.elem.any_pred(f),
                 Type::Function(ty) => {
-                    ty.params.iter().any(RefinedType::has_pred_var) || ty.ret.has_pred_var()
+                    ty.params.iter().any(|param| param.any_pred(f)) || ty.ret.any_pred(f)
                 }
-                Type::Tuple(ty) => ty.elems.iter().any(RefinedType::has_pred_var),
-                Type::Array(ty) => ty.index.has_pred_var() || ty.elem.has_pred_var(),
-                Type::Seq(elem) => elem.has_pred_var(),
-                Type::Enum(ty) => ty.args.iter().any(RefinedType::has_pred_var),
+                Type::Tuple(ty) => ty.elems.iter().any(|elem| elem.any_pred(f)),
+                Type::Array(ty) => ty.index.any_pred(f) || ty.elem.any_pred(f),
+                Type::Seq(elem) => elem.any_pred(f),
+                Type::Enum(ty) => ty.args.iter().any(|arg| arg.any_pred(f)),
             }
     }
 }

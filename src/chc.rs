@@ -2341,6 +2341,22 @@ pub enum ExistsDep {
     UserDefined(UserDefinedPred),
 }
 
+/// Whether predicate variables are reachable from a formula through the definitions of the
+/// user-defined predicates it calls: `found` when one is, `undefined` when a called predicate has
+/// no definition yet (an instance queued for emission), so that its body is not known.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PredVarReach {
+    pub found: bool,
+    pub undefined: bool,
+}
+
+impl PredVarReach {
+    pub fn join(&mut self, other: PredVarReach) {
+        self.found |= other.found;
+        self.undefined |= other.undefined;
+    }
+}
+
 /// A CHC system.
 #[derive(Debug, Clone, Default)]
 pub struct System {
@@ -2559,6 +2575,41 @@ impl System {
             sort_subst,
             dependencies: HashSet::new(),
         })
+    }
+
+    /// What the definition of `symbol`, and those of the user-defined predicates it calls, say
+    /// about predicate variables. A raw SMT-LIB2 body read off the source names none, since the
+    /// variables are numbered by the analysis.
+    pub fn pred_var_reach_of(&self, symbol: &UserDefinedPred) -> PredVarReach {
+        let mut reach = PredVarReach::default();
+        let mut pending = vec![symbol];
+        let mut seen: HashSet<&UserDefinedPred> = HashSet::new();
+        while let Some(symbol) = pending.pop() {
+            if !seen.insert(symbol) {
+                continue;
+            }
+            let mut defs = self
+                .user_defined_pred_defs
+                .iter()
+                .filter(|d| &d.symbol == symbol)
+                .peekable();
+            if defs.peek().is_none() {
+                reach.undefined = true;
+            }
+            for def in defs {
+                let UserDefinedPredBody::Formula(formula) = &def.body else {
+                    continue;
+                };
+                for atom in formula.iter_atoms() {
+                    match &atom.pred {
+                        Pred::Var(_) => reach.found = true,
+                        Pred::UserDefined(p) => pending.push(p),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        reach
     }
 
     pub fn is_pred_defined(&self, symbol: &UserDefinedPred) -> bool {
