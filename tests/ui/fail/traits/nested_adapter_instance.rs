@@ -24,8 +24,8 @@ struct Take<I> {
     n: usize,
 }
 
-impl<I> Model for Take<I> {
-    type Ty = Take<I>;
+impl<I: Model> Model for Take<I> {
+    type Ty = Take<<I as Model>::Ty>;
 }
 
 #[thrust_macros::context]
@@ -33,7 +33,9 @@ impl<I> Iterator for Take<I>
 where
     I: Iterator + Model,
     <I as Iterator>::Item: Model,
-    <I as Model>::Ty: PartialEq,
+    <I as Model>::Ty: Model<Ty = <I as Model>::Ty> + PartialEq,
+    <<I as Iterator>::Item as Model>::Ty:
+        Model<Ty = <<I as Iterator>::Item as Model>::Ty> + PartialEq,
 {
     type Item = I::Item;
 
@@ -49,10 +51,7 @@ where
     // self.iter.invariant() && self.n >= 0
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
-        "(and
-            (q_invariant_3b91c5ccd4337d12ed230c5660d38780<a0> (tuple_proj<a0-Int>.0 self_))
-            (>= (tuple_proj<a0-Int>.1 self_) 0))";
-        true
+        I::invariant(self.iter) && self.n >= 0
     }
 }
 
@@ -83,8 +82,7 @@ impl Iterator for Range {
     // self.start <= self.end
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
-        "(<= (tuple_proj<Int-Int>.0 self_) (tuple_proj<Int-Int>.1 self_))";
-        true
+        self.start <= self.end
     }
 }
 
