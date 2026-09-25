@@ -2,7 +2,7 @@
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 COAR_IMAGE=coar:develop-2493045c3
 use thrust_models::forall;
-use thrust_models::model::Seq;
+use thrust_models::model::{Int, Mut, Seq};
 use thrust_models::Model;
 
 // Creusot's `iter_mut.rs`: the iterator spec (`produces` / `completed` / `invariant`, laws as
@@ -37,8 +37,7 @@ where
     fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool;
 }
 
-// Sorts in the bodies: a0 = T. The model is (Seq<a0>, Seq<a0>, Int): the entry and final
-// sequences of the slice, and the cursor.
+// The model is (Seq<T>, Seq<T>, Int): the entry and final sequences of the slice, and the cursor.
 #[thrust_macros::context]
 impl<'a, T> Iterator for core::slice::IterMut<'a, T>
 where
@@ -56,26 +55,13 @@ where
     // 0 <= self.2 && self.2 <= self.0.len()
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
-        "(and
-            (<= 0 (tuple_proj<Seq<a0>-Seq<a0>-Int>.2 self_))
-            (<= (tuple_proj<Seq<a0>-Seq<a0>-Int>.2 self_)
-                (seq.len
-                    (tuple_proj<Seq<a0>-Seq<a0>-Int>.0 self_))))";
-        true
+        0 <= self.2 && self.2 <= self.0.len()
     }
 
     // (*self).2 >= (*self).0.len() && *self == !self
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
-        "(and
-            (>= (tuple_proj<Seq<a0>-Seq<a0>-Int>.2
-                    (mut_current<Tuple<Seq<a0>-Seq<a0>-Int>> self_))
-                (seq.len
-                    (tuple_proj<Seq<a0>-Seq<a0>-Int>.0
-                        (mut_current<Tuple<Seq<a0>-Seq<a0>-Int>> self_))))
-            (= (mut_current<Tuple<Seq<a0>-Seq<a0>-Int>> self_)
-               (mut_final<Tuple<Seq<a0>-Seq<a0>-Int>> self_)))";
-        true
+        (*self).2 >= (*self).0.len() && *self == !self
     }
 
     // o.0 == self.0 && o.1 == self.1 && o.2 == self.2 + visited.len()
@@ -83,23 +69,12 @@ where
     //        visited[k] == Mut(self.0[self.2 + k], self.1[self.2 + k])
     #[thrust_macros::predicate]
     fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool {
-        "(and
-            (= (tuple_proj<Seq<a0>-Seq<a0>-Int>.0 o)
-               (tuple_proj<Seq<a0>-Seq<a0>-Int>.0 self_))
-            (= (tuple_proj<Seq<a0>-Seq<a0>-Int>.1 o)
-               (tuple_proj<Seq<a0>-Seq<a0>-Int>.1 self_))
-            (= (tuple_proj<Seq<a0>-Seq<a0>-Int>.2 o)
-               (+ (tuple_proj<Seq<a0>-Seq<a0>-Int>.2 self_)
-                  (seq.len visited)))
-            (forall ((k Int))
-                (=> (and (<= 0 k) (< k (seq.len visited)))
-                    (= (seq.nth visited k)
-                       (mut<a0>
-                           (seq.nth (tuple_proj<Seq<a0>-Seq<a0>-Int>.0 self_)
-                                   (+ (tuple_proj<Seq<a0>-Seq<a0>-Int>.2 self_) k))
-                           (seq.nth (tuple_proj<Seq<a0>-Seq<a0>-Int>.1 self_)
-                                   (+ (tuple_proj<Seq<a0>-Seq<a0>-Int>.2 self_) k)))))))";
-        true
+        o.0 == self.0
+            && o.1 == self.1
+            && o.2 == self.2 + visited.len()
+            && forall(|k: Int|
+                !(0 <= k && k < visited.len())
+                    || visited[k] == Mut::new(self.0[self.2 + k], self.1[self.2 + k]))
     }
 }
 
