@@ -2955,6 +2955,31 @@ mod tests {
     }
 
     #[test]
+    fn declares_an_unknown_with_an_empty_dependency_set_explicitly() {
+        let mut system = System::default();
+        let p = system.new_pred_var(vec![Sort::int()], DebugInfo::default());
+        let body = Atom::new(
+            Pred::Known(KnownPred::EQUAL),
+            vec![Term::var(0usize.into()), Term::int(0)],
+        );
+        system.push_clause(Clause {
+            origin: test_origin(0usize.into(), &Sort::int()),
+            vars: [Sort::int()].into_iter().collect(),
+            head: Atom::new(Pred::Var(p), vec![Term::var(0usize.into())]),
+            body: body.into(),
+            debug_info: DebugInfo::default(),
+        });
+
+        let smt = system.smtlib2().to_string();
+        assert_eq!(
+            smt.matches("(declare-dep-exists-fun p0 () (Int) Bool)")
+                .count(),
+            1
+        );
+        assert_eq!(smt.matches("(declare-fun p0 ").count(), 0);
+    }
+
+    #[test]
     fn declares_only_the_forall_sorts_something_refers_to() {
         let mut system = System::default();
         let used = system.new_forall_sort(DebugInfo::default());
