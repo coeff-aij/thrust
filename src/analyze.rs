@@ -697,6 +697,7 @@ impl<'tcx> Analyzer<'tcx> {
     ) -> Option<rty::RefinedType> {
         let type_builder = self.type_builder(self.def_ids(), caller_def_id);
 
+        let is_generic = matches!(self.defs.get(&def_id)?, DefTy::Generic(_));
         let (local_def_id, instantiated_ty_cache, deferred_ty_mode) =
             match self.defs.get(&def_id)? {
                 DefTy::Concrete(rty) => {
@@ -755,7 +756,21 @@ impl<'tcx> Analyzer<'tcx> {
             .insert(key, expected.clone());
         tracing::info!(?def_id, rty = %expected.display(), ?generic_args, "deferred def");
 
-        if deferred_ty_mode.is_some_and(|mode| mode.should_analyze()) {
+        // A generic def's body has been checked once over forall sorts against this contract.
+        // Analyzing it again at the instance is needed only to define the unknowns minted in
+        // `expected` just above (an unannotated or partly annotated contract); a contract without
+        // unknowns is used as instantiated.
+        let analyze_body = deferred_ty_mode.is_some_and(|mode| mode.should_analyze())
+            && (!is_generic || expected.has_pred_var());
+        if is_generic && deferred_ty_mode.is_some() {
+            tracing::info!(
+                ?def_id,
+                ?generic_args,
+                analyze_body,
+                "generic def at an instance"
+            );
+        }
+        if analyze_body {
             let mut body_analyzer = if analyzer.local_def_id().to_def_id() == def_id {
                 analyzer
             } else {

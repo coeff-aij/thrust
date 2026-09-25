@@ -1862,6 +1862,36 @@ impl<FV> RefinedType<FV> {
     }
 }
 
+impl<FV> RefinedType<FV> {
+    /// Whether a predicate variable occurs in a refinement anywhere in this type, i.e. whether
+    /// the type is a template that still has unknowns for the solver to find.
+    pub fn has_pred_var(&self) -> bool {
+        let refinement_has = self
+            .refinement
+            .body
+            .atoms
+            .iter()
+            .any(|atom| matches!(atom.pred, chc::Pred::Var(_)));
+        refinement_has
+            || match &self.ty {
+                Type::Int
+                | Type::Bool
+                | Type::String
+                | Type::Never
+                | Type::Param(_)
+                | Type::Alias(_) => false,
+                Type::Pointer(ty) => ty.elem.has_pred_var(),
+                Type::Function(ty) => {
+                    ty.params.iter().any(RefinedType::has_pred_var) || ty.ret.has_pred_var()
+                }
+                Type::Tuple(ty) => ty.elems.iter().any(RefinedType::has_pred_var),
+                Type::Array(ty) => ty.index.has_pred_var() || ty.elem.has_pred_var(),
+                Type::Seq(elem) => elem.has_pred_var(),
+                Type::Enum(ty) => ty.args.iter().any(RefinedType::has_pred_var),
+            }
+    }
+}
+
 impl RefinedType<Closed> {
     pub fn vacuous<FV>(self) -> RefinedType<FV> {
         self.map_var(|v| match v {})
