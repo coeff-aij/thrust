@@ -42,18 +42,18 @@ impl<T: Idx> DenseBitSet<T> {
     }
 
     /// `dist` is `self` with `i` inserted: same domain, and the word sequence
-    /// updated at `i` only. `Seq::store` cannot be called with the model `Int`
-    /// literal `1`, so the update is stated as two `forall`s over the word
-    /// sequence: for `k == i` the word is `1`, otherwise unchanged.
+    /// updated at `i` only. `Seq::store` cannot take the model `Int` literal
+    /// `1` from Rust syntax, so this stays a raw SMT-LIB2 body.
     #[thrust_macros::predicate]
     fn inserted(self, i: usize, dist: Self) -> bool {
         // dist.domain_size == self.domain_size
-        //     && dist.words.len() == self.words.len()
-        //     && forall k. dist.words[k] == (k == i ? 1 : self.words[k])
-        dist.0 == self.0
-            && dist.1.len() == self.1.len()
-            && forall(|k: Int| !(0 <= k && k < self.1.len()) || k == i || dist.1[k] == self.1[k])
-            && forall(|k: Int| !(0 <= k && k < self.1.len()) || k != i || dist.1[k] == 1)
+        //     && dist.words == self.words.store(i, 1)
+        "(and
+            (= (tuple_proj<Int-Seq<Int>-Tuple>.0 dist)
+               (tuple_proj<Int-Seq<Int>-Tuple>.0 self_))
+            (= (tuple_proj<Int-Seq<Int>-Tuple>.1 dist)
+               (seq.store (tuple_proj<Int-Seq<Int>-Tuple>.1 self_) i 1)))";
+        true
     }
 
     /// `forall i: !Self::mem(self, i)` over the positions the word sequence
