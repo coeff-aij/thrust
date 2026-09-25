@@ -1,7 +1,8 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60 COAR_IMAGE=coar:develop-2493045c3
-use thrust_models::forall;
+use thrust_models::model::{Closure, Int, Mut};
+use thrust_models::{exists, forall};
 
 #[thrust_macros::context]
 trait Iterator {
@@ -25,6 +26,7 @@ trait Iterator {
     fn reaches(self, dist: Self) -> bool;
 }
 
+#[derive(PartialEq)]
 struct Range {
     start: i64,
     end: i64,
@@ -50,34 +52,25 @@ impl Iterator for Range {
 
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
-        "true";
         true
     }
 
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
         // !(*self.start < *self.end) && *self == !self
-        "(and
-            (not (<
-                (tuple_proj<Int-Int>.0 (mut_current<Tuple<Int-Int>> self_))
-                (tuple_proj<Int-Int>.1 (mut_current<Tuple<Int-Int>> self_))
-            ))
-            (= (mut_current<Tuple<Int-Int>> self_) (mut_final<Tuple<Int-Int>> self_))
-        )";
-        true
+        !((*self).start < (*self).end)
+            && (*self).start == (!self).start
+            && (*self).end == (!self).end
     }
 
     #[thrust_macros::predicate]
     fn step(self, item: Self::Item, dist: Self) -> bool {
         // self.start < self.end && self.end == dist.end && self.start == item
         // && self.start + 1 == dist.start
-        "(and
-            (< (tuple_proj<Int-Int>.0 self_) (tuple_proj<Int-Int>.1 self_))
-            (= (tuple_proj<Int-Int>.1 self_) (tuple_proj<Int-Int>.1 dist))
-            (= (tuple_proj<Int-Int>.0 self_) item)
-            (= (+ (tuple_proj<Int-Int>.0 self_) 1) (tuple_proj<Int-Int>.0 dist))
-        )";
-        true
+        self.start < self.end
+            && self.end == dist.end
+            && self.start == item
+            && self.start + 1 == dist.start
     }
 
     #[thrust_macros::predicate]
@@ -86,11 +79,7 @@ impl Iterator for Range {
         // produces the very next item is not among the reachable ones and the
         // mapper's precondition goes undischarged there.
         // self.start < dist.start && self.end == dist.end
-        "(and
-            (< (tuple_proj<Int-Int>.0 self_) (tuple_proj<Int-Int>.0 dist))
-            (= (tuple_proj<Int-Int>.1 self_) (tuple_proj<Int-Int>.1 dist))
-        )";
-        true
+        self.start < dist.start && self.end == dist.end
     }
 }
 
@@ -100,7 +89,7 @@ struct Map<F> {
 }
 
 impl<F> thrust_models::Model for Map<F> {
-    type Ty = Map<F>;
+    type Ty = Map<Closure<F>>;
 }
 
 #[thrust_macros::context]
@@ -127,69 +116,35 @@ impl<F: Fn(i64) -> i64> Iterator for Map<F> {
         //
         // The intermediate states are bound field by field: a binder whose sort is
         // a packed tuple is what crashes the solver's parser.
-        "(and
-            (p_invariant_e2b28941db239feabeba1f7363d369b6 (tuple_proj<Tuple<Int-Int>-a0>.0 self_))
-            (forall ((m0 Int) (m1 Int) (e Int) (n0 Int) (n1 Int))
-                (=>
-                    (and
-                        (p_reaches_e2b28941db239fea5912d328a9ab0865 (tuple_proj<Tuple<Int-Int>-a0>.0 self_) (tuple<Int-Int> m0 m1))
-                        (p_step_e2b28941db239fea3bd4c0e9329eae09 (tuple<Int-Int> m0 m1) e (tuple<Int-Int> n0 n1))
-                    )
-                    (q_pre_F_e2b28941db239fea6e3dfcbea27af016<a0> (tuple_proj<Tuple<Int-Int>-a0>.1 self_) e)
-                )
-            )
-        )";
-        true
+        Range::invariant(self.iter)
+            && forall(|m: Range|
+                forall(|e: Int|
+                    forall(|n: Range|
+                        !(Range::reaches(self.iter, m) && Range::step(m, e, n))
+                            || thrust_macros::pre!((self.func)(e)))))
     }
 
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
         // self.iter.completed() && *self.func == !self.func
-        "(and
-            (p_completed_e2b28941db239fea26aab556cc20ae95
-                (mut<Tuple<Int-Int>>
-                    (tuple_proj<Tuple<Int-Int>-a0>.0 (mut_current<Tuple<Tuple<Int-Int>-a0>> self_))
-                    (tuple_proj<Tuple<Int-Int>-a0>.0 (mut_final<Tuple<Tuple<Int-Int>-a0>> self_))
-                )
-            )
-            (=
-                (tuple_proj<Tuple<Int-Int>-a0>.1 (mut_current<Tuple<Tuple<Int-Int>-a0>> self_))
-                (tuple_proj<Tuple<Int-Int>-a0>.1 (mut_final<Tuple<Tuple<Int-Int>-a0>> self_))
-            )
-        )";
-        true
+        Range::completed(Mut::new((*self).iter, (!self).iter)) && (*self).func == (!self).func
     }
 
     #[thrust_macros::predicate]
     fn step(self, item: Self::Item, dist: Self) -> bool {
         // exists(|i: i64| self.iter.step(i, dist.iter)) &&
         // pre!(self.func(i)) && post!(self.func(i), item) && self.func == dist.func
-        "(exists ((i Int))
-            (and
-                (p_step_e2b28941db239fea3bd4c0e9329eae09
-                    (tuple_proj<Tuple<Int-Int>-a0>.0 self_)
-                    i
-                    (tuple_proj<Tuple<Int-Int>-a0>.0 dist)
-                )
-                (q_pre_F_e2b28941db239fea6e3dfcbea27af016<a0> (tuple_proj<Tuple<Int-Int>-a0>.1 self_) i)
-                (q_post_F_e2b28941db239fea6e3dfcbea27af016<a0> (tuple_proj<Tuple<Int-Int>-a0>.1 self_) i item)
-                (=
-                    (tuple_proj<Tuple<Int-Int>-a0>.1 self_)
-                    (tuple_proj<Tuple<Int-Int>-a0>.1 dist)
-                )
-            )
-        )";
-        true
+        exists(|i: Int|
+            Range::step(self.iter, i, dist.iter)
+                && thrust_macros::pre!((self.func)(i))
+                && thrust_macros::post!((self.func)(i), item)
+                && self.func == dist.func)
     }
 
     #[thrust_macros::predicate]
     fn reaches(self, dist: Self) -> bool {
         // self.iter.reaches(dist.iter) && self.func == dist.func
-        "(and
-            (p_reaches_e2b28941db239fea5912d328a9ab0865 (tuple_proj<Tuple<Int-Int>-a0>.0 self_) (tuple_proj<Tuple<Int-Int>-a0>.0 dist))
-            (= (tuple_proj<Tuple<Int-Int>-a0>.1 self_) (tuple_proj<Tuple<Int-Int>-a0>.1 dist))
-        )";
-        true
+        Range::reaches(self.iter, dist.iter) && self.func == dist.func
     }
 }
 
