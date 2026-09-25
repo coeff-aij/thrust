@@ -18,7 +18,7 @@ mod unbox;
 
 pub use clause_builder::{ClauseBuilder, Var};
 pub use debug::DebugInfo;
-pub use solver::{CheckSatError, Config};
+pub use solver::{Capabilities, CheckSatError, Config};
 pub use unbox::unbox;
 
 /// A name of a datatype.
@@ -2858,8 +2858,8 @@ impl System {
         propagated_forall_deps
     }
 
-    pub fn smtlib2(&self) -> smtlib2::System<'_> {
-        smtlib2::System::new(self)
+    pub fn smtlib2(&self, capabilities: Capabilities) -> smtlib2::System<'_> {
+        smtlib2::System::new(self, capabilities)
     }
 
     /// Solves the CHC using an external SMT solver.
@@ -2883,7 +2883,8 @@ impl System {
                 writeln!(f, "{:?}: {}", idx, c.display()).unwrap();
             }
         }
-        Config::from_env().check_sat(system.smtlib2())
+        let config = Config::from_env();
+        config.check_sat(system.smtlib2(config.capabilities()))
     }
 }
 
@@ -2936,6 +2937,10 @@ fn collect_forall_defaults(term: &Term<TermVarIdx>, used: &mut HashSet<ForallSor
 mod tests {
     use super::*;
 
+    const PCSAT: Capabilities = Capabilities {
+        dependency_aware_declarations: true,
+    };
+
     fn test_origin(var: TermVarIdx, sort: &Sort) -> debug::origin::ClauseOrigin {
         debug::origin::ClauseOrigin {
             environment: Vec::new(),
@@ -2961,7 +2966,7 @@ mod tests {
             debug_info: DebugInfo::default(),
         });
 
-        let smt = system.smtlib2().to_string();
+        let smt = system.smtlib2(PCSAT).to_string();
         assert_eq!(
             smt.matches("(declare-forall-fun default_a0 () a0)").count(),
             1
@@ -2987,7 +2992,7 @@ mod tests {
             debug_info: DebugInfo::default(),
         });
 
-        let smt = system.smtlib2().to_string();
+        let smt = system.smtlib2(PCSAT).to_string();
         assert_eq!(
             smt.matches("(declare-forall-fun default_a0 () a0)").count(),
             1
@@ -3000,9 +3005,39 @@ mod tests {
         system.new_forall_sort(DebugInfo::default());
         system.new_forall_sort(DebugInfo::default());
 
-        let smt = system.smtlib2().to_string();
+        let smt = system.smtlib2(PCSAT).to_string();
         assert_eq!(smt.matches("(declare-forall-fun default_").count(), 0);
         assert_eq!(smt.matches("(declare-forall-sort").count(), 0);
+    }
+
+    #[test]
+    fn declares_an_empty_dependency_set_explicitly_only_to_a_dependency_aware_solver() {
+        let mut system = System::default();
+        let p = system.new_pred_var(vec![Sort::int()], DebugInfo::default());
+        let body = Atom::new(
+            Pred::Known(KnownPred::EQUAL),
+            vec![Term::var(0usize.into()), Term::int(0)],
+        );
+        system.push_clause(Clause {
+            origin: test_origin(0usize.into(), &Sort::int()),
+            vars: [Sort::int()].into_iter().collect(),
+            head: Atom::new(Pred::Var(p), vec![Term::var(0usize.into())]),
+            body: body.into(),
+            debug_info: DebugInfo::default(),
+        });
+
+        let pcsat = system.smtlib2(PCSAT).to_string();
+        assert_eq!(
+            pcsat
+                .matches("(declare-dep-exists-fun p0 () (Int) Bool)")
+                .count(),
+            1
+        );
+        assert_eq!(pcsat.matches("(declare-fun p0 ").count(), 0);
+
+        let z3 = system.smtlib2(Config::default().capabilities()).to_string();
+        assert_eq!(z3.matches("(declare-fun p0 (Int) Bool)").count(), 1);
+        assert_eq!(z3.matches("declare-dep-exists-fun").count(), 0);
     }
 
     #[test]
@@ -3016,7 +3051,7 @@ mod tests {
             vec![Sort::forall(used)],
         ));
 
-        let smt = system.smtlib2().to_string();
+        let smt = system.smtlib2(PCSAT).to_string();
         assert_eq!(smt.matches("(declare-forall-sort a0)").count(), 1);
         assert_eq!(smt.matches("(declare-forall-sort a1)").count(), 0);
     }
@@ -3029,7 +3064,7 @@ mod tests {
             command: "(declare-fun opaque (a0) Bool)".to_string(),
         });
 
-        let smt = system.smtlib2().to_string();
+        let smt = system.smtlib2(PCSAT).to_string();
         assert_eq!(smt.matches("(declare-forall-sort a0)").count(), 1);
     }
 
@@ -3041,7 +3076,7 @@ mod tests {
         );
         system.register_forall_pred(ForallPred::new("q".into(), vec![], vec![Sort::forall(idx)]));
 
-        let smt = system.smtlib2().to_string();
+        let smt = system.smtlib2(PCSAT).to_string();
         assert!(smt.contains("; type_param=ParamTy T/#0 (decl=DefId(...))"));
         assert!(smt.contains("(declare-forall-sort a0)"));
     }
@@ -3057,7 +3092,7 @@ mod tests {
             vec![tuple, Sort::int()],
         ));
 
-        let smt = system.smtlib2().to_string();
+        let smt = system.smtlib2(PCSAT).to_string();
         let declared = smt
             .find("(A0_Tuple<a0-Int> 0)")
             .expect("tuple datatype declared");
@@ -3079,7 +3114,7 @@ mod tests {
             "true".into(),
         );
 
-        let smt = system.smtlib2().to_string();
+        let smt = system.smtlib2(PCSAT).to_string();
         let declared = smt
             .find("(A0_Tuple<Int-Int> 0)")
             .expect("tuple datatype declared");
