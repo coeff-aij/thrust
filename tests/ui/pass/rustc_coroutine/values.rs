@@ -58,6 +58,17 @@ pub struct TargetDataLayout {
     pub c_enum_min_size: Integer,
 }
 
+// A manual `PartialEq` only so that `self == dl` type-checks in the `dl_of`
+// predicates; the driver lowers `==` to model equality directly and the body
+// here is never analyzed. The derived `PartialEq` cannot be used: its
+// field-by-field `&&` chain makes the solver diverge (see the note above).
+impl PartialEq for TargetDataLayout {
+    #[thrust::ignored]
+    fn eq(&self, _other: &Self) -> bool {
+        unimplemented!()
+    }
+}
+
 // The intended specs use two predicates, `dl_wf(dl)` (the default pointer size
 // is 2, 4 or 8 bytes, so `obj_size_bound` cannot hit its `panic!` arm) and
 // `prim_wf(p, dl)` (a `Primitive::Pointer(a)` only names the default address
@@ -148,8 +159,9 @@ impl TargetDataLayout {
 //
 // The by-value trait predicate below sidesteps that: `dl_of`'s own arguments
 // are lowered per its own (fresh) signature, so `Self::dl_of(*self, *result)`
-// typechecks for both impls, and each defines it as `"(= self_ dl)"`. Calling
-// `dl_of` directly (as `data_layout`'s own `ensures` does) verifies.
+// typechecks for both impls, and each defines it as `self == dl` (the
+// reference impl as `*self == dl`). Calling `dl_of` directly (as
+// `data_layout`'s own `ensures` does) verifies.
 //
 // Relating a *generic* `cx: &C` to the layout `dl_of` names needs quantifying
 // over it, e.g.
@@ -178,7 +190,7 @@ pub trait HasDataLayout {
 impl HasDataLayout for TargetDataLayout {
     #[thrust_macros::predicate]
     fn dl_of(self, dl: TargetDataLayout) -> bool {
-        "(= self_ dl)"; true
+        self == dl
     }
 
     #[inline]
@@ -191,7 +203,7 @@ impl HasDataLayout for TargetDataLayout {
 impl HasDataLayout for &TargetDataLayout {
     #[thrust_macros::predicate]
     fn dl_of(self, dl: TargetDataLayout) -> bool {
-        "(= self_ dl)"; true
+        *self == dl
     }
 
     #[inline]
