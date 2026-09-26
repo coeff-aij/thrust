@@ -100,11 +100,11 @@ where
         I::invariant(self.0) && self.1 >= 0
     }
 
-    // (!self).n == 1
+    // (!self).n == 0
     // && exists s j. s.len() <= (*self).n && (*self).iter.produces(s, j) && I::completed(Mut::new(j, (!self).iter))
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
-        (!self).1 == 1
+        (!self).1 == 0
             && exists(|s: Seq<<Self::Item as Model>::Ty>| exists(|j: <I as Model>::Ty|
                 s.len() <= (*self).1
                     && I::produces((*self).0, s, j)
@@ -112,19 +112,18 @@ where
     }
 
     // (visited.len() == 0 && self == o)
-    // or (o.n == 0 && visited.len() > 0 && exists t. t.len() == self.n + visited.len()
-    //     && (forall k. self.n <= k < t.len() ==> t[k] == visited[k - self.n])
-    //     && self.iter.produces(t, o.iter))
-    // `t` is Creusot's `s.concat(visited)` with `s.len() == self.n`, written without `concat`.
+    // or (o.n == 0 && visited.len() > 0 && exists s. s.len() == self.n
+    //     && self.iter.produces(s.concat(visited), o.iter))
+    // Creusot's statement: the inner iterator produces the `self.n` skipped items `s`, then
+    // `visited`, as one concatenated sequence.
     #[thrust_macros::predicate]
     fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool {
         (visited.len() == 0 && self == o)
             || (o.1 == 0
                 && visited.len() > 0
-                && exists(|t: Seq<<Self::Item as Model>::Ty>|
-                    t.len() == self.1 + visited.len()
-                        && forall(|k: Int| !(self.1 <= k && k < t.len()) || t[k] == visited[k - self.1])
-                        && I::produces(self.0, t, o.0)))
+                && exists(|s: Seq<<Self::Item as Model>::Ty>|
+                    s.len() == self.1 + 1
+                        && I::produces(self.0, s.concat(visited), o.0)))
     }
 }
 
