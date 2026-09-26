@@ -184,6 +184,80 @@ fn pre_upvars_term<V>(upvars: chc::Term<V>, closure_kind: mir_ty::ClosureKind) -
     }
 }
 
+/// The closure-state preservation a history-carrying adapter such as `Map` states in its
+/// invariant, read at the closure contract's own `pre`/`post` symbols.
+///
+/// For an `FnMut(Int, Seq<Int>) -> Int` closure the formula is
+/// `forall c h e1 e2 b g2. pre(c, e1, h) and post(mut(c, g2), e1, h, b) implies
+/// pre(g2, e2, h ++ [e1])`.
+/// It relates the closure contract to itself across a fresh post-state (`g2`), which is what the
+/// generic obligation cannot discharge for an arbitrary contract. Registering it as a law of the
+/// contract makes [`chc::System::insert_law_premises`] add it to every clause that depends on the
+/// contract, including clauses that reach it through a user-defined predicate body.
+///
+/// Returns `None` for a contract of any other shape.
+fn closure_state_preservation_law(
+    pre_pred: &chc::ForallPred,
+    post_pred: &chc::ForallPred,
+) -> Option<chc::Formula<chc::TermVarIdx>> {
+    use chc::{Atom, Formula, Sort, Term};
+    let pre_state = pre_pred.params().first()?.clone();
+    let post_state = post_pred.params().first()?.clone();
+    let args = &pre_pred.params()[1..];
+    let ret = post_pred.params().last()?.clone();
+    // Only the counter shape: one `Int` item and one `Seq<Int>` history, returning `Int`, behind a
+    // `&mut` closure state so the post contract takes the `Mut` pair.
+    if args.len() != 2 || args[0] != Sort::int() || args[1] != Sort::seq(Sort::int()) {
+        return None;
+    }
+    if ret != Sort::int() || post_state != Sort::mut_(pre_state.clone()) {
+        return None;
+    }
+
+    let quantified = |sort: Sort, name: &str| {
+        Term::<chc::TermVarIdx>::FormulaQuantifiedVar(sort, name.to_string())
+    };
+    let c = quantified(pre_state.clone(), "closure_c");
+    let g2 = quantified(pre_state.clone(), "closure_g2");
+    let h = quantified(args[1].clone(), "closure_h");
+    let e1 = quantified(args[0].clone(), "closure_e1");
+    let e2 = quantified(args[0].clone(), "closure_e2");
+    let b = quantified(ret.clone(), "closure_b");
+
+    let pre = |state: Term<chc::TermVarIdx>,
+               item: Term<chc::TermVarIdx>,
+               hist: Term<chc::TermVarIdx>| {
+        Formula::Atom(Atom::new(
+            pre_pred.clone().into(),
+            vec![state, item, hist],
+        ))
+    };
+    let post = Formula::Atom(Atom::new(
+        post_pred.clone().into(),
+        vec![
+            Term::mut_(c.clone(), g2.clone()),
+            e1.clone(),
+            h.clone(),
+            b,
+        ],
+    ));
+    let extended = h.clone().seq_concat(e1.clone().seq_unit());
+    let body = pre(c.clone(), e1, h.clone())
+        .and(post)
+        .implies(pre(g2.clone(), e2, extended));
+    Some(Formula::forall(
+        vec![
+            ("closure_c".to_string(), pre_state.clone()),
+            ("closure_h".to_string(), args[1].clone()),
+            ("closure_e1".to_string(), args[0].clone()),
+            ("closure_e2".to_string(), args[0].clone()),
+            ("closure_b".to_string(), ret),
+            ("closure_g2".to_string(), pre_state),
+        ],
+        body,
+    ))
+}
+
 impl<'tcx> TypeBuilder<'tcx> {
     pub fn new(
         tcx: mir_ty::TyCtxt<'tcx>,
@@ -888,6 +962,13 @@ impl<'tcx> TypeBuilder<'tcx> {
         self.system
             .borrow_mut()
             .register_forall_pred(post_pred.clone());
+
+        if let Some(law) = closure_state_preservation_law(&pre_pred, &post_pred) {
+            let mut system = self.system.borrow_mut();
+            if !system.laws_of(&pre_pred).contains(&law) {
+                system.add_law(pre_pred.clone(), law);
+            }
+        }
 
         params
             .iter_mut()
