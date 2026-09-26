@@ -115,6 +115,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
     #[tracing::instrument(skip(self), fields(def_id = %self.tcx.def_path_str(local_def_id)))]
     fn refine_fn_def(&mut self, local_def_id: LocalDefId) {
+        let has_closure_param = self.has_closure_param(local_def_id.to_def_id());
         let sig = self.ctx.fn_sig(local_def_id.to_def_id());
         let mut analyzer = self.ctx.local_def_analyzer(local_def_id);
 
@@ -157,6 +158,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             }) {
                 self.ctx
                     .register_deferred_def_without_analysis(owner_fn_id, local_def_id);
+            } else if has_closure_param {
+                // The closure contract is not written at the type parameter, so the
+                // generic body can only be checked against the free forall predicate.
+                // The call-site re-analysis checks the concrete body instead; keep the
+                // generic body unanalyzed so its clauses do not enter the query.
+                self.ctx.register_deferred_def(owner_fn_id, local_def_id);
             } else {
                 let expected = analyzer.expected_ty();
                 self.ctx
@@ -166,6 +173,23 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             let expected = analyzer.expected_ty();
             self.ctx.register_def(owner_fn_id, expected);
         }
+    }
+
+    /// Whether one of `def_id`'s own type parameters is bounded by `Fn`/`FnMut`/`FnOnce`.
+    ///
+    /// Such a parameter's contract is only a `declare-forall-fun` at the generic def;
+    /// a call site that instantiates it to a concrete closure carries the contract and
+    /// is where the body should be checked.
+    fn has_closure_param(&self, def_id: rustc_hir::def_id::DefId) -> bool {
+        let predicates = self.tcx.predicates_of(def_id).instantiate_identity(self.tcx);
+        predicates.predicates.iter().any(|clause| {
+            let Some(trait_clause) = clause.as_trait_clause() else {
+                return false;
+            };
+            let trait_ref = trait_clause.skip_binder().trait_ref;
+            self.tcx.fn_trait_kind_from_def_id(trait_ref.def_id).is_some()
+                && matches!(trait_ref.self_ty().kind(), mir_ty::TyKind::Param(_))
+        })
     }
 
     fn analyze_local_defs(&mut self) {
