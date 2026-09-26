@@ -24,8 +24,7 @@ trait Tr {
 impl Tr for P {
     #[thrust_macros::predicate]
     fn ok(self) -> bool {
-        "(>= (tuple_proj<Int>.0 self_) 0)";
-        true
+        self.v >= 0
     }
 
     fn use_it(&mut self) -> i64 {

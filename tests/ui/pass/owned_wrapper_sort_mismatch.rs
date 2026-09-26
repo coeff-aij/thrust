@@ -93,46 +93,36 @@ impl Iterator for Range {
 
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
-        "true";
         true
     }
 
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
-        "(and
-            (= (mut_current<Tuple<Int-Int>> self_) (mut_final<Tuple<Int-Int>> self_))
-            (>= (tuple_proj<Int-Int>.0 (mut_current<Tuple<Int-Int>> self_))
-                (tuple_proj<Int-Int>.1 (mut_current<Tuple<Int-Int>> self_)))
-        )";
-        true
+        // self.resolve() && self.start >= self.end
+        *self == !self && (*self).start >= (*self).end
     }
 
     #[thrust_macros::predicate]
     fn step(self, item: Self::Item, dist: Self) -> bool {
-        "(and
-            (< (tuple_proj<Int-Int>.0 self_) (tuple_proj<Int-Int>.1 self_))
-            (= (tuple_proj<Int-Int>.1 self_) (tuple_proj<Int-Int>.1 dist))
-            (= (tuple_proj<Int-Int>.0 self_) item)
-            (= (+ (tuple_proj<Int-Int>.0 self_) 1) (tuple_proj<Int-Int>.0 dist))
-        )";
-        true
+        // self.start < self.end && self.end == dist.end && self.start == item
+        // && self.start + 1 == dist.start
+        self.start < self.end
+            && self.end == dist.end
+            && self.start == item
+            && self.start + 1 == dist.start
     }
 
     #[thrust_macros::predicate]
     fn produces(self, visited: Seq<Int>, o: Self) -> bool {
-        "(and
-            (= (tuple_proj<Int-Int>.1 self_) (tuple_proj<Int-Int>.1 o))
-            (<= (tuple_proj<Int-Int>.0 self_) (tuple_proj<Int-Int>.0 o))
-            (=> (> (seq.len visited) 0)
-                (<= (tuple_proj<Int-Int>.0 o) (tuple_proj<Int-Int>.1 o)))
-            (= (seq.len visited)
-               (- (tuple_proj<Int-Int>.0 o) (tuple_proj<Int-Int>.0 self_)))
-            (forall ((zi Int))
-                (=> (and (<= 0 zi) (< zi (seq.len visited)))
-                    (= (seq.nth visited zi)
-                       (+ (tuple_proj<Int-Int>.0 self_) zi))))
-        )";
-        true
+        // self.end == o.end && self.start <= o.start
+        // && (visited.len() > 0 ==> o.start <= o.end)
+        // && visited.len() == o.start - self.start
+        // && forall zi. 0 <= zi < visited.len() ==> visited[zi] == self.start + zi
+        self.end == o.end
+            && self.start <= o.start
+            && (!(visited.len() > 0) || o.start <= o.end)
+            && visited.len() == o.start - self.start
+            && forall(|zi: Int| !(0 <= zi && zi < visited.len()) || visited[zi] == self.start + zi)
     }
 }
 

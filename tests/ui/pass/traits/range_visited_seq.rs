@@ -2,7 +2,7 @@
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 COAR_IMAGE=coar:develop-2493045c3
 use thrust_models::forall;
-use thrust_models::model::Seq;
+use thrust_models::model::{Int, Seq};
 use thrust_models::Model;
 
 // Creusot's `common.rs`/`range.rs` iterator spec: ternary `produces(self, visited, o)`, `completed`,
@@ -62,19 +62,13 @@ impl Iterator for Range {
 
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
-        "true";
         true
     }
 
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
         // self.resolve() && self.start >= self.end
-        "(and
-            (= (mut_current<Tuple<Int-Int>> self_) (mut_final<Tuple<Int-Int>> self_))
-            (>= (tuple_proj<Int-Int>.0 (mut_current<Tuple<Int-Int>> self_))
-                (tuple_proj<Int-Int>.1 (mut_current<Tuple<Int-Int>> self_)))
-        )";
-        true
+        *self == !self && (*self).start >= (*self).end
     }
 
     #[thrust_macros::predicate]
@@ -83,19 +77,11 @@ impl Iterator for Range {
         // && (visited.len() > 0 ==> o.start <= o.end)
         // && visited.len() == o.start - self.start
         // && forall i. 0 <= i < visited.len() ==> visited[i] == self.start + i
-        "(and
-            (= (tuple_proj<Int-Int>.1 self_) (tuple_proj<Int-Int>.1 o))
-            (<= (tuple_proj<Int-Int>.0 self_) (tuple_proj<Int-Int>.0 o))
-            (=> (> (seq.len visited) 0)
-                (<= (tuple_proj<Int-Int>.0 o) (tuple_proj<Int-Int>.1 o)))
-            (= (seq.len visited)
-               (- (tuple_proj<Int-Int>.0 o) (tuple_proj<Int-Int>.0 self_)))
-            (forall ((zi Int))
-                (=> (and (<= 0 zi) (< zi (seq.len visited)))
-                    (= (seq.nth visited zi)
-                       (+ (tuple_proj<Int-Int>.0 self_) zi))))
-        )";
-        true
+        self.end == o.end
+            && self.start <= o.start
+            && (!(visited.len() > 0) || o.start <= o.end)
+            && visited.len() == o.start - self.start
+            && forall(|i: Int| !(0 <= i && i < visited.len()) || visited[i] == self.start + i)
     }
 }
 

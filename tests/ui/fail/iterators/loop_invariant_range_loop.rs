@@ -46,7 +46,6 @@ impl Iterator for Range {
 
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
-        "true";
         true
     }
 
@@ -54,14 +53,9 @@ impl Iterator for Range {
     fn completed(&mut self) -> bool {
         // (tuple_proj<Int-Int>.0 self) is equivalent to self.start
         // !(*self.start < *self.end) && *self == !self is written as following:
-        "(and
-            (not (<
-                (tuple_proj<Int-Int>.0 (mut_current<Tuple<Int-Int>> self_))
-                (tuple_proj<Int-Int>.1 (mut_current<Tuple<Int-Int>> self_))
-            ))
-            (=  (mut_current<Tuple<Int-Int>> self_) (mut_final<Tuple<Int-Int>> self_))
-        )";
-        true
+        !((*self).start < (*self).end)
+            && (*self).start == (!self).start
+            && (*self).end == (!self).end
     }
 
     #[thrust_macros::predicate]
@@ -70,13 +64,10 @@ impl Iterator for Range {
         // the loop counter from above:
         // self.start < self.end && self.end == dist.end && self.start == item
         // && self.start + 1 == dist.start is written as following:
-        "(and
-            (< (tuple_proj<Int-Int>.0 self_) (tuple_proj<Int-Int>.1 self_))
-            (= (tuple_proj<Int-Int>.1 self_) (tuple_proj<Int-Int>.1 dist))
-            (= (tuple_proj<Int-Int>.0 self_) item)
-            (= (+ (tuple_proj<Int-Int>.0 self_) 1) (tuple_proj<Int-Int>.0 dist))
-        )";
-        true
+        self.start < self.end
+            && self.end == dist.end
+            && self.start == item
+            && self.start + 1 == dist.start
     }
 }
 

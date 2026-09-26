@@ -1,7 +1,8 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60 COAR_IMAGE=coar:develop-2493045c3
-use thrust_models::forall;
+use thrust_models::model::{Closure, Mut};
+use thrust_models::{exists, forall};
 
 #[thrust_macros::context]
 trait Iterator {
@@ -28,13 +29,17 @@ struct Map<I, F> {
     func: F,
 }
 
-impl<I, F> thrust_models::Model for Map<I, F> {
-    type Ty = Map<I, F>;
+impl<I: thrust_models::Model, F> thrust_models::Model for Map<I, F> {
+    type Ty = Map<<I as thrust_models::Model>::Ty, Closure<F>>;
 }
 
 #[thrust_macros::context]
 impl<I: Iterator + thrust_models::Model, B: thrust_models::Model, F: Fn(I::Item) -> B> Iterator for Map<I, F>
-where <I as thrust_models::Model>::Ty: PartialEq
+where
+    <I as thrust_models::Model>::Ty: PartialEq,
+    <I as Iterator>::Item: thrust_models::Model,
+    <<I as Iterator>::Item as thrust_models::Model>::Ty:
+        thrust_models::Model<Ty = <<I as Iterator>::Item as thrust_models::Model>::Ty> + PartialEq,
 {
     type Item = B;
 
@@ -52,55 +57,24 @@ where <I as thrust_models::Model>::Ty: PartialEq
         // self.iter.invariant()
         // The `forall(|i| pre!(self.func(i)))` conjunct is dropped here, so nothing
         // establishes the closure's precondition before `next`'s body calls it.
-        "(q_invariant_597ac4b22488a2bc34d254b9ac53a96e<a0> (tuple_proj<a0-a1>.0 self_))";
-        true
+        I::invariant(self.iter)
     }
 
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
         // self.iter.completed() && *self.func == !self.func
-        "(and
-            (q_completed_597ac4b22488a2bcd79190db0c73456e<a0>
-                (mut<a0>
-                    (tuple_proj<a0-a1>.0 (mut_current<Tuple<a0-a1>> self_))
-                    (tuple_proj<a0-a1>.0 (mut_final<Tuple<a0-a1>> self_))
-                )
-            )
-            (=
-                (tuple_proj<a0-a1>.1 (mut_current<Tuple<a0-a1>> self_))
-                (tuple_proj<a0-a1>.1 (mut_final<Tuple<a0-a1>> self_))
-            )
-        )";
-        true
+        I::completed(Mut::new((*self).iter, (!self).iter)) && (*self).func == (!self).func
     }
 
     #[thrust_macros::predicate]
     fn step(self, item: Self::Item, dist: Self) -> bool {
         // exists(|i: Self::Item| self.iter.step(i, dist.iter)) &&
         // pre!(self.func(i)) && post!(self.func(i), item) && self.func == dist.func
-        "(exists ((i a3))
-            (and
-                (q_step_597ac4b22488a2bc6c728c715e62f635<a0>
-                    (tuple_proj<a0-a1>.0 self_)
-                    i
-                    (tuple_proj<a0-a1>.0 dist)
-                )
-                (q_pre_F_597ac4b22488a2bc3546143568fc8705<a1>
-                    (tuple_proj<a0-a1>.1 self_)
-                    i
-                )
-                (q_post_F_597ac4b22488a2bc3546143568fc8705<a1>
-                    (tuple_proj<a0-a1>.1 self_)
-                    i
-                    item
-                )
-                (=
-                    (tuple_proj<a0-a1>.1 self_)
-                    (tuple_proj<a0-a1>.1 dist)
-                )
-            )
-        )";
-        true
+        exists(|i: <<I as Iterator>::Item as thrust_models::Model>::Ty|
+            I::step(self.iter, i, dist.iter)
+                && thrust_macros::pre!((self.func)(i))
+                && thrust_macros::post!((self.func)(i), item)
+                && self.func == dist.func)
     }
 }
 

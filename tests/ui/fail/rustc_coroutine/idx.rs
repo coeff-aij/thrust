@@ -12,7 +12,7 @@ use std::marker::PhantomData;
 
 use thrust_models::exists;
 use thrust_models::forall;
-use thrust_models::model::Int;
+use thrust_models::model::{Int, Seq};
 
 // //== ./../rustc_index/src/idx.rs
 
@@ -57,15 +57,13 @@ pub trait Idx: Copy + 'static + Eq + PartialEq + Debug + Hash {
 impl Idx for usize {
     #[thrust_macros::predicate]
     fn can_new(idx: thrust_models::model::Int) -> bool {
-        "true";
         true
     }
 
     #[thrust_macros::predicate]
     fn index_is(self, i: thrust_models::model::Int) -> bool {
-        // self == i
-        "(= self_ i)";
-        true
+        // i == self
+        i == self
     }
 
     #[inline]
@@ -83,16 +81,14 @@ impl Idx for usize {
 impl Idx for u32 {
     #[thrust_macros::predicate]
     fn can_new(idx: thrust_models::model::Int) -> bool {
-        // idx <= u32::MAX as usize
-        "(<= idx 4294967295)";
-        true
+        // idx <= u32::MAX
+        idx <= 4294967295usize
     }
 
     #[thrust_macros::predicate]
     fn index_is(self, i: thrust_models::model::Int) -> bool {
-        // self == i
-        "(= self_ i)";
-        true
+        // i == self
+        i == self
     }
 
     #[inline]
@@ -219,48 +215,37 @@ pub struct WordIter<'a> {
 }
 
 impl<'a> thrust_models::Model for WordIter<'a> {
-    type Ty = Self;
+    type Ty = (&'a Seq<Int>, Int);
 }
 
-// The `words` field has the slice type `&'a [Word]`, and `WordIter`'s model
-// is the struct itself, so in a `requires`/`ensures` -- which is compiled as
-// an ordinary Rust function -- the field keeps that Rust type: the `Seq`
-// accessors are rejected (`error[E0609]: no field `length` on type `[u64]``,
-// likewise `array`) and `.len()` reaches
-// `not implemented: unsupported method call in formula: ... len#0`
-// (src/analyze/annot_fn.rs:915; only the `Seq`/`Array` model methods are
-// handled there). The three predicates below are therefore the only way to
-// name `words`' length and elements; a predicate body must be a raw SMT-LIB2
-// string literal, so they project the model tuple
-// `(words: (array, length), pos)` by hand.
+// `WordIter`'s model is the `(words, pos)` pair: `words` is the `&[Word]`
+// field's model (`&Seq<Int>`), so the predicates read `self.0` (the sequence)
+// and `self.1` (the cursor) and can index by the model `Int`.
 #[thrust_macros::context]
 impl<'a> WordIter<'a> {
     /// `self.words.len() == n`.
     #[thrust_macros::predicate]
     fn words_len_is(self, n: Int) -> bool {
-        "(= n (seq.len
-                  (tuple_proj<Seq<Int>-Int>.0 self_)))";
-        true
+        // self.words.len() == n
+        n == self.0.len()
     }
 
     /// `self.words[i] == w`.
     #[thrust_macros::predicate]
     fn word_is(self, i: Int, w: Int) -> bool {
-        "(= w (seq.nth (tuple_proj<Seq<Int>-Int>.0 self_)
-                      i))";
-        true
+        // self.words[i] == w
+        w == self.0[i]
     }
 
     /// `dist.words == self.words`.
     #[thrust_macros::predicate]
     fn same_words(self, dist: Self) -> bool {
-        "(= (tuple_proj<Seq<Int>-Int>.0 dist)
-            (tuple_proj<Seq<Int>-Int>.0 self_))";
-        true
+        // dist.words == self.words
+        *dist.0 == *self.0
     }
 
     #[thrust_macros::requires(true)]
-    #[thrust_macros::ensures(result.pos == 0)]
+    #[thrust_macros::ensures(result.1 == 0)]
     #[thrust_macros::ensures(Self::words_len_is(result, (*words).len()))]
     #[thrust_macros::ensures(forall(|i: Int| Self::word_is(result, i, (*words)[i])))]
     fn new(words: &'a [Word]) -> WordIter<'a> {
@@ -295,10 +280,10 @@ impl<'a> WordIter<'a> {
     #[thrust_macros::requires(true)]
     #[thrust_macros::ensures(Self::same_words(*it, !it))]
     #[thrust_macros::ensures(forall(|n: Int, p: Int|
-        Self::words_len_is(*it, n) && p == (*it).pos
+        Self::words_len_is(*it, n) && p == (*it).1
             ==> (p < n ==> exists(|x: Int| result == Some(&x) && Self::word_is(*it, p, x))
-                    && p + 1 == (!it).pos)
-                && (n <= p ==> result == None && (!it).pos == (*it).pos)))]
+                    && p + 1 == (!it).1)
+                && (n <= p ==> result == None && (!it).1 == (*it).1)))]
     fn _extern_spec_next(it: &mut WordIter<'a>) -> Option<&'a Word> {
         <WordIter<'a> as Iterator>::next(it)
     }

@@ -17,7 +17,7 @@
 // spec is uncertain (`// TODO(spec):`).
 
 use thrust_models::forall;
-use thrust_models::model::Int;
+use thrust_models::model::{Int, Seq};
 
 use std::fmt::Debug;
 use std::hash::Hash;
@@ -47,16 +47,12 @@ impl<T: Idx> DenseBitSet<T> {
     #[thrust_macros::predicate]
     fn mem(self, i: usize) -> bool {
         // self.words[i] != 0
-        "(not (= (seq.nth (tuple_proj<Int-Seq<Int>-Tuple>.1 self_)
-                    i)
-                 0))";
-        true
+        self.1[i] != 0
     }
 
     /// `dist` is `self` with `i` inserted: same domain, and the word sequence
-    /// updated at `i` only. Phrased on the word sequence so that the frame
-    /// ("every other element keeps its membership") is an nth-over-store
-    /// for the solver instead of a nested quantifier.
+    /// updated at `i` only. `Seq::store` cannot take the model `Int` literal
+    /// `1` from Rust syntax, so this stays a raw SMT-LIB2 body.
     #[thrust_macros::predicate]
     fn inserted(self, i: usize, dist: Self) -> bool {
         // dist.domain_size == self.domain_size
@@ -76,10 +72,7 @@ impl<T: Idx> DenseBitSet<T> {
     /// quantified *assumption*.
     #[thrust_macros::predicate]
     fn no_mem(self) -> bool {
-        "(forall ((k Int))
-            (=> (and (<= 0 k) (< k (seq.len (tuple_proj<Int-Seq<Int>-Tuple>.1 self_))))
-                (= (seq.nth (tuple_proj<Int-Seq<Int>-Tuple>.1 self_) k) 0)))";
-        true
+        forall(|k: Int| !(0 <= k && k < self.1.len()) || self.1[k] == 0)
     }
 
     // New for this stage: "l is the k-th element yielded by `self.iter()`".
@@ -92,13 +85,12 @@ impl<T: Idx> DenseBitSet<T> {
     // ensures clause that uses it below is marked accordingly.
     #[thrust_macros::predicate]
     fn elem_at(self, k: usize, l: T) -> bool {
-        "true";
         true
     }
 
     #[inline]
     #[thrust::trusted]
-    #[thrust_macros::ensures(result.domain_size == domain_size)]
+    #[thrust_macros::ensures(result.0 == domain_size)]
     #[thrust_macros::ensures(Self::no_mem(result))]
     pub fn new_empty(domain_size: usize) -> DenseBitSet<T> {
         let num_words = num_words(domain_size);
@@ -123,7 +115,7 @@ impl<T: Idx> DenseBitSet<T> {
 
     #[inline]
     #[thrust::trusted]
-    #[thrust_macros::requires(forall(|i: Int| <T as Idx>::index_is(elem, i) ==> i < (*self).domain_size))]
+    #[thrust_macros::requires(forall(|i: Int| <T as Idx>::index_is(elem, i) ==> i < (*self).0))]
     #[thrust_macros::ensures(forall(|i: Int| <T as Idx>::index_is(elem, i) && (result == true) ==> Self::mem(*self, i)))]
     #[thrust_macros::ensures(forall(|i: Int| <T as Idx>::index_is(elem, i) && Self::mem(*self, i) ==> (result == true)))]
     pub fn contains(&self, elem: T) -> bool {
@@ -134,8 +126,8 @@ impl<T: Idx> DenseBitSet<T> {
 
     #[inline]
     #[thrust::trusted]
-    #[thrust_macros::requires(forall(|i: Int| <T as Idx>::index_is(elem, i) ==> i < (*self).domain_size))]
-    #[thrust_macros::ensures((!self).domain_size == (*self).domain_size)]
+    #[thrust_macros::requires(forall(|i: Int| <T as Idx>::index_is(elem, i) ==> i < (*self).0))]
+    #[thrust_macros::ensures((!self).0 == (*self).0)]
     #[thrust_macros::ensures(forall(|i: Int| <T as Idx>::index_is(elem, i)
         ==> Self::inserted(*self, i, !self)))]
     #[thrust_macros::ensures(forall(|i: Int| <T as Idx>::index_is(elem, i) && (result == true) ==> !Self::mem(*self, i)))]
@@ -156,8 +148,8 @@ impl<T: Idx> DenseBitSet<T> {
     }
 
     #[thrust::trusted]
-    #[thrust_macros::ensures((!self).domain_size == (*self).domain_size)]
-    #[thrust_macros::ensures(forall(|i: Int| i < (*self).domain_size ==> Self::mem(!self, i)))]
+    #[thrust_macros::ensures((!self).0 == (*self).0)]
+    #[thrust_macros::ensures(forall(|i: Int| i < (*self).0 ==> Self::mem(!self, i)))]
     pub fn insert_all(&mut self) {
         self.words.fill(!0);
         self.clear_excess_bits();
@@ -354,13 +346,11 @@ impl Idx for usize {
     #[thrust_macros::predicate]
     fn index_is(self, i: usize) -> bool {
         // i == self
-        "(= i self_)";
-        true
+        i == self
     }
 
     #[thrust_macros::predicate]
     fn can_new(idx: usize) -> bool {
-        "true";
         true
     }
 
@@ -788,7 +778,7 @@ impl<VariantIdx, FieldIdx> thrust_models::Model for SavedLocalEligibility<Varian
     type Ty = Self;
 }
 impl<T> thrust_models::Model for DenseBitSet<T> {
-    type Ty = Self;
+    type Ty = (Int, Seq<Int>, ());
 }
 impl<'a> thrust_models::Model for WordIter<'a> {
     type Ty = Self;

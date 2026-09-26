@@ -8,7 +8,7 @@
 // rustc_index::bit_set and rustc_index::idx, adapted).
 
 use thrust_models::forall;
-use thrust_models::model::Int;
+use thrust_models::model::{Int, Seq};
 
 use std::fmt::Debug;
 use std::hash::Hash;
@@ -40,16 +40,12 @@ impl<T: Idx> DenseBitSet<T> {
     #[thrust_macros::predicate]
     fn mem(self, i: usize) -> bool {
         // self.words[i] != 0
-        "(not (= (seq.nth (tuple_proj<Int-Seq<Int>-Tuple>.1 self_)
-                    i)
-                 0))";
-        true
+        self.1[i] != 0
     }
 
     /// `dist` is `self` with `i` inserted: same domain, and the word sequence
-    /// updated at `i` only. Phrased on the word sequence so that the frame
-    /// ("every other element keeps its membership") is an nth-over-store
-    /// for the solver instead of a nested quantifier.
+    /// updated at `i` only. `Seq::store` cannot take the model `Int` literal
+    /// `1` from Rust syntax, so this stays a raw SMT-LIB2 body.
     #[thrust_macros::predicate]
     fn inserted(self, i: usize, dist: Self) -> bool {
         // dist.domain_size == self.domain_size
@@ -69,10 +65,7 @@ impl<T: Idx> DenseBitSet<T> {
     /// quantified *assumption*.
     #[thrust_macros::predicate]
     fn no_mem(self) -> bool {
-        "(forall ((k Int))
-            (=> (and (<= 0 k) (< k (seq.len (tuple_proj<Int-Seq<Int>-Tuple>.1 self_))))
-                (= (seq.nth (tuple_proj<Int-Seq<Int>-Tuple>.1 self_) k) 0)))";
-        true
+        forall(|k: Int| !(0 <= k && k < self.1.len()) || self.1[k] == 0)
     }
 
     /// The abstraction reads the word sequence as one entry per element, so
@@ -89,7 +82,7 @@ impl<T: Idx> DenseBitSet<T> {
 
     #[inline]
     #[thrust::trusted]
-    #[thrust_macros::ensures(result.domain_size == domain_size)]
+    #[thrust_macros::ensures(result.0 == domain_size)]
     #[thrust_macros::ensures(Self::no_mem(result))]
     #[thrust_macros::ensures(Self::one_entry_per_elem(result))]
     pub fn new_empty(domain_size: usize) -> DenseBitSet<T> {
@@ -115,7 +108,7 @@ impl<T: Idx> DenseBitSet<T> {
 
     #[inline]
     #[thrust::trusted]
-    #[thrust_macros::requires(forall(|i: Int| <T as Idx>::index_is(elem, i) ==> i < (*self).domain_size))]
+    #[thrust_macros::requires(forall(|i: Int| <T as Idx>::index_is(elem, i) ==> i < (*self).0))]
     #[thrust_macros::ensures(forall(|i: Int| <T as Idx>::index_is(elem, i) && (result == true) ==> Self::mem(*self, i)))]
     #[thrust_macros::ensures(forall(|i: Int| <T as Idx>::index_is(elem, i) && Self::mem(*self, i) ==> (result == true)))]
     pub fn contains(&self, elem: T) -> bool {
@@ -126,8 +119,8 @@ impl<T: Idx> DenseBitSet<T> {
 
     #[inline]
     #[thrust::trusted]
-    #[thrust_macros::requires(forall(|i: Int| <T as Idx>::index_is(elem, i) ==> i < (*self).domain_size))]
-    #[thrust_macros::ensures((!self).domain_size == (*self).domain_size)]
+    #[thrust_macros::requires(forall(|i: Int| <T as Idx>::index_is(elem, i) ==> i < (*self).0))]
+    #[thrust_macros::ensures((!self).0 == (*self).0)]
     // `Self::inserted` gives, for `i` the index of `elem`:
     //   `Self::mem(!self, i)`, and
     //   `forall j != i: Self::mem(!self, j) <==> Self::mem(*self, j)`.
@@ -151,9 +144,9 @@ impl<T: Idx> DenseBitSet<T> {
     }
 
     #[thrust::trusted]
-    #[thrust_macros::ensures((!self).domain_size == (*self).domain_size)]
+    #[thrust_macros::ensures((!self).0 == (*self).0)]
     #[thrust_macros::ensures(Self::one_entry_per_elem(*self) ==> Self::one_entry_per_elem(!self))]
-    #[thrust_macros::ensures(forall(|i: Int| i < (*self).domain_size ==> Self::mem(!self, i)))]
+    #[thrust_macros::ensures(forall(|i: Int| i < (*self).0 ==> Self::mem(!self, i)))]
     pub fn insert_all(&mut self) {
         self.words.fill(!0);
         self.clear_excess_bits();
@@ -206,17 +199,10 @@ pub struct BitIter<'a, T: Idx> {
     marker: PhantomData<T>,
 }
 
-// The bit bound below has to be written in raw SMT-LIB2: `self.iter.words`
-// has the slice type `&'a [Word]`, and both `BitIter` and `WordIter` model as
-// themselves, so in a `requires`/`ensures` -- compiled as an ordinary Rust
-// function -- the field keeps that Rust type and the `Seq` accessors are
-// rejected (`error[E0609]: no field `length` on type `[u64]``, likewise
-// `array`), while `.len()` reaches
-// `not implemented: unsupported method call in formula: ... len#0`
-// (src/analyze/annot_fn.rs:915). A `predicate` body must be a raw string
-// literal anyway, so these project the model tuples by hand:
-// `BitIter = (word, offset, iter, marker)` and `WordIter = (words, pos)`,
-// with `words = (array, length)`.
+// `BitIter` and `WordIter` model as themselves, and `self.iter.words` has the
+// slice type `&'a [Word]`, so its length is spelled through a deref,
+// `(*self.iter.words).len()`, and sequence equality as
+// `dist.iter.words == self.iter.words`.
 #[thrust_macros::context]
 impl<'a, T: Idx> BitIter<'a, T> {
     /// `n == self.iter.words.len() * WORD_BITS`: the number of bits the
@@ -226,16 +212,16 @@ impl<'a, T: Idx> BitIter<'a, T> {
     /// the wrapping `offset` arithmetic is not modelled.
     #[thrust_macros::predicate]
     fn bit_bound(self, n: usize) -> bool {
-        "(= n (* 64 (seq.len (tuple_proj<Seq<Int>-Int>.0 (tuple_proj<Int-Int-Tuple<Seq<Int>-Int>-Tuple>.2 self_)))))";
-        true
+        // n == self.iter.words.len() * 64
+        n == 64 * (*self.iter.words).len()
     }
 
     /// `dist.iter.words == self.iter.words`: `next` never replaces the word
     /// array, so the bound above survives a call.
     #[thrust_macros::predicate]
     fn same_words(self, dist: Self) -> bool {
-        "(= (tuple_proj<Seq<Int>-Int>.0 (tuple_proj<Int-Int-Tuple<Seq<Int>-Int>-Tuple>.2 dist)) (tuple_proj<Seq<Int>-Int>.0 (tuple_proj<Int-Int-Tuple<Seq<Int>-Int>-Tuple>.2 self_)))";
-        true
+        // dist.iter.words == self.iter.words
+        dist.iter.words == self.iter.words
     }
 
     #[inline]
@@ -415,8 +401,7 @@ impl Idx for usize {
     #[thrust_macros::predicate]
     fn index_is(self, i: usize) -> bool {
         // i == self
-        "(= i self_)";
-        true
+        i == self
     }
 
     #[inline]
@@ -467,7 +452,7 @@ impl<I: Idx> Iterator for IdxRange<I> {
 }
 
 impl<T> thrust_models::Model for DenseBitSet<T> {
-    type Ty = Self;
+    type Ty = (Int, Seq<Int>, ());
 }
 impl<'a> thrust_models::Model for WordIter<'a> {
     type Ty = Self;

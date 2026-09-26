@@ -49,7 +49,7 @@ impl A for X {
 
     #[thrust_macros::predicate]
     fn p(self) -> bool {
-        "(> (tuple_proj<Int>.0 self_) 0)"; true
+        self.0 > 0
     }
 }
 
@@ -72,7 +72,7 @@ impl A for Y {
 
     #[thrust_macros::predicate]
     fn p(self) -> bool {
-        "(> (tuple_proj<Int>.0 self_) 0)"; true
+        self.0 > 0
     }
 }
 

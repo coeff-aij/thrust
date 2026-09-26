@@ -1,6 +1,7 @@
 // FIXME: Unsat since `next` ensures `Self::invariant(!self)`: Map's invariant (closure pre for every item the inner iterator can step to now) is not inductive; preserving it needs a multi-step reachability relation in the trait (Creusot uses `produces` over sequences).
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:develop-2493045c3
-use thrust_models::forall;
+use thrust_models::model::{Closure, Mut};
+use thrust_models::{exists, forall};
 
 #[thrust_macros::context]
 trait Iterator {
@@ -27,13 +28,17 @@ struct Map<I, F> {
     func: F,
 }
 
-impl<I, F> thrust_models::Model for Map<I, F> {
-    type Ty = Map<I, F>;
+impl<I: thrust_models::Model, F> thrust_models::Model for Map<I, F> {
+    type Ty = Map<<I as thrust_models::Model>::Ty, Closure<F>>;
 }
 
 #[thrust_macros::context]
 impl<I: Iterator + thrust_models::Model, B: thrust_models::Model, F: Fn(I::Item) -> B> Iterator for Map<I, F>
-where <I as thrust_models::Model>::Ty: PartialEq
+where
+    <I as thrust_models::Model>::Ty: PartialEq,
+    <I as Iterator>::Item: thrust_models::Model,
+    <<I as Iterator>::Item as thrust_models::Model>::Ty:
+        thrust_models::Model<Ty = <<I as Iterator>::Item as thrust_models::Model>::Ty> + PartialEq,
 {
     type Item = B;
     
@@ -50,69 +55,28 @@ where <I as thrust_models::Model>::Ty: PartialEq
     fn invariant(self) -> bool {
         // self.iter.invariant() &&
         // forall(|i: I::Item, dist: I| self.iter.step(i, dist) ==> pre!(self.func(i)))
-        "(and
-            (q_invariant_7301c9248155c50d8ab3300ff35fd085<a0> (tuple_proj<a0-a1>.0 self_))
-            (forall ((i a3) (dist a0))
-                (=>
-                    (q_step_7301c9248155c50d139c4cfe897a4790<a0>
-                        (tuple_proj<a0-a1>.0 self_)
-                        i
-                        dist
-                    )
-                    (q_pre_F_7301c9248155c50de40291656f3c087e<a1>
-                        (tuple_proj<a0-a1>.1 self_)
-                        i
-                    )
-                )
-            )
-        )";
-        true
+        I::invariant(self.iter)
+            && forall(|i: <<I as Iterator>::Item as thrust_models::Model>::Ty|
+                forall(|dist: <I as thrust_models::Model>::Ty|
+                    !I::step(self.iter, i, dist)
+                        || thrust_macros::pre!((self.func)(i))))
     }
 
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
         // self.iter.completed() && *self.func == !self.func
-        "(and
-            (q_completed_7301c9248155c50da4cf4c72232b5d2b<a0>
-                (mut<a0>
-                    (tuple_proj<a0-a1>.0 (mut_current<Tuple<a0-a1>> self_))
-                    (tuple_proj<a0-a1>.0 (mut_final<Tuple<a0-a1>> self_))
-                )
-            )
-            (=
-                (tuple_proj<a0-a1>.1 (mut_current<Tuple<a0-a1>> self_))
-                (tuple_proj<a0-a1>.1 (mut_final<Tuple<a0-a1>> self_))
-            )
-        )";
-        true
+        I::completed(Mut::new((*self).iter, (!self).iter)) && (*self).func == (!self).func
     }
 
     #[thrust_macros::predicate]
     fn step(self, item: Self::Item, dist: Self) -> bool {
         // exists(|i: Self::Item| self.iter.step(i, dist.iter)) &&
         // pre!(self.func(i)) && post!(self.func(i), item)
-        "(exists ((i a3))
-            (and
-                (q_step_7301c9248155c50d139c4cfe897a4790<a0>
-                    (tuple_proj<a0-a1>.0 self_)
-                    i
-                    (tuple_proj<a0-a1>.0 dist)
-                )
-                (q_pre_F_7301c9248155c50de40291656f3c087e<a1>
-                    (tuple_proj<a0-a1>.1 self_)
-                    i
-                )
-                (q_post_F_7301c9248155c50de40291656f3c087e<a1>
-                    (tuple_proj<a0-a1>.1 self_)
-                    i item
-                )
-                (=
-                    (tuple_proj<a0-a1>.1 self_)
-                    (tuple_proj<a0-a1>.1 dist)
-                )
-            )
-        )";
-        true
+        exists(|i: <<I as Iterator>::Item as thrust_models::Model>::Ty|
+            I::step(self.iter, i, dist.iter)
+                && thrust_macros::pre!((self.func)(i))
+                && thrust_macros::post!((self.func)(i), item)
+                && self.func == dist.func)
     }
 }
 

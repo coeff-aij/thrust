@@ -48,15 +48,13 @@ pub trait Idx: Copy + 'static + Eq + PartialEq + Debug + Hash {
 impl Idx for usize {
     #[thrust_macros::predicate]
     fn can_new(idx: Int) -> bool {
-        "true";
         true
     }
 
     #[thrust_macros::predicate]
     fn index_is(self, i: Int) -> bool {
-        // self == i
-        "(= self_ i)";
-        true
+        // i == self
+        i == self
     }
 
     #[inline]

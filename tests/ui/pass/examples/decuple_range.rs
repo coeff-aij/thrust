@@ -10,8 +10,8 @@
 // The step form has no history, so what `collect` can promise is that every collected item is
 // one the iterator could produce, not its position: the property checked is the range of each
 // element, not Creusot's `v[i] == 10 * i` (`drafts/creusot-examples/decuple_range_visited.rs` states that one).
-use thrust_models::forall;
-use thrust_models::model::{Closure, Int, Seq};
+use thrust_models::{exists, forall};
+use thrust_models::model::{Closure, Int, Mut, Seq};
 use thrust_models::Model;
 
 #[thrust_macros::context]
@@ -69,7 +69,11 @@ impl<I: Model, F> Model for Map<I, F> {
 
 #[thrust_macros::context]
 impl<I: Iterator + thrust_models::Model, B: thrust_models::Model, F: Fn(I::Item) -> B> Iterator for Map<I, F>
-where <I as thrust_models::Model>::Ty: PartialEq
+where
+    <I as thrust_models::Model>::Ty: PartialEq,
+    <I as Iterator>::Item: thrust_models::Model,
+    <<I as Iterator>::Item as thrust_models::Model>::Ty:
+        thrust_models::Model<Ty = <<I as Iterator>::Item as thrust_models::Model>::Ty> + PartialEq,
 {
     type Item = B;
     
@@ -86,40 +90,15 @@ where <I as thrust_models::Model>::Ty: PartialEq
     fn invariant(self) -> bool {
         // self.iter.invariant() &&
         // forall(|i: I::Item| self.iter.produces(i) ==> pre!(self.func(i)))
-        "(and
-            (q_invariant_535b65d6c851059a677a5e46c08a789<a0> (tuple_proj<a0-a1>.0 self_))
-            (forall ((i a7))
-                (=>
-                    (q_produces_535b65d6c851059ae4cb460e863daa8c<a0>
-                        (tuple_proj<a0-a1>.0 self_)
-                        i
-                    )
-                    (q_pre_F_535b65d6c851059ad5d0a5796474cec<a1>
-                        (tuple_proj<a0-a1>.1 self_)
-                        i
-                    )
-                )
-            )
-        )";
-        true
+        I::invariant(self.iter)
+            && forall(|i: <<I as Iterator>::Item as thrust_models::Model>::Ty|
+                !I::produces(self.iter, i) || thrust_macros::pre!((self.func)(i)))
     }
 
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
         // self.iter.completed() && *self.func == !self.func
-        "(and
-            (q_completed_535b65d6c851059ae9a463aaf40b8ea0<a0>
-                (mut<a0>
-                    (tuple_proj<a0-a1>.0 (mut_current<Tuple<a0-a1>> self_))
-                    (tuple_proj<a0-a1>.0 (mut_final<Tuple<a0-a1>> self_))
-                )
-            )
-            (=
-                (tuple_proj<a0-a1>.1 (mut_current<Tuple<a0-a1>> self_))
-                (tuple_proj<a0-a1>.1 (mut_final<Tuple<a0-a1>> self_))
-            )
-        )";
-        true
+        I::completed(Mut::new((*self).iter, (!self).iter)) && (*self).func == (!self).func
     }
 
     #[thrust_macros::predicate]
@@ -127,50 +106,21 @@ where <I as thrust_models::Model>::Ty: PartialEq
         // exists(|i: I::Item| self.iter.step(i, dist.iter)
         //     && pre!(self.func(i)) && post!(self.func(i), item))
         // && self.func == dist.func
-        "(exists ((i a7))
-            (and
-                (q_step_535b65d6c851059abc1b6209b963f472<a0>
-                    (tuple_proj<a0-a1>.0 self_)
-                    i
-                    (tuple_proj<a0-a1>.0 dist)
-                )
-                (q_pre_F_535b65d6c851059ad5d0a5796474cec<a1>
-                    (tuple_proj<a0-a1>.1 self_)
-                    i
-                )
-                (q_post_F_535b65d6c851059ad5d0a5796474cec<a1>
-                    (tuple_proj<a0-a1>.1 self_)
-                    i
-                    item
-                )
-                (= (tuple_proj<a0-a1>.1 self_) (tuple_proj<a0-a1>.1 dist))
-            )
-        )";
-        true
+        exists(|i: <<I as Iterator>::Item as thrust_models::Model>::Ty|
+            I::step(self.iter, i, dist.iter)
+                && thrust_macros::pre!((self.func)(i))
+                && thrust_macros::post!((self.func)(i), item)
+                && self.func == dist.func)
     }
 
     #[thrust_macros::predicate]
     fn produces(self, item: Self::Item) -> bool {
         // exists(|j: I::Item| self.iter.produces(j)
         //     && pre!(self.func(j)) && post!(self.func(j), item))
-        "(exists ((j a7))
-            (and
-                (q_produces_535b65d6c851059ae4cb460e863daa8c<a0>
-                    (tuple_proj<a0-a1>.0 self_)
-                    j
-                )
-                (q_pre_F_535b65d6c851059ad5d0a5796474cec<a1>
-                    (tuple_proj<a0-a1>.1 self_)
-                    j
-                )
-                (q_post_F_535b65d6c851059ad5d0a5796474cec<a1>
-                    (tuple_proj<a0-a1>.1 self_)
-                    j
-                    item
-                )
-            )
-        )";
-        true
+        exists(|j: <<I as Iterator>::Item as thrust_models::Model>::Ty|
+            I::produces(self.iter, j)
+                && thrust_macros::pre!((self.func)(j))
+                && thrust_macros::post!((self.func)(j), item))
     }
 }
 
@@ -200,44 +150,29 @@ impl Iterator for Range {
 
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
-        "true";
         true
     }
 
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
         // !(*self.start < *self.end) && *self == !self
-        "(and
-            (not (<
-                (tuple_proj<Int-Int>.0 (mut_current<Tuple<Int-Int>> self_))
-                (tuple_proj<Int-Int>.1 (mut_current<Tuple<Int-Int>> self_))
-            ))
-            (= (mut_current<Tuple<Int-Int>> self_) (mut_final<Tuple<Int-Int>> self_))
-        )";
-        true
+        !((*self).start < (*self).end) && *self == !self
     }
 
     #[thrust_macros::predicate]
     fn step(self, item: Self::Item, dist: Self) -> bool {
         // self.start < self.end && self.end == dist.end && self.start == item
         // && self.start + 1 == dist.start
-        "(and
-            (< (tuple_proj<Int-Int>.0 self_) (tuple_proj<Int-Int>.1 self_))
-            (= (tuple_proj<Int-Int>.1 self_) (tuple_proj<Int-Int>.1 dist))
-            (= (tuple_proj<Int-Int>.0 self_) item)
-            (= (+ (tuple_proj<Int-Int>.0 self_) 1) (tuple_proj<Int-Int>.0 dist))
-        )";
-        true
+        self.start < self.end
+            && self.end == dist.end
+            && self.start == item
+            && self.start + 1 == dist.start
     }
 
     #[thrust_macros::predicate]
     fn produces(self, item: Self::Item) -> bool {
         // self.start <= item && item < self.end
-        "(and
-            (<= (tuple_proj<Int-Int>.0 self_) item)
-            (< item (tuple_proj<Int-Int>.1 self_))
-        )";
-        true
+        self.start <= item && item < self.end
     }
 }
 

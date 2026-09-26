@@ -24,7 +24,6 @@ trait Tr {
 impl Tr for P {
     #[thrust_macros::predicate]
     fn ok(self) -> bool {
-        "true";
         true
     }
 

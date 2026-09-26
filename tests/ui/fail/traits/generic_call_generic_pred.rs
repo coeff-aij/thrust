@@ -39,8 +39,7 @@ impl Counter for Cell {
     #[thrust_macros::predicate]
     fn running(self) -> bool {
         // self.n >= 0
-        "(>= (tuple_proj<Int>.0 self_) 0)";
-        true
+        self.n >= 0
     }
 }
 

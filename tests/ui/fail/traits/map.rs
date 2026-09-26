@@ -1,7 +1,8 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60 COAR_IMAGE=coar:develop-2493045c3
-use thrust_models::forall;
+use thrust_models::model::{Closure, Mut};
+use thrust_models::{exists, forall};
 
 #[thrust_macros::context]
 trait Iterator {
@@ -35,16 +36,20 @@ struct Map<I, F> {
     func: F,
 }
 
-impl<I, F> thrust_models::Model for Map<I, F> {
-    type Ty = Map<I, F>;
+impl<I: thrust_models::Model, F> thrust_models::Model for Map<I, F> {
+    type Ty = Map<<I as thrust_models::Model>::Ty, Closure<F>>;
 }
 
 #[thrust_macros::context]
 impl<I: Iterator + thrust_models::Model, B: thrust_models::Model, F: Fn(I::Item) -> B> Iterator for Map<I, F>
-where <I as thrust_models::Model>::Ty: PartialEq
+where
+    <I as thrust_models::Model>::Ty: PartialEq,
+    <I as Iterator>::Item: thrust_models::Model,
+    <<I as Iterator>::Item as thrust_models::Model>::Ty:
+        thrust_models::Model<Ty = <<I as Iterator>::Item as thrust_models::Model>::Ty> + PartialEq,
 {
     type Item = B;
-    
+
     fn next(&mut self) -> Option<Self::Item> {
         match self.iter.next() {
             Some(v) => {
@@ -59,26 +64,13 @@ where <I as thrust_models::Model>::Ty: PartialEq
         // self.iter.invariant()
         // Unsat: without `produces(iter, i) ==> pre!(func(i))` the call `(self.func)(v)` in `next`
         // has no precondition to discharge from.
-        "(q_invariant_ae8bdb3b1e3ae00bdd84dd265c9192eb<a0> (tuple_proj<a0-a1>.0 self_))";
-        true
+        I::invariant(self.iter)
     }
 
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
         // self.iter.completed() && *self.func == !self.func
-        "(and
-            (q_completed_ae8bdb3b1e3ae00b46c4745e3c9b07d6<a0>
-                (mut<a0>
-                    (tuple_proj<a0-a1>.0 (mut_current<Tuple<a0-a1>> self_))
-                    (tuple_proj<a0-a1>.0 (mut_final<Tuple<a0-a1>> self_))
-                )
-            )
-            (=
-                (tuple_proj<a0-a1>.1 (mut_current<Tuple<a0-a1>> self_))
-                (tuple_proj<a0-a1>.1 (mut_final<Tuple<a0-a1>> self_))
-            )
-        )";
-        true
+        I::completed(Mut::new((*self).iter, (!self).iter)) && (*self).func == (!self).func
     }
 
     #[thrust_macros::predicate]
@@ -86,50 +78,21 @@ where <I as thrust_models::Model>::Ty: PartialEq
         // exists(|i: I::Item| self.iter.step(i, dist.iter)
         //     && pre!(self.func(i)) && post!(self.func(i), item))
         // && self.func == dist.func
-        "(exists ((i a3))
-            (and
-                (q_step_ae8bdb3b1e3ae00b8dd88201ff820b9d<a0>
-                    (tuple_proj<a0-a1>.0 self_)
-                    i
-                    (tuple_proj<a0-a1>.0 dist)
-                )
-                (q_pre_F_ae8bdb3b1e3ae00b829c53733665345c<a1>
-                    (tuple_proj<a0-a1>.1 self_)
-                    i
-                )
-                (q_post_F_ae8bdb3b1e3ae00b829c53733665345c<a1>
-                    (tuple_proj<a0-a1>.1 self_)
-                    i
-                    item
-                )
-                (= (tuple_proj<a0-a1>.1 self_) (tuple_proj<a0-a1>.1 dist))
-            )
-        )";
-        true
+        exists(|i: <<I as Iterator>::Item as thrust_models::Model>::Ty|
+            I::step(self.iter, i, dist.iter)
+                && thrust_macros::pre!((self.func)(i))
+                && thrust_macros::post!((self.func)(i), item)
+                && self.func == dist.func)
     }
 
     #[thrust_macros::predicate]
     fn produces(self, item: Self::Item) -> bool {
         // exists(|j: I::Item| self.iter.produces(j)
         //     && pre!(self.func(j)) && post!(self.func(j), item))
-        "(exists ((j a3))
-            (and
-                (q_produces_ae8bdb3b1e3ae00b78c5ded836701e16<a0>
-                    (tuple_proj<a0-a1>.0 self_)
-                    j
-                )
-                (q_pre_F_ae8bdb3b1e3ae00b829c53733665345c<a1>
-                    (tuple_proj<a0-a1>.1 self_)
-                    j
-                )
-                (q_post_F_ae8bdb3b1e3ae00b829c53733665345c<a1>
-                    (tuple_proj<a0-a1>.1 self_)
-                    j
-                    item
-                )
-            )
-        )";
-        true
+        exists(|j: <<I as Iterator>::Item as thrust_models::Model>::Ty|
+            I::produces(self.iter, j)
+                && thrust_macros::pre!((self.func)(j))
+                && thrust_macros::post!((self.func)(j), item))
     }
 }
 

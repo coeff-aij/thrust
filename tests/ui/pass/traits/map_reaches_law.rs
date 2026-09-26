@@ -1,7 +1,8 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60 COAR_IMAGE=coar:develop-2493045c3
-use thrust_models::forall;
+use thrust_models::model::{Closure, Int, Mut};
+use thrust_models::{exists, forall};
 
 #[thrust_macros::context]
 trait Iterator {
@@ -48,8 +49,8 @@ struct Map<I, F> {
     func: F,
 }
 
-impl<I, F> thrust_models::Model for Map<I, F> {
-    type Ty = Map<I, F>;
+impl<I: thrust_models::Model, F> thrust_models::Model for Map<I, F> {
+    type Ty = Map<<I as thrust_models::Model>::Ty, Closure<F>>;
 }
 
 #[thrust_macros::context]
@@ -77,37 +78,18 @@ where
         // `declare-forall-fun`s over the bare abstract sort `a0` rather than the
         // `define-fun`s the monomorphised version got, and the intermediate states
         // are bound at `a0` instead of field by field at `Int`.
-        "(and
-            (q_invariant_b665189a22a9bc2056ad1eadd918ea04<a0> (tuple_proj<a0-a1>.0 self_))
-            (forall ((zm a0) (ze Int) (zn a0))
-                (=>
-                    (and
-                        (q_reaches_b665189a22a9bc20b75324461c8c5287<a0> (tuple_proj<a0-a1>.0 self_) zm)
-                        (q_step_b665189a22a9bc20645f008c4b764e02<a0> zm ze zn)
-                    )
-                    (q_pre_F_b665189a22a9bc204fcdb12194c626e0<a1> (tuple_proj<a0-a1>.1 self_) ze)
-                )
-            )
-        )";
-        true
+        I::invariant(self.iter)
+            && forall(|zm: <I as thrust_models::Model>::Ty|
+                forall(|ze: Int|
+                    forall(|zn: <I as thrust_models::Model>::Ty|
+                        !(I::reaches(self.iter, zm) && I::step(zm, ze, zn))
+                            || thrust_macros::pre!((self.func)(ze)))))
     }
 
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
         // self.iter.completed() && *self.func == !self.func
-        "(and
-            (q_completed_b665189a22a9bc20aeb347e2b1280c86<a0>
-                (mut<a0>
-                    (tuple_proj<a0-a1>.0 (mut_current<Tuple<a0-a1>> self_))
-                    (tuple_proj<a0-a1>.0 (mut_final<Tuple<a0-a1>> self_))
-                )
-            )
-            (=
-                (tuple_proj<a0-a1>.1 (mut_current<Tuple<a0-a1>> self_))
-                (tuple_proj<a0-a1>.1 (mut_final<Tuple<a0-a1>> self_))
-            )
-        )";
-        true
+        I::completed(Mut::new((*self).iter, (!self).iter)) && (*self).func == (!self).func
     }
 
     #[thrust_macros::predicate]
@@ -115,25 +97,17 @@ where
         // exists(|i: i64| self.iter.step(i, dist.iter)
         //     && pre!(self.func(i)) && post!(self.func(i), item))
         // && self.func == dist.func
-        "(exists ((zi Int))
-            (and
-                (q_step_b665189a22a9bc20645f008c4b764e02<a0> (tuple_proj<a0-a1>.0 self_) zi (tuple_proj<a0-a1>.0 dist))
-                (q_pre_F_b665189a22a9bc204fcdb12194c626e0<a1> (tuple_proj<a0-a1>.1 self_) zi)
-                (q_post_F_b665189a22a9bc204fcdb12194c626e0<a1> (tuple_proj<a0-a1>.1 self_) zi item)
-                (= (tuple_proj<a0-a1>.1 self_) (tuple_proj<a0-a1>.1 dist))
-            )
-        )";
-        true
+        exists(|zi: Int|
+            I::step(self.iter, zi, dist.iter)
+                && thrust_macros::pre!((self.func)(zi))
+                && thrust_macros::post!((self.func)(zi), item)
+                && self.func == dist.func)
     }
 
     #[thrust_macros::predicate]
     fn reaches(self, dist: Self) -> bool {
         // self.iter.reaches(dist.iter) && self.func == dist.func
-        "(and
-            (q_reaches_b665189a22a9bc20b75324461c8c5287<a0> (tuple_proj<a0-a1>.0 self_) (tuple_proj<a0-a1>.0 dist))
-            (= (tuple_proj<a0-a1>.1 self_) (tuple_proj<a0-a1>.1 dist))
-        )";
-        true
+        I::reaches(self.iter, dist.iter) && self.func == dist.func
     }
 }
 

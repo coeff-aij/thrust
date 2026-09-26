@@ -434,6 +434,18 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         }
     }
 
+    /// `ty` with any outer references and `Ghost`/`Box` wrappers removed, the
+    /// type whose model an index or a length applies to. A sequence reached
+    /// through a field is a reference (`&[T]` models as `&Seq`), so the index
+    /// path has to see through it to pick `seq.nth` over `select`.
+    fn seq_target_ty(&self, ty: mir_ty::Ty<'tcx>) -> mir_ty::Ty<'tcx> {
+        let mut ty = self.ghost_deref_target_ty(ty);
+        while let mir_ty::TyKind::Ref(_, inner, _) = ty.kind() {
+            ty = *inner;
+        }
+        ty
+    }
+
     fn expr_ty(&self, expr: &'tcx rustc_hir::Expr<'tcx>) -> mir_ty::Ty<'tcx> {
         let ty = self.typeck.expr_ty(expr);
         let instantiated = self
@@ -906,7 +918,8 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             }
             ExprKind::Index(array, index, _) => {
                 let index_term = self.to_term(index);
-                let is_seq = self.is_seq_modeled(self.ghost_deref_target_ty(self.expr_ty(array)));
+                let array_ty = self.expr_ty(array);
+                let is_seq = self.is_seq_modeled(self.seq_target_ty(array_ty));
                 let term = if is_seq {
                     self.to_term(array).seq_nth(index_term)
                 } else {

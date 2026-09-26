@@ -25,7 +25,7 @@ where
 {
     #[thrust_macros::predicate]
     fn valid(self, x: i64) -> bool {
-        "(> x 0)"; true
+        x > 0
     }
 }
 
