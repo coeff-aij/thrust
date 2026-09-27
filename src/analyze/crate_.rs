@@ -169,30 +169,77 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     }
 
     fn analyze_local_defs(&mut self) {
+        // A def with an `FnMut`-bounded type parameter is decided after every other body has
+        // been analyzed, because the call sites that instantiate it are found by analyzing
+        // those bodies.
+        let mut fn_mut_generic_defs = Vec::new();
         for local_def_id in self.tcx.mir_keys(()) {
-            if !self.tcx.def_kind(*local_def_id).is_fn_like() {
-                continue;
-            };
-            if self.skip_analysis.contains(local_def_id) {
-                tracing::debug!("this is marked as skip analysis: {:?}", local_def_id);
+            if self.has_fn_mut_bounded_param(*local_def_id) {
+                fn_mut_generic_defs.push(*local_def_id);
                 continue;
             }
-
-            let Some(expected) = self.ctx.concrete_def_ty(local_def_id.to_def_id()) else {
-                // when the local_def_id is deferred it would be skipped
-                tracing::debug!("this is marked as deferred type: {:?}", local_def_id);
-                continue;
-            };
-
-            // check polymorphic function def by replacing type params with some opaque type
-            // (and this is no-op if the function is mono)
-            let expected = expected.clone();
-            let generic_args = self.placeholder_generic_args(*local_def_id);
-            self.ctx
-                .local_def_analyzer(*local_def_id)
-                .generic_args(generic_args)
-                .run(&expected);
+            self.analyze_placeholder(*local_def_id);
         }
+        for local_def_id in fn_mut_generic_defs {
+            if self.ctx.has_concrete_instance(local_def_id) {
+                // The placeholder analysis would check the body against a closure contract
+                // that is a free forall predicate, which no clause relates to the concrete
+                // closures of this crate. An `FnMut` closure's state changes between calls, so
+                // a body obligation relating the contract at two states (a preservation
+                // conjunct of an adapter invariant) need not be inductive for an arbitrary
+                // contract even when it is for every concrete one. Each concrete
+                // instantiation has checked the body against its own closure contract instead.
+                tracing::debug!(?local_def_id, "verified per concrete instantiation");
+                continue;
+            }
+            self.analyze_placeholder(local_def_id);
+        }
+    }
+
+    /// Check a local def's body with its type parameters left as opaque types (a no-op
+    /// substitution if the def is monomorphic).
+    fn analyze_placeholder(&mut self, local_def_id: LocalDefId) {
+        if !self.tcx.def_kind(local_def_id).is_fn_like() {
+            return;
+        };
+        if self.skip_analysis.contains(&local_def_id) {
+            tracing::debug!("this is marked as skip analysis: {:?}", local_def_id);
+            return;
+        }
+
+        let Some(expected) = self.ctx.concrete_def_ty(local_def_id.to_def_id()) else {
+            // when the local_def_id is deferred it would be skipped
+            tracing::debug!("this is marked as deferred type: {:?}", local_def_id);
+            return;
+        };
+
+        let expected = expected.clone();
+        let generic_args = self.placeholder_generic_args(local_def_id);
+        self.ctx
+            .local_def_analyzer(local_def_id)
+            .generic_args(generic_args)
+            .run(&expected);
+    }
+
+    /// Whether a type parameter in scope of `local_def_id` (its own or an enclosing item's) is
+    /// bounded by `FnMut`. `Fn` and `FnOnce` bounds do not count: their closure state does not
+    /// change between calls, and such defs keep their generic verification.
+    fn has_fn_mut_bounded_param(&self, local_def_id: LocalDefId) -> bool {
+        if !self.tcx.def_kind(local_def_id).is_fn_like() {
+            return false;
+        }
+        let predicates = self
+            .tcx
+            .predicates_of(local_def_id)
+            .instantiate_identity(self.tcx);
+        predicates.predicates.iter().any(|clause| {
+            let Some(trait_clause) = clause.as_trait_clause() else {
+                return false;
+            };
+            let trait_ref = trait_clause.skip_binder().trait_ref;
+            self.tcx.fn_trait_kind_from_def_id(trait_ref.def_id) == Some(mir_ty::ClosureKind::FnMut)
+                && matches!(trait_ref.self_ty().kind(), mir_ty::TyKind::Param(_))
+        })
     }
 
     fn placeholder_generic_args(&self, local_def_id: LocalDefId) -> mir_ty::GenericArgsRef<'tcx> {

@@ -7,7 +7,7 @@
 //! CHC solver with the [`Analyzer::solve`] and subsequently reports the result.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::rc::Rc;
 
@@ -355,6 +355,9 @@ pub struct Analyzer<'tcx> {
     /// Uses of a trait predicate through a type parameter whose laws
     /// [`Analyzer::emit_pending_laws`] has yet to state.
     pending_laws: Rc<RefCell<Vec<pred_inst::PendingLaw<'tcx>>>>,
+    /// Defs whose body has been analyzed at fully concrete type arguments, as the callee of
+    /// a call site; see [`Analyzer::has_concrete_instance`].
+    concrete_instances: Rc<RefCell<HashSet<LocalDefId>>>,
 }
 
 impl<'tcx> crate::refine::TemplateRegistry for Analyzer<'tcx> {
@@ -403,6 +406,7 @@ impl<'tcx> Analyzer<'tcx> {
             pending_pred_instances,
             trait_laws,
             pending_laws,
+            concrete_instances: Default::default(),
         }
     }
 
@@ -805,9 +809,27 @@ impl<'tcx> Analyzer<'tcx> {
                 body_analyzer.generic_args(generic_args);
                 body_analyzer
             };
+            let body_local_def_id = body_analyzer.local_def_id();
             body_analyzer.run(&expected);
+            use mir_ty::TypeVisitableExt as _;
+            if !generic_args.has_param() {
+                self.concrete_instances
+                    .borrow_mut()
+                    .insert(body_local_def_id);
+            }
         }
         Some(expected)
+    }
+
+    /// Whether the body of `local_def_id` has been analyzed at type arguments that mention no
+    /// type parameter, i.e. once per concrete instantiation reached from a call site.
+    ///
+    /// Every call at concrete type arguments re-analyzes the callee's body for those arguments
+    /// (see [`Analyzer::def_ty_with_args`]), so such an instance checks the body against the
+    /// contract instantiated at the call site, including the concrete closure contract of an
+    /// `FnMut`-bounded type parameter.
+    pub fn has_concrete_instance(&self, local_def_id: LocalDefId) -> bool {
+        self.concrete_instances.borrow().contains(&local_def_id)
     }
 
     /// Whether a refinement in `rty`, a contract at `generic_args` made from `caller_def_id`,
