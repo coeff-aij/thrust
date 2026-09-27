@@ -1,4 +1,4 @@
-//@ignore-on-host: draft, stops at the generic slice in `IndexSlice`'s `raw: [T]` (see README.md)
+//@ignore-on-host: draft, stops at std's unspecified PartialOrd::partial_cmp reached from AbiAlign::min/max (see README.md)
 //@edition: 2024
 #![feature(new_range_api)]
 //@compile-flags: -Adead_code -C debug-assertions=off
@@ -130,7 +130,7 @@ impl Idx for u32 {
     #[thrust_macros::predicate]
     fn can_new(idx: usize) -> bool {
         // idx <= u32::MAX
-        idx <= 4294967295
+        idx <= 4294967295usize
     }
 
     #[thrust::trusted]
