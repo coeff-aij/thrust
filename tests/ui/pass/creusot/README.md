@@ -1,10 +1,10 @@
 # Creusot benchmark cases
 
 Thirteen cases from the Creusot artifact's iterator benchmark, each verified with a specification
-equivalent to Creusot's. `<file>.rs` is the pass side; `tests/ui/fail/creusot/<file>.rs` is its
-fail twin (one extra fail-only file, `skip_take_take_count.rs`, twins `skip_take.rs` on a
-different property). `weaker/` holds variants of a case whose property is weaker than Creusot's but
-still verifies.
+equivalent to Creusot's, plus two additions (`fold.rs`, `try_fold.rs`) with no Creusot counterpart.
+`<file>.rs` is the pass side; `tests/ui/fail/creusot/<file>.rs` is its fail twin (one extra
+fail-only file, `skip_take_take_count.rs`, twins `skip_take.rs` on a different property). `weaker/`
+holds variants of a case whose property is weaker than Creusot's but still verifies.
 
 | file | Creusot benchmark file | form |
 | --- | --- | --- |
@@ -21,6 +21,8 @@ still verifies.
 | `counter.rs` | `examples/counter.rs` | `step` + a unary `next_item` guard, `MapInv`'s ghost history |
 | `extend.rs` | `examples/extend.rs` | `produces` |
 | `take_count.rs` | no counterpart | `produces`; an extra call site of `take.rs`'s `Take` |
+| `fold.rs` | no counterpart | `produces`; a hand-written `fold` with a closure contract over the accumulator |
+| `try_fold.rs` | no counterpart | `produces`; a hand-written `try_fold` that returns `None` on an early bound crossing |
 
 Weaker variants (`weaker/`, still verify):
 
