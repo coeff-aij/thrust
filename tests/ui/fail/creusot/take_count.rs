@@ -2,7 +2,7 @@
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300 COAR_IMAGE=coar:9d78ffe9d
 use thrust_models::forall;
-use thrust_models::model::{Int, Seq};
+use thrust_models::model::{Int, Mut, Seq};
 use thrust_models::Model;
 
 // Creusot's `common.rs` iterator spec: ternary `produces(self, visited, o)`, `completed`, and the
@@ -56,7 +56,7 @@ where
     I: Iterator + Model,
     <I as Iterator>::Item: Model,
     <I as Model>::Ty: Model<Ty = <I as Model>::Ty> + PartialEq,
-    <<I as Iterator>::Item as Model>::Ty: Model<Ty = <<I as Iterator>::Item as Model>::Ty>,
+    <<I as Iterator>::Item as Model>::Ty: Model<Ty = <<I as Iterator>::Item as Model>::Ty> + PartialEq,
     <Take<I> as Model>::Ty: Model<Ty = <Take<I> as Model>::Ty>,
 {
     type Item = I::Item;
@@ -76,42 +76,28 @@ where
     }
 
     // self.iter.invariant() && self.n >= 0
+    // (`Take<I>`'s model here is the tuple `(<I as Model>::Ty, Int)`, not the named struct: the
+    // predicate type-checks against the model, so the components are `.0` (iter) and `.1` (n),
+    // as the SMT string's `tuple_proj<a0-Int>.0`/`.1` had it, not the struct's field names.)
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
-        "(and
-            (q_invariant_697f611e1c8a799099f5cab24a2a3c2a<a0> (tuple_proj<a0-Int>.0 self_))
-            (>= (tuple_proj<a0-Int>.1 self_) 0)
-        )";
-        true
+        I::invariant(self.0) && self.1 >= 0
     }
 
     // (*self.n == 0 && *self == !self) ||
     // (*self.n > 0 && *self.n == !self.n + 1 && self.iter.completed())
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
-        "(or
-            (and
-                (= (tuple_proj<a0-Int>.1 (mut_current<Tuple<a0-Int>> self_)) 0)
-                (= (mut_current<Tuple<a0-Int>> self_) (mut_final<Tuple<a0-Int>> self_)))
-            (and
-                (> (tuple_proj<a0-Int>.1 (mut_current<Tuple<a0-Int>> self_)) 0)
-                (= (tuple_proj<a0-Int>.1 (mut_current<Tuple<a0-Int>> self_))
-                   (+ (tuple_proj<a0-Int>.1 (mut_final<Tuple<a0-Int>> self_)) 1))
-                (q_completed_697f611e1c8a7990df91d46c1657fcab<a0>
-                    (mut<a0>
-                        (tuple_proj<a0-Int>.0 (mut_current<Tuple<a0-Int>> self_))
-                        (tuple_proj<a0-Int>.0 (mut_final<Tuple<a0-Int>> self_))))))";
-        true
+        ((*self).1 == 0 && (*self).0 == (!self).0 && (*self).1 == (!self).1)
+            || ((*self).1 > 0
+                && (*self).1 == (!self).1 + 1
+                && I::completed(Mut::new((*self).0, (!self).0)))
     }
 
     // self.n == o.n + visited.len() && self.iter.produces(visited, o.iter)
     #[thrust_macros::predicate]
     fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool {
-        "(and
-            (= (tuple_proj<a0-Int>.1 self_)
-               (+ (tuple_proj<a0-Int>.1 o) (seq.len visited)))
-            (q_produces_697f611e1c8a799049ce63996d440b34<a0> (tuple_proj<a0-Int>.0 self_) visited (tuple_proj<a0-Int>.0 o)))";
-        true
+        self.1 == o.1 + visited.len() && I::produces(self.0, visited, o.0)
     }
 }
 
@@ -143,19 +129,13 @@ impl Iterator for Range {
 
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
-        "true";
         true
     }
 
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
         // self.resolve() && self.start >= self.end
-        "(and
-            (= (mut_current<Tuple<Int-Int>> self_) (mut_final<Tuple<Int-Int>> self_))
-            (>= (tuple_proj<Int-Int>.0 (mut_current<Tuple<Int-Int>> self_))
-                (tuple_proj<Int-Int>.1 (mut_current<Tuple<Int-Int>> self_)))
-        )";
-        true
+        *self == !self && (*self).start >= (*self).end
     }
 
     #[thrust_macros::predicate]
@@ -164,19 +144,11 @@ impl Iterator for Range {
         // && (visited.len() > 0 ==> o.start <= o.end)
         // && visited.len() == o.start - self.start
         // && forall i. 0 <= i < visited.len() ==> visited[i] == self.start + i
-        "(and
-            (= (tuple_proj<Int-Int>.1 self_) (tuple_proj<Int-Int>.1 o))
-            (<= (tuple_proj<Int-Int>.0 self_) (tuple_proj<Int-Int>.0 o))
-            (=> (> (seq.len visited) 0)
-                (<= (tuple_proj<Int-Int>.0 o) (tuple_proj<Int-Int>.1 o)))
-            (= (seq.len visited)
-               (- (tuple_proj<Int-Int>.0 o) (tuple_proj<Int-Int>.0 self_)))
-            (forall ((zi Int))
-                (=> (and (<= 0 zi) (< zi (seq.len visited)))
-                    (= (seq.nth visited zi)
-                       (+ (tuple_proj<Int-Int>.0 self_) zi))))
-        )";
-        true
+        self.end == o.end
+            && self.start <= o.start
+            && (!(visited.len() > 0) || o.start <= o.end)
+            && visited.len() == o.start - self.start
+            && forall(|i: Int| !(0 <= i && i < visited.len()) || visited[i] == self.start + i)
     }
 }
 
