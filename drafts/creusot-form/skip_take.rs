@@ -1,3 +1,5 @@
+//@check-pass
+//@compile-flags: -C debug-assertions=off -A unused-variables
 use thrust_models::{exists, forall, Model};
 use thrust_models::model::{Int, Mut, Seq};
 

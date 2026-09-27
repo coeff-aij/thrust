@@ -1,3 +1,5 @@
+//@error-in-other-file: Unsat
+//@compile-flags: -C debug-assertions=off -A unused-variables
 // Fail twin of `map_creusot_lemmas.rs`: the call site claims the second item is `Some(11)`.
 use thrust_models::model::{Closure, Int, Mut, Seq};
 use thrust_models::{exists, forall, Ghost, Model};

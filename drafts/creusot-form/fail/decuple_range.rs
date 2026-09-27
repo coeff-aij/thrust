@@ -1,3 +1,5 @@
+//@error-in-other-file: Unsat
+//@compile-flags: -C debug-assertions=off -A unused-variables
 use thrust_models::model::{Closure, Int, Mut, Seq};
 use thrust_models::{exists, forall, Model};
 

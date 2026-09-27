@@ -1,3 +1,5 @@
+//@error-in-other-file: Unsat
+//@compile-flags: -C debug-assertions=off -A unused-variables
 // Fail twin of `map_creusot_lemmas.rs`: `Map::produces` relates every `visited[k]` to the first
 // input `s[0]` instead of `s[k]`, which breaks `produces_trans`.
 //
