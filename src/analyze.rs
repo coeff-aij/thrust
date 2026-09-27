@@ -787,8 +787,8 @@ impl<'tcx> Analyzer<'tcx> {
     ///
     /// Every call at concrete type arguments re-analyzes the callee's body for those arguments
     /// (see [`Analyzer::def_ty_with_args`]), so such an instance checks the body against the
-    /// contract instantiated at the call site, including the concrete closure contract of a
-    /// closure-bounded type parameter.
+    /// contract instantiated at the call site, including the concrete closure contract of an
+    /// `FnMut`-bounded type parameter.
     pub fn has_concrete_instance(&self, local_def_id: LocalDefId) -> bool {
         self.concrete_instances.borrow().contains(&local_def_id)
     }
