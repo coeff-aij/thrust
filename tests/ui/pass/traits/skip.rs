@@ -75,7 +75,6 @@ where
                     !s == !self.at_entry()
                         && (*s).1 == 0
                         && I::invariant((*s).0)
-                        && 0 <= n
                         && n <= (*self.at_entry()).1
                         && (n == (*self.at_entry()).1 ==> (*s).0 == (*self.at_entry()).0)
                         && exists(|t: Seq<<<I as Iterator>::Item as Model>::Ty>|

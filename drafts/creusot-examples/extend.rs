@@ -129,7 +129,6 @@ impl Extend<i64> for Vec<i64> {
                     && !v == !self.at_entry()
                     && I::invariant(*it)
                     && I::produces(*iter.at_entry(), pushed, *it)
-                    && pushed.len() >= 0
                     && (*v).len() == (*self.at_entry()).len() + pushed.len()
                     && forall(|k: Int| 0 <= k && k < (*self.at_entry()).len() ==> (*v)[k] == (*self.at_entry())[k])
                     && forall(|k: Int| 0 <= k && k < pushed.len() ==> (*v)[(*self.at_entry()).len() + k] == pushed[k])
@@ -141,8 +140,6 @@ impl Extend<i64> for Vec<i64> {
 }
 
 // Creusot: `proof_assert! { (@v1).ext_eq((@oldv1).concat(@oldv2)) }`, with `v1` returned.
-// The Vec model does not know `len() >= 0`; the requires supplies it, as in `iterators/`.
-#[thrust_macros::requires(v2.len() >= 0)]
 #[thrust_macros::ensures(
     result.len() == v1.len() + v2.len()
         && forall(|k: Int| 0 <= k && k < v1.len() ==> result[k] == v1[k])
