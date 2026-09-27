@@ -182,6 +182,7 @@ impl<I: Idx> IdxRange<I> {
     // on the left, where `impl<T: Model<Ty = Int>> PartialEq<T> for Int`
     // applies -- is what bridges the two.
     #[thrust::extern_spec_fn]
+    #[thrust_macros::requires((*it).start >= 0)]
     #[thrust_macros::requires(
         forall(|s: Int| s == (*it).start && s < (*it).end ==> <I as Idx>::can_new(s))
     )]
@@ -277,7 +278,7 @@ impl<'a> Iterator for WordIter<'a> {
 #[thrust_macros::context]
 impl<'a> WordIter<'a> {
     #[thrust::extern_spec_fn]
-    #[thrust_macros::requires(true)]
+    #[thrust_macros::requires((*it).1 >= 0)]
     #[thrust_macros::ensures(Self::same_words(*it, !it))]
     #[thrust_macros::ensures(forall(|n: Int, p: Int|
         Self::words_len_is(*it, n) && p == (*it).1
