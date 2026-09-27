@@ -3,7 +3,7 @@
 Drafts, not tests: none carries a ui_test header. They are the probes behind the records in the
 thrust-research repository under `experiments/` (`2026-09-25-creusot-map-rust-syntax`,
 `2026-09-25-sequence-spelling-call-site`, `2026-09-27-b5-reflexivity-law`,
-`2026-09-27-map-produces-creusot-proof`). Each file is self-contained: the
+`2026-09-27-map-produces-creusot-proof`, `2026-09-27-map-ext-creusot-form`). Each file is self-contained: the
 Creusot-form `Iterator` trait with `produces_refl` and `produces_trans` as `#[thrust_macros::law]`s,
 the adapters with Rust-syntax `#[predicate]` bodies, and a call site.
 
@@ -32,6 +32,10 @@ cargo run -- -Adead_code -C debug-assertions=off -A unused-variables drafts/creu
 | `fail/map_creusot_lemmas_value.rs` | the same, with the call site claiming `Some(11)` | on 63e7b97e4: unknown 3/3 at 120 s; with `Map`'s bodies trusted, timeout 3/3 |
 | `decuple_range_lemmas.rs` | `decuple_range.rs` with the `Map` of `map_creusot_lemmas.rs`, fully checked | on 63e7b97e4: sat 3/3, 5.5 s |
 | `fail/decuple_range_lemmas.rs` | the same, claiming `v[k] == 10 * k + 1` | on 63e7b97e4: unsat 3/3, 20 to 26 s |
+| `map_ext_creusot.rs` | Creusot's `MapInv` (`iterators/map_ext.rs`) in its own form: the ghost history `produced` passed to an `Fn(Item, Ghost<Seq<Item>>)` closure, `produces` with the existential input sequence and the history `produced ++ s[..k]` at the `k`-th item, the invariant `reinitialize && preservation_inv && iter.invariant && next_precondition`, `completed` resetting `produced`; `map_creusot_lemmas.rs`'s proof structure plus `history_split` (the history of item `k` of `x ++ y` below and above `x.len()`) and `produces_trans_witness` (`produces_trans` with the witness `sab ++ sbc` as a term); `Range { 1, 5 }` with `requires(x == produced.len() + 1)`, two `next`s | on fptprove develop d0a71c61c: no answer at 30 s 3/3 and at 120 s 1/1; every body checked alone is sat except `produces_trans_witness`'s `produces` conclusion (the existential witness) |
+| `fail/map_ext_creusot_pre.rs` | the same, with the closure requiring `x == 1` (the history dropped) | on d0a71c61c: unsat 3/3, 30 s |
+| `fail/map_ext_creusot_history.rs` | the same, with `next` not extending `produced` | on d0a71c61c: no answer at 30 s 3/3, unsat 1/1 at 120 s (33 s) |
+| `fail/map_ext_creusot_value.rs` | the same, with the call site claiming `Some(21)` | not re-measured with the two new lemmas; before them, no answer at 30 s 3/3 and timeout 1/1 at 120 s |
 | `skip_take.rs` | Creusot's `examples/skip_take` at a generic `I` (`Skip<Take<I>>`, `Range` call site); reflexivity only through the `produces_refl` law guarded by the invariant, `Skip::produces` in the concatenated form | on fptprove develop d34a33c44: sat 3/3, 61 s |
 | `fail/skip_take_some.rs` | the same, with the call site claiming `Some` | on d34a33c44: unsat 3/3, 11 s |
 | `fail/skip_take_take_count.rs` | the same, with `Take::produces` counting one item too many | on d34a33c44: unsat 3/3, 16 s |
