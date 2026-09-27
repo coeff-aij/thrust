@@ -79,3 +79,30 @@ A monomorphic model is written over model types. The model of `i64` is
 `iter_mut_generic.rs` takes its slice from a trusted provider rather than from an array,
 because `&mut a[..]` reaches an unmodelled `core::array::index_mut` and panics the driver at
 `src/analyze/basic_block.rs:954`. That is unrelated to the defect these files are about.
+
+## Related upstream issues
+
+`alias_mono.rs` and `iter_mut_i64.rs` need no conditional control flow, no closure, no
+user-written `Drop` impl, and no `==` between two `&mut` references: `w`/`it` is bound once,
+aliased once through a `#[thrust::trusted]` extern function's `ensures`, written through the
+alias, and then goes out of scope unconditionally at the end of the function. Checked against
+four open upstream issues that also involve a `&mut` prophecy resolving wrongly, none match that
+shape:
+
+- **#250** (a conditionally-moved value's drop-flag edge still gets a liveness-derived implicit
+  drop) needs a branch (`if cond { f(); }`) and a move that happens on only one path. Neither
+  file here branches or moves anything conditionally.
+- **#207** (moving a `&mut`-capturing closure out of an aggregate drops its prophecy) needs a
+  closure captured by `&mut` and stored in a tuple/struct/enum. Neither file here has a closure;
+  `W` and `IterMut`'s models are plain data with no closure field.
+- **#215** (a user `Drop` impl's destructor body is never checked) needs a type with a
+  hand-written `impl Drop`. Neither `W` nor `core::slice::IterMut` has one; the driver's default,
+  implicit end-of-scope handling is what runs here, not `<T as Drop>::drop`.
+- **#210** (`==` on two `&mut` references compares the prophecy component too) needs a runtime
+  `==` between two independent `&mut` bindings. `elem`'s `ensures` uses `!w == *w` inside a
+  trusted function's own postcondition to state that `w`'s prophecy equals its current value; it
+  is not a comparison the program executes between two references.
+
+The shared thread across all five is prophecy/drop-point resolution, but the trigger differs in
+each case, so this is a fifth, independent way to make the resolution wrong, not a duplicate of
+any of the four above.
