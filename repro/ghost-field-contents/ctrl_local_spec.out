@@ -1,0 +1,14 @@
+error[E0599]: no method named `push` found for struct `thrust_models::Ghost<T>` in the current scope
+   --> ctrl_local_spec.rs:12:57
+    |
+ 12 | #[thrust_macros::ensures((!h).produced == (*h).produced.push(x))]
+    |                                                         ^^^^ method not found in `thrust_models::Ghost<thrust_models::model::Seq<thrust_models::model::Int>>`
+    |
+   ::: <thrust std injected>:419:5
+    |
+419 |     pub struct Ghost<T: ?Sized>(std::marker::PhantomData<T>);
+    |     --------------------------- method `push` not found for this struct
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0599`.
