@@ -18,10 +18,12 @@ use crate::chc::{self, hoice::HoiceDatatypeRenamer};
 /// - Gives a stringified representation of [`chc::Sort`]s,
 /// - Monomorphizes polymorphic datatypes of [`chc::System`] to be compatible with several CHC solvers,
 /// - Renames datatypes to be compatible with Hoice (see [`HoiceDatatypeRenamer`]),
+/// - Carries what the configured solver reads (see [`chc::Capabilities`]),
 /// - etc.
 #[derive(Debug, Clone)]
 pub struct FormatContext {
     renamer: HoiceDatatypeRenamer,
+    capabilities: chc::Capabilities,
     datatypes: Vec<chc::Datatype>,
     /// Sizes of the consecutive groups in `datatypes`; see [`group_by_dependency`].
     datatype_group_sizes: Vec<usize>,
@@ -459,7 +461,7 @@ fn group_by_dependency(datatypes: Vec<chc::Datatype>) -> Vec<Vec<chc::Datatype>>
 }
 
 impl FormatContext {
-    pub fn from_system(system: &chc::System) -> Self {
+    pub fn from_system(system: &chc::System, capabilities: chc::Capabilities) -> Self {
         let type_params_reverse = system.type_params_reverse.clone();
         let resolver = |idx: chc::ForallSortIdx| type_params_reverse.get(&idx).map(|&i| i as usize);
         // let mut sorts = collect_sorts(system);
@@ -506,9 +508,14 @@ impl FormatContext {
         let renamer = HoiceDatatypeRenamer::new(&datatypes);
         FormatContext {
             renamer,
+            capabilities,
             datatypes,
             datatype_group_sizes,
         }
+    }
+
+    pub fn capabilities(&self) -> chc::Capabilities {
+        self.capabilities
     }
 
     pub fn datatypes(&self) -> &[chc::Datatype] {

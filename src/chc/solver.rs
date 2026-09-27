@@ -101,6 +101,17 @@ fn read_verdict(stdout: &str) -> Option<(Verdict, Vec<String>)> {
     verdict.map(|v| (v, rejected))
 }
 
+/// What the configured solver reads beyond plain CHC SMT-LIB2, derived once from [`Config`]
+/// by [`Config::capabilities`] and carried to the emitter in
+/// [`crate::chc::format_context::FormatContext`], so that no other code tests solver names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Capabilities {
+    /// The solver reads `declare-dep-exists-fun` (CoAR's PCSat), where a plain `declare-fun`
+    /// means "depends on every forall pred declared before it". The default `z3` rejects the
+    /// command, and there a plain `declare-fun` is already exact, since z3 has no forall preds.
+    pub dependency_aware_declarations: bool,
+}
+
 /// A configuration for running a command-line CHC solver.
 #[derive(Debug, Clone)]
 pub struct CommandConfig {
@@ -110,6 +121,12 @@ pub struct CommandConfig {
 }
 
 impl CommandConfig {
+    /// Whether this is the default `z3` binary rather than a solver named by `THRUST_SOLVER`
+    /// (in the tests, the PCSat wrapper).
+    fn is_z3(&self) -> bool {
+        self.name == "z3"
+    }
+
     fn load_args(&mut self, env: &str) {
         if let Ok(args) = std::env::var(env) {
             self.args = args.split_whitespace().map(|s| s.to_owned()).collect();
@@ -219,7 +236,7 @@ impl Config {
         if let Ok(solver) = std::env::var("THRUST_SOLVER") {
             config.solver.name = solver;
         }
-        if config.solver.name != "z3" {
+        if !config.solver.is_z3() {
             config.solver.args.clear();
         }
         config.solver.load_args("THRUST_SOLVER_ARGS");
@@ -238,6 +255,12 @@ impl Config {
             config.output_dir = Some(dir.into());
         }
         config
+    }
+
+    pub fn capabilities(&self) -> Capabilities {
+        Capabilities {
+            dependency_aware_declarations: !self.solver.is_z3(),
+        }
     }
 
     pub fn check_sat(&self, problem: impl std::fmt::Display) -> Result<(), CheckSatError> {
