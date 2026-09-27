@@ -94,13 +94,13 @@ impl<T: Idx> DenseBitSet<T> {
         }
     }
 
+    // Trusted: a `usize` field read through `&self` carries no `v >= 0`, which the callee's `usize` parameter requires (Unsat).
     #[thrust::trusted]
     #[thrust::callable]
     fn clear_excess_bits(&mut self) {
         clear_excess_bits_in_final_word(self.domain_size, &mut self.words);
     }
 
-    #[thrust::trusted]
     #[thrust::callable]
     pub fn count(&self) -> usize {
         count_ones(&self.words)
@@ -225,6 +225,7 @@ impl<'a, T: Idx> BitIter<'a, T> {
     }
 
     #[inline]
+    // Trusted: the constant `usize::MAX` exceeds the i64 range of integer literals (Thrust panics).
     #[thrust::trusted]
     #[thrust::callable]
     // `WORD_BITS` (a named `const`) is not usable in a formula:
@@ -309,6 +310,7 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
         IdxRange::new(0, self.num_rows)
     }
 
+    // Trusted: a `usize` field read through `&self` carries no `v >= 0`, which the callee's `usize` parameter requires (Unsat).
     #[thrust::trusted]
     #[thrust::callable]
     fn range(&self, row: R) -> (usize, usize) {
@@ -321,6 +323,7 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
     // stated here: `BitIter::next`'s contract bounds the yielded index by the
     // *word array* size (`BitIter::bit_bound`), and relating that to
     // `num_columns` needs `range`/`num_words`, both trusted and unspecified.
+    // Trusted: Thrust panics on the range index `&self.words[start..end]` (inconsistent types, src/rty/subtyping.rs).
     #[thrust::trusted]
     #[thrust_macros::requires(forall(|i: Int| <R as Idx>::index_is(row, i) ==> i < (*self).num_rows))]
     pub fn iter(&self, row: R) -> BitIter<'_, C> {
@@ -329,6 +332,7 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
         BitIter::new(&self.words[start..end])
     }
 
+    // Trusted: Thrust panics on the range index `&self.words[start..end]` (inconsistent types, src/rty/subtyping.rs).
     #[thrust::trusted]
     #[thrust::callable]
     pub fn count(&self, row: R) -> usize {
@@ -338,6 +342,7 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
 }
 
 #[inline]
+// Trusted: `usize::div_ceil` has no specification (Thrust panics, unknown def).
 #[thrust::trusted]
 #[thrust::callable]
 fn num_words<T: Idx>(domain_size: T) -> usize {

@@ -76,7 +76,6 @@ impl Idx for usize {
     }
 }
 
-// The body uses `as` casts, which Thrust does not support: marked trusted.
 #[thrust_macros::context]
 impl Idx for u32 {
     #[thrust_macros::predicate]
@@ -92,15 +91,11 @@ impl Idx for u32 {
     }
 
     #[inline]
-    #[thrust::trusted]
-    #[thrust::callable]
     fn new(idx: usize) -> Self {
         assert!(idx <= u32::MAX as usize);
         idx as u32
     }
     #[inline]
-    #[thrust::trusted]
-    #[thrust::callable]
     fn index(self) -> usize {
         self as usize
     }

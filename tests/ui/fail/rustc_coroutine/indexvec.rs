@@ -87,6 +87,7 @@ impl<I: Idx, T: thrust_models::Model> thrust_models::Model for IndexVec<I, T> {
 #[thrust_macros::context]
 impl<I: Idx, T> IndexVec<I, T> {
     #[inline]
+    // Trusted: the body's `Vec<T>` at a type parameter is typed as the (array, length) pair, not the sequence the contract reads.
     #[thrust::trusted]
     #[thrust_macros::requires(true)]
     #[thrust_macros::ensures(result.len() == 0)]
@@ -95,6 +96,7 @@ impl<I: Idx, T> IndexVec<I, T> {
     }
 
     #[inline]
+    // Trusted: the body's `Vec<T>` at a type parameter is typed as the (array, length) pair, not the sequence the contract reads.
     #[thrust::trusted]
     #[thrust_macros::requires(true)]
     #[thrust_macros::ensures(result == raw)]
@@ -106,6 +108,7 @@ impl<I: Idx, T> IndexVec<I, T> {
     }
 
     #[inline]
+    // Trusted: the body's `Vec<T>` at a type parameter is typed as the (array, length) pair, not the sequence the contract reads.
     #[thrust::trusted]
     #[thrust_macros::requires(true)]
     #[thrust_macros::ensures(result.len() == n)]
@@ -118,6 +121,7 @@ impl<I: Idx, T> IndexVec<I, T> {
     }
 
     #[inline]
+    // Trusted: the body's `Vec<T>` at a type parameter is typed as the (array, length) pair, not the sequence the contract reads.
     #[thrust::trusted]
     #[thrust_macros::requires(true)]
     #[thrust_macros::ensures(result == (*self).len())]
@@ -126,6 +130,7 @@ impl<I: Idx, T> IndexVec<I, T> {
     }
 
     #[inline]
+    // Trusted: the body's `Vec<T>` at a type parameter is typed as the (array, length) pair, not the sequence the contract reads.
     #[thrust::trusted]
     #[thrust_macros::requires(true)]
     #[thrust_macros::ensures((result == true) == ((*self).len() == 0))]
@@ -134,6 +139,7 @@ impl<I: Idx, T> IndexVec<I, T> {
     }
 
     #[inline]
+    // Trusted: the body's `Vec<T>` at a type parameter is typed as the (array, length) pair, not the sequence the contract reads.
     #[thrust::trusted]
     #[thrust_macros::requires(<I as Idx>::can_new((*self).len()))]
     #[thrust_macros::ensures(<I as Idx>::index_is(result, (*self).len()))]
@@ -142,6 +148,7 @@ impl<I: Idx, T> IndexVec<I, T> {
     }
 
     #[inline]
+    // Trusted: the body's `Vec<T>` at a type parameter is typed as the (array, length) pair, not the sequence the contract reads.
     #[thrust::trusted]
     #[thrust_macros::requires(<I as Idx>::can_new((*self).len()))]
     #[thrust_macros::ensures(!self == (*self).push(d))]
@@ -156,6 +163,7 @@ impl<I: Idx, T> IndexVec<I, T> {
     // `IndexSlice`; that path is the part of stage 2 that waits on generic
     // slices, so the element read is spelled out on `IndexVec` here.
     #[inline]
+    // Trusted: the body's `Vec<T>` at a type parameter is typed as the (array, length) pair, not the sequence the contract reads.
     #[thrust::trusted]
     #[thrust_macros::requires(forall(|i: Int| !<I as Idx>::index_is(index, i) || (0 <= i && i < (*self).len())))]
     #[thrust_macros::ensures(forall(|i: Int| !<I as Idx>::index_is(index, i) || *result == (*self)[i]))]

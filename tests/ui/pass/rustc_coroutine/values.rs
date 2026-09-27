@@ -114,6 +114,7 @@ impl TargetDataLayout {
     }
 
     #[inline]
+    // Trusted: std's `slice::Iter::find` has no specification (Thrust panics, unknown def).
     #[thrust::trusted]
     #[thrust_macros::requires(((*self).default_address_space_pointer_spec.pointer_size.raw == 2
         || (*self).default_address_space_pointer_spec.pointer_size.raw == 4
@@ -133,6 +134,7 @@ impl TargetDataLayout {
     }
 
     #[inline]
+    // Trusted: std's `slice::Iter::find` has no specification (Thrust panics, unknown def).
     #[thrust::trusted]
     #[thrust_macros::requires(((*self).default_address_space_pointer_spec.pointer_size.raw == 2
         || (*self).default_address_space_pointer_spec.pointer_size.raw == 4
@@ -232,6 +234,7 @@ pub struct Size {
 impl Size {
     pub const ZERO: Size = Size { raw: 0 };
 
+    // Trusted: `u64::div_ceil` has no specification (Thrust panics, unknown def).
     #[thrust::trusted]
     #[thrust::callable]
     pub fn from_bits(bits: impl TryInto<u64>) -> Size {
@@ -242,6 +245,7 @@ impl Size {
     }
 
     #[inline]
+    // Trusted: nothing states that the `impl TryInto<u64>` conversion succeeds, so `unwrap` can panic (Unsat).
     #[thrust::trusted]
     #[thrust::callable]
     pub fn from_bytes(bytes: impl TryInto<u64>) -> Size {
@@ -257,6 +261,7 @@ impl Size {
     // Trusted: the body's `checked_mul` panics on overflow. Overflow is out of
     // scope (see the stage plan), so the spec states the no-overflow result.
     #[inline]
+    // Verifying the body stops earlier: `u64::checked_mul` has no specification (Thrust panics).
     #[thrust::trusted]
     #[thrust_macros::ensures(result == self.raw * 8)]
     pub fn bits(self) -> u64 {
@@ -281,6 +286,7 @@ impl Size {
     }
 
     #[inline]
+    // Trusted: `u64::checked_add` has no specification (Thrust panics, unknown def).
     #[thrust::trusted]
     #[thrust::callable]
     pub fn checked_add<C: HasDataLayout>(self, offset: Size, cx: &C) -> Option<Size> {
@@ -310,6 +316,7 @@ impl Add for Size {
     // spec on an impl of an external trait: `#[thrust_macros::ensures]` here
     // expands to `_thrust_ensures_add`, which is "not a member of trait `Add`".
     #[inline]
+    // Without a contract the body stops at `u64::checked_add`, which has no specification.
     #[thrust::trusted]
     #[thrust::callable]
     fn add(self, other: Size) -> Size {
