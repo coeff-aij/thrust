@@ -6,7 +6,8 @@ use thrust_models::model::{Int, Mut, Seq};
 use thrust_models::Model;
 
 // Creusot's `common.rs` iterator spec: ternary `produces(self, visited, o)`, `completed`, and the
-// laws applied as ensures on `next`; reflexivity is also a callable law (`produces_refl`).
+// one-step laws applied as ensures on `next`; reflexivity is the law `produces_refl`, guarded by
+// the invariant as in Creusot, and not a `next` ensures.
 // The generic `Take` is used at a call site: after `take(1)` the second `next` is `None`.
 #[thrust_macros::context]
 trait Iterator
@@ -21,14 +22,13 @@ where
     #[thrust_macros::requires(Self::invariant(*self))]
     #[thrust_macros::ensures(Self::invariant(!self))]
     #[thrust_macros::ensures(result == None ==> Self::completed(self))]
-    #[thrust_macros::ensures(Self::produces(*self, Seq::empty(), *self))]
     #[thrust_macros::ensures(forall(|i| result == Some(i) ==> Self::produces(*self, Seq::singleton(i), !self)))]
     #[thrust_macros::ensures(forall(|a: <Self as Model>::Ty| forall(|s: Seq<<Self::Item as Model>::Ty>| forall(|i|
         result == Some(i) && Self::produces(a, s, *self) ==> Self::produces(a, s.push(i), !self)))))]
     fn next(&mut self) -> Option<Self::Item>;
 
-    // Reflexivity as a callable law: an adapter that answers without touching its inner
-    // iterator (`Take` at `n == 0`) has no `next` ensures of the inner to take it from.
+    #[thrust_macros::law]
+    #[thrust_macros::requires(Self::invariant(*a))]
     #[thrust_macros::ensures(Self::produces(*a, Seq::empty(), *a))]
     fn produces_refl(a: &Self);
 
@@ -65,7 +65,6 @@ where
             self.n -= 1;
             self.iter.next()
         } else {
-            I::produces_refl(&self.iter);
             None
         }
     }
