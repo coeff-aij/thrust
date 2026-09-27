@@ -5,7 +5,8 @@ use thrust_models::model::{Int, Mut, Seq};
 use thrust_models::{exists, forall, Model};
 
 // Creusot's `common.rs` iterator spec: ternary `produces(self, visited, o)`, `completed`, and the
-// laws applied as ensures on `next`; reflexivity is also a callable law (`produces_refl`).
+// one-step laws applied as ensures on `next`; reflexivity is the law `produces_refl`, guarded by
+// the invariant as in Creusot, and not a `next` ensures.
 // The generic `Skip` follows Creusot's `skip.rs`: `next` drains up to `n` items in a loop whose
 // invariant carries the skipped prefix, then answers with the inner iterator's result.
 // `skip_step.rs` is the same adapter in the step form of the iterator spec.
@@ -22,13 +23,14 @@ where
     #[thrust_macros::requires(Self::invariant(*self))]
     #[thrust_macros::ensures(Self::invariant(!self))]
     #[thrust_macros::ensures(result == None ==> Self::completed(self))]
-    #[thrust_macros::ensures(Self::produces(*self, Seq::empty(), *self))]
     #[thrust_macros::ensures(forall(|i| result == Some(i) ==> Self::produces(*self, Seq::singleton(i), !self)))]
     #[thrust_macros::ensures(forall(|a: <Self as Model>::Ty| forall(|s: Seq<<Self::Item as Model>::Ty>| forall(|i|
         result == Some(i) && Self::produces(a, s, *self) ==> Self::produces(a, s.push(i), !self)))))]
     fn next(&mut self) -> Option<Self::Item>;
 
-    // Reflexivity as a callable law: the base case of a loop invariant `old.produces(t, cur)`.
+    // Callable where a loop invariant `old.produces(t, cur)` needs its base case.
+    #[thrust_macros::law]
+    #[thrust_macros::requires(Self::invariant(*a))]
     #[thrust_macros::ensures(Self::produces(*a, Seq::empty(), *a))]
     fn produces_refl(a: &Self);
 
