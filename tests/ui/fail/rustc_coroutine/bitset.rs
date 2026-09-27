@@ -66,10 +66,23 @@ impl<T: Idx> DenseBitSet<T> {
         forall(|k: Int| !(0 <= k && k < self.1.len()) || self.1[k] == 0)
     }
 
+    /// The abstraction reads the word sequence as one entry per element, so
+    /// it holds `domain_size` entries. Under native sequences `seq.nth` and
+    /// `seq.store` are unspecified or no-ops outside `0..seq.len`, so without
+    /// this length the entries `mem` and `inserted` talk about need not
+    /// exist: `new_empty` fixed no length, so a length-0 sequence satisfied
+    /// every contract and `assert!(set.contains(3))` after `insert(3)` was
+    /// refutable.
+    #[thrust_macros::predicate]
+    fn one_entry_per_elem(self) -> bool {
+        self.1.len() == self.0
+    }
+
     #[inline]
     #[thrust::trusted]
     #[thrust_macros::ensures(result.0 == domain_size)]
     #[thrust_macros::ensures(Self::no_mem(result))]
+    #[thrust_macros::ensures(Self::one_entry_per_elem(result))]
     pub fn new_empty(domain_size: usize) -> DenseBitSet<T> {
         let num_words = num_words(domain_size);
         DenseBitSet {
@@ -130,6 +143,7 @@ impl<T: Idx> DenseBitSet<T> {
 
     #[thrust::trusted]
     #[thrust_macros::ensures((!self).0 == (*self).0)]
+    #[thrust_macros::ensures(Self::one_entry_per_elem(*self) ==> Self::one_entry_per_elem(!self))]
     #[thrust_macros::ensures(forall(|i: Int| i < (*self).0 ==> Self::mem(!self, i)))]
     pub fn insert_all(&mut self) {
         self.words.fill(!0);
