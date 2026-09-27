@@ -1,23 +1,27 @@
-// Fail twin of `map_creusot_lemmas.rs`: `Map::produces` relates every `visited[k]` to the first
-// input `s[0]` instead of `s[k]`, which breaks `produces_trans`.
-//
-// This call site (two direct `next()`s) only ever checks a singleton `produces`, where
-// `s[0] == s[k]` trivially (k = 0), and the generic `produces_trans_split` obligation the change
-// should break stays satisfiable at the abstraction Thrust checks it (the closure's `post`
-// relation is an unconstrained forall-fun with no functionality axiom, so a model that relates
-// every input to every output witnesses it). The refutable form of this same change is
-// `fail/map_index_lemmas.rs`, whose call site (`decuple_range`'s `collect`) forces `Map::produces`
-// concretely at a length-10 sequence of distinct values. See
-// experiments/2026-09-27-map-fail-twin-triage.md in thrust-research.
 use thrust_models::model::{Closure, Int, Mut, Seq};
 use thrust_models::{exists, forall, Ghost, Model};
 
-// Creusot's `Map` in its `produces` form, fully checked, with Creusot's proof structure (the
-// artifact's `iterators/map.rs` and its Why3 session `proofs/map/why3session.xml`): the predicate
-// `produces_one` and the ghost lemmas `produces_one_produces` and `produces_one_invariant`, called
-// from `next` on ghost snapshots taken around the inner `next`, and `produces_trans` through the
-// lemma `produces_trans_split`. Everything else is `decuple_range_lemmas.rs`; the call site is
-// `map_creusot.rs`'s two `next`s over `Range`.
+// Fail twin of `decuple_range_lemmas.rs`, for `Map::produces` rather than for `Range::produces`
+// (`fail/decuple_range_lemmas.rs`): `Map::produces` relates every `visited[k]` to the first inner
+// item `s[0]` instead of `s[k]`. `fail/map_creusot_lemmas.rs` makes the same change but its call
+// site (`map_creusot.rs`'s two direct `next()`s) only ever checks a singleton `produces`, where
+// `s[0] == s[k]` trivially (k = 0), so the change refutes nothing there within 120 s (triaged in
+// experiments/2026-09-27-map-fail-twin-triage.md). `decuple_range()`'s `collect` loop invariant
+// and its `ensures(result[k] == k * 10)` force `Map::produces` concretely, at a length-10 sequence
+// of distinct values, so the same change is refutable here.
+//
+// Creusot's `examples/decuple_range` with its positional property `v[i] == 10 * i`, fully checked,
+// with `Map` carrying Creusot's own proof structure (the artifact's `iterators/map.rs` and its Why3
+// session `proofs/map/why3session.xml`): the predicate `produces_one` and the ghost lemmas
+// `produces_one_produces` (the direction of `produces_one`'s ensures that `next` uses) and
+// `produces_one_invariant`, both called from `next` on ghost snapshots taken around the inner
+// `next`, as Creusot's `next` calls `produces_one_invariant` through `ghost!`. The session's manual
+// steps become lemmas: `produces_one_invariant` calls one lemma per conjunct of the invariant (its
+// `split_vc`) and `produces_one_prefix` (its `apply H11 with .. (singleton e ++ s)`), and the
+// `produces_trans` law calls `produces_trans_split`, which states the concatenated visited sequence
+// index by index. The rest is `decuple_range.rs`: `next`'s ensures are Creusot's extern spec of
+// `Iterator::next`, laws `produces_refl` / `produces_trans`, and `collect` / `FromIterator for
+// Vec<i64>`.
 #[thrust_macros::context]
 trait Iterator
 where
@@ -44,6 +48,21 @@ where
     #[thrust_macros::requires(Self::produces(*a, ab, *b) && Self::produces(*b, bc, *c))]
     #[thrust_macros::ensures(Self::produces(*a, ab.concat(bc), *c))]
     fn produces_trans(a: &Self, ab: Seq<<Self::Item as Model>::Ty>, b: &Self, bc: Seq<<Self::Item as Model>::Ty>, c: &Self);
+
+    // Creusot's `collect` (iter.rs): `exists done prod. resolve(^done) && done.completed()
+    // && self.produces(prod, *done) && B::from_iter_post(prod, result)`, with `from_iter_post`
+    // for `Vec` (vec.rs) `prod == res@` folded in: `result` is the produced sequence. `&mut self`
+    // as in `traits/collect_visited_seq_mutref`.
+    #[thrust_macros::requires(Self::invariant(*self))]
+    #[thrust_macros::ensures(exists(|pre: <Self as Model>::Ty|
+        Self::produces(*self, result, pre) && Self::completed(Mut::new(pre, !self))))]
+    fn collect<B: FromIterator<Self::Item>>(&mut self) -> B
+    where
+        Self: Sized,
+        <Self as Model>::Ty: PartialEq,
+    {
+        B::from_iter(self)
+    }
 
     #[thrust_macros::predicate]
     fn invariant(self) -> bool;
@@ -343,7 +362,43 @@ impl Iterator for Range {
     }
 }
 
-fn main() {
+// `FromIterator<A>` reduced to `from_iter`; `Self: Model<Ty = Seq<..>>` lets `result` feed `produces`.
+#[thrust_macros::context]
+trait FromIterator<A: Model>: Sized
+where
+    Self: Model<Ty = Seq<<A as Model>::Ty>>,
+    <A as Model>::Ty: Model<Ty = <A as Model>::Ty>,
+{
+    #[thrust_macros::requires(I::invariant(*iter))]
+    #[thrust_macros::ensures(exists(|pre: <I as Model>::Ty|
+        I::produces(*iter, result, pre) && I::completed(Mut::new(pre, !iter))))]
+    fn from_iter<I: Iterator<Item = A> + Model>(iter: &mut I) -> Self
+    where
+        <I as Model>::Ty: PartialEq;
+}
+
+#[thrust_macros::context]
+impl FromIterator<i64> for Vec<i64> {
+    fn from_iter<I: Iterator<Item = i64> + Model>(iter: &mut I) -> Vec<i64>
+    where
+        <I as Model>::Ty: PartialEq,
+    {
+        let it = iter;
+        let mut v: Vec<i64> = Vec::new();
+        while let Some(x) = it.next() {
+            thrust_macros::invariant!(
+                |it: &mut I, v: Vec<i64>, iter: thrust_models::FnParam<&mut I>|
+                !it == !iter.at_entry() && I::invariant(*it) && I::produces(*iter.at_entry(), v, *it)
+            );
+            v.push(x);
+        }
+        v
+    }
+}
+
+// Creusot: `proof_assert! { forall<i : Int> 0 <= i && i < (@v).len() ==> @(@v)[i] == i * 10 }`.
+#[thrust_macros::ensures(forall(|k: Int| 0 <= k && k < result.len() ==> result[k] == k * 10))]
+fn decuple_range() -> Vec<i64> {
     let f = thrust_macros::closure!(
         requires(x < 100),
         ensures(result == x * 10),
@@ -353,8 +408,7 @@ fn main() {
         iter: Range { start: 0, end: 10 },
         func: f,
     };
-    let first = m.next();
-    let second = m.next();
-    assert!(matches!(first, Some(0)));
-    assert!(matches!(second, Some(10)));
+    m.collect::<Vec<i64>>()
 }
+
+fn main() {}
