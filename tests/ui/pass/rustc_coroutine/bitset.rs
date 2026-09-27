@@ -69,13 +69,13 @@ impl<T: Idx> DenseBitSet<T> {
     /// The abstraction reads the word sequence as one entry per element, so
     /// it holds `domain_size` entries. Under native sequences `seq.nth` and
     /// `seq.store` are unspecified or no-ops outside `0..seq.len`, so without
-    /// this length the entries `mem` and `inserted` talk about need not exist.
+    /// this length the entries `mem` and `inserted` talk about need not
+    /// exist: `new_empty` fixed no length, so a length-0 sequence satisfied
+    /// every contract and `assert!(set.contains(3))` after `insert(3)` was
+    /// refutable.
     #[thrust_macros::predicate]
     fn one_entry_per_elem(self) -> bool {
-        // self.words.len() == self.domain_size
-        "(= (seq.len (tuple_proj<Int-Seq<Int>-Tuple>.1 self_))
-            (tuple_proj<Int-Seq<Int>-Tuple>.0 self_))";
-        true
+        self.1.len() == self.0
     }
 
     #[inline]
