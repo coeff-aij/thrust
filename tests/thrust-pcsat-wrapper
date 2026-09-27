@@ -1,6 +1,7 @@
 #!/bin/bash
 
 COAR_IMAGE=${COAR_IMAGE:-ghcr.io/hiroshi-unno/coar:main}
+COAR_CONFIG=${COAR_CONFIG:-./config/solver/pcsat_tbq_ar.json}
 
 # Each container gets a fixed share of the machine (the limits coar-run uses), so that eight
 # containers started by the test harness do not oversubscribe the cores: PCSat's validity checks
@@ -15,7 +16,7 @@ trap 'rm -f "$smt2" "$solver_out"' EXIT
 cp "$1" "$smt2"
 
 container=$(docker create --rm --cpus="$cpus" --memory="$memory" -v "$PWD:/mnt" -w /root/coar "$COAR_IMAGE" \
-    main.exe -c ./config/solver/pcsat_tbq_ar.json -p pcsp "/mnt/$smt2")
+    main.exe -c "$COAR_CONFIG" -p pcsp "/mnt/$smt2")
 trap 'docker rm --force "$container" >/dev/null; exit 143' TERM
 
 # needs `wait` to fire the `trap` above
