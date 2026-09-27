@@ -197,7 +197,58 @@ where
         bc: Ghost<Seq<<B as Model>::Ty>>,
         c: Ghost<Self>,
     ) {
+        Self::produces_trans_witness(a, ab, b, bc, c);
     }
+
+    // `produces` with its input sequence `s` given: the body of `produces` under its `exists`.
+    #[thrust_macros::predicate]
+    fn produces_at(s0: Self, visited: Seq<<B as Model>::Ty>, o: Self, s: Seq<A>) -> bool {
+        s0.1 == o.1
+            && s.len() == visited.len()
+            && I::produces(s0.0, s, o.0)
+            && o.2 == s0.2.concat(s)
+            && forall(|k: Int|
+                !(0 <= k && k < visited.len())
+                    || thrust_macros::post!((s0.1)(s[k], s0.2.concat(s.subsequence(0, k))), visited[k]))
+    }
+
+    // The witness of `produces_trans` as a term: the input sequences of the two halves,
+    // concatenated (the session's `exists (s1 ++ s)`), with the history split below and above
+    // `ab.len()` from `history_split` (the session's `instantiate H2 (i - length ab)`).
+    #[thrust_macros::ensures(forall(|sab: Seq<A>| forall(|sbc: Seq<A>| forall(|v: Seq<<B as Model>::Ty>|
+        !(Self::produces_at(a, ab, b, sab)
+            && Self::produces_at(b, bc, c, sbc)
+            && v.len() == ab.len() + bc.len()
+            && forall(|k: Int| !(0 <= k && k < ab.len()) || v[k] == ab[k])
+            && forall(|k: Int| !(ab.len() <= k && k < v.len()) || v[k] == bc[k - ab.len()]))
+            || Self::produces_at(a, v, c, sab.concat(sbc))))))]
+    #[thrust_macros::ensures(forall(|sab: Seq<A>| forall(|sbc: Seq<A>| forall(|v: Seq<<B as Model>::Ty>|
+        !(Self::produces_at(a, ab, b, sab)
+            && Self::produces_at(b, bc, c, sbc)
+            && v.len() == ab.len() + bc.len()
+            && forall(|k: Int| !(0 <= k && k < ab.len()) || v[k] == ab[k])
+            && forall(|k: Int| !(ab.len() <= k && k < v.len()) || v[k] == bc[k - ab.len()]))
+            || <Self as Iterator>::produces(a, v, c)))))]
+    fn produces_trans_witness(
+        a: Ghost<Self>,
+        ab: Ghost<Seq<<B as Model>::Ty>>,
+        b: Ghost<Self>,
+        bc: Ghost<Seq<<B as Model>::Ty>>,
+        c: Ghost<Self>,
+    ) {
+        Self::history_split();
+    }
+
+    // The history of the `k`-th item of a concatenation `x ++ y`, split at `x.len()`: below it the
+    // prefix of `x`, above it `h ++ x` followed by the prefix of `y` (the session's
+    // `instantiate H2 (i - length ab)` with `use_th seq.FreeMonoid`).
+    #[thrust_macros::ensures(forall(|h: Seq<A>| forall(|x: Seq<A>| forall(|y: Seq<A>| forall(|k: Int|
+        !(0 <= k && k <= x.len())
+            || h.concat(x.concat(y).subsequence(0, k)) == h.concat(x.subsequence(0, k)))))))]
+    #[thrust_macros::ensures(forall(|h: Seq<A>| forall(|x: Seq<A>| forall(|y: Seq<A>| forall(|k: Int|
+        !(x.len() <= k && k <= x.len() + y.len())
+            || h.concat(x.concat(y).subsequence(0, k)) == h.concat(x).concat(y.subsequence(0, k - x.len())))))))]
+    fn history_split() {}
 }
 
 #[thrust_macros::context]
