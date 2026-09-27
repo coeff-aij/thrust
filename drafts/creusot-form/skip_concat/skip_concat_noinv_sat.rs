@@ -1,6 +1,3 @@
-//@check-pass
-//@compile-flags: -C debug-assertions=off -A unused-variables
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 COAR_IMAGE=coar:develop-2493045c3
 use thrust_models::model::{Int, Mut, Seq};
 use thrust_models::{exists, forall, Model};
 
@@ -9,7 +6,8 @@ use thrust_models::{exists, forall, Model};
 // the invariant as in Creusot, and not a `next` ensures.
 // The generic `Skip` follows Creusot's `skip.rs`: `next` drains up to `n` items in a loop whose
 // invariant carries the skipped prefix, then answers with the inner iterator's result.
-// `skip_step.rs` is the same adapter in the step form of the iterator spec.
+// This variant has no loop invariant (the `no-invariant` twin: does the solver still answer
+// without the loop's `exists t. ...` hint).
 #[thrust_macros::context]
 trait Iterator
 where
@@ -68,20 +66,6 @@ where
         s.n = 0;
         I::produces_refl(&s.iter);
         loop {
-            // Creusot's four invariants: proph_const, produces (the skipped prefix), n_0, inv;
-            // plus `n` bounded, and "no iteration yet => the inner iterator is untouched".
-            thrust_macros::invariant!(
-                |s: &mut Skip<I>, n: usize, self: thrust_models::FnParam<&mut Skip<I>>|
-                    !s == !self.at_entry()
-                        && (*s).1 == 0
-                        && I::invariant((*s).0)
-                        && 0 <= n
-                        && n <= (*self.at_entry()).1
-                        && (n == (*self.at_entry()).1 ==> (*s).0 == (*self.at_entry()).0)
-                        && exists(|t: Seq<<<I as Iterator>::Item as Model>::Ty>|
-                            t.len() + n == (*self.at_entry()).1
-                                && I::produces((*self.at_entry()).0, t, (*s).0))
-            );
             let r = s.iter.next();
             if n == 0 {
                 return r;

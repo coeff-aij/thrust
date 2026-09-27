@@ -1,6 +1,3 @@
-//@check-pass
-//@compile-flags: -C debug-assertions=off -A unused-variables
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 COAR_IMAGE=coar:develop-2493045c3
 use thrust_models::model::{Int, Mut, Seq};
 use thrust_models::{exists, forall, Model};
 
@@ -9,7 +6,8 @@ use thrust_models::{exists, forall, Model};
 // the invariant as in Creusot, and not a `next` ensures.
 // The generic `Skip` follows Creusot's `skip.rs`: `next` drains up to `n` items in a loop whose
 // invariant carries the skipped prefix, then answers with the inner iterator's result.
-// `skip_step.rs` is the same adapter in the step form of the iterator spec.
+// This is the call-site form: `Skip<Range>` at a concrete `Range`, checking `sk.next()` against a
+// literal value rather than only the generic trait obligations.
 #[thrust_macros::context]
 trait Iterator
 where
@@ -180,4 +178,11 @@ impl Iterator for Range {
     }
 }
 
-fn main() {}
+fn main() {
+    let mut sk = Skip {
+        iter: Range { start: 0, end: 10 },
+        n: 3,
+    };
+    let first = sk.next();
+    assert!(matches!(first, Some(3)));
+}

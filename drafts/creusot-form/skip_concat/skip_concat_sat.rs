@@ -1,6 +1,3 @@
-//@check-pass
-//@compile-flags: -C debug-assertions=off -A unused-variables
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 COAR_IMAGE=coar:develop-2493045c3
 use thrust_models::model::{Int, Mut, Seq};
 use thrust_models::{exists, forall, Model};
 
