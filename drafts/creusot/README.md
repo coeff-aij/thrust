@@ -20,7 +20,7 @@ except `produces_trans_witness`'s `produces` conclusion (the existential witness
 
 `Skip<Take<Range>>`, a concrete instantiation of `skip_take.rs`. Stage S2: the nested generic-impl
 predicate instances are emitted in discovery order, so `Take<Range>`'s instance is used before it
-is defined (B9 in the thrust-research status note); reordering the emitted definitions by hand
+is defined; reordering the emitted definitions by hand
 gives `unknown` on both sides.
 
 ## fail/map_index0.rs, fail/map_value.rs
