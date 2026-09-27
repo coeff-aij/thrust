@@ -2,7 +2,7 @@
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:develop-2493045c3
 
-// Extracted from tests/ui/pass/traits/rustc-coroutine.rs (rustc's
+// Extracted from tests/ui/pass/rustc_coroutine/target.rs (rustc's
 // rustc_abi::layout::coroutine::coroutine_saved_local_eligibility, adapted).
 // Stage 5 of the rustc_coroutine plan (README.md, "stage 5"). The bit-set /
 // `Idx` machinery is copied from the already-annotated tests/ui/pass/

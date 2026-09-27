@@ -8,7 +8,7 @@
 //
 // Stage 1 of the rustc-coroutine verification target: the value types
 // (Size/Align/Integer/Float/Primitive/Scalar/Niche/TargetDataLayout).
-// The items are extracted verbatim from tests/ui/pass/traits/rustc-coroutine.rs;
+// The items are extracted verbatim from tests/ui/pass/rustc_coroutine/target.rs;
 // only attributes and `Model` impls are added.
 
 use std::convert::TryInto;

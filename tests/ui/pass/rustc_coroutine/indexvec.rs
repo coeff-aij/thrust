@@ -2,7 +2,7 @@
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 COAR_IMAGE=coar:develop-2493045c3
 
-// Extracted from tests/ui/pass/traits/rustc-coroutine.rs (rustc's
+// Extracted from tests/ui/pass/rustc_coroutine/target.rs (rustc's
 // rustc_index::vec, adapted). Stage 2 of the rustc_coroutine plan (README.md).
 // `Idx` and its `usize` impl are copied from idx.rs (stage 2/4) rather than
 // re-derived, the same way eligibility.rs reuses bitset.rs.

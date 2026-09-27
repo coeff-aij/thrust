@@ -4,7 +4,7 @@
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:develop-2493045c3
 
-// Extracted from tests/ui/pass/traits/rustc-coroutine.rs (rustc's
+// Extracted from tests/ui/pass/rustc_coroutine/target.rs (rustc's
 // rustc_abi::LayoutCalculator::univariant / univariant_biased and
 // LayoutData::scalar_pair, adapted). Stage 6 of the rustc_coroutine plan
 // (README.md, "stage 6"). The value types (Size/Align/Integer/../Niche/
