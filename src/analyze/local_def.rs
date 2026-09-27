@@ -1137,11 +1137,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     let one = self.build_invariant_precondition(formula_def_id, generic_args, &bty);
                     inv.push_conj(one);
                 }
-                if hints {
-                    bty.conjoin_precondition(inv);
-                } else {
-                    bty.set_precondition(inv);
-                }
+                // Without hints the block's precondition holds only what the types of its
+                // parameters say (see `FunctionTemplateTypeBuilder::build`), so conjoining
+                // keeps that and adds the invariant.
+                bty.conjoin_precondition(inv);
                 self.ctx
                     .register_basic_block_ty_with_precondition(self.analysis_key(), bb, bty);
             } else if analyze::basic_block::needs_own_precondition(&self.body, bb) {

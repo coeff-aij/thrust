@@ -1305,12 +1305,66 @@ where
             param_rtys.push(param_rty);
         }
 
-        let ret_rty = self.ret_rty.clone().unwrap_or_else(|| {
+        self.conjoin_unsigned_params(&mut param_rtys);
+
+        let mut ret_rty = self.ret_rty.clone().unwrap_or_else(|| {
             self.inner
                 .for_template(self.registry)
                 .with_scope(&builder)
                 .build_refined(self.ret_ty)
         });
+        let ret_value = chc::Term::var(rty::RefinedTypeVar::Value);
+        if let Some(fact) = unsigned_nonneg(self.ret_ty, ret_value) {
+            ret_rty.refinement.push_conj(fact.into());
+        }
         rty::FunctionType::new(param_rtys, ret_rty).with_abi(self.abi)
     }
+
+    /// Adds `x >= 0` for each parameter `x` of an unsigned integer type to the refinement of the
+    /// last parameter, which holds the precondition over all of them (a basic block type
+    /// requires the other parameters to stay unrefined).
+    ///
+    /// The fact is an assumption where the type is entered and an obligation where it is left:
+    /// at a call, a jump to a basic block and a return. Overflow is not modelled, so an unsigned
+    /// subtraction that may go below zero now fails where its result reaches one of these points.
+    fn conjoin_unsigned_params(
+        &self,
+        param_rtys: &mut IndexVec<rty::FunctionParamIdx, rty::RefinedType<rty::FunctionParamIdx>>,
+    ) {
+        let Some(last_idx) = param_rtys.last_index() else {
+            return;
+        };
+        for (idx, param_ty) in self.param_tys.iter().enumerate() {
+            let idx = rty::FunctionParamIdx::from_usize(idx);
+            let var = if idx == last_idx {
+                rty::RefinedTypeVar::Value
+            } else {
+                rty::RefinedTypeVar::Free(idx)
+            };
+            let value = if param_ty.mutbl.is_mut() {
+                // elaboration: mutably declared variables are boxed above
+                chc::Term::var(var).box_current()
+            } else {
+                chc::Term::var(var)
+            };
+            if let Some(fact) = unsigned_nonneg(param_ty.ty, value) {
+                param_rtys[last_idx].refinement.push_conj(fact.into());
+            }
+        }
+    }
+}
+
+/// The fact `value >= 0` when `ty` is an unsigned integer type.
+///
+/// Every integer type is `Int` in the logic, so nothing else says that a `usize` is not
+/// negative. Only a value of the type itself is covered: a field of a struct, the referent
+/// of a reference and the element of a sequence stay unconstrained.
+fn unsigned_nonneg<V>(ty: mir_ty::Ty<'_>, value: chc::Term<V>) -> Option<chc::Atom<V>> {
+    if !matches!(ty.kind(), mir_ty::TyKind::Uint(_)) {
+        return None;
+    }
+    Some(chc::Atom::new(
+        chc::KnownPred::GREATER_THAN_OR_EQUAL.into(),
+        vec![value, chc::Term::int(0)],
+    ))
 }
