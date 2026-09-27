@@ -1,9 +1,8 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60 COAR_IMAGE=coar:develop-3d34b93de
-use thrust_models::forall;
-use thrust_models::model::{Closure, Int, Seq};
-use thrust_models::{Ghost, Model};
+use thrust_models::model::{Closure, Int, Mut, Seq};
+use thrust_models::{exists, forall, Ghost, Model};
 
 // Creusot's `examples/counter`: `v.iter().map_inv(|x, _prod| { cnt += 1; *x }).collect()`, where
 // the closure's precondition `cnt == _prod.len()` reads the history. The iterator spec is the
@@ -82,46 +81,54 @@ where
 
     // self.iter.invariant()
     // && forall(|e| self.iter.produces1(e) ==> pre!(self.func(e, self.produced)))
-    // && forall(|h, e1, e2, b| self.iter.produces1(e1) && self.iter.produces1(e2)
-    //        && pre!(self.func(e1, h)) && post!(self.func(e1, h), b) ==> pre!(self.func(e2, h.push(e1))))
+    // && forall(|h, e1, e2, b, g2| self.iter.produces1(e1) && self.iter.produces1(e2)
+    //        && pre!(self.func(e1, h)) && post!(self.func(e1, h), b)
+    //        ==> pre!(g2(e2, h.push(e1))))
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
-        "(and (q_invariant_70773323ab54f8f52546ff7eb9bf2990<a0> (tuple_proj<a0-a1-Seq<Int>>.0 self_)) (forall ((e Int)) (=> (q_produces1_70773323ab54f8f5ebeed520b2c74355<a0> (tuple_proj<a0-a1-Seq<Int>>.0 self_) e) (q_pre_next_70773323ab54f8f5e0f0df431c6ab55<a1> (tuple_proj<a0-a1-Seq<Int>>.1 self_) e (tuple_proj<a0-a1-Seq<Int>>.2 self_)))) (forall ((harr (Seq Int)) (e1 Int) (e2 Int) (b Int) (g a1) (g2 a1))
-            (=> (and (q_produces1_70773323ab54f8f5ebeed520b2c74355<a0> (tuple_proj<a0-a1-Seq<Int>>.0 self_) e1) (q_produces1_70773323ab54f8f5ebeed520b2c74355<a0> (tuple_proj<a0-a1-Seq<Int>>.0 self_) e2)
-                     (q_pre_next_70773323ab54f8f5e0f0df431c6ab55<a1> g e1 harr)
-                     (q_post_next_70773323ab54f8f5e0f0df431c6ab55<a1> (mut<a1> g g2) e1 harr b))
-                (q_pre_next_70773323ab54f8f5e0f0df431c6ab55<a1> g2 e2 (seq.++ harr (seq.unit e1))))))";
-        true
+        I::invariant(self.0)
+            && forall(|e: Int| !I::produces1(self.0, e) || thrust_macros::pre!((self.1)(e, self.2)))
+            && forall(|h: Seq<Int>|
+                forall(|e1: Int|
+                    forall(|e2: Int|
+                        forall(|b: Int|
+                            forall(|g2: Closure<F>|
+                                !(I::produces1(self.0, e1)
+                                    && I::produces1(self.0, e2)
+                                    && thrust_macros::pre!((self.1)(e1, h))
+                                    && thrust_macros::post!(Mut::new(self.1, g2)(e1, h), b))
+                                    || thrust_macros::pre!((g2)(e2, h.push(e1))))))))
     }
 
     // self.iter.completed() && *self.func == !self.func && *self.produced == !self.produced
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
-        "(and (q_completed_70773323ab54f8f530f1c291ef06cef3<a0> (mut<a0> (tuple_proj<a0-a1-Seq<Int>>.0 (mut_current<Tuple<a0-a1-Seq<Int>>> self_)) (tuple_proj<a0-a1-Seq<Int>>.0 (mut_final<Tuple<a0-a1-Seq<Int>>> self_))))
-            (= (tuple_proj<a0-a1-Seq<Int>>.1 (mut_current<Tuple<a0-a1-Seq<Int>>> self_)) (tuple_proj<a0-a1-Seq<Int>>.1 (mut_final<Tuple<a0-a1-Seq<Int>>> self_)))
-            (= (tuple_proj<a0-a1-Seq<Int>>.2 (mut_current<Tuple<a0-a1-Seq<Int>>> self_)) (tuple_proj<a0-a1-Seq<Int>>.2 (mut_final<Tuple<a0-a1-Seq<Int>>> self_))))";
-        true
+        I::completed(Mut::new((*self).0, (!self).0))
+            && (*self).1 == (!self).1
+            && (*self).2 == (!self).2
     }
 
     // exists(|i| self.iter.step(i, dist.iter) && pre!(self.func(i, self.produced))
-    //    && post!(self.func(i, self.produced), item) && self.func == dist.func
+    //    && post!(self.func(i, self.produced), item)
     //    && dist.produced == self.produced.push(i))
     #[thrust_macros::predicate]
     fn step(self, item: Self::Item, dist: Self) -> bool {
-        "(exists ((i Int))
-        (and (q_step_70773323ab54f8f5ad42ca680bcd726f<a0> (tuple_proj<a0-a1-Seq<Int>>.0 self_) i (tuple_proj<a0-a1-Seq<Int>>.0 dist))
-             (q_pre_next_70773323ab54f8f5e0f0df431c6ab55<a1> (tuple_proj<a0-a1-Seq<Int>>.1 self_) i (tuple_proj<a0-a1-Seq<Int>>.2 self_))
-             (q_post_next_70773323ab54f8f5e0f0df431c6ab55<a1> (mut<a1> (tuple_proj<a0-a1-Seq<Int>>.1 self_) (tuple_proj<a0-a1-Seq<Int>>.1 dist)) i (tuple_proj<a0-a1-Seq<Int>>.2 self_) item)
-             (= (tuple_proj<a0-a1-Seq<Int>>.2 dist) (seq.++ (tuple_proj<a0-a1-Seq<Int>>.2 self_) (seq.unit i)))))";
-        true
+        exists(|i: Int|
+            I::step(self.0, i, dist.0)
+                && thrust_macros::pre!((self.1)(i, self.2))
+                && thrust_macros::post!(Mut::new(self.1, dist.1)(i, self.2), item)
+                && dist.2 == self.2.push(i))
     }
 
-    // exists(|j| self.iter.produces1(j) && pre!(self.func(j, self.produced)) && post!(self.func(j, self.produced), item))
+    // exists(|j, g2| self.iter.produces1(j) && pre!(self.func(j, self.produced))
+    //    && post!(self.func(j, self.produced), item))
     #[thrust_macros::predicate]
     fn produces1(self, item: Self::Item) -> bool {
-        "(exists ((j Int) (harr (Seq Int)) (g a1) (g2 a1))
-        (and (q_produces1_70773323ab54f8f5ebeed520b2c74355<a0> (tuple_proj<a0-a1-Seq<Int>>.0 self_) j) (q_pre_next_70773323ab54f8f5e0f0df431c6ab55<a1> g j harr) (q_post_next_70773323ab54f8f5e0f0df431c6ab55<a1> (mut<a1> g g2) j harr item)))";
-        true
+        exists(|j: Int|
+            exists(|g2: Closure<F>|
+                I::produces1(self.0, j)
+                    && thrust_macros::pre!((self.1)(j, self.2))
+                    && thrust_macros::post!(Mut::new(self.1, g2)(j, self.2), item)))
     }
 }
 
@@ -151,32 +158,25 @@ impl Iterator for Range {
 
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
-        "true";
         true
     }
 
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
-        "(and
-            (not (< (tuple_proj<Int-Int>.0 (mut_current<Tuple<Int-Int>> self_)) (tuple_proj<Int-Int>.1 (mut_current<Tuple<Int-Int>> self_))))
-            (= (mut_current<Tuple<Int-Int>> self_) (mut_final<Tuple<Int-Int>> self_)))";
-        true
+        !((*self).start < (*self).end) && *self == !self
     }
 
     #[thrust_macros::predicate]
     fn step(self, item: Self::Item, dist: Self) -> bool {
-        "(and
-            (< (tuple_proj<Int-Int>.0 self_) (tuple_proj<Int-Int>.1 self_))
-            (= (tuple_proj<Int-Int>.1 self_) (tuple_proj<Int-Int>.1 dist))
-            (= (tuple_proj<Int-Int>.0 self_) item)
-            (= (+ (tuple_proj<Int-Int>.0 self_) 1) (tuple_proj<Int-Int>.0 dist)))";
-        true
+        self.start < self.end
+            && self.end == dist.end
+            && self.start == item
+            && self.start + 1 == dist.start
     }
 
     #[thrust_macros::predicate]
     fn produces1(self, item: Self::Item) -> bool {
-        "(and (<= (tuple_proj<Int-Int>.0 self_) item) (< item (tuple_proj<Int-Int>.1 self_)))";
-        true
+        self.start <= item && item < self.end
     }
 }
 
