@@ -5,9 +5,14 @@
 //! same sort such that every clause with `P` in its head establishes `a_i = a_j` for the head's
 //! arguments, from the equalities among the top-level conjuncts of its body and from the same
 //! property of the predicate variables in its body (assumed inductively and checked to a
-//! fixpoint). With `P(x) := P'(x without j) ∧ x_i = x_j`, a solution of the reduced system is a
-//! solution of the original one: every head clause holds because its body established
-//! `a_i = a_j`, and every body occurrence only loses a conjunct.
+//! fixpoint). The column is dropped from the signature and from every atom of `P`, and each
+//! body atom `P(a)` leaves the equality `a_i = a_j` behind as a conjunct of the body (under the
+//! atom's guard, if it has one), so that the new body is the old one with
+//! `P(x) := P'(x without j) ∧ x_i = x_j`. With that definition a solution of the reduced system
+//! is a solution of the original one, since every head clause establishes `a_i = a_j`; and a
+//! solution of the original one, conjoined with `x_i = x_j` (still a solution by the same
+//! check), gives one of the reduced system. Without the equality left behind the reduction would
+//! lose solutions: a goal clause `P(x, y) ∧ x ≠ y ⇒ ⊥` would become `P'(x) ∧ x ≠ y ⇒ ⊥`.
 //!
 //! Equality inside a clause is decided by a congruence closure over the terms of its top-level
 //! equalities and predicate variable arguments, which also knows that a projection of a
@@ -435,30 +440,62 @@ fn established_pairs(system: &System) -> Pairs {
     }
 }
 
-/// The columns to drop for each predicate variable: every column that an established pair
-/// relates to a lower column.
-fn dropped_columns(alive: &Pairs) -> HashMap<PredVarId, HashSet<usize>> {
-    alive
-        .iter()
-        .filter(|(_, pairs)| !pairs.is_empty())
-        .map(|(p, pairs)| (*p, pairs.iter().map(|&(_, j)| j).collect()))
+/// The columns to drop for each predicate variable, each with the lowest column an established
+/// pair relates it to.
+fn dropped_columns(alive: &Pairs) -> HashMap<PredVarId, BTreeMap<usize, usize>> {
+    let mut dropped: HashMap<PredVarId, BTreeMap<usize, usize>> = HashMap::new();
+    for (p, pairs) in alive {
+        for &(i, j) in pairs {
+            let rep = dropped.entry(*p).or_default().entry(j).or_insert(i);
+            *rep = (*rep).min(i);
+        }
+    }
+    dropped
+}
+
+fn keep_columns<T>(items: Vec<T>, dropped: &BTreeMap<usize, usize>) -> Vec<T> {
+    items
+        .into_iter()
+        .enumerate()
+        .filter(|(k, _)| !dropped.contains_key(k))
+        .map(|(_, t)| t)
         .collect()
 }
 
-fn drop_args(atom: &mut Atom, dropped: &HashMap<PredVarId, HashSet<usize>>) {
-    let Pred::Var(p) = atom.pred else {
-        return;
+/// The equalities `a_i = a_j` a body atom stands for with its column `j` dropped, under the
+/// atom's guard if it has one.
+fn dropped_equalities(atom: &Atom, dropped: &BTreeMap<usize, usize>) -> Vec<Formula> {
+    dropped
+        .iter()
+        .map(|(&j, &i)| {
+            let eq = Formula::Atom(atom.args[i].clone().equal_to(atom.args[j].clone()));
+            match &atom.guard {
+                None => eq,
+                Some(guard) => Formula::Implies(guard.clone(), Box::new(eq)),
+            }
+        })
+        .collect()
+}
+
+fn drop_in_clause(clause: &mut Clause, dropped: &HashMap<PredVarId, BTreeMap<usize, usize>>) {
+    let columns_of = |atom: &Atom| match atom.pred {
+        Pred::Var(p) => dropped.get(&p),
+        _ => None,
     };
-    let Some(columns) = dropped.get(&p) else {
-        return;
-    };
-    let args = std::mem::take(&mut atom.args);
-    atom.args = args
-        .into_iter()
-        .enumerate()
-        .filter(|(k, _)| !columns.contains(k))
-        .map(|(_, t)| t)
-        .collect();
+    let mut equalities = Vec::new();
+    for atom in &mut clause.body.atoms {
+        let Some(columns) = columns_of(atom) else {
+            continue;
+        };
+        equalities.extend(dropped_equalities(atom, columns));
+        atom.args = keep_columns(std::mem::take(&mut atom.args), columns);
+    }
+    for eq in equalities {
+        clause.body.formula.push_conj(eq);
+    }
+    if let Some(columns) = columns_of(&clause.head) {
+        clause.head.args = keep_columns(std::mem::take(&mut clause.head.args), columns);
+    }
 }
 
 /// Removes every predicate variable argument that is inductively equal to a lower argument of
@@ -470,22 +507,13 @@ pub fn dedup_pred_args(mut system: System) -> System {
     let mut preds: Vec<_> = dropped.keys().copied().collect();
     preds.sort_by_key(|p| p.index());
     for p in preds {
-        let mut columns: Vec<_> = dropped[&p].iter().copied().collect();
-        columns.sort();
+        let columns = &dropped[&p];
         tracing::info!(pred = %p, ?columns, sig_len = system.pred_vars[p].sig.len(), "dedup_pred_args: dropping columns");
         let sig = std::mem::take(&mut system.pred_vars[p].sig);
-        system.pred_vars[p].sig = sig
-            .into_iter()
-            .enumerate()
-            .filter(|(k, _)| !dropped[&p].contains(k))
-            .map(|(_, s)| s)
-            .collect();
+        system.pred_vars[p].sig = keep_columns(sig, columns);
     }
     for clause in system.clauses.iter_mut() {
-        drop_args(&mut clause.head, &dropped);
-        for atom in &mut clause.body.atoms {
-            drop_args(atom, &dropped);
-        }
+        drop_in_clause(clause, &dropped);
     }
     system
 }
@@ -552,6 +580,10 @@ mod tests {
                 assert_eq!(atom.args.len(), 1);
             }
         }
+        // The goal clause `P(x, y) ∧ x ≠ y ⇒ ⊥` keeps `x = y` in its body.
+        let goal = system.clauses.iter().last().unwrap();
+        let kept = Formula::Atom(v(0).equal_to(v(1)));
+        assert!(matches!(&goal.body.formula, Formula::And(fs) if fs.contains(&kept)));
     }
 
     #[test]
