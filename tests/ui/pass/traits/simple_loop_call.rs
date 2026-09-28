@@ -45,5 +45,7 @@ impl A for B {
 }
 
 fn main() {
-    
+    let b = B(0);
+    let ret = target(&b, 1);
+    assert!(ret > 0);
 }

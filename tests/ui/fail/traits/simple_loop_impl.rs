@@ -35,7 +35,7 @@ impl thrust_models::Model for B {
 #[thrust_macros::context]
 impl A for B {
     fn f(&self, x: i64) -> i64{
-        x
+        x - 1
     }
 
     #[thrust_macros::predicate]
@@ -45,7 +45,5 @@ impl A for B {
 }
 
 fn main() {
-    let b = B(0);
-    let ret = target(&b, 0);
-    assert!(ret > 0);
+    
 }
