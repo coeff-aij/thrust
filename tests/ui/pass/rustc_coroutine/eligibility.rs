@@ -1,4 +1,4 @@
-//@ignore-on-host: draft, stops at the generic slice in `IndexSlice`'s `raw: [T]` (see README.md)
+//@ignore-on-host: draft, stops at the call `VariantIdx::new` in an ensures, where only predicates may be called, and behind it at slice indexing by `IntoSliceIdx::Output` in the generic `Index` impl of `IndexSlice` (see README.md)
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:develop-2493045c3
 

@@ -1,4 +1,4 @@
-//@ignore-on-host: draft, stops at std's unspecified PartialOrd::partial_cmp reached from AbiAlign::min/max (see README.md)
+//@ignore-on-host: draft, stops at the raw-pointer cast of the untrusted `IndexSlice::from_raw`, and behind it at slice indexing by `IntoSliceIdx::Output` in the generic `Index` impl of `IndexSlice` (see README.md)
 //@edition: 2024
 #![feature(new_range_api)]
 //@compile-flags: -Adead_code -C debug-assertions=off
