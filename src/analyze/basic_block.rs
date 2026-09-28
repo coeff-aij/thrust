@@ -1119,6 +1119,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     self.ctx
                         .def_ty_with_args(resolved_def_id, resolved_args, caller_def_id)
                 else {
+                    // Also reached when the def's only specification is an extern spec written
+                    // for another instantiation of it (see `spec_covers`).
                     panic!(
                         "unknown def (resolved): {:?}, args: {:?}",
                         resolved_def_id, resolved_args

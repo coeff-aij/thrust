@@ -192,6 +192,41 @@ struct DeferredDefTy<'tcx> {
     local_def_id: LocalDefId,
     cache: Rc<RefCell<HashMap<InstantiationKey<'tcx>, rty::RefinedType>>>,
     mode: DeferredDefMode,
+    // The target's generic arguments at the spec's own tail call (`None` when this def is
+    // registered under its own def_id, not as an extern spec). The def_id key this is stored
+    // under can be one shared blanket impl covering many instantiations of one of its type
+    // parameters (`Vec<T, A>: Index<I>` for any `I: SliceIndex<[T]>` is one `index` def_id for
+    // every `I`), while a spec written against it fixes that parameter to one concrete type
+    // (`_extern_spec_vec_index` only ever calls it at `I = usize`). `def_ty_with_args` uses this
+    // to refuse the spec's contract at a call whose actual `I` is not that one, rather than
+    // handing every instantiation the `usize` one's contract.
+    target_args: Option<mir_ty::GenericArgsRef<'tcx>>,
+}
+
+/// Whether `target_args` (an extern spec's own tail call, in the target's parameter space)
+/// covers `generic_args` (an actual call's instantiation of the same target).
+///
+/// A position `target_args` leaves as one of the spec's own type parameters is one the spec
+/// generalizes over, so any actual argument there is covered. A position it fixed to a
+/// concrete type is covered only by that same type: the spec's body was checked once, against
+/// that one instantiation, and only handles it.
+fn spec_covers<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    target_args: mir_ty::GenericArgsRef<'tcx>,
+    generic_args: mir_ty::GenericArgsRef<'tcx>,
+) -> bool {
+    use mir_ty::TypeVisitableExt as _;
+    target_args
+        .iter()
+        .zip(generic_args.iter())
+        .all(|(spec_arg, actual_arg)| {
+            let (Some(spec_ty), Some(actual_ty)) = (spec_arg.as_type(), actual_arg.as_type())
+            else {
+                // lifetimes and consts do not narrow a spec here.
+                return true;
+            };
+            spec_ty.has_param() || tcx.erase_regions(spec_ty) == tcx.erase_regions(actual_ty)
+        })
 }
 
 #[derive(Debug, Clone)]
@@ -511,27 +546,45 @@ impl<'tcx> Analyzer<'tcx> {
         self.defs.insert(def_id, DefTy::Concrete(rty));
     }
 
-    pub fn register_deferred_def(&mut self, target_def_id: DefId, local_def_id: LocalDefId) {
-        self.register_deferred_def_impl(target_def_id, local_def_id, DeferredDefMode::Analyze);
+    pub fn register_deferred_def(
+        &mut self,
+        target_def_id: DefId,
+        local_def_id: LocalDefId,
+        target_args: Option<mir_ty::GenericArgsRef<'tcx>>,
+    ) {
+        self.register_deferred_def_impl(
+            target_def_id,
+            local_def_id,
+            target_args,
+            DeferredDefMode::Analyze,
+        );
     }
 
     pub fn register_deferred_def_without_analysis(
         &mut self,
         target_def_id: DefId,
         local_def_id: LocalDefId,
+        target_args: Option<mir_ty::GenericArgsRef<'tcx>>,
     ) {
-        self.register_deferred_def_impl(target_def_id, local_def_id, DeferredDefMode::NoAnalyze);
+        self.register_deferred_def_impl(
+            target_def_id,
+            local_def_id,
+            target_args,
+            DeferredDefMode::NoAnalyze,
+        );
     }
 
     fn register_deferred_def_impl(
         &mut self,
         target_def_id: DefId,
         local_def_id: LocalDefId,
+        target_args: Option<mir_ty::GenericArgsRef<'tcx>>,
         mode: DeferredDefMode,
     ) {
         tracing::info!(
             ?target_def_id,
             ?local_def_id,
+            ?target_args,
             ?mode,
             "register_deferred_def"
         );
@@ -540,6 +593,7 @@ impl<'tcx> Analyzer<'tcx> {
                 local_def_id,
                 cache: Rc::new(RefCell::new(HashMap::new())),
                 mode,
+                target_args,
             })
         });
     }
@@ -748,11 +802,25 @@ impl<'tcx> Analyzer<'tcx> {
                         def_id != caller_def_id && generic.local_def_id.to_def_id() == def_id
                     }),
                 ),
-                DefTy::Deferred(deferred) => (
-                    deferred.local_def_id,
-                    Rc::clone(&deferred.cache),
-                    Some(deferred.mode),
-                ),
+                DefTy::Deferred(deferred) => {
+                    if let Some(target_args) = deferred.target_args {
+                        if !spec_covers(self.tcx, target_args, generic_args) {
+                            // This def_id is a blanket impl shared by more instantiations than
+                            // the extern spec's own tail call covers (e.g. `Vec::index` at some
+                            // `Idx` other than the `usize` `_extern_spec_vec_index` calls it
+                            // at). Handing this call that spec's contract would relate its
+                            // result to whatever the spec's own body happens to return,
+                            // regardless of the real `Idx` here, so decline it: this
+                            // instantiation has no specification.
+                            return None;
+                        }
+                    }
+                    (
+                        deferred.local_def_id,
+                        Rc::clone(&deferred.cache),
+                        Some(deferred.mode),
+                    )
+                }
             };
 
         let key = InstantiationKey {
