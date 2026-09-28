@@ -378,6 +378,10 @@ mod thrust_models {
         type Ty = bool;
     }
 
+    impl Model for std::cmp::Ordering {
+        type Ty = std::cmp::Ordering;
+    }
+
     impl<T: ?Sized> Model for model::Closure<T> {
         type Ty = model::Closure<T>;
     }
@@ -872,6 +876,45 @@ fn _extern_spec_i32_is_negative(x: i32) -> bool {
 fn _extern_spec_usize_checked_sub(x: usize, y: usize) -> Option<usize> {
     usize::checked_sub(x, y)
 }
+
+// The comparisons of primitive integers, which derived `PartialOrd` / `Ord` impls call on
+// their fields.
+macro_rules! int_cmp_specs {
+    ($T:ty, $partial_cmp:ident, $cmp:ident) => {
+        #[thrust::extern_spec_fn]
+        #[thrust_macros::requires(true)]
+        #[thrust_macros::ensures(
+            (*x < *y && result == Some(std::cmp::Ordering::Less))
+            || (*x == *y && result == Some(std::cmp::Ordering::Equal))
+            || (*x > *y && result == Some(std::cmp::Ordering::Greater))
+        )]
+        fn $partial_cmp(x: &$T, y: &$T) -> Option<std::cmp::Ordering> {
+            <$T as PartialOrd>::partial_cmp(x, y)
+        }
+
+        #[thrust::extern_spec_fn]
+        #[thrust_macros::requires(true)]
+        #[thrust_macros::ensures(
+            (*x < *y && result == std::cmp::Ordering::Less)
+            || (*x == *y && result == std::cmp::Ordering::Equal)
+            || (*x > *y && result == std::cmp::Ordering::Greater)
+        )]
+        fn $cmp(x: &$T, y: &$T) -> std::cmp::Ordering {
+            <$T as Ord>::cmp(x, y)
+        }
+    };
+}
+
+int_cmp_specs!(isize, _extern_spec_isize_partial_cmp, _extern_spec_isize_cmp);
+int_cmp_specs!(i8, _extern_spec_i8_partial_cmp, _extern_spec_i8_cmp);
+int_cmp_specs!(i16, _extern_spec_i16_partial_cmp, _extern_spec_i16_cmp);
+int_cmp_specs!(i32, _extern_spec_i32_partial_cmp, _extern_spec_i32_cmp);
+int_cmp_specs!(i64, _extern_spec_i64_partial_cmp, _extern_spec_i64_cmp);
+int_cmp_specs!(usize, _extern_spec_usize_partial_cmp, _extern_spec_usize_cmp);
+int_cmp_specs!(u8, _extern_spec_u8_partial_cmp, _extern_spec_u8_cmp);
+int_cmp_specs!(u16, _extern_spec_u16_partial_cmp, _extern_spec_u16_cmp);
+int_cmp_specs!(u32, _extern_spec_u32_partial_cmp, _extern_spec_u32_cmp);
+int_cmp_specs!(u64, _extern_spec_u64_partial_cmp, _extern_spec_u64_cmp);
 
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
