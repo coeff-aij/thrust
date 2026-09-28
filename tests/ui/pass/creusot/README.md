@@ -7,6 +7,12 @@ equivalent to Creusot's, plus five additions with no Creusot counterpart (`take_
 `skip_take_take_count.rs`, twins `skip_take.rs` on a different property). `weaker/` holds
 variants of a case whose property is weaker than Creusot's but still verifies.
 
+Every file in the `produces` form repeats one trait block, Creusot's `common.rs` in Thrust syntax:
+the predicates, the laws `produces_refl` and `produces_trans` in concatenation form (the latter
+without Creusot's invariant premises, which a Thrust loop head cannot supply for its entry state),
+`invariant` defaulting to `true`, and `next` with Creusot's contract. The step-form files repeat
+theirs in the same layout. A case that needs `collect` adds it to its copy after `next`.
+
 | file | Creusot benchmark file | form |
 | --- | --- | --- |
 | `range.rs` | `iterators/range.rs` | `produces` |

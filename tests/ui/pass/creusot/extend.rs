@@ -4,41 +4,50 @@
 use thrust_models::model::{Int, Mut, Seq};
 use thrust_models::{exists, forall, Model};
 
-// Creusot's `examples/extend`: `v1.extend(v2.into_iter())` appends `v2` to `v1`. The iterator
-// spec is Creusot's `produces` form (`traits/collect_visited_seq_i64.rs`); the iterator is std's
-// `vec::IntoIter<i64>` under its std.rs model `(sequence, cursor)`, and `Extend` is a local trait
-// whose generic `extend` is used at `I = vec::IntoIter<i64>`. Creusot's `concat` is written
+// Creusot's `examples/extend`: `v1.extend(v2.into_iter())` appends `v2` to `v1`. The iterator is
+// std's `vec::IntoIter<i64>` under its std.rs model `(sequence, cursor)`, and `Extend` is a local
+// trait whose generic `extend` is used at `I = vec::IntoIter<i64>`. Creusot's `concat` is written
 // index by index.
+
+// Creusot's `common.rs`, the iterator specification every case shares: the trait predicates
+// `produces(self, visited, o)`, `completed` and `invariant` (`true` unless the impl says otherwise),
+// the laws `produces_refl` and `produces_trans` in Creusot's concatenation form, proved by each
+// impl, and `next` with Creusot's contract.
 #[thrust_macros::context]
 trait Iterator
 where
     Self: Model,
     Self::Item: Model,
-    <Self as Model>::Ty: Model<Ty = <Self as Model>::Ty>,
-    <Self::Item as Model>::Ty: Model<Ty = <Self::Item as Model>::Ty>,
 {
     type Item;
+
+    #[thrust_macros::predicate]
+    fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool;
+
+    #[thrust_macros::predicate]
+    fn completed(&mut self) -> bool;
+
+    #[thrust_macros::law]
+    #[thrust_macros::requires(Self::invariant(*a))]
+    #[thrust_macros::ensures(Self::produces(*a, Seq::empty(), *a))]
+    fn produces_refl(a: &Self);
+
+    #[thrust_macros::law]
+    #[thrust_macros::requires(Self::produces(*a, ab, *b))]
+    #[thrust_macros::requires(Self::produces(*b, bc, *c))]
+    #[thrust_macros::ensures(Self::produces(*a, ab.concat(bc), *c))]
+    fn produces_trans(a: &Self, ab: Seq<<Self::Item as Model>::Ty>, b: &Self, bc: Seq<<Self::Item as Model>::Ty>, c: &Self);
+
+    #[thrust_macros::predicate]
+    fn invariant(self) -> bool {
+        true
+    }
 
     #[thrust_macros::requires(Self::invariant(*self))]
     #[thrust_macros::ensures(Self::invariant(!self))]
     #[thrust_macros::ensures(result == None ==> Self::completed(self))]
-    // `produces_trans` with a singleton second leg, applied at every `next` instead of called.
-    #[thrust_macros::ensures(forall(|i| forall(|s: Seq<<Self::Item as Model>::Ty>|
-        result == Some(i) && s == Seq::singleton(i) ==> Self::produces(*self, s, !self))))]
-    #[thrust_macros::ensures(forall(|a: <Self as Model>::Ty| forall(|s: Seq<<Self::Item as Model>::Ty>| forall(|i| forall(|t: Seq<<Self::Item as Model>::Ty>|
-        result == Some(i) && Self::produces(a, s, *self) && t == s.push(i) ==> Self::produces(a, t, !self))))))]
+    #[thrust_macros::ensures(forall(|i| result == Some(i) ==> Self::produces(*self, Seq::singleton(i), !self)))]
     fn next(&mut self) -> Option<Self::Item>;
-
-    // Reflexivity lemma: the base case of a loop invariant `iter_old.produces(v, iter)`.
-    #[thrust_macros::ensures(forall(|s: Seq<<Self::Item as Model>::Ty>| s.len() == 0 ==> Self::produces(*a, s, *a)))]
-    fn produces_refl(a: &Self);
-
-    #[thrust_macros::predicate]
-    fn invariant(self) -> bool;
-    #[thrust_macros::predicate]
-    fn completed(&mut self) -> bool;
-    #[thrust_macros::predicate]
-    fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool;
 }
 
 // `vec::IntoIter<i64>` as an iterator of the local spec; `next` is std's, through its extern spec.
@@ -51,6 +60,8 @@ impl Iterator for std::vec::IntoIter<i64> {
     }
 
     fn produces_refl(a: &std::vec::IntoIter<i64>) {}
+
+    fn produces_trans(a: &std::vec::IntoIter<i64>, ab: Seq<<Self::Item as Model>::Ty>, b: &std::vec::IntoIter<i64>, bc: Seq<<Self::Item as Model>::Ty>, c: &std::vec::IntoIter<i64>) {}
 
     // 0 <= self.1 (not `self.1 <= self.0.len()`: the Vec model does not know `len() >= 0`)
     #[thrust_macros::predicate]

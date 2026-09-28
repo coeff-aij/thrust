@@ -14,18 +14,32 @@ use thrust_models::{exists, forall};
 use thrust_models::model::{Closure, Int, Mut, Seq};
 use thrust_models::Model;
 
+// The step form of the iterator specification, Thrust's own: `step(self, item, dist)` relates
+// one call of `next` to its successor state, and the unary `produces(self, item)` says `item` is
+// among what `self` may still produce. `produces` is monotone under `next`, which makes a guard
+// over it inductive where a guard over `step` (one call ahead) is not.
 #[thrust_macros::context]
 trait Iterator {
     type Item;
+
+    #[thrust_macros::predicate]
+    fn step(self, item: Self::Item, dist: Self) -> bool;
+
+    #[thrust_macros::predicate]
+    fn produces(self, item: Self::Item) -> bool;
+
+    #[thrust_macros::predicate]
+    fn completed(&mut self) -> bool;
+
+    #[thrust_macros::predicate]
+    fn invariant(self) -> bool {
+        true
+    }
 
     #[thrust_macros::requires(Self::invariant(*self))]
     #[thrust_macros::ensures(Self::invariant(!self))]
     #[thrust_macros::ensures(result == None ==> Self::completed(self))]
     #[thrust_macros::ensures(forall(|i| result == Some(i) ==> Self::step(*self, i, !self)))]
-    // `step` relates one call of `next` to its successor state, so an invariant
-    // guarded by it ("closure pre for what the inner can step to NOW") is not
-    // preserved by `next`. `produces` is monotone under `next`, which is what makes
-    // the guard inductive.
     #[thrust_macros::ensures(forall(|i| result == Some(i) ==> Self::produces(*self, i)))]
     #[thrust_macros::ensures(forall(|i| Self::produces(!self, i) ==> Self::produces(*self, i)))]
     fn next(&mut self) -> Option<Self::Item>;
@@ -43,16 +57,6 @@ trait Iterator {
     {
         B::from_iter(self)
     }
-
-    #[thrust_macros::predicate]
-    fn invariant(self) -> bool;
-    #[thrust_macros::predicate]
-    fn completed(&mut self) -> bool;
-    #[thrust_macros::predicate]
-    fn step(self, item: Self::Item, dist: Self) -> bool;
-    /// `item` is among what `self` may still produce.
-    #[thrust_macros::predicate]
-    fn produces(self, item: Self::Item) -> bool;
 }
 
 #[derive(PartialEq)]
@@ -146,11 +150,6 @@ impl Iterator for Range {
         } else {
             None
         }
-    }
-
-    #[thrust_macros::predicate]
-    fn invariant(self) -> bool {
-        true
     }
 
     #[thrust_macros::predicate]

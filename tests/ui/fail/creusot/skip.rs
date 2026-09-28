@@ -4,42 +4,49 @@
 use thrust_models::model::{Int, Mut, Seq};
 use thrust_models::{exists, forall, Model};
 
-// Creusot's `common.rs` iterator spec: ternary `produces(self, visited, o)`, `completed`, and the
-// one-step laws applied as ensures on `next`; reflexivity is the law `produces_refl`, guarded by
-// the invariant as in Creusot, and not a `next` ensures.
 // The generic `Skip` follows Creusot's `skip.rs`: `next` drains up to `n` items in a loop whose
 // invariant carries the skipped prefix, then answers with the inner iterator's result.
 // `skip_step.rs` is the same adapter in the step form of the iterator spec.
+
+// Creusot's `common.rs`, the iterator specification every case shares: the trait predicates
+// `produces(self, visited, o)`, `completed` and `invariant` (`true` unless the impl says otherwise),
+// the laws `produces_refl` and `produces_trans` in Creusot's concatenation form, proved by each
+// impl, and `next` with Creusot's contract.
 #[thrust_macros::context]
 trait Iterator
 where
     Self: Model,
     Self::Item: Model,
-    <Self as Model>::Ty: Model<Ty = <Self as Model>::Ty>,
-    <Self::Item as Model>::Ty: Model<Ty = <Self::Item as Model>::Ty>,
 {
     type Item;
 
-    #[thrust_macros::requires(Self::invariant(*self))]
-    #[thrust_macros::ensures(Self::invariant(!self))]
-    #[thrust_macros::ensures(result == None ==> Self::completed(self))]
-    #[thrust_macros::ensures(forall(|i| result == Some(i) ==> Self::produces(*self, Seq::singleton(i), !self)))]
-    #[thrust_macros::ensures(forall(|a: <Self as Model>::Ty| forall(|s: Seq<<Self::Item as Model>::Ty>| forall(|i|
-        result == Some(i) && Self::produces(a, s, *self) ==> Self::produces(a, s.push(i), !self)))))]
-    fn next(&mut self) -> Option<Self::Item>;
+    #[thrust_macros::predicate]
+    fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool;
 
-    // Callable where a loop invariant `old.produces(t, cur)` needs its base case.
+    #[thrust_macros::predicate]
+    fn completed(&mut self) -> bool;
+
     #[thrust_macros::law]
     #[thrust_macros::requires(Self::invariant(*a))]
     #[thrust_macros::ensures(Self::produces(*a, Seq::empty(), *a))]
     fn produces_refl(a: &Self);
 
+    #[thrust_macros::law]
+    #[thrust_macros::requires(Self::produces(*a, ab, *b))]
+    #[thrust_macros::requires(Self::produces(*b, bc, *c))]
+    #[thrust_macros::ensures(Self::produces(*a, ab.concat(bc), *c))]
+    fn produces_trans(a: &Self, ab: Seq<<Self::Item as Model>::Ty>, b: &Self, bc: Seq<<Self::Item as Model>::Ty>, c: &Self);
+
     #[thrust_macros::predicate]
-    fn invariant(self) -> bool;
-    #[thrust_macros::predicate]
-    fn completed(&mut self) -> bool;
-    #[thrust_macros::predicate]
-    fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool;
+    fn invariant(self) -> bool {
+        true
+    }
+
+    #[thrust_macros::requires(Self::invariant(*self))]
+    #[thrust_macros::ensures(Self::invariant(!self))]
+    #[thrust_macros::ensures(result == None ==> Self::completed(self))]
+    #[thrust_macros::ensures(forall(|i| result == Some(i) ==> Self::produces(*self, Seq::singleton(i), !self)))]
+    fn next(&mut self) -> Option<Self::Item>;
 }
 
 pub struct Skip<I> {
@@ -75,6 +82,7 @@ where
                     !s == !self.at_entry()
                         && (*s).1 == 0
                         && I::invariant((*s).0)
+                        && 0 <= n
                         && n <= (*self.at_entry()).1
                         && (n == (*self.at_entry()).1 ==> (*s).0 == (*self.at_entry()).0)
                         && exists(|t: Seq<<<I as Iterator>::Item as Model>::Ty>|
@@ -94,6 +102,8 @@ where
     }
 
     fn produces_refl(a: &Skip<I>) {}
+
+    fn produces_trans(a: &Skip<I>, ab: Seq<<Self::Item as Model>::Ty>, b: &Skip<I>, bc: Seq<<Self::Item as Model>::Ty>, c: &Skip<I>) {}
 
     // self.iter.invariant() && self.n >= 0
     #[thrust_macros::predicate]
@@ -154,10 +164,7 @@ impl Iterator for Range {
 
     fn produces_refl(a: &Range) {}
 
-    #[thrust_macros::predicate]
-    fn invariant(self) -> bool {
-        true
-    }
+    fn produces_trans(a: &Range, ab: Seq<<Self::Item as Model>::Ty>, b: &Range, bc: Seq<<Self::Item as Model>::Ty>, c: &Range) {}
 
     // self.resolve() && self.start >= self.end
     #[thrust_macros::predicate]

@@ -5,10 +5,15 @@ use thrust_models::forall;
 use thrust_models::model::{Int, Mut, Seq};
 use thrust_models::Model;
 
-// Creusot's `iter_mut.rs`: the iterator spec (`produces` / `completed` / `invariant`, laws as
-// ensures on `next`) implemented for `core::slice::IterMut`, whose model is the slice's entry
-// and final sequences and a cursor. `next` is std's; its contract is the extern spec. The
-// associated `Item` is `&'a mut T`, so `visited` is a sequence of `Mut` pairs.
+// Creusot's `iter_mut.rs`: the iterator specification implemented for `core::slice::IterMut`,
+// whose model is the slice's entry and final sequences and a cursor. `next` is std's; its
+// contract is the extern spec. The associated `Item` is `&'a mut T`, so `visited` is a sequence
+// of `Mut` pairs.
+
+// Creusot's `common.rs`, the iterator specification every case shares: the trait predicates
+// `produces(self, visited, o)`, `completed` and `invariant` (`true` unless the impl says otherwise),
+// the laws `produces_refl` and `produces_trans` in Creusot's concatenation form, proved by each
+// impl, and `next` with Creusot's contract.
 #[thrust_macros::context]
 trait Iterator
 where
@@ -17,24 +22,33 @@ where
 {
     type Item;
 
-    #[thrust_macros::requires(Self::invariant(*self))]
-    #[thrust_macros::ensures(Self::invariant(!self))]
-    #[thrust_macros::ensures(result == None ==> Self::completed(self))]
-    #[thrust_macros::ensures(Self::produces(*self, Seq::empty(), *self))]
-    #[thrust_macros::ensures(forall(|i| result == Some(i) ==> Self::produces(*self, Seq::singleton(i), !self)))]
-    #[thrust_macros::ensures(forall(|a: <Self as Model>::Ty| forall(|s: Seq<<Self::Item as Model>::Ty>| forall(|i|
-        result == Some(i) && Self::produces(a, s, *self) ==> Self::produces(a, s.push(i), !self)))))]
-    fn next(&mut self) -> Option<Self::Item>;
+    #[thrust_macros::predicate]
+    fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool;
 
+    #[thrust_macros::predicate]
+    fn completed(&mut self) -> bool;
+
+    #[thrust_macros::law]
+    #[thrust_macros::requires(Self::invariant(*a))]
     #[thrust_macros::ensures(Self::produces(*a, Seq::empty(), *a))]
     fn produces_refl(a: &Self);
 
+    #[thrust_macros::law]
+    #[thrust_macros::requires(Self::produces(*a, ab, *b))]
+    #[thrust_macros::requires(Self::produces(*b, bc, *c))]
+    #[thrust_macros::ensures(Self::produces(*a, ab.concat(bc), *c))]
+    fn produces_trans(a: &Self, ab: Seq<<Self::Item as Model>::Ty>, b: &Self, bc: Seq<<Self::Item as Model>::Ty>, c: &Self);
+
     #[thrust_macros::predicate]
-    fn invariant(self) -> bool;
-    #[thrust_macros::predicate]
-    fn completed(&mut self) -> bool;
-    #[thrust_macros::predicate]
-    fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool;
+    fn invariant(self) -> bool {
+        true
+    }
+
+    #[thrust_macros::requires(Self::invariant(*self))]
+    #[thrust_macros::ensures(Self::invariant(!self))]
+    #[thrust_macros::ensures(result == None ==> Self::completed(self))]
+    #[thrust_macros::ensures(forall(|i| result == Some(i) ==> Self::produces(*self, Seq::singleton(i), !self)))]
+    fn next(&mut self) -> Option<Self::Item>;
 }
 
 // The model is (Seq<T>, Seq<T>, Int): the entry and final sequences of the slice, and the cursor.
@@ -51,6 +65,8 @@ where
     }
 
     fn produces_refl(a: &core::slice::IterMut<'a, T>) {}
+
+    fn produces_trans(a: &core::slice::IterMut<'a, T>, ab: Seq<<Self::Item as Model>::Ty>, b: &core::slice::IterMut<'a, T>, bc: Seq<<Self::Item as Model>::Ty>, c: &core::slice::IterMut<'a, T>) {}
 
     // 0 <= self.2 && self.2 <= self.0.len()
     #[thrust_macros::predicate]

@@ -6,26 +6,44 @@ use thrust_models::{exists, forall, Ghost, Model};
 
 // Creusot's `examples/counter`: `v.iter().map_inv(|x, _prod| { cnt += 1; *x }).collect()`, where
 // the closure's precondition `cnt == _prod.len()` reads the history. The iterator spec is the
-// step form with a unary `produces1` guard; `Map` carries Creusot's `MapInv` ghost `produced`
+// step form with a unary `produces` guard; `Map` carries Creusot's `MapInv` ghost `produced`
 // and takes an `FnMut(i64, Ghost<Seq<Int>>)`. The source is a `Range` instead of `v.iter()`.
 //
 // The step form has no history, so `collect` promises only that each element is producible;
 // Creusot's `x == v` and `cnt == x.len()` are not stated.
+// The step form of the iterator specification, Thrust's own: `step(self, item, dist)` relates
+// one call of `next` to its successor state, and the unary `produces(self, item)` says `item` is
+// among what `self` may still produce. `produces` is monotone under `next`, which makes a guard
+// over it inductive where a guard over `step` (one call ahead) is not.
 #[thrust_macros::context]
 trait Iterator {
     type Item;
+
+    #[thrust_macros::predicate]
+    fn step(self, item: Self::Item, dist: Self) -> bool;
+
+    #[thrust_macros::predicate]
+    fn produces(self, item: Self::Item) -> bool;
+
+    #[thrust_macros::predicate]
+    fn completed(&mut self) -> bool;
+
+    #[thrust_macros::predicate]
+    fn invariant(self) -> bool {
+        true
+    }
 
     #[thrust_macros::requires(Self::invariant(*self))]
     #[thrust_macros::ensures(Self::invariant(!self))]
     #[thrust_macros::ensures(result == None ==> Self::completed(self))]
     #[thrust_macros::ensures(forall(|i| result == Some(i) ==> Self::step(*self, i, !self)))]
-    #[thrust_macros::ensures(forall(|i| result == Some(i) ==> Self::produces1(*self, i)))]
-    #[thrust_macros::ensures(forall(|i| Self::produces1(!self, i) ==> Self::produces1(*self, i)))]
+    #[thrust_macros::ensures(forall(|i| result == Some(i) ==> Self::produces(*self, i)))]
+    #[thrust_macros::ensures(forall(|i| Self::produces(!self, i) ==> Self::produces(*self, i)))]
     fn next(&mut self) -> Option<Self::Item>;
 
     // `collect` delegates to `from_iter`, as in `tests/ui/pass/creusot/weaker/decuple_range.rs`.
     #[thrust_macros::requires(Self::invariant(*self))]
-    #[thrust_macros::ensures(forall(|k: Int| 0 <= k && k < result.len() ==> Self::produces1(*self, result[k])))]
+    #[thrust_macros::ensures(forall(|k: Int| 0 <= k && k < result.len() ==> Self::produces(*self, result[k])))]
     fn collect<B: FromIterator<Self::Item>>(&mut self) -> B
     where
         Self: Sized + Model,
@@ -35,15 +53,6 @@ trait Iterator {
     {
         B::from_iter(self)
     }
-
-    #[thrust_macros::predicate]
-    fn invariant(self) -> bool;
-    #[thrust_macros::predicate]
-    fn completed(&mut self) -> bool;
-    #[thrust_macros::predicate]
-    fn step(self, item: Self::Item, dist: Self) -> bool;
-    #[thrust_macros::predicate]
-    fn produces1(self, item: Self::Item) -> bool;
 }
 
 struct Map<I, F> {
@@ -80,21 +89,21 @@ where
     }
 
     // self.iter.invariant()
-    // && forall(|e| self.iter.produces1(e) ==> pre!(self.func(e, self.produced)))
-    // && forall(|h, e1, e2, b, g2| self.iter.produces1(e1) && self.iter.produces1(e2)
+    // && forall(|e| self.iter.produces(e) ==> pre!(self.func(e, self.produced)))
+    // && forall(|h, e1, e2, b, g2| self.iter.produces(e1) && self.iter.produces(e2)
     //        && pre!(self.func(e1, h)) && post!(self.func(e1, h), b)
     //        ==> pre!(g2(e2, h.push(e1))))
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
         I::invariant(self.0)
-            && forall(|e: Int| !I::produces1(self.0, e) || thrust_macros::pre!((self.1)(e, self.2)))
+            && forall(|e: Int| !I::produces(self.0, e) || thrust_macros::pre!((self.1)(e, self.2)))
             && forall(|h: Seq<Int>|
                 forall(|e1: Int|
                     forall(|e2: Int|
                         forall(|b: Int|
                             forall(|g2: Closure<F>|
-                                !(I::produces1(self.0, e1)
-                                    && I::produces1(self.0, e2)
+                                !(I::produces(self.0, e1)
+                                    && I::produces(self.0, e2)
                                     && thrust_macros::pre!((self.1)(e1, h))
                                     && thrust_macros::post!(Mut::new(self.1, g2)(e1, h), b))
                                     || thrust_macros::pre!((g2)(e2, h.push(e1))))))))
@@ -120,13 +129,13 @@ where
                 && dist.2 == self.2.push(i))
     }
 
-    // exists(|j, g2| self.iter.produces1(j) && pre!(self.func(j, self.produced))
+    // exists(|j, g2| self.iter.produces(j) && pre!(self.func(j, self.produced))
     //    && post!(self.func(j, self.produced), item))
     #[thrust_macros::predicate]
-    fn produces1(self, item: Self::Item) -> bool {
+    fn produces(self, item: Self::Item) -> bool {
         exists(|j: Int|
             exists(|g2: Closure<F>|
-                I::produces1(self.0, j)
+                I::produces(self.0, j)
                     && thrust_macros::pre!((self.1)(j, self.2))
                     && thrust_macros::post!(Mut::new(self.1, g2)(j, self.2), item)))
     }
@@ -157,11 +166,6 @@ impl Iterator for Range {
     }
 
     #[thrust_macros::predicate]
-    fn invariant(self) -> bool {
-        true
-    }
-
-    #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
         !((*self).start < (*self).end) && *self == !self
     }
@@ -175,7 +179,7 @@ impl Iterator for Range {
     }
 
     #[thrust_macros::predicate]
-    fn produces1(self, item: Self::Item) -> bool {
+    fn produces(self, item: Self::Item) -> bool {
         self.start <= item && item < self.end
     }
 }
@@ -188,7 +192,7 @@ where
     <A as Model>::Ty: Model<Ty = <A as Model>::Ty>,
 {
     #[thrust_macros::requires(I::invariant(*iter))]
-    #[thrust_macros::ensures(forall(|k: Int| 0 <= k && k < result.len() ==> I::produces1(*iter, result[k])))]
+    #[thrust_macros::ensures(forall(|k: Int| 0 <= k && k < result.len() ==> I::produces(*iter, result[k])))]
     fn from_iter<I: Iterator<Item = A> + Model>(iter: &mut I) -> Self
     where
         <I as Model>::Ty: PartialEq;
@@ -207,8 +211,8 @@ impl FromIterator<i64> for Vec<i64> {
                 |it: &mut I, v: Vec<i64>, iter: thrust_models::FnParam<&mut I>|
                 !it == !iter.at_entry()
                     && I::invariant(*it)
-                    && forall(|e: Int| I::produces1(*it, e) ==> I::produces1(*iter.at_entry(), e))
-                    && forall(|k: Int| 0 <= k && k < v.len() ==> I::produces1(*iter.at_entry(), v[k]))
+                    && forall(|e: Int| I::produces(*it, e) ==> I::produces(*iter.at_entry(), e))
+                    && forall(|k: Int| 0 <= k && k < v.len() ==> I::produces(*iter.at_entry(), v[k]))
             );
             v.push(x);
         }

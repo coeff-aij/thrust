@@ -4,22 +4,28 @@
 use thrust_models::model::Mut;
 use thrust_models::{exists, forall};
 
+// The step form of the iterator specification, Thrust's own: `step(self, item, dist)` relates
+// one call of `next` to its successor state.
 #[thrust_macros::context]
 trait Iterator {
     type Item;
+
+    #[thrust_macros::predicate]
+    fn step(self, item: Self::Item, dist: Self) -> bool;
+
+    #[thrust_macros::predicate]
+    fn completed(&mut self) -> bool;
+
+    #[thrust_macros::predicate]
+    fn invariant(self) -> bool {
+        true
+    }
 
     #[thrust_macros::requires(Self::invariant(*self))]
     #[thrust_macros::ensures(Self::invariant(!self))]
     #[thrust_macros::ensures(result == None ==> Self::completed(self))]
     #[thrust_macros::ensures(forall(|i| result == Some(i) ==> Self::step(*self, i, !self)))]
     fn next(&mut self) -> Option<Self::Item>;
-
-    #[thrust_macros::predicate]
-    fn invariant(self) -> bool;
-    #[thrust_macros::predicate]
-    fn completed(&mut self) -> bool;
-    #[thrust_macros::predicate]
-    fn step(self, item: Self::Item, dist: Self) -> bool;
 }
 
 pub struct Fuse<I> {

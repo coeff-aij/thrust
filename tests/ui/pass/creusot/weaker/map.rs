@@ -4,29 +4,35 @@
 use thrust_models::model::{Closure, Mut};
 use thrust_models::{exists, forall};
 
+// The step form of the iterator specification, Thrust's own: `step(self, item, dist)` relates
+// one call of `next` to its successor state, and the unary `produces(self, item)` says `item` is
+// among what `self` may still produce. `produces` is monotone under `next`, which makes a guard
+// over it inductive where a guard over `step` (one call ahead) is not.
 #[thrust_macros::context]
 trait Iterator {
     type Item;
+
+    #[thrust_macros::predicate]
+    fn step(self, item: Self::Item, dist: Self) -> bool;
+
+    #[thrust_macros::predicate]
+    fn produces(self, item: Self::Item) -> bool;
+
+    #[thrust_macros::predicate]
+    fn completed(&mut self) -> bool;
+
+    #[thrust_macros::predicate]
+    fn invariant(self) -> bool {
+        true
+    }
 
     #[thrust_macros::requires(Self::invariant(*self))]
     #[thrust_macros::ensures(Self::invariant(!self))]
     #[thrust_macros::ensures(result == None ==> Self::completed(self))]
     #[thrust_macros::ensures(forall(|i| result == Some(i) ==> Self::step(*self, i, !self)))]
-    // A guard over `step` (one call ahead) is not preserved by `next`; `produces` is
-    // monotone under `next`, which makes Map's invariant inductive.
     #[thrust_macros::ensures(forall(|i| result == Some(i) ==> Self::produces(*self, i)))]
     #[thrust_macros::ensures(forall(|i| Self::produces(!self, i) ==> Self::produces(*self, i)))]
     fn next(&mut self) -> Option<Self::Item>;
-
-    #[thrust_macros::predicate]
-    fn invariant(self) -> bool;
-    #[thrust_macros::predicate]
-    fn completed(&mut self) -> bool;
-    #[thrust_macros::predicate]
-    fn step(self, item: Self::Item, dist: Self) -> bool;
-    /// `item` is among what `self` may still produce.
-    #[thrust_macros::predicate]
-    fn produces(self, item: Self::Item) -> bool;
 }
 
 struct Map<I, F> {
