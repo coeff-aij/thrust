@@ -81,14 +81,11 @@ where
 
     fn produces_trans(a: &Take<I>, ab: Seq<<Self::Item as Model>::Ty>, b: &Take<I>, bc: Seq<<Self::Item as Model>::Ty>, c: &Take<I>) {}
 
-    // self.iter.invariant() && self.n >= 0
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
         I::invariant(self.iter) && self.n >= 0
     }
 
-    // (*self.n == 0 && *self == !self) ||
-    // (*self.n > 0 && *self.n == !self.n + 1 && self.iter.completed())
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
         ((*self).n == 0 && (*self).iter == (!self).iter && (*self).n == (!self).n)
@@ -97,7 +94,6 @@ where
                 && I::completed(Mut::new((*self).iter, (!self).iter)))
     }
 
-    // self.n == o.n + visited.len() + 1 && self.iter.produces(visited, o.iter)
     #[thrust_macros::predicate]
     fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool {
         self.n == o.n + visited.len() + 1 && I::produces(self.iter, visited, o.iter)
@@ -134,16 +130,11 @@ impl Iterator for Range {
 
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
-        // self.resolve() && self.start >= self.end
         *self == !self && (*self).start >= (*self).end
     }
 
     #[thrust_macros::predicate]
     fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool {
-        // self.end == o.end && self.start <= o.start
-        // && (visited.len() > 0 ==> o.start <= o.end)
-        // && visited.len() == o.start - self.start
-        // && forall i. 0 <= i < visited.len() ==> visited[i] == self.start + i
         self.end == o.end
             && self.start <= o.start
             && (!(visited.len() > 0) || o.start <= o.end)

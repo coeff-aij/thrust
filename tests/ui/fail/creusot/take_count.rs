@@ -82,17 +82,13 @@ where
 
     fn produces_trans(a: &Take<I>, ab: Seq<<Self::Item as Model>::Ty>, b: &Take<I>, bc: Seq<<Self::Item as Model>::Ty>, c: &Take<I>) {}
 
-    // self.iter.invariant() && self.n >= 0
-    // (`Take<I>`'s model here is the tuple `(<I as Model>::Ty, Int)`, not the named struct: the
-    // predicate type-checks against the model, so the components are `.0` (iter) and `.1` (n),
-    // as the SMT string's `tuple_proj<a0-Int>.0`/`.1` had it, not the struct's field names.)
+    // `Take<I>`'s model is the tuple `(<I as Model>::Ty, Int)`, not the named struct: the
+    // predicate type-checks against the model, so the components are `.0` (iter) and `.1` (n).
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
         I::invariant(self.0) && self.1 >= 0
     }
 
-    // (*self.n == 0 && *self == !self) ||
-    // (*self.n > 0 && *self.n == !self.n + 1 && self.iter.completed())
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
         ((*self).1 == 0 && (*self).0 == (!self).0 && (*self).1 == (!self).1)
@@ -101,7 +97,6 @@ where
                 && I::completed(Mut::new((*self).0, (!self).0)))
     }
 
-    // self.n == o.n + visited.len() && self.iter.produces(visited, o.iter)
     #[thrust_macros::predicate]
     fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool {
         self.1 == o.1 + visited.len() && I::produces(self.0, visited, o.0)
@@ -138,16 +133,11 @@ impl Iterator for Range {
 
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
-        // self.resolve() && self.start >= self.end
         *self == !self && (*self).start >= (*self).end
     }
 
     #[thrust_macros::predicate]
     fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool {
-        // self.end == o.end && self.start <= o.start
-        // && (visited.len() > 0 ==> o.start <= o.end)
-        // && visited.len() == o.start - self.start
-        // && forall i. 0 <= i < visited.len() ==> visited[i] == self.start + i
         self.end == o.end
             && self.start <= o.start
             && (!(visited.len() > 0) || o.start <= o.end)

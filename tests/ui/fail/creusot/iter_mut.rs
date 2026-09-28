@@ -68,21 +68,16 @@ where
 
     fn produces_trans(a: &core::slice::IterMut<'a, T>, ab: Seq<<Self::Item as Model>::Ty>, b: &core::slice::IterMut<'a, T>, bc: Seq<<Self::Item as Model>::Ty>, c: &core::slice::IterMut<'a, T>) {}
 
-    // 0 <= self.2 && self.2 <= self.0.len()
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
         0 <= self.2 && self.2 <= self.0.len()
     }
 
-    // (*self).2 >= (*self).0.len() && *self == !self
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
         (*self).2 >= (*self).0.len() && *self == !self
     }
 
-    // o.0 == self.0 && o.1 == self.1 && o.2 == self.2 + visited.len()
-    // && forall k. 0 <= k < visited.len() ==>
-    //        visited[k] == Mut(self.0[k], self.1[k])
     #[thrust_macros::predicate]
     fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool {
         o.0 == self.0

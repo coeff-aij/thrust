@@ -89,10 +89,6 @@ where
     }
 
     // self.iter.invariant()
-    // && forall(|e| self.iter.produces(e) ==> pre!(self.func(e, self.produced)))
-    // && forall(|h, e1, e2, b, g2| self.iter.produces(e1) && self.iter.produces(e2)
-    //        && pre!(self.func(e1, h)) && post!(self.func(e1, h), b)
-    //        ==> pre!(g2(e2, h.push(e1))))
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
         I::invariant(self.0)
@@ -109,7 +105,6 @@ where
                                     || thrust_macros::pre!((g2)(e2, h.push(e1))))))))
     }
 
-    // self.iter.completed() && *self.func == !self.func && *self.produced == !self.produced
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
         I::completed(Mut::new((*self).0, (!self).0))
@@ -117,9 +112,6 @@ where
             && (*self).2 == (!self).2
     }
 
-    // exists(|i| self.iter.step(i, dist.iter) && pre!(self.func(i, self.produced))
-    //    && post!(self.func(i, self.produced), item)
-    //    && dist.produced == self.produced.push(i))
     #[thrust_macros::predicate]
     fn step(self, item: Self::Item, dist: Self) -> bool {
         exists(|i: Int|
@@ -129,8 +121,6 @@ where
                 && dist.2 == self.2.push(i))
     }
 
-    // exists(|j, g2| self.iter.produces(j) && pre!(self.func(j, self.produced))
-    //    && post!(self.func(j, self.produced), item))
     #[thrust_macros::predicate]
     fn produces(self, item: Self::Item) -> bool {
         exists(|j: Int|

@@ -74,7 +74,6 @@ where
     }
 }
 
-
 #[derive(PartialEq)]
 struct Map<I, F> {
     iter: I,
@@ -96,14 +95,12 @@ where
     <<I as Iterator>::Item as Model>::Ty: Model<Ty = <<I as Iterator>::Item as Model>::Ty> + PartialEq,
     <B as Model>::Ty: Model<Ty = <B as Model>::Ty> + PartialEq,
 {
-    // forall e i. iter.produces([e], i) ==> pre(func(e))
     #[thrust_macros::predicate]
     fn next_precondition(iter: I, func: F) -> bool {
         forall(|e: <<I as Iterator>::Item as Model>::Ty| forall(|i: <I as Model>::Ty|
             !I::produces(iter, Seq::singleton(e), i) || thrust_macros::pre!(func(e))))
     }
 
-    // forall s e1 e2 i b. iter.produces(s.push(e1).push(e2), i) && post(func(e1), b) ==> pre(func(e2))
     #[thrust_macros::predicate]
     fn preservation(iter: I, func: F) -> bool {
         forall(|s: Seq<<<I as Iterator>::Item as Model>::Ty>|
@@ -115,7 +112,6 @@ where
                 || thrust_macros::pre!(func(e2)))))))
     }
 
-    // forall cur fin. completed(Mut(cur, fin)) ==> next_precondition(fin) && preservation(fin)
     #[thrust_macros::predicate]
     fn reinitialize(func: F) -> bool {
         forall(|cur: <I as Model>::Ty| forall(|fin: <I as Model>::Ty|
@@ -284,8 +280,6 @@ where
         I::completed(Mut::new((*self).iter, (!self).iter)) && (*self).func == (!self).func
     }
 
-    // self.func == o.func && exists s. s.len() == visited.len() && iter.produces(s, o.iter)
-    //   && forall k. 0 <= k < visited.len() ==> post(func(s[k]), visited[k])
     #[thrust_macros::predicate]
     fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool {
         self.func == o.func
@@ -327,16 +321,11 @@ impl Iterator for Range {
 
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
-        // self.resolve() && self.start >= self.end
         *self == !self && (*self).start >= (*self).end
     }
 
     #[thrust_macros::predicate]
     fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool {
-        // self.end == o.end && self.start <= o.start
-        // && (visited.len() > 0 ==> o.start <= o.end)
-        // && visited.len() == o.start - self.start
-        // && forall i. 0 <= i < visited.len() ==> visited[i] == self.start + i
         self.end == o.end
             && self.start <= o.start
             && (!(visited.len() > 0) || o.start <= o.end)

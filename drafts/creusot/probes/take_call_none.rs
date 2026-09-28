@@ -75,7 +75,6 @@ where
         I::produces_refl(&a.iter);
     }
 
-    // self.iter.invariant() && self.n >= 0
     #[thrust_macros::predicate]
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
@@ -130,7 +129,6 @@ impl Iterator for Range {
 
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
-        // self.resolve() && self.start >= self.end
         "(and
             (= (mut_current<Tuple<Int-Int>> self_) (mut_final<Tuple<Int-Int>> self_))
             (>= (tuple_proj<Int-Int>.0 (mut_current<Tuple<Int-Int>> self_))
@@ -141,10 +139,6 @@ impl Iterator for Range {
 
     #[thrust_macros::predicate]
     fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool {
-        // self.end == o.end && self.start <= o.start
-        // && (visited.len() > 0 ==> o.start <= o.end)
-        // && visited.len() == o.start - self.start
-        // && forall i. 0 <= i < visited.len() ==> visited[i] == self.start + i
         "(and
             (= (tuple_proj<Int-Int>.1 self_) (tuple_proj<Int-Int>.1 o))
             (<= (tuple_proj<Int-Int>.0 self_) (tuple_proj<Int-Int>.0 o))

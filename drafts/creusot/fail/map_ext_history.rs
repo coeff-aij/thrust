@@ -53,8 +53,6 @@ where
     fn next(&mut self) -> Option<Self::Item>;
 }
 
-
-
 struct Map<I, A, F> {
     iter: I,
     func: F,
@@ -79,17 +77,13 @@ where
     <I as Model>::Ty: Model<Ty = <I as Model>::Ty> + PartialEq,
     <B as Model>::Ty: Model<Ty = <B as Model>::Ty> + PartialEq,
 {
-    // Creusot's `next_precondition`: forall e i. iter.produces([e], i) ==> pre(func(e, produced))
     #[thrust_macros::predicate]
     fn next_precondition(iter: I, func: F, produced: Seq<A>) -> bool {
         forall(|e: A| forall(|i: <I as Model>::Ty|
             !I::produces(iter, Seq::singleton(e), i) || thrust_macros::pre!(func(e, produced))))
     }
 
-    // Creusot's `preservation_inv` (and, at `produced == []`, `preservation`):
-    // forall s e1 e2 i b. iter.produces(s.push(e1).push(e2), i)
-    //   && pre(func(e1, produced ++ s)) && post(func(e1, produced ++ s), b)
-    //   ==> pre(func(e2, (produced ++ s).push(e1)))
+    // Creusot's `preservation_inv` (and, at `produced == []`, `preservation`).
     #[thrust_macros::predicate]
     fn preservation_inv(iter: I, func: F, produced: Seq<A>) -> bool {
         forall(|s: Seq<A>|
@@ -310,7 +304,6 @@ where
         let _live = (a, &ab, b, &bc, c);
     }
 
-    // Creusot's `invariant`: reinitialize && preservation_inv && iter.invariant && next_precondition
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
         Self::reinitialize(self.1)
@@ -319,7 +312,6 @@ where
             && Self::next_precondition(self.0, self.1, self.2)
     }
 
-    // Creusot's `completed`: the history is reset, the inner iterator completed, `func` unchanged.
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
         (!self).2 == Seq::empty()
@@ -327,9 +319,6 @@ where
             && (*self).1 == (!self).1
     }
 
-    // self.func == o.func && exists s. s.len() == visited.len() && iter.produces(s, o.iter)
-    //   && o.produced == self.produced ++ s
-    //   && forall k. 0 <= k < visited.len() ==> post(func(s[k], self.produced ++ s[0..k]), visited[k])
     #[thrust_macros::predicate]
     fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool {
         self.1 == o.1
@@ -378,7 +367,6 @@ impl Iterator for Range {
 
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
-        // self.resolve() && self.start >= self.end
         "(and
             (= (mut_current<Tuple<Int-Int>> self_) (mut_final<Tuple<Int-Int>> self_))
             (>= (tuple_proj<Int-Int>.0 (mut_current<Tuple<Int-Int>> self_))
@@ -389,10 +377,6 @@ impl Iterator for Range {
 
     #[thrust_macros::predicate]
     fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool {
-        // self.end == o.end && self.start <= o.start
-        // && (visited.len() > 0 ==> o.start <= o.end)
-        // && visited.len() == o.start - self.start
-        // && forall i. 0 <= i < visited.len() ==> visited[i] == self.start + i
         "(and
             (= (tuple_proj<Int-Int>.1 self_) (tuple_proj<Int-Int>.1 o))
             (<= (tuple_proj<Int-Int>.0 self_) (tuple_proj<Int-Int>.0 o))
@@ -408,7 +392,6 @@ impl Iterator for Range {
         true
     }
 }
-
 
 fn main() {
     // The precondition depends on the history: the k-th item is k + 1.

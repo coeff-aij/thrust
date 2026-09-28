@@ -49,16 +49,12 @@ where
 
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
-        // self.iter == None || exists(|i| self.iter == Some(i) && I::invariant(i))
         self.iter == None
             || exists(|i: <I as thrust_models::Model>::Ty| self.iter == Some(i) && I::invariant(i))
     }
 
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
-        // (*self).iter == None
-        //     || (!self).iter == None && exists(|cur, i|
-        //         (*self).iter == Some(cur) && I::completed(Mut::new(cur, i)))
         (*self).iter == None
             || ((!self).iter == None
                 && exists(|cur: <I as thrust_models::Model>::Ty| exists(|i: <I as thrust_models::Model>::Ty|
@@ -67,8 +63,6 @@ where
 
     #[thrust_macros::predicate]
     fn step(self, item: Self::Item, dist: Self) -> bool {
-        // exists(|i, d| self.iter == Some(i) && dist.iter == Some(d)
-        //     && I::step(i, item, d))
         exists(|i: <I as thrust_models::Model>::Ty| exists(|d: <I as thrust_models::Model>::Ty|
             self.iter == Some(i) && dist.iter == Some(d) && I::step(i, item, d)))
     }

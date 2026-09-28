@@ -105,14 +105,11 @@ where
 
     fn produces_trans(a: &Skip<I>, ab: Seq<<Self::Item as Model>::Ty>, b: &Skip<I>, bc: Seq<<Self::Item as Model>::Ty>, c: &Skip<I>) {}
 
-    // self.iter.invariant() && self.n >= 0
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
         I::invariant(self.0) && self.1 >= 0
     }
 
-    // (!self).n == 0
-    // && exists s j. s.len() <= (*self).n && (*self).iter.produces(s, j) && I::completed(Mut::new(j, (!self).iter))
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
         (!self).1 == 0
@@ -122,9 +119,6 @@ where
                     && I::completed(Mut::new(j, (!self).0))))
     }
 
-    // (visited.len() == 0 && self == o)
-    // or (o.n == 0 && visited.len() > 0 && exists s. s.len() == self.n
-    //     && self.iter.produces(s.concat(visited), o.iter))
     // Creusot's statement: the inner iterator produces the `self.n` skipped items `s`, then
     // `visited`, as one concatenated sequence.
     #[thrust_macros::predicate]
@@ -166,16 +160,11 @@ impl Iterator for Range {
 
     fn produces_trans(a: &Range, ab: Seq<<Self::Item as Model>::Ty>, b: &Range, bc: Seq<<Self::Item as Model>::Ty>, c: &Range) {}
 
-    // self.resolve() && self.start >= self.end
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
         *self == !self && (*self).start >= (*self).end
     }
 
-    // self.end == o.end && self.start <= o.start
-    // && (visited.len() > 0 ==> o.start <= o.end)
-    // && visited.len() == o.start - self.start
-    // && forall i. 0 <= i < visited.len() ==> visited[i] == self.start + i
     #[thrust_macros::predicate]
     fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool {
         self.end == o.end

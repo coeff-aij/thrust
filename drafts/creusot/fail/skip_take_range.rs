@@ -83,7 +83,6 @@ where
 
     fn produces_trans(a: &Take<I>, ab: Seq<<Self::Item as Model>::Ty>, b: &Take<I>, bc: Seq<<Self::Item as Model>::Ty>, c: &Take<I>) {}
 
-    // self.iter.invariant() && self.n >= 0
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
         "(and
@@ -93,8 +92,6 @@ where
         true
     }
 
-    // (*self.n == 0 && *self == !self) ||
-    // (*self.n > 0 && *self.n == !self.n + 1 && self.iter.completed())
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
         "(or
@@ -112,7 +109,6 @@ where
         true
     }
 
-    // self.n == o.n + visited.len() && self.iter.produces(visited, o.iter)
     #[thrust_macros::predicate]
     fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool {
         "(and
@@ -179,7 +175,6 @@ where
 
     fn produces_trans(a: &Skip<I>, ab: Seq<<Self::Item as Model>::Ty>, b: &Skip<I>, bc: Seq<<Self::Item as Model>::Ty>, c: &Skip<I>) {}
 
-    // self.iter.invariant() && self.n >= 0
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
         "(and
@@ -188,8 +183,6 @@ where
         true
     }
 
-    // (!self).n == 0
-    // && exists s j. s.len() <= (*self).n && (*self).iter.produces(s, j) && I::completed(Mut::new(j, (!self).iter))
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
         "(and
@@ -207,10 +200,6 @@ where
         true
     }
 
-    // (visited.len() == 0 && self == o)
-    // or (o.n == 0 && visited.len() > 0 && exists t. t.len() == self.n + visited.len()
-    //     && (forall k. self.n <= k < t.len() ==> t[k] == visited[k - self.n])
-    //     && self.iter.produces(t, o.iter))
     // `t` is Creusot's `s.concat(visited)` with `s.len() == self.n`, written without `concat`.
     #[thrust_macros::predicate]
     fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool {
@@ -270,7 +259,6 @@ impl Iterator for Range {
 
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
-        // self.resolve() && self.start >= self.end
         "(and
             (= (mut_current<Tuple<Int-Int>> self_) (mut_final<Tuple<Int-Int>> self_))
             (>= (tuple_proj<Int-Int>.0 (mut_current<Tuple<Int-Int>> self_))
@@ -281,10 +269,6 @@ impl Iterator for Range {
 
     #[thrust_macros::predicate]
     fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool {
-        // self.end == o.end && self.start <= o.start
-        // && (visited.len() > 0 ==> o.start <= o.end)
-        // && visited.len() == o.start - self.start
-        // && forall i. 0 <= i < visited.len() ==> visited[i] == self.start + i
         "(and
             (= (tuple_proj<Int-Int>.1 self_) (tuple_proj<Int-Int>.1 o))
             (<= (tuple_proj<Int-Int>.0 self_) (tuple_proj<Int-Int>.0 o))

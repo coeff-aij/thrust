@@ -92,8 +92,6 @@ where
 
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
-        // self.iter.invariant() &&
-        // forall(|i: I::Item| self.iter.produces(i) ==> pre!(self.func(i)))
         I::invariant(self.iter)
             && forall(|i: <<I as Iterator>::Item as thrust_models::Model>::Ty|
                 !I::produces(self.iter, i) || thrust_macros::pre!((self.func)(i)))
@@ -101,15 +99,11 @@ where
 
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
-        // self.iter.completed() && *self.func == !self.func
         I::completed(Mut::new((*self).iter, (!self).iter)) && (*self).func == (!self).func
     }
 
     #[thrust_macros::predicate]
     fn step(self, item: Self::Item, dist: Self) -> bool {
-        // exists(|i: I::Item| self.iter.step(i, dist.iter)
-        //     && pre!(self.func(i)) && post!(self.func(i), item))
-        // && self.func == dist.func
         exists(|i: <<I as Iterator>::Item as thrust_models::Model>::Ty|
             I::step(self.iter, i, dist.iter)
                 && thrust_macros::pre!((self.func)(i))
@@ -119,8 +113,6 @@ where
 
     #[thrust_macros::predicate]
     fn produces(self, item: Self::Item) -> bool {
-        // exists(|j: I::Item| self.iter.produces(j)
-        //     && pre!(self.func(j)) && post!(self.func(j), item))
         exists(|j: <<I as Iterator>::Item as thrust_models::Model>::Ty|
             I::produces(self.iter, j)
                 && thrust_macros::pre!((self.func)(j))
@@ -154,14 +146,11 @@ impl Iterator for Range {
 
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
-        // !(*self.start < *self.end) && *self == !self
         !((*self).start < (*self).end) && *self == !self
     }
 
     #[thrust_macros::predicate]
     fn step(self, item: Self::Item, dist: Self) -> bool {
-        // self.start < self.end && self.end == dist.end && self.start == item
-        // && self.start + 1 == dist.start
         self.start < self.end
             && self.end == dist.end
             && self.start == item
@@ -170,7 +159,6 @@ impl Iterator for Range {
 
     #[thrust_macros::predicate]
     fn produces(self, item: Self::Item) -> bool {
-        // self.start <= item && item < self.end
         self.start <= item && item < self.end
     }
 }

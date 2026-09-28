@@ -63,21 +63,17 @@ impl Iterator for std::vec::IntoIter<i64> {
 
     fn produces_trans(a: &std::vec::IntoIter<i64>, ab: Seq<<Self::Item as Model>::Ty>, b: &std::vec::IntoIter<i64>, bc: Seq<<Self::Item as Model>::Ty>, c: &std::vec::IntoIter<i64>) {}
 
-    // 0 <= self.1 (not `self.1 <= self.0.len()`: the Vec model does not know `len() >= 0`)
+    // Not `self.1 <= self.0.len()`: the Vec model does not know `len() >= 0`.
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
         0 <= self.1
     }
 
-    // self.resolve() && self.1 >= self.0.len()
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
         *self == !self && (*self).1 >= (*self).0.len()
     }
 
-    // self.0 == o.0 && self.1 <= o.1 && (visited.len() > 0 ==> o.1 <= o.0.len())
-    // && visited.len() == o.1 - self.1
-    // && forall k. 0 <= k < visited.len() ==> visited[k] == self.0[self.1 + k]
     #[thrust_macros::predicate]
     fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool {
         self.0 == o.0
