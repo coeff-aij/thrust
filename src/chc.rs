@@ -10,6 +10,7 @@ use crate::pretty::PrettyDisplayExt as _;
 
 mod clause_builder;
 pub mod debug;
+mod dedup;
 pub(crate) mod format_context;
 mod hoice;
 mod smtlib2;
@@ -18,6 +19,7 @@ mod unbox;
 
 pub use clause_builder::{ClauseBuilder, Var};
 pub use debug::DebugInfo;
+pub use dedup::dedup_pred_args;
 pub use solver::{Capabilities, CheckSatError, Config};
 pub use unbox::unbox;
 
@@ -2874,6 +2876,11 @@ impl System {
         system.populate_user_defined_pred_dependencies();
         system.insert_law_premises();
         let mut system = unbox(system);
+        // With `THRUST_DEDUP_PRED_ARGS` set, predicate variable arguments that are inductively
+        // equal to another argument are removed (see `dedup`).
+        if std::env::var_os("THRUST_DEDUP_PRED_ARGS").is_some() {
+            system = dedup_pred_args(system);
+        }
         system.populate_user_defined_pred_dependencies();
         if let Ok(file) = std::env::var("THRUST_PRETTY_OUTPUT") {
             let mut f = std::fs::File::create(file).unwrap();
