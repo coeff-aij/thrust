@@ -43,15 +43,20 @@ fn is_annotated_as_extern_spec_fn_impl(tcx: &TyCtxt, local_def_id: &LocalDefId) 
     .is_some()
 }
 
-/// Extract the target DefId from `#[thrust::extern_spec_fn]` function.
+/// Extract the target DefId and the generic arguments the spec's own tail call reached it
+/// with, from a `#[thrust::extern_spec_fn]` function.
 ///
 /// The target is identified as the tail call expression (last expression without
-/// semicolon) in the function body block.
+/// semicolon) in the function body block. The arguments are in the target's own parameter
+/// space (e.g. `[T, usize, Global]` for a spec of `Vec::index` fixing `Idx = usize`); a
+/// position that is not one of the spec's own type parameters is one the spec's own source
+/// fixed to a concrete type, and [`Analyzer::def_ty_with_args`] uses this to tell whether a
+/// later call's actual instantiation is the one the spec covers.
 fn extern_spec_fn_target_def_id_impl<'tcx>(
     tcx: &TyCtxt<'tcx>,
     local_def_id: &LocalDefId,
     mir_body: &Body<'tcx>,
-) -> DefId {
+) -> (DefId, mir_ty::GenericArgsRef<'tcx>) {
     let hir_node = tcx.hir_node_by_def_id(*local_def_id);
     let hir_body_id = match hir_node {
         rustc_hir::Node::Item(item) => {
@@ -104,9 +109,9 @@ fn extern_spec_fn_target_def_id_impl<'tcx>(
     let typing_env = mir_body.typing_env(*tcx);
     let instance = mir_ty::Instance::try_resolve(*tcx, typing_env, def_id, args).unwrap();
     if let Some(instance) = instance {
-        instance.def_id()
+        (instance.def_id(), instance.args)
     } else {
-        def_id
+        (def_id, args)
     }
 }
 
@@ -120,6 +125,10 @@ pub struct Analyzer<'tcx, 'ctx> {
 
     local_def_id: LocalDefId,
     pub owner_fn_id: DefId,
+    /// `owner_fn_id`'s generic arguments at the extern spec's own tail call, in `owner_fn_id`'s
+    /// parameter space; `None` when this def is not an extern spec (then `owner_fn_id` is its
+    /// own def_id and every call to it already shares its full generic space).
+    pub owner_fn_id_args: Option<mir_ty::GenericArgsRef<'tcx>>,
 
     body: Body<'tcx>,
     /// the instantiation of the def's generic parameters being analyzed, also used
@@ -514,7 +523,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// The target is identified as the tail call expression (last expression without
     /// semicolon) in the function body block.
     pub fn extern_spec_fn_target_def_id(&self) -> DefId {
-        extern_spec_fn_target_def_id_impl(&self.tcx, &self.local_def_id, &self.body)
+        extern_spec_fn_target_def_id_impl(&self.tcx, &self.local_def_id, &self.body).0
     }
 
     fn is_mut_param(&self, param_idx: rty::FunctionParamIdx) -> bool {
@@ -810,7 +819,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             let ty = local_decl.ty;
             if self
                 .tcx
-                .layout_of(self.body.typing_env(self.tcx).as_query_input(ty))
+                .layout_of(self.analysis_key().typing_env(self.tcx).as_query_input(ty))
                 .map(|l| l.is_zst())
                 .unwrap_or(false)
             {
@@ -1305,11 +1314,13 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let tcx = ctx.tcx;
         let body = tcx.optimized_mir(local_def_id.to_def_id()).clone();
         let drop_points = Default::default();
-        let owner_fn_id = if is_annotated_as_extern_spec_fn_impl(&tcx, &local_def_id) {
-            extern_spec_fn_target_def_id_impl(&tcx, &local_def_id, &body)
-        } else {
-            local_def_id.to_def_id()
-        };
+        let (owner_fn_id, owner_fn_id_args) =
+            if is_annotated_as_extern_spec_fn_impl(&tcx, &local_def_id) {
+                let (def_id, args) = extern_spec_fn_target_def_id_impl(&tcx, &local_def_id, &body);
+                (def_id, Some(args))
+            } else {
+                (local_def_id.to_def_id(), None)
+            };
         let type_builder = ctx.type_builder(ctx.def_ids(), owner_fn_id);
         let generic_args = mir_ty::GenericArgs::identity_for_item(tcx, local_def_id);
         Self {
@@ -1317,6 +1328,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             tcx,
             local_def_id,
             owner_fn_id,
+            owner_fn_id_args,
             body,
             generic_args,
             drop_points,

@@ -150,13 +150,17 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         }
 
         let owner_fn_id = analyzer.owner_fn_id;
+        let owner_fn_id_args = analyzer.owner_fn_id_args;
         use mir_ty::TypeVisitableExt as _;
         if sig.has_param() {
             if owner_fn_id.as_local().is_none_or(|def_id| {
                 self.skip_analysis.contains(&def_id) || !self.tcx.is_mir_available(def_id)
             }) {
-                self.ctx
-                    .register_deferred_def_without_analysis(owner_fn_id, local_def_id);
+                self.ctx.register_deferred_def_without_analysis(
+                    owner_fn_id,
+                    local_def_id,
+                    owner_fn_id_args,
+                );
             } else {
                 let expected = analyzer.expected_ty();
                 self.ctx

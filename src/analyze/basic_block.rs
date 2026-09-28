@@ -183,6 +183,13 @@ pub struct Analyzer<'tcx, 'ctx> {
     local_decls: IndexVec<Local, mir::LocalDecl<'tcx>>,
     // TODO: remove this
     prophecy_vars: HashMap<usize, TempVarIdx>,
+
+    /// The typing environment for resolving associated types, layouts and instances in
+    /// `body`. `body` may have been instantiated at a caller's generic arguments and still
+    /// mention the caller's type parameters (`analyze::local_def::Analyzer::generic_args`),
+    /// so this is the owner's env (`analysis_key.owner_fn_id`), not `body`'s own def, which
+    /// would lack the caller's where-clauses and fail to normalize such a projection.
+    typing_env: mir_ty::TypingEnv<'tcx>,
 }
 
 impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
@@ -367,7 +374,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let bytes = alloc
             .inner()
             .inspect_with_uninit_and_ptr_outside_interpreter(range.clone());
-        let typing_env = self.body.typing_env(self.tcx);
+        let typing_env = self.typing_env;
         let layout = self.tcx.layout_of(typing_env.as_query_input(ty)).unwrap();
         let lcx = mir_ty::layout::LayoutCx::new(self.tcx, typing_env);
         match ty.kind() {
@@ -460,7 +467,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             {
                 // the value is a scalar only when the struct has exactly one non-ZST field,
                 // which holds the scalar
-                let typing_env = self.body.typing_env(self.tcx);
+                let typing_env = self.typing_env;
                 let mut pts = Vec::new();
                 for field_def in def.all_fields() {
                     let field_ty = field_def.ty(self.tcx, args);
@@ -486,7 +493,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 let global_alloc = self.tcx.global_alloc(prov.alloc_id());
                 match global_alloc {
                     mir::interpret::GlobalAlloc::Memory(alloc) => {
-                        let typing_env = self.body.typing_env(self.tcx);
+                        let typing_env = self.typing_env;
                         let layout = self
                             .tcx
                             .layout_of(typing_env.as_query_input(*elem))
@@ -520,7 +527,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             mir::Const::Unevaluated(unevaluated, ty) => {
                 // since all constants are immutable in current setup,
                 // it should be okay to evaluate them here on-the-fly
-                let typing_env = self.body.typing_env(self.tcx);
+                let typing_env = self.typing_env;
                 let val = self
                     .tcx
                     .const_eval_resolve(typing_env, *unevaluated, rustc_span::DUMMY_SP)
@@ -1038,7 +1045,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 }
             }
         } else {
-            let typing_env = self.body.typing_env(self.tcx);
+            let typing_env = self.typing_env;
             let instance =
                 mir_ty::Instance::try_resolve(self.tcx, typing_env, def_id, args).unwrap();
             if let Some(instance) = instance {
@@ -1119,6 +1126,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     self.ctx
                         .def_ty_with_args(resolved_def_id, resolved_args, caller_def_id)
                 else {
+                    // Also reached when the def's only specification is an extern spec written
+                    // for another instantiation of it (see `spec_covers`).
                     panic!(
                         "unknown def (resolved): {:?}, args: {:?}",
                         resolved_def_id, resolved_args
@@ -1805,6 +1814,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let local_decls = body.local_decls.clone();
         let prophecy_vars = Default::default();
         let type_builder = ctx.type_builder(ctx.def_ids(), owner_fn_id);
+        let typing_env = analysis_key.typing_env(tcx);
         Self {
             ctx,
             tcx,
@@ -1817,6 +1827,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             env,
             local_decls,
             prophecy_vars,
+            typing_env,
         }
     }
 
