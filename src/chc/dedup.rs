@@ -5,7 +5,11 @@
 //! same sort such that every clause with `P` in its head establishes `a_i = a_j` for the head's
 //! arguments, from the equalities among the top-level conjuncts of its body and from the same
 //! property of the predicate variables in its body (assumed inductively and checked to a
-//! fixpoint). The column is dropped from the signature and from every atom of `P`, and each
+//! fixpoint). The check runs over leaf components rather than columns: the projections a
+//! flattening would split a tuple, `Box` or `Mut` argument into, so that an equality between a
+//! component of one argument and a component of another (a loop body's `&mut Vec` and its
+//! iterator's entry sequence) carries through a predicate whose arguments are not flattened.
+//! Only a pair of two whole columns removes a column. The column is dropped from the signature and from every atom of `P`, and each
 //! body atom `P(a)` leaves the equality `a_i = a_j` behind as a conjunct of the body (under the
 //! atom's guard, if it has one), so that the new body is the old one with
 //! `P(x) := P'(x without j) ∧ x_i = x_j`. With that definition a solution of the reduced system
@@ -143,8 +147,14 @@ impl Congruence {
         self.union(a, b);
     }
 
+    /// Whether the two terms are equal. A term not seen before is interned and the closure run
+    /// again, so that a projection of a constructed value meets its component.
     fn equal(&mut self, t1: &Term, t2: &Term) -> bool {
+        let known = self.nodes.len();
         let (a, b) = (self.intern(t1), self.intern(t2));
+        if self.nodes.len() > known {
+            self.close();
+        }
         self.find(a) == self.find(b)
     }
 
@@ -231,8 +241,99 @@ impl Congruence {
     }
 }
 
-/// The alive pairs `(i, j)`, `i < j`, of each predicate variable.
-type Pairs = HashMap<PredVarId, Vec<(usize, usize)>>;
+/// One step of a projection path into an argument.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Step {
+    Proj(usize),
+    Current,
+    Final,
+    BoxCurrent,
+}
+
+/// A leaf component of a predicate variable's arguments: the projection `path` of argument
+/// `column`, split the way flattening splits a tuple, `Box` or `Mut` argument. When no argument
+/// is composite, the leaves are the columns.
+#[derive(Debug, Clone)]
+struct Leaf {
+    column: usize,
+    path: Vec<Step>,
+    sort: Sort,
+}
+
+impl Leaf {
+    fn term(&self, args: &[Term]) -> Term {
+        let mut term = args[self.column].clone();
+        for step in &self.path {
+            term = match step {
+                Step::Proj(i) => Term::TupleProj(Box::new(term), *i),
+                Step::Current => Term::MutCurrent(Box::new(term)),
+                Step::Final => Term::MutFinal(Box::new(term)),
+                Step::BoxCurrent => Term::BoxCurrent(Box::new(term)),
+            };
+        }
+        term
+    }
+
+    fn is_column(&self) -> bool {
+        self.path.is_empty()
+    }
+}
+
+fn push_leaves(out: &mut Vec<Leaf>, column: usize, path: Vec<Step>, sort: &Sort) {
+    let mut sub = |step: Step, sort: &Sort| {
+        let mut path = path.clone();
+        path.push(step);
+        push_leaves(out, column, path, sort);
+    };
+    match sort {
+        Sort::Tuple(sorts) => {
+            for (i, s) in sorts.iter().enumerate() {
+                if !s.is_singleton() {
+                    sub(Step::Proj(i), s);
+                }
+            }
+        }
+        Sort::Box(inner) => sub(Step::BoxCurrent, inner),
+        Sort::Mut(inner) => {
+            sub(Step::Current, inner);
+            sub(Step::Final, inner);
+        }
+        _ => out.push(Leaf {
+            column,
+            path,
+            sort: sort.clone(),
+        }),
+    }
+}
+
+fn leaves_of(sig: &PredSig) -> Vec<Leaf> {
+    let mut out = Vec::new();
+    for (column, sort) in sig.iter().enumerate() {
+        push_leaves(&mut out, column, Vec::new(), sort);
+    }
+    out
+}
+
+/// The leaves of each predicate variable, and the alive pairs `(a, b)`, `a < b`, of leaf indices.
+#[derive(Debug, Default)]
+struct Pairs {
+    leaves: HashMap<PredVarId, Vec<Leaf>>,
+    alive: HashMap<PredVarId, Vec<(usize, usize)>>,
+}
+
+impl Pairs {
+    /// The pairs of `atom`'s predicate variable as pairs of argument terms.
+    fn terms<'a>(&'a self, atom: &'a Atom) -> impl Iterator<Item = (Term, Term)> + 'a {
+        let (leaves, pairs) = match atom.pred {
+            Pred::Var(p) => (self.leaves.get(&p), self.alive.get(&p)),
+            _ => (None, None),
+        };
+        pairs.into_iter().flatten().map(move |&(a, b)| {
+            let leaves = leaves.expect("leaves of a predicate with pairs");
+            (leaves[a].term(&atom.args), leaves[b].term(&atom.args))
+        })
+    }
+}
 
 fn equality_args<V>(atom: &Atom<V>) -> Option<(&Term<V>, &Term<V>)> {
     if atom.guard.is_some() || atom.pred != Pred::Known(KnownPred::EQUAL) {
@@ -308,14 +409,11 @@ fn body_equalities(clause: &Clause, alive: &Pairs) -> BodyEqualities {
         cc.union_terms(t1, t2);
     }
     for atom in &clause.body.atoms {
-        let Pred::Var(p) = atom.pred else {
-            continue;
-        };
         if atom.guard.is_some() {
             continue;
         }
-        for &(i, j) in alive.get(&p).into_iter().flatten() {
-            cc.union_terms(&atom.args[i], &atom.args[j]);
+        for (t1, t2) in alive.terms(atom) {
+            cc.union_terms(&t1, &t2);
         }
     }
     for atom in &clause.head_and_body_atoms() {
@@ -347,24 +445,26 @@ fn kill_unestablished(clause: &Clause, alive: &mut Pairs) -> bool {
     let Pred::Var(p) = clause.head.pred else {
         return false;
     };
-    let Some(pairs) = alive.get(&p) else {
+    let Some(pairs) = alive.alive.get(&p) else {
         return false;
     };
     if pairs.is_empty() {
         return false;
     }
     let mut equalities = body_equalities(clause, alive);
+    let leaves = &alive.leaves[&p];
     let args = &clause.head.args;
+    let pairs = pairs.clone();
     let kept: Vec<_> = pairs
         .iter()
         .copied()
-        .filter(|&(i, j)| equalities.equal(&args[i], &args[j]))
+        .filter(|&(a, b)| equalities.equal(&leaves[a].term(args), &leaves[b].term(args)))
         .collect();
     let killed = kept.len() != pairs.len();
     if killed {
         tracing::debug!(pred = %p, ?pairs, ?kept, clause = %clause.display(), "dedup_pred_args: killed pairs");
     }
-    alive.insert(p, kept);
+    alive.alive.insert(p, kept);
     killed
 }
 
@@ -386,7 +486,7 @@ fn collect_atom_pred_vars(atom: &Atom, out: &mut HashSet<PredVarId>) {
 /// Predicate variables that occur somewhere other than as a clause head or a body atom: in a
 /// formula, a guard, the body of a user-defined predicate or a law. The pass leaves them alone,
 /// since it only rewrites heads and body atoms.
-fn pred_vars_in_formulas(system: &System) -> HashSet<PredVarId> {
+pub(super) fn pred_vars_in_formulas(system: &System) -> HashSet<PredVarId> {
     let mut out = HashSet::new();
     for clause in &system.clauses {
         collect_pred_vars(&clause.body.formula, &mut out);
@@ -411,17 +511,18 @@ fn pred_vars_in_formulas(system: &System) -> HashSet<PredVarId> {
 
 fn candidate_pairs(system: &System) -> Pairs {
     let excluded = pred_vars_in_formulas(system);
-    let mut pairs = Pairs::new();
+    let mut pairs = Pairs::default();
     for (p, def) in system.pred_vars.iter_enumerated() {
         if excluded.contains(&p) {
             continue;
         }
-        let sig = &def.sig;
-        let candidates = (0..sig.len())
-            .flat_map(|i| (i + 1..sig.len()).map(move |j| (i, j)))
-            .filter(|&(i, j)| sig[i] == sig[j])
+        let leaves = leaves_of(&def.sig);
+        let candidates = (0..leaves.len())
+            .flat_map(|a| (a + 1..leaves.len()).map(move |b| (a, b)))
+            .filter(|&(a, b)| leaves[a].sort == leaves[b].sort)
             .collect();
-        pairs.insert(p, candidates);
+        pairs.leaves.insert(p, leaves);
+        pairs.alive.insert(p, candidates);
     }
     pairs
 }
@@ -441,13 +542,22 @@ fn established_pairs(system: &System) -> Pairs {
 }
 
 /// The columns to drop for each predicate variable, each with the lowest column an established
-/// pair relates it to.
-fn dropped_columns(alive: &Pairs) -> HashMap<PredVarId, BTreeMap<usize, usize>> {
+/// pair relates it to. Only a pair of two whole columns lets a column go.
+fn dropped_columns(pairs: &Pairs) -> HashMap<PredVarId, BTreeMap<usize, usize>> {
     let mut dropped: HashMap<PredVarId, BTreeMap<usize, usize>> = HashMap::new();
-    for (p, pairs) in alive {
-        for &(i, j) in pairs {
-            let rep = dropped.entry(*p).or_default().entry(j).or_insert(i);
-            *rep = (*rep).min(i);
+    for (p, alive) in &pairs.alive {
+        let leaves = &pairs.leaves[p];
+        for &(a, b) in alive {
+            let (i, j) = (&leaves[a], &leaves[b]);
+            if !i.is_column() || !j.is_column() {
+                continue;
+            }
+            let rep = dropped
+                .entry(*p)
+                .or_default()
+                .entry(j.column)
+                .or_insert(i.column);
+            *rep = (*rep).min(i.column);
         }
     }
     dropped
@@ -498,10 +608,36 @@ fn drop_in_clause(clause: &mut Clause, dropped: &HashMap<PredVarId, BTreeMap<usi
     }
 }
 
+/// The predicate variables that occur both in the head and in the body of one clause: at the CHC
+/// level, the loop heads.
+pub(super) fn recursive_pred_vars(system: &System) -> HashSet<PredVarId> {
+    system
+        .clauses
+        .iter()
+        .filter_map(|clause| match clause.head.pred {
+            Pred::Var(p) if clause.body.atoms.iter().any(|a| a.pred == Pred::Var(p)) => Some(p),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Removes every predicate variable argument that is inductively equal to a lower argument of
 /// the same predicate variable (see the module documentation).
-pub fn dedup_pred_args(mut system: System) -> System {
-    let alive = established_pairs(&system);
+pub fn dedup_pred_args(system: System) -> System {
+    dedup_pred_args_where(system, |_| true)
+}
+
+/// [`dedup_pred_args`] restricted to the recursive predicate variables (the loop heads). The
+/// equalities are still established over every predicate variable, since a loop head's
+/// recursive clause usually passes through the predicate of the loop body.
+pub fn dedup_recursive_pred_args(system: System) -> System {
+    let recursive = recursive_pred_vars(&system);
+    dedup_pred_args_where(system, |p| recursive.contains(&p))
+}
+
+fn dedup_pred_args_where(mut system: System, drop_at: impl Fn(PredVarId) -> bool) -> System {
+    let mut alive = established_pairs(&system);
+    alive.alive.retain(|p, _| drop_at(*p));
     tracing::debug!(?alive, "dedup_pred_args: established pairs");
     let dropped = dropped_columns(&alive);
     let mut preds: Vec<_> = dropped.keys().copied().collect();
@@ -584,6 +720,50 @@ mod tests {
         let goal = system.clauses.iter().last().unwrap();
         let kept = Formula::Atom(v(0).equal_to(v(1)));
         assert!(matches!(&goal.body.formula, Formula::And(fs) if fs.contains(&kept)));
+    }
+
+    #[test]
+    fn restricted_to_loop_heads_leaves_other_predicates() {
+        let step = Formula::And(vec![
+            Formula::Atom(v(2).equal_to(v(0).add(Term::int(1)))),
+            Formula::Atom(v(3).equal_to(v(1).add(Term::int(1)))),
+        ]);
+        let (mut system, p) = loop_system(step);
+        // `x = 0 => Q(x, x)`: a non-recursive predicate with an established pair.
+        let q = system.new_pred_var(vec![Sort::int(), Sort::int()], DebugInfo::default());
+        system.push_clause(clause(
+            vec![Sort::int()],
+            Atom::new(Pred::Var(q), vec![v(0), v(0)]),
+            Body::from(v(0).equal_to(Term::int(0))),
+        ));
+        let system = dedup_recursive_pred_args(system);
+        assert_eq!(system.pred_vars[p].sig, vec![Sort::int()]);
+        assert_eq!(system.pred_vars[q].sig, vec![Sort::int(), Sort::int()]);
+    }
+
+    #[test]
+    fn carries_an_equality_between_components_through_an_unflattened_predicate() {
+        // x = (0, 0) => Q(x);  Q(x) => P(x.0, x.1);  P(a, b) ∧ Q(x) ∧ x = (a, b) => P(a, b)
+        let pair = Sort::tuple(vec![Sort::int(), Sort::int()]);
+        let mut system = System::default();
+        let p = system.new_pred_var(vec![Sort::int(), Sort::int()], DebugInfo::default());
+        let q = system.new_pred_var(vec![pair.clone()], DebugInfo::default());
+        system.push_clause(clause(
+            vec![pair.clone()],
+            Atom::new(Pred::Var(q), vec![v(0)]),
+            Body::from(v(0).equal_to(Term::tuple(vec![Term::int(0), Term::int(0)]))),
+        ));
+        system.push_clause(clause(
+            vec![pair.clone()],
+            Atom::new(Pred::Var(p), vec![v(0).tuple_proj(0), v(0).tuple_proj(1)]),
+            Body::new(vec![Atom::new(Pred::Var(q), vec![v(0)])], Formula::top()),
+        ));
+        let system = dedup_recursive_pred_args(system);
+        assert_eq!(system.pred_vars[p].sig, vec![Sort::int(), Sort::int()]);
+        assert_eq!(system.pred_vars[q].sig, vec![pair.clone()]);
+        let system = dedup_pred_args(system);
+        assert_eq!(system.pred_vars[p].sig, vec![Sort::int()]);
+        assert_eq!(system.pred_vars[q].sig, vec![pair]);
     }
 
     #[test]
