@@ -250,6 +250,20 @@ impl<'tcx> AnalysisKey<'tcx> {
             owner_fn_id,
         }
     }
+
+    /// The typing environment for resolving associated types, layouts and instances in the
+    /// analyzed body. When the body is instantiated at a caller's generic arguments that still
+    /// mention the caller's type parameters, only the caller's (`owner_fn_id`'s) where-clauses
+    /// can resolve a projection over them, so its environment is used; otherwise the body's own.
+    pub fn typing_env(&self, tcx: TyCtxt<'tcx>) -> mir_ty::TypingEnv<'tcx> {
+        use mir_ty::TypeVisitableExt as _;
+        let identity = mir_ty::GenericArgs::identity_for_item(tcx, self.local_def_id);
+        if self.generic_args.has_param() && self.generic_args != identity {
+            mir_ty::TypingEnv::post_analysis(tcx, self.owner_fn_id)
+        } else {
+            mir_ty::TypingEnv::post_analysis(tcx, self.local_def_id)
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

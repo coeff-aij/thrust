@@ -810,7 +810,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             let ty = local_decl.ty;
             if self
                 .tcx
-                .layout_of(self.body.typing_env(self.tcx).as_query_input(ty))
+                .layout_of(self.analysis_key().typing_env(self.tcx).as_query_input(ty))
                 .map(|l| l.is_zst())
                 .unwrap_or(false)
             {
