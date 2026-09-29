@@ -1,13 +1,12 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:0360cb142 THRUST_FNMUT_GENERIC=1
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:0360cb142
 
 use thrust_models::{exists, forall, model::{Closure, Mut}};
 
-// With THRUST_FNMUT_GENERIC, verified once over `F` from the laws of `unnest!` (each call's
-// postcondition implies it, and transitivity), and the call in `main` uses the contract as
-// instantiated once the closure is shown to obey those laws. The contract hides the state
-// between the calls.
+// Verified once over `F` from the laws of `unnest!` (each call's postcondition implies it, and
+// transitivity), and the call in `main` uses the contract as instantiated once the closure is
+// shown to obey those laws. The contract hides the state between the calls.
 #[thrust_macros::requires(forall(|c: Closure<F>, y: i64| thrust_macros::pre!(c(y))))]
 #[thrust_macros::ensures(thrust_macros::unnest!(*f, !f))]
 #[thrust_macros::ensures(exists(|g, y: i64|
@@ -19,8 +18,9 @@ fn apply_twice<F: FnMut(i64) -> i64>(f: &mut F, x: i64) -> i64 {
 
 fn main() {
     let mut cnt: i64 = 0;
-    // The contract does not say the call keeps the capture's prophecy, so the closure does not
-    // obey the law `apply_twice` was verified with, although the program is correct.
+    // The contract does not say that the call keeps the capture's prophecy: the postcondition
+    // the closure is checked against and callers use includes it, as Creusot's
+    // `postcondition_mut` includes `hist_inv(self, ^self)`.
     let mut c = thrust_macros::closure!(
         captures(cnt: &mut &mut i64),
         requires(true),
@@ -31,6 +31,7 @@ fn main() {
         },
     );
     apply_twice(&mut c, 1);
-    assert!(cnt == 7);
+    // `cnt` is 7
+    assert!(cnt == 8);
 }
 

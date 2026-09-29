@@ -1,4 +1,4 @@
-//@error-in-other-file: Unsat
+//@check-pass
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:0360cb142
 
@@ -18,20 +18,19 @@ fn apply_twice<F: FnMut(i64) -> i64>(f: &mut F, x: i64) -> i64 {
 
 fn main() {
     let mut cnt: i64 = 0;
-    // The second `ensures` states that the borrow of `cnt` keeps its prophecy, which the
-    // postcondition includes anyway.
+    // The contract does not say that the call keeps the capture's prophecy: the postcondition
+    // the closure is checked against and callers use includes it, as Creusot's
+    // `postcondition_mut` includes `hist_inv(self, ^self)`.
     let mut c = thrust_macros::closure!(
         captures(cnt: &mut &mut i64),
         requires(true),
         ensures(*(!cnt) == 7 && result == x),
-        ensures(!(!cnt) == !(*cnt)),
         |x: i64| -> i64 {
             cnt = 7;
             x
         },
     );
     apply_twice(&mut c, 1);
-    // `cnt` is 7
-    assert!(cnt == 8);
+    assert!(cnt == 7);
 }
 

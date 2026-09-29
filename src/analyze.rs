@@ -192,12 +192,13 @@ impl DeferredDefMode {
     }
 }
 
-/// Experiment: an `FnMut`-bounded def keeps its generic analysis, and an instance at a concrete
-/// `FnMut` closure uses the contract as instantiated, with what that analysis assumed of the
-/// closure type parameter checked of the closure
-/// ([`closure_unnest::instance_obligations`]).
-pub fn fn_mut_generic_enabled() -> bool {
-    std::env::var_os("THRUST_FNMUT_GENERIC").is_some()
+/// See [`Analyzer::reuse_fn_mut_generic`].
+#[derive(Default)]
+struct FnMutInstanceObligations {
+    laws: Vec<chc::Clause>,
+    pre: Vec<chc::Clause>,
+    /// Whether some instance has used a generic contract as instantiated.
+    reused: bool,
 }
 
 /// Whether a type argument contains a closure of kind `FnMut`.
@@ -638,10 +639,10 @@ pub struct Analyzer<'tcx> {
     /// Defs whose body has been analyzed at fully concrete type arguments, as the callee of
     /// a call site; see [`Analyzer::has_concrete_instance`].
     concrete_instances: Rc<RefCell<HashSet<LocalDefId>>>,
-    /// Under [`fn_mut_generic_enabled`], the clauses [`closure_unnest::instance_obligations`]
-    /// gave for the instances that reuse a generic analysis: the `unnest!` laws and the
+    /// The clauses [`closure_unnest::instance_obligations`] gave for the instances at an `FnMut`
+    /// closure that use a generic def's contract as instantiated: the `unnest!` laws and the
     /// precondition clauses, pushed by [`Analyzer::emit_fn_mut_instance_obligations`].
-    fn_mut_instance_obligations: Rc<RefCell<(Vec<chc::Clause>, Vec<chc::Clause>)>>,
+    fn_mut_instance_obligations: Rc<RefCell<FnMutInstanceObligations>>,
 }
 
 impl<'tcx> crate::refine::TemplateRegistry for Analyzer<'tcx> {
@@ -1227,18 +1228,17 @@ impl<'tcx> Analyzer<'tcx> {
         Some(expected)
     }
 
-    /// Under [`fn_mut_generic_enabled`], whether an instance of a generic def at `generic_args`
-    /// can use its contract as instantiated: no unknown is reachable from it and every `FnMut`
-    /// closure among the type arguments has a known contract, whose obligations are pushed here.
+    /// Whether an instance of a generic def at `generic_args`, which has an `FnMut` closure among
+    /// them, can use its contract as instantiated rather than analyzing the body again: no
+    /// unknown is reachable from it and every `FnMut` closure among the type arguments has a
+    /// known contract. The generic analysis then stands for the instance once the closures obey
+    /// what it assumed of their type parameters; those obligations are recorded here.
     fn reuse_fn_mut_generic(
         &mut self,
         expected: &rty::RefinedType,
         generic_args: mir_ty::GenericArgsRef<'tcx>,
         caller_def_id: DefId,
     ) -> bool {
-        if !fn_mut_generic_enabled() {
-            return false;
-        }
         if self.may_have_pred_var(expected, generic_args, caller_def_id) {
             tracing::info!(
                 ?generic_args,
@@ -1285,9 +1285,10 @@ impl<'tcx> Analyzer<'tcx> {
         }
         tracing::info!(?generic_args, "FnMut instance reuses the generic analysis");
         let mut pending = self.fn_mut_instance_obligations.borrow_mut();
+        pending.reused = true;
         for (laws, pre) in obligations {
-            pending.0.extend(laws);
-            pending.1.extend(pre);
+            pending.laws.extend(laws);
+            pending.pre.extend(pre);
         }
         true
     }
@@ -1297,7 +1298,9 @@ impl<'tcx> Analyzer<'tcx> {
     /// parameter's relation. That is coarser than tracking which instance reaches which
     /// relation, and only adds checks.
     pub fn emit_fn_mut_instance_obligations(&mut self) {
-        let (laws, pre) = std::mem::take(&mut *self.fn_mut_instance_obligations.borrow_mut());
+        let mut pending = self.fn_mut_instance_obligations.borrow_mut();
+        let laws = std::mem::take(&mut pending.laws);
+        let pre = std::mem::take(&mut pending.pre);
         let mut system = self.system.borrow_mut();
         let laws_assumed = system
             .forall_preds()
@@ -1306,6 +1309,13 @@ impl<'tcx> Analyzer<'tcx> {
         for clause in clauses.into_iter().chain(pre) {
             system.push_clause(clause);
         }
+    }
+
+    /// Whether some instance at an `FnMut` closure has used a generic def's contract as
+    /// instantiated ([`Analyzer::reuse_fn_mut_generic`]). Its callees are then not analyzed at
+    /// that instance, so no `FnMut`-bounded def may skip its generic analysis.
+    pub fn has_fn_mut_generic_reuse(&self) -> bool {
+        self.fn_mut_instance_obligations.borrow().reused
     }
 
     /// Whether the body of `local_def_id` has been analyzed at type arguments that mention no
