@@ -474,6 +474,12 @@ mod thrust_models {
         type Ty = (model::Seq<<T as Model>::Ty>, model::Int);
     }
 
+    // The iterator it wraps and the number of items handed out. It has the shape of the struct,
+    // so the refinement type builder needs no special case.
+    impl<I> Model for core::iter::Enumerate<I> where I: Model {
+        type Ty = (<I as Model>::Ty, model::Int);
+    }
+
     impl<T> Model for Option<T> where T: Model {
         type Ty = Option<<T as Model>::Ty>;
     }
@@ -1432,6 +1438,38 @@ fn _extern_spec_vec_mut_into_iter<'a, T>(vec: &'a mut Vec<T>) -> core::slice::It
     where T: thrust_models::Model + 'a, T::Ty: PartialEq
 {
     <&mut Vec<T> as std::iter::IntoIterator>::into_iter(vec)
+}
+
+// `Enumerate<I>` is specified for the three sequence iterators above rather than for every
+// `I: Iterator`: `Iterator` carries no predicates that `next` could be stated through, so a
+// generic `next` has nothing to delegate to.
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(result.0 == it && result.1 == 0)]
+fn _extern_spec_slice_iter_enumerate<'a, T>(
+    it: core::slice::Iter<'a, T>,
+) -> core::iter::Enumerate<core::slice::Iter<'a, T>>
+    where T: thrust_models::Model + 'a, T::Ty: PartialEq
+{
+    <core::slice::Iter<'a, T> as std::iter::Iterator>::enumerate(it)
+}
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(
+    ((*it).0.1 < (*it).0.0.len()
+        && result == Some(((*it).1, &(*it).0.0[(*it).0.1]))
+        && (!it).0.0 == (*it).0.0
+        && (!it).0.1 == (*it).0.1 + 1
+        && (!it).1 == (*it).1 + 1)
+    || ((*it).0.1 >= (*it).0.0.len() && result == None && !it == *it)
+)]
+fn _extern_spec_slice_iter_enumerate_next<'a, T>(
+    it: &mut core::iter::Enumerate<core::slice::Iter<'a, T>>,
+) -> Option<(usize, &'a T)>
+    where T: thrust_models::Model + 'a, T::Ty: PartialEq
+{
+    <core::iter::Enumerate<core::slice::Iter<'a, T>> as std::iter::Iterator>::next(it)
 }
 
 // `vec![elem; n]` expands to a call to this function.
