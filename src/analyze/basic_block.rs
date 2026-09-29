@@ -464,16 +464,15 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             mir_ty::TyKind::Bool => {
                 PlaceType::with_ty_and_term(rty::Type::bool(), chc::Term::bool(bytes[0] != 0))
             }
-            mir_ty::TyKind::Int(_) => {
+            mir_ty::TyKind::Int(_) | mir_ty::TyKind::Uint(_) => {
+                let mut int_bytes = [0u8; 16];
+                int_bytes[..bytes.len()].copy_from_slice(bytes);
                 // TODO: see target endianness
-                let val = match bytes.len() {
-                    1 => i8::from_ne_bytes(bytes.try_into().unwrap()) as i64,
-                    2 => i16::from_ne_bytes(bytes.try_into().unwrap()) as i64,
-                    4 => i32::from_ne_bytes(bytes.try_into().unwrap()) as i64,
-                    8 => i64::from_ne_bytes(bytes.try_into().unwrap()),
-                    _ => unimplemented!("const int bytes len: {}", bytes.len()),
-                };
-                PlaceType::with_ty_and_term(rty::Type::int(), chc::Term::int(val))
+                let bits = u128::from_ne_bytes(int_bytes);
+                PlaceType::with_ty_and_term(
+                    rty::Type::int(),
+                    chc::Term::int(analyze::int_value_of_bits(self.tcx, ty, bits)),
+                )
             }
             mir_ty::TyKind::Tuple(tys) => {
                 let mut pts = Vec::new();
@@ -518,20 +517,17 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     fn const_value_ty(&self, val: &mir::ConstValue, ty: &mir_ty::Ty<'tcx>) -> PlaceType {
         use mir::{interpret::Scalar, ConstValue, Mutability};
         match (ty.kind(), val) {
-            (mir_ty::TyKind::Int(_), ConstValue::Scalar(Scalar::Int(val))) => {
-                let val = val.to_int(val.size());
-                PlaceType::with_ty_and_term(
-                    rty::Type::int(),
-                    chc::Term::int(val.try_into().unwrap()),
-                )
-            }
-            (mir_ty::TyKind::Uint(_), ConstValue::Scalar(Scalar::Int(val))) => {
-                let val = val.to_uint(val.size());
-                PlaceType::with_ty_and_term(
-                    rty::Type::int(),
-                    chc::Term::int(val.try_into().unwrap()),
-                )
-            }
+            (
+                mir_ty::TyKind::Int(_) | mir_ty::TyKind::Uint(_),
+                ConstValue::Scalar(Scalar::Int(val)),
+            ) => PlaceType::with_ty_and_term(
+                rty::Type::int(),
+                chc::Term::int(analyze::int_value_of_bits(
+                    self.tcx,
+                    *ty,
+                    val.to_bits_unchecked(),
+                )),
+            ),
             (mir_ty::TyKind::Bool, ConstValue::Scalar(Scalar::Int(val))) => {
                 PlaceType::with_ty_and_term(
                     rty::Type::bool(),
@@ -1085,13 +1081,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 (0, rty::Type::Bool) => chc::Term::bool(false),
                 (1, rty::Type::Bool) => chc::Term::bool(true),
                 (_, rty::Type::Int) => {
-                    let (size, signed) = discr_mir_ty.int_size_and_signed(self.tcx);
-                    let val: i64 = if signed {
-                        size.sign_extend(bits).try_into().unwrap()
-                    } else {
-                        bits.try_into().unwrap()
-                    };
-                    chc::Term::int(val)
+                    chc::Term::int(analyze::int_value_of_bits(self.tcx, discr_mir_ty, bits))
                 }
                 _ => unimplemented!(),
             };

@@ -11,6 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::rc::Rc;
 
+use num_bigint::BigInt;
 use rustc_hir::lang_items::LangItem;
 use rustc_index::IndexVec;
 use rustc_middle::mir::{self, BasicBlock, Local};
@@ -87,12 +88,13 @@ pub fn function_param_of_local(local: Local) -> rty::FunctionParamIdx {
     rty::FunctionParamIdx::from(local.as_usize() - 1)
 }
 
-fn discr_value<'tcx>(tcx: TyCtxt<'tcx>, discr: mir_ty::util::Discr<'tcx>) -> i64 {
-    let (size, signed) = discr.ty.int_size_and_signed(tcx);
+/// The value of the integer type `ty` whose bit pattern is `bits`.
+pub fn int_value_of_bits<'tcx>(tcx: TyCtxt<'tcx>, ty: mir_ty::Ty<'tcx>, bits: u128) -> BigInt {
+    let (size, signed) = ty.int_size_and_signed(tcx);
     if signed {
-        size.sign_extend(discr.val).try_into().unwrap()
+        size.sign_extend(bits).into()
     } else {
-        discr.val.try_into().unwrap()
+        bits.into()
     }
 }
 
@@ -626,7 +628,7 @@ impl<'tcx> Analyzer<'tcx> {
             .iter()
             .zip(adt.discriminants(self.tcx))
             .map(|(variant, (_, discr))| {
-                let discr = discr_value(self.tcx, discr);
+                let discr = int_value_of_bits(self.tcx, discr.ty, discr.val);
                 let field_tys = variant
                     .fields
                     .iter()
@@ -684,7 +686,7 @@ impl<'tcx> Analyzer<'tcx> {
                         sort: ty.to_sort(),
                     })
                     .collect(),
-                discriminant: v.discr,
+                discriminant: v.discr.clone(),
             })
             .collect();
         let datatype = chc::Datatype {

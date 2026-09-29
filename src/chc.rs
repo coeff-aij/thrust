@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::hash::Hash;
 
+use num_bigint::BigInt;
 use pretty::{termcolor, Pretty};
 use rustc_index::IndexVec;
 
@@ -574,7 +575,7 @@ pub enum Term<V = TermVarIdx> {
     ForallDefault(ForallSortIdx),
     Var(V),
     Bool(bool),
-    Int(i64),
+    Int(BigInt),
     String(String),
     Box(Box<Term<V>>),
     Mut(Box<Term<V>>, Box<Term<V>>),
@@ -801,20 +802,13 @@ impl<V> Term<V> {
         Term::Var(v)
     }
 
-    pub fn int(n: i64) -> Self {
-        Term::Int(n)
+    pub fn int(n: impl Into<BigInt>) -> Self {
+        Term::Int(n.into())
     }
 
     /// The integer `2^exp`.
-    ///
-    /// [`Term::Int`] holds an `i64`, so from `2^63` on the value cannot be a single literal
-    /// and is instead expressed as a product of literals, e.g. `2^64` as `2^32 * 2^32`.
     pub fn pow2(exp: u64) -> Self {
-        if exp < 63 {
-            Term::int(1 << exp)
-        } else {
-            Term::pow2(exp / 2).mul(Term::pow2(exp - exp / 2))
-        }
+        Term::Int(BigInt::from(1) << exp)
     }
 
     pub fn bool(b: bool) -> Self {
@@ -832,7 +826,7 @@ impl<V> Term<V> {
         match sort {
             Sort::Null => Term::Null,
             Sort::Forall(idx) => Term::ForallDefault(*idx),
-            Sort::Int => Term::Int(0),
+            Sort::Int => Term::int(0),
             Sort::Bool => Term::Bool(false),
             Sort::String => Term::String(String::new()),
             Sort::Box(s) => Term::Box(Box::new(Self::default_for(s))),
@@ -964,13 +958,11 @@ impl<V> Term<V> {
     {
         let direct = |a, b| Term::App(f, vec![a, b]);
         // A literal dividend settles the sign test here rather than leaving an `ite` behind.
-        if let Term::Int(n) = dividend {
-            if n >= 0 {
+        if let Term::Int(n) = &dividend {
+            if *n >= BigInt::ZERO {
                 return direct(dividend, divisor);
             }
-            if let Some(m) = n.checked_neg() {
-                return direct(Term::int(m), divisor).neg();
-            }
+            return direct(Term::Int(-n), divisor).neg();
         }
         Term::ite(
             dividend.clone().ge(Term::int(0)),
@@ -2241,7 +2233,7 @@ pub struct DatatypeSelector {
 pub struct DatatypeCtor {
     pub symbol: DatatypeSymbol,
     pub selectors: Vec<DatatypeSelector>,
-    pub discriminant: i64,
+    pub discriminant: BigInt,
 }
 
 /// A datatype definition.

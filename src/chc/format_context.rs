@@ -213,7 +213,7 @@ fn builtin_sort_datatype(s: chc::Sort) -> Option<chc::Datatype> {
             ctors: vec![chc::DatatypeCtor {
                 symbol: chc::DatatypeSymbol::new("null".to_string()),
                 selectors: vec![],
-                discriminant: 0,
+                discriminant: 0.into(),
             }],
         },
         chc::Sort::Box(inner) => {
@@ -227,7 +227,7 @@ fn builtin_sort_datatype(s: chc::Sort) -> Option<chc::Datatype> {
                         symbol: chc::DatatypeSymbol::new(format!("box_current{ss}")),
                         sort: *inner,
                     }],
-                    discriminant: 0,
+                    discriminant: 0.into(),
                 }],
             }
         }
@@ -248,7 +248,7 @@ fn builtin_sort_datatype(s: chc::Sort) -> Option<chc::Datatype> {
                             sort: *inner,
                         },
                     ],
-                    discriminant: 0,
+                    discriminant: 0.into(),
                 }],
             }
         }
@@ -268,7 +268,7 @@ fn builtin_sort_datatype(s: chc::Sort) -> Option<chc::Datatype> {
                 ctors: vec![chc::DatatypeCtor {
                     symbol: chc::DatatypeSymbol::new(format!("tuple{ss}")),
                     selectors,
-                    discriminant: 0,
+                    discriminant: 0.into(),
                 }],
             }
         }
@@ -350,7 +350,7 @@ fn monomorphize_datatype(
                         }
                     })
                     .collect(),
-                discriminant: c.discriminant,
+                discriminant: c.discriminant.clone(),
             })
             .collect(),
     };
