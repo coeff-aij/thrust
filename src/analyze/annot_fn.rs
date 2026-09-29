@@ -690,6 +690,28 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         self.type_builder.build(elem_ty)
     }
 
+    fn int_const_term(
+        &self,
+        const_did: DefId,
+        ty: mir_ty::Ty<'tcx>,
+    ) -> chc::Term<rty::FunctionParamIdx> {
+        let value = self
+            .tcx
+            .const_eval_poly(const_did)
+            .expect("constant in formula must evaluate without generic arguments");
+        let scalar = value
+            .try_to_scalar_int()
+            .expect("constant in formula must be a scalar");
+        if !ty.is_integral() {
+            unimplemented!("unsupported constant type in formula: {:?}", ty);
+        }
+        chc::Term::int(analyze::int_value_of_bits(
+            self.tcx,
+            ty,
+            scalar.to_bits_unchecked(),
+        ))
+    }
+
     fn variant_ctor_term(
         &self,
         ctor_did: rustc_span::def_id::DefId,
@@ -864,6 +886,10 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 ) => {
                     FormulaOrTerm::Term(self.variant_ctor_term(ctor_did, self.expr_ty(hir), vec![]))
                 }
+                rustc_hir::def::Res::Def(
+                    rustc_hir::def::DefKind::Const | rustc_hir::def::DefKind::AssocConst,
+                    const_did,
+                ) => FormulaOrTerm::Term(self.int_const_term(const_did, self.expr_ty(hir))),
                 _ => unimplemented!("unsupported path in formula: {:?}", qpath),
             },
             ExprKind::Tup(exprs) => {
