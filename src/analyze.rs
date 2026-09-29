@@ -183,13 +183,11 @@ impl<'tcx> ReplacePlacesVisitor<'tcx> {
 enum DeferredDefMode {
     Analyze,
     NoAnalyze,
-    /// The local def is the def's body (an extern body), analyzed at each call that runs it.
-    ExternBody,
 }
 
 impl DeferredDefMode {
     fn should_analyze(&self) -> bool {
-        matches!(self, DeferredDefMode::Analyze | DeferredDefMode::ExternBody)
+        matches!(self, DeferredDefMode::Analyze)
     }
 }
 
@@ -210,8 +208,7 @@ fn has_fn_mut_closure(generic_args: mir_ty::GenericArgsRef<'_>) -> bool {
 #[derive(Debug, Clone)]
 struct DeferredDefTy<'tcx> {
     // the def that provides the spec (`expected_ty`). this is different from a key in defs when
-    // the def is an extern_spec_fn (then it is the extern_spec_fn wrapper carrying the contract)
-    // or an extern_body_fn (then it is the function whose body is taken as the def's).
+    // the def is an extern_spec_fn (then it is the extern_spec_fn wrapper carrying the contract).
     local_def_id: LocalDefId,
     cache: Rc<RefCell<HashMap<InstantiationKey<'tcx>, rty::RefinedType>>>,
     mode: DeferredDefMode,
@@ -356,21 +353,6 @@ fn predicate_typing_env<'tcx>(
         Some(model_ty) => model_assuming_env(tcx, owner_fn_id, model_ty),
         None => mir_ty::TypingEnv::post_analysis(tcx, owner_fn_id),
     }
-}
-
-/// Whether a call to `def_id` at `args` runs `def_id`'s own body, the one an extern body stands
-/// for, rather than an implementation overriding it or one not known at these arguments.
-fn runs_own_body<'tcx>(
-    tcx: TyCtxt<'tcx>,
-    def_id: DefId,
-    args: mir_ty::GenericArgsRef<'tcx>,
-    caller_def_id: DefId,
-) -> bool {
-    let typing_env = mir_ty::TypingEnv::post_analysis(tcx, caller_def_id);
-    matches!(
-        mir_ty::Instance::try_resolve(tcx, typing_env, def_id, tcx.erase_regions(args)),
-        Ok(Some(instance)) if instance.def == mir_ty::InstanceKind::Item(def_id)
-    )
 }
 
 fn model_assuming_env<'tcx>(
@@ -795,6 +777,50 @@ impl<'tcx> Analyzer<'tcx> {
         enum_def
     }
 
+    /// Registers the enums that occur in `tys`, in the order they are visited: that order reaches
+    /// the emitted datatype declarations.
+    pub fn register_enum_defs(
+        &self,
+        tys: impl IntoIterator<Item = mir_ty::Ty<'tcx>>,
+        builder: TypeBuilder<'tcx>,
+    ) {
+        use mir_ty::{TypeSuperVisitable as _, TypeVisitable as _};
+        struct EnumCollector<'tcx> {
+            tcx: TyCtxt<'tcx>,
+            builder: TypeBuilder<'tcx>,
+            enums: rustc_data_structures::fx::FxIndexSet<DefId>,
+            visited: HashSet<mir_ty::Ty<'tcx>>,
+        }
+        impl<'tcx> mir_ty::TypeVisitor<TyCtxt<'tcx>> for EnumCollector<'tcx> {
+            fn visit_ty(&mut self, ty: mir_ty::Ty<'tcx>) {
+                let ty = self.builder.resolve_model_ty(ty);
+                if let mir_ty::TyKind::Adt(def, args) = ty.kind() {
+                    if self.visited.insert(ty) {
+                        if def.is_enum() {
+                            self.enums.insert(def.did());
+                        }
+                        for field in def.all_fields() {
+                            field.ty(self.tcx, args).visit_with(self);
+                        }
+                    }
+                }
+                ty.super_visit_with(self);
+            }
+        }
+        let mut visitor = EnumCollector {
+            tcx: self.tcx,
+            builder,
+            enums: Default::default(),
+            visited: HashSet::new(),
+        };
+        for ty in tys {
+            ty.visit_with(&mut visitor);
+        }
+        for def_id in visitor.enums {
+            self.get_or_register_enum_def(def_id);
+        }
+    }
+
     pub fn register_def(&mut self, def_id: DefId, rty: rty::RefinedType) {
         tracing::info!(def_id = ?def_id, rty = %rty.display(), "register_def");
         self.defs.insert(def_id, DefTy::Concrete(rty));
@@ -811,20 +837,6 @@ impl<'tcx> Analyzer<'tcx> {
             local_def_id,
             target_args,
             DeferredDefMode::Analyze,
-        );
-    }
-
-    pub fn register_extern_body_def(
-        &mut self,
-        target_def_id: DefId,
-        local_def_id: LocalDefId,
-        target_args: mir_ty::GenericArgsRef<'tcx>,
-    ) {
-        self.register_deferred_def_impl(
-            target_def_id,
-            local_def_id,
-            Some(target_args),
-            DeferredDefMode::ExternBody,
         );
     }
 
@@ -971,6 +983,7 @@ impl<'tcx> Analyzer<'tcx> {
             .formula_fn_with_args(local_def_id, generic_args, owner_fn_id)
             .unwrap();
         let type_builder = self.type_builder(self.def_ids(), owner_fn_id);
+        self.register_enum_defs(formula_fn.params().iter().copied(), type_builder.clone());
         let arg_sorts = formula_fn
             .params()
             .iter()
@@ -1046,16 +1059,13 @@ impl<'tcx> Analyzer<'tcx> {
             DefTy::Deferred(DeferredDefTy {
                 local_def_id,
                 target_args: Some(target_args),
-                mode,
                 ..
             }) => {
                 let bound = bind_spec_args(self.tcx, *local_def_id, target_args, generic_args)?;
                 let holds = self.def_ids().model_ty().is_none_or(|model_ty| {
                     spec_bounds_hold(self.tcx, *local_def_id, bound, caller_def_id, model_ty)
                 });
-                let runs = *mode != DeferredDefMode::ExternBody
-                    || runs_own_body(self.tcx, def_id, generic_args, caller_def_id);
-                (holds && runs).then_some(bound)?
+                holds.then_some(bound)?
             }
             _ => generic_args,
         };
@@ -1139,9 +1149,7 @@ impl<'tcx> Analyzer<'tcx> {
             );
         }
         if analyze_body {
-            let is_local_body = local_def_id.to_def_id() == def_id
-                || deferred_ty_mode == Some(DeferredDefMode::ExternBody);
-            let mut body_analyzer = if is_local_body {
+            let mut body_analyzer = if local_def_id.to_def_id() == def_id {
                 let mut body_analyzer = self.local_def_analyzer(local_def_id);
                 body_analyzer
                     .owner_fn_id(caller_def_id)

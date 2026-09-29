@@ -924,77 +924,6 @@ fn _extern_spec_i32_is_negative(x: i32) -> bool {
     i32::is_negative(x)
 }
 
-// The comparisons of primitive integers, which derived `PartialOrd` / `Ord` impls call on
-// their fields. The integers define their own `lt`, `le`, `gt` and `ge`, which compare by value.
-macro_rules! int_cmp_specs {
-    ($T:ty) => {
-        const _: () = {
-            #[thrust::extern_spec_fn]
-            #[thrust_macros::requires(true)]
-            #[thrust_macros::ensures(
-                (*x < *y && result == Some(std::cmp::Ordering::Less))
-                || (*x == *y && result == Some(std::cmp::Ordering::Equal))
-                || (*x > *y && result == Some(std::cmp::Ordering::Greater))
-            )]
-            fn partial_cmp(x: &$T, y: &$T) -> Option<std::cmp::Ordering> {
-                <$T as PartialOrd>::partial_cmp(x, y)
-            }
-
-            #[thrust::extern_spec_fn]
-            #[thrust_macros::requires(true)]
-            #[thrust_macros::ensures(
-                (*x < *y && result == std::cmp::Ordering::Less)
-                || (*x == *y && result == std::cmp::Ordering::Equal)
-                || (*x > *y && result == std::cmp::Ordering::Greater)
-            )]
-            fn cmp(x: &$T, y: &$T) -> std::cmp::Ordering {
-                <$T as Ord>::cmp(x, y)
-            }
-
-            #[thrust::extern_spec_fn]
-            #[thrust_macros::requires(true)]
-            #[thrust_macros::ensures(result == (*x < *y))]
-            fn lt(x: &$T, y: &$T) -> bool {
-                <$T as PartialOrd>::lt(x, y)
-            }
-
-            #[thrust::extern_spec_fn]
-            #[thrust_macros::requires(true)]
-            #[thrust_macros::ensures(result == (*x <= *y))]
-            fn le(x: &$T, y: &$T) -> bool {
-                <$T as PartialOrd>::le(x, y)
-            }
-
-            #[thrust::extern_spec_fn]
-            #[thrust_macros::requires(true)]
-            #[thrust_macros::ensures(result == (*x > *y))]
-            fn gt(x: &$T, y: &$T) -> bool {
-                <$T as PartialOrd>::gt(x, y)
-            }
-
-            #[thrust::extern_spec_fn]
-            #[thrust_macros::requires(true)]
-            #[thrust_macros::ensures(result == (*x >= *y))]
-            fn ge(x: &$T, y: &$T) -> bool {
-                <$T as PartialOrd>::ge(x, y)
-            }
-        };
-    };
-}
-
-int_cmp_specs!(isize);
-int_cmp_specs!(i8);
-int_cmp_specs!(i16);
-int_cmp_specs!(i32);
-int_cmp_specs!(i64);
-int_cmp_specs!(i128);
-int_cmp_specs!(usize);
-int_cmp_specs!(u8);
-int_cmp_specs!(u16);
-int_cmp_specs!(u32);
-int_cmp_specs!(u64);
-int_cmp_specs!(u128);
-
 // The checked arithmetic of signed integers: `None` exactly when the result leaves the range of
 // the type.
 macro_rules! int_checked_specs {
@@ -2335,77 +2264,156 @@ fn _extern_spec_clone<T>(x: &T) -> T
     Clone::clone(x)
 }
 
-// The provided `lt`, `le`, `gt` and `ge` of `PartialOrd`, which a type takes unless it defines its
-// own: they compare through the type's `partial_cmp`.
-#[thrust::extern_body_fn]
-#[allow(path_statements)]
-fn _extern_body_partialord_lt<T, U>(x: &T, y: &U) -> bool
-  where T: PartialOrd<U> + ?Sized, U: ?Sized
-{
-    <T as PartialOrd<U>>::lt;
-    matches!(x.partial_cmp(y), Some(std::cmp::Ordering::Less))
+// Comparison is specified through `PartialOrdSpec`, which relates two values to the outcome of
+// comparing them. A type gets the specs of `partial_cmp`, the comparison operators, `cmp`, `max`
+// and `min` by implementing it, as Creusot's `OrdLogic` does with `cmp_log`; the relation must
+// be functional, and `Ord` types must agree with `partial_cmp`, as std requires.
+#[thrust_macros::context]
+trait PartialOrdSpec: PartialOrd + thrust_models::Model {
+    #[thrust_macros::predicate]
+    fn compares(self, other: Self, ord: Option<std::cmp::Ordering>) -> bool;
+
+    #[thrust_macros::law]
+    #[thrust_macros::requires(Self::compares(*a, *b, x) && Self::compares(*a, *b, y))]
+    #[thrust_macros::ensures(x == y)]
+    fn compares_functional(
+        a: &Self,
+        b: &Self,
+        x: Option<std::cmp::Ordering>,
+        y: Option<std::cmp::Ordering>,
+    )
+    where
+        <Self as thrust_models::Model>::Ty: PartialEq;
 }
 
-#[thrust::extern_body_fn]
-#[allow(path_statements)]
-fn _extern_body_partialord_le<T, U>(x: &T, y: &U) -> bool
-  where T: PartialOrd<U> + ?Sized, U: ?Sized
-{
-    <T as PartialOrd<U>>::le;
-    matches!(x.partial_cmp(y), Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal))
+macro_rules! int_partial_ord_spec {
+    ($T:ty) => {
+        #[thrust_macros::context]
+        impl PartialOrdSpec for $T {
+            #[thrust_macros::predicate]
+            fn compares(self, other: Self, ord: Option<std::cmp::Ordering>) -> bool {
+                (self < other && ord == Some(std::cmp::Ordering::Less))
+                    || (self == other && ord == Some(std::cmp::Ordering::Equal))
+                    || (self > other && ord == Some(std::cmp::Ordering::Greater))
+            }
+
+            fn compares_functional(
+                a: &Self,
+                b: &Self,
+                x: Option<std::cmp::Ordering>,
+                y: Option<std::cmp::Ordering>,
+            ) {
+            }
+        }
+    };
 }
 
-#[thrust::extern_body_fn]
-#[allow(path_statements)]
-fn _extern_body_partialord_gt<T, U>(x: &T, y: &U) -> bool
-  where T: PartialOrd<U> + ?Sized, U: ?Sized
-{
-    <T as PartialOrd<U>>::gt;
-    matches!(x.partial_cmp(y), Some(std::cmp::Ordering::Greater))
-}
-
-#[thrust::extern_body_fn]
-#[allow(path_statements)]
-fn _extern_body_partialord_ge<T, U>(x: &T, y: &U) -> bool
-  where T: PartialOrd<U> + ?Sized, U: ?Sized
-{
-    <T as PartialOrd<U>>::ge;
-    matches!(x.partial_cmp(y), Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal))
-}
+int_partial_ord_spec!(isize);
+int_partial_ord_spec!(i8);
+int_partial_ord_spec!(i16);
+int_partial_ord_spec!(i32);
+int_partial_ord_spec!(i64);
+int_partial_ord_spec!(i128);
+int_partial_ord_spec!(usize);
+int_partial_ord_spec!(u8);
+int_partial_ord_spec!(u16);
+int_partial_ord_spec!(u32);
+int_partial_ord_spec!(u64);
+int_partial_ord_spec!(u128);
 
 // `&A` compares its referents.
-#[thrust::extern_body_fn]
-#[allow(path_statements)]
-fn _extern_body_ref_partialord_lt<A, B>(x: &&A, y: &&B) -> bool
-  where A: PartialOrd<B> + ?Sized, B: ?Sized
+#[thrust_macros::context]
+impl<A> PartialOrdSpec for &A
+where
+    A: PartialOrdSpec,
+    A::Ty: PartialEq,
 {
-    <&A as PartialOrd<&B>>::lt;
-    PartialOrd::lt(*x, *y)
+    #[thrust_macros::predicate]
+    fn compares(self, other: Self, ord: Option<std::cmp::Ordering>) -> bool {
+        A::compares(*self, *other, ord)
+    }
+
+    fn compares_functional(
+        a: &Self,
+        b: &Self,
+        x: Option<std::cmp::Ordering>,
+        y: Option<std::cmp::Ordering>,
+    ) {
+    }
 }
 
-#[thrust::extern_body_fn]
-#[allow(path_statements)]
-fn _extern_body_ref_partialord_le<A, B>(x: &&A, y: &&B) -> bool
-  where A: PartialOrd<B> + ?Sized, B: ?Sized
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(T::compares(*x, *y, result))]
+fn _extern_spec_partialord_partial_cmp<T>(x: &T, y: &T) -> Option<std::cmp::Ordering>
+    where T: PartialOrdSpec, T::Ty: PartialEq
 {
-    <&A as PartialOrd<&B>>::le;
-    PartialOrd::le(*x, *y)
+    PartialOrd::partial_cmp(x, y)
 }
 
-#[thrust::extern_body_fn]
-#[allow(path_statements)]
-fn _extern_body_ref_partialord_gt<A, B>(x: &&A, y: &&B) -> bool
-  where A: PartialOrd<B> + ?Sized, B: ?Sized
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures((result ==> T::compares(*x, *y, Some(std::cmp::Ordering::Less))) && (T::compares(*x, *y, Some(std::cmp::Ordering::Less)) ==> result))]
+fn _extern_spec_partialord_lt<T>(x: &T, y: &T) -> bool
+    where T: PartialOrdSpec, T::Ty: PartialEq
 {
-    <&A as PartialOrd<&B>>::gt;
-    PartialOrd::gt(*x, *y)
+    PartialOrd::lt(x, y)
 }
 
-#[thrust::extern_body_fn]
-#[allow(path_statements)]
-fn _extern_body_ref_partialord_ge<A, B>(x: &&A, y: &&B) -> bool
-  where A: PartialOrd<B> + ?Sized, B: ?Sized
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures((result ==> T::compares(*x, *y, Some(std::cmp::Ordering::Less)) || T::compares(*x, *y, Some(std::cmp::Ordering::Equal))) && ((T::compares(*x, *y, Some(std::cmp::Ordering::Less)) || T::compares(*x, *y, Some(std::cmp::Ordering::Equal))) ==> result))]
+fn _extern_spec_partialord_le<T>(x: &T, y: &T) -> bool
+    where T: PartialOrdSpec, T::Ty: PartialEq
 {
-    <&A as PartialOrd<&B>>::ge;
-    PartialOrd::ge(*x, *y)
+    PartialOrd::le(x, y)
+}
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures((result ==> T::compares(*x, *y, Some(std::cmp::Ordering::Greater))) && (T::compares(*x, *y, Some(std::cmp::Ordering::Greater)) ==> result))]
+fn _extern_spec_partialord_gt<T>(x: &T, y: &T) -> bool
+    where T: PartialOrdSpec, T::Ty: PartialEq
+{
+    PartialOrd::gt(x, y)
+}
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures((result ==> T::compares(*x, *y, Some(std::cmp::Ordering::Greater)) || T::compares(*x, *y, Some(std::cmp::Ordering::Equal))) && ((T::compares(*x, *y, Some(std::cmp::Ordering::Greater)) || T::compares(*x, *y, Some(std::cmp::Ordering::Equal))) ==> result))]
+fn _extern_spec_partialord_ge<T>(x: &T, y: &T) -> bool
+    where T: PartialOrdSpec, T::Ty: PartialEq
+{
+    PartialOrd::ge(x, y)
+}
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(T::compares(*x, *y, Some(result)))]
+fn _extern_spec_ord_cmp<T>(x: &T, y: &T) -> std::cmp::Ordering
+    where T: Ord + PartialOrdSpec, T::Ty: PartialEq
+{
+    Ord::cmp(x, y)
+}
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(
+    (T::compares(x, y, Some(std::cmp::Ordering::Greater)) ==> result == x) && (!T::compares(x, y, Some(std::cmp::Ordering::Greater)) ==> result == y)
+)]
+fn _extern_spec_ord_max<T>(x: T, y: T) -> T
+    where T: Ord + PartialOrdSpec, T::Ty: PartialEq
+{
+    Ord::max(x, y)
+}
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(
+    (T::compares(x, y, Some(std::cmp::Ordering::Greater)) ==> result == y) && (!T::compares(x, y, Some(std::cmp::Ordering::Greater)) ==> result == x)
+)]
+fn _extern_spec_ord_min<T>(x: T, y: T) -> T
+    where T: Ord + PartialOrdSpec, T::Ty: PartialEq
+{
+    Ord::min(x, y)
 }
