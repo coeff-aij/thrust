@@ -1573,6 +1573,35 @@ fn _extern_spec_iterator_next<I>(it: &mut I) -> Option<I::Item>
     <I as std::iter::Iterator>::next(it)
 }
 
+// The predicate accepted the item found in some state of it; which state, and that it rejected
+// the items before, is not stated: that needs the sequence of its states across the calls, on
+// which PCSat fails.
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(
+    thrust_models::forall(|c: thrust_models::model::Closure<P>|
+        thrust_models::forall(|x: <I::Item as thrust_models::Model>::Ty| thrust_macros::pre!(c(&x))))
+)]
+#[thrust_macros::ensures(
+    (result == None
+        && thrust_models::exists(|visited: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>, mid: I::Ty|
+            I::produces(*it, visited, mid) && I::completed(thrust_models::model::Mut::new(mid, !it))))
+    || thrust_models::exists(|visited: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
+                              x: <I::Item as thrust_models::Model>::Ty|
+        result == Some(x)
+            && I::produces(*it, visited.push(x), !it)
+            && thrust_models::exists(|c: thrust_models::model::Closure<P>, d: thrust_models::model::Closure<P>|
+                thrust_macros::post!(thrust_models::model::Mut::new(c, d)(&x), true)))
+)]
+fn _extern_spec_iterator_find<I, P>(it: &mut I, predicate: P) -> Option<I::Item>
+    where I: IteratorSpec,
+          I::Item: thrust_models::Model,
+          I::Ty: PartialEq,
+          <I::Item as thrust_models::Model>::Ty: PartialEq,
+          P: FnMut(&I::Item) -> bool
+{
+    <I as std::iter::Iterator>::find(it, predicate)
+}
+
 #[thrust_macros::context]
 impl<'a, T> IteratorSpec for core::slice::Iter<'a, T>
 where
