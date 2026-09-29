@@ -77,6 +77,16 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 let target_def_id = analyzer.extern_spec_fn_target_def_id();
                 if let Some(local_target_def_id) = target_def_id.as_local() {
                     keys.swap_remove(&local_target_def_id);
+                    // The spec is the target's contract; a trusted target's body is not
+                    // checked against it.
+                    if self
+                        .tcx
+                        .get_attrs_by_path(target_def_id, &analyze::annot::trusted_path())
+                        .next()
+                        .is_some()
+                    {
+                        self.skip_analysis.insert(local_target_def_id);
+                    }
                 }
                 if matches!(
                     self.tcx.def_kind(target_def_id),

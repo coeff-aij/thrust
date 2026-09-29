@@ -280,10 +280,12 @@ fn spec_bounds_hold<'tcx>(
     let model_trait = tcx.parent(model_ty);
     let typing_env = model_assuming_env(tcx, caller_def_id, model_ty);
     let infcx = tcx.infer_ctxt().build(typing_env.typing_mode);
-    tcx.predicates_of(spec_def_id)
+    let clauses = tcx
+        .predicates_of(spec_def_id)
         .instantiate(tcx, args)
-        .predicates
-        .into_iter()
+        .predicates;
+    let traits_hold = clauses
+        .iter()
         .filter_map(|clause| clause.as_trait_clause())
         .map(|clause| clause.skip_binder().trait_ref)
         .filter(|trait_ref| trait_ref.def_id.is_local() && trait_ref.def_id != model_trait)
@@ -305,6 +307,37 @@ fn spec_bounds_hold<'tcx>(
                 trait_ref,
             );
             infcx.predicate_must_hold_modulo_regions(&obligation)
+        });
+    traits_hold
+        && clauses
+            .iter()
+            .filter_map(|clause| clause.as_projection_clause())
+            .map(|clause| clause.skip_binder())
+            .all(|projection| projection_holds(tcx, typing_env, projection))
+}
+
+/// Whether an associated type a spec's bound fixes (`R: IntoSliceIdx<I, [T], Output = usize>`)
+/// is that type at the arguments the spec was bound to. A spec's contract is stated for the type it
+/// fixes: at another one the target's result is not the one the contract describes. A projection
+/// that stays unresolved is assumed, like a bound on a type parameter.
+fn projection_holds<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    typing_env: mir_ty::TypingEnv<'tcx>,
+    projection: mir_ty::ProjectionPredicate<'tcx>,
+) -> bool {
+    let normalize = |term| tcx.try_normalize_erasing_regions(typing_env, term).ok();
+    let (Some(actual), Some(fixed)) = (
+        normalize(projection.projection_term.to_term(tcx)),
+        normalize(projection.term),
+    ) else {
+        return true;
+    };
+    actual == fixed
+        || actual.as_type().is_some_and(|ty| {
+            matches!(
+                ty.kind(),
+                mir_ty::TyKind::Param(_) | mir_ty::TyKind::Alias(..)
+            )
         })
 }
 
