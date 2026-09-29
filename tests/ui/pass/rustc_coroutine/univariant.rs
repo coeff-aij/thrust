@@ -177,13 +177,26 @@ impl<I: Idx> Iterator for IdxRange<I> {
     }
 }
 
-pub trait IntoSliceIdx<I, T: ?Sized> {
+#[thrust_macros::context]
+pub trait IntoSliceIdx<I, T: ?Sized + thrust_models::Model<Ty: PartialEq>> {
     type Output: SliceIndex<T>;
+
+    /// `out` is the slice position `self` selects.
+    #[thrust_macros::predicate]
+    fn into_is(self, out: Self::Output) -> bool;
+
     fn into_slice_idx(self) -> Self::Output;
 }
 
-impl<I: Idx, T> IntoSliceIdx<I, [T]> for I {
+#[thrust_macros::context]
+impl<I: Idx, T: thrust_models::Model<Ty: PartialEq>> IntoSliceIdx<I, [T]> for I {
     type Output = usize;
+
+    #[thrust_macros::predicate]
+    fn into_is(self, out: usize) -> bool {
+        <I as Idx>::index_is(self, out)
+    }
+
     #[inline]
     fn into_slice_idx(self) -> Self::Output {
         self.index()
@@ -295,20 +308,47 @@ impl<I: Idx, T> IndexSlice<I, T> {
     }
 }
 
-impl<I: Idx, T, R: IntoSliceIdx<I, [T]>> std::ops::Index<R> for IndexSlice<I, T> {
+impl<I: Idx, T: thrust_models::Model<Ty: PartialEq>, R: IntoSliceIdx<I, [T]>> std::ops::Index<R> for IndexSlice<I, T> {
     type Output = <R::Output as SliceIndex<[T]>>::Output;
 
+    #[thrust::trusted]
     #[inline]
     fn index(&self, index: R) -> &Self::Output {
         &self.raw[index.into_slice_idx()]
     }
 }
 
-impl<I: Idx, T, R: IntoSliceIdx<I, [T]>> std::ops::IndexMut<R> for IndexSlice<I, T> {
+impl<I: Idx, T: thrust_models::Model<Ty: PartialEq>, R: IntoSliceIdx<I, [T]>> std::ops::IndexMut<R> for IndexSlice<I, T> {
+    #[thrust::trusted]
     #[inline]
     fn index_mut(&mut self, index: R) -> &mut Self::Output {
         &mut self.raw[index.into_slice_idx()]
     }
+}
+
+// `Index`/`IndexMut` are foreign traits, so the contract is an extern spec (the impl methods
+// are `trusted`). `IntoSliceIdx` has one impl, `I: Idx` into `usize`, through `Idx::index_is`.
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(forall(|i: Int| <R as IntoSliceIdx<I, [T]>>::into_is(index, i) ==> i < (*slf).len()))]
+#[thrust_macros::ensures(forall(|i: Int| <R as IntoSliceIdx<I, [T]>>::into_is(index, i) ==> *result == (*slf)[i]))]
+fn _extern_spec_index_slice_index<I: Idx + thrust_models::Model<Ty: PartialEq>, T: thrust_models::Model, R: IntoSliceIdx<I, [T], Output = usize> + thrust_models::Model>(slf: &IndexSlice<I, T>, index: R) -> &T
+where
+    <T as thrust_models::Model>::Ty: PartialEq,
+    <R as thrust_models::Model>::Ty: PartialEq,
+{
+    <IndexSlice<I, T> as std::ops::Index<R>>::index(slf, index)
+}
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(forall(|i: Int| <R as IntoSliceIdx<I, [T]>>::into_is(index, i) ==> i < (*slf).len()))]
+#[thrust_macros::ensures(forall(|i: Int| <R as IntoSliceIdx<I, [T]>>::into_is(index, i)
+    ==> (*result == (*slf)[i] && !result == (!slf)[i] && (!slf).len() == (*slf).len())))]
+fn _extern_spec_index_slice_index_mut<I: Idx + thrust_models::Model<Ty: PartialEq>, T: thrust_models::Model, R: IntoSliceIdx<I, [T], Output = usize> + thrust_models::Model>(slf: &mut IndexSlice<I, T>, index: R) -> &mut T
+where
+    <T as thrust_models::Model>::Ty: PartialEq,
+    <R as thrust_models::Model>::Ty: PartialEq,
+{
+    <IndexSlice<I, T> as std::ops::IndexMut<R>>::index_mut(slf, index)
 }
 
 // //== ./../rustc_index/src/vec.rs (from eligibility.rs, stage 2)
@@ -1319,7 +1359,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         'a,
         FieldIdx: Idx,
         VariantIdx: Idx,
-        F: Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy,
+        F: Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model<Ty: PartialEq>,
     >(
         &self,
         fields: &IndexSlice<FieldIdx, F>,
@@ -1367,7 +1407,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         'a,
         FieldIdx: Idx,
         VariantIdx: Idx,
-        F: Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy,
+        F: Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model<Ty: PartialEq>,
     >(
         &self,
         fields: &IndexSlice<FieldIdx, F>,
