@@ -232,6 +232,22 @@ impl<'a, T: Idx> Iterator for BitIter<'a, T> {
     }
 }
 
+#[thrust_macros::context]
+impl<'a, T: Idx + thrust_models::Model> IteratorSpec for BitIter<'a, T>
+where
+    T::Ty: PartialEq,
+{
+    #[thrust_macros::predicate]
+    fn produces(self, visited: Vec<T>, o: Self) -> bool {
+        true
+    }
+
+    #[thrust_macros::predicate]
+    fn completed(&mut self) -> bool {
+        true
+    }
+}
+
 #[derive(/* Clone, Eq, PartialEq, */ Hash)]
 pub struct BitMatrix<R: Idx, C: Idx> {
     num_rows: usize,
@@ -781,7 +797,7 @@ impl<'a> thrust_models::Model for WordIter<'a> {
     type Ty = Self;
 }
 impl<'a, T: Idx> thrust_models::Model for BitIter<'a, T> {
-    type Ty = Self;
+    type Ty = Int;
 }
 impl<R: Idx, C: Idx> thrust_models::Model for BitMatrix<R, C> {
     type Ty = Self;
