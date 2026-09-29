@@ -1714,6 +1714,15 @@ fn _extern_spec_partialeq_eq<T>(x: &T, y: &T) -> bool
     PartialEq::eq(x, y)
 }
 
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(result == !(*x == *y))]
+fn _extern_spec_partialeq_ne<T>(x: &T, y: &T) -> bool
+  where T: thrust_models::Model + PartialEq, T::Ty: PartialEq
+{
+    PartialEq::ne(x, y)
+}
+
 // Hashing has no model; the spec only records that hashing itself does not
 // panic, which lets derived Hash impls be analyzed (they hash field by field).
 #[thrust::extern_spec_fn]
