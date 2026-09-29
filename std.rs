@@ -1671,7 +1671,9 @@ fn _extern_spec_vec_mut_into_iter<'a, T>(vec: &'a mut Vec<T>) -> core::slice::It
 }
 
 // `next` is specified once, through the predicates of `IteratorSpec`; a type gets a `next` by
-// implementing the trait. `next` is total: `completed` covers every position at or past the end.
+// implementing the trait. `next` is total: `completed` covers every position at or past the end,
+// and producing nothing holds at every position, as `produces_refl` requires. The laws are
+// Creusot's; they let a loop over a type parameter accumulate what `next` produced.
 #[thrust_macros::context]
 trait IteratorSpec: std::iter::Iterator + thrust_models::Model
 where
@@ -1682,6 +1684,25 @@ where
 
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool;
+
+    #[thrust_macros::law]
+    #[thrust_macros::ensures(Self::produces(*a, thrust_models::model::Seq::empty(), *a))]
+    fn produces_refl(a: &Self)
+    where
+        <Self::Item as thrust_models::Model>::Ty: PartialEq;
+
+    #[thrust_macros::law]
+    #[thrust_macros::requires(Self::produces(*a, ab, *b) && Self::produces(*b, bc, *c))]
+    #[thrust_macros::ensures(Self::produces(*a, ab.concat(bc), *c))]
+    fn produces_trans(
+        a: &Self,
+        ab: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        b: &Self,
+        bc: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        c: &Self,
+    )
+    where
+        <Self::Item as thrust_models::Model>::Ty: PartialEq;
 }
 
 #[thrust::extern_spec_fn]
@@ -1739,7 +1760,7 @@ where
     fn produces(self, visited: Vec<&'a T>, o: Self) -> bool {
         self.0 == o.0
             && self.1 <= o.1
-            && o.1 <= self.0.len()
+            && (visited.len() == 0 || o.1 <= self.0.len())
             && visited.len() == o.1 - self.1
             && thrust_models::forall(|i: thrust_models::model::Int|
                 !(0 <= i && i < visited.len()) || visited[i] == &self.0[self.1 + i])
@@ -1748,6 +1769,17 @@ where
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
         (*self).1 >= (*self).0.len() && *self == !self
+    }
+
+    fn produces_refl(a: &Self) {}
+
+    fn produces_trans(
+        a: &Self,
+        ab: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        b: &Self,
+        bc: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        c: &Self,
+    ) {
     }
 }
 
@@ -1766,7 +1798,7 @@ where
         self.0 == o.0
             && self.1 == o.1
             && self.2 <= o.2
-            && o.2 <= self.0.len()
+            && (visited.len() == 0 || o.2 <= self.0.len())
             && visited.len() == o.2 - self.2
             && thrust_models::forall(|i: thrust_models::model::Int|
                 !(0 <= i && i < visited.len()) || visited[i] == thrust_models::model::Mut::new(
@@ -1778,6 +1810,17 @@ where
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
         (*self).2 >= (*self).0.len() && *self == !self
+    }
+
+    fn produces_refl(a: &Self) {}
+
+    fn produces_trans(
+        a: &Self,
+        ab: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        b: &Self,
+        bc: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        c: &Self,
+    ) {
     }
 }
 
@@ -1791,7 +1834,7 @@ where
     fn produces(self, visited: Vec<T>, o: Self) -> bool {
         self.0 == o.0
             && self.1 <= o.1
-            && o.1 <= self.0.len()
+            && (visited.len() == 0 || o.1 <= self.0.len())
             && visited.len() == o.1 - self.1
             && thrust_models::forall(|i: thrust_models::model::Int|
                 !(0 <= i && i < visited.len()) || visited[i] == self.0[self.1 + i])
@@ -1800,6 +1843,17 @@ where
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
         (*self).1 >= (*self).0.len() && *self == !self
+    }
+
+    fn produces_refl(a: &Self) {}
+
+    fn produces_trans(
+        a: &Self,
+        ab: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        b: &Self,
+        bc: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        c: &Self,
+    ) {
     }
 }
 
@@ -1825,6 +1879,17 @@ where
     fn completed(&mut self) -> bool {
         I::completed(thrust_models::model::Mut::new((*self).0, (!self).0))
             && (*self).1 == (!self).1
+    }
+
+    fn produces_refl(a: &Self) {}
+
+    fn produces_trans(
+        a: &Self,
+        ab: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        b: &Self,
+        bc: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        c: &Self,
+    ) {
     }
 }
 
@@ -1870,6 +1935,17 @@ where
             || thrust_models::exists(|x: <A::Item as thrust_models::Model>::Ty|
                 A::produces((*self).0, thrust_models::model::Seq::singleton(x), (!self).0)
                     && B::completed(thrust_models::model::Mut::new((*self).1, (!self).1)))
+    }
+
+    fn produces_refl(a: &Self) {}
+
+    fn produces_trans(
+        a: &Self,
+        ab: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        b: &Self,
+        bc: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        c: &Self,
+    ) {
     }
 }
 
