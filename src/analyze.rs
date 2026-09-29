@@ -37,6 +37,25 @@ mod reconstruct_slice_indexing;
 // TODO: organize structure and remove cross dependency between refine
 pub use did_cache::DefIdCache;
 
+fn scalar_const_term<T>(
+    ty: mir_ty::Ty<'_>,
+    val: &mir::ConstValue,
+) -> Option<(rty::Type<T>, chc::Term<T>)> {
+    use mir::interpret::Scalar;
+    match (ty.kind(), val) {
+        (mir_ty::TyKind::Int(_), mir::ConstValue::Scalar(Scalar::Int(v))) => {
+            Some((rty::Type::int(), chc::Term::int(v.to_int(v.size()))))
+        }
+        (mir_ty::TyKind::Uint(_), mir::ConstValue::Scalar(Scalar::Int(v))) => {
+            Some((rty::Type::int(), chc::Term::int(v.to_uint(v.size()))))
+        }
+        (mir_ty::TyKind::Bool, mir::ConstValue::Scalar(Scalar::Int(v))) => {
+            Some((rty::Type::bool(), chc::Term::bool(v.try_to_bool().unwrap())))
+        }
+        _ => None,
+    }
+}
+
 fn fn_operand<'tcx>(
     tcx: TyCtxt<'tcx>,
     def_id: DefId,
@@ -88,13 +107,12 @@ pub fn function_param_of_local(local: Local) -> rty::FunctionParamIdx {
     rty::FunctionParamIdx::from(local.as_usize() - 1)
 }
 
-/// The value of the integer type `ty` whose bit pattern is `bits`.
-pub fn int_value_of_bits<'tcx>(tcx: TyCtxt<'tcx>, ty: mir_ty::Ty<'tcx>, bits: u128) -> BigInt {
-    let (size, signed) = ty.int_size_and_signed(tcx);
+fn discr_value<'tcx>(tcx: TyCtxt<'tcx>, discr: mir_ty::util::Discr<'tcx>) -> BigInt {
+    let (size, signed) = discr.ty.int_size_and_signed(tcx);
     if signed {
-        size.sign_extend(bits).into()
+        size.sign_extend(discr.val).into()
     } else {
-        bits.into()
+        discr.val.into()
     }
 }
 
@@ -242,11 +260,12 @@ fn bind_spec_args<'tcx>(
 }
 
 /// Whether the bounds an extern spec puts on its type parameters by traits of its own hold at the
-/// arguments it was bound to. A spec stated through a trait (`I: IteratorSpec`) says nothing
-/// about a type that does not implement it, so a call at such a type finds no specification.
+/// arguments it was bound to, in the caller's environment. A spec stated through a trait
+/// (`I: IteratorSpec`) says nothing about a type that does not implement it, so a call at such a
+/// type finds no specification.
 ///
-/// Only a bound on a fully concrete type is checked. A type that still mentions a parameter or an
-/// unresolved projection is left to the spec, whose predicates are then universal.
+/// A bound whose self type is a type parameter or an unresolved projection is assumed: the
+/// spec's predicates are then universal.
 ///
 /// `Model` and its `PartialEq` are assumed of every type parameter of the caller, as a spec
 /// assumes them of its own: they are what a bound like `usize: SliceIndexSpec<T>` needs of `T`.
@@ -257,12 +276,19 @@ fn spec_bounds_hold<'tcx>(
     caller_def_id: DefId,
     model_ty: DefId,
 ) -> bool {
+    use rustc_infer::infer::TyCtxtInferExt as _;
+    use rustc_trait_selection::traits::query::evaluate_obligation::InferCtxtExt as _;
+    use rustc_trait_selection::traits::{Obligation, ObligationCause};
+
     let model_trait = tcx.parent(model_ty);
     let typing_env = model_assuming_env(tcx, caller_def_id, model_ty);
-    tcx.predicates_of(spec_def_id)
+    let infcx = tcx.infer_ctxt().build(typing_env.typing_mode);
+    let clauses = tcx
+        .predicates_of(spec_def_id)
         .instantiate(tcx, args)
-        .predicates
-        .into_iter()
+        .predicates;
+    let traits_hold = clauses
+        .iter()
         .filter_map(|clause| clause.as_trait_clause())
         .map(|clause| clause.skip_binder().trait_ref)
         .filter(|trait_ref| trait_ref.def_id.is_local() && trait_ref.def_id != model_trait)
@@ -271,14 +297,65 @@ fn spec_bounds_hold<'tcx>(
                 .ok()
         })
         .filter(|trait_ref| {
-            use mir_ty::TypeVisitableExt as _;
-            let self_ty = trait_ref.self_ty();
-            !self_ty.has_non_region_param() && !self_ty.has_aliases()
+            !matches!(
+                trait_ref.self_ty().kind(),
+                mir_ty::TyKind::Param(_) | mir_ty::TyKind::Alias(..)
+            )
         })
         .all(|trait_ref| {
-            tcx.codegen_select_candidate(typing_env.as_query_input(trait_ref))
-                .is_ok()
+            let obligation = Obligation::new(
+                tcx,
+                ObligationCause::dummy(),
+                typing_env.param_env,
+                trait_ref,
+            );
+            infcx.predicate_must_hold_modulo_regions(&obligation)
+        });
+    traits_hold
+        && clauses
+            .iter()
+            .filter_map(|clause| clause.as_projection_clause())
+            .map(|clause| clause.skip_binder())
+            .all(|projection| projection_holds(tcx, typing_env, projection))
+}
+
+/// Whether an associated type a spec's bound fixes (`R: IntoSliceIdx<I, [T], Output = usize>`)
+/// is that type at the arguments the spec was bound to. A spec's contract is stated for the type it
+/// fixes: at another one the target's result is not the one the contract describes. A projection
+/// that stays unresolved is assumed, like a bound on a type parameter.
+fn projection_holds<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    typing_env: mir_ty::TypingEnv<'tcx>,
+    projection: mir_ty::ProjectionPredicate<'tcx>,
+) -> bool {
+    let normalize = |term| tcx.try_normalize_erasing_regions(typing_env, term).ok();
+    let (Some(actual), Some(fixed)) = (
+        normalize(projection.projection_term.to_term(tcx)),
+        normalize(projection.term),
+    ) else {
+        return true;
+    };
+    actual == fixed
+        || actual.as_type().is_some_and(|ty| {
+            matches!(
+                ty.kind(),
+                mir_ty::TyKind::Param(_) | mir_ty::TyKind::Alias(..)
+            )
         })
+}
+
+/// The environment a predicate call in `owner_fn_id` is resolved in: the owner's own, with `Model`
+/// assumed of its type parameters as a spec assumes it, so that a call on a concrete type is
+/// resolved to the impl's predicate even when the impl needs `T: Model` of a type parameter `T`.
+fn predicate_typing_env<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    owner_fn_id: DefId,
+    model_ty: Option<DefId>,
+) -> mir_ty::TypingEnv<'tcx> {
+    match model_ty {
+        Some(model_ty) => model_assuming_env(tcx, owner_fn_id, model_ty),
+        None => mir_ty::TypingEnv::post_analysis(tcx, owner_fn_id),
+    }
 }
 
 /// Whether a call to `def_id` at `args` runs `def_id`'s own body, the one an extern body stands
@@ -646,7 +723,7 @@ impl<'tcx> Analyzer<'tcx> {
             .iter()
             .zip(adt.discriminants(self.tcx))
             .map(|(variant, (_, discr))| {
-                let discr = int_value_of_bits(self.tcx, discr.ty, discr.val);
+                let discr = discr_value(self.tcx, discr);
                 let field_tys = variant
                     .fields
                     .iter()

@@ -583,6 +583,20 @@ impl<I: Idx, T> IntoIterator for IndexVec<I, T> {
     }
 }
 
+#[thrust_macros::context]
+impl<I: Idx, T> IntoIteratorSpec for IndexVec<I, T>
+where
+    I: thrust_models::Model,
+    I::Ty: PartialEq,
+    T: thrust_models::Model,
+    T::Ty: PartialEq,
+{
+    #[thrust_macros::predicate]
+    fn into_iter_is(self, it: vec::IntoIter<T>) -> bool {
+        it.0 == self && it.1 == 0
+    }
+}
+
 impl<'a, I: Idx, T> IntoIterator for &'a IndexVec<I, T> {
     type Item = &'a T;
     type IntoIter = SliceIter<'a, T>;

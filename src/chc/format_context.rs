@@ -7,6 +7,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
+use num_bigint::BigInt;
 use rustc_index::IndexVec;
 
 use crate::chc::{self, hoice::HoiceDatatypeRenamer};
@@ -213,7 +214,7 @@ fn builtin_sort_datatype(s: chc::Sort) -> Option<chc::Datatype> {
             ctors: vec![chc::DatatypeCtor {
                 symbol: chc::DatatypeSymbol::new("null".to_string()),
                 selectors: vec![],
-                discriminant: 0.into(),
+                discriminant: BigInt::ZERO,
             }],
         },
         chc::Sort::Box(inner) => {
@@ -227,7 +228,7 @@ fn builtin_sort_datatype(s: chc::Sort) -> Option<chc::Datatype> {
                         symbol: chc::DatatypeSymbol::new(format!("box_current{ss}")),
                         sort: *inner,
                     }],
-                    discriminant: 0.into(),
+                    discriminant: BigInt::ZERO,
                 }],
             }
         }
@@ -248,7 +249,7 @@ fn builtin_sort_datatype(s: chc::Sort) -> Option<chc::Datatype> {
                             sort: *inner,
                         },
                     ],
-                    discriminant: 0.into(),
+                    discriminant: BigInt::ZERO,
                 }],
             }
         }
@@ -268,7 +269,7 @@ fn builtin_sort_datatype(s: chc::Sort) -> Option<chc::Datatype> {
                 ctors: vec![chc::DatatypeCtor {
                     symbol: chc::DatatypeSymbol::new(format!("tuple{ss}")),
                     selectors,
-                    discriminant: 0.into(),
+                    discriminant: BigInt::ZERO,
                 }],
             }
         }

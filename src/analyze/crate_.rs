@@ -77,6 +77,16 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 let target_def_id = analyzer.extern_spec_fn_target_def_id();
                 if let Some(local_target_def_id) = target_def_id.as_local() {
                     keys.swap_remove(&local_target_def_id);
+                    // The spec is the target's contract; a trusted target's body is not
+                    // checked against it.
+                    if self
+                        .tcx
+                        .get_attrs_by_path(target_def_id, &analyze::annot::trusted_path())
+                        .next()
+                        .is_some()
+                    {
+                        self.skip_analysis.insert(local_target_def_id);
+                    }
                 }
                 if matches!(
                     self.tcx.def_kind(target_def_id),
@@ -112,10 +122,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 keys.swap_remove(local_def_id);
             }
         }
+        // A closure is skipped when its typeck root is, so roots are refined first.
+        let (roots, nested): (Vec<&LocalDefId>, Vec<&LocalDefId>) = keys
+            .iter()
+            .partition(|id| self.tcx.typeck_root_def_id(id.to_def_id()) == id.to_def_id());
         for local_def_id in &trait_method_spec_keys {
             self.refine_fn_def(*local_def_id);
         }
-        for local_def_id in &keys {
+        for local_def_id in roots.into_iter().chain(nested) {
             self.refine_fn_def(*local_def_id);
         }
     }

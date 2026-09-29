@@ -4,13 +4,11 @@
 // input `s[0]` instead of `s[k]`, which breaks `produces_trans`.
 //
 // This call site (two direct `next()`s) only ever checks a singleton `produces`, where
-// `s[0] == s[k]` trivially (k = 0), and the generic `produces_trans_split` obligation the change
-// should break stays satisfiable at the abstraction Thrust checks it (the closure's `post`
-// relation is an unconstrained forall-fun with no functionality axiom, so a model that relates
-// every input to every output witnesses it). The refutable form of this same change is
-// `fail/map_index_lemmas.rs`, whose call site (`decuple_range`'s `collect`) forces `Map::produces`
-// concretely at a length-10 sequence of distinct values. See
-// experiments/2026-09-27-map-fail-twin-triage.md in thrust-research.
+// `s[0] == s[k]` trivially (k = 0). The change is refuted by the generic `produces_trans_split`
+// obligation instead: `post` and `produces` are universally quantified forall-funs, and a `post`
+// of two pairs with a concatenation-closed `produces` violates it, so the query is unsat
+// (countermodel in fptprove `docs/data/index0_unsat_2026-09-28/`). `fail/map_index_lemmas.rs`
+// refutes the same change at a call site (`decuple_range`'s `collect`).
 use thrust_models::model::{Closure, Int, Mut, Seq};
 use thrust_models::{exists, forall, Ghost, Model};
 

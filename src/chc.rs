@@ -806,11 +806,6 @@ impl<V> Term<V> {
         Term::Int(n.into())
     }
 
-    /// The integer `2^exp`.
-    pub fn pow2(exp: u64) -> Self {
-        Term::Int(BigInt::from(1) << exp)
-    }
-
     pub fn bool(b: bool) -> Self {
         Term::Bool(b)
     }
@@ -959,10 +954,11 @@ impl<V> Term<V> {
         let direct = |a, b| Term::App(f, vec![a, b]);
         // A literal dividend settles the sign test here rather than leaving an `ite` behind.
         if let Term::Int(n) = &dividend {
-            if *n >= BigInt::ZERO {
+            if *n >= BigInt::from(0) {
                 return direct(dividend, divisor);
             }
-            return direct(Term::Int(-n), divisor).neg();
+            let m = -n.clone();
+            return direct(Term::int(m), divisor).neg();
         }
         Term::ite(
             dividend.clone().ge(Term::int(0)),
