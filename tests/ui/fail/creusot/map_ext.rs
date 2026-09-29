@@ -1,5 +1,6 @@
-//@check-pass
-//@compile-flags: -C debug-assertions=off -A unused-variables
+//@error-in-other-file: Unsat
+//@compile-flags: -C debug-assertions=off -A unused-variables -A unused_parens
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300 COAR_IMAGE=coar:07c15d715
 use thrust_models::model::{Closure, Int, Mut, Seq};
 use thrust_models::{exists, forall, Ghost, Model};
 
@@ -10,6 +11,7 @@ use thrust_models::{exists, forall, Ghost, Model};
 // `produced ++ s[..k]` for the `k`-th item; the invariant is Creusot's `reinitialize`,
 // `preservation_inv`, the inner invariant and `next_precondition`. The proof structure is the one
 // of `map_creusot_lemmas.rs` (lemmas called from ghost code in `next` and `produces_trans`).
+// Fail twin: `next` does not extend `produced` by the consumed item.
 
 // Creusot's `common.rs`, the iterator specification every case shares: the trait predicates
 // `produces(self, visited, o)`, `completed` and `invariant` (`true` unless the impl says otherwise),
@@ -276,7 +278,7 @@ where
                 let e = thrust_macros::ghost!(|v: <I as Iterator>::Item| -> <I as Iterator>::Item { v });
                 let b = (self.func)(v, self.produced);
                 self.produced =
-                    thrust_macros::ghost!(|self: &mut Self, e: Ghost<<I as Iterator>::Item>| -> Seq<A> { (*self).2.push(e) });
+                    thrust_macros::ghost!(|self: &mut Self, e: Ghost<<I as Iterator>::Item>| -> Seq<A> { (*self).2 });
                 let post = thrust_macros::ghost!(|self: &mut Self| -> Self { *self });
                 let bm = thrust_macros::ghost!(|b: B| -> B { b });
                 Self::produces_one_produces(pre, e, bm, post);

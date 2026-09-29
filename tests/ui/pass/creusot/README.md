@@ -1,6 +1,6 @@
 # Creusot benchmark cases
 
-Thirteen cases from the Creusot artifact's iterator benchmark, each verified with a specification
+Fourteen cases from the Creusot artifact's iterator benchmark, each verified with a specification
 equivalent to Creusot's, plus five additions with no Creusot counterpart (`take_count.rs`,
 `fold.rs`, `try_fold.rs`, `find.rs`, `filter.rs`). `<file>.rs` is the pass side;
 `tests/ui/fail/creusot/<file>.rs` is its fail twin (one extra fail-only file,
@@ -27,6 +27,7 @@ theirs in the same layout. A case that needs `collect` adds it to its copy after
 | `decuple_range.rs` | `examples/decuple_range.rs` | `produces`, positional property, fully checked |
 | `skip_take.rs` | `examples/skip_take.rs` | `produces`, concatenated `Skip`, generic in `I` |
 | `counter.rs` | `examples/counter.rs` | `step` + a unary `next_item` guard, `MapInv`'s ghost history |
+| `map_ext.rs` | `iterators/map_ext.rs` | `produces` with an existential input sequence, `MapInv`'s ghost history (the ninth adapter) |
 | `extend.rs` | `examples/extend.rs` | `produces` |
 | `take_count.rs` | no counterpart | `produces`; an extra call site of `take.rs`'s `Take` |
 | `fold.rs` | no counterpart | `produces`; a hand-written `fold` with a closure contract over the accumulator |
@@ -43,6 +44,6 @@ Weaker variants (`weaker/`, still verify):
 | `collect_mutref.rs` | `collect.rs` | `collect(&mut self)` / `from_iter(&mut I)` instead of by value |
 | `decuple_range.rs` | `decuple_range.rs` | the `step` form's positionless property (every element in range) instead of `v[i] == 10 * i` |
 
-`map_ext.rs` (Creusot's `MapInv`, the ninth adapter), `fuse_produces_result.rs` (Fuse with
+`fuse_produces_result.rs` (Fuse with
 Creusot's `Result<I, Ghost<I>>` state) and every case's probe programs are drafts,
 not yet verified or superseded by the files above: see [drafts/creusot/README.md](../../../../drafts/creusot/README.md).

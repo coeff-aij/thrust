@@ -4,15 +4,13 @@ What does not verify yet, and non-refuting fail twins, for the benchmark cases t
 `tests/ui/{pass,fail}/creusot/`. Full verdict tables and history are in `drafts/creusot-form/NOTES.md`
 and `drafts/creusot-examples/NOTES.md` as of commit 382af70, before this directory replaced them.
 
-## map_ext.rs
+## map_ext (fail twins)
 
-Creusot's `MapInv` (the ninth adapter, `iterators/map_ext.rs`) in Creusot's own form: the ghost
-history `produced`, `produces` with an existential input sequence, and `map.rs`'s proof structure
-extended with `history_split` and `produces_trans_witness`. Stage S3: every body checks alone
-except `produces_trans_witness`'s `produces` conclusion (the existential witness), which stalls.
+Creusot's `MapInv` (the ninth adapter, `iterators/map_ext.rs`) moved to the tracked suite:
+`tests/ui/pass/creusot/map_ext.rs` and its fail twin `tests/ui/fail/creusot/map_ext.rs` (`next`
+does not extend `produced`). The other fail twins stay here:
 
 - `fail/map_ext_pre.rs`: the closure requires `x == 1` (drops the history) — refutes.
-- `fail/map_ext_history.rs`: `next` does not extend `produced` — refutes.
 - `fail/map_ext_value.rs`: the call site claims `Some(21)` — not re-measured since the two new
   lemmas were added.
 
