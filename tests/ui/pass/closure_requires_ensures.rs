@@ -1,6 +1,6 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:develop-2493045c3
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:0360cb142
 // The declared postcondition `result > x` is weaker than what the body computes, and
 // the caller sees only the declared one.
 #[thrust_macros::requires(thrust_macros::pre!(f(x)))]

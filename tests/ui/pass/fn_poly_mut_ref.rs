@@ -1,5 +1,5 @@
 //@check-pass
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:develop-2493045c3
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:0360cb142
 
 fn update<T>(x: &mut T, new_val: T) {
     *x = new_val;

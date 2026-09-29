@@ -1,6 +1,6 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -Adead_code -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300 COAR_IMAGE=coar:develop-2493045c3 THRUST_TRY_SPECS=1
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300 COAR_IMAGE=coar:0360cb142 THRUST_TRY_SPECS=1
 // The refutation takes about 100 s on fptprove develop 2493045c3 (8 GB, 2 CPUs), so the
 // timeout leaves room above the 120 s of the other stage files.
 
