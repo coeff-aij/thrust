@@ -17,6 +17,7 @@ impl Callbacks for CompilerCalls {
     fn config(&mut self, config: &mut Config) {
         let attrs = &mut config.opts.unstable_opts.crate_attr;
         attrs.push("feature(register_tool)".to_owned());
+        attrs.push("feature(try_trait_v2)".to_owned());
         attrs.push("register_tool(thrust)".to_owned());
 
         // Refinements live on MIR locals, and `RemoveZsts` rewrites reads of zero-sized
