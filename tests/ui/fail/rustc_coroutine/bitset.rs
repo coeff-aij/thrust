@@ -322,7 +322,7 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
     // `every yielded C satisfies c.index() < self.num_columns` is still not
     // stated here: `BitIter::next`'s contract bounds the yielded index by the
     // *word array* size (`BitIter::bit_bound`), and relating that to
-    // `num_columns` needs `range`/`num_words`, both trusted and unspecified.
+    // `num_columns` needs contracts on `range` (trusted) and `num_words`, which have none.
     // Trusted: Thrust panics on the range index `&self.words[start..end]` (inconsistent types, src/rty/subtyping.rs).
     #[thrust::trusted]
     #[thrust_macros::requires(forall(|i: Int| <R as Idx>::index_is(row, i) ==> i < (*self).num_rows))]
@@ -342,8 +342,6 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
 }
 
 #[inline]
-// Trusted: `usize::div_ceil` has no specification (Thrust panics, unknown def).
-#[thrust::trusted]
 #[thrust::callable]
 fn num_words<T: Idx>(domain_size: T) -> usize {
     domain_size.index().div_ceil(WORD_BITS)
