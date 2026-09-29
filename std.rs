@@ -1396,8 +1396,10 @@ fn _extern_spec_slice_index_mut<T, I>(slice: &mut [T], index: I) -> &mut <I as s
     <[T] as std::ops::IndexMut<I>>::index_mut(slice, index)
 }
 
-// `<[T]>::iter`, `<[T]>::iter_mut` and `Vec`'s three `into_iter`s all start a fresh iterator at
-// position 0 over the sequence they are given.
+// `<[T]>::iter` and `<[T]>::iter_mut` start a fresh iterator at position 0 over the sequence
+// they are given. `Vec`'s and the slice references' `IntoIterator::into_iter` match them; those
+// are stated below, through `IntoIteratorSpec`, since `iter::zip` and other consumers of
+// `IntoIterator` need the trait, not one-off specs of each concrete `into_iter`.
 
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
@@ -1420,36 +1422,6 @@ fn _extern_spec_slice_iter_mut<T>(slice: &mut [T]) -> core::slice::IterMut<'_, T
     where T: thrust_models::Model, T::Ty: PartialEq
 {
     <[T]>::iter_mut(slice)
-}
-
-#[thrust::extern_spec_fn]
-#[thrust_macros::requires(true)]
-#[thrust_macros::ensures(result.0 == vec && result.1 == 0)]
-fn _extern_spec_vec_into_iter<T>(vec: Vec<T>) -> std::vec::IntoIter<T>
-    where T: thrust_models::Model, T::Ty: PartialEq
-{
-    <Vec<T> as std::iter::IntoIterator>::into_iter(vec)
-}
-
-#[thrust::extern_spec_fn]
-#[thrust_macros::requires(true)]
-#[thrust_macros::ensures(result.0 == *vec && result.1 == 0)]
-fn _extern_spec_vec_ref_into_iter<'a, T>(vec: &'a Vec<T>) -> core::slice::Iter<'a, T>
-    where T: thrust_models::Model + 'a, T::Ty: PartialEq
-{
-    <&Vec<T> as std::iter::IntoIterator>::into_iter(vec)
-}
-
-#[thrust::extern_spec_fn]
-#[thrust_macros::requires(true)]
-#[thrust_macros::ensures(
-    result.0 == *vec && result.1 == !vec && result.2 == 0
-        && (!vec).len() == (*vec).len()
-)]
-fn _extern_spec_vec_mut_into_iter<'a, T>(vec: &'a mut Vec<T>) -> core::slice::IterMut<'a, T>
-    where T: thrust_models::Model + 'a, T::Ty: PartialEq
-{
-    <&mut Vec<T> as std::iter::IntoIterator>::into_iter(vec)
 }
 
 // `next` is specified once, through the predicates of `IteratorSpec`; a type gets a `next` by
@@ -1626,18 +1598,127 @@ where
     }
 }
 
+// `into_iter` starts the iterator it hands back at the same position `produces`/`completed`
+// track from then on: the identity for a value that is already an iterator, and the fresh
+// position-0 state `<[T]>::iter`/`iter_mut` give for `Vec` and slice references. Consumers that
+// are generic over `IntoIterator` (`iter::zip`, `Vec::extend`, `Vec::from_iter`, ...) go through
+// this trait instead of a per-type spec of `into_iter`.
+#[thrust_macros::context]
+trait IntoIteratorSpec: std::iter::IntoIterator + thrust_models::Model
+where
+    Self::Item: thrust_models::Model,
+    Self::IntoIter: IteratorSpec,
+    <Self::IntoIter as std::iter::Iterator>::Item: thrust_models::Model,
+{
+    #[thrust_macros::predicate]
+    fn into_iter_post(self, o: Self::IntoIter) -> bool;
+}
+
+#[thrust_macros::context]
+impl<I> IntoIteratorSpec for I
+where
+    I: IteratorSpec,
+    I::Item: thrust_models::Model,
+    I::Ty: PartialEq,
+{
+    #[thrust_macros::predicate]
+    fn into_iter_post(self, o: Self::IntoIter) -> bool {
+        o == self
+    }
+}
+
+#[thrust_macros::context]
+impl<T> IntoIteratorSpec for Vec<T>
+where
+    T: thrust_models::Model,
+    T::Ty: PartialEq,
+{
+    #[thrust_macros::predicate]
+    fn into_iter_post(self, o: std::vec::IntoIter<T>) -> bool {
+        o.0 == self && o.1 == 0
+    }
+}
+
+#[thrust_macros::context]
+impl<'a, T> IntoIteratorSpec for &'a Vec<T>
+where
+    T: thrust_models::Model + 'a,
+    T::Ty: PartialEq,
+{
+    #[thrust_macros::predicate]
+    fn into_iter_post(self, o: core::slice::Iter<'a, T>) -> bool {
+        o.0 == *self && o.1 == 0
+    }
+}
+
+#[thrust_macros::context]
+impl<'a, T> IntoIteratorSpec for &'a mut Vec<T>
+where
+    T: thrust_models::Model + 'a,
+    T::Ty: PartialEq,
+{
+    #[thrust_macros::predicate]
+    fn into_iter_post(self, o: core::slice::IterMut<'a, T>) -> bool {
+        o.0 == *self && o.1 == !self && o.2 == 0 && (!self).len() == (*self).len()
+    }
+}
+
+#[thrust_macros::context]
+impl<'a, T> IntoIteratorSpec for &'a [T]
+where
+    T: thrust_models::Model + 'a,
+    T::Ty: PartialEq,
+{
+    #[thrust_macros::predicate]
+    fn into_iter_post(self, o: core::slice::Iter<'a, T>) -> bool {
+        o.0 == *self && o.1 == 0
+    }
+}
+
+#[thrust_macros::context]
+impl<'a, T> IntoIteratorSpec for &'a mut [T]
+where
+    T: thrust_models::Model + 'a,
+    T::Ty: PartialEq,
+{
+    #[thrust_macros::predicate]
+    fn into_iter_post(self, o: core::slice::IterMut<'a, T>) -> bool {
+        o.0 == *self && o.1 == !self && o.2 == 0 && (!self).len() == (*self).len()
+    }
+}
+
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
-#[thrust_macros::ensures(result.0 == a && result.1 == b)]
-fn _extern_spec_iterator_zip<A, B>(a: A, b: B) -> core::iter::Zip<A, B>
-    where A: IteratorSpec,
-          B: IteratorSpec,
+#[thrust_macros::ensures(T::into_iter_post(x, result))]
+fn _extern_spec_into_iter<T>(x: T) -> T::IntoIter
+    where T: IntoIteratorSpec,
+          T::Item: thrust_models::Model,
+          T::IntoIter: IteratorSpec,
+          <T::IntoIter as std::iter::Iterator>::Item: thrust_models::Model,
+          T::Ty: PartialEq,
+          <T::IntoIter as thrust_models::Model>::Ty: PartialEq
+{
+    <T as std::iter::IntoIterator>::into_iter(x)
+}
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(A::into_iter_post(a, result.0) && B::into_iter_post(b, result.1))]
+fn _extern_spec_iterator_zip<A, B>(a: A, b: B) -> core::iter::Zip<A::IntoIter, B::IntoIter>
+    where A: IntoIteratorSpec,
+          B: IntoIteratorSpec,
           A::Item: thrust_models::Model,
           B::Item: thrust_models::Model,
+          A::IntoIter: IteratorSpec,
+          B::IntoIter: IteratorSpec,
+          <A::IntoIter as std::iter::Iterator>::Item: thrust_models::Model,
+          <B::IntoIter as std::iter::Iterator>::Item: thrust_models::Model,
           A::Ty: PartialEq,
           B::Ty: PartialEq,
-          <A::Item as thrust_models::Model>::Ty: PartialEq,
-          <B::Item as thrust_models::Model>::Ty: PartialEq
+          <A::IntoIter as thrust_models::Model>::Ty: PartialEq,
+          <B::IntoIter as thrust_models::Model>::Ty: PartialEq,
+          <<A::IntoIter as std::iter::Iterator>::Item as thrust_models::Model>::Ty: PartialEq,
+          <<B::IntoIter as std::iter::Iterator>::Item as thrust_models::Model>::Ty: PartialEq
 {
     std::iter::zip(a, b)
 }
