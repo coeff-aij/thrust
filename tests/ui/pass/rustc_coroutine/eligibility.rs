@@ -692,7 +692,6 @@ impl<I: Idx, T> IntoIterator for IndexVec<I, T> {
     type IntoIter = vec::IntoIter<T>;
 
     #[inline]
-    #[thrust::ignored]
     fn into_iter(self) -> vec::IntoIter<T> {
         self.raw.into_iter()
     }
@@ -713,7 +712,6 @@ impl<'a, I: Idx, T> IntoIterator for &'a mut IndexVec<I, T> {
     type IntoIter = slice::IterMut<'a, T>;
 
     #[inline]
-    #[thrust::ignored]
     fn into_iter(self) -> slice::IterMut<'a, T> {
         self.iter_mut()
     }
@@ -721,7 +719,6 @@ impl<'a, I: Idx, T> IntoIterator for &'a mut IndexVec<I, T> {
 
 impl<I: Idx, T> IndexSlice<I, T> {
     #[inline]
-    #[thrust::ignored]
     pub fn iter_mut(&mut self) -> slice::IterMut<'_, T> {
         self.raw.iter_mut()
     }
