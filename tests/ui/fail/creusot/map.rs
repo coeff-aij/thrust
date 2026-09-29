@@ -150,17 +150,6 @@ where
         s1: Ghost<Self>,
     ) {
     }
-
-    // Creusot's `produces_one_invariant`, with its requires and ensures, and the inner item `e`
-    // of `produces_one` as an argument.
-    #[thrust_macros::requires(<Self as Iterator>::invariant(s0)
-        && Self::produces_one(s0, b, s1)
-        && I::produces(s0.iter, Seq::singleton(e), s1.iter)
-        && thrust_macros::post!((s0.func)(e), b)
-        && I::invariant(s1.iter))]
-    #[thrust_macros::ensures(<Self as Iterator>::invariant(s1))]
-    fn produces_one_invariant(s0: Ghost<Self>, e: Ghost<<I as Iterator>::Item>, b: Ghost<B>, s1: Ghost<Self>) {
-    }
 }
 
 #[thrust_macros::context]
@@ -189,7 +178,6 @@ where
                 let b = (self.func)(v);
                 let bm = thrust_macros::ghost!(|b: B| -> B { b });
                 Self::produces_one_produces(pre, e, bm, post);
-                Self::produces_one_invariant(pre, e, bm, post);
                 Some(b)
             }
             None => None,
