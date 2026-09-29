@@ -20,12 +20,11 @@ except `produces_trans_witness`'s `produces` conclusion (the existential witness
 
 Creusot's `examples/counter` with its own property (`x == v`, `cnt == x.len()`) over a `Range`,
 through `map_ext.rs`'s `MapInv` with an `FnMut` closure: `produces` carries the chain `fs` of
-closure states, and the closure's ensures adds `unnest(*self, ^self)` of Creusot's
-`postcondition_mut` (the borrow of `cnt` keeps its prophecy). Stage S2: `cnt == x.len()` needs
-Creusot's `unnest` between the first and last state of `produces`, which Thrust cannot state;
-through the chain it needs induction at the call site. `x == v` alone is decided with the
-adapter's and `from_iter`'s bodies trusted; `from_iter`'s instance stalls on the witness of `fs`.
-The fail twin (`cnt == x.len() + 1`) refutes, backing no pass side.
+closure states and, as creusot-std's `std/iter/map_inv.rs`, relates them by `unnest!` (Creusot's
+`hist_inv`); the closure's ensures adds `unnest(*self, ^self)` of Creusot's `postcondition_mut`
+(the borrow of `cnt` keeps its prophecy). Stage S2: with the adapter's and `from_iter`'s bodies
+trusted both conjuncts are decided and the fail twin (`cnt == x.len() + 1`) refutes; checked,
+`from_iter`'s instance and the generic `produces_trans_witness` stall on the witness of `fs`.
 
 ## skip_take_range.rs (+ fail/)
 

@@ -28,6 +28,7 @@ use crate::rty;
 mod annot;
 mod annot_fn;
 mod basic_block;
+mod closure_unnest;
 mod crate_;
 mod did_cache;
 mod local_def;

@@ -1,6 +1,6 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -A unused-variables -A unused_parens
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300 COAR_IMAGE=coar:9e87f6a90
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300 COAR_IMAGE=coar:07c15d715
 use thrust_models::model::{Closure, Int, Mut, Seq};
 use thrust_models::{exists, forall, Ghost, Model};
 
@@ -9,13 +9,16 @@ use thrust_models::{exists, forall, Ghost, Model};
 // so `x == v` reads `x` is the range's sequence. `Map` is Creusot's `MapInv`
 // (`iterators/map_ext.rs`) with an `FnMut` closure: `produces` carries the chain `fs` of closure
 // states, `preservation_inv` and `reinitialize` quantify over every closure state, as Creusot's
-// do. The closure precondition drops Creusot's `cnt < usize::MAX` (integers are unbounded).
+// do. As in creusot-std's `std/iter/map_inv.rs`, which `examples/counter` uses, `produces` relates
+// the first state to the last and to every state of the chain by `unnest!` (Creusot's
+// `hist_inv`), and `preservation_inv` is guarded by it. The closure precondition drops Creusot's
+// `cnt < usize::MAX` (integers are unbounded).
 //
-// The pass side, `../counter_creusot.rs`, does not verify. `cnt == x.len()` needs the first and
-// last closure states of `produces` to share the prophecy of the borrow of `cnt`. Creusot states that with `unnest`, which Thrust has
-// no counterpart for: here the chain `fs` relates them only call by call, so the call site needs
-// induction over the chain. `x == v` is decided with the adapter's and `from_iter`'s bodies
-// trusted; `from_iter` checked at this instance stalls on the witness of the chain `fs`.
+// The pass side, `../counter_creusot.rs`, does not verify. With the adapter's and `from_iter`'s
+// bodies trusted, `x == v` and `cnt == x.len()` are decided: `unnest!` gives the final state the
+// prophecy of the borrow of `cnt`, and the last call's postcondition its value. Checked,
+// `from_iter` at this instance and the generic `produces_trans_witness` stall on the existential
+// witness of the chain `fs`.
 
 // Creusot's `common.rs`, the iterator specification every case shares: the trait predicates
 // `produces(self, visited, o)`, `completed` and `invariant` (`true` unless the impl says otherwise),
@@ -104,9 +107,10 @@ where
     }
 
     // Creusot's `preservation_inv` (and, at `produced == []`, `preservation`), over every closure
-    // state `f1` and its successor `f2` (Creusot's `f: &mut F`).
+    // state `f1` that `func` reaches (`func.hist_inv(*f)`) and its successor `f2` (Creusot's
+    // `f: &mut F`).
     #[thrust_macros::predicate]
-    fn preservation_inv(iter: I, produced: Seq<A>) -> bool {
+    fn preservation_inv(iter: I, func: F, produced: Seq<A>) -> bool {
         forall(|s: Seq<A>|
         forall(|e1: A|
         forall(|e2: A|
@@ -114,7 +118,8 @@ where
         forall(|f1: Closure<F>|
         forall(|f2: Closure<F>|
         forall(|b: <B as Model>::Ty|
-            !(I::produces(iter, s.push(e1).push(e2), i)
+            !(thrust_macros::unnest!(func, f1)
+                && I::produces(iter, s.push(e1).push(e2), i)
                 && thrust_macros::pre!(f1(e1, produced.concat(s)))
                 && thrust_macros::post!(Mut::new(f1, f2)(e1, produced.concat(s)), b))
                 || thrust_macros::pre!(f2(e2, produced.concat(s).push(e1))))))))))
@@ -127,7 +132,7 @@ where
         forall(|cur: <I as Model>::Ty| forall(|fin: <I as Model>::Ty| forall(|f: Closure<F>|
             !I::completed(Mut::new(cur, fin))
                 || (Self::next_precondition(fin, f, Seq::empty())
-                    && Self::preservation_inv(fin, Seq::empty())))))
+                    && Self::preservation_inv(fin, f, Seq::empty())))))
     }
 
     // Creusot's `produces_one`: one closure call from `s0.func` to `s1.func` (Creusot's
@@ -145,7 +150,8 @@ where
     // under its `exists`.
     #[thrust_macros::predicate]
     fn produces_at(s0: Self, visited: Seq<<B as Model>::Ty>, o: Self, s: Seq<A>, fs: Seq<F>) -> bool {
-        s.len() == visited.len()
+        thrust_macros::unnest!(s0.1, o.1)
+            && s.len() == visited.len()
             && I::produces(s0.0, s, o.0)
             && o.2 == s0.2.concat(s)
             && fs.len() == visited.len() + 1
@@ -153,7 +159,8 @@ where
             && fs[visited.len()] == o.1
             && forall(|k: Int|
                 !(0 <= k && k < visited.len())
-                    || thrust_macros::post!(Mut::new(fs[k], fs[k + 1])(s[k], s0.2.concat(s.subsequence(0, k))), visited[k]))
+                    || (thrust_macros::unnest!(s0.1, fs[k])
+                        && thrust_macros::post!(Mut::new(fs[k], fs[k + 1])(s[k], s0.2.concat(s.subsequence(0, k))), visited[k])))
     }
 
     // The direction of `produces_one`'s ensures that `next` uses, with the witnesses `[e]` and
@@ -195,8 +202,9 @@ where
     #[thrust_macros::requires(<Self as Iterator>::invariant(s0)
         && I::produces(s0.0, Seq::singleton(e), s1.0)
         && s1.2 == s0.2.push(e)
+        && thrust_macros::unnest!(s0.1, s1.1)
         && I::invariant(s1.0))]
-    #[thrust_macros::ensures(Self::preservation_inv(s1.0, s1.2))]
+    #[thrust_macros::ensures(Self::preservation_inv(s1.0, s1.1, s1.2))]
     fn produces_one_preservation(s0: Ghost<Self>, e: Ghost<<I as Iterator>::Item>, s1: Ghost<Self>) {
         Self::produces_one_prefix(s0, e, s1);
     }
@@ -343,7 +351,7 @@ where
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
         Self::reinitialize()
-            && Self::preservation_inv(self.0, self.2)
+            && Self::preservation_inv(self.0, self.1, self.2)
             && I::invariant(self.0)
             && Self::next_precondition(self.0, self.1, self.2)
     }
@@ -360,7 +368,8 @@ where
     // `^fs[k]`), and the history `produced ++ s[..k]` at the `k`-th call.
     #[thrust_macros::predicate]
     fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool {
-        exists(|s: Seq<A>| exists(|fs: Seq<Closure<F>>|
+        thrust_macros::unnest!(self.1, o.1)
+            && exists(|s: Seq<A>| exists(|fs: Seq<Closure<F>>|
             s.len() == visited.len()
                 && I::produces(self.0, s, o.0)
                 && o.2 == self.2.concat(s)
@@ -369,7 +378,8 @@ where
                 && fs[visited.len()] == o.1
                 && forall(|k: Int|
                     !(0 <= k && k < visited.len())
-                        || thrust_macros::post!(Mut::new(fs[k], fs[k + 1])(s[k], self.2.concat(s.subsequence(0, k))), visited[k]))))
+                        || (thrust_macros::unnest!(self.1, fs[k])
+                            && thrust_macros::post!(Mut::new(fs[k], fs[k + 1])(s[k], self.2.concat(s.subsequence(0, k))), visited[k])))))
     }
 }
 
@@ -462,6 +472,9 @@ fn counter(start: i64, end: i64) -> (Vec<i64>, i64) {
         captures(cnt: &mut &mut i64),
         requires(*(*cnt) == produced.len()),
         ensures(*(!cnt) == *(*cnt) + 1 && result == x),
+        // The precondition restated, as in the postcondition Creusot infers for the closure
+        // body, which reads `cnt == produced.len()` before the increment.
+        ensures(*(*cnt) == produced.len()),
         // Creusot's `postcondition_mut` of a closure adds `unnest(*self, ^self)`, for this
         // capture that the borrow of `cnt` keeps its prophecy.
         ensures(!(!cnt) == !(*cnt)),

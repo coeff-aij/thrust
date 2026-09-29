@@ -30,6 +30,14 @@ pub fn post(input: TokenStream) -> TokenStream {
     pre_post::expand_post(input)
 }
 
+/// `unnest!(f, g)` relates two states `f` and `g` of an `FnMut` closure as Creusot's
+/// `hist_inv` does: `g` is reachable from `f` by calls, as far as the captures borrowed by the
+/// closure can tell.
+#[proc_macro]
+pub fn unnest(input: TokenStream) -> TokenStream {
+    pre_post::expand_unnest(input)
+}
+
 /// `closure!(requires(..), ensures(..), |x: T| -> R { .. })` attaches an
 /// explicit pre-/post-condition to a closure expression. Each clause is optional
 /// (omitting one leaves that side inferred) and may be repeated (conjoined).
