@@ -3,13 +3,10 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 COAR_IMAGE=coar:0360cb142
 
 use thrust_models::model::{Closure, Int, Mut, Seq};
-use thrust_models::{exists, forall, Ghost, Model};
+use thrust_models::{exists, forall, Model};
 
-// Creusot's `Map` in its `produces` form, fully checked, with Creusot's proof structure (the
-// artifact's `iterators/map.rs` and its Why3 session `proofs/map/why3session.xml`): the predicate
-// `produces_one` and the ghost lemmas `produces_one_produces` and `produces_one_invariant`, called
-// from `next` on ghost snapshots taken around the inner `next`. The `produces_trans` law has an
-// empty body, as `Range`'s does. Everything else is `decuple_range_lemmas.rs`; the call site is
+// Creusot's `Map` in its `produces` form, fully checked, with the predicate `produces_one`, no ghost lemmas, and `produces_refl` and `produces_trans` with
+// empty bodies, as `Range`'s. Everything else is `decuple_range_lemmas.rs`; the call site is
 // `map_creusot.rs`'s two `next`s over `Range`.
 
 // Creusot's `common.rs`, the iterator specification every case shares: the trait predicates
@@ -106,22 +103,6 @@ where
                 I::produces(s0.iter, Seq::singleton(e), s1.iter)
                     && thrust_macros::post!((s0.func)(e), visited))
     }
-
-    // The direction of Creusot's `ensures(result == self.produces(Seq::singleton(visited), succ))`
-    // on `produces_one` that `next` uses. The witness of `produces`'s `exists` is `[e]`, which
-    // the session gives by hand (`exists (singleton e)`); here `e` is the lemma's argument.
-    #[thrust_macros::requires(s0.func == s1.func
-        && I::produces(s0.iter, Seq::singleton(e), s1.iter)
-        && thrust_macros::post!((s0.func)(e), b))]
-    #[thrust_macros::ensures(Self::produces_one(s0, b, s1))]
-    #[thrust_macros::ensures(<Self as Iterator>::produces(s0, Seq::singleton(b), s1))]
-    fn produces_one_produces(
-        s0: Ghost<Self>,
-        e: Ghost<<I as Iterator>::Item>,
-        b: Ghost<B>,
-        s1: Ghost<Self>,
-    ) {
-    }
 }
 
 #[thrust_macros::context]
@@ -137,19 +118,11 @@ where
 {
     type Item = B;
 
-    // Creusot's `next`: after the inner `next` returns `Some(v)`, the closure's precondition
-    // follows from `next_precondition`, and the ghost lemmas give the singleton `produces`
-    // and the invariant at the next state.
     fn next(&mut self) -> Option<B> {
-        let pre = thrust_macros::ghost!(|self: &mut Self| -> Self { *self });
         let r = self.iter.next();
-        let post = thrust_macros::ghost!(|self: &mut Self| -> Self { *self });
         match r {
             Some(v) => {
-                let e = thrust_macros::ghost!(|v: <I as Iterator>::Item| -> <I as Iterator>::Item { v });
                 let b = (self.func)(v);
-                let bm = thrust_macros::ghost!(|b: B| -> B { b });
-                Self::produces_one_produces(pre, e, bm, post);
                 Some(b)
             }
             None => None,
