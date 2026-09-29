@@ -799,6 +799,7 @@ impl<'ctx, 'a> UserDefinedPredDef<'ctx, 'a> {
 pub struct ForallPredDef<'ctx, 'a> {
     ctx: &'ctx FormatContext,
     pred: &'a chc::ForallPred,
+    laws: &'a [chc::Formula],
 }
 
 impl<'ctx, 'a> std::fmt::Display for ForallPredDef<'ctx, 'a> {
@@ -807,15 +808,34 @@ impl<'ctx, 'a> std::fmt::Display for ForallPredDef<'ctx, 'a> {
         let params = List::closed(params);
         write!(
             f,
-            "(declare-forall-fun {name} {params} Bool)",
+            "(declare-forall-fun {name} {params} Bool",
             name = self.ctx.forall_pred(self.pred),
-        )
+        )?;
+        let no_vars = IndexVec::new();
+        let mut laws = self
+            .laws
+            .iter()
+            .map(|law| Formula::new(self.ctx, &no_vars, law));
+        match (laws.next(), laws.next()) {
+            (None, _) => {}
+            (Some(law), None) => write!(f, " :law {law}")?,
+            (Some(first), Some(second)) => {
+                write!(f, " :law (and {first} {second}")?;
+                laws.try_for_each(|law| write!(f, " {law}"))?;
+                write!(f, ")")?;
+            }
+        }
+        write!(f, ")")
     }
 }
 
 impl<'ctx, 'a> ForallPredDef<'ctx, 'a> {
-    pub fn new(ctx: &'ctx FormatContext, pred: &'a chc::ForallPred) -> Self {
-        Self { ctx, pred }
+    pub fn new(
+        ctx: &'ctx FormatContext,
+        pred: &'a chc::ForallPred,
+        laws: &'a [chc::Formula],
+    ) -> Self {
+        Self { ctx, pred, laws }
     }
 }
 
@@ -910,7 +930,11 @@ impl<'a> std::fmt::Display for System<'a> {
         }
 
         for pred in &self.inner.forall_pred_vars {
-            writeln!(f, "{}\n", ForallPredDef::new(&self.ctx, pred))?;
+            writeln!(
+                f,
+                "{}\n",
+                ForallPredDef::new(&self.ctx, pred, self.inner.laws_of(pred))
+            )?;
         }
 
         // insert command from #![thrust::raw_command()] here

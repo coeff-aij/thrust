@@ -303,6 +303,10 @@ pub(super) fn collect_sorts(system: &chc::System) -> BTreeSet<chc::Sort> {
         }
     }
 
+    for law in system.laws.values().flatten() {
+        formula_sorts(&IndexVec::new(), law, &mut sorts);
+    }
+
     for clause in &system.clauses {
         sorts.extend(clause.vars.clone());
         atom_sorts(&clause.vars, &clause.head, &mut sorts);

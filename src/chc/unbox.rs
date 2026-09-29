@@ -242,6 +242,13 @@ pub fn unbox(system: System) -> System {
         .into_iter()
         .map(unbox_forall_pred_var_def)
         .collect();
+    let laws = laws
+        .into_iter()
+        .map(|(pred, laws)| {
+            let laws = laws.into_iter().map(unbox_formula).collect();
+            (unbox_forall_pred_var_def(pred), laws)
+        })
+        .collect();
     System {
         raw_commands,
         datatypes,

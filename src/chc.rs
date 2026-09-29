@@ -2381,8 +2381,9 @@ pub struct System {
     // iteration order is the emitted order.
     forall_pred_vars: BTreeSet<ForallPred>,
     /// The laws stated of each forall predicate: closed formulas that hold of
-    /// every interpretation the clauses are meant for. [`Self::insert_law_premises`]
-    /// adds them to the body of every clause that depends on the predicate.
+    /// every interpretation the clauses are meant for. They are emitted as the
+    /// `:law` of the predicate's `declare-forall-fun`, which the solver inserts
+    /// as a premise into every clause that mentions the predicate.
     laws: BTreeMap<ForallPred, Vec<Formula<TermVarIdx>>>,
 }
 
@@ -2428,79 +2429,6 @@ impl System {
 
     pub fn laws_of(&self, pred: &ForallPred) -> &[Formula<TermVarIdx>] {
         self.laws.get(pred).map(Vec::as_slice).unwrap_or(&[])
-    }
-
-    /// The forall predicates a clause depends on: those its atoms name and those
-    /// named by the definitions of the user-defined predicates it calls, through
-    /// any chain of such calls.
-    fn forall_preds_reachable_from(&self, clause: &Clause) -> BTreeSet<ForallPred> {
-        let mut preds = BTreeSet::new();
-        let mut pending_defs: Vec<&UserDefinedPred> = Vec::new();
-        for atom in clause
-            .body
-            .iter_atoms()
-            .chain(std::iter::once(&clause.head))
-        {
-            match &atom.pred {
-                Pred::ForallPred(p) => {
-                    preds.insert(p.clone());
-                }
-                Pred::UserDefined(p) => pending_defs.push(p),
-                _ => {}
-            }
-        }
-        let mut seen_defs: HashSet<&UserDefinedPred> = HashSet::new();
-        while let Some(symbol) = pending_defs.pop() {
-            if !seen_defs.insert(symbol) {
-                continue;
-            }
-            for def in self
-                .user_defined_pred_defs
-                .iter()
-                .filter(|d| &d.symbol == symbol)
-            {
-                preds.extend(def.dependencies.iter().cloned());
-                if let UserDefinedPredBody::Formula(formula) = &def.body {
-                    for atom in formula.iter_atoms() {
-                        match &atom.pred {
-                            Pred::ForallPred(p) => {
-                                preds.insert(p.clone());
-                            }
-                            Pred::UserDefined(p) => pending_defs.push(p),
-                            _ => {}
-                        }
-                    }
-                }
-            }
-        }
-        preds
-    }
-
-    /// Adds the laws of every forall predicate a clause depends on to that
-    /// clause's body. A law is universal in every clause, so it cannot be a
-    /// top-level assertion; as a premise it reads "for every interpretation
-    /// satisfying the law", which is what a law means. Call after
-    /// [`Self::populate_user_defined_pred_dependencies`].
-    pub fn insert_law_premises(&mut self) {
-        if self.laws.is_empty() {
-            return;
-        }
-        let premises: Vec<Vec<Formula<TermVarIdx>>> = self
-            .clauses
-            .iter()
-            .map(|clause| {
-                self.forall_preds_reachable_from(clause)
-                    .iter()
-                    .flat_map(|pred| self.laws_of(pred).iter().cloned())
-                    .collect()
-            })
-            .collect();
-        for (clause, laws) in self.clauses.iter_mut().zip(premises) {
-            for law in laws {
-                let formula = std::mem::take(&mut clause.body.formula);
-                clause.body.formula = law.and(formula);
-            }
-        }
     }
 
     pub fn new_forall_sort(&mut self, debug_info: DebugInfo) -> ForallSortIdx {
@@ -2637,7 +2565,8 @@ impl System {
             .map(|pred| (pred.clone(), format_forall_pred_name(pred)))
             .collect();
 
-        for udpd in &mut self.user_defined_pred_defs {
+        let mut user_defined_pred_defs = std::mem::take(&mut self.user_defined_pred_defs);
+        for udpd in &mut user_defined_pred_defs {
             match &udpd.body {
                 UserDefinedPredBody::Raw(body) => {
                     for (pred, name) in &forall_names {
@@ -2655,7 +2584,9 @@ impl System {
                     ));
                 }
             }
+            udpd.dependencies = self.with_law_dependencies(std::mem::take(&mut udpd.dependencies));
         }
+        self.user_defined_pred_defs = user_defined_pred_defs;
     }
 
     /// The set of forall sorts whose default value is referenced (via
@@ -2663,15 +2594,16 @@ impl System {
     /// `declare-forall-fun default_` definition in the SMT-LIB2 output.
     pub fn used_forall_default_sorts(&self) -> HashSet<ForallSortIdx> {
         let mut used = HashSet::new();
-        for clause in &self.clauses {
-            for atom in clause
+        let clause_atoms = self.clauses.iter().flat_map(|clause| {
+            clause
                 .body
                 .iter_atoms()
                 .chain(std::iter::once(&clause.head))
-            {
-                for arg in &atom.args {
-                    collect_forall_defaults(arg, &mut used);
-                }
+        });
+        let law_atoms = self.laws.values().flatten().flat_map(Formula::iter_atoms);
+        for atom in clause_atoms.chain(law_atoms) {
+            for arg in &atom.args {
+                collect_forall_defaults(arg, &mut used);
             }
         }
         used
@@ -2744,12 +2676,26 @@ impl System {
         Some(self.clauses.push(clause))
     }
 
-    fn compute_forall_dependency(clause: &Clause) -> HashSet<ForallPred> {
-        clause
+    fn compute_forall_dependency(&self, clause: &Clause) -> HashSet<ForallPred> {
+        let preds = clause
             .body
             .iter_atoms()
             .filter_map(|atom| atom.pred.clone().try_into().ok())
-            .collect()
+            .collect();
+        self.with_law_dependencies(preds)
+    }
+
+    /// Adds the forall predicates named by the laws of `preds`: a law is a premise of
+    /// every clause that mentions its predicate, so the unknowns of that clause depend on them.
+    fn with_law_dependencies(&self, mut preds: HashSet<ForallPred>) -> HashSet<ForallPred> {
+        let in_laws: Vec<ForallPred> = preds
+            .iter()
+            .flat_map(|pred| self.laws_of(pred))
+            .flat_map(|law| law.iter_atoms())
+            .filter_map(|atom| atom.pred.clone().try_into().ok())
+            .collect();
+        preds.extend(in_laws);
+        preds
     }
 
     fn compute_exists_dependency(clause: &Clause) -> HashSet<ExistsDep> {
@@ -2778,7 +2724,7 @@ impl System {
             };
 
             let exists = Self::compute_exists_dependency(clause);
-            let forall = Self::compute_forall_dependency(clause);
+            let forall = self.compute_forall_dependency(clause);
 
             tracing::debug!(
                 "exists deps for {:?} at {:?}: {:?}",
@@ -2872,7 +2818,6 @@ impl System {
     pub fn solve(&self) -> Result<(), CheckSatError> {
         let mut system = self.clone();
         system.populate_user_defined_pred_dependencies();
-        system.insert_law_premises();
         let mut system = unbox(system);
         system.populate_user_defined_pred_dependencies();
         if let Ok(file) = std::env::var("THRUST_PRETTY_OUTPUT") {
