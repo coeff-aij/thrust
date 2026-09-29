@@ -5,7 +5,7 @@
 use thrust_models::model::{Closure, Int, Mut, Seq};
 use thrust_models::{exists, forall, Model};
 
-// Creusot's `Map` in its `produces` form, fully checked, with the predicate `produces_one`, no ghost lemmas, and `produces_refl` and `produces_trans` with
+// Creusot's `Map` in its `produces` form, fully checked, with no ghost lemmas, and `produces_refl` and `produces_trans` with
 // empty bodies, as `Range`'s. Everything else is `decuple_range_lemmas.rs`; the call site is
 // `map_creusot.rs`'s two `next`s over `Range`.
 
@@ -95,14 +95,6 @@ where
                 || (Self::next_precondition(fin, func) && Self::preservation(fin, func))))
     }
 
-    // Creusot's `produces_one`: `func` unchanged and one inner item `e` mapped to `visited`.
-    #[thrust_macros::predicate]
-    fn produces_one(s0: Self, visited: B, s1: Self) -> bool {
-        s0.func == s1.func
-            && exists(|e: <<I as Iterator>::Item as Model>::Ty|
-                I::produces(s0.iter, Seq::singleton(e), s1.iter)
-                    && thrust_macros::post!((s0.func)(e), visited))
-    }
 }
 
 #[thrust_macros::context]
