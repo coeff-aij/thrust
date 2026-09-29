@@ -232,6 +232,29 @@ impl<'a, T: Idx> Iterator for BitIter<'a, T> {
     }
 }
 
+// `BitIter`'s model is the opaque `Self` (its `word`/`offset`/`iter` fields carry no traversal
+// position the way `slice::Iter`'s `(slice, pos)` does), and its traversal order has no model
+// here either: `DenseBitSet::elem_at` above, the predicate that would relate a yielded element to
+// its position, is itself left axiom-free for the same reason. `produces`/`completed` are the
+// only sound and expressible choice with that opaque model: `true`, an axiom generic adapters
+// (`Enumerate`, `Zip`, ...) over `BitIter` can build on without asserting anything about what it
+// yields.
+#[thrust_macros::context]
+impl<'a, T: Idx + thrust_models::Model> IteratorSpec for BitIter<'a, T>
+where
+    T::Ty: PartialEq,
+{
+    #[thrust_macros::predicate]
+    fn produces(self, visited: Vec<T>, o: Self) -> bool {
+        true
+    }
+
+    #[thrust_macros::predicate]
+    fn completed(&mut self) -> bool {
+        true
+    }
+}
+
 #[derive(/* Clone, Eq, PartialEq, */ Hash)]
 pub struct BitMatrix<R: Idx, C: Idx> {
     num_rows: usize,
