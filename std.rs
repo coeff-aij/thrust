@@ -1062,6 +1062,26 @@ uint_checked_specs!(u16, _extern_spec_u16_checked_add, _extern_spec_u16_checked_
 uint_checked_specs!(u32, _extern_spec_u32_checked_add, _extern_spec_u32_checked_sub, _extern_spec_u32_checked_mul);
 uint_checked_specs!(u64, _extern_spec_u64_checked_add, _extern_spec_u64_checked_sub, _extern_spec_u64_checked_mul);
 
+// `div_ceil` is stable on the unsigned integers only.
+macro_rules! uint_div_ceil_spec {
+    ($T:ty, $div_ceil:ident) => {
+        #[thrust::extern_spec_fn]
+        #[thrust_macros::requires(y != 0)]
+        #[thrust_macros::ensures(
+            (x % y == 0 && result == x / y) || (x % y != 0 && result == x / y + 1)
+        )]
+        fn $div_ceil(x: $T, y: $T) -> $T {
+            <$T>::div_ceil(x, y)
+        }
+    };
+}
+
+uint_div_ceil_spec!(usize, _extern_spec_usize_div_ceil);
+uint_div_ceil_spec!(u8, _extern_spec_u8_div_ceil);
+uint_div_ceil_spec!(u16, _extern_spec_u16_div_ceil);
+uint_div_ceil_spec!(u32, _extern_spec_u32_div_ceil);
+uint_div_ceil_spec!(u64, _extern_spec_u64_div_ceil);
+
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(result.len() == 0)]
