@@ -283,9 +283,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     );
                     new_param
                 }
-                mir_ty::GenericParamDefKind::Const { .. } => {
-                    unimplemented!()
-                }
+                mir_ty::GenericParamDefKind::Const { .. } => mir_ty::Const::new_param(
+                    self.tcx,
+                    mir_ty::ParamConst::new(param.index, param.name),
+                )
+                .into(),
                 mir_ty::GenericParamDefKind::Lifetime => self.tcx.lifetimes.re_erased.into(),
             };
             args.push(arg);
