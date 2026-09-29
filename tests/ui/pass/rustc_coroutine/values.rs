@@ -114,8 +114,6 @@ impl TargetDataLayout {
     }
 
     #[inline]
-    // Trusted: Thrust panics on the `panic!` message (`unrefined_ty: *const ()`, src/refine/template.rs).
-    #[thrust::trusted]
     #[thrust_macros::requires(((*self).default_address_space_pointer_spec.pointer_size.raw == 2
         || (*self).default_address_space_pointer_spec.pointer_size.raw == 4
         || (*self).default_address_space_pointer_spec.pointer_size.raw == 8)
@@ -129,13 +127,13 @@ impl TargetDataLayout {
         if let Some(e) = self.address_space_info.iter().find(|(a, _)| a == &c) {
             e.1.pointer_size
         } else {
-            panic!("Use of unknown address space");
+            // Rewrite (rewrites.md R6): the message is dropped; a message makes
+            // `fmt::Arguments`, which Thrust cannot type in analysed code.
+            panic!();
         }
     }
 
     #[inline]
-    // Trusted: Thrust panics on the `panic!` message (`unrefined_ty: *const ()`, src/refine/template.rs).
-    #[thrust::trusted]
     #[thrust_macros::requires(((*self).default_address_space_pointer_spec.pointer_size.raw == 2
         || (*self).default_address_space_pointer_spec.pointer_size.raw == 4
         || (*self).default_address_space_pointer_spec.pointer_size.raw == 8)
@@ -147,7 +145,9 @@ impl TargetDataLayout {
         } else if let Some(e) = self.address_space_info.iter().find(|(a, _)| a == &c) {
             e.1.pointer_align
         } else {
-            panic!("Use of unknown address space");
+            // Rewrite (rewrites.md R6): the message is dropped; a message makes
+            // `fmt::Arguments`, which Thrust cannot type in analysed code.
+            panic!();
         })
     }
 }

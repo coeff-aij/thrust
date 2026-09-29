@@ -130,7 +130,9 @@ impl TargetDataLayout {
         if let Some(e) = self.address_space_info.iter().find(|(a, _)| a == &c) {
             e.1.pointer_size
         } else {
-            panic!("Use of unknown address space");
+            // Rewrite (rewrites.md R6): the message is dropped; a message makes
+            // `fmt::Arguments`, which Thrust cannot type in analysed code.
+            panic!();
         }
     }
 
@@ -148,7 +150,9 @@ impl TargetDataLayout {
         } else if let Some(e) = self.address_space_info.iter().find(|(a, _)| a == &c) {
             e.1.pointer_align
         } else {
-            panic!("Use of unknown address space");
+            // Rewrite (rewrites.md R6): the message is dropped; a message makes
+            // `fmt::Arguments`, which Thrust cannot type in analysed code.
+            panic!();
         })
     }
 }
