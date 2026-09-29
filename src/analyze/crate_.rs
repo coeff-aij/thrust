@@ -202,19 +202,41 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             }
             self.analyze_placeholder(*local_def_id);
         }
-        for local_def_id in fn_mut_generic_defs {
-            if self.ctx.has_concrete_instance(local_def_id) {
-                // The placeholder analysis would check the body against a closure contract
-                // that is a free forall predicate, which no clause relates to the concrete
-                // closures of this crate. An `FnMut` closure's state changes between calls, so
-                // a body obligation relating the contract at two states (a preservation
-                // conjunct of an adapter invariant) need not be inductive for an arbitrary
-                // contract even when it is for every concrete one. Each concrete
-                // instantiation has checked the body against its own closure contract instead.
-                tracing::debug!(?local_def_id, "verified per concrete instantiation");
-                continue;
+        // A def is skipped (D34) when a concrete instantiation has analyzed its body and no
+        // instance has used its generic analysis instead. Only a def whose specification relates
+        // the closure's states by `unnest!` can have such an instance
+        // (`Analyzer::reuse_fn_mut_generic`); analyzing a def may add one for a def skipped
+        // before, which is then analyzed too.
+        let mut pending = fn_mut_generic_defs;
+        while !pending.is_empty() {
+            let mut skipped = Vec::new();
+            for local_def_id in pending {
+                if self.ctx.has_concrete_instance(local_def_id)
+                    && !self.ctx.has_reused_instance(local_def_id)
+                {
+                    // The placeholder analysis would check the body against a closure contract
+                    // that is a free forall predicate, which no clause relates to the concrete
+                    // closures of this crate. An `FnMut` closure's state changes between calls,
+                    // so a body obligation relating the contract at two states (a preservation
+                    // conjunct of an adapter invariant) need not be inductive for an arbitrary
+                    // contract even when it is for every concrete one; creusot-std guards it
+                    // by `unnest!` for that reason. Each concrete instantiation has checked the
+                    // body against its own closure contract instead.
+                    skipped.push(local_def_id);
+                    continue;
+                }
+                self.analyze_placeholder(local_def_id);
             }
-            self.analyze_placeholder(local_def_id);
+            pending = skipped
+                .into_iter()
+                .filter(|local_def_id| {
+                    let reused = self.ctx.has_reused_instance(*local_def_id);
+                    if !reused {
+                        tracing::debug!(?local_def_id, "verified per concrete instantiation");
+                    }
+                    reused
+                })
+                .collect();
         }
     }
 
@@ -247,21 +269,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// bounded by `FnMut`. `Fn` and `FnOnce` bounds do not count: their closure state does not
     /// change between calls, and such defs keep their generic verification.
     fn has_fn_mut_bounded_param(&self, local_def_id: LocalDefId) -> bool {
-        if !self.tcx.def_kind(local_def_id).is_fn_like() {
-            return false;
-        }
-        let predicates = self
-            .tcx
-            .predicates_of(local_def_id)
-            .instantiate_identity(self.tcx);
-        predicates.predicates.iter().any(|clause| {
-            let Some(trait_clause) = clause.as_trait_clause() else {
-                return false;
-            };
-            let trait_ref = trait_clause.skip_binder().trait_ref;
-            self.tcx.fn_trait_kind_from_def_id(trait_ref.def_id) == Some(mir_ty::ClosureKind::FnMut)
-                && matches!(trait_ref.self_ty().kind(), mir_ty::TyKind::Param(_))
-        })
+        self.tcx.def_kind(local_def_id).is_fn_like()
+            && !analyze::fn_mut_bounded_params(self.tcx, local_def_id.to_def_id()).is_empty()
     }
 
     fn placeholder_generic_args(&self, local_def_id: LocalDefId) -> mir_ty::GenericArgsRef<'tcx> {
@@ -366,9 +375,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.analyze_raw_command_annot();
         self.register_trait_laws();
         self.refine_local_defs();
+        let keys: Vec<_> = self.tcx.mir_keys(()).iter().copied().collect();
+        self.ctx.record_unnest_specified_params(keys.into_iter());
         self.analyze_local_defs();
         self.ctx.emit_pending_pred_instances();
         self.ctx.emit_pending_laws();
+        self.ctx.emit_fn_mut_instance_obligations();
         self.assert_callable_entry();
     }
 

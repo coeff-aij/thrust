@@ -32,8 +32,10 @@ unused shared borrow (`_keep`), as Creusot's `ghost! { *iter }` reads `iter`.
 Creusot's `examples/counter` with its own property (`x == v`, `cnt == x.len()`) over a `Range`,
 through `map_ext.rs`'s `MapInv` with an `FnMut` closure: `produces` carries the chain `fs` of
 closure states and, as creusot-std's `std/iter/map_inv.rs`, relates them by `unnest!` (Creusot's
-`hist_inv`); the closure's ensures adds `unnest(*self, ^self)` of Creusot's `postcondition_mut`
-(the borrow of `cnt` keeps its prophecy). Stage S2: with the adapter's and `from_iter`'s bodies
+`hist_inv`). Because `Map`'s specification uses `unnest!`, its methods are verified once over `F`
+and `Map::next` at the closure uses that analysis, with the closure's `unnest!` laws checked. The
+closure's `ensures(!(!cnt) == !(*cnt))` restates the `unnest(*self, ^self)` that Thrust adds to
+every `FnMut` closure's postcondition, as Creusot's `postcondition_mut` does. Stage S2: with the adapter's and `from_iter`'s bodies
 trusted both conjuncts are decided and the fail twin (`cnt == x.len() + 1`) refutes; checked,
 `from_iter`'s instance and the generic `produces_trans_witness` stall on the witness of `fs`.
 

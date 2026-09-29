@@ -192,6 +192,35 @@ impl DeferredDefMode {
     }
 }
 
+/// See [`Analyzer::reuse_fn_mut_generic`].
+#[derive(Default)]
+struct FnMutInstanceObligations {
+    laws: Vec<chc::Clause>,
+    pre: Vec<chc::Clause>,
+    /// The defs an instance has used the contract of as instantiated.
+    reused: HashSet<DefId>,
+}
+
+/// The type parameters in scope of `def_id` (its own or an enclosing item's) bounded by `FnMut`.
+pub fn fn_mut_bounded_params(tcx: TyCtxt<'_>, def_id: DefId) -> Vec<DefId> {
+    let generics = tcx.generics_of(def_id);
+    let predicates = tcx.predicates_of(def_id).instantiate_identity(tcx);
+    predicates
+        .predicates
+        .iter()
+        .filter_map(|clause| {
+            let trait_ref = clause.as_trait_clause()?.skip_binder().trait_ref;
+            if tcx.fn_trait_kind_from_def_id(trait_ref.def_id) != Some(mir_ty::ClosureKind::FnMut) {
+                return None;
+            }
+            let mir_ty::TyKind::Param(param_ty) = trait_ref.self_ty().kind() else {
+                return None;
+            };
+            Some(generics.type_param(*param_ty, tcx).def_id)
+        })
+        .collect()
+}
+
 /// Whether a type argument contains a closure of kind `FnMut`.
 fn has_fn_mut_closure(generic_args: mir_ty::GenericArgsRef<'_>) -> bool {
     generic_args.types().any(|ty| {
@@ -630,6 +659,12 @@ pub struct Analyzer<'tcx> {
     /// Defs whose body has been analyzed at fully concrete type arguments, as the callee of
     /// a call site; see [`Analyzer::has_concrete_instance`].
     concrete_instances: Rc<RefCell<HashSet<LocalDefId>>>,
+    /// The clauses [`closure_unnest::instance_obligations`] gave for the instances at an `FnMut`
+    /// closure that use a generic def's contract as instantiated: the `unnest!` laws and the
+    /// precondition clauses, pushed by [`Analyzer::emit_fn_mut_instance_obligations`].
+    fn_mut_instance_obligations: Rc<RefCell<FnMutInstanceObligations>>,
+    /// See [`Analyzer::record_unnest_specified_params`].
+    unnest_specified_params: Rc<RefCell<HashSet<DefId>>>,
 }
 
 impl<'tcx> crate::refine::TemplateRegistry for Analyzer<'tcx> {
@@ -679,6 +714,8 @@ impl<'tcx> Analyzer<'tcx> {
             trait_laws,
             pending_laws,
             concrete_instances: Default::default(),
+            fn_mut_instance_obligations: Default::default(),
+            unnest_specified_params: Default::default(),
         }
     }
 
@@ -1176,7 +1213,8 @@ impl<'tcx> Analyzer<'tcx> {
         // to the current one. Otherwise the contract is used as instantiated.
         let analyze_body = deferred_ty_mode.is_some_and(|mode| mode.should_analyze())
             && (!is_generic
-                || has_fn_mut_closure(generic_args)
+                || (has_fn_mut_closure(generic_args)
+                    && !self.reuse_fn_mut_generic(def_id, &expected, generic_args, caller_def_id))
                 || self.may_have_pred_var(&expected, generic_args, caller_def_id));
         if is_generic && deferred_ty_mode.is_some() {
             tracing::info!(
@@ -1211,6 +1249,161 @@ impl<'tcx> Analyzer<'tcx> {
             }
         }
         Some(expected)
+    }
+
+    /// Whether an instance of the generic def `def_id` at `generic_args`, which has an `FnMut`
+    /// closure among them, can use its contract as instantiated rather than analyzing the body
+    /// again. The def must be unnest-specified ([`Analyzer::is_unnest_specified`]), every type
+    /// argument that contains an `FnMut` closure must be that closure itself at one of its
+    /// `FnMut`-bounded type parameters, no unknown may be reachable from the contract, and each
+    /// closure must have a known contract. The def's generic analysis, which such a def always
+    /// gets, then stands for the instance once the closures obey what it assumed of their type
+    /// parameters; those obligations are recorded here.
+    ///
+    /// A closure nested in another type argument (`Map<Range, F>` given to `collect`) could reach
+    /// the body of an `FnMut`-bounded def verified per instance only through this instance, so
+    /// that instance is analyzed again.
+    fn reuse_fn_mut_generic(
+        &mut self,
+        def_id: DefId,
+        expected: &rty::RefinedType,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
+        caller_def_id: DefId,
+    ) -> bool {
+        if !self.is_unnest_specified(def_id) {
+            return false;
+        }
+        let specified = fn_mut_bounded_params(self.tcx, def_id);
+        let generics = self.tcx.generics_of(def_id);
+        for (idx, arg) in generic_args.iter().enumerate() {
+            let Some(ty) = arg.as_type() else {
+                continue;
+            };
+            if !has_fn_mut_closure(self.tcx.mk_args(&[arg])) {
+                continue;
+            }
+            let is_closure = matches!(ty.kind(), mir_ty::TyKind::Closure(..));
+            if !is_closure || !specified.contains(&generics.param_at(idx, self.tcx).def_id) {
+                tracing::info!(
+                    ?ty,
+                    "FnMut instance analyzed again: closure not at an unnest-specified parameter"
+                );
+                return false;
+            }
+        }
+        if self.may_have_pred_var(expected, generic_args, caller_def_id) {
+            tracing::info!(
+                ?generic_args,
+                "FnMut instance analyzed again: unknowns reachable"
+            );
+            return false;
+        }
+        let closures: Vec<_> = generic_args
+            .types()
+            .flat_map(|ty| ty.walk())
+            .filter_map(|arg| arg.as_type())
+            .filter(|ty| match ty.kind() {
+                mir_ty::TyKind::Closure(_, args) => {
+                    args.as_closure().kind() == mir_ty::ClosureKind::FnMut
+                }
+                _ => false,
+            })
+            .collect();
+        let mut obligations = Vec::new();
+        for closure_ty in closures {
+            let mir_ty::TyKind::Closure(def_id, args) = closure_ty.kind() else {
+                unreachable!()
+            };
+            let parent_args = self.tcx.mk_args(args.as_closure().parent_args());
+            let Some(contract) =
+                self.known_function_ty_with_args(*def_id, parent_args, caller_def_id)
+            else {
+                tracing::info!(
+                    ?closure_ty,
+                    "FnMut instance analyzed again: closure contract unknown"
+                );
+                return false;
+            };
+            let Some(clauses) =
+                closure_unnest::instance_obligations(self.tcx, closure_ty, &contract)
+            else {
+                tracing::info!(
+                    ?closure_ty,
+                    "FnMut instance analyzed again: precondition unknown"
+                );
+                return false;
+            };
+            obligations.push(clauses);
+        }
+        tracing::info!(?generic_args, "FnMut instance reuses the generic analysis");
+        let mut pending = self.fn_mut_instance_obligations.borrow_mut();
+        pending.reused.insert(def_id);
+        for (laws, pre) in obligations {
+            pending.laws.extend(laws);
+            pending.pre.extend(pre);
+        }
+        true
+    }
+
+    /// Pushes the obligations of [`Analyzer::reuse_fn_mut_generic`]: the precondition clauses
+    /// always, the `unnest!` law clauses when some analysis assumed the laws of a closure type
+    /// parameter's relation. That is coarser than tracking which instance reaches which
+    /// relation, and only adds checks.
+    pub fn emit_fn_mut_instance_obligations(&mut self) {
+        let mut pending = self.fn_mut_instance_obligations.borrow_mut();
+        let laws = std::mem::take(&mut pending.laws);
+        let pre = std::mem::take(&mut pending.pre);
+        let mut system = self.system.borrow_mut();
+        let laws_assumed = system
+            .forall_preds()
+            .any(|pred| pred.inner().starts_with("q_unnest_") && !system.laws_of(pred).is_empty());
+        let clauses = if laws_assumed { laws } else { Vec::new() };
+        for clause in clauses.into_iter().chain(pre) {
+            system.push_clause(clause);
+        }
+    }
+
+    /// Records the `FnMut`-bounded type parameters whose `unnest!` relation the specifications
+    /// use: those whose relation carries its laws once every contract and predicate definition
+    /// has been translated. Taken once, after refinement, so the choice below does not depend
+    /// on the order bodies are analyzed in.
+    pub fn record_unnest_specified_params(&mut self, defs: impl Iterator<Item = LocalDefId>) {
+        let system = self.system.borrow();
+        let with_laws: HashSet<&str> = system
+            .forall_preds()
+            .filter(|pred| !system.laws_of(pred).is_empty())
+            .map(|pred| pred.inner())
+            .collect();
+        let mut specified = HashSet::new();
+        for def in defs {
+            for param in fn_mut_bounded_params(self.tcx, def.to_def_id()) {
+                let name = crate::refine::stable_def_id_symbol(self.tcx, param, "q_unnest");
+                if with_laws.contains(name.as_str()) {
+                    specified.insert(param);
+                }
+            }
+        }
+        drop(system);
+        *self.unnest_specified_params.borrow_mut() = specified;
+    }
+
+    /// Whether `def_id` has an `FnMut`-bounded type parameter and each of them is one whose
+    /// `unnest!` relation the specifications use. Only such a def's instances at concrete
+    /// closures may use its generic analysis ([`Analyzer::reuse_fn_mut_generic`]); any other
+    /// `FnMut`-bounded def is verified per instance (D34).
+    pub fn is_unnest_specified(&self, def_id: DefId) -> bool {
+        let params = fn_mut_bounded_params(self.tcx, def_id);
+        let specified = self.unnest_specified_params.borrow();
+        !params.is_empty() && params.iter().all(|param| specified.contains(param))
+    }
+
+    /// Whether an instance has used the contract of `local_def_id` as instantiated, so its
+    /// generic analysis stands for that instance and must be emitted.
+    pub fn has_reused_instance(&self, local_def_id: LocalDefId) -> bool {
+        self.fn_mut_instance_obligations
+            .borrow()
+            .reused
+            .contains(&local_def_id.to_def_id())
     }
 
     /// Whether the body of `local_def_id` has been analyzed at type arguments that mention no

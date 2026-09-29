@@ -520,13 +520,52 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             builder.refinement_at(&position, refinement);
         }
 
-        if is_fully_annotated {
-            rty::RefinedType::unrefined(builder.build().into())
-        } else if let Some(trait_item_ty) = trait_item_ty {
-            trait_item_ty
-        } else {
-            rty::RefinedType::unrefined(builder.build().into())
+        if !is_fully_annotated {
+            if let Some(trait_item_ty) = trait_item_ty {
+                return trait_item_ty;
+            }
         }
+        let mut fn_ty = builder.build();
+        self.conjoin_fn_mut_unnest(&mut fn_ty);
+        rty::RefinedType::unrefined(fn_ty.into())
+    }
+
+    /// Conjoins to an `FnMut` closure's postcondition that the call keeps the closure's state
+    /// related by `unnest!` (each `&mut` capture keeps its prophecy, each `&` capture its value),
+    /// as Creusot's `postcondition_mut` of a closure includes `hist_inv(self, ^self)`. The body
+    /// is checked against it, and it makes the law that each call's postcondition implies
+    /// `unnest!` hold of every such closure's contract.
+    fn conjoin_fn_mut_unnest(&self, fn_ty: &mut rty::FunctionType) {
+        if !self.tcx.is_closure_like(self.local_def_id.to_def_id()) {
+            return;
+        }
+        let closure_ty = self.tcx.type_of(self.local_def_id).instantiate_identity();
+        let mir_ty::TyKind::Closure(_, args) = closure_ty.kind() else {
+            return;
+        };
+        if args.as_closure().kind() != mir_ty::ClosureKind::FnMut {
+            return;
+        }
+        let receiver = &fn_ty.params[rty::FunctionParamIdx::from_usize(0)].ty;
+        if receiver.as_pointer().map(|ty| ty.kind) != Some(rty::PointerKind::Ref(rty::RefKind::Mut))
+        {
+            return;
+        }
+        let upvars_sort = receiver.to_sort().deref();
+        let receiver = chc::Term::var(rty::RefinedTypeVar::Free(
+            rty::FunctionParamIdx::from_usize(0),
+        ));
+        let formula = analyze::closure_unnest::concrete_definition(
+            self.tcx,
+            closure_ty,
+            &upvars_sort,
+            receiver.clone().mut_current(),
+            receiver.mut_final(),
+        );
+        if formula.is_top() {
+            return;
+        }
+        fn_ty.ret.extend_refinement(formula.into());
     }
 
     /// Extract the target DefId from `#[thrust::extern_spec_fn]` function.
