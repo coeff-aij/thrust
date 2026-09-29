@@ -18,6 +18,10 @@ pub fn extern_spec_fn_path() -> [Symbol; 2] {
     [Symbol::intern("thrust"), Symbol::intern("extern_spec_fn")]
 }
 
+pub fn extern_body_fn_path() -> [Symbol; 2] {
+    [Symbol::intern("thrust"), Symbol::intern("extern_body_fn")]
+}
+
 pub fn raw_command_path() -> [Symbol; 2] {
     [Symbol::intern("thrust"), Symbol::intern("raw_command")]
 }

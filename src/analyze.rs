@@ -165,11 +165,13 @@ impl<'tcx> ReplacePlacesVisitor<'tcx> {
 enum DeferredDefMode {
     Analyze,
     NoAnalyze,
+    /// The local def is the def's body (an extern body), analyzed at each call that runs it.
+    ExternBody,
 }
 
 impl DeferredDefMode {
     fn should_analyze(&self) -> bool {
-        matches!(self, DeferredDefMode::Analyze)
+        matches!(self, DeferredDefMode::Analyze | DeferredDefMode::ExternBody)
     }
 }
 
@@ -190,7 +192,8 @@ fn has_fn_mut_closure(generic_args: mir_ty::GenericArgsRef<'_>) -> bool {
 #[derive(Debug, Clone)]
 struct DeferredDefTy<'tcx> {
     // the def that provides the spec (`expected_ty`). this is different from a key in defs when
-    // the def is an extern_spec_fn (then it is the extern_spec_fn wrapper carrying the contract).
+    // the def is an extern_spec_fn (then it is the extern_spec_fn wrapper carrying the contract)
+    // or an extern_body_fn (then it is the function whose body is taken as the def's).
     local_def_id: LocalDefId,
     cache: Rc<RefCell<HashMap<InstantiationKey<'tcx>, rty::RefinedType>>>,
     mode: DeferredDefMode,
@@ -276,6 +279,21 @@ fn spec_bounds_hold<'tcx>(
             tcx.codegen_select_candidate(typing_env.as_query_input(trait_ref))
                 .is_ok()
         })
+}
+
+/// Whether a call to `def_id` at `args` runs `def_id`'s own body, the one an extern body stands
+/// for, rather than an implementation overriding it or one not known at these arguments.
+fn runs_own_body<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    def_id: DefId,
+    args: mir_ty::GenericArgsRef<'tcx>,
+    caller_def_id: DefId,
+) -> bool {
+    let typing_env = mir_ty::TypingEnv::post_analysis(tcx, caller_def_id);
+    matches!(
+        mir_ty::Instance::try_resolve(tcx, typing_env, def_id, tcx.erase_regions(args)),
+        Ok(Some(instance)) if instance.def == mir_ty::InstanceKind::Item(def_id)
+    )
 }
 
 fn model_assuming_env<'tcx>(
@@ -719,6 +737,20 @@ impl<'tcx> Analyzer<'tcx> {
         );
     }
 
+    pub fn register_extern_body_def(
+        &mut self,
+        target_def_id: DefId,
+        local_def_id: LocalDefId,
+        target_args: mir_ty::GenericArgsRef<'tcx>,
+    ) {
+        self.register_deferred_def_impl(
+            target_def_id,
+            local_def_id,
+            Some(target_args),
+            DeferredDefMode::ExternBody,
+        );
+    }
+
     pub fn register_deferred_def_without_analysis(
         &mut self,
         target_def_id: DefId,
@@ -937,13 +969,16 @@ impl<'tcx> Analyzer<'tcx> {
             DefTy::Deferred(DeferredDefTy {
                 local_def_id,
                 target_args: Some(target_args),
+                mode,
                 ..
             }) => {
                 let bound = bind_spec_args(self.tcx, *local_def_id, target_args, generic_args)?;
                 let holds = self.def_ids().model_ty().is_none_or(|model_ty| {
                     spec_bounds_hold(self.tcx, *local_def_id, bound, caller_def_id, model_ty)
                 });
-                holds.then_some(bound)?
+                let runs = *mode != DeferredDefMode::ExternBody
+                    || runs_own_body(self.tcx, def_id, generic_args, caller_def_id);
+                (holds && runs).then_some(bound)?
             }
             _ => generic_args,
         };
@@ -1027,7 +1062,9 @@ impl<'tcx> Analyzer<'tcx> {
             );
         }
         if analyze_body {
-            let mut body_analyzer = if local_def_id.to_def_id() == def_id {
+            let is_local_body = local_def_id.to_def_id() == def_id
+                || deferred_ty_mode == Some(DeferredDefMode::ExternBody);
+            let mut body_analyzer = if is_local_body {
                 let mut body_analyzer = self.local_def_analyzer(local_def_id);
                 body_analyzer
                     .owner_fn_id(caller_def_id)

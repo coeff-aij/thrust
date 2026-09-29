@@ -99,10 +99,40 @@ fn extern_spec_fn_target_def_id_impl<'tcx>(
         panic!("extern_spec_fn call must be a path expression");
     };
 
+    resolve_path_target(tcx, local_def_id, mir_body, qpath, func_expr.hir_id)
+}
+
+/// Extract the target DefId and its generic arguments in the body function's parameter space,
+/// from a `#[thrust::extern_body_fn]` function: the path its first statement names.
+fn extern_body_fn_target_impl<'tcx>(
+    tcx: &TyCtxt<'tcx>,
+    local_def_id: &LocalDefId,
+    mir_body: &Body<'tcx>,
+) -> (DefId, mir_ty::GenericArgsRef<'tcx>) {
+    let hir_body = tcx.hir_body_owned_by(*local_def_id);
+    let rustc_hir::ExprKind::Block(block, _) = &hir_body.value.kind else {
+        panic!("extern_body_fn body must be a block");
+    };
+    let Some(rustc_hir::StmtKind::Semi(path_expr)) = block.stmts.first().map(|stmt| stmt.kind)
+    else {
+        panic!("extern_body_fn must start with a statement naming its target");
+    };
+    let rustc_hir::ExprKind::Path(qpath) = &path_expr.kind else {
+        panic!("extern_body_fn target must be a path expression");
+    };
+    resolve_path_target(tcx, local_def_id, mir_body, qpath, path_expr.hir_id)
+}
+
+fn resolve_path_target<'tcx>(
+    tcx: &TyCtxt<'tcx>,
+    local_def_id: &LocalDefId,
+    mir_body: &Body<'tcx>,
+    qpath: &rustc_hir::QPath<'tcx>,
+    hir_id: rustc_hir::HirId,
+) -> (DefId, mir_ty::GenericArgsRef<'tcx>) {
     let typeck_result = tcx.typeck(local_def_id);
-    let hir_id = func_expr.hir_id;
     let rustc_hir::def::Res::Def(_, def_id) = typeck_result.qpath_res(qpath, hir_id) else {
-        panic!("extern_spec_fn call must resolve to a definition");
+        panic!("the target path must resolve to a definition");
     };
 
     let args = typeck_result.node_args(hir_id);
@@ -230,6 +260,16 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
     pub fn is_annotated_as_extern_spec_fn(&self) -> bool {
         is_annotated_as_extern_spec_fn_impl(&self.tcx, &self.local_def_id)
+    }
+
+    pub fn is_annotated_as_extern_body_fn(&self) -> bool {
+        self.tcx
+            .get_attrs_by_path(
+                self.local_def_id.to_def_id(),
+                &analyze::annot::extern_body_fn_path(),
+            )
+            .next()
+            .is_some()
     }
 
     pub fn is_annotated_as_predicate(&self) -> bool {
@@ -535,6 +575,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// semicolon) in the function body block.
     pub fn extern_spec_fn_target_def_id(&self) -> DefId {
         extern_spec_fn_target_def_id_impl(&self.tcx, &self.local_def_id, &self.body).0
+    }
+
+    /// Extract the target DefId and generic arguments from `#[thrust::extern_body_fn]`
+    /// function, whose body is taken as the target's.
+    pub fn extern_body_fn_target(&self) -> (DefId, mir_ty::GenericArgsRef<'tcx>) {
+        extern_body_fn_target_impl(&self.tcx, &self.local_def_id, &self.body)
     }
 
     fn is_mut_param(&self, param_idx: rty::FunctionParamIdx) -> bool {

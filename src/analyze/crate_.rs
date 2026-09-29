@@ -86,6 +86,13 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     keys.swap_remove(local_def_id);
                 }
             }
+            if analyzer.is_annotated_as_extern_body_fn() {
+                let (target_def_id, target_args) = analyzer.extern_body_fn_target();
+                self.ctx
+                    .register_extern_body_def(target_def_id, *local_def_id, target_args);
+                keys.swap_remove(local_def_id);
+                continue;
+            }
             if analyzer.is_annotated_as_ignored() {
                 self.skip_analysis.insert(*local_def_id);
                 keys.swap_remove(local_def_id);
