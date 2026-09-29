@@ -385,6 +385,38 @@ impl<'tcx> TypeBuilder<'tcx> {
         })
     }
 
+    /// The typing environment extended with `P: Model` for every type parameter `P` of `ty`.
+    ///
+    /// The model of a parameter is built as the parameter itself, bound or not, so an impl such
+    /// as `impl<I, T: Model> Model for Wrap<I, T>` applies to `Wrap<I, T>` in a function that
+    /// leaves `T` unbounded, and the type gets the same lowering as it has where `T` is bound.
+    fn params_are_models(
+        &self,
+        model_ty_def_id: DefId,
+        ty: mir_ty::Ty<'tcx>,
+    ) -> mir_ty::TypingEnv<'tcx> {
+        use rustc_middle::ty::Upcast as _;
+        let model_trait = self.tcx.parent(model_ty_def_id);
+        let assumed = ty.walk().filter_map(|arg| match arg.kind() {
+            mir_ty::GenericArgKind::Type(t) if matches!(t.kind(), mir_ty::TyKind::Param(_)) => {
+                let trait_ref = mir_ty::TraitRef::new(self.tcx, model_trait, [t]);
+                Some(trait_ref.upcast(self.tcx))
+            }
+            _ => None,
+        });
+        let clauses = self.tcx.mk_clauses_from_iter(
+            self.typing_env
+                .param_env
+                .caller_bounds()
+                .iter()
+                .chain(assumed),
+        );
+        mir_ty::TypingEnv {
+            param_env: mir_ty::ParamEnv::new(clauses),
+            ..self.typing_env
+        }
+    }
+
     pub fn resolve_model_ty(&self, orig_ty: mir_ty::Ty<'tcx>) -> mir_ty::Ty<'tcx> {
         let replaced = self.replace_closure_model(orig_ty);
 
@@ -396,13 +428,18 @@ impl<'tcx> TypeBuilder<'tcx> {
         // model, so a projection through such an impl (`<Map<Range, {closure}>
         // as Iterator>::Item`) resolves only on the original type. The closure
         // models are put in place on the result.
-        for ty in [orig_ty, replaced] {
+        for (params_are_models, ty) in [(false, orig_ty), (false, replaced), (true, orig_ty)] {
+            let typing_env = if params_are_models {
+                self.params_are_models(model_ty_def_id, ty)
+            } else {
+                self.typing_env
+            };
             let args = self.tcx.mk_args(&[ty.into()]);
             tracing::debug!("generic args are {:#?}.", args);
             let projection_ty = mir_ty::Ty::new_projection(self.tcx, model_ty_def_id, args);
             let Ok(normalized_ty) = self
                 .tcx
-                .try_normalize_erasing_regions(self.typing_env, projection_ty)
+                .try_normalize_erasing_regions(typing_env, projection_ty)
             else {
                 continue;
             };
@@ -437,9 +474,8 @@ impl<'tcx> TypeBuilder<'tcx> {
         replaced
     }
 
-    /// Whether the field `field_idx` of the struct `ty` *is* the whole value in the logic, so
-    /// that reading it -- or building the struct out of it -- is the identity rather than a
-    /// projection.
+    /// The field of the struct `ty` that *is* the whole value in the logic, so that reading it
+    /// -- or building the struct out of it -- is the identity rather than a projection.
     ///
     /// A struct whose `Model::Ty` is the model of one of its fields does not survive as a
     /// struct here: [`build`](Self::build) resolves it to that model and the struct's own
@@ -449,40 +485,28 @@ impl<'tcx> TypeBuilder<'tcx> {
     /// `(elements, length)` pair its model is are both `0`, so `.raw` would silently come back
     /// as the element array instead of the whole sequence.
     ///
-    /// The two conditions are checked rather than declared, because the struct is user code
-    /// that cannot be marked -- unlike `Closure<T>` and `Ghost<T>`, which are lowered through
-    /// their content by an attribute. Checking also keeps the answer in step with the lowering
-    /// actually chosen: where the model cannot be resolved and the struct is traversed after
-    /// all, the field really is a projection and this says so.
-    pub fn is_transparent_field(&self, ty: mir_ty::Ty<'tcx>, field_idx: usize) -> bool {
+    /// The struct is user code that cannot be marked -- unlike `Closure<T>` and `Ghost<T>`,
+    /// which are lowered through their content by an attribute -- so this is checked: exactly
+    /// one field is not of singleton sort, and it has the sort of the struct's model. That keeps
+    /// the answer in step with the lowering actually chosen: where the model cannot be resolved
+    /// and the struct is traversed after all, the fields really are projections and this says
+    /// so. The other fields are inert, so the identity does not drop anything the model carries.
+    pub fn transparent_field(&self, ty: mir_ty::Ty<'tcx>) -> Option<usize> {
         let mir_ty::TyKind::Adt(def, args) = ty.kind() else {
-            return false;
+            return None;
         };
         if !def.is_struct() {
-            return false;
+            return None;
         }
-        let fields: Vec<_> = def.all_fields().collect();
-        let Some(field) = fields.get(field_idx) else {
-            return false;
-        };
-
         let model_sort = self.build(ty).to_sort();
-        if model_sort.is_singleton() {
-            return false;
+        let mut live = def.all_fields().enumerate().filter_map(|(idx, field)| {
+            let sort = self.build(field.ty(self.tcx, args)).to_sort();
+            (!sort.is_singleton()).then_some((idx, sort))
+        });
+        match (live.next(), live.next()) {
+            (Some((idx, sort)), None) if sort == model_sort => Some(idx),
+            _ => None,
         }
-        if self.build(field.ty(self.tcx, args)).to_sort() != model_sort {
-            return false;
-        }
-
-        // Every other field has to be inert, or the struct would carry something the model
-        // does not and the identity would drop it.
-        fields.iter().enumerate().all(|(idx, other)| {
-            idx == field_idx
-                || self
-                    .build(other.ty(self.tcx, args))
-                    .to_sort()
-                    .is_singleton()
-        })
     }
 
     // TODO: consolidate two impls

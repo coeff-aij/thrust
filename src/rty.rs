@@ -38,6 +38,7 @@
 
 use std::collections::HashMap;
 
+use num_bigint::BigInt;
 use pretty::{termcolor, Pretty};
 use rustc_abi::VariantIdx;
 use rustc_index::IndexVec;
@@ -645,7 +646,7 @@ impl<T> TupleType<T> {
 #[derive(Debug, Clone)]
 pub struct EnumVariantDef {
     pub name: chc::DatatypeSymbol,
-    pub discr: i64,
+    pub discr: BigInt,
     pub field_tys: Vec<Type<Closed>>,
 }
 
