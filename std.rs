@@ -940,23 +940,32 @@ fn _extern_spec_vec_len<T>(vec: &Vec<T>) -> usize where T: thrust_models::Model,
 }
 
 #[thrust::extern_spec_fn]
-#[thrust_macros::requires(index < (*vec).len())]
-#[thrust_macros::ensures(*result == (*vec)[index])]
-fn _extern_spec_vec_index<T>(vec: &Vec<T>, index: usize) -> &T where T: thrust_models::Model, T::Ty: PartialEq {
-    <Vec<T> as std::ops::Index<usize>>::index(vec, index)
+#[thrust_macros::requires(I::in_bounds(index, *vec))]
+#[thrust_macros::ensures(I::has_value(index, *vec, *result))]
+fn _extern_spec_vec_index<T, I>(vec: &Vec<T>, index: I) -> &<I as std::slice::SliceIndex<[T]>>::Output
+    where T: thrust_models::Model, T::Ty: PartialEq,
+          I: SliceIndexSpec<T>,
+          <I as std::slice::SliceIndex<[T]>>::Output: thrust_models::Model,
+          <<I as std::slice::SliceIndex<[T]>>::Output as thrust_models::Model>::Ty: PartialEq,
+          I::Ty: PartialEq
+{
+    <Vec<T> as std::ops::Index<I>>::index(vec, index)
 }
 
 #[thrust::extern_spec_fn]
-#[thrust_macros::requires(index < (*vec).len())]
+#[thrust_macros::requires(I::in_bounds(index, *vec))]
 #[thrust_macros::ensures(
-    *result == (*vec)[index] &&
-    !result == (!vec)[index] &&
-    !vec == (*vec).store(index, !result)
+    I::has_value(index, *vec, *result) &&
+    I::store_value(index, *vec, !result, !vec)
 )]
-fn _extern_spec_vec_index_mut<T>(vec: &mut Vec<T>, index: usize) -> &mut T
-    where T: thrust_models::Model, T::Ty: PartialEq
+fn _extern_spec_vec_index_mut<T, I>(vec: &mut Vec<T>, index: I) -> &mut <I as std::slice::SliceIndex<[T]>>::Output
+    where T: thrust_models::Model, T::Ty: PartialEq,
+          I: SliceIndexSpec<T>,
+          <I as std::slice::SliceIndex<[T]>>::Output: thrust_models::Model,
+          <<I as std::slice::SliceIndex<[T]>>::Output as thrust_models::Model>::Ty: PartialEq,
+          I::Ty: PartialEq
 {
-    <Vec<T> as std::ops::IndexMut<usize>>::index_mut(vec, index)
+    <Vec<T> as std::ops::IndexMut<I>>::index_mut(vec, index)
 }
 
 #[thrust::extern_spec_fn]
@@ -1233,29 +1242,83 @@ fn _extern_spec_slice_split_last_mut<T>(slice: &mut [T]) -> Option<(&mut T, &mut
     <[T]>::split_last_mut(slice)
 }
 
-// TODO: The following specs for Index/IndexMut methods are too specific; we should write specs for
-//       a generic index (I: SliceIndex) that isn't specific to usize, maybe once #83 is implemented.
-
-#[thrust::extern_spec_fn]
-#[thrust_macros::requires(index < (*slice).len())]
-#[thrust_macros::ensures(*result == (*slice)[index])]
-fn _extern_spec_slice_index<T>(slice: &[T], index: usize) -> &T
-    where T: thrust_models::Model, T::Ty: PartialEq
+#[thrust_macros::context]
+trait SliceIndexSpec<T>: std::slice::SliceIndex<[T]> + thrust_models::Model
+where
+    T: thrust_models::Model,
+    <Self as std::slice::SliceIndex<[T]>>::Output: thrust_models::Model,
 {
-    <[T] as std::ops::Index<usize>>::index(slice, index)
+    #[thrust_macros::predicate]
+    fn in_bounds(self, seq: Vec<T>) -> bool;
+
+    #[thrust_macros::predicate]
+    fn has_value(
+        self,
+        seq: Vec<T>,
+        out: <Self as std::slice::SliceIndex<[T]>>::Output,
+    ) -> bool;
+
+    #[thrust_macros::predicate]
+    fn store_value(
+        self,
+        seq: Vec<T>,
+        out: <Self as std::slice::SliceIndex<[T]>>::Output,
+        new_seq: Vec<T>,
+    ) -> bool;
+}
+
+#[thrust_macros::context]
+impl<T> SliceIndexSpec<T> for usize
+where
+    T: thrust_models::Model,
+{
+    #[thrust_macros::predicate]
+    fn in_bounds(self, seq: Vec<T>) -> bool {
+        self < seq.len()
+    }
+
+    #[thrust_macros::predicate]
+    fn has_value(
+        self,
+        seq: Vec<T>,
+        out: T,
+    ) -> bool {
+        seq[self] == out
+    }
+
+    #[thrust_macros::predicate]
+    fn store_value(self, seq: Vec<T>, out: T, new_seq: Vec<T>) -> bool {
+        new_seq == seq.store(self, out)
+    }
 }
 
 #[thrust::extern_spec_fn]
-#[thrust_macros::requires(index < (*slice).len())]
-#[thrust_macros::ensures(
-    *result == (*slice)[index] &&
-    !result == (!slice)[index] &&
-    !slice == (*slice).store(index, !result)
-)]
-fn _extern_spec_slice_index_mut<T>(slice: &mut [T], index: usize) -> &mut T
-    where T: thrust_models::Model, T::Ty: PartialEq
+#[thrust_macros::requires(I::in_bounds(index, *slice))]
+#[thrust_macros::ensures(I::has_value(index, *slice, *result))]
+fn _extern_spec_slice_index<T, I>(slice: &[T], index: I) -> &<I as std::slice::SliceIndex<[T]>>::Output
+    where T: thrust_models::Model, T::Ty: PartialEq,
+          I: SliceIndexSpec<T>,
+          <I as std::slice::SliceIndex<[T]>>::Output: thrust_models::Model,
+          <<I as std::slice::SliceIndex<[T]>>::Output as thrust_models::Model>::Ty: PartialEq,
+          I::Ty: PartialEq
 {
-    <[T] as std::ops::IndexMut<usize>>::index_mut(slice, index)
+    <[T] as std::ops::Index<I>>::index(slice, index)
+}
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(I::in_bounds(index, *slice))]
+#[thrust_macros::ensures(
+    I::has_value(index, *slice, *result) &&
+    I::store_value(index, *slice, !result, !slice)
+)]
+fn _extern_spec_slice_index_mut<T, I>(slice: &mut [T], index: I) -> &mut <I as std::slice::SliceIndex<[T]>>::Output
+    where T: thrust_models::Model, T::Ty: PartialEq,
+          I: SliceIndexSpec<T>,
+          <I as std::slice::SliceIndex<[T]>>::Output: thrust_models::Model,
+          <<I as std::slice::SliceIndex<[T]>>::Output as thrust_models::Model>::Ty: PartialEq,
+          I::Ty: PartialEq
+{
+    <[T] as std::ops::IndexMut<I>>::index_mut(slice, index)
 }
 
 // `<[T]>::iter`, `<[T]>::iter_mut` and `Vec`'s three `into_iter`s all start a fresh iterator at
