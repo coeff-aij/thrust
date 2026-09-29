@@ -1833,7 +1833,7 @@ fn _extern_spec_vec_extend<T, I>(vec: &mut Vec<T>, iter: I)
     where T: thrust_models::Model, T::Ty: PartialEq,
           I: IntoIterator<Item = T> + thrust_models::Model, I::Ty: PartialEq
 {
-    <Vec<T> as Extend<T>>::extend(vec, iter)
+    <Vec<T> as std::iter::Extend<T>>::extend(vec, iter)
 }
 
 // Nothing about the collected items is visible in this vocabulary, so the result is any `Vec<T>`.
@@ -1844,7 +1844,7 @@ fn _extern_spec_vec_from_iter<T, I>(iter: I) -> Vec<T>
     where T: thrust_models::Model, T::Ty: PartialEq,
           I: IntoIterator<Item = T> + thrust_models::Model, I::Ty: PartialEq
 {
-    <Vec<T> as FromIterator<T>>::from_iter(iter)
+    <Vec<T> as std::iter::FromIterator<T>>::from_iter(iter)
 }
 
 #[thrust::extern_spec_fn]
