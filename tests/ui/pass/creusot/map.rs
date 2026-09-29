@@ -123,18 +123,6 @@ where
     ) {
     }
 
-    // Creusot's `produces_one_invariant` is proved in its Why3 session by `split_vc` into the
-    // invariant's conjuncts, each with its own tactic. Here each conjunct is a lemma of its own.
-    // They take the inner item `e` that `produces_one`'s `exists` hides, as `next` has it: the
-    // witness given as a term.
-    #[thrust_macros::requires(<Self as Iterator>::invariant(s0)
-        && s0.func == s1.func
-        && I::produces(s0.iter, Seq::singleton(e), s1.iter)
-        && thrust_macros::post!((s0.func)(e), b)
-        && I::invariant(s1.iter))]
-    #[thrust_macros::ensures(Self::next_precondition(s1.iter, s1.func))]
-    fn produces_one_next_precondition(s0: Ghost<Self>, e: Ghost<<I as Iterator>::Item>, b: Ghost<B>, s1: Ghost<Self>) {}
-
     #[thrust_macros::requires(<Self as Iterator>::invariant(s0)
         && s0.func == s1.func
         && I::invariant(s1.iter))]
@@ -150,7 +138,6 @@ where
         && I::invariant(s1.iter))]
     #[thrust_macros::ensures(<Self as Iterator>::invariant(s1))]
     fn produces_one_invariant(s0: Ghost<Self>, e: Ghost<<I as Iterator>::Item>, b: Ghost<B>, s1: Ghost<Self>) {
-        Self::produces_one_next_precondition(s0, e, b, s1);
         Self::produces_one_reinitialize(s0, s1);
     }
 }
