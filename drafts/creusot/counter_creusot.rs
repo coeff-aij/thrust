@@ -14,10 +14,11 @@ use thrust_models::{exists, forall, Ghost, Model};
 // `hist_inv`), and `preservation_inv` is guarded by it. The closure precondition drops Creusot's
 // `cnt < usize::MAX` (integers are unbounded).
 //
-// Does not verify. With the adapter's and `from_iter`'s bodies trusted, `x == v` and
-// `cnt == x.len()` are decided: `unnest!` gives the final state the prophecy of the borrow of
-// `cnt`, and the last call's postcondition its value. Checked, `from_iter` at this instance and the
-// generic `produces_trans_witness` stall on the existential witness of the chain `fs`.
+// Does not verify: `from_iter`, re-analysed at this `Map` instance, gives no answer. With its body
+// trusted, the rest verifies with every `Map` body checked: `unnest!` gives the final state the
+// prophecy of the borrow of `cnt`, the last call's postcondition its value, and `produces_trans`
+// is proved by lemmas that name the joined witnesses as terms (Creusot's session gives them by
+// hand, `exists (s1 ++ s)` and `exists (fs1 ++ fs)`).
 
 // Creusot's `common.rs`, the iterator specification every case shares: the trait predicates
 // `produces(self, visited, o)`, `completed` and `invariant` (`true` unless the impl says otherwise),
