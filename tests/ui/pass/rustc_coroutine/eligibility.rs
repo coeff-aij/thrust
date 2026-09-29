@@ -16,6 +16,7 @@
 // verify (`ignore-on-host` above), only to compile and to record where the
 // spec is uncertain (`// TODO(spec):`).
 
+use thrust_models::exists;
 use thrust_models::forall;
 use thrust_models::model::{Int, Seq};
 
@@ -158,6 +159,7 @@ impl<T: Idx> DenseBitSet<T> {
     #[inline]
     #[thrust::trusted]
     #[thrust::callable]
+    #[thrust_macros::ensures(result == (*self).0)]
     pub fn iter(&self) -> BitIter<'_, T> {
         BitIter::new(&self.words)
     }
@@ -237,6 +239,9 @@ impl<'a, T: Idx + thrust_models::Model> IteratorSpec for BitIter<'a, T>
 where
     T::Ty: PartialEq,
 {
+    // The model is the column bound of the bit set the iterator walks (`num_columns` of the
+    // matrix row, `domain_size` of a `DenseBitSet`); it never changes, and every yielded
+    // element is below it.
     #[thrust_macros::predicate]
     fn inv(self) -> bool {
         true
@@ -244,7 +249,9 @@ where
 
     #[thrust_macros::predicate]
     fn produces(self, visited: Vec<T>, o: Self) -> bool {
-        true
+        self == o
+            && forall(|i: Int, k: Int|
+                !(0 <= i && i < visited.len() && <T as Idx>::index_is(visited[i], k)) || k < self)
     }
 
     #[thrust_macros::predicate]
@@ -291,6 +298,7 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
 
     #[thrust::trusted]
     #[thrust_macros::requires(forall(|i: Int| <R as Idx>::index_is(row, i) ==> i < (*self).num_rows))]
+    #[thrust_macros::ensures(result == (*self).num_columns)]
     pub fn iter(&self, row: R) -> BitIter<'_, C> {
         assert!(row.index() < self.num_rows);
         let (start, end) = self.range(row);
@@ -429,6 +437,33 @@ impl<I: Idx> Iterator for IdxRange<I> {
         } else {
             None
         }
+    }
+}
+
+#[thrust_macros::context]
+impl<I: Idx> IdxRange<I> {
+    // Contract of the trusted `next` above, on a sibling inherent impl (see idx.rs, where the
+    // same contract is verified against the body together with a `can_new` requirement): the
+    // yielded index is `start`, in `[start, end)`, and the range advances by one.
+    #[thrust::extern_spec_fn]
+    #[thrust_macros::requires((*it).start >= 0)]
+    #[thrust_macros::ensures(
+        forall(|s: Int| s == (*it).start && s < (*it).end
+            ==> exists(|x: <I as thrust_models::Model>::Ty|
+                    result == Some(x) && <I as Idx>::index_is(x, s))
+                && s + 1 == (!it).start
+                && (!it).end == (*it).end)
+    )]
+    #[thrust_macros::ensures(
+        !((*it).start < (*it).end)
+            ==> result == None && (!it).start == (*it).start && (!it).end == (*it).end
+    )]
+    fn _extern_spec_next(it: &mut IdxRange<I>) -> Option<I>
+    where
+        I: thrust_models::Model,
+        <I as thrust_models::Model>::Ty: PartialEq,
+    {
+        <IdxRange<I> as Iterator>::next(it)
     }
 }
 
@@ -959,12 +994,12 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
         // Unassigned, and if Assigned(v) then v < variant_index" per the
         // README; written informally here (draft, not expected to verify).
         thrust_macros::invariant!(
-            |assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>|
-            true
+            |assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, ineligible_locals: DenseBitSet<LocalIdx>|
+            assignments.len() == ineligible_locals.0
         );
         let mut locals = fields.into_iter();
         while let Some(local) = locals.next() {
-            thrust_macros::invariant!(|assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>| true);
+            thrust_macros::invariant!(|assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, ineligible_locals: DenseBitSet<LocalIdx>| assignments.len() == ineligible_locals.0);
             match assignments[*local] {
                 Unassigned => {
                     assignments[*local] = Assigned(variant_index);
@@ -980,10 +1015,15 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
 
     let mut rows = storage_conflicts.rows();
     while let Some(local_a) = rows.next() {
-        // TODO(spec): conflict loop invariant from the README ("Assigned ->
+        // TODO(spec): the README's conflict loop invariant ("Assigned ->
         // Ineligible transitions only; properties 1, 2's negative half and 4
-        // preserved") is not encoded; left `true` for this draft.
-        thrust_macros::invariant!(|assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, ineligible_locals: DenseBitSet<LocalIdx>| true);
+        // preserved") is not encoded. What is stated is what the indexing and
+        // `contains`/`insert` preconditions in the body need: the lengths and
+        // domain sizes stay `nb_locals`, and `rows` yields `[start, nb_locals)`.
+        thrust_macros::invariant!(|assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, ineligible_locals: DenseBitSet<LocalIdx>, rows: IdxRange<LocalIdx>, storage_conflicts: &BitMatrix<LocalIdx, LocalIdx>|
+            assignments.len() == ineligible_locals.0 && ineligible_locals.0 == (*storage_conflicts).num_rows
+                && (*storage_conflicts).num_rows == (*storage_conflicts).num_columns
+                && rows.start >= 0 && rows.end == (*storage_conflicts).num_rows);
         let conflicts_a = storage_conflicts.count(local_a);
         if ineligible_locals.contains(local_a) {
             continue;
@@ -991,7 +1031,9 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
 
         let mut conflicts = storage_conflicts.iter(local_a);
         while let Some(local_b) = conflicts.next() {
-            thrust_macros::invariant!(|assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, ineligible_locals: DenseBitSet<LocalIdx>| true);
+            thrust_macros::invariant!(|assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, ineligible_locals: DenseBitSet<LocalIdx>, conflicts: BitIter<LocalIdx>, storage_conflicts: &BitMatrix<LocalIdx, LocalIdx>|
+                assignments.len() == ineligible_locals.0 && ineligible_locals.0 == (*storage_conflicts).num_rows
+                    && conflicts == (*storage_conflicts).num_columns);
             if ineligible_locals.contains(local_b) || assignments[local_a] == assignments[local_b] {
                 continue;
             }
