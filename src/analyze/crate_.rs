@@ -105,10 +105,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 keys.swap_remove(local_def_id);
             }
         }
+        // A closure is skipped when its typeck root is, so roots are refined first.
+        let (roots, nested): (Vec<&LocalDefId>, Vec<&LocalDefId>) = keys
+            .iter()
+            .partition(|id| self.tcx.typeck_root_def_id(id.to_def_id()) == id.to_def_id());
         for local_def_id in &trait_method_spec_keys {
             self.refine_fn_def(*local_def_id);
         }
-        for local_def_id in &keys {
+        for local_def_id in roots.into_iter().chain(nested) {
             self.refine_fn_def(*local_def_id);
         }
     }
