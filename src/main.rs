@@ -11,13 +11,19 @@ extern crate rustc_span;
 use rustc_driver::{Callbacks, Compilation};
 use rustc_interface::interface::{Compiler, Config};
 
+fn try_specs_enabled() -> bool {
+    matches!(std::env::var("THRUST_TRY_SPECS").as_deref(), Ok("1"))
+}
+
 struct CompilerCalls {}
 
 impl Callbacks for CompilerCalls {
     fn config(&mut self, config: &mut Config) {
         let attrs = &mut config.opts.unstable_opts.crate_attr;
         attrs.push("feature(register_tool)".to_owned());
-        attrs.push("feature(try_trait_v2)".to_owned());
+        if try_specs_enabled() {
+            attrs.push("feature(try_trait_v2)".to_owned());
+        }
         attrs.push("register_tool(thrust)".to_owned());
 
         // Refinements live on MIR locals, and `RemoveZsts` rewrites reads of zero-sized
@@ -55,11 +61,14 @@ impl Callbacks for CompilerCalls {
             return Compilation::Continue;
         }
 
-        let injected = include_str!("../std.rs");
+        let mut injected = include_str!("../std.rs").to_owned();
+        if try_specs_enabled() {
+            injected.push_str(include_str!("../std_try.rs"));
+        }
         let mut parser = rustc_parse::new_parser_from_source_str(
             &compiler.sess.psess,
             rustc_span::FileName::Custom(thrust::INJECTED_STD_FILE_NAME.to_string()),
-            injected.to_owned(),
+            injected,
         )
         .unwrap();
         while let Some(item) = parser

@@ -1,6 +1,6 @@
 //@ignore-on-host: draft, stops at slice indexing by `IntoSliceIdx::Output` in the generic `Index` impl of `IndexSlice`, which has no specification (see README.md)
 //@compile-flags: -Adead_code -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:develop-2493045c3
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:develop-2493045c3 THRUST_TRY_SPECS=1
 
 // Extracted from tests/ui/pass/rustc_coroutine/target.rs (rustc's
 // rustc_abi::layout::coroutine::coroutine_saved_local_eligibility, adapted).
