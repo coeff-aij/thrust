@@ -235,10 +235,15 @@ pub struct Size {
 impl Size {
     pub const ZERO: Size = Size { raw: 0 };
 
-    // Trusted: nothing states that the `impl TryInto<u64>` conversion succeeds, so `unwrap` can panic (Unsat).
+    // Here and in `from_bytes`, the `impl TryInto<u64>` parameter is a named `T: TryIntoSpec<u64>`:
+    // `TryInto` says nothing about the converted value, and a formula cannot name the type of an
+    // `impl Trait` parameter to call `TryIntoSpec`'s predicates on.
+    //
+    // Trusted: `u64::div_ceil` has no specification (Thrust panics, unknown def).
     #[thrust::trusted]
-    #[thrust::callable]
-    pub fn from_bits(bits: impl TryInto<u64>) -> Size {
+    #[thrust_macros::requires(T::fits(bits))]
+    #[thrust_macros::ensures(thrust_models::exists(|b| T::converts_to(bits, b) && result.raw == (b + 7) / 8))]
+    pub fn from_bits<T: TryIntoSpec<u64>>(bits: T) -> Size {
         let bits = bits.try_into().ok().unwrap();
         Size {
             raw: bits.div_ceil(8),
@@ -246,10 +251,9 @@ impl Size {
     }
 
     #[inline]
-    // Trusted: nothing states that the `impl TryInto<u64>` conversion succeeds, so `unwrap` can panic (Unsat).
-    #[thrust::trusted]
-    #[thrust::callable]
-    pub fn from_bytes(bytes: impl TryInto<u64>) -> Size {
+    #[thrust_macros::requires(T::fits(bytes))]
+    #[thrust_macros::ensures(thrust_models::exists(|b| T::converts_to(bytes, b) && result.raw == b))]
+    pub fn from_bytes<T: TryIntoSpec<u64>>(bytes: T) -> Size {
         let bytes: u64 = bytes.try_into().ok().unwrap();
         Size { raw: bytes }
     }
