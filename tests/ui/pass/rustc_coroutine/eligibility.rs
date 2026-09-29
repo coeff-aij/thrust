@@ -1,4 +1,4 @@
-//@ignore-on-host: draft, stops at the call `VariantIdx::new` in an ensures, where only predicates may be called, and behind it at slice indexing by `IntoSliceIdx::Output` in the generic `Index` impl of `IndexSlice` (see README.md)
+//@ignore-on-host: draft, stops at slice indexing by `IntoSliceIdx::Output` in the generic `Index` impl of `IndexSlice`, which has no specification (see README.md)
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:develop-2493045c3
 
@@ -692,7 +692,6 @@ impl<I: Idx, T> IntoIterator for IndexVec<I, T> {
     type IntoIter = vec::IntoIter<T>;
 
     #[inline]
-    #[thrust::ignored]
     fn into_iter(self) -> vec::IntoIter<T> {
         self.raw.into_iter()
     }
@@ -713,7 +712,6 @@ impl<'a, I: Idx, T> IntoIterator for &'a mut IndexVec<I, T> {
     type IntoIter = slice::IterMut<'a, T>;
 
     #[inline]
-    #[thrust::ignored]
     fn into_iter(self) -> slice::IterMut<'a, T> {
         self.iter_mut()
     }
@@ -721,7 +719,6 @@ impl<'a, I: Idx, T> IntoIterator for &'a mut IndexVec<I, T> {
 
 impl<I: Idx, T> IndexSlice<I, T> {
     #[inline]
-    #[thrust::ignored]
     pub fn iter_mut(&mut self) -> slice::IterMut<'_, T> {
         self.raw.iter_mut()
     }
@@ -774,8 +771,8 @@ impl<'a, T> thrust_models::Model for SliceIter<'a, T> {
 impl<'a, I: Idx, T> thrust_models::Model for IterEnumerated<'a, I, T> {
     type Ty = Self;
 }
-impl<VariantIdx, FieldIdx> thrust_models::Model for SavedLocalEligibility<VariantIdx, FieldIdx> {
-    type Ty = Self;
+impl<VariantIdx: thrust_models::Model, FieldIdx: thrust_models::Model> thrust_models::Model for SavedLocalEligibility<VariantIdx, FieldIdx> {
+    type Ty = SavedLocalEligibility<<VariantIdx as thrust_models::Model>::Ty, <FieldIdx as thrust_models::Model>::Ty>;
 }
 impl<T> thrust_models::Model for DenseBitSet<T> {
     type Ty = (Int, Seq<Int>, ());
@@ -845,7 +842,9 @@ impl<I: Idx> thrust_models::Model for IdxRange<I> {
     // checked against the solver (this file does not verify, see header).
     && forall(|l: usize, v: usize|
         !(0 <= l && l < nb_locals
-            && result.1[l] == SavedLocalEligibility::Assigned(VariantIdx::new(v)))
+            && thrust_models::exists(|vi: <VariantIdx as thrust_models::Model>::Ty|
+                thrust_models::exists(|vn: Int| vn == v && <VariantIdx as Idx>::index_is(vi, vn))
+                    && result.1[l] == SavedLocalEligibility::Assigned(vi)))
         || (v < (*variant_fields).len()
             && thrust_models::exists(|f: usize|
                 0 <= f && f < (*variant_fields)[v].len()
@@ -862,9 +861,9 @@ impl<I: Idx> thrust_models::Model for IdxRange<I> {
     // (`Int: PartialEq<T> where T: Model<Ty = Int>`, and `usize` is one).
     && forall(|l: usize| !(0 <= l && l < nb_locals) ||
         (!thrust_models::exists(|li: Int| li == l && DenseBitSet::<LocalIdx>::mem(result.0, li))
-            || thrust_models::exists(|x: Option<FieldIdx>| result.1[l] == SavedLocalEligibility::Ineligible(x))))
+            || thrust_models::exists(|x: Option<<FieldIdx as thrust_models::Model>::Ty>| result.1[l] == SavedLocalEligibility::Ineligible(x))))
     && forall(|l: usize| !(0 <= l && l < nb_locals) ||
-        (!thrust_models::exists(|x: Option<FieldIdx>| result.1[l] == SavedLocalEligibility::Ineligible(x))
+        (!thrust_models::exists(|x: Option<<FieldIdx as thrust_models::Model>::Ty>| result.1[l] == SavedLocalEligibility::Ineligible(x))
             || thrust_models::exists(|li: Int| li == l && DenseBitSet::<LocalIdx>::mem(result.0, li))))
 )]
 #[thrust_macros::context]
