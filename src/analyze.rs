@@ -236,6 +236,68 @@ fn bind_spec_args<'tcx>(
     ))
 }
 
+/// Whether the bounds an extern spec puts on its type parameters by traits of its own hold at the
+/// arguments it was bound to. A spec stated through a trait (`I: IteratorSpec`) says nothing
+/// about a type that does not implement it, so a call at such a type finds no specification.
+///
+/// `Model` and its `PartialEq` are assumed of every type parameter of the caller, as a spec
+/// assumes them of its own: they are what a bound like `usize: SliceIndexSpec<T>` needs of `T`.
+fn spec_bounds_hold<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    spec_def_id: LocalDefId,
+    args: mir_ty::GenericArgsRef<'tcx>,
+    caller_def_id: DefId,
+    model_ty: DefId,
+) -> bool {
+    let model_trait = tcx.parent(model_ty);
+    let typing_env = model_assuming_env(tcx, caller_def_id, model_ty);
+    tcx.predicates_of(spec_def_id)
+        .instantiate(tcx, args)
+        .predicates
+        .into_iter()
+        .filter_map(|clause| clause.as_trait_clause())
+        .map(|clause| clause.skip_binder().trait_ref)
+        .filter(|trait_ref| trait_ref.def_id.is_local() && trait_ref.def_id != model_trait)
+        .filter_map(|trait_ref| {
+            tcx.try_normalize_erasing_regions(typing_env, trait_ref)
+                .ok()
+        })
+        .all(|trait_ref| {
+            tcx.codegen_select_candidate(typing_env.as_query_input(trait_ref))
+                .is_ok()
+        })
+}
+
+fn model_assuming_env<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    caller_def_id: DefId,
+    model_ty: DefId,
+) -> mir_ty::TypingEnv<'tcx> {
+    use mir_ty::Upcast as _;
+    let env = mir_ty::TypingEnv::post_analysis(tcx, caller_def_id);
+    let model_trait = tcx.parent(model_ty);
+    let Some(eq_trait) = tcx.lang_items().eq_trait() else {
+        return env;
+    };
+    let generics = tcx.generics_of(caller_def_id);
+    let assumed = (0..generics.count())
+        .map(|idx| generics.param_at(idx, tcx))
+        .filter(|param| matches!(param.kind, mir_ty::GenericParamDefKind::Type { .. }))
+        .map(|param| tcx.mk_param_from_def(param).expect_ty())
+        .flat_map(|ty| {
+            let model = mir_ty::Ty::new_projection(tcx, model_ty, [ty]);
+            [
+                mir_ty::TraitRef::new(tcx, model_trait, [ty]).upcast(tcx),
+                mir_ty::TraitRef::new(tcx, eq_trait, [model, model]).upcast(tcx),
+            ]
+        });
+    let clauses = tcx.mk_clauses_from_iter(env.param_env.caller_bounds().iter().chain(assumed));
+    mir_ty::TypingEnv {
+        param_env: mir_ty::ParamEnv::new(clauses),
+        ..env
+    }
+}
+
 fn match_spec_arg<'tcx>(
     tcx: TyCtxt<'tcx>,
     spec_arg: mir_ty::GenericArg<'tcx>,
@@ -866,7 +928,13 @@ impl<'tcx> Analyzer<'tcx> {
                 local_def_id,
                 target_args: Some(target_args),
                 ..
-            }) => bind_spec_args(self.tcx, *local_def_id, target_args, generic_args)?,
+            }) => {
+                let bound = bind_spec_args(self.tcx, *local_def_id, target_args, generic_args)?;
+                let holds = self.def_ids().model_ty().is_none_or(|model_ty| {
+                    spec_bounds_hold(self.tcx, *local_def_id, bound, caller_def_id, model_ty)
+                });
+                holds.then_some(bound)?
+            }
             _ => generic_args,
         };
         let is_generic = matches!(self.defs.get(&def_id)?, DefTy::Generic(_));
