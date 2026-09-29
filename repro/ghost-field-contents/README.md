@@ -109,9 +109,11 @@ parse it.
 
 `repro.rs` is the one file that still fails, but not with `E0599`: it now reaches MIR analysis
 and the driver panics inside its own subtyping check on a `ghost!` closure that captures the
-whole `Hist` struct by value (`|h: Hist, x: i64| -> Seq<Int> { h.produced.push(x) }`). That is a
-distinct, separate defect from the field-projection gap this bundle documents; it is not analyzed
-further here.
+whole `Hist` struct by value (`|h: Hist, x: i64| -> Seq<Int> { h.produced.push(x) }`). The
+parameter's type `Hist` differs from the live variable's, `&mut Hist`; written as
+`|h: &mut Hist, x: i64| -> Seq<Int> { (*h).produced.push(x) }` the file reaches the solver like
+the other six (checked on `main` 496e711). The panic on the mistyped parameter is a separate
+defect, present upstream too: [`../ghost-param-type-panic/`](../ghost-param-type-panic/README.md).
 
 ## Relation to the fix
 

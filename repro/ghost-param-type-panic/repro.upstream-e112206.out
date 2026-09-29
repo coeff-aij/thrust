@@ -1,0 +1,5 @@
+
+thread 'rustc' panicked at src/rty/subtyping.rs:155:14:
+inconsistent types: got=&mut (own int,
+own Seq<int>), expected=(own int,
+own Seq<int>)
