@@ -503,6 +503,26 @@ mod thrust_models {
         type Ty = core::ops::ControlFlow<<B as Model>::Ty, <C as Model>::Ty>;
     }
 
+    impl<Idx> Model for core::ops::Range<Idx> where Idx: Model {
+        type Ty = core::ops::Range<<Idx as Model>::Ty>;
+    }
+
+    impl<Idx> Model for core::ops::RangeFrom<Idx> where Idx: Model {
+        type Ty = core::ops::RangeFrom<<Idx as Model>::Ty>;
+    }
+
+    impl<Idx> Model for core::ops::RangeTo<Idx> where Idx: Model {
+        type Ty = core::ops::RangeTo<<Idx as Model>::Ty>;
+    }
+
+    impl<Idx> Model for core::ops::RangeToInclusive<Idx> where Idx: Model {
+        type Ty = core::ops::RangeToInclusive<<Idx as Model>::Ty>;
+    }
+
+    impl Model for core::ops::RangeFull {
+        type Ty = core::ops::RangeFull;
+    }
+
     #[allow(dead_code)]
     #[thrust::def::exists]
     #[thrust::ignored]
@@ -1455,6 +1475,113 @@ where
     #[thrust_macros::predicate]
     fn store_value(self, seq: Vec<T>, out: T, new_seq: Vec<T>) -> bool {
         new_seq == seq.store(self, out)
+    }
+}
+
+#[thrust_macros::context]
+impl<T> SliceIndexSpec<T> for std::ops::Range<usize>
+where
+    T: thrust_models::Model,
+{
+    #[thrust_macros::predicate]
+    fn in_bounds(self, seq: Vec<T>) -> bool {
+        self.start <= self.end && self.end <= seq.len()
+    }
+
+    #[thrust_macros::predicate]
+    fn has_value(self, seq: Vec<T>, out: [T]) -> bool {
+        seq.subsequence(self.start, self.end) == out
+    }
+
+    #[thrust_macros::predicate]
+    fn store_value(self, seq: Vec<T>, out: [T], new_seq: Vec<T>) -> bool {
+        new_seq == seq.subsequence(0, self.start)
+            .concat(out)
+            .concat(seq.subsequence(self.end, seq.len()))
+    }
+}
+
+#[thrust_macros::context]
+impl<T> SliceIndexSpec<T> for std::ops::RangeFrom<usize>
+where
+    T: thrust_models::Model,
+{
+    #[thrust_macros::predicate]
+    fn in_bounds(self, seq: Vec<T>) -> bool {
+        self.start <= seq.len()
+    }
+
+    #[thrust_macros::predicate]
+    fn has_value(self, seq: Vec<T>, out: [T]) -> bool {
+        seq.subsequence(self.start, seq.len()) == out
+    }
+
+    #[thrust_macros::predicate]
+    fn store_value(self, seq: Vec<T>, out: [T], new_seq: Vec<T>) -> bool {
+        new_seq == seq.subsequence(0, self.start).concat(out)
+    }
+}
+
+#[thrust_macros::context]
+impl<T> SliceIndexSpec<T> for std::ops::RangeTo<usize>
+where
+    T: thrust_models::Model,
+{
+    #[thrust_macros::predicate]
+    fn in_bounds(self, seq: Vec<T>) -> bool {
+        self.end <= seq.len()
+    }
+
+    #[thrust_macros::predicate]
+    fn has_value(self, seq: Vec<T>, out: [T]) -> bool {
+        seq.subsequence(0, self.end) == out
+    }
+
+    #[thrust_macros::predicate]
+    fn store_value(self, seq: Vec<T>, out: [T], new_seq: Vec<T>) -> bool {
+        new_seq == out.concat(seq.subsequence(self.end, seq.len()))
+    }
+}
+
+#[thrust_macros::context]
+impl<T> SliceIndexSpec<T> for std::ops::RangeToInclusive<usize>
+where
+    T: thrust_models::Model,
+{
+    #[thrust_macros::predicate]
+    fn in_bounds(self, seq: Vec<T>) -> bool {
+        self.end < seq.len()
+    }
+
+    #[thrust_macros::predicate]
+    fn has_value(self, seq: Vec<T>, out: [T]) -> bool {
+        seq.subsequence(0, self.end + 1) == out
+    }
+
+    #[thrust_macros::predicate]
+    fn store_value(self, seq: Vec<T>, out: [T], new_seq: Vec<T>) -> bool {
+        new_seq == out.concat(seq.subsequence(self.end + 1, seq.len()))
+    }
+}
+
+#[thrust_macros::context]
+impl<T> SliceIndexSpec<T> for std::ops::RangeFull
+where
+    T: thrust_models::Model,
+{
+    #[thrust_macros::predicate]
+    fn in_bounds(self, _seq: Vec<T>) -> bool {
+        true
+    }
+
+    #[thrust_macros::predicate]
+    fn has_value(self, seq: Vec<T>, out: [T]) -> bool {
+        seq == out
+    }
+
+    #[thrust_macros::predicate]
+    fn store_value(self, _seq: Vec<T>, out: [T], new_seq: Vec<T>) -> bool {
+        new_seq == out
     }
 }
 
