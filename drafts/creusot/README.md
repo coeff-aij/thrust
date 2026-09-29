@@ -46,6 +46,15 @@ predicate instances are emitted in discovery order, so `Take<Range>`'s instance 
 is defined; reordering the emitted definitions by hand
 gives `unknown` on both sides.
 
+## decuple_range_closure_inferred.rs (+ fail/)
+
+`tests/ui/{pass,fail}/creusot/decuple_range.rs` with the closure's `requires(x < 100)` left to
+inference. The closure's precondition unknown then sits under the quantifiers of
+`Map::next_precondition` and `Map::preservation`, and so under a `forall` in the premises that
+assume `Map::invariant`. On fptprove 0360cb142 both sides give no answer at 60 s, and at 300 s
+the solver is killed for memory (6 GB and 8 GB) while normalizing the clauses, before its CEGIS
+loop starts. With `requires(true)` written instead, both sides answer.
+
 ## fail/map_index0.rs, fail/map_value.rs
 
 Twins of `tests/ui/pass/creusot/map.rs` that the solver does not refute, so they cannot stand in
