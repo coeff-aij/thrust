@@ -945,13 +945,6 @@ fn _extern_spec_i32_is_negative(x: i32) -> bool {
     i32::is_negative(x)
 }
 
-#[thrust::extern_spec_fn]
-#[thrust_macros::requires(true)]
-#[thrust_macros::ensures((x >= y && result == Some(x - y)) || (x < y && result == None))]
-fn _extern_spec_usize_checked_sub(x: usize, y: usize) -> Option<usize> {
-    usize::checked_sub(x, y)
-}
-
 // The comparisons of primitive integers, which derived `PartialOrd` / `Ord` impls call on
 // their fields.
 macro_rules! int_cmp_specs {
@@ -990,6 +983,84 @@ int_cmp_specs!(u8, _extern_spec_u8_partial_cmp, _extern_spec_u8_cmp);
 int_cmp_specs!(u16, _extern_spec_u16_partial_cmp, _extern_spec_u16_cmp);
 int_cmp_specs!(u32, _extern_spec_u32_partial_cmp, _extern_spec_u32_cmp);
 int_cmp_specs!(u64, _extern_spec_u64_partial_cmp, _extern_spec_u64_cmp);
+
+// The checked arithmetic of signed integers: `None` exactly when the result leaves the range of
+// the type.
+macro_rules! int_checked_specs {
+    ($T:ty, $checked_add:ident, $checked_sub:ident, $checked_mul:ident) => {
+        #[thrust::extern_spec_fn]
+        #[thrust_macros::requires(true)]
+        #[thrust_macros::ensures(
+            (<$T>::MIN <= x + y && x + y <= <$T>::MAX && result == Some(x + y))
+            || ((x + y < <$T>::MIN || x + y > <$T>::MAX) && result == None)
+        )]
+        fn $checked_add(x: $T, y: $T) -> Option<$T> {
+            <$T>::checked_add(x, y)
+        }
+
+        #[thrust::extern_spec_fn]
+        #[thrust_macros::requires(true)]
+        #[thrust_macros::ensures(
+            (<$T>::MIN <= x - y && x - y <= <$T>::MAX && result == Some(x - y))
+            || ((x - y < <$T>::MIN || x - y > <$T>::MAX) && result == None)
+        )]
+        fn $checked_sub(x: $T, y: $T) -> Option<$T> {
+            <$T>::checked_sub(x, y)
+        }
+
+        #[thrust::extern_spec_fn]
+        #[thrust_macros::requires(true)]
+        #[thrust_macros::ensures(
+            (<$T>::MIN <= x * y && x * y <= <$T>::MAX && result == Some(x * y))
+            || ((x * y < <$T>::MIN || x * y > <$T>::MAX) && result == None)
+        )]
+        fn $checked_mul(x: $T, y: $T) -> Option<$T> {
+            <$T>::checked_mul(x, y)
+        }
+    };
+}
+
+// The checked arithmetic of unsigned integers. The arguments are not negative, so a sum or a
+// product can only leave the range above it and a difference only below it.
+macro_rules! uint_checked_specs {
+    ($T:ty, $checked_add:ident, $checked_sub:ident, $checked_mul:ident) => {
+        #[thrust::extern_spec_fn]
+        #[thrust_macros::requires(true)]
+        #[thrust_macros::ensures(
+            (x + y <= <$T>::MAX && result == Some(x + y)) || (x + y > <$T>::MAX && result == None)
+        )]
+        fn $checked_add(x: $T, y: $T) -> Option<$T> {
+            <$T>::checked_add(x, y)
+        }
+
+        #[thrust::extern_spec_fn]
+        #[thrust_macros::requires(true)]
+        #[thrust_macros::ensures((x >= y && result == Some(x - y)) || (x < y && result == None))]
+        fn $checked_sub(x: $T, y: $T) -> Option<$T> {
+            <$T>::checked_sub(x, y)
+        }
+
+        #[thrust::extern_spec_fn]
+        #[thrust_macros::requires(true)]
+        #[thrust_macros::ensures(
+            (x * y <= <$T>::MAX && result == Some(x * y)) || (x * y > <$T>::MAX && result == None)
+        )]
+        fn $checked_mul(x: $T, y: $T) -> Option<$T> {
+            <$T>::checked_mul(x, y)
+        }
+    };
+}
+
+int_checked_specs!(isize, _extern_spec_isize_checked_add, _extern_spec_isize_checked_sub, _extern_spec_isize_checked_mul);
+int_checked_specs!(i8, _extern_spec_i8_checked_add, _extern_spec_i8_checked_sub, _extern_spec_i8_checked_mul);
+int_checked_specs!(i16, _extern_spec_i16_checked_add, _extern_spec_i16_checked_sub, _extern_spec_i16_checked_mul);
+int_checked_specs!(i32, _extern_spec_i32_checked_add, _extern_spec_i32_checked_sub, _extern_spec_i32_checked_mul);
+int_checked_specs!(i64, _extern_spec_i64_checked_add, _extern_spec_i64_checked_sub, _extern_spec_i64_checked_mul);
+uint_checked_specs!(usize, _extern_spec_usize_checked_add, _extern_spec_usize_checked_sub, _extern_spec_usize_checked_mul);
+uint_checked_specs!(u8, _extern_spec_u8_checked_add, _extern_spec_u8_checked_sub, _extern_spec_u8_checked_mul);
+uint_checked_specs!(u16, _extern_spec_u16_checked_add, _extern_spec_u16_checked_sub, _extern_spec_u16_checked_mul);
+uint_checked_specs!(u32, _extern_spec_u32_checked_add, _extern_spec_u32_checked_sub, _extern_spec_u32_checked_mul);
+uint_checked_specs!(u64, _extern_spec_u64_checked_add, _extern_spec_u64_checked_sub, _extern_spec_u64_checked_mul);
 
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
