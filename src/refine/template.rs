@@ -13,24 +13,17 @@ use crate::chc;
 use crate::refine;
 use crate::rty;
 
-/// The model of a contiguous sequence of `elem_ty`: the `(elements, length)` pair that
-/// `thrust_models` gives to `Vec<T>`, `[T]` and `[T; N]` alike.
+/// The model of a contiguous sequence of `elem_ty`: the native sequence that `thrust_models`
+/// gives to `Vec<T>`, `[T]` and `[T; N]` alike.
 ///
-/// A concrete element type never needs this: `<Vec<i64> as Model>::Ty` normalizes all the way
-/// to `model::Seq<model::Int>`, whose fields are traversed as a struct into the very same pair.
-///
-/// A generic element type does not get that far, in either of two ways. Where the element type
-/// is bounded by `Model`, the projection normalizes to `Seq<<T as Model>::Ty>` but the nested
-/// alias it leaves behind makes `resolve_model_ty` discard the normalization and hand back the
-/// original type. Where it is not, the projection does not normalize at all, since `T: Model`
-/// is not provable. Neither leaves an ADT to traverse, so the pair is spelled out here instead.
+/// A concrete element type never needs this: `<Vec<i64> as Model>::Ty` normalizes to
+/// `model::Seq<model::Int>`, which `model_adt` maps to the same type. A generic element type
+/// does not get that far: where it is not bounded by `Model` the projection does not normalize,
+/// and where it is, the nested alias it leaves behind makes `resolve_model_ty` discard the
+/// normalization. The element's model is then the element type as `build` sees it, a type
+/// parameter, and the sequence over it is spelled out here.
 fn seq_model_type<V>(elem_ty: rty::Type<V>) -> rty::Type<V> {
-    let array_ty = rty::ArrayType::new(rty::Type::int(), elem_ty);
-    rty::TupleType::new(vec![
-        rty::PointerType::own(rty::Type::Array(array_ty)).into(),
-        rty::PointerType::own(rty::Type::int()).into(),
-    ])
-    .into()
+    rty::Type::Seq(Box::new(rty::RefinedType::unrefined(elem_ty)))
 }
 
 /// The model of an iterator over a contiguous sequence: the `(base, cursor)` pair, where the
