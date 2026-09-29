@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use num_bigint::BigInt;
 use rustc_hir::def::DefKind;
@@ -1210,13 +1210,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         &mut self,
         func: Operand<'tcx>,
         args: Vec<Operand<'tcx>>,
+        ret_ty: mir_ty::Ty<'tcx>,
     ) -> rty::RefinedType<Var> {
         let func_ty = if let Some((def_id, args)) = func.const_fn_def() {
             self.callable_ty(def_id, args).vacuous()
         } else {
             self.operand_type(func.clone()).ty
         };
-        let rty::Type::Function(func_ty) = func_ty else {
+        let rty::Type::Function(mut func_ty) = func_ty else {
             panic!("unexpected def type: {:?}", func_ty);
         };
         let expected_args: IndexVec<rty::FunctionParamIdx, _> = args
@@ -1224,7 +1225,36 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .map(|op| self.operand_refined_type(op))
             .collect();
         let expected_args = Self::expand_call_args(expected_args, func_ty.abi);
+        func_ty.abi = rty::FunctionAbi::Rust;
         assert!(func_ty.params.len() == expected_args.len());
+
+        // A temporary can only hold an argument whose refinement mentions variables that the
+        // environment passes on to later blocks; otherwise keep the template.
+        let deps: HashSet<Var> = self.env.dependencies().map(|(v, _)| v).collect();
+        let bindable = expected_args.iter().all(|arg| {
+            arg.ty.to_sort().is_singleton()
+                || arg
+                    .refinement
+                    .body
+                    .atoms
+                    .iter()
+                    .flat_map(|a| a.fv())
+                    .chain(arg.refinement.body.formula.fv())
+                    .all(|v| match v {
+                        rty::RefinedTypeVar::Free(v) => deps.contains(v),
+                        _ => true,
+                    })
+        });
+        if !bindable {
+            let rty = self
+                .type_builder
+                .for_template(&mut self.ctx)
+                .with_scope(&self.env)
+                .build_refined(ret_ty);
+            let clauses = self.relate_fn_sub_type(func_ty, expected_args, rty.clone());
+            self.ctx.extend_clauses(clauses);
+            return rty;
+        }
 
         let mut param_terms = IndexVec::<rty::FunctionParamIdx, chc::Term<Var>>::new();
         let mut singleton_args = IndexVec::<rty::FunctionParamIdx, _>::new();
@@ -1252,8 +1282,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         );
         self.ctx.extend_clauses(clauses);
 
-        let ret = (*func_ty.ret).clone();
-        ret.subst_var(|idx| param_terms[idx].clone())
+        let mut ret = (*func_ty.ret)
+            .clone()
+            .subst_var(|idx| param_terms[idx].clone());
+        if ret.ty.to_sort().is_singleton() {
+            // the environment keeps no variable for a value of a singleton sort
+            ret.refinement = ret.refinement.subst_value_var(|| chc::Term::tuple(vec![]));
+        }
+        ret
     }
 
     fn type_call<I>(&mut self, func: Operand<'tcx>, args: I, expected_ret: &rty::RefinedType<Var>)
@@ -1652,8 +1688,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
             let direct = std::env::var_os("THRUST_DIRECT_CALL_RET").is_some();
             if direct && self.ghost_marker_formula_fn(func, args).is_none() {
-                let rty = self
-                    .type_call_direct(func.clone(), args.iter().map(|a| a.node.clone()).collect());
+                let ret_ty = self.local_decls[destination].ty;
+                let rty = self.type_call_direct(
+                    func.clone(),
+                    args.iter().map(|a| a.node.clone()).collect(),
+                    ret_ty,
+                );
                 self.bind_local(destination, rty);
                 return;
             }
