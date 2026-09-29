@@ -191,6 +191,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     }
 
     fn analyze_local_defs(&mut self) {
+        // Inherited laws first: with them after the bodies, the `skip_take` query (the same clauses
+        // in another order) is not answered by the solver within 300 s, where it answers in 8 s.
+        self.analyze_inherited_laws();
         // A def with an `FnMut`-bounded type parameter is decided after every other body has
         // been analyzed, because the call sites that instantiate it are found by analyzing
         // those bodies.
@@ -244,7 +247,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 })
                 .collect();
         }
-        self.analyze_inherited_laws();
     }
 
     /// Whether `local_def_id` is a `#[thrust::law]` declared in a local trait.
