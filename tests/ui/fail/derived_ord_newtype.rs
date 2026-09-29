@@ -12,6 +12,22 @@ impl thrust_models::Model for Align {
     type Ty = thrust_models::model::Int;
 }
 
+#[thrust_macros::context]
+impl PartialOrdSpec for Align {
+    #[thrust_macros::predicate]
+    fn compares(self, other: Self, ord: Option<std::cmp::Ordering>) -> bool {
+        u8::compares(self, other, ord)
+    }
+
+    fn compares_functional(
+        a: &Self,
+        b: &Self,
+        x: Option<std::cmp::Ordering>,
+        y: Option<std::cmp::Ordering>,
+    ) {
+    }
+}
+
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(result == (a < b))]
 fn lt(a: Align, b: Align) -> bool {

@@ -13,6 +13,28 @@ impl thrust_models::Model for P {
     type Ty = P;
 }
 
+// The derived order compares the fields in order.
+#[thrust_macros::context]
+impl PartialOrdSpec for P {
+    #[thrust_macros::predicate]
+    fn compares(self, other: Self, ord: Option<std::cmp::Ordering>) -> bool {
+        (self.a < other.a && ord == Some(std::cmp::Ordering::Less))
+            || (self.a > other.a && ord == Some(std::cmp::Ordering::Greater))
+            || (self.a == other.a
+                && ((self.b < other.b && ord == Some(std::cmp::Ordering::Less))
+                    || (self.b == other.b && ord == Some(std::cmp::Ordering::Equal))
+                    || (self.b > other.b && ord == Some(std::cmp::Ordering::Greater))))
+    }
+
+    fn compares_functional(
+        a: &Self,
+        b: &Self,
+        x: Option<std::cmp::Ordering>,
+        y: Option<std::cmp::Ordering>,
+    ) {
+    }
+}
+
 #[thrust_macros::requires(x == P { a: 1, b: 5 } && y == P { a: 1, b: 5 })]
 #[thrust_macros::ensures(true)]
 fn check(x: P, y: P) {
