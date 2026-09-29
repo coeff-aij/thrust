@@ -205,6 +205,19 @@ mod thrust_models {
             unimplemented!()
         }
 
+        /// Relates two states of an `FnMut` closure: Creusot's `FnMutExt::hist_inv` (formerly
+        /// `unnest`). Reflexive, transitive, and implied by every call's postcondition between
+        /// the states before and after the call; at a concrete closure, the captures taken by
+        /// `&mut` keep their final values and those taken by `&` their values.
+        ///
+        /// Prefer the `thrust_macros::unnest!(f, g)` surface syntax, which desugars to this.
+        #[allow(dead_code)]
+        #[thrust::def::closure_unnest]
+        #[thrust::ignored]
+        pub fn closure_unnest<F>(_f: F, _g: F) -> bool {
+            unimplemented!()
+        }
+
         #[thrust::def::seq_model]
         pub struct Seq<T: ?Sized>(PhantomData<T>);
 

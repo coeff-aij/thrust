@@ -673,6 +673,70 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         FormulaOrTerm::Formula(fn_ty.postcondition_formula(&param_args, result))
     }
 
+    fn translate_closure_unnest(
+        &self,
+        from: &'tcx rustc_hir::Expr<'tcx>,
+        to: &'tcx rustc_hir::Expr<'tcx>,
+    ) -> FormulaOrTerm<rty::FunctionParamIdx> {
+        let model_ty = self.expr_ty(from);
+        let closure_ty = match model_ty.kind() {
+            mir_ty::TyKind::Adt(adt, args) if Some(adt.did()) == self.def_ids.closure_model() => {
+                args.type_at(0)
+            }
+            _ => panic!(
+                "unnest! takes two closure states (`Closure<F>`): {:?}",
+                from
+            ),
+        };
+        let from = self.to_term(from);
+        let to = self.to_term(to);
+        let formula = match closure_ty.kind() {
+            mir_ty::TyKind::Closure(..) => {
+                let upvars_sort = self.type_builder.build(model_ty).to_sort();
+                analyze::closure_unnest::concrete_definition(
+                    self.tcx,
+                    closure_ty,
+                    &upvars_sort,
+                    from,
+                    to,
+                )
+            }
+            mir_ty::TyKind::Param(param_ty) => {
+                let pred = self.closure_unnest_pred(*param_ty, model_ty);
+                chc::Atom::new(pred.into(), vec![from, to]).into()
+            }
+            _ => panic!("unnest! at a type that is not a closure: {closure_ty:?}"),
+        };
+        FormulaOrTerm::Formula(formula)
+    }
+
+    /// The relation of the closure type parameter `param_ty`, one symbol per parameter as its
+    /// contract is, with its laws.
+    fn closure_unnest_pred(
+        &self,
+        param_ty: mir_ty::ParamTy,
+        model_ty: mir_ty::Ty<'tcx>,
+    ) -> chc::ForallPred {
+        let contract = self
+            .receiver_closure_fn_type(model_ty)
+            .unwrap_or_else(|| panic!("unnest! at {param_ty:?}, which has no closure bound"));
+        let sort = self.type_builder.build(param_ty.to_ty(self.tcx)).to_sort();
+        let pred = refine::closure_unnest_forall_pred(
+            self.tcx,
+            self.type_builder.param_def_id(&param_ty),
+            vec![sort.clone()],
+            vec![sort.clone(), sort],
+        );
+        self.register_forall_pred(pred.clone());
+        let mut system = self.analyzer.system.borrow_mut();
+        if system.laws_of(&pred).is_empty() {
+            for law in analyze::closure_unnest::laws(&pred, &contract) {
+                system.add_law(pred.clone(), law);
+            }
+        }
+        pred
+    }
+
     fn node_arg_type_at(&self, hir_id: HirId, idx: usize) -> rty::Type<rty::Closed> {
         let mut generic_args = self.typeck.node_args(hir_id);
         if !self.generic_args.is_empty() {
@@ -1025,6 +1089,12 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                                 );
                             };
                             return self.translate_closure_postcondition(receiver, args, result);
+                        }
+                        if Some(def_id) == self.def_ids.closure_unnest() {
+                            let [from, to] = args else {
+                                panic!("closure_unnest takes two closure states");
+                            };
+                            return self.translate_closure_unnest(from, to);
                         }
                         if Some(def_id) == self.def_ids.exists() {
                             assert_eq!(args.len(), 1, "exists takes exactly 1 argument");

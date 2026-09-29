@@ -29,6 +29,16 @@ the `Err` payload's invariant, does not change that.
 The ghost term names only live variables, so `next` keeps `iter` live past the ghost with an
 unused shared borrow (`_keep`), as Creusot's `ghost! { *iter }` reads `iter`.
 
+## counter_creusot.rs (+ fail/)
+
+Creusot's `examples/counter` with its own property (`x == v`, `cnt == x.len()`) over a `Range`,
+through `map_ext.rs`'s `MapInv` with an `FnMut` closure: `produces` carries the chain `fs` of
+closure states and, as creusot-std's `std/iter/map_inv.rs`, relates them by `unnest!` (Creusot's
+`hist_inv`); the closure's ensures adds `unnest(*self, ^self)` of Creusot's `postcondition_mut`
+(the borrow of `cnt` keeps its prophecy). Stage S2: with the adapter's and `from_iter`'s bodies
+trusted both conjuncts are decided and the fail twin (`cnt == x.len() + 1`) refutes; checked,
+`from_iter`'s instance and the generic `produces_trans_witness` stall on the witness of `fs`.
+
 ## skip_take_range.rs (+ fail/)
 
 `Skip<Take<Range>>`, a concrete instantiation of `skip_take.rs`. Stage S2: the nested generic-impl

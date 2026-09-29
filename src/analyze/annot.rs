@@ -270,6 +270,14 @@ pub fn closure_postcondition_path() -> [Symbol; 3] {
     ]
 }
 
+pub fn closure_unnest_path() -> [Symbol; 3] {
+    [
+        Symbol::intern("thrust"),
+        Symbol::intern("def"),
+        Symbol::intern("closure_unnest"),
+    ]
+}
+
 pub fn extract_annot_tokens(attr: Attribute) -> TokenStream {
     let Attribute::Unparsed(item) = attr else {
         panic!("invalid attribute: expected unparsed");

@@ -435,10 +435,12 @@ impl<'tcx> analyze::Analyzer<'tcx> {
         generic_args: mir_ty::GenericArgsRef<'tcx>,
         owner_fn_id: DefId,
     ) -> Option<String> {
-        let post = if pred.inner().starts_with("q_pre_") {
-            false
+        let part = if pred.inner().starts_with("q_pre_") {
+            ClosureContractPart::Pre
         } else if pred.inner().starts_with("q_post_") {
-            true
+            ClosureContractPart::Post
+        } else if pred.inner().starts_with("q_unnest_") {
+            ClosureContractPart::Unnest
         } else {
             return None;
         };
@@ -474,18 +476,33 @@ impl<'tcx> analyze::Analyzer<'tcx> {
         let vars: rustc_index::IndexVec<chc::TermVarIdx, chc::Sort> =
             params.iter().cloned().collect();
         let terms: Vec<chc::Term<chc::TermVarIdx>> = vars.indices().map(chc::Term::var).collect();
-        let upvars = closure_upvars_term(terms.first()?.clone(), params.first()?, &fn_ty);
-        let formula = if post {
-            let (result, args) = terms.get(1..)?.split_last()?;
-            let call_args: Vec<_> = std::iter::once(upvars)
-                .chain(args.iter().cloned())
-                .collect();
-            fn_ty.postcondition_formula(&call_args, result.clone())
-        } else {
-            let call_args: Vec<_> = std::iter::once(upvars)
-                .chain(terms.get(1..)?.iter().cloned())
-                .collect();
-            fn_ty.precondition_formula(&call_args)
+        let upvars = || closure_upvars_term(terms[0].clone(), &params[0], &fn_ty);
+        let formula = match part {
+            ClosureContractPart::Unnest => {
+                let [from, to] = terms.as_slice() else {
+                    return None;
+                };
+                analyze::closure_unnest::concrete_definition(
+                    self.tcx(),
+                    closure_ty,
+                    &params[0],
+                    from.clone(),
+                    to.clone(),
+                )
+            }
+            ClosureContractPart::Post => {
+                let (result, args) = terms.get(1..)?.split_last()?;
+                let call_args: Vec<_> = std::iter::once(upvars())
+                    .chain(args.iter().cloned())
+                    .collect();
+                fn_ty.postcondition_formula(&call_args, result.clone())
+            }
+            ClosureContractPart::Pre => {
+                let call_args: Vec<_> = std::iter::once(upvars())
+                    .chain(terms.get(1..)?.iter().cloned())
+                    .collect();
+                fn_ty.precondition_formula(&call_args)
+            }
         };
 
         tracing::debug!(?symbol, ?params, ?formula, "closure contract instantiated");
@@ -507,6 +524,12 @@ impl<'tcx> analyze::Analyzer<'tcx> {
                 _ => None,
             })
     }
+}
+
+enum ClosureContractPart {
+    Pre,
+    Post,
+    Unnest,
 }
 
 /// The upvars argument a closure contract takes, given the sort the predicate
