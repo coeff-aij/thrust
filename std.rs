@@ -966,7 +966,7 @@ fn _extern_spec_i32_is_negative(x: i32) -> bool {
 }
 
 // The comparisons of primitive integers, which derived `PartialOrd` / `Ord` impls call on
-// their fields. The integers define their own `lt` and `gt`, which compare by value.
+// their fields. The integers define their own `lt`, `le`, `gt` and `ge`, which compare by value.
 macro_rules! int_cmp_specs {
     ($T:ty) => {
         const _: () = {
@@ -1001,11 +1001,24 @@ macro_rules! int_cmp_specs {
 
             #[thrust::extern_spec_fn]
             #[thrust_macros::requires(true)]
+            #[thrust_macros::ensures(result == (*x <= *y))]
+            fn le(x: &$T, y: &$T) -> bool {
+                <$T as PartialOrd>::le(x, y)
+            }
+
+            #[thrust::extern_spec_fn]
+            #[thrust_macros::requires(true)]
             #[thrust_macros::ensures(result == (*x > *y))]
             fn gt(x: &$T, y: &$T) -> bool {
                 <$T as PartialOrd>::gt(x, y)
             }
 
+            #[thrust::extern_spec_fn]
+            #[thrust_macros::requires(true)]
+            #[thrust_macros::ensures(result == (*x >= *y))]
+            fn ge(x: &$T, y: &$T) -> bool {
+                <$T as PartialOrd>::ge(x, y)
+            }
         };
     };
 }
@@ -2097,8 +2110,8 @@ fn _extern_spec_clone<T>(x: &T) -> T
     Clone::clone(x)
 }
 
-// The provided `lt` and `gt` of `PartialOrd`, which a type takes unless it defines its own: they
-// compare through the type's `partial_cmp`.
+// The provided `lt`, `le`, `gt` and `ge` of `PartialOrd`, which a type takes unless it defines its
+// own: they compare through the type's `partial_cmp`.
 #[thrust::extern_body_fn]
 #[allow(path_statements)]
 fn _extern_body_partialord_lt<T, U>(x: &T, y: &U) -> bool
@@ -2110,11 +2123,29 @@ fn _extern_body_partialord_lt<T, U>(x: &T, y: &U) -> bool
 
 #[thrust::extern_body_fn]
 #[allow(path_statements)]
+fn _extern_body_partialord_le<T, U>(x: &T, y: &U) -> bool
+  where T: PartialOrd<U> + ?Sized, U: ?Sized
+{
+    <T as PartialOrd<U>>::le;
+    matches!(x.partial_cmp(y), Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal))
+}
+
+#[thrust::extern_body_fn]
+#[allow(path_statements)]
 fn _extern_body_partialord_gt<T, U>(x: &T, y: &U) -> bool
   where T: PartialOrd<U> + ?Sized, U: ?Sized
 {
     <T as PartialOrd<U>>::gt;
     matches!(x.partial_cmp(y), Some(std::cmp::Ordering::Greater))
+}
+
+#[thrust::extern_body_fn]
+#[allow(path_statements)]
+fn _extern_body_partialord_ge<T, U>(x: &T, y: &U) -> bool
+  where T: PartialOrd<U> + ?Sized, U: ?Sized
+{
+    <T as PartialOrd<U>>::ge;
+    matches!(x.partial_cmp(y), Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal))
 }
 
 // `&A` compares its referents.
@@ -2129,9 +2160,27 @@ fn _extern_body_ref_partialord_lt<A, B>(x: &&A, y: &&B) -> bool
 
 #[thrust::extern_body_fn]
 #[allow(path_statements)]
+fn _extern_body_ref_partialord_le<A, B>(x: &&A, y: &&B) -> bool
+  where A: PartialOrd<B> + ?Sized, B: ?Sized
+{
+    <&A as PartialOrd<&B>>::le;
+    PartialOrd::le(*x, *y)
+}
+
+#[thrust::extern_body_fn]
+#[allow(path_statements)]
 fn _extern_body_ref_partialord_gt<A, B>(x: &&A, y: &&B) -> bool
   where A: PartialOrd<B> + ?Sized, B: ?Sized
 {
     <&A as PartialOrd<&B>>::gt;
     PartialOrd::gt(*x, *y)
+}
+
+#[thrust::extern_body_fn]
+#[allow(path_statements)]
+fn _extern_body_ref_partialord_ge<A, B>(x: &&A, y: &&B) -> bool
+  where A: PartialOrd<B> + ?Sized, B: ?Sized
+{
+    <&A as PartialOrd<&B>>::ge;
+    PartialOrd::ge(*x, *y)
 }
