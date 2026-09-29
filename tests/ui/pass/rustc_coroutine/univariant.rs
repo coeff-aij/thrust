@@ -1,4 +1,4 @@
-//@ignore-on-host: draft, stops at the raw-pointer cast of the untrusted `IndexSlice::from_raw`, and behind it at slice indexing by `IntoSliceIdx::Output` in the generic `Index` impl of `IndexSlice` (see README.md)
+//@ignore-on-host: draft, stops at slice indexing by `IntoSliceIdx::Output` in the generic `Index` impl of `IndexSlice`, which has no specification (see README.md)
 //@edition: 2024
 #![feature(new_range_api)]
 //@compile-flags: -Adead_code -C debug-assertions=off
@@ -238,8 +238,12 @@ impl<'a, I: Idx, T> Iterator for IterEnumerated<'a, I, T> {
     }
 }
 
+#[thrust_macros::context]
 impl<I: Idx, T> IndexSlice<I, T> {
     #[inline]
+    #[thrust::trusted]
+    #[thrust_macros::requires(true)]
+    #[thrust_macros::ensures(*result == *raw)]
     pub const fn from_raw(raw: &[T]) -> &Self {
         let ptr: *const [T] = raw;
 
@@ -247,6 +251,9 @@ impl<I: Idx, T> IndexSlice<I, T> {
     }
 
     #[inline]
+    #[thrust::trusted]
+    #[thrust_macros::requires(true)]
+    #[thrust_macros::ensures(*result == *raw && !result == !raw)]
     pub fn from_raw_mut(raw: &mut [T]) -> &mut Self {
         let ptr: *mut [T] = raw;
 
