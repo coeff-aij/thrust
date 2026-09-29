@@ -20,7 +20,7 @@ use thrust_models::{exists, forall, Ghost, Model};
 // `produces_one_invariant`, both called from `next` on ghost snapshots taken around the inner
 // `next`, as Creusot's `next` calls `produces_one_invariant` through `ghost!`. The session's manual
 // steps become lemmas: `produces_one_invariant` calls one lemma per conjunct of the invariant (its
-// `split_vc`) and `produces_one_prefix` (its `apply H11 with .. (singleton e ++ s)`). The
+// `split_vc`). The
 // `produces_trans` law has an empty body, as `Range`'s does. The rest is `collect` and `FromIterator for Vec<i64>`, as in
 // `weaker/collect_mutref.rs`.
 
@@ -163,20 +163,6 @@ where
     #[thrust_macros::ensures(Self::next_precondition(s1.iter, s1.func))]
     fn produces_one_next_precondition(s0: Ghost<Self>, e: Ghost<<I as Iterator>::Item>, b: Ghost<B>, s1: Ghost<Self>) {}
 
-    // The instance of `preservation(s0.iter)` that `preservation(s1.iter)` needs, at the prefix
-    // `[e] ++ s` (the session's `apply H11 with i,b,e1,(singleton e ++ s)`), named `t` so that the
-    // pushed sequence keeps the shape `preservation` is stated in.
-    #[thrust_macros::requires(I::produces(s0.iter, Seq::singleton(e), s1.iter))]
-    #[thrust_macros::ensures(forall(|s: Seq<<<I as Iterator>::Item as Model>::Ty>|
-        forall(|e1: <<I as Iterator>::Item as Model>::Ty|
-        forall(|e2: <<I as Iterator>::Item as Model>::Ty|
-        forall(|i: <I as Model>::Ty|
-            !I::produces(s1.iter, s.push(e1).push(e2), i)
-                || exists(|t: Seq<<<I as Iterator>::Item as Model>::Ty>|
-                    t == Seq::singleton(e).concat(s)
-                        && I::produces(s0.iter, t.push(e1).push(e2), i)))))))]
-    fn produces_one_prefix(s0: Ghost<Self>, e: Ghost<<I as Iterator>::Item>, s1: Ghost<Self>) {}
-
     #[thrust_macros::requires(<Self as Iterator>::invariant(s0)
         && s0.func == s1.func
         && I::produces(s0.iter, Seq::singleton(e), s1.iter)
@@ -184,7 +170,6 @@ where
         && I::invariant(s1.iter))]
     #[thrust_macros::ensures(Self::preservation(s1.iter, s1.func))]
     fn produces_one_preservation(s0: Ghost<Self>, e: Ghost<<I as Iterator>::Item>, b: Ghost<B>, s1: Ghost<Self>) {
-        Self::produces_one_prefix(s0, e, s1);
     }
 
     #[thrust_macros::requires(<Self as Iterator>::invariant(s0)
