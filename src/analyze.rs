@@ -308,6 +308,20 @@ fn spec_bounds_hold<'tcx>(
         })
 }
 
+/// The environment a predicate call in `owner_fn_id` is resolved in: the owner's own, with `Model`
+/// assumed of its type parameters as a spec assumes it, so that a call on a concrete type is
+/// resolved to the impl's predicate even when the impl needs `T: Model` of a type parameter `T`.
+fn predicate_typing_env<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    owner_fn_id: DefId,
+    model_ty: Option<DefId>,
+) -> mir_ty::TypingEnv<'tcx> {
+    match model_ty {
+        Some(model_ty) => model_assuming_env(tcx, owner_fn_id, model_ty),
+        None => mir_ty::TypingEnv::post_analysis(tcx, owner_fn_id),
+    }
+}
+
 fn model_assuming_env<'tcx>(
     tcx: TyCtxt<'tcx>,
     caller_def_id: DefId,

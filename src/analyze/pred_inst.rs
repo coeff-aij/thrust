@@ -415,7 +415,7 @@ impl<'tcx> analyze::Analyzer<'tcx> {
         let pred_args = mir_ty::EarlyBinder::bind(pred_args).instantiate(self.tcx(), generic_args);
         let instance = mir_ty::Instance::try_resolve(
             self.tcx(),
-            mir_ty::TypingEnv::post_analysis(self.tcx(), owner_fn_id),
+            analyze::predicate_typing_env(self.tcx(), owner_fn_id, self.def_ids().model_ty()),
             def_id,
             pred_args,
         )
