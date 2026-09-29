@@ -22,7 +22,7 @@ use crate::chc::{DatatypeSymbol, ForallPred, Sort, UserDefinedPred};
 use rustc_middle::ty as mir_ty;
 use rustc_span::def_id::DefId;
 
-fn stable_def_id_symbol(tcx: mir_ty::TyCtxt<'_>, did: DefId, prefix: &str) -> String {
+pub fn stable_def_id_symbol(tcx: mir_ty::TyCtxt<'_>, did: DefId, prefix: &str) -> String {
     let hash = tcx.def_path_hash(did);
     let path = tcx.def_path(did);
     if let Some(name) = path.data.last().and_then(|d| d.data.get_opt_name()) {
