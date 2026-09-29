@@ -1474,6 +1474,17 @@ fn _extern_spec_vec_extend<T, I>(vec: &mut Vec<T>, iter: I)
     <Vec<T> as Extend<T>>::extend(vec, iter)
 }
 
+// Nothing about the collected items is visible in this vocabulary, so the result is any `Vec<T>`.
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(true)]
+fn _extern_spec_vec_from_iter<T, I>(iter: I) -> Vec<T>
+    where T: thrust_models::Model, T::Ty: PartialEq,
+          I: IntoIterator<Item = T> + thrust_models::Model, I::Ty: PartialEq
+{
+    <Vec<T> as FromIterator<T>>::from_iter(iter)
+}
+
 // TODO: The following specs of some trait methods are too restrictive; we should allow for a
 //       per-impl spec once we can describe the spec of blanket impls.
 
