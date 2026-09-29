@@ -1485,6 +1485,15 @@ fn _extern_spec_vec_from_iter<T, I>(iter: I) -> Vec<T>
     <Vec<T> as FromIterator<T>>::from_iter(iter)
 }
 
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(result == array)]
+fn _extern_spec_array_into_vec<T, const N: usize>(array: [T; N]) -> Vec<T>
+    where T: thrust_models::Model, T::Ty: PartialEq
+{
+    <[T; N] as Into<Vec<T>>>::into(array)
+}
+
 // TODO: The following specs of some trait methods are too restrictive; we should allow for a
 //       per-impl spec once we can describe the spec of blanket impls.
 
