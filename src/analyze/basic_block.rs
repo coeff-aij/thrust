@@ -386,15 +386,91 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         clauses
     }
 
-    fn const_bytes_ty(
+    fn const_enum_ty(
         &self,
         ty: mir_ty::Ty<'tcx>,
-        alloc: mir::interpret::ConstAllocation,
-        range: std::ops::Range<usize>,
+        variant_idx: rustc_abi::VariantIdx,
+        fields: Vec<PlaceType>,
     ) -> PlaceType {
-        let bytes = alloc
-            .inner()
-            .inspect_with_uninit_and_ptr_outside_interpreter(range.clone());
+        let mir_ty::TyKind::Adt(def, args) = ty.kind() else {
+            panic!("expected an enum type: {:?}", ty);
+        };
+        let enum_def = self.ctx.get_or_register_enum_def(def.did());
+        let sort_args = args
+            .types()
+            .map(|ty| self.type_builder.build(ty).to_sort())
+            .collect();
+        let mut builder = PlaceTypeBuilder::default();
+        let field_terms = fields
+            .into_iter()
+            .map(|field| builder.subsume(field.boxed()).1)
+            .collect();
+        let term = chc::Term::datatype_ctor(
+            enum_def.name.clone(),
+            sort_args,
+            enum_def.variants[variant_idx].name.clone(),
+            field_terms,
+        );
+        builder.build(self.type_builder.build(ty).vacuous(), term)
+    }
+
+    fn const_variant_idx(
+        &self,
+        ty: mir_ty::Ty<'tcx>,
+        layout: &mir_ty::layout::TyAndLayout<'tcx>,
+        bytes: &[u8],
+    ) -> rustc_abi::VariantIdx {
+        use rustc_abi::{TagEncoding, Variants};
+        let Variants::Multiple {
+            tag,
+            tag_encoding,
+            tag_field,
+            ..
+        } = &layout.variants
+        else {
+            let Variants::Single { index } = &layout.variants else {
+                unreachable!("an enum layout is single or multiple: {:?}", ty);
+            };
+            return *index;
+        };
+        let size = tag.primitive().size(&self.tcx);
+        let offset = layout.fields.offset(tag_field.as_usize());
+        let mut tag_bytes = [0u8; 16];
+        let start = offset.bytes() as usize;
+        tag_bytes[..size.bytes() as usize]
+            .copy_from_slice(&bytes[start..][..size.bytes() as usize]);
+        // TODO: see target endianness
+        let bits = u128::from_ne_bytes(tag_bytes);
+        match tag_encoding {
+            TagEncoding::Direct => {
+                let (idx, _) = ty
+                    .ty_adt_def()
+                    .unwrap()
+                    .discriminants(self.tcx)
+                    .find(|(_, discr)| discr.val & size.unsigned_int_max() == bits)
+                    .expect("tag of an enum constant matches no discriminant");
+                idx
+            }
+            TagEncoding::Niche {
+                untagged_variant,
+                niche_variants,
+                niche_start,
+            } => {
+                let relative = bits.wrapping_sub(*niche_start) & size.unsigned_int_max();
+                let count =
+                    (niche_variants.end().as_u32() - niche_variants.start().as_u32()) as u128;
+                if relative <= count {
+                    rustc_abi::VariantIdx::from_u32(
+                        niche_variants.start().as_u32() + relative as u32,
+                    )
+                } else {
+                    *untagged_variant
+                }
+            }
+        }
+    }
+
+    fn const_bytes_ty(&self, ty: mir_ty::Ty<'tcx>, bytes: &[u8]) -> PlaceType {
         let typing_env = self.typing_env;
         let layout = self.tcx.layout_of(typing_env.as_query_input(ty)).unwrap();
         let lcx = mir_ty::layout::LayoutCx::new(self.tcx, typing_env);
@@ -424,9 +500,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 let mut pts = Vec::new();
                 for (i, field_ty) in tys.iter().enumerate() {
                     let field = layout.field(&lcx, i);
-                    let start = range.start + layout.fields.offset(i).bytes() as usize;
+                    let start = layout.fields.offset(i).bytes() as usize;
                     let end = start + field.size.bytes() as usize;
-                    let pt = self.const_bytes_ty(field_ty, alloc, start..end);
+                    let pt = self.const_bytes_ty(field_ty, &bytes[start..end]);
                     pts.push(pt.boxed());
                 }
                 PlaceType::tuple(pts)
@@ -435,13 +511,26 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 let mut pts = Vec::new();
                 for (i, field_def) in def.all_fields().enumerate() {
                     let field = layout.field(&lcx, i);
-                    let start = range.start + layout.fields.offset(i).bytes() as usize;
+                    let start = layout.fields.offset(i).bytes() as usize;
                     let end = start + field.size.bytes() as usize;
                     let field_ty = field_def.ty(self.tcx, args);
-                    let pt = self.const_bytes_ty(field_ty, alloc, start..end);
+                    let pt = self.const_bytes_ty(field_ty, &bytes[start..end]);
                     pts.push(pt.boxed());
                 }
                 PlaceType::tuple(pts)
+            }
+            mir_ty::TyKind::Adt(def, args) if def.is_enum() => {
+                let variant_idx = self.const_variant_idx(ty, &layout, bytes);
+                let variant_layout = layout.for_variant(&lcx, variant_idx);
+                let mut pts = Vec::new();
+                for (i, field_def) in def.variant(variant_idx).fields.iter().enumerate() {
+                    let field = variant_layout.field(&lcx, i);
+                    let start = variant_layout.fields.offset(i).bytes() as usize;
+                    let end = start + field.size.bytes() as usize;
+                    let field_ty = field_def.ty(self.tcx, args);
+                    pts.push(self.const_bytes_ty(field_ty, &bytes[start..end]));
+                }
+                self.const_enum_ty(ty, variant_idx, pts)
             }
             _ => unimplemented!("const bytes ty: {:?}", ty),
         }
@@ -489,6 +578,15 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 }
                 PlaceType::tuple(pts)
             }
+            (mir_ty::TyKind::Adt(def, _), ConstValue::Scalar(Scalar::Int(int)))
+                if def.is_enum() =>
+            {
+                let bits = int.to_bits_unchecked().to_ne_bytes();
+                self.const_bytes_ty(*ty, &bits[..int.size().bytes() as usize])
+            }
+            (mir_ty::TyKind::Adt(def, _), ConstValue::ZeroSized) if def.is_enum() => {
+                self.const_bytes_ty(*ty, &[])
+            }
             (
                 mir_ty::TyKind::Ref(_, elem, Mutability::Not),
                 ConstValue::Scalar(Scalar::Ptr(ptr, _)),
@@ -505,7 +603,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         let size = layout.size;
                         let range =
                             offset.bytes() as usize..(offset.bytes() + size.bytes()) as usize;
-                        self.const_bytes_ty(*elem, alloc, range).immut()
+                        let bytes = alloc
+                            .inner()
+                            .inspect_with_uninit_and_ptr_outside_interpreter(range);
+                        self.const_bytes_ty(*elem, bytes).immut()
                     }
                     _ => unimplemented!("const ptr alloc: {:?}", global_alloc),
                 }
@@ -519,7 +620,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 let mir::interpret::GlobalAlloc::Memory(alloc) = global_alloc else {
                     unimplemented!("const slice alloc: {:?}", global_alloc);
                 };
-                self.const_bytes_ty(*elem, alloc, 0..end).immut()
+                let bytes = alloc
+                    .inner()
+                    .inspect_with_uninit_and_ptr_outside_interpreter(0..end);
+                self.const_bytes_ty(*elem, bytes).immut()
             }
             _ => unimplemented!("const: {:?}, ty: {:?}", val, ty),
         }
