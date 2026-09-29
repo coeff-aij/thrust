@@ -305,15 +305,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         )
     }
 
-    fn relate_fn_param_sub_types_with_builder(
-        &mut self,
-        got_args: IndexVec<rty::FunctionParamIdx, rty::RefinedType<rty::FunctionParamIdx>>,
+    /// The arguments of a call as the callee's parameters see them: at least one for the Rust
+    /// ABI, and for the rust-call ABI the packed tuple split into one argument per element.
+    fn expand_call_args(
         mut expected_args: IndexVec<rty::FunctionParamIdx, rty::RefinedType<Var>>,
-        builder: &mut chc::ClauseBuilder,
         abi: rty::FunctionAbi,
-    ) -> Vec<chc::Clause> {
-        let mut clauses = Vec::new();
-
+    ) -> IndexVec<rty::FunctionParamIdx, rty::RefinedType<Var>> {
         match abi {
             rty::FunctionAbi::Rust => {
                 if expected_args.is_empty() {
@@ -356,6 +353,18 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 );
             }
         }
+        expected_args
+    }
+
+    fn relate_fn_param_sub_types_with_builder(
+        &mut self,
+        got_args: IndexVec<rty::FunctionParamIdx, rty::RefinedType<rty::FunctionParamIdx>>,
+        expected_args: IndexVec<rty::FunctionParamIdx, rty::RefinedType<Var>>,
+        builder: &mut chc::ClauseBuilder,
+        abi: rty::FunctionAbi,
+    ) -> Vec<chc::Clause> {
+        let mut clauses = Vec::new();
+        let expected_args = Self::expand_call_args(expected_args, abi);
 
         assert!(got_args.len() == expected_args.len());
         // TODO: check stys are equal
@@ -1193,6 +1202,60 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         rty::FunctionType::new(params, ret).into()
     }
 
+    /// The type of a call's result read off the callee's type, with each parameter bound to a
+    /// temporary that holds its argument: `{ v | post(v, args) }` instead of a fresh predicate
+    /// variable over the whole environment that the callee's postcondition must imply. The
+    /// callee's preconditions are checked as in [`Self::type_call`]. `THRUST_DIRECT_CALL_RET`.
+    fn type_call_direct(
+        &mut self,
+        func: Operand<'tcx>,
+        args: Vec<Operand<'tcx>>,
+    ) -> rty::RefinedType<Var> {
+        let func_ty = if let Some((def_id, args)) = func.const_fn_def() {
+            self.callable_ty(def_id, args).vacuous()
+        } else {
+            self.operand_type(func.clone()).ty
+        };
+        let rty::Type::Function(func_ty) = func_ty else {
+            panic!("unexpected def type: {:?}", func_ty);
+        };
+        let expected_args: IndexVec<rty::FunctionParamIdx, _> = args
+            .into_iter()
+            .map(|op| self.operand_refined_type(op))
+            .collect();
+        let expected_args = Self::expand_call_args(expected_args, func_ty.abi);
+        assert!(func_ty.params.len() == expected_args.len());
+
+        let mut param_terms = IndexVec::<rty::FunctionParamIdx, chc::Term<Var>>::new();
+        let mut singleton_args = IndexVec::<rty::FunctionParamIdx, _>::new();
+        for arg in expected_args {
+            if arg.ty.to_sort().is_singleton() {
+                param_terms.push(chc::Term::tuple(vec![]));
+                singleton_args.push(arg);
+                continue;
+            }
+            let ty = arg.ty.clone();
+            let var = self.env.immut_bind_tmp(arg);
+            param_terms.push(chc::Term::var(var));
+            let refinement: rty::Refinement<Var> = chc::Term::var(rty::RefinedTypeVar::Value)
+                .equal_to(chc::Term::var(rty::RefinedTypeVar::Free(var)))
+                .into();
+            singleton_args.push(rty::RefinedType::new(ty, refinement));
+        }
+
+        let mut builder = self.env.build_clause();
+        let clauses = self.relate_fn_param_sub_types_with_builder(
+            func_ty.params.clone(),
+            singleton_args,
+            &mut builder,
+            rty::FunctionAbi::Rust,
+        );
+        self.ctx.extend_clauses(clauses);
+
+        let ret = (*func_ty.ret).clone();
+        ret.subst_var(|idx| param_terms[idx].clone())
+    }
+
     fn type_call<I>(&mut self, func: Operand<'tcx>, args: I, expected_ret: &rty::RefinedType<Var>)
     where
         I: IntoIterator<Item = Operand<'tcx>>,
@@ -1585,6 +1648,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             };
             if self.is_defined(destination) {
                 unimplemented!()
+            }
+
+            let direct = std::env::var_os("THRUST_DIRECT_CALL_RET").is_some();
+            if direct && self.ghost_marker_formula_fn(func, args).is_none() {
+                let rty = self
+                    .type_call_direct(func.clone(), args.iter().map(|a| a.node.clone()).collect());
+                self.bind_local(destination, rty);
+                return;
             }
 
             let decl = self.local_decls[destination].clone();
