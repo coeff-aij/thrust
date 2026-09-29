@@ -197,6 +197,17 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         )
     }
 
+    /// Whether the def comes from the injected `std.rs`. The bodies there are the specification
+    /// library's own proofs, such as the laws its impls prove; they are checked once, by compiling
+    /// `std.rs` as an ordinary source file, rather than again in every crate.
+    pub fn is_injected_std(&self) -> bool {
+        let span = self.tcx.def_span(self.local_def_id);
+        matches!(
+            self.tcx.sess.source_map().span_to_filename(span),
+            rustc_span::FileName::Custom(name) if name == crate::INJECTED_STD_FILE_NAME
+        )
+    }
+
     pub fn is_annotated_as_trusted(&self) -> bool {
         self.tcx
             .get_attrs_by_path(

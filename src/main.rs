@@ -46,7 +46,7 @@ impl Callbacks for CompilerCalls {
         let injected = include_str!("../std.rs");
         let mut parser = rustc_parse::new_parser_from_source_str(
             &compiler.sess.psess,
-            rustc_span::FileName::Custom("thrust std injected".to_string()),
+            rustc_span::FileName::Custom(thrust::INJECTED_STD_FILE_NAME.to_string()),
             injected.to_owned(),
         )
         .unwrap();

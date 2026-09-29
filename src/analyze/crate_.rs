@@ -127,6 +127,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             self.skip_analysis.insert(local_def_id);
         }
 
+        if analyzer.is_injected_std() {
+            self.skip_analysis.insert(local_def_id);
+        }
+
         if analyzer.is_annotated_as_extern_spec_fn() {
             assert!(
                 analyzer.is_fully_annotated(),

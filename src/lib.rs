@@ -29,3 +29,6 @@ mod pretty;
 
 pub use analyze::mir_borrowck_skip_formula_fn;
 pub use analyze::Analyzer;
+
+/// The file name `std.rs` is parsed under when it is injected into the analyzed crate.
+pub const INJECTED_STD_FILE_NAME: &str = "thrust std injected";
