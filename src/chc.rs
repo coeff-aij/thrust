@@ -2379,7 +2379,17 @@ pub struct UserDefinedPredDef {
     pub dependencies: HashSet<ForallPred>,
 }
 
+/// The raw body that marks a predicate definition as left to the solver: the
+/// predicate is declared as an unknown instead of defined.
+pub const INFERRED_PRED_BODY: &str = "thrust:infer";
+
 impl UserDefinedPredDef {
+    /// Whether the definition is left to the solver (its raw body is
+    /// [`INFERRED_PRED_BODY`]).
+    pub fn is_inferred(&self) -> bool {
+        matches!(&self.body, UserDefinedPredBody::Raw(body) if body.trim() == INFERRED_PRED_BODY)
+    }
+
     /// The user-defined predicates and functions the body calls.
     fn callees(&self) -> Vec<&UserDefinedPred> {
         match &self.body {

@@ -736,6 +736,17 @@ impl<'ctx, 'a> std::fmt::Display for UserDefinedPredDef<'ctx, 'a> {
             chc::UserDefinedPredBody::Term(sort, _) => self.ctx.fmt_sort(sort).to_string(),
             _ => "Bool".to_string(),
         };
+        if self.inner.is_inferred() {
+            // An unknown of the system: to a dependency-aware solver a plain
+            // `declare-fun` may depend on every forall pred declared before it.
+            let sorts = List::closed(
+                self.inner
+                    .sig
+                    .iter()
+                    .map(|(_, sort)| self.ctx.fmt_sort(sort)),
+            );
+            return write!(f, "(declare-fun {} {sorts} Bool)", self.inner.symbol);
+        }
         write!(
             f,
             "(define-fun {name} {params} {ret_sort} ",
