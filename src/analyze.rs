@@ -203,30 +203,103 @@ struct DeferredDefTy<'tcx> {
     target_args: Option<mir_ty::GenericArgsRef<'tcx>>,
 }
 
-/// Whether `target_args` (an extern spec's own tail call, in the target's parameter space)
-/// covers `generic_args` (an actual call's instantiation of the same target).
+/// Binds the parameters of an extern spec function to the arguments of an actual call, by
+/// matching `target_args` (the spec's own tail call, in the target's parameter space) against
+/// `generic_args` (the actual call's instantiation of the same target).
 ///
-/// A position `target_args` leaves as one of the spec's own type parameters is one the spec
-/// generalizes over, so any actual argument there is covered. A position it fixed to a
-/// concrete type is covered only by that same type: the spec's body was checked once, against
-/// that one instantiation, and only handles it.
-fn spec_covers<'tcx>(
+/// A parameter of the spec occurring in `target_args` is one the spec generalizes over and takes
+/// whatever the actual call has at that place. Anything else the spec fixed is covered only by
+/// the same type: the spec's body was checked once, against that one instantiation, and only
+/// handles it. Returns `None` when the call is not covered.
+fn bind_spec_args<'tcx>(
     tcx: TyCtxt<'tcx>,
+    spec_def_id: LocalDefId,
     target_args: mir_ty::GenericArgsRef<'tcx>,
     generic_args: mir_ty::GenericArgsRef<'tcx>,
+) -> Option<mir_ty::GenericArgsRef<'tcx>> {
+    let mut bound = HashMap::new();
+    for (spec_arg, actual_arg) in target_args.iter().zip(generic_args.iter()) {
+        if !match_spec_arg(tcx, spec_arg, actual_arg, &mut bound) {
+            return None;
+        }
+    }
+    Some(mir_ty::GenericArgs::for_item(
+        tcx,
+        spec_def_id.to_def_id(),
+        |param, _| match param.kind {
+            mir_ty::GenericParamDefKind::Lifetime => tcx.lifetimes.re_erased.into(),
+            _ => bound
+                .get(&param.index)
+                .copied()
+                .unwrap_or_else(|| tcx.mk_param_from_def(param)),
+        },
+    ))
+}
+
+fn match_spec_arg<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    spec_arg: mir_ty::GenericArg<'tcx>,
+    actual_arg: mir_ty::GenericArg<'tcx>,
+    bound: &mut HashMap<u32, mir_ty::GenericArg<'tcx>>,
 ) -> bool {
+    use mir_ty::GenericArgKind as K;
+    match (spec_arg.kind(), actual_arg.kind()) {
+        (K::Lifetime(_), K::Lifetime(_)) => true,
+        (K::Type(spec_ty), K::Type(actual_ty)) => match_spec_ty(tcx, spec_ty, actual_ty, bound),
+        (K::Const(spec_ct), K::Const(actual_ct)) => match spec_ct.kind() {
+            mir_ty::ConstKind::Param(p) => bind_spec_param(tcx, p.index, actual_arg, bound),
+            _ => spec_ct == actual_ct,
+        },
+        _ => false,
+    }
+}
+
+fn match_spec_ty<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    spec_ty: mir_ty::Ty<'tcx>,
+    actual_ty: mir_ty::Ty<'tcx>,
+    bound: &mut HashMap<u32, mir_ty::GenericArg<'tcx>>,
+) -> bool {
+    use mir_ty::TyKind as T;
     use mir_ty::TypeVisitableExt as _;
-    target_args
-        .iter()
-        .zip(generic_args.iter())
-        .all(|(spec_arg, actual_arg)| {
-            let (Some(spec_ty), Some(actual_ty)) = (spec_arg.as_type(), actual_arg.as_type())
-            else {
-                // lifetimes and consts do not narrow a spec here.
-                return true;
-            };
-            spec_ty.has_param() || tcx.erase_regions(spec_ty) == tcx.erase_regions(actual_ty)
-        })
+    match (spec_ty.kind(), actual_ty.kind()) {
+        (T::Param(p), _) => bind_spec_param(tcx, p.index, actual_ty.into(), bound),
+        (T::Adt(spec_def, spec_args), T::Adt(actual_def, actual_args)) => {
+            spec_def == actual_def
+                && spec_args
+                    .iter()
+                    .zip(actual_args.iter())
+                    .all(|(s, a)| match_spec_arg(tcx, s, a, bound))
+        }
+        (T::Array(spec_elem, spec_len), T::Array(actual_elem, actual_len)) => {
+            match_spec_ty(tcx, *spec_elem, *actual_elem, bound)
+                && match_spec_arg(tcx, (*spec_len).into(), (*actual_len).into(), bound)
+        }
+        (T::Slice(spec_elem), T::Slice(actual_elem)) => {
+            match_spec_ty(tcx, *spec_elem, *actual_elem, bound)
+        }
+        (T::Ref(_, spec_inner, spec_mut), T::Ref(_, actual_inner, actual_mut)) => {
+            spec_mut == actual_mut && match_spec_ty(tcx, *spec_inner, *actual_inner, bound)
+        }
+        (T::Tuple(spec_tys), T::Tuple(actual_tys)) => {
+            spec_tys.len() == actual_tys.len()
+                && spec_tys
+                    .iter()
+                    .zip(actual_tys.iter())
+                    .all(|(s, a)| match_spec_ty(tcx, s, a, bound))
+        }
+        _ => !spec_ty.has_param() && tcx.erase_regions(spec_ty) == tcx.erase_regions(actual_ty),
+    }
+}
+
+fn bind_spec_param<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    index: u32,
+    actual_arg: mir_ty::GenericArg<'tcx>,
+    bound: &mut HashMap<u32, mir_ty::GenericArg<'tcx>>,
+) -> bool {
+    let actual_arg = tcx.erase_regions(actual_arg);
+    *bound.entry(index).or_insert(actual_arg) == actual_arg
 }
 
 #[derive(Debug, Clone)]
@@ -783,6 +856,19 @@ impl<'tcx> Analyzer<'tcx> {
     ) -> Option<rty::RefinedType> {
         let type_builder = self.type_builder(self.def_ids(), caller_def_id);
 
+        // A def_id key can be a blanket impl shared by more instantiations than an extern spec's
+        // own tail call covers (e.g. `Vec::index` at some `Idx` other than the `usize`
+        // `_extern_spec_vec_index` calls it at). Handing such a call that spec's contract would
+        // relate its result to whatever the spec's own body happens to return, regardless of the
+        // real `Idx` here, so it has no specification.
+        let generic_args = match self.defs.get(&def_id)? {
+            DefTy::Deferred(DeferredDefTy {
+                local_def_id,
+                target_args: Some(target_args),
+                ..
+            }) => bind_spec_args(self.tcx, *local_def_id, target_args, generic_args)?,
+            _ => generic_args,
+        };
         let is_generic = matches!(self.defs.get(&def_id)?, DefTy::Generic(_));
         let (local_def_id, instantiated_ty_cache, deferred_ty_mode) =
             match self.defs.get(&def_id)? {
@@ -816,25 +902,11 @@ impl<'tcx> Analyzer<'tcx> {
                         def_id != caller_def_id && generic.local_def_id.to_def_id() == def_id
                     }),
                 ),
-                DefTy::Deferred(deferred) => {
-                    if let Some(target_args) = deferred.target_args {
-                        if !spec_covers(self.tcx, target_args, generic_args) {
-                            // This def_id is a blanket impl shared by more instantiations than
-                            // the extern spec's own tail call covers (e.g. `Vec::index` at some
-                            // `Idx` other than the `usize` `_extern_spec_vec_index` calls it
-                            // at). Handing this call that spec's contract would relate its
-                            // result to whatever the spec's own body happens to return,
-                            // regardless of the real `Idx` here, so decline it: this
-                            // instantiation has no specification.
-                            return None;
-                        }
-                    }
-                    (
-                        deferred.local_def_id,
-                        Rc::clone(&deferred.cache),
-                        Some(deferred.mode),
-                    )
-                }
+                DefTy::Deferred(deferred) => (
+                    deferred.local_def_id,
+                    Rc::clone(&deferred.cache),
+                    Some(deferred.mode),
+                ),
             };
 
         let key = InstantiationKey {

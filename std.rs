@@ -1458,9 +1458,8 @@ fn _extern_spec_vec_split_off<T>(vec: &mut Vec<T>, at: usize) -> Vec<T>
     Vec::split_off(vec, at)
 }
 
-// `A` is `Vec`'s allocator parameter: a spec's type parameters are matched by position to the
-// target's, and `Extend::extend`'s own `I` comes after it. The iterator's items are not visible in
-// this vocabulary, so only the old contents kept as a prefix are stated.
+// The iterator's items are not visible in this vocabulary, so only the old contents kept as a
+// prefix are stated.
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(
@@ -1468,9 +1467,8 @@ fn _extern_spec_vec_split_off<T>(vec: &mut Vec<T>, at: usize) -> Vec<T>
         && thrust_models::forall(|i: thrust_models::model::Int|
             (0 <= i && i < (*vec).len()) ==> (!vec)[i] == (*vec)[i])
 )]
-fn _extern_spec_vec_extend<T, A, I>(vec: &mut Vec<T>, iter: I)
+fn _extern_spec_vec_extend<T, I>(vec: &mut Vec<T>, iter: I)
     where T: thrust_models::Model, T::Ty: PartialEq,
-          A: thrust_models::Model, A::Ty: PartialEq,
           I: IntoIterator<Item = T> + thrust_models::Model, I::Ty: PartialEq
 {
     <Vec<T> as Extend<T>>::extend(vec, iter)
