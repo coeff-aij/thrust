@@ -121,6 +121,13 @@ pub fn predicate(_attr: TokenStream, item: TokenStream) -> TokenStream {
     spec::expand_predicate(item)
 }
 
+/// Declares a function callable in the term position of specifications: its body is a single
+/// expression of the specification language, and the function is non-recursive.
+#[proc_macro_attribute]
+pub fn logic(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    spec::expand_logic(item)
+}
+
 /// Marks a trait function as a law: its `requires`/`ensures` are assumed of every
 /// implementation wherever the trait's predicates are used through a type parameter, and
 /// each implementation proves them with an empty body.

@@ -20,7 +20,15 @@ pub struct FormulaFn<'tcx> {
     // TODO: remove once we stop relying on debug info to map parameters
     // `None` for a parameter bound by a pattern, as the closure upvars tuple is.
     param_idents: IndexVec<rty::FunctionParamIdx, Option<rustc_span::symbol::Ident>>,
-    formula: chc::Formula<rty::FunctionParamIdx>,
+    ret: mir_ty::Ty<'tcx>,
+    body: FormulaFnBody,
+}
+
+/// The translated body: a formula, or a term for a `#[thrust_macros::logic]` function.
+#[derive(Debug, Clone)]
+pub enum FormulaFnBody {
+    Formula(chc::Formula<rty::FunctionParamIdx>),
+    Term(chc::Term<rty::FunctionParamIdx>),
 }
 
 /// The source name a parameter of a formula function lifted out of a function body
@@ -54,14 +62,28 @@ where
             )
             .enclose("|", "|")
             .group()
-            .append(self.formula.pretty(allocator))
+            .append(match &self.body {
+                FormulaFnBody::Formula(formula) => formula.pretty(allocator),
+                FormulaFnBody::Term(term) => term.pretty(allocator),
+            })
             .group()
     }
 }
 
 impl<'tcx> FormulaFn<'tcx> {
     pub fn formula(&self) -> &chc::Formula<rty::FunctionParamIdx> {
-        &self.formula
+        let FormulaFnBody::Formula(formula) = &self.body else {
+            panic!("a logic function has a term body");
+        };
+        formula
+    }
+
+    pub fn body(&self) -> &FormulaFnBody {
+        &self.body
+    }
+
+    pub fn ret(&self) -> mir_ty::Ty<'tcx> {
+        self.ret
     }
 
     pub fn params(&self) -> &IndexVec<rty::FunctionParamIdx, mir_ty::Ty<'tcx>> {
@@ -75,7 +97,7 @@ impl<'tcx> FormulaFn<'tcx> {
     }
 
     pub fn to_require_formula(&self) -> chc::Formula<rty::FunctionParamIdx> {
-        self.formula.clone()
+        self.formula().clone()
     }
 
     /// Lowers an `ensures` formula function into a postcondition formula.
@@ -85,7 +107,7 @@ impl<'tcx> FormulaFn<'tcx> {
     /// and parameters `1..n` are the enclosing function's parameters in order
     /// (mapped to [`rty::RefinedTypeVar::Free`]).
     pub fn to_ensure_formula(&self) -> chc::Formula<rty::RefinedTypeVar<rty::FunctionParamIdx>> {
-        self.formula.clone().map_var(|v| {
+        self.formula().clone().map_var(|v| {
             if v.as_usize() == 0 {
                 rty::RefinedTypeVar::Value
             } else {
@@ -102,7 +124,7 @@ impl<'tcx> FormulaFn<'tcx> {
     /// and the remaining parameters carry the formula's free variables,
     /// mapped to [`rty::RefinedTypeVar::Free`].
     pub fn to_refinement(&self) -> rty::Refinement<rty::FunctionParamIdx> {
-        self.formula
+        self.formula()
             .clone()
             .map_var(|v| {
                 if v.as_usize() == 0 {
@@ -470,13 +492,23 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
     }
 
     pub fn to_formula_fn(&self) -> FormulaFn<'tcx> {
-        let formula = self.to_formula(self.body.value);
+        let is_logic = self
+            .tcx
+            .get_attrs_by_path(self.local_def_id.to_def_id(), &analyze::annot::logic_path())
+            .next()
+            .is_some();
+        let body = if is_logic {
+            FormulaFnBody::Term(self.to_term(self.body.value))
+        } else {
+            FormulaFnBody::Formula(self.to_formula(self.body.value))
+        };
         let fn_sig = self.tcx.fn_sig(self.local_def_id.to_def_id());
         let binder = if self.generic_args.is_empty() {
             fn_sig.skip_binder()
         } else {
             fn_sig.instantiate(self.tcx, self.generic_args)
         };
+        let ret = binder.skip_binder().output();
         let params = binder.skip_binder().inputs().to_vec();
         let param_idents = self
             .tcx
@@ -487,8 +519,43 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         FormulaFn {
             params: IndexVec::from_raw(params),
             param_idents,
-            formula,
+            ret,
+            body,
         }
+    }
+
+    /// The generic arguments of the call `func_expr` to a predicate or logic function `def_id`
+    /// in the owner's terms, and the instance they resolve to.
+    ///
+    /// `self.generic_args` is empty only when the owner has no generics, so the callee's own
+    /// args are already concrete and there is nothing to instantiate. In both cases
+    /// `Instance::try_resolve` decides the routing: it resolves a call on a concrete type to the
+    /// impl's function, and returns `None` for a call that still depends on the owner's type
+    /// parameters (an `ImplSource::Param`).
+    fn resolve_spec_fn_call(
+        &self,
+        def_id: DefId,
+        func_expr: &'tcx rustc_hir::Expr<'tcx>,
+    ) -> (mir_ty::GenericArgsRef<'tcx>, Option<mir_ty::Instance<'tcx>>) {
+        let typing_env = analyze::predicate_typing_env(
+            self.tcx,
+            self.type_builder.owner_fn_id(),
+            self.def_ids.model_ty(),
+        );
+        let generic_args = self.typeck.node_args(func_expr.hir_id);
+        tracing::debug!(
+            lhs = ?def_id,
+            lhs_generic_args = ?generic_args,
+            outer = ?self.local_def_id,
+            outer_generic_args = ?self.generic_args,
+            "resolving spec function call in formula"
+        );
+        let generic_args = self
+            .instantiate_generics(generic_args, self.generic_args)
+            .unwrap_or(generic_args);
+        let instance =
+            mir_ty::Instance::try_resolve(self.tcx, typing_env, def_id, generic_args).unwrap();
+        (generic_args, instance)
     }
 
     fn to_formula(&self, hir: &'tcx rustc_hir::Expr<'tcx>) -> chc::Formula<rty::FunctionParamIdx> {
@@ -1175,41 +1242,40 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                         }
                         if self
                             .tcx
+                            .get_attrs_by_path(def_id, &analyze::annot::logic_path())
+                            .next()
+                            .is_some()
+                        {
+                            let (_, instance) = self.resolve_spec_fn_call(def_id, func_expr);
+                            let Some(instance) = instance else {
+                                self.tcx.dcx().span_fatal(
+                                    hir.span,
+                                    "a logic function called at a type parameter has no definition",
+                                );
+                            };
+                            if instance.def_id() == self.local_def_id.to_def_id() {
+                                self.tcx
+                                    .dcx()
+                                    .span_fatal(hir.span, "a logic function cannot call itself");
+                            }
+                            let (symbol, sort) = self.analyzer.logic_fn_with_args(
+                                instance.def_id(),
+                                instance.args,
+                                self.type_builder.owner_fn_id(),
+                            );
+                            let arg_terms = args.iter().map(|e| self.to_term(e)).collect();
+                            return FormulaOrTerm::Term(chc::Term::user_defined_fn(
+                                symbol, sort, arg_terms,
+                            ));
+                        }
+                        if self
+                            .tcx
                             .get_attrs_by_path(def_id, &analyze::annot::predicate_path())
                             .next()
                             .is_some()
                         {
-                            let typing_env = analyze::predicate_typing_env(
-                                self.tcx,
-                                self.type_builder.owner_fn_id(),
-                                self.def_ids.model_ty(),
-                            );
-                            let generic_args = self.typeck.node_args(func_expr.hir_id);
-                            tracing::debug!(
-                                lhs = ?def_id,
-                                lhs_generic_args = ?generic_args,
-                                outer = ?self.local_def_id,
-                                outer_generic_args = ?self.generic_args,
-                                "resolving predicate call in formula"
-                            );
-                            // `self.generic_args` is empty only when the owner has no generics,
-                            // so the predicate's own args are already concrete and there is
-                            // nothing to instantiate. In both cases `Instance::try_resolve`
-                            // decides the routing: it resolves a call on a concrete type to the
-                            // impl's predicate, and returns `None` for a call that still
-                            // depends on the owner's type parameters (an `ImplSource::Param`),
-                            // which is the only case that needs the forall predicate.
-                            let generic_args = self
-                                .instantiate_generics(generic_args, self.generic_args)
-                                .unwrap_or(generic_args);
-
-                            let instance = mir_ty::Instance::try_resolve(
-                                self.tcx,
-                                typing_env,
-                                def_id,
-                                generic_args,
-                            )
-                            .unwrap();
+                            let (generic_args, instance) =
+                                self.resolve_spec_fn_call(def_id, func_expr);
                             let pred: chc::Pred = match instance {
                                 None => {
                                     tracing::debug!(?self.local_def_id, ?generic_args, "owner_fn_id={:?}", self.type_builder.owner_fn_id());

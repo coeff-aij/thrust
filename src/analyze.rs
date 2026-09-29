@@ -945,7 +945,7 @@ impl<'tcx> Analyzer<'tcx> {
     }
 
     /// The predicate symbol for a call to the predicate `def_id` at `generic_args`, made from
-    /// `owner_fn_id`.
+    /// `owner_fn_id`. A logic function is instantiated the same way.
     ///
     /// A predicate with a Rust body is defined once per instantiation. When the arguments still
     /// mention type parameters, those belong to `owner_fn_id` and translate to its forall sorts,
@@ -984,20 +984,57 @@ impl<'tcx> Analyzer<'tcx> {
             .formula_fn_with_args(local_def_id, generic_args, owner_fn_id)
             .unwrap();
         let type_builder = self.type_builder(self.def_ids(), owner_fn_id);
-        self.register_enum_defs(formula_fn.params().iter().copied(), type_builder.clone());
+        self.register_enum_defs(
+            formula_fn
+                .params()
+                .iter()
+                .copied()
+                .chain(std::iter::once(formula_fn.ret())),
+            type_builder.clone(),
+        );
         let arg_sorts = formula_fn
             .params()
             .iter()
             .map(|ty| type_builder.build(*ty).to_sort())
             .collect();
-        let formula = formula_fn
-            .formula()
-            .clone()
-            .map_var(|idx| chc::TermVarIdx::from(idx.index()));
-        self.system
-            .borrow_mut()
-            .push_pred_define_formula(pred.clone(), arg_sorts, formula);
+        let mut system = self.system.borrow_mut();
+        match formula_fn.body() {
+            annot_fn::FormulaFnBody::Formula(formula) => system.push_pred_define_formula(
+                pred.clone(),
+                arg_sorts,
+                formula
+                    .clone()
+                    .map_var(|idx| chc::TermVarIdx::from(idx.index())),
+            ),
+            annot_fn::FormulaFnBody::Term(term) => system.push_fn_define_term(
+                pred.clone(),
+                arg_sorts,
+                type_builder.build(formula_fn.ret()).to_sort(),
+                term.clone()
+                    .map_var(|idx| chc::TermVarIdx::from(idx.index())),
+            ),
+        }
         pred
+    }
+
+    /// The symbol and result sort for a call to the `#[thrust_macros::logic]` function `def_id`
+    /// at `generic_args`, defined like a predicate instance.
+    pub fn logic_fn_with_args(
+        &self,
+        def_id: DefId,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
+        owner_fn_id: DefId,
+    ) -> (chc::UserDefinedPred, chc::Sort) {
+        let symbol = self.predicate_with_args(def_id, generic_args, owner_fn_id);
+        let ret = self
+            .formula_fn_with_args(def_id.expect_local(), generic_args, owner_fn_id)
+            .expect("a logic function has a Rust body")
+            .ret();
+        let ret_sort = self
+            .type_builder(self.def_ids(), owner_fn_id)
+            .build(ret)
+            .to_sort();
+        (symbol, ret_sort)
     }
 
     pub fn formula_fn_with_args(

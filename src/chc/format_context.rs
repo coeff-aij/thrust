@@ -75,6 +75,11 @@ fn term_sorts(
             }
         }
         chc::Term::DatatypeDiscr(_, t) => term_sorts(var_sorts, t, sorts),
+        chc::Term::UserDefinedFn(_, _, args) => {
+            for arg in args {
+                term_sorts(var_sorts, arg, sorts);
+            }
+        }
         chc::Term::FormulaQuantifiedVar(_, _) => {}
     }
 }
@@ -301,6 +306,11 @@ pub(super) fn collect_sorts(system: &chc::System) -> BTreeSet<chc::Sort> {
         if let chc::UserDefinedPredBody::Formula(formula) = &def.body {
             let var_sorts = def.sig.iter().map(|(_, sort)| sort.clone()).collect();
             formula_sorts(&var_sorts, formula, &mut sorts);
+        }
+        if let chc::UserDefinedPredBody::Term(sort, term) = &def.body {
+            let var_sorts = def.sig.iter().map(|(_, sort)| sort.clone()).collect();
+            sorts.insert(sort.clone());
+            term_sorts(&var_sorts, term, &mut sorts);
         }
     }
 

@@ -107,7 +107,7 @@ For the example above, the check succeeds. Changing the assertion to `add(1, 2) 
 
 ## Annotation
 
-Thrust can verify a wide range of programs without explicit annotations, but you can use `#[thrust_macros::requires(expr)]` and `#[thrust_macros::ensures(expr)]` to annotate the precondition and postcondition of a function, aiding in verification or specifying the intended behavior. Here, `expr` is an ordinary Rust expression that Thrust interprets as a logical formula. It supports the usual integer, boolean, and comparison operators, integer constants such as `u64::MAX`, calls to functions declared with `#[thrust_macros::predicate]`, and the model operations described below.
+Thrust can verify a wide range of programs without explicit annotations, but you can use `#[thrust_macros::requires(expr)]` and `#[thrust_macros::ensures(expr)]` to annotate the precondition and postcondition of a function, aiding in verification or specifying the intended behavior. Here, `expr` is an ordinary Rust expression that Thrust interprets as a logical formula. It supports the usual integer, boolean, and comparison operators, integer constants such as `u64::MAX`, calls to functions declared with `#[thrust_macros::predicate]` (Boolean) or `#[thrust_macros::logic]` (any model type, a single non-recursive expression), and the model operations described below.
 
 ```rust
 #[thrust_macros::requires(n >= 0)]

@@ -2000,6 +2000,12 @@ fn subst_ty_params_in_term<T, V>(term: &mut chc::Term<V>, subst: &TypeParamSubst
                 subst_ty_params_in_term(arg, subst);
             }
         }
+        chc::Term::UserDefinedFn(_, sort, args) => {
+            subst_ty_params_in_sort(sort, subst);
+            for arg in args {
+                subst_ty_params_in_term(arg, subst);
+            }
+        }
         chc::Term::ArrayEmpty(s1, s2) => {
             subst_ty_params_in_sort(s1, subst);
             subst_ty_params_in_sort(s2, subst);
