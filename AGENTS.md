@@ -1,4 +1,4 @@
-# CLAUDE.md
+# AGENTS.md
 
 Everything about the project itself is documented for humans, starting from `README.md`;
 read it, the Development section in particular, rather than looking for it here. This file
@@ -13,6 +13,16 @@ Add a test as a pair of files sharing one name: `tests/ui/pass/<name>.rs` headed
 The `fail` file is the `pass` file with the verified property broken as narrowly as
 possible, so that the pair pins down both directions of the check.
 
+Do not add tests merely to cover every changed code path or fixed bug. Add a test only
+when it protects behavior that could plausibly regress without an obviously incorrect
+code change. Similar implementations do not each need separate tests when one
+representative case sufficiently exercises the behavior.
+
+## Comments
+
+Fewer comments are better. A code comment means the code itself isn't self-explanatory
+and should be rewritten if possible.
+
 ## Panics on unsupported input
 
 Thrust is under active development, and it is fine for an unsupported or unexpected
@@ -24,8 +34,8 @@ keep from reaching it.
 ## Running the tests on claude.ai/code
 
 Neither prerequisite of `cargo test` is set up in the session container. Install Z3 at the
-version `.github/actions/setup-z3` pins for CI, and start a Docker daemon with `dockerd &`.
-The daemon dies from time to time, so restart it whenever the tests that need it fail.
+version `.github/actions/setup-z3` pins for CI.
 
-Export the `COAR_IMAGE` digest that `.github/workflows/ci.yml` pins, and `docker pull` it
-before running `cargo test`.
+For PCSat, do what `.github/workflows/ci.yml` does: install the packages it lists, download
+the pinned `thrust-pcsat-wrapper` binary, and put it in place of `tests/thrust-pcsat-wrapper`.
+That path is a tracked Docker-based script, so restore it before committing.

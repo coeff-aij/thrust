@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 
+use num_bigint::BigInt;
 use rustc_hir::def::DefKind;
 use rustc_index::IndexVec;
 use rustc_middle::mir::{
@@ -72,13 +73,33 @@ fn wrap_int_term<'tcx, V>(
     ty: mir_ty::Ty<'tcx>,
 ) -> chc::Term<V> {
     let bits = ty.primitive_size(tcx).bits();
+    let modulus = BigInt::from(1) << bits;
     if ty.is_signed() {
-        term.add(chc::Term::pow2(bits - 1))
-            .mod_(chc::Term::pow2(bits))
-            .sub(chc::Term::pow2(bits - 1))
+        let half = BigInt::from(1) << (bits - 1);
+        term.add(chc::Term::int(half.clone()))
+            .mod_(chc::Term::int(modulus))
+            .sub(chc::Term::int(half))
     } else {
-        term.mod_(chc::Term::pow2(bits))
+        term.mod_(chc::Term::int(modulus))
     }
+}
+
+/// Whether the integer `term` lies in the range of the integer type `ty`.
+fn int_term_in_range<'tcx, V: Clone>(
+    tcx: TyCtxt<'tcx>,
+    term: chc::Term<V>,
+    ty: mir_ty::Ty<'tcx>,
+) -> chc::Term<V> {
+    let bits = ty.primitive_size(tcx).bits();
+    let (min, end) = if ty.is_signed() {
+        let half = BigInt::from(1) << (bits - 1);
+        (-half.clone(), half)
+    } else {
+        (BigInt::from(0), BigInt::from(1) << bits)
+    };
+    term.clone()
+        .ge(chc::Term::int(min))
+        .and(term.lt(chc::Term::int(end)))
 }
 
 /// Converts the current env state into a `Refinement<FunctionParamIdx>` to be
@@ -427,28 +448,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     }
 
     fn const_value_ty(&self, val: &mir::ConstValue, ty: &mir_ty::Ty<'tcx>) -> PlaceType {
+        if let Some((scalar_ty, term)) = analyze::scalar_const_term(*ty, val) {
+            return PlaceType::with_ty_and_term(scalar_ty, term);
+        }
         use mir::{interpret::Scalar, ConstValue, Mutability};
         match (ty.kind(), val) {
-            (mir_ty::TyKind::Int(_), ConstValue::Scalar(Scalar::Int(val))) => {
-                let val = val.to_int(val.size());
-                PlaceType::with_ty_and_term(
-                    rty::Type::int(),
-                    chc::Term::int(val.try_into().unwrap()),
-                )
-            }
-            (mir_ty::TyKind::Uint(_), ConstValue::Scalar(Scalar::Int(val))) => {
-                let val = val.to_uint(val.size());
-                PlaceType::with_ty_and_term(
-                    rty::Type::int(),
-                    chc::Term::int(val.try_into().unwrap()),
-                )
-            }
-            (mir_ty::TyKind::Bool, ConstValue::Scalar(Scalar::Int(val))) => {
-                PlaceType::with_ty_and_term(
-                    rty::Type::bool(),
-                    chc::Term::bool(val.try_to_bool().unwrap()),
-                )
-            }
             (mir_ty::TyKind::Tuple(tys), _) if tys.is_empty() => {
                 PlaceType::with_ty_and_term(rty::Type::unit(), chc::Term::tuple(vec![]))
             }
@@ -556,6 +560,26 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         ty
     }
 
+    /// The type and term of a checked integer operation on operands of `ty` whose mathematical
+    /// result is `result`.
+    ///
+    /// See <https://doc.rust-lang.org/nightly/nightly-rustc/rustc_middle/mir/enum.BinOp.html#variant.AddWithOverflow>.
+    fn checked_int_op(
+        &self,
+        result: chc::Term<PlaceTypeVar>,
+        ty: mir_ty::Ty<'tcx>,
+    ) -> (rty::Type<Var>, chc::Term<PlaceTypeVar>) {
+        let overflowed = int_term_in_range(self.tcx, result.clone(), ty).not();
+        let wrapped = wrap_int_term(self.tcx, result, ty);
+        // elaboration: all fields are boxed
+        let tuple_ty = rty::TupleType::new(vec![
+            rty::PointerType::own(rty::Type::int()).into(),
+            rty::PointerType::own(rty::Type::bool()).into(),
+        ]);
+        let term = chc::Term::tuple(vec![wrapped.boxed(), overflowed.boxed()]);
+        (tuple_ty.into(), term)
+    }
+
     fn rvalue_type(&mut self, rvalue: Rvalue<'tcx>) -> PlaceType {
         match rvalue {
             Rvalue::Use(operand) => self.operand_type(operand),
@@ -577,6 +601,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             }
             Rvalue::BinaryOp(op, operands) => {
                 let (lhs, rhs) = *operands;
+                let lhs_mir_ty = lhs.ty(&self.local_decls, self.tcx);
                 let lhs_ty = self.operand_type(lhs);
                 let rhs_ty = self.operand_type(rhs);
 
@@ -607,6 +632,18 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     }
                     (rty::Type::Bool, mir::BinOp::BitOr) => {
                         builder.build(rty::Type::Bool, lhs_term.or(rhs_term))
+                    }
+                    (rty::Type::Int, mir::BinOp::AddWithOverflow) => {
+                        let (ty, term) = self.checked_int_op(lhs_term.add(rhs_term), lhs_mir_ty);
+                        builder.build(ty, term)
+                    }
+                    (rty::Type::Int, mir::BinOp::SubWithOverflow) => {
+                        let (ty, term) = self.checked_int_op(lhs_term.sub(rhs_term), lhs_mir_ty);
+                        builder.build(ty, term)
+                    }
+                    (rty::Type::Int, mir::BinOp::MulWithOverflow) => {
+                        let (ty, term) = self.checked_int_op(lhs_term.mul(rhs_term), lhs_mir_ty);
+                        builder.build(ty, term)
                     }
                     (rty::Type::Int | rty::Type::Bool, mir::BinOp::Ge) => {
                         builder.build(rty::Type::Bool, lhs_term.ge(rhs_term))
@@ -982,12 +1019,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 (1, rty::Type::Bool) => chc::Term::bool(true),
                 (_, rty::Type::Int) => {
                     let (size, signed) = discr_mir_ty.int_size_and_signed(self.tcx);
-                    let val: i64 = if signed {
-                        size.sign_extend(bits).try_into().unwrap()
+                    if signed {
+                        chc::Term::int(size.sign_extend(bits))
                     } else {
-                        bits.try_into().unwrap()
-                    };
-                    chc::Term::int(val)
+                        chc::Term::int(bits)
+                    }
                 }
                 _ => unimplemented!(),
             };

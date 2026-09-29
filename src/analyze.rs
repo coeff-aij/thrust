@@ -11,6 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::rc::Rc;
 
+use num_bigint::BigInt;
 use rustc_hir::lang_items::LangItem;
 use rustc_index::IndexVec;
 use rustc_middle::mir::{self, BasicBlock, Local};
@@ -35,6 +36,25 @@ mod reconstruct_slice_indexing;
 
 // TODO: organize structure and remove cross dependency between refine
 pub use did_cache::DefIdCache;
+
+fn scalar_const_term<T>(
+    ty: mir_ty::Ty<'_>,
+    val: &mir::ConstValue,
+) -> Option<(rty::Type<T>, chc::Term<T>)> {
+    use mir::interpret::Scalar;
+    match (ty.kind(), val) {
+        (mir_ty::TyKind::Int(_), mir::ConstValue::Scalar(Scalar::Int(v))) => {
+            Some((rty::Type::int(), chc::Term::int(v.to_int(v.size()))))
+        }
+        (mir_ty::TyKind::Uint(_), mir::ConstValue::Scalar(Scalar::Int(v))) => {
+            Some((rty::Type::int(), chc::Term::int(v.to_uint(v.size()))))
+        }
+        (mir_ty::TyKind::Bool, mir::ConstValue::Scalar(Scalar::Int(v))) => {
+            Some((rty::Type::bool(), chc::Term::bool(v.try_to_bool().unwrap())))
+        }
+        _ => None,
+    }
+}
 
 fn fn_operand<'tcx>(
     tcx: TyCtxt<'tcx>,
@@ -87,12 +107,12 @@ pub fn function_param_of_local(local: Local) -> rty::FunctionParamIdx {
     rty::FunctionParamIdx::from(local.as_usize() - 1)
 }
 
-fn discr_value<'tcx>(tcx: TyCtxt<'tcx>, discr: mir_ty::util::Discr<'tcx>) -> i64 {
+fn discr_value<'tcx>(tcx: TyCtxt<'tcx>, discr: mir_ty::util::Discr<'tcx>) -> BigInt {
     let (size, signed) = discr.ty.int_size_and_signed(tcx);
     if signed {
-        size.sign_extend(discr.val).try_into().unwrap()
+        size.sign_extend(discr.val).into()
     } else {
-        discr.val.try_into().unwrap()
+        discr.val.into()
     }
 }
 
@@ -541,7 +561,7 @@ impl<'tcx> Analyzer<'tcx> {
                         sort: ty.to_sort(),
                     })
                     .collect(),
-                discriminant: v.discr,
+                discriminant: v.discr.clone(),
             })
             .collect();
         let datatype = chc::Datatype {
