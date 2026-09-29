@@ -839,7 +839,7 @@ fn _extern_spec_result_from_residual<T, E, F: From<E>>(residual: Result<std::con
 fn _extern_spec_from_identity<T>(value: T) -> T
     where T: thrust_models::Model, T::Ty: PartialEq,
 {
-    <T as From<T>>::from(value)
+    <T as std::convert::From<T>>::from(value)
 }
 
 #[thrust::extern_spec_fn]
@@ -1792,9 +1792,9 @@ fn _extern_spec_vec_split_off<T>(vec: &mut Vec<T>, at: usize) -> Vec<T>
 )]
 fn _extern_spec_vec_extend<T, I>(vec: &mut Vec<T>, iter: I)
     where T: thrust_models::Model, T::Ty: PartialEq,
-          I: IntoIterator<Item = T> + thrust_models::Model, I::Ty: PartialEq
+          I: std::iter::IntoIterator<Item = T> + thrust_models::Model, I::Ty: PartialEq
 {
-    <Vec<T> as Extend<T>>::extend(vec, iter)
+    <Vec<T> as std::iter::Extend<T>>::extend(vec, iter)
 }
 
 // Nothing about the collected items is visible in this vocabulary, so the result is any `Vec<T>`.
@@ -1803,9 +1803,9 @@ fn _extern_spec_vec_extend<T, I>(vec: &mut Vec<T>, iter: I)
 #[thrust_macros::ensures(true)]
 fn _extern_spec_vec_from_iter<T, I>(iter: I) -> Vec<T>
     where T: thrust_models::Model, T::Ty: PartialEq,
-          I: IntoIterator<Item = T> + thrust_models::Model, I::Ty: PartialEq
+          I: std::iter::IntoIterator<Item = T> + thrust_models::Model, I::Ty: PartialEq
 {
-    <Vec<T> as FromIterator<T>>::from_iter(iter)
+    <Vec<T> as std::iter::FromIterator<T>>::from_iter(iter)
 }
 
 #[thrust::extern_spec_fn]
@@ -1814,7 +1814,7 @@ fn _extern_spec_vec_from_iter<T, I>(iter: I) -> Vec<T>
 fn _extern_spec_array_into_vec<T, const N: usize>(array: [T; N]) -> Vec<T>
     where T: thrust_models::Model, T::Ty: PartialEq
 {
-    <[T; N] as Into<Vec<T>>>::into(array)
+    <[T; N] as std::convert::Into<Vec<T>>>::into(array)
 }
 
 // TODO: The following specs of some trait methods are too restrictive; we should allow for a
