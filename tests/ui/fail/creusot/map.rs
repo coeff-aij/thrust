@@ -151,12 +151,6 @@ where
     ) {
     }
 
-    #[thrust_macros::requires(<Self as Iterator>::invariant(s0)
-        && s0.func == s1.func
-        && I::invariant(s1.iter))]
-    #[thrust_macros::ensures(Self::reinitialize(s1.func))]
-    fn produces_one_reinitialize(s0: Ghost<Self>, s1: Ghost<Self>) {}
-
     // Creusot's `produces_one_invariant`, with its requires and ensures, and the inner item `e`
     // of `produces_one` as an argument.
     #[thrust_macros::requires(<Self as Iterator>::invariant(s0)
@@ -166,7 +160,6 @@ where
         && I::invariant(s1.iter))]
     #[thrust_macros::ensures(<Self as Iterator>::invariant(s1))]
     fn produces_one_invariant(s0: Ghost<Self>, e: Ghost<<I as Iterator>::Item>, b: Ghost<B>, s1: Ghost<Self>) {
-        Self::produces_one_reinitialize(s0, s1);
     }
 }
 
