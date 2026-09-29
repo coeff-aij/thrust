@@ -27,6 +27,9 @@ fn stable_def_id_symbol(tcx: mir_ty::TyCtxt<'_>, did: DefId, prefix: &str) -> St
     let path = tcx.def_path(did);
     if let Some(name) = path.data.last().and_then(|d| d.data.get_opt_name()) {
         tracing::debug!("stable_def_id_symbol: name={}", name);
+        let name = name
+            .as_str()
+            .replace(|c: char| !c.is_alphanumeric() && c != '_', "_");
         format!("{}_{}_{}", prefix, name, hash.0.to_hex())
     } else {
         hash.0.to_hex()
