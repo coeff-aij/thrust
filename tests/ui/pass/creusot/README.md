@@ -20,7 +20,7 @@ theirs in the same layout. A case that needs `collect` adds it to its copy after
 | `skip.rs` | `iterators/skip.rs` | `produces`, concatenated |
 | `fuse.rs` | `iterators/fuse.rs` | `step` |
 | `fuse_produces.rs` | `iterators/fuse.rs` | `produces` + `FusedIterator::is_fused`; state `Option<I>` for Creusot's `Result<I, Ghost<I>>` |
-| `map.rs` | `iterators/map.rs` | `produces`, Creusot's own proof structure (source-level lemmas), fully checked |
+| `map.rs` | `iterators/map.rs` | `produces` over an `FnMut` closure with the chain `fs` of closure states and `unnest!`, Creusot's own proof structure (source-level lemmas, `counter_creusot.rs`'s for `produces_trans`), fully checked |
 | `iter_mut.rs` | `iterators/iter_mut.rs` | `produces` |
 | `collect.rs` | `common.rs` (`collect` / `FromIterator`) | `produces` |
 | `all_zero.rs` | `examples/all_zero.rs` | `produces`, via `iter_mut` |
@@ -28,7 +28,7 @@ theirs in the same layout. A case that needs `collect` adds it to its copy after
 | `skip_take.rs` | `examples/skip_take.rs` | `produces`, concatenated `Skip`, generic in `I` |
 | `counter.rs` | `examples/counter.rs` | `step` + a unary `next_item` guard, `MapInv`'s ghost history |
 | `counter_creusot.rs` | `examples/counter.rs` | `produces` with Creusot's property (`x == v`, `cnt == x.len()`), `MapInv` over an `FnMut` closure whose states are related by `unnest!` (Creusot's `hist_inv`), as in creusot-std's `std/iter/map_inv.rs` |
-| `map_ext.rs` | `iterators/map_ext.rs` | `produces` with an existential input sequence, `MapInv`'s ghost history (the ninth adapter) |
+| `map_ext.rs` | `iterators/map_ext.rs` | `produces` with an existential input sequence, `MapInv`'s ghost history, over an `FnMut` closure with the chain `fs` and `unnest!` as `counter_creusot.rs` (the ninth adapter) |
 | `extend.rs` | `examples/extend.rs` | `produces` |
 | `take_count.rs` | no counterpart | `produces`; an extra call site of `take.rs`'s `Take` |
 | `fold.rs` | no counterpart | `produces`; a hand-written `fold` with a closure contract over the accumulator |

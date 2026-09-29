@@ -9,8 +9,11 @@ use thrust_models::{exists, forall, Ghost, Model};
 // `produced` of the inner items consumed so far, so its precondition may depend on it. `produces`
 // extends `produced` by the existential input sequence `s` and calls the closure at the history
 // `produced ++ s[..k]` for the `k`-th item; the invariant is Creusot's `reinitialize`,
-// `preservation_inv`, the inner invariant and `next_precondition`. The proof structure is the one
-// of `map_creusot_lemmas.rs` (lemmas called from ghost code in `next` and `produces_trans`).
+// `preservation_inv`, the inner invariant and `next_precondition`. The closure is `FnMut`, as
+// Creusot's: `produces` carries the chain `fs` of closure states related by `unnest!` (Creusot's
+// `unnest`, `hist_inv` in creusot-std), and `preservation_inv` and `reinitialize` quantify over
+// every closure state. The adapter and its lemmas are `counter_creusot.rs`'s (lemmas called from
+// ghost code in `next` and `produces_trans`).
 
 // Creusot's `common.rs`, the iterator specification every case shares: the trait predicates
 // `produces(self, visited, o)`, `completed` and `invariant` (`true` unless the impl says otherwise),
@@ -72,7 +75,7 @@ where
     I: Iterator + Model,
     A: Model<Ty = A> + PartialEq,
     B: Model,
-    F: Fn(I::Item, Ghost<Seq<A>>) -> B,
+    F: FnMut(I::Item, Ghost<Seq<A>>) -> B,
     <I as Iterator>::Item: Model<Ty = A>,
     <I as Model>::Ty: Model<Ty = <I as Model>::Ty> + PartialEq,
     <B as Model>::Ty: Model<Ty = <B as Model>::Ty> + PartialEq,
@@ -83,57 +86,85 @@ where
             !I::produces(iter, Seq::singleton(e), i) || thrust_macros::pre!(func(e, produced))))
     }
 
-    // Creusot's `preservation_inv` (and, at `produced == []`, `preservation`).
+    // Creusot's `preservation_inv` (and, at `produced == []`, `preservation`), over every closure
+    // state `f1` that `func` reaches (`func.hist_inv(*f)`) and its successor `f2` (Creusot's
+    // `f: &mut F`).
     #[thrust_macros::predicate]
     fn preservation_inv(iter: I, func: F, produced: Seq<A>) -> bool {
         forall(|s: Seq<A>|
         forall(|e1: A|
         forall(|e2: A|
         forall(|i: <I as Model>::Ty|
+        forall(|f1: Closure<F>|
+        forall(|f2: Closure<F>|
         forall(|b: <B as Model>::Ty|
-            !(I::produces(iter, s.push(e1).push(e2), i)
-                && thrust_macros::pre!(func(e1, produced.concat(s)))
-                && thrust_macros::post!(func(e1, produced.concat(s)), b))
-                || thrust_macros::pre!(func(e2, produced.concat(s).push(e1))))))))
+            !(thrust_macros::unnest!(func, f1)
+                && I::produces(iter, s.push(e1).push(e2), i)
+                && thrust_macros::pre!(f1(e1, produced.concat(s)))
+                && thrust_macros::post!(Mut::new(f1, f2)(e1, produced.concat(s)), b))
+                || thrust_macros::pre!(f2(e2, produced.concat(s).push(e1))))))))))
     }
 
     // Creusot's `reinitialize`: after completion (`produced` reset to []), the next item's
-    // precondition and preservation hold again.
+    // precondition and preservation hold again, for every closure state.
     #[thrust_macros::predicate]
-    fn reinitialize(func: F) -> bool {
-        forall(|cur: <I as Model>::Ty| forall(|fin: <I as Model>::Ty|
+    fn reinitialize() -> bool {
+        forall(|cur: <I as Model>::Ty| forall(|fin: <I as Model>::Ty| forall(|f: Closure<F>|
             !I::completed(Mut::new(cur, fin))
-                || (Self::next_precondition(fin, func, Seq::empty())
-                    && Self::preservation_inv(fin, func, Seq::empty()))))
+                || (Self::next_precondition(fin, f, Seq::empty())
+                    && Self::preservation_inv(fin, f, Seq::empty())))))
     }
 
-    // Creusot's `produces_one`: `func` unchanged, one inner item `e` mapped to `visited` at the
-    // history `produced`, and `produced` extended by `e`.
+    // Creusot's `produces_one`: one closure call from `s0.func` to `s1.func` (Creusot's
+    // `f: &mut F` with `*f == self.func && ^f == succ.func`), one inner item `e` mapped to `visited`
+    // at the history `produced`, and `produced` extended by `e`.
     #[thrust_macros::predicate]
     fn produces_one(s0: Self, visited: B, s1: Self) -> bool {
-        s0.1 == s1.1
-            && exists(|e: A|
-                I::produces(s0.0, Seq::singleton(e), s1.0)
-                    && s1.2 == s0.2.push(e)
-                    && thrust_macros::post!((s0.1)(e, s0.2), visited))
+        exists(|e: A|
+            I::produces(s0.0, Seq::singleton(e), s1.0)
+                && s1.2 == s0.2.push(e)
+                && thrust_macros::post!(Mut::new(s0.1, s1.1)(e, s0.2), visited))
     }
 
-    // The direction of `produces_one`'s ensures that `next` uses, with the witness `[e]` as a term.
-    #[thrust_macros::requires(s0.1 == s1.1
-        && I::produces(s0.0, Seq::singleton(e), s1.0)
+    // `produces` with its input sequence `s` and closure chain `fs` given: the body of `produces`
+    // under its `exists`.
+    #[thrust_macros::predicate]
+    fn produces_at(s0: Self, visited: Seq<<B as Model>::Ty>, o: Self, s: Seq<A>, fs: Seq<F>) -> bool {
+        thrust_macros::unnest!(s0.1, o.1)
+            && s.len() == visited.len()
+            && I::produces(s0.0, s, o.0)
+            && o.2 == s0.2.concat(s)
+            && fs.len() == visited.len() + 1
+            && fs[0] == s0.1
+            && fs[visited.len()] == o.1
+            && forall(|k: Int|
+                !(0 <= k && k < visited.len())
+                    || (thrust_macros::unnest!(s0.1, fs[k])
+                        && thrust_macros::post!(Mut::new(fs[k], fs[k + 1])(s[k], s0.2.concat(s.subsequence(0, k))), visited[k])))
+    }
+
+    // `produces` with its input sequence `s` given: `produces_at` under the `exists` of the chain.
+    #[thrust_macros::predicate]
+    fn produces_with(s0: Self, visited: Seq<<B as Model>::Ty>, o: Self, s: Seq<A>) -> bool {
+        exists(|fs: Seq<Closure<F>>| Self::produces_at(s0, visited, o, s, fs))
+    }
+
+    // The direction of `produces_one`'s ensures that `next` uses, with the witnesses `[e]` and
+    // `[s0.func, s1.func]` as terms.
+    #[thrust_macros::requires(I::produces(s0.0, Seq::singleton(e), s1.0)
         && s1.2 == s0.2.push(e)
-        && thrust_macros::post!((s0.1)(e, s0.2), b))]
+        && thrust_macros::post!(Mut::new(s0.1, s1.1)(e, s0.2), b))]
     #[thrust_macros::ensures(Self::produces_one(s0, b, s1))]
+    #[thrust_macros::ensures(Self::produces_at(s0, Seq::singleton(b), s1, Seq::singleton(e), Seq::singleton(s0.1).push(s1.1)))]
     #[thrust_macros::ensures(<Self as Iterator>::produces(s0, Seq::singleton(b), s1))]
     fn produces_one_produces(s0: Ghost<Self>, e: Ghost<<I as Iterator>::Item>, b: Ghost<B>, s1: Ghost<Self>) {}
 
     // One lemma per conjunct of the invariant (the session's `split_vc`), each taking the inner
     // item `e` that `produces_one`'s `exists` hides.
     #[thrust_macros::requires(<Self as Iterator>::invariant(s0)
-        && s0.1 == s1.1
         && I::produces(s0.0, Seq::singleton(e), s1.0)
         && s1.2 == s0.2.push(e)
-        && thrust_macros::post!((s0.1)(e, s0.2), b)
+        && thrust_macros::post!(Mut::new(s0.1, s1.1)(e, s0.2), b)
         && I::invariant(s1.0))]
     #[thrust_macros::ensures(Self::next_precondition(s1.0, s1.1, s1.2))]
     fn produces_one_next_precondition(s0: Ghost<Self>, e: Ghost<<I as Iterator>::Item>, b: Ghost<B>, s1: Ghost<Self>) {}
@@ -155,44 +186,33 @@ where
     fn produces_one_prefix(s0: Ghost<Self>, e: Ghost<<I as Iterator>::Item>, s1: Ghost<Self>) {}
 
     #[thrust_macros::requires(<Self as Iterator>::invariant(s0)
-        && s0.1 == s1.1
         && I::produces(s0.0, Seq::singleton(e), s1.0)
         && s1.2 == s0.2.push(e)
-        && thrust_macros::post!((s0.1)(e, s0.2), b)
+        && thrust_macros::unnest!(s0.1, s1.1)
         && I::invariant(s1.0))]
     #[thrust_macros::ensures(Self::preservation_inv(s1.0, s1.1, s1.2))]
-    fn produces_one_preservation(s0: Ghost<Self>, e: Ghost<<I as Iterator>::Item>, b: Ghost<B>, s1: Ghost<Self>) {
+    fn produces_one_preservation(s0: Ghost<Self>, e: Ghost<<I as Iterator>::Item>, s1: Ghost<Self>) {
         Self::produces_one_prefix(s0, e, s1);
     }
 
-    #[thrust_macros::requires(<Self as Iterator>::invariant(s0)
-        && s0.1 == s1.1
-        && I::invariant(s1.0))]
-    #[thrust_macros::ensures(Self::reinitialize(s1.1))]
-    fn produces_one_reinitialize(s0: Ghost<Self>, s1: Ghost<Self>) {}
-
-    // Creusot's `produces_one_invariant`, with the inner item `e` as an argument.
+    // Creusot's `produces_one_invariant`, with the inner item `e` as an argument. `reinitialize`
+    // does not depend on the state, so it carries over from `s0`.
     #[thrust_macros::requires(<Self as Iterator>::invariant(s0)
         && Self::produces_one(s0, b, s1)
         && I::produces(s0.0, Seq::singleton(e), s1.0)
         && s1.2 == s0.2.push(e)
-        && thrust_macros::post!((s0.1)(e, s0.2), b)
+        && thrust_macros::post!(Mut::new(s0.1, s1.1)(e, s0.2), b)
         && I::invariant(s1.0))]
     #[thrust_macros::ensures(<Self as Iterator>::invariant(s1))]
     fn produces_one_invariant(s0: Ghost<Self>, e: Ghost<<I as Iterator>::Item>, b: Ghost<B>, s1: Ghost<Self>) {
         Self::produces_one_next_precondition(s0, e, b, s1);
-        Self::produces_one_preservation(s0, e, b, s1);
-        Self::produces_one_reinitialize(s0, s1);
+        Self::produces_one_preservation(s0, e, s1);
     }
 
-    // `produces_trans` with the concatenation of the visited sequences spelled out index by index.
+    // `produces_trans` on ghost arguments.
     #[thrust_macros::requires(<Self as Iterator>::produces(a, ab, b)
         && <Self as Iterator>::produces(b, bc, c))]
-    #[thrust_macros::ensures(forall(|v: Seq<<B as Model>::Ty>|
-        !(v.len() == ab.len() + bc.len()
-            && forall(|k: Int| !(0 <= k && k < ab.len()) || v[k] == ab[k])
-            && forall(|k: Int| !(ab.len() <= k && k < v.len()) || v[k] == bc[k - ab.len()]))
-            || <Self as Iterator>::produces(a, v, c)))]
+    #[thrust_macros::ensures(<Self as Iterator>::produces(a, ab.concat(bc), c))]
     fn produces_trans_split(
         a: Ghost<Self>,
         ab: Ghost<Seq<<B as Model>::Ty>>,
@@ -203,35 +223,15 @@ where
         Self::produces_trans_witness(a, ab, b, bc, c);
     }
 
-    // `produces` with its input sequence `s` given: the body of `produces` under its `exists`.
-    #[thrust_macros::predicate]
-    fn produces_at(s0: Self, visited: Seq<<B as Model>::Ty>, o: Self, s: Seq<A>) -> bool {
-        s0.1 == o.1
-            && s.len() == visited.len()
-            && I::produces(s0.0, s, o.0)
-            && o.2 == s0.2.concat(s)
-            && forall(|k: Int|
-                !(0 <= k && k < visited.len())
-                    || thrust_macros::post!((s0.1)(s[k], s0.2.concat(s.subsequence(0, k))), visited[k]))
-    }
-
-    // The witness of `produces_trans` as a term: the input sequences of the two halves,
-    // concatenated (the session's `exists (s1 ++ s)`), with the history split below and above
-    // `ab.len()` from `history_split` (the session's `instantiate H2 (i - length ab)`).
-    #[thrust_macros::ensures(forall(|sab: Seq<A>| forall(|sbc: Seq<A>| forall(|v: Seq<<B as Model>::Ty>|
-        !(Self::produces_at(a, ab, b, sab)
-            && Self::produces_at(b, bc, c, sbc)
-            && v.len() == ab.len() + bc.len()
-            && forall(|k: Int| !(0 <= k && k < ab.len()) || v[k] == ab[k])
-            && forall(|k: Int| !(ab.len() <= k && k < v.len()) || v[k] == bc[k - ab.len()]))
-            || Self::produces_at(a, v, c, sab.concat(sbc))))))]
-    #[thrust_macros::ensures(forall(|sab: Seq<A>| forall(|sbc: Seq<A>| forall(|v: Seq<<B as Model>::Ty>|
-        !(Self::produces_at(a, ab, b, sab)
-            && Self::produces_at(b, bc, c, sbc)
-            && v.len() == ab.len() + bc.len()
-            && forall(|k: Int| !(0 <= k && k < ab.len()) || v[k] == ab[k])
-            && forall(|k: Int| !(ab.len() <= k && k < v.len()) || v[k] == bc[k - ab.len()]))
-            || <Self as Iterator>::produces(a, v, c)))))]
+    // The existential introduction of `produces(a, ab.concat(bc), c)`, with the witnesses of the two halves'
+    // `exists` universally quantified and the joined witnesses as terms: the input sequences
+    // concatenated (the session's `exists (s1 ++ s)`) and the closure chains joined at their shared
+    // state `b.func`, `fab[..ab.len()] ++ fbc` (the session's `exists (fs1 ++ fs)`; Thrust's chain
+    // holds the states, one more than Creusot's `&mut F` steps, so the shared one is dropped once).
+    #[thrust_macros::ensures(forall(|sab: Seq<A>| forall(|sbc: Seq<A>|
+        forall(|fab: Seq<Closure<F>>| forall(|fbc: Seq<Closure<F>>|
+        !(Self::produces_at(a, ab, b, sab, fab) && Self::produces_at(b, bc, c, sbc, fbc))
+            || <Self as Iterator>::produces(a, ab.concat(bc), c))))))]
     fn produces_trans_witness(
         a: Ghost<Self>,
         ab: Ghost<Seq<<B as Model>::Ty>>,
@@ -239,19 +239,205 @@ where
         bc: Ghost<Seq<<B as Model>::Ty>>,
         c: Ghost<Self>,
     ) {
-        Self::history_split();
+        Self::produces_trans_at(a, ab, b, bc, c);
+        Self::produces_join_intro(a, ab, b, bc, c);
     }
 
-    // The history of the `k`-th item of a concatenation `x ++ y`, split at `x.len()`: below it the
-    // prefix of `x`, above it `h ++ x` followed by the prefix of `y` (the session's
-    // `instantiate H2 (i - length ab)` with `use_th seq.FreeMonoid`).
-    #[thrust_macros::ensures(forall(|h: Seq<A>| forall(|x: Seq<A>| forall(|y: Seq<A>| forall(|k: Int|
-        !(0 <= k && k <= x.len())
-            || h.concat(x.concat(y).subsequence(0, k)) == h.concat(x.subsequence(0, k)))))))]
-    #[thrust_macros::ensures(forall(|h: Seq<A>| forall(|x: Seq<A>| forall(|y: Seq<A>| forall(|k: Int|
-        !(x.len() <= k && k <= x.len() + y.len())
-            || h.concat(x.concat(y).subsequence(0, k)) == h.concat(x).concat(y.subsequence(0, k - x.len())))))))]
-    fn history_split() {}
+    // `produces`'s existential introduced at the joined witnesses, over the same variables as
+    // `produces_trans_at`'s conclusion.
+    #[thrust_macros::ensures(forall(|sab: Seq<A>| forall(|sbc: Seq<A>|
+        forall(|fab: Seq<Closure<F>>| forall(|fbc: Seq<Closure<F>>|
+        !Self::produces_at(a, ab.concat(bc), c, sab.concat(sbc), fab.subsequence(0, ab.len()).concat(fbc))
+            || <Self as Iterator>::produces(a, ab.concat(bc), c))))))]
+    fn produces_join_intro(
+        a: Ghost<Self>,
+        ab: Ghost<Seq<<B as Model>::Ty>>,
+        b: Ghost<Self>,
+        bc: Ghost<Seq<<B as Model>::Ty>>,
+        c: Ghost<Self>,
+    ) {
+        Self::produces_join_chain(a, ab, b, bc, c);
+        Self::produces_join_inputs(a, ab, b, bc, c);
+    }
+
+    // `produces`'s two existentials introduced one at a time at the joined witnesses, over the same
+    // variables as `produces_trans_at`'s conclusion: first the closure chain, then the input
+    // sequence.
+    #[thrust_macros::ensures(forall(|sab: Seq<A>| forall(|sbc: Seq<A>|
+        forall(|fab: Seq<Closure<F>>| forall(|fbc: Seq<Closure<F>>|
+        !Self::produces_at(a, ab.concat(bc), c, sab.concat(sbc), fab.subsequence(0, ab.len()).concat(fbc))
+            || Self::produces_with(a, ab.concat(bc), c, sab.concat(sbc)))))))]
+    fn produces_join_chain(
+        a: Ghost<Self>,
+        ab: Ghost<Seq<<B as Model>::Ty>>,
+        b: Ghost<Self>,
+        bc: Ghost<Seq<<B as Model>::Ty>>,
+        c: Ghost<Self>,
+    ) {
+    }
+
+    #[thrust_macros::ensures(forall(|sab: Seq<A>| forall(|sbc: Seq<A>|
+        !Self::produces_with(a, ab.concat(bc), c, sab.concat(sbc)) || <Self as Iterator>::produces(a, ab.concat(bc), c))))]
+    fn produces_join_inputs(
+        a: Ghost<Self>,
+        ab: Ghost<Seq<<B as Model>::Ty>>,
+        b: Ghost<Self>,
+        bc: Ghost<Seq<<B as Model>::Ty>>,
+        c: Ghost<Self>,
+    ) {
+    }
+
+    // `produces_at` of the joined witnesses: one lemma per group of conjuncts (the session's
+    // `split_vc`).
+    #[thrust_macros::ensures(forall(|sab: Seq<A>| forall(|sbc: Seq<A>|
+        forall(|fab: Seq<Closure<F>>| forall(|fbc: Seq<Closure<F>>|
+        !(Self::produces_at(a, ab, b, sab, fab) && Self::produces_at(b, bc, c, sbc, fbc))
+            || Self::produces_at(a, ab.concat(bc), c, sab.concat(sbc), fab.subsequence(0, ab.len()).concat(fbc)))))))]
+    fn produces_trans_at(
+        a: Ghost<Self>,
+        ab: Ghost<Seq<<B as Model>::Ty>>,
+        b: Ghost<Self>,
+        bc: Ghost<Seq<<B as Model>::Ty>>,
+        c: Ghost<Self>,
+    ) {
+        Self::trans_inputs(a, ab, b, bc, c);
+        Self::trans_ends(a, ab, b, bc, c);
+        Self::trans_calls(a, ab, b, bc, c);
+    }
+
+    // The input sequence, the inner `produces` and the history of the joined witness.
+    #[thrust_macros::ensures(forall(|sab: Seq<A>| forall(|sbc: Seq<A>|
+        forall(|fab: Seq<Closure<F>>| forall(|fbc: Seq<Closure<F>>|
+        !(Self::produces_at(a, ab, b, sab, fab) && Self::produces_at(b, bc, c, sbc, fbc))
+            || (sab.concat(sbc).len() == ab.concat(bc).len()
+                && I::produces(a.0, sab.concat(sbc), c.0)
+                && c.2 == a.2.concat(sab.concat(sbc))))))))]
+    fn trans_inputs(
+        a: Ghost<Self>,
+        ab: Ghost<Seq<<B as Model>::Ty>>,
+        b: Ghost<Self>,
+        bc: Ghost<Seq<<B as Model>::Ty>>,
+        c: Ghost<Self>,
+    ) {
+    }
+
+    // The first and the last closure state and the length of the joined chain, and `unnest!` from
+    // the first to the last state.
+    #[thrust_macros::ensures(forall(|sab: Seq<A>| forall(|sbc: Seq<A>|
+        forall(|fab: Seq<Closure<F>>| forall(|fbc: Seq<Closure<F>>|
+        !(Self::produces_at(a, ab, b, sab, fab) && Self::produces_at(b, bc, c, sbc, fbc))
+            || (thrust_macros::unnest!(a.1, c.1)
+                && fab.subsequence(0, ab.len()).concat(fbc).len() == ab.concat(bc).len() + 1
+                && fab.subsequence(0, ab.len()).concat(fbc)[0] == a.1
+                && fab.subsequence(0, ab.len()).concat(fbc)[ab.concat(bc).len()] == c.1))))))]
+    fn trans_ends(
+        a: Ghost<Self>,
+        ab: Ghost<Seq<<B as Model>::Ty>>,
+        b: Ghost<Self>,
+        bc: Ghost<Seq<<B as Model>::Ty>>,
+        c: Ghost<Self>,
+    ) {
+    }
+
+    // Every call of the joined witnesses, in the form of `produces_at`'s last conjunct: the two
+    // halves below and from `ab.len()`.
+    #[thrust_macros::ensures(forall(|sab: Seq<A>| forall(|sbc: Seq<A>|
+        forall(|fab: Seq<Closure<F>>| forall(|fbc: Seq<Closure<F>>|
+        !(Self::produces_at(a, ab, b, sab, fab) && Self::produces_at(b, bc, c, sbc, fbc))
+            || forall(|k: Int|
+                !(0 <= k && k < ab.concat(bc).len())
+                    || (thrust_macros::unnest!(a.1, fab.subsequence(0, ab.len()).concat(fbc)[k])
+                        && thrust_macros::post!(Mut::new(fab.subsequence(0, ab.len()).concat(fbc)[k], fab.subsequence(0, ab.len()).concat(fbc)[k + 1])(
+                            sab.concat(sbc)[k], a.2.concat(sab.concat(sbc).subsequence(0, k))), ab.concat(bc)[k]))))))))]
+    fn trans_calls(
+        a: Ghost<Self>,
+        ab: Ghost<Seq<<B as Model>::Ty>>,
+        b: Ghost<Self>,
+        bc: Ghost<Seq<<B as Model>::Ty>>,
+        c: Ghost<Self>,
+    ) {
+        Self::trans_lower(a, ab, b, bc, c);
+        Self::trans_upper(a, ab, b, bc, c);
+    }
+
+    // The calls of the first half, below `ab.len()`.
+    #[thrust_macros::ensures(forall(|sab: Seq<A>| forall(|sbc: Seq<A>|
+        forall(|fab: Seq<Closure<F>>| forall(|fbc: Seq<Closure<F>>| forall(|k: Int|
+        !(Self::produces_at(a, ab, b, sab, fab) && Self::produces_at(b, bc, c, sbc, fbc)
+            && 0 <= k && k < ab.len())
+            || (thrust_macros::unnest!(a.1, fab.subsequence(0, ab.len()).concat(fbc)[k])
+                && thrust_macros::post!(Mut::new(fab.subsequence(0, ab.len()).concat(fbc)[k], fab.subsequence(0, ab.len()).concat(fbc)[k + 1])(
+                    sab.concat(sbc)[k], a.2.concat(sab.concat(sbc).subsequence(0, k))), ab.concat(bc)[k]))))))))]
+    fn trans_lower(
+        a: Ghost<Self>,
+        ab: Ghost<Seq<<B as Model>::Ty>>,
+        b: Ghost<Self>,
+        bc: Ghost<Seq<<B as Model>::Ty>>,
+        c: Ghost<Self>,
+    ) {
+        Self::join_lower_visited(ab, bc);
+        Self::join_lower_inputs(a, ab);
+        Self::join_lower_chain(ab, b, bc);
+    }
+
+    // The calls of the second half, from `ab.len()` on, at `k - ab.len()` in `bc`.
+    #[thrust_macros::ensures(forall(|sab: Seq<A>| forall(|sbc: Seq<A>|
+        forall(|fab: Seq<Closure<F>>| forall(|fbc: Seq<Closure<F>>| forall(|k: Int|
+        !(Self::produces_at(a, ab, b, sab, fab) && Self::produces_at(b, bc, c, sbc, fbc)
+            && ab.len() <= k && k < ab.concat(bc).len())
+            || (thrust_macros::unnest!(a.1, fab.subsequence(0, ab.len()).concat(fbc)[k])
+                && thrust_macros::post!(Mut::new(fab.subsequence(0, ab.len()).concat(fbc)[k], fab.subsequence(0, ab.len()).concat(fbc)[k + 1])(
+                    sab.concat(sbc)[k], a.2.concat(sab.concat(sbc).subsequence(0, k))), ab.concat(bc)[k]))))))))]
+    fn trans_upper(
+        a: Ghost<Self>,
+        ab: Ghost<Seq<<B as Model>::Ty>>,
+        b: Ghost<Self>,
+        bc: Ghost<Seq<<B as Model>::Ty>>,
+        c: Ghost<Self>,
+    ) {
+        Self::join_upper_visited(ab, bc);
+        Self::join_upper_inputs(a, ab, bc);
+        Self::join_upper_chain(ab, bc);
+    }
+
+    // The joined witnesses read at `k`, one lemma per sequence and side: below `ab.len()` the first
+    // half at `k`, from `ab.len()` on the second half at `k - ab.len()`.
+    #[thrust_macros::ensures(forall(|k: Int|
+        !(0 <= k && k < ab.len()) || ab.concat(bc)[k] == ab[k]))]
+    fn join_lower_visited(ab: Ghost<Seq<<B as Model>::Ty>>, bc: Ghost<Seq<<B as Model>::Ty>>) {}
+
+    #[thrust_macros::ensures(forall(|k: Int|
+        !(ab.len() <= k && k < ab.len() + bc.len()) || ab.concat(bc)[k] == bc[k - ab.len()]))]
+    fn join_upper_visited(ab: Ghost<Seq<<B as Model>::Ty>>, bc: Ghost<Seq<<B as Model>::Ty>>) {}
+
+    #[thrust_macros::ensures(forall(|sab: Seq<A>| forall(|sbc: Seq<A>| forall(|k: Int|
+        !(sab.len() == ab.len() && 0 <= k && k < ab.len())
+            || (sab.concat(sbc)[k] == sab[k]
+                && a.2.concat(sab.concat(sbc).subsequence(0, k)) == a.2.concat(sab.subsequence(0, k)))))))]
+    fn join_lower_inputs(a: Ghost<Self>, ab: Ghost<Seq<<B as Model>::Ty>>) {
+    }
+
+    #[thrust_macros::ensures(forall(|sab: Seq<A>| forall(|sbc: Seq<A>| forall(|k: Int|
+        !(sab.len() == ab.len() && sbc.len() == bc.len() && ab.len() <= k && k < ab.len() + bc.len())
+            || (sab.concat(sbc)[k] == sbc[k - ab.len()]
+                && a.2.concat(sab.concat(sbc).subsequence(0, k)) == a.2.concat(sab).concat(sbc.subsequence(0, k - ab.len())))))))]
+    fn join_upper_inputs(a: Ghost<Self>, ab: Ghost<Seq<<B as Model>::Ty>>, bc: Ghost<Seq<<B as Model>::Ty>>) {
+    }
+
+    #[thrust_macros::ensures(forall(|fab: Seq<Closure<F>>| forall(|fbc: Seq<Closure<F>>| forall(|k: Int|
+        !(fab.len() == ab.len() + 1 && fbc.len() == bc.len() + 1
+            && fab[ab.len()] == b.1 && fbc[0] == b.1 && 0 <= k && k < ab.len())
+            || (fab.subsequence(0, ab.len()).concat(fbc)[k] == fab[k]
+                && fab.subsequence(0, ab.len()).concat(fbc)[k + 1] == fab[k + 1])))))]
+    fn join_lower_chain(ab: Ghost<Seq<<B as Model>::Ty>>, b: Ghost<Self>, bc: Ghost<Seq<<B as Model>::Ty>>) {
+    }
+
+    #[thrust_macros::ensures(forall(|fab: Seq<Closure<F>>| forall(|fbc: Seq<Closure<F>>| forall(|k: Int|
+        !(fab.len() == ab.len() + 1 && fbc.len() == bc.len() + 1 && ab.len() <= k && k < ab.len() + bc.len())
+            || (fab.subsequence(0, ab.len()).concat(fbc)[k] == fbc[k - ab.len()]
+                && fab.subsequence(0, ab.len()).concat(fbc)[k + 1] == fbc[k - ab.len() + 1])))))]
+    fn join_upper_chain(ab: Ghost<Seq<<B as Model>::Ty>>, bc: Ghost<Seq<<B as Model>::Ty>>) {
+    }
 }
 
 #[thrust_macros::context]
@@ -260,7 +446,7 @@ where
     I: Iterator + Model,
     A: Model<Ty = A> + PartialEq,
     B: Model,
-    F: Fn(I::Item, Ghost<Seq<A>>) -> B,
+    F: FnMut(I::Item, Ghost<Seq<A>>) -> B,
     <I as Iterator>::Item: Model<Ty = A>,
     <I as Model>::Ty: Model<Ty = <I as Model>::Ty> + PartialEq,
     <B as Model>::Ty: Model<Ty = <B as Model>::Ty> + PartialEq,
@@ -306,7 +492,7 @@ where
 
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
-        Self::reinitialize(self.1)
+        Self::reinitialize()
             && Self::preservation_inv(self.0, self.1, self.2)
             && I::invariant(self.0)
             && Self::next_precondition(self.0, self.1, self.2)
@@ -319,18 +505,26 @@ where
             && (*self).1 == (!self).1
     }
 
+    // Creusot's `produces`: the inner items `s`, the closure states `fs` with `fs[k]` before and
+    // `fs[k + 1]` after the `k`-th call (Creusot's `fs: Seq<&mut F>` read as `*fs[k]` and
+    // `^fs[k]`), and the history `produced ++ s[..k]` at the `k`-th call.
     #[thrust_macros::predicate]
     fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool {
-        self.1 == o.1
-            && exists(|s: Seq<A>|
-                s.len() == visited.len()
-                    && I::produces(self.0, s, o.0)
-                    && o.2 == self.2.concat(s)
-                    && forall(|k: Int|
-                        !(0 <= k && k < visited.len())
-                            || thrust_macros::post!((self.1)(s[k], self.2.concat(s.subsequence(0, k))), visited[k])))
+        thrust_macros::unnest!(self.1, o.1)
+            && exists(|s: Seq<A>| exists(|fs: Seq<Closure<F>>|
+            s.len() == visited.len()
+                && I::produces(self.0, s, o.0)
+                && o.2 == self.2.concat(s)
+                && fs.len() == visited.len() + 1
+                && fs[0] == self.1
+                && fs[visited.len()] == o.1
+                && forall(|k: Int|
+                    !(0 <= k && k < visited.len())
+                        || (thrust_macros::unnest!(self.1, fs[k])
+                            && thrust_macros::post!(Mut::new(fs[k], fs[k + 1])(s[k], self.2.concat(s.subsequence(0, k))), visited[k])))))
     }
 }
+
 #[derive(PartialEq)]
 struct Range {
     start: i64,
