@@ -12,8 +12,9 @@ use thrust_models::{exists, forall, Model};
 
 // Creusot's `common.rs`, the iterator specification every case shares: the trait predicates
 // `produces(self, visited, o)`, `completed` and `invariant` (`true` unless the impl says otherwise),
-// the laws `produces_refl` and `produces_trans` in Creusot's concatenation form, proved by each
-// impl, and `next` with Creusot's contract.
+// the laws `produces_refl` and `produces_trans` in Creusot's concatenation form, which every impl
+// inherits and Thrust checks at each impl (Creusot restates them per impl with empty bodies), and
+// `next` with Creusot's contract.
 #[thrust_macros::context]
 trait Iterator
 where
@@ -31,13 +32,13 @@ where
     #[thrust_macros::law]
     #[thrust_macros::requires(Self::invariant(*a))]
     #[thrust_macros::ensures(Self::produces(*a, Seq::empty(), *a))]
-    fn produces_refl(a: &Self);
+    fn produces_refl(a: &Self) {}
 
     #[thrust_macros::law]
     #[thrust_macros::requires(Self::produces(*a, ab, *b))]
     #[thrust_macros::requires(Self::produces(*b, bc, *c))]
     #[thrust_macros::ensures(Self::produces(*a, ab.concat(bc), *c))]
-    fn produces_trans(a: &Self, ab: Seq<<Self::Item as Model>::Ty>, b: &Self, bc: Seq<<Self::Item as Model>::Ty>, c: &Self);
+    fn produces_trans(a: &Self, ab: Seq<<Self::Item as Model>::Ty>, b: &Self, bc: Seq<<Self::Item as Model>::Ty>, c: &Self) {}
 
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
@@ -63,7 +64,7 @@ where
     #[thrust_macros::requires(Self::completed(s))]
     #[thrust_macros::requires(Self::produces(!s, steps, *next))]
     #[thrust_macros::ensures(steps == Seq::empty() && !s == *next)]
-    fn is_fused(s: &mut Self, steps: Seq<<Self::Item as Model>::Ty>, next: &Self);
+    fn is_fused(s: &mut Self, steps: Seq<<Self::Item as Model>::Ty>, next: &Self) {}
 }
 
 pub struct Fuse<I> {
@@ -104,9 +105,7 @@ where
         }
     }
 
-    fn produces_refl(a: &Fuse<I>) {}
 
-    fn produces_trans(a: &Fuse<I>, ab: Seq<<Self::Item as Model>::Ty>, b: &Fuse<I>, bc: Seq<<Self::Item as Model>::Ty>, c: &Fuse<I>) {}
 
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
@@ -139,7 +138,6 @@ where
     <<I as Iterator>::Item as Model>::Ty: Model<Ty = <<I as Iterator>::Item as Model>::Ty> + PartialEq,
     <Fuse<I> as Model>::Ty: Model<Ty = <Fuse<I> as Model>::Ty> + PartialEq,
 {
-    fn is_fused(s: &mut Fuse<I>, steps: Seq<<Self::Item as Model>::Ty>, next: &Fuse<I>) {}
 }
 
 fn main() {}

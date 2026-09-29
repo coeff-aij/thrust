@@ -196,6 +196,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         // those bodies.
         let mut fn_mut_generic_defs = Vec::new();
         for local_def_id in self.tcx.mir_keys(()) {
+            if self.is_trait_law(*local_def_id) {
+                // A law's default body over `Self` would be checked with the law itself among
+                // the premises of `Self`'s predicates, which proves nothing; it is checked at
+                // each impl instead (`analyze_inherited_laws`).
+                continue;
+            }
             if self.has_fn_mut_bounded_param(*local_def_id) {
                 fn_mut_generic_defs.push(*local_def_id);
                 continue;
@@ -241,12 +247,27 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.analyze_inherited_laws();
     }
 
+    /// Whether `local_def_id` is a `#[thrust::law]` declared in a local trait.
+    fn is_trait_law(&self, local_def_id: LocalDefId) -> bool {
+        let def_id = local_def_id.to_def_id();
+        self.ctx
+            .trait_laws
+            .borrow()
+            .values()
+            .any(|laws| laws.contains(&def_id))
+    }
+
     /// Checks, at every local impl of a trait with laws, each `#[thrust::law]` the impl does not
-    /// define itself: the trait's default body is analyzed with `Self` (and the trait's own
-    /// arguments) set to the impl's, the impl's type parameters left as placeholders, against
-    /// the law's contract at those arguments. This is the obligation an impl that writes the law
-    /// with an empty body is checked against; the placeholder analysis of the default body over
-    /// `Self` proves nothing about an impl, since the law is assumed there.
+    /// define itself.
+    ///
+    /// A law is declared once in the trait with its contract and a default body (`{}` when the
+    /// solver needs no proof steps), and each impl inherits it. This is the shape Creusot
+    /// restates in each impl (`#[law]` with the trait's contract and an empty body); here the
+    /// impl writes the law only when it needs proof steps. The trait's default body is analyzed
+    /// with `Self` (and the trait's own arguments) set to the impl's, the impl's type parameters
+    /// left as placeholders, against the law's contract at those arguments: the obligation an
+    /// impl that writes the law with an empty body is checked against. Only local impls are
+    /// checked.
     fn analyze_inherited_laws(&mut self) {
         let trait_laws = self.ctx.trait_laws.borrow().clone();
         for (trait_def_id, laws) in trait_laws {

@@ -1,13 +1,14 @@
-//@check-pass
+//@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -A unused-variables
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300 COAR_IMAGE=coar:804d76744
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 COAR_IMAGE=coar:804d76744
+// `pass/creusot/take.rs` with `Take::produces` limited to at most one item, which breaks only the
+// inherited `produces_trans` of the generic impl (`next` yields one item at a time): the check at
+// the impl `Take<I>`, over `I`'s universal predicates, refutes it.
 use thrust_models::forall;
-use thrust_models::model::{Int, Seq};
+use thrust_models::model::{Int, Mut, Seq};
 use thrust_models::Model;
 
-// A hand-written try_fold over `range.rs`'s Range: the running sum stops and returns `None` as
-// soon as adding the next item would cross `bound`, so every returned sum is within `[0, bound]`.
-// No Creusot counterpart; an addition in the spirit of Creusot's examples.
+// The generic `Take` is used at a call site: after `take(1)` the second `next` is `None`.
 
 // Creusot's `common.rs`, the iterator specification every case shares: the trait predicates
 // `produces(self, visited, o)`, `completed` and `invariant` (`true` unless the impl says otherwise),
@@ -51,6 +52,56 @@ where
     fn next(&mut self) -> Option<Self::Item>;
 }
 
+pub struct Take<I> {
+    iter: I,
+    n: usize,
+}
+
+impl<I: Model> Model for Take<I> {
+    type Ty = Take<<I as Model>::Ty>;
+}
+
+#[thrust_macros::context]
+impl<I> Iterator for Take<I>
+where
+    I: Iterator + Model,
+    <I as Iterator>::Item: Model,
+    <I as Model>::Ty: Model<Ty = <I as Model>::Ty> + PartialEq,
+    <<I as Iterator>::Item as Model>::Ty: Model<Ty = <<I as Iterator>::Item as Model>::Ty> + PartialEq,
+    <Take<I> as Model>::Ty: Model<Ty = <Take<I> as Model>::Ty>,
+{
+    type Item = I::Item;
+
+    fn next(&mut self) -> Option<I::Item> {
+        if self.n != 0 {
+            self.n -= 1;
+            self.iter.next()
+        } else {
+            None
+        }
+    }
+
+
+
+    #[thrust_macros::predicate]
+    fn invariant(self) -> bool {
+        I::invariant(self.iter) && self.n >= 0
+    }
+
+    #[thrust_macros::predicate]
+    fn completed(&mut self) -> bool {
+        ((*self).n == 0 && (*self).iter == (!self).iter && (*self).n == (!self).n)
+            || ((*self).n > 0
+                && (*self).n == (!self).n + 1
+                && I::completed(Mut::new((*self).iter, (!self).iter)))
+    }
+
+    #[thrust_macros::predicate]
+    fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool {
+        visited.len() <= 1 && self.n == o.n + visited.len() && I::produces(self.iter, visited, o.iter)
+    }
+}
+
 #[derive(PartialEq)]
 struct Range {
     start: i64,
@@ -92,24 +143,13 @@ impl Iterator for Range {
     }
 }
 
-// `try_fold` over a `Range`: a running sum that bails out to `None` before it would cross
-// `bound`, so a `Some(s)` result always has `0 <= s <= bound`.
-#[thrust_macros::requires(0 <= start && start <= end && 0 <= bound)]
-#[thrust_macros::ensures(forall(|s: Int| result == Some(s) ==> (0 <= s && s <= bound)))]
-fn try_fold(start: i64, end: i64, bound: i64) -> Option<i64> {
-    let mut it = Range { start, end };
-    let mut acc: i64 = 0;
-    while let Some(x) = it.next() {
-        thrust_macros::invariant!(
-            |it: Range, acc: i64, bound: i64|
-            it.start >= 0 && acc >= 0 && acc <= bound
-        );
-        if acc + x > bound {
-            return None;
-        }
-        acc = acc + x;
-    }
-    Some(acc)
+fn main() {
+    let mut t = Take {
+        iter: Range { start: 0, end: 10 },
+        n: 1,
+    };
+    let first = t.next();
+    let second = t.next();
+    assert!(matches!(first, Some(0)));
+    assert!(matches!(second, None));
 }
-
-fn main() {}

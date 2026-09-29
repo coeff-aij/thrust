@@ -8,7 +8,6 @@ use thrust_models::forall;
 use thrust_models::model::Int;
 
 #[thrust_macros::context]
-#[thrust_macros::requires((*v).len() >= 0)]
 #[thrust_macros::ensures(
     (!v).len() == (*v).len()
         && forall(|i: Int| (0 <= i && i < (!v).len()) ==> ((!v)[i] == 0))

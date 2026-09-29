@@ -1,13 +1,11 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off -A unused-variables
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300 COAR_IMAGE=coar:804d76744
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 COAR_IMAGE=coar:804d76744
+// The trait's laws have default empty bodies and `Range` writes no proof of them: Thrust checks
+// each law at the impl, against the trait's contract with `Self` = `Range`.
 use thrust_models::forall;
 use thrust_models::model::{Int, Seq};
 use thrust_models::Model;
-
-// A hand-written try_fold over `range.rs`'s Range: the running sum stops and returns `None` as
-// soon as adding the next item would cross `bound`, so every returned sum is within `[0, bound]`.
-// No Creusot counterpart; an addition in the spirit of Creusot's examples.
 
 // Creusot's `common.rs`, the iterator specification every case shares: the trait predicates
 // `produces(self, visited, o)`, `completed` and `invariant` (`true` unless the impl says otherwise),
@@ -90,26 +88,6 @@ impl Iterator for Range {
             && visited.len() == o.start - self.start
             && forall(|i: Int| !(0 <= i && i < visited.len()) || visited[i] == self.start + i)
     }
-}
-
-// `try_fold` over a `Range`: a running sum that bails out to `None` before it would cross
-// `bound`, so a `Some(s)` result always has `0 <= s <= bound`.
-#[thrust_macros::requires(0 <= start && start <= end && 0 <= bound)]
-#[thrust_macros::ensures(forall(|s: Int| result == Some(s) ==> (0 <= s && s <= bound)))]
-fn try_fold(start: i64, end: i64, bound: i64) -> Option<i64> {
-    let mut it = Range { start, end };
-    let mut acc: i64 = 0;
-    while let Some(x) = it.next() {
-        thrust_macros::invariant!(
-            |it: Range, acc: i64, bound: i64|
-            it.start >= 0 && acc >= 0 && acc <= bound
-        );
-        if acc + x > bound {
-            return None;
-        }
-        acc = acc + x;
-    }
-    Some(acc)
 }
 
 fn main() {}
