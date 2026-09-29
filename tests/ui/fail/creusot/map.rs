@@ -165,15 +165,6 @@ where
 
     #[thrust_macros::requires(<Self as Iterator>::invariant(s0)
         && s0.func == s1.func
-        && I::produces(s0.iter, Seq::singleton(e), s1.iter)
-        && thrust_macros::post!((s0.func)(e), b)
-        && I::invariant(s1.iter))]
-    #[thrust_macros::ensures(Self::preservation(s1.iter, s1.func))]
-    fn produces_one_preservation(s0: Ghost<Self>, e: Ghost<<I as Iterator>::Item>, b: Ghost<B>, s1: Ghost<Self>) {
-    }
-
-    #[thrust_macros::requires(<Self as Iterator>::invariant(s0)
-        && s0.func == s1.func
         && I::invariant(s1.iter))]
     #[thrust_macros::ensures(Self::reinitialize(s1.func))]
     fn produces_one_reinitialize(s0: Ghost<Self>, s1: Ghost<Self>) {}
@@ -188,7 +179,6 @@ where
     #[thrust_macros::ensures(<Self as Iterator>::invariant(s1))]
     fn produces_one_invariant(s0: Ghost<Self>, e: Ghost<<I as Iterator>::Item>, b: Ghost<B>, s1: Ghost<Self>) {
         Self::produces_one_next_precondition(s0, e, b, s1);
-        Self::produces_one_preservation(s0, e, b, s1);
         Self::produces_one_reinitialize(s0, s1);
     }
 }
