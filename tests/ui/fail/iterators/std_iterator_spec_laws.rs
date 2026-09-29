@@ -7,8 +7,8 @@
 // `produces_refl` and `produces_trans` with an empty body.
 // On fptprove 2493045c3 the `produces_trans` of `Enumerate` and `Zip` time out: their `produces`
 // states the inner iterators' history under an existential, whose witness that build does not find.
-// Fail twin: one more impl, whose `produces` bounds the end state even when nothing is produced,
-// so `produces_refl` does not hold of a state past that bound.
+// Fail twin: one more impl, whose `produces` bounds the end state even when nothing is produced
+// but whose `inv` does not imply that bound, so `produces_refl` does not hold.
 
 include!("../../../../std.rs");
 
@@ -33,6 +33,11 @@ impl Iterator for Countdown {
 
 #[thrust_macros::context]
 impl IteratorSpec for Countdown {
+    #[thrust_macros::predicate]
+    fn inv(self) -> bool {
+        true
+    }
+
     #[thrust_macros::predicate]
     fn produces(self, visited: Vec<i64>, o: Self) -> bool {
         o.n <= self.n

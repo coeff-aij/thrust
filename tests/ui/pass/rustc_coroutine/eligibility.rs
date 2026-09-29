@@ -238,6 +238,11 @@ where
     T::Ty: PartialEq,
 {
     #[thrust_macros::predicate]
+    fn inv(self) -> bool {
+        true
+    }
+
+    #[thrust_macros::predicate]
     fn produces(self, visited: Vec<T>, o: Self) -> bool {
         true
     }
