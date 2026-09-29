@@ -16,6 +16,17 @@ except `produces_trans_witness`'s `produces` conclusion (the existential witness
 - `fail/map_ext_value.rs`: the call site claims `Some(21)` — not re-measured since the two new
   lemmas were added.
 
+## counter_creusot.rs (+ fail/)
+
+Creusot's `examples/counter` with its own property (`x == v`, `cnt == x.len()`) over a `Range`,
+through `map_ext.rs`'s `MapInv` with an `FnMut` closure: `produces` carries the chain `fs` of
+closure states, and the closure's ensures adds `unnest(*self, ^self)` of Creusot's
+`postcondition_mut` (the borrow of `cnt` keeps its prophecy). Stage S2: `cnt == x.len()` needs
+Creusot's `unnest` between the first and last state of `produces`, which Thrust cannot state;
+through the chain it needs induction at the call site. `x == v` alone is decided with the
+adapter's and `from_iter`'s bodies trusted; `from_iter`'s instance stalls on the witness of `fs`.
+The fail twin (`cnt == x.len() + 1`) refutes, backing no pass side.
+
 ## skip_take_range.rs (+ fail/)
 
 `Skip<Take<Range>>`, a concrete instantiation of `skip_take.rs`. Stage S2: the nested generic-impl
