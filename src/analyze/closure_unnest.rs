@@ -106,3 +106,113 @@ pub fn laws(
     }
     laws
 }
+
+/// A premise and the conclusion it must imply.
+type Obligation = (chc::Formula<chc::TermVarIdx>, chc::Formula<chc::TermVarIdx>);
+
+/// What the generic analysis of an `FnMut`-bounded def assumes of its closure type parameter,
+/// stated of the concrete `FnMut` closure `closure_ty` with contract `contract` as clauses to
+/// check at an instance that reuses that analysis instead of analyzing the body again:
+///
+/// - the three laws of [`laws`], of the relation [`concrete_definition`] gives this closure;
+/// - that the precondition does not read the final half of the receiver pair. The generic call
+///   discharges its closure's precondition at the current state alone (`pre_upvars_sort` in
+///   `refine::template`), while the closure's body is checked assuming it of the pair.
+///
+/// Returns the law clauses and the precondition clauses apart, since the laws are assumed only
+/// where a generic analysis uses `unnest!`. `None` when the precondition names an unknown,
+/// which such a clause cannot state in Horn form; the instance is then analyzed again.
+pub fn instance_obligations<'tcx>(
+    tcx: mir_ty::TyCtxt<'tcx>,
+    closure_ty: mir_ty::Ty<'tcx>,
+    contract: &rty::FunctionType,
+) -> Option<(Vec<chc::Clause>, Vec<chc::Clause>)> {
+    let receiver_sort = contract.params[rty::FunctionParamIdx::from_usize(0)]
+        .ty
+        .to_sort();
+    let upvars_sort = receiver_sort.clone().deref();
+    let related = |from: chc::Term<chc::TermVarIdx>, to: chc::Term<chc::TermVarIdx>| {
+        concrete_definition(tcx, closure_ty, &upvars_sort, from, to)
+    };
+    let obligation = |sorts: Vec<chc::Sort>,
+                      build: &dyn Fn(&[chc::Term<chc::TermVarIdx>]) -> Obligation,
+                      what: &str| {
+        let mut builder = chc::ClauseBuilder::default();
+        let vars: Vec<_> = sorts
+            .into_iter()
+            .map(|sort| chc::Term::var(builder.add_var(sort)))
+            .collect();
+        let (premise, conclusion) = build(&vars);
+        let origin = crate::chc::debug::origin::Entry::described(format!(
+            "{what} of {closure_ty:?}, assumed by a generic analysis"
+        ));
+        builder.add_body(premise.into(), origin.clone());
+        builder.head(conclusion.into(), origin)
+    };
+
+    let s = || upvars_sort.clone();
+    let mut law_clauses = obligation(
+        vec![s()],
+        &|v| (chc::Formula::top(), related(v[0].clone(), v[0].clone())),
+        "unnest! reflexivity",
+    );
+    law_clauses.extend(obligation(
+        vec![s(), s(), s()],
+        &|v| {
+            let premise =
+                related(v[0].clone(), v[1].clone()).and(related(v[1].clone(), v[2].clone()));
+            (premise, related(v[0].clone(), v[2].clone()))
+        },
+        "unnest! transitivity",
+    ));
+    let param_sorts: Vec<chc::Sort> = contract
+        .params
+        .iter()
+        .map(|param| param.ty.to_sort())
+        .collect();
+    let mut post_sorts = param_sorts.clone();
+    post_sorts.push(contract.ret.ty.to_sort());
+    law_clauses.extend(obligation(
+        post_sorts,
+        &|v| {
+            let (result, args) = v.split_last().unwrap();
+            let post = contract.postcondition_formula(args, result.clone());
+            let receiver = args[0].clone();
+            (
+                post,
+                related(receiver.clone().mut_current(), receiver.mut_final()),
+            )
+        },
+        "unnest! implied by each call's postcondition",
+    ));
+
+    // The precondition at the pair `(current, final)` against the one at `(current, current)`.
+    let mut pre_sorts = param_sorts;
+    pre_sorts.push(upvars_sort.clone());
+    let pre = |v: &[chc::Term<chc::TermVarIdx>], final_: chc::Term<chc::TermVarIdx>| {
+        let (_, params) = v.split_last().unwrap();
+        let mut args = params.to_vec();
+        args[0] = chc::Term::mut_(params[0].clone().mut_current(), final_);
+        contract.precondition_formula(&args)
+    };
+    let probe_vars: Vec<_> = (0..pre_sorts.len())
+        .map(|idx| chc::Term::var(chc::TermVarIdx::from_usize(idx)))
+        .collect();
+    let probe = pre(&probe_vars, probe_vars.last().unwrap().clone());
+    if probe
+        .iter_atoms()
+        .any(|atom| matches!(atom.pred, chc::Pred::Var(_)))
+    {
+        return None;
+    }
+    let pre_clauses = obligation(
+        pre_sorts,
+        &|v| {
+            let final_ = v.last().unwrap().clone();
+            let current = v[0].clone().mut_current();
+            (pre(v, current), pre(v, final_))
+        },
+        "precondition independent of the receiver's final state",
+    );
+    Some((law_clauses, pre_clauses))
+}

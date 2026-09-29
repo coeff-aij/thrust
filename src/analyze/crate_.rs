@@ -196,7 +196,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         // those bodies.
         let mut fn_mut_generic_defs = Vec::new();
         for local_def_id in self.tcx.mir_keys(()) {
-            if self.has_fn_mut_bounded_param(*local_def_id) {
+            if !analyze::fn_mut_generic_enabled() && self.has_fn_mut_bounded_param(*local_def_id) {
                 fn_mut_generic_defs.push(*local_def_id);
                 continue;
             }
@@ -369,6 +369,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.analyze_local_defs();
         self.ctx.emit_pending_pred_instances();
         self.ctx.emit_pending_laws();
+        self.ctx.emit_fn_mut_instance_obligations();
         self.assert_callable_entry();
     }
 

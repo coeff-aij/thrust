@@ -31,6 +31,13 @@ impl Entry {
         }
     }
 
+    pub fn described(text: String) -> Self {
+        Self {
+            text,
+            mappings: Vec::new(),
+        }
+    }
+
     pub fn parameter<V: Var>(variable: V, sort: &Sort) -> Self {
         Self {
             text: format!("{variable:?}: {}", sort.display()),
