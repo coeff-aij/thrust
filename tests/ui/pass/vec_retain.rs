@@ -13,7 +13,7 @@
             !(0 <= k && k < (!v).len()) || (!v)[k] > 0)
 )]
 fn positives(v: &mut Vec<i64>) {
-    v.retain(|&x| x > 0);
+    v.retain(thrust_macros::closure!(ensures(result == (*x > 0)), |x: &i64| -> bool { *x > 0 }));
 }
 
 fn main() {}

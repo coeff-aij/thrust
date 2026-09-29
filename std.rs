@@ -1080,19 +1080,23 @@ fn _extern_spec_vec_is_empty<T>(vec: &Vec<T>) -> bool where T: thrust_models::Mo
 // its state between calls, and a state cannot be named in a specification, so its precondition is
 // asked at every state and its postcondition only says that some state returns what the call did:
 // an element is kept only if `true` is possible, dropped only if `false` is.
+// The length bound and the kept elements' postcondition are stated outside `kept`: deriving them
+// from it takes an induction or an existential the solver does not find.
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(
     thrust_models::forall(|c: thrust_models::model::Closure<F>, i: thrust_models::model::Int|
         !(0 <= i && i < (*vec).len()) || thrust_macros::pre!(c((*vec)[i])))
 )]
 #[thrust_macros::ensures(
-    thrust_models::exists(|kept: thrust_models::model::Seq<thrust_models::model::Int>|
-        kept.len() == (!vec).len()
-            && thrust_models::forall(|k: thrust_models::model::Int| !(0 <= k && k < kept.len())
-                || (0 <= kept[k] && kept[k] < (*vec).len() && (!vec)[k] == (*vec)[kept[k]]
-                    && (k + 1 >= kept.len() || kept[k] < kept[k + 1])
-                    && thrust_models::exists(|c: thrust_models::model::Closure<F>, d: thrust_models::model::Closure<F>|
-                        thrust_macros::post!(thrust_models::model::Mut::new(c, d)((!vec)[k]), true))))
+    (!vec).len() <= (*vec).len()
+        && thrust_models::forall(|k: thrust_models::model::Int| !(0 <= k && k < (!vec).len())
+            || thrust_models::exists(|c: thrust_models::model::Closure<F>, d: thrust_models::model::Closure<F>|
+                thrust_macros::post!(thrust_models::model::Mut::new(c, d)((!vec)[k]), true)))
+        && thrust_models::exists(|kept: thrust_models::model::Seq<thrust_models::model::Int>|
+            kept.len() == (!vec).len()
+                && thrust_models::forall(|k: thrust_models::model::Int| !(0 <= k && k < kept.len())
+                    || (0 <= kept[k] && kept[k] < (*vec).len() && (!vec)[k] == (*vec)[kept[k]]
+                        && (k + 1 >= kept.len() || kept[k] < kept[k + 1])))
             && thrust_models::forall(|i: thrust_models::model::Int| !(0 <= i && i < (*vec).len())
                 || thrust_models::exists(|k: thrust_models::model::Int| 0 <= k && k < kept.len() && kept[k] == i)
                 || thrust_models::exists(|c: thrust_models::model::Closure<F>, d: thrust_models::model::Closure<F>|
