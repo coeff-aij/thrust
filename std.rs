@@ -1815,8 +1815,6 @@ where
         <Self::Item as thrust_models::Model>::Ty: PartialEq;
 }
 
-}
-
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(
