@@ -26,6 +26,11 @@ fn unbox_term(term: Term) -> Term {
             args.into_iter().map(unbox_term).collect(),
         ),
         Term::DatatypeDiscr(sym, arg) => Term::DatatypeDiscr(sym, Box::new(unbox_term(*arg))),
+        Term::UserDefinedFn(symbol, sort, args) => Term::UserDefinedFn(
+            symbol,
+            unbox_sort(sort),
+            args.into_iter().map(unbox_term).collect(),
+        ),
         Term::FormulaQuantifiedVar(sort, name) => {
             Term::FormulaQuantifiedVar(unbox_sort(sort), name)
         }
@@ -192,6 +197,9 @@ fn unbox_user_defined_pred_def(user_defined_pred_def: UserDefinedPredDef) -> Use
         UserDefinedPredBody::Raw(s) => UserDefinedPredBody::Raw(s),
         UserDefinedPredBody::Formula(formula) => {
             UserDefinedPredBody::Formula(unbox_formula(formula))
+        }
+        UserDefinedPredBody::Term(sort, term) => {
+            UserDefinedPredBody::Term(unbox_sort(sort), unbox_term(term))
         }
     };
     UserDefinedPredDef {

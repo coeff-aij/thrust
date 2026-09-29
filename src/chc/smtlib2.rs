@@ -235,6 +235,17 @@ impl<'ctx, 'a> std::fmt::Display for Term<'ctx, 'a> {
                     Term::new(self.ctx, self.var_sorts, t)
                 )
             }
+            chc::Term::UserDefinedFn(symbol, _, args) => {
+                if args.is_empty() {
+                    write!(f, "{symbol}")
+                } else {
+                    write!(
+                        f,
+                        "({symbol} {})",
+                        List::open(args.iter().map(|t| Term::new(self.ctx, self.var_sorts, t)))
+                    )
+                }
+            }
             chc::Term::FormulaQuantifiedVar(_, name) => write!(f, "{}", QuantifiedVar(name)),
         }
     }
@@ -714,21 +725,28 @@ impl<'ctx, 'a> std::fmt::Display for UserDefinedPredDef<'ctx, 'a> {
                 .iter()
                 .map(|(name, sort)| format!("({} {})", name, self.ctx.fmt_sort(sort))),
         );
+        let ret_sort = match &self.inner.body {
+            chc::UserDefinedPredBody::Term(sort, _) => self.ctx.fmt_sort(sort).to_string(),
+            _ => "Bool".to_string(),
+        };
         write!(
             f,
-            "(define-fun {name} {params} Bool ",
+            "(define-fun {name} {params} {ret_sort} ",
             name = self.inner.symbol,
         )?;
+        let var_sorts: IndexVec<chc::TermVarIdx, chc::Sort> = self
+            .inner
+            .sig
+            .iter()
+            .map(|(_, sort)| sort.clone())
+            .collect();
         match &self.inner.body {
             chc::UserDefinedPredBody::Raw(body) => write!(f, "{}", self.raw_body(body))?,
             chc::UserDefinedPredBody::Formula(formula) => {
-                let var_sorts: IndexVec<chc::TermVarIdx, chc::Sort> = self
-                    .inner
-                    .sig
-                    .iter()
-                    .map(|(_, sort)| sort.clone())
-                    .collect();
                 write!(f, "{}", Formula::new(self.ctx, &var_sorts, formula))?;
+            }
+            chc::UserDefinedPredBody::Term(_, term) => {
+                write!(f, "{}", Term::new(self.ctx, &var_sorts, term))?;
             }
         }
         write!(f, ")")

@@ -589,6 +589,9 @@ pub enum Term<V = TermVarIdx> {
     TupleProj(Box<Term<V>>, usize),
     DatatypeCtor(DatatypeSort, DatatypeSymbol, Vec<Term<V>>),
     DatatypeDiscr(DatatypeSymbol, Box<Term<V>>),
+    /// A call to a function defined by a [`UserDefinedPredDef`] with a term body, and its result
+    /// sort.
+    UserDefinedFn(UserDefinedPred, Sort, Vec<Term<V>>),
     /// Used in [`Formula`] to represent quantified variables appearing in annotations.
     FormulaQuantifiedVar(Sort, String),
 }
@@ -663,6 +666,13 @@ where
             Term::DatatypeDiscr(_, t) => allocator
                 .text("discriminant")
                 .append(t.pretty(allocator).parens()),
+            Term::UserDefinedFn(symbol, _, args) => {
+                let separator = allocator.text(",").append(allocator.line());
+                let args = allocator
+                    .intersperse(args.iter().map(|t| t.pretty(allocator)), separator)
+                    .parens();
+                symbol.pretty(allocator).append(args).group()
+            }
             Term::FormulaQuantifiedVar(_, name) => allocator.text(name.clone()),
         }
     }
@@ -713,6 +723,11 @@ impl<V> Term<V> {
                 args.into_iter().map(|t| t.subst_var(&mut f)).collect(),
             ),
             Term::DatatypeDiscr(d_sym, t) => Term::DatatypeDiscr(d_sym, Box::new(t.subst_var(f))),
+            Term::UserDefinedFn(symbol, sort, args) => Term::UserDefinedFn(
+                symbol,
+                sort,
+                args.into_iter().map(|t| t.subst_var(&mut f)).collect(),
+            ),
             Term::FormulaQuantifiedVar(sort, name) => Term::FormulaQuantifiedVar(sort, name),
         }
     }
@@ -762,6 +777,7 @@ impl<V> Term<V> {
             Term::TupleProj(t, i) => t.sort(var_sort).tuple_elem(*i),
             Term::DatatypeCtor(sort, _, _) => sort.clone().into(),
             Term::DatatypeDiscr(_, _) => Sort::int(),
+            Term::UserDefinedFn(_, sort, _) => sort.clone(),
             Term::FormulaQuantifiedVar(sort, _) => sort.clone(),
         }
     }
@@ -787,6 +803,39 @@ impl<V> Term<V> {
             Term::TupleProj(t, _) => t.fv_impl(),
             Term::DatatypeCtor(_, _, args) => Box::new(args.iter().flat_map(|t| t.fv_impl())),
             Term::DatatypeDiscr(_, t) => t.fv_impl(),
+            Term::UserDefinedFn(_, _, args) => Box::new(args.iter().flat_map(|t| t.fv_impl())),
+        }
+    }
+
+    /// The user-defined functions called anywhere in this term.
+    fn user_defined_fns(&self) -> Vec<&UserDefinedPred> {
+        match self {
+            Term::UserDefinedFn(symbol, _, args) => std::iter::once(symbol)
+                .chain(args.iter().flat_map(Term::user_defined_fns))
+                .collect(),
+            Term::Box(t)
+            | Term::BoxCurrent(t)
+            | Term::MutCurrent(t)
+            | Term::MutFinal(t)
+            | Term::TupleProj(t, _)
+            | Term::DatatypeDiscr(_, t) => t.user_defined_fns(),
+            Term::Mut(t1, t2) => t1
+                .user_defined_fns()
+                .into_iter()
+                .chain(t2.user_defined_fns())
+                .collect(),
+            Term::App(_, args) | Term::Tuple(args) | Term::DatatypeCtor(_, _, args) => {
+                args.iter().flat_map(Term::user_defined_fns).collect()
+            }
+            Term::Null
+            | Term::ForallDefault(_)
+            | Term::Var(_)
+            | Term::Bool(_)
+            | Term::Int(_)
+            | Term::String(_)
+            | Term::ArrayEmpty(_, _)
+            | Term::SeqEmpty(_)
+            | Term::FormulaQuantifiedVar(_, _) => Vec::new(),
         }
     }
 
@@ -1077,6 +1126,10 @@ impl<V> Term<V> {
 
     pub fn datatype_discr(d_sym: DatatypeSymbol, t: Term<V>) -> Self {
         Term::DatatypeDiscr(d_sym, Box::new(t))
+    }
+
+    pub fn user_defined_fn(symbol: UserDefinedPred, sort: Sort, args: Vec<Term<V>>) -> Self {
+        Term::UserDefinedFn(symbol, sort, args)
     }
 
     pub fn equal_to(self, other: Self) -> Atom<V> {
@@ -2271,11 +2324,13 @@ pub type UserDefinedPredSig = Vec<(String, Sort)>;
 ///
 /// A predicate can be defined either by a raw SMT-LIB2 string (inserted into the
 /// generated `define-fun` verbatim) or by a [`Formula`] translated from a Rust
-/// expression via the `formula_fn` infrastructure.
+/// expression via the `formula_fn` infrastructure. A [`Term`] body, with its sort, defines a
+/// function instead, which [`Term::UserDefinedFn`] calls.
 #[derive(Debug, Clone)]
 pub enum UserDefinedPredBody {
     Raw(String),
     Formula(Formula<TermVarIdx>),
+    Term(Sort, Term<TermVarIdx>),
 }
 
 #[derive(Debug, Clone)]
@@ -2291,6 +2346,27 @@ pub struct UserDefinedPredDef {
     /// `ForallPred`s referenced from `body`. Populated just before dependency
     /// analysis by `System::populate_user_defined_pred_dependencies`.
     pub dependencies: HashSet<ForallPred>,
+}
+
+impl UserDefinedPredDef {
+    /// The user-defined predicates and functions the body calls.
+    fn callees(&self) -> Vec<&UserDefinedPred> {
+        match &self.body {
+            UserDefinedPredBody::Raw(_) => Vec::new(),
+            UserDefinedPredBody::Formula(formula) => formula
+                .iter_atoms()
+                .flat_map(|atom| {
+                    let pred = match &atom.pred {
+                        Pred::UserDefined(pred) => Some(pred),
+                        _ => None,
+                    };
+                    pred.into_iter()
+                        .chain(atom.args.iter().flat_map(Term::user_defined_fns))
+                })
+                .collect(),
+            UserDefinedPredBody::Term(_, term) => term.user_defined_fns(),
+        }
+    }
 }
 
 pub fn compute_transitive_closure<T>(direct_deps: &HashMap<T, HashSet<T>>) -> HashMap<T, HashSet<T>>
@@ -2382,16 +2458,12 @@ impl System {
         while !remaining.is_empty() {
             let next = remaining
                 .iter()
-                .position(|def| match &def.body {
-                    UserDefinedPredBody::Raw(_) => true,
-                    UserDefinedPredBody::Formula(formula) => formula.iter_atoms().all(|atom| {
-                        let Pred::UserDefined(pred) = &atom.pred else {
-                            return true;
-                        };
+                .position(|def| {
+                    def.callees().into_iter().all(|callee| {
                         !remaining
                             .iter()
-                            .any(|dependency| dependency.symbol == *pred)
-                    }),
+                            .any(|dependency| dependency.symbol == *callee)
+                    })
                 })
                 .expect("recursive predicate definitions are not supported");
             ordered.push(remaining.remove(next));
@@ -2470,6 +2542,26 @@ impl System {
             symbol,
             sig,
             body: UserDefinedPredBody::Formula(formula),
+            sort_subst: Vec::new(),
+            dependencies: HashSet::new(),
+        })
+    }
+
+    pub fn push_fn_define_term(
+        &mut self,
+        symbol: UserDefinedPred,
+        arg_sorts: IndexVec<TermVarIdx, Sort>,
+        ret_sort: Sort,
+        body: Term<TermVarIdx>,
+    ) {
+        let sig = arg_sorts
+            .into_iter_enumerated()
+            .map(|(var, sort)| (var.to_string(), sort))
+            .collect();
+        self.user_defined_pred_defs.push(UserDefinedPredDef {
+            symbol,
+            sig,
+            body: UserDefinedPredBody::Term(ret_sort, body),
             sort_subst: Vec::new(),
             dependencies: HashSet::new(),
         })
@@ -2563,6 +2655,8 @@ impl System {
                         }
                     }
                 }
+                // A term holds no atom, so it names no `ForallPred`.
+                UserDefinedPredBody::Term(..) => {}
                 UserDefinedPredBody::Formula(formula) => {
                     udpd.dependencies.extend(formula.iter_atoms().filter_map(
                         |atom| match &atom.pred {
@@ -2640,7 +2734,7 @@ impl System {
             .iter()
             .filter_map(|d| match &d.body {
                 UserDefinedPredBody::Raw(body) => Some(body.as_str()),
-                UserDefinedPredBody::Formula(_) => None,
+                UserDefinedPredBody::Formula(_) | UserDefinedPredBody::Term(..) => None,
             })
             .chain(self.raw_commands.iter().map(|c| c.command.as_str()))
             .collect();
@@ -2857,6 +2951,11 @@ fn collect_forall_defaults(term: &Term<TermVarIdx>, used: &mut HashSet<ForallSor
             }
         }
         Term::DatatypeDiscr(_, t) => collect_forall_defaults(t, used),
+        Term::UserDefinedFn(_, _, args) => {
+            for t in args {
+                collect_forall_defaults(t, used);
+            }
+        }
         Term::Null
         | Term::Var(_)
         | Term::Bool(_)

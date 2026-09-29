@@ -16,6 +16,16 @@ use syn::{
 use crate::{apit, fn_outer_item::FnOuterItem, FormulaFnTypeLowering};
 
 pub fn expand_predicate(item: TokenStream) -> TokenStream {
+    expand_spec_fn(item, quote!(#[thrust::predicate]))
+}
+
+/// Like a predicate, but the return type is any model type: the function is callable in the
+/// term position of a specification.
+pub fn expand_logic(item: TokenStream) -> TokenStream {
+    expand_spec_fn(item, quote!(#[thrust::logic]))
+}
+
+fn expand_spec_fn(item: TokenStream, marker: TokenStream2) -> TokenStream {
     let func = parse_macro_input!(item as FnItemWithSignature);
     let outer_context = match extract_outer_context(&func) {
         Ok(ctx) => ctx,
@@ -54,7 +64,7 @@ pub fn expand_predicate(item: TokenStream) -> TokenStream {
     let sig = quote! {
         #[allow(dead_code)]
         #formula_fn_attr
-        #[thrust::predicate]
+        #marker
         #vis fn #name #def_generics(#model_ty_params) -> #model_ret #extended_where
     };
     if let Some(block) = func.block() {
