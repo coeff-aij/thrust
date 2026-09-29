@@ -238,6 +238,72 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 })
                 .collect();
         }
+        self.analyze_inherited_laws();
+    }
+
+    /// Checks, at every local impl of a trait with laws, each `#[thrust::law]` the impl does not
+    /// define itself: the trait's default body is analyzed with `Self` (and the trait's own
+    /// arguments) set to the impl's, the impl's type parameters left as placeholders, against
+    /// the law's contract at those arguments. This is the obligation an impl that writes the law
+    /// with an empty body is checked against; the placeholder analysis of the default body over
+    /// `Self` proves nothing about an impl, since the law is assumed there.
+    fn analyze_inherited_laws(&mut self) {
+        let trait_laws = self.ctx.trait_laws.borrow().clone();
+        for (trait_def_id, laws) in trait_laws {
+            let impls: Vec<LocalDefId> = self
+                .tcx
+                .all_local_trait_impls(())
+                .get(&trait_def_id)
+                .cloned()
+                .unwrap_or_default();
+            for impl_local in impls {
+                let impl_def_id = impl_local.to_def_id();
+                let implemented = self.tcx.impl_item_implementor_ids(impl_def_id);
+                let Some(owner) = self
+                    .tcx
+                    .associated_item_def_ids(impl_def_id)
+                    .iter()
+                    .copied()
+                    .find(|id| self.tcx.def_kind(*id).is_fn_like())
+                else {
+                    continue;
+                };
+                let trait_ref = self
+                    .tcx
+                    .impl_trait_ref(impl_def_id)
+                    .unwrap()
+                    .instantiate_identity();
+                let args = self.tcx.erase_regions(trait_ref.args);
+                for law_def_id in &laws {
+                    if implemented.contains_key(law_def_id) {
+                        continue;
+                    }
+                    let Some(law_local) = law_def_id.as_local() else {
+                        continue;
+                    };
+                    if !self.tcx.is_mir_available(*law_def_id) {
+                        tracing::warn!(?law_def_id, ?impl_def_id, "inherited law has no body");
+                        continue;
+                    }
+                    tracing::info!(
+                        ?law_def_id,
+                        ?impl_def_id,
+                        ?args,
+                        "inherited law checked at impl"
+                    );
+                    // A trait method with a default body carries its contract on the spec
+                    // function the macro generates, so the contract is read as a call site
+                    // reads it, at the impl's arguments.
+                    let Some(expected) = self.ctx.def_ty_with_args(*law_def_id, args, owner) else {
+                        tracing::warn!(?law_def_id, ?impl_def_id, "inherited law has no contract");
+                        continue;
+                    };
+                    let mut analyzer = self.ctx.local_def_analyzer(law_local);
+                    analyzer.owner_fn_id(owner).generic_args(args);
+                    analyzer.run(&expected);
+                }
+            }
+        }
     }
 
     /// Check a local def's body with its type parameters left as opaque types (a no-op
