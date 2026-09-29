@@ -952,6 +952,23 @@ fn _extern_spec_usize_checked_sub(x: usize, y: usize) -> Option<usize> {
     usize::checked_sub(x, y)
 }
 
+// Bit-counting intrinsics have no bitvector model (integers are plain `Int`, not bitvectors), so
+// the only sound fact stated is the one every caller relies on: the count of a 64-bit value's
+// bits cannot exceed 64.
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(result <= 64)]
+fn _extern_spec_u64_trailing_zeros(x: u64) -> u32 {
+    u64::trailing_zeros(x)
+}
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(result <= 64)]
+fn _extern_spec_u64_count_ones(x: u64) -> u32 {
+    u64::count_ones(x)
+}
+
 // The comparisons of primitive integers, which derived `PartialOrd` / `Ord` impls call on
 // their fields.
 macro_rules! int_cmp_specs {
