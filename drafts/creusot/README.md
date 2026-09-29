@@ -16,6 +16,19 @@ except `produces_trans_witness`'s `produces` conclusion (the existential witness
 - `fail/map_ext_value.rs`: the call site claims `Some(21)` — not re-measured since the two new
   lemmas were added.
 
+## fuse_produces_result.rs (+ fail/)
+
+`tests/ui/pass/creusot/fuse_produces.rs` with Creusot's state `Result<I, Ghost<I>>`: `Err` holds a
+ghost of the exhausted inner iterator, taken after the inner `next` returns `None`, and `produces`
+reads it through Creusot's `inner`. On fptprove 9e87f6a90 the pass side gives no answer at 300 s
+and the fail twin refutes in 127 s. The laws (`produces_refl`, `produces_trans`, `is_fused`) check
+alone in under 2 s; `next` alone is what stalls (no answer at 300 s), where with the `Option<I>`
+state it answers in 5 s. Writing the predicates with `forall` instead of `exists`, or dropping
+the `Err` payload's invariant, does not change that.
+
+The ghost term names only live variables, so `next` keeps `iter` live past the ghost with an
+unused shared borrow (`_keep`), as Creusot's `ghost! { *iter }` reads `iter`.
+
 ## skip_take_range.rs (+ fail/)
 
 `Skip<Take<Range>>`, a concrete instantiation of `skip_take.rs`. Stage S2: the nested generic-impl
