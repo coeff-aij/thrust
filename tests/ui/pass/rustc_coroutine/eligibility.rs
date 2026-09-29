@@ -1117,12 +1117,15 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
 
         let mut conflicts = storage_conflicts.iter(local_a);
         while let Some(local_b) = conflicts.next() {
-            thrust_macros::invariant!(|assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, ineligible_locals: DenseBitSet<LocalIdx>, conflicts: BitIter<LocalIdx>, storage_conflicts: &BitMatrix<LocalIdx, LocalIdx>, variant_fields: &IndexSlice<VariantIdx, IndexVec<FieldIdx, LocalIdx>>|
+            thrust_macros::invariant!(|assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, ineligible_locals: DenseBitSet<LocalIdx>, conflicts: BitIter<LocalIdx>, rows: IdxRange<LocalIdx>, local_a: LocalIdx, storage_conflicts: &BitMatrix<LocalIdx, LocalIdx>, variant_fields: &IndexSlice<VariantIdx, IndexVec<FieldIdx, LocalIdx>>|
                 forall(|k: Int, v: <VariantIdx as thrust_models::Model>::Ty, i: Int|
                 !(0 <= k && k < assignments.len() && assignments[k] == SavedLocalEligibility::Assigned(v)
                     && <VariantIdx as Idx>::index_is(v, i))
                 || i < (*variant_fields).len())
                 && assignments.len() == ineligible_locals.0 && ineligible_locals.0 == (*storage_conflicts).num_rows
+                    && (*storage_conflicts).num_rows == (*storage_conflicts).num_columns
+                    && rows.start >= 0 && rows.end == (*storage_conflicts).num_rows
+                    && forall(|i: Int| !<LocalIdx as Idx>::index_is(local_a, i) || i < ineligible_locals.0)
                     && conflicts == (*storage_conflicts).num_columns);
             if ineligible_locals.contains(local_b) || assignments[local_a] == assignments[local_b] {
                 continue;
