@@ -480,6 +480,11 @@ mod thrust_models {
         type Ty = (<I as Model>::Ty, model::Int);
     }
 
+    // The two iterators it wraps, in the order of the arguments to `zip`.
+    impl<A, B> Model for core::iter::Zip<A, B> where A: Model, B: Model {
+        type Ty = (<A as Model>::Ty, <B as Model>::Ty);
+    }
+
     impl<T> Model for Option<T> where T: Model {
         type Ty = Option<<T as Model>::Ty>;
     }
@@ -1328,9 +1333,7 @@ fn _extern_spec_slice_index_mut<T, I>(slice: &mut [T], index: I) -> &mut <I as s
 }
 
 // `<[T]>::iter`, `<[T]>::iter_mut` and `Vec`'s three `into_iter`s all start a fresh iterator at
-// position 0 over the sequence they are given. The `next`s below are each total: the second
-// disjunct covers every position at or past the end, so a caller owes nothing on entry and a
-// loop that runs to exhaustion needs no invariant about the cursor to leave the loop.
+// position 0 over the sequence they are given.
 
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
@@ -1339,21 +1342,6 @@ fn _extern_spec_slice_iter<T>(slice: &[T]) -> core::slice::Iter<'_, T>
     where T: thrust_models::Model, T::Ty: PartialEq
 {
     <[T]>::iter(slice)
-}
-
-#[thrust::extern_spec_fn]
-#[thrust_macros::requires(true)]
-#[thrust_macros::ensures(
-    ((*it).1 < (*it).0.len()
-        && result == Some(&(*it).0[(*it).1])
-        && (!it).0 == (*it).0
-        && (!it).1 == (*it).1 + 1)
-    || ((*it).1 >= (*it).0.len() && result == None && !it == *it)
-)]
-fn _extern_spec_slice_iter_next<'a, T>(it: &mut core::slice::Iter<'a, T>) -> Option<&'a T>
-    where T: thrust_models::Model + 'a, T::Ty: PartialEq
-{
-    <core::slice::Iter<'a, T> as std::iter::Iterator>::next(it)
 }
 
 // The length preservation is stated here because nothing else supplies it: the iterator's
@@ -1370,31 +1358,6 @@ fn _extern_spec_slice_iter_mut<T>(slice: &mut [T]) -> core::slice::IterMut<'_, T
     <[T]>::iter_mut(slice)
 }
 
-// The element handed out is the `Mut` pair of the current and final sequences at the cursor. The
-// tail the loop has not reached yet keeps its prophecy unconstrained, so dropping the iterator
-// early leaves the caller unable to say the untouched elements are unchanged; running it to
-// exhaustion is what the specification supports.
-#[thrust::extern_spec_fn]
-#[thrust_macros::requires(true)]
-#[thrust_macros::ensures(
-    ((*it).2 < (*it).0.len()
-        && result == Some(thrust_models::model::Mut::new(
-            (*it).0[(*it).2],
-            (*it).1[(*it).2],
-        ))
-        && (!it).0 == (*it).0
-        && (!it).1 == (*it).1
-        && (!it).2 == (*it).2 + 1)
-    || ((*it).2 >= (*it).0.len() && result == None && !it == *it)
-)]
-fn _extern_spec_slice_iter_mut_next<'a, T>(
-    it: &mut core::slice::IterMut<'a, T>,
-) -> Option<&'a mut T>
-    where T: thrust_models::Model + 'a, T::Ty: PartialEq
-{
-    <core::slice::IterMut<'a, T> as std::iter::Iterator>::next(it)
-}
-
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(result.0 == vec && result.1 == 0)]
@@ -1402,21 +1365,6 @@ fn _extern_spec_vec_into_iter<T>(vec: Vec<T>) -> std::vec::IntoIter<T>
     where T: thrust_models::Model, T::Ty: PartialEq
 {
     <Vec<T> as std::iter::IntoIterator>::into_iter(vec)
-}
-
-#[thrust::extern_spec_fn]
-#[thrust_macros::requires(true)]
-#[thrust_macros::ensures(
-    ((*it).1 < (*it).0.len()
-        && result == Some((*it).0[(*it).1])
-        && (!it).0 == (*it).0
-        && (!it).1 == (*it).1 + 1)
-    || ((*it).1 >= (*it).0.len() && result == None && !it == *it)
-)]
-fn _extern_spec_vec_into_iter_next<T>(it: &mut std::vec::IntoIter<T>) -> Option<T>
-    where T: thrust_models::Model, T::Ty: PartialEq
-{
-    <std::vec::IntoIter<T> as std::iter::Iterator>::next(it)
 }
 
 #[thrust::extern_spec_fn]
@@ -1440,36 +1388,194 @@ fn _extern_spec_vec_mut_into_iter<'a, T>(vec: &'a mut Vec<T>) -> core::slice::It
     <&mut Vec<T> as std::iter::IntoIterator>::into_iter(vec)
 }
 
-// `Enumerate<I>` is specified for the three sequence iterators above rather than for every
-// `I: Iterator`: `Iterator` carries no predicates that `next` could be stated through, so a
-// generic `next` has nothing to delegate to.
-#[thrust::extern_spec_fn]
-#[thrust_macros::requires(true)]
-#[thrust_macros::ensures(result.0 == it && result.1 == 0)]
-fn _extern_spec_slice_iter_enumerate<'a, T>(
-    it: core::slice::Iter<'a, T>,
-) -> core::iter::Enumerate<core::slice::Iter<'a, T>>
-    where T: thrust_models::Model + 'a, T::Ty: PartialEq
+// `next` is specified once, through the predicates of `IteratorSpec`; a type gets a `next` by
+// implementing the trait. `next` is total: `completed` covers every position at or past the end.
+#[thrust_macros::context]
+trait IteratorSpec: std::iter::Iterator + thrust_models::Model
+where
+    Self::Item: thrust_models::Model,
 {
-    <core::slice::Iter<'a, T> as std::iter::Iterator>::enumerate(it)
+    #[thrust_macros::predicate]
+    fn produces(self, visited: Vec<Self::Item>, o: Self) -> bool;
+
+    #[thrust_macros::predicate]
+    fn completed(&mut self) -> bool;
 }
 
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(
-    ((*it).0.1 < (*it).0.0.len()
-        && result == Some(((*it).1, &(*it).0.0[(*it).0.1]))
-        && (!it).0.0 == (*it).0.0
-        && (!it).0.1 == (*it).0.1 + 1
-        && (!it).1 == (*it).1 + 1)
-    || ((*it).0.1 >= (*it).0.0.len() && result == None && !it == *it)
+    (result == None ==> I::completed(it))
+        && thrust_models::forall(|x: <I::Item as thrust_models::Model>::Ty| result == Some(x)
+            ==> I::produces(*it, thrust_models::model::Seq::singleton(x), !it))
 )]
-fn _extern_spec_slice_iter_enumerate_next<'a, T>(
-    it: &mut core::iter::Enumerate<core::slice::Iter<'a, T>>,
-) -> Option<(usize, &'a T)>
-    where T: thrust_models::Model + 'a, T::Ty: PartialEq
+fn _extern_spec_iterator_next<I>(it: &mut I) -> Option<I::Item>
+    where I: IteratorSpec,
+          I::Item: thrust_models::Model,
+          I::Ty: PartialEq,
+          <I::Item as thrust_models::Model>::Ty: PartialEq
 {
-    <core::iter::Enumerate<core::slice::Iter<'a, T>> as std::iter::Iterator>::next(it)
+    <I as std::iter::Iterator>::next(it)
+}
+
+#[thrust_macros::context]
+impl<'a, T> IteratorSpec for core::slice::Iter<'a, T>
+where
+    T: thrust_models::Model,
+    T::Ty: PartialEq,
+{
+    #[thrust_macros::predicate]
+    fn produces(self, visited: Vec<&'a T>, o: Self) -> bool {
+        self.0 == o.0
+            && self.1 <= o.1
+            && o.1 <= self.0.len()
+            && visited.len() == o.1 - self.1
+            && thrust_models::forall(|i: thrust_models::model::Int|
+                !(0 <= i && i < visited.len()) || visited[i] == &self.0[self.1 + i])
+    }
+
+    #[thrust_macros::predicate]
+    fn completed(&mut self) -> bool {
+        (*self).1 >= (*self).0.len() && *self == !self
+    }
+}
+
+// The element handed out is the `Mut` pair of the current and final sequences at the cursor. The
+// tail the loop has not reached yet keeps its prophecy unconstrained, so dropping the iterator
+// early leaves the caller unable to say the untouched elements are unchanged; running it to
+// exhaustion is what the specification supports.
+#[thrust_macros::context]
+impl<'a, T> IteratorSpec for core::slice::IterMut<'a, T>
+where
+    T: thrust_models::Model,
+    T::Ty: PartialEq,
+{
+    #[thrust_macros::predicate]
+    fn produces(self, visited: Vec<&'a mut T>, o: Self) -> bool {
+        self.0 == o.0
+            && self.1 == o.1
+            && self.2 <= o.2
+            && o.2 <= self.0.len()
+            && visited.len() == o.2 - self.2
+            && thrust_models::forall(|i: thrust_models::model::Int|
+                !(0 <= i && i < visited.len()) || visited[i] == thrust_models::model::Mut::new(
+                    self.0[self.2 + i],
+                    self.1[self.2 + i],
+                ))
+    }
+
+    #[thrust_macros::predicate]
+    fn completed(&mut self) -> bool {
+        (*self).2 >= (*self).0.len() && *self == !self
+    }
+}
+
+#[thrust_macros::context]
+impl<T> IteratorSpec for std::vec::IntoIter<T>
+where
+    T: thrust_models::Model,
+    T::Ty: PartialEq,
+{
+    #[thrust_macros::predicate]
+    fn produces(self, visited: Vec<T>, o: Self) -> bool {
+        self.0 == o.0
+            && self.1 <= o.1
+            && o.1 <= self.0.len()
+            && visited.len() == o.1 - self.1
+            && thrust_models::forall(|i: thrust_models::model::Int|
+                !(0 <= i && i < visited.len()) || visited[i] == self.0[self.1 + i])
+    }
+
+    #[thrust_macros::predicate]
+    fn completed(&mut self) -> bool {
+        (*self).1 >= (*self).0.len() && *self == !self
+    }
+}
+
+#[thrust_macros::context]
+impl<I> IteratorSpec for core::iter::Enumerate<I>
+where
+    I: IteratorSpec,
+    I::Item: thrust_models::Model,
+    I::Ty: PartialEq,
+    <I::Item as thrust_models::Model>::Ty: PartialEq,
+{
+    #[thrust_macros::predicate]
+    fn produces(self, visited: Vec<(usize, I::Item)>, o: Self) -> bool {
+        visited.len() == o.1 - self.1
+            && thrust_models::exists(|inner: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>|
+                I::produces(self.0, inner, o.0)
+                    && inner.len() == visited.len()
+                    && thrust_models::forall(|i: thrust_models::model::Int|
+                        !(0 <= i && i < inner.len()) || visited[i] == (self.1 + i, inner[i])))
+    }
+
+    #[thrust_macros::predicate]
+    fn completed(&mut self) -> bool {
+        I::completed(thrust_models::model::Mut::new((*self).0, (!self).0))
+            && (*self).1 == (!self).1
+    }
+}
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(result.0 == it && result.1 == 0)]
+fn _extern_spec_iterator_enumerate<I>(it: I) -> core::iter::Enumerate<I>
+    where I: IteratorSpec,
+          I::Item: thrust_models::Model,
+          I::Ty: PartialEq,
+          <I::Item as thrust_models::Model>::Ty: PartialEq
+{
+    <I as std::iter::Iterator>::enumerate(it)
+}
+
+#[thrust_macros::context]
+impl<A, B> IteratorSpec for core::iter::Zip<A, B>
+where
+    A: IteratorSpec,
+    B: IteratorSpec,
+    A::Item: thrust_models::Model,
+    B::Item: thrust_models::Model,
+    A::Ty: PartialEq,
+    B::Ty: PartialEq,
+    <A::Item as thrust_models::Model>::Ty: PartialEq,
+    <B::Item as thrust_models::Model>::Ty: PartialEq,
+{
+    #[thrust_macros::predicate]
+    fn produces(self, visited: Vec<(A::Item, B::Item)>, o: Self) -> bool {
+        thrust_models::exists(|xs: thrust_models::model::Seq<<A::Item as thrust_models::Model>::Ty>| thrust_models::exists(|ys: thrust_models::model::Seq<<B::Item as thrust_models::Model>::Ty>|
+            A::produces(self.0, xs, o.0)
+                && B::produces(self.1, ys, o.1)
+                && xs.len() == visited.len()
+                && ys.len() == visited.len()
+                && thrust_models::forall(|i: thrust_models::model::Int|
+                    !(0 <= i && i < visited.len()) || visited[i] == (xs[i], ys[i]))))
+    }
+
+    #[thrust_macros::predicate]
+    fn completed(&mut self) -> bool {
+        (A::completed(thrust_models::model::Mut::new((*self).0, (!self).0))
+            && (*self).1 == (!self).1)
+            || thrust_models::exists(|x: <A::Item as thrust_models::Model>::Ty|
+                A::produces((*self).0, thrust_models::model::Seq::singleton(x), (!self).0)
+                    && B::completed(thrust_models::model::Mut::new((*self).1, (!self).1)))
+    }
+}
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(result.0 == a && result.1 == b)]
+fn _extern_spec_iterator_zip<A, B>(a: A, b: B) -> core::iter::Zip<A, B>
+    where A: IteratorSpec,
+          B: IteratorSpec,
+          A::Item: thrust_models::Model,
+          B::Item: thrust_models::Model,
+          A::Ty: PartialEq,
+          B::Ty: PartialEq,
+          <A::Item as thrust_models::Model>::Ty: PartialEq,
+          <B::Item as thrust_models::Model>::Ty: PartialEq
+{
+    std::iter::zip(a, b)
 }
 
 // `vec![elem; n]` expands to a call to this function.
