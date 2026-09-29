@@ -240,6 +240,9 @@ fn bind_spec_args<'tcx>(
 /// arguments it was bound to. A spec stated through a trait (`I: IteratorSpec`) says nothing
 /// about a type that does not implement it, so a call at such a type finds no specification.
 ///
+/// Only a bound on a fully concrete type is checked. A type that still mentions a parameter or an
+/// unresolved projection is left to the spec, whose predicates are then universal.
+///
 /// `Model` and its `PartialEq` are assumed of every type parameter of the caller, as a spec
 /// assumes them of its own: they are what a bound like `usize: SliceIndexSpec<T>` needs of `T`.
 fn spec_bounds_hold<'tcx>(
@@ -261,6 +264,11 @@ fn spec_bounds_hold<'tcx>(
         .filter_map(|trait_ref| {
             tcx.try_normalize_erasing_regions(typing_env, trait_ref)
                 .ok()
+        })
+        .filter(|trait_ref| {
+            use mir_ty::TypeVisitableExt as _;
+            let self_ty = trait_ref.self_ty();
+            !self_ty.has_non_region_param() && !self_ty.has_aliases()
         })
         .all(|trait_ref| {
             tcx.codegen_select_candidate(typing_env.as_query_input(trait_ref))
