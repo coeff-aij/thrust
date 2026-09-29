@@ -1076,6 +1076,35 @@ fn _extern_spec_vec_is_empty<T>(vec: &Vec<T>) -> bool where T: thrust_models::Mo
     Vec::is_empty(vec)
 }
 
+// The result is the subsequence of the old vector at the positions `kept`. The closure may change
+// its state between calls, and a state cannot be named in a specification, so its precondition is
+// asked at every state and its postcondition only says that some state returns what the call did:
+// an element is kept only if `true` is possible, dropped only if `false` is.
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(
+    thrust_models::forall(|c: thrust_models::model::Closure<F>, i: thrust_models::model::Int|
+        !(0 <= i && i < (*vec).len()) || thrust_macros::pre!(c((*vec)[i])))
+)]
+#[thrust_macros::ensures(
+    thrust_models::exists(|kept: thrust_models::model::Seq<thrust_models::model::Int>|
+        kept.len() == (!vec).len()
+            && thrust_models::forall(|k: thrust_models::model::Int| !(0 <= k && k < kept.len())
+                || (0 <= kept[k] && kept[k] < (*vec).len() && (!vec)[k] == (*vec)[kept[k]]
+                    && (k + 1 >= kept.len() || kept[k] < kept[k + 1])
+                    && thrust_models::exists(|c: thrust_models::model::Closure<F>, d: thrust_models::model::Closure<F>|
+                        thrust_macros::post!(thrust_models::model::Mut::new(c, d)((!vec)[k]), true))))
+            && thrust_models::forall(|i: thrust_models::model::Int| !(0 <= i && i < (*vec).len())
+                || thrust_models::exists(|k: thrust_models::model::Int| 0 <= k && k < kept.len() && kept[k] == i)
+                || thrust_models::exists(|c: thrust_models::model::Closure<F>, d: thrust_models::model::Closure<F>|
+                    thrust_macros::post!(thrust_models::model::Mut::new(c, d)((*vec)[i]), false))))
+)]
+fn _extern_spec_vec_retain<T, F>(vec: &mut Vec<T>, f: F)
+    where T: thrust_models::Model, T::Ty: PartialEq,
+          F: FnMut(&T) -> bool
+{
+    Vec::retain(vec, f)
+}
+
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(
