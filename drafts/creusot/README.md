@@ -27,24 +27,10 @@ the `Err` payload's invariant, does not change that.
 The ghost term names only live variables, so `next` keeps `iter` live past the ghost with an
 unused shared borrow (`_keep`), as Creusot's `ghost! { *iter }` reads `iter`.
 
-## counter_creusot.rs (+ fail/)
+## counter_creusot (moved)
 
-Creusot's `examples/counter` with its own property (`x == v`, `cnt == x.len()`) over a `Range`,
-through `map_ext.rs`'s `MapInv` with an `FnMut` closure: `produces` carries the chain `fs` of
-closure states and, as creusot-std's `std/iter/map_inv.rs`, relates them by `unnest!` (Creusot's
-`hist_inv`). Because `Map`'s specification uses `unnest!`, its methods are verified once over `F`
-and `Map::next` at the closure uses that analysis, with the closure's `unnest!` laws checked. The
-closure's `ensures(!(!cnt) == !(*cnt))` restates the `unnest(*self, ^self)` that Thrust adds to
-every `FnMut` closure's postcondition, as Creusot's `postcondition_mut` does. `produces_trans` is
-proved by lemmas whose conclusions name the joined witnesses `sab ++ sbc` and
-`fab[..ab.len()] ++ fbc` as terms, over the halves' witnesses: one per group of `produces_at`'s
-conjuncts, one per sequence and side for the index reads, and the introduction of the chain's and
-then the input's existential. On fptprove 0360cb142, with `from_iter`'s body trusted and every
-`Map` body checked, the pass side is sat (35 to 42 s) and the fail twin (`cnt == x.len() + 1`)
-unsat (34 s); fully checked, the pass side answers `timeout` (200 to 214 s) and the fail twin is
-unsat (27 s). The open part is `from_iter` re-analysed at this instance, where `Map`'s predicates
-are unfolded: calling `produces_refl` and `produces_trans` there as ghost-argument lemmas does not
-make it answer.
+Creusot's `examples/counter` with its own property moved to the tracked suite:
+`tests/ui/pass/creusot/counter_creusot.rs` and its fail twin `tests/ui/fail/creusot/counter_creusot.rs`.
 
 ## skip_take_range.rs (+ fail/)
 

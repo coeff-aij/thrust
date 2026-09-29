@@ -665,6 +665,9 @@ pub struct Analyzer<'tcx> {
     fn_mut_instance_obligations: Rc<RefCell<FnMutInstanceObligations>>,
     /// See [`Analyzer::record_unnest_specified_params`].
     unnest_specified_params: Rc<RefCell<HashSet<DefId>>>,
+    /// The local fn-like defs with an `FnMut`-bounded type parameter, recorded with
+    /// [`Analyzer::unnest_specified_params`].
+    fn_mut_bounded_defs: Rc<RefCell<Vec<DefId>>>,
 }
 
 impl<'tcx> crate::refine::TemplateRegistry for Analyzer<'tcx> {
@@ -716,6 +719,7 @@ impl<'tcx> Analyzer<'tcx> {
             concrete_instances: Default::default(),
             fn_mut_instance_obligations: Default::default(),
             unnest_specified_params: Default::default(),
+            fn_mut_bounded_defs: Default::default(),
         }
     }
 
@@ -1253,16 +1257,18 @@ impl<'tcx> Analyzer<'tcx> {
 
     /// Whether an instance of the generic def `def_id` at `generic_args`, which has an `FnMut`
     /// closure among them, can use its contract as instantiated rather than analyzing the body
-    /// again. The def must be unnest-specified ([`Analyzer::is_unnest_specified`]), every type
-    /// argument that contains an `FnMut` closure must be that closure itself at one of its
-    /// `FnMut`-bounded type parameters, no unknown may be reachable from the contract, and each
-    /// closure must have a known contract. The def's generic analysis, which such a def always
-    /// gets, then stands for the instance once the closures obey what it assumed of their type
-    /// parameters; those obligations are recorded here.
+    /// again. The generic analysis stands for the instance once the closures obey what it
+    /// assumed of their type parameters; those obligations are recorded here. It requires:
     ///
-    /// A closure nested in another type argument (`Map<Range, F>` given to `collect`) could reach
-    /// the body of an `FnMut`-bounded def verified per instance only through this instance, so
-    /// that instance is analyzed again.
+    /// - the def, if `FnMut`-bounded, to be unnest-specified ([`Analyzer::is_unnest_specified`]);
+    /// - each type argument that is an `FnMut` closure to sit at one of its `FnMut`-bounded
+    ///   parameters;
+    /// - each type argument that nests an `FnMut` closure (`Map<Range, F>` given to `collect`) to
+    ///   nest it in local ADTs only, and every `FnMut`-bounded def reachable through them
+    ///   ([`Analyzer::fn_mut_defs_reached_through`]) to be unnest-specified. Those defs then have
+    ///   their own generic analysis emitted, so no def verified per instance is reached only
+    ///   through this instance;
+    /// - no unknown reachable from the contract, and a known contract for each closure.
     fn reuse_fn_mut_generic(
         &mut self,
         def_id: DefId,
@@ -1270,11 +1276,12 @@ impl<'tcx> Analyzer<'tcx> {
         generic_args: mir_ty::GenericArgsRef<'tcx>,
         caller_def_id: DefId,
     ) -> bool {
-        if !self.is_unnest_specified(def_id) {
+        let callee_bounded = fn_mut_bounded_params(self.tcx, def_id);
+        if !callee_bounded.is_empty() && !self.is_unnest_specified(def_id) {
             return false;
         }
-        let specified = fn_mut_bounded_params(self.tcx, def_id);
         let generics = self.tcx.generics_of(def_id);
+        let mut reached = Vec::new();
         for (idx, arg) in generic_args.iter().enumerate() {
             let Some(ty) = arg.as_type() else {
                 continue;
@@ -1282,14 +1289,32 @@ impl<'tcx> Analyzer<'tcx> {
             if !has_fn_mut_closure(self.tcx.mk_args(&[arg])) {
                 continue;
             }
-            let is_closure = matches!(ty.kind(), mir_ty::TyKind::Closure(..));
-            if !is_closure || !specified.contains(&generics.param_at(idx, self.tcx).def_id) {
+            if matches!(ty.kind(), mir_ty::TyKind::Closure(..)) {
+                if !callee_bounded.contains(&generics.param_at(idx, self.tcx).def_id) {
+                    tracing::info!(
+                        ?ty,
+                        "FnMut instance analyzed again: closure not at an FnMut-bounded parameter"
+                    );
+                    return false;
+                }
+                continue;
+            }
+            let Some(defs) = self.fn_mut_defs_reached_through(ty) else {
                 tracing::info!(
                     ?ty,
-                    "FnMut instance analyzed again: closure not at an unnest-specified parameter"
+                    "FnMut instance analyzed again: closure nested in a type other than a local ADT"
+                );
+                return false;
+            };
+            if let Some(def) = defs.iter().find(|def| !self.is_unnest_specified(**def)) {
+                tracing::info!(
+                    ?ty,
+                    ?def,
+                    "FnMut instance analyzed again: a reachable FnMut-bounded def is verified per instance"
                 );
                 return false;
             }
+            reached.extend(defs);
         }
         if self.may_have_pred_var(expected, generic_args, caller_def_id) {
             tracing::info!(
@@ -1337,12 +1362,90 @@ impl<'tcx> Analyzer<'tcx> {
         }
         tracing::info!(?generic_args, "FnMut instance reuses the generic analysis");
         let mut pending = self.fn_mut_instance_obligations.borrow_mut();
-        pending.reused.insert(def_id);
+        if !callee_bounded.is_empty() {
+            pending.reused.insert(def_id);
+        }
+        pending.reused.extend(reached);
         for (laws, pre) in obligations {
             pending.laws.extend(laws);
             pending.pre.extend(pre);
         }
         true
+    }
+
+    /// The local `FnMut`-bounded defs an `FnMut` closure nested in `ty` can reach as the value of
+    /// one of their type parameters: the items (and the closures in them) of the local impls
+    /// that name an ADT on the path from `ty` to the closure ([`Analyzer::enclosing_impl`]).
+    /// `None` if the path passes through
+    /// anything but a local ADT, whose impls are not all in view here.
+    ///
+    /// A generic body receives the closure only inside such an ADT, so it reaches the closure's
+    /// type only through the ADT's impls; any other call it makes at the closure's type is made
+    /// at its own type parameters and is analyzed within its own generic analysis.
+    fn fn_mut_defs_reached_through(&self, ty: mir_ty::Ty<'tcx>) -> Option<Vec<DefId>> {
+        let mut adts = Vec::new();
+        if !self.collect_adts_to_fn_mut_closures(ty, &mut adts) {
+            return None;
+        }
+        let names_adt = |ty: mir_ty::Ty<'tcx>| {
+            ty.walk().any(|arg| {
+                arg.as_type().is_some_and(|ty| {
+                    matches!(ty.kind(), mir_ty::TyKind::Adt(adt, _) if adts.contains(&adt.did()))
+                })
+            })
+        };
+        let defs = self
+            .fn_mut_bounded_defs
+            .borrow()
+            .iter()
+            .copied()
+            .filter(|def| {
+                let Some(impl_did) = self.enclosing_impl(*def) else {
+                    return false;
+                };
+                let self_ty = self.tcx.type_of(impl_did).instantiate_identity();
+                let trait_args_name_adt = self
+                    .tcx
+                    .impl_trait_ref(impl_did)
+                    .is_some_and(|tr| tr.instantiate_identity().args.types().any(names_adt));
+                names_adt(self_ty) || trait_args_name_adt
+            })
+            .collect();
+        Some(defs)
+    }
+
+    /// Collects the ADTs on the paths from `ty` to the `FnMut` closures in it; false if such a
+    /// path passes through a type other than a local ADT.
+    fn collect_adts_to_fn_mut_closures(&self, ty: mir_ty::Ty<'tcx>, adts: &mut Vec<DefId>) -> bool {
+        if !has_fn_mut_closure(self.tcx.mk_args(&[ty.into()])) {
+            return true;
+        }
+        match ty.kind() {
+            mir_ty::TyKind::Closure(..) => true,
+            mir_ty::TyKind::Adt(adt, args) if adt.did().is_local() => {
+                adts.push(adt.did());
+                args.types()
+                    .all(|ty| self.collect_adts_to_fn_mut_closures(ty, adts))
+            }
+            _ => false,
+        }
+    }
+
+    /// The impl whose type parameters `def_id` shares: that of an associated fn, or of the fn a
+    /// closure is in. A fn item nested in a body has generics of its own and no such impl; it is
+    /// called only from that body, at the body's type parameters.
+    fn enclosing_impl(&self, def_id: DefId) -> Option<DefId> {
+        let mut cursor = def_id;
+        while let Some(parent) = self.tcx.generics_of(cursor).parent {
+            if matches!(
+                self.tcx.def_kind(parent),
+                rustc_hir::def::DefKind::Impl { .. }
+            ) {
+                return Some(parent);
+            }
+            cursor = parent;
+        }
+        None
     }
 
     /// Pushes the obligations of [`Analyzer::reuse_fn_mut_generic`]: the precondition clauses
@@ -1375,8 +1478,13 @@ impl<'tcx> Analyzer<'tcx> {
             .map(|pred| pred.inner())
             .collect();
         let mut specified = HashSet::new();
+        let mut fn_mut_bounded_defs = Vec::new();
         for def in defs {
-            for param in fn_mut_bounded_params(self.tcx, def.to_def_id()) {
+            let params = fn_mut_bounded_params(self.tcx, def.to_def_id());
+            if self.tcx.def_kind(def).is_fn_like() && !params.is_empty() {
+                fn_mut_bounded_defs.push(def.to_def_id());
+            }
+            for param in params {
                 let name = crate::refine::stable_def_id_symbol(self.tcx, param, "q_unnest");
                 if with_laws.contains(name.as_str()) {
                     specified.insert(param);
@@ -1385,6 +1493,7 @@ impl<'tcx> Analyzer<'tcx> {
         }
         drop(system);
         *self.unnest_specified_params.borrow_mut() = specified;
+        *self.fn_mut_bounded_defs.borrow_mut() = fn_mut_bounded_defs;
     }
 
     /// Whether `def_id` has an `FnMut`-bounded type parameter and each of them is one whose
