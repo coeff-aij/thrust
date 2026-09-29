@@ -499,6 +499,10 @@ mod thrust_models {
         type Ty = ();
     }
 
+    impl Model for core::num::TryFromIntError {
+        type Ty = ();
+    }
+
     impl<B, C> Model for core::ops::ControlFlow<B, C> where B: Model, C: Model {
         type Ty = core::ops::ControlFlow<<B as Model>::Ty, <C as Model>::Ty>;
     }
@@ -1133,6 +1137,77 @@ uint_div_ceil_spec!(u8, _extern_spec_u8_div_ceil);
 uint_div_ceil_spec!(u16, _extern_spec_u16_div_ceil);
 uint_div_ceil_spec!(u32, _extern_spec_u32_div_ceil);
 uint_div_ceil_spec!(u64, _extern_spec_u64_div_ceil);
+
+// A conversion to `U` that fails exactly when the value does not fit, specified through the
+// source type: `fits` says the value is one of `U`, and `converts_to` relates it to the `U` it
+// becomes.
+#[thrust_macros::context]
+trait TryIntoSpec<U>: TryInto<U> + thrust_models::Model
+where
+    U: thrust_models::Model,
+{
+    #[thrust_macros::predicate]
+    fn fits(self) -> bool;
+
+    #[thrust_macros::predicate]
+    fn converts_to(self, out: U) -> bool;
+}
+
+macro_rules! int_try_into_specs {
+    ($($from:ident),*) => {
+        $(int_try_into_specs!(
+            @from $from => isize, i8, i16, i32, i64, i128, usize, u8, u16, u32, u64, u128
+        );)*
+    };
+    (@from $from:ident => $($to:ident),*) => {
+        $(
+            #[thrust_macros::context]
+            impl TryIntoSpec<$to> for $from {
+                #[thrust_macros::predicate]
+                fn fits(self) -> bool {
+                    $to::MIN <= self && self <= $to::MAX
+                }
+
+                #[thrust_macros::predicate]
+                fn converts_to(self, out: $to) -> bool {
+                    out == self
+                }
+            }
+        )*
+    };
+}
+
+int_try_into_specs!(isize, i8, i16, i32, i64, i128, usize, u8, u16, u32, u64, u128);
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(
+    (T::fits(value) && thrust_models::exists(|x| result == Ok(x) && T::converts_to(value, x)))
+    || (!T::fits(value) && thrust_models::exists(|e| result == Err(e)))
+)]
+fn _extern_spec_try_into<T, U>(value: T) -> Result<U, <T as TryInto<U>>::Error>
+    where T: TryIntoSpec<U>, T::Ty: PartialEq,
+          U: thrust_models::Model, U::Ty: PartialEq,
+          <T as TryInto<U>>::Error: thrust_models::Model,
+          <<T as TryInto<U>>::Error as thrust_models::Model>::Ty: PartialEq,
+{
+    <T as TryInto<U>>::try_into(value)
+}
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(
+    (T::fits(value) && thrust_models::exists(|x| result == Ok(x) && T::converts_to(value, x)))
+    || (!T::fits(value) && thrust_models::exists(|e| result == Err(e)))
+)]
+fn _extern_spec_try_from<T, U>(value: T) -> Result<U, <U as TryFrom<T>>::Error>
+    where T: TryIntoSpec<U>, T::Ty: PartialEq,
+          U: TryFrom<T> + thrust_models::Model, U::Ty: PartialEq,
+          <U as TryFrom<T>>::Error: thrust_models::Model,
+          <<U as TryFrom<T>>::Error as thrust_models::Model>::Ty: PartialEq,
+{
+    <U as TryFrom<T>>::try_from(value)
+}
 
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
