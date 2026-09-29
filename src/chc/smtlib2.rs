@@ -6,7 +6,7 @@
 //! such as naming convention and solver-specific workarounds.
 //! The output of this module is what gets passed to the external CHC solver.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use rustc_index::IndexVec;
 
@@ -973,6 +973,14 @@ impl<'a> std::fmt::Display for System<'a> {
             writeln!(f, "{}\n", RawCommand::new(raw_command))?;
         }
 
+        // The solver reads a `define-fun` against what precedes it, so the unknowns a
+        // definition applies are declared ahead of the definitions.
+        let dependencies = self.inner.compute_dependency();
+        let declared_early = self.inner.pred_vars_in_definitions();
+        for &p in &declared_early {
+            self.fmt_pred_var_decl(f, p, &dependencies)?;
+        }
+
         for user_defined_pred_def in self.inner.user_defined_preds_in_dependency_order() {
             writeln!(
                 f,
@@ -982,31 +990,9 @@ impl<'a> std::fmt::Display for System<'a> {
         }
 
         writeln!(f)?;
-        let dependencies = self.inner.compute_dependency();
-        for (p, def) in self.inner.pred_vars.iter_enumerated() {
-            // To a dependency-aware solver a plain `declare-fun` means "every forall pred
-            // declared before it", so an unknown whose computed set is empty is declared
-            // with the explicit, empty list. Any other solver keeps the plain form for it.
-            let explicit = self.ctx.capabilities().dependency_aware_declarations;
-            if dependencies
-                .get(&p)
-                .is_some_and(|deps| explicit || !deps.is_empty())
-            {
-                writeln!(
-                    f,
-                    "{}\n",
-                    DepExistsPredVarDef::new(&self.ctx, &p, def, &dependencies[&p])
-                )?;
-            } else {
-                if !def.debug_info.is_empty() {
-                    writeln!(f, "{}", def.debug_info.display("; "))?;
-                }
-                writeln!(
-                    f,
-                    "(declare-fun {} {} Bool)\n",
-                    p,
-                    List::closed(def.sig.iter().map(|s| self.ctx.fmt_sort(s)))
-                )?;
+        for p in self.inner.pred_vars.indices() {
+            if !declared_early.contains(&p) {
+                self.fmt_pred_var_decl(f, p, &dependencies)?;
             }
         }
         for (id, clause) in self.inner.clauses.iter_enumerated() {
@@ -1023,6 +1009,38 @@ impl<'a> std::fmt::Display for System<'a> {
 }
 
 impl<'a> System<'a> {
+    fn fmt_pred_var_decl(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+        p: chc::PredVarId,
+        dependencies: &HashMap<chc::PredVarId, BTreeSet<chc::ForallPred>>,
+    ) -> std::fmt::Result {
+        let def = &self.inner.pred_vars[p];
+        // To a dependency-aware solver a plain `declare-fun` means "every forall pred
+        // declared before it", so an unknown whose computed set is empty is declared
+        // with the explicit, empty list. Any other solver keeps the plain form for it.
+        let explicit = self.ctx.capabilities().dependency_aware_declarations;
+        if dependencies
+            .get(&p)
+            .is_some_and(|deps| explicit || !deps.is_empty())
+        {
+            return writeln!(
+                f,
+                "{}\n",
+                DepExistsPredVarDef::new(&self.ctx, &p, def, &dependencies[&p])
+            );
+        }
+        if !def.debug_info.is_empty() {
+            writeln!(f, "{}", def.debug_info.display("; "))?;
+        }
+        writeln!(
+            f,
+            "(declare-fun {} {} Bool)\n",
+            p,
+            List::closed(def.sig.iter().map(|s| self.ctx.fmt_sort(s)))
+        )
+    }
+
     pub fn new(inner: &'a chc::System, capabilities: chc::Capabilities) -> Self {
         let ctx = FormatContext::from_system(inner, capabilities);
         Self { ctx, inner }

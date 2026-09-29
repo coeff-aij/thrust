@@ -2620,6 +2620,27 @@ impl System {
         reach
     }
 
+    /// The predicate variables some user-defined predicate's formula body applies, as the
+    /// contract of a closure left to inference does in a predicate instantiated at that closure.
+    pub fn pred_vars_in_definitions(&self) -> Vec<PredVarId> {
+        let mut ids: Vec<_> = self
+            .user_defined_pred_defs
+            .iter()
+            .filter_map(|def| match &def.body {
+                UserDefinedPredBody::Formula(formula) => Some(formula),
+                UserDefinedPredBody::Raw(_) | UserDefinedPredBody::Term(..) => None,
+            })
+            .flat_map(Formula::iter_atoms)
+            .filter_map(|atom| match atom.pred {
+                Pred::Var(id) => Some(id),
+                _ => None,
+            })
+            .collect();
+        ids.sort_by_key(|id| id.index());
+        ids.dedup();
+        ids
+    }
+
     pub fn is_pred_defined(&self, symbol: &UserDefinedPred) -> bool {
         self.user_defined_pred_defs
             .iter()
