@@ -1,6 +1,6 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -A unused-variables -A unused_parens
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300 COAR_IMAGE=coar:07c15d715
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300 COAR_IMAGE=coar:0360cb142
 use thrust_models::model::{Closure, Int, Mut, Seq};
 use thrust_models::{exists, forall, Ghost, Model};
 
@@ -14,11 +14,7 @@ use thrust_models::{exists, forall, Ghost, Model};
 // `hist_inv`), and `preservation_inv` is guarded by it. The closure precondition drops Creusot's
 // `cnt < usize::MAX` (integers are unbounded).
 //
-// The pass side, `../counter_creusot.rs`, does not verify: `from_iter`, re-analysed at this `Map`
-// instance, gives no answer. With its body trusted, the rest verifies with every `Map` body
-// checked: `unnest!` gives the final state the prophecy of the borrow of `cnt`, the last call's
-// postcondition its value, and `produces_trans` is proved by lemmas that name the joined witnesses
-// as terms (Creusot's session gives them by hand, `exists (s1 ++ s)` and `exists (fs1 ++ fs)`).
+// The pass side is `tests/ui/pass/creusot/counter_creusot.rs`, which says how it verifies.
 
 // Creusot's `common.rs`, the iterator specification every case shares: the trait predicates
 // `produces(self, visited, o)`, `completed` and `invariant` (`true` unless the impl says otherwise),
