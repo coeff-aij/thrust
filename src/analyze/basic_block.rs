@@ -548,12 +548,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         }
     }
 
-    fn operand_type(&self, mut operand: Operand<'tcx>) -> PlaceType {
-        if let Operand::Copy(p) | Operand::Move(p) = &mut operand {
-            *p = self.elaborate_place(p);
-        }
+    fn operand_type(&self, operand: Operand<'tcx>) -> PlaceType {
         let ty = match &operand {
-            Operand::Copy(place) | Operand::Move(place) => self.env.place_type(*place),
+            Operand::Copy(place) | Operand::Move(place) => self.place_type(place),
             Operand::Constant(operand) => self.const_ty(&operand.const_),
         };
         tracing::debug!(operand = ?operand, ty = %ty.display(), "operand_type");
@@ -583,7 +580,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     fn rvalue_type(&mut self, rvalue: Rvalue<'tcx>) -> PlaceType {
         match rvalue {
             Rvalue::Use(operand) => self.operand_type(operand),
-            Rvalue::CopyForDeref(place) => self.env.place_type(self.elaborate_place(&place)),
+            Rvalue::CopyForDeref(place) => self.place_type(&place),
             Rvalue::UnaryOp(op, operand) => {
                 let operand_ty = self.operand_type(operand);
 
@@ -667,7 +664,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 }
             }
             Rvalue::Ref(_, mir::BorrowKind::Shared, place) => {
-                let ty = self.env.place_type(self.elaborate_place(&place));
+                let ty = self.place_type(&place);
 
                 let mut builder = PlaceTypeBuilder::default();
                 let (ty, term) = builder.subsume(ty);
@@ -754,12 +751,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         // the same lowering `elaborate_place` gives the field access.
                         if let mir::AggregateKind::Adt(did, _, args, _, _) = *kind {
                             let adt_ty = mir_ty::Ty::new_adt(self.tcx, self.tcx.adt_def(did), args);
-                            let transparent = fields.iter_enumerated().find(|(idx, _)| {
-                                self.type_builder
-                                    .is_transparent_field(adt_ty, idx.as_usize())
-                            });
-                            if let Some((_, operand)) = transparent {
-                                return self.operand_type(operand.clone());
+                            if let Some(live) = self.type_builder.transparent_field(adt_ty) {
+                                return self.operand_type(
+                                    fields[rustc_abi::FieldIdx::from_usize(live)].clone(),
+                                );
                             }
                         }
                         // elaboration: all fields are boxed
@@ -1322,21 +1317,13 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         }
         let mut base = mir::PlaceTy::from_ty(self.local_decls[place.local].ty);
         for elem in place.projection {
-            let elaborated = match elem {
-                // A struct that the model lowering makes transparent has no projection to
-                // make: its live field is the value itself, so the access is the identity.
-                mir::PlaceElem::Field(idx, _)
-                    if base.variant_index.is_none()
-                        && self
-                            .type_builder
-                            .is_transparent_field(base.ty, idx.as_usize()) =>
-                {
-                    false
-                }
-                _ => true,
-            };
+            // A struct that the model lowering makes transparent has no projection to make:
+            // its live field is the value itself, so the access is the identity.
+            let is_live_field = matches!(elem, mir::PlaceElem::Field(idx, _)
+                if base.variant_index.is_none()
+                    && self.type_builder.transparent_field(base.ty) == Some(idx.as_usize()));
             base = base.projection_ty(self.tcx, elem);
-            if !elaborated {
+            if is_live_field {
                 continue;
             }
             projection.push(elem);
@@ -1349,6 +1336,29 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let mut p = *place;
         p.projection = self.tcx.mk_place_elems(&projection);
         p
+    }
+
+    /// The type of `place`, which is the one value of its sort if it lies in a field that the
+    /// model lowering leaves out of a transparent struct.
+    fn place_type(&self, place: &mir::Place<'tcx>) -> PlaceType {
+        let mut base = mir::PlaceTy::from_ty(self.local_decls[place.local].ty);
+        for elem in place.projection {
+            let is_omitted_field = matches!(elem, mir::PlaceElem::Field(idx, _)
+                if base.variant_index.is_none()
+                    && self
+                        .type_builder
+                        .transparent_field(base.ty)
+                        .is_some_and(|live| live != idx.as_usize()));
+            if is_omitted_field {
+                let ty = self
+                    .type_builder
+                    .build(place.ty(&self.local_decls, self.tcx).ty);
+                let term = chc::Term::default_for(&ty.to_sort());
+                return PlaceType::with_ty_and_term(ty.vacuous(), term);
+            }
+            base = base.projection_ty(self.tcx, elem);
+        }
+        self.env.place_type(self.elaborate_place(place))
     }
 
     fn elaborate_place_for_borrow(&self, place: &mir::Place<'tcx>) -> mir::Place<'tcx> {
@@ -1412,8 +1422,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     }
 
     fn immut_borrow_place(&self, referent: mir::Place<'tcx>) -> rty::RefinedType<Var> {
-        let place = self.elaborate_place(&referent);
-        self.env.place_type(place).immut().into()
+        self.place_type(&referent).immut().into()
     }
 
     #[tracing::instrument(skip(self, lhs, rvalue))]
