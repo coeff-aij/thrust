@@ -238,9 +238,6 @@ impl Size {
     // Here and in `from_bytes`, the `impl TryInto<u64>` parameter is a named `T: TryIntoSpec<u64>`:
     // `TryInto` says nothing about the converted value, and a formula cannot name the type of an
     // `impl Trait` parameter to call `TryIntoSpec`'s predicates on.
-    //
-    // Trusted: `u64::div_ceil` has no specification (Thrust panics, unknown def).
-    #[thrust::trusted]
     #[thrust_macros::requires(T::fits(bits))]
     #[thrust_macros::ensures(thrust_models::exists(|b| T::converts_to(bits, b) && result.raw == (b + 7) / 8))]
     pub fn from_bits<T: TryIntoSpec<u64>>(bits: T) -> Size {
@@ -448,10 +445,7 @@ impl Integer {
         })
     }
 
-    // Trusted: the match arms use u128 constants, which exceed the i64 range
-    // Thrust models integer literals with.
     #[inline]
-    #[thrust::trusted]
     #[thrust::callable]
     pub fn fit_unsigned(x: u128) -> Integer {
         use Integer::*;
