@@ -1,4 +1,4 @@
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:develop-2493045c3
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:0360cb142
 use thrust_models::model::{Closure, Mut};
 use thrust_models::{exists, forall};
 

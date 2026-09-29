@@ -1,6 +1,6 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:develop-2493045c3
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:0360cb142
 // A generic function whose contract names a trait predicate, calling another generic
 // function whose contract names the same predicate. Both declare their type parameter
 // at the same position, so the predicate instance the call site applies has to be
