@@ -251,6 +251,17 @@ where
     fn completed(&mut self) -> bool {
         true
     }
+
+    fn produces_refl(a: &Self) {}
+
+    fn produces_trans(
+        a: &Self,
+        ab: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        b: &Self,
+        bc: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        c: &Self,
+    ) {
+    }
 }
 
 #[derive(/* Clone, Eq, PartialEq, */ Hash)]
