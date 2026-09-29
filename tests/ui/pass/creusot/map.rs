@@ -8,8 +8,8 @@ use thrust_models::{exists, forall, Ghost, Model};
 // Creusot's `Map` in its `produces` form, fully checked, with Creusot's proof structure (the
 // artifact's `iterators/map.rs` and its Why3 session `proofs/map/why3session.xml`): the predicate
 // `produces_one` and the ghost lemmas `produces_one_produces` and `produces_one_invariant`, called
-// from `next` on ghost snapshots taken around the inner `next`, and `produces_trans` through the
-// lemma `produces_trans_split`. Everything else is `decuple_range_lemmas.rs`; the call site is
+// from `next` on ghost snapshots taken around the inner `next`. The `produces_trans` law has an
+// empty body, as `Range`'s does. Everything else is `decuple_range_lemmas.rs`; the call site is
 // `map_creusot.rs`'s two `next`s over `Range`.
 
 // Creusot's `common.rs`, the iterator specification every case shares: the trait predicates
@@ -178,26 +178,6 @@ where
         Self::produces_one_preservation(s0, e, b, s1);
         Self::produces_one_reinitialize(s0, s1);
     }
-
-    // `produces_trans` with the concatenation of the visited sequences spelled out: any `v`
-    // that is `ab` followed by `bc` index by index. With the witness `s_ab ++ s_bc` of the
-    // inner sequence, the pointwise relation then reads under a concatenation on one side
-    // only. `produces_trans` below instantiates `v` with `ab.concat(bc)`.
-    #[thrust_macros::requires(<Self as Iterator>::produces(a, ab, b)
-        && <Self as Iterator>::produces(b, bc, c))]
-    #[thrust_macros::ensures(forall(|v: Seq<<B as Model>::Ty>|
-        !(v.len() == ab.len() + bc.len()
-            && forall(|k: Int| !(0 <= k && k < ab.len()) || v[k] == ab[k])
-            && forall(|k: Int| !(ab.len() <= k && k < v.len()) || v[k] == bc[k - ab.len()]))
-            || <Self as Iterator>::produces(a, v, c)))]
-    fn produces_trans_split(
-        a: Ghost<Self>,
-        ab: Ghost<Seq<<B as Model>::Ty>>,
-        b: Ghost<Self>,
-        bc: Ghost<Seq<<B as Model>::Ty>>,
-        c: Ghost<Self>,
-    ) {
-    }
 }
 
 #[thrust_macros::context]
@@ -235,16 +215,7 @@ where
 
     fn produces_refl(a: &Map<I, F>) {}
 
-    fn produces_trans(a: &Map<I, F>, ab: Seq<<Self::Item as Model>::Ty>, b: &Map<I, F>, bc: Seq<<Self::Item as Model>::Ty>, c: &Map<I, F>) {
-        let ga = thrust_macros::ghost!(|a: &Self| -> Self { *a });
-        let gb = thrust_macros::ghost!(|b: &Self| -> Self { *b });
-        let gc = thrust_macros::ghost!(|c: &Self| -> Self { *c });
-        let gab = thrust_macros::ghost!(|ab: Seq<<B as Model>::Ty>| -> Seq<<B as Model>::Ty> { ab });
-        let gbc = thrust_macros::ghost!(|bc: Seq<<B as Model>::Ty>| -> Seq<<B as Model>::Ty> { bc });
-        Self::produces_trans_split(ga, gab, gb, gbc, gc);
-        // Keeps the parameters live at the snapshots above.
-        let _live = (a, &ab, b, &bc, c);
-    }
+    fn produces_trans(a: &Map<I, F>, ab: Seq<<Self::Item as Model>::Ty>, b: &Map<I, F>, bc: Seq<<Self::Item as Model>::Ty>, c: &Map<I, F>) {}
 
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
