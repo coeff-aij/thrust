@@ -237,11 +237,12 @@ fn bind_spec_args<'tcx>(
 }
 
 /// Whether the bounds an extern spec puts on its type parameters by traits of its own hold at the
-/// arguments it was bound to. A spec stated through a trait (`I: IteratorSpec`) says nothing
-/// about a type that does not implement it, so a call at such a type finds no specification.
+/// arguments it was bound to, in the caller's environment. A spec stated through a trait
+/// (`I: IteratorSpec`) says nothing about a type that does not implement it, so a call at such a
+/// type finds no specification.
 ///
-/// Only a bound on a fully concrete type is checked. A type that still mentions a parameter or an
-/// unresolved projection is left to the spec, whose predicates are then universal.
+/// A bound whose self type is a type parameter or an unresolved projection is assumed: the
+/// spec's predicates are then universal.
 ///
 /// `Model` and its `PartialEq` are assumed of every type parameter of the caller, as a spec
 /// assumes them of its own: they are what a bound like `usize: SliceIndexSpec<T>` needs of `T`.
@@ -252,8 +253,13 @@ fn spec_bounds_hold<'tcx>(
     caller_def_id: DefId,
     model_ty: DefId,
 ) -> bool {
+    use rustc_infer::infer::TyCtxtInferExt as _;
+    use rustc_trait_selection::traits::query::evaluate_obligation::InferCtxtExt as _;
+    use rustc_trait_selection::traits::{Obligation, ObligationCause};
+
     let model_trait = tcx.parent(model_ty);
     let typing_env = model_assuming_env(tcx, caller_def_id, model_ty);
+    let infcx = tcx.infer_ctxt().build(typing_env.typing_mode);
     tcx.predicates_of(spec_def_id)
         .instantiate(tcx, args)
         .predicates
@@ -266,13 +272,19 @@ fn spec_bounds_hold<'tcx>(
                 .ok()
         })
         .filter(|trait_ref| {
-            use mir_ty::TypeVisitableExt as _;
-            let self_ty = trait_ref.self_ty();
-            !self_ty.has_non_region_param() && !self_ty.has_aliases()
+            !matches!(
+                trait_ref.self_ty().kind(),
+                mir_ty::TyKind::Param(_) | mir_ty::TyKind::Alias(..)
+            )
         })
         .all(|trait_ref| {
-            tcx.codegen_select_candidate(typing_env.as_query_input(trait_ref))
-                .is_ok()
+            let obligation = Obligation::new(
+                tcx,
+                ObligationCause::dummy(),
+                typing_env.param_env,
+                trait_ref,
+            );
+            infcx.predicate_must_hold_modulo_regions(&obligation)
         })
 }
 
