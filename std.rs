@@ -1714,7 +1714,10 @@ fn _extern_spec_slice_index_mut<T, I>(slice: &mut [T], index: I) -> &mut <I as s
 
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
-#[thrust_macros::ensures(result.0 == *slice && result.1 == 0)]
+#[thrust_macros::ensures(
+    result.0 == *slice && result.1 == 0
+        && <core::slice::Iter<'_, T> as IteratorSpec>::inv(result)
+)]
 fn _extern_spec_slice_iter<T>(slice: &[T]) -> core::slice::Iter<'_, T>
     where T: thrust_models::Model, T::Ty: PartialEq
 {
@@ -1728,6 +1731,7 @@ fn _extern_spec_slice_iter<T>(slice: &[T]) -> core::slice::Iter<'_, T>
 #[thrust_macros::ensures(
     result.0 == *slice && result.1 == !slice && result.2 == 0
         && (!slice).len() == (*slice).len()
+        && <core::slice::IterMut<'_, T> as IteratorSpec>::inv(result)
 )]
 fn _extern_spec_slice_iter_mut<T>(slice: &mut [T]) -> core::slice::IterMut<'_, T>
     where T: thrust_models::Model, T::Ty: PartialEq
@@ -1736,14 +1740,18 @@ fn _extern_spec_slice_iter_mut<T>(slice: &mut [T]) -> core::slice::IterMut<'_, T
 }
 
 // `next` is specified once, through the predicates of `IteratorSpec`; a type gets a `next` by
-// implementing the trait. `next` is total: `completed` covers every position at or past the end,
-// and producing nothing holds at every position, as `produces_refl` requires. The laws are
-// Creusot's; they let a loop over a type parameter accumulate what `next` produced.
+// implementing the trait. `next` is total: `completed` covers every position at or past the end.
+// `inv` is the state invariant, Creusot's type invariant: `produces_refl` holds at the states that
+// satisfy it. The laws are Creusot's; they let a loop over a type parameter accumulate what
+// `next` produced.
 #[thrust_macros::context]
 trait IteratorSpec: std::iter::Iterator + thrust_models::Model
 where
     Self::Item: thrust_models::Model,
 {
+    #[thrust_macros::predicate]
+    fn inv(self) -> bool;
+
     #[thrust_macros::predicate]
     fn produces(self, visited: Vec<Self::Item>, o: Self) -> bool;
 
@@ -1751,6 +1759,7 @@ where
     fn completed(&mut self) -> bool;
 
     #[thrust_macros::law]
+    #[thrust_macros::requires(Self::inv(*a))]
     #[thrust_macros::ensures(Self::produces(*a, thrust_models::model::Seq::empty(), *a))]
     fn produces_refl(a: &Self)
     where
@@ -1773,7 +1782,8 @@ where
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(
-    (result == None ==> I::completed(it))
+    (I::inv(*it) ==> I::inv(!it))
+        && (result == None ==> I::completed(it))
         && thrust_models::forall(|x: <I::Item as thrust_models::Model>::Ty| result == Some(x)
             ==> I::produces(*it, thrust_models::model::Seq::singleton(x), !it))
 )]
@@ -1822,10 +1832,15 @@ where
     T::Ty: PartialEq,
 {
     #[thrust_macros::predicate]
+    fn inv(self) -> bool {
+        self.1 <= self.0.len()
+    }
+
+    #[thrust_macros::predicate]
     fn produces(self, visited: Vec<&'a T>, o: Self) -> bool {
         self.0 == o.0
             && self.1 <= o.1
-            && (visited.len() == 0 || o.1 <= self.0.len())
+            && o.1 <= self.0.len()
             && visited.len() == o.1 - self.1
             && thrust_models::forall(|i: thrust_models::model::Int|
                 !(0 <= i && i < visited.len()) || visited[i] == &self.0[self.1 + i])
@@ -1859,11 +1874,16 @@ where
     T::Ty: PartialEq,
 {
     #[thrust_macros::predicate]
+    fn inv(self) -> bool {
+        self.2 <= self.0.len()
+    }
+
+    #[thrust_macros::predicate]
     fn produces(self, visited: Vec<&'a mut T>, o: Self) -> bool {
         self.0 == o.0
             && self.1 == o.1
             && self.2 <= o.2
-            && (visited.len() == 0 || o.2 <= self.0.len())
+            && o.2 <= self.0.len()
             && visited.len() == o.2 - self.2
             && thrust_models::forall(|i: thrust_models::model::Int|
                 !(0 <= i && i < visited.len()) || visited[i] == thrust_models::model::Mut::new(
@@ -1896,10 +1916,15 @@ where
     T::Ty: PartialEq,
 {
     #[thrust_macros::predicate]
+    fn inv(self) -> bool {
+        self.1 <= self.0.len()
+    }
+
+    #[thrust_macros::predicate]
     fn produces(self, visited: Vec<T>, o: Self) -> bool {
         self.0 == o.0
             && self.1 <= o.1
-            && (visited.len() == 0 || o.1 <= self.0.len())
+            && o.1 <= self.0.len()
             && visited.len() == o.1 - self.1
             && thrust_models::forall(|i: thrust_models::model::Int|
                 !(0 <= i && i < visited.len()) || visited[i] == self.0[self.1 + i])
@@ -1930,6 +1955,11 @@ where
     I::Ty: PartialEq,
     <I::Item as thrust_models::Model>::Ty: PartialEq,
 {
+    #[thrust_macros::predicate]
+    fn inv(self) -> bool {
+        I::inv(self.0)
+    }
+
     #[thrust_macros::predicate]
     fn produces(self, visited: Vec<(usize, I::Item)>, o: Self) -> bool {
         visited.len() == o.1 - self.1
@@ -1982,6 +2012,11 @@ where
     <A::Item as thrust_models::Model>::Ty: PartialEq,
     <B::Item as thrust_models::Model>::Ty: PartialEq,
 {
+    #[thrust_macros::predicate]
+    fn inv(self) -> bool {
+        A::inv(self.0) && B::inv(self.1)
+    }
+
     #[thrust_macros::predicate]
     fn produces(self, visited: Vec<(A::Item, B::Item)>, o: Self) -> bool {
         thrust_models::exists(|xs: thrust_models::model::Seq<<A::Item as thrust_models::Model>::Ty>| thrust_models::exists(|ys: thrust_models::model::Seq<<B::Item as thrust_models::Model>::Ty>|
@@ -2045,7 +2080,7 @@ where
 {
     #[thrust_macros::predicate]
     fn into_iter_is(self, it: std::vec::IntoIter<T>) -> bool {
-        it.0 == self && it.1 == 0
+        it.0 == self && it.1 == 0 && <std::vec::IntoIter<T> as IteratorSpec>::inv(it)
     }
 }
 
@@ -2057,7 +2092,7 @@ where
 {
     #[thrust_macros::predicate]
     fn into_iter_is(self, it: core::slice::Iter<'a, T>) -> bool {
-        it.0 == *self && it.1 == 0
+        it.0 == *self && it.1 == 0 && <core::slice::Iter<'a, T> as IteratorSpec>::inv(it)
     }
 }
 
@@ -2070,6 +2105,7 @@ where
     #[thrust_macros::predicate]
     fn into_iter_is(self, it: core::slice::IterMut<'a, T>) -> bool {
         it.0 == *self && it.1 == !self && it.2 == 0 && (!self).len() == (*self).len()
+            && <core::slice::IterMut<'a, T> as IteratorSpec>::inv(it)
     }
 }
 
@@ -2081,7 +2117,7 @@ where
 {
     #[thrust_macros::predicate]
     fn into_iter_is(self, it: core::slice::Iter<'a, T>) -> bool {
-        it.0 == *self && it.1 == 0
+        it.0 == *self && it.1 == 0 && <core::slice::Iter<'a, T> as IteratorSpec>::inv(it)
     }
 }
 
@@ -2094,6 +2130,7 @@ where
     #[thrust_macros::predicate]
     fn into_iter_is(self, it: core::slice::IterMut<'a, T>) -> bool {
         it.0 == *self && it.1 == !self && it.2 == 0 && (!self).len() == (*self).len()
+            && <core::slice::IterMut<'a, T> as IteratorSpec>::inv(it)
     }
 }
 

@@ -3,11 +3,12 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:develop-2493045c3
 
 // A `while let Some(x) = it.next()` loop at a type parameter with an `IteratorSpec` bound. `next`
-// gives one step at a time; `produces_refl` and `produces_trans` are what let the invariant hold
-// the whole history, so the collected vector is exactly what the iterator produced until it was
-// completed.
+// gives one step at a time; `produces_refl` (from the start state's invariant) and `produces_trans`
+// are what let the invariant hold the whole history, so the collected vector is exactly what the
+// iterator produced until it was completed.
 
 #[thrust_macros::context]
+#[thrust_macros::requires(I::inv(iter))]
 #[thrust_macros::ensures(thrust_models::exists(|last: I::Ty| thrust_models::exists(|fin: I::Ty|
     I::produces(iter, result, last) && I::completed(thrust_models::model::Mut::new(last, fin)))))]
 fn collect<I: IteratorSpec>(iter: I) -> Vec<I::Item>
