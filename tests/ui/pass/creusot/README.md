@@ -19,6 +19,7 @@ theirs in the same layout. A case that needs `collect` adds it to its copy after
 | `take.rs` | `iterators/take.rs` | `produces` |
 | `skip.rs` | `iterators/skip.rs` | `produces`, concatenated |
 | `fuse.rs` | `iterators/fuse.rs` | `step` |
+| `fuse_produces.rs` | `iterators/fuse.rs` | `produces` + `FusedIterator::is_fused`; state `Option<I>` for Creusot's `Result<I, Ghost<I>>` |
 | `map.rs` | `iterators/map.rs` | `produces`, Creusot's own proof structure (source-level lemmas), fully checked |
 | `iter_mut.rs` | `iterators/iter_mut.rs` | `produces` |
 | `collect.rs` | `common.rs` (`collect` / `FromIterator`) | `produces` |
@@ -42,5 +43,6 @@ Weaker variants (`weaker/`, still verify):
 | `collect_mutref.rs` | `collect.rs` | `collect(&mut self)` / `from_iter(&mut I)` instead of by value |
 | `decuple_range.rs` | `decuple_range.rs` | the `step` form's positionless property (every element in range) instead of `v[i] == 10 * i` |
 
-`map_ext.rs` (Creusot's `MapInv`, the ninth adapter) and every case's probe programs are drafts,
+`map_ext.rs` (Creusot's `MapInv`, the ninth adapter), `fuse_produces_result.rs` (Fuse with
+Creusot's `Result<I, Ghost<I>>` state) and every case's probe programs are drafts,
 not yet verified or superseded by the files above: see [drafts/creusot/README.md](../../../../drafts/creusot/README.md).
