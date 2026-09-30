@@ -160,6 +160,7 @@ impl<T: Idx> DenseBitSet<T> {
     #[thrust::trusted]
     #[thrust::callable]
     #[thrust_macros::ensures(result.0 == (*self).0 && result.1 == 0)]
+    #[thrust_macros::ensures(0 <= result.2 && result.2 <= (*self).0)]
     pub fn iter(&self) -> BitIter<'_, T> {
         BitIter::new(&self.words)
     }
@@ -239,13 +240,15 @@ impl<'a, T: Idx + thrust_models::Model> IteratorSpec for BitIter<'a, T>
 where
     T::Ty: PartialEq,
 {
-    // The model is (bound, count) with 0 <= count <= bound: the column bound of the bit set the iterator walks
+    // The model is (bound, count, left): the column bound of the bit set the iterator walks
     // (`num_columns` of the matrix row, `domain_size` of a `DenseBitSet`), which never changes,
-    // and the number of items yielded so far. Every yielded element is below the bound, and
-    // the elements are distinct, so the count stays at most the bound.
+    // the number of items yielded so far, and the number still to yield. Every yielded element
+    // is below the bound, and the elements are distinct, so count + left stays at most the bound.
+    // `left` makes completion observable: the iterator completes with nothing left, which
+    // `Map`'s `reinitialize` in layout.rs needs.
     #[thrust_macros::predicate]
     fn inv(self) -> bool {
-        0 <= self.1 && self.1 <= self.0
+        0 <= self.1 && 0 <= self.2 && self.1 + self.2 <= self.0
     }
 
     #[thrust_macros::predicate]
@@ -253,13 +256,15 @@ where
         self.0 == o.0
             && o.1 == self.1 + visited.len()
             && o.1 <= self.0
+            && o.2 + visited.len() == self.2
+            && 0 <= o.2
             && forall(|i: Int, k: Int|
                 !(0 <= i && i < visited.len() && <T as Idx>::index_is(visited[i], k)) || k < self.0)
     }
 
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
-        true
+        (*self).2 == 0 && *self == !self
     }
 
     fn produces_refl(a: &Self) {}
@@ -284,6 +289,16 @@ pub struct BitMatrix<R: Idx, C: Idx> {
 
 #[thrust_macros::context]
 impl<R: Idx, C: Idx> BitMatrix<R, C> {
+    /// Well-formedness, as in bitset.rs: `words` holds `num_words(num_columns)` words per row.
+    #[thrust_macros::predicate]
+    fn wf(self) -> bool {
+        exists(|rw: Int| {
+            self.words.len() == self.num_rows * rw
+                && 64 * rw >= self.num_columns
+                && 64 * rw < self.num_columns + 64
+        })
+    }
+
     #[thrust::trusted]
     #[thrust_macros::ensures(result.start == 0)]
     #[thrust_macros::ensures(result.end == (*self).num_rows)]
@@ -293,6 +308,10 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
 
     #[thrust::trusted]
     #[thrust::callable]
+    #[thrust_macros::requires(Self::wf(*self))]
+    #[thrust_macros::requires(forall(|i: Int| <R as Idx>::index_is(row, i) ==> i < (*self).num_rows))]
+    #[thrust_macros::ensures(result.0 <= result.1)]
+    #[thrust_macros::ensures(result.1 <= (*self).words.len())]
     fn range(&self, row: R) -> (usize, usize) {
         let words_per_row = num_words(self.num_columns);
         let start = row.index() * words_per_row;
@@ -300,8 +319,10 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
     }
 
     #[thrust::trusted]
+    #[thrust_macros::requires(Self::wf(*self))]
     #[thrust_macros::requires(forall(|i: Int| <R as Idx>::index_is(row, i) ==> i < (*self).num_rows))]
     #[thrust_macros::ensures(result.0 == (*self).num_columns && result.1 == 0)]
+    #[thrust_macros::ensures(0 <= result.2 && result.2 <= (*self).num_columns)]
     pub fn iter(&self, row: R) -> BitIter<'_, C> {
         assert!(row.index() < self.num_rows);
         let (start, end) = self.range(row);
@@ -310,6 +331,8 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
 
     #[thrust::trusted]
     #[thrust::callable]
+    #[thrust_macros::requires(Self::wf(*self))]
+    #[thrust_macros::requires(forall(|i: Int| <R as Idx>::index_is(row, i) ==> i < (*self).num_rows))]
     pub fn count(&self, row: R) -> usize {
         let (start, end) = self.range(row);
         count_ones(&self.words[start..end])
@@ -451,11 +474,14 @@ impl<I: Idx> Iterator for IdxRange<I> {
 
 #[thrust_macros::context]
 impl<I: Idx> IdxRange<I> {
-    // Contract of the trusted `next` above, on a sibling inherent impl (see idx.rs, where the
-    // same contract is verified against the body together with a `can_new` requirement): the
-    // yielded index is `start`, in `[start, end)`, and the range advances by one.
+    // Contract of the trusted `next` above, on a sibling inherent impl (idx.rs verifies the
+    // same contract against the body): the yielded index is `start`, in `[start, end)`, and the
+    // range advances by one.
     #[thrust::extern_spec_fn]
     #[thrust_macros::requires((*it).start >= 0)]
+    #[thrust_macros::requires(
+        forall(|s: Int| s == (*it).start && s < (*it).end ==> <I as Idx>::can_new(s))
+    )]
     #[thrust_macros::ensures(
         forall(|s: Int| s == (*it).start && s < (*it).end
             ==> exists(|x: <I as thrust_models::Model>::Ty|
@@ -668,9 +694,14 @@ impl<I: Idx, T> IndexSlice<I, T> {
 
 #[thrust_macros::context]
 impl<I: Idx + thrust_models::Model<Ty: PartialEq>, J: Idx> IndexSlice<I, J> {
-    // The two `debug_assert_eq!`s sum `as u128` casts, which have no model.
+    // The two `debug_assert_eq!`s sum `as u128` casts, which have no model; debug assertions are
+    // off. The body panics when an element is not below the length (`inverse[i2]`) or an index
+    // up to the length cannot be built (`iter_enumerated`).
     #[thrust::trusted]
     #[thrust::callable]
+    #[thrust_macros::requires(forall(|k: Int| !(0 <= k && k <= (*self).len()) || <I as Idx>::can_new(k)))]
+    #[thrust_macros::requires(forall(|k: Int, i: Int|
+        !(0 <= k && k < (*self).len() && <J as Idx>::index_is((*self)[k], i)) || i < (*self).len()))]
     pub fn invert_bijective_mapping(&self) -> IndexVec<J, I> {
         debug_assert_eq!(
             self.iter().map(|x| x.index() as u128).sum::<u128>(),
@@ -950,7 +981,7 @@ impl<'a> thrust_models::Model for WordIter<'a> {
     type Ty = Self;
 }
 impl<'a, T: Idx> thrust_models::Model for BitIter<'a, T> {
-    type Ty = (Int, Int);
+    type Ty = (Int, Int, Int);
 }
 impl<R: Idx, C: Idx> thrust_models::Model for BitMatrix<R, C> {
     type Ty = Self;
@@ -990,14 +1021,23 @@ impl<I: Idx> thrust_models::Model for IdxRange<I> {
         || forall(|i: Int|
             !<LocalIdx as Idx>::index_is((*variant_fields)[v][f], i)
                 || i < nb_locals))
-    && (*storage_conflicts).num_rows == nb_locals
-    && (*storage_conflicts).num_columns == nb_locals
+    // `count(local_b)` takes a column index as a row, so the columns must not outnumber the
+    // rows: the set abstraction does not say which bits a row holds, so this is stronger than
+    // the panic condition (a set bit of some row at a column >= num_rows).
+    && (*storage_conflicts).num_rows <= nb_locals
+    && (*storage_conflicts).num_columns <= (*storage_conflicts).num_rows
+    && BitMatrix::<LocalIdx, LocalIdx>::wf(*storage_conflicts)
+    && forall(|k: Int| !(0 <= k && k < nb_locals) || LocalIdx::can_new(k))
     && forall(|n: Int| !(0 <= n && n <= nb_locals) || FieldIdx::can_new(n))
     && forall(|v: Int| !(0 <= v && v <= (*variant_fields).len()) || VariantIdx::can_new(v))
 )]
 #[thrust_macros::ensures(
+    // `assignments` has one entry per local, and `inel` is a set over the locals, so its
+    // iterator yields locals below `nb_locals`.
+    result.1.len() == nb_locals
+    && result.0.0 == nb_locals
     // 1. Unassigned locals never appear in any variant's field list.
-    forall(|l: usize| !(0 <= l && l < nb_locals && result.1[l] == SavedLocalEligibility::Unassigned)
+    && forall(|l: usize| !(0 <= l && l < nb_locals && result.1[l] == SavedLocalEligibility::Unassigned)
         || forall(|v: usize, f: usize|
             !(0 <= v && v < (*variant_fields).len()
                 && 0 <= f && f < (*variant_fields)[v].len())
@@ -1020,6 +1060,13 @@ impl<I: Idx> thrust_models::Model for IdxRange<I> {
                     && thrust_models::exists(|i: Int|
                         i == l
                             && <LocalIdx as Idx>::index_is((*variant_fields)[v][f], i)))))
+    // 3. An ineligible local has its promoted field index. The README bounds it by the
+    // cardinality of `inel`, which no predicate states yet (DenseBitSet cardinality); the bound
+    // stated is the number of locals, which the cardinality is at most.
+    && forall(|l: usize, x: Option<<FieldIdx as thrust_models::Model>::Ty>|
+        !(0 <= l && l < nb_locals && result.1[l] == SavedLocalEligibility::Ineligible(x))
+        || thrust_models::exists(|k: <FieldIdx as thrust_models::Model>::Ty|
+            x == Some(k) && forall(|i: Int| !<FieldIdx as Idx>::index_is(k, i) || i < nb_locals)))
     // 4. Membership in `inel` matches being `Ineligible(_)`.
     // TODO(spec): `DenseBitSet::elem_at`/`mem` are uninterpreted here, see
     // above; written as an `<==>` via two `==>` for the annotation grammar.
@@ -1110,8 +1157,10 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
                 !(0 <= k && k < assignments.len() && assignments[k] == SavedLocalEligibility::Assigned(v)
                     && <VariantIdx as Idx>::index_is(v, i))
                 || i < (*variant_fields).len())
-                && assignments.len() == ineligible_locals.0 && ineligible_locals.0 == (*storage_conflicts).num_rows
-                && (*storage_conflicts).num_rows == (*storage_conflicts).num_columns
+                && assignments.len() == ineligible_locals.0 && (*storage_conflicts).num_rows <= ineligible_locals.0
+                && (*storage_conflicts).num_columns <= (*storage_conflicts).num_rows
+                && BitMatrix::<LocalIdx, LocalIdx>::wf(*storage_conflicts)
+                && forall(|k: Int| !(0 <= k && k < ineligible_locals.0) || <LocalIdx as Idx>::can_new(k))
                 && rows.start >= 0 && rows.end == (*storage_conflicts).num_rows);
         let conflicts_a = storage_conflicts.count(local_a);
         if ineligible_locals.contains(local_a) {
@@ -1125,8 +1174,10 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
                 !(0 <= k && k < assignments.len() && assignments[k] == SavedLocalEligibility::Assigned(v)
                     && <VariantIdx as Idx>::index_is(v, i))
                 || i < (*variant_fields).len())
-                && assignments.len() == ineligible_locals.0 && ineligible_locals.0 == (*storage_conflicts).num_rows
-                    && (*storage_conflicts).num_rows == (*storage_conflicts).num_columns
+                && assignments.len() == ineligible_locals.0 && (*storage_conflicts).num_rows <= ineligible_locals.0
+                    && (*storage_conflicts).num_columns <= (*storage_conflicts).num_rows
+                    && BitMatrix::<LocalIdx, LocalIdx>::wf(*storage_conflicts)
+                    && forall(|k: Int| !(0 <= k && k < ineligible_locals.0) || <LocalIdx as Idx>::can_new(k))
                     && rows.start >= 0 && rows.end == (*storage_conflicts).num_rows
                     && forall(|i: Int| !<LocalIdx as Idx>::index_is(local_a, i) || i < ineligible_locals.0)
                     && conflicts.0 == (*storage_conflicts).num_columns);
