@@ -762,22 +762,19 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
     (ineligible_locals, assignments)
 }
 
-// Rewrite (rewrites.md R8): argument-position impl Trait as a named type parameter
 pub fn layout<
     'a,
     F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy,
     VariantIdx: Idx,
     FieldIdx: Idx,
     LocalIdx: Idx,
-    D: HasDataLayout,
-    G: Fn(Scalar) -> F,
 >(
-    calc: &LayoutCalculator<D>,
+    calc: &LayoutCalculator<impl HasDataLayout>,
     local_layouts: &IndexSlice<LocalIdx, F>,
     mut prefix_layouts: IndexVec<FieldIdx, F>,
     variant_fields: &IndexSlice<VariantIdx, IndexVec<FieldIdx, LocalIdx>>,
     storage_conflicts: &BitMatrix<LocalIdx, LocalIdx>,
-    tag_to_layout: G,
+    tag_to_layout: impl Fn(Scalar) -> F,
 ) -> LayoutCalculatorResult<FieldIdx, VariantIdx, F> {
     use SavedLocalEligibility::*;
 
@@ -1623,21 +1620,19 @@ pub struct Size {
 impl Size {
     pub const ZERO: Size = Size { raw: 0 };
 
-    // Rewrite (rewrites.md R8): argument-position impl Trait as a named type parameter
     #[thrust::trusted]
     #[thrust::callable]
-    pub fn from_bits<T: TryInto<u64>>(bits: T) -> Size {
+    pub fn from_bits(bits: impl TryInto<u64>) -> Size {
         let bits = bits.try_into().ok().unwrap();
         Size {
             raw: bits.div_ceil(8),
         }
     }
 
-    // Rewrite (rewrites.md R8): argument-position impl Trait as a named type parameter
     #[inline]
     #[thrust::trusted]
     #[thrust::callable]
-    pub fn from_bytes<T: TryInto<u64>>(bytes: T) -> Size {
+    pub fn from_bytes(bytes: impl TryInto<u64>) -> Size {
         let bytes: u64 = bytes.try_into().ok().unwrap();
         Size { raw: bytes }
     }
@@ -1916,13 +1911,11 @@ impl Scalar {
         }
     }
 
-    // Rewrite (rewrites.md R8): argument-position impl Trait as a named type parameter
-    pub fn align<C: HasDataLayout>(self, cx: &C) -> AbiAlign {
+    pub fn align(self, cx: &impl HasDataLayout) -> AbiAlign {
         self.primitive().align(cx)
     }
 
-    // Rewrite (rewrites.md R8): argument-position impl Trait as a named type parameter
-    pub fn size<C: HasDataLayout>(self, cx: &C) -> Size {
+    pub fn size(self, cx: &impl HasDataLayout) -> Size {
         self.primitive().size(cx)
     }
 }
@@ -2127,8 +2120,7 @@ pub struct VariantLayout<FieldIdx: Idx> {
 }
 
 impl<FieldIdx: Idx> VariantLayout<FieldIdx> {
-    // Rewrite (rewrites.md R8): argument-position impl Trait as a named type parameter
-    pub fn from_layout<L: Idx>(layout: LayoutData<FieldIdx, L>) -> Self {
+    pub fn from_layout(layout: LayoutData<FieldIdx, impl Idx>) -> Self {
         let FieldsShape::Arbitrary {
             offsets,
             in_memory_order,

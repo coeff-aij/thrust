@@ -563,25 +563,23 @@ impl Scalar {
         }
     }
 
-    // Rewrite (rewrites.md R8): argument-position impl Trait as a named type parameter
     #[thrust_macros::requires(forall(|dl: TargetDataLayout, p: Primitive, r: WrappingRange, a: AddressSpace|
-        !(C::dl_of(*cx, dl)
+        !(__ThrustApit0::dl_of(*cx, dl)
             && (self == Scalar::Initialized { value: p, valid_range: r } || self == Scalar::Union { value: p })
             && p == Primitive::Pointer(a))
             || TargetDataLayout::pointer_space_ok(dl, a)))]
     #[thrust::callable]
-    pub fn align<C: HasDataLayout>(self, cx: &C) -> AbiAlign {
+    pub fn align(self, cx: &impl HasDataLayout) -> AbiAlign {
         self.primitive().align(cx)
     }
 
-    // Rewrite (rewrites.md R8): argument-position impl Trait as a named type parameter
     #[thrust_macros::requires(forall(|dl: TargetDataLayout, p: Primitive, r: WrappingRange, a: AddressSpace|
-        !(C::dl_of(*cx, dl)
+        !(__ThrustApit0::dl_of(*cx, dl)
             && (self == Scalar::Initialized { value: p, valid_range: r } || self == Scalar::Union { value: p })
             && p == Primitive::Pointer(a))
             || TargetDataLayout::pointer_space_ok(dl, a)))]
     #[thrust::callable]
-    pub fn size<C: HasDataLayout>(self, cx: &C) -> Size {
+    pub fn size(self, cx: &impl HasDataLayout) -> Size {
         self.primitive().size(cx)
     }
 }
