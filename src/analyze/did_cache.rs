@@ -73,16 +73,6 @@ impl<'tcx> DefIdCache<'tcx> {
         self.tcx.lang_items().owned_box()
     }
 
-    /// `core::fmt::Arguments`, what `format_args!` builds.
-    pub fn format_arguments(&self) -> Option<DefId> {
-        self.tcx.lang_items().format_arguments()
-    }
-
-    /// `core::fmt::rt::Argument`, one argument of a `format_args!`.
-    pub fn format_argument(&self) -> Option<DefId> {
-        self.tcx.lang_items().format_argument()
-    }
-
     pub fn vec(&self) -> Option<DefId> {
         self.tcx.get_diagnostic_item(Symbol::intern("Vec"))
     }

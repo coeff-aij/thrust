@@ -417,12 +417,6 @@ impl<'tcx> TypeBuilder<'tcx> {
         }
     }
 
-    /// The values `format_args!` builds are opaque: the formatted message never affects
-    /// verification, and their fields (raw pointers, function pointers) have no model.
-    pub fn is_format_adt(&self, did: DefId) -> bool {
-        Some(did) == self.def_ids.format_arguments() || Some(did) == self.def_ids.format_argument()
-    }
-
     pub fn resolve_model_ty(&self, orig_ty: mir_ty::Ty<'tcx>) -> mir_ty::Ty<'tcx> {
         let replaced = self.replace_closure_model(orig_ty);
 
@@ -619,9 +613,6 @@ impl<'tcx> TypeBuilder<'tcx> {
                 if Some(def.did()) == self.def_ids.vec() {
                     let elem_ty = self.build(params.type_at(0));
                     return seq_model_type(elem_ty);
-                }
-                if self.is_format_adt(def.did()) {
-                    return rty::Type::unit();
                 }
                 if Some(def.did()) == self.def_ids.slice_iter()
                     || Some(def.did()) == self.def_ids.vec_into_iter()
@@ -1064,9 +1055,6 @@ where
                 if Some(def.did()) == self.inner.def_ids.vec() {
                     let elem_ty = self.build(params.type_at(0));
                     return seq_model_type(elem_ty);
-                }
-                if self.inner.is_format_adt(def.did()) {
-                    return rty::Type::unit();
                 }
                 if Some(def.did()) == self.inner.def_ids.slice_iter()
                     || Some(def.did()) == self.inner.def_ids.vec_into_iter()
