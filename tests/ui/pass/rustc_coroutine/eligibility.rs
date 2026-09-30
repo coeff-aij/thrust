@@ -159,7 +159,7 @@ impl<T: Idx> DenseBitSet<T> {
     #[inline]
     #[thrust::trusted]
     #[thrust::callable]
-    #[thrust_macros::ensures(result == (*self).0)]
+    #[thrust_macros::ensures(result.0 == (*self).0 && result.1 == 0)]
     pub fn iter(&self) -> BitIter<'_, T> {
         BitIter::new(&self.words)
     }
@@ -239,19 +239,22 @@ impl<'a, T: Idx + thrust_models::Model> IteratorSpec for BitIter<'a, T>
 where
     T::Ty: PartialEq,
 {
-    // The model is the column bound of the bit set the iterator walks (`num_columns` of the
-    // matrix row, `domain_size` of a `DenseBitSet`); it never changes, and every yielded
-    // element is below it.
+    // The model is (bound, count) with 0 <= count <= bound: the column bound of the bit set the iterator walks
+    // (`num_columns` of the matrix row, `domain_size` of a `DenseBitSet`), which never changes,
+    // and the number of items yielded so far. Every yielded element is below the bound, and
+    // the elements are distinct, so the count stays at most the bound.
     #[thrust_macros::predicate]
     fn inv(self) -> bool {
-        true
+        0 <= self.1 && self.1 <= self.0
     }
 
     #[thrust_macros::predicate]
     fn produces(self, visited: Vec<T>, o: Self) -> bool {
-        self == o
+        self.0 == o.0
+            && o.1 == self.1 + visited.len()
+            && o.1 <= self.0
             && forall(|i: Int, k: Int|
-                !(0 <= i && i < visited.len() && <T as Idx>::index_is(visited[i], k)) || k < self)
+                !(0 <= i && i < visited.len() && <T as Idx>::index_is(visited[i], k)) || k < self.0)
     }
 
     #[thrust_macros::predicate]
@@ -298,7 +301,7 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
 
     #[thrust::trusted]
     #[thrust_macros::requires(forall(|i: Int| <R as Idx>::index_is(row, i) ==> i < (*self).num_rows))]
-    #[thrust_macros::ensures(result == (*self).num_columns)]
+    #[thrust_macros::ensures(result.0 == (*self).num_columns && result.1 == 0)]
     pub fn iter(&self, row: R) -> BitIter<'_, C> {
         assert!(row.index() < self.num_rows);
         let (start, end) = self.range(row);
@@ -947,7 +950,7 @@ impl<'a> thrust_models::Model for WordIter<'a> {
     type Ty = Self;
 }
 impl<'a, T: Idx> thrust_models::Model for BitIter<'a, T> {
-    type Ty = Int;
+    type Ty = (Int, Int);
 }
 impl<R: Idx, C: Idx> thrust_models::Model for BitMatrix<R, C> {
     type Ty = Self;
@@ -1126,7 +1129,7 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
                     && (*storage_conflicts).num_rows == (*storage_conflicts).num_columns
                     && rows.start >= 0 && rows.end == (*storage_conflicts).num_rows
                     && forall(|i: Int| !<LocalIdx as Idx>::index_is(local_a, i) || i < ineligible_locals.0)
-                    && conflicts == (*storage_conflicts).num_columns);
+                    && conflicts.0 == (*storage_conflicts).num_columns);
             if ineligible_locals.contains(local_b) || assignments[local_a] == assignments[local_b] {
                 continue;
             }
@@ -1180,7 +1183,8 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
             // one of the blocked std-iterator-adapter constructs, see the
             // report).
             thrust_macros::invariant!(|assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, ineligible: std::iter::Enumerate<BitIter<LocalIdx>>, ineligible_locals: DenseBitSet<LocalIdx>|
-                assignments.len() == ineligible_locals.0 && ineligible.0 == ineligible_locals.0);
+                assignments.len() == ineligible_locals.0 && ineligible.0.0 == ineligible_locals.0
+                && ineligible.1 == ineligible.0.1 && 0 <= ineligible.1 && ineligible.1 <= ineligible.0.0);
             assignments[local] = Ineligible(Some(FieldIdx::new(idx)));
         }
     }
