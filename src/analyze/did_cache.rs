@@ -40,6 +40,7 @@ struct DefIds {
     exists: OnceCell<Option<DefId>>,
     forall: OnceCell<Option<DefId>>,
     implies: OnceCell<Option<DefId>>,
+    model_conversion: OnceCell<Option<DefId>>,
     invariant_marker: OnceCell<Option<DefId>>,
     ghost_marker: OnceCell<Option<DefId>>,
 
@@ -320,6 +321,13 @@ impl<'tcx> DefIdCache<'tcx> {
             .def_ids
             .implies
             .get_or_init(|| self.annotated_def(&crate::analyze::annot::implies_path()))
+    }
+
+    pub fn model_conversion(&self) -> Option<DefId> {
+        *self
+            .def_ids
+            .model_conversion
+            .get_or_init(|| self.annotated_def(&crate::analyze::annot::model_conversion_path()))
     }
 
     pub fn invariant_marker(&self) -> Option<DefId> {

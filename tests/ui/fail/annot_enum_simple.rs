@@ -10,7 +10,7 @@ impl thrust_models::Model for X {
     type Ty = X;
 }
 
-#[thrust_macros::requires(x == X::A(1))]
+#[thrust_macros::requires(x == X::A(1i64))]
 #[thrust_macros::ensures(true)]
 fn test(x: X) {
     if let X::A(i) = x {

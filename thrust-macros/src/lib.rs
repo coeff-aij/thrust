@@ -10,6 +10,7 @@ mod formula_fn_lifting;
 mod formula_fn_type_lowering;
 mod ghost;
 mod invariant;
+mod model_derive;
 mod pre_post;
 mod rty;
 mod spec;
@@ -114,6 +115,13 @@ pub fn invariant(input: TokenStream) -> TokenStream {
 #[proc_macro]
 pub fn _invariant_with_context(input: TokenStream) -> TokenStream {
     invariant::expand_with_context(input)
+}
+
+/// Models a struct by a struct of the same fields, each of its field's model type (see
+/// [`mod@model_derive`]).
+#[proc_macro_derive(Model)]
+pub fn derive_model(input: TokenStream) -> TokenStream {
+    model_derive::expand(syn::parse_macro_input!(input as syn::DeriveInput)).into()
 }
 
 #[proc_macro_attribute]

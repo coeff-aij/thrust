@@ -23,7 +23,7 @@ impl Model for Tracker {
 #[thrust_macros::ensures((!t).last.x == (*t).last.x + 2)]
 fn shift(t: &mut Tracker) {
     t.last = thrust_macros::ghost!(|t: &mut Tracker| -> Point {
-        Point { x: (*t).last.x + 1 }
+        Point { x: (*t).last.x + 1i64 }
     });
 }
 

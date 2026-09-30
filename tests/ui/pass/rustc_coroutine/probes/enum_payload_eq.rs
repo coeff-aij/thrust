@@ -15,7 +15,7 @@ impl thrust_models::Model for E {
     type Ty = Self;
 }
 
-#[thrust_macros::requires(x == E::B(3))]
+#[thrust_macros::requires(x == E::B(3i64))]
 #[thrust_macros::ensures(true)]
 fn test_b(x: E) {
     if let E::B(n) = x {

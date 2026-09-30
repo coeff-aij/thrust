@@ -7,8 +7,8 @@
 //! which parses formulas as [`syn::Expr`] — never chokes on it, and gives one
 //! place to run preprocessing before the body reaches rustc / HIR lowering.
 //!
-//! The only pass today is implication lowering; further passes can be appended
-//! in [`expand`].
+//! The passes, in [`expand`], lower implications and give unsuffixed integer
+//! literals the type `Int`.
 
 use proc_macro2::{Group, Punct, Spacing, TokenStream, TokenTree};
 use quote::{quote, ToTokens};
@@ -121,8 +121,42 @@ pub fn expand(input: TokenStream) -> TokenStream {
     }
 
     ImplicationRewriter.visit_expr_mut(&mut expr);
+    IntLiteralRewriter.visit_expr_mut(&mut expr);
 
     expr.into_token_stream()
+}
+
+/// Rewrites each unsuffixed integer literal `n` into `crate::thrust_models::model(nu128)`, so
+/// that its type is `Int`, as Creusot's Pearlite and ACSL have it, instead of whatever machine
+/// type rustc infers. The literals of types, array lengths and const arguments are left alone.
+struct IntLiteralRewriter;
+
+impl VisitMut for IntLiteralRewriter {
+    fn visit_expr_mut(&mut self, expr: &mut syn::Expr) {
+        let syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Int(lit),
+            ..
+        }) = expr
+        else {
+            return syn::visit_mut::visit_expr_mut(self, expr);
+        };
+        if lit.suffix().is_empty() {
+            let value = syn::LitInt::new(&format!("{}u128", lit.base10_digits()), lit.span());
+            *expr = syn::parse_quote!(crate::thrust_models::model(#value));
+        }
+    }
+
+    fn visit_type_mut(&mut self, _ty: &mut syn::Type) {}
+
+    fn visit_expr_repeat_mut(&mut self, repeat: &mut syn::ExprRepeat) {
+        self.visit_expr_mut(&mut repeat.expr);
+    }
+
+    fn visit_generic_argument_mut(&mut self, arg: &mut syn::GenericArgument) {
+        if !matches!(arg, syn::GenericArgument::Const(_)) {
+            syn::visit_mut::visit_generic_argument_mut(self, arg);
+        }
+    }
 }
 
 /// Rejects a bare assignment `=` anywhere in `input`. Desugaring turns `==>` into
@@ -239,6 +273,18 @@ mod tests {
         for s in ["a == b", "a != b", "a >= b", "a <= b"] {
             assert_eq!(expand_expr(s), expect(s), "{s}");
         }
+    }
+
+    #[test]
+    fn models_unsuffixed_int_literals() {
+        assert_eq!(
+            expand_expr("x.0 + 0x10 - 3u8"),
+            expect("x.0 + crate::thrust_models::model(16u128) - 3u8")
+        );
+        assert_eq!(
+            expand_expr("exists(|a: [i64; 2]| a == [0; 2])"),
+            expect("exists(|a: [i64; 2]| a == [crate::thrust_models::model(0u128); 2])")
+        );
     }
 
     #[test]

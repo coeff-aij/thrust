@@ -13,7 +13,7 @@ impl thrust_models::Model for Rows {
     type Ty = Self;
 }
 
-#[thrust_macros::ensures(result.raw.len() == 2 && result.raw[0] == a && result.raw[1] == b)]
+#[thrust_macros::ensures(result.raw.len() == 2 && result.raw[0usize] == a && result.raw[1usize] == b)]
 fn pair(a: i64, b: i64) -> Rows {
     let mut raw = Vec::new();
     raw.push(a);

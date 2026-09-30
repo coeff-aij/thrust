@@ -218,6 +218,14 @@ pub fn forall_path() -> [Symbol; 3] {
     ]
 }
 
+pub fn model_conversion_path() -> [Symbol; 3] {
+    [
+        Symbol::intern("thrust"),
+        Symbol::intern("def"),
+        Symbol::intern("model_conversion"),
+    ]
+}
+
 pub fn implies_path() -> [Symbol; 3] {
     [
         Symbol::intern("thrust"),

@@ -123,6 +123,12 @@ fn sum(n: i32) -> i32 {
 
 In an `ensures` expression, the special identifier `result` refers to the return value of the function. `requires` and `ensures` are independent: you can write either one on its own, and a missing one defaults to `true`.
 
+### Integers and structs
+
+A formula reads each parameter as its model (`<T as thrust_models::Model>::Ty`), in which every machine integer is the mathematical integer `thrust_models::model::Int`. An unsuffixed integer literal is an `Int` too; a suffixed one (`1i64`) keeps its type, for a position that needs a machine integer, such as the payload of an enum modelled by itself. `thrust_models::model(x)` reads any other value, such as a constant (`model(usize::MAX)`), as its model.
+
+`#[derive(thrust_macros::Model)]` on a struct `S` declares the model struct `SModel` with the same fields in the same order, each of its field's model type, so that `m.cols` of a `usize` field is an `Int` in a formula; a struct literal in a formula names `SModel`. A struct can instead be its own model (`impl thrust_models::Model for S { type Ty = Self; }`), whose fields keep their Rust types. The derive takes structs only. A field read through a reference derefs it, as in Rust (`m.cols` for `m: &S`).
+
 ### Mutable references
 
 Within an annotation, a mutable reference `ma: &mut T` is modeled by its value at the time the function is called and its value when the function returns (the *prophecy* value). Use the deref operator `*ma` to denote the current value and the unary `!ma` to denote the final value. You can also construct a mutable-reference model directly with `thrust_models::model::Mut::new(current, final)`.

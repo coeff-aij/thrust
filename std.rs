@@ -540,6 +540,10 @@ mod thrust_models {
         type Ty = core::ops::RangeFull;
     }
 
+    impl<T: ?Sized> Model for std::marker::PhantomData<T> {
+        type Ty = std::marker::PhantomData<T>;
+    }
+
     #[allow(dead_code)]
     #[thrust::def::exists]
     #[thrust::ignored]
@@ -551,6 +555,15 @@ mod thrust_models {
     #[thrust::def::forall]
     #[thrust::ignored]
     pub fn forall<T>(_x: T) -> bool {
+        unimplemented!()
+    }
+
+    /// A value read as its model, as a specification already reads a parameter. The identity
+    /// in the logic; `formula!` wraps every unsuffixed integer literal in it.
+    #[allow(dead_code)]
+    #[thrust::def::model_conversion]
+    #[thrust::ignored]
+    pub fn model<T: Model>(_x: T) -> <T as Model>::Ty {
         unimplemented!()
     }
 

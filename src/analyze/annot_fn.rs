@@ -394,7 +394,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         }
     }
 
-    /// The type a field access or an index on `ty` resolves in: a `Ghost<T>` autoderefs to
+    /// The type an index on `ty` resolves in: a `Ghost<T>` autoderefs to
     /// `<T as Model>::Ty`, the identity in the logic, and any other type is taken as is.
     fn ghost_deref_target_ty(&self, ty: mir_ty::Ty<'tcx>) -> mir_ty::Ty<'tcx> {
         match ty.kind() {
@@ -469,8 +469,55 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         ty
     }
 
-    fn expr_ty(&self, expr: &'tcx rustc_hir::Expr<'tcx>) -> mir_ty::Ty<'tcx> {
-        let ty = self.typeck.expr_ty(expr);
+    /// `*operand` for a term of `operand_ty`: the referent of a reference or a `Box`, the
+    /// current value of a `Mut`, and a `Ghost` as its content.
+    fn deref_term(
+        &self,
+        term: chc::Term<rty::FunctionParamIdx>,
+        operand_ty: mir_ty::Ty<'tcx>,
+    ) -> chc::Term<rty::FunctionParamIdx> {
+        if matches!(
+            operand_ty.kind(),
+            mir_ty::TyKind::Ref(_, _, mir_ty::Mutability::Not)
+        ) {
+            return term.box_current();
+        }
+        let adt = operand_ty
+            .ty_adt_def()
+            .expect("deref operand must be a model type");
+        if Some(adt.did()) == self.def_ids.mut_model() {
+            term.mut_current()
+        } else if Some(adt.did()) == self.def_ids.box_model() {
+            term.box_current()
+        } else if Some(adt.did()) == self.def_ids.ghost_model() {
+            term
+        } else {
+            unimplemented!(
+                "unsupported deref operand type in formula: {:?}",
+                operand_ty
+            )
+        }
+    }
+
+    /// The term and type of `expr` after the dereferences rustc inserted there, as it does
+    /// for the base of a field access (`m.cols` for `(*m).cols`).
+    fn autoderef_term(
+        &self,
+        expr: &'tcx rustc_hir::Expr<'tcx>,
+    ) -> (chc::Term<rty::FunctionParamIdx>, mir_ty::Ty<'tcx>) {
+        let mut term = self.to_term(expr);
+        let mut ty = self.expr_ty(expr);
+        for adjustment in self.typeck.expr_adjustments(expr) {
+            let mir_ty::adjustment::Adjust::Deref(_) = adjustment.kind else {
+                unimplemented!("unsupported adjustment in formula: {:?}", adjustment);
+            };
+            term = self.deref_term(term, ty);
+            ty = self.normalize_ty(adjustment.target);
+        }
+        (term, ty)
+    }
+
+    fn normalize_ty(&self, ty: mir_ty::Ty<'tcx>) -> mir_ty::Ty<'tcx> {
         let instantiated = self
             .instantiate_generics(ty, self.generic_args)
             .unwrap_or(ty);
@@ -480,15 +527,12 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             .unwrap_or(instantiated)
     }
 
+    fn expr_ty(&self, expr: &'tcx rustc_hir::Expr<'tcx>) -> mir_ty::Ty<'tcx> {
+        self.normalize_ty(self.typeck.expr_ty(expr))
+    }
+
     fn pat_ty(&self, pat: &'tcx rustc_hir::Pat<'tcx>) -> mir_ty::Ty<'tcx> {
-        let ty = self.typeck.pat_ty(pat);
-        let instantiated = self
-            .instantiate_generics(ty, self.generic_args)
-            .unwrap_or(ty);
-        let typing_env = mir_ty::TypingEnv::fully_monomorphized();
-        self.tcx
-            .try_normalize_erasing_regions(typing_env, instantiated)
-            .unwrap_or(instantiated)
+        self.normalize_ty(self.typeck.pat_ty(pat))
     }
 
     pub fn to_formula_fn(&self) -> FormulaFn<'tcx> {
@@ -968,28 +1012,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 }
                 rustc_hir::UnOp::Deref => {
                     let operand_ty = self.expr_ty(operand);
-                    let term = self.to_term(operand);
-                    if matches!(
-                        operand_ty.kind(),
-                        mir_ty::TyKind::Ref(_, _, mir_ty::Mutability::Not)
-                    ) {
-                        return FormulaOrTerm::Term(term.box_current());
-                    }
-                    let adt = operand_ty
-                        .ty_adt_def()
-                        .expect("deref operand must be a model type");
-                    if Some(adt.did()) == self.def_ids.mut_model() {
-                        FormulaOrTerm::Term(term.mut_current())
-                    } else if Some(adt.did()) == self.def_ids.box_model() {
-                        FormulaOrTerm::Term(term.box_current())
-                    } else if Some(adt.did()) == self.def_ids.ghost_model() {
-                        FormulaOrTerm::Term(term)
-                    } else {
-                        unimplemented!(
-                            "unsupported deref operand type in formula: {:?}",
-                            operand_ty
-                        )
-                    }
+                    FormulaOrTerm::Term(self.deref_term(self.to_term(operand), operand_ty))
                 }
             },
             ExprKind::AddrOf(rustc_hir::BorrowKind::Ref, rustc_hir::Mutability::Not, operand) => {
@@ -1055,13 +1078,13 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 FormulaOrTerm::Term(chc::Term::tuple(terms))
             }
             ExprKind::Field(expr, field) => {
+                let (term, ty) = self.autoderef_term(expr);
                 // Tuples use numeric field names (`.0`); structs (represented as
                 // tuples in the logic) use named fields resolved to their position.
                 let index = match field.name.as_str().parse::<usize>() {
                     Ok(index) => index,
                     Err(_) => {
-                        let adt = self
-                            .ghost_deref_target_ty(self.expr_ty(expr))
+                        let adt = ty
                             .ty_adt_def()
                             .expect("named field access on a non-ADT type");
                         adt.non_enum_variant()
@@ -1071,7 +1094,6 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                             .expect("unknown named field in formula")
                     }
                 };
-                let term = self.to_term(expr);
                 FormulaOrTerm::Term(term.tuple_proj(index))
             }
             ExprKind::Index(array, index, _) => {
@@ -1202,6 +1224,12 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                             assert_eq!(args.len(), 1, "FnParam::at_entry takes exactly 1 argument");
                             let t = self.to_term(&args[0]);
                             return FormulaOrTerm::Term(t);
+                        }
+                        if Some(def_id) == self.def_ids.model_conversion() {
+                            let [value] = args else {
+                                panic!("model takes exactly 1 argument");
+                            };
+                            return self.to_formula_or_term(value);
                         }
                         if Some(def_id) == self.def_ids.implies() {
                             let [lhs, rhs] = args else {

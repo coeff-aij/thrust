@@ -15,7 +15,7 @@ impl thrust_models::Model for Fz {
 #[thrust_macros::context]
 impl Fz {
     #[thrust_macros::ensures((*self).iter == None ==> (!self).iter == None)]
-    #[thrust_macros::ensures(forall(|v| (*self).iter == Some(v) ==> (!self).iter == Some(v + 1)))]
+    #[thrust_macros::ensures(forall(|v| (*self).iter == Some(v) ==> (!self).iter == Some(v + 1i64)))]
     fn inc(&mut self) {
         match &mut self.iter {
             None => {}
