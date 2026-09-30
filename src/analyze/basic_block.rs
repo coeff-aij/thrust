@@ -1056,7 +1056,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         bb: BasicBlock,
         outer_fn_param_vars: &BTreeMap<rty::FunctionParamIdx, Var>,
     ) {
-        let bty = self.ctx.basic_block_ty(self.analysis_key, bb);
+        let bty = self.ctx.basic_block_ty(self.analysis_key, bb).clone();
 
         let mut capture = PrecondCapture::default();
         for (param_idx, param_rty) in bty.as_ref().params.iter_enumerated() {
@@ -1077,10 +1077,60 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             capture.push(rty::RefinedTypeVar::Free(param_idx), pty);
         }
         capture.push_env_state(&self.env);
-        let precondition = capture.finish(&self.env);
+        let precondition = self.define_precondition(bty, capture.finish(&self.env));
 
         self.ctx
             .register_basic_block_precondition(self.analysis_key, bb, precondition);
+    }
+
+    /// Names `precondition` by a predicate defined over the block's parameters, so that the
+    /// block's clauses and its successor's precondition apply it instead of copying it.
+    fn define_precondition(
+        &mut self,
+        bty: BasicBlockType,
+        precondition: rty::Refinement<rty::FunctionParamIdx>,
+    ) -> rty::Refinement<rty::FunctionParamIdx> {
+        let params: Vec<_> = bty
+            .as_ref()
+            .params
+            .iter_enumerated()
+            .map(|(idx, rty)| (idx, rty.ty.to_sort()))
+            .filter(|(_, sort)| !sort.is_singleton())
+            .collect();
+        let arg_of: HashMap<_, _> = params
+            .iter()
+            .enumerate()
+            .map(|(i, (idx, _))| (*idx, chc::TermVarIdx::from_usize(i)))
+            .collect();
+        let rty::Refinement { existentials, body } = precondition;
+        let bound: Vec<_> = existentials
+            .into_iter_enumerated()
+            .map(|(ev, sort)| (format!("e{}", ev.index()), sort))
+            .collect();
+        let body = body.subst_var(|v| match v {
+            rty::RefinedTypeVar::Free(idx) => chc::Term::var(arg_of[&idx]),
+            rty::RefinedTypeVar::Existential(ev) => {
+                let (name, sort) = bound[ev.index()].clone();
+                chc::Term::FormulaQuantifiedVar(sort, name)
+            }
+            rty::RefinedTypeVar::Value => unreachable!("a captured precondition has no value var"),
+        });
+        let mut formula =
+            chc::Formula::And(body.atoms.into_iter().map(chc::Formula::Atom).collect());
+        formula.push_conj(body.formula);
+        formula.simplify();
+        let formula = if bound.is_empty() {
+            formula
+        } else {
+            chc::Formula::exists(bound, formula)
+        };
+        let arg_sorts = params.iter().map(|(_, sort)| sort.clone()).collect();
+        let symbol = self.ctx.define_pred(arg_sorts, formula);
+        let args = params
+            .into_iter()
+            .map(|(idx, _)| chc::Term::var(rty::RefinedTypeVar::Free(idx)))
+            .collect();
+        rty::Refinement::new(IndexVec::new(), chc::Atom::new(symbol.into(), args).into())
     }
 
     fn with_assumptions<F, T>(&mut self, assumptions: Vec<impl Into<Assumption>>, callback: F) -> T

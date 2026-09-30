@@ -734,6 +734,19 @@ impl<'tcx> Analyzer<'tcx> {
         self.system.borrow_mut().push_clause(clause);
     }
 
+    /// Defines a fresh predicate as `formula` over variables of `arg_sorts`.
+    pub fn define_pred(
+        &mut self,
+        arg_sorts: IndexVec<chc::TermVarIdx, chc::Sort>,
+        formula: chc::Formula,
+    ) -> chc::UserDefinedPred {
+        let mut system = self.system.borrow_mut();
+        let symbol =
+            chc::UserDefinedPred::new(format!("bb_pre_{}", system.user_defined_pred_defs.len()));
+        system.push_pred_define_formula(symbol.clone(), arg_sorts, formula);
+        symbol
+    }
+
     pub fn extend_clauses(&mut self, clauses: impl IntoIterator<Item = chc::Clause>) {
         for clause in clauses {
             self.add_clause(clause);
