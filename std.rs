@@ -1059,6 +1059,58 @@ where
     fn converts_to(self, out: U) -> bool;
 }
 
+// An infallible conversion to `U`, specified through the source type like `TryIntoSpec`:
+// `converts` is the precondition of `U::from`, and `converts_to` relates the value to its result.
+// A local `From` impl is checked against them.
+#[thrust_macros::context]
+trait IntoSpec<U>: core::convert::Into<U> + thrust_models::Model
+where
+    U: thrust_models::Model,
+{
+    #[thrust_macros::predicate]
+    fn converts(self) -> bool;
+
+    #[thrust_macros::predicate]
+    fn converts_to(self, out: U) -> bool;
+}
+
+#[thrust_macros::context]
+impl<T> IntoSpec<T> for T
+where
+    T: thrust_models::Model,
+    T::Ty: PartialEq,
+{
+    #[thrust_macros::predicate]
+    fn converts(self) -> bool {
+        true
+    }
+
+    #[thrust_macros::predicate]
+    fn converts_to(self, out: T) -> bool {
+        out == self
+    }
+}
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(T::converts(value))]
+#[thrust_macros::ensures(T::converts_to(value, result))]
+fn _extern_spec_from<T, U>(value: T) -> U
+    where T: IntoSpec<U>, T::Ty: PartialEq,
+          U: core::convert::From<T> + thrust_models::Model, U::Ty: PartialEq
+{
+    <U as core::convert::From<T>>::from(value)
+}
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(T::converts(value))]
+#[thrust_macros::ensures(T::converts_to(value, result))]
+fn _extern_spec_into<T, U>(value: T) -> U
+    where T: IntoSpec<U>, T::Ty: PartialEq,
+          U: thrust_models::Model, U::Ty: PartialEq
+{
+    <T as core::convert::Into<U>>::into(value)
+}
+
 macro_rules! int_try_into_specs {
     ($($from:ident),*) => {
         $(int_try_into_specs!(
