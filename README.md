@@ -172,6 +172,8 @@ The bodies of functions marked with `#[thrust::trusted]` are not analyzed by Thr
 fn rand() -> i32 { unimplemented!() }
 ```
 
+`#[thrust_macros::impl_trait_names(D, F)]` names the types of a function's argument-position `impl Trait` parameters, in order of occurrence, so that its `requires`/`ensures` can refer to them (e.g. `D::dl_of(*cx, dl)` for `cx: &impl HasDataLayout`); it may appear before or after them, and the number of names must equal the number of such parameters.
+
 ## Configuration
 
 Several environment variables are used by Thrust to configure its behavior:

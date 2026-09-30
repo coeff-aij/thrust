@@ -26,7 +26,8 @@ pub fn expand_logic(item: TokenStream) -> TokenStream {
 }
 
 fn expand_spec_fn(item: TokenStream, marker: TokenStream2) -> TokenStream {
-    let func = parse_macro_input!(item as FnItemWithSignature);
+    let mut func = parse_macro_input!(item as FnItemWithSignature);
+    let impl_trait_names = apit::take_names(func.attrs_mut());
     let outer_context = match extract_outer_context(&func) {
         Ok(ctx) => ctx,
         Err(e) => {
@@ -36,7 +37,7 @@ fn expand_spec_fn(item: TokenStream, marker: TokenStream2) -> TokenStream {
     };
 
     let name = &func.sig().ident;
-    let sig = apit::desugar_signature(func.sig());
+    let sig = apit::desugar_signature(func.sig(), &impl_trait_names);
     let def_generics = generic_params_tokens(&sig.generics);
     let type_lowering = if let Some(outer_context) = &outer_context {
         FormulaFnTypeLowering::with_outer_context(&sig, outer_context)
@@ -353,15 +354,20 @@ impl quote::ToTokens for ExpandedTokens {
 }
 
 impl ExpandedTokens {
-    fn new(func: FnItemWithSignature, mut req_expr: syn::Expr, mut ens_expr: syn::Expr) -> Self {
+    fn new(
+        mut func: FnItemWithSignature,
+        mut req_expr: syn::Expr,
+        mut ens_expr: syn::Expr,
+    ) -> Self {
+        let impl_trait_names = apit::take_names(func.attrs_mut());
         let name = &func.sig().ident;
         let requires_name = format_ident!("_thrust_requires_{}", name);
         let ensures_name = format_ident!("_thrust_ensures_{}", name);
 
-        let sig = apit::desugar_signature(func.sig());
+        let sig = apit::desugar_signature(func.sig(), &impl_trait_names);
         let def_generics = generic_params_tokens(&sig.generics);
         let turbofish = generic_turbofish(&sig.generics);
-        let target_turbofish = if apit::has_arg_position_impl_trait(func.sig()) {
+        let target_turbofish = if apit::count_arg_position_impl_traits(func.sig()) > 0 {
             quote!()
         } else {
             turbofish.clone()

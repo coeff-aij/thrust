@@ -136,6 +136,14 @@ pub fn law(_attr: TokenStream, item: TokenStream) -> TokenStream {
     spec::expand_law(item)
 }
 
+/// Names the types of a function's argument-position `impl Trait` parameters, in order of
+/// occurrence, for use in its `requires`/`ensures` (`#[impl_trait_names(D, F)]`). Placement
+/// among the other specification attributes does not matter.
+#[proc_macro_attribute]
+pub fn impl_trait_names(attr: TokenStream, item: TokenStream) -> TokenStream {
+    apit::expand_names(attr, item)
+}
+
 #[proc_macro_attribute]
 pub fn requires(attr: TokenStream, item: TokenStream) -> TokenStream {
     spec::expand_requires(attr, item)

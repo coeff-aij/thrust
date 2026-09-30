@@ -563,8 +563,9 @@ impl Scalar {
         }
     }
 
+    #[thrust_macros::impl_trait_names(C)]
     #[thrust_macros::requires(forall(|dl: TargetDataLayout, p: Primitive, r: WrappingRange, a: AddressSpace|
-        !(__ThrustApit0::dl_of(*cx, dl)
+        !(C::dl_of(*cx, dl)
             && (self == Scalar::Initialized { value: p, valid_range: r } || self == Scalar::Union { value: p })
             && p == Primitive::Pointer(a))
             || TargetDataLayout::pointer_space_ok(dl, a)))]
@@ -573,8 +574,9 @@ impl Scalar {
         self.primitive().align(cx)
     }
 
+    #[thrust_macros::impl_trait_names(C)]
     #[thrust_macros::requires(forall(|dl: TargetDataLayout, p: Primitive, r: WrappingRange, a: AddressSpace|
-        !(__ThrustApit0::dl_of(*cx, dl)
+        !(C::dl_of(*cx, dl)
             && (self == Scalar::Initialized { value: p, valid_range: r } || self == Scalar::Union { value: p })
             && p == Primitive::Pointer(a))
             || TargetDataLayout::pointer_space_ok(dl, a)))]
