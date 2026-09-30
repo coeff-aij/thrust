@@ -72,10 +72,16 @@ fn record_names(attr: TokenStream2, item: &TokenStream2) -> syn::Result<syn::Att
         })
         .collect();
     for (i, name) in names.iter().enumerate() {
-        if own.contains(&name) || names.iter().take(i).any(|earlier| earlier == name) {
+        if own.contains(&name) {
             return Err(syn::Error::new_spanned(
                 name,
                 format!("`{name}` is already a generic parameter of `{}`", sig.ident),
+            ));
+        }
+        if names.iter().take(i).any(|earlier| earlier == name) {
+            return Err(syn::Error::new_spanned(
+                name,
+                format!("`{name}` is given twice"),
             ));
         }
     }
