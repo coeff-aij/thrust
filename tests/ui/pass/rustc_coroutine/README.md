@@ -17,5 +17,5 @@ goal is a proof that `layout()` does not panic. Each stage file is one part of `
 
 `probes/` holds one small pass/fail pair per language feature the stages rely on (a `forall` over a
 `Vec`, nested `Vec`s, an enum payload equality, an `Option` existential, a generic predicate in a
-free function, a nested field, a `forall` in an invariant). `probes/nested_vec.rs`'s fail twin is
+free function, a nested field, a `forall` in an invariant, the enumerate position over a bit-set iterator staying below the domain size). `probes/nested_vec.rs`'s fail twin is
 not refuted under native sequences.
