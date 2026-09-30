@@ -703,17 +703,11 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
 // `IndexSlice`'s `Seq`-shaped model needs `FieldIdx`/`VariantIdx`/`LocalIdx`
 // to be `Model<Ty = Int>`, unconstrained for a generic `Idx`); see that
 // file's report entry, not repeated here.
-// TODO(spec): tried `requires(variant_fields.len() > 0 && ...)` /
-// `ensures(true)` here (the two stage 7 facts that don't need generic-slice
-// element access) but it does not compile: `calc: &LayoutCalculator<impl
-// HasDataLayout>` and `tag_to_layout: impl Fn(Scalar) -> F` use *anonymous*
-// `impl Trait` argument types, legal for the real function but not once
-// `FormulaFnTypeLowering::lower_params` re-embeds the same type inside a
-// `<.. as Model>::Ty` qualified-path position for the companion function --
-// `error[E0562]: impl Trait is not allowed in paths`. This reproduces
-// regardless of whether the formula even mentions `calc`/`tag_to_layout`,
-// and the real signature must not change (see the report): so `layout()`
-// carries no `requires`/`ensures` at all in this draft.
+// TODO(spec): `requires` carries only the non-emptiness of `variant_fields`; the
+// dimension agreement of `storage_conflicts` / `variant_fields` / `local_layouts` is
+// not stated yet.
+#[thrust_macros::requires(variant_fields.len() > 0)]
+#[thrust_macros::ensures(true)]
 pub fn layout<
     'a,
     F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + thrust_models::Model<Ty: PartialEq>,
