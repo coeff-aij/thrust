@@ -601,6 +601,7 @@ enum DefTy<'tcx> {
 struct BasicBlockDef {
     ty: BasicBlockType,
     has_precondition: bool,
+    has_param_types: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1748,6 +1749,7 @@ impl<'tcx> Analyzer<'tcx> {
             BasicBlockDef {
                 ty: rty,
                 has_precondition: true,
+                has_param_types: bb == rustc_middle::mir::START_BLOCK,
             },
         );
     }
@@ -1764,6 +1766,7 @@ impl<'tcx> Analyzer<'tcx> {
             BasicBlockDef {
                 ty: rty,
                 has_precondition: false,
+                has_param_types: false,
             },
         );
     }
@@ -1784,28 +1787,33 @@ impl<'tcx> Analyzer<'tcx> {
         self.basic_blocks.entry(key).or_default().insert(bb, def);
     }
 
-    pub fn register_basic_block_precondition(
+    pub fn basic_block_ty(&self, key: AnalysisKey<'tcx>, bb: BasicBlock) -> &BasicBlockType {
+        &self.basic_blocks[&key][&bb].ty
+    }
+
+    pub fn basic_block_has_param_types(&self, key: AnalysisKey<'tcx>, bb: BasicBlock) -> bool {
+        self.basic_blocks[&key][&bb].has_param_types
+    }
+
+    pub fn inherit_basic_block_param_types(
         &mut self,
         key: AnalysisKey<'tcx>,
         bb: BasicBlock,
-        precondition: rty::Refinement<rty::FunctionParamIdx>,
+        types: IndexVec<rty::FunctionParamIdx, rty::Type<rty::FunctionParamIdx>>,
     ) {
-        let bb_def = &mut self
+        let def = self
             .basic_blocks
             .get_mut(&key)
             .unwrap()
             .get_mut(&bb)
             .unwrap();
-        assert!(
-            !bb_def.has_precondition,
-            "precondition is already registered for basic block"
-        );
-        bb_def.has_precondition = true;
-        bb_def.ty.set_precondition(precondition);
-    }
-
-    pub fn basic_block_ty(&self, key: AnalysisKey<'tcx>, bb: BasicBlock) -> &BasicBlockType {
-        &self.basic_blocks[&key][&bb].ty
+        if def.has_param_types {
+            return;
+        }
+        for (idx, ty) in types.into_iter_enumerated() {
+            def.ty.set_param_type(idx, ty);
+        }
+        def.has_param_types = true;
     }
 
     pub fn basic_block_ty_with_precondition(
