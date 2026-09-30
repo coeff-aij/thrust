@@ -19,8 +19,8 @@
 // stage plan (their bodies are not re-verified here, only `univariant` gets a
 // non-trivial contract).
 
-use thrust_models::forall;
-use thrust_models::model::Int;
+use thrust_models::{exists, forall};
+use thrust_models::model::{Int, Seq};
 
 use std::cmp;
 use std::convert::TryInto;
@@ -74,18 +74,24 @@ pub trait Idx: Copy + 'static + Eq + PartialEq + Debug + Hash {
     #[thrust_macros::predicate]
     fn can_new(idx: usize) -> bool;
 
+    #[thrust_macros::requires(Self::can_new(idx))]
+    #[thrust_macros::ensures(Self::index_is(result, idx))]
     fn new(idx: usize) -> Self;
 
     #[thrust_macros::ensures(Self::index_is(self, result))]
     fn index(self) -> usize;
 
     #[inline]
+    #[thrust_macros::requires(forall(|i: Int, a: Int|
+        Self::index_is(*self, i) && a == amount ==> Self::can_new(i + a)))]
     fn increment_by(&mut self, amount: usize) {
         *self = self.plus(amount);
     }
 
     #[inline]
     #[must_use = "Use `increment_by` if you wanted to update the index in-place"]
+    #[thrust_macros::requires(forall(|i: Int, a: Int|
+        Self::index_is(self, i) && a == amount ==> Self::can_new(i + a)))]
     fn plus(self, amount: usize) -> Self {
         Self::new(self.index() + amount)
     }
@@ -115,10 +121,7 @@ impl Idx for usize {
 }
 
 // `in_memory_order: IndexVec<u32, FieldIdx>` (FieldsShape::Arbitrary,
-// VariantLayout) needs `u32: Idx`. The real impl's body uses `idx as u32` /
-// `self as usize` (`as` casts, a known-blocked construct per the target
-// file's header), so both methods stay trusted; `can_new`'s bound
-// (`idx <= u32::MAX`) is within Thrust's i64 literal range.
+// VariantLayout) needs `u32: Idx`; idx.rs verifies these bodies.
 #[thrust_macros::context]
 impl Idx for u32 {
     #[thrust_macros::predicate]
@@ -133,14 +136,12 @@ impl Idx for u32 {
         idx <= 4294967295usize
     }
 
-    #[thrust::trusted]
-    #[thrust::callable]
+    #[inline]
     fn new(idx: usize) -> Self {
         assert!(idx <= u32::MAX as usize);
         idx as u32
     }
-    #[thrust::trusted]
-    #[thrust::callable]
+    #[inline]
     fn index(self) -> usize {
         self as usize
     }
@@ -1074,6 +1075,30 @@ pub enum FieldsShape<FieldIdx: Idx> {
     },
 }
 
+// `IndexVec`'s model here is the struct itself, so a formula reaches the sequences through
+// the `raw` field, and the memory order's elements at their model type through `Seq`'s
+// `PartialEq` with the `Vec`.
+#[thrust_macros::context]
+impl<FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>> FieldsShape<FieldIdx> {
+    /// `self` is `Arbitrary` over `n` fields: `n` offsets, and a memory order listing each
+    /// field below `n` exactly once.
+    #[thrust_macros::predicate]
+    fn arbitrary_of(self, n: Int) -> bool {
+        exists(|o: IndexVec<FieldIdx, Size>, m: IndexVec<u32, FieldIdx>,
+                ms: Seq<<FieldIdx as thrust_models::Model>::Ty>|
+            self == FieldsShape::Arbitrary { offsets: o, in_memory_order: m }
+                && ms == m.raw
+                && o.raw.len() == n
+                && ms.len() == n
+                && forall(|k: Int, i: Int|
+                    !(0 <= k && k < n && <FieldIdx as Idx>::index_is(ms[k], i)) || (0 <= i && i < n))
+                && forall(|k: Int, k2: Int, i: Int|
+                    !(0 <= k && k < n && 0 <= k2 && k2 < n && !(k == k2)
+                        && <FieldIdx as Idx>::index_is(ms[k], i))
+                        || !<FieldIdx as Idx>::index_is(ms[k2], i)))
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash /*Debug*/)]
 pub struct NumScalableVectors(pub u8);
 
@@ -1183,7 +1208,8 @@ impl<FieldIdx: Idx, VariantIdx: Idx> LayoutData<FieldIdx, VariantIdx> {
     }
 }
 
-#[derive(Copy, Clone /*Debug*/)]
+// `PartialEq` added (rewrites.md S10): `univariant`'s requires tests for `MaybeUnsized`.
+#[derive(Copy, Clone, PartialEq /*Debug*/)]
 pub enum StructKind {
     AlwaysSized,
 
@@ -1310,51 +1336,27 @@ pub struct LayoutCalculator<Cx> {
     pub cx: Cx,
 }
 
-// Stage 6 spec (README.md, "stage 6"): the permutation part of `univariant`'s
-// contract, `exists inv: forall k < fields.len(): inv[in_memory_order[k]] ==
-// k && in_memory_order[inv[k]] == k`, needs an inverse-permutation array; the
-// README asks for `exists(|inv: thrust_models::model::Array<Int, Int>|
-// forall(..))`. `scalar_pair` and `univariant_biased` are only called from
-// `univariant`, so they carry no spec of their own (the README notes this
-// too); `F: Deref<Target = &LayoutData>` is only dereferenced inside
-// `univariant`'s own body, so `layout.rs`'s copy of `univariant` will not
-// need a spec on `F` either.
-// TODO(spec): the intended `requires`/`ensures` (README, stage 6) is:
-//
-//   requires: forall i < fields.len(): niche_wf(fields[i].largest_niche, dl)
-//   ensures:  result == Ok(l) ==>
-//               l.fields == FieldsShape::Arbitrary { offsets, in_memory_order }
-//               && offsets.len() == fields.len()
-//               && in_memory_order.len() == fields.len()
-//               && forall k < fields.len(): in_memory_order[k].index() < fields.len()
-//               && exists inv: forall k < fields.len():
-//                    inv[in_memory_order[k].index()] == k && in_memory_order[inv[k]].index() == k
-//
-// Three obstacles surfaced trying to write this out, all reported precisely
-// in the report rather than worked around:
-// 1. `fields`'s top-level parameter type is model-lowered to `Seq<F::Ty>`
-//    (`IndexSlice`'s own `Model`, see the note on that `impl` above), so
-//    `fields[FieldIdx::new(i)]` yields `F::Ty`, not `F` -- and `F` (bound
-//    only `Deref<Target = &LayoutData<..>> + Copy`) carries no `Model` of
-//    its own relating `F::Ty` to `LayoutData`, so `.largest_niche` does not
-//    resolve on it (`error[E0609]`) and indexing itself needs `FieldIdx:
-//    Model<Ty = Int>`, unconstrained (`error[E0271]`). This is the generic
-//    `[T]` / generic-slice wall the target file's header names first.
-// 2. `result == Ok(l)`: `LayoutCalculatorError<F>`'s derived `PartialEq`
-//    needs `F: PartialEq`, not given on `univariant`'s real signature (which
-//    this file must not change) and not implied by the `Model`-only bounds
-//    Thrust auto-adds for generic parameters (`error[E0369]`).
-// 3. `model::Array<I, T>` has no `.select` method (`error[E0599]`); the
-//    digest's `arr.select(i)` spec-language sugar does not correspond to a
-//    real method on the injected `Array` struct, at least not under this
-//    name.
-// Given these, `univariant` stays effectively `ensures(true)` here: a
-// meaningful contract needs stage 2's slice support (point 1) at minimum.
+// Stage 6 spec (README.md, "stage 6"). `requires` is the panic condition of `univariant` and
+// `univariant_biased` apart from the data layout and the field layouts: `fields.indices()`
+// builds every field index up to `fields.len()`, the single variant is `VariantIdx::new(0)`,
+// and `MaybeUnsized` takes `fields.len() - 1`, which wraps below zero (overflow checks are off)
+// so that the slice `[..end]` panics. Not stated: `dl_wf` of the data layout and `niche_wf` of
+// every field's niche, which `Niche::available`, `Primitive::size` and `Size::checked_add`
+// need, and that the `NicheBias::End` layout succeeds and keeps a niche whenever the `Start`
+// one does (the two `unwrap_without_debug`s). The data layout is reached through the generic
+// `Cx::data_layout()`, and `F`'s model is not related to the `LayoutData` it dereferences to,
+// so neither can be named. `ensures`: an `Ok` layout has `Arbitrary` fields over
+// `fields.len()` fields, its memory order a permutation (`FieldsShape::arbitrary_of`).
 #[thrust_macros::context]
 impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
     #[thrust::trusted]
-    #[thrust_macros::requires(true)]
-    #[thrust_macros::ensures(true)]
+    #[thrust_macros::requires(
+        forall(|k: Int| !(0 <= k && k <= (*fields).len()) || <FieldIdx as Idx>::can_new(k))
+            && forall(|z: Int| !(z == 0usize) || <VariantIdx as Idx>::can_new(z))
+            && (kind == StructKind::MaybeUnsized ==> (*fields).len() > 0)
+    )]
+    #[thrust_macros::ensures(forall(|l: LayoutData<FieldIdx, VariantIdx>|
+        result != Ok(l) || FieldsShape::<FieldIdx>::arbitrary_of(l.fields, (*fields).len())))]
     pub fn univariant<
         'a,
         FieldIdx: Idx,
@@ -1827,14 +1829,53 @@ impl thrust_models::Model for StructKind {
 impl<FieldIdx: Idx> thrust_models::Model for VariantLayout<FieldIdx> {
     type Ty = Self;
 }
-impl<F> thrust_models::Model for LayoutCalculatorError<F> {
-    type Ty = Self;
+impl<F: thrust_models::Model> thrust_models::Model for LayoutCalculatorError<F> {
+    type Ty = LayoutCalculatorError<<F as thrust_models::Model>::Ty>;
 }
 impl<Cx> thrust_models::Model for LayoutCalculator<Cx> {
     type Ty = Self;
 }
 impl thrust_models::Model for NicheBias {
     type Ty = Self;
+}
+
+// The derived `PartialOrd` and `Ord` of `Size` and `Align` compare the single field, so `max` and
+// `min` are specified through the field's order, as std.rs does for the integers. `Size`
+// compares `raw: u64`, `Align` compares `pow2: u8`.
+#[thrust_macros::context]
+impl PartialOrdSpec for Size {
+    #[thrust_macros::predicate]
+    fn compares(self, other: Self, ord: Option<std::cmp::Ordering>) -> bool {
+        (self.raw < other.raw && ord == Some(std::cmp::Ordering::Less))
+            || (self.raw == other.raw && ord == Some(std::cmp::Ordering::Equal))
+            || (self.raw > other.raw && ord == Some(std::cmp::Ordering::Greater))
+    }
+
+    fn compares_functional(
+        a: &Self,
+        b: &Self,
+        x: Option<std::cmp::Ordering>,
+        y: Option<std::cmp::Ordering>,
+    ) {
+    }
+}
+
+#[thrust_macros::context]
+impl PartialOrdSpec for Align {
+    #[thrust_macros::predicate]
+    fn compares(self, other: Self, ord: Option<std::cmp::Ordering>) -> bool {
+        (self.pow2 < other.pow2 && ord == Some(std::cmp::Ordering::Less))
+            || (self.pow2 == other.pow2 && ord == Some(std::cmp::Ordering::Equal))
+            || (self.pow2 > other.pow2 && ord == Some(std::cmp::Ordering::Greater))
+    }
+
+    fn compares_functional(
+        a: &Self,
+        b: &Self,
+        x: Option<std::cmp::Ordering>,
+        y: Option<std::cmp::Ordering>,
+    ) {
+    }
 }
 
 fn main() {}
