@@ -39,38 +39,6 @@ pub use drop_point::DropPoints;
 /// it with a fresh predicate variable; this is also the set of CFG cutpoints, so
 /// it cuts every cycle (a loop header always has in-degree >= 2).
 pub fn needs_own_precondition(body: &Body<'_>, bb: BasicBlock) -> bool {
-    if std::env::var_os("THRUST_PROBE_EVERY_BLOCK_PREDICATE").is_some() {
-        return true;
-    }
-    if is_join_or_entry(body, bb) {
-        return true;
-    }
-    match probe_chain_cut() {
-        Some(bound) => merged_depth(body, bb, bound) == 0,
-        None => false,
-    }
-}
-
-fn probe_chain_cut() -> Option<usize> {
-    std::env::var("THRUST_PROBE_CHAIN_CUT").ok()?.parse().ok()
-}
-
-/// The number of blocks merged into `bb`'s precondition since the nearest block with a
-/// predicate of its own, where a chain is cut once it reaches `bound` blocks.
-fn merged_depth(body: &Body<'_>, bb: BasicBlock, bound: usize) -> usize {
-    if is_join_or_entry(body, bb) {
-        return 0;
-    }
-    let pred = body.basic_blocks.predecessors()[bb][0];
-    let depth = merged_depth(body, pred, bound) + 1;
-    if depth >= bound {
-        0
-    } else {
-        depth
-    }
-}
-
-fn is_join_or_entry(body: &Body<'_>, bb: BasicBlock) -> bool {
     if bb == mir::START_BLOCK {
         return true;
     }
