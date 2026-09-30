@@ -1298,13 +1298,26 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         rty::FunctionType::new(params, ret).into()
     }
 
+    /// Keeps the callee's type for the candidate atoms of the loop this block is in.
+    fn record_called_fn_ty(&mut self, ty: &rty::Type<rty::Closed>) {
+        let Some(fn_ty) = ty.as_function() else {
+            return;
+        };
+        self.ctx
+            .record_called_fn_ty(self.analysis_key, self.basic_block, fn_ty.clone());
+    }
+
     fn type_call<I>(&mut self, func: Operand<'tcx>, args: I, expected_ret: &rty::RefinedType<Var>)
     where
         I: IntoIterator<Item = Operand<'tcx>>,
     {
         // TODO: handle const_fn_def on Env side
         let func_ty = if let Some((def_id, args)) = func.const_fn_def() {
-            self.callable_ty(def_id, args).vacuous()
+            let ty = self.callable_ty(def_id, args);
+            if analyze::candidate_atoms_enabled() {
+                self.record_called_fn_ty(&ty);
+            }
+            ty.vacuous()
         } else {
             self.operand_type(func.clone()).ty
         };

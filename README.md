@@ -184,6 +184,7 @@ Several environment variables are used by Thrust to configure its behavior:
 - `THRUST_OUTPUT_DIR`: When configured, Thrust outputs intermediate smtlib2 files into this directory.
 - `THRUST_NO_INJECT_STD`: When set to `1`, Thrust does not inject `std.rs` into the analyzed crate.
 - `THRUST_TRY_SPECS`: When set to `1`, Thrust enables `feature(try_trait_v2)` in the analyzed crate and injects `std_try.rs`, the specifications of `Try::branch` and `FromResidual::from_residual` for `Option` and `Result` that `?` needs.
+- `THRUST_CANDIDATE_ATOMS`: When set to `1`, the unknown of each loop head gets candidate atoms, declared as `(set-info :candidates ...)` and never asserted: every conjunct of the enclosing function's requires and ensures, and the conjuncts over reference parameters of the contracts of the functions the loop calls, instantiated at the terms over the loop head's arguments of the matching sorts (an outermost `exists` also opened at them), and `^x = ^y` for every two `&mut` terms of one sort. Only a dependency-aware solver (not `z3`) is given them; PCSat reads them as qualifiers and, with its validator's `houdini_declared_atoms`, as the start of a Houdini-style check.
 - `THRUST_ENUM_EXPANSION_DEPTH_LIMIT`: When Thrust works with enums, it "expands" the structure of the enum value onto its environment. This configuration value sets the limit on the depth of recursion during this expansion to handle enums that are defined recursively. It is our future work to discover a sensible value for this automatically. Default: `2`
 
 ### PCSat

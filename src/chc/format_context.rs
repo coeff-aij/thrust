@@ -318,6 +318,17 @@ pub(super) fn collect_sorts(system: &chc::System) -> BTreeSet<chc::Sort> {
         formula_sorts(&IndexVec::new(), law, &mut sorts);
     }
 
+    for candidates in &system.candidate_atoms {
+        let var_sorts = system.pred_vars[candidates.pred]
+            .sig
+            .iter()
+            .cloned()
+            .collect();
+        for atom in &candidates.atoms {
+            formula_sorts(&var_sorts, atom, &mut sorts);
+        }
+    }
+
     for clause in &system.clauses {
         sorts.extend(clause.vars.clone());
         atom_sorts(&clause.vars, &clause.head, &mut sorts);
