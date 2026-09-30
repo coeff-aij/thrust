@@ -6,6 +6,55 @@ use std::marker::PhantomData;
 use thrust_models::model::{Closure, Int, Mut, Seq};
 use thrust_models::{exists, forall, Ghost};
 
+// The iterator trait, local to the case study (rewrites.md R9): Creusot's `common.rs` as the
+// Creusot benchmark cases of the fork declare it (tests/ui/pass/creusot/range.rs), with the
+// predicates `produces`, `completed` and `invariant` (`true` unless the impl says otherwise), the
+// laws `produces_refl` and `produces_trans`, which every impl inherits and Thrust checks at each
+// impl, and `next` with Creusot's contract. It shadows std's `Iterator`.
+#[thrust_macros::context]
+trait Iterator
+where
+    Self: thrust_models::Model,
+    Self::Item: thrust_models::Model,
+{
+    type Item;
+
+    #[thrust_macros::predicate]
+    fn produces(self, visited: Seq<<Self::Item as thrust_models::Model>::Ty>, o: Self) -> bool;
+
+    #[thrust_macros::predicate]
+    fn completed(&mut self) -> bool;
+
+    #[thrust_macros::law]
+    #[thrust_macros::requires(Self::invariant(*a))]
+    #[thrust_macros::ensures(Self::produces(*a, Seq::empty(), *a))]
+    fn produces_refl(a: &Self) {}
+
+    #[thrust_macros::law]
+    #[thrust_macros::requires(Self::produces(*a, ab, *b))]
+    #[thrust_macros::requires(Self::produces(*b, bc, *c))]
+    #[thrust_macros::ensures(Self::produces(*a, ab.concat(bc), *c))]
+    fn produces_trans(
+        a: &Self,
+        ab: Seq<<Self::Item as thrust_models::Model>::Ty>,
+        b: &Self,
+        bc: Seq<<Self::Item as thrust_models::Model>::Ty>,
+        c: &Self,
+    ) {
+    }
+
+    #[thrust_macros::predicate]
+    fn invariant(self) -> bool {
+        true
+    }
+
+    #[thrust_macros::requires(Self::invariant(*self))]
+    #[thrust_macros::ensures(Self::invariant(!self))]
+    #[thrust_macros::ensures(result == None ==> Self::completed(self))]
+    #[thrust_macros::ensures(forall(|i| result == Some(i) ==> Self::produces(*self, Seq::singleton(i), !self)))]
+    fn next(&mut self) -> Option<Self::Item>;
+}
+
 pub struct IndexVec<I, T> {
     raw: Vec<T>,
     _marker: PhantomData<fn(&I)>,
@@ -42,24 +91,21 @@ impl DenseBitSet {
     }
 }
 
+#[thrust_macros::context]
 impl Iterator for BitIter {
     type Item = usize;
-    #[thrust::trusted]
-    #[thrust::callable]
-    fn next(&mut self) -> Option<usize> {
-        None
-    }
-}
 
-#[thrust_macros::context]
-impl IteratorSpec for BitIter {
+    fn next(&mut self) -> Option<usize> {
+        self.next_bit()
+    }
+
     #[thrust_macros::predicate]
-    fn inv(self) -> bool {
+    fn invariant(self) -> bool {
         0 <= self
     }
 
     #[thrust_macros::predicate]
-    fn produces(self, visited: Vec<usize>, o: Self) -> bool {
+    fn produces(self, visited: Seq<<Self::Item as thrust_models::Model>::Ty>, o: Self) -> bool {
         0 <= o && o + visited.len() == self
             && forall(|i: Int| !(0 <= i && i < visited.len()) || 0 <= visited[i])
     }
@@ -68,20 +114,25 @@ impl IteratorSpec for BitIter {
     fn completed(&mut self) -> bool {
         *self == 0 && *self == !self
     }
+}
 
-    fn produces_refl(a: &Self) {}
-
-    fn produces_trans(
-        a: &Self,
-        ab: Seq<<Self::Item as thrust_models::Model>::Ty>,
-        b: &Self,
-        bc: Seq<<Self::Item as thrust_models::Model>::Ty>,
-        c: &Self,
-    ) {
+// The trusted stub behind `next`: Thrust trusts a function only on its own contract, and the
+// method of an impl of the local trait has the trait's.
+#[thrust_macros::context]
+impl BitIter {
+    #[thrust::trusted]
+    #[thrust_macros::requires(<Self as Iterator>::invariant(*self))]
+    #[thrust_macros::ensures(
+        <Self as Iterator>::invariant(!self)
+            && (result == None ==> <Self as Iterator>::completed(self))
+            && forall(|x: <usize as thrust_models::Model>::Ty| result == Some(x) ==> <Self as Iterator>::produces(*self, Seq::singleton(x), !self))
+    )]
+    fn next_bit(&mut self) -> Option<usize> {
+        None
     }
 }
 // Rewrite (rewrites.md R8): a local `Map` in place of `iter::Map`, evaluation 1's adapter
-// (tests/ui/pass/creusot/map.rs) on std.rs's `IteratorSpec`. The model is the inner iterator and
+// (tests/ui/pass/creusot/map.rs) on the local `Iterator`. The model is the inner iterator and
 // the closure state; `produces` carries the input items `s` and the chain `fs` of closure states.
 struct Map<I, F> {
     iter: I,
@@ -97,7 +148,7 @@ impl<I: thrust_models::Model, F> thrust_models::Model for Map<I, F> {
 #[thrust_macros::context]
 impl<I, B, F> Map<I, F>
 where
-    I: IteratorSpec,
+    I: Iterator,
     B: thrust_models::Model,
     F: FnMut(I::Item) -> B,
     I::Item: thrust_models::Model,
@@ -106,7 +157,7 @@ where
     <B as thrust_models::Model>::Ty: PartialEq,
 {
     #[thrust_macros::requires(
-        I::inv(iter)
+        I::invariant(iter)
             && Self::reinitialize()
             && Self::preservation_inv(iter, func)
             && Self::next_precondition(iter, func)
@@ -174,18 +225,22 @@ where
         c: Ghost<Self>,
     ) {
     }
+}
 
-    // `next` of the `Iterator` impl below, where the ghost snapshots cannot be written (a
-    // `context` impl adds `Model` bounds that std's trait does not have): Creusot's contract of
-    // `next` on `Map`, the invariant holds before and after.
-    #[thrust_macros::requires(<Self as IteratorSpec>::inv(*self))]
-    #[thrust_macros::ensures(
-        <Self as IteratorSpec>::inv(!self)
-            && (result == None ==> <Self as IteratorSpec>::completed(self))
-            && forall(|x: <B as thrust_models::Model>::Ty| result == Some(x)
-                ==> <Self as IteratorSpec>::produces(*self, Seq::singleton(x), !self))
-    )]
-    fn next_map(&mut self) -> Option<B> {
+#[thrust_macros::context]
+impl<I, B, F> Iterator for Map<I, F>
+where
+    I: Iterator,
+    B: thrust_models::Model,
+    F: FnMut(I::Item) -> B,
+    I::Item: thrust_models::Model,
+    <I::Item as thrust_models::Model>::Ty: PartialEq,
+    <I as thrust_models::Model>::Ty: PartialEq,
+    <B as thrust_models::Model>::Ty: PartialEq,
+{
+    type Item = B;
+
+    fn next(&mut self) -> Option<B> {
         let pre = thrust_macros::ghost!(|self: &mut Self| -> Self { *self });
         let r = self.iter.next();
         match r {
@@ -202,59 +257,16 @@ where
         }
     }
 
-    // The same contract on `Iterator::next`, which `std.rs` gives only for `I: IteratorSpec` with
-    // no precondition.
-    #[thrust::extern_spec_fn]
-    #[thrust_macros::requires(<Self as IteratorSpec>::inv(*it))]
-    #[thrust_macros::ensures(
-        <Self as IteratorSpec>::inv(!it)
-            && (result == None ==> <Self as IteratorSpec>::completed(it))
-            && forall(|x: <B as thrust_models::Model>::Ty| result == Some(x)
-                ==> <Self as IteratorSpec>::produces(*it, Seq::singleton(x), !it))
-    )]
-    fn _extern_spec_next(it: &mut Map<I, F>) -> Option<B> {
-        <Map<I, F> as Iterator>::next(it)
-    }
-}
-
-impl<I, B, F> Iterator for Map<I, F>
-where
-    I: IteratorSpec,
-    B: thrust_models::Model,
-    F: FnMut(I::Item) -> B,
-    I::Item: thrust_models::Model,
-    <I::Item as thrust_models::Model>::Ty: PartialEq,
-    <I as thrust_models::Model>::Ty: PartialEq,
-    <B as thrust_models::Model>::Ty: PartialEq,
-{
-    type Item = B;
-
-    fn next(&mut self) -> Option<B> {
-        self.next_map()
-    }
-}
-
-#[thrust_macros::context]
-impl<I, B, F> IteratorSpec for Map<I, F>
-where
-    I: IteratorSpec,
-    B: thrust_models::Model,
-    F: FnMut(I::Item) -> B,
-    I::Item: thrust_models::Model,
-    <I::Item as thrust_models::Model>::Ty: PartialEq,
-    <I as thrust_models::Model>::Ty: PartialEq,
-    <B as thrust_models::Model>::Ty: PartialEq,
-{
     #[thrust_macros::predicate]
-    fn inv(self) -> bool {
+    fn invariant(self) -> bool {
         Self::reinitialize()
             && Self::preservation_inv(self.0, self.1)
-            && I::inv(self.0)
+            && I::invariant(self.0)
             && Self::next_precondition(self.0, self.1)
     }
 
     #[thrust_macros::predicate]
-    fn produces(self, visited: Vec<B>, o: Self) -> bool {
+    fn produces(self, visited: Seq<<Self::Item as thrust_models::Model>::Ty>, o: Self) -> bool {
         thrust_macros::unnest!(self.1, o.1)
             && exists(|s: Seq<<I::Item as thrust_models::Model>::Ty>| exists(|fs: Seq<Closure<F>>|
                 Self::produces_at(self, visited, o, s, fs)))
@@ -265,8 +277,6 @@ where
         I::completed(Mut::new((*self).0, (!self).0))
             && (*self).1 == (!self).1
     }
-
-    fn produces_refl(a: &Self) {}
 
     fn produces_trans(
         a: &Self,
@@ -290,7 +300,7 @@ where
 // `FromIterator for Result<V, E>` of std: the first `Err` item is returned; otherwise the
 // collection holds the `Ok` payloads of what the iterator produced before it completed.
 #[thrust_macros::context]
-#[thrust_macros::requires(J::inv(iter))]
+#[thrust_macros::requires(J::invariant(iter))]
 #[thrust_macros::ensures(
     forall(|v: <IndexVec<I, T> as thrust_models::Model>::Ty| result != Ok(v)
         || exists(|visited: Seq<<Result<T, E> as thrust_models::Model>::Ty>,
@@ -307,7 +317,7 @@ where
     T::Ty: PartialEq,
     E: thrust_models::Model,
     E::Ty: PartialEq,
-    J: IteratorSpec<Item = Result<T, E>>,
+    J: Iterator<Item = Result<T, E>>,
     <J as thrust_models::Model>::Ty: PartialEq,
 {
     let mut it = iter;
@@ -316,7 +326,7 @@ where
     while let Some(x) = it.next() {
         thrust_macros::invariant!(
             |it: J, v: Vec<T>, iter: thrust_models::FnParam<J>|
-                J::inv(it)
+                J::invariant(it)
                     && exists(|s: Seq<<Result<T, E> as thrust_models::Model>::Ty>|
                         J::produces(iter.at_entry(), s, it)
                             && s.len() == v.len()

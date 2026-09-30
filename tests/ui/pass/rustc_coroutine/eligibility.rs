@@ -18,13 +18,124 @@
 
 use thrust_models::exists;
 use thrust_models::forall;
-use thrust_models::model::{Int, Seq};
+use thrust_models::model::{Int, Mut, Seq};
 
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::iter::FromIterator;
 use std::marker::PhantomData;
 use std::slice::SliceIndex;
+
+// //== local to the case study: the iterator trait and `Enumerate` (rewrites.md R9)
+
+// The iterator trait, local to the case study (rewrites.md R9): Creusot's `common.rs` as the
+// Creusot benchmark cases of the fork declare it (tests/ui/pass/creusot/range.rs), with the
+// predicates `produces`, `completed` and `invariant` (`true` unless the impl says otherwise), the
+// laws `produces_refl` and `produces_trans`, which every impl inherits and Thrust checks at each
+// impl, and `next` with Creusot's contract. It shadows std's `Iterator`.
+#[thrust_macros::context]
+trait Iterator
+where
+    Self: thrust_models::Model,
+    Self::Item: thrust_models::Model,
+{
+    type Item;
+
+    #[thrust_macros::predicate]
+    fn produces(self, visited: Seq<<Self::Item as thrust_models::Model>::Ty>, o: Self) -> bool;
+
+    #[thrust_macros::predicate]
+    fn completed(&mut self) -> bool;
+
+    #[thrust_macros::law]
+    #[thrust_macros::requires(Self::invariant(*a))]
+    #[thrust_macros::ensures(Self::produces(*a, Seq::empty(), *a))]
+    fn produces_refl(a: &Self) {}
+
+    #[thrust_macros::law]
+    #[thrust_macros::requires(Self::produces(*a, ab, *b))]
+    #[thrust_macros::requires(Self::produces(*b, bc, *c))]
+    #[thrust_macros::ensures(Self::produces(*a, ab.concat(bc), *c))]
+    fn produces_trans(
+        a: &Self,
+        ab: Seq<<Self::Item as thrust_models::Model>::Ty>,
+        b: &Self,
+        bc: Seq<<Self::Item as thrust_models::Model>::Ty>,
+        c: &Self,
+    ) {
+    }
+
+    #[thrust_macros::predicate]
+    fn invariant(self) -> bool {
+        true
+    }
+
+    #[thrust_macros::requires(Self::invariant(*self))]
+    #[thrust_macros::ensures(Self::invariant(!self))]
+    #[thrust_macros::ensures(result == None ==> Self::completed(self))]
+    #[thrust_macros::ensures(forall(|i| result == Some(i) ==> Self::produces(*self, Seq::singleton(i), !self)))]
+    fn next(&mut self) -> Option<Self::Item>;
+
+    // Creusot's `enumerate` (creusot-std/src/std/iter.rs) without its two requirements, which are
+    // there only for the absence of overflow in the count (Thrust's integers do not wrap).
+    #[thrust_macros::requires(true)]
+    #[thrust_macros::ensures(result.0 == self && result.1 == 0)]
+    fn enumerate(self) -> Enumerate<Self>
+    where
+        Self: Sized,
+        <Self as thrust_models::Model>::Ty: PartialEq,
+    {
+        Enumerate { iter: self, count: 0 }
+    }
+}
+
+// Creusot's `Enumerate` (creusot-std/src/std/iter/enumerate.rs) in place of `iter::Enumerate`
+// (rewrites.md R9): the inner iterator and the number of items yielded so far.
+pub struct Enumerate<I> {
+    iter: I,
+    count: usize,
+}
+
+#[thrust_macros::context]
+impl<I> Iterator for Enumerate<I>
+where
+    I: Iterator,
+    I::Item: thrust_models::Model,
+    <I::Item as thrust_models::Model>::Ty: PartialEq,
+    <I as thrust_models::Model>::Ty: PartialEq,
+{
+    type Item = (usize, I::Item);
+
+    fn next(&mut self) -> Option<(usize, I::Item)> {
+        match self.iter.next() {
+            None => None,
+            Some(x) => {
+                let n = self.count;
+                self.count += 1;
+                Some((n, x))
+            }
+        }
+    }
+
+    #[thrust_macros::predicate]
+    fn invariant(self) -> bool {
+        I::invariant(self.0)
+    }
+
+    #[thrust_macros::predicate]
+    fn produces(self, visited: Seq<<Self::Item as thrust_models::Model>::Ty>, o: Self) -> bool {
+        visited.len() == o.1 - self.1
+            && exists(|s: Seq<<I::Item as thrust_models::Model>::Ty>|
+                I::produces(self.0, s, o.0)
+                    && s.len() == visited.len()
+                    && forall(|i: Int| !(0 <= i && i < s.len()) || visited[i] == (self.1 + i, s[i])))
+    }
+
+    #[thrust_macros::predicate]
+    fn completed(&mut self) -> bool {
+        I::completed(Mut::new((*self).0, (!self).0)) && (*self).1 == (!self).1
+    }
+}
 
 // //== ./../rustc_index/src/bit_set.rs (verbatim from bitset.rs, stage 3/4)
 
@@ -179,6 +290,7 @@ impl<'a> WordIter<'a> {
     }
 }
 
+#[thrust_macros::context]
 impl<'a> Iterator for WordIter<'a> {
     type Item = &'a Word;
 
@@ -190,6 +302,25 @@ impl<'a> Iterator for WordIter<'a> {
         } else {
             None
         }
+    }
+
+    #[thrust_macros::predicate]
+    fn invariant(self) -> bool {
+        0 <= self.1 && self.1 <= self.0.len()
+    }
+
+    #[thrust_macros::predicate]
+    fn produces(self, visited: Seq<<Self::Item as thrust_models::Model>::Ty>, o: Self) -> bool {
+        self.0 == o.0
+            && self.1 <= o.1
+            && o.1 <= self.0.len()
+            && visited.len() == o.1 - self.1
+            && forall(|i: Int| !(0 <= i && i < visited.len()) || visited[i] == &self.0[self.1 + i])
+    }
+
+    #[thrust_macros::predicate]
+    fn completed(&mut self) -> bool {
+        (*self).1 >= (*self).0.len() && *self == !self
     }
 }
 
@@ -217,29 +348,17 @@ impl<'a, T: Idx> BitIter<'a, T> {
     }
 }
 
-impl<'a, T: Idx> Iterator for BitIter<'a, T> {
-    type Item = T;
-    #[thrust::trusted]
-    #[thrust::callable]
-    fn next(&mut self) -> Option<T> {
-        loop {
-            if self.word != 0 {
-                let bit_pos = self.word.trailing_zeros() as usize;
-                self.word ^= 1 << bit_pos;
-                return Some(T::new(bit_pos + self.offset));
-            }
-
-            self.word = *self.iter.next()?;
-            self.offset = self.offset.wrapping_add(WORD_BITS);
-        }
-    }
-}
-
 #[thrust_macros::context]
-impl<'a, T: Idx + thrust_models::Model> IteratorSpec for BitIter<'a, T>
+impl<'a, T: Idx + thrust_models::Model> Iterator for BitIter<'a, T>
 where
     T::Ty: PartialEq,
 {
+    type Item = T;
+
+    fn next(&mut self) -> Option<T> {
+        self.next_bit()
+    }
+
     // The model is (bound, count, left): the column bound of the bit set the iterator walks
     // (`num_columns` of the matrix row, `domain_size` of a `DenseBitSet`), which never changes,
     // the number of items yielded so far, and the number still to yield. Every yielded element
@@ -247,12 +366,12 @@ where
     // `left` makes completion observable: the iterator completes with nothing left, which
     // `Map`'s `reinitialize` in layout.rs needs.
     #[thrust_macros::predicate]
-    fn inv(self) -> bool {
+    fn invariant(self) -> bool {
         0 <= self.1 && 0 <= self.2 && self.1 + self.2 <= self.0
     }
 
     #[thrust_macros::predicate]
-    fn produces(self, visited: Vec<T>, o: Self) -> bool {
+    fn produces(self, visited: Seq<<Self::Item as thrust_models::Model>::Ty>, o: Self) -> bool {
         self.0 == o.0
             && o.1 == self.1 + visited.len()
             && o.1 <= self.0
@@ -266,16 +385,34 @@ where
     fn completed(&mut self) -> bool {
         (*self).2 == 0 && *self == !self
     }
+}
 
-    fn produces_refl(a: &Self) {}
+// The trusted body of `next`, rustc's bit arithmetic, which Thrust does not model: Thrust trusts a
+// function only on its own contract, and the method of an impl of the local trait has the trait's.
+#[thrust_macros::context]
+impl<'a, T: Idx + thrust_models::Model> BitIter<'a, T>
+where
+    T::Ty: PartialEq,
+{
+    #[thrust::trusted]
+    #[thrust_macros::requires(<Self as Iterator>::invariant(*self))]
+    #[thrust_macros::ensures(
+        <Self as Iterator>::invariant(!self)
+            && (result == None ==> <Self as Iterator>::completed(self))
+            && forall(|x: <T as thrust_models::Model>::Ty| result == Some(x)
+                ==> <Self as Iterator>::produces(*self, Seq::singleton(x), !self))
+    )]
+    fn next_bit(&mut self) -> Option<T> {
+        loop {
+            if self.word != 0 {
+                let bit_pos = self.word.trailing_zeros() as usize;
+                self.word ^= 1 << bit_pos;
+                return Some(T::new(bit_pos + self.offset));
+            }
 
-    fn produces_trans(
-        a: &Self,
-        ab: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
-        b: &Self,
-        bc: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
-        c: &Self,
-    ) {
+            self.word = *self.iter.next()?;
+            self.offset = self.offset.wrapping_add(WORD_BITS);
+        }
     }
 }
 
@@ -456,11 +593,13 @@ impl<I: Idx> IdxRange<I> {
     }
 }
 
-impl<I: Idx> Iterator for IdxRange<I> {
+#[thrust_macros::context]
+impl<I: Idx + thrust_models::Model> Iterator for IdxRange<I>
+where
+    I::Ty: PartialEq,
+{
     type Item = I;
 
-    #[thrust::trusted]
-    #[thrust::callable]
     fn next(&mut self) -> Option<I> {
         if self.start < self.end {
             let n = self.start;
@@ -470,35 +609,26 @@ impl<I: Idx> Iterator for IdxRange<I> {
             None
         }
     }
-}
 
-#[thrust_macros::context]
-impl<I: Idx> IdxRange<I> {
-    // Contract of the trusted `next` above, on a sibling inherent impl (idx.rs verifies the
-    // same contract against the body): the yielded index is `start`, in `[start, end)`, and the
-    // range advances by one.
-    #[thrust::extern_spec_fn]
-    #[thrust_macros::requires((*it).start >= 0)]
-    #[thrust_macros::requires(
-        forall(|s: Int| s == (*it).start && s < (*it).end ==> <I as Idx>::can_new(s))
-    )]
-    #[thrust_macros::ensures(
-        forall(|s: Int| s == (*it).start && s < (*it).end
-            ==> exists(|x: <I as thrust_models::Model>::Ty|
-                    result == Some(x) && <I as Idx>::index_is(x, s))
-                && s + 1 == (!it).start
-                && (!it).end == (*it).end)
-    )]
-    #[thrust_macros::ensures(
-        !((*it).start < (*it).end)
-            ==> result == None && (!it).start == (*it).start && (!it).end == (*it).end
-    )]
-    fn _extern_spec_next(it: &mut IdxRange<I>) -> Option<I>
-    where
-        I: thrust_models::Model,
-        <I as thrust_models::Model>::Ty: PartialEq,
-    {
-        <IdxRange<I> as Iterator>::next(it)
+    // `next` builds `I::new(start)`, so the invariant carries `can_new` of the positions left.
+    #[thrust_macros::predicate]
+    fn invariant(self) -> bool {
+        self.start >= 0 && forall(|s: Int| !(s >= self.start && s < self.end) || <I as Idx>::can_new(s))
+    }
+
+    #[thrust_macros::predicate]
+    fn produces(self, visited: Seq<<Self::Item as thrust_models::Model>::Ty>, o: Self) -> bool {
+        self.end == o.end
+            && self.start <= o.start
+            && (!(visited.len() > 0) || o.start <= o.end)
+            && visited.len() == o.start - self.start
+            && forall(|i: Int, s: Int|
+                !(0 <= i && i < visited.len() && s == self.start) || <I as Idx>::index_is(visited[i], s + i))
+    }
+
+    #[thrust_macros::predicate]
+    fn completed(&mut self) -> bool {
+        (*self).start == (!self).start && (*self).end == (!self).end && (*self).start >= (*self).end
     }
 }
 
@@ -547,7 +677,11 @@ pub struct SliceIter<'a, T> {
     pos: usize,
 }
 
-impl<'a, T> Iterator for SliceIter<'a, T> {
+#[thrust_macros::context]
+impl<'a, T: thrust_models::Model> Iterator for SliceIter<'a, T>
+where
+    T::Ty: PartialEq,
+{
     type Item = &'a T;
 
     fn next(&mut self) -> Option<&'a T> {
@@ -559,26 +693,24 @@ impl<'a, T> Iterator for SliceIter<'a, T> {
             None
         }
     }
-}
 
-#[thrust_macros::context]
-impl<'a, T: thrust_models::Model> SliceIter<'a, T> {
-    // The contract of `next` above, as on `WordIter` in idx.rs: the state invariant is
-    // `0 <= pos <= raw.len()`, required and kept, so `self.pos >= 0` is a premise of the body.
-    #[thrust::extern_spec_fn]
-    #[thrust_macros::requires(0 <= (*it).1 && (*it).1 <= (*it).0.len())]
-    #[thrust_macros::ensures(*(!it).0 == *(*it).0 && 0 <= (!it).1 && (!it).1 <= (*it).0.len())]
-    #[thrust_macros::ensures(forall(|n: Int, p: Int|
-        n == (*it).0.len() && p == (*it).1
-            ==> (p < n ==> exists(|x: <T as thrust_models::Model>::Ty|
-                    result == Some(&x) && x == (*it).0[p])
-                && p + 1 == (!it).1)
-                && (n <= p ==> result == None && (!it).1 == (*it).1)))]
-    fn _extern_spec_next(it: &mut SliceIter<'a, T>) -> Option<&'a T>
-    where
-        <T as thrust_models::Model>::Ty: PartialEq,
-    {
-        <SliceIter<'a, T> as Iterator>::next(it)
+    #[thrust_macros::predicate]
+    fn invariant(self) -> bool {
+        0 <= self.1 && self.1 <= self.0.len()
+    }
+
+    #[thrust_macros::predicate]
+    fn produces(self, visited: Seq<<Self::Item as thrust_models::Model>::Ty>, o: Self) -> bool {
+        self.0 == o.0
+            && self.1 <= o.1
+            && o.1 <= self.0.len()
+            && visited.len() == o.1 - self.1
+            && forall(|i: Int| !(0 <= i && i < visited.len()) || visited[i] == &self.0[self.1 + i])
+    }
+
+    #[thrust_macros::predicate]
+    fn completed(&mut self) -> bool {
+        (*self).1 >= (*self).0.len() && *self == !self
     }
 }
 
@@ -591,7 +723,12 @@ pub struct IterEnumerated<'a, I: Idx, T> {
     marker: PhantomData<I>,
 }
 
-impl<'a, I: Idx, T> Iterator for IterEnumerated<'a, I, T> {
+#[thrust_macros::context]
+impl<'a, I: Idx + thrust_models::Model, T: thrust_models::Model> Iterator for IterEnumerated<'a, I, T>
+where
+    I::Ty: PartialEq,
+    T::Ty: PartialEq,
+{
     type Item = (I, &'a T);
 
     fn next(&mut self) -> Option<(I, &'a T)> {
@@ -603,28 +740,27 @@ impl<'a, I: Idx, T> Iterator for IterEnumerated<'a, I, T> {
             None
         }
     }
-}
 
-#[thrust_macros::context]
-impl<'a, I: Idx + thrust_models::Model, T: thrust_models::Model> IterEnumerated<'a, I, T> {
-    // As `SliceIter`'s, and the yielded index is `I::new(pos)`, whose `can_new` the caller owes.
-    #[thrust::extern_spec_fn]
-    #[thrust_macros::requires(0 <= (*it).1 && (*it).1 <= (*it).0.len())]
-    #[thrust_macros::requires(forall(|s: Int|
-        s == (*it).1 && s < (*it).0.len() ==> <I as Idx>::can_new(s)))]
-    #[thrust_macros::ensures(*(!it).0 == *(*it).0 && 0 <= (!it).1 && (!it).1 <= (*it).0.len())]
-    #[thrust_macros::ensures(forall(|n: Int, p: Int|
-        n == (*it).0.len() && p == (*it).1
-            ==> (p < n ==> exists(|x: <I as thrust_models::Model>::Ty, y: <T as thrust_models::Model>::Ty|
-                    result == Some((x, &y)) && <I as Idx>::index_is(x, p) && y == (*it).0[p])
-                && p + 1 == (!it).1)
-                && (n <= p ==> result == None && (!it).1 == (*it).1)))]
-    fn _extern_spec_next(it: &mut IterEnumerated<'a, I, T>) -> Option<(I, &'a T)>
-    where
-        <I as thrust_models::Model>::Ty: PartialEq,
-        <T as thrust_models::Model>::Ty: PartialEq,
-    {
-        <IterEnumerated<'a, I, T> as Iterator>::next(it)
+    // `next` builds `I::new(pos)`, so the invariant carries `can_new` of the positions left.
+    #[thrust_macros::predicate]
+    fn invariant(self) -> bool {
+        0 <= self.1 && self.1 <= self.0.len()
+            && forall(|k: Int| !(self.1 <= k && k < self.0.len()) || <I as Idx>::can_new(k))
+    }
+
+    #[thrust_macros::predicate]
+    fn produces(self, visited: Seq<<Self::Item as thrust_models::Model>::Ty>, o: Self) -> bool {
+        self.0 == o.0
+            && self.1 <= o.1
+            && o.1 <= self.0.len()
+            && visited.len() == o.1 - self.1
+            && forall(|i: Int| !(0 <= i && i < visited.len())
+                || (<I as Idx>::index_is(visited[i].0, self.1 + i) && visited[i].1 == &self.0[self.1 + i]))
+    }
+
+    #[thrust_macros::predicate]
+    fn completed(&mut self) -> bool {
+        (*self).1 >= (*self).0.len() && *self == !self
     }
 }
 
@@ -693,32 +829,21 @@ impl<I: Idx, T> IndexSlice<I, T> {
 }
 
 #[thrust_macros::context]
-impl<I: Idx + thrust_models::Model<Ty: PartialEq>, J: Idx> IndexSlice<I, J> {
-    // The two `debug_assert_eq!`s sum `as u128` casts, which have no model; debug assertions are
-    // off. The body panics when an element is not below the length (`inverse[i2]`) or an index
-    // up to the length cannot be built (`iter_enumerated`).
+impl<I: Idx + thrust_models::Model<Ty: PartialEq>, J: Idx + thrust_models::Model<Ty: PartialEq>> IndexSlice<I, J> {
+    // `debug_assert_eq!` calls dropped (debug assertions are off), as in layout.rs. The body
+    // panics when an element is not below the length (`inverse[i2]`) or an index up to the length
+    // cannot be built (`iter_enumerated`).
     #[thrust::trusted]
     #[thrust::callable]
     #[thrust_macros::requires(forall(|k: Int| !(0 <= k && k <= (*self).len()) || <I as Idx>::can_new(k)))]
     #[thrust_macros::requires(forall(|k: Int, i: Int|
         !(0 <= k && k < (*self).len() && <J as Idx>::index_is((*self)[k], i)) || i < (*self).len()))]
     pub fn invert_bijective_mapping(&self) -> IndexVec<J, I> {
-        debug_assert_eq!(
-            self.iter().map(|x| x.index() as u128).sum::<u128>(),
-            (0..self.len() as u128).sum::<u128>(),
-        );
-
         let mut inverse = IndexVec::from_elem_n(Idx::new(0), self.len());
         let mut entries = self.iter_enumerated();
         while let Some((i1, &i2)) = entries.next() {
             inverse[i2] = i1;
         }
-
-        debug_assert_eq!(
-            inverse.iter().map(|x| x.index() as u128).sum::<u128>(),
-            (0..inverse.len() as u128).sum::<u128>(),
-        );
-
         inverse
     }
 }
@@ -870,6 +995,9 @@ impl<I: Idx, T> BorrowMut<IndexSlice<I, T>> for IndexVec<I, T> {
 
 impl<I: Idx, T> Extend<T> for IndexVec<I, T> {
     #[inline]
+    // Not analysed and not callable: nothing in this file calls it, and std.rs's iterator
+    // specifications are not used (rewrites.md R9).
+    #[thrust::ignored]
     fn extend<J: IntoIterator<Item = T>>(&mut self, iter: J) {
         self.raw.extend(iter);
     }
@@ -877,6 +1005,9 @@ impl<I: Idx, T> Extend<T> for IndexVec<I, T> {
 
 impl<I: Idx, T> FromIterator<T> for IndexVec<I, T> {
     #[inline]
+    // Not analysed and not callable: nothing in this file calls it, and std.rs's iterator
+    // specifications are not used (rewrites.md R9).
+    #[thrust::ignored]
     fn from_iter<J>(iter: J) -> Self
     where
         J: IntoIterator<Item = T>,
@@ -890,35 +1021,88 @@ impl<I: Idx, T> IntoIterator for IndexVec<I, T> {
     type IntoIter = vec::IntoIter<T>;
 
     #[inline]
+    // Not analysed and not callable: nothing in this file calls it, and std.rs's iterator
+    // specifications are not used (rewrites.md R9).
+    #[thrust::ignored]
     fn into_iter(self) -> vec::IntoIter<T> {
         self.raw.into_iter()
     }
 }
 
-impl<'a, I: Idx, T> IntoIterator for &'a IndexVec<I, T> {
-    type Item = &'a T;
-    type IntoIter = SliceIter<'a, T>;
-
-    #[inline]
-    fn into_iter(self) -> SliceIter<'a, T> {
-        self.iter()
-    }
+/// Own iterator standing in for `slice::IterMut<'a, T>` (rewrites.md R9): a trusted wrapper,
+/// since yielding disjoint `&mut` elements needs raw pointers or a split of the slice. The model
+/// is std.rs's for `slice::IterMut`: the current and final sequences of the slice and the cursor.
+pub struct IterMut<'a, T> {
+    inner: slice::IterMut<'a, T>,
 }
 
-impl<'a, I: Idx, T> IntoIterator for &'a mut IndexVec<I, T> {
+impl<'a, T: thrust_models::Model> thrust_models::Model for IterMut<'a, T> {
+    type Ty = (Seq<<T as thrust_models::Model>::Ty>, Seq<<T as thrust_models::Model>::Ty>, Int);
+}
+
+#[thrust_macros::context]
+impl<'a, T: thrust_models::Model> Iterator for IterMut<'a, T>
+where
+    T::Ty: PartialEq,
+{
     type Item = &'a mut T;
-    type IntoIter = slice::IterMut<'a, T>;
 
-    #[inline]
-    fn into_iter(self) -> slice::IterMut<'a, T> {
-        self.iter_mut()
+    fn next(&mut self) -> Option<&'a mut T> {
+        self.next_item()
+    }
+
+    #[thrust_macros::predicate]
+    fn invariant(self) -> bool {
+        0 <= self.2 && self.2 <= self.0.len()
+    }
+
+    // The element handed out is the `Mut` pair of the two sequences at the cursor.
+    #[thrust_macros::predicate]
+    fn produces(self, visited: Seq<<Self::Item as thrust_models::Model>::Ty>, o: Self) -> bool {
+        self.0 == o.0
+            && self.1 == o.1
+            && self.2 <= o.2
+            && o.2 <= self.0.len()
+            && visited.len() == o.2 - self.2
+            && forall(|i: Int| !(0 <= i && i < visited.len())
+                || visited[i] == Mut::new(self.0[self.2 + i], self.1[self.2 + i]))
+    }
+
+    #[thrust_macros::predicate]
+    fn completed(&mut self) -> bool {
+        (*self).2 >= (*self).0.len() && *self == !self
     }
 }
 
-impl<I: Idx, T> IndexSlice<I, T> {
+#[thrust_macros::context]
+impl<'a, T: thrust_models::Model> IterMut<'a, T>
+where
+    T::Ty: PartialEq,
+{
+    #[thrust::trusted]
+    #[thrust_macros::requires(<Self as Iterator>::invariant(*self))]
+    #[thrust_macros::ensures(
+        <Self as Iterator>::invariant(!self)
+            && (result == None ==> <Self as Iterator>::completed(self))
+            && forall(|x: <&'a mut T as thrust_models::Model>::Ty| result == Some(x)
+                ==> <Self as Iterator>::produces(*self, Seq::singleton(x), !self))
+    )]
+    fn next_item(&mut self) -> Option<&'a mut T> {
+        self.inner.next()
+    }
+}
+
+#[thrust_macros::context]
+impl<I: Idx, T: thrust_models::Model> IndexSlice<I, T>
+where
+    T::Ty: PartialEq,
+{
     #[inline]
-    pub fn iter_mut(&mut self) -> slice::IterMut<'_, T> {
-        self.raw.iter_mut()
+    #[thrust::trusted]
+    #[thrust_macros::requires(true)]
+    #[thrust_macros::ensures(result.0 == *self && result.1 == !self && result.2 == 0 && (!self).len() == (*self).len())]
+    pub fn iter_mut(&mut self) -> IterMut<'_, T> {
+        IterMut { inner: self.raw.iter_mut() }
     }
 }
 
@@ -978,7 +1162,7 @@ impl<T> thrust_models::Model for DenseBitSet<T> {
     type Ty = (Int, Seq<Int>, ());
 }
 impl<'a> thrust_models::Model for WordIter<'a> {
-    type Ty = Self;
+    type Ty = (&'a Seq<Int>, Int);
 }
 impl<'a, T: Idx> thrust_models::Model for BitIter<'a, T> {
     type Ty = (Int, Int, Int);
@@ -988,6 +1172,9 @@ impl<R: Idx, C: Idx> thrust_models::Model for BitMatrix<R, C> {
 }
 impl<I: Idx> thrust_models::Model for IdxRange<I> {
     type Ty = Self;
+}
+impl<I: thrust_models::Model> thrust_models::Model for Enumerate<I> {
+    type Ty = (<I as thrust_models::Model>::Ty, Int);
 }
 
 // //== stage 5 spec: `coroutine_saved_local_eligibility` (README.md, stage 5)
@@ -1115,7 +1302,8 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
                     && <VariantIdx as Idx>::index_is(v, i))
                 || i < (*variant_fields).len())
         );
-        let mut locals = fields.into_iter();
+        // Rewrite (rewrites.md R9): `iter()`, which `IntoIterator for &IndexVec` returned.
+        let mut locals = fields.iter();
         while let Some(local) = locals.next() {
             thrust_macros::invariant!(|assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, ineligible_locals: DenseBitSet<LocalIdx>, variants: IterEnumerated<VariantIdx, IndexVec<FieldIdx, LocalIdx>>, locals: SliceIter<LocalIdx>, variant_index: VariantIdx, variant_fields: &IndexSlice<VariantIdx, IndexVec<FieldIdx, LocalIdx>>|
                 assignments.len() == ineligible_locals.0 && variants.1 >= 0 && variants.1 <= variants.0.len() && *variants.0 == *variant_fields
@@ -1180,7 +1368,8 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
                     && forall(|k: Int| !(0 <= k && k < ineligible_locals.0) || <LocalIdx as Idx>::can_new(k))
                     && rows.start >= 0 && rows.end == (*storage_conflicts).num_rows
                     && forall(|i: Int| !<LocalIdx as Idx>::index_is(local_a, i) || i < ineligible_locals.0)
-                    && conflicts.0 == (*storage_conflicts).num_columns);
+                    && conflicts.0 == (*storage_conflicts).num_columns
+                    && 0 <= conflicts.1 && 0 <= conflicts.2 && conflicts.1 + conflicts.2 <= conflicts.0);
             if ineligible_locals.contains(local_b) || assignments[local_a] == assignments[local_b] {
                 continue;
             }
@@ -1198,7 +1387,8 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
 
     {
         let mut used_variants = DenseBitSet::new_empty(variant_fields.len());
-        let mut assignments_iter = (&assignments).into_iter();
+        // Rewrite (rewrites.md R9), as for `locals` above.
+        let mut assignments_iter = assignments.iter();
         while let Some(assignment) = assignments_iter.next() {
             // TODO(spec): "properties 1, 2, 4 preserved" from the README not
             // encoded; `used_variants` itself carries no property needed for
@@ -1229,13 +1419,12 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
             // TODO(spec): `idx` is the enumeration position and `local` is
             // the `idx`-th element of `ineligible_locals` in iteration order
             // (`DenseBitSet::elem_at(ineligible_locals, idx, local)`, per the
-            // README); not encoded as an invariant here (the underlying
-            // `.enumerate()` is a std adapter over our own `BitIter`, itself
-            // one of the blocked std-iterator-adapter constructs, see the
-            // report).
-            thrust_macros::invariant!(|assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, ineligible: std::iter::Enumerate<BitIter<LocalIdx>>, ineligible_locals: DenseBitSet<LocalIdx>|
+            // README); not encoded as an invariant here: `elem_at` is
+            // uninterpreted (see its TODO above).
+            thrust_macros::invariant!(|assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, ineligible: Enumerate<BitIter<LocalIdx>>, ineligible_locals: DenseBitSet<LocalIdx>|
                 assignments.len() == ineligible_locals.0 && ineligible.0.0 == ineligible_locals.0
-                && ineligible.1 == ineligible.0.1 && 0 <= ineligible.1 && ineligible.1 <= ineligible.0.0);
+                && ineligible.1 == ineligible.0.1 && 0 <= ineligible.1 && ineligible.1 <= ineligible.0.0
+                && 0 <= ineligible.0.2 && ineligible.0.1 + ineligible.0.2 <= ineligible.0.0);
             assignments[local] = Ineligible(Some(FieldIdx::new(idx)));
         }
     }
