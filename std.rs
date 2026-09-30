@@ -1106,6 +1106,9 @@ fn _extern_spec_try_from<T, U>(value: T) -> Result<U, <U as core::convert::TryFr
     <U as core::convert::TryFrom<T>>::try_from(value)
 }
 
+// A `Vec` is modelled as a `Seq`: capacity overflow and allocation failure are outside the model,
+// so `push`, `extend`, `from_iter` and the like require nothing for them. Creusot's `Vec::push`
+// likewise has no precondition (`// can OOM` in creusot-std/src/std/vec.rs).
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(result.len() == 0)]

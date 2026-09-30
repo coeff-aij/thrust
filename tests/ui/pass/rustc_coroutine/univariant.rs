@@ -436,6 +436,9 @@ impl<I: Idx, T> BorrowMut<IndexSlice<I, T>> for IndexVec<I, T> {
 
 impl<I: Idx, T> FromIterator<T> for IndexVec<I, T> {
     #[inline]
+    // Not analysed and not callable: its only caller, the `collect` in `univariant_biased`, is
+    // trusted, and std.rs's iterator specifications are not used (rewrites.md R9).
+    #[thrust::ignored]
     fn from_iter<J>(iter: J) -> Self
     where
         J: IntoIterator<Item = T>,

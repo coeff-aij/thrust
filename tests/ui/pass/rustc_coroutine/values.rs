@@ -134,7 +134,8 @@ impl TargetDataLayout {
             return self.default_address_space_pointer_spec.pointer_size;
         }
 
-        if let Some(e) = self.address_space_info.iter().find(|(a, _)| a == &c) {
+        // Rewrite (rewrites.md R9): a local slice iterator and `find` for `iter().find(..)`.
+        if let Some(e) = SliceIter::new(&self.address_space_info).find(|(a, _)| a == &c) {
             e.1.pointer_size
         } else {
             // Rewrite (rewrites.md R6): the message is dropped; a message makes
@@ -150,9 +151,10 @@ impl TargetDataLayout {
         && c == (*self).default_address_space)]
     #[thrust_macros::ensures(true)]
     pub fn pointer_align_in(&self, c: AddressSpace) -> AbiAlign {
+        // Rewrite (rewrites.md R9): as in `pointer_size_in`.
         AbiAlign::new(if c == self.default_address_space {
             self.default_address_space_pointer_spec.pointer_align
-        } else if let Some(e) = self.address_space_info.iter().find(|(a, _)| a == &c) {
+        } else if let Some(e) = SliceIter::new(&self.address_space_info).find(|(a, _)| a == &c) {
             e.1.pointer_align
         } else {
             // Rewrite (rewrites.md R6): the message is dropped; a message makes
@@ -640,6 +642,157 @@ impl Niche {
         let niche = v.end.wrapping_add(1)..v.start;
         niche.end.wrapping_sub(niche.start) & max_value
     }
+}
+
+// //== local to the case study: the iterator trait, a slice iterator and `find` (rewrites.md R9)
+
+// Creusot's iterator trait (`common.rs` of its iterator benchmark), declared as the Creusot
+// benchmark cases of the fork declare it (tests/ui/pass/creusot/range.rs): the predicates
+// `produces`, `completed` and `invariant` (`true` unless the impl says otherwise), the laws
+// `produces_refl` and `produces_trans`, which every impl inherits and Thrust checks at each impl,
+// and `next` with Creusot's contract.
+#[thrust_macros::context]
+trait Iterator
+where
+    Self: thrust_models::Model,
+    Self::Item: thrust_models::Model,
+{
+    type Item;
+
+    #[thrust_macros::predicate]
+    fn produces(
+        self,
+        visited: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        o: Self,
+    ) -> bool;
+
+    #[thrust_macros::predicate]
+    fn completed(&mut self) -> bool;
+
+    #[thrust_macros::law]
+    #[thrust_macros::requires(Self::invariant(*a))]
+    #[thrust_macros::ensures(Self::produces(*a, thrust_models::model::Seq::empty(), *a))]
+    fn produces_refl(a: &Self) {}
+
+    #[thrust_macros::law]
+    #[thrust_macros::requires(Self::produces(*a, ab, *b))]
+    #[thrust_macros::requires(Self::produces(*b, bc, *c))]
+    #[thrust_macros::ensures(Self::produces(*a, ab.concat(bc), *c))]
+    fn produces_trans(
+        a: &Self,
+        ab: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        b: &Self,
+        bc: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        c: &Self,
+    ) {
+    }
+
+    #[thrust_macros::predicate]
+    fn invariant(self) -> bool {
+        true
+    }
+
+    #[thrust_macros::requires(Self::invariant(*self))]
+    #[thrust_macros::ensures(Self::invariant(!self))]
+    #[thrust_macros::ensures(result == None ==> Self::completed(self))]
+    #[thrust_macros::ensures(forall(|i| result == Some(i)
+        ==> Self::produces(*self, thrust_models::model::Seq::singleton(i), !self)))]
+    fn next(&mut self) -> Option<Self::Item>;
+}
+
+/// Own iterator standing in for `slice::Iter<'a, T>` (whose raw pointer
+/// fields have no model in Thrust): yields `&raw[0]`, ..., `&raw[len - 1]`.
+pub struct SliceIter<'a, T> {
+    raw: &'a [T],
+    pos: usize,
+}
+
+#[thrust_macros::context]
+impl<'a, T: thrust_models::Model> Iterator for SliceIter<'a, T>
+where
+    T::Ty: PartialEq,
+{
+    type Item = &'a T;
+
+    fn next(&mut self) -> Option<&'a T> {
+        if self.pos < self.raw.len() {
+            let item = &self.raw[self.pos];
+            self.pos += 1;
+            Some(item)
+        } else {
+            None
+        }
+    }
+
+    #[thrust_macros::predicate]
+    fn invariant(self) -> bool {
+        0 <= self.1 && self.1 <= self.0.len()
+    }
+
+    #[thrust_macros::predicate]
+    fn produces(
+        self,
+        visited: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        o: Self,
+    ) -> bool {
+        self.0 == o.0
+            && self.1 <= o.1
+            && o.1 <= self.0.len()
+            && visited.len() == o.1 - self.1
+            && forall(|i: thrust_models::model::Int|
+                !(0 <= i && i < visited.len()) || visited[i] == &self.0[self.1 + i])
+    }
+
+    #[thrust_macros::predicate]
+    fn completed(&mut self) -> bool {
+        (*self).1 >= (*self).0.len() && *self == !self
+    }
+}
+
+#[thrust_macros::context]
+impl<'a, T: thrust_models::Model> SliceIter<'a, T>
+where
+    T::Ty: PartialEq,
+{
+    #[thrust_macros::ensures(result.0 == raw && result.1 == 0)]
+    fn new(raw: &'a [T]) -> SliceIter<'a, T> {
+        SliceIter { raw, pos: 0 }
+    }
+
+    // `Iterator::find` over this iterator: the items in order until the closure accepts one. `P:
+    // Fn` in place of std's `FnMut` (the closures at the call sites capture by shared reference),
+    // so the postcondition names the closure that accepted the item. The iterator ends right
+    // after the item found, or at the end.
+    #[thrust_macros::requires(<Self as Iterator>::invariant(*self))]
+    #[thrust_macros::requires(forall(|x: <&'a T as thrust_models::Model>::Ty| thrust_macros::pre!(predicate(&x))))]
+    #[thrust_macros::ensures((!self).0 == (*self).0 && (*self).1 <= (!self).1 && (!self).1 <= (*self).0.len())]
+    #[thrust_macros::ensures(result == None ==> (!self).1 == (*self).0.len())]
+    #[thrust_macros::ensures(forall(|x: <&'a T as thrust_models::Model>::Ty| result == Some(x)
+        ==> (*self).1 < (!self).1
+            && x == &(*self).0[(!self).1 - 1]
+            && thrust_macros::post!(predicate(&x), true)))]
+    fn find<P: Fn(&&'a T) -> bool>(&mut self, predicate: P) -> Option<&'a T> {
+        let this = self;
+        while let Some(x) = this.next() {
+            thrust_macros::invariant!(
+                |this: &mut SliceIter<'a, T>, self: thrust_models::FnParam<&mut SliceIter<'a, T>>, predicate: P|
+                    !this == !self.at_entry()
+                        && (*this).0 == (*self.at_entry()).0
+                        && (*self.at_entry()).1 <= (*this).1
+                        && 0 <= (*this).1
+                        && (*this).1 <= (*this).0.len()
+                        && forall(|x: <&'a T as thrust_models::Model>::Ty| thrust_macros::pre!(predicate(&x)))
+            );
+            if predicate(&x) {
+                return Some(x);
+            }
+        }
+        None
+    }
+}
+
+impl<'a, T: thrust_models::Model> thrust_models::Model for SliceIter<'a, T> {
+    type Ty = (&'a thrust_models::model::Seq<<T as thrust_models::Model>::Ty>, thrust_models::model::Int);
 }
 
 impl thrust_models::Model for PointerSpec {
