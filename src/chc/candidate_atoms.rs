@@ -205,7 +205,7 @@ where
                 .map(|(((slot, _), fs), &i)| (slot.clone(), fs[i].clone()))
                 .collect();
             let instance = substitute(conjunct, &assignment);
-            if !instance.is_top() {
+            if !is_trivial(&instance) {
                 out.push(instance);
             }
         }
@@ -214,6 +214,28 @@ where
         }
     }
     out
+}
+
+/// Whether `formula` holds whatever its variables are, by its shape: `true`, `t = t`,
+/// `t <= t`, `t >= t`, or `A => A`. Such an instance comes from a reference whose current and
+/// final values were given the same term.
+fn is_trivial(formula: &Formula) -> bool {
+    match formula {
+        Formula::Atom(atom) => {
+            let reflexive = [
+                KnownPred::EQUAL,
+                KnownPred::LESS_THAN_OR_EQUAL,
+                KnownPred::GREATER_THAN_OR_EQUAL,
+            ];
+            atom.is_top()
+                || (atom.guard.is_none()
+                    && atom.args.len() == 2
+                    && atom.args[0] == atom.args[1]
+                    && reflexive.iter().any(|&p| atom.pred == Pred::Known(p)))
+        }
+        Formula::Implies(lhs, rhs) => lhs == rhs,
+        f => f.is_top(),
+    }
 }
 
 /// Whether no two slots of the same sort are given the same term.
