@@ -1008,8 +1008,9 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
 //   twice);
 // - P + 1 + n <= u32::MAX, for the `u32` memory order.
 // - `dl_wf` of the data layout `calc.cx` names, which `univariant` requires.
-// Not stated: `niche_wf` of every input layout and of `tag_to_layout(tag)`: the closure's
-// result is an `F`, whose model is not related to the `LayoutData` it dereferences to.
+// - `niche_wf` of the largest niche of every layout `univariant` may receive: each of
+//   `local_layouts` and `prefix_layouts`, and `tag_to_layout`'s result for any scalar (through
+//   its postcondition), each named by `LayoutRef::layout_is`.
 #[thrust_macros::requires(
     (*variant_fields).len() > 0
         && (*storage_conflicts).num_rows <= (*local_layouts).len()
@@ -1034,11 +1035,33 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
             || dl.default_address_space_pointer_spec.pointer_size.raw == 2
             || dl.default_address_space_pointer_spec.pointer_size.raw == 4
             || dl.default_address_space_pointer_spec.pointer_size.raw == 8)
+        && forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, n: Niche|
+            !(C::dl_of(*calc, dl)
+                && 0 <= i
+                && i < (*local_layouts).len()
+                && F::layout_is((*local_layouts)[i], l)
+                && l.largest_niche == Some(n))
+                || Niche::wf_in(n, dl))
+        && forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, n: Niche|
+            !(C::dl_of(*calc, dl)
+                && 0 <= i
+                && i < prefix_layouts.len()
+                && F::layout_is(prefix_layouts[i], l)
+                && l.largest_niche == Some(n))
+                || Niche::wf_in(n, dl))
+        && forall(|dl: TargetDataLayout, s: Scalar, r: <F as thrust_models::Model>::Ty,
+                l: LayoutData<FieldIdx, VariantIdx>, n: Niche|
+            !(C::dl_of(*calc, dl)
+                && thrust_macros::post!(tag_to_layout(s), r)
+                && F::layout_is(r, l)
+                && l.largest_niche == Some(n))
+                || Niche::wf_in(n, dl))
 )]
 #[thrust_macros::ensures(true)]
 pub fn layout<
     'a,
-    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + PartialEq + thrust_models::Model<Ty: PartialEq>,
+    // Rewrite (rewrites.md S10): `LayoutRef` for `core::ops::Deref<Target = &'a LayoutData<..>>`.
+    F: LayoutRef<'a, FieldIdx, VariantIdx> + core::fmt::Debug + Copy + PartialEq + thrust_models::Model<Ty: PartialEq>,
     VariantIdx: Idx + thrust_models::Model<Ty: PartialEq>,
     FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
     LocalIdx: Idx + thrust_models::Model<Ty: PartialEq>,
@@ -1795,6 +1818,13 @@ pub struct Niche {
 
 #[thrust_macros::context]
 impl Niche {
+    // `niche_wf`: what `available` requires of the niche under the data layout `dl`.
+    #[thrust_macros::predicate]
+    fn wf_in(self, dl: TargetDataLayout) -> bool {
+        forall(|a: AddressSpace| !(self.value == Primitive::Pointer(a))
+            || (TargetDataLayout::pointer_space_ok(dl, a)
+                && forall(|n: Size| !TargetDataLayout::pointer_size_is(dl, a, n) || n.raw * 8 <= 128)))
+    }
     #[thrust_macros::requires(forall(|dl: TargetDataLayout, r: WrappingRange, a: AddressSpace|
         !(C::dl_of(*cx, dl) && scalar == Scalar::Initialized { value: Primitive::Pointer(a), valid_range: r })
             || (TargetDataLayout::pointer_space_ok(dl, a)
@@ -2164,6 +2194,17 @@ pub enum LayoutCalculatorError<F> {
 type LayoutCalculatorResult<FieldIdx, VariantIdx, F> =
     Result<LayoutData<FieldIdx, VariantIdx>, LayoutCalculatorError<F>>;
 
+// The layout an `F` dereferences to, for a contract to name: `layout_is(f, l)` says `**f` is `l`.
+// Rewrite (rewrites.md S10): `F`'s bound `Deref<Target = &'a LayoutData<..>>` becomes this trait,
+// which has it as a supertrait (probes/layout_ref_niche.rs).
+#[thrust_macros::context]
+pub trait LayoutRef<'a, FieldIdx: Idx, VariantIdx: Idx>:
+    Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model
+{
+    #[thrust_macros::predicate]
+    fn layout_is(self, l: LayoutData<FieldIdx, VariantIdx>) -> bool;
+}
+
 #[derive(Clone, Copy /*Debug*/)]
 pub struct LayoutCalculator<Cx> {
     pub cx: Cx,
@@ -2177,10 +2218,11 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
     // and `MaybeUnsized` takes `fields.len() - 1`, which wraps below zero (overflow checks are off)
     // so that the slice `[..end]` panics; and `dl_wf` of the data layout `self.cx` names (the
     // default pointer size is 2, 4 or 8 bytes, which `Size::checked_add` needs), named by
-    // `Cx::dl_of(*self, dl)` since the calculator's model is `self.cx`'s. Not stated: `niche_wf` of
-    // every field's niche, which `Niche::available` and `Primitive::size` need, and that the
-    // `NicheBias::End` layout succeeds and keeps a niche whenever the `Start` one does (the two
-    // `unwrap_without_debug`s); `F`'s model is not related to the `LayoutData` it dereferences to. `ensures`: an `Ok` layout has `Arbitrary` fields over
+    // `Cx::dl_of(*self, dl)` since the calculator's model is `self.cx`'s; and `niche_wf` of every
+    // field's largest niche under that layout (`Niche::wf_in`, which `Niche::available` and
+    // `Primitive::size` need), the field's layout named by `LayoutRef::layout_is`. Not stated: that
+    // the `NicheBias::End` layout succeeds and keeps a niche whenever the `Start` one does (the two
+    // `unwrap_without_debug`s). `ensures`: an `Ok` layout has `Arbitrary` fields over
     // `fields.len()` fields, its memory order a permutation (`FieldsShape::arbitrary_of`).
     #[thrust::trusted]
     #[thrust_macros::requires(
@@ -2191,6 +2233,13 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                 || dl.default_address_space_pointer_spec.pointer_size.raw == 2
                 || dl.default_address_space_pointer_spec.pointer_size.raw == 4
                 || dl.default_address_space_pointer_spec.pointer_size.raw == 8)
+            && forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, n: Niche|
+                !(Cx::dl_of(*self, dl)
+                    && 0 <= i
+                    && i < (*fields).len()
+                    && F::layout_is((*fields)[i], l)
+                    && l.largest_niche == Some(n))
+                    || Niche::wf_in(n, dl))
     )]
     #[thrust_macros::ensures(forall(|l: LayoutData<FieldIdx, VariantIdx>|
         result != Ok(l) || FieldsShape::<FieldIdx>::arbitrary_of(l.fields, (*fields).len())))]
@@ -2198,7 +2247,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         'a,
         FieldIdx: Idx,
         VariantIdx: Idx,
-        F: Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model<Ty: PartialEq>,
+        F: LayoutRef<'a, FieldIdx, VariantIdx> + thrust_models::Model<Ty: PartialEq>,
     >(
         &self,
         fields: &IndexSlice<FieldIdx, F>,
