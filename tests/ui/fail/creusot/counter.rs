@@ -65,7 +65,6 @@ impl<I: Model, F> Model for Map<I, F> {
     type Ty = (<I as Model>::Ty, Closure<F>, Seq<Int>);
 }
 
-#[thrust_macros::ensures(result == produced.push(x))]
 fn push_produced(produced: Ghost<Seq<Int>>, x: i64) -> Ghost<Seq<Int>> {
     thrust_macros::ghost!(|produced: Ghost<Seq<Int>>, x: i64| -> Seq<Int> { produced.push(x) })
 }

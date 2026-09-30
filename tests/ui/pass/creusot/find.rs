@@ -7,8 +7,9 @@ use thrust_models::Model;
 
 // Creusot's `common.rs`, the iterator specification every case shares: the trait predicates
 // `produces(self, visited, o)`, `completed` and `invariant` (`true` unless the impl says otherwise),
-// the laws `produces_refl` and `produces_trans` in Creusot's concatenation form, proved by each
-// impl, and `next` with Creusot's contract.
+// the laws `produces_refl` and `produces_trans` in Creusot's concatenation form, which every impl
+// inherits and Thrust checks at each impl (Creusot restates them per impl with empty bodies), and
+// `next` with Creusot's contract.
 #[thrust_macros::context]
 trait Iterator
 where
@@ -26,13 +27,13 @@ where
     #[thrust_macros::law]
     #[thrust_macros::requires(Self::invariant(*a))]
     #[thrust_macros::ensures(Self::produces(*a, Seq::empty(), *a))]
-    fn produces_refl(a: &Self);
+    fn produces_refl(a: &Self) {}
 
     #[thrust_macros::law]
     #[thrust_macros::requires(Self::produces(*a, ab, *b))]
     #[thrust_macros::requires(Self::produces(*b, bc, *c))]
     #[thrust_macros::ensures(Self::produces(*a, ab.concat(bc), *c))]
-    fn produces_trans(a: &Self, ab: Seq<<Self::Item as Model>::Ty>, b: &Self, bc: Seq<<Self::Item as Model>::Ty>, c: &Self);
+    fn produces_trans(a: &Self, ab: Seq<<Self::Item as Model>::Ty>, b: &Self, bc: Seq<<Self::Item as Model>::Ty>, c: &Self) {}
 
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
@@ -70,9 +71,7 @@ impl Iterator for Range {
         }
     }
 
-    fn produces_refl(a: &Range) {}
 
-    fn produces_trans(a: &Range, ab: Seq<<Self::Item as Model>::Ty>, b: &Range, bc: Seq<<Self::Item as Model>::Ty>, c: &Range) {}
 
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
