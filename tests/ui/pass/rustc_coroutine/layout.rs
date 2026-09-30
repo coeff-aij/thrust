@@ -1978,7 +1978,10 @@ where
 
 // local to the case study
 #[thrust::extern_spec_fn]
-#[thrust_macros::requires(true)]
+#[thrust_macros::requires(
+    forall(|c: thrust_models::model::Closure<F>, visited: Seq<<I::Item as thrust_models::Model>::Ty>, mid: <I as thrust_models::Model>::Ty, i: Int|
+        !(I::produces(it, visited, mid) && 0 <= i && i < visited.len()) || thrust_macros::pre!(c(visited[i])))
+)]
 #[thrust_macros::ensures(result == it)]
 fn _extern_spec_iterator_map<I, B, F>(it: I, f: F) -> iter::Map<I, F>
 where
@@ -1995,7 +1998,10 @@ where
 
 // local to the case study
 #[thrust::extern_spec_fn]
-#[thrust_macros::requires(true)]
+#[thrust_macros::requires(
+    forall(|c: thrust_models::model::Closure<P>, visited: Seq<<I::Item as thrust_models::Model>::Ty>, mid: <I as thrust_models::Model>::Ty, i: Int|
+        !(I::produces(it, visited, mid) && 0 <= i && i < visited.len()) || thrust_macros::pre!(c(&visited[i])))
+)]
 #[thrust_macros::ensures(result == it)]
 fn _extern_spec_iterator_filter<I, P>(it: I, predicate: P) -> iter::Filter<I, P>
 where

@@ -50,7 +50,10 @@ where
 }
 
 #[thrust::extern_spec_fn]
-#[thrust_macros::requires(true)]
+#[thrust_macros::requires(
+    forall(|c: thrust_models::model::Closure<F>, visited: Seq<<I::Item as thrust_models::Model>::Ty>, mid: <I as thrust_models::Model>::Ty, i: Int|
+        !(I::produces(it, visited, mid) && 0 <= i && i < visited.len()) || thrust_macros::pre!(c(visited[i])))
+)]
 #[thrust_macros::ensures(result == it)]
 fn _extern_spec_iterator_map<I, B, F>(it: I, f: F) -> std::iter::Map<I, F>
 where
@@ -186,8 +189,8 @@ fn iter_of(raw: &[u32]) -> SliceIter<'_, u32> {
 
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(result.len() == (*xs).len() + 1)]
-fn collect_all(xs: &[u32]) -> Wrapped<u32> {
-    iter_of(xs).map(|x| *x + 1).collect()
+fn collect_all(xs: &[u32]) -> Wrapped<&u32> {
+    iter_of(xs).collect()
 }
 
 fn main() {}

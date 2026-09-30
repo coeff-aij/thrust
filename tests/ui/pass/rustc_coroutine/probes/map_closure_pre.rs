@@ -50,7 +50,7 @@ impl IteratorSpec for BitIter {
     #[thrust_macros::predicate]
     fn produces(self, visited: Vec<usize>, o: Self) -> bool {
         0 <= o && o + visited.len() == self
-            && forall(|i: Int| !(0 <= i && i < visited.len()) || 0 <= visited[i])
+            && forall(|i: Int| !(0 <= i && i < visited.len()) || (0 <= visited[i] && visited[i] < 5))
     }
 
     #[thrust_macros::predicate]
@@ -75,10 +75,6 @@ impl<I: thrust_models::Model, F> thrust_models::Model for std::iter::Map<I, F> {
     type Ty = <I as thrust_models::Model>::Ty;
 }
 
-
-impl<I: thrust_models::Model, P> thrust_models::Model for std::iter::Filter<I, P> {
-    type Ty = <I as thrust_models::Model>::Ty;
-}
 
 #[thrust_macros::context]
 impl<I, F, B> IteratorSpec for std::iter::Map<I, F>
@@ -183,67 +179,6 @@ where
     <Wrapped<T> as Extend<T>>::extend(slf, iter)
 }
 
-#[thrust_macros::requires(true)]
-#[thrust_macros::ensures((!v).len() == (*v).len() + *set)]
-fn append_bits(set: &DenseBitSet, v: &mut Wrapped<u32>) {
-    v.extend(set.iter().map(thrust_macros::closure!(requires(true), ensures(true), |i: usize| -> u32 { i as u32 })));
-}
-
-
-#[thrust_macros::context]
-impl<I, P> IteratorSpec for std::iter::Filter<I, P>
-where
-    I: IteratorSpec,
-    P: FnMut(&I::Item) -> bool,
-    I::Item: thrust_models::Model,
-    I::Ty: PartialEq,
-    <I::Item as thrust_models::Model>::Ty: PartialEq,
-{
-    #[thrust_macros::predicate]
-    fn inv(self) -> bool {
-        I::inv(self)
-    }
-
-    #[thrust_macros::predicate]
-    fn produces(self, visited: Vec<I::Item>, o: Self) -> bool {
-        exists(|xs: Seq<<I::Item as thrust_models::Model>::Ty>|
-            I::produces(self, xs, o) && visited.len() <= xs.len())
-    }
-
-    #[thrust_macros::predicate]
-    fn completed(&mut self) -> bool {
-        I::completed(Mut::new(*self, !self))
-    }
-
-    fn produces_refl(a: &Self) {}
-
-    fn produces_trans(
-        a: &Self,
-        ab: Seq<<Self::Item as thrust_models::Model>::Ty>,
-        b: &Self,
-        bc: Seq<<Self::Item as thrust_models::Model>::Ty>,
-        c: &Self,
-    ) {
-    }
-}
-
-#[thrust::extern_spec_fn]
-#[thrust_macros::requires(
-    forall(|c: thrust_models::model::Closure<P>, visited: Seq<<I::Item as thrust_models::Model>::Ty>, mid: <I as thrust_models::Model>::Ty, i: Int|
-        !(I::produces(it, visited, mid) && 0 <= i && i < visited.len()) || thrust_macros::pre!(c(&visited[i])))
-)]
-#[thrust_macros::ensures(result == it)]
-fn _extern_spec_iterator_filter<I, P>(it: I, predicate: P) -> std::iter::Filter<I, P>
-where
-    I: IteratorSpec,
-    P: FnMut(&I::Item) -> bool,
-    I::Item: thrust_models::Model,
-    I::Ty: PartialEq,
-    <I::Item as thrust_models::Model>::Ty: PartialEq,
-{
-    <I as Iterator>::filter(it, predicate)
-}
-
 #[thrust_macros::context]
 trait CollectSpec<A>: FromIterator<A> + thrust_models::Model {
     #[thrust_macros::predicate]
@@ -298,21 +233,11 @@ where
 
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(result.len() == *set)]
-fn collect_bits(set: &DenseBitSet) -> Wrapped<u32> {
-    set.iter().map(thrust_macros::closure!(requires(true), ensures(true), |i: usize| -> u32 { i as u32 })).collect()
-}
-
-#[thrust_macros::requires(true)]
-#[thrust_macros::ensures(result.len() <= *set)]
-fn collect_some_bits(set: &DenseBitSet) -> Wrapped<usize> {
-    set.iter().filter(thrust_macros::closure!(requires(true), ensures(true), |i: &usize| -> bool { *i > 1 })).collect()
-}
-
-#[thrust_macros::requires(true)]
-#[thrust_macros::ensures((!v).len() == (*v).len() + 1 + *set)]
-fn push_then_extend(set: &DenseBitSet, v: &mut Wrapped<u32>, tag: u32) {
-    v.push(tag);
-    v.extend(set.iter().map(thrust_macros::closure!(requires(true), ensures(true), |i: usize| -> u32 { i as u32 })));
+fn collect_small(set: &DenseBitSet) -> Wrapped<u32> {
+    set.iter().map(thrust_macros::closure!(requires(i < 5), ensures(true), |i: usize| -> u32 {
+        assert!(i < 5);
+        i as u32
+    })).collect()
 }
 
 fn main() {}
