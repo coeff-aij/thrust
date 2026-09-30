@@ -94,6 +94,15 @@ impl PartialEq for TargetDataLayout {
 
 #[thrust_macros::context]
 impl TargetDataLayout {
+    // What `pointer_size_in` and `pointer_align_in` require of the address space `c`.
+    #[thrust_macros::predicate]
+    fn pointer_space_ok(self, c: AddressSpace) -> bool {
+        (self.default_address_space_pointer_spec.pointer_size.raw == 2
+            || self.default_address_space_pointer_spec.pointer_size.raw == 4
+            || self.default_address_space_pointer_spec.pointer_size.raw == 8)
+            && c == self.default_address_space
+    }
+
     #[inline]
     #[thrust::trusted]
     #[thrust_macros::requires(((*self).default_address_space_pointer_spec.pointer_size.raw == 2
@@ -502,11 +511,8 @@ pub enum Primitive {
 impl Primitive {
     // A pointer's size and alignment are looked up in the layout `cx` names: the `requires` of
     // `pointer_size_in` / `pointer_align_in` must hold for every layout `dl` with `dl_of(*cx, dl)`.
-    #[thrust_macros::requires(forall(|dl: TargetDataLayout, a: AddressSpace| !(C::dl_of(*cx, dl) && self == Primitive::Pointer(a))
-        || ((dl.default_address_space_pointer_spec.pointer_size.raw == 2
-            || dl.default_address_space_pointer_spec.pointer_size.raw == 4
-            || dl.default_address_space_pointer_spec.pointer_size.raw == 8)
-            && a == dl.default_address_space)))]
+    #[thrust_macros::requires(forall(|dl: TargetDataLayout, a: AddressSpace|
+        !(C::dl_of(*cx, dl) && self == Primitive::Pointer(a)) || TargetDataLayout::pointer_space_ok(dl, a)))]
     #[thrust::callable]
     pub fn size<C: HasDataLayout>(self, cx: &C) -> Size {
         use Primitive::*;
@@ -519,11 +525,8 @@ impl Primitive {
         }
     }
 
-    #[thrust_macros::requires(forall(|dl: TargetDataLayout, a: AddressSpace| !(C::dl_of(*cx, dl) && self == Primitive::Pointer(a))
-        || ((dl.default_address_space_pointer_spec.pointer_size.raw == 2
-            || dl.default_address_space_pointer_spec.pointer_size.raw == 4
-            || dl.default_address_space_pointer_spec.pointer_size.raw == 8)
-            && a == dl.default_address_space)))]
+    #[thrust_macros::requires(forall(|dl: TargetDataLayout, a: AddressSpace|
+        !(C::dl_of(*cx, dl) && self == Primitive::Pointer(a)) || TargetDataLayout::pointer_space_ok(dl, a)))]
     #[thrust::callable]
     pub fn align<C: HasDataLayout>(self, cx: &C) -> AbiAlign {
         use Primitive::*;
@@ -565,17 +568,21 @@ impl Scalar {
         }
     }
 
-    // Trusted: `cx` is an `impl Trait` argument, which a `requires` cannot name, so the
-    // `requires` of `Primitive::align` cannot be stated here.
-    #[thrust::trusted]
+    #[thrust_macros::requires(forall(|dl: TargetDataLayout, p: Primitive, r: WrappingRange, a: AddressSpace|
+        !(__ThrustApit0::dl_of(*cx, dl)
+            && (self == Scalar::Initialized { value: p, valid_range: r } || self == Scalar::Union { value: p })
+            && p == Primitive::Pointer(a))
+            || TargetDataLayout::pointer_space_ok(dl, a)))]
     #[thrust::callable]
     pub fn align(self, cx: &impl HasDataLayout) -> AbiAlign {
         self.primitive().align(cx)
     }
 
-    // Trusted: `cx` is an `impl Trait` argument, which a `requires` cannot name, so the
-    // `requires` of `Primitive::size` cannot be stated here.
-    #[thrust::trusted]
+    #[thrust_macros::requires(forall(|dl: TargetDataLayout, p: Primitive, r: WrappingRange, a: AddressSpace|
+        !(__ThrustApit0::dl_of(*cx, dl)
+            && (self == Scalar::Initialized { value: p, valid_range: r } || self == Scalar::Union { value: p })
+            && p == Primitive::Pointer(a))
+            || TargetDataLayout::pointer_space_ok(dl, a)))]
     #[thrust::callable]
     pub fn size(self, cx: &impl HasDataLayout) -> Size {
         self.primitive().size(cx)

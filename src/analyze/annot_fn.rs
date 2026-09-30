@@ -824,11 +824,10 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
 
     fn variant_ctor_term(
         &self,
-        ctor_did: rustc_span::def_id::DefId,
+        variant_did: rustc_span::def_id::DefId,
         result_ty: mir_ty::Ty<'tcx>,
         field_terms: Vec<chc::Term<rty::FunctionParamIdx>>,
     ) -> chc::Term<rty::FunctionParamIdx> {
-        let variant_did = self.tcx.parent(ctor_did);
         let adt_did = self.tcx.parent(variant_did);
         let d_sym = crate::refine::datatype_symbol(self.tcx, adt_did);
         let variant_name = self.tcx.item_name(variant_did);
@@ -1012,9 +1011,11 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 rustc_hir::def::Res::Def(
                     rustc_hir::def::DefKind::Ctor(rustc_hir::def::CtorOf::Variant, _),
                     ctor_did,
-                ) => {
-                    FormulaOrTerm::Term(self.variant_ctor_term(ctor_did, self.expr_ty(hir), vec![]))
-                }
+                ) => FormulaOrTerm::Term(self.variant_ctor_term(
+                    self.tcx.parent(ctor_did),
+                    self.expr_ty(hir),
+                    vec![],
+                )),
                 rustc_hir::def::Res::Def(
                     rustc_hir::def::DefKind::Const | rustc_hir::def::DefKind::AssocConst,
                     const_did,
@@ -1025,16 +1026,19 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 let terms = exprs.iter().map(|e| self.to_term(e)).collect();
                 FormulaOrTerm::Term(chc::Term::tuple(terms))
             }
-            ExprKind::Struct(_qpath, fields, tail) => {
+            ExprKind::Struct(qpath, fields, tail) => {
                 if !matches!(tail, rustc_hir::StructTailExpr::None) {
                     unimplemented!("struct update syntax is not supported in formulas");
                 }
-                let adt = self
-                    .expr_ty(hir)
-                    .ty_adt_def()
-                    .expect("struct literal on a non-ADT type");
+                let ty = self.expr_ty(hir);
+                let adt = ty.ty_adt_def().expect("struct literal on a non-ADT type");
+                let variant = match self.typeck.qpath_res(qpath, hir.hir_id) {
+                    rustc_hir::def::Res::Def(rustc_hir::def::DefKind::Variant, variant_did) => {
+                        adt.variant_with_id(variant_did)
+                    }
+                    _ => adt.non_enum_variant(),
+                };
                 let mut terms = Vec::new();
-                let variant = adt.non_enum_variant();
                 for variant_field in &variant.fields {
                     let Some(field) = fields.iter().find(|f| f.ident.name == variant_field.name)
                     else {
@@ -1044,6 +1048,9 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                         );
                     };
                     terms.push(self.to_term(field.expr));
+                }
+                if adt.is_enum() {
+                    return FormulaOrTerm::Term(self.variant_ctor_term(variant.def_id, ty, terms));
                 }
                 FormulaOrTerm::Term(chc::Term::tuple(terms))
             }
@@ -1230,7 +1237,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                             match ctor_of {
                                 rustc_hir::def::CtorOf::Variant => {
                                     return FormulaOrTerm::Term(self.variant_ctor_term(
-                                        def_id,
+                                        self.tcx.parent(def_id),
                                         self.expr_ty(hir),
                                         terms,
                                     ));
