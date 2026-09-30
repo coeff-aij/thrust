@@ -11,10 +11,10 @@
 // and univariant.rs (stage 6, itself sourced from values.rs stage 1) rather
 // than re-derived, for the same reason those two reuse bitset.rs/values.rs.
 // This file is a DRAFT: it is not expected to verify (`ignore-on-host`
-// above). `layout()` itself gets the `requires` from README stages 5/7 that
-// typecheck, plus `// TODO(proof):` comments at each panic site naming the
-// README fact that discharges it, plus a trusted `lemma_permutation_split`
-// skeleton (not called from `layout()`, per the task).
+// above). `layout()` itself gets its panic-safety precondition (see the
+// comment above it), plus `// TODO(proof):` comments at each panic site naming
+// the fact that discharges it, plus a trusted `lemma_permutation_split`
+// skeleton (not called from `layout()` yet).
 
 use thrust_models::model::{Closure, Int, Mut, Seq};
 use thrust_models::{exists, forall, Ghost};
@@ -77,9 +77,17 @@ pub struct DenseBitSet<T> {
 
 #[thrust_macros::context]
 impl<T: Idx> DenseBitSet<T> {
+    /// `i` is a member of the set, as in bitset.rs.
+    #[thrust_macros::predicate]
+    fn mem(self, i: usize) -> bool {
+        // self.words[i] != 0
+        self.1[i] != 0
+    }
+
     #[thrust::trusted]
     #[thrust::callable]
-    #[thrust_macros::ensures(0 <= result)]
+    #[thrust_macros::ensures(result.0 == (*self).0 && result.1 == 0)]
+    #[thrust_macros::ensures(0 <= result.2 && result.2 <= (*self).0)]
     pub fn iter(&self) -> BitIter<'_, T> {
         BitIter::new(&self.words)
     }
@@ -160,6 +168,16 @@ pub struct BitMatrix<R: Idx, C: Idx> {
 
 #[thrust_macros::context]
 impl<R: Idx, C: Idx> BitMatrix<R, C> {
+    /// Well-formedness, as in bitset.rs: `words` holds `num_words(num_columns)` words per row.
+    #[thrust_macros::predicate]
+    fn wf(self) -> bool {
+        exists(|rw: Int| {
+            self.words.len() == self.num_rows * rw
+                && 64 * rw >= self.num_columns
+                && 64 * rw < self.num_columns + 64
+        })
+    }
+
     #[thrust::trusted]
     #[thrust_macros::ensures(result.start == 0)]
     #[thrust_macros::ensures(result.end == (*self).num_rows)]
@@ -169,6 +187,10 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
 
     #[thrust::trusted]
     #[thrust::callable]
+    #[thrust_macros::requires(Self::wf(*self))]
+    #[thrust_macros::requires(forall(|i: Int| <R as Idx>::index_is(row, i) ==> i < (*self).num_rows))]
+    #[thrust_macros::ensures(result.0 <= result.1)]
+    #[thrust_macros::ensures(result.1 <= (*self).words.len())]
     fn range(&self, row: R) -> (usize, usize) {
         let words_per_row = num_words(self.num_columns);
         let start = row.index() * words_per_row;
@@ -176,7 +198,10 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
     }
 
     #[thrust::trusted]
-    #[thrust::callable]
+    #[thrust_macros::requires(Self::wf(*self))]
+    #[thrust_macros::requires(forall(|i: Int| <R as Idx>::index_is(row, i) ==> i < (*self).num_rows))]
+    #[thrust_macros::ensures(result.0 == (*self).num_columns && result.1 == 0)]
+    #[thrust_macros::ensures(0 <= result.2 && result.2 <= (*self).num_columns)]
     pub fn iter(&self, row: R) -> BitIter<'_, C> {
         assert!(row.index() < self.num_rows);
         let (start, end) = self.range(row);
@@ -185,6 +210,8 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
 
     #[thrust::trusted]
     #[thrust::callable]
+    #[thrust_macros::requires(Self::wf(*self))]
+    #[thrust_macros::requires(forall(|i: Int| <R as Idx>::index_is(row, i) ==> i < (*self).num_rows))]
     pub fn count(&self, row: R) -> usize {
         let (start, end) = self.range(row);
         count_ones(&self.words[start..end])
@@ -213,18 +240,24 @@ pub trait Idx: Copy + 'static + Eq + PartialEq + Debug + Hash {
     #[thrust_macros::predicate]
     fn can_new(idx: usize) -> bool;
 
+    #[thrust_macros::requires(Self::can_new(idx))]
+    #[thrust_macros::ensures(Self::index_is(result, idx))]
     fn new(idx: usize) -> Self;
 
     #[thrust_macros::ensures(Self::index_is(self, result))]
     fn index(self) -> usize;
 
     #[inline]
+    #[thrust_macros::requires(forall(|i: Int, a: Int|
+        Self::index_is(*self, i) && a == amount ==> Self::can_new(i + a)))]
     fn increment_by(&mut self, amount: usize) {
         *self = self.plus(amount);
     }
 
     #[inline]
     #[must_use = "Use `increment_by` if you wanted to update the index in-place"]
+    #[thrust_macros::requires(forall(|i: Int, a: Int|
+        Self::index_is(self, i) && a == amount ==> Self::can_new(i + a)))]
     fn plus(self, amount: usize) -> Self {
         Self::new(self.index() + amount)
     }
@@ -253,8 +286,7 @@ impl Idx for usize {
     }
 }
 
-// See univariant.rs's copy of this impl: `in_memory_order: IndexVec<u32,
-// FieldIdx>` needs `u32: Idx`; trusted for the same `as`-cast reason.
+// `in_memory_order: IndexVec<u32, FieldIdx>` needs `u32: Idx`; idx.rs verifies these bodies.
 #[thrust_macros::context]
 impl Idx for u32 {
     #[thrust_macros::predicate]
@@ -269,14 +301,12 @@ impl Idx for u32 {
         idx <= 4294967295usize
     }
 
-    #[thrust::trusted]
-    #[thrust::callable]
+    #[inline]
     fn new(idx: usize) -> Self {
         assert!(idx <= u32::MAX as usize);
         idx as u32
     }
-    #[thrust::trusted]
-    #[thrust::callable]
+    #[inline]
     fn index(self) -> usize {
         self as usize
     }
@@ -310,6 +340,34 @@ impl<I: Idx> Iterator for IdxRange<I> {
         } else {
             None
         }
+    }
+}
+
+#[thrust_macros::context]
+impl<I: Idx> IdxRange<I> {
+    // idx.rs's contract of `next`.
+    #[thrust::extern_spec_fn]
+    #[thrust_macros::requires((*it).start >= 0)]
+    #[thrust_macros::requires(
+        forall(|s: Int| s == (*it).start && s < (*it).end ==> <I as Idx>::can_new(s))
+    )]
+    #[thrust_macros::ensures(
+        forall(|s: Int| s == (*it).start && s < (*it).end
+            ==> exists(|x: <I as thrust_models::Model>::Ty|
+                    result == Some(x) && <I as Idx>::index_is(x, s))
+                && s + 1 == (!it).start
+                && (!it).end == (*it).end)
+    )]
+    #[thrust_macros::ensures(
+        !((*it).start < (*it).end)
+            ==> result == None && (!it).start == (*it).start && (!it).end == (*it).end
+    )]
+    fn _extern_spec_next(it: &mut IdxRange<I>) -> Option<I>
+    where
+        I: thrust_models::Model,
+        <I as thrust_models::Model>::Ty: PartialEq,
+    {
+        <IdxRange<I> as Iterator>::next(it)
     }
 }
 
@@ -420,11 +478,13 @@ impl<I: Idx, T> IndexSlice<I, T> {
     }
 
     #[inline]
+    #[thrust_macros::requires(<I as Idx>::can_new((*self).len()))]
     pub fn next_index(&self) -> I {
         I::new(self.len())
     }
 
     #[inline]
+    #[thrust_macros::ensures(*result.0 == *self && result.1 == 0)]
     pub fn iter(&self) -> SliceIter<'_, T> {
         SliceIter {
             raw: &self.raw,
@@ -432,7 +492,11 @@ impl<I: Idx, T> IndexSlice<I, T> {
         }
     }
 
+    // The iterator builds `I::new(k)` for every position `k` below the length, so the
+    // precondition covers them, which `IterEnumerated`'s invariant then carries.
     #[inline]
+    #[thrust_macros::requires(forall(|k: Int| !(0 <= k && k <= (*self).len()) || <I as Idx>::can_new(k)))]
+    #[thrust_macros::ensures(*result.0 == *self && result.1 == 0)]
     pub fn iter_enumerated(&self) -> IterEnumerated<'_, I, T> {
         let _ = I::new(self.len());
         IterEnumerated {
@@ -443,6 +507,7 @@ impl<I: Idx, T> IndexSlice<I, T> {
     }
 
     #[inline]
+    #[thrust_macros::requires(<I as Idx>::can_new((*self).len()))]
     pub fn indices(&self) -> IdxRange<I> {
         let _ = I::new(self.len());
         IdxRange::new(0, self.len())
@@ -454,12 +519,14 @@ impl<I: Idx, T> IndexSlice<I, T> {
     }
 }
 
+#[thrust_macros::context]
 impl<I: Idx + thrust_models::Model<Ty: PartialEq>, J: Idx> IndexSlice<I, J> {
-    // TODO(proof): `debug_assert_eq!` calls dropped (debug-assertions are
-    // off, out of scope). The README's needed precondition on this
-    // (`invert_bijective_mapping`'s `requires` is "all elements < len") and
-    // the permutation-split lemma below are how `layout()`'s later panics
-    // are meant to be discharged; not wired up yet (see the report).
+    // `debug_assert_eq!` calls dropped (debug assertions are off). The body panics when an
+    // element is not below the length (`inverse[i2]`) or an index up to the length cannot be
+    // built (`iter_enumerated`).
+    #[thrust_macros::requires(forall(|k: Int| !(0 <= k && k <= (*self).len()) || <I as Idx>::can_new(k)))]
+    #[thrust_macros::requires(forall(|k: Int, i: Int|
+        !(0 <= k && k < (*self).len() && <J as Idx>::index_is((*self)[k], i)) || i < (*self).len()))]
     pub fn invert_bijective_mapping(&self) -> IndexVec<J, I> {
         let mut inverse = IndexVec::from_elem_n(Idx::new(0), self.len());
         let mut entries = self.iter_enumerated();
@@ -522,6 +589,7 @@ pub struct IndexVec<I: Idx, T> {
     _marker: PhantomData<fn(&I)>,
 }
 
+#[thrust_macros::context]
 impl<I: Idx, T> IndexVec<I, T> {
     #[inline]
     pub const fn new() -> Self {
@@ -545,6 +613,8 @@ impl<I: Idx, T> IndexVec<I, T> {
     }
 
     #[inline]
+    #[thrust_macros::ensures(result.len() == n
+        && forall(|k: Int| !(0 <= k && k < n) || result[k] == elem))]
     pub fn from_elem_n(elem: T, n: usize) -> Self
     where
         T: Clone,
@@ -563,6 +633,7 @@ impl<I: Idx, T> IndexVec<I, T> {
     }
 
     #[inline]
+    #[thrust_macros::requires(<I as Idx>::can_new((*self).len()))]
     pub fn push(&mut self, d: T) -> I {
         let idx = self.next_index();
         self.raw.push(d);
@@ -669,9 +740,7 @@ impl<I: Idx, T, const N: usize> From<[T; N]> for IndexVec<I, T> {
 }
 
 // //== ./src/layout/coroutine.rs: `coroutine_saved_local_eligibility` (from
-// eligibility.rs, stage 5; `layout()` only calls it, so it keeps only the
-// length/domain facts `layout()`'s own panics need, not the full stage 5
-// contract -- see eligibility.rs for that).
+// eligibility.rs, stage 5)
 
 #[derive(Clone, /*Debug,*/ PartialEq)]
 enum SavedLocalEligibility<VariantIdx, FieldIdx> {
@@ -680,11 +749,78 @@ enum SavedLocalEligibility<VariantIdx, FieldIdx> {
     Ineligible(Option<FieldIdx>),
 }
 
-// Trusted stub here: this file only calls it, its full contract lives in
-// eligibility.rs (stage 5).
+// Trusted stub here: this file only calls it. The contract is eligibility.rs's (stage 5), which
+// that file checks against the body.
 #[thrust::trusted]
-#[thrust_macros::requires(true)]
-#[thrust_macros::ensures(true)]
+#[thrust_macros::requires(
+    forall(|v: usize, f: usize|
+        !(0 <= v && v < (*variant_fields).len()
+            && 0 <= f && f < (*variant_fields)[v].len())
+        || forall(|i: Int|
+            !<LocalIdx as Idx>::index_is((*variant_fields)[v][f], i)
+                || i < nb_locals))
+    // `count(local_b)` takes a column index as a row, so the columns must not outnumber the
+    // rows: the set abstraction does not say which bits a row holds, so this is stronger than
+    // the panic condition (a set bit of some row at a column >= num_rows).
+    && (*storage_conflicts).num_rows <= nb_locals
+    && (*storage_conflicts).num_columns <= (*storage_conflicts).num_rows
+    && BitMatrix::<LocalIdx, LocalIdx>::wf(*storage_conflicts)
+    && forall(|k: Int| !(0 <= k && k < nb_locals) || LocalIdx::can_new(k))
+    && forall(|n: Int| !(0 <= n && n <= nb_locals) || FieldIdx::can_new(n))
+    && forall(|v: Int| !(0 <= v && v <= (*variant_fields).len()) || VariantIdx::can_new(v))
+)]
+#[thrust_macros::ensures(
+    // `assignments` has one entry per local, and `inel` is a set over the locals, so its
+    // iterator yields locals below `nb_locals`.
+    result.1.len() == nb_locals
+    && result.0.0 == nb_locals
+    // 1. Unassigned locals never appear in any variant's field list.
+    && forall(|l: usize| !(0 <= l && l < nb_locals && result.1[l] == SavedLocalEligibility::Unassigned)
+        || forall(|v: usize, f: usize|
+            !(0 <= v && v < (*variant_fields).len()
+                && 0 <= f && f < (*variant_fields)[v].len())
+            || !thrust_models::exists(|i: Int|
+                i == l
+                    && <LocalIdx as Idx>::index_is((*variant_fields)[v][f], i))))
+    // 2. Assigned(v) locals appear only under variant v, and only there.
+    // TODO(spec): "exists f: variant_fields[v][f] == l" and the "not under
+    // any other assigned variant" half are folded into one nested forall/
+    // exists below; the exact quantifier shape is a best effort, not
+    // checked against the solver (this file does not verify, see header).
+    && forall(|l: usize, v: usize|
+        !(0 <= l && l < nb_locals
+            && thrust_models::exists(|vi: <VariantIdx as thrust_models::Model>::Ty|
+                thrust_models::exists(|vn: Int| vn == v && <VariantIdx as Idx>::index_is(vi, vn))
+                    && result.1[l] == SavedLocalEligibility::Assigned(vi)))
+        || (v < (*variant_fields).len()
+            && thrust_models::exists(|f: usize|
+                0 <= f && f < (*variant_fields)[v].len()
+                    && thrust_models::exists(|i: Int|
+                        i == l
+                            && <LocalIdx as Idx>::index_is((*variant_fields)[v][f], i)))))
+    // 3. An ineligible local has its promoted field index. The README bounds it by the
+    // cardinality of `inel`, which no predicate states yet (DenseBitSet cardinality); the bound
+    // stated is the number of locals, which the cardinality is at most.
+    && forall(|l: usize, x: Option<<FieldIdx as thrust_models::Model>::Ty>|
+        !(0 <= l && l < nb_locals && result.1[l] == SavedLocalEligibility::Ineligible(x))
+        || thrust_models::exists(|k: <FieldIdx as thrust_models::Model>::Ty|
+            x == Some(k) && forall(|i: Int| !<FieldIdx as Idx>::index_is(k, i) || i < nb_locals)))
+    // 4. Membership in `inel` matches being `Ineligible(_)`.
+    // TODO(spec): `DenseBitSet::elem_at`/`mem` are uninterpreted here, see
+    // above; written as an `<==>` via two `==>` for the annotation grammar.
+    // `mem` takes an `Int` (its declared `usize` parameter is lowered to
+    // `Int` by `#[thrust_macros::predicate]`, see the note above the
+    // `requires`), but real `Vec` indexing needs a literal `usize`; the
+    // `exists(|li: Int| li == l && ..)` below is a `usize -> Int` bridge
+    // (`Int: PartialEq<T> where T: Model<Ty = Int>`, and `usize` is one).
+    && forall(|l: usize| !(0 <= l && l < nb_locals) ||
+        (!thrust_models::exists(|li: Int| li == l && DenseBitSet::<LocalIdx>::mem(result.0, li))
+            || thrust_models::exists(|x: Option<<FieldIdx as thrust_models::Model>::Ty>| result.1[l] == SavedLocalEligibility::Ineligible(x))))
+    && forall(|l: usize| !(0 <= l && l < nb_locals) ||
+        (!thrust_models::exists(|x: Option<<FieldIdx as thrust_models::Model>::Ty>| result.1[l] == SavedLocalEligibility::Ineligible(x))
+            || thrust_models::exists(|li: Int| li == l && DenseBitSet::<LocalIdx>::mem(result.0, li))))
+)]
+#[thrust_macros::context]
 fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: Idx>(
     nb_locals: usize,
     variant_fields: &IndexSlice<VariantIdx, IndexVec<FieldIdx, LocalIdx>>,
@@ -698,19 +834,43 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
 
 // //== ./src/layout/coroutine.rs: `layout()` itself (verbatim)
 //
-// `requires` below covers the two README stage 7 facts that typecheck without
-// needing generic-slice element access (variant_fields non-empty; the
-// storage_conflicts / variant_fields / local_layouts dimensions agreeing).
-// The remaining ones -- `dl_wf`/`niche_wf` of the inputs, and the
-// well-formedness of `variant_fields`/`storage_conflicts` from README stage 5
-// -- hit the same wall as `eligibility.rs`'s own `requires` (indexing through
-// `IndexSlice`'s `Seq`-shaped model needs `FieldIdx`/`VariantIdx`/`LocalIdx`
-// to be `Model<Ty = Int>`, unconstrained for a generic `Idx`); see that
-// file's report entry, not repeated here.
-// TODO(spec): `requires` carries only the non-emptiness of `variant_fields`; the
-// dimension agreement of `storage_conflicts` / `variant_fields` / `local_layouts` is
-// not stated yet.
-#[thrust_macros::requires(variant_fields.len() > 0)]
+// Precondition (experiments/2026-10-01-layout-precondition-review.md), with n the number of
+// saved locals (`local_layouts.len()`), V the number of variants and P the number of prefix
+// layouts:
+// - V > 0, which rustc's caller has by construction (V = 3 + the number of yields);
+// - `storage_conflicts` is well formed, has at most n rows, and no more columns than rows
+//   (eligibility's `count(local_b)` reads a column index as a row; see eligibility.rs);
+// - every local a variant lists is below n;
+// - the index types can be built wherever `new` is called: `LocalIdx` below n, `VariantIdx` up
+//   to V (`iter_enumerated` builds `new(V)`), `FieldIdx` up to P + 1 + n (the prefix, the tag
+//   and at most n promoted locals) and up to each variant's length (a variant may list a local
+//   twice);
+// - P + 1 + n <= u32::MAX, for the `u32` memory order.
+// Not stated: `dl_wf` of the data layout, and `niche_wf` of every input layout and of
+// `tag_to_layout(tag)`. The data layout is reached through the generic `Cx::data_layout()`, and
+// the closure's result is an `F`, whose model is not related to the `LayoutData` it
+// dereferences to.
+#[thrust_macros::requires(
+    (*variant_fields).len() > 0
+        && (*storage_conflicts).num_rows <= (*local_layouts).len()
+        && (*storage_conflicts).num_columns <= (*storage_conflicts).num_rows
+        && BitMatrix::<LocalIdx, LocalIdx>::wf(*storage_conflicts)
+        && forall(|v: usize, f: usize|
+            !(0 <= v && v < (*variant_fields).len()
+                && 0 <= f && f < (*variant_fields)[v].len())
+            || forall(|i: Int|
+                !<LocalIdx as Idx>::index_is((*variant_fields)[v][f], i)
+                    || i < (*local_layouts).len()))
+        && forall(|k: Int| !(0 <= k && k < (*local_layouts).len()) || <LocalIdx as Idx>::can_new(k))
+        && forall(|k: Int| !(0 <= k && k <= (*variant_fields).len()) || <VariantIdx as Idx>::can_new(k))
+        && forall(|k: Int|
+            !(0 <= k && k <= prefix_layouts.len() + 1 + (*local_layouts).len())
+                || <FieldIdx as Idx>::can_new(k))
+        && forall(|v: usize, k: Int|
+            !(0 <= v && v < (*variant_fields).len() && 0 <= k && k <= (*variant_fields)[v].len())
+                || <FieldIdx as Idx>::can_new(k))
+        && prefix_layouts.len() + 1 + (*local_layouts).len() <= 4294967295usize
+)]
 #[thrust_macros::ensures(true)]
 pub fn layout<
     'a,
@@ -733,9 +893,7 @@ pub fn layout<
 
     let tag_index = prefix_layouts.next_index();
 
-    // TODO(proof): `variant_fields.len() - 1` needs `variant_fields` non-empty
-    // (README stage 7, "remaining assumption: variant_fields is non-empty"); out of scope for
-    // overflow itself (debug-assertions off) but feeds `tag`'s `valid_range`.
+    // `variant_fields.len() > 0` (the precondition) keeps the subtraction from wrapping.
     let max_discr = (variant_fields.len() - 1) as u128;
     let discr_int = Integer::fit_unsigned(max_discr);
     let tag = Scalar::Initialized {
@@ -750,9 +908,9 @@ pub fn layout<
     let promoted_layouts = Map::new(ineligible_locals.iter(), |local| local_layouts[local]);
     prefix_layouts.push(tag_to_layout(tag));
     prefix_layouts.extend_from(promoted_layouts);
-    // TODO(proof): `push` and `extend` give `prefix_layouts.len() == original length + 1 + n`,
-    // `n` the item count of `ineligible_locals.iter()`; `n == card(ineligible_locals)` needs the
-    // set-to-iterator link that `DenseBitSet::iter` lacks (README stage 7).
+    // TODO(proof): `push` and `extend_from` give `prefix_layouts.len() == P + 1 + c`, c the
+    // items `ineligible_locals.iter()` yields, at most n by `BitIter`'s model; `c ==
+    // card(ineligible_locals)` needs the set cardinality, which no predicate states yet.
     let prefix = match calc.univariant(
         &prefix_layouts,
         &ReprOptions::default(),
@@ -771,10 +929,9 @@ pub fn layout<
         } => {
             let b_start = tag_index.plus(1);
             // TODO(proof): `split_off(b_start.index())` needs `b_start.index()
-            // <= offsets.raw.len()`, i.e. `tag_index + 1 <= len` -- from
-            // univariant's stage-6 contract (`offsets.len() == fields.len()`)
-            // together with the prefix-length fact above (not wired up: see
-            // the report on univariant.rs's own `ensures(true)`).
+            // <= offsets.raw.len()`: `offsets` has `prefix_layouts.len()`
+            // entries (univariant's `arbitrary_of`), which is at least
+            // `tag_index + 1` (the prefix-length fact above).
             let offsets_b = IndexVec::from_raw(offsets.raw.split_off(b_start.index()));
             let offsets_a = offsets;
 
@@ -796,15 +953,14 @@ pub fn layout<
             (
                 outer_fields,
                 offsets_b,
-                // TODO(proof): `invert_bijective_mapping`'s (dropped)
-                // debug_assert needs `in_memory_order_b` to enumerate
-                // `0..in_memory_order_b.len()` exactly once -- the
-                // permutation-split fact `lemma_permutation_split` below is
-                // meant to supply this; not called here per the task.
+                // TODO(proof): `invert_bijective_mapping` requires every
+                // element of `in_memory_order_b` below its length -- the
+                // permutation-split fact `lemma_permutation_split` below
+                // gives it from univariant's `arbitrary_of`; not called yet.
                 in_memory_order_b.invert_bijective_mapping(),
             )
         }
-        _ => unreachable!(), // TODO(proof): unreachable because `univariant` always returns `FieldsShape::Arbitrary` (its own stage-6 `ensures`, not yet wired up here either).
+        _ => unreachable!(), // TODO(proof): unreachable by univariant's ensures (`arbitrary_of`).
     };
 
     let mut size = prefix.size;
@@ -1538,6 +1694,31 @@ pub enum FieldsShape<FieldIdx: Idx> {
     },
 }
 
+// `offsets` and `in_memory_order` are `IndexVec`s, whose model is a sequence, inside a
+// `Model = Self` enum, so a formula reaches the sequences through `Seq`'s `PartialEq` with a
+// type whose model it is (univariant.rs, where `IndexVec` models as itself, reads `raw`).
+#[thrust_macros::context]
+impl<FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>> FieldsShape<FieldIdx> {
+    /// `self` is `Arbitrary` over `n` fields: `n` offsets, and a memory order listing each
+    /// field below `n` exactly once.
+    #[thrust_macros::predicate]
+    fn arbitrary_of(self, n: Int) -> bool {
+        exists(|o: IndexVec<FieldIdx, Size>, m: IndexVec<u32, FieldIdx>,
+                os: Seq<Size>, ms: Seq<<FieldIdx as thrust_models::Model>::Ty>|
+            self == FieldsShape::Arbitrary { offsets: o, in_memory_order: m }
+                && os == o
+                && ms == m
+                && os.len() == n
+                && ms.len() == n
+                && forall(|k: Int, i: Int|
+                    !(0 <= k && k < n && <FieldIdx as Idx>::index_is(ms[k], i)) || (0 <= i && i < n))
+                && forall(|k: Int, k2: Int, i: Int|
+                    !(0 <= k && k < n && 0 <= k2 && k2 < n && !(k == k2)
+                        && <FieldIdx as Idx>::index_is(ms[k], i))
+                        || !<FieldIdx as Idx>::index_is(ms[k2], i)))
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash /*Debug*/)]
 pub struct NumScalableVectors(pub u8);
 
@@ -1633,7 +1814,8 @@ impl<FieldIdx: Idx, VariantIdx: Idx> LayoutData<FieldIdx, VariantIdx> {
     }
 }
 
-#[derive(Copy, Clone /*Debug*/)]
+// `PartialEq` added (rewrites.md S10): `univariant`'s requires tests for `MaybeUnsized`.
+#[derive(Copy, Clone, PartialEq /*Debug*/)]
 pub enum StructKind {
     AlwaysSized,
     MaybeUnsized,
@@ -1743,11 +1925,25 @@ pub struct LayoutCalculator<Cx> {
 
 #[thrust_macros::context]
 impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
-    // See univariant.rs for the intended contract and the three obstacles
-    // that keep it at `ensures(true)` here too.
+    // The contract of univariant.rs (stage 6). `requires` is the panic condition of `univariant` and
+    // `univariant_biased` apart from the data layout and the field layouts: `fields.indices()`
+    // builds every field index up to `fields.len()`, the single variant is `VariantIdx::new(0)`,
+    // and `MaybeUnsized` takes `fields.len() - 1`, which wraps below zero (overflow checks are off)
+    // so that the slice `[..end]` panics. Not stated: `dl_wf` of the data layout and `niche_wf` of
+    // every field's niche, which `Niche::available`, `Primitive::size` and `Size::checked_add`
+    // need, and that the `NicheBias::End` layout succeeds and keeps a niche whenever the `Start`
+    // one does (the two `unwrap_without_debug`s). The data layout is reached through the generic
+    // `Cx::data_layout()`, and `F`'s model is not related to the `LayoutData` it dereferences to,
+    // so neither can be named. `ensures`: an `Ok` layout has `Arbitrary` fields over
+    // `fields.len()` fields, its memory order a permutation (`FieldsShape::arbitrary_of`).
     #[thrust::trusted]
-    #[thrust_macros::requires(true)]
-    #[thrust_macros::ensures(true)]
+    #[thrust_macros::requires(
+        forall(|k: Int| !(0 <= k && k <= (*fields).len()) || <FieldIdx as Idx>::can_new(k))
+            && forall(|z: Int| !(z == 0usize) || <VariantIdx as Idx>::can_new(z))
+            && (kind == StructKind::MaybeUnsized ==> (*fields).len() > 0)
+    )]
+    #[thrust_macros::ensures(forall(|l: LayoutData<FieldIdx, VariantIdx>|
+        result != Ok(l) || FieldsShape::<FieldIdx>::arbitrary_of(l.fields, (*fields).len())))]
     pub fn univariant<
         'a,
         FieldIdx: Idx,
@@ -1789,25 +1985,37 @@ impl<T> Unwrap<T> for Option<T> {
 // in place of std's `Map`, `Filter`, `extend` and `collect` (rewrites.md R8), verified against the
 // contracts written here.
 
-// local to the case study: the model is the number of items still to yield
+// local to the case study, as in eligibility.rs
 #[thrust_macros::context]
 impl<'a, T: Idx + thrust_models::Model> IteratorSpec for BitIter<'a, T>
 where
     T::Ty: PartialEq,
 {
+    // The model is (bound, count, left): the column bound of the bit set the iterator walks
+    // (`num_columns` of the matrix row, `domain_size` of a `DenseBitSet`), which never changes,
+    // the number of items yielded so far, and the number still to yield. Every yielded element
+    // is below the bound, and the elements are distinct, so count + left stays at most the bound.
+    // `left` makes completion observable: the iterator completes with nothing left, which
+    // `Map`'s `reinitialize` in layout.rs needs.
     #[thrust_macros::predicate]
     fn inv(self) -> bool {
-        0 <= self
+        0 <= self.1 && 0 <= self.2 && self.1 + self.2 <= self.0
     }
 
     #[thrust_macros::predicate]
     fn produces(self, visited: Vec<T>, o: Self) -> bool {
-        0 <= o && o + visited.len() == self
+        self.0 == o.0
+            && o.1 == self.1 + visited.len()
+            && o.1 <= self.0
+            && o.2 + visited.len() == self.2
+            && 0 <= o.2
+            && forall(|i: Int, k: Int|
+                !(0 <= i && i < visited.len() && <T as Idx>::index_is(visited[i], k)) || k < self.0)
     }
 
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
-        *self == 0 && *self == !self
+        (*self).2 == 0 && *self == !self
     }
 
     fn produces_refl(a: &Self) {}
@@ -1866,9 +2074,11 @@ where
     I::Ty: PartialEq,
     T::Ty: PartialEq,
 {
+    // `next` builds `I::new(pos)`, so the invariant carries `can_new` of the positions left.
     #[thrust_macros::predicate]
     fn inv(self) -> bool {
         0 <= self.1 && self.1 <= self.0.len()
+            && forall(|k: Int| !(self.1 <= k && k < self.0.len()) || <I as Idx>::can_new(k))
     }
 
     #[thrust_macros::predicate]
@@ -1894,6 +2104,27 @@ where
         bc: Seq<<Self::Item as thrust_models::Model>::Ty>,
         c: &Self,
     ) {
+    }
+}
+
+// local to the case study: `next` of the `Iterator` impl above requires the invariant, as `Map`'s
+// below does.
+#[thrust_macros::context]
+impl<'a, I: Idx + thrust_models::Model, T: thrust_models::Model> IterEnumerated<'a, I, T>
+where
+    I::Ty: PartialEq,
+    T::Ty: PartialEq,
+{
+    #[thrust::extern_spec_fn]
+    #[thrust_macros::requires(<Self as IteratorSpec>::inv(*it))]
+    #[thrust_macros::ensures(
+        <Self as IteratorSpec>::inv(!it)
+            && (result == None ==> <Self as IteratorSpec>::completed(it))
+            && forall(|x: <(I, &'a T) as thrust_models::Model>::Ty| result == Some(x)
+                ==> <Self as IteratorSpec>::produces(*it, Seq::singleton(x), !it))
+    )]
+    fn _extern_spec_next(it: &mut IterEnumerated<'a, I, T>) -> Option<(I, &'a T)> {
+        <IterEnumerated<'a, I, T> as Iterator>::next(it)
     }
 }
 
@@ -2573,13 +2804,13 @@ impl PartialOrdSpec for Align {
 // //== Thrust model declarations
 
 impl<T> thrust_models::Model for DenseBitSet<T> {
-    type Ty = Self;
+    type Ty = (Int, Seq<Int>, ());
 }
 impl<'a> thrust_models::Model for WordIter<'a> {
     type Ty = Self;
 }
 impl<'a, T: Idx> thrust_models::Model for BitIter<'a, T> {
-    type Ty = Int;
+    type Ty = (Int, Int, Int);
 }
 impl<R: Idx, C: Idx> thrust_models::Model for BitMatrix<R, C> {
     type Ty = Self;
@@ -2601,11 +2832,11 @@ impl<I: Idx, T: thrust_models::Model> thrust_models::Model for IndexVec<I, T> {
 impl<I: Idx, T: thrust_models::Model> thrust_models::Model for IndexSlice<I, T> {
     type Ty = <[T] as thrust_models::Model>::Ty;
 }
-impl<VariantIdx, FieldIdx> thrust_models::Model for SavedLocalEligibility<VariantIdx, FieldIdx> {
-    type Ty = Self;
+impl<VariantIdx: thrust_models::Model, FieldIdx: thrust_models::Model> thrust_models::Model for SavedLocalEligibility<VariantIdx, FieldIdx> {
+    type Ty = SavedLocalEligibility<<VariantIdx as thrust_models::Model>::Ty, <FieldIdx as thrust_models::Model>::Ty>;
 }
-impl<F> thrust_models::Model for LayoutCalculatorError<F> {
-    type Ty = Self;
+impl<F: thrust_models::Model> thrust_models::Model for LayoutCalculatorError<F> {
+    type Ty = LayoutCalculatorError<<F as thrust_models::Model>::Ty>;
 }
 impl<Cx> thrust_models::Model for LayoutCalculator<Cx> {
     type Ty = Self;
