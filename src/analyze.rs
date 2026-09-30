@@ -286,89 +286,124 @@ fn bind_spec_args<'tcx>(
     ))
 }
 
-/// Whether the bounds an extern spec puts on its type parameters by traits of its own hold at the
-/// arguments it was bound to, in the caller's environment. A spec stated through a trait
-/// (`I: IteratorSpec`) says nothing about a type that does not implement it, so a call at such a
-/// type finds no specification.
+/// How a spec's bound stands at the arguments it was bound to, in a caller's environment.
+enum SpecBound {
+    Holds,
+    /// The bound's self type is a type parameter or an unresolved projection of the caller.
+    Assumed,
+    Fails,
+}
+
+/// The bounds an extern spec puts on its type parameters by traits of its own, and the associated
+/// types those fix. `Model` is left out: it is assumed of every type parameter.
+fn is_spec_bound(clause: mir_ty::Clause<'_>, model_trait: DefId) -> bool {
+    if clause.as_projection_clause().is_some() {
+        return true;
+    }
+    clause.as_trait_clause().is_some_and(|clause| {
+        let trait_def_id = clause.skip_binder().trait_ref.def_id;
+        trait_def_id.is_local() && trait_def_id != model_trait
+    })
+}
+
+/// Whether spec bounds (see [`is_spec_bound`]) hold in the environment of `caller_def_id`.
+/// Returns those assumed, or the first that fails.
 ///
-/// A bound whose self type is a type parameter or an unresolved projection is assumed: the
-/// spec's predicates are then universal.
+/// A spec stated through a trait (`I: IteratorSpec`) says nothing about a type that does not
+/// implement it, so a call at such a type finds no specification. A bound whose self type is a
+/// type parameter or an unresolved projection is assumed: the caller's contract is then verified
+/// under it, and [`Analyzer::check_reused_spec_bounds`] checks it at each instance that reuses that
+/// contract.
 ///
 /// `Model` and its `PartialEq` are assumed of every type parameter of the caller, as a spec
 /// assumes them of its own: they are what a bound like `usize: SliceIndexSpec<T>` needs of `T`.
-fn spec_bounds_hold<'tcx>(
+fn classify_spec_bounds<'tcx>(
     tcx: TyCtxt<'tcx>,
-    spec_def_id: LocalDefId,
-    args: mir_ty::GenericArgsRef<'tcx>,
+    clauses: impl IntoIterator<Item = mir_ty::Clause<'tcx>>,
     caller_def_id: DefId,
     model_ty: DefId,
-) -> bool {
+) -> Result<Vec<mir_ty::Clause<'tcx>>, mir_ty::Clause<'tcx>> {
     use rustc_infer::infer::TyCtxtInferExt as _;
+
+    let typing_env = model_assuming_env(tcx, caller_def_id, model_ty);
+    let infcx = tcx.infer_ctxt().build(typing_env.typing_mode);
+    let mut assumed = Vec::new();
+    for clause in clauses {
+        let bound = match clause.as_projection_clause() {
+            Some(projection) => projection_bound(tcx, typing_env, projection.skip_binder()),
+            None => trait_bound(tcx, &infcx, typing_env, clause),
+        };
+        match bound {
+            SpecBound::Holds => {}
+            SpecBound::Assumed => assumed.push(clause),
+            SpecBound::Fails => return Err(clause),
+        }
+    }
+    Ok(assumed)
+}
+
+fn trait_bound<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    infcx: &rustc_infer::infer::InferCtxt<'tcx>,
+    typing_env: mir_ty::TypingEnv<'tcx>,
+    clause: mir_ty::Clause<'tcx>,
+) -> SpecBound {
     use rustc_trait_selection::traits::query::evaluate_obligation::InferCtxtExt as _;
     use rustc_trait_selection::traits::{Obligation, ObligationCause};
 
-    let model_trait = tcx.parent(model_ty);
-    let typing_env = model_assuming_env(tcx, caller_def_id, model_ty);
-    let infcx = tcx.infer_ctxt().build(typing_env.typing_mode);
-    let clauses = tcx
-        .predicates_of(spec_def_id)
-        .instantiate(tcx, args)
-        .predicates;
-    let traits_hold = clauses
-        .iter()
-        .filter_map(|clause| clause.as_trait_clause())
-        .map(|clause| clause.skip_binder().trait_ref)
-        .filter(|trait_ref| trait_ref.def_id.is_local() && trait_ref.def_id != model_trait)
-        .filter_map(|trait_ref| {
-            tcx.try_normalize_erasing_regions(typing_env, trait_ref)
-                .ok()
-        })
-        .filter(|trait_ref| {
-            !matches!(
-                trait_ref.self_ty().kind(),
-                mir_ty::TyKind::Param(_) | mir_ty::TyKind::Alias(..)
-            )
-        })
-        .all(|trait_ref| {
-            let obligation = Obligation::new(
-                tcx,
-                ObligationCause::dummy(),
-                typing_env.param_env,
-                trait_ref,
-            );
-            infcx.predicate_must_hold_modulo_regions(&obligation)
-        });
-    traits_hold
-        && clauses
-            .iter()
-            .filter_map(|clause| clause.as_projection_clause())
-            .map(|clause| clause.skip_binder())
-            .all(|projection| projection_holds(tcx, typing_env, projection))
+    let trait_ref = clause.as_trait_clause().unwrap().skip_binder().trait_ref;
+    let Ok(trait_ref) = tcx.try_normalize_erasing_regions(typing_env, trait_ref) else {
+        return SpecBound::Assumed;
+    };
+    let obligation = Obligation::new(
+        tcx,
+        ObligationCause::dummy(),
+        typing_env.param_env,
+        trait_ref,
+    );
+    if infcx.predicate_must_hold_modulo_regions(&obligation) {
+        return SpecBound::Holds;
+    }
+    if matches!(
+        trait_ref.self_ty().kind(),
+        mir_ty::TyKind::Param(_) | mir_ty::TyKind::Alias(..)
+    ) {
+        SpecBound::Assumed
+    } else {
+        SpecBound::Fails
+    }
 }
 
 /// Whether an associated type a spec's bound fixes (`R: IntoSliceIdx<I, [T], Output = usize>`)
 /// is that type at the arguments the spec was bound to. A spec's contract is stated for the type it
 /// fixes: at another one the target's result is not the one the contract describes. A projection
 /// that stays unresolved is assumed, like a bound on a type parameter.
-fn projection_holds<'tcx>(
+fn projection_bound<'tcx>(
     tcx: TyCtxt<'tcx>,
     typing_env: mir_ty::TypingEnv<'tcx>,
     projection: mir_ty::ProjectionPredicate<'tcx>,
-) -> bool {
+) -> SpecBound {
     let normalize = |term| tcx.try_normalize_erasing_regions(typing_env, term).ok();
     let (Some(actual), Some(fixed)) = (
         normalize(projection.projection_term.to_term(tcx)),
         normalize(projection.term),
     ) else {
-        return true;
+        return SpecBound::Assumed;
     };
-    actual == fixed
-        || actual.as_type().is_some_and(|ty| {
-            matches!(
-                ty.kind(),
-                mir_ty::TyKind::Param(_) | mir_ty::TyKind::Alias(..)
-            )
-        })
+    if actual == fixed {
+        return SpecBound::Holds;
+    }
+    let unresolved = actual.as_type().is_some_and(|ty| {
+        matches!(
+            ty.kind(),
+            mir_ty::TyKind::Param(_) | mir_ty::TyKind::Alias(..)
+        )
+    });
+    if unresolved {
+        SpecBound::Assumed
+    } else {
+        SpecBound::Fails
+    }
 }
 
 /// The environment a predicate call in `owner_fn_id` is resolved in: the owner's own, with `Model`
@@ -670,6 +705,12 @@ pub struct Analyzer<'tcx> {
     /// The local fn-like defs with an `FnMut`-bounded type parameter, recorded with
     /// [`Analyzer::unnest_specified_params`].
     fn_mut_bounded_defs: Rc<RefCell<Vec<DefId>>>,
+    /// The spec bounds a body assumed at a type parameter or an unresolved projection, keyed by
+    /// the typeck root of the def it was analysed under; see [`classify_spec_bounds`].
+    assumed_spec_bounds: RefCell<HashMap<DefId, Vec<mir_ty::Clause<'tcx>>>>,
+    /// The instances `(def, generic args, caller)` that use a generic def's contract as
+    /// instantiated; see [`Analyzer::check_reused_spec_bounds`].
+    reused_generic_instances: RefCell<Vec<(DefId, mir_ty::GenericArgsRef<'tcx>, DefId)>>,
 }
 
 impl<'tcx> crate::refine::TemplateRegistry for Analyzer<'tcx> {
@@ -722,6 +763,8 @@ impl<'tcx> Analyzer<'tcx> {
             fn_mut_instance_obligations: Default::default(),
             unnest_specified_params: Default::default(),
             fn_mut_bounded_defs: Default::default(),
+            assumed_spec_bounds: Default::default(),
+            reused_generic_instances: Default::default(),
         }
     }
 
@@ -1148,10 +1191,89 @@ impl<'tcx> Analyzer<'tcx> {
             return Some(generic_args);
         };
         let bound = bind_spec_args(self.tcx, spec.local_def_id, target_args, generic_args)?;
-        let holds = self.def_ids().model_ty().is_none_or(|model_ty| {
-            spec_bounds_hold(self.tcx, spec.local_def_id, bound, caller_def_id, model_ty)
-        });
-        holds.then_some(bound)
+        let Some(model_ty) = self.def_ids().model_ty() else {
+            return Some(bound);
+        };
+        let model_trait = self.tcx.parent(model_ty);
+        let clauses = self
+            .tcx
+            .predicates_of(spec.local_def_id)
+            .instantiate(self.tcx, bound)
+            .predicates
+            .into_iter()
+            .filter(|clause| is_spec_bound(*clause, model_trait));
+        let assumed = classify_spec_bounds(self.tcx, clauses, caller_def_id, model_ty).ok()?;
+        self.record_assumed_spec_bounds(caller_def_id, assumed);
+        Some(bound)
+    }
+
+    /// Records spec bounds assumed while analysing a body owned by `owner_fn_id`, under its typeck
+    /// root: a closure's body is verified as part of the fn it is in. Returns whether any is new.
+    fn record_assumed_spec_bounds(
+        &self,
+        owner_fn_id: DefId,
+        clauses: Vec<mir_ty::Clause<'tcx>>,
+    ) -> bool {
+        let root = self.tcx.typeck_root_def_id(owner_fn_id);
+        let mut assumed = self.assumed_spec_bounds.borrow_mut();
+        let recorded = assumed.entry(root).or_default();
+        let mut grew = false;
+        for clause in clauses {
+            let clause = self.tcx.erase_regions(clause);
+            if !recorded.contains(&clause) {
+                recorded.push(clause);
+                grew = true;
+            }
+        }
+        grew
+    }
+
+    /// Checks the spec bounds each generic def's analysis assumed at its type parameters
+    /// ([`classify_spec_bounds`]) at every instance that uses its contract as instantiated.
+    ///
+    /// Creusot requires such a bound (`T::IntoIter: IteratorSpec` of `FromIterator::from_iter`'s
+    /// extern spec) to be provable at each call, so a generic caller must declare it and rustc
+    /// checks it at the caller's instantiations. Here the bound is assumed at the caller's type
+    /// parameters instead, so this checks it at each instance, after every body is analysed, when
+    /// all the assumptions are known. A bound still at a type parameter of the instance's caller
+    /// is assumed by that caller in turn, until nothing new is assumed. A program with an instance
+    /// at which a bound fails is rejected: the generic contract does not stand for it, and its
+    /// body would call a spec that does not cover it, as a direct call there does.
+    pub fn check_reused_spec_bounds(&self) {
+        let Some(model_ty) = self.def_ids().model_ty() else {
+            return;
+        };
+        loop {
+            let mut grew = false;
+            for &(def_id, generic_args, caller_def_id) in
+                self.reused_generic_instances.borrow().iter()
+            {
+                let root = self.tcx.typeck_root_def_id(def_id);
+                let assumed = self
+                    .assumed_spec_bounds
+                    .borrow()
+                    .get(&root)
+                    .cloned()
+                    .unwrap_or_default();
+                let clauses = assumed.into_iter().map(|clause| {
+                    mir_ty::EarlyBinder::bind(clause).instantiate(self.tcx, generic_args)
+                });
+                match classify_spec_bounds(self.tcx, clauses, caller_def_id, model_ty) {
+                    Ok(assumed) => grew |= self.record_assumed_spec_bounds(caller_def_id, assumed),
+                    Err(clause) => self.tcx.dcx().fatal(format!(
+                        "spec bound not satisfied: `{}` is verified generically under a spec \
+                         bound at its type parameters, which does not hold at its instance \
+                         `{}` used in `{}`: `{clause}`",
+                        self.tcx.def_path_str(def_id),
+                        self.tcx.def_path_str_with_args(def_id, generic_args),
+                        self.tcx.def_path_str(caller_def_id),
+                    )),
+                }
+            }
+            if !grew {
+                return;
+            }
+        }
     }
 
     pub fn def_ty_with_args(
@@ -1241,6 +1363,11 @@ impl<'tcx> Analyzer<'tcx> {
                 || (has_fn_mut_closure(generic_args)
                     && !self.reuse_fn_mut_generic(def_id, &expected, generic_args, caller_def_id))
                 || self.may_have_pred_var(&expected, generic_args, caller_def_id));
+        if is_generic && !analyze_body {
+            self.reused_generic_instances
+                .borrow_mut()
+                .push((def_id, generic_args, caller_def_id));
+        }
         if is_generic && deferred_ty_mode.is_some() {
             tracing::info!(
                 ?def_id,
