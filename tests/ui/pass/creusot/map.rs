@@ -109,6 +109,16 @@ where
                     && Self::preservation_inv(fin, f)))))
     }
 
+    // Creusot's `produces_one`: one closure call from `s0.func` to `s1.func` (Creusot's
+    // `f: &mut F` with `*f == self.func && ^f == succ.func`), one inner item `e` mapped to
+    // `visited`.
+    #[thrust_macros::predicate]
+    fn produces_one(s0: Self, visited: B, s1: Self) -> bool {
+        exists(|e: A|
+            I::produces(s0.0, Seq::singleton(e), s1.0)
+                && thrust_macros::post!(Mut::new(s0.1, s1.1)(e), visited))
+    }
+
     // `produces` with its input sequence `s` and closure chain `fs` given: the body of `produces`
     // under its `exists`.
     #[thrust_macros::predicate]
@@ -123,6 +133,12 @@ where
                 !(0 <= k && k < visited.len())
                     || (thrust_macros::unnest!(s0.1, fs[k])
                         && thrust_macros::post!(Mut::new(fs[k], fs[k + 1])(s[k]), visited[k])))
+    }
+
+    // `produces` with its input sequence `s` given: `produces_at` under the `exists` of the chain.
+    #[thrust_macros::predicate]
+    fn produces_with(s0: Self, visited: Seq<<B as Model>::Ty>, o: Self, s: Seq<A>) -> bool {
+        exists(|fs: Seq<Closure<F>>| Self::produces_at(s0, visited, o, s, fs))
     }
 
     // `produces_trans` on ghost arguments.
@@ -187,9 +203,19 @@ where
     type Item = B;
 
     fn next(&mut self) -> Option<B> {
+        let pre = thrust_macros::ghost!(|self: &mut Self| -> Self { *self });
         let r = self.iter.next();
         match r {
-            Some(v) => Some((self.func)(v)),
+            Some(v) => {
+                let e = thrust_macros::ghost!(|v: <I as Iterator>::Item| -> <I as Iterator>::Item { v });
+                let b = (self.func)(v);
+                let post = thrust_macros::ghost!(|self: &mut Self| -> Self { *self });
+                let bm = thrust_macros::ghost!(|b: B| -> B { b });
+                // Keeps `self` live at the snapshot `post`, as the history update does in
+                // `counter_creusot.rs`.
+                let _keep = &*self;
+                Some(b)
+            }
             None => None,
         }
     }
