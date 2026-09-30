@@ -535,6 +535,17 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 }
                 self.const_enum_ty(ty, variant_idx, pts)
             }
+            // The pieces of a `format_args!` message. Their bytes hold pointers, which cannot
+            // be read here, and the message never affects verification, so the value is left
+            // unconstrained.
+            mir_ty::TyKind::Array(elem, _) if matches!(elem.kind(), mir_ty::TyKind::Ref(_, str_ty, _) if str_ty.is_str()) =>
+            {
+                let ty = self.type_builder.build(ty).vacuous();
+                let mut builder = PlaceTypeBuilder::default();
+                let ex = builder.push_existential(ty.to_sort());
+                let term = chc::Term::var(PlaceTypeVar::Existential(ex));
+                builder.build(ty, term)
+            }
             _ => unimplemented!("const bytes ty: {:?}", ty),
         }
     }
@@ -1217,6 +1228,38 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             })
     }
 
+    /// Whether `def_id` is an associated function of `fmt::Arguments` or `fmt::rt::Argument`,
+    /// which `format_args!` calls to build the (opaque) message of a `panic!`.
+    fn is_format_constructor(&self, def_id: DefId) -> bool {
+        let Some(impl_id) = self.tcx.impl_of_assoc(def_id) else {
+            return false;
+        };
+        let self_ty = self.tcx.type_of(impl_id).skip_binder();
+        self_ty
+            .ty_adt_def()
+            .is_some_and(|adt| self.type_builder.is_format_adt(adt.did()))
+    }
+
+    /// The signature of `def_id` with unrefined parameter and return types.
+    fn unrefined_callable_ty(
+        &self,
+        def_id: DefId,
+        args: mir_ty::GenericArgsRef<'tcx>,
+    ) -> rty::Type<rty::Closed> {
+        let sig = self
+            .tcx
+            .fn_sig(def_id)
+            .instantiate(self.tcx, args)
+            .skip_binder();
+        let params = sig
+            .inputs()
+            .iter()
+            .map(|ty| rty::RefinedType::unrefined(self.type_builder.build(*ty)).vacuous())
+            .collect();
+        let ret = rty::RefinedType::unrefined(self.type_builder.build(sig.output()));
+        rty::FunctionType::new(params, ret.vacuous()).into()
+    }
+
     fn callable_ty(
         &mut self,
         def_id: DefId,
@@ -1228,6 +1271,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 "a Ghost value cannot be used in executable code: {:?}, args: {:?}",
                 def_id, args
             );
+        }
+        if self.is_format_constructor(def_id) {
+            return self.unrefined_callable_ty(def_id, args);
         }
         match self.resolve_callable(def_id, args) {
             ResolvedCallable::Generic(type_param) => {

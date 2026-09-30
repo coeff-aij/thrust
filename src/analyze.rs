@@ -837,6 +837,9 @@ impl<'tcx> Analyzer<'tcx> {
             fn visit_ty(&mut self, ty: mir_ty::Ty<'tcx>) {
                 let ty = self.builder.resolve_model_ty(ty);
                 if let mir_ty::TyKind::Adt(def, args) = ty.kind() {
+                    if self.builder.is_format_adt(def.did()) {
+                        return;
+                    }
                     if self.visited.insert(ty) {
                         if def.is_enum() {
                             self.enums.insert(def.did());
@@ -1686,6 +1689,20 @@ impl<'tcx> Analyzer<'tcx> {
             .tcx
             .require_lang_item(LangItem::Panic, rustc_span::DUMMY_SP);
         self.register_def(panic_def_id, rty::RefinedType::unrefined(panic_ty.into()));
+
+        // `panic_fmt` diverges whatever its message is; the message is opaque (see `is_format_adt`).
+        let panic_fmt_ty = {
+            let param = rty::RefinedType::new(rty::Type::unit(), rty::Refinement::bottom());
+            let ret = rty::RefinedType::new(rty::Type::never(), rty::Refinement::bottom());
+            rty::FunctionType::new([param.vacuous()].into_iter().collect(), ret)
+        };
+        let panic_fmt_def_id = self
+            .tcx
+            .require_lang_item(LangItem::PanicFmt, rustc_span::DUMMY_SP);
+        self.register_def(
+            panic_fmt_def_id,
+            rty::RefinedType::unrefined(panic_fmt_ty.into()),
+        );
     }
 
     pub fn new_env(&self) -> Env {
