@@ -228,10 +228,15 @@ where
     // the number of items yielded so far, and the number still to yield. Every yielded element
     // is below the bound, and the elements are distinct, so count + left stays at most the bound.
     // `left` makes completion observable: the iterator completes with nothing left, which
-    // `Map`'s `reinitialize` in layout.rs needs.
+    // `Map`'s `reinitialize` in layout.rs needs. `next` builds its item with `T::new`, which
+    // panics unless `can_new` holds; the model does not say which bit comes next, so every
+    // index below the bound must be buildable.
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
-        0 <= self.1 && 0 <= self.2 && self.1 + self.2 <= self.0
+        0 <= self.1
+            && 0 <= self.2
+            && self.1 + self.2 <= self.0
+            && forall(|k: Int| !(0 <= k && k < self.0) || <T as Idx>::can_new(k))
     }
 
     #[thrust_macros::predicate]

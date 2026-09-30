@@ -269,7 +269,10 @@ impl<'a, T: Idx> Iterator for BitIter<'a, T> {
 #[thrust_macros::context]
 impl<'a, T: Idx> BitIter<'a, T> {
     #[thrust::extern_spec_fn]
-    #[thrust_macros::requires(true)]
+    // `next` builds its item with `T::new`; the contract does not say which bit comes next, so
+    // every index below the bound must be buildable.
+    #[thrust_macros::requires(forall(|n: Int, k: Int|
+        !(Self::bit_bound(*it, n) && 0 <= k && k < n) || <T as Idx>::can_new(k)))]
     #[thrust_macros::ensures(Self::same_words(*it, !it))]
     // The weak, safe form: *any* yielded element's index is below the bound.
     // Written as one universal over the payload rather than
@@ -392,10 +395,15 @@ fn count_ones(words: &[Word]) -> usize {
 
 #[thrust_macros::context]
 pub trait Idx: Copy + 'static + Eq + PartialEq + Debug + Hash {
+    /// `idx` is an index `new` accepts, as in idx.rs.
+    #[thrust_macros::predicate]
+    fn can_new(idx: Int) -> bool;
+
     /// `i` is the `usize` index of this element.
     #[thrust_macros::predicate]
     fn index_is(self, i: usize) -> bool;
 
+    #[thrust_macros::requires(Self::can_new(idx))]
     fn new(idx: usize) -> Self;
 
     #[thrust_macros::ensures(Self::index_is(self, result))]
@@ -415,6 +423,11 @@ pub trait Idx: Copy + 'static + Eq + PartialEq + Debug + Hash {
 
 #[thrust_macros::context]
 impl Idx for usize {
+    #[thrust_macros::predicate]
+    fn can_new(idx: Int) -> bool {
+        true
+    }
+
     #[thrust_macros::predicate]
     fn index_is(self, i: usize) -> bool {
         // i == self
@@ -465,6 +478,25 @@ impl<I: Idx> Iterator for IdxRange<I> {
         } else {
             None
         }
+    }
+}
+
+// `next` builds `I::new(start)`: the `requires` of idx.rs's wrapper, on a sibling inherent impl
+// as for `BitIter::next` above.
+#[thrust_macros::context]
+impl<I: Idx> IdxRange<I> {
+    #[thrust::extern_spec_fn]
+    #[thrust_macros::requires((*it).start >= 0)]
+    #[thrust_macros::requires(
+        forall(|s: Int| s == (*it).start && s < (*it).end ==> <I as Idx>::can_new(s))
+    )]
+    #[thrust_macros::ensures(true)]
+    fn _extern_spec_next(it: &mut IdxRange<I>) -> Option<I>
+    where
+        I: thrust_models::Model,
+        <I as thrust_models::Model>::Ty: PartialEq,
+    {
+        <IdxRange<I> as Iterator>::next(it)
     }
 }
 
