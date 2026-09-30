@@ -2,11 +2,11 @@
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:804d76744
 
-fn collect<I: IntoIterator<Item = i64>>(iter: I) -> Vec<i64> {
-    Vec::from_iter(iter)
-}
-
 fn main() {
-    let v = collect(Vec::new());
-    assert!(v.len() == 0);
+    let mut w: Vec<i64> = Vec::new();
+    Vec::push(&mut w, 3);
+    Vec::push(&mut w, 4);
+    let v: Vec<i64> = Vec::from_iter(w);
+    assert!(v.len() == 3);
+    assert!(v[0] == 3 && v[1] == 4);
 }

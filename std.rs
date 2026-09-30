@@ -2188,31 +2188,92 @@ fn _extern_spec_vec_split_off<T>(vec: &mut Vec<T>, at: usize) -> Vec<T>
     Vec::split_off(vec, at)
 }
 
-// The iterator's items are not visible in this vocabulary, so only the old contents kept as a
-// prefix are stated.
+// `Vec::extend` appends what the iterator made from `iter` produced before it was completed.
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(
-    (!vec).len() >= (*vec).len()
-        && thrust_models::forall(|i: thrust_models::model::Int|
-            (0 <= i && i < (*vec).len()) ==> (!vec)[i] == (*vec)[i])
+    thrust_models::exists(|start: <I::IntoIter as thrust_models::Model>::Ty,
+                          visited: thrust_models::model::Seq<<T as thrust_models::Model>::Ty>,
+                          mid: <I::IntoIter as thrust_models::Model>::Ty,
+                          fin: <I::IntoIter as thrust_models::Model>::Ty|
+        I::into_iter_is(iter, start)
+            && I::IntoIter::produces(start, visited, mid)
+            && I::IntoIter::completed(thrust_models::model::Mut::new(mid, fin))
+            && !vec == (*vec).concat(visited))
 )]
 fn _extern_spec_vec_extend<T, I>(vec: &mut Vec<T>, iter: I)
     where T: thrust_models::Model, T::Ty: PartialEq,
-          I: IntoIterator<Item = T> + thrust_models::Model, I::Ty: PartialEq
+          I: IntoIteratorSpec<Item = T>,
+          I::Ty: PartialEq,
+          I::IntoIter: IteratorSpec<Item = T>,
+          <I::IntoIter as thrust_models::Model>::Ty: PartialEq
 {
     <Vec<T> as std::iter::Extend<T>>::extend(vec, iter)
 }
 
-// Nothing about the collected items is visible in this vocabulary, so the result is any `Vec<T>`.
+// How the items a `FromIterator` consumed relate to what it built.
+#[thrust_macros::context]
+trait FromIteratorSpec<A>: std::iter::FromIterator<A> + thrust_models::Model
+where
+    A: thrust_models::Model,
+{
+    #[thrust_macros::predicate]
+    fn from_iter_post(prod: Vec<A>, res: Self) -> bool;
+}
+
+#[thrust_macros::context]
+impl<T> FromIteratorSpec<T> for Vec<T>
+where
+    T: thrust_models::Model,
+    T::Ty: PartialEq,
+{
+    #[thrust_macros::predicate]
+    fn from_iter_post(prod: Vec<T>, res: Self) -> bool {
+        prod == res
+    }
+}
+
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
-#[thrust_macros::ensures(true)]
-fn _extern_spec_vec_from_iter<T, I>(iter: I) -> Vec<T>
-    where T: thrust_models::Model, T::Ty: PartialEq,
-          I: IntoIterator<Item = T> + thrust_models::Model, I::Ty: PartialEq
+#[thrust_macros::ensures(
+    thrust_models::exists(|start: <I::IntoIter as thrust_models::Model>::Ty,
+                          visited: thrust_models::model::Seq<<A as thrust_models::Model>::Ty>,
+                          mid: <I::IntoIter as thrust_models::Model>::Ty,
+                          fin: <I::IntoIter as thrust_models::Model>::Ty|
+        I::into_iter_is(iter, start)
+            && I::IntoIter::produces(start, visited, mid)
+            && I::IntoIter::completed(thrust_models::model::Mut::new(mid, fin))
+            && B::from_iter_post(visited, result))
+)]
+fn _extern_spec_from_iter<A, B, I>(iter: I) -> B
+    where A: thrust_models::Model, A::Ty: PartialEq,
+          B: FromIteratorSpec<A>, B::Ty: PartialEq,
+          I: IntoIteratorSpec<Item = A>,
+          I::Ty: PartialEq,
+          I::IntoIter: IteratorSpec<Item = A>,
+          <I::IntoIter as thrust_models::Model>::Ty: PartialEq
 {
-    <Vec<T> as std::iter::FromIterator<T>>::from_iter(iter)
+    <B as std::iter::FromIterator<A>>::from_iter(iter)
+}
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(
+    thrust_models::exists(|visited: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
+                          mid: I::Ty,
+                          fin: I::Ty|
+        I::produces(it, visited, mid)
+            && I::completed(thrust_models::model::Mut::new(mid, fin))
+            && B::from_iter_post(visited, result))
+)]
+fn _extern_spec_iterator_collect<I, B>(it: I) -> B
+    where I: IteratorSpec,
+          I::Item: thrust_models::Model,
+          I::Ty: PartialEq,
+          <I::Item as thrust_models::Model>::Ty: PartialEq,
+          B: FromIteratorSpec<I::Item>, B::Ty: PartialEq
+{
+    <I as std::iter::Iterator>::collect(it)
 }
 
 #[thrust::extern_spec_fn]
