@@ -187,6 +187,8 @@ impl PrecondCapture {
 enum ResolvedCallable<'tcx> {
     Concrete(DefId, mir_ty::GenericArgsRef<'tcx>),
     Generic(TypeParam),
+    /// A trait method whose impl depends on the caller's type parameters.
+    Unresolved,
 }
 
 pub struct Analyzer<'tcx, 'ctx> {
@@ -1186,10 +1188,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             let typing_env = self.typing_env;
             let instance =
                 mir_ty::Instance::try_resolve(self.tcx, typing_env, def_id, args).unwrap();
-            if let Some(instance) = instance {
-                ResolvedCallable::Concrete(instance.def_id(), instance.args)
-            } else {
-                ResolvedCallable::Concrete(def_id, args)
+            match instance {
+                Some(instance) => ResolvedCallable::Concrete(instance.def_id(), instance.args),
+                None => ResolvedCallable::Unresolved,
             }
         }
     }
@@ -1237,6 +1238,15 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     .expect("unknown closure type")
                     .into()
             }
+            ResolvedCallable::Unresolved => {
+                match self.ctx.def_ty_with_args(def_id, args, caller_def_id) {
+                    Some(def_ty) => def_ty.ty,
+                    None => {
+                        tracing::debug!(?def_id, ?args, "using abstract trait method type");
+                        self.abstract_callable_ty(def_id, args)
+                    }
+                }
+            }
             ResolvedCallable::Concrete(resolved_def_id, resolved_args) => {
                 if let Some(def_ty) = self.ctx.def_ty_with_args(def_id, args, caller_def_id) {
                     // otherwise nothing asks for a deferred impl method's type and its body goes unchecked
@@ -1250,14 +1260,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     return def_ty.ty;
                 }
                 if resolved_def_id == def_id {
-                    if self.ctx.is_trait_method(def_id) {
-                        tracing::debug!(?def_id, ?args, "using abstract trait method type");
-                        return self.abstract_callable_ty(def_id, args);
-                    }
-                    panic!(
-                        "unknown def (and not resolved): {:?}, args: {:?}",
-                        def_id, args
-                    );
+                    panic!("unknown def: {:?}, args: {:?}", def_id, args);
                 }
                 tracing::info!(?def_id, ?resolved_def_id, ?resolved_args, "resolved");
                 let Some(def_ty) =
