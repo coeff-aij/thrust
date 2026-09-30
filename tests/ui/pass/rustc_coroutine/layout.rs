@@ -1007,10 +1007,9 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
 //   and at most n promoted locals) and up to each variant's length (a variant may list a local
 //   twice);
 // - P + 1 + n <= u32::MAX, for the `u32` memory order.
-// Not stated: `dl_wf` of the data layout, and `niche_wf` of every input layout and of
-// `tag_to_layout(tag)`. The data layout is the one `calc.cx` names, which a formula cannot pass
-// to `dl_of` (as for `univariant`), and the closure's result is an `F`, whose model is not
-// related to the `LayoutData` it dereferences to.
+// - `dl_wf` of the data layout `calc.cx` names, which `univariant` requires.
+// Not stated: `niche_wf` of every input layout and of `tag_to_layout(tag)`: the closure's
+// result is an `F`, whose model is not related to the `LayoutData` it dereferences to.
 #[thrust_macros::requires(
     (*variant_fields).len() > 0
         && (*storage_conflicts).num_rows <= (*local_layouts).len()
@@ -1031,6 +1030,10 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
             !(0 <= v && v < (*variant_fields).len() && 0 <= k && k <= (*variant_fields)[v].len())
                 || <FieldIdx as Idx>::can_new(k))
         && prefix_layouts.len() + 1 + (*local_layouts).len() <= 4294967295usize
+        && forall(|dl: TargetDataLayout| !C::dl_of(*calc, dl)
+            || dl.default_address_space_pointer_spec.pointer_size.raw == 2
+            || dl.default_address_space_pointer_spec.pointer_size.raw == 4
+            || dl.default_address_space_pointer_spec.pointer_size.raw == 8)
 )]
 #[thrust_macros::ensures(true)]
 pub fn layout<
@@ -1039,8 +1042,10 @@ pub fn layout<
     VariantIdx: Idx + thrust_models::Model<Ty: PartialEq>,
     FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
     LocalIdx: Idx + thrust_models::Model<Ty: PartialEq>,
+    // Rewrite (rewrites.md S10): named, for the `requires` to call `C::dl_of` on.
+    C: HasDataLayout,
 >(
-    calc: &LayoutCalculator<impl HasDataLayout>,
+    calc: &LayoutCalculator<C>,
     local_layouts: &IndexSlice<LocalIdx, F>,
     mut prefix_layouts: IndexVec<FieldIdx, F>,
     variant_fields: &IndexSlice<VariantIdx, IndexVec<FieldIdx, LocalIdx>>,
@@ -2170,18 +2175,22 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
     // `univariant_biased` apart from the data layout and the field layouts: `fields.indices()`
     // builds every field index up to `fields.len()`, the single variant is `VariantIdx::new(0)`,
     // and `MaybeUnsized` takes `fields.len() - 1`, which wraps below zero (overflow checks are off)
-    // so that the slice `[..end]` panics. Not stated: `dl_wf` of the data layout and `niche_wf` of
-    // every field's niche, which `Niche::available`, `Primitive::size` and `Size::checked_add`
-    // need, and that the `NicheBias::End` layout succeeds and keeps a niche whenever the `Start`
-    // one does (the two `unwrap_without_debug`s). The data layout is the one `self.cx` names, and
-    // a formula cannot pass `self.cx`, a field of a struct modelled as itself, to `dl_of`; `F`'s
-    // model is not related to the `LayoutData` it dereferences to. `ensures`: an `Ok` layout has `Arbitrary` fields over
+    // so that the slice `[..end]` panics; and `dl_wf` of the data layout `self.cx` names (the
+    // default pointer size is 2, 4 or 8 bytes, which `Size::checked_add` needs), named by
+    // `Cx::dl_of(*self, dl)` since the calculator's model is `self.cx`'s. Not stated: `niche_wf` of
+    // every field's niche, which `Niche::available` and `Primitive::size` need, and that the
+    // `NicheBias::End` layout succeeds and keeps a niche whenever the `Start` one does (the two
+    // `unwrap_without_debug`s); `F`'s model is not related to the `LayoutData` it dereferences to. `ensures`: an `Ok` layout has `Arbitrary` fields over
     // `fields.len()` fields, its memory order a permutation (`FieldsShape::arbitrary_of`).
     #[thrust::trusted]
     #[thrust_macros::requires(
         forall(|k: Int| !(0 <= k && k <= (*fields).len()) || <FieldIdx as Idx>::can_new(k))
             && forall(|z: Int| !(z == 0usize) || <VariantIdx as Idx>::can_new(z))
             && (matches!(kind, StructKind::MaybeUnsized) ==> (*fields).len() > 0)
+            && forall(|dl: TargetDataLayout| !Cx::dl_of(*self, dl)
+                || dl.default_address_space_pointer_spec.pointer_size.raw == 2
+                || dl.default_address_space_pointer_spec.pointer_size.raw == 4
+                || dl.default_address_space_pointer_spec.pointer_size.raw == 8)
     )]
     #[thrust_macros::ensures(forall(|l: LayoutData<FieldIdx, VariantIdx>|
         result != Ok(l) || FieldsShape::<FieldIdx>::arbitrary_of(l.fields, (*fields).len())))]
@@ -2931,8 +2940,10 @@ impl<VariantIdx: thrust_models::Model, FieldIdx: thrust_models::Model> thrust_mo
 impl<F: thrust_models::Model> thrust_models::Model for LayoutCalculatorError<F> {
     type Ty = LayoutCalculatorError<<F as thrust_models::Model>::Ty>;
 }
-impl<Cx> thrust_models::Model for LayoutCalculator<Cx> {
-    type Ty = Self;
+// The calculator's model is its one field's, so that a contract names `self.cx`'s data layout
+// through `Cx::dl_of(*self, dl)` (probes/calculator_dl.rs).
+impl<Cx: thrust_models::Model> thrust_models::Model for LayoutCalculator<Cx> {
+    type Ty = <Cx as thrust_models::Model>::Ty;
 }
 impl thrust_models::Model for NicheBias {
     type Ty = Self;

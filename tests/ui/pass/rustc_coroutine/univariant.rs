@@ -1390,12 +1390,12 @@ pub struct LayoutCalculator<Cx> {
 // `univariant_biased` apart from the data layout and the field layouts: `fields.indices()`
 // builds every field index up to `fields.len()`, the single variant is `VariantIdx::new(0)`,
 // and `MaybeUnsized` takes `fields.len() - 1`, which wraps below zero (overflow checks are off)
-// so that the slice `[..end]` panics. Not stated: `dl_wf` of the data layout and `niche_wf` of
-// every field's niche, which `Niche::available`, `Primitive::size` and `Size::checked_add`
-// need, and that the `NicheBias::End` layout succeeds and keeps a niche whenever the `Start`
-// one does (the two `unwrap_without_debug`s). The data layout is the one `self.cx` names, and
-// a formula cannot pass `self.cx`, a field of a struct modelled as itself, to `dl_of`; `F`'s
-// model is not related to the `LayoutData` it dereferences to. `ensures`: an `Ok` layout has `Arbitrary` fields over
+// so that the slice `[..end]` panics; and `dl_wf` of the data layout `self.cx` names (the
+// default pointer size is 2, 4 or 8 bytes, which `Size::checked_add` needs), named by
+// `Cx::dl_of(*self, dl)` since the calculator's model is `self.cx`'s. Not stated: `niche_wf` of
+// every field's niche, which `Niche::available` and `Primitive::size` need, and that the
+// `NicheBias::End` layout succeeds and keeps a niche whenever the `Start` one does (the two
+// `unwrap_without_debug`s); `F`'s model is not related to the `LayoutData` it dereferences to. `ensures`: an `Ok` layout has `Arbitrary` fields over
 // `fields.len()` fields, its memory order a permutation (`FieldsShape::arbitrary_of`).
 #[thrust_macros::context]
 impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
@@ -1404,6 +1404,10 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         forall(|k: Int| !(0 <= k && k <= (*fields).len()) || <FieldIdx as Idx>::can_new(k))
             && forall(|z: Int| !(z == 0usize) || <VariantIdx as Idx>::can_new(z))
             && (matches!(kind, StructKind::MaybeUnsized) ==> (*fields).len() > 0)
+            && forall(|dl: TargetDataLayout| !Cx::dl_of(*self, dl)
+                || dl.default_address_space_pointer_spec.pointer_size.raw == 2
+                || dl.default_address_space_pointer_spec.pointer_size.raw == 4
+                || dl.default_address_space_pointer_spec.pointer_size.raw == 8)
     )]
     #[thrust_macros::ensures(forall(|l: LayoutData<FieldIdx, VariantIdx>|
         result != Ok(l) || FieldsShape::<FieldIdx>::arbitrary_of(l.fields, (*fields).len())))]
@@ -1882,8 +1886,10 @@ impl<FieldIdx: Idx> thrust_models::Model for VariantLayout<FieldIdx> {
 impl<F: thrust_models::Model> thrust_models::Model for LayoutCalculatorError<F> {
     type Ty = LayoutCalculatorError<<F as thrust_models::Model>::Ty>;
 }
-impl<Cx> thrust_models::Model for LayoutCalculator<Cx> {
-    type Ty = Self;
+// The calculator's model is its one field's, so that a contract names `self.cx`'s data layout
+// through `Cx::dl_of(*self, dl)` (probes/calculator_dl.rs).
+impl<Cx: thrust_models::Model> thrust_models::Model for LayoutCalculator<Cx> {
+    type Ty = <Cx as thrust_models::Model>::Ty;
 }
 impl thrust_models::Model for NicheBias {
     type Ty = Self;
