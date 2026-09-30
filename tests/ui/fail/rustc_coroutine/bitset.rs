@@ -7,7 +7,7 @@
 // Extracted from tests/ui/pass/rustc_coroutine/target.rs (rustc's
 // rustc_index::bit_set and rustc_index::idx, adapted).
 
-use thrust_models::forall;
+use thrust_models::{exists, forall};
 use thrust_models::model::{Int, Seq};
 
 use std::fmt::Debug;
@@ -302,6 +302,19 @@ pub struct BitMatrix<R: Idx, C: Idx> {
 
 #[thrust_macros::context]
 impl<R: Idx, C: Idx> BitMatrix<R, C> {
+    /// Well-formedness: `words` holds `num_words(num_columns)` words per row
+    /// (the invariant `BitMatrix::new` establishes). `num_words` is
+    /// `ceil(num_columns / 64)`, spelled as the word count `rw` with
+    /// `64 * rw >= num_columns` and `64 * rw < num_columns + 64`.
+    #[thrust_macros::predicate]
+    fn wf(self) -> bool {
+        exists(|rw: Int| {
+            self.words.len() == self.num_rows * rw
+                && 64 * rw >= self.num_columns
+                && 64 * rw < self.num_columns + 64
+        })
+    }
+
     // Trusted: `self.num_rows` read through `&self` carries no `v >= 0` (coord-e/thrust#165), which `IdxRange::new`'s `usize` parameter requires.
     #[thrust::trusted]
     #[thrust_macros::ensures(result.start == 0)]
@@ -310,9 +323,13 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
         IdxRange::new(0, self.num_rows)
     }
 
-    // Trusted: a `usize` field read through `&self` carries no `v >= 0`, which the callee's `usize` parameter requires (Unsat).
+    // Trusted: a `usize` field read through `&self` carries no `v >= 0` (coord-e/thrust#165), which the callee's `usize` parameter requires (Unsat).
     #[thrust::trusted]
     #[thrust::callable]
+    #[thrust_macros::requires(Self::wf(*self))]
+    #[thrust_macros::requires(forall(|i: Int| <R as Idx>::index_is(row, i) ==> i < (*self).num_rows))]
+    #[thrust_macros::ensures(result.0 <= result.1)]
+    #[thrust_macros::ensures(result.1 <= (*self).words.len())]
     fn range(&self, row: R) -> (usize, usize) {
         let words_per_row = num_words(self.num_columns);
         let start = row.index() * words_per_row;
@@ -323,8 +340,7 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
     // stated here: `BitIter::next`'s contract bounds the yielded index by the
     // *word array* size (`BitIter::bit_bound`), and relating that to
     // `num_columns` needs contracts on `range` (trusted) and `num_words`, which have none.
-    // Trusted: Thrust panics on the range index `&self.words[start..end]` (inconsistent types, src/rty/subtyping.rs).
-    #[thrust::trusted]
+    #[thrust_macros::requires(Self::wf(*self))]
     #[thrust_macros::requires(forall(|i: Int| <R as Idx>::index_is(row, i) ==> i < (*self).num_rows))]
     pub fn iter(&self, row: R) -> BitIter<'_, C> {
         assert!(row.index() < self.num_rows);
@@ -332,9 +348,9 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
         BitIter::new(&self.words[start..end])
     }
 
-    // Trusted: Thrust panics on the range index `&self.words[start..end]` (inconsistent types, src/rty/subtyping.rs).
-    #[thrust::trusted]
     #[thrust::callable]
+    #[thrust_macros::requires(Self::wf(*self))]
+    #[thrust_macros::requires(forall(|i: Int| <R as Idx>::index_is(row, i) ==> i < (*self).num_rows))]
     pub fn count(&self, row: R) -> usize {
         let (start, end) = self.range(row);
         count_ones(&self.words[start..end])
