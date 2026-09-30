@@ -1577,6 +1577,86 @@ impl<FV> Refinement<FV> {
         }
         subst_ty_params_in_body(&mut self.body, subst);
     }
+
+    /// Removes each existential that an unguarded body atom equates with a copy of another
+    /// variable, by substituting the copy for it, and drops the existentials that no longer occur.
+    /// A copy is a variable under any number of `Box` and `BoxCurrent`, which the model erases.
+    ///
+    /// `∃e. (e = t ∧ φ)` is equivalent to `φ[t/e]` for a term `t` in which `e` does not occur,
+    /// and `∃e. φ` to `φ` when `e` does not occur in `φ`, since every sort is inhabited. So the
+    /// result is equivalent to `self`, over the same free variables.
+    pub fn eliminate_existential_copies(self) -> Self
+    where
+        FV: Clone + Eq + std::hash::Hash,
+    {
+        type Term<FV> = chc::Term<RefinedTypeVar<FV>>;
+        fn copied_var<FV>(t: &Term<FV>) -> Option<&RefinedTypeVar<FV>> {
+            match t {
+                chc::Term::Var(v) => Some(v),
+                chc::Term::Box(t) | chc::Term::BoxCurrent(t) => copied_var(t),
+                _ => None,
+            }
+        }
+        fn resolve<FV: Clone>(
+            subst: &HashMap<ExistentialVarIdx, Term<FV>>,
+            t: Term<FV>,
+        ) -> Term<FV> {
+            t.subst_var(|v| match v {
+                RefinedTypeVar::Existential(ev) if subst.contains_key(&ev) => {
+                    resolve(subst, subst[&ev].clone())
+                }
+                v => chc::Term::var(v),
+            })
+        }
+        let eliminate = |subst: &mut HashMap<_, _>, atom: &chc::Atom<RefinedTypeVar<FV>>| {
+            let (None, chc::Pred::Known(chc::KnownPred::EQUAL), [lhs, rhs]) =
+                (&atom.guard, &atom.pred, atom.args.as_slice())
+            else {
+                return false;
+            };
+            let (lhs, rhs) = (resolve(subst, lhs.clone()), resolve(subst, rhs.clone()));
+            for (e, t) in [(&lhs, &rhs), (&rhs, &lhs)] {
+                let chc::Term::Var(RefinedTypeVar::Existential(ev)) = e else {
+                    continue;
+                };
+                if copied_var(t).is_some_and(|v| *v != RefinedTypeVar::Existential(*ev)) {
+                    subst.insert(*ev, t.clone());
+                    return true;
+                }
+            }
+            false
+        };
+        let Formula { existentials, body } = self;
+        let mut subst = HashMap::new();
+        let mut atoms = body.atoms;
+        atoms.retain(|atom| !eliminate(&mut subst, atom));
+        let mut formula = body.formula.into_conjuncts();
+        formula.retain(
+            |conj| !matches!(conj, chc::Formula::Atom(atom) if eliminate(&mut subst, atom)),
+        );
+        let body = chc::Body::new(atoms, chc::Formula::And(formula))
+            .subst_var(|v| resolve(&subst, chc::Term::var(v)));
+
+        let occurring: std::collections::HashSet<_> = body
+            .iter_atoms()
+            .flat_map(chc::Atom::fv)
+            .filter_map(|v| match v {
+                RefinedTypeVar::Existential(ev) => Some(*ev),
+                _ => None,
+            })
+            .collect();
+        let mut kept_existentials = IndexVec::new();
+        let renumber: HashMap<_, _> = existentials
+            .into_iter_enumerated()
+            .filter(|(ev, _)| occurring.contains(ev))
+            .map(|(ev, sort)| (ev, kept_existentials.push(sort)))
+            .collect();
+        let body = body.map_var(|v| match v {
+            RefinedTypeVar::Existential(ev) => RefinedTypeVar::Existential(renumber[&ev]),
+            v => v,
+        });
+        Formula::new(kept_existentials, body)
+    }
 }
 
 /// A helper type to map logical variables in a refinement at once.

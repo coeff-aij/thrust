@@ -1988,6 +1988,14 @@ impl<V> Formula<V> {
         }
     }
 
+    /// The top-level conjuncts, with nested conjunctions flattened.
+    pub fn into_conjuncts(self) -> Vec<Self> {
+        match self {
+            Formula::And(fs) => fs.into_iter().flat_map(Formula::into_conjuncts).collect(),
+            fo => vec![fo],
+        }
+    }
+
     pub fn push_conj(&mut self, other: Self) {
         match self {
             Formula::And(fs) => {

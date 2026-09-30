@@ -180,7 +180,7 @@ impl PrecondCapture {
         for (t, term) in self.target_equations {
             body.push_conj(chc::Term::var(t).equal_to(term.map_var(map)));
         }
-        rty::Refinement::new(self.existentials, body)
+        rty::Refinement::new(self.existentials, body).eliminate_existential_copies()
     }
 }
 
