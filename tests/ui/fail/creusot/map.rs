@@ -213,6 +213,11 @@ where
     }
 
 
+    // Written, not inherited: checked through the trait's default body, this impl's
+    // `produces_refl` leaves the pass query unanswered at 300 s (fptprove 804d76744), where the
+    // written proof answers in 23 s.
+    fn produces_refl(a: &Map<I, F>) {}
+
     fn produces_trans(a: &Map<I, F>, ab: Seq<<Self::Item as Model>::Ty>, b: &Map<I, F>, bc: Seq<<Self::Item as Model>::Ty>, c: &Map<I, F>) {
         let ga = thrust_macros::ghost!(|a: &Self| -> Self { *a });
         let gb = thrust_macros::ghost!(|b: &Self| -> Self { *b });

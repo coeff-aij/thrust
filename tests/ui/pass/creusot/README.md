@@ -13,7 +13,8 @@ without Creusot's invariant premises, which a Thrust loop head cannot supply for
 `invariant` defaulting to `true`, and `next` with Creusot's contract. Each law has a default empty
 body in the trait, and Thrust checks it at every impl that does not write it, where Creusot restates
 it in each impl with an empty body; an impl writes a law only when it needs proof steps (the
-`produces_trans` of `map`, `map_ext` and `counter_creusot`). The step-form files repeat theirs in the
+`produces_trans` of `map`, `map_ext` and `counter_creusot`), or when the solver does not answer the
+inherited check (`map`'s `produces_refl`). The step-form files repeat theirs in the
 same layout. A case that needs `collect` adds it to its copy after `next`.
 
 | file | Creusot benchmark file | form |
