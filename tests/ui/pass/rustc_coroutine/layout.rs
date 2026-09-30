@@ -1814,7 +1814,7 @@ impl<FieldIdx: Idx, VariantIdx: Idx> LayoutData<FieldIdx, VariantIdx> {
     }
 }
 
-// `PartialEq` added (rewrites.md S10): `univariant`'s requires tests for `MaybeUnsized`.
+// `PartialEq` added (rewrites.md S6): `univariant`'s requires tests for `MaybeUnsized`.
 #[derive(Copy, Clone, PartialEq /*Debug*/)]
 pub enum StructKind {
     AlwaysSized,
