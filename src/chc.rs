@@ -2855,13 +2855,14 @@ impl System {
         // Each `UserDefinedPred`'s body may call `ForallPred`s. We populate
         // these lazily via `populate_user_defined_pred_dependencies`; thread
         // them into the forall map so transitive propagation sees them.
-        // A formula body may also call other `UserDefinedPred`s, whose
-        // `ForallPred` uses then propagate through it.
+        // A formula body may also call other `UserDefinedPred`s and apply
+        // predicate variables, whose `ForallPred` uses then propagate through it.
         for udpd in &self.user_defined_pred_defs {
             if let UserDefinedPredBody::Formula(formula) = &udpd.body {
                 let callees: HashSet<_> = formula
                     .iter_atoms()
                     .filter_map(|atom| match &atom.pred {
+                        Pred::Var(id) => Some(ExistsDep::PredVar(*id)),
                         Pred::UserDefined(p) => Some(ExistsDep::UserDefined(p.clone())),
                         _ => None,
                     })
