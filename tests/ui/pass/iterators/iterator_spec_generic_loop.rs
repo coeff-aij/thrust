@@ -1,6 +1,6 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:0360cb142
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:804d76744
 
 // A `while let Some(x) = it.next()` loop at a type parameter with an `IteratorSpec` bound. `next`
 // gives one step at a time; `produces_refl` (from the start state's invariant) and `produces_trans`

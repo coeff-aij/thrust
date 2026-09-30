@@ -1,6 +1,6 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:0360cb142
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:804d76744
 
 // A slice whose element type is a type parameter. `<[T] as Model>::Ty` is of no use here: with
 // a `Model` bound it normalizes to a `Seq` that still carries `<T as Model>::Ty`, and without

@@ -1,6 +1,6 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -Adead_code -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:0360cb142
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:804d76744
 
 // Rust's `/` truncates toward zero and its `%` takes the sign of the dividend, so for a
 // negative dividend both go the opposite way from the never-negative remainder that

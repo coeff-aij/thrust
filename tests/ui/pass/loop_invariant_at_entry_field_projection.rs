@@ -1,6 +1,6 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off -A unused-variables
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60 COAR_IMAGE=coar:0360cb142
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60 COAR_IMAGE=coar:804d76744
 
 // A loop invariant may name individual fields of a `&mut` parameter's entry state
 // through `at_entry()`, without also asserting a whole-value equality against it.

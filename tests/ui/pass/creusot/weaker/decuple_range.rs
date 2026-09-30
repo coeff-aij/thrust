@@ -1,6 +1,6 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off -A unused-variables
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 COAR_IMAGE=coar:0360cb142
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 COAR_IMAGE=coar:804d76744
 
 // Creusot's `examples/decuple_range`: `(0..10).map(|x| x * 10).collect()` with a closure that is
 // defined only below 100. The iterator spec is the step form of `creusot/weaker/map_call.rs`; `Map` is

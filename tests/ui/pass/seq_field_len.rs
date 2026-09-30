@@ -1,5 +1,5 @@
 //@check-pass
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60 COAR_IMAGE=coar:0360cb142
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60 COAR_IMAGE=coar:804d76744
 
 // A `Vec` reached through a field of a struct whose model is the struct itself
 // keeps its real Rust type inside a formula, so the model's `.array` / `.length`

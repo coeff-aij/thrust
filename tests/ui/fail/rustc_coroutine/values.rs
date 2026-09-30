@@ -1,7 +1,7 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@no-rustfix
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 COAR_IMAGE=coar:0360cb142 THRUST_TRY_SPECS=1
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 COAR_IMAGE=coar:804d76744 THRUST_TRY_SPECS=1
 // Adapted from rust-lang/rust
 // commit: 89a99936d9e76a50e8df622e7242190841fd871b
 // Licensed under MIT OR Apache-2.0

@@ -1,6 +1,6 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -Adead_code -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:0360cb142
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:804d76744
 
 // A default method's postcondition is checked once against the abstract predicate, so it
 // has to hold for every implementor: `produces` is non-empty in the only impl here, but

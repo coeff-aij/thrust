@@ -1,6 +1,6 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:0360cb142
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:804d76744
 // A higher-order function whose specification refers to the pre-/post-conditions
 // of its closure argument via `pre!(f(..))` / `post!(f(..), result)`.
 #[thrust_macros::requires(thrust_macros::pre!(f(x)))]
