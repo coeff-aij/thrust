@@ -618,6 +618,9 @@ pub struct Niche {
 
 #[thrust_macros::context]
 impl Niche {
+    #[thrust_macros::requires(forall(|dl: TargetDataLayout, r: WrappingRange, a: AddressSpace|
+        !(C::dl_of(*cx, dl) && scalar == Scalar::Initialized { value: Primitive::Pointer(a), valid_range: r })
+            || TargetDataLayout::pointer_space_ok(dl, a)))]
     pub fn from_scalar<C: HasDataLayout>(cx: &C, offset: Size, scalar: Scalar) -> Option<Self> {
         let Scalar::Initialized { value, valid_range } = scalar else {
             return None;
@@ -634,10 +637,12 @@ impl Niche {
         }
     }
 
-    // Trusted; the intended `requires` is `prim_wf(self.value, *cx.data_layout())`,
-    // which is not expressible for a generic `cx` (see `HasDataLayout`).
+    // Trusted: the bit operations of the body are not modelled. The `requires` is that of
+    // `value.size(cx)`; the pointer size it admits (2, 4 or 8 bytes) also meets the `assert!`.
     #[thrust::trusted]
-    #[thrust::callable]
+    #[thrust_macros::requires(forall(|dl: TargetDataLayout, a: AddressSpace|
+        !(C::dl_of(*cx, dl) && (*self).value == Primitive::Pointer(a)) || TargetDataLayout::pointer_space_ok(dl, a)))]
+    #[thrust_macros::ensures(true)]
     pub fn available<C: HasDataLayout>(&self, cx: &C) -> u128 {
         let Self {
             value,
