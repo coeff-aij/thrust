@@ -18,6 +18,13 @@ when it protects behavior that could plausibly regress without an obviously inco
 code change. Similar implementations do not each need separate tests when one
 representative case sufficiently exercises the behavior.
 
+## Specifications in `std.rs`
+
+`std.rs` is injected into every crate Thrust verifies, so a specification there must be
+general: it states the function's behaviour faithfully and serves every call site.
+A weaker contract that only one proof needs goes in that test's own file, as an extern-spec
+wrapper or a local trusted helper, not in `std.rs`.
+
 ## Comments
 
 Fewer comments are better. A code comment means the code itself isn't self-explanatory
