@@ -427,7 +427,7 @@ impl PlaceType {
         let mut field_terms = Vec::new();
         let mut field_tys = Vec::new();
         for field_ty in variant.field_tys.clone() {
-            let mut rty = rty::RefinedType::unrefined(field_ty.vacuous());
+            let mut rty = field_ty.vacuous();
             rty.instantiate_ty_params(inner_ty.args.clone());
             let (ty, field_ex_var) = builder.subsume_rty(rty.boxed());
 
@@ -776,7 +776,7 @@ where
             for field_ty in &variant_def.field_tys {
                 let x = self.temp_vars.next_index();
                 fields.push(x);
-                let mut field_ty = rty::RefinedType::unrefined(field_ty.clone().vacuous());
+                let mut field_ty = field_ty.clone().vacuous();
                 field_ty.instantiate_ty_params(ty.args.clone());
                 let guarded_field_ty = field_ty.guarded(
                     chc::Term::var(discr_var.into())
@@ -1285,7 +1285,7 @@ where
 
             let mut pred_args = vec![];
             for field_ty in enum_def.field_tys() {
-                let mut field_rty = rty::RefinedType::unrefined(field_ty.clone().vacuous());
+                let mut field_rty = field_ty.clone().vacuous();
                 field_rty.instantiate_ty_params(ety.args.clone());
                 let field_type = field_rty.ty;
 

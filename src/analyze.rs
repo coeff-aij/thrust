@@ -1032,7 +1032,6 @@ impl<'tcx> Analyzer<'tcx> {
             generic_args
                 .types()
                 .map(|ty| type_builder.build(ty))
-                .map(rty::RefinedType::unrefined)
                 .collect(),
         );
         def_ty.ty.as_function().cloned()
@@ -1169,7 +1168,6 @@ impl<'tcx> Analyzer<'tcx> {
             generic_args
                 .types()
                 .map(|ty| type_builder.build(ty))
-                .map(rty::RefinedType::unrefined)
                 .collect(),
         );
     }
