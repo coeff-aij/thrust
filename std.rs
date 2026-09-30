@@ -1039,7 +1039,7 @@ uint_div_ceil_spec!(u64, _extern_spec_u64_div_ceil);
 // source type: `fits` says the value is one of `U`, and `converts_to` relates it to the `U` it
 // becomes.
 #[thrust_macros::context]
-trait TryIntoSpec<U>: TryInto<U> + thrust_models::Model
+trait TryIntoSpec<U>: core::convert::TryInto<U> + thrust_models::Model
 where
     U: thrust_models::Model,
 {
@@ -1082,13 +1082,13 @@ int_try_into_specs!(isize, i8, i16, i32, i64, i128, usize, u8, u16, u32, u64, u1
     (T::fits(value) && thrust_models::exists(|x| result == Ok(x) && T::converts_to(value, x)))
     || (!T::fits(value) && thrust_models::exists(|e| result == Err(e)))
 )]
-fn _extern_spec_try_into<T, U>(value: T) -> Result<U, <T as TryInto<U>>::Error>
+fn _extern_spec_try_into<T, U>(value: T) -> Result<U, <T as core::convert::TryInto<U>>::Error>
     where T: TryIntoSpec<U>, T::Ty: PartialEq,
           U: thrust_models::Model, U::Ty: PartialEq,
-          <T as TryInto<U>>::Error: thrust_models::Model,
-          <<T as TryInto<U>>::Error as thrust_models::Model>::Ty: PartialEq,
+          <T as core::convert::TryInto<U>>::Error: thrust_models::Model,
+          <<T as core::convert::TryInto<U>>::Error as thrust_models::Model>::Ty: PartialEq,
 {
-    <T as TryInto<U>>::try_into(value)
+    <T as core::convert::TryInto<U>>::try_into(value)
 }
 
 #[thrust::extern_spec_fn]
@@ -1097,13 +1097,13 @@ fn _extern_spec_try_into<T, U>(value: T) -> Result<U, <T as TryInto<U>>::Error>
     (T::fits(value) && thrust_models::exists(|x| result == Ok(x) && T::converts_to(value, x)))
     || (!T::fits(value) && thrust_models::exists(|e| result == Err(e)))
 )]
-fn _extern_spec_try_from<T, U>(value: T) -> Result<U, <U as TryFrom<T>>::Error>
+fn _extern_spec_try_from<T, U>(value: T) -> Result<U, <U as core::convert::TryFrom<T>>::Error>
     where T: TryIntoSpec<U>, T::Ty: PartialEq,
-          U: TryFrom<T> + thrust_models::Model, U::Ty: PartialEq,
-          <U as TryFrom<T>>::Error: thrust_models::Model,
-          <<U as TryFrom<T>>::Error as thrust_models::Model>::Ty: PartialEq,
+          U: core::convert::TryFrom<T> + thrust_models::Model, U::Ty: PartialEq,
+          <U as core::convert::TryFrom<T>>::Error: thrust_models::Model,
+          <<U as core::convert::TryFrom<T>>::Error as thrust_models::Model>::Ty: PartialEq,
 {
-    <U as TryFrom<T>>::try_from(value)
+    <U as core::convert::TryFrom<T>>::try_from(value)
 }
 
 #[thrust::extern_spec_fn]
@@ -2177,11 +2177,11 @@ fn _extern_spec_vec_from_elem<T>(elem: T, n: usize) -> Vec<T>
     std::vec::from_elem(elem, n)
 }
 
-// Only the lengths are specified; the element-wise description of the two
-// halves needs quantifiers the solvers do not handle well yet.
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(at <= (*vec).len())]
-#[thrust_macros::ensures((!vec).len() == at && result.len() == (*vec).len() - at)]
+#[thrust_macros::ensures(
+    !vec == (*vec).subsequence(0, at) && result == (*vec).subsequence(at, (*vec).len())
+)]
 fn _extern_spec_vec_split_off<T>(vec: &mut Vec<T>, at: usize) -> Vec<T>
     where T: thrust_models::Model, T::Ty: PartialEq
 {
@@ -2199,7 +2199,7 @@ fn _extern_spec_vec_split_off<T>(vec: &mut Vec<T>, at: usize) -> Vec<T>
 )]
 fn _extern_spec_vec_extend<T, I>(vec: &mut Vec<T>, iter: I)
     where T: thrust_models::Model, T::Ty: PartialEq,
-          I: IntoIterator<Item = T> + thrust_models::Model, I::Ty: PartialEq
+          I: IntoIteratorSpec<Item = T>, I::IntoIter: IteratorSpec, I::Ty: PartialEq
 {
     <Vec<T> as std::iter::Extend<T>>::extend(vec, iter)
 }
@@ -2210,7 +2210,7 @@ fn _extern_spec_vec_extend<T, I>(vec: &mut Vec<T>, iter: I)
 #[thrust_macros::ensures(true)]
 fn _extern_spec_vec_from_iter<T, I>(iter: I) -> Vec<T>
     where T: thrust_models::Model, T::Ty: PartialEq,
-          I: IntoIterator<Item = T> + thrust_models::Model, I::Ty: PartialEq
+          I: IntoIteratorSpec<Item = T>, I::IntoIter: IteratorSpec, I::Ty: PartialEq
 {
     <Vec<T> as std::iter::FromIterator<T>>::from_iter(iter)
 }
@@ -2254,6 +2254,47 @@ fn _extern_spec_hash<T, H>(x: &T, state: &mut H)
   where T: std::hash::Hash + thrust_models::Model + ?Sized, T::Ty: PartialEq, H: std::hash::Hasher + thrust_models::Model, H::Ty: PartialEq
 {
     std::hash::Hash::hash(x, state)
+}
+
+// The hasher's `write*` methods are called by foreign `hash` impls, so a local hasher is checked
+// against these.
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(true)]
+fn _extern_spec_hasher_write<H>(state: &mut H, bytes: &[u8])
+  where H: std::hash::Hasher + thrust_models::Model, H::Ty: PartialEq
+{
+    std::hash::Hasher::write(state, bytes)
+}
+
+macro_rules! extern_spec_hasher_write_int {
+    ($($spec:ident $method:ident $ty:ty,)*) => {
+        $(
+            #[thrust::extern_spec_fn]
+            #[thrust_macros::requires(true)]
+            #[thrust_macros::ensures(true)]
+            fn $spec<H>(state: &mut H, i: $ty)
+              where H: std::hash::Hasher + thrust_models::Model, H::Ty: PartialEq
+            {
+                std::hash::Hasher::$method(state, i)
+            }
+        )*
+    };
+}
+
+extern_spec_hasher_write_int! {
+    _extern_spec_hasher_write_u8 write_u8 u8,
+    _extern_spec_hasher_write_u16 write_u16 u16,
+    _extern_spec_hasher_write_u32 write_u32 u32,
+    _extern_spec_hasher_write_u64 write_u64 u64,
+    _extern_spec_hasher_write_u128 write_u128 u128,
+    _extern_spec_hasher_write_usize write_usize usize,
+    _extern_spec_hasher_write_i8 write_i8 i8,
+    _extern_spec_hasher_write_i16 write_i16 i16,
+    _extern_spec_hasher_write_i32 write_i32 i32,
+    _extern_spec_hasher_write_i64 write_i64 i64,
+    _extern_spec_hasher_write_i128 write_i128 i128,
+    _extern_spec_hasher_write_isize write_isize isize,
 }
 
 // Default values of foreign types are not modeled; the spec only records that
