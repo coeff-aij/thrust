@@ -285,6 +285,13 @@ impl<'ctx, 'a> std::fmt::Display for Atom<'ctx, 'a> {
         let pred = match &self.inner.pred {
             chc::Pred::Matcher(p) => self.ctx.matcher_pred(p).to_string(),
             chc::Pred::ForallPred(p) => self.ctx.forall_pred(p).to_string(),
+            chc::Pred::Tester(ctor) => {
+                let sort = self.inner.args[0]
+                    .sort(|v| self.var_sorts[*v].clone())
+                    .into_datatype()
+                    .unwrap();
+                format!("(_ is {})", self.ctx.datatype_ctor(&sort, ctor))
+            }
             p => p.name().into_owned(),
         };
         if self.inner.args.is_empty() {

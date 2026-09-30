@@ -56,6 +56,7 @@ fn unbox_pred(pred: Pred) -> Pred {
         Pred::Matcher(pred) => unbox_matcher_pred(pred),
         Pred::UserDefined(pred) => Pred::UserDefined(pred),
         Pred::ForallPred(pred) => Pred::ForallPred(unbox_forall_pred_var_def(pred)),
+        Pred::Tester(ctor) => Pred::Tester(ctor),
     }
 }
 

@@ -1452,6 +1452,8 @@ pub enum Pred {
     Matcher(MatcherPred),
     UserDefined(UserDefinedPred),
     ForallPred(ForallPred),
+    /// The datatype tester `(_ is C)` of the constructor `C`, applied to one argument.
+    Tester(DatatypeSymbol),
 }
 
 impl std::fmt::Display for Pred {
@@ -1462,6 +1464,7 @@ impl std::fmt::Display for Pred {
             Pred::Matcher(p) => p.fmt(f),
             Pred::UserDefined(p) => p.fmt(f),
             Pred::ForallPred(p) => p.fmt(f),
+            Pred::Tester(c) => write!(f, "is<{c}>"),
         }
     }
 }
@@ -1478,6 +1481,7 @@ where
             Pred::Matcher(p) => p.pretty(allocator),
             Pred::UserDefined(p) => p.pretty(allocator),
             Pred::ForallPred(p) => p.pretty(allocator),
+            Pred::Tester(c) => allocator.text(format!("is<{c}>")),
         }
     }
 }
@@ -1520,6 +1524,7 @@ impl Pred {
             Pred::Matcher(p) => p.name().into(),
             Pred::UserDefined(p) => p.to_string().into(),
             Pred::ForallPred(p) => p.to_string().into(),
+            Pred::Tester(c) => format!("is<{c}>").into(),
         }
     }
 
@@ -1530,6 +1535,7 @@ impl Pred {
             Pred::Matcher(_) => false,
             Pred::UserDefined(_) => false,
             Pred::ForallPred(_) => false,
+            Pred::Tester(_) => false,
         }
     }
 
@@ -1540,6 +1546,7 @@ impl Pred {
             Pred::Matcher(_) => false,
             Pred::UserDefined(_) => false,
             Pred::ForallPred(_) => false,
+            Pred::Tester(_) => false,
         }
     }
 
@@ -1550,6 +1557,7 @@ impl Pred {
             Pred::Matcher(_) => false,
             Pred::UserDefined(_) => false,
             Pred::ForallPred(_) => false,
+            Pred::Tester(_) => false,
         }
     }
 
@@ -1560,6 +1568,7 @@ impl Pred {
             Pred::Matcher(_) => false,
             Pred::UserDefined(_) => false,
             Pred::ForallPred(_) => false,
+            Pred::Tester(_) => false,
         }
     }
 }
