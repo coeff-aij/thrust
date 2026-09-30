@@ -124,6 +124,11 @@ impl<'a> FormulaFnTypeLowering<'a> {
 
         impl syn::visit::Visit<'_> for Visitor {
             fn visit_type_path(&mut self, tp: &syn::TypePath) {
+                // `<T as Model>::Ty` is already a model type, which needs no model of its own.
+                if tp.qself.is_some() && is_model_ty_projection(&tp.path) {
+                    syn::visit::visit_type_path(self, tp);
+                    return;
+                }
                 for param in &self.generic_type_params {
                     if let Some(qself) = &tp.qself {
                         let param_ty: syn::Type = syn::parse_quote!(#param);
@@ -213,7 +218,9 @@ impl<'a> FormulaFnTypeLowering<'a> {
                     .collect();
                 syn::Type::Tuple(tt)
             }
-            syn::Type::Path(tp) => {
+            // Any other type's `Model` impl says how it models a closure argument (`Map<I, F>` as
+            // `Closure<F>`), as it does for `self`, so the argument is left as written there.
+            syn::Type::Path(tp) if is_spec_wrapper(&tp.path) => {
                 let mut tp = tp.clone();
                 for segment in &mut tp.path.segments {
                     if let syn::PathArguments::AngleBracketed(args) = &mut segment.arguments {
@@ -230,6 +237,22 @@ impl<'a> FormulaFnTypeLowering<'a> {
             _ => ty.clone(),
         }
     }
+}
+
+/// The specification types, whose arguments are models (`Seq`, `Mut`) or are read through their
+/// models (`Ghost`, `FnParam`), so that a closure argument stands for its `Closure` model.
+fn is_spec_wrapper(path: &syn::Path) -> bool {
+    path.segments.last().is_some_and(|s| {
+        matches!(
+            s.ident.to_string().as_str(),
+            "FnParam" | "Ghost" | "Seq" | "Mut"
+        )
+    })
+}
+
+fn is_model_ty_projection(path: &syn::Path) -> bool {
+    let mut idents = path.segments.iter().rev().map(|s| s.ident.to_string());
+    idents.next().as_deref() == Some("Ty") && idents.next().as_deref() == Some("Model")
 }
 
 fn has_fn_bound<'a>(bounds: impl IntoIterator<Item = &'a syn::TypeParamBound>) -> bool {
