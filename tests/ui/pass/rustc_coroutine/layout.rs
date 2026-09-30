@@ -16,8 +16,8 @@
 // README fact that discharges it, plus a trusted `lemma_permutation_split`
 // skeleton (not called from `layout()`, per the task).
 
-use thrust_models::forall;
-use thrust_models::model::Int;
+use thrust_models::model::{Int, Mut, Seq};
+use thrust_models::{exists, forall};
 
 use std::borrow::{Borrow, BorrowMut};
 use std::convert::TryInto;
@@ -75,9 +75,11 @@ pub struct DenseBitSet<T> {
     marker: PhantomData<T>,
 }
 
+#[thrust_macros::context]
 impl<T: Idx> DenseBitSet<T> {
     #[thrust::trusted]
     #[thrust::callable]
+    #[thrust_macros::ensures(0 <= result)]
     pub fn iter(&self) -> BitIter<'_, T> {
         BitIter::new(&self.words)
     }
@@ -598,6 +600,7 @@ impl<I: Idx, T> BorrowMut<IndexSlice<I, T>> for IndexVec<I, T> {
 
 impl<I: Idx, T> Extend<T> for IndexVec<I, T> {
     #[inline]
+    #[thrust::trusted]
     fn extend<J: IntoIterator<Item = T>>(&mut self, iter: J) {
         self.raw.extend(iter);
     }
@@ -745,8 +748,9 @@ pub fn layout<
     let promoted_layouts = ineligible_locals.iter().map(|local| local_layouts[local]);
     prefix_layouts.push(tag_to_layout(tag));
     prefix_layouts.extend(promoted_layouts);
-    // TODO(proof): `prefix_layouts.len() == original length + 1 + card(ineligible_locals)`
-    // (README stage 7) is needed for `b_start <= offsets.len()` below.
+    // TODO(proof): `push` and `extend` give `prefix_layouts.len() == original length + 1 + n`,
+    // `n` the item count of `ineligible_locals.iter()`; `n == card(ineligible_locals)` needs the
+    // set-to-iterator link that `DenseBitSet::iter` lacks (README stage 7).
     let prefix = match calc.univariant(
         &prefix_layouts,
         &ReprOptions::default(),
@@ -1091,9 +1095,9 @@ pub struct Size {
 impl Size {
     pub const ZERO: Size = Size { raw: 0 };
 
-    #[thrust::trusted]
-    #[thrust::callable]
-    pub fn from_bits(bits: impl TryInto<u64>) -> Size {
+    #[thrust_macros::requires(T::fits(bits))]
+    #[thrust_macros::ensures(thrust_models::exists(|b| T::converts_to(bits, b) && result.raw == (b + 7) / 8))]
+    pub fn from_bits<T: TryIntoSpec<u64>>(bits: T) -> Size {
         let bits = bits.try_into().ok().unwrap();
         Size {
             raw: bits.div_ceil(8),
@@ -1101,9 +1105,9 @@ impl Size {
     }
 
     #[inline]
-    #[thrust::trusted]
-    #[thrust::callable]
-    pub fn from_bytes(bytes: impl TryInto<u64>) -> Size {
+    #[thrust_macros::requires(T::fits(bytes))]
+    #[thrust_macros::ensures(thrust_models::exists(|b| T::converts_to(bytes, b) && result.raw == b))]
+    pub fn from_bytes<T: TryIntoSpec<u64>>(bytes: T) -> Size {
         let bytes: u64 = bytes.try_into().ok().unwrap();
         Size { raw: bytes }
     }
@@ -1773,6 +1777,333 @@ impl<T> Unwrap<T> for Option<T> {
     }
 }
 
+// //== local to the case study: the number of items an iterator yields, and the length of what
+// `extend` and `collect` build from them. Iterator specs are not in std.rs yet.
+
+// local to the case study
+impl<I: thrust_models::Model, F> thrust_models::Model for iter::Map<I, F> {
+    type Ty = <I as thrust_models::Model>::Ty;
+}
+
+// local to the case study
+impl<I: thrust_models::Model, P> thrust_models::Model for iter::Filter<I, P> {
+    type Ty = <I as thrust_models::Model>::Ty;
+}
+
+// local to the case study: the model is the number of items still to yield
+#[thrust_macros::context]
+impl<'a, T: Idx + thrust_models::Model> IteratorSpec for BitIter<'a, T>
+where
+    T::Ty: PartialEq,
+{
+    #[thrust_macros::predicate]
+    fn inv(self) -> bool {
+        0 <= self
+    }
+
+    #[thrust_macros::predicate]
+    fn produces(self, visited: Vec<T>, o: Self) -> bool {
+        0 <= o && o + visited.len() == self
+    }
+
+    #[thrust_macros::predicate]
+    fn completed(&mut self) -> bool {
+        *self == 0 && *self == !self
+    }
+
+    fn produces_refl(a: &Self) {}
+
+    fn produces_trans(
+        a: &Self,
+        ab: Seq<<Self::Item as thrust_models::Model>::Ty>,
+        b: &Self,
+        bc: Seq<<Self::Item as thrust_models::Model>::Ty>,
+        c: &Self,
+    ) {
+    }
+}
+
+// local to the case study
+#[thrust_macros::context]
+impl<'a, T: thrust_models::Model> IteratorSpec for SliceIter<'a, T>
+where
+    T::Ty: PartialEq,
+{
+    #[thrust_macros::predicate]
+    fn inv(self) -> bool {
+        0 <= self.1 && self.1 <= self.0.len()
+    }
+
+    #[thrust_macros::predicate]
+    fn produces(self, visited: Vec<&'a T>, o: Self) -> bool {
+        self.0 == o.0
+            && self.1 <= o.1
+            && o.1 <= self.0.len()
+            && visited.len() == o.1 - self.1
+            && forall(|i: Int| !(0 <= i && i < visited.len()) || visited[i] == &self.0[self.1 + i])
+    }
+
+    #[thrust_macros::predicate]
+    fn completed(&mut self) -> bool {
+        (*self).1 >= (*self).0.len() && *self == !self
+    }
+
+    fn produces_refl(a: &Self) {}
+
+    fn produces_trans(
+        a: &Self,
+        ab: Seq<<Self::Item as thrust_models::Model>::Ty>,
+        b: &Self,
+        bc: Seq<<Self::Item as thrust_models::Model>::Ty>,
+        c: &Self,
+    ) {
+    }
+}
+
+// local to the case study
+#[thrust_macros::context]
+impl<'a, I: Idx + thrust_models::Model, T: thrust_models::Model> IteratorSpec for IterEnumerated<'a, I, T>
+where
+    I::Ty: PartialEq,
+    T::Ty: PartialEq,
+{
+    #[thrust_macros::predicate]
+    fn inv(self) -> bool {
+        0 <= self.1 && self.1 <= self.0.len()
+    }
+
+    #[thrust_macros::predicate]
+    fn produces(self, visited: Vec<(I, &'a T)>, o: Self) -> bool {
+        self.0 == o.0
+            && self.1 <= o.1
+            && o.1 <= self.0.len()
+            && visited.len() == o.1 - self.1
+            && forall(|i: Int| !(0 <= i && i < visited.len()) || visited[i].1 == &self.0[self.1 + i])
+    }
+
+    #[thrust_macros::predicate]
+    fn completed(&mut self) -> bool {
+        (*self).1 >= (*self).0.len() && *self == !self
+    }
+
+    fn produces_refl(a: &Self) {}
+
+    fn produces_trans(
+        a: &Self,
+        ab: Seq<<Self::Item as thrust_models::Model>::Ty>,
+        b: &Self,
+        bc: Seq<<Self::Item as thrust_models::Model>::Ty>,
+        c: &Self,
+    ) {
+    }
+}
+
+// local to the case study: one item out per item in
+#[thrust_macros::context]
+impl<I, F, B> IteratorSpec for iter::Map<I, F>
+where
+    I: IteratorSpec,
+    F: FnMut(I::Item) -> B,
+    B: thrust_models::Model,
+    I::Item: thrust_models::Model,
+    I::Ty: PartialEq,
+    <I::Item as thrust_models::Model>::Ty: PartialEq,
+    B::Ty: PartialEq,
+{
+    #[thrust_macros::predicate]
+    fn inv(self) -> bool {
+        I::inv(self)
+    }
+
+    #[thrust_macros::predicate]
+    fn produces(self, visited: Vec<B>, o: Self) -> bool {
+        exists(|xs: Seq<<I::Item as thrust_models::Model>::Ty>|
+            I::produces(self, xs, o) && xs.len() == visited.len())
+    }
+
+    #[thrust_macros::predicate]
+    fn completed(&mut self) -> bool {
+        I::completed(Mut::new(*self, !self))
+    }
+
+    fn produces_refl(a: &Self) {}
+
+    fn produces_trans(
+        a: &Self,
+        ab: Seq<<Self::Item as thrust_models::Model>::Ty>,
+        b: &Self,
+        bc: Seq<<Self::Item as thrust_models::Model>::Ty>,
+        c: &Self,
+    ) {
+    }
+}
+
+// local to the case study: at most one item out per item in
+#[thrust_macros::context]
+impl<I, P> IteratorSpec for iter::Filter<I, P>
+where
+    I: IteratorSpec,
+    P: FnMut(&I::Item) -> bool,
+    I::Item: thrust_models::Model,
+    I::Ty: PartialEq,
+    <I::Item as thrust_models::Model>::Ty: PartialEq,
+{
+    #[thrust_macros::predicate]
+    fn inv(self) -> bool {
+        I::inv(self)
+    }
+
+    #[thrust_macros::predicate]
+    fn produces(self, visited: Vec<I::Item>, o: Self) -> bool {
+        exists(|xs: Seq<<I::Item as thrust_models::Model>::Ty>|
+            I::produces(self, xs, o) && visited.len() <= xs.len())
+    }
+
+    #[thrust_macros::predicate]
+    fn completed(&mut self) -> bool {
+        I::completed(Mut::new(*self, !self))
+    }
+
+    fn produces_refl(a: &Self) {}
+
+    fn produces_trans(
+        a: &Self,
+        ab: Seq<<Self::Item as thrust_models::Model>::Ty>,
+        b: &Self,
+        bc: Seq<<Self::Item as thrust_models::Model>::Ty>,
+        c: &Self,
+    ) {
+    }
+}
+
+// local to the case study
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(result == it)]
+fn _extern_spec_iterator_map<I, B, F>(it: I, f: F) -> iter::Map<I, F>
+where
+    I: IteratorSpec,
+    F: FnMut(I::Item) -> B,
+    B: thrust_models::Model,
+    I::Item: thrust_models::Model,
+    I::Ty: PartialEq,
+    <I::Item as thrust_models::Model>::Ty: PartialEq,
+    B::Ty: PartialEq,
+{
+    <I as Iterator>::map(it, f)
+}
+
+// local to the case study
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(result == it)]
+fn _extern_spec_iterator_filter<I, P>(it: I, predicate: P) -> iter::Filter<I, P>
+where
+    I: IteratorSpec,
+    P: FnMut(&I::Item) -> bool,
+    I::Item: thrust_models::Model,
+    I::Ty: PartialEq,
+    <I::Item as thrust_models::Model>::Ty: PartialEq,
+{
+    <I as Iterator>::filter(it, predicate)
+}
+
+// local to the case study: the old items are kept, and the iterator is exhausted
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(
+    exists(|visited: Seq<<J::Item as thrust_models::Model>::Ty>, mid: <J as thrust_models::Model>::Ty|
+        J::produces(iter, visited, mid)
+            && J::completed(Mut::new(mid, mid))
+            && (!slf).len() == (*slf).len() + visited.len())
+        && forall(|i: Int| !(0 <= i && i < (*slf).len()) || (!slf)[i] == (*slf)[i])
+)]
+fn _extern_spec_index_vec_extend<I, T, J>(slf: &mut IndexVec<I, T>, iter: J)
+where
+    I: Idx + thrust_models::Model,
+    I::Ty: PartialEq,
+    T: thrust_models::Model,
+    T::Ty: PartialEq,
+    J: IteratorSpec + Iterator<Item = T>,
+    J::Ty: PartialEq,
+    <J::Item as thrust_models::Model>::Ty: PartialEq,
+{
+    <IndexVec<I, T> as Extend<T>>::extend(slf, iter)
+}
+
+// local to the case study: what a collection built by `collect` says of the items it took
+#[thrust_macros::context]
+trait CollectSpec<A>: FromIterator<A> + thrust_models::Model {
+    #[thrust_macros::predicate]
+    fn of_len(self, n: Int) -> bool;
+
+    #[thrust_macros::predicate]
+    fn stopped(self) -> bool;
+}
+
+// local to the case study
+#[thrust_macros::context]
+impl<I: Idx, T: thrust_models::Model> CollectSpec<T> for IndexVec<I, T>
+where
+    I: thrust_models::Model,
+    I::Ty: PartialEq,
+    T::Ty: PartialEq,
+{
+    #[thrust_macros::predicate]
+    fn of_len(self, n: Int) -> bool {
+        self.len() == n
+    }
+
+    #[thrust_macros::predicate]
+    fn stopped(self) -> bool {
+        false
+    }
+}
+
+// local to the case study: a fallible collection stops at the first failing item
+#[thrust_macros::context]
+impl<A, E, V> CollectSpec<Result<A, E>> for Result<V, E>
+where
+    A: thrust_models::Model,
+    E: thrust_models::Model,
+    V: CollectSpec<A>,
+    A::Ty: PartialEq,
+    V::Ty: PartialEq,
+    E::Ty: PartialEq,
+{
+    #[thrust_macros::predicate]
+    fn of_len(self, n: Int) -> bool {
+        forall(|v: <V as thrust_models::Model>::Ty| self != Ok(v) || V::of_len(v, n))
+    }
+
+    #[thrust_macros::predicate]
+    fn stopped(self) -> bool {
+        exists(|e: <E as thrust_models::Model>::Ty| self == Err(e))
+    }
+}
+
+// local to the case study: `collect` exhausts the iterator, or stops at a failing item
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(
+    exists(|visited: Seq<<I::Item as thrust_models::Model>::Ty>, mid: <I as thrust_models::Model>::Ty|
+        I::produces(it, visited, mid)
+            && I::completed(Mut::new(mid, mid))
+            && B::of_len(result, visited.len()))
+        || B::stopped(result)
+)]
+fn _extern_spec_iterator_collect<I, B>(it: I) -> B
+where
+    I: IteratorSpec,
+    I::Item: thrust_models::Model,
+    I::Ty: PartialEq,
+    <I::Item as thrust_models::Model>::Ty: PartialEq,
+    B: CollectSpec<I::Item>,
+    B::Ty: PartialEq,
+{
+    <I as Iterator>::collect::<B>(it)
+}
+
 // //== Thrust model declarations
 
 impl<T> thrust_models::Model for DenseBitSet<T> {
@@ -1782,7 +2113,7 @@ impl<'a> thrust_models::Model for WordIter<'a> {
     type Ty = Self;
 }
 impl<'a, T: Idx> thrust_models::Model for BitIter<'a, T> {
-    type Ty = Self;
+    type Ty = Int;
 }
 impl<R: Idx, C: Idx> thrust_models::Model for BitMatrix<R, C> {
     type Ty = Self;
@@ -1790,11 +2121,11 @@ impl<R: Idx, C: Idx> thrust_models::Model for BitMatrix<R, C> {
 impl<I: Idx> thrust_models::Model for IdxRange<I> {
     type Ty = Self;
 }
-impl<'a, T> thrust_models::Model for SliceIter<'a, T> {
-    type Ty = Self;
+impl<'a, T: thrust_models::Model> thrust_models::Model for SliceIter<'a, T> {
+    type Ty = (<&'a [T] as thrust_models::Model>::Ty, Int);
 }
-impl<'a, I: Idx, T> thrust_models::Model for IterEnumerated<'a, I, T> {
-    type Ty = Self;
+impl<'a, I: Idx, T: thrust_models::Model> thrust_models::Model for IterEnumerated<'a, I, T> {
+    type Ty = (<&'a [T] as thrust_models::Model>::Ty, Int, ());
 }
 impl<I: Idx, T: thrust_models::Model> thrust_models::Model for IndexVec<I, T> {
     type Ty = <[T] as thrust_models::Model>::Ty;
