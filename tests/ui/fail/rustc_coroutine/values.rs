@@ -170,20 +170,8 @@ impl TargetDataLayout {
 // reference impl as `*self == dl`). Calling `dl_of` directly (as
 // `data_layout`'s own `ensures` does) verifies.
 //
-// Relating a *generic* `cx: &C` to the layout `dl_of` names needs quantifying
-// over it, e.g.
-//   requires(forall(|dl: TargetDataLayout| C::dl_of(*cx, dl) ==> prim_wf(self, dl)))
-// This typechecks and does not crash the backend (an earlier note here about
-// a hard SMT2 parser failure came from a stale local `coar:latest` tag and
-// does not reproduce with the pinned image), but it does not verify either:
-// isolated to a minimal repro with the same shape (a trusted, `requires`-only
-// pointer-size lookup called from a generic `size` guarded by exactly this
-// forall), pcsat answers `verification error: Unknown { stdout: "unknown" }`
-// once the callee's precondition actually has to be discharged through the
-// quantifier (as opposed to a body that ignores `dl` -- see `dl_of`'s
-// standalone use above, which has no such quantifier and does verify). So
-// this stays out of reach for `Primitive::size`/`align` in practice, which
-// remain trusted below.
+// Relating a *generic* `cx: &C` to the layout `dl_of` names needs quantifying over it, as the
+// `requires` of `Primitive::size` / `align` does; that verifies.
 #[thrust_macros::context]
 pub trait HasDataLayout {
     #[thrust_macros::predicate]
@@ -323,8 +311,8 @@ impl Add for Size {
     // spec on an impl of an external trait: `#[thrust_macros::ensures]` here
     // expands to `_thrust_ensures_add`, which is "not a member of trait `Add`".
     #[inline]
-    // Without a contract the body stops at the `panic!` message (Thrust panics, `unrefined_ty: *const ()`),
-    // and past that at the `u64` field reads, which carry no `v >= 0` for `checked_add`'s parameters (Unsat).
+    // Without a contract the overflow `panic!` is reachable (Unsat), and the `u64` field reads
+    // carry no `v >= 0` for `checked_add`'s parameters.
     #[thrust::trusted]
     #[thrust::callable]
     fn add(self, other: Size) -> Size {
@@ -512,19 +500,13 @@ pub enum Primitive {
 
 #[thrust_macros::context]
 impl Primitive {
-    // Trusted. The body's `dl.pointer_size_in(a)` needs
-    // `a == (*dl).default_address_space`, and `dl` comes out of the generic
-    // `cx.data_layout()`. `data_layout` now has a trait-level postcondition
-    // (`Self::dl_of(*self, *result)`, see the note on `HasDataLayout`), but
-    // relating a generic `cx: &C` to the layout `dl_of` names needs a
-    // `requires(forall(|dl: TargetDataLayout| C::dl_of(*cx, dl) ==> ..))`.
-    // That typechecks, but a minimal repro of the same shape (a trusted,
-    // `requires`-only callee gated by exactly this forall, called from a
-    // generic function) gets `verification error: Unknown { stdout: "unknown"
-    // }` from pcsat once the callee's precondition actually needs discharging
-    // through the quantifier -- see the note on `HasDataLayout` for the
-    // repro. So this stays unprovable in practice.
-    #[thrust::trusted]
+    // A pointer's size and alignment are looked up in the layout `cx` names: the `requires` of
+    // `pointer_size_in` / `pointer_align_in` must hold for every layout `dl` with `dl_of(*cx, dl)`.
+    #[thrust_macros::requires(forall(|dl: TargetDataLayout, a: AddressSpace| !(C::dl_of(*cx, dl) && self == Primitive::Pointer(a))
+        || ((dl.default_address_space_pointer_spec.pointer_size.raw == 2
+            || dl.default_address_space_pointer_spec.pointer_size.raw == 4
+            || dl.default_address_space_pointer_spec.pointer_size.raw == 8)
+            && a == dl.default_address_space)))]
     #[thrust::callable]
     pub fn size<C: HasDataLayout>(self, cx: &C) -> Size {
         use Primitive::*;
@@ -537,8 +519,11 @@ impl Primitive {
         }
     }
 
-    // Trusted for the same reason as `size` above.
-    #[thrust::trusted]
+    #[thrust_macros::requires(forall(|dl: TargetDataLayout, a: AddressSpace| !(C::dl_of(*cx, dl) && self == Primitive::Pointer(a))
+        || ((dl.default_address_space_pointer_spec.pointer_size.raw == 2
+            || dl.default_address_space_pointer_spec.pointer_size.raw == 4
+            || dl.default_address_space_pointer_spec.pointer_size.raw == 8)
+            && a == dl.default_address_space)))]
     #[thrust::callable]
     pub fn align<C: HasDataLayout>(self, cx: &C) -> AbiAlign {
         use Primitive::*;
@@ -580,10 +565,18 @@ impl Scalar {
         }
     }
 
+    // Trusted: `cx` is an `impl Trait` argument, which a `requires` cannot name, so the
+    // `requires` of `Primitive::align` cannot be stated here.
+    #[thrust::trusted]
+    #[thrust::callable]
     pub fn align(self, cx: &impl HasDataLayout) -> AbiAlign {
         self.primitive().align(cx)
     }
 
+    // Trusted: `cx` is an `impl Trait` argument, which a `requires` cannot name, so the
+    // `requires` of `Primitive::size` cannot be stated here.
+    #[thrust::trusted]
+    #[thrust::callable]
     pub fn size(self, cx: &impl HasDataLayout) -> Size {
         self.primitive().size(cx)
     }
