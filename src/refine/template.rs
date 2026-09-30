@@ -466,6 +466,14 @@ impl<'tcx> TypeBuilder<'tcx> {
                 return self.replace_closure_model(normalized_ty);
             }
         }
+        // The type itself may still normalize where its model does not, and only with the
+        // closure types intact: left as the projection `<Filter<I, {closure}> as Iterator>::Item`,
+        // it would get a forall sort of its own apart from the sort of the type it stands for.
+        let normalized = self
+            .tcx
+            .try_normalize_erasing_regions(self.typing_env, orig_ty)
+            .unwrap_or(orig_ty);
+        let replaced = self.replace_closure_model(normalized);
         tracing::debug!(
             "the type {:#?} is replaced as the {:#?}.",
             orig_ty,
