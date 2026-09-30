@@ -1,5 +1,6 @@
 //@check-pass
 
+#[thrust::opaque]
 struct VecWrap<T> {
     inner: Vec<T>
 }

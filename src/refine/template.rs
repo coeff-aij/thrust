@@ -509,6 +509,24 @@ impl<'tcx> TypeBuilder<'tcx> {
         }
     }
 
+    /// Whether the model of the struct `ty` is its representation, which the translation of
+    /// field accesses and struct literals assumes: the struct itself, the models of its fields
+    /// in order, or the model of its one [`transparent_field`](Self::transparent_field).
+    pub fn has_positional_model(&self, ty: mir_ty::Ty<'tcx>) -> bool {
+        let mir_ty::TyKind::Adt(def, args) = ty.kind() else {
+            return true;
+        };
+        if self.resolve_model_ty(ty) == ty {
+            return true;
+        }
+        let fields: Vec<_> = def
+            .all_fields()
+            .map(|field| rty::PointerType::own(self.build(field.ty(self.tcx, args))).into())
+            .collect();
+        let positional = rty::Type::<rty::Closed>::from(rty::TupleType::new(fields)).to_sort();
+        positional == self.build(ty).to_sort() || self.transparent_field(ty).is_some()
+    }
+
     // TODO: consolidate two impls
     fn model_adt(
         &self,

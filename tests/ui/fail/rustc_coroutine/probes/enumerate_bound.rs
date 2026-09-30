@@ -17,6 +17,7 @@ impl thrust_models::Model for DenseBitSet {
     type Ty = (Int, ());
 }
 
+#[thrust::opaque]
 pub struct BitIter {}
 
 impl thrust_models::Model for BitIter {

@@ -1,11 +1,13 @@
+//@check-pass
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:804d76744
 
-// The correct twin of positional_read_unsound.rs: `words` holds 2 entries, and Thrust
-// refutes the assertion because it reads the field as the model's sequence of length 100.
+// The model has one entry per element of the domain, not one per word, so the bodies that see
+// `words` are trusted and state what they do in terms of the model.
 
 use thrust_models::model::{Int, Seq};
 
+#[thrust::opaque]
 pub struct Bits {
     domain_size: usize,
     words: Vec<u64>,
@@ -24,6 +26,9 @@ impl Bits {
         Bits { domain_size, words: vec![0; domain_size.div_ceil(64)] }
     }
 
+    #[thrust::trusted]
+    #[thrust_macros::requires(true)]
+    #[thrust_macros::ensures(result == ((*self).0 + 63) / 64)]
     fn num_words(&self) -> usize {
         self.words.len()
     }

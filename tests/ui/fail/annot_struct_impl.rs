@@ -1,5 +1,6 @@
 //@error-in-other-file: Unsat
 
+#[thrust::opaque]
 struct VecWrap<T> {
     inner: Vec<T>
 }

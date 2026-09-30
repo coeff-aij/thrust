@@ -32,6 +32,7 @@ mod closure_unnest;
 mod crate_;
 mod did_cache;
 mod local_def;
+mod opaque;
 mod pred_inst;
 mod reconstruct_slice_indexing;
 

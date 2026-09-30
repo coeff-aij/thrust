@@ -174,6 +174,23 @@ fn rand() -> i32 { unimplemented!() }
 
 `#[thrust_macros::impl_trait_names(D, F)]` names the types of a function's argument-position `impl Trait` parameters, in order of occurrence, so that its `requires`/`ensures` can refer to them (e.g. `D::dl_of(*cx, dl)` for `cx: &impl HasDataLayout`); it may appear before or after them, and the number of names must equal the number of such parameters.
 
+### Models of structs
+
+A value is represented in the logic by its model, `<T as thrust_models::Model>::Ty`. The model of a struct is its representation: the struct itself, the models of its fields in order, or, for a struct whose other fields have unit models such as `PhantomData`, the model of its one remaining field. Thrust reads a field access as a projection of the model, so a `Model` impl that gives a struct any other model is an error. Declare the struct `#[thrust::opaque]` when its model is an abstraction of its fields:
+
+```rust
+#[thrust::opaque]
+struct Counter {
+    hits: Vec<u64>,
+}
+
+impl thrust_models::Model for Counter {
+    type Ty = thrust_models::model::Int; // the number of hits
+}
+```
+
+Only `#[thrust::trusted]` bodies may read, write, match or build the fields of an opaque struct. Any other body may move, copy, borrow and pass its values, and knows its model only through the contracts of the trusted ones. A derived impl on an opaque struct is taken as trusted when its trait's contract says nothing about the model, as the contracts of `Hash` and `Default` in `std.rs` do. Otherwise it is analyzed like any other body, so a derive whose contract states the model and whose body reads the fields, such as `PartialEq`, or `Clone` on a type that is not `Copy`, is an error.
+
 ## Configuration
 
 Several environment variables are used by Thrust to configure its behavior:

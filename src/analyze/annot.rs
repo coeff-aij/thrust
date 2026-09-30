@@ -38,6 +38,10 @@ pub fn ignored_path() -> [Symbol; 2] {
     [Symbol::intern("thrust"), Symbol::intern("ignored")]
 }
 
+pub fn opaque_path() -> [Symbol; 2] {
+    [Symbol::intern("thrust"), Symbol::intern("opaque")]
+}
+
 pub fn formula_fn_path() -> [Symbol; 2] {
     [Symbol::intern("thrust"), Symbol::intern("formula_fn")]
 }

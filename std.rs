@@ -572,6 +572,7 @@ mod thrust_models {
     /// content, so a specification refers to a `Ghost<T>` as if it were a `T`.
     #[allow(dead_code)]
     #[thrust::def::ghost_model]
+    #[thrust::opaque]
     pub struct Ghost<T: ?Sized>(std::marker::PhantomData<T>);
 
     impl<T: ?Sized> Clone for Ghost<T> {

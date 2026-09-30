@@ -4,11 +4,12 @@ use std::collections::HashSet;
 
 use rustc_hir::def_id::CRATE_DEF_ID;
 use rustc_middle::ty::{self as mir_ty, TyCtxt};
-use rustc_span::def_id::LocalDefId;
+use rustc_span::def_id::{DefId, LocalDefId};
 
 use crate::analyze;
 use crate::chc;
 use crate::chc::debug;
+use crate::refine;
 use crate::rty::ClauseBuilderExt as _;
 
 /// An implementation of local crate analysis.
@@ -122,8 +123,150 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         for local_def_id in &trait_method_spec_keys {
             self.refine_fn_def(*local_def_id);
         }
+        for local_def_id in &roots {
+            self.trust_opaque_derive(**local_def_id);
+        }
         for local_def_id in roots.into_iter().chain(nested) {
             self.refine_fn_def(*local_def_id);
+        }
+    }
+
+    /// The struct a derived impl method is on, if the struct is opaque.
+    fn derived_on_opaque(&self, local_def_id: LocalDefId) -> Option<DefId> {
+        let impl_def_id = self.tcx.impl_of_assoc(local_def_id.to_def_id())?;
+        if !self.tcx.is_automatically_derived(impl_def_id) {
+            return None;
+        }
+        let self_ty = self.tcx.type_of(impl_def_id).instantiate_identity();
+        let adt = self_ty.ty_adt_def()?;
+        analyze::opaque::is_opaque(self.tcx, adt.did()).then_some(adt.did())
+    }
+
+    /// Takes a derived method of an opaque struct as trusted when its trait's contract says
+    /// nothing about the struct's model. The derived body works on the fields, and the model need
+    /// not determine them, so a contract that states the model is not established by it.
+    fn trust_opaque_derive(&mut self, local_def_id: LocalDefId) {
+        let Some(adt) = self.derived_on_opaque(local_def_id) else {
+            return;
+        };
+        let Some(contract) = self.ctx.local_def_analyzer(local_def_id).trait_item_ty() else {
+            return;
+        };
+        let fn_ty = contract
+            .ty
+            .as_function()
+            .expect("a method contract is a function type");
+        let sig = self.ctx.fn_sig(local_def_id.to_def_id());
+        if !analyze::opaque::contract_states_model(fn_ty, &sig, adt) {
+            self.skip_analysis.insert(local_def_id);
+        }
+    }
+
+    /// Reports each analyzed body that reaches into the fields of an opaque struct.
+    fn check_opaque_field_accesses(&self) {
+        for local_def_id in self.tcx.mir_keys(()) {
+            if !self.tcx.def_kind(*local_def_id).is_fn_like()
+                || self.skip_analysis.contains(local_def_id)
+            {
+                continue;
+            }
+            let body = self.tcx.optimized_mir(local_def_id.to_def_id());
+            let accesses = analyze::opaque::field_accesses(self.tcx, body);
+            if let Some(access) = accesses.first() {
+                if self.derived_on_opaque(*local_def_id).is_some() {
+                    self.report_opaque_derive(*local_def_id, access);
+                    continue;
+                }
+            }
+            for access in &accesses {
+                self.tcx.dcx().span_err(
+                    access.span,
+                    format!(
+                        "`{}` {}, which only a `#[thrust::trusted]` body may do",
+                        self.tcx.def_path_str(*local_def_id),
+                        access.describe(self.tcx)
+                    ),
+                );
+            }
+        }
+    }
+
+    fn report_opaque_derive(
+        &self,
+        local_def_id: LocalDefId,
+        access: &analyze::opaque::FieldAccess<'tcx>,
+    ) {
+        let def_id = local_def_id.to_def_id();
+        let impl_def_id = self.tcx.impl_of_assoc(def_id).unwrap();
+        let trait_def_id = self.tcx.trait_id_of_impl(impl_def_id).unwrap();
+        self.tcx.dcx().span_err(
+            self.tcx.def_span(impl_def_id),
+            format!(
+                "the derived `{}::{}` {}; a derive on an opaque type is trusted only when its \
+                 trait's contract says nothing about the model",
+                self.tcx.item_name(trait_def_id),
+                self.tcx.item_name(def_id),
+                access.describe(self.tcx)
+            ),
+        );
+    }
+
+    /// Checks that the `Model` impl of each local struct that is not opaque gives the struct its
+    /// representation as its model.
+    fn check_model_impls(&self) {
+        let Some(model_ty_def_id) = self.ctx.def_ids.model_ty() else {
+            return;
+        };
+        let model_trait = self.tcx.parent(model_ty_def_id);
+        let Some(impls) = self.tcx.all_local_trait_impls(()).get(&model_trait) else {
+            return;
+        };
+        for impl_local in impls {
+            let impl_def_id = impl_local.to_def_id();
+            let self_ty = self.tcx.type_of(impl_def_id).instantiate_identity();
+            let Some(adt) = self_ty.ty_adt_def() else {
+                continue;
+            };
+            if !adt.is_struct()
+                || !adt.did().is_local()
+                || analyze::opaque::is_opaque(self.tcx, adt.did())
+            {
+                continue;
+            }
+            let builder = refine::TypeBuilder::new(
+                self.tcx,
+                self.ctx.def_ids(),
+                impl_def_id,
+                Default::default(),
+                Default::default(),
+                Default::default(),
+            );
+            if builder.has_positional_model(self_ty) {
+                continue;
+            }
+            self.tcx.dcx().span_err(
+                self.tcx.def_span(impl_def_id),
+                format!(
+                    "the model of `{self_ty}` is not the models of its fields in order, which the \
+                     fields are read as; declare `{}` `#[thrust::opaque]` if its model is an \
+                     abstraction",
+                    self.tcx.item_name(adt.did())
+                ),
+            );
+        }
+    }
+
+    fn check_opaque_attrs(&self) {
+        for item_id in self.tcx.hir_crate_items(()).free_items() {
+            let def_id = item_id.owner_id.to_def_id();
+            if analyze::opaque::is_opaque(self.tcx, def_id)
+                && self.tcx.def_kind(def_id) != rustc_hir::def::DefKind::Struct
+            {
+                self.tcx.dcx().span_err(
+                    self.tcx.def_span(def_id),
+                    "`#[thrust::opaque]` applies only to structs",
+                );
+            }
         }
     }
 
@@ -463,7 +606,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
         self.analyze_raw_command_annot();
         self.register_trait_laws();
+        self.check_opaque_attrs();
+        self.check_model_impls();
         self.refine_local_defs();
+        self.check_opaque_field_accesses();
+        self.tcx.dcx().abort_if_errors();
         let keys: Vec<_> = self.tcx.mir_keys(()).iter().copied().collect();
         self.ctx.record_unnest_specified_params(keys.into_iter());
         self.analyze_local_defs();

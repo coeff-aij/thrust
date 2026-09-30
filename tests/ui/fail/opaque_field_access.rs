@@ -1,14 +1,12 @@
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:804d76744
 
-// The model reads `words` as one entry per element, the way the case study's bit-set
-// contracts do. It has the sort of the fields, so the verified body of `num_words` reads the
-// model's sequence as the field: Thrust accepts the assertion, which fails at run time
-// (`words` holds `100.div_ceil(64) == 2` entries). positional_read_false_alarm.rs is the
-// correct program, which Thrust refutes.
+// A verified body reading `words` would read the model's sequence, which has one entry per
+// element, as the field: Thrust would accept the assertion, which fails at run time.
 
 use thrust_models::model::{Int, Seq};
 
+#[thrust::opaque]
 pub struct Bits {
     domain_size: usize,
     words: Vec<u64>,
@@ -28,7 +26,7 @@ impl Bits {
     }
 
     fn num_words(&self) -> usize {
-        self.words.len()
+        self.words.len() //~ ERROR: accesses the field `words` of the opaque type `Bits`
     }
 }
 

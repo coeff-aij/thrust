@@ -5,6 +5,7 @@
 use thrust_models::model::{Closure, Int, Mut, Seq};
 use thrust_models::{exists, forall, Ghost};
 
+#[thrust::opaque]
 pub struct DenseBitSet {
     words: Vec<u64>,
 }

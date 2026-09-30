@@ -16,6 +16,7 @@ impl<I, T: thrust_models::Model> thrust_models::Model for IndexVec<I, T> {
 }
 
 
+#[thrust::opaque]
 pub struct DenseBitSet {
     words: Vec<u64>,
 }

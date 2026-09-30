@@ -2118,6 +2118,13 @@ impl<V> Body<V> {
         self.formula.is_bottom() || self.atoms.iter().any(|a| a.is_bottom())
     }
 
+    pub fn fv(&self) -> impl Iterator<Item = &V> {
+        self.atoms
+            .iter()
+            .flat_map(|a| a.fv())
+            .chain(self.formula.fv())
+    }
+
     pub fn push_conj(&mut self, other: impl Into<Body<V>>) {
         let Body { atoms, formula } = other.into();
         self.atoms.extend(atoms);
