@@ -130,7 +130,8 @@ impl TargetDataLayout {
         || (*self).default_address_space_pointer_spec.pointer_size.raw == 4
         || (*self).default_address_space_pointer_spec.pointer_size.raw == 8)
         && c == (*self).default_address_space)]
-    #[thrust_macros::ensures(true)]
+    #[thrust_macros::ensures(c != (*self).default_address_space
+        || result.raw == (*self).default_address_space_pointer_spec.pointer_size.raw)]
     pub fn pointer_size_in(&self, c: AddressSpace) -> Size {
         if c == self.default_address_space {
             return self.default_address_space_pointer_spec.pointer_size;
@@ -261,11 +262,11 @@ impl Size {
         self.raw
     }
 
-    // Trusted: the body's `checked_mul` panics on overflow. Overflow is out of
-    // scope (see the stage plan), so the spec states the no-overflow result.
+    // Trusted: the body panics exactly when `raw * 8` overflows `u64`, which the `requires` excludes.
     #[inline]
     // Verifying the body stops earlier: a `u64` field read carries no `v >= 0`, which `checked_mul`'s `u64` parameter requires (Unsat).
     #[thrust::trusted]
+    #[thrust_macros::requires(self.raw * 8 <= u64::MAX)]
     #[thrust_macros::ensures(result == self.raw * 8)]
     pub fn bits(self) -> u64 {
         #[cold]
@@ -307,7 +308,7 @@ impl Size {
 
     #[inline]
     #[thrust::trusted]
-    #[thrust::callable]
+    #[thrust_macros::requires((*self).raw * 8 <= 128)]
     pub fn unsigned_int_max(&self) -> u128 {
         u128::MAX >> (128 - self.bits())
     }
