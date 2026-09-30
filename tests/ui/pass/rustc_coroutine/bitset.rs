@@ -223,8 +223,6 @@ impl<'a, T: Idx> BitIter<'a, T> {
     }
 
     #[inline]
-    // Trusted: the constant `usize::MAX` exceeds the i64 range of integer literals (Thrust panics).
-    #[thrust::trusted]
     #[thrust::callable]
     // `WORD_BITS` (a named `const`) is not usable in a formula:
     // `not implemented: unsupported path in formula: ... Def(Const, ..
