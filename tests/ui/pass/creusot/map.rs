@@ -1,6 +1,6 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off -A unused-variables -A unused_parens
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 COAR_IMAGE=coar:804d76744
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 COAR_IMAGE=coar:9799dfd7b
 
 use thrust_models::model::{Closure, Int, Mut, Seq};
 use thrust_models::{exists, forall, Ghost, Model};
@@ -10,7 +10,7 @@ use thrust_models::{exists, forall, Ghost, Model};
 // (Creusot's `unnest`, `hist_inv` in creusot-std), and `preservation_inv` and `reinitialize`
 // quantify over every closure state, as in `counter_creusot.rs`. `produces_trans` is proved by
 // one lemma, `produces_trans_at`, that names the joined witnesses, and nothing else needs a
-// lemma. The call site is `map_creusot.rs`'s two `next`s over `Range`.
+// lemma; `produces_refl` is inherited. The call site is `map_creusot.rs`'s two `next`s over `Range`.
 
 // Creusot's `common.rs`, the iterator specification every case shares: the trait predicates
 // `produces(self, visited, o)`, `completed` and `invariant` (`true` unless the impl says otherwise),
@@ -190,12 +190,6 @@ where
             None => None,
         }
     }
-
-
-    // Written, not inherited: checked through the trait's default body, this impl's
-    // `produces_refl` leaves the pass query unanswered at 300 s (fptprove 804d76744), where the
-    // written proof answers in 23 s.
-    fn produces_refl(a: &Map<I, F>) {}
 
     fn produces_trans(a: &Map<I, F>, ab: Seq<<Self::Item as Model>::Ty>, b: &Map<I, F>, bc: Seq<<Self::Item as Model>::Ty>, c: &Map<I, F>) {
         let ga = thrust_macros::ghost!(|a: &Self| -> Self { *a });
