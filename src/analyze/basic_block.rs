@@ -39,6 +39,9 @@ pub use drop_point::DropPoints;
 /// it with a fresh predicate variable; this is also the set of CFG cutpoints, so
 /// it cuts every cycle (a loop header always has in-degree >= 2).
 pub fn needs_own_precondition(body: &Body<'_>, bb: BasicBlock) -> bool {
+    if std::env::var_os("THRUST_PROBE_EVERY_BLOCK_PREDICATE").is_some() {
+        return true;
+    }
     if bb == mir::START_BLOCK {
         return true;
     }
