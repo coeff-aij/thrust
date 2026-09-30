@@ -20,7 +20,7 @@ theirs in the same layout. A case that needs `collect` adds it to its copy after
 | `skip.rs` | `iterators/skip.rs` | `produces`, concatenated |
 | `fuse.rs` | `iterators/fuse.rs` | `step` |
 | `fuse_produces.rs` | `iterators/fuse.rs` | `produces` + `FusedIterator::is_fused`; state `Option<I>` for Creusot's `Result<I, Ghost<I>>` |
-| `map.rs` | `iterators/map.rs` | `produces` over an `FnMut` closure with the chain `fs` of closure states and `unnest!`, `produces_trans` by three source-level lemmas, nothing else needs one, fully checked |
+| `map.rs` | `iterators/map.rs` | `produces` over an `FnMut` closure with the chain `fs` of closure states and `unnest!`, `produces_trans` by one source-level lemma, nothing else needs one, fully checked |
 | `iter_mut.rs` | `iterators/iter_mut.rs` | `produces` |
 | `collect.rs` | `common.rs` (`collect` / `FromIterator`) | `produces` |
 | `all_zero.rs` | `examples/all_zero.rs` | `produces`, via `iter_mut` |

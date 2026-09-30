@@ -12,8 +12,8 @@ use thrust_models::{exists, forall, Ghost, Model};
 // `preservation_inv`, the inner invariant and `next_precondition`. The closure is `FnMut`, as
 // Creusot's: `produces` carries the chain `fs` of closure states related by `unnest!` (Creusot's
 // `unnest`, `hist_inv` in creusot-std), and `preservation_inv` and `reinitialize` quantify over
-// every closure state. The adapter and its lemmas are `counter_creusot.rs`'s (lemmas called from
-// ghost code in `next` and `produces_trans`).
+// every closure state. The adapter is `counter_creusot.rs`'s; its lemmas are called from ghost
+// code in `next` and `produces_trans`.
 // Fail twin: `next` does not extend `produced` by the consumed item.
 
 // Creusot's `common.rs`, the iterator specification every case shares: the trait predicates
@@ -116,17 +116,6 @@ where
                     && Self::preservation_inv(fin, f, Seq::empty())))))
     }
 
-    // Creusot's `produces_one`: one closure call from `s0.func` to `s1.func` (Creusot's
-    // `f: &mut F` with `*f == self.func && ^f == succ.func`), one inner item `e` mapped to `visited`
-    // at the history `produced`, and `produced` extended by `e`.
-    #[thrust_macros::predicate]
-    fn produces_one(s0: Self, visited: B, s1: Self) -> bool {
-        exists(|e: A|
-            I::produces(s0.0, Seq::singleton(e), s1.0)
-                && s1.2 == s0.2.push(e)
-                && thrust_macros::post!(Mut::new(s0.1, s1.1)(e, s0.2), visited))
-    }
-
     // `produces` with its input sequence `s` and closure chain `fs` given: the body of `produces`
     // under its `exists`.
     #[thrust_macros::predicate]
@@ -150,52 +139,16 @@ where
         exists(|fs: Seq<Closure<F>>| Self::produces_at(s0, visited, o, s, fs))
     }
 
-    // The direction of `produces_one`'s ensures that `next` uses, with the witnesses `[e]` and
-    // `[s0.func, s1.func]` as terms.
+    // `next`'s singleton `produces`, from the inner item `e` the call consumed (Creusot's
+    // `produces_one`).
     #[thrust_macros::requires(I::produces(s0.0, Seq::singleton(e), s1.0)
         && s1.2 == s0.2.push(e)
         && thrust_macros::post!(Mut::new(s0.1, s1.1)(e, s0.2), b))]
-    #[thrust_macros::ensures(Self::produces_one(s0, b, s1))]
-    #[thrust_macros::ensures(Self::produces_at(s0, Seq::singleton(b), s1, Seq::singleton(e), Seq::singleton(s0.1).push(s1.1)))]
     #[thrust_macros::ensures(<Self as Iterator>::produces(s0, Seq::singleton(b), s1))]
     fn produces_one_produces(s0: Ghost<Self>, e: Ghost<<I as Iterator>::Item>, b: Ghost<B>, s1: Ghost<Self>) {}
 
-    // `produces_trans` on ghost arguments.
-    #[thrust_macros::requires(<Self as Iterator>::produces(a, ab, b)
-        && <Self as Iterator>::produces(b, bc, c))]
-    #[thrust_macros::ensures(<Self as Iterator>::produces(a, ab.concat(bc), c))]
-    fn produces_trans_split(
-        a: Ghost<Self>,
-        ab: Ghost<Seq<<B as Model>::Ty>>,
-        b: Ghost<Self>,
-        bc: Ghost<Seq<<B as Model>::Ty>>,
-        c: Ghost<Self>,
-    ) {
-        Self::produces_trans_witness(a, ab, b, bc, c);
-    }
-
-    // The existential introduction of `produces(a, ab.concat(bc), c)`, with the witnesses of the two halves'
-    // `exists` universally quantified and the joined witnesses as terms: the input sequences
-    // concatenated (the session's `exists (s1 ++ s)`) and the closure chains joined at their shared
-    // state `b.func`, `fab[..ab.len()] ++ fbc` (the session's `exists (fs1 ++ fs)`; Thrust's chain
-    // holds the states, one more than Creusot's `&mut F` steps, so the shared one is dropped once).
-    #[thrust_macros::ensures(forall(|sab: Seq<A>| forall(|sbc: Seq<A>|
-        forall(|fab: Seq<Closure<F>>| forall(|fbc: Seq<Closure<F>>|
-        !(Self::produces_at(a, ab, b, sab, fab) && Self::produces_at(b, bc, c, sbc, fbc))
-            || <Self as Iterator>::produces(a, ab.concat(bc), c))))))]
-    fn produces_trans_witness(
-        a: Ghost<Self>,
-        ab: Ghost<Seq<<B as Model>::Ty>>,
-        b: Ghost<Self>,
-        bc: Ghost<Seq<<B as Model>::Ty>>,
-        c: Ghost<Self>,
-    ) {
-        Self::produces_trans_at(a, ab, b, bc, c);
-        Self::produces_join_intro(a, ab, b, bc, c);
-    }
-
-    // `produces`'s existential introduced at the joined witnesses, over the same variables as
-    // `produces_trans_at`'s conclusion.
+    // `produces`'s existentials introduced at the joined witnesses, the chain's and then the input
+    // sequence's.
     #[thrust_macros::ensures(forall(|sab: Seq<A>| forall(|sbc: Seq<A>|
         forall(|fab: Seq<Closure<F>>| forall(|fbc: Seq<Closure<F>>|
         !Self::produces_at(a, ab.concat(bc), c, sab.concat(sbc), fab.subsequence(0, ab.len()).concat(fbc))
@@ -210,6 +163,7 @@ where
         Self::produces_join_inputs(a, ab, b, bc, c);
     }
 
+    // The input sequence's existential introduced at `sab ++ sbc`.
     #[thrust_macros::ensures(forall(|sab: Seq<A>| forall(|sbc: Seq<A>|
         !Self::produces_with(a, ab.concat(bc), c, sab.concat(sbc)) || <Self as Iterator>::produces(a, ab.concat(bc), c))))]
     fn produces_join_inputs(
@@ -221,7 +175,11 @@ where
     ) {
     }
 
-    // `produces_at` of the joined witnesses.
+    // `produces_at` of the joined witnesses, with the witnesses of the two halves' `exists`
+    // universally quantified: the input sequences concatenated (the session's `exists (s1 ++ s)`)
+    // and the closure chains joined at their shared state `b.func`, `fab[..ab.len()] ++ fbc` (the
+    // session's `exists (fs1 ++ fs)`; Thrust's chain holds the states, one more than Creusot's
+    // `&mut F` steps, so the shared one is dropped once).
     #[thrust_macros::ensures(forall(|sab: Seq<A>| forall(|sbc: Seq<A>|
         forall(|fab: Seq<Closure<F>>| forall(|fbc: Seq<Closure<F>>|
         !(Self::produces_at(a, ab, b, sab, fab) && Self::produces_at(b, bc, c, sbc, fbc))
@@ -233,79 +191,20 @@ where
         bc: Ghost<Seq<<B as Model>::Ty>>,
         c: Ghost<Self>,
     ) {
-        Self::trans_calls(a, ab, b, bc, c);
+        Self::history_join(a, ab, bc);
     }
 
-    // Every call of the joined witnesses, in the form of `produces_at`'s last conjunct: the two
-    // halves below and from `ab.len()`.
-    #[thrust_macros::ensures(forall(|sab: Seq<A>| forall(|sbc: Seq<A>|
-        forall(|fab: Seq<Closure<F>>| forall(|fbc: Seq<Closure<F>>|
-        !(Self::produces_at(a, ab, b, sab, fab) && Self::produces_at(b, bc, c, sbc, fbc))
-            || forall(|k: Int|
-                !(0 <= k && k < ab.concat(bc).len())
-                    || (thrust_macros::unnest!(a.1, fab.subsequence(0, ab.len()).concat(fbc)[k])
-                        && thrust_macros::post!(Mut::new(fab.subsequence(0, ab.len()).concat(fbc)[k], fab.subsequence(0, ab.len()).concat(fbc)[k + 1])(
-                            sab.concat(sbc)[k], a.2.concat(sab.concat(sbc).subsequence(0, k))), ab.concat(bc)[k]))))))))]
-    fn trans_calls(
-        a: Ghost<Self>,
-        ab: Ghost<Seq<<B as Model>::Ty>>,
-        b: Ghost<Self>,
-        bc: Ghost<Seq<<B as Model>::Ty>>,
-        c: Ghost<Self>,
-    ) {
-        Self::trans_lower(a, ab, b, bc, c);
-        Self::trans_upper(a, ab, b, bc, c);
-    }
-
-    // The calls of the first half, below `ab.len()`.
-    #[thrust_macros::ensures(forall(|sab: Seq<A>| forall(|sbc: Seq<A>|
-        forall(|fab: Seq<Closure<F>>| forall(|fbc: Seq<Closure<F>>| forall(|k: Int|
-        !(Self::produces_at(a, ab, b, sab, fab) && Self::produces_at(b, bc, c, sbc, fbc)
-            && 0 <= k && k < ab.len())
-            || (thrust_macros::unnest!(a.1, fab.subsequence(0, ab.len()).concat(fbc)[k])
-                && thrust_macros::post!(Mut::new(fab.subsequence(0, ab.len()).concat(fbc)[k], fab.subsequence(0, ab.len()).concat(fbc)[k + 1])(
-                    sab.concat(sbc)[k], a.2.concat(sab.concat(sbc).subsequence(0, k))), ab.concat(bc)[k]))))))))]
-    fn trans_lower(
-        a: Ghost<Self>,
-        ab: Ghost<Seq<<B as Model>::Ty>>,
-        b: Ghost<Self>,
-        bc: Ghost<Seq<<B as Model>::Ty>>,
-        c: Ghost<Self>,
-    ) {
-        Self::join_lower_inputs(a, ab);
-    }
-
-    // The calls of the second half, from `ab.len()` on, at `k - ab.len()` in `bc`.
-    #[thrust_macros::ensures(forall(|sab: Seq<A>| forall(|sbc: Seq<A>|
-        forall(|fab: Seq<Closure<F>>| forall(|fbc: Seq<Closure<F>>| forall(|k: Int|
-        !(Self::produces_at(a, ab, b, sab, fab) && Self::produces_at(b, bc, c, sbc, fbc)
-            && ab.len() <= k && k < ab.concat(bc).len())
-            || (thrust_macros::unnest!(a.1, fab.subsequence(0, ab.len()).concat(fbc)[k])
-                && thrust_macros::post!(Mut::new(fab.subsequence(0, ab.len()).concat(fbc)[k], fab.subsequence(0, ab.len()).concat(fbc)[k + 1])(
-                    sab.concat(sbc)[k], a.2.concat(sab.concat(sbc).subsequence(0, k))), ab.concat(bc)[k]))))))))]
-    fn trans_upper(
-        a: Ghost<Self>,
-        ab: Ghost<Seq<<B as Model>::Ty>>,
-        b: Ghost<Self>,
-        bc: Ghost<Seq<<B as Model>::Ty>>,
-        c: Ghost<Self>,
-    ) {
-        Self::join_upper_inputs(a, ab, bc);
-    }
-
+    // The joined input sequence read at `k` and its history, below `ab.len()` in the first half and
+    // from it on in the second (the session's `instantiate H2 (i - length ab)`).
     #[thrust_macros::ensures(forall(|sab: Seq<A>| forall(|sbc: Seq<A>| forall(|k: Int|
         !(sab.len() == ab.len() && 0 <= k && k < ab.len())
             || (sab.concat(sbc)[k] == sab[k]
                 && a.2.concat(sab.concat(sbc).subsequence(0, k)) == a.2.concat(sab.subsequence(0, k)))))))]
-    fn join_lower_inputs(a: Ghost<Self>, ab: Ghost<Seq<<B as Model>::Ty>>) {
-    }
-
     #[thrust_macros::ensures(forall(|sab: Seq<A>| forall(|sbc: Seq<A>| forall(|k: Int|
         !(sab.len() == ab.len() && sbc.len() == bc.len() && ab.len() <= k && k < ab.len() + bc.len())
             || (sab.concat(sbc)[k] == sbc[k - ab.len()]
                 && a.2.concat(sab.concat(sbc).subsequence(0, k)) == a.2.concat(sab).concat(sbc.subsequence(0, k - ab.len())))))))]
-    fn join_upper_inputs(a: Ghost<Self>, ab: Ghost<Seq<<B as Model>::Ty>>, bc: Ghost<Seq<<B as Model>::Ty>>) {
-    }
+    fn history_join(a: Ghost<Self>, ab: Ghost<Seq<<B as Model>::Ty>>, bc: Ghost<Seq<<B as Model>::Ty>>) {}
 }
 
 #[thrust_macros::context]
@@ -352,7 +251,8 @@ where
         let gc = thrust_macros::ghost!(|c: &Self| -> Self { *c });
         let gab = thrust_macros::ghost!(|ab: Seq<<B as Model>::Ty>| -> Seq<<B as Model>::Ty> { ab });
         let gbc = thrust_macros::ghost!(|bc: Seq<<B as Model>::Ty>| -> Seq<<B as Model>::Ty> { bc });
-        Self::produces_trans_split(ga, gab, gb, gbc, gc);
+        Self::produces_trans_at(ga, gab, gb, gbc, gc);
+        Self::produces_join_intro(ga, gab, gb, gbc, gc);
         // Keeps the parameters live at the snapshots above.
         let _live = (a, &ab, b, &bc, c);
     }

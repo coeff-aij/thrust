@@ -9,9 +9,8 @@ use thrust_models::{exists, forall, Ghost, Model};
 // checked: `produces` carries the chain `fs` of closure states and relates them by `unnest!`
 // (Creusot's `unnest`, `hist_inv` in creusot-std), and `preservation_inv` and `reinitialize`
 // quantify over every closure state, as in `counter_creusot.rs`. `produces_trans` is proved by
-// three lemmas that name the joined witnesses (`produces_trans_split`, `produces_trans_witness`,
-// `produces_trans_at`), and nothing else needs a lemma. The call site is `map_creusot.rs`'s two
-// `next`s over `Range`.
+// one lemma, `produces_trans_at`, that names the joined witnesses, and nothing else needs a
+// lemma. The call site is `map_creusot.rs`'s two `next`s over `Range`.
 
 // Creusot's `common.rs`, the iterator specification every case shares: the trait predicates
 // `produces(self, visited, o)`, `completed` and `invariant` (`true` unless the impl says otherwise),
@@ -141,40 +140,11 @@ where
         exists(|fs: Seq<Closure<F>>| Self::produces_at(s0, visited, o, s, fs))
     }
 
-    // `produces_trans` on ghost arguments.
-    #[thrust_macros::requires(<Self as Iterator>::produces(a, ab, b)
-        && <Self as Iterator>::produces(b, bc, c))]
-    #[thrust_macros::ensures(<Self as Iterator>::produces(a, ab.concat(bc), c))]
-    fn produces_trans_split(
-        a: Ghost<Self>,
-        ab: Ghost<Seq<<B as Model>::Ty>>,
-        b: Ghost<Self>,
-        bc: Ghost<Seq<<B as Model>::Ty>>,
-        c: Ghost<Self>,
-    ) {
-        Self::produces_trans_witness(a, ab, b, bc, c);
-    }
-
-    // The existential introduction of `produces(a, ab.concat(bc), c)`, with the witnesses of the two halves'
-    // `exists` universally quantified and the joined witnesses as terms: the input sequences
-    // concatenated (the session's `exists (s1 ++ s)`) and the closure chains joined at their shared
-    // state `b.func`, `fab[..ab.len()] ++ fbc` (the session's `exists (fs1 ++ fs)`; Thrust's chain
-    // holds the states, one more than Creusot's `&mut F` steps, so the shared one is dropped once).
-    #[thrust_macros::ensures(forall(|sab: Seq<A>| forall(|sbc: Seq<A>|
-        forall(|fab: Seq<Closure<F>>| forall(|fbc: Seq<Closure<F>>|
-        !(Self::produces_at(a, ab, b, sab, fab) && Self::produces_at(b, bc, c, sbc, fbc))
-            || <Self as Iterator>::produces(a, ab.concat(bc), c))))))]
-    fn produces_trans_witness(
-        a: Ghost<Self>,
-        ab: Ghost<Seq<<B as Model>::Ty>>,
-        b: Ghost<Self>,
-        bc: Ghost<Seq<<B as Model>::Ty>>,
-        c: Ghost<Self>,
-    ) {
-        Self::produces_trans_at(a, ab, b, bc, c);
-    }
-
-    // `produces_at` of the joined witnesses.
+    // `produces_at` of the joined witnesses, with the witnesses of the two halves' `exists`
+    // universally quantified: the input sequences concatenated (the session's `exists (s1 ++ s)`)
+    // and the closure chains joined at their shared state `b.func`, `fab[..ab.len()] ++ fbc` (the
+    // session's `exists (fs1 ++ fs)`; Thrust's chain holds the states, one more than Creusot's
+    // `&mut F` steps, so the shared one is dropped once).
     #[thrust_macros::ensures(forall(|sab: Seq<A>| forall(|sbc: Seq<A>|
         forall(|fab: Seq<Closure<F>>| forall(|fbc: Seq<Closure<F>>|
         !(Self::produces_at(a, ab, b, sab, fab) && Self::produces_at(b, bc, c, sbc, fbc))
@@ -228,7 +198,7 @@ where
         let gc = thrust_macros::ghost!(|c: &Self| -> Self { *c });
         let gab = thrust_macros::ghost!(|ab: Seq<<B as Model>::Ty>| -> Seq<<B as Model>::Ty> { ab });
         let gbc = thrust_macros::ghost!(|bc: Seq<<B as Model>::Ty>| -> Seq<<B as Model>::Ty> { bc });
-        Self::produces_trans_split(ga, gab, gb, gbc, gc);
+        Self::produces_trans_at(ga, gab, gb, gbc, gc);
         // Keeps the parameters live at the snapshots above.
         let _live = (a, &ab, b, &bc, c);
     }
