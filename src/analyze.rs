@@ -557,7 +557,9 @@ impl<'tcx> AnalysisKey<'tcx> {
 enum DefTy<'tcx> {
     Concrete(rty::RefinedType),
     Generic(GenericDefTy<'tcx>),
-    Deferred(DeferredDefTy<'tcx>),
+    // Several extern specs can share one target, each covering the instantiations its tail call
+    // and bounds cover (see `bind_spec_args`); a call takes the first one that covers it.
+    Deferred(Vec<DeferredDefTy<'tcx>>),
 }
 
 #[derive(Debug, Clone)]
@@ -910,14 +912,19 @@ impl<'tcx> Analyzer<'tcx> {
             ?mode,
             "register_deferred_def"
         );
-        self.defs.entry(target_def_id).or_insert_with(|| {
-            DefTy::Deferred(DeferredDefTy {
-                local_def_id,
-                cache: Rc::new(RefCell::new(HashMap::new())),
-                mode,
-                target_args,
-            })
-        });
+        let spec = DeferredDefTy {
+            local_def_id,
+            cache: Rc::new(RefCell::new(HashMap::new())),
+            mode,
+            target_args,
+        };
+        if let DefTy::Deferred(specs) = self
+            .defs
+            .entry(target_def_id)
+            .or_insert_with(|| DefTy::Deferred(Vec::new()))
+        {
+            specs.push(spec);
+        }
     }
 
     pub fn register_generic_def(
@@ -973,7 +980,9 @@ impl<'tcx> Analyzer<'tcx> {
         let mut def_ty = match self.defs.get(&def_id)? {
             DefTy::Concrete(rty) => rty.clone(),
             DefTy::Generic(generic) => generic.cache.borrow().get(&key)?.clone(),
-            DefTy::Deferred(deferred) => deferred.cache.borrow().get(&key)?.clone(),
+            DefTy::Deferred(specs) => specs
+                .iter()
+                .find_map(|spec| spec.cache.borrow().get(&key).cloned())?,
         };
         def_ty.instantiate_ty_params(
             generic_args
@@ -1121,6 +1130,30 @@ impl<'tcx> Analyzer<'tcx> {
         );
     }
 
+    /// The generic arguments of `spec` at a call of its target at `generic_args`, or `None` when
+    /// the spec does not cover the call.
+    ///
+    /// A def_id key can be a blanket impl shared by more instantiations than an extern spec's own
+    /// tail call covers (e.g. `Vec::index` at some `Idx` other than the `usize`
+    /// `_extern_spec_vec_index` calls it at). Handing such a call that spec's contract would relate
+    /// its result to whatever the spec's own body happens to return, regardless of the real `Idx`
+    /// here.
+    fn spec_args(
+        &self,
+        spec: &DeferredDefTy<'tcx>,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
+        caller_def_id: DefId,
+    ) -> Option<mir_ty::GenericArgsRef<'tcx>> {
+        let Some(target_args) = spec.target_args else {
+            return Some(generic_args);
+        };
+        let bound = bind_spec_args(self.tcx, spec.local_def_id, target_args, generic_args)?;
+        let holds = self.def_ids().model_ty().is_none_or(|model_ty| {
+            spec_bounds_hold(self.tcx, spec.local_def_id, bound, caller_def_id, model_ty)
+        });
+        holds.then_some(bound)
+    }
+
     pub fn def_ty_with_args(
         &mut self,
         def_id: DefId,
@@ -1129,27 +1162,8 @@ impl<'tcx> Analyzer<'tcx> {
     ) -> Option<rty::RefinedType> {
         let type_builder = self.type_builder(self.def_ids(), caller_def_id);
 
-        // A def_id key can be a blanket impl shared by more instantiations than an extern spec's
-        // own tail call covers (e.g. `Vec::index` at some `Idx` other than the `usize`
-        // `_extern_spec_vec_index` calls it at). Handing such a call that spec's contract would
-        // relate its result to whatever the spec's own body happens to return, regardless of the
-        // real `Idx` here, so it has no specification.
-        let generic_args = match self.defs.get(&def_id)? {
-            DefTy::Deferred(DeferredDefTy {
-                local_def_id,
-                target_args: Some(target_args),
-                ..
-            }) => {
-                let bound = bind_spec_args(self.tcx, *local_def_id, target_args, generic_args)?;
-                let holds = self.def_ids().model_ty().is_none_or(|model_ty| {
-                    spec_bounds_hold(self.tcx, *local_def_id, bound, caller_def_id, model_ty)
-                });
-                holds.then_some(bound)?
-            }
-            _ => generic_args,
-        };
         let is_generic = matches!(self.defs.get(&def_id)?, DefTy::Generic(_));
-        let (local_def_id, instantiated_ty_cache, deferred_ty_mode) =
+        let (local_def_id, instantiated_ty_cache, deferred_ty_mode, generic_args) =
             match self.defs.get(&def_id)? {
                 DefTy::Concrete(rty) => {
                     let mut def_ty = rty.clone();
@@ -1180,12 +1194,19 @@ impl<'tcx> Analyzer<'tcx> {
                         //   typed over sorts the call site does not share.
                         def_id != caller_def_id && generic.local_def_id.to_def_id() == def_id
                     }),
+                    generic_args,
                 ),
-                DefTy::Deferred(deferred) => (
-                    deferred.local_def_id,
-                    Rc::clone(&deferred.cache),
-                    Some(deferred.mode),
-                ),
+                DefTy::Deferred(specs) => {
+                    let (spec, generic_args) = specs.iter().find_map(|spec| {
+                        Some((spec, self.spec_args(spec, generic_args, caller_def_id)?))
+                    })?;
+                    (
+                        spec.local_def_id,
+                        Rc::clone(&spec.cache),
+                        Some(spec.mode),
+                        generic_args,
+                    )
+                }
             };
 
         let key = InstantiationKey {
