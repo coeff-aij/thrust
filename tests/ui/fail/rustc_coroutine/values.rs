@@ -292,10 +292,14 @@ impl Size {
     }
 
     #[inline]
-    // Trusted: a `u64` field read carries no `v >= 0`, which `checked_add`'s `u64` parameter requires (Unsat);
-    // past that, `obj_size_bound`'s `requires` is not provable for a generic `cx` (see `HasDataLayout`).
+    // Trusted: a `u64` field read carries no `v >= 0`, which `checked_add`'s `u64` parameter requires (Unsat).
+    // The `requires` is that of `obj_size_bound` for the layout `cx` names.
     #[thrust::trusted]
-    #[thrust::callable]
+    #[thrust_macros::requires(forall(|dl: TargetDataLayout| !C::dl_of(*cx, dl)
+        || dl.default_address_space_pointer_spec.pointer_size.raw == 2
+        || dl.default_address_space_pointer_spec.pointer_size.raw == 4
+        || dl.default_address_space_pointer_spec.pointer_size.raw == 8))]
+    #[thrust_macros::ensures(true)]
     pub fn checked_add<C: HasDataLayout>(self, offset: Size, cx: &C) -> Option<Size> {
         let dl = cx.data_layout();
 
