@@ -302,6 +302,8 @@ pub struct BitMatrix<R: Idx, C: Idx> {
 
 #[thrust_macros::context]
 impl<R: Idx, C: Idx> BitMatrix<R, C> {
+    // Trusted: `self.num_rows` read through `&self` carries no `v >= 0` (coord-e/thrust#165), which `IdxRange::new`'s `usize` parameter requires.
+    #[thrust::trusted]
     #[thrust_macros::ensures(result.start == 0)]
     #[thrust_macros::ensures(result.end == (*self).num_rows)]
     pub fn rows(&self) -> IdxRange<R> {
@@ -481,11 +483,11 @@ fn main() {
     // index by it, and `same_words` carries the bound to the second call.
     let mut it: BitIter<'static, usize> = BitIter::new(words());
     match it.next() {
-        Some(e) => assert!(e.index() < 128),
+        Some(e) => assert!(e < 128),
         None => {}
     }
     match it.next() {
-        Some(e) => assert!(e.index() < 128),
+        Some(e) => assert!(e < 128),
         None => {}
     }
 }
