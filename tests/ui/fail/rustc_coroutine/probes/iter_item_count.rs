@@ -70,74 +70,6 @@ impl IteratorSpec for BitIter {
     }
 }
 
-// local to the case study
-impl<I: thrust_models::Model, F> thrust_models::Model for std::iter::Map<I, F> {
-    type Ty = <I as thrust_models::Model>::Ty;
-}
-
-
-impl<I: thrust_models::Model, P> thrust_models::Model for std::iter::Filter<I, P> {
-    type Ty = <I as thrust_models::Model>::Ty;
-}
-
-#[thrust_macros::context]
-impl<I, F, B> IteratorSpec for std::iter::Map<I, F>
-where
-    I: IteratorSpec,
-    F: FnMut(I::Item) -> B,
-    B: thrust_models::Model,
-    I::Item: thrust_models::Model,
-    I::Ty: PartialEq,
-    <I::Item as thrust_models::Model>::Ty: PartialEq,
-    B::Ty: PartialEq,
-{
-    #[thrust_macros::predicate]
-    fn inv(self) -> bool {
-        I::inv(self)
-    }
-
-    #[thrust_macros::predicate]
-    fn produces(self, visited: Vec<B>, o: Self) -> bool {
-        exists(|xs: Seq<<I::Item as thrust_models::Model>::Ty>|
-            I::produces(self, xs, o) && xs.len() == visited.len())
-    }
-
-    #[thrust_macros::predicate]
-    fn completed(&mut self) -> bool {
-        I::completed(Mut::new(*self, !self))
-    }
-
-    fn produces_refl(a: &Self) {}
-
-    fn produces_trans(
-        a: &Self,
-        ab: Seq<<Self::Item as thrust_models::Model>::Ty>,
-        b: &Self,
-        bc: Seq<<Self::Item as thrust_models::Model>::Ty>,
-        c: &Self,
-    ) {
-    }
-}
-
-#[thrust::extern_spec_fn]
-#[thrust_macros::requires(
-    forall(|c: thrust_models::model::Closure<F>, visited: Seq<<I::Item as thrust_models::Model>::Ty>, mid: <I as thrust_models::Model>::Ty, i: Int|
-        !(I::produces(it, visited, mid) && 0 <= i && i < visited.len()) || thrust_macros::pre!(c(visited[i])))
-)]
-#[thrust_macros::ensures(result == it)]
-fn _extern_spec_iterator_map<I, B, F>(it: I, f: F) -> std::iter::Map<I, F>
-where
-    I: IteratorSpec,
-    F: FnMut(I::Item) -> B,
-    B: thrust_models::Model,
-    I::Item: thrust_models::Model,
-    I::Ty: PartialEq,
-    <I::Item as thrust_models::Model>::Ty: PartialEq,
-    B::Ty: PartialEq,
-{
-    <I as Iterator>::map(it, f)
-}
-
 pub struct Wrapped<T> {
     raw: Vec<T>,
 }
@@ -187,61 +119,6 @@ where
 #[thrust_macros::ensures((!v).len() == (*v).len() + *set + 1)]
 fn append_bits(set: &DenseBitSet, v: &mut Wrapped<u32>) {
     v.extend(set.iter().map(thrust_macros::closure!(requires(true), ensures(true), |i: usize| -> u32 { i as u32 })));
-}
-
-
-#[thrust_macros::context]
-impl<I, P> IteratorSpec for std::iter::Filter<I, P>
-where
-    I: IteratorSpec,
-    P: FnMut(&I::Item) -> bool,
-    I::Item: thrust_models::Model,
-    I::Ty: PartialEq,
-    <I::Item as thrust_models::Model>::Ty: PartialEq,
-{
-    #[thrust_macros::predicate]
-    fn inv(self) -> bool {
-        I::inv(self)
-    }
-
-    #[thrust_macros::predicate]
-    fn produces(self, visited: Vec<I::Item>, o: Self) -> bool {
-        exists(|xs: Seq<<I::Item as thrust_models::Model>::Ty>|
-            I::produces(self, xs, o) && visited.len() <= xs.len())
-    }
-
-    #[thrust_macros::predicate]
-    fn completed(&mut self) -> bool {
-        I::completed(Mut::new(*self, !self))
-    }
-
-    fn produces_refl(a: &Self) {}
-
-    fn produces_trans(
-        a: &Self,
-        ab: Seq<<Self::Item as thrust_models::Model>::Ty>,
-        b: &Self,
-        bc: Seq<<Self::Item as thrust_models::Model>::Ty>,
-        c: &Self,
-    ) {
-    }
-}
-
-#[thrust::extern_spec_fn]
-#[thrust_macros::requires(
-    forall(|c: thrust_models::model::Closure<P>, visited: Seq<<I::Item as thrust_models::Model>::Ty>, mid: <I as thrust_models::Model>::Ty, i: Int|
-        !(I::produces(it, visited, mid) && 0 <= i && i < visited.len()) || thrust_macros::pre!(c(&visited[i])))
-)]
-#[thrust_macros::ensures(result == it)]
-fn _extern_spec_iterator_filter<I, P>(it: I, predicate: P) -> std::iter::Filter<I, P>
-where
-    I: IteratorSpec,
-    P: FnMut(&I::Item) -> bool,
-    I::Item: thrust_models::Model,
-    I::Ty: PartialEq,
-    <I::Item as thrust_models::Model>::Ty: PartialEq,
-{
-    <I as Iterator>::filter(it, predicate)
 }
 
 #[thrust_macros::context]

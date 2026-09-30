@@ -498,6 +498,15 @@ mod thrust_models {
         type Ty = (<A as Model>::Ty, <B as Model>::Ty);
     }
 
+    // The iterator it wraps and the closure, in the order of the struct's fields.
+    impl<I, F> Model for core::iter::Map<I, F> where I: Model {
+        type Ty = (<I as Model>::Ty, model::Closure<F>);
+    }
+
+    impl<I, P> Model for core::iter::Filter<I, P> where I: Model {
+        type Ty = (<I as Model>::Ty, model::Closure<P>);
+    }
+
     impl<T> Model for Option<T> where T: Model {
         type Ty = Option<<T as Model>::Ty>;
     }
@@ -1991,6 +2000,132 @@ where
     }
 }
 
+// `Map` and `Filter` call their closure in `next`, which `IteratorSpec` makes total. `map` and
+// `filter` therefore require the closure's precondition at every item the inner iterator can
+// produce, in every state of the closure: a state cannot be named in a specification. Only the
+// number of items is described, not their values.
+#[thrust_macros::context]
+impl<I, F, B> IteratorSpec for core::iter::Map<I, F>
+where
+    I: IteratorSpec,
+    F: FnMut(I::Item) -> B,
+    B: thrust_models::Model,
+    I::Item: thrust_models::Model,
+    I::Ty: PartialEq,
+    <I::Item as thrust_models::Model>::Ty: PartialEq,
+    B::Ty: PartialEq,
+{
+    #[thrust_macros::predicate]
+    fn inv(self) -> bool {
+        I::inv(self.0)
+    }
+
+    #[thrust_macros::predicate]
+    fn produces(self, visited: Vec<B>, o: Self) -> bool {
+        thrust_models::exists(|xs: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>|
+            I::produces(self.0, xs, o.0) && xs.len() == visited.len())
+    }
+
+    #[thrust_macros::predicate]
+    fn completed(&mut self) -> bool {
+        I::completed(thrust_models::model::Mut::new((*self).0, (!self).0))
+            && (*self).1 == (!self).1
+    }
+
+    fn produces_refl(a: &Self) {}
+
+    fn produces_trans(
+        a: &Self,
+        ab: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        b: &Self,
+        bc: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        c: &Self,
+    ) {
+    }
+}
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(
+    thrust_models::forall(|c: thrust_models::model::Closure<F>,
+                           visited: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
+                           mid: I::Ty,
+                           i: thrust_models::model::Int|
+        !(I::produces(it, visited, mid) && 0 <= i && i < visited.len())
+            || thrust_macros::pre!(c(visited[i])))
+)]
+#[thrust_macros::ensures(result.0 == it)]
+fn _extern_spec_iterator_map<I, B, F>(it: I, f: F) -> core::iter::Map<I, F>
+    where I: IteratorSpec,
+          F: FnMut(I::Item) -> B,
+          B: thrust_models::Model,
+          I::Item: thrust_models::Model,
+          I::Ty: PartialEq,
+          <I::Item as thrust_models::Model>::Ty: PartialEq,
+          B::Ty: PartialEq
+{
+    <I as std::iter::Iterator>::map(it, f)
+}
+
+// `next` may call the predicate on several items and change its state before it returns `None`.
+#[thrust_macros::context]
+impl<I, P> IteratorSpec for core::iter::Filter<I, P>
+where
+    I: IteratorSpec,
+    P: FnMut(&I::Item) -> bool,
+    I::Item: thrust_models::Model,
+    I::Ty: PartialEq,
+    <I::Item as thrust_models::Model>::Ty: PartialEq,
+{
+    #[thrust_macros::predicate]
+    fn inv(self) -> bool {
+        I::inv(self.0)
+    }
+
+    #[thrust_macros::predicate]
+    fn produces(self, visited: Vec<I::Item>, o: Self) -> bool {
+        thrust_models::exists(|xs: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>|
+            I::produces(self.0, xs, o.0) && visited.len() <= xs.len())
+    }
+
+    #[thrust_macros::predicate]
+    fn completed(&mut self) -> bool {
+        thrust_models::exists(|xs: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>, mid: I::Ty|
+            I::produces((*self).0, xs, mid)
+                && I::completed(thrust_models::model::Mut::new(mid, (!self).0)))
+    }
+
+    fn produces_refl(a: &Self) {}
+
+    fn produces_trans(
+        a: &Self,
+        ab: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        b: &Self,
+        bc: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        c: &Self,
+    ) {
+    }
+}
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(
+    thrust_models::forall(|c: thrust_models::model::Closure<P>,
+                           visited: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
+                           mid: I::Ty,
+                           i: thrust_models::model::Int|
+        !(I::produces(it, visited, mid) && 0 <= i && i < visited.len())
+            || thrust_macros::pre!(c(&visited[i])))
+)]
+#[thrust_macros::ensures(result.0 == it)]
+fn _extern_spec_iterator_filter<I, P>(it: I, predicate: P) -> core::iter::Filter<I, P>
+    where I: IteratorSpec,
+          P: FnMut(&I::Item) -> bool,
+          I::Item: thrust_models::Model,
+          I::Ty: PartialEq,
+          <I::Item as thrust_models::Model>::Ty: PartialEq
+{
+    <I as std::iter::Iterator>::filter(it, predicate)
+}
+
 // `into_iter` is specified once, through `into_iter_is`; a type gets an `into_iter` by
 // implementing the trait. An iterator is its own `into_iter`.
 #[thrust_macros::context]
@@ -2144,6 +2279,38 @@ where
     }
 }
 
+#[thrust_macros::context]
+impl<I, F, B> IntoIteratorSpec for core::iter::Map<I, F>
+where
+    I: IteratorSpec,
+    F: FnMut(I::Item) -> B,
+    B: thrust_models::Model,
+    I::Item: thrust_models::Model,
+    I::Ty: PartialEq,
+    <I::Item as thrust_models::Model>::Ty: PartialEq,
+    B::Ty: PartialEq,
+{
+    #[thrust_macros::predicate]
+    fn into_iter_is(self, it: Self) -> bool {
+        self == it
+    }
+}
+
+#[thrust_macros::context]
+impl<I, P> IntoIteratorSpec for core::iter::Filter<I, P>
+where
+    I: IteratorSpec,
+    P: FnMut(&I::Item) -> bool,
+    I::Item: thrust_models::Model,
+    I::Ty: PartialEq,
+    <I::Item as thrust_models::Model>::Ty: PartialEq,
+{
+    #[thrust_macros::predicate]
+    fn into_iter_is(self, it: Self) -> bool {
+        self == it
+    }
+}
+
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(A::into_iter_is(a, result.0) && B::into_iter_is(b, result.1))]
@@ -2213,6 +2380,17 @@ fn _extern_spec_vec_from_iter<T, I>(iter: I) -> Vec<T>
           I: IntoIteratorSpec<Item = T>, I::IntoIter: IteratorSpec, I::Ty: PartialEq
 {
     <Vec<T> as std::iter::FromIterator<T>>::from_iter(iter)
+}
+
+// `collect` into a `Vec` is `Vec::from_iter`.
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(true)]
+fn _extern_spec_iterator_collect_vec<I, T>(it: I) -> Vec<T>
+    where T: thrust_models::Model, T::Ty: PartialEq,
+          I: IteratorSpec<Item = T>, I::Ty: PartialEq
+{
+    <I as std::iter::Iterator>::collect::<Vec<T>>(it)
 }
 
 #[thrust::extern_spec_fn]
