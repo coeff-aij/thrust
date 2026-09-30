@@ -514,18 +514,43 @@ fn single_definition(system: &System, pred: PredVarId) -> Option<&Clause> {
     Some(def)
 }
 
-fn entry_atoms_from(mut facts: Vec<Formula>, mut head: Vec<Term>) -> Vec<Formula> {
-    while let Some((x, t)) = take_definition(&mut facts) {
-        let subst = |v: TermVarIdx| if v == x { t.clone() } else { Term::Var(v) };
-        facts = facts
-            .into_iter()
-            .map(|f| map_formula_terms(f.subst_var(subst), &mut simplify_term))
-            .collect();
-        head = head
-            .into_iter()
-            .map(|h| map_term(h.subst_var(subst), &mut simplify_term))
-            .collect();
+/// Terms larger than this are not built when variables are resolved through their definitions.
+const MAX_RESOLVED_SIZE: usize = 256;
+
+fn entry_atoms_from(facts: Vec<Formula>, head: Vec<Term>) -> Vec<Formula> {
+    let mut defs = Definitions::default();
+    let mut pending: std::collections::VecDeque<Formula> = facts.into();
+    let mut kept = Vec::new();
+    while let Some(fact) = pending.pop_front() {
+        let Some((lhs, rhs)) = equality_sides(&fact) else {
+            kept.push(fact);
+            continue;
+        };
+        let (Some(lhs), Some(rhs)) = (defs.resolve(lhs), defs.resolve(rhs)) else {
+            continue;
+        };
+        match (lhs, rhs) {
+            (Term::Mut(a, b), Term::Mut(c, d)) => {
+                pending.push_back(Formula::Atom(a.equal_to(*c)));
+                pending.push_back(Formula::Atom(b.equal_to(*d)));
+            }
+            (Term::Tuple(xs), Term::Tuple(ys)) if xs.len() == ys.len() => {
+                pending.extend(
+                    xs.into_iter()
+                        .zip(ys)
+                        .map(|(x, y)| Formula::Atom(x.equal_to(y))),
+                );
+            }
+            (Term::Var(x), t) | (t, Term::Var(x)) if !t.fv().any(|v| *v == x) => {
+                defs.define(x, t);
+            }
+            (lhs, rhs) => kept.push(Formula::Atom(lhs.equal_to(rhs))),
+        }
     }
+    let head: Vec<Term> = head
+        .iter()
+        .map(|h| defs.resolve(h).unwrap_or_else(|| h.clone()))
+        .collect();
 
     let mut mapping: HashMap<TermVarIdx, Term> = HashMap::new();
     let mut built = Vec::new();
@@ -537,7 +562,6 @@ fn entry_atoms_from(mut facts: Vec<Formula>, mut head: Vec<Term>) -> Vec<Formula
             &mut built,
         );
     }
-    let mapped = |f: &Formula| f.fv().all(|v| mapping.contains_key(v));
     let mut out = Vec::new();
     for (at, h) in built {
         if h.fv().all(|v| mapping.contains_key(v)) {
@@ -545,48 +569,100 @@ fn entry_atoms_from(mut facts: Vec<Formula>, mut head: Vec<Term>) -> Vec<Formula
             out.push(Formula::Atom(at.equal_to(h)));
         }
     }
-    for fact in facts.iter().filter(|f| mapped(f)) {
-        let fact = fact.clone().subst_var(|v| mapping[&v].clone());
-        out.push(map_formula_terms(fact, &mut simplify_term));
+    for fact in kept {
+        let Some(fact) = defs.resolve_formula(&fact) else {
+            continue;
+        };
+        if fact.fv().all(|v| mapping.contains_key(v)) {
+            let fact = fact.subst_var(|v| mapping[&v].clone());
+            out.push(map_formula_terms(fact, &mut simplify_term));
+        }
     }
     out
 }
 
-/// Removes from `facts` an equality that defines a variable, `x = t` with `x` not in `t`, and
-/// returns it; an equality of two references or tuples is split into its components first.
-fn take_definition(facts: &mut Vec<Formula>) -> Option<(TermVarIdx, Term)> {
-    loop {
-        let i = facts.iter().position(|f| equality_sides(f).is_some())?;
-        let (lhs, rhs) = equality_sides(&facts[i]).unwrap();
-        let (lhs, rhs) = (lhs.clone(), rhs.clone());
-        match (lhs, rhs) {
-            (Term::Mut(a, b), Term::Mut(c, d)) => {
-                facts[i] = Formula::Atom(a.equal_to(*c));
-                facts.push(Formula::Atom(b.equal_to(*d)));
-            }
-            (Term::Tuple(xs), Term::Tuple(ys)) if xs.len() == ys.len() => {
-                facts.remove(i);
-                facts.extend(
-                    xs.into_iter()
-                        .zip(ys)
-                        .map(|(x, y)| Formula::Atom(x.equal_to(y))),
-                );
-            }
-            (Term::Var(x), t) | (t, Term::Var(x)) if !t.fv().any(|v| *v == x) => {
-                facts.remove(i);
-                return Some((x, t));
-            }
-            _ => return definition_elsewhere(facts, i),
-        }
-    }
+/// Variables defined by equalities of an entry clause, `x = t` with `x` not occurring in `t` once
+/// the variables of `t` are resolved, so that resolution terminates.
+#[derive(Default)]
+struct Definitions {
+    defs: HashMap<TermVarIdx, Term>,
 }
 
-/// [`take_definition`] past the equality at `skip`, which defines no variable.
-fn definition_elsewhere(facts: &mut Vec<Formula>, skip: usize) -> Option<(TermVarIdx, Term)> {
-    let mut rest = facts.split_off(skip + 1);
-    let found = take_definition(&mut rest);
-    facts.extend(rest);
-    found
+impl Definitions {
+    fn define(&mut self, x: TermVarIdx, t: Term) {
+        self.defs.insert(x, t);
+    }
+
+    /// `t` with every defined variable replaced by its resolved definition, simplified, or
+    /// `None` if the result would exceed [`MAX_RESOLVED_SIZE`].
+    fn resolve(&self, t: &Term) -> Option<Term> {
+        let mut budget = MAX_RESOLVED_SIZE;
+        self.resolve_within(t, &mut budget)
+    }
+
+    fn resolve_within(&self, t: &Term, budget: &mut usize) -> Option<Term> {
+        *budget = budget.checked_sub(1)?;
+        if let Term::Var(x) = t {
+            return match self.defs.get(x) {
+                Some(def) => self.resolve_within(def, budget),
+                None => Some(t.clone()),
+            };
+        }
+        let mut failed = false;
+        let mut children = |c: &Term, budget: &mut usize| -> Term {
+            self.resolve_within(c, budget).unwrap_or_else(|| {
+                failed = true;
+                Term::Null
+            })
+        };
+        let term = match t {
+            Term::Box(a) => Term::Box(Box::new(children(a, budget))),
+            Term::BoxCurrent(a) => Term::BoxCurrent(Box::new(children(a, budget))),
+            Term::MutCurrent(a) => Term::MutCurrent(Box::new(children(a, budget))),
+            Term::MutFinal(a) => Term::MutFinal(Box::new(children(a, budget))),
+            Term::Mut(a, b) => {
+                let a = children(a, budget);
+                Term::Mut(Box::new(a), Box::new(children(b, budget)))
+            }
+            Term::TupleProj(a, i) => Term::TupleProj(Box::new(children(a, budget)), *i),
+            Term::DatatypeDiscr(sym, a) => {
+                Term::DatatypeDiscr(sym.clone(), Box::new(children(a, budget)))
+            }
+            Term::App(fun, args) => {
+                Term::App(*fun, args.iter().map(|a| children(a, budget)).collect())
+            }
+            Term::Tuple(ts) => Term::Tuple(ts.iter().map(|a| children(a, budget)).collect()),
+            Term::DatatypeCtor(sort, sym, args) => Term::DatatypeCtor(
+                sort.clone(),
+                sym.clone(),
+                args.iter().map(|a| children(a, budget)).collect(),
+            ),
+            Term::UserDefinedFn(sym, sort, args) => Term::UserDefinedFn(
+                sym.clone(),
+                sort.clone(),
+                args.iter().map(|a| children(a, budget)).collect(),
+            ),
+            t => t.clone(),
+        };
+        if failed {
+            return None;
+        }
+        Some(simplify_term(term))
+    }
+
+    fn resolve_formula(&self, f: &Formula) -> Option<Formula> {
+        let mut failed = false;
+        let resolved = f.clone().subst_var(|v| {
+            self.resolve(&Term::Var(v)).unwrap_or_else(|| {
+                failed = true;
+                Term::Var(v)
+            })
+        });
+        if failed {
+            return None;
+        }
+        Some(map_formula_terms(resolved, &mut simplify_term))
+    }
 }
 
 fn equality_sides(f: &Formula) -> Option<(&Term, &Term)> {
