@@ -1814,12 +1814,18 @@ impl<FieldIdx: Idx, VariantIdx: Idx> LayoutData<FieldIdx, VariantIdx> {
     }
 }
 
-// `PartialEq` added (rewrites.md S6): `univariant`'s requires tests for `MaybeUnsized`.
-#[derive(Copy, Clone, PartialEq /*Debug*/)]
+#[derive(Copy, Clone /*Debug*/)]
 pub enum StructKind {
     AlwaysSized,
     MaybeUnsized,
     Prefixed(Size, Align),
+}
+
+/// `univariant`'s requires. Thrust's formula language has no `match`, so the test is the
+/// equality that the `PartialEq` impl below (next to the `Model` impl) provides.
+#[thrust_macros::predicate]
+fn is_maybe_unsized(kind: StructKind) -> bool {
+    kind == StructKind::MaybeUnsized
 }
 
 #[derive(PartialEq, Eq, Hash, Clone /*Debug*/)]
@@ -1940,7 +1946,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
     #[thrust_macros::requires(
         forall(|k: Int| !(0 <= k && k <= (*fields).len()) || <FieldIdx as Idx>::can_new(k))
             && forall(|z: Int| !(z == 0usize) || <VariantIdx as Idx>::can_new(z))
-            && (kind == StructKind::MaybeUnsized ==> (*fields).len() > 0)
+            && (is_maybe_unsized(kind) ==> (*fields).len() > 0)
     )]
     #[thrust_macros::ensures(forall(|l: LayoutData<FieldIdx, VariantIdx>|
         result != Ok(l) || FieldsShape::<FieldIdx>::arbitrary_of(l.fields, (*fields).len())))]
@@ -2918,6 +2924,16 @@ impl<FieldIdx: Idx, VariantIdx: Idx> thrust_models::Model for LayoutData<FieldId
 }
 impl thrust_models::Model for StructKind {
     type Ty = Self;
+}
+impl PartialEq for StructKind {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (StructKind::AlwaysSized, StructKind::AlwaysSized) => true,
+            (StructKind::MaybeUnsized, StructKind::MaybeUnsized) => true,
+            (StructKind::Prefixed(s1, a1), StructKind::Prefixed(s2, a2)) => s1 == s2 && a1 == a2,
+            _ => false,
+        }
+    }
 }
 impl<FieldIdx: Idx> thrust_models::Model for VariantLayout<FieldIdx> {
     type Ty = Self;
