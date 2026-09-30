@@ -385,3 +385,260 @@ pub(super) fn forall_preds_of<'a>(
     }
     preds
 }
+
+/// Which candidate atoms loop heads get: `THRUST_CANDIDATE_ATOMS=1` from contracts,
+/// `THRUST_CANDIDATE_ATOMS=2` also from the facts that hold where the loop is entered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CandidateAtomsMode {
+    Off,
+    Contracts,
+    ContractsAndEntry,
+}
+
+impl CandidateAtomsMode {
+    pub fn from_env() -> Self {
+        match std::env::var("THRUST_CANDIDATE_ATOMS").as_deref() {
+            Ok("1") => CandidateAtomsMode::Contracts,
+            Ok("2") => CandidateAtomsMode::ContractsAndEntry,
+            _ => CandidateAtomsMode::Off,
+        }
+    }
+}
+
+impl System {
+    /// Adds to each declared predicate variable the atoms of its entry clauses
+    /// ([`entry_atoms`]). Run on the unboxed system.
+    pub fn add_entry_candidate_atoms(&mut self) {
+        let mut added = Vec::new();
+        for candidates in &self.candidate_atoms {
+            added.push(entry_atoms(self, candidates.pred));
+        }
+        for (candidates, atoms) in self.candidate_atoms.iter_mut().zip(added) {
+            candidates.atoms.extend(atoms);
+        }
+    }
+}
+
+/// The facts of the clauses that enter `pred` from outside (its head is `pred`, its body does not
+/// apply it), over `pred`'s arguments: liquid-fixpoint's scraping of the concrete predicates of a
+/// constraint's environment, restricted to where the loop is entered and mapped onto the head
+/// instead of abstracted into a qualifier.
+///
+/// The equalities of the body that define a variable are substituted away, the head's arguments
+/// are then read back as terms over the argument positions (`cur`, `final` and tuple fields), and
+/// what the head's arguments were built from becomes an equality (`s.n = 0` from an assignment
+/// before the loop, `n = e.n`). Every body conjunct over mapped variables is kept, and an integer
+/// equality also gives its two inequalities, so that a check that drops `n = e.n` can keep
+/// `n <= e.n`.
+pub(super) fn entry_atoms(system: &System, pred: PredVarId) -> Vec<Formula> {
+    let sig = &system.pred_vars[pred].sig;
+    let mut out = Vec::new();
+    for clause in &system.clauses {
+        if clause.head.pred != Pred::Var(pred)
+            || clause.body.atoms.iter().any(|a| a.pred == Pred::Var(pred))
+        {
+            continue;
+        }
+        for atom in entry_atoms_of(system, clause) {
+            let split = int_equality_halves(&atom, sig);
+            out.push(atom);
+            out.extend(split);
+        }
+    }
+    out.retain(|atom| !is_trivial(atom));
+    out
+}
+
+/// How many levels of single-clause predicate variables [`clause_facts`] unfolds.
+const UNFOLD_DEPTH: usize = 3;
+
+fn entry_atoms_of(system: &System, clause: &Clause) -> Vec<Formula> {
+    let mut next_var = clause.vars.len();
+    let facts = clause_facts(system, clause, 0, &mut next_var, UNFOLD_DEPTH);
+    let head = clause.head.args.clone();
+    entry_atoms_from(facts, head)
+}
+
+/// The concrete facts of `clause`'s body (and head guard), its variables shifted by `offset`.
+/// A predicate variable of the body that has exactly one defining clause, not recursive, is
+/// unfolded into that clause's facts, with fresh variables from `next_var`, down to `depth`
+/// levels (liquid-fixpoint's elimination of a variable with a single definition): the facts
+/// that reach a loop through the block before it are otherwise hidden in that block's unknown.
+fn clause_facts(
+    system: &System,
+    clause: &Clause,
+    offset: usize,
+    next_var: &mut usize,
+    depth: usize,
+) -> Vec<Formula> {
+    let shift = |v: TermVarIdx| Term::var(TermVarIdx::from_usize(v.index() + offset));
+    let mut facts: Vec<Formula> = conjuncts(&clause.body.formula)
+        .into_iter()
+        .chain(clause.head.guard.iter().flat_map(|g| conjuncts(g)))
+        .map(|f| f.subst_var(shift))
+        .collect();
+    for atom in &clause.body.atoms {
+        let atom = atom.clone().subst_var(shift);
+        let Pred::Var(q) = atom.pred else {
+            facts.push(Formula::Atom(atom));
+            continue;
+        };
+        if depth == 0 {
+            continue;
+        }
+        let Some(def) = single_definition(system, q) else {
+            continue;
+        };
+        let def_offset = *next_var;
+        *next_var += def.vars.len();
+        let def_shift = |v: TermVarIdx| Term::var(TermVarIdx::from_usize(v.index() + def_offset));
+        for (arg, param) in atom.args.iter().zip(&def.head.args) {
+            let param = param.clone().subst_var(def_shift);
+            facts.push(Formula::Atom(arg.clone().equal_to(param)));
+        }
+        facts.extend(clause_facts(system, def, def_offset, next_var, depth - 1));
+    }
+    facts
+}
+
+/// The only clause whose head is `pred`, if there is one and its body does not apply `pred`.
+fn single_definition(system: &System, pred: PredVarId) -> Option<&Clause> {
+    let mut defs = system
+        .clauses
+        .iter()
+        .filter(|c| c.head.pred == Pred::Var(pred));
+    let def = defs.next()?;
+    if defs.next().is_some() || def.body.atoms.iter().any(|a| a.pred == Pred::Var(pred)) {
+        return None;
+    }
+    Some(def)
+}
+
+fn entry_atoms_from(mut facts: Vec<Formula>, mut head: Vec<Term>) -> Vec<Formula> {
+    while let Some((x, t)) = take_definition(&mut facts) {
+        let subst = |v: TermVarIdx| if v == x { t.clone() } else { Term::Var(v) };
+        facts = facts
+            .into_iter()
+            .map(|f| map_formula_terms(f.subst_var(subst), &mut simplify_term))
+            .collect();
+        head = head
+            .into_iter()
+            .map(|h| map_term(h.subst_var(subst), &mut simplify_term))
+            .collect();
+    }
+
+    let mut mapping: HashMap<TermVarIdx, Term> = HashMap::new();
+    let mut built = Vec::new();
+    for (k, h) in head.into_iter().enumerate() {
+        read_back(
+            h,
+            Term::var(TermVarIdx::from_usize(k)),
+            &mut mapping,
+            &mut built,
+        );
+    }
+    let mapped = |f: &Formula| f.fv().all(|v| mapping.contains_key(v));
+    let mut out = Vec::new();
+    for (at, h) in built {
+        if h.fv().all(|v| mapping.contains_key(v)) {
+            let h = h.subst_var(|v| mapping[&v].clone());
+            out.push(Formula::Atom(at.equal_to(h)));
+        }
+    }
+    for fact in facts.iter().filter(|f| mapped(f)) {
+        let fact = fact.clone().subst_var(|v| mapping[&v].clone());
+        out.push(map_formula_terms(fact, &mut simplify_term));
+    }
+    out
+}
+
+/// Removes from `facts` an equality that defines a variable, `x = t` with `x` not in `t`, and
+/// returns it; an equality of two references or tuples is split into its components first.
+fn take_definition(facts: &mut Vec<Formula>) -> Option<(TermVarIdx, Term)> {
+    loop {
+        let i = facts.iter().position(|f| equality_sides(f).is_some())?;
+        let (lhs, rhs) = equality_sides(&facts[i]).unwrap();
+        let (lhs, rhs) = (lhs.clone(), rhs.clone());
+        match (lhs, rhs) {
+            (Term::Mut(a, b), Term::Mut(c, d)) => {
+                facts[i] = Formula::Atom(a.equal_to(*c));
+                facts.push(Formula::Atom(b.equal_to(*d)));
+            }
+            (Term::Tuple(xs), Term::Tuple(ys)) if xs.len() == ys.len() => {
+                facts.remove(i);
+                facts.extend(
+                    xs.into_iter()
+                        .zip(ys)
+                        .map(|(x, y)| Formula::Atom(x.equal_to(y))),
+                );
+            }
+            (Term::Var(x), t) | (t, Term::Var(x)) if !t.fv().any(|v| *v == x) => {
+                facts.remove(i);
+                return Some((x, t));
+            }
+            _ => return definition_elsewhere(facts, i),
+        }
+    }
+}
+
+/// [`take_definition`] past the equality at `skip`, which defines no variable.
+fn definition_elsewhere(facts: &mut Vec<Formula>, skip: usize) -> Option<(TermVarIdx, Term)> {
+    let mut rest = facts.split_off(skip + 1);
+    let found = take_definition(&mut rest);
+    facts.extend(rest);
+    found
+}
+
+fn equality_sides(f: &Formula) -> Option<(&Term, &Term)> {
+    let Formula::Atom(atom) = f else {
+        return None;
+    };
+    if atom.guard.is_some() || atom.pred != Pred::Known(KnownPred::EQUAL) || atom.args.len() != 2 {
+        return None;
+    }
+    Some((&atom.args[0], &atom.args[1]))
+}
+
+/// Reads the head argument `h` as the term `at` over the argument positions: a variable is
+/// mapped to `at` (or, if already mapped, gives an equality), a reference or tuple is read
+/// component-wise, and anything else is an equality `at = h` to state once its variables are
+/// mapped.
+fn read_back(
+    h: Term,
+    at: Term,
+    mapping: &mut HashMap<TermVarIdx, Term>,
+    built: &mut Vec<(Term, Term)>,
+) {
+    match h {
+        Term::Var(x) if !mapping.contains_key(&x) => {
+            mapping.insert(x, at);
+        }
+        Term::Mut(current, final_) => {
+            read_back(*current, at.clone().mut_current(), mapping, built);
+            read_back(*final_, at.mut_final(), mapping, built);
+        }
+        Term::Tuple(ts) => {
+            for (i, t) in ts.into_iter().enumerate() {
+                read_back(t, at.clone().tuple_proj(i), mapping, built);
+            }
+        }
+        h => built.push((at, h)),
+    }
+}
+
+/// `a <= b` and `a >= b` for an integer equality `a = b` over the arguments of sorts `sig`.
+fn int_equality_halves(atom: &Formula, sig: &[Sort]) -> Vec<Formula> {
+    let Some((a, b)) = equality_sides(atom) else {
+        return Vec::new();
+    };
+    if a.sort(|v| sig[v.index()].clone()) != Sort::Int {
+        return Vec::new();
+    }
+    [
+        KnownPred::LESS_THAN_OR_EQUAL,
+        KnownPred::GREATER_THAN_OR_EQUAL,
+    ]
+    .into_iter()
+    .map(|p| Formula::Atom(Atom::new(p.into(), vec![a.clone(), b.clone()])))
+    .collect()
+}

@@ -18,7 +18,7 @@ mod smtlib2;
 mod solver;
 mod unbox;
 
-pub use candidate_atoms::{conjuncts, instances, CandidateAtoms, HeadTerms};
+pub use candidate_atoms::{conjuncts, instances, CandidateAtoms, CandidateAtomsMode, HeadTerms};
 pub use clause_builder::{ClauseBuilder, Var};
 pub use debug::DebugInfo;
 pub use solver::{Capabilities, CheckSatError, Config};
@@ -2942,6 +2942,9 @@ impl System {
         system.populate_user_defined_pred_dependencies();
         let mut system = unbox(system);
         system.populate_user_defined_pred_dependencies();
+        if CandidateAtomsMode::from_env() == CandidateAtomsMode::ContractsAndEntry {
+            system.add_entry_candidate_atoms();
+        }
         if let Ok(file) = std::env::var("THRUST_PRETTY_OUTPUT") {
             let mut f = std::fs::File::create(file).unwrap();
             for (idx, c) in system.clauses.iter_enumerated() {

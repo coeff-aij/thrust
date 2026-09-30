@@ -716,9 +716,10 @@ pub struct Analyzer<'tcx> {
     called_fn_tys: HashMap<(AnalysisKey<'tcx>, BasicBlock), Vec<rty::FunctionType>>,
 }
 
-/// Whether loop heads get candidate atoms from contracts (`THRUST_CANDIDATE_ATOMS=1`).
+/// Whether loop heads get candidate atoms (`THRUST_CANDIDATE_ATOMS`, see
+/// [`chc::CandidateAtomsMode`]).
 pub fn candidate_atoms_enabled() -> bool {
-    matches!(std::env::var("THRUST_CANDIDATE_ATOMS").as_deref(), Ok("1"))
+    chc::CandidateAtomsMode::from_env() != chc::CandidateAtomsMode::Off
 }
 
 impl<'tcx> crate::refine::TemplateRegistry for Analyzer<'tcx> {

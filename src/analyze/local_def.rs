@@ -1473,6 +1473,47 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             })
     }
 
+    /// The facts of the precondition of `bb` besides its predicate variable (`x >= 0` of an
+    /// unsigned parameter), over that variable's arguments by position.
+    fn precondition_facts(&self, bb: BasicBlock) -> Vec<chc::Formula> {
+        let bty = self
+            .ctx
+            .basic_block_ty_with_precondition(self.analysis_key(), bb);
+        let fn_ty = bty.to_function_ty();
+        let Some(param) = fn_ty.params.raw.last() else {
+            return Vec::new();
+        };
+        let body = &param.refinement.body;
+        let Some(pred_atom) = body
+            .atoms
+            .iter()
+            .find(|atom| matches!(atom.pred, chc::Pred::Var(_)))
+        else {
+            return Vec::new();
+        };
+        let mut position = HashMap::new();
+        for (k, arg) in pred_atom.args.iter().enumerate() {
+            let at = chc::Term::var(chc::TermVarIdx::from_usize(k));
+            match arg {
+                chc::Term::Var(v) => position.insert(*v, at),
+                chc::Term::BoxCurrent(t) => match &**t {
+                    chc::Term::Var(v) => position.insert(*v, chc::Term::box_(at)),
+                    _ => None,
+                },
+                _ => None,
+            };
+        }
+        body.atoms
+            .iter()
+            .filter(|atom| !matches!(atom.pred, chc::Pred::Var(_)))
+            .cloned()
+            .map(chc::Formula::Atom)
+            .chain(chc::conjuncts(&body.formula))
+            .filter(|fact| fact.fv().all(|v| position.contains_key(v)))
+            .map(|fact| fact.subst_var(|v| position[&v].clone()))
+            .collect()
+    }
+
     /// Declares candidate atoms for the predicate variable of each loop head: the conjuncts of
     /// this function's contract and of the contracts of the functions its loop calls, each
     /// instantiated at the terms over the head's arguments of the matching sorts, and the
@@ -1496,6 +1537,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             tracing::debug!(?bb, ?pred, ?sig, "candidate atoms for loop head");
             let head = chc::HeadTerms::new(&sig);
             let mut atoms = head.prophecy_atoms();
+            if chc::CandidateAtomsMode::from_env() == chc::CandidateAtomsMode::ContractsAndEntry {
+                atoms.extend(self.precondition_facts(bb));
+            }
             atoms.extend(contract_instances(&fn_ty, &head, ContractSource::Enclosing));
             let mut loop_blocks: Vec<_> = loop_blocks.into_iter().collect();
             loop_blocks.sort();
