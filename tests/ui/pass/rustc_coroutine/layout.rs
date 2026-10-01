@@ -1011,6 +1011,10 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
 //   and at most n promoted locals) and up to each variant's length (a variant may list a local
 //   twice);
 // - P + 1 + n <= u32::MAX, for the `u32` memory order.
+//   Both P + 1 + n bounds are stronger than the panic condition, which is P + 1 + c with c the
+//   number of ineligible locals (the ghost count of `ineligible_locals`): c is computed inside,
+//   from eligibility's result, so a condition on the inputs can only bound it by n. rustc's
+//   caller guarantees neither form.
 // - `dl_wf` of the data layout `calc.cx` names, which `univariant` requires.
 // - `niche_wf` of the largest niche of every layout `univariant` may receive: each of
 //   `local_layouts` and `prefix_layouts`, and `tag_to_layout`'s result for any scalar (through
