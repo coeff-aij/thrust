@@ -1,6 +1,8 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -Adead_code -C debug-assertions=off -A unused-variables -A unused_parens
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60 COAR_IMAGE=coar:804d76744
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300 COAR_IMAGE=coar:804d76744
+// The refutation takes about 100 s on fptprove 804d76744 and develop 82865d8c7 (6 GB, 2 CPUs)
+// since unsigned values carry `v >= 0`, so the timeout leaves room above the pass side's 60 s.
 
 // A projection through a closure-bounded impl reached at a call site: `Map::new`'s contract
 // quantifies over `<Filter<SliceIter<T>, {closure}> as Iterator>::Item` and passes it to

@@ -283,7 +283,7 @@ mod thrust_models {
             #[allow(dead_code)]
             #[thrust::def::seq_len]
             #[thrust::ignored]
-            pub fn len(&self) -> Int {
+            pub fn len(&self) -> UInt {
                 unimplemented!()
             }
 
@@ -416,15 +416,15 @@ mod thrust_models {
     integer_model!(isize, model::Int);
     integer_model!(i32, model::Int);
     integer_model!(i64, model::Int);
-    integer_model!(usize, model::Int);
-    integer_model!(u32, model::Int);
-    integer_model!(u64, model::Int);
+    integer_model!(usize, model::UInt);
+    integer_model!(u32, model::UInt);
+    integer_model!(u64, model::UInt);
     integer_model!(i8, model::Int);
     integer_model!(i16, model::Int);
     integer_model!(i128, model::Int);
-    integer_model!(u8, model::Int);
-    integer_model!(u16, model::Int);
-    integer_model!(u128, model::Int);
+    integer_model!(u8, model::UInt);
+    integer_model!(u16, model::UInt);
+    integer_model!(u128, model::UInt);
 
     impl Model for bool {
         type Ty = bool;
@@ -529,7 +529,7 @@ mod thrust_models {
     // The iterator it wraps and the number of items handed out. It has the shape of the struct,
     // so the refinement type builder needs no special case.
     impl<I> Model for core::iter::Enumerate<I> where I: Model {
-        type Ty = (<I as Model>::Ty, model::Int);
+        type Ty = (<I as Model>::Ty, model::UInt);
     }
 
     // The two iterators it wraps, in the order of the arguments to `zip`.

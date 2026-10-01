@@ -20,7 +20,7 @@
 // non-trivial contract).
 
 use thrust_models::{exists, forall};
-use thrust_models::model::{Int, Seq};
+use thrust_models::model::{UInt, Seq};
 
 use std::cmp;
 use std::convert::TryInto;
@@ -82,7 +82,7 @@ pub trait Idx: Copy + 'static + Eq + PartialEq + Debug + Hash {
     fn index(self) -> usize;
 
     #[inline]
-    #[thrust_macros::requires(forall(|i: Int, a: Int|
+    #[thrust_macros::requires(forall(|i: UInt, a: UInt|
         Self::index_is(*self, i) && a == amount ==> Self::can_new(i + a)))]
     fn increment_by(&mut self, amount: usize) {
         *self = self.plus(amount);
@@ -90,7 +90,7 @@ pub trait Idx: Copy + 'static + Eq + PartialEq + Debug + Hash {
 
     #[inline]
     #[must_use = "Use `increment_by` if you wanted to update the index in-place"]
-    #[thrust_macros::requires(forall(|i: Int, a: Int|
+    #[thrust_macros::requires(forall(|i: UInt, a: UInt|
         Self::index_is(self, i) && a == amount ==> Self::can_new(i + a)))]
     fn plus(self, amount: usize) -> Self {
         Self::new(self.index() + amount)
@@ -330,8 +330,8 @@ impl<I: Idx, T: thrust_models::Model<Ty: PartialEq>, R: IntoSliceIdx<I, [T]>> st
 // `Index`/`IndexMut` are foreign traits, so the contract is an extern spec (the impl methods
 // are `trusted`). `IntoSliceIdx` has one impl, `I: Idx` into `usize`, through `Idx::index_is`.
 #[thrust::extern_spec_fn]
-#[thrust_macros::requires(forall(|i: Int| <R as IntoSliceIdx<I, [T]>>::into_is(index, i) ==> i < (*slf).len()))]
-#[thrust_macros::ensures(forall(|i: Int| <R as IntoSliceIdx<I, [T]>>::into_is(index, i) ==> *result == (*slf)[i]))]
+#[thrust_macros::requires(forall(|i: UInt| <R as IntoSliceIdx<I, [T]>>::into_is(index, i) ==> i < (*slf).len()))]
+#[thrust_macros::ensures(forall(|i: UInt| <R as IntoSliceIdx<I, [T]>>::into_is(index, i) ==> *result == (*slf)[i]))]
 fn _extern_spec_index_slice_index<I: Idx + thrust_models::Model<Ty: PartialEq>, T: thrust_models::Model, R: IntoSliceIdx<I, [T], Output = usize> + thrust_models::Model>(slf: &IndexSlice<I, T>, index: R) -> &T
 where
     <T as thrust_models::Model>::Ty: PartialEq,
@@ -341,8 +341,8 @@ where
 }
 
 #[thrust::extern_spec_fn]
-#[thrust_macros::requires(forall(|i: Int| <R as IntoSliceIdx<I, [T]>>::into_is(index, i) ==> i < (*slf).len()))]
-#[thrust_macros::ensures(forall(|i: Int| <R as IntoSliceIdx<I, [T]>>::into_is(index, i)
+#[thrust_macros::requires(forall(|i: UInt| <R as IntoSliceIdx<I, [T]>>::into_is(index, i) ==> i < (*slf).len()))]
+#[thrust_macros::ensures(forall(|i: UInt| <R as IntoSliceIdx<I, [T]>>::into_is(index, i)
     ==> (*result == (*slf)[i] && !result == (!slf)[i] && (!slf).len() == (*slf).len())))]
 fn _extern_spec_index_slice_index_mut<I: Idx + thrust_models::Model<Ty: PartialEq>, T: thrust_models::Model, R: IntoSliceIdx<I, [T], Output = usize> + thrust_models::Model>(slf: &mut IndexSlice<I, T>, index: R) -> &mut T
 where
@@ -843,7 +843,7 @@ impl Float {
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash /*Debug*/)]
 pub enum Primitive {
-    Int(Integer, bool),
+    UInt(Integer, bool),
     Float(Float),
     Pointer(AddressSpace),
 }
@@ -860,7 +860,7 @@ impl Primitive {
         let dl = cx.data_layout();
 
         match self {
-            Int(i, _) => i.size(),
+            UInt(i, _) => i.size(),
             Float(f) => f.size(),
             Pointer(a) => dl.pointer_size_in(a),
         }
@@ -873,7 +873,7 @@ impl Primitive {
         let dl = cx.data_layout();
 
         match self {
-            Int(i, _) => i.align(dl),
+            UInt(i, _) => i.align(dl),
             Float(f) => f.align(dl),
             Pointer(a) => dl.pointer_align_in(a),
         }
@@ -1086,16 +1086,16 @@ impl<FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>> FieldsShape<FieldIdx> 
     /// `self` is `Arbitrary` over `n` fields: `n` offsets, and a memory order listing each
     /// field below `n` exactly once.
     #[thrust_macros::predicate]
-    fn arbitrary_of(self, n: Int) -> bool {
+    fn arbitrary_of(self, n: UInt) -> bool {
         exists(|o: IndexVec<FieldIdx, Size>, m: IndexVec<u32, FieldIdx>,
                 ms: Seq<<FieldIdx as thrust_models::Model>::Ty>|
             self == FieldsShape::Arbitrary { offsets: o, in_memory_order: m }
                 && ms == m.raw
                 && o.raw.len() == n
                 && ms.len() == n
-                && forall(|k: Int, i: Int|
+                && forall(|k: UInt, i: UInt|
                     !(0 <= k && k < n && <FieldIdx as Idx>::index_is(ms[k], i)) || (0 <= i && i < n))
-                && forall(|k: Int, k2: Int, i: Int|
+                && forall(|k: UInt, k2: UInt, i: UInt|
                     !(0 <= k && k < n && 0 <= k2 && k2 < n && !(k == k2)
                         && <FieldIdx as Idx>::index_is(ms[k], i))
                         || !<FieldIdx as Idx>::index_is(ms[k2], i)))
@@ -1353,8 +1353,8 @@ pub struct LayoutCalculator<Cx> {
 impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
     #[thrust::trusted]
     #[thrust_macros::requires(
-        forall(|k: Int| !(0 <= k && k <= (*fields).len()) || <FieldIdx as Idx>::can_new(k))
-            && forall(|z: Int| !(z == 0usize) || <VariantIdx as Idx>::can_new(z))
+        forall(|k: UInt| !(0 <= k && k <= (*fields).len()) || <FieldIdx as Idx>::can_new(k))
+            && forall(|z: UInt| !(z == 0usize) || <VariantIdx as Idx>::can_new(z))
             && (matches!(kind, StructKind::MaybeUnsized) ==> (*fields).len() > 0)
     )]
     #[thrust_macros::ensures(forall(|l: LayoutData<FieldIdx, VariantIdx>|

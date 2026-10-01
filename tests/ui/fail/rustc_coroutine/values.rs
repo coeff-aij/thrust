@@ -264,10 +264,8 @@ impl Size {
         self.raw
     }
 
-    // Trusted: the body panics exactly when `raw * 8` overflows `u64`, which the `requires` excludes.
+    // The body panics exactly when `raw * 8` overflows `u64`, which the `requires` excludes.
     #[inline]
-    // Verifying the body stops earlier: a `u64` field read carries no `v >= 0`, which `checked_mul`'s `u64` parameter requires (Unsat).
-    #[thrust::trusted]
     #[thrust_macros::requires(self.raw * 8 <= u64::MAX)]
     #[thrust_macros::ensures(result == self.raw * 8)]
     pub fn bits(self) -> u64 {
@@ -292,8 +290,8 @@ impl Size {
     }
 
     #[inline]
-    // Trusted: a `u64` field read carries no `v >= 0`, which `checked_add`'s `u64` parameter requires (Unsat);
-    // past that, `obj_size_bound`'s `requires` is not provable for a generic `cx` (see `HasDataLayout`).
+    // Trusted: `obj_size_bound`'s `requires` is not provable for a generic `cx` (see `HasDataLayout`)
+    // (Unsat).
     #[thrust::trusted]
     #[thrust::callable]
     pub fn checked_add<C: HasDataLayout>(self, offset: Size, cx: &C) -> Option<Size> {
@@ -323,8 +321,7 @@ impl Add for Size {
     // spec on an impl of an external trait: `#[thrust_macros::ensures]` here
     // expands to `_thrust_ensures_add`, which is "not a member of trait `Add`".
     #[inline]
-    // Without a contract the overflow `panic!` is reachable (Unsat), and the `u64` field reads
-    // carry no `v >= 0` for `checked_add`'s parameters.
+    // Without a contract the overflow `panic!` is reachable (Unsat).
     #[thrust::trusted]
     #[thrust::callable]
     fn add(self, other: Size) -> Size {

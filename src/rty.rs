@@ -499,6 +499,20 @@ impl<T> PointerType<T> {
         }
     }
 
+    pub fn mut_to_refined(ty: RefinedType<T>) -> Self {
+        PointerType {
+            kind: PointerKind::Ref(RefKind::Mut),
+            elem: Box::new(ty),
+        }
+    }
+
+    pub fn immut_to_refined(ty: RefinedType<T>) -> Self {
+        PointerType {
+            kind: PointerKind::Ref(RefKind::Immut),
+            elem: Box::new(ty),
+        }
+    }
+
     pub fn is_mut(&self) -> bool {
         matches!(self.kind, PointerKind::Ref(RefKind::Mut))
     }
@@ -1000,6 +1014,26 @@ where
 }
 
 impl<T> Type<T> {
+    /// Conjoins the refinements nested in `facts` (of tuple elements and pointer contents) onto
+    /// the matching positions of this type. Positions where the two types differ are left as
+    /// they are.
+    pub fn conjoin_nested_refinements_of(&mut self, facts: &Type<T>)
+    where
+        T: Clone,
+    {
+        match (self, facts) {
+            (Type::Tuple(ty), Type::Tuple(facts)) if ty.elems.len() == facts.elems.len() => {
+                for (elem, facts) in ty.elems.iter_mut().zip(&facts.elems) {
+                    elem.conjoin_refinements_of(facts);
+                }
+            }
+            (Type::Pointer(ty), Type::Pointer(facts)) if ty.kind == facts.kind => {
+                ty.elem.conjoin_refinements_of(&facts.elem);
+            }
+            _ => {}
+        }
+    }
+
     pub fn inherit_pointer_types<U: chc::Var>(
         &mut self,
         source: Type<U>,
@@ -1743,6 +1777,16 @@ impl RefinedType<FunctionParamIdx> {
 }
 
 impl<FV> RefinedType<FV> {
+    /// Conjoins the refinement of `facts` onto this one, and the refinements nested in it onto
+    /// the matching positions of this type.
+    pub fn conjoin_refinements_of(&mut self, facts: &RefinedType<FV>)
+    where
+        FV: Clone,
+    {
+        self.refinement.push_conj(facts.refinement.clone());
+        self.ty.conjoin_nested_refinements_of(&facts.ty);
+    }
+
     fn pretty_atom<'a, 'b, D>(
         &'b self,
         allocator: &'a D,
@@ -1795,10 +1839,30 @@ impl<FV> RefinedType<FV> {
         formula
     }
 
+    /// Moves the refinements of tuple elements, and of the content of an owned or shared
+    /// pointer, up to the refinement of the whole value, so that they are stated about the
+    /// value's own term.
+    ///
+    /// A struct field is an owned pointer in a tuple (fields are boxed), so a refinement of a
+    /// field's value sits under both. The content of a mutable reference stays where it is: its
+    /// refinement is about both the current and the final value.
     pub fn normalize_tuple_refinements(mut self) -> Self
     where
         FV: chc::Var,
     {
+        if let Type::Pointer(ty) = &mut self.ty {
+            if !ty.is_mut() {
+                let kind = ty.kind;
+                let elem = std::mem::replace(&mut *ty.elem, RefinedType::unrefined(Type::unit()));
+                let mut elem = elem.normalize_tuple_refinements();
+                let refinement = std::mem::take(&mut elem.refinement);
+                *ty.elem = elem;
+                self.refinement
+                    .push_conj(refinement.subst_value_var(|| {
+                        kind.deref_term(chc::Term::var(RefinedTypeVar::Value))
+                    }));
+            }
+        }
         if let Type::Tuple(ty) = &mut self.ty {
             for (index, elem) in ty.elems.iter_mut().enumerate() {
                 *elem = elem.clone().normalize_tuple_refinements();

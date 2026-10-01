@@ -12,17 +12,17 @@ use std::marker::PhantomData;
 
 use thrust_models::exists;
 use thrust_models::forall;
-use thrust_models::model::{Int, Seq};
+use thrust_models::model::{UInt, Seq};
 
 // //== ./../rustc_index/src/idx.rs
 
 #[thrust_macros::context]
 pub trait Idx: Copy + 'static + Eq + PartialEq + Debug + Hash {
     #[thrust_macros::predicate]
-    fn can_new(idx: thrust_models::model::Int) -> bool;
+    fn can_new(idx: thrust_models::model::UInt) -> bool;
 
     #[thrust_macros::predicate]
-    fn index_is(self, i: thrust_models::model::Int) -> bool;
+    fn index_is(self, i: thrust_models::model::UInt) -> bool;
 
     #[thrust_macros::requires(Self::can_new(idx))]
     #[thrust_macros::ensures(Self::index_is(result, idx))]
@@ -33,7 +33,7 @@ pub trait Idx: Copy + 'static + Eq + PartialEq + Debug + Hash {
 
     #[inline]
     #[thrust_macros::requires(
-        thrust_models::forall(|i: thrust_models::model::Int|
+        thrust_models::forall(|i: thrust_models::model::UInt|
             Self::index_is(*self, i) ==> Self::can_new(i + amount)
         )
     )]
@@ -44,7 +44,7 @@ pub trait Idx: Copy + 'static + Eq + PartialEq + Debug + Hash {
     #[inline]
     #[must_use = "Use `increment_by` if you wanted to update the index in-place"]
     #[thrust_macros::requires(
-        thrust_models::forall(|i: thrust_models::model::Int|
+        thrust_models::forall(|i: thrust_models::model::UInt|
             Self::index_is(self, i) ==> Self::can_new(i + amount)
         )
     )]
@@ -56,12 +56,12 @@ pub trait Idx: Copy + 'static + Eq + PartialEq + Debug + Hash {
 #[thrust_macros::context]
 impl Idx for usize {
     #[thrust_macros::predicate]
-    fn can_new(idx: thrust_models::model::Int) -> bool {
+    fn can_new(idx: thrust_models::model::UInt) -> bool {
         true
     }
 
     #[thrust_macros::predicate]
-    fn index_is(self, i: thrust_models::model::Int) -> bool {
+    fn index_is(self, i: thrust_models::model::UInt) -> bool {
         // i == self
         i == self
     }
@@ -79,13 +79,13 @@ impl Idx for usize {
 #[thrust_macros::context]
 impl Idx for u32 {
     #[thrust_macros::predicate]
-    fn can_new(idx: thrust_models::model::Int) -> bool {
+    fn can_new(idx: thrust_models::model::UInt) -> bool {
         // idx <= u32::MAX
         idx <= 4294967295usize
     }
 
     #[thrust_macros::predicate]
-    fn index_is(self, i: thrust_models::model::Int) -> bool {
+    fn index_is(self, i: thrust_models::model::UInt) -> bool {
         // i == self
         i == self
     }
@@ -179,10 +179,10 @@ impl<I: Idx> IdxRange<I> {
     #[thrust::extern_spec_fn]
     #[thrust_macros::requires((*it).start >= 0)]
     #[thrust_macros::requires(
-        forall(|s: Int| s == (*it).start && s < (*it).end ==> <I as Idx>::can_new(s))
+        forall(|s: UInt| s == (*it).start && s < (*it).end ==> <I as Idx>::can_new(s))
     )]
     #[thrust_macros::ensures(
-        forall(|s: Int| s == (*it).start && s < (*it).end
+        forall(|s: UInt| s == (*it).start && s < (*it).end
             ==> exists(|x: <I as thrust_models::Model>::Ty|
                     result == Some(x) && <I as Idx>::index_is(x, s))
                 && s + 1 == (!it).start
@@ -211,7 +211,7 @@ pub struct WordIter<'a> {
 }
 
 impl<'a> thrust_models::Model for WordIter<'a> {
-    type Ty = (&'a Seq<Int>, Int);
+    type Ty = (&'a Seq<UInt>, UInt);
 }
 
 // `WordIter`'s model is the `(words, pos)` pair: `words` is the `&[Word]`
@@ -221,14 +221,14 @@ impl<'a> thrust_models::Model for WordIter<'a> {
 impl<'a> WordIter<'a> {
     /// `self.words.len() == n`.
     #[thrust_macros::predicate]
-    fn words_len_is(self, n: Int) -> bool {
+    fn words_len_is(self, n: UInt) -> bool {
         // self.words.len() == n
         n == self.0.len()
     }
 
     /// `self.words[i] == w`.
     #[thrust_macros::predicate]
-    fn word_is(self, i: Int, w: Int) -> bool {
+    fn word_is(self, i: UInt, w: UInt) -> bool {
         // self.words[i] == w
         w == self.0[i]
     }
@@ -243,7 +243,7 @@ impl<'a> WordIter<'a> {
     #[thrust_macros::requires(true)]
     #[thrust_macros::ensures(result.1 == 0)]
     #[thrust_macros::ensures(Self::words_len_is(result, (*words).len()))]
-    #[thrust_macros::ensures(forall(|i: Int| Self::word_is(result, i, (*words)[i])))]
+    #[thrust_macros::ensures(forall(|i: UInt| Self::word_is(result, i, (*words)[i])))]
     fn new(words: &'a [Word]) -> WordIter<'a> {
         WordIter { words, pos: 0 }
     }
@@ -275,9 +275,9 @@ impl<'a> WordIter<'a> {
     #[thrust::extern_spec_fn]
     #[thrust_macros::requires((*it).1 >= 0)]
     #[thrust_macros::ensures(Self::same_words(*it, !it))]
-    #[thrust_macros::ensures(forall(|n: Int, p: Int|
+    #[thrust_macros::ensures(forall(|n: UInt, p: UInt|
         Self::words_len_is(*it, n) && p == (*it).1
-            ==> (p < n ==> exists(|x: Int| result == Some(&x) && Self::word_is(*it, p, x))
+            ==> (p < n ==> exists(|x: UInt| result == Some(&x) && Self::word_is(*it, p, x))
                     && p + 1 == (!it).1)
                 && (n <= p ==> result == None && (!it).1 == (*it).1)))]
     fn _extern_spec_next(it: &mut WordIter<'a>) -> Option<&'a Word> {

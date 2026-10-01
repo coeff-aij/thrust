@@ -241,13 +241,62 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .basic_block_ty_with_precondition(self.analysis_key, bb)
     }
 
+    /// Whether `local` itself, or a place inside it that is not behind a reference, is borrowed
+    /// mutably somewhere in the body.
+    fn is_mut_borrowed(&self, local: Local) -> bool {
+        self.body.basic_blocks.iter().any(|data| {
+            data.statements.iter().any(|stmt| {
+                let Some((_, Rvalue::Ref(_, mir::BorrowKind::Mut { .. }, referent))) =
+                    stmt.kind.as_assign()
+                else {
+                    return false;
+                };
+                referent.local == local
+                    && !referent
+                        .projection
+                        .iter()
+                        .any(|elem| matches!(elem, mir::ProjectionElem::Deref))
+            })
+        })
+    }
+
+    /// The content of the box of a mutable local.
+    ///
+    /// The content of a mutable reference carries what the model says about it as an invariant
+    /// (see `TypeBuilder::model_refinement`), and a mutable borrow takes the invariant from the
+    /// box it borrows. So the box of a local that is borrowed mutably carries the facts of its
+    /// declared type as well, and the value bound to it has to satisfy them. Other locals carry
+    /// none, which would only add an obligation at each write.
+    fn mut_local_content(
+        &mut self,
+        local: Local,
+        rty: &rty::RefinedType<Var>,
+    ) -> rty::RefinedType<Var> {
+        let mut content = rty::RefinedType::unrefined(rty.ty.clone());
+        if !self.is_mut_borrowed(local) {
+            return content;
+        }
+        let facts = self
+            .type_builder
+            .build(self.local_decls[local].ty)
+            .vacuous();
+        if facts.ty.to_sort() != rty.ty.to_sort() {
+            return content;
+        }
+        content.conjoin_refinements_of(&facts);
+        let clauses = self.env.relate_sub_refined_type(rty, &content);
+        self.ctx.extend_clauses(clauses);
+        content
+    }
+
     fn bind_local(&mut self, local: Local, rty: rty::RefinedType<Var>) {
         let rty = if self.is_mut_local(local) {
             // elaboration:
+            let content = self.mut_local_content(local, &rty);
             let refinement = rty
                 .refinement
                 .subst_value_var(|| chc::Term::var(rty::RefinedTypeVar::Value).box_current());
-            let ty = rty::PointerType::own(rty.ty).into();
+            let ty = rty::PointerType::own_refined(content).into();
             rty::RefinedType::new(ty, refinement)
         } else {
             rty

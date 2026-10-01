@@ -16,7 +16,7 @@
 // the fact that discharges it, plus a trusted `lemma_permutation_split`
 // skeleton (not called from `layout()` yet).
 
-use thrust_models::model::{Closure, Int, Mut, Seq};
+use thrust_models::model::{Closure, UInt, Mut, Seq};
 use thrust_models::{exists, forall, Ghost};
 
 use std::borrow::{Borrow, BorrowMut};
@@ -180,7 +180,7 @@ impl<'a> Iterator for WordIter<'a> {
             && self.1 <= o.1
             && o.1 <= self.0.len()
             && visited.len() == o.1 - self.1
-            && forall(|i: Int| !(0 <= i && i < visited.len()) || visited[i] == &self.0[self.1 + i])
+            && forall(|i: UInt| !(0 <= i && i < visited.len()) || visited[i] == &self.0[self.1 + i])
     }
 
     #[thrust_macros::predicate]
@@ -241,7 +241,7 @@ where
             && o.1 <= self.0
             && o.2 + visited.len() == self.2
             && 0 <= o.2
-            && forall(|i: Int, k: Int|
+            && forall(|i: UInt, k: UInt|
                 !(0 <= i && i < visited.len() && <T as Idx>::index_is(visited[i], k)) || k < self.0)
     }
 
@@ -292,7 +292,7 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
     /// Well-formedness, as in bitset.rs: `words` holds `num_words(num_columns)` words per row.
     #[thrust_macros::predicate]
     fn wf(self) -> bool {
-        exists(|rw: Int| {
+        exists(|rw: UInt| {
             self.words.len() == self.num_rows * rw
                 && 64 * rw >= self.num_columns
                 && 64 * rw < self.num_columns + 64
@@ -309,7 +309,7 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
     #[thrust::trusted]
     #[thrust::callable]
     #[thrust_macros::requires(Self::wf(*self))]
-    #[thrust_macros::requires(forall(|i: Int| <R as Idx>::index_is(row, i) ==> i < (*self).num_rows))]
+    #[thrust_macros::requires(forall(|i: UInt| <R as Idx>::index_is(row, i) ==> i < (*self).num_rows))]
     #[thrust_macros::ensures(result.0 <= result.1)]
     #[thrust_macros::ensures(result.1 <= (*self).words.len())]
     fn range(&self, row: R) -> (usize, usize) {
@@ -320,7 +320,7 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
 
     #[thrust::trusted]
     #[thrust_macros::requires(Self::wf(*self))]
-    #[thrust_macros::requires(forall(|i: Int| <R as Idx>::index_is(row, i) ==> i < (*self).num_rows))]
+    #[thrust_macros::requires(forall(|i: UInt| <R as Idx>::index_is(row, i) ==> i < (*self).num_rows))]
     #[thrust_macros::ensures(result.0 == (*self).num_columns && result.1 == 0)]
     #[thrust_macros::ensures(0 <= result.2 && result.2 <= (*self).num_columns)]
     pub fn iter(&self, row: R) -> BitIter<'_, C> {
@@ -332,7 +332,7 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
     #[thrust::trusted]
     #[thrust::callable]
     #[thrust_macros::requires(Self::wf(*self))]
-    #[thrust_macros::requires(forall(|i: Int| <R as Idx>::index_is(row, i) ==> i < (*self).num_rows))]
+    #[thrust_macros::requires(forall(|i: UInt| <R as Idx>::index_is(row, i) ==> i < (*self).num_rows))]
     pub fn count(&self, row: R) -> usize {
         let (start, end) = self.range(row);
         count_ones(&self.words[start..end])
@@ -369,7 +369,7 @@ pub trait Idx: Copy + 'static + Eq + PartialEq + Debug + Hash {
     fn index(self) -> usize;
 
     #[inline]
-    #[thrust_macros::requires(forall(|i: Int, a: Int|
+    #[thrust_macros::requires(forall(|i: UInt, a: UInt|
         Self::index_is(*self, i) && a == amount ==> Self::can_new(i + a)))]
     fn increment_by(&mut self, amount: usize) {
         *self = self.plus(amount);
@@ -377,7 +377,7 @@ pub trait Idx: Copy + 'static + Eq + PartialEq + Debug + Hash {
 
     #[inline]
     #[must_use = "Use `increment_by` if you wanted to update the index in-place"]
-    #[thrust_macros::requires(forall(|i: Int, a: Int|
+    #[thrust_macros::requires(forall(|i: UInt, a: UInt|
         Self::index_is(self, i) && a == amount ==> Self::can_new(i + a)))]
     fn plus(self, amount: usize) -> Self {
         Self::new(self.index() + amount)
@@ -470,7 +470,7 @@ where
     // `next` builds `I::new(start)`, so the invariant carries `can_new` of the positions left.
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
-        self.start >= 0 && forall(|s: Int| !(s >= self.start && s < self.end) || <I as Idx>::can_new(s))
+        self.start >= 0 && forall(|s: UInt| !(s >= self.start && s < self.end) || <I as Idx>::can_new(s))
     }
 
     #[thrust_macros::predicate]
@@ -479,7 +479,7 @@ where
             && self.start <= o.start
             && (!(visited.len() > 0) || o.start <= o.end)
             && visited.len() == o.start - self.start
-            && forall(|i: Int, s: Int|
+            && forall(|i: UInt, s: UInt|
                 !(0 <= i && i < visited.len() && s == self.start) || <I as Idx>::index_is(visited[i], s + i))
     }
 
@@ -560,7 +560,7 @@ where
             && self.1 <= o.1
             && o.1 <= self.0.len()
             && visited.len() == o.1 - self.1
-            && forall(|i: Int| !(0 <= i && i < visited.len()) || visited[i] == &self.0[self.1 + i])
+            && forall(|i: UInt| !(0 <= i && i < visited.len()) || visited[i] == &self.0[self.1 + i])
     }
 
     #[thrust_macros::predicate]
@@ -597,7 +597,7 @@ where
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
         0 <= self.1 && self.1 <= self.0.len()
-            && forall(|k: Int| !(self.1 <= k && k < self.0.len()) || <I as Idx>::can_new(k))
+            && forall(|k: UInt| !(self.1 <= k && k < self.0.len()) || <I as Idx>::can_new(k))
     }
 
     #[thrust_macros::predicate]
@@ -606,7 +606,7 @@ where
             && self.1 <= o.1
             && o.1 <= self.0.len()
             && visited.len() == o.1 - self.1
-            && forall(|i: Int| !(0 <= i && i < visited.len())
+            && forall(|i: UInt| !(0 <= i && i < visited.len())
                 || (<I as Idx>::index_is(visited[i].0, self.1 + i) && visited[i].1 == &self.0[self.1 + i]))
     }
 
@@ -663,7 +663,7 @@ impl<I: Idx, T> IndexSlice<I, T> {
     // The iterator builds `I::new(k)` for every position `k` below the length, so the
     // precondition covers them, which `IterEnumerated`'s invariant then carries.
     #[inline]
-    #[thrust_macros::requires(forall(|k: Int| !(0 <= k && k <= (*self).len()) || <I as Idx>::can_new(k)))]
+    #[thrust_macros::requires(forall(|k: UInt| !(0 <= k && k <= (*self).len()) || <I as Idx>::can_new(k)))]
     #[thrust_macros::ensures(*result.0 == *self && result.1 == 0)]
     pub fn iter_enumerated(&self) -> IterEnumerated<'_, I, T> {
         let _ = I::new(self.len());
@@ -695,8 +695,8 @@ impl<I: Idx + thrust_models::Model<Ty: PartialEq>, J: Idx + thrust_models::Model
     // `debug_assert_eq!` calls dropped (debug assertions are off). The body panics when an
     // element is not below the length (`inverse[i2]`) or an index up to the length cannot be
     // built (`iter_enumerated`).
-    #[thrust_macros::requires(forall(|k: Int| !(0 <= k && k <= (*self).len()) || <I as Idx>::can_new(k)))]
-    #[thrust_macros::requires(forall(|k: Int, i: Int|
+    #[thrust_macros::requires(forall(|k: UInt| !(0 <= k && k <= (*self).len()) || <I as Idx>::can_new(k)))]
+    #[thrust_macros::requires(forall(|k: UInt, i: UInt|
         !(0 <= k && k < (*self).len() && <J as Idx>::index_is((*self)[k], i)) || i < (*self).len()))]
     pub fn invert_bijective_mapping(&self) -> IndexVec<J, I> {
         let mut inverse = IndexVec::from_elem_n(Idx::new(0), self.len());
@@ -729,8 +729,8 @@ impl<I: Idx, T: thrust_models::Model<Ty: PartialEq>, R: IntoSliceIdx<I, [T]>> st
 // `Index`/`IndexMut` are foreign traits, so the contract is an extern spec (the impl methods
 // are `trusted`). `IntoSliceIdx` has one impl, `I: Idx` into `usize`, through `Idx::index_is`.
 #[thrust::extern_spec_fn]
-#[thrust_macros::requires(forall(|i: Int| <R as IntoSliceIdx<I, [T]>>::into_is(index, i) ==> i < (*slf).len()))]
-#[thrust_macros::ensures(forall(|i: Int| <R as IntoSliceIdx<I, [T]>>::into_is(index, i) ==> *result == (*slf)[i]))]
+#[thrust_macros::requires(forall(|i: UInt| <R as IntoSliceIdx<I, [T]>>::into_is(index, i) ==> i < (*slf).len()))]
+#[thrust_macros::ensures(forall(|i: UInt| <R as IntoSliceIdx<I, [T]>>::into_is(index, i) ==> *result == (*slf)[i]))]
 fn _extern_spec_index_slice_index<I: Idx + thrust_models::Model<Ty: PartialEq>, T: thrust_models::Model, R: IntoSliceIdx<I, [T], Output = usize> + thrust_models::Model>(slf: &IndexSlice<I, T>, index: R) -> &T
 where
     <T as thrust_models::Model>::Ty: PartialEq,
@@ -740,8 +740,8 @@ where
 }
 
 #[thrust::extern_spec_fn]
-#[thrust_macros::requires(forall(|i: Int| <R as IntoSliceIdx<I, [T]>>::into_is(index, i) ==> i < (*slf).len()))]
-#[thrust_macros::ensures(forall(|i: Int| <R as IntoSliceIdx<I, [T]>>::into_is(index, i)
+#[thrust_macros::requires(forall(|i: UInt| <R as IntoSliceIdx<I, [T]>>::into_is(index, i) ==> i < (*slf).len()))]
+#[thrust_macros::ensures(forall(|i: UInt| <R as IntoSliceIdx<I, [T]>>::into_is(index, i)
     ==> (*result == (*slf)[i] && !result == (!slf)[i] && (!slf).len() == (*slf).len())))]
 fn _extern_spec_index_slice_index_mut<I: Idx + thrust_models::Model<Ty: PartialEq>, T: thrust_models::Model, R: IntoSliceIdx<I, [T], Output = usize> + thrust_models::Model>(slf: &mut IndexSlice<I, T>, index: R) -> &mut T
 where
@@ -785,7 +785,7 @@ impl<I: Idx, T> IndexVec<I, T> {
 
     #[inline]
     #[thrust_macros::ensures(result.len() == n
-        && forall(|k: Int| !(0 <= k && k < n) || result[k] == elem))]
+        && forall(|k: UInt| !(0 <= k && k < n) || result[k] == elem))]
     pub fn from_elem_n(elem: T, n: usize) -> Self
     where
         T: Clone,
@@ -912,7 +912,7 @@ enum SavedLocalEligibility<VariantIdx, FieldIdx> {
     forall(|v: usize, f: usize|
         !(0 <= v && v < (*variant_fields).len()
             && 0 <= f && f < (*variant_fields)[v].len())
-        || forall(|i: Int|
+        || forall(|i: UInt|
             !<LocalIdx as Idx>::index_is((*variant_fields)[v][f], i)
                 || i < nb_locals))
     // `count(local_b)` takes a column index as a row, so the columns must not outnumber the
@@ -921,9 +921,9 @@ enum SavedLocalEligibility<VariantIdx, FieldIdx> {
     && (*storage_conflicts).num_rows <= nb_locals
     && (*storage_conflicts).num_columns <= (*storage_conflicts).num_rows
     && BitMatrix::<LocalIdx, LocalIdx>::wf(*storage_conflicts)
-    && forall(|k: Int| !(0 <= k && k < nb_locals) || LocalIdx::can_new(k))
-    && forall(|n: Int| !(0 <= n && n <= nb_locals) || FieldIdx::can_new(n))
-    && forall(|v: Int| !(0 <= v && v <= (*variant_fields).len()) || VariantIdx::can_new(v))
+    && forall(|k: UInt| !(0 <= k && k < nb_locals) || LocalIdx::can_new(k))
+    && forall(|n: UInt| !(0 <= n && n <= nb_locals) || FieldIdx::can_new(n))
+    && forall(|v: UInt| !(0 <= v && v <= (*variant_fields).len()) || VariantIdx::can_new(v))
 )]
 #[thrust_macros::ensures(
     // `assignments` has one entry per local, and `inel` is a set over the locals, so its
@@ -935,7 +935,7 @@ enum SavedLocalEligibility<VariantIdx, FieldIdx> {
         || forall(|v: usize, f: usize|
             !(0 <= v && v < (*variant_fields).len()
                 && 0 <= f && f < (*variant_fields)[v].len())
-            || !thrust_models::exists(|i: Int|
+            || !thrust_models::exists(|i: UInt|
                 i == l
                     && <LocalIdx as Idx>::index_is((*variant_fields)[v][f], i))))
     // 2. Assigned(v) locals appear only under variant v, and only there.
@@ -946,12 +946,12 @@ enum SavedLocalEligibility<VariantIdx, FieldIdx> {
     && forall(|l: usize, v: usize|
         !(0 <= l && l < nb_locals
             && thrust_models::exists(|vi: <VariantIdx as thrust_models::Model>::Ty|
-                thrust_models::exists(|vn: Int| vn == v && <VariantIdx as Idx>::index_is(vi, vn))
+                thrust_models::exists(|vn: UInt| vn == v && <VariantIdx as Idx>::index_is(vi, vn))
                     && result.1[l] == SavedLocalEligibility::Assigned(vi)))
         || (v < (*variant_fields).len()
             && thrust_models::exists(|f: usize|
                 0 <= f && f < (*variant_fields)[v].len()
-                    && thrust_models::exists(|i: Int|
+                    && thrust_models::exists(|i: UInt|
                         i == l
                             && <LocalIdx as Idx>::index_is((*variant_fields)[v][f], i)))))
     // 3. An ineligible local has its promoted field index. The README bounds it by the
@@ -960,7 +960,7 @@ enum SavedLocalEligibility<VariantIdx, FieldIdx> {
     && forall(|l: usize, x: Option<<FieldIdx as thrust_models::Model>::Ty>|
         !(0 <= l && l < nb_locals && result.1[l] == SavedLocalEligibility::Ineligible(x))
         || thrust_models::exists(|k: <FieldIdx as thrust_models::Model>::Ty|
-            x == Some(k) && forall(|i: Int| !<FieldIdx as Idx>::index_is(k, i) || i < nb_locals)))
+            x == Some(k) && forall(|i: UInt| !<FieldIdx as Idx>::index_is(k, i) || i < nb_locals)))
     // 4. Membership in `inel` matches being `Ineligible(_)`.
     // TODO(spec): `DenseBitSet::elem_at`/`mem` are uninterpreted here, see
     // above; written as an `<==>` via two `==>` for the annotation grammar.
@@ -970,11 +970,11 @@ enum SavedLocalEligibility<VariantIdx, FieldIdx> {
     // `exists(|li: Int| li == l && ..)` below is a `usize -> Int` bridge
     // (`Int: PartialEq<T> where T: Model<Ty = Int>`, and `usize` is one).
     && forall(|l: usize| !(0 <= l && l < nb_locals) ||
-        (!thrust_models::exists(|li: Int| li == l && DenseBitSet::<LocalIdx>::mem(result.0, li))
+        (!thrust_models::exists(|li: UInt| li == l && DenseBitSet::<LocalIdx>::mem(result.0, li))
             || thrust_models::exists(|x: Option<<FieldIdx as thrust_models::Model>::Ty>| result.1[l] == SavedLocalEligibility::Ineligible(x))))
     && forall(|l: usize| !(0 <= l && l < nb_locals) ||
         (!thrust_models::exists(|x: Option<<FieldIdx as thrust_models::Model>::Ty>| result.1[l] == SavedLocalEligibility::Ineligible(x))
-            || thrust_models::exists(|li: Int| li == l && DenseBitSet::<LocalIdx>::mem(result.0, li))))
+            || thrust_models::exists(|li: UInt| li == l && DenseBitSet::<LocalIdx>::mem(result.0, li))))
 )]
 #[thrust_macros::context]
 fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: Idx>(
@@ -1014,15 +1014,15 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
         && forall(|v: usize, f: usize|
             !(0 <= v && v < (*variant_fields).len()
                 && 0 <= f && f < (*variant_fields)[v].len())
-            || forall(|i: Int|
+            || forall(|i: UInt|
                 !<LocalIdx as Idx>::index_is((*variant_fields)[v][f], i)
                     || i < (*local_layouts).len()))
-        && forall(|k: Int| !(0 <= k && k < (*local_layouts).len()) || <LocalIdx as Idx>::can_new(k))
-        && forall(|k: Int| !(0 <= k && k <= (*variant_fields).len()) || <VariantIdx as Idx>::can_new(k))
-        && forall(|k: Int|
+        && forall(|k: UInt| !(0 <= k && k < (*local_layouts).len()) || <LocalIdx as Idx>::can_new(k))
+        && forall(|k: UInt| !(0 <= k && k <= (*variant_fields).len()) || <VariantIdx as Idx>::can_new(k))
+        && forall(|k: UInt|
             !(0 <= k && k <= prefix_layouts.len() + 1 + (*local_layouts).len())
                 || <FieldIdx as Idx>::can_new(k))
-        && forall(|v: usize, k: Int|
+        && forall(|v: usize, k: UInt|
             !(0 <= v && v < (*variant_fields).len() && 0 <= k && k <= (*variant_fields)[v].len())
                 || <FieldIdx as Idx>::can_new(k))
         && prefix_layouts.len() + 1 + (*local_layouts).len() <= 4294967295usize
@@ -1053,7 +1053,7 @@ pub fn layout<
     let max_discr = (variant_fields.len() - 1) as u128;
     let discr_int = Integer::fit_unsigned(max_discr);
     let tag = Scalar::Initialized {
-        value: Primitive::Int(discr_int, false),
+        value: Primitive::UInt(discr_int, false),
         valid_range: WrappingRange {
             start: 0,
             end: max_discr,
@@ -1267,10 +1267,10 @@ pub fn layout<
 #[thrust::trusted]
 #[thrust_macros::requires(
     order.len() == n
-        && forall(|k: usize, i: Int|
+        && forall(|k: usize, i: UInt|
             !(0 <= k && k < n && <FieldIdx as Idx>::index_is(order[k], i))
                 || i < n)
-        && forall(|k: usize, k2: usize, i: Int|
+        && forall(|k: usize, k2: usize, i: UInt|
             !(0 <= k && k < n && 0 <= k2 && k2 < n && !(k == k2)
                 && <FieldIdx as Idx>::index_is(order[k], i))
                 || !<FieldIdx as Idx>::index_is(order[k2], i))
@@ -1278,10 +1278,10 @@ pub fn layout<
 )]
 #[thrust_macros::ensures(
     result.len() == n - b_start
-        && forall(|k: usize, i: Int|
+        && forall(|k: usize, i: UInt|
             !(0 <= k && k < result.len() && <FieldIdx as Idx>::index_is(result[k], i))
                 || i < n - b_start)
-        && forall(|k: usize, k2: usize, i: Int|
+        && forall(|k: usize, k2: usize, i: UInt|
             !(0 <= k && k < result.len() && 0 <= k2 && k2 < result.len() && !(k == k2)
                 && <FieldIdx as Idx>::index_is(result[k], i))
                 || !<FieldIdx as Idx>::index_is(result[k2], i))
@@ -1641,7 +1641,7 @@ impl Float {
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash /*Debug*/)]
 pub enum Primitive {
-    Int(Integer, bool),
+    UInt(Integer, bool),
     Float(Float),
     Pointer(AddressSpace),
 }
@@ -1655,7 +1655,7 @@ impl Primitive {
         use Primitive::*;
         let dl = cx.data_layout();
         match self {
-            Int(i, _) => i.size(),
+            UInt(i, _) => i.size(),
             Float(f) => f.size(),
             Pointer(a) => dl.pointer_size_in(a),
         }
@@ -1667,7 +1667,7 @@ impl Primitive {
         use Primitive::*;
         let dl = cx.data_layout();
         match self {
-            Int(i, _) => i.align(dl),
+            UInt(i, _) => i.align(dl),
             Float(f) => f.align(dl),
             Pointer(a) => dl.pointer_align_in(a),
         }
@@ -1860,7 +1860,7 @@ impl<FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>> FieldsShape<FieldIdx> 
     /// `self` is `Arbitrary` over `n` fields: `n` offsets, and a memory order listing each
     /// field below `n` exactly once.
     #[thrust_macros::predicate]
-    fn arbitrary_of(self, n: Int) -> bool {
+    fn arbitrary_of(self, n: UInt) -> bool {
         exists(|o: IndexVec<FieldIdx, Size>, m: IndexVec<u32, FieldIdx>,
                 os: Seq<Size>, ms: Seq<<FieldIdx as thrust_models::Model>::Ty>|
             self == FieldsShape::Arbitrary { offsets: o, in_memory_order: m }
@@ -1868,9 +1868,9 @@ impl<FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>> FieldsShape<FieldIdx> 
                 && ms == m
                 && os.len() == n
                 && ms.len() == n
-                && forall(|k: Int, i: Int|
+                && forall(|k: UInt, i: UInt|
                     !(0 <= k && k < n && <FieldIdx as Idx>::index_is(ms[k], i)) || (0 <= i && i < n))
-                && forall(|k: Int, k2: Int, i: Int|
+                && forall(|k: UInt, k2: UInt, i: UInt|
                     !(0 <= k && k < n && 0 <= k2 && k2 < n && !(k == k2)
                         && <FieldIdx as Idx>::index_is(ms[k], i))
                         || !<FieldIdx as Idx>::index_is(ms[k2], i)))
@@ -2095,8 +2095,8 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
     // `fields.len()` fields, its memory order a permutation (`FieldsShape::arbitrary_of`).
     #[thrust::trusted]
     #[thrust_macros::requires(
-        forall(|k: Int| !(0 <= k && k <= (*fields).len()) || <FieldIdx as Idx>::can_new(k))
-            && forall(|z: Int| !(z == 0usize) || <VariantIdx as Idx>::can_new(z))
+        forall(|k: UInt| !(0 <= k && k <= (*fields).len()) || <FieldIdx as Idx>::can_new(k))
+            && forall(|z: UInt| !(z == 0usize) || <VariantIdx as Idx>::can_new(z))
             && (matches!(kind, StructKind::MaybeUnsized) ==> (*fields).len() > 0)
     )]
     #[thrust_macros::ensures(forall(|l: LayoutData<FieldIdx, VariantIdx>|
@@ -2190,7 +2190,7 @@ where
                 && B::produces(self.1, ys, o.1)
                 && xs.len() == visited.len()
                 && ys.len() == visited.len()
-                && forall(|i: Int| !(0 <= i && i < visited.len()) || visited[i] == (xs[i], ys[i])))
+                && forall(|i: UInt| !(0 <= i && i < visited.len()) || visited[i] == (xs[i], ys[i])))
     }
 
     // The first iterator completed, or it yielded an item and the second completed.
@@ -2290,7 +2290,7 @@ where
             && fs.len() == visited.len() + 1
             && fs[0] == s0.1
             && fs[visited.len()] == o.1
-            && forall(|k: Int|
+            && forall(|k: UInt|
                 !(0 <= k && k < visited.len())
                     || (thrust_macros::unnest!(s0.1, fs[k])
                         && thrust_macros::post!(Mut::new(fs[k], fs[k + 1])(s[k]), visited[k])))
@@ -2588,7 +2588,7 @@ where
 
     #[thrust_macros::predicate]
     fn accepted(func: F, seen: Vec<I::Item>) -> bool {
-        forall(|k: Int| !(0 <= k && k < seen.len()) || thrust_macros::post!(func(seen[k]), true))
+        forall(|k: UInt| !(0 <= k && k < seen.len()) || thrust_macros::post!(func(seen[k]), true))
     }
 }
 
@@ -2600,11 +2600,11 @@ where
         I::produces(iter, visited, mid)
             && (result == true ==>
                 exists(|fin: <I as thrust_models::Model>::Ty| I::completed(Mut::new(mid, fin)))
-                    && forall(|k: Int| !(0 <= k && k < visited.len()) || thrust_macros::post!(f(visited[k]), true)))
+                    && forall(|k: UInt| !(0 <= k && k < visited.len()) || thrust_macros::post!(f(visited[k]), true)))
             && (result == false ==>
                 0 < visited.len()
                     && thrust_macros::post!(f(visited[visited.len() - 1]), false)
-                    && forall(|k: Int| !(0 <= k && k < visited.len() - 1) || thrust_macros::post!(f(visited[k]), true))))
+                    && forall(|k: UInt| !(0 <= k && k < visited.len() - 1) || thrust_macros::post!(f(visited[k]), true))))
 )]
 fn iter_all<I, F>(iter: I, f: F) -> bool
 where
@@ -2735,7 +2735,7 @@ where
             J::produces(iter, visited, mid)
                 && J::completed(Mut::new(mid, fin))
                 && visited.len() == v.len()
-                && forall(|k: Int| !(0 <= k && k < v.len()) || visited[k] == Ok(v[k]))))
+                && forall(|k: UInt| !(0 <= k && k < v.len()) || visited[k] == Ok(v[k]))))
 )]
 fn collect_index_vec_result<I, T, E, J>(iter: J) -> Result<IndexVec<I, T>, E>
 where
@@ -2758,7 +2758,7 @@ where
                     && exists(|s: Seq<<Result<T, E> as thrust_models::Model>::Ty>|
                         J::produces(iter.at_entry(), s, it)
                             && s.len() == v.len()
-                            && forall(|k: Int| !(0 <= k && k < v.len()) || s[k] == Ok(v[k])))
+                            && forall(|k: UInt| !(0 <= k && k < v.len()) || s[k] == Ok(v[k])))
         );
         match x {
             Ok(y) => v.push(y),
@@ -2813,13 +2813,13 @@ impl PartialOrdSpec for Align {
 // //== Thrust model declarations
 
 impl<T> thrust_models::Model for DenseBitSet<T> {
-    type Ty = (Int, Seq<Int>, ());
+    type Ty = (UInt, Seq<UInt>, ());
 }
 impl<'a> thrust_models::Model for WordIter<'a> {
-    type Ty = (&'a Seq<Int>, Int);
+    type Ty = (&'a Seq<UInt>, UInt);
 }
 impl<'a, T: Idx> thrust_models::Model for BitIter<'a, T> {
-    type Ty = (Int, Int, Int);
+    type Ty = (UInt, UInt, UInt);
 }
 impl<R: Idx, C: Idx> thrust_models::Model for BitMatrix<R, C> {
     type Ty = Self;
@@ -2828,10 +2828,10 @@ impl<I: Idx> thrust_models::Model for IdxRange<I> {
     type Ty = Self;
 }
 impl<'a, T: thrust_models::Model> thrust_models::Model for SliceIter<'a, T> {
-    type Ty = (<&'a [T] as thrust_models::Model>::Ty, Int);
+    type Ty = (<&'a [T] as thrust_models::Model>::Ty, UInt);
 }
 impl<'a, I: Idx, T: thrust_models::Model> thrust_models::Model for IterEnumerated<'a, I, T> {
-    type Ty = (<&'a [T] as thrust_models::Model>::Ty, Int, ());
+    type Ty = (<&'a [T] as thrust_models::Model>::Ty, UInt, ());
 }
 impl<I: Idx, T: thrust_models::Model> thrust_models::Model for IndexVec<I, T> {
     type Ty = <[T] as thrust_models::Model>::Ty;

@@ -576,15 +576,15 @@ impl<'tcx> TypeBuilder<'tcx> {
     /// What the model of `ty` says about every value of that type: an unsigned integer is
     /// non-negative, and nothing for the other models.
     ///
-    /// This describes the value as a whole. A refinement nested in a type (a field of a
-    /// tuple, an element of an array) is out of reach of the analyzer, which carries the
-    /// facts about the parts of a value in the formula of its [`refine::PlaceType`] instead.
+    /// This describes the value as a whole. The builders also place it on the elements of a
+    /// tuple, the fields of a struct and the content of a reference. On the content of a
+    /// mutable reference it is an invariant of the reference, an obligation at each write and
+    /// an assumption on the final value. A `Box` and the elements of a sequence stay unrefined.
     fn model_refinement<V>(&self, ty: mir_ty::Ty<'tcx>) -> rty::Refinement<V> {
-        let is_unsigned = matches!(ty.kind(), mir_ty::TyKind::Uint(_))
-            || match self.resolve_model_ty(ty).kind() {
-                mir_ty::TyKind::Adt(def, _) => Some(def.did()) == self.def_ids.uint_model(),
-                _ => false,
-            };
+        let is_unsigned = match self.resolve_model_ty(ty).kind() {
+            mir_ty::TyKind::Adt(def, _) => Some(def.did()) == self.def_ids.uint_model(),
+            _ => false,
+        };
         if !is_unsigned {
             return rty::Refinement::top();
         }
@@ -598,6 +598,11 @@ impl<'tcx> TypeBuilder<'tcx> {
         .into()
     }
 
+    /// The type of a tuple element or struct field, boxed (elaboration: all fields are boxed).
+    fn field_type(&self, ty: mir_ty::Ty<'tcx>) -> rty::PointerType<rty::Closed> {
+        rty::PointerType::own_refined(self.build(ty))
+    }
+
     pub fn build(&self, ty: mir_ty::Ty<'tcx>) -> rty::RefinedType<rty::Closed> {
         rty::RefinedType::new(self.build_ty(ty), self.model_refinement(ty))
     }
@@ -609,19 +614,16 @@ impl<'tcx> TypeBuilder<'tcx> {
             mir_ty::TyKind::Bool => rty::Type::bool(),
             mir_ty::TyKind::Str => rty::Type::string(),
             mir_ty::TyKind::Ref(_, elem_ty, mir_ty::Mutability::Not) => {
-                let elem_ty = self.build_ty(*elem_ty);
-                rty::PointerType::immut_to(elem_ty).into()
+                let elem_ty = self.build(*elem_ty);
+                rty::PointerType::immut_to_refined(elem_ty).into()
             }
             mir_ty::TyKind::Ref(_, elem_ty, mir_ty::Mutability::Mut) => {
-                let elem_ty = self.build_ty(*elem_ty);
-                rty::PointerType::mut_to(elem_ty).into()
+                let elem_ty = self.build(*elem_ty);
+                rty::PointerType::mut_to_refined(elem_ty).into()
             }
             mir_ty::TyKind::Tuple(ts) => {
                 // elaboration: all fields are boxed
-                let elems = ts
-                    .iter()
-                    .map(|ty| rty::PointerType::own(self.build_ty(ty)).into())
-                    .collect();
+                let elems = ts.iter().map(|ty| self.field_type(ty).into()).collect();
                 rty::TupleType::new(elems).into()
             }
             mir_ty::TyKind::Never => rty::Type::never(),
@@ -674,7 +676,7 @@ impl<'tcx> TypeBuilder<'tcx> {
                         .map(|field| {
                             let ty = field.ty(self.tcx, params);
                             // elaboration: all fields are boxed
-                            rty::PointerType::own(self.build_ty(ty)).into()
+                            self.field_type(ty).into()
                         })
                         .collect();
                     rty::TupleType::new(elem_tys).into()
@@ -1048,6 +1050,11 @@ where
         None
     }
 
+    /// The type of a tuple element or struct field, boxed (elaboration: all fields are boxed).
+    fn field_type(&mut self, ty: mir_ty::Ty<'tcx>) -> rty::PointerType<S::Var> {
+        rty::PointerType::own_refined(self.build(ty))
+    }
+
     pub fn build(&mut self, ty: mir_ty::Ty<'tcx>) -> rty::RefinedType<S::Var> {
         rty::RefinedType::new(self.build_ty(ty), self.inner.model_refinement(ty))
     }
@@ -1058,19 +1065,16 @@ where
             mir_ty::TyKind::Bool => rty::Type::bool(),
             mir_ty::TyKind::Str => rty::Type::string(),
             mir_ty::TyKind::Ref(_, elem_ty, mir_ty::Mutability::Not) => {
-                let elem_ty = self.build_ty(*elem_ty);
-                rty::PointerType::immut_to(elem_ty).into()
+                let elem_ty = self.build(*elem_ty);
+                rty::PointerType::immut_to_refined(elem_ty).into()
             }
             mir_ty::TyKind::Ref(_, elem_ty, mir_ty::Mutability::Mut) => {
-                let elem_ty = self.build_ty(*elem_ty);
-                rty::PointerType::mut_to(elem_ty).into()
+                let elem_ty = self.build(*elem_ty);
+                rty::PointerType::mut_to_refined(elem_ty).into()
             }
             mir_ty::TyKind::Tuple(ts) => {
                 // elaboration: all fields are boxed
-                let elems = ts
-                    .iter()
-                    .map(|ty| rty::PointerType::own(self.build_ty(ty)).into())
-                    .collect();
+                let elems = ts.iter().map(|ty| self.field_type(ty).into()).collect();
                 rty::TupleType::new(elems).into()
             }
             mir_ty::TyKind::Never => rty::Type::never(),
@@ -1119,7 +1123,7 @@ where
                         .map(|field| {
                             let ty = field.ty(self.inner.tcx, params);
                             // elaboration: all fields are boxed
-                            rty::PointerType::own(self.build_ty(ty)).into()
+                            self.field_type(ty).into()
                         })
                         .collect();
                     rty::TupleType::new(elem_tys).into()
@@ -1150,22 +1154,15 @@ where
         }
     }
 
-    /// Builds a refinement type whose refinement is an unknown predicate.
-    ///
-    /// What the model of `ty` says about its values (an unsigned integer is non-negative) is not
-    /// conjoined here: it is stated where a value crosses a function or basic block boundary and
-    /// in enum fields, and is an obligation at the same places. Conjoining it to every local's
-    /// template as well adds an obligation at each binding and made PCSat time out on small loops
-    /// (`slice_split_first_loop`, `traits/map_over_filter_item`).
+    /// Builds a refinement type whose refinement is an unknown predicate, conjoined with
+    /// what the model of `ty` already tells us about its values.
     pub fn build_refined(&mut self, ty: mir_ty::Ty<'tcx>) -> rty::RefinedType<S::Var> {
         // TODO: consider building ty with scope
-        let ty = self
-            .inner
-            .for_template(self.registry)
-            .build_ty(ty)
-            .vacuous();
-        let tmpl = self.scope.build_template().build(ty);
-        self.registry.register_template(tmpl)
+        let known = self.inner.for_template(self.registry).build(ty).vacuous();
+        let tmpl = self.scope.build_template().build(known.ty);
+        let mut rty = self.registry.register_template(tmpl);
+        rty.refinement.push_conj(known.refinement);
+        rty
     }
 
     fn build_basic_block_with_precondition(
