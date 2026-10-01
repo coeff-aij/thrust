@@ -329,8 +329,8 @@ where
 
 #[derive(PartialEq)]
 struct Range {
-    start: i64,
-    end: i64,
+    start: isize,
+    end: isize,
 }
 
 impl Model for Range {
@@ -339,7 +339,7 @@ impl Model for Range {
 
 #[thrust_macros::context]
 impl Iterator for Range {
-    type Item = i64;
+    type Item = isize;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.start < self.end {
@@ -384,16 +384,16 @@ where
 }
 
 #[thrust_macros::context]
-impl FromIterator<i64> for Vec<i64> {
-    fn from_iter<I: Iterator<Item = i64> + Model>(iter: &mut I) -> Vec<i64>
+impl FromIterator<isize> for Vec<isize> {
+    fn from_iter<I: Iterator<Item = isize> + Model>(iter: &mut I) -> Vec<isize>
     where
         <I as Model>::Ty: PartialEq,
     {
         let it = iter;
-        let mut v: Vec<i64> = Vec::new();
+        let mut v: Vec<isize> = Vec::new();
         while let Some(x) = it.next() {
             thrust_macros::invariant!(
-                |it: &mut I, v: Vec<i64>, iter: thrust_models::FnParam<&mut I>|
+                |it: &mut I, v: Vec<isize>, iter: thrust_models::FnParam<&mut I>|
                 !it == !iter.at_entry() && I::invariant(*it) && I::produces(*iter.at_entry(), v, *it)
             );
             v.push(x);
@@ -408,7 +408,7 @@ impl FromIterator<i64> for Vec<i64> {
 #[thrust_macros::ensures(result.0.len() == end - start
     && forall(|k: Int| 0 <= k && k < result.0.len() ==> result.0[k] == start + k)
     && result.1 == result.0.len())]
-fn counter(start: i64, end: i64) -> (Vec<i64>, usize) {
+fn counter(start: isize, end: isize) -> (Vec<isize>, usize) {
     let mut cnt: usize = 0;
     let f = thrust_macros::closure!(
         captures(cnt: &mut &mut usize),
@@ -420,14 +420,14 @@ fn counter(start: i64, end: i64) -> (Vec<i64>, usize) {
         // Creusot's `postcondition_mut` of a closure adds `unnest(*self, ^self)`, for this
         // capture that the borrow of `cnt` keeps its prophecy.
         ensures(!(!cnt) == !(*cnt)),
-        |x: i64, produced: Ghost<Seq<Int>>| -> i64 { cnt += 1; x },
+        |x: isize, produced: Ghost<Seq<Int>>| -> isize { cnt += 1; x },
     );
     let mut m = Map {
         iter: Range { start, end },
         func: f,
         produced: thrust_macros::ghost!(|| -> Seq<Int> { Seq::empty() }),
     };
-    let x = m.collect::<Vec<i64>>();
+    let x = m.collect::<Vec<isize>>();
     (x, cnt)
 }
 

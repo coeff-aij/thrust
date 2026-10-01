@@ -7,7 +7,7 @@ use thrust_models::model::{Int, Seq};
 use thrust_models::Model;
 
 // The `&mut` variant of `collect_visited_seq`: `collect(&mut self)` / `from_iter(iter: &mut I)`
-// and a concrete `FromIterator<i64> for Vec<i64>`, on the shared iterator specification.
+// and a concrete `FromIterator<isize> for Vec<isize>`, on the shared iterator specification.
 
 // Creusot's `common.rs`, the iterator specification every case shares: the trait predicates
 // `produces(self, visited, o)`, `completed` and `invariant` (`true` unless the impl says otherwise),
@@ -67,8 +67,8 @@ where
 
 #[derive(PartialEq)]
 struct Range {
-    start: i64,
-    end: i64,
+    start: isize,
+    end: isize,
 }
 
 impl Model for Range {
@@ -77,7 +77,7 @@ impl Model for Range {
 
 #[thrust_macros::context]
 impl Iterator for Range {
-    type Item = i64;
+    type Item = isize;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.start < self.end {
@@ -124,17 +124,17 @@ where
 }
 
 #[thrust_macros::context]
-impl FromIterator<i64> for Vec<i64> {
-    fn from_iter<I: Iterator<Item = i64> + Model>(iter: &mut I) -> Vec<i64>
+impl FromIterator<isize> for Vec<isize> {
+    fn from_iter<I: Iterator<Item = isize> + Model>(iter: &mut I) -> Vec<isize>
     where
         <I as Model>::Ty: Model<Ty = <I as Model>::Ty> + PartialEq,
     {
         let it = iter;
         I::produces_refl(it);
-        let mut v: Vec<i64> = Vec::new();
+        let mut v: Vec<isize> = Vec::new();
         while let Some(x) = it.next() {
             thrust_macros::invariant!(
-                |it: &mut I, v: Vec<i64>, iter: thrust_models::FnParam<&mut I>|
+                |it: &mut I, v: Vec<isize>, iter: thrust_models::FnParam<&mut I>|
                 !it == !iter.at_entry() && I::invariant(*it) && I::produces(*iter.at_entry(), v, *it)
             );
             v.push(x);
@@ -145,9 +145,9 @@ impl FromIterator<i64> for Vec<i64> {
 
 #[thrust_macros::requires(start <= end)]
 #[thrust_macros::ensures(result.len() == end - start && forall(|k: Int| 0 <= k && k < result.len() ==> result[k] == start + k))]
-fn collect_range(start: i64, end: i64) -> Vec<i64> {
+fn collect_range(start: isize, end: isize) -> Vec<isize> {
     let mut r = Range { start, end };
-    r.collect::<Vec<i64>>()
+    r.collect::<Vec<isize>>()
 }
 
 fn main() {}

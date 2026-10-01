@@ -104,8 +104,8 @@ where
 
 #[derive(PartialEq)]
 struct Range {
-    start: i64,
-    end: i64,
+    start: isize,
+    end: isize,
 }
 
 impl Model for Range {
@@ -114,7 +114,7 @@ impl Model for Range {
 
 #[thrust_macros::context]
 impl Iterator for Range {
-    type Item = i64;
+    type Item = isize;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.start < self.end {
@@ -148,7 +148,7 @@ impl Iterator for Range {
 // counterpart; it is an extra call site of `creusot/take.rs`'s `Take`.
 #[thrust_macros::requires(n >= 0)]
 #[thrust_macros::ensures(result <= n)]
-fn take_count(start: i64, end: i64, n: usize) -> usize {
+fn take_count(start: isize, end: isize, n: usize) -> usize {
     let mut t = Take { iter: Range { start, end }, n };
     let mut cnt: usize = 0;
     while let Some(_x) = t.next() {

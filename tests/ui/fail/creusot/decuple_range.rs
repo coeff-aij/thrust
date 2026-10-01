@@ -7,7 +7,7 @@ use thrust_models::{exists, forall, Model};
 
 // Creusot's `examples/decuple_range` with its positional property `v[i] == 10 * i`, fully checked,
 // with `Map` in its `produces` form: no ghost lemmas, and
-// `produces_refl` and `produces_trans` inherited from the trait, as `Range`'s. The rest is `collect` and `FromIterator for Vec<i64>`, as in
+// `produces_refl` and `produces_trans` inherited from the trait, as `Range`'s. The rest is `collect` and `FromIterator for Vec<isize>`, as in
 // `weaker/collect_mutref.rs`.
 
 // Creusot's `common.rs`, the iterator specification every case shares: the trait predicates
@@ -167,8 +167,8 @@ where
 }
 #[derive(PartialEq)]
 struct Range {
-    start: i64,
-    end: i64,
+    start: isize,
+    end: isize,
 }
 
 impl Model for Range {
@@ -177,7 +177,7 @@ impl Model for Range {
 
 #[thrust_macros::context]
 impl Iterator for Range {
-    type Item = i64;
+    type Item = isize;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.start < self.end {
@@ -222,16 +222,16 @@ where
 }
 
 #[thrust_macros::context]
-impl FromIterator<i64> for Vec<i64> {
-    fn from_iter<I: Iterator<Item = i64> + Model>(iter: &mut I) -> Vec<i64>
+impl FromIterator<isize> for Vec<isize> {
+    fn from_iter<I: Iterator<Item = isize> + Model>(iter: &mut I) -> Vec<isize>
     where
         <I as Model>::Ty: PartialEq,
     {
         let it = iter;
-        let mut v: Vec<i64> = Vec::new();
+        let mut v: Vec<isize> = Vec::new();
         while let Some(x) = it.next() {
             thrust_macros::invariant!(
-                |it: &mut I, v: Vec<i64>, iter: thrust_models::FnParam<&mut I>|
+                |it: &mut I, v: Vec<isize>, iter: thrust_models::FnParam<&mut I>|
                 !it == !iter.at_entry() && I::invariant(*it) && I::produces(*iter.at_entry(), v, *it)
             );
             v.push(x);
@@ -242,17 +242,17 @@ impl FromIterator<i64> for Vec<i64> {
 
 // Fail twin: every element is off by one from Creusot's `v[i] == 10 * i`.
 #[thrust_macros::ensures(forall(|k: Int| 0 <= k && k < result.len() ==> result[k] == k * 10 + 1))]
-fn decuple_range() -> Vec<i64> {
+fn decuple_range() -> Vec<isize> {
     let f = thrust_macros::closure!(
         requires(x < 100),
         ensures(result == x * 10),
-        |x: i64| -> i64 { x * 10 }
+        |x: isize| -> isize { x * 10 }
     );
     let mut m = Map {
         iter: Range { start: 0, end: 10 },
         func: f,
     };
-    m.collect::<Vec<i64>>()
+    m.collect::<Vec<isize>>()
 }
 
 fn main() {}

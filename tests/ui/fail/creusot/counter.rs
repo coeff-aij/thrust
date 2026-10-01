@@ -7,7 +7,7 @@ use thrust_models::{exists, forall, Ghost, Model};
 // Creusot's `examples/counter`: `v.iter().map_inv(|x, _prod| { cnt += 1; *x }).collect()`, where
 // the closure's precondition `cnt == _prod.len()` reads the history. The iterator spec is the
 // step form with a unary `produces` guard; `Map` carries Creusot's `MapInv` ghost `produced`
-// and takes an `FnMut(i64, Ghost<Seq<Int>>)`. The source is a `Range` instead of `v.iter()`.
+// and takes an `FnMut(isize, Ghost<Seq<Int>>)`. The source is a `Range` instead of `v.iter()`.
 //
 // The step form has no history, so `collect` promises only that each element is producible;
 // Creusot's `x == v` and `cnt == x.len()` are not stated.
@@ -65,16 +65,16 @@ impl<I: Model, F> Model for Map<I, F> {
     type Ty = (<I as Model>::Ty, Closure<F>, Seq<Int>);
 }
 
-fn push_produced(produced: Ghost<Seq<Int>>, x: i64) -> Ghost<Seq<Int>> {
-    thrust_macros::ghost!(|produced: Ghost<Seq<Int>>, x: i64| -> Seq<Int> { produced.push(x) })
+fn push_produced(produced: Ghost<Seq<Int>>, x: isize) -> Ghost<Seq<Int>> {
+    thrust_macros::ghost!(|produced: Ghost<Seq<Int>>, x: isize| -> Seq<Int> { produced.push(x) })
 }
 
 #[thrust_macros::context]
-impl<I: Iterator<Item = i64> + Model, F: FnMut(i64, Ghost<Seq<Int>>) -> i64> Iterator for Map<I, F>
+impl<I: Iterator<Item = isize> + Model, F: FnMut(isize, Ghost<Seq<Int>>) -> isize> Iterator for Map<I, F>
 where
     <I as Model>::Ty: PartialEq,
 {
-    type Item = i64;
+    type Item = isize;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.iter.next() {
@@ -132,8 +132,8 @@ where
 
 #[derive(PartialEq)]
 struct Range {
-    start: i64,
-    end: i64,
+    start: isize,
+    end: isize,
 }
 
 impl Model for Range {
@@ -142,7 +142,7 @@ impl Model for Range {
 
 #[thrust_macros::context]
 impl Iterator for Range {
-    type Item = i64;
+    type Item = isize;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.start < self.end {
@@ -188,16 +188,16 @@ where
 }
 
 #[thrust_macros::context]
-impl FromIterator<i64> for Vec<i64> {
-    fn from_iter<I: Iterator<Item = i64> + Model>(iter: &mut I) -> Vec<i64>
+impl FromIterator<isize> for Vec<isize> {
+    fn from_iter<I: Iterator<Item = isize> + Model>(iter: &mut I) -> Vec<isize>
     where
         <I as Model>::Ty: PartialEq,
     {
         let it = iter;
-        let mut v: Vec<i64> = Vec::new();
+        let mut v: Vec<isize> = Vec::new();
         while let Some(x) = it.next() {
             thrust_macros::invariant!(
-                |it: &mut I, v: Vec<i64>, iter: thrust_models::FnParam<&mut I>|
+                |it: &mut I, v: Vec<isize>, iter: thrust_models::FnParam<&mut I>|
                 !it == !iter.at_entry()
                     && I::invariant(*it)
                     && forall(|e: Int| I::produces(*it, e) ==> I::produces(*iter.at_entry(), e))
@@ -213,20 +213,20 @@ impl FromIterator<i64> for Vec<i64> {
 // closure's history-dependent precondition is discharged at every call, and each element is one
 // the range produces. Unsat: the first element is `start`.
 #[thrust_macros::ensures(forall(|k: Int| 0 <= k && k < result.len() ==> start < result[k] && result[k] < end))]
-fn counter(start: i64, end: i64) -> Vec<i64> {
+fn counter(start: isize, end: isize) -> Vec<isize> {
     let mut cnt: usize = 0;
     let f = thrust_macros::closure!(
         captures(cnt: &mut &mut usize),
         requires(*(*cnt) == produced.len()),
         ensures(*(!cnt) == *(*cnt) + 1 && result == x),
-        |x: i64, produced: Ghost<Seq<Int>>| -> i64 { cnt += 1; x },
+        |x: isize, produced: Ghost<Seq<Int>>| -> isize { cnt += 1; x },
     );
     let mut m = Map {
         iter: Range { start, end },
         func: f,
         produced: thrust_macros::ghost!(|| -> Seq<Int> { Seq::empty() }),
     };
-    m.collect::<Vec<i64>>()
+    m.collect::<Vec<isize>>()
 }
 
 fn main() {}
