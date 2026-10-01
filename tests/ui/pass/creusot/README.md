@@ -1,8 +1,9 @@
 # Creusot benchmark cases
 
 Fourteen cases from the Creusot artifact's iterator benchmark, each verified with a specification
-equivalent to Creusot's, plus five additions with no Creusot counterpart (`take_count.rs`,
-`fold.rs`, `try_fold.rs`, `find.rs`, `filter.rs`). `<file>.rs` is the pass side;
+equivalent to Creusot's, plus nine additions with no Creusot counterpart (`take_count.rs`,
+`fold.rs`, `try_fold.rs`, `find.rs`, `filter.rs`, and the forms of the last four generic in the
+iterator and the closure, `*_generic.rs`). `<file>.rs` is the pass side;
 `tests/ui/fail/creusot/<file>.rs` is its fail twin (one extra fail-only file,
 `skip_take_take_count.rs`, twins `skip_take.rs` on a different property). `weaker/` holds
 variants of a case whose property is weaker than Creusot's but still verifies.
@@ -39,6 +40,10 @@ same layout. A case that needs `collect` adds it to its copy after `next`.
 | `try_fold.rs` | no counterpart | `produces`; a hand-written `try_fold` that returns `None` on an early bound crossing |
 | `find.rs` | no counterpart | `produces`; linear search over a `Range` |
 | `filter.rs` | no counterpart | `produces`; collects a `Range`'s items above a bound |
+| `fold_generic.rs` | no counterpart | `produces`; `fold` generic in `I: Iterator` and `F: FnMut`, the closure's contract stated for every state, called at `Range` |
+| `try_fold_generic.rs` | no counterpart | `produces`; `try_fold` generic in `I` and `F: FnMut` with `Option` as the `Try` type, called at `Range` |
+| `find_generic.rs` | no counterpart | `produces`; `find` generic in `I` and a `P: FnMut` predicate taking the item by value, called at `Range` |
+| `filter_generic.rs` | no counterpart | `produces`; `filter` into a `Vec`, generic in `I` and `P: FnMut`, called at `Range` |
 
 Weaker variants (`weaker/`, still verify):
 
