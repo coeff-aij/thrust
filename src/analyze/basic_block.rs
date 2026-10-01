@@ -241,62 +241,13 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .basic_block_ty_with_precondition(self.analysis_key, bb)
     }
 
-    /// Whether `local` itself, or a place inside it that is not behind a reference, is borrowed
-    /// mutably somewhere in the body.
-    fn is_mut_borrowed(&self, local: Local) -> bool {
-        self.body.basic_blocks.iter().any(|data| {
-            data.statements.iter().any(|stmt| {
-                let Some((_, Rvalue::Ref(_, mir::BorrowKind::Mut { .. }, referent))) =
-                    stmt.kind.as_assign()
-                else {
-                    return false;
-                };
-                referent.local == local
-                    && !referent
-                        .projection
-                        .iter()
-                        .any(|elem| matches!(elem, mir::ProjectionElem::Deref))
-            })
-        })
-    }
-
-    /// The content of the box of a mutable local.
-    ///
-    /// The content of a mutable reference carries what the model says about it as an invariant
-    /// (see `TypeBuilder::model_refinement`), and a mutable borrow takes the invariant from the
-    /// box it borrows. So the box of a local that is borrowed mutably carries the facts of its
-    /// declared type as well, and the value bound to it has to satisfy them. Other locals carry
-    /// none, which would only add an obligation at each write.
-    fn mut_local_content(
-        &mut self,
-        local: Local,
-        rty: &rty::RefinedType<Var>,
-    ) -> rty::RefinedType<Var> {
-        let mut content = rty::RefinedType::unrefined(rty.ty.clone());
-        if !self.is_mut_borrowed(local) {
-            return content;
-        }
-        let facts = self
-            .type_builder
-            .build(self.local_decls[local].ty)
-            .vacuous();
-        if facts.ty.to_sort() != rty.ty.to_sort() {
-            return content;
-        }
-        content.conjoin_refinements_of(&facts);
-        let clauses = self.env.relate_sub_refined_type(rty, &content);
-        self.ctx.extend_clauses(clauses);
-        content
-    }
-
     fn bind_local(&mut self, local: Local, rty: rty::RefinedType<Var>) {
         let rty = if self.is_mut_local(local) {
             // elaboration:
-            let content = self.mut_local_content(local, &rty);
             let refinement = rty
                 .refinement
                 .subst_value_var(|| chc::Term::var(rty::RefinedTypeVar::Value).box_current());
-            let ty = rty::PointerType::own_refined(content).into();
+            let ty = rty::PointerType::own(rty.ty).into();
             rty::RefinedType::new(ty, refinement)
         } else {
             rty
@@ -722,6 +673,21 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         (tuple_ty.into(), term)
     }
 
+    /// Asserts that an unsigned subtraction without overflow checks does not go below zero.
+    ///
+    /// With overflow checks on, rustc asserts that `SubWithOverflow` did not overflow; without
+    /// them the subtraction is modelled on unbounded integers. This is the same assertion, on
+    /// the lower bound only, so that no negative value of [`rty::Type::UInt`] is produced: every
+    /// such value is assumed non-negative without an obligation. Flux puts the same precondition
+    /// on unsigned subtraction when overflow checking is off.
+    fn assert_no_underflow(&mut self, no_underflow: PlaceType) {
+        let got: rty::RefinedType<Var> = no_underflow.into();
+        let expected =
+            rty::RefinedType::<Var>::refined_with_term(rty::Type::bool(), chc::Term::bool(true));
+        let clauses = self.env.relate_sub_refined_type(&got, &expected);
+        self.ctx.extend_clauses(clauses);
+    }
+
     fn rvalue_type(&mut self, rvalue: Rvalue<'tcx>) -> PlaceType {
         match rvalue {
             Rvalue::Use(operand) => self.operand_type(operand),
@@ -735,7 +701,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     (rty::Type::Bool, mir::UnOp::Not) => {
                         builder.build(rty::Type::Bool, operand_term.not())
                     }
-                    (rty::Type::Int, mir::UnOp::Neg) => {
+                    (rty::Type::Int | rty::Type::UInt, mir::UnOp::Neg) => {
                         builder.build(rty::Type::Int, operand_term.neg())
                     }
                     _ => unimplemented!("ty={}, op={:?}", operand_ty.display(), op),
@@ -751,19 +717,25 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 let (lhs_ty, lhs_term) = builder.subsume(lhs_ty);
                 let (_rhs_ty, rhs_term) = builder.subsume(rhs_ty);
                 match (&lhs_ty, op) {
-                    (rty::Type::Int, mir::BinOp::Add) => {
+                    (rty::Type::Int | rty::Type::UInt, mir::BinOp::Add) => {
                         builder.build(lhs_ty, lhs_term.add(rhs_term))
                     }
-                    (rty::Type::Int, mir::BinOp::Sub) => {
-                        builder.build(lhs_ty, lhs_term.sub(rhs_term))
+                    (rty::Type::Int | rty::Type::UInt, mir::BinOp::Sub) => {
+                        let result = lhs_term.sub(rhs_term);
+                        if !lhs_mir_ty.is_signed() {
+                            let no_underflow = result.clone().ge(chc::Term::int(0));
+                            let guard = builder.clone().build(rty::Type::bool(), no_underflow);
+                            self.assert_no_underflow(guard);
+                        }
+                        builder.build(lhs_ty, result)
                     }
-                    (rty::Type::Int, mir::BinOp::Mul) => {
+                    (rty::Type::Int | rty::Type::UInt, mir::BinOp::Mul) => {
                         builder.build(lhs_ty, lhs_term.mul(rhs_term))
                     }
-                    (rty::Type::Int, mir::BinOp::Div) => {
+                    (rty::Type::Int | rty::Type::UInt, mir::BinOp::Div) => {
                         builder.build(lhs_ty, lhs_term.div_trunc(rhs_term))
                     }
-                    (rty::Type::Int, mir::BinOp::Rem) => {
+                    (rty::Type::Int | rty::Type::UInt, mir::BinOp::Rem) => {
                         builder.build(lhs_ty, lhs_term.rem_trunc(rhs_term))
                     }
                     // On `bool` these are the non-short-circuiting connectives, and rustc
@@ -775,34 +747,34 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     (rty::Type::Bool, mir::BinOp::BitOr) => {
                         builder.build(rty::Type::Bool, lhs_term.or(rhs_term))
                     }
-                    (rty::Type::Int, mir::BinOp::AddWithOverflow) => {
+                    (rty::Type::Int | rty::Type::UInt, mir::BinOp::AddWithOverflow) => {
                         let (ty, term) = self.checked_int_op(lhs_term.add(rhs_term), lhs_mir_ty);
                         builder.build(ty, term)
                     }
-                    (rty::Type::Int, mir::BinOp::SubWithOverflow) => {
+                    (rty::Type::Int | rty::Type::UInt, mir::BinOp::SubWithOverflow) => {
                         let (ty, term) = self.checked_int_op(lhs_term.sub(rhs_term), lhs_mir_ty);
                         builder.build(ty, term)
                     }
-                    (rty::Type::Int, mir::BinOp::MulWithOverflow) => {
+                    (rty::Type::Int | rty::Type::UInt, mir::BinOp::MulWithOverflow) => {
                         let (ty, term) = self.checked_int_op(lhs_term.mul(rhs_term), lhs_mir_ty);
                         builder.build(ty, term)
                     }
-                    (rty::Type::Int | rty::Type::Bool, mir::BinOp::Ge) => {
+                    (rty::Type::Int | rty::Type::UInt | rty::Type::Bool, mir::BinOp::Ge) => {
                         builder.build(rty::Type::Bool, lhs_term.ge(rhs_term))
                     }
-                    (rty::Type::Int | rty::Type::Bool, mir::BinOp::Gt) => {
+                    (rty::Type::Int | rty::Type::UInt | rty::Type::Bool, mir::BinOp::Gt) => {
                         builder.build(rty::Type::Bool, lhs_term.gt(rhs_term))
                     }
-                    (rty::Type::Int | rty::Type::Bool, mir::BinOp::Le) => {
+                    (rty::Type::Int | rty::Type::UInt | rty::Type::Bool, mir::BinOp::Le) => {
                         builder.build(rty::Type::Bool, lhs_term.le(rhs_term))
                     }
-                    (rty::Type::Int | rty::Type::Bool, mir::BinOp::Lt) => {
+                    (rty::Type::Int | rty::Type::UInt | rty::Type::Bool, mir::BinOp::Lt) => {
                         builder.build(rty::Type::Bool, lhs_term.lt(rhs_term))
                     }
-                    (rty::Type::Int | rty::Type::Bool, mir::BinOp::Eq) => {
+                    (rty::Type::Int | rty::Type::UInt | rty::Type::Bool, mir::BinOp::Eq) => {
                         builder.build(rty::Type::Bool, lhs_term.eq(rhs_term))
                     }
-                    (rty::Type::Int | rty::Type::Bool, mir::BinOp::Ne) => {
+                    (rty::Type::Int | rty::Type::UInt | rty::Type::Bool, mir::BinOp::Ne) => {
                         builder.build(rty::Type::Bool, lhs_term.ne(rhs_term))
                     }
                     _ => unimplemented!("ty={}, op={:?}", lhs_ty.display(), op),
@@ -1195,7 +1167,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             let target_term = match (bits, &discr_ty.ty) {
                 (0, rty::Type::Bool) => chc::Term::bool(false),
                 (1, rty::Type::Bool) => chc::Term::bool(true),
-                (_, rty::Type::Int) => {
+                (_, rty::Type::Int | rty::Type::UInt) => {
                     let (size, signed) = discr_mir_ty.int_size_and_signed(self.tcx);
                     if signed {
                         chc::Term::int(size.sign_extend(bits))

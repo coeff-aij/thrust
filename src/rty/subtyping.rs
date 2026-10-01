@@ -86,7 +86,7 @@ where
 
     let mut clauses = Vec::new();
     match (got, expected) {
-        (Type::Int, Type::Int)
+        (Type::Int | Type::UInt, Type::Int | Type::UInt)
         | (Type::Bool, Type::Bool)
         | (Type::String, Type::String)
         | (Type::Never, Type::Never) => {}

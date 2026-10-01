@@ -127,8 +127,8 @@ where
 ///
 /// This struct implements a translation from Rust MIR types to Thrust types.
 /// Thrust types may contain refinement predicates which do not exist in MIR types, and
-/// [`TypeBuilder::build`] fills them with what the model of the type says about its values
-/// (an unsigned integer is non-negative, and nothing for the other models). This also provides
+/// [`TypeBuilder::build`] leaves them unrefined. An unsigned integer becomes [`rty::Type::UInt`],
+/// whose values are non-negative by the type itself. This also provides
 /// [`TypeBuilder::for_template`] to build refinement types by filling unknown predicates with
 /// templates with predicate variables.
 #[derive(Clone)]
@@ -524,10 +524,11 @@ impl<'tcx> TypeBuilder<'tcx> {
         adt: &mir_ty::AdtDef<'tcx>,
         args: &'tcx mir_ty::List<mir_ty::GenericArg<'tcx>>,
     ) -> Option<rty::Type<rty::Closed>> {
-        if Some(adt.did()) == self.def_ids.int_model()
-            || Some(adt.did()) == self.def_ids.uint_model()
-        {
+        if Some(adt.did()) == self.def_ids.int_model() {
             return Some(rty::Type::int());
+        }
+        if Some(adt.did()) == self.def_ids.uint_model() {
+            return Some(rty::Type::uint());
         }
 
         if Some(adt.did()) == self.def_ids.mut_model() {
@@ -573,38 +574,13 @@ impl<'tcx> TypeBuilder<'tcx> {
         None
     }
 
-    /// What the model of `ty` says about every value of that type: an unsigned integer is
-    /// non-negative, and nothing for the other models.
-    ///
-    /// This describes the value as a whole. The builders also place it on the elements of a
-    /// tuple, the fields of a struct and the content of a reference. On the content of a
-    /// mutable reference it is an invariant of the reference, an obligation at each write and
-    /// an assumption on the final value. A `Box` and the elements of a sequence stay unrefined.
-    fn model_refinement<V>(&self, ty: mir_ty::Ty<'tcx>) -> rty::Refinement<V> {
-        let is_unsigned = match self.resolve_model_ty(ty).kind() {
-            mir_ty::TyKind::Adt(def, _) => Some(def.did()) == self.def_ids.uint_model(),
-            _ => false,
-        };
-        if !is_unsigned {
-            return rty::Refinement::top();
-        }
-        chc::Atom::new(
-            chc::KnownPred::GREATER_THAN_OR_EQUAL.into(),
-            vec![
-                chc::Term::var(rty::RefinedTypeVar::Value),
-                chc::Term::int(0),
-            ],
-        )
-        .into()
-    }
-
     /// The type of a tuple element or struct field, boxed (elaboration: all fields are boxed).
     fn field_type(&self, ty: mir_ty::Ty<'tcx>) -> rty::PointerType<rty::Closed> {
         rty::PointerType::own_refined(self.build(ty))
     }
 
     pub fn build(&self, ty: mir_ty::Ty<'tcx>) -> rty::RefinedType<rty::Closed> {
-        rty::RefinedType::new(self.build_ty(ty), self.model_refinement(ty))
+        rty::RefinedType::unrefined(self.build_ty(ty))
     }
 
     // TODO: consolidate two impls
@@ -1006,10 +982,11 @@ where
         adt: &mir_ty::AdtDef<'tcx>,
         args: &'tcx mir_ty::List<mir_ty::GenericArg<'tcx>>,
     ) -> Option<rty::Type<S::Var>> {
-        if Some(adt.did()) == self.inner.def_ids.int_model()
-            || Some(adt.did()) == self.inner.def_ids.uint_model()
-        {
+        if Some(adt.did()) == self.inner.def_ids.int_model() {
             return Some(rty::Type::int());
+        }
+        if Some(adt.did()) == self.inner.def_ids.uint_model() {
+            return Some(rty::Type::uint());
         }
 
         if Some(adt.did()) == self.inner.def_ids.mut_model() {
@@ -1056,7 +1033,7 @@ where
     }
 
     pub fn build(&mut self, ty: mir_ty::Ty<'tcx>) -> rty::RefinedType<S::Var> {
-        rty::RefinedType::new(self.build_ty(ty), self.inner.model_refinement(ty))
+        rty::RefinedType::unrefined(self.build_ty(ty))
     }
 
     fn build_ty(&mut self, ty: mir_ty::Ty<'tcx>) -> rty::Type<S::Var> {
@@ -1154,15 +1131,16 @@ where
         }
     }
 
-    /// Builds a refinement type whose refinement is an unknown predicate, conjoined with
-    /// what the model of `ty` already tells us about its values.
+    /// Builds a refinement type whose refinement is an unknown predicate.
     pub fn build_refined(&mut self, ty: mir_ty::Ty<'tcx>) -> rty::RefinedType<S::Var> {
         // TODO: consider building ty with scope
-        let known = self.inner.for_template(self.registry).build(ty).vacuous();
-        let tmpl = self.scope.build_template().build(known.ty);
-        let mut rty = self.registry.register_template(tmpl);
-        rty.refinement.push_conj(known.refinement);
-        rty
+        let ty = self
+            .inner
+            .for_template(self.registry)
+            .build_ty(ty)
+            .vacuous();
+        let tmpl = self.scope.build_template().build(ty);
+        self.registry.register_template(tmpl)
     }
 
     fn build_basic_block_with_precondition(

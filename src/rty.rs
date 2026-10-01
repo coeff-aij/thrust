@@ -932,6 +932,12 @@ impl<T> ArrayType<T> {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Type<T> {
     Int,
+    /// An integer of an unsigned type. Every value of it is non-negative: the fact is assumed
+    /// wherever such a value is in the environment (see [`RefinedType::formula`]) and is never an
+    /// obligation of subtyping. It holds because every operation that produces an unsigned value
+    /// stays in range, and the one that may not (subtraction without overflow checks) is checked
+    /// where it is performed.
+    UInt,
     Bool,
     String,
     Never,
@@ -996,6 +1002,7 @@ where
     fn pretty(self, allocator: &'a D) -> pretty::DocBuilder<'a, D, termcolor::ColorSpec> {
         match self {
             Type::Int => allocator.text("int"),
+            Type::UInt => allocator.text("uint"),
             Type::Bool => allocator.text("bool"),
             Type::String => allocator.text("string"),
             Type::Never => allocator.text("!"),
@@ -1014,26 +1021,6 @@ where
 }
 
 impl<T> Type<T> {
-    /// Conjoins the refinements nested in `facts` (of tuple elements and pointer contents) onto
-    /// the matching positions of this type. Positions where the two types differ are left as
-    /// they are.
-    pub fn conjoin_nested_refinements_of(&mut self, facts: &Type<T>)
-    where
-        T: Clone,
-    {
-        match (self, facts) {
-            (Type::Tuple(ty), Type::Tuple(facts)) if ty.elems.len() == facts.elems.len() => {
-                for (elem, facts) in ty.elems.iter_mut().zip(&facts.elems) {
-                    elem.conjoin_refinements_of(facts);
-                }
-            }
-            (Type::Pointer(ty), Type::Pointer(facts)) if ty.kind == facts.kind => {
-                ty.elem.conjoin_refinements_of(&facts.elem);
-            }
-            _ => {}
-        }
-    }
-
     pub fn inherit_pointer_types<U: chc::Var>(
         &mut self,
         source: Type<U>,
@@ -1091,6 +1078,10 @@ impl<T> Type<T> {
 
     pub fn int() -> Self {
         Type::Int
+    }
+
+    pub fn uint() -> Self {
+        Type::UInt
     }
 
     pub fn bool() -> Self {
@@ -1186,7 +1177,7 @@ impl<T> Type<T> {
 
     pub fn to_sort(&self) -> chc::Sort {
         match self {
-            Type::Int => chc::Sort::int(),
+            Type::Int | Type::UInt => chc::Sort::int(),
             Type::Bool => chc::Sort::bool(),
             // TODO: enable string reasoning
             //       currently String sort seems not available in HORN logic of Z3
@@ -1228,6 +1219,7 @@ impl<T> Type<T> {
     {
         match self {
             Type::Int => Type::Int,
+            Type::UInt => Type::UInt,
             Type::Bool => Type::Bool,
             Type::String => Type::String,
             Type::Never => Type::Never,
@@ -1248,6 +1240,7 @@ impl<T> Type<T> {
     {
         match self {
             Type::Int => Type::Int,
+            Type::UInt => Type::UInt,
             Type::Bool => Type::Bool,
             Type::String => Type::String,
             Type::Never => Type::Never,
@@ -1269,6 +1262,7 @@ impl<T> Type<T> {
     pub fn strip_refinement(self) -> Type<Closed> {
         match self {
             Type::Int => Type::Int,
+            Type::UInt => Type::UInt,
             Type::Bool => Type::Bool,
             Type::String => Type::String,
             Type::Never => Type::Never,
@@ -1777,16 +1771,6 @@ impl RefinedType<FunctionParamIdx> {
 }
 
 impl<FV> RefinedType<FV> {
-    /// Conjoins the refinement of `facts` onto this one, and the refinements nested in it onto
-    /// the matching positions of this type.
-    pub fn conjoin_refinements_of(&mut self, facts: &RefinedType<FV>)
-    where
-        FV: Clone,
-    {
-        self.refinement.push_conj(facts.refinement.clone());
-        self.ty.conjoin_nested_refinements_of(&facts.ty);
-    }
-
     fn pretty_atom<'a, 'b, D>(
         &'b self,
         allocator: &'a D,
@@ -1813,6 +1797,15 @@ impl<FV> RefinedType<FV> {
     {
         let mut formula = self.refinement.clone();
         match &self.ty {
+            Type::UInt => {
+                formula.push_conj(
+                    chc::Atom::new(
+                        chc::KnownPred::GREATER_THAN_OR_EQUAL.into(),
+                        vec![chc::Term::var(RefinedTypeVar::Value), chc::Term::int(0)],
+                    )
+                    .into(),
+                );
+            }
             Type::Tuple(ty) => {
                 for (index, elem) in ty.elems.iter().enumerate() {
                     formula.push_conj(elem.formula().subst_value_var(|| {
@@ -1977,7 +1970,7 @@ impl<FV> RefinedType<FV> {
     {
         self.refinement.subst_ty_params_in_sorts(subst);
         match &mut self.ty {
-            Type::Int | Type::Bool | Type::String | Type::Never => {}
+            Type::Int | Type::UInt | Type::Bool | Type::String | Type::Never => {}
             Type::Param(ty) => {
                 if let Some(rty) = subst.get(ty.type_param_index()) {
                     let RefinedType {
@@ -2028,6 +2021,7 @@ impl<FV> RefinedType<FV> {
         self.refinement.body.iter_atoms().any(|atom| f(&atom.pred))
             || match &self.ty {
                 Type::Int
+                | Type::UInt
                 | Type::Bool
                 | Type::String
                 | Type::Never
