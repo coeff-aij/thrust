@@ -179,6 +179,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     local_def_id,
                     owner_fn_id_args,
                 );
+            } else if per_instance_generics() {
+                // Upstream Thrust's treatment: the body is analyzed at each instance a call site
+                // reaches, and not once over the type parameters.
+                self.ctx
+                    .register_deferred_def(owner_fn_id, local_def_id, owner_fn_id_args);
             } else {
                 let expected = analyzer.expected_ty();
                 self.ctx
@@ -494,4 +499,13 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             self.ctx.register_trait_law(trait_def_id, def_id);
         }
     }
+}
+
+/// Whether a generic def with a body is verified at each instance rather than once over its type
+/// parameters (`THRUST_PER_INSTANCE_GENERICS=1`).
+fn per_instance_generics() -> bool {
+    matches!(
+        std::env::var("THRUST_PER_INSTANCE_GENERICS").as_deref(),
+        Ok("1")
+    )
 }
