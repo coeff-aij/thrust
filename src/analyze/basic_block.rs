@@ -479,14 +479,17 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 int_bytes[..bytes.len()].copy_from_slice(bytes);
                 // TODO: see target endianness
                 let bits = u128::from_ne_bytes(int_bytes);
-                PlaceType::with_ty_and_term(rty::Type::int(), {
-                    let (size, signed) = ty.int_size_and_signed(self.tcx);
-                    if signed {
-                        chc::Term::int(size.sign_extend(bits))
-                    } else {
-                        chc::Term::int(bits)
-                    }
-                })
+                let (size, signed) = ty.int_size_and_signed(self.tcx);
+                if signed {
+                    PlaceType::with_ty_and_term(
+                        rty::Type::int(),
+                        chc::Term::int(size.sign_extend(bits)),
+                    )
+                } else {
+                    // An unsigned literal is non-negative as written, so it needs no check where
+                    // it becomes a value of an unsigned type.
+                    PlaceType::with_ty_and_term(rty::Type::uint(), chc::Term::int(bits))
+                }
             }
             mir_ty::TyKind::Tuple(tys) => {
                 let mut pts = Vec::new();

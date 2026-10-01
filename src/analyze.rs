@@ -48,7 +48,7 @@ fn scalar_const_term<T>(
             Some((rty::Type::int(), chc::Term::int(v.to_int(v.size()))))
         }
         (mir_ty::TyKind::Uint(_), mir::ConstValue::Scalar(Scalar::Int(v))) => {
-            Some((rty::Type::int(), chc::Term::int(v.to_uint(v.size()))))
+            Some((rty::Type::uint(), chc::Term::int(v.to_uint(v.size()))))
         }
         (mir_ty::TyKind::Bool, mir::ConstValue::Scalar(Scalar::Int(v))) => {
             Some((rty::Type::bool(), chc::Term::bool(v.try_to_bool().unwrap())))
