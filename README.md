@@ -185,6 +185,7 @@ Several environment variables are used by Thrust to configure its behavior:
 - `THRUST_NO_INJECT_STD`: When set to `1`, Thrust does not inject `std.rs` into the analyzed crate.
 - `THRUST_TRY_SPECS`: When set to `1`, Thrust enables `feature(try_trait_v2)` in the analyzed crate and injects `std_try.rs`, the specifications of `Try::branch` and `FromResidual::from_residual` for `Option` and `Result` that `?` needs.
 - `THRUST_ENUM_EXPANSION_DEPTH_LIMIT`: When Thrust works with enums, it "expands" the structure of the enum value onto its environment. This configuration value sets the limit on the depth of recursion during this expansion to handle enums that are defined recursively. It is our future work to discover a sensible value for this automatically. Default: `2`
+- `THRUST_CHECK_UINT_FACTS`: When set, the result of every unsigned addition, multiplication, division and remainder is also required non-negative where it is computed. A value of an unsigned type is otherwise assumed non-negative, and only the places that may take it out of range are checked (a subtraction without overflow checks, a ghost term, an integer that becomes an unsigned value); the mode is for checking once that no other place makes an unsigned value.
 
 ### PCSat
 
