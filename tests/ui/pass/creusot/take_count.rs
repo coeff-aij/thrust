@@ -2,7 +2,7 @@
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300 COAR_IMAGE=coar:804d76744
 use thrust_models::forall;
-use thrust_models::model::{Int, Mut, Seq};
+use thrust_models::model::{Int, Mut, Seq, UInt};
 use thrust_models::Model;
 
 // `take_count` is a call site of the generic `Take` (`creusot/take.rs`) at `Take<Range>`.
@@ -55,7 +55,7 @@ pub struct Take<I> {
 }
 
 impl<I: Model> Model for Take<I> {
-    type Ty = (<I as Model>::Ty, Int);
+    type Ty = (<I as Model>::Ty, UInt);
 }
 
 #[thrust_macros::context]
@@ -81,11 +81,11 @@ where
 
 
 
-    // `Take<I>`'s model is the tuple `(<I as Model>::Ty, Int)`, not the named struct: the
+    // `Take<I>`'s model is the tuple `(<I as Model>::Ty, UInt)`, not the named struct: the
     // predicate type-checks against the model, so the components are `.0` (iter) and `.1` (n).
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
-        I::invariant(self.0) && self.1 >= 0
+        I::invariant(self.0)
     }
 
     #[thrust_macros::predicate]

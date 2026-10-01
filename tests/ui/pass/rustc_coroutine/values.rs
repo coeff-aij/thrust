@@ -778,7 +778,6 @@ where
                     !this == !self.at_entry()
                         && (*this).0 == (*self.at_entry()).0
                         && (*self.at_entry()).1 <= (*this).1
-                        && 0 <= (*this).1
                         && (*this).1 <= (*this).0.len()
                         && forall(|x: <&'a T as thrust_models::Model>::Ty| thrust_macros::pre!(predicate(&x)))
             );
@@ -791,7 +790,7 @@ where
 }
 
 impl<'a, T: thrust_models::Model> thrust_models::Model for SliceIter<'a, T> {
-    type Ty = (&'a thrust_models::model::Seq<<T as thrust_models::Model>::Ty>, thrust_models::model::Int);
+    type Ty = (&'a thrust_models::model::Seq<<T as thrust_models::Model>::Ty>, thrust_models::model::UInt);
 }
 
 impl thrust_models::Model for PointerSpec {

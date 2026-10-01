@@ -162,7 +162,7 @@ impl Iterator for BitIter {
 
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
-        0 <= self.1 && self.1 <= self.0
+        self.1 <= self.0
     }
 
     #[thrust_macros::predicate]

@@ -82,7 +82,7 @@ where
 
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
-        I::invariant(self.iter) && self.n >= 0
+        I::invariant(self.iter)
     }
 
     #[thrust_macros::predicate]
