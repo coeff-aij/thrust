@@ -8,7 +8,7 @@ current state, with no reference to anything outside this repository's tracked h
 | [`thrust-macros-dylib/`](thrust-macros-dylib/README.md) | the driver can link a stale `thrust-macros` proc-macro dylib when more than one build of it exists under `target/debug/deps` | no open upstream issue; distinct from #255 (multi-crate support) |
 | [`ghost-field-contents/`](ghost-field-contents/README.md) | a `Ghost<T>` struct field could not be used as its contents in `ensures`/`ghost!`, only a `Ghost<T>` parameter could (fixed on this fork) | no open upstream issue |
 | [`ghost-param-type-panic/`](ghost-param-type-panic/README.md) | a `ghost!` parameter typed differently from its live variable (`c: Counter` for `c: &mut Counter`) panics the driver in subtyping instead of being reported | no open upstream issue; reproduces on upstream `main` e112206 |
-| [`unsigned-nonneg/`](unsigned-nonneg/README.md) | unsigned facts as refinements: #268 and #286 extended to fields and reference contents, and the clause growth this gives (most new obligations hold as written) | upstream #268 and #286 (both unmerged) |
+| [`unsigned-nonneg/`](unsigned-nonneg/README.md) | unsigned facts as refinements (#268 and #286 extended to nested positions, branch `uint-models`) and as part of the type (branch `uint-sort`): clause counts, solver results and soundness checks of both | upstream #268 and #286 (both unmerged) |
 
 Two other topics have their own pushed branches rather than a directory here, because each
 predates this branch and already carries its own commit history:
