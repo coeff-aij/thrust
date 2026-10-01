@@ -691,6 +691,29 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.ctx.extend_clauses(clauses);
     }
 
+    /// The result of an arithmetic operation of type `ty`. In the unsigned-fact check mode
+    /// ([`rty::check_uint_facts_mode`]) an unsigned result is required non-negative where it is
+    /// computed, instead of being assumed so.
+    fn arith_result(
+        &mut self,
+        builder: PlaceTypeBuilder,
+        ty: rty::Type<Var>,
+        term: chc::Term<PlaceTypeVar>,
+    ) -> PlaceType {
+        if matches!(ty, rty::Type::UInt) && rty::check_uint_facts_mode() {
+            let nonnegative = term.clone().ge(chc::Term::int(0));
+            let got: rty::RefinedType<Var> =
+                builder.clone().build(rty::Type::bool(), nonnegative).into();
+            let expected = rty::RefinedType::<Var>::refined_with_term(
+                rty::Type::bool(),
+                chc::Term::bool(true),
+            );
+            let clauses = self.env.relate_sub_refined_type(&got, &expected);
+            self.ctx.extend_clauses(clauses);
+        }
+        builder.build(ty, term)
+    }
+
     fn rvalue_type(&mut self, rvalue: Rvalue<'tcx>) -> PlaceType {
         match rvalue {
             Rvalue::Use(operand) => self.operand_type(operand),
@@ -721,7 +744,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 let (_rhs_ty, rhs_term) = builder.subsume(rhs_ty);
                 match (&lhs_ty, op) {
                     (rty::Type::Int | rty::Type::UInt, mir::BinOp::Add) => {
-                        builder.build(lhs_ty, lhs_term.add(rhs_term))
+                        self.arith_result(builder, lhs_ty, lhs_term.add(rhs_term))
                     }
                     (rty::Type::Int | rty::Type::UInt, mir::BinOp::Sub) => {
                         let result = lhs_term.sub(rhs_term);
@@ -733,13 +756,13 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         builder.build(lhs_ty, result)
                     }
                     (rty::Type::Int | rty::Type::UInt, mir::BinOp::Mul) => {
-                        builder.build(lhs_ty, lhs_term.mul(rhs_term))
+                        self.arith_result(builder, lhs_ty, lhs_term.mul(rhs_term))
                     }
                     (rty::Type::Int | rty::Type::UInt, mir::BinOp::Div) => {
-                        builder.build(lhs_ty, lhs_term.div_trunc(rhs_term))
+                        self.arith_result(builder, lhs_ty, lhs_term.div_trunc(rhs_term))
                     }
                     (rty::Type::Int | rty::Type::UInt, mir::BinOp::Rem) => {
-                        builder.build(lhs_ty, lhs_term.rem_trunc(rhs_term))
+                        self.arith_result(builder, lhs_ty, lhs_term.rem_trunc(rhs_term))
                     }
                     // On `bool` these are the non-short-circuiting connectives, and rustc
                     // builds the overflow guard of `/` and `%` out of one of them. They stay

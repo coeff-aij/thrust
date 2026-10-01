@@ -929,6 +929,18 @@ impl<T> ArrayType<T> {
 }
 
 /// An underlying type of a refinement type.
+/// Whether the unsigned-fact check mode is on (`THRUST_CHECK_UINT_FACTS` set).
+///
+/// A value of [`Type::UInt`] is assumed non-negative, and the places where a value may leave the
+/// range are checked: a subtraction without overflow checks, a ghost term, an integer that becomes
+/// an unsigned value. The mode also checks the result of the other unsigned arithmetic operations,
+/// which stays in range by arithmetic, so that every place that makes an unsigned value is checked
+/// once; an obligation that fails points at a place that should be checked by default.
+pub fn check_uint_facts_mode() -> bool {
+    static MODE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *MODE.get_or_init(|| std::env::var_os("THRUST_CHECK_UINT_FACTS").is_some())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Type<T> {
     Int,
