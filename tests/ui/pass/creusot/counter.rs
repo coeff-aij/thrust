@@ -1,13 +1,13 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off -A unused-variables -A unused_parens
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300 COAR_IMAGE=coar:804d76744
-use thrust_models::model::{Closure, Int, Mut, Seq};
+use thrust_models::model::{Closure, Int, Mut, Seq, UInt};
 use thrust_models::{exists, forall, Ghost, Model};
 
 // Creusot's `examples/counter`: `v.iter().map_inv(|x, _prod| { cnt += 1; *x }).collect()`, where
 // the closure's precondition `cnt == _prod.len()` reads the history. The iterator spec is the
 // step form with a unary `produces` guard; `Map` carries Creusot's `MapInv` ghost `produced`
-// and takes an `FnMut(i64, Ghost<Seq<Int>>)`. The source is a `Range` instead of `v.iter()`.
+// and takes an `FnMut(u32, Ghost<Seq<UInt>>)`. The source is a `Range` instead of `v.iter()`.
 //
 // The step form has no history, so `collect` promises only that each element is producible;
 // Creusot's `x == v` and `cnt == x.len()` are not stated.
@@ -58,23 +58,23 @@ trait Iterator {
 struct Map<I, F> {
     iter: I,
     func: F,
-    produced: Ghost<Seq<Int>>,
+    produced: Ghost<Seq<UInt>>,
 }
 
 impl<I: Model, F> Model for Map<I, F> {
-    type Ty = (<I as Model>::Ty, Closure<F>, Seq<Int>);
+    type Ty = (<I as Model>::Ty, Closure<F>, Seq<UInt>);
 }
 
-fn push_produced(produced: Ghost<Seq<Int>>, x: i64) -> Ghost<Seq<Int>> {
-    thrust_macros::ghost!(|produced: Ghost<Seq<Int>>, x: i64| -> Seq<Int> { produced.push(x) })
+fn push_produced(produced: Ghost<Seq<UInt>>, x: u32) -> Ghost<Seq<UInt>> {
+    thrust_macros::ghost!(|produced: Ghost<Seq<UInt>>, x: u32| -> Seq<UInt> { produced.push(x) })
 }
 
 #[thrust_macros::context]
-impl<I: Iterator<Item = i64> + Model, F: FnMut(i64, Ghost<Seq<Int>>) -> i64> Iterator for Map<I, F>
+impl<I: Iterator<Item = u32> + Model, F: FnMut(u32, Ghost<Seq<UInt>>) -> u32> Iterator for Map<I, F>
 where
     <I as Model>::Ty: PartialEq,
 {
-    type Item = i64;
+    type Item = u32;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.iter.next() {
@@ -91,11 +91,11 @@ where
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
         I::invariant(self.0)
-            && forall(|e: Int| !I::produces(self.0, e) || thrust_macros::pre!((self.1)(e, self.2)))
-            && forall(|h: Seq<Int>|
-                forall(|e1: Int|
-                    forall(|e2: Int|
-                        forall(|b: Int|
+            && forall(|e: UInt| !I::produces(self.0, e) || thrust_macros::pre!((self.1)(e, self.2)))
+            && forall(|h: Seq<UInt>|
+                forall(|e1: UInt|
+                    forall(|e2: UInt|
+                        forall(|b: UInt|
                             forall(|g2: Closure<F>|
                                 !(I::produces(self.0, e1)
                                     && I::produces(self.0, e2)
@@ -113,7 +113,7 @@ where
 
     #[thrust_macros::predicate]
     fn step(self, item: Self::Item, dist: Self) -> bool {
-        exists(|i: Int|
+        exists(|i: UInt|
             I::step(self.0, i, dist.0)
                 && thrust_macros::pre!((self.1)(i, self.2))
                 && thrust_macros::post!(Mut::new(self.1, dist.1)(i, self.2), item)
@@ -122,7 +122,7 @@ where
 
     #[thrust_macros::predicate]
     fn produces(self, item: Self::Item) -> bool {
-        exists(|j: Int|
+        exists(|j: UInt|
             exists(|g2: Closure<F>|
                 I::produces(self.0, j)
                     && thrust_macros::pre!((self.1)(j, self.2))
@@ -132,8 +132,8 @@ where
 
 #[derive(PartialEq)]
 struct Range {
-    start: i64,
-    end: i64,
+    start: u32,
+    end: u32,
 }
 
 impl Model for Range {
@@ -142,7 +142,7 @@ impl Model for Range {
 
 #[thrust_macros::context]
 impl Iterator for Range {
-    type Item = i64;
+    type Item = u32;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.start < self.end {
@@ -188,19 +188,19 @@ where
 }
 
 #[thrust_macros::context]
-impl FromIterator<i64> for Vec<i64> {
-    fn from_iter<I: Iterator<Item = i64> + Model>(iter: &mut I) -> Vec<i64>
+impl FromIterator<u32> for Vec<u32> {
+    fn from_iter<I: Iterator<Item = u32> + Model>(iter: &mut I) -> Vec<u32>
     where
         <I as Model>::Ty: PartialEq,
     {
         let it = iter;
-        let mut v: Vec<i64> = Vec::new();
+        let mut v: Vec<u32> = Vec::new();
         while let Some(x) = it.next() {
             thrust_macros::invariant!(
-                |it: &mut I, v: Vec<i64>, iter: thrust_models::FnParam<&mut I>|
+                |it: &mut I, v: Vec<u32>, iter: thrust_models::FnParam<&mut I>|
                 !it == !iter.at_entry()
                     && I::invariant(*it)
-                    && forall(|e: Int| I::produces(*it, e) ==> I::produces(*iter.at_entry(), e))
+                    && forall(|e: UInt| I::produces(*it, e) ==> I::produces(*iter.at_entry(), e))
                     && forall(|k: Int| 0 <= k && k < v.len() ==> I::produces(*iter.at_entry(), v[k]))
             );
             v.push(x);
@@ -213,20 +213,20 @@ impl FromIterator<i64> for Vec<i64> {
 // closure's history-dependent precondition is discharged at every call, and each element is one
 // the range produces.
 #[thrust_macros::ensures(forall(|k: Int| 0 <= k && k < result.len() ==> start <= result[k] && result[k] < end))]
-fn counter(start: i64, end: i64) -> Vec<i64> {
-    let mut cnt: i64 = 0;
+fn counter(start: u32, end: u32) -> Vec<u32> {
+    let mut cnt: usize = 0;
     let f = thrust_macros::closure!(
-        captures(cnt: &mut &mut i64),
+        captures(cnt: &mut &mut usize),
         requires(*(*cnt) == produced.len()),
         ensures(*(!cnt) == *(*cnt) + 1 && result == x),
-        |x: i64, produced: Ghost<Seq<Int>>| -> i64 { cnt += 1; x },
+        |x: u32, produced: Ghost<Seq<UInt>>| -> u32 { cnt += 1; x },
     );
     let mut m = Map {
         iter: Range { start, end },
         func: f,
-        produced: thrust_macros::ghost!(|| -> Seq<Int> { Seq::empty() }),
+        produced: thrust_macros::ghost!(|| -> Seq<UInt> { Seq::empty() }),
     };
-    m.collect::<Vec<i64>>()
+    m.collect::<Vec<u32>>()
 }
 
 fn main() {}

@@ -2,64 +2,37 @@
 //@compile-flags: -Adead_code -C debug-assertions=off -A unused-variables -A unused_parens
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300 COAR_IMAGE=coar:9799dfd7b THRUST_TRY_SPECS=1
 
-use thrust_models::model::{Closure, Int, Mut, Seq};
+use thrust_models::model::{Closure, Int, Mut, Seq, UInt};
 use thrust_models::{exists, forall, Ghost};
 
-pub struct DenseBitSet {
-    words: Vec<u64>,
-}
-
-impl thrust_models::Model for DenseBitSet {
-    type Ty = Int;
-}
-
-pub struct BitIter {
-    word: u64,
-}
-
-impl thrust_models::Model for BitIter {
-    type Ty = Int;
-}
-
+// The iterator trait, local to the case study (rewrites.md R9): Creusot's `common.rs` as the
+// Creusot benchmark cases of the fork declare it (tests/ui/pass/creusot/range.rs), with the
+// predicates `produces`, `completed` and `invariant` (`true` unless the impl says otherwise), the
+// laws `produces_refl` and `produces_trans`, which every impl inherits and Thrust checks at each
+// impl, and `next` with Creusot's contract. It shadows std's `Iterator`.
 #[thrust_macros::context]
-impl DenseBitSet {
-    #[thrust::trusted]
-    #[thrust::callable]
-    #[thrust_macros::ensures(result == *self && 0 <= *self)]
-    fn iter(&self) -> BitIter {
-        BitIter { word: 0 }
-    }
-}
-
-impl Iterator for BitIter {
-    type Item = usize;
-    #[thrust::trusted]
-    #[thrust::callable]
-    fn next(&mut self) -> Option<usize> {
-        None
-    }
-}
-
-#[thrust_macros::context]
-impl IteratorSpec for BitIter {
-    #[thrust_macros::predicate]
-    fn inv(self) -> bool {
-        0 <= self
-    }
+trait Iterator
+where
+    Self: thrust_models::Model,
+    Self::Item: thrust_models::Model,
+{
+    type Item;
 
     #[thrust_macros::predicate]
-    fn produces(self, visited: Vec<usize>, o: Self) -> bool {
-        0 <= o && o + visited.len() == self
-            && forall(|i: Int| !(0 <= i && i < visited.len()) || (0 <= visited[i] && visited[i] < 5))
-    }
+    fn produces(self, visited: Seq<<Self::Item as thrust_models::Model>::Ty>, o: Self) -> bool;
 
     #[thrust_macros::predicate]
-    fn completed(&mut self) -> bool {
-        *self == 0 && *self == !self
-    }
+    fn completed(&mut self) -> bool;
 
+    #[thrust_macros::law]
+    #[thrust_macros::requires(Self::invariant(*a))]
+    #[thrust_macros::ensures(Self::produces(*a, Seq::empty(), *a))]
     fn produces_refl(a: &Self) {}
 
+    #[thrust_macros::law]
+    #[thrust_macros::requires(Self::produces(*a, ab, *b))]
+    #[thrust_macros::requires(Self::produces(*b, bc, *c))]
+    #[thrust_macros::ensures(Self::produces(*a, ab.concat(bc), *c))]
     fn produces_trans(
         a: &Self,
         ab: Seq<<Self::Item as thrust_models::Model>::Ty>,
@@ -68,9 +41,87 @@ impl IteratorSpec for BitIter {
         c: &Self,
     ) {
     }
+
+    #[thrust_macros::predicate]
+    fn invariant(self) -> bool {
+        true
+    }
+
+    #[thrust_macros::requires(Self::invariant(*self))]
+    #[thrust_macros::ensures(Self::invariant(!self))]
+    #[thrust_macros::ensures(result == None ==> Self::completed(self))]
+    #[thrust_macros::ensures(forall(|i| result == Some(i) ==> Self::produces(*self, Seq::singleton(i), !self)))]
+    fn next(&mut self) -> Option<Self::Item>;
+}
+
+pub struct DenseBitSet {
+    words: Vec<u64>,
+}
+
+impl thrust_models::Model for DenseBitSet {
+    type Ty = UInt;
+}
+
+pub struct BitIter {
+    word: u64,
+}
+
+impl thrust_models::Model for BitIter {
+    type Ty = UInt;
+}
+
+#[thrust_macros::context]
+impl DenseBitSet {
+    #[thrust::trusted]
+    #[thrust::callable]
+    #[thrust_macros::ensures(result == *self)]
+    fn iter(&self) -> BitIter {
+        BitIter { word: 0 }
+    }
+}
+
+#[thrust_macros::context]
+impl Iterator for BitIter {
+    type Item = usize;
+
+    fn next(&mut self) -> Option<usize> {
+        self.next_bit()
+    }
+
+    #[thrust_macros::predicate]
+    fn invariant(self) -> bool {
+        true
+    }
+
+    #[thrust_macros::predicate]
+    fn produces(self, visited: Seq<<Self::Item as thrust_models::Model>::Ty>, o: Self) -> bool {
+        o + visited.len() == self
+            && forall(|i: Int| !(0 <= i && i < visited.len()) || (0 <= visited[i] && visited[i] < 5))
+    }
+
+    #[thrust_macros::predicate]
+    fn completed(&mut self) -> bool {
+        *self == 0 && *self == !self
+    }
+}
+
+// The trusted stub behind `next`: Thrust trusts a function only on its own contract, and the
+// method of an impl of the local trait has the trait's.
+#[thrust_macros::context]
+impl BitIter {
+    #[thrust::trusted]
+    #[thrust_macros::requires(<Self as Iterator>::invariant(*self))]
+    #[thrust_macros::ensures(
+        <Self as Iterator>::invariant(!self)
+            && (result == None ==> <Self as Iterator>::completed(self))
+            && forall(|x: <usize as thrust_models::Model>::Ty| result == Some(x) ==> <Self as Iterator>::produces(*self, Seq::singleton(x), !self))
+    )]
+    fn next_bit(&mut self) -> Option<usize> {
+        None
+    }
 }
 // Rewrite (rewrites.md R8): a local `Map` in place of `iter::Map`, evaluation 1's adapter
-// (tests/ui/pass/creusot/map.rs) on std.rs's `IteratorSpec`. The model is the inner iterator and
+// (tests/ui/pass/creusot/map.rs) on the local `Iterator`. The model is the inner iterator and
 // the closure state; `produces` carries the input items `s` and the chain `fs` of closure states.
 struct Map<I, F> {
     iter: I,
@@ -86,7 +137,7 @@ impl<I: thrust_models::Model, F> thrust_models::Model for Map<I, F> {
 #[thrust_macros::context]
 impl<I, B, F> Map<I, F>
 where
-    I: IteratorSpec,
+    I: Iterator,
     B: thrust_models::Model,
     F: FnMut(I::Item) -> B,
     I::Item: thrust_models::Model,
@@ -95,7 +146,7 @@ where
     <B as thrust_models::Model>::Ty: PartialEq,
 {
     #[thrust_macros::requires(
-        I::inv(iter)
+        I::invariant(iter)
             && Self::reinitialize()
             && Self::preservation_inv(iter, func)
             && Self::next_precondition(iter, func)
@@ -163,18 +214,22 @@ where
         c: Ghost<Self>,
     ) {
     }
+}
 
-    // `next` of the `Iterator` impl below, where the ghost snapshots cannot be written (a
-    // `context` impl adds `Model` bounds that std's trait does not have): Creusot's contract of
-    // `next` on `Map`, the invariant holds before and after.
-    #[thrust_macros::requires(<Self as IteratorSpec>::inv(*self))]
-    #[thrust_macros::ensures(
-        <Self as IteratorSpec>::inv(!self)
-            && (result == None ==> <Self as IteratorSpec>::completed(self))
-            && forall(|x: <B as thrust_models::Model>::Ty| result == Some(x)
-                ==> <Self as IteratorSpec>::produces(*self, Seq::singleton(x), !self))
-    )]
-    fn next_map(&mut self) -> Option<B> {
+#[thrust_macros::context]
+impl<I, B, F> Iterator for Map<I, F>
+where
+    I: Iterator,
+    B: thrust_models::Model,
+    F: FnMut(I::Item) -> B,
+    I::Item: thrust_models::Model,
+    <I::Item as thrust_models::Model>::Ty: PartialEq,
+    <I as thrust_models::Model>::Ty: PartialEq,
+    <B as thrust_models::Model>::Ty: PartialEq,
+{
+    type Item = B;
+
+    fn next(&mut self) -> Option<B> {
         let pre = thrust_macros::ghost!(|self: &mut Self| -> Self { *self });
         let r = self.iter.next();
         match r {
@@ -191,59 +246,16 @@ where
         }
     }
 
-    // The same contract on `Iterator::next`, which `std.rs` gives only for `I: IteratorSpec` with
-    // no precondition.
-    #[thrust::extern_spec_fn]
-    #[thrust_macros::requires(<Self as IteratorSpec>::inv(*it))]
-    #[thrust_macros::ensures(
-        <Self as IteratorSpec>::inv(!it)
-            && (result == None ==> <Self as IteratorSpec>::completed(it))
-            && forall(|x: <B as thrust_models::Model>::Ty| result == Some(x)
-                ==> <Self as IteratorSpec>::produces(*it, Seq::singleton(x), !it))
-    )]
-    fn _extern_spec_next(it: &mut Map<I, F>) -> Option<B> {
-        <Map<I, F> as Iterator>::next(it)
-    }
-}
-
-impl<I, B, F> Iterator for Map<I, F>
-where
-    I: IteratorSpec,
-    B: thrust_models::Model,
-    F: FnMut(I::Item) -> B,
-    I::Item: thrust_models::Model,
-    <I::Item as thrust_models::Model>::Ty: PartialEq,
-    <I as thrust_models::Model>::Ty: PartialEq,
-    <B as thrust_models::Model>::Ty: PartialEq,
-{
-    type Item = B;
-
-    fn next(&mut self) -> Option<B> {
-        self.next_map()
-    }
-}
-
-#[thrust_macros::context]
-impl<I, B, F> IteratorSpec for Map<I, F>
-where
-    I: IteratorSpec,
-    B: thrust_models::Model,
-    F: FnMut(I::Item) -> B,
-    I::Item: thrust_models::Model,
-    <I::Item as thrust_models::Model>::Ty: PartialEq,
-    <I as thrust_models::Model>::Ty: PartialEq,
-    <B as thrust_models::Model>::Ty: PartialEq,
-{
     #[thrust_macros::predicate]
-    fn inv(self) -> bool {
+    fn invariant(self) -> bool {
         Self::reinitialize()
             && Self::preservation_inv(self.0, self.1)
-            && I::inv(self.0)
+            && I::invariant(self.0)
             && Self::next_precondition(self.0, self.1)
     }
 
     #[thrust_macros::predicate]
-    fn produces(self, visited: Vec<B>, o: Self) -> bool {
+    fn produces(self, visited: Seq<<Self::Item as thrust_models::Model>::Ty>, o: Self) -> bool {
         thrust_macros::unnest!(self.1, o.1)
             && exists(|s: Seq<<I::Item as thrust_models::Model>::Ty>| exists(|fs: Seq<Closure<F>>|
                 Self::produces_at(self, visited, o, s, fs)))
@@ -254,8 +266,6 @@ where
         I::completed(Mut::new((*self).0, (!self).0))
             && (*self).1 == (!self).1
     }
-
-    fn produces_refl(a: &Self) {}
 
     fn produces_trans(
         a: &Self,
@@ -303,7 +313,7 @@ impl<T> Wrapped<T> {
 // Rewrite (rewrites.md R8): `collect` with a verified body, in place of `Iterator::collect` into
 // the collection: the collection is what the iterator produced before it completed.
 #[thrust_macros::context]
-#[thrust_macros::requires(J::inv(iter))]
+#[thrust_macros::requires(J::invariant(iter))]
 #[thrust_macros::ensures(
     exists(|visited: Seq<<T as thrust_models::Model>::Ty>,
            mid: <J as thrust_models::Model>::Ty,
@@ -316,7 +326,7 @@ fn collect_wrapped<T, J>(iter: J) -> Wrapped<T>
 where
     T: thrust_models::Model,
     T::Ty: PartialEq,
-    J: IteratorSpec<Item = T>,
+    J: Iterator<Item = T>,
     <J as thrust_models::Model>::Ty: PartialEq,
 {
     let mut it = iter;
@@ -325,7 +335,7 @@ where
     while let Some(x) = it.next() {
         thrust_macros::invariant!(
             |it: J, v: Vec<T>, iter: thrust_models::FnParam<J>|
-                J::inv(it) && J::produces(iter.at_entry(), v, it)
+                J::invariant(it) && J::produces(iter.at_entry(), v, it)
         );
         v.push(x);
     }

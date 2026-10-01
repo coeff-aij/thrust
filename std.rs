@@ -9,76 +9,102 @@ mod thrust_models {
     pub mod model {
         use std::marker::PhantomData;
 
+        /// Models denoting a mathematical integer.
+        ///
+        /// Arithmetic and comparison mix these freely: the model of an unsigned integer
+        /// denotes the same mathematical integers as [`Int`], only non-negative ones.
+        pub trait Integer {}
+
+        impl Integer for Int {}
+        impl Integer for UInt {}
+
+        /// Models usable as an index into `Array<I, _>`.
+        pub trait IndexModel<I: ?Sized> {}
+
+        impl<I: ?Sized> IndexModel<I> for I {}
+        impl IndexModel<Int> for UInt {}
+        impl IndexModel<UInt> for Int {}
+
+        macro_rules! integer_model_ops {
+            ($M:ty) => {
+                impl<T> PartialEq<T> for $M where T: super::Model, T::Ty: Integer {
+                    #[thrust::ignored]
+                    fn eq(&self, _other: &T) -> bool {
+                        unimplemented!()
+                    }
+                }
+
+                impl<T> PartialOrd<T> for $M where T: super::Model, T::Ty: Integer {
+                    #[thrust::ignored]
+                    fn partial_cmp(&self, _other: &T) -> Option<std::cmp::Ordering> {
+                        unimplemented!()
+                    }
+                }
+
+                impl<T> std::ops::Add<T> for $M where T: super::Model, T::Ty: Integer {
+                    type Output = Self;
+
+                    #[thrust::ignored]
+                    fn add(self, _rhs: T) -> Self::Output {
+                        unimplemented!()
+                    }
+                }
+
+                impl<T> std::ops::Sub<T> for $M where T: super::Model, T::Ty: Integer {
+                    type Output = Self;
+
+                    #[thrust::ignored]
+                    fn sub(self, _rhs: T) -> Self::Output {
+                        unimplemented!()
+                    }
+                }
+
+                impl<T> std::ops::Mul<T> for $M where T: super::Model, T::Ty: Integer {
+                    type Output = Self;
+
+                    #[thrust::ignored]
+                    fn mul(self, _rhs: T) -> Self::Output {
+                        unimplemented!()
+                    }
+                }
+
+                impl<T> std::ops::Div<T> for $M where T: super::Model, T::Ty: Integer {
+                    type Output = Self;
+
+                    #[thrust::ignored]
+                    fn div(self, _rhs: T) -> Self::Output {
+                        unimplemented!()
+                    }
+                }
+
+                impl<T> std::ops::Rem<T> for $M where T: super::Model, T::Ty: Integer {
+                    type Output = Self;
+
+                    #[thrust::ignored]
+                    fn rem(self, _rhs: T) -> Self::Output {
+                        unimplemented!()
+                    }
+                }
+
+                impl std::ops::Neg for $M {
+                    type Output = Int;
+
+                    #[thrust::ignored]
+                    fn neg(self) -> Self::Output {
+                        unimplemented!()
+                    }
+                }
+            };
+        }
+
         #[thrust::def::int_model]
         pub struct Int;
 
-        impl<T> PartialEq<T> for Int where T: super::Model<Ty = Self> {
-            #[thrust::ignored]
-            fn eq(&self, _other: &T) -> bool {
-                unimplemented!()
-            }
-        }
+        #[thrust::def::uint_model]
+        pub struct UInt;
 
-        impl<T> PartialOrd<T> for Int where T: super::Model<Ty = Self> {
-            #[thrust::ignored]
-            fn partial_cmp(&self, _other: &T) -> Option<std::cmp::Ordering> {
-                unimplemented!()
-            }
-        }
-
-        impl<T> std::ops::Add<T> for Int where T: super::Model<Ty = Self> {
-            type Output = Self;
-
-            #[thrust::ignored]
-            fn add(self, _rhs: T) -> Self::Output {
-                unimplemented!()
-            }
-        }
-
-        impl<T> std::ops::Sub<T> for Int where T: super::Model<Ty = Self> {
-            type Output = Self;
-
-            #[thrust::ignored]
-            fn sub(self, _rhs: T) -> Self::Output {
-                unimplemented!()
-            }
-        }
-
-        impl<T> std::ops::Mul<T> for Int where T: super::Model<Ty = Self> {
-            type Output = Self;
-
-            #[thrust::ignored]
-            fn mul(self, _rhs: T) -> Self::Output {
-                unimplemented!()
-            }
-        }
-
-        impl<T> std::ops::Div<T> for Int where T: super::Model<Ty = Self> {
-            type Output = Self;
-
-            #[thrust::ignored]
-            fn div(self, _rhs: T) -> Self::Output {
-                unimplemented!()
-            }
-        }
-
-        impl<T> std::ops::Rem<T> for Int where T: super::Model<Ty = Self> {
-            type Output = Self;
-
-            #[thrust::ignored]
-            fn rem(self, _rhs: T) -> Self::Output {
-                unimplemented!()
-            }
-        }
-
-        impl std::ops::Neg for Int {
-            type Output = Self;
-
-            #[thrust::ignored]
-            fn neg(self) -> Self::Output {
-                unimplemented!()
-            }
-        }
+        integer_model_ops!(Int);
+        integer_model_ops!(UInt);
 
         #[thrust::def::mut_model]
         pub struct Mut<T: ?Sized>(PhantomData<T>);
@@ -155,7 +181,7 @@ mod thrust_models {
             }
         }
 
-        impl<I, T, U> std::ops::Index<U> for Array<I, T> where U: super::Model<Ty = I> {
+        impl<I, T, U> std::ops::Index<U> for Array<I, T> where U: super::Model, U::Ty: IndexModel<I> {
             type Output = T;
 
             #[thrust::ignored]
@@ -168,7 +194,9 @@ mod thrust_models {
             #[allow(dead_code)]
             #[thrust::def::array_store]
             #[thrust::ignored]
-            pub fn store<U>(&self, _index: U, _value: T) -> Self where U: super::Model<Ty = I> {
+            pub fn store<U>(&self, _index: U, _value: T) -> Self
+                where U: super::Model, U::Ty: IndexModel<I>
+            {
                 unimplemented!()
             }
         }
@@ -228,7 +256,7 @@ mod thrust_models {
             }
         }
 
-        impl<T, U> std::ops::Index<U> for Seq<T> where U: super::Model<Ty = Int> {
+        impl<T, U> std::ops::Index<U> for Seq<T> where U: super::Model, U::Ty: Integer {
             type Output = T;
 
             #[thrust::ignored]
@@ -255,7 +283,7 @@ mod thrust_models {
             #[allow(dead_code)]
             #[thrust::def::seq_len]
             #[thrust::ignored]
-            pub fn len(&self) -> Int {
+            pub fn len(&self) -> UInt {
                 unimplemented!()
             }
 
@@ -274,7 +302,7 @@ mod thrust_models {
             #[thrust::ignored]
             pub fn store<U>(self, _index: U, _value: T) -> Self
             where
-                U: super::Model<Ty = Int>,
+                U: super::Model, U::Ty: Integer,
             {
                 unimplemented!()
             }
@@ -284,8 +312,8 @@ mod thrust_models {
             #[thrust::ignored]
             pub fn subsequence<U, V>(self, _start: U, _end: V) -> Self
             where
-                U: super::Model<Ty = Int>,
-                V: super::Model<Ty = Int>,
+                U: super::Model, U::Ty: Integer,
+                V: super::Model, V::Ty: Integer,
             {
                 unimplemented!()
             }
@@ -307,85 +335,96 @@ mod thrust_models {
         type Ty = model::Int;
     }
 
-    macro_rules! int_model {
-        ($T:ty) => {
-            impl Model for $T {
-                type Ty = model::Int;
-            }
+    impl Model for model::UInt {
+        type Ty = model::UInt;
+    }
 
-            impl PartialEq<model::Int> for $T {
+    macro_rules! model_arith {
+        ($T:ty, $M:ty) => {
+            impl PartialEq<$M> for $T {
                 #[thrust::ignored]
-                fn eq(&self, _other: &model::Int) -> bool {
+                fn eq(&self, _other: &$M) -> bool {
                     unimplemented!()
                 }
             }
 
-            impl PartialOrd<model::Int> for $T {
+            impl PartialOrd<$M> for $T {
                 #[thrust::ignored]
-                fn partial_cmp(&self, _other: &model::Int) -> Option<std::cmp::Ordering> {
+                fn partial_cmp(&self, _other: &$M) -> Option<std::cmp::Ordering> {
                     unimplemented!()
                 }
             }
 
-            impl std::ops::Add<model::Int> for $T {
-                type Output = model::Int;
+            impl std::ops::Add<$M> for $T {
+                type Output = $M;
 
                 #[thrust::ignored]
-                fn add(self, _rhs: model::Int) -> Self::Output {
+                fn add(self, _rhs: $M) -> Self::Output {
                     unimplemented!()
                 }
             }
 
-            impl std::ops::Sub<model::Int> for $T {
-                type Output = model::Int;
+            impl std::ops::Sub<$M> for $T {
+                type Output = $M;
 
                 #[thrust::ignored]
-                fn sub(self, _rhs: model::Int) -> Self::Output {
+                fn sub(self, _rhs: $M) -> Self::Output {
                     unimplemented!()
                 }
             }
 
-            impl std::ops::Mul<model::Int> for $T {
-                type Output = model::Int;
+            impl std::ops::Mul<$M> for $T {
+                type Output = $M;
 
                 #[thrust::ignored]
-                fn mul(self, _rhs: model::Int) -> Self::Output {
+                fn mul(self, _rhs: $M) -> Self::Output {
                     unimplemented!()
                 }
             }
 
-            impl std::ops::Div<model::Int> for $T {
-                type Output = model::Int;
+            impl std::ops::Div<$M> for $T {
+                type Output = $M;
 
                 #[thrust::ignored]
-                fn div(self, _rhs: model::Int) -> Self::Output {
+                fn div(self, _rhs: $M) -> Self::Output {
                     unimplemented!()
                 }
             }
 
-            impl std::ops::Rem<model::Int> for $T {
-                type Output = model::Int;
+            impl std::ops::Rem<$M> for $T {
+                type Output = $M;
 
                 #[thrust::ignored]
-                fn rem(self, _rhs: model::Int) -> Self::Output {
+                fn rem(self, _rhs: $M) -> Self::Output {
                     unimplemented!()
                 }
             }
         };
     }
 
-    int_model!(isize);
-    int_model!(i32);
-    int_model!(i64);
-    int_model!(usize);
-    int_model!(u32);
-    int_model!(u64);
-    int_model!(i8);
-    int_model!(i16);
-    int_model!(i128);
-    int_model!(u8);
-    int_model!(u16);
-    int_model!(u128);
+    macro_rules! integer_model {
+        ($T:ty, $M:ty) => {
+            impl Model for $T {
+                type Ty = $M;
+            }
+
+            model_arith!($T, model::Int);
+            model_arith!($T, model::UInt);
+        };
+    }
+
+    integer_model!(isize, model::Int);
+    integer_model!(i32, model::Int);
+    integer_model!(i64, model::Int);
+    integer_model!(usize, model::UInt);
+    integer_model!(u32, model::UInt);
+    integer_model!(u64, model::UInt);
+    integer_model!(i8, model::Int);
+    integer_model!(i16, model::Int);
+    integer_model!(i128, model::Int);
+    integer_model!(u8, model::UInt);
+    integer_model!(u16, model::UInt);
+    integer_model!(u128, model::UInt);
 
     impl Model for bool {
         type Ty = bool;
@@ -490,7 +529,7 @@ mod thrust_models {
     // The iterator it wraps and the number of items handed out. It has the shape of the struct,
     // so the refinement type builder needs no special case.
     impl<I> Model for core::iter::Enumerate<I> where I: Model {
-        type Ty = (<I as Model>::Ty, model::Int);
+        type Ty = (<I as Model>::Ty, model::UInt);
     }
 
     // The two iterators it wraps, in the order of the arguments to `zip`.
@@ -582,6 +621,12 @@ mod thrust_models {
     }
 
     impl<T: ?Sized> Copy for Ghost<T> {}
+
+    // Proof-only data hashes to nothing, so that a struct with a ghost field keeps its derives.
+    impl<T: ?Sized> std::hash::Hash for Ghost<T> {
+        #[thrust::ignored]
+        fn hash<H: std::hash::Hasher>(&self, _state: &mut H) {}
+    }
 
     // TODO: keep this in step with the `ghost_model` arm of `model_adt` in
     // `refine::template`, which resolves a `Ghost<T>` to its content as well.
@@ -1106,6 +1151,9 @@ fn _extern_spec_try_from<T, U>(value: T) -> Result<U, <U as core::convert::TryFr
     <U as core::convert::TryFrom<T>>::try_from(value)
 }
 
+// A `Vec` is modelled as a `Seq`: capacity overflow and allocation failure are outside the model,
+// so `push`, `extend`, `from_iter` and the like require nothing for them. Creusot's `Vec::push`
+// likewise has no precondition (`// can OOM` in creusot-std/src/std/vec.rs).
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(result.len() == 0)]
@@ -1908,7 +1956,7 @@ where
             && thrust_models::exists(|inner: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>|
                 I::produces(self.0, inner, o.0)
                     && inner.len() == visited.len()
-                    && thrust_models::forall(|i: thrust_models::model::Int|
+                    && thrust_models::forall(|i: thrust_models::model::UInt|
                         !(0 <= i && i < inner.len()) || visited[i] == (self.1 + i, inner[i])))
     }
 

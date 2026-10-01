@@ -49,8 +49,8 @@ where
 
 #[derive(PartialEq)]
 struct Range {
-    start: i64,
-    end: i64,
+    start: isize,
+    end: isize,
 }
 
 impl Model for Range {
@@ -59,7 +59,7 @@ impl Model for Range {
 
 #[thrust_macros::context]
 impl Iterator for Range {
-    type Item = i64;
+    type Item = isize;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.start < self.end {
@@ -96,10 +96,10 @@ impl Iterator for Range {
     forall(|x: Int| result == Some(x) ==> (x >= k && start <= x && x < end))
         && (result == None ==> (end <= k || end <= start))
 )]
-fn find(start: i64, end: i64, k: i64) -> Option<i64> {
+fn find(start: isize, end: isize, k: isize) -> Option<isize> {
     let mut it = Range { start, end };
     while let Some(x) = it.next() {
-        thrust_macros::invariant!(|it: Range, start: thrust_models::FnParam<i64>, end: thrust_models::FnParam<i64>, k: i64|
+        thrust_macros::invariant!(|it: Range, start: thrust_models::FnParam<isize>, end: thrust_models::FnParam<isize>, k: isize|
             it.start >= start.at_entry()
                 && it.end == end.at_entry()
                 && (it.start <= start.at_entry() || it.start <= k));

@@ -12,7 +12,8 @@
 
 use std::convert::TryInto;
 use std::ops::{Add, AddAssign, Deref};
-use thrust_models::forall;
+use thrust_models::model::{Int, Seq};
+use thrust_models::{exists, forall};
 
 #[derive(Copy, Clone, /*Debug,*/ PartialEq, Eq)]
 pub struct PointerSpec {
@@ -69,37 +70,34 @@ impl PartialEq for TargetDataLayout {
     }
 }
 
-// The intended specs use two predicates, `dl_wf(dl)` (the default pointer size
-// is 2, 4 or 8 bytes, so `obj_size_bound` cannot hit its `panic!` arm) and
-// `prim_wf(p, dl)` (a `Primitive::Pointer(a)` only names the default address
-// space, so `pointer_size_in` / `pointer_align_in` cannot panic).
-//
-// They are written out inline in the `requires` below instead of as
-// `#[thrust_macros::predicate]`s: a predicate body must be a raw SMT-LIB2
-// string literal (`thrust-macros/src/spec.rs:18-21`, and
-// `src/analyze/local_def.rs:152` panics with "invalid predicate definition: no
-// string literal was found." otherwise), and writing these out in SMT needs the
-// generated projector names for an 18-field datatype. `requires` / `ensures`
-// are formula expressions, so the same conditions can be written in Rust there.
-//
-// The second half of the intended `dl_wf` -- every entry of
-// `address_space_info` has a pointer size of at most 8 bytes -- is NOT
-// expressible at all: the model of `TargetDataLayout` is the struct itself, so
-// `dl.address_space_info` has the ordinary Rust type `Vec<..>` in a formula and
-// the `Seq` accessors are rejected by rustc ("no field `length` on type
-// `std::vec::Vec<..>`", likewise `array`). Only the default pointer spec is
-// constrained; the other entries are never read because `pointer_size_in` /
-// `pointer_align_in` require the default address space.
+// `address_space_info` is a `Vec` field of a struct whose model is the struct itself, so a
+// formula reaches its entries through a sequence `s` equal to it (`Seq`'s `PartialEq` with a type
+// whose model is that sequence). rustc's parser adds an address space to it at most once.
 
 #[thrust_macros::context]
 impl TargetDataLayout {
-    // What `pointer_size_in` and `pointer_align_in` require of the address space `c`.
+    // What `pointer_size_in` and `pointer_align_in` require of the address space `c`: it is the
+    // default one or has an entry in `address_space_info`.
     #[thrust_macros::predicate]
     fn pointer_space_ok(self, c: AddressSpace) -> bool {
-        (self.default_address_space_pointer_spec.pointer_size.raw == 2
-            || self.default_address_space_pointer_spec.pointer_size.raw == 4
-            || self.default_address_space_pointer_spec.pointer_size.raw == 8)
-            && c == self.default_address_space
+        c == self.default_address_space
+            || exists(|s: Seq<(AddressSpace, PointerSpec)>, i: Int|
+                s == self.address_space_info && 0 <= i && i < s.len() && s[i].0 == c)
+    }
+
+    // `n` is the pointer size of the address space `c`: the default one's, or that of the first
+    // entry of `address_space_info` for `c`.
+    #[thrust_macros::predicate]
+    fn pointer_size_is(self, c: AddressSpace, n: Size) -> bool {
+        (c == self.default_address_space && n == self.default_address_space_pointer_spec.pointer_size)
+            || (!(c == self.default_address_space)
+                && exists(|s: Seq<(AddressSpace, PointerSpec)>, i: Int|
+                    s == self.address_space_info
+                        && 0 <= i
+                        && i < s.len()
+                        && s[i].0 == c
+                        && n == s[i].1.pointer_size
+                        && forall(|j: Int| !(0 <= j && j < i) || !(s[j].0 == c))))
     }
 
     #[inline]
@@ -123,18 +121,15 @@ impl TargetDataLayout {
     }
 
     #[inline]
-    #[thrust_macros::requires(((*self).default_address_space_pointer_spec.pointer_size.raw == 2
-        || (*self).default_address_space_pointer_spec.pointer_size.raw == 4
-        || (*self).default_address_space_pointer_spec.pointer_size.raw == 8)
-        && c == (*self).default_address_space)]
-    #[thrust_macros::ensures(c != (*self).default_address_space
-        || result.raw == (*self).default_address_space_pointer_spec.pointer_size.raw)]
+    #[thrust_macros::requires(Self::pointer_space_ok(*self, c))]
+    #[thrust_macros::ensures(Self::pointer_size_is(*self, c, result))]
     pub fn pointer_size_in(&self, c: AddressSpace) -> Size {
         if c == self.default_address_space {
             return self.default_address_space_pointer_spec.pointer_size;
         }
 
-        if let Some(e) = self.address_space_info.iter().find(|(a, _)| a == &c) {
+        // Rewrite (rewrites.md R9): a local slice iterator and `find` for `iter().find(..)`.
+        if let Some(e) = SliceIter::new(&self.address_space_info).find(|(a, _)| a == &c) {
             e.1.pointer_size
         } else {
             // Rewrite (rewrites.md R6): the message is dropped; a message makes
@@ -144,15 +139,13 @@ impl TargetDataLayout {
     }
 
     #[inline]
-    #[thrust_macros::requires(((*self).default_address_space_pointer_spec.pointer_size.raw == 2
-        || (*self).default_address_space_pointer_spec.pointer_size.raw == 4
-        || (*self).default_address_space_pointer_spec.pointer_size.raw == 8)
-        && c == (*self).default_address_space)]
+    #[thrust_macros::requires(Self::pointer_space_ok(*self, c))]
     #[thrust_macros::ensures(true)]
     pub fn pointer_align_in(&self, c: AddressSpace) -> AbiAlign {
+        // Rewrite (rewrites.md R9): as in `pointer_size_in`.
         AbiAlign::new(if c == self.default_address_space {
             self.default_address_space_pointer_spec.pointer_align
-        } else if let Some(e) = self.address_space_info.iter().find(|(a, _)| a == &c) {
+        } else if let Some(e) = SliceIter::new(&self.address_space_info).find(|(a, _)| a == &c) {
             e.1.pointer_align
         } else {
             // Rewrite (rewrites.md R6): the message is dropped; a message makes
@@ -257,10 +250,8 @@ impl Size {
         self.raw
     }
 
-    // Trusted: the body panics exactly when `raw * 8` overflows `u64`, which the `requires` excludes.
+    // The body panics exactly when `raw * 8` overflows `u64`, which the `requires` excludes.
     #[inline]
-    // Verifying the body stops earlier: a `u64` field read carries no `v >= 0`, which `checked_mul`'s `u64` parameter requires (Unsat).
-    #[thrust::trusted]
     #[thrust_macros::requires(self.raw * 8 <= u64::MAX)]
     #[thrust_macros::ensures(result == self.raw * 8)]
     pub fn bits(self) -> u64 {
@@ -285,10 +276,12 @@ impl Size {
     }
 
     #[inline]
-    // Trusted: a `u64` field read carries no `v >= 0`, which `checked_add`'s `u64` parameter requires (Unsat);
-    // past that, `obj_size_bound`'s `requires` is not provable for a generic `cx` (see `HasDataLayout`).
-    #[thrust::trusted]
-    #[thrust::callable]
+    // The `requires` is that of `obj_size_bound` for the layout `cx` names.
+    #[thrust_macros::requires(forall(|dl: TargetDataLayout| !C::dl_of(*cx, dl)
+        || dl.default_address_space_pointer_spec.pointer_size.raw == 2
+        || dl.default_address_space_pointer_spec.pointer_size.raw == 4
+        || dl.default_address_space_pointer_spec.pointer_size.raw == 8))]
+    #[thrust_macros::ensures(true)]
     pub fn checked_add<C: HasDataLayout>(self, offset: Size, cx: &C) -> Option<Size> {
         let dl = cx.data_layout();
 
@@ -316,8 +309,7 @@ impl Add for Size {
     // spec on an impl of an external trait: `#[thrust_macros::ensures]` here
     // expands to `_thrust_ensures_add`, which is "not a member of trait `Add`".
     #[inline]
-    // Without a contract the overflow `panic!` is reachable (Unsat), and the `u64` field reads
-    // carry no `v >= 0` for `checked_add`'s parameters.
+    // Without a contract the overflow `panic!` is reachable (Unsat).
     #[thrust::trusted]
     #[thrust::callable]
     fn add(self, other: Size) -> Size {
@@ -607,6 +599,10 @@ pub struct Niche {
 
 #[thrust_macros::context]
 impl Niche {
+    #[thrust_macros::requires(forall(|dl: TargetDataLayout, r: WrappingRange, a: AddressSpace|
+        !(C::dl_of(*cx, dl) && scalar == Scalar::Initialized { value: Primitive::Pointer(a), valid_range: r })
+            || (TargetDataLayout::pointer_space_ok(dl, a)
+                && forall(|n: Size| !TargetDataLayout::pointer_size_is(dl, a, n) || n.raw * 8 <= 128))))]
     pub fn from_scalar<C: HasDataLayout>(cx: &C, offset: Size, scalar: Scalar) -> Option<Self> {
         let Scalar::Initialized { value, valid_range } = scalar else {
             return None;
@@ -623,10 +619,14 @@ impl Niche {
         }
     }
 
-    // Trusted; the intended `requires` is `prim_wf(self.value, *cx.data_layout())`,
-    // which is not expressible for a generic `cx` (see `HasDataLayout`).
+    // Trusted: the bit operations of the body are not modelled. The `requires` is that of
+    // `value.size(cx)` and the `assert!`'s bound on a pointer's size.
     #[thrust::trusted]
-    #[thrust::callable]
+    #[thrust_macros::requires(forall(|dl: TargetDataLayout, a: AddressSpace|
+        !(C::dl_of(*cx, dl) && (*self).value == Primitive::Pointer(a))
+            || (TargetDataLayout::pointer_space_ok(dl, a)
+                && forall(|n: Size| !TargetDataLayout::pointer_size_is(dl, a, n) || n.raw * 8 <= 128))))]
+    #[thrust_macros::ensures(true)]
     pub fn available<C: HasDataLayout>(&self, cx: &C) -> u128 {
         let Self {
             value,
@@ -640,6 +640,162 @@ impl Niche {
         let niche = v.end.wrapping_add(1)..v.start;
         niche.end.wrapping_sub(niche.start) & max_value
     }
+}
+
+// //== local to the case study: the iterator trait, a slice iterator and `find` (rewrites.md R9)
+
+// Creusot's iterator trait (`common.rs` of its iterator benchmark), declared as the Creusot
+// benchmark cases of the fork declare it (tests/ui/pass/creusot/range.rs): the predicates
+// `produces`, `completed` and `invariant` (`true` unless the impl says otherwise), the laws
+// `produces_refl` and `produces_trans`, which every impl inherits and Thrust checks at each impl,
+// and `next` with Creusot's contract.
+#[thrust_macros::context]
+trait Iterator
+where
+    Self: thrust_models::Model,
+    Self::Item: thrust_models::Model,
+{
+    type Item;
+
+    #[thrust_macros::predicate]
+    fn produces(
+        self,
+        visited: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        o: Self,
+    ) -> bool;
+
+    #[thrust_macros::predicate]
+    fn completed(&mut self) -> bool;
+
+    #[thrust_macros::law]
+    #[thrust_macros::requires(Self::invariant(*a))]
+    #[thrust_macros::ensures(Self::produces(*a, thrust_models::model::Seq::empty(), *a))]
+    fn produces_refl(a: &Self) {}
+
+    #[thrust_macros::law]
+    #[thrust_macros::requires(Self::produces(*a, ab, *b))]
+    #[thrust_macros::requires(Self::produces(*b, bc, *c))]
+    #[thrust_macros::ensures(Self::produces(*a, ab.concat(bc), *c))]
+    fn produces_trans(
+        a: &Self,
+        ab: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        b: &Self,
+        bc: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        c: &Self,
+    ) {
+    }
+
+    #[thrust_macros::predicate]
+    fn invariant(self) -> bool {
+        true
+    }
+
+    #[thrust_macros::requires(Self::invariant(*self))]
+    #[thrust_macros::ensures(Self::invariant(!self))]
+    #[thrust_macros::ensures(result == None ==> Self::completed(self))]
+    #[thrust_macros::ensures(forall(|i| result == Some(i)
+        ==> Self::produces(*self, thrust_models::model::Seq::singleton(i), !self)))]
+    fn next(&mut self) -> Option<Self::Item>;
+}
+
+/// Own iterator standing in for `slice::Iter<'a, T>` (whose raw pointer
+/// fields have no model in Thrust): yields `&raw[0]`, ..., `&raw[len - 1]`.
+pub struct SliceIter<'a, T> {
+    raw: &'a [T],
+    pos: usize,
+}
+
+#[thrust_macros::context]
+impl<'a, T: thrust_models::Model> Iterator for SliceIter<'a, T>
+where
+    T::Ty: PartialEq,
+{
+    type Item = &'a T;
+
+    fn next(&mut self) -> Option<&'a T> {
+        if self.pos < self.raw.len() {
+            let item = &self.raw[self.pos];
+            self.pos += 1;
+            Some(item)
+        } else {
+            None
+        }
+    }
+
+    #[thrust_macros::predicate]
+    fn invariant(self) -> bool {
+        0 <= self.1 && self.1 <= self.0.len()
+    }
+
+    #[thrust_macros::predicate]
+    fn produces(
+        self,
+        visited: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        o: Self,
+    ) -> bool {
+        self.0 == o.0
+            && self.1 <= o.1
+            && o.1 <= self.0.len()
+            && visited.len() == o.1 - self.1
+            && forall(|i: thrust_models::model::Int|
+                !(0 <= i && i < visited.len()) || visited[i] == &self.0[self.1 + i])
+    }
+
+    #[thrust_macros::predicate]
+    fn completed(&mut self) -> bool {
+        (*self).1 >= (*self).0.len() && *self == !self
+    }
+}
+
+#[thrust_macros::context]
+impl<'a, T: thrust_models::Model> SliceIter<'a, T>
+where
+    T::Ty: PartialEq,
+{
+    #[thrust_macros::ensures(result.0 == raw && result.1 == 0)]
+    fn new(raw: &'a [T]) -> SliceIter<'a, T> {
+        SliceIter { raw, pos: 0 }
+    }
+
+    // `Iterator::find` over this iterator: the items in order until the closure accepts one. `P:
+    // Fn` in place of std's `FnMut` (the closures at the call sites capture by shared reference),
+    // so the postcondition names the closure's answers: it rejected every item before the one
+    // found, or every item. The iterator ends right after the item found, or at the end.
+    #[thrust_macros::requires(<Self as Iterator>::invariant(*self))]
+    #[thrust_macros::requires(forall(|x: <&'a T as thrust_models::Model>::Ty| thrust_macros::pre!(predicate(&x))))]
+    #[thrust_macros::ensures((!self).0 == (*self).0 && (*self).1 <= (!self).1 && (!self).1 <= (*self).0.len())]
+    #[thrust_macros::ensures(result == None ==> (!self).1 == (*self).0.len())]
+    #[thrust_macros::ensures(forall(|x: <&'a T as thrust_models::Model>::Ty| result == Some(x)
+        ==> (*self).1 < (!self).1
+            && x == &(*self).0[(!self).1 - 1]
+            && thrust_macros::post!(predicate(&x), true)))]
+    #[thrust_macros::ensures(result == None ==> forall(|k: Int|
+        !((*self).1 <= k && k < (!self).1) || thrust_macros::post!(predicate(&&(*self).0[k]), false)))]
+    #[thrust_macros::ensures(result == None || forall(|k: Int|
+        !((*self).1 <= k && k + 1 < (!self).1) || thrust_macros::post!(predicate(&&(*self).0[k]), false)))]
+    fn find<P: Fn(&&'a T) -> bool>(&mut self, predicate: P) -> Option<&'a T> {
+        let this = self;
+        while let Some(x) = this.next() {
+            thrust_macros::invariant!(
+                |this: &mut SliceIter<'a, T>, self: thrust_models::FnParam<&mut SliceIter<'a, T>>, predicate: P|
+                    !this == !self.at_entry()
+                        && (*this).0 == (*self.at_entry()).0
+                        && (*self.at_entry()).1 <= (*this).1
+                        && (*this).1 <= (*this).0.len()
+                        && forall(|x: <&'a T as thrust_models::Model>::Ty| thrust_macros::pre!(predicate(&x)))
+                        && forall(|k: Int| !((*self.at_entry()).1 <= k && k < (*this).1)
+                            || thrust_macros::post!(predicate(&&(*this).0[k]), false))
+            );
+            if predicate(&x) {
+                return Some(x);
+            }
+        }
+        None
+    }
+}
+
+impl<'a, T: thrust_models::Model> thrust_models::Model for SliceIter<'a, T> {
+    type Ty = (&'a thrust_models::model::Seq<<T as thrust_models::Model>::Ty>, thrust_models::model::UInt);
 }
 
 impl thrust_models::Model for PointerSpec {

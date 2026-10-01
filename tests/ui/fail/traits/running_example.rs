@@ -99,8 +99,8 @@ where
 
 #[derive(PartialEq)]
 struct Range {
-    start: i64,
-    end: i64,
+    start: isize,
+    end: isize,
 }
 
 impl Model for Range {
@@ -109,7 +109,7 @@ impl Model for Range {
 
 #[thrust_macros::context]
 impl Iterator for Range {
-    type Item = i64;
+    type Item = isize;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.start < self.end {
@@ -148,8 +148,8 @@ impl Iterator for Range {
 // A generic consumer over any `Iterator`, with a written loop invariant.
 #[thrust_macros::context]
 #[thrust_macros::requires(I::invariant(*it))]
-#[thrust_macros::ensures(I::invariant(!it) && result >= 0)]
-fn count<I: Iterator + thrust_models::Model>(it: &mut I) -> i64
+#[thrust_macros::ensures(I::invariant(!it))]
+fn count<I: Iterator + thrust_models::Model>(it: &mut I) -> usize
 where
     I::Item: thrust_models::Model,
     <I::Item as thrust_models::Model>::Ty: PartialEq,
@@ -159,8 +159,8 @@ where
     let b = it;
     while let Some(_) = b.next() {
         thrust_macros::invariant!(
-            |b: &mut I, n: i64, it: thrust_models::FnParam<&mut I>|
-            I::invariant(*b) && n >= 0 && !b == !it.at_entry()
+            |b: &mut I, n: usize, it: thrust_models::FnParam<&mut I>|
+            I::invariant(*b) && !b == !it.at_entry()
         );
         n += 1;
     }
@@ -173,7 +173,7 @@ fn main() {
     let f = thrust_macros::closure!(
         requires(x > 1),
         ensures(result == x + 1),
-        |x: i64| -> i64 { x + 1 },
+        |x: isize| -> isize { x + 1 },
     );
     let mut m = Map {
         iter: Range { start: 1, end: 5 },

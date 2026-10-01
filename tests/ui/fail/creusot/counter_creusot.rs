@@ -1,7 +1,7 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -A unused-variables -A unused_parens
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300 COAR_IMAGE=coar:804d76744
-use thrust_models::model::{Closure, Int, Mut, Seq};
+use thrust_models::model::{Closure, Int, Mut, Seq, UInt};
 use thrust_models::{exists, forall, Ghost, Model};
 
 // Creusot's `examples/counter` with its own property: `v.iter().map_inv(|x, _prod| { cnt += 1; *x })
@@ -324,8 +324,8 @@ where
 
 #[derive(PartialEq)]
 struct Range {
-    start: i64,
-    end: i64,
+    start: u32,
+    end: u32,
 }
 
 impl Model for Range {
@@ -334,7 +334,7 @@ impl Model for Range {
 
 #[thrust_macros::context]
 impl Iterator for Range {
-    type Item = i64;
+    type Item = u32;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.start < self.end {
@@ -379,16 +379,16 @@ where
 }
 
 #[thrust_macros::context]
-impl FromIterator<i64> for Vec<i64> {
-    fn from_iter<I: Iterator<Item = i64> + Model>(iter: &mut I) -> Vec<i64>
+impl FromIterator<u32> for Vec<u32> {
+    fn from_iter<I: Iterator<Item = u32> + Model>(iter: &mut I) -> Vec<u32>
     where
         <I as Model>::Ty: PartialEq,
     {
         let it = iter;
-        let mut v: Vec<i64> = Vec::new();
+        let mut v: Vec<u32> = Vec::new();
         while let Some(x) = it.next() {
             thrust_macros::invariant!(
-                |it: &mut I, v: Vec<i64>, iter: thrust_models::FnParam<&mut I>|
+                |it: &mut I, v: Vec<u32>, iter: thrust_models::FnParam<&mut I>|
                 !it == !iter.at_entry() && I::invariant(*it) && I::produces(*iter.at_entry(), v, *it)
             );
             v.push(x);
@@ -403,10 +403,10 @@ impl FromIterator<i64> for Vec<i64> {
 #[thrust_macros::ensures(result.0.len() == end - start
     && forall(|k: Int| 0 <= k && k < result.0.len() ==> result.0[k] == start + k)
     && result.1 == result.0.len() + 1)]
-fn counter(start: i64, end: i64) -> (Vec<i64>, i64) {
-    let mut cnt: i64 = 0;
+fn counter(start: u32, end: u32) -> (Vec<u32>, usize) {
+    let mut cnt: usize = 0;
     let f = thrust_macros::closure!(
-        captures(cnt: &mut &mut i64),
+        captures(cnt: &mut &mut usize),
         requires(*(*cnt) == produced.len()),
         ensures(*(!cnt) == *(*cnt) + 1 && result == x),
         // The precondition restated, as in the postcondition Creusot infers for the closure
@@ -415,14 +415,14 @@ fn counter(start: i64, end: i64) -> (Vec<i64>, i64) {
         // Creusot's `postcondition_mut` of a closure adds `unnest(*self, ^self)`, for this
         // capture that the borrow of `cnt` keeps its prophecy.
         ensures(!(!cnt) == !(*cnt)),
-        |x: i64, produced: Ghost<Seq<Int>>| -> i64 { cnt += 1; x },
+        |x: u32, produced: Ghost<Seq<UInt>>| -> u32 { cnt += 1; x },
     );
     let mut m = Map {
         iter: Range { start, end },
         func: f,
-        produced: thrust_macros::ghost!(|| -> Seq<Int> { Seq::empty() }),
+        produced: thrust_macros::ghost!(|| -> Seq<UInt> { Seq::empty() }),
     };
-    let x = m.collect::<Vec<i64>>();
+    let x = m.collect::<Vec<u32>>();
     (x, cnt)
 }
 

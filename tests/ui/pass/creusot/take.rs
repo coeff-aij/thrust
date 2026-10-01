@@ -82,7 +82,7 @@ where
 
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
-        I::invariant(self.iter) && self.n >= 0
+        I::invariant(self.iter)
     }
 
     #[thrust_macros::predicate]
@@ -101,8 +101,8 @@ where
 
 #[derive(PartialEq)]
 struct Range {
-    start: i64,
-    end: i64,
+    start: isize,
+    end: isize,
 }
 
 impl Model for Range {
@@ -111,7 +111,7 @@ impl Model for Range {
 
 #[thrust_macros::context]
 impl Iterator for Range {
-    type Item = i64;
+    type Item = isize;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.start < self.end {

@@ -10,10 +10,15 @@ goal is a proof that `layout()` does not panic. Each stage file is one part of `
 | `values.rs` | Size / Align / Integer / Primitive / Scalar / Niche / TargetDataLayout | verified |
 | `idx.rs` | the `Idx` trait, IdxRange and WordIter iterators | verified |
 | `indexvec.rs` | IndexVec over a native sequence, trusted method contracts | verified |
-| `bitset.rs` | set abstraction of DenseBitSet / BitMatrix / BitIter | pass side fails on `main` (a false alarm through `BitMatrix::rows` under native sequences) |
+| `bitset.rs` | set abstraction of DenseBitSet / BitMatrix / BitIter | verified |
 | `eligibility.rs` | `coroutine_saved_local_eligibility` | draft, `ignore-on-host` |
 | `univariant.rs` | trusted specification of `univariant` | draft, `ignore-on-host` |
 | `layout.rs` | `layout()` integration | draft, `ignore-on-host` |
+
+No stage file or probe uses std.rs's iterator specifications (`IteratorSpec`, `IntoIteratorSpec`
+and the extern specs built on them): values.rs, eligibility.rs, layout.rs and the iterator probes
+declare Creusot's iterator trait locally, as `tests/ui/pass/creusot/` does, and implement it for
+their own iterators and adapters (rewrites.md R9).
 
 `probes/` holds one small pass/fail pair per language feature the stages rely on (a `forall` over a
 `Vec`, nested `Vec`s, an enum payload equality, an `Option` existential, a generic predicate in a

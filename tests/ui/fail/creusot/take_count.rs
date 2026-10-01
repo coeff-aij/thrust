@@ -2,7 +2,7 @@
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300 COAR_IMAGE=coar:804d76744
 use thrust_models::forall;
-use thrust_models::model::{Int, Mut, Seq};
+use thrust_models::model::{Int, Mut, Seq, UInt};
 use thrust_models::Model;
 
 // `take_count` is a call site of the generic `Take` (`creusot/take.rs`) at `Take<Range>`.
@@ -55,7 +55,7 @@ pub struct Take<I> {
 }
 
 impl<I: Model> Model for Take<I> {
-    type Ty = (<I as Model>::Ty, Int);
+    type Ty = (<I as Model>::Ty, UInt);
 }
 
 #[thrust_macros::context]
@@ -81,11 +81,11 @@ where
 
 
 
-    // `Take<I>`'s model is the tuple `(<I as Model>::Ty, Int)`, not the named struct: the
+    // `Take<I>`'s model is the tuple `(<I as Model>::Ty, UInt)`, not the named struct: the
     // predicate type-checks against the model, so the components are `.0` (iter) and `.1` (n).
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
-        I::invariant(self.0) && self.1 >= 0
+        I::invariant(self.0)
     }
 
     #[thrust_macros::predicate]
@@ -104,8 +104,8 @@ where
 
 #[derive(PartialEq)]
 struct Range {
-    start: i64,
-    end: i64,
+    start: isize,
+    end: isize,
 }
 
 impl Model for Range {
@@ -114,7 +114,7 @@ impl Model for Range {
 
 #[thrust_macros::context]
 impl Iterator for Range {
-    type Item = i64;
+    type Item = isize;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.start < self.end {
@@ -148,12 +148,12 @@ impl Iterator for Range {
 // counterpart; it is an extra call site of `creusot/take.rs`'s `Take`.
 #[thrust_macros::requires(n >= 0)]
 #[thrust_macros::ensures(result < n)]
-fn take_count(start: i64, end: i64, n: usize) -> usize {
+fn take_count(start: isize, end: isize, n: usize) -> usize {
     let mut t = Take { iter: Range { start, end }, n };
     let mut cnt: usize = 0;
     while let Some(_x) = t.next() {
         thrust_macros::invariant!(|t: Take<Range>, cnt: usize, n: thrust_models::FnParam<usize>|
-            cnt + t.1 == n.at_entry() && t.1 >= 0 && Take::<Range>::invariant(t));
+            cnt + t.1 == n.at_entry() && Take::<Range>::invariant(t));
         cnt += 1;
     }
     cnt

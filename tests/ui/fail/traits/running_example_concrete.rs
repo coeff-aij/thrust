@@ -6,8 +6,8 @@
 // which an empty range (`start == end`, allowed by the precondition) refutes.
 #[derive(PartialEq)]
 struct Range {
-    start: i64,
-    end: i64,
+    start: isize,
+    end: isize,
 }
 
 impl thrust_models::Model for Range {
@@ -18,7 +18,7 @@ impl thrust_models::Model for Range {
 impl Range {
     #[thrust_macros::ensures(result == None ==> !((*self).start < (*self).end) && *self == !self)]
     #[thrust_macros::ensures(thrust_models::forall(|i| result == Some(i) ==> (*self).start < (*self).end && i == (*self).start && (!self).start == i + 1 && (!self).end == (*self).end))]
-    fn next(&mut self) -> Option<i64> {
+    fn next(&mut self) -> Option<isize> {
         if self.start < self.end {
             let item = self.start;
             self.start += 1;
@@ -32,7 +32,7 @@ impl Range {
 #[thrust_macros::context]
 #[thrust_macros::requires((*it).start <= (*it).end)]
 #[thrust_macros::ensures(result > 0)]
-fn count(it: &mut Range) -> i64 {
+fn count(it: &mut Range) -> usize {
     let mut n = 0;
     let b = it;
     while let Some(_) = b.next() {

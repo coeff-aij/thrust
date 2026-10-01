@@ -106,8 +106,8 @@ where
 
 #[derive(PartialEq)]
 struct Range {
-    start: i64,
-    end: i64,
+    start: isize,
+    end: isize,
 }
 
 impl thrust_models::Model for Range {
@@ -116,7 +116,7 @@ impl thrust_models::Model for Range {
 
 #[thrust_macros::context]
 impl Iterator for Range {
-    type Item = i64;
+    type Item = isize;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.start < self.end {
@@ -153,7 +153,7 @@ fn main() {
     let f = thrust_macros::closure!(
         requires(x > 1),
         ensures(result == x + 1),
-        |x: i64| -> i64 { x + 1 },
+        |x: isize| -> isize { x + 1 },
     );
     let mut m = Map {
         iter: Range { start: 1, end: 5 },

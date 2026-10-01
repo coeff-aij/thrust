@@ -5,8 +5,8 @@ use thrust_models::model::{Int, Mut, Seq};
 use thrust_models::{exists, forall, Model};
 
 // Creusot's `examples/extend`: `v1.extend(v2.into_iter())` appends `v2` to `v1`. The iterator is
-// std's `vec::IntoIter<i64>` under its std.rs model `(sequence, cursor)`, and `Extend` is a local
-// trait whose generic `extend` is used at `I = vec::IntoIter<i64>`. Creusot's `concat` is written
+// std's `vec::IntoIter<u32>` under its std.rs model `(sequence, cursor)`, and `Extend` is a local
+// trait whose generic `extend` is used at `I = vec::IntoIter<u32>`. Creusot's `concat` is written
 // index by index.
 
 // Creusot's `common.rs`, the iterator specification every case shares: the trait predicates
@@ -51,12 +51,12 @@ where
     fn next(&mut self) -> Option<Self::Item>;
 }
 
-// `vec::IntoIter<i64>` as an iterator of the local spec; `next` is std's, through its extern spec.
+// `vec::IntoIter<u32>` as an iterator of the local spec; `next` is std's, through its extern spec.
 #[thrust_macros::context]
-impl Iterator for std::vec::IntoIter<i64> {
-    type Item = i64;
+impl Iterator for std::vec::IntoIter<u32> {
+    type Item = u32;
 
-    fn next(&mut self) -> Option<i64> {
+    fn next(&mut self) -> Option<u32> {
         std::iter::Iterator::next(self)
     }
 
@@ -104,8 +104,8 @@ where
 }
 
 #[thrust_macros::context]
-impl Extend<i64> for Vec<i64> {
-    fn extend<I: Iterator<Item = i64> + Model>(&mut self, iter: &mut I)
+impl Extend<u32> for Vec<u32> {
+    fn extend<I: Iterator<Item = u32> + Model>(&mut self, iter: &mut I)
     where
         <I as Model>::Ty: Model<Ty = <I as Model>::Ty> + PartialEq,
     {
@@ -113,10 +113,10 @@ impl Extend<i64> for Vec<i64> {
         let v = self;
         I::produces_refl(it);
         // `pushed` records what `it` produced, so the invariant needs no existential sequence.
-        let mut pushed: Vec<i64> = Vec::new();
+        let mut pushed: Vec<u32> = Vec::new();
         while let Some(x) = it.next() {
             thrust_macros::invariant!(
-                |it: &mut I, v: &mut Vec<i64>, pushed: Vec<i64>, iter: thrust_models::FnParam<&mut I>, self: thrust_models::FnParam<&mut Vec<i64>>|
+                |it: &mut I, v: &mut Vec<u32>, pushed: Vec<u32>, iter: thrust_models::FnParam<&mut I>, self: thrust_models::FnParam<&mut Vec<u32>>|
                 !it == !iter.at_entry()
                     && !v == !self.at_entry()
                     && I::invariant(*it)
@@ -137,10 +137,10 @@ impl Extend<i64> for Vec<i64> {
         && forall(|k: Int| 0 <= k && k < v1.len() ==> result[k] == v1[k])
         && forall(|k: Int| 0 <= k && k < v2.len() ==> result[v1.len() + k] == v2[k])
 )]
-fn extend_index(mut v1: Vec<i64>, v2: Vec<i64>) -> Vec<i64> {
+fn extend_index(mut v1: Vec<u32>, v2: Vec<u32>) -> Vec<u32> {
     let mut it = v2.into_iter();
     // `v1.extend(..)` is ambiguous with std's `Extend`, which stays in scope.
-    <Vec<i64> as Extend<i64>>::extend(&mut v1, &mut it);
+    <Vec<u32> as Extend<u32>>::extend(&mut v1, &mut it);
     v1
 }
 

@@ -48,10 +48,10 @@ where
         }
     }
 
-    // self.iter.invariant() && self.n >= 0
+    // self.iter.invariant()
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
-        I::invariant(self.iter) && self.n >= 0
+        I::invariant(self.iter)
     }
 }
 

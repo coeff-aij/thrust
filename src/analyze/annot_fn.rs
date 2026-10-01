@@ -279,7 +279,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             let term = if ty.to_sort().is_singleton() {
                 // the analyzer don't expect params with singleton sorts to be used in formula...
                 // FIXME: fix the analyzer side to uniformly accept all params
-                Self::singleton_term_for_ty(&ty).unwrap()
+                Self::singleton_term_for_ty(&ty.ty).unwrap()
             } else {
                 chc::Term::var(param_idx)
             };
@@ -819,7 +819,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             .tcx
             .try_normalize_erasing_regions(typing_env, elem_ty)
             .unwrap_or(elem_ty);
-        self.type_builder.build(elem_ty)
+        self.type_builder.build(elem_ty).ty
     }
 
     fn variant_ctor_term(

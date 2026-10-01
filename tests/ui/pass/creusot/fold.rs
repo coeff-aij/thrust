@@ -53,8 +53,8 @@ where
 
 #[derive(PartialEq)]
 struct Range {
-    start: i64,
-    end: i64,
+    start: isize,
+    end: isize,
 }
 
 impl Model for Range {
@@ -63,7 +63,7 @@ impl Model for Range {
 
 #[thrust_macros::context]
 impl Iterator for Range {
-    type Item = i64;
+    type Item = isize;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.start < self.end {
@@ -96,21 +96,21 @@ impl Iterator for Range {
 // `[start, end)`, and every result it returns on non-negative inputs is itself non-negative, so
 // the accumulator stays non-negative throughout.
 #[thrust_macros::requires(0 <= start && start <= end && init >= 0)]
-#[thrust_macros::requires(forall(|a: i64| forall(|x: i64| (a >= 0 && start <= x && x < end) ==> thrust_macros::pre!(f(a, x)))))]
-#[thrust_macros::requires(forall(|a: i64| forall(|x: i64| forall(|r: i64| (a >= 0 && x >= 0) ==> (thrust_macros::post!(f(a, x), r) ==> r >= 0)))))]
+#[thrust_macros::requires(forall(|a: isize| forall(|x: isize| (a >= 0 && start <= x && x < end) ==> thrust_macros::pre!(f(a, x)))))]
+#[thrust_macros::requires(forall(|a: isize| forall(|x: isize| forall(|r: isize| (a >= 0 && x >= 0) ==> (thrust_macros::post!(f(a, x), r) ==> r >= 0)))))]
 #[thrust_macros::ensures(result >= 0)]
 #[thrust_macros::context]
-fn fold<F: Fn(i64, i64) -> i64>(start: i64, end: i64, init: i64, f: F) -> i64 {
+fn fold<F: Fn(isize, isize) -> isize>(start: isize, end: isize, init: isize, f: F) -> isize {
     let mut it = Range { start, end };
     let mut acc = init;
     while let Some(x) = it.next() {
         thrust_macros::invariant!(
-            |it: Range, acc: i64, f: thrust_models::FnParam<F>|
+            |it: Range, acc: isize, f: thrust_models::FnParam<F>|
             it.start >= 0
                 && it.start <= it.end
                 && acc >= 0
-                && forall(|a: i64| forall(|x: i64| (a >= 0 && it.start <= x && x < it.end) ==> thrust_macros::pre!(f.at_entry()(a, x))))
-                && forall(|a: i64| forall(|x: i64| forall(|r: i64| (a >= 0 && x >= 0) ==> (thrust_macros::post!(f.at_entry()(a, x), r) ==> r >= 0))))
+                && forall(|a: isize| forall(|x: isize| (a >= 0 && it.start <= x && x < it.end) ==> thrust_macros::pre!(f.at_entry()(a, x))))
+                && forall(|a: isize| forall(|x: isize| forall(|r: isize| (a >= 0 && x >= 0) ==> (thrust_macros::post!(f.at_entry()(a, x), r) ==> r >= 0))))
         );
         acc = f(acc, x);
     }

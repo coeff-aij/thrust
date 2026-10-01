@@ -53,8 +53,8 @@ where
 
 #[derive(PartialEq)]
 struct Range {
-    start: i64,
-    end: i64,
+    start: isize,
+    end: isize,
 }
 
 impl Model for Range {
@@ -63,7 +63,7 @@ impl Model for Range {
 
 #[thrust_macros::context]
 impl Iterator for Range {
-    type Item = i64;
+    type Item = isize;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.start < self.end {
@@ -96,12 +96,12 @@ impl Iterator for Range {
 // `bound`, so a `Some(s)` result always has `0 <= s <= bound`.
 #[thrust_macros::requires(0 <= start && start <= end && 0 <= bound)]
 #[thrust_macros::ensures(forall(|s: Int| result == Some(s) ==> (0 <= s && s <= bound)))]
-fn try_fold(start: i64, end: i64, bound: i64) -> Option<i64> {
+fn try_fold(start: isize, end: isize, bound: isize) -> Option<isize> {
     let mut it = Range { start, end };
-    let mut acc: i64 = 0;
+    let mut acc: isize = 0;
     while let Some(x) = it.next() {
         thrust_macros::invariant!(
-            |it: Range, acc: i64, bound: i64|
+            |it: Range, acc: isize, bound: isize|
             it.start >= 0 && acc >= 0 && acc <= bound
         );
         if acc + x > bound {

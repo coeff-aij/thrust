@@ -122,8 +122,8 @@ where
 
 #[derive(PartialEq)]
 struct Range {
-    start: i64,
-    end: i64,
+    start: isize,
+    end: isize,
 }
 
 impl thrust_models::Model for Range {
@@ -132,7 +132,7 @@ impl thrust_models::Model for Range {
 
 #[thrust_macros::context]
 impl Iterator for Range {
-    type Item = i64;
+    type Item = isize;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.start < self.end {
@@ -178,16 +178,16 @@ where
 }
 
 #[thrust_macros::context]
-impl FromIterator<i64> for Vec<i64> {
-    fn from_iter<I: Iterator<Item = i64> + Model>(iter: &mut I) -> Vec<i64>
+impl FromIterator<isize> for Vec<isize> {
+    fn from_iter<I: Iterator<Item = isize> + Model>(iter: &mut I) -> Vec<isize>
     where
         <I as Model>::Ty: PartialEq,
     {
         let it = iter;
-        let mut v: Vec<i64> = Vec::new();
+        let mut v: Vec<isize> = Vec::new();
         while let Some(x) = it.next() {
             thrust_macros::invariant!(
-                |it: &mut I, v: Vec<i64>, iter: thrust_models::FnParam<&mut I>|
+                |it: &mut I, v: Vec<isize>, iter: thrust_models::FnParam<&mut I>|
                 !it == !iter.at_entry()
                     && I::invariant(*it)
                     && forall(|e: Int| I::produces(*it, e) ==> I::produces(*iter.at_entry(), e))
@@ -202,17 +202,17 @@ impl FromIterator<i64> for Vec<i64> {
 // Creusot: `forall i. 0 <= i < v.len() ==> v[i] == i * 10`. Here: every element is `10 * x` for
 // some `x` in `0..10`, stated by its bounds. Unsat: `x = 0` gives `0`.
 #[thrust_macros::ensures(forall(|k: Int| 0 <= k && k < result.len() ==> 1 <= result[k] && result[k] <= 90))]
-fn decuple_range() -> Vec<i64> {
+fn decuple_range() -> Vec<isize> {
     let f = thrust_macros::closure!(
         requires(x < 100),
         ensures(result == x * 10),
-        |x: i64| -> i64 { x * 10 },
+        |x: isize| -> isize { x * 10 },
     );
     let mut m = Map {
         iter: Range { start: 0, end: 10 },
         func: f,
     };
-    m.collect::<Vec<i64>>()
+    m.collect::<Vec<isize>>()
 }
 
 fn main() {}

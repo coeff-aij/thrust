@@ -4,7 +4,7 @@
 
 use thrust_models::exists;
 
-#[thrust_macros::requires(exists(|k: thrust_models::model::Int| x == Some(k) && k < 5))]
+#[thrust_macros::requires(exists(|k: thrust_models::model::UInt| x == Some(k) && k < 5))]
 #[thrust_macros::ensures(true)]
 fn test(x: Option<usize>) {
     let v = x.unwrap();

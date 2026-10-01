@@ -2,10 +2,59 @@
 //@compile-flags: -Adead_code -C debug-assertions=off -A unused-variables -A unused_parens
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300 COAR_IMAGE=coar:9799dfd7b THRUST_TRY_SPECS=1
 
-use thrust_models::model::{Int, Mut, Seq};
+use thrust_models::model::{Int, Mut, Seq, UInt};
 use thrust_models::{exists, forall};
 pub struct Wrapped<T> {
     raw: Vec<T>,
+}
+
+// The iterator trait, local to the case study (rewrites.md R9): Creusot's `common.rs` as the
+// Creusot benchmark cases of the fork declare it (tests/ui/pass/creusot/range.rs), with the
+// predicates `produces`, `completed` and `invariant` (`true` unless the impl says otherwise), the
+// laws `produces_refl` and `produces_trans`, which every impl inherits and Thrust checks at each
+// impl, and `next` with Creusot's contract. It shadows std's `Iterator`.
+#[thrust_macros::context]
+trait Iterator
+where
+    Self: thrust_models::Model,
+    Self::Item: thrust_models::Model,
+{
+    type Item;
+
+    #[thrust_macros::predicate]
+    fn produces(self, visited: Seq<<Self::Item as thrust_models::Model>::Ty>, o: Self) -> bool;
+
+    #[thrust_macros::predicate]
+    fn completed(&mut self) -> bool;
+
+    #[thrust_macros::law]
+    #[thrust_macros::requires(Self::invariant(*a))]
+    #[thrust_macros::ensures(Self::produces(*a, Seq::empty(), *a))]
+    fn produces_refl(a: &Self) {}
+
+    #[thrust_macros::law]
+    #[thrust_macros::requires(Self::produces(*a, ab, *b))]
+    #[thrust_macros::requires(Self::produces(*b, bc, *c))]
+    #[thrust_macros::ensures(Self::produces(*a, ab.concat(bc), *c))]
+    fn produces_trans(
+        a: &Self,
+        ab: Seq<<Self::Item as thrust_models::Model>::Ty>,
+        b: &Self,
+        bc: Seq<<Self::Item as thrust_models::Model>::Ty>,
+        c: &Self,
+    ) {
+    }
+
+    #[thrust_macros::predicate]
+    fn invariant(self) -> bool {
+        true
+    }
+
+    #[thrust_macros::requires(Self::invariant(*self))]
+    #[thrust_macros::ensures(Self::invariant(!self))]
+    #[thrust_macros::ensures(result == None ==> Self::completed(self))]
+    #[thrust_macros::ensures(forall(|i| result == Some(i) ==> Self::produces(*self, Seq::singleton(i), !self)))]
+    fn next(&mut self) -> Option<Self::Item>;
 }
 
 impl<T: thrust_models::Model> thrust_models::Model for Wrapped<T> {
@@ -32,7 +81,7 @@ impl<T> Wrapped<T> {
 // Rewrite (rewrites.md R8): `collect` with a verified body, in place of `Iterator::collect` into
 // the collection: the collection is what the iterator produced before it completed.
 #[thrust_macros::context]
-#[thrust_macros::requires(J::inv(iter))]
+#[thrust_macros::requires(J::invariant(iter))]
 #[thrust_macros::ensures(
     exists(|visited: Seq<<T as thrust_models::Model>::Ty>,
            mid: <J as thrust_models::Model>::Ty,
@@ -45,7 +94,7 @@ fn collect_wrapped<T, J>(iter: J) -> Wrapped<T>
 where
     T: thrust_models::Model,
     T::Ty: PartialEq,
-    J: IteratorSpec<Item = T>,
+    J: Iterator<Item = T>,
     <J as thrust_models::Model>::Ty: PartialEq,
 {
     let mut it = iter;
@@ -54,7 +103,7 @@ where
     while let Some(x) = it.next() {
         thrust_macros::invariant!(
             |it: J, v: Vec<T>, iter: thrust_models::FnParam<J>|
-                J::inv(it) && J::produces(iter.at_entry(), v, it)
+                J::invariant(it) && J::produces(iter.at_entry(), v, it)
         );
         v.push(x);
     }
@@ -67,31 +116,27 @@ pub struct SliceIter<'a, T> {
 }
 
 impl<'a, T: thrust_models::Model> thrust_models::Model for SliceIter<'a, T> {
-    type Ty = (<&'a [T] as thrust_models::Model>::Ty, Int);
-}
-
-impl<'a, T> Iterator for SliceIter<'a, T> {
-    type Item = &'a T;
-
-    #[thrust::trusted]
-    #[thrust::callable]
-    fn next(&mut self) -> Option<&'a T> {
-        None
-    }
+    type Ty = (<&'a [T] as thrust_models::Model>::Ty, UInt);
 }
 
 #[thrust_macros::context]
-impl<'a, T: thrust_models::Model> IteratorSpec for SliceIter<'a, T>
+impl<'a, T: thrust_models::Model> Iterator for SliceIter<'a, T>
 where
     T::Ty: PartialEq,
 {
-    #[thrust_macros::predicate]
-    fn inv(self) -> bool {
-        0 <= self.1 && self.1 <= self.0.len()
+    type Item = &'a T;
+
+    fn next(&mut self) -> Option<&'a T> {
+        self.next_item()
     }
 
     #[thrust_macros::predicate]
-    fn produces(self, visited: Vec<&'a T>, o: Self) -> bool {
+    fn invariant(self) -> bool {
+        self.1 <= self.0.len()
+    }
+
+    #[thrust_macros::predicate]
+    fn produces(self, visited: Seq<<Self::Item as thrust_models::Model>::Ty>, o: Self) -> bool {
         self.0 == o.0
             && self.1 <= o.1
             && o.1 <= self.0.len()
@@ -103,16 +148,24 @@ where
     fn completed(&mut self) -> bool {
         (*self).1 >= (*self).0.len() && *self == !self
     }
+}
 
-    fn produces_refl(a: &Self) {}
-
-    fn produces_trans(
-        a: &Self,
-        ab: Seq<<Self::Item as thrust_models::Model>::Ty>,
-        b: &Self,
-        bc: Seq<<Self::Item as thrust_models::Model>::Ty>,
-        c: &Self,
-    ) {
+// The trusted stub behind `next`: Thrust trusts a function only on its own contract, and the
+// method of an impl of the local trait has the trait's.
+#[thrust_macros::context]
+impl<'a, T: thrust_models::Model> SliceIter<'a, T>
+where
+    T::Ty: PartialEq,
+{
+    #[thrust::trusted]
+    #[thrust_macros::requires(<Self as Iterator>::invariant(*self))]
+    #[thrust_macros::ensures(
+        <Self as Iterator>::invariant(!self)
+            && (result == None ==> <Self as Iterator>::completed(self))
+            && forall(|x: <&'a T as thrust_models::Model>::Ty| result == Some(x) ==> <Self as Iterator>::produces(*self, Seq::singleton(x), !self))
+    )]
+    fn next_item(&mut self) -> Option<&'a T> {
+        None
     }
 }
 
