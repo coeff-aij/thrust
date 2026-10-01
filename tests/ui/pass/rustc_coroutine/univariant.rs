@@ -84,6 +84,7 @@ pub trait Idx: Copy + 'static + Eq + PartialEq + Debug + Hash {
     #[inline]
     #[thrust_macros::requires(forall(|i: UInt, a: UInt|
         Self::index_is(*self, i) && a == amount ==> Self::can_new(i + a)))]
+    #[thrust::trusted]
     fn increment_by(&mut self, amount: usize) {
         *self = self.plus(amount);
     }
@@ -92,6 +93,7 @@ pub trait Idx: Copy + 'static + Eq + PartialEq + Debug + Hash {
     #[must_use = "Use `increment_by` if you wanted to update the index in-place"]
     #[thrust_macros::requires(forall(|i: UInt, a: UInt|
         Self::index_is(self, i) && a == amount ==> Self::can_new(i + a)))]
+    #[thrust::trusted]
     fn plus(self, amount: usize) -> Self {
         Self::new(self.index() + amount)
     }
