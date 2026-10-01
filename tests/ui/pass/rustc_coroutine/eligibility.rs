@@ -148,6 +148,8 @@ pub struct DenseBitSet<T> {
     domain_size: usize,
     words: Vec<Word>,
     marker: PhantomData<T>,
+    // Rewrite (rewrites.md S11): the number of members, proof-only, as in bitset.rs.
+    card: thrust_models::Ghost<Int>,
 }
 
 #[thrust_macros::context]
@@ -197,12 +199,14 @@ impl<T: Idx> DenseBitSet<T> {
     #[thrust::trusted]
     #[thrust_macros::ensures(result.0 == domain_size)]
     #[thrust_macros::ensures(Self::no_mem(result))]
+    #[thrust_macros::ensures(result.3 == 0)]
     pub fn new_empty(domain_size: usize) -> DenseBitSet<T> {
         let num_words = num_words(domain_size);
         DenseBitSet {
             domain_size,
             words: vec![0; num_words],
             marker: PhantomData,
+            card: thrust_macros::ghost!(|| -> Int { 0 }),
         }
     }
 
@@ -237,6 +241,10 @@ impl<T: Idx> DenseBitSet<T> {
         ==> Self::inserted(*self, i, !self)))]
     #[thrust_macros::ensures(forall(|i: Int| <T as Idx>::index_is(elem, i) && (result == true) ==> !Self::mem(*self, i)))]
     #[thrust_macros::ensures(forall(|i: Int| <T as Idx>::index_is(elem, i) && Self::mem(*self, i) ==> (result == false)))]
+    #[thrust_macros::ensures(forall(|i: Int| <T as Idx>::index_is(elem, i) && !Self::mem(*self, i) ==> (result == true)))]
+    #[thrust_macros::ensures((result == true) ==> (!self).3 == (*self).3 + 1)]
+    #[thrust_macros::ensures((result == false) ==> (!self).3 == (*self).3)]
+    #[thrust_macros::ensures(0 <= (!self).3 && (!self).3 <= (!self).0)]
     pub fn insert(&mut self, elem: T) -> bool {
         assert!(
             elem.index() < self.domain_size,
@@ -255,6 +263,7 @@ impl<T: Idx> DenseBitSet<T> {
     #[thrust::trusted]
     #[thrust_macros::ensures((!self).0 == (*self).0)]
     #[thrust_macros::ensures(forall(|i: Int| i < (*self).0 ==> Self::mem(!self, i)))]
+    #[thrust_macros::ensures((!self).3 == (*self).0)]
     pub fn insert_all(&mut self) {
         self.words.fill(!0);
         self.clear_excess_bits();
@@ -265,6 +274,7 @@ impl<T: Idx> DenseBitSet<T> {
     #[thrust::callable]
     #[thrust_macros::ensures(result.0 == (*self).0 && result.1 == 0)]
     #[thrust_macros::ensures(0 <= result.2 && result.2 <= (*self).0)]
+    #[thrust_macros::ensures(result.2 == (*self).3)]
     pub fn iter(&self) -> BitIter<'_, T> {
         BitIter::new(&self.words)
     }
@@ -1157,7 +1167,7 @@ impl<VariantIdx: thrust_models::Model, FieldIdx: thrust_models::Model> thrust_mo
     type Ty = SavedLocalEligibility<<VariantIdx as thrust_models::Model>::Ty, <FieldIdx as thrust_models::Model>::Ty>;
 }
 impl<T> thrust_models::Model for DenseBitSet<T> {
-    type Ty = (Int, Seq<Int>, ());
+    type Ty = (Int, Seq<Int>, (), Int);
 }
 impl<'a> thrust_models::Model for WordIter<'a> {
     type Ty = (&'a Seq<Int>, Int);
@@ -1245,13 +1255,12 @@ impl<I: thrust_models::Model> thrust_models::Model for Enumerate<I> {
                     && thrust_models::exists(|i: Int|
                         i == l
                             && <LocalIdx as Idx>::index_is((*variant_fields)[v][f], i)))))
-    // 3. An ineligible local has its promoted field index. The README bounds it by the
-    // cardinality of `inel`, which no predicate states yet (DenseBitSet cardinality); the bound
-    // stated is the number of locals, which the cardinality is at most.
+    // 3. An ineligible local has its promoted field index, below the number of members of
+    // `inel` (its ghost count `result.0.3`, the position in `inel.iter()`'s enumeration).
     && forall(|l: usize, x: Option<<FieldIdx as thrust_models::Model>::Ty>|
         !(0 <= l && l < nb_locals && result.1[l] == SavedLocalEligibility::Ineligible(x))
         || thrust_models::exists(|k: <FieldIdx as thrust_models::Model>::Ty|
-            x == Some(k) && forall(|i: Int| !<FieldIdx as Idx>::index_is(k, i) || i < nb_locals)))
+            x == Some(k) && forall(|i: Int| !<FieldIdx as Idx>::index_is(k, i) || i < result.0.3)))
     // 4. Membership in `inel` matches being `Ineligible(_)`.
     // TODO(spec): `DenseBitSet::elem_at`/`mem` are uninterpreted here, see
     // above; written as an `<==>` via two `==>` for the annotation grammar.

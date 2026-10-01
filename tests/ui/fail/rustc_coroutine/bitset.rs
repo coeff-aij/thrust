@@ -29,6 +29,9 @@ pub struct DenseBitSet<T> {
     domain_size: usize,
     words: Vec<Word>,
     marker: PhantomData<T>,
+    // Rewrite (rewrites.md S11): the number of members, proof-only (`Ghost` has no runtime data).
+    // The bodies are trusted, so the contracts of `new_empty`, `insert` and `insert_all` define it.
+    card: thrust_models::Ghost<Int>,
 }
 
 #[thrust_macros::context]
@@ -78,12 +81,14 @@ impl<T: Idx> DenseBitSet<T> {
     #[thrust_macros::ensures(result.0 == domain_size)]
     #[thrust_macros::ensures(Self::no_mem(result))]
     #[thrust_macros::ensures(Self::one_entry_per_elem(result))]
+    #[thrust_macros::ensures(result.3 == 0)]
     pub fn new_empty(domain_size: usize) -> DenseBitSet<T> {
         let num_words = num_words(domain_size);
         DenseBitSet {
             domain_size,
             words: vec![0; num_words],
             marker: PhantomData,
+            card: thrust_macros::ghost!(|| -> Int { 0 }),
         }
     }
 
@@ -121,6 +126,10 @@ impl<T: Idx> DenseBitSet<T> {
         ==> Self::inserted(*self, i, !self)))]
     #[thrust_macros::ensures(forall(|i: Int| <T as Idx>::index_is(elem, i) && (result == true) ==> !Self::mem(*self, i)))]
     #[thrust_macros::ensures(forall(|i: Int| <T as Idx>::index_is(elem, i) && Self::mem(*self, i) ==> (result == false)))]
+    #[thrust_macros::ensures(forall(|i: Int| <T as Idx>::index_is(elem, i) && !Self::mem(*self, i) ==> (result == true)))]
+    #[thrust_macros::ensures((result == true) ==> (!self).3 == (*self).3 + 1)]
+    #[thrust_macros::ensures((result == false) ==> (!self).3 == (*self).3)]
+    #[thrust_macros::ensures(0 <= (!self).3 && (!self).3 <= (!self).0)]
     pub fn insert(&mut self, elem: T) -> bool {
         assert!(
             elem.index() < self.domain_size,
@@ -140,6 +149,7 @@ impl<T: Idx> DenseBitSet<T> {
     #[thrust_macros::ensures((!self).0 == (*self).0)]
     #[thrust_macros::ensures(Self::one_entry_per_elem(*self) ==> Self::one_entry_per_elem(!self))]
     #[thrust_macros::ensures(forall(|i: Int| i < (*self).0 ==> Self::mem(!self, i)))]
+    #[thrust_macros::ensures((!self).3 == (*self).0)]
     pub fn insert_all(&mut self) {
         self.words.fill(!0);
         self.clear_excess_bits();
@@ -496,7 +506,7 @@ impl<I: Idx> IdxRange<I> {
 }
 
 impl<T> thrust_models::Model for DenseBitSet<T> {
-    type Ty = (Int, Seq<Int>, ());
+    type Ty = (Int, Seq<Int>, (), Int);
 }
 impl<'a> thrust_models::Model for WordIter<'a> {
     type Ty = Self;

@@ -124,6 +124,8 @@ pub struct DenseBitSet<T> {
     domain_size: usize,
     words: Vec<Word>,
     marker: PhantomData<T>,
+    // Rewrite (rewrites.md S11): the number of members, proof-only, as in bitset.rs.
+    card: thrust_models::Ghost<Int>,
 }
 
 #[thrust_macros::context]
@@ -139,6 +141,7 @@ impl<T: Idx> DenseBitSet<T> {
     #[thrust::callable]
     #[thrust_macros::ensures(result.0 == (*self).0 && result.1 == 0)]
     #[thrust_macros::ensures(0 <= result.2 && result.2 <= (*self).0)]
+    #[thrust_macros::ensures(result.2 == (*self).3)]
     pub fn iter(&self) -> BitIter<'_, T> {
         BitIter::new(&self.words)
     }
@@ -959,13 +962,12 @@ enum SavedLocalEligibility<VariantIdx, FieldIdx> {
                     && thrust_models::exists(|i: Int|
                         i == l
                             && <LocalIdx as Idx>::index_is((*variant_fields)[v][f], i)))))
-    // 3. An ineligible local has its promoted field index. The README bounds it by the
-    // cardinality of `inel`, which no predicate states yet (DenseBitSet cardinality); the bound
-    // stated is the number of locals, which the cardinality is at most.
+    // 3. An ineligible local has its promoted field index, below the number of members of
+    // `inel` (its ghost count `result.0.3`, the position in `inel.iter()`'s enumeration).
     && forall(|l: usize, x: Option<<FieldIdx as thrust_models::Model>::Ty>|
         !(0 <= l && l < nb_locals && result.1[l] == SavedLocalEligibility::Ineligible(x))
         || thrust_models::exists(|k: <FieldIdx as thrust_models::Model>::Ty|
-            x == Some(k) && forall(|i: Int| !<FieldIdx as Idx>::index_is(k, i) || i < nb_locals)))
+            x == Some(k) && forall(|i: Int| !<FieldIdx as Idx>::index_is(k, i) || i < result.0.3)))
     // 4. Membership in `inel` matches being `Ineligible(_)`.
     // TODO(spec): `DenseBitSet::elem_at`/`mem` are uninterpreted here, see
     // above; written as an `<==>` via two `==>` for the annotation grammar.
@@ -1098,8 +1100,8 @@ pub fn layout<
     prefix_layouts.push(tag_to_layout(tag));
     prefix_layouts.extend_from(promoted_layouts);
     // TODO(proof): `push` and `extend_from` give `prefix_layouts.len() == P + 1 + c`, c the
-    // items `ineligible_locals.iter()` yields, at most n by `BitIter`'s model; `c ==
-    // card(ineligible_locals)` needs the set cardinality, which no predicate states yet.
+    // items `ineligible_locals.iter()` yields, which is the set's ghost count: `iter` starts
+    // `BitIter`'s `left` at it, and the iterator completes with nothing left.
     let prefix = match calc.univariant(
         &prefix_layouts,
         &ReprOptions::default(),
@@ -2955,7 +2957,7 @@ impl PartialOrdSpec for Align {
 // //== Thrust model declarations
 
 impl<T> thrust_models::Model for DenseBitSet<T> {
-    type Ty = (Int, Seq<Int>, ());
+    type Ty = (Int, Seq<Int>, (), Int);
 }
 impl<'a> thrust_models::Model for WordIter<'a> {
     type Ty = (&'a Seq<Int>, Int);
