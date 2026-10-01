@@ -403,10 +403,10 @@ impl FromIterator<i64> for Vec<i64> {
 #[thrust_macros::ensures(result.0.len() == end - start
     && forall(|k: Int| 0 <= k && k < result.0.len() ==> result.0[k] == start + k)
     && result.1 == result.0.len() + 1)]
-fn counter(start: i64, end: i64) -> (Vec<i64>, i64) {
-    let mut cnt: i64 = 0;
+fn counter(start: i64, end: i64) -> (Vec<i64>, usize) {
+    let mut cnt: usize = 0;
     let f = thrust_macros::closure!(
-        captures(cnt: &mut &mut i64),
+        captures(cnt: &mut &mut usize),
         requires(*(*cnt) == produced.len()),
         ensures(*(!cnt) == *(*cnt) + 1 && result == x),
         // The precondition restated, as in the postcondition Creusot infers for the closure
