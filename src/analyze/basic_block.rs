@@ -1477,9 +1477,15 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         }
         let mut value_rty = self.type_builder.build(*value_ty).vacuous();
         value_rty.refinement.push_conj(formula_fn.to_refinement());
+        // The term itself is a logical integer: model arithmetic is unbounded, so a `UInt`
+        // value made from it is required non-negative here, as an unchecked subtraction is.
+        let term_check = matches!(value_rty.ty, rty::Type::UInt).then(|| {
+            let term_rty = rty::RefinedType::new(rty::Type::int(), formula_fn.to_refinement());
+            rty::FunctionType::new(params.clone(), term_rty)
+        });
         let func_ty = rty::FunctionType::new(params, value_rty);
 
-        let args = formula_fn
+        let args: IndexVec<_, _> = formula_fn
             .param_idents()
             .iter()
             .skip(1)
@@ -1495,6 +1501,21 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             })
             .collect();
 
+        if let Some(term_ty) = term_check {
+            let nonnegative = rty::RefinedType::new(
+                rty::Type::int(),
+                chc::Atom::new(
+                    chc::KnownPred::GREATER_THAN_OR_EQUAL.into(),
+                    vec![
+                        chc::Term::var(rty::RefinedTypeVar::Value),
+                        chc::Term::int(0),
+                    ],
+                )
+                .into(),
+            );
+            let clauses = self.relate_fn_sub_type(term_ty, args.clone(), nonnegative);
+            self.ctx.extend_clauses(clauses);
+        }
         let clauses = self.relate_fn_sub_type(func_ty, args, expected.clone());
         self.ctx.extend_clauses(clauses);
     }
