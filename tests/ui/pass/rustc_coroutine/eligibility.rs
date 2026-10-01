@@ -50,12 +50,14 @@ where
     #[thrust_macros::law]
     #[thrust_macros::requires(Self::invariant(*a))]
     #[thrust_macros::ensures(Self::produces(*a, Seq::empty(), *a))]
+    #[thrust::trusted]
     fn produces_refl(a: &Self) {}
 
     #[thrust_macros::law]
     #[thrust_macros::requires(Self::produces(*a, ab, *b))]
     #[thrust_macros::requires(Self::produces(*b, bc, *c))]
     #[thrust_macros::ensures(Self::produces(*a, ab.concat(bc), *c))]
+    #[thrust::trusted]
     fn produces_trans(
         a: &Self,
         ab: Seq<<Self::Item as thrust_models::Model>::Ty>,
@@ -537,6 +539,7 @@ pub trait Idx: Copy + 'static + Eq + PartialEq + Debug + Hash {
     #[inline]
     #[thrust_macros::requires(forall(|i: UInt, a: UInt|
         Self::index_is(*self, i) && a == amount ==> Self::can_new(i + a)))]
+    #[thrust::trusted]
     fn increment_by(&mut self, amount: usize) {
         *self = self.plus(amount);
     }
@@ -545,6 +548,7 @@ pub trait Idx: Copy + 'static + Eq + PartialEq + Debug + Hash {
     #[must_use = "Use `increment_by` if you wanted to update the index in-place"]
     #[thrust_macros::requires(forall(|i: UInt, a: UInt|
         Self::index_is(self, i) && a == amount ==> Self::can_new(i + a)))]
+    #[thrust::trusted]
     fn plus(self, amount: usize) -> Self {
         Self::new(self.index() + amount)
     }

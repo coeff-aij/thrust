@@ -55,12 +55,14 @@ where
     #[thrust_macros::law]
     #[thrust_macros::requires(Self::invariant(*a))]
     #[thrust_macros::ensures(Self::produces(*a, Seq::empty(), *a))]
+    #[thrust::trusted]
     fn produces_refl(a: &Self) {}
 
     #[thrust_macros::law]
     #[thrust_macros::requires(Self::produces(*a, ab, *b))]
     #[thrust_macros::requires(Self::produces(*b, bc, *c))]
     #[thrust_macros::ensures(Self::produces(*a, ab.concat(bc), *c))]
+    #[thrust::trusted]
     fn produces_trans(
         a: &Self,
         ab: Seq<<Self::Item as thrust_models::Model>::Ty>,
@@ -371,6 +373,7 @@ pub trait Idx: Copy + 'static + Eq + PartialEq + Debug + Hash {
     #[inline]
     #[thrust_macros::requires(forall(|i: UInt, a: UInt|
         Self::index_is(*self, i) && a == amount ==> Self::can_new(i + a)))]
+    #[thrust::trusted]
     fn increment_by(&mut self, amount: usize) {
         *self = self.plus(amount);
     }
@@ -379,6 +382,7 @@ pub trait Idx: Copy + 'static + Eq + PartialEq + Debug + Hash {
     #[must_use = "Use `increment_by` if you wanted to update the index in-place"]
     #[thrust_macros::requires(forall(|i: UInt, a: UInt|
         Self::index_is(self, i) && a == amount ==> Self::can_new(i + a)))]
+    #[thrust::trusted]
     fn plus(self, amount: usize) -> Self {
         Self::new(self.index() + amount)
     }
@@ -647,12 +651,14 @@ impl<I: Idx, T> IndexSlice<I, T> {
 
     #[inline]
     #[thrust_macros::requires(<I as Idx>::can_new((*self).len()))]
+    #[thrust::trusted]
     pub fn next_index(&self) -> I {
         I::new(self.len())
     }
 
     #[inline]
     #[thrust_macros::ensures(*result.0 == *self && result.1 == 0)]
+    #[thrust::trusted]
     pub fn iter(&self) -> SliceIter<'_, T> {
         SliceIter {
             raw: &self.raw,
@@ -665,6 +671,7 @@ impl<I: Idx, T> IndexSlice<I, T> {
     #[inline]
     #[thrust_macros::requires(forall(|k: UInt| !(0 <= k && k <= (*self).len()) || <I as Idx>::can_new(k)))]
     #[thrust_macros::ensures(*result.0 == *self && result.1 == 0)]
+    #[thrust::trusted]
     pub fn iter_enumerated(&self) -> IterEnumerated<'_, I, T> {
         let _ = I::new(self.len());
         IterEnumerated {
@@ -676,6 +683,7 @@ impl<I: Idx, T> IndexSlice<I, T> {
 
     #[inline]
     #[thrust_macros::requires(<I as Idx>::can_new((*self).len()))]
+    #[thrust::trusted]
     pub fn indices(&self) -> IdxRange<I> {
         let _ = I::new(self.len());
         IdxRange::new(0, self.len())
@@ -698,6 +706,7 @@ impl<I: Idx + thrust_models::Model<Ty: PartialEq>, J: Idx + thrust_models::Model
     #[thrust_macros::requires(forall(|k: UInt| !(0 <= k && k <= (*self).len()) || <I as Idx>::can_new(k)))]
     #[thrust_macros::requires(forall(|k: UInt, i: UInt|
         !(0 <= k && k < (*self).len() && <J as Idx>::index_is((*self)[k], i)) || i < (*self).len()))]
+    #[thrust::trusted]
     pub fn invert_bijective_mapping(&self) -> IndexVec<J, I> {
         let mut inverse = IndexVec::from_elem_n(Idx::new(0), self.len());
         let mut entries = self.iter_enumerated();
@@ -786,6 +795,7 @@ impl<I: Idx, T> IndexVec<I, T> {
     #[inline]
     #[thrust_macros::ensures(result.len() == n
         && forall(|k: UInt| !(0 <= k && k < n) || result[k] == elem))]
+    #[thrust::trusted]
     pub fn from_elem_n(elem: T, n: usize) -> Self
     where
         T: Clone,
@@ -805,6 +815,7 @@ impl<I: Idx, T> IndexVec<I, T> {
 
     #[inline]
     #[thrust_macros::requires(<I as Idx>::can_new((*self).len()))]
+    #[thrust::trusted]
     pub fn push(&mut self, d: T) -> I {
         let idx = self.next_index();
         self.raw.push(d);
@@ -1419,6 +1430,7 @@ impl Size {
 
     #[thrust_macros::requires(T::fits(bits))]
     #[thrust_macros::ensures(thrust_models::exists(|b| T::converts_to(bits, b) && result.raw == (b + 7) / 8))]
+    #[thrust::trusted]
     pub fn from_bits<T: TryIntoSpec<u64>>(bits: T) -> Size {
         let bits = bits.try_into().ok().unwrap();
         Size {
@@ -1429,6 +1441,7 @@ impl Size {
     #[inline]
     #[thrust_macros::requires(T::fits(bytes))]
     #[thrust_macros::ensures(thrust_models::exists(|b| T::converts_to(bytes, b) && result.raw == b))]
+    #[thrust::trusted]
     pub fn from_bytes<T: TryIntoSpec<u64>>(bytes: T) -> Size {
         let bytes: u64 = bytes.try_into().ok().unwrap();
         Size { raw: bytes }
