@@ -2,7 +2,7 @@
 //@compile-flags: -Adead_code -C debug-assertions=off -A unused-variables -A unused_parens
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300 COAR_IMAGE=coar:9799dfd7b THRUST_TRY_SPECS=1
 
-use thrust_models::model::{Int, Mut, Seq};
+use thrust_models::model::{Int, Mut, Seq, UInt};
 use thrust_models::{exists, forall};
 pub struct Wrapped<T> {
     raw: Vec<T>,
@@ -116,7 +116,7 @@ pub struct SliceIter<'a, T> {
 }
 
 impl<'a, T: thrust_models::Model> thrust_models::Model for SliceIter<'a, T> {
-    type Ty = (<&'a [T] as thrust_models::Model>::Ty, Int);
+    type Ty = (<&'a [T] as thrust_models::Model>::Ty, UInt);
 }
 
 #[thrust_macros::context]
@@ -132,7 +132,7 @@ where
 
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
-        0 <= self.1 && self.1 <= self.0.len()
+        self.1 <= self.0.len()
     }
 
     #[thrust_macros::predicate]

@@ -18,6 +18,7 @@ struct DefIds {
 
     model_ty: OnceCell<Option<DefId>>,
     int_model: OnceCell<Option<DefId>>,
+    uint_model: OnceCell<Option<DefId>>,
     mut_model: OnceCell<Option<DefId>>,
     box_model: OnceCell<Option<DefId>>,
     array_model: OnceCell<Option<DefId>>,
@@ -75,6 +76,10 @@ impl<'tcx> DefIdCache<'tcx> {
 
     pub fn vec(&self) -> Option<DefId> {
         self.tcx.get_diagnostic_item(Symbol::intern("Vec"))
+    }
+
+    pub fn box_new(&self) -> Option<DefId> {
+        self.tcx.get_diagnostic_item(rustc_span::sym::box_new)
     }
 
     pub fn unique(&self) -> Option<DefId> {
@@ -187,6 +192,13 @@ impl<'tcx> DefIdCache<'tcx> {
             .def_ids
             .int_model
             .get_or_init(|| self.annotated_def(&crate::analyze::annot::int_model_path()))
+    }
+
+    pub fn uint_model(&self) -> Option<DefId> {
+        *self
+            .def_ids
+            .uint_model
+            .get_or_init(|| self.annotated_def(&crate::analyze::annot::uint_model_path()))
     }
 
     pub fn mut_model(&self) -> Option<DefId> {

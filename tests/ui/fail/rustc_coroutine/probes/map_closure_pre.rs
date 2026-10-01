@@ -2,7 +2,7 @@
 //@compile-flags: -Adead_code -C debug-assertions=off -A unused-variables -A unused_parens
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300 COAR_IMAGE=coar:9799dfd7b THRUST_TRY_SPECS=1
 
-use thrust_models::model::{Closure, Int, Mut, Seq};
+use thrust_models::model::{Closure, Int, Mut, Seq, UInt};
 use thrust_models::{exists, forall, Ghost};
 
 // The iterator trait, local to the case study (rewrites.md R9): Creusot's `common.rs` as the
@@ -59,7 +59,7 @@ pub struct DenseBitSet {
 }
 
 impl thrust_models::Model for DenseBitSet {
-    type Ty = Int;
+    type Ty = UInt;
 }
 
 pub struct BitIter {
@@ -67,14 +67,14 @@ pub struct BitIter {
 }
 
 impl thrust_models::Model for BitIter {
-    type Ty = Int;
+    type Ty = UInt;
 }
 
 #[thrust_macros::context]
 impl DenseBitSet {
     #[thrust::trusted]
     #[thrust::callable]
-    #[thrust_macros::ensures(result == *self && 0 <= *self)]
+    #[thrust_macros::ensures(result == *self)]
     fn iter(&self) -> BitIter {
         BitIter { word: 0 }
     }
@@ -90,12 +90,12 @@ impl Iterator for BitIter {
 
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
-        0 <= self
+        true
     }
 
     #[thrust_macros::predicate]
     fn produces(self, visited: Seq<<Self::Item as thrust_models::Model>::Ty>, o: Self) -> bool {
-        0 <= o && o + visited.len() == self
+        o + visited.len() == self
             && forall(|i: Int| !(0 <= i && i < visited.len()) || 0 <= visited[i])
     }
 

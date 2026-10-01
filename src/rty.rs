@@ -499,6 +499,20 @@ impl<T> PointerType<T> {
         }
     }
 
+    pub fn mut_to_refined(ty: RefinedType<T>) -> Self {
+        PointerType {
+            kind: PointerKind::Ref(RefKind::Mut),
+            elem: Box::new(ty),
+        }
+    }
+
+    pub fn immut_to_refined(ty: RefinedType<T>) -> Self {
+        PointerType {
+            kind: PointerKind::Ref(RefKind::Immut),
+            elem: Box::new(ty),
+        }
+    }
+
     pub fn is_mut(&self) -> bool {
         matches!(self.kind, PointerKind::Ref(RefKind::Mut))
     }
@@ -647,7 +661,7 @@ impl<T> TupleType<T> {
 pub struct EnumVariantDef {
     pub name: chc::DatatypeSymbol,
     pub discr: BigInt,
-    pub field_tys: Vec<Type<Closed>>,
+    pub field_tys: Vec<RefinedType<Closed>>,
 }
 
 /// A definition of an enum datatype.
@@ -659,7 +673,7 @@ pub struct EnumDatatypeDef {
 }
 
 impl EnumDatatypeDef {
-    pub fn field_tys(&self) -> impl Iterator<Item = &Type<Closed>> {
+    pub fn field_tys(&self) -> impl Iterator<Item = &RefinedType<Closed>> {
         self.variants.iter().flat_map(|v| &v.field_tys)
     }
 }
@@ -1000,6 +1014,62 @@ where
 }
 
 impl<T> Type<T> {
+    /// Conjoins the refinements nested in `facts` (of tuple elements and pointer contents) onto
+    /// the matching positions of this type. Positions where the two types differ are left as
+    /// they are.
+    pub fn conjoin_nested_refinements_of(&mut self, facts: &Type<T>)
+    where
+        T: Clone,
+    {
+        match (self, facts) {
+            (Type::Tuple(ty), Type::Tuple(facts)) if ty.elems.len() == facts.elems.len() => {
+                for (elem, facts) in ty.elems.iter_mut().zip(&facts.elems) {
+                    elem.conjoin_refinements_of(facts);
+                }
+            }
+            (Type::Pointer(ty), Type::Pointer(facts)) if ty.kind == facts.kind => {
+                ty.elem.conjoin_refinements_of(&facts.elem);
+            }
+            _ => {}
+        }
+    }
+
+    pub fn inherit_pointer_types<U: chc::Var>(
+        &mut self,
+        source: Type<U>,
+        subst: &mut impl FnMut(U) -> chc::Term<T>,
+    ) where
+        T: chc::Var,
+    {
+        match (self, source) {
+            (Type::Pointer(target), Type::Pointer(source)) => {
+                target.elem.refinement = source.elem.refinement.subst_free_var(&mut *subst);
+                target.elem.ty.inherit_pointer_types(source.elem.ty, subst);
+            }
+            (Type::Tuple(target), Type::Tuple(source)) => {
+                for (target, source) in target.elems.iter_mut().zip(source.elems) {
+                    target.ty.inherit_pointer_types(source.ty, subst);
+                }
+            }
+            (Type::Enum(target), Type::Enum(source)) => {
+                for (target, source) in target.args.iter_mut().zip(source.args) {
+                    target.ty.inherit_pointer_types(source.ty, subst);
+                }
+            }
+            (Type::Seq(target), Type::Seq(source)) => {
+                target.ty.inherit_pointer_types(source.ty, subst);
+            }
+            (Type::Array(target), Type::Array(source)) => {
+                target
+                    .index
+                    .ty
+                    .inherit_pointer_types(source.index.ty, subst);
+                target.elem.ty.inherit_pointer_types(source.elem.ty, subst);
+            }
+            _ => {}
+        }
+    }
+
     fn pretty_atom<'a, 'b, D>(
         &'b self,
         allocator: &'a D,
@@ -1467,6 +1537,10 @@ impl<V> Formula<V> {
         self.body.is_bottom()
     }
 
+    pub fn has_pred_var(&self) -> bool {
+        self.body.has_pred_var()
+    }
+
     pub fn top() -> Self {
         Formula::new(IndexVec::new(), chc::Body::top())
     }
@@ -1661,7 +1735,7 @@ where
 impl RefinedType<FunctionParamIdx> {
     /// Installs `refinement` at the sub-type addressed by `steps`.
     ///
-    /// An empty `steps` slice replaces the refinement at this node; otherwise
+    /// An empty `steps` slice conjoins the refinement to the one at this node; otherwise
     /// each step navigates one level deeper per [`TypePositionStep`].
     pub fn install_refinement_at(
         &mut self,
@@ -1669,7 +1743,7 @@ impl RefinedType<FunctionParamIdx> {
         refinement: Refinement<FunctionParamIdx>,
     ) {
         let Some((step, rest)) = steps.split_first() else {
-            self.refinement = refinement;
+            self.refinement.push_conj(refinement);
             return;
         };
         match step {
@@ -1703,6 +1777,16 @@ impl RefinedType<FunctionParamIdx> {
 }
 
 impl<FV> RefinedType<FV> {
+    /// Conjoins the refinement of `facts` onto this one, and the refinements nested in it onto
+    /// the matching positions of this type.
+    pub fn conjoin_refinements_of(&mut self, facts: &RefinedType<FV>)
+    where
+        FV: Clone,
+    {
+        self.refinement.push_conj(facts.refinement.clone());
+        self.ty.conjoin_nested_refinements_of(&facts.ty);
+    }
+
     fn pretty_atom<'a, 'b, D>(
         &'b self,
         allocator: &'a D,
@@ -1721,6 +1805,80 @@ impl<FV> RefinedType<FV> {
 
     pub fn new(ty: Type<FV>, refinement: Refinement<FV>) -> Self {
         RefinedType { ty, refinement }
+    }
+
+    pub fn formula(&self) -> Refinement<FV>
+    where
+        FV: chc::Var,
+    {
+        let mut formula = self.refinement.clone();
+        match &self.ty {
+            Type::Tuple(ty) => {
+                for (index, elem) in ty.elems.iter().enumerate() {
+                    formula.push_conj(elem.formula().subst_value_var(|| {
+                        chc::Term::var(RefinedTypeVar::Value).tuple_proj(index)
+                    }));
+                }
+            }
+            Type::Pointer(ty) => {
+                formula.push_conj(
+                    ty.elem.formula().subst_value_var(|| {
+                        ty.kind.deref_term(chc::Term::var(RefinedTypeVar::Value))
+                    }),
+                );
+                if ty.is_mut() {
+                    formula.push_conj(
+                        ty.elem
+                            .formula()
+                            .subst_value_var(|| chc::Term::var(RefinedTypeVar::Value).mut_final()),
+                    );
+                }
+            }
+            _ => {}
+        }
+        formula
+    }
+
+    /// Moves the refinements of tuple elements, and of the content of an owned or shared
+    /// pointer, up to the refinement of the whole value, so that they are stated about the
+    /// value's own term.
+    ///
+    /// A struct field is an owned pointer in a tuple (fields are boxed), so a refinement of a
+    /// field's value sits under both. The content of a mutable reference stays where it is: its
+    /// refinement is about both the current and the final value.
+    pub fn normalize_tuple_refinements(mut self) -> Self
+    where
+        FV: chc::Var,
+    {
+        if let Type::Pointer(ty) = &mut self.ty {
+            if !ty.is_mut() {
+                let kind = ty.kind;
+                let elem = std::mem::replace(&mut *ty.elem, RefinedType::unrefined(Type::unit()));
+                let mut elem = elem.normalize_tuple_refinements();
+                let refinement = std::mem::take(&mut elem.refinement);
+                *ty.elem = elem;
+                self.refinement
+                    .push_conj(refinement.subst_value_var(|| {
+                        kind.deref_term(chc::Term::var(RefinedTypeVar::Value))
+                    }));
+            }
+        }
+        if let Type::Tuple(ty) = &mut self.ty {
+            for (index, elem) in ty.elems.iter_mut().enumerate() {
+                *elem = elem.clone().normalize_tuple_refinements();
+                let refinement = std::mem::take(&mut elem.refinement);
+                self.refinement.push_conj(
+                    refinement.subst_value_var(|| {
+                        chc::Term::var(RefinedTypeVar::Value).tuple_proj(index)
+                    }),
+                );
+            }
+        }
+        self
+    }
+
+    pub fn to_sort(&self) -> chc::Sort {
+        self.ty.to_sort()
     }
 
     pub fn refined_with_term(ty: Type<FV>, term: chc::Term<FV>) -> Self {

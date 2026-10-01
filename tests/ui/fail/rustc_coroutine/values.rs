@@ -264,10 +264,8 @@ impl Size {
         self.raw
     }
 
-    // Trusted: the body panics exactly when `raw * 8` overflows `u64`, which the `requires` excludes.
+    // The body panics exactly when `raw * 8` overflows `u64`, which the `requires` excludes.
     #[inline]
-    // Verifying the body stops earlier: a `u64` field read carries no `v >= 0`, which `checked_mul`'s `u64` parameter requires (Unsat).
-    #[thrust::trusted]
     #[thrust_macros::requires(self.raw * 8 <= u64::MAX)]
     #[thrust_macros::ensures(result == self.raw * 8)]
     pub fn bits(self) -> u64 {
@@ -292,9 +290,7 @@ impl Size {
     }
 
     #[inline]
-    // Trusted: a `u64` field read carries no `v >= 0`, which `checked_add`'s `u64` parameter requires (Unsat).
     // The `requires` is that of `obj_size_bound` for the layout `cx` names.
-    #[thrust::trusted]
     #[thrust_macros::requires(forall(|dl: TargetDataLayout| !C::dl_of(*cx, dl)
         || dl.default_address_space_pointer_spec.pointer_size.raw == 2
         || dl.default_address_space_pointer_spec.pointer_size.raw == 4
@@ -327,8 +323,7 @@ impl Add for Size {
     // spec on an impl of an external trait: `#[thrust_macros::ensures]` here
     // expands to `_thrust_ensures_add`, which is "not a member of trait `Add`".
     #[inline]
-    // Without a contract the overflow `panic!` is reachable (Unsat), and the `u64` field reads
-    // carry no `v >= 0` for `checked_add`'s parameters.
+    // Without a contract the overflow `panic!` is reachable (Unsat).
     #[thrust::trusted]
     #[thrust::callable]
     fn add(self, other: Size) -> Size {
@@ -788,7 +783,6 @@ where
                     !this == !self.at_entry()
                         && (*this).0 == (*self.at_entry()).0
                         && (*self.at_entry()).1 <= (*this).1
-                        && 0 <= (*this).1
                         && (*this).1 <= (*this).0.len()
                         && forall(|x: <&'a T as thrust_models::Model>::Ty| thrust_macros::pre!(predicate(&x)))
             );
@@ -801,7 +795,7 @@ where
 }
 
 impl<'a, T: thrust_models::Model> thrust_models::Model for SliceIter<'a, T> {
-    type Ty = (&'a thrust_models::model::Seq<<T as thrust_models::Model>::Ty>, thrust_models::model::Int);
+    type Ty = (&'a thrust_models::model::Seq<<T as thrust_models::Model>::Ty>, thrust_models::model::UInt);
 }
 
 impl thrust_models::Model for PointerSpec {
