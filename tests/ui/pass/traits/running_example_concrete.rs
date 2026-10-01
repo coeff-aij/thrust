@@ -33,8 +33,7 @@ impl Range {
 
 #[thrust_macros::context]
 #[thrust_macros::requires((*it).start <= (*it).end)]
-#[thrust_macros::ensures(result >= 0)]
-fn count(it: &mut Range) -> i64 {
+fn count(it: &mut Range) -> usize {
     let mut n = 0;
     let b = it;
     while let Some(_) = b.next() {

@@ -153,7 +153,7 @@ fn take_count(start: i64, end: i64, n: usize) -> usize {
     let mut cnt: usize = 0;
     while let Some(_x) = t.next() {
         thrust_macros::invariant!(|t: Take<Range>, cnt: usize, n: thrust_models::FnParam<usize>|
-            cnt + t.1 == n.at_entry() && t.1 >= 0 && Take::<Range>::invariant(t));
+            cnt + t.1 == n.at_entry() && Take::<Range>::invariant(t));
         cnt += 1;
     }
     cnt

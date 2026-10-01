@@ -145,8 +145,8 @@ impl Iterator for Range {
 // A generic consumer over any `Iterator`, with an inferred (not written) loop invariant.
 #[thrust_macros::context]
 #[thrust_macros::requires(I::invariant(*it))]
-#[thrust_macros::ensures(I::invariant(!it) && result >= 0)]
-fn count<I: Iterator + thrust_models::Model>(it: &mut I) -> i64
+#[thrust_macros::ensures(I::invariant(!it))]
+fn count<I: Iterator + thrust_models::Model>(it: &mut I) -> usize
 where
     I::Item: thrust_models::Model,
     <I::Item as thrust_models::Model>::Ty: PartialEq,

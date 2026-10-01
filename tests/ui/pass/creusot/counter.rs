@@ -214,9 +214,9 @@ impl FromIterator<i64> for Vec<i64> {
 // the range produces.
 #[thrust_macros::ensures(forall(|k: Int| 0 <= k && k < result.len() ==> start <= result[k] && result[k] < end))]
 fn counter(start: i64, end: i64) -> Vec<i64> {
-    let mut cnt: i64 = 0;
+    let mut cnt: usize = 0;
     let f = thrust_macros::closure!(
-        captures(cnt: &mut &mut i64),
+        captures(cnt: &mut &mut usize),
         requires(*(*cnt) == produced.len()),
         ensures(*(!cnt) == *(*cnt) + 1 && result == x),
         |x: i64, produced: Ghost<Seq<Int>>| -> i64 { cnt += 1; x },

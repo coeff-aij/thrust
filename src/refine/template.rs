@@ -531,8 +531,8 @@ impl<'tcx> TypeBuilder<'tcx> {
         }
 
         if Some(adt.did()) == self.def_ids.mut_model() {
-            let elem_ty = self.build_ty(args.type_at(0));
-            return Some(rty::PointerType::mut_to(elem_ty).into());
+            let elem_ty = self.build(args.type_at(0));
+            return Some(rty::PointerType::mut_to_refined(elem_ty).into());
         }
 
         if Some(adt.did()) == self.def_ids.box_model() {
@@ -1013,8 +1013,8 @@ where
         }
 
         if Some(adt.did()) == self.inner.def_ids.mut_model() {
-            let elem_ty = self.build_ty(args.type_at(0));
-            return Some(rty::PointerType::mut_to(elem_ty).into());
+            let elem_ty = self.build(args.type_at(0));
+            return Some(rty::PointerType::mut_to_refined(elem_ty).into());
         }
 
         if Some(adt.did()) == self.inner.def_ids.box_model() {
