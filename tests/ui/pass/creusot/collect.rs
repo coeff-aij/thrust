@@ -65,8 +65,8 @@ where
 
 #[derive(PartialEq)]
 struct Range {
-    start: isize,
-    end: isize,
+    start: u32,
+    end: u32,
 }
 
 impl Model for Range {
@@ -75,7 +75,7 @@ impl Model for Range {
 
 #[thrust_macros::context]
 impl Iterator for Range {
-    type Item = isize;
+    type Item = u32;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.start < self.end {
@@ -145,9 +145,9 @@ where
 
 #[thrust_macros::requires(start <= end)]
 #[thrust_macros::ensures(result.len() == end - start && forall(|k: Int| 0 <= k && k < result.len() ==> result[k] == start + k))]
-fn collect_range(start: isize, end: isize) -> Vec<isize> {
+fn collect_range(start: u32, end: u32) -> Vec<u32> {
     let r = Range { start, end };
-    r.collect::<Vec<isize>>()
+    r.collect::<Vec<u32>>()
 }
 
 fn main() {}
