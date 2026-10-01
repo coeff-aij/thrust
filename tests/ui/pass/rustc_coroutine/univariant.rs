@@ -1485,8 +1485,6 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         layout
     }
 
-    #[thrust::trusted]
-    #[thrust::callable]
     fn univariant_biased<
         'a,
         FieldIdx: Idx,
@@ -1729,16 +1727,16 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                                 ref offsets,
                                 ref in_memory_order,
                             } => {
-                                assert_eq!(
-                                    in_memory_order.raw,
-                                    [FieldIdx::new(0), FieldIdx::new(1)]
-                                );
+                                // Rewrite (rewrites.md R6): `assert_eq!` as `assert!`, without the
+                                // `Debug` message.
+                                assert!(in_memory_order.raw == [FieldIdx::new(0), FieldIdx::new(1)]);
                                 offsets
                             }
                             FieldsShape::Primitive
                             | FieldsShape::Array { .. }
                             | FieldsShape::Union(..) => {
-                                panic!("encountered a non-arbitrary layout during enum layout")
+                                // Rewrite (rewrites.md R6): message dropped.
+                                panic!()
                             }
                         };
                         if offsets[i] == pair_offsets[FieldIdx::new(0)]
@@ -1786,6 +1784,19 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
             randomization_seed: seed,
         })
     }
+}
+
+// The `Vec == array` of `univariant_biased`'s `assert!`: a `Vec` and an array are both modelled as
+// a `Seq`, so their `==` is model equality, as std.rs's generic `eq`.
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(result == (*x == *y))]
+fn _extern_spec_vec_partialeq_array_eq<T, const N: usize>(x: &Vec<T>, y: &[T; N]) -> bool
+where
+    T: thrust_models::Model + PartialEq,
+    T::Ty: PartialEq,
+{
+    <Vec<T> as PartialEq<[T; N]>>::eq(x, y)
 }
 
 trait Unwrap<T> {
