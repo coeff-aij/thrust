@@ -430,6 +430,9 @@ pub struct BitMatrix<R: Idx, C: Idx> {
     num_columns: usize,
     words: Vec<Word>,
     marker: PhantomData<(R, C)>,
+    // Rewrite (rewrites.md S11): proof-only, every set bit's column is below it. rustc's `new`
+    // starts it at 0 and `insert` raises it past the column it sets.
+    col_bound: thrust_models::Ghost<Int>,
 }
 
 #[thrust_macros::context]
@@ -441,7 +444,7 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
             self.words.len() == self.num_rows * rw
                 && 64 * rw >= self.num_columns
                 && 64 * rw < self.num_columns + 64
-        })
+        }) && 0 <= *self.col_bound && *self.col_bound <= self.num_columns
     }
 
     #[thrust::trusted]
@@ -466,8 +469,8 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
     #[thrust::trusted]
     #[thrust_macros::requires(Self::wf(*self))]
     #[thrust_macros::requires(forall(|i: Int| <R as Idx>::index_is(row, i) ==> i < (*self).num_rows))]
-    #[thrust_macros::ensures(result.0 == (*self).num_columns && result.1 == 0)]
-    #[thrust_macros::ensures(0 <= result.2 && result.2 <= (*self).num_columns)]
+    #[thrust_macros::ensures(result.0 == *(*self).col_bound && result.1 == 0)]
+    #[thrust_macros::ensures(0 <= result.2 && result.2 <= *(*self).col_bound)]
     pub fn iter(&self, row: R) -> BitIter<'_, C> {
         assert!(row.index() < self.num_rows);
         let (start, end) = self.range(row);
@@ -1216,11 +1219,10 @@ impl<I: thrust_models::Model> thrust_models::Model for Enumerate<I> {
         || forall(|i: Int|
             !<LocalIdx as Idx>::index_is((*variant_fields)[v][f], i)
                 || i < nb_locals))
-    // `count(local_b)` takes a column index as a row, so the columns must not outnumber the
-    // rows: the set abstraction does not say which bits a row holds, so this is stronger than
-    // the panic condition (a set bit of some row at a column >= num_rows).
+    // `count(local_b)` takes a column index as a row, so every set bit's column must be below
+    // the number of rows: the panic condition, through the matrix's ghost column bound.
     && (*storage_conflicts).num_rows <= nb_locals
-    && (*storage_conflicts).num_columns <= (*storage_conflicts).num_rows
+    && *(*storage_conflicts).col_bound <= (*storage_conflicts).num_rows
     && BitMatrix::<LocalIdx, LocalIdx>::wf(*storage_conflicts)
     && forall(|k: Int| !(0 <= k && k < nb_locals) || LocalIdx::can_new(k))
     && forall(|n: Int| !(0 <= n && n <= nb_locals) || FieldIdx::can_new(n))
@@ -1353,7 +1355,7 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
                     && <VariantIdx as Idx>::index_is(v, i))
                 || i < (*variant_fields).len())
                 && assignments.len() == ineligible_locals.0 && (*storage_conflicts).num_rows <= ineligible_locals.0
-                && (*storage_conflicts).num_columns <= (*storage_conflicts).num_rows
+                && *(*storage_conflicts).col_bound <= (*storage_conflicts).num_rows
                 && BitMatrix::<LocalIdx, LocalIdx>::wf(*storage_conflicts)
                 && forall(|k: Int| !(0 <= k && k < ineligible_locals.0) || <LocalIdx as Idx>::can_new(k))
                 && rows.start >= 0 && rows.end == (*storage_conflicts).num_rows);
@@ -1370,12 +1372,12 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
                     && <VariantIdx as Idx>::index_is(v, i))
                 || i < (*variant_fields).len())
                 && assignments.len() == ineligible_locals.0 && (*storage_conflicts).num_rows <= ineligible_locals.0
-                    && (*storage_conflicts).num_columns <= (*storage_conflicts).num_rows
+                    && *(*storage_conflicts).col_bound <= (*storage_conflicts).num_rows
                     && BitMatrix::<LocalIdx, LocalIdx>::wf(*storage_conflicts)
                     && forall(|k: Int| !(0 <= k && k < ineligible_locals.0) || <LocalIdx as Idx>::can_new(k))
                     && rows.start >= 0 && rows.end == (*storage_conflicts).num_rows
                     && forall(|i: Int| !<LocalIdx as Idx>::index_is(local_a, i) || i < ineligible_locals.0)
-                    && conflicts.0 == (*storage_conflicts).num_columns
+                    && conflicts.0 == *(*storage_conflicts).col_bound
                     && 0 <= conflicts.1 && 0 <= conflicts.2 && conflicts.1 + conflicts.2 <= conflicts.0);
             if ineligible_locals.contains(local_b) || assignments[local_a] == assignments[local_b] {
                 continue;
