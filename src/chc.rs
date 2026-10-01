@@ -9,6 +9,7 @@ use rustc_index::IndexVec;
 
 use crate::pretty::PrettyDisplayExt as _;
 
+mod candidate_atoms;
 mod clause_builder;
 pub mod debug;
 pub(crate) mod format_context;
@@ -17,6 +18,7 @@ mod smtlib2;
 mod solver;
 mod unbox;
 
+pub use candidate_atoms::{conjuncts, instances, CandidateAtoms, CandidateAtomsMode, HeadTerms};
 pub use clause_builder::{ClauseBuilder, Var};
 pub use debug::DebugInfo;
 pub use solver::{Capabilities, CheckSatError, Config};
@@ -2462,6 +2464,9 @@ pub struct System {
     /// `:law` of the predicate's `declare-forall-fun`, which the solver inserts
     /// as a premise into every clause that mentions the predicate.
     laws: BTreeMap<ForallPred, Vec<Formula<TermVarIdx>>>,
+    /// Candidate atoms of loop heads' predicate variables (`THRUST_CANDIDATE_ATOMS`), emitted
+    /// as `(set-info :candidates ...)` and never asserted.
+    candidate_atoms: Vec<CandidateAtoms>,
 }
 
 impl System {
@@ -2498,6 +2503,10 @@ impl System {
 
     pub fn add_law(&mut self, pred: ForallPred, law: Formula<TermVarIdx>) {
         self.laws.entry(pred).or_default().push(law);
+    }
+
+    pub fn push_candidate_atoms(&mut self, pred: PredVarId, atoms: Vec<Formula<TermVarIdx>>) {
+        self.candidate_atoms.push(CandidateAtoms { pred, atoms });
     }
 
     pub fn laws_of(&self, pred: &ForallPred) -> &[Formula<TermVarIdx>] {
@@ -2937,6 +2946,9 @@ impl System {
         system.populate_user_defined_pred_dependencies();
         let mut system = unbox(system);
         system.populate_user_defined_pred_dependencies();
+        if CandidateAtomsMode::from_env() == CandidateAtomsMode::ContractsAndEntry {
+            system.add_entry_candidate_atoms();
+        }
         if let Ok(file) = std::env::var("THRUST_PRETTY_OUTPUT") {
             let mut f = std::fs::File::create(file).unwrap();
             for (idx, c) in system.clauses.iter_enumerated() {

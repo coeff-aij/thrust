@@ -1466,6 +1466,125 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self
     }
 
+    /// The blocks of the natural loops whose head is `bb`, or `None` if `bb` heads no loop.
+    fn natural_loop(&self, bb: BasicBlock) -> Option<HashSet<BasicBlock>> {
+        let dominators = self.body.basic_blocks.dominators();
+        let preds = &self.body.basic_blocks.predecessors();
+        let mut pending: Vec<_> = preds[bb]
+            .iter()
+            .copied()
+            .filter(|&p| dominators.dominates(bb, p))
+            .collect();
+        if pending.is_empty() {
+            return None;
+        }
+        let mut blocks = HashSet::from([bb]);
+        while let Some(b) = pending.pop() {
+            if blocks.insert(b) {
+                pending.extend(preds[b].iter().copied());
+            }
+        }
+        Some(blocks)
+    }
+
+    /// The predicate variable of the precondition of `bb`, when it is left to inference.
+    fn precondition_pred_var(&self, bb: BasicBlock) -> Option<chc::PredVarId> {
+        let bty = self
+            .ctx
+            .basic_block_ty_with_precondition(self.analysis_key(), bb);
+        let fn_ty = bty.to_function_ty();
+        let precondition = &fn_ty.params.raw.last()?.refinement;
+        precondition
+            .body
+            .atoms
+            .iter()
+            .find_map(|atom| match atom.pred {
+                chc::Pred::Var(p) => Some(p),
+                _ => None,
+            })
+    }
+
+    /// The facts of the precondition of `bb` besides its predicate variable (`x >= 0` of an
+    /// unsigned parameter), over that variable's arguments by position.
+    fn precondition_facts(&self, bb: BasicBlock) -> Vec<chc::Formula> {
+        let bty = self
+            .ctx
+            .basic_block_ty_with_precondition(self.analysis_key(), bb);
+        let fn_ty = bty.to_function_ty();
+        let Some(param) = fn_ty.params.raw.last() else {
+            return Vec::new();
+        };
+        let body = &param.refinement.body;
+        let Some(pred_atom) = body
+            .atoms
+            .iter()
+            .find(|atom| matches!(atom.pred, chc::Pred::Var(_)))
+        else {
+            return Vec::new();
+        };
+        let mut position = HashMap::new();
+        for (k, arg) in pred_atom.args.iter().enumerate() {
+            let at = chc::Term::var(chc::TermVarIdx::from_usize(k));
+            match arg {
+                chc::Term::Var(v) => position.insert(*v, at),
+                chc::Term::BoxCurrent(t) => match &**t {
+                    chc::Term::Var(v) => position.insert(*v, chc::Term::box_(at)),
+                    _ => None,
+                },
+                _ => None,
+            };
+        }
+        body.atoms
+            .iter()
+            .filter(|atom| !matches!(atom.pred, chc::Pred::Var(_)))
+            .cloned()
+            .map(chc::Formula::Atom)
+            .chain(chc::conjuncts(&body.formula))
+            .filter(|fact| fact.fv().all(|v| position.contains_key(v)))
+            .map(|fact| fact.subst_var(|v| position[&v].clone()))
+            .collect()
+    }
+
+    /// Declares candidate atoms for the predicate variable of each loop head: the conjuncts of
+    /// this function's contract and of the contracts of the functions its loop calls, each
+    /// instantiated at the terms over the head's arguments of the matching sorts, and the
+    /// prophecy equalities of the references the head carries.
+    fn declare_candidate_atoms(&mut self, expected: &rty::RefinedType) {
+        let fn_ty = expected.ty.as_function().unwrap().clone();
+        for bb in self.body.basic_blocks.indices() {
+            if bb == mir::START_BLOCK
+                || self.body.basic_blocks[bb].is_cleanup
+                || !analyze::basic_block::needs_own_precondition(&self.body, bb)
+            {
+                continue;
+            }
+            let Some(loop_blocks) = self.natural_loop(bb) else {
+                continue;
+            };
+            let Some(pred) = self.precondition_pred_var(bb) else {
+                continue;
+            };
+            let sig = self.ctx.pred_var_sig(pred);
+            tracing::debug!(?bb, ?pred, ?sig, "candidate atoms for loop head");
+            let head = chc::HeadTerms::new(&sig);
+            let mut atoms = head.prophecy_atoms();
+            if chc::CandidateAtomsMode::from_env() == chc::CandidateAtomsMode::ContractsAndEntry {
+                atoms.extend(self.precondition_facts(bb));
+            }
+            atoms.extend(contract_instances(&fn_ty, &head, ContractSource::Enclosing));
+            let mut loop_blocks: Vec<_> = loop_blocks.into_iter().collect();
+            loop_blocks.sort();
+            for b in loop_blocks {
+                for callee in self.ctx.called_fn_tys(self.analysis_key(), b) {
+                    tracing::debug!(?b, callee = %callee.display(), "candidate atoms from callee");
+                    atoms.extend(contract_instances(callee, &head, ContractSource::Callee));
+                }
+            }
+            atoms.truncate(MAX_CANDIDATE_ATOMS);
+            self.ctx.push_candidate_atoms(pred, atoms);
+        }
+    }
+
     pub fn run(&mut self, expected: &rty::RefinedType) {
         let span = tracing::info_span!("def", def = %self.tcx.def_path_str(self.local_def_id));
         let _guard = span.enter();
@@ -1476,5 +1595,105 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.refine_basic_blocks();
         self.analyze_basic_blocks(expected);
         self.assert_entry(expected);
+        if analyze::candidate_atoms_enabled() {
+            self.declare_candidate_atoms(expected);
+        }
     }
+}
+
+/// At most this many instances of one contract conjunct, and candidate atoms of one loop head.
+const MAX_INSTANCES_PER_CONJUNCT: usize = 256;
+const MAX_CANDIDATE_ATOMS: usize = 512;
+
+/// Whose contract a loop head's candidate atoms are read from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ContractSource {
+    /// The function the loop is in: its requires and ensures.
+    Enclosing,
+    /// A function the loop calls. Its arguments and result are values of one iteration, so
+    /// only the conjuncts over its reference parameters are kept: what `*r` and `^r` of a
+    /// reference into the loop's state satisfy (an iterator's `invariant(*self)`).
+    Callee,
+}
+
+/// The instances at `head` of the conjuncts of `fn_ty`'s contract.
+fn contract_instances(
+    fn_ty: &rty::FunctionType,
+    head: &chc::HeadTerms,
+    source: ContractSource,
+) -> Vec<chc::Formula> {
+    let param_sorts: Vec<chc::Sort> = fn_ty.params.iter().map(|p| p.ty.to_sort()).collect();
+    let is_reference = |sort: &chc::Sort| matches!(sort, chc::Sort::Mut(_) | chc::Sort::Box(_));
+    let mut out = Vec::new();
+    for (idx, param) in fn_ty.params.iter_enumerated() {
+        let value_sort = param_sorts[idx.index()].clone();
+        let keep = |v: &rty::RefinedTypeVar<rty::FunctionParamIdx>| match (source, v) {
+            (ContractSource::Enclosing, _) => true,
+            (ContractSource::Callee, rty::RefinedTypeVar::Value) => is_reference(&value_sort),
+            (ContractSource::Callee, rty::RefinedTypeVar::Free(j)) => {
+                is_reference(&param_sorts[j.index()])
+            }
+            (ContractSource::Callee, rty::RefinedTypeVar::Existential(_)) => true,
+        };
+        out.extend(refinement_instances(
+            &param.refinement,
+            &value_sort,
+            &param_sorts,
+            head,
+            &keep,
+        ));
+    }
+    let keep = |v: &rty::RefinedTypeVar<rty::FunctionParamIdx>| match (source, v) {
+        (ContractSource::Enclosing, _) => true,
+        (ContractSource::Callee, rty::RefinedTypeVar::Value) => false,
+        (ContractSource::Callee, rty::RefinedTypeVar::Free(j)) => {
+            is_reference(&param_sorts[j.index()])
+        }
+        (ContractSource::Callee, rty::RefinedTypeVar::Existential(_)) => true,
+    };
+    out.extend(refinement_instances(
+        &fn_ty.ret.refinement,
+        &fn_ty.ret.ty.to_sort(),
+        &param_sorts,
+        head,
+        &keep,
+    ));
+    out
+}
+
+/// The instances at `head` of the conjuncts of `refinement` whose variables all pass `keep`.
+/// `value_sort` is the sort of the refined value, `param_sorts` those of the function's
+/// parameters.
+fn refinement_instances(
+    refinement: &rty::Refinement<rty::FunctionParamIdx>,
+    value_sort: &chc::Sort,
+    param_sorts: &[chc::Sort],
+    head: &chc::HeadTerms,
+    keep: &dyn Fn(&rty::RefinedTypeVar<rty::FunctionParamIdx>) -> bool,
+) -> Vec<chc::Formula> {
+    let var_sort = |v: &rty::RefinedTypeVar<rty::FunctionParamIdx>| match v {
+        rty::RefinedTypeVar::Value => Some(value_sort.clone()),
+        rty::RefinedTypeVar::Free(j) => param_sorts.get(j.index()).cloned(),
+        rty::RefinedTypeVar::Existential(k) => refinement.existentials.get(*k).cloned(),
+    };
+    let body = &refinement.body;
+    let conjuncts = body
+        .atoms
+        .iter()
+        .cloned()
+        .map(chc::Formula::Atom)
+        .chain(chc::conjuncts(&body.formula));
+    let mut out = Vec::new();
+    for conjunct in conjuncts {
+        if !conjunct.fv().all(keep) {
+            continue;
+        }
+        out.extend(chc::instances(
+            &conjunct,
+            &var_sort,
+            head,
+            MAX_INSTANCES_PER_CONJUNCT,
+        ));
+    }
+    out
 }

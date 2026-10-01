@@ -6,11 +6,11 @@
 //! such as naming convention and solver-specific workarounds.
 //! The output of this module is what gets passed to the external CHC solver.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use rustc_index::IndexVec;
 
-use crate::chc::{self, format_context::FormatContext};
+use crate::chc::{self, candidate_atoms::forall_preds_of, format_context::FormatContext};
 
 /// A quantifier-bound variable, prefixed with `q$` so it can't capture a clause variable like `v1`.
 struct QuantifiedVar<'a>(&'a str);
@@ -1011,6 +1011,9 @@ impl<'a> std::fmt::Display for System<'a> {
                 Clause::new(&self.ctx, clause)
             )?;
         }
+        for candidates in &self.inner.candidate_atoms {
+            self.fmt_candidate_atoms(f, candidates, &dependencies)?;
+        }
         Ok(())
     }
 }
@@ -1045,6 +1048,59 @@ impl<'a> System<'a> {
             "(declare-fun {} {} Bool)\n",
             p,
             List::closed(def.sig.iter().map(|s| self.ctx.fmt_sort(s)))
+        )
+    }
+
+    /// Declares the candidate atoms of a predicate variable, in fptprove's
+    /// `(set-info :candidates (P ((x1 s1) ...) (A1 ...)))`. An atom naming a forall predicate
+    /// outside the variable's dependencies could not be a qualifier of it and is left out, as
+    /// is a repeat of an earlier atom. z3 reports the compound `set-info` value as an error, so
+    /// the declaration is written only for a dependency-aware solver.
+    fn fmt_candidate_atoms(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+        candidates: &chc::CandidateAtoms,
+        dependencies: &HashMap<chc::PredVarId, BTreeSet<chc::ForallPred>>,
+    ) -> std::fmt::Result {
+        if !self.ctx.capabilities().dependency_aware_declarations {
+            return Ok(());
+        }
+        let var_sorts: IndexVec<chc::TermVarIdx, chc::Sort> = self.inner.pred_vars[candidates.pred]
+            .sig
+            .iter()
+            .cloned()
+            .collect();
+        let no_dependencies = BTreeSet::new();
+        let allowed = dependencies
+            .get(&candidates.pred)
+            .unwrap_or(&no_dependencies);
+        let mut seen = HashSet::new();
+        let atoms: Vec<String> = candidates
+            .atoms
+            .iter()
+            .filter(|atom| {
+                forall_preds_of(atom, &self.inner.user_defined_pred_defs)
+                    .into_iter()
+                    .all(|p| allowed.contains(p))
+            })
+            .map(|atom| Formula::new(&self.ctx, &var_sorts, atom).to_string())
+            .filter(|atom| seen.insert(atom.clone()))
+            .collect();
+        if atoms.is_empty() {
+            return Ok(());
+        }
+        let params = List::closed(
+            var_sorts
+                .iter_enumerated()
+                .map(|(v, s)| List::closed([v.to_string(), self.ctx.fmt_sort(s).to_string()])),
+        );
+        writeln!(
+            f,
+            "; candidate atoms of {}, from contracts\n(set-info :candidates ({} {} {}))\n",
+            candidates.pred,
+            candidates.pred,
+            params,
+            List::closed(atoms),
         )
     }
 

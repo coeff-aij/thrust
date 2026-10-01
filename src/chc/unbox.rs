@@ -239,6 +239,7 @@ pub fn unbox(system: System) -> System {
         type_params_reverse,
         forall_pred_vars,
         laws,
+        candidate_atoms,
     } = system;
     let datatypes = datatypes.into_iter().map(unbox_datatype).collect();
     let clauses = clauses.into_iter().map(unbox_clause).collect();
@@ -258,6 +259,13 @@ pub fn unbox(system: System) -> System {
             (unbox_forall_pred_var_def(pred), laws)
         })
         .collect();
+    let candidate_atoms = candidate_atoms
+        .into_iter()
+        .map(|CandidateAtoms { pred, atoms }| CandidateAtoms {
+            pred,
+            atoms: atoms.into_iter().map(unbox_formula).collect(),
+        })
+        .collect();
     System {
         raw_commands,
         datatypes,
@@ -269,5 +277,6 @@ pub fn unbox(system: System) -> System {
         type_params_reverse,
         forall_pred_vars,
         laws,
+        candidate_atoms,
     }
 }

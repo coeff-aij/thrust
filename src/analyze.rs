@@ -712,6 +712,15 @@ pub struct Analyzer<'tcx> {
     /// The instances `(def, generic args, caller)` that use a generic def's contract as
     /// instantiated; see [`Analyzer::check_reused_spec_bounds`].
     reused_generic_instances: RefCell<Vec<(DefId, mir_ty::GenericArgsRef<'tcx>, DefId)>>,
+    /// The types of the functions each basic block calls, recorded only when
+    /// [`candidate_atoms_enabled`], whose contracts give a loop head candidate atoms.
+    called_fn_tys: HashMap<(AnalysisKey<'tcx>, BasicBlock), Vec<rty::FunctionType>>,
+}
+
+/// Whether loop heads get candidate atoms (`THRUST_CANDIDATE_ATOMS`, see
+/// [`chc::CandidateAtomsMode`]).
+pub fn candidate_atoms_enabled() -> bool {
+    chc::CandidateAtomsMode::from_env() != chc::CandidateAtomsMode::Off
 }
 
 impl<'tcx> crate::refine::TemplateRegistry for Analyzer<'tcx> {
@@ -766,12 +775,37 @@ impl<'tcx> Analyzer<'tcx> {
             fn_mut_bounded_defs: Default::default(),
             assumed_spec_bounds: Default::default(),
             reused_generic_instances: Default::default(),
+            called_fn_tys: Default::default(),
         }
     }
 
     pub fn def_ids(&self) -> did_cache::DefIdCache<'tcx> {
         // DefIdCache is backed by Rc
         self.def_ids.clone()
+    }
+
+    pub fn record_called_fn_ty(
+        &mut self,
+        key: AnalysisKey<'tcx>,
+        bb: BasicBlock,
+        fn_ty: rty::FunctionType,
+    ) {
+        self.called_fn_tys.entry((key, bb)).or_default().push(fn_ty);
+    }
+
+    pub fn called_fn_tys(&self, key: AnalysisKey<'tcx>, bb: BasicBlock) -> &[rty::FunctionType] {
+        self.called_fn_tys
+            .get(&(key, bb))
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    pub fn pred_var_sig(&self, pred: chc::PredVarId) -> chc::PredSig {
+        self.system.borrow().pred_vars[pred].sig.clone()
+    }
+
+    pub fn push_candidate_atoms(&mut self, pred: chc::PredVarId, atoms: Vec<chc::Formula>) {
+        self.system.borrow_mut().push_candidate_atoms(pred, atoms);
     }
 
     pub fn add_clause(&mut self, clause: chc::Clause) {
