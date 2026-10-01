@@ -12,7 +12,8 @@
 
 use std::convert::TryInto;
 use std::ops::{Add, AddAssign, Deref};
-use thrust_models::forall;
+use thrust_models::model::{Int, Seq};
+use thrust_models::{exists, forall};
 
 #[derive(Copy, Clone, /*Debug,*/ PartialEq, Eq)]
 pub struct PointerSpec {
@@ -69,37 +70,34 @@ impl PartialEq for TargetDataLayout {
     }
 }
 
-// The intended specs use two predicates, `dl_wf(dl)` (the default pointer size
-// is 2, 4 or 8 bytes, so `obj_size_bound` cannot hit its `panic!` arm) and
-// `prim_wf(p, dl)` (a `Primitive::Pointer(a)` only names the default address
-// space, so `pointer_size_in` / `pointer_align_in` cannot panic).
-//
-// They are written out inline in the `requires` below instead of as
-// `#[thrust_macros::predicate]`s: a predicate body must be a raw SMT-LIB2
-// string literal (`thrust-macros/src/spec.rs:18-21`, and
-// `src/analyze/local_def.rs:152` panics with "invalid predicate definition: no
-// string literal was found." otherwise), and writing these out in SMT needs the
-// generated projector names for an 18-field datatype. `requires` / `ensures`
-// are formula expressions, so the same conditions can be written in Rust there.
-//
-// The second half of the intended `dl_wf` -- every entry of
-// `address_space_info` has a pointer size of at most 8 bytes -- is NOT
-// expressible at all: the model of `TargetDataLayout` is the struct itself, so
-// `dl.address_space_info` has the ordinary Rust type `Vec<..>` in a formula and
-// the `Seq` accessors are rejected by rustc ("no field `length` on type
-// `std::vec::Vec<..>`", likewise `array`). Only the default pointer spec is
-// constrained; the other entries are never read because `pointer_size_in` /
-// `pointer_align_in` require the default address space.
+// `address_space_info` is a `Vec` field of a struct whose model is the struct itself, so a
+// formula reaches its entries through a sequence `s` equal to it (`Seq`'s `PartialEq` with a type
+// whose model is that sequence). rustc's parser adds an address space to it at most once.
 
 #[thrust_macros::context]
 impl TargetDataLayout {
-    // What `pointer_size_in` and `pointer_align_in` require of the address space `c`.
+    // What `pointer_size_in` and `pointer_align_in` require of the address space `c`: it is the
+    // default one or has an entry in `address_space_info`.
     #[thrust_macros::predicate]
     fn pointer_space_ok(self, c: AddressSpace) -> bool {
-        (self.default_address_space_pointer_spec.pointer_size.raw == 2
-            || self.default_address_space_pointer_spec.pointer_size.raw == 4
-            || self.default_address_space_pointer_spec.pointer_size.raw == 8)
-            && c == self.default_address_space
+        c == self.default_address_space
+            || exists(|s: Seq<(AddressSpace, PointerSpec)>, i: Int|
+                s == self.address_space_info && 0 <= i && i < s.len() && s[i].0 == c)
+    }
+
+    // `n` is the pointer size of the address space `c`: the default one's, or that of the first
+    // entry of `address_space_info` for `c`.
+    #[thrust_macros::predicate]
+    fn pointer_size_is(self, c: AddressSpace, n: Size) -> bool {
+        (c == self.default_address_space && n == self.default_address_space_pointer_spec.pointer_size)
+            || (!(c == self.default_address_space)
+                && exists(|s: Seq<(AddressSpace, PointerSpec)>, i: Int|
+                    s == self.address_space_info
+                        && 0 <= i
+                        && i < s.len()
+                        && s[i].0 == c
+                        && n == s[i].1.pointer_size
+                        && forall(|j: Int| !(0 <= j && j < i) || !(s[j].0 == c))))
     }
 
     #[inline]
@@ -123,12 +121,8 @@ impl TargetDataLayout {
     }
 
     #[inline]
-    #[thrust_macros::requires(((*self).default_address_space_pointer_spec.pointer_size.raw == 2
-        || (*self).default_address_space_pointer_spec.pointer_size.raw == 4
-        || (*self).default_address_space_pointer_spec.pointer_size.raw == 8)
-        && c == (*self).default_address_space)]
-    #[thrust_macros::ensures(c != (*self).default_address_space
-        || result.raw == (*self).default_address_space_pointer_spec.pointer_size.raw)]
+    #[thrust_macros::requires(Self::pointer_space_ok(*self, c))]
+    #[thrust_macros::ensures(Self::pointer_size_is(*self, c, result))]
     pub fn pointer_size_in(&self, c: AddressSpace) -> Size {
         if c == self.default_address_space {
             return self.default_address_space_pointer_spec.pointer_size;
@@ -145,10 +139,7 @@ impl TargetDataLayout {
     }
 
     #[inline]
-    #[thrust_macros::requires(((*self).default_address_space_pointer_spec.pointer_size.raw == 2
-        || (*self).default_address_space_pointer_spec.pointer_size.raw == 4
-        || (*self).default_address_space_pointer_spec.pointer_size.raw == 8)
-        && c == (*self).default_address_space)]
+    #[thrust_macros::requires(Self::pointer_space_ok(*self, c))]
     #[thrust_macros::ensures(true)]
     pub fn pointer_align_in(&self, c: AddressSpace) -> AbiAlign {
         // Rewrite (rewrites.md R9): as in `pointer_size_in`.
@@ -608,6 +599,10 @@ pub struct Niche {
 
 #[thrust_macros::context]
 impl Niche {
+    #[thrust_macros::requires(forall(|dl: TargetDataLayout, r: WrappingRange, a: AddressSpace|
+        !(C::dl_of(*cx, dl) && scalar == Scalar::Initialized { value: Primitive::Pointer(a), valid_range: r })
+            || (TargetDataLayout::pointer_space_ok(dl, a)
+                && forall(|n: Size| !TargetDataLayout::pointer_size_is(dl, a, n) || n.raw * 8 <= 128))))]
     pub fn from_scalar<C: HasDataLayout>(cx: &C, offset: Size, scalar: Scalar) -> Option<Self> {
         let Scalar::Initialized { value, valid_range } = scalar else {
             return None;
@@ -624,10 +619,14 @@ impl Niche {
         }
     }
 
-    // Trusted; the intended `requires` is `prim_wf(self.value, *cx.data_layout())`,
-    // which is not expressible for a generic `cx` (see `HasDataLayout`).
+    // Trusted: the bit operations of the body are not modelled. The `requires` is that of
+    // `value.size(cx)` and the `assert!`'s bound on a pointer's size.
     #[thrust::trusted]
-    #[thrust::callable]
+    #[thrust_macros::requires(forall(|dl: TargetDataLayout, a: AddressSpace|
+        !(C::dl_of(*cx, dl) && (*self).value == Primitive::Pointer(a))
+            || (TargetDataLayout::pointer_space_ok(dl, a)
+                && forall(|n: Size| !TargetDataLayout::pointer_size_is(dl, a, n) || n.raw * 8 <= 128))))]
+    #[thrust_macros::ensures(true)]
     pub fn available<C: HasDataLayout>(&self, cx: &C) -> u128 {
         let Self {
             value,
@@ -760,8 +759,8 @@ where
 
     // `Iterator::find` over this iterator: the items in order until the closure accepts one. `P:
     // Fn` in place of std's `FnMut` (the closures at the call sites capture by shared reference),
-    // so the postcondition names the closure that accepted the item. The iterator ends right
-    // after the item found, or at the end.
+    // so the postcondition names the closure's answers: it rejected every item before the one
+    // found, or every item. The iterator ends right after the item found, or at the end.
     #[thrust_macros::requires(<Self as Iterator>::invariant(*self))]
     #[thrust_macros::requires(forall(|x: <&'a T as thrust_models::Model>::Ty| thrust_macros::pre!(predicate(&x))))]
     #[thrust_macros::ensures((!self).0 == (*self).0 && (*self).1 <= (!self).1 && (!self).1 <= (*self).0.len())]
@@ -770,6 +769,10 @@ where
         ==> (*self).1 < (!self).1
             && x == &(*self).0[(!self).1 - 1]
             && thrust_macros::post!(predicate(&x), true)))]
+    #[thrust_macros::ensures(result == None ==> forall(|k: Int|
+        !((*self).1 <= k && k < (!self).1) || thrust_macros::post!(predicate(&&(*self).0[k]), false)))]
+    #[thrust_macros::ensures(result == None || forall(|k: Int|
+        !((*self).1 <= k && k + 1 < (!self).1) || thrust_macros::post!(predicate(&&(*self).0[k]), false)))]
     fn find<P: Fn(&&'a T) -> bool>(&mut self, predicate: P) -> Option<&'a T> {
         let this = self;
         while let Some(x) = this.next() {
@@ -780,6 +783,8 @@ where
                         && (*self.at_entry()).1 <= (*this).1
                         && (*this).1 <= (*this).0.len()
                         && forall(|x: <&'a T as thrust_models::Model>::Ty| thrust_macros::pre!(predicate(&x)))
+                        && forall(|k: Int| !((*self.at_entry()).1 <= k && k < (*this).1)
+                            || thrust_macros::post!(predicate(&&(*this).0[k]), false))
             );
             if predicate(&x) {
                 return Some(x);

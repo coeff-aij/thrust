@@ -29,6 +29,9 @@ pub struct DenseBitSet<T> {
     domain_size: usize,
     words: Vec<Word>,
     marker: PhantomData<T>,
+    // Rewrite (rewrites.md S11): the number of members, proof-only (`Ghost` has no runtime data).
+    // The bodies are trusted, so the contracts of `new_empty`, `insert` and `insert_all` define it.
+    card: thrust_models::Ghost<UInt>,
 }
 
 #[thrust_macros::context]
@@ -44,18 +47,11 @@ impl<T: Idx> DenseBitSet<T> {
     }
 
     /// `dist` is `self` with `i` inserted: same domain, and the word sequence
-    /// updated at `i` only. `Seq::store` cannot take the model `Int` literal
-    /// `1` from Rust syntax, so this stays a raw SMT-LIB2 body.
+    /// updated at `i` only. A formula has no `Int` literal to pass to
+    /// `Seq::store`, so `one` is bound to 1 by a guarded `forall`.
     #[thrust_macros::predicate]
     fn inserted(self, i: usize, dist: Self) -> bool {
-        // dist.domain_size == self.domain_size
-        //     && dist.words == self.words.store(i, 1)
-        "(and
-            (= (tuple_proj<Int-Seq<Int>-Tuple>.0 dist)
-               (tuple_proj<Int-Seq<Int>-Tuple>.0 self_))
-            (= (tuple_proj<Int-Seq<Int>-Tuple>.1 dist)
-               (seq.store (tuple_proj<Int-Seq<Int>-Tuple>.1 self_) i 1)))";
-        true
+        dist.0 == self.0 && forall(|one: UInt| !(one == 1) || dist.1 == self.1.store(i, one))
     }
 
     /// `forall i: !Self::mem(self, i)` over the positions the word sequence
@@ -85,12 +81,14 @@ impl<T: Idx> DenseBitSet<T> {
     #[thrust_macros::ensures(result.0 == domain_size)]
     #[thrust_macros::ensures(Self::no_mem(result))]
     #[thrust_macros::ensures(Self::one_entry_per_elem(result))]
+    #[thrust_macros::ensures(result.3 == 0)]
     pub fn new_empty(domain_size: usize) -> DenseBitSet<T> {
         let num_words = num_words(domain_size);
         DenseBitSet {
             domain_size,
             words: vec![0; num_words],
             marker: PhantomData,
+            card: thrust_macros::ghost!(|| -> UInt { 0 }),
         }
     }
 
@@ -126,6 +124,10 @@ impl<T: Idx> DenseBitSet<T> {
         ==> Self::inserted(*self, i, !self)))]
     #[thrust_macros::ensures(forall(|i: UInt| <T as Idx>::index_is(elem, i) && (result == true) ==> !Self::mem(*self, i)))]
     #[thrust_macros::ensures(forall(|i: UInt| <T as Idx>::index_is(elem, i) && Self::mem(*self, i) ==> (result == false)))]
+    #[thrust_macros::ensures(forall(|i: UInt| <T as Idx>::index_is(elem, i) && !Self::mem(*self, i) ==> (result == true)))]
+    #[thrust_macros::ensures((result == true) ==> (!self).3 == (*self).3 + 1)]
+    #[thrust_macros::ensures((result == false) ==> (!self).3 == (*self).3)]
+    #[thrust_macros::ensures(0 <= (!self).3 && (!self).3 <= (!self).0)]
     pub fn insert(&mut self, elem: T) -> bool {
         assert!(
             elem.index() < self.domain_size,
@@ -145,6 +147,7 @@ impl<T: Idx> DenseBitSet<T> {
     #[thrust_macros::ensures((!self).0 == (*self).0)]
     #[thrust_macros::ensures(Self::one_entry_per_elem(*self) ==> Self::one_entry_per_elem(!self))]
     #[thrust_macros::ensures(forall(|i: UInt| i < (*self).0 ==> Self::mem(!self, i)))]
+    #[thrust_macros::ensures((!self).3 == (*self).0)]
     pub fn insert_all(&mut self) {
         self.words.fill(!0);
         self.clear_excess_bits();
@@ -269,7 +272,10 @@ impl<'a, T: Idx> Iterator for BitIter<'a, T> {
 #[thrust_macros::context]
 impl<'a, T: Idx> BitIter<'a, T> {
     #[thrust::extern_spec_fn]
-    #[thrust_macros::requires(true)]
+    // `next` builds its item with `T::new`; the contract does not say which bit comes next, so
+    // every index below the bound must be buildable.
+    #[thrust_macros::requires(forall(|n: UInt, k: UInt|
+        !(Self::bit_bound(*it, n) && 0 <= k && k < n) || <T as Idx>::can_new(k)))]
     #[thrust_macros::ensures(Self::same_words(*it, !it))]
     // The weak, safe form: *any* yielded element's index is below the bound.
     // Written as one universal over the payload rather than
@@ -391,10 +397,15 @@ fn count_ones(words: &[Word]) -> usize {
 
 #[thrust_macros::context]
 pub trait Idx: Copy + 'static + Eq + PartialEq + Debug + Hash {
+    /// `idx` is an index `new` accepts, as in idx.rs.
+    #[thrust_macros::predicate]
+    fn can_new(idx: usize) -> bool;
+
     /// `i` is the `usize` index of this element.
     #[thrust_macros::predicate]
     fn index_is(self, i: usize) -> bool;
 
+    #[thrust_macros::requires(Self::can_new(idx))]
     fn new(idx: usize) -> Self;
 
     #[thrust_macros::ensures(Self::index_is(self, result))]
@@ -414,6 +425,11 @@ pub trait Idx: Copy + 'static + Eq + PartialEq + Debug + Hash {
 
 #[thrust_macros::context]
 impl Idx for usize {
+    #[thrust_macros::predicate]
+    fn can_new(idx: usize) -> bool {
+        true
+    }
+
     #[thrust_macros::predicate]
     fn index_is(self, i: usize) -> bool {
         // i == self
@@ -467,8 +483,27 @@ impl<I: Idx> Iterator for IdxRange<I> {
     }
 }
 
+// `next` builds `I::new(start)`: the `requires` of idx.rs's wrapper, on a sibling inherent impl
+// as for `BitIter::next` above.
+#[thrust_macros::context]
+impl<I: Idx> IdxRange<I> {
+    #[thrust::extern_spec_fn]
+    #[thrust_macros::requires((*it).start >= 0)]
+    #[thrust_macros::requires(
+        forall(|s: UInt| s == (*it).start && s < (*it).end ==> <I as Idx>::can_new(s))
+    )]
+    #[thrust_macros::ensures(true)]
+    fn _extern_spec_next(it: &mut IdxRange<I>) -> Option<I>
+    where
+        I: thrust_models::Model,
+        <I as thrust_models::Model>::Ty: PartialEq,
+    {
+        <IdxRange<I> as Iterator>::next(it)
+    }
+}
+
 impl<T> thrust_models::Model for DenseBitSet<T> {
-    type Ty = (UInt, Seq<UInt>, ());
+    type Ty = (UInt, Seq<UInt>, (), UInt);
 }
 impl<'a> thrust_models::Model for WordIter<'a> {
     type Ty = Self;

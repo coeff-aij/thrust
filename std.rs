@@ -622,6 +622,12 @@ mod thrust_models {
 
     impl<T: ?Sized> Copy for Ghost<T> {}
 
+    // Proof-only data hashes to nothing, so that a struct with a ghost field keeps its derives.
+    impl<T: ?Sized> std::hash::Hash for Ghost<T> {
+        #[thrust::ignored]
+        fn hash<H: std::hash::Hasher>(&self, _state: &mut H) {}
+    }
+
     // TODO: keep this in step with the `ghost_model` arm of `model_adt` in
     // `refine::template`, which resolves a `Ghost<T>` to its content as well.
     //

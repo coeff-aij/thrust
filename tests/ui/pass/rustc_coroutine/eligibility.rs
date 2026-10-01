@@ -150,6 +150,8 @@ pub struct DenseBitSet<T> {
     domain_size: usize,
     words: Vec<Word>,
     marker: PhantomData<T>,
+    // Rewrite (rewrites.md S11): the number of members, proof-only, as in bitset.rs.
+    card: thrust_models::Ghost<UInt>,
 }
 
 #[thrust_macros::context]
@@ -165,18 +167,11 @@ impl<T: Idx> DenseBitSet<T> {
     }
 
     /// `dist` is `self` with `i` inserted: same domain, and the word sequence
-    /// updated at `i` only. `Seq::store` cannot take the model `Int` literal
-    /// `1` from Rust syntax, so this stays a raw SMT-LIB2 body.
+    /// updated at `i` only. A formula has no `Int` literal to pass to
+    /// `Seq::store`, so `one` is bound to 1 by a guarded `forall`.
     #[thrust_macros::predicate]
     fn inserted(self, i: usize, dist: Self) -> bool {
-        // dist.domain_size == self.domain_size
-        //     && dist.words == self.words.store(i, 1)
-        "(and
-            (= (tuple_proj<Int-Seq<Int>-Tuple>.0 dist)
-               (tuple_proj<Int-Seq<Int>-Tuple>.0 self_))
-            (= (tuple_proj<Int-Seq<Int>-Tuple>.1 dist)
-               (seq.store (tuple_proj<Int-Seq<Int>-Tuple>.1 self_) i 1)))";
-        true
+        dist.0 == self.0 && forall(|one: UInt| !(one == 1) || dist.1 == self.1.store(i, one))
     }
 
     /// `forall i: !Self::mem(self, i)` over the positions the word sequence
@@ -206,12 +201,14 @@ impl<T: Idx> DenseBitSet<T> {
     #[thrust::trusted]
     #[thrust_macros::ensures(result.0 == domain_size)]
     #[thrust_macros::ensures(Self::no_mem(result))]
+    #[thrust_macros::ensures(result.3 == 0)]
     pub fn new_empty(domain_size: usize) -> DenseBitSet<T> {
         let num_words = num_words(domain_size);
         DenseBitSet {
             domain_size,
             words: vec![0; num_words],
             marker: PhantomData,
+            card: thrust_macros::ghost!(|| -> UInt { 0 }),
         }
     }
 
@@ -246,6 +243,10 @@ impl<T: Idx> DenseBitSet<T> {
         ==> Self::inserted(*self, i, !self)))]
     #[thrust_macros::ensures(forall(|i: UInt| <T as Idx>::index_is(elem, i) && (result == true) ==> !Self::mem(*self, i)))]
     #[thrust_macros::ensures(forall(|i: UInt| <T as Idx>::index_is(elem, i) && Self::mem(*self, i) ==> (result == false)))]
+    #[thrust_macros::ensures(forall(|i: UInt| <T as Idx>::index_is(elem, i) && !Self::mem(*self, i) ==> (result == true)))]
+    #[thrust_macros::ensures((result == true) ==> (!self).3 == (*self).3 + 1)]
+    #[thrust_macros::ensures((result == false) ==> (!self).3 == (*self).3)]
+    #[thrust_macros::ensures(0 <= (!self).3 && (!self).3 <= (!self).0)]
     pub fn insert(&mut self, elem: T) -> bool {
         assert!(
             elem.index() < self.domain_size,
@@ -264,6 +265,7 @@ impl<T: Idx> DenseBitSet<T> {
     #[thrust::trusted]
     #[thrust_macros::ensures((!self).0 == (*self).0)]
     #[thrust_macros::ensures(forall(|i: UInt| i < (*self).0 ==> Self::mem(!self, i)))]
+    #[thrust_macros::ensures((!self).3 == (*self).0)]
     pub fn insert_all(&mut self) {
         self.words.fill(!0);
         self.clear_excess_bits();
@@ -274,6 +276,7 @@ impl<T: Idx> DenseBitSet<T> {
     #[thrust::callable]
     #[thrust_macros::ensures(result.0 == (*self).0 && result.1 == 0)]
     #[thrust_macros::ensures(0 <= result.2 && result.2 <= (*self).0)]
+    #[thrust_macros::ensures(result.2 == (*self).3)]
     pub fn iter(&self) -> BitIter<'_, T> {
         BitIter::new(&self.words)
     }
@@ -366,10 +369,15 @@ where
     // the number of items yielded so far, and the number still to yield. Every yielded element
     // is below the bound, and the elements are distinct, so count + left stays at most the bound.
     // `left` makes completion observable: the iterator completes with nothing left, which
-    // `Map`'s `reinitialize` in layout.rs needs.
+    // `Map`'s `reinitialize` in layout.rs needs. `next` builds its item with `T::new`, which
+    // panics unless `can_new` holds; the model does not say which bit comes next, so every
+    // index below the bound must be buildable.
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
-        0 <= self.1 && 0 <= self.2 && self.1 + self.2 <= self.0
+        0 <= self.1
+            && 0 <= self.2
+            && self.1 + self.2 <= self.0
+            && forall(|k: UInt| !(0 <= k && k < self.0) || <T as Idx>::can_new(k))
     }
 
     #[thrust_macros::predicate]
@@ -424,6 +432,9 @@ pub struct BitMatrix<R: Idx, C: Idx> {
     num_columns: usize,
     words: Vec<Word>,
     marker: PhantomData<(R, C)>,
+    // Rewrite (rewrites.md S11): proof-only, every set bit's column is below it. rustc's `new`
+    // starts it at 0 and `insert` raises it past the column it sets.
+    col_bound: thrust_models::Ghost<UInt>,
 }
 
 #[thrust_macros::context]
@@ -435,7 +446,7 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
             self.words.len() == self.num_rows * rw
                 && 64 * rw >= self.num_columns
                 && 64 * rw < self.num_columns + 64
-        })
+        }) && 0 <= *self.col_bound && *self.col_bound <= self.num_columns
     }
 
     #[thrust::trusted]
@@ -460,8 +471,8 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
     #[thrust::trusted]
     #[thrust_macros::requires(Self::wf(*self))]
     #[thrust_macros::requires(forall(|i: UInt| <R as Idx>::index_is(row, i) ==> i < (*self).num_rows))]
-    #[thrust_macros::ensures(result.0 == (*self).num_columns && result.1 == 0)]
-    #[thrust_macros::ensures(0 <= result.2 && result.2 <= (*self).num_columns)]
+    #[thrust_macros::ensures(result.0 == *(*self).col_bound && result.1 == 0)]
+    #[thrust_macros::ensures(0 <= result.2 && result.2 <= *(*self).col_bound)]
     pub fn iter(&self, row: R) -> BitIter<'_, C> {
         assert!(row.index() < self.num_rows);
         let (start, end) = self.range(row);
@@ -1163,7 +1174,7 @@ impl<VariantIdx: thrust_models::Model, FieldIdx: thrust_models::Model> thrust_mo
     type Ty = SavedLocalEligibility<<VariantIdx as thrust_models::Model>::Ty, <FieldIdx as thrust_models::Model>::Ty>;
 }
 impl<T> thrust_models::Model for DenseBitSet<T> {
-    type Ty = (UInt, Seq<UInt>, ());
+    type Ty = (UInt, Seq<UInt>, (), UInt);
 }
 impl<'a> thrust_models::Model for WordIter<'a> {
     type Ty = (&'a Seq<UInt>, UInt);
@@ -1212,11 +1223,10 @@ impl<I: thrust_models::Model> thrust_models::Model for Enumerate<I> {
         || forall(|i: UInt|
             !<LocalIdx as Idx>::index_is((*variant_fields)[v][f], i)
                 || i < nb_locals))
-    // `count(local_b)` takes a column index as a row, so the columns must not outnumber the
-    // rows: the set abstraction does not say which bits a row holds, so this is stronger than
-    // the panic condition (a set bit of some row at a column >= num_rows).
+    // `count(local_b)` takes a column index as a row, so every set bit's column must be below
+    // the number of rows: the panic condition, through the matrix's ghost column bound.
     && (*storage_conflicts).num_rows <= nb_locals
-    && (*storage_conflicts).num_columns <= (*storage_conflicts).num_rows
+    && *(*storage_conflicts).col_bound <= (*storage_conflicts).num_rows
     && BitMatrix::<LocalIdx, LocalIdx>::wf(*storage_conflicts)
     && forall(|k: UInt| !(0 <= k && k < nb_locals) || LocalIdx::can_new(k))
     && forall(|n: UInt| !(0 <= n && n <= nb_locals) || FieldIdx::can_new(n))
@@ -1251,13 +1261,12 @@ impl<I: thrust_models::Model> thrust_models::Model for Enumerate<I> {
                     && thrust_models::exists(|i: UInt|
                         i == l
                             && <LocalIdx as Idx>::index_is((*variant_fields)[v][f], i)))))
-    // 3. An ineligible local has its promoted field index. The README bounds it by the
-    // cardinality of `inel`, which no predicate states yet (DenseBitSet cardinality); the bound
-    // stated is the number of locals, which the cardinality is at most.
+    // 3. An ineligible local has its promoted field index, below the number of members of
+    // `inel` (its ghost count `result.0.3`, the position in `inel.iter()`'s enumeration).
     && forall(|l: usize, x: Option<<FieldIdx as thrust_models::Model>::Ty>|
         !(0 <= l && l < nb_locals && result.1[l] == SavedLocalEligibility::Ineligible(x))
         || thrust_models::exists(|k: <FieldIdx as thrust_models::Model>::Ty|
-            x == Some(k) && forall(|i: UInt| !<FieldIdx as Idx>::index_is(k, i) || i < nb_locals)))
+            x == Some(k) && forall(|i: UInt| !<FieldIdx as Idx>::index_is(k, i) || i < result.0.3)))
     // 4. Membership in `inel` matches being `Ineligible(_)`.
     // TODO(spec): `DenseBitSet::elem_at`/`mem` are uninterpreted here, see
     // above; written as an `<==>` via two `==>` for the annotation grammar.
@@ -1350,7 +1359,7 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
                     && <VariantIdx as Idx>::index_is(v, i))
                 || i < (*variant_fields).len())
                 && assignments.len() == ineligible_locals.0 && (*storage_conflicts).num_rows <= ineligible_locals.0
-                && (*storage_conflicts).num_columns <= (*storage_conflicts).num_rows
+                && *(*storage_conflicts).col_bound <= (*storage_conflicts).num_rows
                 && BitMatrix::<LocalIdx, LocalIdx>::wf(*storage_conflicts)
                 && forall(|k: UInt| !(0 <= k && k < ineligible_locals.0) || <LocalIdx as Idx>::can_new(k))
                 && rows.start >= 0 && rows.end == (*storage_conflicts).num_rows);
@@ -1367,12 +1376,12 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
                     && <VariantIdx as Idx>::index_is(v, i))
                 || i < (*variant_fields).len())
                 && assignments.len() == ineligible_locals.0 && (*storage_conflicts).num_rows <= ineligible_locals.0
-                    && (*storage_conflicts).num_columns <= (*storage_conflicts).num_rows
+                    && *(*storage_conflicts).col_bound <= (*storage_conflicts).num_rows
                     && BitMatrix::<LocalIdx, LocalIdx>::wf(*storage_conflicts)
                     && forall(|k: UInt| !(0 <= k && k < ineligible_locals.0) || <LocalIdx as Idx>::can_new(k))
                     && rows.start >= 0 && rows.end == (*storage_conflicts).num_rows
                     && forall(|i: UInt| !<LocalIdx as Idx>::index_is(local_a, i) || i < ineligible_locals.0)
-                    && conflicts.0 == (*storage_conflicts).num_columns
+                    && conflicts.0 == *(*storage_conflicts).col_bound
                     && 0 <= conflicts.1 && 0 <= conflicts.2 && conflicts.1 + conflicts.2 <= conflicts.0);
             if ineligible_locals.contains(local_b) || assignments[local_a] == assignments[local_b] {
                 continue;

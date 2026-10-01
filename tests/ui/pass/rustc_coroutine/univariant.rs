@@ -500,23 +500,32 @@ pub struct TargetDataLayout {
     pub c_enum_min_size: Integer,
 }
 
-// NOTE: an earlier draft of this file (and of values.rs) tried `dl_wf(dl)` /
-// `prim_wf(p, dl)` as `#[thrust_macros::predicate]`s with a plain Rust
-// boolean body. That does not work: a predicate body must be a raw SMT-LIB2
-// string literal (`thrust-macros/src/spec.rs:18-21`;
-// `src/analyze/local_def.rs:152` panics "invalid predicate definition: no
-// string literal was found." otherwise) -- confirmed against the
-// now-corrected tests/ui/pass/rustc_coroutine/values.rs, which inlines the
-// same condition directly in `requires` instead. Following that fix here:
-// the pointer-size well-formedness condition is inlined per-method, and the
-// "every `address_space_info` entry has pointer size <= 8" / "`Pointer(a)`
-// only names the default address space" halves are dropped as NOT
-// expressible (`dl.address_space_info` has the real `Vec<..>` type in a
-// formula body, where the model's `Seq` accessors do not apply; see values.rs's
-// note). `Primitive::size`/`align` and `Niche::available` accordingly stay
-// fully trusted below, matching values.rs.
+// `address_space_info` is reached in a formula through a sequence equal to it, as in values.rs.
 #[thrust_macros::context]
 impl TargetDataLayout {
+    // What `pointer_size_in` and `pointer_align_in` require of the address space `c`, as in
+    // values.rs.
+    #[thrust_macros::predicate]
+    fn pointer_space_ok(self, c: AddressSpace) -> bool {
+        c == self.default_address_space
+            || exists(|s: Seq<(AddressSpace, PointerSpec)>, i: UInt|
+                s == self.address_space_info && 0 <= i && i < s.len() && s[i].0 == c)
+    }
+
+    // `n` is the pointer size of the address space `c`, as in values.rs.
+    #[thrust_macros::predicate]
+    fn pointer_size_is(self, c: AddressSpace, n: Size) -> bool {
+        (c == self.default_address_space && n == self.default_address_space_pointer_spec.pointer_size)
+            || (!(c == self.default_address_space)
+                && exists(|s: Seq<(AddressSpace, PointerSpec)>, i: UInt|
+                    s == self.address_space_info
+                        && 0 <= i
+                        && i < s.len()
+                        && s[i].0 == c
+                        && n == s[i].1.pointer_size
+                        && forall(|j: UInt| !(0 <= j && j < i) || !(s[j].0 == c))))
+    }
+
     #[inline]
     #[thrust::trusted]
     #[thrust_macros::requires(((*self).default_address_space_pointer_spec.pointer_size.raw == 2
@@ -539,11 +548,8 @@ impl TargetDataLayout {
 
     #[inline]
     #[thrust::trusted]
-    #[thrust_macros::requires(((*self).default_address_space_pointer_spec.pointer_size.raw == 2
-        || (*self).default_address_space_pointer_spec.pointer_size.raw == 4
-        || (*self).default_address_space_pointer_spec.pointer_size.raw == 8)
-        && c == (*self).default_address_space)]
-    #[thrust_macros::ensures(true)]
+    #[thrust_macros::requires(Self::pointer_space_ok(*self, c))]
+    #[thrust_macros::ensures(Self::pointer_size_is(*self, c, result))]
     pub fn pointer_size_in(&self, c: AddressSpace) -> Size {
         if c == self.default_address_space {
             return self.default_address_space_pointer_spec.pointer_size;
@@ -558,10 +564,7 @@ impl TargetDataLayout {
 
     #[inline]
     #[thrust::trusted]
-    #[thrust_macros::requires(((*self).default_address_space_pointer_spec.pointer_size.raw == 2
-        || (*self).default_address_space_pointer_spec.pointer_size.raw == 4
-        || (*self).default_address_space_pointer_spec.pointer_size.raw == 8)
-        && c == (*self).default_address_space)]
+    #[thrust_macros::requires(Self::pointer_space_ok(*self, c))]
     #[thrust_macros::ensures(true)]
     pub fn pointer_align_in(&self, c: AddressSpace) -> AbiAlign {
         AbiAlign::new(if c == self.default_address_space {
@@ -574,18 +577,36 @@ impl TargetDataLayout {
     }
 }
 
+// `dl_of(cx, dl)`: `dl` is the layout `cx.data_layout()` returns, as in values.rs.
+#[thrust_macros::context]
 pub trait HasDataLayout {
+    #[thrust_macros::predicate]
+    fn dl_of(self, dl: TargetDataLayout) -> bool;
+
+    #[thrust_macros::ensures(Self::dl_of(*self, *result))]
     fn data_layout(&self) -> &TargetDataLayout;
 }
 
+#[thrust_macros::context]
 impl HasDataLayout for TargetDataLayout {
+    #[thrust_macros::predicate]
+    fn dl_of(self, dl: TargetDataLayout) -> bool {
+        self == dl
+    }
+
     #[inline]
     fn data_layout(&self) -> &TargetDataLayout {
         self
     }
 }
 
+#[thrust_macros::context]
 impl HasDataLayout for &TargetDataLayout {
+    #[thrust_macros::predicate]
+    fn dl_of(self, dl: TargetDataLayout) -> bool {
+        *self == dl
+    }
+
     #[inline]
     fn data_layout(&self) -> &TargetDataLayout {
         (**self).data_layout()
@@ -658,7 +679,11 @@ impl Size {
 
     #[inline]
     #[thrust::trusted]
-    #[thrust::callable]
+    #[thrust_macros::requires(forall(|dl: TargetDataLayout| !C::dl_of(*cx, dl)
+        || dl.default_address_space_pointer_spec.pointer_size.raw == 2
+        || dl.default_address_space_pointer_spec.pointer_size.raw == 4
+        || dl.default_address_space_pointer_spec.pointer_size.raw == 8))]
+    #[thrust_macros::ensures(true)]
     pub fn checked_add<C: HasDataLayout>(self, offset: Size, cx: &C) -> Option<Size> {
         let dl = cx.data_layout();
 
@@ -850,12 +875,11 @@ pub enum Primitive {
     Pointer(AddressSpace),
 }
 
+#[thrust_macros::context]
 impl Primitive {
-    // Trusted: the body's `dl.pointer_size_in(a)` needs `a ==
-    // (*dl).default_address_space`, and with no trait-level spec on
-    // `HasDataLayout::data_layout` (see the note there) there is nothing to
-    // relate `a` to `dl` for a generic `cx`; matches values.rs.
-    #[thrust::trusted]
+    // A pointer's size and alignment are looked up in the layout `cx` names, as in values.rs.
+    #[thrust_macros::requires(forall(|dl: TargetDataLayout, a: AddressSpace|
+        !(C::dl_of(*cx, dl) && self == Primitive::Pointer(a)) || TargetDataLayout::pointer_space_ok(dl, a)))]
     #[thrust::callable]
     pub fn size<C: HasDataLayout>(self, cx: &C) -> Size {
         use Primitive::*;
@@ -868,7 +892,8 @@ impl Primitive {
         }
     }
 
-    #[thrust::trusted]
+    #[thrust_macros::requires(forall(|dl: TargetDataLayout, a: AddressSpace|
+        !(C::dl_of(*cx, dl) && self == Primitive::Pointer(a)) || TargetDataLayout::pointer_space_ok(dl, a)))]
     #[thrust::callable]
     pub fn align<C: HasDataLayout>(self, cx: &C) -> AbiAlign {
         use Primitive::*;
@@ -908,10 +933,25 @@ impl Scalar {
         }
     }
 
+
+    #[thrust_macros::impl_trait_names(C)]
+    #[thrust_macros::requires(forall(|dl: TargetDataLayout, p: Primitive, r: WrappingRange, a: AddressSpace|
+        !(C::dl_of(*cx, dl)
+            && (self == Scalar::Initialized { value: p, valid_range: r } || self == Scalar::Union { value: p })
+            && p == Primitive::Pointer(a))
+            || TargetDataLayout::pointer_space_ok(dl, a)))]
+    #[thrust::callable]
     pub fn align(self, cx: &impl HasDataLayout) -> AbiAlign {
         self.primitive().align(cx)
     }
 
+    #[thrust_macros::impl_trait_names(C)]
+    #[thrust_macros::requires(forall(|dl: TargetDataLayout, p: Primitive, r: WrappingRange, a: AddressSpace|
+        !(C::dl_of(*cx, dl)
+            && (self == Scalar::Initialized { value: p, valid_range: r } || self == Scalar::Union { value: p })
+            && p == Primitive::Pointer(a))
+            || TargetDataLayout::pointer_space_ok(dl, a)))]
+    #[thrust::callable]
     pub fn size(self, cx: &impl HasDataLayout) -> Size {
         self.primitive().size(cx)
     }
@@ -929,6 +969,17 @@ pub struct Niche {
 
 #[thrust_macros::context]
 impl Niche {
+    // `niche_wf`: what `available` requires of the niche under the data layout `dl`.
+    #[thrust_macros::predicate]
+    fn wf_in(self, dl: TargetDataLayout) -> bool {
+        forall(|a: AddressSpace| !(self.value == Primitive::Pointer(a))
+            || (TargetDataLayout::pointer_space_ok(dl, a)
+                && forall(|n: Size| !TargetDataLayout::pointer_size_is(dl, a, n) || n.raw * 8 <= 128)))
+    }
+    #[thrust_macros::requires(forall(|dl: TargetDataLayout, r: WrappingRange, a: AddressSpace|
+        !(C::dl_of(*cx, dl) && scalar == Scalar::Initialized { value: Primitive::Pointer(a), valid_range: r })
+            || (TargetDataLayout::pointer_space_ok(dl, a)
+                && forall(|n: Size| !TargetDataLayout::pointer_size_is(dl, a, n) || n.raw * 8 <= 128))))]
     pub fn from_scalar<C: HasDataLayout>(cx: &C, offset: Size, scalar: Scalar) -> Option<Self> {
         let Scalar::Initialized { value, valid_range } = scalar else {
             return None;
@@ -945,10 +996,14 @@ impl Niche {
         }
     }
 
-    // Trusted for the same reason as `Primitive::size`/`align`; matches
-    // values.rs.
+    // Trusted: the bit operations of the body are not modelled. The `requires` is that of
+    // `value.size(cx)` and the `assert!`'s bound on a pointer's size, as in values.rs.
     #[thrust::trusted]
-    #[thrust::callable]
+    #[thrust_macros::requires(forall(|dl: TargetDataLayout, a: AddressSpace|
+        !(C::dl_of(*cx, dl) && (*self).value == Primitive::Pointer(a))
+            || (TargetDataLayout::pointer_space_ok(dl, a)
+                && forall(|n: Size| !TargetDataLayout::pointer_size_is(dl, a, n) || n.raw * 8 <= 128))))]
+    #[thrust_macros::ensures(true)]
     pub fn available<C: HasDataLayout>(&self, cx: &C) -> u128 {
         let Self {
             value,
@@ -1335,6 +1390,17 @@ pub enum LayoutCalculatorError<F> {
 type LayoutCalculatorResult<FieldIdx, VariantIdx, F> =
     Result<LayoutData<FieldIdx, VariantIdx>, LayoutCalculatorError<F>>;
 
+// The layout an `F` dereferences to, for a contract to name: `layout_is(f, l)` says `**f` is `l`.
+// Rewrite (rewrites.md S10): `F`'s bound `Deref<Target = &'a LayoutData<..>>` becomes this trait,
+// which has it as a supertrait (probes/layout_ref_niche.rs).
+#[thrust_macros::context]
+pub trait LayoutRef<'a, FieldIdx: Idx, VariantIdx: Idx>:
+    Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model
+{
+    #[thrust_macros::predicate]
+    fn layout_is(self, l: LayoutData<FieldIdx, VariantIdx>) -> bool;
+}
+
 #[derive(Clone, Copy /*Debug*/)]
 pub struct LayoutCalculator<Cx> {
     pub cx: Cx,
@@ -1344,12 +1410,13 @@ pub struct LayoutCalculator<Cx> {
 // `univariant_biased` apart from the data layout and the field layouts: `fields.indices()`
 // builds every field index up to `fields.len()`, the single variant is `VariantIdx::new(0)`,
 // and `MaybeUnsized` takes `fields.len() - 1`, which wraps below zero (overflow checks are off)
-// so that the slice `[..end]` panics. Not stated: `dl_wf` of the data layout and `niche_wf` of
-// every field's niche, which `Niche::available`, `Primitive::size` and `Size::checked_add`
-// need, and that the `NicheBias::End` layout succeeds and keeps a niche whenever the `Start`
-// one does (the two `unwrap_without_debug`s). The data layout is reached through the generic
-// `Cx::data_layout()`, and `F`'s model is not related to the `LayoutData` it dereferences to,
-// so neither can be named. `ensures`: an `Ok` layout has `Arbitrary` fields over
+// so that the slice `[..end]` panics; and `dl_wf` of the data layout `self.cx` names (the
+// default pointer size is 2, 4 or 8 bytes, which `Size::checked_add` needs), named by
+// `Cx::dl_of(*self, dl)` since the calculator's model is `self.cx`'s; and `niche_wf` of every
+// field's largest niche under that layout (`Niche::wf_in`, which `Niche::available` and
+// `Primitive::size` need), the field's layout named by `LayoutRef::layout_is`. Not stated: that
+// the `NicheBias::End` layout succeeds and keeps a niche whenever the `Start` one does (the two
+// `unwrap_without_debug`s). `ensures`: an `Ok` layout has `Arbitrary` fields over
 // `fields.len()` fields, its memory order a permutation (`FieldsShape::arbitrary_of`).
 #[thrust_macros::context]
 impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
@@ -1358,6 +1425,17 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         forall(|k: UInt| !(0 <= k && k <= (*fields).len()) || <FieldIdx as Idx>::can_new(k))
             && forall(|z: UInt| !(z == 0usize) || <VariantIdx as Idx>::can_new(z))
             && (matches!(kind, StructKind::MaybeUnsized) ==> (*fields).len() > 0)
+            && forall(|dl: TargetDataLayout| !Cx::dl_of(*self, dl)
+                || dl.default_address_space_pointer_spec.pointer_size.raw == 2
+                || dl.default_address_space_pointer_spec.pointer_size.raw == 4
+                || dl.default_address_space_pointer_spec.pointer_size.raw == 8)
+            && forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, n: Niche|
+                !(Cx::dl_of(*self, dl)
+                    && 0 <= i
+                    && i < (*fields).len()
+                    && F::layout_is((*fields)[i], l)
+                    && l.largest_niche == Some(n))
+                    || Niche::wf_in(n, dl))
     )]
     #[thrust_macros::ensures(forall(|l: LayoutData<FieldIdx, VariantIdx>|
         result != Ok(l) || FieldsShape::<FieldIdx>::arbitrary_of(l.fields, (*fields).len())))]
@@ -1365,7 +1443,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         'a,
         FieldIdx: Idx,
         VariantIdx: Idx,
-        F: Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model<Ty: PartialEq>,
+        F: LayoutRef<'a, FieldIdx, VariantIdx> + thrust_models::Model<Ty: PartialEq>,
     >(
         &self,
         fields: &IndexSlice<FieldIdx, F>,
@@ -1836,8 +1914,10 @@ impl<FieldIdx: Idx> thrust_models::Model for VariantLayout<FieldIdx> {
 impl<F: thrust_models::Model> thrust_models::Model for LayoutCalculatorError<F> {
     type Ty = LayoutCalculatorError<<F as thrust_models::Model>::Ty>;
 }
-impl<Cx> thrust_models::Model for LayoutCalculator<Cx> {
-    type Ty = Self;
+// The calculator's model is its one field's, so that a contract names `self.cx`'s data layout
+// through `Cx::dl_of(*self, dl)` (probes/calculator_dl.rs).
+impl<Cx: thrust_models::Model> thrust_models::Model for LayoutCalculator<Cx> {
+    type Ty = <Cx as thrust_models::Model>::Ty;
 }
 impl thrust_models::Model for NicheBias {
     type Ty = Self;

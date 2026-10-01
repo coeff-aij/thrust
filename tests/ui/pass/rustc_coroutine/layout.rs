@@ -126,6 +126,8 @@ pub struct DenseBitSet<T> {
     domain_size: usize,
     words: Vec<Word>,
     marker: PhantomData<T>,
+    // Rewrite (rewrites.md S11): the number of members, proof-only, as in bitset.rs.
+    card: thrust_models::Ghost<UInt>,
 }
 
 #[thrust_macros::context]
@@ -141,6 +143,7 @@ impl<T: Idx> DenseBitSet<T> {
     #[thrust::callable]
     #[thrust_macros::ensures(result.0 == (*self).0 && result.1 == 0)]
     #[thrust_macros::ensures(0 <= result.2 && result.2 <= (*self).0)]
+    #[thrust_macros::ensures(result.2 == (*self).3)]
     pub fn iter(&self) -> BitIter<'_, T> {
         BitIter::new(&self.words)
     }
@@ -230,10 +233,15 @@ where
     // the number of items yielded so far, and the number still to yield. Every yielded element
     // is below the bound, and the elements are distinct, so count + left stays at most the bound.
     // `left` makes completion observable: the iterator completes with nothing left, which
-    // `Map`'s `reinitialize` in layout.rs needs.
+    // `Map`'s `reinitialize` in layout.rs needs. `next` builds its item with `T::new`, which
+    // panics unless `can_new` holds; the model does not say which bit comes next, so every
+    // index below the bound must be buildable.
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
-        0 <= self.1 && 0 <= self.2 && self.1 + self.2 <= self.0
+        0 <= self.1
+            && 0 <= self.2
+            && self.1 + self.2 <= self.0
+            && forall(|k: UInt| !(0 <= k && k < self.0) || <T as Idx>::can_new(k))
     }
 
     #[thrust_macros::predicate]
@@ -287,6 +295,9 @@ pub struct BitMatrix<R: Idx, C: Idx> {
     num_columns: usize,
     words: Vec<Word>,
     marker: PhantomData<(R, C)>,
+    // Rewrite (rewrites.md S11): proof-only, every set bit's column is below it. rustc's `new`
+    // starts it at 0 and `insert` raises it past the column it sets.
+    col_bound: thrust_models::Ghost<UInt>,
 }
 
 #[thrust_macros::context]
@@ -298,7 +309,7 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
             self.words.len() == self.num_rows * rw
                 && 64 * rw >= self.num_columns
                 && 64 * rw < self.num_columns + 64
-        })
+        }) && 0 <= *self.col_bound && *self.col_bound <= self.num_columns
     }
 
     #[thrust::trusted]
@@ -323,8 +334,8 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
     #[thrust::trusted]
     #[thrust_macros::requires(Self::wf(*self))]
     #[thrust_macros::requires(forall(|i: UInt| <R as Idx>::index_is(row, i) ==> i < (*self).num_rows))]
-    #[thrust_macros::ensures(result.0 == (*self).num_columns && result.1 == 0)]
-    #[thrust_macros::ensures(0 <= result.2 && result.2 <= (*self).num_columns)]
+    #[thrust_macros::ensures(result.0 == *(*self).col_bound && result.1 == 0)]
+    #[thrust_macros::ensures(0 <= result.2 && result.2 <= *(*self).col_bound)]
     pub fn iter(&self, row: R) -> BitIter<'_, C> {
         assert!(row.index() < self.num_rows);
         let (start, end) = self.range(row);
@@ -926,11 +937,10 @@ enum SavedLocalEligibility<VariantIdx, FieldIdx> {
         || forall(|i: UInt|
             !<LocalIdx as Idx>::index_is((*variant_fields)[v][f], i)
                 || i < nb_locals))
-    // `count(local_b)` takes a column index as a row, so the columns must not outnumber the
-    // rows: the set abstraction does not say which bits a row holds, so this is stronger than
-    // the panic condition (a set bit of some row at a column >= num_rows).
+    // `count(local_b)` takes a column index as a row, so every set bit's column must be below
+    // the number of rows: the panic condition, through the matrix's ghost column bound.
     && (*storage_conflicts).num_rows <= nb_locals
-    && (*storage_conflicts).num_columns <= (*storage_conflicts).num_rows
+    && *(*storage_conflicts).col_bound <= (*storage_conflicts).num_rows
     && BitMatrix::<LocalIdx, LocalIdx>::wf(*storage_conflicts)
     && forall(|k: UInt| !(0 <= k && k < nb_locals) || LocalIdx::can_new(k))
     && forall(|n: UInt| !(0 <= n && n <= nb_locals) || FieldIdx::can_new(n))
@@ -965,13 +975,12 @@ enum SavedLocalEligibility<VariantIdx, FieldIdx> {
                     && thrust_models::exists(|i: UInt|
                         i == l
                             && <LocalIdx as Idx>::index_is((*variant_fields)[v][f], i)))))
-    // 3. An ineligible local has its promoted field index. The README bounds it by the
-    // cardinality of `inel`, which no predicate states yet (DenseBitSet cardinality); the bound
-    // stated is the number of locals, which the cardinality is at most.
+    // 3. An ineligible local has its promoted field index, below the number of members of
+    // `inel` (its ghost count `result.0.3`, the position in `inel.iter()`'s enumeration).
     && forall(|l: usize, x: Option<<FieldIdx as thrust_models::Model>::Ty>|
         !(0 <= l && l < nb_locals && result.1[l] == SavedLocalEligibility::Ineligible(x))
         || thrust_models::exists(|k: <FieldIdx as thrust_models::Model>::Ty|
-            x == Some(k) && forall(|i: UInt| !<FieldIdx as Idx>::index_is(k, i) || i < nb_locals)))
+            x == Some(k) && forall(|i: UInt| !<FieldIdx as Idx>::index_is(k, i) || i < result.0.3)))
     // 4. Membership in `inel` matches being `Ineligible(_)`.
     // TODO(spec): `DenseBitSet::elem_at`/`mem` are uninterpreted here, see
     // above; written as an `<==>` via two `==>` for the annotation grammar.
@@ -1005,22 +1014,26 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
 // saved locals (`local_layouts.len()`), V the number of variants and P the number of prefix
 // layouts:
 // - V > 0, which rustc's caller has by construction (V = 3 + the number of yields);
-// - `storage_conflicts` is well formed, has at most n rows, and no more columns than rows
-//   (eligibility's `count(local_b)` reads a column index as a row; see eligibility.rs);
+// - `storage_conflicts` is well formed, has at most n rows, and every set bit's column is below
+//   the number of rows (eligibility's `count(local_b)` reads a column index as a row);
 // - every local a variant lists is below n;
 // - the index types can be built wherever `new` is called: `LocalIdx` below n, `VariantIdx` up
 //   to V (`iter_enumerated` builds `new(V)`), `FieldIdx` up to P + 1 + n (the prefix, the tag
 //   and at most n promoted locals) and up to each variant's length (a variant may list a local
 //   twice);
 // - P + 1 + n <= u32::MAX, for the `u32` memory order.
-// Not stated: `dl_wf` of the data layout, and `niche_wf` of every input layout and of
-// `tag_to_layout(tag)`. The data layout is reached through the generic `Cx::data_layout()`, and
-// the closure's result is an `F`, whose model is not related to the `LayoutData` it
-// dereferences to.
+//   Both P + 1 + n bounds are stronger than the panic condition, which is P + 1 + c with c the
+//   number of ineligible locals (the ghost count of `ineligible_locals`): c is computed inside,
+//   from eligibility's result, so a condition on the inputs can only bound it by n. rustc's
+//   caller guarantees neither form.
+// - `dl_wf` of the data layout `calc.cx` names, which `univariant` requires.
+// - `niche_wf` of the largest niche of every layout `univariant` may receive: each of
+//   `local_layouts` and `prefix_layouts`, and `tag_to_layout`'s result for any scalar (through
+//   its postcondition), each named by `LayoutRef::layout_is`.
 #[thrust_macros::requires(
     (*variant_fields).len() > 0
         && (*storage_conflicts).num_rows <= (*local_layouts).len()
-        && (*storage_conflicts).num_columns <= (*storage_conflicts).num_rows
+        && *(*storage_conflicts).col_bound <= (*storage_conflicts).num_rows
         && BitMatrix::<LocalIdx, LocalIdx>::wf(*storage_conflicts)
         && forall(|v: usize, f: usize|
             !(0 <= v && v < (*variant_fields).len()
@@ -1037,16 +1050,44 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
             !(0 <= v && v < (*variant_fields).len() && 0 <= k && k <= (*variant_fields)[v].len())
                 || <FieldIdx as Idx>::can_new(k))
         && prefix_layouts.len() + 1 + (*local_layouts).len() <= 4294967295usize
+        && forall(|dl: TargetDataLayout| !C::dl_of(*calc, dl)
+            || dl.default_address_space_pointer_spec.pointer_size.raw == 2
+            || dl.default_address_space_pointer_spec.pointer_size.raw == 4
+            || dl.default_address_space_pointer_spec.pointer_size.raw == 8)
+        && forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, n: Niche|
+            !(C::dl_of(*calc, dl)
+                && 0 <= i
+                && i < (*local_layouts).len()
+                && F::layout_is((*local_layouts)[i], l)
+                && l.largest_niche == Some(n))
+                || Niche::wf_in(n, dl))
+        && forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, n: Niche|
+            !(C::dl_of(*calc, dl)
+                && 0 <= i
+                && i < prefix_layouts.len()
+                && F::layout_is(prefix_layouts[i], l)
+                && l.largest_niche == Some(n))
+                || Niche::wf_in(n, dl))
+        && forall(|dl: TargetDataLayout, s: Scalar, r: <F as thrust_models::Model>::Ty,
+                l: LayoutData<FieldIdx, VariantIdx>, n: Niche|
+            !(C::dl_of(*calc, dl)
+                && thrust_macros::post!(tag_to_layout(s), r)
+                && F::layout_is(r, l)
+                && l.largest_niche == Some(n))
+                || Niche::wf_in(n, dl))
 )]
 #[thrust_macros::ensures(true)]
 pub fn layout<
     'a,
-    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + PartialEq + thrust_models::Model<Ty: PartialEq>,
+    // Rewrite (rewrites.md S10): `LayoutRef` for `core::ops::Deref<Target = &'a LayoutData<..>>`.
+    F: LayoutRef<'a, FieldIdx, VariantIdx> + core::fmt::Debug + Copy + PartialEq + thrust_models::Model<Ty: PartialEq>,
     VariantIdx: Idx + thrust_models::Model<Ty: PartialEq>,
     FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
     LocalIdx: Idx + thrust_models::Model<Ty: PartialEq>,
+    // Rewrite (rewrites.md S10): named, for the `requires` to call `C::dl_of` on.
+    C: HasDataLayout,
 >(
-    calc: &LayoutCalculator<impl HasDataLayout>,
+    calc: &LayoutCalculator<C>,
     local_layouts: &IndexSlice<LocalIdx, F>,
     mut prefix_layouts: IndexVec<FieldIdx, F>,
     variant_fields: &IndexSlice<VariantIdx, IndexVec<FieldIdx, LocalIdx>>,
@@ -1076,8 +1117,8 @@ pub fn layout<
     prefix_layouts.push(tag_to_layout(tag));
     prefix_layouts.extend_from(promoted_layouts);
     // TODO(proof): `push` and `extend_from` give `prefix_layouts.len() == P + 1 + c`, c the
-    // items `ineligible_locals.iter()` yields, at most n by `BitIter`'s model; `c ==
-    // card(ineligible_locals)` needs the set cardinality, which no predicate states yet.
+    // items `ineligible_locals.iter()` yields, which is the set's ghost count: `iter` starts
+    // `BitIter`'s `left` at it, and the iterator completes with nothing left.
     let prefix = match calc.univariant(
         &prefix_layouts,
         &ReprOptions::default(),
@@ -1337,8 +1378,32 @@ pub struct TargetDataLayout {
     pub c_enum_min_size: Integer,
 }
 
+// `address_space_info` is reached in a formula through a sequence equal to it, as in values.rs.
 #[thrust_macros::context]
 impl TargetDataLayout {
+    // What `pointer_size_in` and `pointer_align_in` require of the address space `c`, as in
+    // values.rs.
+    #[thrust_macros::predicate]
+    fn pointer_space_ok(self, c: AddressSpace) -> bool {
+        c == self.default_address_space
+            || exists(|s: Seq<(AddressSpace, PointerSpec)>, i: UInt|
+                s == self.address_space_info && 0 <= i && i < s.len() && s[i].0 == c)
+    }
+
+    // `n` is the pointer size of the address space `c`, as in values.rs.
+    #[thrust_macros::predicate]
+    fn pointer_size_is(self, c: AddressSpace, n: Size) -> bool {
+        (c == self.default_address_space && n == self.default_address_space_pointer_spec.pointer_size)
+            || (!(c == self.default_address_space)
+                && exists(|s: Seq<(AddressSpace, PointerSpec)>, i: UInt|
+                    s == self.address_space_info
+                        && 0 <= i
+                        && i < s.len()
+                        && s[i].0 == c
+                        && n == s[i].1.pointer_size
+                        && forall(|j: UInt| !(0 <= j && j < i) || !(s[j].0 == c))))
+    }
+
     #[inline]
     #[thrust::trusted]
     #[thrust_macros::requires(((*self).default_address_space_pointer_spec.pointer_size.raw == 2
@@ -1361,11 +1426,8 @@ impl TargetDataLayout {
 
     #[inline]
     #[thrust::trusted]
-    #[thrust_macros::requires(((*self).default_address_space_pointer_spec.pointer_size.raw == 2
-        || (*self).default_address_space_pointer_spec.pointer_size.raw == 4
-        || (*self).default_address_space_pointer_spec.pointer_size.raw == 8)
-        && c == (*self).default_address_space)]
-    #[thrust_macros::ensures(true)]
+    #[thrust_macros::requires(Self::pointer_space_ok(*self, c))]
+    #[thrust_macros::ensures(Self::pointer_size_is(*self, c, result))]
     pub fn pointer_size_in(&self, c: AddressSpace) -> Size {
         if c == self.default_address_space {
             return self.default_address_space_pointer_spec.pointer_size;
@@ -1379,10 +1441,7 @@ impl TargetDataLayout {
 
     #[inline]
     #[thrust::trusted]
-    #[thrust_macros::requires(((*self).default_address_space_pointer_spec.pointer_size.raw == 2
-        || (*self).default_address_space_pointer_spec.pointer_size.raw == 4
-        || (*self).default_address_space_pointer_spec.pointer_size.raw == 8)
-        && c == (*self).default_address_space)]
+    #[thrust_macros::requires(Self::pointer_space_ok(*self, c))]
     #[thrust_macros::ensures(true)]
     pub fn pointer_align_in(&self, c: AddressSpace) -> AbiAlign {
         AbiAlign::new(if c == self.default_address_space {
@@ -1395,18 +1454,45 @@ impl TargetDataLayout {
     }
 }
 
+// A manual `PartialEq` only so that `self == dl` type-checks in the `dl_of` predicates, as in
+// values.rs.
+impl PartialEq for TargetDataLayout {
+    #[thrust::ignored]
+    fn eq(&self, _other: &Self) -> bool {
+        unimplemented!()
+    }
+}
+
+// `dl_of(cx, dl)`: `dl` is the layout `cx.data_layout()` returns, as in values.rs.
+#[thrust_macros::context]
 pub trait HasDataLayout {
+    #[thrust_macros::predicate]
+    fn dl_of(self, dl: TargetDataLayout) -> bool;
+
+    #[thrust_macros::ensures(Self::dl_of(*self, *result))]
     fn data_layout(&self) -> &TargetDataLayout;
 }
 
+#[thrust_macros::context]
 impl HasDataLayout for TargetDataLayout {
+    #[thrust_macros::predicate]
+    fn dl_of(self, dl: TargetDataLayout) -> bool {
+        self == dl
+    }
+
     #[inline]
     fn data_layout(&self) -> &TargetDataLayout {
         self
     }
 }
 
+#[thrust_macros::context]
 impl HasDataLayout for &TargetDataLayout {
+    #[thrust_macros::predicate]
+    fn dl_of(self, dl: TargetDataLayout) -> bool {
+        *self == dl
+    }
+
     #[inline]
     fn data_layout(&self) -> &TargetDataLayout {
         (**self).data_layout()
@@ -1478,7 +1564,11 @@ impl Size {
 
     #[inline]
     #[thrust::trusted]
-    #[thrust::callable]
+    #[thrust_macros::requires(forall(|dl: TargetDataLayout| !C::dl_of(*cx, dl)
+        || dl.default_address_space_pointer_spec.pointer_size.raw == 2
+        || dl.default_address_space_pointer_spec.pointer_size.raw == 4
+        || dl.default_address_space_pointer_spec.pointer_size.raw == 8))]
+    #[thrust_macros::ensures(true)]
     pub fn checked_add<C: HasDataLayout>(self, offset: Size, cx: &C) -> Option<Size> {
         let dl = cx.data_layout();
         let bytes = self.bytes().checked_add(offset.bytes())?;
@@ -1659,10 +1749,11 @@ pub enum Primitive {
     Pointer(AddressSpace),
 }
 
+#[thrust_macros::context]
 impl Primitive {
-    // Trusted for the same reason as univariant.rs/values.rs's copy: no
-    // trait-level spec on `HasDataLayout::data_layout` for a generic `cx`.
-    #[thrust::trusted]
+    // A pointer's size and alignment are looked up in the layout `cx` names, as in values.rs.
+    #[thrust_macros::requires(forall(|dl: TargetDataLayout, a: AddressSpace|
+        !(C::dl_of(*cx, dl) && self == Primitive::Pointer(a)) || TargetDataLayout::pointer_space_ok(dl, a)))]
     #[thrust::callable]
     pub fn size<C: HasDataLayout>(self, cx: &C) -> Size {
         use Primitive::*;
@@ -1674,7 +1765,8 @@ impl Primitive {
         }
     }
 
-    #[thrust::trusted]
+    #[thrust_macros::requires(forall(|dl: TargetDataLayout, a: AddressSpace|
+        !(C::dl_of(*cx, dl) && self == Primitive::Pointer(a)) || TargetDataLayout::pointer_space_ok(dl, a)))]
     #[thrust::callable]
     pub fn align<C: HasDataLayout>(self, cx: &C) -> AbiAlign {
         use Primitive::*;
@@ -1704,15 +1796,32 @@ pub enum Scalar {
     },
 }
 
+#[thrust_macros::context]
 impl Scalar {
     pub fn primitive(&self) -> Primitive {
         match *self {
             Scalar::Initialized { value, .. } | Scalar::Union { value } => value,
         }
     }
+
+    #[thrust_macros::impl_trait_names(C)]
+    #[thrust_macros::requires(forall(|dl: TargetDataLayout, p: Primitive, r: WrappingRange, a: AddressSpace|
+        !(C::dl_of(*cx, dl)
+            && (self == Scalar::Initialized { value: p, valid_range: r } || self == Scalar::Union { value: p })
+            && p == Primitive::Pointer(a))
+            || TargetDataLayout::pointer_space_ok(dl, a)))]
+    #[thrust::callable]
     pub fn align(self, cx: &impl HasDataLayout) -> AbiAlign {
         self.primitive().align(cx)
     }
+
+    #[thrust_macros::impl_trait_names(C)]
+    #[thrust_macros::requires(forall(|dl: TargetDataLayout, p: Primitive, r: WrappingRange, a: AddressSpace|
+        !(C::dl_of(*cx, dl)
+            && (self == Scalar::Initialized { value: p, valid_range: r } || self == Scalar::Union { value: p })
+            && p == Primitive::Pointer(a))
+            || TargetDataLayout::pointer_space_ok(dl, a)))]
+    #[thrust::callable]
     pub fn size(self, cx: &impl HasDataLayout) -> Size {
         self.primitive().size(cx)
     }
@@ -1728,7 +1837,19 @@ pub struct Niche {
     pub valid_range: WrappingRange,
 }
 
+#[thrust_macros::context]
 impl Niche {
+    // `niche_wf`: what `available` requires of the niche under the data layout `dl`.
+    #[thrust_macros::predicate]
+    fn wf_in(self, dl: TargetDataLayout) -> bool {
+        forall(|a: AddressSpace| !(self.value == Primitive::Pointer(a))
+            || (TargetDataLayout::pointer_space_ok(dl, a)
+                && forall(|n: Size| !TargetDataLayout::pointer_size_is(dl, a, n) || n.raw * 8 <= 128)))
+    }
+    #[thrust_macros::requires(forall(|dl: TargetDataLayout, r: WrappingRange, a: AddressSpace|
+        !(C::dl_of(*cx, dl) && scalar == Scalar::Initialized { value: Primitive::Pointer(a), valid_range: r })
+            || (TargetDataLayout::pointer_space_ok(dl, a)
+                && forall(|n: Size| !TargetDataLayout::pointer_size_is(dl, a, n) || n.raw * 8 <= 128))))]
     pub fn from_scalar<C: HasDataLayout>(cx: &C, offset: Size, scalar: Scalar) -> Option<Self> {
         let Scalar::Initialized { value, valid_range } = scalar else {
             return None;
@@ -1745,8 +1866,14 @@ impl Niche {
         }
     }
 
+    // Trusted: the bit operations of the body are not modelled. The `requires` is that of
+    // `value.size(cx)` and the `assert!`'s bound on a pointer's size, as in values.rs.
     #[thrust::trusted]
-    #[thrust::callable]
+    #[thrust_macros::requires(forall(|dl: TargetDataLayout, a: AddressSpace|
+        !(C::dl_of(*cx, dl) && (*self).value == Primitive::Pointer(a))
+            || (TargetDataLayout::pointer_space_ok(dl, a)
+                && forall(|n: Size| !TargetDataLayout::pointer_size_is(dl, a, n) || n.raw * 8 <= 128))))]
+    #[thrust_macros::ensures(true)]
     pub fn available<C: HasDataLayout>(&self, cx: &C) -> u128 {
         let Self {
             value,
@@ -2088,6 +2215,17 @@ pub enum LayoutCalculatorError<F> {
 type LayoutCalculatorResult<FieldIdx, VariantIdx, F> =
     Result<LayoutData<FieldIdx, VariantIdx>, LayoutCalculatorError<F>>;
 
+// The layout an `F` dereferences to, for a contract to name: `layout_is(f, l)` says `**f` is `l`.
+// Rewrite (rewrites.md S10): `F`'s bound `Deref<Target = &'a LayoutData<..>>` becomes this trait,
+// which has it as a supertrait (probes/layout_ref_niche.rs).
+#[thrust_macros::context]
+pub trait LayoutRef<'a, FieldIdx: Idx, VariantIdx: Idx>:
+    Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model
+{
+    #[thrust_macros::predicate]
+    fn layout_is(self, l: LayoutData<FieldIdx, VariantIdx>) -> bool;
+}
+
 #[derive(Clone, Copy /*Debug*/)]
 pub struct LayoutCalculator<Cx> {
     pub cx: Cx,
@@ -2099,18 +2237,30 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
     // `univariant_biased` apart from the data layout and the field layouts: `fields.indices()`
     // builds every field index up to `fields.len()`, the single variant is `VariantIdx::new(0)`,
     // and `MaybeUnsized` takes `fields.len() - 1`, which wraps below zero (overflow checks are off)
-    // so that the slice `[..end]` panics. Not stated: `dl_wf` of the data layout and `niche_wf` of
-    // every field's niche, which `Niche::available`, `Primitive::size` and `Size::checked_add`
-    // need, and that the `NicheBias::End` layout succeeds and keeps a niche whenever the `Start`
-    // one does (the two `unwrap_without_debug`s). The data layout is reached through the generic
-    // `Cx::data_layout()`, and `F`'s model is not related to the `LayoutData` it dereferences to,
-    // so neither can be named. `ensures`: an `Ok` layout has `Arbitrary` fields over
+    // so that the slice `[..end]` panics; and `dl_wf` of the data layout `self.cx` names (the
+    // default pointer size is 2, 4 or 8 bytes, which `Size::checked_add` needs), named by
+    // `Cx::dl_of(*self, dl)` since the calculator's model is `self.cx`'s; and `niche_wf` of every
+    // field's largest niche under that layout (`Niche::wf_in`, which `Niche::available` and
+    // `Primitive::size` need), the field's layout named by `LayoutRef::layout_is`. Not stated: that
+    // the `NicheBias::End` layout succeeds and keeps a niche whenever the `Start` one does (the two
+    // `unwrap_without_debug`s). `ensures`: an `Ok` layout has `Arbitrary` fields over
     // `fields.len()` fields, its memory order a permutation (`FieldsShape::arbitrary_of`).
     #[thrust::trusted]
     #[thrust_macros::requires(
         forall(|k: UInt| !(0 <= k && k <= (*fields).len()) || <FieldIdx as Idx>::can_new(k))
             && forall(|z: UInt| !(z == 0usize) || <VariantIdx as Idx>::can_new(z))
             && (matches!(kind, StructKind::MaybeUnsized) ==> (*fields).len() > 0)
+            && forall(|dl: TargetDataLayout| !Cx::dl_of(*self, dl)
+                || dl.default_address_space_pointer_spec.pointer_size.raw == 2
+                || dl.default_address_space_pointer_spec.pointer_size.raw == 4
+                || dl.default_address_space_pointer_spec.pointer_size.raw == 8)
+            && forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, n: Niche|
+                !(Cx::dl_of(*self, dl)
+                    && 0 <= i
+                    && i < (*fields).len()
+                    && F::layout_is((*fields)[i], l)
+                    && l.largest_niche == Some(n))
+                    || Niche::wf_in(n, dl))
     )]
     #[thrust_macros::ensures(forall(|l: LayoutData<FieldIdx, VariantIdx>|
         result != Ok(l) || FieldsShape::<FieldIdx>::arbitrary_of(l.fields, (*fields).len())))]
@@ -2118,7 +2268,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         'a,
         FieldIdx: Idx,
         VariantIdx: Idx,
-        F: Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model<Ty: PartialEq>,
+        F: LayoutRef<'a, FieldIdx, VariantIdx> + thrust_models::Model<Ty: PartialEq>,
     >(
         &self,
         fields: &IndexSlice<FieldIdx, F>,
@@ -2826,7 +2976,7 @@ impl PartialOrdSpec for Align {
 // //== Thrust model declarations
 
 impl<T> thrust_models::Model for DenseBitSet<T> {
-    type Ty = (UInt, Seq<UInt>, ());
+    type Ty = (UInt, Seq<UInt>, (), UInt);
 }
 impl<'a> thrust_models::Model for WordIter<'a> {
     type Ty = (&'a Seq<UInt>, UInt);
@@ -2860,8 +3010,10 @@ impl<VariantIdx: thrust_models::Model, FieldIdx: thrust_models::Model> thrust_mo
 impl<F: thrust_models::Model> thrust_models::Model for LayoutCalculatorError<F> {
     type Ty = LayoutCalculatorError<<F as thrust_models::Model>::Ty>;
 }
-impl<Cx> thrust_models::Model for LayoutCalculator<Cx> {
-    type Ty = Self;
+// The calculator's model is its one field's, so that a contract names `self.cx`'s data layout
+// through `Cx::dl_of(*self, dl)` (probes/calculator_dl.rs).
+impl<Cx: thrust_models::Model> thrust_models::Model for LayoutCalculator<Cx> {
+    type Ty = <Cx as thrust_models::Model>::Ty;
 }
 impl thrust_models::Model for NicheBias {
     type Ty = Self;
