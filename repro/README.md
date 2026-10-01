@@ -8,7 +8,7 @@ current state, with no reference to anything outside this repository's tracked h
 | [`thrust-macros-dylib/`](thrust-macros-dylib/README.md) | the driver can link a stale `thrust-macros` proc-macro dylib when more than one build of it exists under `target/debug/deps` | no open upstream issue; distinct from #255 (multi-crate support) |
 | [`ghost-field-contents/`](ghost-field-contents/README.md) | a `Ghost<T>` struct field could not be used as its contents in `ensures`/`ghost!`, only a `Ghost<T>` parameter could (fixed on this fork) | no open upstream issue |
 | [`ghost-param-type-panic/`](ghost-param-type-panic/README.md) | a `ghost!` parameter typed differently from its live variable (`c: Counter` for `c: &mut Counter`) panics the driver in subtyping instead of being reported | no open upstream issue; reproduces on upstream `main` e112206 |
-| [`unsigned-nonneg/`](unsigned-nonneg/README.md) | unsigned integer types carry no non-negativity fact, so a `usize` can be proved negative (this fork carries a provisional, narrower fix) | upstream #277 (unsigned constants only) and the unmerged `claude/vibrant-brown-tjmb6h-*` branches (a general range/wrapping fix in progress) |
+| [`unsigned-nonneg/`](unsigned-nonneg/README.md) | unsigned facts as refinements: #268 and #286 extended to fields and reference contents, and the clause growth this gives (most new obligations hold as written) | upstream #268 and #286 (both unmerged) |
 
 Two other topics have their own pushed branches rather than a directory here, because each
 predates this branch and already carries its own commit history:
