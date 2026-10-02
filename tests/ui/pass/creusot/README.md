@@ -24,7 +24,7 @@ same layout. A case that needs `collect` adds it to its copy after `next`.
 | `take.rs` | `iterators/take.rs` | `produces` |
 | `skip.rs` | `iterators/skip.rs` | `produces`, concatenated |
 | `fuse.rs` | `iterators/fuse.rs` | `step` |
-| `fuse_produces.rs` | `iterators/fuse.rs` | `produces` + `FusedIterator::is_fused`; state `Option<I>` for Creusot's `Result<I, Ghost<I>>` |
+| `fuse_produces.rs` | the current Creusot's `examples/iterators/07_fuse.rs` (3620de437) | `produces` + `FusedIterator::is_fused` with its state `Option<I>` and its `completed` and `produces` |
 | `fuse_produces_result.rs` | `iterators/fuse.rs` | `produces` + `FusedIterator::is_fused` with Creusot's state `Result<I, Ghost<I>>`; `next` keeps `iter` live past the ghost of the exhausted iterator, as Creusot's `ghost! { *iter }` reads it |
 | `map.rs` | `iterators/map.rs` | `produces` over an `FnMut` closure with the chain `fs` of closure states and `hist_inv!`, `produces_trans` by one source-level lemma, nothing else needs one, fully checked |
 | `iter_mut.rs` | `iterators/iter_mut.rs` | `produces` |

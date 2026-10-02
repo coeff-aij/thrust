@@ -1,14 +1,12 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300
-use thrust_models::model::Seq;
+use thrust_models::model::{Mut, Seq};
 use thrust_models::{exists, forall, Model};
 
-// The generic `Fuse` in Creusot's `produces` form, with Creusot's `FusedIterator::is_fused` law.
-// Creusot's state `Result<I, Ghost<I>>` is `Option<I>` here: `None` stands for `Err`, whose ghost
-// payload (the exhausted inner iterator) is existential where Creusot's `produces` reads it
-// through `inner`, and whose invariant `invariant` does not state.
-// fuse_produces_result.rs keeps Creusot's state.
+// The generic `Fuse` of the current Creusot (3620de437, `examples/iterators/07_fuse.rs`): state
+// `Option<I>`, its `completed` and `produces`, and the `FusedIterator::is_fused` law.
+// fuse_produces_result.rs is the 2022 artifact's version, with state `Result<I, Ghost<I>>`.
 
 // Creusot's `common.rs`, the iterator specification every case shares: the trait predicates
 // `produces(self, visited, o)`, `completed` and `invariant` (`true` unless the impl says otherwise),
@@ -108,20 +106,23 @@ where
 
 
 
+    // Creusot: `(self.iter == None || exists<it: &mut I> it.completed() && self.iter == Some(*it))
+    // && (^self).iter == None`.
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
-        (!self).iter == None
+        ((*self).iter == None
+            || exists(|i: <I as Model>::Ty| exists(|j: <I as Model>::Ty|
+                (*self).iter == Some(i) && I::completed(Mut::new(i, j)))))
+            && (!self).iter == None
     }
 
-    // Creusot's `match self.iter`; `other.inner()` is `k` when `o.iter` is `Some(k)` and the
-    // exhausted ghost, any `k`, when it is `None`.
+    // Creusot's `match self.iter`: from `None` nothing is produced, and from `Some(i)` only to a
+    // `Some(k)` that `i` produces.
     #[thrust_macros::predicate]
     fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool {
         (self.iter == None && visited == Seq::empty() && o.iter == self.iter)
             || exists(|i: <I as Model>::Ty| exists(|k: <I as Model>::Ty|
-                self.iter == Some(i)
-                    && (o.iter == Some(k) || o.iter == None)
-                    && I::produces(i, visited, k)))
+                self.iter == Some(i) && o.iter == Some(k) && I::produces(i, visited, k)))
     }
 
     #[thrust_macros::predicate]
