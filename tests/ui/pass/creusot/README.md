@@ -54,6 +54,13 @@ inference. The pass sides of `fold_noinv.rs`, `try_fold_noinv.rs` and `filter_no
 | `find.rs`, `find_noinv.rs` | `find` generic in `I` and a `P: FnMut` predicate taking the item by value |
 | `filter.rs`, `filter_noinv.rs` | `filter` into a `Vec`, generic in `I` and `P: FnMut` |
 
+`generic/std/find.rs` writes `find` as std does: a call of `try_fold` with a closure `check` that
+breaks with the first item the predicate accepts, so `try_fold` holds the only loop. Both
+specifications relate closure states by `unnest!`, and `check`, which owns the predicate, states
+its own relation through the predicate's in an `unnest` clause. It carries `//@ignore-on-host`:
+fptprove `6a54ae688` raises a `[gen_fun]` failure on it, and answers `sat,0` without `find`'s
+`ensures`.
+
 Weaker variants (`weaker/`, still verify):
 
 | file | weaker than | how |
