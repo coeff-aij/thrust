@@ -12,6 +12,8 @@ use crate::pretty::PrettyDisplayExt as _;
 mod candidate_atoms;
 mod clause_builder;
 pub mod debug;
+mod dedup;
+mod flatten;
 pub(crate) mod format_context;
 mod hoice;
 mod smtlib2;
@@ -21,6 +23,8 @@ mod unbox;
 pub use candidate_atoms::{conjuncts, instances, CandidateAtoms, CandidateAtomsMode, HeadTerms};
 pub use clause_builder::{ClauseBuilder, Var};
 pub use debug::DebugInfo;
+pub use dedup::dedup_pred_args;
+pub use flatten::flatten_recursive_pred_args;
 pub use solver::{Capabilities, CheckSatError, Config};
 pub use unbox::unbox;
 
@@ -2986,6 +2990,15 @@ impl System {
         let mut system = self.clone();
         system.populate_user_defined_pred_dependencies();
         let mut system = unbox(system);
+        // With `THRUST_FLAT_PRED_ARGS` set, the tuple, `Box` and `Mut` arguments of the loop
+        // heads are split into their components (see `flatten`); with `THRUST_DEDUP_PRED_ARGS`
+        // set, the loop heads' arguments inductively equal to another are removed (see `dedup`).
+        if std::env::var_os("THRUST_FLAT_PRED_ARGS").is_some() {
+            system = flatten_recursive_pred_args(system);
+        }
+        if std::env::var_os("THRUST_DEDUP_PRED_ARGS").is_some() {
+            system = dedup_pred_args(system);
+        }
         system.populate_user_defined_pred_dependencies();
         if CandidateAtomsMode::from_env() == CandidateAtomsMode::ContractsAndEntry {
             system.add_entry_candidate_atoms();

@@ -279,6 +279,32 @@ where
     formula
 }
 
+/// Moves candidate atoms onto a predicate variable's new arguments when a pass changes them
+/// (`flatten`, `dedup`): each argument variable is replaced by `f`'s term over the new
+/// arguments, and an atom with an argument `f` has no term for is dropped, as are the atoms that
+/// become trivial or repeat an earlier one.
+pub(super) fn rewrite_atoms(
+    atoms: Vec<Formula>,
+    f: impl Fn(TermVarIdx) -> Option<Term>,
+) -> Vec<Formula> {
+    let mut rewritten: Vec<Formula> = Vec::new();
+    for atom in atoms {
+        let mut complete = true;
+        let atom = atom.subst_var(|v| {
+            f(v).unwrap_or_else(|| {
+                complete = false;
+                Term::Null
+            })
+        });
+        let mut atom = map_formula_terms(atom, &mut simplify_term);
+        atom.simplify();
+        if complete && !is_trivial(&atom) && !rewritten.contains(&atom) {
+            rewritten.push(atom);
+        }
+    }
+    rewritten
+}
+
 fn simplify_term(term: Term) -> Term {
     match term {
         Term::MutCurrent(t) => match *t {
