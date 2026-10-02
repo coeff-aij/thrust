@@ -697,9 +697,9 @@ pub struct Analyzer<'tcx> {
     /// Defs whose body has been analyzed at fully concrete type arguments, as the callee of
     /// a call site; see [`Analyzer::has_concrete_instance`].
     concrete_instances: Rc<RefCell<HashSet<LocalDefId>>>,
-    /// The closures, with the sort of their upvars, whose `unnest` clause has had its laws
-    /// pushed; see [`closure_unnest::explicit_laws`].
-    explicit_unnest_laws: Rc<RefCell<HashSet<(DefId, chc::Sort)>>>,
+    /// The closure types, generic arguments included, with the sort of their upvars, whose
+    /// `unnest` clause has had its laws pushed; see [`closure_unnest::explicit_laws`].
+    explicit_unnest_laws: Rc<RefCell<HashSet<(mir_ty::Ty<'tcx>, chc::Sort)>>>,
     /// The clauses [`closure_unnest::instance_obligations`] gave for the instances at an `FnMut`
     /// closure that use a generic def's contract as instantiated: the `unnest!` laws and the
     /// precondition clauses, pushed by [`Analyzer::emit_fn_mut_instance_obligations`].
@@ -1777,7 +1777,7 @@ impl<'tcx> Analyzer<'tcx> {
         if self
             .explicit_unnest_laws
             .borrow_mut()
-            .insert((*def_id, upvars_sort.clone()))
+            .insert((closure_ty, upvars_sort.clone()))
         {
             let related = |from: chc::Term<chc::TermVarIdx>, to: chc::Term<chc::TermVarIdx>| {
                 let pair = chc::Term::mut_(from, to);

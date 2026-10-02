@@ -58,8 +58,9 @@ inference. The pass sides of `fold_noinv.rs`, `try_fold_noinv.rs` and `filter_no
 breaks with the first item the predicate accepts, so `try_fold` holds the only loop. Both
 specifications relate closure states by `unnest!`, and `check`, which owns the predicate, states
 its own relation through the predicate's in an `unnest` clause. It carries `//@ignore-on-host`:
-fptprove `6a54ae688` raises a `[gen_fun]` failure on it, and answers `sat,0` without `find`'s
-`ensures`.
+fptprove `6a54ae688` raises a `[gen_fun]` failure on it. `generic/std/find_pre.rs` is the same
+without `find`'s `ensures`, and verifies; its fail twin drops `find`'s precondition on the
+predicate.
 
 Weaker variants (`weaker/`, still verify):
 

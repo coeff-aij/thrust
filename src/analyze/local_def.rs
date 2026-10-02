@@ -378,7 +378,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 }
             }
 
-            let (fn_def_id, fn_args) = match inst.kind() {
+            // A callable passed by reference (`g: &mut G` at a closure) is looked up the same way.
+            let callable = match inst.kind() {
+                mir_ty::TyKind::Ref(_, inner, _) => *inner,
+                _ => inst,
+            };
+            let (fn_def_id, fn_args) = match callable.kind() {
                 mir_ty::TyKind::Closure(def_id, args) => {
                     (*def_id, self.tcx.mk_args(args.as_closure().parent_args()))
                 }
