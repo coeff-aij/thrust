@@ -6,10 +6,12 @@ use thrust_models::model::{Closure, Mut};
 use thrust_models::model::{Int, Seq};
 use thrust_models::Model;
 
-// `find` as std's `Iterator::find` is implemented: a call of `try_fold((), check(predicate))`,
-// where `check` turns the predicate into a closure that breaks with the first item it accepts.
-// `ControlFlow<B>` is std's `ControlFlow<B, ()>`. Items are taken by value (`I::Item: Copy`)
-// where std passes `&I::Item` to the predicate.
+// `find` as std's `Iterator::find` is implemented: a call of `try_fold`, whose closure `check`
+// breaks with the first item the predicate accepts. `ControlFlow<B>` is std's `ControlFlow<B, ()>`.
+// Deviations from std: `try_fold`'s accumulator `()` is dropped from the closure's arguments, and
+// items are taken by value (`I::Item: Copy`) where std passes `&I::Item` to the predicate.
+// Both specifications relate the closure's states by `unnest!`, so each def is verified once over
+// its type parameters (D34) and `main` uses `find`'s contract as instantiated.
 
 // Creusot's `common.rs`, the iterator specification every case shares: the trait predicates
 // `produces(self, visited, o)`, `completed` and `invariant` (`true` unless the impl says otherwise),
@@ -104,42 +106,43 @@ impl<B: Model> Model for ControlFlow<B> {
     type Ty = ControlFlow<<B as Model>::Ty>;
 }
 
-// std's default `try_fold`, with the `Try` type fixed to `ControlFlow<I::Item>` and the
-// accumulator to `()`: the closure may be called on every item in every state, and a `Break`
-// result is one some call of it returned.
+// std's default `try_fold` with the `Try` type fixed to `ControlFlow<I::Item>`: the closure may be
+// called on every item in every state, and a `Break` result is one some call of it returned from a
+// state reachable from `f`.
 #[thrust_macros::context]
 #[thrust_macros::requires(I::invariant(*iter))]
-#[thrust_macros::requires(forall(|c: Closure<F>, x: <<I as Iterator>::Item as Model>::Ty| thrust_macros::pre!(c((), x))))]
-#[thrust_macros::ensures(forall(|v: <<I as Iterator>::Item as Model>::Ty| result == ControlFlow::Break(v) ==> exists(|c: Closure<F>, d: Closure<F>, x: <<I as Iterator>::Item as Model>::Ty| thrust_macros::post!(Mut::new(c, d)((), x), ControlFlow::Break(v)))))]
-fn try_fold<I, F>(iter: &mut I, init: (), mut f: F) -> ControlFlow<I::Item>
+#[thrust_macros::requires(forall(|c: Closure<F>, x: <<I as Iterator>::Item as Model>::Ty| thrust_macros::pre!(c(x))))]
+#[thrust_macros::ensures(forall(|v: <<I as Iterator>::Item as Model>::Ty| result == ControlFlow::Break(v) ==> exists(|c: Closure<F>, d: Closure<F>, x: <<I as Iterator>::Item as Model>::Ty| thrust_macros::unnest!(f, c) && thrust_macros::post!(Mut::new(c, d)(x), ControlFlow::Break(v)))))]
+fn try_fold<I, F>(iter: &mut I, f: F) -> ControlFlow<I::Item>
 where
     I: Iterator + Model,
-    F: FnMut((), I::Item) -> ControlFlow<I::Item>,
+    F: FnMut(I::Item) -> ControlFlow<I::Item>,
     <I as Iterator>::Item: Model,
     <I as Model>::Ty: Model<Ty = <I as Model>::Ty> + PartialEq,
     <<I as Iterator>::Item as Model>::Ty: Model<Ty = <<I as Iterator>::Item as Model>::Ty> + PartialEq,
 {
-    let mut accum = init;
     let it = iter;
+    let mut g = f;
     while let Some(x) = it.next() {
         thrust_macros::invariant!(
-            |it: &mut I|
+            |it: &mut I, g: F, f: thrust_models::FnParam<F>|
             I::invariant(*it)
-                && forall(|c: Closure<F>, x: <<I as Iterator>::Item as Model>::Ty| thrust_macros::pre!(c((), x)))
+                && thrust_macros::unnest!(f.at_entry(), g)
+                && forall(|c: Closure<F>, x: <<I as Iterator>::Item as Model>::Ty| thrust_macros::pre!(c(x)))
         );
-        match f(accum, x) {
-            ControlFlow::Continue(a) => accum = a,
+        match g(x) {
+            ControlFlow::Continue(()) => {}
             ControlFlow::Break(b) => return ControlFlow::Break(b),
         }
     }
-    ControlFlow::Continue(accum)
+    ControlFlow::Continue(())
 }
 
-// std's `find`: `check(predicate)` breaks with an item exactly when the predicate accepts it.
+// std's `find`: `check` breaks with an item exactly when the predicate accepts it.
 #[thrust_macros::context]
 #[thrust_macros::requires(I::invariant(*iter))]
 #[thrust_macros::requires(forall(|c: Closure<P>, x: <<I as Iterator>::Item as Model>::Ty| thrust_macros::pre!(c(x))))]
-#[thrust_macros::ensures(forall(|v: <<I as Iterator>::Item as Model>::Ty| result == Some(v) ==> exists(|c: Closure<P>, d: Closure<P>| thrust_macros::post!(Mut::new(c, d)(v), true))))]
+#[thrust_macros::ensures(forall(|v: <<I as Iterator>::Item as Model>::Ty| result == Some(v) ==> exists(|c: Closure<P>, d: Closure<P>| thrust_macros::unnest!(predicate, c) && thrust_macros::post!(Mut::new(c, d)(v), true))))]
 fn find<I, P>(iter: &mut I, mut predicate: P) -> Option<I::Item>
 where
     I: Iterator + Model,
@@ -148,10 +151,10 @@ where
     <I as Model>::Ty: Model<Ty = <I as Model>::Ty> + PartialEq,
     <<I as Iterator>::Item as Model>::Ty: Model<Ty = <<I as Iterator>::Item as Model>::Ty> + PartialEq,
 {
-    let check = move |(): (), x: I::Item| -> ControlFlow<I::Item> {
+    let check = move |x: I::Item| -> ControlFlow<I::Item> {
         if predicate(x) { ControlFlow::Break(x) } else { ControlFlow::Continue(()) }
     };
-    match try_fold(iter, (), check) {
+    match try_fold(iter, check) {
         ControlFlow::Break(x) => Some(x),
         ControlFlow::Continue(()) => None,
     }
@@ -159,6 +162,7 @@ where
 
 fn main() {
     let c = thrust_macros::closure!(
+        requires(true),
         ensures(result == (x >= 5)),
         |x: isize| -> bool { x >= 5 },
     );

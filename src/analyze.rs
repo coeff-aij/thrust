@@ -1424,8 +1424,13 @@ impl<'tcx> Analyzer<'tcx> {
                 let body_local_def_id = def_id
                     .as_local()
                     .expect("Analyze mode is only set for deferred defs keyed on a local def");
+                // The body is checked against `expected`, which was built under the caller
+                // as its owner; analyzing it under the same owner keeps the contracts it reads
+                // (a closure argument's, minted while building `expected`) the same instances.
                 let mut body_analyzer = self.local_def_analyzer(body_local_def_id);
-                body_analyzer.generic_args(generic_args);
+                body_analyzer
+                    .owner_fn_id(caller_def_id)
+                    .generic_args(generic_args);
                 body_analyzer
             };
             let body_local_def_id = body_analyzer.local_def_id();
