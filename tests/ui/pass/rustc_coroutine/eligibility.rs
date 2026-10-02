@@ -1437,7 +1437,8 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
             thrust_macros::invariant!(|assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, ineligible: Enumerate<BitIter<LocalIdx>>, ineligible_locals: DenseBitSet<LocalIdx>|
                 assignments.len() == ineligible_locals.0 && ineligible.0.0 == ineligible_locals.0
                 && ineligible.1 == ineligible.0.1 && 0 <= ineligible.1 && ineligible.1 <= ineligible.0.0
-                && 0 <= ineligible.0.2 && ineligible.0.1 + ineligible.0.2 <= ineligible.0.0);
+                && 0 <= ineligible.0.2 && ineligible.0.1 + ineligible.0.2 <= ineligible.0.0
+                && forall(|k: UInt| !(0 <= k && k < ineligible_locals.0) || <LocalIdx as Idx>::can_new(k)));
             assignments[local] = Ineligible(Some(FieldIdx::new(idx)));
         }
     }
