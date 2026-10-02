@@ -2484,6 +2484,12 @@ pub struct System {
     /// as `(set-info :candidates ...)` and never asserted.
     candidate_atoms: Vec<CandidateAtoms>,
     user_quantified_var_count: usize,
+    /// Predicate variables pushed together with every clause that defines them, independently of
+    /// any analysis of a body at an instance: a reachability check for unknowns
+    /// ([`System::pred_var_reach_of`]) does not count them. The `hist_inv!` relation of an
+    /// `FnMut` closure's by-value captures is one: its laws come with it and each call's step
+    /// from the closure's own body.
+    self_defined_pred_vars: HashSet<PredVarId>,
     /// The source name of each quantified variable issued with one, named in a comment of the
     /// SMT-LIB2 output when logging is on.
     user_quantified_var_names: BTreeMap<usize, String>,
@@ -2652,6 +2658,15 @@ impl System {
         })
     }
 
+    /// Records that `id` comes with every clause that defines it; see `self_defined_pred_vars`.
+    pub fn mark_self_defined(&mut self, id: PredVarId) {
+        self.self_defined_pred_vars.insert(id);
+    }
+
+    pub fn is_self_defined(&self, id: PredVarId) -> bool {
+        self.self_defined_pred_vars.contains(&id)
+    }
+
     /// What the definition of `symbol`, and those of the user-defined predicates it calls, say
     /// about predicate variables. A raw SMT-LIB2 body read off the source names none, since the
     /// variables are numbered by the analysis.
@@ -2677,7 +2692,7 @@ impl System {
                 };
                 for atom in formula.iter_atoms() {
                     match &atom.pred {
-                        Pred::Var(_) => reach.found = true,
+                        Pred::Var(id) if !self.is_self_defined(*id) => reach.found = true,
                         Pred::UserDefined(p) => pending.push(p),
                         _ => {}
                     }

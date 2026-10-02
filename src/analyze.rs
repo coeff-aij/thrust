@@ -1793,6 +1793,9 @@ impl<'tcx> Analyzer<'tcx> {
         for clause in closure_hist_inv::by_value_relation_laws(relation, &sorts) {
             self.system.borrow_mut().push_clause(clause);
         }
+        // Its laws are pushed here and each call's step comes from the closure's body, so a
+        // callee whose contract reaches it needs no analysis at the instance to define it.
+        self.system.borrow_mut().mark_self_defined(relation);
         self.by_value_hist_invs.borrow_mut().insert(key, relation);
         relation
     }
@@ -1900,7 +1903,7 @@ impl<'tcx> Analyzer<'tcx> {
         let mut reach = chc::PredVarReach::default();
         rty.any_pred(&mut |pred| {
             match pred {
-                chc::Pred::Var(_) => reach.found = true,
+                chc::Pred::Var(id) if !system.is_self_defined(*id) => reach.found = true,
                 chc::Pred::UserDefined(p) => reach.join(system.pred_var_reach_of(p)),
                 _ => {}
             }

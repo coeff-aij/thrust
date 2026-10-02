@@ -239,6 +239,7 @@ pub fn unbox(system: System) -> System {
         laws,
         candidate_atoms,
         user_quantified_var_count,
+        self_defined_pred_vars,
         user_quantified_var_names,
     } = system;
     let datatypes = datatypes.into_iter().map(unbox_datatype).collect();
@@ -279,6 +280,7 @@ pub fn unbox(system: System) -> System {
         laws,
         candidate_atoms,
         user_quantified_var_count,
+        self_defined_pred_vars,
         user_quantified_var_names,
     }
 }
