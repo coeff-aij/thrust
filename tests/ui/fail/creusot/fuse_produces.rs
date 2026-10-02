@@ -8,7 +8,7 @@ use thrust_models::{exists, forall, Model};
 // Creusot's state `Result<I, Ghost<I>>` is `Option<I>` here: `None` stands for `Err`, whose ghost
 // payload (the exhausted inner iterator) is existential where Creusot's `produces` reads it
 // through `inner`, and whose invariant `invariant` does not state.
-// drafts/creusot/fuse_produces_result.rs keeps Creusot's state.
+// fuse_produces_result.rs keeps Creusot's state.
 
 // Creusot's `common.rs`, the iterator specification every case shares: the trait predicates
 // `produces(self, visited, o)`, `completed` and `invariant` (`true` unless the impl says otherwise),

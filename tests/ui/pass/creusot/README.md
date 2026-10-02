@@ -25,6 +25,7 @@ same layout. A case that needs `collect` adds it to its copy after `next`.
 | `skip.rs` | `iterators/skip.rs` | `produces`, concatenated |
 | `fuse.rs` | `iterators/fuse.rs` | `step` |
 | `fuse_produces.rs` | `iterators/fuse.rs` | `produces` + `FusedIterator::is_fused`; state `Option<I>` for Creusot's `Result<I, Ghost<I>>` |
+| `fuse_produces_result.rs` | `iterators/fuse.rs` | `produces` + `FusedIterator::is_fused` with Creusot's state `Result<I, Ghost<I>>`; `next` keeps `iter` live past the ghost of the exhausted iterator, as Creusot's `ghost! { *iter }` reads it |
 | `map.rs` | `iterators/map.rs` | `produces` over an `FnMut` closure with the chain `fs` of closure states and `hist_inv!`, `produces_trans` by one source-level lemma, nothing else needs one, fully checked |
 | `iter_mut.rs` | `iterators/iter_mut.rs` | `produces` |
 | `collect.rs` | `common.rs` (`collect` / `FromIterator`) | `produces` |
@@ -70,6 +71,5 @@ Weaker variants (`weaker/`, still verify):
 | `collect_mutref.rs` | `collect.rs` | `collect(&mut self)` / `from_iter(&mut I)` instead of by value |
 | `decuple_range.rs` | `decuple_range.rs` | the `step` form's positionless property (every element in range) instead of `v[i] == 10 * i` |
 
-`fuse_produces_result.rs` (Fuse with
-Creusot's `Result<I, Ghost<I>>` state) and every case's probe programs are drafts,
+Every case's probe programs are drafts,
 not yet verified or superseded by the files above: see [drafts/creusot/README.md](../../../../drafts/creusot/README.md).
