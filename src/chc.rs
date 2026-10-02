@@ -2868,6 +2868,70 @@ impl System {
         preds
     }
 
+    /// The predicate variables a clause defines: its head, and each one that occurs negatively
+    /// in its body. A body `φ ∧ ¬ψ` is the clause `φ ⇒ ψ`, which is how a call's quantified
+    /// precondition (`∀c x. pre(c, x)`) is put, so a predicate variable in `ψ` is solved from
+    /// the rest of the clause as a head is. The polarity is followed into the formula bodies of
+    /// the user-defined predicates the clause applies (`bodies`), which may apply predicate
+    /// variables in turn.
+    fn head_pred_vars<'a>(
+        clause: &'a Clause,
+        bodies: &HashMap<&'a UserDefinedPred, &'a Formula>,
+    ) -> Vec<PredVarId> {
+        struct Walk<'a, 'b> {
+            bodies: &'b HashMap<&'a UserDefinedPred, &'a Formula>,
+            entered: HashSet<(&'a UserDefinedPred, bool)>,
+            heads: Vec<PredVarId>,
+        }
+        impl<'a> Walk<'a, '_> {
+            fn atom(&mut self, atom: &'a Atom<TermVarIdx>, positive: bool) {
+                match &atom.pred {
+                    Pred::Var(id) if !positive => self.heads.push(*id),
+                    Pred::UserDefined(pred) => {
+                        let Some(body) = self.bodies.get(pred).copied() else {
+                            return;
+                        };
+                        if self.entered.insert((pred, positive)) {
+                            self.formula(body, positive);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            fn formula(&mut self, formula: &'a Formula, positive: bool) {
+                match formula {
+                    Formula::Atom(atom) => self.atom(atom, positive),
+                    Formula::Not(f) => self.formula(f, !positive),
+                    Formula::And(fs) | Formula::Or(fs) => {
+                        fs.iter().for_each(|f| self.formula(f, positive))
+                    }
+                    Formula::Implies(lhs, rhs) => {
+                        self.formula(lhs, !positive);
+                        self.formula(rhs, positive);
+                    }
+                    Formula::Exists(_, f) | Formula::Forall(_, f) => self.formula(f, positive),
+                }
+            }
+        }
+        let mut walk = Walk {
+            bodies,
+            entered: HashSet::new(),
+            heads: Vec::new(),
+        };
+        if let Pred::Var(head_id) = clause.head.pred {
+            walk.heads.push(head_id);
+        }
+        clause
+            .body
+            .atoms
+            .iter()
+            .for_each(|atom| walk.atom(atom, true));
+        walk.formula(&clause.body.formula, true);
+        let mut seen = HashSet::new();
+        walk.heads.retain(|id| seen.insert(*id));
+        walk.heads
+    }
+
     fn compute_exists_dependency(clause: &Clause) -> HashSet<ExistsDep> {
         clause
             .body
@@ -2888,27 +2952,42 @@ impl System {
         let mut exists_deps: HashMap<ExistsDep, HashSet<ExistsDep>> = HashMap::new();
         let mut forall_deps: HashMap<ExistsDep, BTreeSet<ForallPred>> = HashMap::new();
 
+        let bodies: HashMap<&UserDefinedPred, &Formula> = self
+            .user_defined_pred_defs
+            .iter()
+            .filter_map(|def| match &def.body {
+                UserDefinedPredBody::Formula(formula) => Some((&def.symbol, formula)),
+                _ => None,
+            })
+            .collect();
         for (clause_idx, clause) in self.clauses.iter_enumerated() {
-            let Pred::Var(head_id) = clause.head.pred else {
+            let heads = Self::head_pred_vars(clause, &bodies);
+            if heads.is_empty() {
                 continue;
-            };
+            }
 
             let exists = Self::compute_exists_dependency(clause);
             let forall = self.compute_forall_dependency(clause);
 
-            tracing::debug!(
-                "exists deps for {:?} at {:?}: {:?}",
-                head_id,
-                clause_idx,
-                exists
-            );
-
-            let head_dep = ExistsDep::PredVar(head_id);
-            exists_deps
-                .entry(head_dep.clone())
-                .or_default()
-                .extend(exists);
-            forall_deps.entry(head_dep).or_default().extend(forall);
+            for head_id in heads {
+                tracing::debug!(
+                    "exists deps for {:?} at {:?}: {:?}",
+                    head_id,
+                    clause_idx,
+                    exists
+                );
+                let head_dep = ExistsDep::PredVar(head_id);
+                let mut exists = exists.clone();
+                exists.remove(&head_dep);
+                exists_deps
+                    .entry(head_dep.clone())
+                    .or_default()
+                    .extend(exists);
+                forall_deps
+                    .entry(head_dep)
+                    .or_default()
+                    .extend(forall.iter().cloned());
+            }
         }
         // Each `UserDefinedPred`'s body may call `ForallPred`s. We populate
         // these lazily via `populate_user_defined_pred_dependencies`; thread
