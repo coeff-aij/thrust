@@ -89,14 +89,14 @@ pub fn closure_post_forall_pred(
     )
 }
 
-pub fn closure_unnest_forall_pred(
+pub fn closure_hist_inv_forall_pred(
     tcx: mir_ty::TyCtxt<'_>,
     did: DefId,
     type_parameters: Vec<Sort>,
     params: Vec<Sort>,
 ) -> ForallPred {
     ForallPred::new(
-        stable_def_id_symbol(tcx, did, "q_unnest"),
+        stable_def_id_symbol(tcx, did, "q_hist_inv"),
         type_parameters,
         params,
     )

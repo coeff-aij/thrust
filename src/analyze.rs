@@ -28,7 +28,7 @@ use crate::rty;
 mod annot;
 mod annot_fn;
 mod basic_block;
-mod closure_unnest;
+mod closure_hist_inv;
 mod crate_;
 mod did_cache;
 mod local_def;
@@ -698,16 +698,16 @@ pub struct Analyzer<'tcx> {
     /// a call site; see [`Analyzer::has_concrete_instance`].
     concrete_instances: Rc<RefCell<HashSet<LocalDefId>>>,
     /// The closure types, generic arguments included, with the sort of their upvars, whose
-    /// `unnest` clause has had its laws pushed; see [`closure_unnest::explicit_laws`].
-    explicit_unnest_laws: Rc<RefCell<HashSet<(mir_ty::Ty<'tcx>, chc::Sort)>>>,
-    /// The clauses [`closure_unnest::instance_obligations`] gave for the instances at an `FnMut`
-    /// closure that use a generic def's contract as instantiated: the `unnest!` laws and the
+    /// `hist_inv` clause has had its laws pushed; see [`closure_hist_inv::explicit_laws`].
+    explicit_hist_inv_laws: Rc<RefCell<HashSet<(mir_ty::Ty<'tcx>, chc::Sort)>>>,
+    /// The clauses [`closure_hist_inv::instance_obligations`] gave for the instances at an `FnMut`
+    /// closure that use a generic def's contract as instantiated: the `hist_inv!` laws and the
     /// precondition clauses, pushed by [`Analyzer::emit_fn_mut_instance_obligations`].
     fn_mut_instance_obligations: Rc<RefCell<FnMutInstanceObligations>>,
-    /// See [`Analyzer::record_unnest_specified_params`].
-    unnest_specified_params: Rc<RefCell<HashSet<DefId>>>,
+    /// See [`Analyzer::record_hist_inv_specified_params`].
+    hist_inv_specified_params: Rc<RefCell<HashSet<DefId>>>,
     /// The local fn-like defs with an `FnMut`-bounded type parameter, recorded with
-    /// [`Analyzer::unnest_specified_params`].
+    /// [`Analyzer::hist_inv_specified_params`].
     fn_mut_bounded_defs: Rc<RefCell<Vec<DefId>>>,
     /// The spec bounds a body assumed at a type parameter or an unresolved projection, keyed by
     /// the typeck root of the def it was analysed under; see [`classify_spec_bounds`].
@@ -777,9 +777,9 @@ impl<'tcx> Analyzer<'tcx> {
             trait_laws,
             pending_laws,
             concrete_instances: Default::default(),
-            explicit_unnest_laws: Default::default(),
+            explicit_hist_inv_laws: Default::default(),
             fn_mut_instance_obligations: Default::default(),
-            unnest_specified_params: Default::default(),
+            hist_inv_specified_params: Default::default(),
             fn_mut_bounded_defs: Default::default(),
             assumed_spec_bounds: Default::default(),
             reused_generic_instances: Default::default(),
@@ -1454,12 +1454,12 @@ impl<'tcx> Analyzer<'tcx> {
     /// again. The generic analysis stands for the instance once the closures obey what it
     /// assumed of their type parameters; those obligations are recorded here. It requires:
     ///
-    /// - the def, if `FnMut`-bounded, to be unnest-specified ([`Analyzer::is_unnest_specified`]);
+    /// - the def, if `FnMut`-bounded, to be hist_inv-specified ([`Analyzer::is_hist_inv_specified`]);
     /// - each type argument that is an `FnMut` closure to sit at one of its `FnMut`-bounded
     ///   parameters;
     /// - each type argument that nests an `FnMut` closure (`Map<Range, F>` given to `collect`) to
     ///   nest it in local ADTs only, and every `FnMut`-bounded def reachable through them
-    ///   ([`Analyzer::fn_mut_defs_reached_through`]) to be unnest-specified. Those defs then have
+    ///   ([`Analyzer::fn_mut_defs_reached_through`]) to be hist_inv-specified. Those defs then have
     ///   their own generic analysis emitted, so no def verified per instance is reached only
     ///   through this instance;
     /// - no unknown reachable from the contract, and a known contract for each closure.
@@ -1471,7 +1471,7 @@ impl<'tcx> Analyzer<'tcx> {
         caller_def_id: DefId,
     ) -> bool {
         let callee_bounded = fn_mut_bounded_params(self.tcx, def_id);
-        if !callee_bounded.is_empty() && !self.is_unnest_specified(def_id) {
+        if !callee_bounded.is_empty() && !self.is_hist_inv_specified(def_id) {
             return false;
         }
         let generics = self.tcx.generics_of(def_id);
@@ -1500,7 +1500,7 @@ impl<'tcx> Analyzer<'tcx> {
                 );
                 return false;
             };
-            if let Some(def) = defs.iter().find(|def| !self.is_unnest_specified(**def)) {
+            if let Some(def) = defs.iter().find(|def| !self.is_hist_inv_specified(**def)) {
                 tracing::info!(
                     ?ty,
                     ?def,
@@ -1544,8 +1544,8 @@ impl<'tcx> Analyzer<'tcx> {
                 return false;
             };
             let Some(clauses) =
-                closure_unnest::instance_obligations(closure_ty, &contract, &|from, to| {
-                    self.closure_unnest_definition(
+                closure_hist_inv::instance_obligations(closure_ty, &contract, &|from, to| {
+                    self.closure_hist_inv_definition(
                         closure_ty,
                         &contract.params[rty::FunctionParamIdx::from_usize(0)]
                             .ty
@@ -1653,7 +1653,7 @@ impl<'tcx> Analyzer<'tcx> {
     }
 
     /// Pushes the obligations of [`Analyzer::reuse_fn_mut_generic`]: the precondition clauses
-    /// always, the `unnest!` law clauses when some analysis assumed the laws of a closure type
+    /// always, the `hist_inv!` law clauses when some analysis assumed the laws of a closure type
     /// parameter's relation. That is coarser than tracking which instance reaches which
     /// relation, and only adds checks.
     pub fn emit_fn_mut_instance_obligations(&mut self) {
@@ -1661,20 +1661,20 @@ impl<'tcx> Analyzer<'tcx> {
         let laws = std::mem::take(&mut pending.laws);
         let pre = std::mem::take(&mut pending.pre);
         let mut system = self.system.borrow_mut();
-        let laws_assumed = system
-            .forall_preds()
-            .any(|pred| pred.inner().starts_with("q_unnest_") && !system.laws_of(pred).is_empty());
+        let laws_assumed = system.forall_preds().any(|pred| {
+            pred.inner().starts_with("q_hist_inv_") && !system.laws_of(pred).is_empty()
+        });
         let clauses = if laws_assumed { laws } else { Vec::new() };
         for clause in clauses.into_iter().chain(pre) {
             system.push_clause(clause);
         }
     }
 
-    /// Records the `FnMut`-bounded type parameters whose `unnest!` relation the specifications
+    /// Records the `FnMut`-bounded type parameters whose `hist_inv!` relation the specifications
     /// use: those whose relation carries its laws once every contract and predicate definition
     /// has been translated. Taken once, after refinement, so the choice below does not depend
     /// on the order bodies are analyzed in.
-    pub fn record_unnest_specified_params(&mut self, defs: impl Iterator<Item = LocalDefId>) {
+    pub fn record_hist_inv_specified_params(&mut self, defs: impl Iterator<Item = LocalDefId>) {
         let system = self.system.borrow();
         let with_laws: HashSet<&str> = system
             .forall_preds()
@@ -1689,24 +1689,24 @@ impl<'tcx> Analyzer<'tcx> {
                 fn_mut_bounded_defs.push(def.to_def_id());
             }
             for param in params {
-                let name = crate::refine::stable_def_id_symbol(self.tcx, param, "q_unnest");
+                let name = crate::refine::stable_def_id_symbol(self.tcx, param, "q_hist_inv");
                 if with_laws.contains(name.as_str()) {
                     specified.insert(param);
                 }
             }
         }
         drop(system);
-        *self.unnest_specified_params.borrow_mut() = specified;
+        *self.hist_inv_specified_params.borrow_mut() = specified;
         *self.fn_mut_bounded_defs.borrow_mut() = fn_mut_bounded_defs;
     }
 
     /// Whether `def_id` has an `FnMut`-bounded type parameter and each of them is one whose
-    /// `unnest!` relation the specifications use. Only such a def's instances at concrete
+    /// `hist_inv!` relation the specifications use. Only such a def's instances at concrete
     /// closures may use its generic analysis ([`Analyzer::reuse_fn_mut_generic`]); any other
     /// `FnMut`-bounded def is verified per instance (D34).
-    pub fn is_unnest_specified(&self, def_id: DefId) -> bool {
+    pub fn is_hist_inv_specified(&self, def_id: DefId) -> bool {
         let params = fn_mut_bounded_params(self.tcx, def_id);
-        let specified = self.unnest_specified_params.borrow();
+        let specified = self.hist_inv_specified_params.borrow();
         !params.is_empty() && params.iter().all(|param| specified.contains(param))
     }
 
@@ -1726,32 +1726,32 @@ impl<'tcx> Analyzer<'tcx> {
     /// (see [`Analyzer::def_ty_with_args`]), so such an instance checks the body against the
     /// contract instantiated at the call site, including the concrete closure contract of an
     /// `FnMut`-bounded type parameter.
-    /// The relation of `unnest!` at the concrete closure `closure_ty` whose upvars have the sort
+    /// The relation of `hist_inv!` at the concrete closure `closure_ty` whose upvars have the sort
     /// `upvars_sort`, between the states `from` and `to`: the one its captures give, and the one
-    /// the `unnest` clause of its specification writes, if any.
-    pub fn closure_unnest_definition<V: chc::Var>(
+    /// the `hist_inv` clause of its specification writes, if any.
+    pub fn closure_hist_inv_definition<V: chc::Var>(
         &self,
         closure_ty: mir_ty::Ty<'tcx>,
         upvars_sort: &chc::Sort,
         from: chc::Term<V>,
         to: chc::Term<V>,
     ) -> chc::Formula<V> {
-        let derived = closure_unnest::concrete_definition(
+        let derived = closure_hist_inv::concrete_definition(
             self.tcx,
             closure_ty,
             upvars_sort,
             from.clone(),
             to.clone(),
         );
-        match self.closure_explicit_unnest(closure_ty, upvars_sort, from, to) {
+        match self.closure_explicit_hist_inv(closure_ty, upvars_sort, from, to) {
             Some(explicit) => derived.and(explicit),
             None => derived,
         }
     }
 
-    /// The relation the `unnest` clause of `closure_ty`'s specification writes, between the
+    /// The relation the `hist_inv` clause of `closure_ty`'s specification writes, between the
     /// states `from` and `to`, with its laws pushed on first use.
-    fn closure_explicit_unnest<V: chc::Var>(
+    fn closure_explicit_hist_inv<V: chc::Var>(
         &self,
         closure_ty: mir_ty::Ty<'tcx>,
         upvars_sort: &chc::Sort,
@@ -1763,19 +1763,19 @@ impl<'tcx> Analyzer<'tcx> {
         };
         let local_def_id = def_id.as_local()?;
         let formula_def_id = self
-            .extract_path_with_attr(local_def_id, &analyze::annot::unnest_path_path())?
+            .extract_path_with_attr(local_def_id, &analyze::annot::hist_inv_path_path())?
             .expect_local();
         let generic_args = self.closure_spec_args(formula_def_id, closure_args);
         let owner_fn_id = self.tcx.typeck_root_def_id(*def_id);
         let formula_fn = self
             .formula_fn_with_args(formula_def_id, generic_args, owner_fn_id)
-            .expect("unnest clause is not a formula function");
+            .expect("hist_inv clause is not a formula function");
         let apply = |from: chc::Term<V>, to: chc::Term<V>| {
             let pair = chc::Term::mut_(from, to);
             formula_fn.formula().clone().subst_var(|_| pair.clone())
         };
         if self
-            .explicit_unnest_laws
+            .explicit_hist_inv_laws
             .borrow_mut()
             .insert((closure_ty, upvars_sort.clone()))
         {
@@ -1783,7 +1783,7 @@ impl<'tcx> Analyzer<'tcx> {
                 let pair = chc::Term::mut_(from, to);
                 formula_fn.formula().clone().subst_var(|_| pair.clone())
             };
-            let laws = closure_unnest::explicit_laws(closure_ty, upvars_sort, &related);
+            let laws = closure_hist_inv::explicit_laws(closure_ty, upvars_sort, &related);
             for clause in laws {
                 self.system.borrow_mut().push_clause(clause);
             }

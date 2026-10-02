@@ -1,15 +1,14 @@
-//@ignore-on-host: not yet verifiable, the relation of a by-value capture is not inferred (see README.md)
-//@check-pass
+//@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 use thrust_models::{exists, forall, model::{Closure, Mut}};
 
-// `closure_unnest_clause.rs` without its `unnest` clause: the relation between the closure's
+// `closure_hist_inv_clause.rs` without its `hist_inv` clause: the relation between the closure's
 // states, that its owned counter never decreases, is left to inference.
 
 #[thrust_macros::requires(forall(|c: Closure<F>| thrust_macros::pre!(c())))]
 #[thrust_macros::ensures(exists(|g|
-    thrust_macros::unnest!(*f, g) && thrust_macros::post!(Mut::new(g, !f)(), result)))]
+    thrust_macros::hist_inv!(*f, g) && thrust_macros::post!(Mut::new(g, !f)(), result)))]
 fn call_twice<F: FnMut() -> i64>(f: &mut F) -> i64 {
     f();
     f()
@@ -27,5 +26,5 @@ fn main() {
         },
     );
     let r = call_twice(&mut c);
-    assert!(r >= 1);
+    assert!(r >= 3);
 }

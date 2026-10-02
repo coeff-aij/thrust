@@ -5,9 +5,9 @@
 use thrust_models::{exists, model::Mut};
 
 // `call_twice` hides the state between the calls, so the caller learns the final value of
-// `cnt` only through `unnest!`, which at this closure keeps the borrow's prophecy.
+// `cnt` only through `hist_inv!`, which at this closure keeps the borrow's prophecy.
 #[thrust_macros::ensures(exists(|g|
-    thrust_macros::unnest!(*f, g) && thrust_macros::post!(Mut::new(g, !f)(), ())))]
+    thrust_macros::hist_inv!(*f, g) && thrust_macros::post!(Mut::new(g, !f)(), ())))]
 fn call_twice<F: FnMut()>(f: &mut F) {
     f();
     f();

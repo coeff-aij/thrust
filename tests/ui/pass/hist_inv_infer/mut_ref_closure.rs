@@ -5,10 +5,10 @@
 use thrust_models::{exists, forall, model::{Closure, Mut}};
 
 // `call_twice` takes its closure by value, as std's `find` does, and hides the state between the
-// calls behind `unnest!`.
+// calls behind `hist_inv!`.
 #[thrust_macros::requires(forall(|c: Closure<G>, y: i64| thrust_macros::pre!(c(y))))]
 #[thrust_macros::ensures(exists(|c: Closure<G>, d: Closure<G>, y: i64|
-    thrust_macros::unnest!(g, c) && thrust_macros::post!(Mut::new(c, d)(y), result)))]
+    thrust_macros::hist_inv!(g, c) && thrust_macros::post!(Mut::new(c, d)(y), result)))]
 fn call_twice<G: FnMut(i64) -> i64>(mut g: G, x: i64) -> i64 {
     let a = g(x);
     g(a)
@@ -20,7 +20,7 @@ fn call_twice<G: FnMut(i64) -> i64>(mut g: G, x: i64) -> i64 {
 #[thrust_macros::context]
 #[thrust_macros::requires(forall(|c: Closure<F>, y: i64| thrust_macros::pre!(c(y))))]
 #[thrust_macros::ensures(exists(|c: Closure<F>, d: Closure<F>, y: i64|
-    thrust_macros::unnest!(*f, c) && thrust_macros::post!(Mut::new(c, d)(y), result)))]
+    thrust_macros::hist_inv!(*f, c) && thrust_macros::post!(Mut::new(c, d)(y), result)))]
 fn call_twice_by_ref<F: FnMut(i64) -> i64>(f: &mut F, x: i64) -> i64 {
     call_twice(&mut *f, x)
 }

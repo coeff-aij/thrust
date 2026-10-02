@@ -46,17 +46,17 @@ pub fn expand_post(input: TokenStream) -> TokenStream {
     quote::quote!(crate::thrust_models::model::closure_postcondition(#func, #args, #result)).into()
 }
 
-pub fn expand_unnest(input: TokenStream) -> TokenStream {
+pub fn expand_hist_inv(input: TokenStream) -> TokenStream {
     let parser = Punctuated::<syn::Expr, syn::Token![,]>::parse_terminated;
     let exprs = syn::parse_macro_input!(input with parser);
     let exprs: Vec<syn::Expr> = exprs.into_iter().collect();
     let [from, to] = exprs.as_slice() else {
         return syn::Error::new(
             proc_macro2::Span::call_site(),
-            "unnest! expects `unnest!(f, g)`",
+            "hist_inv! expects `hist_inv!(f, g)`",
         )
         .to_compile_error()
         .into();
     };
-    quote::quote!(crate::thrust_models::model::closure_unnest(#from, #to)).into()
+    quote::quote!(crate::thrust_models::model::closure_hist_inv(#from, #to)).into()
 }

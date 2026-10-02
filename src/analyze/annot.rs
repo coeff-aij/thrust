@@ -54,8 +54,8 @@ pub fn refinement_path_path() -> [Symbol; 2] {
     [Symbol::intern("thrust"), Symbol::intern("refinement_path")]
 }
 
-pub fn unnest_path_path() -> [Symbol; 2] {
-    [Symbol::intern("thrust"), Symbol::intern("unnest_path")]
+pub fn hist_inv_path_path() -> [Symbol; 2] {
+    [Symbol::intern("thrust"), Symbol::intern("hist_inv_path")]
 }
 
 pub fn closure_upvars_path() -> [Symbol; 2] {
@@ -286,11 +286,11 @@ pub fn closure_postcondition_path() -> [Symbol; 3] {
     ]
 }
 
-pub fn closure_unnest_path() -> [Symbol; 3] {
+pub fn closure_hist_inv_path() -> [Symbol; 3] {
     [
         Symbol::intern("thrust"),
         Symbol::intern("def"),
-        Symbol::intern("closure_unnest"),
+        Symbol::intern("closure_hist_inv"),
     ]
 }
 

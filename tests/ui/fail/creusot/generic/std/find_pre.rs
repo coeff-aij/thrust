@@ -110,7 +110,7 @@ impl<B: Model> Model for ControlFlow<B> {
 #[thrust_macros::context]
 #[thrust_macros::requires(I::invariant(*iter))]
 #[thrust_macros::requires(forall(|c: Closure<F>, x: <<I as Iterator>::Item as Model>::Ty| thrust_macros::pre!(c(x))))]
-#[thrust_macros::ensures(forall(|v: <<I as Iterator>::Item as Model>::Ty| result == ControlFlow::Break(v) ==> exists(|c: Closure<F>, d: Closure<F>, x: <<I as Iterator>::Item as Model>::Ty| thrust_macros::unnest!(f, c) && thrust_macros::post!(Mut::new(c, d)(x), ControlFlow::Break(v)))))]
+#[thrust_macros::ensures(forall(|v: <<I as Iterator>::Item as Model>::Ty| result == ControlFlow::Break(v) ==> exists(|c: Closure<F>, d: Closure<F>, x: <<I as Iterator>::Item as Model>::Ty| thrust_macros::hist_inv!(f, c) && thrust_macros::post!(Mut::new(c, d)(x), ControlFlow::Break(v)))))]
 fn try_fold<I, F>(iter: &mut I, f: F) -> ControlFlow<I::Item>
 where
     I: Iterator + Model,
@@ -125,7 +125,7 @@ where
         thrust_macros::invariant!(
             |it: &mut I, g: F, f: thrust_models::FnParam<F>|
             I::invariant(*it)
-                && thrust_macros::unnest!(f.at_entry(), g)
+                && thrust_macros::hist_inv!(f.at_entry(), g)
                 && forall(|c: Closure<F>, x: <<I as Iterator>::Item as Model>::Ty| thrust_macros::pre!(c(x)))
         );
         match g(x) {
@@ -150,7 +150,7 @@ where
     // `check` owns the predicate, so its states are related as the predicate's are.
     let check = thrust_macros::closure!(
         captures(predicate: &mut P),
-        unnest(thrust_macros::unnest!(*predicate, !predicate)),
+        hist_inv(thrust_macros::hist_inv!(*predicate, !predicate)),
         move |x: I::Item| -> ControlFlow<I::Item> {
             if predicate(x) { ControlFlow::Break(x) } else { ControlFlow::Continue(()) }
         },

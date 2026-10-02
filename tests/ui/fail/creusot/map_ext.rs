@@ -10,8 +10,8 @@ use thrust_models::{exists, forall, Ghost, Model};
 // extends `produced` by the existential input sequence `s` and calls the closure at the history
 // `produced ++ s[..k]` for the `k`-th item; the invariant is Creusot's `reinitialize`,
 // `preservation_inv`, the inner invariant and `next_precondition`. The closure is `FnMut`, as
-// Creusot's: `produces` carries the chain `fs` of closure states related by `unnest!` (Creusot's
-// `unnest`, `hist_inv` in creusot-std), and `preservation_inv` and `reinitialize` quantify over
+// Creusot's: `produces` carries the chain `fs` of closure states related by `hist_inv!` (Creusot's
+// `hist_inv`, `unnest` in earlier versions), and `preservation_inv` and `reinitialize` quantify over
 // every closure state. The adapter is `counter_creusot.rs`'s; its lemmas are called from ghost
 // code in `next` and `produces_trans`.
 // Fail twin: `next` does not extend `produced` by the consumed item.
@@ -100,7 +100,7 @@ where
         forall(|f1: Closure<F>|
         forall(|f2: Closure<F>|
         forall(|b: <B as Model>::Ty|
-            !(thrust_macros::unnest!(func, f1)
+            !(thrust_macros::hist_inv!(func, f1)
                 && I::produces(iter, s.push(e1).push(e2), i)
                 && thrust_macros::pre!(f1(e1, produced.concat(s)))
                 && thrust_macros::post!(Mut::new(f1, f2)(e1, produced.concat(s)), b))
@@ -121,7 +121,7 @@ where
     // under its `exists`.
     #[thrust_macros::predicate]
     fn produces_at(s0: Self, visited: Seq<<B as Model>::Ty>, o: Self, s: Seq<A>, fs: Seq<F>) -> bool {
-        thrust_macros::unnest!(s0.1, o.1)
+        thrust_macros::hist_inv!(s0.1, o.1)
             && s.len() == visited.len()
             && I::produces(s0.0, s, o.0)
             && o.2 == s0.2.concat(s)
@@ -130,7 +130,7 @@ where
             && fs[visited.len()] == o.1
             && forall(|k: Int|
                 !(0 <= k && k < visited.len())
-                    || (thrust_macros::unnest!(s0.1, fs[k])
+                    || (thrust_macros::hist_inv!(s0.1, fs[k])
                         && thrust_macros::post!(Mut::new(fs[k], fs[k + 1])(s[k], s0.2.concat(s.subsequence(0, k))), visited[k])))
     }
 
@@ -277,7 +277,7 @@ where
     // `^fs[k]`), and the history `produced ++ s[..k]` at the `k`-th call.
     #[thrust_macros::predicate]
     fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool {
-        thrust_macros::unnest!(self.1, o.1)
+        thrust_macros::hist_inv!(self.1, o.1)
             && exists(|s: Seq<A>| exists(|fs: Seq<Closure<F>>|
             s.len() == visited.len()
                 && I::produces(self.0, s, o.0)
@@ -287,7 +287,7 @@ where
                 && fs[visited.len()] == o.1
                 && forall(|k: Int|
                     !(0 <= k && k < visited.len())
-                        || (thrust_macros::unnest!(self.1, fs[k])
+                        || (thrust_macros::hist_inv!(self.1, fs[k])
                             && thrust_macros::post!(Mut::new(fs[k], fs[k + 1])(s[k], self.2.concat(s.subsequence(0, k))), visited[k])))))
     }
 }

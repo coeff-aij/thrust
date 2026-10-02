@@ -443,8 +443,8 @@ impl<'tcx> analyze::Analyzer<'tcx> {
             ClosureContractPart::Pre
         } else if pred.inner().starts_with("q_post_") {
             ClosureContractPart::Post
-        } else if pred.inner().starts_with("q_unnest_") {
-            ClosureContractPart::Unnest
+        } else if pred.inner().starts_with("q_hist_inv_") {
+            ClosureContractPart::HistInv
         } else {
             return None;
         };
@@ -482,11 +482,11 @@ impl<'tcx> analyze::Analyzer<'tcx> {
         let terms: Vec<chc::Term<chc::TermVarIdx>> = vars.indices().map(chc::Term::var).collect();
         let upvars = || closure_upvars_term(terms[0].clone(), &params[0], &fn_ty);
         let formula = match part {
-            ClosureContractPart::Unnest => {
+            ClosureContractPart::HistInv => {
                 let [from, to] = terms.as_slice() else {
                     return None;
                 };
-                self.closure_unnest_definition(closure_ty, &params[0], from.clone(), to.clone())
+                self.closure_hist_inv_definition(closure_ty, &params[0], from.clone(), to.clone())
             }
             ClosureContractPart::Post => {
                 let (result, args) = terms.get(1..)?.split_last()?;
@@ -527,7 +527,7 @@ impl<'tcx> analyze::Analyzer<'tcx> {
 enum ClosureContractPart {
     Pre,
     Post,
-    Unnest,
+    HistInv,
 }
 
 /// The upvars argument a closure contract takes, given the sort the predicate

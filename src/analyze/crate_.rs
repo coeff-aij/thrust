@@ -218,7 +218,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         }
         // A def is skipped (D34) when a concrete instantiation has analyzed its body and no
         // instance has used its generic analysis instead. Only a def whose specification relates
-        // the closure's states by `unnest!` can have such an instance
+        // the closure's states by `hist_inv!` can have such an instance
         // (`Analyzer::reuse_fn_mut_generic`); analyzing a def may add one for a def skipped
         // before, which is then analyzed too.
         let mut pending = fn_mut_generic_defs;
@@ -234,7 +234,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     // so a body obligation relating the contract at two states (a preservation
                     // conjunct of an adapter invariant) need not be inductive for an arbitrary
                     // contract even when it is for every concrete one; creusot-std guards it
-                    // by `unnest!` for that reason. Each concrete instantiation has checked the
+                    // by `hist_inv!` for that reason. Each concrete instantiation has checked the
                     // body against its own closure contract instead.
                     skipped.push(local_def_id);
                     continue;
@@ -470,7 +470,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.register_trait_laws();
         self.refine_local_defs();
         let keys: Vec<_> = self.tcx.mir_keys(()).iter().copied().collect();
-        self.ctx.record_unnest_specified_params(keys.into_iter());
+        self.ctx.record_hist_inv_specified_params(keys.into_iter());
         self.analyze_local_defs();
         self.ctx.emit_pending_pred_instances();
         self.ctx.emit_pending_laws();

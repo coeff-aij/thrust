@@ -21,7 +21,7 @@
 //! they are captured by the closure. Only the ones a clause names need restating, and
 //! in any order: the plugin matches them against the closure's real captures by name.
 //!
-//! `unnest` gives the relation `unnest!` holds between two states of an `FnMut` closure, in
+//! `hist_inv` gives the relation `hist_inv!` holds between two states of an `FnMut` closure, in
 //! place of the one derived from its captures, which says nothing of a capture taken by value.
 //! It reads a capture `x` as `*x` at the first state and `!x` at the second, as `ensures` reads
 //! the receiver's current and final state. The analyzer checks it reflexive and transitive,
@@ -47,14 +47,14 @@ mod kw {
     syn::custom_keyword!(captures);
     syn::custom_keyword!(requires);
     syn::custom_keyword!(ensures);
-    syn::custom_keyword!(unnest);
+    syn::custom_keyword!(hist_inv);
 }
 
 struct ClosureSpec {
     captures: Vec<FnArg>,
     requires: Vec<TokenStream2>,
     ensures: Vec<TokenStream2>,
-    unnest: Vec<TokenStream2>,
+    hist_inv: Vec<TokenStream2>,
     closure: syn::ExprClosure,
 }
 
@@ -63,7 +63,7 @@ impl Parse for ClosureSpec {
         let mut captures = Vec::new();
         let mut requires = Vec::new();
         let mut ensures = Vec::new();
-        let mut unnest = Vec::new();
+        let mut hist_inv = Vec::new();
 
         loop {
             if input.peek(kw::captures) {
@@ -78,9 +78,9 @@ impl Parse for ClosureSpec {
                 } else if input.peek(kw::ensures) {
                     input.parse::<kw::ensures>()?;
                     &mut ensures
-                } else if input.peek(kw::unnest) {
-                    input.parse::<kw::unnest>()?;
-                    &mut unnest
+                } else if input.peek(kw::hist_inv) {
+                    input.parse::<kw::hist_inv>()?;
+                    &mut hist_inv
                 } else {
                     break;
                 };
@@ -98,7 +98,7 @@ impl Parse for ClosureSpec {
             captures,
             requires,
             ensures,
-            unnest,
+            hist_inv,
             closure,
         })
     }
@@ -150,7 +150,7 @@ fn expand_closure(
         captures,
         requires,
         ensures,
-        unnest,
+        hist_inv,
         mut closure,
     } = spec;
 
@@ -181,7 +181,7 @@ fn expand_closure(
             &upvars,
             &arg_params,
             &closure.output,
-            [requires, ensures, unnest],
+            [requires, ensures, hist_inv],
         )?;
         splice_prelude(&mut closure, prelude);
         return Ok(closure);
@@ -230,18 +230,18 @@ fn expand_closure(
             _thrust_closure_ensures;
         });
     }
-    if let Some(body) = conjoin(unnest) {
+    if let Some(body) = conjoin(hist_inv) {
         prelude.push(quote! {
             #[allow(unused_variables, non_snake_case)]
             #[thrust::formula_fn]
-            fn _thrust_closure_unnest(
+            fn _thrust_closure_hist_inv(
                 #[thrust::closure_upvars] #upvars_model
             ) -> bool {
                 #body
             }
 
-            #[thrust::unnest_path]
-            _thrust_closure_unnest;
+            #[thrust::hist_inv_path]
+            _thrust_closure_hist_inv;
         });
     }
 
@@ -249,14 +249,14 @@ fn expand_closure(
     Ok(closure)
 }
 
-/// The companions of the clauses `[requires, ensures, unnest]` lifted with the enclosing
+/// The companions of the clauses `[requires, ensures, hist_inv]` lifted with the enclosing
 /// generics, each referred to with them as arguments.
 fn context_companions(
     context: &EnclosingContext,
     upvars: &FnArg,
     arg_params: &[FnArg],
     output: &syn::ReturnType,
-    [requires, ensures, unnest]: [Vec<TokenStream2>; 3],
+    [requires, ensures, hist_inv]: [Vec<TokenStream2>; 3],
 ) -> syn::Result<Vec<TokenStream2>> {
     let upvars: FnArg = {
         let FnArg::Typed(pt) = upvars else {
@@ -306,12 +306,12 @@ fn context_companions(
             quote!(#[thrust::ensures_path]),
         )?;
     }
-    if let Some(body) = conjoin(unnest) {
+    if let Some(body) = conjoin(hist_inv) {
         lift(
-            "_thrust_closure_unnest",
+            "_thrust_closure_hist_inv",
             vec![upvars],
             body,
-            quote!(#[thrust::unnest_path]),
+            quote!(#[thrust::hist_inv_path]),
         )?;
     }
     Ok(prelude)

@@ -113,7 +113,7 @@ where
         forall(|f1: Closure<F>|
         forall(|f2: Closure<F>|
         forall(|b: <B as Model>::Ty|
-            !(thrust_macros::unnest!(func, f1)
+            !(thrust_macros::hist_inv!(func, f1)
                 && I::produces(iter, s.push(e1).push(e2), i)
                 && thrust_macros::pre!(f1(e1))
                 && thrust_macros::post!(Mut::new(f1, f2)(e1), b))
@@ -144,7 +144,7 @@ where
     // under its `exists`.
     #[thrust_macros::predicate]
     fn produces_at(s0: Self, visited: Seq<<B as Model>::Ty>, o: Self, s: Seq<A>, fs: Seq<F>) -> bool {
-        thrust_macros::unnest!(s0.1, o.1)
+        thrust_macros::hist_inv!(s0.1, o.1)
             && s.len() == visited.len()
             && I::produces(s0.0, s, o.0)
             && fs.len() == visited.len() + 1
@@ -152,7 +152,7 @@ where
             && fs[visited.len()] == o.1
             && forall(|k: Int|
                 !(0 <= k && k < visited.len())
-                    || (thrust_macros::unnest!(s0.1, fs[k])
+                    || (thrust_macros::hist_inv!(s0.1, fs[k])
                         && thrust_macros::post!(Mut::new(fs[k], fs[k + 1])(s[0]), visited[k])))
     }
 
@@ -242,7 +242,7 @@ where
     // `^fs[k]`).
     #[thrust_macros::predicate]
     fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool {
-        thrust_macros::unnest!(self.1, o.1)
+        thrust_macros::hist_inv!(self.1, o.1)
             && exists(|s: Seq<A>| exists(|fs: Seq<Closure<F>>|
             s.len() == visited.len()
                 && I::produces(self.0, s, o.0)
@@ -251,7 +251,7 @@ where
                 && fs[visited.len()] == o.1
                 && forall(|k: Int|
                     !(0 <= k && k < visited.len())
-                        || (thrust_macros::unnest!(self.1, fs[k])
+                        || (thrust_macros::hist_inv!(self.1, fs[k])
                             && thrust_macros::post!(Mut::new(fs[k], fs[k + 1])(s[0]), visited[k])))))
     }
 }

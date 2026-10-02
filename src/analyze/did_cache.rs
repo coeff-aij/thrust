@@ -49,7 +49,7 @@ struct DefIds {
 
     closure_precondition: OnceCell<Option<DefId>>,
     closure_postcondition: OnceCell<Option<DefId>>,
-    closure_unnest: OnceCell<Option<DefId>>,
+    closure_hist_inv: OnceCell<Option<DefId>>,
 }
 
 /// Retrieves and caches well-known [`DefId`]s.
@@ -375,10 +375,10 @@ impl<'tcx> DefIdCache<'tcx> {
         })
     }
 
-    pub fn closure_unnest(&self) -> Option<DefId> {
+    pub fn closure_hist_inv(&self) -> Option<DefId> {
         *self
             .def_ids
-            .closure_unnest
-            .get_or_init(|| self.annotated_def(&crate::analyze::annot::closure_unnest_path()))
+            .closure_hist_inv
+            .get_or_init(|| self.annotated_def(&crate::analyze::annot::closure_hist_inv_path()))
     }
 }

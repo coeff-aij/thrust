@@ -1,11 +1,11 @@
-//! `unnest!(f, g)` between two states of a closure: Creusot's `FnMutExt::hist_inv`, called
+//! `hist_inv!(f, g)` between two states of a closure: Creusot's `FnMutExt::hist_inv`, called
 //! `unnest` in earlier Creusot versions.
 //!
 //! As in Creusot (`creusot-std/src/std/ops.rs` and `closure_hist_inv` in
 //! `creusot/src/backend/closures.rs`), a closure type parameter's relation is opaque and obeys
 //! the laws `hist_inv_refl`, `hist_inv_trans` and `postcondition_mut_hist_inv`, stated here as
 //! premises of the clauses that use it; a concrete closure's relation is defined from its
-//! captures, together with the relation its `closure!` specification writes in an `unnest`
+//! captures, together with the relation its `closure!` specification writes in an `hist_inv`
 //! clause, which the closure is checked to obey ([`explicit_laws`]).
 
 use rustc_middle::ty as mir_ty;
@@ -25,12 +25,12 @@ pub fn concrete_definition<'tcx, V: chc::Var>(
     to: chc::Term<V>,
 ) -> chc::Formula<V> {
     let mir_ty::TyKind::Closure(def_id, args) = closure_ty.kind() else {
-        panic!("unnest! at a type that is not a closure: {closure_ty:?}");
+        panic!("hist_inv! at a type that is not a closure: {closure_ty:?}");
     };
     match args.as_closure().kind() {
         mir_ty::ClosureKind::Fn => return from.equal_to(to).into(),
         mir_ty::ClosureKind::FnMut => {}
-        mir_ty::ClosureKind::FnOnce => panic!("unnest! is defined for Fn and FnMut closures"),
+        mir_ty::ClosureKind::FnOnce => panic!("hist_inv! is defined for Fn and FnMut closures"),
     }
     let chc::Sort::Tuple(upvar_sorts) = upvars_sort else {
         panic!("closure upvars in an unexpected shape: {upvars_sort:?}");
@@ -54,7 +54,7 @@ pub fn concrete_definition<'tcx, V: chc::Var>(
     formula
 }
 
-/// The clauses checking that `related`, the relation an `unnest` clause of `closure_ty`'s
+/// The clauses checking that `related`, the relation an `hist_inv` clause of `closure_ty`'s
 /// specification gives over its upvars of sort `upvars_sort`, is reflexive and transitive.
 /// That each call's postcondition implies it is checked against the closure's body, since the
 /// postcondition includes it.
@@ -74,7 +74,7 @@ pub fn explicit_laws(
                 .collect();
             let (premise, conclusion) = build(&vars);
             let origin = crate::chc::debug::origin::Entry::described(format!(
-                "{what} of the unnest clause of {closure_ty:?}"
+                "{what} of the hist_inv clause of {closure_ty:?}"
             ));
             builder.add_body(premise.into(), origin.clone());
             builder.head(conclusion.into(), origin)
@@ -111,9 +111,9 @@ pub fn laws(
     let fresh = |system: &mut chc::System, name: &str| {
         system.new_named_user_quantified_var(format!("{name} in a law of {pred}"))
     };
-    let f = fresh(system, "unnest_f");
+    let f = fresh(system, "hist_inv_f");
     let refl = chc::Formula::forall(vec![(f, sort.clone())], related(var(f), var(f)));
-    let [f, g, h] = ["unnest_f", "unnest_g", "unnest_h"].map(|n| fresh(system, n));
+    let [f, g, h] = ["hist_inv_f", "hist_inv_g", "hist_inv_h"].map(|n| fresh(system, n));
     let trans = chc::Formula::forall(
         vec![(f, sort.clone()), (g, sort.clone()), (h, sort.clone())],
         related(var(f), var(g))
@@ -129,7 +129,7 @@ pub fn laws(
             .params
             .iter_enumerated()
             .map(|(idx, param)| {
-                let v = fresh(system, &format!("unnest_p{}", idx.index()));
+                let v = fresh(system, &format!("hist_inv_p{}", idx.index()));
                 (v, param.ty.to_sort())
             })
             .collect();
@@ -138,7 +138,7 @@ pub fn laws(
             .map(|(v, sort)| chc::Term::UserQuantifiedVar(sort.clone(), *v))
             .collect();
         let result_sort = contract.ret.ty.to_sort();
-        let r = fresh(system, "unnest_r");
+        let r = fresh(system, "hist_inv_r");
         let result = chc::Term::UserQuantifiedVar(result_sort.clone(), r);
         params.push((r, result_sort));
         let post = contract.postcondition_formula(&args, result);
@@ -164,7 +164,7 @@ type Obligation = (chc::Formula<chc::TermVarIdx>, chc::Formula<chc::TermVarIdx>)
 ///   `refine::template`), while the closure's body is checked assuming it of the pair.
 ///
 /// Returns the law clauses and the precondition clauses apart, since the laws are assumed only
-/// where a generic analysis uses `unnest!`. `None` when the precondition names an unknown,
+/// where a generic analysis uses `hist_inv!`. `None` when the precondition names an unknown,
 /// which such a clause cannot state in Horn form; the instance is then analyzed again.
 pub fn instance_obligations(
     closure_ty: mir_ty::Ty<'_>,
@@ -198,7 +198,7 @@ pub fn instance_obligations(
     let mut law_clauses = obligation(
         vec![s()],
         &|v| (chc::Formula::top(), related(v[0].clone(), v[0].clone())),
-        "unnest! reflexivity",
+        "hist_inv! reflexivity",
     );
     law_clauses.extend(obligation(
         vec![s(), s(), s()],
@@ -207,7 +207,7 @@ pub fn instance_obligations(
                 related(v[0].clone(), v[1].clone()).and(related(v[1].clone(), v[2].clone()));
             (premise, related(v[0].clone(), v[2].clone()))
         },
-        "unnest! transitivity",
+        "hist_inv! transitivity",
     ));
     let param_sorts: Vec<chc::Sort> = contract
         .params
@@ -227,7 +227,7 @@ pub fn instance_obligations(
                 related(receiver.clone().mut_current(), receiver.mut_final()),
             )
         },
-        "unnest! implied by each call's postcondition",
+        "hist_inv! implied by each call's postcondition",
     ));
 
     // The precondition at the pair `(current, final)` against the one at `(current, current)`.

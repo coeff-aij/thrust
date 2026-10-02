@@ -531,16 +531,16 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             }
         }
         let mut fn_ty = builder.build();
-        self.conjoin_fn_mut_unnest(&mut fn_ty);
+        self.conjoin_fn_mut_hist_inv(&mut fn_ty);
         rty::RefinedType::unrefined(fn_ty.into())
     }
 
     /// Conjoins to an `FnMut` closure's postcondition that the call keeps the closure's state
-    /// related by `unnest!` (each `&mut` capture keeps its prophecy, each `&` capture its value),
+    /// related by `hist_inv!` (each `&mut` capture keeps its prophecy, each `&` capture its value),
     /// as Creusot's `postcondition_mut` of a closure includes `hist_inv(self, ^self)`. The body
     /// is checked against it, and it makes the law that each call's postcondition implies
-    /// `unnest!` hold of every such closure's contract.
-    fn conjoin_fn_mut_unnest(&self, fn_ty: &mut rty::FunctionType) {
+    /// `hist_inv!` hold of every such closure's contract.
+    fn conjoin_fn_mut_hist_inv(&self, fn_ty: &mut rty::FunctionType) {
         if !self.tcx.is_closure_like(self.local_def_id.to_def_id()) {
             return;
         }
@@ -560,7 +560,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let receiver = chc::Term::var(rty::RefinedTypeVar::Free(
             rty::FunctionParamIdx::from_usize(0),
         ));
-        let formula = self.ctx.closure_unnest_definition(
+        let formula = self.ctx.closure_hist_inv_definition(
             closure_ty,
             &upvars_sort,
             receiver.clone().mut_current(),
