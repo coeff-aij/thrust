@@ -70,8 +70,10 @@ where
         let mut pred_sig = chc::PredSig::new();
         // With `THRUST_FLAT_PRED_ARGS` set, a tuple- or `Mut`-sorted dependency is passed to the
         // predicate variable as its components (projections) rather than as one argument, so
-        // that the solver sees scalars and sequences as separate columns.
-        let flat = std::env::var_os("THRUST_FLAT_PRED_ARGS").is_some();
+        // that the solver sees scalars and sequences as separate columns. The value `loop`
+        // leaves the templates alone and flattens only the loop heads, on the CHC system
+        // (`chc::flatten_recursive_pred_args`).
+        let flat = std::env::var("THRUST_FLAT_PRED_ARGS").is_ok_and(|v| v != "loop");
         for (v, sort) in self.dependencies.into_iter() {
             if sort.is_singleton() {
                 continue;

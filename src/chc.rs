@@ -12,6 +12,8 @@ use crate::pretty::PrettyDisplayExt as _;
 mod candidate_atoms;
 mod clause_builder;
 pub mod debug;
+mod dedup;
+mod flatten;
 pub(crate) mod format_context;
 mod hoice;
 mod smtlib2;
@@ -21,6 +23,8 @@ mod unbox;
 pub use candidate_atoms::{conjuncts, instances, CandidateAtoms, CandidateAtomsMode, HeadTerms};
 pub use clause_builder::{ClauseBuilder, Var};
 pub use debug::DebugInfo;
+pub use dedup::{dedup_pred_args, dedup_recursive_pred_args};
+pub use flatten::flatten_recursive_pred_args;
 pub use solver::{Capabilities, CheckSatError, Config};
 pub use unbox::unbox;
 
@@ -2986,6 +2990,20 @@ impl System {
         let mut system = self.clone();
         system.populate_user_defined_pred_dependencies();
         let mut system = unbox(system);
+        // `THRUST_FLAT_PRED_ARGS=loop` splits the tuple and `Mut` arguments of the loop-head
+        // predicates here (see `flatten`); any other value flattens every template instead
+        // (`src/rty/template.rs`).
+        if std::env::var("THRUST_FLAT_PRED_ARGS").as_deref() == Ok("loop") {
+            system = flatten_recursive_pred_args(system);
+        }
+        // With `THRUST_DEDUP_PRED_ARGS` set, predicate variable arguments that are inductively
+        // equal to another argument are removed (see `dedup`), only at the loop heads with the
+        // value `loop`.
+        match std::env::var("THRUST_DEDUP_PRED_ARGS").as_deref() {
+            Ok("loop") => system = dedup_recursive_pred_args(system),
+            Ok(_) => system = dedup_pred_args(system),
+            Err(_) => {}
+        }
         system.populate_user_defined_pred_dependencies();
         if CandidateAtomsMode::from_env() == CandidateAtomsMode::ContractsAndEntry {
             system.add_entry_candidate_atoms();
