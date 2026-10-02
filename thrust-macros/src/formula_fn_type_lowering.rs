@@ -54,12 +54,13 @@ impl<'a> FormulaFnTypeLowering<'a> {
                         .push(syn::parse_quote!(self_: <#ty as crate::thrust_models::Model>::Ty));
                 }
                 syn::FnArg::Typed(pt) => {
+                    let attrs = &pt.attrs;
                     let pat = &pt.pat;
                     let ty = &pt.ty;
                     let lowered_ty = self.lower_closure_type_params_in_ty(ty);
-                    model_inputs.push(
-                        syn::parse_quote!(#pat: <#lowered_ty as crate::thrust_models::Model>::Ty),
-                    );
+                    model_inputs.push(syn::parse_quote!(
+                        #(#attrs)* #pat: <#lowered_ty as crate::thrust_models::Model>::Ty
+                    ));
                 }
             }
         }

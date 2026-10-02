@@ -760,13 +760,8 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         let formula = match closure_ty.kind() {
             mir_ty::TyKind::Closure(..) => {
                 let upvars_sort = self.type_builder.build(model_ty).to_sort();
-                analyze::closure_unnest::concrete_definition(
-                    self.tcx,
-                    closure_ty,
-                    &upvars_sort,
-                    from,
-                    to,
-                )
+                self.analyzer
+                    .closure_unnest_definition(closure_ty, &upvars_sort, from, to)
             }
             mir_ty::TyKind::Param(param_ty) => {
                 let pred = self.closure_unnest_pred(*param_ty, model_ty);

@@ -555,8 +555,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let receiver = chc::Term::var(rty::RefinedTypeVar::Free(
             rty::FunctionParamIdx::from_usize(0),
         ));
-        let formula = analyze::closure_unnest::concrete_definition(
-            self.tcx,
+        let formula = self.ctx.closure_unnest_definition(
             closure_ty,
             &upvars_sort,
             receiver.clone().mut_current(),

@@ -697,6 +697,9 @@ pub struct Analyzer<'tcx> {
     /// Defs whose body has been analyzed at fully concrete type arguments, as the callee of
     /// a call site; see [`Analyzer::has_concrete_instance`].
     concrete_instances: Rc<RefCell<HashSet<LocalDefId>>>,
+    /// The closures, with the sort of their upvars, whose `unnest` clause has had its laws
+    /// pushed; see [`closure_unnest::explicit_laws`].
+    explicit_unnest_laws: Rc<RefCell<HashSet<(DefId, chc::Sort)>>>,
     /// The clauses [`closure_unnest::instance_obligations`] gave for the instances at an `FnMut`
     /// closure that use a generic def's contract as instantiated: the `unnest!` laws and the
     /// precondition clauses, pushed by [`Analyzer::emit_fn_mut_instance_obligations`].
@@ -774,6 +777,7 @@ impl<'tcx> Analyzer<'tcx> {
             trait_laws,
             pending_laws,
             concrete_instances: Default::default(),
+            explicit_unnest_laws: Default::default(),
             fn_mut_instance_obligations: Default::default(),
             unnest_specified_params: Default::default(),
             fn_mut_bounded_defs: Default::default(),
@@ -1540,7 +1544,17 @@ impl<'tcx> Analyzer<'tcx> {
                 return false;
             };
             let Some(clauses) =
-                closure_unnest::instance_obligations(self.tcx, closure_ty, &contract)
+                closure_unnest::instance_obligations(closure_ty, &contract, &|from, to| {
+                    self.closure_unnest_definition(
+                        closure_ty,
+                        &contract.params[rty::FunctionParamIdx::from_usize(0)]
+                            .ty
+                            .to_sort()
+                            .deref(),
+                        from,
+                        to,
+                    )
+                })
             else {
                 tracing::info!(
                     ?closure_ty,
@@ -1712,6 +1726,85 @@ impl<'tcx> Analyzer<'tcx> {
     /// (see [`Analyzer::def_ty_with_args`]), so such an instance checks the body against the
     /// contract instantiated at the call site, including the concrete closure contract of an
     /// `FnMut`-bounded type parameter.
+    /// The relation of `unnest!` at the concrete closure `closure_ty` whose upvars have the sort
+    /// `upvars_sort`, between the states `from` and `to`: the one its captures give, and the one
+    /// the `unnest` clause of its specification writes, if any.
+    pub fn closure_unnest_definition<V: chc::Var>(
+        &self,
+        closure_ty: mir_ty::Ty<'tcx>,
+        upvars_sort: &chc::Sort,
+        from: chc::Term<V>,
+        to: chc::Term<V>,
+    ) -> chc::Formula<V> {
+        let derived = closure_unnest::concrete_definition(
+            self.tcx,
+            closure_ty,
+            upvars_sort,
+            from.clone(),
+            to.clone(),
+        );
+        match self.closure_explicit_unnest(closure_ty, upvars_sort, from, to) {
+            Some(explicit) => derived.and(explicit),
+            None => derived,
+        }
+    }
+
+    /// The relation the `unnest` clause of `closure_ty`'s specification writes, between the
+    /// states `from` and `to`, with its laws pushed on first use.
+    fn closure_explicit_unnest<V: chc::Var>(
+        &self,
+        closure_ty: mir_ty::Ty<'tcx>,
+        upvars_sort: &chc::Sort,
+        from: chc::Term<V>,
+        to: chc::Term<V>,
+    ) -> Option<chc::Formula<V>> {
+        let mir_ty::TyKind::Closure(def_id, closure_args) = closure_ty.kind() else {
+            return None;
+        };
+        let local_def_id = def_id.as_local()?;
+        let formula_def_id = self
+            .extract_path_with_attr(local_def_id, &analyze::annot::unnest_path_path())?
+            .expect_local();
+        let generic_args = self.closure_spec_args(formula_def_id, closure_args);
+        let owner_fn_id = self.tcx.typeck_root_def_id(*def_id);
+        let formula_fn = self
+            .formula_fn_with_args(formula_def_id, generic_args, owner_fn_id)
+            .expect("unnest clause is not a formula function");
+        let apply = |from: chc::Term<V>, to: chc::Term<V>| {
+            let pair = chc::Term::mut_(from, to);
+            formula_fn.formula().clone().subst_var(|_| pair.clone())
+        };
+        if self
+            .explicit_unnest_laws
+            .borrow_mut()
+            .insert((*def_id, upvars_sort.clone()))
+        {
+            let related = |from: chc::Term<chc::TermVarIdx>, to: chc::Term<chc::TermVarIdx>| {
+                let pair = chc::Term::mut_(from, to);
+                formula_fn.formula().clone().subst_var(|_| pair.clone())
+            };
+            let laws = closure_unnest::explicit_laws(closure_ty, upvars_sort, &related);
+            for clause in laws {
+                self.system.borrow_mut().push_clause(clause);
+            }
+        }
+        Some(apply(from, to))
+    }
+
+    /// The generic arguments of a `closure!` specification's formula function at the closure
+    /// arguments `closure_args`: none when it is lifted without the enclosing generics, and the
+    /// closure's parent arguments when `#[thrust_macros::context]` re-declared them on it.
+    fn closure_spec_args(
+        &self,
+        formula_def_id: LocalDefId,
+        closure_args: mir_ty::GenericArgsRef<'tcx>,
+    ) -> mir_ty::GenericArgsRef<'tcx> {
+        if self.tcx.generics_of(formula_def_id).count() == 0 {
+            return self.tcx.mk_args(&[]);
+        }
+        self.tcx.mk_args(closure_args.as_closure().parent_args())
+    }
+
     pub fn has_concrete_instance(&self, local_def_id: LocalDefId) -> bool {
         self.concrete_instances.borrow().contains(&local_def_id)
     }
@@ -2024,6 +2117,11 @@ impl<'tcx> Analyzer<'tcx> {
                 formula_def_id
             );
         };
+        let generic_args = if self.tcx.is_closure_like(local_def_id.to_def_id()) {
+            self.closure_spec_args(formula_def_id, generic_args)
+        } else {
+            generic_args
+        };
         let Some(formula_fn) = self.formula_fn_with_args(formula_def_id, generic_args, owner_fn_id)
         else {
             panic!(
@@ -2047,6 +2145,11 @@ impl<'tcx> Analyzer<'tcx> {
                 "ensure annotation with path is expected to refer to a local def, but found: {:?}",
                 formula_def_id
             );
+        };
+        let generic_args = if self.tcx.is_closure_like(local_def_id.to_def_id()) {
+            self.closure_spec_args(formula_def_id, generic_args)
+        } else {
+            generic_args
         };
         let Some(formula_fn) = self.formula_fn_with_args(formula_def_id, generic_args, owner_fn_id)
         else {

@@ -2,10 +2,11 @@
 //!
 //! Makes the enclosing context available to the specifications written inside an item.
 //!
-//! On a function, every `thrust_macros::invariant!(...)` and `thrust_macros::ghost!(...)`
-//! in the body is rewritten into its context-carrying counterpart, carrying the host
-//! signature and, for a method, the enclosing `impl`/`trait` header, so a formula may
-//! refer to generic- and `Self`-typed variables that the standalone macros cannot see.
+//! On a function, every `thrust_macros::invariant!(...)`, `thrust_macros::ghost!(...)` and
+//! `thrust_macros::closure!(...)` in the body is rewritten into its context-carrying
+//! counterpart, carrying the host signature and, for a method, the enclosing `impl`/`trait`
+//! header, so a formula may refer to generic- and `Self`-typed variables that the standalone
+//! macros cannot see.
 //! That also extends the function's where clause with the `Model` predicates for every
 //! in-scope type parameter (and for `Self` when used), since each injected marker call
 //! instantiates a `Model`-bounded formula function with the host's own generics.
@@ -165,6 +166,7 @@ fn context_carrying_form(path: &syn::Path) -> Option<syn::Path> {
     match path.segments.last()?.ident.to_string().as_str() {
         "invariant" => Some(syn::parse_quote!(::thrust_macros::_invariant_with_context)),
         "ghost" => Some(syn::parse_quote!(::thrust_macros::_ghost_with_context)),
+        "closure" => Some(syn::parse_quote!(::thrust_macros::_closure_with_context)),
         _ => None,
     }
 }

@@ -11,7 +11,8 @@ use thrust_models::Model;
 // Deviations from std: `try_fold`'s accumulator `()` is dropped from the closure's arguments, and
 // items are taken by value (`I::Item: Copy`) where std passes `&I::Item` to the predicate.
 // Both specifications relate the closure's states by `unnest!`, so each def is verified once over
-// its type parameters (D34) and `main` uses `find`'s contract as instantiated.
+// its type parameters (D34) and `main` uses `find`'s contract as instantiated. `check`'s
+// `unnest` clause relates its states through the predicate it owns.
 
 // Creusot's `common.rs`, the iterator specification every case shares: the trait predicates
 // `produces(self, visited, o)`, `completed` and `invariant` (`true` unless the impl says otherwise),
@@ -151,9 +152,14 @@ where
     <I as Model>::Ty: Model<Ty = <I as Model>::Ty> + PartialEq,
     <<I as Iterator>::Item as Model>::Ty: Model<Ty = <<I as Iterator>::Item as Model>::Ty> + PartialEq,
 {
-    let check = move |x: I::Item| -> ControlFlow<I::Item> {
-        if predicate(x) { ControlFlow::Break(x) } else { ControlFlow::Continue(()) }
-    };
+    // `check` owns the predicate, so its states are related as the predicate's are.
+    let check = thrust_macros::closure!(
+        captures(predicate: &mut P),
+        unnest(thrust_macros::unnest!(*predicate, !predicate)),
+        move |x: I::Item| -> ControlFlow<I::Item> {
+            if predicate(x) { ControlFlow::Break(x) } else { ControlFlow::Continue(()) }
+        },
+    );
     match try_fold(iter, check) {
         ControlFlow::Break(x) => Some(x),
         ControlFlow::Continue(()) => None,

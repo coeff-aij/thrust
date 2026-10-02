@@ -21,8 +21,15 @@
 //! they are captured by the closure. Only the ones a clause names need restating, and
 //! in any order: the plugin matches them against the closure's real captures by name.
 //!
-//! A clause sees no threaded generic or `Self` context, so a closure in a generic
-//! context cannot refer to generic- or `Self`-typed values.
+//! `unnest` gives the relation `unnest!` holds between two states of an `FnMut` closure, in
+//! place of the one derived from its captures, which says nothing of a capture taken by value.
+//! It reads a capture `x` as `*x` at the first state and `!x` at the second, as `ensures` reads
+//! the receiver's current and final state. The analyzer checks it reflexive and transitive,
+//! and each call's postcondition includes it.
+//!
+//! Under `#[thrust_macros::context]` a clause sees the enclosing function's generics, so a
+//! closure in a generic function can name generic-typed captures; without it a clause sees no
+//! generic or `Self` context.
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
@@ -33,18 +40,21 @@ use syn::{
     FnArg,
 };
 
+use crate::formula_fn_lifting::{self, EnclosingContext, LiftedFormulaFn};
 use crate::FormulaFnTypeLowering;
 
 mod kw {
     syn::custom_keyword!(captures);
     syn::custom_keyword!(requires);
     syn::custom_keyword!(ensures);
+    syn::custom_keyword!(unnest);
 }
 
 struct ClosureSpec {
     captures: Vec<FnArg>,
     requires: Vec<TokenStream2>,
     ensures: Vec<TokenStream2>,
+    unnest: Vec<TokenStream2>,
     closure: syn::ExprClosure,
 }
 
@@ -53,6 +63,7 @@ impl Parse for ClosureSpec {
         let mut captures = Vec::new();
         let mut requires = Vec::new();
         let mut ensures = Vec::new();
+        let mut unnest = Vec::new();
 
         loop {
             if input.peek(kw::captures) {
@@ -67,6 +78,9 @@ impl Parse for ClosureSpec {
                 } else if input.peek(kw::ensures) {
                     input.parse::<kw::ensures>()?;
                     &mut ensures
+                } else if input.peek(kw::unnest) {
+                    input.parse::<kw::unnest>()?;
+                    &mut unnest
                 } else {
                     break;
                 };
@@ -84,6 +98,7 @@ impl Parse for ClosureSpec {
             captures,
             requires,
             ensures,
+            unnest,
             closure,
         })
     }
@@ -94,17 +109,48 @@ pub fn expand(input: TokenStream) -> TokenStream {
         Ok(spec) => spec,
         Err(e) => return e.to_compile_error().into(),
     };
-    match expand_closure(spec) {
+    match expand_closure(spec, None) {
         Ok(expr) => expr.into_token_stream().into(),
         Err(e) => e.to_compile_error().into(),
     }
 }
 
-fn expand_closure(spec: ClosureSpec) -> syn::Result<syn::ExprClosure> {
+/// A `closure!` with the enclosing context `#[thrust_macros::context]` threads in.
+struct ClosureSpecWithContext {
+    context: EnclosingContext,
+    spec: ClosureSpec,
+}
+
+impl Parse for ClosureSpecWithContext {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let context = input.parse()?;
+        let spec = input.parse()?;
+        Ok(Self { context, spec })
+    }
+}
+
+/// Expands `_closure_with_context!(#outer_attr #sig; SPEC)`, the form
+/// `#[thrust_macros::context]` rewrites each `closure!` into.
+pub fn expand_with_context(input: TokenStream) -> TokenStream {
+    let ClosureSpecWithContext { context, spec } = match syn::parse(input) {
+        Ok(parsed) => parsed,
+        Err(e) => return e.to_compile_error().into(),
+    };
+    match expand_closure(spec, Some(&context)) {
+        Ok(expr) => expr.into_token_stream().into(),
+        Err(e) => e.to_compile_error().into(),
+    }
+}
+
+fn expand_closure(
+    spec: ClosureSpec,
+    context: Option<&EnclosingContext>,
+) -> syn::Result<syn::ExprClosure> {
     let ClosureSpec {
         captures,
         requires,
         ensures,
+        unnest,
         mut closure,
     } = spec;
 
@@ -127,6 +173,18 @@ fn expand_closure(spec: ClosureSpec) -> syn::Result<syn::ExprClosure> {
             &closure,
             "closure! with `ensures` requires an explicit return type, e.g. `|x: i32| -> i32 { .. }`",
         ));
+    }
+
+    if let Some(context) = context {
+        let prelude = context_companions(
+            context,
+            &upvars,
+            &arg_params,
+            &closure.output,
+            [requires, ensures, unnest],
+        )?;
+        splice_prelude(&mut closure, prelude);
+        return Ok(closure);
     }
 
     // The lowering reads generics off a signature to spot `Fn`-bounded type params; a
@@ -172,7 +230,94 @@ fn expand_closure(spec: ClosureSpec) -> syn::Result<syn::ExprClosure> {
             _thrust_closure_ensures;
         });
     }
+    if let Some(body) = conjoin(unnest) {
+        prelude.push(quote! {
+            #[allow(unused_variables, non_snake_case)]
+            #[thrust::formula_fn]
+            fn _thrust_closure_unnest(
+                #[thrust::closure_upvars] #upvars_model
+            ) -> bool {
+                #body
+            }
 
+            #[thrust::unnest_path]
+            _thrust_closure_unnest;
+        });
+    }
+
+    splice_prelude(&mut closure, prelude);
+    Ok(closure)
+}
+
+/// The companions of the clauses `[requires, ensures, unnest]` lifted with the enclosing
+/// generics, each referred to with them as arguments.
+fn context_companions(
+    context: &EnclosingContext,
+    upvars: &FnArg,
+    arg_params: &[FnArg],
+    output: &syn::ReturnType,
+    [requires, ensures, unnest]: [Vec<TokenStream2>; 3],
+) -> syn::Result<Vec<TokenStream2>> {
+    let upvars: FnArg = {
+        let FnArg::Typed(pt) = upvars else {
+            unreachable!("upvars_param builds a typed parameter");
+        };
+        let (pat, ty) = (&pt.pat, &pt.ty);
+        syn::parse_quote!(#[thrust::closure_upvars] #pat: #ty)
+    };
+    let mut prelude = Vec::new();
+    let mut lift = |name: &str, params: Vec<FnArg>, body: TokenStream2, marker: TokenStream2| {
+        let name = quote::format_ident!("{}", name);
+        let body: syn::Expr = syn::parse2(body)?;
+        let LiftedFormulaFn { item, reference } =
+            formula_fn_lifting::lift(&name, &params, &body, Some(context))?;
+        prelude.push(quote! {
+            #item
+
+            #marker
+            #reference;
+        });
+        syn::Result::Ok(())
+    };
+    if let Some(body) = conjoin(requires) {
+        let params = std::iter::once(upvars.clone())
+            .chain(arg_params.iter().cloned())
+            .collect();
+        lift(
+            "_thrust_closure_requires",
+            params,
+            body,
+            quote!(#[thrust::requires_path]),
+        )?;
+    }
+    if let Some(body) = conjoin(ensures) {
+        let syn::ReturnType::Type(_, ret) = output else {
+            unreachable!("checked above: `ensures` needs an explicit return type");
+        };
+        let result: FnArg = syn::parse_quote!(result: #ret);
+        let params = [result, upvars.clone()]
+            .into_iter()
+            .chain(arg_params.iter().cloned())
+            .collect();
+        lift(
+            "_thrust_closure_ensures",
+            params,
+            body,
+            quote!(#[thrust::ensures_path]),
+        )?;
+    }
+    if let Some(body) = conjoin(unnest) {
+        lift(
+            "_thrust_closure_unnest",
+            vec![upvars],
+            body,
+            quote!(#[thrust::unnest_path]),
+        )?;
+    }
+    Ok(prelude)
+}
+
+fn splice_prelude(closure: &mut syn::ExprClosure, prelude: Vec<TokenStream2>) {
     // Splice into the body's own block rather than nesting it inside a new one, which
     // would warn `unused_braces`. A block carrying a label or attributes has to stay
     // whole, so it becomes the tail expression of the new block instead.
@@ -186,8 +331,6 @@ fn expand_closure(spec: ClosureSpec) -> syn::Result<syn::ExprClosure> {
         #(#prelude)*
         #(#body_stmts)*
     }));
-
-    Ok(closure)
 }
 
 /// The companion parameter holding the closure's upvars: a tuple of the captures a

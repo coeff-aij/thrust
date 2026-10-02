@@ -48,6 +48,14 @@ pub fn closure(input: TokenStream) -> TokenStream {
     closure::expand(input)
 }
 
+/// Context-carrying counterpart of `closure!`, emitted by `#[thrust_macros::context]`. Not
+/// intended to be written by hand: it takes a `fn` header carrying the threaded
+/// generics/where clause, then the `closure!` specification (see [`mod@closure`]).
+#[proc_macro]
+pub fn _closure_with_context(input: TokenStream) -> TokenStream {
+    closure::expand_with_context(input)
+}
+
 /// Introduces a ghost value: proof-only data with no runtime representation.
 ///
 /// ```ignore

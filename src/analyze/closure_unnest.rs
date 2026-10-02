@@ -5,7 +5,8 @@
 //! `creusot/src/backend/closures.rs`), a closure type parameter's relation is opaque and obeys
 //! the laws `hist_inv_refl`, `hist_inv_trans` and `postcondition_mut_hist_inv`, stated here as
 //! premises of the clauses that use it; a concrete closure's relation is defined from its
-//! captures, and nothing is assumed of it.
+//! captures, together with the relation its `closure!` specification writes in an `unnest`
+//! clause, which the closure is checked to obey ([`explicit_laws`]).
 
 use rustc_middle::ty as mir_ty;
 
@@ -51,6 +52,48 @@ pub fn concrete_definition<'tcx, V: chc::Var>(
         formula = formula.and(kept.into());
     }
     formula
+}
+
+/// The clauses checking that `related`, the relation an `unnest` clause of `closure_ty`'s
+/// specification gives over its upvars of sort `upvars_sort`, is reflexive and transitive.
+/// That each call's postcondition implies it is checked against the closure's body, since the
+/// postcondition includes it.
+pub fn explicit_laws(
+    closure_ty: mir_ty::Ty<'_>,
+    upvars_sort: &chc::Sort,
+    related: &dyn Fn(
+        chc::Term<chc::TermVarIdx>,
+        chc::Term<chc::TermVarIdx>,
+    ) -> chc::Formula<chc::TermVarIdx>,
+) -> Vec<chc::Clause> {
+    let law =
+        |states: usize, build: &dyn Fn(&[chc::Term<chc::TermVarIdx>]) -> Obligation, what: &str| {
+            let mut builder = chc::ClauseBuilder::default();
+            let vars: Vec<_> = (0..states)
+                .map(|_| chc::Term::var(builder.add_var(upvars_sort.clone())))
+                .collect();
+            let (premise, conclusion) = build(&vars);
+            let origin = crate::chc::debug::origin::Entry::described(format!(
+                "{what} of the unnest clause of {closure_ty:?}"
+            ));
+            builder.add_body(premise.into(), origin.clone());
+            builder.head(conclusion.into(), origin)
+        };
+    let mut clauses = law(
+        1,
+        &|v| (chc::Formula::top(), related(v[0].clone(), v[0].clone())),
+        "reflexivity",
+    );
+    clauses.extend(law(
+        3,
+        &|v| {
+            let premise =
+                related(v[0].clone(), v[1].clone()).and(related(v[1].clone(), v[2].clone()));
+            (premise, related(v[0].clone(), v[2].clone()))
+        },
+        "transitivity",
+    ));
+    clauses
 }
 
 /// The laws of the relation `pred` of a closure type parameter whose contract is `contract`.
@@ -123,18 +166,18 @@ type Obligation = (chc::Formula<chc::TermVarIdx>, chc::Formula<chc::TermVarIdx>)
 /// Returns the law clauses and the precondition clauses apart, since the laws are assumed only
 /// where a generic analysis uses `unnest!`. `None` when the precondition names an unknown,
 /// which such a clause cannot state in Horn form; the instance is then analyzed again.
-pub fn instance_obligations<'tcx>(
-    tcx: mir_ty::TyCtxt<'tcx>,
-    closure_ty: mir_ty::Ty<'tcx>,
+pub fn instance_obligations(
+    closure_ty: mir_ty::Ty<'_>,
     contract: &rty::FunctionType,
+    related: &dyn Fn(
+        chc::Term<chc::TermVarIdx>,
+        chc::Term<chc::TermVarIdx>,
+    ) -> chc::Formula<chc::TermVarIdx>,
 ) -> Option<(Vec<chc::Clause>, Vec<chc::Clause>)> {
     let receiver_sort = contract.params[rty::FunctionParamIdx::from_usize(0)]
         .ty
         .to_sort();
     let upvars_sort = receiver_sort.clone().deref();
-    let related = |from: chc::Term<chc::TermVarIdx>, to: chc::Term<chc::TermVarIdx>| {
-        concrete_definition(tcx, closure_ty, &upvars_sort, from, to)
-    };
     let obligation = |sorts: Vec<chc::Sort>,
                       build: &dyn Fn(&[chc::Term<chc::TermVarIdx>]) -> Obligation,
                       what: &str| {

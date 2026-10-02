@@ -486,13 +486,7 @@ impl<'tcx> analyze::Analyzer<'tcx> {
                 let [from, to] = terms.as_slice() else {
                     return None;
                 };
-                analyze::closure_unnest::concrete_definition(
-                    self.tcx(),
-                    closure_ty,
-                    &params[0],
-                    from.clone(),
-                    to.clone(),
-                )
+                self.closure_unnest_definition(closure_ty, &params[0], from.clone(), to.clone())
             }
             ClosureContractPart::Post => {
                 let (result, args) = terms.get(1..)?.split_last()?;
