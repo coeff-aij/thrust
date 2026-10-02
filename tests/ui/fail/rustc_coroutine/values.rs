@@ -132,7 +132,14 @@ impl TargetDataLayout {
         }
 
         // Rewrite (rewrites.md R9): a local slice iterator and `find` for `iter().find(..)`.
-        if let Some(e) = SliceIter::new(&self.address_space_info).find(|(a, _)| a == &c) {
+        // The closure's contract is written: inferred, its postcondition sits under the `forall` of
+        // `find`'s contract over the rejected items, where no term names the witness.
+        if let Some(e) = SliceIter::new(&self.address_space_info).find(thrust_macros::closure!(
+            captures(c: AddressSpace),
+            requires(true),
+            ensures(result == ((**p).0 == c)),
+            |p: &&(AddressSpace, PointerSpec)| -> bool { p.0 == c },
+        )) {
             e.1.pointer_size
         } else {
             // Rewrite (rewrites.md R6): the message is dropped; a message makes
@@ -150,7 +157,12 @@ impl TargetDataLayout {
         // Rewrite (rewrites.md R9): as in `pointer_size_in`.
         AbiAlign::new(if c == self.default_address_space {
             self.default_address_space_pointer_spec.pointer_align
-        } else if let Some(e) = SliceIter::new(&self.address_space_info).find(|(a, _)| a == &c) {
+        } else if let Some(e) = SliceIter::new(&self.address_space_info).find(thrust_macros::closure!(
+            captures(c: AddressSpace),
+            requires(true),
+            ensures(result == ((**p).0 == c)),
+            |p: &&(AddressSpace, PointerSpec)| -> bool { p.0 == c },
+        )) {
             e.1.pointer_align
         } else {
             // Rewrite (rewrites.md R6): the message is dropped; a message makes
