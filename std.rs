@@ -1721,12 +1721,38 @@ fn _extern_spec_slice_iter<T>(slice: &[T]) -> core::slice::Iter<'_, T>
 #[thrust_macros::ensures(
     result.0 == *slice && result.1 == !slice && result.2 == 0
         && (!slice).len() == (*slice).len()
-        && <core::slice::IterMut<'_, T> as IteratorSpec>::inv(result)
 )]
 fn _extern_spec_slice_iter_mut<T>(slice: &mut [T]) -> core::slice::IterMut<'_, T>
     where T: thrust_models::Model, T::Ty: PartialEq
 {
     <[T]>::iter_mut(slice)
+}
+
+// `slice::IterMut` gets its own `next` rather than one through `IteratorSpec`: the two state the
+// same step, and this one keeps the preserved sequences and the cursor's step as conjuncts of each
+// case, where the clauses show them. The element handed out is the `Mut` pair of the current and
+// final sequences at the cursor. The tail the loop has not reached yet keeps its prophecy
+// unconstrained, so dropping the iterator early leaves the caller unable to say the untouched
+// elements are unchanged; running it to exhaustion is what the specification supports.
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(
+    ((*it).2 < (*it).0.len()
+        && result == Some(thrust_models::model::Mut::new(
+            (*it).0[(*it).2],
+            (*it).1[(*it).2],
+        ))
+        && (!it).0 == (*it).0
+        && (!it).1 == (*it).1
+        && (!it).2 == (*it).2 + 1)
+    || ((*it).2 >= (*it).0.len() && result == None && !it == *it)
+)]
+fn _extern_spec_slice_iter_mut_next<'a, T>(
+    it: &mut core::slice::IterMut<'a, T>,
+) -> Option<&'a mut T>
+    where T: thrust_models::Model + 'a, T::Ty: PartialEq
+{
+    <core::slice::IterMut<'a, T> as std::iter::Iterator>::next(it)
 }
 
 // `next` is specified once, through the predicates of `IteratorSpec`; a type gets a `next` by
@@ -1839,52 +1865,6 @@ where
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
         (*self).1 >= (*self).0.len() && *self == !self
-    }
-
-    fn produces_refl(a: &Self) {}
-
-    fn produces_trans(
-        a: &Self,
-        ab: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
-        b: &Self,
-        bc: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
-        c: &Self,
-    ) {
-    }
-}
-
-// The element handed out is the `Mut` pair of the current and final sequences at the cursor. The
-// tail the loop has not reached yet keeps its prophecy unconstrained, so dropping the iterator
-// early leaves the caller unable to say the untouched elements are unchanged; running it to
-// exhaustion is what the specification supports.
-#[thrust_macros::context]
-impl<'a, T> IteratorSpec for core::slice::IterMut<'a, T>
-where
-    T: thrust_models::Model,
-    T::Ty: PartialEq,
-{
-    #[thrust_macros::predicate]
-    fn inv(self) -> bool {
-        self.2 <= self.0.len()
-    }
-
-    #[thrust_macros::predicate]
-    fn produces(self, visited: Vec<&'a mut T>, o: Self) -> bool {
-        self.0 == o.0
-            && self.1 == o.1
-            && self.2 <= o.2
-            && o.2 <= self.0.len()
-            && visited.len() == o.2 - self.2
-            && thrust_models::forall(|i: thrust_models::model::Int|
-                !(0 <= i && i < visited.len()) || visited[i] == thrust_models::model::Mut::new(
-                    self.0[self.2 + i],
-                    self.1[self.2 + i],
-                ))
-    }
-
-    #[thrust_macros::predicate]
-    fn completed(&mut self) -> bool {
-        (*self).2 >= (*self).0.len() && *self == !self
     }
 
     fn produces_refl(a: &Self) {}
@@ -2095,7 +2075,6 @@ where
     #[thrust_macros::predicate]
     fn into_iter_is(self, it: core::slice::IterMut<'a, T>) -> bool {
         it.0 == *self && it.1 == !self && it.2 == 0 && (!self).len() == (*self).len()
-            && <core::slice::IterMut<'a, T> as IteratorSpec>::inv(it)
     }
 }
 
@@ -2120,7 +2099,6 @@ where
     #[thrust_macros::predicate]
     fn into_iter_is(self, it: core::slice::IterMut<'a, T>) -> bool {
         it.0 == *self && it.1 == !self && it.2 == 0 && (!self).len() == (*self).len()
-            && <core::slice::IterMut<'a, T> as IteratorSpec>::inv(it)
     }
 }
 
