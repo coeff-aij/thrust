@@ -143,14 +143,18 @@ impl<'tcx> analyze::Analyzer<'tcx> {
             let Some(fn_ty) = def_ty.ty.as_function() else {
                 continue;
             };
-            let vars: Vec<(String, chc::Sort)> = fn_ty
+            let vars: Vec<(chc::UserQuantifiedVarId, chc::Sort)> = fn_ty
                 .params
                 .iter_enumerated()
-                .map(|(idx, param)| (format!("law_{}", idx.index()), param.ty.to_sort()))
+                .map(|(idx, param)| {
+                    let name = format!("law_{} of {:?}", idx.index(), law_def_id);
+                    let v = self.system.borrow_mut().new_named_user_quantified_var(name);
+                    (v, param.ty.to_sort())
+                })
                 .collect();
             let args: Vec<chc::Term<chc::TermVarIdx>> = vars
                 .iter()
-                .map(|(name, sort)| chc::Term::FormulaQuantifiedVar(sort.clone(), name.clone()))
+                .map(|(v, sort)| chc::Term::UserQuantifiedVar(sort.clone(), *v))
                 .collect();
             let pre = fn_ty.precondition_formula(&args);
             let post = fn_ty.postcondition_formula(&args, chc::Term::tuple(vec![]));

@@ -595,7 +595,7 @@ pub enum Term<V = TermVarIdx> {
     /// sort.
     UserDefinedFn(UserDefinedPred, Sort, Vec<Term<V>>),
     /// Used in [`Formula`] to represent quantified variables appearing in annotations.
-    FormulaQuantifiedVar(Sort, String),
+    UserQuantifiedVar(Sort, UserQuantifiedVarId),
 }
 
 impl<'a, D, V> Pretty<'a, D, termcolor::ColorSpec> for &Term<V>
@@ -675,7 +675,7 @@ where
                     .parens();
                 symbol.pretty(allocator).append(args).group()
             }
-            Term::FormulaQuantifiedVar(_, name) => allocator.text(name.clone()),
+            Term::UserQuantifiedVar(_, var) => allocator.as_string(var),
         }
     }
 }
@@ -730,7 +730,7 @@ impl<V> Term<V> {
                 sort,
                 args.into_iter().map(|t| t.subst_var(&mut f)).collect(),
             ),
-            Term::FormulaQuantifiedVar(sort, name) => Term::FormulaQuantifiedVar(sort, name),
+            Term::UserQuantifiedVar(sort, var) => Term::UserQuantifiedVar(sort, var),
         }
     }
 
@@ -780,7 +780,7 @@ impl<V> Term<V> {
             Term::DatatypeCtor(sort, _, _) => sort.clone().into(),
             Term::DatatypeDiscr(_, _) => Sort::int(),
             Term::UserDefinedFn(_, sort, _) => sort.clone(),
-            Term::FormulaQuantifiedVar(sort, _) => sort.clone(),
+            Term::UserQuantifiedVar(sort, _) => sort.clone(),
         }
     }
 
@@ -793,7 +793,7 @@ impl<V> Term<V> {
             | Term::Int(_)
             | Term::String(_)
             | Term::ArrayEmpty { .. }
-            | Term::FormulaQuantifiedVar { .. } => Box::new(std::iter::empty()),
+            | Term::UserQuantifiedVar { .. } => Box::new(std::iter::empty()),
             Term::Box(t) => t.fv_impl(),
             Term::Mut(t1, t2) => Box::new(t1.fv_impl().chain(t2.fv_impl())),
             Term::BoxCurrent(t) => t.fv_impl(),
@@ -837,7 +837,7 @@ impl<V> Term<V> {
             | Term::String(_)
             | Term::ArrayEmpty(_, _)
             | Term::SeqEmpty(_)
-            | Term::FormulaQuantifiedVar(_, _) => Vec::new(),
+            | Term::UserQuantifiedVar(_, _) => Vec::new(),
         }
     }
 
@@ -1140,6 +1140,18 @@ impl<V> Term<V> {
 
     pub fn not_equal_to(self, other: Self) -> Atom<V> {
         Atom::new(KnownPred::NOT_EQUAL.into(), vec![self, other])
+    }
+}
+
+rustc_index::newtype_index! {
+    /// An identifier of a variable bound by `forall`/`exists` in an annotation.
+    #[debug_format = "q${}"]
+    pub struct UserQuantifiedVarId { }
+}
+
+impl std::fmt::Display for UserQuantifiedVarId {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "q${}", self.index())
     }
 }
 
@@ -1744,8 +1756,8 @@ pub enum Formula<V = TermVarIdx> {
     And(Vec<Formula<V>>),
     Or(Vec<Formula<V>>),
     Implies(Box<Formula<V>>, Box<Formula<V>>),
-    Exists(Vec<(String, Sort)>, Box<Formula<V>>),
-    Forall(Vec<(String, Sort)>, Box<Formula<V>>),
+    Exists(Vec<(UserQuantifiedVarId, Sort)>, Box<Formula<V>>),
+    Forall(Vec<(UserQuantifiedVarId, Sort)>, Box<Formula<V>>),
 }
 
 impl<V> Default for Formula<V> {
@@ -1796,9 +1808,9 @@ where
                 .group(),
             Formula::Exists(vars, fo) => {
                 let vars = allocator.intersperse(
-                    vars.iter().map(|(name, sort)| {
+                    vars.iter().map(|(var, sort)| {
                         allocator
-                            .text(name.clone())
+                            .as_string(var)
                             .append(allocator.text(":"))
                             .append(allocator.text(" "))
                             .append(sort.pretty(allocator))
@@ -1815,9 +1827,9 @@ where
             }
             Formula::Forall(vars, fo) => {
                 let vars = allocator.intersperse(
-                    vars.iter().map(|(name, sort)| {
+                    vars.iter().map(|(var, sort)| {
                         allocator
-                            .text(name.clone())
+                            .as_string(var)
                             .append(allocator.text(":"))
                             .append(allocator.text(" "))
                             .append(sort.pretty(allocator))
@@ -1919,11 +1931,11 @@ impl<V> Formula<V> {
         Formula::Implies(Box::new(self), Box::new(other))
     }
 
-    pub fn exists(vars: Vec<(String, Sort)>, body: Self) -> Self {
+    pub fn exists(vars: Vec<(UserQuantifiedVarId, Sort)>, body: Self) -> Self {
         Formula::Exists(vars, Box::new(body))
     }
 
-    pub fn forall(vars: Vec<(String, Sort)>, body: Self) -> Self {
+    pub fn forall(vars: Vec<(UserQuantifiedVarId, Sort)>, body: Self) -> Self {
         Formula::Forall(vars, Box::new(body))
     }
 
@@ -2467,6 +2479,10 @@ pub struct System {
     /// Candidate atoms of loop heads' predicate variables (`THRUST_CANDIDATE_ATOMS`), emitted
     /// as `(set-info :candidates ...)` and never asserted.
     candidate_atoms: Vec<CandidateAtoms>,
+    user_quantified_var_count: usize,
+    /// The source name of each quantified variable issued with one, named in a comment of the
+    /// SMT-LIB2 output when logging is on.
+    user_quantified_var_names: BTreeMap<usize, String>,
 }
 
 impl System {
@@ -2519,6 +2535,31 @@ impl System {
         self.forall_sorts
             .push(ForallSortDef::new(new_idx, debug_info));
         new_idx
+    }
+
+    pub fn new_user_quantified_var(&mut self) -> UserQuantifiedVarId {
+        let var = UserQuantifiedVarId::from_usize(self.user_quantified_var_count);
+        self.user_quantified_var_count += 1;
+        var
+    }
+
+    /// A quantified variable standing for `name` in the source or in a law.
+    pub fn new_named_user_quantified_var(
+        &mut self,
+        name: impl Into<String>,
+    ) -> UserQuantifiedVarId {
+        let var = self.new_user_quantified_var();
+        self.user_quantified_var_names
+            .insert(var.index(), name.into());
+        var
+    }
+
+    pub fn user_quantified_var_names(
+        &self,
+    ) -> impl Iterator<Item = (UserQuantifiedVarId, &str)> + '_ {
+        self.user_quantified_var_names
+            .iter()
+            .map(|(idx, name)| (UserQuantifiedVarId::from_usize(*idx), name.as_str()))
     }
 
     pub fn push_raw_command(&mut self, raw_command: RawCommand) {
@@ -3008,7 +3049,7 @@ fn collect_forall_defaults(term: &Term<TermVarIdx>, used: &mut HashSet<ForallSor
         | Term::Bool(_)
         | Term::Int(_)
         | Term::String(_)
-        | Term::FormulaQuantifiedVar(_, _) => {}
+        | Term::UserQuantifiedVar(_, _) => {}
     }
 }
 

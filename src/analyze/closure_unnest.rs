@@ -55,48 +55,49 @@ pub fn concrete_definition<'tcx, V: chc::Var>(
 
 /// The laws of the relation `pred` of a closure type parameter whose contract is `contract`.
 pub fn laws(
+    system: &mut chc::System,
     pred: &chc::ForallPred,
     contract: &rty::FunctionType,
 ) -> Vec<chc::Formula<chc::TermVarIdx>> {
     let sort = pred.params()[0].clone();
-    let var = |name: &str| chc::Term::FormulaQuantifiedVar(sort.clone(), name.to_owned());
+    let var = |v| chc::Term::UserQuantifiedVar(sort.clone(), v);
     let related = |from, to| -> chc::Formula<chc::TermVarIdx> {
         chc::Atom::new(pred.clone().into(), vec![from, to]).into()
     };
-    let vars = |names: &[&str]| -> Vec<(String, chc::Sort)> {
-        names
-            .iter()
-            .map(|name| (name.to_string(), sort.clone()))
-            .collect()
-    };
 
-    let refl = chc::Formula::forall(
-        vars(&["unnest_f"]),
-        related(var("unnest_f"), var("unnest_f")),
-    );
+    let fresh = |system: &mut chc::System, name: &str| {
+        system.new_named_user_quantified_var(format!("{name} in a law of {pred}"))
+    };
+    let f = fresh(system, "unnest_f");
+    let refl = chc::Formula::forall(vec![(f, sort.clone())], related(var(f), var(f)));
+    let [f, g, h] = ["unnest_f", "unnest_g", "unnest_h"].map(|n| fresh(system, n));
     let trans = chc::Formula::forall(
-        vars(&["unnest_f", "unnest_g", "unnest_h"]),
-        related(var("unnest_f"), var("unnest_g"))
-            .and(related(var("unnest_g"), var("unnest_h")))
-            .implies(related(var("unnest_f"), var("unnest_h"))),
+        vec![(f, sort.clone()), (g, sort.clone()), (h, sort.clone())],
+        related(var(f), var(g))
+            .and(related(var(g), var(h)))
+            .implies(related(var(f), var(h))),
     );
     let mut laws = vec![refl, trans];
 
     let receiver = &contract.params[rty::FunctionParamIdx::from_usize(0)].ty;
     let receiver_kind = receiver.as_pointer().map(|ty| ty.kind);
     if receiver_kind == Some(rty::PointerKind::Ref(rty::RefKind::Mut)) {
-        let mut params: Vec<(String, chc::Sort)> = contract
+        let mut params: Vec<(chc::UserQuantifiedVarId, chc::Sort)> = contract
             .params
             .iter_enumerated()
-            .map(|(idx, param)| (format!("unnest_p{}", idx.index()), param.ty.to_sort()))
+            .map(|(idx, param)| {
+                let v = fresh(system, &format!("unnest_p{}", idx.index()));
+                (v, param.ty.to_sort())
+            })
             .collect();
         let args: Vec<_> = params
             .iter()
-            .map(|(name, sort)| chc::Term::FormulaQuantifiedVar(sort.clone(), name.clone()))
+            .map(|(v, sort)| chc::Term::UserQuantifiedVar(sort.clone(), *v))
             .collect();
         let result_sort = contract.ret.ty.to_sort();
-        let result = chc::Term::FormulaQuantifiedVar(result_sort.clone(), "unnest_r".to_owned());
-        params.push(("unnest_r".to_owned(), result_sort));
+        let r = fresh(system, "unnest_r");
+        let result = chc::Term::UserQuantifiedVar(result_sort.clone(), r);
+        params.push((r, result_sort));
         let post = contract.postcondition_formula(&args, result);
         let states = related(args[0].clone().mut_current(), args[0].clone().mut_final());
         laws.push(chc::Formula::forall(params, post.implies(states)));

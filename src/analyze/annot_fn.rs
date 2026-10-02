@@ -797,7 +797,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         self.register_forall_pred(pred.clone());
         let mut system = self.analyzer.system.borrow_mut();
         if system.laws_of(&pred).is_empty() {
-            for law in analyze::closure_unnest::laws(&pred, &contract) {
+            for law in analyze::closure_unnest::laws(&mut system, &pred, &contract) {
                 system.add_law(pred.clone(), law);
             }
         }
@@ -866,7 +866,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         &self,
         closure: &rustc_hir::Body<'tcx>,
     ) -> (
-        Vec<(String, chc::Sort)>,
+        Vec<(chc::UserQuantifiedVarId, chc::Sort)>,
         chc::Formula<rty::FunctionParamIdx>,
     ) {
         let mut inner_translator = self.clone();
@@ -880,9 +880,13 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             };
             let param_ty = self.pat_ty(param.pat);
             let sort = self.type_builder.build(param_ty).to_sort();
-            let var_term = chc::Term::FormulaQuantifiedVar(sort.clone(), ident.name.to_string());
-            inner_translator.env.insert(hir_id, var_term);
-            vars.push((ident.name.to_string(), sort));
+            let var = self
+                .analyzer
+                .generate_user_quantified_var(format!("{ident} at {:?}", param.pat.span));
+            inner_translator
+                .env
+                .insert(hir_id, chc::Term::UserQuantifiedVar(sort.clone(), var));
+            vars.push((var, sort));
         }
         let body_formula = inner_translator.to_formula(closure.value);
         (vars, body_formula)

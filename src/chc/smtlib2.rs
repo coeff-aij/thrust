@@ -12,12 +12,16 @@ use rustc_index::IndexVec;
 
 use crate::chc::{self, candidate_atoms::forall_preds_of, format_context::FormatContext};
 
-/// A quantifier-bound variable, prefixed with `q$` so it can't capture a clause variable like `v1`.
-struct QuantifiedVar<'a>(&'a str);
+/// An integer constant. SMT-LIB2 has no negative numerals.
+struct IntConst<'a>(&'a num_bigint::BigInt);
 
-impl std::fmt::Display for QuantifiedVar<'_> {
+impl std::fmt::Display for IntConst<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "q${}", self.0)
+        if self.0.sign() == num_bigint::Sign::Minus {
+            write!(f, "(- {})", self.0.magnitude())
+        } else {
+            write!(f, "{}", self.0)
+        }
     }
 }
 
@@ -116,7 +120,7 @@ impl<'ctx, 'a> std::fmt::Display for Term<'ctx, 'a> {
             chc::Term::Null => write!(f, "null"),
             chc::Term::ForallDefault(idx) => write!(f, "default_{idx}"),
             chc::Term::Var(v) => write!(f, "{}", v),
-            chc::Term::Int(i) => write!(f, "{}", i),
+            chc::Term::Int(i) => write!(f, "{}", IntConst(i)),
             chc::Term::Bool(b) => write!(f, "{}", b),
             chc::Term::String(s) => write!(f, "\"{}\"", s.escape_default()),
             chc::Term::Box(t) => {
@@ -246,7 +250,7 @@ impl<'ctx, 'a> std::fmt::Display for Term<'ctx, 'a> {
                     )
                 }
             }
-            chc::Term::FormulaQuantifiedVar(_, name) => write!(f, "{}", QuantifiedVar(name)),
+            chc::Term::UserQuantifiedVar(_, var) => write!(f, "{}", var),
         }
     }
 }
@@ -368,22 +372,18 @@ impl<'ctx, 'a> std::fmt::Display for Formula<'ctx, 'a> {
                 write!(f, "(=> {lhs} {rhs})")
             }
             chc::Formula::Exists(vars, fo) => {
-                let vars = List::closed(vars.iter().map(|(v, s)| {
-                    List::closed([
-                        QuantifiedVar(v).to_string(),
-                        self.ctx.fmt_sort(s).to_string(),
-                    ])
-                }));
+                let vars =
+                    List::closed(vars.iter().map(|(v, s)| {
+                        List::closed([v.to_string(), self.ctx.fmt_sort(s).to_string()])
+                    }));
                 let fo = Formula::new(self.ctx, self.var_sorts, fo);
                 write!(f, "(exists {vars} {fo})")
             }
             chc::Formula::Forall(vars, fo) => {
-                let vars = List::closed(vars.iter().map(|(v, s)| {
-                    List::closed([
-                        QuantifiedVar(v).to_string(),
-                        self.ctx.fmt_sort(s).to_string(),
-                    ])
-                }));
+                let vars =
+                    List::closed(vars.iter().map(|(v, s)| {
+                        List::closed([v.to_string(), self.ctx.fmt_sort(s).to_string()])
+                    }));
                 let fo = Formula::new(self.ctx, self.var_sorts, fo);
                 write!(f, "(forall {vars} {fo})")
             }
@@ -650,7 +650,7 @@ impl<'ctx, 'a> std::fmt::Display for DatatypeDiscrFun<'ctx, 'a> {
                 format!(
                     "(ite ((_ is {ctor}) x) {discr} {acc})",
                     ctor = &ctor.symbol,
-                    discr = ctor.discriminant,
+                    discr = IntConst(&ctor.discriminant),
                 )
             });
         write!(
@@ -926,9 +926,29 @@ pub struct System<'a> {
     inner: &'a chc::System,
 }
 
+/// What each quantified variable `q$<n>` stands for: a binder of an annotation, with its source
+/// position, or a variable of a law Thrust states.
+fn write_quantified_var_names(
+    f: &mut std::fmt::Formatter<'_>,
+    system: &chc::System,
+) -> std::fmt::Result {
+    let mut names = system.user_quantified_var_names().peekable();
+    if names.peek().is_none() {
+        return Ok(());
+    }
+    write_comment(f, 0, "quantified variables")?;
+    for (var, name) in names {
+        write_comment(f, 2, format!("{var} = {name}"))?;
+    }
+    writeln!(f)
+}
+
 impl<'a> std::fmt::Display for System<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "(set-logic HORN)\n")?;
+        if tracing::enabled!(tracing::Level::INFO) {
+            write_quantified_var_names(f, self.inner)?;
+        }
 
         let used_forall_sorts = self.inner.used_forall_sorts();
         for forall_sort_def in &self.inner.forall_sorts {

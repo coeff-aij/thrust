@@ -80,7 +80,7 @@ fn term_sorts(
                 term_sorts(var_sorts, arg, sorts);
             }
         }
-        chc::Term::FormulaQuantifiedVar(_, _) => {}
+        chc::Term::UserQuantifiedVar(_, _) => {}
     }
 }
 

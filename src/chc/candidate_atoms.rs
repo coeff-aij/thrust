@@ -131,7 +131,7 @@ pub fn conjuncts<V: Clone>(formula: &Formula<V>) -> Vec<Formula<V>> {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum Slot<V> {
     Free(V),
-    Bound(String),
+    Bound(UserQuantifiedVarId),
 }
 
 /// The instances of a contract conjunct at the head terms, at most `limit` of them.
@@ -159,7 +159,7 @@ where
 
 fn instances_with<V>(
     conjunct: &Formula<V>,
-    bound: &[(String, Sort)],
+    bound: &[(UserQuantifiedVarId, Sort)],
     var_sort: &dyn Fn(&V) -> Option<Sort>,
     head: &HeadTerms,
     limit: usize,
@@ -183,8 +183,8 @@ where
             slots.push((slot, sort));
         }
     }
-    for (name, sort) in bound {
-        slots.push((Slot::Bound(name.clone()), sort.clone()));
+    for (var, sort) in bound {
+        slots.push((Slot::Bound(*var), sort.clone()));
     }
     let fillers: Vec<Vec<Term>> = slots.iter().map(|(_, s)| head.fillers(s)).collect();
     if fillers.iter().any(Vec::is_empty) {
@@ -269,10 +269,10 @@ where
         .clone()
         .subst_var(|v| assignment[&Slot::Free(v)].clone());
     let mut formula = map_formula_terms(formula, &mut |t| match t {
-        Term::FormulaQuantifiedVar(sort, name) => assignment
-            .get(&Slot::Bound(name.clone()))
+        Term::UserQuantifiedVar(sort, var) => assignment
+            .get(&Slot::Bound(var))
             .cloned()
-            .unwrap_or(Term::FormulaQuantifiedVar(sort, name)),
+            .unwrap_or(Term::UserQuantifiedVar(sort, var)),
         t => simplify_term(t),
     });
     formula.simplify();
@@ -361,7 +361,7 @@ fn map_term(term: Term, f: &mut dyn FnMut(Term) -> Term) -> Term {
         | Term::String(_)
         | Term::ArrayEmpty(_, _)
         | Term::SeqEmpty(_)
-        | Term::FormulaQuantifiedVar(_, _)) => t,
+        | Term::UserQuantifiedVar(_, _)) => t,
     };
     f(term)
 }

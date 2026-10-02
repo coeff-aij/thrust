@@ -739,6 +739,10 @@ impl<'tcx> Analyzer<'tcx> {
             .borrow_mut()
             .new_pred_var(sig, chc::DebugInfo::from_current_span())
     }
+
+    pub fn generate_user_quantified_var(&self, name: String) -> chc::UserQuantifiedVarId {
+        self.system.borrow_mut().new_named_user_quantified_var(name)
+    }
 }
 
 impl<'tcx> Analyzer<'tcx> {

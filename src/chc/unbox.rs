@@ -31,9 +31,7 @@ fn unbox_term(term: Term) -> Term {
             unbox_sort(sort),
             args.into_iter().map(unbox_term).collect(),
         ),
-        Term::FormulaQuantifiedVar(sort, name) => {
-            Term::FormulaQuantifiedVar(unbox_sort(sort), name)
-        }
+        Term::UserQuantifiedVar(sort, var) => Term::UserQuantifiedVar(unbox_sort(sort), var),
     }
 }
 
@@ -240,6 +238,8 @@ pub fn unbox(system: System) -> System {
         forall_pred_vars,
         laws,
         candidate_atoms,
+        user_quantified_var_count,
+        user_quantified_var_names,
     } = system;
     let datatypes = datatypes.into_iter().map(unbox_datatype).collect();
     let clauses = clauses.into_iter().map(unbox_clause).collect();
@@ -278,5 +278,7 @@ pub fn unbox(system: System) -> System {
         forall_pred_vars,
         laws,
         candidate_atoms,
+        user_quantified_var_count,
+        user_quantified_var_names,
     }
 }
