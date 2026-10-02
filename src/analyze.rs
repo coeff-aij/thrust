@@ -700,6 +700,10 @@ pub struct Analyzer<'tcx> {
     /// The closure types, generic arguments included, with the sort of their upvars, whose
     /// `hist_inv` clause has had its laws pushed; see [`closure_hist_inv::explicit_laws`].
     explicit_hist_inv_laws: Rc<RefCell<HashSet<(mir_ty::Ty<'tcx>, chc::Sort)>>>,
+    /// The unknown relating the by-value captures of an `FnMut` closure whose specification has
+    /// no `hist_inv` clause, one per closure type and upvars sort; see
+    /// [`Analyzer::closure_hist_inv_definition`].
+    by_value_hist_invs: Rc<RefCell<HashMap<(mir_ty::Ty<'tcx>, chc::Sort), chc::PredVarId>>>,
     /// The clauses [`closure_hist_inv::instance_obligations`] gave for the instances at an `FnMut`
     /// closure that use a generic def's contract as instantiated: the `hist_inv!` laws and the
     /// precondition clauses, pushed by [`Analyzer::emit_fn_mut_instance_obligations`].
@@ -778,6 +782,7 @@ impl<'tcx> Analyzer<'tcx> {
             pending_laws,
             concrete_instances: Default::default(),
             explicit_hist_inv_laws: Default::default(),
+            by_value_hist_invs: Default::default(),
             fn_mut_instance_obligations: Default::default(),
             hist_inv_specified_params: Default::default(),
             fn_mut_bounded_defs: Default::default(),
@@ -1743,10 +1748,53 @@ impl<'tcx> Analyzer<'tcx> {
             from.clone(),
             to.clone(),
         );
-        match self.closure_explicit_hist_inv(closure_ty, upvars_sort, from, to) {
-            Some(explicit) => derived.and(explicit),
-            None => derived,
+        if let Some(explicit) =
+            self.closure_explicit_hist_inv(closure_ty, upvars_sort, from.clone(), to.clone())
+        {
+            return derived.and(explicit);
         }
+        let positions: Vec<usize> =
+            closure_hist_inv::by_value_captures(self.tcx, closure_ty, upvars_sort)
+                .into_iter()
+                .map(|(idx, _)| idx)
+                .collect();
+        if positions.is_empty() {
+            return derived;
+        }
+        let relation = self.by_value_hist_inv(closure_ty, upvars_sort);
+        derived.and(closure_hist_inv::by_value_related(
+            relation, &positions, from, to,
+        ))
+    }
+
+    /// The unknown relating the by-value captures of `closure_ty`, whose specification writes
+    /// no `hist_inv` clause, made with its laws on first use. Where Creusot says nothing of
+    /// those captures, the relation is inferred like any other unknown: reflexive and transitive
+    /// by these clauses, and implied by each call's postcondition, which includes it.
+    fn by_value_hist_inv(
+        &self,
+        closure_ty: mir_ty::Ty<'tcx>,
+        upvars_sort: &chc::Sort,
+    ) -> chc::PredVarId {
+        let key = (closure_ty, upvars_sort.clone());
+        if let Some(relation) = self.by_value_hist_invs.borrow().get(&key) {
+            return *relation;
+        }
+        let sorts: Vec<chc::Sort> =
+            closure_hist_inv::by_value_captures(self.tcx, closure_ty, upvars_sort)
+                .into_iter()
+                .map(|(_, sort)| sort)
+                .collect();
+        let sig = sorts.iter().chain(&sorts).cloned().collect();
+        let relation = self
+            .system
+            .borrow_mut()
+            .new_pred_var(sig, chc::DebugInfo::from_current_span());
+        for clause in closure_hist_inv::by_value_relation_laws(relation, &sorts) {
+            self.system.borrow_mut().push_clause(clause);
+        }
+        self.by_value_hist_invs.borrow_mut().insert(key, relation);
+        relation
     }
 
     /// The relation the `hist_inv` clause of `closure_ty`'s specification writes, between the

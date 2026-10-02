@@ -5,13 +5,108 @@
 //! `creusot/src/backend/closures.rs`), a closure type parameter's relation is opaque and obeys
 //! the laws `hist_inv_refl`, `hist_inv_trans` and `postcondition_mut_hist_inv`, stated here as
 //! premises of the clauses that use it; a concrete closure's relation is defined from its
-//! captures, together with the relation its `closure!` specification writes in an `hist_inv`
-//! clause, which the closure is checked to obey ([`explicit_laws`]).
+//! captures, together with the relation its `closure!` specification writes in a `hist_inv`
+//! clause, which the closure is checked to obey ([`explicit_laws`]). Without such a clause,
+//! where Creusot says nothing of a capture taken by value, the relation of those captures is an
+//! unknown inferred under the same laws ([`by_value_relation_laws`]).
 
 use rustc_middle::ty as mir_ty;
 
 use crate::chc;
 use crate::rty;
+
+/// The positions and sorts of the captures of the `FnMut` closure `closure_ty` taken by value,
+/// which the relation [`concrete_definition`] derives says nothing of. Empty for an `Fn` closure.
+pub fn by_value_captures<'tcx>(
+    tcx: mir_ty::TyCtxt<'tcx>,
+    closure_ty: mir_ty::Ty<'tcx>,
+    upvars_sort: &chc::Sort,
+) -> Vec<(usize, chc::Sort)> {
+    let mir_ty::TyKind::Closure(def_id, args) = closure_ty.kind() else {
+        return Vec::new();
+    };
+    if args.as_closure().kind() != mir_ty::ClosureKind::FnMut {
+        return Vec::new();
+    }
+    let chc::Sort::Tuple(upvar_sorts) = upvars_sort else {
+        return Vec::new();
+    };
+    let captures = tcx.closure_captures(def_id.expect_local());
+    captures
+        .iter()
+        .zip(upvar_sorts)
+        .enumerate()
+        .filter(|(_, (capture, sort))| {
+            !sort.is_singleton()
+                && matches!(
+                    capture.info.capture_kind,
+                    mir_ty::UpvarCapture::ByValue | mir_ty::UpvarCapture::ByUse
+                )
+        })
+        .map(|(idx, (_, sort))| (idx, sort.clone()))
+        .collect()
+}
+
+/// `relation` applied to the captures at `positions` of the states `from` and `to`.
+pub fn by_value_related<V: chc::Var>(
+    relation: chc::PredVarId,
+    positions: &[usize],
+    from: chc::Term<V>,
+    to: chc::Term<V>,
+) -> chc::Formula<V> {
+    let args = positions
+        .iter()
+        .map(|idx| from.clone().tuple_proj(*idx))
+        .chain(positions.iter().map(|idx| to.clone().tuple_proj(*idx)))
+        .collect();
+    chc::Atom::new(relation.into(), args).into()
+}
+
+/// The clauses that make `relation`, over the by-value captures of sorts `sorts` at two states,
+/// reflexive and transitive. That each call's postcondition implies it is checked against the
+/// closure's body, since the postcondition includes it.
+pub fn by_value_relation_laws(relation: chc::PredVarId, sorts: &[chc::Sort]) -> Vec<chc::Clause> {
+    type States = [Vec<chc::Term<chc::TermVarIdx>>];
+    let law = |states: usize, build: &dyn Fn(&States) -> Obligation, what: &str| {
+        let mut builder = chc::ClauseBuilder::default();
+        let vars: Vec<Vec<_>> = (0..states)
+            .map(|_| {
+                sorts
+                    .iter()
+                    .map(|sort| chc::Term::var(builder.add_var(sort.clone())))
+                    .collect()
+            })
+            .collect();
+        let (premise, conclusion) = build(&vars);
+        let origin = crate::chc::debug::origin::Entry::described(format!(
+            "{what} of the by-value captures' hist_inv! relation {relation:?}"
+        ));
+        builder.add_body(premise.into(), origin.clone());
+        builder.head(conclusion.into(), origin)
+    };
+    let related = |from: &[chc::Term<chc::TermVarIdx>], to: &[chc::Term<chc::TermVarIdx>]| {
+        chc::Formula::from(chc::Atom::new(
+            relation.into(),
+            from.iter().chain(to).cloned().collect(),
+        ))
+    };
+    let mut clauses = law(
+        1,
+        &|v| (chc::Formula::top(), related(&v[0], &v[0])),
+        "reflexivity",
+    );
+    clauses.extend(law(
+        3,
+        &|v| {
+            (
+                related(&v[0], &v[1]).and(related(&v[1], &v[2])),
+                related(&v[0], &v[2]),
+            )
+        },
+        "transitivity",
+    ));
+    clauses
+}
 
 /// The relation at a concrete closure: an `Fn` closure's state never changes, and an `FnMut`
 /// closure keeps the final value of every capture borrowed by `&mut` and the value of every

@@ -1,4 +1,3 @@
-//@ignore-on-host: not yet verifiable, the relation of a by-value capture is not inferred (see README.md)
 //@check-pass
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
