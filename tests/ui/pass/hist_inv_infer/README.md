@@ -13,4 +13,4 @@ toward std's `filter`, whose `Filter::next` calls `find(&mut self.predicate)`. E
 | `counter.rs` | a counter owned by the closure, never decreasing | verifies |
 | `owned_closure.rs` | a closure owning an `F: FnMut`, related through `F`'s `hist_inv!` (the unknown depends on that universal predicate) | verifies |
 | `mut_ref_closure.rs` | `&mut F` passed as an `FnMut` by value, its states read back as `f`'s | ignored, with its fail twin: the frontend panics (`src/analyze/annot_fn.rs`, precondition of a non-closure parameter) |
-| `find.rs` | std's `find` through `try_fold`, `check` without its clause | ignored: the solver raises on `find`'s postcondition (as `../creusot/generic/std/find.rs`) |
+| `find.rs` | std's `find` through `try_fold`, `check` without its clause | verifies (fptprove `7d11252b2` on) |

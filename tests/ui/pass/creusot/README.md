@@ -57,10 +57,9 @@ inference. The pass sides of `fold_noinv.rs`, `try_fold_noinv.rs` and `filter_no
 `generic/std/find.rs` writes `find` as std does: a call of `try_fold` with a closure `check` that
 breaks with the first item the predicate accepts, so `try_fold` holds the only loop. Both
 specifications relate closure states by `hist_inv!`, and `check`, which owns the predicate, states
-its own relation through the predicate's in an `hist_inv` clause. It carries `//@ignore-on-host`:
-fptprove `6a54ae688` raises a `[gen_fun]` failure on it. `generic/std/find_pre.rs` is the same
-without `find`'s `ensures`, and verifies; its fail twin drops `find`'s precondition on the
-predicate.
+its own relation through the predicate's in a `hist_inv` clause; it verifies from fptprove
+`7d11252b2` on. `generic/std/find_pre.rs` is the same without `find`'s `ensures`; its fail twin
+drops `find`'s precondition on the predicate.
 
 Weaker variants (`weaker/`, still verify):
 

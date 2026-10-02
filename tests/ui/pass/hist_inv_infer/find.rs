@@ -1,4 +1,3 @@
-//@ignore-on-host: not yet verifiable, the solver raises on `find`'s postcondition (see README.md)
 //@check-pass
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300
