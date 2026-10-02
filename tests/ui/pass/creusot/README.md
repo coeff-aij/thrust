@@ -3,7 +3,7 @@
 Fourteen cases from the Creusot artifact's iterator benchmark, each verified with a specification
 equivalent to Creusot's, plus nine additions with no Creusot counterpart (`take_count.rs`,
 `fold.rs`, `try_fold.rs`, `find.rs`, `filter.rs`, and the forms of the last four generic in the
-iterator and the closure, `*_generic.rs`). `<file>.rs` is the pass side;
+iterator and the closure, in `generic/`). `<file>.rs` is the pass side;
 `tests/ui/fail/creusot/<file>.rs` is its fail twin (one extra fail-only file,
 `skip_take_take_count.rs`, twins `skip_take.rs` on a different property). `weaker/` holds
 variants of a case whose property is weaker than Creusot's but still verifies.
@@ -40,10 +40,19 @@ same layout. A case that needs `collect` adds it to its copy after `next`.
 | `try_fold.rs` | no counterpart | `produces`; a hand-written `try_fold` that returns `None` on an early bound crossing |
 | `find.rs` | no counterpart | `produces`; linear search over a `Range` |
 | `filter.rs` | no counterpart | `produces`; collects a `Range`'s items above a bound |
-| `fold_generic.rs` | no counterpart | `produces`; `fold` generic in `I: Iterator` and `F: FnMut`, the closure's contract stated for every state, called at `Range` |
-| `try_fold_generic.rs` | no counterpart | `produces`; `try_fold` generic in `I` and `F: FnMut` with `Option` as the `Try` type, called at `Range` |
-| `find_generic.rs` | no counterpart | `produces`; `find` generic in `I` and a `P: FnMut` predicate taking the item by value, called at `Range` |
-| `filter_generic.rs` | no counterpart | `produces`; `filter` into a `Vec`, generic in `I` and `P: FnMut`, called at `Range` |
+
+Generic forms (`generic/`): `fold`, `try_fold`, `find` and `filter` generic in the iterator and an
+`FnMut` closure, called at `Range`, each closure's contract stated for every closure state. `<name>.rs`
+writes the loop invariant; `<name>_noinv.rs` is the same with every `invariant!` removed, left to
+inference. The pass sides of `fold_noinv.rs`, `try_fold_noinv.rs` and `filter_noinv.rs` carry
+`//@ignore-on-host`: the pinned solver build (fptprove `804d76744`) gives them no answer at 60 s.
+
+| file | what |
+| --- | --- |
+| `fold.rs`, `fold_noinv.rs` | `fold` generic in `I: Iterator` and `F: FnMut` |
+| `try_fold.rs`, `try_fold_noinv.rs` | `try_fold` generic in `I` and `F: FnMut` with `Option` as the `Try` type |
+| `find.rs`, `find_noinv.rs` | `find` generic in `I` and a `P: FnMut` predicate taking the item by value |
+| `filter.rs`, `filter_noinv.rs` | `filter` into a `Vec`, generic in `I` and `P: FnMut` |
 
 Weaker variants (`weaker/`, still verify):
 
