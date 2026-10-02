@@ -1,6 +1,6 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:804d76744
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 extern crate thrust_macros;
 use thrust_macros::{context, requires, ensures, predicate};
 use thrust_models::{exists, forall, Model};

@@ -1,6 +1,6 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:9799dfd7b
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 #[derive(PartialEq)]
 struct Good;

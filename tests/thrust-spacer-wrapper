@@ -1,6 +1,6 @@
 #!/bin/bash
 
-COAR_IMAGE=${COAR_IMAGE:-ghcr.io/hiroshi-unno/coar:main}
+COAR_IMAGE=${COAR_IMAGE:-coar:latest}
 
 smt2=$(mktemp -p . --suffix .smt2)
 solver_out=$(mktemp)

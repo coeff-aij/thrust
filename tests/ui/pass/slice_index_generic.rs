@@ -1,6 +1,6 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:804d76744
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // Indexing at an index type that is a projection of a type parameter, as in
 // `v[key.into_slice_idx()]`, is specified through the index's `SliceIndexSpec` predicates.

@@ -1,6 +1,6 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:804d76744
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // A closure in a trusted function is part of its trusted body, so it is not analyzed
 // even though it calls a std function that has no specification.

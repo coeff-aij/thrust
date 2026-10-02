@@ -1,6 +1,6 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:804d76744
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 #[thrust_macros::requires(thrust_macros::pre!(f()))]
 #[thrust_macros::ensures(thrust_macros::post!(f(), result))]
 fn call<F: Fn() -> i64>(f: &mut F) -> i64 {

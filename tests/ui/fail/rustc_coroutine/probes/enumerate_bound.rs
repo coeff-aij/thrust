@@ -1,6 +1,6 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -Adead_code -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:804d76744 THRUST_TRY_SPECS=1
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_TRY_SPECS=1
 
 // The enumerate position over a bit-set iterator stays below the domain size: `BitIter`'s model
 // is (bound, count), as in tests/ui/pass/rustc_coroutine/eligibility.rs.

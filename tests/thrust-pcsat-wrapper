@@ -1,6 +1,6 @@
 #!/bin/bash
 
-COAR_IMAGE=${COAR_IMAGE:-ghcr.io/hiroshi-unno/coar:main}
+COAR_IMAGE=${COAR_IMAGE:-coar:latest}
 COAR_CONFIG=${COAR_CONFIG:-./config/solver/pcsat_tbq_ar.json}
 
 # Each container gets a fixed share of the machine (the limits coar-run uses), so that eight

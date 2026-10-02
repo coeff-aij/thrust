@@ -1,6 +1,6 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:804d76744
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 // The declared postcondition `result > x` hides the body's exact result, so `r == 4`
 // is not provable. Were the postcondition inferred instead, it would be exact and the
 // assertion would hold.

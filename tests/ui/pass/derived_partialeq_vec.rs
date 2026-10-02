@@ -1,6 +1,6 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:804d76744
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // A derived Clone and PartialEq compare a Vec field through std.rs's generic
 // trait-side specs (`_extern_spec_clone`, `_extern_spec_partialeq_eq`), which

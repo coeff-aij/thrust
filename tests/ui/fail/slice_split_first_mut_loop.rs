@@ -1,6 +1,6 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:804d76744
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 //@rustc-env: THRUST_SOLVER_TIMEOUT_SECS=180
 // The solve time varies 12-110 s from run to run on the same query (the CEGIS path differs between runs), a solver-side variance, so the cap is 180 s.
 

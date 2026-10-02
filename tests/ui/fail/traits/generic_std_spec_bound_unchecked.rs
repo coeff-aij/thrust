@@ -6,7 +6,7 @@
 // rejected, as a direct `Vec::from_iter(Bad)` finds no spec. Without the check it verified, while
 // `Bad::next` panics natively.
 //@compile-flags: -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:9799dfd7b
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 struct Bad;
 

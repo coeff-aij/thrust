@@ -1,6 +1,6 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60 COAR_IMAGE=coar:804d76744
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60
 
 // Fail twin of `pass/traits/simple_loop_call_two.rs`: the call at `Neg` passes 1, which violates
 // `target`'s precondition `T::p(x)` once `T::p` is `Neg`'s `x < 0`.

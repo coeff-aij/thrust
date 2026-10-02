@@ -1,6 +1,6 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:804d76744
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // The fresh parameter standing for `impl Fn(i64) -> i64` has to line up with the one
 // rustc synthesizes for it, which follows the written `T`.

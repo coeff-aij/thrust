@@ -1,6 +1,6 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -A unused-variables -A unused_mut
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:804d76744
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // Soundness check for unsigned facts: under the guard, `x - 1` is -1 in the logic (it wraps at run
 // time, so the `assert!` fails). The value reaches a position whose type says it is non-negative

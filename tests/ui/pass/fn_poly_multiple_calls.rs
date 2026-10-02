@@ -1,5 +1,5 @@
 //@check-pass
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:804d76744
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 fn first<T, U>(pair: (T, U)) -> T {
     pair.0

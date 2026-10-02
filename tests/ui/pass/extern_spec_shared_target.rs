@@ -1,5 +1,5 @@
 //@check-pass
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:804d76744
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // Two extern specs share the target `<Seq<i64> as Index<R>>::index`, one per index
 // trait. A call at `u8` is covered only by the second spec, which a target used to drop in favour

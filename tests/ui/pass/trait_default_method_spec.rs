@@ -1,6 +1,6 @@
 //@check-pass
 //@compile-flags: -Adead_code -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:804d76744
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // A required method carries its postcondition into each impl, where `produces` is concrete
 // and the witness exists. The `fail` twin keeps `nonempty` a default method, whose

@@ -1,6 +1,6 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -Adead_code -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 COAR_IMAGE=coar:bd27e3fc4 THRUST_TRY_SPECS=1
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 THRUST_TRY_SPECS=1
 
 // layout.rs's `layout()` and `univariant` reduced to how a contract names the layout an `F`
 // dereferences to: `LayoutRef::layout_is(f, l)`, a predicate of a bound with `Deref` as its

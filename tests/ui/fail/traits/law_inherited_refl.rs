@@ -1,6 +1,6 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -A unused-variables
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 COAR_IMAGE=coar:804d76744
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120
 // `pass/traits/law_inherited.rs` with `Range::produces` requiring `self.start < o.start`, which
 // breaks only the inherited `produces_refl` (`next` and `produces_trans` still hold): the check at
 // the impl refutes it.

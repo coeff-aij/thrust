@@ -1,6 +1,6 @@
 //@check-pass
 //@compile-flags: -Adead_code -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 COAR_IMAGE=coar:bd27e3fc4 THRUST_TRY_SPECS=1
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 THRUST_TRY_SPECS=1
 
 // layout.rs's `LayoutCalculator<Cx>` reduced: its model is its one field's, so a contract names
 // the data layout of `self.cx` as `Cx::dl_of(*self, dl)`, and a caller holding the calculator

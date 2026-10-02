@@ -1,6 +1,6 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:804d76744
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // `zip` takes `IntoIterator`s, not iterators: it holds `a.into_iter()`, here the `vec::IntoIter`
 // of a `Vec` and the `slice::Iter` of a `&Vec`.

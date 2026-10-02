@@ -1,6 +1,6 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:804d76744
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 #[thrust_macros::requires(thrust_macros::pre!(f(x)))]
 #[thrust_macros::ensures(thrust_macros::post!(f(x), result))]
 fn apply<T, F: FnOnce(T) -> T>(x: T, f: F) -> T {

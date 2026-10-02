@@ -1,6 +1,6 @@
 //@check-pass
 //@compile-flags: -Adead_code -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:804d76744
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // rustc's caller (rustc_ty_utils::layout, `ty::Coroutine`) establishes the dimension,
 // well-formedness and index conjuncts of `layout()`'s panic-safety precondition from a

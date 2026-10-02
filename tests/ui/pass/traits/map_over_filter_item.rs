@@ -1,6 +1,6 @@
 //@check-pass
 //@compile-flags: -Adead_code -C debug-assertions=off -A unused-variables -A unused_parens
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60 COAR_IMAGE=coar:804d76744
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60
 
 // A projection through a closure-bounded impl reached at a call site: `Map::new`'s contract
 // quantifies over `<Filter<SliceIter<T>, {closure}> as Iterator>::Item` and passes it to

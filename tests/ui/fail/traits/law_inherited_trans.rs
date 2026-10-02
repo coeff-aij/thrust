@@ -1,6 +1,6 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -A unused-variables
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 COAR_IMAGE=coar:804d76744
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120
 // `pass/creusot/take.rs` with `Take::produces` limited to at most one item, which breaks only the
 // inherited `produces_trans` of the generic impl (`next` yields one item at a time): the check at
 // the impl `Take<I>`, over `I`'s universal predicates, refutes it.

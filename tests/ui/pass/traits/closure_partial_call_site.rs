@@ -1,6 +1,6 @@
 //@check-pass
 //@compile-flags: -Aunused_parens -A unused-variables -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60 COAR_IMAGE=coar:804d76744
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60
 
 // A partial closure reaching a call site through a generic trait impl.
 //
