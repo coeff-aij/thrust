@@ -1,7 +1,8 @@
-//! An optimization that removes predicate variable arguments that are inductively equal to
-//! another argument of the same predicate variable.
+//! An optimization that removes the arguments of a loop-head predicate variable that are
+//! inductively equal to another argument of the same predicate variable.
 //!
-//! A column `j` of a predicate variable `P` is removed when there is a column `i < j` of the
+//! A column `j` of a loop head `P` (a predicate variable in the head and the body of one clause)
+//! is removed when there is a column `i < j` of the
 //! same sort such that every clause with `P` in its head establishes `a_i = a_j` for the head's
 //! arguments, from the equalities among the top-level conjuncts of its body and from the same
 //! property of the predicate variables in its body (assumed inductively and checked to a
@@ -9,7 +10,8 @@
 //! flattening would split a tuple, `Box` or `Mut` argument into, so that an equality between a
 //! component of one argument and a component of another (a loop body's `&mut Vec` and its
 //! iterator's entry sequence) carries through a predicate whose arguments are not flattened.
-//! Only a pair of two whole columns removes a column. The column is dropped from the signature and from every atom of `P`, and each
+//! Only a pair of two whole columns removes a column. The column is dropped from the signature,
+//! from every atom of `P` and from its candidate atoms (read as the column it equals), and each
 //! body atom `P(a)` leaves the equality `a_i = a_j` behind as a conjunct of the body (under the
 //! atom's guard, if it has one), so that the new body is the old one with
 //! `P(x) := P'(x without j) ∧ x_i = x_j`. With that definition a solution of the reduced system
@@ -26,6 +28,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use super::flatten::components;
 use super::*;
 
 /// The symbol of a compound term, with its arguments left out.
@@ -37,6 +40,7 @@ enum Op {
     MutCurrent,
     MutFinal,
     App(Function),
+    UserDefinedFn(UserDefinedPred, Sort),
     Tuple,
     TupleProj(usize),
     Ctor(DatatypeSort, DatatypeSymbol),
@@ -61,13 +65,17 @@ fn decompose(term: &Term) -> Option<(Op, Vec<&Term>)> {
         | Term::ForallDefault(_)
         | Term::ArrayEmpty(..)
         | Term::SeqEmpty(_)
-        | Term::FormulaQuantifiedVar(..) => return None,
+        | Term::UserQuantifiedVar(..) => return None,
         Term::Box(t) => (Op::Box, vec![&**t]),
         Term::Mut(t1, t2) => (Op::Mut, vec![&**t1, &**t2]),
         Term::BoxCurrent(t) => (Op::BoxCurrent, vec![&**t]),
         Term::MutCurrent(t) => (Op::MutCurrent, vec![&**t]),
         Term::MutFinal(t) => (Op::MutFinal, vec![&**t]),
         Term::App(fun, args) => (Op::App(*fun), args.iter().collect()),
+        Term::UserDefinedFn(sym, sort, args) => (
+            Op::UserDefinedFn(sym.clone(), sort.clone()),
+            args.iter().collect(),
+        ),
         Term::Tuple(ts) => (Op::Tuple, ts.iter().collect()),
         Term::TupleProj(t, i) => (Op::TupleProj(*i), vec![&**t]),
         Term::DatatypeCtor(sort, sym, args) => {
@@ -241,77 +249,41 @@ impl Congruence {
     }
 }
 
-/// One step of a projection path into an argument.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Step {
-    Proj(usize),
-    Current,
-    Final,
-    BoxCurrent,
-}
-
-/// A leaf component of a predicate variable's arguments: the projection `path` of argument
-/// `column`, split the way flattening splits a tuple, `Box` or `Mut` argument. When no argument
-/// is composite, the leaves are the columns.
+/// A leaf component of a predicate variable's arguments: a projection of argument `column`, as
+/// flattening splits it (`flatten::components`), written over the variable `column`. When no
+/// argument is composite, the leaves are the columns.
 #[derive(Debug, Clone)]
 struct Leaf {
     column: usize,
-    path: Vec<Step>,
+    projection: Term,
     sort: Sort,
 }
 
 impl Leaf {
     fn term(&self, args: &[Term]) -> Term {
-        let mut term = args[self.column].clone();
-        for step in &self.path {
-            term = match step {
-                Step::Proj(i) => Term::TupleProj(Box::new(term), *i),
-                Step::Current => Term::MutCurrent(Box::new(term)),
-                Step::Final => Term::MutFinal(Box::new(term)),
-                Step::BoxCurrent => Term::BoxCurrent(Box::new(term)),
-            };
-        }
-        term
+        self.projection
+            .clone()
+            .subst_var(|_| args[self.column].clone())
     }
 
     fn is_column(&self) -> bool {
-        self.path.is_empty()
-    }
-}
-
-fn push_leaves(out: &mut Vec<Leaf>, column: usize, path: Vec<Step>, sort: &Sort) {
-    let mut sub = |step: Step, sort: &Sort| {
-        let mut path = path.clone();
-        path.push(step);
-        push_leaves(out, column, path, sort);
-    };
-    match sort {
-        Sort::Tuple(sorts) => {
-            for (i, s) in sorts.iter().enumerate() {
-                if !s.is_singleton() {
-                    sub(Step::Proj(i), s);
-                }
-            }
-        }
-        Sort::Box(inner) => sub(Step::BoxCurrent, inner),
-        Sort::Mut(inner) => {
-            sub(Step::Current, inner);
-            sub(Step::Final, inner);
-        }
-        _ => out.push(Leaf {
-            column,
-            path,
-            sort: sort.clone(),
-        }),
+        matches!(self.projection, Term::Var(_))
     }
 }
 
 fn leaves_of(sig: &PredSig) -> Vec<Leaf> {
-    let mut out = Vec::new();
+    let mut leaves = Vec::new();
     for (column, sort) in sig.iter().enumerate() {
-        push_leaves(&mut out, column, Vec::new(), sort);
+        let var = Term::var(TermVarIdx::from_usize(column));
+        for (projection, sort) in components(var, sort.clone()) {
+            leaves.push(Leaf {
+                column,
+                projection,
+                sort,
+            });
+        }
     }
-    out
+    leaves
 }
 
 /// The leaves of each predicate variable, and the alive pairs `(a, b)`, `a < b`, of leaf indices.
@@ -621,23 +593,14 @@ pub(super) fn recursive_pred_vars(system: &System) -> HashSet<PredVarId> {
         .collect()
 }
 
-/// Removes every predicate variable argument that is inductively equal to a lower argument of
-/// the same predicate variable (see the module documentation).
-pub fn dedup_pred_args(system: System) -> System {
-    dedup_pred_args_where(system, |_| true)
-}
-
-/// [`dedup_pred_args`] restricted to the recursive predicate variables (the loop heads). The
-/// equalities are still established over every predicate variable, since a loop head's
-/// recursive clause usually passes through the predicate of the loop body.
-pub fn dedup_recursive_pred_args(system: System) -> System {
+/// Removes every argument of a recursive predicate variable (a loop head) that is inductively
+/// equal to a lower argument of the same predicate variable (see the module documentation). The
+/// equalities are established over every predicate variable, since a loop head's recursive
+/// clause usually passes through the predicate of the loop body.
+pub fn dedup_pred_args(mut system: System) -> System {
     let recursive = recursive_pred_vars(&system);
-    dedup_pred_args_where(system, |p| recursive.contains(&p))
-}
-
-fn dedup_pred_args_where(mut system: System, drop_at: impl Fn(PredVarId) -> bool) -> System {
     let mut alive = established_pairs(&system);
-    alive.alive.retain(|p, _| drop_at(*p));
+    alive.alive.retain(|p, _| recursive.contains(p));
     tracing::debug!(?alive, "dedup_pred_args: established pairs");
     let dropped = dropped_columns(&alive);
     let mut preds: Vec<_> = dropped.keys().copied().collect();
@@ -646,12 +609,28 @@ fn dedup_pred_args_where(mut system: System, drop_at: impl Fn(PredVarId) -> bool
         let columns = &dropped[&p];
         tracing::info!(pred = %p, ?columns, sig_len = system.pred_vars[p].sig.len(), "dedup_pred_args: dropping columns");
         let sig = std::mem::take(&mut system.pred_vars[p].sig);
+        drop_in_candidate_atoms(&mut system, p, columns);
         system.pred_vars[p].sig = keep_columns(sig, columns);
     }
     for clause in system.clauses.iter_mut() {
         drop_in_clause(clause, &dropped);
     }
     system
+}
+
+/// Moves the candidate atoms of `p` onto the columns kept: a dropped column is read as the
+/// column it equals, which is kept, and a kept column moves down by the columns dropped before it.
+fn drop_in_candidate_atoms(system: &mut System, p: PredVarId, dropped: &BTreeMap<usize, usize>) {
+    let column = |v: TermVarIdx| {
+        let k = dropped.get(&v.index()).copied().unwrap_or(v.index());
+        Some(Term::var(TermVarIdx::from_usize(
+            k - dropped.range(..k).count(),
+        )))
+    };
+    for candidates in system.candidate_atoms.iter_mut().filter(|c| c.pred == p) {
+        let atoms = std::mem::take(&mut candidates.atoms);
+        candidates.atoms = candidate_atoms::rewrite_atoms(atoms, column);
+    }
 }
 
 #[cfg(test)]
@@ -736,14 +715,14 @@ mod tests {
             Atom::new(Pred::Var(q), vec![v(0), v(0)]),
             Body::from(v(0).equal_to(Term::int(0))),
         ));
-        let system = dedup_recursive_pred_args(system);
+        let system = dedup_pred_args(system);
         assert_eq!(system.pred_vars[p].sig, vec![Sort::int()]);
         assert_eq!(system.pred_vars[q].sig, vec![Sort::int(), Sort::int()]);
     }
 
     #[test]
     fn carries_an_equality_between_components_through_an_unflattened_predicate() {
-        // x = (0, 0) => Q(x);  Q(x) => P(x.0, x.1);  P(a, b) ∧ Q(x) ∧ x = (a, b) => P(a, b)
+        // x = (0, 0) => Q(x);  Q(x) => P(x.0, x.1);  P(a, b) => P(a, b)
         let pair = Sort::tuple(vec![Sort::int(), Sort::int()]);
         let mut system = System::default();
         let p = system.new_pred_var(vec![Sort::int(), Sort::int()], DebugInfo::default());
@@ -758,9 +737,14 @@ mod tests {
             Atom::new(Pred::Var(p), vec![v(0).tuple_proj(0), v(0).tuple_proj(1)]),
             Body::new(vec![Atom::new(Pred::Var(q), vec![v(0)])], Formula::top()),
         ));
-        let system = dedup_recursive_pred_args(system);
-        assert_eq!(system.pred_vars[p].sig, vec![Sort::int(), Sort::int()]);
-        assert_eq!(system.pred_vars[q].sig, vec![pair.clone()]);
+        system.push_clause(clause(
+            vec![Sort::int(), Sort::int()],
+            Atom::new(Pred::Var(p), vec![v(0), v(1)]),
+            Body::new(
+                vec![Atom::new(Pred::Var(p), vec![v(0), v(1)])],
+                Formula::top(),
+            ),
+        ));
         let system = dedup_pred_args(system);
         assert_eq!(system.pred_vars[p].sig, vec![Sort::int()]);
         assert_eq!(system.pred_vars[q].sig, vec![pair]);
@@ -804,13 +788,35 @@ mod tests {
         let pair = Sort::tuple(vec![Sort::int(), Sort::int()]);
         let mut system = System::default();
         let p = system.new_pred_var(vec![Sort::int(), Sort::int()], DebugInfo::default());
-        // t = (x, x) => P(t.0, t.1)
+        // t = (x, x) => P(t.0, t.1);  P(a, b) => P(a, b)
         system.push_clause(clause(
             vec![pair, Sort::int()],
             Atom::new(Pred::Var(p), vec![v(0).tuple_proj(0), v(0).tuple_proj(1)]),
             Body::from(v(0).equal_to(Term::tuple(vec![v(1), v(1)]))),
         ));
+        system.push_clause(clause(
+            vec![Sort::int(), Sort::int()],
+            Atom::new(Pred::Var(p), vec![v(0), v(1)]),
+            Body::new(
+                vec![Atom::new(Pred::Var(p), vec![v(0), v(1)])],
+                Formula::top(),
+            ),
+        ));
         let system = dedup_pred_args(system);
         assert_eq!(system.pred_vars[p].sig, vec![Sort::int()]);
+    }
+
+    #[test]
+    fn reads_a_dropped_column_of_a_candidate_atom_as_the_column_it_equals() {
+        let step = Formula::And(vec![
+            Formula::Atom(v(2).equal_to(v(0).add(Term::int(1)))),
+            Formula::Atom(v(3).equal_to(v(1).add(Term::int(1)))),
+        ]);
+        let (mut system, p) = loop_system(step);
+        let atom = Formula::Atom(v(1).equal_to(Term::int(0)));
+        system.push_candidate_atoms(p, vec![atom]);
+        let system = dedup_pred_args(system);
+        let atoms = &system.candidate_atoms[0].atoms;
+        assert_eq!(atoms, &vec![Formula::Atom(v(0).equal_to(Term::int(0)))]);
     }
 }

@@ -68,66 +68,17 @@ where
             .insert(RefinedTypeVar::Value, ty.to_sort());
         let mut atom_args = Vec::new();
         let mut pred_sig = chc::PredSig::new();
-        // With `THRUST_FLAT_PRED_ARGS` set, a tuple- or `Mut`-sorted dependency is passed to the
-        // predicate variable as its components (projections) rather than as one argument, so
-        // that the solver sees scalars and sequences as separate columns. The value `loop`
-        // leaves the templates alone and flattens only the loop heads, on the CHC system
-        // (`chc::flatten_recursive_pred_args`).
-        let flat = std::env::var("THRUST_FLAT_PRED_ARGS").is_ok_and(|v| v != "loop");
         for (v, sort) in self.dependencies.into_iter() {
             if sort.is_singleton() {
                 continue;
             }
-            if flat {
-                push_flat_arg(&mut atom_args, &mut pred_sig, chc::Term::Var(v), sort);
-            } else {
-                atom_args.push(chc::Term::Var(v));
-                pred_sig.push(sort);
-            }
+            atom_args.push(chc::Term::Var(v));
+            pred_sig.push(sort);
         }
         Template {
             pred_sig,
             atom_args,
             ty,
-        }
-    }
-}
-
-fn push_flat_arg<V: Clone>(
-    args: &mut Vec<chc::Term<V>>,
-    sig: &mut chc::PredSig,
-    term: chc::Term<V>,
-    sort: chc::Sort,
-) {
-    match sort {
-        chc::Sort::Tuple(sorts) => {
-            for (i, s) in sorts.into_iter().enumerate() {
-                if s.is_singleton() {
-                    continue;
-                }
-                push_flat_arg(
-                    args,
-                    sig,
-                    chc::Term::TupleProj(Box::new(term.clone()), i),
-                    s,
-                );
-            }
-        }
-        chc::Sort::Box(inner) => {
-            push_flat_arg(args, sig, chc::Term::BoxCurrent(Box::new(term)), *inner);
-        }
-        chc::Sort::Mut(inner) => {
-            push_flat_arg(
-                args,
-                sig,
-                chc::Term::MutCurrent(Box::new(term.clone())),
-                (*inner).clone(),
-            );
-            push_flat_arg(args, sig, chc::Term::MutFinal(Box::new(term)), *inner);
-        }
-        sort => {
-            args.push(term);
-            sig.push(sort);
         }
     }
 }
