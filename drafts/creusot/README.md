@@ -39,8 +39,18 @@ precondition, as the generic tests do, and holds the chain under an `exists`; th
 `fold_chain_push` extends it by one item and verifies alone. Not yet verifiable: on fptprove
 082cd295c the program gives no answer (timeout at about 160 s, also with an empty `main`), and with
 `fold` trusted the rest verifies. Ghost locals cannot carry the chain instead, since they are not
-live at the loop header. A `MapInv`-style variant (the closure receives the ghost history) and
-`try_fold` are not written yet.
+live at the loop header. A `MapInv`-style variant (the closure receives the ghost history of the
+items so far) cannot be written either: `MapInv` keeps that history in a ghost field of its
+struct, and `fold` has only locals to keep it in.
+
+## try_fold_map.rs
+
+std's `Iterator::try_fold` (`?` on each call, the `Try` type fixed to `Option<B>`, the iterator
+taken as `&mut`) in the form of `fold_map.rs`: each chain step is a call returning `Some`; `Some(r)`
+ends a chain over a completed iterator, `None` is a call returning `None` at the end of a chain.
+Needs `THRUST_TRY_SPECS=1`. Same state as `fold_map.rs`: with `try_fold` trusted the rest verifies,
+and the program gives no answer on fptprove 082cd295c (timeout at about 175 s, also with an empty
+`main`).
 
 ## skip_take_range.rs (+ fail/)
 
