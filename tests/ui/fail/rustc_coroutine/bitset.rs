@@ -74,7 +74,6 @@ impl<T: Idx> DenseBitSet<T> {
     }
 
     #[inline]
-    #[thrust::trusted]
     #[thrust_macros::ensures(result.0 == domain_size)]
     #[thrust_macros::ensures(Self::no_mem(result))]
     #[thrust_macros::ensures(Self::words_cover_domain(result))]
@@ -142,6 +141,8 @@ impl<T: Idx> DenseBitSet<T> {
         new_word != word
     }
 
+    // Trusted: with `<[T]>::fill` specified, the bits below `domain_size` kept by
+    // `clear_excess_bits` and `card` set by `ghost!`, the solver gives no answer at 120 s.
     #[thrust::trusted]
     #[thrust_macros::ensures((!self).0 == (*self).0)]
     #[thrust_macros::ensures(Self::words_cover_domain(*self) ==> Self::words_cover_domain(!self))]
@@ -393,6 +394,16 @@ fn clear_excess_bits_in_final_word(domain_size: usize, words: &mut [Word]) {
 #[thrust::callable]
 fn count_ones(words: &[Word]) -> usize {
     words.iter().map(|word| word.count_ones() as usize).sum()
+}
+
+// //== local to the case study: `vec![elem; n]` expands to `std::vec::from_elem`, which std.rs
+// does not specify; specified here at the word type.
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::ensures(result.len() == n)]
+#[thrust_macros::ensures(forall(|k: UInt| k < n ==> result[k] == elem))]
+fn _extern_spec_vec_from_elem_word(elem: Word, n: usize) -> Vec<Word> {
+    std::vec::from_elem(elem, n)
 }
 
 // //== ./../rustc_index/src/idx.rs
