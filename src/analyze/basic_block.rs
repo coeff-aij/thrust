@@ -84,6 +84,48 @@ fn wrap_int_term<'tcx, V>(
     }
 }
 
+/// The integer result of the bitwise or shift operator `op` on operands of the integer type `ty`,
+/// computed on bit-vectors of the type's width: `x op y` is
+/// `bv_to_int(bvop(int_to_bv(x), int_to_bv(y)))`. A shift masks its amount to the width, as Rust's
+/// `<<` and `>>` do; with overflow checks on, rustc asserts the amount is below the width first.
+fn bit_op_term<'tcx, V>(
+    tcx: TyCtxt<'tcx>,
+    op: mir::BinOp,
+    lhs: chc::Term<V>,
+    rhs: chc::Term<V>,
+    ty: mir_ty::Ty<'tcx>,
+) -> chc::Term<V> {
+    let width = ty.primitive_size(tcx).bits() as u32;
+    let lhs = lhs.int_to_bit_vec(width);
+    let rhs = rhs.int_to_bit_vec(width);
+    let shift_amount = |rhs: chc::Term<V>| {
+        let mask = chc::Term::int(BigInt::from(width - 1)).int_to_bit_vec(width);
+        chc::Term::App(chc::Function::BVAND, vec![rhs, mask])
+    };
+    let bv = match op {
+        mir::BinOp::BitAnd => chc::Term::App(chc::Function::BVAND, vec![lhs, rhs]),
+        mir::BinOp::BitOr => chc::Term::App(chc::Function::BVOR, vec![lhs, rhs]),
+        mir::BinOp::BitXor => chc::Term::App(chc::Function::BVXOR, vec![lhs, rhs]),
+        mir::BinOp::Shl => chc::Term::App(chc::Function::BVSHL, vec![lhs, shift_amount(rhs)]),
+        mir::BinOp::Shr if ty.is_signed() => {
+            chc::Term::App(chc::Function::BVASHR, vec![lhs, shift_amount(rhs)])
+        }
+        mir::BinOp::Shr => chc::Term::App(chc::Function::BVLSHR, vec![lhs, shift_amount(rhs)]),
+        _ => unreachable!("not a bitwise operator: {:?}", op),
+    };
+    bit_vec_to_int(bv, ty)
+}
+
+/// The integer a bit-vector denotes as a value of the integer type `ty`.
+fn bit_vec_to_int<'tcx, V>(bv: chc::Term<V>, ty: mir_ty::Ty<'tcx>) -> chc::Term<V> {
+    let fun = if ty.is_signed() {
+        chc::Function::SBV_TO_INT
+    } else {
+        chc::Function::UBV_TO_INT
+    };
+    chc::Term::App(fun, vec![bv])
+}
+
 /// Whether the integer `term` lies in the range of the integer type `ty`.
 fn int_term_in_range<'tcx, V: Clone>(
     tcx: TyCtxt<'tcx>,
@@ -719,6 +761,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             Rvalue::Use(operand) => self.operand_type(operand),
             Rvalue::CopyForDeref(place) => self.place_type(&place),
             Rvalue::UnaryOp(op, operand) => {
+                let operand_mir_ty = operand.ty(&self.local_decls, self.tcx);
                 let operand_ty = self.operand_type(operand);
 
                 let mut builder = PlaceTypeBuilder::default();
@@ -729,6 +772,15 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     }
                     (rty::Type::Int | rty::Type::UInt, mir::UnOp::Neg) => {
                         builder.build(rty::Type::Int, operand_term.neg())
+                    }
+                    (rty::Type::Int | rty::Type::UInt, mir::UnOp::Not) => {
+                        let width = operand_mir_ty.primitive_size(self.tcx).bits() as u32;
+                        let bv = chc::Term::App(
+                            chc::Function::BVNOT,
+                            vec![operand_term.int_to_bit_vec(width)],
+                        );
+                        let ty = operand_ty.clone();
+                        builder.build(ty, bit_vec_to_int(bv, operand_mir_ty))
                     }
                     _ => unimplemented!("ty={}, op={:?}", operand_ty.display(), op),
                 }
@@ -765,13 +817,24 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         self.arith_result(builder, lhs_ty, lhs_term.rem_trunc(rhs_term))
                     }
                     // On `bool` these are the non-short-circuiting connectives, and rustc
-                    // builds the overflow guard of `/` and `%` out of one of them. They stay
-                    // unsupported on integers, where they really are bitwise.
+                    // builds the overflow guard of `/` and `%` out of one of them. On integers
+                    // they are bitwise.
                     (rty::Type::Bool, mir::BinOp::BitAnd) => {
                         builder.build(rty::Type::Bool, lhs_term.and(rhs_term))
                     }
                     (rty::Type::Bool, mir::BinOp::BitOr) => {
                         builder.build(rty::Type::Bool, lhs_term.or(rhs_term))
+                    }
+                    (
+                        rty::Type::Int | rty::Type::UInt,
+                        mir::BinOp::BitAnd
+                        | mir::BinOp::BitOr
+                        | mir::BinOp::BitXor
+                        | mir::BinOp::Shl
+                        | mir::BinOp::Shr,
+                    ) => {
+                        let term = bit_op_term(self.tcx, op, lhs_term, rhs_term, lhs_mir_ty);
+                        builder.build(lhs_ty, term)
                     }
                     (rty::Type::Int | rty::Type::UInt, mir::BinOp::AddWithOverflow) => {
                         let (ty, term) = self.checked_int_op(lhs_term.add(rhs_term), lhs_mir_ty);
