@@ -55,7 +55,9 @@ inference. Every `_noinv` pair verifies from fptprove `082cd295c` on.
 | `filter.rs`, `filter_noinv.rs` | `filter` into a `Vec`, generic in `I` and `P: FnMut` |
 
 `generic/std/find.rs` writes `find` as std does: a call of `try_fold` with a closure `check` that
-breaks with the first item the predicate accepts, so `try_fold` holds the only loop. Both
+breaks with the first item the predicate accepts, so `try_fold` holds the only loop. As in std,
+`check` takes `try_fold`'s accumulator `()`, the predicate takes `&I::Item`, and the result is
+`break_value()`; the file header lists what still differs. Both
 specifications relate closure states by `hist_inv!`, and `check`, which owns the predicate, states
 its own relation through the predicate's in a `hist_inv` clause; it verifies from fptprove
 `7d11252b2` on. `generic/std/find_pre.rs` is the same without `find`'s `ensures`; its fail twin

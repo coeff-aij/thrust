@@ -316,6 +316,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             "fn_sub_type"
         );
 
+        let got_ret = subst_singleton_params(*got.ret, &singleton_params(&got.params));
         let mut builder = self.env.build_clause();
         let cs = self.relate_fn_param_sub_types_with_builder(
             got.params,
@@ -325,7 +326,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         );
         clauses.extend(cs);
 
-        clauses.extend(builder.relate_sub_refined_type(&got.ret, &expected_ret));
+        clauses.extend(builder.relate_sub_refined_type(&got_ret, &expected_ret));
         clauses
     }
 
@@ -396,6 +397,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         }
 
         assert!(got_args.len() == expected_args.len());
+        let singleton_params = singleton_params(&got_args);
+        let got_args: IndexVec<rty::FunctionParamIdx, _> = got_args
+            .into_iter()
+            .map(|rty| subst_singleton_params(rty, &singleton_params))
+            .collect();
         // TODO: check stys are equal
         for (param_idx, param_rty) in got_args.iter_enumerated() {
             let param_sort = param_rty.ty.to_sort();
@@ -409,9 +415,15 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         }
         for ((param_idx, got_ty), expected_ty) in got_args.iter_enumerated().zip(&expected_args) {
             clauses.extend(builder.relate_sub_refined_type(expected_ty, got_ty));
-            builder
-                .with_mapped_value_var(param_idx)
-                .add_body(expected_ty.formula());
+            if singleton_params.contains_key(&param_idx) {
+                builder
+                    .with_value_var(&got_ty.ty)
+                    .add_body(expected_ty.formula());
+            } else {
+                builder
+                    .with_mapped_value_var(param_idx)
+                    .add_body(expected_ty.formula());
+            }
         }
 
         clauses
@@ -2235,4 +2247,26 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.analyze_terminator_binds(&term, expected_fn, &outer_fn_param_vars);
         self.analyze_terminator_goto(&term, expected_fn, &outer_fn_param_vars);
     }
+}
+
+/// The parameters of a singleton sort (such as `()`). They get no clause variable, so a
+/// refinement that refers to one takes the sort's only value instead.
+fn singleton_params(
+    params: &IndexVec<rty::FunctionParamIdx, rty::RefinedType<rty::FunctionParamIdx>>,
+) -> HashMap<rty::FunctionParamIdx, chc::Sort> {
+    params
+        .iter_enumerated()
+        .map(|(idx, rty)| (idx, rty.ty.to_sort()))
+        .filter(|(_, sort)| sort.is_singleton())
+        .collect()
+}
+
+fn subst_singleton_params(
+    rty: rty::RefinedType<rty::FunctionParamIdx>,
+    singletons: &HashMap<rty::FunctionParamIdx, chc::Sort>,
+) -> rty::RefinedType<rty::FunctionParamIdx> {
+    rty.subst_var(|v| match singletons.get(&v) {
+        Some(sort) => chc::Term::default_for(sort),
+        None => chc::Term::var(v),
+    })
 }

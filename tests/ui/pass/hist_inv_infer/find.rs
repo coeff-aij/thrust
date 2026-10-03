@@ -102,17 +102,26 @@ impl<B: Model> Model for ControlFlow<B> {
     type Ty = ControlFlow<<B as Model>::Ty>;
 }
 
+impl<B> ControlFlow<B> {
+    fn break_value(self) -> Option<B> {
+        match self {
+            ControlFlow::Continue(..) => None,
+            ControlFlow::Break(x) => Some(x),
+        }
+    }
+}
+
 // std's default `try_fold` with the `Try` type fixed to `ControlFlow<I::Item>`: the closure may be
 // called on every item in every state, and a `Break` result is one some call of it returned from a
 // state reachable from `f`.
 #[thrust_macros::context]
 #[thrust_macros::requires(I::invariant(*iter))]
-#[thrust_macros::requires(forall(|c: Closure<F>, x: <<I as Iterator>::Item as Model>::Ty| thrust_macros::pre!(c(x))))]
-#[thrust_macros::ensures(forall(|v: <<I as Iterator>::Item as Model>::Ty| result == ControlFlow::Break(v) ==> exists(|c: Closure<F>, d: Closure<F>, x: <<I as Iterator>::Item as Model>::Ty| thrust_macros::hist_inv!(f, c) && thrust_macros::post!(Mut::new(c, d)(x), ControlFlow::Break(v)))))]
-fn try_fold<I, F>(iter: &mut I, f: F) -> ControlFlow<I::Item>
+#[thrust_macros::requires(forall(|c: Closure<F>, x: <<I as Iterator>::Item as Model>::Ty| thrust_macros::pre!(c((), x))))]
+#[thrust_macros::ensures(forall(|v: <<I as Iterator>::Item as Model>::Ty| result == ControlFlow::Break(v) ==> exists(|c: Closure<F>, d: Closure<F>, x: <<I as Iterator>::Item as Model>::Ty| thrust_macros::hist_inv!(f, c) && thrust_macros::post!(Mut::new(c, d)((), x), ControlFlow::Break(v)))))]
+fn try_fold<I, F>(iter: &mut I, init: (), f: F) -> ControlFlow<I::Item>
 where
     I: Iterator + Model,
-    F: FnMut(I::Item) -> ControlFlow<I::Item>,
+    F: FnMut((), I::Item) -> ControlFlow<I::Item>,
     <I as Iterator>::Item: Model,
     <I as Model>::Ty: Model<Ty = <I as Model>::Ty> + PartialEq,
     <<I as Iterator>::Item as Model>::Ty: Model<Ty = <<I as Iterator>::Item as Model>::Ty> + PartialEq,
@@ -124,9 +133,9 @@ where
             |it: &mut I, g: F, f: thrust_models::FnParam<F>|
             I::invariant(*it)
                 && thrust_macros::hist_inv!(f.at_entry(), g)
-                && forall(|c: Closure<F>, x: <<I as Iterator>::Item as Model>::Ty| thrust_macros::pre!(c(x)))
+                && forall(|c: Closure<F>, x: <<I as Iterator>::Item as Model>::Ty| thrust_macros::pre!(c((), x)))
         );
-        match g(x) {
+        match g(init, x) {
             ControlFlow::Continue(()) => {}
             ControlFlow::Break(b) => return ControlFlow::Break(b),
         }
@@ -142,25 +151,22 @@ where
 fn find<I, P>(iter: &mut I, mut predicate: P) -> Option<I::Item>
 where
     I: Iterator + Model,
-    P: FnMut(I::Item) -> bool,
-    <I as Iterator>::Item: Model + Copy,
+    P: FnMut(&I::Item) -> bool,
+    <I as Iterator>::Item: Model,
     <I as Model>::Ty: Model<Ty = <I as Model>::Ty> + PartialEq,
     <<I as Iterator>::Item as Model>::Ty: Model<Ty = <<I as Iterator>::Item as Model>::Ty> + PartialEq,
 {
-    let check = move |x: I::Item| -> ControlFlow<I::Item> {
-        if predicate(x) { ControlFlow::Break(x) } else { ControlFlow::Continue(()) }
+    let check = move |(): (), x: I::Item| -> ControlFlow<I::Item> {
+        if predicate(&x) { ControlFlow::Break(x) } else { ControlFlow::Continue(()) }
     };
-    match try_fold(iter, check) {
-        ControlFlow::Break(x) => Some(x),
-        ControlFlow::Continue(()) => None,
-    }
+    try_fold(iter, (), check).break_value()
 }
 
 fn main() {
     let c = thrust_macros::closure!(
         requires(true),
-        ensures(result == (x >= 5)),
-        |x: isize| -> bool { x >= 5 },
+        ensures(result == (*x >= 5)),
+        |x: &isize| -> bool { *x >= 5 },
     );
     let mut it = Range { start: 0, end: 10 };
     let r = find(&mut it, c);
