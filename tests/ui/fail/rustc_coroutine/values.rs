@@ -318,25 +318,31 @@ impl Size {
     }
 }
 
+// Thrust cannot put a contract on an impl of an external trait (`#[thrust_macros::ensures]` on
+// `add` expands to `_thrust_ensures_add`, which is "not a member of trait `Add`"), so the
+// contracts of `add` and `add_assign` are on the `extern_spec_fn` wrappers below.
 impl Add for Size {
     type Output = Size;
-    // Trusted. The intended spec is `result.raw == self.raw + other.raw` (the
-    // body panics on overflow, which is out of scope), but Thrust cannot put a
-    // spec on an impl of an external trait: `#[thrust_macros::ensures]` here
-    // expands to `_thrust_ensures_add`, which is "not a member of trait `Add`".
     #[inline]
-    // Without a contract the overflow `panic!` is reachable (Unsat).
-    #[thrust::trusted]
-    #[thrust::callable]
     fn add(self, other: Size) -> Size {
-        Size::from_bytes(self.bytes().checked_add(other.bytes()).unwrap_or_else(|| {
-            panic!(
-                "Size::add: {} + {} doesn't fit in u64",
-                self.bytes(),
-                other.bytes()
-            )
-        }))
+        // Rewrite (rewrites.md R6): the message is dropped; a message makes
+        // `fmt::Arguments`, which Thrust cannot type in analysed code.
+        Size::from_bytes(self.bytes().checked_add(other.bytes()).unwrap_or_else(|| panic!()))
     }
+}
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(a.raw + b.raw <= u64::MAX)]
+#[thrust_macros::ensures(result.raw == a.raw + b.raw)]
+fn _extern_spec_size_add(a: Size, b: Size) -> Size {
+    <Size as Add>::add(a, b)
+}
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires((*a).raw + b.raw <= u64::MAX)]
+#[thrust_macros::ensures((!a).raw == (*a).raw + b.raw)]
+fn _extern_spec_size_add_assign(a: &mut Size, b: Size) {
+    <Size as AddAssign>::add_assign(a, b)
 }
 
 impl AddAssign for Size {
@@ -634,8 +640,9 @@ impl Niche {
         }
     }
 
-    // Trusted: the bit operations of the body are not modelled. The `requires` is that of
-    // `value.size(cx)` and the `assert!`'s bound on a pointer's size.
+    // Trusted: `Primitive::size` has no postcondition, so `size.bits()`'s `requires` cannot be
+    // shown. The `requires` is that of `value.size(cx)` and the `assert!`'s bound on a pointer's
+    // size.
     #[thrust::trusted]
     #[thrust_macros::requires(forall(|dl: TargetDataLayout, a: AddressSpace|
         !(C::dl_of(*cx, dl) && (*self).value == Primitive::Pointer(a))

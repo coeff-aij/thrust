@@ -89,7 +89,7 @@ impl<T: Idx> DenseBitSet<T> {
         }
     }
 
-    #[thrust::callable]
+    #[thrust_macros::requires(Self::words_cover_domain(*self))]
     fn clear_excess_bits(&mut self) {
         clear_excess_bits_in_final_word(self.domain_size, &mut self.words);
     }
@@ -324,9 +324,6 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
         IdxRange::new(0, self.num_rows)
     }
 
-    // Trusted: `num_words` has no contract, so its result cannot be matched with the row width
-    // that `wf` states (Unsat).
-    #[thrust::trusted]
     #[thrust::callable]
     #[thrust_macros::requires(Self::wf(*self))]
     #[thrust_macros::requires(forall(|i: UInt| <R as Idx>::index_is(row, i) ==> i < (*self).num_rows))]
@@ -360,7 +357,10 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
 }
 
 #[inline]
-#[thrust::callable]
+#[thrust_macros::requires(forall(|i: UInt, j: UInt|
+    <T as Idx>::index_is(domain_size, i) && <T as Idx>::index_is(domain_size, j) ==> i == j))]
+#[thrust_macros::ensures(forall(|i: UInt| <T as Idx>::index_is(domain_size, i)
+    ==> 64 * result >= i && 64 * result < i + 64))]
 fn num_words<T: Idx>(domain_size: T) -> usize {
     domain_size.index().div_ceil(WORD_BITS)
 }
@@ -379,8 +379,7 @@ fn word_index_and_mask<T: Idx>(elem: T) -> (usize, Word) {
     (word_index, mask)
 }
 
-#[thrust::trusted]
-#[thrust::callable]
+#[thrust_macros::requires((*words).len() == (domain_size + 63) / 64)]
 fn clear_excess_bits_in_final_word(domain_size: usize, words: &mut [Word]) {
     let num_bits_in_final_word = domain_size % WORD_BITS;
     if num_bits_in_final_word > 0 {
