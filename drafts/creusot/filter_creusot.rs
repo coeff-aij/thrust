@@ -110,21 +110,26 @@ where
     fn next(&mut self) -> Option<I::Item> {
         let s = self;
         I::produces_refl(&s.iter);
-        while let Some(n) = s.iter.next() {
+        loop {
             thrust_macros::invariant!(
                 |s: &mut Self, self: thrust_models::FnParam<&mut Self>|
-                Self::invariant(*s)
+                !s == !self.at_entry()
+                    && Self::invariant(*s)
                     && (*s).1 == (*self.at_entry()).1
                     && exists(|t: Seq<<<I as Iterator>::Item as Model>::Ty>|
                         forall(|i: Int| !(0 <= i && i < t.len())
                             || thrust_macros::post!(Mut::new((*s).1, (*s).1)(t[i]), false))
                         && I::produces((*self.at_entry()).0, t, (*s).0))
             );
-            if (s.func)(&n) {
-                return Some(n);
+            match s.iter.next() {
+                None => return None,
+                Some(n) => {
+                    if (s.func)(&n) {
+                        return Some(n);
+                    }
+                }
             }
         }
-        None
     }
 
 

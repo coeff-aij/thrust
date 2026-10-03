@@ -22,11 +22,11 @@ Creusot's `examples/counter` with its own property moved to the tracked suite:
 ## filter_creusot.rs (+ fail/)
 
 Creusot's `Filter` (`examples/iterators/17_filter.rs` of creusot-rs/creusot 3620de437) in its own
-form, with `Mapping<Int, Int>` as `Array<Int, Int>`. Not yet verifiable: on fptprove 082cd295c both
-sides are `Unsat`. Removing parts locates the failure in `next`'s loop: with `next` trusted the
-`produces_trans` law times out instead, and the loop alone is refuted even when its invariant is only
-`I::invariant` of the inner iterator and `exists t. I::produces(entry, t, iter)`, with no call of the
-predicate (`probes/filter_next_loop_min.rs`), although `skip.rs` keeps an invariant of the same shape.
+form, with `Mapping<Int, Int>` as `Array<Int, Int>`. `next`'s loop invariant restates what Creusot
+carries implicitly: the prophecy of the reborrow (`!s == !self.at_entry()`, as in `skip.rs`) and the
+type invariant. Not yet verifiable: on fptprove 082cd295c the pass side is `unknown` at 70 s and the
+fail twin times out at 300 s. With `next` trusted the `produces_trans` law alone gives no answer at
+120 s; `map.rs` closes the same law with a lemma that names the joined witnesses.
 
 ## skip_take_range.rs (+ fail/)
 
