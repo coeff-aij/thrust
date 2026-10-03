@@ -163,23 +163,39 @@ where
     let mut accum = init;
     let mut g = f;
     I::produces_refl(&it);
+    // The chain so far: the produced items, the accumulators and the closure states.
+    let mut gs = thrust_macros::ghost!(|| -> Seq<<<I as Iterator>::Item as Model>::Ty> { Seq::empty() });
+    let mut gaccs = thrust_macros::ghost!(|accum: B| -> Seq<<B as Model>::Ty> { Seq::singleton(accum) });
+    let mut gfs = thrust_macros::ghost!(|g: F| -> Seq<Closure<F>> { Seq::singleton(g) });
     loop {
         thrust_macros::invariant!(
-            |it: I, accum: B, g: F, iter: thrust_models::FnParam<I>, init: thrust_models::FnParam<B>, f: thrust_models::FnParam<F>|
+            |it: I, accum: B, g: F, gs: thrust_models::Ghost<Seq<<<I as Iterator>::Item as Model>::Ty>>, gaccs: thrust_models::Ghost<Seq<<B as Model>::Ty>>, gfs: thrust_models::Ghost<Seq<Closure<F>>>, iter: thrust_models::FnParam<I>, init: thrust_models::FnParam<B>, f: thrust_models::FnParam<F>|
             I::invariant(it)
                 && forall(|s: Seq<<<I as Iterator>::Item as Model>::Ty>, it1: <I as Model>::Ty, accs: Seq<<B as Model>::Ty>, fs: Seq<Closure<F>>, x: <<I as Iterator>::Item as Model>::Ty, it2: <I as Model>::Ty|
                     !(fold_chain::<I, B, F>(iter.at_entry(), init.at_entry(), f.at_entry(), s, it1, accs, fs) && I::produces(it1, Seq::singleton(x), it2))
                         || thrust_macros::pre!(fs[s.len()](accs[s.len()], x)))
-                && exists(|s: Seq<<<I as Iterator>::Item as Model>::Ty>, accs: Seq<<B as Model>::Ty>, fs: Seq<Closure<F>>|
-                    fold_chain::<I, B, F>(iter.at_entry(), init.at_entry(), f.at_entry(), s, it, accs, fs)
-                        && accs[s.len()] == accum
-                        && fs[s.len()] == g)
+                && fold_chain::<I, B, F>(iter.at_entry(), init.at_entry(), f.at_entry(), gs, it, gaccs, gfs)
+                && gaccs[gs.len()] == accum
+                && gfs[gs.len()] == g
         );
         match it.next() {
-            None => return accum,
+            None => {
+                // Keeps the chain live at the loop header.
+                let _live = (&gs, &gaccs, &gfs);
+                return accum;
+            }
             Some(x) => {
+                let gx = thrust_macros::ghost!(|x: <I as Iterator>::Item| -> <I as Iterator>::Item { x });
                 accum = g(accum, x);
                 fold_chain_push::<I, B, F>();
+                let ngs = thrust_macros::ghost!(|gs: thrust_models::Ghost<Seq<<<I as Iterator>::Item as Model>::Ty>>, gx: thrust_models::Ghost<<I as Iterator>::Item>| -> Seq<<<I as Iterator>::Item as Model>::Ty> { gs.push(gx) });
+                let ngaccs = thrust_macros::ghost!(|gaccs: thrust_models::Ghost<Seq<<B as Model>::Ty>>, accum: B| -> Seq<<B as Model>::Ty> { gaccs.push(accum) });
+                let ngfs = thrust_macros::ghost!(|gfs: thrust_models::Ghost<Seq<Closure<F>>>, g: F| -> Seq<Closure<F>> { gfs.push(g) });
+                // Keeps the previous chain live at the snapshots above.
+                let _live = (&gs, &gaccs, &gfs, &gx);
+                gs = ngs;
+                gaccs = ngaccs;
+                gfs = ngfs;
             }
         }
     }

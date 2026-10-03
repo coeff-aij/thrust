@@ -65,6 +65,16 @@ its own relation through the predicate's in a `hist_inv` clause; it verifies fro
 solver gives no answer at 300 s. `generic/std/find_pre.rs` is the same without `find`'s `ensures`;
 its fail twin drops `find`'s precondition on the predicate.
 
+`generic/std/fold_map.rs`, `fold_mapinv.rs`, `try_fold_map.rs` and `try_fold_mapinv.rs` are std's
+`Iterator::fold` and `Iterator::try_fold` with std's bodies (`try_fold` with `?`, the `Try` type
+fixed to `Option<B>`, needing `THRUST_TRY_SPECS=1`), specified in the forms of Creusot's `Map`
+(`map.rs`) and `MapInv` (`map_ext.rs`, the closure also receiving the ghost history of the items
+before the current one): the closure states and accumulators along the produced items form a chain
+of call postconditions, held in ghost variables across the loop, and the closure may be called at
+every state the chain reaches. Each client derives its bound from the chain; each fail twin claims
+a bound the closure's contract does not give. The pass side of `try_fold_mapinv.rs` is ignored
+while the solver gives no answer at 300 s.
+
 Weaker variants (`weaker/`, still verify):
 
 | file | weaker than | how |
