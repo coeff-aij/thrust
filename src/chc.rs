@@ -3034,6 +3034,102 @@ impl System {
         walk.heads
     }
 
+    /// The forall predicates of what a clause concludes: its head, and the part of its body
+    /// that occurs negatively (`φ ∧ ¬ψ`, the clause `φ ⇒ ψ`, which is how an ensures is
+    /// checked). A user-defined predicate there contributes the forall predicates of its body.
+    fn conclusion_forall_preds(
+        &self,
+        clause: &Clause,
+        udp_deps: &HashMap<&UserDefinedPred, &HashSet<ForallPred>>,
+    ) -> HashSet<ForallPred> {
+        fn walk(
+            formula: &Formula,
+            positive: bool,
+            udp_deps: &HashMap<&UserDefinedPred, &HashSet<ForallPred>>,
+            preds: &mut HashSet<ForallPred>,
+        ) {
+            match formula {
+                Formula::Atom(atom) if !positive => atom_preds(atom, udp_deps, preds),
+                Formula::Atom(_) => {}
+                Formula::Not(f) => walk(f, !positive, udp_deps, preds),
+                Formula::And(fs) | Formula::Or(fs) => {
+                    fs.iter().for_each(|f| walk(f, positive, udp_deps, preds))
+                }
+                Formula::Implies(lhs, rhs) => {
+                    walk(lhs, !positive, udp_deps, preds);
+                    walk(rhs, positive, udp_deps, preds);
+                }
+                Formula::Exists(_, f) | Formula::Forall(_, f) => walk(f, positive, udp_deps, preds),
+            }
+        }
+        fn atom_preds(
+            atom: &Atom<TermVarIdx>,
+            udp_deps: &HashMap<&UserDefinedPred, &HashSet<ForallPred>>,
+            preds: &mut HashSet<ForallPred>,
+        ) {
+            if let Pred::UserDefined(p) = &atom.pred {
+                preds.extend(
+                    udp_deps
+                        .get(p)
+                        .into_iter()
+                        .flat_map(|deps| deps.iter().cloned()),
+                );
+            } else if let Ok(p) = atom.pred.clone().try_into() {
+                preds.insert(p);
+            }
+        }
+        let mut preds = HashSet::new();
+        atom_preds(&clause.head, udp_deps, &mut preds);
+        walk(&clause.body.formula, true, udp_deps, &mut preds);
+        self.with_law_dependencies(preds)
+    }
+
+    /// The forall predicates each predicate variable needs to imply what follows it: an
+    /// unknown in the body of a clause must be strong enough for the clause's conclusion, and
+    /// so for the conclusions of the clauses its successors (the predicate variables the clause
+    /// defines) occur in, transitively. Without these, a loop head could not name a forall
+    /// predicate that only the enclosing function's ensures mentions.
+    fn compute_conclusion_dependency(
+        &self,
+        bodies: &HashMap<&UserDefinedPred, &Formula>,
+    ) -> HashMap<PredVarId, BTreeSet<ForallPred>> {
+        let udp_deps: HashMap<&UserDefinedPred, &HashSet<ForallPred>> = self
+            .user_defined_pred_defs
+            .iter()
+            .map(|def| (&def.symbol, &def.dependencies))
+            .collect();
+        let mut direct: HashMap<PredVarId, BTreeSet<ForallPred>> = HashMap::new();
+        let mut successors: HashMap<PredVarId, HashSet<PredVarId>> = HashMap::new();
+        for clause in &self.clauses {
+            let heads = Self::head_pred_vars(clause, bodies);
+            let conclusion = self.conclusion_forall_preds(clause, &udp_deps);
+            let sources = clause.body.iter_atoms().filter_map(|atom| match atom.pred {
+                Pred::Var(id) if !heads.contains(&id) => Some(id),
+                _ => None,
+            });
+            for source in sources {
+                direct
+                    .entry(source)
+                    .or_default()
+                    .extend(conclusion.iter().cloned());
+                successors
+                    .entry(source)
+                    .or_default()
+                    .extend(heads.iter().copied());
+            }
+        }
+        compute_transitive_closure(&successors)
+            .into_iter()
+            .map(|(pred, reachable)| {
+                let mut deps = direct.get(&pred).cloned().unwrap_or_default();
+                for r in &reachable {
+                    deps.extend(direct.get(r).into_iter().flatten().cloned());
+                }
+                (pred, deps)
+            })
+            .collect()
+    }
+
     fn compute_exists_dependency(clause: &Clause) -> HashSet<ExistsDep> {
         clause
             .body
@@ -3151,6 +3247,14 @@ impl System {
             }
 
             propagated_forall_deps.insert(pred, deps);
+        }
+
+        // Only the unknowns some clause defines get a dependency list; one that only occurs in
+        // bodies stays undeclared as before.
+        for (pred, deps) in self.compute_conclusion_dependency(&bodies) {
+            if let Some(propagated) = propagated_forall_deps.get_mut(&pred) {
+                propagated.extend(deps);
+            }
         }
 
         propagated_forall_deps
@@ -3358,6 +3462,39 @@ mod tests {
         let z3 = system.smtlib2(Config::default().capabilities()).to_string();
         assert_eq!(z3.matches("(declare-fun p0 (Int) Bool)").count(), 1);
         assert_eq!(z3.matches("declare-dep-exists-fun").count(), 0);
+    }
+
+    /// `p` is defined without `q`, but has to imply `q` where a clause checks it (`p(x) ∧ ¬q(x)`,
+    /// an `ensures` at a return), so its solution may need to name `q`.
+    #[test]
+    fn an_unknown_depends_on_the_forall_preds_of_what_follows_it() {
+        let mut system = System::default();
+        let q = ForallPred::new("q".into(), vec![], vec![Sort::int()]);
+        system.register_forall_pred(q.clone());
+        let p = system.new_pred_var(vec![Sort::int()], DebugInfo::default());
+        let x = || Term::var(0usize.into());
+        system.push_clause(Clause {
+            origin: test_origin(0usize.into(), &Sort::int()),
+            vars: [Sort::int()].into_iter().collect(),
+            head: Atom::new(Pred::Var(p), vec![x()]),
+            body: Atom::new(Pred::Known(KnownPred::EQUAL), vec![x(), Term::int(0)]).into(),
+            debug_info: DebugInfo::default(),
+        });
+        system.push_clause(Clause {
+            origin: test_origin(0usize.into(), &Sort::int()),
+            vars: [Sort::int()].into_iter().collect(),
+            head: Atom::bottom(),
+            body: Body {
+                atoms: vec![Atom::new(Pred::Var(p), vec![x()])],
+                formula: Formula::Not(Box::new(Formula::Atom(Atom::new(
+                    q.clone().into(),
+                    vec![x()],
+                )))),
+            },
+            debug_info: DebugInfo::default(),
+        });
+
+        assert!(system.compute_dependency()[&p].contains(&q));
     }
 
     #[test]
