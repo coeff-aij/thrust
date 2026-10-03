@@ -280,7 +280,6 @@ impl Size {
     }
 
     #[inline]
-    #[thrust::trusted]
     #[thrust::callable]
     pub fn align_to(self, align: Align) -> Size {
         let mask = align.bytes() - 1;
@@ -307,7 +306,6 @@ impl Size {
     }
 
     #[inline]
-    #[thrust::trusted]
     #[thrust_macros::requires((*self).raw * 8 <= 128)]
     pub fn unsigned_int_max(&self) -> u128 {
         u128::MAX >> (128 - self.bits())
@@ -360,7 +358,6 @@ impl Align {
     pub const MAX: Align = Align { pow2: 29 };
 
     #[inline]
-    #[thrust::trusted]
     #[thrust_macros::ensures(result >= 1)]
     pub const fn bytes(self) -> u64 {
         1 << self.pow2

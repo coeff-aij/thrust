@@ -6,7 +6,7 @@
 // rustc_index::bit_set and rustc_index::idx, adapted).
 
 use thrust_models::{exists, forall};
-use thrust_models::model::{UInt, Seq};
+use thrust_models::model::{BitVec, UInt, Seq};
 
 use std::fmt::Debug;
 use std::hash::Hash;
@@ -34,22 +34,24 @@ pub struct DenseBitSet<T> {
 
 #[thrust_macros::context]
 impl<T: Idx> DenseBitSet<T> {
-    /// `i` is a member of the set. The words are a `Vec<u64>` and bit tests
-    /// have no model, so membership is read off the word array as "the word
-    /// stored at index `i` is non-zero"; every body below is trusted, so this
-    /// is just a fixed abstraction function for the set specs.
+    /// `i` is a member of the set: bit `i % 64` of word `i / 64`, rustc's layout.
     #[thrust_macros::predicate]
     fn mem(self, i: usize) -> bool {
-        // self.words[i] != 0
-        self.1[i] != 0
+        (BitVec::<64, false>::from_int(self.1[i / 64]) >> BitVec::from_int(i % 64))
+            & BitVec::from_int(1)
+            == BitVec::from_int(1)
     }
 
-    /// `dist` is `self` with `i` inserted: same domain, and the word sequence
-    /// updated at `i` only. A formula has no `Int` literal to pass to
-    /// `Seq::store`, so `one` is bound to 1 by a guarded `forall`.
+    /// `dist` is `self` with `i` inserted: same domain, and bit `i % 64` of word `i / 64` set.
     #[thrust_macros::predicate]
     fn inserted(self, i: usize, dist: Self) -> bool {
-        dist.0 == self.0 && forall(|one: UInt| !(one == 1) || dist.1 == self.1.store(i, one))
+        dist.0 == self.0
+            && forall(|w: UInt| {
+                !(w == (BitVec::<64, false>::from_int(self.1[i / 64])
+                    | (BitVec::from_int(1) << BitVec::from_int(i % 64)))
+                .to_int())
+                    || dist.1 == self.1.store(i / 64, w)
+            })
     }
 
     /// `forall i: !Self::mem(self, i)` over the positions the word sequence
@@ -62,23 +64,18 @@ impl<T: Idx> DenseBitSet<T> {
         forall(|k: UInt| !(0 <= k && k < self.1.len()) || self.1[k] == 0)
     }
 
-    /// The abstraction reads the word sequence as one entry per element, so
-    /// it holds `domain_size` entries. Under native sequences `seq.nth` and
-    /// `seq.store` are unspecified or no-ops outside `0..seq.len`, so without
-    /// this length the entries `mem` and `inserted` talk about need not
-    /// exist: `new_empty` fixed no length, so a length-0 sequence satisfied
-    /// every contract and `assert!(set.contains(3))` after `insert(3)` was
-    /// refutable.
+    /// The word sequence holds `num_words(domain_size)` words, so every word `mem` and
+    /// `inserted` read exists.
     #[thrust_macros::predicate]
-    fn one_entry_per_elem(self) -> bool {
-        self.1.len() == self.0
+    fn words_cover_domain(self) -> bool {
+        self.1.len() == (self.0 + 63) / 64
     }
 
     #[inline]
     #[thrust::trusted]
     #[thrust_macros::ensures(result.0 == domain_size)]
     #[thrust_macros::ensures(Self::no_mem(result))]
-    #[thrust_macros::ensures(Self::one_entry_per_elem(result))]
+    #[thrust_macros::ensures(Self::words_cover_domain(result))]
     #[thrust_macros::ensures(result.3 == 0)]
     pub fn new_empty(domain_size: usize) -> DenseBitSet<T> {
         let num_words = num_words(domain_size);
@@ -103,6 +100,7 @@ impl<T: Idx> DenseBitSet<T> {
     #[inline]
     #[thrust::trusted]
     #[thrust_macros::requires(forall(|i: UInt| <T as Idx>::index_is(elem, i) ==> i < (*self).0))]
+    #[thrust_macros::requires(Self::words_cover_domain(*self))]
     #[thrust_macros::ensures(forall(|i: UInt| <T as Idx>::index_is(elem, i) && (result == true) ==> Self::mem(*self, i)))]
     #[thrust_macros::ensures(forall(|i: UInt| <T as Idx>::index_is(elem, i) && Self::mem(*self, i) ==> (result == true)))]
     pub fn contains(&self, elem: T) -> bool {
@@ -115,6 +113,7 @@ impl<T: Idx> DenseBitSet<T> {
     #[thrust::trusted]
     #[thrust_macros::requires(forall(|i: UInt| <T as Idx>::index_is(elem, i) ==> i < (*self).0))]
     #[thrust_macros::ensures((!self).0 == (*self).0)]
+    #[thrust_macros::ensures(Self::words_cover_domain(*self) ==> Self::words_cover_domain(!self))]
     // `Self::inserted` gives, for `i` the index of `elem`:
     //   `Self::mem(!self, i)`, and
     //   `forall j != i: Self::mem(!self, j) <==> Self::mem(*self, j)`.
@@ -143,7 +142,7 @@ impl<T: Idx> DenseBitSet<T> {
 
     #[thrust::trusted]
     #[thrust_macros::ensures((!self).0 == (*self).0)]
-    #[thrust_macros::ensures(Self::one_entry_per_elem(*self) ==> Self::one_entry_per_elem(!self))]
+    #[thrust_macros::ensures(Self::words_cover_domain(*self) ==> Self::words_cover_domain(!self))]
     #[thrust_macros::ensures(forall(|i: UInt| i < (*self).0 ==> Self::mem(!self, i)))]
     #[thrust_macros::ensures((!self).3 == (*self).0)]
     pub fn insert_all(&mut self) {
@@ -365,8 +364,12 @@ fn num_words<T: Idx>(domain_size: T) -> usize {
 }
 
 #[inline]
+// Trusted: the body verifies against this contract only with `index_is` functional, and then
+// the solver gives no answer at 120 s.
 #[thrust::trusted]
-#[thrust::callable]
+#[thrust_macros::ensures(forall(|i: UInt| <T as Idx>::index_is(elem, i)
+    ==> result.0 == i / 64
+        && result.1 == (BitVec::<64, false>::from_int(1) << BitVec::from_int(i % 64)).to_int()))]
 fn word_index_and_mask<T: Idx>(elem: T) -> (usize, Word) {
     let elem = elem.index();
     let word_index = elem / WORD_BITS;
