@@ -101,7 +101,6 @@ impl TargetDataLayout {
     }
 
     #[inline]
-    #[thrust::trusted]
     #[thrust_macros::requires(((*self).default_address_space_pointer_spec.pointer_size.raw == 2
         || (*self).default_address_space_pointer_spec.pointer_size.raw == 4
         || (*self).default_address_space_pointer_spec.pointer_size.raw == 8))]
@@ -111,7 +110,9 @@ impl TargetDataLayout {
             16 => 1 << 15,
             32 => 1 << 31,
             64 => 1 << 61,
-            bits => panic!("obj_size_bound: unknown pointer bit size {bits}"),
+            // Rewrite (rewrites.md R6): the message is dropped; a message makes
+            // `fmt::Arguments`, which Thrust cannot type in analysed code.
+            _ => panic!(),
         }
     }
 
