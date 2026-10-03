@@ -518,6 +518,23 @@ impl<'tcx> TypeBuilder<'tcx> {
         }
     }
 
+    /// Builds the type of `thrust_models::model::BitVec<WIDTH, SIGNED>` from its generic `args`.
+    fn build_bit_vec(&self, args: mir_ty::GenericArgsRef<'tcx>) -> rty::BitVecType {
+        let width = args
+            .const_at(0)
+            .try_to_target_usize(self.tcx)
+            .expect("BitVec width must be a known constant");
+        let signed = args
+            .const_at(1)
+            .try_to_value()
+            .and_then(|value| value.try_to_bool())
+            .expect("BitVec signedness must be a known constant");
+        rty::BitVecType {
+            width: width.try_into().unwrap(),
+            signed,
+        }
+    }
+
     // TODO: consolidate two impls
     fn model_adt(
         &self,
@@ -529,6 +546,10 @@ impl<'tcx> TypeBuilder<'tcx> {
         }
         if Some(adt.did()) == self.def_ids.uint_model() {
             return Some(rty::Type::uint());
+        }
+
+        if Some(adt.did()) == self.def_ids.bit_vec_model() {
+            return Some(rty::Type::BitVec(self.build_bit_vec(args)));
         }
 
         if Some(adt.did()) == self.def_ids.mut_model() {
@@ -987,6 +1008,10 @@ where
         }
         if Some(adt.did()) == self.inner.def_ids.uint_model() {
             return Some(rty::Type::uint());
+        }
+
+        if Some(adt.did()) == self.inner.def_ids.bit_vec_model() {
+            return Some(rty::Type::BitVec(self.inner.build_bit_vec(args)));
         }
 
         if Some(adt.did()) == self.inner.def_ids.mut_model() {

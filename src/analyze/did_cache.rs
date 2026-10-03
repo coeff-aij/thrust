@@ -19,6 +19,7 @@ struct DefIds {
     model_ty: OnceCell<Option<DefId>>,
     int_model: OnceCell<Option<DefId>>,
     uint_model: OnceCell<Option<DefId>>,
+    bit_vec_model: OnceCell<Option<DefId>>,
     mut_model: OnceCell<Option<DefId>>,
     box_model: OnceCell<Option<DefId>>,
     array_model: OnceCell<Option<DefId>>,
@@ -28,6 +29,8 @@ struct DefIds {
     mut_model_new: OnceCell<Option<DefId>>,
     box_model_new: OnceCell<Option<DefId>>,
     array_model_store: OnceCell<Option<DefId>>,
+    bit_vec_from_int: OnceCell<Option<DefId>>,
+    bit_vec_to_int: OnceCell<Option<DefId>>,
 
     seq_model: OnceCell<Option<DefId>>,
     seq_empty: OnceCell<Option<DefId>>,
@@ -199,6 +202,27 @@ impl<'tcx> DefIdCache<'tcx> {
             .def_ids
             .uint_model
             .get_or_init(|| self.annotated_def(&crate::analyze::annot::uint_model_path()))
+    }
+
+    pub fn bit_vec_model(&self) -> Option<DefId> {
+        *self
+            .def_ids
+            .bit_vec_model
+            .get_or_init(|| self.annotated_def(&crate::analyze::annot::bit_vec_model_path()))
+    }
+
+    pub fn bit_vec_from_int(&self) -> Option<DefId> {
+        *self
+            .def_ids
+            .bit_vec_from_int
+            .get_or_init(|| self.annotated_def(&crate::analyze::annot::bit_vec_from_int_path()))
+    }
+
+    pub fn bit_vec_to_int(&self) -> Option<DefId> {
+        *self
+            .def_ids
+            .bit_vec_to_int
+            .get_or_init(|| self.annotated_def(&crate::analyze::annot::bit_vec_to_int_path()))
     }
 
     pub fn mut_model(&self) -> Option<DefId> {

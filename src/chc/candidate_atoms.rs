@@ -374,6 +374,10 @@ fn map_term(term: Term, f: &mut dyn FnMut(Term) -> Term) -> Term {
             args.into_iter().map(|t| map_term(t, f)).collect(),
         ),
         Term::DatatypeDiscr(sym, t) => Term::DatatypeDiscr(sym, sub(t, f)),
+        Term::IntToBitVec { width, term } => Term::IntToBitVec {
+            width,
+            term: sub(term, f),
+        },
         Term::UserDefinedFn(sym, sort, args) => Term::UserDefinedFn(
             sym,
             sort,
@@ -654,6 +658,10 @@ impl Definitions {
             Term::DatatypeDiscr(sym, a) => {
                 Term::DatatypeDiscr(sym.clone(), Box::new(children(a, budget)))
             }
+            Term::IntToBitVec { width, term } => Term::IntToBitVec {
+                width: *width,
+                term: Box::new(children(term, budget)),
+            },
             Term::App(fun, args) => {
                 Term::App(*fun, args.iter().map(|a| children(a, budget)).collect())
             }
