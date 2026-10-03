@@ -19,6 +19,15 @@ does not extend `produced`). The other fail twins stay here:
 Creusot's `examples/counter` with its own property moved to the tracked suite:
 `tests/ui/pass/creusot/counter_creusot.rs` and its fail twin `tests/ui/fail/creusot/counter_creusot.rs`.
 
+## filter_creusot.rs (+ fail/)
+
+Creusot's `Filter` (`examples/iterators/17_filter.rs` of creusot-rs/creusot 3620de437) in its own
+form, with `Mapping<Int, Int>` as `Array<Int, Int>`. Not yet verifiable: on fptprove 082cd295c both
+sides are `Unsat`. Removing parts locates the failure in `next`'s loop: with `next` trusted the
+`produces_trans` law times out instead, and the loop alone is refuted even when its invariant is only
+`I::invariant` of the inner iterator and `exists t. I::produces(entry, t, iter)`, with no call of the
+predicate (`probes/filter_next_loop_min.rs`), although `skip.rs` keeps an invariant of the same shape.
+
 ## skip_take_range.rs (+ fail/)
 
 `Skip<Take<Range>>`, a concrete instantiation of `skip_take.rs`. Stage S2: the nested generic-impl
