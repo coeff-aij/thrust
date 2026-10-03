@@ -24,9 +24,12 @@ Creusot's `examples/counter` with its own property moved to the tracked suite:
 Creusot's `Filter` (`examples/iterators/17_filter.rs` of creusot-rs/creusot 3620de437) in its own
 form, with `Mapping<Int, Int>` as `Array<Int, Int>`. `next`'s loop invariant restates what Creusot
 carries implicitly: the prophecy of the reborrow (`!s == !self.at_entry()`, as in `skip.rs`) and the
-type invariant. Not yet verifiable: on fptprove 082cd295c the pass side is `unknown` at 70 s and the
-fail twin times out at 300 s. With `next` trusted the `produces_trans` law alone gives no answer at
-120 s; `map.rs` closes the same law with a lemma that names the joined witnesses.
+type invariant. `produces_trans` calls the lemma `produces_trans_at`, which names the joined
+witness: the inner sequences concatenated and the index maps joined by
+`Array::from_fn(|i| if i < ab.len() { f1[i] } else { f2[i - ab.len()] + s1.len() })`, Creusot's
+`Mapping` built by a closure. Not yet verifiable on fptprove 082cd295c: both sides time out. The
+lemma verifies alone in 3 s (with `next` and the law trusted); with `next` and the lemma trusted,
+the law (the joined witness put into `produces`' `exists`) times out.
 
 ## fold_map.rs
 

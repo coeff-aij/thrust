@@ -29,6 +29,7 @@ struct DefIds {
     mut_model_new: OnceCell<Option<DefId>>,
     box_model_new: OnceCell<Option<DefId>>,
     array_model_store: OnceCell<Option<DefId>>,
+    array_model_from_fn: OnceCell<Option<DefId>>,
     bit_vec_from_int: OnceCell<Option<DefId>>,
     bit_vec_to_int: OnceCell<Option<DefId>>,
 
@@ -272,6 +273,13 @@ impl<'tcx> DefIdCache<'tcx> {
             .def_ids
             .box_model_new
             .get_or_init(|| self.annotated_def(&crate::analyze::annot::box_model_new_path()))
+    }
+
+    pub fn array_model_from_fn(&self) -> Option<DefId> {
+        *self
+            .def_ids
+            .array_model_from_fn
+            .get_or_init(|| self.annotated_def(&crate::analyze::annot::array_model_from_fn_path()))
     }
 
     pub fn array_model_store(&self) -> Option<DefId> {

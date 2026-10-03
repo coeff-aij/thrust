@@ -657,6 +657,9 @@ pub enum Term<V = TermVarIdx> {
     },
     /// Used in [`Formula`] to represent quantified variables appearing in annotations.
     UserQuantifiedVar(Sort, UserQuantifiedVarId),
+    /// The array whose element at each index, bound to the variable (of the given index sort),
+    /// is the body (SMT-LIB's `lambda`).
+    ArrayLambda(UserQuantifiedVarId, Sort, Box<Term<V>>),
 }
 
 impl<'a, D, V> Pretty<'a, D, termcolor::ColorSpec> for &Term<V>
@@ -684,6 +687,12 @@ where
                 allocator.text("*").append(t.pretty(allocator))
             }
             Term::MutFinal(t) => allocator.text("°").append(t.pretty(allocator)),
+            Term::ArrayLambda(v, _, t) => allocator
+                .text("λ")
+                .append(allocator.as_string(v))
+                .append(allocator.text(". "))
+                .append(t.pretty(allocator))
+                .parens(),
             Term::App(f, args) if f.is_infix() => args[0]
                 .pretty_atom(allocator)
                 .append(allocator.line())
@@ -776,6 +785,7 @@ impl<V> Term<V> {
             Term::BoxCurrent(t) => Term::BoxCurrent(Box::new(t.subst_var(f))),
             Term::MutCurrent(t) => Term::MutCurrent(Box::new(t.subst_var(f))),
             Term::MutFinal(t) => Term::MutFinal(Box::new(t.subst_var(f))),
+            Term::ArrayLambda(v, s, t) => Term::ArrayLambda(v, s, Box::new(t.subst_var(f))),
             Term::App(fun, args) => {
                 Term::App(fun, args.into_iter().map(|t| t.subst_var(&mut f)).collect())
             }
@@ -832,6 +842,7 @@ impl<V> Term<V> {
             Term::BoxCurrent(t) => t.sort(var_sort).deref(),
             Term::MutCurrent(t) => t.sort(var_sort).deref(),
             Term::MutFinal(t) => t.sort(var_sort).deref(),
+            Term::ArrayLambda(_, s, t) => Sort::array(s.clone(), t.sort(var_sort)),
             Term::App(fun, args) => {
                 // TODO: remove this
                 let mut var_sort: Box<dyn FnMut(&V) -> Sort> = Box::new(var_sort);
@@ -868,6 +879,7 @@ impl<V> Term<V> {
             Term::BoxCurrent(t) => t.fv_impl(),
             Term::MutCurrent(t) => t.fv_impl(),
             Term::MutFinal(t) => t.fv_impl(),
+            Term::ArrayLambda(_, _, t) => t.fv_impl(),
             Term::App(_, args) => Box::new(args.iter().flat_map(|t| t.fv_impl())),
             Term::SeqEmpty(_) => Box::new(std::iter::empty()),
             Term::Tuple(ts) => Box::new(ts.iter().flat_map(|t| t.fv_impl())),
@@ -890,6 +902,7 @@ impl<V> Term<V> {
             | Term::MutFinal(t)
             | Term::TupleProj(t, _)
             | Term::DatatypeDiscr(_, t)
+            | Term::ArrayLambda(_, _, t)
             | Term::IntToBitVec { term: t, .. } => t.user_defined_fns(),
             Term::Mut(t1, t2) => t1
                 .user_defined_fns()
@@ -3192,6 +3205,10 @@ fn collect_forall_defaults(term: &Term<TermVarIdx>, used: &mut HashSet<ForallSor
             used.insert(*idx);
         }
         Term::Box(t) | Term::BoxCurrent(t) | Term::MutCurrent(t) | Term::MutFinal(t) => {
+            collect_forall_defaults(t, used)
+        }
+        Term::ArrayLambda(_, s, t) => {
+            collect_forall_defaults(&Term::default_for(s), used);
             collect_forall_defaults(t, used)
         }
         Term::Mut(t1, t2) => {

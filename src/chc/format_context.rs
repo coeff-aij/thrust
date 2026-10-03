@@ -83,6 +83,10 @@ fn term_sorts(
             term_sorts(var_sorts, t, sorts)
         }
         chc::Term::UserQuantifiedVar(_, _) => {}
+        chc::Term::ArrayLambda(_, s, t) => {
+            sorts.insert(s.clone());
+            term_sorts(var_sorts, t, sorts);
+        }
     }
 }
 

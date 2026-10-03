@@ -2,7 +2,7 @@
 //@compile-flags: -C debug-assertions=off -A unused-variables -A unused_parens
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300
 use thrust_models::model::{Array, Closure, Int, Mut, Seq};
-use thrust_models::{exists, forall, Model};
+use thrust_models::{exists, forall, Ghost, Model};
 
 // Creusot's `Filter` (`examples/iterators/17_filter.rs` of creusot-rs/creusot 3620de437) in its
 // own form: `produces` relates the visited items to the inner iterator's sequence `s` through a
@@ -90,6 +90,47 @@ where
         forall(|c: Closure<F>, d: Closure<F>, i: <<I as Iterator>::Item as Model>::Ty|
             !(thrust_macros::post!(Mut::new(c, d)(i), true) && thrust_macros::post!(Mut::new(c, d)(i), false)))
     }
+
+    // Creusot's `Invariant` of `Filter`, the guard of `produces`.
+    #[thrust_macros::predicate]
+    fn func_invariant() -> bool {
+        Self::no_precondition() && Self::immutable() && Self::precise()
+    }
+
+    // `produces` with the inner sequence `s` and the index map `f` given: the body of Creusot's
+    // `exists<s, f>`.
+    #[thrust_macros::predicate]
+    fn produces_at(s0: Self, visited: Seq<<<I as Iterator>::Item as Model>::Ty>, o: Self, s: Seq<<<I as Iterator>::Item as Model>::Ty>, f: Array<Int, Int>) -> bool {
+        I::produces(s0.0, s, o.0)
+            && forall(|i: Int, j: Int| !(0 <= i && i <= j && j < visited.len())
+                || (0 <= f[i] && f[i] <= f[j] && f[j] < s.len()))
+            && forall(|i: Int| !(0 <= i && i < visited.len()) || visited[i] == s[f[i]])
+            && forall(|i: Int| !(0 <= i && i < s.len())
+                || ((!exists(|j: Int| 0 <= j && j < visited.len() && f[j] == i)
+                        || thrust_macros::post!(Mut::new(s0.1, s0.1)(s[i]), true))
+                    && (!thrust_macros::post!(Mut::new(s0.1, s0.1)(s[i]), true)
+                        || exists(|j: Int| 0 <= j && j < visited.len() && f[j] == i))))
+    }
+
+    // `produces_at` of the joined witnesses: the inner sequences concatenated and the index maps
+    // joined, the second shifted past the first's inner sequence (Creusot's `Mapping` built by a
+    // closure, here `Array::from_fn`).
+    #[thrust_macros::ensures(forall(|s1: Seq<<<I as Iterator>::Item as Model>::Ty>| forall(|s2: Seq<<<I as Iterator>::Item as Model>::Ty>|
+        forall(|f1: Array<Int, Int>| forall(|f2: Array<Int, Int>|
+        !(Self::func_invariant()
+            && thrust_macros::hist_inv!(a.1, b.1)
+            && Self::produces_at(a, ab, b, s1, f1)
+            && Self::produces_at(b, bc, c, s2, f2))
+            || Self::produces_at(a, ab.concat(bc), c, s1.concat(s2),
+                Array::<Int, Int>::from_fn(|i: Int| if i < ab.len() { f1[i] } else { f2[i - ab.len()] + s1.len() })))))))]
+    fn produces_trans_at(
+        a: Ghost<Self>,
+        ab: Ghost<Seq<<<I as Iterator>::Item as Model>::Ty>>,
+        b: Ghost<Self>,
+        bc: Ghost<Seq<<<I as Iterator>::Item as Model>::Ty>>,
+        c: Ghost<Self>,
+    ) {
+    }
 }
 
 #[thrust_macros::context]
@@ -155,18 +196,20 @@ where
     // predicate, not the inner iterator's invariant).
     #[thrust_macros::predicate]
     fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, succ: Self) -> bool {
-        !(Self::no_precondition() && Self::immutable() && Self::precise())
+        !Self::func_invariant()
             || (thrust_macros::hist_inv!(self.1, succ.1)
-                && exists(|s: Seq<<<I as Iterator>::Item as Model>::Ty>| exists(|f: Array<Int, Int>|
-                    I::produces(self.0, s, succ.0)
-                        && forall(|i: Int, j: Int| !(0 <= i && i <= j && j < visited.len())
-                            || (0 <= f[i] && f[i] <= f[j] && f[j] < s.len()))
-                        && forall(|i: Int| !(0 <= i && i < visited.len()) || visited[i] == s[f[i]])
-                        && forall(|i: Int| !(0 <= i && i < s.len())
-                            || ((!exists(|j: Int| 0 <= j && j < visited.len() && f[j] == i)
-                                    || thrust_macros::post!(Mut::new(self.1, self.1)(s[i]), true))
-                                && (!thrust_macros::post!(Mut::new(self.1, self.1)(s[i]), true)
-                                    || exists(|j: Int| 0 <= j && j < visited.len() && f[j] == i)))))))
+                && exists(|s: Seq<<<I as Iterator>::Item as Model>::Ty>| exists(|f: Array<Int, Int>| Self::produces_at(self, visited, succ, s, f))))
+    }
+
+    fn produces_trans(a: &Self, ab: Seq<<Self::Item as Model>::Ty>, b: &Self, bc: Seq<<Self::Item as Model>::Ty>, c: &Self) {
+        let ga = thrust_macros::ghost!(|a: &Self| -> Self { *a });
+        let gb = thrust_macros::ghost!(|b: &Self| -> Self { *b });
+        let gc = thrust_macros::ghost!(|c: &Self| -> Self { *c });
+        let gab = thrust_macros::ghost!(|ab: Seq<<<I as Iterator>::Item as Model>::Ty>| -> Seq<<<I as Iterator>::Item as Model>::Ty> { ab });
+        let gbc = thrust_macros::ghost!(|bc: Seq<<<I as Iterator>::Item as Model>::Ty>| -> Seq<<<I as Iterator>::Item as Model>::Ty> { bc });
+        Self::produces_trans_at(ga, gab, gb, gbc, gc);
+        // Keeps the parameters live at the snapshots above.
+        let _live = (a, &ab, b, &bc, c);
     }
 }
 

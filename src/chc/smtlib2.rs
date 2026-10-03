@@ -259,6 +259,16 @@ impl<'ctx, 'a> std::fmt::Display for Term<'ctx, 'a> {
                 )
             }
             chc::Term::UserQuantifiedVar(_, var) => write!(f, "{}", var),
+            chc::Term::ArrayLambda(var, index, body) => {
+                let index_sort = self.ctx.fmt_sort(index);
+                write!(
+                    f,
+                    "(lambda (({} {})) {})",
+                    var,
+                    index_sort,
+                    Term::new(self.ctx, self.var_sorts, body)
+                )
+            }
         }
     }
 }

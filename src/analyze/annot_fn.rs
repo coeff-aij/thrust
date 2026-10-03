@@ -930,6 +930,38 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         (vars, body_formula)
     }
 
+    /// The body of a one-parameter closure as a term, with the parameter bound to a fresh
+    /// quantified variable (the bound variable of `Array::from_fn`'s `lambda`).
+    fn to_term_with_quantified_var(
+        &self,
+        closure: &rustc_hir::Body<'tcx>,
+    ) -> (
+        chc::UserQuantifiedVarId,
+        chc::Sort,
+        chc::Term<rty::FunctionParamIdx>,
+    ) {
+        let [param] = closure.params else {
+            panic!("Array::from_fn closure must take exactly 1 parameter");
+        };
+        let rustc_hir::PatKind::Binding(_, hir_id, ident, None) = param.pat.kind else {
+            panic!(
+                "Array::from_fn closure parameter must be a simple binding: {:?}",
+                param.pat
+            );
+        };
+        let param_ty = self.pat_ty(param.pat);
+        let sort = self.type_builder.build(param_ty).to_sort();
+        let var = self
+            .analyzer
+            .generate_user_quantified_var(format!("{ident} at {:?}", param.pat.span));
+        let mut inner_translator = self.clone();
+        inner_translator
+            .env
+            .insert(hir_id, chc::Term::UserQuantifiedVar(sort.clone(), var));
+        let body = inner_translator.to_term(closure.value);
+        (var, sort, body)
+    }
+
     /// A `match` whose arm bodies are formulas, `matches!` among them: the disjunction, over
     /// the arms, of an arm's body under the condition that it is the first arm to match.
     fn match_formula(
@@ -1166,6 +1198,20 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 let lhs = self.to_formula_or_term(lhs);
                 let rhs = self.to_formula_or_term(rhs);
                 FormulaOrTerm::BinOp(lhs.into_term().unwrap(), binop, rhs.into_term().unwrap())
+            }
+            ExprKind::If(cond, then_expr, Some(else_expr)) => {
+                // A conditional whose branches are terms: `ite` of the condition as a Boolean term.
+                let cond = match cond.kind {
+                    ExprKind::DropTemps(inner) => inner,
+                    _ => cond,
+                };
+                let cond_term = self
+                    .to_formula_or_term(cond)
+                    .into_term()
+                    .expect("the condition of an `if` in a term must be a Boolean term");
+                let then_term = self.to_term(then_expr);
+                let else_term = self.to_term(else_expr);
+                FormulaOrTerm::Term(chc::Term::ite(cond_term, then_term, else_term))
             }
             ExprKind::Unary(op, operand) => match op {
                 rustc_hir::UnOp::Neg => {
@@ -1438,6 +1484,20 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                             return FormulaOrTerm::Formula(chc::Formula::forall(
                                 vars,
                                 body_formula,
+                            ));
+                        }
+                        if Some(def_id) == self.def_ids.array_model_from_fn() {
+                            assert_eq!(args.len(), 1, "Array::from_fn takes exactly 1 argument");
+                            let ExprKind::Closure(closure) = args[0].kind else {
+                                panic!("Array::from_fn argument must be a closure");
+                            };
+                            let closure_body = self.tcx.hir_body(closure.body);
+                            let (var, index_sort, body) =
+                                self.to_term_with_quantified_var(closure_body);
+                            return FormulaOrTerm::Term(chc::Term::ArrayLambda(
+                                var,
+                                index_sort,
+                                Box::new(body),
                             ));
                         }
                         if Some(def_id) == self.def_ids.fn_param_at_entry() {

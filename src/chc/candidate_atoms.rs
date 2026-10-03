@@ -365,6 +365,7 @@ fn map_term(term: Term, f: &mut dyn FnMut(Term) -> Term) -> Term {
         Term::BoxCurrent(t) => Term::BoxCurrent(sub(t, f)),
         Term::MutCurrent(t) => Term::MutCurrent(sub(t, f)),
         Term::MutFinal(t) => Term::MutFinal(sub(t, f)),
+        Term::ArrayLambda(v, s, t) => Term::ArrayLambda(v, s, sub(t, f)),
         Term::App(fun, args) => Term::App(fun, args.into_iter().map(|t| map_term(t, f)).collect()),
         Term::Tuple(ts) => Term::Tuple(ts.into_iter().map(|t| map_term(t, f)).collect()),
         Term::TupleProj(t, i) => Term::TupleProj(sub(t, f), i),

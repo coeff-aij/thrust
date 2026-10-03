@@ -36,6 +36,9 @@ fn unbox_term(term: Term) -> Term {
             term: Box::new(unbox_term(*term)),
         },
         Term::UserQuantifiedVar(sort, var) => Term::UserQuantifiedVar(unbox_sort(sort), var),
+        Term::ArrayLambda(var, sort, t) => {
+            Term::ArrayLambda(var, unbox_sort(sort), Box::new(unbox_term(*t)))
+        }
     }
 }
 

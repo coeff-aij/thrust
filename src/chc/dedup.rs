@@ -66,7 +66,8 @@ fn decompose(term: &Term) -> Option<(Op, Vec<&Term>)> {
         | Term::ForallDefault(_)
         | Term::ArrayEmpty(..)
         | Term::SeqEmpty(_)
-        | Term::UserQuantifiedVar(..) => return None,
+        | Term::UserQuantifiedVar(..)
+        | Term::ArrayLambda(..) => return None,
         Term::Box(t) => (Op::Box, vec![&**t]),
         Term::Mut(t1, t2) => (Op::Mut, vec![&**t1, &**t2]),
         Term::BoxCurrent(t) => (Op::BoxCurrent, vec![&**t]),

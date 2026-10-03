@@ -2210,6 +2210,10 @@ fn subst_ty_params_in_term<T, V>(term: &mut chc::Term<V>, subst: &TypeParamSubst
         chc::Term::UserQuantifiedVar(sort, _) => {
             subst_ty_params_in_sort(sort, subst);
         }
+        chc::Term::ArrayLambda(_, sort, t) => {
+            subst_ty_params_in_sort(sort, subst);
+            subst_ty_params_in_term(t, subst);
+        }
     }
 }
 

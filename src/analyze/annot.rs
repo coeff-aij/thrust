@@ -174,6 +174,14 @@ pub fn array_model_store_path() -> [Symbol; 3] {
     ]
 }
 
+pub fn array_model_from_fn_path() -> [Symbol; 3] {
+    [
+        Symbol::intern("thrust"),
+        Symbol::intern("def"),
+        Symbol::intern("array_from_fn"),
+    ]
+}
+
 pub fn seq_model_path() -> [Symbol; 3] {
     [
         Symbol::intern("thrust"),

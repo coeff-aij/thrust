@@ -276,6 +276,14 @@ mod thrust_models {
             {
                 unimplemented!()
             }
+
+            /// The array whose element at each index `i` is `f(i)` (SMT-LIB's `lambda`).
+            #[allow(dead_code)]
+            #[thrust::def::array_from_fn]
+            #[thrust::ignored]
+            pub fn from_fn<F: Fn(I) -> T>(_f: F) -> Self {
+                unimplemented!()
+            }
         }
 
         #[thrust::def::closure_model]
