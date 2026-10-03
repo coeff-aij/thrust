@@ -34,11 +34,13 @@ std's `Iterator::fold` with std's body, generic in the iterator, the accumulator
 closure, specified in the form of Creusot's `Map` (`tests/ui/pass/creusot/map.rs`): the closure
 states and accumulators along the produced items form a chain of call postconditions, the closure
 may be called at every state the chain reaches, and the result ends the chain once the iterator is
-completed. The client derives `result >= 0` from the chain. Not yet verifiable: no answer on
-fptprove 082cd295c (timeout at about 130 s, also with an empty `main`). The loop invariant restates
-the precondition, as the generic tests do; the next step is lemmas that name the chain's extension
-by one item, as `map.rs` names its witnesses. A `MapInv`-style variant (the closure receives the
-ghost history) and `try_fold` are not written yet.
+completed. The client derives `result >= 0` from the chain. The loop invariant restates the
+precondition, as the generic tests do, and holds the chain under an `exists`; the lemma
+`fold_chain_push` extends it by one item and verifies alone. Not yet verifiable: on fptprove
+082cd295c the program gives no answer (timeout at about 160 s, also with an empty `main`), and with
+`fold` trusted the rest verifies. Ghost locals cannot carry the chain instead, since they are not
+live at the loop header. A `MapInv`-style variant (the closure receives the ghost history) and
+`try_fold` are not written yet.
 
 ## skip_take_range.rs (+ fail/)
 

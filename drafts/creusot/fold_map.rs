@@ -114,9 +114,30 @@ where
         && fs.len() == s.len() + 1
         && accs[0] == init
         && fs[0] == f
+        && thrust_macros::hist_inv!(f, fs[s.len()])
         && forall(|k: Int| !(0 <= k && k < s.len())
             || (thrust_macros::hist_inv!(f, fs[k])
                 && thrust_macros::post!(Mut::new(fs[k], fs[k + 1])(accs[k], s[k]), accs[k + 1])))
+}
+
+// The chain extended by one item: the next item `x`, the call's result `r` and the closure's state
+// after it, `g`, pushed onto the three sequences.
+#[thrust_macros::context]
+#[thrust_macros::ensures(forall(|iter: <I as Model>::Ty, init: <B as Model>::Ty, f: Closure<F>, s: Seq<<<I as Iterator>::Item as Model>::Ty>, it: <I as Model>::Ty, accs: Seq<<B as Model>::Ty>, fs: Seq<Closure<F>>, x: <<I as Iterator>::Item as Model>::Ty, it2: <I as Model>::Ty, r: <B as Model>::Ty, g: Closure<F>|
+    !(fold_chain::<I, B, F>(iter, init, f, s, it, accs, fs)
+        && I::produces(it, Seq::singleton(x), it2)
+        && thrust_macros::post!(Mut::new(fs[s.len()], g)(accs[s.len()], x), r))
+        || fold_chain::<I, B, F>(iter, init, f, s.push(x), it2, accs.push(r), fs.push(g))))]
+fn fold_chain_push<I, B, F>()
+where
+    I: Iterator + Model,
+    B: Model,
+    F: FnMut(B, I::Item) -> B,
+    <I as Iterator>::Item: Model,
+    <I as Model>::Ty: Model<Ty = <I as Model>::Ty> + PartialEq,
+    <<I as Iterator>::Item as Model>::Ty: Model<Ty = <<I as Iterator>::Item as Model>::Ty> + PartialEq,
+    <B as Model>::Ty: Model<Ty = <B as Model>::Ty> + PartialEq,
+{
 }
 
 #[thrust_macros::context]
@@ -156,7 +177,10 @@ where
         );
         match it.next() {
             None => return accum,
-            Some(x) => accum = g(accum, x),
+            Some(x) => {
+                accum = g(accum, x);
+                fold_chain_push::<I, B, F>();
+            }
         }
     }
 }
