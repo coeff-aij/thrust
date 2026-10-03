@@ -60,8 +60,10 @@ breaks with the first item the predicate accepts, so `try_fold` holds the only l
 `break_value()`; the file header lists what still differs. Both
 specifications relate closure states by `hist_inv!`, and `check`, which owns the predicate, states
 its own relation through the predicate's in a `hist_inv` clause; it verifies from fptprove
-`7d11252b2` on. `generic/std/find_pre.rs` is the same without `find`'s `ensures`; its fail twin
-drops `find`'s precondition on the predicate.
+`7d11252b2` on; its fail twin weakens `find`'s `ensures` to a predicate result of `false`.
+`generic/std/find_noinv.rs` drops `try_fold`'s loop invariant; its pass side is ignored while the
+solver gives no answer at 300 s. `generic/std/find_pre.rs` is the same without `find`'s `ensures`;
+its fail twin drops `find`'s precondition on the predicate.
 
 Weaker variants (`weaker/`, still verify):
 
