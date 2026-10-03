@@ -28,6 +28,18 @@ type invariant. Not yet verifiable: on fptprove 082cd295c the pass side is `unkn
 fail twin times out at 300 s. With `next` trusted the `produces_trans` law alone gives no answer at
 120 s; `map.rs` closes the same law with a lemma that names the joined witnesses.
 
+## fold_map.rs
+
+std's `Iterator::fold` with std's body, generic in the iterator, the accumulator and an `FnMut`
+closure, specified in the form of Creusot's `Map` (`tests/ui/pass/creusot/map.rs`): the closure
+states and accumulators along the produced items form a chain of call postconditions, the closure
+may be called at every state the chain reaches, and the result ends the chain once the iterator is
+completed. The client derives `result >= 0` from the chain. Not yet verifiable: no answer on
+fptprove 082cd295c (timeout at about 130 s, also with an empty `main`). The loop invariant restates
+the precondition, as the generic tests do; the next step is lemmas that name the chain's extension
+by one item, as `map.rs` names its witnesses. A `MapInv`-style variant (the closure receives the
+ghost history) and `try_fold` are not written yet.
+
 ## skip_take_range.rs (+ fail/)
 
 `Skip<Take<Range>>`, a concrete instantiation of `skip_take.rs`. Stage S2: the nested generic-impl
