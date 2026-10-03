@@ -13,7 +13,7 @@
 
 use std::convert::TryInto;
 use std::ops::{Add, AddAssign, Deref};
-use thrust_models::model::{Int, Seq};
+use thrust_models::model::{BitVec, Int, Seq};
 use thrust_models::{exists, forall};
 
 #[derive(Copy, Clone, /*Debug,*/ PartialEq, Eq)]
@@ -27,13 +27,7 @@ pub struct PointerSpec {
     _is_fat: bool,
 }
 
-// `PartialEq, Eq` commented out: the derived `eq` for this 18-field struct
-// makes the backend solver diverge -- with the derive in place, even a file
-// that contains nothing but these type declarations and an empty `main` hits
-// `verification error: Timeout(60s)` (and `Unknown` once specs are added).
-// Removing the two `Vec` fields does not help, so it is the width of the
-// derived `&&` chain, not the `Vec` model.
-#[derive(/*Debug,*/ /*PartialEq, Eq*/)]
+#[derive(/*Debug,*/ PartialEq, Eq)]
 pub struct TargetDataLayout {
     pub endian: Endian,
     pub i1_align: Align,
@@ -58,17 +52,6 @@ pub struct TargetDataLayout {
     pub instruction_address_space: AddressSpace,
 
     pub c_enum_min_size: Integer,
-}
-
-// A manual `PartialEq` only so that `self == dl` type-checks in the `dl_of`
-// predicates; the driver lowers `==` to model equality directly and the body
-// here is never analyzed. The derived `PartialEq` cannot be used: its
-// field-by-field `&&` chain makes the solver diverge (see the note above).
-impl PartialEq for TargetDataLayout {
-    #[thrust::ignored]
-    fn eq(&self, _other: &Self) -> bool {
-        unimplemented!()
-    }
 }
 
 // `address_space_info` is a `Vec` field of a struct whose model is the struct itself, so a
@@ -522,7 +505,10 @@ impl Primitive {
     // `pointer_size_in` / `pointer_align_in` must hold for every layout `dl` with `dl_of(*cx, dl)`.
     #[thrust_macros::requires(forall(|dl: TargetDataLayout, a: AddressSpace|
         !(C::dl_of(*cx, dl) && self == Primitive::Pointer(a)) || TargetDataLayout::pointer_space_ok(dl, a)))]
-    #[thrust::callable]
+    // An integer or a float has at most 16 bytes; a pointer has the size the layout `cx` names.
+    #[thrust_macros::ensures(result.raw <= 16
+        || exists(|dl: TargetDataLayout, a: AddressSpace| C::dl_of(*cx, dl)
+            && self == Primitive::Pointer(a) && TargetDataLayout::pointer_size_is(dl, a, result)))]
     pub fn size<C: HasDataLayout>(self, cx: &C) -> Size {
         use Primitive::*;
         let dl = cx.data_layout();
@@ -640,10 +626,7 @@ impl Niche {
         }
     }
 
-    // Trusted: `Primitive::size` has no postcondition, so `size.bits()`'s `requires` cannot be
-    // shown. The `requires` is that of `value.size(cx)` and the `assert!`'s bound on a pointer's
-    // size.
-    #[thrust::trusted]
+    // The `requires` is that of `value.size(cx)` and the `assert!`'s bound on a pointer's size.
     #[thrust_macros::requires(forall(|dl: TargetDataLayout, a: AddressSpace|
         !(C::dl_of(*cx, dl) && (*self).value == Primitive::Pointer(a))
             || (TargetDataLayout::pointer_space_ok(dl, a)
@@ -662,6 +645,21 @@ impl Niche {
         let niche = v.end.wrapping_add(1)..v.start;
         niche.end.wrapping_sub(niche.start) & max_value
     }
+}
+
+// //== local to the case study: the two std methods `Niche::available` calls, which std.rs does
+// not specify. Each is exact over 128-bit bit-vectors.
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::ensures(result == (BitVec::<128, false>::from_int(x) + BitVec::from_int(y)).to_int())]
+fn _extern_spec_u128_wrapping_add(x: u128, y: u128) -> u128 {
+    u128::wrapping_add(x, y)
+}
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::ensures(result == (BitVec::<128, false>::from_int(x) - BitVec::from_int(y)).to_int())]
+fn _extern_spec_u128_wrapping_sub(x: u128, y: u128) -> u128 {
+    u128::wrapping_sub(x, y)
 }
 
 // //== local to the case study: the iterator trait, a slice iterator and `find` (rewrites.md R9)
