@@ -45,8 +45,7 @@ same layout. A case that needs `collect` adds it to its copy after `next`.
 Generic forms (`generic/`): `fold`, `try_fold`, `find` and `filter` generic in the iterator and an
 `FnMut` closure, called at `Range`, each closure's contract stated for every closure state. `<name>.rs`
 writes the loop invariant; `<name>_noinv.rs` is the same with every `invariant!` removed, left to
-inference. The pass sides of `fold_noinv.rs`, `try_fold_noinv.rs` and `filter_noinv.rs` carry
-`//@ignore-on-host`: fptprove `6a54ae688` gives them no answer (`fold_noinv` at 60 s, the other two at 300 s).
+inference. Every `_noinv` pair verifies from fptprove `082cd295c` on.
 
 | file | what |
 | --- | --- |
