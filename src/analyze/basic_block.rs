@@ -863,12 +863,15 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     }
                     (rty::Type::Int(_) | rty::Type::UInt(_), mir::BinOp::Sub) => {
                         let result = lhs_term.sub(rhs_term);
+                        // An unsigned difference only goes below the range, which the underflow
+                        // assertion covers in every mode; a signed one goes out on either side.
                         if !lhs_mir_ty.is_signed() {
                             let no_underflow = result.clone().ge(chc::Term::int(0));
                             let guard = builder.clone().build(rty::Type::bool(), no_underflow);
                             self.assert_no_underflow(guard);
+                        } else {
+                            self.assert_no_overflow(&builder, &lhs_ty, &result);
                         }
-                        self.assert_no_overflow(&builder, &lhs_ty, &result);
                         builder.build(lhs_ty, result)
                     }
                     (rty::Type::Int(_) | rty::Type::UInt(_), mir::BinOp::Mul) => {
