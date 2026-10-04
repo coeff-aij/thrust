@@ -549,19 +549,6 @@ pub trait Idx: Copy + 'static + Eq + PartialEq + Debug + Hash {
     #[thrust_macros::ensures(Self::index_is(self, result))]
     fn index(self) -> usize;
 
-    // `index` is a function, so an element has exactly one index. Creusot gets this for free from
-    // a logic function; `index_is` is a predicate, so the two halves are laws.
-    #[thrust_macros::law]
-    #[thrust_macros::requires(Self::index_is(*a, i) && Self::index_is(*a, j))]
-    #[thrust_macros::ensures(i == j)]
-    #[thrust::trusted]
-    fn index_is_unique(a: &Self, i: usize, j: usize) {}
-
-    #[thrust_macros::law]
-    #[thrust_macros::ensures(exists(|i: UInt| Self::index_is(*a, i)))]
-    #[thrust::trusted]
-    fn index_is_total(a: &Self) {}
-
     #[inline]
     #[thrust_macros::requires(forall(|i: UInt, a: UInt|
         Self::index_is(*self, i) && a == amount ==> Self::can_new(i + a)))]
@@ -578,6 +565,19 @@ pub trait Idx: Copy + 'static + Eq + PartialEq + Debug + Hash {
     fn plus(self, amount: usize) -> Self {
         Self::new(self.index() + amount)
     }
+
+    // `index` is a function, so an element has exactly one index. Creusot gets this for free from
+    // a logic function; `index_is` is a predicate, so the two halves are laws.
+    #[thrust_macros::law]
+    #[thrust_macros::requires(Self::index_is(*a, i) && Self::index_is(*a, j))]
+    #[thrust_macros::ensures(i == j)]
+    #[thrust::trusted]
+    fn index_is_unique(a: &Self, i: usize, j: usize) {}
+
+    #[thrust_macros::law]
+    #[thrust_macros::ensures(exists(|i: UInt| Self::index_is(*a, i)))]
+    #[thrust::trusted]
+    fn index_is_total(a: &Self) {}
 }
 
 #[thrust_macros::context]
