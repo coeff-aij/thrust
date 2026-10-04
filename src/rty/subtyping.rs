@@ -253,7 +253,7 @@ where
 /// The range of the integer type of `expected` at each position where a value of `got` enters
 /// it: `v >= 0` where an integer of [`Type::Int`] becomes a [`Type::UInt`], and the bounds of
 /// [`super::int_range`] where `got` is not a type within that range, through tuples and the
-/// current value of pointers. The final value of a mutable reference is produced by its borrower,
+/// current value of pointers, and of each element of a sequence of such a type. The final value of a mutable reference is produced by its borrower,
 /// which is checked where it writes it.
 fn int_range_facts<T, U>(got: &Type<T>, expected: &Type<U>) -> Refinement<U>
 where
@@ -296,6 +296,11 @@ where
                     )
                     .into(),
                 );
+            }
+        }
+        (Type::Seq(got), Type::Seq(expected)) if !fits(&got.ty, &expected.ty) => {
+            if let Some(range) = super::seq_elem_range(&expected.ty, value()) {
+                facts.push_conj(range.into());
             }
         }
         (Type::Tuple(got), Type::Tuple(expected)) if got.elems.len() == expected.elems.len() => {

@@ -86,6 +86,14 @@ pub fn uint_model_path() -> [Symbol; 3] {
     ]
 }
 
+pub fn uint_n_model_path() -> [Symbol; 3] {
+    [
+        Symbol::intern("thrust"),
+        Symbol::intern("def"),
+        Symbol::intern("uint_n_model"),
+    ]
+}
+
 pub fn bit_vec_model_path() -> [Symbol; 3] {
     [
         Symbol::intern("thrust"),
@@ -195,6 +203,22 @@ pub fn seq_empty_path() -> [Symbol; 3] {
         Symbol::intern("thrust"),
         Symbol::intern("def"),
         Symbol::intern("seq_empty"),
+    ]
+}
+
+pub fn uint_to_uint_n_path() -> [Symbol; 3] {
+    [
+        Symbol::intern("thrust"),
+        Symbol::intern("def"),
+        Symbol::intern("uint_to_uint_n"),
+    ]
+}
+
+pub fn uint_n_to_uint_path() -> [Symbol; 3] {
+    [
+        Symbol::intern("thrust"),
+        Symbol::intern("def"),
+        Symbol::intern("uint_n_to_uint"),
     ]
 }
 

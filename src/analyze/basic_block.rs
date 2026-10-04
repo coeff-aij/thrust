@@ -66,6 +66,16 @@ fn int_ty_includes<'tcx>(
     }
 }
 
+/// The type of a ghost term checked against the range of its value type: an integer with no
+/// bounds, or a sequence of them.
+fn unbounded_range_ty<T>(seq: bool) -> rty::Type<T> {
+    if seq {
+        rty::Type::Seq(Box::new(rty::RefinedType::unrefined(rty::Type::int())))
+    } else {
+        rty::Type::int()
+    }
+}
+
 /// Wraps the integer `term` around into the range of the integer type `ty`, as an `as` cast does.
 fn wrap_int_term<'tcx, V>(
     tcx: TyCtxt<'tcx>,
@@ -1665,18 +1675,34 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         }
         let mut value_rty = self.type_builder.build(*value_ty).vacuous();
         value_rty.refinement.push_conj(formula_fn.to_refinement());
-        // The term itself is a logical integer: model arithmetic is unbounded, so a `UInt`
-        // value made from it is required in its type's range here, as an unchecked subtraction is.
-        let range_ty = match value_rty.ty {
-            rty::Type::UInt(width) => Some(rty::Type::UInt(width)),
-            rty::Type::Int(width) if rty::int_range(true, width).is_some() => {
-                Some(rty::Type::Int(width))
+        // The term itself is a logical integer: model arithmetic is unbounded, so a value of a
+        // type with a range made from it is required in that range here, as an unchecked
+        // subtraction is.
+        // `(sequence, signed, width)` of a value type with a range: an integer type, or a
+        // sequence of one, whose elements are then in range.
+        let range_kind = match &value_rty.ty {
+            rty::Type::UInt(width) => Some((false, false, *width)),
+            rty::Type::Int(width) if rty::int_range(true, *width).is_some() => {
+                Some((false, true, *width))
             }
+            rty::Type::Seq(elem) => match elem.ty {
+                rty::Type::UInt(width) if rty::int_range(false, width).is_some() => {
+                    Some((true, false, width))
+                }
+                rty::Type::Int(width) if rty::int_range(true, width).is_some() => {
+                    Some((true, true, width))
+                }
+                _ => None,
+            },
             _ => None,
         };
-        let term_check = range_ty.map(|range_ty| {
-            let term_rty = rty::RefinedType::new(rty::Type::int(), formula_fn.to_refinement());
-            (rty::FunctionType::new(params.clone(), term_rty), range_ty)
+        let term_check = range_kind.map(|(seq, signed, width)| {
+            let term_rty =
+                rty::RefinedType::new(unbounded_range_ty(seq), formula_fn.to_refinement());
+            (
+                rty::FunctionType::new(params.clone(), term_rty),
+                (seq, signed, width),
+            )
         });
         let func_ty = rty::FunctionType::new(params, value_rty);
 
@@ -1696,9 +1722,20 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             })
             .collect();
 
-        if let Some((term_ty, range_ty)) = term_check {
-            let range = rty::RefinedType::unrefined(range_ty).formula();
-            let in_range = rty::RefinedType::new(rty::Type::int(), range);
+        if let Some((term_ty, (seq, signed, width))) = term_check {
+            let int_ty = if signed {
+                rty::Type::Int(width)
+            } else {
+                rty::Type::UInt(width)
+            };
+            let range = if seq {
+                rty::seq_elem_range(&int_ty, chc::Term::var(rty::RefinedTypeVar::Value))
+                    .expect("a sequence of a type with a range")
+                    .into()
+            } else {
+                rty::RefinedType::unrefined(int_ty).formula()
+            };
+            let in_range = rty::RefinedType::new(unbounded_range_ty(seq), range);
             let clauses = self.relate_fn_sub_type(term_ty, args.clone(), in_range);
             self.ctx.extend_clauses(clauses);
         }

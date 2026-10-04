@@ -931,14 +931,17 @@ impl<'tcx> Analyzer<'tcx> {
         impl<'tcx> mir_ty::TypeVisitor<TyCtxt<'tcx>> for EnumCollector<'tcx> {
             fn visit_ty(&mut self, ty: mir_ty::Ty<'tcx>) {
                 let ty = self.builder.resolve_model_ty(ty);
+                // Each type once: the const argument of a model such as `UIntN<64>` has type
+                // `usize`, whose model is that type again.
+                if !self.visited.insert(ty) {
+                    return;
+                }
                 if let mir_ty::TyKind::Adt(def, args) = ty.kind() {
-                    if self.visited.insert(ty) {
-                        if def.is_enum() {
-                            self.enums.insert(def.did());
-                        }
-                        for field in def.all_fields() {
-                            field.ty(self.tcx, args).visit_with(self);
-                        }
+                    if def.is_enum() {
+                        self.enums.insert(def.did());
+                    }
+                    for field in def.all_fields() {
+                        field.ty(self.tcx, args).visit_with(self);
                     }
                 }
                 ty.super_visit_with(self);

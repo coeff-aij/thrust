@@ -5,7 +5,7 @@
 // The enumerate position over a bit-set iterator stays below the domain size: `BitIter`'s model
 // is (bound, count), as in tests/ui/pass/rustc_coroutine/eligibility.rs.
 
-use thrust_models::model::{UInt, Mut, Seq};
+use thrust_models::model::{UIntN, Mut, Seq};
 use thrust_models::{exists, forall};
 
 // The iterator trait, local to the case study (rewrites.md R9): Creusot's `common.rs` as the
@@ -77,7 +77,7 @@ pub struct Enumerate<I> {
 }
 
 impl<I: thrust_models::Model> thrust_models::Model for Enumerate<I> {
-    type Ty = (<I as thrust_models::Model>::Ty, UInt);
+    type Ty = (<I as thrust_models::Model>::Ty, UIntN<64>);
 }
 
 #[thrust_macros::context]
@@ -112,7 +112,7 @@ where
             && exists(|s: Seq<<I::Item as thrust_models::Model>::Ty>|
                 I::produces(self.0, s, o.0)
                     && s.len() == visited.len()
-                    && forall(|i: UInt| !(0 <= i && i < s.len()) || visited[i] == (self.1 + i, s[i])))
+                    && forall(|i: UIntN<64>| !(0 <= i && i < s.len()) || visited[i] == (self.1 + i, s[i])))
     }
 
     #[thrust_macros::predicate]
@@ -127,13 +127,13 @@ pub struct DenseBitSet {
 }
 
 impl thrust_models::Model for DenseBitSet {
-    type Ty = (UInt, ());
+    type Ty = (UIntN<64>, ());
 }
 
 pub struct BitIter {}
 
 impl thrust_models::Model for BitIter {
-    type Ty = (UInt, UInt);
+    type Ty = (UIntN<64>, UIntN<64>);
 }
 
 #[thrust_macros::context]
@@ -170,7 +170,7 @@ impl Iterator for BitIter {
         self.0 == o.0
             && o.1 == self.1 + visited.len()
             && o.1 <= self.0
-            && forall(|i: UInt| !(0 <= i && i < visited.len()) || visited[i] < self.0)
+            && forall(|i: UIntN<64>| !(0 <= i && i < visited.len()) || visited[i] < self.0)
     }
 
     #[thrust_macros::predicate]

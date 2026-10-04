@@ -999,6 +999,76 @@ pub fn int_range(signed: bool, width: Option<u32>) -> Option<(BigInt, BigInt)> {
     }
 }
 
+/// The range of a value `x` of the integer type `ty` as atoms: `0 <= x` of an unsigned type, and
+/// the bounds of [`int_range`] when they are in use. `None` when `ty` is not an integer type.
+pub fn int_range_atoms<T, V>(ty: &Type<T>, x: chc::Term<V>) -> Option<Vec<chc::Atom<V>>>
+where
+    V: Clone,
+{
+    let (signed, width) = match ty {
+        Type::Int(width) => (true, *width),
+        Type::UInt(width) => (false, *width),
+        _ => return None,
+    };
+    let mut atoms = Vec::new();
+    let range = int_range(signed, width);
+    let min = match &range {
+        Some((min, _)) => Some(min.clone()),
+        None if !signed => Some(BigInt::from(0)),
+        None => None,
+    };
+    if let Some(min) = min {
+        atoms.push(chc::Atom::new(
+            chc::KnownPred::GREATER_THAN_OR_EQUAL.into(),
+            vec![x.clone(), chc::Term::int(min)],
+        ));
+    }
+    if let Some((_, end)) = range {
+        atoms.push(chc::Atom::new(
+            chc::KnownPred::LESS_THAN.into(),
+            vec![x, chc::Term::int(end)],
+        ));
+    }
+    Some(atoms)
+}
+
+/// The variable of the element facts of a sequence. They are stated only of a sequence of integers
+/// of a type with a width, so they never nest and one reserved identifier serves.
+fn seq_elem_var() -> chc::UserQuantifiedVarId {
+    chc::UserQuantifiedVarId::from_u32(0xFFFF_0000)
+}
+
+/// `forall i. 0 <= i < len(seq) => range(seq[i])` of a sequence whose element type `elem` is an
+/// integer type with a width whose range is in use ([`int_range`]); `None` otherwise.
+pub fn seq_elem_range<T, V>(elem: &Type<T>, seq: chc::Term<V>) -> Option<chc::Formula<V>>
+where
+    V: Clone,
+{
+    let (signed, width) = match elem {
+        Type::Int(width) => (true, *width),
+        Type::UInt(width) => (false, *width),
+        _ => return None,
+    };
+    int_range(signed, width)?;
+    let i = chc::Term::UserQuantifiedVar(chc::Sort::int(), seq_elem_var());
+    let in_bounds = chc::Formula::Atom(chc::Atom::new(
+        chc::KnownPred::GREATER_THAN_OR_EQUAL.into(),
+        vec![i.clone(), chc::Term::int(0)],
+    ))
+    .and(chc::Formula::Atom(chc::Atom::new(
+        chc::KnownPred::LESS_THAN.into(),
+        vec![i.clone(), seq.clone().seq_len()],
+    )));
+    let range = int_range_atoms(elem, seq.seq_nth(i))?
+        .into_iter()
+        .map(chc::Formula::Atom)
+        .reduce(chc::Formula::and)?;
+    Some(chc::Formula::forall(
+        vec![(seq_elem_var(), chc::Sort::int())],
+        in_bounds.implies(range),
+    ))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Type<T> {
     /// An integer, with the width in bits of the signed Rust type it comes from; the model type
@@ -1926,6 +1996,12 @@ impl<FV> RefinedType<FV> {
                         )
                         .into(),
                     );
+                }
+            }
+            Type::Seq(elem) => {
+                if let Some(range) = seq_elem_range(&elem.ty, chc::Term::var(RefinedTypeVar::Value))
+                {
+                    formula.push_conj(range.into());
                 }
             }
             Type::Tuple(ty) => {

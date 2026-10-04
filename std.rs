@@ -106,6 +106,84 @@ mod thrust_models {
         integer_model_ops!(Int);
         integer_model_ops!(UInt);
 
+        /// The model of an unsigned integer of `BITS` bits: the same mathematical integers as
+        /// [`UInt`], below `2^BITS`. A model type may use it where [`UInt`] says too little, such
+        /// as `Seq<UIntN<64>>` for the words of a `Vec<u64>`; with `THRUST_INT_RANGE` set, Thrust
+        /// assumes the bound of every such value (each element of such a sequence) and checks it
+        /// where a value of another type enters. Arithmetic on it is unbounded, as on [`UInt`]: a
+        /// term of a specification is not assumed in range, only a value is.
+        #[thrust::def::uint_n_model]
+        pub struct UIntN<const BITS: usize>;
+
+        impl UInt {
+            /// The same integer as a model of `BITS` bits, where a specification passes a
+            /// [`UInt`] (such as a `Seq::len`) to a parameter of a model of a Rust unsigned type.
+            /// A term is not assumed in the range of its type, so this states nothing.
+            #[allow(dead_code)]
+            #[thrust::def::uint_to_uint_n]
+            #[thrust::ignored]
+            pub fn to_uint_n<const BITS: usize>(self) -> UIntN<BITS> {
+                unimplemented!()
+            }
+        }
+
+        impl<const BITS: usize> UIntN<BITS> {
+            /// The same integer as a [`UInt`].
+            #[allow(dead_code)]
+            #[thrust::def::uint_n_to_uint]
+            #[thrust::ignored]
+            pub fn to_uint(self) -> UInt {
+                unimplemented!()
+            }
+        }
+
+        impl<const BITS: usize> Integer for UIntN<BITS> {}
+        impl<const BITS: usize> IndexModel<Int> for UIntN<BITS> {}
+        impl<const BITS: usize> IndexModel<UInt> for UIntN<BITS> {}
+
+        macro_rules! uint_n_model_ops {
+            ($($Op:ident $op:ident),*) => {
+                $(
+                    impl<T, const BITS: usize> std::ops::$Op<T> for UIntN<BITS>
+                    where
+                        T: super::Model,
+                        T::Ty: Integer,
+                    {
+                        type Output = Self;
+
+                        #[thrust::ignored]
+                        fn $op(self, _rhs: T) -> Self::Output {
+                            unimplemented!()
+                        }
+                    }
+                )*
+            };
+        }
+
+        uint_n_model_ops!(Add add, Sub sub, Mul mul, Div div, Rem rem);
+
+        impl<T, const BITS: usize> PartialEq<T> for UIntN<BITS>
+        where
+            T: super::Model,
+            T::Ty: Integer,
+        {
+            #[thrust::ignored]
+            fn eq(&self, _other: &T) -> bool {
+                unimplemented!()
+            }
+        }
+
+        impl<T, const BITS: usize> PartialOrd<T> for UIntN<BITS>
+        where
+            T: super::Model,
+            T::Ty: Integer,
+        {
+            #[thrust::ignored]
+            fn partial_cmp(&self, _other: &T) -> Option<std::cmp::Ordering> {
+                unimplemented!()
+            }
+        }
+
         /// An SMT-LIB bit-vector of `WIDTH` bits. `SIGNED` selects the signed or unsigned variant
         /// of the operations that have both.
         #[thrust::def::bit_vec_model]
@@ -424,6 +502,10 @@ mod thrust_models {
         type Ty = model::UInt;
     }
 
+    impl<const BITS: usize> Model for model::UIntN<BITS> {
+        type Ty = model::UIntN<BITS>;
+    }
+
     impl<const WIDTH: usize, const SIGNED: bool> Model for model::BitVec<WIDTH, SIGNED> {
         type Ty = model::BitVec<WIDTH, SIGNED>;
     }
@@ -499,21 +581,56 @@ mod thrust_models {
 
             model_arith!($T, model::Int);
             model_arith!($T, model::UInt);
+            model_arith_n!($T);
+        };
+    }
+
+    // `x op n` of a Rust integer `x` and an `n` of a model `UIntN`, as `model_arith!` for `Int` and
+    // `UInt`.
+    macro_rules! model_arith_n {
+        ($T:ty) => {
+            impl<const BITS: usize> PartialEq<model::UIntN<BITS>> for $T {
+                #[thrust::ignored]
+                fn eq(&self, _other: &model::UIntN<BITS>) -> bool {
+                    unimplemented!()
+                }
+            }
+
+            impl<const BITS: usize> PartialOrd<model::UIntN<BITS>> for $T {
+                #[thrust::ignored]
+                fn partial_cmp(&self, _other: &model::UIntN<BITS>) -> Option<std::cmp::Ordering> {
+                    unimplemented!()
+                }
+            }
+
+            model_arith_n!(@op $T, Add add, Sub sub, Mul mul, Div div, Rem rem);
+        };
+        (@op $T:ty, $($Op:ident $op:ident),*) => {
+            $(
+                impl<const BITS: usize> std::ops::$Op<model::UIntN<BITS>> for $T {
+                    type Output = model::UIntN<BITS>;
+
+                    #[thrust::ignored]
+                    fn $op(self, _rhs: model::UIntN<BITS>) -> Self::Output {
+                        unimplemented!()
+                    }
+                }
+            )*
         };
     }
 
     integer_model!(isize, model::Int);
     integer_model!(i32, model::Int);
     integer_model!(i64, model::Int);
-    integer_model!(usize, model::UInt);
-    integer_model!(u32, model::UInt);
-    integer_model!(u64, model::UInt);
+    integer_model!(usize, model::UIntN<64>);
+    integer_model!(u32, model::UIntN<32>);
+    integer_model!(u64, model::UIntN<64>);
     integer_model!(i8, model::Int);
     integer_model!(i16, model::Int);
     integer_model!(i128, model::Int);
-    integer_model!(u8, model::UInt);
-    integer_model!(u16, model::UInt);
-    integer_model!(u128, model::UInt);
+    integer_model!(u8, model::UIntN<8>);
+    integer_model!(u16, model::UIntN<16>);
+    integer_model!(u128, model::UIntN<128>);
 
     impl Model for bool {
         type Ty = bool;
@@ -618,7 +735,7 @@ mod thrust_models {
     // The iterator it wraps and the number of items handed out. It has the shape of the struct,
     // so the refinement type builder needs no special case.
     impl<I> Model for core::iter::Enumerate<I> where I: Model {
-        type Ty = (<I as Model>::Ty, model::UInt);
+        type Ty = (<I as Model>::Ty, model::UIntN<64>);
     }
 
     // The two iterators it wraps, in the order of the arguments to `zip`.

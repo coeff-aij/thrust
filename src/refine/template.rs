@@ -519,6 +519,15 @@ impl<'tcx> TypeBuilder<'tcx> {
     }
 
     /// Builds the type of `thrust_models::model::BitVec<WIDTH, SIGNED>` from its generic `args`.
+    /// The width of the model type `UIntN<BITS>`.
+    fn uint_n_width(&self, args: mir_ty::GenericArgsRef<'tcx>) -> u32 {
+        let width = args
+            .const_at(0)
+            .try_to_target_usize(self.tcx)
+            .expect("UIntN width must be a known constant");
+        width.try_into().unwrap()
+    }
+
     fn build_bit_vec(&self, args: mir_ty::GenericArgsRef<'tcx>) -> rty::BitVecType {
         let width = args
             .const_at(0)
@@ -546,6 +555,9 @@ impl<'tcx> TypeBuilder<'tcx> {
         }
         if Some(adt.did()) == self.def_ids.uint_model() {
             return Some(rty::Type::uint());
+        }
+        if Some(adt.did()) == self.def_ids.uint_n_model() {
+            return Some(rty::Type::uint_of_width(self.uint_n_width(args)));
         }
 
         if Some(adt.did()) == self.def_ids.bit_vec_model() {
@@ -1017,6 +1029,9 @@ where
         }
         if Some(adt.did()) == self.inner.def_ids.uint_model() {
             return Some(rty::Type::uint());
+        }
+        if Some(adt.did()) == self.inner.def_ids.uint_n_model() {
+            return Some(rty::Type::uint_of_width(self.inner.uint_n_width(args)));
         }
 
         if Some(adt.did()) == self.inner.def_ids.bit_vec_model() {

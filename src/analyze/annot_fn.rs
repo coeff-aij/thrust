@@ -1390,6 +1390,17 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                         let t = self.to_term(receiver);
                         return FormulaOrTerm::Term(chc::Term::App(fun, vec![t]));
                     }
+                    // The same integer under another model type: a term is not assumed in the
+                    // range of its type, so the conversion is the identity.
+                    if Some(def_id) == self.def_ids.uint_to_uint_n()
+                        || Some(def_id) == self.def_ids.uint_n_to_uint()
+                    {
+                        assert!(
+                            args.is_empty(),
+                            "the conversion does not take any arguments"
+                        );
+                        return FormulaOrTerm::Term(self.to_term(receiver));
+                    }
                     if Some(def_id) == self.def_ids.seq_len() {
                         assert!(args.is_empty(), "Seq::len does not take any arguments");
                         let t = self.to_term(receiver);
