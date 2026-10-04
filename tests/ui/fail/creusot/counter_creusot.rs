@@ -418,9 +418,6 @@ fn counter(start: u32, end: u32) -> (Vec<u32>, usize) {
         // The precondition restated, as in the postcondition Creusot infers for the closure
         // body, which reads `cnt == produced.len()` before the increment.
         ensures(*(*cnt) == produced.len()),
-        // Creusot's `postcondition_mut` of a closure adds `hist_inv(*self, ^self)`, for this
-        // capture that the borrow of `cnt` keeps its prophecy.
-        ensures(!(!cnt) == !(*cnt)),
         |x: u32, produced: Ghost<Seq<U32>>| -> u32 { cnt += 1; x },
     );
     let mut m = Map {
