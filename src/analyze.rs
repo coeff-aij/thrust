@@ -691,8 +691,11 @@ pub struct Analyzer<'tcx> {
     /// Predicate definitions an instantiation asked for and that
     /// [`Analyzer::emit_pending_pred_instances`] has yet to emit.
     pending_pred_instances: Rc<RefCell<Vec<pred_inst::PendingPredInstance<'tcx>>>>,
-    /// The `#[thrust::law]` functions of each trait, keyed by the trait.
-    trait_laws: Rc<RefCell<HashMap<DefId, Vec<DefId>>>>,
+    /// The `#[thrust::law]` functions of each trait, keyed by the trait, in the order the traits'
+    /// laws were registered (source order), so that the laws are checked in the same order on
+    /// every run: the order decides the numbering of the unknowns and the order of the clauses,
+    /// which the solver's time depends on (see `analyze_local_defs`).
+    trait_laws: Rc<RefCell<rustc_data_structures::fx::FxIndexMap<DefId, Vec<DefId>>>>,
     /// Uses of a trait predicate through a type parameter whose laws
     /// [`Analyzer::emit_pending_laws`] has yet to state.
     pending_laws: Rc<RefCell<Vec<pred_inst::PendingLaw<'tcx>>>>,
