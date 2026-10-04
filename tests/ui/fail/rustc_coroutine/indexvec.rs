@@ -24,17 +24,17 @@ use std::hash::Hash;
 use std::marker::PhantomData;
 
 use thrust_models::forall;
-use thrust_models::model::UIntN;
+use thrust_models::model::UInt;
 
 // //== ./../rustc_index/src/idx.rs
 
 #[thrust_macros::context]
 pub trait Idx: Copy + 'static + Eq + PartialEq + Debug + Hash {
     #[thrust_macros::predicate]
-    fn can_new(idx: UIntN<64>) -> bool;
+    fn can_new(idx: UInt) -> bool;
 
     #[thrust_macros::predicate]
-    fn index_is(self, i: UIntN<64>) -> bool;
+    fn index_is(self, i: UInt) -> bool;
 
     #[thrust_macros::requires(Self::can_new(idx))]
     #[thrust_macros::ensures(Self::index_is(result, idx))]
@@ -47,12 +47,12 @@ pub trait Idx: Copy + 'static + Eq + PartialEq + Debug + Hash {
 #[thrust_macros::context]
 impl Idx for usize {
     #[thrust_macros::predicate]
-    fn can_new(idx: UIntN<64>) -> bool {
+    fn can_new(idx: UInt) -> bool {
         true
     }
 
     #[thrust_macros::predicate]
-    fn index_is(self, i: UIntN<64>) -> bool {
+    fn index_is(self, i: UInt) -> bool {
         // i == self
         i == self
     }
@@ -106,7 +106,7 @@ impl<I: Idx, T> IndexVec<I, T> {
     #[inline]
     #[thrust_macros::requires(true)]
     #[thrust_macros::ensures(result.len() == n)]
-    #[thrust_macros::ensures(forall(|k: UIntN<64>| !(0 <= k && k < n) || result[k] == elem))]
+    #[thrust_macros::ensures(forall(|k: UInt| !(0 <= k && k < n) || result[k] == elem))]
     pub fn from_elem_n(elem: T, n: usize) -> Self
     where
         T: Clone,
@@ -129,16 +129,16 @@ impl<I: Idx, T> IndexVec<I, T> {
     }
 
     #[inline]
-    #[thrust_macros::requires(<I as Idx>::can_new((*self).len().to_uint_n::<64>()))]
-    #[thrust_macros::ensures(<I as Idx>::index_is(result, (*self).len().to_uint_n::<64>()))]
+    #[thrust_macros::requires(<I as Idx>::can_new((*self).len()))]
+    #[thrust_macros::ensures(<I as Idx>::index_is(result, (*self).len()))]
     pub fn next_index(&self) -> I {
         I::new(self.raw.len())
     }
 
     #[inline]
-    #[thrust_macros::requires(<I as Idx>::can_new((*self).len().to_uint_n::<64>()))]
+    #[thrust_macros::requires(<I as Idx>::can_new((*self).len()))]
     #[thrust_macros::ensures(!self == (*self).push(d))]
-    #[thrust_macros::ensures(<I as Idx>::index_is(result, (*self).len().to_uint_n::<64>()))]
+    #[thrust_macros::ensures(<I as Idx>::index_is(result, (*self).len()))]
     pub fn push(&mut self, d: T) -> I {
         let idx = self.next_index();
         self.raw.push(d);
@@ -151,8 +151,8 @@ impl<I: Idx, T> IndexVec<I, T> {
     #[inline]
     // Trusted: the body's `Vec<T>` at a type parameter is typed as the (array, length) pair, not the sequence the contract reads.
     #[thrust::trusted]
-    #[thrust_macros::requires(forall(|i: UIntN<64>| !<I as Idx>::index_is(index, i) || (0 <= i && i < (*self).len())))]
-    #[thrust_macros::ensures(forall(|i: UIntN<64>| !<I as Idx>::index_is(index, i) || *result == (*self)[i]))]
+    #[thrust_macros::requires(forall(|i: UInt| !<I as Idx>::index_is(index, i) || (0 <= i && i < (*self).len())))]
+    #[thrust_macros::ensures(forall(|i: UInt| !<I as Idx>::index_is(index, i) || *result == (*self)[i]))]
     pub fn at(&self, index: I) -> &T {
         &self.raw[index.index()]
     }
@@ -167,7 +167,7 @@ impl<I: Idx, T> IndexVec<I, T> {
 
 #[thrust_macros::requires(n >= 0)]
 #[thrust_macros::ensures(result.len() == n)]
-#[thrust_macros::ensures(forall(|k: UIntN<64>| !(0 <= k && k < n) || result[k] == elem))]
+#[thrust_macros::ensures(forall(|k: UInt| !(0 <= k && k < n) || result[k] == elem))]
 #[thrust_macros::context]
 fn filled(n: usize, elem: i64) -> IndexVec<usize, i64> {
     let mut v: IndexVec<usize, i64> = IndexVec::new();
@@ -180,7 +180,7 @@ fn filled(n: usize, elem: i64) -> IndexVec<usize, i64> {
              elem: thrust_models::FnParam<i64>|
                 v.len() == i
                     && i <= n.at_entry()
-                    && forall(|k: UIntN<64>| !(0 <= k && k < i) || v[k] == elem.at_entry())
+                    && forall(|k: UInt| !(0 <= k && k < i) || v[k] == elem.at_entry())
         );
         // Every entry is one more than the element asked for, so `filled` no
         // longer returns `n` copies of `elem`.

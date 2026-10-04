@@ -1,7 +1,7 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -A unused-variables -A unused_parens
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300
-use thrust_models::model::{Closure, Int, Mut, Seq, UIntN};
+use thrust_models::model::{Closure, Int, Mut, Seq, UInt};
 use thrust_models::{exists, forall, Ghost, Model};
 
 // Creusot's `examples/counter` with its own property: `v.iter().map_inv(|x, _prod| { cnt += 1; *x })
@@ -415,12 +415,12 @@ fn counter(start: u32, end: u32) -> (Vec<u32>, usize) {
         // Creusot's `postcondition_mut` of a closure adds `hist_inv(*self, ^self)`, for this
         // capture that the borrow of `cnt` keeps its prophecy.
         ensures(!(!cnt) == !(*cnt)),
-        |x: u32, produced: Ghost<Seq<UIntN<32>>>| -> u32 { cnt += 1; x },
+        |x: u32, produced: Ghost<Seq<UInt>>| -> u32 { cnt += 1; x },
     );
     let mut m = Map {
         iter: Range { start, end },
         func: f,
-        produced: thrust_macros::ghost!(|| -> Seq<UIntN<32>> { Seq::empty() }),
+        produced: thrust_macros::ghost!(|| -> Seq<UInt> { Seq::empty() }),
     };
     let x = m.collect::<Vec<u32>>();
     (x, cnt)

@@ -107,10 +107,11 @@ mod thrust_models {
         integer_model_ops!(UInt);
 
         /// The model of an unsigned integer of `BITS` bits: the same mathematical integers as
-        /// [`UInt`], below `2^BITS`. A model type may use it where [`UInt`] says too little, such
-        /// as `Seq<UIntN<64>>` for the words of a `Vec<u64>`; with `THRUST_INT_RANGE` set, Thrust
-        /// assumes the bound of every such value (each element of such a sequence) and checks it
-        /// where a value of another type enters. Arithmetic on it is unbounded, as on [`UInt`]: a
+        /// [`UInt`], below `2^BITS`. With `THRUST_INT_RANGE` set (`cfg(thrust_int_range)`), it is
+        /// the model of each `BITS`-bit unsigned type, so the model of `Vec<u64>` is
+        /// `Seq<UIntN<64>>`; Thrust then assumes the bound of every such value (each element of
+        /// such a sequence) and checks it where a value of another type enters. Unset, those
+        /// models are [`UInt`]. Arithmetic on it is unbounded, as on [`UInt`]: a
         /// term of a specification is not assumed in range, only a value is.
         #[thrust::def::uint_n_model]
         pub struct UIntN<const BITS: usize>;
@@ -622,14 +623,32 @@ mod thrust_models {
     integer_model!(isize, model::Int);
     integer_model!(i32, model::Int);
     integer_model!(i64, model::Int);
+    #[cfg(not(thrust_int_range))]
+    integer_model!(usize, model::UInt);
+    #[cfg(thrust_int_range)]
     integer_model!(usize, model::UIntN<64>);
+    #[cfg(not(thrust_int_range))]
+    integer_model!(u32, model::UInt);
+    #[cfg(thrust_int_range)]
     integer_model!(u32, model::UIntN<32>);
+    #[cfg(not(thrust_int_range))]
+    integer_model!(u64, model::UInt);
+    #[cfg(thrust_int_range)]
     integer_model!(u64, model::UIntN<64>);
     integer_model!(i8, model::Int);
     integer_model!(i16, model::Int);
     integer_model!(i128, model::Int);
+    #[cfg(not(thrust_int_range))]
+    integer_model!(u8, model::UInt);
+    #[cfg(thrust_int_range)]
     integer_model!(u8, model::UIntN<8>);
+    #[cfg(not(thrust_int_range))]
+    integer_model!(u16, model::UInt);
+    #[cfg(thrust_int_range)]
     integer_model!(u16, model::UIntN<16>);
+    #[cfg(not(thrust_int_range))]
+    integer_model!(u128, model::UInt);
+    #[cfg(thrust_int_range)]
     integer_model!(u128, model::UIntN<128>);
 
     impl Model for bool {
@@ -735,6 +754,9 @@ mod thrust_models {
     // The iterator it wraps and the number of items handed out. It has the shape of the struct,
     // so the refinement type builder needs no special case.
     impl<I> Model for core::iter::Enumerate<I> where I: Model {
+        #[cfg(not(thrust_int_range))]
+        type Ty = (<I as Model>::Ty, model::UInt);
+        #[cfg(thrust_int_range)]
         type Ty = (<I as Model>::Ty, model::UIntN<64>);
     }
 

@@ -6,7 +6,7 @@
 // rustc_index::bit_set and rustc_index::idx, adapted).
 
 use thrust_models::{exists, forall};
-use thrust_models::model::{BitVec, UIntN, Seq};
+use thrust_models::model::{BitVec, UInt, Seq};
 
 use std::fmt::Debug;
 use std::hash::Hash;
@@ -29,7 +29,7 @@ pub struct DenseBitSet<T> {
     marker: PhantomData<T>,
     // Rewrite (rewrites.md S11): the number of members, proof-only (`Ghost` has no runtime data).
     // The bodies are trusted, so the contracts of `new_empty`, `insert` and `insert_all` define it.
-    card: thrust_models::Ghost<UIntN<64>>,
+    card: thrust_models::Ghost<UInt>,
 }
 
 #[thrust_macros::context]
@@ -46,7 +46,7 @@ impl<T: Idx> DenseBitSet<T> {
     #[thrust_macros::predicate]
     fn inserted(self, i: usize, dist: Self) -> bool {
         dist.0 == self.0
-            && forall(|w: UIntN<64>| {
+            && forall(|w: UInt| {
                 !(w == (BitVec::<64, false>::from_int(self.1[i / 64])
                     | (BitVec::from_int(1) << BitVec::from_int(i % 64)))
                 .to_int())
@@ -61,7 +61,7 @@ impl<T: Idx> DenseBitSet<T> {
     /// quantified *assumption*.
     #[thrust_macros::predicate]
     fn no_mem(self) -> bool {
-        forall(|k: UIntN<64>| !(0 <= k && k < self.1.len()) || self.1[k] == 0)
+        forall(|k: UInt| !(0 <= k && k < self.1.len()) || self.1[k] == 0)
     }
 
     /// The word sequence holds `num_words(domain_size)` words, so every word `mem` and
@@ -82,7 +82,7 @@ impl<T: Idx> DenseBitSet<T> {
             domain_size,
             words: vec![0; num_words],
             marker: PhantomData,
-            card: thrust_macros::ghost!(|| -> UIntN<64> { 0 }),
+            card: thrust_macros::ghost!(|| -> UInt { 0 }),
         }
     }
 
@@ -98,10 +98,10 @@ impl<T: Idx> DenseBitSet<T> {
 
     #[inline]
     #[thrust::trusted]
-    #[thrust_macros::requires(forall(|i: UIntN<64>| <T as Idx>::index_is(elem, i) ==> i < (*self).0))]
+    #[thrust_macros::requires(forall(|i: UInt| <T as Idx>::index_is(elem, i) ==> i < (*self).0))]
     #[thrust_macros::requires(Self::words_cover_domain(*self))]
-    #[thrust_macros::ensures(forall(|i: UIntN<64>| <T as Idx>::index_is(elem, i) && (result == true) ==> Self::mem(*self, i)))]
-    #[thrust_macros::ensures(forall(|i: UIntN<64>| <T as Idx>::index_is(elem, i) && Self::mem(*self, i) ==> (result == true)))]
+    #[thrust_macros::ensures(forall(|i: UInt| <T as Idx>::index_is(elem, i) && (result == true) ==> Self::mem(*self, i)))]
+    #[thrust_macros::ensures(forall(|i: UInt| <T as Idx>::index_is(elem, i) && Self::mem(*self, i) ==> (result == true)))]
     pub fn contains(&self, elem: T) -> bool {
         assert!(elem.index() < self.domain_size);
         let (word_index, mask) = word_index_and_mask(elem);
@@ -110,17 +110,17 @@ impl<T: Idx> DenseBitSet<T> {
 
     #[inline]
     #[thrust::trusted]
-    #[thrust_macros::requires(forall(|i: UIntN<64>| <T as Idx>::index_is(elem, i) ==> i < (*self).0))]
+    #[thrust_macros::requires(forall(|i: UInt| <T as Idx>::index_is(elem, i) ==> i < (*self).0))]
     #[thrust_macros::ensures((!self).0 == (*self).0)]
     #[thrust_macros::ensures(Self::words_cover_domain(*self) ==> Self::words_cover_domain(!self))]
     // `Self::inserted` gives, for `i` the index of `elem`:
     //   `Self::mem(!self, i)`, and
     //   `forall j != i: Self::mem(!self, j) <==> Self::mem(*self, j)`.
-    #[thrust_macros::ensures(forall(|i: UIntN<64>| <T as Idx>::index_is(elem, i)
+    #[thrust_macros::ensures(forall(|i: UInt| <T as Idx>::index_is(elem, i)
         ==> Self::inserted(*self, i, !self)))]
-    #[thrust_macros::ensures(forall(|i: UIntN<64>| <T as Idx>::index_is(elem, i) && (result == true) ==> !Self::mem(*self, i)))]
-    #[thrust_macros::ensures(forall(|i: UIntN<64>| <T as Idx>::index_is(elem, i) && Self::mem(*self, i) ==> (result == false)))]
-    #[thrust_macros::ensures(forall(|i: UIntN<64>| <T as Idx>::index_is(elem, i) && !Self::mem(*self, i) ==> (result == true)))]
+    #[thrust_macros::ensures(forall(|i: UInt| <T as Idx>::index_is(elem, i) && (result == true) ==> !Self::mem(*self, i)))]
+    #[thrust_macros::ensures(forall(|i: UInt| <T as Idx>::index_is(elem, i) && Self::mem(*self, i) ==> (result == false)))]
+    #[thrust_macros::ensures(forall(|i: UInt| <T as Idx>::index_is(elem, i) && !Self::mem(*self, i) ==> (result == true)))]
     #[thrust_macros::ensures((result == true) ==> (!self).3 == (*self).3 + 1)]
     #[thrust_macros::ensures((result == false) ==> (!self).3 == (*self).3)]
     #[thrust_macros::ensures(0 <= (!self).3 && (!self).3 <= (!self).0)]
@@ -144,7 +144,7 @@ impl<T: Idx> DenseBitSet<T> {
     #[thrust::trusted]
     #[thrust_macros::ensures((!self).0 == (*self).0)]
     #[thrust_macros::ensures(Self::words_cover_domain(*self) ==> Self::words_cover_domain(!self))]
-    #[thrust_macros::ensures(forall(|i: UIntN<64>| i < (*self).0 ==> Self::mem(!self, i)))]
+    #[thrust_macros::ensures(forall(|i: UInt| i < (*self).0 ==> Self::mem(!self, i)))]
     #[thrust_macros::ensures((!self).3 == (*self).0)]
     pub fn insert_all(&mut self) {
         self.words.fill(!0);
@@ -229,7 +229,7 @@ impl<'a, T: Idx> BitIter<'a, T> {
     // `not implemented: unsupported path in formula: ... Def(Const, ..
     // WORD_BITS)` (src/analyze/annot_fn.rs:809), so the literal 64 is used
     // here and in `bit_bound`'s SMT body.
-    #[thrust_macros::ensures(Self::bit_bound(result, (*words).len().to_uint_n::<64>() * 64))]
+    #[thrust_macros::ensures(Self::bit_bound(result, (*words).len() * 64))]
     fn new(words: &'a [Word]) -> BitIter<'a, T> {
         BitIter {
             word: 0,
@@ -272,7 +272,7 @@ impl<'a, T: Idx> BitIter<'a, T> {
     #[thrust::extern_spec_fn]
     // `next` builds its item with `T::new`; the contract does not say which bit comes next, so
     // every index below the bound must be buildable.
-    #[thrust_macros::requires(forall(|n: UIntN<64>, k: UIntN<64>|
+    #[thrust_macros::requires(forall(|n: UInt, k: UInt|
         !(Self::bit_bound(*it, n) && 0 <= k && k < n) || <T as Idx>::can_new(k)))]
     #[thrust_macros::ensures(Self::same_words(*it, !it))]
     // The weak, safe form: *any* yielded element's index is below the bound.
@@ -280,7 +280,7 @@ impl<'a, T: Idx> BitIter<'a, T> {
     // `result == None || exists(|e| result == Some(e) && ..)`: with the
     // existential, pcsat answers `unknown` on the failing twin instead of
     // `Unsat`.
-    #[thrust_macros::ensures(forall(|n: UIntN<64>, e: <T as thrust_models::Model>::Ty, i: UIntN<64>|
+    #[thrust_macros::ensures(forall(|n: UInt, e: <T as thrust_models::Model>::Ty, i: UInt|
         Self::bit_bound(*it, n) && result == Some(e) && <T as Idx>::index_is(e, i)
             ==> i < n))]
     fn _extern_spec_next(it: &mut BitIter<'a, T>) -> Option<T>
@@ -310,7 +310,7 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
     /// `64 * rw >= num_columns` and `64 * rw < num_columns + 64`.
     #[thrust_macros::predicate]
     fn wf(self) -> bool {
-        exists(|rw: UIntN<64>| {
+        exists(|rw: UInt| {
             self.words.len() == self.num_rows * rw
                 && 64 * rw >= self.num_columns
                 && 64 * rw < self.num_columns + 64
@@ -325,7 +325,7 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
 
     #[thrust::callable]
     #[thrust_macros::requires(Self::wf(*self))]
-    #[thrust_macros::requires(forall(|i: UIntN<64>| <R as Idx>::index_is(row, i) ==> i < (*self).num_rows))]
+    #[thrust_macros::requires(forall(|i: UInt| <R as Idx>::index_is(row, i) ==> i < (*self).num_rows))]
     #[thrust_macros::ensures(result.0 <= result.1)]
     #[thrust_macros::ensures(result.1 <= (*self).words.len())]
     fn range(&self, row: R) -> (usize, usize) {
@@ -339,7 +339,7 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
     // *word array* size (`BitIter::bit_bound`), and relating that to
     // `num_columns` needs contracts on `range` (trusted) and `num_words`, which have none.
     #[thrust_macros::requires(Self::wf(*self))]
-    #[thrust_macros::requires(forall(|i: UIntN<64>| <R as Idx>::index_is(row, i) ==> i < (*self).num_rows))]
+    #[thrust_macros::requires(forall(|i: UInt| <R as Idx>::index_is(row, i) ==> i < (*self).num_rows))]
     pub fn iter(&self, row: R) -> BitIter<'_, C> {
         assert!(row.index() < self.num_rows);
         let (start, end) = self.range(row);
@@ -348,7 +348,7 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
 
     #[thrust::callable]
     #[thrust_macros::requires(Self::wf(*self))]
-    #[thrust_macros::requires(forall(|i: UIntN<64>| <R as Idx>::index_is(row, i) ==> i < (*self).num_rows))]
+    #[thrust_macros::requires(forall(|i: UInt| <R as Idx>::index_is(row, i) ==> i < (*self).num_rows))]
     pub fn count(&self, row: R) -> usize {
         let (start, end) = self.range(row);
         count_ones(&self.words[start..end])
@@ -356,9 +356,9 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
 }
 
 #[inline]
-#[thrust_macros::requires(forall(|i: UIntN<64>, j: UIntN<64>|
+#[thrust_macros::requires(forall(|i: UInt, j: UInt|
     <T as Idx>::index_is(domain_size, i) && <T as Idx>::index_is(domain_size, j) ==> i == j))]
-#[thrust_macros::ensures(forall(|i: UIntN<64>| <T as Idx>::index_is(domain_size, i)
+#[thrust_macros::ensures(forall(|i: UInt| <T as Idx>::index_is(domain_size, i)
     ==> 64 * result >= i && 64 * result < i + 64))]
 fn num_words<T: Idx>(domain_size: T) -> usize {
     domain_size.index().div_ceil(WORD_BITS)
@@ -368,7 +368,7 @@ fn num_words<T: Idx>(domain_size: T) -> usize {
 // Trusted: the body verifies against this contract only with `index_is` functional, and then
 // the solver gives no answer at 120 s.
 #[thrust::trusted]
-#[thrust_macros::ensures(forall(|i: UIntN<64>| <T as Idx>::index_is(elem, i)
+#[thrust_macros::ensures(forall(|i: UInt| <T as Idx>::index_is(elem, i)
     ==> result.0 == i / 64
         && result.1 == (BitVec::<64, false>::from_int(1) << BitVec::from_int(i % 64)).to_int()))]
 fn word_index_and_mask<T: Idx>(elem: T) -> (usize, Word) {
@@ -399,7 +399,7 @@ fn count_ones(words: &[Word]) -> usize {
 
 #[thrust::extern_spec_fn]
 #[thrust_macros::ensures(result.len() == n)]
-#[thrust_macros::ensures(forall(|k: UIntN<64>| k < n ==> result[k] == elem))]
+#[thrust_macros::ensures(forall(|k: UInt| k < n ==> result[k] == elem))]
 fn _extern_spec_vec_from_elem_word(elem: Word, n: usize) -> Vec<Word> {
     std::vec::from_elem(elem, n)
 }
@@ -501,7 +501,7 @@ impl<I: Idx> IdxRange<I> {
     #[thrust::extern_spec_fn]
     #[thrust_macros::requires((*it).start >= 0)]
     #[thrust_macros::requires(
-        forall(|s: UIntN<64>| s == (*it).start && s < (*it).end ==> <I as Idx>::can_new(s))
+        forall(|s: UInt| s == (*it).start && s < (*it).end ==> <I as Idx>::can_new(s))
     )]
     #[thrust_macros::ensures(true)]
     fn _extern_spec_next(it: &mut IdxRange<I>) -> Option<I>
@@ -514,7 +514,7 @@ impl<I: Idx> IdxRange<I> {
 }
 
 impl<T> thrust_models::Model for DenseBitSet<T> {
-    type Ty = (UIntN<64>, Seq<UIntN<64>>, (), UIntN<64>);
+    type Ty = (UInt, Seq<UInt>, (), UInt);
 }
 impl<'a> thrust_models::Model for WordIter<'a> {
     type Ty = Self;

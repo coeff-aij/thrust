@@ -15,6 +15,12 @@ fn try_specs_enabled() -> bool {
     matches!(std::env::var("THRUST_TRY_SPECS").as_deref(), Ok("1"))
 }
 
+/// Whether `THRUST_INT_RANGE` is set: the injected `std.rs` then models a `w`-bit unsigned type
+/// as `UIntN<w>` (under `cfg(thrust_int_range)`) instead of `UInt`.
+fn int_range_enabled() -> bool {
+    std::env::var_os("THRUST_INT_RANGE").is_some()
+}
+
 struct CompilerCalls {}
 
 impl Callbacks for CompilerCalls {
@@ -25,6 +31,12 @@ impl Callbacks for CompilerCalls {
             attrs.push("feature(try_trait_v2)".to_owned());
         }
         attrs.push("register_tool(thrust)".to_owned());
+        config
+            .crate_check_cfg
+            .push("cfg(thrust_int_range)".to_owned());
+        if int_range_enabled() {
+            config.crate_cfg.push("thrust_int_range".to_owned());
+        }
 
         // Refinements live on MIR locals, and `RemoveZsts` rewrites reads of zero-sized
         // locals into constants, losing the refinement of every value whose type carries

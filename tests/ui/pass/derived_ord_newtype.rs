@@ -9,7 +9,7 @@ struct Align {
 }
 
 impl thrust_models::Model for Align {
-    type Ty = thrust_models::model::UIntN<8>;
+    type Ty = thrust_models::model::UInt;
 }
 
 #[thrust_macros::context]
