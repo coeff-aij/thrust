@@ -11,7 +11,7 @@ goal is a proof that `layout()` does not panic. Each stage file is one part of `
 | `idx.rs` | the `Idx` trait, IdxRange and WordIter iterators | verified |
 | `indexvec.rs` | IndexVec over a native sequence, trusted method contracts | verified |
 | `bitset.rs` | set abstraction of DenseBitSet / BitMatrix / BitIter | verified |
-| `eligibility.rs` | `coroutine_saved_local_eligibility` | draft, `ignore-on-host` |
+| `eligibility.rs` | `coroutine_saved_local_eligibility` | full specification, no answer at 300 s, `ignore-on-host` |
 | `univariant.rs` | trusted specification of `univariant` | draft, `ignore-on-host` |
 | `layout.rs` | `layout()` integration | draft, `ignore-on-host` |
 

@@ -1,4 +1,4 @@
-//@ignore-on-host: draft, stops at slice indexing by `IntoSliceIdx::Output` in the generic `Index` impl of `IndexSlice`, which has no specification (see README.md)
+//@ignore-on-host: the query needs more memory and time than a ui run gives (see README.md)
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_TRY_SPECS=1
 
@@ -10,11 +10,11 @@
 // re-derived, since its predicates (`mem`, `inserted`, `no_mem`, `index_is`)
 // are exactly what the eligibility spec needs to build on. `IndexSlice` /
 // `IndexVec` / `SliceIter` / `IterEnumerated` are new here (stage 2/4, not
-// yet in bitset.rs) and carry a best-effort `Model` for `IndexSlice`: see the
-// comment on that `impl` below for why plain `type Ty = Self` cannot work
-// and what is chosen instead. This file is a DRAFT: it is not expected to
-// verify (`ignore-on-host` above), only to compile and to record where the
-// spec is uncertain (`// TODO(spec):`).
+// yet in bitset.rs) and carry a `Model` for `IndexSlice`: see the comment on
+// that `impl` below for why plain `type Ty = Self` cannot work and what is
+// chosen instead. Every loop of `coroutine_saved_local_eligibility` has an
+// invariant, which replaces inference at that loop, so each one restates
+// every fact the code after it needs.
 
 use thrust_models::exists;
 use thrust_models::forall;
@@ -159,7 +159,8 @@ impl<T: Idx> DenseBitSet<T> {
     /// `i` is a member of the set. The words are a `Vec<u64>` and bit tests
     /// have no model, so membership is read off the word array as "the word
     /// stored at index `i` is non-zero"; every body below is trusted, so this
-    /// is just a fixed abstraction function for the set specs.
+    /// is just a fixed abstraction function for the set specs, under which the
+    /// second component holds one flag per element of the domain.
     #[thrust_macros::predicate]
     fn mem(self, i: usize) -> bool {
         // self.words[i] != 0
@@ -184,22 +185,10 @@ impl<T: Idx> DenseBitSet<T> {
         forall(|k: UInt| !(0 <= k && k < self.1.len()) || self.1[k] == 0)
     }
 
-    // New for this stage: "l is the k-th element yielded by `self.iter()`".
-    // TODO(spec): uninterpreted placeholder. A real definition needs a model
-    // of `BitIter`'s traversal order tied to `mem` (e.g. `elem_at(self, k, l)
-    // ==> mem(self, l)`, injectivity in `k`, and the count of `k`s below
-    // `self.domain_size` equalling `self.count()`); that model is out of
-    // scope for this draft (bit-set specs stay set-abstraction only, per the
-    // stage plan), so this predicate is left axiom-free (`true`) and every
-    // ensures clause that uses it below is marked accordingly.
-    #[thrust_macros::predicate]
-    fn elem_at(self, k: usize, l: T) -> bool {
-        true
-    }
-
     #[inline]
     #[thrust::trusted]
     #[thrust_macros::ensures(result.0 == domain_size)]
+    #[thrust_macros::ensures(result.1.len() == domain_size)]
     #[thrust_macros::ensures(Self::no_mem(result))]
     #[thrust_macros::ensures(result.3 == 0)]
     pub fn new_empty(domain_size: usize) -> DenseBitSet<T> {
@@ -264,6 +253,7 @@ impl<T: Idx> DenseBitSet<T> {
 
     #[thrust::trusted]
     #[thrust_macros::ensures((!self).0 == (*self).0)]
+    #[thrust_macros::ensures((!self).1.len() == (*self).1.len())]
     #[thrust_macros::ensures(forall(|i: UInt| i < (*self).0 ==> Self::mem(!self, i)))]
     #[thrust_macros::ensures((!self).3 == (*self).0)]
     pub fn insert_all(&mut self) {
@@ -277,6 +267,7 @@ impl<T: Idx> DenseBitSet<T> {
     #[thrust_macros::ensures(result.0 == (*self).0 && result.1 == 0)]
     #[thrust_macros::ensures(0 <= result.2 && result.2 <= (*self).0)]
     #[thrust_macros::ensures(result.2 == (*self).3)]
+    #[thrust_macros::ensures(result.3 == (*self).1)]
     pub fn iter(&self) -> BitIter<'_, T> {
         BitIter::new(&self.words)
     }
@@ -364,14 +355,17 @@ where
         self.next_bit()
     }
 
-    // The model is (bound, count, left): the column bound of the bit set the iterator walks
+    // The model is (bound, count, left, rest): the column bound of the bit set the iterator walks
     // (`num_columns` of the matrix row, `domain_size` of a `DenseBitSet`), which never changes,
-    // the number of items yielded so far, and the number still to yield. Every yielded element
+    // the number of items yielded so far, the number still to yield, and the members not yet
+    // yielded, as flags read like `DenseBitSet::mem` (non-zero at a member). Every yielded element
     // is below the bound, and the elements are distinct, so count + left stays at most the bound.
     // `left` makes completion observable: the iterator completes with nothing left, which
-    // `Map`'s `reinitialize` in layout.rs needs. `next` builds its item with `T::new`, which
-    // panics unless `can_new` holds; the model does not say which bit comes next, so every
-    // index below the bound must be buildable.
+    // `Map`'s `reinitialize` in layout.rs needs. `rest` says which elements come: a yielded
+    // element leaves it, an element not yielded stays, and none joins; at completion it has no
+    // member below the bound. `next` builds its item with `T::new`, which panics unless `can_new`
+    // holds; the model does not say which bit comes next, so every index below the bound must be
+    // buildable.
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
         0 <= self.1
@@ -388,12 +382,20 @@ where
             && o.2 + visited.len() == self.2
             && 0 <= o.2
             && forall(|i: UInt, k: UInt|
-                !(0 <= i && i < visited.len() && <T as Idx>::index_is(visited[i], k)) || k < self.0)
+                !(0 <= i && i < visited.len() && <T as Idx>::index_is(visited[i], k))
+                    || (k < self.0 && self.3[k] != 0 && o.3[k] == 0))
+            && forall(|k: UInt| !(o.3[k] != 0) || self.3[k] != 0)
+            && forall(|k: UInt|
+                !(self.3[k] != 0
+                    && forall(|i: UInt| !(0 <= i && i < visited.len()) || !<T as Idx>::index_is(visited[i], k)))
+                    || o.3[k] != 0)
     }
 
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
-        (*self).2 == 0 && *self == !self
+        (*self).2 == 0
+            && forall(|k: UInt| !(0 <= k && k < (*self).0) || (*self).3[k] == 0)
+            && *self == !self
     }
 }
 
@@ -546,6 +548,19 @@ pub trait Idx: Copy + 'static + Eq + PartialEq + Debug + Hash {
 
     #[thrust_macros::ensures(Self::index_is(self, result))]
     fn index(self) -> usize;
+
+    // `index` is a function, so an element has exactly one index. Creusot gets this for free from
+    // a logic function; `index_is` is a predicate, so the two halves are laws.
+    #[thrust_macros::law]
+    #[thrust_macros::requires(Self::index_is(*a, i) && Self::index_is(*a, j))]
+    #[thrust_macros::ensures(i == j)]
+    #[thrust::trusted]
+    fn index_is_unique(a: &Self, i: usize, j: usize) {}
+
+    #[thrust_macros::law]
+    #[thrust_macros::ensures(exists(|i: UInt| Self::index_is(*a, i)))]
+    #[thrust::trusted]
+    fn index_is_total(a: &Self) {}
 
     #[inline]
     #[thrust_macros::requires(forall(|i: UInt, a: UInt|
@@ -897,7 +912,7 @@ where
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(forall(|i: UInt| <R as IntoSliceIdx<I, [T]>>::into_is(index, i) ==> i < (*slf).len()))]
 #[thrust_macros::ensures(forall(|i: UInt| <R as IntoSliceIdx<I, [T]>>::into_is(index, i)
-    ==> (*result == (*slf)[i] && !result == (!slf)[i] && (!slf).len() == (*slf).len())))]
+    ==> (*result == (*slf)[i] && !slf == (*slf).store(i, !result))))]
 fn _extern_spec_index_slice_index_mut<I: Idx + thrust_models::Model<Ty: PartialEq>, T: thrust_models::Model, R: IntoSliceIdx<I, [T], Output = usize> + thrust_models::Model>(slf: &mut IndexSlice<I, T>, index: R) -> &mut T
 where
     <T as thrust_models::Model>::Ty: PartialEq,
@@ -947,13 +962,9 @@ impl<I: Idx, T> IndexVec<I, T> {
     #[inline]
     #[thrust_macros::ensures(result.len() == n
         && forall(|k: UInt| !(0 <= k && k < n) || result[k] == elem))]
-    // TODO(spec): the intended second clause, `forall i < n: result.raw[i] ==
-    // elem`, does not typecheck generically: `elem`'s top-level parameter
-    // type is lowered to `<T as Model>::Ty` (per `lower_params`) but
-    // `result.raw[i]` (real `Vec` indexing) yields the real, un-lowered `T`,
-    // and nothing constrains `T: PartialEq<<T as Model>::Ty>` generically.
-    // Dropped for this draft; the only property `coroutine_saved_local_
-    // eligibility`'s proof actually needs from `from_elem_n` is the length.
+    // The elements are read through the model (`result[k]`), not `result.raw[i]`: `elem`'s
+    // parameter type is lowered to `<T as Model>::Ty` (per `lower_params`), which a real `T`
+    // from `result.raw[i]` cannot be compared with generically.
     pub fn from_elem_n(elem: T, n: usize) -> Self
     where
         T: Clone,
@@ -1153,11 +1164,6 @@ impl<I: Idx, T: thrust_models::Model> thrust_models::Model for IndexVec<I, T> {
 // { type Ty = Seq<T::Ty>; }` (std.rs) that `IndexSlice`'s own `raw` field
 // already gets: model `IndexSlice<I, T>` the same way its slice models
 // itself, dropping the phantom `I` marker (it carries no runtime state).
-// TODO(spec): this is untested against Thrust's own analysis passes for a
-// *generic* element type T (the target file's header lists generic `[T]` as
-// unsupported "in order of appearance" ahead of everything in this file);
-// expect this to be exactly where the draft's compile check stops being
-// clean, if anywhere. See the report for what actually happened.
 impl<I: Idx, T: thrust_models::Model> thrust_models::Model for IndexSlice<I, T> {
     type Ty = <[T] as thrust_models::Model>::Ty;
 }
@@ -1180,7 +1186,7 @@ impl<'a> thrust_models::Model for WordIter<'a> {
     type Ty = (&'a Seq<UInt>, UInt);
 }
 impl<'a, T: Idx> thrust_models::Model for BitIter<'a, T> {
-    type Ty = (UInt, UInt, UInt);
+    type Ty = (UInt, UInt, UInt, Seq<UInt>);
 }
 impl<R: Idx, C: Idx> thrust_models::Model for BitMatrix<R, C> {
     type Ty = Self;
@@ -1197,25 +1203,27 @@ impl<I: thrust_models::Model> thrust_models::Model for Enumerate<I> {
 // Notation below follows the README: `a = result.1` (the `assignments`
 // vector) and `inel = result.0` (the `ineligible_locals` set).
 //
-// TODO(spec): the four `ensures` clauses are a direct transcription of the
-// README's four bullets; property 3/4 lean on the freshly-introduced
-// `DenseBitSet::elem_at` predicate, which is uninterpreted (see its
-// definition above) — so as written these two clauses are close to vacuous
-// (anything satisfies an implication whose antecedent can't be discharged
-// against an axiom-free predicate), which is expected for a draft.
-// NOTE: quantifiers below use `usize`, not `Int`: unlike a `predicate` body
-// (see `DenseBitSet::mem` etc., which get special HIR-level field-projection
-// handling per `analyze::local_def::predicate_definition`, as in values.rs's
-// `dl_wf`), a `requires`/`ensures` body is compiled as an ordinary function
-// (`thrust-macros/src/spec.rs`'s `requires_fn`/`ensures_fn`) and really does
-// need literal, valid Rust: real `.len()` / real `[usize]` indexing on a
-// plain `Vec<T>` field.
+// The four numbered `ensures` clauses are the README's four bullets.
+// Quantifiers in `requires`/`ensures` use `usize`, not `Int`: unlike a
+// `predicate` body (see `DenseBitSet::mem` etc., which get special HIR-level
+// field-projection handling per `analyze::local_def::predicate_definition`, as
+// in values.rs's `dl_wf`), a `requires`/`ensures` body is compiled as an
+// ordinary function (`thrust-macros/src/spec.rs`'s `requires_fn`/`ensures_fn`)
+// and needs valid Rust: real `.len()` / real `[usize]` indexing.
 // `IndexVec` and `IndexSlice` share one model, the slice's `Seq`, so element
 // access below reads `[..]` and the length `.len()`.
 // An element is then `<LocalIdx as Model>::Ty`, not a real `LocalIdx`, so
 // `Idx::index()` is not callable on it (and would not translate in a formula
 // anyway): the `Idx::index_is` predicate carries the same fact, with an
 // `exists(|i: Int| i == l && ..)` bridge where the position is a `usize`.
+//
+// The loop invariants replace inference, so each restates what the code after
+// it needs: the lengths, the requirements on the arguments, and properties 1,
+// 2 and 4 in the form that holds at that loop (`nb_locals` and, once dead,
+// `variant_fields` are read at entry through `FnParam`). Where the live
+// `variant_fields` and `storage_conflicts` are needed too, a second
+// `invariant!` at the same header states the facts about them; the variants
+// loops tie the two `variant_fields` together through `variants.0`.
 #[thrust_macros::requires(
     forall(|v: usize, f: usize|
         !(0 <= v && v < (*variant_fields).len()
@@ -1245,11 +1253,7 @@ impl<I: thrust_models::Model> thrust_models::Model for Enumerate<I> {
             || !thrust_models::exists(|i: UInt|
                 i == l
                     && <LocalIdx as Idx>::index_is((*variant_fields)[v][f], i))))
-    // 2. Assigned(v) locals appear only under variant v, and only there.
-    // TODO(spec): "exists f: variant_fields[v][f] == l" and the "not under
-    // any other assigned variant" half are folded into one nested forall/
-    // exists below; the exact quantifier shape is a best effort, not
-    // checked against the solver (this file does not verify, see header).
+    // 2. An Assigned(v) local appears in variant v's field list.
     && forall(|l: usize, v: usize|
         !(0 <= l && l < nb_locals
             && thrust_models::exists(|vi: <VariantIdx as thrust_models::Model>::Ty|
@@ -1267,9 +1271,7 @@ impl<I: thrust_models::Model> thrust_models::Model for Enumerate<I> {
         !(0 <= l && l < nb_locals && result.1[l] == SavedLocalEligibility::Ineligible(x))
         || thrust_models::exists(|k: <FieldIdx as thrust_models::Model>::Ty|
             x == Some(k) && forall(|i: UInt| !<FieldIdx as Idx>::index_is(k, i) || i < result.0.3)))
-    // 4. Membership in `inel` matches being `Ineligible(_)`.
-    // TODO(spec): `DenseBitSet::elem_at`/`mem` are uninterpreted here, see
-    // above; written as an `<==>` via two `==>` for the annotation grammar.
+    // 4. Membership in `inel` matches being `Ineligible(_)`, written as an `<==>` via two `==>`.
     // `mem` takes an `Int` (its declared `usize` parameter is lowered to
     // `Int` by `#[thrust_macros::predicate]`, see the note above the
     // `requires`), but real `Vec` indexing needs a literal `usize`; the
@@ -1299,40 +1301,95 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
 
     let mut variants = variant_fields.iter_enumerated();
     while let Some((variant_index, fields)) = variants.next() {
-        // TODO(spec): "a local of a processed variant (0..variant_index) is not
-        // Unassigned, and if Assigned(v) then v < variant_index" per the
-        // README; written informally here (draft, not expected to verify).
+        // Properties 1 and 2 over the variants before `variants.1`, and 4.
         thrust_macros::invariant!(
-            |assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, ineligible_locals: DenseBitSet<LocalIdx>, variants: IterEnumerated<VariantIdx, IndexVec<FieldIdx, LocalIdx>>, variant_fields: &IndexSlice<VariantIdx, IndexVec<FieldIdx, LocalIdx>>|
-            assignments.len() == ineligible_locals.0 && variants.1 >= 0 && variants.1 <= variants.0.len() && *variants.0 == *variant_fields
-                && forall(|v: UInt| !(0 <= v && v <= (*variant_fields).len()) || <VariantIdx as Idx>::can_new(v))
-                && forall(|v: usize, f: usize|
-                !(0 <= v && v < (*variant_fields).len() && 0 <= f && f < (*variant_fields)[v].len())
-                || forall(|i: UInt| !<LocalIdx as Idx>::index_is((*variant_fields)[v][f], i)
-                    || i < ineligible_locals.0))
-                && forall(|k: UInt, v: <VariantIdx as thrust_models::Model>::Ty, i: UInt|
-                !(0 <= k && k < assignments.len() && assignments[k] == SavedLocalEligibility::Assigned(v)
-                    && <VariantIdx as Idx>::index_is(v, i))
+            |assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, ineligible_locals: DenseBitSet<LocalIdx>, variants: IterEnumerated<VariantIdx, IndexVec<FieldIdx, LocalIdx>>, variant_fields: &IndexSlice<VariantIdx, IndexVec<FieldIdx, LocalIdx>>, storage_conflicts: &BitMatrix<LocalIdx, LocalIdx>, nb_locals: thrust_models::FnParam<usize>|
+            assignments.len() == nb_locals.at_entry()
+            && ineligible_locals.0 == nb_locals.at_entry()
+            && ineligible_locals.1.len() == nb_locals.at_entry()
+            && 0 <= ineligible_locals.3
+            && ineligible_locals.3 <= ineligible_locals.0
+            && variants.1 >= 0 && variants.1 <= variants.0.len() && *variants.0 == *variant_fields
+            && forall(|v: UInt| !(0 <= v && v <= (*variant_fields).len()) || <VariantIdx as Idx>::can_new(v))
+            && forall(|k: UInt, v: <VariantIdx as thrust_models::Model>::Ty, i: UInt|
+                !(0 <= k && k < assignments.len() && assignments[k] == SavedLocalEligibility::Assigned(v) && <VariantIdx as Idx>::index_is(v, i))
                 || i < (*variant_fields).len())
+            && (*storage_conflicts).num_rows <= nb_locals.at_entry()
+            && *(*storage_conflicts).col_bound <= (*storage_conflicts).num_rows
+            && BitMatrix::<LocalIdx, LocalIdx>::wf(*storage_conflicts)
+            && forall(|k: UInt| !(0 <= k && k < nb_locals.at_entry()) || <LocalIdx as Idx>::can_new(k))
+            && forall(|n: UInt| !(0 <= n && n <= nb_locals.at_entry()) || <FieldIdx as Idx>::can_new(n))
+            && forall(|l: UInt, x: Option<<FieldIdx as thrust_models::Model>::Ty>|
+                !(0 <= l && l < nb_locals.at_entry() && assignments[l] == SavedLocalEligibility::Ineligible(x))
+                || (DenseBitSet::<LocalIdx>::mem(ineligible_locals, l) && x == None))
+            && forall(|l: UInt| !(0 <= l && l < nb_locals.at_entry() && DenseBitSet::<LocalIdx>::mem(ineligible_locals, l))
+                || assignments[l] == SavedLocalEligibility::Ineligible(None))
+        );
+        thrust_macros::invariant!(
+            |assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, variants: IterEnumerated<VariantIdx, IndexVec<FieldIdx, LocalIdx>>, variant_fields: thrust_models::FnParam<&IndexSlice<VariantIdx, IndexVec<FieldIdx, LocalIdx>>>, nb_locals: thrust_models::FnParam<usize>|
+            *variants.0 == *variant_fields.at_entry()
+            && forall(|v: UInt, f: UInt| !(0 <= v && v < (*variant_fields.at_entry()).len() && 0 <= f && f < (*variant_fields.at_entry())[v].len())
+                || forall(|i: UInt| !<LocalIdx as Idx>::index_is((*variant_fields.at_entry())[v][f], i) || i < nb_locals.at_entry()))
+            && forall(|l: UInt, v: UInt, f: UInt|
+                !(0 <= l && l < nb_locals.at_entry() && assignments[l] == SavedLocalEligibility::Unassigned
+                    && 0 <= v && v < variants.1 && 0 <= f && f < (*variant_fields.at_entry())[v].len())
+                || !<LocalIdx as Idx>::index_is((*variant_fields.at_entry())[v][f], l))
+            && forall(|k: UInt, v: <VariantIdx as thrust_models::Model>::Ty, i: UInt|
+                !(0 <= k && k < assignments.len() && assignments[k] == SavedLocalEligibility::Assigned(v) && <VariantIdx as Idx>::index_is(v, i))
+                || (i < (*variant_fields.at_entry()).len()
+                    && exists(|f: UInt| 0 <= f && f < (*variant_fields.at_entry())[i].len() && <LocalIdx as Idx>::index_is((*variant_fields.at_entry())[i][f], k))))
         );
         // Rewrite (rewrites.md R9): `iter()`, which `IntoIterator for &IndexVec` returned.
         let mut locals = fields.iter();
         while let Some(local) = locals.next() {
-            thrust_macros::invariant!(|assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, ineligible_locals: DenseBitSet<LocalIdx>, variants: IterEnumerated<VariantIdx, IndexVec<FieldIdx, LocalIdx>>, locals: SliceIter<LocalIdx>, variant_index: VariantIdx, variant_fields: &IndexSlice<VariantIdx, IndexVec<FieldIdx, LocalIdx>>|
-                assignments.len() == ineligible_locals.0 && variants.1 >= 0 && variants.1 <= variants.0.len() && *variants.0 == *variant_fields
+            // `variant_index` is the variant at `variants.1 - 1`, whose fields `locals` walks;
+            // property 1 covers the variants before it and its locals before `locals.1`.
+            thrust_macros::invariant!(
+                |assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, ineligible_locals: DenseBitSet<LocalIdx>, variants: IterEnumerated<VariantIdx, IndexVec<FieldIdx, LocalIdx>>, locals: SliceIter<LocalIdx>, variant_index: VariantIdx, variant_fields: &IndexSlice<VariantIdx, IndexVec<FieldIdx, LocalIdx>>, storage_conflicts: &BitMatrix<LocalIdx, LocalIdx>, nb_locals: thrust_models::FnParam<usize>|
+                assignments.len() == nb_locals.at_entry()
+                && ineligible_locals.0 == nb_locals.at_entry()
+                && ineligible_locals.1.len() == nb_locals.at_entry()
+                && 0 <= ineligible_locals.3
+                && ineligible_locals.3 <= ineligible_locals.0
+                && variants.1 >= 0 && variants.1 <= variants.0.len() && *variants.0 == *variant_fields
                 && forall(|v: UInt| !(0 <= v && v <= (*variant_fields).len()) || <VariantIdx as Idx>::can_new(v))
-                && forall(|v: usize, f: usize|
-                !(0 <= v && v < (*variant_fields).len() && 0 <= f && f < (*variant_fields)[v].len())
-                || forall(|i: UInt| !<LocalIdx as Idx>::index_is((*variant_fields)[v][f], i)
-                    || i < ineligible_locals.0))
                 && forall(|k: UInt, v: <VariantIdx as thrust_models::Model>::Ty, i: UInt|
-                !(0 <= k && k < assignments.len() && assignments[k] == SavedLocalEligibility::Assigned(v)
-                    && <VariantIdx as Idx>::index_is(v, i))
-                || i < (*variant_fields).len())
+                    !(0 <= k && k < assignments.len() && assignments[k] == SavedLocalEligibility::Assigned(v) && <VariantIdx as Idx>::index_is(v, i))
+                    || i < (*variant_fields).len())
+                && (*storage_conflicts).num_rows <= nb_locals.at_entry()
+                && *(*storage_conflicts).col_bound <= (*storage_conflicts).num_rows
+                && BitMatrix::<LocalIdx, LocalIdx>::wf(*storage_conflicts)
+                && forall(|k: UInt| !(0 <= k && k < nb_locals.at_entry()) || <LocalIdx as Idx>::can_new(k))
+                && forall(|n: UInt| !(0 <= n && n <= nb_locals.at_entry()) || <FieldIdx as Idx>::can_new(n))
+                && forall(|l: UInt, x: Option<<FieldIdx as thrust_models::Model>::Ty>|
+                    !(0 <= l && l < nb_locals.at_entry() && assignments[l] == SavedLocalEligibility::Ineligible(x))
+                    || (DenseBitSet::<LocalIdx>::mem(ineligible_locals, l) && x == None))
+                && forall(|l: UInt| !(0 <= l && l < nb_locals.at_entry() && DenseBitSet::<LocalIdx>::mem(ineligible_locals, l))
+                    || assignments[l] == SavedLocalEligibility::Ineligible(None))
                 && locals.1 >= 0 && locals.1 <= locals.0.len()
                 && forall(|k: UInt| !(0 <= k && k < locals.0.len())
-                    || forall(|i: UInt| !<LocalIdx as Idx>::index_is(locals.0[k], i) || i < ineligible_locals.0))
-                && forall(|i: UInt| !<VariantIdx as Idx>::index_is(variant_index, i) || i < (*variant_fields).len()));
+                    || forall(|i: UInt| !<LocalIdx as Idx>::index_is(locals.0[k], i) || i < nb_locals.at_entry()))
+                && forall(|i: UInt| !<VariantIdx as Idx>::index_is(variant_index, i) || i < (*variant_fields).len())
+                && forall(|p: UInt| !<VariantIdx as Idx>::index_is(variant_index, p) || p + 1 == variants.1)
+            );
+            thrust_macros::invariant!(
+                |assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, variants: IterEnumerated<VariantIdx, IndexVec<FieldIdx, LocalIdx>>, locals: SliceIter<LocalIdx>, variant_index: VariantIdx, variant_fields: thrust_models::FnParam<&IndexSlice<VariantIdx, IndexVec<FieldIdx, LocalIdx>>>, nb_locals: thrust_models::FnParam<usize>|
+                *variants.0 == *variant_fields.at_entry()
+                && forall(|v: UInt, f: UInt| !(0 <= v && v < (*variant_fields.at_entry()).len() && 0 <= f && f < (*variant_fields.at_entry())[v].len())
+                    || forall(|i: UInt| !<LocalIdx as Idx>::index_is((*variant_fields.at_entry())[v][f], i) || i < nb_locals.at_entry()))
+                && forall(|p: UInt| !<VariantIdx as Idx>::index_is(variant_index, p) || *locals.0 == (*variant_fields.at_entry())[p])
+                && forall(|l: UInt, v: UInt, f: UInt|
+                    !(0 <= l && l < nb_locals.at_entry() && assignments[l] == SavedLocalEligibility::Unassigned
+                        && 0 <= v && v + 1 < variants.1 && 0 <= f && f < (*variant_fields.at_entry())[v].len())
+                    || !<LocalIdx as Idx>::index_is((*variant_fields.at_entry())[v][f], l))
+                && forall(|l: UInt, k: UInt|
+                    !(0 <= l && l < nb_locals.at_entry() && assignments[l] == SavedLocalEligibility::Unassigned && 0 <= k && k < locals.1)
+                    || !<LocalIdx as Idx>::index_is(locals.0[k], l))
+                && forall(|k: UInt, v: <VariantIdx as thrust_models::Model>::Ty, i: UInt|
+                    !(0 <= k && k < assignments.len() && assignments[k] == SavedLocalEligibility::Assigned(v) && <VariantIdx as Idx>::index_is(v, i))
+                    || (i < (*variant_fields.at_entry()).len()
+                        && exists(|f: UInt| 0 <= f && f < (*variant_fields.at_entry())[i].len() && <LocalIdx as Idx>::index_is((*variant_fields.at_entry())[i][f], k))))
+            );
             match assignments[*local] {
                 Unassigned => {
                     assignments[*local] = Assigned(variant_index);
@@ -1348,21 +1405,41 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
 
     let mut rows = storage_conflicts.rows();
     while let Some(local_a) = rows.next() {
-        // TODO(spec): the README's conflict loop invariant ("Assigned ->
-        // Ineligible transitions only; properties 1, 2's negative half and 4
-        // preserved") is not encoded. What is stated is what the indexing and
-        // `contains`/`insert` preconditions in the body need: the lengths and
-        // domain sizes stay `nb_locals`, and `rows` yields `[start, nb_locals)`.
-        thrust_macros::invariant!(|assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, ineligible_locals: DenseBitSet<LocalIdx>, rows: IdxRange<LocalIdx>, storage_conflicts: &BitMatrix<LocalIdx, LocalIdx>, variant_fields: &IndexSlice<VariantIdx, IndexVec<FieldIdx, LocalIdx>>|
-            forall(|k: UInt, v: <VariantIdx as thrust_models::Model>::Ty, i: UInt|
-                !(0 <= k && k < assignments.len() && assignments[k] == SavedLocalEligibility::Assigned(v)
-                    && <VariantIdx as Idx>::index_is(v, i))
+        // The loop only turns locals into `Ineligible(None)` members of `ineligible_locals`, so
+        // properties 1, 2 and 4 carry over.
+        thrust_macros::invariant!(
+            |assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, ineligible_locals: DenseBitSet<LocalIdx>, rows: IdxRange<LocalIdx>, storage_conflicts: &BitMatrix<LocalIdx, LocalIdx>, variant_fields: &IndexSlice<VariantIdx, IndexVec<FieldIdx, LocalIdx>>, nb_locals: thrust_models::FnParam<usize>|
+            assignments.len() == nb_locals.at_entry()
+            && ineligible_locals.0 == nb_locals.at_entry()
+            && ineligible_locals.1.len() == nb_locals.at_entry()
+            && 0 <= ineligible_locals.3
+            && ineligible_locals.3 <= ineligible_locals.0
+            && forall(|k: UInt, v: <VariantIdx as thrust_models::Model>::Ty, i: UInt|
+                !(0 <= k && k < assignments.len() && assignments[k] == SavedLocalEligibility::Assigned(v) && <VariantIdx as Idx>::index_is(v, i))
                 || i < (*variant_fields).len())
-                && assignments.len() == ineligible_locals.0 && (*storage_conflicts).num_rows <= ineligible_locals.0
-                && *(*storage_conflicts).col_bound <= (*storage_conflicts).num_rows
-                && BitMatrix::<LocalIdx, LocalIdx>::wf(*storage_conflicts)
-                && forall(|k: UInt| !(0 <= k && k < ineligible_locals.0) || <LocalIdx as Idx>::can_new(k))
-                && rows.start >= 0 && rows.end == (*storage_conflicts).num_rows);
+            && (*storage_conflicts).num_rows <= nb_locals.at_entry()
+            && *(*storage_conflicts).col_bound <= (*storage_conflicts).num_rows
+            && BitMatrix::<LocalIdx, LocalIdx>::wf(*storage_conflicts)
+            && forall(|k: UInt| !(0 <= k && k < nb_locals.at_entry()) || <LocalIdx as Idx>::can_new(k))
+            && forall(|n: UInt| !(0 <= n && n <= nb_locals.at_entry()) || <FieldIdx as Idx>::can_new(n))
+            && forall(|l: UInt, x: Option<<FieldIdx as thrust_models::Model>::Ty>|
+                !(0 <= l && l < nb_locals.at_entry() && assignments[l] == SavedLocalEligibility::Ineligible(x))
+                || (DenseBitSet::<LocalIdx>::mem(ineligible_locals, l) && x == None))
+            && forall(|l: UInt| !(0 <= l && l < nb_locals.at_entry() && DenseBitSet::<LocalIdx>::mem(ineligible_locals, l))
+                || assignments[l] == SavedLocalEligibility::Ineligible(None))
+            && rows.start >= 0 && rows.end == (*storage_conflicts).num_rows
+        );
+        thrust_macros::invariant!(
+            |assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, variant_fields: thrust_models::FnParam<&IndexSlice<VariantIdx, IndexVec<FieldIdx, LocalIdx>>>, nb_locals: thrust_models::FnParam<usize>|
+            forall(|l: UInt, v: UInt, f: UInt|
+                !(0 <= l && l < nb_locals.at_entry() && assignments[l] == SavedLocalEligibility::Unassigned
+                    && 0 <= v && v < (*variant_fields.at_entry()).len() && 0 <= f && f < (*variant_fields.at_entry())[v].len())
+                || !<LocalIdx as Idx>::index_is((*variant_fields.at_entry())[v][f], l))
+            && forall(|k: UInt, v: <VariantIdx as thrust_models::Model>::Ty, i: UInt|
+                !(0 <= k && k < assignments.len() && assignments[k] == SavedLocalEligibility::Assigned(v) && <VariantIdx as Idx>::index_is(v, i))
+                || (i < (*variant_fields.at_entry()).len()
+                    && exists(|f: UInt| 0 <= f && f < (*variant_fields.at_entry())[i].len() && <LocalIdx as Idx>::index_is((*variant_fields.at_entry())[i][f], k))))
+        );
         let conflicts_a = storage_conflicts.count(local_a);
         if ineligible_locals.contains(local_a) {
             continue;
@@ -1370,19 +1447,42 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
 
         let mut conflicts = storage_conflicts.iter(local_a);
         while let Some(local_b) = conflicts.next() {
-            thrust_macros::invariant!(|assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, ineligible_locals: DenseBitSet<LocalIdx>, conflicts: BitIter<LocalIdx>, rows: IdxRange<LocalIdx>, local_a: LocalIdx, storage_conflicts: &BitMatrix<LocalIdx, LocalIdx>, variant_fields: &IndexSlice<VariantIdx, IndexVec<FieldIdx, LocalIdx>>|
-                forall(|k: UInt, v: <VariantIdx as thrust_models::Model>::Ty, i: UInt|
-                !(0 <= k && k < assignments.len() && assignments[k] == SavedLocalEligibility::Assigned(v)
-                    && <VariantIdx as Idx>::index_is(v, i))
-                || i < (*variant_fields).len())
-                && assignments.len() == ineligible_locals.0 && (*storage_conflicts).num_rows <= ineligible_locals.0
-                    && *(*storage_conflicts).col_bound <= (*storage_conflicts).num_rows
-                    && BitMatrix::<LocalIdx, LocalIdx>::wf(*storage_conflicts)
-                    && forall(|k: UInt| !(0 <= k && k < ineligible_locals.0) || <LocalIdx as Idx>::can_new(k))
-                    && rows.start >= 0 && rows.end == (*storage_conflicts).num_rows
-                    && forall(|i: UInt| !<LocalIdx as Idx>::index_is(local_a, i) || i < ineligible_locals.0)
-                    && conflicts.0 == *(*storage_conflicts).col_bound
-                    && 0 <= conflicts.1 && 0 <= conflicts.2 && conflicts.1 + conflicts.2 <= conflicts.0);
+            thrust_macros::invariant!(
+                |assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, ineligible_locals: DenseBitSet<LocalIdx>, conflicts: BitIter<LocalIdx>, rows: IdxRange<LocalIdx>, local_a: LocalIdx, storage_conflicts: &BitMatrix<LocalIdx, LocalIdx>, variant_fields: &IndexSlice<VariantIdx, IndexVec<FieldIdx, LocalIdx>>, nb_locals: thrust_models::FnParam<usize>|
+                assignments.len() == nb_locals.at_entry()
+                && ineligible_locals.0 == nb_locals.at_entry()
+                && ineligible_locals.1.len() == nb_locals.at_entry()
+                && 0 <= ineligible_locals.3
+                && ineligible_locals.3 <= ineligible_locals.0
+                && forall(|k: UInt, v: <VariantIdx as thrust_models::Model>::Ty, i: UInt|
+                    !(0 <= k && k < assignments.len() && assignments[k] == SavedLocalEligibility::Assigned(v) && <VariantIdx as Idx>::index_is(v, i))
+                    || i < (*variant_fields).len())
+                && (*storage_conflicts).num_rows <= nb_locals.at_entry()
+                && *(*storage_conflicts).col_bound <= (*storage_conflicts).num_rows
+                && BitMatrix::<LocalIdx, LocalIdx>::wf(*storage_conflicts)
+                && forall(|k: UInt| !(0 <= k && k < nb_locals.at_entry()) || <LocalIdx as Idx>::can_new(k))
+                && forall(|n: UInt| !(0 <= n && n <= nb_locals.at_entry()) || <FieldIdx as Idx>::can_new(n))
+                && forall(|l: UInt, x: Option<<FieldIdx as thrust_models::Model>::Ty>|
+                    !(0 <= l && l < nb_locals.at_entry() && assignments[l] == SavedLocalEligibility::Ineligible(x))
+                    || (DenseBitSet::<LocalIdx>::mem(ineligible_locals, l) && x == None))
+                && forall(|l: UInt| !(0 <= l && l < nb_locals.at_entry() && DenseBitSet::<LocalIdx>::mem(ineligible_locals, l))
+                    || assignments[l] == SavedLocalEligibility::Ineligible(None))
+                && rows.start >= 0 && rows.end == (*storage_conflicts).num_rows
+                && forall(|i: UInt| !<LocalIdx as Idx>::index_is(local_a, i) || i < nb_locals.at_entry())
+                && conflicts.0 == *(*storage_conflicts).col_bound
+                && 0 <= conflicts.1 && 0 <= conflicts.2 && conflicts.1 + conflicts.2 <= conflicts.0
+            );
+            thrust_macros::invariant!(
+                |assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, variant_fields: thrust_models::FnParam<&IndexSlice<VariantIdx, IndexVec<FieldIdx, LocalIdx>>>, nb_locals: thrust_models::FnParam<usize>|
+                forall(|l: UInt, v: UInt, f: UInt|
+                    !(0 <= l && l < nb_locals.at_entry() && assignments[l] == SavedLocalEligibility::Unassigned
+                        && 0 <= v && v < (*variant_fields.at_entry()).len() && 0 <= f && f < (*variant_fields.at_entry())[v].len())
+                    || !<LocalIdx as Idx>::index_is((*variant_fields.at_entry())[v][f], l))
+                && forall(|k: UInt, v: <VariantIdx as thrust_models::Model>::Ty, i: UInt|
+                    !(0 <= k && k < assignments.len() && assignments[k] == SavedLocalEligibility::Assigned(v) && <VariantIdx as Idx>::index_is(v, i))
+                    || (i < (*variant_fields.at_entry()).len()
+                        && exists(|f: UInt| 0 <= f && f < (*variant_fields.at_entry())[i].len() && <LocalIdx as Idx>::index_is((*variant_fields.at_entry())[i][f], k))))
+            );
             if ineligible_locals.contains(local_b) || assignments[local_a] == assignments[local_b] {
                 continue;
             }
@@ -1403,16 +1503,35 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
         // Rewrite (rewrites.md R9), as for `locals` above.
         let mut assignments_iter = assignments.iter();
         while let Some(assignment) = assignments_iter.next() {
-            // TODO(spec): "properties 1, 2, 4 preserved" from the README not
-            // encoded; `used_variants` itself carries no property needed for
-            // panic safety (only `count()` is read below).
-            thrust_macros::invariant!(|used_variants: DenseBitSet<VariantIdx>, assignments_iter: SliceIter<SavedLocalEligibility<VariantIdx, FieldIdx>>, assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>|
+            // `used_variants` is the domain of the variants assigned so far; the rest is unchanged.
+            thrust_macros::invariant!(
+                |used_variants: DenseBitSet<VariantIdx>, assignments_iter: SliceIter<SavedLocalEligibility<VariantIdx, FieldIdx>>, assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, ineligible_locals: DenseBitSet<LocalIdx>, variant_fields: thrust_models::FnParam<&IndexSlice<VariantIdx, IndexVec<FieldIdx, LocalIdx>>>, nb_locals: thrust_models::FnParam<usize>|
                 assignments_iter.1 >= 0 && assignments_iter.1 <= assignments_iter.0.len()
-                    && *assignments_iter.0 == assignments
-                    && forall(|k: UInt, v: <VariantIdx as thrust_models::Model>::Ty, i: UInt|
-                        !(0 <= k && k < assignments.len() && assignments[k] == SavedLocalEligibility::Assigned(v)
-                            && <VariantIdx as Idx>::index_is(v, i))
-                        || i < used_variants.0));
+                && *assignments_iter.0 == assignments
+                && forall(|k: UInt, v: <VariantIdx as thrust_models::Model>::Ty, i: UInt|
+                    !(0 <= k && k < assignments.len() && assignments[k] == SavedLocalEligibility::Assigned(v) && <VariantIdx as Idx>::index_is(v, i))
+                    || i < used_variants.0)
+                && assignments.len() == nb_locals.at_entry()
+                && ineligible_locals.0 == nb_locals.at_entry()
+                && ineligible_locals.1.len() == nb_locals.at_entry()
+                && 0 <= ineligible_locals.3
+                && ineligible_locals.3 <= ineligible_locals.0
+                && forall(|k: UInt| !(0 <= k && k < nb_locals.at_entry()) || <LocalIdx as Idx>::can_new(k))
+                && forall(|n: UInt| !(0 <= n && n <= nb_locals.at_entry()) || <FieldIdx as Idx>::can_new(n))
+                && forall(|l: UInt, v: UInt, f: UInt|
+                    !(0 <= l && l < nb_locals.at_entry() && assignments[l] == SavedLocalEligibility::Unassigned
+                        && 0 <= v && v < (*variant_fields.at_entry()).len() && 0 <= f && f < (*variant_fields.at_entry())[v].len())
+                    || !<LocalIdx as Idx>::index_is((*variant_fields.at_entry())[v][f], l))
+                && forall(|k: UInt, v: <VariantIdx as thrust_models::Model>::Ty, i: UInt|
+                    !(0 <= k && k < assignments.len() && assignments[k] == SavedLocalEligibility::Assigned(v) && <VariantIdx as Idx>::index_is(v, i))
+                    || (i < (*variant_fields.at_entry()).len()
+                        && exists(|f: UInt| 0 <= f && f < (*variant_fields.at_entry())[i].len() && <LocalIdx as Idx>::index_is((*variant_fields.at_entry())[i][f], k))))
+                && forall(|l: UInt, x: Option<<FieldIdx as thrust_models::Model>::Ty>|
+                    !(0 <= l && l < nb_locals.at_entry() && assignments[l] == SavedLocalEligibility::Ineligible(x))
+                    || (DenseBitSet::<LocalIdx>::mem(ineligible_locals, l) && x == None))
+                && forall(|l: UInt| !(0 <= l && l < nb_locals.at_entry() && DenseBitSet::<LocalIdx>::mem(ineligible_locals, l))
+                    || assignments[l] == SavedLocalEligibility::Ineligible(None))
+            );
             if let Assigned(idx) = assignment {
                 used_variants.insert(*idx);
             }
@@ -1420,6 +1539,20 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
         if used_variants.count() < 2 {
             let mut assignments_iter_mut = assignments.iter_mut();
             while let Some(assignment) = assignments_iter_mut.next() {
+                // `assignments` is the final sequence of the borrow, `Ineligible(None)` below the cursor.
+                thrust_macros::invariant!(
+                    |assignments_iter_mut: IterMut<SavedLocalEligibility<VariantIdx, FieldIdx>>, assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, ineligible_locals: DenseBitSet<LocalIdx>, nb_locals: thrust_models::FnParam<usize>|
+                    assignments_iter_mut.0.len() == nb_locals.at_entry() && assignments_iter_mut.1.len() == nb_locals.at_entry()
+                    && 0 <= assignments_iter_mut.2 && assignments_iter_mut.2 <= assignments_iter_mut.0.len()
+                    && assignments == assignments_iter_mut.1
+                    && forall(|k: UInt| !(0 <= k && k < assignments_iter_mut.2) || assignments_iter_mut.1[k] == SavedLocalEligibility::Ineligible(None))
+                    && ineligible_locals.0 == nb_locals.at_entry()
+                    && ineligible_locals.1.len() == nb_locals.at_entry()
+                    && 0 <= ineligible_locals.3
+                    && ineligible_locals.3 <= ineligible_locals.0
+                    && forall(|k: UInt| !(0 <= k && k < nb_locals.at_entry()) || <LocalIdx as Idx>::can_new(k))
+                    && forall(|n: UInt| !(0 <= n && n <= nb_locals.at_entry()) || <FieldIdx as Idx>::can_new(n))
+                );
                 *assignment = Ineligible(None);
             }
             ineligible_locals.insert_all();
@@ -1429,16 +1562,38 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
     {
         let mut ineligible = ineligible_locals.iter().enumerate();
         while let Some((idx, local)) = ineligible.next() {
-            // TODO(spec): `idx` is the enumeration position and `local` is
-            // the `idx`-th element of `ineligible_locals` in iteration order
-            // (`DenseBitSet::elem_at(ineligible_locals, idx, local)`, per the
-            // README); not encoded as an invariant here: `elem_at` is
-            // uninterpreted (see its TODO above).
-            thrust_macros::invariant!(|assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, ineligible: Enumerate<BitIter<LocalIdx>>, ineligible_locals: DenseBitSet<LocalIdx>|
-                assignments.len() == ineligible_locals.0 && ineligible.0.0 == ineligible_locals.0
-                && ineligible.1 == ineligible.0.1 && 0 <= ineligible.1 && ineligible.1 <= ineligible.0.0
-                && 0 <= ineligible.0.2 && ineligible.0.1 + ineligible.0.2 <= ineligible.0.0
-                && forall(|k: UInt| !(0 <= k && k < ineligible_locals.0) || <LocalIdx as Idx>::can_new(k)));
+            // A member of `ineligible_locals` is either still to come from the iterator and
+            // `Ineligible(None)`, or already `Ineligible(Some(k))` with `k` below the number of
+            // members; at the end none is still to come, which gives property 3.
+            thrust_macros::invariant!(
+                |assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, ineligible: Enumerate<BitIter<LocalIdx>>, ineligible_locals: DenseBitSet<LocalIdx>, variant_fields: thrust_models::FnParam<&IndexSlice<VariantIdx, IndexVec<FieldIdx, LocalIdx>>>, nb_locals: thrust_models::FnParam<usize>|
+                assignments.len() == nb_locals.at_entry()
+                && ineligible_locals.0 == nb_locals.at_entry()
+                && ineligible_locals.1.len() == nb_locals.at_entry()
+                && 0 <= ineligible_locals.3
+                && ineligible_locals.3 <= ineligible_locals.0
+                && ineligible.0.0 == ineligible_locals.0 && ineligible.1 == ineligible.0.1
+                && 0 <= ineligible.1 && ineligible.1 <= ineligible.0.0
+                && 0 <= ineligible.0.2 && ineligible.0.1 + ineligible.0.2 == ineligible_locals.3
+                && forall(|k: UInt| !(0 <= k && k < nb_locals.at_entry()) || <LocalIdx as Idx>::can_new(k))
+                && forall(|n: UInt| !(0 <= n && n <= nb_locals.at_entry()) || <FieldIdx as Idx>::can_new(n))
+                && forall(|l: UInt, v: UInt, f: UInt|
+                    !(0 <= l && l < nb_locals.at_entry() && assignments[l] == SavedLocalEligibility::Unassigned
+                        && 0 <= v && v < (*variant_fields.at_entry()).len() && 0 <= f && f < (*variant_fields.at_entry())[v].len())
+                    || !<LocalIdx as Idx>::index_is((*variant_fields.at_entry())[v][f], l))
+                && forall(|k: UInt, v: <VariantIdx as thrust_models::Model>::Ty, i: UInt|
+                    !(0 <= k && k < assignments.len() && assignments[k] == SavedLocalEligibility::Assigned(v) && <VariantIdx as Idx>::index_is(v, i))
+                    || (i < (*variant_fields.at_entry()).len()
+                        && exists(|f: UInt| 0 <= f && f < (*variant_fields.at_entry())[i].len() && <LocalIdx as Idx>::index_is((*variant_fields.at_entry())[i][f], k))))
+                && forall(|l: UInt, x: Option<<FieldIdx as thrust_models::Model>::Ty>|
+                    !(0 <= l && l < nb_locals.at_entry() && assignments[l] == SavedLocalEligibility::Ineligible(x))
+                    || DenseBitSet::<LocalIdx>::mem(ineligible_locals, l))
+                && forall(|l: UInt| !(ineligible.0.3[l] != 0) || DenseBitSet::<LocalIdx>::mem(ineligible_locals, l))
+                && forall(|l: UInt| !(0 <= l && l < nb_locals.at_entry() && DenseBitSet::<LocalIdx>::mem(ineligible_locals, l))
+                    || (ineligible.0.3[l] != 0 && assignments[l] == SavedLocalEligibility::Ineligible(None))
+                    || exists(|k: <FieldIdx as thrust_models::Model>::Ty| assignments[l] == SavedLocalEligibility::Ineligible(Some(k))
+                        && forall(|i: UInt| !<FieldIdx as Idx>::index_is(k, i) || i < ineligible_locals.3)))
+            );
             assignments[local] = Ineligible(Some(FieldIdx::new(idx)));
         }
     }
