@@ -27,9 +27,9 @@ fn check_subtype(got: &RefinedType, expected: &RefinedType) -> Result<(), chc::C
 
 #[test]
 fn tuple_refinement_positions_are_equivalent() {
-    let int = RefinedType::unrefined(Type::Int);
+    let int = RefinedType::unrefined(Type::Int(None));
     let nested = tuple(
-        RefinedType::new(Type::Int, nonnegative(value())),
+        RefinedType::new(Type::Int(None), nonnegative(value())),
         int.clone(),
     );
     let mut outer = tuple(int.clone(), int);
@@ -41,10 +41,10 @@ fn tuple_refinement_positions_are_equivalent() {
 
 #[test]
 fn tuple_relations_can_prove_element_refinements() {
-    let int = RefinedType::unrefined(Type::Int);
+    let int = RefinedType::unrefined(Type::Int(None));
     let nested = tuple(
         int.clone(),
-        RefinedType::new(Type::Int, nonnegative(value())),
+        RefinedType::new(Type::Int(None), nonnegative(value())),
     );
     let mut outer = tuple(int.clone(), int);
     outer.refinement = nonnegative(value().tuple_proj(0));
@@ -65,11 +65,11 @@ fn tuple_relations_can_prove_element_refinements() {
 
 #[test]
 fn nested_tuples_preserve_projection_paths() {
-    let int = RefinedType::unrefined(Type::Int);
+    let int = RefinedType::unrefined(Type::Int(None));
     let nested = tuple(
         tuple(
             int.clone(),
-            RefinedType::new(Type::Int, nonnegative(value())),
+            RefinedType::new(Type::Int(None), nonnegative(value())),
         ),
         int.clone(),
     );
@@ -89,7 +89,7 @@ fn nested_tuples_preserve_projection_paths() {
 fn mutable_pointee_refinements_are_facts_about_both_values() {
     let pointer = RefinedType::unrefined(Type::Pointer(PointerType {
         kind: PointerKind::Ref(RefKind::Mut),
-        elem: Box::new(RefinedType::new(Type::Int, nonnegative(value()))),
+        elem: Box::new(RefinedType::new(Type::Int(None), nonnegative(value()))),
     }));
     let mut refined = pointer.clone();
     refined.refinement = nonnegative(value().mut_current());
@@ -106,10 +106,10 @@ fn pointer_invariants_cannot_be_replaced_by_outer_refinements() {
     for kind in [PointerKind::Own, PointerKind::Ref(RefKind::Mut)] {
         let nested = RefinedType::unrefined(Type::Pointer(PointerType {
             kind,
-            elem: Box::new(RefinedType::new(Type::Int, nonnegative(value()))),
+            elem: Box::new(RefinedType::new(Type::Int(None), nonnegative(value()))),
         }));
         let outer = RefinedType::new(
-            Type::Pointer(PointerType::new(kind, Type::Int)),
+            Type::Pointer(PointerType::new(kind, Type::Int(None))),
             nested.formula(),
         );
 

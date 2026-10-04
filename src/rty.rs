@@ -956,15 +956,62 @@ pub fn check_uint_facts_mode() -> bool {
     *MODE.get_or_init(|| std::env::var_os("THRUST_CHECK_UINT_FACTS").is_some())
 }
 
+/// How the range of a value of a Rust integer type is used (`THRUST_INT_RANGE`): `[0, 2^w)` for
+/// an unsigned type of `w` bits, `[-2^(w-1), 2^(w-1))` for a signed one. Without it only the lower
+/// bound of an unsigned value is used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntRange {
+    /// Unset: no bound but `0 <=` of an unsigned value is assumed or checked.
+    Off,
+    /// `conversions`: the range is assumed wherever a value of the type is in the environment,
+    /// and checked where an integer becomes one (a cast, a checked operation, a ghost term, a value
+    /// of a wider or unbounded integer type). The result of arithmetic is not checked: it is
+    /// modelled on unbounded integers, so a path on which an operation overflows assumes a false
+    /// range and is dropped, as if every overflow stopped the program.
+    Conversions,
+    /// `all`: as `Conversions`, and the result of `+`, `-`, `*` and negation is checked too, so an
+    /// overflow is an error, as with rustc's overflow checks.
+    All,
+}
+
+pub fn int_range_mode() -> IntRange {
+    static MODE: std::sync::OnceLock<IntRange> = std::sync::OnceLock::new();
+    *MODE.get_or_init(|| match std::env::var("THRUST_INT_RANGE").as_deref() {
+        Err(_) => IntRange::Off,
+        Ok("conversions") => IntRange::Conversions,
+        Ok("all") => IntRange::All,
+        Ok(other) => panic!("THRUST_INT_RANGE: expected `conversions` or `all`, got `{other}`"),
+    })
+}
+
+/// The range `[min, end)` of an integer of `width` bits, when [`int_range_mode`] is on and the type
+/// has a width.
+pub fn int_range(signed: bool, width: Option<u32>) -> Option<(BigInt, BigInt)> {
+    if int_range_mode() == IntRange::Off {
+        return None;
+    }
+    let width = width?;
+    if signed {
+        let half = BigInt::from(1) << (width - 1);
+        Some((-half.clone(), half))
+    } else {
+        Some((BigInt::from(0), BigInt::from(1) << width))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Type<T> {
-    Int,
-    /// An integer of an unsigned type. Every value of it is non-negative: the fact is assumed
-    /// wherever such a value is in the environment (see [`RefinedType::formula`]) and is never an
-    /// obligation of subtyping. It holds because every operation that produces an unsigned value
-    /// stays in range, and the one that may not (subtraction without overflow checks) is checked
-    /// where it is performed.
-    UInt,
+    /// An integer, with the width in bits of the signed Rust type it comes from; the model type
+    /// `Int` and the unbounded results of arithmetic have none. When [`int_range_mode`] is on, a
+    /// value of a type with a width is in [`int_range`], as for [`Type::UInt`].
+    Int(Option<u32>),
+    /// An integer of an unsigned type, with the width in bits of the Rust type it comes from; the
+    /// model type `UInt` has none. Every value of it is non-negative, and below `2^width` when
+    /// [`int_range_mode`] is on: the facts are assumed wherever such a value is in the environment
+    /// (see [`RefinedType::formula`]) and are checked only where a value may leave the range
+    /// (subtraction without overflow checks, an integer that becomes an unsigned value, and in
+    /// [`IntRange::All`] the arithmetic operations).
+    UInt(Option<u32>),
     BitVec(BitVecType),
     Bool,
     String,
@@ -1029,8 +1076,10 @@ where
 {
     fn pretty(self, allocator: &'a D) -> pretty::DocBuilder<'a, D, termcolor::ColorSpec> {
         match self {
-            Type::Int => allocator.text("int"),
-            Type::UInt => allocator.text("uint"),
+            Type::Int(None) => allocator.text("int"),
+            Type::Int(Some(width)) => allocator.text(format!("i{width}")),
+            Type::UInt(None) => allocator.text("uint"),
+            Type::UInt(Some(width)) => allocator.text(format!("u{width}")),
             Type::BitVec(ty) => ty.pretty(allocator),
             Type::Bool => allocator.text("bool"),
             Type::String => allocator.text("string"),
@@ -1105,12 +1154,24 @@ impl<T> Type<T> {
         Type::Tuple(TupleType::unit())
     }
 
+    /// The model type `Int`, with no bounds.
     pub fn int() -> Self {
-        Type::Int
+        Type::Int(None)
     }
 
+    /// The type of a Rust signed integer of `width` bits.
+    pub fn int_of_width(width: u32) -> Self {
+        Type::Int(Some(width))
+    }
+
+    /// The model type `UInt`, with no upper bound.
     pub fn uint() -> Self {
-        Type::UInt
+        Type::UInt(None)
+    }
+
+    /// The type of a Rust unsigned integer of `width` bits.
+    pub fn uint_of_width(width: u32) -> Self {
+        Type::UInt(Some(width))
     }
 
     pub fn bool() -> Self {
@@ -1206,7 +1267,7 @@ impl<T> Type<T> {
 
     pub fn to_sort(&self) -> chc::Sort {
         match self {
-            Type::Int | Type::UInt => chc::Sort::int(),
+            Type::Int(_) | Type::UInt(_) => chc::Sort::int(),
             Type::BitVec(ty) => chc::Sort::bit_vec(ty.width),
             Type::Bool => chc::Sort::bool(),
             // TODO: enable string reasoning
@@ -1248,8 +1309,8 @@ impl<T> Type<T> {
         F: FnMut(T) -> chc::Term<U>,
     {
         match self {
-            Type::Int => Type::Int,
-            Type::UInt => Type::UInt,
+            Type::Int(width) => Type::Int(width),
+            Type::UInt(width) => Type::UInt(width),
             Type::BitVec(ty) => Type::BitVec(ty),
             Type::Bool => Type::Bool,
             Type::String => Type::String,
@@ -1270,8 +1331,8 @@ impl<T> Type<T> {
         F: FnMut(T) -> U,
     {
         match self {
-            Type::Int => Type::Int,
-            Type::UInt => Type::UInt,
+            Type::Int(width) => Type::Int(width),
+            Type::UInt(width) => Type::UInt(width),
             Type::BitVec(ty) => Type::BitVec(ty),
             Type::Bool => Type::Bool,
             Type::String => Type::String,
@@ -1293,8 +1354,8 @@ impl<T> Type<T> {
 
     pub fn strip_refinement(self) -> Type<Closed> {
         match self {
-            Type::Int => Type::Int,
-            Type::UInt => Type::UInt,
+            Type::Int(width) => Type::Int(width),
+            Type::UInt(width) => Type::UInt(width),
             Type::BitVec(ty) => Type::BitVec(ty),
             Type::Bool => Type::Bool,
             Type::String => Type::String,
@@ -1830,7 +1891,7 @@ impl<FV> RefinedType<FV> {
     {
         let mut formula = self.refinement.clone();
         match &self.ty {
-            Type::UInt => {
+            Type::UInt(width) => {
                 formula.push_conj(
                     chc::Atom::new(
                         chc::KnownPred::GREATER_THAN_OR_EQUAL.into(),
@@ -1838,6 +1899,34 @@ impl<FV> RefinedType<FV> {
                     )
                     .into(),
                 );
+                if let Some((_, end)) = int_range(false, *width) {
+                    formula.push_conj(
+                        chc::Atom::new(
+                            chc::KnownPred::LESS_THAN.into(),
+                            vec![chc::Term::var(RefinedTypeVar::Value), chc::Term::int(end)],
+                        )
+                        .into(),
+                    );
+                }
+            }
+            Type::Int(width) => {
+                if let Some((min, end)) = int_range(true, *width) {
+                    let value = || chc::Term::var(RefinedTypeVar::Value);
+                    formula.push_conj(
+                        chc::Atom::new(
+                            chc::KnownPred::GREATER_THAN_OR_EQUAL.into(),
+                            vec![value(), chc::Term::int(min)],
+                        )
+                        .into(),
+                    );
+                    formula.push_conj(
+                        chc::Atom::new(
+                            chc::KnownPred::LESS_THAN.into(),
+                            vec![value(), chc::Term::int(end)],
+                        )
+                        .into(),
+                    );
+                }
             }
             Type::Tuple(ty) => {
                 for (index, elem) in ty.elems.iter().enumerate() {
@@ -2003,7 +2092,12 @@ impl<FV> RefinedType<FV> {
     {
         self.refinement.subst_ty_params_in_sorts(subst);
         match &mut self.ty {
-            Type::Int | Type::UInt | Type::BitVec(_) | Type::Bool | Type::String | Type::Never => {}
+            Type::Int(_)
+            | Type::UInt(_)
+            | Type::BitVec(_)
+            | Type::Bool
+            | Type::String
+            | Type::Never => {}
             Type::Param(ty) => {
                 if let Some(rty) = subst.get(ty.type_param_index()) {
                     let RefinedType {
@@ -2053,8 +2147,8 @@ impl<FV> RefinedType<FV> {
     pub fn any_pred(&self, f: &mut impl FnMut(&chc::Pred) -> bool) -> bool {
         self.refinement.body.iter_atoms().any(|atom| f(&atom.pred))
             || match &self.ty {
-                Type::Int
-                | Type::UInt
+                Type::Int(_)
+                | Type::UInt(_)
                 | Type::BitVec(_)
                 | Type::Bool
                 | Type::String

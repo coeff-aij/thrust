@@ -98,7 +98,7 @@ where
 
     let mut clauses = Vec::new();
     match (got, expected) {
-        (Type::Int | Type::UInt, Type::Int | Type::UInt)
+        (Type::Int(_) | Type::UInt(_), Type::Int(_) | Type::UInt(_))
         | (Type::Bool, Type::Bool)
         | (Type::String, Type::String)
         | (Type::Never, Type::Never) => {}
@@ -233,12 +233,11 @@ where
 }
 
 /// The head of a clause relating a value of `got_ty` to `expected`: the refinement of `expected`,
-/// and, at the top, `v >= 0` at each position where a value of [`Type::Int`] is related to one of
-/// [`Type::UInt`].
+/// and, at the top, the range of [`Type::UInt`] at each position where a value enters it.
 ///
-/// A value of [`Type::UInt`] is assumed non-negative wherever it is in the environment, so an
+/// A value of [`Type::UInt`] is assumed in its range wherever it is in the environment, so an
 /// integer that becomes one, such as the result of a cast or of a checked operation, has to be
-/// shown non-negative where it does. A nested position is checked through the value at the top,
+/// shown in range where it does. A nested position is checked through the value at the top,
 /// whose refinement is what says something about it.
 fn head_of<T, U>(got_ty: &Type<T>, expected: &RefinedType<U>, position: Position) -> Refinement<U>
 where
@@ -246,41 +245,70 @@ where
 {
     let mut head = expected.refinement.clone();
     if position == Position::Top {
-        head.push_conj(uint_facts_of_int(got_ty, &expected.ty));
+        head.push_conj(int_range_facts(got_ty, &expected.ty));
     }
     head
 }
 
-/// `v >= 0` at each position where `got` has [`Type::Int`] and `expected` has [`Type::UInt`],
-/// through tuples and the current value of pointers. The final value of a mutable reference is
-/// produced by its borrower, which is checked where it writes it.
-fn uint_facts_of_int<T, U>(got: &Type<T>, expected: &Type<U>) -> Refinement<U>
+/// The range of the integer type of `expected` at each position where a value of `got` enters
+/// it: `v >= 0` where an integer of [`Type::Int`] becomes a [`Type::UInt`], and the bounds of
+/// [`super::int_range`] where `got` is not a type within that range, through tuples and the
+/// current value of pointers. The final value of a mutable reference is produced by its borrower,
+/// which is checked where it writes it.
+fn int_range_facts<T, U>(got: &Type<T>, expected: &Type<U>) -> Refinement<U>
 where
     U: chc::Var,
 {
     let value = || chc::Term::var(RefinedTypeVar::Value);
     let mut facts = Refinement::top();
     match (got, expected) {
-        (Type::Int, Type::UInt) => {
-            facts.push_conj(
-                chc::Atom::new(
-                    chc::KnownPred::GREATER_THAN_OR_EQUAL.into(),
-                    vec![value(), chc::Term::int(0)],
-                )
-                .into(),
-            );
+        (Type::Int(_) | Type::UInt(_), Type::Int(_) | Type::UInt(_)) => {
+            let signed = matches!(expected, Type::Int(_));
+            if !signed && matches!(got, Type::Int(_)) {
+                facts.push_conj(
+                    chc::Atom::new(
+                        chc::KnownPred::GREATER_THAN_OR_EQUAL.into(),
+                        vec![value(), chc::Term::int(0)],
+                    )
+                    .into(),
+                );
+            }
+            let width = match expected {
+                Type::Int(width) | Type::UInt(width) => *width,
+                _ => None,
+            };
+            if let Some((min, end)) =
+                super::int_range(signed, width).filter(|_| !fits(got, expected))
+            {
+                if signed {
+                    facts.push_conj(
+                        chc::Atom::new(
+                            chc::KnownPred::GREATER_THAN_OR_EQUAL.into(),
+                            vec![value(), chc::Term::int(min)],
+                        )
+                        .into(),
+                    );
+                }
+                facts.push_conj(
+                    chc::Atom::new(
+                        chc::KnownPred::LESS_THAN.into(),
+                        vec![value(), chc::Term::int(end)],
+                    )
+                    .into(),
+                );
+            }
         }
         (Type::Tuple(got), Type::Tuple(expected)) if got.elems.len() == expected.elems.len() => {
             for (index, (got, expected)) in got.elems.iter().zip(&expected.elems).enumerate() {
                 facts.push_conj(
-                    uint_facts_of_int(&got.ty, &expected.ty)
+                    int_range_facts(&got.ty, &expected.ty)
                         .subst_value_var(|| value().tuple_proj(index)),
                 );
             }
         }
         (Type::Pointer(got), Type::Pointer(expected)) if got.kind == expected.kind => {
             facts.push_conj(
-                uint_facts_of_int(&got.elem.ty, &expected.elem.ty)
+                int_range_facts(&got.elem.ty, &expected.elem.ty)
                     .subst_value_var(|| expected.kind.deref_term(value())),
             );
         }
@@ -316,4 +344,14 @@ pub fn relate_sub_param_types(
     }
 
     clauses
+}
+
+/// Whether every value of the integer type `got` is in the range of the integer type `expected`.
+fn fits<T, U>(got: &Type<T>, expected: &Type<U>) -> bool {
+    match (got, expected) {
+        (Type::UInt(Some(got)), Type::UInt(Some(expected))) => got <= expected,
+        (Type::UInt(Some(got)), Type::Int(Some(expected))) => got < expected,
+        (Type::Int(Some(got)), Type::Int(Some(expected))) => got <= expected,
+        _ => false,
+    }
 }

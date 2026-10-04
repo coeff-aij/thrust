@@ -536,13 +536,16 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 let (size, signed) = ty.int_size_and_signed(self.tcx);
                 if signed {
                     PlaceType::with_ty_and_term(
-                        rty::Type::int(),
+                        rty::Type::int_of_width(size.bits() as u32),
                         chc::Term::int(size.sign_extend(bits)),
                     )
                 } else {
                     // An unsigned literal is non-negative as written, so it needs no check where
                     // it becomes a value of an unsigned type.
-                    PlaceType::with_ty_and_term(rty::Type::uint(), chc::Term::int(bits))
+                    PlaceType::with_ty_and_term(
+                        rty::Type::uint_of_width(size.bits() as u32),
+                        chc::Term::int(bits),
+                    )
                 }
             }
             mir_ty::TyKind::Tuple(tys) => {
@@ -745,6 +748,40 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.ctx.extend_clauses(clauses);
     }
 
+    /// Asserts that an arithmetic result of the integer type `ty` stays in the type's range, in
+    /// [`rty::IntRange::All`]. Without overflow checks the operation is modelled on unbounded
+    /// integers, and the range is assumed of its result as of every value of the type; with them,
+    /// rustc's own assertion on `AddWithOverflow` and the like does this. The lower bound of an
+    /// unsigned result is left to [`Self::assert_no_underflow`], which is on in every mode.
+    fn assert_no_overflow(
+        &mut self,
+        builder: &PlaceTypeBuilder,
+        ty: &rty::Type<Var>,
+        term: &chc::Term<PlaceTypeVar>,
+    ) {
+        if rty::int_range_mode() != rty::IntRange::All {
+            return;
+        }
+        let (signed, width) = match ty {
+            rty::Type::Int(width) => (true, *width),
+            rty::Type::UInt(width) => (false, *width),
+            _ => return,
+        };
+        let Some((min, end)) = rty::int_range(signed, width) else {
+            return;
+        };
+        let mut no_overflow = term.clone().lt(chc::Term::int(end));
+        if signed {
+            no_overflow = term.clone().ge(chc::Term::int(min)).and(no_overflow);
+        }
+        let got: rty::RefinedType<Var> =
+            builder.clone().build(rty::Type::bool(), no_overflow).into();
+        let expected =
+            rty::RefinedType::<Var>::refined_with_term(rty::Type::bool(), chc::Term::bool(true));
+        let clauses = self.env.relate_sub_refined_type(&got, &expected);
+        self.ctx.extend_clauses(clauses);
+    }
+
     /// The result of an arithmetic operation of type `ty`. In the unsigned-fact check mode
     /// ([`rty::check_uint_facts_mode`]) an unsigned result is required non-negative where it is
     /// computed, instead of being assumed so.
@@ -754,7 +791,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         ty: rty::Type<Var>,
         term: chc::Term<PlaceTypeVar>,
     ) -> PlaceType {
-        if matches!(ty, rty::Type::UInt) && rty::check_uint_facts_mode() {
+        if matches!(ty, rty::Type::UInt(_)) && rty::check_uint_facts_mode() {
             let nonnegative = term.clone().ge(chc::Term::int(0));
             let got: rty::RefinedType<Var> =
                 builder.clone().build(rty::Type::bool(), nonnegative).into();
@@ -782,10 +819,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     (rty::Type::Bool, mir::UnOp::Not) => {
                         builder.build(rty::Type::Bool, operand_term.not())
                     }
-                    (rty::Type::Int | rty::Type::UInt, mir::UnOp::Neg) => {
-                        builder.build(rty::Type::Int, operand_term.neg())
+                    (rty::Type::Int(_) | rty::Type::UInt(_), mir::UnOp::Neg) => {
+                        let result = operand_term.neg();
+                        self.assert_no_overflow(&builder, &operand_ty, &result);
+                        builder.build(operand_ty, result)
                     }
-                    (rty::Type::Int | rty::Type::UInt, mir::UnOp::Not) => {
+                    (rty::Type::Int(_) | rty::Type::UInt(_), mir::UnOp::Not) => {
                         let width = operand_mir_ty.primitive_size(self.tcx).bits() as u32;
                         let bv = chc::Term::App(
                             chc::Function::BVNOT,
@@ -807,25 +846,30 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 let (lhs_ty, lhs_term) = builder.subsume(lhs_ty);
                 let (_rhs_ty, rhs_term) = builder.subsume(rhs_ty);
                 match (&lhs_ty, op) {
-                    (rty::Type::Int | rty::Type::UInt, mir::BinOp::Add) => {
-                        self.arith_result(builder, lhs_ty, lhs_term.add(rhs_term))
+                    (rty::Type::Int(_) | rty::Type::UInt(_), mir::BinOp::Add) => {
+                        let result = lhs_term.add(rhs_term);
+                        self.assert_no_overflow(&builder, &lhs_ty, &result);
+                        self.arith_result(builder, lhs_ty, result)
                     }
-                    (rty::Type::Int | rty::Type::UInt, mir::BinOp::Sub) => {
+                    (rty::Type::Int(_) | rty::Type::UInt(_), mir::BinOp::Sub) => {
                         let result = lhs_term.sub(rhs_term);
                         if !lhs_mir_ty.is_signed() {
                             let no_underflow = result.clone().ge(chc::Term::int(0));
                             let guard = builder.clone().build(rty::Type::bool(), no_underflow);
                             self.assert_no_underflow(guard);
                         }
+                        self.assert_no_overflow(&builder, &lhs_ty, &result);
                         builder.build(lhs_ty, result)
                     }
-                    (rty::Type::Int | rty::Type::UInt, mir::BinOp::Mul) => {
-                        self.arith_result(builder, lhs_ty, lhs_term.mul(rhs_term))
+                    (rty::Type::Int(_) | rty::Type::UInt(_), mir::BinOp::Mul) => {
+                        let result = lhs_term.mul(rhs_term);
+                        self.assert_no_overflow(&builder, &lhs_ty, &result);
+                        self.arith_result(builder, lhs_ty, result)
                     }
-                    (rty::Type::Int | rty::Type::UInt, mir::BinOp::Div) => {
+                    (rty::Type::Int(_) | rty::Type::UInt(_), mir::BinOp::Div) => {
                         self.arith_result(builder, lhs_ty, lhs_term.div_trunc(rhs_term))
                     }
-                    (rty::Type::Int | rty::Type::UInt, mir::BinOp::Rem) => {
+                    (rty::Type::Int(_) | rty::Type::UInt(_), mir::BinOp::Rem) => {
                         self.arith_result(builder, lhs_ty, lhs_term.rem_trunc(rhs_term))
                     }
                     // On `bool` these are the non-short-circuiting connectives, and rustc
@@ -838,7 +882,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         builder.build(rty::Type::Bool, lhs_term.or(rhs_term))
                     }
                     (
-                        rty::Type::Int | rty::Type::UInt,
+                        rty::Type::Int(_) | rty::Type::UInt(_),
                         mir::BinOp::BitAnd
                         | mir::BinOp::BitOr
                         | mir::BinOp::BitXor
@@ -848,34 +892,34 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         let term = bit_op_term(self.tcx, op, lhs_term, rhs_term, lhs_mir_ty);
                         builder.build(lhs_ty, term)
                     }
-                    (rty::Type::Int | rty::Type::UInt, mir::BinOp::AddWithOverflow) => {
+                    (rty::Type::Int(_) | rty::Type::UInt(_), mir::BinOp::AddWithOverflow) => {
                         let (ty, term) = self.checked_int_op(lhs_term.add(rhs_term), lhs_mir_ty);
                         builder.build(ty, term)
                     }
-                    (rty::Type::Int | rty::Type::UInt, mir::BinOp::SubWithOverflow) => {
+                    (rty::Type::Int(_) | rty::Type::UInt(_), mir::BinOp::SubWithOverflow) => {
                         let (ty, term) = self.checked_int_op(lhs_term.sub(rhs_term), lhs_mir_ty);
                         builder.build(ty, term)
                     }
-                    (rty::Type::Int | rty::Type::UInt, mir::BinOp::MulWithOverflow) => {
+                    (rty::Type::Int(_) | rty::Type::UInt(_), mir::BinOp::MulWithOverflow) => {
                         let (ty, term) = self.checked_int_op(lhs_term.mul(rhs_term), lhs_mir_ty);
                         builder.build(ty, term)
                     }
-                    (rty::Type::Int | rty::Type::UInt | rty::Type::Bool, mir::BinOp::Ge) => {
+                    (rty::Type::Int(_) | rty::Type::UInt(_) | rty::Type::Bool, mir::BinOp::Ge) => {
                         builder.build(rty::Type::Bool, lhs_term.ge(rhs_term))
                     }
-                    (rty::Type::Int | rty::Type::UInt | rty::Type::Bool, mir::BinOp::Gt) => {
+                    (rty::Type::Int(_) | rty::Type::UInt(_) | rty::Type::Bool, mir::BinOp::Gt) => {
                         builder.build(rty::Type::Bool, lhs_term.gt(rhs_term))
                     }
-                    (rty::Type::Int | rty::Type::UInt | rty::Type::Bool, mir::BinOp::Le) => {
+                    (rty::Type::Int(_) | rty::Type::UInt(_) | rty::Type::Bool, mir::BinOp::Le) => {
                         builder.build(rty::Type::Bool, lhs_term.le(rhs_term))
                     }
-                    (rty::Type::Int | rty::Type::UInt | rty::Type::Bool, mir::BinOp::Lt) => {
+                    (rty::Type::Int(_) | rty::Type::UInt(_) | rty::Type::Bool, mir::BinOp::Lt) => {
                         builder.build(rty::Type::Bool, lhs_term.lt(rhs_term))
                     }
-                    (rty::Type::Int | rty::Type::UInt | rty::Type::Bool, mir::BinOp::Eq) => {
+                    (rty::Type::Int(_) | rty::Type::UInt(_) | rty::Type::Bool, mir::BinOp::Eq) => {
                         builder.build(rty::Type::Bool, lhs_term.eq(rhs_term))
                     }
-                    (rty::Type::Int | rty::Type::UInt | rty::Type::Bool, mir::BinOp::Ne) => {
+                    (rty::Type::Int(_) | rty::Type::UInt(_) | rty::Type::Bool, mir::BinOp::Ne) => {
                         builder.build(rty::Type::Bool, lhs_term.ne(rhs_term))
                     }
                     _ => unimplemented!("ty={}, op={:?}", lhs_ty.display(), op),
@@ -1042,10 +1086,22 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 } else {
                     let mut builder = PlaceTypeBuilder::default();
                     let (_, op_term) = builder.subsume(op_pty);
-                    builder.build(rty::Type::Int, wrap_int_term(self.tcx, op_term, ty))
+                    builder.build(rty::Type::int(), wrap_int_term(self.tcx, op_term, ty))
                 }
             }
             Rvalue::Discriminant(place) => {
+                // The discriminant is one the enum declares, so it is in the range of its type,
+                // which is assumed without an obligation.
+                let discr_mir_ty = place
+                    .ty(&self.local_decls, self.tcx)
+                    .ty
+                    .discriminant_ty(self.tcx);
+                let width = discr_mir_ty.primitive_size(self.tcx).bits() as u32;
+                let discr_ty = if discr_mir_ty.is_signed() {
+                    rty::Type::int_of_width(width)
+                } else {
+                    rty::Type::uint_of_width(width)
+                };
                 let place = self.elaborate_place(&place);
                 let ty = self.env.place_type(place);
                 let sym = ty
@@ -1057,7 +1113,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
                 let mut builder = PlaceTypeBuilder::default();
                 let (_, term) = builder.subsume(ty);
-                builder.build(rty::Type::Int, chc::Term::datatype_discr(sym, term))
+                builder.build(discr_ty, chc::Term::datatype_discr(sym, term))
             }
             _ => unimplemented!(
                 "rvalue={:?} ({:?})",
@@ -1286,7 +1342,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             let target_term = match (bits, &discr_ty.ty) {
                 (0, rty::Type::Bool) => chc::Term::bool(false),
                 (1, rty::Type::Bool) => chc::Term::bool(true),
-                (_, rty::Type::Int | rty::Type::UInt) => {
+                (_, rty::Type::Int(_) | rty::Type::UInt(_)) => {
                     let (size, signed) = discr_mir_ty.int_size_and_signed(self.tcx);
                     if signed {
                         chc::Term::int(size.sign_extend(bits))
@@ -1610,10 +1666,17 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let mut value_rty = self.type_builder.build(*value_ty).vacuous();
         value_rty.refinement.push_conj(formula_fn.to_refinement());
         // The term itself is a logical integer: model arithmetic is unbounded, so a `UInt`
-        // value made from it is required non-negative here, as an unchecked subtraction is.
-        let term_check = matches!(value_rty.ty, rty::Type::UInt).then(|| {
+        // value made from it is required in its type's range here, as an unchecked subtraction is.
+        let range_ty = match value_rty.ty {
+            rty::Type::UInt(width) => Some(rty::Type::UInt(width)),
+            rty::Type::Int(width) if rty::int_range(true, width).is_some() => {
+                Some(rty::Type::Int(width))
+            }
+            _ => None,
+        };
+        let term_check = range_ty.map(|range_ty| {
             let term_rty = rty::RefinedType::new(rty::Type::int(), formula_fn.to_refinement());
-            rty::FunctionType::new(params.clone(), term_rty)
+            (rty::FunctionType::new(params.clone(), term_rty), range_ty)
         });
         let func_ty = rty::FunctionType::new(params, value_rty);
 
@@ -1633,19 +1696,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             })
             .collect();
 
-        if let Some(term_ty) = term_check {
-            let nonnegative = rty::RefinedType::new(
-                rty::Type::int(),
-                chc::Atom::new(
-                    chc::KnownPred::GREATER_THAN_OR_EQUAL.into(),
-                    vec![
-                        chc::Term::var(rty::RefinedTypeVar::Value),
-                        chc::Term::int(0),
-                    ],
-                )
-                .into(),
-            );
-            let clauses = self.relate_fn_sub_type(term_ty, args.clone(), nonnegative);
+        if let Some((term_ty, range_ty)) = term_check {
+            let range = rty::RefinedType::unrefined(range_ty).formula();
+            let in_range = rty::RefinedType::new(rty::Type::int(), range);
+            let clauses = self.relate_fn_sub_type(term_ty, args.clone(), in_range);
             self.ctx.extend_clauses(clauses);
         }
         let clauses = self.relate_fn_sub_type(func_ty, args, expected.clone());

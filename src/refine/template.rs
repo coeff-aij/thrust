@@ -127,8 +127,8 @@ where
 ///
 /// This struct implements a translation from Rust MIR types to Thrust types.
 /// Thrust types may contain refinement predicates which do not exist in MIR types, and
-/// [`TypeBuilder::build`] leaves them unrefined. An unsigned integer becomes [`rty::Type::UInt`],
-/// whose values are non-negative by the type itself. This also provides
+/// [`TypeBuilder::build`] leaves them unrefined. An unsigned integer becomes [`rty::Type::UInt`]
+/// with its width, whose values are in range by the type itself. This also provides
 /// [`TypeBuilder::for_template`] to build refinement types by filling unknown predicates with
 /// templates with predicate variables.
 #[derive(Clone)]
@@ -606,6 +606,15 @@ impl<'tcx> TypeBuilder<'tcx> {
 
     // TODO: consolidate two impls
     fn build_ty(&self, ty: mir_ty::Ty<'tcx>) -> rty::Type<rty::Closed> {
+        // An integer keeps its width, which its model `Int` or `UInt` does not have.
+        if ty.is_integral() {
+            let width = ty.primitive_size(self.tcx).bits() as u32;
+            return if ty.is_signed() {
+                rty::Type::int_of_width(width)
+            } else {
+                rty::Type::uint_of_width(width)
+            };
+        }
         let ty = self.resolve_model_ty(ty);
         match ty.kind() {
             mir_ty::TyKind::Bool => rty::Type::bool(),
@@ -1062,6 +1071,15 @@ where
     }
 
     fn build_ty(&mut self, ty: mir_ty::Ty<'tcx>) -> rty::Type<S::Var> {
+        // An integer keeps its width, which its model `Int` or `UInt` does not have.
+        if ty.is_integral() {
+            let width = ty.primitive_size(self.inner.tcx).bits() as u32;
+            return if ty.is_signed() {
+                rty::Type::int_of_width(width)
+            } else {
+                rty::Type::uint_of_width(width)
+            };
+        }
         let ty = self.inner.resolve_model_ty(ty);
         match ty.kind() {
             mir_ty::TyKind::Bool => rty::Type::bool(),
