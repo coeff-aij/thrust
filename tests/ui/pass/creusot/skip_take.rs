@@ -107,7 +107,7 @@ pub struct Skip<I> {
 }
 
 impl<I: Model> Model for Skip<I> {
-    type Ty = (<I as Model>::Ty, Int);
+    type Ty = (<I as Model>::Ty, <usize as Model>::Ty);
 }
 
 #[thrust_macros::context]

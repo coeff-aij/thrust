@@ -1394,6 +1394,8 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                     // range of its type, so the conversion is the identity.
                     if Some(def_id) == self.def_ids.uint_to_uint_n()
                         || Some(def_id) == self.def_ids.uint_n_to_uint()
+                        || Some(def_id) == self.def_ids.int_to_int_n()
+                        || Some(def_id) == self.def_ids.int_n_to_int()
                     {
                         assert!(
                             args.is_empty(),

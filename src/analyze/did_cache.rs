@@ -20,6 +20,7 @@ struct DefIds {
     int_model: OnceCell<Option<DefId>>,
     uint_model: OnceCell<Option<DefId>>,
     uint_n_model: OnceCell<Option<DefId>>,
+    int_n_model: OnceCell<Option<DefId>>,
     bit_vec_model: OnceCell<Option<DefId>>,
     mut_model: OnceCell<Option<DefId>>,
     box_model: OnceCell<Option<DefId>>,
@@ -39,6 +40,8 @@ struct DefIds {
     seq_singleton: OnceCell<Option<DefId>>,
     seq_len: OnceCell<Option<DefId>>,
     uint_to_uint_n: OnceCell<Option<DefId>>,
+    int_to_int_n: OnceCell<Option<DefId>>,
+    int_n_to_int: OnceCell<Option<DefId>>,
     uint_n_to_uint: OnceCell<Option<DefId>>,
     seq_push: OnceCell<Option<DefId>>,
     seq_store: OnceCell<Option<DefId>>,
@@ -208,6 +211,13 @@ impl<'tcx> DefIdCache<'tcx> {
             .get_or_init(|| self.annotated_def(&crate::analyze::annot::uint_model_path()))
     }
 
+    pub fn int_n_model(&self) -> Option<DefId> {
+        *self
+            .def_ids
+            .int_n_model
+            .get_or_init(|| self.annotated_def(&crate::analyze::annot::int_n_model_path()))
+    }
+
     pub fn uint_n_model(&self) -> Option<DefId> {
         *self
             .def_ids
@@ -318,6 +328,20 @@ impl<'tcx> DefIdCache<'tcx> {
             .def_ids
             .seq_singleton
             .get_or_init(|| self.annotated_def(&crate::analyze::annot::seq_singleton_path()))
+    }
+
+    pub fn int_to_int_n(&self) -> Option<DefId> {
+        *self
+            .def_ids
+            .int_to_int_n
+            .get_or_init(|| self.annotated_def(&crate::analyze::annot::int_to_int_n_path()))
+    }
+
+    pub fn int_n_to_int(&self) -> Option<DefId> {
+        *self
+            .def_ids
+            .int_n_to_int
+            .get_or_init(|| self.annotated_def(&crate::analyze::annot::int_n_to_int_path()))
     }
 
     pub fn uint_to_uint_n(&self) -> Option<DefId> {

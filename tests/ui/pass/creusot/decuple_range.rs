@@ -244,7 +244,7 @@ impl FromIterator<isize> for Vec<isize> {
 #[thrust_macros::ensures(forall(|k: Int| 0 <= k && k < result.len() ==> result[k] == k * 10))]
 fn decuple_range() -> Vec<isize> {
     let f = thrust_macros::closure!(
-        requires(x < 100),
+        requires(0 <= x && x < 100),
         ensures(result == x * 10),
         |x: isize| -> isize { x * 10 }
     );

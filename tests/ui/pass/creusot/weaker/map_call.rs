@@ -151,7 +151,7 @@ impl Iterator for Range {
 // arguments, and every item a `1..5` range can produce is positive.
 fn main() {
     let f = thrust_macros::closure!(
-        requires(x > 0),
+        requires(x > 0 && x < 100),
         ensures(result == x + 1),
         |x: isize| -> isize { x + 1 },
     );

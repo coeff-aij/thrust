@@ -4,6 +4,12 @@
 use thrust_models::model::{Closure, Int, Mut, Seq};
 use thrust_models::{exists, forall, Ghost, Model};
 
+/// The model of `isize`, which carries its width while `THRUST_INT_RANGE` is set.
+#[cfg(not(thrust_int_range))]
+type ISize = thrust_models::model::Int;
+#[cfg(thrust_int_range)]
+type ISize = thrust_models::model::IntN<64>;
+
 // Creusot's `MapInv` (`iterators/map_ext.rs` in the artifact, Why3 session
 // `proofs/map_ext/why3session.xml`) in its own form: the closure receives the ghost history
 // `produced` of the inner items consumed so far, so its precondition may depend on it. `produces`
@@ -342,12 +348,12 @@ fn main() {
     let f = thrust_macros::closure!(
         requires(x == produced.len() + 1),
         ensures(result == x * 10),
-        |x: isize, produced: Ghost<Seq<Int>>| -> isize { x * 10 }
+        |x: isize, produced: Ghost<Seq<ISize>>| -> isize { x * 10 }
     );
     let mut m = Map {
         iter: Range { start: 1, end: 5 },
         func: f,
-        produced: thrust_macros::ghost!(|| -> Seq<Int> { Seq::empty() }),
+        produced: thrust_macros::ghost!(|| -> Seq<ISize> { Seq::empty() }),
     };
     let first = m.next();
     let second = m.next();

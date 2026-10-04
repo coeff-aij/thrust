@@ -278,7 +278,7 @@ impl Iterator for Range {
 
 fn main() {
     let f = thrust_macros::closure!(
-        requires(x < 100),
+        requires(0 <= x && x < 100),
         ensures(result == x * 10),
         |x: isize| -> isize { x * 10 }
     );

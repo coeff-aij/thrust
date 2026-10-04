@@ -6,6 +6,12 @@ use thrust_models::model::{Closure, Mut};
 use thrust_models::model::{Int, Seq};
 use thrust_models::Model;
 
+/// The model of `isize`, which carries its width while `THRUST_INT_RANGE` is set.
+#[cfg(not(thrust_int_range))]
+type ISize = thrust_models::model::Int;
+#[cfg(thrust_int_range)]
+type ISize = thrust_models::model::IntN<64>;
+
 // std's `Iterator::try_fold` (its body as std writes it, `?` on each call), generic in the iterator,
 // the accumulator `B` and an `FnMut` closure, with the `Try` type fixed to `Option<B>`, specified in
 // the form of Creusot's `Map` (`map.rs`): the closure states and accumulators along the produced
@@ -210,7 +216,7 @@ where
 fn main() {
     let c = thrust_macros::closure!(
         requires(a >= 0),
-        ensures(forall(|r: Int| !(result == Some(r)) || r >= 0)),
+        ensures(forall(|r: ISize| !(result == Some(r)) || r >= 0)),
         |a: isize, x: isize| -> Option<isize> { if x > a { Some(x) } else { Some(a) } },
     );
     let mut it = Range { start: 0, end: 10 };

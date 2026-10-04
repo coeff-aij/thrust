@@ -14,6 +14,12 @@ use thrust_models::{exists, forall};
 use thrust_models::model::{Closure, Int, Mut, Seq};
 use thrust_models::Model;
 
+/// The model of `isize`, which carries its width while `THRUST_INT_RANGE` is set.
+#[cfg(not(thrust_int_range))]
+type ISize = thrust_models::model::Int;
+#[cfg(thrust_int_range)]
+type ISize = thrust_models::model::IntN<64>;
+
 // The step form of the iterator specification, Thrust's own: `step(self, item, dist)` relates
 // one call of `next` to its successor state, and the unary `produces(self, item)` says `item` is
 // among what `self` may still produce. `produces` is monotone under `next`, which makes a guard
@@ -190,7 +196,7 @@ impl FromIterator<isize> for Vec<isize> {
                 |it: &mut I, v: Vec<isize>, iter: thrust_models::FnParam<&mut I>|
                 !it == !iter.at_entry()
                     && I::invariant(*it)
-                    && forall(|e: Int| I::produces(*it, e) ==> I::produces(*iter.at_entry(), e))
+                    && forall(|e: ISize| I::produces(*it, e) ==> I::produces(*iter.at_entry(), e))
                     && forall(|k: Int| 0 <= k && k < v.len() ==> I::produces(*iter.at_entry(), v[k]))
             );
             v.push(x);
@@ -204,7 +210,7 @@ impl FromIterator<isize> for Vec<isize> {
 #[thrust_macros::ensures(forall(|k: Int| 0 <= k && k < result.len() ==> 1 <= result[k] && result[k] <= 90))]
 fn decuple_range() -> Vec<isize> {
     let f = thrust_macros::closure!(
-        requires(x < 100),
+        requires(0 <= x && x < 100),
         ensures(result == x * 10),
         |x: isize| -> isize { x * 10 },
     );

@@ -142,10 +142,77 @@ mod thrust_models {
         impl<const BITS: usize> IndexModel<Int> for UIntN<BITS> {}
         impl<const BITS: usize> IndexModel<UInt> for UIntN<BITS> {}
 
-        macro_rules! uint_n_model_ops {
-            ($($Op:ident $op:ident),*) => {
+        /// The model of a signed integer of `BITS` bits: the same mathematical integers as
+        /// [`Int`], in `[-2^(BITS-1), 2^(BITS-1))`. With `THRUST_INT_RANGE` set
+        /// (`cfg(thrust_int_range)`), it is the model of each `BITS`-bit signed type, as
+        /// [`UIntN`] is of the unsigned ones; unset, those models are [`Int`].
+        #[thrust::def::int_n_model]
+        pub struct IntN<const BITS: usize>;
+
+        impl Int {
+            /// The same integer as a model of `BITS` bits, as [`UInt::to_uint_n`].
+            #[allow(dead_code)]
+            #[thrust::def::int_to_int_n]
+            #[thrust::ignored]
+            pub fn to_int_n<const BITS: usize>(self) -> IntN<BITS> {
+                unimplemented!()
+            }
+        }
+
+        impl<const BITS: usize> IntN<BITS> {
+            /// The same integer as an [`Int`].
+            #[allow(dead_code)]
+            #[thrust::def::int_n_to_int]
+            #[thrust::ignored]
+            pub fn to_int(self) -> Int {
+                unimplemented!()
+            }
+        }
+
+        impl<const BITS: usize> Integer for IntN<BITS> {}
+        impl<const BITS: usize> IndexModel<Int> for IntN<BITS> {}
+        impl<const BITS: usize> IndexModel<UInt> for IntN<BITS> {}
+
+        impl<const BITS: usize> std::ops::Neg for IntN<BITS> {
+            type Output = Self;
+
+            #[thrust::ignored]
+            fn neg(self) -> Self::Output {
+                unimplemented!()
+            }
+        }
+
+        // Arithmetic and comparison of a model with a width, against any integer model, as
+        // `integer_model_ops!` for `Int` and `UInt`.
+        macro_rules! width_model_ops {
+            ($N:ident) => {
+                width_model_ops!(@op $N, Add add, Sub sub, Mul mul, Div div, Rem rem);
+
+                impl<T, const BITS: usize> PartialEq<T> for $N<BITS>
+                where
+                    T: super::Model,
+                    T::Ty: Integer,
+                {
+                    #[thrust::ignored]
+                    fn eq(&self, _other: &T) -> bool {
+                        unimplemented!()
+                    }
+                }
+
+                impl<T, const BITS: usize> PartialOrd<T> for $N<BITS>
+                where
+                    T: super::Model,
+                    T::Ty: Integer,
+                {
+                    #[thrust::ignored]
+                    fn partial_cmp(&self, _other: &T) -> Option<std::cmp::Ordering> {
+                        unimplemented!()
+                    }
+                }
+            };
+            (@op $N:ident, $($Op:ident $op:ident),*) => {
                 $(
-                    impl<T, const BITS: usize> std::ops::$Op<T> for UIntN<BITS>
+                    impl<T, const BITS: usize> std::ops::$Op<T> for $N<BITS>
                     where
                         T: super::Model,
                         T::Ty: Integer,
@@ -161,29 +228,8 @@ mod thrust_models {
             };
         }
 
-        uint_n_model_ops!(Add add, Sub sub, Mul mul, Div div, Rem rem);
-
-        impl<T, const BITS: usize> PartialEq<T> for UIntN<BITS>
-        where
-            T: super::Model,
-            T::Ty: Integer,
-        {
-            #[thrust::ignored]
-            fn eq(&self, _other: &T) -> bool {
-                unimplemented!()
-            }
-        }
-
-        impl<T, const BITS: usize> PartialOrd<T> for UIntN<BITS>
-        where
-            T: super::Model,
-            T::Ty: Integer,
-        {
-            #[thrust::ignored]
-            fn partial_cmp(&self, _other: &T) -> Option<std::cmp::Ordering> {
-                unimplemented!()
-            }
-        }
+        width_model_ops!(UIntN);
+        width_model_ops!(IntN);
 
         /// An SMT-LIB bit-vector of `WIDTH` bits. `SIGNED` selects the signed or unsigned variant
         /// of the operations that have both.
@@ -507,6 +553,10 @@ mod thrust_models {
         type Ty = model::UIntN<BITS>;
     }
 
+    impl<const BITS: usize> Model for model::IntN<BITS> {
+        type Ty = model::IntN<BITS>;
+    }
+
     impl<const WIDTH: usize, const SIGNED: bool> Model for model::BitVec<WIDTH, SIGNED> {
         type Ty = model::BitVec<WIDTH, SIGNED>;
     }
@@ -586,43 +636,56 @@ mod thrust_models {
         };
     }
 
-    // `x op n` of a Rust integer `x` and an `n` of a model `UIntN`, as `model_arith!` for `Int` and
-    // `UInt`.
+    // `x op n` of a Rust integer `x` and an `n` of a model with a width (`UIntN`, `IntN`), as
+    // `model_arith!` for `Int` and `UInt`.
     macro_rules! model_arith_n {
-        ($T:ty) => {
-            impl<const BITS: usize> PartialEq<model::UIntN<BITS>> for $T {
+        (@model $T:ty, $N:ident) => {
+            impl<const BITS: usize> PartialEq<model::$N<BITS>> for $T {
                 #[thrust::ignored]
-                fn eq(&self, _other: &model::UIntN<BITS>) -> bool {
+                fn eq(&self, _other: &model::$N<BITS>) -> bool {
                     unimplemented!()
                 }
             }
 
-            impl<const BITS: usize> PartialOrd<model::UIntN<BITS>> for $T {
+            impl<const BITS: usize> PartialOrd<model::$N<BITS>> for $T {
                 #[thrust::ignored]
-                fn partial_cmp(&self, _other: &model::UIntN<BITS>) -> Option<std::cmp::Ordering> {
+                fn partial_cmp(&self, _other: &model::$N<BITS>) -> Option<std::cmp::Ordering> {
                     unimplemented!()
                 }
             }
 
-            model_arith_n!(@op $T, Add add, Sub sub, Mul mul, Div div, Rem rem);
+            model_arith_n!(@op $T, $N, Add add, Sub sub, Mul mul, Div div, Rem rem);
         };
-        (@op $T:ty, $($Op:ident $op:ident),*) => {
+        (@op $T:ty, $N:ident, $($Op:ident $op:ident),*) => {
             $(
-                impl<const BITS: usize> std::ops::$Op<model::UIntN<BITS>> for $T {
-                    type Output = model::UIntN<BITS>;
+                impl<const BITS: usize> std::ops::$Op<model::$N<BITS>> for $T {
+                    type Output = model::$N<BITS>;
 
                     #[thrust::ignored]
-                    fn $op(self, _rhs: model::UIntN<BITS>) -> Self::Output {
+                    fn $op(self, _rhs: model::$N<BITS>) -> Self::Output {
                         unimplemented!()
                     }
                 }
             )*
         };
+        ($T:ty) => {
+            model_arith_n!(@model $T, UIntN);
+            model_arith_n!(@model $T, IntN);
+        };
     }
 
+    #[cfg(not(thrust_int_range))]
     integer_model!(isize, model::Int);
+    #[cfg(thrust_int_range)]
+    integer_model!(isize, model::IntN<64>);
+    #[cfg(not(thrust_int_range))]
     integer_model!(i32, model::Int);
+    #[cfg(thrust_int_range)]
+    integer_model!(i32, model::IntN<32>);
+    #[cfg(not(thrust_int_range))]
     integer_model!(i64, model::Int);
+    #[cfg(thrust_int_range)]
+    integer_model!(i64, model::IntN<64>);
     #[cfg(not(thrust_int_range))]
     integer_model!(usize, model::UInt);
     #[cfg(thrust_int_range)]
@@ -635,9 +698,18 @@ mod thrust_models {
     integer_model!(u64, model::UInt);
     #[cfg(thrust_int_range)]
     integer_model!(u64, model::UIntN<64>);
+    #[cfg(not(thrust_int_range))]
     integer_model!(i8, model::Int);
+    #[cfg(thrust_int_range)]
+    integer_model!(i8, model::IntN<8>);
+    #[cfg(not(thrust_int_range))]
     integer_model!(i16, model::Int);
+    #[cfg(thrust_int_range)]
+    integer_model!(i16, model::IntN<16>);
+    #[cfg(not(thrust_int_range))]
     integer_model!(i128, model::Int);
+    #[cfg(thrust_int_range)]
+    integer_model!(i128, model::IntN<128>);
     #[cfg(not(thrust_int_range))]
     integer_model!(u8, model::UInt);
     #[cfg(thrust_int_range)]

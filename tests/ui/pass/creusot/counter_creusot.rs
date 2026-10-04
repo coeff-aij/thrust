@@ -1,8 +1,14 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off -A unused-variables -A unused_parens
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300
-use thrust_models::model::{Closure, Int, Mut, Seq, UInt};
+use thrust_models::model::{Closure, Int, Mut, Seq};
 use thrust_models::{exists, forall, Ghost, Model};
+
+/// The model of `u32`, which carries its width while `THRUST_INT_RANGE` is set.
+#[cfg(not(thrust_int_range))]
+type U32 = thrust_models::model::UInt;
+#[cfg(thrust_int_range)]
+type U32 = thrust_models::model::UIntN<32>;
 
 // Creusot's `examples/counter` with its own property: `v.iter().map_inv(|x, _prod| { cnt += 1; *x })
 // .collect()`, then `x == v` and `cnt == x.len()`. The source is a `Range` instead of `v.iter()`,
@@ -420,12 +426,12 @@ fn counter(start: u32, end: u32) -> (Vec<u32>, usize) {
         // Creusot's `postcondition_mut` of a closure adds `hist_inv(*self, ^self)`, for this
         // capture that the borrow of `cnt` keeps its prophecy.
         ensures(!(!cnt) == !(*cnt)),
-        |x: u32, produced: Ghost<Seq<UInt>>| -> u32 { cnt += 1; x },
+        |x: u32, produced: Ghost<Seq<U32>>| -> u32 { cnt += 1; x },
     );
     let mut m = Map {
         iter: Range { start, end },
         func: f,
-        produced: thrust_macros::ghost!(|| -> Seq<UInt> { Seq::empty() }),
+        produced: thrust_macros::ghost!(|| -> Seq<U32> { Seq::empty() }),
     };
     let x = m.collect::<Vec<u32>>();
     (x, cnt)
