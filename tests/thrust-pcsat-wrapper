@@ -15,7 +15,10 @@ solver_out=$(mktemp)
 trap 'rm -f "$smt2" "$solver_out"' EXIT
 cp "$1" "$smt2"
 
-container=$(docker create --rm --cpus="$cpus" --memory="$memory" -v "$PWD:/mnt" -w /root/coar "$COAR_IMAGE" \
+# THRUST_PCSAT_LABEL (key=value), if set, labels the container, so that a caller can tell its own
+# containers from those of other runs.
+container=$(docker create --rm --cpus="$cpus" --memory="$memory" ${THRUST_PCSAT_LABEL:+--label "$THRUST_PCSAT_LABEL"} \
+    -v "$PWD:/mnt" -w /root/coar "$COAR_IMAGE" \
     main.exe -c "$COAR_CONFIG" -p pcsp "/mnt/$smt2")
 trap 'docker rm --force "$container" >/dev/null; exit 143' TERM
 
