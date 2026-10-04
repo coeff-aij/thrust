@@ -400,6 +400,8 @@ pub trait Idx: Copy + 'static + Eq + PartialEq + Debug + Hash {
     #[must_use = "Use `increment_by` if you wanted to update the index in-place"]
     #[thrust_macros::requires(forall(|i: USize, a: USize|
         Self::index_is(self, i) && a == amount ==> Self::can_new(i + a)))]
+    #[thrust_macros::ensures(forall(|i: USize, a: USize|
+        Self::index_is(self, i) && a == amount ==> Self::index_is(result, i + a)))]
     #[thrust::trusted]
     fn plus(self, amount: usize) -> Self {
         Self::new(self.index() + amount)
@@ -417,6 +419,13 @@ pub trait Idx: Copy + 'static + Eq + PartialEq + Debug + Hash {
     #[thrust_macros::ensures(exists(|i: USize| Self::index_is(*a, i)))]
     #[thrust::trusted]
     fn index_is_total(a: &Self) {}
+
+    // Two elements with the same index are equal, which `layout()`'s `v == index` needs.
+    #[thrust_macros::law]
+    #[thrust_macros::requires(Self::index_is(*a, i) && Self::index_is(*b, i))]
+    #[thrust_macros::ensures(*a == *b)]
+    #[thrust::trusted]
+    fn index_is_injective(a: &Self, b: &Self, i: usize) {}
 }
 
 #[thrust_macros::context]
@@ -682,6 +691,7 @@ impl<I: Idx, T> IndexSlice<I, T> {
 
     #[inline]
     #[thrust_macros::requires(<I as Idx>::can_new((*self).len()))]
+    #[thrust_macros::ensures(<I as Idx>::index_is(result, (*self).len()))]
     #[thrust::trusted]
     pub fn next_index(&self) -> I {
         I::new(self.len())
@@ -737,6 +747,11 @@ impl<I: Idx + thrust_models::Model<Ty: PartialEq>, J: Idx + thrust_models::Model
     #[thrust_macros::requires(forall(|k: USize| !(0 <= k && k <= (*self).len()) || <I as Idx>::can_new(k)))]
     #[thrust_macros::requires(forall(|k: USize, i: USize|
         !(0 <= k && k < (*self).len() && <J as Idx>::index_is((*self)[k], i)) || i < (*self).len()))]
+    // The inverse has the same length, and each entry is a position of `self` (or the `new(0)` it
+    // starts from), so below the length.
+    #[thrust_macros::ensures(result.len() == (*self).len())]
+    #[thrust_macros::ensures(forall(|k: USize, i: USize|
+        !(0 <= k && k < result.len() && <I as Idx>::index_is(result[k], i)) || i < result.len()))]
     #[thrust::trusted]
     pub fn invert_bijective_mapping(&self) -> IndexVec<J, I> {
         let mut inverse = IndexVec::from_elem_n(Idx::new(0), self.len());
@@ -846,6 +861,8 @@ impl<I: Idx, T> IndexVec<I, T> {
 
     #[inline]
     #[thrust_macros::requires(<I as Idx>::can_new((*self).len()))]
+    #[thrust_macros::ensures(!self == (*self).push(d))]
+    #[thrust_macros::ensures(<I as Idx>::index_is(result, (*self).len()))]
     #[thrust::trusted]
     pub fn push(&mut self, d: T) -> I {
         let idx = self.next_index();
@@ -995,6 +1012,15 @@ enum SavedLocalEligibility<VariantIdx, FieldIdx> {
                     && thrust_models::exists(|i: USize|
                         i == l
                             && <LocalIdx as Idx>::index_is((*variant_fields)[v][f], i)))))
+    // 2b. A local a variant lists is Assigned to that variant if it is Assigned at all, which
+    // `layout()`'s `Assigned(_) => unreachable!()` needs.
+    && forall(|l: usize, w: usize, f: usize, vi: <VariantIdx as thrust_models::Model>::Ty|
+        !(0 <= l && l < nb_locals
+            && 0 <= w && w < (*variant_fields).len()
+            && 0 <= f && f < (*variant_fields)[w].len()
+            && thrust_models::exists(|i: USize| i == l && <LocalIdx as Idx>::index_is((*variant_fields)[w][f], i))
+            && result.1[l] == SavedLocalEligibility::Assigned(vi))
+        || forall(|vn: USize| !<VariantIdx as Idx>::index_is(vi, vn) || vn == w))
     // 3. An ineligible local has its promoted field index, below the number of members of
     // `inel` (its ghost count `result.0.3`, the position in `inel.iter()`'s enumeration).
     && forall(|l: usize, x: Option<<FieldIdx as thrust_models::Model>::Ty>|
@@ -1136,9 +1162,9 @@ pub fn layout<
     let promoted_layouts = Map::new(ineligible_locals.iter(), |local| local_layouts[local]);
     prefix_layouts.push(tag_to_layout(tag));
     prefix_layouts.extend_from(promoted_layouts);
-    // TODO(proof): `push` and `extend_from` give `prefix_layouts.len() == P + 1 + c`, c the
-    // items `ineligible_locals.iter()` yields, which is the set's ghost count: `iter` starts
-    // `BitIter`'s `left` at it, and the iterator completes with nothing left.
+    // `push` and `extend_from` give `prefix_layouts.len() == P + 1 + c`, c the items
+    // `ineligible_locals.iter()` yields (`Map` keeps the length), which is the set's ghost count:
+    // `iter` starts `BitIter`'s `left` at it, and the iterator completes with nothing left.
     let prefix = match calc.univariant(
         &prefix_layouts,
         &ReprOptions::default(),
@@ -1156,10 +1182,13 @@ pub fn layout<
             in_memory_order,
         } => {
             let b_start = tag_index.plus(1);
-            // TODO(proof): `split_off(b_start.index())` needs `b_start.index()
-            // <= offsets.raw.len()`: `offsets` has `prefix_layouts.len()`
-            // entries (univariant's `arbitrary_of`), which is at least
-            // `tag_index + 1` (the prefix-length fact above).
+            // `split_off(b_start.index())` needs `b_start.index() <= offsets.raw.len()`:
+            // `b_start` is P + 1 (`next_index`, `plus`), and `offsets` has `prefix_layouts.len()`
+            // entries (univariant's `arbitrary_of`), P + 1 + c by the prefix-length fact above.
+            // TODO(proof): the loop below has no invariant, so inference must find that the two
+            // orders together hold at most as many entries as were read (each `push` needs
+            // `u32::can_new` of the length) and that `j` is below `n - b_start`
+            // (`FieldIdx::new(j)`).
             let offsets_b = IndexVec::from_raw(offsets.raw.split_off(b_start.index()));
             let offsets_a = offsets;
 
@@ -1182,14 +1211,14 @@ pub fn layout<
             (
                 outer_fields,
                 offsets_b,
-                // TODO(proof): `invert_bijective_mapping` requires every
-                // element of `in_memory_order_b` below its length -- the
-                // permutation-split fact `lemma_permutation_split` below
-                // gives it from univariant's `arbitrary_of`; not called yet.
+                // TODO(proof): `invert_bijective_mapping` requires every element of
+                // `in_memory_order_b` below its length, and the variants need that length to be
+                // c: the permutation split, which `lemma_permutation_split` below states of a
+                // value it returns and not of `in_memory_order_b` (not called).
                 in_memory_order_b.invert_bijective_mapping(),
             )
         }
-        _ => unreachable!(), // TODO(proof): unreachable by univariant's ensures (`arbitrary_of`).
+        _ => unreachable!(), // unreachable by univariant's ensures (`arbitrary_of`).
     };
 
     let mut size = prefix.size;
@@ -1202,13 +1231,12 @@ pub fn layout<
         |(index, variant_fields)| {
             let variant_only_tys = Map::new(
                 Filter::new(variant_fields.iter(), |local| match assignments[**local] {
-                    // TODO(proof): unreachable by eligibility.rs's stage-5
-                    // property 1 (an `Unassigned` local never appears in any
-                    // variant's field list).
+                    // Unreachable by eligibility.rs's stage-5 property 1 (an `Unassigned` local
+                    // never appears in any variant's field list).
                     Unassigned => unreachable!(),
                     Assigned(v) if v == index => true,
-                    // TODO(proof): unreachable by property 2 (`Assigned(v)`
-                    // appears only under variant `v`).
+                    // Unreachable by property 2b (a listed local is Assigned to its own variant)
+                    // and `Idx::index_is_injective` (`v == index`).
                     Assigned(_) => unreachable!(),
                     Ineligible(_) => false,
                 }),
@@ -1230,9 +1258,13 @@ pub fn layout<
                 in_memory_order,
             } = variant.fields
             else {
-                unreachable!(); // TODO(proof): same as the prefix's, above.
+                unreachable!(); // the same as the prefix's, above.
             };
 
+            // TODO(proof): `invert_bijective_mapping` needs `u32::can_new` up to the number of
+            // fields m, and `FieldIdx::new(invalid_field_idx)` needs `FieldIdx::can_new(c + m)`:
+            // both need m, the variant's Assigned locals, bounded by the distinct locals
+            // (c + m <= n), a count no contract states.
             let memory_index = in_memory_order.invert_bijective_mapping();
             let invalid_field_idx = promoted_memory_index.len() + memory_index.len();
             let mut combined_in_memory_order =
@@ -1245,7 +1277,7 @@ pub fn layout<
                 variant_fields.iter_enumerated(),
                 |(i, local)| {
                     let (offset, memory_index) = match assignments[*local] {
-                        Unassigned => unreachable!(), // TODO(proof): as above.
+                        Unassigned => unreachable!(), // as above.
                         Assigned(_) => {
                             // TODO(proof): `.unwrap()` needs
                             // `offsets_and_memory_index` to have as many
@@ -1256,13 +1288,14 @@ pub fn layout<
                             (offset, promoted_memory_index.len() as u32 + memory_index)
                         }
                         Ineligible(field_idx) => {
-                            // TODO(proof): `.unwrap()` needs `field_idx ==
-                            // Some(_)` -- eligibility.rs's stage-5 property 3.
+                            // `.unwrap()`: `field_idx == Some(_)` by eligibility.rs's stage-5
+                            // property 3.
                             let field_idx = field_idx.unwrap();
                             (
-                                // TODO(proof): needs `field_idx <
-                                // card(ineligible_locals) == offsets_b.len()`
-                                // -- README stage 7.
+                                // `field_idx` is below the set's ghost count c (property 3),
+                                // which is `offsets_b.len()` (the prefix length and `split_off`).
+                                // TODO(proof): `promoted_memory_index` has c entries only by
+                                // the permutation split above.
                                 promoted_offsets[field_idx],
                                 promoted_memory_index[field_idx],
                             )
@@ -1289,9 +1322,8 @@ pub fn layout<
 
             size = size.max(variant.size);
             align = align.max(variant.align);
-            // TODO(proof): `VariantLayout::from_layout`'s own panic is
-            // unreachable because `variant.fields` was just reassigned to
-            // `Arbitrary` above (README stage 7, "unreachable").
+            // `VariantLayout::from_layout`'s own panic is unreachable: `variant.fields` was just
+            // reassigned to `Arbitrary` above.
             Ok(VariantLayout::from_layout(variant))
         },
     ))?;
