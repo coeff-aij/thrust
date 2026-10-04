@@ -1218,7 +1218,8 @@ pub fn layout<
                 in_memory_order_b.invert_bijective_mapping(),
             )
         }
-        _ => unreachable!(), // unreachable by univariant's ensures (`arbitrary_of`).
+        // Unreachable by univariant's ensures (`arbitrary_of`).
+        _ => unreachable!(),
     };
 
     let mut size = prefix.size;
@@ -1258,7 +1259,8 @@ pub fn layout<
                 in_memory_order,
             } = variant.fields
             else {
-                unreachable!(); // the same as the prefix's, above.
+                // Unreachable, as the prefix's above.
+                unreachable!();
             };
 
             // TODO(proof): `invert_bijective_mapping` needs `u32::can_new` up to the number of
@@ -1277,7 +1279,8 @@ pub fn layout<
                 variant_fields.iter_enumerated(),
                 |(i, local)| {
                     let (offset, memory_index) = match assignments[*local] {
-                        Unassigned => unreachable!(), // as above.
+                        // Unreachable, as above.
+                        Unassigned => unreachable!(),
                         Assigned(_) => {
                             // TODO(proof): `.unwrap()` needs
                             // `offsets_and_memory_index` to have as many
