@@ -4,7 +4,14 @@
 
 use thrust_models::exists;
 
-#[thrust_macros::requires(exists(|k: thrust_models::model::UInt| x == Some(k) && k < 5))]
+/// The model of `usize`, which carries its width while `THRUST_INT_RANGE` is set.
+#[cfg(not(thrust_int_range))]
+type USize = thrust_models::model::UInt;
+#[cfg(thrust_int_range)]
+type USize = thrust_models::model::UIntN<64>;
+
+
+#[thrust_macros::requires(exists(|k: USize| x == Some(k) && k < 5))]
 #[thrust_macros::ensures(true)]
 fn test(x: Option<usize>) {
     let v = x.unwrap();

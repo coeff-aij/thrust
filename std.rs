@@ -490,10 +490,22 @@ mod thrust_models {
                 unimplemented!()
             }
 
+            // With `THRUST_INT_RANGE` the length has the type of a `usize` model, so that it is
+            // passed where a specification takes a `usize`; a term is not assumed in the range of
+            // its type, so this states nothing.
             #[allow(dead_code)]
+            #[cfg(not(thrust_int_range))]
             #[thrust::def::seq_len]
             #[thrust::ignored]
             pub fn len(&self) -> UInt {
+                unimplemented!()
+            }
+
+            #[allow(dead_code)]
+            #[cfg(thrust_int_range)]
+            #[thrust::def::seq_len]
+            #[thrust::ignored]
+            pub fn len(&self) -> UIntN<64> {
                 unimplemented!()
             }
 

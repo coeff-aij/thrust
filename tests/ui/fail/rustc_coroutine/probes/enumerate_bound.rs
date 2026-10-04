@@ -5,8 +5,15 @@
 // The enumerate position over a bit-set iterator stays below the domain size: `BitIter`'s model
 // is (bound, count), as in tests/ui/pass/rustc_coroutine/eligibility.rs.
 
-use thrust_models::model::{UInt, Mut, Seq};
+use thrust_models::model::{Mut, Seq};
 use thrust_models::{exists, forall};
+
+/// The model of `usize`, which carries its width while `THRUST_INT_RANGE` is set.
+#[cfg(not(thrust_int_range))]
+type USize = thrust_models::model::UInt;
+#[cfg(thrust_int_range)]
+type USize = thrust_models::model::UIntN<64>;
+
 
 // The iterator trait, local to the case study (rewrites.md R9): Creusot's `common.rs` as the
 // Creusot benchmark cases of the fork declare it (tests/ui/pass/creusot/range.rs), with the
@@ -77,7 +84,7 @@ pub struct Enumerate<I> {
 }
 
 impl<I: thrust_models::Model> thrust_models::Model for Enumerate<I> {
-    type Ty = (<I as thrust_models::Model>::Ty, UInt);
+    type Ty = (<I as thrust_models::Model>::Ty, USize);
 }
 
 #[thrust_macros::context]
@@ -112,7 +119,7 @@ where
             && exists(|s: Seq<<I::Item as thrust_models::Model>::Ty>|
                 I::produces(self.0, s, o.0)
                     && s.len() == visited.len()
-                    && forall(|i: UInt| !(0 <= i && i < s.len()) || visited[i] == (self.1 + i, s[i])))
+                    && forall(|i: USize| !(0 <= i && i < s.len()) || visited[i] == (self.1 + i, s[i])))
     }
 
     #[thrust_macros::predicate]
@@ -127,13 +134,13 @@ pub struct DenseBitSet {
 }
 
 impl thrust_models::Model for DenseBitSet {
-    type Ty = (UInt, ());
+    type Ty = (USize, ());
 }
 
 pub struct BitIter {}
 
 impl thrust_models::Model for BitIter {
-    type Ty = (UInt, UInt);
+    type Ty = (USize, USize);
 }
 
 #[thrust_macros::context]
@@ -170,7 +177,7 @@ impl Iterator for BitIter {
         self.0 == o.0
             && o.1 == self.1 + visited.len()
             && o.1 <= self.0
-            && forall(|i: UInt| !(0 <= i && i < visited.len()) || visited[i] < self.0)
+            && forall(|i: USize| !(0 <= i && i < visited.len()) || visited[i] < self.0)
     }
 
     #[thrust_macros::predicate]

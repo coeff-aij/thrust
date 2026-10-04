@@ -20,7 +20,7 @@
 // non-trivial contract).
 
 use thrust_models::{exists, forall};
-use thrust_models::model::{UInt, Seq};
+use thrust_models::model::{Seq};
 
 use std::cmp;
 use std::convert::TryInto;
@@ -82,7 +82,7 @@ pub trait Idx: Copy + 'static + Eq + PartialEq + Debug + Hash {
     fn index(self) -> usize;
 
     #[inline]
-    #[thrust_macros::requires(forall(|i: UInt, a: UInt|
+    #[thrust_macros::requires(forall(|i: USize, a: USize|
         Self::index_is(*self, i) && a == amount ==> Self::can_new(i + a)))]
     #[thrust::trusted]
     fn increment_by(&mut self, amount: usize) {
@@ -91,7 +91,7 @@ pub trait Idx: Copy + 'static + Eq + PartialEq + Debug + Hash {
 
     #[inline]
     #[must_use = "Use `increment_by` if you wanted to update the index in-place"]
-    #[thrust_macros::requires(forall(|i: UInt, a: UInt|
+    #[thrust_macros::requires(forall(|i: USize, a: USize|
         Self::index_is(self, i) && a == amount ==> Self::can_new(i + a)))]
     #[thrust::trusted]
     fn plus(self, amount: usize) -> Self {
@@ -332,8 +332,8 @@ impl<I: Idx, T: thrust_models::Model<Ty: PartialEq>, R: IntoSliceIdx<I, [T]>> st
 // `Index`/`IndexMut` are foreign traits, so the contract is an extern spec (the impl methods
 // are `trusted`). `IntoSliceIdx` has one impl, `I: Idx` into `usize`, through `Idx::index_is`.
 #[thrust::extern_spec_fn]
-#[thrust_macros::requires(forall(|i: UInt| <R as IntoSliceIdx<I, [T]>>::into_is(index, i) ==> i < (*slf).len()))]
-#[thrust_macros::ensures(forall(|i: UInt| <R as IntoSliceIdx<I, [T]>>::into_is(index, i) ==> *result == (*slf)[i]))]
+#[thrust_macros::requires(forall(|i: USize| <R as IntoSliceIdx<I, [T]>>::into_is(index, i) ==> i < (*slf).len()))]
+#[thrust_macros::ensures(forall(|i: USize| <R as IntoSliceIdx<I, [T]>>::into_is(index, i) ==> *result == (*slf)[i]))]
 fn _extern_spec_index_slice_index<I: Idx + thrust_models::Model<Ty: PartialEq>, T: thrust_models::Model, R: IntoSliceIdx<I, [T], Output = usize> + thrust_models::Model>(slf: &IndexSlice<I, T>, index: R) -> &T
 where
     <T as thrust_models::Model>::Ty: PartialEq,
@@ -343,8 +343,8 @@ where
 }
 
 #[thrust::extern_spec_fn]
-#[thrust_macros::requires(forall(|i: UInt| <R as IntoSliceIdx<I, [T]>>::into_is(index, i) ==> i < (*slf).len()))]
-#[thrust_macros::ensures(forall(|i: UInt| <R as IntoSliceIdx<I, [T]>>::into_is(index, i)
+#[thrust_macros::requires(forall(|i: USize| <R as IntoSliceIdx<I, [T]>>::into_is(index, i) ==> i < (*slf).len()))]
+#[thrust_macros::ensures(forall(|i: USize| <R as IntoSliceIdx<I, [T]>>::into_is(index, i)
     ==> (*result == (*slf)[i] && !result == (!slf)[i] && (!slf).len() == (*slf).len())))]
 fn _extern_spec_index_slice_index_mut<I: Idx + thrust_models::Model<Ty: PartialEq>, T: thrust_models::Model, R: IntoSliceIdx<I, [T], Output = usize> + thrust_models::Model>(slf: &mut IndexSlice<I, T>, index: R) -> &mut T
 where
@@ -358,6 +358,13 @@ where
 
 use std::borrow::{Borrow, BorrowMut};
 use std::ops::{Deref as _, DerefMut};
+
+/// The model of `usize` and `u64`, which carries its width while `THRUST_INT_RANGE` is set.
+#[cfg(not(thrust_int_range))]
+type USize = thrust_models::model::UInt;
+#[cfg(thrust_int_range)]
+type USize = thrust_models::model::UIntN<64>;
+
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 #[repr(transparent)]
@@ -508,7 +515,7 @@ impl TargetDataLayout {
     #[thrust_macros::predicate]
     fn pointer_space_ok(self, c: AddressSpace) -> bool {
         c == self.default_address_space
-            || exists(|s: Seq<(AddressSpace, PointerSpec)>, i: UInt|
+            || exists(|s: Seq<(AddressSpace, PointerSpec)>, i: USize|
                 s == self.address_space_info && 0 <= i && i < s.len() && s[i].0 == c)
     }
 
@@ -517,13 +524,13 @@ impl TargetDataLayout {
     fn pointer_size_is(self, c: AddressSpace, n: Size) -> bool {
         (c == self.default_address_space && n == self.default_address_space_pointer_spec.pointer_size)
             || (!(c == self.default_address_space)
-                && exists(|s: Seq<(AddressSpace, PointerSpec)>, i: UInt|
+                && exists(|s: Seq<(AddressSpace, PointerSpec)>, i: USize|
                     s == self.address_space_info
                         && 0 <= i
                         && i < s.len()
                         && s[i].0 == c
                         && n == s[i].1.pointer_size
-                        && forall(|j: UInt| !(0 <= j && j < i) || !(s[j].0 == c))))
+                        && forall(|j: USize| !(0 <= j && j < i) || !(s[j].0 == c))))
     }
 
     #[inline]
@@ -870,7 +877,7 @@ impl Float {
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash /*Debug*/)]
 pub enum Primitive {
-    UInt(Integer, bool),
+    USize(Integer, bool),
     Float(Float),
     Pointer(AddressSpace),
 }
@@ -886,7 +893,7 @@ impl Primitive {
         let dl = cx.data_layout();
 
         match self {
-            UInt(i, _) => i.size(),
+            USize(i, _) => i.size(),
             Float(f) => f.size(),
             Pointer(a) => dl.pointer_size_in(a),
         }
@@ -900,7 +907,7 @@ impl Primitive {
         let dl = cx.data_layout();
 
         match self {
-            UInt(i, _) => i.align(dl),
+            USize(i, _) => i.align(dl),
             Float(f) => f.align(dl),
             Pointer(a) => dl.pointer_align_in(a),
         }
@@ -1143,16 +1150,16 @@ impl<FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>> FieldsShape<FieldIdx> 
     /// `self` is `Arbitrary` over `n` fields: `n` offsets, and a memory order listing each
     /// field below `n` exactly once.
     #[thrust_macros::predicate]
-    fn arbitrary_of(self, n: UInt) -> bool {
+    fn arbitrary_of(self, n: USize) -> bool {
         exists(|o: IndexVec<FieldIdx, Size>, m: IndexVec<u32, FieldIdx>,
                 ms: Seq<<FieldIdx as thrust_models::Model>::Ty>|
             self == FieldsShape::Arbitrary { offsets: o, in_memory_order: m }
                 && ms == m.raw
                 && o.raw.len() == n
                 && ms.len() == n
-                && forall(|k: UInt, i: UInt|
+                && forall(|k: USize, i: USize|
                     !(0 <= k && k < n && <FieldIdx as Idx>::index_is(ms[k], i)) || (0 <= i && i < n))
-                && forall(|k: UInt, k2: UInt, i: UInt|
+                && forall(|k: USize, k2: USize, i: USize|
                     !(0 <= k && k < n && 0 <= k2 && k2 < n && !(k == k2)
                         && <FieldIdx as Idx>::index_is(ms[k], i))
                         || !<FieldIdx as Idx>::index_is(ms[k2], i)))
@@ -1422,8 +1429,8 @@ pub struct LayoutCalculator<Cx> {
 impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
     #[thrust::trusted]
     #[thrust_macros::requires(
-        forall(|k: UInt| !(0 <= k && k <= (*fields).len()) || <FieldIdx as Idx>::can_new(k))
-            && forall(|z: UInt| !(z == 0usize) || <VariantIdx as Idx>::can_new(z))
+        forall(|k: USize| !(0 <= k && k <= (*fields).len()) || <FieldIdx as Idx>::can_new(k))
+            && forall(|z: USize| !(z == 0usize) || <VariantIdx as Idx>::can_new(z))
             && (matches!(kind, StructKind::MaybeUnsized) ==> (*fields).len() > 0)
             && forall(|dl: TargetDataLayout| !Cx::dl_of(*self, dl)
                 || dl.default_address_space_pointer_spec.pointer_size.raw == 2
