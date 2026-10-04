@@ -213,20 +213,28 @@ where
     let expected = expected.clone().normalize_tuple_refinements();
     let mut clauses = relate_type(scope, &got.ty, &expected.ty, relation);
 
-    let cs = scope
-        .build_clause()
-        .with_value_var(&got.ty)
-        .add_body(got.formula())
-        .head(head_of(&got.ty, &expected, position));
-    clauses.extend(cs);
-
-    if relation == Relation::Equal {
+    // A clause whose head is `true` is dropped by `push_clause`, so it is not built: building
+    // one instantiates the whole environment.
+    let head = head_of(&got.ty, &expected, position);
+    if !head.is_top() {
         let cs = scope
             .build_clause()
-            .with_value_var(&expected.ty)
-            .add_body(expected.formula())
-            .head(head_of(&expected.ty, &got, position));
+            .with_value_var(&got.ty)
+            .add_body(got.formula())
+            .head(head);
         clauses.extend(cs);
+    }
+
+    if relation == Relation::Equal {
+        let head = head_of(&expected.ty, &got, position);
+        if !head.is_top() {
+            let cs = scope
+                .build_clause()
+                .with_value_var(&expected.ty)
+                .add_body(expected.formula())
+                .head(head);
+            clauses.extend(cs);
+        }
     }
 
     clauses
