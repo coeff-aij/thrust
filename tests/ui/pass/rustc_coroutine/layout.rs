@@ -404,6 +404,19 @@ pub trait Idx: Copy + 'static + Eq + PartialEq + Debug + Hash {
     fn plus(self, amount: usize) -> Self {
         Self::new(self.index() + amount)
     }
+
+    // `index` is a function, so an element has exactly one index. Creusot gets this for free from
+    // a logic function; `index_is` is a predicate, so the two halves are laws.
+    #[thrust_macros::law]
+    #[thrust_macros::requires(Self::index_is(*a, i) && Self::index_is(*a, j))]
+    #[thrust_macros::ensures(i == j)]
+    #[thrust::trusted]
+    fn index_is_unique(a: &Self, i: usize, j: usize) {}
+
+    #[thrust_macros::law]
+    #[thrust_macros::ensures(exists(|i: USize| Self::index_is(*a, i)))]
+    #[thrust::trusted]
+    fn index_is_total(a: &Self) {}
 }
 
 #[thrust_macros::context]
@@ -769,7 +782,7 @@ where
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(forall(|i: USize| <R as IntoSliceIdx<I, [T]>>::into_is(index, i) ==> i < (*slf).len()))]
 #[thrust_macros::ensures(forall(|i: USize| <R as IntoSliceIdx<I, [T]>>::into_is(index, i)
-    ==> (*result == (*slf)[i] && !result == (!slf)[i] && (!slf).len() == (*slf).len())))]
+    ==> (*result == (*slf)[i] && !slf == (*slf).store(i, !result))))]
 fn _extern_spec_index_slice_index_mut<I: Idx + thrust_models::Model<Ty: PartialEq>, T: thrust_models::Model, R: IntoSliceIdx<I, [T], Output = usize> + thrust_models::Model>(slf: &mut IndexSlice<I, T>, index: R) -> &mut T
 where
     <T as thrust_models::Model>::Ty: PartialEq,
