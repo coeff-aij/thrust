@@ -210,6 +210,14 @@ impl<T> FormulaOrTerm<T> {
     }
 }
 
+/// The quantified variables of an `exists` / `forall` closure, the range they range over, and
+/// the body.
+type QuantifiedBody = (
+    Vec<(chc::UserQuantifiedVarId, chc::Sort)>,
+    Option<chc::Formula<rty::FunctionParamIdx>>,
+    chc::Formula<rty::FunctionParamIdx>,
+);
+
 #[derive(Clone)]
 pub struct AnnotFnTranslator<'a, 'tcx> {
     tcx: TyCtxt<'tcx>,
@@ -900,15 +908,13 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         term
     }
 
-    fn to_formula_with_quantified_vars(
-        &self,
-        closure: &rustc_hir::Body<'tcx>,
-    ) -> (
-        Vec<(chc::UserQuantifiedVarId, chc::Sort)>,
-        chc::Formula<rty::FunctionParamIdx>,
-    ) {
+    /// The parameters of an `exists` / `forall` closure as quantified variables, the range of
+    /// those of an integer type whose range is in use ([`rty::int_range`]), over which they range,
+    /// and the body.
+    fn to_formula_with_quantified_vars(&self, closure: &rustc_hir::Body<'tcx>) -> QuantifiedBody {
         let mut inner_translator = self.clone();
         let mut vars = Vec::new();
+        let mut range: Option<chc::Formula<rty::FunctionParamIdx>> = None;
         for param in closure.params {
             let rustc_hir::PatKind::Binding(_, hir_id, ident, None) = param.pat.kind else {
                 panic!(
@@ -917,17 +923,23 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 );
             };
             let param_ty = self.pat_ty(param.pat);
-            let sort = self.type_builder.build(param_ty).to_sort();
+            let param_rty = self.type_builder.build(param_ty);
+            let sort = param_rty.to_sort();
             let var = self
                 .analyzer
                 .generate_user_quantified_var(format!("{ident} at {:?}", param.pat.span));
-            inner_translator
-                .env
-                .insert(hir_id, chc::Term::UserQuantifiedVar(sort.clone(), var));
+            let term = chc::Term::UserQuantifiedVar(sort.clone(), var);
+            if let Some(fact) = rty::int_range_formula(&param_rty.ty, term.clone()) {
+                range = Some(match range {
+                    Some(range) => range.and(fact),
+                    None => fact,
+                });
+            }
+            inner_translator.env.insert(hir_id, term);
             vars.push((var, sort));
         }
         let body_formula = inner_translator.to_formula(closure.value);
-        (vars, body_formula)
+        (vars, range, body_formula)
     }
 
     /// The body of a one-parameter closure as a term, with the parameter bound to a fresh
@@ -1478,8 +1490,12 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                             };
                             let closure_body = self.tcx.hir_body(closure.body);
 
-                            let (vars, body_formula) =
+                            let (vars, range, body_formula) =
                                 self.to_formula_with_quantified_vars(closure_body);
+                            let body_formula = match range {
+                                Some(range) => range.and(body_formula),
+                                None => body_formula,
+                            };
                             return FormulaOrTerm::Formula(chc::Formula::exists(
                                 vars,
                                 body_formula,
@@ -1492,8 +1508,12 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                             };
                             let closure_body = self.tcx.hir_body(closure.body);
 
-                            let (vars, body_formula) =
+                            let (vars, range, body_formula) =
                                 self.to_formula_with_quantified_vars(closure_body);
+                            let body_formula = match range {
+                                Some(range) => range.implies(body_formula),
+                                None => body_formula,
+                            };
                             return FormulaOrTerm::Formula(chc::Formula::forall(
                                 vars,
                                 body_formula,

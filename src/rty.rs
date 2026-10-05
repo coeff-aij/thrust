@@ -1032,6 +1032,24 @@ where
     Some(atoms)
 }
 
+/// The range of a value `x` of the integer type `ty` as a formula, when [`int_range`] is in use for
+/// `ty`; `None` otherwise.
+pub fn int_range_formula<T, V>(ty: &Type<T>, x: chc::Term<V>) -> Option<chc::Formula<V>>
+where
+    V: Clone,
+{
+    let (signed, width) = match ty {
+        Type::Int(width) => (true, *width),
+        Type::UInt(width) => (false, *width),
+        _ => return None,
+    };
+    int_range(signed, width)?;
+    int_range_atoms(ty, x)?
+        .into_iter()
+        .map(chc::Formula::Atom)
+        .reduce(chc::Formula::and)
+}
+
 /// The variable of the element facts of a sequence. They are stated only of a sequence of integers
 /// of a type with a width, so they never nest and one reserved identifier serves.
 fn seq_elem_var() -> chc::UserQuantifiedVarId {
