@@ -429,6 +429,11 @@ impl PlaceType {
         for field_ty in variant.field_tys.clone() {
             let mut rty = field_ty.vacuous();
             rty.instantiate_ty_params(inner_ty.args.clone());
+            // A field is a fresh existential here, so the facts of its type are stated with it,
+            // as `formula` states them of a binding.
+            if let Some(facts) = rty::int_range_type_facts(&rty.ty) {
+                rty.refinement.push_conj(facts);
+            }
             let (ty, field_ex_var) = builder.subsume_rty(rty.boxed());
 
             field_terms.push(chc::Term::var(field_ex_var.into()));

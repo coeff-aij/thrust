@@ -156,7 +156,13 @@ impl<'tcx> analyze::Analyzer<'tcx> {
                 .iter()
                 .map(|(v, sort)| chc::Term::UserQuantifiedVar(sort.clone(), *v))
                 .collect();
-            let pre = fn_ty.precondition_formula(&args);
+            // A law variable ranges over its parameter's type, as an annotation's `forall` does.
+            let mut pre = fn_ty.precondition_formula(&args);
+            for (param, arg) in fn_ty.params.iter().zip(&args) {
+                if let Some(range) = rty::int_range_type_formula(&param.ty, arg.clone()) {
+                    pre = range.and(pre);
+                }
+            }
             let post = fn_ty.postcondition_formula(&args, chc::Term::tuple(vec![]));
             let mut law = chc::Formula::forall(vars, pre.implies(post));
             law.simplify();

@@ -1050,6 +1050,35 @@ where
         .reduce(chc::Formula::and)
 }
 
+/// The facts [`RefinedType::formula`] states of every value of `ty`, the ranges of the integers it
+/// holds through tuples, pointers and sequences, when [`int_range_mode`] is on; `None` when it is
+/// off.
+pub fn int_range_type_facts<FV>(ty: &Type<FV>) -> Option<Refinement<FV>>
+where
+    FV: chc::Var,
+{
+    if int_range_mode() == IntRange::Off {
+        return None;
+    }
+    Some(RefinedType::unrefined(ty.clone()).formula())
+}
+
+/// [`int_range_type_facts`] of `ty` as a formula about `value`; `None` when they are not in use or
+/// `ty` holds no integer with a range.
+pub fn int_range_type_formula<W>(
+    ty: &Type<FunctionParamIdx>,
+    value: chc::Term<W>,
+) -> Option<chc::Formula<W>>
+where
+    W: chc::Var,
+{
+    let facts = int_range_type_facts(ty)?;
+    if facts.is_top() {
+        return None;
+    }
+    Some(refinement_to_chc_formula(&facts, value, &IndexVec::new()))
+}
+
 /// The variable of the element facts of a sequence. They are stated only of a sequence of integers
 /// of a type with a width, so they never nest and one reserved identifier serves.
 fn seq_elem_var() -> chc::UserQuantifiedVarId {

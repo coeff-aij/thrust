@@ -236,9 +236,20 @@ pub fn laws(
         let r = fresh(system, "hist_inv_r");
         let result = chc::Term::UserQuantifiedVar(result_sort.clone(), r);
         params.push((r, result_sort));
-        let post = contract.postcondition_formula(&args, result);
+        let mut premise = contract.postcondition_formula(&args, result.clone());
+        // The law's variables range over the types of the parameters and the result.
+        let typed = contract
+            .params
+            .iter()
+            .zip(&args)
+            .map(|(param, arg)| (&param.ty, arg));
+        for (ty, term) in typed.chain([(&contract.ret.ty, &result)]) {
+            if let Some(range) = rty::int_range_type_formula(ty, term.clone()) {
+                premise = range.and(premise);
+            }
+        }
         let states = related(args[0].clone().mut_current(), args[0].clone().mut_final());
-        laws.push(chc::Formula::forall(params, post.implies(states)));
+        laws.push(chc::Formula::forall(params, premise.implies(states)));
     }
     for law in &mut laws {
         law.simplify();
