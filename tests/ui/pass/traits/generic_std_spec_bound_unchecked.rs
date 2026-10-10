@@ -2,6 +2,10 @@
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
+// The spec bound is reached through `enumerate`, which steps nothing: `Vec::from_iter(j)` requires
+// `inv` of the iterator `j`'s `into_iter` makes, as Creusot requires the type invariant of the
+// iterator `extend` and `collect` step, and a contract over `J: IntoIterator` cannot state it.
+
 #[derive(PartialEq)]
 struct Good;
 
