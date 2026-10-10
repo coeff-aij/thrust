@@ -9,6 +9,7 @@ use rustc_span::def_id::LocalDefId;
 use crate::analyze;
 use crate::chc;
 use crate::chc::debug;
+use crate::pretty::PrettyDisplayExt as _;
 use crate::rty::ClauseBuilderExt as _;
 
 /// An implementation of local crate analysis.
@@ -67,6 +68,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         // Refinement order decides how predicate variables are numbered, so collect these
         // in the order `mir_keys` yields them rather than in a hash order.
         let mut trait_method_spec_keys = Vec::new();
+        let mut impl_methods_with_own_contract = Vec::new();
         for local_def_id in self.tcx.mir_keys(()) {
             if !self.tcx.def_kind(*local_def_id).is_fn_like() {
                 keys.swap_remove(local_def_id);
@@ -77,6 +79,13 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 let target_def_id = analyzer.extern_spec_fn_target_def_id();
                 if let Some(local_target_def_id) = target_def_id.as_local() {
                     keys.swap_remove(&local_target_def_id);
+                    if self
+                        .tcx
+                        .opt_associated_item(target_def_id)
+                        .is_some_and(|item| item.trait_item_def_id.is_some())
+                    {
+                        impl_methods_with_own_contract.push(target_def_id);
+                    }
                     // The spec is the target's contract; a trusted target's body is not
                     // checked against it.
                     if self
@@ -114,6 +123,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 self.skip_analysis.insert(*local_def_id);
                 keys.swap_remove(local_def_id);
             }
+        }
+        for def_id in impl_methods_with_own_contract {
+            self.ctx.register_impl_method_with_own_contract(def_id);
         }
         // A closure is skipped when its typeck root is, so roots are refined first.
         let (roots, nested): (Vec<&LocalDefId>, Vec<&LocalDefId>) = keys
@@ -251,6 +263,40 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     reused
                 })
                 .collect();
+        }
+    }
+
+    /// Checks that the contract written on a method of a local trait impl refines the trait's
+    /// contract of that method at the impl, as Creusot does for each method of an impl
+    /// (`translation/traits.rs`, `translate_impl`): under the trait's precondition the impl's
+    /// holds, and the impl's postcondition implies the trait's. The trait's contract is the one
+    /// a call through a type parameter bounded by the trait uses: an extern spec of a std trait's
+    /// method, which may hold only under a bound of its own (`I: IteratorSpec` of
+    /// `Iterator::next`), or a local trait's. A method without a contract of its own takes the
+    /// trait's (`local_def::Analyzer::expected_ty`), so its body is checked against it directly.
+    fn check_impl_refinements(&mut self) {
+        for def_id in self.ctx.impl_methods_with_own_contract() {
+            let Some(impl_ty) = self.ctx.concrete_def_ty(def_id).cloned() else {
+                continue;
+            };
+            let Some(trait_ty) = self
+                .ctx
+                .local_def_analyzer(def_id.expect_local())
+                .trait_item_ty()
+            else {
+                continue;
+            };
+            tracing::info!(
+                ?def_id,
+                impl_ty = %impl_ty.display(),
+                trait_ty = %trait_ty.display(),
+                "impl refinement"
+            );
+            let clauses = crate::rty::relate_refining_function_type(
+                impl_ty.ty.as_function().unwrap(),
+                trait_ty.ty.as_function().unwrap(),
+            );
+            self.ctx.extend_clauses(clauses);
         }
     }
 
@@ -469,6 +515,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.analyze_raw_command_annot();
         self.register_trait_laws();
         self.refine_local_defs();
+        self.check_impl_refinements();
         let keys: Vec<_> = self.tcx.mir_keys(()).iter().copied().collect();
         self.ctx.record_hist_inv_specified_params(keys.into_iter());
         self.analyze_local_defs();

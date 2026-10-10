@@ -1482,6 +1482,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 }
             }
             ResolvedCallable::Concrete(resolved_def_id, resolved_args) => {
+                if resolved_def_id != def_id && self.ctx.has_own_impl_contract(resolved_def_id) {
+                    if let Some(def_ty) =
+                        self.ctx
+                            .def_ty_with_args(resolved_def_id, resolved_args, caller_def_id)
+                    {
+                        return def_ty.ty;
+                    }
+                }
                 if let Some(def_ty) = self.ctx.def_ty_with_args(def_id, args, caller_def_id) {
                     // otherwise nothing asks for a deferred impl method's type and its body goes unchecked
                     if resolved_def_id != def_id {

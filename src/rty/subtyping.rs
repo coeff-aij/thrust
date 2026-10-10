@@ -7,8 +7,8 @@ use crate::chc::debug;
 use crate::pretty::PrettyDisplayExt;
 
 use super::{
-    ClauseBuilderExt as _, FunctionParamIdx, PointerKind, RefKind, RefinedType, RefinedTypeVar,
-    Refinement, Type,
+    ClauseBuilderExt as _, FunctionParamIdx, FunctionType, PointerKind, RefKind, RefinedType,
+    RefinedTypeVar, Refinement, Type,
 };
 
 #[cfg(test)]
@@ -356,6 +356,72 @@ pub fn relate_sub_param_types(
         clauses.extend(cs);
     }
 
+    clauses
+}
+
+/// The clauses for `got`, the contract of a method of a trait impl, to refine `expected`, the
+/// trait's contract of that method at the impl: under `expected`'s precondition, `got`'s holds and
+/// `got`'s postcondition implies `expected`'s.
+///
+/// This is Creusot's refinement obligation (`translation/traits.rs`, `logic_refinement_term`).
+/// Unlike the subtyping of two function types, the parameters are related at the same values and
+/// the postconditions under `expected`'s precondition.
+#[must_use]
+pub fn relate_refining_function_type(
+    got: &FunctionType,
+    expected: &FunctionType,
+) -> Vec<chc::Clause> {
+    assert_eq!(got.params.len(), expected.params.len());
+
+    let mut builder = chc::ClauseBuilder::default();
+    for (param_idx, param_rty) in expected.params.iter_enumerated() {
+        let param_sort = param_rty.ty.to_sort();
+        if !param_sort.is_singleton() {
+            let chc_var = builder.add_mapped_var(param_idx, param_sort.clone());
+            builder.add_environment_origin(
+                debug::origin::Entry::parameter(param_idx, &param_sort)
+                    .var_mapping(param_idx, chc_var),
+            );
+        }
+    }
+    for (param_idx, param_rty) in expected.params.iter_enumerated() {
+        builder
+            .with_mapped_value_var(param_idx)
+            .add_body(param_rty.formula());
+    }
+
+    let mut clauses = Vec::new();
+    for ((param_idx, got_rty), expected_rty) in got.params.iter_enumerated().zip(&expected.params) {
+        clauses.extend(relate_type(
+            &builder,
+            &expected_rty.ty,
+            &got_rty.ty,
+            Relation::Sub,
+        ));
+        if !got_rty.refinement.is_top() {
+            clauses.extend(
+                builder
+                    .clone()
+                    .with_mapped_value_var(param_idx)
+                    .head(got_rty.refinement.clone()),
+            );
+        }
+    }
+    clauses.extend(relate_type(
+        &builder,
+        &got.ret.ty,
+        &expected.ret.ty,
+        Relation::Sub,
+    ));
+    if !expected.ret.refinement.is_top() {
+        clauses.extend(
+            builder
+                .clone()
+                .with_value_var(&got.ret.ty)
+                .add_body(got.ret.formula())
+                .head(expected.ret.refinement.clone()),
+        );
+    }
     clauses
 }
 

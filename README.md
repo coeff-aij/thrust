@@ -174,6 +174,8 @@ fn rand() -> i32 { unimplemented!() }
 
 `#[thrust_macros::impl_trait_names(D, F)]` names the types of a function's argument-position `impl Trait` parameters, in order of occurrence, so that its `requires`/`ensures` can refer to them (e.g. `D::dl_of(*cx, dl)` for `cx: &impl HasDataLayout`); it may appear before or after them, and the number of names must equal the number of such parameters.
 
+A method of a trait impl takes the trait's contract of that method: the one written on a local trait, or the one `std.rs` gives a std trait's method, such as `Iterator::next` for a type implementing `IteratorSpec`. With `#[thrust_macros::context]` on the impl, the method may carry `requires`/`ensures` of its own instead. Its body is then checked against them, a call resolved to the method uses them, and they must refine the trait's contract: the trait's precondition implies the method's, and the method's postcondition implies the trait's under the trait's precondition.
+
 ## Configuration
 
 Several environment variables are used by Thrust to configure its behavior:
