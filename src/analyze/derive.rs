@@ -5,16 +5,16 @@
 //!
 //! - `PartialEq::eq` compares the fields with `==`, and `Clone::clone` clones each field, so
 //!   they are `result == (*x == *y)` and `result == *x` when the type's model is the tuple (or
-//!   datatype) of its fields' models, or the model of its one field besides `PhantomData`s, and
-//!   `==` and `clone` of every field act on its model.
+//!   datatype) of its fields' models, or the model of its one field besides `PhantomData`s. For
+//!   `eq`, `==` on the type must also be equality of models, as std.rs's `ModelEq` decides it,
+//!   and no field may hold a `Ghost`, whose `PartialEq` is for formulas only: analyzing the body
+//!   rejects that call. A clone acts on the model of every type, as std.rs's spec states.
 //! - `Hash::hash` and `Default::default` call the same method of each field, whose contracts
 //!   (no panic, nothing more) they then have.
 //! - `PartialOrd::partial_cmp` and `Ord::cmp` compare the fields lexicographically in declaration
 //!   order, and a fieldless enum by its discriminants. A type with such a derive and no
 //!   `PartialOrdSpec` impl is given that order as its `compares` relation ([`Compares`]), from
 //!   the relations of its fields, and the two methods have std.rs's contracts over it.
-//! - `Debug::fmt` writes to a `Formatter`, which has no model; it is left out, as
-//!   `#[thrust::ignored]`.
 
 use rustc_middle::ty::{self as mir_ty, TyCtxt, TypeVisitableExt as _};
 use rustc_span::def_id::DefId;
@@ -24,43 +24,54 @@ use crate::analyze::{self, DefIdCache};
 use crate::chc;
 use crate::refine::{self, TypeBuilder};
 
-/// How a method of an impl a built-in derive generated is treated.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Treatment {
-    /// The body is not analyzed; the method has the contract of the trait method.
-    Trusted,
-    /// The method is not verified, and a call to it is not supported.
-    Ignored,
-}
-
-/// The treatment of `def_id` when it is a method of an impl one of rustc's built-in derives
-/// generated, and `None` when its body is analyzed as any other.
-pub fn treatment<'tcx>(
+/// Whether `def_id` is a method of an impl one of rustc's built-in derives generated whose body
+/// is not analyzed: it has the contract of the trait method.
+pub fn is_trusted<'tcx>(
     tcx: TyCtxt<'tcx>,
     def_ids: &DefIdCache<'tcx>,
     type_builder: &TypeBuilder<'tcx>,
     def_id: DefId,
-) -> Option<Treatment> {
-    let impl_did = tcx.impl_of_assoc(def_id)?;
-    if !tcx.is_builtin_derived(impl_did) {
-        return None;
-    }
-    let trait_did = tcx.trait_id_of_impl(impl_did)?;
-    let self_ty = tcx.type_of(impl_did).instantiate_identity();
-    let trusted = match tcx.get_diagnostic_name(trait_did)? {
-        sym::Debug => return Some(Treatment::Ignored),
-        sym::Hash | sym::Default => true,
-        sym::PartialEq | sym::Clone => {
-            (has_structural_model(type_builder, self_ty)
-                || has_transparent_model(tcx, def_ids, type_builder, self_ty))
-                && field_tys(tcx, self_ty)
-                    .into_iter()
-                    .all(|ty| acts_on_model(tcx, def_ids, ty))
-        }
-        sym::PartialOrd | sym::Ord => has_generated_compares(tcx, def_ids, type_builder, self_ty),
-        _ => false,
+) -> bool {
+    let Some(impl_did) = tcx.impl_of_assoc(def_id) else {
+        return false;
     };
-    trusted.then_some(Treatment::Trusted)
+    if !tcx.is_builtin_derived(impl_did) {
+        return false;
+    }
+    let Some(trait_did) = tcx.trait_id_of_impl(impl_did) else {
+        return false;
+    };
+    let self_ty = tcx.type_of(impl_did).instantiate_identity();
+    let has_fields_model = || {
+        has_structural_model(type_builder, self_ty)
+            || has_transparent_model(tcx, def_ids, type_builder, self_ty)
+    };
+    match tcx.get_diagnostic_name(trait_did) {
+        Some(sym::Hash | sym::Default) => true,
+        Some(sym::PartialEq) => {
+            has_fields_model()
+                && !matches!(analyze::model_eq(tcx, self_ty), analyze::SpecBound::Fails)
+                && !holds_ghost(tcx, def_ids, self_ty)
+        }
+        Some(sym::Clone) => has_fields_model(),
+        Some(sym::PartialOrd | sym::Ord) => {
+            has_generated_compares(tcx, def_ids, type_builder, self_ty)
+        }
+        _ => false,
+    }
+}
+
+/// Whether a field of the ADT `ty` holds a `Ghost`.
+fn holds_ghost<'tcx>(tcx: TyCtxt<'tcx>, def_ids: &DefIdCache<'tcx>, ty: mir_ty::Ty<'tcx>) -> bool {
+    let Some(ghost) = def_ids.ghost_model() else {
+        return false;
+    };
+    field_tys(tcx, ty).into_iter().any(|field_ty| {
+        field_ty
+            .walk()
+            .filter_map(|arg| arg.as_type())
+            .any(|ty| ty.ty_adt_def().is_some_and(|adt| adt.did() == ghost))
+    })
 }
 
 /// Whether `clause` is `ty: PartialOrdSpec` for a `ty` whose `compares` is generated.
@@ -194,36 +205,6 @@ fn field_tys<'tcx>(tcx: TyCtxt<'tcx>, ty: mir_ty::Ty<'tcx>) -> Vec<mir_ty::Ty<'t
 
 fn is_phantom_data(tcx: TyCtxt<'_>, ty: mir_ty::Ty<'_>) -> bool {
     ty.ty_adt_def().map(|adt| adt.did()) == tcx.lang_items().phantom_data()
-}
-
-/// Whether `==` and `clone` on a value of `ty` are equality and identity of its model, as
-/// std.rs's `PartialEq::eq` and `Clone::clone` specs state. They are not for a `&mut` (its model
-/// has the final value), a float (NaN), a raw or function pointer (compared by address), or a
-/// `Ghost` (whose `PartialEq` is for formulas only); `PhantomData` compares equal at any argument.
-fn acts_on_model<'tcx>(
-    tcx: TyCtxt<'tcx>,
-    def_ids: &DefIdCache<'tcx>,
-    ty: mir_ty::Ty<'tcx>,
-) -> bool {
-    match ty.kind() {
-        mir_ty::TyKind::Bool
-        | mir_ty::TyKind::Char
-        | mir_ty::TyKind::Int(_)
-        | mir_ty::TyKind::Uint(_)
-        | mir_ty::TyKind::Str
-        | mir_ty::TyKind::Never
-        | mir_ty::TyKind::Param(_) => true,
-        mir_ty::TyKind::Ref(_, ty, mir_ty::Mutability::Not)
-        | mir_ty::TyKind::Array(ty, _)
-        | mir_ty::TyKind::Slice(ty) => acts_on_model(tcx, def_ids, *ty),
-        mir_ty::TyKind::Tuple(tys) => tys.iter().all(|ty| acts_on_model(tcx, def_ids, ty)),
-        mir_ty::TyKind::Adt(adt, args) => {
-            is_phantom_data(tcx, ty)
-                || (Some(adt.did()) != def_ids.ghost_model()
-                    && args.types().all(|ty| acts_on_model(tcx, def_ids, ty)))
-        }
-        _ => false,
-    }
 }
 
 /// The generated `compares` relation of a type for which [`has_generated_compares`] holds,

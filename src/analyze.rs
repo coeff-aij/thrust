@@ -360,10 +360,7 @@ fn is_model_eq_clause(tcx: TyCtxt<'_>, clause: mir_ty::Clause<'_>) -> bool {
     })
 }
 
-/// `ty: ModelEq` of std.rs, decided from the structure of `ty`: `==` on its values is equality of
-/// their models unless it holds a `&mut`, whose model also has the final value, which `==` does
-/// not read. A local ADT is looked into through its fields, a foreign one through its type
-/// arguments. A type parameter or an unresolved projection in `ty` makes the bound assumed.
+/// `ty: ModelEq` of std.rs, decided by [`model_eq`].
 fn model_eq_bound<'tcx>(
     tcx: TyCtxt<'tcx>,
     typing_env: mir_ty::TypingEnv<'tcx>,
@@ -373,17 +370,39 @@ fn model_eq_bound<'tcx>(
     let self_ty = tcx
         .try_normalize_erasing_regions(typing_env, self_ty)
         .unwrap_or(self_ty);
+    model_eq(tcx, self_ty)
+}
+
+/// Whether `==` on values of `ty` is equality of their models, decided from the structure of
+/// `ty`. It is not when `ty` holds a `&mut` (its model also has the final value, which `==` does
+/// not read), a float (NaN), or a raw or function pointer (compared by address); a `PhantomData`
+/// compares equal at any argument. A local ADT is looked into through its fields, a foreign one
+/// through its type arguments. A type parameter or an unresolved projection in `ty` makes it
+/// assumed.
+fn model_eq<'tcx>(tcx: TyCtxt<'tcx>, ty: mir_ty::Ty<'tcx>) -> SpecBound {
     let mut assumed = false;
     let mut visited = HashSet::new();
-    let mut pending = vec![self_ty];
+    let mut pending = vec![ty];
     while let Some(ty) = pending.pop() {
         if !visited.insert(ty) {
             continue;
         }
-        for ty in ty.walk().filter_map(|arg| arg.as_type()) {
+        let mut walker = ty.walk();
+        while let Some(arg) = walker.next() {
+            let Some(ty) = arg.as_type() else {
+                continue;
+            };
             match ty.kind() {
-                mir_ty::TyKind::Ref(_, _, mir_ty::Mutability::Mut) => return SpecBound::Fails,
+                mir_ty::TyKind::Ref(_, _, mir_ty::Mutability::Mut)
+                | mir_ty::TyKind::Float(_)
+                | mir_ty::TyKind::RawPtr(..)
+                | mir_ty::TyKind::FnPtr(..) => return SpecBound::Fails,
                 mir_ty::TyKind::Param(_) | mir_ty::TyKind::Alias(..) => assumed = true,
+                mir_ty::TyKind::Adt(adt, _)
+                    if tcx.is_lang_item(adt.did(), LangItem::PhantomData) =>
+                {
+                    walker.skip_current_subtree();
+                }
                 mir_ty::TyKind::Adt(adt, args) if adt.did().is_local() => {
                     pending.extend(adt.all_fields().map(|field| field.ty(tcx, args)));
                 }

@@ -107,10 +107,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     keys.swap_remove(local_def_id);
                 }
             }
-            if analyzer.is_annotated_as_ignored()
-                || analyzer.is_formatting_trait_method()
-                || analyzer.derive_treatment() == Some(analyze::derive::Treatment::Ignored)
-            {
+            if analyzer.is_annotated_as_ignored() || analyzer.is_formatting_trait_method() {
                 self.skip_analysis.insert(*local_def_id);
                 keys.swap_remove(local_def_id);
             }
@@ -214,9 +211,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         // A derived method has the contract of its trait method, which its derive implies. A
         // generic one is a generic def with that contract, so that at an instance where the trait
         // method's spec does not apply its body is analyzed (`Analyzer::def_ty_with_args`).
-        let trusted_derive = analyzer.derive_treatment()
-            == Some(analyze::derive::Treatment::Trusted)
-            && analyzer.trait_item_ty().is_some();
+        let trusted_derive = analyzer.is_trusted_derive() && analyzer.trait_item_ty().is_some();
         if trusted_derive {
             self.skip_analysis.insert(local_def_id);
         }

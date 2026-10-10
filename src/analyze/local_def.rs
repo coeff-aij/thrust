@@ -264,8 +264,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             && self.tcx.item_name(trait_item_id) == rustc_span::sym::fmt
     }
 
-    pub fn derive_treatment(&self) -> Option<analyze::derive::Treatment> {
-        analyze::derive::treatment(
+    pub fn is_trusted_derive(&self) -> bool {
+        analyze::derive::is_trusted(
             self.tcx,
             &self.ctx.def_ids(),
             &self.type_builder,
