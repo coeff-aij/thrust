@@ -17,6 +17,11 @@ pub trait Idx: Copy + 'static + Eq + PartialEq + Debug + Hash {
     #[thrust_macros::predicate]
     fn index_is(self, i: USize) -> bool;
 
+    // The index as a function, which a recursive logic function can apply (`case_study::lemmas`
+    // counts a sequence of indices through it). `index_logic_is` ties it to `index_is`.
+    #[thrust_macros::logic]
+    fn index_logic(self) -> USize;
+
     #[thrust_macros::requires(Self::can_new(idx))]
     #[thrust_macros::ensures(Self::index_is(result, idx))]
     fn new(idx: usize) -> Self;
@@ -60,6 +65,15 @@ pub trait Idx: Copy + 'static + Eq + PartialEq + Debug + Hash {
     #[thrust::trusted]
     fn index_is_total(a: &Self) {}
 
+    #[thrust_macros::law]
+    #[thrust_macros::ensures(
+        Self::index_logic(*a) >= 0
+            && forall(|i: USize| Self::index_is(*a, i) ==> i == Self::index_logic(*a))
+            && forall(|i: USize| i == Self::index_logic(*a) ==> Self::index_is(*a, i))
+    )]
+    #[thrust::trusted]
+    fn index_logic_is(a: &Self) {}
+
     // Two elements with the same index are equal, which `layout()`'s `v == index` needs.
     #[thrust_macros::law]
     #[thrust_macros::requires(Self::index_is(*a, i) && Self::index_is(*b, i))]
@@ -70,6 +84,11 @@ pub trait Idx: Copy + 'static + Eq + PartialEq + Debug + Hash {
 
 #[thrust_macros::context]
 impl Idx for usize {
+    #[thrust_macros::logic]
+    fn index_logic(self) -> USize {
+        self
+    }
+
     #[thrust_macros::predicate]
     fn can_new(idx: USize) -> bool {
         true
@@ -92,6 +111,11 @@ impl Idx for usize {
 
 #[thrust_macros::context]
 impl Idx for u32 {
+    #[thrust_macros::logic]
+    fn index_logic(self) -> USize {
+        self
+    }
+
     #[thrust_macros::predicate]
     fn can_new(idx: USize) -> bool {
         // idx <= u32::MAX
