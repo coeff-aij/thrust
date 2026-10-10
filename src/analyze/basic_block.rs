@@ -1482,6 +1482,22 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 }
             }
             ResolvedCallable::Concrete(resolved_def_id, resolved_args) => {
+                // At type parameters, a trait-level spec may hold only by assuming its bound
+                // (`I: IntoIteratorSpec` of `IntoIterator::into_iter`), while the impl the call
+                // resolves to regardless of them (the blanket `impl<I: Iterator> IntoIterator
+                // for I`) is the one that runs; its own spec is used when it has one.
+                use mir_ty::TypeVisitableExt as _;
+                let resolved_at_params = !resolved_def_id.is_local() && args.has_param();
+                if resolved_def_id != def_id
+                    && (resolved_at_params || self.ctx.has_own_impl_contract(resolved_def_id))
+                {
+                    if let Some(def_ty) =
+                        self.ctx
+                            .def_ty_with_args(resolved_def_id, resolved_args, caller_def_id)
+                    {
+                        return def_ty.ty;
+                    }
+                }
                 if let Some(def_ty) = self.ctx.def_ty_with_args(def_id, args, caller_def_id) {
                     // otherwise nothing asks for a deferred impl method's type and its body goes unchecked
                     if resolved_def_id != def_id {

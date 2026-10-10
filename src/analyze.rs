@@ -731,6 +731,9 @@ pub struct Analyzer<'tcx> {
     /// The types of the functions each basic block calls, recorded only when
     /// [`candidate_atoms_enabled`], whose contracts give a loop head candidate atoms.
     called_fn_tys: HashMap<(AnalysisKey<'tcx>, BasicBlock), Vec<rty::FunctionType>>,
+    /// The local methods of trait impls that carry a contract of their own, given by an
+    /// extern-spec wrapper; see [`Analyzer::has_own_impl_contract`].
+    impl_methods_with_own_contract: rustc_data_structures::fx::FxIndexSet<DefId>,
 }
 
 /// Whether loop heads get candidate atoms (`THRUST_CANDIDATE_ATOMS`, see
@@ -799,6 +802,7 @@ impl<'tcx> Analyzer<'tcx> {
             assumed_spec_bounds: Default::default(),
             reused_generic_instances: Default::default(),
             called_fn_tys: Default::default(),
+            impl_methods_with_own_contract: Default::default(),
         }
     }
 
@@ -972,6 +976,24 @@ impl<'tcx> Analyzer<'tcx> {
     pub fn register_def(&mut self, def_id: DefId, rty: rty::RefinedType) {
         tracing::info!(def_id = ?def_id, rty = %rty.display(), "register_def");
         self.defs.insert(def_id, DefTy::Concrete(rty));
+    }
+
+    pub fn register_impl_method_with_own_contract(&mut self, def_id: DefId) {
+        self.impl_methods_with_own_contract.insert(def_id);
+    }
+
+    /// Whether `def_id` is a local method of a trait impl with a contract of its own. A call
+    /// resolved to it uses that contract, which refines the trait's (`check_impl_refinements` in
+    /// [`crate_`]); one without its own contract takes the trait's.
+    pub fn has_own_impl_contract(&self, def_id: DefId) -> bool {
+        self.impl_methods_with_own_contract.contains(&def_id)
+    }
+
+    pub fn impl_methods_with_own_contract(&self) -> Vec<DefId> {
+        self.impl_methods_with_own_contract
+            .iter()
+            .copied()
+            .collect()
     }
 
     pub fn register_deferred_def(

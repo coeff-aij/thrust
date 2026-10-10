@@ -208,6 +208,10 @@ fn rand() -> i32 { unimplemented!() }
 
 `#[thrust_macros::impl_trait_names(D, F)]` names the types of a function's argument-position `impl Trait` parameters, in order of occurrence, so that its `requires`/`ensures` can refer to them (e.g. `D::dl_of(*cx, dl)` for `cx: &impl HasDataLayout`); it may appear before or after them, and the number of names must equal the number of such parameters.
 
+A method of a trait impl takes the trait's contract of that method: the one written on a local trait, or the one `std.rs` gives a std trait's method, such as `Iterator::next` for a type implementing `IteratorSpec`. With `#[thrust_macros::context]` on the impl, the method may carry `requires`/`ensures` of its own instead. Its body is then checked against them, a call resolved to the method uses them, and they must refine the trait's contract: the trait's precondition implies the method's, and the method's postcondition implies the trait's under the trait's precondition.
+
+A `for` loop runs over any type implementing `IteratorSpec` (`std.rs` gives one to ranges of integers, slice and `Vec` iterators, and `Enumerate`/`Zip` of them): `into_iter` of an iterator is the identity, and each step is `Iterator::next`'s contract. A loop invariant written as `thrust_macros::invariant!` at the start of the loop body may name the iterator as `iter`. In a function under `#[thrust_macros::context]`, such an invariant may also name `iter_old`, the iterator before the loop, and `produced`, the ghost sequence of the items returned so far: the loop is desugared as Creusot does, and `produces(iter_old, produced, iter)` is conjoined to the invariant.
+
 ### Verifying part of a crate
 
 `#![thrust::verify_only("a::b", "c::**", "d::Type::method")]` in the crate root, after `#![feature(custom_inner_attributes)]`, verifies only the selected functions and assumes the contracts of the others, so that a large crate can be verified one part at a time. Each entry is a path relative to the crate root (a leading `crate::` is allowed, and `crate` alone is the root module):
