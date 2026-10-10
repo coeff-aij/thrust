@@ -1,5 +1,9 @@
-//! Expansion of `thrust_macros::invariant!` and its context-carrying sibling
-//! `thrust_macros::_invariant_with_context!`.
+//! Expansion of `thrust_macros::invariant!`, its partial counterpart
+//! `thrust_macros::invariant_hint!`, and their context-carrying siblings
+//! `thrust_macros::_invariant_with_context!` and `_invariant_hint_with_context!`.
+//!
+//! The two forms differ only in the marker they call: an `invariant!` is the loop
+//! head's whole invariant, an `invariant_hint!` is conjoined with the inferred one.
 //!
 //! Both expand a predicate closure with explicit parameter types into a
 //! `#[thrust::formula_fn]` over `Model::Ty` parameters plus a marker call
@@ -32,15 +36,31 @@ use crate::formula_fn_lifting::{self, ClosureWithContext, EnclosingContext, Lift
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
+/// The marker function an invariant form calls.
+#[derive(Clone, Copy)]
+pub enum Marker {
+    Full,
+    Partial,
+}
+
+impl Marker {
+    fn ident(self) -> syn::Ident {
+        match self {
+            Marker::Full => format_ident!("__invariant_marker"),
+            Marker::Partial => format_ident!("__invariant_hint_marker"),
+        }
+    }
+}
+
 /// Expands `invariant!(CLOSURE)`: a bare predicate closure with no threaded
 /// context.
-pub fn expand(input: TokenStream) -> TokenStream {
+pub fn expand(input: TokenStream, marker: Marker) -> TokenStream {
     let input = crate::formula::wrap_closure_body(input.into());
     let closure = match syn::parse2::<syn::ExprClosure>(input) {
         Ok(closure) => closure,
         Err(e) => return e.to_compile_error().into(),
     };
-    match expand_invariant(&closure, None) {
+    match expand_invariant(&closure, None, marker) {
         Ok(expr) => expr.into_token_stream().into(),
         Err(e) => e.to_compile_error().into(),
     }
@@ -48,13 +68,13 @@ pub fn expand(input: TokenStream) -> TokenStream {
 
 /// Expands `_invariant_with_context!(#outer_attr #sig; CLOSURE)`, the form
 /// `#[thrust_macros::context]` rewrites each `invariant!` into.
-pub fn expand_with_context(input: TokenStream) -> TokenStream {
+pub fn expand_with_context(input: TokenStream, marker: Marker) -> TokenStream {
     let input = crate::formula::wrap_closure_body(input.into());
     let ClosureWithContext { closure, context } = match syn::parse2::<ClosureWithContext>(input) {
         Ok(parsed) => parsed,
         Err(e) => return e.to_compile_error().into(),
     };
-    match expand_invariant(&closure, Some(&context)) {
+    match expand_invariant(&closure, Some(&context), marker) {
         Ok(expr) => expr.into_token_stream().into(),
         Err(e) => e.to_compile_error().into(),
     }
@@ -64,6 +84,7 @@ pub fn expand_with_context(input: TokenStream) -> TokenStream {
 fn expand_invariant(
     closure: &syn::ExprClosure,
     context: Option<&EnclosingContext>,
+    marker: Marker,
 ) -> syn::Result<syn::Expr> {
     let mut params: Vec<FnArg> = Vec::new();
     for param in &closure.inputs {
@@ -82,10 +103,11 @@ fn expand_invariant(
     let name = format_ident!("_thrust_invariant_{}", id);
     let LiftedFormulaFn { item, reference } =
         formula_fn_lifting::lift(&name, &params, &closure.body, context)?;
+    let marker = marker.ident();
 
     Ok(syn::parse_quote!({
         #item
 
-        crate::thrust_models::__invariant_marker(#reference)
+        crate::thrust_models::#marker(#reference)
     }))
 }

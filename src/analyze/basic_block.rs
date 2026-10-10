@@ -1963,7 +1963,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let term = &self.body.basic_blocks[self.basic_block].terminator().kind;
         if let TerminatorKind::Call { func, target, .. } = term {
             if let Some((def_id, _)) = func.const_fn_def() {
-                if Some(def_id) == self.ctx.def_ids().invariant_marker() {
+                if self.ctx.def_ids().invariant_marker_kind(def_id).is_some() {
                     return Some(target.expect("invariant marker call must have a target"));
                 }
             }

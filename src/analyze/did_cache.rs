@@ -52,6 +52,7 @@ struct DefIds {
     forall: OnceCell<Option<DefId>>,
     implies: OnceCell<Option<DefId>>,
     invariant_marker: OnceCell<Option<DefId>>,
+    invariant_hint_marker: OnceCell<Option<DefId>>,
     ghost_marker: OnceCell<Option<DefId>>,
 
     fn_param_wrapper: OnceCell<Option<DefId>>,
@@ -419,6 +420,24 @@ impl<'tcx> DefIdCache<'tcx> {
             .def_ids
             .invariant_marker
             .get_or_init(|| self.annotated_def(&crate::analyze::annot::invariant_marker_path()))
+    }
+
+    pub fn invariant_hint_marker(&self) -> Option<DefId> {
+        *self.def_ids.invariant_hint_marker.get_or_init(|| {
+            self.annotated_def(&crate::analyze::annot::invariant_hint_marker_path())
+        })
+    }
+
+    /// Whether `def_id` is a loop-invariant marker, and if so whether its invariant is
+    /// partial (`invariant_hint!`): conjoined with the loop head's inferred predicate.
+    pub fn invariant_marker_kind(&self, def_id: DefId) -> Option<bool> {
+        if Some(def_id) == self.invariant_marker() {
+            Some(false)
+        } else if Some(def_id) == self.invariant_hint_marker() {
+            Some(true)
+        } else {
+            None
+        }
     }
 
     pub fn ghost_marker(&self) -> Option<DefId> {
