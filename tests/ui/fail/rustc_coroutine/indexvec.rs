@@ -1,157 +1,30 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120
+// Stage 2 of the rustc-coroutine verification target: rustc_index's `IndexVec` and `IndexSlice`.
+// `filled` is the caller the trusted `IndexVec` contracts are checked against (rewrites.md S5).
+// The code is the module tree under tests/rustc_coroutine/; this file selects the stage and
+// drives it.
+#![feature(custom_inner_attributes)]
+#![feature(new_range_api)]
+#![thrust::verify_only("rustc_index::vec", "rustc_index::slice", "filled")]
 
-// Extracted from tests/ui/pass/rustc_coroutine/target.rs (rustc's
-// rustc_index::vec, adapted). Stage 2 of the rustc_coroutine plan (README.md).
-// `Idx` and its `usize` impl are copied from idx.rs (stage 2/4) rather than
-// re-derived, the same way eligibility.rs reuses bitset.rs.
-//
-// This is the half of stage 2 that does not need a generic slice. `IndexVec`
-// takes the model of the `Vec` it wraps -- the `(array, length)` pair -- and
-// its methods carry that model as trusted contracts, per the stage plan
-// ("IndexSlice/IndexVec are trusted specs first"). What is checked here is the
-// caller: `filled` below is verified against those contracts, and it is the
-// shape `coroutine_saved_local_eligibility` builds its `assignments` vector
-// with.
-//
-// `IndexSlice` -- whose `raw: [T]` is a bare slice at a generic element type --
-// and the `Index`/`IntoSliceIdx` element access built on it are not here; see
-// README.md for where they stand.
-
-use std::fmt::Debug;
-use std::hash::Hash;
-use std::marker::PhantomData;
+#[path = "../../../rustc_coroutine/compiler/rustc_hashes/src/lib.rs"]
+pub mod rustc_hashes;
+#[path = "../../../rustc_coroutine/compiler/rustc_index/src/lib.rs"]
+pub mod rustc_index;
+#[path = "../../../rustc_coroutine/compiler/rustc_abi/src/lib.rs"]
+pub mod rustc_abi;
+#[path = "../../../rustc_coroutine/thrust/mod.rs"]
+pub mod case_study;
 
 use thrust_models::forall;
 
-/// The model of `usize` and `u64`, which carries its width while `THRUST_INT_RANGE` is set.
-#[cfg(not(thrust_int_range))]
-type USize = thrust_models::model::UInt;
-#[cfg(thrust_int_range)]
-type USize = thrust_models::model::UIntN<64>;
-
-
-
-// //== ./../rustc_index/src/idx.rs
-
-#[thrust_macros::context]
-pub trait Idx: Copy + 'static + Eq + PartialEq + Debug + Hash {
-    #[thrust_macros::predicate]
-    fn can_new(idx: USize) -> bool;
-
-    #[thrust_macros::predicate]
-    fn index_is(self, i: USize) -> bool;
-
-    #[thrust_macros::requires(Self::can_new(idx))]
-    #[thrust_macros::ensures(Self::index_is(result, idx))]
-    fn new(idx: usize) -> Self;
-
-    #[thrust_macros::ensures(Self::index_is(self, result))]
-    fn index(self) -> usize;
-}
-
-#[thrust_macros::context]
-impl Idx for usize {
-    #[thrust_macros::predicate]
-    fn can_new(idx: USize) -> bool {
-        true
-    }
-
-    #[thrust_macros::predicate]
-    fn index_is(self, i: USize) -> bool {
-        // i == self
-        i == self
-    }
-
-    #[inline]
-    fn new(idx: usize) -> Self {
-        idx
-    }
-    #[inline]
-    fn index(self) -> usize {
-        self
-    }
-}
-
-// //== ./../rustc_index/src/vec.rs
-
-// `PartialEq, Eq` commented out: the derived `eq` compares the `PhantomData`
-// field, whose model is the unit sort, and Thrust panics with
-// `unbound var $0` (src/chc/clause_builder.rs:113) -- the same reason
-// bitset.rs drops them from `DenseBitSet`.
-#[derive(/* PartialEq, Eq, */ Hash)]
-#[repr(transparent)]
-pub struct IndexVec<I: Idx, T> {
-    pub raw: Vec<T>,
-    _marker: PhantomData<fn(&I)>,
-}
-
-impl<I: Idx, T: thrust_models::Model> thrust_models::Model for IndexVec<I, T> {
-    type Ty = <Vec<T> as thrust_models::Model>::Ty;
-}
+use case_study::USize;
+use rustc_index::{Idx, IndexVec};
 
 #[thrust_macros::context]
 impl<I: Idx, T> IndexVec<I, T> {
-    #[inline]
-    #[thrust_macros::requires(true)]
-    #[thrust_macros::ensures(result.len() == 0)]
-    pub const fn new() -> Self {
-        IndexVec::from_raw(Vec::new())
-    }
-
-    #[inline]
-    #[thrust_macros::requires(true)]
-    #[thrust_macros::ensures(result == raw)]
-    pub const fn from_raw(raw: Vec<T>) -> Self {
-        IndexVec {
-            raw,
-            _marker: PhantomData,
-        }
-    }
-
-    #[inline]
-    #[thrust_macros::requires(true)]
-    #[thrust_macros::ensures(result.len() == n)]
-    #[thrust_macros::ensures(forall(|k: USize| !(0 <= k && k < n) || result[k] == elem))]
-    pub fn from_elem_n(elem: T, n: usize) -> Self
-    where
-        T: Clone,
-    {
-        IndexVec::from_raw(vec![elem; n])
-    }
-
-    #[inline]
-    #[thrust_macros::requires(true)]
-    #[thrust_macros::ensures(result == (*self).len())]
-    pub fn len(&self) -> usize {
-        self.raw.len()
-    }
-
-    #[inline]
-    #[thrust_macros::requires(true)]
-    #[thrust_macros::ensures((result == true) == ((*self).len() == 0))]
-    pub fn is_empty(&self) -> bool {
-        self.raw.is_empty()
-    }
-
-    #[inline]
-    #[thrust_macros::requires(<I as Idx>::can_new((*self).len()))]
-    #[thrust_macros::ensures(<I as Idx>::index_is(result, (*self).len()))]
-    pub fn next_index(&self) -> I {
-        I::new(self.raw.len())
-    }
-
-    #[inline]
-    #[thrust_macros::requires(<I as Idx>::can_new((*self).len()))]
-    #[thrust_macros::ensures(!self == (*self).push(d))]
-    #[thrust_macros::ensures(<I as Idx>::index_is(result, (*self).len()))]
-    pub fn push(&mut self, d: T) -> I {
-        let idx = self.next_index();
-        self.raw.push(d);
-        idx
-    }
-
     // rustc reaches the elements through `Index<R: IntoSliceIdx<I, [T]>>` on
     // `IndexSlice`; that path is the part of stage 2 that waits on generic
     // slices, so the element read is spelled out on `IndexVec` here.
@@ -160,7 +33,7 @@ impl<I: Idx, T> IndexVec<I, T> {
     #[thrust::trusted]
     #[thrust_macros::requires(forall(|i: USize| !<I as Idx>::index_is(index, i) || (0 <= i && i < (*self).len())))]
     #[thrust_macros::ensures(forall(|i: USize| !<I as Idx>::index_is(index, i) || *result == (*self)[i]))]
-    pub fn at(&self, index: I) -> &T {
+    fn at(&self, index: I) -> &T {
         &self.raw[index.index()]
     }
 }

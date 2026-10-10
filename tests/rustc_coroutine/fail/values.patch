@@ -1,0 +1,21 @@
+--- pass/values.rs
++++ fail/values.rs
+@@ -1,5 +1,6 @@
+-//@check-pass
++//@error-in-other-file: Unsat
+ //@compile-flags: -Adead_code -C debug-assertions=off
++//@no-rustfix
+ //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 THRUST_TRY_SPECS=1
+ // Stage 1 of the rustc-coroutine verification target: the value types of rustc_abi's lib.rs
+ // (Size/Align/Integer/Float/Primitive/Scalar/Niche/TargetDataLayout) and rustc_hashes, with the
+@@ -56,7 +57,9 @@
+     // checks the address-space requires, and `Align::bytes` / `Size::bits`
+     // check their `ensures`.
+     assert!(dl.obj_size_bound() >= 1);
+-    let ptr = dl.pointer_size_in(AddressSpace(0));
++    // The fail twin: `AddressSpace(1)` is neither `dl.default_address_space` nor listed in
++    // `dl.address_space_info`, so the lookup of `pointer_size_in` falls through to its `panic!`.
++    let ptr = dl.pointer_size_in(AddressSpace(1));
+     assert!(ptr.bits() == ptr.bytes() * 8);
+     assert!(dl.i64_align.bytes() >= 1);
+     let _ = Integer::I32.size();

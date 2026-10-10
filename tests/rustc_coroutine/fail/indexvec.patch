@@ -1,0 +1,19 @@
+--- pass/indexvec.rs
++++ fail/indexvec.rs
+@@ -1,4 +1,4 @@
+-//@check-pass
++//@error-in-other-file: Unsat
+ //@compile-flags: -Adead_code -C debug-assertions=off
+ //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120
+ // Stage 2 of the rustc-coroutine verification target: rustc_index's `IndexVec` and `IndexSlice`.
+@@ -62,7 +62,9 @@
+                     && i <= n.at_entry()
+                     && forall(|k: USize| !(0 <= k && k < i) || v[k] == elem.at_entry())
+         );
+-        v.push(elem);
++        // Every entry is one more than the element asked for, so `filled` no
++        // longer returns `n` copies of `elem`.
++        v.push(elem + 1);
+         i += 1;
+     }
+     v

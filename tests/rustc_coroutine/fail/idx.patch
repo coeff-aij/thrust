@@ -1,0 +1,18 @@
+--- pass/idx.rs
++++ fail/idx.rs
+@@ -1,4 +1,4 @@
+-//@check-pass
++//@error-in-other-file: Unsat
+ //@compile-flags: -Adead_code -C debug-assertions=off
+ //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120
+ // Stages 2 and 4 of the rustc-coroutine verification target: rustc_index's `Idx` and the own
+@@ -28,7 +28,8 @@
+     // Verified via the `next` contract above: `Idx for usize` reads
+     // `index_is(self, i)` as `self == i`, so the k-th call yields `Some(k)`.
+     let a = range.next();
+-    assert!(a.unwrap() == 0);
++    // Broken narrowly: `IdxRange::next`'s contract pins this to `Some(0)`.
++    assert!(a.unwrap() == 1);
+     assert!(range.start == 1);
+     let b = range.next();
+     assert!(b.unwrap() == 1);
