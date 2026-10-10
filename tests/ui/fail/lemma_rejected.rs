@@ -22,7 +22,39 @@ fn calls_helper() {
 }
 
 #[thrust_macros::lemma]
+#[thrust_macros::variant(k)]
+#[thrust_macros::ensures(false)]
+fn forged_entry(k: i64) {
+    _thrust_lemma_rec_forged_entry(&1000, 0) //~ ERROR: a lemma's recursive call passes the lemma's own parameters as the entry values
+}
+
+#[thrust_macros::lemma]
+#[thrust_macros::variant(k)]
+#[thrust_macros::ensures(false)]
+fn shadowed_entry(k: i64) { //~ ERROR: a lemma's recursive call passes the lemma's own parameters as the entry values
+    let __thrust_entry_k = &1000;
+    shadowed_entry(0)
+}
+
+#[thrust_macros::lemma]
 fn takes_mut(_x: &mut i64) {} //~ ERROR: a lemma cannot take a `&mut`
+
+struct Wrapped<'a>(&'a mut i64);
+
+#[thrust_macros::lemma]
+fn takes_wrapped_mut(w: Wrapped) { //~ ERROR: a lemma cannot take a `&mut`
+    *w.0 = 5;
+}
+
+#[thrust_macros::lemma]
+fn takes_closure<F: FnOnce(i64) -> i64>(f: F) { //~ ERROR: a lemma cannot take a function or closure
+    let _ = Some(1i64).map(f);
+}
+
+#[thrust_macros::lemma]
+fn passes_function() {
+    let _ = Some(1i64).map(diverges_at); //~ ERROR: a lemma cannot pass a function or closure to another
+}
 
 #[thrust_macros::lemma]
 fn ping(k: usize) {
@@ -36,6 +68,11 @@ fn pong(k: usize) {
 
 #[thrust_macros::ensures(false)]
 fn diverges() {
+    loop {}
+}
+
+#[thrust_macros::ensures(false)]
+fn diverges_at(_x: i64) -> i64 {
     loop {}
 }
 

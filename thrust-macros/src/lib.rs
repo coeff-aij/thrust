@@ -148,8 +148,8 @@ pub fn variant(attr: TokenStream, item: TokenStream) -> TokenStream {
 
 /// Declares a lemma: a function whose `requires`/`ensures` are the statement and whose body,
 /// verified like any other, is the proof. It terminates: it has no loop, calls only other lemmas
-/// (without a cycle), itself under a [`macro@variant`], and functions outside the crate, and it
-/// takes no `&mut`.
+/// (without a cycle), itself under a [`macro@variant`], and functions outside the crate without
+/// passing them a function, and it takes no `&mut`, interior mutability or function.
 #[proc_macro_attribute]
 pub fn lemma(_attr: TokenStream, item: TokenStream) -> TokenStream {
     lemma::expand(item)
