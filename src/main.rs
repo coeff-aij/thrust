@@ -105,32 +105,32 @@ impl Callbacks for CompilerCalls {
     }
 }
 
+/// The thrust-macros library to link the analyzed crate with: the build this binary was compiled
+/// against, or, when that is gone (the binary was moved), the newest build next to the binary.
 fn thrust_macros_path() -> Option<std::path::PathBuf> {
+    let linked = std::path::Path::new(thrust_macros::linked_path!());
+    if linked.is_file() {
+        return Some(linked.to_path_buf());
+    }
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;
     // When thrust-macros is a cargo dependency it lands in deps/ with a hash
-    // suffix (e.g. libthrust_macros-<hash>.so), so check both locations.
-    let search_dirs = [dir.to_path_buf(), dir.join("deps")];
-    for search_dir in &search_dirs {
-        for ext in ["so", "dylib", "dll"] {
-            // First try the exact name (e.g. when built standalone).
-            let candidate = search_dir.join(format!("libthrust_macros.{ext}"));
-            if candidate.exists() {
-                return Some(candidate);
-            }
-            // Then scan for libthrust_macros-<hash>.<ext>.
-            if let Ok(entries) = std::fs::read_dir(search_dir) {
-                for entry in entries.flatten() {
-                    let name = entry.file_name();
-                    let name = name.to_string_lossy();
-                    if name.starts_with("libthrust_macros-") && name.ends_with(ext) {
-                        return Some(entry.path());
-                    }
-                }
-            }
-        }
-    }
-    None
+    // suffix (e.g. libthrust_macros-<hash>.so).
+    [dir.to_path_buf(), dir.join("deps")]
+        .iter()
+        .filter_map(|search_dir| std::fs::read_dir(search_dir).ok())
+        .flatten()
+        .flatten()
+        .filter(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name.starts_with("libthrust_macros")
+                && ["so", "dylib", "dll"]
+                    .iter()
+                    .any(|ext| name.ends_with(&format!(".{ext}")))
+        })
+        .max_by_key(|entry| entry.metadata().and_then(|m| m.modified()).ok())
+        .map(|entry| entry.path())
 }
 
 pub fn main() {
