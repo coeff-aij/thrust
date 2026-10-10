@@ -513,7 +513,7 @@ where
 }
 
 // Rewrite (rewrites.md R8): `extend` with a verified body, in place of `Extend::extend` (whose
-// std body is not analysed): `self` ends as its entry value followed by what `iter` produced
+// std body is not analysed): `self` ends as its entry value followed by what `it` produced
 // before it completed.
 #[thrust_macros::context]
 impl<I: Idx, T: thrust_models::Model + Copy> IndexVec<I, T>
@@ -522,35 +522,29 @@ where
     I::Ty: PartialEq,
     T::Ty: PartialEq,
 {
-    #[thrust_macros::requires(J::inv(iter))]
+    #[thrust_macros::requires(J::inv(it))]
     #[thrust_macros::ensures(
         exists(|visited: Seq<<T as thrust_models::Model>::Ty>,
                mid: <J as thrust_models::Model>::Ty,
                fin: <J as thrust_models::Model>::Ty|
-            J::produces(iter, visited, mid)
+            J::produces(it, visited, mid)
                 && J::completed(Mut::new(mid, fin))
                 && !self == (*self).concat(visited))
     )]
-    pub fn extend_from<J>(&mut self, iter: J)
+    pub fn extend_from<J>(&mut self, it: J)
     where
         J: IteratorSpec + Iterator<Item = T>,
         <J as thrust_models::Model>::Ty: PartialEq,
     {
         let this = self;
-        let mut it = iter;
-        J::produces_refl(&it);
-        // `pushed` records what `it` produced, so the invariant needs no existential sequence.
-        let mut pushed: Vec<T> = Vec::new();
-        while let Some(x) = it.next() {
+        for x in it {
             thrust_macros::invariant!(
-                |it: J, this: &mut IndexVec<I, T>, pushed: Vec<T>, iter: thrust_models::FnParam<J>, self: thrust_models::FnParam<&mut IndexVec<I, T>>|
-                    !this == !self.at_entry()
-                        && J::inv(it)
-                        && J::produces(iter.at_entry(), pushed, it)
-                        && *this == (*self.at_entry()).concat(pushed)
+                |iter: J, iter_old: Ghost<J>, it: thrust_models::FnParam<J>, produced: Ghost<Seq<<T as thrust_models::Model>::Ty>>, this: &mut IndexVec<I, T>, self: thrust_models::FnParam<&mut IndexVec<I, T>>|
+                    iter_old == it.at_entry()
+                        && !this == !self.at_entry()
+                        && *this == (*self.at_entry()).concat(produced)
             );
             this.raw.push(x);
-            pushed.push(x);
         }
     }
 }
@@ -558,16 +552,16 @@ where
 // Rewrite (rewrites.md R8): `collect` with a verified body, in place of `Iterator::collect` into
 // an `IndexVec`: the collection is what the iterator produced before it completed.
 #[thrust_macros::context]
-#[thrust_macros::requires(J::inv(iter))]
+#[thrust_macros::requires(J::inv(it))]
 #[thrust_macros::ensures(
     exists(|visited: Seq<<T as thrust_models::Model>::Ty>,
            mid: <J as thrust_models::Model>::Ty,
            fin: <J as thrust_models::Model>::Ty|
-        J::produces(iter, visited, mid)
+        J::produces(it, visited, mid)
             && J::completed(Mut::new(mid, fin))
             && result == visited)
 )]
-pub fn collect_index_vec<I, T, J>(iter: J) -> IndexVec<I, T>
+pub fn collect_index_vec<I, T, J>(it: J) -> IndexVec<I, T>
 where
     I: Idx + thrust_models::Model,
     I::Ty: PartialEq,
@@ -576,13 +570,11 @@ where
     J: IteratorSpec + Iterator<Item = T>,
     <J as thrust_models::Model>::Ty: PartialEq,
 {
-    let mut it = iter;
-    J::produces_refl(&it);
     let mut v: Vec<T> = Vec::new();
-    while let Some(x) = it.next() {
+    for x in it {
         thrust_macros::invariant!(
-            |it: J, v: Vec<T>, iter: thrust_models::FnParam<J>|
-                J::inv(it) && J::produces(iter.at_entry(), v, it)
+            |iter: J, iter_old: Ghost<J>, it: thrust_models::FnParam<J>, produced: Ghost<Seq<<T as thrust_models::Model>::Ty>>, v: Vec<T>|
+                iter_old == it.at_entry() && v == produced
         );
         v.push(x);
     }
@@ -597,18 +589,18 @@ where
 // `FromIterator for Result<V, E>` of std: the first `Err` item is returned; otherwise the
 // collection holds the `Ok` payloads of what the iterator produced before it completed.
 #[thrust_macros::context]
-#[thrust_macros::requires(J::inv(iter))]
+#[thrust_macros::requires(J::inv(it))]
 #[thrust_macros::ensures(
     forall(|v: <IndexVec<I, T> as thrust_models::Model>::Ty| result != Ok(v)
         || exists(|visited: Seq<<Result<T, E> as thrust_models::Model>::Ty>,
                    mid: <J as thrust_models::Model>::Ty,
                    fin: <J as thrust_models::Model>::Ty|
-            J::produces(iter, visited, mid)
+            J::produces(it, visited, mid)
                 && J::completed(Mut::new(mid, fin))
                 && visited.len() == v.len()
                 && forall(|k: USize| !(0 <= k && k < v.len()) || visited[k] == Ok(v[k]))))
 )]
-pub fn collect_index_vec_result<I, T, E, J>(iter: J) -> Result<IndexVec<I, T>, E>
+pub fn collect_index_vec_result<I, T, E, J>(it: J) -> Result<IndexVec<I, T>, E>
 where
     I: Idx + thrust_models::Model,
     I::Ty: PartialEq,
@@ -619,17 +611,13 @@ where
     J: IteratorSpec + Iterator<Item = Result<T, E>>,
     <J as thrust_models::Model>::Ty: PartialEq,
 {
-    let mut it = iter;
-    J::produces_refl(&it);
     let mut v: Vec<T> = Vec::new();
-    while let Some(x) = it.next() {
+    for x in it {
         thrust_macros::invariant!(
-            |it: J, v: Vec<T>, iter: thrust_models::FnParam<J>|
-                J::inv(it)
-                    && exists(|s: Seq<<Result<T, E> as thrust_models::Model>::Ty>|
-                        J::produces(iter.at_entry(), s, it)
-                            && s.len() == v.len()
-                            && forall(|k: USize| !(0 <= k && k < v.len()) || s[k] == Ok(v[k])))
+            |iter: J, iter_old: Ghost<J>, it: thrust_models::FnParam<J>, produced: Ghost<Seq<<Result<T, E> as thrust_models::Model>::Ty>>, v: Vec<T>|
+                iter_old == it.at_entry()
+                    && produced.len() == v.len()
+                    && forall(|k: USize| !(0 <= k && k < v.len()) || produced[k] == Ok(v[k]))
         );
         match x {
             Ok(y) => v.push(y),
