@@ -23,14 +23,7 @@ fn in_module<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId, module: Symbol) -> bool {
 
 fn is_panic_entry_point<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> bool {
     let krate = tcx.crate_name(def_id.krate);
-    (krate == sym::core || krate == sym::std)
-        && tcx
-            .fn_sig(def_id)
-            .skip_binder()
-            .output()
-            .skip_binder()
-            .is_never()
-        && in_module(tcx, def_id, sym::panicking)
+    (krate == sym::core || krate == sym::std) && in_module(tcx, def_id, sym::panicking)
 }
 
 fn is_payload_constructor<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> bool {
@@ -117,6 +110,7 @@ pub fn elide<'tcx>(tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
                 const_: mir::Const::from_bool(tcx, false),
             })),
             expected: true,
+            // No `AssertKind` names a panic; Thrust reads only `cond` and `expected`.
             msg: Box::new(mir::AssertKind::NullPointerDereference),
             target: unreachable,
             unwind: mir::UnwindAction::Continue,
