@@ -1,10 +1,10 @@
 //@error-in-other-file: spec bound not satisfied
-// Rejected, not Unsat. `collect` is fully annotated, so it is verified once, generically; its call
-// `Vec::from_iter(j)` assumes the spec bounds of std.rs's `_extern_spec_vec_from_iter`
-// (`J: IntoIteratorSpec`, `J::IntoIter: IteratorSpec`) at the type parameter `J`. The instance
-// `collect::<Bad>` reuses that contract, and `Bad` has no `IteratorSpec` impl, so the program is
-// rejected, as a direct `Vec::from_iter(Bad)` finds no spec. Without the check it verified, while
-// `Bad::next` panics natively.
+// Rejected, not Unsat. `number` is fully annotated, so it is verified once, generically; its call
+// `j.enumerate()` assumes the spec bound of std.rs's `_extern_spec_iterator_enumerate`
+// (`J: IteratorSpec`) at the type parameter `J`. The instance `number::<Bad>` reuses that
+// contract, and `Bad` has no `IteratorSpec` impl, so the program is rejected, as a direct
+// `Bad.enumerate()` finds no spec. Without the check it verified, while the spec it assumed does
+// not hold of `Bad`, whose `next` panics natively.
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
@@ -38,11 +38,10 @@ impl Iterator for Bad {
 
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(true)]
-fn collect<J: IntoIterator<Item = i64>>(j: J) -> Vec<i64> {
-    Vec::from_iter(j)
+fn number<J: Iterator<Item = i64>>(j: J) {
+    let _ = j.enumerate();
 }
 
 fn main() {
-    let v = collect(Bad);
-    assert!(v.len() >= 0);
+    number(Bad);
 }

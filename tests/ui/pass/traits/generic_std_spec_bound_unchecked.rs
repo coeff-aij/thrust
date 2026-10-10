@@ -56,11 +56,10 @@ impl IntoIteratorSpec for Good {
 
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(true)]
-fn collect<J: IntoIterator<Item = i64>>(j: J) -> Vec<i64> {
-    Vec::from_iter(j)
+fn number<J: Iterator<Item = i64>>(j: J) {
+    let _ = j.enumerate();
 }
 
 fn main() {
-    let v = collect(Good);
-    assert!(v.len() >= 0);
+    number(Good);
 }

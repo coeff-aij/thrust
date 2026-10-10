@@ -2586,9 +2586,12 @@ fn _extern_spec_vec_split_off<T>(vec: &mut Vec<T>, at: usize) -> Vec<T>
 }
 
 // The iterator's items are not visible in this vocabulary, so only the old contents kept as a
-// prefix are stated.
+// prefix are stated. Each step is `next`, which requires `inv`.
 #[thrust::extern_spec_fn]
-#[thrust_macros::requires(true)]
+#[thrust_macros::requires(
+    thrust_models::forall(|it: <I::IntoIter as thrust_models::Model>::Ty|
+        I::into_iter_is(iter, it) ==> <I::IntoIter as IteratorSpec>::inv(it))
+)]
 #[thrust_macros::ensures(
     (!vec).len() >= (*vec).len()
         && thrust_models::forall(|i: thrust_models::model::Int|
@@ -2596,18 +2599,24 @@ fn _extern_spec_vec_split_off<T>(vec: &mut Vec<T>, at: usize) -> Vec<T>
 )]
 fn _extern_spec_vec_extend<T, I>(vec: &mut Vec<T>, iter: I)
     where T: thrust_models::Model, T::Ty: PartialEq,
-          I: IntoIteratorSpec<Item = T>, I::IntoIter: IteratorSpec, I::Ty: PartialEq
+          I: IntoIteratorSpec<Item = T>, I::IntoIter: IteratorSpec, I::Ty: PartialEq,
+          <I::IntoIter as thrust_models::Model>::Ty: PartialEq
 {
     <Vec<T> as std::iter::Extend<T>>::extend(vec, iter)
 }
 
 // Nothing about the collected items is visible in this vocabulary, so the result is any `Vec<T>`.
+// Each step is `next`, which requires `inv`.
 #[thrust::extern_spec_fn]
-#[thrust_macros::requires(true)]
+#[thrust_macros::requires(
+    thrust_models::forall(|it: <I::IntoIter as thrust_models::Model>::Ty|
+        I::into_iter_is(iter, it) ==> <I::IntoIter as IteratorSpec>::inv(it))
+)]
 #[thrust_macros::ensures(true)]
 fn _extern_spec_vec_from_iter<T, I>(iter: I) -> Vec<T>
     where T: thrust_models::Model, T::Ty: PartialEq,
-          I: IntoIteratorSpec<Item = T>, I::IntoIter: IteratorSpec, I::Ty: PartialEq
+          I: IntoIteratorSpec<Item = T>, I::IntoIter: IteratorSpec, I::Ty: PartialEq,
+          <I::IntoIter as thrust_models::Model>::Ty: PartialEq
 {
     <Vec<T> as std::iter::FromIterator<T>>::from_iter(iter)
 }
