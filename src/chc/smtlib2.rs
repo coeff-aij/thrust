@@ -1039,9 +1039,6 @@ impl<'a> std::fmt::Display for System<'a> {
         // The solver reads a `define-fun` against what precedes it, so the unknowns a
         // definition applies are declared ahead of the definitions.
         let dependencies = self.inner.compute_dependency();
-        let emitted = super::prune::emitted_clauses(self.inner);
-        let emitted_pred_vars =
-            super::prune::pred_vars_of(emitted.iter().map(|&id| &self.inner.clauses[id]));
         let declared_early = self.inner.pred_vars_in_definitions();
         for &p in &declared_early {
             self.fmt_pred_var_decl(f, p, &dependencies)?;
@@ -1057,12 +1054,11 @@ impl<'a> std::fmt::Display for System<'a> {
 
         writeln!(f)?;
         for p in self.inner.pred_vars.indices() {
-            if !declared_early.contains(&p) && emitted_pred_vars.contains(&p) {
+            if !declared_early.contains(&p) {
                 self.fmt_pred_var_decl(f, p, &dependencies)?;
             }
         }
-        for id in emitted {
-            let clause = &self.inner.clauses[id];
+        for (id, clause) in self.inner.clauses.iter_enumerated() {
             writeln!(
                 f,
                 "; {:?}\n{}(assert {})\n",
@@ -1072,9 +1068,6 @@ impl<'a> std::fmt::Display for System<'a> {
             )?;
         }
         for candidates in &self.inner.candidate_atoms {
-            if !emitted_pred_vars.contains(&candidates.pred) {
-                continue;
-            }
             self.fmt_candidate_atoms(f, candidates, &dependencies)?;
         }
         Ok(())
