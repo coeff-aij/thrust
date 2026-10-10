@@ -3,8 +3,8 @@
 The target is rustc's `rustc_abi::layout::coroutine` and its dependencies. `target.rs` is the
 whole extraction in one file (`//@ignore-on-host`). The verified code lives in rustc's module
 layout under `tests/rustc_coroutine/compiler/` (`rustc_hashes`, `rustc_index`, `rustc_abi`, one
-crate of three modules), with the case study's own code (the iterator trait and adapters of
-rewrites.md R8 and R9, `Model` declarations, std specifications, `Unwrap`, lemmas) under
+crate of three modules), with the case study's own code (the iterator adapters of rewrites.md R8,
+`SliceIter::find` of R9, `Model` declarations, std specifications, `Unwrap`, lemmas) under
 `tests/rustc_coroutine/thrust/`. The goal is a proof that `layout()` does not panic.
 
 Each file below is a crate root that includes the whole tree and selects one stage with
@@ -27,11 +27,10 @@ with the driver broken, regenerated and checked by `tests/rustc_coroutine/fail/c
 The states are those of the single-file stage files; the module tree has not been run against
 the solver yet.
 
-No root or probe uses std.rs's iterator specifications (`IteratorSpec`, `IntoIteratorSpec`
-and the extern specs built on them): `tests/rustc_coroutine/thrust/iter.rs` declares Creusot's
-iterator trait, as `tests/ui/pass/creusot/` does, and `BitIter`, `SliceIter`, `IterEnumerated` and
-the adapters implement it (rewrites.md R9). `IdxRange` and `WordIter` implement std's `Iterator`
-with an `extern_spec_fn` contract on `next`.
+The case study's iterators (`IdxRange`, `WordIter`, `BitIter`, `SliceIter`, `IterEnumerated`) and
+the adapters of `thrust/iter.rs` implement std's `Iterator` and std.rs's `IteratorSpec`; `next` of
+`IdxRange`, `WordIter` and `BitIter` carries a contract of its own, which refines the trait's.
+The probes keep their own copy of Creusot's iterator trait.
 
 `probes/` holds one small pass/fail pair per language feature the stages rely on (a `forall` over a
 `Vec`, nested `Vec`s, an enum payload equality, an `Option` existential, a generic predicate in a

@@ -216,8 +216,9 @@ impl TargetDataLayout {
             return self.default_address_space_pointer_spec.pointer_size;
         }
 
-        // Rewrite (rewrites.md R9): a local slice iterator and `find` for `iter().find(..)`.
-        // The closure's contract is written: inferred, its postcondition sits under the `forall` of
+        // Rewrite (rewrites.md R9): a local slice iterator and `find` for `iter().find(..)`: std.rs's
+        // `find` does not say that the closure rejected the items before the one found, which the
+        // `panic!` below needs. The closure's contract is written: inferred, its postcondition sits under the `forall` of
         // `find`'s contract over the rejected items, where no term names the witness.
         if let Some(e) = SliceIter::new(&self.address_space_info).find(thrust_macros::closure!(
             captures(c: AddressSpace),

@@ -142,7 +142,7 @@ impl<I: Idx, T> Extend<T> for IndexVec<I, T> {
 impl<I: Idx, T> FromIterator<T> for IndexVec<I, T> {
     #[inline]
     // Not analysed and not callable: its only caller, the `collect` in `univariant_biased`, is
-    // trusted, and std.rs's iterator specifications are not used (rewrites.md R9).
+    // trusted.
     #[thrust::ignored]
     fn from_iter<J>(iter: J) -> Self
     where
@@ -157,8 +157,7 @@ impl<I: Idx, T> IntoIterator for IndexVec<I, T> {
     type IntoIter = vec::IntoIter<T>;
 
     #[inline]
-    // Not analysed and not callable: nothing calls it, and std.rs's iterator specifications are
-    // not used (rewrites.md R9).
+    // Not analysed and not callable: nothing calls it.
     #[thrust::ignored]
     fn into_iter(self) -> vec::IntoIter<T> {
         self.raw.into_iter()

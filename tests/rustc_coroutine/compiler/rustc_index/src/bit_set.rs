@@ -5,6 +5,7 @@ use thrust_models::model::{BitVec, Seq};
 use thrust_models::{exists, forall};
 
 use crate::rustc_index::{Idx, IdxRange};
+use crate::IteratorSpec;
 use crate::case_study::USize;
 
 type Word = u64;
@@ -197,12 +198,18 @@ impl<'a> WordIter<'a> {
     }
 }
 
-// The contract of `next` is an `extern_spec_fn` wrapper, as for `IdxRange::next` (idx.rs).
 // `Option<&'a Word>` models as `Option<&'a Int>`, so the yielded word is named by
 // `exists(|x: Int| result == Some(&x) && ..)`.
+#[thrust_macros::context]
 impl<'a> Iterator for WordIter<'a> {
     type Item = &'a Word;
 
+    #[thrust_macros::ensures(Self::same_words(*self, !self))]
+    #[thrust_macros::ensures(forall(|n: USize, p: USize|
+        Self::words_len_is(*self, n) && p == (*self).1
+            ==> (p < n ==> exists(|x: USize| result == Some(&x) && Self::word_is(*self, p, x))
+                    && p + 1 == (!self).1)
+                && (n <= p ==> result == None && (!self).1 == (*self).1)))]
     fn next(&mut self) -> Option<&'a Word> {
         if self.pos < self.words.len() {
             let item = &self.words[self.pos];
@@ -214,17 +221,37 @@ impl<'a> Iterator for WordIter<'a> {
     }
 }
 
+// The words from the cursor on, as std.rs's `IteratorSpec` of `slice::Iter`.
 #[thrust_macros::context]
-impl<'a> WordIter<'a> {
-    #[thrust::extern_spec_fn]
-    #[thrust_macros::ensures(Self::same_words(*it, !it))]
-    #[thrust_macros::ensures(forall(|n: USize, p: USize|
-        Self::words_len_is(*it, n) && p == (*it).1
-            ==> (p < n ==> exists(|x: USize| result == Some(&x) && Self::word_is(*it, p, x))
-                    && p + 1 == (!it).1)
-                && (n <= p ==> result == None && (!it).1 == (*it).1)))]
-    fn _extern_spec_next(it: &mut WordIter<'a>) -> Option<&'a Word> {
-        <WordIter<'a> as Iterator>::next(it)
+impl<'a> IteratorSpec for WordIter<'a> {
+    #[thrust_macros::predicate]
+    fn inv(self) -> bool {
+        self.1 <= self.0.len()
+    }
+
+    #[thrust_macros::predicate]
+    fn produces(self, visited: Vec<&'a Word>, o: Self) -> bool {
+        Self::same_words(self, o)
+            && self.1 <= o.1
+            && o.1 <= self.0.len()
+            && visited.len() == o.1 - self.1
+            && forall(|i: USize| !(0 <= i && i < visited.len()) || visited[i] == &self.0[self.1 + i])
+    }
+
+    #[thrust_macros::predicate]
+    fn completed(&mut self) -> bool {
+        (*self).1 >= (*self).0.len() && Self::same_words(*self, !self) && (!self).1 == (*self).1
+    }
+
+    fn produces_refl(a: &Self) {}
+
+    fn produces_trans(
+        a: &Self,
+        ab: Seq<<Self::Item as thrust_models::Model>::Ty>,
+        b: &Self,
+        bc: Seq<<Self::Item as thrust_models::Model>::Ty>,
+        c: &Self,
+    ) {
     }
 }
 
@@ -248,8 +275,8 @@ pub struct BitIter<'a, T: Idx> {
 }
 
 // `BitIter`'s model is the tuple of its fields' models,
-// `(word, offset, (words, pos), marker, bound, count, left, rest)`, so that the case study's
-// iterator trait can compare two states; the word array is `self.2.0`.
+// `(word, offset, (words, pos), marker, bound, count, left, rest)`, so that std.rs's
+// `IteratorSpec` impl can compare two states; the word array is `self.2.0`.
 #[thrust_macros::context]
 impl<'a, T: Idx> BitIter<'a, T> {
     /// `n == self.iter.words.len() * WORD_BITS`: the number of bits the
@@ -290,8 +317,8 @@ impl<'a, T: Idx> BitIter<'a, T> {
     }
 }
 
-// `BitIter` implements the case study's iterator trait (rewrites.md R9), which `layout()`'s `Map`
-// and eligibility's `enumerate` need. Every yielded element is below the bound and the word
+// `BitIter` implements std.rs's `IteratorSpec`, which `layout()`'s `Map` and eligibility's
+// `enumerate` need. Every yielded element is below the bound and the word
 // array's bit count, and the elements are distinct, so count + left stays at most the bound.
 // `left` makes completion observable: the iterator completes with nothing left, which `Map`'s
 // `reinitialize` in `layout()` needs. `rest` says which elements come: a yielded element leaves
@@ -299,18 +326,42 @@ impl<'a, T: Idx> BitIter<'a, T> {
 // bound. `next` builds its item with `T::new`, which panics unless `can_new` holds; the model
 // does not say which bit comes next, so every index below the bound must be buildable.
 #[thrust_macros::context]
-impl<'a, T: Idx + thrust_models::Model> crate::case_study::iter::Iterator for BitIter<'a, T>
+impl<'a, T: Idx + thrust_models::Model> Iterator for BitIter<'a, T>
 where
     T::Ty: PartialEq,
 {
     type Item = T;
 
+    // rustc's bit arithmetic, which Thrust does not model, under `IteratorSpec`'s contract.
+    #[thrust::trusted]
+    #[thrust_macros::requires(<Self as IteratorSpec>::inv(*self))]
+    #[thrust_macros::ensures(
+        <Self as IteratorSpec>::inv(!self)
+            && (result == None ==> <Self as IteratorSpec>::completed(self))
+            && forall(|x: <T as thrust_models::Model>::Ty| result == Some(x)
+                ==> <Self as IteratorSpec>::produces(*self, Seq::singleton(x), !self))
+    )]
     fn next(&mut self) -> Option<T> {
-        self.next_bit()
-    }
+        loop {
+            if self.word != 0 {
+                let bit_pos = self.word.trailing_zeros() as usize;
+                self.word ^= 1 << bit_pos;
+                return Some(T::new(bit_pos + self.offset));
+            }
 
+            self.word = *self.iter.next()?;
+            self.offset = self.offset.wrapping_add(WORD_BITS);
+        }
+    }
+}
+
+#[thrust_macros::context]
+impl<'a, T: Idx + thrust_models::Model> IteratorSpec for BitIter<'a, T>
+where
+    T::Ty: PartialEq,
+{
     #[thrust_macros::predicate]
-    fn invariant(self) -> bool {
+    fn inv(self) -> bool {
         0 <= self.5
             && 0 <= self.6
             && self.5 + self.6 <= self.4
@@ -318,7 +369,7 @@ where
     }
 
     #[thrust_macros::predicate]
-    fn produces(self, visited: Seq<<Self::Item as thrust_models::Model>::Ty>, o: Self) -> bool {
+    fn produces(self, visited: Vec<Self::Item>, o: Self) -> bool {
         Self::same_words(self, o)
             && forall(|n: USize, i: USize, k: USize|
                 !(Self::bit_bound(self, n) && 0 <= i && i < visited.len() && <T as Idx>::index_is(visited[i], k))
@@ -350,34 +401,16 @@ where
             && (!self).6 == (*self).6
             && (!self).7 == (*self).7
     }
-}
 
-// The trusted body of `next`, rustc's bit arithmetic, which Thrust does not model: Thrust trusts a
-// function only on its own contract, and the method of an impl of the local trait has the trait's.
-#[thrust_macros::context]
-impl<'a, T: Idx + thrust_models::Model> BitIter<'a, T>
-where
-    T::Ty: PartialEq,
-{
-    #[thrust::trusted]
-    #[thrust_macros::requires(<Self as crate::case_study::iter::Iterator>::invariant(*self))]
-    #[thrust_macros::ensures(
-        <Self as crate::case_study::iter::Iterator>::invariant(!self)
-            && (result == None ==> <Self as crate::case_study::iter::Iterator>::completed(self))
-            && forall(|x: <T as thrust_models::Model>::Ty| result == Some(x)
-                ==> <Self as crate::case_study::iter::Iterator>::produces(*self, Seq::singleton(x), !self))
-    )]
-    fn next_bit(&mut self) -> Option<T> {
-        loop {
-            if self.word != 0 {
-                let bit_pos = self.word.trailing_zeros() as usize;
-                self.word ^= 1 << bit_pos;
-                return Some(T::new(bit_pos + self.offset));
-            }
+    fn produces_refl(a: &Self) {}
 
-            self.word = *self.iter.next()?;
-            self.offset = self.offset.wrapping_add(WORD_BITS);
-        }
+    fn produces_trans(
+        a: &Self,
+        ab: Seq<<Self::Item as thrust_models::Model>::Ty>,
+        b: &Self,
+        bc: Seq<<Self::Item as thrust_models::Model>::Ty>,
+        c: &Self,
+    ) {
     }
 }
 

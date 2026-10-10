@@ -9,10 +9,9 @@ use crate::rustc_abi::{
 use crate::rustc_index::bit_set::{BitIter, BitMatrix, DenseBitSet};
 use crate::rustc_index::{Idx, IdxRange, IndexSlice, IndexVec, IterEnumerated, SliceIter};
 use crate::case_study::USize;
-use crate::case_study::iter::{
-    Enumerate, Filter, IterMut, Iterator, Map, collect_index_vec, collect_index_vec_result,
-    iter_all, zip,
-};
+use crate::case_study::iter::{Filter, Map, collect_index_vec, collect_index_vec_result, iter_all};
+use std::iter::{Enumerate, zip};
+use std::slice::IterMut;
 
 #[derive(Clone, /*Debug,*/ PartialEq)]
 enum SavedLocalEligibility<VariantIdx, FieldIdx> {

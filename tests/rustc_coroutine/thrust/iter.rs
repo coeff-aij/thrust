@@ -1,5 +1,5 @@
-//! The case study's iterator trait and the iterators and consumers built on it (rewrites.md R8,
-//! R9), which are not rustc's.
+//! The case study's iterator adapters and consumers for those std.rs does not specify
+//! (rewrites.md R8), over std's `Iterator` and std.rs's `IteratorSpec`, and `SliceIter`'s `find`.
 
 use crate::thrust_models;
 use std::marker::PhantomData;
@@ -7,126 +7,9 @@ use std::marker::PhantomData;
 use thrust_models::model::{Closure, Int, Mut, Seq};
 use thrust_models::{Ghost, exists, forall};
 
+use crate::IteratorSpec;
 use crate::rustc_index::{Idx, IndexVec, SliceIter};
 use crate::case_study::USize;
-
-// Creusot's iterator trait (`common.rs` of its iterator benchmark), declared as the Creusot
-// benchmark cases of the fork declare it (tests/ui/pass/creusot/range.rs): the predicates
-// `produces`, `completed` and `invariant` (`true` unless the impl says otherwise), the laws
-// `produces_refl` and `produces_trans`, which every impl inherits and Thrust checks at each impl,
-// and `next` with Creusot's contract.
-#[thrust_macros::context]
-pub trait Iterator
-where
-    Self: thrust_models::Model,
-    Self::Item: thrust_models::Model,
-{
-    type Item;
-
-    #[thrust_macros::predicate]
-    fn produces(
-        self,
-        visited: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
-        o: Self,
-    ) -> bool;
-
-    #[thrust_macros::predicate]
-    fn completed(&mut self) -> bool;
-
-    #[thrust_macros::law]
-    #[thrust_macros::requires(Self::invariant(*a))]
-    #[thrust_macros::ensures(Self::produces(*a, thrust_models::model::Seq::empty(), *a))]
-    fn produces_refl(a: &Self) {}
-
-    #[thrust_macros::law]
-    #[thrust_macros::requires(Self::produces(*a, ab, *b))]
-    #[thrust_macros::requires(Self::produces(*b, bc, *c))]
-    #[thrust_macros::ensures(Self::produces(*a, ab.concat(bc), *c))]
-    fn produces_trans(
-        a: &Self,
-        ab: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
-        b: &Self,
-        bc: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
-        c: &Self,
-    ) {
-    }
-
-    #[thrust_macros::predicate]
-    fn invariant(self) -> bool {
-        true
-    }
-
-    #[thrust_macros::requires(Self::invariant(*self))]
-    #[thrust_macros::ensures(Self::invariant(!self))]
-    #[thrust_macros::ensures(result == None ==> Self::completed(self))]
-    #[thrust_macros::ensures(forall(|i| result == Some(i)
-        ==> Self::produces(*self, thrust_models::model::Seq::singleton(i), !self)))]
-    fn next(&mut self) -> Option<Self::Item>;
-
-    // Creusot's `enumerate` (creusot-std/src/std/iter.rs) without its two requirements, which are
-    // there only for the absence of overflow in the count (Thrust's integers do not wrap).
-    #[thrust_macros::requires(true)]
-    #[thrust_macros::ensures(result.0 == self && result.1 == 0)]
-    fn enumerate(self) -> Enumerate<Self>
-    where
-        Self: Sized,
-        <Self as thrust_models::Model>::Ty: PartialEq,
-    {
-        Enumerate { iter: self, count: 0 }
-    }
-}
-
-// Creusot's `Enumerate` (creusot-std/src/std/iter/enumerate.rs) in place of `iter::Enumerate`
-// (rewrites.md R9): the inner iterator and the number of items yielded so far.
-pub struct Enumerate<I> {
-    iter: I,
-    count: usize,
-}
-
-impl<I: thrust_models::Model> thrust_models::Model for Enumerate<I> {
-    type Ty = (<I as thrust_models::Model>::Ty, USize);
-}
-
-#[thrust_macros::context]
-impl<I> Iterator for Enumerate<I>
-where
-    I: Iterator,
-    I::Item: thrust_models::Model,
-    <I::Item as thrust_models::Model>::Ty: PartialEq,
-    <I as thrust_models::Model>::Ty: PartialEq,
-{
-    type Item = (usize, I::Item);
-
-    fn next(&mut self) -> Option<(usize, I::Item)> {
-        match self.iter.next() {
-            None => None,
-            Some(x) => {
-                let n = self.count;
-                self.count += 1;
-                Some((n, x))
-            }
-        }
-    }
-
-    #[thrust_macros::predicate]
-    fn invariant(self) -> bool {
-        I::invariant(self.0)
-    }
-
-    #[thrust_macros::predicate]
-    fn produces(self, visited: Seq<<Self::Item as thrust_models::Model>::Ty>, o: Self) -> bool {
-        visited.len() == o.1 - self.1
-            && exists(|s: Seq<<I::Item as thrust_models::Model>::Ty>|
-                I::produces(self.0, s, o.0)
-                    && s.len() == visited.len()
-                    && forall(|i: USize| !(0 <= i && i < s.len()) || visited[i] == (self.1 + i, s[i])))
-    }
-
-    #[thrust_macros::predicate]
-    fn completed(&mut self) -> bool {
-        I::completed(Mut::new((*self).0, (!self).0)) && (*self).1 == (!self).1
-    }
-}
 
 #[thrust_macros::context]
 impl<'a, T: thrust_models::Model> SliceIter<'a, T>
@@ -142,7 +25,7 @@ where
     // Fn` in place of std's `FnMut` (the closures at the call sites capture by shared reference),
     // so the postcondition names the closure's answers: it rejected every item before the one
     // found, or every item. The iterator ends right after the item found, or at the end.
-    #[thrust_macros::requires(<Self as Iterator>::invariant(*self))]
+    #[thrust_macros::requires(<Self as IteratorSpec>::inv(*self))]
     #[thrust_macros::requires(forall(|x: <&'a T as thrust_models::Model>::Ty| thrust_macros::pre!(predicate(&x))))]
     #[thrust_macros::ensures((!self).0 == (*self).0 && (*self).1 <= (!self).1 && (!self).1 <= (*self).0.len())]
     #[thrust_macros::ensures(result == None ==> (!self).1 == (*self).0.len())]
@@ -175,146 +58,8 @@ where
     }
 }
 
-/// Own iterator standing in for `slice::IterMut<'a, T>` (rewrites.md R9): a trusted wrapper,
-/// since yielding disjoint `&mut` elements needs raw pointers or a split of the slice. The model
-/// is std.rs's for `slice::IterMut`: the current and final sequences of the slice and the cursor.
-pub struct IterMut<'a, T> {
-    pub(crate) inner: std::slice::IterMut<'a, T>,
-}
-
-impl<'a, T: thrust_models::Model> thrust_models::Model for IterMut<'a, T> {
-    type Ty = (Seq<<T as thrust_models::Model>::Ty>, Seq<<T as thrust_models::Model>::Ty>, USize);
-}
-
-#[thrust_macros::context]
-impl<'a, T: thrust_models::Model> Iterator for IterMut<'a, T>
-where
-    T::Ty: PartialEq,
-{
-    type Item = &'a mut T;
-
-    fn next(&mut self) -> Option<&'a mut T> {
-        self.next_item()
-    }
-
-    #[thrust_macros::predicate]
-    fn invariant(self) -> bool {
-        0 <= self.2 && self.2 <= self.0.len()
-    }
-
-    // The element handed out is the `Mut` pair of the two sequences at the cursor.
-    #[thrust_macros::predicate]
-    fn produces(self, visited: Seq<<Self::Item as thrust_models::Model>::Ty>, o: Self) -> bool {
-        self.0 == o.0
-            && self.1 == o.1
-            && self.2 <= o.2
-            && o.2 <= self.0.len()
-            && visited.len() == o.2 - self.2
-            && forall(|i: USize| !(0 <= i && i < visited.len())
-                || visited[i] == Mut::new(self.0[self.2 + i], self.1[self.2 + i]))
-    }
-
-    #[thrust_macros::predicate]
-    fn completed(&mut self) -> bool {
-        (*self).2 >= (*self).0.len() && *self == !self
-    }
-}
-
-#[thrust_macros::context]
-impl<'a, T: thrust_models::Model> IterMut<'a, T>
-where
-    T::Ty: PartialEq,
-{
-    #[thrust::trusted]
-    #[thrust_macros::requires(<Self as Iterator>::invariant(*self))]
-    #[thrust_macros::ensures(
-        <Self as Iterator>::invariant(!self)
-            && (result == None ==> <Self as Iterator>::completed(self))
-            && forall(|x: <&'a mut T as thrust_models::Model>::Ty| result == Some(x)
-                ==> <Self as Iterator>::produces(*self, Seq::singleton(x), !self))
-    )]
-    fn next_item(&mut self) -> Option<&'a mut T> {
-        self.inner.next()
-    }
-}
-
-// Rewrite (rewrites.md R9): a local `Zip` and `zip` in place of `iter::Zip` and `iter::zip`,
-// Creusot's (`examples/iterators/12_zip.rs` of its iterator benchmark), over two local iterators.
-pub struct Zip<A, B> {
-    a: A,
-    b: B,
-}
-
-impl<A: thrust_models::Model, B: thrust_models::Model> thrust_models::Model for Zip<A, B> {
-    type Ty = (<A as thrust_models::Model>::Ty, <B as thrust_models::Model>::Ty);
-}
-
-#[thrust_macros::context]
-impl<A, B> Iterator for Zip<A, B>
-where
-    A: Iterator,
-    B: Iterator,
-    A::Item: thrust_models::Model,
-    B::Item: thrust_models::Model,
-    <A::Item as thrust_models::Model>::Ty: PartialEq,
-    <B::Item as thrust_models::Model>::Ty: PartialEq,
-    <A as thrust_models::Model>::Ty: PartialEq,
-    <B as thrust_models::Model>::Ty: PartialEq,
-{
-    type Item = (A::Item, B::Item);
-
-    fn next(&mut self) -> Option<(A::Item, B::Item)> {
-        let x = match self.a.next() {
-            None => return None,
-            Some(x) => x,
-        };
-        let y = match self.b.next() {
-            None => return None,
-            Some(y) => y,
-        };
-        Some((x, y))
-    }
-
-    #[thrust_macros::predicate]
-    fn invariant(self) -> bool {
-        A::invariant(self.0) && B::invariant(self.1)
-    }
-
-    #[thrust_macros::predicate]
-    fn produces(self, visited: Seq<<Self::Item as thrust_models::Model>::Ty>, o: Self) -> bool {
-        exists(|xs: Seq<<A::Item as thrust_models::Model>::Ty>, ys: Seq<<B::Item as thrust_models::Model>::Ty>|
-            A::produces(self.0, xs, o.0)
-                && B::produces(self.1, ys, o.1)
-                && xs.len() == visited.len()
-                && ys.len() == visited.len()
-                && forall(|i: USize| !(0 <= i && i < visited.len()) || visited[i] == (xs[i], ys[i])))
-    }
-
-    // The first iterator completed, or it yielded an item and the second completed.
-    #[thrust_macros::predicate]
-    fn completed(&mut self) -> bool {
-        (A::completed(Mut::new((*self).0, (!self).0)) && (*self).1 == (!self).1)
-            || exists(|x: <A::Item as thrust_models::Model>::Ty|
-                A::produces((*self).0, Seq::singleton(x), (!self).0)
-                    && B::completed(Mut::new((*self).1, (!self).1)))
-    }
-}
-
-#[thrust_macros::context]
-#[thrust_macros::requires(true)]
-#[thrust_macros::ensures(result.0 == a && result.1 == b)]
-pub fn zip<A, B>(a: A, b: B) -> Zip<A, B>
-where
-    A: Iterator,
-    B: Iterator,
-    <A as thrust_models::Model>::Ty: PartialEq,
-    <B as thrust_models::Model>::Ty: PartialEq,
-{
-    Zip { a, b }
-}
-
 // Rewrite (rewrites.md R8): a local `Map` in place of `iter::Map`, evaluation 1's adapter
-// (tests/ui/pass/creusot/map.rs) on the local `Iterator`. The model is the inner iterator and
+// (tests/ui/pass/creusot/map.rs), implementing std's `Iterator` and std.rs's `IteratorSpec`. The model is the inner iterator and
 // the closure state; `produces` carries the input items `s` and the chain `fs` of closure states.
 pub struct Map<I, F> {
     iter: I,
@@ -330,7 +75,7 @@ impl<I: thrust_models::Model, F> thrust_models::Model for Map<I, F> {
 #[thrust_macros::context]
 impl<I, B, F> Map<I, F>
 where
-    I: Iterator,
+    I: IteratorSpec,
     B: thrust_models::Model,
     F: FnMut(I::Item) -> B,
     I::Item: thrust_models::Model,
@@ -339,7 +84,7 @@ where
     <B as thrust_models::Model>::Ty: PartialEq,
 {
     #[thrust_macros::requires(
-        I::invariant(iter)
+        I::inv(iter)
             && Self::reinitialize()
             && Self::preservation_inv(iter, func)
             && Self::next_precondition(iter, func)
@@ -412,7 +157,7 @@ where
 #[thrust_macros::context]
 impl<I, B, F> Iterator for Map<I, F>
 where
-    I: Iterator,
+    I: IteratorSpec,
     B: thrust_models::Model,
     F: FnMut(I::Item) -> B,
     I::Item: thrust_models::Model,
@@ -438,17 +183,29 @@ where
             None => None,
         }
     }
+}
 
+#[thrust_macros::context]
+impl<I, B, F> IteratorSpec for Map<I, F>
+where
+    I: IteratorSpec,
+    B: thrust_models::Model,
+    F: FnMut(I::Item) -> B,
+    I::Item: thrust_models::Model,
+    <I::Item as thrust_models::Model>::Ty: PartialEq,
+    <I as thrust_models::Model>::Ty: PartialEq,
+    <B as thrust_models::Model>::Ty: PartialEq,
+{
     #[thrust_macros::predicate]
-    fn invariant(self) -> bool {
+    fn inv(self) -> bool {
         Self::reinitialize()
             && Self::preservation_inv(self.0, self.1)
-            && I::invariant(self.0)
+            && I::inv(self.0)
             && Self::next_precondition(self.0, self.1)
     }
 
     #[thrust_macros::predicate]
-    fn produces(self, visited: Seq<<Self::Item as thrust_models::Model>::Ty>, o: Self) -> bool {
+    fn produces(self, visited: Vec<Self::Item>, o: Self) -> bool {
         thrust_macros::hist_inv!(self.1, o.1)
             && exists(|s: Seq<<I::Item as thrust_models::Model>::Ty>| exists(|fs: Seq<Closure<F>>|
                 Self::produces_at(self, visited, o, s, fs)))
@@ -476,6 +233,8 @@ where
         // Keeps the parameters live at the snapshots above.
         let _live = (a, &ab, b, &bc, c);
     }
+
+    fn produces_refl(a: &Self) {}
 }
 
 // Rewrite (rewrites.md R8): a local `Filter` in place of `iter::Filter`, in the form of `Map`
@@ -497,14 +256,14 @@ impl<I: thrust_models::Model, P> thrust_models::Model for Filter<I, P> {
 #[thrust_macros::context]
 impl<I, P> Filter<I, P>
 where
-    I: Iterator,
+    I: IteratorSpec,
     P: Fn(&I::Item) -> bool,
     I::Item: thrust_models::Model,
     <I::Item as thrust_models::Model>::Ty: PartialEq,
     <I as thrust_models::Model>::Ty: PartialEq,
 {
     #[thrust_macros::requires(
-        I::invariant(iter)
+        I::inv(iter)
             && Self::reinitialize()
             && Self::pre_all(iter, predicate)
     )]
@@ -572,7 +331,7 @@ where
 #[thrust_macros::context]
 impl<I, P> Iterator for Filter<I, P>
 where
-    I: Iterator,
+    I: IteratorSpec,
     P: Fn(&I::Item) -> bool,
     I::Item: thrust_models::Model,
     <I::Item as thrust_models::Model>::Ty: PartialEq,
@@ -590,7 +349,7 @@ where
                     !this == !self.at_entry()
                         && Filter::<I, P>::reinitialize()
                         && Filter::<I, P>::pre_all((*this).0, (*this).1)
-                        && I::invariant((*this).0)
+                        && I::inv((*this).0)
                         && (*this).1 == (*self.at_entry()).1
                         && I::produces((*self.at_entry()).0, skipped, (*this).0)
             );
@@ -608,16 +367,29 @@ where
         }
         None
     }
+}
+
+#[thrust_macros::context]
+impl<I, P> IteratorSpec for Filter<I, P>
+where
+    I: IteratorSpec,
+    P: Fn(&I::Item) -> bool,
+    I::Item: thrust_models::Model,
+    <I::Item as thrust_models::Model>::Ty: PartialEq,
+    <I as thrust_models::Model>::Ty: PartialEq,
+{
+
+
 
     #[thrust_macros::predicate]
-    fn invariant(self) -> bool {
+    fn inv(self) -> bool {
         Self::reinitialize()
-            && I::invariant(self.0)
+            && I::inv(self.0)
             && Self::pre_all(self.0, self.1)
     }
 
     #[thrust_macros::predicate]
-    fn produces(self, visited: Seq<<Self::Item as thrust_models::Model>::Ty>, o: Self) -> bool {
+    fn produces(self, visited: Vec<Self::Item>, o: Self) -> bool {
         exists(|s: Seq<<I::Item as thrust_models::Model>::Ty>|
             Self::produces_at(self, visited, o, s))
     }
@@ -647,6 +419,8 @@ where
         // Keeps the parameters live at the snapshots above.
         let _live = (a, &ab, b, &bc, c);
     }
+
+    fn produces_refl(a: &Self) {}
 }
 
 // Rewrite (rewrites.md R8): `iter_all(it, f)` for `it.all(f)`, with a verified body. Like `all`
@@ -658,7 +432,7 @@ pub struct IterAllSpec<I, F>(PhantomData<(I, F)>);
 #[thrust_macros::context]
 impl<I, F> IterAllSpec<I, F>
 where
-    I: Iterator,
+    I: IteratorSpec,
     F: Fn(I::Item) -> bool,
     I::Item: thrust_models::Model + Copy,
     <I::Item as thrust_models::Model>::Ty: PartialEq,
@@ -690,7 +464,7 @@ where
 }
 
 #[thrust_macros::context]
-#[thrust_macros::requires(I::invariant(iter) && IterAllSpec::<I, F>::pre_all(iter, f))]
+#[thrust_macros::requires(I::inv(iter) && IterAllSpec::<I, F>::pre_all(iter, f))]
 #[thrust_macros::ensures(
     exists(|visited: Seq<<I::Item as thrust_models::Model>::Ty>,
            mid: <I as thrust_models::Model>::Ty|
@@ -705,7 +479,7 @@ where
 )]
 pub fn iter_all<I, F>(iter: I, f: F) -> bool
 where
-    I: Iterator,
+    I: IteratorSpec,
     F: Fn(I::Item) -> bool,
     I::Item: thrust_models::Model + Copy,
     <I::Item as thrust_models::Model>::Ty: PartialEq,
@@ -718,7 +492,7 @@ where
     loop {
         thrust_macros::invariant!(
             |it: I, seen: Vec<I::Item>, iter: thrust_models::FnParam<I>, f: F|
-                I::invariant(it)
+                I::inv(it)
                     && I::produces(iter.at_entry(), seen, it)
                     && IterAllSpec::<I, F>::accepted(f, seen)
                     && IterAllSpec::<I, F>::pre_all(it, f)
@@ -748,7 +522,7 @@ where
     I::Ty: PartialEq,
     T::Ty: PartialEq,
 {
-    #[thrust_macros::requires(J::invariant(iter))]
+    #[thrust_macros::requires(J::inv(iter))]
     #[thrust_macros::ensures(
         exists(|visited: Seq<<T as thrust_models::Model>::Ty>,
                mid: <J as thrust_models::Model>::Ty,
@@ -759,7 +533,7 @@ where
     )]
     pub fn extend_from<J>(&mut self, iter: J)
     where
-        J: Iterator<Item = T>,
+        J: IteratorSpec + Iterator<Item = T>,
         <J as thrust_models::Model>::Ty: PartialEq,
     {
         let this = self;
@@ -771,7 +545,7 @@ where
             thrust_macros::invariant!(
                 |it: J, this: &mut IndexVec<I, T>, pushed: Vec<T>, iter: thrust_models::FnParam<J>, self: thrust_models::FnParam<&mut IndexVec<I, T>>|
                     !this == !self.at_entry()
-                        && J::invariant(it)
+                        && J::inv(it)
                         && J::produces(iter.at_entry(), pushed, it)
                         && *this == (*self.at_entry()).concat(pushed)
             );
@@ -784,7 +558,7 @@ where
 // Rewrite (rewrites.md R8): `collect` with a verified body, in place of `Iterator::collect` into
 // an `IndexVec`: the collection is what the iterator produced before it completed.
 #[thrust_macros::context]
-#[thrust_macros::requires(J::invariant(iter))]
+#[thrust_macros::requires(J::inv(iter))]
 #[thrust_macros::ensures(
     exists(|visited: Seq<<T as thrust_models::Model>::Ty>,
            mid: <J as thrust_models::Model>::Ty,
@@ -799,7 +573,7 @@ where
     I::Ty: PartialEq,
     T: thrust_models::Model,
     T::Ty: PartialEq,
-    J: Iterator<Item = T>,
+    J: IteratorSpec + Iterator<Item = T>,
     <J as thrust_models::Model>::Ty: PartialEq,
 {
     let mut it = iter;
@@ -808,7 +582,7 @@ where
     while let Some(x) = it.next() {
         thrust_macros::invariant!(
             |it: J, v: Vec<T>, iter: thrust_models::FnParam<J>|
-                J::invariant(it) && J::produces(iter.at_entry(), v, it)
+                J::inv(it) && J::produces(iter.at_entry(), v, it)
         );
         v.push(x);
     }
@@ -823,7 +597,7 @@ where
 // `FromIterator for Result<V, E>` of std: the first `Err` item is returned; otherwise the
 // collection holds the `Ok` payloads of what the iterator produced before it completed.
 #[thrust_macros::context]
-#[thrust_macros::requires(J::invariant(iter))]
+#[thrust_macros::requires(J::inv(iter))]
 #[thrust_macros::ensures(
     forall(|v: <IndexVec<I, T> as thrust_models::Model>::Ty| result != Ok(v)
         || exists(|visited: Seq<<Result<T, E> as thrust_models::Model>::Ty>,
@@ -842,7 +616,7 @@ where
     T::Ty: PartialEq,
     E: thrust_models::Model,
     E::Ty: PartialEq,
-    J: Iterator<Item = Result<T, E>>,
+    J: IteratorSpec + Iterator<Item = Result<T, E>>,
     <J as thrust_models::Model>::Ty: PartialEq,
 {
     let mut it = iter;
@@ -851,7 +625,7 @@ where
     while let Some(x) = it.next() {
         thrust_macros::invariant!(
             |it: J, v: Vec<T>, iter: thrust_models::FnParam<J>|
-                J::invariant(it)
+                J::inv(it)
                     && exists(|s: Seq<<Result<T, E> as thrust_models::Model>::Ty>|
                         J::produces(iter.at_entry(), s, it)
                             && s.len() == v.len()

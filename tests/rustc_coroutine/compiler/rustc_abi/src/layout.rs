@@ -11,7 +11,7 @@ use crate::rustc_abi::{
 use crate::rustc_hashes::Hash64;
 use crate::rustc_index::{Idx, IndexSlice, IndexVec};
 use crate::case_study::USize;
-use crate::case_study::iter::{Filter, Iterator, iter_all};
+use crate::case_study::iter::{Filter, iter_all};
 use crate::case_study::unwrap::Unwrap;
 
 mod coroutine;

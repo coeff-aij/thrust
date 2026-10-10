@@ -20,7 +20,6 @@ pub mod case_study;
 use thrust_models::forall;
 
 use case_study::USize;
-use case_study::iter::Iterator;
 use rustc_index::bit_set::{BitMatrix, DenseBitSet};
 
 // `vec![elem; n]` expands to `std::vec::from_elem`; specified at the word type of
@@ -61,7 +60,7 @@ fn main() {
     assert!(!set.contains(2));
 
     // `iter`'s ensures make the iterator's elements the set's members, so the only element is 3;
-    // the iterator trait carries the domain bound to the second call.
+    // `IteratorSpec` carries the domain bound to the second call.
     let mut it = set.iter();
     match it.next() {
         Some(e) => assert!(e == 3),

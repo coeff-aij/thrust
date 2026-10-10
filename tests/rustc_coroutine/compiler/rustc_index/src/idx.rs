@@ -6,6 +6,7 @@ use std::slice::SliceIndex;
 
 use thrust_models::{exists, forall};
 
+use crate::IteratorSpec;
 use crate::case_study::USize;
 
 #[thrust_macros::context]
@@ -138,14 +139,29 @@ impl<I: Idx> IdxRange<I> {
     }
 }
 
-// `next` implements std's `Iterator`, so its contract cannot be written on the impl method:
-// `requires`/`ensures` expand into companion items next to the method, and in an `impl Trait for
-// Ty` every item must be a trait member. The contract is an `#[thrust::extern_spec_fn]` wrapper on
-// a sibling inherent impl, whose body tail-calls the impl method; Thrust registers it under the
-// impl method's `DefId`, checks the impl body against it and uses it at static call sites.
-impl<I: Idx> Iterator for IdxRange<I> {
+// `IdxRange`'s model is the struct itself, so `(*self).start` keeps its Rust type `usize` in a
+// formula; the `s == (*self).start` guards under `forall` pass it to `Idx`'s predicates.
+#[thrust_macros::context]
+impl<I: Idx + thrust_models::Model> Iterator for IdxRange<I>
+where
+    <I as thrust_models::Model>::Ty: PartialEq,
+{
     type Item = I;
 
+    #[thrust_macros::requires(
+        forall(|s: USize| s == (*self).start && s < (*self).end ==> <I as Idx>::can_new(s))
+    )]
+    #[thrust_macros::ensures(
+        forall(|s: USize| s == (*self).start && s < (*self).end
+            ==> exists(|x: <I as thrust_models::Model>::Ty|
+                    result == Some(x) && <I as Idx>::index_is(x, s))
+                && s + 1 == (!self).start
+                && (!self).end == (*self).end)
+    )]
+    #[thrust_macros::ensures(
+        !((*self).start < (*self).end)
+            ==> result == None && (!self).start == (*self).start && (!self).end == (*self).end
+    )]
     fn next(&mut self) -> Option<I> {
         if self.start < self.end {
             let n = self.start;
@@ -157,31 +173,43 @@ impl<I: Idx> Iterator for IdxRange<I> {
     }
 }
 
+// The positions left are buildable; `produces` and `completed` restate `next`'s contract.
 #[thrust_macros::context]
-impl<I: Idx> IdxRange<I> {
-    // `IdxRange`'s model is the struct itself, so `(*it).start` keeps its Rust type `usize` in a
-    // formula; the `s == (*it).start` guard under `forall` passes it to `Idx`'s predicates.
-    #[thrust::extern_spec_fn]
-    #[thrust_macros::requires(
-        forall(|s: USize| s == (*it).start && s < (*it).end ==> <I as Idx>::can_new(s))
-    )]
-    #[thrust_macros::ensures(
-        forall(|s: USize| s == (*it).start && s < (*it).end
-            ==> exists(|x: <I as thrust_models::Model>::Ty|
-                    result == Some(x) && <I as Idx>::index_is(x, s))
-                && s + 1 == (!it).start
-                && (!it).end == (*it).end)
-    )]
-    #[thrust_macros::ensures(
-        !((*it).start < (*it).end)
-            ==> result == None && (!it).start == (*it).start && (!it).end == (*it).end
-    )]
-    fn _extern_spec_next(it: &mut IdxRange<I>) -> Option<I>
-    where
-        I: thrust_models::Model,
-        <I as thrust_models::Model>::Ty: PartialEq,
-    {
-        <IdxRange<I> as Iterator>::next(it)
+impl<I: Idx + thrust_models::Model> IteratorSpec for IdxRange<I>
+where
+    <I as thrust_models::Model>::Ty: PartialEq,
+{
+    #[thrust_macros::predicate]
+    fn inv(self) -> bool {
+        forall(|a: USize, b: USize, s: USize|
+            !(a == self.start && b == self.end && a <= s && s < b) || <I as Idx>::can_new(s))
+    }
+
+    #[thrust_macros::predicate]
+    fn produces(self, visited: Vec<I>, o: Self) -> bool {
+        self.end == o.end
+            && forall(|a: USize, b: USize, e: USize|
+                !(a == self.start && b == o.start && e == o.end)
+                    || (a <= b
+                        && (visited.len() == 0 || b <= e)
+                        && visited.len() == b - a
+                        && forall(|i: USize| !(0 <= i && i < visited.len()) || <I as Idx>::index_is(visited[i], a + i))))
+    }
+
+    #[thrust_macros::predicate]
+    fn completed(&mut self) -> bool {
+        (*self).start >= (*self).end && (!self).start == (*self).start && (!self).end == (*self).end
+    }
+
+    fn produces_refl(a: &Self) {}
+
+    fn produces_trans(
+        a: &Self,
+        ab: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        b: &Self,
+        bc: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        c: &Self,
+    ) {
     }
 }
 

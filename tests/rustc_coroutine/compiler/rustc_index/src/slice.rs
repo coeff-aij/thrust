@@ -7,7 +7,7 @@ use thrust_models::model::Seq;
 
 use crate::rustc_index::{Idx, IdxRange, IndexVec, IntoSliceIdx};
 use crate::case_study::USize;
-use crate::case_study::iter::{IterMut, Iterator};
+use crate::{IntoIteratorSpec, IteratorSpec};
 
 // `PartialEq, Eq` commented out: the derived `eq` compares the `PhantomData`
 // field, whose model is the unit sort, and Thrust panics with
@@ -42,14 +42,20 @@ where
             None
         }
     }
+}
 
+#[thrust_macros::context]
+impl<'a, T: thrust_models::Model> IteratorSpec for SliceIter<'a, T>
+where
+    T::Ty: PartialEq,
+{
     #[thrust_macros::predicate]
-    fn invariant(self) -> bool {
+    fn inv(self) -> bool {
         0 <= self.1 && self.1 <= self.0.len()
     }
 
     #[thrust_macros::predicate]
-    fn produces(self, visited: Seq<<Self::Item as thrust_models::Model>::Ty>, o: Self) -> bool {
+    fn produces(self, visited: Vec<Self::Item>, o: Self) -> bool {
         self.0 == o.0
             && self.1 <= o.1
             && o.1 <= self.0.len()
@@ -60,6 +66,29 @@ where
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
         (*self).1 >= (*self).0.len() && *self == !self
+    }
+
+    fn produces_refl(a: &Self) {}
+
+    fn produces_trans(
+        a: &Self,
+        ab: Seq<<Self::Item as thrust_models::Model>::Ty>,
+        b: &Self,
+        bc: Seq<<Self::Item as thrust_models::Model>::Ty>,
+        c: &Self,
+    ) {
+    }
+}
+
+// An iterator is its own `into_iter`, as std.rs's `IntoIteratorSpec` of `slice::Iter` says.
+#[thrust_macros::context]
+impl<'a, T: thrust_models::Model> IntoIteratorSpec for SliceIter<'a, T>
+where
+    T::Ty: PartialEq,
+{
+    #[thrust_macros::predicate]
+    fn into_iter_is(self, it: Self) -> bool {
+        self == it
     }
 }
 
@@ -89,16 +118,23 @@ where
             None
         }
     }
+}
 
+#[thrust_macros::context]
+impl<'a, I: Idx + thrust_models::Model, T: thrust_models::Model> IteratorSpec for IterEnumerated<'a, I, T>
+where
+    I::Ty: PartialEq,
+    T::Ty: PartialEq,
+{
     // `next` builds `I::new(pos)`, so the invariant carries `can_new` of the positions left.
     #[thrust_macros::predicate]
-    fn invariant(self) -> bool {
+    fn inv(self) -> bool {
         0 <= self.1 && self.1 <= self.0.len()
             && forall(|k: USize| !(self.1 <= k && k < self.0.len()) || <I as Idx>::can_new(k))
     }
 
     #[thrust_macros::predicate]
-    fn produces(self, visited: Seq<<Self::Item as thrust_models::Model>::Ty>, o: Self) -> bool {
+    fn produces(self, visited: Vec<Self::Item>, o: Self) -> bool {
         self.0 == o.0
             && self.1 <= o.1
             && o.1 <= self.0.len()
@@ -110,6 +146,17 @@ where
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
         (*self).1 >= (*self).0.len() && *self == !self
+    }
+
+    fn produces_refl(a: &Self) {}
+
+    fn produces_trans(
+        a: &Self,
+        ab: Seq<<Self::Item as thrust_models::Model>::Ty>,
+        b: &Self,
+        bc: Seq<<Self::Item as thrust_models::Model>::Ty>,
+        c: &Self,
+    ) {
     }
 }
 
@@ -183,13 +230,12 @@ impl<I: Idx, T: thrust_models::Model> IndexSlice<I, T>
 where
     T::Ty: PartialEq,
 {
-    // Rewrite (rewrites.md R9): the case study's `IterMut` for `slice::IterMut`.
     #[inline]
     #[thrust::trusted]
     #[thrust_macros::requires(true)]
     #[thrust_macros::ensures(result.0 == *self && result.1 == !self && result.2 == 0 && (!self).len() == (*self).len())]
-    pub fn iter_mut(&mut self) -> IterMut<'_, T> {
-        IterMut { inner: self.raw.iter_mut() }
+    pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, T> {
+        self.raw.iter_mut()
     }
 }
 
@@ -210,8 +256,7 @@ impl<I: Idx + thrust_models::Model<Ty: PartialEq>, J: Idx + thrust_models::Model
         !(0 <= k && k < result.len() && <I as Idx>::index_is(result[k], i)) || i < result.len()))]
     pub fn invert_bijective_mapping(&self) -> IndexVec<J, I> {
         let mut inverse = IndexVec::from_elem_n(Idx::new(0), self.len());
-        let mut entries = self.iter_enumerated();
-        while let Some((i1, &i2)) = entries.next() {
+        for (i1, &i2) in self.iter_enumerated() {
             inverse[i2] = i1;
         }
         inverse
