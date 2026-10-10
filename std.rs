@@ -2086,6 +2086,37 @@ fn _extern_spec_slice_index_mut<T, I>(slice: &mut [T], index: I) -> &mut <I as s
     <[T] as std::ops::IndexMut<I>>::index_mut(slice, index)
 }
 
+// `sort_by_key` permutes the slice: `p` maps each final position to the current position of the
+// element it now holds, one to one and onto (Creusot's `permutation_of`, by a witness). That the
+// result is sorted by the key is not stated. The key closure is called on the elements.
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(
+    thrust_models::forall(|c: thrust_models::model::Closure<F>, i: thrust_models::model::Int|
+        !(0 <= i && i < (*slice).len()) || thrust_macros::pre!(c(&(*slice)[i])))
+)]
+#[thrust_macros::ensures(
+    (!slice).len() == (*slice).len()
+        && thrust_models::exists(|p: thrust_models::model::Seq<thrust_models::model::Int>|
+            p.len() == (*slice).len()
+                && thrust_models::forall(|i: thrust_models::model::Int|
+                    !(0 <= i && i < (*slice).len())
+                        || (0 <= p[i] && p[i] < (*slice).len() && (!slice)[i] == (*slice)[p[i]]))
+                && thrust_models::forall(|i: thrust_models::model::Int, j: thrust_models::model::Int|
+                    !(0 <= i && i < (*slice).len() && 0 <= j && j < (*slice).len() && i != j)
+                        || p[i] != p[j])
+                && thrust_models::forall(|j: thrust_models::model::Int|
+                    !(0 <= j && j < (*slice).len())
+                        || thrust_models::exists(|i: thrust_models::model::Int|
+                            0 <= i && i < (*slice).len() && p[i] == j)))
+)]
+fn _extern_spec_slice_sort_by_key<T, K, F>(slice: &mut [T], f: F)
+    where T: thrust_models::Model, T::Ty: PartialEq,
+          K: Ord + thrust_models::Model, K::Ty: PartialEq,
+          F: FnMut(&T) -> K
+{
+    <[T]>::sort_by_key(slice, f)
+}
+
 // `<[T]>::iter` and `<[T]>::iter_mut` start a fresh iterator at
 // position 0 over the sequence they are given.
 
@@ -2857,6 +2888,32 @@ where
     #[thrust_macros::predicate]
     fn compares(self, other: Self, ord: Option<std::cmp::Ordering>) -> bool {
         A::compares(*self, *other, ord)
+    }
+
+    fn compares_functional(
+        a: &Self,
+        b: &Self,
+        x: Option<std::cmp::Ordering>,
+        y: Option<std::cmp::Ordering>,
+    ) {
+    }
+}
+
+// `Option<A>` orders `None` below every `Some`, and two `Some`s by their contents (the derived
+// order).
+#[thrust_macros::context]
+impl<A> PartialOrdSpec for Option<A>
+where
+    A: PartialOrdSpec,
+    A::Ty: PartialEq,
+{
+    #[thrust_macros::predicate]
+    fn compares(self, other: Self, ord: Option<std::cmp::Ordering>) -> bool {
+        (self == None && other == None && ord == Some(std::cmp::Ordering::Equal))
+            || (self == None && other != None && ord == Some(std::cmp::Ordering::Less))
+            || (self != None && other == None && ord == Some(std::cmp::Ordering::Greater))
+            || thrust_models::exists(|a: A::Ty, b: A::Ty|
+                self == Some(a) && other == Some(b) && A::compares(a, b, ord))
     }
 
     fn compares_functional(

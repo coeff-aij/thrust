@@ -1,6 +1,6 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper COAR_IMAGE=coar:develop-2493045c3
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // The default no longer matches what `None` maps to.
 
