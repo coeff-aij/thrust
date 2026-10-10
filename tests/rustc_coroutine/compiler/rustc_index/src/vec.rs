@@ -36,11 +36,13 @@ impl<I: Idx, T> IndexVec<I, T> {
         }
     }
 
+    // A written contract, so that the roots that do not select this module trust it rather than
+    // analyse it: the bit-set root's specification of `vec![elem; n]` at the word type would be
+    // applied to it at `T` (src/rty/subtyping.rs panics with "inconsistent types").
     #[inline]
-    // Not analysed and not callable: its only caller, `univariant_biased`, is trusted, and the
-    // bit-set root's specification of `vec![elem; n]` at the word type would be applied to it
-    // at `T` (src/rty/subtyping.rs panics with "inconsistent types").
-    #[thrust::ignored]
+    #[thrust_macros::requires(true)]
+    #[thrust_macros::ensures(result.len() == (*universe).len()
+        && forall(|k: USize| !(0 <= k && k < result.len()) || result[k] == elem))]
     pub fn from_elem<S>(elem: T, universe: &IndexSlice<I, S>) -> Self
     where
         T: Clone,

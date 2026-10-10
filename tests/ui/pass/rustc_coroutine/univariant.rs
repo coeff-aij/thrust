@@ -1,4 +1,4 @@
-//@ignore-on-host: draft, stops at slice indexing by `IntoSliceIdx::Output` in the generic `Index` impl of `IndexSlice`, which has no specification (see README.md)
+//@ignore-on-host: draft, passes the frontend with `univariant_biased` analysed; its query is about 324 MB, and `univariant_biased` has no contract of its own yet (see README.md)
 //@edition: 2024
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_TRY_SPECS=1

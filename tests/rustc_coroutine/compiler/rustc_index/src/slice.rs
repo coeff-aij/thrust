@@ -219,6 +219,7 @@ impl<I: Idx, T> IndexSlice<I, T> {
 
     #[inline]
     #[thrust_macros::requires(<I as Idx>::can_new((*self).len()))]
+    #[thrust_macros::ensures(result.start == 0 && result.end == (*self).len())]
     pub fn indices(&self) -> IdxRange<I> {
         let _ = I::new(self.len());
         IdxRange::new(0, self.len())

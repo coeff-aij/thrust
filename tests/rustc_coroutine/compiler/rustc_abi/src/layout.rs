@@ -11,7 +11,7 @@ use crate::rustc_abi::{
 use crate::rustc_hashes::Hash64;
 use crate::rustc_index::{Idx, IndexSlice, IndexVec};
 use crate::case_study::USize;
-use crate::case_study::iter::{Filter, iter_all};
+use crate::case_study::iter::{Filter, Map, collect_index_vec, iter_all};
 use crate::case_study::unwrap::Unwrap;
 
 mod coroutine;
@@ -162,7 +162,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         layout
     }
 
-    #[thrust::trusted]
+    // Analysed, under `callable` until it has a contract that `univariant` can use.
     #[thrust::callable]
     fn univariant_biased<
         'a,
@@ -184,7 +184,8 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
             dl.aggregate_align
         };
         let mut max_repr_align = repr.align;
-        let mut in_memory_order: IndexVec<u32, FieldIdx> = fields.indices().collect();
+        // Rewrite (rewrites.md R8): `collect_index_vec` for `collect`.
+        let mut in_memory_order: IndexVec<u32, FieldIdx> = collect_index_vec(fields.indices());
         let optimize_field_order = !repr.inhibit_struct_field_reordering();
         let end = if let StructKind::MaybeUnsized = kind {
             fields.len() - 1
@@ -212,17 +213,19 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                     optimizing.shuffle(&mut rng);
                 }
             } else {
-                let max_field_align = fields_excluding_tail
-                    .iter()
-                    .map(|f| f.align.bytes())
-                    .max()
-                    .unwrap_or(1);
-                let largest_niche_size = fields_excluding_tail
-                    .iter()
-                    .filter_map(|f| f.largest_niche)
-                    .map(|n| n.available(dl))
-                    .max()
-                    .unwrap_or(0);
+                // Rewrite (rewrites.md R8): `Map::new(it, f)` for `it.map(f)`.
+                let max_field_align =
+                    Map::new(fields_excluding_tail.iter(), |f: &F| f.align.bytes())
+                        .max()
+                        .unwrap_or(1);
+                // Rewrite (rewrites.md R8): `Map::new` of the niche's `available`, 0 without one,
+                // for `filter_map` of the niche and `map` of `available`: the two maxima agree,
+                // as `available` is never negative.
+                let largest_niche_size = Map::new(fields_excluding_tail.iter(), |f: &F| {
+                    f.largest_niche.map_or(0, |n| n.available(dl))
+                })
+                .max()
+                .unwrap_or(0);
 
                 let alignment_group_key = |layout: &F| {
                     if let Some(pack) = pack {

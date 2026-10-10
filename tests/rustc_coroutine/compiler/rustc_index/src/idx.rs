@@ -126,6 +126,14 @@ pub struct IdxRange<I: Idx> {
     marker: PhantomData<I>,
 }
 
+// Not rustc's: model equality of the iterator, which `IteratorSpec`'s users need; written out, as
+// a derived `PartialEq` would compare the `PhantomData` field (see `Clone` above).
+impl<I: Idx> PartialEq for IdxRange<I> {
+    fn eq(&self, other: &Self) -> bool {
+        self.start == other.start && self.end == other.end
+    }
+}
+
 #[thrust_macros::context]
 impl<I: Idx> IdxRange<I> {
     #[thrust_macros::requires(true)]
