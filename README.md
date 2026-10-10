@@ -174,6 +174,18 @@ fn rand() -> i32 { unimplemented!() }
 
 `#[thrust_macros::impl_trait_names(D, F)]` names the types of a function's argument-position `impl Trait` parameters, in order of occurrence, so that its `requires`/`ensures` can refer to them (e.g. `D::dl_of(*cx, dl)` for `cx: &impl HasDataLayout`); it may appear before or after them, and the number of names must equal the number of such parameters.
 
+### Verifying part of a crate
+
+`#![thrust::verify_only("a::b", "c::**", "d::Type::method")]` in the crate root, after `#![feature(custom_inner_attributes)]`, verifies only the selected functions and assumes the contracts of the others, so that a large crate can be verified one part at a time. Each entry is a path relative to the crate root (a leading `crate::` is allowed, and `crate` alone is the root module):
+
+- a module selects the functions defined directly in it, not those of its submodules;
+- `m::**` selects module `m` with all its submodules;
+- any other path selects the named function with its closures, or every function defined inside the named item (a type's methods, a function's nested functions).
+
+A method belongs to the module of its `impl` block and is named through the impl's self type, `module::Type::method`, for inherent and trait impls alike; a method of an impl for a type that is not a struct, enum or union is selected only through its module. Several attributes take the union of their entries.
+
+A function outside the selection that has a written contract (`requires`/`ensures`, `#[thrust::callable]`, or the contract of the trait method it implements) is treated as `#[thrust::trusted]`. One without a contract is still analyzed, because its callers use the contract inferred from its body. A trait law that an impl outside the selection inherits is assumed there rather than checked. Predicates, logic functions and model declarations are unaffected, and so are `#[thrust::trusted]` and `#[thrust::ignored]`. Without the attribute, the whole crate is verified.
+
 ## Configuration
 
 Several environment variables are used by Thrust to configure its behavior:

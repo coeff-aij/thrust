@@ -36,3 +36,13 @@ fn cargo_check_reports_verification_failure() {
     assert!(!output.status.success(), "{stderr}");
     assert!(stderr.contains("verification error: Unsat"), "{stderr}");
 }
+
+#[test]
+fn cargo_check_trusts_contracts_outside_verify_only() {
+    let output = cargo_check("verify_only");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

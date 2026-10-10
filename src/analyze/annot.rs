@@ -34,6 +34,10 @@ pub fn law_path() -> [Symbol; 2] {
     [Symbol::intern("thrust"), Symbol::intern("law")]
 }
 
+pub fn verify_only_path() -> [Symbol; 2] {
+    [Symbol::intern("thrust"), Symbol::intern("verify_only")]
+}
+
 pub fn ignored_path() -> [Symbol; 2] {
     [Symbol::intern("thrust"), Symbol::intern("ignored")]
 }

@@ -34,6 +34,7 @@ mod did_cache;
 mod local_def;
 mod pred_inst;
 mod reconstruct_slice_indexing;
+mod selection;
 
 // TODO: organize structure and remove cross dependency between refine
 pub use did_cache::DefIdCache;

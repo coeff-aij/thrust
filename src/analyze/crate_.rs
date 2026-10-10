@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use rustc_hir::def_id::CRATE_DEF_ID;
+use rustc_hir::def_id::{DefId, CRATE_DEF_ID};
 use rustc_middle::ty::{self as mir_ty, TyCtxt};
 use rustc_span::def_id::LocalDefId;
 
@@ -26,6 +26,7 @@ pub struct Analyzer<'tcx, 'ctx> {
     ctx: &'ctx mut analyze::Analyzer<'tcx>,
 
     skip_analysis: HashSet<LocalDefId>,
+    selection: Option<analyze::selection::Selection>,
 }
 
 impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
@@ -67,6 +68,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         // Refinement order decides how predicate variables are numbered, so collect these
         // in the order `mir_keys` yields them rather than in a hash order.
         let mut trait_method_spec_keys = Vec::new();
+        let mut spec_targets = HashSet::new();
         for local_def_id in self.tcx.mir_keys(()) {
             if !self.tcx.def_kind(*local_def_id).is_fn_like() {
                 keys.swap_remove(local_def_id);
@@ -75,6 +77,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             let analyzer = self.ctx.local_def_analyzer(*local_def_id);
             if analyzer.is_annotated_as_extern_spec_fn() {
                 let target_def_id = analyzer.extern_spec_fn_target_def_id();
+                spec_targets.insert(target_def_id);
                 if let Some(local_target_def_id) = target_def_id.as_local() {
                     keys.swap_remove(&local_target_def_id);
                     // The spec is the target's contract; a trusted target's body is not
@@ -115,6 +118,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 keys.swap_remove(local_def_id);
             }
         }
+        self.trust_unselected(&spec_targets);
         // A closure is skipped when its typeck root is, so roots are refined first.
         let (roots, nested): (Vec<&LocalDefId>, Vec<&LocalDefId>) = keys
             .iter()
@@ -125,6 +129,59 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         for local_def_id in roots.into_iter().chain(nested) {
             self.refine_fn_def(*local_def_id);
         }
+    }
+
+    /// Under `#![thrust::verify_only(..)]`, skips the body of each function outside the selection
+    /// that has a written contract, as `#[thrust::trusted]` does. A function without one is
+    /// analyzed, because its callers use the contract inferred from its body.
+    fn trust_unselected(&mut self, spec_targets: &HashSet<DefId>) {
+        let Some(selection) = &self.selection else {
+            return;
+        };
+        let mut trusted = 0;
+        for local_def_id in self.tcx.mir_keys(()) {
+            let def_id = local_def_id.to_def_id();
+            if !self.tcx.def_kind(def_id).is_fn_like()
+                || self.tcx.typeck_root_def_id(def_id) != def_id
+                || self.skip_analysis.contains(local_def_id)
+                || self.is_trait_law(*local_def_id)
+                || selection.contains(self.tcx, def_id)
+            {
+                continue;
+            }
+            let analyzer = self.ctx.local_def_analyzer(*local_def_id);
+            if analyzer.is_annotated_as_extern_spec_fn()
+                || analyzer.is_annotated_as_trusted()
+                || analyzer.is_injected_std()
+            {
+                continue;
+            }
+            let trait_item_has_contract = self
+                .tcx
+                .opt_associated_item(def_id)
+                .and_then(|item| item.trait_item_def_id)
+                .is_some_and(|trait_item| {
+                    spec_targets.contains(&trait_item)
+                        || trait_item.as_local().is_some_and(|trait_item| {
+                            self.ctx.local_def_analyzer(trait_item).is_fully_annotated()
+                        })
+                });
+            let has_contract = spec_targets.contains(&def_id)
+                || self
+                    .ctx
+                    .local_def_analyzer(*local_def_id)
+                    .is_fully_annotated()
+                || trait_item_has_contract;
+            if has_contract {
+                tracing::debug!(def_id = %self.tcx.def_path_str(def_id), "trusted outside verify_only");
+                self.skip_analysis.insert(*local_def_id);
+                trusted += 1;
+            }
+        }
+        tracing::info!(
+            trusted,
+            "functions with a contract trusted outside verify_only"
+        );
     }
 
     #[tracing::instrument(skip(self), fields(def_id = %self.tcx.def_path_str(local_def_id)))]
@@ -306,6 +363,18 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     if implemented.contains_key(law_def_id) {
                         continue;
                     }
+                    if self
+                        .selection
+                        .as_ref()
+                        .is_some_and(|s| !s.contains_inherited(self.tcx, impl_def_id, *law_def_id))
+                    {
+                        tracing::info!(
+                            ?law_def_id,
+                            ?impl_def_id,
+                            "inherited law assumed outside verify_only"
+                        );
+                        continue;
+                    }
                     let Some(law_local) = law_def_id.as_local() else {
                         continue;
                     };
@@ -455,10 +524,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     pub fn new(ctx: &'ctx mut analyze::Analyzer<'tcx>) -> Self {
         let tcx = ctx.tcx;
         let skip_analysis = HashSet::default();
+        let selection = analyze::selection::Selection::of_crate(tcx);
         Self {
             ctx,
             tcx,
             skip_analysis,
+            selection,
         }
     }
 
