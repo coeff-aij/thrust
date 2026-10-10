@@ -269,7 +269,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     }
 
     pub fn derive_treatment(&self) -> Option<analyze::derive::Treatment> {
-        analyze::derive::treatment(self.tcx, &self.ctx.def_ids(), self.local_def_id.to_def_id())
+        analyze::derive::treatment(
+            self.tcx,
+            &self.ctx.def_ids(),
+            &self.type_builder,
+            self.local_def_id.to_def_id(),
+        )
     }
 
     pub fn is_annotated_as_formula_fn(&self) -> bool {

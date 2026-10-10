@@ -5,7 +5,8 @@
 //!
 //! - `PartialEq::eq` compares the fields with `==`, and `Clone::clone` clones each field, so
 //!   they are `result == (*x == *y)` and `result == *x` when the type's model is the tuple (or
-//!   datatype) of its fields' models and `==` and `clone` of every field act on its model.
+//!   datatype) of its fields' models, or the model of its one field besides `PhantomData`s, and
+//!   `==` and `clone` of every field act on its model.
 //! - `Hash::hash` and `Default::default` call the same method of each field, whose contracts
 //!   (no panic, nothing more) they then have.
 //! - `PartialOrd::partial_cmp` and `Ord::cmp` compare the fields lexicographically in declaration
@@ -37,6 +38,7 @@ pub enum Treatment {
 pub fn treatment<'tcx>(
     tcx: TyCtxt<'tcx>,
     def_ids: &DefIdCache<'tcx>,
+    type_builder: &TypeBuilder<'tcx>,
     def_id: DefId,
 ) -> Option<Treatment> {
     let impl_did = tcx.impl_of_assoc(def_id)?;
@@ -45,17 +47,17 @@ pub fn treatment<'tcx>(
     }
     let trait_did = tcx.trait_id_of_impl(impl_did)?;
     let self_ty = tcx.type_of(impl_did).instantiate_identity();
-    let typing_env = mir_ty::TypingEnv::post_analysis(tcx, impl_did);
     let trusted = match tcx.get_diagnostic_name(trait_did)? {
         sym::Debug => return Some(Treatment::Ignored),
         sym::Hash | sym::Default => true,
         sym::PartialEq | sym::Clone => {
-            has_structural_model(tcx, def_ids, typing_env, self_ty)
+            (has_structural_model(type_builder, self_ty)
+                || has_transparent_model(tcx, def_ids, type_builder, self_ty))
                 && field_tys(tcx, self_ty)
                     .into_iter()
                     .all(|ty| acts_on_model(tcx, def_ids, ty))
         }
-        sym::PartialOrd | sym::Ord => has_generated_compares(tcx, def_ids, self_ty),
+        sym::PartialOrd | sym::Ord => has_generated_compares(tcx, def_ids, type_builder, self_ty),
         _ => false,
     };
     trusted.then_some(Treatment::Trusted)
@@ -65,12 +67,13 @@ pub fn treatment<'tcx>(
 pub fn holds_by_generated_compares<'tcx>(
     tcx: TyCtxt<'tcx>,
     def_ids: &DefIdCache<'tcx>,
+    type_builder: &TypeBuilder<'tcx>,
     clause: mir_ty::Clause<'tcx>,
 ) -> bool {
     clause.as_trait_clause().is_some_and(|pred| {
         let trait_ref = pred.skip_binder().trait_ref;
         Some(trait_ref.def_id) == def_ids.partial_ord_spec()
-            && has_generated_compares(tcx, def_ids, trait_ref.self_ty())
+            && has_generated_compares(tcx, def_ids, type_builder, trait_ref.self_ty())
     })
 }
 
@@ -81,6 +84,7 @@ pub fn holds_by_generated_compares<'tcx>(
 pub fn has_generated_compares<'tcx>(
     tcx: TyCtxt<'tcx>,
     def_ids: &DefIdCache<'tcx>,
+    type_builder: &TypeBuilder<'tcx>,
     ty: mir_ty::Ty<'tcx>,
 ) -> bool {
     let Some(spec_trait) = def_ids.partial_ord_spec() else {
@@ -89,11 +93,10 @@ pub fn has_generated_compares<'tcx>(
     let mir_ty::TyKind::Adt(adt, _) = ty.kind() else {
         return false;
     };
-    let typing_env = mir_ty::TypingEnv::fully_monomorphized();
     if ty.has_param()
         || implements(tcx, spec_trait, ty)
-        || !has_derived_partial_ord(tcx, adt.did())
-        || !has_structural_model(tcx, def_ids, typing_env, ty)
+        || !has_derived_partial_ord(tcx, ty)
+        || !has_structural_model(type_builder, ty)
     {
         return false;
     }
@@ -103,23 +106,23 @@ pub fn has_generated_compares<'tcx>(
     field_tys(tcx, ty).into_iter().all(|field_ty| {
         is_phantom_data(tcx, field_ty)
             || implements(tcx, spec_trait, field_ty)
-            || has_generated_compares(tcx, def_ids, field_ty)
+            || has_generated_compares(tcx, def_ids, type_builder, field_ty)
     })
 }
 
-fn has_derived_partial_ord(tcx: TyCtxt<'_>, adt_did: DefId) -> bool {
-    let Some(partial_ord) = tcx.lang_items().partial_ord_trait() else {
+/// Whether the `PartialOrd` impl of `ty` is the built-in derive.
+fn has_derived_partial_ord<'tcx>(tcx: TyCtxt<'tcx>, ty: mir_ty::Ty<'tcx>) -> bool {
+    let Some(partial_cmp) = tcx.get_diagnostic_item(sym::cmp_partialord_cmp) else {
         return false;
     };
-    tcx.all_local_trait_impls(())
-        .get(&partial_ord)
-        .into_iter()
-        .flatten()
-        .any(|impl_did| {
-            let self_ty = tcx.type_of(*impl_did).instantiate_identity();
-            self_ty.ty_adt_def().map(|adt| adt.did()) == Some(adt_did)
-                && tcx.is_builtin_derived(impl_did.to_def_id())
-        })
+    let args = tcx.mk_args(&[ty.into(), ty.into()]);
+    let typing_env = mir_ty::TypingEnv::fully_monomorphized();
+    let Ok(Some(instance)) = mir_ty::Instance::try_resolve(tcx, typing_env, partial_cmp, args)
+    else {
+        return false;
+    };
+    tcx.impl_of_assoc(instance.def_id())
+        .is_some_and(|impl_did| tcx.is_builtin_derived(impl_did))
 }
 
 fn implements<'tcx>(tcx: TyCtxt<'tcx>, trait_did: DefId, ty: mir_ty::Ty<'tcx>) -> bool {
@@ -134,22 +137,50 @@ fn implements<'tcx>(tcx: TyCtxt<'tcx>, trait_did: DefId, ty: mir_ty::Ty<'tcx>) -
         .must_apply_modulo_regions()
 }
 
-/// Whether the model of `ty` is `ty` itself: the tuple of its fields' models for a struct, the
-/// datatype of them for an enum. A type without a `Model` impl has that model.
-fn has_structural_model<'tcx>(
+/// Whether the model of the ADT `ty` is the same ADT (at its arguments' models): the tuple of its
+/// fields' models for a struct, the datatype of them for an enum. A type without a `Model` impl
+/// has that model.
+fn has_structural_model<'tcx>(type_builder: &TypeBuilder<'tcx>, ty: mir_ty::Ty<'tcx>) -> bool {
+    let model = type_builder.resolve_model_ty(ty);
+    model.ty_adt_def().is_some() && model.ty_adt_def() == ty.ty_adt_def()
+}
+
+/// Whether the model of the struct `ty` is the model of one of its fields, the others being
+/// `PhantomData`.
+fn has_transparent_model<'tcx>(
     tcx: TyCtxt<'tcx>,
     def_ids: &DefIdCache<'tcx>,
-    typing_env: mir_ty::TypingEnv<'tcx>,
+    type_builder: &TypeBuilder<'tcx>,
     ty: mir_ty::Ty<'tcx>,
 ) -> bool {
-    let Some(model_ty) = def_ids.model_ty() else {
-        return true;
+    if !ty.ty_adt_def().is_some_and(|adt| adt.is_struct()) {
+        return false;
+    }
+    let live: Vec<_> = field_tys(tcx, ty)
+        .into_iter()
+        .filter(|field_ty| !is_phantom_data(tcx, *field_ty))
+        .collect();
+    let [field_ty] = live[..] else {
+        return false;
     };
-    let ty = tcx.erase_regions(ty);
-    let projection = mir_ty::Ty::new_projection(tcx, model_ty, [ty]);
-    match tcx.try_normalize_erasing_regions(typing_env, projection) {
-        Ok(model) => model == ty || model == projection,
-        Err(_) => true,
+    model_of(def_ids, type_builder, field_ty) == model_of(def_ids, type_builder, ty)
+}
+
+/// The model of `ty`, with a `<X as Model>::Ty` left unresolved taken as the model of `X`, as
+/// [`TypeBuilder::build`] takes it (the model of a type parameter is the parameter).
+fn model_of<'tcx>(
+    def_ids: &DefIdCache<'tcx>,
+    type_builder: &TypeBuilder<'tcx>,
+    ty: mir_ty::Ty<'tcx>,
+) -> mir_ty::Ty<'tcx> {
+    let model = type_builder.resolve_model_ty(ty);
+    match model.kind() {
+        mir_ty::TyKind::Alias(mir_ty::AliasTyKind::Projection, alias)
+            if Some(alias.def_id) == def_ids.model_ty() =>
+        {
+            type_builder.resolve_model_ty(alias.self_ty())
+        }
+        _ => model,
     }
 }
 
@@ -276,7 +307,7 @@ impl<'a, 'tcx> Compares<'a, 'tcx> {
         if is_phantom_data(self.tcx, ty) {
             return chc::Formula::Atom(ord.equal_to(self.ordering("Equal")));
         }
-        if has_generated_compares(self.tcx, &self.analyzer.def_ids(), ty) {
+        if has_generated_compares(self.tcx, &self.analyzer.def_ids(), self.type_builder, ty) {
             return self.formula(ty, x, y, ord);
         }
         let instance = mir_ty::Instance::try_resolve(
@@ -334,7 +365,7 @@ impl<'a, 'tcx> Compares<'a, 'tcx> {
         fields: Vec<chc::Term<V>>,
     ) -> chc::Term<V> {
         let d_sym = refine::datatype_symbol(self.tcx, adt_did);
-        let v_sym = chc::DatatypeSymbol::new(format!("{}.{}", d_sym, variant));
+        let v_sym = refine::variant_symbol(&d_sym, variant);
         chc::Term::datatype_ctor(d_sym, sort_args, v_sym, fields)
     }
 }

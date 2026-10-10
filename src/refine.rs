@@ -40,6 +40,11 @@ pub fn datatype_symbol(tcx: mir_ty::TyCtxt<'_>, did: DefId) -> DatatypeSymbol {
     DatatypeSymbol::new(tcx.def_path_str(did).replace("::", "."))
 }
 
+/// The symbol of the constructor of `variant` of the datatype `d_sym`.
+pub fn variant_symbol(d_sym: &DatatypeSymbol, variant: impl std::fmt::Display) -> DatatypeSymbol {
+    DatatypeSymbol::new(format!("{}.{}", d_sym, variant))
+}
+
 pub fn user_defined_pred(tcx: mir_ty::TyCtxt<'_>, did: DefId) -> UserDefinedPred {
     UserDefinedPred::new(stable_def_id_symbol(tcx, did, "p"))
 }
