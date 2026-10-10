@@ -164,7 +164,7 @@ fn g(x: i32) -> i32 {
 
 Refinements may be nested inside generic arguments and reference types, e.g. `Box<{ v: i64 | v > 0 }>` or `&mut { v: i32 | v >= 0 }`.
 
-The bodies of functions marked with `#[thrust::trusted]` are not analyzed by Thrust. Additionally, `#[thrust::callable]` is an alias for `#[thrust_macros::requires(true)]` and `#[thrust_macros::ensures(true)]`.
+The bodies of functions marked with `#[thrust::trusted]` are not analyzed by Thrust. Additionally, `#[thrust::callable]` is an alias for `#[thrust_macros::requires(true)]` and `#[thrust_macros::ensures(true)]`. A function without a contract is checked only under the preconditions its callers establish: the body of one that no analyzed function calls is not checked, and its clauses are left out of the query.
 
 ```rust
 #[thrust::trusted]
