@@ -1124,6 +1124,23 @@ where
 }
 
 #[thrust::extern_spec_fn]
+#[thrust_macros::requires(
+    opt == None || thrust_models::exists(|i| opt == Some(i) && thrust_macros::pre!(f(i)))
+)]
+#[thrust_macros::ensures(
+    (opt == None && result == default)
+    || thrust_models::exists(|i| opt == Some(i) && thrust_macros::post!(f(i), result))
+)]
+fn _extern_spec_option_map_or<T, U, F>(opt: Option<T>, default: U, f: F) -> U
+where
+    T: thrust_models::Model, T::Ty: PartialEq,
+    U: thrust_models::Model, U::Ty: PartialEq,
+    F: FnOnce(T) -> U,
+{
+    Option::map_or(opt, default, f)
+}
+
+#[thrust::extern_spec_fn]
 #[thrust_macros::requires(opt != None || thrust_macros::pre!(f()))]
 #[thrust_macros::ensures(
     (opt != None && Some(result) == opt)
