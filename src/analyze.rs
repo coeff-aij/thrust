@@ -549,6 +549,15 @@ struct InstantiationKey<'tcx> {
 /// arguments, and the calling function when those arguments mention its type parameters.
 type PredicateInstanceKey<'tcx> = (DefId, mir_ty::GenericArgsRef<'tcx>, Option<DefId>);
 
+/// Whether `def_id` comes from the injected `std.rs`.
+pub fn is_injected_std(tcx: mir_ty::TyCtxt<'_>, def_id: LocalDefId) -> bool {
+    let span = tcx.def_span(def_id);
+    matches!(
+        tcx.sess.source_map().span_to_filename(span),
+        rustc_span::FileName::Custom(name) if name == crate::INJECTED_STD_FILE_NAME
+    )
+}
+
 /// Identifies one analysis instance of a function body.
 ///
 /// A def may be analyzed more than once: the placeholder analysis (with the

@@ -18,7 +18,7 @@ fn helper() {}
 
 #[thrust_macros::lemma]
 fn calls_helper() {
-    helper() //~ ERROR: a lemma calls only lemmas and functions outside the crate
+    helper() //~ ERROR: a lemma calls only lemmas, logic functions, predicates and model operations
 }
 
 #[thrust_macros::lemma]
@@ -47,13 +47,18 @@ fn takes_wrapped_mut(w: Wrapped) { //~ ERROR: a lemma cannot take a `&mut`
 }
 
 #[thrust_macros::lemma]
-fn takes_closure<F: FnOnce(i64) -> i64>(f: F) { //~ ERROR: a lemma cannot take a function or closure
-    let _ = Some(1i64).map(f);
+fn takes_closure<F: FnOnce(i64) -> i64>(f: F) {
+    let _ = Some(1i64).map(f); //~ ERROR: a lemma calls only lemmas, logic functions, predicates and model operations
+}
+
+#[thrust_macros::lemma]
+fn calls_back<T: Ord>(a: T, b: T) {
+    let _ = std::cmp::max(a, b); //~ ERROR: a lemma calls only lemmas, logic functions, predicates and model operations
 }
 
 #[thrust_macros::lemma]
 fn passes_function() {
-    let _ = Some(1i64).map(diverges_at); //~ ERROR: a lemma cannot pass a function or closure to another
+    let _ = Some(1i64).map(diverges_at); //~ ERROR: a lemma calls only lemmas, logic functions, predicates and model operations
 }
 
 #[thrust_macros::lemma]
