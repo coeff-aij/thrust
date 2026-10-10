@@ -2089,9 +2089,10 @@ fn _extern_spec_slice_iter_mut_next<'a, T>(
 
 // `next` is specified once, through the predicates of `IteratorSpec`; a type gets a `next` by
 // implementing the trait. `next` is total: `completed` covers every position at or past the end.
-// `inv` is the state invariant, Creusot's type invariant: `produces_refl` holds at the states that
-// satisfy it. The laws are Creusot's; they let a loop over a type parameter accumulate what
-// `next` produced.
+// `inv` is the state invariant, Creusot's type invariant: `next` requires and keeps it, so that an
+// iterator whose `next` panics outside it (one building an index) can implement the trait, and
+// `produces_refl` holds at the states that satisfy it. The laws are Creusot's; they let a loop
+// over a type parameter accumulate what `next` produced.
 #[thrust_macros::context]
 trait IteratorSpec: std::iter::Iterator + thrust_models::Model
 where
@@ -2128,9 +2129,9 @@ where
 }
 
 #[thrust::extern_spec_fn]
-#[thrust_macros::requires(true)]
+#[thrust_macros::requires(I::inv(*it))]
 #[thrust_macros::ensures(
-    (I::inv(*it) ==> I::inv(!it))
+    I::inv(!it)
         && (result == None ==> I::completed(it))
         && thrust_models::forall(|x: <I::Item as thrust_models::Model>::Ty| result == Some(x)
             ==> I::produces(*it, thrust_models::model::Seq::singleton(x), !it))
@@ -2149,8 +2150,9 @@ fn _extern_spec_iterator_next<I>(it: &mut I) -> Option<I::Item>
 // which PCSat fails.
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(
-    thrust_models::forall(|c: thrust_models::model::Closure<P>|
-        thrust_models::forall(|x: <I::Item as thrust_models::Model>::Ty| thrust_macros::pre!(c(&x))))
+    I::inv(*it)
+        && thrust_models::forall(|c: thrust_models::model::Closure<P>|
+            thrust_models::forall(|x: <I::Item as thrust_models::Model>::Ty| thrust_macros::pre!(c(&x))))
 )]
 #[thrust_macros::ensures(
     (result == None
