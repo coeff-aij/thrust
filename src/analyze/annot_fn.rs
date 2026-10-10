@@ -1837,7 +1837,12 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                                     pred.into()
                                 }
                                 Some(instance) => {
-                                    if instance.def_id() == self.local_def_id.to_def_id() {
+                                    // A call at other type arguments, such as an adapter's
+                                    // predicate calling the same impl's at the adapted
+                                    // iterator, defines another predicate.
+                                    if instance.def_id() == self.local_def_id.to_def_id()
+                                        && instance.args == self.generic_args
+                                    {
                                         self.tcx.dcx().span_fatal(
                                             hir.span,
                                             "a predicate cannot call itself; a recursive one is a #[thrust_macros::logic] function with #[thrust_macros::variant(..)]",
