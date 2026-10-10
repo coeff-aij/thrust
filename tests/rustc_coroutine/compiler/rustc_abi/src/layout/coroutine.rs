@@ -9,6 +9,7 @@ use crate::rustc_abi::{
 use crate::rustc_index::bit_set::{BitIter, BitMatrix, DenseBitSet};
 use crate::rustc_index::{Idx, IdxRange, IndexSlice, IndexVec, IterEnumerated, SliceIter};
 use crate::case_study::USize;
+use crate::case_study::lemmas;
 use crate::case_study::iter::{Filter, Map, collect_index_vec, collect_index_vec_result, iter_all};
 use std::iter::{self, Enumerate};
 use std::slice::IterMut;
@@ -515,6 +516,84 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
     (ineligible_locals, assignments)
 }
 
+// Rewrite (stage 7): `layout()`'s loop splitting the prefix's memory order at `b_start`, moved
+// into a function of its own with the loop unchanged. A written invariant replaces inference
+// (see stage 5 above), so in `layout()` it would have to restate everything the variants need
+// after the loop; here it states only the split. The order is a permutation of `0..n`, as
+// univariant's `arbitrary_of` states it, and the counting lemmas of `case_study::lemmas` give
+// that the second part has at least `n - b_start` entries, each below `n - b_start`:
+// `invert_bijective_mapping` needs its entries below its length, and the variants need
+// `promoted_memory_index` to have c entries. `n` is the order's length: the postcondition
+// names it rather than `in_memory_order`, which the loop consumes, since a by-value parameter in
+// an `ensures` reads its value at the return.
+#[thrust_macros::requires(
+    in_memory_order.len() == n
+        && b_start <= in_memory_order.len()
+        && forall(|k: USize| !(0 <= k && k <= in_memory_order.len()) || <FieldIdx as Idx>::can_new(k))
+        && forall(|k: USize| !(0 <= k && k <= in_memory_order.len()) || <u32 as Idx>::can_new(k))
+        && forall(|k: USize, i: USize|
+            !(0 <= k && k < in_memory_order.len() && <FieldIdx as Idx>::index_is(in_memory_order[k], i))
+                || i < in_memory_order.len())
+        && forall(|k: USize, k2: USize, i: USize|
+            !(0 <= k && k < in_memory_order.len() && 0 <= k2 && k2 < in_memory_order.len() && !(k == k2)
+                && <FieldIdx as Idx>::index_is(in_memory_order[k], i))
+                || !<FieldIdx as Idx>::index_is(in_memory_order[k2], i))
+)]
+#[thrust_macros::ensures(
+    result.0.len() + result.1.len() == n
+        && result.1.len() >= n - b_start
+        && forall(|k: USize, i: USize|
+            !(0 <= k && k < result.1.len() && <FieldIdx as Idx>::index_is(result.1[k], i))
+                || i < result.1.len())
+)]
+#[thrust_macros::context]
+fn split_memory_order<FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>>(
+    in_memory_order: IndexVec<u32, FieldIdx>,
+    n: usize,
+    b_start: usize,
+) -> (IndexVec<u32, FieldIdx>, IndexVec<u32, FieldIdx>) {
+    let order = thrust_macros::ghost!(|in_memory_order: IndexVec<u32, FieldIdx>| -> IndexVec<u32, FieldIdx> {
+        in_memory_order
+    });
+    thrust_macros::proof!(lemmas::distinct_of_injective(order, n));
+    let mut in_memory_order_a = IndexVec::<u32, FieldIdx>::new();
+    let mut in_memory_order_b = IndexVec::<u32, FieldIdx>::new();
+    for i in in_memory_order {
+        thrust_macros::invariant!(
+            |iter: std::vec::IntoIter<FieldIdx>,
+             iter_old: thrust_models::Ghost<std::vec::IntoIter<FieldIdx>>,
+             produced: thrust_models::Ghost<thrust_models::model::Seq<<FieldIdx as thrust_models::Model>::Ty>>,
+             order: thrust_models::Ghost<IndexVec<u32, FieldIdx>>,
+             in_memory_order_a: IndexVec<u32, FieldIdx>,
+             in_memory_order_b: IndexVec<u32, FieldIdx>,
+             n: usize,
+             b_start: usize| {
+                iter_old.0 == order
+                    && iter_old.1 == 0
+                    && order.len() == n
+                    && b_start <= n
+                    && forall(|k: USize| !(0 <= k && k <= n) || <FieldIdx as Idx>::can_new(k))
+                    && forall(|k: USize| !(0 <= k && k <= n) || <u32 as Idx>::can_new(k))
+                    && forall(|k: USize, i: USize|
+                        !(0 <= k && k < n && <FieldIdx as Idx>::index_is(order[k], i)) || i < n)
+                    && lemmas::distinct::<FieldIdx>(order, n)
+                    && in_memory_order_a.len() + in_memory_order_b.len() == produced.len()
+                    && in_memory_order_b.len() == lemmas::cnt_ge::<FieldIdx>(order, produced.len(), b_start)
+                    && forall(|k: USize|
+                        !(0 <= k && k < in_memory_order_b.len())
+                            || <FieldIdx as Idx>::index_logic(in_memory_order_b[k]) < n - b_start)
+            }
+        );
+        if let Some(j) = i.index().checked_sub(b_start) {
+            in_memory_order_b.push(FieldIdx::new(j));
+        } else {
+            in_memory_order_a.push(i);
+        }
+    }
+    thrust_macros::proof!(lemmas::permutation_split(order, n, b_start));
+    (in_memory_order_a, in_memory_order_b)
+}
+
 // The specification of stage 7 (README.md of the stage files).
 //
 // Precondition (experiments/2026-10-01-layout-precondition-review.md), with n the number of
@@ -643,22 +722,14 @@ pub fn layout<
             // `split_off(b_start.index())` needs `b_start.index() <= offsets.raw.len()`:
             // `b_start` is P + 1 (`next_index`, `plus`), and `offsets` has `prefix_layouts.len()`
             // entries (univariant's `arbitrary_of`), P + 1 + c by the prefix-length fact above.
-            // TODO(proof): the loop below has no invariant, so inference must find that the two
-            // orders together hold at most as many entries as were read (each `push` needs
-            // `u32::can_new` of the length) and that `j` is below `n - b_start`
-            // (`FieldIdx::new(j)`).
             let offsets_b = IndexVec::from_raw(offsets.raw.split_off(b_start.index()));
             let offsets_a = offsets;
 
-            let mut in_memory_order_a = IndexVec::<u32, FieldIdx>::new();
-            let mut in_memory_order_b = IndexVec::<u32, FieldIdx>::new();
-            for i in in_memory_order {
-                if let Some(j) = i.index().checked_sub(b_start.index()) {
-                    in_memory_order_b.push(FieldIdx::new(j));
-                } else {
-                    in_memory_order_a.push(i);
-                }
-            }
+            // Rewrite (stage 7): the loop splitting `in_memory_order` is `split_memory_order`
+            // above, with its invariant. Its precondition is univariant's `arbitrary_of` with
+            // n = P + 1 + c, and `P + 1 + n <= u32::MAX` of `layout()`'s.
+            let (in_memory_order_a, in_memory_order_b) =
+                split_memory_order(in_memory_order, prefix_layouts.len(), b_start.index());
 
             let outer_fields = FieldsShape::Arbitrary {
                 offsets: offsets_a,
@@ -667,10 +738,9 @@ pub fn layout<
             (
                 outer_fields,
                 offsets_b,
-                // TODO(proof): `invert_bijective_mapping` requires every element of
-                // `in_memory_order_b` below its length, and the variants need that length to be
-                // c: the permutation split, which `lemma_permutation_split` below states of a
-                // value it returns and not of `in_memory_order_b` (not called).
+                // `invert_bijective_mapping` requires every element of `in_memory_order_b` below
+                // its length, and `promoted_memory_index` gets at least n - (P + 1) = c entries:
+                // `split_memory_order`'s permutation split.
                 in_memory_order_b.invert_bijective_mapping(),
             )
         }
@@ -750,9 +820,9 @@ pub fn layout<
                             let field_idx = field_idx.unwrap();
                             (
                                 // `field_idx` is below the set's ghost count c (property 3),
-                                // which is `offsets_b.len()` (the prefix length and `split_off`).
-                                // TODO(proof): `promoted_memory_index` has c entries only by
-                                // the permutation split above.
+                                // which is `offsets_b.len()` (the prefix length and `split_off`),
+                                // and `promoted_memory_index` has at least c entries
+                                // (`split_memory_order`).
                                 promoted_offsets[field_idx],
                                 promoted_memory_index[field_idx],
                             )
@@ -760,9 +830,10 @@ pub fn layout<
                     };
                     // TODO(proof): `combined_in_memory_order[memory_index]`
                     // needs `promoted_memory_index.len() + memory_index <
-                    // invalid_field_idx` -- README stage 7 (memory_index is a
-                    // permutation's inverse, so `< len`; promoted_memory_index
-                    // entries are likewise `< len`).
+                    // invalid_field_idx` -- README stage 7: `memory_index` of an Assigned local
+                    // is below the variant's field count m by its own permutation (the counts of
+                    // the variant's Assigned locals, still open), and an Ineligible local's
+                    // `promoted_memory_index` entry is below its length by `split_memory_order`.
                     combined_in_memory_order[memory_index] = i;
                     offset
                 },
