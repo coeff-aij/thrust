@@ -935,10 +935,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
     /// Scans the body for loop-invariant marker calls and groups them by
     /// enclosing loop header. Multiple invariants for the same header are kept
-    /// in source order; the caller is responsible for AND'ing them.
+    /// in source order; the caller is responsible for AND'ing them. Each carries
+    /// whether it is partial (`invariant_hint!`).
     fn collect_loop_invariant_annotations(
         &self,
-    ) -> HashMap<BasicBlock, Vec<(LocalDefId, mir_ty::GenericArgsRef<'tcx>)>> {
+    ) -> HashMap<BasicBlock, Vec<(LocalDefId, mir_ty::GenericArgsRef<'tcx>, bool)>> {
         let mut loop_invariants: HashMap<_, Vec<_>> = HashMap::new();
         for (bb, data) in self.body.basic_blocks.iter_enumerated() {
             let Some(term) = &data.terminator else {
@@ -950,9 +951,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             let Some((def_id, _)) = func.const_fn_def() else {
                 continue;
             };
-            if Some(def_id) != self.ctx.def_ids().invariant_marker() {
+            let Some(partial) = self.ctx.def_ids().invariant_marker_kind(def_id) else {
                 continue;
-            }
+            };
 
             let arg_ty = args[0].node.ty(&self.body.local_decls, self.tcx);
             let mir_ty::TyKind::FnDef(formula_def_id, generic_args) = arg_ty.kind() else {
@@ -964,10 +965,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             let header = Self::loop_header_of(&self.body, bb).unwrap_or_else(|| {
                 panic!("no enclosing loop header for invariant marker at {bb:?}")
             });
-            loop_invariants
-                .entry(header)
-                .or_default()
-                .push((formula_def_id, *generic_args));
+            loop_invariants.entry(header).or_default().push((
+                formula_def_id,
+                *generic_args,
+                partial,
+            ));
         }
         loop_invariants
     }
@@ -1201,12 +1203,13 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 // invariant as its precondition. Multiple `invariant!` calls at
                 // the same header are AND'd in source order.
                 //
-                // With `THRUST_INVARIANT_HINTS` set, the written invariant is
-                // instead a hint: the block keeps the template's predicate
-                // variable and the invariant is conjoined to it, so inference
-                // fills in what the annotation leaves out.
-                let hints = std::env::var_os("THRUST_INVARIANT_HINTS").is_some();
-                let mut bty = if hints {
+                // When one of them is partial (`invariant_hint!`), or with
+                // `THRUST_INVARIANT_HINTS` set, the block instead keeps the
+                // template's predicate variable and the invariants are conjoined
+                // to it, so inference fills in what the annotations leave out.
+                let partial = std::env::var_os("THRUST_INVARIANT_HINTS").is_some()
+                    || invariants.iter().any(|&(_, _, partial)| partial);
+                let mut bty = if partial {
                     self.type_builder
                         .for_template(&mut self.ctx)
                         .build_basic_block(&self.body, live_locals, ret_ty)
@@ -1215,11 +1218,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         .build_basic_block(&self.body, live_locals, ret_ty)
                 };
                 let mut inv = rty::Refinement::top();
-                for &(formula_def_id, generic_args) in invariants {
+                for &(formula_def_id, generic_args, _) in invariants {
                     let one = self.build_invariant_precondition(formula_def_id, generic_args, &bty);
                     inv.push_conj(one);
                 }
-                // Without hints the block's precondition holds only what the types of its
+                // For a full invariant the block's precondition holds only what the types of its
                 // parameters say (see `FunctionTemplateTypeBuilder::build`), so conjoining
                 // keeps that and adds the invariant.
                 bty.conjoin_precondition(inv);

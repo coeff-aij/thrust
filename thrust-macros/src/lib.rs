@@ -84,7 +84,7 @@ pub fn _ghost_with_context(input: TokenStream) -> TokenStream {
 /// Makes the enclosing context available to the specifications written inside an
 /// item. On an `impl`/`trait`, each method recovers the outer generics (and `Self`)
 /// in its `requires`/`ensures`; on a function — including a method reached that way —
-/// every `thrust_macros::invariant!(...)` and `thrust_macros::ghost!(...)` in the body
+/// every `thrust_macros::invariant!(...)`, `invariant_hint!(...)` and `ghost!(...)` in the body
 /// may refer to generic- and `Self`-typed variables that the standalone macros cannot
 /// see. See [`mod@context`].
 #[proc_macro_attribute]
@@ -114,7 +114,15 @@ pub fn formula(input: TokenStream) -> TokenStream {
 /// predicate.
 #[proc_macro]
 pub fn invariant(input: TokenStream) -> TokenStream {
-    invariant::expand(input)
+    invariant::expand(input, invariant::Marker::Full)
+}
+
+/// Declares a partial loop invariant: the same closure as [`invariant`], whose
+/// predicate is conjoined with the invariant Thrust infers at the loop head
+/// instead of replacing it. The loop head is partial when any of its invariants is.
+#[proc_macro]
+pub fn invariant_hint(input: TokenStream) -> TokenStream {
+    invariant::expand(input, invariant::Marker::Partial)
 }
 
 /// Context-carrying counterpart of `invariant!`, emitted by
@@ -123,7 +131,13 @@ pub fn invariant(input: TokenStream) -> TokenStream {
 /// body is the predicate closure (see [`invariant`]).
 #[proc_macro]
 pub fn _invariant_with_context(input: TokenStream) -> TokenStream {
-    invariant::expand_with_context(input)
+    invariant::expand_with_context(input, invariant::Marker::Full)
+}
+
+/// Context-carrying counterpart of `invariant_hint!` (see [`_invariant_with_context`]).
+#[proc_macro]
+pub fn _invariant_hint_with_context(input: TokenStream) -> TokenStream {
+    invariant::expand_with_context(input, invariant::Marker::Partial)
 }
 
 #[proc_macro_attribute]
