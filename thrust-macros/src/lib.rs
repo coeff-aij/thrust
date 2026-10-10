@@ -19,6 +19,40 @@ mod spec;
 use fn_outer_item::FnOuterItem;
 use formula_fn_type_lowering::FormulaFnTypeLowering;
 
+/// The path of the build of this library that the crate being compiled links, as a string
+/// literal: the `--extern thrust_macros=<path>` cargo gives the compiler, made absolute, or `""`
+/// without one. `thrust-rustc` records it to load the very build of the macros it was built with.
+#[doc(hidden)]
+#[proc_macro]
+pub fn linked_path(_input: TokenStream) -> TokenStream {
+    let args = compiler_args();
+    let path = args
+        .iter()
+        .zip(args.iter().skip(1))
+        .find_map(|(flag, value)| match flag.strip_prefix("--extern=") {
+            Some(value) => value.strip_prefix("thrust_macros="),
+            None if flag == "--extern" => value.strip_prefix("thrust_macros="),
+            None => None,
+        })
+        .and_then(|path| std::fs::canonicalize(path).ok())
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    quote::quote!(#path).into()
+}
+
+/// The compiler's command-line arguments, with each `@file` argument replaced by the lines of
+/// the file, as rustc reads them.
+fn compiler_args() -> Vec<String> {
+    std::env::args()
+        .flat_map(|arg| match arg.strip_prefix('@') {
+            Some(file) => std::fs::read_to_string(file)
+                .map(|content| content.lines().map(str::to_owned).collect())
+                .unwrap_or_default(),
+            None => vec![arg],
+        })
+        .collect()
+}
+
 /// `pre!(f(a, b))` refers to the precondition of the closure `f`, or of the function a path
 /// such as `<F as Deref>::deref` names, for arguments `a, b` in a specification.
 #[proc_macro]

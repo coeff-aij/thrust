@@ -19,8 +19,9 @@ harness = false
 
 [dependencies]
 # Workaround until thrust supports invocation via cargo: adding thrust-macros as
-# a dependency ensures cargo builds (and rebuilds) it alongside thrust. It is not
-# used as a proc-macro here; the dylib is loaded at runtime via --extern.
+# a dependency ensures cargo builds (and rebuilds) it alongside thrust. thrust-rustc
+# records the path of that build (`linked_path!`) and passes it to the analyzed
+# crate via --extern.
 thrust-macros = { path = "thrust-macros" }
 
 anyhow = "1.0.102"
