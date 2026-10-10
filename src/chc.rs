@@ -16,6 +16,7 @@ mod dedup;
 mod flatten;
 pub(crate) mod format_context;
 mod hoice;
+mod prune;
 mod smtlib2;
 mod solver;
 mod unbox;
@@ -3622,6 +3623,45 @@ mod tests {
         assert_eq!(smt.matches("(declare-forall-sort").count(), 0);
     }
 
+    /// Of `p(x) ⇐ x = 0`, `r(x) ⇐ p(x)`, `p(x) ⇒ x = 0` and `q(x) ⇒ x = 0`, only the
+    /// definition of `p` and its goal are emitted: `q` has no defining clause, and nothing reads
+    /// `r`.
+    #[test]
+    fn leaves_out_underivable_and_unused_clauses() {
+        let mut system = System::default();
+        let p = system.new_pred_var(vec![Sort::int()], DebugInfo::default());
+        let q = system.new_pred_var(vec![Sort::int()], DebugInfo::default());
+        let r = system.new_pred_var(vec![Sort::int()], DebugInfo::default());
+        let x = || vec![Term::var(0usize.into())];
+        let is_zero = Atom::new(
+            Pred::Known(KnownPred::EQUAL),
+            vec![Term::var(0usize.into()), Term::int(0)],
+        );
+        let clauses = [
+            (Atom::new(Pred::Var(p), x()), Body::from(is_zero.clone())),
+            (
+                Atom::new(Pred::Var(r), x()),
+                Atom::new(Pred::Var(p), x()).into(),
+            ),
+            (is_zero.clone(), Atom::new(Pred::Var(p), x()).into()),
+            (is_zero, Atom::new(Pred::Var(q), x()).into()),
+        ];
+        for (head, body) in clauses {
+            system.push_clause(Clause {
+                origin: test_origin(0usize.into(), &Sort::int()),
+                vars: [Sort::int()].into_iter().collect(),
+                head,
+                body,
+                debug_info: DebugInfo::default(),
+            });
+        }
+
+        let smt = system.smtlib2(PCSAT).to_string();
+        assert_eq!(smt.matches("(assert ").count(), 2);
+        assert_eq!(smt.matches("(declare-dep-exists-fun p0 ").count(), 1);
+        assert!(!smt.contains("p1") && !smt.contains("p2"));
+    }
+
     #[test]
     fn declares_an_empty_dependency_set_explicitly_only_to_a_dependency_aware_solver() {
         let mut system = System::default();
@@ -3634,7 +3674,14 @@ mod tests {
             origin: test_origin(0usize.into(), &Sort::int()),
             vars: [Sort::int()].into_iter().collect(),
             head: Atom::new(Pred::Var(p), vec![Term::var(0usize.into())]),
-            body: body.into(),
+            body: body.clone().into(),
+            debug_info: DebugInfo::default(),
+        });
+        system.push_clause(Clause {
+            origin: test_origin(0usize.into(), &Sort::int()),
+            vars: [Sort::int()].into_iter().collect(),
+            head: body,
+            body: Atom::new(Pred::Var(p), vec![Term::var(0usize.into())]).into(),
             debug_info: DebugInfo::default(),
         });
 
