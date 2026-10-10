@@ -6,7 +6,8 @@
 //! `#[thrust_macros::variant]` makes (whose precondition requires the variant to decrease),
 //! logic functions and predicates, and the model operations of the injected `thrust_models`.
 //! The operations MIR has as statements (arithmetic, comparisons, field and index access) need
-//! no call. A lemma has no loop, and takes no `&mut`, so that what it assigns stays its own.
+//! no call. A lemma has no loop and no unsafe code, and takes no `&mut`, so that what it
+//! assigns stays its own.
 
 use std::collections::HashMap;
 
@@ -17,13 +18,9 @@ use rustc_span::def_id::{DefId, LocalDefId};
 
 use crate::analyze;
 
-/// `analyzes_body` tells the functions whose bodies the analysis reads, where a `proof!` branch
-/// it takes and the program does not must change nothing.
-pub fn check(
-    tcx: TyCtxt<'_>,
-    proof_branch: Option<DefId>,
-    analyzes_body: impl Fn(LocalDefId) -> bool,
-) {
+/// Checks every lemma of the crate; the errors are reported with those of
+/// [`check_proof_branches`].
+pub fn check_lemmas(tcx: TyCtxt<'_>, proof_branch: Option<DefId>) {
     let checker = Checker { tcx, proof_branch };
     let lemmas: Vec<LocalDefId> = tcx
         .mir_keys(())
@@ -34,10 +31,24 @@ pub fn check(
     let mut calls = HashMap::new();
     for &lemma in &lemmas {
         checker.check_signature(lemma);
+        checker.check_safe(lemma);
         calls.insert(lemma, checker.lemma_calls(lemma));
     }
     checker.check_acyclic(&lemmas, &calls);
+}
+
+/// Checks the `proof!` branches of the functions whose bodies the analysis reads
+/// (`analyzes_body`), where a branch it takes and the program does not must change nothing.
+pub fn check_proof_branches(
+    tcx: TyCtxt<'_>,
+    proof_branch: Option<DefId>,
+    analyzes_body: impl Fn(LocalDefId) -> bool,
+) {
     if let Some(proof_branch) = proof_branch {
+        let checker = Checker {
+            tcx,
+            proof_branch: Some(proof_branch),
+        };
         for &def_id in tcx.mir_keys(()) {
             let id = def_id.to_def_id();
             if tcx.def_kind(id).is_fn_like() && analyzes_body(def_id) && tcx.is_mir_available(id) {
@@ -98,6 +109,25 @@ impl<'tcx> Checker<'tcx> {
             self.tcx.dcx().span_err(
                 self.tcx.def_span(lemma),
                 "a lemma cannot take a `&mut`, or a value holding one",
+            );
+        }
+    }
+
+    /// A lemma has no unsafe code, as in Verus's proof mode: it is not an `unsafe fn` and has
+    /// no `unsafe` block, so it cannot write through a raw pointer, and it takes no raw pointer
+    /// (`&raw`) either.
+    fn check_safe(&self, lemma: LocalDefId) {
+        if self.tcx.fn_sig(lemma).skip_binder().safety().is_unsafe() {
+            self.tcx
+                .dcx()
+                .span_err(self.tcx.def_span(lemma), "a lemma cannot be unsafe");
+        }
+        let mut finder = UnsafeFinder { spans: Vec::new() };
+        rustc_hir::intravisit::Visitor::visit_body(&mut finder, self.tcx.hir_body_owned_by(lemma));
+        for span in finder.spans {
+            self.tcx.dcx().span_err(
+                span,
+                "a lemma cannot contain an `unsafe` block or a raw pointer",
             );
         }
     }
@@ -391,6 +421,29 @@ impl<'tcx> Checker<'tcx> {
             block = next;
         }
         (lemma_calls == 1).then_some((path, assigned))
+    }
+}
+
+/// The `unsafe` blocks written in a body, and the raw pointers it takes (`&raw`).
+struct UnsafeFinder {
+    spans: Vec<rustc_span::Span>,
+}
+
+impl<'tcx> rustc_hir::intravisit::Visitor<'tcx> for UnsafeFinder {
+    fn visit_block(&mut self, block: &'tcx rustc_hir::Block<'tcx>) {
+        if let rustc_hir::BlockCheckMode::UnsafeBlock(rustc_hir::UnsafeSource::UserProvided) =
+            block.rules
+        {
+            self.spans.push(block.span);
+        }
+        rustc_hir::intravisit::walk_block(self, block);
+    }
+
+    fn visit_expr(&mut self, expr: &'tcx rustc_hir::Expr<'tcx>) {
+        if let rustc_hir::ExprKind::AddrOf(rustc_hir::BorrowKind::Raw, _, _) = expr.kind {
+            self.spans.push(expr.span);
+        }
+        rustc_hir::intravisit::walk_expr(self, expr);
     }
 }
 

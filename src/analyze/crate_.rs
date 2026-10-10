@@ -466,10 +466,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let span = tracing::debug_span!("crate", krate = %self.tcx.crate_name(rustc_span::def_id::LOCAL_CRATE));
         let _guard = span.enter();
 
+        let proof_branch = self.ctx.def_ids().proof_branch();
+        analyze::lemma::check_lemmas(self.tcx, proof_branch);
         self.analyze_raw_command_annot();
         self.register_trait_laws();
         self.refine_local_defs();
-        analyze::lemma::check(self.tcx, self.ctx.def_ids().proof_branch(), |def_id| {
+        analyze::lemma::check_proof_branches(self.tcx, proof_branch, |def_id| {
             !self.skip_analysis.contains(&def_id)
         });
         let keys: Vec<_> = self.tcx.mir_keys(()).iter().copied().collect();

@@ -37,6 +37,15 @@ fn shadowed_entry(k: i64) { //~ ERROR: a lemma's recursive call passes the lemma
 }
 
 #[thrust_macros::lemma]
+fn writes_through_raw(x: i64) {
+    let p = &raw const x; //~ ERROR: a lemma cannot contain an `unsafe` block or a raw pointer
+    unsafe { *(p as *mut i64) = 5 } //~ ERROR: a lemma cannot contain an `unsafe` block or a raw pointer
+}
+
+#[thrust_macros::lemma]
+unsafe fn unsafe_lemma() {} //~ ERROR: a lemma cannot be unsafe
+
+#[thrust_macros::lemma]
 fn takes_mut(_x: &mut i64) {} //~ ERROR: a lemma cannot take a `&mut`
 
 struct Wrapped<'a>(&'a mut i64);
