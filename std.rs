@@ -919,10 +919,10 @@ mod thrust_models {
         unimplemented!()
     }
 
-    #[thrust::def::invariant_hint_marker]
+    #[thrust::def::partial_invariant_marker]
     #[thrust::ignored]
     #[inline(never)]
-    pub fn __invariant_hint_marker<F>(_f: F) {
+    pub fn __partial_invariant_marker<F>(_f: F) {
         unimplemented!()
     }
 

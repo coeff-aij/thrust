@@ -917,7 +917,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// Scans the body for loop-invariant marker calls and groups them by
     /// enclosing loop header. Multiple invariants for the same header are kept
     /// in source order; the caller is responsible for AND'ing them. Each carries
-    /// whether it is partial (`invariant_hint!`).
+    /// whether it is partial (`partial_invariant!`).
     fn collect_loop_invariant_annotations(
         &self,
     ) -> HashMap<BasicBlock, Vec<(LocalDefId, mir_ty::GenericArgsRef<'tcx>, bool)>> {
@@ -1184,12 +1184,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 // invariant as its precondition. Multiple `invariant!` calls at
                 // the same header are AND'd in source order.
                 //
-                // When one of them is partial (`invariant_hint!`), or with
-                // `THRUST_INVARIANT_HINTS` set, the block instead keeps the
-                // template's predicate variable and the invariants are conjoined
-                // to it, so inference fills in what the annotations leave out.
-                let partial = std::env::var_os("THRUST_INVARIANT_HINTS").is_some()
-                    || invariants.iter().any(|&(_, _, partial)| partial);
+                // When one of them is partial (`partial_invariant!`), the block
+                // instead keeps the template's predicate variable and the
+                // invariants are conjoined to it, so inference fills in what the
+                // annotations leave out.
+                let partial = invariants.iter().any(|&(_, _, partial)| partial);
                 let mut bty = if partial {
                     self.type_builder
                         .for_template(&mut self.ctx)

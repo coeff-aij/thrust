@@ -2,7 +2,7 @@
 //!
 //! Makes the enclosing context available to the specifications written inside an item.
 //!
-//! On a function, every `thrust_macros::invariant!(...)`, `thrust_macros::invariant_hint!(...)`,
+//! On a function, every `thrust_macros::invariant!(...)`, `thrust_macros::partial_invariant!(...)`,
 //! `thrust_macros::ghost!(...)` and `thrust_macros::closure!(...)` in the body is rewritten into its context-carrying
 //! counterpart, carrying the host signature and, for a method, the enclosing `impl`/`trait`
 //! header, so a formula may refer to generic- and `Self`-typed variables that the standalone
@@ -163,11 +163,11 @@ impl VisitMut for ContextInjector<'_> {
 /// variables, or `None` for any other macro.
 fn context_carrying_form(path: &syn::Path) -> Option<syn::Path> {
     // TODO: identify the macro precisely
-    match path.segments.last()?.ident.to_string().as_str() {
-        "invariant" => Some(syn::parse_quote!(::thrust_macros::_invariant_with_context)),
-        "invariant_hint" => Some(syn::parse_quote!(
-            ::thrust_macros::_invariant_hint_with_context
-        )),
+    let name = path.segments.last()?.ident.to_string();
+    if let Some(marker) = crate::invariant::Marker::of_macro(&name) {
+        return Some(marker.with_context_path());
+    }
+    match name.as_str() {
         "ghost" => Some(syn::parse_quote!(::thrust_macros::_ghost_with_context)),
         "closure" => Some(syn::parse_quote!(::thrust_macros::_closure_with_context)),
         _ => None,
