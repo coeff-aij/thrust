@@ -10,6 +10,7 @@ mod formula_fn_lifting;
 mod formula_fn_type_lowering;
 mod ghost;
 mod invariant;
+mod lemma;
 mod pre_post;
 mod rty;
 mod spec;
@@ -137,11 +138,28 @@ pub fn logic(_attr: TokenStream, item: TokenStream) -> TokenStream {
     spec::expand_logic(item)
 }
 
-/// The termination measure of a recursive `#[logic]` function: an integer expression over its
-/// parameters that is non-negative and decreases at each recursive call (`#[variant(k)]`).
+/// The termination measure of a recursive `#[logic]` function or `#[lemma]`: an integer
+/// expression over its parameters that is non-negative and decreases at each recursive call
+/// (`#[variant(k)]`).
 #[proc_macro_attribute]
 pub fn variant(attr: TokenStream, item: TokenStream) -> TokenStream {
     spec::expand_variant(attr, item)
+}
+
+/// Declares a lemma: a function whose `requires`/`ensures` are the statement and whose body,
+/// verified like any other, is the proof. It terminates: it has no loop, calls only other lemmas
+/// (without a cycle), itself under a [`macro@variant`], and functions outside the crate, and it
+/// takes no `&mut`.
+#[proc_macro_attribute]
+pub fn lemma(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    lemma::expand(item)
+}
+
+/// `proof!(lemma(args))` uses a lemma in executable code: the analysis checks its precondition
+/// and assumes its postcondition, and the program does not run it.
+#[proc_macro]
+pub fn proof(input: TokenStream) -> TokenStream {
+    lemma::expand_proof(input)
 }
 
 /// Marks a trait function as a law: its `requires`/`ensures` are assumed of every

@@ -31,6 +31,7 @@ mod basic_block;
 mod closure_hist_inv;
 mod crate_;
 mod did_cache;
+mod lemma;
 mod local_def;
 mod pred_inst;
 mod reconstruct_slice_indexing;

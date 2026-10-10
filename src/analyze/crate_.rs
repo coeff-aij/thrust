@@ -466,6 +466,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let span = tracing::debug_span!("crate", krate = %self.tcx.crate_name(rustc_span::def_id::LOCAL_CRATE));
         let _guard = span.enter();
 
+        analyze::lemma::check(self.tcx, self.ctx.def_ids().proof_branch());
         self.analyze_raw_command_annot();
         self.register_trait_laws();
         self.refine_local_defs();

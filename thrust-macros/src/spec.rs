@@ -25,15 +25,19 @@ pub fn expand_logic(item: TokenStream) -> TokenStream {
     expand_spec_fn(item, SpecFnKind::Logic)
 }
 
-/// `#[variant(e)]` written above `#[logic]` is moved below it, where [`expand_logic`] takes it.
+/// `#[variant(e)]` written above `#[logic]` or `#[lemma]` is moved below it, where that attribute
+/// takes it.
 pub fn expand_variant(attr: TokenStream, item: TokenStream) -> TokenStream {
     let attr = TokenStream2::from(attr);
     let mut func = parse_macro_input!(item as FnItemWithSignature);
     let attrs = func.attrs_mut();
-    let Some(logic) = attrs.iter().position(|a| has_last_segment(a, "logic")) else {
+    let Some(logic) = attrs
+        .iter()
+        .position(|a| has_last_segment(a, "logic") || has_last_segment(a, "lemma"))
+    else {
         let err = syn::Error::new(
             proc_macro2::Span::call_site(),
-            "#[thrust_macros::variant] applies only to a #[thrust_macros::logic] function",
+            "#[thrust_macros::variant] applies only to a logic function or a lemma",
         )
         .to_compile_error();
         return quote! { #err #func }.into();
@@ -51,7 +55,7 @@ enum SpecFnKind {
     Logic,
 }
 
-fn has_last_segment(attr: &syn::Attribute, name: &str) -> bool {
+pub(crate) fn has_last_segment(attr: &syn::Attribute, name: &str) -> bool {
     attr.path()
         .segments
         .last()
@@ -59,7 +63,7 @@ fn has_last_segment(attr: &syn::Attribute, name: &str) -> bool {
 }
 
 /// Removes the `#[thrust_macros::variant(e)]` attribute from `attrs`, returning `e`.
-fn take_variant(attrs: &mut Vec<syn::Attribute>) -> syn::Result<Option<TokenStream2>> {
+pub(crate) fn take_variant(attrs: &mut Vec<syn::Attribute>) -> syn::Result<Option<TokenStream2>> {
     let mut variants = attrs.iter().filter(|a| has_last_segment(a, "variant"));
     let variant = variants.next().map(|a| a.parse_args()).transpose()?;
     if let Some(extra) = variants.next() {

@@ -30,6 +30,14 @@ pub fn logic_path() -> [Symbol; 2] {
     [Symbol::intern("thrust"), Symbol::intern("logic")]
 }
 
+pub fn lemma_path() -> [Symbol; 2] {
+    [Symbol::intern("thrust"), Symbol::intern("lemma")]
+}
+
+pub fn lemma_rec_path() -> [Symbol; 2] {
+    [Symbol::intern("thrust"), Symbol::intern("lemma_rec")]
+}
+
 pub fn law_path() -> [Symbol; 2] {
     [Symbol::intern("thrust"), Symbol::intern("law")]
 }
@@ -223,6 +231,14 @@ pub fn int_to_int_n_path() -> [Symbol; 3] {
         Symbol::intern("thrust"),
         Symbol::intern("def"),
         Symbol::intern("int_to_int_n"),
+    ]
+}
+
+pub fn proof_branch_path() -> [Symbol; 3] {
+    [
+        Symbol::intern("thrust"),
+        Symbol::intern("def"),
+        Symbol::intern("proof_branch"),
     ]
 }
 

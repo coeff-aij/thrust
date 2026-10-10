@@ -137,6 +137,24 @@ fn count_zeros(s: &[i64], k: usize) -> usize {
 }
 ```
 
+A lemma, declared with `#[thrust_macros::lemma]`, is a function whose `requires`/`ensures` state a fact and whose body, verified like any other, proves it. A recursive call is the induction hypothesis and needs `#[thrust_macros::variant(expr)]`: the variant must be non-negative and decrease at each recursive call, checked where the call is made. A lemma must terminate and change nothing, so it has no loop or closure, takes no `&mut`, and calls only other lemmas (without mutual recursion), itself under its variant, and functions outside the crate. `thrust_macros::proof!(lemma(args))` uses a lemma in executable code: the analysis checks the lemma's precondition there and assumes its postcondition, and the program evaluates the arguments without running the call.
+
+```rust
+#[thrust_macros::lemma]
+#[thrust_macros::variant(k)]
+#[thrust_macros::ensures(count_zeros(s, k) <= k)]
+fn count_zeros_bound(s: &[i64], k: usize) {
+    if k > 0 {
+        count_zeros_bound(s, k - 1);
+    }
+}
+
+fn f(s: &[i64]) {
+    thrust_macros::proof!(count_zeros_bound(s, s.len()));
+    // count_zeros(s, s.len()) <= s.len() holds here.
+}
+```
+
 ### Mutable references
 
 Within an annotation, a mutable reference `ma: &mut T` is modeled by its value at the time the function is called and its value when the function returns (the *prophecy* value). Use the deref operator `*ma` to denote the current value and the unary `!ma` to denote the final value. You can also construct a mutable-reference model directly with `thrust_models::model::Mut::new(current, final)`.

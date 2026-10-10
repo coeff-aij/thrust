@@ -989,6 +989,17 @@ mod thrust_models {
         Ghost(std::marker::PhantomData)
     }
 
+    /// Taken in the analysis and not at run time: the branch in which `proof!` calls a lemma.
+    #[doc(hidden)]
+    #[thrust::def::proof_branch]
+    #[thrust::trusted]
+    #[thrust_macros::requires(true)]
+    #[thrust_macros::ensures(result == true)]
+    #[inline(never)]
+    pub fn __proof_branch() -> bool {
+        false
+    }
+
     #[allow(dead_code)]
     #[thrust::def::fn_param_wrapper]
     pub struct FnParam<T>(std::marker::PhantomData<T>);
