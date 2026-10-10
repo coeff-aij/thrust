@@ -74,7 +74,7 @@ fn term_sorts(
                 term_sorts(var_sorts, arg, sorts);
             }
         }
-        chc::Term::UserDefinedFn(_, _, args) => {
+        chc::Term::UserDefinedFn(_, _, args) | chc::Term::ForallFn(_, args) => {
             for arg in args {
                 term_sorts(var_sorts, arg, sorts);
             }

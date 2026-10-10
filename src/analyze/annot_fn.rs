@@ -727,6 +727,43 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         )
     }
 
+    fn is_logic(&self, def_id: DefId) -> bool {
+        self.tcx
+            .get_attrs_by_path(def_id, &analyze::annot::logic_path())
+            .next()
+            .is_some()
+    }
+
+    /// A trait's logic function called at a type parameter, which stands for every
+    /// implementation: a universally quantified function, as a trait predicate is.
+    fn trait_logic_fn_term(
+        &self,
+        def_id: DefId,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
+        hir: &'tcx rustc_hir::Expr<'tcx>,
+        args: &'tcx [rustc_hir::Expr<'tcx>],
+    ) -> chc::Term<rty::FunctionParamIdx> {
+        let type_params = generic_args
+            .types()
+            .map(|ty| self.type_builder.build(ty).to_sort())
+            .collect();
+        let params = args
+            .iter()
+            .map(|expr| self.type_builder.build(self.expr_ty(expr)).to_sort())
+            .collect();
+        let result = self.type_builder.build(self.expr_ty(hir)).to_sort();
+        let pred = refine::trait_forall_fn(self.tcx, def_id, type_params, params, result);
+        self.register_forall_pred(pred.clone());
+        self.analyzer.register_forall_pred_origin(
+            pred.clone(),
+            def_id,
+            generic_args,
+            self.type_builder.owner_fn_id(),
+        );
+        let arg_terms = args.iter().map(|e| self.to_term(e)).collect();
+        chc::Term::ForallFn(pred, arg_terms)
+    }
+
     fn register_forall_pred(&self, forall_pred: chc::ForallPred) {
         self.analyzer
             .system
@@ -1616,13 +1653,22 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                             .next()
                             .is_some()
                         {
-                            let (_, instance) = self.resolve_spec_fn_call(def_id, func_expr);
+                            let (generic_args, instance) =
+                                self.resolve_spec_fn_call(def_id, func_expr);
                             let Some(instance) = instance else {
+                                return FormulaOrTerm::Term(self.trait_logic_fn_term(
+                                    def_id,
+                                    generic_args,
+                                    hir,
+                                    args,
+                                ));
+                            };
+                            if !self.is_logic(instance.def_id()) {
                                 self.tcx.dcx().span_fatal(
                                     hir.span,
-                                    "a logic function called at a type parameter has no definition",
+                                    "the implementation of a logic function is a #[thrust_macros::logic] function",
                                 );
-                            };
+                            }
                             if instance.def_id() == self.local_def_id.to_def_id() {
                                 if !self.logic_body_expr().1 {
                                     self.tcx.dcx().span_fatal(

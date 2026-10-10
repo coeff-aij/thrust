@@ -63,6 +63,21 @@ pub fn trait_forall_pred(
     ForallPred::new(stable_def_id_symbol(tcx, did, "q"), type_parameters, params)
 }
 
+pub fn trait_forall_fn(
+    tcx: mir_ty::TyCtxt<'_>,
+    did: DefId,
+    type_parameters: Vec<Sort>,
+    params: Vec<Sort>,
+    result: Sort,
+) -> ForallPred {
+    ForallPred::function(
+        stable_def_id_symbol(tcx, did, "q"),
+        type_parameters,
+        params,
+        result,
+    )
+}
+
 pub fn closure_pre_forall_pred(
     tcx: mir_ty::TyCtxt<'_>,
     did: DefId,

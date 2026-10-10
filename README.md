@@ -137,6 +137,8 @@ fn count_zeros(s: &[i64], k: usize) -> usize {
 }
 ```
 
+In a trait, a `#[thrust_macros::logic]` or `#[thrust_macros::predicate]` function may be declared without a body, and each implementation defines it with a function of the same kind. Where the trait is used through a type parameter, the function stands for every implementation (a universally quantified function in the query), so what is known of it there comes from the trait's contracts and its `#[thrust_macros::law]` functions, whose `requires`/`ensures` each implementation proves.
+
 A lemma, declared with `#[thrust_macros::lemma]`, is a function whose `requires`/`ensures` state a fact and whose body, verified like any other, proves it. A recursive call is the induction hypothesis and needs `#[thrust_macros::variant(expr)]`: the variant must be non-negative and decrease at each recursive call, checked where the call is made. A lemma must terminate and change nothing, so it has no loop or closure, takes no `&mut`, and calls only other lemmas (without mutual recursion), itself under its variant, and functions outside the crate. `thrust_macros::proof!(lemma(args))` uses a lemma in executable code: the analysis checks the lemma's precondition there and assumes its postcondition, and the program evaluates the arguments without running the call.
 
 ```rust

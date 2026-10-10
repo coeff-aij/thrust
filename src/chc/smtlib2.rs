@@ -250,6 +250,18 @@ impl<'ctx, 'a> std::fmt::Display for Term<'ctx, 'a> {
                     )
                 }
             }
+            chc::Term::ForallFn(pred, args) => {
+                let name = self.ctx.forall_pred(pred);
+                if args.is_empty() {
+                    write!(f, "{name}")
+                } else {
+                    write!(
+                        f,
+                        "({name} {})",
+                        List::open(args.iter().map(|t| Term::new(self.ctx, self.var_sorts, t)))
+                    )
+                }
+            }
             chc::Term::IntToBitVec { width, term } => {
                 write!(
                     f,
@@ -869,8 +881,9 @@ impl<'ctx, 'a> std::fmt::Display for ForallPredDef<'ctx, 'a> {
         let params = List::closed(params);
         write!(
             f,
-            "(declare-forall-fun {name} {params} Bool",
+            "(declare-forall-fun {name} {params} {result}",
             name = self.ctx.forall_pred(self.pred),
+            result = self.ctx.fmt_sort(self.pred.result()),
         )?;
         let no_vars = IndexVec::new();
         let mut laws = self

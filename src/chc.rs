@@ -659,6 +659,9 @@ pub enum Term<V = TermVarIdx> {
     /// A call to a function defined by a [`UserDefinedPredDef`] with a term body, and its result
     /// sort.
     UserDefinedFn(UserDefinedPred, Sort, Vec<Term<V>>),
+    /// An application of a [`ForallPred`] whose result is not `Bool`: a trait logic function read
+    /// at a type parameter.
+    ForallFn(ForallPred, Vec<Term<V>>),
     IntToBitVec {
         width: u32,
         term: Box<Term<V>>,
@@ -753,6 +756,13 @@ where
                     .parens();
                 symbol.pretty(allocator).append(args).group()
             }
+            Term::ForallFn(pred, args) => {
+                let separator = allocator.text(",").append(allocator.line());
+                let args = allocator
+                    .intersperse(args.iter().map(|t| t.pretty(allocator)), separator)
+                    .parens();
+                pred.pretty(allocator).append(args).group()
+            }
             Term::IntToBitVec { width, term } => allocator
                 .text(format!("int_to_bv{width}"))
                 .append(term.pretty(allocator).parens()),
@@ -812,6 +822,10 @@ impl<V> Term<V> {
                 sort,
                 args.into_iter().map(|t| t.subst_var(&mut f)).collect(),
             ),
+            Term::ForallFn(pred, args) => Term::ForallFn(
+                pred,
+                args.into_iter().map(|t| t.subst_var(&mut f)).collect(),
+            ),
             Term::IntToBitVec { width, term } => Term::IntToBitVec {
                 width,
                 term: Box::new(term.subst_var(f)),
@@ -867,6 +881,7 @@ impl<V> Term<V> {
             Term::DatatypeCtor(sort, _, _) => sort.clone().into(),
             Term::DatatypeDiscr(_, _) => Sort::int(),
             Term::UserDefinedFn(_, sort, _) => sort.clone(),
+            Term::ForallFn(pred, _) => pred.result.clone(),
             Term::IntToBitVec { width, .. } => Sort::bit_vec(*width),
             Term::UserQuantifiedVar(sort, _) => sort.clone(),
         }
@@ -894,7 +909,52 @@ impl<V> Term<V> {
             Term::TupleProj(t, _) => t.fv_impl(),
             Term::DatatypeCtor(_, _, args) => Box::new(args.iter().flat_map(|t| t.fv_impl())),
             Term::DatatypeDiscr(_, t) | Term::IntToBitVec { term: t, .. } => t.fv_impl(),
-            Term::UserDefinedFn(_, _, args) => Box::new(args.iter().flat_map(|t| t.fv_impl())),
+            Term::UserDefinedFn(_, _, args) | Term::ForallFn(_, args) => {
+                Box::new(args.iter().flat_map(|t| t.fv_impl()))
+            }
+        }
+    }
+
+    /// The forall functions applied anywhere in this term.
+    pub fn forall_fns(&self) -> Vec<&ForallPred> {
+        let mut fns = Vec::new();
+        self.collect_forall_fns(&mut fns);
+        fns
+    }
+
+    fn collect_forall_fns<'a>(&'a self, fns: &mut Vec<&'a ForallPred>) {
+        match self {
+            Term::ForallFn(pred, args) => {
+                fns.push(pred);
+                args.iter().for_each(|t| t.collect_forall_fns(fns));
+            }
+            Term::Box(t)
+            | Term::BoxCurrent(t)
+            | Term::MutCurrent(t)
+            | Term::MutFinal(t)
+            | Term::TupleProj(t, _)
+            | Term::DatatypeDiscr(_, t)
+            | Term::ArrayLambda(_, _, t)
+            | Term::IntToBitVec { term: t, .. } => t.collect_forall_fns(fns),
+            Term::Mut(t1, t2) => {
+                t1.collect_forall_fns(fns);
+                t2.collect_forall_fns(fns);
+            }
+            Term::App(_, args)
+            | Term::Tuple(args)
+            | Term::DatatypeCtor(_, _, args)
+            | Term::UserDefinedFn(_, _, args) => {
+                args.iter().for_each(|t| t.collect_forall_fns(fns))
+            }
+            Term::Null
+            | Term::ForallDefault(_)
+            | Term::Var(_)
+            | Term::Bool(_)
+            | Term::Int(_)
+            | Term::String(_)
+            | Term::ArrayEmpty(_, _)
+            | Term::SeqEmpty(_)
+            | Term::UserQuantifiedVar(_, _) => {}
         }
     }
 
@@ -917,9 +977,10 @@ impl<V> Term<V> {
                 .into_iter()
                 .chain(t2.user_defined_fns())
                 .collect(),
-            Term::App(_, args) | Term::Tuple(args) | Term::DatatypeCtor(_, _, args) => {
-                args.iter().flat_map(Term::user_defined_fns).collect()
-            }
+            Term::App(_, args)
+            | Term::Tuple(args)
+            | Term::DatatypeCtor(_, _, args)
+            | Term::ForallFn(_, args) => args.iter().flat_map(Term::user_defined_fns).collect(),
             Term::Null
             | Term::ForallDefault(_)
             | Term::Var(_)
@@ -989,7 +1050,10 @@ impl<V> Term<V> {
                 t1.collect_guarded_calls(symbol, guards, calls);
                 t2.collect_guarded_calls(symbol, guards, calls);
             }
-            Term::App(_, args) | Term::Tuple(args) | Term::DatatypeCtor(_, _, args) => {
+            Term::App(_, args)
+            | Term::Tuple(args)
+            | Term::DatatypeCtor(_, _, args)
+            | Term::ForallFn(_, args) => {
                 for arg in args {
                     arg.collect_guarded_calls(symbol, guards, calls);
                 }
@@ -1578,6 +1642,9 @@ pub struct ForallPred {
     inner: String,
     type_parameters: Vec<Sort>,
     params: Vec<Sort>,
+    /// `Bool` for a predicate; the result sort of a trait logic function read at a type
+    /// parameter, which [`Term::ForallFn`] applies.
+    result: Sort,
 }
 
 impl std::fmt::Display for ForallPred {
@@ -1610,11 +1677,25 @@ where
 
 impl ForallPred {
     pub fn new(inner: String, type_parameters: Vec<Sort>, params: Vec<Sort>) -> Self {
+        Self::function(inner, type_parameters, params, Sort::bool())
+    }
+
+    pub fn function(
+        inner: String,
+        type_parameters: Vec<Sort>,
+        params: Vec<Sort>,
+        result: Sort,
+    ) -> Self {
         Self {
             inner,
             type_parameters,
             params,
+            result,
         }
+    }
+
+    pub fn result(&self) -> &Sort {
+        &self.result
     }
 
     /// The symbol without the `<...>` that names the sorts it stands over.
@@ -2933,8 +3014,10 @@ impl System {
                         }
                     }
                 }
-                // A term holds no atom, so it names no `ForallPred`.
-                UserDefinedPredBody::Term(..) => {}
+                UserDefinedPredBody::Term(_, term) => {
+                    udpd.dependencies
+                        .extend(term.forall_fns().into_iter().cloned());
+                }
                 UserDefinedPredBody::Formula(formula) => {
                     udpd.dependencies.extend(formula.iter_atoms().filter_map(
                         |atom| match &atom.pred {
@@ -2942,6 +3025,13 @@ impl System {
                             _ => None,
                         },
                     ));
+                    udpd.dependencies.extend(
+                        formula
+                            .iter_atoms()
+                            .flat_map(|atom| &atom.args)
+                            .flat_map(Term::forall_fns)
+                            .cloned(),
+                    );
                 }
             }
             udpd.dependencies = self.with_law_dependencies(std::mem::take(&mut udpd.dependencies));
@@ -3037,11 +3127,21 @@ impl System {
     }
 
     fn compute_forall_dependency(&self, clause: &Clause) -> HashSet<ForallPred> {
-        let preds = clause
+        let mut preds: HashSet<ForallPred> = clause
             .body
             .iter_atoms()
             .filter_map(|atom| atom.pred.clone().try_into().ok())
             .collect();
+        let atoms = clause
+            .body
+            .iter_atoms()
+            .chain(std::iter::once(&clause.head));
+        preds.extend(
+            atoms
+                .flat_map(|atom| &atom.args)
+                .flat_map(Term::forall_fns)
+                .cloned(),
+        );
         self.with_law_dependencies(preds)
     }
 
@@ -3431,7 +3531,7 @@ fn collect_forall_defaults(term: &Term<TermVarIdx>, used: &mut HashSet<ForallSor
         Term::DatatypeDiscr(_, t) | Term::IntToBitVec { term: t, .. } => {
             collect_forall_defaults(t, used)
         }
-        Term::UserDefinedFn(_, _, args) => {
+        Term::UserDefinedFn(_, _, args) | Term::ForallFn(_, args) => {
             for t in args {
                 collect_forall_defaults(t, used);
             }

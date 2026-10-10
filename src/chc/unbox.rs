@@ -31,6 +31,10 @@ fn unbox_term(term: Term) -> Term {
             unbox_sort(sort),
             args.into_iter().map(unbox_term).collect(),
         ),
+        Term::ForallFn(pred, args) => Term::ForallFn(
+            unbox_forall_pred_var_def(pred),
+            args.into_iter().map(unbox_term).collect(),
+        ),
         Term::IntToBitVec { width, term } => Term::IntToBitVec {
             width,
             term: Box::new(unbox_term(*term)),
@@ -225,6 +229,7 @@ fn unbox_forall_pred_var_def(pred: ForallPred) -> ForallPred {
         inner: pred.inner,
         type_parameters,
         params,
+        result: unbox_sort(pred.result),
     }
 }
 
