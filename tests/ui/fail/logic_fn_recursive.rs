@@ -3,7 +3,7 @@
 
 #[thrust_macros::logic]
 fn count(x: i64) -> i64 {
-    count(x - 1) + 1 //~ ERROR: a logic function cannot call itself
+    count(x - 1) + 1 //~ ERROR: a recursive logic function needs #[thrust_macros::variant(..)]
 }
 
 #[thrust_macros::ensures(result == count(x))]

@@ -42,6 +42,10 @@ pub fn formula_fn_path() -> [Symbol; 2] {
     [Symbol::intern("thrust"), Symbol::intern("formula_fn")]
 }
 
+pub fn variant_path_path() -> [Symbol; 2] {
+    [Symbol::intern("thrust"), Symbol::intern("variant_path")]
+}
+
 pub fn requires_path_path() -> [Symbol; 2] {
     [Symbol::intern("thrust"), Symbol::intern("requires_path")]
 }
@@ -219,6 +223,14 @@ pub fn int_to_int_n_path() -> [Symbol; 3] {
         Symbol::intern("thrust"),
         Symbol::intern("def"),
         Symbol::intern("int_to_int_n"),
+    ]
+}
+
+pub fn int_lit_path() -> [Symbol; 3] {
+    [
+        Symbol::intern("thrust"),
+        Symbol::intern("def"),
+        Symbol::intern("int_lit"),
     ]
 }
 

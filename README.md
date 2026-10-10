@@ -107,7 +107,7 @@ For the example above, the check succeeds. Changing the assertion to `add(1, 2) 
 
 ## Annotation
 
-Thrust can verify a wide range of programs without explicit annotations, but you can use `#[thrust_macros::requires(expr)]` and `#[thrust_macros::ensures(expr)]` to annotate the precondition and postcondition of a function, aiding in verification or specifying the intended behavior. Here, `expr` is an ordinary Rust expression that Thrust interprets as a logical formula. It supports the usual integer, boolean, and comparison operators, integer constants such as `u64::MAX`, calls to functions declared with `#[thrust_macros::predicate]` (Boolean) or `#[thrust_macros::logic]` (any model type, a single non-recursive expression), and the model operations described below.
+Thrust can verify a wide range of programs without explicit annotations, but you can use `#[thrust_macros::requires(expr)]` and `#[thrust_macros::ensures(expr)]` to annotate the precondition and postcondition of a function, aiding in verification or specifying the intended behavior. Here, `expr` is an ordinary Rust expression that Thrust interprets as a logical formula. It supports the usual integer, boolean, and comparison operators, integer constants such as `u64::MAX`, calls to functions declared with `#[thrust_macros::predicate]` (Boolean) or `#[thrust_macros::logic]` (any model type, a single expression), and the model operations described below.
 
 ```rust
 #[thrust_macros::requires(n >= 0)]
@@ -122,6 +122,20 @@ fn sum(n: i32) -> i32 {
 ```
 
 In an `ensures` expression, the special identifier `result` refers to the return value of the function. `requires` and `ensures` are independent: you can write either one on its own, and a missing one defaults to `true`.
+
+A logic function may call itself (at its own type arguments, not through another function) when it carries `#[thrust_macros::variant(expr)]`, an integer expression over its parameters. Thrust emits the function as a `define-fun-rec` and adds clauses to the query requiring the variant to be non-negative and to decrease at each recursive call, under the conditions of the branches leading to it, so a variant that does not decrease is a verification error.
+
+```rust
+#[thrust_macros::logic]
+#[thrust_macros::variant(k)]
+fn count_zeros(s: &[i64], k: usize) -> usize {
+    if k <= 0 {
+        0
+    } else {
+        count_zeros(s, k - 1) + if s[k - 1] == 0 { 1 } else { 0 }
+    }
+}
+```
 
 ### Mutable references
 

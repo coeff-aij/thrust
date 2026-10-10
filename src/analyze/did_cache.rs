@@ -42,6 +42,7 @@ struct DefIds {
     uint_to_uint_n: OnceCell<Option<DefId>>,
     int_to_int_n: OnceCell<Option<DefId>>,
     int_n_to_int: OnceCell<Option<DefId>>,
+    int_lit: OnceCell<Option<DefId>>,
     uint_n_to_uint: OnceCell<Option<DefId>>,
     seq_push: OnceCell<Option<DefId>>,
     seq_store: OnceCell<Option<DefId>>,
@@ -335,6 +336,13 @@ impl<'tcx> DefIdCache<'tcx> {
             .def_ids
             .int_to_int_n
             .get_or_init(|| self.annotated_def(&crate::analyze::annot::int_to_int_n_path()))
+    }
+
+    pub fn int_lit(&self) -> Option<DefId> {
+        *self
+            .def_ids
+            .int_lit
+            .get_or_init(|| self.annotated_def(&crate::analyze::annot::int_lit_path()))
     }
 
     pub fn int_n_to_int(&self) -> Option<DefId> {

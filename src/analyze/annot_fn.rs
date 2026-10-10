@@ -549,7 +549,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             .next()
             .is_some();
         let body = if is_logic {
-            FormulaFnBody::Term(self.to_term(self.body.value))
+            FormulaFnBody::Term(self.to_term(self.logic_body_expr().0))
         } else {
             FormulaFnBody::Formula(self.to_formula(self.body.value))
         };
@@ -572,6 +572,24 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             param_idents,
             ret,
             body,
+        }
+    }
+
+    /// The body of a logic function past the `#[thrust::variant_path]` statement naming its
+    /// variant, and whether there is one.
+    fn logic_body_expr(&self) -> (&'tcx rustc_hir::Expr<'tcx>, bool) {
+        let rustc_hir::ExprKind::Block(block, _) = self.body.value.kind else {
+            return (self.body.value, false);
+        };
+        let is_variant_path = |stmt: &rustc_hir::Stmt<'_>| {
+            self.tcx
+                .hir_attrs(stmt.hir_id)
+                .iter()
+                .any(|attr| attr.path_matches(&analyze::annot::variant_path_path()))
+        };
+        match (block.stmts, block.expr) {
+            ([stmt], Some(expr)) if is_variant_path(stmt) => (expr, true),
+            _ => (self.body.value, false),
         }
     }
 
@@ -1533,6 +1551,10 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                                 Box::new(body),
                             ));
                         }
+                        if Some(def_id) == self.def_ids.int_lit() {
+                            assert_eq!(args.len(), 1, "int_lit takes exactly 1 argument");
+                            return FormulaOrTerm::Term(self.to_term(&args[0]));
+                        }
                         if Some(def_id) == self.def_ids.fn_param_at_entry() {
                             assert_eq!(args.len(), 1, "FnParam::at_entry takes exactly 1 argument");
                             let t = self.to_term(&args[0]);
@@ -1602,9 +1624,18 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                                 );
                             };
                             if instance.def_id() == self.local_def_id.to_def_id() {
-                                self.tcx
-                                    .dcx()
-                                    .span_fatal(hir.span, "a logic function cannot call itself");
+                                if !self.logic_body_expr().1 {
+                                    self.tcx.dcx().span_fatal(
+                                        hir.span,
+                                        "a recursive logic function needs #[thrust_macros::variant(..)]",
+                                    );
+                                }
+                                if instance.args != self.generic_args {
+                                    self.tcx.dcx().span_fatal(
+                                        hir.span,
+                                        "a logic function can call itself only at its own type arguments",
+                                    );
+                                }
                             }
                             let (symbol, sort) = self.analyzer.logic_fn_with_args(
                                 instance.def_id(),

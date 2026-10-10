@@ -754,9 +754,14 @@ impl<'ctx, 'a> std::fmt::Display for UserDefinedPredDef<'ctx, 'a> {
             chc::UserDefinedPredBody::Term(sort, _) => self.ctx.fmt_sort(sort).to_string(),
             _ => "Bool".to_string(),
         };
+        let command = if self.inner.is_recursive() {
+            "define-fun-rec"
+        } else {
+            "define-fun"
+        };
         write!(
             f,
-            "(define-fun {name} {params} {ret_sort} ",
+            "({command} {name} {params} {ret_sort} ",
             name = self.inner.symbol,
         )?;
         let var_sorts: IndexVec<chc::TermVarIdx, chc::Sort> = self

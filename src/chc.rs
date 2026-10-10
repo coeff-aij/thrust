@@ -627,6 +627,14 @@ impl Function {
     pub const ITE: Function = Function::new("ite");
 }
 
+/// A call found by [`Term::guarded_calls`]: its arguments, and the conditions under which the
+/// enclosing term evaluates it.
+#[derive(Debug, Clone)]
+pub struct GuardedCall<V> {
+    pub guards: Vec<Term<V>>,
+    pub args: Vec<Term<V>>,
+}
+
 /// A logical term.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Term<V = TermVarIdx> {
@@ -921,6 +929,80 @@ impl<V> Term<V> {
             | Term::ArrayEmpty(_, _)
             | Term::SeqEmpty(_)
             | Term::UserQuantifiedVar(_, _) => Vec::new(),
+        }
+    }
+
+    /// The calls to `symbol` in this term, each with the `ite` conditions on the way to it.
+    pub fn guarded_calls(&self, symbol: &UserDefinedPred) -> Vec<GuardedCall<V>>
+    where
+        V: Clone,
+    {
+        let mut calls = Vec::new();
+        self.collect_guarded_calls(symbol, &mut Vec::new(), &mut calls);
+        calls
+    }
+
+    fn collect_guarded_calls(
+        &self,
+        symbol: &UserDefinedPred,
+        guards: &mut Vec<Term<V>>,
+        calls: &mut Vec<GuardedCall<V>>,
+    ) where
+        V: Clone,
+    {
+        match self {
+            Term::App(fun, args) if *fun == Function::ITE => {
+                let [cond, then_, else_] = &args[..] else {
+                    panic!("ite takes three arguments");
+                };
+                cond.collect_guarded_calls(symbol, guards, calls);
+                guards.push(cond.clone());
+                then_.collect_guarded_calls(symbol, guards, calls);
+                *guards.last_mut().unwrap() = cond.clone().not();
+                else_.collect_guarded_calls(symbol, guards, calls);
+                guards.pop();
+            }
+            Term::UserDefinedFn(callee, _, args) => {
+                if callee == symbol {
+                    calls.push(GuardedCall {
+                        guards: guards.clone(),
+                        args: args.clone(),
+                    });
+                }
+                for arg in args {
+                    arg.collect_guarded_calls(symbol, guards, calls);
+                }
+            }
+            Term::ArrayLambda(_, _, t) => {
+                if t.user_defined_fns().contains(&symbol) {
+                    unimplemented!("a recursive call under a lambda: {symbol}");
+                }
+            }
+            Term::Box(t)
+            | Term::BoxCurrent(t)
+            | Term::MutCurrent(t)
+            | Term::MutFinal(t)
+            | Term::TupleProj(t, _)
+            | Term::DatatypeDiscr(_, t)
+            | Term::IntToBitVec { term: t, .. } => t.collect_guarded_calls(symbol, guards, calls),
+            Term::Mut(t1, t2) => {
+                t1.collect_guarded_calls(symbol, guards, calls);
+                t2.collect_guarded_calls(symbol, guards, calls);
+            }
+            Term::App(_, args) | Term::Tuple(args) | Term::DatatypeCtor(_, _, args) => {
+                for arg in args {
+                    arg.collect_guarded_calls(symbol, guards, calls);
+                }
+            }
+            Term::Null
+            | Term::ForallDefault(_)
+            | Term::Var(_)
+            | Term::Bool(_)
+            | Term::Int(_)
+            | Term::String(_)
+            | Term::ArrayEmpty(_, _)
+            | Term::SeqEmpty(_)
+            | Term::UserQuantifiedVar(_, _) => {}
         }
     }
 
@@ -2485,6 +2567,11 @@ impl UserDefinedPredDef {
             UserDefinedPredBody::Term(_, term) => term.user_defined_fns(),
         }
     }
+
+    /// Whether the body calls the definition itself, which makes it a `define-fun-rec`.
+    pub fn is_recursive(&self) -> bool {
+        self.callees().contains(&&self.symbol)
+    }
 }
 
 pub fn compute_transitive_closure<T>(direct_deps: &HashMap<T, HashSet<T>>) -> HashMap<T, HashSet<T>>
@@ -2591,12 +2678,13 @@ impl System {
                 .iter()
                 .position(|def| {
                     def.callees().into_iter().all(|callee| {
-                        !remaining
-                            .iter()
-                            .any(|dependency| dependency.symbol == *callee)
+                        *callee == def.symbol
+                            || !remaining
+                                .iter()
+                                .any(|dependency| dependency.symbol == *callee)
                     })
                 })
-                .expect("recursive predicate definitions are not supported");
+                .expect("mutually recursive definitions are not supported");
             ordered.push(remaining.remove(next));
         }
         ordered

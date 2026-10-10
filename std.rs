@@ -456,6 +456,15 @@ mod thrust_models {
             unimplemented!()
         }
 
+        /// The integer `n` as the integer model `M`. `#[thrust_macros::logic]` writes an integer
+        /// literal the function returns as this, so that it takes the model of the result type.
+        #[allow(dead_code)]
+        #[thrust::def::int_lit]
+        #[thrust::ignored]
+        pub fn int_lit<M: Integer>(_n: i128) -> M {
+            unimplemented!()
+        }
+
         #[thrust::def::seq_model]
         pub struct Seq<T: ?Sized>(PhantomData<T>);
 

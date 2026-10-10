@@ -130,10 +130,18 @@ pub fn predicate(_attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 /// Declares a function callable in the term position of specifications: its body is a single
-/// expression of the specification language, and the function is non-recursive.
+/// expression of the specification language. It may call itself, at its own type arguments,
+/// when it carries a [`macro@variant`].
 #[proc_macro_attribute]
 pub fn logic(_attr: TokenStream, item: TokenStream) -> TokenStream {
     spec::expand_logic(item)
+}
+
+/// The termination measure of a recursive `#[logic]` function: an integer expression over its
+/// parameters that is non-negative and decreases at each recursive call (`#[variant(k)]`).
+#[proc_macro_attribute]
+pub fn variant(attr: TokenStream, item: TokenStream) -> TokenStream {
+    spec::expand_variant(attr, item)
 }
 
 /// Marks a trait function as a law: its `requires`/`ensures` are assumed of every
