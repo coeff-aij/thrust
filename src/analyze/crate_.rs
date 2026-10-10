@@ -142,6 +142,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     #[tracing::instrument(skip(self), fields(def_id = %self.tcx.def_path_str(local_def_id)))]
     fn refine_fn_def(&mut self, local_def_id: LocalDefId) {
         let sig = self.ctx.fn_sig(local_def_id.to_def_id());
+        let is_law_impl = self.is_law_impl(local_def_id);
         let mut analyzer = self.ctx.local_def_analyzer(local_def_id);
 
         if analyzer.is_annotated_as_trusted() {
@@ -153,7 +154,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             self.skip_analysis.insert(local_def_id);
         }
 
-        if analyzer.is_injected_std() {
+        let is_injected_std = analyzer.is_injected_std();
+        if is_injected_std {
             self.skip_analysis.insert(local_def_id);
         }
 
@@ -201,6 +203,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 self.ctx
                     .register_generic_def(owner_fn_id, local_def_id, Some(expected));
             }
+        } else if is_injected_std && is_law_impl {
+            // The contract of an injected impl's law instantiates the trait's predicates at the
+            // impl; it is built where a proof step calls the law, not in every crate.
+            self.ctx.register_deferred_def_without_analysis(
+                owner_fn_id,
+                local_def_id,
+                owner_fn_id_args,
+            );
         } else {
             let expected = analyzer.expected_ty();
             self.ctx.register_def(owner_fn_id, expected);
@@ -298,6 +308,19 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             );
             self.ctx.extend_clauses(clauses);
         }
+    }
+
+    /// Whether `local_def_id` is an impl's definition of a `#[thrust::law]` of its trait.
+    fn is_law_impl(&self, local_def_id: LocalDefId) -> bool {
+        self.tcx
+            .opt_associated_item(local_def_id.to_def_id())
+            .and_then(|item| item.trait_item_def_id)
+            .is_some_and(|trait_item| {
+                self.tcx
+                    .get_attrs_by_path(trait_item, &analyze::annot::law_path())
+                    .next()
+                    .is_some()
+            })
     }
 
     /// Whether `local_def_id` is a `#[thrust::law]` declared in a local trait.

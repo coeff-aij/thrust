@@ -6,7 +6,9 @@
 //! `thrust_macros::closure!(...)` in the body is rewritten into its context-carrying
 //! counterpart, carrying the host signature and, for a method, the enclosing `impl`/`trait`
 //! header, so a formula may refer to generic- and `Self`-typed variables that the standalone
-//! macros cannot see.
+//! macros cannot see. A `for` loop whose body starts with an `invariant!` naming the iterator
+//! `iter` is desugared first, so that the invariant may also name `iter_old` and `produced`
+//! (see [`mod@crate::for_loop`]).
 //! That also extends the function's where clause with the `Model` predicates for every
 //! in-scope type parameter (and for `Self` when used), since each injected marker call
 //! instantiates a `Model`-bounded formula function with the host's own generics.
@@ -331,6 +333,15 @@ impl ContextInjector<'_> {
 }
 
 impl VisitMut for ContextInjector<'_> {
+    fn visit_expr_mut(&mut self, expr: &mut syn::Expr) {
+        if let syn::Expr::ForLoop(for_loop) = expr {
+            if let Some(desugared) = crate::for_loop::desugar(for_loop) {
+                *expr = desugared;
+            }
+        }
+        syn::visit_mut::visit_expr_mut(self, expr);
+    }
+
     fn visit_macro_mut(&mut self, mac: &mut syn::Macro) {
         let Some(with_context) = context_carrying_form(&mac.path) else {
             return;

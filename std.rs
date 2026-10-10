@@ -2331,6 +2331,50 @@ where
     }
 }
 
+// A range of integers yields its start and steps it up to its end, as Creusot's `Range` does
+// (creusot-std/src/std/iter/range.rs).
+macro_rules! range_iterator_spec {
+    ($($t:ty)*) => {
+        $(
+            #[thrust_macros::context]
+            impl IteratorSpec for core::ops::Range<$t> {
+                #[thrust_macros::predicate]
+                fn inv(self) -> bool {
+                    true
+                }
+
+                #[thrust_macros::predicate]
+                fn produces(self, visited: Vec<$t>, o: Self) -> bool {
+                    self.end == o.end
+                        && self.start <= o.start
+                        && (visited.len() == 0 || o.start <= o.end)
+                        && visited.len() == o.start - self.start
+                        && thrust_models::forall(|i: thrust_models::model::Int|
+                            !(0 <= i && i < visited.len()) || visited[i] == self.start + i)
+                }
+
+                #[thrust_macros::predicate]
+                fn completed(&mut self) -> bool {
+                    (*self).start >= (*self).end && *self == !self
+                }
+
+                fn produces_refl(a: &Self) {}
+
+                fn produces_trans(
+                    a: &Self,
+                    ab: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+                    b: &Self,
+                    bc: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+                    c: &Self,
+                ) {
+                }
+            }
+        )*
+    };
+}
+
+range_iterator_spec!(i8 i16 i32 i64 i128 isize u8 u16 u32 u64 u128 usize);
+
 // `into_iter` is specified once, through `into_iter_is`; a type gets an `into_iter` by
 // implementing the trait. An iterator is its own `into_iter`.
 #[thrust_macros::context]
@@ -2350,6 +2394,19 @@ fn _extern_spec_into_iterator_into_iter<I>(it: I) -> I::IntoIter
           I::IntoIter: thrust_models::Model,
           I::Ty: PartialEq,
           <I::IntoIter as thrust_models::Model>::Ty: PartialEq
+{
+    <I as std::iter::IntoIterator>::into_iter(it)
+}
+
+// `for` calls `into_iter` on the iterator it is given, which std's blanket
+// `impl<I: Iterator> IntoIterator for I` defines as the identity (Creusot states the same,
+// creusot-std/src/std/iter.rs).
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(result == it)]
+fn _extern_spec_iterator_into_iter<I>(it: I) -> I
+    where I: std::iter::Iterator + thrust_models::Model,
+          I::Ty: PartialEq
 {
     <I as std::iter::IntoIterator>::into_iter(it)
 }
