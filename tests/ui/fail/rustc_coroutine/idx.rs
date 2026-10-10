@@ -1,5 +1,6 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -Adead_code -C debug-assertions=off
+//@no-rustfix
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120
 // Stages 2 and 4 of the rustc-coroutine verification target: rustc_index's `Idx` and the own
 // iterators of rewrites.md R2 to R4 (`IdxRange`, `WordIter`, `SliceIter`, `IterEnumerated`).

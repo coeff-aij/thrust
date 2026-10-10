@@ -1,5 +1,6 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -Adead_code -C debug-assertions=off
+//@no-rustfix
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120
 // Stage 2 of the rustc-coroutine verification target: rustc_index's `IndexVec` and `IndexSlice`.
 // `filled` is the caller the trusted `IndexVec` contracts are checked against (rewrites.md S5).
