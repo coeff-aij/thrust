@@ -20,7 +20,8 @@ with the driver broken, regenerated and checked by `tests/rustc_coroutine/fail/c
 | `indexvec.rs` | `rustc_index::vec`, `rustc_index::slice`, the client `filled` | verified as stage file |
 | `bitset.rs` | `rustc_index::bit_set` | verified as stage file |
 | `simple.rs` | `rustc_abi::layout::simple` | draft, `ignore-on-host` |
-| `univariant.rs` | `LayoutCalculator` of `rustc_abi::layout` | draft, `ignore-on-host`; `univariant_biased` analysed under `callable`, query about 324 MB |
+| `univariant.rs` | `LayoutCalculator::univariant`, `univariant_biased` trusted on its contract | draft, `ignore-on-host`: no answer at 300 s, also for its panic obligations alone (query 17.8 MB) |
+| `univariant_biased.rs` | `LayoutCalculator::univariant_biased` | draft, `ignore-on-host`: query about 323 MB |
 | `eligibility.rs` | `coroutine_saved_local_eligibility` | draft, `ignore-on-host` |
 | `layout.rs` | `layout()` and the adapters of `thrust/iter.rs` | draft, `ignore-on-host` |
 
