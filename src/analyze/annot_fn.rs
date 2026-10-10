@@ -543,12 +543,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
     }
 
     pub fn to_formula_fn(&self) -> FormulaFn<'tcx> {
-        let is_logic = self
-            .tcx
-            .get_attrs_by_path(self.local_def_id.to_def_id(), &analyze::annot::logic_path())
-            .next()
-            .is_some();
-        let body = if is_logic {
+        let body = if self.is_logic(self.local_def_id.to_def_id()) {
             FormulaFnBody::Term(self.to_term(self.logic_body_expr().0))
         } else {
             FormulaFnBody::Formula(self.to_formula(self.body.value))
@@ -1647,12 +1642,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                                 }
                             }
                         }
-                        if self
-                            .tcx
-                            .get_attrs_by_path(def_id, &analyze::annot::logic_path())
-                            .next()
-                            .is_some()
-                        {
+                        if self.is_logic(def_id) {
                             let (generic_args, instance) =
                                 self.resolve_spec_fn_call(def_id, func_expr);
                             let Some(instance) = instance else {
