@@ -626,14 +626,11 @@ pub fn layout<
     // `push` and `extend_from` give `prefix_layouts.len() == P + 1 + c`, c the items
     // `ineligible_locals.iter()` yields (`Map` keeps the length), which is the set's ghost count:
     // `iter` starts `BitIter`'s `left` at it, and the iterator completes with nothing left.
-    let prefix = match calc.univariant(
+    let prefix = calc.univariant(
         &prefix_layouts,
         &ReprOptions::default(),
         StructKind::AlwaysSized,
-    ) {
-        Ok(prefix) => prefix,
-        Err(err) => return Err(err),
-    };
+    )?;
 
     let (prefix_size, prefix_align) = (prefix.size, prefix.align);
 
@@ -704,14 +701,11 @@ pub fn layout<
             );
 
             // Rewrite (rewrites.md R8): `collect_index_vec` for `collect`.
-            let mut variant = match calc.univariant(
+            let mut variant = calc.univariant(
                 &collect_index_vec(variant_only_tys),
                 &ReprOptions::default(),
                 StructKind::Prefixed(prefix_size, prefix_align.abi),
-            ) {
-                Ok(variant) => variant,
-                Err(err) => return Err(err),
-            };
+            )?;
 
             let FieldsShape::Arbitrary {
                 offsets,
