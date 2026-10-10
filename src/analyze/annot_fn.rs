@@ -549,7 +549,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             .next()
             .is_some();
         let body = if is_logic {
-            FormulaFnBody::Term(self.to_term(self.body.value))
+            FormulaFnBody::Term(self.to_term(self.logic_body_expr().0))
         } else {
             FormulaFnBody::Formula(self.to_formula(self.body.value))
         };
@@ -572,6 +572,24 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             param_idents,
             ret,
             body,
+        }
+    }
+
+    /// The body of a logic function past the `#[thrust::variant_path]` statement naming its
+    /// variant, and whether there is one.
+    fn logic_body_expr(&self) -> (&'tcx rustc_hir::Expr<'tcx>, bool) {
+        let rustc_hir::ExprKind::Block(block, _) = self.body.value.kind else {
+            return (self.body.value, false);
+        };
+        let is_variant_path = |stmt: &rustc_hir::Stmt<'_>| {
+            self.tcx
+                .hir_attrs(stmt.hir_id)
+                .iter()
+                .any(|attr| attr.path_matches(&analyze::annot::variant_path_path()))
+        };
+        match (block.stmts, block.expr) {
+            ([stmt], Some(expr)) if is_variant_path(stmt) => (expr, true),
+            _ => (self.body.value, false),
         }
     }
 
@@ -707,6 +725,43 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             self.tcx.mk_args(args.as_closure().parent_args()),
             self.type_builder.owner_fn_id(),
         )
+    }
+
+    fn is_logic(&self, def_id: DefId) -> bool {
+        self.tcx
+            .get_attrs_by_path(def_id, &analyze::annot::logic_path())
+            .next()
+            .is_some()
+    }
+
+    /// A trait's logic function called at a type parameter, which stands for every
+    /// implementation: a universally quantified function, as a trait predicate is.
+    fn trait_logic_fn_term(
+        &self,
+        def_id: DefId,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
+        hir: &'tcx rustc_hir::Expr<'tcx>,
+        args: &'tcx [rustc_hir::Expr<'tcx>],
+    ) -> chc::Term<rty::FunctionParamIdx> {
+        let type_params = generic_args
+            .types()
+            .map(|ty| self.type_builder.build(ty).to_sort())
+            .collect();
+        let params = args
+            .iter()
+            .map(|expr| self.type_builder.build(self.expr_ty(expr)).to_sort())
+            .collect();
+        let result = self.type_builder.build(self.expr_ty(hir)).to_sort();
+        let pred = refine::trait_forall_fn(self.tcx, def_id, type_params, params, result);
+        self.register_forall_pred(pred.clone());
+        self.analyzer.register_forall_pred_origin(
+            pred.clone(),
+            def_id,
+            generic_args,
+            self.type_builder.owner_fn_id(),
+        );
+        let arg_terms = args.iter().map(|e| self.to_term(e)).collect();
+        chc::Term::ForallFn(pred, arg_terms)
     }
 
     fn register_forall_pred(&self, forall_pred: chc::ForallPred) {
@@ -1533,6 +1588,10 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                                 Box::new(body),
                             ));
                         }
+                        if Some(def_id) == self.def_ids.int_lit() {
+                            assert_eq!(args.len(), 1, "int_lit takes exactly 1 argument");
+                            return FormulaOrTerm::Term(self.to_term(&args[0]));
+                        }
                         if Some(def_id) == self.def_ids.fn_param_at_entry() {
                             assert_eq!(args.len(), 1, "FnParam::at_entry takes exactly 1 argument");
                             let t = self.to_term(&args[0]);
@@ -1594,17 +1653,35 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                             .next()
                             .is_some()
                         {
-                            let (_, instance) = self.resolve_spec_fn_call(def_id, func_expr);
+                            let (generic_args, instance) =
+                                self.resolve_spec_fn_call(def_id, func_expr);
                             let Some(instance) = instance else {
+                                return FormulaOrTerm::Term(self.trait_logic_fn_term(
+                                    def_id,
+                                    generic_args,
+                                    hir,
+                                    args,
+                                ));
+                            };
+                            if !self.is_logic(instance.def_id()) {
                                 self.tcx.dcx().span_fatal(
                                     hir.span,
-                                    "a logic function called at a type parameter has no definition",
+                                    "the implementation of a logic function is a #[thrust_macros::logic] function",
                                 );
-                            };
+                            }
                             if instance.def_id() == self.local_def_id.to_def_id() {
-                                self.tcx
-                                    .dcx()
-                                    .span_fatal(hir.span, "a logic function cannot call itself");
+                                if !self.logic_body_expr().1 {
+                                    self.tcx.dcx().span_fatal(
+                                        hir.span,
+                                        "a recursive logic function needs #[thrust_macros::variant(..)]",
+                                    );
+                                }
+                                if instance.args != self.generic_args {
+                                    self.tcx.dcx().span_fatal(
+                                        hir.span,
+                                        "a logic function can call itself only at its own type arguments",
+                                    );
+                                }
                             }
                             let (symbol, sort) = self.analyzer.logic_fn_with_args(
                                 instance.def_id(),

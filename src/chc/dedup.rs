@@ -41,6 +41,7 @@ enum Op {
     MutFinal,
     App(Function),
     UserDefinedFn(UserDefinedPred, Sort),
+    ForallFn(ForallPred),
     Tuple,
     TupleProj(usize),
     Ctor(DatatypeSort, DatatypeSymbol),
@@ -78,6 +79,7 @@ fn decompose(term: &Term) -> Option<(Op, Vec<&Term>)> {
             Op::UserDefinedFn(sym.clone(), sort.clone()),
             args.iter().collect(),
         ),
+        Term::ForallFn(pred, args) => (Op::ForallFn(pred.clone()), args.iter().collect()),
         Term::Tuple(ts) => (Op::Tuple, ts.iter().collect()),
         Term::TupleProj(t, i) => (Op::TupleProj(*i), vec![&**t]),
         Term::DatatypeCtor(sort, sym, args) => {

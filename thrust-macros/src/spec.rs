@@ -16,17 +16,87 @@ use syn::{
 use crate::{apit, fn_outer_item::FnOuterItem, FormulaFnTypeLowering};
 
 pub fn expand_predicate(item: TokenStream) -> TokenStream {
-    expand_spec_fn(item, quote!(#[thrust::predicate]))
+    expand_spec_fn(item, SpecFnKind::Predicate)
 }
 
 /// Like a predicate, but the return type is any model type: the function is callable in the
 /// term position of a specification.
 pub fn expand_logic(item: TokenStream) -> TokenStream {
-    expand_spec_fn(item, quote!(#[thrust::logic]))
+    expand_spec_fn(item, SpecFnKind::Logic)
 }
 
-fn expand_spec_fn(item: TokenStream, marker: TokenStream2) -> TokenStream {
+/// `#[variant(e)]` written above `#[logic]` or `#[lemma]` is moved below it, where that attribute
+/// takes it.
+pub fn expand_variant(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let attr = TokenStream2::from(attr);
     let mut func = parse_macro_input!(item as FnItemWithSignature);
+    let attrs = func.attrs_mut();
+    let Some(logic) = attrs
+        .iter()
+        .position(|a| has_last_segment(a, "logic") || has_last_segment(a, "lemma"))
+    else {
+        let err = syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "#[thrust_macros::variant] applies only to a logic function or a lemma",
+        )
+        .to_compile_error();
+        return quote! { #err #func }.into();
+    };
+    attrs.insert(
+        logic + 1,
+        syn::parse_quote!(#[::thrust_macros::variant(#attr)]),
+    );
+    func.into_token_stream().into()
+}
+
+#[derive(PartialEq)]
+enum SpecFnKind {
+    Predicate,
+    Logic,
+}
+
+pub(crate) fn has_last_segment(attr: &syn::Attribute, name: &str) -> bool {
+    attr.path()
+        .segments
+        .last()
+        .is_some_and(|segment| segment.ident == name)
+}
+
+/// Removes the `#[thrust_macros::variant(e)]` attribute from `attrs`, returning `e`.
+pub(crate) fn take_variant(attrs: &mut Vec<syn::Attribute>) -> syn::Result<Option<TokenStream2>> {
+    let mut variants = attrs.iter().filter(|a| has_last_segment(a, "variant"));
+    let variant = variants.next().map(|a| a.parse_args()).transpose()?;
+    if let Some(extra) = variants.next() {
+        return Err(syn::Error::new_spanned(
+            extra,
+            "a logic function takes one variant",
+        ));
+    }
+    attrs.retain(|a| !has_last_segment(a, "variant"));
+    Ok(variant)
+}
+
+fn expand_spec_fn(item: TokenStream, kind: SpecFnKind) -> TokenStream {
+    let mut func = parse_macro_input!(item as FnItemWithSignature);
+    let marker = match kind {
+        SpecFnKind::Predicate => quote!(#[thrust::predicate]),
+        SpecFnKind::Logic => quote!(#[thrust::logic]),
+    };
+    let variant = match take_variant(func.attrs_mut()) {
+        Ok(Some(_)) if kind != SpecFnKind::Logic => {
+            let err = syn::Error::new_spanned(
+                &func.sig().ident,
+                "#[thrust_macros::variant] applies only to a #[thrust_macros::logic] function",
+            )
+            .to_compile_error();
+            return quote! { #err #func }.into();
+        }
+        Ok(variant) => variant,
+        Err(e) => {
+            let err = e.to_compile_error();
+            return quote! { #err #func }.into();
+        }
+    };
     let impl_trait_names = apit::take_names(func.attrs_mut());
     let outer_context = match extract_outer_context(&func) {
         Ok(ctx) => ctx,
@@ -39,6 +109,7 @@ fn expand_spec_fn(item: TokenStream, marker: TokenStream2) -> TokenStream {
     let name = &func.sig().ident;
     let sig = apit::desugar_signature(func.sig(), &impl_trait_names);
     let def_generics = generic_params_tokens(&sig.generics);
+    let turbofish = generic_turbofish(&sig.generics);
     let type_lowering = if let Some(outer_context) = &outer_context {
         FormulaFnTypeLowering::with_outer_context(&sig, outer_context)
     } else {
@@ -68,16 +139,93 @@ fn expand_spec_fn(item: TokenStream, marker: TokenStream2) -> TokenStream {
         #marker
         #vis fn #name #def_generics(#model_ty_params) -> #model_ret #extended_where
     };
-    if let Some(block) = func.block() {
-        let mut block = block.clone();
-        // The receiver `self` is lowered to a named `self_` parameter, so rewrite
-        // references in the (Rust) body to match.
-        if is_rust_body {
-            rewrite_self_in_block(&mut block);
+    let Some(block) = func.block() else {
+        return quote! { #sig; }.into();
+    };
+    let mut block = block.clone();
+    // The receiver `self` is lowered to a named `self_` parameter, so rewrite
+    // references in the (Rust) body to match.
+    if is_rust_body {
+        rewrite_self_in_block(&mut block);
+    }
+    if is_rust_body && kind == SpecFnKind::Logic {
+        wrap_result_literals_in_block(&mut block);
+    }
+    let Some(mut variant) = variant else {
+        return quote! { #sig #block }.into();
+    };
+    if func.sig().receiver().is_some() {
+        variant = variant
+            .into_iter()
+            .map(|tt| rewrite_self_in_tokens(tt, &format_ident!("self_")))
+            .collect();
+    }
+    let variant = crate::formula::expand(variant);
+    let variant_name = format_ident!("_thrust_variant_{}", name);
+    let path_prefix = outer_context.as_ref().map(|_| quote!(Self::));
+    quote! {
+        #[allow(path_statements)]
+        #sig {
+            #[thrust::variant_path]
+            #path_prefix #variant_name #turbofish;
+            #block
         }
-        quote! { #sig #block }.into()
-    } else {
-        quote! { #sig; }.into()
+
+        #[allow(dead_code, unused_variables, non_snake_case)]
+        #[thrust::formula_fn]
+        #[thrust::logic]
+        fn #variant_name #def_generics(#model_ty_params)
+            -> impl crate::thrust_models::Model<Ty: crate::thrust_models::model::Integer>
+            #extended_where
+        {
+            #variant
+        }
+    }
+    .into()
+}
+
+/// Writes each unsuffixed integer literal that a logic function's body returns as
+/// `int_lit(n)`, which takes the model of the result type where a bare literal is an `i32`.
+fn wrap_result_literals(expr: &mut syn::Expr) {
+    match expr {
+        syn::Expr::If(e) => {
+            wrap_result_literals_in_block(&mut e.then_branch);
+            if let Some((_, else_branch)) = &mut e.else_branch {
+                wrap_result_literals(else_branch);
+            }
+        }
+        syn::Expr::Match(e) => {
+            for arm in &mut e.arms {
+                wrap_result_literals(&mut arm.body);
+            }
+        }
+        syn::Expr::Block(e) => wrap_result_literals_in_block(&mut e.block),
+        syn::Expr::Paren(e) => wrap_result_literals(&mut e.expr),
+        _ if is_unsuffixed_int_literal(expr) => {
+            *expr = syn::parse_quote!(crate::thrust_models::model::int_lit(#expr));
+        }
+        _ => {}
+    }
+}
+
+fn wrap_result_literals_in_block(block: &mut syn::Block) {
+    if let Some(syn::Stmt::Expr(expr, None)) = block.stmts.last_mut() {
+        wrap_result_literals(expr);
+    }
+}
+
+fn is_unsuffixed_int_literal(expr: &syn::Expr) -> bool {
+    match expr {
+        syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Int(lit),
+            ..
+        }) => lit.suffix().is_empty(),
+        syn::Expr::Unary(syn::ExprUnary {
+            op: syn::UnOp::Neg(_),
+            expr,
+            ..
+        }) => is_unsuffixed_int_literal(expr),
+        _ => false,
     }
 }
 

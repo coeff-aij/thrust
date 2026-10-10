@@ -30,6 +30,14 @@ pub fn logic_path() -> [Symbol; 2] {
     [Symbol::intern("thrust"), Symbol::intern("logic")]
 }
 
+pub fn lemma_path() -> [Symbol; 2] {
+    [Symbol::intern("thrust"), Symbol::intern("lemma")]
+}
+
+pub fn lemma_rec_path() -> [Symbol; 2] {
+    [Symbol::intern("thrust"), Symbol::intern("lemma_rec")]
+}
+
 pub fn law_path() -> [Symbol; 2] {
     [Symbol::intern("thrust"), Symbol::intern("law")]
 }
@@ -44,6 +52,10 @@ pub fn ignored_path() -> [Symbol; 2] {
 
 pub fn formula_fn_path() -> [Symbol; 2] {
     [Symbol::intern("thrust"), Symbol::intern("formula_fn")]
+}
+
+pub fn variant_path_path() -> [Symbol; 2] {
+    [Symbol::intern("thrust"), Symbol::intern("variant_path")]
 }
 
 pub fn requires_path_path() -> [Symbol; 2] {
@@ -223,6 +235,22 @@ pub fn int_to_int_n_path() -> [Symbol; 3] {
         Symbol::intern("thrust"),
         Symbol::intern("def"),
         Symbol::intern("int_to_int_n"),
+    ]
+}
+
+pub fn proof_branch_path() -> [Symbol; 3] {
+    [
+        Symbol::intern("thrust"),
+        Symbol::intern("def"),
+        Symbol::intern("proof_branch"),
+    ]
+}
+
+pub fn int_lit_path() -> [Symbol; 3] {
+    [
+        Symbol::intern("thrust"),
+        Symbol::intern("def"),
+        Symbol::intern("int_lit"),
     ]
 }
 

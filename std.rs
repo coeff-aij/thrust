@@ -456,6 +456,15 @@ mod thrust_models {
             unimplemented!()
         }
 
+        /// The integer `n` as the integer model `M`. `#[thrust_macros::logic]` writes an integer
+        /// literal the function returns as this, so that it takes the model of the result type.
+        #[allow(dead_code)]
+        #[thrust::def::int_lit]
+        #[thrust::ignored]
+        pub fn int_lit<M: Integer>(_n: i128) -> M {
+            unimplemented!()
+        }
+
         #[thrust::def::seq_model]
         pub struct Seq<T: ?Sized>(PhantomData<T>);
 
@@ -978,6 +987,17 @@ mod thrust_models {
     #[inline(never)]
     pub fn __ghost_marker<F, T: ?Sized>(_f: F) -> Ghost<T> {
         Ghost(std::marker::PhantomData)
+    }
+
+    /// Taken in the analysis and not at run time: the branch in which `proof!` calls a lemma.
+    #[doc(hidden)]
+    #[thrust::def::proof_branch]
+    #[thrust::trusted]
+    #[thrust_macros::requires(true)]
+    #[thrust_macros::ensures(result == true)]
+    #[inline(never)]
+    pub fn __proof_branch() -> bool {
+        false
     }
 
     #[allow(dead_code)]

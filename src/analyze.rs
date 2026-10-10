@@ -31,6 +31,7 @@ mod basic_block;
 mod closure_hist_inv;
 mod crate_;
 mod did_cache;
+mod lemma;
 mod local_def;
 mod pred_inst;
 mod reconstruct_slice_indexing;
@@ -673,6 +674,8 @@ pub struct Analyzer<'tcx> {
     formula_fns: HashMap<LocalDefId, DeferredFormulaFnDef<'tcx>>,
     /// Instances of predicates with a Rust body; see [`Analyzer::predicate_with_args`].
     predicate_instances: Rc<RefCell<HashMap<PredicateInstanceKey<'tcx>, chc::UserDefinedPred>>>,
+    /// The predicate instances whose bodies are being translated, innermost last.
+    defining_predicates: Rc<RefCell<Vec<PredicateInstanceKey<'tcx>>>>,
 
     /// Resulting CHC system.
     system: Rc<RefCell<chc::System>>,
@@ -776,6 +779,7 @@ impl<'tcx> Analyzer<'tcx> {
             defs,
             formula_fns,
             predicate_instances: Default::default(),
+            defining_predicates: Default::default(),
             system,
             basic_blocks,
             def_ids: did_cache::DefIdCache::new(tcx),
@@ -1118,6 +1122,13 @@ impl<'tcx> Analyzer<'tcx> {
             generic_args.has_param().then_some(owner_fn_id),
         );
         if let Some(pred) = self.predicate_instances.borrow().get(&key) {
+            let defining = self.defining_predicates.borrow();
+            if defining.contains(&key) && defining.last() != Some(&key) {
+                self.tcx.dcx().span_fatal(
+                    self.tcx.def_span(def_id),
+                    "mutual recursion between predicates or logic functions is not supported",
+                );
+            }
             return pred.clone();
         }
         let pred = chc::UserDefinedPred::new(format!(
@@ -1129,9 +1140,11 @@ impl<'tcx> Analyzer<'tcx> {
             .borrow_mut()
             .insert(key, pred.clone());
 
+        self.defining_predicates.borrow_mut().push(key);
         let formula_fn = self
             .formula_fn_with_args(local_def_id, generic_args, owner_fn_id)
             .unwrap();
+        self.defining_predicates.borrow_mut().pop();
         let type_builder = self.type_builder(self.def_ids(), owner_fn_id);
         self.register_enum_defs(
             formula_fn
@@ -1141,29 +1154,113 @@ impl<'tcx> Analyzer<'tcx> {
                 .chain(std::iter::once(formula_fn.ret())),
             type_builder.clone(),
         );
-        let arg_sorts = formula_fn
+        let arg_sorts: IndexVec<chc::TermVarIdx, chc::Sort> = formula_fn
             .params()
             .iter()
             .map(|ty| type_builder.build(*ty).to_sort())
             .collect();
-        let mut system = self.system.borrow_mut();
         match formula_fn.body() {
-            annot_fn::FormulaFnBody::Formula(formula) => system.push_pred_define_formula(
-                pred.clone(),
-                arg_sorts,
-                formula
+            annot_fn::FormulaFnBody::Formula(formula) => {
+                self.system.borrow_mut().push_pred_define_formula(
+                    pred.clone(),
+                    arg_sorts,
+                    formula
+                        .clone()
+                        .map_var(|idx| chc::TermVarIdx::from(idx.index())),
+                )
+            }
+            annot_fn::FormulaFnBody::Term(term) => {
+                let term = term
                     .clone()
-                    .map_var(|idx| chc::TermVarIdx::from(idx.index())),
-            ),
-            annot_fn::FormulaFnBody::Term(term) => system.push_fn_define_term(
-                pred.clone(),
-                arg_sorts,
-                type_builder.build(formula_fn.ret()).to_sort(),
-                term.clone()
-                    .map_var(|idx| chc::TermVarIdx::from(idx.index())),
-            ),
+                    .map_var(|idx| chc::TermVarIdx::from(idx.index()));
+                let termination = self.termination_clauses(
+                    local_def_id,
+                    generic_args,
+                    owner_fn_id,
+                    &pred,
+                    &arg_sorts,
+                    &term,
+                );
+                let mut system = self.system.borrow_mut();
+                for clause in termination {
+                    system.push_clause(clause);
+                }
+                system.push_fn_define_term(
+                    pred.clone(),
+                    arg_sorts,
+                    type_builder.build(formula_fn.ret()).to_sort(),
+                    term,
+                );
+            }
         }
         pred
+    }
+
+    /// The clauses requiring the variant of the logic function `local_def_id` to be
+    /// non-negative and to decrease at each call `body` makes to `pred`, its own instance, under
+    /// the conditions on the way to the call. A `define-fun-rec` that does not terminate could
+    /// make the query inconsistent.
+    fn termination_clauses(
+        &self,
+        local_def_id: LocalDefId,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
+        owner_fn_id: DefId,
+        pred: &chc::UserDefinedPred,
+        arg_sorts: &IndexVec<chc::TermVarIdx, chc::Sort>,
+        body: &chc::Term,
+    ) -> Vec<chc::Clause> {
+        let calls = body.guarded_calls(pred);
+        if calls.is_empty() {
+            return Vec::new();
+        }
+        let variant_def_id = self
+            .extract_path_with_attr(local_def_id, &analyze::annot::variant_path_path())
+            .expect("a recursive logic function has a variant");
+        let variant_fn = self
+            .formula_fn_with_args(variant_def_id.expect_local(), generic_args, owner_fn_id)
+            .expect("a variant is a formula function");
+        let annot_fn::FormulaFnBody::Term(variant) = variant_fn.body() else {
+            panic!("a variant is a term");
+        };
+        let variant = variant
+            .clone()
+            .map_var(|idx| chc::TermVarIdx::from(idx.index()));
+        let name = self.tcx.def_path_str(local_def_id.to_def_id());
+
+        calls
+            .into_iter()
+            .flat_map(|call| {
+                let mut builder = chc::ClauseBuilder::default();
+                for (var, sort) in arg_sorts.iter_enumerated() {
+                    builder.add_var(sort.clone());
+                    builder.add_environment_origin(chc::debug::origin::Entry::parameter(var, sort));
+                }
+                for guard in call.guards {
+                    builder.add_body(
+                        guard.equal_to(chc::Term::bool(true)).into(),
+                        chc::debug::origin::Entry::described(format!(
+                            "a condition on the way to a recursive call of {name}"
+                        )),
+                    );
+                }
+                let at_call = variant.clone().subst_var(|v| call.args[v.index()].clone());
+                let non_negative = chc::Atom::new(
+                    chc::KnownPred::LESS_THAN_OR_EQUAL.into(),
+                    vec![chc::Term::int(0), variant.clone()],
+                );
+                let smaller = chc::Atom::new(
+                    chc::KnownPred::LESS_THAN.into(),
+                    vec![at_call, variant.clone()],
+                );
+                let decreases = chc::Formula::Atom(non_negative).and(chc::Formula::Atom(smaller));
+                builder.head(
+                    decreases.into(),
+                    chc::debug::origin::Entry::described(format!(
+                        "the variant of {name} decreases at a recursive call"
+                    )),
+                )
+            })
+            .collect()
     }
 
     /// The symbol and result sort for a call to the `#[thrust_macros::logic]` function `def_id`
@@ -1175,10 +1272,14 @@ impl<'tcx> Analyzer<'tcx> {
         owner_fn_id: DefId,
     ) -> (chc::UserDefinedPred, chc::Sort) {
         let symbol = self.predicate_with_args(def_id, generic_args, owner_fn_id);
-        let ret = self
-            .formula_fn_with_args(def_id.expect_local(), generic_args, owner_fn_id)
-            .expect("a logic function has a Rust body")
-            .ret();
+        let fn_sig = self.tcx.fn_sig(def_id);
+        let ret = if generic_args.is_empty() {
+            fn_sig.skip_binder()
+        } else {
+            fn_sig.instantiate(self.tcx, generic_args)
+        }
+        .skip_binder()
+        .output();
         let ret_sort = self
             .type_builder(self.def_ids(), owner_fn_id)
             .build(ret)

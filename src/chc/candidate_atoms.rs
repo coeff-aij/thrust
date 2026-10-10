@@ -384,6 +384,9 @@ fn map_term(term: Term, f: &mut dyn FnMut(Term) -> Term) -> Term {
             sort,
             args.into_iter().map(|t| map_term(t, f)).collect(),
         ),
+        Term::ForallFn(pred, args) => {
+            Term::ForallFn(pred, args.into_iter().map(|t| map_term(t, f)).collect())
+        }
         t @ (Term::Null
         | Term::ForallDefault(_)
         | Term::Var(_)
@@ -404,6 +407,7 @@ pub(super) fn forall_preds_of<'a>(
 ) -> Vec<&'a ForallPred> {
     let mut preds = Vec::new();
     for atom in formula.iter_atoms() {
+        preds.extend(atom.args.iter().flat_map(Term::forall_fns));
         match &atom.pred {
             Pred::ForallPred(p) => preds.push(p),
             Pred::UserDefined(sym) => {
@@ -675,6 +679,10 @@ impl Definitions {
             Term::UserDefinedFn(sym, sort, args) => Term::UserDefinedFn(
                 sym.clone(),
                 sort.clone(),
+                args.iter().map(|a| children(a, budget)).collect(),
+            ),
+            Term::ForallFn(pred, args) => Term::ForallFn(
+                pred.clone(),
                 args.iter().map(|a| children(a, budget)).collect(),
             ),
             t => t.clone(),

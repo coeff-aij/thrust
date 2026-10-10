@@ -107,7 +107,7 @@ For the example above, the check succeeds. Changing the assertion to `add(1, 2) 
 
 ## Annotation
 
-Thrust can verify a wide range of programs without explicit annotations, but you can use `#[thrust_macros::requires(expr)]` and `#[thrust_macros::ensures(expr)]` to annotate the precondition and postcondition of a function, aiding in verification or specifying the intended behavior. Here, `expr` is an ordinary Rust expression that Thrust interprets as a logical formula. It supports the usual integer, boolean, and comparison operators, integer constants such as `u64::MAX`, calls to functions declared with `#[thrust_macros::predicate]` (Boolean) or `#[thrust_macros::logic]` (any model type, a single non-recursive expression), and the model operations described below.
+Thrust can verify a wide range of programs without explicit annotations, but you can use `#[thrust_macros::requires(expr)]` and `#[thrust_macros::ensures(expr)]` to annotate the precondition and postcondition of a function, aiding in verification or specifying the intended behavior. Here, `expr` is an ordinary Rust expression that Thrust interprets as a logical formula. It supports the usual integer, boolean, and comparison operators, integer constants such as `u64::MAX`, calls to functions declared with `#[thrust_macros::predicate]` (Boolean) or `#[thrust_macros::logic]` (any model type, a single expression), and the model operations described below.
 
 ```rust
 #[thrust_macros::requires(n >= 0)]
@@ -122,6 +122,40 @@ fn sum(n: i32) -> i32 {
 ```
 
 In an `ensures` expression, the special identifier `result` refers to the return value of the function. `requires` and `ensures` are independent: you can write either one on its own, and a missing one defaults to `true`.
+
+A logic function may call itself (at its own type arguments, not through another function) when it carries `#[thrust_macros::variant(expr)]`, an integer expression over its parameters. Thrust emits the function as a `define-fun-rec` and adds clauses to the query requiring the variant to be non-negative and to decrease at each recursive call, under the conditions of the branches leading to it, so a variant that does not decrease is a verification error.
+
+```rust
+#[thrust_macros::logic]
+#[thrust_macros::variant(k)]
+fn count_zeros(s: &[i64], k: usize) -> usize {
+    if k <= 0 {
+        0
+    } else {
+        count_zeros(s, k - 1) + if s[k - 1] == 0 { 1 } else { 0 }
+    }
+}
+```
+
+In a trait, a `#[thrust_macros::logic]` or `#[thrust_macros::predicate]` function may be declared without a body, and each implementation defines it with a function of the same kind. Where the trait is used through a type parameter, the function stands for every implementation (a universally quantified function in the query), so what is known of it there comes from the trait's contracts and its `#[thrust_macros::law]` functions, whose `requires`/`ensures` each implementation proves.
+
+A lemma, declared with `#[thrust_macros::lemma]`, is a function whose `requires`/`ensures` state a fact and whose body, verified like any other, proves it. A recursive call is the induction hypothesis and needs `#[thrust_macros::variant(expr)]`: the variant must be non-negative and decrease at each recursive call, checked where the call is made. A lemma must terminate and change nothing, so it has no loop or closure, takes no `&mut`, and calls only other lemmas (without mutual recursion), itself under its variant, and functions outside the crate. `thrust_macros::proof!(lemma(args))` uses a lemma in executable code: the analysis checks the lemma's precondition there and assumes its postcondition, and the program evaluates the arguments without running the call.
+
+```rust
+#[thrust_macros::lemma]
+#[thrust_macros::variant(k)]
+#[thrust_macros::ensures(count_zeros(s, k) <= k)]
+fn count_zeros_bound(s: &[i64], k: usize) {
+    if k > 0 {
+        count_zeros_bound(s, k - 1);
+    }
+}
+
+fn f(s: &[i64]) {
+    thrust_macros::proof!(count_zeros_bound(s, s.len()));
+    // count_zeros(s, s.len()) <= s.len() holds here.
+}
+```
 
 ### Mutable references
 
