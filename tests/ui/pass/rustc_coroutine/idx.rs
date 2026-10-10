@@ -1,294 +1,25 @@
 //@check-pass
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120
+// Stages 2 and 4 of the rustc-coroutine verification target: rustc_index's `Idx` and the own
+// iterators of rewrites.md R2 to R4 (`IdxRange`, `WordIter`, `SliceIter`, `IterEnumerated`).
+// The code is the module tree under tests/rustc_coroutine/; this file selects the stage and
+// drives it.
+#![feature(custom_inner_attributes)]
+#![feature(new_range_api)]
+#![thrust::verify_only("rustc_index::idx", "rustc_index::bit_set::WordIter", "rustc_index::slice::SliceIter", "rustc_index::slice::IterEnumerated")]
 
-// Extracted from tests/ui/pass/rustc_coroutine/target.rs (rustc's
-// rustc_index::idx, adapted). Only attributes, `Model` impls and the
-// predicate definitions below are added; bodies and signatures are verbatim.
+#[path = "../../../rustc_coroutine/compiler/rustc_hashes/src/lib.rs"]
+pub mod rustc_hashes;
+#[path = "../../../rustc_coroutine/compiler/rustc_index/src/lib.rs"]
+pub mod rustc_index;
+#[path = "../../../rustc_coroutine/compiler/rustc_abi/src/lib.rs"]
+pub mod rustc_abi;
+#[path = "../../../rustc_coroutine/thrust/mod.rs"]
+pub mod case_study;
 
-use std::fmt::Debug;
-use std::hash::Hash;
-use std::marker::PhantomData;
-
-use thrust_models::exists;
-use thrust_models::forall;
-use thrust_models::model::{Seq};
-
-/// The model of `usize` and `u64`, which carries its width while `THRUST_INT_RANGE` is set.
-#[cfg(not(thrust_int_range))]
-type USize = thrust_models::model::UInt;
-#[cfg(thrust_int_range)]
-type USize = thrust_models::model::UIntN<64>;
-
-
-// //== ./../rustc_index/src/idx.rs
-
-#[thrust_macros::context]
-pub trait Idx: Copy + 'static + Eq + PartialEq + Debug + Hash {
-    #[thrust_macros::predicate]
-    fn can_new(idx: USize) -> bool;
-
-    #[thrust_macros::predicate]
-    fn index_is(self, i: USize) -> bool;
-
-    #[thrust_macros::requires(Self::can_new(idx))]
-    #[thrust_macros::ensures(Self::index_is(result, idx))]
-    fn new(idx: usize) -> Self;
-
-    #[thrust_macros::ensures(Self::index_is(self, result))]
-    fn index(self) -> usize;
-
-    #[inline]
-    #[thrust_macros::requires(
-        thrust_models::forall(|i: USize|
-            Self::index_is(*self, i) ==> Self::can_new(i + amount)
-        )
-    )]
-    fn increment_by(&mut self, amount: usize) {
-        *self = self.plus(amount);
-    }
-
-    #[inline]
-    #[must_use = "Use `increment_by` if you wanted to update the index in-place"]
-    #[thrust_macros::requires(
-        thrust_models::forall(|i: USize|
-            Self::index_is(self, i) ==> Self::can_new(i + amount)
-        )
-    )]
-    fn plus(self, amount: usize) -> Self {
-        Self::new(self.index() + amount)
-    }
-}
-
-#[thrust_macros::context]
-impl Idx for usize {
-    #[thrust_macros::predicate]
-    fn can_new(idx: USize) -> bool {
-        true
-    }
-
-    #[thrust_macros::predicate]
-    fn index_is(self, i: USize) -> bool {
-        // i == self
-        i == self
-    }
-
-    #[inline]
-    fn new(idx: usize) -> Self {
-        idx
-    }
-    #[inline]
-    fn index(self) -> usize {
-        self
-    }
-}
-
-#[thrust_macros::context]
-impl Idx for u32 {
-    #[thrust_macros::predicate]
-    fn can_new(idx: USize) -> bool {
-        // idx <= u32::MAX
-        idx <= 4294967295usize
-    }
-
-    #[thrust_macros::predicate]
-    fn index_is(self, i: USize) -> bool {
-        // i == self
-        i == self
-    }
-
-    #[inline]
-    fn new(idx: usize) -> Self {
-        assert!(idx <= u32::MAX as usize);
-        idx as u32
-    }
-    #[inline]
-    fn index(self) -> usize {
-        self as usize
-    }
-}
-
-/// Own iterator standing in for `(start..end).map(I::new)`: yields
-/// `I::new(start)`, `I::new(start + 1)`, ..., `I::new(end - 1)`.
-// `Clone` commented out (/* Debug-style */ marker, see CLAUDE.md/agent brief):
-// deriving it on this generic struct panics Thrust with `unbound var $0`
-// (src/chc/clause_builder.rs:113) while analysing
-// `<IdxRange<I> as Clone>::clone`, on the inner
-// `<PhantomData<I> as Clone>::clone` call whose std spec is
-// `{ () | true /\ nu = *$0 }` with `generic_args=[PhantomData<I/#0>]` -- i.e.
-// the unit-modelled `&PhantomData<I>` argument. Re-checked after moving
-// `next`'s spec onto the `extern_spec_fn` wrapper below: the ICE is
-// independent of that (it needs no requires/ensures mentioning `Self::Item`
-// at all, just the derive). `bitset.rs`'s own copy of `IdxRange` and its
-// `DenseBitSet`/`BitMatrix` comment out the same derives for the same reason.
-// #[derive(Clone)]
-pub struct IdxRange<I: Idx> {
-    start: usize,
-    end: usize,
-    marker: PhantomData<I>,
-}
-
-impl<I: Idx> thrust_models::Model for IdxRange<I> {
-    type Ty = Self;
-}
-
-#[thrust_macros::context]
-impl<I: Idx> IdxRange<I> {
-    #[thrust_macros::requires(true)]
-    #[thrust_macros::ensures(result.start == start && result.end == end)]
-    fn new(start: usize, end: usize) -> IdxRange<I> {
-        IdxRange {
-            start,
-            end,
-            marker: PhantomData,
-        }
-    }
-}
-
-// `next` implements the real `std::iter::Iterator`, so its spec cannot be
-// written as attributes on the impl method itself: `requires`/`ensures`
-// expand into companion items placed next to the method, and in an
-// `impl Trait for Ty` every item must be a trait member
-// (`error[E0407]: method `_thrust_requires_next` is not a member of trait
-// `Iterator``). The spec therefore lives on a sibling *inherent* impl, as an
-// `#[thrust::extern_spec_fn]` wrapper whose body tail-calls the impl method.
-// Thrust resolves the wrapper's target through `Instance::try_resolve`,
-// registers the contract under the impl method's `DefId`, checks the impl
-// body against it and uses it at static call sites; see
-// tests/ui/pass/rustc_coroutine/notes/foreign_trait_impl_specs.md. Written
-// this way, the `I::can_new(n)` obligation inside the body *is* discharged
-// from the wrapper's `requires` -- the two-forall-sorts mismatch reported for
-// the earlier local-shadow-trait attempt does not occur here (dropping the
-// `requires` clause below turns the file `Unsat`, so the body is really
-// checked against this contract).
-impl<I: Idx> Iterator for IdxRange<I> {
-    type Item = I;
-
-    fn next(&mut self) -> Option<I> {
-        if self.start < self.end {
-            let n = self.start;
-            self.start += 1;
-            Some(I::new(n))
-        } else {
-            None
-        }
-    }
-}
-
-#[thrust_macros::context]
-impl<I: Idx> IdxRange<I> {
-    // `Idx::can_new` / `Idx::index_is` take `Int`, but `IdxRange`'s model is
-    // the struct itself, so `(*it).start` keeps its Rust type `usize` in a
-    // formula and cannot be passed to them (`error[E0308]: expected `Int`,
-    // found `usize``). The `s == (*it).start` guard under `forall` -- `Int`
-    // on the left, where `impl<T: Model<Ty = Int>> PartialEq<T> for Int`
-    // applies -- is what bridges the two.
-    #[thrust::extern_spec_fn]
-    #[thrust_macros::requires(
-        forall(|s: USize| s == (*it).start && s < (*it).end ==> <I as Idx>::can_new(s))
-    )]
-    #[thrust_macros::ensures(
-        forall(|s: USize| s == (*it).start && s < (*it).end
-            ==> exists(|x: <I as thrust_models::Model>::Ty|
-                    result == Some(x) && <I as Idx>::index_is(x, s))
-                && s + 1 == (!it).start
-                && (!it).end == (*it).end)
-    )]
-    #[thrust_macros::ensures(
-        !((*it).start < (*it).end)
-            ==> result == None && (!it).start == (*it).start && (!it).end == (*it).end
-    )]
-    fn _extern_spec_next(it: &mut IdxRange<I>) -> Option<I>
-    where
-        I: thrust_models::Model,
-        <I as thrust_models::Model>::Ty: PartialEq,
-    {
-        <IdxRange<I> as Iterator>::next(it)
-    }
-}
-
-type Word = u64;
-
-/// Own iterator standing in for `slice::Iter<'a, Word>` (whose raw pointer
-/// fields have no model in Thrust): yields `&words[0]`, ..., `&words[len - 1]`.
-pub struct WordIter<'a> {
-    words: &'a [Word],
-    pos: usize,
-}
-
-impl<'a> thrust_models::Model for WordIter<'a> {
-    type Ty = (&'a Seq<USize>, USize);
-}
-
-// `WordIter`'s model is the `(words, pos)` pair: `words` is the `&[Word]`
-// field's model (`&Seq<Int>`), so the predicates read `self.0` (the sequence)
-// and `self.1` (the cursor) and can index by the model `Int`.
-#[thrust_macros::context]
-impl<'a> WordIter<'a> {
-    /// `self.words.len() == n`.
-    #[thrust_macros::predicate]
-    fn words_len_is(self, n: USize) -> bool {
-        // self.words.len() == n
-        n == self.0.len()
-    }
-
-    /// `self.words[i] == w`.
-    #[thrust_macros::predicate]
-    fn word_is(self, i: USize, w: USize) -> bool {
-        // self.words[i] == w
-        w == self.0[i]
-    }
-
-    /// `dist.words == self.words`.
-    #[thrust_macros::predicate]
-    fn same_words(self, dist: Self) -> bool {
-        // dist.words == self.words
-        *dist.0 == *self.0
-    }
-
-    #[thrust_macros::requires(true)]
-    #[thrust_macros::ensures(result.1 == 0)]
-    #[thrust_macros::ensures(Self::words_len_is(result, (*words).len()))]
-    #[thrust_macros::ensures(forall(|i: USize| Self::word_is(result, i, (*words)[i])))]
-    fn new(words: &'a [Word]) -> WordIter<'a> {
-        WordIter { words, pos: 0 }
-    }
-}
-
-// Same `extern_spec_fn` idiom as `IdxRange::next` above. `Option<&'a Word>`
-// models as `Option<&'a Int>`, so the yielded word has to be named by
-// `exists(|x: Int| result == Some(&x) && ..)`: writing the closure parameter
-// at the Rust element type instead gives
-// `error[E0308]: mismatched types ... expected `&Int`, found `&u64``
-// (`Option`'s `PartialEq` needs both sides at the same model type). No
-// `<&u64 as Model>::Ty` `PartialEq` bound is needed with this shape.
-impl<'a> Iterator for WordIter<'a> {
-    type Item = &'a Word;
-
-    fn next(&mut self) -> Option<&'a Word> {
-        if self.pos < self.words.len() {
-            let item = &self.words[self.pos];
-            self.pos += 1;
-            Some(item)
-        } else {
-            None
-        }
-    }
-}
-
-#[thrust_macros::context]
-impl<'a> WordIter<'a> {
-    #[thrust::extern_spec_fn]
-    #[thrust_macros::ensures(Self::same_words(*it, !it))]
-    #[thrust_macros::ensures(forall(|n: USize, p: USize|
-        Self::words_len_is(*it, n) && p == (*it).1
-            ==> (p < n ==> exists(|x: USize| result == Some(&x) && Self::word_is(*it, p, x))
-                    && p + 1 == (!it).1)
-                && (n <= p ==> result == None && (!it).1 == (*it).1)))]
-    fn _extern_spec_next(it: &mut WordIter<'a>) -> Option<&'a Word> {
-        <WordIter<'a> as Iterator>::next(it)
-    }
-}
+use rustc_index::IdxRange;
+use rustc_index::bit_set::WordIter;
 
 fn main() {
     let mut range: IdxRange<usize> = IdxRange::new(0, 3);
@@ -327,6 +58,6 @@ fn main() {
         && (*result)[1] == 20
         && (*result)[2] == 30
 )]
-fn words() -> &'static [Word] {
+fn words() -> &'static [u64] {
     unimplemented!()
 }

@@ -1,14 +1,13 @@
-//@ignore-on-host: draft, stops at slice indexing by `IntoSliceIdx::Output` in the generic `Index` impl of `IndexSlice`, which has no specification (see README.md)
+//@ignore-on-host: draft, not yet run as its own stage (see README.md)
 //@edition: 2024
-//@compile-flags: -Adead_code -C debug-assertions=off -A unused-variables -A unused_parens
+//@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_TRY_SPECS=1
-// Stage 7 of the rustc-coroutine verification target: `layout()` of rustc_abi's
-// layout/coroutine.rs, with the local iterator adapters it calls (rewrites.md R8).
+// `LayoutData::scalar_pair` of rustc_abi's layout/simple.rs, trusted per the stage plan.
 // The code is the module tree under tests/rustc_coroutine/; this file selects the stage and
 // drives it.
 #![feature(custom_inner_attributes)]
 #![feature(new_range_api)]
-#![thrust::verify_only("rustc_abi::layout::coroutine::layout", "case_study::iter")]
+#![thrust::verify_only("rustc_abi::layout::simple")]
 
 #[path = "../../../rustc_coroutine/compiler/rustc_hashes/src/lib.rs"]
 pub mod rustc_hashes;

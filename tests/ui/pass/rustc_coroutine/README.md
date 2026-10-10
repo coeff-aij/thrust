@@ -1,24 +1,37 @@
 # rustc coroutine `layout()` case study
 
-The target is rustc's `rustc_abi::layout::coroutine` and its dependencies, copied into `target.rs`
-with only annotations added (`//@ignore-on-host`: Thrust does not analyze the whole file yet). The
-goal is a proof that `layout()` does not panic. Each stage file is one part of `target.rs`;
-`tests/ui/fail/rustc_coroutine/<file>.rs` is its fail twin where one exists.
+The target is rustc's `rustc_abi::layout::coroutine` and its dependencies. `target.rs` is the
+whole extraction in one file (`//@ignore-on-host`). The verified code lives in rustc's module
+layout under `tests/rustc_coroutine/compiler/` (`rustc_hashes`, `rustc_index`, `rustc_abi`, one
+crate of three modules), with the case study's own code (the iterator trait and adapters of
+rewrites.md R8 and R9, `Model` declarations, std specifications, `Unwrap`, lemmas) under
+`tests/rustc_coroutine/thrust/`. The goal is a proof that `layout()` does not panic.
 
-| file | content | state |
+Each file below is a crate root that includes the whole tree and selects one stage with
+`#![thrust::verify_only(..)]`; functions outside the selection that have a contract are trusted.
+The root also holds the stage's driver (`main` and the stubs of rewrites.md S5).
+`tests/ui/fail/rustc_coroutine/<file>.rs` is its fail twin where one exists; it is the pass root
+with the driver broken, regenerated and checked by `tests/rustc_coroutine/fail/check.sh`.
+
+| file | selection | state |
 | --- | --- | --- |
-| `values.rs` | Size / Align / Integer / Primitive / Scalar / Niche / TargetDataLayout | verified |
-| `idx.rs` | the `Idx` trait, IdxRange and WordIter iterators | verified |
-| `indexvec.rs` | IndexVec over a native sequence, trusted method contracts | verified |
-| `bitset.rs` | set abstraction of DenseBitSet / BitMatrix / BitIter | verified |
-| `eligibility.rs` | `coroutine_saved_local_eligibility` | full specification, no answer at 300 s, `ignore-on-host` |
-| `univariant.rs` | trusted specification of `univariant` | draft, `ignore-on-host` |
-| `layout.rs` | `layout()` integration | draft, `ignore-on-host` |
+| `values.rs` | `rustc_hashes`, `rustc_abi` (lib.rs), `SliceIter` and its `find` | verified as stage file |
+| `idx.rs` | `rustc_index::idx`, the own iterators `WordIter`, `SliceIter`, `IterEnumerated` | verified as stage file |
+| `indexvec.rs` | `rustc_index::vec`, `rustc_index::slice`, the client `filled` | verified as stage file |
+| `bitset.rs` | `rustc_index::bit_set` | verified as stage file |
+| `simple.rs` | `rustc_abi::layout::simple` | draft, `ignore-on-host` |
+| `univariant.rs` | `LayoutCalculator` of `rustc_abi::layout` | draft, `ignore-on-host` |
+| `eligibility.rs` | `coroutine_saved_local_eligibility` | draft, `ignore-on-host` |
+| `layout.rs` | `layout()` and the adapters of `thrust/iter.rs` | draft, `ignore-on-host` |
 
-No stage file or probe uses std.rs's iterator specifications (`IteratorSpec`, `IntoIteratorSpec`
-and the extern specs built on them): values.rs, eligibility.rs, layout.rs and the iterator probes
-declare Creusot's iterator trait locally, as `tests/ui/pass/creusot/` does, and implement it for
-their own iterators and adapters (rewrites.md R9).
+The states are those of the single-file stage files; the module tree has not been run against
+the solver yet.
+
+No root or probe uses std.rs's iterator specifications (`IteratorSpec`, `IntoIteratorSpec`
+and the extern specs built on them): `tests/rustc_coroutine/thrust/iter.rs` declares Creusot's
+iterator trait, as `tests/ui/pass/creusot/` does, and `BitIter`, `SliceIter`, `IterEnumerated` and
+the adapters implement it (rewrites.md R9). `IdxRange` and `WordIter` implement std's `Iterator`
+with an `extern_spec_fn` contract on `next`.
 
 `probes/` holds one small pass/fail pair per language feature the stages rely on (a `forall` over a
 `Vec`, nested `Vec`s, an enum payload equality, an `Option` existential, a generic predicate in a
