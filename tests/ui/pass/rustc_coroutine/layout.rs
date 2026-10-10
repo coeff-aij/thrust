@@ -1021,6 +1021,17 @@ enum SavedLocalEligibility<VariantIdx, FieldIdx> {
             && thrust_models::exists(|i: USize| i == l && <LocalIdx as Idx>::index_is((*variant_fields)[w][f], i))
             && result.1[l] == SavedLocalEligibility::Assigned(vi))
         || forall(|vn: USize| !<VariantIdx as Idx>::index_is(vi, vn) || vn == w))
+    // 2c. An Assigned local appears at most once in a variant's field list: rustc's pass makes a
+    // local it sees a second time ineligible. `layout()` counts a variant's Assigned locals by it.
+    && forall(|l: usize, w: usize, f: usize, g: usize, vi: <VariantIdx as thrust_models::Model>::Ty|
+        !(0 <= l && l < nb_locals
+            && 0 <= w && w < (*variant_fields).len()
+            && 0 <= f && f < (*variant_fields)[w].len()
+            && 0 <= g && g < (*variant_fields)[w].len()
+            && thrust_models::exists(|i: USize| i == l && <LocalIdx as Idx>::index_is((*variant_fields)[w][f], i))
+            && thrust_models::exists(|i: USize| i == l && <LocalIdx as Idx>::index_is((*variant_fields)[w][g], i))
+            && result.1[l] == SavedLocalEligibility::Assigned(vi))
+        || f == g)
     // 3. An ineligible local has its promoted field index, below the number of members of
     // `inel` (its ghost count `result.0.3`, the position in `inel.iter()`'s enumeration).
     && forall(|l: usize, x: Option<<FieldIdx as thrust_models::Model>::Ty>|
@@ -1266,7 +1277,9 @@ pub fn layout<
             // TODO(proof): `invert_bijective_mapping` needs `u32::can_new` up to the number of
             // fields m, and `FieldIdx::new(invalid_field_idx)` needs `FieldIdx::can_new(c + m)`:
             // both need m, the variant's Assigned locals, bounded by the distinct locals
-            // (c + m <= n), a count no contract states.
+            // (c + m <= n). It holds by eligibility's property 2c (an Assigned local appears once
+            // in its variant) and property 4 (the c ineligible locals are not Assigned), but it is
+            // a count of distinct locals, which no contract states.
             let memory_index = in_memory_order.invert_bijective_mapping();
             let invalid_field_idx = promoted_memory_index.len() + memory_index.len();
             let mut combined_in_memory_order =
