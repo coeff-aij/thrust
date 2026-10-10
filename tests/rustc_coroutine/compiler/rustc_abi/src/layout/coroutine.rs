@@ -648,7 +648,7 @@ pub fn layout<
             let offsets_b = IndexVec::from_raw(offsets.raw.split_off(b_start.index()));
             let offsets_a = offsets;
 
-            // The loop is rustc's; `invariant_hint!` adds the count of the split to what inference
+            // The loop is rustc's; `partial_invariant!` adds the count of the split to what inference
             // finds at the loop. The order is a permutation of `0..n`, n = P + 1 + c, by
             // univariant's `arbitrary_of`, and the counting lemmas give that the second part has
             // at least `n - b_start` entries, each below `n - b_start`: `invert_bijective_mapping`
@@ -661,7 +661,7 @@ pub fn layout<
             let mut in_memory_order_a = IndexVec::<u32, FieldIdx>::new();
             let mut in_memory_order_b = IndexVec::<u32, FieldIdx>::new();
             for i in in_memory_order {
-                thrust_macros::invariant_hint!(
+                thrust_macros::partial_invariant!(
                     |iter: std::vec::IntoIter<FieldIdx>,
                      iter_old: thrust_models::Ghost<std::vec::IntoIter<FieldIdx>>,
                      produced: thrust_models::Ghost<thrust_models::model::Seq<<FieldIdx as thrust_models::Model>::Ty>>,
