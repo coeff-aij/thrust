@@ -27,6 +27,7 @@ struct DefIds {
     array_model: OnceCell<Option<DefId>>,
     closure_model: OnceCell<Option<DefId>>,
     ghost_model: OnceCell<Option<DefId>>,
+    partial_ord_spec: OnceCell<Option<DefId>>,
 
     mut_model_new: OnceCell<Option<DefId>>,
     box_model_new: OnceCell<Option<DefId>>,
@@ -279,6 +280,14 @@ impl<'tcx> DefIdCache<'tcx> {
             .def_ids
             .ghost_model
             .get_or_init(|| self.annotated_def(&crate::analyze::annot::ghost_model_path()))
+    }
+
+    /// The `PartialOrdSpec` trait of std.rs.
+    pub fn partial_ord_spec(&self) -> Option<DefId> {
+        *self
+            .def_ids
+            .partial_ord_spec
+            .get_or_init(|| self.annotated_def(&crate::analyze::annot::partial_ord_spec_path()))
     }
 
     pub fn mut_model_new(&self) -> Option<DefId> {

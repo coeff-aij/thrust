@@ -593,7 +593,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             self.type_builder.owner_fn_id(),
             self.def_ids.model_ty(),
         );
-        let generic_args = self.typeck.node_args(func_expr.hir_id);
+        let generic_args = self.spec_fn_call_args(func_expr);
         tracing::debug!(
             lhs = ?def_id,
             lhs_generic_args = ?generic_args,
@@ -601,12 +601,42 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             outer_generic_args = ?self.generic_args,
             "resolving spec function call in formula"
         );
-        let generic_args = self
-            .instantiate_generics(generic_args, self.generic_args)
-            .unwrap_or(generic_args);
         let instance =
             mir_ty::Instance::try_resolve(self.tcx, typing_env, def_id, generic_args).unwrap();
         (generic_args, instance)
+    }
+
+    /// The generic arguments of the call `func_expr` in the owner's terms.
+    fn spec_fn_call_args(
+        &self,
+        func_expr: &'tcx rustc_hir::Expr<'tcx>,
+    ) -> mir_ty::GenericArgsRef<'tcx> {
+        let generic_args = self.typeck.node_args(func_expr.hir_id);
+        self.instantiate_generics(generic_args, self.generic_args)
+            .unwrap_or(generic_args)
+    }
+
+    /// `ty::compares(..)` for a type whose `PartialOrdSpec` relation is generated from its
+    /// derived `PartialOrd`.
+    fn generated_compares_call(
+        &self,
+        def_id: DefId,
+        func_expr: &'tcx rustc_hir::Expr<'tcx>,
+        args: &'tcx [rustc_hir::Expr<'tcx>],
+    ) -> Option<chc::Formula<rty::FunctionParamIdx>> {
+        let spec_trait = self.def_ids.partial_ord_spec()?;
+        if self.tcx.trait_of_assoc(def_id) != Some(spec_trait) {
+            return None;
+        }
+        let self_ty = self.spec_fn_call_args(func_expr).type_at(0);
+        if !analyze::derive::has_generated_compares(self.tcx, &self.def_ids, self_ty) {
+            return None;
+        }
+        let [x, y, ord] = args else {
+            panic!("`compares` takes three arguments");
+        };
+        let compares = analyze::derive::Compares::new(self.analyzer, &self.type_builder, def_id);
+        Some(compares.formula(self_ty, self.to_term(x), self.to_term(y), self.to_term(ord)))
     }
 
     fn to_formula(&self, hir: &'tcx rustc_hir::Expr<'tcx>) -> chc::Formula<rty::FunctionParamIdx> {
@@ -1622,6 +1652,11 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                             .next()
                             .is_some()
                         {
+                            if let Some(formula) =
+                                self.generated_compares_call(def_id, func_expr, args)
+                            {
+                                return FormulaOrTerm::Formula(formula);
+                            }
                             let (generic_args, instance) =
                                 self.resolve_spec_fn_call(def_id, func_expr);
                             let pred: chc::Pred = match instance {
