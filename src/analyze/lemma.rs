@@ -1,9 +1,13 @@
 //! Checks that let a lemma's contract be assumed where `proof!` does not run it: a lemma
 //! terminates and changes nothing, and `proof!` calls only lemmas.
 //!
-//! A lemma has no loop and no closure, takes no `&mut`, and calls only functions outside the
-//! crate, other lemmas without a cycle, and itself through the companion
-//! `#[thrust_macros::variant]` makes, whose precondition requires the variant to decrease.
+//! As in Verus's proof mode and Creusot's ghost code, a lemma calls only what is known to
+//! terminate without effects: other lemmas without a cycle, itself through the companion
+//! `#[thrust_macros::variant]` makes (whose precondition requires the variant to decrease),
+//! logic functions and predicates, and the model operations of the injected `thrust_models`.
+//! The operations MIR has as statements (arithmetic, comparisons, field and index access) need
+//! no call. A lemma has no loop and no unsafe code, and takes no `&mut`, so that what it
+//! assigns stays its own.
 
 use std::collections::HashMap;
 
@@ -14,8 +18,10 @@ use rustc_span::def_id::{DefId, LocalDefId};
 
 use crate::analyze;
 
-pub fn check(tcx: TyCtxt<'_>, proof_branch: Option<DefId>) {
-    let checker = Checker { tcx };
+/// Checks every lemma of the crate; the errors are reported with those of
+/// [`check_proof_branches`].
+pub fn check_lemmas(tcx: TyCtxt<'_>, proof_branch: Option<DefId>) {
+    let checker = Checker { tcx, proof_branch };
     let lemmas: Vec<LocalDefId> = tcx
         .mir_keys(())
         .iter()
@@ -25,12 +31,27 @@ pub fn check(tcx: TyCtxt<'_>, proof_branch: Option<DefId>) {
     let mut calls = HashMap::new();
     for &lemma in &lemmas {
         checker.check_signature(lemma);
+        checker.check_safe(lemma);
         calls.insert(lemma, checker.lemma_calls(lemma));
     }
     checker.check_acyclic(&lemmas, &calls);
+}
+
+/// Checks the `proof!` branches of the functions whose bodies the analysis reads
+/// (`analyzes_body`), where a branch it takes and the program does not must change nothing.
+pub fn check_proof_branches(
+    tcx: TyCtxt<'_>,
+    proof_branch: Option<DefId>,
+    analyzes_body: impl Fn(LocalDefId) -> bool,
+) {
     if let Some(proof_branch) = proof_branch {
+        let checker = Checker {
+            tcx,
+            proof_branch: Some(proof_branch),
+        };
         for &def_id in tcx.mir_keys(()) {
-            if checker.has_plain_body(def_id) {
+            let id = def_id.to_def_id();
+            if tcx.def_kind(id).is_fn_like() && analyzes_body(def_id) && tcx.is_mir_available(id) {
                 checker.check_proof_branches(def_id, proof_branch);
             }
         }
@@ -40,6 +61,7 @@ pub fn check(tcx: TyCtxt<'_>, proof_branch: Option<DefId>) {
 
 struct Checker<'tcx> {
     tcx: TyCtxt<'tcx>,
+    proof_branch: Option<DefId>,
 }
 
 impl<'tcx> Checker<'tcx> {
@@ -51,40 +73,80 @@ impl<'tcx> Checker<'tcx> {
         self.has_attr(def_id, &analyze::annot::lemma_path())
     }
 
-    fn is_injected_std(&self, def_id: LocalDefId) -> bool {
-        let span = self.tcx.def_span(def_id);
-        matches!(
-            self.tcx.sess.source_map().span_to_filename(span),
-            rustc_span::FileName::Custom(name) if name == crate::INJECTED_STD_FILE_NAME
-        )
+    fn is_lemma_rec(&self, def_id: DefId) -> bool {
+        self.has_attr(def_id, &analyze::annot::lemma_rec_path())
     }
 
-    /// Whether `def_id` is a function with an executable body written in this crate.
-    fn has_plain_body(&self, def_id: LocalDefId) -> bool {
-        let id = def_id.to_def_id();
-        self.tcx.def_kind(id).is_fn_like()
-            && !self.is_injected_std(def_id)
-            && !self.has_attr(id, &analyze::annot::formula_fn_path())
-            && !self.has_attr(id, &analyze::annot::predicate_path())
-            && !self.has_attr(id, &analyze::annot::ignored_path())
-            && !self.has_attr(id, &analyze::annot::extern_spec_fn_path())
-            && self.tcx.is_mir_available(id)
+    /// The types a value of `ty` is made of: the types `ty` names and, through the fields of
+    /// each struct, enum or union among them, the types of the values it holds.
+    fn contained_types(&self, ty: mir_ty::Ty<'tcx>) -> Vec<mir_ty::Ty<'tcx>> {
+        let mut seen = Vec::new();
+        let mut pending = vec![ty];
+        while let Some(ty) = pending.pop() {
+            for ty in ty.walk().filter_map(|arg| arg.as_type()) {
+                if seen.contains(&ty) {
+                    continue;
+                }
+                seen.push(ty);
+                if let mir_ty::Adt(adt, args) = ty.kind() {
+                    pending.extend(adt.all_fields().map(|field| field.ty(self.tcx, args)));
+                }
+            }
+        }
+        seen
     }
 
+    /// A lemma takes nothing it could change the program's state through, so that not running
+    /// it changes nothing.
     fn check_signature(&self, lemma: LocalDefId) {
         let sig = self.tcx.fn_sig(lemma).instantiate_identity().skip_binder();
         let takes_mut = sig.inputs().iter().any(|ty| {
-            ty.walk().any(|arg| {
-                arg.as_type().is_some_and(|ty| {
-                    matches!(ty.kind(), mir_ty::Ref(_, _, mir_ty::Mutability::Mut))
-                })
-            })
+            self.contained_types(*ty)
+                .iter()
+                .any(|ty| matches!(ty.kind(), mir_ty::Ref(_, _, mir_ty::Mutability::Mut)))
         });
         if takes_mut {
+            self.tcx.dcx().span_err(
+                self.tcx.def_span(lemma),
+                "a lemma cannot take a `&mut`, or a value holding one",
+            );
+        }
+    }
+
+    /// A lemma has no unsafe code, as in Verus's proof mode: it is not an `unsafe fn` and has
+    /// no `unsafe` block, so it cannot write through a raw pointer, and it takes no raw pointer
+    /// (`&raw`) either.
+    fn check_safe(&self, lemma: LocalDefId) {
+        if self.tcx.fn_sig(lemma).skip_binder().safety().is_unsafe() {
             self.tcx
                 .dcx()
-                .span_err(self.tcx.def_span(lemma), "a lemma cannot take a `&mut`");
+                .span_err(self.tcx.def_span(lemma), "a lemma cannot be unsafe");
         }
+        let mut finder = UnsafeFinder { spans: Vec::new() };
+        rustc_hir::intravisit::Visitor::visit_body(&mut finder, self.tcx.hir_body_owned_by(lemma));
+        for span in finder.spans {
+            self.tcx.dcx().span_err(
+                span,
+                "a lemma cannot contain an `unsafe` block or a raw pointer",
+            );
+        }
+    }
+
+    /// Whether `def_id` is a function a lemma may call besides lemmas: a logic function or
+    /// predicate, or a model operation of the injected `thrust_models`, which has no effect and
+    /// is never run.
+    fn is_ghost_fn(&self, def_id: DefId) -> bool {
+        let spec = [
+            analyze::annot::logic_path(),
+            analyze::annot::predicate_path(),
+            analyze::annot::formula_fn_path(),
+        ];
+        let model_operation = def_id
+            .as_local()
+            .is_some_and(|local| analyze::is_injected_std(self.tcx, local))
+            && (self.has_attr(def_id, &analyze::annot::ignored_path())
+                || Some(def_id) == self.proof_branch);
+        spec.iter().any(|path| self.has_attr(def_id, path)) || model_operation
     }
 
     /// The lemmas `lemma` calls, other than itself under its variant, after checking that it
@@ -95,17 +157,17 @@ impl<'tcx> Checker<'tcx> {
         if rustc_data_structures::graph::is_cyclic(&body.basic_blocks) {
             dcx.span_err(loop_span(body), "a lemma cannot contain a loop");
         }
-        for decl in &body.local_decls {
-            if matches!(decl.ty.kind(), mir_ty::Closure(..) | mir_ty::Coroutine(..)) {
-                dcx.span_err(decl.source_info.span, "a lemma cannot contain a closure");
-            }
-        }
         let mut lemmas = Vec::new();
         for data in body.basic_blocks.iter() {
             let terminator = data.terminator();
             match &terminator.kind {
-                TerminatorKind::Call { func, fn_span, .. } => {
-                    if let Some(callee) = self.lemma_callee(lemma, func, *fn_span) {
+                TerminatorKind::Call {
+                    func,
+                    args,
+                    fn_span,
+                    ..
+                } => {
+                    if let Some(callee) = self.lemma_callee(lemma, body, func, args, *fn_span) {
                         lemmas.push((callee, *fn_span));
                     }
                 }
@@ -118,22 +180,32 @@ impl<'tcx> Checker<'tcx> {
         lemmas
     }
 
+    /// The lemma a call in `lemma` makes, other than to itself under its variant, after checking
+    /// that the callee is one a lemma may call.
     fn lemma_callee(
         &self,
         lemma: LocalDefId,
+        body: &mir::Body<'tcx>,
         func: &mir::Operand<'tcx>,
+        call_args: &[rustc_span::source_map::Spanned<mir::Operand<'tcx>>],
         span: rustc_span::Span,
     ) -> Option<LocalDefId> {
         let dcx = self.tcx.dcx();
-        let Some((def_id, args)) = func.const_fn_def() else {
-            dcx.span_err(span, "a lemma calls functions only by name");
+        let callee = func.const_fn_def().map(|(def_id, _)| def_id);
+        if callee.is_some_and(|def_id| self.is_ghost_fn(def_id)) {
+            return None;
+        }
+        let Some(local) = callee
+            .filter(|def_id| self.is_lemma(*def_id) || self.is_lemma_rec(*def_id))
+            .and_then(DefId::as_local)
+        else {
+            dcx.span_err(
+                span,
+                "a lemma calls only lemmas, logic functions, predicates and model operations",
+            );
             return None;
         };
-        let Some(local) = def_id.as_local() else {
-            self.check_external_callee(lemma, def_id, args, span);
-            return None;
-        };
-        if self.is_lemma(def_id) {
+        if self.is_lemma(local.to_def_id()) {
             if local == lemma {
                 dcx.span_err(
                     span,
@@ -143,55 +215,30 @@ impl<'tcx> Checker<'tcx> {
             }
             return Some(local);
         }
-        if self.has_attr(def_id, &analyze::annot::lemma_rec_path()) {
-            let target = self.rec_target(local);
-            return (target != lemma).then_some(target);
+        let target = self.rec_target(local);
+        if target != lemma {
+            return Some(target);
         }
-        if !self.is_injected_std(local) {
+        if !passes_own_entries(body, call_args) {
             dcx.span_err(
                 span,
-                "a lemma calls only lemmas and functions outside the crate",
+                "a lemma's recursive call passes the lemma's own parameters as the entry values",
             );
         }
         None
     }
 
-    /// A function outside the crate is assumed to terminate, unless it resolves to an
-    /// implementation in this crate or cannot be resolved yet.
-    fn check_external_callee(
-        &self,
-        lemma: LocalDefId,
-        def_id: DefId,
-        args: mir_ty::GenericArgsRef<'tcx>,
-        span: rustc_span::Span,
-    ) {
-        let typing_env = mir_ty::TypingEnv::post_analysis(self.tcx, lemma.to_def_id());
-        let instance = mir_ty::Instance::try_resolve(self.tcx, typing_env, def_id, args)
-            .ok()
-            .flatten();
-        let resolved_in_crate = instance.is_some_and(|instance| {
-            instance.def_id().as_local().is_some_and(|local| {
-                !self.is_injected_std(local) && !self.is_lemma(local.to_def_id())
-            })
-        });
-        if instance.is_none() || resolved_in_crate {
-            self.tcx.dcx().span_err(
-                span,
-                "a lemma calls only lemmas and functions outside the crate",
-            );
-        }
-    }
-
     fn check_drop(&self, ty: mir_ty::Ty<'tcx>, span: rustc_span::Span) {
-        let runs_local_code = ty.walk().any(|arg| {
-            arg.as_type().is_some_and(|ty| match ty.kind() {
+        let runs_local_code = self
+            .contained_types(ty)
+            .into_iter()
+            .any(|ty| match ty.kind() {
                 mir_ty::Adt(adt, _) => self
                     .tcx
                     .adt_destructor(adt.did())
                     .is_some_and(|dtor| dtor.did.is_local()),
                 _ => false,
-            })
-        });
+            });
         if runs_local_code {
             self.tcx.dcx().span_err(
                 span,
@@ -374,6 +421,76 @@ impl<'tcx> Checker<'tcx> {
             block = next;
         }
         (lemma_calls == 1).then_some((path, assigned))
+    }
+}
+
+/// The `unsafe` blocks written in a body, and the raw pointers it takes (`&raw`).
+struct UnsafeFinder {
+    spans: Vec<rustc_span::Span>,
+}
+
+impl<'tcx> rustc_hir::intravisit::Visitor<'tcx> for UnsafeFinder {
+    fn visit_block(&mut self, block: &'tcx rustc_hir::Block<'tcx>) {
+        if let rustc_hir::BlockCheckMode::UnsafeBlock(rustc_hir::UnsafeSource::UserProvided) =
+            block.rules
+        {
+            self.spans.push(block.span);
+        }
+        rustc_hir::intravisit::walk_block(self, block);
+    }
+
+    fn visit_expr(&mut self, expr: &'tcx rustc_hir::Expr<'tcx>) {
+        if let rustc_hir::ExprKind::AddrOf(rustc_hir::BorrowKind::Raw, _, _) = expr.kind {
+            self.spans.push(expr.span);
+        }
+        rustc_hir::intravisit::walk_expr(self, expr);
+    }
+}
+
+/// Whether the first arguments of a call `body` makes to its own `#[thrust::lemma_rec]`
+/// companion are references to `body`'s parameters, in order: the values on entry that the
+/// companion's precondition compares the variant with.
+fn passes_own_entries(
+    body: &mir::Body<'_>,
+    args: &[rustc_span::source_map::Spanned<mir::Operand<'_>>],
+) -> bool {
+    body.args_iter().zip(args).all(|(param, arg)| {
+        arg.node
+            .place()
+            .and_then(|place| place.as_local())
+            .and_then(|local| referent(body, local))
+            == Some(param)
+    })
+}
+
+/// The local that `local` holds a shared reference to, following copies, when each local on
+/// the way is assigned once.
+fn referent(body: &mir::Body<'_>, mut local: mir::Local) -> Option<mir::Local> {
+    loop {
+        let mut assignments = body.basic_blocks.iter().flat_map(|data| {
+            data.statements.iter().filter_map(|stmt| match &stmt.kind {
+                mir::StatementKind::Assign(assign) if assign.0.as_local() == Some(local) => {
+                    Some(&assign.1)
+                }
+                _ => None,
+            })
+        });
+        let (Some(rvalue), None) = (assignments.next(), assignments.next()) else {
+            return None;
+        };
+        let assigned_by_call = body.basic_blocks.iter().any(|data| {
+            matches!(&data.terminator().kind, TerminatorKind::Call { destination, .. } if destination.as_local() == Some(local))
+        });
+        if assigned_by_call {
+            return None;
+        }
+        match rvalue {
+            mir::Rvalue::Ref(_, mir::BorrowKind::Shared, place) => return place.as_local(),
+            mir::Rvalue::Use(mir::Operand::Copy(place) | mir::Operand::Move(place)) => {
+                local = place.as_local()?;
+            }
+            _ => return None,
+        }
     }
 }
 

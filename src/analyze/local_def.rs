@@ -202,11 +202,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// library's own proofs, such as the laws its impls prove; they are checked once, by compiling
     /// `std.rs` as an ordinary source file, rather than again in every crate.
     pub fn is_injected_std(&self) -> bool {
-        let span = self.tcx.def_span(self.local_def_id);
-        matches!(
-            self.tcx.sess.source_map().span_to_filename(span),
-            rustc_span::FileName::Custom(name) if name == crate::INJECTED_STD_FILE_NAME
-        )
+        analyze::is_injected_std(self.tcx, self.local_def_id)
     }
 
     pub fn is_annotated_as_trusted(&self) -> bool {

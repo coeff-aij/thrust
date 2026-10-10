@@ -602,6 +602,15 @@ struct InstantiationKey<'tcx> {
 /// arguments, and the calling function when those arguments mention its type parameters.
 type PredicateInstanceKey<'tcx> = (DefId, mir_ty::GenericArgsRef<'tcx>, Option<DefId>);
 
+/// Whether `def_id` comes from the injected `std.rs`.
+pub fn is_injected_std(tcx: mir_ty::TyCtxt<'_>, def_id: LocalDefId) -> bool {
+    let span = tcx.def_span(def_id);
+    matches!(
+        tcx.sess.source_map().span_to_filename(span),
+        rustc_span::FileName::Custom(name) if name == crate::INJECTED_STD_FILE_NAME
+    )
+}
+
 /// Identifies one analysis instance of a function body.
 ///
 /// A def may be analyzed more than once: the placeholder analysis (with the
@@ -1200,7 +1209,7 @@ impl<'tcx> Analyzer<'tcx> {
             if defining.contains(&key) && defining.last() != Some(&key) {
                 self.tcx.dcx().span_fatal(
                     self.tcx.def_span(def_id),
-                    "mutual recursion between predicates or logic functions is not supported",
+                    "a predicate or logic function is called from a function or variant it calls, which is not supported",
                 );
             }
             return pred.clone();
@@ -1218,7 +1227,6 @@ impl<'tcx> Analyzer<'tcx> {
         let formula_fn = self
             .formula_fn_with_args(local_def_id, generic_args, owner_fn_id)
             .unwrap();
-        self.defining_predicates.borrow_mut().pop();
         let type_builder = self.type_builder(self.def_ids(), owner_fn_id);
         self.register_enum_defs(
             formula_fn
@@ -1267,13 +1275,15 @@ impl<'tcx> Analyzer<'tcx> {
                 );
             }
         }
+        self.defining_predicates.borrow_mut().pop();
         pred
     }
 
     /// The clauses requiring the variant of the logic function `local_def_id` to be
     /// non-negative and to decrease at each call `body` makes to `pred`, its own instance, under
     /// the conditions on the way to the call. A `define-fun-rec` that does not terminate could
-    /// make the query inconsistent.
+    /// make the query inconsistent, so the variant is translated while the function is being
+    /// defined: a variant that calls it could otherwise be discharged by that inconsistency.
     fn termination_clauses(
         &self,
         local_def_id: LocalDefId,
@@ -1290,9 +1300,16 @@ impl<'tcx> Analyzer<'tcx> {
         let variant_def_id = self
             .extract_path_with_attr(local_def_id, &analyze::annot::variant_path_path())
             .expect("a recursive logic function has a variant");
+        use mir_ty::TypeVisitableExt as _;
+        self.defining_predicates.borrow_mut().push((
+            variant_def_id,
+            generic_args,
+            generic_args.has_param().then_some(owner_fn_id),
+        ));
         let variant_fn = self
             .formula_fn_with_args(variant_def_id.expect_local(), generic_args, owner_fn_id)
             .expect("a variant is a formula function");
+        self.defining_predicates.borrow_mut().pop();
         let annot_fn::FormulaFnBody::Term(variant) = variant_fn.body() else {
             panic!("a variant is a term");
         };

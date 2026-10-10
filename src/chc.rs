@@ -915,19 +915,9 @@ impl<V> Term<V> {
         }
     }
 
-    /// The forall functions applied anywhere in this term.
-    pub fn forall_fns(&self) -> Vec<&ForallPred> {
-        let mut fns = Vec::new();
-        self.collect_forall_fns(&mut fns);
-        fns
-    }
-
-    fn collect_forall_fns<'a>(&'a self, fns: &mut Vec<&'a ForallPred>) {
+    /// The immediate subterms of this term, in order.
+    fn subterms(&self) -> Vec<&Term<V>> {
         match self {
-            Term::ForallFn(pred, args) => {
-                fns.push(pred);
-                args.iter().for_each(|t| t.collect_forall_fns(fns));
-            }
             Term::Box(t)
             | Term::BoxCurrent(t)
             | Term::MutCurrent(t)
@@ -935,52 +925,13 @@ impl<V> Term<V> {
             | Term::TupleProj(t, _)
             | Term::DatatypeDiscr(_, t)
             | Term::ArrayLambda(_, _, t)
-            | Term::IntToBitVec { term: t, .. } => t.collect_forall_fns(fns),
-            Term::Mut(t1, t2) => {
-                t1.collect_forall_fns(fns);
-                t2.collect_forall_fns(fns);
-            }
+            | Term::IntToBitVec { term: t, .. } => vec![&**t],
+            Term::Mut(t1, t2) => vec![&**t1, &**t2],
             Term::App(_, args)
             | Term::Tuple(args)
             | Term::DatatypeCtor(_, _, args)
-            | Term::UserDefinedFn(_, _, args) => {
-                args.iter().for_each(|t| t.collect_forall_fns(fns))
-            }
-            Term::Null
-            | Term::ForallDefault(_)
-            | Term::Var(_)
-            | Term::Bool(_)
-            | Term::Int(_)
-            | Term::String(_)
-            | Term::ArrayEmpty(_, _)
-            | Term::SeqEmpty(_)
-            | Term::UserQuantifiedVar(_, _) => {}
-        }
-    }
-
-    /// The user-defined functions called anywhere in this term.
-    fn user_defined_fns(&self) -> Vec<&UserDefinedPred> {
-        match self {
-            Term::UserDefinedFn(symbol, _, args) => std::iter::once(symbol)
-                .chain(args.iter().flat_map(Term::user_defined_fns))
-                .collect(),
-            Term::Box(t)
-            | Term::BoxCurrent(t)
-            | Term::MutCurrent(t)
-            | Term::MutFinal(t)
-            | Term::TupleProj(t, _)
-            | Term::DatatypeDiscr(_, t)
-            | Term::ArrayLambda(_, _, t)
-            | Term::IntToBitVec { term: t, .. } => t.user_defined_fns(),
-            Term::Mut(t1, t2) => t1
-                .user_defined_fns()
-                .into_iter()
-                .chain(t2.user_defined_fns())
-                .collect(),
-            Term::App(_, args)
-            | Term::Tuple(args)
-            | Term::DatatypeCtor(_, _, args)
-            | Term::ForallFn(_, args) => args.iter().flat_map(Term::user_defined_fns).collect(),
+            | Term::UserDefinedFn(_, _, args)
+            | Term::ForallFn(_, args) => args.iter().collect(),
             Term::Null
             | Term::ForallDefault(_)
             | Term::Var(_)
@@ -991,6 +942,37 @@ impl<V> Term<V> {
             | Term::SeqEmpty(_)
             | Term::UserQuantifiedVar(_, _) => Vec::new(),
         }
+    }
+
+    /// This term and all its subterms, each before its own subterms.
+    fn preorder(&self) -> Vec<&Term<V>> {
+        let mut terms = vec![self];
+        for t in self.subterms() {
+            terms.extend(t.preorder());
+        }
+        terms
+    }
+
+    /// The forall functions applied anywhere in this term.
+    pub fn forall_fns(&self) -> Vec<&ForallPred> {
+        self.preorder()
+            .into_iter()
+            .filter_map(|t| match t {
+                Term::ForallFn(pred, _) => Some(pred),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The user-defined functions called anywhere in this term.
+    fn user_defined_fns(&self) -> Vec<&UserDefinedPred> {
+        self.preorder()
+            .into_iter()
+            .filter_map(|t| match t {
+                Term::UserDefinedFn(symbol, _, _) => Some(symbol),
+                _ => None,
+            })
+            .collect()
     }
 
     /// The calls to `symbol` in this term, each with the `ite` conditions on the way to it.
@@ -1022,51 +1004,24 @@ impl<V> Term<V> {
                 *guards.last_mut().unwrap() = cond.clone().not();
                 else_.collect_guarded_calls(symbol, guards, calls);
                 guards.pop();
-            }
-            Term::UserDefinedFn(callee, _, args) => {
-                if callee == symbol {
-                    calls.push(GuardedCall {
-                        guards: guards.clone(),
-                        args: args.clone(),
-                    });
-                }
-                for arg in args {
-                    arg.collect_guarded_calls(symbol, guards, calls);
-                }
+                return;
             }
             Term::ArrayLambda(_, _, t) => {
                 if t.user_defined_fns().contains(&symbol) {
                     unimplemented!("a recursive call under a lambda: {symbol}");
                 }
+                return;
             }
-            Term::Box(t)
-            | Term::BoxCurrent(t)
-            | Term::MutCurrent(t)
-            | Term::MutFinal(t)
-            | Term::TupleProj(t, _)
-            | Term::DatatypeDiscr(_, t)
-            | Term::IntToBitVec { term: t, .. } => t.collect_guarded_calls(symbol, guards, calls),
-            Term::Mut(t1, t2) => {
-                t1.collect_guarded_calls(symbol, guards, calls);
-                t2.collect_guarded_calls(symbol, guards, calls);
+            Term::UserDefinedFn(callee, _, args) if callee == symbol => {
+                calls.push(GuardedCall {
+                    guards: guards.clone(),
+                    args: args.clone(),
+                });
             }
-            Term::App(_, args)
-            | Term::Tuple(args)
-            | Term::DatatypeCtor(_, _, args)
-            | Term::ForallFn(_, args) => {
-                for arg in args {
-                    arg.collect_guarded_calls(symbol, guards, calls);
-                }
-            }
-            Term::Null
-            | Term::ForallDefault(_)
-            | Term::Var(_)
-            | Term::Bool(_)
-            | Term::Int(_)
-            | Term::String(_)
-            | Term::ArrayEmpty(_, _)
-            | Term::SeqEmpty(_)
-            | Term::UserQuantifiedVar(_, _) => {}
+            _ => {}
+        }
+        for t in self.subterms() {
+            t.collect_guarded_calls(symbol, guards, calls);
         }
     }
 

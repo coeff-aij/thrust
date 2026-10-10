@@ -543,12 +543,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
     }
 
     pub fn to_formula_fn(&self) -> FormulaFn<'tcx> {
-        let is_logic = self
-            .tcx
-            .get_attrs_by_path(self.local_def_id.to_def_id(), &analyze::annot::logic_path())
-            .next()
-            .is_some();
-        let body = if is_logic {
+        let body = if self.is_logic(self.local_def_id.to_def_id()) {
             FormulaFnBody::Term(self.to_term(self.logic_body_expr().0))
         } else {
             FormulaFnBody::Formula(self.to_formula(self.body.value))
@@ -1682,12 +1677,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                                 }
                             }
                         }
-                        if self
-                            .tcx
-                            .get_attrs_by_path(def_id, &analyze::annot::logic_path())
-                            .next()
-                            .is_some()
-                        {
+                        if self.is_logic(def_id) {
                             let (generic_args, instance) =
                                 self.resolve_spec_fn_call(def_id, func_expr);
                             let Some(instance) = instance else {
@@ -1773,14 +1763,21 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                                     );
                                     pred.into()
                                 }
-                                Some(instance) => self
-                                    .analyzer
-                                    .predicate_with_args(
-                                        instance.def_id(),
-                                        instance.args,
-                                        self.type_builder.owner_fn_id(),
-                                    )
-                                    .into(),
+                                Some(instance) => {
+                                    if instance.def_id() == self.local_def_id.to_def_id() {
+                                        self.tcx.dcx().span_fatal(
+                                            hir.span,
+                                            "a predicate cannot call itself; a recursive one is a #[thrust_macros::logic] function with #[thrust_macros::variant(..)]",
+                                        );
+                                    }
+                                    self.analyzer
+                                        .predicate_with_args(
+                                            instance.def_id(),
+                                            instance.args,
+                                            self.type_builder.owner_fn_id(),
+                                        )
+                                        .into()
+                                }
                             };
                             tracing::debug!("resolved predicate call in formula: {:?}", pred);
                             let arg_terms = args.iter().map(|e| self.to_term(e)).collect();
