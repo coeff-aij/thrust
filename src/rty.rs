@@ -1471,6 +1471,28 @@ impl<T> Type<T> {
         self.map_var(|_v| panic!("unexpected variable"))
     }
 
+    /// Whether a refinement inside this type, at any depth, has a predicate variable.
+    pub fn has_pred_var(&self) -> bool {
+        match self {
+            Type::Int(_)
+            | Type::UInt(_)
+            | Type::BitVec(_)
+            | Type::Bool
+            | Type::String
+            | Type::Never
+            | Type::Param(_)
+            | Type::Alias(_) => false,
+            Type::Pointer(ty) => ty.elem.has_pred_var(),
+            Type::Function(ty) => {
+                ty.params.iter().any(RefinedType::has_pred_var) || ty.ret.has_pred_var()
+            }
+            Type::Tuple(ty) => ty.elems.iter().any(RefinedType::has_pred_var),
+            Type::Array(ty) => ty.index.has_pred_var() || ty.elem.has_pred_var(),
+            Type::Seq(elem) => elem.has_pred_var(),
+            Type::Enum(ty) => ty.args.iter().any(RefinedType::has_pred_var),
+        }
+    }
+
     pub fn strip_refinement(self) -> Type<Closed> {
         match self {
             Type::Int(width) => Type::Int(width),
@@ -2205,6 +2227,11 @@ impl<FV> RefinedType<FV> {
 
     pub fn extend_refinement(&mut self, refinement: Refinement<FV>) {
         self.refinement.push_conj(refinement);
+    }
+
+    /// Whether the refinement of this type or of a type inside it has a predicate variable.
+    pub fn has_pred_var(&self) -> bool {
+        self.refinement.has_pred_var() || self.ty.has_pred_var()
     }
 
     pub fn strip_refinement(self) -> Type<Closed> {

@@ -2,11 +2,12 @@
 
 use std::collections::HashSet;
 
-use rustc_hir::def_id::{DefId, CRATE_DEF_ID};
+use rustc_hir::def_id::CRATE_DEF_ID;
 use rustc_middle::ty::{self as mir_ty, TyCtxt};
 use rustc_span::def_id::LocalDefId;
 
 use crate::analyze;
+use crate::analyze::selection::ItemPath;
 use crate::chc;
 use crate::chc::debug;
 use crate::pretty::PrettyDisplayExt as _;
@@ -69,8 +70,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         // Refinement order decides how predicate variables are numbered, so collect these
         // in the order `mir_keys` yields them rather than in a hash order.
         let mut trait_method_spec_keys = Vec::new();
-        let mut spec_targets = HashSet::new();
         let mut impl_methods_with_own_contract = Vec::new();
+        let mut local_spec_targets = Vec::new();
         for local_def_id in self.tcx.mir_keys(()) {
             if !self.tcx.def_kind(*local_def_id).is_fn_like() {
                 keys.swap_remove(local_def_id);
@@ -79,7 +80,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             let analyzer = self.ctx.local_def_analyzer(*local_def_id);
             if analyzer.is_annotated_as_extern_spec_fn() {
                 let target_def_id = analyzer.extern_spec_fn_target_def_id();
-                spec_targets.insert(target_def_id);
                 if let Some(local_target_def_id) = target_def_id.as_local() {
                     keys.swap_remove(&local_target_def_id);
                     if self
@@ -89,6 +89,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     {
                         impl_methods_with_own_contract.push(target_def_id);
                     }
+                    local_spec_targets.push(local_target_def_id);
                     // The spec is the target's contract; a trusted target's body is not
                     // checked against it.
                     if self
@@ -130,9 +131,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 keys.swap_remove(local_def_id);
             }
         }
-        self.trust_unselected(&spec_targets);
         for def_id in impl_methods_with_own_contract {
             self.ctx.register_impl_method_with_own_contract(def_id);
+        }
+        // Nor is the body of a target outside `verify_only`, whose contract the spec writes.
+        for local_target_def_id in local_spec_targets {
+            if self.is_outside_selection(local_target_def_id) {
+                self.skip_analysis.insert(local_target_def_id);
+            }
         }
         // A closure is skipped when its typeck root is, so roots are refined first.
         let (roots, nested): (Vec<&LocalDefId>, Vec<&LocalDefId>) = keys
@@ -146,64 +152,51 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         }
     }
 
-    /// Under `#![thrust::verify_only(..)]`, skips the body of each function outside the selection
-    /// that has a written contract, as `#[thrust::trusted]` does. A function without one is
-    /// analyzed, because its callers use the contract inferred from its body.
-    fn trust_unselected(&mut self, spec_targets: &HashSet<DefId>) {
+    /// Whether `local_def_id` is a function outside the selection of `#![thrust::verify_only(..)]`
+    /// whose body is trusted when its contract is written: a typeck root that is not a trait law.
+    fn is_outside_selection(&self, local_def_id: LocalDefId) -> bool {
+        let def_id = local_def_id.to_def_id();
+        self.selection.as_ref().is_some_and(|selection| {
+            self.tcx.typeck_root_def_id(def_id) == def_id
+                && !self.is_trait_law(local_def_id)
+                && !selection.contains(self.tcx, def_id)
+        })
+    }
+
+    /// Reports each `#![thrust::verify_only(..)]` entry that selects no function of the crate,
+    /// nor a law inherited by one of its impls.
+    fn report_unmatched_selection(&self) {
         let Some(selection) = &self.selection else {
             return;
         };
-        let mut trusted = 0;
-        for local_def_id in self.tcx.mir_keys(()) {
-            let def_id = local_def_id.to_def_id();
-            if !self.tcx.def_kind(def_id).is_fn_like()
-                || self.tcx.typeck_root_def_id(def_id) != def_id
-                || self.skip_analysis.contains(local_def_id)
-                || self.is_trait_law(*local_def_id)
-                || selection.contains(self.tcx, def_id)
-            {
-                continue;
-            }
-            let analyzer = self.ctx.local_def_analyzer(*local_def_id);
-            if analyzer.is_annotated_as_extern_spec_fn()
-                || analyzer.is_annotated_as_trusted()
-                || analyzer.is_injected_std()
-            {
-                continue;
-            }
-            let trait_item_has_contract = self
-                .tcx
-                .opt_associated_item(def_id)
-                .and_then(|item| item.trait_item_def_id)
-                .is_some_and(|trait_item| {
-                    spec_targets.contains(&trait_item)
-                        || trait_item.as_local().is_some_and(|trait_item| {
-                            self.tcx.hir_maybe_body_owned_by(trait_item).is_some()
-                                && self.ctx.local_def_analyzer(trait_item).is_fully_annotated()
-                        })
-                });
-            let has_contract = spec_targets.contains(&def_id)
-                || self
-                    .ctx
-                    .local_def_analyzer(*local_def_id)
-                    .is_fully_annotated()
-                || trait_item_has_contract;
-            if has_contract {
-                tracing::debug!(def_id = %self.tcx.def_path_str(def_id), "trusted outside verify_only");
-                self.skip_analysis.insert(*local_def_id);
-                trusted += 1;
+        let mut paths: Vec<_> = self
+            .tcx
+            .mir_keys(())
+            .iter()
+            .map(|local_def_id| local_def_id.to_def_id())
+            .filter(|def_id| self.tcx.def_kind(*def_id).is_fn_like())
+            .map(|def_id| ItemPath::of(self.tcx, def_id))
+            .collect();
+        for (trait_def_id, laws) in self.ctx.trait_laws.borrow().iter() {
+            let impls = self.tcx.all_local_trait_impls(()).get(trait_def_id);
+            for impl_local in impls.into_iter().flatten() {
+                for law_def_id in laws {
+                    paths.push(ItemPath::of_inherited(
+                        self.tcx,
+                        impl_local.to_def_id(),
+                        *law_def_id,
+                    ));
+                }
             }
         }
-        tracing::info!(
-            trusted,
-            "functions with a contract trusted outside verify_only"
-        );
+        selection.report_unmatched(self.tcx, &paths);
     }
 
     #[tracing::instrument(skip(self), fields(def_id = %self.tcx.def_path_str(local_def_id)))]
     fn refine_fn_def(&mut self, local_def_id: LocalDefId) {
         let sig = self.ctx.fn_sig(local_def_id.to_def_id());
         let is_law_impl = self.is_law_impl(local_def_id);
+        let outside_selection = self.is_outside_selection(local_def_id);
         let mut analyzer = self.ctx.local_def_analyzer(local_def_id);
 
         if analyzer.is_annotated_as_trusted() {
@@ -249,6 +242,19 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             }
         }
 
+        // Outside `verify_only`, a function whose contract leaves nothing to infer from its body
+        // is trusted, as `#[thrust::trusted]` is; one with a predicate variable in its contract
+        // is analyzed, because its callers use the contract inferred from its body.
+        let mut expected = None;
+        if outside_selection && !self.skip_analysis.contains(&local_def_id) {
+            let ty = analyzer.expected_ty();
+            if !ty.has_pred_var() {
+                tracing::debug!("trusted outside verify_only");
+                self.skip_analysis.insert(local_def_id);
+            }
+            expected = Some(ty);
+        }
+
         let owner_fn_id = analyzer.owner_fn_id;
         let owner_fn_id_args = analyzer.owner_fn_id_args;
         use mir_ty::TypeVisitableExt as _;
@@ -267,7 +273,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 self.ctx
                     .register_deferred_def(owner_fn_id, local_def_id, owner_fn_id_args);
             } else {
-                let expected = analyzer.expected_ty();
+                let expected = expected.unwrap_or_else(|| analyzer.expected_ty());
                 self.ctx
                     .register_generic_def(owner_fn_id, local_def_id, Some(expected));
             }
@@ -280,7 +286,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 owner_fn_id_args,
             );
         } else {
-            let expected = analyzer.expected_ty();
+            let expected = expected.unwrap_or_else(|| analyzer.expected_ty());
             self.ctx.register_def(owner_fn_id, expected);
         }
     }
@@ -627,6 +633,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         analyze::lemma::check(self.tcx, self.ctx.def_ids().proof_branch());
         self.analyze_raw_command_annot();
         self.register_trait_laws();
+        self.report_unmatched_selection();
         self.refine_local_defs();
         self.check_impl_refinements();
         let keys: Vec<_> = self.tcx.mir_keys(()).iter().copied().collect();
