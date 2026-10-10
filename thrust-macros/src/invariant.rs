@@ -1,9 +1,9 @@
 //! Expansion of `thrust_macros::invariant!`, its partial counterpart
-//! `thrust_macros::invariant_hint!`, and their context-carrying siblings
-//! `thrust_macros::_invariant_with_context!` and `_invariant_hint_with_context!`.
+//! `thrust_macros::partial_invariant!`, and their context-carrying siblings
+//! `thrust_macros::_invariant_with_context!` and `_partial_invariant_with_context!`.
 //!
 //! The two forms differ only in the marker they call: an `invariant!` is the loop
-//! head's whole invariant, an `invariant_hint!` is conjoined with the inferred one.
+//! head's whole invariant, a `partial_invariant!` is conjoined with the inferred one.
 //!
 //! Both expand a predicate closure with explicit parameter types into a
 //! `#[thrust::formula_fn]` over `Model::Ty` parameters plus a marker call
@@ -44,10 +44,29 @@ pub enum Marker {
 }
 
 impl Marker {
+    /// The invariant form a macro named `name` is, or `None` for any other macro.
+    pub fn of_macro(name: &str) -> Option<Self> {
+        match name {
+            "invariant" => Some(Marker::Full),
+            "partial_invariant" => Some(Marker::Partial),
+            _ => None,
+        }
+    }
+
+    /// The context-carrying counterpart `#[thrust_macros::context]` rewrites the form into.
+    pub fn with_context_path(self) -> syn::Path {
+        match self {
+            Marker::Full => syn::parse_quote!(::thrust_macros::_invariant_with_context),
+            Marker::Partial => {
+                syn::parse_quote!(::thrust_macros::_partial_invariant_with_context)
+            }
+        }
+    }
+
     fn ident(self) -> syn::Ident {
         match self {
             Marker::Full => format_ident!("__invariant_marker"),
-            Marker::Partial => format_ident!("__invariant_hint_marker"),
+            Marker::Partial => format_ident!("__partial_invariant_marker"),
         }
     }
 }

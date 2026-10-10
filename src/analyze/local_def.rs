@@ -8,6 +8,7 @@ use rustc_middle::ty::{self as mir_ty, TyCtxt, TypeAndMut};
 use rustc_span::def_id::{DefId, LocalDefId};
 
 use crate::analyze;
+use crate::analyze::did_cache::InvariantMarker;
 use crate::chc;
 use crate::pretty::PrettyDisplayExt as _;
 use crate::refine::{self, BasicBlockType, TypeBuilder};
@@ -936,10 +937,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// Scans the body for loop-invariant marker calls and groups them by
     /// enclosing loop header. Multiple invariants for the same header are kept
     /// in source order; the caller is responsible for AND'ing them. Each carries
-    /// whether it is partial (`invariant_hint!`).
+    /// the marker it was written with.
     fn collect_loop_invariant_annotations(
         &self,
-    ) -> HashMap<BasicBlock, Vec<(LocalDefId, mir_ty::GenericArgsRef<'tcx>, bool)>> {
+    ) -> HashMap<BasicBlock, Vec<(LocalDefId, mir_ty::GenericArgsRef<'tcx>, InvariantMarker)>> {
         let mut loop_invariants: HashMap<_, Vec<_>> = HashMap::new();
         for (bb, data) in self.body.basic_blocks.iter_enumerated() {
             let Some(term) = &data.terminator else {
@@ -951,7 +952,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             let Some((def_id, _)) = func.const_fn_def() else {
                 continue;
             };
-            let Some(partial) = self.ctx.def_ids().invariant_marker_kind(def_id) else {
+            let Some(marker) = self.ctx.def_ids().invariant_marker_kind(def_id) else {
                 continue;
             };
 
@@ -968,7 +969,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             loop_invariants.entry(header).or_default().push((
                 formula_def_id,
                 *generic_args,
-                partial,
+                marker,
             ));
         }
         loop_invariants
@@ -1203,12 +1204,13 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 // invariant as its precondition. Multiple `invariant!` calls at
                 // the same header are AND'd in source order.
                 //
-                // When one of them is partial (`invariant_hint!`), or with
-                // `THRUST_INVARIANT_HINTS` set, the block instead keeps the
-                // template's predicate variable and the invariants are conjoined
-                // to it, so inference fills in what the annotations leave out.
-                let partial = std::env::var_os("THRUST_INVARIANT_HINTS").is_some()
-                    || invariants.iter().any(|&(_, _, partial)| partial);
+                // When one of them is partial (`partial_invariant!`), the block
+                // instead keeps the template's predicate variable and the
+                // invariants are conjoined to it, so inference fills in what the
+                // annotations leave out.
+                let partial = invariants
+                    .iter()
+                    .any(|&(_, _, marker)| marker == InvariantMarker::Partial);
                 let mut bty = if partial {
                     self.type_builder
                         .for_template(&mut self.ctx)

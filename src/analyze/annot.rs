@@ -366,11 +366,11 @@ pub fn invariant_marker_path() -> [Symbol; 3] {
     ]
 }
 
-pub fn invariant_hint_marker_path() -> [Symbol; 3] {
+pub fn partial_invariant_marker_path() -> [Symbol; 3] {
     [
         Symbol::intern("thrust"),
         Symbol::intern("def"),
-        Symbol::intern("invariant_hint_marker"),
+        Symbol::intern("partial_invariant_marker"),
     ]
 }
 
