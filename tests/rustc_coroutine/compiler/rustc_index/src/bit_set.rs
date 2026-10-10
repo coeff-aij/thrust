@@ -21,6 +21,10 @@ pub struct DenseBitSet<T> {
     marker: PhantomData<T>,
     // Rewrite (rewrites.md S11): the number of members, proof-only (`Ghost` has no runtime data).
     // The bodies are trusted, so the contracts of `new_empty`, `insert` and `insert_all` define it.
+    // The trusted `iter` relies on it being the number of members below `domain_size`. That holds
+    // because the fields are private to this module and those three (with `clear_excess_bits`,
+    // called only by `insert_all`) are their only writers; a
+    // type invariant (Creusot's `Invariant`, Verus's `type_invariant`) would make it checked.
     card: thrust_models::Ghost<USize>,
 }
 
