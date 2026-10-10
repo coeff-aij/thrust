@@ -337,6 +337,7 @@ fn classify_spec_bounds<'tcx>(
     for clause in clauses {
         let bound = match clause.as_projection_clause() {
             Some(projection) => projection_bound(tcx, typing_env, projection.skip_binder()),
+            None if is_model_eq_clause(tcx, clause) => model_eq_bound(tcx, typing_env, clause),
             None => trait_bound(tcx, &infcx, typing_env, clause),
         };
         match bound {
@@ -346,6 +347,55 @@ fn classify_spec_bounds<'tcx>(
         }
     }
     Ok(assumed)
+}
+
+fn is_model_eq_clause(tcx: TyCtxt<'_>, clause: mir_ty::Clause<'_>) -> bool {
+    clause.as_trait_clause().is_some_and(|pred| {
+        tcx.get_attrs_by_path(
+            pred.skip_binder().trait_ref.def_id,
+            &analyze::annot::model_eq_path(),
+        )
+        .next()
+        .is_some()
+    })
+}
+
+/// `ty: ModelEq` of std.rs, decided from the structure of `ty`: `==` on its values is equality of
+/// their models unless it holds a `&mut`, whose model also has the final value, which `==` does
+/// not read. A local ADT is looked into through its fields, a foreign one through its type
+/// arguments. A type parameter or an unresolved projection in `ty` makes the bound assumed.
+fn model_eq_bound<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    typing_env: mir_ty::TypingEnv<'tcx>,
+    clause: mir_ty::Clause<'tcx>,
+) -> SpecBound {
+    let self_ty = clause.as_trait_clause().unwrap().skip_binder().self_ty();
+    let self_ty = tcx
+        .try_normalize_erasing_regions(typing_env, self_ty)
+        .unwrap_or(self_ty);
+    let mut assumed = false;
+    let mut visited = HashSet::new();
+    let mut pending = vec![self_ty];
+    while let Some(ty) = pending.pop() {
+        if !visited.insert(ty) {
+            continue;
+        }
+        for ty in ty.walk().filter_map(|arg| arg.as_type()) {
+            match ty.kind() {
+                mir_ty::TyKind::Ref(_, _, mir_ty::Mutability::Mut) => return SpecBound::Fails,
+                mir_ty::TyKind::Param(_) | mir_ty::TyKind::Alias(..) => assumed = true,
+                mir_ty::TyKind::Adt(adt, args) if adt.did().is_local() => {
+                    pending.extend(adt.all_fields().map(|field| field.ty(tcx, args)));
+                }
+                _ => {}
+            }
+        }
+    }
+    if assumed {
+        SpecBound::Assumed
+    } else {
+        SpecBound::Holds
+    }
 }
 
 fn trait_bound<'tcx>(
