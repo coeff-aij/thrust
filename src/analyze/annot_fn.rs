@@ -731,9 +731,10 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
 
     /// The contract of the function a `pre!`/`post!` receiver names by its path, such as
     /// `<F as Deref>::deref`. At type arguments that still name type parameters it is the
-    /// contract a call there is given; otherwise that of the function the path resolves to.
-    /// The precondition of the former is `true`, which holds at an instance only if the impl
-    /// reached accepts any arguments, so `pre!` records it to be checked there as a call does.
+    /// contract a call there is given: the trait-level spec when there is one, and otherwise one
+    /// whose precondition is `true`, which holds at an instance only if the impl reached accepts
+    /// any arguments, so `pre!` records it to be checked there as a call does. At other type
+    /// arguments it is the contract of the function the path resolves to.
     fn fn_item_contract(
         &self,
         receiver: &'tcx rustc_hir::Expr<'tcx>,
@@ -748,6 +749,12 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         let instance =
             mir_ty::Instance::try_resolve(self.tcx, typing_env, def_id, generic_args).unwrap();
         let Some(instance) = instance else {
+            if let Some(fn_ty) =
+                self.analyzer
+                    .known_function_ty_with_args(def_id, generic_args, owner_fn_id)
+            {
+                return Some(fn_ty);
+            }
             if names_precondition {
                 self.analyzer
                     .record_assumed_total_method(owner_fn_id, def_id, generic_args);

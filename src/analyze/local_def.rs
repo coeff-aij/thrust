@@ -451,6 +451,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     mir_ty::EarlyBinder::bind(args).instantiate(self.tcx, self.generic_args)
                 };
                 if args.has_param() {
+                    // A trait-level spec, as a call at the type parameters takes.
+                    let _ = self.ctx.def_ty_with_args(def_id, args, self.owner_fn_id);
                     continue;
                 }
                 let typing_env = mir_ty::TypingEnv::fully_monomorphized();
