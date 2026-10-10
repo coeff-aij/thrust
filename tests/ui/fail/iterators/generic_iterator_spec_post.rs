@@ -4,7 +4,7 @@
 
 // The pass twin returning the item of a second step.
 
-#[thrust_macros::requires(true)]
+#[thrust_macros::requires(thrust_macros::pre!(<I as Iterator>::next(it)))]
 #[thrust_macros::ensures(thrust_macros::post!(<I as Iterator>::next(it), result))]
 fn step<I>(it: &mut I) -> Option<I::Item>
 where
