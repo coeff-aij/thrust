@@ -123,7 +123,7 @@ fn sum(n: i32) -> i32 {
 
 In an `ensures` expression, the special identifier `result` refers to the return value of the function. `requires` and `ensures` are independent: you can write either one on its own, and a missing one defaults to `true`.
 
-A logic function may call itself (at its own type arguments, not through another function) when it carries `#[thrust_macros::variant(expr)]`, an integer expression over its parameters. Thrust emits the function as a `define-fun-rec` and adds clauses to the query requiring the variant to be non-negative and to decrease at each recursive call, under the conditions of the branches leading to it, so a variant that does not decrease is a verification error.
+A logic function may call itself (at its own type arguments, not through another function) when it carries `#[thrust_macros::variant(expr)]`, an integer expression over its parameters that does not call the function. Thrust emits the function as a `define-fun-rec` and adds clauses to the query requiring the variant to be non-negative and to decrease at each recursive call, under the conditions of the branches leading to it, so a variant that does not decrease is a verification error. A predicate cannot call itself; a recursive one is written as a logic function returning `bool`.
 
 ```rust
 #[thrust_macros::logic]

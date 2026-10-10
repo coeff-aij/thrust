@@ -1733,14 +1733,21 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                                     );
                                     pred.into()
                                 }
-                                Some(instance) => self
-                                    .analyzer
-                                    .predicate_with_args(
-                                        instance.def_id(),
-                                        instance.args,
-                                        self.type_builder.owner_fn_id(),
-                                    )
-                                    .into(),
+                                Some(instance) => {
+                                    if instance.def_id() == self.local_def_id.to_def_id() {
+                                        self.tcx.dcx().span_fatal(
+                                            hir.span,
+                                            "a predicate cannot call itself; a recursive one is a #[thrust_macros::logic] function with #[thrust_macros::variant(..)]",
+                                        );
+                                    }
+                                    self.analyzer
+                                        .predicate_with_args(
+                                            instance.def_id(),
+                                            instance.args,
+                                            self.type_builder.owner_fn_id(),
+                                        )
+                                        .into()
+                                }
                             };
                             tracing::debug!("resolved predicate call in formula: {:?}", pred);
                             let arg_terms = args.iter().map(|e| self.to_term(e)).collect();
