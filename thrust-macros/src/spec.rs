@@ -639,7 +639,7 @@ impl ExpandedTokens {
             #ensures_fn
 
             #[thrust::extern_spec_fn]
-            #[allow(path_statements)]
+            #[allow(path_statements, non_snake_case)]
             fn #extern_spec_name #def_generics(#extern_spec_inputs) #orig_output #extended_where {
                 #[thrust::requires_path]
                 #path_prefix #requires_name #turbofish;
