@@ -1352,6 +1352,23 @@ fn _extern_spec_i32_is_negative(x: i32) -> bool {
     i32::is_negative(x)
 }
 
+// Bit-counting intrinsics have no bitvector model (integers are plain `Int`, not bitvectors), so
+// the only sound fact stated is the one every caller relies on: the count of a 64-bit value's
+// bits cannot exceed 64.
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(result <= 64)]
+fn _extern_spec_u64_trailing_zeros(x: u64) -> u32 {
+    u64::trailing_zeros(x)
+}
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(result <= 64)]
+fn _extern_spec_u64_count_ones(x: u64) -> u32 {
+    u64::count_ones(x)
+}
+
 // The checked arithmetic of signed integers: `None` exactly when the result leaves the range of
 // the type.
 macro_rules! int_checked_specs {
