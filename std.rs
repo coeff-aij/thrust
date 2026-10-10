@@ -2415,6 +2415,19 @@ fn _extern_spec_iterator_into_iter<I>(it: I) -> I
 }
 
 #[thrust_macros::context]
+impl<I> IntoIteratorSpec for I
+where
+    I: IteratorSpec,
+    I::Item: thrust_models::Model,
+    I::Ty: PartialEq,
+{
+    #[thrust_macros::predicate]
+    fn into_iter_is(self, it: Self) -> bool {
+        self == it
+    }
+}
+
+#[thrust_macros::context]
 impl<T> IntoIteratorSpec for Vec<T>
 where
     T: thrust_models::Model,
@@ -2475,66 +2488,10 @@ where
 }
 
 #[thrust_macros::context]
-impl<'a, T> IntoIteratorSpec for core::slice::Iter<'a, T>
-where
-    T: thrust_models::Model,
-    T::Ty: PartialEq,
-{
-    #[thrust_macros::predicate]
-    fn into_iter_is(self, it: Self) -> bool {
-        self == it
-    }
-}
-
-#[thrust_macros::context]
 impl<'a, T> IntoIteratorSpec for core::slice::IterMut<'a, T>
 where
     T: thrust_models::Model,
     T::Ty: PartialEq,
-{
-    #[thrust_macros::predicate]
-    fn into_iter_is(self, it: Self) -> bool {
-        self == it
-    }
-}
-
-#[thrust_macros::context]
-impl<T> IntoIteratorSpec for std::vec::IntoIter<T>
-where
-    T: thrust_models::Model,
-    T::Ty: PartialEq,
-{
-    #[thrust_macros::predicate]
-    fn into_iter_is(self, it: Self) -> bool {
-        self == it
-    }
-}
-
-#[thrust_macros::context]
-impl<I> IntoIteratorSpec for core::iter::Enumerate<I>
-where
-    I: IteratorSpec,
-    I::Item: thrust_models::Model,
-    I::Ty: PartialEq,
-    <I::Item as thrust_models::Model>::Ty: PartialEq,
-{
-    #[thrust_macros::predicate]
-    fn into_iter_is(self, it: Self) -> bool {
-        self == it
-    }
-}
-
-#[thrust_macros::context]
-impl<A, B> IntoIteratorSpec for core::iter::Zip<A, B>
-where
-    A: IteratorSpec,
-    B: IteratorSpec,
-    A::Item: thrust_models::Model,
-    B::Item: thrust_models::Model,
-    A::Ty: PartialEq,
-    B::Ty: PartialEq,
-    <A::Item as thrust_models::Model>::Ty: PartialEq,
-    <B::Item as thrust_models::Model>::Ty: PartialEq,
 {
     #[thrust_macros::predicate]
     fn into_iter_is(self, it: Self) -> bool {

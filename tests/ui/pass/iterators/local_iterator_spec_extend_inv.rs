@@ -64,14 +64,6 @@ impl IteratorSpec for Counter {
     }
 }
 
-#[thrust_macros::context]
-impl IntoIteratorSpec for Counter {
-    #[thrust_macros::predicate]
-    fn into_iter_is(self, it: Self) -> bool {
-        self == it
-    }
-}
-
 fn main() {
     let mut v: Vec<i64> = Vec::new();
     v.extend(Counter { cur: 0, end: 3 });

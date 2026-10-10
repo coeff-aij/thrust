@@ -50,14 +50,6 @@ impl IteratorSpec for Good {
     }
 }
 
-#[thrust_macros::context]
-impl IntoIteratorSpec for Good {
-    #[thrust_macros::predicate]
-    fn into_iter_is(self, it: Self) -> bool {
-        self == it
-    }
-}
-
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(true)]
 fn number<J: Iterator<Item = i64>>(j: J) {
