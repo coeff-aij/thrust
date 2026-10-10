@@ -302,11 +302,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
             align = align.max(prefix_align);
             offset = prefix_size.align_to(prefix_align);
         }
-        // Rewrite (rewrites.md R5, R9): `while let` over `iter()` with the pattern `&i`, as in
-        // `layout()`; `IntoIterator for &IndexVec` returned `SliceIter`, which implements the case
-        // study's iterator trait, not std's.
-        let mut in_memory_order_iter = in_memory_order.iter();
-        while let Some(&i) = in_memory_order_iter.next() {
+        for &i in &in_memory_order {
             let field = &fields[i];
             if let Some(unsized_field) = unsized_field {
                 return Err(LayoutCalculatorError::UnexpectedUnsized(*unsized_field));

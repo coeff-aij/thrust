@@ -6,7 +6,8 @@ use std::vec;
 
 use thrust_models::forall;
 
-use crate::rustc_index::{Idx, IndexSlice};
+use crate::rustc_index::{Idx, IndexSlice, SliceIter};
+use crate::{IntoIteratorSpec, IteratorSpec};
 use crate::case_study::USize;
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -157,10 +158,63 @@ impl<I: Idx, T> IntoIterator for IndexVec<I, T> {
     type IntoIter = vec::IntoIter<T>;
 
     #[inline]
-    // Not analysed and not callable: nothing calls it.
-    #[thrust::ignored]
     fn into_iter(self) -> vec::IntoIter<T> {
         self.raw.into_iter()
+    }
+}
+
+// Rewrite (rewrites.md R4): `SliceIter` for `slice::Iter`, as `IndexSlice::iter` returns.
+impl<'a, I: Idx, T: thrust_models::Model<Ty: PartialEq>> IntoIterator for &'a IndexVec<I, T> {
+    type Item = &'a T;
+    type IntoIter = SliceIter<'a, T>;
+
+    #[inline]
+    fn into_iter(self) -> SliceIter<'a, T> {
+        self.iter()
+    }
+}
+
+impl<'a, I: Idx, T: thrust_models::Model<Ty: PartialEq>> IntoIterator for &'a mut IndexVec<I, T> {
+    type Item = &'a mut T;
+    type IntoIter = std::slice::IterMut<'a, T>;
+
+    #[inline]
+    fn into_iter(self) -> std::slice::IterMut<'a, T> {
+        self.iter_mut()
+    }
+}
+
+// The iterators the three `into_iter`s start, as std.rs's `IntoIteratorSpec` of `Vec` says.
+#[thrust_macros::context]
+impl<I: Idx + thrust_models::Model<Ty: PartialEq>, T: thrust_models::Model> IntoIteratorSpec for IndexVec<I, T>
+where
+    T::Ty: PartialEq,
+{
+    #[thrust_macros::predicate]
+    fn into_iter_is(self, it: vec::IntoIter<T>) -> bool {
+        it.0 == self && it.1 == 0 && <vec::IntoIter<T> as IteratorSpec>::inv(it)
+    }
+}
+
+#[thrust_macros::context]
+impl<'a, I: Idx + thrust_models::Model<Ty: PartialEq>, T: thrust_models::Model + 'a> IntoIteratorSpec for &'a IndexVec<I, T>
+where
+    T::Ty: PartialEq,
+{
+    #[thrust_macros::predicate]
+    fn into_iter_is(self, it: SliceIter<'a, T>) -> bool {
+        *it.0 == *self && it.1 == 0 && <SliceIter<'a, T> as IteratorSpec>::inv(it)
+    }
+}
+
+#[thrust_macros::context]
+impl<'a, I: Idx + thrust_models::Model<Ty: PartialEq>, T: thrust_models::Model + 'a> IntoIteratorSpec for &'a mut IndexVec<I, T>
+where
+    T::Ty: PartialEq,
+{
+    #[thrust_macros::predicate]
+    fn into_iter_is(self, it: std::slice::IterMut<'a, T>) -> bool {
+        it.0 == *self && it.1 == !self && it.2 == 0 && (!self).len() == (*self).len()
     }
 }
 
