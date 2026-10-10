@@ -8,7 +8,7 @@ use thrust_models::model::Seq;
 
 use crate::rustc_index::{Idx, IdxRange, IndexVec, IntoSliceIdx};
 use crate::case_study::USize;
-use crate::{IntoIteratorSpec, IteratorSpec};
+use crate::IteratorSpec;
 
 #[derive(PartialEq, Eq, Hash)]
 #[repr(transparent)]
@@ -81,18 +81,6 @@ where
         bc: Seq<<Self::Item as thrust_models::Model>::Ty>,
         c: &Self,
     ) {
-    }
-}
-
-// An iterator is its own `into_iter`, as std.rs's `IntoIteratorSpec` of `slice::Iter` says.
-#[thrust_macros::context]
-impl<'a, T: thrust_models::Model> IntoIteratorSpec for SliceIter<'a, T>
-where
-    T::Ty: PartialEq,
-{
-    #[thrust_macros::predicate]
-    fn into_iter_is(self, it: Self) -> bool {
-        self == it
     }
 }
 
