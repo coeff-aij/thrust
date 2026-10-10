@@ -6,6 +6,12 @@ mod thrust_models {
         type Ty;
     }
 
+    /// `==` on the type is equality of its models: the type holds no `&mut`, whose model also has
+    /// the final value, which `==` does not read. Thrust decides it from the type's structure;
+    /// the specs that state `PartialEq` as model equality are bounded by it.
+    #[thrust::def::model_eq]
+    pub trait ModelEq {}
+
     pub mod model {
         use std::marker::PhantomData;
 
@@ -1009,7 +1015,7 @@ fn _extern_spec_box_new<T>(x: T) -> Box<T> where T: thrust_models::Model, T::Ty:
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(result == (x == y))]
 fn _extern_spec_box_partialeq_eq<T>(x: &Box<T>, y: &Box<T>) -> bool
-  where T: thrust_models::Model + PartialEq, T::Ty: PartialEq
+  where T: thrust_models::Model + thrust_models::ModelEq + PartialEq, T::Ty: PartialEq
 {
     <Box<T> as PartialEq>::eq(x, y)
 }
@@ -1032,7 +1038,7 @@ fn _extern_spec_std_mem_replace<T>(dest: &mut T, src: T) -> T where T: thrust_mo
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(result == (x == y))]
 fn _extern_spec_option_partialeq_eq<T>(x: &Option<T>, y: &Option<T>) -> bool
-  where T: thrust_models::Model + PartialEq, T::Ty: PartialEq
+  where T: thrust_models::Model + thrust_models::ModelEq + PartialEq, T::Ty: PartialEq
 {
     <Option<T> as PartialEq>::eq(x, y)
 }
@@ -1178,8 +1184,8 @@ fn _extern_spec_from_identity<T>(value: T) -> T
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(result == (x == y))]
 fn _extern_spec_result_partialeq_eq<T, E>(x: &Result<T, E>, y: &Result<T, E>) -> bool
-  where T: thrust_models::Model + PartialEq, T::Ty: PartialEq,
-        E: thrust_models::Model + PartialEq, E::Ty: PartialEq,
+  where T: thrust_models::Model + thrust_models::ModelEq + PartialEq, T::Ty: PartialEq,
+        E: thrust_models::Model + thrust_models::ModelEq + PartialEq, E::Ty: PartialEq,
 {
     <Result<T, E> as PartialEq>::eq(x, y)
 }
@@ -2569,7 +2575,7 @@ fn _extern_spec_array_into_vec<T, const N: usize>(array: [T; N]) -> Vec<T>
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(result == (*x == *y))]
 fn _extern_spec_partialeq_eq<T>(x: &T, y: &T) -> bool
-  where T: thrust_models::Model + PartialEq, T::Ty: PartialEq
+  where T: thrust_models::Model + thrust_models::ModelEq + PartialEq, T::Ty: PartialEq
 {
     PartialEq::eq(x, y)
 }
@@ -2578,9 +2584,28 @@ fn _extern_spec_partialeq_eq<T>(x: &T, y: &T) -> bool
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(result == !(*x == *y))]
 fn _extern_spec_partialeq_ne<T>(x: &T, y: &T) -> bool
-  where T: thrust_models::Model + PartialEq, T::Ty: PartialEq
+  where T: thrust_models::Model + thrust_models::ModelEq + PartialEq, T::Ty: PartialEq
 {
     PartialEq::ne(x, y)
+}
+
+// `&mut A` compares the current values, as Creusot's deep model of `&mut T` is that of `*self`.
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(result == (**x == **y))]
+fn _extern_spec_mut_ref_partialeq_eq<'a, 'b, A>(x: &&'a mut A, y: &&'b mut A) -> bool
+  where A: thrust_models::Model + thrust_models::ModelEq + PartialEq, A::Ty: PartialEq
+{
+    <&'a mut A as PartialEq<&'b mut A>>::eq(x, y)
+}
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(result == !(**x == **y))]
+fn _extern_spec_mut_ref_partialeq_ne<'a, 'b, A>(x: &&'a mut A, y: &&'b mut A) -> bool
+  where A: thrust_models::Model + thrust_models::ModelEq + PartialEq, A::Ty: PartialEq
+{
+    <&'a mut A as PartialEq<&'b mut A>>::ne(x, y)
 }
 
 // Hashing has no model; the spec only records that hashing itself does not

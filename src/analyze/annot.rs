@@ -158,6 +158,14 @@ pub fn closure_model_path() -> [Symbol; 3] {
     ]
 }
 
+pub fn model_eq_path() -> [Symbol; 3] {
+    [
+        Symbol::intern("thrust"),
+        Symbol::intern("def"),
+        Symbol::intern("model_eq"),
+    ]
+}
+
 pub fn ghost_model_path() -> [Symbol; 3] {
     [
         Symbol::intern("thrust"),
