@@ -147,10 +147,13 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             self.skip_analysis.insert(local_def_id);
         }
 
-        // A derived method has the contract of its trait method, which its derive implies.
-        if analyzer.derive_treatment() == Some(analyze::derive::Treatment::Trusted)
-            && analyzer.trait_item_ty().is_some()
-        {
+        // A derived method has the contract of its trait method, which its derive implies. A
+        // generic one is a generic def with that contract, so that at an instance where the trait
+        // method's spec does not apply its body is analyzed (`Analyzer::def_ty_with_args`).
+        let trusted_derive = analyzer.derive_treatment()
+            == Some(analyze::derive::Treatment::Trusted)
+            && analyzer.trait_item_ty().is_some();
+        if trusted_derive {
             self.skip_analysis.insert(local_def_id);
         }
 
@@ -180,7 +183,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let owner_fn_id_args = analyzer.owner_fn_id_args;
         use mir_ty::TypeVisitableExt as _;
         if sig.has_param() {
-            if owner_fn_id.as_local().is_none_or(|def_id| {
+            if trusted_derive {
+                let expected = analyzer.expected_ty();
+                self.ctx
+                    .register_generic_def(owner_fn_id, local_def_id, Some(expected));
+            } else if owner_fn_id.as_local().is_none_or(|def_id| {
                 self.skip_analysis.contains(&def_id) || !self.tcx.is_mir_available(def_id)
             }) {
                 self.ctx.register_deferred_def_without_analysis(
