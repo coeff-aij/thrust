@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 
+use rustc_middle::mir::visit::Visitor;
 use rustc_middle::mir::{self, TerminatorKind};
 use rustc_middle::ty::{self as mir_ty, TyCtxt};
 use rustc_span::def_id::{DefId, LocalDefId};
@@ -248,14 +249,23 @@ impl<'tcx> Checker<'tcx> {
         done.push(lemma);
     }
 
-    /// Each `proof!` in `def_id` calls a lemma: the branch taken on `__proof_branch()` starts
-    /// with a call to one.
+    /// Each use of `__proof_branch` in `def_id` is the condition of a `proof!` branch: the
+    /// branch taken on it makes one lemma call and nothing else the program after it can see,
+    /// so that not running it leaves the program as the analysis describes it.
     fn check_proof_branches(&self, def_id: LocalDefId, proof_branch: DefId) {
         let body = self.tcx.optimized_mir(def_id);
-        for data in body.basic_blocks.iter() {
+        let mut uses = Uses {
+            proof_branch,
+            local_blocks: HashMap::new(),
+            proof_branch_constants: 0,
+        };
+        uses.visit_body(body);
+        let mut calls = 0;
+        for (block, data) in body.basic_blocks.iter_enumerated() {
             let TerminatorKind::Call {
                 func,
-                target: Some(target),
+                destination,
+                target,
                 fn_span,
                 ..
             } = &data.terminator().kind
@@ -265,33 +275,158 @@ impl<'tcx> Checker<'tcx> {
             if func.const_fn_def().map(|(def_id, _)| def_id) != Some(proof_branch) {
                 continue;
             }
-            if !self.branch_calls_lemma(body, *target) {
-                self.tcx
-                    .dcx()
-                    .span_err(*fn_span, "`proof!` takes a call of a lemma");
+            calls += 1;
+            if !self.is_proof_branch(body, &uses, block, *destination, *target) {
+                self.tcx.dcx().span_err(
+                    *fn_span,
+                    "`__proof_branch()` is only the condition of a `proof!`, which makes one lemma call",
+                );
             }
+        }
+        if uses.proof_branch_constants != calls {
+            self.tcx
+                .dcx()
+                .span_err(body.span, "`__proof_branch` is only called, by `proof!`");
         }
     }
 
-    fn branch_calls_lemma(&self, body: &mir::Body<'tcx>, switch: mir::BasicBlock) -> bool {
-        let TerminatorKind::SwitchInt { targets, .. } =
-            &body.basic_blocks[switch].terminator().kind
+    fn is_proof_branch(
+        &self,
+        body: &mir::Body<'tcx>,
+        uses: &Uses,
+        call: mir::BasicBlock,
+        destination: mir::Place<'tcx>,
+        target: Option<mir::BasicBlock>,
+    ) -> bool {
+        let (Some(switch), Some(cond)) = (target, destination.as_local()) else {
+            return false;
+        };
+        let data = &body.basic_blocks[switch];
+        if !data.statements.iter().all(|stmt| is_marker(&stmt.kind)) {
+            return false;
+        }
+        let TerminatorKind::SwitchInt { discr, targets } = &data.terminator().kind else {
+            return false;
+        };
+        if discr.place().and_then(|place| place.as_local()) != Some(cond) {
+            return false;
+        }
+        let [(0, join)] = targets.iter().collect::<Vec<_>>()[..] else {
+            return false;
+        };
+        if !uses.only_in(cond, &[call, switch]) {
+            return false;
+        }
+        let Some((path, assigned)) = self.lemma_call_path(body, switch, targets.otherwise(), join)
         else {
             return false;
         };
-        let mut block = targets.otherwise();
-        for _ in 0..body.basic_blocks.len() {
-            match &body.basic_blocks[block].terminator().kind {
-                TerminatorKind::Goto { target } => block = *target,
-                TerminatorKind::Call { func, .. } => {
-                    return func
-                        .const_fn_def()
-                        .is_some_and(|(def_id, _)| self.is_lemma(def_id));
+        assigned.into_iter().all(|local| uses.only_in(local, &path))
+    }
+
+    /// The blocks from `then` to `join`, and the locals they assign, when the blocks form a
+    /// straight path entered only from `switch` and do nothing but assign locals and make one
+    /// call, of a lemma.
+    fn lemma_call_path(
+        &self,
+        body: &mir::Body<'tcx>,
+        switch: mir::BasicBlock,
+        then: mir::BasicBlock,
+        join: mir::BasicBlock,
+    ) -> Option<(Vec<mir::BasicBlock>, Vec<mir::Local>)> {
+        let predecessors = body.basic_blocks.predecessors();
+        let mut path = Vec::new();
+        let mut assigned = Vec::new();
+        let mut lemma_calls = 0;
+        let (mut prev, mut block) = (switch, then);
+        while block != join {
+            if path.contains(&block) || predecessors[block].as_slice() != [prev] {
+                return None;
+            }
+            let data = &body.basic_blocks[block];
+            for stmt in &data.statements {
+                match &stmt.kind {
+                    mir::StatementKind::Assign(assign) => assigned.push(assign.0.as_local()?),
+                    kind if is_marker(kind) => {}
+                    _ => return None,
                 }
-                _ => return false,
+            }
+            let next = match &data.terminator().kind {
+                TerminatorKind::Goto { target } => *target,
+                TerminatorKind::Call {
+                    func,
+                    destination,
+                    target: Some(target),
+                    ..
+                } if func
+                    .const_fn_def()
+                    .is_some_and(|(def_id, _)| self.is_lemma(def_id)) =>
+                {
+                    lemma_calls += 1;
+                    assigned.push(destination.as_local()?);
+                    *target
+                }
+                _ => return None,
+            };
+            path.push(block);
+            prev = block;
+            block = next;
+        }
+        (lemma_calls == 1).then_some((path, assigned))
+    }
+}
+
+fn is_marker(kind: &mir::StatementKind<'_>) -> bool {
+    matches!(
+        kind,
+        mir::StatementKind::StorageLive(_)
+            | mir::StatementKind::StorageDead(_)
+            | mir::StatementKind::Nop
+    )
+}
+
+/// The blocks each local is mentioned in, and how often `__proof_branch` appears as a value.
+struct Uses {
+    proof_branch: DefId,
+    local_blocks: HashMap<mir::Local, Vec<mir::BasicBlock>>,
+    proof_branch_constants: usize,
+}
+
+impl Uses {
+    fn only_in(&self, local: mir::Local, blocks: &[mir::BasicBlock]) -> bool {
+        self.local_blocks
+            .get(&local)
+            .into_iter()
+            .flatten()
+            .all(|block| blocks.contains(block))
+    }
+}
+
+impl<'tcx> Visitor<'tcx> for Uses {
+    fn visit_local(
+        &mut self,
+        local: mir::Local,
+        _context: mir::visit::PlaceContext,
+        location: mir::Location,
+    ) {
+        self.local_blocks
+            .entry(local)
+            .or_default()
+            .push(location.block);
+    }
+
+    fn visit_var_debug_info(&mut self, _var_debug_info: &mir::VarDebugInfo<'tcx>) {}
+
+    fn visit_const_operand(
+        &mut self,
+        constant: &mir::ConstOperand<'tcx>,
+        _location: mir::Location,
+    ) {
+        if let mir_ty::FnDef(def_id, _) = constant.const_.ty().kind() {
+            if *def_id == self.proof_branch {
+                self.proof_branch_constants += 1;
             }
         }
-        false
     }
 }
 

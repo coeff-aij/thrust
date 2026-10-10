@@ -39,6 +39,25 @@ fn diverges() {
     loop {}
 }
 
+#[thrust_macros::lemma]
+fn fact() {}
+
+fn more_than_a_lemma_call(mut x: i64) -> i64 {
+    if thrust_models::__proof_branch() { //~ ERROR: `__proof_branch()` is only the condition of a `proof!`, which makes one lemma call
+        fact();
+        x = 1;
+    }
+    x
+}
+
+fn kept_condition() -> bool {
+    let taken = thrust_models::__proof_branch(); //~ ERROR: `__proof_branch()` is only the condition of a `proof!`, which makes one lemma call
+    if taken {
+        fact();
+    }
+    taken
+}
+
 fn main() {
-    thrust_macros::proof!(diverges()); //~ ERROR: `proof!` takes a call of a lemma
+    thrust_macros::proof!(diverges()); //~ ERROR: `__proof_branch()` is only the condition of a `proof!`, which makes one lemma call
 }
