@@ -17,7 +17,7 @@ use crate::{PartialOrdSpec, TryIntoSpec};
 
 mod layout;
 
-pub use layout::{LayoutCalculator, LayoutCalculatorError};
+pub use layout::{LayoutCalculator, LayoutCalculatorError, LayoutRef};
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 // #[cfg_attr(feature = "nightly", derive(Encodable_NoContext, Decodable_NoContext, StableHash))]
@@ -502,7 +502,18 @@ pub enum Integer {
 
 #[thrust_macros::context]
 impl Integer {
+    /// `n` is the number of bytes of `self`.
+    #[thrust_macros::predicate]
+    pub(crate) fn bytes_are(self, n: USize) -> bool {
+        (self == Integer::I8 && n == 1)
+            || (self == Integer::I16 && n == 2)
+            || (self == Integer::I32 && n == 4)
+            || (self == Integer::I64 && n == 8)
+            || (self == Integer::I128 && n == 16)
+    }
+
     #[inline]
+    #[thrust_macros::ensures(forall(|n: USize| !(n == result.raw) || Self::bytes_are(self, n)))]
     pub fn size(self) -> Size {
         use Integer::*;
         match self {
@@ -556,6 +567,16 @@ pub enum Float {
 
 #[thrust_macros::context]
 impl Float {
+    /// `n` is the number of bytes of `self`.
+    #[thrust_macros::predicate]
+    pub(crate) fn bytes_are(self, n: USize) -> bool {
+        (self == Float::F16 && n == 2)
+            || (self == Float::F32 && n == 4)
+            || (self == Float::F64 && n == 8)
+            || (self == Float::F128 && n == 16)
+    }
+
+    #[thrust_macros::ensures(forall(|n: USize| !(n == result.raw) || Self::bytes_are(self, n)))]
     pub fn size(self) -> Size {
         use Float::*;
 
@@ -590,6 +611,15 @@ pub enum Primitive {
 
 #[thrust_macros::context]
 impl Primitive {
+    /// `s` is the size of `self` under the data layout `dl`.
+    #[thrust_macros::predicate]
+    pub(crate) fn size_in(self, dl: TargetDataLayout, s: Size) -> bool {
+        exists(|i: Integer, b: bool, n: USize| self == Primitive::Int(i, b) && n == s.raw && Integer::bytes_are(i, n))
+            || exists(|f: Float, n: USize| self == Primitive::Float(f) && n == s.raw && Float::bytes_are(f, n))
+            || exists(|a: AddressSpace| self == Primitive::Pointer(a)
+                && TargetDataLayout::pointer_size_is(dl, a, s))
+    }
+
     // A pointer's size and alignment are looked up in the layout `cx` names: the `requires` of
     // `pointer_size_in` / `pointer_align_in` must hold for every layout `dl` with `dl_of(*cx, dl)`.
     #[thrust_macros::requires(forall(|dl: TargetDataLayout, a: AddressSpace|
@@ -598,6 +628,7 @@ impl Primitive {
     #[thrust_macros::ensures(result.raw <= 16
         || exists(|dl: TargetDataLayout, a: AddressSpace| C::dl_of(*cx, dl)
             && self == Primitive::Pointer(a) && TargetDataLayout::pointer_size_is(dl, a, result)))]
+    #[thrust_macros::ensures(exists(|dl: TargetDataLayout| C::dl_of(*cx, dl) && Self::size_in(self, dl, result)))]
     pub fn size<C: HasDataLayout>(self, cx: &C) -> Size {
         use Primitive::*;
         let dl = cx.data_layout();
@@ -896,7 +927,8 @@ impl<FieldIdx: Idx, VariantIdx: Idx> LayoutData<FieldIdx, VariantIdx> {
     }
 }
 
-#[derive(Copy, Clone /*Debug*/)]
+// `PartialEq` is not rustc's: `univariant`'s contract compares the kind (rewrites.md S1).
+#[derive(Copy, Clone, PartialEq /*Debug*/)]
 pub enum StructKind {
     AlwaysSized,
 
