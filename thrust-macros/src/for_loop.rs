@@ -3,8 +3,8 @@
 //! The loop is desugared as Creusot does (`creusot-std-proc/src/creusot/invariant.rs`,
 //! `desugar_for`): the iterator is a variable `iter`, `iter_old` a ghost copy of it before the
 //! loop, and `produced` the ghost sequence of the items `next` has returned so far. The loop
-//! invariant is the written one conjoined with the structural `produces(iter_old, produced, iter)`
-//! of `IteratorSpec`, and the written one may name `iter`, `iter_old` and `produced`. Those names
+//! invariant is the written one conjoined with the structural `inv(iter)` and
+//! `produces(iter_old, produced, iter)` of `IteratorSpec`, and the written one may name `iter`, `iter_old` and `produced`. Those names
 //! shadow variables of the same names in the loop body.
 
 /// The desugaring of `for_loop`, or `None` when its body does not start with an `invariant!`
@@ -36,7 +36,8 @@ pub fn desugar(for_loop: &syn::ExprForLoop) -> Option<syn::Expr> {
                 |iter: #iter_ty,
                  iter_old: crate::thrust_models::Ghost<#iter_ty>,
                  produced: crate::thrust_models::Ghost<#seq>|
-                <#iter_ty as crate::IteratorSpec>::produces(iter_old, produced, iter)
+                <#iter_ty as crate::IteratorSpec>::inv(iter)
+                    && <#iter_ty as crate::IteratorSpec>::produces(iter_old, produced, iter)
             );
             match ::core::iter::Iterator::next(&mut iter) {
                 ::core::option::Option::Some(__thrust_item) => {

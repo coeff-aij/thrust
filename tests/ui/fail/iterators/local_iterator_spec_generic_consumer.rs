@@ -76,7 +76,7 @@ where
     let mut out = Vec::new();
     while let Some(x) = it.next() {
         thrust_macros::invariant!(|it: I, out: Vec<I::Item>, iter: thrust_models::FnParam<I>|
-            I::produces(iter.at_entry(), out, it));
+            I::inv(it) && I::produces(iter.at_entry(), out, it));
         out.push(x);
     }
     out

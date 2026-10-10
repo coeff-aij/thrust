@@ -5,6 +5,7 @@
 // `next` at a type parameter with an `IteratorSpec` bound: `None` means the iterator is completed.
 
 #[thrust_macros::context]
+#[thrust_macros::requires(I::inv(*it))]
 #[thrust_macros::ensures(result == false ==> I::completed(it))]
 fn exhausted<I: IteratorSpec>(it: &mut I) -> bool
 where

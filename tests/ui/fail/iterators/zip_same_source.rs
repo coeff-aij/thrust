@@ -10,7 +10,7 @@ fn same(v: &Vec<i64>) {
     let mut it = std::iter::zip(v.iter(), v.iter());
     while let Some((x, y)) = it.next() {
         thrust_macros::invariant!(|it: core::iter::Zip<core::slice::Iter<'_, i64>, core::slice::Iter<'_, i64>>|
-            it.0 == it.1);
+            it.0 == it.1 && <core::iter::Zip<core::slice::Iter<'_, i64>, core::slice::Iter<'_, i64>> as IteratorSpec>::inv(it));
         assert!(*x < *y);
     }
 }

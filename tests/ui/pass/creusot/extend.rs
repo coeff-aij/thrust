@@ -62,10 +62,10 @@ impl Iterator for std::vec::IntoIter<u32> {
 
 
 
-    // Not `self.1 <= self.0.len()`: the Vec model does not know `len() >= 0`.
+    // std.rs's `inv`, which std's `next` requires, and the position's lower bound.
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
-        0 <= self.1
+        0 <= self.1 && self.1 <= self.0.len()
     }
 
     #[thrust_macros::predicate]
