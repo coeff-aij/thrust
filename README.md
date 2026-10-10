@@ -121,7 +121,7 @@ fn sum(n: i32) -> i32 {
 }
 ```
 
-In an `ensures` expression, the special identifier `result` refers to the return value of the function. A parameter denotes the argument's value at the call, also where the body moves the argument or, for a `mut` parameter, assigns to it; for a `&mut` parameter that value is the reference, described below. A written loop invariant (`thrust_macros::invariant!`) replaces what Thrust infers at its loop, so a postcondition that needs such an entry value past the loop has the invariant name it as a `thrust_models::FnParam`. `requires` and `ensures` are independent: you can write either one on its own, and a missing one defaults to `true`.
+In an `ensures` expression, the special identifier `result` refers to the return value of the function. A parameter denotes the argument's value at the call, also where the body moves the argument or, for a `mut` parameter, assigns to it or lends it out as `&mut`; for a `&mut` parameter that value is the reference, described below. A written loop invariant (`thrust_macros::invariant!`) replaces what Thrust infers at its loop, so a postcondition that needs such an entry value past the loop has the invariant name it as a `thrust_models::FnParam`. `requires` and `ensures` are independent: you can write either one on its own, and a missing one defaults to `true`.
 
 ### Mutable references
 
