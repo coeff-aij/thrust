@@ -6,7 +6,7 @@
 // drives it.
 #![feature(custom_inner_attributes)]
 #![feature(new_range_api)]
-#![thrust::verify_only("rustc_index::bit_set", "two_members")]
+#![thrust::verify_only("rustc_index::bit_set", "two_members", "column_bound")]
 
 #[path = "../../../rustc_coroutine/compiler/rustc_hashes/src/lib.rs"]
 pub mod rustc_hashes;
@@ -21,7 +21,7 @@ use thrust_models::forall;
 
 use case_study::USize;
 use case_study::iter::Iterator;
-use rustc_index::bit_set::{BitIter, DenseBitSet};
+use rustc_index::bit_set::{BitMatrix, DenseBitSet};
 
 // `vec![elem; n]` expands to `std::vec::from_elem`; specified at the word type of
 // bit_set.rs. It stays in this root: Thrust applies it to every instantiation of `from_elem`.
@@ -43,31 +43,32 @@ fn two_members() -> DenseBitSet<usize> {
     set
 }
 
+// Every column a row of a matrix yields is below its column bound, whatever the bits.
+#[thrust_macros::requires(BitMatrix::<usize, usize>::wf(*m) && 0 < (*m).num_rows && *(*m).col_bound == 5)]
+#[thrust_macros::ensures(true)]
+fn column_bound(m: &BitMatrix<usize, usize>) {
+    let mut it = m.iter(0);
+    match it.next() {
+        Some(e) => assert!(e < 5),
+        None => {}
+    }
+}
+
 fn main() {
     let mut set: DenseBitSet<usize> = DenseBitSet::new_empty(5);
     set.insert(3);
     assert!(set.contains(3));
     assert!(!set.contains(2));
 
-    // `DenseBitSet::new_empty` says nothing about the length of its word
-    // array, so the bound is exercised on an iterator built over a word slice
-    // of known length: `BitIter::new`'s ensures turns that into
-    // `bit_bound(it, 2 * WORD_BITS)`, `next`'s ensures bounds every yielded
-    // index by it, and `same_words` carries the bound to the second call.
-    let mut it: BitIter<'static, usize> = BitIter::new(words());
+    // `iter`'s ensures make the iterator's elements the set's members, so the only element is 3;
+    // the iterator trait carries the domain bound to the second call.
+    let mut it = set.iter();
     match it.next() {
-        Some(e) => assert!(e < 128),
+        Some(e) => assert!(e == 3),
         None => {}
     }
     match it.next() {
-        Some(e) => assert!(e < 128),
+        Some(e) => assert!(e < 5),
         None => {}
     }
-}
-
-#[thrust::trusted]
-#[thrust_macros::requires(true)]
-#[thrust_macros::ensures((*result).len() == 2)]
-fn words() -> &'static [u64] {
-    unimplemented!()
 }

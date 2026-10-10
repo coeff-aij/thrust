@@ -61,9 +61,9 @@ impl<VariantIdx: thrust_models::Model, FieldIdx: thrust_models::Model> thrust_mo
             !<LocalIdx as Idx>::index_is((*variant_fields)[v][f], i)
                 || i < nb_locals))
     // `count(local_b)` takes a column index as a row, so every set bit's column must be below
-    // the number of rows. The contracts of `bit_set.rs` do not bound the columns `BitMatrix::iter`
-    // yields by anything but the row's bit count, so this panic condition is not stated.
+    // the number of rows: the panic condition, through the matrix's ghost column bound.
     && (*storage_conflicts).num_rows <= nb_locals
+    && *(*storage_conflicts).col_bound <= (*storage_conflicts).num_rows
     && BitMatrix::<LocalIdx, LocalIdx>::wf(*storage_conflicts)
     && forall(|k: USize| !(0 <= k && k < nb_locals) || LocalIdx::can_new(k))
     && forall(|n: USize| !(0 <= n && n <= nb_locals) || FieldIdx::can_new(n))
@@ -164,6 +164,7 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
                 !(0 <= k && k < assignments.len() && assignments[k] == SavedLocalEligibility::Assigned(v) && <VariantIdx as Idx>::index_is(v, i))
                 || i < (*variant_fields).len())
             && (*storage_conflicts).num_rows <= nb_locals.at_entry()
+            && *(*storage_conflicts).col_bound <= (*storage_conflicts).num_rows
             && BitMatrix::<LocalIdx, LocalIdx>::wf(*storage_conflicts)
             && forall(|k: USize| !(0 <= k && k < nb_locals.at_entry()) || <LocalIdx as Idx>::can_new(k))
             && forall(|n: USize| !(0 <= n && n <= nb_locals.at_entry()) || <FieldIdx as Idx>::can_new(n))
@@ -215,6 +216,7 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
                     !(0 <= k && k < assignments.len() && assignments[k] == SavedLocalEligibility::Assigned(v) && <VariantIdx as Idx>::index_is(v, i))
                     || i < (*variant_fields).len())
                 && (*storage_conflicts).num_rows <= nb_locals.at_entry()
+                && *(*storage_conflicts).col_bound <= (*storage_conflicts).num_rows
                 && BitMatrix::<LocalIdx, LocalIdx>::wf(*storage_conflicts)
                 && forall(|k: USize| !(0 <= k && k < nb_locals.at_entry()) || <LocalIdx as Idx>::can_new(k))
                 && forall(|n: USize| !(0 <= n && n <= nb_locals.at_entry()) || <FieldIdx as Idx>::can_new(n))
@@ -294,6 +296,7 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
                 !(0 <= k && k < assignments.len() && assignments[k] == SavedLocalEligibility::Assigned(v) && <VariantIdx as Idx>::index_is(v, i))
                 || i < (*variant_fields).len())
             && (*storage_conflicts).num_rows <= nb_locals.at_entry()
+            && *(*storage_conflicts).col_bound <= (*storage_conflicts).num_rows
             && BitMatrix::<LocalIdx, LocalIdx>::wf(*storage_conflicts)
             && forall(|k: USize| !(0 <= k && k < nb_locals.at_entry()) || <LocalIdx as Idx>::can_new(k))
             && forall(|n: USize| !(0 <= n && n <= nb_locals.at_entry()) || <FieldIdx as Idx>::can_new(n))
@@ -343,6 +346,7 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
                     !(0 <= k && k < assignments.len() && assignments[k] == SavedLocalEligibility::Assigned(v) && <VariantIdx as Idx>::index_is(v, i))
                     || i < (*variant_fields).len())
                 && (*storage_conflicts).num_rows <= nb_locals.at_entry()
+                && *(*storage_conflicts).col_bound <= (*storage_conflicts).num_rows
                 && BitMatrix::<LocalIdx, LocalIdx>::wf(*storage_conflicts)
                 && forall(|k: USize| !(0 <= k && k < nb_locals.at_entry()) || <LocalIdx as Idx>::can_new(k))
                 && forall(|n: USize| !(0 <= n && n <= nb_locals.at_entry()) || <FieldIdx as Idx>::can_new(n))
@@ -353,6 +357,8 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
                     || assignments[l] == SavedLocalEligibility::Ineligible(None))
                 && rows.start >= 0 && rows.end == (*storage_conflicts).num_rows
                 && forall(|i: USize| !<LocalIdx as Idx>::index_is(local_a, i) || i < nb_locals.at_entry())
+                && conflicts.4 == *(*storage_conflicts).col_bound
+                && 0 <= conflicts.5 && 0 <= conflicts.6 && conflicts.5 + conflicts.6 <= conflicts.4
             );
             thrust_macros::invariant!(
                 |assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, variant_fields: thrust_models::FnParam<&IndexSlice<VariantIdx, IndexVec<FieldIdx, LocalIdx>>>, nb_locals: thrust_models::FnParam<usize>|
@@ -474,7 +480,9 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
                 && DenseBitSet::<LocalIdx>::words_cover_domain(ineligible_locals)
                 && 0 <= ineligible_locals.3
                 && ineligible_locals.3 <= ineligible_locals.0
-                && 0 <= ineligible.1
+                && ineligible.0.4 == ineligible_locals.0 && ineligible.1 == ineligible.0.5
+                && 0 <= ineligible.1 && ineligible.1 <= ineligible.0.4
+                && 0 <= ineligible.0.6 && ineligible.0.5 + ineligible.0.6 == ineligible_locals.3
                 && forall(|k: USize| !(0 <= k && k < nb_locals.at_entry()) || <LocalIdx as Idx>::can_new(k))
                 && forall(|n: USize| !(0 <= n && n <= nb_locals.at_entry()) || <FieldIdx as Idx>::can_new(n))
                 && forall(|l: USize, v: USize, f: USize|
@@ -498,8 +506,9 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
                 && forall(|l: USize, x: Option<<FieldIdx as thrust_models::Model>::Ty>|
                     !(0 <= l && l < nb_locals.at_entry() && assignments[l] == SavedLocalEligibility::Ineligible(x))
                     || DenseBitSet::<LocalIdx>::mem(ineligible_locals, l))
+                && forall(|l: USize| !(ineligible.0.7[l] != 0) || DenseBitSet::<LocalIdx>::mem(ineligible_locals, l))
                 && forall(|l: USize| !(0 <= l && l < nb_locals.at_entry() && DenseBitSet::<LocalIdx>::mem(ineligible_locals, l))
-                    || assignments[l] == SavedLocalEligibility::Ineligible(None)
+                    || (ineligible.0.7[l] != 0 && assignments[l] == SavedLocalEligibility::Ineligible(None))
                     || exists(|k: <FieldIdx as thrust_models::Model>::Ty| assignments[l] == SavedLocalEligibility::Ineligible(Some(k))
                         && forall(|i: USize| !<FieldIdx as Idx>::index_is(k, i) || i < ineligible_locals.3)))
             );
@@ -535,6 +544,7 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
 #[thrust_macros::requires(
     (*variant_fields).len() > 0
         && (*storage_conflicts).num_rows <= (*local_layouts).len()
+        && *(*storage_conflicts).col_bound <= (*storage_conflicts).num_rows
         && BitMatrix::<LocalIdx, LocalIdx>::wf(*storage_conflicts)
         && forall(|v: usize, f: usize|
             !(0 <= v && v < (*variant_fields).len()

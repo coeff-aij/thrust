@@ -1,25 +1,22 @@
 --- pass/bitset.rs
 +++ fail/bitset.rs
-@@ -1,12 +1,15 @@
+@@ -1,12 +1,13 @@
 -//@check-pass
 +//@error-in-other-file: Unsat
  //@compile-flags: -Adead_code -C debug-assertions=off
--//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 THRUST_TRY_SPECS=1
 +//@no-rustfix
-+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300 THRUST_TRY_SPECS=1
-+// The refutation takes about 100 s on fptprove develop 2493045c3 (8 GB, 2 CPUs), so the
-+// timeout leaves room above the 120 s of the other stage files.
+ //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 THRUST_TRY_SPECS=1
  // Stage 3 of the rustc-coroutine verification target: rustc_index's bit sets.
  // The code is the module tree under tests/rustc_coroutine/; this file selects the stage and
  // drives it.
  #![feature(custom_inner_attributes)]
  #![feature(new_range_api)]
--#![thrust::verify_only("rustc_index::bit_set", "two_members")]
-+#![thrust::verify_only("rustc_index::bit_set")]
+-#![thrust::verify_only("rustc_index::bit_set", "two_members", "column_bound")]
++#![thrust::verify_only("rustc_index::bit_set", "column_bound")]
  
  #[path = "../../../rustc_coroutine/compiler/rustc_hashes/src/lib.rs"]
  pub mod rustc_hashes;
-@@ -33,16 +36,6 @@
+@@ -33,23 +34,14 @@
  }
  
  
@@ -33,17 +30,15 @@
 -    set
 -}
 -
- fn main() {
-     let mut set: DenseBitSet<usize> = DenseBitSet::new_empty(5);
-     set.insert(3);
-@@ -56,7 +49,9 @@
-     // index by it, and `same_words` carries the bound to the second call.
-     let mut it: BitIter<'static, usize> = BitIter::new(words());
+ // Every column a row of a matrix yields is below its column bound, whatever the bits.
+ #[thrust_macros::requires(BitMatrix::<usize, usize>::wf(*m) && 0 < (*m).num_rows && *(*m).col_bound == 5)]
+ #[thrust_macros::ensures(true)]
+ fn column_bound(m: &BitMatrix<usize, usize>) {
+     let mut it = m.iter(0);
      match it.next() {
--        Some(e) => assert!(e < 128),
-+        // Broken narrowly: `BitIter::next`'s contract bounds the yielded
-+        // index by `words.len() * 64 == 128`, not by 127.
-+        Some(e) => assert!(e < 127),
+-        Some(e) => assert!(e < 5),
++        // Broken narrowly: the column bound is 5, and column 4 may be set.
++        Some(e) => assert!(e < 4),
          None => {}
      }
-     match it.next() {
+ }

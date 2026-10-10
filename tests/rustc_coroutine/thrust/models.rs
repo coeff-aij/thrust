@@ -22,9 +22,9 @@ impl<T> thrust_models::Model for DenseBitSet<T> {
 impl<'a> thrust_models::Model for WordIter<'a> {
     type Ty = (&'a Seq<USize>, USize);
 }
-// `(word, offset, iter, marker)`.
+// `(word, offset, iter, marker, bound, count, left, rest)`.
 impl<'a, T: Idx> thrust_models::Model for BitIter<'a, T> {
-    type Ty = (USize, USize, <WordIter<'a> as thrust_models::Model>::Ty, ());
+    type Ty = (USize, USize, <WordIter<'a> as thrust_models::Model>::Ty, (), USize, USize, USize, Seq<USize>);
 }
 impl<R: Idx, C: Idx> thrust_models::Model for BitMatrix<R, C> {
     type Ty = Self;

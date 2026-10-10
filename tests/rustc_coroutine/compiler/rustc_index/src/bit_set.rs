@@ -144,11 +144,15 @@ impl<T: Idx> DenseBitSet<T> {
         self.clear_excess_bits();
     }
 
-    // A deterministic enumeration spec (`elems(set, seq, n)` plus a `next`
-    // that returns `seq[k]` on its k-th call) would need `next` to know which
-    // bit it is at; only the weaker index bound below is stated, on
-    // `BitIter`'s `Iterator` impl.
+    // Trusted: the iterator's ghost state is the set's members, which relates the words to the
+    // ghost count only through the trusted contracts above.
     #[inline]
+    #[thrust::trusted]
+    #[thrust_macros::ensures(result.4 == (*self).0 && result.5 == 0)]
+    #[thrust_macros::ensures(0 <= result.6 && result.6 <= (*self).0)]
+    #[thrust_macros::ensures(result.6 == (*self).3)]
+    #[thrust_macros::ensures(forall(|k: USize| !(result.7[k] != 0) || (0 <= k && k < (*self).0 && Self::mem(*self, k))))]
+    #[thrust_macros::ensures(forall(|k: USize| !(0 <= k && k < (*self).0 && Self::mem(*self, k)) || result.7[k] != 0))]
     pub fn iter(&self) -> BitIter<'_, T> {
         BitIter::new(&self.words)
     }
@@ -232,10 +236,20 @@ pub struct BitIter<'a, T: Idx> {
     iter: WordIter<'a>,
 
     marker: PhantomData<T>,
+
+    // Rewrite (rewrites.md S11): proof-only. A bound on the elements, the number yielded so far,
+    // the number still to come, and the members still to come as flags (non-zero at a member).
+    // The trusted `iter` of `DenseBitSet` and of `BitMatrix`, the only callers of `new`, state
+    // them; `new` leaves them empty.
+    bound: thrust_models::Ghost<USize>,
+    count: thrust_models::Ghost<USize>,
+    left: thrust_models::Ghost<USize>,
+    rest: thrust_models::Ghost<Seq<USize>>,
 }
 
-// `BitIter`'s model is the tuple of its fields' models, `(word, offset, (words, pos), marker)`, so
-// that the case study's iterator trait can compare two states; the word array is `self.2.0`.
+// `BitIter`'s model is the tuple of its fields' models,
+// `(word, offset, (words, pos), marker, bound, count, left, rest)`, so that the case study's
+// iterator trait can compare two states; the word array is `self.2.0`.
 #[thrust_macros::context]
 impl<'a, T: Idx> BitIter<'a, T> {
     /// `n == self.iter.words.len() * WORD_BITS`: the number of bits the
@@ -254,29 +268,36 @@ impl<'a, T: Idx> BitIter<'a, T> {
     fn same_words(self, dist: Self) -> bool {
         *dist.2.0 == *self.2.0
     }
+}
 
+// Outside the `#[thrust_macros::context]` block, so that `ghost!` adds no `Model` bound on `T`.
+// Its only callers, the two trusted `iter`s, state the ghost fields.
+impl<'a, T: Idx> BitIter<'a, T> {
     #[inline]
+    #[thrust::trusted]
     #[thrust::callable]
-    // `WORD_BITS` (a named `const`) is not usable in a formula:
-    // `not implemented: unsupported path in formula: ... Def(Const, ..
-    // WORD_BITS)` (src/analyze/annot_fn.rs:809), so the literal 64 is used
-    // here and in `bit_bound`'s body.
-    #[thrust_macros::ensures(Self::bit_bound(result, (*words).len() * 64))]
-    pub(crate) fn new(words: &'a [Word]) -> BitIter<'a, T> {
+    fn new(words: &'a [Word]) -> BitIter<'a, T> {
         BitIter {
             word: 0,
             offset: usize::MAX - (WORD_BITS - 1),
             iter: WordIter::new(words),
             marker: PhantomData,
+            bound: thrust_macros::ghost!(|| -> USize { 0 }),
+            count: thrust_macros::ghost!(|| -> USize { 0 }),
+            left: thrust_macros::ghost!(|| -> USize { 0 }),
+            rest: thrust_macros::ghost!(|| -> Seq<USize> { Seq::empty() }),
         }
     }
 }
 
 // `BitIter` implements the case study's iterator trait (rewrites.md R9), which `layout()`'s `Map`
-// and eligibility's `enumerate` need. Its predicates state the contract of the
-// `extern_spec_fn` on std's `next` this stage had: every index below the word array's bit count
-// can be built (`invariant`), the word array never changes, and every yielded index is below
-// that bit count (`produces`).
+// and eligibility's `enumerate` need. Every yielded element is below the bound and the word
+// array's bit count, and the elements are distinct, so count + left stays at most the bound.
+// `left` makes completion observable: the iterator completes with nothing left, which `Map`'s
+// `reinitialize` in `layout()` needs. `rest` says which elements come: a yielded element leaves
+// it, an element not yielded stays, and none joins; at completion it has no member below the
+// bound. `next` builds its item with `T::new`, which panics unless `can_new` holds; the model
+// does not say which bit comes next, so every index below the bound must be buildable.
 #[thrust_macros::context]
 impl<'a, T: Idx + thrust_models::Model> crate::case_study::iter::Iterator for BitIter<'a, T>
 where
@@ -290,7 +311,10 @@ where
 
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
-        forall(|n: USize, k: USize| !(Self::bit_bound(self, n) && 0 <= k && k < n) || <T as Idx>::can_new(k))
+        0 <= self.5
+            && 0 <= self.6
+            && self.5 + self.6 <= self.4
+            && forall(|k: USize| !(0 <= k && k < self.4) || <T as Idx>::can_new(k))
     }
 
     #[thrust_macros::predicate]
@@ -299,11 +323,32 @@ where
             && forall(|n: USize, i: USize, k: USize|
                 !(Self::bit_bound(self, n) && 0 <= i && i < visited.len() && <T as Idx>::index_is(visited[i], k))
                     || k < n)
+            && self.4 == o.4
+            && o.5 == self.5 + visited.len()
+            && o.5 <= self.4
+            && o.6 + visited.len() == self.6
+            && 0 <= o.6
+            && forall(|i: USize, k: USize|
+                !(0 <= i && i < visited.len() && <T as Idx>::index_is(visited[i], k))
+                    || (k < self.4 && self.7[k] != 0 && o.7[k] == 0))
+            && forall(|k: USize| !(o.7[k] != 0) || self.7[k] != 0)
+            && forall(|k: USize|
+                !(self.7[k] != 0
+                    && forall(|i: USize| !(0 <= i && i < visited.len()) || !<T as Idx>::index_is(visited[i], k)))
+                    || o.7[k] != 0)
     }
 
+    // The fields may change on the way to the end (zero words are skipped), the ghost state does
+    // not.
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
         Self::same_words(*self, !self)
+            && (*self).6 == 0
+            && forall(|k: USize| !(0 <= k && k < (*self).4) || (*self).7[k] == 0)
+            && (!self).4 == (*self).4
+            && (!self).5 == (*self).5
+            && (!self).6 == (*self).6
+            && (!self).7 == (*self).7
     }
 }
 
@@ -344,6 +389,9 @@ pub struct BitMatrix<R: Idx, C: Idx> {
     pub(crate) num_columns: usize,
     words: Vec<Word>,
     marker: PhantomData<(R, C)>,
+    // Rewrite (rewrites.md S11): proof-only, every set bit's column is below it. rustc's `new`
+    // starts it at 0 and `insert` raises it past the column it sets.
+    pub(crate) col_bound: thrust_models::Ghost<USize>,
 }
 
 #[thrust_macros::context]
@@ -358,7 +406,7 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
             self.words.len() == self.num_rows * rw
                 && 64 * rw >= self.num_columns
                 && 64 * rw < self.num_columns + 64
-        })
+        }) && 0 <= *self.col_bound && *self.col_bound <= self.num_columns
     }
 
     #[thrust_macros::ensures(result.start == 0)]
@@ -378,12 +426,13 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
         (start, start + words_per_row)
     }
 
-    // `every yielded C satisfies c.index() < self.num_columns` is still not
-    // stated here: `BitIter`'s contract bounds the yielded index by the
-    // *word array* size (`BitIter::bit_bound`), and relating that to
-    // `num_columns` needs contracts on `range` (trusted) and `num_words`, which have none.
+    // Trusted, as `DenseBitSet::iter`: the iterator's ghost state is the row's members, below the
+    // ghost column bound.
+    #[thrust::trusted]
     #[thrust_macros::requires(Self::wf(*self))]
     #[thrust_macros::requires(forall(|i: USize| <R as Idx>::index_is(row, i) ==> i < (*self).num_rows))]
+    #[thrust_macros::ensures(result.4 == *(*self).col_bound && result.5 == 0)]
+    #[thrust_macros::ensures(0 <= result.6 && result.6 <= *(*self).col_bound)]
     pub fn iter(&self, row: R) -> BitIter<'_, C> {
         assert!(row.index() < self.num_rows);
         let (start, end) = self.range(row);
