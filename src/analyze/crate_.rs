@@ -82,10 +82,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 let target_def_id = analyzer.extern_spec_fn_target_def_id();
                 if let Some(local_target_def_id) = target_def_id.as_local() {
                     keys.swap_remove(&local_target_def_id);
-                    if self
-                        .tcx
-                        .opt_associated_item(target_def_id)
-                        .is_some_and(|item| item.trait_item_def_id.is_some())
+                    if self.tcx.def_kind(self.tcx.parent(target_def_id))
+                        == (rustc_hir::def::DefKind::Impl { of_trait: true })
                     {
                         impl_methods_with_own_contract.push(target_def_id);
                     }
@@ -374,9 +372,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             {
                 continue;
             }
-            let Some(impl_ty) = self.ctx.concrete_def_ty(def_id).cloned() else {
-                continue;
-            };
+            let impl_ty = self.ctx.concrete_def_ty(def_id).cloned();
             let Some(trait_ty) = self
                 .ctx
                 .local_def_analyzer(def_id.expect_local())
@@ -384,6 +380,13 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             else {
                 continue;
             };
+            // A trusted method of a generic impl is deferred, with no type registered.
+            let impl_ty = impl_ty.unwrap_or_else(|| {
+                let identity = mir_ty::GenericArgs::identity_for_item(self.tcx, def_id);
+                self.ctx
+                    .def_ty_with_args(def_id, identity, def_id)
+                    .expect("an impl method's own contract over the impl's generics")
+            });
             tracing::info!(
                 ?def_id,
                 impl_ty = %impl_ty.display(),

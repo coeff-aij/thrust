@@ -2,6 +2,10 @@
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
+// The spec bound is reached through `enumerate`, which steps nothing: `Vec::from_iter(j)` requires
+// `inv` of the iterator `j`'s `into_iter` makes, as Creusot requires the type invariant of the
+// iterator `extend` and `collect` step, and a contract over `J: IntoIterator` cannot state it.
+
 #[derive(PartialEq)]
 struct Good;
 
@@ -46,21 +50,12 @@ impl IteratorSpec for Good {
     }
 }
 
-#[thrust_macros::context]
-impl IntoIteratorSpec for Good {
-    #[thrust_macros::predicate]
-    fn into_iter_is(self, it: Self) -> bool {
-        self == it
-    }
-}
-
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(true)]
-fn collect<J: IntoIterator<Item = i64>>(j: J) -> Vec<i64> {
-    Vec::from_iter(j)
+fn number<J: Iterator<Item = i64>>(j: J) {
+    let _ = j.enumerate();
 }
 
 fn main() {
-    let v = collect(Good);
-    assert!(v.len() >= 0);
+    number(Good);
 }
