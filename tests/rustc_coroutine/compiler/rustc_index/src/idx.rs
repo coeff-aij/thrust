@@ -68,8 +68,8 @@ pub trait Idx: Copy + 'static + Eq + PartialEq + Debug + Hash {
     #[thrust_macros::law]
     #[thrust_macros::ensures(
         Self::index_logic(*a) >= 0
+            && Self::index_is(*a, Self::index_logic(*a))
             && forall(|i: USize| Self::index_is(*a, i) ==> i == Self::index_logic(*a))
-            && forall(|i: USize| i == Self::index_logic(*a) ==> Self::index_is(*a, i))
     )]
     #[thrust::trusted]
     fn index_logic_is(a: &Self) {}
