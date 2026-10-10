@@ -5,6 +5,7 @@ use rustc_hir::def::DefKind;
 use rustc_hir::def_id::{DefId, CRATE_DEF_ID};
 use rustc_middle::ty::TyCtxt;
 use rustc_span::symbol::{kw, Symbol};
+use rustc_span::Span;
 
 use crate::analyze;
 
@@ -17,10 +18,12 @@ use crate::analyze;
 struct Entry {
     segments: Vec<Symbol>,
     recursive: bool,
+    text: String,
+    span: Span,
 }
 
 impl Entry {
-    fn parse(entry: &str) -> Self {
+    fn parse(entry: &str, span: Span) -> Self {
         let mut segments: Vec<&str> = entry.split("::").filter(|s| !s.is_empty()).collect();
         let recursive = segments.last() == Some(&"**");
         if recursive {
@@ -32,6 +35,8 @@ impl Entry {
         Entry {
             segments: segments.into_iter().map(Symbol::intern).collect(),
             recursive,
+            text: entry.to_owned(),
+            span,
         }
     }
 
@@ -47,13 +52,13 @@ impl Entry {
 
 /// The path of an item for the selection: its def path from the crate root, with an impl block
 /// named by its self type, and the length of the path of the module that contains it.
-struct ItemPath {
+pub struct ItemPath {
     segments: Vec<Symbol>,
     module_len: usize,
 }
 
 impl ItemPath {
-    fn of(tcx: TyCtxt<'_>, def_id: DefId) -> Self {
+    pub fn of(tcx: TyCtxt<'_>, def_id: DefId) -> Self {
         let mut ancestors = Vec::new();
         let mut current = def_id;
         while let Some(parent) = tcx.opt_parent(current) {
@@ -74,6 +79,14 @@ impl ItemPath {
                 path.module_len = path.segments.len();
             }
         }
+        path
+    }
+
+    /// The path of `law_def_id` as inherited by the impl `impl_def_id`, named as a method of the
+    /// impl.
+    pub fn of_inherited(tcx: TyCtxt<'_>, impl_def_id: DefId, law_def_id: DefId) -> Self {
+        let mut path = ItemPath::of(tcx, impl_def_id);
+        path.segments.push(tcx.item_name(law_def_id));
         path
     }
 }
@@ -111,11 +124,11 @@ impl Selection {
                     TokenTree::Token(
                         Token {
                             kind: TokenKind::Literal(lit),
-                            ..
+                            span,
                         },
                         _,
                     ) if lit.kind == LitKind::Str => {
-                        entries.push(Entry::parse(lit.symbol.as_str()));
+                        entries.push(Entry::parse(lit.symbol.as_str(), *span));
                     }
                     TokenTree::Token(
                         Token {
@@ -136,16 +149,27 @@ impl Selection {
         self.entries.iter().any(|entry| entry.selects(&path))
     }
 
-    /// Whether the selection contains `law_def_id` as inherited by the impl `impl_def_id`, which
-    /// is named as a method of the impl.
+    /// Whether the selection contains `law_def_id` as inherited by the impl `impl_def_id`.
     pub fn contains_inherited(
         &self,
         tcx: TyCtxt<'_>,
         impl_def_id: DefId,
         law_def_id: DefId,
     ) -> bool {
-        let mut path = ItemPath::of(tcx, impl_def_id);
-        path.segments.push(tcx.item_name(law_def_id));
+        let path = ItemPath::of_inherited(tcx, impl_def_id, law_def_id);
         self.entries.iter().any(|entry| entry.selects(&path))
+    }
+
+    /// Reports each entry that selects none of `paths`, which would leave its intended part of
+    /// the crate unverified without a sign.
+    pub fn report_unmatched(&self, tcx: TyCtxt<'_>, paths: &[ItemPath]) {
+        for entry in &self.entries {
+            if !paths.iter().any(|path| entry.selects(path)) {
+                tcx.dcx().span_err(
+                    entry.span,
+                    format!("`verify_only` entry \"{}\" selects no function", entry.text),
+                );
+            }
+        }
     }
 }

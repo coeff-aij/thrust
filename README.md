@@ -182,7 +182,7 @@ fn rand() -> i32 { unimplemented!() }
 - `m::**` selects module `m` with all its submodules;
 - any other path selects the named function with its closures, or every function defined inside the named item (a type's methods, a function's nested functions).
 
-A method belongs to the module of its `impl` block and is named through the impl's self type, `module::Type::method`, for inherent and trait impls alike; a method of an impl for a type that is not a struct, enum or union is selected only through its module. Several attributes take the union of their entries.
+A method belongs to the module of its `impl` block and is named through the impl's self type, `module::Type::method`, for inherent and trait impls alike; a method of an impl for a type that is not a struct, enum or union is selected only through its module. Several attributes take the union of their entries, and an entry that selects no function is an error.
 
 A function outside the selection that has a written contract (`requires`/`ensures`, `#[thrust::callable]`, or the contract of the trait method it implements) is treated as `#[thrust::trusted]`. One without a contract is still analyzed, because its callers use the contract inferred from its body. A trait law that an impl outside the selection inherits is assumed there rather than checked. Predicates, logic functions and model declarations are unaffected, and so are `#[thrust::trusted]` and `#[thrust::ignored]`. Without the attribute, the whole crate is verified.
 

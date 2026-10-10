@@ -7,6 +7,7 @@ use rustc_middle::ty::{self as mir_ty, TyCtxt};
 use rustc_span::def_id::LocalDefId;
 
 use crate::analyze;
+use crate::analyze::selection::ItemPath;
 use crate::chc;
 use crate::chc::debug;
 use crate::rty::ClauseBuilderExt as _;
@@ -183,6 +184,35 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             trusted,
             "functions with a contract trusted outside verify_only"
         );
+    }
+
+    /// Reports each `#![thrust::verify_only(..)]` entry that selects no function of the crate,
+    /// nor a law inherited by one of its impls.
+    fn report_unmatched_selection(&self) {
+        let Some(selection) = &self.selection else {
+            return;
+        };
+        let mut paths: Vec<_> = self
+            .tcx
+            .mir_keys(())
+            .iter()
+            .map(|local_def_id| local_def_id.to_def_id())
+            .filter(|def_id| self.tcx.def_kind(*def_id).is_fn_like())
+            .map(|def_id| ItemPath::of(self.tcx, def_id))
+            .collect();
+        for (trait_def_id, laws) in self.ctx.trait_laws.borrow().iter() {
+            let impls = self.tcx.all_local_trait_impls(()).get(trait_def_id);
+            for impl_local in impls.into_iter().flatten() {
+                for law_def_id in laws {
+                    paths.push(ItemPath::of_inherited(
+                        self.tcx,
+                        impl_local.to_def_id(),
+                        *law_def_id,
+                    ));
+                }
+            }
+        }
+        selection.report_unmatched(self.tcx, &paths);
     }
 
     #[tracing::instrument(skip(self), fields(def_id = %self.tcx.def_path_str(local_def_id)))]
@@ -540,6 +570,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
         self.analyze_raw_command_annot();
         self.register_trait_laws();
+        self.report_unmatched_selection();
         self.refine_local_defs();
         let keys: Vec<_> = self.tcx.mir_keys(()).iter().copied().collect();
         self.ctx.record_hist_inv_specified_params(keys.into_iter());
