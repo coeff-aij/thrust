@@ -354,7 +354,7 @@ fn map_atom_terms(atom: Atom, f: &mut dyn FnMut(Term) -> Term) -> Atom {
     }
 }
 
-fn map_term(term: Term, f: &mut dyn FnMut(Term) -> Term) -> Term {
+pub(super) fn map_term(term: Term, f: &mut dyn FnMut(Term) -> Term) -> Term {
     let sub = |t: Box<Term>, f: &mut dyn FnMut(Term) -> Term| Box::new(map_term(*t, f));
     let term = match term {
         Term::Box(t) => Term::Box(sub(t, f)),

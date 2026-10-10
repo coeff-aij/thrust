@@ -16,6 +16,7 @@ mod dedup;
 mod flatten;
 pub(crate) mod format_context;
 mod hoice;
+mod lift_forall_fns;
 mod smtlib2;
 mod solver;
 mod unbox;
@@ -881,6 +882,9 @@ impl<V> Term<V> {
             Term::DatatypeCtor(sort, _, _) => sort.clone().into(),
             Term::DatatypeDiscr(_, _) => Sort::int(),
             Term::UserDefinedFn(_, sort, _) => sort.clone(),
+            Term::ForallFn(pred, args) if args.is_empty() && pred.params.len() == 1 => {
+                Sort::array(pred.params[0].clone(), pred.result.clone())
+            }
             Term::ForallFn(pred, _) => pred.result.clone(),
             Term::IntToBitVec { width, .. } => Sort::bit_vec(*width),
             Term::UserQuantifiedVar(sort, _) => sort.clone(),
@@ -3472,6 +3476,7 @@ impl System {
         if std::env::var_os("THRUST_DEDUP_PRED_ARGS").is_some() {
             system = dedup_pred_args(system);
         }
+        let mut system = lift_forall_fns::lift_forall_fns(system);
         system.populate_user_defined_pred_dependencies();
         if CandidateAtomsMode::from_env() == CandidateAtomsMode::ContractsAndEntry {
             system.add_entry_candidate_atoms();
