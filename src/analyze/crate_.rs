@@ -163,7 +163,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 .is_some_and(|trait_item| {
                     spec_targets.contains(&trait_item)
                         || trait_item.as_local().is_some_and(|trait_item| {
-                            self.ctx.local_def_analyzer(trait_item).is_fully_annotated()
+                            self.tcx.hir_maybe_body_owned_by(trait_item).is_some()
+                                && self.ctx.local_def_analyzer(trait_item).is_fully_annotated()
                         })
                 });
             let has_contract = spec_targets.contains(&def_id)
