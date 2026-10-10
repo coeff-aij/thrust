@@ -1,3 +1,4 @@
+use std::fmt;
 use crate::thrust_models;
 use std::borrow::{Borrow, BorrowMut};
 use std::marker::PhantomData;
@@ -15,6 +16,12 @@ use crate::case_study::USize;
 pub struct IndexVec<I: Idx, T> {
     pub raw: Vec<T>,
     pub(crate) _marker: PhantomData<fn(&I)>,
+}
+
+impl<I: Idx, T: fmt::Debug> fmt::Debug for IndexVec<I, T> {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self.raw, fmt)
+    }
 }
 
 #[thrust_macros::context]

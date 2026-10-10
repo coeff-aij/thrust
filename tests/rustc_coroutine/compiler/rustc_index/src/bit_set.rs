@@ -13,9 +13,7 @@ const WORD_BYTES: usize = size_of::<Word>();
 const WORD_BITS: usize = WORD_BYTES * 8;
 
 // #[cfg_attr(feature = "nightly", derive(Decodable_NoContext, Encodable_NoContext))]
-// `Eq, PartialEq` commented out: the derived `PartialEq` compares the
-// `PhantomData` field, whose model is the unit sort, and Thrust panics with
-// `unbound var $0` (src/chc/clause_builder.rs:113).
+// `Eq, PartialEq` commented out: the ghost field `card` (rewrites.md S11) has no executable `eq`.
 #[derive(/* Eq, PartialEq, */ Hash)]
 pub struct DenseBitSet<T> {
     domain_size: usize,
@@ -415,7 +413,8 @@ where
 }
 
 // #[cfg_attr(feature = "nightly", derive(Decodable_NoContext, Encodable_NoContext))]
-// `Clone, Eq, PartialEq` commented out: same `PhantomData` ICE as above.
+// `Clone, Eq, PartialEq` commented out: the ghost field `col_bound` (rewrites.md S11) has no
+// executable `clone` or `eq`.
 #[derive(/* Clone, Eq, PartialEq, */ Hash)]
 pub struct BitMatrix<R: Idx, C: Idx> {
     pub(crate) num_rows: usize,

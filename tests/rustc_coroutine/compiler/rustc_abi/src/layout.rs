@@ -13,7 +13,6 @@ use crate::rustc_hashes::Hash64;
 use crate::rustc_index::{Idx, IndexSlice, IndexVec};
 use crate::case_study::USize;
 use crate::case_study::iter::{Filter, Map, collect_index_vec, iter_all};
-use crate::case_study::unwrap::Unwrap;
 
 mod coroutine;
 mod simple;
@@ -27,7 +26,7 @@ impl thrust_models::Model for NicheBias {
     type Ty = Self;
 }
 
-#[derive(Copy, Clone, /*Debug,*/ PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum LayoutCalculatorError<F> {
     UnexpectedUnsized(F),
 
@@ -58,7 +57,7 @@ pub trait LayoutRef<'a, FieldIdx: Idx, VariantIdx: Idx>:
     fn layout_is(self, l: LayoutData<FieldIdx, VariantIdx>) -> bool;
 }
 
-#[derive(Clone, Copy /*Debug*/)]
+#[derive(Clone, Copy, Debug)]
 pub struct LayoutCalculator<Cx> {
     pub cx: Cx,
 }
@@ -93,7 +92,7 @@ fn sum_first(ts: &[u64], k: usize) -> u64 {
 // on the order, or with `SizeOverflow`, never when the fields fit in any order
 // (`fits_in_any_order`); with `Start` a niche comes from some field's, and with `End` any field's
 // niche gives one; the niche is well formed and lies within the size. `univariant` needs these
-// for its two `unwrap_without_debug`s on the `End` layout, and requires that the fields fit in any
+// for its two `expect`s on the `End` layout, and requires that the fields fit in any
 // order: rustc assumes the `End` layout succeeds whenever the `Start` one does
 // (`expect("alt layout should always work")`), but the two orders pad differently, so one of them
 // can overflow `checked_add` or `obj_size_bound` alone; summing every field's size and twice its
@@ -208,7 +207,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         'a,
         FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
         VariantIdx: Idx,
-        F: LayoutRef<'a, FieldIdx, VariantIdx> + thrust_models::Model<Ty: PartialEq>,
+        F: LayoutRef<'a, FieldIdx, VariantIdx> + core::fmt::Debug + thrust_models::Model<Ty: PartialEq>,
     >(
         &self,
         fields: &IndexSlice<FieldIdx, F>,
@@ -228,12 +227,10 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                     if fields.len() > 1 && head_space != 0 && tail_space > 0 {
                         let alt_layout = self
                             .univariant_biased(fields, repr, kind, NicheBias::End)
-                            // .expect("alt layout should always work");
-                            .unwrap_without_debug();
+                            .expect("alt layout should always work");
                         let alt_niche = alt_layout
                             .largest_niche
-                            // .expect("alt layout should have a niche like the regular one");
-                            .unwrap_without_debug();
+                            .expect("alt layout should have a niche like the regular one");
                         let alt_head_space = alt_niche.offset.bytes();
                         let alt_niche_len = alt_niche.value.size(dl).bytes();
                         let alt_tail_space =
@@ -295,7 +292,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         'a,
         FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
         VariantIdx: Idx,
-        F: LayoutRef<'a, FieldIdx, VariantIdx> + thrust_models::Model<Ty: PartialEq>,
+        F: LayoutRef<'a, FieldIdx, VariantIdx> + core::fmt::Debug + thrust_models::Model<Ty: PartialEq>,
     >(
         &self,
         fields: &IndexSlice<FieldIdx, F>,

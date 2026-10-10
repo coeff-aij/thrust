@@ -1,6 +1,14 @@
+use std::fmt;
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub struct Hash64 {
     inner: u64,
+}
+
+impl fmt::Debug for Hash64 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.inner.fmt(f)
+    }
 }
 
 impl Hash64 {

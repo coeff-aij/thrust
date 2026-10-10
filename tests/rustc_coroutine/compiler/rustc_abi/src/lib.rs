@@ -3,6 +3,7 @@
 // #![cfg_attr(feature = "nightly", feature(step_trait))]
 
 use crate::thrust_models;
+use std::fmt;
 use std::num::NonZeroUsize;
 use std::ops::{Add, AddAssign, Deref};
 use std::range::RangeInclusive;
@@ -19,7 +20,7 @@ mod layout;
 
 pub use layout::{LayoutCalculator, LayoutCalculatorError, LayoutRef};
 
-#[derive(Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 // #[cfg_attr(feature = "nightly", derive(Encodable_NoContext, Decodable_NoContext, StableHash))]
 pub struct ReprFlags(u8);
 
@@ -63,7 +64,7 @@ impl ReprFlags {
     }
 }
 
-#[derive(Copy, Clone, /*Debug,*/ Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 // #[cfg_attr(feature = "nightly", derive(Encodable_NoContext, Decodable_NoContext, StableHash))]
 pub enum IntegerType {
     Pointer(bool),
@@ -71,7 +72,7 @@ pub enum IntegerType {
     Fixed(Integer, bool),
 }
 
-#[derive(Copy, Clone, /*Debug,*/ Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 // #[cfg_attr(feature = "nightly", derive(Encodable_NoContext, Decodable_NoContext, StableHash))]
 pub enum ScalableElt {
     ElementCount(u16),
@@ -79,7 +80,7 @@ pub enum ScalableElt {
     Container,
 }
 
-#[derive(Copy, Clone, /*Debug,*/ Eq, PartialEq, Default)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Default)]
 // #[cfg_attr(feature = "nightly", derive(Encodable_NoContext, Decodable_NoContext, StableHash))]
 pub struct ReprOptions {
     pub int: Option<IntegerType>,
@@ -119,7 +120,7 @@ impl ReprOptions {
     }
 }
 
-#[derive(Copy, Clone, /*Debug,*/ PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct PointerSpec {
     pub(crate) pointer_size: Size,
 
@@ -130,7 +131,7 @@ pub struct PointerSpec {
     pub(crate) _is_fat: bool,
 }
 
-#[derive(/*Debug,*/ PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct TargetDataLayout {
     pub endian: Endian,
     pub i1_align: Align,
@@ -197,9 +198,7 @@ impl TargetDataLayout {
             16 => 1 << 15,
             32 => 1 << 31,
             64 => 1 << 61,
-            // Rewrite (rewrites.md R6): the message is dropped; a message makes
-            // `fmt::Arguments`, which Thrust cannot type in analysed code.
-            _ => panic!(),
+            bits => panic!("obj_size_bound: unknown pointer bit size {bits}"),
         }
     }
 
@@ -228,9 +227,7 @@ impl TargetDataLayout {
         )) {
             e.1.pointer_size
         } else {
-            // Rewrite (rewrites.md R6): the message is dropped; a message makes
-            // `fmt::Arguments`, which Thrust cannot type in analysed code.
-            panic!();
+            panic!("Use of unknown address space {c:?}");
         }
     }
 
@@ -249,9 +246,7 @@ impl TargetDataLayout {
         )) {
             e.1.pointer_align
         } else {
-            // Rewrite (rewrites.md R6): the message is dropped; a message makes
-            // `fmt::Arguments`, which Thrust cannot type in analysed code.
-            panic!();
+            panic!("Use of unknown address space {c:?}");
         })
     }
 }
@@ -312,10 +307,31 @@ pub enum Endian {
     Big,
 }
 
+impl Endian {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Little => "little",
+            Self::Big => "big",
+        }
+    }
+}
+
+impl fmt::Debug for Endian {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 // #[cfg_attr(feature = "nightly", derive(Encodable_NoContext, Decodable_NoContext, StableHash))]
 pub struct Size {
     pub(crate) raw: u64,
+}
+
+impl fmt::Debug for Size {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Size({} bytes)", self.bytes())
+    }
 }
 
 #[thrust_macros::context]
@@ -404,9 +420,9 @@ impl Add for Size {
     type Output = Size;
     #[inline]
     fn add(self, other: Size) -> Size {
-        // Rewrite (rewrites.md R6): the message is dropped; a message makes
-        // `fmt::Arguments`, which Thrust cannot type in analysed code.
-        Size::from_bytes(self.bytes().checked_add(other.bytes()).unwrap_or_else(|| panic!()))
+        Size::from_bytes(self.bytes().checked_add(other.bytes()).unwrap_or_else(|| {
+            panic!("Size::add: {} + {} doesn't fit in u64", self.bytes(), other.bytes())
+        }))
     }
 }
 
@@ -437,6 +453,12 @@ pub struct Align {
     pub(crate) pow2: u8,
 }
 
+impl fmt::Debug for Align {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Align({} bytes)", self.bytes())
+    }
+}
+
 #[thrust_macros::context]
 impl Align {
     pub const ONE: Align = Align { pow2: 0 };
@@ -451,7 +473,7 @@ impl Align {
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Hash /*Debug*/)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 // #[cfg_attr(feature = "nightly", derive(StableHash))]
 pub struct AbiAlign {
     pub abi: Align,
@@ -486,11 +508,7 @@ impl Deref for AbiAlign {
     }
 }
 
-// `PartialOrd, Ord` commented out: the derived `partial_cmp` returns
-// `Option<std::cmp::Ordering>`, whose i8 discriminants make rustc ICE inside
-// Thrust with "expected int of size 4, but got size 1"
-// (rustc_middle/src/ty/consts/int.rs:276).
-#[derive(Copy, Clone, PartialEq, Eq, /*PartialOrd, Ord,*/ Hash /*Debug*/)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 // #[cfg_attr(feature = "nightly", derive(Encodable_NoContext, Decodable_NoContext, StableHash))]
 pub enum Integer {
     I8,
@@ -552,11 +570,7 @@ impl Integer {
     }
 }
 
-// `PartialOrd, Ord` commented out: the derived `partial_cmp` returns
-// `Option<std::cmp::Ordering>`, whose i8 discriminants make rustc ICE inside
-// Thrust with "expected int of size 4, but got size 1"
-// (rustc_middle/src/ty/consts/int.rs:276).
-#[derive(Copy, Clone, PartialEq, Eq, /*PartialOrd, Ord,*/ Hash /*Debug*/)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 // #[cfg_attr(feature = "nightly", derive(StableHash))]
 pub enum Float {
     F16,
@@ -601,7 +615,7 @@ impl Float {
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Hash /*Debug*/)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 // #[cfg_attr(feature = "nightly", derive(StableHash))]
 pub enum Primitive {
     Int(Integer, bool),
@@ -662,7 +676,18 @@ pub struct WrappingRange {
     pub end: u128,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash /*Debug*/)]
+impl fmt::Debug for WrappingRange {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.start > self.end {
+            write!(fmt, "(..={}) | ({}..)", self.end, self.start)?;
+        } else {
+            write!(fmt, "{}..={}", self.start, self.end)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 // #[cfg_attr(feature = "nightly", derive(StableHash))]
 pub enum Scalar {
     Initialized {
@@ -706,7 +731,7 @@ impl Scalar {
     }
 }
 
-#[derive(PartialEq, Eq, Hash, Clone /*Debug*/)]
+#[derive(PartialEq, Eq, Hash, Clone, Debug)]
 pub enum FieldsShape<FieldIdx: Idx> {
     Primitive,
 
@@ -749,20 +774,14 @@ impl<FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>> FieldsShape<FieldIdx> 
     }
 }
 
-// `Debug` commented out: the derived `fmt` reaches `std::fmt::Formatter`, whose
-// `dyn std::fmt::Write` field makes Thrust panic with
-// "not implemented: ty: dyn [Binder { value: Trait(std::fmt::Write), .. }]"
-// (src/refine/template.rs:823). Dropping it forces the two `{c:?}` panic
-// messages below to lose their argument, the same rewrite the target file
-// already applies elsewhere ("dropped panic messages").
-#[derive(Copy, Clone, /*Debug,*/ PartialEq, Eq, /*PartialOrd, Ord,*/ Hash)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 // #[cfg_attr(feature = "nightly", derive(StableHash))]
 pub struct AddressSpace(pub u32);
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash /*Debug*/)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct NumScalableVectors(pub u8);
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash /*Debug*/)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum BackendRepr {
     Scalar(Scalar),
     ScalarPair(Scalar, Scalar),
@@ -794,7 +813,7 @@ impl BackendRepr {
     }
 }
 
-#[derive(PartialEq, Eq, Hash, Clone /*Debug*/)]
+#[derive(PartialEq, Eq, Hash, Clone, Debug)]
 pub enum Variants<FieldIdx: Idx, VariantIdx: Idx> {
     Empty,
 
@@ -810,7 +829,7 @@ pub enum Variants<FieldIdx: Idx, VariantIdx: Idx> {
     },
 }
 
-#[derive(PartialEq, Eq, Hash, Copy, Clone /*Debug*/)]
+#[derive(PartialEq, Eq, Hash, Copy, Clone, Debug)]
 pub enum TagEncoding<VariantIdx: Idx> {
     Direct,
 
@@ -823,7 +842,7 @@ pub enum TagEncoding<VariantIdx: Idx> {
     },
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash /*Debug*/)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 // #[cfg_attr(feature = "nightly", derive(StableHash))]
 pub struct Niche {
     pub offset: Size,
@@ -928,7 +947,7 @@ impl<FieldIdx: Idx, VariantIdx: Idx> LayoutData<FieldIdx, VariantIdx> {
 }
 
 // `PartialEq` is not rustc's: `univariant`'s contract compares the kind (rewrites.md S1).
-#[derive(Copy, Clone, PartialEq /*Debug*/)]
+#[derive(Copy, Clone, PartialEq, Debug)]
 pub enum StructKind {
     AlwaysSized,
 
@@ -937,7 +956,7 @@ pub enum StructKind {
     Prefixed(Size, Align),
 }
 
-#[derive(PartialEq, Eq, Hash, Clone /*Debug*/)]
+#[derive(PartialEq, Eq, Hash, Clone, Debug)]
 pub struct VariantLayout<FieldIdx: Idx> {
     pub size: Size,
     pub backend_repr: BackendRepr,

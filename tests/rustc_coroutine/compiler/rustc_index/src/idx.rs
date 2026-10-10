@@ -116,10 +116,7 @@ impl Idx for u32 {
 
 /// Own iterator standing in for `(start..end).map(I::new)`: yields
 /// `I::new(start)`, `I::new(start + 1)`, ..., `I::new(end - 1)`.
-// `Clone` commented out: deriving it on this generic struct panics Thrust with `unbound var $0`
-// (src/chc/clause_builder.rs:113) while analysing `<IdxRange<I> as Clone>::clone`, on the inner
-// `<PhantomData<I> as Clone>::clone` call.
-// #[derive(Clone)]
+#[derive(Clone)]
 pub struct IdxRange<I: Idx> {
     pub(crate) start: usize,
     pub(crate) end: usize,

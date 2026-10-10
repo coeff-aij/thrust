@@ -1,3 +1,4 @@
+use std::fmt;
 use crate::thrust_models;
 use std::marker::PhantomData;
 use std::slice::SliceIndex;
@@ -9,14 +10,17 @@ use crate::rustc_index::{Idx, IdxRange, IndexVec, IntoSliceIdx};
 use crate::case_study::USize;
 use crate::{IntoIteratorSpec, IteratorSpec};
 
-// `PartialEq, Eq` commented out: the derived `eq` compares the `PhantomData`
-// field, whose model is the unit sort, and Thrust panics with
-// `unbound var $0` -- the same reason bit_set.rs drops them from `DenseBitSet`.
-#[derive(/* PartialEq, Eq, */ Hash)]
+#[derive(PartialEq, Eq, Hash)]
 #[repr(transparent)]
 pub struct IndexSlice<I: Idx, T> {
     _marker: PhantomData<fn(&I)>,
     pub raw: [T],
+}
+
+impl<I: Idx, T: fmt::Debug> fmt::Debug for IndexSlice<I, T> {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self.raw, fmt)
+    }
 }
 
 /// Own iterator standing in for `slice::Iter<'a, T>` (whose raw pointer

@@ -35,7 +35,7 @@ fn drive<
     Cx: HasDataLayout,
     FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
     VariantIdx: Idx,
-    F: LayoutRef<'a, FieldIdx, VariantIdx> + thrust_models::Model<Ty: PartialEq>,
+    F: LayoutRef<'a, FieldIdx, VariantIdx> + core::fmt::Debug + thrust_models::Model<Ty: PartialEq>,
 >(
     calc: &LayoutCalculator<Cx>,
     fields: &IndexSlice<FieldIdx, F>,
