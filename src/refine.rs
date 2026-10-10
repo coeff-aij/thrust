@@ -89,6 +89,22 @@ pub fn closure_post_forall_pred(
     )
 }
 
+/// The postcondition of the trait method `did` at type arguments that are still type
+/// parameters, when it has no specification: one symbol per method and type arguments, shared by
+/// its calls and by `post!` in the contracts that name it.
+pub fn method_post_forall_pred(
+    tcx: mir_ty::TyCtxt<'_>,
+    did: DefId,
+    type_parameters: Vec<Sort>,
+    params: Vec<Sort>,
+) -> ForallPred {
+    ForallPred::new(
+        stable_def_id_symbol(tcx, did, "q_method_post"),
+        type_parameters,
+        params,
+    )
+}
+
 pub fn closure_hist_inv_forall_pred(
     tcx: mir_ty::TyCtxt<'_>,
     did: DefId,

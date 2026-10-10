@@ -724,6 +724,9 @@ pub struct Analyzer<'tcx> {
     /// The instances `(def, generic args, caller)` that use a generic def's contract as
     /// instantiated; see [`Analyzer::check_reused_spec_bounds`].
     reused_generic_instances: RefCell<Vec<(DefId, mir_ty::GenericArgsRef<'tcx>, DefId)>>,
+    /// The trait methods without a specification a body called at its type parameters, keyed
+    /// like `assumed_spec_bounds`; see [`Analyzer::check_reused_total_methods`].
+    assumed_total_methods: RefCell<HashMap<DefId, Vec<(DefId, mir_ty::GenericArgsRef<'tcx>)>>>,
     /// The types of the functions each basic block calls, recorded only when
     /// [`candidate_atoms_enabled`], whose contracts give a loop head candidate atoms.
     called_fn_tys: HashMap<(AnalysisKey<'tcx>, BasicBlock), Vec<rty::FunctionType>>,
@@ -793,6 +796,7 @@ impl<'tcx> Analyzer<'tcx> {
             fn_mut_bounded_defs: Default::default(),
             assumed_spec_bounds: Default::default(),
             reused_generic_instances: Default::default(),
+            assumed_total_methods: Default::default(),
             called_fn_tys: Default::default(),
         }
     }
@@ -1328,6 +1332,109 @@ impl<'tcx> Analyzer<'tcx> {
                 return;
             }
         }
+    }
+
+    /// Records that a body analysed under `owner_fn_id` called the trait method `def_id`, which
+    /// has no specification, at `generic_args` that name type parameters, and so took it to
+    /// accept any arguments. Returns whether it is new.
+    pub fn record_assumed_total_method(
+        &self,
+        owner_fn_id: DefId,
+        def_id: DefId,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
+    ) -> bool {
+        let root = self.tcx.typeck_root_def_id(owner_fn_id);
+        let call = (def_id, self.tcx.erase_regions(generic_args));
+        let mut assumed = self.assumed_total_methods.borrow_mut();
+        let recorded = assumed.entry(root).or_default();
+        if recorded.contains(&call) {
+            return false;
+        }
+        recorded.push(call);
+        true
+    }
+
+    /// Checks, at each instance that uses a generic def's contract as instantiated, that every
+    /// trait method its analysis called without a specification at a type parameter
+    /// ([`Self::record_assumed_total_method`]) accepts any arguments there: the precondition of
+    /// the impl the call resolves to holds of all of them. A call still at a type parameter of
+    /// the instance's caller is assumed by that caller in turn, as
+    /// [`Self::check_reused_spec_bounds`] does with spec bounds. An impl Thrust knows no contract
+    /// of is not checked, as a direct call to it cannot be analysed either.
+    pub fn check_reused_total_methods(&mut self) {
+        use mir_ty::TypeVisitableExt as _;
+
+        let mut checked = HashSet::new();
+        let mut seen_instances = 0;
+        loop {
+            let instances = self.reused_generic_instances.borrow().clone();
+            let mut grew = instances.len() != seen_instances;
+            seen_instances = instances.len();
+            for (def_id, generic_args, caller_def_id) in instances {
+                let root = self.tcx.typeck_root_def_id(def_id);
+                let assumed = self
+                    .assumed_total_methods
+                    .borrow()
+                    .get(&root)
+                    .cloned()
+                    .unwrap_or_default();
+                for (method, method_args) in assumed {
+                    let method_args =
+                        mir_ty::EarlyBinder::bind(method_args).instantiate(self.tcx, generic_args);
+                    if method_args.has_param() {
+                        grew |=
+                            self.record_assumed_total_method(caller_def_id, method, method_args);
+                    } else if checked.insert((method, method_args)) {
+                        self.check_total_method(method, method_args, caller_def_id);
+                    }
+                }
+            }
+            if !grew {
+                return;
+            }
+        }
+    }
+
+    fn check_total_method(
+        &mut self,
+        def_id: DefId,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
+        caller_def_id: DefId,
+    ) {
+        let typing_env = mir_ty::TypingEnv::fully_monomorphized();
+        let Ok(Some(instance)) =
+            mir_ty::Instance::try_resolve(self.tcx, typing_env, def_id, generic_args)
+        else {
+            return;
+        };
+        let Some(def_ty) = self.def_ty_with_args(instance.def_id(), instance.args, caller_def_id)
+        else {
+            return;
+        };
+        let fn_ty = def_ty
+            .ty
+            .as_function()
+            .expect("a method has a function type");
+        let mut builder = chc::ClauseBuilder::default();
+        let args: IndexVec<rty::FunctionParamIdx, _> = fn_ty
+            .params
+            .iter()
+            .map(|param| chc::Term::var(builder.add_var(param.ty.to_sort())))
+            .collect();
+        let mut pre = chc::Body::top();
+        for (idx, param) in fn_ty.params.iter_enumerated() {
+            assert!(param.refinement.existentials.is_empty());
+            pre.push_conj(param.refinement.body.clone().subst_var(|v| match v {
+                rty::RefinedTypeVar::Value => args[idx].clone(),
+                rty::RefinedTypeVar::Free(j) => args[j].clone(),
+                rty::RefinedTypeVar::Existential(_) => unreachable!(),
+            }));
+        }
+        let origin = chc::debug::origin::Entry::described(format!(
+            "precondition of {instance} at any arguments, assumed by a generic analysis"
+        ));
+        let clauses = builder.head(pre, origin);
+        self.extend_clauses(clauses);
     }
 
     pub fn def_ty_with_args(

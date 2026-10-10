@@ -174,6 +174,8 @@ fn rand() -> i32 { unimplemented!() }
 
 `#[thrust_macros::impl_trait_names(D, F)]` names the types of a function's argument-position `impl Trait` parameters, in order of occurrence, so that its `requires`/`ensures` can refer to them (e.g. `D::dl_of(*cx, dl)` for `cx: &impl HasDataLayout`); it may appear before or after them, and the number of names must equal the number of such parameters.
 
+`thrust_macros::pre!(f(args))` and `thrust_macros::post!(f(args), r)` name the precondition of `f` at `args` and its postcondition relating `args` to the result `r`, where `f` is a closure or a function named by path. A trait method that has no specification in `std.rs`, called at a type parameter, accepts any arguments, and its result is related to them by a predicate that holds of every implementation, which `post!` names: `requires(forall(|r: &u64| post!(<F as Deref>::deref(&x), r) ==> *r > 0))` states what a body learns from `*x` at `F: Deref<Target = u64>`. At a concrete type, `pre!` and `post!` read the contract of the function the path resolves to, and a generic function verified once is accepted at an instance only if each such method its body calls at a type parameter accepts any arguments there.
+
 ## Configuration
 
 Several environment variables are used by Thrust to configure its behavior:

@@ -991,6 +991,49 @@ impl<'tcx> TypeBuilder<'tcx> {
             abi: rty::FunctionAbi::RustCall,
         })
     }
+
+    /// The contract of the trait method `def_id`, which has no specification, called at
+    /// `generic_args` that still name type parameters: it can be called with any arguments, and
+    /// its result is related to them by a forall predicate, which `post!` names.
+    pub fn build_unspecified_method_type(
+        &self,
+        def_id: DefId,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
+    ) -> rty::FunctionType {
+        let sig = self
+            .tcx
+            .fn_sig(def_id)
+            .instantiate(self.tcx, generic_args)
+            .skip_binder();
+        let params: IndexVec<rty::FunctionParamIdx, rty::RefinedType<rty::FunctionParamIdx>> = sig
+            .inputs()
+            .iter()
+            .map(|ty| self.build(*ty).vacuous())
+            .collect();
+        let mut ret = self.build(sig.output()).vacuous();
+
+        let type_params = generic_args
+            .types()
+            .map(|ty| self.build(ty).to_sort())
+            .collect();
+        let sorts = params
+            .iter()
+            .chain(std::iter::once(&ret))
+            .map(|rty| rty.ty.to_sort())
+            .collect();
+        let post_pred = refine::method_post_forall_pred(self.tcx, def_id, type_params, sorts);
+        self.system
+            .borrow_mut()
+            .register_forall_pred(post_pred.clone());
+
+        let args = params
+            .indices()
+            .map(|idx| chc::Term::var(rty::RefinedTypeVar::Free(idx)))
+            .chain(std::iter::once(chc::Term::var(rty::RefinedTypeVar::Value)))
+            .collect();
+        ret.extend_refinement(chc::Atom::new(post_pred.into(), args).into());
+        rty::FunctionType::new(params, ret)
+    }
 }
 
 /// Translates [`mir_ty::Ty`] to [`rty::RefinedType`] using templates for unknown refinements.
