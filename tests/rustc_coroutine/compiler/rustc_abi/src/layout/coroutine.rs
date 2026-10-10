@@ -10,7 +10,7 @@ use crate::rustc_index::bit_set::{BitIter, BitMatrix, DenseBitSet};
 use crate::rustc_index::{Idx, IdxRange, IndexSlice, IndexVec, IterEnumerated, SliceIter};
 use crate::case_study::USize;
 use crate::case_study::iter::{Filter, Map, collect_index_vec, collect_index_vec_result, iter_all};
-use std::iter::{Enumerate, zip};
+use std::iter::{self, Enumerate};
 use std::slice::IterMut;
 
 #[derive(Clone, /*Debug,*/ PartialEq)]
@@ -733,8 +733,7 @@ pub fn layout<
             let mut combined_in_memory_order =
                 IndexVec::from_elem_n(FieldIdx::new(invalid_field_idx), invalid_field_idx);
 
-            // Rewrite (rewrites.md R9): the local `zip` over the items by reference, copied below.
-            let mut offsets_and_memory_index = zip(offsets.iter(), memory_index.iter());
+            let mut offsets_and_memory_index = iter::zip(offsets, memory_index);
             // Rewrite (rewrites.md R8): `Map::new` and `collect_index_vec` for `map` and `collect`.
             let combined_offsets = collect_index_vec(Map::new(
                 variant_fields.iter_enumerated(),
@@ -748,7 +747,7 @@ pub fn layout<
                             // entries left as there are `Assigned` locals
                             // still to visit -- README stage 7, "the number of Assigned
                             // equals the length of variant_only_tys".
-                            let (&offset, &memory_index) = offsets_and_memory_index.next().unwrap();
+                            let (offset, memory_index) = offsets_and_memory_index.next().unwrap();
                             (offset, promoted_memory_index.len() as u32 + memory_index)
                         }
                         Ineligible(field_idx) => {
