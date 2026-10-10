@@ -629,7 +629,12 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             return None;
         }
         let self_ty = self.spec_fn_call_args(func_expr).type_at(0);
-        if !analyze::derive::has_generated_compares(self.tcx, &self.def_ids, self_ty) {
+        if !analyze::derive::has_generated_compares(
+            self.tcx,
+            &self.def_ids,
+            &self.type_builder,
+            self_ty,
+        ) {
             return None;
         }
         let [x, y, ord] = args else {
@@ -907,7 +912,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         let adt_did = self.tcx.parent(variant_did);
         let d_sym = crate::refine::datatype_symbol(self.tcx, adt_did);
         let variant_name = self.tcx.item_name(variant_did);
-        let v_sym = chc::DatatypeSymbol::new(format!("{}.{}", d_sym, variant_name));
+        let v_sym = crate::refine::variant_symbol(&d_sym, variant_name);
         let sort_args = if let mir_ty::TyKind::Adt(_, generic_args) = result_ty.kind() {
             generic_args
                 .types()

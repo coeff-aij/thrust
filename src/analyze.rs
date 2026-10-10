@@ -856,7 +856,7 @@ impl<'tcx> Analyzer<'tcx> {
                     })
                     .collect();
                 rty::EnumVariantDef {
-                    name: chc::DatatypeSymbol::new(format!("{}.{}", name, variant.name)),
+                    name: refine::variant_symbol(&name, variant.name),
                     discr,
                     field_tys,
                 }
@@ -1250,6 +1250,7 @@ impl<'tcx> Analyzer<'tcx> {
             return Some(bound);
         };
         let model_trait = self.tcx.parent(model_ty);
+        let type_builder = self.type_builder(self.def_ids(), caller_def_id);
         let clauses = self
             .tcx
             .predicates_of(spec.local_def_id)
@@ -1258,7 +1259,12 @@ impl<'tcx> Analyzer<'tcx> {
             .into_iter()
             .filter(|clause| is_spec_bound(*clause, model_trait))
             .filter(|clause| {
-                !derive::holds_by_generated_compares(self.tcx, &self.def_ids(), *clause)
+                !derive::holds_by_generated_compares(
+                    self.tcx,
+                    &self.def_ids(),
+                    &type_builder,
+                    *clause,
+                )
             });
         let assumed = classify_spec_bounds(self.tcx, clauses, caller_def_id, model_ty).ok()?;
         self.record_assumed_spec_bounds(caller_def_id, assumed);
