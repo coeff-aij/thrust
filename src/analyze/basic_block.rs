@@ -1482,14 +1482,15 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 }
             }
             ResolvedCallable::Concrete(resolved_def_id, resolved_args) => {
-                // At type parameters, a trait-level spec may hold only by assuming its bound
-                // (`I: IntoIteratorSpec` of `IntoIterator::into_iter`), while the impl the call
-                // resolves to regardless of them (the blanket `impl<I: Iterator> IntoIterator
-                // for I`) is the one that runs; its own spec is used when it has one.
-                use mir_ty::TypeVisitableExt as _;
-                let resolved_at_params = !resolved_def_id.is_local() && args.has_param();
+                // The impl the call resolves to is the one that runs, so its spec is used when it
+                // has one: an extern spec of a std impl, or a local impl method's own contract,
+                // which refines the trait's. A trait-level spec may hold only by assuming a bound
+                // of its own (`I: IntoIteratorSpec` of `IntoIterator::into_iter`), which the
+                // resolved impl does not need (the blanket `impl<I: Iterator> IntoIterator for I`).
+                // A local impl method without a contract of its own takes the trait's.
                 if resolved_def_id != def_id
-                    && (resolved_at_params || self.ctx.has_own_impl_contract(resolved_def_id))
+                    && (!resolved_def_id.is_local()
+                        || self.ctx.has_own_impl_contract(resolved_def_id))
                 {
                     if let Some(def_ty) =
                         self.ctx
