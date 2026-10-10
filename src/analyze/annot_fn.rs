@@ -732,7 +732,13 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
     /// The contract of the function a `pre!`/`post!` receiver names by its path, such as
     /// `<F as Deref>::deref`. At type arguments that still name type parameters it is the
     /// contract a call there is given; otherwise that of the function the path resolves to.
-    fn fn_item_contract(&self, receiver: &'tcx rustc_hir::Expr<'tcx>) -> Option<rty::FunctionType> {
+    /// The precondition of the former is `true`, which holds at an instance only if the impl
+    /// reached accepts any arguments, so `pre!` records it to be checked there as a call does.
+    fn fn_item_contract(
+        &self,
+        receiver: &'tcx rustc_hir::Expr<'tcx>,
+        names_precondition: bool,
+    ) -> Option<rty::FunctionType> {
         let mir_ty::TyKind::FnDef(def_id, generic_args) = *self.expr_ty(receiver).kind() else {
             return None;
         };
@@ -742,6 +748,10 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         let instance =
             mir_ty::Instance::try_resolve(self.tcx, typing_env, def_id, generic_args).unwrap();
         let Some(instance) = instance else {
+            if names_precondition {
+                self.analyzer
+                    .record_assumed_total_method(owner_fn_id, def_id, generic_args);
+            }
             return Some(
                 self.type_builder
                     .build_unspecified_method_type(def_id, generic_args),
@@ -783,7 +793,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         receiver: &'tcx rustc_hir::Expr<'tcx>,
         args: &'tcx rustc_hir::Expr<'tcx>,
     ) -> FormulaOrTerm<rty::FunctionParamIdx> {
-        if let Some(fn_ty) = self.fn_item_contract(receiver) {
+        if let Some(fn_ty) = self.fn_item_contract(receiver, true) {
             let args = self.fn_item_spec_args(args, &fn_ty);
             return FormulaOrTerm::Formula(fn_ty.precondition_formula(&args));
         }
@@ -817,7 +827,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         args: &'tcx rustc_hir::Expr<'tcx>,
         result: &'tcx rustc_hir::Expr<'tcx>,
     ) -> FormulaOrTerm<rty::FunctionParamIdx> {
-        if let Some(fn_ty) = self.fn_item_contract(receiver) {
+        if let Some(fn_ty) = self.fn_item_contract(receiver, false) {
             let args = self.fn_item_spec_args(args, &fn_ty);
             let result = self.to_term(result);
             return FormulaOrTerm::Formula(fn_ty.postcondition_formula(&args, result));

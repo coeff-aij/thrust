@@ -724,8 +724,9 @@ pub struct Analyzer<'tcx> {
     /// The instances `(def, generic args, caller)` that use a generic def's contract as
     /// instantiated; see [`Analyzer::check_reused_spec_bounds`].
     reused_generic_instances: RefCell<Vec<(DefId, mir_ty::GenericArgsRef<'tcx>, DefId)>>,
-    /// The trait methods without a specification a body called at its type parameters, keyed
-    /// like `assumed_spec_bounds`; see [`Analyzer::check_reused_total_methods`].
+    /// The trait methods without a specification a body called, or a contract named by `pre!`, at
+    /// its type parameters, keyed like `assumed_spec_bounds`; see
+    /// [`Analyzer::check_reused_total_methods`].
     assumed_total_methods: RefCell<HashMap<DefId, Vec<(DefId, mir_ty::GenericArgsRef<'tcx>)>>>,
     /// The types of the functions each basic block calls, recorded only when
     /// [`candidate_atoms_enabled`], whose contracts give a loop head candidate atoms.
@@ -1334,9 +1335,9 @@ impl<'tcx> Analyzer<'tcx> {
         }
     }
 
-    /// Records that a body analysed under `owner_fn_id` called the trait method `def_id`, which
-    /// has no specification, at `generic_args` that name type parameters, and so took it to
-    /// accept any arguments. Returns whether it is new.
+    /// Records that a body or contract analysed under `owner_fn_id` called the trait method
+    /// `def_id`, which has no specification, or named its `pre!`, at `generic_args` that name type
+    /// parameters, and so took it to accept any arguments. Returns whether it is new.
     pub fn record_assumed_total_method(
         &self,
         owner_fn_id: DefId,
@@ -1360,7 +1361,7 @@ impl<'tcx> Analyzer<'tcx> {
     /// the impl the call resolves to holds of all of them. A call still at a type parameter of
     /// the instance's caller is assumed by that caller in turn, as
     /// [`Self::check_reused_spec_bounds`] does with spec bounds. An impl Thrust knows no contract
-    /// of is not checked, as a direct call to it cannot be analysed either.
+    /// of is not accepted, as a direct call to it is not.
     pub fn check_reused_total_methods(&mut self) {
         use mir_ty::TypeVisitableExt as _;
 
@@ -1409,7 +1410,7 @@ impl<'tcx> Analyzer<'tcx> {
         };
         let Some(def_ty) = self.def_ty_with_args(instance.def_id(), instance.args, caller_def_id)
         else {
-            return;
+            panic!("unknown def (reached at a type parameter): {instance}");
         };
         let fn_ty = def_ty
             .ty
