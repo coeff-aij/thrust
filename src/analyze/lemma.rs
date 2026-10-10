@@ -67,6 +67,7 @@ impl<'tcx> Checker<'tcx> {
             && !self.has_attr(id, &analyze::annot::formula_fn_path())
             && !self.has_attr(id, &analyze::annot::predicate_path())
             && !self.has_attr(id, &analyze::annot::ignored_path())
+            && !self.has_attr(id, &analyze::annot::extern_spec_fn_path())
             && self.tcx.is_mir_available(id)
     }
 
