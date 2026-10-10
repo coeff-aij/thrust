@@ -30,6 +30,7 @@ mod annot_fn;
 mod basic_block;
 mod closure_hist_inv;
 mod crate_;
+mod derive;
 mod did_cache;
 mod elide_panic_payloads;
 mod lemma;
@@ -1380,7 +1381,10 @@ impl<'tcx> Analyzer<'tcx> {
             .instantiate(self.tcx, bound)
             .predicates
             .into_iter()
-            .filter(|clause| is_spec_bound(*clause, model_trait));
+            .filter(|clause| is_spec_bound(*clause, model_trait))
+            .filter(|clause| {
+                !derive::holds_by_generated_compares(self.tcx, &self.def_ids(), *clause)
+            });
         let assumed = classify_spec_bounds(self.tcx, clauses, caller_def_id, model_ty).ok()?;
         self.record_assumed_spec_bounds(caller_def_id, assumed);
         Some(bound)

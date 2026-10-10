@@ -108,7 +108,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     keys.swap_remove(local_def_id);
                 }
             }
-            if analyzer.is_annotated_as_ignored() || analyzer.is_formatting_trait_method() {
+            if analyzer.is_annotated_as_ignored()
+                || analyzer.is_formatting_trait_method()
+                || analyzer.derive_treatment() == Some(analyze::derive::Treatment::Ignored)
+            {
                 self.skip_analysis.insert(*local_def_id);
                 keys.swap_remove(local_def_id);
             }
@@ -214,6 +217,13 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
         let is_injected_std = analyzer.is_injected_std();
         if is_injected_std {
+            self.skip_analysis.insert(local_def_id);
+        }
+
+        // A derived method has the contract of its trait method, which its derive implies.
+        if analyzer.derive_treatment() == Some(analyze::derive::Treatment::Trusted)
+            && analyzer.trait_item_ty().is_some()
+        {
             self.skip_analysis.insert(local_def_id);
         }
 

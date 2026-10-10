@@ -2824,8 +2824,10 @@ fn _extern_spec_clone<T>(x: &T) -> T
 // Comparison is specified through `PartialOrdSpec`, which relates two values to the outcome of
 // comparing them. A type gets the specs of `partial_cmp`, the comparison operators, `cmp`, `max`
 // and `min` by implementing it, as Creusot's `OrdLogic` does with `cmp_log`; the relation must
-// be functional, and `Ord` types must agree with `partial_cmp`, as std requires.
+// be functional, and `Ord` types must agree with `partial_cmp`, as std requires. A type with a
+// derived `PartialOrd` and no impl has the derive's lexicographic order (`analyze::derive`).
 #[thrust_macros::context]
+#[thrust::def::partial_ord_spec]
 trait PartialOrdSpec: PartialOrd + thrust_models::Model {
     #[thrust_macros::predicate]
     fn compares(self, other: Self, ord: Option<std::cmp::Ordering>) -> bool;

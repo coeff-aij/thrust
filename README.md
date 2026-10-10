@@ -200,6 +200,8 @@ Refinements may be nested inside generic arguments and reference types, e.g. `Bo
 
 The bodies of functions marked with `#[thrust::trusted]` are not analyzed by Thrust. Additionally, `#[thrust::callable]` is an alias for `#[thrust_macros::requires(true)]` and `#[thrust_macros::ensures(true)]`.
 
+The methods rustc's built-in `#[derive(..)]`s generate are not analyzed either; each has the contract `std.rs` gives its trait method, which the derive implies. `PartialEq::eq` and `Clone::clone` are so treated when the type's model is the tuple (or enum) of its fields' models and the fields' `==` and `clone` act on their models, and `Hash::hash` and `Default::default` always. A type with a derived `PartialOrd` and no `PartialOrdSpec` impl is ordered as the derive orders it, lexicographically by its fields (a fieldless enum by its discriminants), when each field has a `PartialOrdSpec` order, so `<`, `cmp`, `max` and `min` need no annotation. A derived `Debug::fmt` is not verified, and a call to it is not supported.
+
 ```rust
 #[thrust::trusted]
 #[thrust::callable]
