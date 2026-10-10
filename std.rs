@@ -2127,7 +2127,7 @@ fn _extern_spec_iterator_next<I>(it: &mut I) -> Option<I::Item>
 
 // The predicate accepted the item found in some state of it; which state, and that it rejected
 // the items before, is not stated: that needs the sequence of its states across the calls, on
-// which PCSat fails.
+// which PCSat fails. Each step is `next`, which keeps `inv`.
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(
     I::inv(*it)
@@ -2135,15 +2135,16 @@ fn _extern_spec_iterator_next<I>(it: &mut I) -> Option<I::Item>
             thrust_models::forall(|x: <I::Item as thrust_models::Model>::Ty| thrust_macros::pre!(c(&x))))
 )]
 #[thrust_macros::ensures(
-    (result == None
-        && thrust_models::exists(|visited: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>, mid: I::Ty|
-            I::produces(*it, visited, mid) && I::completed(thrust_models::model::Mut::new(mid, !it))))
-    || thrust_models::exists(|visited: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
-                              x: <I::Item as thrust_models::Model>::Ty|
-        result == Some(x)
-            && I::produces(*it, visited.push(x), !it)
-            && thrust_models::exists(|c: thrust_models::model::Closure<P>, d: thrust_models::model::Closure<P>|
-                thrust_macros::post!(thrust_models::model::Mut::new(c, d)(&x), true)))
+    I::inv(!it)
+        && ((result == None
+            && thrust_models::exists(|visited: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>, mid: I::Ty|
+                I::produces(*it, visited, mid) && I::completed(thrust_models::model::Mut::new(mid, !it))))
+        || thrust_models::exists(|visited: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
+                                  x: <I::Item as thrust_models::Model>::Ty|
+            result == Some(x)
+                && I::produces(*it, visited.push(x), !it)
+                && thrust_models::exists(|c: thrust_models::model::Closure<P>, d: thrust_models::model::Closure<P>|
+                    thrust_macros::post!(thrust_models::model::Mut::new(c, d)(&x), true))))
 )]
 fn _extern_spec_iterator_find<I, P>(it: &mut I, predicate: P) -> Option<I::Item>
     where I: IteratorSpec,
