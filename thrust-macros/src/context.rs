@@ -6,8 +6,8 @@
 //! `thrust_macros::closure!(...)` in the body is rewritten into its context-carrying
 //! counterpart, carrying the host signature and, for a method, the enclosing `impl`/`trait`
 //! header, so a formula may refer to generic- and `Self`-typed variables that the standalone
-//! macros cannot see. A `for` loop whose body starts with an `invariant!` naming `iter` and
-//! `iter_old` or `produced` is desugared first, so that those names exist (see
+//! macros cannot see. A `for` loop whose body starts with an `invariant!` naming `iter` is
+//! desugared first, so that `iter`, and `iter_old` and `produced` when named, exist (see
 //! [`mod@crate::for_loop`]).
 //! That also extends the function's where clause with the `Model` predicates for every
 //! in-scope type parameter (and for `Self` when used), since each injected marker call

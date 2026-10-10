@@ -2,9 +2,8 @@
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
-// A `for` over `v.iter_mut()` whose invariant names `iter`, the iterator of rustc's own
-// desugaring: `slice::IterMut` has no `IteratorSpec`, so `#[thrust_macros::context]` leaves the
-// loop as it is.
+// A `for` over `v.iter_mut()` whose invariant names the iterator `iter` alone: `slice::IterMut`
+// has no `IteratorSpec`, so the loop is desugared without `iter_old` and `produced`.
 
 #[thrust_macros::context]
 #[thrust_macros::requires(true)]
