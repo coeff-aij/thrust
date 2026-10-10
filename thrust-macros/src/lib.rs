@@ -19,15 +19,15 @@ mod spec;
 use fn_outer_item::FnOuterItem;
 use formula_fn_type_lowering::FormulaFnTypeLowering;
 
-/// `pre!(f(a, b))` refers to the precondition of the closure `f` for arguments `a, b` in a
-/// specification.
+/// `pre!(f(a, b))` refers to the precondition of the closure `f`, or of the function a path
+/// such as `<F as Deref>::deref` names, for arguments `a, b` in a specification.
 #[proc_macro]
 pub fn pre(input: TokenStream) -> TokenStream {
     pre_post::expand_pre(input)
 }
 
-/// `post!(f(a, b), r)` refers to the postcondition of the closure `f` relating arguments
-/// `a, b` to the result `r` in a specification.
+/// `post!(f(a, b), r)` refers to the postcondition of the closure `f`, or of the function a
+/// path names, relating arguments `a, b` to the result `r` in a specification.
 #[proc_macro]
 pub fn post(input: TokenStream) -> TokenStream {
     pre_post::expand_post(input)

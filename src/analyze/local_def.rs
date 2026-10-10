@@ -430,6 +430,69 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         }
     }
 
+    /// Analyses, at this analysis's arguments, the functions this def's contract names by path
+    /// in `pre!`/`post!` (`<F as Deref>::deref` at `F` instantiated), so that the translation
+    /// finds their contracts as it finds a callable parameter's.
+    fn precompute_named_fn_contracts(&mut self) {
+        use mir_ty::TypeVisitableExt as _;
+
+        let def_ids = self.ctx.def_ids();
+        let markers = [
+            def_ids.closure_precondition(),
+            def_ids.closure_postcondition(),
+        ];
+        let formula_fns: Vec<_> = [
+            analyze::annot::requires_path_path(),
+            analyze::annot::ensures_path_path(),
+        ]
+        .iter()
+        .filter_map(|path| self.ctx.extract_path_with_attr(self.local_def_id, path))
+        .filter_map(|def_id| def_id.as_local())
+        .collect();
+        for formula_fn in formula_fns {
+            let typeck = self.tcx.typeck(formula_fn);
+            let named: Vec<_> = typeck
+                .node_types()
+                .items_in_stable_order()
+                .into_iter()
+                .filter_map(|(_, ty)| match ty.kind() {
+                    mir_ty::TyKind::FnDef(marker, args) if markers.contains(&Some(*marker)) => {
+                        match args.type_at(0).kind() {
+                            mir_ty::TyKind::FnDef(def_id, args) => Some((*def_id, *args)),
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                })
+                .collect();
+            for (def_id, args) in named {
+                let args = if self.generic_args.is_empty() {
+                    args
+                } else {
+                    mir_ty::EarlyBinder::bind(args).instantiate(self.tcx, self.generic_args)
+                };
+                if args.has_param() {
+                    // A trait-level spec, as a call at the type parameters takes.
+                    let _ = self.ctx.def_ty_with_args(def_id, args, self.owner_fn_id);
+                    continue;
+                }
+                let typing_env = mir_ty::TypingEnv::fully_monomorphized();
+                let Ok(Some(instance)) =
+                    mir_ty::Instance::try_resolve(self.tcx, typing_env, def_id, args)
+                else {
+                    continue;
+                };
+                if instance.def_id() != self.local_def_id.to_def_id() {
+                    let _ = self.ctx.def_ty_with_args(
+                        instance.def_id(),
+                        instance.args,
+                        self.owner_fn_id,
+                    );
+                }
+            }
+        }
+    }
+
     /// Walks `impl_local_def_id`'s `predicates_of` and registers any
     /// `Fn`/`FnMut`/`FnOnce` type parameters declared on the impl.
     fn precompute_impl_closure_type_params(&mut self, impl_local_def_id: LocalDefId) {
@@ -487,6 +550,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         // parameter resolves to a deferred closure/function def, force its analysis here so the
         // translator can later find the cached contract.
         self.precompute_callable_param_contracts(&sig);
+        self.precompute_named_fn_contracts();
 
         let mut require_annot =
             self.ctx

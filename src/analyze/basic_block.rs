@@ -1535,18 +1535,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         def_id: DefId,
         args: mir_ty::GenericArgsRef<'tcx>,
     ) -> rty::Type<rty::Closed> {
-        let sig = self
-            .tcx
-            .fn_sig(def_id)
-            .instantiate(self.tcx, args)
-            .skip_binder();
-        let params = sig
-            .inputs()
-            .iter()
-            .map(|ty| self.type_builder.build(*ty).vacuous())
-            .collect();
-        let ret = self.type_builder.build(sig.output()).vacuous();
-        rty::FunctionType::new(params, ret).into()
+        self.ctx
+            .record_assumed_total_method(self.type_builder.owner_fn_id(), def_id, args);
+        self.type_builder
+            .build_unspecified_method_type(def_id, args)
+            .into()
     }
 
     /// Keeps the callee's type for the candidate atoms of the loop this block is in.

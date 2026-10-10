@@ -814,6 +814,70 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         }
     }
 
+    /// The contract of the function a `pre!`/`post!` receiver names by its path, such as
+    /// `<F as Deref>::deref`. At type arguments that still name type parameters it is the
+    /// contract a call there is given: the trait-level spec when there is one, and otherwise one
+    /// whose precondition is `true`, which holds at an instance only if the impl reached accepts
+    /// any arguments, so `pre!` records it to be checked there as a call does. At other type
+    /// arguments it is the contract of the function the path resolves to.
+    fn fn_item_contract(
+        &self,
+        receiver: &'tcx rustc_hir::Expr<'tcx>,
+        names_precondition: bool,
+    ) -> Option<rty::FunctionType> {
+        let mir_ty::TyKind::FnDef(def_id, generic_args) = *self.expr_ty(receiver).kind() else {
+            return None;
+        };
+        let owner_fn_id = self.type_builder.owner_fn_id();
+        let typing_env =
+            analyze::predicate_typing_env(self.tcx, owner_fn_id, self.def_ids.model_ty());
+        let instance =
+            mir_ty::Instance::try_resolve(self.tcx, typing_env, def_id, generic_args).unwrap();
+        let Some(instance) = instance else {
+            if let Some(fn_ty) =
+                self.analyzer
+                    .known_function_ty_with_args(def_id, generic_args, owner_fn_id)
+            {
+                return Some(fn_ty);
+            }
+            if names_precondition {
+                self.analyzer
+                    .record_assumed_total_method(owner_fn_id, def_id, generic_args);
+            }
+            return Some(
+                self.type_builder
+                    .build_unspecified_method_type(def_id, generic_args),
+            );
+        };
+        let fn_ty = self.analyzer.known_function_ty_with_args(
+            instance.def_id(),
+            instance.args,
+            owner_fn_id,
+        );
+        if fn_ty.is_none() {
+            self.tcx.dcx().span_fatal(
+                receiver.span,
+                format!("`pre!`/`post!` names `{instance}`, which has no contract here"),
+            );
+        }
+        fn_ty
+    }
+
+    fn fn_item_spec_args(
+        &self,
+        args: &'tcx rustc_hir::Expr<'tcx>,
+        fn_ty: &rty::FunctionType,
+    ) -> Vec<chc::Term<rty::FunctionParamIdx>> {
+        let args = self.closure_spec_args(args);
+        assert_eq!(
+            args.len(),
+            fn_ty.params.len(),
+            "`pre!`/`post!` arity mismatch: the function takes {} argument(s)",
+            fn_ty.params.len()
+        );
+        args
+    }
+
     /// The values of a closure's parameters: the closure's first (RustCall) parameter is its
     /// upvars, which are the closure value itself, followed by the logical arguments.
     fn translate_closure_precondition(
@@ -821,6 +885,10 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         receiver: &'tcx rustc_hir::Expr<'tcx>,
         args: &'tcx rustc_hir::Expr<'tcx>,
     ) -> FormulaOrTerm<rty::FunctionParamIdx> {
+        if let Some(fn_ty) = self.fn_item_contract(receiver, true) {
+            let args = self.fn_item_spec_args(args, &fn_ty);
+            return FormulaOrTerm::Formula(fn_ty.precondition_formula(&args));
+        }
         let receiver_ty = self.expr_ty(receiver);
         let fn_ty = self
             .receiver_closure_fn_type(receiver_ty)
@@ -851,6 +919,11 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         args: &'tcx rustc_hir::Expr<'tcx>,
         result: &'tcx rustc_hir::Expr<'tcx>,
     ) -> FormulaOrTerm<rty::FunctionParamIdx> {
+        if let Some(fn_ty) = self.fn_item_contract(receiver, false) {
+            let args = self.fn_item_spec_args(args, &fn_ty);
+            let result = self.to_term(result);
+            return FormulaOrTerm::Formula(fn_ty.postcondition_formula(&args, result));
+        }
         let receiver_ty = self.expr_ty(receiver);
         let fn_ty = self
             .receiver_closure_fn_type(receiver_ty)
