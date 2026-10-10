@@ -19,8 +19,8 @@ struct W<I> {
     inner: I,
 }
 
-impl<I> thrust_models::Model for W<I> {
-    type Ty = W<I>;
+impl<I: thrust_models::Model> thrust_models::Model for W<I> {
+    type Ty = (<I as thrust_models::Model>::Ty,);
 }
 
 #[thrust_macros::context]
@@ -31,9 +31,7 @@ where
 {
     #[thrust_macros::predicate]
     fn p(self, x: i64) -> bool {
-        // I::p(self.inner, x)
-        "(q_p_76f0c568ed2435da625b3e40bc133c46<a0> (tuple_proj<a0>.0 self_) x)";
-        true
+        I::p(self.0, x)
     }
 
     fn g(&self, x: i64) -> i64 {

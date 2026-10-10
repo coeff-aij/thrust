@@ -20,8 +20,8 @@ struct M<I, F> {
     func: F,
 }
 
-impl<I, F> thrust_models::Model for M<I, F> {
-    type Ty = M<I, F>;
+impl<I: thrust_models::Model, F> thrust_models::Model for M<I, F> {
+    type Ty = (<I as thrust_models::Model>::Ty, thrust_models::model::Closure<F>);
 }
 
 #[thrust_macros::context]
@@ -33,9 +33,7 @@ where
 {
     #[thrust_macros::predicate]
     fn p(self) -> bool {
-        // I::p(self.iter)
-        "(q_p_90849721ed499bdbe024ffd3cd1c5364<a0> (tuple_proj<a0-a1>.0 self_))";
-        true
+        I::p(self.0)
     }
 
     fn g(&mut self) {}
