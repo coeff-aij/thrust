@@ -6,9 +6,10 @@
 //! - `PartialEq::eq` compares the fields with `==`, and `Clone::clone` clones each field, so
 //!   they are `result == (*x == *y)` and `result == *x` when the type's model is the tuple (or
 //!   datatype) of its fields' models, or the model of its one field besides `PhantomData`s. For
-//!   `eq`, `==` on the type must also be equality of models, as std.rs's `ModelEq` decides it,
-//!   and no field may hold a `Ghost`, whose `PartialEq` is for formulas only: analyzing the body
-//!   rejects that call. A clone acts on the model of every type, as std.rs's spec states.
+//!   `eq`, `==` on the type must also be equality of models, as std.rs's `ModelEq` decides it;
+//!   it does not for a type holding a `Ghost`, whose `PartialEq` is for formulas only, and
+//!   analyzing the body rejects that call. A clone acts on the model of every type, as std.rs's
+//!   spec states.
 //! - `Hash::hash` and `Default::default` call the same method of each field, whose contracts
 //!   (no panic, nothing more) they then have.
 //! - `PartialOrd::partial_cmp` and `Ord::cmp` compare the fields lexicographically in declaration
@@ -51,7 +52,6 @@ pub fn is_trusted<'tcx>(
         Some(sym::PartialEq) => {
             has_fields_model()
                 && !matches!(analyze::model_eq(tcx, self_ty), analyze::SpecBound::Fails)
-                && !holds_ghost(tcx, def_ids, self_ty)
         }
         Some(sym::Clone) => has_fields_model(),
         Some(sym::PartialOrd | sym::Ord) => {
@@ -59,19 +59,6 @@ pub fn is_trusted<'tcx>(
         }
         _ => false,
     }
-}
-
-/// Whether a field of the ADT `ty` holds a `Ghost`.
-fn holds_ghost<'tcx>(tcx: TyCtxt<'tcx>, def_ids: &DefIdCache<'tcx>, ty: mir_ty::Ty<'tcx>) -> bool {
-    let Some(ghost) = def_ids.ghost_model() else {
-        return false;
-    };
-    field_tys(tcx, ty).into_iter().any(|field_ty| {
-        field_ty
-            .walk()
-            .filter_map(|arg| arg.as_type())
-            .any(|ty| ty.ty_adt_def().is_some_and(|adt| adt.did() == ghost))
-    })
 }
 
 /// Whether `clause` is `ty: PartialOrdSpec` for a `ty` whose `compares` is generated.

@@ -1452,6 +1452,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             })
     }
 
+    /// Whether the call is a `PartialEq` method at a type that holds a `Ghost`
+    /// (`Option<Ghost<T>>`). Such a call has no contract: the specs of `PartialEq` are bounded
+    /// by `ModelEq`, which fails on a `Ghost`.
+    fn compares_ghost(&self, def_id: DefId, args: mir_ty::GenericArgsRef<'tcx>) -> bool {
+        self.tcx.trait_of_assoc(def_id) == self.tcx.lang_items().eq_trait()
+            && args.types().any(|ty| analyze::compares_ghost(self.tcx, ty))
+    }
+
     fn callable_ty(
         &mut self,
         def_id: DefId,
@@ -1459,10 +1467,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     ) -> rty::Type<rty::Closed> {
         let caller_def_id = self.type_builder.owner_fn_id();
         if self.needs_ghost_formula_impl(def_id, args) {
-            panic!(
-                "a Ghost value cannot be used in executable code: {:?}, args: {:?}",
-                def_id, args
-            );
+            self.tcx.dcx().fatal(format!(
+                "a Ghost value cannot be used in executable code: `{}` in `{}` needs the \
+                 `PartialEq` or `Deref` impl of `Ghost`, which only specifications may use",
+                self.tcx.def_path_str_with_args(def_id, args),
+                self.tcx.def_path_str(caller_def_id),
+            ));
         }
         match self.resolve_callable(def_id, args) {
             ResolvedCallable::Generic(type_param) => {
@@ -1518,6 +1528,15 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     self.ctx
                         .def_ty_with_args(resolved_def_id, resolved_args, caller_def_id)
                 else {
+                    if self.compares_ghost(def_id, args) {
+                        self.tcx.dcx().fatal(format!(
+                            "a Ghost value cannot be compared in executable code: `{}` in `{}` \
+                             compares values holding a `Ghost`, whose `PartialEq` only \
+                             specifications may use",
+                            self.tcx.def_path_str_with_args(def_id, args),
+                            self.tcx.def_path_str(caller_def_id),
+                        ));
+                    }
                     // Also reached when the def's only specification is an extern spec written
                     // for another instantiation of it (see `bind_spec_args`).
                     panic!(
