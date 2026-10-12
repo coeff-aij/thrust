@@ -31,6 +31,7 @@ mod basic_block;
 mod closure_hist_inv;
 mod crate_;
 mod derive;
+mod derived_pred;
 mod did_cache;
 mod lemma;
 mod local_def;
@@ -847,6 +848,11 @@ pub struct Analyzer<'tcx> {
     /// The local methods of trait impls that carry a contract of their own, given by an
     /// extern-spec wrapper; see [`Analyzer::has_own_impl_contract`].
     impl_methods_with_own_contract: rustc_data_structures::fx::FxIndexSet<DefId>,
+    /// Each derived predicate declared at an impl, by symbol, with the impl's `Self` type; see
+    /// [`derived_pred`].
+    derived_preds: Rc<RefCell<HashMap<chc::UserDefinedPred, mir_ty::Ty<'tcx>>>>,
+    /// The function each clause comes from, for [`Analyzer::check_derived_predicates`].
+    clause_sites: Rc<RefCell<derived_pred::ClauseSites>>,
 }
 
 /// Whether loop heads get candidate atoms (`THRUST_CANDIDATE_ATOMS`, see
@@ -909,6 +915,8 @@ impl<'tcx> Analyzer<'tcx> {
             concrete_instances: Default::default(),
             explicit_hist_inv_laws: Default::default(),
             by_value_hist_invs: Default::default(),
+            derived_preds: Default::default(),
+            clause_sites: Default::default(),
             fn_mut_instance_obligations: Default::default(),
             hist_inv_specified_params: Default::default(),
             fn_mut_bounded_defs: Default::default(),
@@ -1101,6 +1109,52 @@ impl<'tcx> Analyzer<'tcx> {
     /// [`crate_`]); one without its own contract takes the trait's.
     pub fn has_own_impl_contract(&self, def_id: DefId) -> bool {
         self.impl_methods_with_own_contract.contains(&def_id)
+    }
+
+    /// Whether `def_id` is a trait's `#[thrust_macros::predicate(derived)]`.
+    pub fn is_derived_predicate(&self, def_id: DefId) -> bool {
+        self.tcx
+            .get_attrs_by_path(def_id, &analyze::annot::derived_path())
+            .next()
+            .is_some()
+    }
+
+    /// Declares the derived predicate `symbol` at an impl for `self_ty`.
+    pub fn declare_derived_pred(
+        &self,
+        symbol: chc::UserDefinedPred,
+        sig: chc::UserDefinedPredSig,
+        self_ty: mir_ty::Ty<'tcx>,
+    ) {
+        self.system
+            .borrow_mut()
+            .push_derived_pred(symbol.clone(), sig);
+        self.derived_preds.borrow_mut().insert(symbol, self_ty);
+    }
+
+    /// The number of clauses pushed so far, where the clauses of a function start.
+    pub fn clause_count(&self) -> usize {
+        self.system.borrow().clauses.len()
+    }
+
+    /// Records that the clauses pushed since `start` come from `site`.
+    pub fn record_clause_site(&self, start: usize, site: DefId) {
+        let end = self.clause_count();
+        self.clause_sites.borrow_mut().record(start..end, site);
+    }
+
+    /// Reports each clause that concludes a derived predicate outside its impl.
+    pub fn check_derived_predicates(&self) {
+        let derived = self.derived_preds.borrow();
+        if derived.is_empty() {
+            return;
+        }
+        derived_pred::check_head_closed(
+            self.tcx,
+            &self.system.borrow(),
+            &self.clause_sites.borrow(),
+            &derived,
+        );
     }
 
     pub fn impl_methods_with_own_contract(&self) -> Vec<DefId> {

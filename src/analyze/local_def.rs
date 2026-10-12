@@ -141,6 +141,10 @@ pub struct Analyzer<'tcx, 'ctx> {
 
 impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     pub fn analyze_predicate_definition(&self) {
+        if self.ctx.is_derived_predicate(self.local_def_id.to_def_id()) {
+            // Declared at each impl that leaves it undefined, when that instance is emitted.
+            return;
+        }
         let (sig, body) = self.predicate_definition();
         self.ctx.system.borrow_mut().push_pred_define(
             refine::user_defined_pred(self.tcx, self.local_def_id.to_def_id()),
@@ -1671,6 +1675,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let span = tracing::info_span!("def", def = %self.tcx.def_path_str(self.local_def_id));
         let _guard = span.enter();
 
+        let start = self.ctx.clause_count();
         self.unelaborate_derefs();
         analyze::reconstruct_slice_indexing::reconstruct(self.tcx, &mut self.body);
         self.reassign_local_mutabilities();
@@ -1679,6 +1684,24 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.assert_entry(expected);
         if analyze::candidate_atoms_enabled() {
             self.declare_candidate_atoms(expected);
+        }
+        self.ctx.record_clause_site(start, self.clause_site());
+    }
+
+    /// The function the clauses of this analysis belong to: the def itself, or for a trait's
+    /// default body analyzed for an impl (an inherited law), the impl's function it is analyzed
+    /// under.
+    fn clause_site(&self) -> DefId {
+        let def_id = self.local_def_id.to_def_id();
+        let is_trait_item = self
+            .tcx
+            .opt_associated_item(def_id)
+            .and_then(|item| item.trait_container(self.tcx))
+            .is_some();
+        if is_trait_item {
+            self.owner_fn_id
+        } else {
+            def_id
         }
     }
 }

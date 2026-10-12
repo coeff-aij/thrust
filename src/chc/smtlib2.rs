@@ -801,6 +801,17 @@ impl<'ctx, 'a> std::fmt::Display for UserDefinedPredDef<'ctx, 'a> {
                 .iter()
                 .map(|(name, sort)| format!("({} {})", name, self.ctx.fmt_sort(sort))),
         );
+        if let chc::UserDefinedPredBody::Derived = &self.inner.body {
+            // An unknown: to a dependency-aware solver a plain `declare-fun` may depend on every
+            // forall pred declared before it, as the clauses defining it may.
+            let sorts = List::closed(
+                self.inner
+                    .sig
+                    .iter()
+                    .map(|(_, sort)| self.ctx.fmt_sort(sort)),
+            );
+            return write!(f, "(declare-fun {} {sorts} Bool)", self.inner.symbol);
+        }
         let ret_sort = match &self.inner.body {
             chc::UserDefinedPredBody::Term(sort, _) => self.ctx.fmt_sort(sort).to_string(),
             _ => "Bool".to_string(),
@@ -829,6 +840,7 @@ impl<'ctx, 'a> std::fmt::Display for UserDefinedPredDef<'ctx, 'a> {
             chc::UserDefinedPredBody::Term(_, term) => {
                 write!(f, "{}", Term::new(self.ctx, &var_sorts, term))?;
             }
+            chc::UserDefinedPredBody::Derived => unreachable!("declared above"),
         }
         write!(f, ")")
     }
