@@ -1,12 +1,11 @@
 //@check-pass
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 THRUST_TRY_SPECS=1
+//@rustc-env: THRUST_VERIFY_ONLY=rustc_index::bit_set,two_members,column_bound
 // Stage 3 of the rustc-coroutine verification target: rustc_index's bit sets.
 // The code is the module tree under tests/rustc_coroutine/; this file selects the stage and
 // drives it.
-#![feature(custom_inner_attributes)]
 #![feature(new_range_api)]
-#![thrust::verify_only("rustc_index::bit_set", "two_members", "column_bound")]
 
 #[path = "../../../rustc_coroutine/compiler/rustc_hashes/src/lib.rs"]
 pub mod rustc_hashes;

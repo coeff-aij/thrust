@@ -2,14 +2,13 @@
 //@edition: 2024
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300 THRUST_TRY_SPECS=1
+//@rustc-env: THRUST_VERIFY_ONLY=rustc_abi::layout::LayoutCalculator::univariant,crate
 // Stage 6 of the rustc-coroutine verification target: `LayoutCalculator::univariant` of rustc_abi's
 // layout.rs, with `univariant_biased` trusted on its contract (its body is the univariant_biased
 // root's).
 // The code is the module tree under tests/rustc_coroutine/; this file selects the stage and
 // drives it.
-#![feature(custom_inner_attributes)]
 #![feature(new_range_api)]
-#![thrust::verify_only("rustc_abi::layout::LayoutCalculator::univariant", "crate")]
 
 #[path = "../../../rustc_coroutine/compiler/rustc_hashes/src/lib.rs"]
 pub mod rustc_hashes;
