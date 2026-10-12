@@ -28,29 +28,95 @@ impl<'a> std::fmt::Display for Display<'a> {
     }
 }
 
+/// The fields that place a clause or a declaration in the source: the span it was made in, the
+/// definition, basic block, statement and terminator, and the type parameter of a forall sort.
+const ORIGIN_KEYS: [&str; 7] = [
+    "span",
+    "def",
+    "def_id",
+    "bb",
+    "stmt_idx",
+    "term",
+    "type_param",
+];
+
+/// The [`ORIGIN_KEYS`] fields of a [`DebugInfo`] on one line, each preceded by a space.
+#[derive(Debug, Clone)]
+pub struct OriginLine<'a> {
+    inner: &'a DebugInfo,
+}
+
+impl std::fmt::Display for OriginLine<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        for (key, value) in &self.inner.contexts {
+            if !ORIGIN_KEYS.contains(&key.as_str()) {
+                continue;
+            }
+            write!(f, " {key}=")?;
+            for (i, line) in value.lines().enumerate() {
+                if i > 0 {
+                    write!(f, " ")?;
+                }
+                write!(f, "{line}")?;
+            }
+        }
+        Ok(())
+    }
+}
+
 /// A purely informational metadata that can be attached to a clause.
 #[derive(Debug, Clone, Default)]
 pub struct DebugInfo {
     contexts: Vec<(String, String)>,
 }
 
-fn strip_ansi_colors(s: &str) -> String {
-    let mut line = s.to_owned();
-    let mut start = None;
-    let mut offset = 0;
-    for (i, b) in s.bytes().enumerate() {
-        if b == b'\x1b' {
-            start = Some(i);
-        }
-        if let Some(start_idx) = start {
-            if b == b'm' {
-                line.drain((start_idx - offset)..=(i - offset));
-                offset += i - start_idx + 1;
-                start = None;
-            }
+/// The fields of a span, in the order they were recorded.
+#[derive(Debug, Default)]
+struct SpanFields(Vec<(String, String)>);
+
+impl tracing::field::Visit for SpanFields {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        self.0.push((field.name().to_owned(), format!("{value:?}")));
+    }
+}
+
+/// Keeps the fields of every span it sees in the span's extensions, so that
+/// [`DebugInfo::from_current_span`] reads them as recorded rather than from a formatted log
+/// line. It records the spans its filter enables, so it shares the filter of the log output.
+pub struct SpanFieldsLayer;
+
+impl<S> tracing_subscriber::Layer<S> for SpanFieldsLayer
+where
+    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+{
+    fn on_new_span(
+        &self,
+        attrs: &tracing::span::Attributes<'_>,
+        id: &tracing::span::Id,
+        ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        let Some(span) = ctx.span(id) else {
+            return;
+        };
+        let mut fields = SpanFields::default();
+        attrs.record(&mut fields);
+        span.extensions_mut().insert(fields);
+    }
+
+    fn on_record(
+        &self,
+        id: &tracing::span::Id,
+        values: &tracing::span::Record<'_>,
+        ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        let Some(span) = ctx.span(id) else {
+            return;
+        };
+        let mut extensions = span.extensions_mut();
+        if let Some(fields) = extensions.get_mut::<SpanFields>() {
+            values.record(fields);
         }
     }
-    line
 }
 
 impl DebugInfo {
@@ -60,8 +126,9 @@ impl DebugInfo {
         debug_info
     }
 
+    /// The name of the current span, then the fields of each span from the current one
+    /// outwards, the fields of one span latest first.
     pub fn context_from_current_span(&mut self) {
-        // XXX: hack
         tracing::dispatcher::get_default(|d| {
             let current_span = d.current_span();
             if let Some(metadata) = current_span.metadata() {
@@ -71,40 +138,19 @@ impl DebugInfo {
                 return;
             };
             use tracing_subscriber::registry::{LookupSpan, SpanData};
-            type Extension = tracing_subscriber::fmt::FormattedFields<
-                tracing_subscriber::fmt::format::DefaultFields,
-            >;
             let mut span_id = current_span.id().cloned();
             while let Some(id) = span_id {
                 let Some(data) = registry.span_data(&id) else {
                     break;
                 };
-                let exts = data.extensions();
-                if let Some(fields) = exts.get::<Extension>() {
-                    self.context_from_formatted_fields(&fields.fields);
+                if let Some(fields) = data.extensions().get::<SpanFields>() {
+                    for (key, value) in fields.0.iter().rev() {
+                        self.context(key, value.clone());
+                    }
                 }
                 span_id = data.parent().cloned();
             }
         });
-    }
-
-    fn context_from_formatted_fields(&mut self, fields: &str) {
-        let mut value = None;
-        for field in fields.rsplit("\x1b[2m=\x1b[0m") {
-            let field = strip_ansi_colors(field);
-            if let Some(prev_value) = value {
-                if let Some((next_value, key)) = field.rsplit_once(' ') {
-                    self.context(key, prev_value);
-                    value = Some(next_value.to_owned());
-                } else {
-                    self.context(&field, prev_value);
-                    break;
-                }
-            } else {
-                value = Some(field);
-                continue;
-            }
-        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -126,5 +172,9 @@ impl DebugInfo {
             inner: self,
             line_head,
         }
+    }
+
+    pub fn origin_line(&self) -> OriginLine<'_> {
+        OriginLine { inner: self }
     }
 }

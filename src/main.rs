@@ -139,6 +139,7 @@ pub fn main() {
                 .with_writer(std::io::stderr)
                 .compact()
                 .without_time()
+                .and_then(thrust::SpanFieldsLayer)
                 .with_filter(EnvFilter::from_default_env()),
         )
         .init();
