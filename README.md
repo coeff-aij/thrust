@@ -232,7 +232,7 @@ A `for` loop runs over any type implementing `IteratorSpec` (`std.rs` gives one 
 
 A method belongs to the module of its `impl` block and is named through the impl's self type, `module::Type::method`, for inherent and trait impls alike; a method of an impl for a type that is not a struct, enum or union is selected only through its module. The selection is the union of the entries, and an entry that selects no function is an error.
 
-A function outside the selection that has a written contract (`requires`/`ensures`, `#[thrust::callable]`, or the contract of the trait method it implements) is treated as `#[thrust::trusted]`. One without a contract is still analyzed, because its callers use the contract inferred from its body. A trait law that an impl outside the selection inherits is assumed there rather than checked. Predicates, logic functions and model declarations are unaffected, and so are `#[thrust::trusted]` and `#[thrust::ignored]`. Unset or empty, the whole crate is verified.
+A function outside the selection that has a written contract (`requires`/`ensures`, `#[thrust::callable]`, or the contract of the trait method it implements) is treated as `#[thrust::trusted]`. One without a contract is still analyzed, because its callers use the contract inferred from its body. A trait law that an impl outside the selection inherits is assumed there rather than checked. Predicates, logic functions and model declarations are unaffected, and so are `#[thrust::trusted]` and `#[thrust::ignored]`. Unset or empty, the whole crate is verified. Under cargo, the selection applies only to the packages cargo was asked to build (those it marks with `CARGO_PRIMARY_PACKAGE`); a path dependency built through Thrust is verified whole.
 
 ## Configuration
 

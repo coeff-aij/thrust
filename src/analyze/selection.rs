@@ -94,14 +94,26 @@ fn impl_self_name(tcx: TyCtxt<'_>, impl_def_id: DefId) -> Symbol {
         .unwrap_or_else(|| Symbol::intern("{impl}"))
 }
 
+/// Whether the selection applies to the crate being compiled: under cargo only to the packages
+/// it was asked to build, not to their dependencies; otherwise to the one crate compiled.
+fn applies_to_crate(compiled_by_cargo: bool, primary: bool) -> bool {
+    !compiled_by_cargo || primary
+}
+
 #[derive(Debug)]
 pub struct Selection {
     entries: Vec<Entry>,
 }
 
 impl Selection {
-    /// The entries of `THRUST_VERIFY_ONLY`, a comma-separated list, if it is set and not empty.
+    /// The entries of `THRUST_VERIFY_ONLY`, a comma-separated list, if it is set and not empty
+    /// and the crate being compiled is the one to verify.
     pub fn from_env() -> Option<Self> {
+        let compiled_by_cargo = std::env::var_os("CARGO_CRATE_NAME").is_some();
+        let primary = std::env::var_os("CARGO_PRIMARY_PACKAGE").is_some();
+        if !applies_to_crate(compiled_by_cargo, primary) {
+            return None;
+        }
         let value = std::env::var("THRUST_VERIFY_ONLY").ok()?;
         let entries: Vec<_> = value
             .split(',')

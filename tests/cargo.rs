@@ -40,7 +40,7 @@ fn cargo_check_reports_verification_failure() {
 
 #[test]
 fn cargo_check_trusts_contracts_outside_verify_only() {
-    let output = cargo_check("verify_only", &[("THRUST_VERIFY_ONLY", "crate")]);
+    let output = cargo_check("verify_only", &[("THRUST_VERIFY_ONLY", "g")]);
     assert!(
         output.status.success(),
         "{}",
