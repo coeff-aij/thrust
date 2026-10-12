@@ -2759,6 +2759,17 @@ fn _extern_spec_hash<T, H>(x: &T, state: &mut H)
     std::hash::Hash::hash(x, state)
 }
 
+// `assert_receiver_is_total_eq` exists for the type check of `#[derive(Eq)]`: its default body and
+// the derived one do nothing at run time.
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(true)]
+fn _extern_spec_assert_receiver_is_total_eq<T>(x: &T)
+  where T: Eq + thrust_models::Model + ?Sized, T::Ty: PartialEq
+{
+    Eq::assert_receiver_is_total_eq(x)
+}
+
 // The hasher's `write*` methods are called by foreign `hash` impls, so a local hasher is checked
 // against these.
 #[thrust::extern_spec_fn]

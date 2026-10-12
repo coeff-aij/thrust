@@ -11,6 +11,9 @@
 //!   rejects that call. A clone acts on the model of every type, as std.rs's spec states.
 //! - `Hash::hash` and `Default::default` call the same method of each field, whose contracts
 //!   (no panic, nothing more) they then have.
+//! - `Eq::assert_receiver_is_total_eq` only names `AssertParamIsEq<F>` of each field type `F` in
+//!   a `let _:`, a check at type-checking time; its body does nothing at run time, so it has
+//!   std.rs's contract (no panic, nothing more).
 //! - `PartialOrd::partial_cmp` and `Ord::cmp` compare the fields lexicographically in declaration
 //!   order, and a fieldless enum by its discriminants. A type with such a derive and no
 //!   `PartialOrdSpec` impl is given that order as its `compares` relation ([`Compares`]), from
@@ -47,7 +50,7 @@ pub fn is_trusted<'tcx>(
             || has_transparent_model(tcx, def_ids, type_builder, self_ty)
     };
     match tcx.get_diagnostic_name(trait_did) {
-        Some(sym::Hash | sym::Default) => true,
+        Some(sym::Hash | sym::Default | sym::Eq) => true,
         Some(sym::PartialEq) => {
             has_fields_model()
                 && !matches!(analyze::model_eq(tcx, self_ty), analyze::SpecBound::Fails)
