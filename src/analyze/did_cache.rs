@@ -63,6 +63,7 @@ struct DefIds {
     exists: OnceCell<Option<DefId>>,
     forall: OnceCell<Option<DefId>>,
     implies: OnceCell<Option<DefId>>,
+    log_eq_args: OnceCell<Option<DefId>>,
     invariant_marker: OnceCell<Option<DefId>>,
     partial_invariant_marker: OnceCell<Option<DefId>>,
     ghost_marker: OnceCell<Option<DefId>>,
@@ -447,6 +448,13 @@ impl<'tcx> DefIdCache<'tcx> {
             .def_ids
             .implies
             .get_or_init(|| self.annotated_def(&crate::analyze::annot::implies_path()))
+    }
+
+    pub fn log_eq_args(&self) -> Option<DefId> {
+        *self
+            .def_ids
+            .log_eq_args
+            .get_or_init(|| self.annotated_def(&crate::analyze::annot::log_eq_args_path()))
     }
 
     pub fn invariant_marker(&self) -> Option<DefId> {

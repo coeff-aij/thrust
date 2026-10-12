@@ -6,10 +6,9 @@
 //! - `PartialEq::eq` compares the fields with `==`, and `Clone::clone` clones each field, so
 //!   they are `result == (*x == *y)` and `result == *x` when the type's model is the tuple (or
 //!   datatype) of its fields' models, or the model of its one field besides `PhantomData`s. For
-//!   `eq`, `==` on the type must also be equality of models, as std.rs's `ModelEq` decides it;
-//!   it does not for a type holding a `Ghost`, whose `PartialEq` is for formulas only, and
-//!   analyzing the body rejects that call. A clone acts on the model of every type, as std.rs's
-//!   spec states.
+//!   `eq`, `==` on the type must also be equality of models, as std.rs's `ModelEq` decides it
+//!   (`PartialEq` is not derivable for a type holding a `Ghost`, which has none). A clone acts
+//!   on the model of every type, as std.rs's spec states.
 //! - `Hash::hash` and `Default::default` call the same method of each field, whose contracts
 //!   (no panic, nothing more) they then have.
 //! - `Eq::assert_receiver_is_total_eq` only names `AssertParamIsEq<F>` of each field type `F` in

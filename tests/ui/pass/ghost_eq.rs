@@ -2,8 +2,8 @@
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
-// `==` on a type holding a `Ghost` compares the ghosts' contents in a specification. In
-// executable code it would run `Ghost`'s `PartialEq`, which panics, and is rejected.
+// `==` in a specification is logical equality, so it compares values holding a `Ghost` by
+// their models. `Ghost` has no `PartialEq`: executable code cannot compare it.
 
 use thrust_models::Ghost;
 
@@ -14,13 +14,6 @@ struct Tagged {
 
 impl thrust_models::Model for Tagged {
     type Ty = Tagged;
-}
-
-impl PartialEq for Tagged {
-    #[thrust::ignored]
-    fn eq(&self, other: &Tagged) -> bool {
-        self.v == other.v && self.g == other.g
-    }
 }
 
 #[thrust_macros::predicate]

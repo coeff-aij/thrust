@@ -27,7 +27,6 @@ impl<I: thrust_models::Model> thrust_models::Model for W<I> {
 impl<I> A for W<I>
 where
     I: A + thrust_models::Model,
-    <I as thrust_models::Model>::Ty: PartialEq,
 {
     #[thrust_macros::predicate]
     fn p(self) -> bool {

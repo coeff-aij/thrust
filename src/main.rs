@@ -27,6 +27,7 @@ impl Callbacks for CompilerCalls {
     fn config(&mut self, config: &mut Config) {
         let attrs = &mut config.opts.unstable_opts.crate_attr;
         attrs.push("feature(register_tool)".to_owned());
+        attrs.push("feature(marker_trait_attr)".to_owned());
         if try_specs_enabled() {
             attrs.push("feature(try_trait_v2)".to_owned());
         }

@@ -109,6 +109,8 @@ For the example above, the check succeeds. Changing the assertion to `add(1, 2) 
 
 Thrust can verify a wide range of programs without explicit annotations, but you can use `#[thrust_macros::requires(expr)]` and `#[thrust_macros::ensures(expr)]` to annotate the precondition and postcondition of a function, aiding in verification or specifying the intended behavior. Here, `expr` is an ordinary Rust expression that Thrust interprets as a logical formula. It supports the usual integer, boolean, and comparison operators, integer constants such as `u64::MAX`, calls to functions declared with `#[thrust_macros::predicate]` (Boolean) or `#[thrust_macros::logic]` (any model type, a single expression), and the model operations described below.
 
+`==` and `!=` in a formula, and in the body of a predicate or a logic function, are logical equality: they compare the models of their operands and need no `PartialEq` on them (`a == b` is written as `thrust_models::log_eq_args(&a, &b).log_eq()`). The operands are of one type, or of two types `thrust_models::LogEq` relates: two integer types, a model type and a type whose model it is, or a `Ghost<T>` and a type whose model is `T`'s. A `Ghost` has no `PartialEq`, so executable code cannot compare one.
+
 ```rust
 #[thrust_macros::requires(n >= 0)]
 #[thrust_macros::ensures((result * 2) == n * (n + 1))]

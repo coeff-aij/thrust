@@ -7,11 +7,12 @@
 //! which parses formulas as [`syn::Expr`] — never chokes on it, and gives one
 //! place to run preprocessing before the body reaches rustc / HIR lowering.
 //!
-//! The only pass today is implication lowering; further passes can be appended
-//! in [`expand`].
+//! The passes are implication lowering and the rewriting of `==` and `!=` into
+//! logical equality; further passes can be appended in [`expand`].
 
 use proc_macro2::{Group, Punct, Spacing, TokenStream, TokenTree};
 use quote::{quote, ToTokens};
+use syn::spanned::Spanned as _;
 use syn::visit_mut::VisitMut;
 
 /// Wraps formula tokens in a `thrust_macros::formula!(...)` call.
@@ -121,8 +122,39 @@ pub fn expand(input: TokenStream) -> TokenStream {
     }
 
     ImplicationRewriter.visit_expr_mut(&mut expr);
+    EqRewriter.visit_expr_mut(&mut expr);
 
     expr.into_token_stream()
+}
+
+/// Rewrites `==` and `!=` in the body of a predicate or a logic function, as [`expand`] does in
+/// a formula.
+pub fn rewrite_eq_in_block(block: &mut syn::Block) {
+    EqRewriter.visit_block_mut(block);
+}
+
+/// Rewrites each `lhs == rhs` into `crate::thrust_models::log_eq_args(&(lhs), &(rhs)).log_eq()`
+/// and each `lhs != rhs` into `.log_ne()`: logical equality, which needs no `PartialEq` on the
+/// operands.
+struct EqRewriter;
+
+impl VisitMut for EqRewriter {
+    fn visit_expr_mut(&mut self, expr: &mut syn::Expr) {
+        syn::visit_mut::visit_expr_mut(self, expr);
+        let syn::Expr::Binary(binary) = expr else {
+            return;
+        };
+        let fun = match binary.op {
+            syn::BinOp::Eq(_) => quote!(log_eq),
+            syn::BinOp::Ne(_) => quote!(log_ne),
+            _ => return,
+        };
+        let left = &binary.left;
+        let right = &binary.right;
+        *expr = syn::parse_quote_spanned!(binary.op.span()=>
+            crate::thrust_models::log_eq_args(&(#left), &(#right)).#fun()
+        );
+    }
 }
 
 /// Rejects a bare assignment `=` anywhere in `input`. Desugaring turns `==>` into
@@ -224,8 +256,8 @@ mod tests {
         );
         // lower precedence than `||` and `==`
         assert_eq!(
-            expand_expr("a || b ==> c == d"),
-            expect("crate::thrust_models::implies((a || b), (c == d))")
+            expand_expr("a || b ==> c >= d"),
+            expect("crate::thrust_models::implies((a || b), (c >= d))")
         );
         // nested inside a closure argument
         assert_eq!(
@@ -235,10 +267,30 @@ mod tests {
     }
 
     #[test]
-    fn leaves_comparisons_untouched() {
-        for s in ["a == b", "a != b", "a >= b", "a <= b"] {
+    fn leaves_orderings_untouched() {
+        for s in ["a >= b", "a <= b"] {
             assert_eq!(expand_expr(s), expect(s), "{s}");
         }
+    }
+
+    #[test]
+    fn rewrites_equality() {
+        assert_eq!(
+            expand_expr("a == b"),
+            expect("crate::thrust_models::log_eq_args(&(a), &(b)).log_eq()")
+        );
+        assert_eq!(
+            expand_expr("*a != b.f"),
+            expect("crate::thrust_models::log_eq_args(&(*a), &(b.f)).log_ne()")
+        );
+        assert_eq!(
+            expand_expr("a == b ==> forall(|x: Int| x == c)"),
+            expect(
+                "crate::thrust_models::implies(\
+                 (crate::thrust_models::log_eq_args(&(a), &(b)).log_eq()), \
+                 (forall(|x: Int| crate::thrust_models::log_eq_args(&(x), &(c)).log_eq())))"
+            )
+        );
     }
 
     #[test]

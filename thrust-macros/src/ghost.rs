@@ -76,7 +76,7 @@ fn expand_ghost(
     }
 
     let term = &closure.body;
-    let body = syn::parse_quote!(#value == (#term));
+    let body = syn::parse_quote!(crate::thrust_models::log_eq_args(&#value, &(#term)).log_eq());
 
     let id = COUNTER.fetch_add(1, Ordering::Relaxed);
     let name = format_ident!("_thrust_ghost_{}", id);

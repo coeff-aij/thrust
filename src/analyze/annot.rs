@@ -362,6 +362,14 @@ pub fn implies_path() -> [Symbol; 3] {
     ]
 }
 
+pub fn log_eq_args_path() -> [Symbol; 3] {
+    [
+        Symbol::intern("thrust"),
+        Symbol::intern("def"),
+        Symbol::intern("log_eq_args"),
+    ]
+}
+
 pub fn invariant_marker_path() -> [Symbol; 3] {
     [
         Symbol::intern("thrust"),

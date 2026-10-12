@@ -76,7 +76,7 @@ impl<I: Model> Model for Fuse<I> {
 impl<I: Model + PartialEq> PartialEq for Fuse<I> {
     #[thrust::ignored]
     fn eq(&self, other: &Fuse<I>) -> bool {
-        self.iter == other.iter
+        unimplemented!()
     }
 }
 

@@ -62,10 +62,7 @@ pub struct SliceIter<'a, T> {
 }
 
 #[thrust_macros::context]
-impl<'a, T: thrust_models::Model> Iterator for SliceIter<'a, T>
-where
-    T::Ty: PartialEq,
-{
+impl<'a, T: thrust_models::Model> Iterator for SliceIter<'a, T> {
     type Item = &'a T;
 
     fn next(&mut self) -> Option<&'a T> {
@@ -120,9 +117,6 @@ where
     B: thrust_models::Model,
     F: FnMut(I::Item) -> B,
     I::Item: thrust_models::Model,
-    <I::Item as thrust_models::Model>::Ty: PartialEq,
-    <I as thrust_models::Model>::Ty: PartialEq,
-    <B as thrust_models::Model>::Ty: PartialEq,
 {
     #[thrust_macros::requires(
         I::invariant(iter)
@@ -202,9 +196,6 @@ where
     B: thrust_models::Model,
     F: FnMut(I::Item) -> B,
     I::Item: thrust_models::Model,
-    <I::Item as thrust_models::Model>::Ty: PartialEq,
-    <I as thrust_models::Model>::Ty: PartialEq,
-    <B as thrust_models::Model>::Ty: PartialEq,
 {
     type Item = B;
 
@@ -279,8 +270,6 @@ where
     I: Iterator,
     P: Fn(&I::Item) -> bool,
     I::Item: thrust_models::Model,
-    <I::Item as thrust_models::Model>::Ty: PartialEq,
-    <I as thrust_models::Model>::Ty: PartialEq,
 {
     #[thrust_macros::requires(
         I::invariant(iter)
@@ -354,8 +343,6 @@ where
     I: Iterator,
     P: Fn(&I::Item) -> bool,
     I::Item: thrust_models::Model,
-    <I::Item as thrust_models::Model>::Ty: PartialEq,
-    <I as thrust_models::Model>::Ty: PartialEq,
 {
     type Item = I::Item;
 
@@ -430,7 +417,7 @@ where
 
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(true)]
-fn others<T: thrust_models::Model<Ty: PartialEq> + PartialEq + Copy>(a: &[T], k: &T) {
+fn others<T: thrust_models::Model + PartialEq + Copy>(a: &[T], k: &T) {
     let m = Map::new(Filter::new(SliceIter { raw: a, pos: 0 }, |x: &&T| **x != *k), |x: &T| {
         assert!(*x == *k);
         *x

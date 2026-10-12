@@ -1429,15 +1429,13 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         }
     }
 
-    /// Whether the call needs `Ghost`'s `PartialEq` or `Deref` impl, directly (`g == h`, `*g`)
-    /// or through a generic callee's bound.
+    /// Whether the call needs `Ghost`'s `Deref` impl, directly (`*g`) or through a generic
+    /// callee's bound.
     ///
-    /// Those impls exist so that a formula can use a `Ghost` field as its content. A `Ghost`
-    /// value has no content at run time, so executable code must not observe it through
-    /// them; otherwise `g == h` would take the blanket `PartialEq::eq` spec and verify.
+    /// The impl exists so that a formula can use a `Ghost` field as its content. A `Ghost`
+    /// value has no content at run time, so executable code must not observe it through it.
     fn needs_ghost_formula_impl(&self, def_id: DefId, args: mir_ty::GenericArgsRef<'tcx>) -> bool {
-        let lang_items = self.tcx.lang_items();
-        let formula_traits = [lang_items.eq_trait(), lang_items.deref_trait()];
+        let deref_trait = self.tcx.lang_items().deref_trait();
         let ghost_model = self.ctx.def_ids().ghost_model();
         self.tcx
             .predicates_of(def_id)
@@ -1447,14 +1445,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .filter_map(|clause| clause.as_trait_clause())
             .any(|pred| {
                 let pred = pred.skip_binder();
-                formula_traits.contains(&Some(pred.def_id()))
+                Some(pred.def_id()) == deref_trait
                     && pred.self_ty().ty_adt_def().map(|adt| adt.did()) == ghost_model
             })
     }
 
-    /// Whether the call is a `PartialEq` method at a type that holds a `Ghost`
-    /// (`Option<Ghost<T>>`). Such a call has no contract: the specs of `PartialEq` are bounded
-    /// by `ModelEq`, which fails on a `Ghost`.
+    /// Whether the call is a `PartialEq` method at a type that holds a `Ghost` (`Option<S>` of a
+    /// struct `S` with a `Ghost` field and a hand-written `eq`). Such a call has no contract: the
+    /// specs of `PartialEq` are bounded by `ModelEq`, which fails on a `Ghost`.
     fn compares_ghost(&self, def_id: DefId, args: mir_ty::GenericArgsRef<'tcx>) -> bool {
         self.tcx.trait_of_assoc(def_id) == self.tcx.lang_items().eq_trait()
             && args.types().any(|ty| analyze::compares_ghost(self.tcx, ty))
@@ -1469,7 +1467,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         if self.needs_ghost_formula_impl(def_id, args) {
             self.tcx.dcx().fatal(format!(
                 "a Ghost value cannot be used in executable code: `{}` in `{}` needs the \
-                 `PartialEq` or `Deref` impl of `Ghost`, which only specifications may use",
+                 `Deref` impl of `Ghost`, which only specifications may use",
                 self.tcx.def_path_str_with_args(def_id, args),
                 self.tcx.def_path_str(caller_def_id),
             ));
@@ -1531,8 +1529,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     if self.compares_ghost(def_id, args) {
                         self.tcx.dcx().fatal(format!(
                             "a Ghost value cannot be compared in executable code: `{}` in `{}` \
-                             compares values holding a `Ghost`, whose `PartialEq` only \
-                             specifications may use",
+                             compares values holding a `Ghost`, which their `PartialEq` leaves \
+                             out, so it is not equality of their models",
                             self.tcx.def_path_str_with_args(def_id, args),
                             self.tcx.def_path_str(caller_def_id),
                         ));

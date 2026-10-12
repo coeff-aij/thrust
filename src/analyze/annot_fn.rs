@@ -663,6 +663,37 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             .expect("expected a formula")
     }
 
+    /// The two arguments of `expr` when it is a call of `thrust_models::log_eq_args`.
+    fn log_eq_args(
+        &self,
+        expr: &'tcx rustc_hir::Expr<'tcx>,
+    ) -> Option<(&'tcx rustc_hir::Expr<'tcx>, &'tcx rustc_hir::Expr<'tcx>)> {
+        let rustc_hir::ExprKind::Call(func_expr, [lhs, rhs]) = expr.kind else {
+            return None;
+        };
+        let rustc_hir::ExprKind::Path(qpath) = &func_expr.kind else {
+            return None;
+        };
+        let def_id = self
+            .typeck
+            .qpath_res(qpath, func_expr.hir_id)
+            .opt_def_id()?;
+        (Some(def_id) == self.def_ids.log_eq_args()).then_some((lhs, rhs))
+    }
+
+    /// The term of the value an argument of `log_eq_args` refers to: `a` of the `&a` that `==`
+    /// is rewritten to, or the referent of any other reference.
+    fn log_eq_operand(&self, arg: &'tcx rustc_hir::Expr<'tcx>) -> chc::Term<rty::FunctionParamIdx> {
+        match arg.kind {
+            rustc_hir::ExprKind::AddrOf(
+                rustc_hir::BorrowKind::Ref,
+                rustc_hir::Mutability::Not,
+                operand,
+            ) => self.to_term(operand),
+            _ => self.to_term(arg).box_current(),
+        }
+    }
+
     fn to_term(&self, hir: &'tcx rustc_hir::Expr<'tcx>) -> chc::Term<rty::FunctionParamIdx> {
         self.to_formula_or_term(hir)
             .into_term()
@@ -1530,6 +1561,18 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 FormulaOrTerm::Term(term)
             }
             ExprKind::MethodCall(method, receiver, args, _) => {
+                if let Some((lhs, rhs)) = self.log_eq_args(receiver) {
+                    let binop = match method.ident.as_str() {
+                        "log_eq" => AmbiguousBinOp::Eq,
+                        "log_ne" => AmbiguousBinOp::Ne,
+                        name => panic!("unknown method of log_eq_args: {name}"),
+                    };
+                    return FormulaOrTerm::BinOp(
+                        self.log_eq_operand(lhs),
+                        binop,
+                        self.log_eq_operand(rhs),
+                    );
+                }
                 if let Some(def_id) = self.typeck.type_dependent_def_id(hir.hir_id) {
                     if Some(def_id) == self.def_ids.array_model_store() {
                         assert_eq!(args.len(), 2, "array_store takes exactly 2 arguments");
