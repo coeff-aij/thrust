@@ -32,7 +32,6 @@ mod closure_hist_inv;
 mod crate_;
 mod derive;
 mod did_cache;
-mod elide_panic_payloads;
 mod lemma;
 mod local_def;
 mod pred_inst;

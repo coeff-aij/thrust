@@ -16,6 +16,8 @@
 //!   order, and a fieldless enum by its discriminants. A type with such a derive and no
 //!   `PartialOrdSpec` impl is given that order as its `compares` relation ([`Compares`]), from
 //!   the relations of its fields, and the two methods have std.rs's contracts over it.
+//! - `Debug::fmt` writes to a `Formatter`, which has no model; it is left out, as
+//!   `#[thrust::ignored]`.
 
 use rustc_middle::ty::{self as mir_ty, TyCtxt, TypeVisitableExt as _};
 use rustc_span::def_id::DefId;
@@ -59,6 +61,18 @@ pub fn is_trusted<'tcx>(
         }
         _ => false,
     }
+}
+
+/// Whether `def_id` is the `fmt` of an impl rustc's built-in `Debug` derive generated: it is not
+/// verified, and a call to it is not supported.
+pub fn is_ignored(tcx: TyCtxt<'_>, def_id: DefId) -> bool {
+    let Some(impl_did) = tcx.impl_of_assoc(def_id) else {
+        return false;
+    };
+    tcx.is_builtin_derived(impl_did)
+        && tcx
+            .trait_id_of_impl(impl_did)
+            .is_some_and(|trait_did| tcx.is_diagnostic_item(sym::Debug, trait_did))
 }
 
 /// Whether `clause` is `ty: PartialOrdSpec` for a `ty` whose `compares` is generated.

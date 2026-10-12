@@ -755,10 +755,6 @@ mod thrust_models {
         type Ty = bool;
     }
 
-    impl<'a> Model for &'a str {
-        type Ty = &'a str;
-    }
-
     impl Model for std::cmp::Ordering {
         type Ty = std::cmp::Ordering;
     }
@@ -1083,13 +1079,6 @@ fn _extern_spec_option_unwrap<T>(opt: Option<T>) -> T where T: thrust_models::Mo
 }
 
 #[thrust::extern_spec_fn]
-#[thrust_macros::requires(opt != None)]
-#[thrust_macros::ensures(Some(result) == opt)]
-fn _extern_spec_option_expect<T>(opt: Option<T>, msg: &str) -> T where T: thrust_models::Model, T::Ty: PartialEq {
-    Option::expect(opt, msg)
-}
-
-#[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(
     (*opt == None && result == true)
@@ -1254,16 +1243,6 @@ fn _extern_spec_result_unwrap<T, E: std::fmt::Debug>(res: Result<T, E>) -> T
         E: thrust_models::Model, E::Ty: PartialEq,
 {
     Result::unwrap(res)
-}
-
-#[thrust::extern_spec_fn]
-#[thrust_macros::requires(thrust_models::exists(|x| res == Ok(x)))]
-#[thrust_macros::ensures(Ok(result) == res)]
-fn _extern_spec_result_expect<T, E: std::fmt::Debug>(res: Result<T, E>, msg: &str) -> T
-  where T: thrust_models::Model, T::Ty: PartialEq,
-        E: thrust_models::Model, E::Ty: PartialEq,
-{
-    Result::expect(res, msg)
 }
 
 #[thrust::extern_spec_fn]

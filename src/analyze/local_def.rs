@@ -249,19 +249,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .is_some()
     }
 
-    /// The `fmt` method of a formatting trait (`Debug`, `Display`, ...), which only
-    /// `fmt::Arguments` calls; a path that builds one is a panicking path and is not analyzed
-    /// (see `elide_panic_payloads`).
-    pub fn is_formatting_trait_method(&self) -> bool {
-        let Some(trait_item_id) = self
-            .tcx
-            .opt_associated_item(self.local_def_id.to_def_id())
-            .and_then(|item| item.trait_item_def_id)
-        else {
-            return false;
-        };
-        self.tcx.crate_name(trait_item_id.krate) == rustc_span::sym::core
-            && self.tcx.item_name(trait_item_id) == rustc_span::sym::fmt
+    pub fn is_ignored_derive(&self) -> bool {
+        analyze::derive::is_ignored(self.tcx, self.local_def_id.to_def_id())
     }
 
     pub fn is_trusted_derive(&self) -> bool {
@@ -1682,7 +1671,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let span = tracing::info_span!("def", def = %self.tcx.def_path_str(self.local_def_id));
         let _guard = span.enter();
 
-        analyze::elide_panic_payloads::elide(self.tcx, &mut self.body);
         self.unelaborate_derefs();
         analyze::reconstruct_slice_indexing::reconstruct(self.tcx, &mut self.body);
         self.reassign_local_mutabilities();

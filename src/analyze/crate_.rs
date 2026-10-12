@@ -107,7 +107,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     keys.swap_remove(local_def_id);
                 }
             }
-            if analyzer.is_annotated_as_ignored() || analyzer.is_formatting_trait_method() {
+            if analyzer.is_annotated_as_ignored() || analyzer.is_ignored_derive() {
                 self.skip_analysis.insert(*local_def_id);
                 keys.swap_remove(local_def_id);
             }
