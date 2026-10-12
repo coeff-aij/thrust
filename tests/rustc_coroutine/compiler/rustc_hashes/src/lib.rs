@@ -6,6 +6,7 @@ pub struct Hash64 {
 }
 
 impl fmt::Debug for Hash64 {
+    #[thrust::ignored]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.inner.fmt(f)
     }

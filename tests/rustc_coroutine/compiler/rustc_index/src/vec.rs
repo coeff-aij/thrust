@@ -19,6 +19,7 @@ pub struct IndexVec<I: Idx, T> {
 }
 
 impl<I: Idx, T: fmt::Debug> fmt::Debug for IndexVec<I, T> {
+    #[thrust::ignored]
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(&self.raw, fmt)
     }

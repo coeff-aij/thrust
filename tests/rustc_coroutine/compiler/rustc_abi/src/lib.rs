@@ -198,7 +198,9 @@ impl TargetDataLayout {
             16 => 1 << 15,
             32 => 1 << 31,
             64 => 1 << 61,
-            bits => panic!("obj_size_bound: unknown pointer bit size {bits}"),
+            // Rewrite (rewrites.md R6): the message is dropped; a message makes
+            // `fmt::Arguments`, which Thrust cannot type in analysed code.
+            _ => panic!(),
         }
     }
 
@@ -227,7 +229,9 @@ impl TargetDataLayout {
         )) {
             e.1.pointer_size
         } else {
-            panic!("Use of unknown address space {c:?}");
+            // Rewrite (rewrites.md R6): the message is dropped; a message makes
+            // `fmt::Arguments`, which Thrust cannot type in analysed code.
+            panic!();
         }
     }
 
@@ -246,7 +250,9 @@ impl TargetDataLayout {
         )) {
             e.1.pointer_align
         } else {
-            panic!("Use of unknown address space {c:?}");
+            // Rewrite (rewrites.md R6): the message is dropped; a message makes
+            // `fmt::Arguments`, which Thrust cannot type in analysed code.
+            panic!();
         })
     }
 }
@@ -317,6 +323,7 @@ impl Endian {
 }
 
 impl fmt::Debug for Endian {
+    #[thrust::ignored]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
     }
@@ -329,6 +336,7 @@ pub struct Size {
 }
 
 impl fmt::Debug for Size {
+    #[thrust::ignored]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Size({} bytes)", self.bytes())
     }
@@ -420,9 +428,9 @@ impl Add for Size {
     type Output = Size;
     #[inline]
     fn add(self, other: Size) -> Size {
-        Size::from_bytes(self.bytes().checked_add(other.bytes()).unwrap_or_else(|| {
-            panic!("Size::add: {} + {} doesn't fit in u64", self.bytes(), other.bytes())
-        }))
+        // Rewrite (rewrites.md R6): the message is dropped; a message makes
+        // `fmt::Arguments`, which Thrust cannot type in analysed code.
+        Size::from_bytes(self.bytes().checked_add(other.bytes()).unwrap_or_else(|| panic!()))
     }
 }
 
@@ -454,6 +462,7 @@ pub struct Align {
 }
 
 impl fmt::Debug for Align {
+    #[thrust::ignored]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Align({} bytes)", self.bytes())
     }
@@ -677,6 +686,7 @@ pub struct WrappingRange {
 }
 
 impl fmt::Debug for WrappingRange {
+    #[thrust::ignored]
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.start > self.end {
             write!(fmt, "(..={}) | ({}..)", self.end, self.start)?;

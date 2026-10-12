@@ -18,6 +18,7 @@ pub struct IndexSlice<I: Idx, T> {
 }
 
 impl<I: Idx, T: fmt::Debug> fmt::Debug for IndexSlice<I, T> {
+    #[thrust::ignored]
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(&self.raw, fmt)
     }
