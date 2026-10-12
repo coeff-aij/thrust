@@ -1,9 +1,7 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
-
-#![feature(custom_inner_attributes)]
-#![thrust::verify_only("b")]
+//@rustc-env: THRUST_VERIFY_ONLY=b
 
 mod a {
     #[thrust_macros::requires(x >= 0)]

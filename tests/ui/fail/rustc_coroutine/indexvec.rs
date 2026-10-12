@@ -2,13 +2,12 @@
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@no-rustfix
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120
+//@rustc-env: THRUST_VERIFY_ONLY=rustc_index::vec,rustc_index::slice,filled
 // Stage 2 of the rustc-coroutine verification target: rustc_index's `IndexVec` and `IndexSlice`.
 // `filled` is the caller the trusted `IndexVec` contracts are checked against (rewrites.md S5).
 // The code is the module tree under tests/rustc_coroutine/; this file selects the stage and
 // drives it.
-#![feature(custom_inner_attributes)]
 #![feature(new_range_api)]
-#![thrust::verify_only("rustc_index::vec", "rustc_index::slice", "filled")]
 
 #[path = "../../../rustc_coroutine/compiler/rustc_hashes/src/lib.rs"]
 pub mod rustc_hashes;

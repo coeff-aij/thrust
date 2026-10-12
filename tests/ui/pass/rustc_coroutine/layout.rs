@@ -2,13 +2,12 @@
 //@edition: 2024
 //@compile-flags: -Adead_code -C debug-assertions=off -A unused-variables -A unused_parens
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_TRY_SPECS=1
+//@rustc-env: THRUST_VERIFY_ONLY=rustc_abi::layout::coroutine::layout,case_study::iter
 // Stage 7 of the rustc-coroutine verification target: `layout()` of rustc_abi's
 // layout/coroutine.rs, with the local iterator adapters it calls (rewrites.md R8).
 // The code is the module tree under tests/rustc_coroutine/; this file selects the stage and
 // drives it.
-#![feature(custom_inner_attributes)]
 #![feature(new_range_api)]
-#![thrust::verify_only("rustc_abi::layout::coroutine::layout", "case_study::iter")]
 
 #[path = "../../../rustc_coroutine/compiler/rustc_hashes/src/lib.rs"]
 pub mod rustc_hashes;

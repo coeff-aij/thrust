@@ -1,15 +1,12 @@
-//! The selection of `#![thrust::verify_only(..)]`: the functions whose bodies are checked when
-//! only part of a crate is verified.
+//! The selection of `THRUST_VERIFY_ONLY`: the functions whose bodies are checked when only part
+//! of a crate is verified.
 
 use rustc_hir::def::DefKind;
-use rustc_hir::def_id::{DefId, CRATE_DEF_ID};
+use rustc_hir::def_id::DefId;
 use rustc_middle::ty::TyCtxt;
 use rustc_span::symbol::{kw, Symbol};
-use rustc_span::Span;
 
-use crate::analyze;
-
-/// One entry of `#![thrust::verify_only(..)]`, a path relative to the crate root.
+/// One entry of `THRUST_VERIFY_ONLY`, a path relative to the crate root.
 ///
 /// `m` selects the items defined directly in module `m`, `m::**` those of `m` and of all its
 /// submodules, and `m::f`, `m::Type` or `m::Type::method` the named item with everything defined
@@ -19,11 +16,10 @@ struct Entry {
     segments: Vec<Symbol>,
     recursive: bool,
     text: String,
-    span: Span,
 }
 
 impl Entry {
-    fn parse(entry: &str, span: Span) -> Self {
+    fn parse(entry: &str) -> Self {
         let mut segments: Vec<&str> = entry.split("::").filter(|s| !s.is_empty()).collect();
         let recursive = segments.last() == Some(&"**");
         if recursive {
@@ -36,7 +32,6 @@ impl Entry {
             segments: segments.into_iter().map(Symbol::intern).collect(),
             recursive,
             text: entry.to_owned(),
-            span,
         }
     }
 
@@ -105,41 +100,17 @@ pub struct Selection {
 }
 
 impl Selection {
-    /// The union of the crate's `#![thrust::verify_only(..)]` attributes, if it has any.
-    pub fn of_crate(tcx: TyCtxt<'_>) -> Option<Self> {
-        use rustc_ast::token::{LitKind, Token, TokenKind};
-        use rustc_ast::tokenstream::TokenTree;
-
-        let path = analyze::annot::verify_only_path();
-        let attrs: Vec<_> = tcx
-            .get_attrs_by_path(CRATE_DEF_ID.to_def_id(), &path)
+    /// The entries of `THRUST_VERIFY_ONLY`, a comma-separated list, if it is set and not empty.
+    pub fn from_env() -> Option<Self> {
+        let value = std::env::var("THRUST_VERIFY_ONLY").ok()?;
+        let entries: Vec<_> = value
+            .split(',')
+            .map(str::trim)
+            .filter(|entry| !entry.is_empty())
+            .map(Entry::parse)
             .collect();
-        if attrs.is_empty() {
+        if entries.is_empty() {
             return None;
-        }
-        let mut entries = Vec::new();
-        for attr in attrs {
-            for tt in analyze::annot::extract_annot_tokens(attr.clone()).iter() {
-                match tt {
-                    TokenTree::Token(
-                        Token {
-                            kind: TokenKind::Literal(lit),
-                            span,
-                        },
-                        _,
-                    ) if lit.kind == LitKind::Str => {
-                        entries.push(Entry::parse(lit.symbol.as_str(), *span));
-                    }
-                    TokenTree::Token(
-                        Token {
-                            kind: TokenKind::Comma,
-                            ..
-                        },
-                        _,
-                    ) => {}
-                    _ => panic!("verify_only takes string literals: {tt:?}"),
-                }
-            }
         }
         Some(Selection { entries })
     }
@@ -165,10 +136,10 @@ impl Selection {
     pub fn report_unmatched(&self, tcx: TyCtxt<'_>, paths: &[ItemPath]) {
         for entry in &self.entries {
             if !paths.iter().any(|path| entry.selects(path)) {
-                tcx.dcx().span_err(
-                    entry.span,
-                    format!("`verify_only` entry \"{}\" selects no function", entry.text),
-                );
+                tcx.dcx().err(format!(
+                    "`THRUST_VERIFY_ONLY` entry `{}` selects no function",
+                    entry.text
+                ));
             }
         }
     }

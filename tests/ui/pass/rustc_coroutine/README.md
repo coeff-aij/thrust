@@ -7,8 +7,9 @@ crate of three modules), with the case study's own code (the iterator adapters o
 `SliceIter::find` of R9, `Model` declarations, std specifications, `Unwrap`, lemmas) under
 `tests/rustc_coroutine/thrust/`. The goal is a proof that `layout()` does not panic.
 
-Each file below is a crate root that includes the whole tree and selects one stage with
-`#![thrust::verify_only(..)]`; functions outside the selection that have a contract are trusted.
+Each file below is a crate root that includes the whole tree and selects one stage with a
+`//@rustc-env: THRUST_VERIFY_ONLY=..` header; functions outside the selection that have a contract
+are trusted.
 The root also holds the stage's driver (`main` and the stubs of rewrites.md S5).
 `tests/ui/fail/rustc_coroutine/<file>.rs` is its fail twin where one exists; it is the pass root
 with the driver broken, regenerated and checked by `tests/rustc_coroutine/fail/check.sh`.

@@ -1,13 +1,12 @@
 //@check-pass
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120
+//@rustc-env: THRUST_VERIFY_ONLY=rustc_index::idx,rustc_index::bit_set::WordIter,rustc_index::slice::SliceIter,rustc_index::slice::IterEnumerated
 // Stages 2 and 4 of the rustc-coroutine verification target: rustc_index's `Idx` and the own
 // iterators of rewrites.md R2 to R4 (`IdxRange`, `WordIter`, `SliceIter`, `IterEnumerated`).
 // The code is the module tree under tests/rustc_coroutine/; this file selects the stage and
 // drives it.
-#![feature(custom_inner_attributes)]
 #![feature(new_range_api)]
-#![thrust::verify_only("rustc_index::idx", "rustc_index::bit_set::WordIter", "rustc_index::slice::SliceIter", "rustc_index::slice::IterEnumerated")]
 
 #[path = "../../../rustc_coroutine/compiler/rustc_hashes/src/lib.rs"]
 pub mod rustc_hashes;

@@ -1,6 +1,3 @@
-#![feature(custom_inner_attributes)]
-#![thrust::verify_only("crate")]
-
 mod spec;
 
 #[thrust_macros::requires(x >= 0)]
