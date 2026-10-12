@@ -4,7 +4,7 @@ use thrust_models::{exists, forall};
 use crate::rustc_abi::layout::{LayoutCalculator, LayoutCalculatorResult, LayoutRef};
 use crate::rustc_abi::{
     BackendRepr, FieldsShape, HasDataLayout, Integer, LayoutData, Niche, Primitive, ReprOptions,
-    Scalar, StructKind, TagEncoding, TargetDataLayout, VariantLayout, Variants, WrappingRange,
+    Scalar, Size, StructKind, TagEncoding, TargetDataLayout, VariantLayout, Variants, WrappingRange,
 };
 use crate::rustc_index::bit_set::{BitIter, BitMatrix, DenseBitSet};
 use crate::rustc_index::{Idx, IdxRange, IndexSlice, IndexVec, IterEnumerated, SliceIter};
@@ -535,9 +535,12 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
 //   from eligibility's result, so a condition on the inputs can only bound it by n. rustc's
 //   caller guarantees neither form.
 // - `dl_wf` of the data layout `calc.cx` names, which `univariant` requires.
-// - `niche_wf` of the largest niche of every layout `univariant` may receive: each of
-//   `local_layouts` and `prefix_layouts`, and `tag_to_layout`'s result for any scalar (through
-//   its postcondition), each named by `LayoutRef::layout_is`.
+// - `niche_wf` of the largest niche of every layout `univariant` may receive, and the niche
+//   within that layout: each of `local_layouts` and `prefix_layouts`, and `tag_to_layout`'s
+//   result for any scalar (through its postcondition), each named by `LayoutRef::layout_is`.
+// - Not yet required: that the fields fit in any order (`fits_in_any_order`), which `univariant`
+//   also requires. A size bound on the inputs gives it for the prefix; a variant's prefix kind
+//   carries the prefix's size and alignment, which `univariant`'s ensures does not bound.
 #[thrust_macros::requires(
     (*variant_fields).len() > 0
         && (*storage_conflicts).num_rows <= (*local_layouts).len()
@@ -562,27 +565,27 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
             || dl.default_address_space_pointer_spec.pointer_size.raw == 2
             || dl.default_address_space_pointer_spec.pointer_size.raw == 4
             || dl.default_address_space_pointer_spec.pointer_size.raw == 8)
-        && forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, n: Niche|
+        && forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, n: Niche, z: Size|
             !(C::dl_of(*calc, dl)
                 && 0 <= i
                 && i < (*local_layouts).len()
                 && F::layout_is((*local_layouts)[i], l)
                 && l.largest_niche == Some(n))
-                || Niche::wf_in(n, dl))
-        && forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, n: Niche|
+                || (Niche::wf_in(n, dl) && (!Primitive::size_in(n.value, dl, z) || n.offset.raw + z.raw <= l.size.raw)))
+        && forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, n: Niche, z: Size|
             !(C::dl_of(*calc, dl)
                 && 0 <= i
                 && i < prefix_layouts.len()
                 && F::layout_is(prefix_layouts[i], l)
                 && l.largest_niche == Some(n))
-                || Niche::wf_in(n, dl))
+                || (Niche::wf_in(n, dl) && (!Primitive::size_in(n.value, dl, z) || n.offset.raw + z.raw <= l.size.raw)))
         && forall(|dl: TargetDataLayout, s: Scalar, r: <F as thrust_models::Model>::Ty,
-                l: LayoutData<FieldIdx, VariantIdx>, n: Niche|
+                l: LayoutData<FieldIdx, VariantIdx>, n: Niche, z: Size|
             !(C::dl_of(*calc, dl)
                 && thrust_macros::post!(tag_to_layout(s), r)
                 && F::layout_is(r, l)
                 && l.largest_niche == Some(n))
-                || Niche::wf_in(n, dl))
+                || (Niche::wf_in(n, dl) && (!Primitive::size_in(n.value, dl, z) || n.offset.raw + z.raw <= l.size.raw)))
 )]
 #[thrust_macros::ensures(true)]
 #[thrust_macros::context]
