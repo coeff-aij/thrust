@@ -28,6 +28,42 @@ impl<'a> std::fmt::Display for Display<'a> {
     }
 }
 
+/// The fields that place a clause or a declaration in the source: the span it was made in, the
+/// definition, basic block, statement and terminator, and the type parameter of a forall sort.
+const ORIGIN_KEYS: [&str; 7] = [
+    "span",
+    "def",
+    "def_id",
+    "bb",
+    "stmt_idx",
+    "term",
+    "type_param",
+];
+
+/// The [`ORIGIN_KEYS`] fields of a [`DebugInfo`] on one line, each preceded by a space.
+#[derive(Debug, Clone)]
+pub struct OriginLine<'a> {
+    inner: &'a DebugInfo,
+}
+
+impl std::fmt::Display for OriginLine<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        for (key, value) in &self.inner.contexts {
+            if !ORIGIN_KEYS.contains(&key.as_str()) {
+                continue;
+            }
+            write!(f, " {key}=")?;
+            for (i, line) in value.lines().enumerate() {
+                if i > 0 {
+                    write!(f, " ")?;
+                }
+                write!(f, "{line}")?;
+            }
+        }
+        Ok(())
+    }
+}
+
 /// A purely informational metadata that can be attached to a clause.
 #[derive(Debug, Clone, Default)]
 pub struct DebugInfo {
@@ -136,5 +172,9 @@ impl DebugInfo {
             inner: self,
             line_head,
         }
+    }
+
+    pub fn origin_line(&self) -> OriginLine<'_> {
+        OriginLine { inner: self }
     }
 }

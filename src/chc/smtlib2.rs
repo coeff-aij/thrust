@@ -493,8 +493,9 @@ impl<'ctx, 'a> Clause<'ctx, 'a> {
 }
 
 /// How much the query says in comments about where its parts come from, by the log level
-/// enabled for this module: nothing by default, the origin of each clause and definition at
-/// `info`, and also the typing environment, body and head of each clause at `debug`.
+/// enabled for this module: nothing by default; at `info`, what the quantified variables stand
+/// for and one line placing each clause and declaration in the source; at `debug`, every field
+/// of the spans each was made in and the typing environment, body and head of each clause.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Comments {
     None,
@@ -540,11 +541,24 @@ fn write_origin_entry(
 fn write_debug_info(
     f: &mut std::fmt::Formatter<'_>,
     debug_info: &chc::debug::DebugInfo,
+    comments: Comments,
 ) -> std::fmt::Result {
-    if debug_info.is_empty() {
-        return Ok(());
+    match comments {
+        Comments::None => Ok(()),
+        Comments::Origin => {
+            let line = debug_info.origin_line().to_string();
+            if line.is_empty() {
+                return Ok(());
+            }
+            writeln!(f, ";{line}")
+        }
+        Comments::Full => {
+            if debug_info.is_empty() {
+                return Ok(());
+            }
+            writeln!(f, "{}", debug_info.display("; "))
+        }
     }
-    writeln!(f, "{}", debug_info.display("; "))
 }
 
 fn write_clause_origin(
@@ -996,9 +1010,7 @@ impl<'a> std::fmt::Display for System<'a> {
             if !used_forall_sorts.contains(&forall_sort_def.idx) {
                 continue;
             }
-            if comments >= Comments::Origin {
-                write_debug_info(f, &forall_sort_def.debug_info)?;
-            }
+            write_debug_info(f, &forall_sort_def.debug_info, comments)?;
             writeln!(f, "(declare-forall-sort {})\n", forall_sort_def.idx)?;
         }
         let used_forall_defaults = self.inner.used_forall_default_sorts();
@@ -1064,12 +1076,14 @@ impl<'a> std::fmt::Display for System<'a> {
             }
         }
         for (id, clause) in self.inner.clauses.iter_enumerated() {
-            if comments >= Comments::Origin {
-                writeln!(f, "; {:?}", id)?;
-                write_debug_info(f, &clause.debug_info)?;
-            }
-            if comments >= Comments::Full {
-                write_clause_origin(f, &clause.origin)?;
+            match comments {
+                Comments::None => {}
+                Comments::Origin => writeln!(f, "; {:?}{}", id, clause.debug_info.origin_line())?,
+                Comments::Full => {
+                    writeln!(f, "; {:?}", id)?;
+                    write_debug_info(f, &clause.debug_info, comments)?;
+                    write_clause_origin(f, &clause.origin)?;
+                }
             }
             writeln!(f, "(assert {})\n", Clause::new(&self.ctx, clause))?;
         }
@@ -1089,9 +1103,7 @@ impl<'a> System<'a> {
         comments: Comments,
     ) -> std::fmt::Result {
         let def = &self.inner.pred_vars[p];
-        if comments >= Comments::Origin {
-            write_debug_info(f, &def.debug_info)?;
-        }
+        write_debug_info(f, &def.debug_info, comments)?;
         // To a dependency-aware solver a plain `declare-fun` means "every forall pred
         // declared before it", so an unknown whose computed set is empty is declared
         // with the explicit, empty list. Any other solver keeps the plain form for it.
