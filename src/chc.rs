@@ -3009,9 +3009,45 @@ impl System {
                 udpd.dependencies
                     .extend(direct.get(callee).into_iter().flatten().cloned());
             }
-            udpd.dependencies = self.with_law_dependencies(std::mem::take(&mut udpd.dependencies));
+        }
+        let with_laws: Vec<HashSet<ForallPred>> = {
+            let udp_deps = Self::udp_deps(&user_defined_pred_defs);
+            user_defined_pred_defs
+                .iter()
+                .map(|def| self.with_law_dependencies(def.dependencies.clone(), &udp_deps))
+                .collect()
+        };
+        for (udpd, deps) in user_defined_pred_defs.iter_mut().zip(with_laws) {
+            udpd.dependencies = deps;
         }
         self.user_defined_pred_defs = user_defined_pred_defs;
+    }
+
+    fn udp_deps(defs: &[UserDefinedPredDef]) -> HashMap<&UserDefinedPred, &HashSet<ForallPred>> {
+        defs.iter()
+            .map(|def| (&def.symbol, &def.dependencies))
+            .collect()
+    }
+
+    /// The forall predicates an atom applies: its predicate, or the body of the user-defined
+    /// predicate it applies, and its arguments (see [`Self::term_forall_preds`]).
+    fn atom_forall_preds<'a>(
+        atom: &'a Atom<TermVarIdx>,
+        udp_deps: &'a HashMap<&UserDefinedPred, &HashSet<ForallPred>>,
+    ) -> impl Iterator<Item = ForallPred> + 'a {
+        let pred: Vec<ForallPred> = match &atom.pred {
+            Pred::UserDefined(p) => udp_deps
+                .get(p)
+                .into_iter()
+                .flat_map(|deps| deps.iter().cloned())
+                .collect(),
+            pred => pred.clone().try_into().ok().into_iter().collect(),
+        };
+        pred.into_iter().chain(
+            atom.args
+                .iter()
+                .flat_map(|arg| Self::term_forall_preds(arg, udp_deps)),
+        )
     }
 
     /// The forall predicates a term applies, directly or through the bodies of the user-defined
@@ -3134,17 +3170,22 @@ impl System {
                 .flat_map(|atom| &atom.args)
                 .flat_map(|arg| Self::term_forall_preds(arg, udp_deps)),
         );
-        self.with_law_dependencies(preds)
+        self.with_law_dependencies(preds, udp_deps)
     }
 
-    /// Adds the forall predicates named by the laws of `preds`: a law is a premise of
-    /// every clause that mentions its predicate, so the unknowns of that clause depend on them.
-    fn with_law_dependencies(&self, mut preds: HashSet<ForallPred>) -> HashSet<ForallPred> {
+    /// Adds the forall predicates named by the laws of `preds`, directly or through the
+    /// definitions they apply: a law is a premise of every clause that mentions its predicate,
+    /// so the unknowns of that clause depend on them.
+    fn with_law_dependencies(
+        &self,
+        mut preds: HashSet<ForallPred>,
+        udp_deps: &HashMap<&UserDefinedPred, &HashSet<ForallPred>>,
+    ) -> HashSet<ForallPred> {
         let in_laws: Vec<ForallPred> = preds
             .iter()
             .flat_map(|pred| self.laws_of(pred))
             .flat_map(|law| law.iter_atoms())
-            .filter_map(|atom| atom.pred.clone().try_into().ok())
+            .flat_map(|atom| Self::atom_forall_preds(atom, udp_deps))
             .collect();
         preds.extend(in_laws);
         preds
@@ -3230,7 +3271,9 @@ impl System {
             preds: &mut HashSet<ForallPred>,
         ) {
             match formula {
-                Formula::Atom(atom) if !positive => atom_preds(atom, udp_deps, preds),
+                Formula::Atom(atom) if !positive => {
+                    preds.extend(System::atom_forall_preds(atom, udp_deps))
+                }
                 Formula::Atom(_) => {}
                 Formula::Not(f) => walk(f, !positive, udp_deps, preds),
                 Formula::And(fs) | Formula::Or(fs) => {
@@ -3243,31 +3286,10 @@ impl System {
                 Formula::Exists(_, f) | Formula::Forall(_, f) => walk(f, positive, udp_deps, preds),
             }
         }
-        fn atom_preds(
-            atom: &Atom<TermVarIdx>,
-            udp_deps: &HashMap<&UserDefinedPred, &HashSet<ForallPred>>,
-            preds: &mut HashSet<ForallPred>,
-        ) {
-            if let Pred::UserDefined(p) = &atom.pred {
-                preds.extend(
-                    udp_deps
-                        .get(p)
-                        .into_iter()
-                        .flat_map(|deps| deps.iter().cloned()),
-                );
-            } else if let Ok(p) = atom.pred.clone().try_into() {
-                preds.insert(p);
-            }
-            preds.extend(
-                atom.args
-                    .iter()
-                    .flat_map(|arg| System::term_forall_preds(arg, udp_deps)),
-            );
-        }
-        let mut preds = HashSet::new();
-        atom_preds(&clause.head, udp_deps, &mut preds);
+        let mut preds: HashSet<ForallPred> =
+            Self::atom_forall_preds(&clause.head, udp_deps).collect();
         walk(&clause.body.formula, true, udp_deps, &mut preds);
-        self.with_law_dependencies(preds)
+        self.with_law_dependencies(preds, udp_deps)
     }
 
     /// The forall predicates each predicate variable needs to imply what follows it: an
@@ -3340,11 +3362,7 @@ impl System {
                 _ => None,
             })
             .collect();
-        let udp_deps: HashMap<&UserDefinedPred, &HashSet<ForallPred>> = self
-            .user_defined_pred_defs
-            .iter()
-            .map(|def| (&def.symbol, &def.dependencies))
-            .collect();
+        let udp_deps = Self::udp_deps(&self.user_defined_pred_defs);
         for (clause_idx, clause) in self.clauses.iter_enumerated() {
             let heads = Self::head_pred_vars(clause, &bodies);
             if heads.is_empty() {
