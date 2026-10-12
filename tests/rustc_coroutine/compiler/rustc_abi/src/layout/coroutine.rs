@@ -1,7 +1,7 @@
 use crate::thrust_models;
 use thrust_models::{exists, forall};
 
-use crate::rustc_abi::layout::{LayoutCalculator, LayoutCalculatorResult, LayoutRef};
+use crate::rustc_abi::layout::{LayoutCalculator, LayoutCalculatorResult, LayoutRef, pow2};
 use crate::rustc_abi::{
     BackendRepr, FieldsShape, HasDataLayout, Integer, LayoutData, Niche, Primitive, ReprOptions,
     Scalar, Size, StructKind, TagEncoding, TargetDataLayout, VariantLayout, Variants, WrappingRange,
@@ -538,9 +538,16 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
 // - `niche_wf` of the largest niche of every layout `univariant` may receive, and the niche
 //   within that layout: each of `local_layouts` and `prefix_layouts`, and `tag_to_layout`'s
 //   result for any scalar (through its postcondition), each named by `LayoutRef::layout_is`.
-// - Not yet required: that the fields fit in any order (`fits_in_any_order`), which `univariant`
-//   also requires. A size bound on the inputs gives it for the prefix; a variant's prefix kind
-//   carries the prefix's size and alignment, which `univariant`'s ensures does not bound.
+// - The size bound: with T the weight (`weight`: each layout's size and twice its alignment) of
+//   `prefix_layouts`, the tag's layout and all of `local_layouts`, plus the aggregate and `i8`
+//   alignments 2^qa and 2^qi, 3T + 2^qa + 2^qi is below the object size bound. It gives
+//   `univariant`'s `fits_in_any_order` at both calls. The prefix's fields are `prefix_layouts`,
+//   the tag and the promoted locals, a subset of `local_layouts`, so their sum S_p (`weighs`, no
+//   prefix and no `repr` alignment) is at most T. A variant's kind is `Prefixed` by the prefix's
+//   size, below S_p, and alignment, at most S_p (univariant's ensures), so its sum is below its
+//   Assigned locals' weight plus 3 S_p + 2^qa + 2^qi; its Assigned locals appear once each
+//   (eligibility's property 2c) and are not promoted (property 4), so with the promoted ones they
+//   weigh at most `local_layouts`' weight, and the sum is below 3T + 2^qa + 2^qi.
 #[thrust_macros::requires(
     (*variant_fields).len() > 0
         && (*storage_conflicts).num_rows <= (*local_layouts).len()
@@ -586,6 +593,18 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
                 && F::layout_is(r, l)
                 && l.largest_niche == Some(n))
                 || (Niche::wf_in(n, dl) && (!Primitive::size_in(n.value, dl, z) || n.offset.raw + z.raw <= l.size.raw)))
+        && forall(|dl: TargetDataLayout, s: Scalar, r: <F as thrust_models::Model>::Ty, l: LayoutData<FieldIdx, VariantIdx>|
+            !(C::dl_of(*calc, dl) && thrust_macros::post!(tag_to_layout(s), r) && F::layout_is(r, l))
+                || exists(|wp: USize, wl: USize, q: USize, qa: USize, qi: USize, b: USize|
+                    LayoutCalculator::<C>::weight::<FieldIdx, FieldIdx, VariantIdx, F>(&prefix_layouts, wp)
+                        && LayoutCalculator::<C>::weight::<LocalIdx, FieldIdx, VariantIdx, F>(local_layouts, wl)
+                        && q == l.align.abi.pow2
+                        && qa == dl.aggregate_align.pow2
+                        && qi == dl.i8_align.pow2
+                        && ((dl.default_address_space_pointer_spec.pointer_size.raw == 2 && b == 32768u64)
+                            || (dl.default_address_space_pointer_spec.pointer_size.raw == 4 && b == 2147483648u64)
+                            || (dl.default_address_space_pointer_spec.pointer_size.raw == 8 && b == 2305843009213693952u64))
+                        && 3 * (wp + pow2(q) * 2 + l.size.raw + wl + pow2(qa) + pow2(qi)) + pow2(qa) + pow2(qi) < b))
 )]
 #[thrust_macros::ensures(true)]
 #[thrust_macros::context]
@@ -631,6 +650,8 @@ pub fn layout<
     // `push` and `extend_from` give `prefix_layouts.len() == P + 1 + c`, c the items
     // `ineligible_locals.iter()` yields (`Map` keeps the length), which is the set's ghost count:
     // `iter` starts `BitIter`'s `left` at it, and the iterator completes with nothing left.
+    // TODO(proof): `fits_in_any_order` by the size bound needs the promoted locals to weigh at most
+    // `local_layouts`, a sum over a subset, which no lemma states.
     let prefix = calc.univariant(
         &prefix_layouts,
         &ReprOptions::default(),
@@ -733,6 +754,9 @@ pub fn layout<
             );
 
             // Rewrite (rewrites.md R8): `collect_index_vec` for `collect`.
+            // TODO(proof): `fits_in_any_order` by the size bound needs the variant's Assigned locals
+            // and the promoted ones to weigh at most `local_layouts`, a sum over distinct locals
+            // (properties 2c and 4), as the count below.
             let mut variant = calc.univariant(
                 &collect_index_vec(variant_only_tys),
                 &ReprOptions::default(),

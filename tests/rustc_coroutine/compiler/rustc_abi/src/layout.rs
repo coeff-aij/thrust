@@ -98,6 +98,15 @@ fn sum_first(ts: &[u64], k: usize) -> u64 {
 // (`expect("alt layout should always work")`), but the two orders pad differently, so one of them
 // can overflow `checked_add` or `obj_size_bound` alone; summing every field's size and twice its
 // alignment, with the prefix, the aggregate and `repr` alignments, bounds the size of every order.
+//
+// Both methods also ensure that an `Ok` layout's size is below that sum S (`weighs`) and its
+// alignment at most S, which `layout()` needs to bound the prefix its variants start with. The
+// first field starts below ps + 2^pa (the prefix's size and alignment), each field adds at most
+// 2^a - 1 of padding and its size s, and the final padding is below the alignment, which is one of
+// the field's 2^a, the prefix's 2^pa, the `repr` alignment or the aggregate or `i8` alignment
+// (`pack` only lowers them): each is a summand of S not yet spent, as S counts a field's and the
+// prefix's alignment twice. `univariant` proves it from its two calls; `univariant_biased` is
+// verified against it in its own root, and the other roots take it as part of its contract.
 #[thrust_macros::context]
 impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
     /// The panic condition of `univariant` and `univariant_biased` apart from the size.
@@ -136,6 +145,54 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                     || n.offset.raw + s.raw <= l.size.raw)
     }
 
+    /// `w` is the weight of `fields`: the sum of each field's size and twice its alignment.
+    #[thrust_macros::predicate]
+    pub(crate) fn weight<
+        'a,
+        I: Idx,
+        FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
+        VariantIdx: Idx,
+        F: LayoutRef<'a, FieldIdx, VariantIdx> + thrust_models::Model<Ty: PartialEq>,
+    >(
+        fields: &IndexSlice<I, F>,
+        w: USize,
+    ) -> bool {
+        exists(|ts: Seq<USize>|
+            ts.len() == (*fields).len()
+                && forall(|i: USize, l: LayoutData<FieldIdx, VariantIdx>, q: USize|
+                    !(0 <= i && i < ts.len() && F::layout_is((*fields)[i], l) && q == l.align.abi.pow2)
+                        || ts[i] == pow2(q) * 2 + l.size.raw)
+                && w == sum_first(&ts, ts.len()))
+    }
+
+    /// `s` is the weight of `fields` with the prefix's size and twice its alignment, the `repr`
+    /// alignment and the aggregate and `i8` alignments of `dl`. It bounds the size and the
+    /// alignment of every order of the fields.
+    #[thrust_macros::predicate]
+    pub(crate) fn weighs<
+        'a,
+        FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
+        VariantIdx: Idx,
+        F: LayoutRef<'a, FieldIdx, VariantIdx> + thrust_models::Model<Ty: PartialEq>,
+    >(
+        fields: &IndexSlice<FieldIdx, F>,
+        repr: &ReprOptions,
+        kind: StructKind,
+        dl: TargetDataLayout,
+        s: USize,
+    ) -> bool {
+        exists(|w: USize, p: USize, r: USize, qa: USize, qi: USize|
+            Self::weight::<FieldIdx, FieldIdx, VariantIdx, F>(fields, w)
+                && ((forall(|ps: Size, pa: Align| kind != StructKind::Prefixed(ps, pa)) && p == 0)
+                    || exists(|ps: Size, pa: Align, q: USize|
+                        kind == StructKind::Prefixed(ps, pa) && q == pa.pow2 && p == pow2(q) * 2 + ps.raw))
+                && (((*repr).align == None && r == 0)
+                    || exists(|ra: Align, q: USize| (*repr).align == Some(ra) && q == ra.pow2 && r == pow2(q)))
+                && qa == dl.aggregate_align.pow2
+                && qi == dl.i8_align.pow2
+                && s == w + p + r + pow2(qa) + pow2(qi))
+    }
+
     /// Every order of the fields stays below the object size bound of the data layout.
     #[thrust_macros::predicate]
     pub(crate) fn fits_in_any_order<
@@ -150,22 +207,12 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         kind: StructKind,
     ) -> bool {
         forall(|dl: TargetDataLayout| !Cx::dl_of(self, dl)
-            || exists(|ts: Seq<USize>, b: USize, p: USize, r: USize, qa: USize, qi: USize|
-                ts.len() == (*fields).len()
-                    && forall(|i: USize, l: LayoutData<FieldIdx, VariantIdx>, q: USize|
-                        !(0 <= i && i < ts.len() && F::layout_is((*fields)[i], l) && q == l.align.abi.pow2)
-                            || ts[i] == pow2(q) * 2 + l.size.raw)
+            || exists(|s: USize, b: USize|
+                Self::weighs::<FieldIdx, VariantIdx, F>(fields, repr, kind, dl, s)
                     && ((dl.default_address_space_pointer_spec.pointer_size.raw == 2 && b == 32768u64)
                         || (dl.default_address_space_pointer_spec.pointer_size.raw == 4 && b == 2147483648u64)
                         || (dl.default_address_space_pointer_spec.pointer_size.raw == 8 && b == 2305843009213693952u64))
-                    && ((forall(|ps: Size, pa: Align| kind != StructKind::Prefixed(ps, pa)) && p == 0)
-                        || exists(|ps: Size, pa: Align, q: USize|
-                            kind == StructKind::Prefixed(ps, pa) && q == pa.pow2 && p == pow2(q) * 2 + ps.raw))
-                    && (((*repr).align == None && r == 0)
-                        || exists(|ra: Align, q: USize| (*repr).align == Some(ra) && q == ra.pow2 && r == pow2(q)))
-                    && qa == dl.aggregate_align.pow2
-                    && qi == dl.i8_align.pow2
-                    && sum_first(&ts, ts.len()) + p + r + pow2(qa) + pow2(qi) < b))
+                    && s < b))
     }
 
     /// An unsized field is not the tail of a `MaybeUnsized` struct.
@@ -204,6 +251,12 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
     #[thrust_macros::requires(Self::fits_in_any_order::<FieldIdx, VariantIdx, F>(*self, fields, repr, kind))]
     #[thrust_macros::ensures(forall(|l: LayoutData<FieldIdx, VariantIdx>|
         result != Ok(l) || FieldsShape::<FieldIdx>::arbitrary_of(l.fields, (*fields).len())))]
+    #[thrust_macros::ensures(forall(|l: LayoutData<FieldIdx, VariantIdx>, dl: TargetDataLayout, s: USize, q: USize|
+        !(result == Ok(l)
+            && Cx::dl_of(*self, dl)
+            && Self::weighs::<FieldIdx, VariantIdx, F>(fields, repr, kind, dl, s)
+            && q == l.align.abi.pow2)
+            || (l.size.raw < s && pow2(q) <= s)))]
     pub fn univariant<
         'a,
         FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
@@ -274,6 +327,12 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
     #[thrust_macros::requires(Self::layout_pre::<FieldIdx, VariantIdx, F>(*self, fields, kind))]
     #[thrust_macros::ensures(forall(|l: LayoutData<FieldIdx, VariantIdx>|
         result != Ok(l) || FieldsShape::<FieldIdx>::arbitrary_of(l.fields, (*fields).len())))]
+    #[thrust_macros::ensures(forall(|l: LayoutData<FieldIdx, VariantIdx>, dl: TargetDataLayout, s: USize, q: USize|
+        !(result == Ok(l)
+            && Cx::dl_of(*self, dl)
+            && Self::weighs::<FieldIdx, VariantIdx, F>(fields, repr, kind, dl, s)
+            && q == l.align.abi.pow2)
+            || (l.size.raw < s && pow2(q) <= s)))]
     #[thrust_macros::ensures(forall(|e: LayoutCalculatorError<<F as thrust_models::Model>::Ty>|
         result != Err(e)
             || e == LayoutCalculatorError::SizeOverflow
