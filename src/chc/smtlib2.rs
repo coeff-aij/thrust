@@ -492,8 +492,26 @@ impl<'ctx, 'a> Clause<'ctx, 'a> {
     }
 }
 
-struct ClauseComments<'a> {
-    clause: &'a chc::Clause,
+/// How much the query says in comments about where its parts come from, by the log level
+/// enabled for this module: nothing by default, the origin of each clause and definition at
+/// `info`, and also the typing environment, body and head of each clause at `debug`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Comments {
+    None,
+    Origin,
+    Full,
+}
+
+impl Comments {
+    fn from_log_level() -> Self {
+        if tracing::enabled!(tracing::Level::DEBUG) {
+            Comments::Full
+        } else if tracing::enabled!(tracing::Level::INFO) {
+            Comments::Origin
+        } else {
+            Comments::None
+        }
+    }
 }
 
 fn write_comment(
@@ -519,30 +537,37 @@ fn write_origin_entry(
     Ok(())
 }
 
-impl std::fmt::Display for ClauseComments<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if !self.clause.debug_info.is_empty() {
-            writeln!(f, "{}", self.clause.debug_info.display("; "))?;
-        }
-        let origin = &self.clause.origin;
-        if !origin.environment.is_empty() {
-            write_comment(f, 0, "Γ")?;
-            for entry in &origin.environment {
-                write_origin_entry(f, 2, entry)?;
-            }
-        }
-        if !origin.body.is_empty() {
-            write_comment(f, 0, "body:")?;
-            for entry in &origin.body {
-                write_origin_entry(f, 2, entry)?;
-            }
-        }
-        write_comment(f, 0, format_args!("head: {}", origin.head.text()))?;
-        for mapping in origin.head.mappings() {
-            write_comment(f, 2, mapping)?;
-        }
-        Ok(())
+fn write_debug_info(
+    f: &mut std::fmt::Formatter<'_>,
+    debug_info: &chc::debug::DebugInfo,
+) -> std::fmt::Result {
+    if debug_info.is_empty() {
+        return Ok(());
     }
+    writeln!(f, "{}", debug_info.display("; "))
+}
+
+fn write_clause_origin(
+    f: &mut std::fmt::Formatter<'_>,
+    origin: &chc::debug::origin::ClauseOrigin,
+) -> std::fmt::Result {
+    if !origin.environment.is_empty() {
+        write_comment(f, 0, "Γ")?;
+        for entry in &origin.environment {
+            write_origin_entry(f, 2, entry)?;
+        }
+    }
+    if !origin.body.is_empty() {
+        write_comment(f, 0, "body:")?;
+        for entry in &origin.body {
+            write_origin_entry(f, 2, entry)?;
+        }
+    }
+    write_comment(f, 0, format_args!("head: {}", origin.head.text()))?;
+    for mapping in origin.head.mappings() {
+        write_comment(f, 2, mapping)?;
+    }
+    Ok(())
 }
 
 /// A wrapper around a [`chc::RawCommand`] that provides a [`std::fmt::Display`] implementation in SMT-LIB2 format.
@@ -908,9 +933,6 @@ pub struct DepExistsPredVarDef<'ctx, 'a> {
 
 impl<'ctx, 'a> std::fmt::Display for DepExistsPredVarDef<'ctx, 'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if !self.def.debug_info.is_empty() {
-            writeln!(f, "{}", self.def.debug_info.display("; "))?;
-        }
         writeln!(
             f,
             "(declare-dep-exists-fun {} {} {} Bool)",
@@ -963,8 +985,9 @@ fn write_quantified_var_names(
 
 impl<'a> std::fmt::Display for System<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let comments = Comments::from_log_level();
         writeln!(f, "(set-logic HORN)\n")?;
-        if tracing::enabled!(tracing::Level::INFO) {
+        if comments >= Comments::Origin {
             write_quantified_var_names(f, self.inner)?;
         }
 
@@ -973,8 +996,8 @@ impl<'a> std::fmt::Display for System<'a> {
             if !used_forall_sorts.contains(&forall_sort_def.idx) {
                 continue;
             }
-            if !forall_sort_def.debug_info.is_empty() {
-                writeln!(f, "{}", forall_sort_def.debug_info.display("; "))?;
+            if comments >= Comments::Origin {
+                write_debug_info(f, &forall_sort_def.debug_info)?;
             }
             writeln!(f, "(declare-forall-sort {})\n", forall_sort_def.idx)?;
         }
@@ -1023,7 +1046,7 @@ impl<'a> std::fmt::Display for System<'a> {
         let dependencies = self.inner.compute_dependency();
         let declared_early = self.inner.pred_vars_in_definitions();
         for &p in &declared_early {
-            self.fmt_pred_var_decl(f, p, &dependencies)?;
+            self.fmt_pred_var_decl(f, p, &dependencies, comments)?;
         }
 
         for user_defined_pred_def in self.inner.user_defined_preds_in_dependency_order() {
@@ -1037,20 +1060,21 @@ impl<'a> std::fmt::Display for System<'a> {
         writeln!(f)?;
         for p in self.inner.pred_vars.indices() {
             if !declared_early.contains(&p) {
-                self.fmt_pred_var_decl(f, p, &dependencies)?;
+                self.fmt_pred_var_decl(f, p, &dependencies, comments)?;
             }
         }
         for (id, clause) in self.inner.clauses.iter_enumerated() {
-            writeln!(
-                f,
-                "; {:?}\n{}(assert {})\n",
-                id,
-                ClauseComments { clause },
-                Clause::new(&self.ctx, clause)
-            )?;
+            if comments >= Comments::Origin {
+                writeln!(f, "; {:?}", id)?;
+                write_debug_info(f, &clause.debug_info)?;
+            }
+            if comments >= Comments::Full {
+                write_clause_origin(f, &clause.origin)?;
+            }
+            writeln!(f, "(assert {})\n", Clause::new(&self.ctx, clause))?;
         }
         for candidates in &self.inner.candidate_atoms {
-            self.fmt_candidate_atoms(f, candidates, &dependencies)?;
+            self.fmt_candidate_atoms(f, candidates, &dependencies, comments)?;
         }
         Ok(())
     }
@@ -1062,8 +1086,12 @@ impl<'a> System<'a> {
         f: &mut std::fmt::Formatter<'_>,
         p: chc::PredVarId,
         dependencies: &HashMap<chc::PredVarId, BTreeSet<chc::ForallPred>>,
+        comments: Comments,
     ) -> std::fmt::Result {
         let def = &self.inner.pred_vars[p];
+        if comments >= Comments::Origin {
+            write_debug_info(f, &def.debug_info)?;
+        }
         // To a dependency-aware solver a plain `declare-fun` means "every forall pred
         // declared before it", so an unknown whose computed set is empty is declared
         // with the explicit, empty list. Any other solver keeps the plain form for it.
@@ -1077,9 +1105,6 @@ impl<'a> System<'a> {
                 "{}\n",
                 DepExistsPredVarDef::new(&self.ctx, &p, def, &dependencies[&p])
             );
-        }
-        if !def.debug_info.is_empty() {
-            writeln!(f, "{}", def.debug_info.display("; "))?;
         }
         writeln!(
             f,
@@ -1099,6 +1124,7 @@ impl<'a> System<'a> {
         f: &mut std::fmt::Formatter<'_>,
         candidates: &chc::CandidateAtoms,
         dependencies: &HashMap<chc::PredVarId, BTreeSet<chc::ForallPred>>,
+        comments: Comments,
     ) -> std::fmt::Result {
         if !self.ctx.capabilities().dependency_aware_declarations {
             return Ok(());
@@ -1132,10 +1158,16 @@ impl<'a> System<'a> {
                 .iter_enumerated()
                 .map(|(v, s)| List::closed([v.to_string(), self.ctx.fmt_sort(s).to_string()])),
         );
+        if comments >= Comments::Origin {
+            writeln!(
+                f,
+                "; candidate atoms of {}, from contracts",
+                candidates.pred
+            )?;
+        }
         writeln!(
             f,
-            "; candidate atoms of {}, from contracts\n(set-info :candidates ({} {} {}))\n",
-            candidates.pred,
+            "(set-info :candidates ({} {} {}))\n",
             candidates.pred,
             params,
             List::closed(atoms),
