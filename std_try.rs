@@ -5,7 +5,7 @@
     || (opt == None && result == std::ops::ControlFlow::Break(None))
 )]
 fn _extern_spec_option_branch<T>(opt: Option<T>) -> std::ops::ControlFlow<Option<std::convert::Infallible>, T>
-    where T: thrust_models::Model, T::Ty: PartialEq,
+    where T: thrust_models::Model,
 {
     <Option<T> as std::ops::Try>::branch(opt)
 }
@@ -14,7 +14,7 @@ fn _extern_spec_option_branch<T>(opt: Option<T>) -> std::ops::ControlFlow<Option
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(result == None)]
 fn _extern_spec_option_from_residual<T>(residual: Option<std::convert::Infallible>) -> Option<T>
-    where T: thrust_models::Model, T::Ty: PartialEq,
+    where T: thrust_models::Model,
 {
     <Option<T> as std::ops::FromResidual<Option<std::convert::Infallible>>>::from_residual(residual)
 }
@@ -26,8 +26,8 @@ fn _extern_spec_option_from_residual<T>(residual: Option<std::convert::Infallibl
     || thrust_models::exists(|e| res == Err(e) && result == std::ops::ControlFlow::Break(Err(e)))
 )]
 fn _extern_spec_result_branch<T, E>(res: Result<T, E>) -> std::ops::ControlFlow<Result<std::convert::Infallible, E>, T>
-  where T: thrust_models::Model, T::Ty: PartialEq,
-        E: thrust_models::Model, E::Ty: PartialEq,
+  where T: thrust_models::Model,
+        E: thrust_models::Model,
 {
     <Result<T, E> as std::ops::Try>::branch(res)
 }
@@ -36,8 +36,8 @@ fn _extern_spec_result_branch<T, E>(res: Result<T, E>) -> std::ops::ControlFlow<
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(thrust_models::exists(|e| residual == Err(e) && result == Err(e)))]
 fn _extern_spec_result_from_residual<T, E>(residual: Result<std::convert::Infallible, E>) -> Result<T, E>
-  where T: thrust_models::Model, T::Ty: PartialEq,
-        E: thrust_models::Model, E::Ty: PartialEq,
+  where T: thrust_models::Model,
+        E: thrust_models::Model,
 {
     <Result<T, E> as std::ops::FromResidual<Result<std::convert::Infallible, E>>>::from_residual(residual)
 }

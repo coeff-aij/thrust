@@ -85,7 +85,7 @@ impl<'a> FormulaFnTypeLowering<'a> {
         }
     }
 
-    /// `T: Model` / `<T as Model>::Ty: PartialEq` predicates for every type param
+    /// `T: Model` predicates for every type param
     /// in scope for `sig` (its own, plus the outer `impl`/`trait`'s and, for a
     /// trait, `Self`) that does not carry an `Fn`/`FnOnce`/`FnMut` bound, plus the
     /// same for any generic associated-type projection appearing in `sig` and,
@@ -294,9 +294,20 @@ fn collect_closure_type_params(generics: &syn::Generics, result: &mut HashSet<sy
     }
 }
 
-fn model_predicates(ty: &impl quote::ToTokens) -> [syn::WherePredicate; 2] {
-    [
-        syn::parse_quote!(#ty: crate::thrust_models::Model),
-        syn::parse_quote!(<#ty as crate::thrust_models::Model>::Ty: PartialEq),
-    ]
+/// `<T as Model>::Ty: PartialEq` for each `T: Model` of `predicates`.
+pub fn model_partial_eq_predicates(predicates: &[syn::WherePredicate]) -> Vec<syn::WherePredicate> {
+    predicates
+        .iter()
+        .filter_map(|pred| {
+            let syn::WherePredicate::Type(pt) = pred else {
+                return None;
+            };
+            let ty = &pt.bounded_ty;
+            Some(syn::parse_quote!(<#ty as crate::thrust_models::Model>::Ty: PartialEq))
+        })
+        .collect()
+}
+
+fn model_predicates(ty: &impl quote::ToTokens) -> [syn::WherePredicate; 1] {
+    [syn::parse_quote!(#ty: crate::thrust_models::Model)]
 }

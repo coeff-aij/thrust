@@ -272,6 +272,11 @@ impl VisitMut for SelfAssocResolver<'_> {
 /// Rewrites each spec macro in the body into its context-carrying counterpart and extends
 /// the where clause with the `Model` predicates those calls need. A body naming no spec
 /// macro — or a trait method that has no body at all — is left as it is.
+///
+/// Outside a trait impl, the where clause also gets `<T as Model>::Ty: PartialEq` of each such
+/// `T`, which formulas no longer need (their `==` is `log_eq_args`): functions of
+/// `tests/rustc_coroutine` rely on it to call iterators whose impls still state that bound. A
+/// method of a trait impl cannot add a bound its trait lacks.
 fn expand_fn(mut func: FnItemWithSignature) -> TokenStream {
     let outer = match crate::extract_outer_context(func.attrs()) {
         Ok(outer) => outer,
@@ -299,6 +304,12 @@ fn expand_fn(mut func: FnItemWithSignature) -> TokenStream {
     let mut predicates = type_lowering.model_where_predicates();
     if injector.self_used {
         predicates.extend(type_lowering.model_where_predicates_for(&quote::format_ident!("Self")));
+    }
+    let in_trait_impl =
+        matches!(&outer, Some(FnOuterItem::ItemImpl(item_impl)) if item_impl.trait_.is_some());
+    if !in_trait_impl {
+        let model_eq = crate::formula_fn_type_lowering::model_partial_eq_predicates(&predicates);
+        predicates.extend(model_eq);
     }
     if !predicates.is_empty() {
         func.sig_mut()

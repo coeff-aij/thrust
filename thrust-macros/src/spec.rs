@@ -147,6 +147,7 @@ fn expand_spec_fn(item: TokenStream, kind: SpecFnKind) -> TokenStream {
     // references in the (Rust) body to match.
     if is_rust_body {
         rewrite_self_in_block(&mut block);
+        crate::formula::rewrite_eq_in_block(&mut block);
     }
     if is_rust_body && kind == SpecFnKind::Logic {
         wrap_result_literals_in_block(&mut block);
