@@ -18,7 +18,6 @@ impl<T> Foo for Bar<T>
 where
     T: Foo + Model,
     <T as Foo>::Item: Model,
-    <T as Model>::Ty: PartialEq,
 {
     type Item = T::Item;
 

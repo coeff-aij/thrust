@@ -10,8 +10,6 @@
 fn exhausted<I: IteratorSpec>(it: &mut I) -> bool
 where
     I::Item: thrust_models::Model,
-    I::Ty: PartialEq,
-    <I::Item as thrust_models::Model>::Ty: PartialEq,
 {
     match it.next() {
         None => true,
