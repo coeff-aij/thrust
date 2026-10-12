@@ -45,21 +45,38 @@ fn column_bound(m: &BitMatrix<usize, usize>) {
     }
 }
 
+// Marks an unreachable point without the `&str` a panic carries.
+#[thrust_macros::requires(false)]
+#[thrust_macros::ensures(false)]
+fn never() {}
+
 fn main() {
     let mut set: DenseBitSet<usize> = DenseBitSet::new_empty(5);
     set.insert(3);
-    assert!(set.contains(3));
-    assert!(!set.contains(2));
+    if !set.contains(3) {
+        never()
+    }
+    if set.contains(2) {
+        never()
+    }
 
     // `iter`'s ensures make the iterator's elements the set's members, so the only element is 3;
     // `IteratorSpec` carries the domain bound to the second call.
     let mut it = set.iter();
     match it.next() {
-        Some(e) => assert!(e == 3),
+        Some(e) => {
+            if e != 3 {
+                never()
+            }
+        }
         None => {}
     }
     match it.next() {
-        Some(e) => assert!(e < 5),
+        Some(e) => {
+            if e >= 5 {
+                never()
+            }
+        }
         None => {}
     }
 }
