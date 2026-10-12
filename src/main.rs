@@ -105,13 +105,9 @@ impl Callbacks for CompilerCalls {
     }
 }
 
-/// The thrust-macros library to link the analyzed crate with: the build this binary was compiled
-/// against, or, when that is gone (the binary was moved), the newest build next to the binary.
+/// The thrust-macros library to link the analyzed crate with: the most recently modified build
+/// next to the binary.
 fn thrust_macros_path() -> Option<std::path::PathBuf> {
-    let linked = std::path::Path::new(thrust_macros::linked_path!());
-    if linked.is_file() {
-        return Some(linked.to_path_buf());
-    }
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;
     // When thrust-macros is a cargo dependency it lands in deps/ with a hash
