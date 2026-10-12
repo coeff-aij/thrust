@@ -1,11 +1,9 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
+//@rustc-env: THRUST_VERIFY_ONLY=crate
 
 // The impl outside the selection is assumed to meet the trait method's contract, and no more.
-
-#![feature(custom_inner_attributes)]
-#![thrust::verify_only("crate")]
 
 mod b {
     #[thrust_macros::context]

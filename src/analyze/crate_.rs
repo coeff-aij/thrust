@@ -119,7 +119,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 keys.swap_remove(local_def_id);
             }
         }
-        // Nor is the body of a target outside `verify_only`, whose contract the spec writes.
+        // Nor is the body of a target outside `THRUST_VERIFY_ONLY`, whose contract the spec writes.
         for local_target_def_id in local_spec_targets {
             if self.is_outside_selection(local_target_def_id) {
                 self.skip_analysis.insert(local_target_def_id);
@@ -137,7 +137,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         }
     }
 
-    /// Whether `local_def_id` is a function outside the selection of `#![thrust::verify_only(..)]`
+    /// Whether `local_def_id` is a function outside the selection of `THRUST_VERIFY_ONLY`
     /// whose body is trusted when its contract is written: a typeck root that is not a trait law.
     fn is_outside_selection(&self, local_def_id: LocalDefId) -> bool {
         let def_id = local_def_id.to_def_id();
@@ -148,7 +148,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         })
     }
 
-    /// Reports each `#![thrust::verify_only(..)]` entry that selects no function of the crate,
+    /// Reports each `THRUST_VERIFY_ONLY` entry that selects no function of the crate,
     /// nor a law inherited by one of its impls.
     fn report_unmatched_selection(&self) {
         let Some(selection) = &self.selection else {
@@ -218,14 +218,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             }
         }
 
-        // Outside `verify_only`, a function whose contract leaves nothing to infer from its body
-        // is trusted, as `#[thrust::trusted]` is; one with a predicate variable in its contract
-        // is analyzed, because its callers use the contract inferred from its body.
+        // Outside `THRUST_VERIFY_ONLY`, a function whose contract leaves nothing to infer from its
+        // body is trusted, as `#[thrust::trusted]` is; one with a predicate variable in its
+        // contract is analyzed, because its callers use the contract inferred from its body.
         let mut expected = None;
         if outside_selection && !self.skip_analysis.contains(&local_def_id) {
             let ty = analyzer.expected_ty();
             if !ty.has_pred_var() {
-                tracing::debug!("trusted outside verify_only");
+                tracing::debug!("trusted outside THRUST_VERIFY_ONLY");
                 self.skip_analysis.insert(local_def_id);
             }
             expected = Some(ty);
@@ -378,7 +378,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         tracing::info!(
                             ?law_def_id,
                             ?impl_def_id,
-                            "inherited law assumed outside verify_only"
+                            "inherited law assumed outside THRUST_VERIFY_ONLY"
                         );
                         continue;
                     }
@@ -531,7 +531,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     pub fn new(ctx: &'ctx mut analyze::Analyzer<'tcx>) -> Self {
         let tcx = ctx.tcx;
         let skip_analysis = HashSet::default();
-        let selection = analyze::selection::Selection::of_crate(tcx);
+        let selection = analyze::selection::Selection::from_env();
         Self {
             ctx,
             tcx,

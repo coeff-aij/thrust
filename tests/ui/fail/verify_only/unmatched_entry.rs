@@ -1,8 +1,7 @@
+//@error-in-other-file: `THRUST_VERIFY_ONLY` entry `aa` selects no function
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
-
-#![feature(custom_inner_attributes)]
-#![thrust::verify_only("aa")] //~ ERROR: selects no function
+//@rustc-env: THRUST_VERIFY_ONLY=aa
 
 mod a {
     #[thrust_macros::requires(x >= 0)]
