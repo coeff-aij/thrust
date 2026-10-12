@@ -70,8 +70,6 @@ fn push_produced(produced: Ghost<Seq<Int>>, x: i64) -> Ghost<Seq<Int>> {
 
 #[thrust_macros::context]
 impl<I: Iterator<Item = i64> + Model, F: Fn(i64, Ghost<Seq<Int>>) -> i64> Iterator for Map<I, F>
-where
-    <I as Model>::Ty: PartialEq,
 {
     type Item = i64;
 

@@ -31,7 +31,7 @@ where
 #[thrust_macros::ensures(result != *x)]
 fn other<T: Two + Model>(x: &T) -> T
 where
-    <T as Model>::Ty: Model<Ty = <T as Model>::Ty> + PartialEq,
+    <T as Model>::Ty: Model<Ty = <T as Model>::Ty>,
 {
     x.b()
 }

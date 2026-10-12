@@ -152,9 +152,6 @@ where
     B: thrust_models::Model,
     F: FnMut(I::Item) -> B,
     I::Item: thrust_models::Model,
-    <I::Item as thrust_models::Model>::Ty: PartialEq,
-    <I as thrust_models::Model>::Ty: PartialEq,
-    <B as thrust_models::Model>::Ty: PartialEq,
 {
     #[thrust_macros::requires(
         I::invariant(iter)
@@ -234,9 +231,6 @@ where
     B: thrust_models::Model,
     F: FnMut(I::Item) -> B,
     I::Item: thrust_models::Model,
-    <I::Item as thrust_models::Model>::Ty: PartialEq,
-    <I as thrust_models::Model>::Ty: PartialEq,
-    <B as thrust_models::Model>::Ty: PartialEq,
 {
     type Item = B;
 
@@ -314,11 +308,8 @@ where
 fn collect_index_vec_result<I, T, E, J>(iter: J) -> Result<IndexVec<I, T>, E>
 where
     T: thrust_models::Model,
-    T::Ty: PartialEq,
     E: thrust_models::Model,
-    E::Ty: PartialEq,
     J: Iterator<Item = Result<T, E>>,
-    <J as thrust_models::Model>::Ty: PartialEq,
 {
     let mut it = iter;
     J::produces_refl(&it);

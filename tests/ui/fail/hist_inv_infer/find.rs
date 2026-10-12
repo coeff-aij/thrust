@@ -124,8 +124,8 @@ where
     I: Iterator + Model,
     F: FnMut((), I::Item) -> ControlFlow<I::Item>,
     <I as Iterator>::Item: Model,
-    <I as Model>::Ty: Model<Ty = <I as Model>::Ty> + PartialEq,
-    <<I as Iterator>::Item as Model>::Ty: Model<Ty = <<I as Iterator>::Item as Model>::Ty> + PartialEq,
+    <I as Model>::Ty: Model<Ty = <I as Model>::Ty>,
+    <<I as Iterator>::Item as Model>::Ty: Model<Ty = <<I as Iterator>::Item as Model>::Ty>,
 {
     let it = iter;
     let mut g = f;

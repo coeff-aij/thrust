@@ -38,9 +38,7 @@ impl<I: Model> Model for Skip<I> {
 impl<I> Iterator for Skip<I>
 where
     I: Iterator + Model,
-    <I as Model>::Ty: PartialEq,
     <I as Iterator>::Item: Model,
-    <<I as Iterator>::Item as Model>::Ty: PartialEq,
 {
     type Item = I::Item;
 

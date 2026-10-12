@@ -52,8 +52,6 @@ where
 fn drain<I: Iterator + Model>(r: &mut Run<I>)
 where
     I::Item: Model,
-    <I as Model>::Ty: PartialEq,
-    <I::Item as Model>::Ty: PartialEq,
 {
     let rr = r;
     while let Some(x) = rr.iter.next() {

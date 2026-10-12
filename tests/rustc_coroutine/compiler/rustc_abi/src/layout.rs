@@ -113,9 +113,9 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
     #[thrust_macros::predicate]
     pub(crate) fn layout_pre<
         'a,
-        FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
+        FieldIdx: Idx + thrust_models::Model,
         VariantIdx: Idx,
-        F: LayoutRef<'a, FieldIdx, VariantIdx> + thrust_models::Model<Ty: PartialEq>,
+        F: LayoutRef<'a, FieldIdx, VariantIdx> + thrust_models::Model,
     >(
         self,
         fields: &IndexSlice<FieldIdx, F>,
@@ -150,9 +150,9 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
     pub(crate) fn weight<
         'a,
         I: Idx,
-        FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
+        FieldIdx: Idx + thrust_models::Model,
         VariantIdx: Idx,
-        F: LayoutRef<'a, FieldIdx, VariantIdx> + thrust_models::Model<Ty: PartialEq>,
+        F: LayoutRef<'a, FieldIdx, VariantIdx> + thrust_models::Model,
     >(
         fields: &IndexSlice<I, F>,
         w: USize,
@@ -219,9 +219,9 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
     #[thrust_macros::predicate]
     fn unsized_misplaced<
         'a,
-        FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
+        FieldIdx: Idx + thrust_models::Model,
         VariantIdx: Idx,
-        F: LayoutRef<'a, FieldIdx, VariantIdx> + thrust_models::Model<Ty: PartialEq>,
+        F: LayoutRef<'a, FieldIdx, VariantIdx> + thrust_models::Model,
     >(
         fields: &IndexSlice<FieldIdx, F>,
         kind: StructKind,
@@ -237,9 +237,9 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
     #[thrust_macros::predicate]
     fn some_field_niche<
         'a,
-        FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
+        FieldIdx: Idx + thrust_models::Model,
         VariantIdx: Idx,
-        F: LayoutRef<'a, FieldIdx, VariantIdx> + thrust_models::Model<Ty: PartialEq>,
+        F: LayoutRef<'a, FieldIdx, VariantIdx> + thrust_models::Model,
     >(
         fields: &IndexSlice<FieldIdx, F>,
     ) -> bool {

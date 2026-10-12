@@ -26,7 +26,7 @@ where
 #[thrust_macros::ensures(T::le(*x, *z))]
 fn chain<T: Le + Model>(x: &T, y: &T, z: &T)
 where
-    <T as Model>::Ty: Model<Ty = <T as Model>::Ty> + PartialEq,
+    <T as Model>::Ty: Model<Ty = <T as Model>::Ty>,
 {
 }
 

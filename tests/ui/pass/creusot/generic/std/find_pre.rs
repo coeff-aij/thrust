@@ -125,8 +125,8 @@ where
     I: Iterator + Model,
     F: FnMut((), I::Item) -> ControlFlow<I::Item>,
     <I as Iterator>::Item: Model,
-    <I as Model>::Ty: Model<Ty = <I as Model>::Ty> + PartialEq,
-    <<I as Iterator>::Item as Model>::Ty: Model<Ty = <<I as Iterator>::Item as Model>::Ty> + PartialEq,
+    <I as Model>::Ty: Model<Ty = <I as Model>::Ty>,
+    <<I as Iterator>::Item as Model>::Ty: Model<Ty = <<I as Iterator>::Item as Model>::Ty>,
 {
     let it = iter;
     let mut g = f;
@@ -154,8 +154,8 @@ where
     I: Iterator + Model,
     P: FnMut(&I::Item) -> bool,
     <I as Iterator>::Item: Model,
-    <I as Model>::Ty: Model<Ty = <I as Model>::Ty> + PartialEq,
-    <<I as Iterator>::Item as Model>::Ty: Model<Ty = <<I as Iterator>::Item as Model>::Ty> + PartialEq,
+    <I as Model>::Ty: Model<Ty = <I as Model>::Ty>,
+    <<I as Iterator>::Item as Model>::Ty: Model<Ty = <<I as Iterator>::Item as Model>::Ty>,
 {
     // `check` owns the predicate, so its states are related as the predicate's are.
     let check = thrust_macros::closure!(

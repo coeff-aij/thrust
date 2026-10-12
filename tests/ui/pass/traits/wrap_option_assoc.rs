@@ -28,8 +28,6 @@ impl<I> A for W<I>
 where
     I: A + thrust_models::Model,
     <I as A>::Item: thrust_models::Model,
-    <<I as A>::Item as thrust_models::Model>::Ty: PartialEq,
-    <I as thrust_models::Model>::Ty: PartialEq,
 {
     type Item = I::Item;
 

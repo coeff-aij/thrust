@@ -63,8 +63,6 @@ fn fold<I: Iterator<Item = i64> + Model, F: Fn(i64, i64) -> i64>(
     init: i64,
     f: F,
 ) -> i64
-where
-    <I as Model>::Ty: PartialEq,
 {
     let rr = r;
     let mut acc = init;

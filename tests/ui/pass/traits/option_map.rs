@@ -12,8 +12,6 @@
 )]
 fn map<T, U, F>(opt: Option<T>, f: F) -> Option<U>
 where
-    T: thrust_models::Model, T::Ty: PartialEq,
-    U: thrust_models::Model, U::Ty: PartialEq,
     F: FnOnce(T) -> U,
 {
     match opt {

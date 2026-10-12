@@ -8,7 +8,6 @@
 #[thrust_macros::requires((*s).len() > 0)]
 #[thrust_macros::ensures((!s)[0] == v && (!s).len() == (*s).len())]
 fn set_head<T>(s: &mut [T], v: T)
-    where T: thrust_models::Model, T::Ty: PartialEq
 {
     *s.first_mut().unwrap() = v;
 }

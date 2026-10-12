@@ -20,7 +20,6 @@ where
 impl<T> Iterator for Wrap<T>
 where
     T: thrust_models::Model + Copy,
-    <T as thrust_models::Model>::Ty: PartialEq,
 {
     type Item = T;
 

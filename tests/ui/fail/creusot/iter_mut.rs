@@ -57,7 +57,6 @@ where
 impl<'a, T> Iterator for core::slice::IterMut<'a, T>
 where
     T: Model + 'a,
-    <T as Model>::Ty: PartialEq,
 {
     type Item = &'a mut T;
 

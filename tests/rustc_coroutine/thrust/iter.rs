@@ -13,8 +13,6 @@ use crate::case_study::USize;
 
 #[thrust_macros::context]
 impl<'a, T: thrust_models::Model> SliceIter<'a, T>
-where
-    T::Ty: PartialEq,
 {
     #[thrust_macros::ensures(result.0 == raw && result.1 == 0)]
     pub fn new(raw: &'a [T]) -> SliceIter<'a, T> {
@@ -79,9 +77,6 @@ where
     B: thrust_models::Model,
     F: FnMut(I::Item) -> B,
     I::Item: thrust_models::Model,
-    <I::Item as thrust_models::Model>::Ty: PartialEq,
-    <I as thrust_models::Model>::Ty: PartialEq,
-    <B as thrust_models::Model>::Ty: PartialEq,
 {
     #[thrust_macros::requires(
         I::inv(iter)
@@ -161,9 +156,6 @@ where
     B: thrust_models::Model,
     F: FnMut(I::Item) -> B,
     I::Item: thrust_models::Model,
-    <I::Item as thrust_models::Model>::Ty: PartialEq,
-    <I as thrust_models::Model>::Ty: PartialEq,
-    <B as thrust_models::Model>::Ty: PartialEq,
 {
     type Item = B;
 
@@ -192,9 +184,6 @@ where
     B: thrust_models::Model,
     F: FnMut(I::Item) -> B,
     I::Item: thrust_models::Model,
-    <I::Item as thrust_models::Model>::Ty: PartialEq,
-    <I as thrust_models::Model>::Ty: PartialEq,
-    <B as thrust_models::Model>::Ty: PartialEq,
 {
     #[thrust_macros::predicate]
     fn inv(self) -> bool {
@@ -259,8 +248,6 @@ where
     I: IteratorSpec,
     P: Fn(&I::Item) -> bool,
     I::Item: thrust_models::Model,
-    <I::Item as thrust_models::Model>::Ty: PartialEq,
-    <I as thrust_models::Model>::Ty: PartialEq,
 {
     #[thrust_macros::requires(
         I::inv(iter)
@@ -334,8 +321,6 @@ where
     I: IteratorSpec,
     P: Fn(&I::Item) -> bool,
     I::Item: thrust_models::Model,
-    <I::Item as thrust_models::Model>::Ty: PartialEq,
-    <I as thrust_models::Model>::Ty: PartialEq,
 {
     type Item = I::Item;
 
@@ -375,8 +360,6 @@ where
     I: IteratorSpec,
     P: Fn(&I::Item) -> bool,
     I::Item: thrust_models::Model,
-    <I::Item as thrust_models::Model>::Ty: PartialEq,
-    <I as thrust_models::Model>::Ty: PartialEq,
 {
 
 
@@ -435,8 +418,6 @@ where
     I: IteratorSpec,
     F: Fn(I::Item) -> bool,
     I::Item: thrust_models::Model + Copy,
-    <I::Item as thrust_models::Model>::Ty: PartialEq,
-    <I as thrust_models::Model>::Ty: PartialEq,
 {
     #[thrust_macros::predicate]
     fn pre_all(iter: I, func: F) -> bool {
@@ -482,8 +463,6 @@ where
     I: IteratorSpec,
     F: Fn(I::Item) -> bool,
     I::Item: thrust_models::Model + Copy,
-    <I::Item as thrust_models::Model>::Ty: PartialEq,
-    <I as thrust_models::Model>::Ty: PartialEq,
 {
     let mut it = iter;
     I::produces_refl(&it);
@@ -519,8 +498,6 @@ where
 impl<I: Idx, T: thrust_models::Model + Copy> IndexVec<I, T>
 where
     I: thrust_models::Model,
-    I::Ty: PartialEq,
-    T::Ty: PartialEq,
 {
     #[thrust_macros::requires(J::inv(it))]
     #[thrust_macros::ensures(
@@ -534,7 +511,6 @@ where
     pub fn extend_from<J>(&mut self, it: J)
     where
         J: IteratorSpec + Iterator<Item = T>,
-        <J as thrust_models::Model>::Ty: PartialEq,
     {
         let this = self;
         for x in it {
@@ -564,11 +540,8 @@ where
 pub fn collect_index_vec<I, T, J>(it: J) -> IndexVec<I, T>
 where
     I: Idx + thrust_models::Model,
-    I::Ty: PartialEq,
     T: thrust_models::Model,
-    T::Ty: PartialEq,
     J: IteratorSpec + Iterator<Item = T>,
-    <J as thrust_models::Model>::Ty: PartialEq,
 {
     let mut v: Vec<T> = Vec::new();
     for x in it {
@@ -603,13 +576,9 @@ where
 pub fn collect_index_vec_result<I, T, E, J>(it: J) -> Result<IndexVec<I, T>, E>
 where
     I: Idx + thrust_models::Model,
-    I::Ty: PartialEq,
     T: thrust_models::Model,
-    T::Ty: PartialEq,
     E: thrust_models::Model,
-    E::Ty: PartialEq,
     J: IteratorSpec + Iterator<Item = Result<T, E>>,
-    <J as thrust_models::Model>::Ty: PartialEq,
 {
     let mut v: Vec<T> = Vec::new();
     for x in it {

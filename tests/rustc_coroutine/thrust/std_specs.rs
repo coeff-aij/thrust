@@ -26,9 +26,7 @@ fn _extern_spec_u128_wrapping_sub(x: u128, y: u128) -> u128 {
 fn _extern_spec_slice_iter_fold<'a, T, B, F>(it: core::slice::Iter<'a, T>, init: B, f: F) -> B
 where
     T: thrust_models::Model + 'a,
-    T::Ty: PartialEq,
     B: thrust_models::Model,
-    B::Ty: PartialEq,
     F: FnMut(B, &'a T) -> B,
 {
     <core::slice::Iter<'a, T> as Iterator>::fold(it, init, f)
@@ -43,8 +41,6 @@ fn _extern_spec_iterator_max<I>(it: I) -> Option<I::Item>
 where
     I: crate::IteratorSpec,
     I::Item: thrust_models::Model + Ord,
-    I::Ty: PartialEq,
-    <I::Item as thrust_models::Model>::Ty: PartialEq,
 {
     <I as Iterator>::max(it)
 }
@@ -58,7 +54,6 @@ where
 fn _extern_spec_vec_partialeq_array_eq<T, const N: usize>(x: &Vec<T>, y: &[T; N]) -> bool
 where
     T: thrust_models::Model + PartialEq,
-    T::Ty: PartialEq,
 {
     <Vec<T> as PartialEq<[T; N]>>::eq(x, y)
 }

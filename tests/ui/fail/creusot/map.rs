@@ -89,12 +89,12 @@ impl<I: Model, F> Model for Map<I, F> {
 impl<I, A, B, F> Map<I, F>
 where
     I: Iterator + Model,
-    A: Model<Ty = A> + PartialEq,
+    A: Model<Ty = A>,
     B: Model,
     F: FnMut(I::Item) -> B,
     <I as Iterator>::Item: Model<Ty = A>,
-    <I as Model>::Ty: Model<Ty = <I as Model>::Ty> + PartialEq,
-    <B as Model>::Ty: Model<Ty = <B as Model>::Ty> + PartialEq,
+    <I as Model>::Ty: Model<Ty = <I as Model>::Ty>,
+    <B as Model>::Ty: Model<Ty = <B as Model>::Ty>,
 {
     #[thrust_macros::predicate]
     fn next_precondition(iter: I, func: F) -> bool {
@@ -315,8 +315,6 @@ where
 #[thrust_macros::context]
 impl FromIterator<isize> for Vec<isize> {
     fn from_iter<I: Iterator<Item = isize> + Model>(iter: &mut I) -> Vec<isize>
-    where
-        <I as Model>::Ty: PartialEq,
     {
         let it = iter;
         let mut v: Vec<isize> = Vec::new();

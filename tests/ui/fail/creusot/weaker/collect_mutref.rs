@@ -58,7 +58,7 @@ where
     fn collect<B: FromIterator<Self::Item>>(&mut self) -> B
     where
         Self: Sized,
-        <Self as Model>::Ty: Model<Ty = <Self as Model>::Ty> + PartialEq,
+        <Self as Model>::Ty: Model<Ty = <Self as Model>::Ty>,
         <Self::Item as Model>::Ty: Model<Ty = <Self::Item as Model>::Ty>,
     {
         B::from_iter(self)
@@ -120,14 +120,14 @@ where
         I::produces(*iter, result, pre) && I::completed(Mut::new(pre, !iter))))]
     fn from_iter<I: Iterator<Item = A> + Model>(iter: &mut I) -> Self
     where
-        <I as Model>::Ty: Model<Ty = <I as Model>::Ty> + PartialEq;
+        <I as Model>::Ty: Model<Ty = <I as Model>::Ty>;
 }
 
 #[thrust_macros::context]
 impl FromIterator<u32> for Vec<u32> {
     fn from_iter<I: Iterator<Item = u32> + Model>(iter: &mut I) -> Vec<u32>
     where
-        <I as Model>::Ty: Model<Ty = <I as Model>::Ty> + PartialEq,
+        <I as Model>::Ty: Model<Ty = <I as Model>::Ty>,
     {
         let it = iter;
         I::produces_refl(it);

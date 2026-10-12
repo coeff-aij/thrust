@@ -37,8 +37,6 @@ impl<I: thrust_models::Model, F> thrust_models::Model for Map<I, F> {
 
 #[thrust_macros::context]
 impl<I: Iterator<Item = i64> + thrust_models::Model, F: Fn(i64) -> i64> Iterator for Map<I, F>
-where
-    <I as thrust_models::Model>::Ty: PartialEq,
 {
     type Item = i64;
 

@@ -9,7 +9,6 @@
 #[thrust_macros::requires(v.len() >= 0)]
 #[thrust_macros::ensures(result == v.len())]
 fn count<T>(v: Vec<T>) -> usize
-    where T: thrust_models::Model, T::Ty: PartialEq
 {
     let mut it = v.into_iter();
     let mut n = 0;

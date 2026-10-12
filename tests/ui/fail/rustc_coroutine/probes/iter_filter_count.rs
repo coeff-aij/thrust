@@ -141,9 +141,6 @@ where
     B: thrust_models::Model,
     F: FnMut(I::Item) -> B,
     I::Item: thrust_models::Model,
-    <I::Item as thrust_models::Model>::Ty: PartialEq,
-    <I as thrust_models::Model>::Ty: PartialEq,
-    <B as thrust_models::Model>::Ty: PartialEq,
 {
     #[thrust_macros::requires(
         I::invariant(iter)
@@ -223,9 +220,6 @@ where
     B: thrust_models::Model,
     F: FnMut(I::Item) -> B,
     I::Item: thrust_models::Model,
-    <I::Item as thrust_models::Model>::Ty: PartialEq,
-    <I as thrust_models::Model>::Ty: PartialEq,
-    <B as thrust_models::Model>::Ty: PartialEq,
 {
     type Item = B;
 
@@ -307,8 +301,6 @@ where
     I: Iterator,
     P: Fn(&I::Item) -> bool,
     I::Item: thrust_models::Model,
-    <I::Item as thrust_models::Model>::Ty: PartialEq,
-    <I as thrust_models::Model>::Ty: PartialEq,
 {
     #[thrust_macros::requires(
         I::invariant(iter)
@@ -382,8 +374,6 @@ where
     I: Iterator,
     P: Fn(&I::Item) -> bool,
     I::Item: thrust_models::Model,
-    <I::Item as thrust_models::Model>::Ty: PartialEq,
-    <I as thrust_models::Model>::Ty: PartialEq,
 {
     type Item = I::Item;
 
@@ -485,8 +475,6 @@ impl<T> Wrapped<T> {
 // ends as its entry value followed by what `iter` produced before it completed.
 #[thrust_macros::context]
 impl<T: thrust_models::Model + Copy> Wrapped<T>
-where
-    T::Ty: PartialEq,
 {
     #[thrust_macros::requires(J::invariant(iter))]
     #[thrust_macros::ensures(
@@ -500,7 +488,6 @@ where
     fn extend_from<J>(&mut self, iter: J)
     where
         J: Iterator<Item = T>,
-        <J as thrust_models::Model>::Ty: PartialEq,
     {
         let this = self;
         let mut it = iter;
@@ -537,9 +524,7 @@ where
 fn collect_wrapped<T, J>(iter: J) -> Wrapped<T>
 where
     T: thrust_models::Model,
-    T::Ty: PartialEq,
     J: Iterator<Item = T>,
-    <J as thrust_models::Model>::Ty: PartialEq,
 {
     let mut it = iter;
     J::produces_refl(&it);

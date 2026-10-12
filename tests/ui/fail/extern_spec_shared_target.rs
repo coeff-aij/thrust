@@ -56,7 +56,7 @@ impl<T, R: Key<T>> Index<R> for Seq<T> {
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(*result == 5)]
 fn _extern_spec_seq_index_big<
-    R: Key<i64, Output = usize> + Big + thrust_models::Model<Ty: PartialEq>,
+    R: Key<i64, Output = usize> + Big + thrust_models::Model,
 >(
     s: &Seq<i64>,
     index: R,
@@ -68,7 +68,7 @@ fn _extern_spec_seq_index_big<
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(*result == 7)]
 fn _extern_spec_seq_index_small<
-    R: Key<i64, Output = usize> + Small + thrust_models::Model<Ty: PartialEq>,
+    R: Key<i64, Output = usize> + Small + thrust_models::Model,
 >(
     s: &Seq<i64>,
     index: R,

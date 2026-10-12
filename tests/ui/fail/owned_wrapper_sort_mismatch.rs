@@ -151,7 +151,7 @@ where
 #[thrust_macros::ensures(I::produces(init, (!r).1, (!r).0))]
 fn drain<I: Iterator<Item = i64> + Model>(r: &mut Run<I>, init: Ghost<<I as Model>::Ty>)
 where
-    <I as Model>::Ty: Model<Ty = <I as Model>::Ty> + PartialEq,
+    <I as Model>::Ty: Model<Ty = <I as Model>::Ty>,
 {
     I::produces_refl(&r.iter);
     let rr = r;
@@ -188,7 +188,7 @@ where
 #[thrust_macros::ensures(I::produces(init, result.1, result.0))]
 fn drain_owned<I: Iterator<Item = i64> + Model>(iter: I, init: Ghost<<I as Model>::Ty>) -> Run<I>
 where
-    <I as Model>::Ty: Model<Ty = <I as Model>::Ty> + PartialEq,
+    <I as Model>::Ty: Model<Ty = <I as Model>::Ty>,
 {
     let mut run = Run {
         iter,

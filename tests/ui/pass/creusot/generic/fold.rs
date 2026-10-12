@@ -106,8 +106,8 @@ where
     I: Iterator + Model,
     F: FnMut(isize, I::Item) -> isize,
     <I as Iterator>::Item: Model,
-    <I as Model>::Ty: Model<Ty = <I as Model>::Ty> + PartialEq,
-    <<I as Iterator>::Item as Model>::Ty: Model<Ty = <<I as Iterator>::Item as Model>::Ty> + PartialEq,
+    <I as Model>::Ty: Model<Ty = <I as Model>::Ty>,
+    <<I as Iterator>::Item as Model>::Ty: Model<Ty = <<I as Iterator>::Item as Model>::Ty>,
 {
     let mut it = iter;
     let mut acc = init;

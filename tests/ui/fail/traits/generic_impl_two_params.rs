@@ -28,7 +28,6 @@ impl<I: thrust_models::Model, F> thrust_models::Model for M<I, F> {
 impl<I, F> A for M<I, F>
 where
     I: A + thrust_models::Model,
-    <I as thrust_models::Model>::Ty: PartialEq,
     F: FnMut(i64) -> i64,
 {
     #[thrust_macros::predicate]

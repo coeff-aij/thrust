@@ -13,8 +13,6 @@
 fn collect<I: IteratorSpec>(iter: I) -> Vec<I::Item>
 where
     I::Item: thrust_models::Model,
-    I::Ty: PartialEq,
-    <I::Item as thrust_models::Model>::Ty: PartialEq,
 {
     let mut it = iter;
     let mut out = Vec::new();

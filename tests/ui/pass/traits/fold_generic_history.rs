@@ -60,9 +60,7 @@ trait Iterator {
     where
         Self: Sized,
         Self::Item: Model,
-        <Self::Item as Model>::Ty: PartialEq,
         B: Model,
-        <B as Model>::Ty: PartialEq,
         F: Fn(B, Self::Item) -> B,
     {
         let hh = h;

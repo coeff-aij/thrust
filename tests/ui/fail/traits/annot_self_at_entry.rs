@@ -30,7 +30,6 @@ impl<I: thrust_models::Model> thrust_models::Model for Wrap<I> {
 impl<I> Wrap<I>
 where
     I: thrust_models::Model,
-    <I as thrust_models::Model>::Ty: PartialEq,
 {
     #[thrust_macros::requires(true)]
     #[thrust_macros::ensures(!self == *self)]

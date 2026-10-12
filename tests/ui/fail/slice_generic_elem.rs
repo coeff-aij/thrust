@@ -10,7 +10,6 @@
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(result == (*s).len())]
 fn size<T>(s: &[T]) -> usize
-    where T: thrust_models::Model, T::Ty: PartialEq
 {
     s.len()
 }
@@ -18,7 +17,6 @@ fn size<T>(s: &[T]) -> usize
 #[thrust_macros::requires((*s).len() > 0)]
 #[thrust_macros::ensures(*result == (*s)[0])]
 fn head<T>(s: &[T]) -> &T
-    where T: thrust_models::Model, T::Ty: PartialEq
 {
     &s[s.len() - 1]
 }
@@ -26,7 +24,6 @@ fn head<T>(s: &[T]) -> &T
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(result == (*a).len())]
 fn size_fixed<T>(a: &[T; 3]) -> usize
-    where T: thrust_models::Model, T::Ty: PartialEq
 {
     a.len()
 }

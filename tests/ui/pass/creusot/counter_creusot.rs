@@ -392,8 +392,6 @@ where
 #[thrust_macros::context]
 impl FromIterator<u32> for Vec<u32> {
     fn from_iter<I: Iterator<Item = u32> + Model>(iter: &mut I) -> Vec<u32>
-    where
-        <I as Model>::Ty: PartialEq,
     {
         let it = iter;
         let mut v: Vec<u32> = Vec::new();

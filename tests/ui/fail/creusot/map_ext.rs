@@ -81,12 +81,12 @@ impl<I: Model, A, F> Model for Map<I, A, F> {
 impl<I, A, B, F> Map<I, A, F>
 where
     I: Iterator + Model,
-    A: Model<Ty = A> + PartialEq,
+    A: Model<Ty = A>,
     B: Model,
     F: FnMut(I::Item, Ghost<Seq<A>>) -> B,
     <I as Iterator>::Item: Model<Ty = A>,
-    <I as Model>::Ty: Model<Ty = <I as Model>::Ty> + PartialEq,
-    <B as Model>::Ty: Model<Ty = <B as Model>::Ty> + PartialEq,
+    <I as Model>::Ty: Model<Ty = <I as Model>::Ty>,
+    <B as Model>::Ty: Model<Ty = <B as Model>::Ty>,
 {
     #[thrust_macros::predicate]
     fn next_precondition(iter: I, func: F, produced: Seq<A>) -> bool {
@@ -218,12 +218,12 @@ where
 impl<I, A, B, F> Iterator for Map<I, A, F>
 where
     I: Iterator + Model,
-    A: Model<Ty = A> + PartialEq,
+    A: Model<Ty = A>,
     B: Model,
     F: FnMut(I::Item, Ghost<Seq<A>>) -> B,
     <I as Iterator>::Item: Model<Ty = A>,
-    <I as Model>::Ty: Model<Ty = <I as Model>::Ty> + PartialEq,
-    <B as Model>::Ty: Model<Ty = <B as Model>::Ty> + PartialEq,
+    <I as Model>::Ty: Model<Ty = <I as Model>::Ty>,
+    <B as Model>::Ty: Model<Ty = <B as Model>::Ty>,
 {
     type Item = B;
 

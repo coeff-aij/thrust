@@ -33,8 +33,6 @@ pub struct SliceIter<'a, T> {
 
 #[thrust_macros::context]
 impl<'a, T: thrust_models::Model> Iterator for SliceIter<'a, T>
-where
-    T::Ty: PartialEq,
 {
     type Item = &'a T;
 
@@ -51,8 +49,6 @@ where
 
 #[thrust_macros::context]
 impl<'a, T: thrust_models::Model> IteratorSpec for SliceIter<'a, T>
-where
-    T::Ty: PartialEq,
 {
     #[thrust_macros::predicate]
     fn inv(self) -> bool {
@@ -96,9 +92,6 @@ pub struct IterEnumerated<'a, I: Idx, T> {
 
 #[thrust_macros::context]
 impl<'a, I: Idx + thrust_models::Model, T: thrust_models::Model> Iterator for IterEnumerated<'a, I, T>
-where
-    I::Ty: PartialEq,
-    T::Ty: PartialEq,
 {
     type Item = (I, &'a T);
 
@@ -115,9 +108,6 @@ where
 
 #[thrust_macros::context]
 impl<'a, I: Idx + thrust_models::Model, T: thrust_models::Model> IteratorSpec for IterEnumerated<'a, I, T>
-where
-    I::Ty: PartialEq,
-    T::Ty: PartialEq,
 {
     // `next` builds `I::new(pos)`, so the invariant carries `can_new` of the positions left.
     #[thrust_macros::predicate]
@@ -221,8 +211,6 @@ impl<I: Idx, T> IndexSlice<I, T> {
 
 #[thrust_macros::context]
 impl<I: Idx, T: thrust_models::Model> IndexSlice<I, T>
-where
-    T::Ty: PartialEq,
 {
     #[inline]
     #[thrust::trusted]
@@ -234,7 +222,7 @@ where
 }
 
 #[thrust_macros::context]
-impl<I: Idx + thrust_models::Model<Ty: PartialEq>, J: Idx + thrust_models::Model<Ty: PartialEq>> IndexSlice<I, J> {
+impl<I: Idx + thrust_models::Model, J: Idx + thrust_models::Model> IndexSlice<I, J> {
     // `debug_assert_eq!` calls dropped (debug assertions are off; rewrites.md S6). The body
     // panics when an element is not below the length (`inverse[i2]`) or an index up to the length
     // cannot be built (`iter_enumerated`).
@@ -257,7 +245,7 @@ impl<I: Idx + thrust_models::Model<Ty: PartialEq>, J: Idx + thrust_models::Model
     }
 }
 
-impl<I: Idx, T: thrust_models::Model<Ty: PartialEq>, R: IntoSliceIdx<I, [T]>> std::ops::Index<R> for IndexSlice<I, T> {
+impl<I: Idx, T: thrust_models::Model, R: IntoSliceIdx<I, [T]>> std::ops::Index<R> for IndexSlice<I, T> {
     type Output = <R::Output as SliceIndex<[T]>>::Output;
 
     #[thrust::trusted]
@@ -267,7 +255,7 @@ impl<I: Idx, T: thrust_models::Model<Ty: PartialEq>, R: IntoSliceIdx<I, [T]>> st
     }
 }
 
-impl<I: Idx, T: thrust_models::Model<Ty: PartialEq>, R: IntoSliceIdx<I, [T]>> std::ops::IndexMut<R> for IndexSlice<I, T> {
+impl<I: Idx, T: thrust_models::Model, R: IntoSliceIdx<I, [T]>> std::ops::IndexMut<R> for IndexSlice<I, T> {
     #[thrust::trusted]
     #[inline]
     fn index_mut(&mut self, index: R) -> &mut Self::Output {
@@ -280,10 +268,7 @@ impl<I: Idx, T: thrust_models::Model<Ty: PartialEq>, R: IntoSliceIdx<I, [T]>> st
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(forall(|i: USize| <R as IntoSliceIdx<I, [T]>>::into_is(index, i) ==> i < (*slf).len()))]
 #[thrust_macros::ensures(forall(|i: USize| <R as IntoSliceIdx<I, [T]>>::into_is(index, i) ==> *result == (*slf)[i]))]
-fn _extern_spec_index_slice_index<I: Idx + thrust_models::Model<Ty: PartialEq>, T: thrust_models::Model, R: IntoSliceIdx<I, [T], Output = usize> + thrust_models::Model>(slf: &IndexSlice<I, T>, index: R) -> &T
-where
-    <T as thrust_models::Model>::Ty: PartialEq,
-    <R as thrust_models::Model>::Ty: PartialEq,
+fn _extern_spec_index_slice_index<I: Idx + thrust_models::Model, T: thrust_models::Model, R: IntoSliceIdx<I, [T], Output = usize> + thrust_models::Model>(slf: &IndexSlice<I, T>, index: R) -> &T
 {
     <IndexSlice<I, T> as std::ops::Index<R>>::index(slf, index)
 }
@@ -292,10 +277,7 @@ where
 #[thrust_macros::requires(forall(|i: USize| <R as IntoSliceIdx<I, [T]>>::into_is(index, i) ==> i < (*slf).len()))]
 #[thrust_macros::ensures(forall(|i: USize| <R as IntoSliceIdx<I, [T]>>::into_is(index, i)
     ==> (*result == (*slf)[i] && !slf == (*slf).store(i, !result))))]
-fn _extern_spec_index_slice_index_mut<I: Idx + thrust_models::Model<Ty: PartialEq>, T: thrust_models::Model, R: IntoSliceIdx<I, [T], Output = usize> + thrust_models::Model>(slf: &mut IndexSlice<I, T>, index: R) -> &mut T
-where
-    <T as thrust_models::Model>::Ty: PartialEq,
-    <R as thrust_models::Model>::Ty: PartialEq,
+fn _extern_spec_index_slice_index_mut<I: Idx + thrust_models::Model, T: thrust_models::Model, R: IntoSliceIdx<I, [T], Output = usize> + thrust_models::Model>(slf: &mut IndexSlice<I, T>, index: R) -> &mut T
 {
     <IndexSlice<I, T> as std::ops::IndexMut<R>>::index_mut(slf, index)
 }

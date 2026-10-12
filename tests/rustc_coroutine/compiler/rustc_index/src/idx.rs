@@ -172,8 +172,6 @@ impl<I: Idx> IdxRange<I> {
 // formula; the `s == (*self).start` guards under `forall` pass it to `Idx`'s predicates.
 #[thrust_macros::context]
 impl<I: Idx + thrust_models::Model> Iterator for IdxRange<I>
-where
-    <I as thrust_models::Model>::Ty: PartialEq,
 {
     type Item = I;
 
@@ -205,8 +203,6 @@ where
 // The positions left are buildable; `produces` and `completed` restate `next`'s contract.
 #[thrust_macros::context]
 impl<I: Idx + thrust_models::Model> IteratorSpec for IdxRange<I>
-where
-    <I as thrust_models::Model>::Ty: PartialEq,
 {
     #[thrust_macros::predicate]
     fn inv(self) -> bool {
@@ -243,7 +239,7 @@ where
 }
 
 #[thrust_macros::context]
-pub trait IntoSliceIdx<I, T: ?Sized + thrust_models::Model<Ty: PartialEq>> {
+pub trait IntoSliceIdx<I, T: ?Sized + thrust_models::Model> {
     type Output: SliceIndex<T>;
 
     /// `out` is the slice position `self` selects.
@@ -254,7 +250,7 @@ pub trait IntoSliceIdx<I, T: ?Sized + thrust_models::Model<Ty: PartialEq>> {
 }
 
 #[thrust_macros::context]
-impl<I: Idx, T: thrust_models::Model<Ty: PartialEq>> IntoSliceIdx<I, [T]> for I {
+impl<I: Idx, T: thrust_models::Model> IntoSliceIdx<I, [T]> for I {
     type Output = usize;
 
     #[thrust_macros::predicate]

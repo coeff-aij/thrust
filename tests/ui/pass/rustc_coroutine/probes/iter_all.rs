@@ -133,8 +133,6 @@ where
     I: Iterator,
     F: Fn(I::Item) -> bool,
     I::Item: thrust_models::Model + Copy,
-    <I::Item as thrust_models::Model>::Ty: PartialEq,
-    <I as thrust_models::Model>::Ty: PartialEq,
 {
     #[thrust_macros::predicate]
     fn pre_all(iter: I, func: F) -> bool {
@@ -180,8 +178,6 @@ where
     I: Iterator,
     F: Fn(I::Item) -> bool,
     I::Item: thrust_models::Model + Copy,
-    <I::Item as thrust_models::Model>::Ty: PartialEq,
-    <I as thrust_models::Model>::Ty: PartialEq,
 {
     let mut it = iter;
     I::produces_refl(&it);

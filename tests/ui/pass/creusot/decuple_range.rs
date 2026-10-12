@@ -85,9 +85,9 @@ where
     B: Model,
     F: Fn(I::Item) -> B,
     <I as Iterator>::Item: Model,
-    <I as Model>::Ty: Model<Ty = <I as Model>::Ty> + PartialEq,
-    <<I as Iterator>::Item as Model>::Ty: Model<Ty = <<I as Iterator>::Item as Model>::Ty> + PartialEq,
-    <B as Model>::Ty: Model<Ty = <B as Model>::Ty> + PartialEq,
+    <I as Model>::Ty: Model<Ty = <I as Model>::Ty>,
+    <<I as Iterator>::Item as Model>::Ty: Model<Ty = <<I as Iterator>::Item as Model>::Ty>,
+    <B as Model>::Ty: Model<Ty = <B as Model>::Ty>,
 {
     #[thrust_macros::predicate]
     fn next_precondition(iter: I, func: F) -> bool {
@@ -224,8 +224,6 @@ where
 #[thrust_macros::context]
 impl FromIterator<isize> for Vec<isize> {
     fn from_iter<I: Iterator<Item = isize> + Model>(iter: &mut I) -> Vec<isize>
-    where
-        <I as Model>::Ty: PartialEq,
     {
         let it = iter;
         let mut v: Vec<isize> = Vec::new();

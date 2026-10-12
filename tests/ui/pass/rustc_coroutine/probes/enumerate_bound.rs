@@ -70,7 +70,6 @@ where
     fn enumerate(self) -> Enumerate<Self>
     where
         Self: Sized,
-        <Self as thrust_models::Model>::Ty: PartialEq,
     {
         Enumerate { iter: self, count: 0 }
     }
@@ -92,8 +91,6 @@ impl<I> Iterator for Enumerate<I>
 where
     I: Iterator,
     I::Item: thrust_models::Model,
-    <I::Item as thrust_models::Model>::Ty: PartialEq,
-    <I as thrust_models::Model>::Ty: PartialEq,
 {
     type Item = (usize, I::Item);
 

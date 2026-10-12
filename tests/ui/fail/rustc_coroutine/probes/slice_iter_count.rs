@@ -93,9 +93,7 @@ impl<T> Wrapped<T> {
 fn collect_wrapped<T, J>(iter: J) -> Wrapped<T>
 where
     T: thrust_models::Model,
-    T::Ty: PartialEq,
     J: Iterator<Item = T>,
-    <J as thrust_models::Model>::Ty: PartialEq,
 {
     let mut it = iter;
     J::produces_refl(&it);
@@ -121,8 +119,6 @@ impl<'a, T: thrust_models::Model> thrust_models::Model for SliceIter<'a, T> {
 
 #[thrust_macros::context]
 impl<'a, T: thrust_models::Model> Iterator for SliceIter<'a, T>
-where
-    T::Ty: PartialEq,
 {
     type Item = &'a T;
 
@@ -154,8 +150,6 @@ where
 // method of an impl of the local trait has the trait's.
 #[thrust_macros::context]
 impl<'a, T: thrust_models::Model> SliceIter<'a, T>
-where
-    T::Ty: PartialEq,
 {
     #[thrust::trusted]
     #[thrust_macros::requires(<Self as Iterator>::invariant(*self))]

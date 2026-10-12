@@ -14,8 +14,6 @@ use thrust_models::{Ghost, Model};
 fn collect<I: IteratorSpec>(it: I) -> Vec<I::Item>
 where
     I::Item: Model,
-    I::Ty: PartialEq,
-    <I::Item as Model>::Ty: PartialEq,
 {
     let mut out = Vec::new();
     for x in it {

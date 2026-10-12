@@ -56,7 +56,6 @@ trait FusedIterator: Iterator
 where
     Self: Model,
     Self::Item: Model,
-    <Self as Model>::Ty: PartialEq,
 {
     #[thrust_macros::law]
     #[thrust_macros::requires(Self::completed(s))]
@@ -85,8 +84,8 @@ impl<I> Iterator for Fuse<I>
 where
     I: Iterator + Model,
     <I as Iterator>::Item: Model,
-    <I as Model>::Ty: Model<Ty = <I as Model>::Ty> + PartialEq,
-    <<I as Iterator>::Item as Model>::Ty: Model<Ty = <<I as Iterator>::Item as Model>::Ty> + PartialEq,
+    <I as Model>::Ty: Model<Ty = <I as Model>::Ty>,
+    <<I as Iterator>::Item as Model>::Ty: Model<Ty = <<I as Iterator>::Item as Model>::Ty>,
     <Fuse<I> as Model>::Ty: Model<Ty = <Fuse<I> as Model>::Ty>,
 {
     type Item = I::Item;
@@ -136,9 +135,9 @@ impl<I> FusedIterator for Fuse<I>
 where
     I: Iterator + Model,
     <I as Iterator>::Item: Model,
-    <I as Model>::Ty: Model<Ty = <I as Model>::Ty> + PartialEq,
-    <<I as Iterator>::Item as Model>::Ty: Model<Ty = <<I as Iterator>::Item as Model>::Ty> + PartialEq,
-    <Fuse<I> as Model>::Ty: Model<Ty = <Fuse<I> as Model>::Ty> + PartialEq,
+    <I as Model>::Ty: Model<Ty = <I as Model>::Ty>,
+    <<I as Iterator>::Item as Model>::Ty: Model<Ty = <<I as Iterator>::Item as Model>::Ty>,
+    <Fuse<I> as Model>::Ty: Model<Ty = <Fuse<I> as Model>::Ty>,
 {
 }
 

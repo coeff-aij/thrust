@@ -20,8 +20,7 @@ impl<T> Model for Bar<T> {
 #[thrust_macros::context]
 impl<T> Foo for Bar<T>
 where
-    T: Foo + Model + PartialEq,
-    <T as Model>::Ty: PartialEq,
+    T: Foo + Model,
 {
     #[thrust_macros::predicate]
     fn valid(self, x: i64) -> bool {
@@ -33,8 +32,7 @@ where
 #[thrust_macros::ensures(<Bar<T> as Foo>::valid(result, v))]
 fn keep<T>(b: Bar<T>, v: i64) -> Bar<T>
 where
-    T: Foo + Model + PartialEq,
-    <T as Model>::Ty: PartialEq,
+    T: Foo + Model,
 {
     b
 }

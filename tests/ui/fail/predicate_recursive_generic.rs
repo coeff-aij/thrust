@@ -22,7 +22,7 @@ impl<T: Model> Model for W<T> {
 impl<T> Liar for W<T>
 where
     T: Model,
-    <T as Model>::Ty: Model<Ty = <T as Model>::Ty> + PartialEq,
+    <T as Model>::Ty: Model<Ty = <T as Model>::Ty>,
 {
     #[thrust_macros::predicate]
     fn liar(self) -> bool {

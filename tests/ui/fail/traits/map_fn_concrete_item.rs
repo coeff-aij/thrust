@@ -39,8 +39,6 @@ impl<I: thrust_models::Model, F> thrust_models::Model for Map<I, F> {
 // panicked when a call site tried to resolve it.
 #[thrust_macros::context]
 impl<I: Iterator<Item = i64> + thrust_models::Model, F: Fn(i64) -> i64> Iterator for Map<I, F>
-where
-    <I as thrust_models::Model>::Ty: PartialEq,
 {
     type Item = i64;
 

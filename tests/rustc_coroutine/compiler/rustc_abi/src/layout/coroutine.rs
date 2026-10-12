@@ -611,10 +611,10 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
 pub fn layout<
     'a,
     // Rewrite (rewrites.md S10): `LayoutRef` for `core::ops::Deref<Target = &'a LayoutData<..>>`.
-    F: LayoutRef<'a, FieldIdx, VariantIdx> + core::fmt::Debug + Copy + PartialEq + thrust_models::Model<Ty: PartialEq>,
-    VariantIdx: Idx + thrust_models::Model<Ty: PartialEq>,
+    F: LayoutRef<'a, FieldIdx, VariantIdx> + core::fmt::Debug + Copy + thrust_models::Model,
+    VariantIdx: Idx + thrust_models::Model,
     FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
-    LocalIdx: Idx + thrust_models::Model<Ty: PartialEq>,
+    LocalIdx: Idx + thrust_models::Model,
     // Rewrite (rewrites.md S10): named, for the `requires` to call `C::dl_of` on.
     C: HasDataLayout,
 >(

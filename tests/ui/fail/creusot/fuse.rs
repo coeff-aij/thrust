@@ -41,9 +41,8 @@ impl<I> Iterator for Fuse<I>
 where
     I: Iterator + thrust_models::Model,
     <I as Iterator>::Item: thrust_models::Model,
-    <I as thrust_models::Model>::Ty: PartialEq,
     <<I as Iterator>::Item as thrust_models::Model>::Ty:
-        thrust_models::Model<Ty = <<I as Iterator>::Item as thrust_models::Model>::Ty> + PartialEq,
+        thrust_models::Model<Ty = <<I as Iterator>::Item as thrust_models::Model>::Ty>,
 {
     type Item = I::Item;
 

@@ -13,7 +13,7 @@ use thrust_models::Model;
     s == Seq::singleton(x) ==> s.len() == 1 && s[1] == x))]
 fn singleton_at_abstract_elem<T: Model>(x: <T as Model>::Ty) -> ()
 where
-    <T as Model>::Ty: Model<Ty = <T as Model>::Ty> + PartialEq,
+    <T as Model>::Ty: Model<Ty = <T as Model>::Ty>,
 {
     let _ = x;
 }

@@ -38,9 +38,7 @@ trait Iterator {
 #[thrust_macros::ensures(I::reaches(*x, *x))]
 fn reaches_refl<I: Iterator + thrust_models::Model>(x: &I)
 where
-    <I as thrust_models::Model>::Ty: PartialEq,
     <I as Iterator>::Item: thrust_models::Model,
-    <<I as Iterator>::Item as thrust_models::Model>::Ty: PartialEq,
 {
 }
 
@@ -55,8 +53,6 @@ impl<I: thrust_models::Model, F> thrust_models::Model for Map<I, F> {
 
 #[thrust_macros::context]
 impl<I: Iterator<Item = i64> + thrust_models::Model, F: Fn(i64) -> i64> Iterator for Map<I, F>
-where
-    <I as thrust_models::Model>::Ty: PartialEq,
 {
     type Item = i64;
 

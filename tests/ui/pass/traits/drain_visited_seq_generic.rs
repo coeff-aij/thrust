@@ -129,8 +129,8 @@ where
 fn drain<I: Iterator + Model>(r: &mut Run<I>)
 where
     I::Item: Model,
-    <I as Model>::Ty: Model<Ty = <I as Model>::Ty> + PartialEq,
-    <I::Item as Model>::Ty: Model<Ty = <I::Item as Model>::Ty> + PartialEq,
+    <I as Model>::Ty: Model<Ty = <I as Model>::Ty>,
+    <I::Item as Model>::Ty: Model<Ty = <I::Item as Model>::Ty>,
 {
     let rr = r;
     loop {

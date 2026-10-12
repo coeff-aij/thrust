@@ -25,7 +25,6 @@ where
 impl<T> Get for W<T>
 where
     T: thrust_models::Model,
-    <T as thrust_models::Model>::Ty: PartialEq,
 {
     #[thrust_macros::requires(x > 0)]
     #[thrust_macros::ensures(result == x)]

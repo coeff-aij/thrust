@@ -10,7 +10,7 @@ use thrust_models::Model;
 #[thrust_macros::context]
 trait Ix: Copy + Model
 where
-    <Self as Model>::Ty: Model<Ty = <Self as Model>::Ty> + PartialEq,
+    <Self as Model>::Ty: Model<Ty = <Self as Model>::Ty>,
 {
     #[thrust_macros::logic]
     fn ix(self) -> Int;
@@ -60,7 +60,7 @@ impl Ix for B {
 #[thrust_macros::ensures(*x == *y)]
 fn equal_by_ix<T: Ix>(x: &T, y: &T)
 where
-    <T as Model>::Ty: Model<Ty = <T as Model>::Ty> + PartialEq,
+    <T as Model>::Ty: Model<Ty = <T as Model>::Ty>,
 {
 }
 

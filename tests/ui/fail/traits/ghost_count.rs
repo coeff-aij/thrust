@@ -46,8 +46,6 @@ where
 fn count<I: Iterator + Model>(r: &mut Run<I>) -> i64
 where
     I::Item: Model,
-    <I as Model>::Ty: PartialEq,
-    <I::Item as Model>::Ty: PartialEq,
 {
     let rr = r;
     let mut acc = 0;

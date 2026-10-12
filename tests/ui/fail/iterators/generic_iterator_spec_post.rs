@@ -10,8 +10,6 @@ fn step<I>(it: &mut I) -> Option<I::Item>
 where
     I: IteratorSpec,
     I::Item: thrust_models::Model,
-    I::Ty: PartialEq,
-    <I::Item as thrust_models::Model>::Ty: PartialEq,
 {
     let _ = it.next();
     it.next()

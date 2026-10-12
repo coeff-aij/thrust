@@ -329,8 +329,6 @@ impl<'a, T: Idx> BitIter<'a, T> {
 // does not say which bit comes next, so every index below the bound must be buildable.
 #[thrust_macros::context]
 impl<'a, T: Idx + thrust_models::Model> Iterator for BitIter<'a, T>
-where
-    T::Ty: PartialEq,
 {
     type Item = T;
 
@@ -359,8 +357,6 @@ where
 
 #[thrust_macros::context]
 impl<'a, T: Idx + thrust_models::Model> IteratorSpec for BitIter<'a, T>
-where
-    T::Ty: PartialEq,
 {
     #[thrust_macros::predicate]
     fn inv(self) -> bool {

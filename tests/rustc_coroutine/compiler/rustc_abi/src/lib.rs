@@ -763,7 +763,7 @@ pub enum FieldsShape<FieldIdx: Idx> {
 // `Model = Self` enum, so a formula reaches the sequences through `Seq`'s `PartialEq` with a
 // type whose model it is.
 #[thrust_macros::context]
-impl<FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>> FieldsShape<FieldIdx> {
+impl<FieldIdx: Idx + thrust_models::Model> FieldsShape<FieldIdx> {
     /// `self` is `Arbitrary` over `n` fields: `n` offsets, and a memory order listing each
     /// field below `n` exactly once.
     #[thrust_macros::predicate]

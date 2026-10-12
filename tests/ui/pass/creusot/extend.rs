@@ -100,14 +100,14 @@ where
             && forall(|k: Int| 0 <= k && k < s.len() ==> (!self)[(*self).len() + k] == s[k]))))]
     fn extend<I: Iterator<Item = A> + Model>(&mut self, iter: &mut I)
     where
-        <I as Model>::Ty: Model<Ty = <I as Model>::Ty> + PartialEq;
+        <I as Model>::Ty: Model<Ty = <I as Model>::Ty>;
 }
 
 #[thrust_macros::context]
 impl Extend<u32> for Vec<u32> {
     fn extend<I: Iterator<Item = u32> + Model>(&mut self, iter: &mut I)
     where
-        <I as Model>::Ty: Model<Ty = <I as Model>::Ty> + PartialEq,
+        <I as Model>::Ty: Model<Ty = <I as Model>::Ty>,
     {
         let it = iter;
         let v = self;

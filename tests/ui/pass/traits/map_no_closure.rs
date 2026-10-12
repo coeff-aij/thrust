@@ -34,12 +34,10 @@ impl<I: thrust_models::Model, F> thrust_models::Model for Map<I, F> {
 #[thrust_macros::context]
 impl<I: Iterator + thrust_models::Model, B: thrust_models::Model, F: FnMut(I::Item) -> B> Iterator for Map<I, F>
 where
-    <B as thrust_models::Model>::Ty: PartialEq,
     I: Iterator + thrust_models::Model,
     <I as Iterator>::Item: thrust_models::Model,
     <<I as Iterator>::Item as thrust_models::Model>::Ty:
-        thrust_models::Model<Ty = <<I as Iterator>::Item as thrust_models::Model>::Ty> + PartialEq,
-    <I as thrust_models::Model>::Ty: PartialEq,
+        thrust_models::Model<Ty = <<I as Iterator>::Item as thrust_models::Model>::Ty>,
 {
     type Item = <I as Iterator>::Item;
     

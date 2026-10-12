@@ -50,9 +50,7 @@ impl<I: Model, F> Model for Map<I, F> {
 #[thrust_macros::context]
 impl<I: Iterator + Model, B: Model, F: Fn(I::Item) -> B> Iterator for Map<I, F>
 where
-    <I as Model>::Ty: PartialEq + Model<Ty = <I as Model>::Ty>,
-    <I::Item as Model>::Ty: PartialEq,
-    <B as Model>::Ty: PartialEq,
+    <I as Model>::Ty: Model<Ty = <I as Model>::Ty>,
     I::Item: Model,
 {
     type Item = B;
@@ -149,8 +147,6 @@ impl Iterator for Range {
 fn count<I: Iterator + thrust_models::Model>(it: &mut I) -> usize
 where
     I::Item: thrust_models::Model,
-    <I::Item as thrust_models::Model>::Ty: PartialEq,
-    <I as thrust_models::Model>::Ty: PartialEq,
 {
     let mut n = 0;
     while let Some(_) = it.next() {

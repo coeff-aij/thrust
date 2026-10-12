@@ -104,8 +104,8 @@ where
     I: Iterator + Model,
     P: FnMut(I::Item) -> bool,
     <I as Iterator>::Item: Model + Copy,
-    <I as Model>::Ty: Model<Ty = <I as Model>::Ty> + PartialEq,
-    <<I as Iterator>::Item as Model>::Ty: Model<Ty = <<I as Iterator>::Item as Model>::Ty> + PartialEq,
+    <I as Model>::Ty: Model<Ty = <I as Model>::Ty>,
+    <<I as Iterator>::Item as Model>::Ty: Model<Ty = <<I as Iterator>::Item as Model>::Ty>,
 {
     let mut it = iter;
     while let Some(x) = it.next() {

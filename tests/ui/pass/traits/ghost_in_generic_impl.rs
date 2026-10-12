@@ -35,8 +35,6 @@ impl<I> A for W<I>
 where
     I: A + Model,
     <I as A>::Item: Model,
-    <<I as A>::Item as Model>::Ty: PartialEq,
-    <I as Model>::Ty: PartialEq,
 {
     type Item = I::Item;
 

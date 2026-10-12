@@ -105,9 +105,9 @@ where
     B: Model,
     F: FnMut(B, I::Item, Ghost<Seq<<<I as Iterator>::Item as Model>::Ty>>) -> B,
     <I as Iterator>::Item: Model,
-    <I as Model>::Ty: Model<Ty = <I as Model>::Ty> + PartialEq,
-    <<I as Iterator>::Item as Model>::Ty: Model<Ty = <<I as Iterator>::Item as Model>::Ty> + PartialEq,
-    <B as Model>::Ty: Model<Ty = <B as Model>::Ty> + PartialEq,
+    <I as Model>::Ty: Model<Ty = <I as Model>::Ty>,
+    <<I as Iterator>::Item as Model>::Ty: Model<Ty = <<I as Iterator>::Item as Model>::Ty>,
+    <B as Model>::Ty: Model<Ty = <B as Model>::Ty>,
 {
     I::produces(iter, s, it)
         && accs.len() == s.len() + 1
@@ -134,9 +134,9 @@ where
     B: Model,
     F: FnMut(B, I::Item, Ghost<Seq<<<I as Iterator>::Item as Model>::Ty>>) -> B,
     <I as Iterator>::Item: Model,
-    <I as Model>::Ty: Model<Ty = <I as Model>::Ty> + PartialEq,
-    <<I as Iterator>::Item as Model>::Ty: Model<Ty = <<I as Iterator>::Item as Model>::Ty> + PartialEq,
-    <B as Model>::Ty: Model<Ty = <B as Model>::Ty> + PartialEq,
+    <I as Model>::Ty: Model<Ty = <I as Model>::Ty>,
+    <<I as Iterator>::Item as Model>::Ty: Model<Ty = <<I as Iterator>::Item as Model>::Ty>,
+    <B as Model>::Ty: Model<Ty = <B as Model>::Ty>,
 {
 }
 
@@ -155,9 +155,9 @@ where
     B: Model,
     F: FnMut(B, I::Item, Ghost<Seq<<<I as Iterator>::Item as Model>::Ty>>) -> B,
     <I as Iterator>::Item: Model,
-    <I as Model>::Ty: Model<Ty = <I as Model>::Ty> + PartialEq,
-    <<I as Iterator>::Item as Model>::Ty: Model<Ty = <<I as Iterator>::Item as Model>::Ty> + PartialEq,
-    <B as Model>::Ty: Model<Ty = <B as Model>::Ty> + PartialEq,
+    <I as Model>::Ty: Model<Ty = <I as Model>::Ty>,
+    <<I as Iterator>::Item as Model>::Ty: Model<Ty = <<I as Iterator>::Item as Model>::Ty>,
+    <B as Model>::Ty: Model<Ty = <B as Model>::Ty>,
 {
     let mut it = iter;
     let mut accum = init;

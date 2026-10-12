@@ -21,8 +21,6 @@ impl<T: Copy> Iterator for Once<T> {
 }
 
 fn first<T: thrust_models::Model + Copy + PartialEq>(x: T)
-where
-    T::Ty: PartialEq,
 {
     let mut it = Once(x, true);
     match it.next() {
