@@ -47,6 +47,7 @@ impl ReprFlags {
     pub const ABI_UNOPTIMIZABLE: ReprFlags =
         ReprFlags(ReprFlags::IS_C.bits() | ReprFlags::IS_SIMD.bits());
 
+    #[thrust::callable]
     pub const fn bits(&self) -> u8 {
         self.0
     }
@@ -308,6 +309,7 @@ pub enum Endian {
 }
 
 impl Endian {
+    #[thrust::callable]
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Little => "little",
@@ -479,6 +481,7 @@ pub struct AbiAlign {
     pub abi: Align,
 }
 
+#[thrust_macros::context]
 impl AbiAlign {
     #[inline]
     pub fn new(align: Align) -> AbiAlign {
@@ -486,6 +489,7 @@ impl AbiAlign {
     }
 
     #[inline]
+    #[thrust_macros::requires(true)]
     pub fn min(self, other: AbiAlign) -> AbiAlign {
         AbiAlign {
             abi: self.abi.min(other.abi),
@@ -493,6 +497,7 @@ impl AbiAlign {
     }
 
     #[inline]
+    #[thrust_macros::requires(true)]
     pub fn max(self, other: AbiAlign) -> AbiAlign {
         AbiAlign {
             abi: self.abi.max(other.abi),
@@ -503,6 +508,7 @@ impl AbiAlign {
 impl Deref for AbiAlign {
     type Target = Align;
 
+    #[thrust::callable]
     fn deref(&self) -> &Self::Target {
         &self.abi
     }
@@ -800,8 +806,10 @@ pub enum BackendRepr {
     },
 }
 
+#[thrust_macros::context]
 impl BackendRepr {
     #[inline]
+    #[thrust_macros::requires(true)]
     pub fn is_unsized(&self) -> bool {
         match *self {
             BackendRepr::Scalar(_)
@@ -923,18 +931,23 @@ pub struct LayoutData<FieldIdx: Idx, VariantIdx: Idx> {
     pub randomization_seed: Hash64,
 }
 
+#[thrust_macros::context]
 impl<FieldIdx: Idx, VariantIdx: Idx> LayoutData<FieldIdx, VariantIdx> {
+    #[thrust_macros::requires(true)]
     pub fn is_uninhabited(&self) -> bool {
         self.uninhabited
     }
 }
 
+#[thrust_macros::context]
 impl<FieldIdx: Idx, VariantIdx: Idx> LayoutData<FieldIdx, VariantIdx> {
     #[inline]
+    #[thrust_macros::requires(true)]
     pub fn is_unsized(&self) -> bool {
         self.backend_repr.is_unsized()
     }
 
+    #[thrust_macros::requires(true)]
     pub fn is_zst(&self) -> bool {
         match self.backend_repr {
             BackendRepr::Scalar(_)
@@ -966,7 +979,10 @@ pub struct VariantLayout<FieldIdx: Idx> {
     uninhabited: bool,
 }
 
+#[thrust_macros::context]
 impl<FieldIdx: Idx> VariantLayout<FieldIdx> {
+    #[thrust_macros::requires(exists(|o: IndexVec<FieldIdx, Size>, m: IndexVec<u32, FieldIdx>|
+        layout.fields == FieldsShape::Arbitrary { offsets: o, in_memory_order: m }))]
     pub fn from_layout(layout: LayoutData<FieldIdx, impl Idx>) -> Self {
         let FieldsShape::Arbitrary {
             offsets,
@@ -986,10 +1002,12 @@ impl<FieldIdx: Idx> VariantLayout<FieldIdx> {
         }
     }
 
+    #[thrust_macros::requires(true)]
     pub fn is_uninhabited(&self) -> bool {
         self.uninhabited
     }
 
+    #[thrust::callable]
     pub fn has_fields(&self) -> bool {
         self.field_offsets.len() > 0
     }

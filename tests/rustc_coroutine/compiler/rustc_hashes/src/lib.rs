@@ -15,11 +15,13 @@ impl Hash64 {
     pub const ZERO: Hash64 = Hash64 { inner: 0 };
 
     #[inline]
+    #[thrust::callable]
     pub fn new(n: u64) -> Self {
         Self { inner: n }
     }
 
     #[inline]
+    #[thrust::callable]
     pub fn as_u64(self) -> u64 {
         self.inner
     }

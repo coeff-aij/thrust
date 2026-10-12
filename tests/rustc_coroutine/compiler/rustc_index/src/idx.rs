@@ -263,6 +263,7 @@ impl<I: Idx, T: thrust_models::Model<Ty: PartialEq>> IntoSliceIdx<I, [T]> for I 
     }
 
     #[inline]
+    #[thrust::callable]
     fn into_slice_idx(self) -> Self::Output {
         self.index()
     }

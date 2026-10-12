@@ -129,12 +129,14 @@ impl<I: Idx, T> DerefMut for IndexVec<I, T> {
 }
 
 impl<I: Idx, T> Borrow<IndexSlice<I, T>> for IndexVec<I, T> {
+    #[thrust::callable]
     fn borrow(&self) -> &IndexSlice<I, T> {
         self
     }
 }
 
 impl<I: Idx, T> BorrowMut<IndexSlice<I, T>> for IndexVec<I, T> {
+    #[thrust::callable]
     fn borrow_mut(&mut self) -> &mut IndexSlice<I, T> {
         self
     }
@@ -229,6 +231,7 @@ where
 
 impl<I: Idx, T, const N: usize> From<[T; N]> for IndexVec<I, T> {
     #[inline]
+    #[thrust::callable]
     fn from(array: [T; N]) -> Self {
         IndexVec::from_raw(array.into())
     }
