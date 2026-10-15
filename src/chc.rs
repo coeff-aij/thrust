@@ -2582,6 +2582,9 @@ pub struct UserDefinedPredDef {
     /// `ForallPred`s referenced from `body`. Populated just before dependency
     /// analysis by `System::populate_user_defined_pred_dependencies`.
     pub dependencies: HashSet<ForallPred>,
+    /// The variant of a recursive logic function, emitted as the `:decreases` annotation of its
+    /// body so that the solver can take the function as total.
+    pub decreases: Option<Term<TermVarIdx>>,
 }
 
 impl UserDefinedPredDef {
@@ -2809,6 +2812,7 @@ impl System {
             body: UserDefinedPredBody::Raw(body),
             sort_subst: Vec::new(),
             dependencies,
+            decreases: None,
         })
     }
 
@@ -2828,6 +2832,7 @@ impl System {
             body: UserDefinedPredBody::Formula(formula),
             sort_subst: Vec::new(),
             dependencies: HashSet::new(),
+            decreases: None,
         })
     }
 
@@ -2837,6 +2842,7 @@ impl System {
         arg_sorts: IndexVec<TermVarIdx, Sort>,
         ret_sort: Sort,
         body: Term<TermVarIdx>,
+        decreases: Option<Term<TermVarIdx>>,
     ) {
         let sig = arg_sorts
             .into_iter_enumerated()
@@ -2848,6 +2854,7 @@ impl System {
             body: UserDefinedPredBody::Term(ret_sort, body),
             sort_subst: Vec::new(),
             dependencies: HashSet::new(),
+            decreases,
         })
     }
 
@@ -2866,6 +2873,7 @@ impl System {
             body: UserDefinedPredBody::Raw(body),
             sort_subst,
             dependencies: HashSet::new(),
+            decreases: None,
         })
     }
 
@@ -2972,6 +2980,10 @@ impl System {
                 UserDefinedPredBody::Term(_, term) => {
                     udpd.dependencies
                         .extend(term.forall_fns().into_iter().cloned());
+                    if let Some(decreases) = &udpd.decreases {
+                        udpd.dependencies
+                            .extend(decreases.forall_fns().into_iter().cloned());
+                    }
                 }
                 UserDefinedPredBody::Formula(formula) => {
                     udpd.dependencies.extend(formula.iter_atoms().filter_map(

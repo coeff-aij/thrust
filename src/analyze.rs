@@ -1308,7 +1308,7 @@ impl<'tcx> Analyzer<'tcx> {
                 let term = term
                     .clone()
                     .map_var(|idx| chc::TermVarIdx::from(idx.index()));
-                let termination = self.termination_clauses(
+                let (termination, decreases) = self.termination_clauses(
                     local_def_id,
                     generic_args,
                     owner_fn_id,
@@ -1325,6 +1325,7 @@ impl<'tcx> Analyzer<'tcx> {
                     arg_sorts,
                     type_builder.build(formula_fn.ret()).to_sort(),
                     term,
+                    decreases,
                 );
             }
         }
@@ -1334,7 +1335,7 @@ impl<'tcx> Analyzer<'tcx> {
 
     /// The clauses requiring the variant of the logic function `local_def_id` to be
     /// non-negative and to decrease at each call `body` makes to `pred`, its own instance, under
-    /// the conditions on the way to the call. A `define-fun-rec` that does not terminate could
+    /// the conditions on the way to the call, and the variant if there is such a call. A `define-fun-rec` that does not terminate could
     /// make the query inconsistent, so the variant is translated while the function is being
     /// defined: a variant that calls it could otherwise be discharged by that inconsistency.
     fn termination_clauses(
@@ -1345,10 +1346,10 @@ impl<'tcx> Analyzer<'tcx> {
         pred: &chc::UserDefinedPred,
         arg_sorts: &IndexVec<chc::TermVarIdx, chc::Sort>,
         body: &chc::Term,
-    ) -> Vec<chc::Clause> {
+    ) -> (Vec<chc::Clause>, Option<chc::Term>) {
         let calls = body.guarded_calls(pred);
         if calls.is_empty() {
-            return Vec::new();
+            return (Vec::new(), None);
         }
         let variant_def_id = self
             .extract_path_with_attr(local_def_id, &analyze::annot::variant_path_path())
@@ -1371,7 +1372,7 @@ impl<'tcx> Analyzer<'tcx> {
             .map_var(|idx| chc::TermVarIdx::from(idx.index()));
         let name = self.tcx.def_path_str(local_def_id.to_def_id());
 
-        calls
+        let clauses = calls
             .into_iter()
             .flat_map(|call| {
                 let mut builder = chc::ClauseBuilder::default();
@@ -1404,7 +1405,8 @@ impl<'tcx> Analyzer<'tcx> {
                     )),
                 )
             })
-            .collect()
+            .collect();
+        (clauses, Some(variant))
     }
 
     /// The symbol and result sort for a call to the `#[thrust_macros::logic]` function `def_id`

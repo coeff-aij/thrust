@@ -827,7 +827,15 @@ impl<'ctx, 'a> std::fmt::Display for UserDefinedPredDef<'ctx, 'a> {
                 write!(f, "{}", Formula::new(self.ctx, &var_sorts, formula))?;
             }
             chc::UserDefinedPredBody::Term(_, term) => {
-                write!(f, "{}", Term::new(self.ctx, &var_sorts, term))?;
+                let term = Term::new(self.ctx, &var_sorts, term);
+                match &self.inner.decreases {
+                    Some(decreases) => write!(
+                        f,
+                        "(! {term} :decreases {})",
+                        Term::new(self.ctx, &var_sorts, decreases)
+                    )?,
+                    None => write!(f, "{term}")?,
+                }
             }
         }
         write!(f, ")")

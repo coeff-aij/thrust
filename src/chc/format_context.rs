@@ -318,6 +318,9 @@ pub(super) fn collect_sorts(system: &chc::System) -> BTreeSet<chc::Sort> {
             let var_sorts = def.sig.iter().map(|(_, sort)| sort.clone()).collect();
             sorts.insert(sort.clone());
             term_sorts(&var_sorts, term, &mut sorts);
+            if let Some(decreases) = &def.decreases {
+                term_sorts(&var_sorts, decreases, &mut sorts);
+            }
         }
     }
 
