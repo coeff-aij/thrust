@@ -228,6 +228,11 @@ fn name_preds(
             .map(|t| match t {
                 chc::Term::Var(rty::RefinedTypeVar::Existential(_)) => None,
                 chc::Term::Var(v) => Some(var_name(params, own, v)),
+                chc::Term::BoxCurrent(inner) => match &**inner {
+                    chc::Term::Var(rty::RefinedTypeVar::Existential(_)) => None,
+                    chc::Term::Var(v) => Some(var_name(params, own, v)),
+                    _ => None,
+                },
                 _ => None,
             })
             .collect();

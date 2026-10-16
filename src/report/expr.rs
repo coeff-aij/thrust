@@ -165,9 +165,10 @@ pub fn of_term<V: chc::Var>(term: &chc::Term<V>, name: &impl Fn(&V) -> String) -
         }
         Term::Int(n) => Expr::sym(n.to_string()),
         Term::String(s) => Expr::sym(format!("{s:?}")),
-        Term::Box(t) => Expr::app("Box::new", vec![of_term(t, name)]),
+        // A `Box` is read as its content, as the solver is given it.
+        Term::Box(t) | Term::BoxCurrent(t) => of_term(t, name),
         Term::Mut(c, f) => Expr::app("Mut::new", vec![of_term(c, name), of_term(f, name)]),
-        Term::BoxCurrent(t) | Term::MutCurrent(t) => Expr::app("deref", vec![of_term(t, name)]),
+        Term::MutCurrent(t) => Expr::app("deref", vec![of_term(t, name)]),
         Term::MutFinal(t) => Expr::app("final", vec![of_term(t, name)]),
         Term::App(f, args) => Expr::app(f.name(), all(args)),
         Term::Tuple(ts) => Expr::app("tuple", all(ts)),

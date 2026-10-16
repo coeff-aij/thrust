@@ -122,6 +122,8 @@ pub(super) fn to_expr(s: &Sexp) -> Expr {
         Sexp::List(items) => items,
     };
     match items.as_slice() {
+        // An annotated term, `(! t :weight 0)`, is the term.
+        [Sexp::Atom(head), term, ..] if head == "!" => to_expr(term),
         [Sexp::Atom(head), binds, body] if head == "let" => {
             let subst: HashMap<String, Expr> = bindings(binds)
                 .into_iter()
@@ -217,6 +219,14 @@ mod tests {
         let applied = p0.apply(&[Expr::sym("result"), Expr::sym("x")]);
         assert_eq!(applied.to_string(), "result >= 0 && result == x + 1");
         assert!(model["p1"].body.is_true());
+    }
+
+    #[test]
+    fn reads_annotated_terms_as_the_term() {
+        let model =
+            "((define-fun p0 ((x!0 Int)) Bool (exists ((y Int)) (! (= x!0 (* 2 y)) :weight 0))))";
+        let applied = read(model)["p0"].apply(&[Expr::sym("n")]);
+        assert_eq!(applied.to_string(), "exists(|y: Int| n == 2 * y)");
     }
 
     #[test]
