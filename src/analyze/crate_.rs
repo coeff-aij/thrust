@@ -187,7 +187,13 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         selection.report_unmatched(self.tcx, &paths);
     }
 
-    #[tracing::instrument(skip(self), fields(def_id = %self.tcx.def_path_str(local_def_id)))]
+    #[tracing::instrument(
+        skip(self),
+        fields(
+            def_id = %self.tcx.def_path_str(local_def_id),
+            def_index = local_def_id.local_def_index.as_u32()
+        )
+    )]
     fn refine_fn_def(&mut self, local_def_id: LocalDefId) {
         let sig = self.ctx.fn_sig(local_def_id.to_def_id());
         let is_law_impl = self.is_law_impl(local_def_id);

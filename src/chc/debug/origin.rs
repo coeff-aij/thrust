@@ -121,6 +121,16 @@ impl Entry {
     }
 }
 
+impl VarMapping {
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
+    pub fn chc_var(&self) -> TermVarIdx {
+        self.chc_var
+    }
+}
+
 impl fmt::Display for VarMapping {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} -> {}", self.source, self.chc_var)

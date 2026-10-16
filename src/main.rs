@@ -140,9 +140,9 @@ pub fn main() {
                 .with_writer(std::io::stderr)
                 .compact()
                 .without_time()
-                .and_then(thrust::SpanFieldsLayer)
                 .with_filter(EnvFilter::from_default_env()),
         )
+        .with(thrust::SpanFieldsLayer.with_filter(thrust::SpanFieldsLayer::filter()))
         .init();
 
     if let Some(path) = thrust_macros_path() {

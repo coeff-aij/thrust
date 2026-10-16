@@ -1668,7 +1668,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     }
 
     pub fn run(&mut self, expected: &rty::RefinedType) {
-        let span = tracing::info_span!("def", def = %self.tcx.def_path_str(self.local_def_id));
+        let span = tracing::info_span!(
+            "def",
+            def = %self.tcx.def_path_str(self.local_def_id),
+            def_index = self.local_def_id.local_def_index.as_u32()
+        );
         let _guard = span.enter();
 
         self.unelaborate_derefs();

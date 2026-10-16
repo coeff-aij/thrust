@@ -263,7 +263,74 @@ impl Config {
         }
     }
 
-    pub fn check_sat(&self, problem: impl std::fmt::Display) -> Result<(), CheckSatError> {
+    /// Whether the solver is asked for the evidence `requests` names along with its verdict:
+    /// only `z3` is, which prints a model after `(get-model)` and a refutation after
+    /// `(get-proof)`.
+    pub fn answers(&self, requests: Requests) -> bool {
+        (requests.model || requests.proof) && self.solver.is_z3() && self.preprocessor.is_none()
+    }
+
+    /// Solves `problem`, also asking for the evidence `requests` names when the solver gives it
+    /// (see [`Config::answers`]).
+    pub fn check_sat_with(&self, problem: impl std::fmt::Display, requests: Requests) -> Answer {
+        let mut answer = Answer {
+            result: Ok(()),
+            model: None,
+            proof: None,
+            goal_markers: Vec::new(),
+        };
+        let evidence = match self.run_check_sat(problem, requests) {
+            Ok(output) => {
+                let (verdict, evidence) = split_evidence(&output, self.answers(requests));
+                answer.result = interpret_verdict(verdict);
+                evidence
+            }
+            Err(err) => {
+                answer.result = Err(err);
+                Vec::new()
+            }
+        };
+        if answer.result.is_ok() {
+            answer.model = evidence.into_iter().find(|e| !e.starts_with("(error"));
+        }
+        answer
+    }
+
+    /// `z3`'s refutation of `problem`, which it answers `unsat`. Its preprocessing would fold
+    /// clauses into one another, and with them the facts the refutation derives, so the
+    /// transformations doing so are turned off.
+    pub fn refute(&self, problem: impl std::fmt::Display) -> Option<String> {
+        use std::io::Write as _;
+        let mut file = tempfile::Builder::new()
+            .prefix("thrust_tmp_")
+            .suffix(".smt2")
+            .tempfile()
+            .ok()?;
+        write!(file, "{problem}\n(check-sat)\n(get-proof)\n").ok()?;
+        file.flush().ok()?;
+        let mut solver = self.solver.clone();
+        solver.args.extend(
+            [
+                "proof=true",
+                "fp.xform.slice=false",
+                "fp.xform.inline_linear=false",
+                "fp.xform.inline_eager=false",
+            ]
+            .map(str::to_owned),
+        );
+        let output = solver.run(file.path(), std::process::Stdio::piped()).ok()?;
+        let (verdict, evidence) = split_evidence(&output, true);
+        if read_verdict(&verdict)?.0 != Verdict::Unsat {
+            return None;
+        }
+        evidence.into_iter().find(|e| !e.starts_with("(error"))
+    }
+
+    fn run_check_sat(
+        &self,
+        problem: impl std::fmt::Display,
+        requests: Requests,
+    ) -> Result<String, CheckSatError> {
         use std::io::{Seek as _, Write as _};
         let smt2 = format!("{}\n(check-sat)\n", problem);
         let mut file = tempfile::Builder::new()
@@ -274,6 +341,11 @@ impl Config {
         file.flush()?;
         if let Some(dir) = &self.output_dir {
             std::fs::copy(&file, dir.join("thrust_output.smt2"))?;
+        }
+        let answers = self.answers(requests);
+        if answers && requests.model {
+            writeln!(file, "(get-model)")?;
+            file.flush()?;
         }
 
         if let Some(preproc) = &self.preprocessor {
@@ -286,45 +358,139 @@ impl Config {
             }
         }
 
-        let output = self.solver.run(file.path(), std::process::Stdio::piped())?;
+        let output = self.solver.run(file.path(), std::process::Stdio::piped());
         drop(file);
-        match read_verdict(&output) {
-            Some((Verdict::Sat, rejected)) if rejected.is_empty() => Ok(()),
-            Some((Verdict::Sat, rejected)) => {
+        match output {
+            // `z3` exits with an error when it cannot answer `(get-model)` after `unsat` or
+            // `(get-proof)` after `sat`, having printed the verdict.
+            Err(CheckSatError::Error { stdout, .. })
+                if answers && read_verdict(&split_evidence(&stdout, true).0).is_some() =>
+            {
+                Ok(stdout)
+            }
+            output => output,
+        }
+    }
+}
+
+/// What a caller wants besides the verdict.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Requests {
+    /// The model of a `sat` answer: an interpretation of each predicate variable.
+    pub model: bool,
+    /// The refutation of an `unsat` answer.
+    pub proof: bool,
+}
+
+/// The verdict, with the model of a `sat` answer or the refutation of an `unsat` one as the
+/// solver printed them, if asked for and given.
+#[derive(Debug)]
+pub struct Answer {
+    pub result: Result<(), CheckSatError>,
+    pub model: Option<String>,
+    pub proof: Option<String>,
+    /// The predicate variable marking each goal of the system in the query, when a refutation
+    /// is asked for (see [`crate::chc::System::solve_with`]).
+    pub goal_markers: Vec<(crate::chc::PredVarId, crate::chc::ClauseId)>,
+}
+
+/// Splits the solver's output into the part with the verdict and the s-expressions printed after
+/// it, which are the answers to `(get-model)` and `(get-proof)` when `asked`.
+fn split_evidence(output: &str, asked: bool) -> (String, Vec<String>) {
+    if !asked {
+        return (output.to_owned(), Vec::new());
+    }
+    let verdict_end = output
+        .lines()
+        .position(|line| matches!(line.trim(), "sat" | "unsat" | "unknown"));
+    let Some(verdict_end) = verdict_end else {
+        return (output.to_owned(), Vec::new());
+    };
+    let lines: Vec<&str> = output.lines().collect();
+    let verdict = lines[..=verdict_end].join("\n");
+    let rest = lines[verdict_end + 1..].join("\n");
+    (verdict, top_level_sexprs(&rest))
+}
+
+/// The top-level s-expressions of `text`, as text.
+fn top_level_sexprs(text: &str) -> Vec<String> {
+    let mut exprs = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0;
+    let mut in_string = false;
+    let mut in_quoted = false;
+    for (i, c) in text.char_indices() {
+        match c {
+            '"' if !in_quoted => in_string = !in_string,
+            '|' if !in_string => in_quoted = !in_quoted,
+            '(' if !in_string && !in_quoted => {
+                if depth == 0 {
+                    start = i;
+                }
+                depth += 1;
+            }
+            ')' if !in_string && !in_quoted && depth > 0 => {
+                depth -= 1;
+                if depth == 0 {
+                    exprs.push(text[start..=i].to_owned());
+                }
+            }
+            _ => {}
+        }
+    }
+    exprs
+}
+
+fn interpret_verdict(output: String) -> Result<(), CheckSatError> {
+    match read_verdict(&output) {
+        Some((Verdict::Sat, rejected)) if rejected.is_empty() => Ok(()),
+        Some((Verdict::Sat, rejected)) => {
+            tracing::warn!(
+                ?rejected,
+                "solver reported sat after rejecting part of the query; not trusting it"
+            );
+            Err(CheckSatError::UnsoundSat {
+                stdout: output,
+                rejected,
+            })
+        }
+        Some((Verdict::Unsat, rejected)) => {
+            if !rejected.is_empty() {
                 tracing::warn!(
                     ?rejected,
-                    "solver reported sat after rejecting part of the query; not trusting it"
-                );
-                Err(CheckSatError::UnsoundSat {
-                    stdout: output,
-                    rejected,
-                })
-            }
-            Some((Verdict::Unsat, rejected)) => {
-                if !rejected.is_empty() {
-                    tracing::warn!(
-                        ?rejected,
-                        "solver reported unsat after rejecting part of the query; \
+                    "solver reported unsat after rejecting part of the query; \
                          accepting it, since dropping constraints cannot turn an \
                          unsatisfiable problem satisfiable"
-                    );
-                }
-                Err(CheckSatError::Unsat)
+                );
             }
-            Some((Verdict::Unknown, rejected)) => {
-                if !rejected.is_empty() {
-                    tracing::warn!(?rejected, "solver reported unknown, alongside other output");
-                }
-                Err(CheckSatError::Unknown { stdout: output })
-            }
-            None => Err(CheckSatError::NoVerdict { stdout: output }),
+            Err(CheckSatError::Unsat)
         }
+        Some((Verdict::Unknown, rejected)) => {
+            if !rejected.is_empty() {
+                tracing::warn!(?rejected, "solver reported unknown, alongside other output");
+            }
+            Err(CheckSatError::Unknown { stdout: output })
+        }
+        None => Err(CheckSatError::NoVerdict { stdout: output }),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn evidence_follows_the_verdict() {
+        let output = "sat\n(\n  (define-fun p0 ((x!0 Int)) Bool\n    (>= x!0 0))\n)\n(error \"line 9 column 0: proof is not available\")\n";
+        let (verdict, evidence) = split_evidence(output, true);
+        assert_eq!(verdict, "sat");
+        assert_eq!(evidence.len(), 2);
+        assert!(evidence[0].contains("define-fun p0"));
+        assert!(evidence[1].starts_with("(error"));
+        let (verdict, evidence) = split_evidence(output, false);
+        assert_eq!(verdict, output);
+        assert!(evidence.is_empty());
+    }
 
     #[test]
     fn clean_verdicts_have_nothing_rejected() {

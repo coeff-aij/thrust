@@ -109,12 +109,17 @@ impl Selection {
     /// The entries of `THRUST_VERIFY_ONLY`, a comma-separated list, if it is set and not empty
     /// and the crate being compiled is the one to verify.
     pub fn from_env() -> Option<Self> {
+        Self::from_var("THRUST_VERIFY_ONLY")
+    }
+
+    /// The entries of the environment variable `var`, read as `THRUST_VERIFY_ONLY` is.
+    pub fn from_var(var: &str) -> Option<Self> {
         let compiled_by_cargo = std::env::var_os("CARGO_CRATE_NAME").is_some();
         let primary = std::env::var_os("CARGO_PRIMARY_PACKAGE").is_some();
         if !applies_to_crate(compiled_by_cargo, primary) {
             return None;
         }
-        let value = std::env::var("THRUST_VERIFY_ONLY").ok()?;
+        let value = std::env::var(var).ok()?;
         let entries: Vec<_> = value
             .split(',')
             .map(str::trim)

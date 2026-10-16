@@ -26,7 +26,7 @@ pub use clause_builder::{ClauseBuilder, Var};
 pub use debug::DebugInfo;
 pub use dedup::dedup_pred_args;
 pub use flatten::flatten_recursive_pred_args;
-pub use solver::{Capabilities, CheckSatError, Config};
+pub use solver::{Answer, Capabilities, CheckSatError, Config, Requests};
 pub use unbox::unbox;
 
 /// A name of a datatype.
@@ -3490,22 +3490,14 @@ impl System {
     /// variables
     /// (see <https://github.com/coord-e/thrust?tab=readme-ov-file#configuration>).
     pub fn solve(&self) -> Result<(), CheckSatError> {
-        let mut system = self.clone();
-        system.populate_user_defined_pred_dependencies();
-        let mut system = unbox(system);
-        // With `THRUST_FLAT_PRED_ARGS` set, the tuple, `Box` and `Mut` arguments of the loop
-        // heads are split into their components (see `flatten`); with `THRUST_DEDUP_PRED_ARGS`
-        // set, the loop heads' arguments inductively equal to another are removed (see `dedup`).
-        if std::env::var_os("THRUST_FLAT_PRED_ARGS").is_some() {
-            system = flatten_recursive_pred_args(system);
-        }
-        if std::env::var_os("THRUST_DEDUP_PRED_ARGS").is_some() {
-            system = dedup_pred_args(system);
-        }
-        system.populate_user_defined_pred_dependencies();
-        if CandidateAtomsMode::from_env() == CandidateAtomsMode::ContractsAndEntry {
-            system.add_entry_candidate_atoms();
-        }
+        self.solve_with(Requests::default()).result
+    }
+
+    /// Solves the system, also asking the solver for the evidence `requests` names (see
+    /// [`Config::answers`]).
+    pub fn solve_with(&self, requests: Requests) -> Answer {
+        let config = Config::from_env();
+        let system = self.clone().prepared();
         if let Ok(file) = std::env::var("THRUST_PRETTY_OUTPUT") {
             let mut f = std::fs::File::create(file).unwrap();
             for (idx, c) in system.clauses.iter_enumerated() {
@@ -3514,9 +3506,84 @@ impl System {
                 writeln!(f, "{:?}: {}", idx, c.display()).unwrap();
             }
         }
-        let config = Config::from_env();
-        config.check_sat(system.smtlib2(config.capabilities()))
+        let mut answer = config.check_sat_with(system.smtlib2(config.capabilities()), requests);
+        // The refutation is asked of a second run on the system with its goals marked, so that
+        // the verdict is the one the query alone gets.
+        let refuted = matches!(answer.result, Err(CheckSatError::Unsat));
+        if requests.proof && refuted && config.answers(requests) {
+            let mut marked = self.clone();
+            answer.goal_markers = marked.mark_goals();
+            let marked = marked.prepared();
+            answer.proof = config.refute(marked.smtlib2(config.capabilities()));
+        }
+        answer
     }
+
+    /// The system as the query states it.
+    fn prepared(mut self) -> System {
+        self.populate_user_defined_pred_dependencies();
+        let mut system = unbox(self);
+        // With `THRUST_FLAT_PRED_ARGS` set, the tuple, `Box` and `Mut` arguments of the loop
+        // heads are split into their components (see `flatten`); with `THRUST_DEDUP_PRED_ARGS`
+        // set, the loop heads' arguments inductively equal to another are removed (see `dedup`).
+        if flat_pred_args_enabled() {
+            system = flatten_recursive_pred_args(system);
+        }
+        if dedup_pred_args_enabled() {
+            system = dedup_pred_args(system);
+        }
+        system.populate_user_defined_pred_dependencies();
+        if CandidateAtomsMode::from_env() == CandidateAtomsMode::ContractsAndEntry {
+            system.add_entry_candidate_atoms();
+        }
+        system
+    }
+
+    /// Gives each goal (a clause whose head is `false`) a nullary predicate variable of its own
+    /// between its body and `false`, which the system is satisfiable with exactly when it is
+    /// without: `g ⇐ body` and `false ⇐ g`. A refutation then derives the marker of the goal it
+    /// refutes. Returns the markers with their goals.
+    fn mark_goals(&mut self) -> Vec<(PredVarId, ClauseId)> {
+        let goals: Vec<ClauseId> = self
+            .clauses
+            .iter_enumerated()
+            .filter(|(_, clause)| clause.head.is_bottom())
+            .map(|(id, _)| id)
+            .collect();
+        let mut markers = Vec::new();
+        for id in goals {
+            let marker = self.new_pred_var(PredSig::new(), DebugInfo::default());
+            self.clauses[id].head = Atom::new(marker.into(), vec![]);
+            self.clauses.push(Clause {
+                origin: debug::origin::ClauseOrigin {
+                    environment: Vec::new(),
+                    body: Vec::new(),
+                    head: debug::origin::Entry::described("marker of a goal".to_owned()),
+                },
+                vars: IndexVec::new(),
+                head: Atom::bottom(),
+                body: Body::new(vec![Atom::new(marker.into(), vec![])], Formula::top()),
+                debug_info: DebugInfo::default(),
+            });
+            markers.push((marker, id));
+        }
+        markers
+    }
+}
+
+fn flat_pred_args_enabled() -> bool {
+    std::env::var_os("THRUST_FLAT_PRED_ARGS").is_some()
+}
+
+fn dedup_pred_args_enabled() -> bool {
+    std::env::var_os("THRUST_DEDUP_PRED_ARGS").is_some()
+}
+
+/// Whether the arguments of the loop heads' predicate variables are rewritten before the query is
+/// written (`THRUST_FLAT_PRED_ARGS`, `THRUST_DEDUP_PRED_ARGS`), so that a model of the query
+/// interprets them over other arguments than the system's.
+pub fn pred_args_rewritten() -> bool {
+    flat_pred_args_enabled() || dedup_pred_args_enabled()
 }
 
 /// Collects the forall sorts referenced via [`Term::ForallDefault`] in `term`

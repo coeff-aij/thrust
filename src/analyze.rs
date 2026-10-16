@@ -36,7 +36,7 @@ mod lemma;
 mod local_def;
 mod pred_inst;
 mod reconstruct_slice_indexing;
-mod selection;
+pub(crate) mod selection;
 
 // TODO: organize structure and remove cross dependency between refine
 pub use did_cache::DefIdCache;
@@ -2439,9 +2439,50 @@ impl<'tcx> Analyzer<'tcx> {
             }
         }
         self.system.borrow_mut().type_params_reverse = reverse;
-        if let Err(err) = self.system.borrow().solve() {
+        let config = crate::report::Config::from_env(self.tcx);
+        let requests = config
+            .as_ref()
+            .map(crate::report::Config::requests)
+            .unwrap_or_default();
+        let answer = self.system.borrow().solve_with(requests);
+        if let Some(config) = &config {
+            self.report(config, &answer);
+        }
+        if let Err(err) = answer.result {
             self.tcx.dcx().err(format!("verification error: {:?}", err));
         }
+    }
+
+    fn report(&self, config: &crate::report::Config, answer: &chc::Answer) {
+        let contracts = self
+            .defs
+            .iter()
+            .filter_map(|(def_id, def_ty)| {
+                let rty = match def_ty {
+                    DefTy::Concrete(rty) => rty,
+                    DefTy::Generic(generic) => generic.rty.as_ref()?,
+                    DefTy::Deferred(_) => return None,
+                };
+                Some((def_id.as_local()?, rty.ty.as_function()?))
+            })
+            .collect();
+        let blocks = self
+            .basic_blocks
+            .iter()
+            .flat_map(|(key, blocks)| {
+                blocks
+                    .iter()
+                    .map(move |(bb, def)| (key.local_def_id, *bb, &def.ty))
+            })
+            .collect();
+        let system = self.system.borrow();
+        let input = crate::report::Input {
+            system: &system,
+            contracts,
+            blocks,
+            answer,
+        };
+        crate::report::emit(self.tcx, config, &input);
     }
 
     /// Computes the signature of the function using the given `body`.

@@ -6,6 +6,7 @@ extern crate rustc_borrowck;
 extern crate rustc_data_structures;
 #[cfg(test)]
 extern crate rustc_driver;
+extern crate rustc_errors;
 extern crate rustc_hir;
 extern crate rustc_index;
 extern crate rustc_infer;
@@ -28,6 +29,9 @@ mod rty;
 
 // utility
 mod pretty;
+
+// user-facing output
+mod report;
 
 pub use analyze::mir_borrowck_skip_formula_fn;
 pub use analyze::Analyzer;
