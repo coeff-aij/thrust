@@ -218,7 +218,10 @@ impl Default for Config {
         Config {
             solver: CommandConfig {
                 name: "z3".to_owned(),
+                // Without `fp.engine`, z3 picks its engine from the query, and takes a query over
+                // bit-vectors alone for its finite-domain Datalog engine, which enumerates them.
                 args: vec![
+                    "fp.engine=spacer".to_owned(),
                     "fp.spacer.global=true".to_owned(),
                     "fp.validate=true".to_owned(),
                 ],
