@@ -507,6 +507,15 @@ impl FormatContext {
         //         datatypes.push(mono_datatype);
         let mut datatypes = system.datatypes.clone();
         let mut sorts = collect_sorts(system);
+        // A datatype without parameters is declared whether or not a clause applies it, so the
+        // sorts of its selectors are declared too.
+        for datatype in system.datatypes.iter().filter(|d| d.params == 0) {
+            for selector in datatype.selectors() {
+                selector.sort.walk(|sort| {
+                    sorts.insert(sort.clone());
+                });
+            }
+        }
 
         let mut pending: Vec<_> = sorts.clone().into_iter().collect();
         while let Some(sort) = pending.pop() {
