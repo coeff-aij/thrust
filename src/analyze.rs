@@ -861,6 +861,16 @@ impl<'tcx> crate::refine::TemplateRegistry for Analyzer<'tcx> {
     }
 }
 
+/// `THRUST_SPLIT`: the number of parts of the system solved at a time, when the parts are solved
+/// on their own.
+fn split_jobs() -> Option<usize> {
+    let value = std::env::var("THRUST_SPLIT").ok()?;
+    match value.trim() {
+        "" | "0" => None,
+        jobs => Some(jobs.parse().unwrap_or(1)),
+    }
+}
+
 impl<'tcx> Analyzer<'tcx> {
     pub fn tcx(&self) -> TyCtxt<'tcx> {
         self.tcx
@@ -2439,9 +2449,53 @@ impl<'tcx> Analyzer<'tcx> {
             }
         }
         self.system.borrow_mut().type_params_reverse = reverse;
+        if split_jobs().is_some() {
+            self.solve_parts();
+            return;
+        }
         if let Err(err) = self.system.borrow().solve() {
             self.tcx.dcx().err(format!("verification error: {:?}", err));
         }
+    }
+
+    /// Solves each part of the system that shares no unknown with the rest on its own
+    /// (`THRUST_SPLIT`), and reports the failing ones with the functions their clauses come from.
+    fn solve_parts(&self) {
+        let jobs = split_jobs().unwrap_or(1);
+        let system = self.system.borrow();
+        let parts = system.solve_parts(jobs);
+        let cached = parts.iter().filter(|p| p.cached).count();
+        for part in &parts {
+            let Err(err) = &part.result else {
+                continue;
+            };
+            let mut defs: Vec<&str> = part
+                .clauses
+                .iter()
+                .filter_map(|&id| system.clauses[id].debug_info.get("def"))
+                .collect();
+            defs.sort_unstable();
+            defs.dedup();
+            let defs: Vec<String> = defs.iter().map(|d| format!("`{d}`")).collect();
+            self.tcx
+                .dcx()
+                .struct_err(format!("verification error: {:?}", err))
+                .with_note(format!(
+                    "in the part of {} clauses from {}",
+                    part.clauses.len(),
+                    if defs.is_empty() {
+                        "no function".to_owned()
+                    } else {
+                        defs.join(", ")
+                    }
+                ))
+                .emit();
+        }
+        self.tcx.dcx().note(format!(
+            "thrust: {} parts solved on their own, {} of them from earlier runs",
+            parts.len(),
+            cached
+        ));
     }
 
     /// Computes the signature of the function using the given `body`.

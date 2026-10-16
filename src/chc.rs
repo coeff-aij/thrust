@@ -9,8 +9,10 @@ use rustc_index::IndexVec;
 
 use crate::pretty::PrettyDisplayExt as _;
 
+mod cache;
 mod candidate_atoms;
 mod clause_builder;
+mod components;
 pub mod debug;
 mod dedup;
 mod flatten;
@@ -3490,9 +3492,68 @@ impl System {
     /// variables
     /// (see <https://github.com/coord-e/thrust?tab=readme-ov-file#configuration>).
     pub fn solve(&self) -> Result<(), CheckSatError> {
-        let mut system = self.clone();
-        system.populate_user_defined_pred_dependencies();
-        let mut system = unbox(system);
+        let system = self.clone().prepared();
+        if let Ok(file) = std::env::var("THRUST_PRETTY_OUTPUT") {
+            let mut f = std::fs::File::create(file).unwrap();
+            for (idx, c) in system.clauses.iter_enumerated() {
+                use crate::pretty::PrettyDisplayExt as _;
+                use std::io::Write as _;
+                writeln!(f, "{:?}: {}", idx, c.display()).unwrap();
+            }
+        }
+        let config = Config::from_env();
+        let query = system.smtlib2(config.capabilities()).to_string();
+        solve_query(&config, cache::Cache::from_env().as_ref(), &query).0
+    }
+
+    /// Solves each class of clauses that share an unknown on its own (see [`components`]),
+    /// `jobs` at a time, reusing the verdicts `THRUST_CACHE_DIR` keeps. The system is satisfiable
+    /// exactly when every part is.
+    pub fn solve_parts(&self, jobs: usize) -> Vec<Part> {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let config = Config::from_env();
+        let cache = cache::Cache::from_env();
+        let parts = components::components(self);
+        let results: Vec<std::sync::Mutex<Option<Solved>>> =
+            parts.iter().map(|_| std::sync::Mutex::new(None)).collect();
+        let next = AtomicUsize::new(0);
+        let queries: Vec<String> = parts
+            .iter()
+            .map(|ids| {
+                let system = self.with_clauses(ids).prepared();
+                system.smtlib2(config.capabilities()).to_string()
+            })
+            .collect();
+        std::thread::scope(|scope| {
+            for _ in 0..jobs.max(1) {
+                scope.spawn(|| loop {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(query) = queries.get(i) else {
+                        break;
+                    };
+                    let answer = solve_query(&config, cache.as_ref(), query);
+                    *results[i].lock().unwrap() = Some(answer);
+                });
+            }
+        });
+        parts
+            .into_iter()
+            .zip(results)
+            .map(|(clauses, result)| {
+                let (result, cached) = result.into_inner().unwrap().unwrap();
+                Part {
+                    clauses,
+                    result,
+                    cached,
+                }
+            })
+            .collect()
+    }
+
+    /// The system as the query states it.
+    fn prepared(mut self) -> System {
+        self.populate_user_defined_pred_dependencies();
+        let mut system = unbox(self);
         // With `THRUST_FLAT_PRED_ARGS` set, the tuple, `Box` and `Mut` arguments of the loop
         // heads are split into their components (see `flatten`); with `THRUST_DEDUP_PRED_ARGS`
         // set, the loop heads' arguments inductively equal to another are removed (see `dedup`).
@@ -3506,17 +3567,34 @@ impl System {
         if CandidateAtomsMode::from_env() == CandidateAtomsMode::ContractsAndEntry {
             system.add_entry_candidate_atoms();
         }
-        if let Ok(file) = std::env::var("THRUST_PRETTY_OUTPUT") {
-            let mut f = std::fs::File::create(file).unwrap();
-            for (idx, c) in system.clauses.iter_enumerated() {
-                use crate::pretty::PrettyDisplayExt as _;
-                use std::io::Write as _;
-                writeln!(f, "{:?}: {}", idx, c.display()).unwrap();
-            }
-        }
-        let config = Config::from_env();
-        config.check_sat(system.smtlib2(config.capabilities()))
+        system
     }
+}
+
+/// One class of clauses sharing an unknown, solved on its own.
+#[derive(Debug)]
+pub struct Part {
+    pub clauses: Vec<ClauseId>,
+    pub result: Result<(), CheckSatError>,
+    /// Whether the verdict was that of an earlier run (`THRUST_CACHE_DIR`).
+    pub cached: bool,
+}
+
+/// A verdict, and whether it came from the cache.
+type Solved = (Result<(), CheckSatError>, bool);
+
+/// The verdict on `query`, from `cache` when it has one, and whether it came from there.
+fn solve_query(config: &Config, cache: Option<&cache::Cache>, query: &str) -> Solved {
+    let Some(cache) = cache else {
+        return (config.check_sat(query), false);
+    };
+    let key = cache::Cache::key(query, &config.identity());
+    if let Some(result) = cache.lookup(&key) {
+        return (result, true);
+    }
+    let result = config.check_sat(query);
+    cache.store(&key, &result);
+    (result, false)
 }
 
 /// Collects the forall sorts referenced via [`Term::ForallDefault`] in `term`

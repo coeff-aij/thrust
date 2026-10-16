@@ -257,6 +257,19 @@ impl Config {
         config
     }
 
+    /// The solver as a verdict depends on it: the command, its arguments, and the variables the
+    /// PCSat wrapper reads to choose its image and configuration.
+    pub fn identity(&self) -> String {
+        let env = ["COAR_IMAGE", "COAR_CONFIG"]
+            .map(|v| format!("{v}={}", std::env::var(v).unwrap_or_default()));
+        format!(
+            "{} {} {}",
+            self.solver.name,
+            self.solver.args.join(" "),
+            env.join(" ")
+        )
+    }
+
     pub fn capabilities(&self) -> Capabilities {
         Capabilities {
             dependency_aware_declarations: !self.solver.is_z3(),

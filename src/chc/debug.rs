@@ -82,8 +82,28 @@ impl tracing::field::Visit for SpanFields {
 
 /// Keeps the fields of every span it sees in the span's extensions, so that
 /// [`DebugInfo::from_current_span`] reads them as recorded rather than from a formatted log
-/// line. It records the spans its filter enables, so it shares the filter of the log output.
+/// line. It records the spans [`SpanFieldsLayer::filter`] enables.
 pub struct SpanFieldsLayer;
+
+impl SpanFieldsLayer {
+    /// Thrust's spans at `info` and above, whatever `RUST_LOG` says, since they place each clause
+    /// and declaration in the source for the report (`crate::report`) as well as for the comments
+    /// of the query; and every span the log output enables, so that a span is recorded whenever
+    /// it is logged.
+    pub fn filter<S>() -> impl tracing_subscriber::layer::Filter<S>
+    where
+        S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+    {
+        use tracing_subscriber::filter::{filter_fn, EnvFilter, FilterExt as _, LevelFilter};
+        filter_fn(|meta| {
+            meta.is_span()
+                && meta.target().starts_with("thrust")
+                && *meta.level() <= tracing::Level::INFO
+        })
+        .with_max_level_hint(LevelFilter::INFO)
+        .or(EnvFilter::from_default_env())
+    }
+}
 
 impl<S> tracing_subscriber::Layer<S> for SpanFieldsLayer
 where
@@ -155,6 +175,14 @@ impl DebugInfo {
 
     pub fn is_empty(&self) -> bool {
         self.contexts.is_empty()
+    }
+
+    /// The value of the field `key` of the innermost span that has one.
+    pub fn get(&self, key: &str) -> Option<&str> {
+        self.contexts
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
     }
 
     pub fn context(&mut self, key: &str, value: impl Into<String>) -> &mut Self {
