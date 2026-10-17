@@ -208,9 +208,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let outside_selection = self.is_outside_selection(local_def_id);
         let mut analyzer = self.ctx.local_def_analyzer(local_def_id);
 
+        // An impl's definition of a trait law has the law's contract.
         if analyzer.is_annotated_as_trusted() {
             assert!(
-                analyzer.is_fully_annotated(),
+                analyzer.is_fully_annotated() || is_law_impl,
                 "`#[thrust::trusted]` needs both `requires` and `ensures` (or `#[thrust::callable]`) on `{}`",
                 self.tcx.def_path_str(local_def_id)
             );
