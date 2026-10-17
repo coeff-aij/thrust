@@ -2356,7 +2356,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     }
 
     pub fn run(&mut self, expected: &BasicBlockType, expected_fn: &rty::FunctionType) {
-        let span = tracing::info_span!("bb", bb = ?self.basic_block);
+        let span = tracing::info_span!(
+            "bb",
+            bb = ?self.basic_block,
+            bb_index = self.basic_block.as_u32()
+        );
         let _guard = span.enter();
         self.register_enum_defs();
 

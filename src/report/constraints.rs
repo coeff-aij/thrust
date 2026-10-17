@@ -25,18 +25,13 @@ pub struct Provenance {
 
 impl Provenance {
     pub fn of(debug_info: &chc::DebugInfo) -> Self {
-        let def = debug_info
-            .get("def_index")
-            .and_then(|v| v.parse().ok())
-            .map(|i: u32| LocalDefId {
-                local_def_index: DefIndex::from_u32(i),
-            });
+        let def = debug_info.number("def_index").map(|i| LocalDefId {
+            local_def_index: DefIndex::from_u32(i as u32),
+        });
         let bb = debug_info
-            .get("bb")
-            .and_then(|v| v.strip_prefix("bb"))
-            .and_then(|v| v.parse().ok())
-            .map(BasicBlock::from_u32);
-        let stmt = debug_info.get("stmt_idx").and_then(|v| v.parse().ok());
+            .number("bb_index")
+            .map(|i| BasicBlock::from_u32(i as u32));
+        let stmt = debug_info.number("stmt_idx").map(|i| i as usize);
         Provenance { def, bb, stmt }
     }
 }
@@ -60,11 +55,34 @@ impl Constraint {
     }
 }
 
+/// Whether `def_id` is one of the functions a panic calls: the panic language items (those of
+/// `assert!`, `panic!`, a failed bounds or overflow check) and `std::rt::begin_panic`.
 fn is_panic(tcx: TyCtxt<'_>, def_id: rustc_span::def_id::DefId) -> bool {
-    let path = tcx.def_path_str(def_id);
-    path.starts_with("core::panicking::")
-        || path.starts_with("std::panicking::")
-        || path.starts_with("std::rt::begin_panic")
+    use rustc_hir::LangItem;
+    let lang_item = tcx.as_lang_item(def_id);
+    let panics = matches!(
+        lang_item,
+        Some(
+            LangItem::Panic
+                | LangItem::PanicNounwind
+                | LangItem::PanicFmt
+                | LangItem::PanicDisplay
+                | LangItem::ConstPanicFmt
+                | LangItem::PanicBoundsCheck
+                | LangItem::PanicMisalignedPointerDereference
+                | LangItem::PanicCannotUnwind
+                | LangItem::PanicInCleanup
+                | LangItem::PanicAddOverflow
+                | LangItem::PanicSubOverflow
+                | LangItem::PanicMulOverflow
+                | LangItem::PanicDivOverflow
+                | LangItem::PanicRemOverflow
+                | LangItem::PanicNegOverflow
+                | LangItem::PanicShrOverflow
+                | LangItem::PanicShlOverflow
+        )
+    );
+    panics || tcx.is_diagnostic_item(rustc_span::sym::begin_panic, def_id)
 }
 
 /// What obligation the clause stands for, from the code it was made in and the template its head

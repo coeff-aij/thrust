@@ -68,15 +68,25 @@ impl std::fmt::Display for OriginLine<'_> {
 #[derive(Debug, Clone, Default)]
 pub struct DebugInfo {
     contexts: Vec<(String, String)>,
+    /// The fields recorded as numbers, as the analysis gave them (a def's index, a block's), in
+    /// the order of `contexts`.
+    numbers: Vec<(String, u64)>,
 }
 
-/// The fields of a span, in the order they were recorded.
+/// The fields of a span, in the order they were recorded, each also as a number when it was
+/// recorded as one.
 #[derive(Debug, Default)]
-struct SpanFields(Vec<(String, String)>);
+struct SpanFields(Vec<(String, String, Option<u64>)>);
 
 impl tracing::field::Visit for SpanFields {
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-        self.0.push((field.name().to_owned(), format!("{value:?}")));
+        self.0
+            .push((field.name().to_owned(), format!("{value:?}"), None));
+    }
+
+    fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+        self.0
+            .push((field.name().to_owned(), value.to_string(), Some(value)));
     }
 }
 
@@ -164,8 +174,11 @@ impl DebugInfo {
                     break;
                 };
                 if let Some(fields) = data.extensions().get::<SpanFields>() {
-                    for (key, value) in fields.0.iter().rev() {
+                    for (key, value, number) in fields.0.iter().rev() {
                         self.context(key, value.clone());
+                        if let Some(number) = number {
+                            self.numbers.push((key.clone(), *number));
+                        }
                     }
                 }
                 span_id = data.parent().cloned();
@@ -175,6 +188,11 @@ impl DebugInfo {
 
     pub fn is_empty(&self) -> bool {
         self.contexts.is_empty()
+    }
+
+    /// The number recorded as the field `key` of the innermost span that has one.
+    pub fn number(&self, key: &str) -> Option<u64> {
+        self.numbers.iter().find(|(k, _)| k == key).map(|(_, n)| *n)
     }
 
     /// The value of the field `key` of the innermost span that has one.

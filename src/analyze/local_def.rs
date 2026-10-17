@@ -1214,7 +1214,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
         let mut builder = analyze::basic_block::DropPoints::builder(&self.body);
         for (bb, _data) in mir::traversal::postorder(&self.body) {
-            let span = tracing::info_span!("refine_basic_block", ?bb);
+            let span = tracing::info_span!("refine_basic_block", ?bb, bb_index = bb.as_u32());
             let _guard = span.enter();
 
             self.drop_points.insert(bb, builder.build(&mut results, bb));
