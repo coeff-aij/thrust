@@ -110,3 +110,13 @@ fn a_part_line_spans_its_functions() {
     let part = r#"{"kind":"part","id":1,"clauses":1,"functions":[{"fn":"count_to","span":{"file":"#;
     assert!(stdout.contains(part), "{stdout}");
 }
+
+/// A part's model is read over the sorts its own query declares, which it numbers apart from
+/// the other parts (here the tuple of a `&mut` and an integer of `gcd`'s loop).
+#[test]
+fn a_part_model_is_read_over_its_own_sorts() {
+    let output = run_with("tuple_sort_part.rs", Some("2"), &[("THRUST_REPORT", "1")]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(stderr.contains("inferred: fn gcd("), "{stderr}");
+}

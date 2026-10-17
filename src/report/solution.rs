@@ -53,16 +53,17 @@ impl Solution {
         }
     }
 
-    /// The solution of the parts each of `answers` solved, from those with a model, `partial` when
+    /// The solution of the parts each of `answers` solved, from those with a model, each read
+    /// over its `symbols`, `partial` when
     /// they are parts of the system (`THRUST_SPLIT`); or why there is none, from the first.
     pub(super) fn of_parts(
         answers: &[chc::Answer],
         partial: bool,
-        symbols: &Symbols,
+        symbols: &[Symbols],
         names: &Names,
     ) -> Result<Self, String> {
         let config = chc::Config::from_env();
-        let mut solutions = answers.iter().filter_map(|answer| {
+        let mut solutions = answers.iter().zip(symbols).filter_map(|(answer, symbols)| {
             let (None, Some(model)) = (solution_unavailable(answer), &answer.model) else {
                 return None;
             };

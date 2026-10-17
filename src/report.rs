@@ -155,8 +155,10 @@ pub struct Input<'a> {
     pub contracts: Vec<(LocalDefId, &'a rty::FunctionType)>,
     pub blocks: Vec<(LocalDefId, BasicBlock, &'a BasicBlockType)>,
     /// The solver's answers: one for the whole system, or with `THRUST_SPLIT` one for each part
-    /// refuted. A solution is read from the first, a failure from each.
+    /// reported, whose clauses `answer_clauses` gives. A solution is read from those with a
+    /// model, a failure from each.
     pub answers: &'a [chc::Answer],
+    pub answer_clauses: &'a [Vec<chc::ClauseId>],
     /// Where the analysis made each template's predicate variable.
     pub template_sites: &'a HashMap<chc::PredVarId, crate::analyze::TemplateSite>,
     /// The variable each argument of a template's predicate variable is.
@@ -415,12 +417,21 @@ pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) -> Vec<Option<S
         contracts: input.contracts.clone(),
         blocks: input.blocks.clone(),
         answers: input.answers,
+        answer_clauses: input.answer_clauses,
         template_sites: input.template_sites,
         template_vars: input.template_vars,
         contract_annotations: input.contract_annotations,
         parts: input.parts,
     };
-    let symbols = chc::answer::Symbols::of(&system, chc::Config::from_env().capabilities());
+    // An answer is over the symbols of the query it answers: the whole system's, or a part's,
+    // which numbers its own sorts.
+    let capabilities = chc::Config::from_env().capabilities();
+    let symbols: Vec<chc::answer::Symbols> = (0..input.answers.len())
+        .map(|i| match input.answer_clauses.get(i) {
+            Some(ids) => chc::answer::Symbols::of(&chc::unbox(system.part(ids)), capabilities),
+            None => chc::answer::Symbols::of(&system, capabilities),
+        })
+        .collect();
     let (entries, names) = entries(tcx, config, &input);
     let split = !input.parts.is_empty();
     let solution = Solution::of_parts(input.answers, split, &symbols, &names);
@@ -431,8 +442,9 @@ pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) -> Vec<Option<S
     let failures: Vec<(&chc::Answer, Option<failure::Failure>)> = input
         .answers
         .iter()
+        .zip(&symbols)
         .filter(|_| config.items.failure)
-        .map(|answer| (answer, failure::read(answer, &names, &symbols)))
+        .map(|(answer, symbols)| (answer, failure::read(answer, &names, symbols)))
         .collect();
     let refuted: Vec<Option<Span>> = (0..input.answers.len())
         .map(|i| {

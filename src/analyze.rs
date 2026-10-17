@@ -2619,7 +2619,7 @@ impl<'tcx> Analyzer<'tcx> {
         let refuted = match &config {
             Some(config) => {
                 let system = self.system.borrow();
-                self.report(config, &system, std::slice::from_ref(&answer), &[])[0]
+                self.report(config, &system, std::slice::from_ref(&answer), &[], &[])[0]
             }
             None => None,
         };
@@ -2701,7 +2701,15 @@ impl<'tcx> Analyzer<'tcx> {
             .iter()
             .flat_map(|&i| parts[i].clauses.iter().copied())
             .collect();
-        let spans = self.report(config, &system.part(&clauses), &answers, summaries);
+        let answer_clauses: Vec<Vec<chc::ClauseId>> =
+            reported.iter().map(|&i| parts[i].clauses.clone()).collect();
+        let spans = self.report(
+            config,
+            &system.part(&clauses),
+            &answers,
+            &answer_clauses,
+            summaries,
+        );
         let mut refuted = vec![None; parts.len()];
         for (i, span) in reported.into_iter().zip(spans) {
             refuted[i] = span;
@@ -2714,6 +2722,7 @@ impl<'tcx> Analyzer<'tcx> {
         config: &crate::report::Config,
         system: &chc::System,
         answers: &[chc::Answer],
+        answer_clauses: &[Vec<chc::ClauseId>],
         parts: &[crate::report::Part],
     ) -> Vec<Option<rustc_span::Span>> {
         let contracts = self
@@ -2742,6 +2751,7 @@ impl<'tcx> Analyzer<'tcx> {
             contracts,
             blocks,
             answers,
+            answer_clauses,
             template_sites: &self.template_sites,
             template_vars: &self.template_vars,
             contract_annotations: &self.contract_annotations,
