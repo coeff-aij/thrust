@@ -279,3 +279,12 @@ fn a_split_run_shows_the_constraints_of_every_part() {
     assert_eq!(parts, whole, "{stderr}");
     assert!(stderr.contains("template: fn double("), "{stderr}");
 }
+
+/// A failing part of several functions without a refutation has its error at the first and
+/// labels the others.
+#[test]
+fn a_part_of_several_functions_spans_each() {
+    let output = run("several_functions.rs", Some("2"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("`main` is in this part too"), "{stderr}");
+}

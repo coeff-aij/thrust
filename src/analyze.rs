@@ -2697,10 +2697,16 @@ impl<'tcx> Analyzer<'tcx> {
             let Err(err) = &part.result else {
                 continue;
             };
-            // Without a refutation, the error is at the code of the part.
+            // Without a refutation, the error is at the code of the part: its first function,
+            // the others labelled.
             let code = summary.functions.first().map(|f| f.span);
-            self.verification_error(err, refuted.or(code))
-                .with_note(summary.error_note(self.tcx, parts.len()))
+            let mut diag = self.verification_error(err, refuted.or(code));
+            if refuted.is_none() {
+                for f in summary.functions.iter().skip(1) {
+                    diag.span_label(f.span, format!("`{}` is in this part too", f.r#fn));
+                }
+            }
+            diag.with_note(summary.error_note(self.tcx, parts.len()))
                 .emit();
         }
         crate::report::emit_part_notes(self.tcx, &summaries);
