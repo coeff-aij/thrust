@@ -758,6 +758,16 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.ctx.extend_clauses(clauses);
     }
 
+    /// Asserts that the current block is not reached.
+    fn assert_unreachable(&mut self) {
+        let got =
+            rty::RefinedType::<Var>::refined_with_term(rty::Type::bool(), chc::Term::bool(false));
+        let expected =
+            rty::RefinedType::<Var>::refined_with_term(rty::Type::bool(), chc::Term::bool(true));
+        let clauses = self.env.relate_sub_refined_type(&got, &expected);
+        self.ctx.extend_clauses(clauses);
+    }
+
     /// Asserts that an arithmetic result of the integer type `ty` stays in the type's range, in
     /// [`rty::IntRange::All`]. Without overflow checks the operation is modelled on unbounded
     /// integers, and the range is assumed of its result as of every value of the type; with them,
@@ -2206,7 +2216,15 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 self.type_goto(*target, outer_fn_param_vars);
             }
             TerminatorKind::UnwindResume {} => {}
-            TerminatorKind::Unreachable {} => {}
+            TerminatorKind::Unreachable {} => {
+                // rustc reaches `Unreachable` only with a value of an uninhabited type, which the
+                // logic's sorts never are. A proof's contract is assumed of every value of the
+                // sorts, so in a proof the block must be unreachable in the logic, as Creusot's
+                // `absurd` requires.
+                if analyze::lemma::is_proof(self.tcx, self.local_def_id.to_def_id()) {
+                    self.assert_unreachable();
+                }
+            }
             _ => unimplemented!("term={:?}", term.kind),
         }
     }

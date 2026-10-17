@@ -46,6 +46,15 @@ pub fn check_lemmas(tcx: TyCtxt<'_>, proof_branch: Option<DefId>) {
     checker.check_acyclic(&lemmas, &calls);
 }
 
+/// Whether `def_id` is a lemma or a law's proof, whose contract is assumed where it does not run.
+pub fn is_proof(tcx: TyCtxt<'_>, def_id: DefId) -> bool {
+    let checker = Checker {
+        tcx,
+        proof_branch: None,
+    };
+    checker.is_lemma(def_id) || checker.is_lemma_rec(def_id) || checker.is_law_proof(def_id)
+}
+
 /// Checks the `proof!` branches of the functions whose bodies the analysis reads
 /// (`analyzes_body`), where a branch it takes and the program does not must change nothing.
 pub fn check_proof_branches(
