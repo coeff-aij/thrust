@@ -1,4 +1,7 @@
 //! Specifications of std functions the case study calls that std.rs does not specify.
+//!
+//! The exact `wrapping_add` and `wrapping_sub` specs below are full functional specs, valid at every
+//! call site, and belong in std.rs; they stay here until they move there.
 
 use crate::thrust_models;
 use thrust_models::model::BitVec;
