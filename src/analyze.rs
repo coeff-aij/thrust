@@ -2520,7 +2520,12 @@ impl<'tcx> Analyzer<'tcx> {
             .unwrap_or_default();
         let answer = self.system.borrow().solve_with(requests);
         if let Some(config) = &config {
-            self.report(config, &self.system.borrow(), &answer, &[]);
+            self.report(
+                config,
+                &self.system.borrow(),
+                std::slice::from_ref(&answer),
+                &[],
+            );
         }
         if let Err(err) = answer.result {
             self.tcx.dcx().err(format!("verification error: {:?}", err));
@@ -2576,25 +2581,31 @@ impl<'tcx> Analyzer<'tcx> {
         let Some(config) = report else {
             return;
         };
-        let refuted: Vec<chc::ClauseId> = parts
+        // Each part refuted is solved once more on its own, for its refutation; the report reads
+        // them over the system of all of them, whose clauses keep their ids.
+        let refuted: Vec<&chc::Part> = parts
             .iter()
             .filter(|part| matches!(part.result, Err(chc::CheckSatError::Unsat)))
+            .collect();
+        let mut answers: Vec<chc::Answer> = refuted
+            .iter()
+            .map(|part| system.part(&part.clauses).solve_with(config.requests()))
+            .collect();
+        if answers.is_empty() {
+            answers.push(chc::Answer::of(Ok(())));
+        }
+        let clauses: Vec<chc::ClauseId> = refuted
+            .iter()
             .flat_map(|part| part.clauses.iter().copied())
             .collect();
-        let refuted_part = system.part(&refuted);
-        let answer = if refuted.is_empty() {
-            chc::Answer::of(Ok(()))
-        } else {
-            refuted_part.solve_with(config.requests())
-        };
-        self.report(config, &refuted_part, &answer, &summaries);
+        self.report(config, &system.part(&clauses), &answers, &summaries);
     }
 
     fn report(
         &self,
         config: &crate::report::Config,
         system: &chc::System,
-        answer: &chc::Answer,
+        answers: &[chc::Answer],
         parts: &[crate::report::Part],
     ) {
         let contracts = self
@@ -2622,7 +2633,7 @@ impl<'tcx> Analyzer<'tcx> {
             system,
             contracts,
             blocks,
-            answer,
+            answers,
             template_sites: &self.template_sites,
             template_vars: &self.template_vars,
             parts,

@@ -152,13 +152,15 @@ pub struct Input<'a> {
     /// The contract of each function, written or a template.
     pub contracts: Vec<(LocalDefId, &'a rty::FunctionType)>,
     pub blocks: Vec<(LocalDefId, BasicBlock, &'a BasicBlockType)>,
-    pub answer: &'a chc::Answer,
+    /// The solver's answers: one for the whole system, or with `THRUST_SPLIT` one for each part
+    /// refuted. A solution is read from the first, a failure from each.
+    pub answers: &'a [chc::Answer],
     /// Where the analysis made each template's predicate variable.
     pub template_sites: &'a HashMap<chc::PredVarId, crate::analyze::TemplateSite>,
     /// The variable each argument of a template's predicate variable is.
     pub template_vars: &'a HashMap<chc::PredVarId, Vec<Option<chc::debug::ErasedVar>>>,
-    /// The parts of the system solved on their own (`THRUST_SPLIT`); the system and the answer
-    /// are then those of the parts refuted.
+    /// The parts of the system solved on their own (`THRUST_SPLIT`); the system is then that of
+    /// the parts refuted.
     pub parts: &'a [Part],
 }
 
@@ -353,28 +355,30 @@ pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) {
         system: &system,
         contracts: input.contracts.clone(),
         blocks: input.blocks.clone(),
-        answer: input.answer,
+        answers: input.answers,
         template_sites: input.template_sites,
         template_vars: input.template_vars,
         parts: input.parts,
     };
     let symbols = chc::answer::Symbols::of(&system, chc::Config::from_env().capabilities());
     let (entries, names) = entries(tcx, config, &input);
-    let solution = match (solution_unavailable(input.answer), &input.answer.model) {
+    let first = &input.answers[0];
+    let solution = match (solution_unavailable(first), &first.model) {
         (None, Some(model)) => {
             let config = chc::Config::from_env();
-            let query = input.answer.query.as_deref().unwrap_or_default();
+            let query = first.query.as_deref().unwrap_or_default();
             Ok(Solution::new(model, query, &symbols, &names, |script| {
                 config.run_script(script)
             }))
         }
         (why, _) => Err(why.unwrap_or_else(|| "no solution".to_owned())),
     };
-    let failure = config
-        .items
-        .failure
-        .then(|| failure::read(input.answer, &names, &symbols))
-        .flatten();
+    let failures: Vec<(&chc::Answer, Option<failure::Failure>)> = input
+        .answers
+        .iter()
+        .filter(|_| config.items.failure)
+        .map(|answer| (answer, failure::read(answer, &names, &symbols)))
+        .collect();
     match config.format {
         Format::Human => {
             let human = Human {
@@ -383,7 +387,9 @@ pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) {
                 names: &names,
                 solution,
             };
-            human.failure(input.answer, failure.as_ref(), &entries);
+            for (answer, failure) in &failures {
+                human.failure(answer, failure.as_ref(), &entries);
+            }
             human.emit(&entries);
         }
         Format::Json => {
@@ -392,7 +398,7 @@ pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) {
                 items: config.items,
                 names: &names,
                 solution: solution.ok(),
-                failure,
+                failures: failures.into_iter().filter_map(|(_, f)| f).collect(),
                 parts: input.parts,
             };
             let result = match &config.file {

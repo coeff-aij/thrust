@@ -74,7 +74,7 @@ pub(super) struct Json<'a, 'tcx> {
     pub(super) items: Items,
     pub(super) names: &'a Names,
     pub(super) solution: Option<Solution>,
-    pub(super) failure: Option<Failure>,
+    pub(super) failures: Vec<Failure>,
     pub(super) parts: &'a [super::Part],
 }
 
@@ -179,7 +179,7 @@ impl Json<'_, '_> {
                 cached: part.cached,
             })?;
         }
-        if let Some(failure) = self.failure.as_ref().filter(|_| self.items.failure) {
+        for failure in &self.failures {
             line(self.failure(entries, failure))?;
         }
         for entry in entries {
