@@ -458,7 +458,7 @@ pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) -> Vec<Option<S
     let solution = Solution::of_parts(input.answers, input.asked, &system, &symbols, &names);
     let verdict = match split {
         true => parts::crate_verdict(input.parts),
-        false => parts::verdict(&input.answers[0].result),
+        false => chc::verdict(&input.answers[0].result),
     };
     let failures: Vec<(&chc::Answer, Option<failure::Failure>)> = input
         .answers

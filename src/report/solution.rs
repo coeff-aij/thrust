@@ -96,7 +96,7 @@ impl Solution {
             }
             let why = format!(
                 "no solution: the second run, asked for a model, gave none ({})",
-                super::parts::verdict(&answer.result)
+                chc::verdict(&answer.result)
             );
             for p in system.pred_vars_of(&asked.clauses) {
                 solution.unanswered.insert(p, why.clone());

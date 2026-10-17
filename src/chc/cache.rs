@@ -88,11 +88,10 @@ impl Cache {
     }
 
     pub fn store(&self, key: &str, result: &Result<(), CheckSatError>) {
-        let verdict = match result {
-            Ok(()) => "sat",
-            Err(CheckSatError::Unsat) => "unsat",
-            Err(_) => return,
-        };
+        let verdict = super::solver::verdict(result);
+        if !matches!(verdict, "sat" | "unsat") {
+            return;
+        }
         use std::io::Write as _;
         let path = self.entry(key);
         // Written whole to a file of its own, then renamed, so that a reader or another writer of

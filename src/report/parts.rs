@@ -9,7 +9,6 @@ use rustc_span::Span;
 
 use crate::chc;
 
-use super::body::DefBody;
 use super::constraints::Provenance;
 use super::file_name;
 
@@ -20,21 +19,10 @@ pub struct Part {
     pub clauses: usize,
     /// The functions its clauses come from, in the order of their code.
     pub functions: Vec<PartCode>,
-    /// See [`verdict`].
+    /// See [`chc::verdict`].
     pub verdict: &'static str,
     /// Whether the verdict was that of an earlier run (`THRUST_CACHE_DIR`).
     pub cached: bool,
-}
-
-/// `sat`, `unsat`, `timeout`, `unknown` or `error`.
-pub fn verdict(result: &Result<(), chc::CheckSatError>) -> &'static str {
-    match result {
-        Ok(()) => "sat",
-        Err(chc::CheckSatError::Unsat) => "unsat",
-        Err(chc::CheckSatError::Timeout(_)) => "timeout",
-        Err(chc::CheckSatError::Unknown { .. }) => "unknown",
-        Err(_) => "error",
-    }
 }
 
 /// The verdict of the crate from those of its parts: `unsat` if a part is, else the first that
@@ -61,7 +49,7 @@ impl Part {
             id,
             clauses: part.clauses.len(),
             functions: code(tcx, system, &part.clauses),
-            verdict: verdict(&part.result),
+            verdict: chc::verdict(&part.result),
             cached: part.cached,
         }
     }
@@ -93,32 +81,12 @@ impl Part {
     }
 }
 
-/// Where the clause was made: its function and the span of the code.
-fn made_at<'tcx>(
-    tcx: TyCtxt<'tcx>,
-    bodies: &mut HashMap<LocalDefId, Option<DefBody<'tcx>>>,
-    clause: &chc::Clause,
-) -> Option<(LocalDefId, Span)> {
-    let provenance = Provenance::of(&clause.debug_info);
-    let def = provenance.def?;
-    let body = bodies.entry(def).or_insert_with(|| {
-        tcx.is_mir_available(def.to_def_id())
-            .then(|| DefBody::new(tcx, def))
-    });
-    let in_body = body
-        .as_ref()
-        .zip(provenance.bb)
-        .and_then(|(body, bb)| body.span(bb, provenance.stmt));
-    let span = in_body.unwrap_or_else(|| tcx.def_span(def.to_def_id()).source_callsite());
-    Some((def, span))
-}
-
 /// The functions the clauses `ids` come from, each with the code its clauses were made at.
 fn code(tcx: TyCtxt<'_>, system: &chc::System, ids: &[chc::ClauseId]) -> Vec<PartCode> {
-    let mut bodies = HashMap::new();
     let mut spans: HashMap<LocalDefId, Span> = HashMap::new();
     for &id in ids {
-        let Some((def, span)) = made_at(tcx, &mut bodies, &system.clauses[id]) else {
+        let provenance = Provenance::of(&system.clauses[id].debug_info);
+        let (Some(def), Some(span)) = (provenance.def, provenance.span(tcx)) else {
             continue;
         };
         let all = spans.entry(def).or_insert(span);

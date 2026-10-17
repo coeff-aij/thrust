@@ -36,6 +36,17 @@ impl Provenance {
         let stmt = debug_info.number("stmt_idx").map(|i| i as usize);
         Provenance { def, bb, stmt }
     }
+
+    /// The span of the code the clause was made at: its statement or terminator, or else its
+    /// function.
+    pub fn span(&self, tcx: TyCtxt<'_>) -> Option<Span> {
+        let def = self.def?.to_def_id();
+        let body = tcx.is_mir_available(def).then(|| tcx.optimized_mir(def));
+        let in_body = body
+            .zip(self.bb)
+            .and_then(|(body, bb)| super::body::span_in(body, bb, self.stmt));
+        Some(in_body.unwrap_or_else(|| tcx.def_span(def).source_callsite()))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -431,12 +442,7 @@ pub fn constraint(
     annotations: &HashMap<DefId, ContractAnnotations>,
 ) -> Constraint {
     let provenance = Provenance::of(&clause.debug_info);
-    let span = match (body, provenance.bb) {
-        (Some(body), Some(bb)) => body.span(bb, provenance.stmt),
-        _ => provenance
-            .def
-            .map(|def| tcx.def_span(def.to_def_id()).source_callsite()),
-    };
+    let span = provenance.span(tcx);
     let (kind, annotation) = kind(tcx, clause, &provenance, body, names, annotations);
     let (premises, conclusion, vars) = render(id, clause, provenance.def, names, body);
     let formula = show(

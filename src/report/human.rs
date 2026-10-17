@@ -177,7 +177,7 @@ impl Human<'_, '_> {
                 "thrust: no failing obligation to show for part {}: the second run, asked for a \
                  refutation, gave none ({})",
                 asked.part,
-                super::parts::verdict(&answer.result)
+                chc::verdict(&answer.result)
             ));
             return;
         }

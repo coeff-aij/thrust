@@ -271,16 +271,21 @@ impl<'tcx> DefBody<'tcx> {
         self.body.basic_blocks.get(bb)?.terminator.as_ref()
     }
 
-    /// The span of statement `stmt` of `bb`, or of its terminator, as the user wrote it (the
-    /// call site of a macro such as `assert!`).
+    /// The span of statement `stmt` of `bb`, or of its terminator (see [`span_in`]).
     pub fn span(&self, bb: BasicBlock, stmt: Option<usize>) -> Option<Span> {
-        let data = self.body.basic_blocks.get(bb)?;
-        let span = match stmt {
-            Some(idx) if idx < data.statements.len() => data.statements[idx].source_info.span,
-            _ => data.terminator.as_ref()?.source_info.span,
-        };
-        Some(span.source_callsite())
+        span_in(self.body, bb, stmt)
     }
+}
+
+/// The span of statement `stmt` of `bb` of `body`, or of its terminator, as the user wrote it (the
+/// call site of a macro such as `assert!`).
+pub fn span_in(body: &mir::Body<'_>, bb: BasicBlock, stmt: Option<usize>) -> Option<Span> {
+    let data = body.basic_blocks.get(bb)?;
+    let span = match stmt {
+        Some(idx) if idx < data.statements.len() => data.statements[idx].source_info.span,
+        _ => data.terminator.as_ref()?.source_info.span,
+    };
+    Some(span.source_callsite())
 }
 
 /// The natural loops of `body`: each target of a back edge (an edge to a block that dominates

@@ -2889,7 +2889,7 @@ impl<'tcx> Analyzer<'tcx> {
         local_def_id: LocalDefId,
         generic_args: mir_ty::GenericArgsRef<'tcx>,
         owner_fn_id: DefId,
-    ) -> Option<chc::Formula<rty::FunctionParamIdx>> {
+    ) -> Option<(DefId, chc::Formula<rty::FunctionParamIdx>)> {
         let formula_def_id =
             self.extract_path_with_attr(local_def_id, &analyze::annot::requires_path_path())?;
         let Some(formula_def_id) = formula_def_id.as_local() else {
@@ -2910,7 +2910,7 @@ impl<'tcx> Analyzer<'tcx> {
                 formula_def_id
             );
         };
-        Some(formula_fn.to_require_formula())
+        Some((formula_def_id.to_def_id(), formula_fn.to_require_formula()))
     }
 
     fn extract_ensure_annot(
@@ -2918,7 +2918,10 @@ impl<'tcx> Analyzer<'tcx> {
         local_def_id: LocalDefId,
         generic_args: mir_ty::GenericArgsRef<'tcx>,
         owner_fn_id: DefId,
-    ) -> Option<chc::Formula<rty::RefinedTypeVar<rty::FunctionParamIdx>>> {
+    ) -> Option<(
+        DefId,
+        chc::Formula<rty::RefinedTypeVar<rty::FunctionParamIdx>>,
+    )> {
         let formula_def_id =
             self.extract_path_with_attr(local_def_id, &analyze::annot::ensures_path_path())?;
         let Some(formula_def_id) = formula_def_id.as_local() else {
@@ -2939,7 +2942,7 @@ impl<'tcx> Analyzer<'tcx> {
                 formula_def_id
             );
         };
-        Some(formula_fn.to_ensure_formula())
+        Some((formula_def_id.to_def_id(), formula_fn.to_ensure_formula()))
     }
 
     /// Collects every `#[thrust::refinement_path(..)]` path statement in the
@@ -2995,14 +2998,13 @@ impl<'tcx> Analyzer<'tcx> {
         out
     }
 
-    /// Resolves every `#[thrust::refinement_path(..)]` annotation into a
-    /// positioned refinement, by translating the referenced formula function.
-    /// The annotations of the contract written on `local_def_id`, or on the trait method it
-    /// implements, `trait_item`.
+    /// Where a contract is annotated, from the companions it is read from: `requires`,
+    /// `ensures`, and each refinement at its position.
     pub fn contract_annotations(
         &self,
-        local_def_id: LocalDefId,
-        trait_item: Option<LocalDefId>,
+        requires: Option<DefId>,
+        ensures: Option<DefId>,
+        refinements: impl Iterator<Item = (rty::TypePosition, DefId)>,
     ) -> ContractAnnotations {
         // The clauses as written, read off the tail of the companion's body (the macros conjoin
         // the clauses of a contract into one); the companion where it has no tail.
@@ -3019,24 +3021,14 @@ impl<'tcx> Analyzer<'tcx> {
                 None => vec![self.tcx.def_span(def_id)],
             }
         };
-        let mut annotations = ContractAnnotations::default();
-        for holder in std::iter::once(local_def_id).chain(trait_item) {
-            let requires =
-                self.extract_path_with_attr(holder, &analyze::annot::requires_path_path());
-            let ensures = self.extract_path_with_attr(holder, &analyze::annot::ensures_path_path());
-            annotations
-                .requires
-                .extend(requires.into_iter().flat_map(spans));
-            annotations
-                .ensures
-                .extend(ensures.into_iter().flat_map(spans));
-            for (position, def_id) in self.extract_refinement_paths(holder) {
-                match position.steps().first() {
-                    Some(rty::TypePositionStep::Return) => {
-                        annotations.ensures.extend(spans(def_id))
-                    }
-                    _ => annotations.requires.extend(spans(def_id)),
-                }
+        let mut annotations = ContractAnnotations {
+            requires: requires.into_iter().flat_map(spans).collect(),
+            ensures: ensures.into_iter().flat_map(spans).collect(),
+        };
+        for (position, def_id) in refinements {
+            match position.steps().first() {
+                Some(rty::TypePositionStep::Return) => annotations.ensures.extend(spans(def_id)),
+                _ => annotations.requires.extend(spans(def_id)),
             }
         }
         annotations
@@ -3050,12 +3042,19 @@ impl<'tcx> Analyzer<'tcx> {
         self.contract_annotations.insert(def_id, annotations);
     }
 
+    /// Resolves every `#[thrust::refinement_path(..)]` annotation into a
+    /// positioned refinement, by translating the referenced formula function, which it returns
+    /// too.
     pub fn extract_refinement_annots(
         &self,
         local_def_id: LocalDefId,
         generic_args: mir_ty::GenericArgsRef<'tcx>,
         owner_fn_id: DefId,
-    ) -> Vec<(rty::TypePosition, rty::Refinement<rty::FunctionParamIdx>)> {
+    ) -> Vec<(
+        rty::TypePosition,
+        DefId,
+        rty::Refinement<rty::FunctionParamIdx>,
+    )> {
         let mut out = Vec::new();
         for (position, def_id) in self.extract_refinement_paths(local_def_id) {
             let Some(formula_def_id) = def_id.as_local() else {
@@ -3072,7 +3071,7 @@ impl<'tcx> Analyzer<'tcx> {
                     formula_def_id
                 );
             };
-            out.push((position, formula_fn.to_refinement()));
+            out.push((position, def_id, formula_fn.to_refinement()));
         }
         out
     }
