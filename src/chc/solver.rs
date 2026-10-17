@@ -41,6 +41,17 @@ pub enum CheckSatError {
     Io(#[from] std::io::Error),
 }
 
+/// The name of a verdict: `sat`, `unsat`, `timeout`, `unknown` or `error`.
+pub fn verdict(result: &Result<(), CheckSatError>) -> &'static str {
+    match result {
+        Ok(()) => "sat",
+        Err(CheckSatError::Unsat) => "unsat",
+        Err(CheckSatError::Timeout(_)) => "timeout",
+        Err(CheckSatError::Unknown { .. }) => "unknown",
+        Err(_) => "error",
+    }
+}
+
 /// One of the three answers a solver can give `(check-sat)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Verdict {

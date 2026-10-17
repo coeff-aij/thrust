@@ -17,7 +17,14 @@ pub(super) type Interpretation = answer::Definition<Name>;
 /// The solver's interpretation of each predicate variable the report names.
 pub(super) struct Solution {
     by_pred: HashMap<chc::PredVarId, Interpretation>,
+    /// Whether it is that of some parts of the system only (`THRUST_SPLIT`).
+    partial: bool,
+    /// Why the unknowns of a part solved but not solved again for its model have none.
+    unanswered: HashMap<chc::PredVarId, String>,
 }
+
+/// Why a site of a refuted part has no solution.
+const REFUTED_PART: &str = "no solution: the part of the constraints over it is refuted";
 
 impl Solution {
     /// The interpretations of `model`, simplified by `z3`, which `run` runs (see
@@ -42,7 +49,74 @@ impl Solution {
             .into_iter()
             .map(|(name, interpretation)| (symbols.pred(&name).unwrap(), interpretation))
             .collect();
-        Solution { by_pred }
+        Solution {
+            by_pred,
+            partial: false,
+            unanswered: HashMap::new(),
+        }
+    }
+
+    /// The solution of the parts each of `answers` solved, from those with a model, each read
+    /// over its `symbols`; or why there is none, from the first. With `THRUST_SPLIT`, `asked`
+    /// gives the parts of `system` the answers are of.
+    pub(super) fn of_parts(
+        answers: &[chc::Answer],
+        asked: &[super::Asked],
+        system: &chc::System,
+        symbols: &[Symbols],
+        names: &Names,
+    ) -> Result<Self, String> {
+        let config = chc::Config::from_env();
+        let mut solutions = answers.iter().zip(symbols).filter_map(|(answer, symbols)| {
+            let (None, Some(model)) = (solution_unavailable(answer), &answer.model) else {
+                return None;
+            };
+            let query = answer.query.as_deref().unwrap_or_default();
+            Some(Solution::new(model, query, symbols, names, |script| {
+                config.run_script(script)
+            }))
+        });
+        let first = solutions.next();
+        if first.is_none() && asked.is_empty() {
+            let why = solution_unavailable(&answers[0]);
+            return Err(why.unwrap_or_else(|| "no solution".to_owned()));
+        }
+        let mut solution = first.unwrap_or(Solution {
+            by_pred: HashMap::new(),
+            partial: true,
+            unanswered: HashMap::new(),
+        });
+        for other in solutions {
+            solution.by_pred.extend(other.by_pred);
+        }
+        solution.partial = !asked.is_empty();
+        for (answer, asked) in answers.iter().zip(asked) {
+            if asked.refuted || answer.result.is_ok() {
+                continue;
+            }
+            let why = format!(
+                "no solution: the second run, asked for a model, gave none ({})",
+                chc::verdict(&answer.result)
+            );
+            for p in system.pred_vars_of(&asked.clauses) {
+                solution.unanswered.insert(p, why.clone());
+            }
+        }
+        Ok(solution)
+    }
+
+    /// Why `site` has no solution, if it has none.
+    pub(super) fn unsolved(&self, site: &Site) -> Option<&str> {
+        if self.solves(site) {
+            return None;
+        }
+        let unanswered = site.preds.iter().find_map(|p| self.unanswered.get(p));
+        Some(unanswered.map_or(REFUTED_PART, String::as_str))
+    }
+
+    /// Whether the solution covers `site`: not when it is that of other parts only.
+    pub(super) fn solves(&self, site: &Site) -> bool {
+        !self.partial || site.preds.iter().any(|p| self.interprets(*p))
     }
 
     /// Whether the solver interprets `p`: not when the query leaves it out (see

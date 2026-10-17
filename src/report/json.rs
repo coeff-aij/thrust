@@ -4,26 +4,41 @@ use rustc_middle::mir::BasicBlock;
 use rustc_middle::ty::TyCtxt;
 use serde::Serialize;
 
-use super::constraints::Constraint;
+use super::constraints::{Annotation, Constraint};
 use super::failure::Failure;
 use super::formula::Formula;
 use super::sites::{Names, Site, SiteKind};
 use super::solution::{block_template, invariant, over, signature, Solution};
-use super::{constraint_of, location, Entry, Items};
+use super::{assumed, constraint_of, range, Entry, Items, Range};
 
 /// One line of the report, its `kind` the variant's name.
 #[derive(Serialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 enum Line<'a> {
+    /// What the report is: its version, the directory its relative files are in, and how its
+    /// columns count.
+    Report {
+        version: u32,
+        root: String,
+        columns: &'a str,
+    },
+    /// The crate's verdict, and how many obligations a failure is refuted at: one per query, or
+    /// one per part.
+    Verdict {
+        verdict: &'a str,
+        refutations: &'a str,
+    },
     Part {
-        functions: &'a [String],
+        id: usize,
+        clauses: usize,
+        functions: Vec<FnSpan>,
         verdict: &'a str,
         cached: bool,
     },
     Site {
         r#fn: &'a str,
         site: String,
-        span: String,
+        span: Range,
         over: String,
         template: String,
         preds: Vec<Pred<'a>>,
@@ -33,25 +48,38 @@ enum Line<'a> {
     Constraint {
         id: String,
         r#fn: &'a str,
-        r#loop: Option<String>,
-        span: Option<String>,
+        r#loop: Option<Range>,
+        span: Option<Range>,
         obligation: &'a str,
         premises: &'a [String],
         conclusion: &'a str,
     },
     Failure {
+        /// The number of its part (`THRUST_SPLIT`).
+        part: Option<usize>,
         constraint: String,
         r#fn: Option<&'a str>,
-        span: Option<String>,
+        span: Option<Range>,
         obligation: Option<&'a str>,
         premises: Option<&'a [String]>,
         conclusion: Option<&'a str>,
-        run: Vec<Step>,
+        run: Vec<Step<'a>>,
         truncated: bool,
         values: Vec<Value>,
         /// The functions whose inferred contract the run goes through.
         inferred: Vec<&'a str>,
+        /// The written annotations the refuted obligation checks.
+        annotation: Vec<Range>,
+        /// The functions whose written `ensures` the run assumes at a call.
+        assumes: Vec<FnSpan>,
     },
+}
+
+/// A function and a span in it.
+#[derive(Serialize)]
+struct FnSpan {
+    r#fn: String,
+    span: Range,
 }
 
 #[derive(Serialize)]
@@ -67,10 +95,13 @@ struct Pred<'a> {
 }
 
 #[derive(Serialize)]
-struct Step {
+struct Step<'a> {
     depth: usize,
     fact: String,
+    /// The constraint deriving the fact, with what it stands for and where.
     via: Option<String>,
+    obligation: Option<&'a str>,
+    span: Option<Range>,
 }
 
 pub(super) struct Json<'a, 'tcx> {
@@ -78,8 +109,10 @@ pub(super) struct Json<'a, 'tcx> {
     pub(super) items: Items,
     pub(super) names: &'a Names,
     pub(super) solution: Option<Solution>,
-    pub(super) failures: Vec<Failure>,
+    /// Each failure, with the number of its part (`THRUST_SPLIT`).
+    pub(super) failures: Vec<(Option<usize>, Failure)>,
     pub(super) parts: &'a [super::Part],
+    pub(super) verdict: &'a str,
 }
 
 impl Json<'_, '_> {
@@ -102,11 +135,11 @@ impl Json<'_, '_> {
                 args: &info.args,
             })
             .collect();
-        let solution = self.solution.as_ref();
+        let solution = self.solution.as_ref().filter(|s| s.solves(site));
         Line::Site {
             r#fn: &entry.name,
             site: kind,
-            span: location(self.tcx, site.span),
+            span: range(self.tcx, site.span),
             over: over(site),
             template: match site.kind {
                 SiteKind::Contract => render(&Formula::clone),
@@ -133,31 +166,40 @@ impl Json<'_, '_> {
             r#fn: &entry.name,
             r#loop: header
                 .and_then(|h| entry.body.span(h, None))
-                .map(|span| location(self.tcx, span)),
-            span: c.span.map(|span| location(self.tcx, span)),
+                .map(|span| range(self.tcx, span)),
+            span: c.span.map(|span| range(self.tcx, span)),
             obligation: &c.kind,
             premises: &c.premises,
             conclusion: &c.conclusion,
         }
     }
 
-    fn failure<'a>(&self, entries: &'a [Entry<'_>], failure: &Failure) -> Line<'a> {
+    fn failure<'a>(
+        &self,
+        entries: &'a [Entry<'_>],
+        part: Option<usize>,
+        failure: &Failure,
+    ) -> Line<'a> {
         let found = constraint_of(entries, failure.goal);
         let run = failure
             .run
             .iter()
-            .map(|step| Step {
-                depth: step.depth,
-                fact: step.fact.clone(),
-                via: step.via.map(|id| format!("{id:?}")),
+            .map(|step| {
+                let via = step.via.and_then(|id| constraint_of(entries, id));
+                Step {
+                    depth: step.depth,
+                    fact: step.fact.clone(),
+                    via: step.via.map(|id| format!("{id:?}")),
+                    obligation: via.map(|(_, c)| c.kind.as_str()),
+                    span: via.and_then(|(_, c)| c.span).map(|s| range(self.tcx, s)),
+                }
             })
             .collect();
         Line::Failure {
+            part,
             constraint: format!("{:?}", failure.goal),
             r#fn: found.map(|(e, _)| e.name.as_str()),
-            span: found
-                .and_then(|(_, c)| c.span)
-                .map(|s| location(self.tcx, s)),
+            span: found.and_then(|(_, c)| c.span).map(|s| range(self.tcx, s)),
             obligation: found.map(|(_, c)| c.kind.as_str()),
             premises: found.map(|(_, c)| c.premises.as_slice()),
             conclusion: found.map(|(_, c)| c.conclusion.as_str()),
@@ -175,6 +217,19 @@ impl Json<'_, '_> {
                 .filter_map(|def| entries.iter().find(|e| e.def == *def))
                 .map(|e| e.name.as_str())
                 .collect(),
+            annotation: match found.map(|(_, c)| &c.annotation) {
+                Some(Annotation::Checks(spans)) => {
+                    spans.iter().map(|s| range(self.tcx, *s)).collect()
+                }
+                _ => Vec::new(),
+            },
+            assumes: assumed(self.tcx, entries, failure)
+                .into_iter()
+                .map(|(name, span)| FnSpan {
+                    r#fn: name,
+                    span: range(self.tcx, span),
+                })
+                .collect(),
         }
     }
 
@@ -184,20 +239,51 @@ impl Json<'_, '_> {
         out: &mut dyn std::io::Write,
     ) -> std::io::Result<()> {
         let mut line = |line: Line<'_>| writeln!(out, "{}", serde_json::to_string(&line)?);
+        line(Line::Report {
+            version: 1,
+            root: std::env::current_dir()
+                .unwrap_or_default()
+                .display()
+                .to_string(),
+            columns: "1-based, in characters; end_column after the last",
+        })?;
+        line(Line::Verdict {
+            verdict: self.verdict,
+            refutations: if self.parts.is_empty() {
+                "one per query"
+            } else {
+                "one per part"
+            },
+        })?;
         for part in self.parts {
             line(Line::Part {
-                functions: &part.functions,
+                id: part.id,
+                clauses: part.clauses,
+                functions: part
+                    .functions
+                    .iter()
+                    .map(|f| FnSpan {
+                        r#fn: f.r#fn.clone(),
+                        span: range(self.tcx, f.span),
+                    })
+                    .collect(),
                 verdict: part.verdict,
                 cached: part.cached,
             })?;
         }
-        for failure in &self.failures {
-            line(self.failure(entries, failure))?;
+        for (part, failure) in &self.failures {
+            line(self.failure(entries, *part, failure))?;
         }
+        // Without a solution, a site has only its template to show, if that was asked for.
+        let shown = |site: &Site| {
+            let solved = self.solution.as_ref().is_some_and(|s| s.solves(site));
+            self.items.template || (solved && (self.items.solution || self.items.inferred))
+        };
         for entry in entries {
             let loop_sites = entry.loops.values().filter_map(|(site, _)| site.as_ref());
             let internal = entry.blocks.iter().filter(|_| self.items.internal);
-            for site in entry.contract.iter().chain(loop_sites).chain(internal) {
+            let entry_sites = entry.contract.iter().chain(loop_sites).chain(internal);
+            for site in entry_sites.filter(|site| shown(site)) {
                 line(self.site(entry, site))?;
             }
             if !self.items.constraints {
