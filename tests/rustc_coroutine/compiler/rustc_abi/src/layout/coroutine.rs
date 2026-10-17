@@ -538,6 +538,8 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
 // - `niche_wf` of the largest niche of every layout `univariant` may receive, and the niche
 //   within that layout: each of `local_layouts` and `prefix_layouts`, and `tag_to_layout`'s
 //   result for any scalar (through its postcondition), each named by `post!` of `Deref::deref`.
+// - `F`'s `deref` is a function (`deref_functional`), which `univariant` requires; rustc's
+//   `Layout` dereferences to the interned pointer it holds.
 // - The size bound: with T the weight (`weight`: each layout's size and twice its alignment) of
 //   `prefix_layouts`, the tag's layout and all of `local_layouts`, plus the aggregate and `i8`
 //   alignments 2^qa and 2^qi, 3T + 2^qa + 2^qi is below the object size bound. It gives
@@ -550,6 +552,7 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
 //   weigh at most `local_layouts`' weight, and the sum is below 3T + 2^qa + 2^qi.
 #[thrust_macros::requires(
     (*variant_fields).len() > 0
+        && LayoutCalculator::<C>::deref_functional::<FieldIdx, VariantIdx, F>()
         && (*storage_conflicts).num_rows <= (*local_layouts).len()
         && *(*storage_conflicts).col_bound <= (*storage_conflicts).num_rows
         && BitMatrix::<LocalIdx, LocalIdx>::wf(*storage_conflicts)

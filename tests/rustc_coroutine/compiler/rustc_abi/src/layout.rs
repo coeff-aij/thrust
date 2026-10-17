@@ -82,7 +82,10 @@ fn sum_first(ts: &[u64], k: usize) -> u64 {
 // exactly when an unsized field is not the tail of a `MaybeUnsized` struct, which does not depend
 // on the order, or with `SizeOverflow`, never when the fields fit in any order
 // (`fits_in_any_order`); with `Start` a niche comes from some field's, and with `End` any field's
-// niche gives one; the niche is well formed and lies within the size. `univariant` needs these
+// niche gives one; the niche is well formed and lies within the size. Both methods also require
+// that `F`'s `deref` is a function (`deref_functional`): the code reads each field's layout once,
+// so the directions that conclude from some layout `post!` allows (an unsized field gives
+// `UnexpectedUnsized`, a field's niche gives `End` one) hold only for the layout `deref` returns. `univariant` needs these
 // for its two `unwrap_without_debug`s on the `End` layout, and requires that the fields fit in any
 // order: rustc assumes the `End` layout succeeds whenever the `Start` one does
 // (`expect("alt layout should always work")`), but the two orders pad differently, so one of them
@@ -205,6 +208,24 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                     && s < b))
     }
 
+    /// `F`'s `deref` is a function: each value of `F` dereferences to one layout. `post!` of a
+    /// generic `Deref::deref` is a relation, as Creusot's `T::deref.postcondition` is, so a
+    /// contract that names a field's layout by `exists d. post!(.., d) && **d == l` speaks of every
+    /// layout the relation allows; this predicate makes that the one layout `deref` returns.
+    /// rustc's `Layout` dereferences to the interned pointer it holds.
+    #[thrust_macros::predicate]
+    pub(crate) fn deref_functional<
+        'a,
+        FieldIdx: Idx + thrust_models::Model,
+        VariantIdx: Idx,
+        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model,
+    >() -> bool {
+        forall(|x: <F as thrust_models::Model>::Ty, d1: &&LayoutData<FieldIdx, VariantIdx>, d2: &&LayoutData<FieldIdx, VariantIdx>|
+            !(thrust_macros::post!(<F as core::ops::Deref>::deref(&x), d1)
+                && thrust_macros::post!(<F as core::ops::Deref>::deref(&x), d2))
+                || **d1 == **d2)
+    }
+
     /// An unsized field is not the tail of a `MaybeUnsized` struct.
     #[thrust_macros::predicate]
     fn unsized_misplaced<
@@ -238,6 +259,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
     }
 
     #[thrust_macros::requires(Self::layout_pre::<FieldIdx, VariantIdx, F>(*self, fields, kind))]
+    #[thrust_macros::requires(Self::deref_functional::<FieldIdx, VariantIdx, F>())]
     #[thrust_macros::requires(Self::fits_in_any_order::<FieldIdx, VariantIdx, F>(*self, fields, repr, kind))]
     #[thrust_macros::ensures(forall(|l: LayoutData<FieldIdx, VariantIdx>|
         result != Ok(l) || FieldsShape::<FieldIdx>::arbitrary_of(l.fields, (*fields).len())))]
@@ -315,6 +337,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
     }
 
     #[thrust_macros::requires(Self::layout_pre::<FieldIdx, VariantIdx, F>(*self, fields, kind))]
+    #[thrust_macros::requires(Self::deref_functional::<FieldIdx, VariantIdx, F>())]
     #[thrust_macros::ensures(forall(|l: LayoutData<FieldIdx, VariantIdx>|
         result != Ok(l) || FieldsShape::<FieldIdx>::arbitrary_of(l.fields, (*fields).len())))]
     #[thrust_macros::ensures(forall(|l: LayoutData<FieldIdx, VariantIdx>, dl: TargetDataLayout, s: USize, q: USize|
