@@ -318,9 +318,10 @@ impl Config {
         }
     }
 
-    /// `z3`'s refutation of `problem`, which it answers `unsat`. Its preprocessing would fold
-    /// clauses into one another, and with them the facts the refutation derives, and drop the
-    /// premises a fact makes true, so the transformations doing so are turned off.
+    /// `z3`'s refutation of `problem`, which it answers `unsat`, by Spacer, whose refutations are
+    /// hyper-resolutions. Its preprocessing would fold clauses into one another, and with them
+    /// the facts the refutation derives, and drop the premises a fact makes true, so the
+    /// transformations doing so are turned off.
     pub fn refute(&self, problem: impl std::fmt::Display) -> Option<String> {
         use std::io::Write as _;
         let mut file = tempfile::Builder::new()
@@ -334,6 +335,7 @@ impl Config {
         solver.args.extend(
             [
                 "proof=true",
+                "fp.engine=spacer",
                 "fp.xform.slice=false",
                 "fp.xform.inline_linear=false",
                 "fp.xform.inline_eager=false",

@@ -169,10 +169,10 @@ impl Human<'_, '_> {
             return;
         }
         let Some(failure) = failure else {
-            let why = if answer.proof.is_none() {
-                "the solver gave no refutation (only `z3` is asked for one)"
-            } else {
-                "the refutation derives no goal of the system"
+            let why = match (&answer.proof, answer.goal_markers.is_empty()) {
+                (None, true) => "the solver gave no refutation (only `z3` is asked for one)",
+                (None, false) => "the second run, asked for a refutation, gave none",
+                (Some(_), _) => "the refutation derives no goal of the system",
             };
             self.tcx
                 .dcx()

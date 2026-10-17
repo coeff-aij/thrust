@@ -3590,21 +3590,28 @@ impl System {
         tags
     }
 
-    /// Gives each goal (a clause whose head is `false`) a nullary predicate variable of its own
-    /// between its body and `false`, which the system is satisfiable with exactly when it is
-    /// without: `g ⇐ body` and `false ⇐ g`. A refutation then derives the marker of the goal it
-    /// refutes. Returns the markers with their goals.
+    /// Gives each goal (a clause whose head is no predicate variable: `false`, or a formula the
+    /// clause checks) a nullary predicate variable of its own between its body and `false`, which
+    /// the system is satisfiable with exactly when it is without: `g ⇐ body ∧ ¬head` and
+    /// `false ⇐ g`. A refutation then derives the marker of the goal it refutes. Returns the
+    /// markers with their goals.
     fn mark_goals(&mut self) -> Vec<(PredVarId, ClauseId)> {
         let goals: Vec<ClauseId> = self
             .clauses
             .iter_enumerated()
-            .filter(|(_, clause)| clause.head.is_bottom())
+            .filter(|(_, clause)| {
+                !matches!(clause.head.pred, Pred::Var(_)) && !clause.head.is_top()
+            })
             .map(|(id, _)| id)
             .collect();
         let mut markers = Vec::new();
         for id in goals {
             let marker = self.new_pred_var(PredSig::new(), DebugInfo::default());
-            self.clauses[id].head = Atom::new(marker.into(), vec![]);
+            let clause = &mut self.clauses[id];
+            let head = std::mem::replace(&mut clause.head, Atom::new(marker.into(), vec![]));
+            if !head.is_bottom() {
+                clause.body.formula.push_conj(Formula::Atom(head).not());
+            }
             self.clauses.push(Clause {
                 origin: debug::origin::ClauseOrigin {
                     environment: Vec::new(),
