@@ -458,15 +458,15 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             for impl_local in impls {
                 let impl_def_id = impl_local.to_def_id();
                 let implemented = self.tcx.impl_item_implementor_ids(impl_def_id);
-                let Some(owner) = self
+                // The laws are typed under one of the impl's functions, or under the impl itself
+                // when it has none: its laws are assumed at type parameters all the same.
+                let owner = self
                     .tcx
                     .associated_item_def_ids(impl_def_id)
                     .iter()
                     .copied()
                     .find(|id| self.tcx.def_kind(*id).is_fn_like())
-                else {
-                    continue;
-                };
+                    .unwrap_or(impl_def_id);
                 let trait_ref = self
                     .tcx
                     .impl_trait_ref(impl_def_id)

@@ -160,6 +160,7 @@ where
         forall(|fab: Seq<Closure<F>>| forall(|fbc: Seq<Closure<F>>|
         !Self::produces_at(a, ab.concat(bc), c, sab.concat(sbc), fab.subsequence(0, ab.len()).concat(fbc))
             || <Self as Iterator>::produces(a, ab.concat(bc), c))))))]
+    #[thrust_macros::lemma]
     fn produces_join_intro(
         a: Ghost<Self>,
         ab: Ghost<Seq<<B as Model>::Ty>>,
@@ -173,6 +174,7 @@ where
     // The input sequence's existential introduced at `sab ++ sbc`.
     #[thrust_macros::ensures(forall(|sab: Seq<A>| forall(|sbc: Seq<A>|
         !Self::produces_with(a, ab.concat(bc), c, sab.concat(sbc)) || <Self as Iterator>::produces(a, ab.concat(bc), c))))]
+    #[thrust_macros::lemma]
     fn produces_join_inputs(
         a: Ghost<Self>,
         ab: Ghost<Seq<<B as Model>::Ty>>,
@@ -191,6 +193,7 @@ where
         forall(|fab: Seq<Closure<F>>| forall(|fbc: Seq<Closure<F>>|
         !(Self::produces_at(a, ab, b, sab, fab) && Self::produces_at(b, bc, c, sbc, fbc))
             || Self::produces_at(a, ab.concat(bc), c, sab.concat(sbc), fab.subsequence(0, ab.len()).concat(fbc)))))))]
+    #[thrust_macros::lemma]
     fn produces_trans_at(
         a: Ghost<Self>,
         ab: Ghost<Seq<<B as Model>::Ty>>,
@@ -211,6 +214,7 @@ where
         !(sab.len() == ab.len() && sbc.len() == bc.len() && ab.len() <= k && k < ab.len() + bc.len())
             || (sab.concat(sbc)[k] == sbc[k - ab.len()]
                 && a.2.concat(sab.concat(sbc).subsequence(0, k)) == a.2.concat(sab).concat(sbc.subsequence(0, k - ab.len())))))))]
+    #[thrust_macros::lemma]
     fn history_join(a: Ghost<Self>, ab: Ghost<Seq<<B as Model>::Ty>>, bc: Ghost<Seq<<B as Model>::Ty>>) {}
 }
 
