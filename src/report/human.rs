@@ -271,8 +271,14 @@ impl Human<'_, '_> {
         match span {
             Some(span) => {
                 let mut diag = self.tcx.dcx().struct_span_note(span, title);
-                for annotation in checked.iter().filter(|a| **a != span) {
-                    diag.span_label(*annotation, "the annotation it checks");
+                // Which of several clauses fails, the refutation does not say.
+                let label = if checked.len() > 1 {
+                    "a clause of the annotation it checks"
+                } else {
+                    "the annotation it checks"
+                };
+                for annotation in checked {
+                    diag.span_label(*annotation, label);
                 }
                 for note in notes {
                     diag.note(note);

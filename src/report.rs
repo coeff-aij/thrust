@@ -230,6 +230,10 @@ fn assumed(
         let constraints::Annotation::Assumes(callee, spans) = &c.annotation else {
             continue;
         };
+        // The injected `std.rs` is no annotation of the program's.
+        if in_injected_std(tcx, spans[0]) {
+            continue;
+        }
         let name = tcx.def_path_str(*callee);
         if assumed.iter().all(|(n, _)| *n != name) {
             assumed.push((name, spans[0]));
@@ -250,11 +254,7 @@ fn user_written(tcx: TyCtxt<'_>, def: LocalDefId) -> bool {
             span.ctxt().outer_expn_data().kind,
             ExpnKind::Macro(MacroKind::Attr, _)
         );
-    written
-        && !matches!(
-            tcx.sess.source_map().span_to_filename(span),
-            rustc_span::FileName::Custom(name) if name == crate::INJECTED_STD_FILE_NAME
-        )
+    written && !in_injected_std(tcx, span)
 }
 
 /// The file of `span`, relative to the working directory when it is under it.
@@ -292,6 +292,14 @@ fn range(tcx: TyCtxt<'_>, span: Span) -> Range {
         end_line: hi.line,
         end_column: hi.col.0 + 1,
     }
+}
+
+/// Whether `span` is in the injected `std.rs`.
+fn in_injected_std(tcx: TyCtxt<'_>, span: Span) -> bool {
+    matches!(
+        tcx.sess.source_map().span_to_filename(span),
+        rustc_span::FileName::Custom(name) if name == crate::INJECTED_STD_FILE_NAME
+    )
 }
 
 /// `file:line:column` of `span`.

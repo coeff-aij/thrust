@@ -16,7 +16,11 @@ fn report_with(fixture: &str, items: &str, env: &[(&str, &str)]) -> Output {
         .env("THRUST_REPORT", items)
         .env_remove("THRUST_SOLVER")
         .env_remove("THRUST_OUTPUT_DIR")
+        .env_remove("THRUST_SPLIT")
+        .env_remove("THRUST_CACHE_DIR")
         .env_remove("THRUST_REPORT_FORMAT")
+        .env_remove("THRUST_REPORT_FILE")
+        .env_remove("THRUST_REPORT_ONLY")
         .envs(env.iter().copied())
         .output()
         .unwrap()
@@ -67,7 +71,7 @@ fn report_names_the_written_contract_a_run_assumes() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains(
-            "it assumes the written contract of `natural` (tests/report/written_call.rs:2:1)"
+            "it assumes the written contract of `natural` (tests/report/written_call.rs:2:26)"
         ),
         "{stderr}"
     );
@@ -179,4 +183,42 @@ fn the_verification_error_is_at_the_refuted_obligation() {
         .nth(1)
         .unwrap_or_default();
     assert!(error.contains("loop_fail.rs:15:5\n"), "{stderr}");
+}
+
+/// Each clause of a `closure!` contract is labelled by its formula, and so is a specification
+/// attribute's; JSON gives the spans as the failure's `annotation`.
+#[test]
+fn report_labels_each_clause_by_its_formula() {
+    let output = report("closure_two_clauses.rs", "failure");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let labelled = |clause: &str| {
+        let mut lines = stderr.lines().skip_while(|l| !l.contains(clause));
+        lines
+            .nth(1)
+            .unwrap_or_default()
+            .contains("a clause of the annotation it checks")
+    };
+    assert!(labelled("ensures(result >= x)"), "{stderr}");
+    assert!(labelled("ensures(result == x + 2)"), "{stderr}");
+    let json = report_with(
+        "ensures_fail.rs",
+        "failure",
+        &[("THRUST_REPORT_FORMAT", "json")],
+    );
+    let stdout = String::from_utf8_lossy(&json.stdout);
+    let annotation = r#""annotation":[{"file":"tests/report/ensures_fail.rs","line":2,"column":26,"end_line":2,"end_column":36}]"#;
+    assert!(stdout.contains(annotation), "{stdout}");
+}
+
+/// A run through a call to a function of the injected `std.rs` names no written contract of the
+/// program's.
+#[test]
+fn report_names_no_contract_of_the_injected_std() {
+    let output = report("std_replace.rs", "failure");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("after call to `std::mem::replace`"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("it assumes"), "{stderr}");
 }

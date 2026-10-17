@@ -860,22 +860,46 @@ pub struct Analyzer<'tcx> {
     contract_annotations: HashMap<DefId, ContractAnnotations>,
 }
 
+/// Whether `expr` is the literal `true`.
+fn is_true(expr: &rustc_hir::Expr<'_>) -> bool {
+    let rustc_hir::ExprKind::Lit(lit) = expr.kind else {
+        return false;
+    };
+    matches!(lit.node, rustc_ast::LitKind::Bool(true))
+}
+
+/// The span covering the code of `expr` the program writes, if a macro made `expr` from some.
+fn user_span(expr: &rustc_hir::Expr<'_>) -> Option<rustc_span::Span> {
+    struct Written(Option<rustc_span::Span>);
+    impl<'v> rustc_hir::intravisit::Visitor<'v> for Written {
+        fn visit_expr(&mut self, e: &'v rustc_hir::Expr<'v>) {
+            if !e.span.from_expansion() {
+                self.0 = Some(self.0.map_or(e.span, |all| all.to(e.span)));
+            }
+            rustc_hir::intravisit::walk_expr(self, e);
+        }
+    }
+    let mut written = Written(None);
+    rustc_hir::intravisit::Visitor::visit_expr(&mut written, expr);
+    written.0
+}
+
 /// The spans of the clauses `expr` conjoins as the program writes them, but those that are
-/// `true`. The specification macros conjoin each clause to those before it, starting from `true`,
-/// at the span of the attribute that writes it.
+/// `true`. A macro conjoins each clause to those before it (the specification attributes
+/// starting from `true`); a clause it rewrote is spanned by the code of it the program writes, or
+/// else by the conjunction, which a specification attribute spans by itself.
 fn written_clauses(expr: &rustc_hir::Expr<'_>) -> Vec<rustc_span::Span> {
     use rustc_hir::{BinOpKind, ExprKind};
-    let is_true = |e: &rustc_hir::Expr<'_>| matches!(e.kind, ExprKind::Lit(lit) if matches!(lit.node, rustc_ast::LitKind::Bool(true)));
     match expr.kind {
         ExprKind::Binary(op, before, clause)
             if expr.span.from_expansion() && op.node == BinOpKind::And =>
         {
-            let this = (!is_true(clause)).then_some(expr.span);
+            let this = (!is_true(clause)).then(|| user_span(clause).unwrap_or(expr.span));
             [written_clauses(before), this.into_iter().collect()].concat()
         }
         ExprKind::DropTemps(e) => written_clauses(e),
         _ if is_true(expr) => Vec::new(),
-        _ => vec![expr.span],
+        _ => vec![user_span(expr).unwrap_or(expr.span)],
     }
 }
 
