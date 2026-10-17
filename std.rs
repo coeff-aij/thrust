@@ -934,6 +934,17 @@ mod thrust_models {
         type Ty = core::ops::RangeToInclusive<<Idx as Model>::Ty>;
     }
 
+    // The fields `start`, `end` and `exhausted`, which are private to core, so a tuple rather
+    // than the struct.
+    impl<Idx> Model for core::ops::RangeInclusive<Idx> where Idx: Model {
+        type Ty = (<Idx as Model>::Ty, <Idx as Model>::Ty, bool);
+    }
+
+    // `Rev` holds only the iterator it wraps.
+    impl<I> Model for core::iter::Rev<I> where I: Model {
+        type Ty = <I as Model>::Ty;
+    }
+
     impl Model for core::ops::RangeFull {
         type Ty = core::ops::RangeFull;
     }
@@ -2872,6 +2883,212 @@ macro_rules! range_iterator_spec {
 }
 
 range_iterator_spec!(i8 i16 i32 i64 i128 isize u8 u16 u32 u64 u128 usize);
+
+// `next_back` is specified once, through `produces_back`, as `next` is through `produces`
+// (Creusot's `DoubleEndedIteratorSpec`, creusot-std src/std/iter.rs). A type gets a `next_back`
+// by implementing the trait.
+#[thrust_macros::context]
+trait DoubleEndedIteratorSpec: std::iter::DoubleEndedIterator + IteratorSpec
+where
+    Self::Item: thrust_models::Model,
+{
+    #[thrust_macros::predicate]
+    fn produces_back(self, visited: Vec<Self::Item>, o: Self) -> bool;
+
+    #[thrust_macros::law]
+    #[thrust_macros::requires(Self::inv(*a))]
+    #[thrust_macros::ensures(Self::produces_back(*a, thrust_models::model::Seq::empty(), *a))]
+    fn produces_back_refl(a: &Self);
+
+    #[thrust_macros::law]
+    #[thrust_macros::requires(Self::produces_back(*a, ab, *b) && Self::produces_back(*b, bc, *c))]
+    #[thrust_macros::ensures(Self::produces_back(*a, ab.concat(bc), *c))]
+    fn produces_back_trans(
+        a: &Self,
+        ab: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        b: &Self,
+        bc: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        c: &Self,
+    );
+}
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(I::inv(*it))]
+#[thrust_macros::ensures(
+    I::inv(!it)
+        && (result == None ==> I::completed(it))
+        && thrust_models::forall(|x: <I::Item as thrust_models::Model>::Ty| result == Some(x)
+            ==> I::produces_back(*it, thrust_models::model::Seq::singleton(x), !it))
+)]
+fn _extern_spec_double_ended_iterator_next_back<I>(it: &mut I) -> Option<I::Item>
+    where I: DoubleEndedIteratorSpec,
+          I::Item: thrust_models::Model
+{
+    <I as std::iter::DoubleEndedIterator>::next_back(it)
+}
+
+// Creusot's `produces_back` of `Range` (creusot-std src/std/iter/range.rs, 3620de437) bounds the
+// length by `o.end - self.end`, which is never positive, and starts the items at `end`; here the
+// length is what the end moved down by and the first item is `end - 1`.
+macro_rules! range_double_ended_iterator_spec {
+    ($($t:ty)*) => {
+        $(
+            #[thrust_macros::context]
+            impl DoubleEndedIteratorSpec for core::ops::Range<$t> {
+                #[thrust_macros::predicate]
+                fn produces_back(self, visited: Vec<$t>, o: Self) -> bool {
+                    self.start == o.start
+                        && o.end <= self.end
+                        && (visited.len() == 0 || o.start <= o.end)
+                        && visited.len() == self.end - o.end
+                        && thrust_models::forall(|i: thrust_models::model::Int|
+                            !(0 <= i && i < visited.len()) || visited[i] == self.end - 1 - i)
+                }
+
+                fn produces_back_refl(a: &Self) {}
+
+                fn produces_back_trans(
+                    a: &Self,
+                    ab: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+                    b: &Self,
+                    bc: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+                    c: &Self,
+                ) {
+                }
+            }
+        )*
+    };
+}
+
+range_double_ended_iterator_spec!(i8 i16 i32 i64 i128 isize u8 u16 u32 u64 u128 usize);
+
+// An inclusive range is empty once `exhausted` is set or its start passes its end; it then yields
+// nothing more, whatever its bounds are. Creusot's `RangeInclusive` (creusot-std
+// src/std/iter/range.rs), with the difference of its `range_inclusive_len` split by which of the
+// two ranges are empty.
+macro_rules! range_inclusive_iterator_spec {
+    ($($t:ty)*) => {
+        $(
+            #[thrust_macros::context]
+            impl IteratorSpec for core::ops::RangeInclusive<$t> {
+                #[thrust_macros::predicate]
+                fn inv(self) -> bool {
+                    true
+                }
+
+                #[thrust_macros::predicate]
+                fn produces(self, visited: Vec<$t>, o: Self) -> bool {
+                    (!(self.2 || !(self.0 <= self.1)) || (visited.len() == 0 && (o.2 || !(o.0 <= o.1))))
+                        && (self.2 || !(self.0 <= self.1) || o.2 || !(o.0 <= o.1)
+                            || (self.1 == o.1 && visited.len() == o.0 - self.0))
+                        && (self.2 || !(self.0 <= self.1) || !(o.2 || !(o.0 <= o.1))
+                            || visited.len() == self.1 - self.0 + 1)
+                        && thrust_models::forall(|i: thrust_models::model::Int|
+                            !(0 <= i && i < visited.len()) || visited[i] == self.0 + i)
+                }
+
+                #[thrust_macros::predicate]
+                fn completed(&mut self) -> bool {
+                    ((*self).2 || !((*self).0 <= (*self).1))
+                        && ((!self).2 || !((!self).0 <= (!self).1))
+                }
+
+                fn produces_refl(a: &Self) {}
+
+                fn produces_trans(
+                    a: &Self,
+                    ab: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+                    b: &Self,
+                    bc: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+                    c: &Self,
+                ) {
+                }
+            }
+
+            #[thrust_macros::context]
+            impl DoubleEndedIteratorSpec for core::ops::RangeInclusive<$t> {
+                #[thrust_macros::predicate]
+                fn produces_back(self, visited: Vec<$t>, o: Self) -> bool {
+                    (!(self.2 || !(self.0 <= self.1)) || (visited.len() == 0 && (o.2 || !(o.0 <= o.1))))
+                        && (self.2 || !(self.0 <= self.1) || o.2 || !(o.0 <= o.1)
+                            || (self.0 == o.0 && visited.len() == self.1 - o.1))
+                        && (self.2 || !(self.0 <= self.1) || !(o.2 || !(o.0 <= o.1))
+                            || visited.len() == self.1 - self.0 + 1)
+                        && thrust_models::forall(|i: thrust_models::model::Int|
+                            !(0 <= i && i < visited.len()) || visited[i] == self.1 - i)
+                }
+
+                fn produces_back_refl(a: &Self) {}
+
+                fn produces_back_trans(
+                    a: &Self,
+                    ab: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+                    b: &Self,
+                    bc: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+                    c: &Self,
+                ) {
+                }
+            }
+        )*
+    };
+}
+
+range_inclusive_iterator_spec!(i8 i16 i32 i64 i128 isize u8 u16 u32 u64 u128 usize);
+
+// `start..=end` is `RangeInclusive::new(start, end)`.
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(result.0 == start && result.1 == end && !result.2)]
+fn _extern_spec_range_inclusive_new<Idx>(start: Idx, end: Idx) -> core::ops::RangeInclusive<Idx>
+    where Idx: thrust_models::Model
+{
+    core::ops::RangeInclusive::new(start, end)
+}
+
+// Creusot's `Rev` (creusot-std src/std/iter/rev.rs): the items of the inner iterator taken from
+// the back.
+#[thrust_macros::context]
+impl<I> IteratorSpec for core::iter::Rev<I>
+where
+    I: DoubleEndedIteratorSpec,
+    I::Item: thrust_models::Model,
+{
+    #[thrust_macros::predicate]
+    fn inv(self) -> bool {
+        I::inv(self)
+    }
+
+    #[thrust_macros::predicate]
+    fn produces(self, visited: Vec<I::Item>, o: Self) -> bool {
+        I::produces_back(self, visited, o)
+    }
+
+    #[thrust_macros::predicate]
+    fn completed(&mut self) -> bool {
+        I::completed(thrust_models::model::Mut::new(*self, !self))
+    }
+
+    fn produces_refl(a: &Self) {}
+
+    fn produces_trans(
+        a: &Self,
+        ab: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        b: &Self,
+        bc: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        c: &Self,
+    ) {
+    }
+}
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(result == it)]
+fn _extern_spec_iterator_rev<I>(it: I) -> core::iter::Rev<I>
+    where I: DoubleEndedIteratorSpec,
+          I::Item: thrust_models::Model
+{
+    <I as std::iter::Iterator>::rev(it)
+}
 
 // `into_iter` is specified once, through `into_iter_is`; a type gets an `into_iter` by
 // implementing the trait. An iterator is its own `into_iter`.
