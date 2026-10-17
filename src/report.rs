@@ -17,7 +17,6 @@ mod failure;
 mod formula;
 mod human;
 mod json;
-mod model;
 mod proof;
 mod simplify;
 mod sites;
@@ -344,10 +343,7 @@ pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) {
         template_sites: input.template_sites,
         template_vars: input.template_vars,
     };
-    let symbols = model::Symbols::new(
-        system.declared_symbols(chc::Config::from_env().capabilities()),
-        system.pred_vars.indices(),
-    );
+    let symbols = chc::answer::Symbols::of(&system, chc::Config::from_env().capabilities());
     let (entries, names) = entries(tcx, config, &input);
     let solution = match (solution_unavailable(input.answer), &input.answer.model) {
         (None, Some(model)) => {
