@@ -107,3 +107,22 @@ fn report_states_the_verdict_and_one_refutation_per_query() {
         "{stderr}"
     );
 }
+
+/// A refuted precondition labels the `requires` it checks, not the `ensures` written after it,
+/// and a goal over no unknown is shown without a run.
+#[test]
+fn report_labels_the_requires_a_call_breaks() {
+    let output = report("requires_fail.rs", "failure");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("thrust: refuted: precondition of `withdraw` in `main`"),
+        "{stderr}"
+    );
+    let label = stderr
+        .lines()
+        .skip_while(|l| !l.contains("#[thrust_macros::requires(amount <= balance)]"))
+        .nth(1)
+        .unwrap_or_default();
+    assert!(label.contains("the annotation it checks"), "{stderr}");
+    assert!(!stderr.contains("how the solver reaches it"), "{stderr}");
+}

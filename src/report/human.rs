@@ -211,11 +211,14 @@ impl Human<'_, '_> {
         if failure.truncated {
             lines.push("  …".to_owned());
         }
-        notes.push(format!(
-            "how the solver reaches it: each fact follows, by the constraint in brackets, from \
-             the facts indented under it (a derivation, not an order of execution):\n{}",
-            lines.join("\n")
-        ));
+        // A goal over no unknown fails by its constraint alone, without a run.
+        if !lines.is_empty() {
+            notes.push(format!(
+                "how the solver reaches it: each fact follows, by the constraint in brackets, \
+                 from the facts indented under it (a derivation, not an order of execution):\n{}",
+                lines.join("\n")
+            ));
+        }
         let inferred: Vec<String> = failure
             .inferred
             .iter()

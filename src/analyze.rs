@@ -860,6 +860,24 @@ pub struct Analyzer<'tcx> {
     contract_annotations: HashMap<DefId, ContractAnnotations>,
 }
 
+/// The spans of the clauses `expr` conjoins as the program writes them. The specification macros
+/// conjoin each clause to those before it, starting from `true`, at the span of the attribute
+/// that writes it.
+fn written_clauses(expr: &rustc_hir::Expr<'_>) -> Vec<rustc_span::Span> {
+    use rustc_hir::{BinOpKind, ExprKind};
+    let by_macro = expr.span.from_expansion();
+    match expr.kind {
+        ExprKind::Binary(op, before, _) if by_macro && op.node == BinOpKind::And => {
+            [written_clauses(before), vec![expr.span]].concat()
+        }
+        ExprKind::Lit(lit) if by_macro && matches!(lit.node, rustc_ast::LitKind::Bool(true)) => {
+            Vec::new()
+        }
+        ExprKind::DropTemps(e) => written_clauses(e),
+        _ => vec![expr.span],
+    }
+}
+
 /// The annotations a function's written contract is read from, by the spans of their companion
 /// functions: `requires` and the parameters' refinements, `ensures` and the result's.
 #[derive(Debug, Clone, Default)]
@@ -2911,18 +2929,39 @@ impl<'tcx> Analyzer<'tcx> {
         local_def_id: LocalDefId,
         trait_item: Option<LocalDefId>,
     ) -> ContractAnnotations {
-        let span = |def_id: DefId| self.tcx.def_span(def_id);
+        // The clauses as written, read off the tail of the companion's body (the macros conjoin
+        // the clauses of a contract into one); the companion where none is.
+        let spans = |def_id: DefId| {
+            let body = def_id
+                .as_local()
+                .and_then(|def| self.tcx.hir_maybe_body_owned_by(def));
+            let tail = body.and_then(|body| match body.value.kind {
+                rustc_hir::ExprKind::Block(block, _) => block.expr,
+                _ => None,
+            });
+            let written = tail.map(written_clauses).unwrap_or_default();
+            match written.is_empty() {
+                true => vec![self.tcx.def_span(def_id)],
+                false => written,
+            }
+        };
         let mut annotations = ContractAnnotations::default();
         for holder in std::iter::once(local_def_id).chain(trait_item) {
             let requires =
                 self.extract_path_with_attr(holder, &analyze::annot::requires_path_path());
             let ensures = self.extract_path_with_attr(holder, &analyze::annot::ensures_path_path());
-            annotations.requires.extend(requires.map(span));
-            annotations.ensures.extend(ensures.map(span));
+            annotations
+                .requires
+                .extend(requires.into_iter().flat_map(spans));
+            annotations
+                .ensures
+                .extend(ensures.into_iter().flat_map(spans));
             for (position, def_id) in self.extract_refinement_paths(holder) {
                 match position.steps().first() {
-                    Some(rty::TypePositionStep::Return) => annotations.ensures.push(span(def_id)),
-                    _ => annotations.requires.push(span(def_id)),
+                    Some(rty::TypePositionStep::Return) => {
+                        annotations.ensures.extend(spans(def_id))
+                    }
+                    _ => annotations.requires.extend(spans(def_id)),
                 }
             }
         }
