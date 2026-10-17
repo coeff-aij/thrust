@@ -14,9 +14,9 @@ impl thrust_models::Model for Hash64 {
     type Ty = Self;
 }
 
-// `(domain_size, words, marker, card)`.
+// `(domain_size, words, marker)`.
 impl<T> thrust_models::Model for DenseBitSet<T> {
-    type Ty = (USize, Seq<USize>, (), USize);
+    type Ty = (USize, Seq<USize>, ());
 }
 // `(words, pos)`.
 impl<'a> thrust_models::Model for WordIter<'a> {

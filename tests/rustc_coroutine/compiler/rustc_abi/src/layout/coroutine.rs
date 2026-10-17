@@ -115,11 +115,11 @@ impl<VariantIdx: thrust_models::Model, FieldIdx: thrust_models::Model> thrust_mo
             && result.1[l] == SavedLocalEligibility::Assigned(vi))
         || f == g)
     // 3. An ineligible local has its promoted field index, below the number of members of
-    // `inel` (its ghost count `result.0.3`, the position in `inel.iter()`'s enumeration).
+    // `inel` (`DenseBitSet::card`, the position in `inel.iter()`'s enumeration).
     && forall(|l: usize, x: Option<<FieldIdx as thrust_models::Model>::Ty>|
         !(0 <= l && l < nb_locals && result.1[l] == SavedLocalEligibility::Ineligible(x))
         || thrust_models::exists(|k: <FieldIdx as thrust_models::Model>::Ty|
-            x == Some(k) && forall(|i: USize| !<FieldIdx as Idx>::index_is(k, i) || i < result.0.3)))
+            x == Some(k) && forall(|i: USize| !<FieldIdx as Idx>::index_is(k, i) || i < DenseBitSet::<LocalIdx>::card(result.0))))
     // 4. Membership in `inel` matches being `Ineligible(_)`, written as an `<==>` via two `==>`.
     // `mem` takes an `Int` (its declared `usize` parameter is lowered to
     // `Int` by `#[thrust_macros::predicate]`, see the note above the
@@ -158,8 +158,8 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
             assignments.len() == nb_locals.at_entry()
             && ineligible_locals.0 == nb_locals.at_entry()
             && DenseBitSet::<LocalIdx>::words_cover_domain(ineligible_locals)
-            && 0 <= ineligible_locals.3
-            && ineligible_locals.3 <= ineligible_locals.0
+            && 0 <= DenseBitSet::<LocalIdx>::card(ineligible_locals)
+            && DenseBitSet::<LocalIdx>::card(ineligible_locals) <= ineligible_locals.0
             && variants.1 >= 0 && variants.1 <= variants.0.len() && *variants.0 == *variant_fields
             && forall(|v: USize| !(0 <= v && v <= (*variant_fields).len()) || <VariantIdx as Idx>::can_new(v))
             && forall(|k: USize, v: <VariantIdx as thrust_models::Model>::Ty, i: USize|
@@ -208,8 +208,8 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
                 assignments.len() == nb_locals.at_entry()
                 && ineligible_locals.0 == nb_locals.at_entry()
                 && DenseBitSet::<LocalIdx>::words_cover_domain(ineligible_locals)
-                && 0 <= ineligible_locals.3
-                && ineligible_locals.3 <= ineligible_locals.0
+                && 0 <= DenseBitSet::<LocalIdx>::card(ineligible_locals)
+                && DenseBitSet::<LocalIdx>::card(ineligible_locals) <= ineligible_locals.0
                 && variants.1 >= 0 && variants.1 <= variants.0.len() && *variants.0 == *variant_fields
                 && forall(|v: USize| !(0 <= v && v <= (*variant_fields).len()) || <VariantIdx as Idx>::can_new(v))
                 && forall(|k: USize, v: <VariantIdx as thrust_models::Model>::Ty, i: USize|
@@ -292,8 +292,8 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
             assignments.len() == nb_locals.at_entry()
             && ineligible_locals.0 == nb_locals.at_entry()
             && DenseBitSet::<LocalIdx>::words_cover_domain(ineligible_locals)
-            && 0 <= ineligible_locals.3
-            && ineligible_locals.3 <= ineligible_locals.0
+            && 0 <= DenseBitSet::<LocalIdx>::card(ineligible_locals)
+            && DenseBitSet::<LocalIdx>::card(ineligible_locals) <= ineligible_locals.0
             && forall(|k: USize, v: <VariantIdx as thrust_models::Model>::Ty, i: USize|
                 !(0 <= k && k < assignments.len() && assignments[k] == SavedLocalEligibility::Assigned(v) && <VariantIdx as Idx>::index_is(v, i))
                 || i < (*variant_fields).len())
@@ -341,8 +341,8 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
                 assignments.len() == nb_locals.at_entry()
                 && ineligible_locals.0 == nb_locals.at_entry()
                 && DenseBitSet::<LocalIdx>::words_cover_domain(ineligible_locals)
-                && 0 <= ineligible_locals.3
-                && ineligible_locals.3 <= ineligible_locals.0
+                && 0 <= DenseBitSet::<LocalIdx>::card(ineligible_locals)
+                && DenseBitSet::<LocalIdx>::card(ineligible_locals) <= ineligible_locals.0
                 && forall(|k: USize, v: <VariantIdx as thrust_models::Model>::Ty, i: USize|
                     !(0 <= k && k < assignments.len() && assignments[k] == SavedLocalEligibility::Assigned(v) && <VariantIdx as Idx>::index_is(v, i))
                     || i < (*variant_fields).len())
@@ -411,8 +411,8 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
                 && assignments.len() == nb_locals.at_entry()
                 && ineligible_locals.0 == nb_locals.at_entry()
                 && DenseBitSet::<LocalIdx>::words_cover_domain(ineligible_locals)
-                && 0 <= ineligible_locals.3
-                && ineligible_locals.3 <= ineligible_locals.0
+                && 0 <= DenseBitSet::<LocalIdx>::card(ineligible_locals)
+                && DenseBitSet::<LocalIdx>::card(ineligible_locals) <= ineligible_locals.0
                 && forall(|k: USize| !(0 <= k && k < nb_locals.at_entry()) || <LocalIdx as Idx>::can_new(k))
                 && forall(|n: USize| !(0 <= n && n <= nb_locals.at_entry()) || <FieldIdx as Idx>::can_new(n))
                 && forall(|l: USize, v: USize, f: USize|
@@ -454,8 +454,8 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
                     && forall(|k: USize| !(0 <= k && k < iter.2) || iter.1[k] == SavedLocalEligibility::Ineligible(None))
                     && ineligible_locals.0 == nb_locals.at_entry()
                     && DenseBitSet::<LocalIdx>::words_cover_domain(ineligible_locals)
-                    && 0 <= ineligible_locals.3
-                    && ineligible_locals.3 <= ineligible_locals.0
+                    && 0 <= DenseBitSet::<LocalIdx>::card(ineligible_locals)
+                    && DenseBitSet::<LocalIdx>::card(ineligible_locals) <= ineligible_locals.0
                     && forall(|k: USize| !(0 <= k && k < nb_locals.at_entry()) || <LocalIdx as Idx>::can_new(k))
                     && forall(|n: USize| !(0 <= n && n <= nb_locals.at_entry()) || <FieldIdx as Idx>::can_new(n))
                 );
@@ -475,11 +475,11 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
                 assignments.len() == nb_locals.at_entry()
                 && ineligible_locals.0 == nb_locals.at_entry()
                 && DenseBitSet::<LocalIdx>::words_cover_domain(ineligible_locals)
-                && 0 <= ineligible_locals.3
-                && ineligible_locals.3 <= ineligible_locals.0
+                && 0 <= DenseBitSet::<LocalIdx>::card(ineligible_locals)
+                && DenseBitSet::<LocalIdx>::card(ineligible_locals) <= ineligible_locals.0
                 && iter.0.4 == ineligible_locals.0 && iter.1 == iter.0.5
                 && 0 <= iter.1 && iter.1 <= iter.0.4
-                && 0 <= iter.0.6 && iter.0.5 + iter.0.6 == ineligible_locals.3
+                && 0 <= iter.0.6 && iter.0.5 + iter.0.6 == DenseBitSet::<LocalIdx>::card(ineligible_locals)
                 && forall(|k: USize| !(0 <= k && k < nb_locals.at_entry()) || <LocalIdx as Idx>::can_new(k))
                 && forall(|n: USize| !(0 <= n && n <= nb_locals.at_entry()) || <FieldIdx as Idx>::can_new(n))
                 && forall(|l: USize, v: USize, f: USize|
@@ -507,7 +507,7 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
                 && forall(|l: USize| !(0 <= l && l < nb_locals.at_entry() && DenseBitSet::<LocalIdx>::mem(ineligible_locals, l))
                     || (iter.0.7[l] != 0 && assignments[l] == SavedLocalEligibility::Ineligible(None))
                     || exists(|k: <FieldIdx as thrust_models::Model>::Ty| assignments[l] == SavedLocalEligibility::Ineligible(Some(k))
-                        && forall(|i: USize| !<FieldIdx as Idx>::index_is(k, i) || i < ineligible_locals.3)))
+                        && forall(|i: USize| !<FieldIdx as Idx>::index_is(k, i) || i < DenseBitSet::<LocalIdx>::card(ineligible_locals))))
             );
             assignments[local] = Ineligible(Some(FieldIdx::new(idx)));
         }
@@ -531,7 +531,7 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
 //   twice);
 // - P + 1 + n <= u32::MAX, for the `u32` memory order.
 //   Both P + 1 + n bounds are stronger than the panic condition, which is P + 1 + c with c the
-//   number of ineligible locals (the ghost count of `ineligible_locals`): c is computed inside,
+//   number of ineligible locals (`DenseBitSet::card` of `ineligible_locals`): c is computed inside,
 //   from eligibility's result, so a condition on the inputs can only bound it by n. rustc's
 //   caller guarantees neither form.
 // - `dl_wf` of the data layout `calc.cx` names, which `univariant` requires.
@@ -648,7 +648,7 @@ pub fn layout<
     prefix_layouts.push(tag_to_layout(tag));
     prefix_layouts.extend_from(promoted_layouts);
     // `push` and `extend_from` give `prefix_layouts.len() == P + 1 + c`, c the items
-    // `ineligible_locals.iter()` yields (`Map` keeps the length), which is the set's ghost count:
+    // `ineligible_locals.iter()` yields (`Map` keeps the length), which is the set's count `card`:
     // `iter` starts `BitIter`'s `left` at it, and the iterator completes with nothing left.
     // TODO(proof): `fits_in_any_order` by the size bound needs the promoted locals to weigh at most
     // `local_layouts`, a sum over a subset, which no lemma states.
@@ -805,7 +805,7 @@ pub fn layout<
                             // property 3.
                             let field_idx = field_idx.unwrap();
                             (
-                                // `field_idx` is below the set's ghost count c (property 3),
+                                // `field_idx` is below the set's count c (property 3),
                                 // which is `offsets_b.len()` (the prefix length and `split_off`),
                                 // and `promoted_memory_index` has at least c entries
                                 // (the permutation split).
