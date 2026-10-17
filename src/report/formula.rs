@@ -208,7 +208,10 @@ fn componentwise<V: Clone + PartialEq>(
 fn tidy_atom<V: Clone + PartialEq>(atom: chc::Atom<V>) -> chc::Formula<V> {
     use chc::{KnownPred, Term};
     let args: Vec<Term<V>> = atom.args.into_iter().map(tidy_term).collect();
-    let comparison = matches!(atom.pred, chc::Pred::Known(p) if KnownPred::named(p.name()) == Some(p) || p == KnownPred::NOT_EQUAL);
+    let comparison = match atom.pred {
+        chc::Pred::Known(p) => KnownPred::named(p.name()) == Some(p) || p == KnownPred::NOT_EQUAL,
+        _ => false,
+    };
     if atom.guard.is_some() || !comparison || args.len() != 2 {
         return chc::Atom { args, ..atom }.into();
     }

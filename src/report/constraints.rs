@@ -64,9 +64,8 @@ pub struct Constraint {
 }
 
 /// The written annotation a constraint checks or assumes, by its spans.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub enum Annotation {
-    #[default]
     None,
     /// The goal checks it: an `ensures` at a return, a `requires` at a call.
     Checks(Vec<Span>),

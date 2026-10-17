@@ -55,6 +55,8 @@ enum Line<'a> {
         conclusion: &'a str,
     },
     Failure {
+        /// The number of its part (`THRUST_SPLIT`).
+        part: Option<usize>,
         constraint: String,
         r#fn: Option<&'a str>,
         span: Option<Range>,
@@ -107,7 +109,8 @@ pub(super) struct Json<'a, 'tcx> {
     pub(super) items: Items,
     pub(super) names: &'a Names,
     pub(super) solution: Option<Solution>,
-    pub(super) failures: Vec<Failure>,
+    /// Each failure, with the number of its part (`THRUST_SPLIT`).
+    pub(super) failures: Vec<(Option<usize>, Failure)>,
     pub(super) parts: &'a [super::Part],
     pub(super) verdict: &'a str,
 }
@@ -171,7 +174,12 @@ impl Json<'_, '_> {
         }
     }
 
-    fn failure<'a>(&self, entries: &'a [Entry<'_>], failure: &Failure) -> Line<'a> {
+    fn failure<'a>(
+        &self,
+        entries: &'a [Entry<'_>],
+        part: Option<usize>,
+        failure: &Failure,
+    ) -> Line<'a> {
         let found = constraint_of(entries, failure.goal);
         let run = failure
             .run
@@ -188,6 +196,7 @@ impl Json<'_, '_> {
             })
             .collect();
         Line::Failure {
+            part,
             constraint: format!("{:?}", failure.goal),
             r#fn: found.map(|(e, _)| e.name.as_str()),
             span: found.and_then(|(_, c)| c.span).map(|s| range(self.tcx, s)),
@@ -240,9 +249,10 @@ impl Json<'_, '_> {
         })?;
         line(Line::Verdict {
             verdict: self.verdict,
-            refutations: match self.parts.is_empty() {
-                true => "one per query",
-                false => "one per part",
+            refutations: if self.parts.is_empty() {
+                "one per query"
+            } else {
+                "one per part"
             },
         })?;
         for part in self.parts {
@@ -261,8 +271,8 @@ impl Json<'_, '_> {
                 cached: part.cached,
             })?;
         }
-        for failure in &self.failures {
-            line(self.failure(entries, failure))?;
+        for (part, failure) in &self.failures {
+            line(self.failure(entries, *part, failure))?;
         }
         // Without a solution, a site has only its template to show, if that was asked for.
         let shown = |site: &Site| {

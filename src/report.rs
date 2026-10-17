@@ -456,9 +456,11 @@ pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) -> Vec<Option<S
     let (entries, names) = entries(tcx, config, &input);
     let split = !input.parts.is_empty();
     let solution = Solution::of_parts(input.answers, input.asked, &system, &symbols, &names);
-    let verdict = match split {
-        true => parts::crate_verdict(input.parts),
-        false => chc::verdict(&input.answers[0].result),
+    let verdict = if split {
+        let verdicts: Vec<&'static str> = input.parts.iter().map(|p| p.verdict).collect();
+        parts::crate_verdict(&verdicts)
+    } else {
+        chc::verdict(&input.answers[0].result)
     };
     let failures: Vec<(&chc::Answer, Option<failure::Failure>)> = input
         .answers
@@ -494,7 +496,11 @@ pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) -> Vec<Option<S
                 items: config.items,
                 names: &names,
                 solution: solution.ok(),
-                failures: failures.into_iter().filter_map(|(_, f)| f).collect(),
+                failures: failures
+                    .into_iter()
+                    .enumerate()
+                    .filter_map(|(i, (_, f))| Some((input.asked.get(i).map(|a| a.part), f?)))
+                    .collect(),
                 parts: input.parts,
                 verdict,
             };

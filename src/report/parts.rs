@@ -27,13 +27,15 @@ pub struct Part {
 
 /// The verdict of the crate from those of its parts: `unsat` if a part is, else the first that
 /// is not `sat`.
-pub fn crate_verdict(parts: &[Part]) -> &'static str {
-    let mut verdicts = parts.iter().map(|p| p.verdict);
-    let unsat = verdicts.clone().any(|v| v == "unsat");
-    match unsat {
-        true => "unsat",
-        false => verdicts.find(|v| *v != "sat").unwrap_or("sat"),
+pub fn crate_verdict(verdicts: &[&'static str]) -> &'static str {
+    if verdicts.contains(&"unsat") {
+        return "unsat";
     }
+    verdicts
+        .iter()
+        .copied()
+        .find(|v| *v != "sat")
+        .unwrap_or("sat")
 }
 
 /// A function some clauses of a part come from, and the code they were made at, from the first
@@ -108,11 +110,15 @@ fn lines(tcx: TyCtxt<'_>, span: Span) -> String {
     let source_map = tcx.sess.source_map();
     let first = source_map.lookup_char_pos(span.lo()).line;
     let last = source_map.lookup_char_pos(span.hi()).line;
-    match last > first {
-        true => format!("{}:{first}-{last}", file_name(tcx, span)),
-        false => format!("{}:{first}", file_name(tcx, span)),
+    if last > first {
+        format!("{}:{first}-{last}", file_name(tcx, span))
+    } else {
+        format!("{}:{first}", file_name(tcx, span))
     }
 }
+
+/// At most this many of the parts solved now are named.
+const SOLVED_SHOWN: usize = 5;
 
 /// The notes after the errors of the parts: how many were solved and which of them now, and the
 /// functions of a failing part whose clauses fall into more than one part, with why.
@@ -129,7 +135,12 @@ pub fn emit_notes(tcx: TyCtxt<'_>, parts: &[Part]) {
         n => format!("thrust: {n} parts solved on their own, {cached} of them from earlier runs"),
     };
     if !solved.is_empty() && cached > 0 {
-        note.push_str(&format!("; solved now: {}", solved.join("; ")));
+        let more = solved.len().saturating_sub(SOLVED_SHOWN);
+        let shown = &solved[..solved.len() - more];
+        note.push_str(&format!("; solved now: {}", shown.join("; ")));
+        if more > 0 {
+            note.push_str(&format!(" and {more} more"));
+        }
     }
     tcx.dcx().note(note);
 
@@ -157,4 +168,16 @@ pub fn emit_notes(tcx: TyCtxt<'_>, parts: &[Part]) {
          refined type), and a clause with no unknown is a part of its own",
         split.join(", ")
     ));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::crate_verdict;
+
+    #[test]
+    fn a_refuted_part_refutes_the_crate_before_a_timeout() {
+        assert_eq!(crate_verdict(&["sat", "timeout", "unsat"]), "unsat");
+        assert_eq!(crate_verdict(&["sat", "timeout", "sat"]), "timeout");
+        assert_eq!(crate_verdict(&["sat", "sat"]), "sat");
+    }
 }

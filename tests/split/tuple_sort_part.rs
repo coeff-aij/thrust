@@ -1,4 +1,3 @@
-
 fn gcd(mut a: i32, mut b: i32) -> i32 {
     while a != b {
         let (l, r) = if a > b {

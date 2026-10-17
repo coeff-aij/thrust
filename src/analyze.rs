@@ -2694,7 +2694,9 @@ impl<'tcx> Analyzer<'tcx> {
             let Err(err) = &part.result else {
                 continue;
             };
-            self.verification_error(err, refuted)
+            // Without a refutation, the error is at the code of the part.
+            let code = summary.functions.first().map(|f| f.span);
+            self.verification_error(err, refuted.or(code))
                 .with_note(summary.error_note(self.tcx, parts.len()))
                 .emit();
         }

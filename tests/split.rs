@@ -233,3 +233,28 @@ fn a_solver_without_evidence_solves_each_part_once() {
     );
     assert_eq!(runs, 3, "{stderr}");
 }
+
+/// A split run's JSON states one refutation per part, and each failure names its part; without
+/// the report, a failing part's error is at the code of the part.
+#[test]
+fn a_split_failure_names_its_part() {
+    let json = run_with(
+        "two_parts.rs",
+        Some("2"),
+        &[("THRUST_REPORT", "1"), ("THRUST_REPORT_FORMAT", "json")],
+    );
+    let stdout = String::from_utf8_lossy(&json.stdout);
+    let verdict = r#"{"kind":"verdict","verdict":"unsat","refutations":"one per part"}"#;
+    assert!(stdout.contains(verdict), "{stdout}");
+    assert!(
+        stdout.contains(r#"{"kind":"failure","part":1,"constraint":"#),
+        "{stdout}"
+    );
+    let plain = run("two_parts.rs", Some("2"));
+    let stderr = String::from_utf8_lossy(&plain.stderr);
+    let error = stderr
+        .split("error: verification error: Unsat\n  --> ")
+        .nth(1)
+        .unwrap_or_default();
+    assert!(error.contains("two_parts.rs:9:1\n"), "{stderr}");
+}
