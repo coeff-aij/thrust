@@ -249,6 +249,32 @@ fn file_name(tcx: TyCtxt<'_>, span: Span) -> String {
         .unwrap_or(name)
 }
 
+/// Where a span starts and ends, as JSON writes it.
+#[derive(serde::Serialize)]
+struct Range {
+    file: String,
+    line: usize,
+    column: usize,
+    end_line: usize,
+    end_column: usize,
+}
+
+/// The range of `span`, its columns counted from 1 in characters, `end_column` after the last.
+fn range(tcx: TyCtxt<'_>, span: Span) -> Range {
+    let source_map = tcx.sess.source_map();
+    let (lo, hi) = (
+        source_map.lookup_char_pos(span.lo()),
+        source_map.lookup_char_pos(span.hi()),
+    );
+    Range {
+        file: file_name(tcx, span),
+        line: lo.line,
+        column: lo.col.0 + 1,
+        end_line: hi.line,
+        end_column: hi.col.0 + 1,
+    }
+}
+
 /// `file:line:column` of `span`.
 fn location(tcx: TyCtxt<'_>, span: Span) -> String {
     let loc = tcx.sess.source_map().lookup_char_pos(span.lo());

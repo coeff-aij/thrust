@@ -73,31 +73,31 @@ fn report_names_the_written_contract_a_run_assumes() {
     );
 }
 
-/// `THRUST_REPORT=1` writes to a program what it shows a person: the failure, each step of its
-/// run with the obligation and the span deriving it, spans relative to the working directory, and
-/// no template or constraint without a solution.
+/// `THRUST_REPORT=1` writes to a program what it shows a person: after the header and the
+/// verdict, the failure, each step of its run with the obligation and the span deriving it, spans
+/// as ranges relative to the root the header names, and no template or constraint without a
+/// solution.
 #[test]
 fn json_report_shows_the_failure_alone() {
     let output = report_with("loop_fail.rs", "1", &[("THRUST_REPORT_FORMAT", "json")]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let kinds: Vec<&str> = stdout.lines().filter_map(|l| l.split('"').nth(3)).collect();
-    assert_eq!(kinds, ["verdict", "failure"], "{stdout}");
-    assert!(
-        stdout.contains(
-            r#""via":"c0","obligation":"loop entry","span":"tests/report/loop_fail.rs:9:5""#
-        ),
-        "{stdout}"
-    );
+    assert_eq!(kinds, ["report", "verdict", "failure"], "{stdout}");
+    let root = env!("CARGO_MANIFEST_DIR");
+    let header = format!(r#"{{"kind":"report","version":1,"root":"{root}","#);
+    assert!(stdout.starts_with(&header), "{stdout}");
+    let step = r#""via":"c0","obligation":"loop entry","span":{"file":"tests/report/loop_fail.rs","line":9,"column":5,"end_line":14,"end_column":6}"#;
+    assert!(stdout.contains(step), "{stdout}");
 }
 
-/// The JSON report opens with the crate's verdict, and a failure of the whole query says that
+/// The JSON report states the crate's verdict, and a failure of the whole query says that
 /// the solver refutes one obligation of it.
 #[test]
 fn report_states_the_verdict_and_one_refutation_per_query() {
     let json = report_with("loop_fail.rs", "1", &[("THRUST_REPORT_FORMAT", "json")]);
     let stdout = String::from_utf8_lossy(&json.stdout);
     assert!(
-        stdout.starts_with(r#"{"kind":"verdict","verdict":"unsat","refutations":"one per query"}"#),
+        stdout.contains(r#"{"kind":"verdict","verdict":"unsat","refutations":"one per query"}"#),
         "{stdout}"
     );
     let human = report("loop_fail.rs", "failure");

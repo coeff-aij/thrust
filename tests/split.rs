@@ -93,3 +93,16 @@ fn a_split_run_shows_what_the_solved_parts_infer() {
         "{stderr}"
     );
 }
+
+/// A part line of the JSON report names each function with the span of its clauses.
+#[test]
+fn a_part_line_spans_its_functions() {
+    let output = run_with(
+        "invariant_parts.rs",
+        Some("2"),
+        &[("THRUST_REPORT", "1"), ("THRUST_REPORT_FORMAT", "json")],
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let part = r#"{"kind":"part","id":1,"clauses":1,"functions":[{"fn":"count_to","span":{"file":"#;
+    assert!(stdout.contains(part), "{stdout}");
+}

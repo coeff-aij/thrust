@@ -48,12 +48,11 @@ pub fn crate_verdict(parts: &[Part]) -> &'static str {
     }
 }
 
-/// A function some clauses of a part come from, and the lines they were made at.
-#[derive(serde::Serialize)]
+/// A function some clauses of a part come from, and the code they were made at, from the first
+/// to the last.
 pub struct PartCode {
     pub r#fn: String,
-    /// `file:first-last`, or `file:line`.
-    pub lines: String,
+    pub span: Span,
 }
 
 impl Part {
@@ -67,26 +66,26 @@ impl Part {
         }
     }
 
-    /// `` `f` (a.rs:3-6), `g` (a.rs:9-9) ``.
-    fn functions(&self) -> String {
+    /// `` `f` (a.rs:3-6), `g` (a.rs:9) ``.
+    fn functions(&self, tcx: TyCtxt<'_>) -> String {
         if self.functions.is_empty() {
             return "no function".to_owned();
         }
         let named: Vec<String> = self
             .functions
             .iter()
-            .map(|f| format!("`{}` ({})", f.r#fn, f.lines))
+            .map(|f| format!("`{}` ({})", f.r#fn, lines(tcx, f.span)))
             .collect();
         named.join(", ")
     }
 
     /// What the error of a part that fails says of it.
-    pub fn error_note(&self, parts: usize) -> String {
+    pub fn error_note(&self, tcx: TyCtxt<'_>, parts: usize) -> String {
         format!(
             "in part {} of {parts}, of {} clauses from {}",
             self.id,
             self.clauses,
-            self.functions()
+            self.functions(tcx)
         )
     }
 }
@@ -111,40 +110,37 @@ fn made_at<'tcx>(
     Some((def, span))
 }
 
-/// The functions the clauses `ids` come from, each with the lines its clauses were made at.
+/// The functions the clauses `ids` come from, each with the code its clauses were made at.
 fn code(tcx: TyCtxt<'_>, system: &chc::System, ids: &[chc::ClauseId]) -> Vec<PartCode> {
     let mut bodies = HashMap::new();
-    let mut lines: BTreeMap<String, (String, usize, usize)> = BTreeMap::new();
+    let mut spans: HashMap<LocalDefId, Span> = HashMap::new();
     for &id in ids {
         let Some((def, span)) = made_at(tcx, &mut bodies, &system.clauses[id]) else {
             continue;
         };
-        let source_map = tcx.sess.source_map();
-        let (lo, hi) = (
-            source_map.lookup_char_pos(span.lo()),
-            source_map.lookup_char_pos(span.hi()),
-        );
-        let entry = lines
-            .entry(tcx.def_path_str(def.to_def_id()))
-            .or_insert_with(|| (file_name(tcx, span), lo.line, hi.line));
-        entry.1 = entry.1.min(lo.line);
-        entry.2 = entry.2.max(hi.line);
+        let all = spans.entry(def).or_insert(span);
+        *all = all.to(span);
     }
-    let mut code: Vec<(usize, PartCode)> = lines
+    let mut code: Vec<PartCode> = spans
         .into_iter()
-        .map(|(name, (file, first, last))| {
-            let code = PartCode {
-                r#fn: name,
-                lines: match last > first {
-                    true => format!("{file}:{first}-{last}"),
-                    false => format!("{file}:{first}"),
-                },
-            };
-            (first, code)
+        .map(|(def, span)| PartCode {
+            r#fn: tcx.def_path_str(def.to_def_id()),
+            span,
         })
         .collect();
-    code.sort_by_key(|(first, _)| *first);
-    code.into_iter().map(|(_, code)| code).collect()
+    code.sort_by_key(|c| c.span.lo());
+    code
+}
+
+/// `file:first-last` of the lines of `span`, or `file:line`.
+fn lines(tcx: TyCtxt<'_>, span: Span) -> String {
+    let source_map = tcx.sess.source_map();
+    let first = source_map.lookup_char_pos(span.lo()).line;
+    let last = source_map.lookup_char_pos(span.hi()).line;
+    match last > first {
+        true => format!("{}:{first}-{last}", file_name(tcx, span)),
+        false => format!("{}:{first}", file_name(tcx, span)),
+    }
 }
 
 /// The notes after the errors of the parts: how many were solved and which of them now, and the
@@ -154,7 +150,7 @@ pub fn emit_notes(tcx: TyCtxt<'_>, parts: &[Part]) {
     let solved: Vec<String> = parts
         .iter()
         .filter(|p| !p.cached)
-        .map(|p| format!("part {} from {}", p.id, p.functions()))
+        .map(|p| format!("part {} from {}", p.id, p.functions(tcx)))
         .collect();
     let mut note = match parts.len() {
         1 if cached == 1 => "thrust: 1 part solved on its own, from an earlier run".to_owned(),

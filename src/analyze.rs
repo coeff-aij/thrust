@@ -2631,7 +2631,7 @@ impl<'tcx> Analyzer<'tcx> {
             self.tcx
                 .dcx()
                 .struct_err(format!("verification error: {:?}", err))
-                .with_note(summary.error_note(parts.len()))
+                .with_note(summary.error_note(self.tcx, parts.len()))
                 .emit();
         }
         crate::report::emit_part_notes(self.tcx, &summaries);
