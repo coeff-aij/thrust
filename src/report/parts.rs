@@ -20,10 +20,32 @@ pub struct Part {
     pub clauses: usize,
     /// The functions its clauses come from, in the order of their code.
     pub functions: Vec<PartCode>,
-    /// `sat`, `unsat`, `timeout`, or `error`.
+    /// See [`verdict`].
     pub verdict: &'static str,
     /// Whether the verdict was that of an earlier run (`THRUST_CACHE_DIR`).
     pub cached: bool,
+}
+
+/// `sat`, `unsat`, `timeout`, `unknown` or `error`.
+pub fn verdict(result: &Result<(), chc::CheckSatError>) -> &'static str {
+    match result {
+        Ok(()) => "sat",
+        Err(chc::CheckSatError::Unsat) => "unsat",
+        Err(chc::CheckSatError::Timeout(_)) => "timeout",
+        Err(chc::CheckSatError::Unknown { .. }) => "unknown",
+        Err(_) => "error",
+    }
+}
+
+/// The verdict of the crate from those of its parts: `unsat` if a part is, else the first that
+/// is not `sat`.
+pub fn crate_verdict(parts: &[Part]) -> &'static str {
+    let mut verdicts = parts.iter().map(|p| p.verdict);
+    let unsat = verdicts.clone().any(|v| v == "unsat");
+    match unsat {
+        true => "unsat",
+        false => verdicts.find(|v| *v != "sat").unwrap_or("sat"),
+    }
 }
 
 /// A function some clauses of a part come from, and the lines they were made at.
@@ -40,12 +62,7 @@ impl Part {
             id,
             clauses: part.clauses.len(),
             functions: code(tcx, system, &part.clauses),
-            verdict: match &part.result {
-                Ok(()) => "sat",
-                Err(chc::CheckSatError::Unsat) => "unsat",
-                Err(chc::CheckSatError::Timeout(_)) => "timeout",
-                Err(_) => "error",
-            },
+            verdict: verdict(&part.result),
             cached: part.cached,
         }
     }

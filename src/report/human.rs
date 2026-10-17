@@ -25,6 +25,9 @@ pub(super) struct Human<'a, 'tcx> {
     pub(super) items: Items,
     pub(super) names: &'a Names,
     pub(super) solution: Result<Solution, String>,
+    /// Whether the parts are solved on their own (`THRUST_SPLIT`), each refuted part with a
+    /// refutation of its own.
+    pub(super) split: bool,
 }
 
 impl Human<'_, '_> {
@@ -234,6 +237,13 @@ impl Human<'_, '_> {
                 "it assumes the written contract of {}: a wrong `ensures` there shows here",
                 assumed.join(", ")
             ));
+        }
+        if !self.split {
+            notes.push(
+                "the solver refutes one obligation of a query: others may fail too \
+                 (`THRUST_SPLIT` refutes one in each part)"
+                    .to_owned(),
+            );
         }
         let span = found
             .and_then(|(_, c)| c.span)

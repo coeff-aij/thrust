@@ -396,6 +396,10 @@ pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) {
     let (entries, names) = entries(tcx, config, &input);
     let split = !input.parts.is_empty();
     let solution = Solution::of_parts(input.answers, split, &symbols, &names);
+    let verdict = match split {
+        true => parts::crate_verdict(input.parts),
+        false => parts::verdict(&input.answers[0].result),
+    };
     let failures: Vec<(&chc::Answer, Option<failure::Failure>)> = input
         .answers
         .iter()
@@ -409,6 +413,7 @@ pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) {
                 items: config.items,
                 names: &names,
                 solution,
+                split,
             };
             for (answer, failure) in &failures {
                 human.failure(answer, failure.as_ref(), &entries);
@@ -423,6 +428,7 @@ pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) {
                 solution: solution.ok(),
                 failures: failures.into_iter().filter_map(|(_, f)| f).collect(),
                 parts: input.parts,
+                verdict,
             };
             let result = match &config.file {
                 Some(path) => {

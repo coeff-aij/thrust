@@ -15,6 +15,12 @@ use super::{assumed, constraint_of, location, Entry, Items};
 #[derive(Serialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 enum Line<'a> {
+    /// The crate's verdict, and how many obligations a failure is refuted at: one per query, or
+    /// one per part.
+    Verdict {
+        verdict: &'a str,
+        refutations: &'a str,
+    },
     Part {
         id: usize,
         clauses: usize,
@@ -95,6 +101,7 @@ pub(super) struct Json<'a, 'tcx> {
     pub(super) solution: Option<Solution>,
     pub(super) failures: Vec<Failure>,
     pub(super) parts: &'a [super::Part],
+    pub(super) verdict: &'a str,
 }
 
 impl Json<'_, '_> {
@@ -217,6 +224,13 @@ impl Json<'_, '_> {
         out: &mut dyn std::io::Write,
     ) -> std::io::Result<()> {
         let mut line = |line: Line<'_>| writeln!(out, "{}", serde_json::to_string(&line)?);
+        line(Line::Verdict {
+            verdict: self.verdict,
+            refutations: match self.parts.is_empty() {
+                true => "one per query",
+                false => "one per part",
+            },
+        })?;
         for part in self.parts {
             line(Line::Part {
                 id: part.id,

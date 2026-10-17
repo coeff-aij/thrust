@@ -81,11 +81,29 @@ fn json_report_shows_the_failure_alone() {
     let output = report_with("loop_fail.rs", "1", &[("THRUST_REPORT_FORMAT", "json")]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let kinds: Vec<&str> = stdout.lines().filter_map(|l| l.split('"').nth(3)).collect();
-    assert_eq!(kinds, ["failure"], "{stdout}");
+    assert_eq!(kinds, ["verdict", "failure"], "{stdout}");
     assert!(
         stdout.contains(
             r#""via":"c0","obligation":"loop entry","span":"tests/report/loop_fail.rs:9:5""#
         ),
         "{stdout}"
+    );
+}
+
+/// The JSON report opens with the crate's verdict, and a failure of the whole query says that
+/// the solver refutes one obligation of it.
+#[test]
+fn report_states_the_verdict_and_one_refutation_per_query() {
+    let json = report_with("loop_fail.rs", "1", &[("THRUST_REPORT_FORMAT", "json")]);
+    let stdout = String::from_utf8_lossy(&json.stdout);
+    assert!(
+        stdout.starts_with(r#"{"kind":"verdict","verdict":"unsat","refutations":"one per query"}"#),
+        "{stdout}"
+    );
+    let human = report("loop_fail.rs", "failure");
+    let stderr = String::from_utf8_lossy(&human.stderr);
+    assert!(
+        stderr.contains("the solver refutes one obligation of a query: others may fail too"),
+        "{stderr}"
     );
 }
