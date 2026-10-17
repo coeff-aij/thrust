@@ -1093,13 +1093,17 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 if !op_ty.is_integral() || !ty.is_integral() {
                     unimplemented!("int cast: {:?} -> {:?}", op_ty, ty);
                 }
-                let op_pty = self.operand_type(operand);
+                // The result has the target's type, whose range the wrapped term is in, so that
+                // the operations on it are typed and checked at the target's width.
+                let target_ty = self.type_builder.build(ty).vacuous().ty;
+                let mut op_pty = self.operand_type(operand);
                 if int_ty_includes(self.tcx, ty, op_ty) {
+                    op_pty.ty = target_ty;
                     op_pty
                 } else {
                     let mut builder = PlaceTypeBuilder::default();
                     let (_, op_term) = builder.subsume(op_pty);
-                    builder.build(rty::Type::int(), wrap_int_term(self.tcx, op_term, ty))
+                    builder.build(target_ty, wrap_int_term(self.tcx, op_term, ty))
                 }
             }
             Rvalue::Discriminant(place) => {
