@@ -207,8 +207,7 @@ impl<'tcx> Checker<'tcx> {
         let model_operation = def_id
             .as_local()
             .is_some_and(|local| analyze::is_injected_std(self.tcx, local))
-            && (self.has_attr(def_id, &analyze::annot::ignored_path())
-                || Some(def_id) == self.proof_branch);
+            && (analyze::is_ignored(self.tcx, def_id) || Some(def_id) == self.proof_branch);
         spec.iter().any(|path| self.has_attr(def_id, path)) || model_operation
     }
 

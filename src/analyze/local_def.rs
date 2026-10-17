@@ -240,13 +240,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     }
 
     pub fn is_annotated_as_ignored(&self) -> bool {
-        self.tcx
-            .get_attrs_by_path(
-                self.local_def_id.to_def_id(),
-                &analyze::annot::ignored_path(),
-            )
-            .next()
-            .is_some()
+        analyze::is_ignored(self.tcx, self.local_def_id.to_def_id())
     }
 
     pub fn is_ignored_derive(&self) -> bool {

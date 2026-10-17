@@ -659,6 +659,51 @@ pub fn is_injected_std(tcx: mir_ty::TyCtxt<'_>, def_id: LocalDefId) -> bool {
     )
 }
 
+/// Whether `def_id` is `#[thrust::ignored]`, so that its body is not analyzed.
+pub fn is_ignored(tcx: mir_ty::TyCtxt<'_>, def_id: DefId) -> bool {
+    tcx.get_attrs_by_path(def_id, &annot::ignored_path())
+        .next()
+        .is_some()
+}
+
+/// Whether `def_id` is a function of the crate, not of the injected `std.rs`, that is ignored:
+/// nothing checks its body against the specification of the trait method it implements.
+pub fn is_ignored_crate_fn(tcx: mir_ty::TyCtxt<'_>, def_id: DefId) -> bool {
+    def_id
+        .as_local()
+        .is_some_and(|local| !is_injected_std(tcx, local))
+        && is_ignored(tcx, def_id)
+}
+
+/// Stops at a call that resolves to an ignored function of the crate, which has no checked type.
+pub fn fatal_ignored_call<'tcx>(
+    tcx: mir_ty::TyCtxt<'tcx>,
+    def_id: DefId,
+    args: mir_ty::GenericArgsRef<'tcx>,
+) -> ! {
+    tcx.dcx().fatal(format!(
+        "`{}` is `#[thrust::ignored]`, so a call of it has no checked type",
+        tcx.def_path_str_with_args(def_id, args),
+    ))
+}
+
+/// The trait bounds `def_id` puts on `args`, its own and its parent's.
+fn trait_bounds<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    def_id: DefId,
+    args: mir_ty::GenericArgsRef<'tcx>,
+) -> Vec<mir_ty::TraitRef<'tcx>> {
+    tcx.predicates_of(def_id)
+        .instantiate(tcx, args)
+        .predicates
+        .into_iter()
+        .filter_map(|clause| clause.as_trait_clause())
+        .filter(|pred| pred.skip_binder().polarity == mir_ty::PredicatePolarity::Positive)
+        .map(|pred| tcx.instantiate_bound_regions_with_erased(pred).trait_ref)
+        .map(|trait_ref| tcx.erase_regions(trait_ref))
+        .collect()
+}
+
 /// Identifies one analysis instance of a function body.
 ///
 /// A def may be analyzed more than once: the placeholder analysis (with the
@@ -844,6 +889,9 @@ pub struct Analyzer<'tcx> {
     /// The trait methods a body called at its type parameters with the trait's specification,
     /// keyed like `assumed_spec_bounds`; see [`Analyzer::expand_dispatched_instances`].
     dispatched_calls: RefCell<HashMap<DefId, Vec<(DefId, mir_ty::GenericArgsRef<'tcx>)>>>,
+    /// The trait bounds of std impls a body called at its type parameters, keyed like
+    /// `assumed_spec_bounds`; see [`Analyzer::check_reused_bound_impls`].
+    assumed_bound_impls: RefCell<HashMap<DefId, Vec<mir_ty::TraitRef<'tcx>>>>,
     /// The types of the functions each basic block calls, recorded only when
     /// [`candidate_atoms_enabled`], whose contracts give a loop head candidate atoms.
     called_fn_tys: HashMap<(AnalysisKey<'tcx>, BasicBlock), Vec<rty::FunctionType>>,
@@ -949,6 +997,7 @@ impl<'tcx> Analyzer<'tcx> {
             fn_mut_bounded_defs: Default::default(),
             assumed_spec_bounds: Default::default(),
             dispatched_calls: Default::default(),
+            assumed_bound_impls: Default::default(),
             reused_generic_instances: Default::default(),
             assumed_total_methods: Default::default(),
             called_fn_tys: Default::default(),
@@ -1681,6 +1730,9 @@ impl<'tcx> Analyzer<'tcx> {
                     else {
                         continue;
                     };
+                    if is_ignored_crate_fn(self.tcx, instance.def_id()) {
+                        fatal_ignored_call(self.tcx, instance.def_id(), instance.args);
+                    }
                     if !instance.def_id().is_local()
                         || !matches!(self.defs.get(&instance.def_id()), Some(DefTy::Generic(_)))
                     {
@@ -1692,6 +1744,122 @@ impl<'tcx> Analyzer<'tcx> {
                         reused.push(reached);
                         grew = true;
                     }
+                }
+            }
+            if !grew {
+                return;
+            }
+        }
+    }
+
+    /// Checks that a trait method call resolved to `def_id`, a std impl's method or a trait's
+    /// default body, at `args` relies on no ignored function of the crate, and records for
+    /// `owner_fn_id` the bounds it relies on at type parameters. The specification such a call
+    /// takes, the trait's or the std impl's own, holds of the std impl only where the impls its
+    /// trait bounds resolve to meet their traits' specifications (`<&S as PartialEq>::eq` runs
+    /// `S::eq`), and an ignored body is not checked against them. The bounds are followed
+    /// through the std impls they resolve to; a bound at a type parameter is checked at each
+    /// instance that reuses the contract of the body ([`Self::check_reused_bound_impls`]).
+    pub fn check_std_call_bounds(
+        &self,
+        owner_fn_id: DefId,
+        typing_env: mir_ty::TypingEnv<'tcx>,
+        def_id: DefId,
+        args: mir_ty::GenericArgsRef<'tcx>,
+    ) {
+        for bound in self.bounds_at_params(typing_env, trait_bounds(self.tcx, def_id, args)) {
+            self.record_assumed_bound_impl(owner_fn_id, bound);
+        }
+    }
+
+    /// Follows `bounds` through the impls they resolve to in `typing_env`, stopping at an impl of
+    /// the crate with an ignored function, and returns those still at a type parameter.
+    fn bounds_at_params(
+        &self,
+        typing_env: mir_ty::TypingEnv<'tcx>,
+        bounds: Vec<mir_ty::TraitRef<'tcx>>,
+    ) -> Vec<mir_ty::TraitRef<'tcx>> {
+        use rustc_middle::traits::ImplSource;
+
+        let mut at_params = Vec::new();
+        let mut visited = HashSet::new();
+        let mut pending = bounds;
+        while let Some(bound) = pending.pop() {
+            if !visited.insert(bound) {
+                continue;
+            }
+            let selected = self
+                .tcx
+                .codegen_select_candidate(typing_env.as_query_input(bound));
+            match selected {
+                Ok(ImplSource::UserDefined(data)) if data.impl_def_id.is_local() => {
+                    self.check_impl_not_ignored(data.impl_def_id);
+                }
+                Ok(ImplSource::UserDefined(data)) => {
+                    pending.extend(trait_bounds(self.tcx, data.impl_def_id, data.args));
+                }
+                Ok(ImplSource::Param(_)) => at_params.push(bound),
+                _ => {}
+            }
+        }
+        at_params
+    }
+
+    /// Stops at an ignored function of the crate's impl `impl_def_id`.
+    fn check_impl_not_ignored(&self, impl_def_id: DefId) {
+        let ignored = self
+            .tcx
+            .associated_item_def_ids(impl_def_id)
+            .iter()
+            .copied()
+            .find(|def_id| is_ignored_crate_fn(self.tcx, *def_id));
+        if let Some(def_id) = ignored {
+            let identity = mir_ty::GenericArgs::identity_for_item(self.tcx, def_id);
+            fatal_ignored_call(self.tcx, def_id, identity);
+        }
+    }
+
+    fn record_assumed_bound_impl(&self, owner_fn_id: DefId, bound: mir_ty::TraitRef<'tcx>) -> bool {
+        let root = self.tcx.typeck_root_def_id(owner_fn_id);
+        let bound = self.tcx.erase_regions(bound);
+        let mut assumed = self.assumed_bound_impls.borrow_mut();
+        let recorded = assumed.entry(root).or_default();
+        if recorded.contains(&bound) {
+            return false;
+        }
+        recorded.push(bound);
+        true
+    }
+
+    /// Checks, at each instance that uses a generic def's contract as instantiated, the bounds
+    /// of std impls its analysis relied on at type parameters
+    /// ([`Self::check_std_call_bounds`]). A bound still at a type parameter of the instance's
+    /// caller is recorded for that caller in turn.
+    pub fn check_reused_bound_impls(&self) {
+        use mir_ty::TypeVisitableExt as _;
+
+        let mut seen_instances = 0;
+        loop {
+            let instances = self.reused_generic_instances.borrow().clone();
+            let mut grew = instances.len() != seen_instances;
+            seen_instances = instances.len();
+            for (def_id, generic_args, caller_def_id) in instances {
+                let root = self.tcx.typeck_root_def_id(def_id);
+                let assumed = self
+                    .assumed_bound_impls
+                    .borrow()
+                    .get(&root)
+                    .cloned()
+                    .unwrap_or_default();
+                for bound in assumed {
+                    let bound =
+                        mir_ty::EarlyBinder::bind(bound).instantiate(self.tcx, generic_args);
+                    if bound.has_param() {
+                        grew |= self.record_assumed_bound_impl(caller_def_id, bound);
+                        continue;
+                    }
+                    let typing_env = mir_ty::TypingEnv::fully_monomorphized();
+                    self.bounds_at_params(typing_env, vec![bound]);
                 }
             }
             if !grew {

@@ -666,6 +666,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.ctx.emit_pending_laws();
         self.ctx.emit_fn_mut_instance_obligations();
         self.ctx.expand_dispatched_instances();
+        self.ctx.check_reused_bound_impls();
         self.ctx.check_reused_total_methods();
         self.ctx.check_reused_spec_bounds();
         self.assert_callable_entry();
