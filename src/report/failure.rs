@@ -39,11 +39,11 @@ struct Reader<'a> {
 }
 
 impl Reader<'_> {
-    /// The arguments of `fact`, each with what it stands for, the results apart from the rest.
+    /// The arguments of `fact`, each with what it stands for, in the groups it is shown in.
     fn args(&self, fact: &Fact) -> String {
         let info = self.preds.get(&fact.pred).map(|(_, info)| *info);
         let names = info.map(|info| &info.args);
-        let results = info.map_or(0, |info| info.results);
+        let groups = info.map(|info| info.groups.clone()).unwrap_or_default();
         let values = match info {
             Some(_) => self
                 .names
@@ -51,20 +51,17 @@ impl Reader<'_> {
                 .arrange(&fact.args),
             None => fact.args.clone(),
         };
-        let mut out = String::new();
-        for (k, value) in values.iter().enumerate() {
-            let sep = match k {
-                0 => "",
-                k if k == results => "; ",
-                _ => ", ",
-            };
-            out.push_str(sep);
-            match names.and_then(|n| n.get(k)).cloned().flatten() {
-                Some(name) => out.push_str(&format!("{name} = {value}")),
-                None => out.push_str(&value.to_string()),
-            }
-        }
-        out
+        let shown: Vec<String> = values
+            .iter()
+            .enumerate()
+            .map(
+                |(k, value)| match names.and_then(|n| n.get(k)).cloned().flatten() {
+                    Some(name) => format!("{name} = {value}"),
+                    None => value.to_string(),
+                },
+            )
+            .collect();
+        super::expr::grouped(&shown, &groups)
     }
 
     fn name(&self, fact: &Fact) -> String {

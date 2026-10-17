@@ -19,6 +19,7 @@ mod human;
 mod json;
 mod model;
 mod proof;
+mod simplify;
 mod sites;
 mod solution;
 
@@ -191,6 +192,33 @@ fn location(tcx: TyCtxt<'_>, span: Span) -> String {
     )
 }
 
+/// Puts each clause, as a constraint, in the entry of the code it was made in, in place of those
+/// there.
+fn add_constraints(
+    tcx: TyCtxt<'_>,
+    system: &chc::System,
+    names: &Names,
+    entries: &mut HashMap<LocalDefId, Entry<'_>>,
+) {
+    for entry in entries.values_mut() {
+        entry.constraints.clear();
+        for (_, constraints) in entry.loops.values_mut() {
+            constraints.clear();
+        }
+    }
+    for (id, clause) in system.clauses.iter_enumerated() {
+        let provenance = constraints::Provenance::of(&clause.debug_info);
+        let Some(entry) = provenance.def.and_then(|def| entries.get_mut(&def)) else {
+            continue;
+        };
+        let constraint = constraints::constraint(tcx, id, clause, names, Some(&entry.body));
+        match provenance.bb.and_then(|bb| entry.body.innermost_loop(bb)) {
+            Some(header) => entry.loops.entry(header).or_default().1.push(constraint),
+            None => entry.constraints.push(constraint),
+        }
+    }
+}
+
 fn entries<'tcx>(
     tcx: TyCtxt<'tcx>,
     config: &Config,
@@ -264,39 +292,45 @@ fn entries<'tcx>(
         let rustc_middle::mir::TerminatorKind::Call { destination, .. } =
             &entry.body.terminator(bb)?.kind
         else {
-            return Some((format!("{}.{bb:?}", entry.name), Vec::new(), 0));
+            return Some((format!("{}.{bb:?}", entry.name), Vec::new(), Vec::new()));
         };
         let result = Some(entry.body.local_name(destination.local));
         let name = match entry.body.call(bb) {
             Some((callee, n)) => format!("{}.{callee}#{n}", entry.name),
             None => format!("{}.{bb:?}", entry.name),
         };
-        Some((name, vec![result], 1))
+        Some((name, vec![result], vec![1]))
     });
 
-    for (id, clause) in input.system.clauses.iter_enumerated() {
-        let provenance = constraints::Provenance::of(&clause.debug_info);
-        let Some(entry) = provenance.def.and_then(|def| entries.get_mut(&def)) else {
-            continue;
-        };
-        let constraint = constraints::constraint(tcx, id, clause, &names, Some(&entry.body));
-        match provenance.bb.and_then(|bb| entry.body.innermost_loop(bb)) {
-            Some(header) => entry.loops.entry(header).or_default().1.push(constraint),
-            None => entry.constraints.push(constraint),
-        }
-    }
     // A call's result has no template naming the variables it depends on; the constraint that
-    // defines it, made at the call, names them.
+    // defines it, made at the call, names them, and among them the call's arguments are shown
+    // apart from the other variables. The constraints are then shown with those names.
+    add_constraints(tcx, input.system, &names, &mut entries);
     for entry in entries.values() {
         let in_loops = entry.loops.values().flat_map(|(_, cs)| cs);
         for c in entry.constraints.iter().chain(in_loops) {
-            if let Expr::Pred(name, results, args) = &c.conclusion {
-                if *results > 0 {
+            if let Expr::Pred(name, groups, args) = &c.conclusion {
+                if !groups.is_empty() {
                     names.name_args_after(name, args);
                 }
             }
         }
     }
+    for (p, def, bb) in names.call_results() {
+        let Some(entry) = entries.get(&def) else {
+            continue;
+        };
+        let call_args: Vec<String> = entry
+            .body
+            .call_args(bb)
+            .into_iter()
+            .flatten()
+            .map(|local| entry.body.local_name(local))
+            .collect();
+        names.group_call_args(p, &call_args);
+    }
+    add_constraints(tcx, input.system, &names, &mut entries);
+
     let mut entries: Vec<_> = entries.into_values().collect();
     entries.sort_by_key(|e| (e.span.lo(), e.def.local_def_index));
     (entries, names)
@@ -313,7 +347,13 @@ pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) {
     };
     let (entries, names) = entries(tcx, config, &input);
     let solution = match (solution_unavailable(input.answer), &input.answer.model) {
-        (None, Some(model)) => Ok(Solution::new(model, &names)),
+        (None, Some(model)) => {
+            let config = chc::Config::from_env();
+            let query = input.answer.query.as_deref().unwrap_or_default();
+            Ok(Solution::new(model, query, &names, |script| {
+                config.run_script(script)
+            }))
+        }
         (why, _) => Err(why.unwrap_or("no solution")),
     };
     let failure = config

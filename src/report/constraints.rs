@@ -253,6 +253,7 @@ fn render(
         .body
         .atoms
         .iter()
+        .filter(|a| !matches!(a.pred, chc::Pred::Var(p) if names.always_true.contains(&p)))
         .map(|a| expr::of_atom(a, &sym, &pred_name))
         .chain(expr::of_formula(&clause.body.formula, &sym, &pred_name).into_conjuncts())
         .flat_map(|e| e.normalize().into_conjuncts())

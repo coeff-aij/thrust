@@ -15,8 +15,25 @@ pub(super) struct Solution {
 }
 
 impl Solution {
-    pub(super) fn new(model: &str, names: &Names) -> Self {
-        let model = model::read(model);
+    /// The interpretations of `model`, simplified by `z3`, which `run` runs (see
+    /// [`super::simplify`]).
+    pub(super) fn new(
+        model: &str,
+        query: &str,
+        names: &Names,
+        run: impl Fn(&str) -> Option<String>,
+    ) -> Self {
+        let mut model = model::read(model);
+        // `z3`'s model of a system of clauses interprets the predicate variables by formulas over
+        // their arguments; a function it made up besides would need its definition shown.
+        if let Some(name) = model.keys().find(|name| !names.is_pred_var(name)) {
+            unimplemented!("a model defining `{name}`, which is no predicate variable");
+        }
+        // Only the predicate variables the report names are shown.
+        let named: std::collections::HashSet<String> =
+            names.preds.keys().map(|p| p.to_string()).collect();
+        model.retain(|name, _| named.contains(name));
+        super::simplify::simplify(&mut model, query, run);
         // An interpretation takes the arguments in the order they are shown.
         let by_name = names
             .preds
@@ -27,6 +44,7 @@ impl Solution {
                 let arranged = Interpretation {
                     params,
                     body: interpretation.body.clone(),
+                    source: None,
                 };
                 Some((info.name.clone(), arranged))
             })
@@ -46,11 +64,11 @@ impl Solution {
                 }
             }
             Expr::Quant(q, vars, body) => Expr::Quant(q, vars.clone(), Box::new(self.apply(body))),
-            Expr::Pred(p, results, args) => {
+            Expr::Pred(p, groups, args) => {
                 let args: Vec<Expr> = args.iter().map(|a| self.apply(a)).collect();
                 match self.by_name.get(p) {
                     Some(interpretation) => interpretation.apply(&args),
-                    None => Expr::Pred(p.clone(), *results, args),
+                    None => Expr::Pred(p.clone(), groups.clone(), args),
                 }
             }
         }
@@ -74,7 +92,7 @@ impl Solution {
                     })
                     .collect();
                 let args: Vec<Expr> = args.into_iter().map(Expr::sym).collect();
-                let head = Expr::Pred(info.name.clone(), info.results, args.clone());
+                let head = Expr::Pred(info.name.clone(), info.groups.clone(), args.clone());
                 match self.by_name.get(&info.name) {
                     Some(interpretation) => format!("{head} := {}", interpretation.apply(&args)),
                     None => format!("{head}: not in the query"),

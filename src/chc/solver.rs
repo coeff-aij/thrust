@@ -278,6 +278,7 @@ impl Config {
             model: None,
             proof: None,
             goal_markers: Vec::new(),
+            query: None,
         };
         let evidence = match self.run_check_sat(problem, requests) {
             Ok(output) => {
@@ -294,6 +295,26 @@ impl Config {
             answer.model = evidence.into_iter().find(|e| !e.starts_with("(error"));
         }
         answer
+    }
+
+    /// What `z3` prints for `script`, when the solver is `z3`; also when some command of the script
+    /// failed, which `z3` reports in its output.
+    pub fn run_script(&self, script: &str) -> Option<String> {
+        use std::io::Write as _;
+        if !self.solver.is_z3() {
+            return None;
+        }
+        let mut file = tempfile::Builder::new()
+            .prefix("thrust_tmp_")
+            .suffix(".smt2")
+            .tempfile()
+            .ok()?;
+        file.write_all(script.as_bytes()).ok()?;
+        file.flush().ok()?;
+        match self.solver.run(file.path(), std::process::Stdio::piped()) {
+            Ok(output) | Err(CheckSatError::Error { stdout: output, .. }) => Some(output),
+            Err(_) => None,
+        }
     }
 
     /// `z3`'s refutation of `problem`, which it answers `unsat`. Its preprocessing would fold
@@ -392,6 +413,9 @@ pub struct Answer {
     /// The predicate variable marking each goal of the system in the query, when a refutation
     /// is asked for (see [`crate::chc::System::solve_with`]).
     pub goal_markers: Vec<(crate::chc::PredVarId, crate::chc::ClauseId)>,
+    /// The query, when a model is asked for: its declarations are what the model's terms are
+    /// over.
+    pub query: Option<String>,
 }
 
 /// Splits the solver's output into the part with the verdict and the s-expressions printed after

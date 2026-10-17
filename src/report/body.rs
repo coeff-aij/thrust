@@ -123,6 +123,20 @@ impl<'tcx> DefBody<'tcx> {
         self.loops.iter().position(|(h, _)| *h == bb).map(|i| i + 1)
     }
 
+    /// The local each argument of the call ending block `bb` is, if it is one.
+    pub fn call_args(&self, bb: BasicBlock) -> Vec<Option<Local>> {
+        let Some(mir::TerminatorKind::Call { args, .. }) = self.terminator(bb).map(|t| &t.kind)
+        else {
+            return Vec::new();
+        };
+        args.iter()
+            .map(|arg| {
+                let place = arg.node.place()?;
+                place.projection.is_empty().then_some(place.local)
+            })
+            .collect()
+    }
+
     /// The function the call ending block `bb` calls, and which call to it the call is.
     pub fn call(&self, bb: BasicBlock) -> Option<&(String, usize)> {
         self.calls.get(&bb)

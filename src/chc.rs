@@ -90,6 +90,14 @@ impl DatatypeSort {
         DatatypeSort { symbol, args }
     }
 
+    pub fn symbol(&self) -> &DatatypeSymbol {
+        &self.symbol
+    }
+
+    pub fn args(&self) -> &[Sort] {
+        &self.args
+    }
+
     pub fn args_mut(&mut self) -> &mut Vec<Sort> {
         &mut self.args
     }
@@ -3506,7 +3514,11 @@ impl System {
                 writeln!(f, "{:?}: {}", idx, c.display()).unwrap();
             }
         }
-        let mut answer = config.check_sat_with(system.smtlib2(config.capabilities()), requests);
+        let query = system.smtlib2(config.capabilities()).to_string();
+        let mut answer = config.check_sat_with(&query, requests);
+        if requests.model {
+            answer.query = Some(query);
+        }
         // The refutation is asked of a second run on the system with its goals marked, so that
         // the verdict is the one the query alone gets.
         let refuted = matches!(answer.result, Err(CheckSatError::Unsat));

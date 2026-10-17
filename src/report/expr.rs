@@ -14,9 +14,9 @@ pub enum Expr {
     Sym(String),
     App(String, Vec<Expr>),
     Quant(&'static str, Vec<(String, String)>, Box<Expr>),
-    /// A predicate variable applied to its arguments, the first `results` of which are the values
-    /// its template refines and the rest what it may depend on; printed `p(r; x, y)`.
-    Pred(String, usize, Vec<Expr>),
+    /// A predicate variable applied to its arguments, in groups of the sizes listed and a last
+    /// group of the rest, printed apart: `p(r; a; x, y)` (see [`grouped`]).
+    Pred(String, Vec<usize>, Vec<Expr>),
 }
 
 impl Expr {
@@ -75,9 +75,9 @@ impl Expr {
                 }
                 Expr::Quant(q, vars.clone(), Box::new(body.subst(&inner)))
             }
-            Expr::Pred(p, results, args) => Expr::Pred(
+            Expr::Pred(p, groups, args) => Expr::Pred(
                 p.clone(),
-                *results,
+                groups.clone(),
                 args.iter().map(|a| a.subst(subst)).collect(),
             ),
         }
@@ -106,8 +106,8 @@ impl Expr {
         let e = match self {
             Expr::App(f, args) => Expr::App(f, args.into_iter().map(Expr::normalize).collect()),
             Expr::Quant(q, vars, body) => Expr::Quant(q, vars, Box::new(body.normalize())),
-            Expr::Pred(p, results, args) => {
-                Expr::Pred(p, results, args.into_iter().map(Expr::normalize).collect())
+            Expr::Pred(p, groups, args) => {
+                Expr::Pred(p, groups, args.into_iter().map(Expr::normalize).collect())
             }
             e => e,
         };
@@ -164,6 +164,31 @@ impl Expr {
     }
 }
 
+/// A sort as the report writes it, the way the solver's answers name it: `Int`, `Bool`,
+/// `Mut<Int>`, `(Int, Bool)`, `Seq<Int>`, a datatype by its name; a `Box` is its content, as the
+/// solver is given it.
+pub fn sort_name(sort: &chc::Sort) -> String {
+    use chc::Sort;
+    let list = |ss: &[Sort]| ss.iter().map(sort_name).collect::<Vec<_>>().join(", ");
+    match sort {
+        Sort::Null => "Null".to_owned(),
+        Sort::Int => "Int".to_owned(),
+        Sort::BitVec { width } => format!("BitVec<{width}>"),
+        Sort::Bool => "Bool".to_owned(),
+        Sort::String => "String".to_owned(),
+        Sort::Param(i) => format!("T{i}"),
+        Sort::Box(s) => sort_name(s),
+        Sort::Mut(s) => format!("Mut<{}>", sort_name(s)),
+        Sort::Tuple(ss) if ss.len() == 1 => format!("({},)", sort_name(&ss[0])),
+        Sort::Tuple(ss) => format!("({})", list(ss)),
+        Sort::Array(k, v) => format!("Array<{}, {}>", sort_name(k), sort_name(v)),
+        Sort::Seq(s) => format!("Seq<{}>", sort_name(s)),
+        Sort::Datatype(d) if d.args().is_empty() => d.symbol().to_string(),
+        Sort::Datatype(d) => format!("{}<{}>", d.symbol(), list(d.args())),
+        Sort::Forall(idx) => idx.to_string(),
+    }
+}
+
 /// Reads a term, naming each variable by `name`.
 pub fn of_term<V: chc::Var>(term: &chc::Term<V>, name: &impl Fn(&V) -> String) -> Expr {
     use chc::Term;
@@ -193,12 +218,42 @@ pub fn of_term<V: chc::Var>(term: &chc::Term<V>, name: &impl Fn(&V) -> String) -
     }
 }
 
-/// How a predicate variable is shown: its name, how many of its first arguments are results, and
-/// the order its arguments are shown in when it is not their own (the `i`-th shown is the
-/// `order[i]`-th).
+/// `args` in groups of the sizes `groups` lists, then the rest, the groups separated by `;` (an
+/// empty group shows as its separator alone): `r;; x, y`.
+pub fn grouped(args: &[String], groups: &[usize]) -> String {
+    let bounds: Vec<usize> = groups
+        .iter()
+        .scan(0, |end, size| {
+            *end += size;
+            Some(*end)
+        })
+        .collect();
+    let ends_at = |i: usize| bounds.iter().filter(|&&b| b == i).count();
+    let mut out = String::new();
+    for (i, arg) in args.iter().enumerate() {
+        if i > 0 {
+            match ends_at(i) {
+                0 => out.push_str(", "),
+                n => {
+                    out.push_str(&";".repeat(n));
+                    out.push(' ');
+                }
+            }
+        }
+        out.push_str(arg);
+    }
+    if !args.is_empty() {
+        out.push_str(&";".repeat(ends_at(args.len())));
+    }
+    out
+}
+
+/// How a predicate variable is shown: its name, the groups its arguments are shown in (see
+/// [`grouped`]), and the order they are shown in when it is not their own (the `i`-th shown is
+/// the `order[i]`-th).
 pub struct PredHead {
     pub name: String,
-    pub results: usize,
+    pub groups: Vec<usize>,
     pub order: Option<Vec<usize>>,
 }
 
@@ -228,7 +283,7 @@ pub fn of_atom<V: chc::Var>(
         chc::Pred::Var(p) => {
             let head = pred_name(*p);
             let args = head.arrange(&args);
-            Expr::Pred(head.name, head.results, args)
+            Expr::Pred(head.name, head.groups, args)
         }
         chc::Pred::Tester(c) => Expr::app(format!("is_{c}"), args),
         pred => Expr::app(pred.to_string(), args),
@@ -252,7 +307,7 @@ pub fn of_formula<V: chc::Var>(
     };
     let binders = |vars: &[(chc::UserQuantifiedVarId, chc::Sort)]| {
         vars.iter()
-            .map(|(v, s)| (v.to_string(), s.display().to_string()))
+            .map(|(v, s)| (v.to_string(), sort_name(s)))
             .collect()
     };
     match formula {
@@ -360,18 +415,9 @@ impl Expr {
                 body.fmt_at(f, 0)?;
                 return write!(f, ")");
             }
-            Expr::Pred(p, results, args) => {
-                write!(f, "{p}(")?;
-                for (i, x) in args.iter().enumerate() {
-                    let sep = match i {
-                        0 => "",
-                        i if i == *results => "; ",
-                        _ => ", ",
-                    };
-                    write!(f, "{sep}")?;
-                    x.fmt_at(f, 0)?;
-                }
-                return write!(f, ")");
+            Expr::Pred(p, groups, args) => {
+                let args: Vec<String> = args.iter().map(|x| x.to_string()).collect();
+                return write!(f, "{p}({})", grouped(&args, groups));
             }
             Expr::App(head, args) => (head.as_str(), args.as_slice()),
         };
@@ -550,9 +596,17 @@ mod tests {
 
     #[test]
     fn separates_the_results_of_a_predicate() {
-        let e = Expr::Pred("main.rand#1".into(), 1, vec![s("r"), s("x"), s("y")]);
-        assert_eq!(e.to_string(), "main.rand#1(r; x, y)");
-        let e = Expr::Pred("main.loop#1".into(), 0, vec![s("x"), s("y")]);
+        let e = Expr::Pred(
+            "main.rand#1".into(),
+            vec![1, 0],
+            vec![s("r"), s("x"), s("y")],
+        );
+        assert_eq!(e.to_string(), "main.rand#1(r;; x, y)");
+        let e = Expr::Pred("main.inc#1".into(), vec![1, 1], vec![s("y"), s("a")]);
+        assert_eq!(e.to_string(), "main.inc#1(y; a;)");
+        let e = Expr::Pred("f.g#1".into(), vec![1, 1], vec![s("r"), s("a"), s("x")]);
+        assert_eq!(e.to_string(), "f.g#1(r; a; x)");
+        let e = Expr::Pred("main.loop#1".into(), vec![], vec![s("x"), s("y")]);
         assert_eq!(e.to_string(), "main.loop#1(x, y)");
     }
 

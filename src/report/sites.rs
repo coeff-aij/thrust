@@ -6,14 +6,13 @@
 //! result of a call. A loop header's block type is the loop's invariant; the other blocks' types
 //! are intermediate steps of the analysis.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use rustc_middle::mir::BasicBlock;
 use rustc_span::def_id::LocalDefId;
 use rustc_span::Span;
 
 use crate::chc;
-use crate::pretty::PrettyDisplayExt as _;
 use crate::refine::{BasicBlockType, BasicBlockTypeParamKind};
 use crate::rty;
 
@@ -58,9 +57,9 @@ pub struct PredInfo {
     pub name: String,
     /// What each argument stands for in the template, if it is a variable of the template.
     pub args: Vec<Option<String>>,
-    /// How many of the first arguments are the values the template refines (the result of a
-    /// call), the rest being what they may depend on.
-    pub results: usize,
+    /// The groups the arguments are shown in (see [`expr::grouped`]): for a call's result, the
+    /// result, the call's arguments, and the other variables live there.
+    pub groups: Vec<usize>,
     /// The order the arguments are shown in, when not their own: that of the variables of the
     /// template the predicate variable is the whole of (see [`Site::signature`]).
     pub order: Option<Vec<usize>>,
@@ -100,6 +99,38 @@ struct Made {
 pub struct Names {
     pub preds: HashMap<chc::PredVarId, PredInfo>,
     made: HashMap<chc::PredVarId, Made>,
+    /// The predicate variables without arguments that every solution makes true: those a clause
+    /// derives from nothing but others of them, such as a function's entry being reached. A
+    /// constraint's premise that applies one says nothing and is not shown.
+    pub always_true: HashSet<chc::PredVarId>,
+}
+
+/// The predicate variables without arguments that clauses with nothing but such variables in
+/// their bodies derive, starting from none: the least solution makes them true, so every
+/// solution does.
+fn always_true(system: &chc::System) -> HashSet<chc::PredVarId> {
+    let mut found = HashSet::new();
+    loop {
+        let before = found.len();
+        for clause in &system.clauses {
+            let chc::Pred::Var(head) = clause.head.pred else {
+                continue;
+            };
+            let derived = clause.head.args.is_empty()
+                && clause.head.guard.is_none()
+                && clause.body.formula.is_top()
+                && clause.body.atoms.iter().all(|atom| match atom.pred {
+                    chc::Pred::Var(p) => atom.guard.is_none() && found.contains(&p),
+                    _ => atom.pred.is_top(),
+                });
+            if derived {
+                found.insert(head);
+            }
+        }
+        if found.len() == before {
+            return found;
+        }
+    }
 }
 
 impl Names {
@@ -120,6 +151,7 @@ impl Names {
         Names {
             preds: HashMap::new(),
             made,
+            always_true: always_true(system),
         }
     }
 
@@ -128,12 +160,12 @@ impl Names {
         match self.preds.get(&p) {
             Some(info) => PredHead {
                 name: info.name.clone(),
-                results: info.results,
+                groups: info.groups.clone(),
                 order: info.order.clone(),
             },
             None => PredHead {
                 name: p.to_string(),
-                results: 0,
+                groups: Vec::new(),
                 order: None,
             },
         }
@@ -158,6 +190,43 @@ impl Names {
         }
     }
 
+    /// The predicate variables for the result of a call, with the block ending in the call.
+    pub fn call_results(&self) -> Vec<(chc::PredVarId, LocalDefId, BasicBlock)> {
+        self.preds
+            .iter()
+            .filter(|(_, info)| info.groups.len() == 1)
+            .filter_map(|(p, info)| Some((*p, info.owner.def(), self.made.get(p)?.bb?)))
+            .collect()
+    }
+
+    /// Shows the arguments of the call result `p` in three groups: the result, the call's
+    /// arguments, named `call_args` in order, and the other variables live at the call.
+    pub fn group_call_args(&mut self, p: chc::PredVarId, call_args: &[String]) {
+        let Some(info) = self.preds.get_mut(&p) else {
+            return;
+        };
+        let mut rest: Vec<usize> = (1..info.args.len()).collect();
+        let mut order = vec![0];
+        for name in call_args {
+            let found = rest
+                .iter()
+                .position(|&k| info.args[k].as_deref() == Some(name.as_str()));
+            if let Some(i) = found {
+                order.push(rest.remove(i));
+            }
+        }
+        let arguments = order.len() - 1;
+        order.extend(rest);
+        info.args = order.iter().map(|&k| info.args[k].clone()).collect();
+        info.groups = vec![1, arguments];
+        info.order = Some(order);
+    }
+
+    /// Whether `name` is how the query names a predicate variable of the system.
+    pub fn is_pred_var(&self, name: &str) -> bool {
+        self.made.keys().any(|p| p.to_string() == name)
+    }
+
     fn made_in_contract(&self, p: chc::PredVarId, def: LocalDefId) -> bool {
         self.made
             .get(&p)
@@ -175,7 +244,10 @@ impl Names {
     /// for as far as the code tells.
     pub fn name_rest(
         &mut self,
-        name_of: impl Fn(LocalDefId, Option<BasicBlock>) -> Option<(String, Vec<Option<String>>, usize)>,
+        name_of: impl Fn(
+            LocalDefId,
+            Option<BasicBlock>,
+        ) -> Option<(String, Vec<Option<String>>, Vec<usize>)>,
     ) {
         let mut rest: Vec<_> = self
             .made
@@ -186,7 +258,7 @@ impl Names {
         rest.sort_by_key(|(p, _, _)| p.index());
         let mut counts: HashMap<String, usize> = HashMap::new();
         for (p, def, bb) in rest {
-            let Some((base, args, results)) = name_of(def, bb) else {
+            let Some((base, args, groups)) = name_of(def, bb) else {
                 continue;
             };
             let count = counts.entry(base.clone()).or_default();
@@ -199,19 +271,13 @@ impl Names {
             let info = PredInfo {
                 name,
                 args,
-                results,
+                groups,
                 order: None,
                 owner: Owner::Other { def },
             };
             self.preds.insert(p, info);
         }
     }
-}
-
-/// The type as the program writes it: a local the analysis holds behind an owned pointer
-/// (`own T`) is a `T`.
-fn rust_type(ty: &str) -> String {
-    ty.strip_prefix("own ").unwrap_or(ty).to_owned()
 }
 
 /// An existential of a refinement, which Thrust introduces in typing a value.
@@ -290,7 +356,7 @@ fn name_preds(
         let info = PredInfo {
             name: name_of(k, found.len(), own),
             args,
-            results: 0,
+            groups: Vec::new(),
             order: None,
             owner: owner_of(*i),
         };
@@ -313,7 +379,7 @@ fn render_refinement(
     }
     let vars = refinement
         .existentials()
-        .map(|(e, sort)| (existential_name(e), sort.display().to_string()))
+        .map(|(e, sort)| (existential_name(e), expr::sort_name(sort)))
         .collect();
     Expr::Quant("exists", vars, Box::new(body))
 }
@@ -323,7 +389,7 @@ fn site_params(names: &Names, params: &[Param<'_>]) -> Vec<SiteParam> {
         .iter()
         .map(|(own, ty)| SiteParam {
             name: own.clone(),
-            ty: rust_type(&ty.ty.display().to_string()),
+            ty: expr::sort_name(&ty.ty.to_sort()),
             refinement: render_refinement(names, params, own, &ty.refinement),
         })
         .collect()

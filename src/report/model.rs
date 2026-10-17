@@ -106,13 +106,34 @@ fn bindings(s: &Sexp) -> Vec<(String, &Sexp)> {
         .collect()
 }
 
+/// A sort of the solver's answer as [`super::expr::sort_name`] writes Thrust's: `(_ BitVec 32)`
+/// is `BitVec<32>`, `(Seq Int)` is `Seq<Int>`, and a datatype loses the prefix the query gives its
+/// name (`A0_Mut<Int>` is `Mut<Int>`).
 fn sort_name(s: &Sexp) -> String {
     match s {
-        Sexp::Atom(a) => a.clone(),
-        Sexp::List(items) => {
-            let inner: Vec<_> = items.iter().map(sort_name).collect();
-            format!("({})", inner.join(" "))
-        }
+        Sexp::Atom(a) => strip_datatype_prefix(a).to_owned(),
+        Sexp::List(items) => match items.as_slice() {
+            [Sexp::Atom(u), Sexp::Atom(bv), Sexp::Atom(w)] if u == "_" && bv == "BitVec" => {
+                format!("BitVec<{w}>")
+            }
+            [Sexp::Atom(head), args @ ..] => {
+                let args: Vec<String> = args.iter().map(sort_name).collect();
+                format!("{head}<{}>", args.join(", "))
+            }
+            _ => items.iter().map(sort_name).collect::<Vec<_>>().join(" "),
+        },
+    }
+}
+
+/// `A<n>_<name>`, how the query renames a datatype, as `<name>`.
+fn strip_datatype_prefix(name: &str) -> &str {
+    let Some(rest) = name.strip_prefix('A') else {
+        return name;
+    };
+    let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+    match rest[digits..].strip_prefix('_') {
+        Some(stripped) if digits > 0 => stripped,
+        _ => name,
     }
 }
 
@@ -167,11 +188,66 @@ pub(super) fn to_expr(s: &Sexp) -> Expr {
     }
 }
 
+/// `s` as SMT-LIB text.
+fn smt_text(s: &Sexp) -> String {
+    match s {
+        Sexp::Atom(a) => a.clone(),
+        Sexp::List(items) => {
+            let items: Vec<String> = items.iter().map(smt_text).collect();
+            format!("({})", items.join(" "))
+        }
+    }
+}
+
+/// The formula `z3` prints after `(apply ...)`: the disjunction of its goals, each the
+/// conjunction of its formulas. `None` when the text holds an error or no goals.
+pub fn read_goals(text: &str) -> Option<Expr> {
+    if text.contains("(error") {
+        return None;
+    }
+    let tokens = tokens(text);
+    let mut pos = 0;
+    while let Some(sexp) = parse(&tokens, &mut pos) {
+        let Sexp::List(items) = sexp else {
+            continue;
+        };
+        let [Sexp::Atom(head), goals @ ..] = items.as_slice() else {
+            continue;
+        };
+        if head != "goals" {
+            continue;
+        }
+        let disjuncts: Vec<Expr> = goals
+            .iter()
+            .filter_map(|goal| match goal {
+                Sexp::List(parts) if matches!(parts.first(), Some(Sexp::Atom(g)) if g == "goal") => {
+                    let formulas = parts[1..]
+                        .iter()
+                        .take_while(|p| !matches!(p, Sexp::Atom(a) if a.starts_with(':')))
+                        .map(to_expr)
+                        .collect();
+                    Some(Expr::and(formulas))
+                }
+                _ => None,
+            })
+            .collect();
+        return match disjuncts.len() {
+            0 => Some(Expr::sym("false")),
+            1 => disjuncts.into_iter().next(),
+            _ => Some(Expr::app("or", disjuncts)),
+        };
+    }
+    None
+}
+
 /// The interpretation of one predicate variable: its parameters and its body over them.
 #[derive(Debug, Clone)]
 pub struct Interpretation {
     pub params: Vec<String>,
     pub body: Expr,
+    /// The parameters with their sorts and the body as the solver printed them, to give back to
+    /// it (see [`super::simplify`]).
+    pub source: Option<(Vec<(String, String)>, String)>,
 }
 
 impl Interpretation {
@@ -204,10 +280,14 @@ pub fn read(model: &str) -> HashMap<String, Interpretation> {
         .filter_map(|item| match item {
             Sexp::List(parts) => match parts.as_slice() {
                 [Sexp::Atom(def), Sexp::Atom(name), params, _, body] if def == "define-fun" => {
-                    let params = bindings(params).into_iter().map(|(p, _)| p).collect();
+                    let typed: Vec<(String, String)> = bindings(params)
+                        .into_iter()
+                        .map(|(p, sort)| (p, smt_text(sort)))
+                        .collect();
                     let interpretation = Interpretation {
-                        params,
+                        params: typed.iter().map(|(p, _)| p.clone()).collect(),
                         body: to_expr(body),
+                        source: Some((typed, smt_text(body))),
                     };
                     Some((name.clone(), interpretation))
                 }
@@ -241,6 +321,18 @@ mod tests {
         assert_eq!(
             applied.to_string(),
             "exists(|__tmp_z3_model_y: Int| n == 2 * __tmp_z3_model_y)"
+        );
+    }
+
+    #[test]
+    fn reads_the_goals_of_a_tactic() {
+        let text = "(goals\n(goal\n  (>= x!0 2)\n  (= x!1 x!0)\n  :precision precise :depth 3)\n)";
+        assert_eq!(
+            read_goals(text).unwrap().to_string(),
+            "x!0 >= 2 && x!1 == x!0"
+        );
+        assert!(
+            read_goals("(error \"unknown constant foo\")\n(goals\n(goal\n :depth 1)\n)").is_none()
         );
     }
 
