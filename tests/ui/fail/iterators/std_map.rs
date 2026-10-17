@@ -7,8 +7,8 @@
 // the inner range's cursor. `main` calls it with a concrete closure.
 // Fail twin: every one of the ten items is counted.
 
-use thrust_models::model::{Closure, Int, Mut, Seq};
-use thrust_models::{forall, Ghost};
+use thrust_models::model::{Closure, Int, Mut};
+use thrust_models::forall;
 
 #[thrust_macros::context]
 #[thrust_macros::requires(forall(|c: Closure<F>, x: Int| !(0 <= x && x < 1000) || thrust_macros::pre!(c(x))))]
