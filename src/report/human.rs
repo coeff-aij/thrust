@@ -28,6 +28,10 @@ pub(super) struct Human<'a, 'tcx> {
 
 impl Human<'_, '_> {
     fn site_notes(&self, notes: &mut Vec<Note>, entry: &Entry<'_>, site: &Site) {
+        // Without a solution, a site has only its template to show, if that was asked for.
+        if self.solution.is_err() && !self.items.template {
+            return;
+        }
         let lines = match (site.kind, site.signature) {
             (SiteKind::Contract, _) => self.contract_lines(entry, site),
             (_, Some(_)) => self.signature_lines(site),

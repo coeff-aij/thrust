@@ -52,6 +52,30 @@ struct Items {
     internal: bool,
 }
 
+impl Items {
+    const ALL: Items = Items {
+        template: true,
+        constraints: true,
+        solution: true,
+        inferred: true,
+        failure: true,
+        internal: true,
+    };
+
+    /// What `THRUST_REPORT=1` shows: to a person, what was inferred and why verification failed;
+    /// to a program, everything.
+    fn default_for(format: Format) -> Items {
+        match format {
+            Format::Human => Items {
+                inferred: true,
+                failure: true,
+                ..Items::default()
+            },
+            Format::Json => Items::ALL,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Format {
     Human,
@@ -71,19 +95,21 @@ impl Config {
     /// `None` when `THRUST_REPORT` is unset or names nothing to show.
     pub fn from_env(tcx: TyCtxt<'_>) -> Option<Self> {
         let value = std::env::var("THRUST_REPORT").ok()?;
+        let format = match std::env::var("THRUST_REPORT_FORMAT").as_deref() {
+            Ok("json") => Format::Json,
+            Ok("human") | Err(_) => Format::Human,
+            Ok(other) => {
+                tcx.dcx().warn(format!(
+                    "`THRUST_REPORT_FORMAT`: unknown format `{other}`, using `human`"
+                ));
+                Format::Human
+            }
+        };
         let mut items = Items::default();
         for item in value.split(',').map(str::trim).filter(|i| !i.is_empty()) {
             match item {
-                "all" => {
-                    items = Items {
-                        template: true,
-                        constraints: true,
-                        solution: true,
-                        inferred: true,
-                        failure: true,
-                        internal: true,
-                    }
-                }
+                "1" => items = Items::default_for(format),
+                "all" => items = Items::ALL,
                 "template" => items.template = true,
                 "constraints" => items.constraints = true,
                 "solution" => items.solution = true,
@@ -104,16 +130,6 @@ impl Config {
         {
             return None;
         }
-        let format = match std::env::var("THRUST_REPORT_FORMAT").as_deref() {
-            Ok("json") => Format::Json,
-            Ok("human") | Err(_) => Format::Human,
-            Ok(other) => {
-                tcx.dcx().warn(format!(
-                    "`THRUST_REPORT_FORMAT`: unknown format `{other}`, using `human`"
-                ));
-                Format::Human
-            }
-        };
         Some(Config {
             items,
             format,
