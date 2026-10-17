@@ -23,7 +23,7 @@ pub(super) struct Human<'a, 'tcx> {
     pub(super) tcx: TyCtxt<'tcx>,
     pub(super) items: Items,
     pub(super) names: &'a Names,
-    pub(super) solution: Result<Solution, &'static str>,
+    pub(super) solution: Result<Solution, String>,
 }
 
 impl Human<'_, '_> {
@@ -56,7 +56,7 @@ impl Human<'_, '_> {
             Ok(solution) => Some(solution),
             Err(why) => {
                 if self.items.solution || self.items.inferred {
-                    lines.push((*why).to_owned());
+                    lines.push(why.clone());
                 }
                 None
             }

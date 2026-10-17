@@ -354,7 +354,7 @@ pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) {
                 config.run_script(script)
             }))
         }
-        (why, _) => Err(why.unwrap_or("no solution")),
+        (why, _) => Err(why.unwrap_or_else(|| "no solution".to_owned())),
     };
     let failure = config
         .items
