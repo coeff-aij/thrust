@@ -28,38 +28,22 @@ Run 1, three bugs: three parts, all solved, all failing.
 
 ```console
 $ cp 08_shop_1.rs shop.rs; thrust shop.rs
-note: thrust: refuted: ensures in `withdraw`
+error: verification error: Unsat (thrust: refuted: ensures in `withdraw`)
  --> shop.rs:5:2
 ...
   = note: where it fails: result = -1, balance = 0, amount = 0, __tmp_mir_withdraw_3 = 0
 ...
-note: thrust: refuted: ensures in `shipping`
-...
-note: thrust: refuted: assertion in `main`
-...
-error: verification error: Unsat
- --> shop.rs:5:2
-  |
-5 | }
-  |  ^
-  |
-  = note: in part 0 of 3, of 2 clauses from `withdraw` (shop.rs:3-5)
+  = note: in part 1 of 3, of 2 clauses from `withdraw` (shop.rs:3-5)
 
-error: verification error: Unsat
+error: verification error: Unsat (thrust: refuted: ensures in `shipping`)
   --> shop.rs:17:2
-   |
-17 | }
-   |  ^
-   |
-   = note: in part 1 of 3, of 4 clauses from `shipping` (shop.rs:9-17)
+...
+   = note: in part 2 of 3, of 4 clauses from `shipping` (shop.rs:9-17)
 
-error: verification error: Unsat
+error: verification error: Unsat (thrust: refuted: assertion in `main`)
   --> shop.rs:29:5
-   |
-29 |     assert!(p == 90);
-   |     ^^^^^^^^^^^^^^^^
-   |
-   = note: in part 2 of 3, of 16 clauses from `price` (shop.rs:19-25), `main` (shop.rs:27-33)
+...
+   = note: in part 3 of 3, of 16 clauses from `price` (shop.rs:19-25), `main` (shop.rs:27-33)
 
 note: thrust: 3 parts solved on their own, 0 of them from earlier runs
 
@@ -71,21 +55,17 @@ other two come from the cache and still fail. The last note names the parts solv
 
 ```console
 $ cp 08_shop_2.rs shop.rs; thrust shop.rs
-note: thrust: refuted: ensures in `shipping`
-...
-note: thrust: refuted: assertion in `main`
-...
-error: verification error: Unsat
+error: verification error: Unsat (thrust: refuted: ensures in `shipping`)
   --> shop.rs:17:2
 ...
-   = note: in part 1 of 3, of 4 clauses from `shipping` (shop.rs:9-17)
+   = note: in part 2 of 3, of 4 clauses from `shipping` (shop.rs:9-17)
 
-error: verification error: Unsat
+error: verification error: Unsat (thrust: refuted: assertion in `main`)
   --> shop.rs:29:5
 ...
-   = note: in part 2 of 3, of 16 clauses from `price` (shop.rs:19-25), `main` (shop.rs:27-33)
+   = note: in part 3 of 3, of 16 clauses from `price` (shop.rs:19-25), `main` (shop.rs:27-33)
 
-note: thrust: 3 parts solved on their own, 2 of them from earlier runs; solved now: part 0 from `withdraw` (shop.rs:3-5)
+note: thrust: 3 parts solved on their own, 2 of them from earlier runs; solved now: part 1 from `withdraw` (shop.rs:3-5)
 
 error: aborting due to 2 previous errors
 ```
@@ -94,9 +74,9 @@ The same run with `THRUST_REPORT_FORMAT=json THRUST_REPORT_FILE=r2.jsonl` gives 
 
 ```console
 $ grep '"kind":"part"' r2.jsonl | jq -c '{id, functions: [.functions[].fn], verdict, cached}'
-{"id":0,"functions":["withdraw"],"verdict":"sat","cached":false}
-{"id":1,"functions":["shipping"],"verdict":"unsat","cached":true}
-{"id":2,"functions":["price","main"],"verdict":"unsat","cached":true}
+{"id":1,"functions":["withdraw"],"verdict":"sat","cached":false}
+{"id":2,"functions":["shipping"],"verdict":"unsat","cached":true}
+{"id":3,"functions":["price","main"],"verdict":"unsat","cached":true}
 ```
 
 A cached `unsat` is solved once more to get its refutation; only the verdict is cached.
@@ -106,10 +86,11 @@ also shows the invariant inferred there, while `main`'s part still fails.
 
 ```console
 $ cp 08_shop_3.rs shop.rs; thrust shop.rs
-note: thrust: refuted: assertion in `main`
+error: verification error: Unsat (thrust: refuted: assertion in `main`)
   --> shop.rs:29:5
 ...
    = note: it goes through the contract inferred for `price`: a wrong result there shows here
+   = note: in part 3 of 3, of 16 clauses from `price` (shop.rs:19-25), `main` (shop.rs:27-33)
 
 note: thrust: loop in `shipping`
   --> shop.rs:12:11
@@ -119,14 +100,9 @@ note: thrust: loop in `shipping`
    |
    = note: invariant (inferred)
            shipping.loop#1(n: int, i: int, cost: int, old(n): int)
-           := (3 * i = cost ∧ 3 * old(n) - cost > -1) ∨ (old(n) >= 0 ∧ n = old(n) ∧ i = 0 ∧ cost = 0)
+           := (3 * i = cost ∧ 3 * old(n) >= cost) ∨ (old(n) >= 0 ∧ n = old(n) ∧ i = 0 ∧ cost = 0)
 
-error: verification error: Unsat
-  --> shop.rs:29:5
-...
-   = note: in part 2 of 3, of 16 clauses from `price` (shop.rs:19-25), `main` (shop.rs:27-33)
-
-note: thrust: 3 parts solved on their own, 2 of them from earlier runs; solved now: part 1 from `shipping` (shop.rs:9-17)
+note: thrust: 3 parts solved on their own, 2 of them from earlier runs; solved now: part 2 from `shipping` (shop.rs:9-17)
 
 error: aborting due to 1 previous error
 ```
@@ -140,7 +116,7 @@ note: thrust: loop in `shipping`
 ...
 note: thrust: `price`
 ...
-note: thrust: 3 parts solved on their own, 2 of them from earlier runs; solved now: part 2 from `price` (shop.rs:19-25), `main` (shop.rs:27-33)
+note: thrust: 3 parts solved on their own, 2 of them from earlier runs; solved now: part 3 from `price` (shop.rs:19-25), `main` (shop.rs:27-33)
 
 exit 0
 ```
@@ -151,7 +127,7 @@ with nothing changed takes every verdict from the cache:
 ```console
 $ cp 08_shop_5.rs shop.rs; thrust shop.rs; echo "exit $?"
 ...
-note: thrust: 3 parts solved on their own, 2 of them from earlier runs; solved now: part 2 from `price` (shop.rs:19-25), `main` (shop.rs:27-34)
+note: thrust: 3 parts solved on their own, 2 of them from earlier runs; solved now: part 3 from `price` (shop.rs:19-25), `main` (shop.rs:27-34)
 
 exit 0
 $ thrust shop.rs; echo "exit $?"
@@ -166,7 +142,7 @@ Each run here takes under a second; the cache matters when a part takes the solv
 ## With PCSat
 
 The same session with PCSat gives the same parts and verdicts, without refutations: each error is
-at the code of its part. Set `THRUST_CACHE_SALT` to the image's id, so that a new solver build
+at the code of its part, the first function's, with the other functions of the part labelled. Set `THRUST_CACHE_SALT` to the image's id, so that a new solver build
 does not reuse the old one's verdicts:
 
 ```console
@@ -187,16 +163,24 @@ error: verification error: Unsat
 17 | | }
    | |_^
    |
-   = note: in part 1 of 3, of 4 clauses from `shipping` (shop.rs:9-17)
+   = note: in part 2 of 3, of 4 clauses from `shipping` (shop.rs:9-17)
 
 error: verification error: Unsat
   --> shop.rs:19:1
    |
 19 | / fn price(units: i64) -> i64 {
 ...
-   = note: in part 2 of 3, of 16 clauses from `price` (shop.rs:19-25), `main` (shop.rs:27-33)
+25 | | }
+   | |_^
+26 |
+27 | / fn main() {
+...
+33 | | }
+   | |_- `main` is in this part too
+   |
+   = note: in part 3 of 3, of 16 clauses from `price` (shop.rs:19-25), `main` (shop.rs:27-33)
 
-note: thrust: 3 parts solved on their own, 2 of them from earlier runs; solved now: part 0 from `withdraw` (shop.rs:3-5)
+note: thrust: 3 parts solved on their own, 2 of them from earlier runs; solved now: part 1 from `withdraw` (shop.rs:3-5)
 
 error: aborting due to 2 previous errors
 ```

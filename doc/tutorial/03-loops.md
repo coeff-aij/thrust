@@ -34,7 +34,7 @@ note: thrust: loop in `double_by_loop`
   |
   = note: invariant (inferred)
           double_by_loop.loop#1(n: int, i: int, s: int, old(n): int)
-          := (2 * i = s ∧ 2 * old(n) - s > -1) ∨ (old(n) >= 0 ∧ n = old(n) ∧ i = 0 ∧ s = 0)
+          := (2 * i = s ∧ 2 * old(n) >= s) ∨ (old(n) >= 0 ∧ n = old(n) ∧ i = 0 ∧ s = 0)
 ```
 
 `double_by_loop.loop#1` is the first loop of `double_by_loop`, over the variables live at its
@@ -116,12 +116,14 @@ writes `i * (i + 1)` for `i * (i - 1)`:
 
 ```console
 $ THRUST_REPORT=1 thrust s05_invariant_not_preserved.rs
-note: thrust: refuted: loop preservation in `sum_below`
+...
+error: verification error: Unsat (thrust: refuted: loop preservation in `sum_below`)
   --> s05_invariant_not_preserved.rs:6:5
    |
  6 | /     while i < n {
  7 | |         thrust_macros::invariant!(|i: i64, s: i64, n: thrust_models::FnParam<i64>|
  8 | |             0 <= i && i <= n.at_entry() && 2 * s == i * (i + 1));
+   | |             --------------------------------------------------- the annotation it checks
  9 | |         s += i;
 10 | |         i += 1;
 11 | |     }
@@ -131,15 +133,13 @@ note: thrust: refuted: loop preservation in `sum_below`
    = note: where it fails: n = 1, __tmp_mir_sum_below_7 = 0, *__tmp_mir_sum_below_8 = 0, s = 0, i = 1
    = note: the solver refutes one obligation of a query: others may fail too (`THRUST_SPLIT` refutes one in each part)
 
-error: verification error: Unsat
-  --> s05_invariant_not_preserved.rs:6:5
-...
+error: aborting due to 1 previous error; 1 warning emitted
 ```
 
 `loop preservation` says the body does not keep the invariant. In the constraint,
 `__tmp_mir_sum_below_7` and `*__tmp_mir_sum_below_8` are `i` and `s` before the iteration, `i` and
 `s` after it: from `i = 0, s = 0` (where the invariant holds, `0 = 0 * 1`) the body reaches
-`i = 1, s = 0`, where `2 * 0 = 1 * 2` is false. The error itself is at the obligation refuted, so
-an editor shows it at the loop.
+`i = 1, s = 0`, where `2 * 0 = 1 * 2` is false. The refutation is the error, at the loop with the
+written invariant labelled, so an editor shows it there.
 
 Loops written with `for` are in [chapter 6](06-iterators.md).
