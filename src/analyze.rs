@@ -2716,7 +2716,7 @@ impl<'tcx> Analyzer<'tcx> {
     ) -> Vec<Option<rustc_span::Span>> {
         // Each part refuted is solved once more on its own, for its refutation, and each part
         // solved for its model when the report shows its unknowns; the report reads them over the
-        // system of all of them, whose clauses keep their ids. A solver that gives neither is not
+        // whole system, whose parts keep the clause ids. A solver that gives neither is not
         // asked again.
         let requests = config.requests();
         let evidence = chc::Config::from_env().answers(requests);
@@ -2753,11 +2753,8 @@ impl<'tcx> Analyzer<'tcx> {
         if answers.is_empty() {
             answers.push(chc::Answer::of(Ok(())));
         }
-        let clauses: Vec<chc::ClauseId> = asked
-            .iter()
-            .flat_map(|a| a.clauses.iter().copied())
-            .collect();
-        let spans = self.report(config, &system.part(&clauses), &answers, &asked, summaries);
+        // The templates and constraints of every part are shown, solved again or not.
+        let spans = self.report(config, system, &answers, &asked, summaries);
         let mut refuted = vec![None; parts.len()];
         for (a, span) in asked.iter().zip(spans) {
             refuted[a.part] = span;

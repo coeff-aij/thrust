@@ -258,3 +258,23 @@ fn a_split_failure_names_its_part() {
         .unwrap_or_default();
     assert!(error.contains("two_parts.rs:9:1\n"), "{stderr}");
 }
+
+/// What needs no answer of the solver, the templates and the constraints, is shown of every part
+/// as without `THRUST_SPLIT`.
+#[test]
+fn a_split_run_shows_the_constraints_of_every_part() {
+    let notes = |split| {
+        let output = run_with(
+            "inferred_parts.rs",
+            split,
+            &[("THRUST_REPORT", "template,constraints")],
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        (stderr.matches("constraints from this code").count(), stderr)
+    };
+    let (whole, _) = notes(None);
+    let (parts, stderr) = notes(Some("2"));
+    assert!(whole >= 3, "{stderr}");
+    assert_eq!(parts, whole, "{stderr}");
+    assert!(stderr.contains("template: fn double("), "{stderr}");
+}
