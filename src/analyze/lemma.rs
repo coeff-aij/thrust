@@ -100,14 +100,34 @@ impl<'tcx> Checker<'tcx> {
                 .is_some_and(|trait_item| self.is_law(trait_item))
     }
 
-    /// Whether a call of `def_id` at `args` uses a law at another type than the one being proved:
-    /// a type parameter other than `Self`, as a generic impl's proof uses the laws of the types it
-    /// wraps. A law used at `Self` or at a concrete type could be the one being proved.
-    fn is_law_at_type_param(&self, def_id: DefId, args: mir_ty::GenericArgsRef<'tcx>) -> bool {
-        self.is_law(def_id)
-            && args.types().next().is_some_and(|ty| {
-                matches!(ty.kind(), mir_ty::Param(param) if param.name != rustc_span::symbol::kw::SelfUpper)
-            })
+    /// Whether a call in `lemma` of `def_id` at `args` uses a law at another type than the one
+    /// being proved: a type parameter other than `Self` and, in an impl's proof of a law, one
+    /// inside the impl's self type, as a generic impl's proof uses the laws of the types it wraps. A law used at
+    /// `Self`, at the impl's self type or at a concrete type could be the one being proved.
+    fn is_law_at_type_param(
+        &self,
+        lemma: LocalDefId,
+        def_id: DefId,
+        args: mir_ty::GenericArgsRef<'tcx>,
+    ) -> bool {
+        let Some(ty) = args.types().next().filter(|_| self.is_law(def_id)) else {
+            return false;
+        };
+        if !matches!(ty.kind(), mir_ty::Param(param) if param.name != rustc_span::symbol::kw::SelfUpper)
+        {
+            return false;
+        }
+        let proof_impl = self
+            .tcx
+            .impl_of_assoc(lemma.to_def_id())
+            .filter(|_| self.is_law_proof(lemma.to_def_id()));
+        match proof_impl {
+            Some(impl_did) => {
+                let self_ty = self.tcx.type_of(impl_did).instantiate_identity();
+                self_ty != ty && self_ty.walk().any(|arg| arg.as_type() == Some(ty))
+            }
+            None => true,
+        }
     }
 
     /// The types a value of `ty` is made of: the types `ty` names and, through the fields of
@@ -233,7 +253,7 @@ impl<'tcx> Checker<'tcx> {
         }
         if func
             .const_fn_def()
-            .is_some_and(|(def_id, args)| self.is_law_at_type_param(def_id, args))
+            .is_some_and(|(def_id, args)| self.is_law_at_type_param(lemma, def_id, args))
         {
             return None;
         }
