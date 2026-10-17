@@ -27,7 +27,10 @@ fn report_names_the_variables_of_a_refuted_assertion() {
         "{stderr}"
     );
     assert!(stderr.contains("==> y >= 2"), "{stderr}");
-    assert!(stderr.contains("main.loop#1(x + y, x + y)"), "{stderr}");
+    assert!(
+        stderr.contains("x == 1 && y == 1 ==> main.loop#1(x, y)"),
+        "{stderr}"
+    );
     assert!(stderr.contains("main.loop#1(x = 1, y = 1)"), "{stderr}");
     assert!(
         stderr.contains("main.rand#1(__tmp_mir_main_3;; x, y)"),
