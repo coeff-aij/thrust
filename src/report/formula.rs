@@ -150,6 +150,9 @@ fn tidy_term<V>(t: chc::Term<V>) -> chc::Term<V> {
                 Ok([a, Term::App(g, mut b)]) if f == Function::ADD && g == Function::NEG => {
                     Term::App(Function::SUB, vec![a, b.remove(0)])
                 }
+                Ok([Term::App(g, mut b), a]) if f == Function::ADD && g == Function::NEG => {
+                    Term::App(Function::SUB, vec![a, b.remove(0)])
+                }
                 Ok(args) => Term::App(f, args.into()),
                 Err(args) => Term::App(f, args),
             }
@@ -193,6 +196,39 @@ fn difference<V: Clone>(t: &chc::Term<V>) -> Option<(chc::Term<V>, chc::Term<V>)
     }
 }
 
+/// `x - y` compared by `p` with the integer `k`, as `x` compared with `y` moved by `k`: over the
+/// integers a strict bound is the bound by the neighbour, so `x - y <= -1` is `x < y` and
+/// `x - y > -1` is `x >= y`.
+fn compared_difference<V>(
+    p: chc::KnownPred,
+    x: chc::Term<V>,
+    y: chc::Term<V>,
+    k: num_bigint::BigInt,
+) -> chc::Atom<V> {
+    use chc::{KnownPred, Term};
+    let (p, k) = match p {
+        p if p == KnownPred::LESS_THAN => (KnownPred::LESS_THAN_OR_EQUAL, k - 1),
+        p if p == KnownPred::GREATER_THAN => (KnownPred::GREATER_THAN_OR_EQUAL, k + 1),
+        p => (p, k),
+    };
+    let one: num_bigint::BigInt = 1.into();
+    let (p, k) = match p {
+        p if p == KnownPred::LESS_THAN_OR_EQUAL && k == -one.clone() => {
+            (KnownPred::LESS_THAN, 0.into())
+        }
+        p if p == KnownPred::GREATER_THAN_OR_EQUAL && k == one => {
+            (KnownPred::GREATER_THAN, 0.into())
+        }
+        p => (p, k),
+    };
+    let y = match k {
+        k if k == 0.into() => y,
+        k if k > 0.into() => Term::App(chc::Function::ADD, vec![y, Term::Int(k)]),
+        k => Term::App(chc::Function::SUB, vec![y, Term::Int(-k)]),
+    };
+    chc::Atom::new(p.into(), vec![x, y])
+}
+
 /// The components of two pairs or tuples equated.
 fn componentwise<V: Clone + PartialEq>(
     xs: Vec<chc::Term<V>>,
@@ -216,11 +252,12 @@ fn tidy_atom<V: Clone + PartialEq>(atom: chc::Atom<V>) -> chc::Formula<V> {
         return chc::Atom { args, ..atom }.into();
     }
     let [a, b] = <[Term<V>; 2]>::try_from(args).ok().unwrap();
-    let zero = matches!(&b, Term::Int(k) if *k == 0.into());
-    let (a, b) = match difference(&a) {
-        Some((x, y)) if zero => (x, y),
-        _ => (a, b),
+    let chc::Pred::Known(p) = atom.pred else {
+        unreachable!()
     };
+    if let (Some((x, y)), Term::Int(k)) = (difference(&a), &b) {
+        return compared_difference(p, x, y, k.clone()).into();
+    }
     let equal = matches!(atom.pred, chc::Pred::Known(p) if p == KnownPred::EQUAL);
     let not_equal = matches!(atom.pred, chc::Pred::Known(p) if p == KnownPred::NOT_EQUAL);
     if !(equal || not_equal) {
@@ -358,6 +395,29 @@ mod tests {
             ),
         ]);
         assert_eq!(tidy(g).one_line(), "a = r");
+    }
+
+    #[test]
+    fn a_difference_compared_with_an_integer_is_a_comparison() {
+        use chc::KnownPred;
+        let less = atom(
+            KnownPred::LESS_THAN_OR_EQUAL,
+            var("a").sub(var("r")),
+            Term::int(-1),
+        );
+        assert_eq!(tidy(less).one_line(), "a < r");
+        let at_least = atom(
+            KnownPred::GREATER_THAN,
+            var("n").sub(var("c")),
+            Term::int(-1),
+        );
+        assert_eq!(tidy(at_least).one_line(), "n >= c");
+        let moved = atom(
+            KnownPred::LESS_THAN_OR_EQUAL,
+            var("x").sub(var("y")),
+            Term::int(2),
+        );
+        assert_eq!(tidy(moved).one_line(), "x <= y + 2");
     }
 
     #[test]
