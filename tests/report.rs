@@ -40,11 +40,11 @@ fn report_names_the_variables_of_a_refuted_assertion() {
     );
     assert!(stderr.contains("==> y >= 2"), "{stderr}");
     assert!(
-        stderr.contains("(x = 1 ∧ y = 1) ==> main.loop#1 x y"),
+        stderr.contains("(x = 1 ∧ y = 1) ==> main.loop#1(x, y)"),
         "{stderr}"
     );
     assert!(stderr.contains("main.loop#1(x = 1, y = 1)"), "{stderr}");
-    assert!(stderr.contains("main.rand#1 rand#1 x y"), "{stderr}");
+    assert!(stderr.contains("main.rand#1(rand#1, x, y)"), "{stderr}");
 }
 
 /// A refuted `ensures` is shown at the end of the body, where it fails, with the annotation it
@@ -238,7 +238,7 @@ fn premises_are_the_formula_s_and_each_is_once() {
         .find(|l| l.contains(r#""fn":"check""#) && l.contains("assertion"))
         .unwrap_or_default();
     assert!(
-        check.contains(r#""premises":["check.bb0 x x","x = 0"]"#),
+        check.contains(r#""premises":["check.bb0(x, old(x) = x)","x = 0"]"#),
         "{stdout}"
     );
     let identity = stdout
@@ -246,4 +246,25 @@ fn premises_are_the_formula_s_and_each_is_once() {
         .find(|l| l.contains(r#""kind":"failure""#) && l.contains(r#""fn":"identity""#))
         .unwrap_or_default();
     assert_eq!(identity.matches(r#""°x >= 0""#).count(), 1, "{stdout}");
+}
+
+/// A constraint applies an unknown as the run shows a fact: each argument by the variable of the
+/// template it is, a `&mut` as `*x` and `°x`, never as a `<current, final>` pair.
+#[test]
+fn constraints_name_the_arguments_of_an_unknown() {
+    let output = report_with(
+        "swap_half.rs",
+        "constraints",
+        &[("THRUST_REPORT_FORMAT", "json")],
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let swap: Vec<&str> = stdout
+        .lines()
+        .filter(|l| l.contains(r#""fn":"swap""#))
+        .collect();
+    assert!(
+        swap.iter().any(|l| l.contains("swap.bb0(*x = ")),
+        "{stdout}"
+    );
+    assert!(swap.iter().all(|l| !l.contains('<')), "{stdout}");
 }

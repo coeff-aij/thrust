@@ -91,17 +91,52 @@ pub fn show(f: &Formula, names: &Names) -> String {
         let Some(info) = names.preds.get(&p) else {
             return Formula::Atom(atom);
         };
-        let pred = chc::UserDefinedPred::new(info.name.clone()).into();
         let args = names.arrange(p, &atom.args);
+        let applied = applied(&info.name, &info.args, args);
         Formula::Atom(chc::Atom {
             guard: atom.guard,
-            pred,
-            args,
+            pred: chc::UserDefinedPred::new(applied).into(),
+            args: Vec::new(),
         })
     });
     let mut f = tidy(f);
     f.simplify();
     f.one_line()
+}
+
+/// `p(…)` with each argument as the run shows a fact's: `name = term` for the variable of the
+/// template it is, a `&mut` as its current and final values `*name` and `°name`, and the name
+/// alone where the term is that variable.
+fn applied(pred: &str, params: &[Option<String>], args: Vec<Term>) -> String {
+    if args.is_empty() {
+        return pred.to_owned();
+    }
+    let mut shown = Vec::new();
+    for (param, arg) in params
+        .iter()
+        .map(Option::as_deref)
+        .chain(std::iter::repeat(None))
+        .zip(args)
+    {
+        push_argument(&mut shown, param, tidy_term(arg));
+    }
+    format!("{pred}({})", shown.join(", "))
+}
+
+fn push_argument(shown: &mut Vec<String>, param: Option<&str>, arg: Term) {
+    let Some(name) = param else {
+        shown.push(arg.one_line());
+        return;
+    };
+    if let Term::Mut(current, last) = arg {
+        push_argument(shown, Some(&format!("*{name}")), *current);
+        push_argument(shown, Some(&format!("°{name}")), *last);
+        return;
+    }
+    match arg {
+        Term::Var(v) if v.as_str() == name => shown.push(name.to_owned()),
+        arg => shown.push(format!("{name} = {}", arg.one_line())),
+    }
 }
 
 pub fn and(fs: Vec<Formula>) -> Formula {
