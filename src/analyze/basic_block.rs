@@ -1482,7 +1482,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             }
             ResolvedCallable::Unresolved => {
                 match self.ctx.def_ty_with_args(def_id, args, caller_def_id) {
-                    Some(def_ty) => def_ty.ty,
+                    Some(def_ty) => {
+                        self.ctx.record_dispatched_call(
+                            self.type_builder.owner_fn_id(),
+                            def_id,
+                            args,
+                        );
+                        def_ty.ty
+                    }
                     None => {
                         tracing::debug!(?def_id, ?args, "using abstract trait method type");
                         self.abstract_callable_ty(def_id, args)

@@ -841,6 +841,9 @@ pub struct Analyzer<'tcx> {
     /// its type parameters, keyed like `assumed_spec_bounds`; see
     /// [`Analyzer::check_reused_total_methods`].
     assumed_total_methods: RefCell<HashMap<DefId, Vec<(DefId, mir_ty::GenericArgsRef<'tcx>)>>>,
+    /// The trait methods a body called at its type parameters with the trait's specification,
+    /// keyed like `assumed_spec_bounds`; see [`Analyzer::expand_dispatched_instances`].
+    dispatched_calls: RefCell<HashMap<DefId, Vec<(DefId, mir_ty::GenericArgsRef<'tcx>)>>>,
     /// The types of the functions each basic block calls, recorded only when
     /// [`candidate_atoms_enabled`], whose contracts give a loop head candidate atoms.
     called_fn_tys: HashMap<(AnalysisKey<'tcx>, BasicBlock), Vec<rty::FunctionType>>,
@@ -945,6 +948,7 @@ impl<'tcx> Analyzer<'tcx> {
             hist_inv_specified_params: Default::default(),
             fn_mut_bounded_defs: Default::default(),
             assumed_spec_bounds: Default::default(),
+            dispatched_calls: Default::default(),
             reused_generic_instances: Default::default(),
             assumed_total_methods: Default::default(),
             called_fn_tys: Default::default(),
@@ -1614,6 +1618,80 @@ impl<'tcx> Analyzer<'tcx> {
                         self.tcx.def_path_str_with_args(def_id, generic_args),
                         self.tcx.def_path_str(caller_def_id),
                     )),
+                }
+            }
+            if !grew {
+                return;
+            }
+        }
+    }
+
+    /// Records that a body analysed under `owner_fn_id` called the trait method `def_id` at
+    /// `generic_args` that name type parameters, taking the trait's specification. Returns
+    /// whether it is new.
+    pub fn record_dispatched_call(
+        &self,
+        owner_fn_id: DefId,
+        def_id: DefId,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
+    ) -> bool {
+        let root = self.tcx.typeck_root_def_id(owner_fn_id);
+        let call = (def_id, self.tcx.erase_regions(generic_args));
+        let mut dispatched = self.dispatched_calls.borrow_mut();
+        let recorded = dispatched.entry(root).or_default();
+        if recorded.contains(&call) {
+            return false;
+        }
+        recorded.push(call);
+        true
+    }
+
+    /// Adds to the reused instances the impl methods that a reused generic body reaches through
+    /// a trait method called at its type parameters ([`Self::record_dispatched_call`]), resolved at
+    /// the instance's arguments, to a fixpoint. A generic impl method verified once may assume
+    /// spec bounds or total methods at its own type parameters, and an instance reached only
+    /// through such a call would otherwise never check them. A call still at a type parameter of
+    /// the instance's caller is recorded for that caller in turn.
+    pub fn expand_dispatched_instances(&self) {
+        use mir_ty::TypeVisitableExt as _;
+
+        let mut seen_instances = 0;
+        loop {
+            let instances = self.reused_generic_instances.borrow().clone();
+            let mut grew = instances.len() != seen_instances;
+            seen_instances = instances.len();
+            for (def_id, generic_args, caller_def_id) in instances {
+                let root = self.tcx.typeck_root_def_id(def_id);
+                let dispatched = self
+                    .dispatched_calls
+                    .borrow()
+                    .get(&root)
+                    .cloned()
+                    .unwrap_or_default();
+                for (method, method_args) in dispatched {
+                    let method_args =
+                        mir_ty::EarlyBinder::bind(method_args).instantiate(self.tcx, generic_args);
+                    if method_args.has_param() {
+                        grew |= self.record_dispatched_call(caller_def_id, method, method_args);
+                        continue;
+                    }
+                    let typing_env = mir_ty::TypingEnv::fully_monomorphized();
+                    let Ok(Some(instance)) =
+                        mir_ty::Instance::try_resolve(self.tcx, typing_env, method, method_args)
+                    else {
+                        continue;
+                    };
+                    if !instance.def_id().is_local()
+                        || !matches!(self.defs.get(&instance.def_id()), Some(DefTy::Generic(_)))
+                    {
+                        continue;
+                    }
+                    let reached = (instance.def_id(), instance.args, caller_def_id);
+                    let mut reused = self.reused_generic_instances.borrow_mut();
+                    if !reused.contains(&reached) {
+                        reused.push(reached);
+                        grew = true;
+                    }
                 }
             }
             if !grew {
