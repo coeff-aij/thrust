@@ -240,7 +240,7 @@ fn compared_difference<V>(
     y: chc::Term<V>,
     k: num_bigint::BigInt,
 ) -> chc::Atom<V> {
-    use chc::{KnownPred, Term};
+    use chc::KnownPred;
     let (p, k) = match p {
         p if p == KnownPred::LESS_THAN => (KnownPred::LESS_THAN_OR_EQUAL, k - 1),
         p if p == KnownPred::GREATER_THAN => (KnownPred::GREATER_THAN_OR_EQUAL, k + 1),
@@ -256,12 +256,38 @@ fn compared_difference<V>(
         }
         p => (p, k),
     };
-    let y = match k {
-        k if k == 0.into() => y,
-        k if k > 0.into() => Term::App(chc::Function::ADD, vec![y, Term::Int(k)]),
-        k => Term::App(chc::Function::SUB, vec![y, Term::Int(-k)]),
+    chc::Atom::new(p.into(), vec![x, plus(y, k)])
+}
+
+/// `y + k` over the integers, `y` itself an integer moved by one (`z + j`, `z - j`) moved once.
+fn plus<V>(y: chc::Term<V>, k: num_bigint::BigInt) -> chc::Term<V> {
+    use chc::{Function, Term};
+    let (base, k) = match y {
+        Term::Int(j) => return Term::Int(j + k),
+        Term::App(f, mut ts) if ts.len() == 2 && matches!(ts[1], Term::Int(_)) => {
+            let Term::Int(j) = ts.pop().unwrap() else {
+                unreachable!()
+            };
+            let base = ts.pop().unwrap();
+            match f {
+                f if f == Function::ADD => (base, k + j),
+                f if f == Function::SUB => (base, k - j),
+                f => return plus_at(Term::App(f, vec![base, Term::Int(j)]), k),
+            }
+        }
+        y => (y, k),
     };
-    chc::Atom::new(p.into(), vec![x, y])
+    plus_at(base, k)
+}
+
+/// `base + k`, `base - k` for a negative `k`, `base` for `0`.
+fn plus_at<V>(base: chc::Term<V>, k: num_bigint::BigInt) -> chc::Term<V> {
+    use chc::{Function, Term};
+    match k {
+        k if k == 0.into() => base,
+        k if k > 0.into() => Term::App(Function::ADD, vec![base, Term::Int(k)]),
+        k => Term::App(Function::SUB, vec![base, Term::Int(-k)]),
+    }
 }
 
 /// The components of two pairs or tuples equated.
@@ -342,7 +368,8 @@ pub fn tidy<V: Clone + PartialEq>(f: chc::Formula<V>) -> chc::Formula<V> {
 }
 
 /// The bound `f` puts on `x` by `y`, if it is one: `(x, y, true)` for `x <= y`, `(x, y, false)`
-/// for `x >= y`; a strict bound by an integer is read as the bound by its neighbour.
+/// for `x >= y`; over the integers a strict bound is the bound by the neighbour, `x < y` as
+/// `x <= y - 1`.
 fn bound<V: Clone>(f: &chc::Formula<V>) -> Option<(chc::Term<V>, chc::Term<V>, bool)> {
     use chc::{KnownPred, Term};
     let chc::Formula::Atom(chc::Atom {
@@ -354,12 +381,11 @@ fn bound<V: Clone>(f: &chc::Formula<V>) -> Option<(chc::Term<V>, chc::Term<V>, b
         return None;
     };
     let [x, y] = <&[Term<V>; 2]>::try_from(args.as_slice()).ok()?;
-    let step = |k: &num_bigint::BigInt, d: i32| Term::Int(k + d);
-    let (y, upper) = match (*p, y) {
-        (p, y) if p == KnownPred::LESS_THAN_OR_EQUAL => (y.clone(), true),
-        (p, y) if p == KnownPred::GREATER_THAN_OR_EQUAL => (y.clone(), false),
-        (p, Term::Int(k)) if p == KnownPred::LESS_THAN => (step(k, -1), true),
-        (p, Term::Int(k)) if p == KnownPred::GREATER_THAN => (step(k, 1), false),
+    let (y, upper) = match *p {
+        p if p == KnownPred::LESS_THAN_OR_EQUAL => (y.clone(), true),
+        p if p == KnownPred::GREATER_THAN_OR_EQUAL => (y.clone(), false),
+        p if p == KnownPred::LESS_THAN => (plus(y.clone(), (-1).into()), true),
+        p if p == KnownPred::GREATER_THAN => (plus(y.clone(), 1.into()), false),
         _ => return None,
     };
     Some((x.clone(), y, upper))
@@ -453,6 +479,22 @@ mod tests {
             Term::int(2),
         );
         assert_eq!(tidy(moved).one_line(), "x <= y + 2");
+    }
+
+    #[test]
+    fn bounds_by_a_neighbour_meet() {
+        use chc::KnownPred;
+        let d = || var("a").sub(var("b"));
+        let both = Formula::And(vec![
+            atom(KnownPred::GREATER_THAN_OR_EQUAL, d(), Term::int(1)),
+            atom(KnownPred::LESS_THAN_OR_EQUAL, d(), Term::int(1)),
+        ]);
+        assert_eq!(tidy(both).one_line(), "a = b + 1");
+        let strict = Formula::And(vec![
+            atom(KnownPred::GREATER_THAN, d(), Term::int(0)),
+            atom(KnownPred::LESS_THAN, d(), Term::int(2)),
+        ]);
+        assert_eq!(tidy(strict).one_line(), "a = b + 1");
     }
 
     #[test]
