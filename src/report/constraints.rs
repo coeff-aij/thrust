@@ -169,8 +169,10 @@ fn kind(
             }
             let callee_name = tcx.def_path_str(callee);
             match head_owner {
-                Some(Owner::Contract { def, ret: false }) if def.to_def_id() == callee => {
-                    format!("argument of `{callee_name}`")
+                // The callee's contract, or that of the method a call to a trait method resolves
+                // to.
+                Some(Owner::Contract { def, ret: false }) => {
+                    format!("argument of `{}`", tcx.def_path_str(def.to_def_id()))
                 }
                 _ if goal => {
                     let spans = written(callee).map(|a| a.requires.clone());
@@ -406,8 +408,14 @@ fn render(
             conclusion = last.not();
         }
     }
-    // A premise equating a term with itself says nothing.
+    // A premise equating a term with itself says nothing, and one said before says it again.
     premises.retain(|p| !matches!(equation(p), Some((a, b)) if a == b));
+    let mut said: Vec<Formula> = Vec::new();
+    premises.retain(|p| {
+        let again = said.contains(p);
+        said.push(p.clone());
+        !again
+    });
     (premises, conclusion, var_names)
 }
 

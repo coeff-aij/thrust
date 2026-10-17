@@ -81,10 +81,13 @@ impl Part {
 
     /// What the error of a part that fails says of it.
     pub fn error_note(&self, tcx: TyCtxt<'_>, parts: usize) -> String {
+        let clauses = match self.clauses {
+            1 => "1 clause".to_owned(),
+            n => format!("{n} clauses"),
+        };
         format!(
-            "in part {} of {parts}, of {} clauses from {}",
+            "in part {} of {parts}, of {clauses} from {}",
             self.id,
-            self.clauses,
             self.functions(tcx)
         )
     }

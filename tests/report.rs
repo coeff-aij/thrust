@@ -126,3 +126,12 @@ fn report_labels_the_requires_a_call_breaks() {
     assert!(label.contains("the annotation it checks"), "{stderr}");
     assert!(!stderr.contains("how the solver reaches it"), "{stderr}");
 }
+
+/// A refuted `assert!(a != b)` reads as its condition, not as the boolean term the MIR compares
+/// with `false`.
+#[test]
+fn report_reads_a_boolean_condition_as_a_formula() {
+    let output = report("take_max_same.rs", "failure");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("==> a != b\n"), "{stderr}");
+}
