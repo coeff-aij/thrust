@@ -22,14 +22,15 @@ where
     fn absurd(a: &Self);
 }
 
-#[derive(PartialEq)]
 enum E {
     A,
     B,
 }
 
-impl Model for E {
-    type Ty = E;
+struct S(E);
+
+impl Model for S {
+    type Ty = S;
 }
 
 #[thrust_macros::lemma]
@@ -43,14 +44,14 @@ fn at_a() {}
 fn at_b() {}
 
 #[thrust_macros::context]
-impl Absurd for E {
+impl Absurd for S {
     #[thrust_macros::predicate]
     fn tag(self) -> bool {
         true
     }
 
-    fn absurd(a: &E) {
-        match *a {
+    fn absurd(a: &S) {
+        match a.0 {
             E::A => at_a(),
             E::B => at_b(),
         }
@@ -65,5 +66,5 @@ fn f<T: Absurd>(n: i64) {
 }
 
 fn main() {
-    f::<E>(0);
+    f::<S>(0);
 }
