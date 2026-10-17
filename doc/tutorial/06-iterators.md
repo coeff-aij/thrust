@@ -104,9 +104,10 @@ fn sum_capped(v: &Vec<i64>) -> i64 {
 
 ```console
 $ thrust 06_sum_slice.rs
+...
 error: verification error: Timeout(60s)
 
-error: aborting due to 1 previous error
+error: aborting due to 1 previous error; 1 warning emitted
 ```
 
 With the invariant `iter_old.0 == *v.at_entry() && iter_old.1 == 0 && s <= 100 * produced.len()`

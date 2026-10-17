@@ -22,14 +22,14 @@ cargo build --bin thrust-rustc
 THRUST=$PWD    # the Thrust checkout
 thrust() {
   LD_LIBRARY_PATH="$(rustc +nightly-2025-09-08 --print sysroot)/lib" \
-    "$THRUST/target/debug/thrust-rustc" -Awarnings -C debug-assertions=off "$@"
+    "$THRUST/target/debug/thrust-rustc" -C debug-assertions=off "$@"
 }
 ```
 
-- `-C debug-assertions=off`: Thrust does not support rustc's overflow checks; how integer ranges
-  are treated is in [chapter 9](09-trust-and-limits.md).
-- `-Awarnings`: Thrust injects its specifications of the standard library (`std.rs`) into the
-  checked crate, and they raise about 90 `unused variable` warnings of their own.
+`-C debug-assertions=off` turns off rustc's overflow checks, which Thrust does not support; how
+integer ranges are treated is in [chapter 9](09-trust-and-limits.md). rustc's own warnings on the
+program (an unused variable, a function never called) are printed as usual; the outputs in this
+tutorial leave them out where they say nothing about verification.
 
 Like `rustc`, `thrust-rustc` also compiles the program (add `--out-dir` to put the binary
 elsewhere). A Cargo project without dependencies is checked by setting `RUSTC` to the binary; see
@@ -107,6 +107,8 @@ When z3 meets a query it cannot read, the run ends with its raw parse errors, fo
 ```console
 $ thrust 06_for_range.rs
 error: verification error: Error { stdout: "(error \"line 48 column 87: unknown sort 'Seq'\")\n(error \"line 71 column 911: unknown constant seq.unit (Int) \")\nsat\n", stderr: "" }
+
+error: aborting due to 1 previous error
 ```
 
 An `Error` with `unknown sort` says: use PCSat for this program.

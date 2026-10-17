@@ -29,7 +29,8 @@ fail with one solver and pass with the other, which the ui tests' pass/fail conv
 express, and a reader runs them with the same command the text shows.
 [examples/check.sh](examples/check.sh) runs each one with the solver
 [examples/expected.txt](examples/expected.txt) names and compares the outcome with the one the
-tutorial shows; `check.sh -n` lists the runs without making them.
+tutorial shows; `check.sh -n` lists the runs without making them, and `THRUST_RUSTC` names the
+`thrust-rustc` binary to run (default: the debug build of this checkout).
 
-The outputs were taken on fork branch `incremental` at e72a5fc0, with z3 4.15.2 and PCSat built
+The outputs were taken on fork branch `incremental` at eb116138, with z3 4.15.2 and PCSat built
 from fptprove f7ddc51c0.

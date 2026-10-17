@@ -23,7 +23,7 @@ verify() {
     if [[ $solver == pcsat ]]; then
         env=(THRUST_SOLVER="$root/tests/thrust-pcsat-wrapper" THRUST_SOLVER_TIMEOUT_SECS=60)
     fi
-    if env "${env[@]}" "$thrust" -Awarnings -C debug-assertions=off --out-dir "$out" "$file" >"$log" 2>&1; then
+    if env "${env[@]}" "$thrust" -C debug-assertions=off --out-dir "$out" "$file" >"$log" 2>&1; then
         echo safe
     elif grep -q 'verification error: Unsat' "$log"; then
         echo unsat

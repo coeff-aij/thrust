@@ -112,14 +112,29 @@ for every `i64`. Two consequences:
 
   fn main() {}
   $ thrust 02_uncalled.rs; echo "exit $?"
+  warning: function `f` is never used
+   --> 02_uncalled.rs:1:4
+    |
+  1 | fn f(x: i64) {
+    |    ^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+  warning: 1 warning emitted
+
   exit 0
   $ thrust 02_uncalled_callable.rs; echo "exit $?"    # the same with #[thrust::callable] on f
+  warning: function `f` is never used
+  ...
   error: verification error: Unsat
 
-  error: aborting due to 1 previous error
+  error: aborting due to 1 previous error; 1 warning emitted
 
   exit 1
   ```
+
+  rustc's warning that `f` is never used is the hint: Thrust checks only what is called or
+  marked.
 
 - A bug in a function left to inference shows up at its caller ([scenario 4](scenarios.md)).
 

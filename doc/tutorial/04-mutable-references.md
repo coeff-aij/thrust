@@ -66,12 +66,11 @@ note: thrust: `take_max`
   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   |
   = note: contract (inferred)
-          inferred: fn take_max(a: mut int, b: mut int) -> {mut int | (*a - *result <= 0 ∧ *result - *a <= 0 ∧ °a - °result <= 0 ∧ °result - °a <= 0 ∧ *a >= °b ∧ °b - *b <= 0 ∧ *b - °b <= 0) ∨ (*result - *b <= 0 ∧ *b - *result <= 0 ∧ °result - °b <= 0 ∧ °b - °result <= 0 ∧ *a - °a <= 0 ∧ °a - *a <= 0 ∧ *a - *result <= -1)}
+          inferred: fn take_max(a: mut int, b: mut int) -> {mut int | (*a = *result ∧ °a = °result ∧ *a >= °b ∧ °b = *b) ∨ (*result = *b ∧ °result = °b ∧ *a = °a ∧ *a - *result <= -1)}
 ```
 
-Read pairs of `<=` as equalities: either the result is `a` (`*result = *a`, `°result = °a`), `b`
-is left unchanged (`°b = *b`) and `*a >= *b`; or the result is `b`, `a` is unchanged and
-`*a < *b`. Written as a contract
+Either the result is `a` (`*result = *a`, `°result = °a`), `b` is left unchanged (`°b = *b`) and
+`*a >= *b`; or the result is `b`, `a` is unchanged and `*a < *b` (`*a - *result <= -1`). Written as a contract
 ([examples/04_take_max_contract.rs](examples/04_take_max_contract.rs)):
 
 ```rust
@@ -94,18 +93,34 @@ forgets `*b = t`:
 
 ```console
 $ THRUST_REPORT=1 thrust s06_missing_write.rs
+warning: unused variable: `t`
+ --> s06_missing_write.rs:3:9
+  |
+3 |     let t = *a;
+  |         ^ help: if this is intentional, prefix it with an underscore: `_t`
+  |
+  = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
 note: thrust: refuted: ensures in `swap`
  --> s06_missing_write.rs:5:2
   |
+1 | #[thrust_macros::ensures(!a == *b && !b == *a)]
+  |                          -------------------- the annotation it checks
+...
 5 | }
   |  ^
   |
   = note: c0: (t = *__tmp_mir_swap_5 ∧ swap.bb0 <*__tmp_mir_swap_5, __tmp_mir_swap_4> <__tmp_mir_swap_4, __tmp_mir_swap_4> old(a) old(b)) ==> (°old(a) = *old(b) ∧ °old(b) = *old(a))
-  = note: where it fails: t = 0, __tmp_mir_swap_4 = 1, *__tmp_mir_swap_5 = 0, old(a) = <0, 1>, old(b) = <1, 1>, result = ()
+  = note: where it fails: t = 0, __tmp_mir_swap_4 = 1, *__tmp_mir_swap_5 = 0, *old(a) = 0, °old(a) = 1, *old(b) = 1, °old(b) = 1, result = ()
+  = note: how the solver reaches it: each fact follows, by the constraint in brackets, from the facts indented under it (a derivation, not an order of execution):
+            swap.bb0(*a = 0, °a = 1, *b = 1, °b = 1, *old(a) = 0, °old(a) = 1, *old(b) = 1, °old(b) = 1)   [c1 function entry, s06_missing_write.rs:2:1]
+...
 ```
 
-A reference is shown as the pair `<current, final>`: `old(b) = <1, 1>` says `b` pointed to 1 and
-still does at the end, while the contract asks for `°b = *a = 0`.
+The values give each reference its current and final value: `*old(b) = 1, °old(b) = 1` says `b`
+pointed to 1 and still does at the end, while the contract asks for `°b = *a = 0`. In the
+constraint, a reference passed to an unknown is still the pair `<current, final>`. rustc's
+warning that `t` is unused points at the same bug.
 
 Mutable references inside data (`Option<&mut T>`, a `Vec` of them, a struct field) follow the same
 model; see [Mutable references](../../README.md#mutable-references) for the notation.

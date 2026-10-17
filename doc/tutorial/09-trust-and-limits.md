@@ -51,11 +51,13 @@ written contract holds whenever the function returns. The reference for each ite
 
   ```console
   $ thrust 09_overflow.rs; echo "exit $?"
+  ...
   exit 0
   $ THRUST_INT_RANGE=all thrust 09_overflow.rs; echo "exit $?"
+  ...
   error: verification error: Unsat
 
-  error: aborting due to 1 previous error
+  error: aborting due to 1 previous error; 1 warning emitted
 
   exit 1
   ```
@@ -74,9 +76,12 @@ written contract holds whenever the function returns. The reference for each ite
   calls `i64::pow`:
 
   ```console
-  $ thrust 09_no_spec.rs
-  thread 'rustc' (2903720) panicked at src/analyze/basic_block.rs:1544:21:
+  $ thrust 09_no_spec.rs; echo "exit $?"
+
+  thread 'rustc' (3707821) panicked at src/analyze/basic_block.rs:1544:21:
   unknown def: DefId(2:34533 ~ core[dc33]::num::{impl#3}::pow), args: []
+  note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+  exit 101
   ```
 
   A wrapper marked `#[thrust::trusted]` with a contract is the way around it. Other unsupported

@@ -53,6 +53,9 @@ $ THRUST_REPORT=1 thrust shop.rs
 note: thrust: refuted: ensures in `withdraw`
  --> shop.rs:5:2
   |
+2 | #[thrust_macros::ensures(result == balance - amount)]
+  |                          -------------------------- the annotation it checks
+...
 5 | }
   |  ^
   |
@@ -60,15 +63,22 @@ note: thrust: refuted: ensures in `withdraw`
   = note: where it fails: result = -1, balance = 0, amount = 0, __tmp_mir_withdraw_3 = 0
   = note: how the solver reaches it: each fact follows, by the constraint in brackets, from the facts indented under it (a derivation, not an order of execution):
             withdraw.bb0(balance = 0, amount = 0, old(balance) = 0, old(amount) = 0)   [c1 function entry, shop.rs:3:1]
+  = note: the solver refutes one obligation of a query: others may fail too (`THRUST_SPLIT` refutes one in each part)
 
 error: verification error: Unsat
+ --> shop.rs:5:2
+  |
+5 | }
+  |  ^
 
 error: aborting due to 1 previous error
 ```
 
 - The title names what is checked (`ensures`, `assertion`, `precondition of f`,
   `loop preservation`, `argument of f`, ...) and in which function. The span is where it is
-  checked; for `ensures` that is the end of the body, not the attribute.
+  checked, for `ensures` the end of the body; the label marks the annotation checked there (each
+  clause, "a clause of the annotation it checks", when there are several: the refutation does not
+  say which one fails). The error is at the same place, so an editor shows it there.
 - `c0:` is the constraint: premises `==>` conclusion, over the program's variables.
   `__tmp_mir_withdraw_3` is a value the program does not name (here `balance - amount`).
 - `where it fails` gives values that make the premises true and the conclusion false: one
@@ -77,8 +87,8 @@ error: aborting due to 1 previous error
   the constraint and the code that produced it. `withdraw.bb0` is the state at the function's
   first block.
 
-One query has one refutation, so this run shows only the first failure. Solving in parts shows one
-per failing part (chapter 8):
+The last note says that this is the first failure only: one query has one refutation. Solving in
+parts (chapter 8) shows one per failing part:
 
 ```console
 $ THRUST_SPLIT=4 THRUST_REPORT=1 thrust shop.rs
@@ -87,6 +97,9 @@ note: thrust: refuted: ensures in `withdraw`
 note: thrust: refuted: ensures in `shipping`
   --> shop.rs:17:2
    |
+ 8 | #[thrust_macros::ensures(result == 3 * n)]
+   |                          --------------- the annotation it checks
+...
 17 | }
    |  ^
    |
@@ -114,17 +127,24 @@ note: thrust: refuted: assertion in `main`
    = note: it goes through the contract inferred for `price`: a wrong result there shows here
 
 error: verification error: Unsat
-  |
-  = note: in the part of 2 clauses from `withdraw`
+ --> shop.rs:5:2
 ...
+   = note: in part 2 of 3, of 16 clauses from `price` (shop.rs:19-25), `main` (shop.rs:27-33)
+
 note: thrust: 3 parts solved on their own, 0 of them from earlier runs
+
+error: aborting due to 3 previous errors
 ```
 
 - In `shipping` the run is one fact per loop iteration: from `n = 0` the loop runs once
   (`i <= n` with `i = 0`), so `cost = 3` where `3 * n = 0`.
 - In `main` the bug is in `price`, whose contract is inferred: the failure shows at the caller,
   and the run goes down into `price` (`price.post(units = 10, result = 100)`), through the branch
-  that produced 100 (`price.bb3`).
+  that produced 100 (`price.bb3`). When the run instead goes through a call to a function with a
+  written contract, the note names it: `it assumes the written contract of `abs` (...): a wrong
+  `ensures` there shows here` ([scenario 8](scenarios.md)).
+- Each error names its part: its number (from 0), its size, and the functions its clauses come
+  from with their lines.
 
 ## Inferred contracts
 
@@ -141,7 +161,7 @@ note: thrust: loop in `shipping`
    |
    = note: invariant (inferred)
            shipping.loop#1(n: int, i: int, cost: int, old(n): int)
-           := (3 * i - cost > -1 ∧ 3 * i - cost < 1 ∧ 3 * old(n) - cost > -1) ∨ (old(n) >= 0 ∧ n = old(n) ∧ i = 0 ∧ cost = 0)
+           := (3 * i = cost ∧ 3 * old(n) - cost > -1) ∨ (old(n) >= 0 ∧ n = old(n) ∧ i = 0 ∧ cost = 0)
 
 note: thrust: `price`
   --> shop.rs:19:1
@@ -200,7 +220,8 @@ note: thrust: `main`
 | `f.g#k r ...` | the result `r` of the `k`-th call to `g` in `f` |
 | `f.bb3` | the state at block 3 of `f`'s MIR |
 | `old(x)` | the value of parameter `x` on entry |
-| `*r`, `°r`, `<c, f>` | current and final value of a `&mut`, and the pair of them |
+| `*r`, `°r` | the current and the final value of a `&mut` (in a constraint's unknowns, the pair `<*r, °r>`) |
+| `…` | in a run's fact, the arguments the program does not name |
 | `__tmp_mir_f_3` | a value the program does not name (local `_3` of `f`'s MIR) |
 | `x@2` | the second variable `f` names `x` |
 
@@ -208,25 +229,28 @@ The full list is in [Reading what Thrust infers](../../README.md#reading-what-th
 
 ## JSON, for tools and agents
 
-`THRUST_REPORT_FORMAT=json` writes the report as JSON lines to `THRUST_REPORT_FILE` (default
-standard output): one `failure` line per refuted obligation, `constraint` lines for the
-constraints the failure's ids refer to, `site` lines for the templates, and with `THRUST_SPLIT`
-one `part` line per part.
+`THRUST_REPORT_FORMAT=json` writes the same report as JSON lines to `THRUST_REPORT_FILE` (default
+standard output). The first line is a header (the format version, `root`, the absolute directory
+the spans' files are relative to, and `columns`, the column unit: `1-based, in characters;
+end_column after the last`); the second is the verdict; then, with `THRUST_SPLIT`, one `part` line
+per part, and one `failure` line per refuted obligation (or, on success, a `site` line per
+inferred contract and loop invariant).
 
 ```console
 $ THRUST_SPLIT=4 THRUST_REPORT=1 THRUST_REPORT_FORMAT=json THRUST_REPORT_FILE=report.jsonl thrust shop.rs
 error: verification error: Unsat
 ...
-$ grep '"kind":"failure"' report.jsonl | head -1
-{"kind":"failure","constraint":"c0","fn":"withdraw","span":"shop.rs:5:2","obligation":"ensures","premises":["result = __tmp_mir_withdraw_3 - 1","__tmp_mir_withdraw_3 = balance - amount","withdraw.bb0 balance amount balance amount"],"conclusion":"result = balance - amount","run":[{"depth":0,"fact":"withdraw.bb0(balance = 0, amount = 0, old(balance) = 0, old(amount) = 0)","via":"c1"}],"truncated":false,"values":[{"name":"result","value":"-1"},{"name":"balance","value":"0"},{"name":"amount","value":"0"},{"name":"__tmp_mir_withdraw_3","value":"0"}],"inferred":[]}
-$ grep '"kind":"part"' report.jsonl
-{"kind":"part","functions":["withdraw"],"verdict":"unsat","cached":false}
-{"kind":"part","functions":["shipping"],"verdict":"unsat","cached":false}
-{"kind":"part","functions":["main","price"],"verdict":"unsat","cached":false}
+$ sed -n 2,3p report.jsonl
+{"kind":"verdict","verdict":"unsat","refutations":"one per part"}
+{"kind":"part","id":0,"clauses":2,"functions":[{"fn":"withdraw","span":{"file":"shop.rs","line":3,"column":1,"end_line":5,"end_column":2}}],"verdict":"unsat","cached":false}
+$ jq -c 'select(.kind == "failure" and .fn == "main") | {part, obligation, span, conclusion, values, inferred, assumes}' report.jsonl
+{"part":2,"obligation":"assertion","span":{"file":"shop.rs","line":29,"column":5,"end_line":29,"end_column":21},"conclusion":"p = 90","values":[{"name":"p","value":"100"}],"inferred":["price"],"assumes":[]}
 ```
 
-The `failure` of `main` lists `"inferred":["price"]`: the functions left to inference its run goes
-through.
+A span is a range. A `failure` also has its `premises`, its `annotation` (the spans of the
+annotation it checks), and its `run`, each step with the constraint's obligation and span;
+`inferred` lists the functions left to inference that the run goes through, `assumes` the written
+contracts it relies on.
 
 ## With PCSat
 
@@ -236,12 +260,30 @@ PCSat gives verdicts but no refutation or model yet, so the report says:
 note: thrust: no failing obligation to show: the solver gave no refutation (only `z3` is asked for one)
 ```
 
-Two things still help. `THRUST_SPLIT` names the functions of each failing part, and
-`THRUST_REPORT=constraints` with `THRUST_REPORT_ONLY` shows that part's constraints. For the law of
-[scenario 10](scenarios.md):
+Two things still help. `THRUST_SPLIT` names the functions of each failing part, with their lines,
+and puts the error at the code of the part. For the law of [scenario 10](scenarios.md):
 
 ```console
-$ THRUST_SPLIT=4 THRUST_REPORT=constraints THRUST_REPORT_ONLY='Clicks::count_nonneg' thrust s10_law_fails_at_impl.rs
+$ THRUST_SPLIT=4 THRUST_REPORT=1 thrust s10_law_fails_at_impl.rs
+...
+note: thrust: no failing obligation to show: the solver gave no refutation (only `z3` is asked for one)
+
+error: verification error: Unsat
+  --> s10_law_fails_at_impl.rs:40:5
+   |
+40 |     fn count_nonneg(c: &Clicks) {}
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: in part 1 of 4, of 2 clauses from `<Clicks as Counter>::count_nonneg` (s10_law_fails_at_impl.rs:40)
+...
+```
+
+Then `THRUST_REPORT=constraints` with `THRUST_REPORT_ONLY` shows the constraints of those
+functions, here the obligation the law puts on the impl:
+
+```console
+$ THRUST_REPORT=constraints THRUST_REPORT_ONLY='Clicks::count_nonneg' thrust s10_law_fails_at_impl.rs
+...
 note: thrust: `<Clicks as Counter>::count_nonneg`
   --> s10_law_fails_at_impl.rs:40:5
    |
@@ -253,6 +295,6 @@ note: thrust: `<Clicks as Counter>::count_nonneg`
              c5 function entry (s10_law_fails_at_impl.rs:40:5): <Clicks as Counter>::count_nonneg.bb0 c c
 
 error: verification error: Unsat
-  |
-  = note: in the part of 2 clauses from `<Clicks as Counter>::count_nonneg`
+
+error: aborting due to 1 previous error; 2 warnings emitted
 ```

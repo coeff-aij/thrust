@@ -34,12 +34,12 @@ note: thrust: loop in `double_by_loop`
   |
   = note: invariant (inferred)
           double_by_loop.loop#1(n: int, i: int, s: int, old(n): int)
-          := (2 * i - s > -1 ∧ 2 * i - s < 1 ∧ 2 * old(n) - s > -1) ∨ (old(n) >= 0 ∧ n = old(n) ∧ i = 0 ∧ s = 0)
+          := (2 * i = s ∧ 2 * old(n) - s > -1) ∨ (old(n) >= 0 ∧ n = old(n) ∧ i = 0 ∧ s = 0)
 ```
 
 `double_by_loop.loop#1` is the first loop of `double_by_loop`, over the variables live at its
-head; `old(n)` is the value `n` had on entry. Over integers, `2 * i - s > -1 ∧ 2 * i - s < 1` is
-`s = 2 * i`.
+head; `old(n)` is the value `n` had on entry. The first disjunct says `s = 2 * i` and
+`s <= 2 * old(n)`; the second is the state on entry.
 
 ## When the solver does not find it
 
@@ -63,9 +63,10 @@ z3 does not find it; PCSat does, in about a second:
 
 ```console
 $ thrust 03_loop_sum.rs
+...
 error: verification error: Timeout(30s)
 
-error: aborting due to 1 previous error
+error: aborting due to 1 previous error; 1 warning emitted
 
 $ THRUST_SOLVER=$THRUST/tests/thrust-pcsat-wrapper thrust 03_loop_sum.rs; echo "exit $?"
 exit 0
@@ -128,11 +129,17 @@ note: thrust: refuted: loop preservation in `sum_below`
    |
    = note: c2: (__tmp_mir_sum_below_7 < n ∧ s = *__tmp_mir_sum_below_8 + __tmp_mir_sum_below_7 ∧ i = __tmp_mir_sum_below_7 + 1 ∧ 0 <= __tmp_mir_sum_below_7 ∧ __tmp_mir_sum_below_7 <= n ∧ 2 * *__tmp_mir_sum_below_8 = __tmp_mir_sum_below_7 * (__tmp_mir_sum_below_7 + 1)) ==> ((0 <= i ∧ i <= n) ∧ 2 * s = i * (i + 1))
    = note: where it fails: n = 1, __tmp_mir_sum_below_7 = 0, *__tmp_mir_sum_below_8 = 0, s = 0, i = 1
+   = note: the solver refutes one obligation of a query: others may fail too (`THRUST_SPLIT` refutes one in each part)
+
+error: verification error: Unsat
+  --> s05_invariant_not_preserved.rs:6:5
+...
 ```
 
 `loop preservation` says the body does not keep the invariant. In the constraint,
 `__tmp_mir_sum_below_7` and `*__tmp_mir_sum_below_8` are `i` and `s` before the iteration, `i` and
 `s` after it: from `i = 0, s = 0` (where the invariant holds, `0 = 0 * 1`) the body reaches
-`i = 1, s = 0`, where `2 * 0 = 1 * 2` is false.
+`i = 1, s = 0`, where `2 * 0 = 1 * 2` is false. The error itself is at the obligation refuted, so
+an editor shows it at the loop.
 
 Loops written with `for` are in [chapter 6](06-iterators.md).

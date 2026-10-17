@@ -115,8 +115,17 @@ impl Counter for Clicks {
 ```console
 $ export THRUST_SOLVER=$THRUST/tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60
 $ thrust 05_counter.rs; echo "exit $?"
+warning: unused variable: `c`
+...
+warning: associated function `count_nonneg` is never used
+...
+warning: 2 warnings emitted
+
 exit 0
 ```
+
+rustc warns about the law's unused parameter and that nothing calls the law: a law is used by the
+verifier only.
 
 - A `#[thrust_macros::logic]` function returns any model value, here the count. Its body is one
   expression over the model: `Clicks`'s model is the tuple `(UInt,)`, so the field is `self.0`.
@@ -138,9 +147,14 @@ exit 0
 
   ```console
   $ THRUST_SPLIT=4 thrust 05_counter_int_model.rs
+  ...
   error: verification error: Unsat
-    |
-    = note: in the part of 2 clauses from `<Clicks as Counter>::count_nonneg`
+    --> 05_counter_int_model.rs:40:5
+     |
+  40 |     fn count_nonneg(c: &Clicks) {}
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: in part 1 of 4, of 2 clauses from `<Clicks as Counter>::count_nonneg` (05_counter_int_model.rs:40)
 
   note: thrust: 4 parts solved on their own, 0 of them from earlier runs
   ```
@@ -149,6 +163,7 @@ z3 cannot read the query of a generic function over a trait's logic function:
 
 ```console
 $ unset THRUST_SOLVER; thrust 05_counter.rs
+...
 error: verification error: Error { stdout: "unsupported\n(error \"line 23 column 19: invalid datatype declaration, unknown sort 'a0'\")\n ...
 ```
 
