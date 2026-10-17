@@ -321,10 +321,13 @@ impl<'tcx> TypeBuilder<'tcx> {
         }
 
         let args: Vec<rty::Type<rty::Closed>> = ty.args.types().map(|t| self.build_ty(t)).collect();
+        // The arguments' sorts do not tell two projections apart (`<(T, A) as Tr>::Out` and
+        // `<(T, B) as Tr>::Out` for two structs of one sort); their Rust types do.
+        let args_symbol = self.generic_args_symbol(ty.args);
         let mut type_params = self.type_params.borrow_mut();
         tracing::debug!(?type_params);
         let index = type_params
-            .entry(TypeParam::AssocType(ty.def_id, args.clone()))
+            .entry(TypeParam::AssocType(ty.def_id, args.clone(), args_symbol))
             .or_insert_with(|| {
                 let desc = format!(
                     "AliasTy {:?} with (def_id = {:?}, args = {:?})",
@@ -627,14 +630,15 @@ impl<'tcx> TypeBuilder<'tcx> {
     /// The `<A1-A2-...>` suffix of a symbol that stands for an item at the generic arguments
     /// `args`, empty when there are none. The arguments are named as Rust types rather than by
     /// their sorts, which many types share (every integer width, `&T` and `Box<T>`, structs with
-    /// the same fields), so that the item at two types is two symbols. A type parameter or a
-    /// projection that stays one is named by its sort, which is its own.
+    /// the same fields), so that the item at two types is two symbols. A type parameter is named
+    /// by its sort, which is its own, and a projection that does not normalize by its associated
+    /// item and arguments.
     pub fn generic_args_symbol(&self, args: mir_ty::GenericArgsRef<'tcx>) -> String {
         let names: Vec<String> = args
             .iter()
             .filter_map(|arg| match arg.kind() {
                 mir_ty::GenericArgKind::Type(ty) => Some(self.type_symbol(ty)),
-                mir_ty::GenericArgKind::Const(ct) => Some(symbol_chars(&ct.to_string())),
+                mir_ty::GenericArgKind::Const(ct) => Some(self.const_symbol(ct)),
                 mir_ty::GenericArgKind::Lifetime(_) => None,
             })
             .collect();
@@ -649,8 +653,19 @@ impl<'tcx> TypeBuilder<'tcx> {
 
         let tcx = self.tcx;
         match ty.kind() {
-            TyKind::Param(_) | TyKind::Alias(..) => {
-                chc::format_context::format_sort_symbol(&self.build(ty).to_sort())
+            TyKind::Param(_) => chc::format_context::format_sort_symbol(&self.build(ty).to_sort()),
+            TyKind::Alias(_, alias) => {
+                let normalized = tcx
+                    .try_normalize_erasing_regions(self.typing_env, ty)
+                    .unwrap_or(ty);
+                if normalized != ty {
+                    return self.type_symbol(normalized);
+                }
+                format!(
+                    "{}{}",
+                    refine::stable_def_id_symbol(tcx, alias.def_id, "assoc"),
+                    self.generic_args_symbol(alias.args)
+                )
             }
             TyKind::Bool | TyKind::Char | TyKind::Int(_) | TyKind::Uint(_) | TyKind::Float(_) => {
                 ty.to_string()
@@ -703,6 +718,17 @@ impl<'tcx> TypeBuilder<'tcx> {
                 format!("Ty{:016x}", hasher.finish())
             }
         }
+    }
+
+    /// A const argument: a const parameter by the def path hash of its declaration, so that the
+    /// parameters of two items are two names, and a value by its text.
+    fn const_symbol(&self, ct: mir_ty::Const<'tcx>) -> String {
+        let mir_ty::ConstKind::Param(param) = ct.kind() else {
+            return symbol_chars(&ct.to_string());
+        };
+        let generics = self.tcx.generics_of(self.owner_fn_id);
+        let def_id = generics.param_at(param.index as usize, self.tcx).def_id;
+        refine::stable_def_id_symbol(self.tcx, def_id, "const")
     }
 
     // TODO: consolidate two impls

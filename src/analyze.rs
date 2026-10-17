@@ -796,11 +796,10 @@ pub enum TypeParam {
     /// **local** index within the declaring item (i.e. lifetime and const
     /// parameters are skipped). Using the local index lets monomorphization
     /// substitute it with the actual generic argument at the same position.
-    GenericType {
-        param_def_id: DefId,
-        local_idx: u32,
-    },
-    AssocType(DefId, Vec<rty::Type<rty::Closed>>),
+    GenericType { param_def_id: DefId, local_idx: u32 },
+    /// A projection that does not normalize: the associated item, its arguments' types and their
+    /// names ([`refine::TypeBuilder::generic_args_symbol`]), which tell apart arguments of one sort.
+    AssocType(DefId, Vec<rty::Type<rty::Closed>>, String),
 }
 
 #[derive(Debug, Clone)]
