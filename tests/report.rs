@@ -1,15 +1,23 @@
 use std::process::{Command, Output};
 
 fn report(fixture: &str, items: &str) -> Output {
-    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+    report_with(fixture, items, &[])
+}
+
+fn report_with(fixture: &str, items: &str, env: &[(&str, &str)]) -> Output {
+    let root = env!("CARGO_MANIFEST_DIR");
+    let fixture = std::path::Path::new(root)
         .join("tests/report")
         .join(fixture);
     Command::new(env!("CARGO_BIN_EXE_thrust-rustc"))
         .args(["-Awarnings", "-C", "debug-assertions=off"])
         .arg(fixture)
+        .current_dir(root)
         .env("THRUST_REPORT", items)
         .env_remove("THRUST_SOLVER")
         .env_remove("THRUST_OUTPUT_DIR")
+        .env_remove("THRUST_REPORT_FORMAT")
+        .envs(env.iter().copied())
         .output()
         .unwrap()
 }
@@ -58,8 +66,26 @@ fn report_names_the_written_contract_a_run_assumes() {
     let output = report("written_call.rs", "failure");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("it assumes the written contract of `natural` ("),
+        stderr.contains(
+            "it assumes the written contract of `natural` (tests/report/written_call.rs:2:1)"
+        ),
         "{stderr}"
     );
-    assert!(stderr.contains("written_call.rs:2:1)"), "{stderr}");
+}
+
+/// `THRUST_REPORT=1` writes to a program what it shows a person: the failure, each step of its
+/// run with the obligation and the span deriving it, spans relative to the working directory, and
+/// no template or constraint without a solution.
+#[test]
+fn json_report_shows_the_failure_alone() {
+    let output = report_with("loop_fail.rs", "1", &[("THRUST_REPORT_FORMAT", "json")]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let kinds: Vec<&str> = stdout.lines().filter_map(|l| l.split('"').nth(3)).collect();
+    assert_eq!(kinds, ["failure"], "{stdout}");
+    assert!(
+        stdout.contains(
+            r#""via":"c0","obligation":"loop entry","span":"tests/report/loop_fail.rs:9:5""#
+        ),
+        "{stdout}"
+    );
 }

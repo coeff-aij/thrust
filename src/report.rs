@@ -62,18 +62,16 @@ impl Items {
         internal: true,
     };
 
-    /// What `THRUST_REPORT=1` shows: to a person, what was inferred and why verification failed;
-    /// to a program, everything.
-    fn default_for(format: Format) -> Items {
-        match format {
-            Format::Human => Items {
-                inferred: true,
-                failure: true,
-                ..Items::default()
-            },
-            Format::Json => Items::ALL,
-        }
-    }
+    /// What `THRUST_REPORT=1` shows, to a person and to a program: what was inferred and why
+    /// verification failed.
+    const DEFAULT: Items = Items {
+        template: false,
+        constraints: false,
+        solution: false,
+        inferred: true,
+        failure: true,
+        internal: false,
+    };
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,7 +106,7 @@ impl Config {
         let mut items = Items::default();
         for item in value.split(',').map(str::trim).filter(|i| !i.is_empty()) {
             match item {
-                "1" => items = Items::default_for(format),
+                "1" => items = Items::DEFAULT,
                 "all" => items = Items::ALL,
                 "template" => items.template = true,
                 "constraints" => items.constraints = true,
@@ -247,14 +245,16 @@ fn user_written(tcx: TyCtxt<'_>, def: LocalDefId) -> bool {
         )
 }
 
+/// `file:line:column` of `span`, the file relative to the working directory when it is under it.
 fn location(tcx: TyCtxt<'_>, span: Span) -> String {
     let loc = tcx.sess.source_map().lookup_char_pos(span.lo());
-    format!(
-        "{}:{}:{}",
-        loc.file.name.prefer_local(),
-        loc.line,
-        loc.col.0 + 1
-    )
+    let name = loc.file.name.prefer_local().to_string();
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let file = std::path::Path::new(&name)
+        .strip_prefix(&cwd)
+        .map(|relative| relative.display().to_string())
+        .unwrap_or(name);
+    format!("{file}:{}:{}", loc.line, loc.col.0 + 1)
 }
 
 /// Puts each clause, as a constraint, in the entry of the code it was made in, in place of those

@@ -46,7 +46,7 @@ enum Line<'a> {
         obligation: Option<&'a str>,
         premises: Option<&'a [String]>,
         conclusion: Option<&'a str>,
-        run: Vec<Step>,
+        run: Vec<Step<'a>>,
         truncated: bool,
         values: Vec<Value>,
         /// The functions whose inferred contract the run goes through.
@@ -77,10 +77,13 @@ struct Pred<'a> {
 }
 
 #[derive(Serialize)]
-struct Step {
+struct Step<'a> {
     depth: usize,
     fact: String,
+    /// The constraint deriving the fact, with what it stands for and where.
     via: Option<String>,
+    obligation: Option<&'a str>,
+    span: Option<String>,
 }
 
 pub(super) struct Json<'a, 'tcx> {
@@ -156,10 +159,15 @@ impl Json<'_, '_> {
         let run = failure
             .run
             .iter()
-            .map(|step| Step {
-                depth: step.depth,
-                fact: step.fact.clone(),
-                via: step.via.map(|id| format!("{id:?}")),
+            .map(|step| {
+                let via = step.via.and_then(|id| constraint_of(entries, id));
+                Step {
+                    depth: step.depth,
+                    fact: step.fact.clone(),
+                    via: step.via.map(|id| format!("{id:?}")),
+                    obligation: via.map(|(_, c)| c.kind.as_str()),
+                    span: via.and_then(|(_, c)| c.span).map(|s| location(self.tcx, s)),
+                }
             })
             .collect();
         Line::Failure {
@@ -217,10 +225,14 @@ impl Json<'_, '_> {
         for failure in &self.failures {
             line(self.failure(entries, failure))?;
         }
+        // Without a solution, a site has only its template to show, if that was asked for.
+        let sites = self.items.template
+            || (self.solution.is_some() && (self.items.solution || self.items.inferred));
         for entry in entries {
             let loop_sites = entry.loops.values().filter_map(|(site, _)| site.as_ref());
             let internal = entry.blocks.iter().filter(|_| self.items.internal);
-            for site in entry.contract.iter().chain(loop_sites).chain(internal) {
+            let entry_sites = entry.contract.iter().chain(loop_sites).chain(internal);
+            for site in entry_sites.filter(|_| sites) {
                 line(self.site(entry, site))?;
             }
             if !self.items.constraints {
