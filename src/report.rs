@@ -173,6 +173,8 @@ pub struct Input<'a> {
     pub template_vars: &'a HashMap<chc::PredVarId, Vec<Option<chc::debug::ErasedVar>>>,
     /// Where each function's written contract is annotated.
     pub contract_annotations: &'a HashMap<DefId, ContractAnnotations>,
+    /// Where the written invariant of each loop, by its function and header, is annotated.
+    pub invariant_annotations: &'a HashMap<(LocalDefId, BasicBlock), Vec<Span>>,
     /// The parts of the system solved on their own (`THRUST_SPLIT`); the system is then that of
     /// the parts refuted.
     pub parts: &'a [Part],
@@ -327,14 +329,7 @@ fn add_constraints(
         let Some(entry) = provenance.def.and_then(|def| entries.get_mut(&def)) else {
             continue;
         };
-        let constraint = constraints::constraint(
-            tcx,
-            id,
-            clause,
-            names,
-            Some(&entry.body),
-            input.contract_annotations,
-        );
+        let constraint = constraints::constraint(tcx, id, clause, names, Some(&entry.body), input);
         match provenance.bb.and_then(|bb| entry.body.innermost_loop(bb)) {
             Some(header) => entry.loops.entry(header).or_default().1.push(constraint),
             None => entry.constraints.push(constraint),
@@ -440,6 +435,7 @@ pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) -> Vec<Option<S
         template_sites: input.template_sites,
         template_vars: input.template_vars,
         contract_annotations: input.contract_annotations,
+        invariant_annotations: input.invariant_annotations,
         parts: input.parts,
     };
     // An answer is over the symbols of the query it answers: the whole system's, or a part's,

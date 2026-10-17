@@ -268,3 +268,20 @@ fn constraints_name_the_arguments_of_an_unknown() {
     );
     assert!(swap.iter().all(|l| !l.contains('<')), "{stdout}");
 }
+
+/// A refuted loop entry or preservation labels the `invariant!` it checks.
+#[test]
+fn report_labels_the_invariant_a_loop_checks() {
+    let output = report("invariant_fail.rs", "failure");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("thrust: refuted: loop entry in `count_to`"),
+        "{stderr}"
+    );
+    let label = stderr
+        .lines()
+        .skip_while(|l| !l.contains("thrust_macros::invariant!(|i: i64| i >= 1);"))
+        .nth(1)
+        .unwrap_or_default();
+    assert!(label.contains("the annotation it checks"), "{stderr}");
+}

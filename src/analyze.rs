@@ -858,6 +858,8 @@ pub struct Analyzer<'tcx> {
     template_sites: HashMap<chc::PredVarId, TemplateSite>,
     /// Where the written contract of each function is annotated, for the report.
     contract_annotations: HashMap<DefId, ContractAnnotations>,
+    /// Where the written invariant of each loop, by its header, is annotated, for the report.
+    invariant_annotations: HashMap<(LocalDefId, BasicBlock), Vec<rustc_span::Span>>,
 }
 
 /// Whether `expr` is the literal `true`.
@@ -1036,6 +1038,7 @@ impl<'tcx> Analyzer<'tcx> {
             template_vars: Default::default(),
             template_sites: Default::default(),
             contract_annotations: Default::default(),
+            invariant_annotations: Default::default(),
         }
     }
 
@@ -2800,6 +2803,7 @@ impl<'tcx> Analyzer<'tcx> {
             template_sites: &self.template_sites,
             template_vars: &self.template_vars,
             contract_annotations: &self.contract_annotations,
+            invariant_annotations: &self.invariant_annotations,
             parts,
         };
         crate::report::emit(self.tcx, config, &input)
@@ -2999,27 +3003,44 @@ impl<'tcx> Analyzer<'tcx> {
 
     /// Where a contract is annotated, from the companions it is read from: `requires`,
     /// `ensures`, and each refinement at its position.
+    /// The clauses of the formula function `def_id` as written, read off the tail of its body
+    /// (the macros conjoin the clauses of an annotation into one); the function where it has no
+    /// tail.
+    fn written_spans(&self, def_id: DefId) -> Vec<rustc_span::Span> {
+        let body = def_id
+            .as_local()
+            .and_then(|def| self.tcx.hir_maybe_body_owned_by(def));
+        let tail = body.and_then(|body| match body.value.kind {
+            rustc_hir::ExprKind::Block(block, _) => block.expr,
+            _ => None,
+        });
+        match tail {
+            Some(tail) => written_clauses(tail),
+            None => vec![self.tcx.def_span(def_id)],
+        }
+    }
+
+    /// Keeps where the written invariant of the loop at `header` of `def` is annotated, from the
+    /// formula functions of its `invariant!`s.
+    pub fn record_invariant_annotations(
+        &mut self,
+        def: LocalDefId,
+        header: BasicBlock,
+        formulas: impl Iterator<Item = LocalDefId>,
+    ) {
+        let spans = formulas
+            .flat_map(|f| self.written_spans(f.to_def_id()))
+            .collect();
+        self.invariant_annotations.insert((def, header), spans);
+    }
+
     pub fn contract_annotations(
         &self,
         requires: Option<DefId>,
         ensures: Option<DefId>,
         refinements: impl Iterator<Item = (rty::TypePosition, DefId)>,
     ) -> ContractAnnotations {
-        // The clauses as written, read off the tail of the companion's body (the macros conjoin
-        // the clauses of a contract into one); the companion where it has no tail.
-        let spans = |def_id: DefId| {
-            let body = def_id
-                .as_local()
-                .and_then(|def| self.tcx.hir_maybe_body_owned_by(def));
-            let tail = body.and_then(|body| match body.value.kind {
-                rustc_hir::ExprKind::Block(block, _) => block.expr,
-                _ => None,
-            });
-            match tail {
-                Some(tail) => written_clauses(tail),
-                None => vec![self.tcx.def_span(def_id)],
-            }
-        };
+        let spans = |def_id: DefId| self.written_spans(def_id);
         let mut annotations = ContractAnnotations {
             requires: requires.into_iter().flat_map(spans).collect(),
             ensures: ensures.into_iter().flat_map(spans).collect(),
