@@ -1,0 +1,7 @@
+#!/bin/bash
+# As RUSTC_WRAPPER: runs rustc and copies its stdout into $MONO_OUT/<crate name>.<pid>.txt.
+rustc="$1"; shift
+name=unknown
+prev=""
+for a in "$@"; do [ "$prev" = "--crate-name" ] && name="$a"; prev="$a"; done
+"$rustc" "$@" > >(tee -a "$MONO_OUT/$name.$$.txt")
