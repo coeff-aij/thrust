@@ -11,14 +11,14 @@ fn circular(k: usize) {
 #[thrust_macros::lemma]
 #[thrust_macros::ensures(false)]
 fn spin() {
-    loop {} //~ ERROR: a lemma cannot contain a loop
+    loop {} //~ ERROR: a lemma or a law's proof cannot contain a loop
 }
 
 fn helper() {}
 
 #[thrust_macros::lemma]
 fn calls_helper() {
-    helper() //~ ERROR: a lemma calls only lemmas, logic functions, predicates and model operations
+    helper() //~ ERROR: a lemma or a law's proof calls only lemmas, logic functions, predicates, model operations and laws at a type parameter
 }
 
 #[thrust_macros::lemma]
@@ -57,17 +57,17 @@ fn takes_wrapped_mut(w: Wrapped) { //~ ERROR: a lemma cannot take a `&mut`
 
 #[thrust_macros::lemma]
 fn takes_closure<F: FnOnce(i64) -> i64>(f: F) {
-    let _ = Some(1i64).map(f); //~ ERROR: a lemma calls only lemmas, logic functions, predicates and model operations
+    let _ = Some(1i64).map(f); //~ ERROR: a lemma or a law's proof calls only lemmas, logic functions, predicates, model operations and laws at a type parameter
 }
 
 #[thrust_macros::lemma]
 fn calls_back<T: Ord>(a: T, b: T) {
-    let _ = std::cmp::max(a, b); //~ ERROR: a lemma calls only lemmas, logic functions, predicates and model operations
+    let _ = std::cmp::max(a, b); //~ ERROR: a lemma or a law's proof calls only lemmas, logic functions, predicates, model operations and laws at a type parameter
 }
 
 #[thrust_macros::lemma]
 fn passes_function() {
-    let _ = Some(1i64).map(diverges_at); //~ ERROR: a lemma calls only lemmas, logic functions, predicates and model operations
+    let _ = Some(1i64).map(diverges_at); //~ ERROR: a lemma or a law's proof calls only lemmas, logic functions, predicates, model operations and laws at a type parameter
 }
 
 #[thrust_macros::lemma]
