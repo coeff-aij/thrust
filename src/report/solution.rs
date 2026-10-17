@@ -104,24 +104,9 @@ impl Solution {
 
 /// Why there is no solution to show, if there is none.
 pub(super) fn solution_unavailable(answer: &chc::Answer) -> Option<String> {
-    use chc::CheckSatError;
-    let why = match &answer.result {
-        Ok(()) => None,
-        Err(CheckSatError::Unsat) => Some("the constraints have none (see `failure`)".to_owned()),
-        Err(CheckSatError::Timeout(limit)) => {
-            Some(format!("the solver did not answer within {limit:?}"))
-        }
-        Err(CheckSatError::Unknown { .. }) => Some("the solver answered unknown".to_owned()),
-        Err(CheckSatError::UnsoundSat { .. }) => Some(
-            "the solver answered sat only after rejecting part of the query it does not support"
-                .to_owned(),
-        ),
-        Err(
-            CheckSatError::NoVerdict { .. } | CheckSatError::Error { .. } | CheckSatError::Io(_),
-        ) => Some("the solver gave no answer (see the verification error)".to_owned()),
-    };
-    if let Some(why) = why {
-        return Some(format!("no solution: {why}"));
+    // What the solver answered instead is the verification error.
+    if answer.result.is_err() {
+        return Some("no solution: the solver gave none".to_owned());
     }
     if chc::pred_args_rewritten() {
         return Some(
