@@ -3290,6 +3290,76 @@ fn _extern_spec_iterator_chain<I, U>(it: I, other: U) -> core::iter::Chain<I, U:
     <I as std::iter::Iterator>::chain(it, other)
 }
 
+// Creusot's `&mut I` (creusot-std src/std/iter.rs): stepping the reference steps the iterator it
+// points to, whose final value stays that of the reference.
+#[thrust_macros::context]
+impl<'a, I> IteratorSpec for &'a mut I
+where
+    I: IteratorSpec,
+    I::Item: thrust_models::Model,
+{
+    #[thrust_macros::predicate]
+    fn inv(self) -> bool {
+        I::inv(*self)
+    }
+
+    #[thrust_macros::predicate]
+    fn produces(self, visited: Vec<I::Item>, o: Self) -> bool {
+        I::produces(*self, visited, *o) && !self == !o
+    }
+
+    #[thrust_macros::predicate]
+    fn completed(&mut self) -> bool {
+        I::completed(*self) && !(*self) == !(!self)
+    }
+
+    fn produces_refl(a: &Self) {}
+
+    fn produces_trans(
+        a: &Self,
+        ab: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        b: &Self,
+        bc: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        c: &Self,
+    ) {
+    }
+}
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(result == it)]
+fn _extern_spec_iterator_by_ref<'a, I>(it: &'a mut I) -> &'a mut I
+    where I: IteratorSpec,
+          I::Item: thrust_models::Model
+{
+    <I as std::iter::Iterator>::by_ref(it)
+}
+
+// `count` is the number of items produced up to completion. std adds with the checked crate's
+// overflow checks, so the count wraps without them; as Creusot's `enumerate` does, the
+// precondition bounds what the iterator can produce.
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(
+    I::inv(it)
+        && thrust_models::forall(|s: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
+                                  i: <I as thrust_models::Model>::Ty|
+            !I::produces(it, s, i) || s.len() <= <usize>::MAX)
+)]
+#[thrust_macros::ensures(
+    thrust_models::exists(|s: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
+                           done: <I as thrust_models::Model>::Ty,
+                           fin: <I as thrust_models::Model>::Ty|
+        I::produces(it, s, done)
+            && I::completed(thrust_models::model::Mut::new(done, fin))
+            && result == s.len())
+)]
+fn _extern_spec_iterator_count<I>(it: I) -> usize
+    where I: IteratorSpec,
+          I::Item: thrust_models::Model
+{
+    <I as std::iter::Iterator>::count(it)
+}
+
 // `fold` runs the closure along what the iterator produces up to its completion: the closure's
 // states `fs` and the accumulators `accs` along the items `s` form a chain in which each step is
 // a call's postcondition, in the form of Creusot's `Map` (creusot-std src/std/iter/map.rs).
