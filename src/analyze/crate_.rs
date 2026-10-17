@@ -208,11 +208,15 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let outside_selection = self.is_outside_selection(local_def_id);
         let mut analyzer = self.ctx.local_def_analyzer(local_def_id);
 
-        // An impl's definition of a trait law has the law's contract, when the law has one.
+        // An impl's definition of a trait law has the law's contract, when the law has one. The
+        // injected std.rs is checked where it is compiled on its own: building the contract here
+        // would add its types to every crate's query.
         if analyzer.is_annotated_as_trusted() {
-            let has_law_contract = is_law_impl && !analyzer.expected_ty().has_pred_var();
+            let is_checked = analyzer.is_fully_annotated()
+                || analyzer.is_injected_std()
+                || (is_law_impl && !analyzer.expected_ty().has_pred_var());
             assert!(
-                analyzer.is_fully_annotated() || has_law_contract,
+                is_checked,
                 "`#[thrust::trusted]` needs both `requires` and `ensures` (or `#[thrust::callable]`), or the contract of the trait law it defines, on `{}`",
                 self.tcx.def_path_str(local_def_id)
             );
