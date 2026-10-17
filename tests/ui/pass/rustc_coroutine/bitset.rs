@@ -32,7 +32,7 @@ fn _extern_spec_vec_from_elem_word(elem: u64, n: usize) -> Vec<u64> {
 
 
 // The count of members, through `insert`'s contract: inserting 1 twice counts once.
-#[thrust_macros::ensures(DenseBitSet::<usize>::card(result) == 2)]
+#[thrust_macros::ensures(result.3 == 2)]
 fn two_members() -> DenseBitSet<usize> {
     let mut set: DenseBitSet<usize> = DenseBitSet::new_empty(5);
     set.insert(1);
