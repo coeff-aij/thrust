@@ -1334,7 +1334,8 @@ impl<'tcx> Analyzer<'tcx> {
             "{}_{}",
             refine::user_defined_pred(self.tcx, def_id),
             self.predicate_instances.borrow().len(),
-        ));
+        ))
+        .named(self.tcx.def_path_str(def_id));
         self.predicate_instances
             .borrow_mut()
             .insert(key, pred.clone());
@@ -2534,8 +2535,7 @@ impl<'tcx> Analyzer<'tcx> {
 
     /// Solves each part of the system that shares no unknown with the rest on its own
     /// (`THRUST_SPLIT`), and reports the failing ones with the functions their clauses come from.
-    /// Solves each part of the system on its own and, with `report`, reports the parts refuted:
-    /// those are solved again together, asked for what the report needs.
+    /// Solves each part of the system on its own and, with `report`, reports the parts refuted.
     fn solve_parts(&self, jobs: usize, report: Option<&crate::report::Config>) {
         let system = self.system.borrow();
         let parts = system.solve_parts(jobs);
@@ -2552,6 +2552,9 @@ impl<'tcx> Analyzer<'tcx> {
                 cached: part.cached,
             })
             .collect();
+        if let Some(config) = report {
+            self.report_parts(config, &system, &parts, &summaries);
+        }
         for (part, summary) in parts.iter().zip(&summaries) {
             let Err(err) = &part.result else {
                 continue;
@@ -2578,9 +2581,17 @@ impl<'tcx> Analyzer<'tcx> {
             parts.len(),
             cached
         ));
-        let Some(config) = report else {
-            return;
-        };
+    }
+
+    /// Reports the parts refuted, as without `THRUST_SPLIT`: each is solved once more on its own,
+    /// asked for what the report needs.
+    fn report_parts(
+        &self,
+        config: &crate::report::Config,
+        system: &chc::System,
+        parts: &[chc::Part],
+        summaries: &[crate::report::Part],
+    ) {
         // Each part refuted is solved once more on its own, for its refutation; the report reads
         // them over the system of all of them, whose clauses keep their ids.
         let refuted: Vec<&chc::Part> = parts
@@ -2598,7 +2609,7 @@ impl<'tcx> Analyzer<'tcx> {
             .iter()
             .flat_map(|part| part.clauses.iter().copied())
             .collect();
-        self.report(config, &system.part(&clauses), &answers, &summaries);
+        self.report(config, &system.part(&clauses), &answers, summaries);
     }
 
     fn report(

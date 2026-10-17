@@ -1626,13 +1626,30 @@ impl MatcherPred {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone)]
 pub struct UserDefinedPred {
     inner: String,
     /// The sorts this predicate was emitted at. Empty for the definition read
     /// straight off the source, whose parameter sorts are the declaring item's
     /// own; non-empty for a copy emitted at one instantiation of them.
     instance: Vec<Sort>,
+    /// The path of the item it was read from, which the printer shows in place of `inner`;
+    /// not part of its identity.
+    name: Option<String>,
+}
+
+impl PartialEq for UserDefinedPred {
+    fn eq(&self, other: &Self) -> bool {
+        (&self.inner, &self.instance) == (&other.inner, &other.instance)
+    }
+}
+
+impl Eq for UserDefinedPred {}
+
+impl Hash for UserDefinedPred {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        (&self.inner, &self.instance).hash(state)
+    }
 }
 
 impl std::fmt::Display for UserDefinedPred {
@@ -1658,7 +1675,7 @@ where
     D: pretty::DocAllocator<'a, termcolor::ColorSpec>,
 {
     fn pretty(self, allocator: &'a D) -> pretty::DocBuilder<'a, D, termcolor::ColorSpec> {
-        allocator.text(self.inner.clone())
+        allocator.text(self.name.clone().unwrap_or_else(|| self.inner.clone()))
     }
 }
 
@@ -1667,11 +1684,24 @@ impl UserDefinedPred {
         Self {
             inner,
             instance: Vec::new(),
+            name: None,
         }
     }
 
     pub fn at_instance(inner: String, instance: Vec<Sort>) -> Self {
-        Self { inner, instance }
+        Self {
+            inner,
+            instance,
+            name: None,
+        }
+    }
+
+    /// This predicate, printed as `name`, the path of the item it was read from.
+    pub fn named(self, name: String) -> Self {
+        Self {
+            name: Some(name),
+            ..self
+        }
     }
 
     pub fn instance(&self) -> &[Sort] {

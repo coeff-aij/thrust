@@ -16,15 +16,23 @@ use super::*;
 pub struct Symbols {
     declared: HashMap<String, DeclaredSymbol>,
     preds: HashMap<String, PredVarId>,
+    /// The user-defined predicates and functions, by their name in the query.
+    user_defined: HashMap<String, UserDefinedPred>,
 }
 
 impl Symbols {
     /// The symbols of the query `system.smtlib2(capabilities)` writes.
     pub fn of(system: &System, capabilities: Capabilities) -> Self {
-        Symbols::new(
+        let mut symbols = Symbols::new(
             system.declared_symbols(capabilities),
             system.pred_vars.indices(),
-        )
+        );
+        symbols.user_defined = system
+            .user_defined_pred_defs
+            .iter()
+            .map(|def| (def.symbol.to_string(), def.symbol.clone()))
+            .collect();
+        symbols
     }
 
     pub fn new(
@@ -34,6 +42,7 @@ impl Symbols {
         Symbols {
             declared: declared.into_iter().collect(),
             preds: preds.into_iter().map(|p| (p.to_string(), p)).collect(),
+            user_defined: HashMap::new(),
         }
     }
 
@@ -150,6 +159,10 @@ impl<'a, V: Clone> Reader<'a, V> {
         if let Some((var, sort)) = self.bound.get(a) {
             return Term::UserQuantifiedVar(sort.clone(), *var);
         }
+        // The constructor of the empty tuple is a constant.
+        if let Some(DeclaredSymbol::TupleCtor) = self.symbols.declared.get(a) {
+            return Term::Tuple(Vec::new());
+        }
         match a {
             "true" => Term::Bool(true),
             "false" => Term::Bool(false),
@@ -197,6 +210,9 @@ impl<'a, V: Clone> Reader<'a, V> {
             (Some(DeclaredSymbol::Final), 1) => return Term::MutFinal(arg(&mut args)),
             (Some(DeclaredSymbol::Field(i)), 1) => return Term::TupleProj(arg(&mut args), *i),
             _ => {}
+        }
+        if let Some(symbol) = self.symbols.user_defined.get(head) {
+            return Term::UserDefinedFn(symbol.clone(), Sort::Null, args);
         }
         let Some(f) = Function::named(head, args.len()) else {
             return unknown(head, args);
@@ -274,13 +290,16 @@ impl<'a, V: Clone> Reader<'a, V> {
                         .collect(),
                 )
             }
-            (name, args) => match self.symbols.pred(name) {
-                Some(p) => {
-                    let args = args.iter().map(|a| self.term(a)).collect();
-                    Atom::new(p.into(), args).into()
-                }
-                None => holds(self.term(s)),
-            },
+            (name, args) => {
+                let pred: Pred =
+                    match (self.symbols.pred(name), self.symbols.user_defined.get(name)) {
+                        (Some(p), _) => p.into(),
+                        (None, Some(symbol)) => symbol.clone().into(),
+                        (None, None) => return holds(self.term(s)),
+                    };
+                let args = args.iter().map(|a| self.term(a)).collect();
+                Atom::new(pred, args).into()
+            }
         }
     }
 }

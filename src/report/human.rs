@@ -203,10 +203,22 @@ impl Human<'_, '_> {
             lines.push("  …".to_owned());
         }
         notes.push(format!(
-            "a run reaching it, from the solver's refutation (each fact above the ones it is \
-             derived from):\n{}",
+            "how the solver reaches it: each fact follows, by the constraint in brackets, from \
+             the facts indented under it (a derivation, not an order of execution):\n{}",
             lines.join("\n")
         ));
+        let inferred: Vec<String> = failure
+            .inferred
+            .iter()
+            .filter_map(|def| entries.iter().find(|e| e.def == *def))
+            .map(|e| format!("`{}`", e.name))
+            .collect();
+        if !inferred.is_empty() {
+            notes.push(format!(
+                "it goes through the contract inferred for {}: a wrong result there shows here",
+                inferred.join(", ")
+            ));
+        }
         let span = found
             .and_then(|(_, c)| c.span)
             .or_else(|| entries.first().map(|e| e.span));

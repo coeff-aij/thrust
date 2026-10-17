@@ -21,6 +21,8 @@ pub struct DefBody<'tcx> {
     /// The function's path as an identifier, for the names of its temporaries.
     label: String,
     local_names: HashMap<Local, String>,
+    /// For a closure, the captured variable each field of the closure holds.
+    captures: HashMap<usize, String>,
     /// The blocks of each loop, by its header, the headers in the order they are written.
     loops: Vec<(BasicBlock, HashSet<BasicBlock>)>,
     innermost_loop: IndexVec<BasicBlock, Option<BasicBlock>>,
@@ -93,6 +95,46 @@ impl<'tcx> DefBody<'tcx> {
             };
             local_names.insert(local, name);
         }
+        // A closure's first parameter is the closure, `self`, and the fields of its captures are
+        // named after the captured variables, as its debug information places them: `acc` at
+        // `*((*_1).0)` names field 0.
+        let mut captures = HashMap::new();
+        if tcx.is_closure_like(def.to_def_id()) {
+            let env = Local::from_u32(1);
+            local_names.entry(env).or_insert_with(|| "self".to_owned());
+            for info in &body.var_debug_info {
+                let mir::VarDebugInfoContents::Place(place) = info.value else {
+                    continue;
+                };
+                if place.local != env {
+                    continue;
+                }
+                let field = place.projection.iter().find_map(|p| match p {
+                    mir::ProjectionElem::Field(f, _) => Some(f.index()),
+                    _ => None,
+                });
+                if let Some(field) = field {
+                    captures
+                        .entry(field)
+                        .or_insert_with(|| info.name.to_string());
+                }
+            }
+        }
+        // A temporary a call's result goes to is named after the call: `g#k`, the result of the
+        // `k`-th call to `g`.
+        let calls = calls(tcx, body);
+        for (bb, (callee, n)) in &calls {
+            let Some(mir::TerminatorKind::Call { destination, .. }) =
+                body.basic_blocks[*bb].terminator.as_ref().map(|t| &t.kind)
+            else {
+                continue;
+            };
+            if destination.projection.is_empty() && destination.local != mir::RETURN_PLACE {
+                local_names
+                    .entry(destination.local)
+                    .or_insert_with(|| format!("{callee}#{n}"));
+            }
+        }
         let mut loops = natural_loops(body);
         loops.sort_by_key(|(header, _)| {
             let span = body.basic_blocks[*header].terminator().source_info.span;
@@ -113,9 +155,10 @@ impl<'tcx> DefBody<'tcx> {
             body,
             label: identifier(&tcx.def_path_str(def.to_def_id())),
             local_names,
+            captures,
             loops,
             innermost_loop,
-            calls: calls(tcx, body),
+            calls,
         }
     }
 
@@ -166,7 +209,28 @@ impl<'tcx> DefBody<'tcx> {
             }
         };
         let mut name = self.local_name(path.local);
-        for step in &path.steps {
+        let mut steps = path.steps.as_slice();
+        // A capture of a closure, through the closure behind its reference or by value: `*acc`,
+        // `°acc`, `acc`.
+        if path.local == Local::from_u32(1) {
+            let capture = |i: &usize| self.captures.get(i);
+            match steps {
+                [PathStep::Current, PathStep::Field(i), rest @ ..] if capture(i).is_some() => {
+                    name = format!("*{}", capture(i).unwrap());
+                    steps = rest;
+                }
+                [PathStep::Final, PathStep::Field(i), rest @ ..] if capture(i).is_some() => {
+                    name = format!("°{}", capture(i).unwrap());
+                    steps = rest;
+                }
+                [PathStep::Field(i), rest @ ..] if capture(i).is_some() => {
+                    name = capture(i).unwrap().clone();
+                    steps = rest;
+                }
+                _ => {}
+            }
+        }
+        for step in steps {
             name = match step {
                 PathStep::Current => format!("*{name}"),
                 PathStep::Final => format!("°{name}"),

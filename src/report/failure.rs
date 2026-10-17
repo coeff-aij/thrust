@@ -3,11 +3,13 @@
 
 use std::collections::HashMap;
 
+use rustc_span::def_id::LocalDefId;
+
 use crate::chc;
 
 use super::formula::OneLine;
 use super::proof::{self, Fact};
-use super::sites::{Names, PredInfo};
+use super::sites::{Names, Owner, PredInfo};
 
 /// At most this many facts of the run are shown.
 const MAX_STEPS: usize = 80;
@@ -30,6 +32,9 @@ pub struct Failure {
     pub truncated: bool,
     /// The values the goal's variables have where it fails, by their index.
     pub values: Vec<String>,
+    /// The functions whose inferred contract the run goes through: a wrong result of theirs
+    /// shows here.
+    pub inferred: Vec<LocalDefId>,
 }
 
 impl Failure {
@@ -56,6 +61,8 @@ struct Reader<'a> {
     preds: HashMap<String, (chc::PredVarId, &'a PredInfo)>,
     run: Vec<Step>,
     truncated: bool,
+    /// The functions whose inferred contract the run goes through, by their `post`.
+    inferred: Vec<LocalDefId>,
 }
 
 impl Reader<'_> {
@@ -110,15 +117,17 @@ impl Reader<'_> {
     }
 
     fn walk(&mut self, fact: &Fact, depth: usize) {
-        // A fact the run reaches by two ways is shown in full once.
+        // A fact the run reaches by two ways is shown once.
         let key = format!("{}({})", self.name(fact), self.args(fact));
-        if !self.shown.insert(key.clone()) {
-            self.push(Step {
-                depth,
-                fact: format!("{key} (above)"),
-                via: None,
-            });
+        if !self.shown.insert(key) {
             return;
+        }
+        if let Some((_, info)) = self.preds.get(&fact.pred) {
+            if let Owner::Contract { def, ret: true } = info.owner {
+                if !self.inferred.contains(&def) {
+                    self.inferred.push(def);
+                }
+            }
         }
         let mut chain = vec![fact];
         while let Some(next) = single_same(chain.last().unwrap()) {
@@ -196,6 +205,7 @@ pub fn read(
         preds,
         run: Vec::new(),
         truncated: false,
+        inferred: Vec::new(),
     };
     // Shown from the run's end: the premises of the goal, the facts below them, and so on.
     for premise in &marker.premises {
@@ -208,5 +218,6 @@ pub fn read(
         run: reader.run,
         truncated: reader.truncated,
         values: marker.args.iter().map(OneLine::one_line).collect(),
+        inferred: reader.inferred,
     })
 }

@@ -47,7 +47,7 @@ pub fn variant_symbol(d_sym: &DatatypeSymbol, variant: impl std::fmt::Display) -
 }
 
 pub fn user_defined_pred(tcx: mir_ty::TyCtxt<'_>, did: DefId) -> UserDefinedPred {
-    UserDefinedPred::new(stable_def_id_symbol(tcx, did, "p"))
+    UserDefinedPred::new(stable_def_id_symbol(tcx, did, "p")).named(tcx.def_path_str(did))
 }
 
 /// The symbol for the copy of `did`'s predicate emitted at the instantiation
@@ -58,6 +58,7 @@ pub fn user_defined_pred_at_instance(
     instance: Vec<Sort>,
 ) -> UserDefinedPred {
     UserDefinedPred::at_instance(stable_def_id_symbol(tcx, did, "p"), instance)
+        .named(tcx.def_path_str(did))
 }
 
 pub fn trait_forall_pred(

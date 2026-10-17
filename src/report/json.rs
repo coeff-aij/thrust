@@ -49,6 +49,8 @@ enum Line<'a> {
         run: Vec<Step>,
         truncated: bool,
         values: Vec<Value>,
+        /// The functions whose inferred contract the run goes through.
+        inferred: Vec<&'a str>,
     },
 }
 
@@ -166,6 +168,12 @@ impl Json<'_, '_> {
                 .unwrap_or_default()
                 .into_iter()
                 .map(|(name, value)| Value { name, value })
+                .collect(),
+            inferred: failure
+                .inferred
+                .iter()
+                .filter_map(|def| entries.iter().find(|e| e.def == *def))
+                .map(|e| e.name.as_str())
                 .collect(),
         }
     }
