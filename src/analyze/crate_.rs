@@ -129,9 +129,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         for def_id in impl_methods_with_own_contract {
             self.ctx.register_impl_method_with_own_contract(def_id);
         }
-        // Nor is the body of a target outside `THRUST_VERIFY_ONLY`, whose contract the spec writes.
+        // Nor is the body of a target outside `THRUST_VERIFY_ONLY`, whose contract the spec writes,
+        // unless it is generic (see `refine_fn_def_at_site`).
         for local_target_def_id in local_spec_targets {
-            if self.is_outside_selection(local_target_def_id) {
+            let is_generic = self
+                .tcx
+                .generics_of(local_target_def_id)
+                .requires_monomorphization(self.tcx);
+            if self.is_outside_selection(local_target_def_id) && !is_generic {
                 self.skip_analysis.insert(local_target_def_id);
             }
         }
@@ -254,11 +259,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
         // Outside `THRUST_VERIFY_ONLY`, a function whose contract leaves nothing to infer from its
         // body is trusted, as `#[thrust::trusted]` is; one with a predicate variable in its
-        // contract is analyzed, because its callers use the contract inferred from its body.
+        // contract is analyzed, because its callers use the contract inferred from its body. A
+        // generic function is analyzed too: the spec bounds and trait methods its body assumes at
+        // its type parameters are checked at its instances, which a selected caller may make.
         let mut expected = None;
         if outside_selection && !self.skip_analysis.contains(&local_def_id) {
+            use mir_ty::TypeVisitableExt as _;
             let ty = analyzer.expected_ty();
-            if !ty.has_pred_var() {
+            if !ty.has_pred_var() && !sig.has_param() {
                 tracing::debug!("trusted outside THRUST_VERIFY_ONLY");
                 self.skip_analysis.insert(local_def_id);
             }
