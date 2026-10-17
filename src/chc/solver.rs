@@ -294,6 +294,10 @@ impl Config {
         std::fs::write(dir.join(name), format!("{query}\n(check-sat)\n"))
     }
 
+    pub fn is_z3(&self) -> bool {
+        self.solver.is_z3()
+    }
+
     pub fn capabilities(&self) -> Capabilities {
         Capabilities {
             dependency_aware_declarations: !self.solver.is_z3(),

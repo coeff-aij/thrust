@@ -2678,10 +2678,20 @@ impl<'tcx> Analyzer<'tcx> {
         refuted: Option<rustc_span::Span>,
     ) -> rustc_errors::Diag<'tcx> {
         let message = format!("verification error: {:?}", err);
-        match refuted {
+        let mut diag = match refuted {
             Some(span) => self.tcx.dcx().struct_span_err(span, message),
             None => self.tcx.dcx().struct_err(message),
+        };
+        let unread = matches!(err, chc::CheckSatError::Error { .. })
+            && chc::Config::from_env().is_z3()
+            && self.system.borrow().needs_pcsat();
+        if unread {
+            diag.help(
+                "the query has forall sorts or sequences, which `z3` does not read: \
+                 `THRUST_SOLVER=tests/thrust-pcsat-wrapper` solves it with PCSat",
+            );
         }
+        diag
     }
 
     /// Solves each part of the system that shares no unknown with the rest on its own

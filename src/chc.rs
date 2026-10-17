@@ -3697,6 +3697,18 @@ impl System {
         answer
     }
 
+    /// Whether the query declares what `z3` does not read: forall sorts, or sequences.
+    pub fn needs_pcsat(&self) -> bool {
+        let seq = |sort: &Sort| {
+            let mut found = false;
+            sort.walk(|s| found |= matches!(s, Sort::Seq(_)));
+            found
+        };
+        let vars = self.clauses.iter().flat_map(|c| c.vars.iter());
+        let sigs = self.pred_vars.iter().flat_map(|p| p.sig.iter());
+        !self.forall_sorts.is_empty() || vars.chain(sigs).any(seq)
+    }
+
     /// Solves each class of clauses that share an unknown on its own (see [`components`]),
     /// `jobs` at a time, reusing the verdicts `THRUST_CACHE_DIR` keeps. The system is satisfiable
     /// exactly when every part is. `THRUST_OUTPUT_DIR` gets each part's query as

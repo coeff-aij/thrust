@@ -352,3 +352,14 @@ fn json_states_columns_facts_and_the_solver_s_limit() {
     let verdict = r#"{"kind":"verdict","verdict":"timeout","refutations":"one per query","message":"Timeout(1s)"}"#;
     assert!(stdout.contains(verdict), "{stdout}");
 }
+
+/// When `z3` cannot read a query that has sequences or forall sorts, the error says that PCSat
+/// can.
+#[test]
+fn an_unreadable_query_points_to_pcsat() {
+    let stderr = warnings_of("for_range_needs_pcsat.rs");
+    assert!(
+        stderr.contains("help: the query has forall sorts or sequences, which `z3` does not read"),
+        "{stderr}"
+    );
+}
