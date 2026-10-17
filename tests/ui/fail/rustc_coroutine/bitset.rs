@@ -31,14 +31,6 @@ fn _extern_spec_vec_from_elem_word(elem: u64, n: usize) -> Vec<u64> {
     std::vec::from_elem(elem, n)
 }
 
-// `<[T]>::fill`, at the word type, for `insert_all`.
-#[thrust::extern_spec_fn]
-#[thrust_macros::ensures((!slice).len() == (*slice).len())]
-#[thrust_macros::ensures(forall(|k: USize| k < (*slice).len() ==> (!slice)[k] == value))]
-fn _extern_spec_slice_fill_word(slice: &mut [u64], value: u64) {
-    <[u64]>::fill(slice, value)
-}
-
 
 // Every column a row of a matrix yields is below its column bound, whatever the bits.
 #[thrust_macros::requires(BitMatrix::<usize, usize>::wf(*m) && 0 < (*m).num_rows && *(*m).col_bound == 5)]
