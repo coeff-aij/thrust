@@ -17,6 +17,7 @@ mod failure;
 mod formula;
 mod human;
 mod json;
+mod parts;
 mod proof;
 mod simplify;
 mod sites;
@@ -41,6 +42,8 @@ use human::Human;
 use json::Json;
 use sites::{Names, Site, SiteKind};
 use solution::{solution_unavailable, Solution};
+
+pub use parts::{emit_notes as emit_part_notes, Part};
 
 #[derive(Debug, Clone, Copy, Default)]
 struct Items {
@@ -165,16 +168,6 @@ pub struct Input<'a> {
     pub parts: &'a [Part],
 }
 
-/// A part of the system solved on its own.
-pub struct Part {
-    /// The functions its clauses come from.
-    pub functions: Vec<String>,
-    /// `sat`, `unsat`, `timeout`, or `error`.
-    pub verdict: &'static str,
-    /// Whether the verdict was that of an earlier run (`THRUST_CACHE_DIR`).
-    pub cached: bool,
-}
-
 /// One function: its sites and constraints, the loops' ones under their headers.
 struct Entry<'tcx> {
     def: LocalDefId,
@@ -245,16 +238,21 @@ fn user_written(tcx: TyCtxt<'_>, def: LocalDefId) -> bool {
         )
 }
 
-/// `file:line:column` of `span`, the file relative to the working directory when it is under it.
-fn location(tcx: TyCtxt<'_>, span: Span) -> String {
-    let loc = tcx.sess.source_map().lookup_char_pos(span.lo());
-    let name = loc.file.name.prefer_local().to_string();
+/// The file of `span`, relative to the working directory when it is under it.
+fn file_name(tcx: TyCtxt<'_>, span: Span) -> String {
+    let file = tcx.sess.source_map().lookup_char_pos(span.lo()).file;
+    let name = file.name.prefer_local().to_string();
     let cwd = std::env::current_dir().unwrap_or_default();
-    let file = std::path::Path::new(&name)
+    std::path::Path::new(&name)
         .strip_prefix(&cwd)
         .map(|relative| relative.display().to_string())
-        .unwrap_or(name);
-    format!("{file}:{}:{}", loc.line, loc.col.0 + 1)
+        .unwrap_or(name)
+}
+
+/// `file:line:column` of `span`.
+fn location(tcx: TyCtxt<'_>, span: Span) -> String {
+    let loc = tcx.sess.source_map().lookup_char_pos(span.lo());
+    format!("{}:{}:{}", file_name(tcx, span), loc.line, loc.col.0 + 1)
 }
 
 /// Puts each clause, as a constraint, in the entry of the code it was made in, in place of those

@@ -903,18 +903,6 @@ fn split_jobs() -> Result<Option<usize>, String> {
     }
 }
 
-/// The functions the clauses `ids` of `system` come from, sorted.
-fn part_functions(system: &chc::System, ids: &[chc::ClauseId]) -> Vec<String> {
-    let mut functions: Vec<String> = ids
-        .iter()
-        .filter_map(|&id| system.clauses[id].debug_info.get("def"))
-        .map(str::to_owned)
-        .collect();
-    functions.sort_unstable();
-    functions.dedup();
-    functions
-}
-
 /// Where the analysis makes a template, and so its predicate variables: a function's contract,
 /// a block's type, or the code of a block (the result of a call it makes).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2623,23 +2611,15 @@ impl<'tcx> Analyzer<'tcx> {
     }
 
     /// Solves each part of the system that shares no unknown with the rest on its own
-    /// (`THRUST_SPLIT`), and reports the failing ones with the functions their clauses come from.
-    /// Solves each part of the system on its own and, with `report`, reports the parts refuted.
+    /// (`THRUST_SPLIT`), reports the failing ones with the code their clauses come from and, with
+    /// `report`, reports the parts as without `THRUST_SPLIT`.
     fn solve_parts(&self, jobs: usize, report: Option<&crate::report::Config>) {
         let system = self.system.borrow();
         let parts = system.solve_parts(jobs);
         let summaries: Vec<crate::report::Part> = parts
             .iter()
-            .map(|part| crate::report::Part {
-                functions: part_functions(&system, &part.clauses),
-                verdict: match &part.result {
-                    Ok(()) => "sat",
-                    Err(chc::CheckSatError::Unsat) => "unsat",
-                    Err(chc::CheckSatError::Timeout(_)) => "timeout",
-                    Err(_) => "error",
-                },
-                cached: part.cached,
-            })
+            .enumerate()
+            .map(|(id, part)| crate::report::Part::new(self.tcx, &system, id, part))
             .collect();
         if let Some(config) = report {
             self.report_parts(config, &system, &parts, &summaries);
@@ -2648,28 +2628,13 @@ impl<'tcx> Analyzer<'tcx> {
             let Err(err) = &part.result else {
                 continue;
             };
-            let functions: Vec<String> =
-                summary.functions.iter().map(|f| format!("`{f}`")).collect();
             self.tcx
                 .dcx()
                 .struct_err(format!("verification error: {:?}", err))
-                .with_note(format!(
-                    "in the part of {} clauses from {}",
-                    part.clauses.len(),
-                    if functions.is_empty() {
-                        "no function".to_owned()
-                    } else {
-                        functions.join(", ")
-                    }
-                ))
+                .with_note(summary.error_note(parts.len()))
                 .emit();
         }
-        let cached = parts.iter().filter(|p| p.cached).count();
-        self.tcx.dcx().note(format!(
-            "thrust: {} parts solved on their own, {} of them from earlier runs",
-            parts.len(),
-            cached
-        ));
+        crate::report::emit_part_notes(self.tcx, &summaries);
     }
 
     /// Reports the parts refuted, as without `THRUST_SPLIT`: each is solved once more on its own,

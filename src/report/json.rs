@@ -16,7 +16,9 @@ use super::{assumed, constraint_of, location, Entry, Items};
 #[serde(tag = "kind", rename_all = "lowercase")]
 enum Line<'a> {
     Part {
-        functions: &'a [String],
+        id: usize,
+        clauses: usize,
+        functions: &'a [super::parts::PartCode],
         verdict: &'a str,
         cached: bool,
     },
@@ -217,6 +219,8 @@ impl Json<'_, '_> {
         let mut line = |line: Line<'_>| writeln!(out, "{}", serde_json::to_string(&line)?);
         for part in self.parts {
             line(Line::Part {
+                id: part.id,
+                clauses: part.clauses,
                 functions: &part.functions,
                 verdict: part.verdict,
                 cached: part.cached,

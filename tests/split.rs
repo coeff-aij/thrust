@@ -59,3 +59,21 @@ fn a_split_run_reports_the_refuted_part() {
     );
     assert!(stderr.contains("where it fails: x = 0"), "{stderr}");
 }
+
+/// A function whose clauses a written invariant cuts into two parts: the failing part's error
+/// names the lines its clauses come from, and a note says why one function is in two parts.
+#[test]
+fn a_function_in_two_parts_is_explained() {
+    let output = run("invariant_parts.rs", Some("2"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert!(stderr.contains("in part 0 of 2, of "), "{stderr}");
+    assert!(
+        stderr.contains("invariant_parts.rs:1-8), `main` ("),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("a function can be in several parts: `count_to` in 2"),
+        "{stderr}"
+    );
+}
