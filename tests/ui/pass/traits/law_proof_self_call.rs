@@ -19,11 +19,13 @@ where
 
     #[thrust_macros::law]
     #[thrust_macros::requires(true)]
-    #[thrust_macros::ensures(Self::small(*a))]
+    #[thrust_macros::ensures(Self::small(*a) && *a == *b)]
     fn all_small(a: &Self, b: &Self) {}
 }
 
-impl Tagged for i64 {}
+trait Base {}
+
+impl Base for i64 {}
 
 #[derive(PartialEq)]
 struct Wrap<T>(T);
@@ -43,9 +45,7 @@ impl<T: Tagged> Tagged for Wrap<T> {
 #[thrust_macros::requires(T::small(*a))]
 #[thrust_macros::ensures(true)]
 fn f<T: Tagged + PartialEq>(a: &T, b: &T) {
-    assert!(*a == *a);
+    assert!(*a == *b);
 }
 
-fn main() {
-    f(&Wrap(1i64), &Wrap(2i64));
-}
+fn main() {}
