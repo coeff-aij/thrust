@@ -43,6 +43,7 @@ pub(crate) mod selection;
 // TODO: organize structure and remove cross dependency between refine
 pub use did_cache::DefIdCache;
 
+// Also the paths siblings use: analyze::{predicate_typing_env, SpecBound, fn_mut_bounded_params}.
 use extern_spec::{predicate_typing_env, SpecBound};
 use fn_mut::{fn_mut_bounded_params, has_fn_mut_closure, FnMutInstanceObligations};
 
