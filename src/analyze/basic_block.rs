@@ -1856,7 +1856,16 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         }
     }
 
+    /// A ghost is a snapshot and is never resolved, as in Creusot: a `&mut` it holds is a second
+    /// name of a borrow that the program still uses, whose final value the ghost's death says
+    /// nothing about.
     fn drop_local(&mut self, local: Local) {
+        let ghost_model = self.ctx.def_ids().ghost_model();
+        let is_ghost = ghost_model.is_some()
+            && self.local_decls[local].ty.ty_adt_def().map(|adt| adt.did()) == ghost_model;
+        if is_ghost {
+            return;
+        }
         self.env.drop_local(local);
     }
 
