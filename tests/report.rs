@@ -135,3 +135,16 @@ fn report_reads_a_boolean_condition_as_a_formula() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("==> a != b\n"), "{stderr}");
 }
+
+/// The run shows a `&mut` by its current and final values, `*x` and `°x`, and leaves out the
+/// arguments the program does not name.
+#[test]
+fn report_shows_a_mutable_reference_by_its_two_values() {
+    let output = report("swap_half.rs", "failure");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("swap.post(*x = 1, °x = 3, *y = 3, °y = 3)"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("= <"), "{stderr}");
+}

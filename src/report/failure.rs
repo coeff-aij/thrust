@@ -7,7 +7,7 @@ use rustc_span::def_id::LocalDefId;
 
 use crate::chc;
 
-use super::formula::OneLine;
+use super::formula::{OneLine, Term};
 use super::proof::{self, Fact};
 use super::sites::{Names, Owner, PredInfo};
 
@@ -31,7 +31,7 @@ pub struct Failure {
     pub run: Vec<Step>,
     pub truncated: bool,
     /// The values the goal's variables have where it fails, by their index.
-    pub values: Vec<String>,
+    pub values: Vec<Term>,
     /// The functions whose inferred contract the run goes through: a wrong result of theirs
     /// shows here.
     pub inferred: Vec<LocalDefId>,
@@ -42,12 +42,29 @@ impl Failure {
     pub fn named_values(&self, goal: &super::constraints::Constraint) -> Vec<(String, String)> {
         let mut shown: Vec<(String, String)> = Vec::new();
         for (name, value) in goal.vars.iter().zip(&self.values) {
-            if name.starts_with("__tmp_chc_") || shown.iter().any(|(n, _)| n == name) {
+            if name.starts_with("__tmp_chc_") {
                 continue;
             }
-            shown.push((name.clone(), value.clone()));
+            for (name, value) in named(name, value) {
+                if shown.iter().all(|(n, _)| *n != name) {
+                    shown.push((name, value));
+                }
+            }
         }
         shown
+    }
+}
+
+/// `name = value`, a `&mut` pair `<c, f>` as its current value `*name = c` and its final one
+/// `°name = f`.
+fn named(name: &str, value: &Term) -> Vec<(String, String)> {
+    match value {
+        Term::Mut(current, last) => [
+            named(&format!("*{name}"), current),
+            named(&format!("°{name}"), last),
+        ]
+        .concat(),
+        value => vec![(name.to_owned(), value.one_line())],
     }
 }
 
@@ -66,20 +83,30 @@ struct Reader<'a> {
 }
 
 impl Reader<'_> {
-    /// The arguments of `fact`, each with what it stands for.
+    /// The arguments of `fact` the program names, each with what it stands for, and `…` for those
+    /// it does not.
     fn args(&self, fact: &Fact) -> String {
         let (values, names) = match self.preds.get(&fact.pred) {
             Some((p, info)) => (self.names.arrange(*p, &fact.args), info.args.as_slice()),
             None => (fact.args.clone(), [].as_slice()),
         };
-        let shown: Vec<String> = values
-            .iter()
-            .enumerate()
-            .map(|(k, value)| match names.get(k).cloned().flatten() {
-                Some(name) => format!("{name} = {}", value.one_line()),
-                None => value.one_line(),
-            })
-            .collect();
+        let mut shown: Vec<String> = Vec::new();
+        let mut unnamed = false;
+        for (k, value) in values.iter().enumerate() {
+            let Some(name) = names.get(k).cloned().flatten() else {
+                unnamed = true;
+                continue;
+            };
+            for (name, value) in named(&name, value) {
+                let arg = format!("{name} = {value}");
+                if !shown.contains(&arg) {
+                    shown.push(arg);
+                }
+            }
+        }
+        if unnamed {
+            shown.push("…".to_owned());
+        }
         shown.join(", ")
     }
 
@@ -217,7 +244,7 @@ pub fn read(
         goal,
         run: reader.run,
         truncated: reader.truncated,
-        values: marker.args.iter().map(OneLine::one_line).collect(),
+        values: marker.args.clone(),
         inferred: reader.inferred,
     })
 }
