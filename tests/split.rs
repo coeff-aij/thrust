@@ -291,3 +291,21 @@ fn a_part_of_several_functions_spans_each() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("`main` is in this part too"), "{stderr}");
 }
+
+/// A part declares only the definitions its clauses reach: the part of `bad`, which has no
+/// sequence, is refuted by `z3` although the part of `count` uses sequences, which `z3` cannot
+/// read, and only that part's error says PCSat reads it.
+#[test]
+fn a_part_without_sequences_declares_none() {
+    let output = run("sequence_and_not.rs", Some("2"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("error: verification error: Unsat"),
+        "{stderr}"
+    );
+    assert_eq!(
+        stderr.matches("which `z3` does not read").count(),
+        1,
+        "{stderr}"
+    );
+}

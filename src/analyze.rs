@@ -2668,12 +2668,16 @@ impl<'tcx> Analyzer<'tcx> {
             crate::report::Refuted::At(span) => Some(span),
             crate::report::Refuted::No => None,
         };
-        self.verification_error(&err, at).emit();
+        self.verification_error(&self.system.borrow(), &err, at)
+            .emit();
     }
 
     /// The error of a failed verification, at the obligation the report shows refuted, if it does.
+    /// The error of a failed verification of `system` (the whole or a part), at the obligation
+    /// the report shows refuted, if it does.
     fn verification_error(
         &self,
+        system: &chc::System,
         err: &chc::CheckSatError,
         refuted: Option<rustc_span::Span>,
     ) -> rustc_errors::Diag<'tcx> {
@@ -2682,13 +2686,16 @@ impl<'tcx> Analyzer<'tcx> {
             Some(span) => self.tcx.dcx().struct_span_err(span, message),
             None => self.tcx.dcx().struct_err(message),
         };
-        let unread = matches!(err, chc::CheckSatError::Error { .. })
+        // `z3` reports what it cannot read as `(error …)` lines.
+        let unread = matches!(err, chc::CheckSatError::Error { stdout, .. } if stdout.contains("(error "))
             && chc::Config::from_env().is_z3()
-            && self.system.borrow().needs_pcsat();
+            && system.needs_pcsat();
         if unread {
             diag.help(
-                "the query has forall sorts or sequences, which `z3` does not read: \
-                 `THRUST_SOLVER=tests/thrust-pcsat-wrapper` solves it with PCSat",
+                "the query has forall sorts or sequences, which `z3` does not read; PCSat, the \
+                 CHC solver of CoAR, does: set `THRUST_SOLVER` to the PCSat wrapper of Thrust \
+                 (`tests/thrust-pcsat-wrapper` in its repository), which runs the CoAR image \
+                 `COAR_IMAGE` in Docker",
             );
         }
         diag
@@ -2721,7 +2728,8 @@ impl<'tcx> Analyzer<'tcx> {
             // Without a refutation, the error is at the code of the part: its first function,
             // the others labelled.
             let code = summary.functions.first().map(|f| f.span);
-            let mut diag = self.verification_error(err, refuted.or(code));
+            let mut diag =
+                self.verification_error(&system.part(&part.clauses), err, refuted.or(code));
             if refuted.is_none() {
                 for f in summary.functions.iter().skip(1) {
                     diag.span_label(f.span, format!("`{}` is in this part too", f.r#fn));

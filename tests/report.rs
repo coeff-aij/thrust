@@ -363,3 +363,27 @@ fn an_unreadable_query_points_to_pcsat() {
         "{stderr}"
     );
 }
+
+/// The PCSat help is only for a query `z3` reports it cannot read, not for another failure.
+#[test]
+fn other_failures_get_no_pcsat_help() {
+    let stderr = warnings_of("loop_fail.rs");
+    assert!(stderr.contains("verification error: Unsat"), "{stderr}");
+    assert!(!stderr.contains("PCSat"), "{stderr}");
+    let root = env!("CARGO_MANIFEST_DIR");
+    let output = Command::new(env!("CARGO_BIN_EXE_thrust-rustc"))
+        .args([
+            "-C",
+            "debug-assertions=off",
+            "tests/report/for_range_needs_pcsat.rs",
+        ])
+        .current_dir(root)
+        .env_remove("THRUST_REPORT")
+        .env_remove("THRUST_SPLIT")
+        .env_remove("THRUST_SOLVER")
+        .env("THRUST_SOLVER_ARGS", "-bogusflag")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("PCSat"), "{stderr}");
+}
