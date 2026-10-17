@@ -33,12 +33,28 @@ fn resolve<'a>(mut s: &'a Sexp, env: &Env<'a>) -> &'a Sexp {
     s
 }
 
+/// `s` with every name the refutation binds by `let` (`?x12` for a term) replaced by what it
+/// binds.
+fn expand(s: &Sexp, env: &Env<'_>, depth: usize) -> Sexp {
+    if depth > 256 {
+        return s.clone();
+    }
+    match resolve(s, env) {
+        Sexp::Atom(a) => Sexp::Atom(a.clone()),
+        Sexp::List(items) => Sexp::List(items.iter().map(|i| expand(i, env, depth + 1)).collect()),
+    }
+}
+
 fn fact_of(s: &Sexp, env: &Env<'_>) -> Option<(String, Vec<Expr>)> {
     match resolve(s, env) {
         Sexp::Atom(name) => Some((name.clone(), Vec::new())),
         Sexp::List(items) => match items.as_slice() {
             [Sexp::Atom(pred), args @ ..] => {
-                Some((pred.clone(), args.iter().map(model::to_expr).collect()))
+                let args = args
+                    .iter()
+                    .map(|a| model::to_expr(&expand(a, env, 0)))
+                    .collect();
+                Some((pred.clone(), args))
             }
             _ => None,
         },
@@ -140,5 +156,12 @@ mod tests {
         let p1 = find(&facts, "P").unwrap();
         assert_eq!(p1.args, vec![Expr::sym("1")]);
         assert_eq!(p1.premises[0].args, vec![Expr::sym("0")]);
+    }
+
+    #[test]
+    fn expands_the_terms_a_refutation_names() {
+        let proof = "((set-logic HORN)\n(proof\n(let ((?x7 (tuple 5 5)))\n(mp ((_ hyper-res 0 0) (asserted (P ?x7)) (P ?x7)) (asserted (=> (P ?x7) false)) false))))";
+        let facts = read(proof);
+        assert_eq!(facts[0].args[0].to_string(), "(5, 5)");
     }
 }

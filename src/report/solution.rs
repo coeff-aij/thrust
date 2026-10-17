@@ -52,6 +52,12 @@ impl Solution {
         Solution { by_name }
     }
 
+    /// Whether the solver interprets the predicate variable the report names `name`: not when the
+    /// query leaves it out (see `crate::chc::prune`).
+    pub(super) fn interprets(&self, name: &str) -> bool {
+        self.by_name.contains_key(name)
+    }
+
     /// `e` with each predicate variable replaced by its interpretation.
     pub(super) fn apply(&self, e: &Expr) -> Expr {
         match e {

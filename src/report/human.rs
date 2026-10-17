@@ -92,8 +92,20 @@ impl Human<'_, '_> {
         let Some(solution) = self.solution(&mut lines) else {
             return lines;
         };
-        if self.items.solution || self.items.inferred {
+        if !(self.items.solution || self.items.inferred) {
+            return lines;
+        }
+        let interpreted = site
+            .signature
+            .is_some_and(|p| solution.interprets(&self.names.pred_head(p).name));
+        if interpreted {
             lines.push(format!(":= {}", invariant(site, &|e| solution.apply(e))));
+        } else {
+            lines.push(
+                "not in the query: `true` if no constraint depends on it, `false` if none \
+                 establishes it"
+                    .to_owned(),
+            );
         }
         lines
     }

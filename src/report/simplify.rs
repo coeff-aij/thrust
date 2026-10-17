@@ -1,12 +1,16 @@
 //! The solver's interpretations simplified by `z3` into equivalent formulas: its quantifier
-//! elimination, then simplification, then simplification of each part under the others
-//! (`(then qe simplify ctx-solver-simplify)`). Each tactic keeps the formula's meaning, and an
+//! elimination, then simplification, then simplification of each part under the others, repeated
+//! until nothing changes (`(then qe simplify (repeat (then ctx-solver-simplify simplify) 10))`;
+//! one pass leaves contradictory disjuncts the next removes). Each tactic keeps the formula's
+//! meaning, and an
 //! interpretation `z3` cannot take back (one applying a function of the query) or does not
 //! simplify in time is shown as it was.
 
 use std::collections::HashMap;
 
 use super::model::{self, Interpretation};
+
+const TACTIC: &str = "(then qe simplify (repeat (then ctx-solver-simplify simplify) 10))";
 
 /// How long `z3` may spend on one interpretation, in milliseconds.
 const BUDGET_MS: u32 = 5000;
@@ -48,7 +52,7 @@ pub fn simplify(
             script.push_str(&format!("(declare-const {param} {sort})\n"));
         }
         script.push_str(&format!(
-            "(assert {body})\n(apply (try-for (then qe simplify ctx-solver-simplify) {BUDGET_MS}))\n(pop)\n"
+            "(assert {body})\n(apply (try-for {TACTIC} {BUDGET_MS}))\n(pop)\n"
         ));
     }
     if script.len() == prelude_len {

@@ -182,7 +182,9 @@ impl Names {
         }
         for (slot, arg) in info.args.iter_mut().zip(args) {
             match arg {
-                Expr::Sym(s) if slot.is_none() && !s.starts_with("__tmp_chc_") => {
+                Expr::Sym(s)
+                    if slot.is_none() && !s.starts_with("__tmp_chc_") && !is_literal(s) =>
+                {
                     *slot = Some(s.clone());
                 }
                 _ => {}
@@ -256,18 +258,19 @@ impl Names {
             .filter_map(|(p, m)| Some((*p, m.def?, m.bb)))
             .collect();
         rest.sort_by_key(|(p, _, _)| p.index());
-        let mut counts: HashMap<String, usize> = HashMap::new();
+        let mut used: HashSet<String> = self.preds.values().map(|i| i.name.clone()).collect();
         for (p, def, bb) in rest {
             let Some((base, args, groups)) = name_of(def, bb) else {
                 continue;
             };
-            let count = counts.entry(base.clone()).or_default();
-            *count += 1;
-            let name = if *count == 1 {
-                base
-            } else {
-                format!("{base}_{count}")
-            };
+            let name = (1..)
+                .map(|n| match n {
+                    1 => base.clone(),
+                    n => format!("{base}_{n}"),
+                })
+                .find(|name| !used.contains(name))
+                .unwrap();
+            used.insert(name.clone());
             let info = PredInfo {
                 name,
                 args,
@@ -278,6 +281,11 @@ impl Names {
             self.preds.insert(p, info);
         }
     }
+}
+
+/// Whether `s` is a constant rather than a variable: a number or a Boolean.
+fn is_literal(s: &str) -> bool {
+    s == "true" || s == "false" || s.starts_with(|c: char| c.is_ascii_digit())
 }
 
 /// An existential of a refinement, which Thrust introduces in typing a value.
@@ -320,6 +328,34 @@ fn var_name(
 /// parameters by name, and returns them in order. `name_of(k, n, own)` is the name of the `k`-th
 /// of the `n` variables found, in the refinement of the parameter named `own`; `owner_of(i)` is
 /// the owner of those in parameter `i`.
+/// The refined types nested in `ty`'s type arguments, each with its path from `ty`: the `k`-th
+/// argument at `.argk`, its arguments at `.argk.argj`.
+fn nested_refinements<'a, T>(
+    ty: &'a rty::Type<T>,
+    path: &str,
+    out: &mut Vec<(String, &'a rty::RefinedType<T>)>,
+) {
+    let children: Vec<&rty::RefinedType<T>> = match ty {
+        rty::Type::Pointer(p) => vec![&*p.elem],
+        rty::Type::Tuple(t) => t.elems.iter().collect(),
+        rty::Type::Array(a) => vec![&*a.index, &*a.elem],
+        rty::Type::Seq(e) => vec![&**e],
+        rty::Type::Enum(e) => e.args.iter().collect(),
+        _ => Vec::new(),
+    };
+    for (k, child) in children.into_iter().enumerate() {
+        let path = format!("{path}.arg{k}");
+        out.push((path.clone(), child));
+        nested_refinements(&child.ty, &path, out);
+    }
+}
+
+/// Names the predicate variables of one template that `claims` accepts, `params` being its
+/// parameters by name, and returns them in order. `name_of(k, n, own)` is the name of the `k`-th
+/// of the `n` variables found in the refinement of the parameter named `own`; `owner_of(i)` is
+/// the owner of those in parameter `i`. A variable in a refinement nested in a parameter's type
+/// (the `Some` value of an `Option`) is named after the parameter's with the path to it,
+/// `next.post.arg0`, and its value after the parameter's with the same path.
 fn name_preds(
     names: &mut Names,
     params: &[Param<'_>],
@@ -327,7 +363,7 @@ fn name_preds(
     name_of: impl Fn(usize, usize, &str) -> String,
     owner_of: impl Fn(usize) -> Owner,
 ) -> Vec<chc::PredVarId> {
-    let found: Vec<_> = params
+    let top: Vec<_> = params
         .iter()
         .enumerate()
         .flat_map(|(i, (own, ty))| {
@@ -337,31 +373,49 @@ fn name_preds(
         })
         .filter(|(_, _, p, _)| !names.preds.contains_key(p) && claims(names, *p))
         .collect();
+    let mut found: Vec<_> = top
+        .iter()
+        .enumerate()
+        .map(|(k, (i, own, p, atom))| (*i, (*own).clone(), name_of(k, top.len(), own), *p, *atom))
+        .collect();
+    for (i, (own, ty)) in params.iter().enumerate() {
+        let mut nested = Vec::new();
+        nested_refinements(&ty.ty, "", &mut nested);
+        for (path, refined) in nested {
+            for (p, atom) in pred_vars(&refined.refinement) {
+                if names.preds.contains_key(&p) || !claims(names, p) {
+                    continue;
+                }
+                let name = format!("{}{path}", name_of(0, 1, own));
+                found.push((i, format!("{own}{path}"), name, p, atom));
+            }
+        }
+    }
     let mut named = Vec::new();
-    for (k, (i, own, p, atom)) in found.iter().enumerate() {
+    for (i, own, name, p, atom) in found {
         let args = atom
             .args
             .iter()
             .map(|t| match t {
                 chc::Term::Var(rty::RefinedTypeVar::Existential(_)) => None,
-                chc::Term::Var(v) => Some(var_name(params, own, v)),
+                chc::Term::Var(v) => Some(var_name(params, &own, v)),
                 chc::Term::BoxCurrent(inner) => match &**inner {
                     chc::Term::Var(rty::RefinedTypeVar::Existential(_)) => None,
-                    chc::Term::Var(v) => Some(var_name(params, own, v)),
+                    chc::Term::Var(v) => Some(var_name(params, &own, v)),
                     _ => None,
                 },
                 _ => None,
             })
             .collect();
         let info = PredInfo {
-            name: name_of(k, found.len(), own),
+            name,
             args,
             groups: Vec::new(),
             order: None,
-            owner: owner_of(*i),
+            owner: owner_of(i),
         };
-        names.preds.insert(*p, info);
-        named.push(*p);
+        names.preds.insert(p, info);
+        named.push(p);
     }
     named
 }

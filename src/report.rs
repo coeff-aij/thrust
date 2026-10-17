@@ -172,14 +172,20 @@ fn constraint_of<'a, 'tcx>(
 /// Whether `def` is written in the program, rather than injected (`std.rs`) or expanded from a
 /// macro (the companions of the annotations).
 fn user_written(tcx: TyCtxt<'_>, def: LocalDefId) -> bool {
+    use rustc_span::hygiene::{ExpnKind, MacroKind};
     let span = tcx.def_span(def.to_def_id());
-    if span.from_expansion() {
-        return false;
-    }
-    !matches!(
-        tcx.sess.source_map().span_to_filename(span),
-        rustc_span::FileName::Custom(name) if name == crate::INJECTED_STD_FILE_NAME
-    )
+    // A function an annotation (an attribute macro) emits again is the one written; a derive or
+    // another macro writes its own.
+    let written = !span.from_expansion()
+        || matches!(
+            span.ctxt().outer_expn_data().kind,
+            ExpnKind::Macro(MacroKind::Attr, _)
+        );
+    written
+        && !matches!(
+            tcx.sess.source_map().span_to_filename(span),
+            rustc_span::FileName::Custom(name) if name == crate::INJECTED_STD_FILE_NAME
+        )
 }
 
 fn location(tcx: TyCtxt<'_>, span: Span) -> String {
@@ -239,7 +245,7 @@ fn entries<'tcx>(
         let entry = Entry {
             def: *def,
             name: tcx.def_path_str(def.to_def_id()),
-            span: tcx.def_span(def.to_def_id()),
+            span: tcx.def_span(def.to_def_id()).source_callsite(),
             body: DefBody::new(tcx, *def),
             contract: None,
             constraints: Vec::new(),

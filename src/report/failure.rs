@@ -31,6 +31,8 @@ pub struct Failure {
 
 struct Reader<'a> {
     system: &'a chc::System,
+    /// The facts shown so far.
+    shown: std::collections::HashSet<String>,
     names: &'a Names,
     /// The report's view of each predicate variable, by its name in the query.
     preds: HashMap<String, (chc::PredVarId, &'a PredInfo)>,
@@ -114,6 +116,16 @@ impl Reader<'_> {
     }
 
     fn walk(&mut self, fact: &Fact, depth: usize) {
+        // A fact the run reaches by two ways is shown in full once.
+        let key = format!("{}({})", self.name(fact), self.args(fact));
+        if !self.shown.insert(key.clone()) {
+            self.push(Step {
+                depth,
+                fact: format!("{key} (above)"),
+                via: None,
+            });
+            return;
+        }
         let mut chain = vec![fact];
         while let Some(next) = single_same(chain.last().unwrap()) {
             chain.push(next);
@@ -173,6 +185,7 @@ pub fn read(answer: &chc::Answer, system: &chc::System, names: &Names) -> Option
         .collect();
     let mut reader = Reader {
         system,
+        shown: std::collections::HashSet::new(),
         names,
         preds,
         run: Vec::new(),

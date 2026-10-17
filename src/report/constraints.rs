@@ -340,9 +340,11 @@ fn render(
             conclusion = Expr::app("not", vec![last]);
         }
     }
+    // A premise equating a term with itself says nothing.
     let premises: Vec<Expr> = premises
         .into_iter()
         .flat_map(|p| p.normalize().into_conjuncts())
+        .filter(|p| !matches!(p, Expr::App(f, args) if f == "=" && args.len() == 2 && args[0] == args[1]))
         .collect();
     let conclusion = conclusion.normalize();
     (premises, conclusion)
