@@ -148,3 +148,20 @@ fn report_shows_a_mutable_reference_by_its_two_values() {
     );
     assert!(!stderr.contains("= <"), "{stderr}");
 }
+
+/// The lints of the program are its own: none come from the injected `std.rs`.
+#[test]
+fn no_warning_comes_from_the_injected_std() {
+    let root = env!("CARGO_MANIFEST_DIR");
+    let output = Command::new(env!("CARGO_BIN_EXE_thrust-rustc"))
+        .args(["-C", "debug-assertions=off", "tests/report/unused_local.rs"])
+        .current_dir(root)
+        .env_remove("THRUST_REPORT")
+        .env_remove("THRUST_SOLVER")
+        .env_remove("THRUST_OUTPUT_DIR")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("unused variable: `unused`"), "{stderr}");
+    assert!(!stderr.contains("thrust std injected"), "{stderr}");
+}
