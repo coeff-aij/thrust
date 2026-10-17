@@ -860,20 +860,21 @@ pub struct Analyzer<'tcx> {
     contract_annotations: HashMap<DefId, ContractAnnotations>,
 }
 
-/// The spans of the clauses `expr` conjoins as the program writes them. The specification macros
-/// conjoin each clause to those before it, starting from `true`, at the span of the attribute
-/// that writes it.
+/// The spans of the clauses `expr` conjoins as the program writes them, but those that are
+/// `true`. The specification macros conjoin each clause to those before it, starting from `true`,
+/// at the span of the attribute that writes it.
 fn written_clauses(expr: &rustc_hir::Expr<'_>) -> Vec<rustc_span::Span> {
     use rustc_hir::{BinOpKind, ExprKind};
-    let by_macro = expr.span.from_expansion();
+    let is_true = |e: &rustc_hir::Expr<'_>| matches!(e.kind, ExprKind::Lit(lit) if matches!(lit.node, rustc_ast::LitKind::Bool(true)));
     match expr.kind {
-        ExprKind::Binary(op, before, _) if by_macro && op.node == BinOpKind::And => {
-            [written_clauses(before), vec![expr.span]].concat()
-        }
-        ExprKind::Lit(lit) if by_macro && matches!(lit.node, rustc_ast::LitKind::Bool(true)) => {
-            Vec::new()
+        ExprKind::Binary(op, before, clause)
+            if expr.span.from_expansion() && op.node == BinOpKind::And =>
+        {
+            let this = (!is_true(clause)).then_some(expr.span);
+            [written_clauses(before), this.into_iter().collect()].concat()
         }
         ExprKind::DropTemps(e) => written_clauses(e),
+        _ if is_true(expr) => Vec::new(),
         _ => vec![expr.span],
     }
 }
@@ -2948,7 +2949,7 @@ impl<'tcx> Analyzer<'tcx> {
         trait_item: Option<LocalDefId>,
     ) -> ContractAnnotations {
         // The clauses as written, read off the tail of the companion's body (the macros conjoin
-        // the clauses of a contract into one); the companion where none is.
+        // the clauses of a contract into one); the companion where it has no tail.
         let spans = |def_id: DefId| {
             let body = def_id
                 .as_local()
@@ -2957,10 +2958,9 @@ impl<'tcx> Analyzer<'tcx> {
                 rustc_hir::ExprKind::Block(block, _) => block.expr,
                 _ => None,
             });
-            let written = tail.map(written_clauses).unwrap_or_default();
-            match written.is_empty() {
-                true => vec![self.tcx.def_span(def_id)],
-                false => written,
+            match tail {
+                Some(tail) => written_clauses(tail),
+                None => vec![self.tcx.def_span(def_id)],
             }
         };
         let mut annotations = ContractAnnotations::default();

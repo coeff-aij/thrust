@@ -88,6 +88,8 @@ fn json_report_shows_the_failure_alone() {
     assert!(stdout.starts_with(&header), "{stdout}");
     let step = r#""via":"c0","obligation":"loop entry","span":{"file":"tests/report/loop_fail.rs","line":9,"column":5,"end_line":14,"end_column":6}"#;
     assert!(stdout.contains(step), "{stdout}");
+    // `rand`'s `ensures(true)` assumes nothing.
+    assert!(stdout.contains(r#""assumes":[]"#), "{stdout}");
 }
 
 /// The JSON report states the crate's verdict, and a failure of the whole query says that
