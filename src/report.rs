@@ -344,7 +344,7 @@ pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) {
     let failure = config
         .items
         .failure
-        .then(|| failure::read(input.answer, &system, &names, &symbols))
+        .then(|| failure::read(input.answer, &names, &symbols))
         .flatten();
     match config.format {
         Format::Human => {

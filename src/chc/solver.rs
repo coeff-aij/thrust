@@ -278,6 +278,7 @@ impl Config {
             model: None,
             proof: None,
             goal_markers: Vec::new(),
+            clause_tags: Vec::new(),
             query: None,
         };
         let evidence = match self.run_check_sat(problem, requests) {
@@ -318,8 +319,8 @@ impl Config {
     }
 
     /// `z3`'s refutation of `problem`, which it answers `unsat`. Its preprocessing would fold
-    /// clauses into one another, and with them the facts the refutation derives, so the
-    /// transformations doing so are turned off.
+    /// clauses into one another, and with them the facts the refutation derives, and drop the
+    /// premises a fact makes true, so the transformations doing so are turned off.
     pub fn refute(&self, problem: impl std::fmt::Display) -> Option<String> {
         use std::io::Write as _;
         let mut file = tempfile::Builder::new()
@@ -336,6 +337,7 @@ impl Config {
                 "fp.xform.slice=false",
                 "fp.xform.inline_linear=false",
                 "fp.xform.inline_eager=false",
+                "fp.xform.subsumption_checker=false",
             ]
             .map(str::to_owned),
         );
@@ -413,6 +415,8 @@ pub struct Answer {
     /// The predicate variable marking each goal of the system in the query, when a refutation
     /// is asked for (see [`crate::chc::System::solve_with`]).
     pub goal_markers: Vec<(crate::chc::PredVarId, crate::chc::ClauseId)>,
+    /// The predicate variable tagging each clause of the system in the refutation's query.
+    pub clause_tags: Vec<(crate::chc::PredVarId, crate::chc::ClauseId)>,
     /// The query, when a model is asked for: its declarations are what the model's terms are
     /// over.
     pub query: Option<String>,

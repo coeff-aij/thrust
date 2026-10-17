@@ -30,7 +30,8 @@ pub struct Failure {
 }
 
 struct Reader<'a> {
-    system: &'a chc::System,
+    /// The clause each tag marks, by its name in the query (see `chc::System::solve_with`).
+    tags: HashMap<String, chc::ClauseId>,
     /// The facts shown so far.
     shown: std::collections::HashSet<String>,
     names: &'a Names,
@@ -73,37 +74,21 @@ impl Reader<'_> {
             .unwrap_or_else(|| fact.pred.clone())
     }
 
-    /// The clause the step deriving `fact` applies: the one clause whose head is the fact's
-    /// predicate variable and whose body has the premises' ones, and others the solver may have
-    /// resolved away beforehand.
+    /// The clause the step deriving `fact` applies: the one whose tag is among its premises.
     fn via(&self, fact: &Fact) -> Option<chc::ClauseId> {
-        let pred = self.preds.get(&fact.pred)?.0;
-        let premises: Vec<&str> = fact.premises.iter().map(|p| p.pred.as_str()).collect();
-        let mut matching = self.system.clauses.iter_enumerated().filter(|(_, clause)| {
-            if clause.head.pred != chc::Pred::Var(pred) {
-                return false;
-            }
-            let mut body: Vec<String> = clause
-                .body
-                .atoms
-                .iter()
-                .filter_map(|a| match a.pred {
-                    chc::Pred::Var(p) => Some(p.to_string()),
-                    _ => None,
-                })
-                .collect();
-            premises
-                .iter()
-                .all(|p| match body.iter().position(|b| b == p) {
-                    Some(i) => {
-                        body.swap_remove(i);
-                        true
-                    }
-                    None => false,
-                })
-        });
-        let (id, _) = matching.next()?;
-        matching.next().is_none().then_some(id)
+        fact.premises
+            .iter()
+            .find_map(|p| self.tags.get(&p.pred).copied())
+    }
+
+    /// Whether `fact` is not shown in the run: a clause's tag, or an unknown every solution
+    /// makes true (a function's entry being reached).
+    fn is_tag(&self, fact: &Fact) -> bool {
+        let always_true = self
+            .preds
+            .get(&fact.pred)
+            .is_some_and(|(p, _)| self.names.always_true.contains(p));
+        self.tags.contains_key(&fact.pred) || always_true
     }
 
     fn push(&mut self, step: Step) -> bool {
@@ -157,6 +142,9 @@ impl Reader<'_> {
         }
         let below = if chain.len() > MAX_CHAIN { last } else { fact };
         for premise in &below.premises {
+            if self.is_tag(premise) {
+                continue;
+            }
             if chain.len() <= MAX_CHAIN || premise.pred != fact.pred {
                 self.walk(premise, depth + 1);
             }
@@ -174,7 +162,6 @@ fn single_same(fact: &Fact) -> Option<&Fact> {
 /// The refuted goal and its run, if the answer is a refutation that derives a goal's marker.
 pub fn read(
     answer: &chc::Answer,
-    system: &chc::System,
     names: &Names,
     symbols: &super::model::Symbols,
 ) -> Option<Failure> {
@@ -188,8 +175,13 @@ pub fn read(
         .iter()
         .map(|(p, info)| (p.to_string(), (*p, info)))
         .collect();
+    let tags = answer
+        .clause_tags
+        .iter()
+        .map(|(tag, clause)| (tag.to_string(), *clause))
+        .collect();
     let mut reader = Reader {
-        system,
+        tags,
         shown: std::collections::HashSet::new(),
         names,
         preds,
@@ -198,7 +190,9 @@ pub fn read(
     };
     // Shown from the run's end: the premises of the goal, the facts below them, and so on.
     for premise in &marker.premises {
-        reader.walk(premise, 0);
+        if !reader.is_tag(premise) {
+            reader.walk(premise, 0);
+        }
     }
     Some(Failure {
         goal,

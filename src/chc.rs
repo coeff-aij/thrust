@@ -3533,6 +3533,7 @@ impl System {
         let refuted = matches!(answer.result, Err(CheckSatError::Unsat));
         if requests.proof && refuted && config.answers(requests) {
             let mut marked = self.clone();
+            answer.clause_tags = marked.tag_clauses();
             answer.goal_markers = marked.mark_goals();
             let marked = marked.prepared();
             answer.proof = config.refute(marked.smtlib2(config.capabilities()));
@@ -3558,6 +3559,35 @@ impl System {
             system.add_entry_candidate_atoms();
         }
         system
+    }
+
+    /// Gives each clause a nullary predicate variable of its own as a premise, made true by a
+    /// fact: `t ⇐ true` and `head ⇐ t ∧ body`, which the system is satisfiable with exactly when
+    /// it is without. A refutation then shows, at each step, the clause the step applies. Returns
+    /// the tags with their clauses.
+    fn tag_clauses(&mut self) -> Vec<(PredVarId, ClauseId)> {
+        let ids: Vec<ClauseId> = self.clauses.indices().collect();
+        let mut tags = Vec::new();
+        for id in ids {
+            let tag = self.new_pred_var(PredSig::new(), DebugInfo::default());
+            self.clauses[id]
+                .body
+                .atoms
+                .push(Atom::new(tag.into(), vec![]));
+            self.clauses.push(Clause {
+                origin: debug::origin::ClauseOrigin {
+                    environment: Vec::new(),
+                    body: Vec::new(),
+                    head: debug::origin::Entry::described("tag of a clause".to_owned()),
+                },
+                vars: IndexVec::new(),
+                head: Atom::new(tag.into(), vec![]),
+                body: Body::new(Vec::new(), Formula::top()),
+                debug_info: DebugInfo::default(),
+            });
+            tags.push((tag, id));
+        }
+        tags
     }
 
     /// Gives each goal (a clause whose head is `false`) a nullary predicate variable of its own
