@@ -34,3 +34,32 @@ fn report_names_the_variables_of_a_refuted_assertion() {
     assert!(stderr.contains("main.loop#1(x = 1, y = 1)"), "{stderr}");
     assert!(stderr.contains("main.rand#1 rand#1 x y"), "{stderr}");
 }
+
+/// A refuted `ensures` is shown at the end of the body, where it fails, with the annotation it
+/// checks labelled; JSON names the annotation's span.
+#[test]
+fn report_points_at_the_refuted_annotation() {
+    let output = report("ensures_fail.rs", "failure");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("thrust: refuted: ensures in `next`"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("#[thrust_macros::ensures(result > x)]"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("the annotation it checks"), "{stderr}");
+}
+
+/// A failure whose run assumes a written contract at a call names that contract.
+#[test]
+fn report_names_the_written_contract_a_run_assumes() {
+    let output = report("written_call.rs", "failure");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("it assumes the written contract of `natural` ("),
+        "{stderr}"
+    );
+    assert!(stderr.contains("written_call.rs:2:1)"), "{stderr}");
+}

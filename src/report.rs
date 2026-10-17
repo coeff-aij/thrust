@@ -26,10 +26,11 @@ use std::collections::{BTreeMap, HashMap};
 
 use rustc_middle::mir::BasicBlock;
 use rustc_middle::ty::TyCtxt;
-use rustc_span::def_id::LocalDefId;
+use rustc_span::def_id::{DefId, LocalDefId};
 use rustc_span::Span;
 
 use crate::analyze::selection::Selection;
+use crate::analyze::ContractAnnotations;
 use crate::chc;
 use crate::refine::BasicBlockType;
 use crate::rty;
@@ -159,6 +160,8 @@ pub struct Input<'a> {
     pub template_sites: &'a HashMap<chc::PredVarId, crate::analyze::TemplateSite>,
     /// The variable each argument of a template's predicate variable is.
     pub template_vars: &'a HashMap<chc::PredVarId, Vec<Option<chc::debug::ErasedVar>>>,
+    /// Where each function's written contract is annotated.
+    pub contract_annotations: &'a HashMap<DefId, ContractAnnotations>,
     /// The parts of the system solved on their own (`THRUST_SPLIT`); the system is then that of
     /// the parts refuted.
     pub parts: &'a [Part],
@@ -202,6 +205,29 @@ fn constraint_of<'a, 'tcx>(
     })
 }
 
+/// The functions whose written `ensures` the run of `failure` assumes at a call, each with the
+/// first span of its annotation.
+fn assumed(
+    tcx: TyCtxt<'_>,
+    entries: &[Entry<'_>],
+    failure: &failure::Failure,
+) -> Vec<(String, Span)> {
+    let mut assumed: Vec<(String, Span)> = Vec::new();
+    for step in &failure.run {
+        let Some((_, c)) = step.via.and_then(|id| constraint_of(entries, id)) else {
+            continue;
+        };
+        let constraints::Annotation::Assumes(callee, spans) = &c.annotation else {
+            continue;
+        };
+        let name = tcx.def_path_str(*callee);
+        if assumed.iter().all(|(n, _)| *n != name) {
+            assumed.push((name, spans[0]));
+        }
+    }
+    assumed
+}
+
 /// Whether `def` is written in the program, rather than injected (`std.rs`) or expanded from a
 /// macro (the companions of the annotations).
 fn user_written(tcx: TyCtxt<'_>, def: LocalDefId) -> bool {
@@ -235,7 +261,7 @@ fn location(tcx: TyCtxt<'_>, span: Span) -> String {
 /// there.
 fn add_constraints(
     tcx: TyCtxt<'_>,
-    system: &chc::System,
+    input: &Input<'_>,
     names: &Names,
     entries: &mut HashMap<LocalDefId, Entry<'_>>,
 ) {
@@ -245,12 +271,19 @@ fn add_constraints(
             constraints.clear();
         }
     }
-    for (id, clause) in system.clauses.iter_enumerated() {
+    for (id, clause) in input.system.clauses.iter_enumerated() {
         let provenance = constraints::Provenance::of(&clause.debug_info);
         let Some(entry) = provenance.def.and_then(|def| entries.get_mut(&def)) else {
             continue;
         };
-        let constraint = constraints::constraint(tcx, id, clause, names, Some(&entry.body));
+        let constraint = constraints::constraint(
+            tcx,
+            id,
+            clause,
+            names,
+            Some(&entry.body),
+            input.contract_annotations,
+        );
         match provenance.bb.and_then(|bb| entry.body.innermost_loop(bb)) {
             Some(header) => entry.loops.entry(header).or_default().1.push(constraint),
             None => entry.constraints.push(constraint),
@@ -341,7 +374,7 @@ fn entries<'tcx>(
         |def, bb| Some(format!("{}.{bb:?}", entries.get(&def)?.name)),
         |def, path| entries[&def].body.path_name(path),
     );
-    add_constraints(tcx, input.system, &names, &mut entries);
+    add_constraints(tcx, input, &names, &mut entries);
 
     let mut entries: Vec<_> = entries.into_values().collect();
     entries.sort_by_key(|e| (e.span.lo(), e.def.local_def_index));
@@ -358,6 +391,7 @@ pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) {
         answers: input.answers,
         template_sites: input.template_sites,
         template_vars: input.template_vars,
+        contract_annotations: input.contract_annotations,
         parts: input.parts,
     };
     let symbols = chc::answer::Symbols::of(&system, chc::Config::from_env().capabilities());

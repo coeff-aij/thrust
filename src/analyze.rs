@@ -856,6 +856,16 @@ pub struct Analyzer<'tcx> {
     template_vars: HashMap<chc::PredVarId, Vec<Option<chc::debug::ErasedVar>>>,
     /// Where each template's predicate variable was made.
     template_sites: HashMap<chc::PredVarId, TemplateSite>,
+    /// Where the written contract of each function is annotated, for the report.
+    contract_annotations: HashMap<DefId, ContractAnnotations>,
+}
+
+/// The annotations a function's written contract is read from, by the spans of their companion
+/// functions: `requires` and the parameters' refinements, `ensures` and the result's.
+#[derive(Debug, Clone, Default)]
+pub struct ContractAnnotations {
+    pub requires: Vec<rustc_span::Span>,
+    pub ensures: Vec<rustc_span::Span>,
 }
 
 /// Whether loop heads get candidate atoms (`THRUST_CANDIDATE_ATOMS`, see
@@ -984,6 +994,7 @@ impl<'tcx> Analyzer<'tcx> {
             template_site: None,
             template_vars: Default::default(),
             template_sites: Default::default(),
+            contract_annotations: Default::default(),
         }
     }
 
@@ -2725,6 +2736,7 @@ impl<'tcx> Analyzer<'tcx> {
             answers,
             template_sites: &self.template_sites,
             template_vars: &self.template_vars,
+            contract_annotations: &self.contract_annotations,
             parts,
         };
         crate::report::emit(self.tcx, config, &input);
@@ -2921,6 +2933,39 @@ impl<'tcx> Analyzer<'tcx> {
 
     /// Resolves every `#[thrust::refinement_path(..)]` annotation into a
     /// positioned refinement, by translating the referenced formula function.
+    /// The annotations of the contract written on `local_def_id`, or on the trait method it
+    /// implements, `trait_item`.
+    pub fn contract_annotations(
+        &self,
+        local_def_id: LocalDefId,
+        trait_item: Option<LocalDefId>,
+    ) -> ContractAnnotations {
+        let span = |def_id: DefId| self.tcx.def_span(def_id);
+        let mut annotations = ContractAnnotations::default();
+        for holder in std::iter::once(local_def_id).chain(trait_item) {
+            let requires =
+                self.extract_path_with_attr(holder, &analyze::annot::requires_path_path());
+            let ensures = self.extract_path_with_attr(holder, &analyze::annot::ensures_path_path());
+            annotations.requires.extend(requires.map(span));
+            annotations.ensures.extend(ensures.map(span));
+            for (position, def_id) in self.extract_refinement_paths(holder) {
+                match position.steps().first() {
+                    Some(rty::TypePositionStep::Return) => annotations.ensures.push(span(def_id)),
+                    _ => annotations.requires.push(span(def_id)),
+                }
+            }
+        }
+        annotations
+    }
+
+    /// Keeps where the written contract of `def_id` is annotated, for the report.
+    pub fn record_contract_annotations(&mut self, def_id: DefId, annotations: ContractAnnotations) {
+        if annotations.requires.is_empty() && annotations.ensures.is_empty() {
+            return;
+        }
+        self.contract_annotations.insert(def_id, annotations);
+    }
+
     pub fn extract_refinement_annots(
         &self,
         local_def_id: LocalDefId,

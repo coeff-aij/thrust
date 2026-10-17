@@ -566,6 +566,16 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             ensure_annot = ensure_annot.or(trait_ensure_annot);
         }
 
+        let annotations = self
+            .ctx
+            .contract_annotations(self.local_def_id, self.local_trait_item_id());
+        let annotated = if self.is_annotated_as_extern_spec_fn() {
+            self.extern_spec_fn_target_def_id()
+        } else {
+            self.local_def_id.to_def_id()
+        };
+        self.ctx.record_contract_annotations(annotated, annotations);
+
         if self.is_annotated_as_callable() {
             assert!(require_annot.is_none() && ensure_annot.is_none());
             require_annot = Some(chc::Formula::top());

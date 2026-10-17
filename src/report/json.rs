@@ -4,12 +4,12 @@ use rustc_middle::mir::BasicBlock;
 use rustc_middle::ty::TyCtxt;
 use serde::Serialize;
 
-use super::constraints::Constraint;
+use super::constraints::{Annotation, Constraint};
 use super::failure::Failure;
 use super::formula::Formula;
 use super::sites::{Names, Site, SiteKind};
 use super::solution::{block_template, invariant, over, signature, Solution};
-use super::{constraint_of, location, Entry, Items};
+use super::{assumed, constraint_of, location, Entry, Items};
 
 /// One line of the report, its `kind` the variant's name.
 #[derive(Serialize)]
@@ -51,7 +51,17 @@ enum Line<'a> {
         values: Vec<Value>,
         /// The functions whose inferred contract the run goes through.
         inferred: Vec<&'a str>,
+        /// The written annotations the refuted obligation checks.
+        annotation: Vec<String>,
+        /// The functions whose written `ensures` the run assumes at a call.
+        assumes: Vec<Annotated>,
     },
+}
+
+#[derive(Serialize)]
+struct Annotated {
+    r#fn: String,
+    span: String,
 }
 
 #[derive(Serialize)]
@@ -174,6 +184,19 @@ impl Json<'_, '_> {
                 .iter()
                 .filter_map(|def| entries.iter().find(|e| e.def == *def))
                 .map(|e| e.name.as_str())
+                .collect(),
+            annotation: match found.map(|(_, c)| &c.annotation) {
+                Some(Annotation::Checks(spans)) => {
+                    spans.iter().map(|s| location(self.tcx, *s)).collect()
+                }
+                _ => Vec::new(),
+            },
+            assumes: assumed(self.tcx, entries, failure)
+                .into_iter()
+                .map(|(name, span)| Annotated {
+                    r#fn: name,
+                    span: location(self.tcx, span),
+                })
                 .collect(),
         }
     }

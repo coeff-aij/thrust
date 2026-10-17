@@ -5,12 +5,12 @@ use rustc_span::Span;
 
 use crate::chc;
 
-use super::constraints::Constraint;
+use super::constraints::{Annotation, Constraint};
 use super::failure::Failure;
 use super::formula::Formula;
 use super::sites::{Names, Site, SiteKind};
 use super::solution::{block_template, invariant, over, signature, Solution};
-use super::{constraint_of, location, Entry, Items};
+use super::{assumed, constraint_of, location, Entry, Items};
 
 pub(super) fn constraint_line(tcx: TyCtxt<'_>, c: &Constraint) -> String {
     let at = c
@@ -219,11 +219,34 @@ impl Human<'_, '_> {
                 inferred.join(", ")
             ));
         }
+        let assumed: Vec<String> = assumed(self.tcx, entries, failure)
+            .into_iter()
+            .map(|(name, span)| format!("`{name}` ({})", location(self.tcx, span)))
+            .collect();
+        if !assumed.is_empty() {
+            notes.push(format!(
+                "it assumes the written contract of {}: a wrong `ensures` there shows here",
+                assumed.join(", ")
+            ));
+        }
         let span = found
             .and_then(|(_, c)| c.span)
             .or_else(|| entries.first().map(|e| e.span));
+        let checked = match found.map(|(_, c)| &c.annotation) {
+            Some(Annotation::Checks(spans)) => spans.as_slice(),
+            _ => &[],
+        };
         match span {
-            Some(span) => self.note(span, title, notes),
+            Some(span) => {
+                let mut diag = self.tcx.dcx().struct_span_note(span, title);
+                for annotation in checked.iter().filter(|a| **a != span) {
+                    diag.span_label(*annotation, "the annotation it checks");
+                }
+                for note in notes {
+                    diag.note(note);
+                }
+                diag.emit();
+            }
             None => {
                 let mut diag = self.tcx.dcx().struct_note(title);
                 for note in notes {
