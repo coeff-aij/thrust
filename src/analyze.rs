@@ -448,46 +448,142 @@ pub fn local_destructor(tcx: TyCtxt<'_>, ty: mir_ty::Ty<'_>) -> Option<DefId> {
 }
 
 /// Whether dropping a value of `ty` may run a destructor of the crate.
-pub fn drop_runs_local_destructor<'tcx>(tcx: TyCtxt<'tcx>, ty: mir_ty::Ty<'tcx>) -> bool {
+pub fn drop_runs_local_destructor<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    typing_env: mir_ty::TypingEnv<'tcx>,
+    ty: mir_ty::Ty<'tcx>,
+) -> bool {
+    reaches(tcx, typing_env, ty, |ty| {
+        if local_destructor(tcx, ty).is_some() {
+            return Reach::Found;
+        }
+        if ty.needs_drop(tcx, typing_env) {
+            Reach::Parts
+        } else {
+            Reach::Stop
+        }
+    })
+}
+
+/// Whether dropping the parts of a value of `ty`, which its drop glue drops after its own
+/// destructor, may run a destructor of the crate.
+pub fn drop_of_parts_runs_local_destructor<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    typing_env: mir_ty::TypingEnv<'tcx>,
+    ty: mir_ty::Ty<'tcx>,
+) -> bool {
+    ty.needs_drop(tcx, typing_env)
+        && held_tys(tcx, typing_env, ty)
+            .into_iter()
+            .any(|part| drop_runs_local_destructor(tcx, typing_env, part))
+}
+
+/// Whether a value of `ty`, or a value it refers to, has a type with a destructor of the crate,
+/// which code holding the value may run.
+pub fn reaches_local_destructor<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    typing_env: mir_ty::TypingEnv<'tcx>,
+    ty: mir_ty::Ty<'tcx>,
+) -> bool {
+    reaches(tcx, typing_env, ty, |ty| {
+        if local_destructor(tcx, ty).is_some() {
+            Reach::Found
+        } else {
+            Reach::Parts
+        }
+    })
+}
+
+/// Whether a value of `ty` may hold a `&mut`, whose prophecy its drop would resolve.
+pub fn may_hold_mut_ref<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    typing_env: mir_ty::TypingEnv<'tcx>,
+    ty: mir_ty::Ty<'tcx>,
+) -> bool {
+    reaches(tcx, typing_env, ty, |ty| match ty.kind() {
+        mir_ty::TyKind::Ref(_, _, m) if m.is_mut() => Reach::Found,
+        mir_ty::TyKind::Ref(..) | mir_ty::TyKind::RawPtr(..) => Reach::Stop,
+        _ => Reach::Parts,
+    })
+}
+
+/// What [`reaches`] does at a type.
+enum Reach {
+    Found,
+    Parts,
+    Stop,
+}
+
+/// Whether `visit` finds a type among `ty` and the types it holds ([`held_tys`]), looking into the
+/// parts of a type where it says so.
+fn reaches<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    typing_env: mir_ty::TypingEnv<'tcx>,
+    ty: mir_ty::Ty<'tcx>,
+    mut visit: impl FnMut(mir_ty::Ty<'tcx>) -> Reach,
+) -> bool {
     let mut visited = HashSet::new();
     let mut pending = vec![ty];
     while let Some(ty) = pending.pop() {
         if !visited.insert(ty) {
             continue;
         }
-        if local_destructor(tcx, ty).is_some() {
-            return true;
+        match visit(ty) {
+            Reach::Found => return true,
+            Reach::Parts => pending.extend(held_tys(tcx, typing_env, ty)),
+            Reach::Stop => {}
         }
-        pending.extend(dropped_parts(tcx, ty));
     }
     false
 }
 
-/// Whether dropping the parts of a value of `ty`, which its drop glue drops after its own
-/// destructor, may run a destructor of the crate.
-pub fn drop_of_parts_runs_local_destructor<'tcx>(tcx: TyCtxt<'tcx>, ty: mir_ty::Ty<'tcx>) -> bool {
-    dropped_parts(tcx, ty)
-        .into_iter()
-        .any(|part| drop_runs_local_destructor(tcx, part))
-}
-
-/// The types of the values that dropping a value of `ty` may drop: the fields of a local ADT, the
-/// type arguments of another, the components of a tuple, an array or a closure. Nothing is
-/// dropped through a reference, a pointer, a function or a `PhantomData`.
-fn dropped_parts<'tcx>(tcx: TyCtxt<'tcx>, ty: mir_ty::Ty<'tcx>) -> Vec<mir_ty::Ty<'tcx>> {
+/// The types of the values a value of `ty` holds or refers to: the fields of every variant of an
+/// ADT and its type arguments, the components of a tuple, an array or a closure, and the pointee
+/// of a reference or a pointer. Field types are normalized, so an associated type names the type
+/// it stands for.
+pub fn held_tys<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    typing_env: mir_ty::TypingEnv<'tcx>,
+    ty: mir_ty::Ty<'tcx>,
+) -> Vec<mir_ty::Ty<'tcx>> {
     match ty.kind() {
-        mir_ty::TyKind::Adt(adt, _) if tcx.is_lang_item(adt.did(), LangItem::PhantomData) => {
-            Vec::new()
-        }
-        mir_ty::TyKind::Adt(adt, args) if adt.did().is_local() => {
-            adt.all_fields().map(|field| field.ty(tcx, args)).collect()
-        }
-        mir_ty::TyKind::Adt(_, args) => args.types().collect(),
+        mir_ty::TyKind::Adt(adt, args) => adt
+            .all_fields()
+            .map(|field| normalize(tcx, typing_env, field.ty(tcx, args)))
+            .chain(args.types())
+            .collect(),
         mir_ty::TyKind::Tuple(tys) => tys.to_vec(),
         mir_ty::TyKind::Array(elem, _) | mir_ty::TyKind::Slice(elem) => vec![*elem],
         mir_ty::TyKind::Closure(_, args) => args.as_closure().upvar_tys().to_vec(),
+        mir_ty::TyKind::Ref(_, pointee, _) | mir_ty::TyKind::RawPtr(pointee, _) => vec![*pointee],
         _ => Vec::new(),
     }
+}
+
+/// The types of the fields of a tuple or a struct, normalized.
+pub fn field_tys<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    typing_env: mir_ty::TypingEnv<'tcx>,
+    ty: mir_ty::Ty<'tcx>,
+) -> Option<Vec<mir_ty::Ty<'tcx>>> {
+    match ty.kind() {
+        mir_ty::TyKind::Tuple(tys) => Some(tys.to_vec()),
+        mir_ty::TyKind::Adt(adt, args) if adt.is_struct() => Some(
+            adt.all_fields()
+                .map(|field| normalize(tcx, typing_env, field.ty(tcx, args)))
+                .collect(),
+        ),
+        _ => None,
+    }
+}
+
+fn normalize<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    typing_env: mir_ty::TypingEnv<'tcx>,
+    ty: mir_ty::Ty<'tcx>,
+) -> mir_ty::Ty<'tcx> {
+    tcx.try_normalize_erasing_regions(typing_env, ty)
+        .unwrap_or(ty)
 }
 
 fn is_ghost(tcx: TyCtxt<'_>, def_id: DefId) -> bool {

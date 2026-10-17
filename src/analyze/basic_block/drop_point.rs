@@ -6,9 +6,11 @@ use rustc_middle::mir::{self, BasicBlock, Body, Local};
 use rustc_middle::ty::{self as mir_ty, TyCtxt};
 use rustc_mir_dataflow::{
     impls::{MaybeLiveLocals, MaybeUninitializedPlaces},
-    move_paths::{MoveData, MovePathIndex},
-    ResultsCursor,
+    move_paths::{LookupResult, MoveData, MovePathIndex},
+    on_all_children_bits, Analysis as _, ResultsCursor,
 };
+
+use crate::analyze;
 
 /// The parts of a dropped local that were moved out before its drop point, as paths of field
 /// indices from the local. A part is cut at its first projection other than a field, so a move
@@ -76,15 +78,20 @@ impl DropPoints {
             .unwrap_or_default()
     }
 
-    pub fn terminator_index(&self) -> usize {
-        self.after_statements.len() - 1
-    }
-
-    pub fn after_terminator(&self, target: &BasicBlock) -> Vec<Local> {
+    /// The locals dropped after the terminator on the edge to `target`, each with the parts moved
+    /// out of it. A local scheduled by [`Self::insert_after_terminator`] is dropped whole: its
+    /// move was turned into a borrow.
+    pub fn after_terminator(&self, target: &BasicBlock) -> Vec<(Local, MovedOut)> {
+        let terminator_index = self.after_statements.len() - 1;
         let mut t = self.after_terminator[target].clone();
         t.union(self.after_statements.last().unwrap());
         t.iter()
-            .chain(self.after_terminator_extra.iter().copied())
+            .map(|local| (local, self.moved_out(terminator_index, local)))
+            .chain(
+                self.after_terminator_extra
+                    .iter()
+                    .map(|&local| (local, MovedOut::new())),
+            )
             .collect()
     }
 }
@@ -95,46 +102,37 @@ pub struct DropPointsBuilder<'mir, 'tcx> {
     bb_ins_cache: HashMap<BasicBlock, DenseBitSet<Local>>,
 }
 
-/// Whether a value of `ty` may hold a `&mut`, whose prophecy its drop would resolve.
-fn may_hold_mut_ref<'tcx>(tcx: TyCtxt<'tcx>, ty: mir_ty::Ty<'tcx>) -> bool {
-    let mut visited = std::collections::HashSet::new();
-    let mut pending = vec![ty];
-    while let Some(ty) = pending.pop() {
-        if !visited.insert(ty) {
-            continue;
-        }
-        for ty in ty.walk().filter_map(|arg| arg.as_type()) {
-            match ty.kind() {
-                mir_ty::TyKind::Ref(_, _, m) if m.is_mut() => return true,
-                mir_ty::TyKind::Adt(adt, args) => {
-                    pending.extend(adt.all_fields().map(|field| field.ty(tcx, args)));
-                }
-                _ => {}
-            }
-        }
-    }
-    false
-}
-
-/// The parts of `local` that may be uninitialized (`uninit`) and may hold a `&mut`, which its drop
-/// must not resolve: their pairs went with the move. A `&mut` itself is never one, since a moved
-/// `&mut` becomes a reborrow and the source still resolves to it.
+/// The parts of `local`, dropped after the statement or terminator at `location`, that its drop
+/// must not resolve: the whole local if this very statement moves it out, and any part that may
+/// have been moved out (`uninit`) and may hold a `&mut`, whose pair went with the move. A part
+/// that is a reference is never one, since a moved `&mut` becomes a reborrow and the source still
+/// resolves to it.
 fn moved_out_parts<'tcx>(
-    tcx: TyCtxt<'tcx>,
+    moves: &MoveState<'_, '_, 'tcx>,
     body: &Body<'tcx>,
-    move_data: &MoveData<'tcx>,
+    location: mir::Location,
     uninit: &MixedBitSet<MovePathIndex>,
     local: Local,
 ) -> MovedOut {
+    let move_data = moves.move_data;
     let Some(root) = move_data.rev_lookup.find_local(local) else {
         return MovedOut::new();
+    };
+    let moved_here = |mpi| {
+        move_data.loc_map[location]
+            .iter()
+            .any(|&out| move_data.moves[out].path == mpi)
     };
     let mut parts = MovedOut::new();
     let mut pending = vec![root];
     while let Some(mpi) = pending.pop() {
         let path = &move_data.move_paths[mpi];
-        let ty = path.place.ty(body, tcx).ty;
-        if !uninit.contains(mpi) || ty.is_ref() || !may_hold_mut_ref(tcx, ty) {
+        let ty = path.place.ty(body, moves.tcx).ty;
+        let moved = !ty.is_ref()
+            && ((mpi == root && moved_here(mpi))
+                || (uninit.contains(mpi)
+                    && analyze::may_hold_mut_ref(moves.tcx, moves.typing_env, ty)));
+        if !moved {
             pending.extend(path.children(&move_data.move_paths).map(|(child, _)| child));
             continue;
         }
@@ -162,52 +160,9 @@ fn moved_out_parts<'tcx>(
 /// What a drop point needs of the moves: the move paths and which of them may be uninitialized.
 pub struct MoveState<'a, 'mir, 'tcx> {
     pub tcx: TyCtxt<'tcx>,
+    pub typing_env: mir_ty::TypingEnv<'tcx>,
     pub move_data: &'a MoveData<'tcx>,
     pub uninit: &'a mut ResultsCursor<'mir, 'tcx, MaybeUninitializedPlaces<'mir, 'tcx>>,
-}
-
-/// Locals whose ownership is fully transferred away by the statement (or
-/// terminator) at `statement_index`. Such a local is left uninitialized, so its
-/// drop obligation (including resolving any mutable-borrow prophecies it owns)
-/// moves to the destination and it must not be dropped at the move site.
-///
-/// Only owned (non-reference) operands are reported: `move`d references are
-/// turned into reborrows by `ReborrowVisitor`/`RustCallVisitor`, so the source
-/// local remains live and must still be dropped.
-fn moved_locals<'tcx>(
-    body: &Body<'tcx>,
-    bb: BasicBlock,
-    statement_index: usize,
-) -> DenseBitSet<Local> {
-    struct Visitor<'a, 'tcx> {
-        body: &'a Body<'tcx>,
-        locals: DenseBitSet<Local>,
-    }
-    impl<'tcx> mir::visit::Visitor<'tcx> for Visitor<'_, 'tcx> {
-        fn visit_operand(&mut self, operand: &mir::Operand<'tcx>, _location: mir::Location) {
-            if let mir::Operand::Move(place) = operand {
-                if place.projection.is_empty() && !self.body.local_decls[place.local].ty.is_ref() {
-                    self.locals.insert(place.local);
-                }
-            }
-        }
-    }
-    let mut visitor = Visitor {
-        body,
-        locals: DenseBitSet::new_empty(body.local_decls.len()),
-    };
-    let loc = mir::Location {
-        statement_index,
-        block: bb,
-    };
-    let data = &body.basic_blocks[bb];
-    use mir::visit::Visitor as _;
-    if statement_index < data.statements.len() {
-        visitor.visit_statement(&data.statements[statement_index], loc);
-    } else if let Some(tmnt) = &data.terminator {
-        visitor.visit_terminator(tmnt, loc);
-    }
-    visitor.locals
 }
 
 fn def_local<'tcx>(data: &mir::BasicBlockData<'tcx>, statement_index: usize) -> Option<Local> {
@@ -238,6 +193,47 @@ fn def_local<'tcx>(data: &mir::BasicBlockData<'tcx>, statement_index: usize) -> 
     visitor.local
 }
 
+/// Moves the cursor to the state at a drop point after the statement or terminator at
+/// `location`.
+fn seek_drop_point<'tcx>(
+    moves: &mut MoveState<'_, '_, 'tcx>,
+    data: &mir::BasicBlockData<'tcx>,
+    location: mir::Location,
+) {
+    if location.statement_index < data.statements.len() {
+        moves.uninit.seek_after_primary_effect(location);
+        return;
+    }
+    match &data.terminator().kind {
+        // Drop elaboration leaves a `Drop` only of a place that is initialized where it runs (a
+        // drop flag guards the others), and the dataflow takes the place as uninitialized after
+        // it, while that drop is the one made here.
+        mir::TerminatorKind::Drop { place, .. } => {
+            moves.uninit.seek_before_primary_effect(location);
+            let move_data = moves.move_data;
+            if let LookupResult::Exact(path) = move_data.rev_lookup.find(place.as_ref()) {
+                moves.uninit.apply_custom_effect(|_, state| {
+                    on_all_children_bits(move_data, path, |child| {
+                        state.remove(child);
+                    })
+                });
+            }
+        }
+        // A call initializes its destination on the return edge, after its primary effect.
+        mir::TerminatorKind::Call { destination, .. } => {
+            moves.uninit.seek_after_primary_effect(location);
+            moves.uninit.apply_custom_effect(|analysis, state| {
+                analysis.apply_call_return_effect(
+                    state,
+                    location.block,
+                    mir::CallReturnPlaces::Call(*destination),
+                )
+            });
+        }
+        _ => moves.uninit.seek_after_primary_effect(location),
+    }
+}
+
 /// The parts moved out of each local dropped in `bb`, by drop point (see [`DropPoints`]).
 fn moved_out_at_drops<'tcx>(
     moves: &mut MoveState<'_, '_, 'tcx>,
@@ -248,14 +244,15 @@ fn moved_out_at_drops<'tcx>(
 ) -> HashMap<(usize, Local), MovedOut> {
     let data = &body.basic_blocks[bb];
     let terminator_index = data.statements.len();
-    let mut at_terminator = after_statements[terminator_index].clone();
+    let mut terminator_drops = after_statements[terminator_index].clone();
     for edge_drops in after_terminator.values() {
-        at_terminator.union(edge_drops);
+        terminator_drops.union(edge_drops);
     }
     let mut moved_out = HashMap::new();
     for (statement_index, locals) in after_statements.iter().enumerate() {
-        let locals = if statement_index == terminator_index {
-            &at_terminator
+        let is_terminator = statement_index == terminator_index;
+        let locals = if is_terminator {
+            &terminator_drops
         } else {
             locals
         };
@@ -266,26 +263,9 @@ fn moved_out_at_drops<'tcx>(
             statement_index,
             block: bb,
         };
-        let at_terminator = statement_index == terminator_index;
-        // The dataflow takes the place of a `Drop` terminator as uninitialized after it, but
-        // that drop is the one made here.
-        let is_drop =
-            at_terminator && matches!(data.terminator().kind, mir::TerminatorKind::Drop { .. });
-        if is_drop {
-            moves.uninit.seek_before_primary_effect(location);
-        } else {
-            moves.uninit.seek_after_primary_effect(location);
-        }
-        // A call initializes its destination on the return edge, after its primary effect.
-        let destination = match &data.terminator().kind {
-            mir::TerminatorKind::Call { destination, .. } if at_terminator => {
-                Some(destination.local)
-            }
-            _ => None,
-        };
-        for local in locals.iter().filter(|local| Some(*local) != destination) {
-            let parts =
-                moved_out_parts(moves.tcx, body, moves.move_data, moves.uninit.get(), local);
+        seek_drop_point(moves, data, location);
+        for local in locals.iter() {
+            let parts = moved_out_parts(moves, body, location, moves.uninit.get(), local);
             if !parts.is_empty() {
                 moved_out.insert((statement_index, local), parts);
             }
@@ -345,7 +325,6 @@ impl<'mir, 'tcx> DropPointsBuilder<'mir, 'tcx> {
                     t.insert(def);
                 }
                 t.subtract(&last_live_locals);
-                t.subtract(&moved_locals(self.body, bb, statement_index));
                 t
             };
             last_live_locals = live_locals;
