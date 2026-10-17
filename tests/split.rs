@@ -58,6 +58,10 @@ fn a_split_run_reports_the_refuted_part() {
         "{stderr}"
     );
     assert!(stderr.contains("where it fails: x = 0"), "{stderr}");
+    assert!(
+        stderr.contains("error: verification error: Unsat\n  --> "),
+        "{stderr}"
+    );
 }
 
 /// A function whose clauses a written invariant cuts into two parts: the failing part's error

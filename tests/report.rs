@@ -165,3 +165,16 @@ fn no_warning_comes_from_the_injected_std() {
     assert!(stderr.contains("unused variable: `unused`"), "{stderr}");
     assert!(!stderr.contains("thrust std injected"), "{stderr}");
 }
+
+/// With the report, the verification error is at the obligation the report shows refuted, so an
+/// editor that drops a diagnostic without a span shows it.
+#[test]
+fn the_verification_error_is_at_the_refuted_obligation() {
+    let output = report("loop_fail.rs", "failure");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let error = stderr
+        .split("error: verification error: Unsat\n  --> ")
+        .nth(1)
+        .unwrap_or_default();
+    assert!(error.contains("loop_fail.rs:15:5\n"), "{stderr}");
+}

@@ -2615,16 +2615,28 @@ impl<'tcx> Analyzer<'tcx> {
             .map(crate::report::Config::requests)
             .unwrap_or_default();
         let answer = self.system.borrow().solve_with(requests);
-        if let Some(config) = &config {
-            self.report(
-                config,
-                &self.system.borrow(),
-                std::slice::from_ref(&answer),
-                &[],
-            );
-        }
+        let refuted = match &config {
+            Some(config) => {
+                let system = self.system.borrow();
+                self.report(config, &system, std::slice::from_ref(&answer), &[])[0]
+            }
+            None => None,
+        };
         if let Err(err) = answer.result {
-            self.tcx.dcx().err(format!("verification error: {:?}", err));
+            self.verification_error(&err, refuted).emit();
+        }
+    }
+
+    /// The error of a failed verification, at the obligation the report shows refuted, if it does.
+    fn verification_error(
+        &self,
+        err: &chc::CheckSatError,
+        refuted: Option<rustc_span::Span>,
+    ) -> rustc_errors::Diag<'tcx> {
+        let message = format!("verification error: {:?}", err);
+        match refuted {
+            Some(span) => self.tcx.dcx().struct_span_err(span, message),
+            None => self.tcx.dcx().struct_err(message),
         }
     }
 
@@ -2639,16 +2651,15 @@ impl<'tcx> Analyzer<'tcx> {
             .enumerate()
             .map(|(id, part)| crate::report::Part::new(self.tcx, &system, id, part))
             .collect();
-        if let Some(config) = report {
-            self.report_parts(config, jobs, &system, &parts, &summaries);
-        }
-        for (part, summary) in parts.iter().zip(&summaries) {
+        let refuted = match report {
+            Some(config) => self.report_parts(config, jobs, &system, &parts, &summaries),
+            None => vec![None; parts.len()],
+        };
+        for ((part, summary), refuted) in parts.iter().zip(&summaries).zip(refuted) {
             let Err(err) = &part.result else {
                 continue;
             };
-            self.tcx
-                .dcx()
-                .struct_err(format!("verification error: {:?}", err))
+            self.verification_error(err, refuted)
                 .with_note(summary.error_note(self.tcx, parts.len()))
                 .emit();
         }
@@ -2656,7 +2667,8 @@ impl<'tcx> Analyzer<'tcx> {
     }
 
     /// Reports the parts refuted, as without `THRUST_SPLIT`: each is solved once more on its own,
-    /// asked for what the report needs.
+    /// asked for what the report needs. Returns the span of the obligation the report shows
+    /// refuted in each part.
     fn report_parts(
         &self,
         config: &crate::report::Config,
@@ -2664,30 +2676,36 @@ impl<'tcx> Analyzer<'tcx> {
         system: &chc::System,
         parts: &[chc::Part],
         summaries: &[crate::report::Part],
-    ) {
+    ) -> Vec<Option<rustc_span::Span>> {
         // Each part refuted is solved once more on its own, for its refutation, and each part
         // solved for its model when the report shows one; the report reads them over the system
         // of all of them, whose clauses keep their ids.
         let requests = config.requests();
-        let reported: Vec<&chc::Part> = parts
-            .iter()
-            .filter(|part| match part.result {
+        let reported: Vec<usize> = (0..parts.len())
+            .filter(|&i| match parts[i].result {
                 Ok(()) => requests.model,
                 Err(chc::CheckSatError::Unsat) => requests.proof,
                 Err(_) => false,
             })
             .collect();
         let mut answers = chc::in_parallel(jobs, reported.len(), |i| {
-            system.part(&reported[i].clauses).solve_with(requests)
+            system
+                .part(&parts[reported[i]].clauses)
+                .solve_with(requests)
         });
         if answers.is_empty() {
             answers.push(chc::Answer::of(Ok(())));
         }
         let clauses: Vec<chc::ClauseId> = reported
             .iter()
-            .flat_map(|part| part.clauses.iter().copied())
+            .flat_map(|&i| parts[i].clauses.iter().copied())
             .collect();
-        self.report(config, &system.part(&clauses), &answers, summaries);
+        let spans = self.report(config, &system.part(&clauses), &answers, summaries);
+        let mut refuted = vec![None; parts.len()];
+        for (i, span) in reported.into_iter().zip(spans) {
+            refuted[i] = span;
+        }
+        refuted
     }
 
     fn report(
@@ -2696,7 +2714,7 @@ impl<'tcx> Analyzer<'tcx> {
         system: &chc::System,
         answers: &[chc::Answer],
         parts: &[crate::report::Part],
-    ) {
+    ) -> Vec<Option<rustc_span::Span>> {
         let contracts = self
             .defs
             .iter()
@@ -2728,7 +2746,7 @@ impl<'tcx> Analyzer<'tcx> {
             contract_annotations: &self.contract_annotations,
             parts,
         };
-        crate::report::emit(self.tcx, config, &input);
+        crate::report::emit(self.tcx, config, &input)
     }
 
     /// Computes the signature of the function using the given `body`.

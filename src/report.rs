@@ -405,7 +405,9 @@ fn entries<'tcx>(
     (entries, names)
 }
 
-pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) {
+/// Reports `input`, and returns the span of the obligation the report shows refuted by each
+/// answer.
+pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) -> Vec<Option<Span>> {
     // The clauses are read as the solver is given them, a `Box` being its content.
     let system = chc::unbox(input.system.clone());
     let input = Input {
@@ -431,6 +433,13 @@ pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) {
         .iter()
         .filter(|_| config.items.failure)
         .map(|answer| (answer, failure::read(answer, &names, &symbols)))
+        .collect();
+    let refuted: Vec<Option<Span>> = (0..input.answers.len())
+        .map(|i| {
+            let (_, failure) = failures.get(i)?;
+            let (_, c) = constraint_of(&entries, failure.as_ref()?.goal)?;
+            c.span
+        })
         .collect();
     match config.format {
         Format::Human => {
@@ -467,4 +476,5 @@ pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) {
             }
         }
     }
+    refuted
 }
