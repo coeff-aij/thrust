@@ -311,12 +311,21 @@ fn report_labels_the_invariant_a_loop_checks() {
     assert!(label.contains("the annotation it checks"), "{stderr}");
 }
 
-/// A law, its proof by an empty body and a lemma raise no lint: they are not called and need not
-/// read their parameters.
+/// A law and a lemma with an empty body raise no lint: they are not called and need not read
+/// their parameters.
 #[test]
-fn laws_and_their_proofs_raise_no_warning() {
+fn laws_and_lemmas_raise_no_warning() {
     let stderr = warnings_of("law_proof.rs");
     assert!(!stderr.contains("warning"), "{stderr}");
+}
+
+/// The program's own lints survive: an empty method of a trait impl and a lemma with a body
+/// warn of what they leave unused.
+#[test]
+fn ordinary_warnings_survive() {
+    let stderr = warnings_of("ordinary_warnings.rs");
+    assert!(stderr.contains("unused variable: `node`"), "{stderr}");
+    assert!(stderr.contains("unused variable: `unused`"), "{stderr}");
 }
 
 /// The JSON header states how columns count as values, each step of a run gives its unknown and
