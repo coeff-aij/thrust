@@ -20,6 +20,9 @@ pub fn expand(item: TokenStream) -> TokenStream {
         Err(e) => return error_with(e, &func),
     };
     func.attrs.push(syn::parse_quote!(#[thrust::lemma]));
+    // A lemma is a statement the program uses only through `proof!`.
+    func.attrs
+        .push(syn::parse_quote!(#[allow(dead_code, unused_variables)]));
     let Some(variant) = variant else {
         return func.into_token_stream().into();
     };

@@ -1,14 +1,13 @@
 //! The clauses of the system as the report shows them: where in the code each was made, what
 //! obligation it stands for, and its formula over the program's variables.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 
 use rustc_middle::mir::{self, BasicBlock};
 use rustc_middle::ty::TyCtxt;
 use rustc_span::def_id::{DefId, DefIndex, LocalDefId};
 use rustc_span::Span;
 
-use crate::analyze::ContractAnnotations;
 use crate::chc;
 use crate::refine::VarPath;
 
@@ -111,8 +110,9 @@ fn kind(
     provenance: &Provenance,
     body: Option<&DefBody<'_>>,
     names: &Names,
-    annotations: &HashMap<DefId, ContractAnnotations>,
+    input: &super::Input<'_>,
 ) -> (String, Annotation) {
+    let annotations = input.contract_annotations;
     let plain = |kind: String| (kind, Annotation::None);
     let head_owner = match clause.head.pred {
         chc::Pred::Var(p) => names.preds.get(&p).map(|info| info.owner),
@@ -154,11 +154,18 @@ fn kind(
             _ => "return".to_owned(),
         },
         mir::TerminatorKind::Goto { target } if body.is_loop_header(*target) => {
-            if body.loop_contains(*target, bb) {
+            let kind = if body.loop_contains(*target, bb) {
                 "loop preservation".to_owned()
             } else {
                 "loop entry".to_owned()
-            }
+            };
+            let written = provenance
+                .def
+                .and_then(|def| input.invariant_annotations.get(&(def, *target)));
+            return match written.filter(|_| goal) {
+                Some(spans) => (kind, Annotation::Checks(spans.clone())),
+                None => plain(kind),
+            };
         }
         mir::TerminatorKind::Goto { target } => format!("jump to {target:?}"),
         mir::TerminatorKind::SwitchInt { .. } => "branch".to_owned(),
@@ -438,11 +445,11 @@ pub fn constraint(
     clause: &chc::Clause,
     names: &Names,
     body: Option<&DefBody<'_>>,
-    annotations: &HashMap<DefId, ContractAnnotations>,
+    input: &super::Input<'_>,
 ) -> Constraint {
     let provenance = Provenance::of(&clause.debug_info);
     let span = provenance.span(tcx);
-    let (kind, annotation) = kind(tcx, clause, &provenance, body, names, annotations);
+    let (kind, annotation) = kind(tcx, clause, &provenance, body, names, input);
     let (premises, conclusion, vars) = render(id, clause, provenance.def, names, body);
     let formula = show(
         &formula::and(premises.clone()).implies(conclusion.clone()),

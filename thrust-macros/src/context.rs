@@ -80,11 +80,17 @@ fn expand_outer(mut outer_item: FnOuterItem) -> TokenStream {
     ];
     match &mut outer_item {
         FnOuterItem::ItemImpl(item_impl) => {
+            let of_trait = item_impl.trait_.is_some();
             for item in &mut item_impl.items {
                 let syn::ImplItem::Fn(item) = item else {
                     continue;
                 };
                 item.attrs.extend(method_attrs.clone());
+                // An empty body implementing a trait method proves a law, by its contract.
+                if of_trait && item.block.stmts.is_empty() {
+                    item.attrs
+                        .push(syn::parse_quote!(#[allow(unused_variables)]));
+                }
             }
         }
         FnOuterItem::ItemTrait(item_trait) => {

@@ -20,13 +20,15 @@ enum Line<'a> {
     Report {
         version: u32,
         root: String,
-        columns: &'a str,
+        columns: Columns,
     },
     /// The crate's verdict, and how many obligations a failure is refuted at: one per query, or
     /// one per part.
     Verdict {
         verdict: &'a str,
         refutations: &'a str,
+        /// What the solver answered when it is neither `sat` nor `unsat` (`Timeout(30s)`).
+        message: Option<String>,
     },
     Part {
         id: usize,
@@ -75,6 +77,14 @@ enum Line<'a> {
     },
 }
 
+/// How a span's columns count: from `base`, in `unit`, `end_column` after the last.
+#[derive(Serialize)]
+struct Columns {
+    base: u32,
+    unit: &'static str,
+    end: &'static str,
+}
+
 /// A function and a span in it.
 #[derive(Serialize)]
 struct FnSpan {
@@ -102,6 +112,9 @@ struct Step<'a> {
     via: Option<String>,
     obligation: Option<&'a str>,
     span: Option<Range>,
+    /// The fact's unknown and the arguments the program names, as `fact` shows them.
+    pred: &'a str,
+    args: Vec<Value>,
 }
 
 pub(super) struct Json<'a, 'tcx> {
@@ -113,6 +126,7 @@ pub(super) struct Json<'a, 'tcx> {
     pub(super) failures: Vec<(Option<usize>, Failure)>,
     pub(super) parts: &'a [super::Part],
     pub(super) verdict: &'a str,
+    pub(super) message: Option<String>,
 }
 
 impl Json<'_, '_> {
@@ -178,7 +192,7 @@ impl Json<'_, '_> {
         &self,
         entries: &'a [Entry<'_>],
         part: Option<usize>,
-        failure: &Failure,
+        failure: &'a Failure,
     ) -> Line<'a> {
         let found = constraint_of(entries, failure.goal);
         let run = failure
@@ -192,6 +206,15 @@ impl Json<'_, '_> {
                     via: step.via.map(|id| format!("{id:?}")),
                     obligation: via.map(|(_, c)| c.kind.as_str()),
                     span: via.and_then(|(_, c)| c.span).map(|s| range(self.tcx, s)),
+                    pred: &step.pred,
+                    args: step
+                        .args
+                        .iter()
+                        .map(|(name, value)| Value {
+                            name: name.clone(),
+                            value: value.clone(),
+                        })
+                        .collect(),
                 }
             })
             .collect();
@@ -240,12 +263,16 @@ impl Json<'_, '_> {
     ) -> std::io::Result<()> {
         let mut line = |line: Line<'_>| writeln!(out, "{}", serde_json::to_string(&line)?);
         line(Line::Report {
-            version: 1,
+            version: 2,
             root: std::env::current_dir()
                 .unwrap_or_default()
                 .display()
                 .to_string(),
-            columns: "1-based, in characters; end_column after the last",
+            columns: Columns {
+                base: 1,
+                unit: "char",
+                end: "exclusive",
+            },
         })?;
         line(Line::Verdict {
             verdict: self.verdict,
@@ -254,6 +281,7 @@ impl Json<'_, '_> {
             } else {
                 "one per part"
             },
+            message: self.message.clone(),
         })?;
         for part in self.parts {
             line(Line::Part {
