@@ -51,13 +51,11 @@ impl ReprFlags {
         self.0
     }
 
-    #[thrust::trusted]
     #[thrust::callable]
     pub const fn contains(&self, other: Self) -> bool {
         self.0 & other.0 == other.0
     }
 
-    #[thrust::trusted]
     #[thrust::callable]
     pub const fn intersects(&self, other: Self) -> bool {
         self.0 & other.0 != 0
@@ -95,25 +93,21 @@ pub struct ReprOptions {
 
 impl ReprOptions {
     #[inline]
-    #[thrust::trusted]
     #[thrust::callable]
     pub fn transparent(&self) -> bool {
         self.flags.contains(ReprFlags::IS_TRANSPARENT)
     }
 
-    #[thrust::trusted]
     #[thrust::callable]
     pub fn inhibit_newtype_abi_optimization(&self) -> bool {
         self.flags.intersects(ReprFlags::ABI_UNOPTIMIZABLE)
     }
 
-    #[thrust::trusted]
     #[thrust::callable]
     pub fn inhibit_struct_field_reordering(&self) -> bool {
         self.flags.intersects(ReprFlags::FIELD_ORDER_UNOPTIMIZABLE) || self.int.is_some()
     }
 
-    #[thrust::trusted]
     #[thrust::callable]
     pub fn can_randomize_type_layout(&self) -> bool {
         !self.inhibit_struct_field_reordering() && self.flags.contains(ReprFlags::RANDOMIZE_LAYOUT)
