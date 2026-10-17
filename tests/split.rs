@@ -77,3 +77,19 @@ fn a_function_in_two_parts_is_explained() {
         "{stderr}"
     );
 }
+
+/// A split run shows the contracts inferred in the parts that are solved, beside the failure of
+/// the part that is refuted.
+#[test]
+fn a_split_run_shows_what_the_solved_parts_infer() {
+    let output = run_with("inferred_parts.rs", Some("2"), &[("THRUST_REPORT", "1")]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("thrust: refuted: ensures in `bad`"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("inferred: fn double(x: {int | x = 2})"),
+        "{stderr}"
+    );
+}

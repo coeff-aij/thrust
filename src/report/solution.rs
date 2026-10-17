@@ -17,7 +17,12 @@ pub(super) type Interpretation = answer::Definition<Name>;
 /// The solver's interpretation of each predicate variable the report names.
 pub(super) struct Solution {
     by_pred: HashMap<chc::PredVarId, Interpretation>,
+    /// Whether it is that of some parts of the system only (`THRUST_SPLIT`).
+    partial: bool,
 }
+
+/// Why a site of a part without a solution has none.
+pub(super) const UNSOLVED_PART: &str = "no solution: the part of the constraints over it has none";
 
 impl Solution {
     /// The interpretations of `model`, simplified by `z3`, which `run` runs (see
@@ -42,7 +47,44 @@ impl Solution {
             .into_iter()
             .map(|(name, interpretation)| (symbols.pred(&name).unwrap(), interpretation))
             .collect();
-        Solution { by_pred }
+        Solution {
+            by_pred,
+            partial: false,
+        }
+    }
+
+    /// The solution of the parts each of `answers` solved, from those with a model, `partial` when
+    /// they are parts of the system (`THRUST_SPLIT`); or why there is none, from the first.
+    pub(super) fn of_parts(
+        answers: &[chc::Answer],
+        partial: bool,
+        symbols: &Symbols,
+        names: &Names,
+    ) -> Result<Self, String> {
+        let config = chc::Config::from_env();
+        let mut solutions = answers.iter().filter_map(|answer| {
+            let (None, Some(model)) = (solution_unavailable(answer), &answer.model) else {
+                return None;
+            };
+            let query = answer.query.as_deref().unwrap_or_default();
+            Some(Solution::new(model, query, symbols, names, |script| {
+                config.run_script(script)
+            }))
+        });
+        let Some(mut solution) = solutions.next() else {
+            let why = solution_unavailable(&answers[0]);
+            return Err(why.unwrap_or_else(|| "no solution".to_owned()));
+        };
+        for other in solutions {
+            solution.by_pred.extend(other.by_pred);
+        }
+        solution.partial = partial;
+        Ok(solution)
+    }
+
+    /// Whether the solution covers `site`: not when it is that of other parts only.
+    pub(super) fn solves(&self, site: &Site) -> bool {
+        !self.partial || site.preds.iter().any(|p| self.interprets(*p))
     }
 
     /// Whether the solver interprets `p`: not when the query leaves it out (see

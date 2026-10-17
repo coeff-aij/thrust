@@ -30,7 +30,8 @@ pub(super) struct Human<'a, 'tcx> {
 impl Human<'_, '_> {
     fn site_notes(&self, notes: &mut Vec<String>, entry: &Entry<'_>, site: &Site) {
         // Without a solution, a site has only its template to show, if that was asked for.
-        if self.solution.is_err() && !self.items.template {
+        let solved = self.solution.as_ref().is_ok_and(|s| s.solves(site));
+        if !solved && !self.items.template {
             return;
         }
         let lines = match (site.kind, site.signature) {
@@ -49,13 +50,18 @@ impl Human<'_, '_> {
         notes.push(format!("{title}\n{}", lines.join("\n")));
     }
 
-    /// The solution, or why there is none when one is asked for.
-    fn solution(&self, lines: &mut Vec<String>) -> Option<&Solution> {
-        match &self.solution {
+    /// The solution of `site`, or why there is none when one is asked for.
+    fn solution(&self, site: &Site, lines: &mut Vec<String>) -> Option<&Solution> {
+        let solution = match &self.solution {
+            Ok(solution) if !solution.solves(site) => Err(super::solution::UNSOLVED_PART),
+            Ok(solution) => Ok(solution),
+            Err(why) => Err(why.as_str()),
+        };
+        match solution {
             Ok(solution) => Some(solution),
             Err(why) => {
                 if self.items.solution || self.items.inferred {
-                    lines.push(why.clone());
+                    lines.push(why.to_owned());
                 }
                 None
             }
@@ -68,7 +74,7 @@ impl Human<'_, '_> {
             let template = signature(&entry.name, site, self.names, &Formula::clone);
             lines.push(format!("template: {template}"));
         }
-        let Some(solution) = self.solution(&mut lines) else {
+        let Some(solution) = self.solution(site, &mut lines) else {
             return lines;
         };
         if self.items.solution {
@@ -88,7 +94,7 @@ impl Human<'_, '_> {
         if self.items.template || self.items.solution || self.items.inferred {
             lines.push(block_template(site, self.names));
         }
-        let Some(solution) = self.solution(&mut lines) else {
+        let Some(solution) = self.solution(site, &mut lines) else {
             return lines;
         };
         if !(self.items.solution || self.items.inferred) {
@@ -112,7 +118,7 @@ impl Human<'_, '_> {
         if self.items.template {
             lines.push(format!("template: {}", block_template(site, self.names)));
         }
-        let Some(solution) = self.solution(&mut lines) else {
+        let Some(solution) = self.solution(site, &mut lines) else {
             return lines;
         };
         if self.items.solution {

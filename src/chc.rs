@@ -3684,13 +3684,9 @@ impl System {
     /// exactly when every part is. `THRUST_OUTPUT_DIR` gets each part's query as
     /// `thrust_output_part<i>.smt2`.
     pub fn solve_parts(&self, jobs: usize) -> Vec<Part> {
-        use std::sync::atomic::{AtomicUsize, Ordering};
         let config = Config::from_env();
         let cache = cache::Cache::from_env();
         let parts = components::components(self);
-        let verdicts: Vec<std::sync::OnceLock<cache::Verdict>> =
-            parts.iter().map(|_| std::sync::OnceLock::new()).collect();
-        let next = AtomicUsize::new(0);
         let solve = |i: usize| {
             let query = self
                 .part(&parts[i])
@@ -3705,27 +3701,14 @@ impl System {
             }
             cache::solve(&config, cache.as_ref(), &query)
         };
-        std::thread::scope(|scope| {
-            for _ in 0..jobs {
-                scope.spawn(|| loop {
-                    let i = next.fetch_add(1, Ordering::Relaxed);
-                    if i >= parts.len() {
-                        break;
-                    }
-                    let _ = verdicts[i].set(solve(i));
-                });
-            }
-        });
+        let verdicts = in_parallel(jobs, parts.len(), solve);
         parts
             .into_iter()
             .zip(verdicts)
-            .map(|(clauses, verdict)| {
-                let verdict = verdict.into_inner().unwrap();
-                Part {
-                    clauses,
-                    result: verdict.result,
-                    cached: verdict.cached,
-                }
+            .map(|(clauses, verdict)| Part {
+                clauses,
+                result: verdict.result,
+                cached: verdict.cached,
             })
             .collect()
     }
@@ -3836,6 +3819,28 @@ fn dedup_pred_args_enabled() -> bool {
 /// interprets them over other arguments than the system's.
 pub fn pred_args_rewritten() -> bool {
     flat_pred_args_enabled() || dedup_pred_args_enabled()
+}
+
+/// `f` of `0..n`, `jobs` at a time, in that order.
+pub fn in_parallel<T: Send + Sync>(jobs: usize, n: usize, f: impl Fn(usize) -> T + Sync) -> Vec<T> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let results: Vec<std::sync::OnceLock<T>> = (0..n).map(|_| std::sync::OnceLock::new()).collect();
+    let next = AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        for _ in 0..jobs {
+            scope.spawn(|| loop {
+                let i = next.fetch_add(1, Ordering::Relaxed);
+                if i >= n {
+                    break;
+                }
+                let _ = results[i].set(f(i));
+            });
+        }
+    });
+    results
+        .into_iter()
+        .map(|result| result.into_inner().unwrap())
+        .collect()
 }
 
 /// One class of clauses sharing an unknown, solved on its own.

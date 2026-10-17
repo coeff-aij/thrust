@@ -2622,7 +2622,7 @@ impl<'tcx> Analyzer<'tcx> {
             .map(|(id, part)| crate::report::Part::new(self.tcx, &system, id, part))
             .collect();
         if let Some(config) = report {
-            self.report_parts(config, &system, &parts, &summaries);
+            self.report_parts(config, jobs, &system, &parts, &summaries);
         }
         for (part, summary) in parts.iter().zip(&summaries) {
             let Err(err) = &part.result else {
@@ -2642,24 +2642,30 @@ impl<'tcx> Analyzer<'tcx> {
     fn report_parts(
         &self,
         config: &crate::report::Config,
+        jobs: usize,
         system: &chc::System,
         parts: &[chc::Part],
         summaries: &[crate::report::Part],
     ) {
-        // Each part refuted is solved once more on its own, for its refutation; the report reads
-        // them over the system of all of them, whose clauses keep their ids.
-        let refuted: Vec<&chc::Part> = parts
+        // Each part refuted is solved once more on its own, for its refutation, and each part
+        // solved for its model when the report shows one; the report reads them over the system
+        // of all of them, whose clauses keep their ids.
+        let requests = config.requests();
+        let reported: Vec<&chc::Part> = parts
             .iter()
-            .filter(|part| matches!(part.result, Err(chc::CheckSatError::Unsat)))
+            .filter(|part| match part.result {
+                Ok(()) => requests.model,
+                Err(chc::CheckSatError::Unsat) => requests.proof,
+                Err(_) => false,
+            })
             .collect();
-        let mut answers: Vec<chc::Answer> = refuted
-            .iter()
-            .map(|part| system.part(&part.clauses).solve_with(config.requests()))
-            .collect();
+        let mut answers = chc::in_parallel(jobs, reported.len(), |i| {
+            system.part(&reported[i].clauses).solve_with(requests)
+        });
         if answers.is_empty() {
             answers.push(chc::Answer::of(Ok(())));
         }
-        let clauses: Vec<chc::ClauseId> = refuted
+        let clauses: Vec<chc::ClauseId> = reported
             .iter()
             .flat_map(|part| part.clauses.iter().copied())
             .collect();

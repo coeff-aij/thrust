@@ -41,7 +41,7 @@ use constraints::Constraint;
 use human::Human;
 use json::Json;
 use sites::{Names, Site, SiteKind};
-use solution::{solution_unavailable, Solution};
+use solution::Solution;
 
 pub use parts::{emit_notes as emit_part_notes, Part};
 
@@ -394,17 +394,8 @@ pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) {
     };
     let symbols = chc::answer::Symbols::of(&system, chc::Config::from_env().capabilities());
     let (entries, names) = entries(tcx, config, &input);
-    let first = &input.answers[0];
-    let solution = match (solution_unavailable(first), &first.model) {
-        (None, Some(model)) => {
-            let config = chc::Config::from_env();
-            let query = first.query.as_deref().unwrap_or_default();
-            Ok(Solution::new(model, query, &symbols, &names, |script| {
-                config.run_script(script)
-            }))
-        }
-        (why, _) => Err(why.unwrap_or_else(|| "no solution".to_owned())),
-    };
+    let split = !input.parts.is_empty();
+    let solution = Solution::of_parts(input.answers, split, &symbols, &names);
     let failures: Vec<(&chc::Answer, Option<failure::Failure>)> = input
         .answers
         .iter()

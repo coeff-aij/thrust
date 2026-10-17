@@ -117,7 +117,7 @@ impl Json<'_, '_> {
                 args: &info.args,
             })
             .collect();
-        let solution = self.solution.as_ref();
+        let solution = self.solution.as_ref().filter(|s| s.solves(site));
         Line::Site {
             r#fn: &entry.name,
             site: kind,
@@ -230,13 +230,15 @@ impl Json<'_, '_> {
             line(self.failure(entries, failure))?;
         }
         // Without a solution, a site has only its template to show, if that was asked for.
-        let sites = self.items.template
-            || (self.solution.is_some() && (self.items.solution || self.items.inferred));
+        let shown = |site: &Site| {
+            let solved = self.solution.as_ref().is_some_and(|s| s.solves(site));
+            self.items.template || (solved && (self.items.solution || self.items.inferred))
+        };
         for entry in entries {
             let loop_sites = entry.loops.values().filter_map(|(site, _)| site.as_ref());
             let internal = entry.blocks.iter().filter(|_| self.items.internal);
             let entry_sites = entry.contract.iter().chain(loop_sites).chain(internal);
-            for site in entry_sites.filter(|_| sites) {
+            for site in entry_sites.filter(|site| shown(site)) {
                 line(self.site(entry, site))?;
             }
             if !self.items.constraints {
