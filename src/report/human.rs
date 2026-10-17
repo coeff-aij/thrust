@@ -56,8 +56,10 @@ impl Human<'_, '_> {
     /// The solution of `site`, or why there is none when one is asked for.
     fn solution(&self, site: &Site, lines: &mut Vec<String>) -> Option<&Solution> {
         let solution = match &self.solution {
-            Ok(solution) if !solution.solves(site) => Err(super::solution::UNSOLVED_PART),
-            Ok(solution) => Ok(solution),
+            Ok(solution) => match solution.unsolved(site) {
+                Some(why) => Err(why),
+                None => Ok(solution),
+            },
             Err(why) => Err(why.as_str()),
         };
         match solution {
@@ -162,10 +164,21 @@ impl Human<'_, '_> {
     pub(super) fn failure(
         &self,
         answer: &chc::Answer,
+        asked: Option<&super::Asked>,
         failure: Option<&Failure>,
         entries: &[Entry<'_>],
     ) {
-        if !self.items.failure || !matches!(answer.result, Err(chc::CheckSatError::Unsat)) {
+        let unsat = matches!(answer.result, Err(chc::CheckSatError::Unsat));
+        if !self.items.failure || !asked.map_or(unsat, |a| a.refuted) {
+            return;
+        }
+        if let (Some(asked), false) = (asked, unsat) {
+            self.tcx.dcx().note(format!(
+                "thrust: no failing obligation to show for part {}: the second run, asked for a \
+                 refutation, gave none ({})",
+                asked.part,
+                super::parts::verdict(&answer.result)
+            ));
             return;
         }
         let Some(failure) = failure else {

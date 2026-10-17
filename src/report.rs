@@ -139,6 +139,15 @@ impl Config {
         })
     }
 
+    /// Whether the report shows `def`: written in the program, and among `THRUST_REPORT_ONLY`.
+    pub fn reports(&self, tcx: TyCtxt<'_>, def: LocalDefId) -> bool {
+        user_written(tcx, def)
+            && self
+                .only
+                .as_ref()
+                .is_none_or(|only| only.contains(tcx, def.to_def_id()))
+    }
+
     /// What the report needs from the solver besides the verdict.
     pub fn requests(&self) -> chc::Requests {
         chc::Requests {
@@ -155,10 +164,9 @@ pub struct Input<'a> {
     pub contracts: Vec<(LocalDefId, &'a rty::FunctionType)>,
     pub blocks: Vec<(LocalDefId, BasicBlock, &'a BasicBlockType)>,
     /// The solver's answers: one for the whole system, or with `THRUST_SPLIT` one for each part
-    /// reported, whose clauses `answer_clauses` gives. A solution is read from those with a
-    /// model, a failure from each.
+    /// `asked` names. A solution is read from those with a model, a failure from each.
     pub answers: &'a [chc::Answer],
-    pub answer_clauses: &'a [Vec<chc::ClauseId>],
+    pub asked: &'a [Asked],
     /// Where the analysis made each template's predicate variable.
     pub template_sites: &'a HashMap<chc::PredVarId, crate::analyze::TemplateSite>,
     /// The variable each argument of a template's predicate variable is.
@@ -168,6 +176,15 @@ pub struct Input<'a> {
     /// The parts of the system solved on their own (`THRUST_SPLIT`); the system is then that of
     /// the parts refuted.
     pub parts: &'a [Part],
+}
+
+/// A part of the system solved once more for the report (`THRUST_SPLIT`): for its refutation
+/// when it is refuted, else for its model.
+pub struct Asked {
+    /// Its number among the parts.
+    pub part: usize,
+    pub clauses: Vec<chc::ClauseId>,
+    pub refuted: bool,
 }
 
 /// One function: its sites and constraints, the loops' ones under their headers.
@@ -322,13 +339,7 @@ fn entries<'tcx>(
     config: &Config,
     input: &Input<'_>,
 ) -> (Vec<Entry<'tcx>>, Names) {
-    let selected = |def: LocalDefId| {
-        user_written(tcx, def)
-            && config
-                .only
-                .as_ref()
-                .is_none_or(|only| only.contains(tcx, def.to_def_id()))
-    };
+    let selected = |def: LocalDefId| config.reports(tcx, def);
     let mut entries: HashMap<LocalDefId, Entry<'tcx>> = HashMap::new();
     for (def, _, _) in &input.blocks {
         if entries.contains_key(def) || !selected(*def) {
@@ -417,7 +428,7 @@ pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) -> Vec<Option<S
         contracts: input.contracts.clone(),
         blocks: input.blocks.clone(),
         answers: input.answers,
-        answer_clauses: input.answer_clauses,
+        asked: input.asked,
         template_sites: input.template_sites,
         template_vars: input.template_vars,
         contract_annotations: input.contract_annotations,
@@ -427,14 +438,16 @@ pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) -> Vec<Option<S
     // which numbers its own sorts.
     let capabilities = chc::Config::from_env().capabilities();
     let symbols: Vec<chc::answer::Symbols> = (0..input.answers.len())
-        .map(|i| match input.answer_clauses.get(i) {
-            Some(ids) => chc::answer::Symbols::of(&chc::unbox(system.part(ids)), capabilities),
+        .map(|i| match input.asked.get(i) {
+            Some(asked) => {
+                chc::answer::Symbols::of(&chc::unbox(system.part(&asked.clauses)), capabilities)
+            }
             None => chc::answer::Symbols::of(&system, capabilities),
         })
         .collect();
     let (entries, names) = entries(tcx, config, &input);
     let split = !input.parts.is_empty();
-    let solution = Solution::of_parts(input.answers, split, &symbols, &names);
+    let solution = Solution::of_parts(input.answers, input.asked, &system, &symbols, &names);
     let verdict = match split {
         true => parts::crate_verdict(input.parts),
         false => parts::verdict(&input.answers[0].result),
@@ -462,8 +475,8 @@ pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) -> Vec<Option<S
                 solution,
                 split,
             };
-            for (answer, failure) in &failures {
-                human.failure(answer, failure.as_ref(), &entries);
+            for (i, (answer, failure)) in failures.iter().enumerate() {
+                human.failure(answer, input.asked.get(i), failure.as_ref(), &entries);
             }
             human.emit(&entries);
         }

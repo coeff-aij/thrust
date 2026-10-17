@@ -931,6 +931,16 @@ pub enum TemplateSite {
     Code(LocalDefId, BasicBlock),
 }
 
+impl TemplateSite {
+    pub fn def(self) -> LocalDefId {
+        match self {
+            TemplateSite::Contract(def)
+            | TemplateSite::Block(def, _)
+            | TemplateSite::Code(def, _) => def,
+        }
+    }
+}
+
 impl<'tcx> Analyzer<'tcx> {
     pub fn tcx(&self) -> TyCtxt<'tcx> {
         self.tcx
@@ -2679,40 +2689,52 @@ impl<'tcx> Analyzer<'tcx> {
         summaries: &[crate::report::Part],
     ) -> Vec<Option<rustc_span::Span>> {
         // Each part refuted is solved once more on its own, for its refutation, and each part
-        // solved for its model when the report shows one; the report reads them over the system
-        // of all of them, whose clauses keep their ids.
+        // solved for its model when the report shows its unknowns; the report reads them over the
+        // system of all of them, whose clauses keep their ids. A solver that gives neither is not
+        // asked again.
         let requests = config.requests();
-        let reported: Vec<usize> = (0..parts.len())
-            .filter(|&i| match parts[i].result {
-                Ok(()) => requests.model,
-                Err(chc::CheckSatError::Unsat) => requests.proof,
-                Err(_) => false,
+        let evidence = chc::Config::from_env().answers(requests);
+        let shown = |part: &chc::Part| {
+            let defs = system
+                .pred_vars_of(&part.clauses)
+                .into_iter()
+                .filter_map(|p| self.template_sites.get(&p).map(|site| site.def()));
+            defs.into_iter().any(|def| config.reports(self.tcx, def))
+        };
+        let asked: Vec<crate::report::Asked> = parts
+            .iter()
+            .enumerate()
+            .filter_map(|(i, part)| {
+                let refuted = match part.result {
+                    Ok(()) if requests.model && evidence && shown(part) => false,
+                    Err(chc::CheckSatError::Unsat) if requests.proof => true,
+                    _ => return None,
+                };
+                Some(crate::report::Asked {
+                    part: i,
+                    clauses: part.clauses.clone(),
+                    refuted,
+                })
             })
             .collect();
-        let mut answers = chc::in_parallel(jobs, reported.len(), |i| {
-            system
-                .part(&parts[reported[i]].clauses)
-                .solve_part_with(requests)
+        let mut answers = chc::in_parallel(jobs, asked.len(), |i| {
+            if evidence {
+                system.part(&asked[i].clauses).solve_part_with(requests)
+            } else {
+                chc::Answer::of(Err(chc::CheckSatError::Unsat))
+            }
         });
         if answers.is_empty() {
             answers.push(chc::Answer::of(Ok(())));
         }
-        let clauses: Vec<chc::ClauseId> = reported
+        let clauses: Vec<chc::ClauseId> = asked
             .iter()
-            .flat_map(|&i| parts[i].clauses.iter().copied())
+            .flat_map(|a| a.clauses.iter().copied())
             .collect();
-        let answer_clauses: Vec<Vec<chc::ClauseId>> =
-            reported.iter().map(|&i| parts[i].clauses.clone()).collect();
-        let spans = self.report(
-            config,
-            &system.part(&clauses),
-            &answers,
-            &answer_clauses,
-            summaries,
-        );
+        let spans = self.report(config, &system.part(&clauses), &answers, &asked, summaries);
         let mut refuted = vec![None; parts.len()];
-        for (i, span) in reported.into_iter().zip(spans) {
-            refuted[i] = span;
+        for (a, span) in asked.iter().zip(spans) {
+            refuted[a.part] = span;
         }
         refuted
     }
@@ -2722,7 +2744,7 @@ impl<'tcx> Analyzer<'tcx> {
         config: &crate::report::Config,
         system: &chc::System,
         answers: &[chc::Answer],
-        answer_clauses: &[Vec<chc::ClauseId>],
+        asked: &[crate::report::Asked],
         parts: &[crate::report::Part],
     ) -> Vec<Option<rustc_span::Span>> {
         let contracts = self
@@ -2751,7 +2773,7 @@ impl<'tcx> Analyzer<'tcx> {
             contracts,
             blocks,
             answers,
-            answer_clauses,
+            asked,
             template_sites: &self.template_sites,
             template_vars: &self.template_vars,
             contract_annotations: &self.contract_annotations,
