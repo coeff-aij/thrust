@@ -14,7 +14,7 @@ use super::file_name;
 
 /// A part of the system solved on its own.
 pub struct Part {
-    /// Its number among the parts.
+    /// Its number among the parts, from 1.
     pub id: usize,
     pub clauses: usize,
     /// The functions its clauses come from, in the order of their code.
@@ -46,9 +46,9 @@ pub struct PartCode {
 }
 
 impl Part {
-    pub fn new(tcx: TyCtxt<'_>, system: &chc::System, id: usize, part: &chc::Part) -> Self {
+    pub fn new(tcx: TyCtxt<'_>, system: &chc::System, index: usize, part: &chc::Part) -> Self {
         Part {
-            id,
+            id: index + 1,
             clauses: part.clauses.len(),
             functions: code(tcx, system, &part.clauses),
             verdict: chc::verdict(&part.result),

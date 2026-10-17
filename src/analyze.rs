@@ -2737,7 +2737,7 @@ impl<'tcx> Analyzer<'tcx> {
                     _ => return None,
                 };
                 Some(crate::report::Asked {
-                    part: i,
+                    part: i + 1,
                     clauses: part.clauses.clone(),
                     refuted,
                 })
@@ -2757,7 +2757,7 @@ impl<'tcx> Analyzer<'tcx> {
         let spans = self.report(config, system, &answers, &asked, summaries);
         let mut refuted = vec![None; parts.len()];
         for (a, span) in asked.iter().zip(spans) {
-            refuted[a.part] = span;
+            refuted[a.part - 1] = span;
         }
         refuted
     }

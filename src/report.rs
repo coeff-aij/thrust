@@ -181,7 +181,7 @@ pub struct Input<'a> {
 /// A part of the system solved once more for the report (`THRUST_SPLIT`): for its refutation
 /// when it is refuted, else for its model.
 pub struct Asked {
-    /// Its number among the parts.
+    /// Its number among the parts, from 1.
     pub part: usize,
     pub clauses: Vec<chc::ClauseId>,
     pub refuted: bool,

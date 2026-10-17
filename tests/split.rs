@@ -76,7 +76,8 @@ fn a_function_in_two_parts_is_explained() {
     let output = run("invariant_parts.rs", Some("2"));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!output.status.success(), "{stderr}");
-    assert!(stderr.contains("in part 0 of 2, of "), "{stderr}");
+    // Parts are numbered from 1.
+    assert!(stderr.contains("in part 1 of 2, of "), "{stderr}");
     assert!(
         stderr.contains("invariant_parts.rs:1-8), `main` ("),
         "{stderr}"
@@ -112,7 +113,7 @@ fn a_part_line_spans_its_functions() {
         &[("THRUST_REPORT", "1"), ("THRUST_REPORT_FORMAT", "json")],
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let part = r#"{"kind":"part","id":1,"clauses":1,"functions":[{"fn":"count_to","span":{"file":"#;
+    let part = r#"{"kind":"part","id":2,"clauses":1,"functions":[{"fn":"count_to","span":{"file":"#;
     assert!(stdout.contains(part), "{stdout}");
 }
 
@@ -190,7 +191,7 @@ fn a_failed_second_run_is_reported_with_its_verdict() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains(
-            "thrust: no failing obligation to show for part 0: the second run, asked for a \
+            "thrust: no failing obligation to show for part 1: the second run, asked for a \
              refutation, gave none (unknown)"
         ),
         "{stderr}"
@@ -247,7 +248,7 @@ fn a_split_failure_names_its_part() {
     let verdict = r#"{"kind":"verdict","verdict":"unsat","refutations":"one per part"}"#;
     assert!(stdout.contains(verdict), "{stdout}");
     assert!(
-        stdout.contains(r#"{"kind":"failure","part":1,"constraint":"#),
+        stdout.contains(r#"{"kind":"failure","part":2,"constraint":"#),
         "{stdout}"
     );
     let plain = run("two_parts.rs", Some("2"));
