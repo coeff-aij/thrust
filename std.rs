@@ -2537,6 +2537,8 @@ where
 // copied.rs and the constructors in src/std/iter.rs).
 
 // The first `next` drops the `n` items ahead of the first item it hands out (std calls `nth`).
+// `completed` leaves the inner iterator's state after the call open: where `nth` gives up, it can
+// leave the inner iterator elsewhere than `next` would (an inverted `Range` is set to `end..end`).
 #[thrust_macros::context]
 impl<I> IteratorSpec for core::iter::Skip<I>
 where
@@ -2560,10 +2562,12 @@ where
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
         (!self).1 == 0
-            && thrust_models::exists(|s: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>, j: I::Ty|
+            && thrust_models::exists(|s: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
+                                      j: I::Ty,
+                                      j2: I::Ty|
                 s.len() <= (*self).1
                     && I::produces((*self).0, s, j)
-                    && I::completed(thrust_models::model::Mut::new(j, (!self).0)))
+                    && I::completed(thrust_models::model::Mut::new(j, j2)))
     }
 
     fn produces_refl(a: &Self) {}
@@ -3291,7 +3295,9 @@ fn _extern_spec_iterator_chain<I, U>(it: I, other: U) -> core::iter::Chain<I, U:
 }
 
 // Creusot's `&mut I` (creusot-std src/std/iter.rs): stepping the reference steps the iterator it
-// points to, whose final value stays that of the reference.
+// points to, whose final value stays that of the reference. Unlike Creusot's, `completed` relates
+// the referent before and after this call, not to its value when the reference dies, which a later
+// write through the reference can still change.
 #[thrust_macros::context]
 impl<'a, I> IteratorSpec for &'a mut I
 where
@@ -3310,7 +3316,7 @@ where
 
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
-        I::completed(*self) && !(*self) == !(!self)
+        I::completed(thrust_models::model::Mut::new(*(*self), *(!self))) && !(*self) == !(!self)
     }
 
     fn produces_refl(a: &Self) {}
