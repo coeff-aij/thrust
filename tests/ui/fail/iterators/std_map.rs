@@ -4,7 +4,9 @@
 
 // `for` over std's `Map`, generic in the closure so that the invariant can name the iterator's
 // type: the closure's contract is a precondition, and the invariant carries its postcondition and
-// the inner range's cursor. `main` calls it with a concrete closure.
+// the inner range's cursor. `main` calls it with a concrete closure. PCSat gives no answer when the
+// loop body is broken, so the fail twin breaks `main`'s use of the result; `std_map_next` pins
+// `Map`'s items.
 // Fail twin: every one of the ten items is counted.
 
 use thrust_models::model::{Closure, Int, Mut};
