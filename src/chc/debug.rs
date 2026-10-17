@@ -7,6 +7,28 @@
 
 pub mod origin;
 
+/// A variable of the analysis kept with its type erased, for the code that knows the type to
+/// read back (the report): what an argument of a template or an entry of a clause's typing
+/// environment was made for.
+#[derive(Clone)]
+pub struct ErasedVar(std::sync::Arc<dyn std::any::Any + Send + Sync>);
+
+impl ErasedVar {
+    pub fn new<T: std::any::Any + Send + Sync>(var: T) -> Self {
+        ErasedVar(std::sync::Arc::new(var))
+    }
+
+    pub fn downcast_ref<T: std::any::Any>(&self) -> Option<&T> {
+        self.0.downcast_ref()
+    }
+}
+
+impl std::fmt::Debug for ErasedVar {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ErasedVar")
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Display<'a> {
     inner: &'a DebugInfo,

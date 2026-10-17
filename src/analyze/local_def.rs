@@ -1250,6 +1250,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         .push(a);
                 }
             }
+            let previous = self
+                .ctx
+                .enter_template_site(analyze::TemplateSite::Block(self.local_def_id, bb));
             // function return type is basic block return type
             let ret_ty = self.body.local_decls[mir::RETURN_PLACE].ty;
             if let Some(invariants) = loop_invariants.get(&bb) {
@@ -1301,6 +1304,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 self.ctx
                     .register_basic_block_ty_without_precondition(self.analysis_key(), bb, bty);
             };
+            self.ctx.leave_template_site(previous);
         }
     }
 

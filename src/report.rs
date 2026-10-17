@@ -37,7 +37,6 @@ use crate::rty;
 
 use body::DefBody;
 use constraints::Constraint;
-use expr::Expr;
 use human::Human;
 use json::Json;
 use sites::{Names, Site, SiteKind};
@@ -139,6 +138,10 @@ pub struct Input<'a> {
     pub contracts: Vec<(LocalDefId, &'a rty::FunctionType)>,
     pub blocks: Vec<(LocalDefId, BasicBlock, &'a BasicBlockType)>,
     pub answer: &'a chc::Answer,
+    /// Where the analysis made each template's predicate variable.
+    pub template_sites: &'a HashMap<chc::PredVarId, crate::analyze::TemplateSite>,
+    /// The variable each argument of a template's predicate variable is.
+    pub template_vars: &'a HashMap<chc::PredVarId, Vec<Option<chc::debug::ErasedVar>>>,
 }
 
 /// One function: its sites and constraints, the loops' ones under their headers.
@@ -255,7 +258,7 @@ fn entries<'tcx>(
         entries.insert(*def, entry);
     }
 
-    let mut names = Names::new(input.system);
+    let mut names = Names::new(input.system, input.template_sites, input.template_vars);
     for (def, fn_ty) in &input.contracts {
         let Some(entry) = entries.get_mut(def) else {
             continue;
@@ -290,51 +293,23 @@ fn entries<'tcx>(
             _ => {}
         }
     }
-    // The rest are made for the result of a call, the first argument standing for the result:
-    // `f.g#2` for the result of the second call to `g` in `f`.
-    names.name_rest(|def, bb| {
-        let entry = entries.get(&def)?;
-        let bb = bb?;
-        let rustc_middle::mir::TerminatorKind::Call { destination, .. } =
-            &entry.body.terminator(bb)?.kind
-        else {
-            return Some((format!("{}.{bb:?}", entry.name), Vec::new(), Vec::new()));
-        };
-        let result = Some(entry.body.local_name(destination.local));
-        let name = match entry.body.call(bb) {
-            Some((callee, n)) => format!("{}.{callee}#{n}", entry.name),
-            None => format!("{}.{bb:?}", entry.name),
-        };
-        Some((name, vec![result], vec![1]))
-    });
-
-    // A call's result has no template naming the variables it depends on; the constraint that
-    // defines it, made at the call, names them, and among them the call's arguments are shown
-    // apart from the other variables. The constraints are then shown with those names.
-    add_constraints(tcx, input.system, &names, &mut entries);
-    for entry in entries.values() {
-        let in_loops = entry.loops.values().flat_map(|(_, cs)| cs);
-        for c in entry.constraints.iter().chain(in_loops) {
-            if let Expr::Pred(name, groups, args) = &c.conclusion {
-                if !groups.is_empty() {
-                    names.name_args_after(name, args);
-                }
-            }
-        }
-    }
-    for (p, def, bb) in names.call_results() {
-        let Some(entry) = entries.get(&def) else {
-            continue;
-        };
-        let call_args: Vec<String> = entry
-            .body
-            .call_args(bb)
-            .into_iter()
-            .flatten()
-            .map(|local| entry.body.local_name(local))
-            .collect();
-        names.group_call_args(p, &call_args);
-    }
+    names.name_calls(
+        |def, bb| {
+            let body = &entries.get(&def)?.body;
+            let rustc_middle::mir::TerminatorKind::Call { destination, .. } =
+                &body.terminator(bb)?.kind
+            else {
+                return None;
+            };
+            let (callee, n) = body.call(bb)?;
+            Some(sites::CallAt {
+                name: format!("{}.{callee}#{n}", entries[&def].name),
+                result: body.local_name(destination.local),
+                arguments: body.call_args(bb).into_iter().flatten().collect(),
+            })
+        },
+        |def, path| entries[&def].body.path_name(path),
+    );
     add_constraints(tcx, input.system, &names, &mut entries);
 
     let mut entries: Vec<_> = entries.into_values().collect();
@@ -350,6 +325,8 @@ pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) {
         contracts: input.contracts.clone(),
         blocks: input.blocks.clone(),
         answer: input.answer,
+        template_sites: input.template_sites,
+        template_vars: input.template_vars,
     };
     let (entries, names) = entries(tcx, config, &input);
     let solution = match (solution_unavailable(input.answer), &input.answer.model) {

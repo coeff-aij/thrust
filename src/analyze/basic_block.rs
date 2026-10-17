@@ -2362,6 +2362,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             bb_index = self.basic_block.as_u32()
         );
         let _guard = span.enter();
+        let site = analyze::TemplateSite::Code(self.local_def_id, self.basic_block);
+        let previous = self.ctx.enter_template_site(site);
         self.register_enum_defs();
 
         let outer_fn_param_vars = self.bind_locals(&expected.as_ref().params);
@@ -2371,6 +2373,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let term = self.elaborated_terminator();
         self.analyze_terminator_binds(&term, expected_fn, &outer_fn_param_vars);
         self.analyze_terminator_goto(&term, expected_fn, &outer_fn_param_vars);
+        self.ctx.leave_template_site(previous);
     }
 }
 

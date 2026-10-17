@@ -195,6 +195,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         )
     )]
     fn refine_fn_def(&mut self, local_def_id: LocalDefId) {
+        let previous = self
+            .ctx
+            .enter_template_site(analyze::TemplateSite::Contract(local_def_id));
+        self.refine_fn_def_at_site(local_def_id);
+        self.ctx.leave_template_site(previous);
+    }
+
+    fn refine_fn_def_at_site(&mut self, local_def_id: LocalDefId) {
         let sig = self.ctx.fn_sig(local_def_id.to_def_id());
         let is_law_impl = self.is_law_impl(local_def_id);
         let outside_selection = self.is_outside_selection(local_def_id);

@@ -18,8 +18,8 @@ use super::debug;
 use super::{Atom, Body, Clause, DebugInfo, Sort, TermVarIdx};
 
 /// A convenience trait to represent constraints on variables used in [`ClauseBuilder`] at once.
-pub trait Var: Eq + Ord + Hash + Copy + Debug + 'static {}
-impl<T: Eq + Ord + Hash + Copy + Debug + 'static> Var for T {}
+pub trait Var: Eq + Ord + Hash + Copy + Debug + Send + Sync + 'static {}
+impl<T: Eq + Ord + Hash + Copy + Debug + Send + Sync + 'static> Var for T {}
 
 // https://stackoverflow.com/questions/64838355/how-do-i-create-a-hashmap-with-type-erased-keys
 trait Key {

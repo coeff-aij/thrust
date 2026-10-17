@@ -8,16 +8,18 @@
 
 use std::collections::{HashMap, HashSet};
 
-use rustc_middle::mir::BasicBlock;
+use rustc_middle::mir::{BasicBlock, Local};
 use rustc_span::def_id::LocalDefId;
 use rustc_span::Span;
 
+use crate::analyze::TemplateSite;
 use crate::chc;
-use crate::refine::{BasicBlockType, BasicBlockTypeParamKind};
+use crate::chc::debug::ErasedVar;
+use crate::refine::{BasicBlockType, BasicBlockTypeParamKind, Var, VarPath};
 use crate::rty;
+use crate::rty::RefinedTypeVar;
 
 use super::body::DefBody;
-use super::constraints::Provenance;
 use super::expr::{self, Expr, PredHead};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,18 +89,26 @@ pub struct Site {
     pub signature: Option<chc::PredVarId>,
 }
 
-/// Where each predicate variable was made.
-#[derive(Debug, Clone, Copy)]
-struct Made {
-    def: Option<LocalDefId>,
-    bb: Option<BasicBlock>,
-    in_contract: bool,
+/// What the analysis tells of the call ending a block, for the predicate variables made for its
+/// result.
+pub struct CallAt {
+    /// The name of the result's variable: `f.g#k` for the `k`-th call to `g` in `f`.
+    pub name: String,
+    /// The local the result goes to.
+    pub result: String,
+    /// The locals the call's arguments are, in order.
+    pub arguments: Vec<Local>,
 }
 
 #[derive(Debug, Default)]
 pub struct Names {
     pub preds: HashMap<chc::PredVarId, PredInfo>,
-    made: HashMap<chc::PredVarId, Made>,
+    /// Where the analysis made each template's predicate variable.
+    sites: HashMap<chc::PredVarId, TemplateSite>,
+    /// The variable each argument of a template's predicate variable is.
+    vars: HashMap<chc::PredVarId, Vec<Option<ErasedVar>>>,
+    /// The query's names of the system's predicate variables.
+    query_names: HashSet<String>,
     /// The predicate variables without arguments that every solution makes true: those a clause
     /// derives from nothing but others of them, such as a function's entry being reached. A
     /// constraint's premise that applies one says nothing and is not shown.
@@ -134,23 +144,16 @@ fn always_true(system: &chc::System) -> HashSet<chc::PredVarId> {
 }
 
 impl Names {
-    pub fn new(system: &chc::System) -> Self {
-        let made = system
-            .pred_vars
-            .iter_enumerated()
-            .map(|(p, def)| {
-                let provenance = Provenance::of(&def.debug_info);
-                let made = Made {
-                    def: provenance.def,
-                    bb: provenance.bb,
-                    in_contract: def.debug_info.get("span") == Some("refine_fn_def"),
-                };
-                (p, made)
-            })
-            .collect();
+    pub fn new(
+        system: &chc::System,
+        sites: &HashMap<chc::PredVarId, TemplateSite>,
+        vars: &HashMap<chc::PredVarId, Vec<Option<ErasedVar>>>,
+    ) -> Self {
         Names {
             preds: HashMap::new(),
-            made,
+            sites: sites.clone(),
+            vars: vars.clone(),
+            query_names: system.pred_vars.indices().map(|p| p.to_string()).collect(),
             always_true: always_true(system),
         }
     }
@@ -171,121 +174,138 @@ impl Names {
         }
     }
 
-    /// Names the arguments of the predicate variable `name` that its template leaves unnamed after
-    /// `args`, its arguments in the head of a constraint of the code that made it.
-    pub fn name_args_after(&mut self, name: &str, args: &[Expr]) {
-        let Some(info) = self.preds.values_mut().find(|info| info.name == name) else {
-            return;
-        };
-        if info.args.len() < args.len() {
-            info.args.resize(args.len(), None);
-        }
-        for (slot, arg) in info.args.iter_mut().zip(args) {
-            match arg {
-                Expr::Sym(s)
-                    if slot.is_none() && !s.starts_with("__tmp_chc_") && !is_literal(s) =>
-                {
-                    *slot = Some(s.clone());
-                }
-                _ => {}
-            }
-        }
-    }
-
-    /// The predicate variables for the result of a call, with the block ending in the call.
-    pub fn call_results(&self) -> Vec<(chc::PredVarId, LocalDefId, BasicBlock)> {
-        self.preds
-            .iter()
-            .filter(|(_, info)| info.groups.len() == 1)
-            .filter_map(|(p, info)| Some((*p, info.owner.def(), self.made.get(p)?.bb?)))
-            .collect()
-    }
-
-    /// Shows the arguments of the call result `p` in three groups: the result, the call's
-    /// arguments, named `call_args` in order, and the other variables live at the call.
-    pub fn group_call_args(&mut self, p: chc::PredVarId, call_args: &[String]) {
-        let Some(info) = self.preds.get_mut(&p) else {
-            return;
-        };
-        let mut rest: Vec<usize> = (1..info.args.len()).collect();
-        let mut order = vec![0];
-        for name in call_args {
-            let found = rest
-                .iter()
-                .position(|&k| info.args[k].as_deref() == Some(name.as_str()));
-            if let Some(i) = found {
-                order.push(rest.remove(i));
-            }
-        }
-        let arguments = order.len() - 1;
-        order.extend(rest);
-        info.args = order.iter().map(|&k| info.args[k].clone()).collect();
-        info.groups = vec![1, arguments];
-        info.order = Some(order);
-    }
-
     /// Whether `name` is how the query names a predicate variable of the system.
     pub fn is_pred_var(&self, name: &str) -> bool {
-        self.made.keys().any(|p| p.to_string() == name)
+        self.query_names.contains(name)
     }
 
     fn made_in_contract(&self, p: chc::PredVarId, def: LocalDefId) -> bool {
-        self.made
-            .get(&p)
-            .is_some_and(|m| m.in_contract && m.def == Some(def))
+        self.sites.get(&p) == Some(&TemplateSite::Contract(def))
     }
 
     fn made_in_block(&self, p: chc::PredVarId, def: LocalDefId, bb: BasicBlock) -> bool {
-        self.made
-            .get(&p)
-            .is_some_and(|m| !m.in_contract && m.def == Some(def) && m.bb == Some(bb))
+        self.sites.get(&p) == Some(&TemplateSite::Block(def, bb))
     }
 
-    /// Names each predicate variable no template claimed after the code it was made in:
-    /// `name_of(def, bb)` names one made in block `bb` of `def`, with what its arguments stand
-    /// for as far as the code tells.
-    pub fn name_rest(
+    /// A name not given yet: `base`, or `base_2`, `base_3`, ….
+    fn fresh(&self, base: String) -> String {
+        let used: HashSet<&str> = self.preds.values().map(|i| i.name.as_str()).collect();
+        (1..)
+            .map(|n| match n {
+                1 => base.clone(),
+                n => format!("{base}_{n}"),
+            })
+            .find(|name| !used.contains(name.as_str()))
+            .unwrap()
+    }
+
+    /// Names the predicate variables made in the code of a block: the result of the call ending
+    /// it, `call_at(def, bb)` telling of the call and `path_name(def, path)` naming what a
+    /// variable holds, and the refinements nested in the result's type. The result's template is
+    /// over the variables in scope at the call, the nested ones over none; its arguments are
+    /// shown as the result, the call's arguments, and the other variables.
+    pub fn name_calls(
         &mut self,
-        name_of: impl Fn(
-            LocalDefId,
-            Option<BasicBlock>,
-        ) -> Option<(String, Vec<Option<String>>, Vec<usize>)>,
+        call_at: impl Fn(LocalDefId, BasicBlock) -> Option<CallAt>,
+        path_name: impl Fn(LocalDefId, &VarPath) -> String,
     ) {
-        let mut rest: Vec<_> = self
-            .made
+        let mut made: Vec<(chc::PredVarId, LocalDefId, BasicBlock)> = self
+            .sites
             .iter()
             .filter(|(p, _)| !self.preds.contains_key(p))
-            .filter_map(|(p, m)| Some((*p, m.def?, m.bb)))
+            .filter_map(|(p, site)| match *site {
+                TemplateSite::Code(def, bb) => Some((*p, def, bb)),
+                _ => None,
+            })
             .collect();
-        rest.sort_by_key(|(p, _, _)| p.index());
-        let mut used: HashSet<String> = self.preds.values().map(|i| i.name.clone()).collect();
-        for (p, def, bb) in rest {
-            let Some((base, args, groups)) = name_of(def, bb) else {
+        made.sort_by_key(|(p, _, _)| p.index());
+        for (p, def, bb) in made {
+            let Some(call) = call_at(def, bb) else {
                 continue;
             };
-            let name = (1..)
-                .map(|n| match n {
-                    1 => base.clone(),
-                    n => format!("{base}_{n}"),
-                })
-                .find(|name| !used.contains(name))
-                .unwrap();
-            used.insert(name.clone());
-            let info = PredInfo {
-                name,
-                args,
-                groups,
-                order: None,
-                owner: Owner::Other { def },
+            let args: Vec<Option<CallArg>> = self.vars[&p].iter().map(CallArg::of).collect();
+            let info = if args.iter().all(Option::is_some) {
+                let args: Vec<CallArg> = args.into_iter().flatten().collect();
+                self.call_result(def, &call, &args, |path| path_name(def, path))
+            } else {
+                PredInfo {
+                    name: self.fresh(format!("{}.inner", call.name)),
+                    args: vec![None; args.len()],
+                    groups: Vec::new(),
+                    order: None,
+                    owner: Owner::Other { def },
+                }
             };
             self.preds.insert(p, info);
         }
     }
+
+    fn call_result(
+        &self,
+        def: LocalDefId,
+        call: &CallAt,
+        args: &[CallArg],
+        path_name: impl Fn(&VarPath) -> String,
+    ) -> PredInfo {
+        let is_result = |k: usize| matches!(args[k], CallArg::Result);
+        let local = |k: usize| match &args[k] {
+            CallArg::Held(path) if path.steps.is_empty() => Some(path.local),
+            _ => None,
+        };
+        let mut order: Vec<usize> = (0..args.len()).filter(|&k| is_result(k)).collect();
+        let results = order.len();
+        for argument in &call.arguments {
+            let found =
+                (0..args.len()).find(|&k| local(k) == Some(*argument) && !order.contains(&k));
+            order.extend(found);
+        }
+        let arguments = order.len() - results;
+        let rest: Vec<usize> = (0..args.len()).filter(|k| !order.contains(k)).collect();
+        order.extend(rest);
+        let names = order
+            .iter()
+            .map(|&k| match &args[k] {
+                CallArg::Result => Some(call.result.clone()),
+                CallArg::Held(path) => Some(path_name(path)),
+                CallArg::Other => None,
+            })
+            .collect();
+        PredInfo {
+            name: self.fresh(call.name.clone()),
+            args: names,
+            groups: vec![results, arguments],
+            order: Some(order),
+            owner: Owner::Other { def },
+        }
+    }
 }
 
-/// Whether `s` is a constant rather than a variable: a number or a Boolean.
-fn is_literal(s: &str) -> bool {
-    s == "true" || s == "false" || s.starts_with(|c: char| c.is_ascii_digit())
+/// An argument of the template of a call's result.
+enum CallArg {
+    /// The result itself.
+    Result,
+    /// A value of a local in scope at the call.
+    Held(VarPath),
+    /// A variable in scope that holds no local's value.
+    Other,
+}
+
+impl CallArg {
+    /// What the template's argument `var` is; `None` when it is not over the variables in scope,
+    /// as a refinement nested in the result's type is not.
+    fn of(var: &Option<ErasedVar>) -> Option<CallArg> {
+        let var = var.as_ref()?;
+        if let Some(path) = var.downcast_ref::<VarPath>() {
+            return Some(CallArg::Held(path.clone()));
+        }
+        if var.downcast_ref::<Var>().is_some() {
+            return Some(CallArg::Other);
+        }
+        Some(match var.downcast_ref::<RefinedTypeVar<Var>>()? {
+            RefinedTypeVar::Value => CallArg::Result,
+            _ => CallArg::Other,
+        })
+    }
 }
 
 /// An existential of a refinement, which Thrust introduces in typing a value.

@@ -9,6 +9,7 @@ use rustc_span::def_id::{DefIndex, LocalDefId};
 use rustc_span::Span;
 
 use crate::chc;
+use crate::refine::VarPath;
 
 use super::body::DefBody;
 use super::expr::{self, Expr};
@@ -240,17 +241,37 @@ fn candidate_names(
         .chain(std::iter::once(&origin.head));
     for entry in entries {
         for mapping in entry.mappings() {
-            let local = mapping
-                .source()
-                .strip_prefix('_')
-                .and_then(|n| n.parse::<usize>().ok());
-            if let (Some(local), Some(body)) = (local, body) {
-                let name = body.local_name(mir::Local::from_usize(local));
-                candidates.push((mapping.chc_var(), name));
+            let path = mapping.var().and_then(path_of);
+            if let (Some(path), Some(body)) = (path, body) {
+                candidates.push((mapping.chc_var(), body.path_name(&path)));
             }
         }
     }
     candidates
+}
+
+/// What a variable of the analysis holds, as the code that made it described it, or as the local
+/// it is.
+pub fn path_of(var: &chc::debug::ErasedVar) -> Option<VarPath> {
+    use crate::refine::Var;
+    if let Some(path) = var.downcast_ref::<VarPath>() {
+        return Some(path.clone());
+    }
+    let free = |v: &crate::rty::RefinedTypeVar<Var>| match v {
+        crate::rty::RefinedTypeVar::Free(v) => Some(*v),
+        _ => None,
+    };
+    let var = match var.downcast_ref::<Var>() {
+        Some(var) => *var,
+        None => free(var.downcast_ref::<crate::rty::RefinedTypeVar<Var>>()?)?,
+    };
+    match var {
+        Var::Local(local) => Some(VarPath {
+            local,
+            steps: Vec::new(),
+        }),
+        Var::Temp(_) => None,
+    }
 }
 
 /// The clause as premises and a conclusion over named variables: variables equal to one another

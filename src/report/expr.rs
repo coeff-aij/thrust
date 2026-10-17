@@ -229,7 +229,11 @@ pub fn grouped(args: &[String], groups: &[usize]) -> String {
         })
         .collect();
     let ends_at = |i: usize| bounds.iter().filter(|&&b| b == i).count();
-    let mut out = String::new();
+    // Empty groups before the first argument show as their separators.
+    let mut out = match ends_at(0) {
+        0 => String::new(),
+        n => format!("{} ", ";".repeat(n)),
+    };
     for (i, arg) in args.iter().enumerate() {
         if i > 0 {
             match ends_at(i) {
@@ -606,6 +610,8 @@ mod tests {
         assert_eq!(e.to_string(), "main.inc#1(y; a;)");
         let e = Expr::Pred("f.g#1".into(), vec![1, 1], vec![s("r"), s("a"), s("x")]);
         assert_eq!(e.to_string(), "f.g#1(r; a; x)");
+        let e = Expr::Pred("f.g#1".into(), vec![0, 1], vec![s("a"), s("x")]);
+        assert_eq!(e.to_string(), "f.g#1(; a; x)");
         let e = Expr::Pred("main.loop#1".into(), vec![], vec![s("x"), s("y")]);
         assert_eq!(e.to_string(), "main.loop#1(x, y)");
     }
