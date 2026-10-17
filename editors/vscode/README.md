@@ -9,20 +9,22 @@ Runs Thrust on the Rust file in the editor and shows its report (`THRUST_REPORT=
   facts of the run reaching it at the code of the constraint that derived each;
 - a part of the constraints without an answer (a timeout), or refuted without a refutation, at
   the first line of each of its functions, and a whole query without an answer as a warning at
-  the top of the file;
+  the top of the file, with what the solver answered (`Timeout(30s)`);
 - rustc's own errors at their spans; its `verification error` is left out, since the report
   places the same failure;
 - the inferred contract of each function and invariant of each loop as an inlay hint at the end
   of its line, and in full (template, solution) on hover;
-- the counterexample's facts as inlay hints on the lines of the constraints that derived them, so
-  a loop shows its iterations on its header line;
+- the counterexample's facts as inlay hints on the lines of the constraints that derived them,
+  each variable once with its values from the last fact back (`i = 1 ← 0`), so a loop header
+  shows its iterations, and the facts in full on hover;
 - the verdict of the report's `verdict` line (`safe`, `unsafe`, `unknown`, or `error` for a run
   that wrote none, such as a compile error) in the status bar; clicking it opens the run's
   command and output.
 
-It reads version 1 of the report, the `version` of its first line, and resolves the report's
-files against the `root` that line gives. A report without that line, or of another version, is
-shown as an error and not read.
+It reads version 2 of the report, the `version` of its first line, with columns counted as that
+line's `columns` says, `{"base":1,"unit":"char","end":"exclusive"}`, and resolves the report's
+files against the `root` that line gives. A report without that line, of another version or with
+other columns is shown as an error and not read.
 
 The design and the other options are in thrust-research `docs/design/editor-integration.md`.
 
@@ -69,7 +71,9 @@ standard error and the exit status) for the programs next to them: `safe`, `safe
 (`THRUST_SPLIT=2`, inferred contracts per part), `unsafe` (one refutation of an `ensures`),
 `split` (`THRUST_SPLIT=2`, a refutation per refuted part, a loop's iterations), `unknown` (the
 whole query times out), `unknown-split` (a part times out), `contracts` (an assertion relying on
-a written contract), `precondition` (a refuted `requires`) and `broken` (a compile error).
+a written contract), `precondition` (a refuted `requires`) and `broken` (a compile error), with
+synthetic variants of them (another version or column unit, each verdict, a refuted part without
+a refutation, run steps of several unknowns on one line).
 `test/capture.sh <thrust-rustc command>` captures them again, writing the report's root as `.`.
 The runner's tests replay the cases through `test/fake-thrust.js`. Nothing here starts VS Code;
 the VS Code side (`src/extension.ts`) is only compiled.
@@ -80,7 +84,7 @@ the VS Code side (`src/extension.ts`) is only compiled.
   another file's run replace the shown ones.
 - A failing `ensures` is at the zero-width span after the function's closing brace, where it
   fails; the diagnostic covers that line, and the annotation is related information.
-- A premise of a constraint has no span, so only the run's facts are related information, and a
-  fact is one string rather than values per variable.
-- Inferred contracts come only with `z3`; PCSat reports verdicts and refutations without them.
+- A premise of a constraint has no span, so only the run's facts are related information.
+- Refutations and inferred contracts come only with `z3`; with PCSat only the verdicts and the
+  parts are shown.
 - Diagnostics and hints are not moved when the file is edited; they are replaced at the next run.

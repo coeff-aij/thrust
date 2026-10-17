@@ -35,12 +35,12 @@ function findingsOf(c: Case): report.Finding[] {
 
 const fallback: report.Location = { file: "fallback.rs", line: 1, column: 1 };
 
-test("every line of every captured report is of a known kind, after a header of version 1", () => {
+test("every line of every captured report is of a known kind, after a header of version 2", () => {
   for (const name of cases) {
     const c = load(name);
     assert.deepStrictEqual(c.report.unparsed, [], name);
     assert.deepStrictEqual(c.other, [], name);
-    assert.deepStrictEqual(c.report.header, { kind: "report", version: 1, root: ".", columns: "1-based, in characters; end_column after the last" }, name);
+    assert.deepStrictEqual(c.report.header, { kind: "report", version: 2, root: ".", columns: { base: 1, unit: "char", end: "exclusive" } }, name);
     assert.ok(c.report.verdict, name);
   }
 });
@@ -53,15 +53,20 @@ test("a report without a header or of another version is refused", () => {
   assert.strictEqual(o.verdict, "error");
   assert.deepStrictEqual(report.findings(headless, [], o, fallback).map((f) => f.location), [fallback]);
   assert.deepStrictEqual(report.hints(headless), []);
-  const newer = report.parseReport([unsafe[0].replace('"version":1', '"version":2'), ...unsafe.slice(1)].join("\n"));
-  assert.match(report.verdictOf(1, newer, []).detail, /version 2; this extension reads version 1/);
+  const older = report.parseReport([unsafe[0].replace('"version":2', '"version":1'), ...unsafe.slice(1)].join("\n"));
+  assert.match(report.verdictOf(1, older, []).detail, /version 1; this extension reads version 2/);
+  // Columns counted otherwise than the extension counts them.
+  const utf8 = report.parseReport([unsafe[0].replace('"unit":"char"', '"unit":"utf-8"'), ...unsafe.slice(1)].join("\n"));
+  assert.match(report.verdictOf(1, utf8, []).detail, /counts columns as \{"base":1,"unit":"utf-8","end":"exclusive"\}/);
+  assert.deepStrictEqual(report.hints(utf8), []);
   // No report at all (the run stopped before writing one) is not a refusal.
   assert.strictEqual(report.refusal(report.parseReport("")), undefined);
 });
 
 test("the verdict line decides the verdict, whatever the exit status", () => {
   const header = load("safe").text.split("\n")[0];
-  const verdict = (v: string) => report.verdictOf(0, report.parseReport(`${header}\n{"kind":"verdict","verdict":"${v}","refutations":"one per query"}`), []).verdict;
+  const verdict = (v: string) =>
+    report.verdictOf(0, report.parseReport(`${header}\n{"kind":"verdict","verdict":"${v}","refutations":"one per query","message":null}`), []).verdict;
   assert.deepStrictEqual(["sat", "unsat", "timeout", "unknown", "error"].map(verdict), ["safe", "unsafe", "unknown", "unknown", "error"]);
   // A header without a verdict: the run stopped after the report began.
   assert.deepStrictEqual(report.verdictOf(101, report.parseReport(header), []), { verdict: "error", detail: "no verdict in the report, exit status 101" });
@@ -135,12 +140,12 @@ test("unsafe: the values at the failing line and each fact at its constraint's l
     facts.map((h) => [h.location.line, h.label]),
     [
       [5, "fails with result = -1, b = 0, a = 0, __tmp_mir_withdraw_3 = 0"],
-      [3, "withdraw.bb0(b = 0, a = 0, old(b) = 0, old(a) = 0)"],
+      [3, "b = 0, a = 0, old(b) = 0, old(a) = 0"],
     ],
   );
 });
 
-test("split: every part, a refutation per refuted part named by its part, facts of a loop joined on its line", () => {
+test("split: every part, a refutation per refuted part named by its part, a loop's iterations per variable on its line", () => {
   const c = load("split");
   const o = outcome(c);
   assert.deepStrictEqual(o, { verdict: "unsafe", detail: "3 parts: 1 sat, 2 unsat; 0 from the cache" });
@@ -148,17 +153,17 @@ test("split: every part, a refutation per refuted part named by its part, facts 
   assert.deepStrictEqual(
     c.report.parts.map((p) => [p.id, p.functions.map((f) => `${f.fn}@${f.span.line}-${f.span.end_line}`).join(","), p.verdict]),
     [
-      [0, "withdraw@3-5", "unsat"],
-      [1, "count_to@9-17", "unsat"],
-      [2, "main@19-24", "sat"],
+      [1, "withdraw@3-5", "unsat"],
+      [2, "count_to@9-17", "unsat"],
+      [3, "main@19-24", "sat"],
     ],
   );
   const findings = findingsOf(c);
   assert.deepStrictEqual(
     findings.map((f) => [f.location.line, f.message.split("\n")[0]]),
     [
-      [5, "refuted: ensures in `withdraw`, part 0 (`withdraw`)"],
-      [17, "refuted: ensures in `count_to`, part 1 (`count_to`)"],
+      [5, "refuted: ensures in `withdraw`, part 1 (`withdraw`)"],
+      [17, "refuted: ensures in `count_to`, part 2 (`count_to`)"],
     ],
   );
   const loop = findings[1];
@@ -174,30 +179,31 @@ test("split: every part, a refutation per refuted part named by its part, facts 
   );
   const loopLine = report.hints(c.report).find((h) => h.kind === "fact" && h.location.line === 12);
   assert.ok(loopLine);
-  assert.ok(loopLine.label.startsWith("count_to.loop#1(n = 1, i = 1, s = 2, old(n) = 1)  ←  count_to.loop#1(n = 1, i = 0"));
-  assert.ok(loopLine.label.length <= 100);
+  // Each variable once, with its values from the last iteration back to the entry.
+  assert.strictEqual(loopLine.label, "n = 1, i = 1 ← 0, s = 2 ← 0, old(n) = 1");
   assert.match(loopLine.tooltip, /\ncount_to\.loop#1\(n = 1, i = 1, s = 2, old\(n\) = 1\)\ncount_to\.loop#1\(n = 1, i = 0, s = 0, old\(n\) = 1\)$/);
 });
 
 test("split: a refuted part without a refutation is an error at its functions", () => {
   const c = load("split");
-  const withoutFirst = { ...c.report, failures: c.report.failures.filter((f) => f.part !== 0) };
+  const withoutFirst = { ...c.report, failures: c.report.failures.filter((f) => f.part !== 1) };
   const findings = report.findings(withoutFirst, c.diagnostics, outcome(c), fallback);
   assert.deepStrictEqual(
     findings.map((f) => [f.location, f.severity, f.message.split("\n")[0]]),
     [
-      [{ file: "unsafe.rs", line: 17, column: 2 }, "error", "refuted: ensures in `count_to`, part 1 (`count_to`)"],
-      [{ file: "unsafe.rs", line: 3, column: 1 }, "error", "Thrust: unsat in part 0 (`withdraw`); no refutation"],
+      [{ file: "unsafe.rs", line: 17, column: 2 }, "error", "refuted: ensures in `count_to`, part 2 (`count_to`)"],
+      [{ file: "unsafe.rs", line: 3, column: 1 }, "error", "Thrust: unsat in part 1 (`withdraw`); no refutation"],
     ],
   );
 });
 
-test("unknown: a timeout of the whole query is read from the verdict line and shown at the file", () => {
+test("unknown: a timeout of the whole query is read from the verdict line, with the solver's message, and shown at the file", () => {
   const c = load("unknown");
+  assert.strictEqual(c.report.verdict?.message, "Timeout(2s)");
   const o = outcome(c);
-  assert.deepStrictEqual(o, { verdict: "unknown", detail: "the solver answered timeout" });
+  assert.deepStrictEqual(o, { verdict: "unknown", detail: "the solver answered Timeout(2s)" });
   assert.deepStrictEqual(findingsOf(c), [
-    { location: fallback, severity: "warning", message: "Thrust: unknown (the solver answered timeout)", related: [], source: "thrust" },
+    { location: fallback, severity: "warning", message: "Thrust: unknown (the solver answered Timeout(2s))", related: [], source: "thrust" },
   ]);
   assert.deepStrictEqual(report.hints(c.report), []);
 });
@@ -209,8 +215,8 @@ test("unknown-split: a part that times out is shown at the start of each of its 
   assert.deepStrictEqual(
     findingsOf(c).map((f) => [f.location, f.severity, f.message]),
     [
-      [{ file: "unknown.rs", line: 1, column: 1 }, "warning", "Thrust: timeout in part 0 (`mul`, `main`); no refutation"],
-      [{ file: "unknown.rs", line: 11, column: 1 }, "warning", "Thrust: timeout in part 0 (`mul`, `main`); no refutation"],
+      [{ file: "unknown.rs", line: 1, column: 1 }, "warning", "Thrust: timeout in part 1 (`mul`, `main`); no refutation"],
+      [{ file: "unknown.rs", line: 11, column: 1 }, "warning", "Thrust: timeout in part 1 (`mul`, `main`); no refutation"],
     ],
   );
 });
@@ -236,6 +242,43 @@ test("precondition: a refuted requires at the call, with the callee's annotation
   assert.deepStrictEqual(failure.related, [
     { location: { file: "precondition.rs", line: 1, column: 27, endLine: 1, endColumn: 33 }, message: "the annotation it checks" },
   ]);
+});
+
+test("hints: the steps of one line grouped by unknown, a step without named arguments as its fact", () => {
+  const span = { file: "a.rs", line: 4, column: 1, end_line: 4, end_column: 9 };
+  const step = (pred: string, args: [string, string][], fact: string): report.Step => ({
+    depth: 0,
+    fact,
+    via: "c1",
+    obligation: "function entry",
+    span,
+    pred,
+    args: args.map(([name, value]) => ({ name, value })),
+  });
+  const failure: report.Failure = {
+    part: null,
+    constraint: "c0",
+    fn: "main",
+    span: null,
+    obligation: "assertion",
+    premises: [],
+    conclusion: "false",
+    run: [
+      step("main.price#1", [["p", "100"]], "main.price#1(p = 100)"),
+      step("price.pre", [["units", "10"]], "price.pre(units = 10)"),
+      step("main.bb0", [], "main.bb0"),
+    ],
+    truncated: false,
+    values: [],
+    inferred: [],
+    annotation: [],
+    assumes: [],
+  };
+  const parsed: report.Report = { ...load("unsafe").report, failures: [failure], sites: [] };
+  const [hint, ...rest] = report.hints(parsed);
+  assert.deepStrictEqual(rest, []);
+  assert.strictEqual(hint.label, "p = 100; units = 10; main.bb0");
+  assert.match(hint.tooltip, /\nmain\.price#1\(p = 100\)\nprice\.pre\(units = 10\)\nmain\.bb0$/);
 });
 
 test("broken: a compile error is an error at rustc's span, without a report", () => {

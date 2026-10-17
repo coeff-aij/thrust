@@ -5,7 +5,10 @@
 import * as path from "path";
 
 /// The version of the report this file reads, the `version` of its first line.
-export const REPORT_VERSION = 1;
+export const REPORT_VERSION = 2;
+
+/// How the spans' columns count, as the header states it; the only convention this file reads.
+export const COLUMNS: Columns = { base: 1, unit: "char", end: "exclusive" };
 
 /// A span as the report writes it: 1-based lines and columns in characters, `end_column` after
 /// the last character, the file relative to the report's root.
@@ -32,11 +35,18 @@ export interface FnSpan {
   span: Range;
 }
 
-/// The first line: the format's version, the directory relative files are in, the column unit.
+/// How a span's columns count: from `base`, in `unit`, `end_column` after the last (`exclusive`).
+export interface Columns {
+  base: number;
+  unit: string;
+  end: string;
+}
+
+/// The first line: the format's version, the directory relative files are in, how columns count.
 export interface Header {
   version: number;
   root: string;
-  columns: string;
+  columns: Columns;
 }
 
 export interface VerdictLine {
@@ -44,6 +54,9 @@ export interface VerdictLine {
   verdict: string;
   /// `one per query` or `one per part`: how many obligations a failure is refuted at.
   refutations: string;
+  /// What the solver answered when it is neither `sat` nor `unsat` (`Timeout(30s)`), for a
+  /// query solved whole; null otherwise.
+  message: string | null;
 }
 
 export interface Part {
@@ -60,6 +73,9 @@ export interface Step {
   via: string | null;
   obligation: string | null;
   span: Range | null;
+  /// The fact's unknown, and the arguments the program names with their values.
+  pred: string;
+  args: Value[];
 }
 
 export interface Value {
@@ -232,19 +248,28 @@ function addLine(report: Report, object: Record<string, unknown> | undefined): b
 }
 
 /// Why the report cannot be read, if it cannot: it has lines but no header (a Thrust before the
-/// header), or a version other than the one read here. An empty report (a run that stopped
-/// before writing one) is no refusal.
+/// header), a version other than the one read here, or columns counted otherwise. An empty
+/// report (a run that stopped before writing one) is no refusal.
 export function refusal(report: Report): string | undefined {
   if (report.header) {
-    return report.header.version === REPORT_VERSION
-      ? undefined
-      : `the report is of version ${report.header.version}; this extension reads version ${REPORT_VERSION}`;
+    return headerRefusal(report.header);
   }
   const lines =
     report.parts.length + report.failures.length + report.sites.length + report.constraints.length + report.unparsed.length;
   return lines > 0 || report.verdict
     ? `the report has no header line (a Thrust older than report version ${REPORT_VERSION})`
     : undefined;
+}
+
+function headerRefusal(header: Header): string | undefined {
+  if (header.version !== REPORT_VERSION) {
+    return `the report is of version ${header.version}; this extension reads version ${REPORT_VERSION}`;
+  }
+  const columns = header.columns;
+  if (columns?.base !== COLUMNS.base || columns.unit !== COLUMNS.unit || columns.end !== COLUMNS.end) {
+    return `the report counts columns as ${JSON.stringify(columns)}; this extension reads ${JSON.stringify(COLUMNS)}`;
+  }
+  return undefined;
 }
 
 /// The directory the report's files are relative to: its root, against the run's directory.
@@ -297,7 +322,7 @@ export function verdictOf(exitCode: number | null, report: Report, diagnostics: 
 
 function queryDetail(line: VerdictLine, failures: number): string {
   if (line.verdict !== "unsat") {
-    return `the solver answered ${line.verdict}`;
+    return `the solver answered ${line.message ?? line.verdict}`;
   }
   return failures > 0 ? `refuted, ${line.refutations}; other obligations may fail too` : "refuted, without a refutation to show";
 }
@@ -473,29 +498,63 @@ function siteHint(site: Site): Hint[] {
   return [{ location: headOf(site.span), label: truncate(`${what}: ${site.inferred}`), tooltip, kind: "inferred" }];
 }
 
-/// One hint per line: the facts derived by the constraints of one line are joined, latest first.
+/// One hint per line: the values where the obligation fails, and the facts derived by the
+/// constraints of that line, each unknown's arguments by variable with their values latest first
+/// (`i = 2 ← 1 ← 0`).
 function failureHints(failure: Failure): Hint[] {
-  const byLine = new Map<string, { location: Location; facts: string[] }>();
-  const add = (location: Location, fact: string) => {
+  const byLine = new Map<string, { location: Location; fails?: string; steps: Step[] }>();
+  const entry = (location: Location) => {
     const key = `${location.file}:${location.line}`;
-    const entry = byLine.get(key) ?? { location, facts: [] };
-    entry.facts.push(fact);
-    byLine.set(key, entry);
+    const found = byLine.get(key) ?? { location, steps: [] };
+    byLine.set(key, found);
+    return found;
   };
   if (failure.span && failure.values.length > 0) {
-    add(headOf(failure.span), `fails with ${formatValues(failure.values)}`);
+    entry(headOf(failure.span)).fails = `fails with ${formatValues(failure.values)}`;
   }
   for (const step of failure.run) {
     if (step.span) {
-      add(headOf(step.span), step.fact);
+      entry(headOf(step.span)).steps.push(step);
     }
   }
-  return [...byLine.values()].map(({ location, facts }) => ({
-    location,
-    label: truncate(facts.join("  ←  ")),
-    tooltip: [`counterexample of ${failure.constraint} (${failure.obligation ?? "obligation"}):`, "", ...facts].join("\n"),
-    kind: "fact" as const,
-  }));
+  return [...byLine.values()].map(({ location, fails, steps }) => {
+    const segments = (fails ? [fails] : []).concat(byPred(steps).map(stepsLabel));
+    const facts = (fails ? [fails] : []).concat(steps.map((s) => s.fact));
+    return {
+      location,
+      label: truncate(segments.join("; ")),
+      tooltip: [`counterexample of ${failure.constraint} (${failure.obligation ?? "obligation"}):`, "", ...facts].join("\n"),
+      kind: "fact" as const,
+    };
+  });
+}
+
+/// The steps grouped by their unknown, in the order the unknowns first occur.
+function byPred(steps: Step[]): Step[][] {
+  const groups = new Map<string, Step[]>();
+  for (const step of steps) {
+    groups.set(step.pred, [...(groups.get(step.pred) ?? []), step]);
+  }
+  return [...groups.values()];
+}
+
+/// The steps of one unknown, each variable once with its values in the steps' order, a value
+/// repeated in the next step said once; the fact itself when the program names no argument.
+function stepsLabel(steps: Step[]): string {
+  const values = new Map<string, string[]>();
+  for (const step of steps) {
+    for (const arg of step.args) {
+      const seen = values.get(arg.name) ?? [];
+      if (seen[seen.length - 1] !== arg.value) {
+        seen.push(arg.value);
+      }
+      values.set(arg.name, seen);
+    }
+  }
+  if (values.size === 0) {
+    return steps.map((s) => s.fact).join("  ←  ");
+  }
+  return [...values].map(([name, seen]) => `${name} = ${seen.join(" ← ")}`).join(", ");
 }
 
 export function formatValues(values: Value[]): string {

@@ -1,2 +1,2 @@
-{"kind":"report","version":1,"root":".","columns":"1-based, in characters; end_column after the last"}
-{"kind":"verdict","verdict":"timeout","refutations":"one per query"}
+{"kind":"report","version":2,"root":".","columns":{"base":1,"unit":"char","end":"exclusive"}}
+{"kind":"verdict","verdict":"timeout","refutations":"one per query","message":"Timeout(2s)"}
