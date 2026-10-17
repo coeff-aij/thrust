@@ -163,24 +163,78 @@ fn tidy_term<V>(t: chc::Term<V>) -> chc::Term<V> {
     }
 }
 
+/// The formula a boolean term `t` stands for, if it is a comparison or a connective of them.
+fn as_formula<V>(t: chc::Term<V>) -> Option<chc::Formula<V>> {
+    use chc::{Formula, Function, Term};
+    let all = |ts: Vec<Term<V>>| ts.into_iter().map(as_formula).collect::<Option<Vec<_>>>();
+    match t {
+        Term::Bool(true) => Some(Formula::top()),
+        Term::Bool(false) => Some(Formula::bottom()),
+        Term::App(f, mut ts) if f == Function::NOT && ts.len() == 1 => {
+            Some(as_formula(ts.remove(0))?.not())
+        }
+        Term::App(f, ts) if f == Function::AND => Some(Formula::And(all(ts)?)),
+        Term::App(f, ts) if f == Function::OR => Some(Formula::Or(all(ts)?)),
+        Term::App(f, ts) if ts.len() == 2 => {
+            let p = chc::KnownPred::named(f.name())?;
+            Some(chc::Atom::new(p.into(), ts).into())
+        }
+        _ => None,
+    }
+}
+
+/// `x - y` as `(x, y)`.
+fn difference<V: Clone>(t: &chc::Term<V>) -> Option<(chc::Term<V>, chc::Term<V>)> {
+    match t {
+        chc::Term::App(f, ts) if *f == chc::Function::SUB && ts.len() == 2 => {
+            Some((ts[0].clone(), ts[1].clone()))
+        }
+        _ => None,
+    }
+}
+
 /// The components of two pairs or tuples equated.
-fn componentwise<V>(xs: Vec<chc::Term<V>>, ys: Vec<chc::Term<V>>) -> chc::Formula<V> {
+fn componentwise<V: Clone + PartialEq>(
+    xs: Vec<chc::Term<V>>,
+    ys: Vec<chc::Term<V>>,
+) -> chc::Formula<V> {
     let eq = |(x, y)| tidy_atom(chc::Atom::new(chc::KnownPred::EQUAL.into(), vec![x, y]));
     chc::Formula::And(xs.into_iter().zip(ys).map(eq).collect())
 }
 
 /// `atom` with its arguments tidied (see `tidy_term`), two pairs `<c, f>` or two tuples equal
-/// when their components are, and a comparison equated with `true` or `false` read as the comparison or its
-/// negation.
-fn tidy_atom<V>(atom: chc::Atom<V>) -> chc::Formula<V> {
+/// when their components are, a boolean term equated with `true` or `false` read as the formula
+/// it stands for or its negation, and `x - y` compared with `0` as `x` compared with `y`.
+fn tidy_atom<V: Clone + PartialEq>(atom: chc::Atom<V>) -> chc::Formula<V> {
     use chc::{KnownPred, Term};
     let args: Vec<Term<V>> = atom.args.into_iter().map(tidy_term).collect();
-    let equal = matches!(atom.pred, chc::Pred::Known(p) if p == KnownPred::EQUAL);
-    let not_equal = matches!(atom.pred, chc::Pred::Known(p) if p == KnownPred::NOT_EQUAL);
-    if atom.guard.is_some() || !(equal || not_equal) || args.len() != 2 {
+    let comparison = match atom.pred {
+        chc::Pred::Known(p) => KnownPred::named(p.name()) == Some(p) || p == KnownPred::NOT_EQUAL,
+        _ => false,
+    };
+    if atom.guard.is_some() || !comparison || args.len() != 2 {
         return chc::Atom { args, ..atom }.into();
     }
     let [a, b] = <[Term<V>; 2]>::try_from(args).ok().unwrap();
+    let zero = matches!(&b, Term::Int(k) if *k == 0.into());
+    let (a, b) = match difference(&a) {
+        Some((x, y)) if zero => (x, y),
+        _ => (a, b),
+    };
+    let equal = matches!(atom.pred, chc::Pred::Known(p) if p == KnownPred::EQUAL);
+    let not_equal = matches!(atom.pred, chc::Pred::Known(p) if p == KnownPred::NOT_EQUAL);
+    if !(equal || not_equal) {
+        return chc::Atom::new(atom.pred, vec![a, b]).into();
+    }
+    let read = match (&a, &b) {
+        (Term::Bool(value), t) | (t, Term::Bool(value)) if !matches!(t, Term::Bool(_)) => {
+            as_formula(t.clone()).map(|f| if *value == equal { f } else { f.not() })
+        }
+        _ => None,
+    };
+    if let Some(f) = read {
+        return tidy(f);
+    }
     match (a, b) {
         (Term::Mut(c1, f1), Term::Mut(c2, f2)) if equal => {
             componentwise(vec![*c1, *f1], vec![*c2, *f2])
@@ -188,20 +242,13 @@ fn tidy_atom<V>(atom: chc::Atom<V>) -> chc::Formula<V> {
         (Term::Tuple(xs), Term::Tuple(ys)) if equal && xs.len() == ys.len() => {
             componentwise(xs, ys)
         }
-        (Term::App(op, xs), Term::Bool(b)) | (Term::Bool(b), Term::App(op, xs))
-            if xs.len() == 2 && chc::KnownPred::named(op.name()).is_some() =>
-        {
-            let p = chc::KnownPred::named(op.name()).unwrap();
-            let p = if b == equal { p } else { negated(p).unwrap() };
-            chc::Atom::new(p.into(), xs).into()
-        }
         (a, b) => chc::Atom::new(atom.pred, vec![a, b]).into(),
     }
 }
 
 /// `f` with what reads as noise rewritten into an equivalent formula: see `tidy_atom`, and a
 /// negated comparison is the opposite comparison.
-pub fn tidy<V>(f: chc::Formula<V>) -> chc::Formula<V> {
+pub fn tidy<V: Clone + PartialEq>(f: chc::Formula<V>) -> chc::Formula<V> {
     use chc::Formula;
     let all = |fs: Vec<Formula<V>>| fs.into_iter().map(tidy).collect();
     match f {
@@ -214,10 +261,117 @@ pub fn tidy<V>(f: chc::Formula<V>) -> chc::Formula<V> {
             }) if negated(p).is_some() => chc::Atom::new(negated(p).unwrap().into(), args).into(),
             f => f.not(),
         },
-        Formula::And(fs) => Formula::And(all(fs)),
+        Formula::And(fs) => Formula::And(equalities(all(fs))),
         Formula::Or(fs) => Formula::Or(all(fs)),
         Formula::Implies(a, b) => Formula::Implies(Box::new(tidy(*a)), Box::new(tidy(*b))),
         Formula::Exists(vars, f) => Formula::Exists(vars, Box::new(tidy(*f))),
         Formula::Forall(vars, f) => Formula::Forall(vars, Box::new(tidy(*f))),
+    }
+}
+
+/// The bound `f` puts on `x` by `y`, if it is one: `(x, y, true)` for `x <= y`, `(x, y, false)`
+/// for `x >= y`; a strict bound by an integer is read as the bound by its neighbour.
+fn bound<V: Clone>(f: &chc::Formula<V>) -> Option<(chc::Term<V>, chc::Term<V>, bool)> {
+    use chc::{KnownPred, Term};
+    let chc::Formula::Atom(chc::Atom {
+        guard: None,
+        pred: chc::Pred::Known(p),
+        args,
+    }) = f
+    else {
+        return None;
+    };
+    let [x, y] = <&[Term<V>; 2]>::try_from(args.as_slice()).ok()?;
+    let step = |k: &num_bigint::BigInt, d: i32| Term::Int(k + d);
+    let (y, upper) = match (*p, y) {
+        (p, y) if p == KnownPred::LESS_THAN_OR_EQUAL => (y.clone(), true),
+        (p, y) if p == KnownPred::GREATER_THAN_OR_EQUAL => (y.clone(), false),
+        (p, Term::Int(k)) if p == KnownPred::LESS_THAN => (step(k, -1), true),
+        (p, Term::Int(k)) if p == KnownPred::GREATER_THAN => (step(k, 1), false),
+        _ => return None,
+    };
+    Some((x.clone(), y, upper))
+}
+
+/// `fs` with each two of them that bound a term from below and above by one value read as one
+/// equation: `x <= y ∧ y <= x` and `t > -1 ∧ t < 1` as `x = y` and `t = 0`.
+pub fn equalities<V: Clone + PartialEq>(mut fs: Vec<chc::Formula<V>>) -> Vec<chc::Formula<V>> {
+    let mut i = 0;
+    while i < fs.len() {
+        let partner = bound(&fs[i]).and_then(|(x, y, upper)| {
+            (i + 1..fs.len()).find_map(|j| {
+                let (x2, y2, upper2) = bound(&fs[j])?;
+                let opposite = x == x2 && y == y2 && upper != upper2;
+                let flipped = x == y2 && y == x2 && upper == upper2;
+                (opposite || flipped).then(|| (j, x.clone(), y.clone()))
+            })
+        });
+        match partner {
+            Some((j, x, y)) => {
+                fs.remove(j);
+                fs[i] = tidy_atom(chc::Atom::new(chc::KnownPred::EQUAL.into(), vec![x, y]));
+            }
+            None => i += 1,
+        }
+    }
+    fs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn var(name: &str) -> Term {
+        Term::var(Name::new(name))
+    }
+
+    fn atom(p: chc::KnownPred, a: Term, b: Term) -> Formula {
+        chc::Atom::new(p.into(), vec![a, b]).into()
+    }
+
+    #[test]
+    fn a_comparison_term_equated_with_a_truth_value_is_the_comparison() {
+        let ne = var("a").ne(var("b"));
+        let f = atom(chc::KnownPred::NOT_EQUAL, ne, Term::Bool(false));
+        assert_eq!(tidy(f).one_line(), "a != b");
+    }
+
+    #[test]
+    fn two_bounds_by_one_value_are_an_equation() {
+        use chc::KnownPred;
+        let d = var("s").sub(var("i").mul(Term::int(2)));
+        let f = Formula::And(vec![
+            atom(KnownPred::GREATER_THAN, d.clone(), Term::int(-1)),
+            atom(KnownPred::LESS_THAN, d, Term::int(1)),
+        ]);
+        assert_eq!(tidy(f).one_line(), "s = i * 2");
+        let g = Formula::And(vec![
+            atom(
+                KnownPred::LESS_THAN_OR_EQUAL,
+                var("a").sub(var("r")),
+                Term::int(0),
+            ),
+            atom(
+                KnownPred::LESS_THAN_OR_EQUAL,
+                var("r").sub(var("a")),
+                Term::int(0),
+            ),
+        ]);
+        assert_eq!(tidy(g).one_line(), "a = r");
+    }
+
+    #[test]
+    fn bounds_that_do_not_meet_stay_bounds() {
+        use chc::KnownPred;
+        let strict = Formula::And(vec![
+            atom(KnownPred::LESS_THAN, var("x"), var("y")),
+            atom(KnownPred::GREATER_THAN, var("x"), var("y")),
+        ]);
+        assert_eq!(tidy(strict).one_line(), "x < y ∧ x > y");
+        let same = Formula::And(vec![
+            atom(KnownPred::LESS_THAN_OR_EQUAL, var("x"), Term::int(1)),
+            atom(KnownPred::LESS_THAN_OR_EQUAL, var("x"), Term::int(1)),
+        ]);
+        assert_eq!(tidy(same).one_line(), "x <= 1 ∧ x <= 1");
     }
 }

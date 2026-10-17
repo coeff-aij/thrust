@@ -1,13 +1,14 @@
 //! The clauses of the system as the report shows them: where in the code each was made, what
 //! obligation it stands for, and its formula over the program's variables.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use rustc_middle::mir::{self, BasicBlock};
 use rustc_middle::ty::TyCtxt;
-use rustc_span::def_id::{DefIndex, LocalDefId};
+use rustc_span::def_id::{DefId, DefIndex, LocalDefId};
 use rustc_span::Span;
 
+use crate::analyze::ContractAnnotations;
 use crate::chc;
 use crate::refine::VarPath;
 
@@ -35,6 +36,17 @@ impl Provenance {
         let stmt = debug_info.number("stmt_idx").map(|i| i as usize);
         Provenance { def, bb, stmt }
     }
+
+    /// The span of the code the clause was made at: its statement or terminator, or else its
+    /// function.
+    pub fn span(&self, tcx: TyCtxt<'_>) -> Option<Span> {
+        let def = self.def?.to_def_id();
+        let body = tcx.is_mir_available(def).then(|| tcx.optimized_mir(def));
+        let in_body = body
+            .zip(self.bb)
+            .and_then(|(body, bb)| super::body::span_in(body, bb, self.stmt));
+        Some(in_body.unwrap_or_else(|| tcx.def_span(def).source_callsite()))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -48,6 +60,17 @@ pub struct Constraint {
     pub formula: String,
     /// The name of each variable of the clause, by its index.
     pub vars: Vec<String>,
+    pub annotation: Annotation,
+}
+
+/// The written annotation a constraint checks or assumes, by its spans.
+#[derive(Debug, Clone)]
+pub enum Annotation {
+    None,
+    /// The goal checks it: an `ensures` at a return, a `requires` at a call.
+    Checks(Vec<Span>),
+    /// The result of a call to the function, as its `ensures` states it.
+    Assumes(DefId, Vec<Span>),
 }
 
 /// Whether `def_id` is one of the functions a panic calls: the panic language items (those of
@@ -81,14 +104,16 @@ fn is_panic(tcx: TyCtxt<'_>, def_id: rustc_span::def_id::DefId) -> bool {
 }
 
 /// What obligation the clause stands for, from the code it was made in and the template its head
-/// belongs to.
+/// belongs to, and the written annotation it checks or assumes.
 fn kind(
     tcx: TyCtxt<'_>,
     clause: &chc::Clause,
     provenance: &Provenance,
     body: Option<&DefBody<'_>>,
     names: &Names,
-) -> String {
+    annotations: &HashMap<DefId, ContractAnnotations>,
+) -> (String, Annotation) {
+    let plain = |kind: String| (kind, Annotation::None);
     let head_owner = match clause.head.pred {
         chc::Pred::Var(p) => names.preds.get(&p).map(|info| info.owner),
         _ => None,
@@ -96,25 +121,36 @@ fn kind(
     let goal = matches!(&clause.head.pred, chc::Pred::Known(p) if p.is_bottom());
     let span_name = clause.debug_info.get("span").unwrap_or("");
     if matches!(span_name, "def" | "refine_fn_def") || provenance.bb.is_none() {
-        return match head_owner {
+        return plain(match head_owner {
             Some(Owner::Block { bb, .. }) if bb == mir::START_BLOCK => "function entry".to_owned(),
             _ if goal => "contract check".to_owned(),
             _ => "function".to_owned(),
-        };
+        });
     }
     if provenance.stmt.is_some() {
-        return "statement".to_owned();
+        return plain("statement".to_owned());
     }
     let (Some(body), Some(bb)) = (body, provenance.bb) else {
-        return span_name.to_owned();
+        return plain(span_name.to_owned());
     };
     let Some(terminator) = body.terminator(bb) else {
-        return span_name.to_owned();
+        return plain(span_name.to_owned());
     };
-    match &terminator.kind {
+    // A method without a contract of its own has that of the trait method it implements.
+    let written = |def_id: DefId| {
+        let trait_item = || tcx.opt_associated_item(def_id)?.trait_item_def_id;
+        annotations
+            .get(&def_id)
+            .or_else(|| annotations.get(&trait_item()?))
+    };
+    let kind = match &terminator.kind {
         mir::TerminatorKind::Return => match head_owner {
             Some(Owner::Contract { ret: true, .. }) => "return value".to_owned(),
-            _ if goal => "ensures".to_owned(),
+            _ if goal => {
+                let ensures = provenance.def.and_then(|def| written(def.to_def_id()));
+                let spans = ensures.map(|a| a.ensures.clone()).unwrap_or_default();
+                return ("ensures".to_owned(), Annotation::Checks(spans));
+            }
             _ => "return".to_owned(),
         },
         mir::TerminatorKind::Goto { target } if body.is_loop_header(*target) => {
@@ -136,23 +172,38 @@ fn kind(
         },
         mir::TerminatorKind::Call { func, .. } => {
             let Some((callee, _)) = func.const_fn_def() else {
-                return "call".to_owned();
+                return plain("call".to_owned());
             };
             if is_panic(tcx, callee) {
-                return "assertion".to_owned();
+                return plain("assertion".to_owned());
             }
             let callee_name = tcx.def_path_str(callee);
             match head_owner {
-                Some(Owner::Contract { def, ret: false }) if def.to_def_id() == callee => {
-                    format!("argument of `{callee_name}`")
+                // The callee's contract, or that of the method a call to a trait method resolves
+                // to.
+                Some(Owner::Contract { def, ret: false }) => {
+                    format!("argument of `{}`", tcx.def_path_str(def.to_def_id()))
                 }
-                _ if goal => format!("precondition of `{callee_name}`"),
-                _ => format!("after call to `{callee_name}`"),
+                _ if goal => {
+                    let spans = written(callee).map(|a| a.requires.clone());
+                    return (
+                        format!("precondition of `{callee_name}`"),
+                        Annotation::Checks(spans.unwrap_or_default()),
+                    );
+                }
+                _ => {
+                    let kind = format!("after call to `{callee_name}`");
+                    return match written(callee).filter(|a| !a.ensures.is_empty()) {
+                        Some(a) => (kind, Annotation::Assumes(callee, a.ensures.clone())),
+                        None => plain(kind),
+                    };
+                }
             }
         }
         mir::TerminatorKind::Drop { .. } => "drop".to_owned(),
         _ => span_name.to_owned(),
-    }
+    };
+    plain(kind)
 }
 
 /// A union-find over the clause's variables.
@@ -356,10 +407,13 @@ fn render(
         conclusion = subst(conclusion);
     }
 
-    let mut premises: Vec<Formula> = premises
-        .into_iter()
-        .flat_map(|f| chc::conjuncts(&formula::tidy(f)))
-        .collect();
+    // Tidied as one conjunction, as the formula shown is.
+    let mut premises: Vec<Formula> = formula::equalities(
+        premises
+            .into_iter()
+            .flat_map(|f| chc::conjuncts(&formula::tidy(f)))
+            .collect(),
+    );
     let mut conclusion = formula::tidy(conclusion);
     // A goal's last premise is the negated property it checks.
     if conclusion.is_bottom() {
@@ -367,8 +421,14 @@ fn render(
             conclusion = last.not();
         }
     }
-    // A premise equating a term with itself says nothing.
+    // A premise equating a term with itself says nothing, and one said before says it again.
     premises.retain(|p| !matches!(equation(p), Some((a, b)) if a == b));
+    let mut said: Vec<Formula> = Vec::new();
+    premises.retain(|p| {
+        let again = said.contains(p);
+        said.push(p.clone());
+        !again
+    });
     (premises, conclusion, var_names)
 }
 
@@ -378,15 +438,11 @@ pub fn constraint(
     clause: &chc::Clause,
     names: &Names,
     body: Option<&DefBody<'_>>,
+    annotations: &HashMap<DefId, ContractAnnotations>,
 ) -> Constraint {
     let provenance = Provenance::of(&clause.debug_info);
-    let span = match (body, provenance.bb) {
-        (Some(body), Some(bb)) => body.span(bb, provenance.stmt),
-        _ => provenance
-            .def
-            .map(|def| tcx.def_span(def.to_def_id()).source_callsite()),
-    };
-    let kind = kind(tcx, clause, &provenance, body, names);
+    let span = provenance.span(tcx);
+    let (kind, annotation) = kind(tcx, clause, &provenance, body, names, annotations);
     let (premises, conclusion, vars) = render(id, clause, provenance.def, names, body);
     let formula = show(
         &formula::and(premises.clone()).implies(conclusion.clone()),
@@ -400,5 +456,6 @@ pub fn constraint(
         conclusion: show(&conclusion, names),
         formula,
         vars: vars.iter().map(|v| v.as_str().to_owned()).collect(),
+        annotation,
     }
 }

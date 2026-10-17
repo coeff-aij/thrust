@@ -2523,6 +2523,7 @@ where
 macro_rules! range_iterator_spec {
     ($($t:ty)*) => {
         $(
+            #[allow(warnings)]
             #[thrust_macros::context]
             impl IteratorSpec for core::ops::Range<$t> {
                 #[thrust_macros::predicate]
@@ -2902,6 +2903,7 @@ trait PartialOrdSpec: PartialOrd + thrust_models::Model {
 
 macro_rules! int_partial_ord_spec {
     ($T:ty) => {
+        #[allow(warnings)]
         #[thrust_macros::context]
         impl PartialOrdSpec for $T {
             #[thrust_macros::predicate]

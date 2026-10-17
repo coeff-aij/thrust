@@ -84,10 +84,16 @@ impl Callbacks for CompilerCalls {
             injected,
         )
         .unwrap();
-        while let Some(item) = parser
+        // The program's own lints are not about the injected items.
+        let allow_warnings = |span| allow_warnings(&compiler.sess.psess.attr_id_generator, span);
+        while let Some(mut item) = parser
             .parse_item(rustc_parse::parser::ForceCollect::No)
             .unwrap()
         {
+            // An attribute on a macro call is ignored; its expansion is not warned about.
+            if !matches!(item.kind, rustc_ast::ItemKind::MacCall(_)) {
+                item.attrs.push(allow_warnings(item.span));
+            }
             krate.items.push(item);
         }
         Compilation::Continue
@@ -104,6 +110,52 @@ impl Callbacks for CompilerCalls {
         ctx.solve();
         Compilation::Stop
     }
+}
+
+/// `#[allow(warnings)]` at `span`, with the tokens an attribute needs before expansion (a derive
+/// or a `cfg` on the item it is put on reads them).
+fn allow_warnings(
+    g: &rustc_ast::attr::AttrIdGenerator,
+    span: rustc_span::Span,
+) -> rustc_ast::Attribute {
+    use rustc_ast::token::{Delimiter, Token, TokenKind};
+    use rustc_ast::tokenstream::{
+        AttrTokenStream, AttrTokenTree, DelimSpacing, DelimSpan, LazyAttrTokenStream, Spacing,
+    };
+    let ident = |name: &str| {
+        let ident = rustc_span::Ident::new(rustc_span::Symbol::intern(name), span);
+        AttrTokenTree::Token(Token::from_ast_ident(ident), Spacing::Alone)
+    };
+    let delimited = |delimiter, inner: Vec<AttrTokenTree>| {
+        AttrTokenTree::Delimited(
+            DelimSpan::from_single(span),
+            DelimSpacing::new(Spacing::Alone, Spacing::Alone),
+            delimiter,
+            AttrTokenStream::new(inner),
+        )
+    };
+    let tokens = AttrTokenStream::new(vec![
+        AttrTokenTree::Token(Token::new(TokenKind::Pound, span), Spacing::Joint),
+        delimited(
+            Delimiter::Bracket,
+            vec![
+                ident("allow"),
+                delimited(Delimiter::Parenthesis, vec![ident("warnings")]),
+            ],
+        ),
+    ]);
+    let mut attr = rustc_ast::attr::mk_attr_nested_word(
+        g,
+        rustc_ast::AttrStyle::Outer,
+        rustc_ast::Safety::Default,
+        rustc_span::sym::allow,
+        rustc_span::Symbol::intern("warnings"),
+        span,
+    );
+    if let rustc_ast::AttrKind::Normal(normal) = &mut attr.kind {
+        normal.tokens = Some(LazyAttrTokenStream::new_direct(tokens));
+    }
+    attr
 }
 
 /// The thrust-macros library to link the analyzed crate with: the most recently modified build

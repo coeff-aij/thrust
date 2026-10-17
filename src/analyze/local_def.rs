@@ -566,17 +566,32 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             ensure_annot = ensure_annot.or(trait_ensure_annot);
         }
 
-        if self.is_annotated_as_callable() {
-            assert!(require_annot.is_none() && ensure_annot.is_none());
-            require_annot = Some(chc::Formula::top());
-            ensure_annot = Some(chc::Formula::top());
-        }
-
         let refinement_annots = self.ctx.extract_refinement_annots(
             self.local_def_id,
             self.generic_args,
             self.owner_fn_id,
         );
+        let annotations = self.ctx.contract_annotations(
+            require_annot.as_ref().map(|(def_id, _)| *def_id),
+            ensure_annot.as_ref().map(|(def_id, _)| *def_id),
+            refinement_annots
+                .iter()
+                .map(|(position, def_id, _)| (position.clone(), *def_id)),
+        );
+        let annotated = if self.is_annotated_as_extern_spec_fn() {
+            self.extern_spec_fn_target_def_id()
+        } else {
+            self.local_def_id.to_def_id()
+        };
+        self.ctx.record_contract_annotations(annotated, annotations);
+        let mut require_annot = require_annot.map(|(_, formula)| formula);
+        let mut ensure_annot = ensure_annot.map(|(_, formula)| formula);
+
+        if self.is_annotated_as_callable() {
+            assert!(require_annot.is_none() && ensure_annot.is_none());
+            require_annot = Some(chc::Formula::top());
+            ensure_annot = Some(chc::Formula::top());
+        }
 
         let trait_item_ty = self.trait_item_ty();
         let is_fully_annotated = self.is_fully_annotated();
@@ -596,7 +611,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         if let Some(ensure) = ensure_annot {
             builder.ret_refinement(ensure.into());
         }
-        for (position, refinement) in refinement_annots {
+        for (position, _, refinement) in refinement_annots {
             builder.refinement_at(&position, refinement);
         }
 

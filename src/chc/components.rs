@@ -115,6 +115,11 @@ pub fn components(system: &System) -> Vec<Vec<ClauseId>> {
 }
 
 impl System {
+    /// The unknowns the clauses `ids` apply.
+    pub fn pred_vars_of(&self, ids: &[ClauseId]) -> HashSet<PredVarId> {
+        prune::pred_vars_of(ids.iter().map(|&id| &self.clauses[id]))
+    }
+
     /// The system with only the clauses `ids`; each other clause is replaced by `true ⇐ true`,
     /// which the query leaves out, so that every clause keeps its id.
     pub fn part(&self, ids: &[ClauseId]) -> System {
