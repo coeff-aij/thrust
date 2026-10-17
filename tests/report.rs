@@ -28,7 +28,7 @@ fn report_names_the_variables_of_a_refuted_assertion() {
     );
     assert!(stderr.contains("==> y >= 2"), "{stderr}");
     assert!(
-        stderr.contains("(x = 1∧ y = 1) ==> main.loop#1 x y"),
+        stderr.contains("(x = 1 ∧ y = 1) ==> main.loop#1 x y"),
         "{stderr}"
     );
     assert!(stderr.contains("main.loop#1(x = 1, y = 1)"), "{stderr}");

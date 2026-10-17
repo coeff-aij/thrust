@@ -6,8 +6,13 @@ use std::collections::HashMap;
 use crate::chc;
 
 use super::formula::{self, map_atoms, show, Formula, Name, Term};
-use super::model::{self, Interpretation};
+use crate::chc::answer::{self, Symbols};
+use crate::chc::sexp::Sexp;
+
 use super::sites::{Names, Site, SiteParam};
+
+/// The solver's interpretation of a predicate variable.
+pub(super) type Interpretation = answer::Definition<Name>;
 
 /// The solver's interpretation of each predicate variable the report names.
 pub(super) struct Solution {
@@ -18,13 +23,13 @@ impl Solution {
     /// The interpretations of `model`, simplified by `z3`, which `run` runs (see
     /// [`super::simplify`]).
     pub(super) fn new(
-        model: &str,
+        model: &Sexp,
         query: &str,
-        symbols: &model::Symbols,
+        symbols: &Symbols,
         names: &Names,
         run: impl Fn(&str) -> Option<String>,
     ) -> Self {
-        let mut model = model::read(model, symbols);
+        let mut model = answer::definitions(model, symbols, Name::new);
         // `z3`'s model of a system of clauses interprets the predicate variables by formulas over
         // their arguments; a function it made up besides would need its definition shown.
         if let Some(name) = model.keys().find(|name| symbols.pred(name).is_none()) {

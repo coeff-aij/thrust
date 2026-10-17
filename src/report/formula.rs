@@ -102,20 +102,6 @@ pub fn and(fs: Vec<Formula>) -> Formula {
     f
 }
 
-/// The comparison `name` names, as a predicate.
-pub fn comparison(name: &str) -> Option<chc::KnownPred> {
-    use chc::KnownPred;
-    [
-        KnownPred::EQUAL,
-        KnownPred::LESS_THAN_OR_EQUAL,
-        KnownPred::GREATER_THAN_OR_EQUAL,
-        KnownPred::LESS_THAN,
-        KnownPred::GREATER_THAN,
-    ]
-    .into_iter()
-    .find(|p| p.name() == name)
-}
-
 /// The comparison `p` negated, if `p` is one.
 fn negated(p: chc::KnownPred) -> Option<chc::KnownPred> {
     use chc::KnownPred;
@@ -131,7 +117,8 @@ fn negated(p: chc::KnownPred) -> Option<chc::KnownPred> {
     })
 }
 
-/// `t` with the current and final values of a pair `<c, f>` read as `c` and `f`, `-1 * x` as
+/// `t` with the current and final values of a pair `<c, f>` read as `c` and `f`, a component of a
+/// tuple written out as that component, `-1 * x` as
 /// `-x` and `a + -b` as `a - b`.
 fn tidy_term<V>(t: chc::Term<V>) -> chc::Term<V> {
     use chc::{Function, Term};
@@ -160,16 +147,25 @@ fn tidy_term<V>(t: chc::Term<V>) -> chc::Term<V> {
             }
         }
         Term::Tuple(ts) => Term::Tuple(ts.into_iter().map(tidy_term).collect()),
-        Term::TupleProj(t, i) => Term::TupleProj(tidy(t), i),
+        Term::TupleProj(t, i) => match tidy_term(*t) {
+            Term::Tuple(mut ts) if i < ts.len() => ts.swap_remove(i),
+            t => Term::TupleProj(Box::new(t), i),
+        },
         t => t,
     }
 }
 
-/// `atom` with its arguments tidied (see `tidy_term`), two pairs `<c, f>` equal when their
-/// components are, and a comparison equated with `true` or `false` read as the comparison or its
+/// The components of two pairs or tuples equated.
+fn componentwise<V>(xs: Vec<chc::Term<V>>, ys: Vec<chc::Term<V>>) -> chc::Formula<V> {
+    let eq = |(x, y)| tidy_atom(chc::Atom::new(chc::KnownPred::EQUAL.into(), vec![x, y]));
+    chc::Formula::And(xs.into_iter().zip(ys).map(eq).collect())
+}
+
+/// `atom` with its arguments tidied (see `tidy_term`), two pairs `<c, f>` or two tuples equal
+/// when their components are, and a comparison equated with `true` or `false` read as the comparison or its
 /// negation.
 fn tidy_atom<V>(atom: chc::Atom<V>) -> chc::Formula<V> {
-    use chc::{Formula, KnownPred, Term};
+    use chc::{KnownPred, Term};
     let args: Vec<Term<V>> = atom.args.into_iter().map(tidy_term).collect();
     let equal = matches!(atom.pred, chc::Pred::Known(p) if p == KnownPred::EQUAL);
     let not_equal = matches!(atom.pred, chc::Pred::Known(p) if p == KnownPred::NOT_EQUAL);
@@ -179,15 +175,15 @@ fn tidy_atom<V>(atom: chc::Atom<V>) -> chc::Formula<V> {
     let [a, b] = <[Term<V>; 2]>::try_from(args).ok().unwrap();
     match (a, b) {
         (Term::Mut(c1, f1), Term::Mut(c2, f2)) if equal => {
-            let eq = |x: Box<Term<V>>, y: Box<Term<V>>| {
-                tidy_atom(chc::Atom::new(KnownPred::EQUAL.into(), vec![*x, *y]))
-            };
-            Formula::And(vec![eq(c1, c2), eq(f1, f2)])
+            componentwise(vec![*c1, *f1], vec![*c2, *f2])
+        }
+        (Term::Tuple(xs), Term::Tuple(ys)) if equal && xs.len() == ys.len() => {
+            componentwise(xs, ys)
         }
         (Term::App(op, xs), Term::Bool(b)) | (Term::Bool(b), Term::App(op, xs))
-            if xs.len() == 2 && comparison(op.name()).is_some() =>
+            if xs.len() == 2 && chc::KnownPred::named(op.name()).is_some() =>
         {
-            let p = comparison(op.name()).unwrap();
+            let p = chc::KnownPred::named(op.name()).unwrap();
             let p = if b == equal { p } else { negated(p).unwrap() };
             chc::Atom::new(p.into(), xs).into()
         }

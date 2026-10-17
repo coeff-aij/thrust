@@ -9,7 +9,10 @@
 use std::collections::HashMap;
 
 use super::formula::Term;
-use super::model::{self, Sexp};
+use crate::chc::answer::Symbols;
+use crate::chc::sexp::Sexp;
+
+use super::formula::Name;
 
 /// An instance of a predicate variable, with the facts the step deriving it applied its clause
 /// to.
@@ -45,14 +48,14 @@ fn expand(s: &Sexp, env: &Env<'_>, depth: usize) -> Sexp {
     }
 }
 
-fn fact_of(s: &Sexp, env: &Env<'_>, symbols: &model::Symbols) -> Option<(String, Vec<Term>)> {
+fn fact_of(s: &Sexp, env: &Env<'_>, symbols: &Symbols) -> Option<(String, Vec<Term>)> {
     match resolve(s, env) {
         Sexp::Atom(name) => Some((name.clone(), Vec::new())),
         Sexp::List(items) => match items.as_slice() {
             [Sexp::Atom(pred), args @ ..] => {
                 let args = args
                     .iter()
-                    .map(|a| symbols.term(&expand(a, env, 0)))
+                    .map(|a| symbols.term(&expand(a, env, 0), Name::new))
                     .collect();
                 Some((pred.clone(), args))
             }
@@ -66,7 +69,7 @@ fn is_hyper_res(head: &Sexp) -> bool {
 }
 
 /// The facts the proof term `s` derives at its top.
-fn derive<'a>(s: &'a Sexp, env: &mut Env<'a>, symbols: &model::Symbols, depth: usize) -> Vec<Fact> {
+fn derive<'a>(s: &'a Sexp, env: &mut Env<'a>, symbols: &Symbols, depth: usize) -> Vec<Fact> {
     // A refutation of a long run is deep; past this depth the rest of the run is not shown.
     if depth > 4096 {
         return Vec::new();
@@ -76,14 +79,8 @@ fn derive<'a>(s: &'a Sexp, env: &mut Env<'a>, symbols: &model::Symbols, depth: u
         Sexp::List(items) => items,
     };
     match items.as_slice() {
-        [Sexp::Atom(l), Sexp::List(binds), body] if l == "let" => {
-            for bind in binds {
-                if let Sexp::List(pair) = bind {
-                    if let [Sexp::Atom(name), value] = pair.as_slice() {
-                        env.insert(name.as_str(), value);
-                    }
-                }
-            }
+        [Sexp::Atom(l), binds, body] if l == "let" => {
+            env.extend(binds.bindings());
             derive(body, env, symbols, depth + 1)
         }
         [head, _clause, rest @ ..] if is_hyper_res(head) => {
@@ -113,10 +110,8 @@ fn derive<'a>(s: &'a Sexp, env: &mut Env<'a>, symbols: &model::Symbols, depth: u
 }
 
 /// The facts a refutation as `z3` prints it after `(get-proof)` derives last.
-pub fn read(proof: &str, symbols: &model::Symbols) -> Vec<Fact> {
-    let tokens = model::tokens(proof);
-    let mut pos = 0;
-    let Some(Sexp::List(items)) = model::parse(&tokens, &mut pos) else {
+pub fn read(proof: &Sexp, symbols: &Symbols) -> Vec<Fact> {
+    let Sexp::List(items) = proof else {
         return Vec::new();
     };
     let Some(term) = items.iter().find_map(|item| match item {
@@ -124,7 +119,7 @@ pub fn read(proof: &str, symbols: &model::Symbols) -> Vec<Fact> {
             [Sexp::Atom(p), term] if p == "proof" => Some(term),
             _ => None,
         },
-        _ => None,
+        Sexp::Atom(_) => None,
     }) else {
         return Vec::new();
     };
@@ -149,7 +144,7 @@ mod tests {
     #[test]
     fn reads_hyper_resolution_steps() {
         let proof = "((set-logic HORN)\n(declare-fun query!0 (Int) Bool)\n(proof\n(let (($x1 (query!0 6)))\n(let ((@x2 (asserted (forall ((A Int) (B Int)) (=> (and (P B) (= A (+ 1 B))) (P A))))))\n(let ((@x3 ((_ hyper-res 0 0 0 1) @x2 ((_ hyper-res 0 0) (asserted (P 0)) (P 0)) (P 1))))\n(mp ((_ hyper-res 0 0 0 1) (asserted (forall ((A Int)) (=> (P A) (query!0 A)))) @x3 $x1) (asserted (=> $x1 false)) false))))))";
-        let facts = read(proof, &model::Symbols::default());
+        let facts = read(&crate::chc::sexp::parse_all(proof)[0], &Symbols::default());
         assert_eq!(facts.len(), 1);
         assert_eq!(facts[0].pred, "query!0");
         assert_eq!(facts[0].args, vec![Term::Int(6.into())]);
@@ -161,7 +156,7 @@ mod tests {
     #[test]
     fn expands_the_terms_a_refutation_names() {
         let proof = "((set-logic HORN)\n(proof\n(let ((?x7 (tuple 5 5)))\n(mp ((_ hyper-res 0 0) (asserted (P ?x7)) (P ?x7)) (asserted (=> (P ?x7) false)) false))))";
-        let facts = read(proof, &model::Symbols::default());
+        let facts = read(&crate::chc::sexp::parse_all(proof)[0], &Symbols::default());
         use crate::report::formula::OneLine as _;
         let arg = facts[0].args[0].one_line();
         assert_eq!(arg, "tuple(5, 5)");

@@ -156,7 +156,7 @@ fn single_same(fact: &Fact) -> Option<&Fact> {
 pub fn read(
     answer: &chc::Answer,
     names: &Names,
-    symbols: &super::model::Symbols,
+    symbols: &crate::chc::answer::Symbols,
 ) -> Option<Failure> {
     let facts = proof::read(answer.proof.as_ref()?, symbols);
     let (marker, goal) = answer
