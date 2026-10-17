@@ -3656,12 +3656,30 @@ impl System {
         if let Err(err) = config.save_query("thrust_output.smt2", &query) {
             return Answer::of(Err(err.into()));
         }
+        self.answer(&config, query, requests)
+    }
+
+    /// Solves a part of the system (see [`System::part`]) once more for the evidence `requests`
+    /// names. Its query was saved when its verdict was taken ([`System::solve_parts`]), so this
+    /// writes no file.
+    pub fn solve_part_with(&self, requests: Requests) -> Answer {
+        let config = Config::from_env();
+        let query = self
+            .clone()
+            .prepared()
+            .smtlib2(config.capabilities())
+            .to_string();
+        self.answer(&config, query, requests)
+    }
+
+    /// The answer to `query`, the system's, with the evidence `requests` names.
+    fn answer(&self, config: &Config, query: String, requests: Requests) -> Answer {
         // A verdict alone may be that of an earlier run (`THRUST_CACHE_DIR`); the cache keeps no
         // model or refutation.
         let mut answer = if config.answers(requests) {
             config.check_sat_with(&query, requests)
         } else {
-            Answer::of(cache::solve(&config, cache::Cache::from_env().as_ref(), &query).result)
+            Answer::of(cache::solve(config, cache::Cache::from_env().as_ref(), &query).result)
         };
         if requests.model {
             answer.query = Some(query);

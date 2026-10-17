@@ -2692,7 +2692,7 @@ impl<'tcx> Analyzer<'tcx> {
         let mut answers = chc::in_parallel(jobs, reported.len(), |i| {
             system
                 .part(&parts[reported[i]].clauses)
-                .solve_with(requests)
+                .solve_part_with(requests)
         });
         if answers.is_empty() {
             answers.push(chc::Answer::of(Ok(())));

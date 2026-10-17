@@ -14,7 +14,12 @@ fn run_with(fixture: &str, split: Option<&str>, env: &[(&str, &str)]) -> Output 
         .arg(fixture)
         .env_remove("THRUST_SOLVER")
         .env_remove("THRUST_CACHE_DIR")
-        .env_remove("THRUST_OUTPUT_DIR");
+        .env_remove("THRUST_OUTPUT_DIR")
+        .env_remove("THRUST_PRETTY_OUTPUT")
+        .env_remove("THRUST_REPORT")
+        .env_remove("THRUST_REPORT_FORMAT")
+        .env_remove("THRUST_REPORT_FILE")
+        .env_remove("THRUST_REPORT_ONLY");
     match split {
         Some(jobs) => command.env("THRUST_SPLIT", jobs),
         None => command.env_remove("THRUST_SPLIT"),
@@ -119,4 +124,37 @@ fn a_part_model_is_read_over_its_own_sorts() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "{stderr}");
     assert!(stderr.contains("inferred: fn gcd("), "{stderr}");
+}
+
+/// The report's second runs of the parts write no file: `THRUST_OUTPUT_DIR` gets each part's
+/// query once, and neither the whole query nor `THRUST_PRETTY_OUTPUT` is written.
+#[test]
+fn the_report_of_a_split_run_writes_only_the_parts() {
+    let dir = std::env::temp_dir().join(format!("thrust-split-output-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let pretty = dir.join("pretty.txt");
+    let output = run_with(
+        "two_parts.rs",
+        Some("2"),
+        &[
+            ("THRUST_REPORT", "1"),
+            ("THRUST_OUTPUT_DIR", dir.to_str().unwrap()),
+            ("THRUST_PRETTY_OUTPUT", pretty.to_str().unwrap()),
+        ],
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let files: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(
+        files.iter().any(|f| f == "thrust_output_part0.smt2"),
+        "{files:?} {stderr}"
+    );
+    assert!(
+        !files.iter().any(|f| f == "thrust_output.smt2"),
+        "{files:?}"
+    );
+    assert!(!files.iter().any(|f| f == "pretty.txt"), "{files:?}");
 }
