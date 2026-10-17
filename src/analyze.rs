@@ -1191,6 +1191,13 @@ impl<'tcx> Analyzer<'tcx> {
         self.impl_methods_with_own_contract.contains(&def_id)
     }
 
+    /// Whether `def_id` is an ignored function of the crate with no contract of its own, so that
+    /// a call of it has no checked type. A `#[thrust::trusted]` impl method with a contract is
+    /// ignored too, and has that contract.
+    pub fn is_unchecked_crate_fn(&self, def_id: DefId) -> bool {
+        is_ignored_crate_fn(self.tcx, def_id) && !self.has_own_impl_contract(def_id)
+    }
+
     pub fn impl_methods_with_own_contract(&self) -> Vec<DefId> {
         self.impl_methods_with_own_contract
             .iter()
@@ -1730,7 +1737,7 @@ impl<'tcx> Analyzer<'tcx> {
                     else {
                         continue;
                     };
-                    if is_ignored_crate_fn(self.tcx, instance.def_id()) {
+                    if self.is_unchecked_crate_fn(instance.def_id()) {
                         fatal_ignored_call(self.tcx, instance.def_id(), instance.args);
                     }
                     if !instance.def_id().is_local()
@@ -1812,7 +1819,7 @@ impl<'tcx> Analyzer<'tcx> {
             .associated_item_def_ids(impl_def_id)
             .iter()
             .copied()
-            .find(|def_id| is_ignored_crate_fn(self.tcx, *def_id));
+            .find(|def_id| self.is_unchecked_crate_fn(*def_id));
         if let Some(def_id) = ignored {
             let identity = mir_ty::GenericArgs::identity_for_item(self.tcx, def_id);
             fatal_ignored_call(self.tcx, def_id, identity);
