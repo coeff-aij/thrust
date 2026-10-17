@@ -1507,6 +1507,21 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         return def_ty.ty;
                     }
                 }
+                // A trait-level spec of `std.rs` describes std's impls and the crate's own, whose
+                // bodies are checked against it; an impl from another crate is checked by
+                // nothing, so it takes no trait-level spec.
+                let unchecked_foreign_impl = resolved_def_id != def_id
+                    && !resolved_def_id.is_local()
+                    && !matches!(
+                        self.tcx.crate_name(resolved_def_id.krate).as_str(),
+                        "std" | "core" | "alloc"
+                    );
+                if unchecked_foreign_impl {
+                    panic!(
+                        "unknown def: {:?} of another crate, which no trait-level spec covers",
+                        resolved_def_id
+                    );
+                }
                 if let Some(def_ty) = self.ctx.def_ty_with_args(def_id, args, caller_def_id) {
                     // otherwise nothing asks for a deferred impl method's type and its body goes unchecked
                     if resolved_def_id != def_id {
