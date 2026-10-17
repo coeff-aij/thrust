@@ -173,6 +173,8 @@ pub struct Input<'a> {
     pub template_vars: &'a HashMap<chc::PredVarId, Vec<Option<chc::debug::ErasedVar>>>,
     /// Where each function's written contract is annotated.
     pub contract_annotations: &'a HashMap<DefId, ContractAnnotations>,
+    /// Where the written invariant of each loop, by its function and header, is annotated.
+    pub invariant_annotations: &'a HashMap<(LocalDefId, BasicBlock), Vec<Span>>,
     /// The parts of the system solved on their own (`THRUST_SPLIT`); the system is then that of
     /// the parts refuted.
     pub parts: &'a [Part],
@@ -181,7 +183,7 @@ pub struct Input<'a> {
 /// A part of the system solved once more for the report (`THRUST_SPLIT`): for its refutation
 /// when it is refuted, else for its model.
 pub struct Asked {
-    /// Its number among the parts.
+    /// Its number among the parts, from 1.
     pub part: usize,
     pub clauses: Vec<chc::ClauseId>,
     pub refuted: bool,
@@ -327,14 +329,7 @@ fn add_constraints(
         let Some(entry) = provenance.def.and_then(|def| entries.get_mut(&def)) else {
             continue;
         };
-        let constraint = constraints::constraint(
-            tcx,
-            id,
-            clause,
-            names,
-            Some(&entry.body),
-            input.contract_annotations,
-        );
+        let constraint = constraints::constraint(tcx, id, clause, names, Some(&entry.body), input);
         match provenance.bb.and_then(|bb| entry.body.innermost_loop(bb)) {
             Some(header) => entry.loops.entry(header).or_default().1.push(constraint),
             None => entry.constraints.push(constraint),
@@ -426,9 +421,19 @@ fn entries<'tcx>(
     (entries, names)
 }
 
-/// Reports `input`, and returns the span of the obligation the report shows refuted by each
-/// answer.
-pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) -> Vec<Option<Span>> {
+/// How the report shows the refutation of an answer.
+#[derive(Debug, Clone, Copy)]
+pub enum Refuted {
+    /// Not at all: the verification error is without it.
+    No,
+    /// At a span, where the verification error goes.
+    At(Span),
+    /// As the verification error itself, which the report emitted.
+    AsError,
+}
+
+/// Reports `input`, and returns how it shows the refutation of each answer.
+pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) -> Vec<Refuted> {
     // The clauses are read as the solver is given them, a `Box` being its content.
     let system = chc::unbox(input.system.clone());
     let input = Input {
@@ -440,6 +445,7 @@ pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) -> Vec<Option<S
         template_sites: input.template_sites,
         template_vars: input.template_vars,
         contract_annotations: input.contract_annotations,
+        invariant_annotations: input.invariant_annotations,
         parts: input.parts,
     };
     // An answer is over the symbols of the query it answers: the whole system's, or a part's,
@@ -469,11 +475,20 @@ pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) -> Vec<Option<S
         .filter(|_| config.items.failure)
         .map(|(answer, symbols)| (answer, failure::read(answer, &names, symbols)))
         .collect();
-    let refuted: Vec<Option<Span>> = (0..input.answers.len())
+    let refuted_at: Vec<Option<Span>> = (0..input.answers.len())
         .map(|i| {
             let (_, failure) = failures.get(i)?;
             let (_, c) = constraint_of(&entries, failure.as_ref()?.goal)?;
             c.span
+        })
+        .collect();
+    // A person reads the refutation as the error; a program, the error at its span.
+    let refuted: Vec<Refuted> = refuted_at
+        .iter()
+        .map(|span| match (span, config.format) {
+            (None, _) => Refuted::No,
+            (Some(_), Format::Human) => Refuted::AsError,
+            (Some(span), Format::Json) => Refuted::At(*span),
         })
         .collect();
     match config.format {
@@ -486,7 +501,10 @@ pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) -> Vec<Option<S
                 split,
             };
             for (i, (answer, failure)) in failures.iter().enumerate() {
-                human.failure(answer, input.asked.get(i), failure.as_ref(), &entries);
+                let asked = input.asked.get(i);
+                let part_note =
+                    asked.map(|a| input.parts[a.part - 1].error_note(tcx, input.parts.len()));
+                human.failure(answer, asked, part_note, failure.as_ref(), &entries);
             }
             human.emit(&entries);
         }
@@ -503,6 +521,12 @@ pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) -> Vec<Option<S
                     .collect(),
                 parts: input.parts,
                 verdict,
+                message: match &input.answers[0].result {
+                    Err(err) if !split && !matches!(err, chc::CheckSatError::Unsat) => {
+                        Some(format!("{err:?}"))
+                    }
+                    _ => None,
+                },
             };
             let result = match &config.file {
                 Some(path) => {

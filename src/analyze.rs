@@ -858,6 +858,8 @@ pub struct Analyzer<'tcx> {
     template_sites: HashMap<chc::PredVarId, TemplateSite>,
     /// Where the written contract of each function is annotated, for the report.
     contract_annotations: HashMap<DefId, ContractAnnotations>,
+    /// Where the written invariant of each loop, by its header, is annotated, for the report.
+    invariant_annotations: HashMap<(LocalDefId, BasicBlock), Vec<rustc_span::Span>>,
 }
 
 /// Whether `expr` is the literal `true`.
@@ -1036,6 +1038,7 @@ impl<'tcx> Analyzer<'tcx> {
             template_vars: Default::default(),
             template_sites: Default::default(),
             contract_annotations: Default::default(),
+            invariant_annotations: Default::default(),
         }
     }
 
@@ -2655,11 +2658,17 @@ impl<'tcx> Analyzer<'tcx> {
                 let system = self.system.borrow();
                 self.report(config, &system, std::slice::from_ref(&answer), &[], &[])[0]
             }
-            None => None,
+            None => crate::report::Refuted::No,
         };
-        if let Err(err) = answer.result {
-            self.verification_error(&err, refuted).emit();
-        }
+        let Err(err) = answer.result else {
+            return;
+        };
+        let at = match refuted {
+            crate::report::Refuted::AsError => return,
+            crate::report::Refuted::At(span) => Some(span),
+            crate::report::Refuted::No => None,
+        };
+        self.verification_error(&err, at).emit();
     }
 
     /// The error of a failed verification, at the obligation the report shows refuted, if it does.
@@ -2669,10 +2678,20 @@ impl<'tcx> Analyzer<'tcx> {
         refuted: Option<rustc_span::Span>,
     ) -> rustc_errors::Diag<'tcx> {
         let message = format!("verification error: {:?}", err);
-        match refuted {
+        let mut diag = match refuted {
             Some(span) => self.tcx.dcx().struct_span_err(span, message),
             None => self.tcx.dcx().struct_err(message),
+        };
+        let unread = matches!(err, chc::CheckSatError::Error { .. })
+            && chc::Config::from_env().is_z3()
+            && self.system.borrow().needs_pcsat();
+        if unread {
+            diag.help(
+                "the query has forall sorts or sequences, which `z3` does not read: \
+                 `THRUST_SOLVER=tests/thrust-pcsat-wrapper` solves it with PCSat",
+            );
         }
+        diag
     }
 
     /// Solves each part of the system that shares no unknown with the rest on its own
@@ -2688,24 +2707,34 @@ impl<'tcx> Analyzer<'tcx> {
             .collect();
         let refuted = match report {
             Some(config) => self.report_parts(config, jobs, &system, &parts, &summaries),
-            None => vec![None; parts.len()],
+            None => vec![crate::report::Refuted::No; parts.len()],
         };
         for ((part, summary), refuted) in parts.iter().zip(&summaries).zip(refuted) {
             let Err(err) = &part.result else {
                 continue;
             };
-            // Without a refutation, the error is at the code of the part.
+            let refuted = match refuted {
+                crate::report::Refuted::AsError => continue,
+                crate::report::Refuted::At(span) => Some(span),
+                crate::report::Refuted::No => None,
+            };
+            // Without a refutation, the error is at the code of the part: its first function,
+            // the others labelled.
             let code = summary.functions.first().map(|f| f.span);
-            self.verification_error(err, refuted.or(code))
-                .with_note(summary.error_note(self.tcx, parts.len()))
+            let mut diag = self.verification_error(err, refuted.or(code));
+            if refuted.is_none() {
+                for f in summary.functions.iter().skip(1) {
+                    diag.span_label(f.span, format!("`{}` is in this part too", f.r#fn));
+                }
+            }
+            diag.with_note(summary.error_note(self.tcx, parts.len()))
                 .emit();
         }
         crate::report::emit_part_notes(self.tcx, &summaries);
     }
 
     /// Reports the parts refuted, as without `THRUST_SPLIT`: each is solved once more on its own,
-    /// asked for what the report needs. Returns the span of the obligation the report shows
-    /// refuted in each part.
+    /// asked for what the report needs. Returns how the report shows the refutation of each part.
     fn report_parts(
         &self,
         config: &crate::report::Config,
@@ -2713,10 +2742,10 @@ impl<'tcx> Analyzer<'tcx> {
         system: &chc::System,
         parts: &[chc::Part],
         summaries: &[crate::report::Part],
-    ) -> Vec<Option<rustc_span::Span>> {
+    ) -> Vec<crate::report::Refuted> {
         // Each part refuted is solved once more on its own, for its refutation, and each part
         // solved for its model when the report shows its unknowns; the report reads them over the
-        // system of all of them, whose clauses keep their ids. A solver that gives neither is not
+        // whole system, whose parts keep the clause ids. A solver that gives neither is not
         // asked again.
         let requests = config.requests();
         let evidence = chc::Config::from_env().answers(requests);
@@ -2737,7 +2766,7 @@ impl<'tcx> Analyzer<'tcx> {
                     _ => return None,
                 };
                 Some(crate::report::Asked {
-                    part: i,
+                    part: i + 1,
                     clauses: part.clauses.clone(),
                     refuted,
                 })
@@ -2753,14 +2782,11 @@ impl<'tcx> Analyzer<'tcx> {
         if answers.is_empty() {
             answers.push(chc::Answer::of(Ok(())));
         }
-        let clauses: Vec<chc::ClauseId> = asked
-            .iter()
-            .flat_map(|a| a.clauses.iter().copied())
-            .collect();
-        let spans = self.report(config, &system.part(&clauses), &answers, &asked, summaries);
-        let mut refuted = vec![None; parts.len()];
+        // The templates and constraints of every part are shown, solved again or not.
+        let spans = self.report(config, system, &answers, &asked, summaries);
+        let mut refuted = vec![crate::report::Refuted::No; parts.len()];
         for (a, span) in asked.iter().zip(spans) {
-            refuted[a.part] = span;
+            refuted[a.part - 1] = span;
         }
         refuted
     }
@@ -2772,7 +2798,7 @@ impl<'tcx> Analyzer<'tcx> {
         answers: &[chc::Answer],
         asked: &[crate::report::Asked],
         parts: &[crate::report::Part],
-    ) -> Vec<Option<rustc_span::Span>> {
+    ) -> Vec<crate::report::Refuted> {
         let contracts = self
             .defs
             .iter()
@@ -2803,6 +2829,7 @@ impl<'tcx> Analyzer<'tcx> {
             template_sites: &self.template_sites,
             template_vars: &self.template_vars,
             contract_annotations: &self.contract_annotations,
+            invariant_annotations: &self.invariant_annotations,
             parts,
         };
         crate::report::emit(self.tcx, config, &input)
@@ -3002,27 +3029,44 @@ impl<'tcx> Analyzer<'tcx> {
 
     /// Where a contract is annotated, from the companions it is read from: `requires`,
     /// `ensures`, and each refinement at its position.
+    /// The clauses of the formula function `def_id` as written, read off the tail of its body
+    /// (the macros conjoin the clauses of an annotation into one); the function where it has no
+    /// tail.
+    fn written_spans(&self, def_id: DefId) -> Vec<rustc_span::Span> {
+        let body = def_id
+            .as_local()
+            .and_then(|def| self.tcx.hir_maybe_body_owned_by(def));
+        let tail = body.and_then(|body| match body.value.kind {
+            rustc_hir::ExprKind::Block(block, _) => block.expr,
+            _ => None,
+        });
+        match tail {
+            Some(tail) => written_clauses(tail),
+            None => vec![self.tcx.def_span(def_id)],
+        }
+    }
+
+    /// Keeps where the written invariant of the loop at `header` of `def` is annotated, from the
+    /// formula functions of its `invariant!`s.
+    pub fn record_invariant_annotations(
+        &mut self,
+        def: LocalDefId,
+        header: BasicBlock,
+        formulas: impl Iterator<Item = LocalDefId>,
+    ) {
+        let spans = formulas
+            .flat_map(|f| self.written_spans(f.to_def_id()))
+            .collect();
+        self.invariant_annotations.insert((def, header), spans);
+    }
+
     pub fn contract_annotations(
         &self,
         requires: Option<DefId>,
         ensures: Option<DefId>,
         refinements: impl Iterator<Item = (rty::TypePosition, DefId)>,
     ) -> ContractAnnotations {
-        // The clauses as written, read off the tail of the companion's body (the macros conjoin
-        // the clauses of a contract into one); the companion where it has no tail.
-        let spans = |def_id: DefId| {
-            let body = def_id
-                .as_local()
-                .and_then(|def| self.tcx.hir_maybe_body_owned_by(def));
-            let tail = body.and_then(|body| match body.value.kind {
-                rustc_hir::ExprKind::Block(block, _) => block.expr,
-                _ => None,
-            });
-            match tail {
-                Some(tail) => written_clauses(tail),
-                None => vec![self.tcx.def_span(def_id)],
-            }
-        };
+        let spans = |def_id: DefId| self.written_spans(def_id);
         let mut annotations = ContractAnnotations {
             requires: requires.into_iter().flat_map(spans).collect(),
             ensures: ensures.into_iter().flat_map(spans).collect(),

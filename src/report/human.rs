@@ -165,6 +165,7 @@ impl Human<'_, '_> {
         &self,
         answer: &chc::Answer,
         asked: Option<&super::Asked>,
+        part_note: Option<String>,
         failure: Option<&Failure>,
         entries: &[Entry<'_>],
     ) {
@@ -261,16 +262,16 @@ impl Human<'_, '_> {
                     .to_owned(),
             );
         }
-        let span = found
-            .and_then(|(_, c)| c.span)
-            .or_else(|| entries.first().map(|e| e.span));
+        notes.extend(part_note);
         let checked = match found.map(|(_, c)| &c.annotation) {
             Some(Annotation::Checks(spans)) => spans.as_slice(),
             _ => &[],
         };
-        match span {
+        // At the obligation, the refutation is the verification error (see `super::Refuted`).
+        match found.and_then(|(_, c)| c.span) {
             Some(span) => {
-                let mut diag = self.tcx.dcx().struct_span_note(span, title);
+                let message = format!("verification error: Unsat ({title})");
+                let mut diag = self.tcx.dcx().struct_span_err(span, message);
                 // Which of several clauses fails, the refutation does not say.
                 let label = if checked.len() > 1 {
                     "a clause of the annotation it checks"
@@ -286,7 +287,10 @@ impl Human<'_, '_> {
                 diag.emit();
             }
             None => {
-                let mut diag = self.tcx.dcx().struct_note(title);
+                let mut diag = match entries.first() {
+                    Some(entry) => self.tcx.dcx().struct_span_note(entry.span, title),
+                    None => self.tcx.dcx().struct_note(title),
+                };
                 for note in notes {
                     diag.note(note);
                 }

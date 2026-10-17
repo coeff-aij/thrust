@@ -40,11 +40,11 @@ fn report_names_the_variables_of_a_refuted_assertion() {
     );
     assert!(stderr.contains("==> y >= 2"), "{stderr}");
     assert!(
-        stderr.contains("(x = 1 ∧ y = 1) ==> main.loop#1 x y"),
+        stderr.contains("(x = 1 ∧ y = 1) ==> main.loop#1(x, y)"),
         "{stderr}"
     );
     assert!(stderr.contains("main.loop#1(x = 1, y = 1)"), "{stderr}");
-    assert!(stderr.contains("main.rand#1 rand#1 x y"), "{stderr}");
+    assert!(stderr.contains("main.rand#1(rand#1, x, y)"), "{stderr}");
 }
 
 /// A refuted `ensures` is shown at the end of the body, where it fails, with the annotation it
@@ -88,7 +88,7 @@ fn json_report_shows_the_failure_alone() {
     let kinds: Vec<&str> = stdout.lines().filter_map(|l| l.split('"').nth(3)).collect();
     assert_eq!(kinds, ["report", "verdict", "failure"], "{stdout}");
     let root = env!("CARGO_MANIFEST_DIR");
-    let header = format!(r#"{{"kind":"report","version":1,"root":"{root}","#);
+    let header = format!(r#"{{"kind":"report","version":2,"root":"{root}","#);
     assert!(stdout.starts_with(&header), "{stdout}");
     let step = r#""via":"c0","obligation":"loop entry","span":{"file":"tests/report/loop_fail.rs","line":9,"column":5,"end_line":14,"end_column":6}"#;
     assert!(stdout.contains(step), "{stdout}");
@@ -103,7 +103,9 @@ fn report_states_the_verdict_and_one_refutation_per_query() {
     let json = report_with("loop_fail.rs", "1", &[("THRUST_REPORT_FORMAT", "json")]);
     let stdout = String::from_utf8_lossy(&json.stdout);
     assert!(
-        stdout.contains(r#"{"kind":"verdict","verdict":"unsat","refutations":"one per query"}"#),
+        stdout.contains(
+            r#"{"kind":"verdict","verdict":"unsat","refutations":"one per query","message":null}"#
+        ),
         "{stdout}"
     );
     let human = report("loop_fail.rs", "failure");
@@ -155,29 +157,52 @@ fn report_shows_a_mutable_reference_by_its_two_values() {
     assert!(!stderr.contains("= <"), "{stderr}");
 }
 
-/// The lints of the program are its own: none come from the injected `std.rs`.
-#[test]
-fn no_warning_comes_from_the_injected_std() {
+/// The warnings of compiling `fixture` with its lints on, without the report.
+fn warnings_of(fixture: &str) -> String {
     let root = env!("CARGO_MANIFEST_DIR");
     let output = Command::new(env!("CARGO_BIN_EXE_thrust-rustc"))
-        .args(["-C", "debug-assertions=off", "tests/report/unused_local.rs"])
+        .args(["-C", "debug-assertions=off"])
+        .arg(format!("tests/report/{fixture}"))
         .current_dir(root)
         .env_remove("THRUST_REPORT")
+        .env_remove("THRUST_SPLIT")
         .env_remove("THRUST_SOLVER")
         .env_remove("THRUST_OUTPUT_DIR")
         .output()
         .unwrap();
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
+/// The lints of the program are its own: none come from the injected `std.rs`.
+#[test]
+fn no_warning_comes_from_the_injected_std() {
+    let stderr = warnings_of("unused_local.rs");
     assert!(stderr.contains("unused variable: `unused`"), "{stderr}");
     assert!(!stderr.contains("thrust std injected"), "{stderr}");
 }
 
-/// With the report, the verification error is at the obligation the report shows refuted, so an
-/// editor that drops a diagnostic without a span shows it.
+/// With the report, the refutation is the verification error, at the obligation, so an editor
+/// that drops a diagnostic without a span shows it, and it is the one error; in JSON, the error
+/// is at that obligation.
 #[test]
-fn the_verification_error_is_at_the_refuted_obligation() {
+fn the_verification_error_is_the_refutation() {
     let output = report("loop_fail.rs", "failure");
     let stderr = String::from_utf8_lossy(&output.stderr);
+    let error = stderr
+        .split("error: verification error: Unsat (thrust: refuted: assertion in `main`)\n  --> ")
+        .nth(1)
+        .unwrap_or_default();
+    assert!(error.contains("loop_fail.rs:15:5\n"), "{stderr}");
+    assert!(
+        stderr.contains("aborting due to 1 previous error"),
+        "{stderr}"
+    );
+    let json = report_with(
+        "loop_fail.rs",
+        "failure",
+        &[("THRUST_REPORT_FORMAT", "json")],
+    );
+    let stderr = String::from_utf8_lossy(&json.stderr);
     let error = stderr
         .split("error: verification error: Unsat\n  --> ")
         .nth(1)
@@ -238,7 +263,7 @@ fn premises_are_the_formula_s_and_each_is_once() {
         .find(|l| l.contains(r#""fn":"check""#) && l.contains("assertion"))
         .unwrap_or_default();
     assert!(
-        check.contains(r#""premises":["check.bb0 x x","x = 0"]"#),
+        check.contains(r#""premises":["check.bb0(x, old(x) = x)","x = 0"]"#),
         "{stdout}"
     );
     let identity = stdout
@@ -246,4 +271,95 @@ fn premises_are_the_formula_s_and_each_is_once() {
         .find(|l| l.contains(r#""kind":"failure""#) && l.contains(r#""fn":"identity""#))
         .unwrap_or_default();
     assert_eq!(identity.matches(r#""°x >= 0""#).count(), 1, "{stdout}");
+}
+
+/// A constraint applies an unknown as the run shows a fact: each argument by the variable of the
+/// template it is, a `&mut` as `*x` and `°x`, never as a `<current, final>` pair.
+#[test]
+fn constraints_name_the_arguments_of_an_unknown() {
+    let output = report_with(
+        "swap_half.rs",
+        "constraints",
+        &[("THRUST_REPORT_FORMAT", "json")],
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let swap: Vec<&str> = stdout
+        .lines()
+        .filter(|l| l.contains(r#""fn":"swap""#))
+        .collect();
+    assert!(
+        swap.iter().any(|l| l.contains("swap.bb0(*x = ")),
+        "{stdout}"
+    );
+    assert!(swap.iter().all(|l| !l.contains('<')), "{stdout}");
+}
+
+/// A refuted loop entry or preservation labels the `invariant!` it checks.
+#[test]
+fn report_labels_the_invariant_a_loop_checks() {
+    let output = report("invariant_fail.rs", "failure");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("thrust: refuted: loop entry in `count_to`"),
+        "{stderr}"
+    );
+    let label = stderr
+        .lines()
+        .skip_while(|l| !l.contains("thrust_macros::invariant!(|i: i64| i >= 1);"))
+        .nth(1)
+        .unwrap_or_default();
+    assert!(label.contains("the annotation it checks"), "{stderr}");
+}
+
+/// A law, its proof by an empty body and a lemma raise no lint: they are not called and need not
+/// read their parameters.
+#[test]
+fn laws_and_their_proofs_raise_no_warning() {
+    let stderr = warnings_of("law_proof.rs");
+    assert!(!stderr.contains("warning"), "{stderr}");
+}
+
+/// The JSON header states how columns count as values, each step of a run gives its unknown and
+/// arguments apart from the fact's text, and a verdict that is no answer says what it was.
+#[test]
+fn json_states_columns_facts_and_the_solver_s_limit() {
+    let json = report_with("loop_fail.rs", "1", &[("THRUST_REPORT_FORMAT", "json")]);
+    let stdout = String::from_utf8_lossy(&json.stdout);
+    assert!(
+        stdout.contains(r#""columns":{"base":1,"unit":"char","end":"exclusive"}"#),
+        "{stdout}"
+    );
+    let step = r#""pred":"main.loop#1","args":[{"name":"x","value":"1"},{"name":"y","value":"1"}]"#;
+    assert!(stdout.contains(step), "{stdout}");
+
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = std::env::temp_dir().join(format!("thrust-slow-solver-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let solver = dir.join("slow");
+    std::fs::write(&solver, "#!/bin/sh\nsleep 5\necho sat\n").unwrap();
+    std::fs::set_permissions(&solver, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let slow = report_with(
+        "loop_fail.rs",
+        "1",
+        &[
+            ("THRUST_REPORT_FORMAT", "json"),
+            ("THRUST_SOLVER", solver.to_str().unwrap()),
+            ("THRUST_SOLVER_TIMEOUT_SECS", "1"),
+        ],
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+    let stdout = String::from_utf8_lossy(&slow.stdout);
+    let verdict = r#"{"kind":"verdict","verdict":"timeout","refutations":"one per query","message":"Timeout(1s)"}"#;
+    assert!(stdout.contains(verdict), "{stdout}");
+}
+
+/// When `z3` cannot read a query that has sequences or forall sorts, the error says that PCSat
+/// can.
+#[test]
+fn an_unreadable_query_points_to_pcsat() {
+    let stderr = warnings_of("for_range_needs_pcsat.rs");
+    assert!(
+        stderr.contains("help: the query has forall sorts or sequences, which `z3` does not read"),
+        "{stderr}"
+    );
 }

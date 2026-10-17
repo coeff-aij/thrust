@@ -1226,6 +1226,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     fn refine_basic_blocks(&mut self) {
         use rustc_mir_dataflow::Analysis as _;
         let loop_invariants = self.collect_loop_invariant_annotations();
+        for (header, invariants) in &loop_invariants {
+            let formulas = invariants.iter().map(|(formula, _, _)| *formula);
+            self.ctx
+                .record_invariant_annotations(self.local_def_id, *header, formulas);
+        }
         let mut results = rustc_mir_dataflow::impls::MaybeLiveLocals
             .iterate_to_fixpoint(self.tcx, &self.body, None)
             .into_results_cursor(&self.body);

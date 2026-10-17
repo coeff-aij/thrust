@@ -64,7 +64,9 @@ fn a_split_run_reports_the_refuted_part() {
     );
     assert!(stderr.contains("where it fails: x = 0"), "{stderr}");
     assert!(
-        stderr.contains("error: verification error: Unsat\n  --> "),
+        stderr.contains(
+            "error: verification error: Unsat (thrust: refuted: ensures in `bad`)\n  --> "
+        ),
         "{stderr}"
     );
 }
@@ -76,7 +78,8 @@ fn a_function_in_two_parts_is_explained() {
     let output = run("invariant_parts.rs", Some("2"));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!output.status.success(), "{stderr}");
-    assert!(stderr.contains("in part 0 of 2, of "), "{stderr}");
+    // Parts are numbered from 1.
+    assert!(stderr.contains("in part 1 of 2, of "), "{stderr}");
     assert!(
         stderr.contains("invariant_parts.rs:1-8), `main` ("),
         "{stderr}"
@@ -112,7 +115,7 @@ fn a_part_line_spans_its_functions() {
         &[("THRUST_REPORT", "1"), ("THRUST_REPORT_FORMAT", "json")],
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let part = r#"{"kind":"part","id":1,"clauses":1,"functions":[{"fn":"count_to","span":{"file":"#;
+    let part = r#"{"kind":"part","id":2,"clauses":1,"functions":[{"fn":"count_to","span":{"file":"#;
     assert!(stdout.contains(part), "{stdout}");
 }
 
@@ -190,7 +193,7 @@ fn a_failed_second_run_is_reported_with_its_verdict() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains(
-            "thrust: no failing obligation to show for part 0: the second run, asked for a \
+            "thrust: no failing obligation to show for part 1: the second run, asked for a \
              refutation, gave none (unknown)"
         ),
         "{stderr}"
@@ -244,10 +247,11 @@ fn a_split_failure_names_its_part() {
         &[("THRUST_REPORT", "1"), ("THRUST_REPORT_FORMAT", "json")],
     );
     let stdout = String::from_utf8_lossy(&json.stdout);
-    let verdict = r#"{"kind":"verdict","verdict":"unsat","refutations":"one per part"}"#;
+    let verdict =
+        r#"{"kind":"verdict","verdict":"unsat","refutations":"one per part","message":null}"#;
     assert!(stdout.contains(verdict), "{stdout}");
     assert!(
-        stdout.contains(r#"{"kind":"failure","part":1,"constraint":"#),
+        stdout.contains(r#"{"kind":"failure","part":2,"constraint":"#),
         "{stdout}"
     );
     let plain = run("two_parts.rs", Some("2"));
@@ -257,4 +261,33 @@ fn a_split_failure_names_its_part() {
         .nth(1)
         .unwrap_or_default();
     assert!(error.contains("two_parts.rs:9:1\n"), "{stderr}");
+}
+
+/// What needs no answer of the solver, the templates and the constraints, is shown of every part
+/// as without `THRUST_SPLIT`.
+#[test]
+fn a_split_run_shows_the_constraints_of_every_part() {
+    let notes = |split| {
+        let output = run_with(
+            "inferred_parts.rs",
+            split,
+            &[("THRUST_REPORT", "template,constraints")],
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        (stderr.matches("constraints from this code").count(), stderr)
+    };
+    let (whole, _) = notes(None);
+    let (parts, stderr) = notes(Some("2"));
+    assert!(whole >= 3, "{stderr}");
+    assert_eq!(parts, whole, "{stderr}");
+    assert!(stderr.contains("template: fn double("), "{stderr}");
+}
+
+/// A failing part of several functions without a refutation has its error at the first and
+/// labels the others.
+#[test]
+fn a_part_of_several_functions_spans_each() {
+    let output = run("several_functions.rs", Some("2"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("`main` is in this part too"), "{stderr}");
 }
