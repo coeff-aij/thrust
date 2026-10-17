@@ -22,15 +22,24 @@ use crate::analyze;
 /// [`check_proof_branches`].
 pub fn check_lemmas(tcx: TyCtxt<'_>, proof_branch: Option<DefId>) {
     let checker = Checker { tcx, proof_branch };
+    // A law's proof, an impl's definition of a law or a trait's default body for one, is a
+    // lemma too: what it proves is assumed wherever the trait is used through a type parameter,
+    // so a proof that does not return would prove anything.
     let lemmas: Vec<LocalDefId> = tcx
         .mir_keys(())
         .iter()
         .copied()
-        .filter(|def_id| checker.is_lemma(def_id.to_def_id()))
+        .filter(|def_id| {
+            checker.is_lemma(def_id.to_def_id()) || checker.is_law_proof(def_id.to_def_id())
+        })
         .collect();
     let mut calls = HashMap::new();
     for &lemma in &lemmas {
-        checker.check_signature(lemma);
+        // A law is run where it is called, and a call analyzed as any other, so it may take a
+        // `&mut`.
+        if checker.is_lemma(lemma.to_def_id()) {
+            checker.check_signature(lemma);
+        }
         checker.check_safe(lemma);
         calls.insert(lemma, checker.lemma_calls(lemma));
     }
@@ -75,6 +84,30 @@ impl<'tcx> Checker<'tcx> {
 
     fn is_lemma_rec(&self, def_id: DefId) -> bool {
         self.has_attr(def_id, &analyze::annot::lemma_rec_path())
+    }
+
+    fn is_law(&self, def_id: DefId) -> bool {
+        self.has_attr(def_id, &analyze::annot::law_path())
+    }
+
+    /// Whether `def_id` is a trait law with a default body or an impl's definition of one.
+    fn is_law_proof(&self, def_id: DefId) -> bool {
+        self.is_law(def_id)
+            || self
+                .tcx
+                .opt_associated_item(def_id)
+                .and_then(|item| item.trait_item_def_id)
+                .is_some_and(|trait_item| self.is_law(trait_item))
+    }
+
+    /// Whether a call of `def_id` at `args` uses a law at another type than the one being proved:
+    /// a type parameter other than `Self`, as a generic impl's proof uses the laws of the types it
+    /// wraps. A law used at `Self` or at a concrete type could be the one being proved.
+    fn is_law_at_type_param(&self, def_id: DefId, args: mir_ty::GenericArgsRef<'tcx>) -> bool {
+        self.is_law(def_id)
+            && args.types().next().is_some_and(|ty| {
+                matches!(ty.kind(), mir_ty::Param(param) if param.name != rustc_span::symbol::kw::SelfUpper)
+            })
     }
 
     /// The types a value of `ty` is made of: the types `ty` names and, through the fields of
@@ -155,7 +188,10 @@ impl<'tcx> Checker<'tcx> {
         let body = self.tcx.optimized_mir(lemma);
         let dcx = self.tcx.dcx();
         if rustc_data_structures::graph::is_cyclic(&body.basic_blocks) {
-            dcx.span_err(loop_span(body), "a lemma cannot contain a loop");
+            dcx.span_err(
+                loop_span(body),
+                "a lemma or a law's proof cannot contain a loop",
+            );
         }
         let mut lemmas = Vec::new();
         for data in body.basic_blocks.iter() {
@@ -195,13 +231,19 @@ impl<'tcx> Checker<'tcx> {
         if callee.is_some_and(|def_id| self.is_ghost_fn(def_id)) {
             return None;
         }
+        if func
+            .const_fn_def()
+            .is_some_and(|(def_id, args)| self.is_law_at_type_param(def_id, args))
+        {
+            return None;
+        }
         let Some(local) = callee
             .filter(|def_id| self.is_lemma(*def_id) || self.is_lemma_rec(*def_id))
             .and_then(DefId::as_local)
         else {
             dcx.span_err(
                 span,
-                "a lemma calls only lemmas, logic functions, predicates and model operations",
+                "a lemma or a law's proof calls only lemmas, logic functions, predicates, model operations and laws at a type parameter",
             );
             return None;
         };
