@@ -2336,6 +2336,31 @@ fn _extern_spec_iterator_next<I>(it: &mut I) -> Option<I::Item>
     <I as std::iter::Iterator>::next(it)
 }
 
+// `nth` hands out the item after `n` others, or runs out first. Where it runs out, the iterator's
+// state afterwards is left open: std's `Range::nth` moves the range to `end..end` where `next`
+// would leave an inverted range as it is. std's adapters call `nth` (`Skip::next`), so an impl's
+// own `nth` is checked against this; proving one needs the skipped items as a witness, which PCSat
+// does not find unaided.
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(I::inv(*it))]
+#[thrust_macros::ensures(
+    I::inv(!it)
+        && (thrust_models::exists(|s: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
+                                   x: <I::Item as thrust_models::Model>::Ty|
+                s.len() == n && result == Some(x) && I::produces(*it, s.push(x), !it))
+            || (result == None
+                && thrust_models::exists(|s: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
+                                          j: <I as thrust_models::Model>::Ty,
+                                          j2: <I as thrust_models::Model>::Ty|
+                    s.len() <= n && I::produces(*it, s, j) && I::completed(thrust_models::model::Mut::new(j, j2)))))
+)]
+fn _extern_spec_iterator_nth<I>(it: &mut I, n: usize) -> Option<I::Item>
+    where I: IteratorSpec,
+          I::Item: thrust_models::Model
+{
+    <I as std::iter::Iterator>::nth(it, n)
+}
+
 // The predicate accepted the item found in some state of it; which state, and that it rejected
 // the items before, is not stated: that needs the sequence of its states across the calls, on
 // which PCSat fails. Each step is `next`, which keeps `inv`.
