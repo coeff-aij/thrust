@@ -114,6 +114,31 @@ pub fn components(system: &System) -> Vec<Vec<ClauseId>> {
     components
 }
 
+impl System {
+    /// The system with only the clauses `ids`; each other clause is replaced by `true ⇐ true`,
+    /// which the query leaves out, so that every clause keeps its id.
+    pub fn part(&self, ids: &[ClauseId]) -> System {
+        let kept: HashSet<ClauseId> = ids.iter().copied().collect();
+        let mut system = self.clone();
+        for id in self.clauses.indices() {
+            if !kept.contains(&id) {
+                system.clauses[id] = Clause {
+                    origin: debug::origin::ClauseOrigin {
+                        environment: Vec::new(),
+                        body: Vec::new(),
+                        head: debug::origin::Entry::described("left out of the part".to_owned()),
+                    },
+                    vars: IndexVec::new(),
+                    head: Atom::top(),
+                    body: Body::top(),
+                    debug_info: DebugInfo::default(),
+                };
+            }
+        }
+        system
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -46,6 +46,8 @@ pub struct Constraint {
     pub conclusion: String,
     /// The premises implying the conclusion.
     pub formula: String,
+    /// The name of each variable of the clause, by its index.
+    pub vars: Vec<String>,
 }
 
 /// Whether `def_id` is one of the functions a panic calls: the panic language items (those of
@@ -267,7 +269,7 @@ pub fn path_of(var: &chc::debug::ErasedVar) -> Option<VarPath> {
     }
 }
 
-/// The clause as premises and a conclusion over named variables: variables equal to one another
+/// The clause as premises and a conclusion over named variables, and the name of each variable: variables equal to one another
 /// are merged, a variable without a name that a premise defines is replaced by its definition,
 /// and a goal's negated premise becomes its conclusion.
 fn render(
@@ -276,7 +278,7 @@ fn render(
     def: Option<LocalDefId>,
     names: &Names,
     body: Option<&DefBody<'_>>,
-) -> (Vec<Formula>, Formula) {
+) -> (Vec<Formula>, Formula, Vec<Name>) {
     let mut premises: Vec<chc::Formula> = clause
         .body
         .atoms
@@ -367,7 +369,7 @@ fn render(
     }
     // A premise equating a term with itself says nothing.
     premises.retain(|p| !matches!(equation(p), Some((a, b)) if a == b));
-    (premises, conclusion)
+    (premises, conclusion, var_names)
 }
 
 pub fn constraint(
@@ -385,7 +387,7 @@ pub fn constraint(
             .map(|def| tcx.def_span(def.to_def_id()).source_callsite()),
     };
     let kind = kind(tcx, clause, &provenance, body, names);
-    let (premises, conclusion) = render(id, clause, provenance.def, names, body);
+    let (premises, conclusion, vars) = render(id, clause, provenance.def, names, body);
     let formula = show(
         &formula::and(premises.clone()).implies(conclusion.clone()),
         names,
@@ -397,5 +399,6 @@ pub fn constraint(
         premises: premises.iter().map(|p| show(p, names)).collect(),
         conclusion: show(&conclusion, names),
         formula,
+        vars: vars.iter().map(|v| v.as_str().to_owned()).collect(),
     }
 }

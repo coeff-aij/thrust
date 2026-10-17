@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use crate::chc;
 
-use super::formula::OneLine as _;
+use super::formula::OneLine;
 use super::proof::{self, Fact};
 use super::sites::{Names, PredInfo};
 
@@ -28,6 +28,22 @@ pub struct Failure {
     pub goal: chc::ClauseId,
     pub run: Vec<Step>,
     pub truncated: bool,
+    /// The values the goal's variables have where it fails, by their index.
+    pub values: Vec<String>,
+}
+
+impl Failure {
+    /// The values where the goal fails of the variables of `goal` the program names, once each.
+    pub fn named_values(&self, goal: &super::constraints::Constraint) -> Vec<(String, String)> {
+        let mut shown: Vec<(String, String)> = Vec::new();
+        for (name, value) in goal.vars.iter().zip(&self.values) {
+            if name.starts_with("__tmp_chc_") || shown.iter().any(|(n, _)| n == name) {
+                continue;
+            }
+            shown.push((name.clone(), value.clone()));
+        }
+        shown
+    }
 }
 
 struct Reader<'a> {
@@ -191,5 +207,6 @@ pub fn read(
         goal,
         run: reader.run,
         truncated: reader.truncated,
+        values: marker.args.iter().map(OneLine::one_line).collect(),
     })
 }

@@ -890,6 +890,18 @@ fn split_jobs() -> Result<Option<usize>, String> {
     }
 }
 
+/// The functions the clauses `ids` of `system` come from, sorted.
+fn part_functions(system: &chc::System, ids: &[chc::ClauseId]) -> Vec<String> {
+    let mut functions: Vec<String> = ids
+        .iter()
+        .filter_map(|&id| system.clauses[id].debug_info.get("def"))
+        .map(str::to_owned)
+        .collect();
+    functions.sort_unstable();
+    functions.dedup();
+    functions
+}
+
 /// Where the analysis makes a template, and so its predicate variables: a function's contract,
 /// a block's type, or the code of a block (the result of a call it makes).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2494,12 +2506,7 @@ impl<'tcx> Analyzer<'tcx> {
         match split_jobs() {
             Ok(None) => {}
             Ok(Some(jobs)) => {
-                if config.is_some() {
-                    self.tcx
-                        .dcx()
-                        .warn("`THRUST_REPORT` is not made when `THRUST_SPLIT` solves in parts");
-                }
-                self.solve_parts(jobs);
+                self.solve_parts(jobs, config.as_ref());
                 return;
             }
             Err(err) => {
@@ -2513,7 +2520,7 @@ impl<'tcx> Analyzer<'tcx> {
             .unwrap_or_default();
         let answer = self.system.borrow().solve_with(requests);
         if let Some(config) = &config {
-            self.report(config, &answer);
+            self.report(config, &self.system.borrow(), &answer, &[]);
         }
         if let Err(err) = answer.result {
             self.tcx.dcx().err(format!("verification error: {:?}", err));
@@ -2522,44 +2529,74 @@ impl<'tcx> Analyzer<'tcx> {
 
     /// Solves each part of the system that shares no unknown with the rest on its own
     /// (`THRUST_SPLIT`), and reports the failing ones with the functions their clauses come from.
-    fn solve_parts(&self, jobs: usize) {
+    /// Solves each part of the system on its own and, with `report`, reports the parts refuted:
+    /// those are solved again together, asked for what the report needs.
+    fn solve_parts(&self, jobs: usize, report: Option<&crate::report::Config>) {
         let system = self.system.borrow();
         let parts = system.solve_parts(jobs);
-        let cached = parts.iter().filter(|p| p.cached).count();
-        for part in &parts {
+        let summaries: Vec<crate::report::Part> = parts
+            .iter()
+            .map(|part| crate::report::Part {
+                functions: part_functions(&system, &part.clauses),
+                verdict: match &part.result {
+                    Ok(()) => "sat",
+                    Err(chc::CheckSatError::Unsat) => "unsat",
+                    Err(chc::CheckSatError::Timeout(_)) => "timeout",
+                    Err(_) => "error",
+                },
+                cached: part.cached,
+            })
+            .collect();
+        for (part, summary) in parts.iter().zip(&summaries) {
             let Err(err) = &part.result else {
                 continue;
             };
-            let mut defs: Vec<&str> = part
-                .clauses
-                .iter()
-                .filter_map(|&id| system.clauses[id].debug_info.get("def"))
-                .collect();
-            defs.sort_unstable();
-            defs.dedup();
-            let defs: Vec<String> = defs.iter().map(|d| format!("`{d}`")).collect();
+            let functions: Vec<String> =
+                summary.functions.iter().map(|f| format!("`{f}`")).collect();
             self.tcx
                 .dcx()
                 .struct_err(format!("verification error: {:?}", err))
                 .with_note(format!(
                     "in the part of {} clauses from {}",
                     part.clauses.len(),
-                    if defs.is_empty() {
+                    if functions.is_empty() {
                         "no function".to_owned()
                     } else {
-                        defs.join(", ")
+                        functions.join(", ")
                     }
                 ))
                 .emit();
         }
+        let cached = parts.iter().filter(|p| p.cached).count();
         self.tcx.dcx().note(format!(
             "thrust: {} parts solved on their own, {} of them from earlier runs",
             parts.len(),
             cached
         ));
+        let Some(config) = report else {
+            return;
+        };
+        let refuted: Vec<chc::ClauseId> = parts
+            .iter()
+            .filter(|part| matches!(part.result, Err(chc::CheckSatError::Unsat)))
+            .flat_map(|part| part.clauses.iter().copied())
+            .collect();
+        let refuted_part = system.part(&refuted);
+        let answer = if refuted.is_empty() {
+            chc::Answer::of(Ok(()))
+        } else {
+            refuted_part.solve_with(config.requests())
+        };
+        self.report(config, &refuted_part, &answer, &summaries);
     }
 
-    fn report(&self, config: &crate::report::Config, answer: &chc::Answer) {
+    fn report(
+        &self,
+        config: &crate::report::Config,
+        system: &chc::System,
+        answer: &chc::Answer,
+        parts: &[crate::report::Part],
+    ) {
         let contracts = self
             .defs
             .iter()
@@ -2581,14 +2618,14 @@ impl<'tcx> Analyzer<'tcx> {
                     .map(move |(bb, def)| (key.local_def_id, *bb, &def.ty))
             })
             .collect();
-        let system = self.system.borrow();
         let input = crate::report::Input {
-            system: &system,
+            system,
             contracts,
             blocks,
             answer,
             template_sites: &self.template_sites,
             template_vars: &self.template_vars,
+            parts,
         };
         crate::report::emit(self.tcx, config, &input);
     }

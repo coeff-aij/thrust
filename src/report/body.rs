@@ -71,15 +71,27 @@ fn calls(tcx: TyCtxt<'_>, body: &mir::Body<'_>) -> HashMap<BasicBlock, (String, 
 impl<'tcx> DefBody<'tcx> {
     pub fn new(tcx: TyCtxt<'tcx>, def: LocalDefId) -> Self {
         let body = tcx.optimized_mir(def.to_def_id());
-        let mut local_names = HashMap::new();
+        // A name bound again (a shadowing `let`) is told apart by the order of the bindings:
+        // `b`, then `b@2`.
+        let mut bound: Vec<(Local, String, Span)> = Vec::new();
         for info in &body.var_debug_info {
             if let mir::VarDebugInfoContents::Place(place) = info.value {
-                if place.projection.is_empty() {
-                    local_names
-                        .entry(place.local)
-                        .or_insert_with(|| info.name.to_string());
+                if place.projection.is_empty() && bound.iter().all(|(l, _, _)| *l != place.local) {
+                    bound.push((place.local, info.name.to_string(), info.source_info.span));
                 }
             }
+        }
+        bound.sort_by_key(|(local, _, span)| (span.lo(), *local));
+        let mut local_names = HashMap::new();
+        let mut seen: HashMap<String, usize> = HashMap::new();
+        for (local, name, _) in bound {
+            let n = seen.entry(name.clone()).or_insert(0);
+            *n += 1;
+            let name = match *n {
+                1 => name,
+                n => format!("{name}@{n}"),
+            };
+            local_names.insert(local, name);
         }
         let mut loops = natural_loops(body);
         loops.sort_by_key(|(header, _)| {

@@ -3658,16 +3658,15 @@ impl System {
         let config = Config::from_env();
         let cache = cache::Cache::from_env();
         let parts = components::components(self);
-        // The system without its clauses, which each part puts its own into.
-        let mut base = self.clone();
-        let clauses = std::mem::take(&mut base.clauses);
         let verdicts: Vec<std::sync::OnceLock<cache::Verdict>> =
             parts.iter().map(|_| std::sync::OnceLock::new()).collect();
         let next = AtomicUsize::new(0);
         let solve = |i: usize| {
-            let mut system = base.clone();
-            system.clauses = parts[i].iter().map(|&id| clauses[id].clone()).collect();
-            let query = system.prepared().smtlib2(config.capabilities()).to_string();
+            let query = self
+                .part(&parts[i])
+                .prepared()
+                .smtlib2(config.capabilities())
+                .to_string();
             if let Err(err) = config.save_query(&format!("thrust_output_part{i}.smt2"), &query) {
                 return cache::Verdict {
                     result: Err(err.into()),
@@ -3751,10 +3750,10 @@ impl System {
     }
 
     /// Gives each goal (a clause whose head is no predicate variable: `false`, or a formula the
-    /// clause checks) a nullary predicate variable of its own between its body and `false`, which
-    /// the system is satisfiable with exactly when it is without: `g ⇐ body ∧ ¬head` and
-    /// `false ⇐ g`. A refutation then derives the marker of the goal it refutes. Returns the
-    /// markers with their goals.
+    /// clause checks) a predicate variable of its own over the goal's variables between its body
+    /// and `false`, which the system is satisfiable with exactly when it is without:
+    /// `g(x) ⇐ body ∧ ¬head` and `false ⇐ g(x)`. A refutation then derives the marker of the
+    /// goal it refutes, at the values of its variables. Returns the markers with their goals.
     fn mark_goals(&mut self) -> Vec<(PredVarId, ClauseId)> {
         let goals: Vec<ClauseId> = self
             .clauses
@@ -3766,9 +3765,14 @@ impl System {
             .collect();
         let mut markers = Vec::new();
         for id in goals {
-            let marker = self.new_pred_var(PredSig::new(), DebugInfo::default());
+            // The marker takes the goal's variables, so that the refutation's last fact gives the
+            // values they have where the goal fails.
+            let vars = self.clauses[id].vars.clone();
+            let args: Vec<Term> = vars.indices().map(Term::Var).collect();
+            let marker = self.new_pred_var(vars.raw.clone(), DebugInfo::default());
             let clause = &mut self.clauses[id];
-            let head = std::mem::replace(&mut clause.head, Atom::new(marker.into(), vec![]));
+            let marked = Atom::new(marker.into(), args.clone());
+            let head = std::mem::replace(&mut clause.head, marked);
             if !head.is_bottom() {
                 clause.body.formula.push_conj(Formula::Atom(head).not());
             }
@@ -3778,9 +3782,9 @@ impl System {
                     body: Vec::new(),
                     head: debug::origin::Entry::described("marker of a goal".to_owned()),
                 },
-                vars: IndexVec::new(),
+                vars,
                 head: Atom::bottom(),
-                body: Body::new(vec![Atom::new(marker.into(), vec![])], Formula::top()),
+                body: Body::new(vec![Atom::new(marker.into(), args)], Formula::top()),
                 debug_info: DebugInfo::default(),
             });
             markers.push((marker, id));

@@ -178,6 +178,14 @@ impl Human<'_, '_> {
         let mut notes = Vec::new();
         if let Some((_, c)) = found {
             notes.push(format!("{:?}: {}", c.id, c.formula));
+            let values: Vec<String> = failure
+                .named_values(c)
+                .into_iter()
+                .map(|(name, value)| format!("{name} = {value}"))
+                .collect();
+            if !values.is_empty() {
+                notes.push(format!("where it fails: {}", values.join(", ")));
+            }
         }
         let mut lines = Vec::new();
         for step in &failure.run {

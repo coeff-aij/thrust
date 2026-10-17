@@ -15,6 +15,11 @@ use super::{constraint_of, location, Entry, Items};
 #[derive(Serialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 enum Line<'a> {
+    Part {
+        functions: &'a [String],
+        verdict: &'a str,
+        cached: bool,
+    },
     Site {
         r#fn: &'a str,
         site: String,
@@ -41,7 +46,14 @@ enum Line<'a> {
         obligation: Option<&'a str>,
         run: Vec<Step>,
         truncated: bool,
+        values: Vec<Value>,
     },
+}
+
+#[derive(Serialize)]
+struct Value {
+    name: String,
+    value: String,
 }
 
 #[derive(Serialize)]
@@ -63,6 +75,7 @@ pub(super) struct Json<'a, 'tcx> {
     pub(super) names: &'a Names,
     pub(super) solution: Option<Solution>,
     pub(super) failure: Option<Failure>,
+    pub(super) parts: &'a [super::Part],
 }
 
 impl Json<'_, '_> {
@@ -144,6 +157,12 @@ impl Json<'_, '_> {
             obligation: found.map(|(_, c)| c.kind.as_str()),
             run,
             truncated: failure.truncated,
+            values: found
+                .map(|(_, c)| failure.named_values(c))
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(name, value)| Value { name, value })
+                .collect(),
         }
     }
 
@@ -153,6 +172,13 @@ impl Json<'_, '_> {
         out: &mut dyn std::io::Write,
     ) -> std::io::Result<()> {
         let mut line = |line: Line<'_>| writeln!(out, "{}", serde_json::to_string(&line)?);
+        for part in self.parts {
+            line(Line::Part {
+                functions: &part.functions,
+                verdict: part.verdict,
+                cached: part.cached,
+            })?;
+        }
         if let Some(failure) = self.failure.as_ref().filter(|_| self.items.failure) {
             line(self.failure(entries, failure))?;
         }

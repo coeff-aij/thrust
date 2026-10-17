@@ -157,6 +157,19 @@ pub struct Input<'a> {
     pub template_sites: &'a HashMap<chc::PredVarId, crate::analyze::TemplateSite>,
     /// The variable each argument of a template's predicate variable is.
     pub template_vars: &'a HashMap<chc::PredVarId, Vec<Option<chc::debug::ErasedVar>>>,
+    /// The parts of the system solved on their own (`THRUST_SPLIT`); the system and the answer
+    /// are then those of the parts refuted.
+    pub parts: &'a [Part],
+}
+
+/// A part of the system solved on its own.
+pub struct Part {
+    /// The functions its clauses come from.
+    pub functions: Vec<String>,
+    /// `sat`, `unsat`, `timeout`, or `error`.
+    pub verdict: &'static str,
+    /// Whether the verdict was that of an earlier run (`THRUST_CACHE_DIR`).
+    pub cached: bool,
 }
 
 /// One function: its sites and constraints, the loops' ones under their headers.
@@ -343,6 +356,7 @@ pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) {
         answer: input.answer,
         template_sites: input.template_sites,
         template_vars: input.template_vars,
+        parts: input.parts,
     };
     let symbols = chc::answer::Symbols::of(&system, chc::Config::from_env().capabilities());
     let (entries, names) = entries(tcx, config, &input);
@@ -379,6 +393,7 @@ pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) {
                 names: &names,
                 solution: solution.ok(),
                 failure,
+                parts: input.parts,
             };
             let result = match &config.file {
                 Some(path) => {
