@@ -3239,17 +3239,24 @@ fn _extern_spec_vec_split_off<T>(vec: &mut Vec<T>, at: usize) -> Vec<T>
     Vec::split_off(vec, at)
 }
 
-// The iterator's items are not visible in this vocabulary, so only the old contents kept as a
-// prefix are stated. Each step is `next`, which requires `inv`.
+// Creusot's `Vec::extend` and `FromIterator::from_iter` (creusot-std src/std/vec.rs, whose
+// `from_iter_post` is `prod == res@`, and src/std/iter.rs): the iterator runs from what
+// `into_iter` gives to completion, and what it produced is appended (`extend`) or is the vector
+// (`from_iter`, `collect`). Each step is `next`, which requires `inv`.
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(
     thrust_models::forall(|it: <I::IntoIter as thrust_models::Model>::Ty|
         I::into_iter_is(iter, it) ==> <I::IntoIter as IteratorSpec>::inv(it))
 )]
 #[thrust_macros::ensures(
-    (!vec).len() >= (*vec).len()
-        && thrust_models::forall(|i: thrust_models::model::Int|
-            (0 <= i && i < (*vec).len()) ==> (!vec)[i] == (*vec)[i])
+    thrust_models::exists(|it: <I::IntoIter as thrust_models::Model>::Ty,
+                           prod: thrust_models::model::Seq<<T as thrust_models::Model>::Ty>,
+                           done: <I::IntoIter as thrust_models::Model>::Ty,
+                           fin: <I::IntoIter as thrust_models::Model>::Ty|
+        I::into_iter_is(iter, it)
+            && <I::IntoIter as IteratorSpec>::produces(it, prod, done)
+            && <I::IntoIter as IteratorSpec>::completed(thrust_models::model::Mut::new(done, fin))
+            && !vec == (*vec).concat(prod))
 )]
 fn _extern_spec_vec_extend<T, I>(vec: &mut Vec<T>, iter: I)
     where T: thrust_models::Model,
@@ -3258,19 +3265,37 @@ fn _extern_spec_vec_extend<T, I>(vec: &mut Vec<T>, iter: I)
     <Vec<T> as std::iter::Extend<T>>::extend(vec, iter)
 }
 
-// Nothing about the collected items is visible in this vocabulary, so the result is any `Vec<T>`.
-// Each step is `next`, which requires `inv`.
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(
     thrust_models::forall(|it: <I::IntoIter as thrust_models::Model>::Ty|
         I::into_iter_is(iter, it) ==> <I::IntoIter as IteratorSpec>::inv(it))
 )]
-#[thrust_macros::ensures(true)]
+#[thrust_macros::ensures(
+    thrust_models::exists(|it: <I::IntoIter as thrust_models::Model>::Ty,
+                           done: <I::IntoIter as thrust_models::Model>::Ty,
+                           fin: <I::IntoIter as thrust_models::Model>::Ty|
+        I::into_iter_is(iter, it)
+            && <I::IntoIter as IteratorSpec>::produces(it, result, done)
+            && <I::IntoIter as IteratorSpec>::completed(thrust_models::model::Mut::new(done, fin)))
+)]
 fn _extern_spec_vec_from_iter<T, I>(iter: I) -> Vec<T>
     where T: thrust_models::Model,
           I: IntoIteratorSpec<Item = T>, I::IntoIter: IteratorSpec
 {
     <Vec<T> as std::iter::FromIterator<T>>::from_iter(iter)
+}
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(I::inv(it))]
+#[thrust_macros::ensures(
+    thrust_models::exists(|done: <I as thrust_models::Model>::Ty, fin: <I as thrust_models::Model>::Ty|
+        I::produces(it, result, done) && I::completed(thrust_models::model::Mut::new(done, fin)))
+)]
+fn _extern_spec_iterator_collect_vec<I, T>(it: I) -> Vec<T>
+    where I: IteratorSpec<Item = T>,
+          T: thrust_models::Model
+{
+    <I as std::iter::Iterator>::collect::<Vec<T>>(it)
 }
 
 #[thrust::extern_spec_fn]

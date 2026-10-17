@@ -8,5 +8,5 @@ fn collect<I: IntoIterator<Item = i64>>(iter: I) -> Vec<i64> {
 
 fn main() {
     let v = collect(Vec::new());
-    assert!(v.len() >= 0);
+    assert!(v.len() == 0);
 }
