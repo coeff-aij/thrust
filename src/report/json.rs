@@ -2,45 +2,59 @@
 
 use rustc_middle::mir::BasicBlock;
 use rustc_middle::ty::TyCtxt;
+use serde::Serialize;
 
 use super::constraints::Constraint;
-use super::expr::Expr;
 use super::failure::Failure;
+use super::formula::Formula;
 use super::sites::{Names, Site, SiteKind};
 use super::solution::{block_template, invariant, over, signature, Solution};
 use super::{constraint_of, location, Entry, Items};
 
-fn json_str(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
+/// One line of the report, its `kind` the variant's name.
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+enum Line<'a> {
+    Site {
+        r#fn: &'a str,
+        site: String,
+        span: String,
+        over: String,
+        template: String,
+        preds: Vec<Pred<'a>>,
+        solution: Option<Vec<String>>,
+        inferred: Option<String>,
+    },
+    Constraint {
+        id: String,
+        r#fn: &'a str,
+        r#loop: Option<String>,
+        span: Option<String>,
+        obligation: &'a str,
+        premises: &'a [String],
+        conclusion: &'a str,
+    },
+    Failure {
+        constraint: String,
+        r#fn: Option<&'a str>,
+        span: Option<String>,
+        obligation: Option<&'a str>,
+        run: Vec<Step>,
+        truncated: bool,
+    },
 }
 
-fn json_opt(s: Option<String>) -> String {
-    s.map_or_else(|| "null".to_owned(), |s| json_str(&s))
+#[derive(Serialize)]
+struct Pred<'a> {
+    name: &'a str,
+    args: &'a [Option<String>],
 }
 
-fn json_list(items: impl IntoIterator<Item = String>) -> String {
-    format!("[{}]", items.into_iter().collect::<Vec<_>>().join(","))
-}
-
-fn json_object(fields: &[(&str, String)]) -> String {
-    let fields: Vec<_> = fields
-        .iter()
-        .map(|(k, v)| format!("{}:{v}", json_str(k)))
-        .collect();
-    format!("{{{}}}", fields.join(","))
+#[derive(Serialize)]
+struct Step {
+    depth: usize,
+    fact: String,
+    via: Option<String>,
 }
 
 pub(super) struct Json<'a, 'tcx> {
@@ -52,11 +66,10 @@ pub(super) struct Json<'a, 'tcx> {
 }
 
 impl Json<'_, '_> {
-    fn site(&self, entry: &Entry<'_>, site: &Site) -> String {
-        let id = |e: &Expr| e.clone();
-        let render = |f: &dyn Fn(&Expr) -> Expr| match site.kind {
-            SiteKind::Contract => signature(&entry.name, site, &f),
-            _ => invariant(site, &f).to_string(),
+    fn site<'a>(&'a self, entry: &'a Entry<'_>, site: &Site) -> Line<'a> {
+        let render = |f: &dyn Fn(&Formula) -> Formula| match site.kind {
+            SiteKind::Contract => signature(&entry.name, site, self.names, &f),
+            _ => invariant(site, self.names, &f),
         };
         let kind = match site.kind {
             SiteKind::Contract => "contract".to_owned(),
@@ -67,87 +80,71 @@ impl Json<'_, '_> {
             .preds
             .iter()
             .filter_map(|p| self.names.preds.get(p))
-            .map(|info| {
-                let args = info.args.iter().map(|a| json_opt(a.clone()));
-                json_object(&[("name", json_str(&info.name)), ("args", json_list(args))])
-            });
-        let solution = self
-            .solution
-            .as_ref()
-            .filter(|_| self.items.solution)
-            .map(|s| json_list(s.lines(site, self.names).iter().map(|l| json_str(l))));
-        let inferred = self
-            .solution
-            .as_ref()
-            .filter(|_| self.items.inferred)
-            .map(|s| render(&|e: &Expr| s.apply(e)));
-        json_object(&[
-            ("kind", json_str("site")),
-            ("fn", json_str(&entry.name)),
-            ("site", json_str(&kind)),
-            ("span", json_str(&location(self.tcx, site.span))),
-            ("over", json_str(&over(site))),
-            (
-                "template",
-                json_str(&match site.kind {
-                    SiteKind::Contract => render(&id),
-                    _ => block_template(site, self.names),
-                }),
-            ),
-            ("preds", json_list(preds)),
-            ("solution", solution.unwrap_or_else(|| "null".to_owned())),
-            ("inferred", json_opt(inferred)),
-        ])
+            .map(|info| Pred {
+                name: &info.name,
+                args: &info.args,
+            })
+            .collect();
+        let solution = self.solution.as_ref();
+        Line::Site {
+            r#fn: &entry.name,
+            site: kind,
+            span: location(self.tcx, site.span),
+            over: over(site),
+            template: match site.kind {
+                SiteKind::Contract => render(&Formula::clone),
+                _ => block_template(site, self.names),
+            },
+            preds,
+            solution: solution
+                .filter(|_| self.items.solution)
+                .map(|s| s.lines(site, self.names)),
+            inferred: solution
+                .filter(|_| self.items.inferred)
+                .map(|s| render(&|f| s.apply(f))),
+        }
     }
 
-    fn constraint(&self, entry: &Entry<'_>, header: Option<BasicBlock>, c: &Constraint) -> String {
-        let loop_span = header
-            .and_then(|h| entry.body.span(h, None))
-            .map(|span| location(self.tcx, span));
-        json_object(&[
-            ("kind", json_str("constraint")),
-            ("id", json_str(&format!("{:?}", c.id))),
-            ("fn", json_str(&entry.name)),
-            ("loop", json_opt(loop_span)),
-            (
-                "span",
-                json_opt(c.span.map(|span| location(self.tcx, span))),
-            ),
-            ("obligation", json_str(&c.kind)),
-            (
-                "premises",
-                json_list(c.premises.iter().map(|p| json_str(&p.to_string()))),
-            ),
-            ("conclusion", json_str(&c.conclusion.to_string())),
-        ])
+    fn constraint<'a>(
+        &self,
+        entry: &'a Entry<'_>,
+        header: Option<BasicBlock>,
+        c: &'a Constraint,
+    ) -> Line<'a> {
+        Line::Constraint {
+            id: format!("{:?}", c.id),
+            r#fn: &entry.name,
+            r#loop: header
+                .and_then(|h| entry.body.span(h, None))
+                .map(|span| location(self.tcx, span)),
+            span: c.span.map(|span| location(self.tcx, span)),
+            obligation: &c.kind,
+            premises: &c.premises,
+            conclusion: &c.conclusion,
+        }
     }
 
-    fn failure(&self, entries: &[Entry<'_>], failure: &Failure) -> String {
+    fn failure<'a>(&self, entries: &'a [Entry<'_>], failure: &Failure) -> Line<'a> {
         let found = constraint_of(entries, failure.goal);
-        let run = failure.run.iter().map(|step| {
-            let via = step.via.map(|id| format!("{id:?}"));
-            json_object(&[
-                ("depth", step.depth.to_string()),
-                ("fact", json_str(&step.fact)),
-                ("via", json_opt(via)),
-            ])
-        });
-        json_object(&[
-            ("kind", json_str("failure")),
-            ("constraint", json_str(&format!("{:?}", failure.goal))),
-            ("fn", json_opt(found.map(|(e, _)| e.name.clone()))),
-            (
-                "span",
-                json_opt(
-                    found
-                        .and_then(|(_, c)| c.span)
-                        .map(|s| location(self.tcx, s)),
-                ),
-            ),
-            ("obligation", json_opt(found.map(|(_, c)| c.kind.clone()))),
-            ("run", json_list(run)),
-            ("truncated", failure.truncated.to_string()),
-        ])
+        let run = failure
+            .run
+            .iter()
+            .map(|step| Step {
+                depth: step.depth,
+                fact: step.fact.clone(),
+                via: step.via.map(|id| format!("{id:?}")),
+            })
+            .collect();
+        Line::Failure {
+            constraint: format!("{:?}", failure.goal),
+            r#fn: found.map(|(e, _)| e.name.as_str()),
+            span: found
+                .and_then(|(_, c)| c.span)
+                .map(|s| location(self.tcx, s)),
+            obligation: found.map(|(_, c)| c.kind.as_str()),
+            run,
+            truncated: failure.truncated,
+        }
     }
 
     pub(super) fn write(
@@ -155,24 +152,25 @@ impl Json<'_, '_> {
         entries: &[Entry<'_>],
         out: &mut dyn std::io::Write,
     ) -> std::io::Result<()> {
+        let mut line = |line: Line<'_>| writeln!(out, "{}", serde_json::to_string(&line)?);
         if let Some(failure) = self.failure.as_ref().filter(|_| self.items.failure) {
-            writeln!(out, "{}", self.failure(entries, failure))?;
+            line(self.failure(entries, failure))?;
         }
         for entry in entries {
             let loop_sites = entry.loops.values().filter_map(|(site, _)| site.as_ref());
             let internal = entry.blocks.iter().filter(|_| self.items.internal);
             for site in entry.contract.iter().chain(loop_sites).chain(internal) {
-                writeln!(out, "{}", self.site(entry, site))?;
+                line(self.site(entry, site))?;
             }
             if !self.items.constraints {
                 continue;
             }
             for c in &entry.constraints {
-                writeln!(out, "{}", self.constraint(entry, None, c))?;
+                line(self.constraint(entry, None, c))?;
             }
             for (header, (_, constraints)) in &entry.loops {
                 for c in constraints {
-                    writeln!(out, "{}", self.constraint(entry, Some(*header), c))?;
+                    line(self.constraint(entry, Some(*header), c))?;
                 }
             }
         }

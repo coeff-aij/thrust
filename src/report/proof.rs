@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use super::expr::Expr;
+use super::formula::Term;
 use super::model::{self, Sexp};
 
 /// An instance of a predicate variable, with the facts the step deriving it applied its clause
@@ -17,7 +17,7 @@ use super::model::{self, Sexp};
 pub struct Fact {
     /// The predicate variable's name in the query (`p3`).
     pub pred: String,
-    pub args: Vec<Expr>,
+    pub args: Vec<Term>,
     pub premises: Vec<Fact>,
 }
 
@@ -45,14 +45,14 @@ fn expand(s: &Sexp, env: &Env<'_>, depth: usize) -> Sexp {
     }
 }
 
-fn fact_of(s: &Sexp, env: &Env<'_>, symbols: &model::Symbols) -> Option<(String, Vec<Expr>)> {
+fn fact_of(s: &Sexp, env: &Env<'_>, symbols: &model::Symbols) -> Option<(String, Vec<Term>)> {
     match resolve(s, env) {
         Sexp::Atom(name) => Some((name.clone(), Vec::new())),
         Sexp::List(items) => match items.as_slice() {
             [Sexp::Atom(pred), args @ ..] => {
                 let args = args
                     .iter()
-                    .map(|a| symbols.expr(&expand(a, env, 0)))
+                    .map(|a| symbols.term(&expand(a, env, 0)))
                     .collect();
                 Some((pred.clone(), args))
             }
@@ -152,16 +152,18 @@ mod tests {
         let facts = read(proof, &model::Symbols::default());
         assert_eq!(facts.len(), 1);
         assert_eq!(facts[0].pred, "query!0");
-        assert_eq!(facts[0].args, vec![Expr::sym("6")]);
+        assert_eq!(facts[0].args, vec![Term::Int(6.into())]);
         let p1 = find(&facts, "P").unwrap();
-        assert_eq!(p1.args, vec![Expr::sym("1")]);
-        assert_eq!(p1.premises[0].args, vec![Expr::sym("0")]);
+        assert_eq!(p1.args, vec![Term::Int(1.into())]);
+        assert_eq!(p1.premises[0].args, vec![Term::Int(0.into())]);
     }
 
     #[test]
     fn expands_the_terms_a_refutation_names() {
         let proof = "((set-logic HORN)\n(proof\n(let ((?x7 (tuple 5 5)))\n(mp ((_ hyper-res 0 0) (asserted (P ?x7)) (P ?x7)) (asserted (=> (P ?x7) false)) false))))";
         let facts = read(proof, &model::Symbols::default());
-        assert_eq!(facts[0].args[0].to_string(), "(5, 5)");
+        use crate::report::formula::OneLine as _;
+        let arg = facts[0].args[0].one_line();
+        assert_eq!(arg, "tuple(5, 5)");
     }
 }

@@ -43,11 +43,8 @@ pub fn simplify(
     names.sort();
     let mut script = declarations(query);
     script.push('\n');
-    let prelude_len = script.len();
     for name in &names {
-        let Some((params, body)) = &interpretations[*name].source else {
-            continue;
-        };
+        let (params, body) = &interpretations[*name].source;
         script.push_str(&format!("(echo \"@{name}\")\n(push)\n"));
         for (param, sort) in params {
             script.push_str(&format!("(declare-const {param} {sort})\n"));
@@ -56,7 +53,7 @@ pub fn simplify(
             "(assert {body})\n(apply (try-for {TACTIC} {BUDGET_MS}))\n(pop)\n"
         ));
     }
-    if script.len() == prelude_len {
+    if names.is_empty() {
         return;
     }
     let Some(output) = run(&script) else {

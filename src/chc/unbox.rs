@@ -2,7 +2,7 @@
 
 use super::*;
 
-fn unbox_term(term: Term) -> Term {
+fn unbox_term<V>(term: Term<V>) -> Term<V> {
     match term {
         Term::Var(_)
         | Term::Bool(_)
@@ -69,7 +69,7 @@ fn unbox_pred(pred: Pred) -> Pred {
     }
 }
 
-fn unbox_atom(atom: Atom) -> Atom {
+fn unbox_atom<V>(atom: Atom<V>) -> Atom<V> {
     let Atom { guard, pred, args } = atom;
     let guard = guard.map(|fo| Box::new(unbox_formula(*fo)));
     let pred = unbox_pred(pred);
@@ -83,7 +83,7 @@ fn unbox_datatype_sort(sort: DatatypeSort) -> DatatypeSort {
     DatatypeSort { symbol, args }
 }
 
-fn unbox_sort(sort: Sort) -> Sort {
+pub fn unbox_sort(sort: Sort) -> Sort {
     match sort {
         Sort::Null => Sort::Null,
         Sort::Int => Sort::Int,
@@ -101,7 +101,7 @@ fn unbox_sort(sort: Sort) -> Sort {
     }
 }
 
-fn unbox_formula(formula: Formula) -> Formula {
+pub fn unbox_formula<V>(formula: Formula<V>) -> Formula<V> {
     match formula {
         Formula::Atom(atom) => Formula::Atom(unbox_atom(atom)),
         Formula::Not(fo) => Formula::Not(Box::new(unbox_formula(*fo))),

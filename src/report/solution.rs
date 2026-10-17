@@ -5,13 +5,13 @@ use std::collections::HashMap;
 
 use crate::chc;
 
-use super::expr::Expr;
+use super::formula::{self, map_atoms, show, Formula, Name, Term};
 use super::model::{self, Interpretation};
 use super::sites::{Names, Site, SiteParam};
 
-/// The solver's interpretation of each predicate variable, by its name in the report.
+/// The solver's interpretation of each predicate variable the report names.
 pub(super) struct Solution {
-    by_name: HashMap<String, Interpretation>,
+    by_pred: HashMap<chc::PredVarId, Interpretation>,
 }
 
 impl Solution {
@@ -27,82 +27,68 @@ impl Solution {
         let mut model = model::read(model, symbols);
         // `z3`'s model of a system of clauses interprets the predicate variables by formulas over
         // their arguments; a function it made up besides would need its definition shown.
-        if let Some(name) = model.keys().find(|name| !names.is_pred_var(name)) {
+        if let Some(name) = model.keys().find(|name| symbols.pred(name).is_none()) {
             unimplemented!("a model defining `{name}`, which is no predicate variable");
         }
         // Only the predicate variables the report names are shown.
-        let named: std::collections::HashSet<String> =
-            names.preds.keys().map(|p| p.to_string()).collect();
-        model.retain(|name, _| named.contains(name));
+        model.retain(|name, _| names.preds.contains_key(&symbols.pred(name).unwrap()));
         super::simplify::simplify(&mut model, query, symbols, run);
-        // An interpretation takes the arguments in the order they are shown.
-        let by_name = names
-            .preds
-            .iter()
-            .filter_map(|(p, info)| {
-                let interpretation = model.get(&p.to_string())?;
-                let params = names.pred_head(*p).arrange(&interpretation.params);
-                let arranged = Interpretation {
-                    params,
-                    body: interpretation.body.clone(),
-                    source: None,
-                };
-                Some((info.name.clone(), arranged))
-            })
+        let by_pred = model
+            .into_iter()
+            .map(|(name, interpretation)| (symbols.pred(&name).unwrap(), interpretation))
             .collect();
-        Solution { by_name }
+        Solution { by_pred }
     }
 
-    /// Whether the solver interprets the predicate variable the report names `name`: not when the
-    /// query leaves it out (see `crate::chc::prune`).
-    pub(super) fn interprets(&self, name: &str) -> bool {
-        self.by_name.contains_key(name)
+    /// Whether the solver interprets `p`: not when the query leaves it out (see
+    /// `crate::chc::prune`).
+    pub(super) fn interprets(&self, p: chc::PredVarId) -> bool {
+        self.by_pred.contains_key(&p)
     }
 
-    /// `e` with each predicate variable replaced by its interpretation.
-    pub(super) fn apply(&self, e: &Expr) -> Expr {
-        match e {
-            Expr::Sym(_) => e.clone(),
-            Expr::App(f, args) => {
-                let args: Vec<Expr> = args.iter().map(|a| self.apply(a)).collect();
-                match self.by_name.get(f) {
-                    Some(interpretation) => interpretation.apply(&args),
-                    None => Expr::App(f.clone(), args),
-                }
+    /// `f` with each predicate variable replaced by its interpretation.
+    pub(super) fn apply(&self, f: &Formula) -> Formula {
+        map_atoms(f.clone(), &|atom| {
+            let chc::Pred::Var(p) = atom.pred else {
+                return atom.into();
+            };
+            let Some(interpretation) = self.by_pred.get(&p) else {
+                return atom.into();
+            };
+            let applied = interpretation.apply(&atom.args);
+            match atom.guard {
+                Some(guard) => guard.implies(applied),
+                None => applied,
             }
-            Expr::Quant(q, vars, body) => Expr::Quant(q, vars.clone(), Box::new(self.apply(body))),
-            Expr::Pred(p, groups, args) => {
-                let args: Vec<Expr> = args.iter().map(|a| self.apply(a)).collect();
-                match self.by_name.get(p) {
-                    Some(interpretation) => interpretation.apply(&args),
-                    None => Expr::Pred(p.clone(), groups.clone(), args),
-                }
-            }
-        }
+        })
     }
 
-    /// `name(args) := body` for each predicate variable of `site`.
+    /// `name args := body` for each predicate variable of `site`.
     pub(super) fn lines(&self, site: &Site, names: &Names) -> Vec<String> {
         site.preds
             .iter()
-            .filter_map(|p| names.preds.get(p))
-            .map(|info| {
+            .filter_map(|p| Some((*p, names.preds.get(p)?)))
+            .map(|(p, info)| {
                 let unique =
                     |a: &String| info.args.iter().filter(|b| b.as_ref() == Some(a)).count() == 1;
-                let args: Vec<String> = info
+                let shown: Vec<Term> = info
                     .args
                     .iter()
                     .enumerate()
                     .map(|(k, a)| match a {
-                        Some(a) if unique(a) => a.clone(),
-                        _ => format!("x{k}"),
+                        Some(a) if unique(a) => Term::Var(Name::new(a)),
+                        _ => Term::Var(Name::new(&format!("x{k}"))),
                     })
                     .collect();
-                let args: Vec<Expr> = args.into_iter().map(Expr::sym).collect();
-                let head = Expr::Pred(info.name.clone(), info.groups.clone(), args.clone());
-                match self.by_name.get(&info.name) {
-                    Some(interpretation) => format!("{head} := {}", interpretation.apply(&args)),
-                    None => format!("{head}: not in the query"),
+                let args = names.unarrange(p, shown);
+                let head = chc::Atom::new(p.into(), args.clone()).into();
+                match self.by_pred.get(&p) {
+                    Some(interpretation) => format!(
+                        "{} := {}",
+                        show(&head, names),
+                        show(&interpretation.apply(&args), names)
+                    ),
+                    None => format!("{}: not in the query", show(&head, names)),
                 }
             })
             .collect()
@@ -130,38 +116,49 @@ pub(super) fn solution_unavailable(answer: &chc::Answer) -> Option<String> {
     None
 }
 
-pub(super) fn refined(param: &SiteParam, refinement: &Expr) -> String {
-    if refinement.is_true() {
+fn refined(param: &SiteParam, refinement: Formula, names: &Names) -> String {
+    let refinement = formula::and(vec![refinement]);
+    if refinement.is_top() {
         return param.ty.clone();
     }
-    format!("{{{} | {refinement}}}", param.ty)
+    format!("{{{} | {}}}", param.ty, show(&refinement, names))
 }
 
 /// The template of a contract site as a signature, each refinement passed through `f`.
-pub(super) fn signature(name: &str, site: &Site, f: &impl Fn(&Expr) -> Expr) -> String {
+pub(super) fn signature(
+    name: &str,
+    site: &Site,
+    names: &Names,
+    f: &impl Fn(&Formula) -> Formula,
+) -> String {
     let (ret, params) = site.params.split_last().unwrap();
     let params: Vec<String> = params
         .iter()
-        .map(|p| format!("{}: {}", p.name, refined(p, &f(&p.refinement))))
+        .map(|p| format!("{}: {}", p.name, refined(p, f(&p.refinement), names)))
         .collect();
     format!(
         "fn {name}({}) -> {}",
         params.join(", "),
-        refined(ret, &f(&ret.refinement))
+        refined(ret, f(&ret.refinement), names)
     )
 }
 
 /// The template of a block site as one formula over its variables, passed through `f`.
-pub(super) fn invariant(site: &Site, f: &impl Fn(&Expr) -> Expr) -> Expr {
-    Expr::and(site.params.iter().map(|p| f(&p.refinement)).collect())
+pub(super) fn invariant(site: &Site, names: &Names, f: &impl Fn(&Formula) -> Formula) -> String {
+    let conjuncts = site.params.iter().map(|p| f(&p.refinement)).collect();
+    show(&formula::and(conjuncts), names)
 }
 
 /// The template of a block site: the signature of the predicate variable that is the whole of it,
-/// `main.loop#1(x: i64, y: i64)`, or else a closure over its variables, as `invariant!` takes it.
+/// `main.loop#1(x: int, y: int)`, or else a closure over its variables, as `invariant!` takes it.
 pub(super) fn block_template(site: &Site, names: &Names) -> String {
-    match site.signature {
-        Some(p) => format!("{}({})", names.pred_head(p).name, over(site)),
-        None => format!("|{}| {}", over(site), invariant(site, &|e| e.clone())),
+    match site.signature.and_then(|p| names.preds.get(&p)) {
+        Some(info) => format!("{}({})", info.name, over(site)),
+        None => format!(
+            "|{}| {}",
+            over(site),
+            invariant(site, names, &Formula::clone)
+        ),
     }
 }
 
@@ -172,24 +169,4 @@ pub(super) fn over(site: &Site) -> String {
         .map(|p| format!("{}: {}", p.name, p.ty))
         .collect();
     vars.join(", ")
-}
-
-/// The written form of an inferred contract.
-pub(super) fn contract_help(site: &Site, solution: &Solution) -> Option<String> {
-    let (ret, params) = site.params.split_last().unwrap();
-    let requires = Expr::and(
-        params
-            .iter()
-            .map(|p| solution.apply(&p.refinement))
-            .collect(),
-    );
-    let ensures = solution.apply(&ret.refinement);
-    let mut attrs = Vec::new();
-    if !requires.is_true() {
-        attrs.push(format!("#[thrust_macros::requires({requires})]"));
-    }
-    if !ensures.is_true() {
-        attrs.push(format!("#[thrust_macros::ensures({ensures})]"));
-    }
-    (!attrs.is_empty()).then(|| format!("as a contract: {}", attrs.join(" ")))
 }

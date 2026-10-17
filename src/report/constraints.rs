@@ -1,7 +1,7 @@
 //! The clauses of the system as the report shows them: where in the code each was made, what
 //! obligation it stands for, and its formula over the program's variables.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 
 use rustc_middle::mir::{self, BasicBlock};
 use rustc_middle::ty::TyCtxt;
@@ -12,7 +12,7 @@ use crate::chc;
 use crate::refine::VarPath;
 
 use super::body::DefBody;
-use super::expr::{self, Expr};
+use super::formula::{self, show, Formula, Name, Term};
 use super::sites::{Names, Owner};
 
 /// Where a clause was made, read from the spans it was made in (see
@@ -42,18 +42,10 @@ pub struct Constraint {
     pub id: chc::ClauseId,
     pub span: Option<Span>,
     pub kind: String,
-    pub premises: Vec<Expr>,
-    pub conclusion: Expr,
-}
-
-impl Constraint {
-    pub fn formula(&self) -> String {
-        let premises = Expr::and(self.premises.clone());
-        if premises.is_true() {
-            return self.conclusion.to_string();
-        }
-        Expr::app("=>", vec![premises, self.conclusion.clone()]).to_string()
-    }
+    pub premises: Vec<String>,
+    pub conclusion: String,
+    /// The premises implying the conclusion.
+    pub formula: String,
 }
 
 /// Whether `def_id` is one of the functions a panic calls: the panic language items (those of
@@ -188,13 +180,14 @@ impl Classes {
     }
 }
 
-fn var_sym(v: chc::TermVarIdx) -> String {
-    v.to_string()
-}
-
-fn var_of(e: &Expr, vars: &HashMap<String, usize>) -> Option<usize> {
-    match e {
-        Expr::Sym(s) => vars.get(s).copied(),
+/// The two sides of `f` if it is an equation.
+fn equation<V>(f: &chc::Formula<V>) -> Option<(&chc::Term<V>, &chc::Term<V>)> {
+    match f {
+        chc::Formula::Atom(chc::Atom {
+            guard: None,
+            pred: chc::Pred::Known(p),
+            args,
+        }) if *p == chc::KnownPred::EQUAL && args.len() == 2 => Some((&args[0], &args[1])),
         _ => None,
     }
 }
@@ -226,7 +219,7 @@ fn candidate_names(
             continue;
         }
         // `info.args` follows the order the arguments are shown in.
-        let shown = names.pred_head(p).arrange(&atom.args);
+        let shown = names.arrange(p, &atom.args);
         for (arg, name) in shown.iter().zip(&info.args) {
             if let (chc::Term::Var(v), Some(name)) = (arg, name) {
                 candidates.push((*v, name.clone()));
@@ -283,37 +276,23 @@ fn render(
     def: Option<LocalDefId>,
     names: &Names,
     body: Option<&DefBody<'_>>,
-) -> (Vec<Expr>, Expr) {
-    let pred_name = |p| names.pred_head(p);
-    // A variable of the clause the program does not name: `__tmp_chc_c<clause>_<n>`.
-    let unnamed_name = |class: usize| format!("__tmp_chc_{id:?}_{class}");
-    let sym = |v: &chc::TermVarIdx| var_sym(*v);
-    let mut premises: Vec<Expr> = clause
+) -> (Vec<Formula>, Formula) {
+    let mut premises: Vec<chc::Formula> = clause
         .body
         .atoms
         .iter()
         .filter(|a| !matches!(a.pred, chc::Pred::Var(p) if names.always_true.contains(&p)))
-        .map(|a| expr::of_atom(a, &sym, &pred_name))
-        .chain(expr::of_formula(&clause.body.formula, &sym, &pred_name).into_conjuncts())
-        .flat_map(|e| e.normalize().into_conjuncts())
+        .cloned()
+        .map(chc::Formula::Atom)
+        .chain(chc::conjuncts(&clause.body.formula))
+        .flat_map(|f| chc::conjuncts(&formula::tidy(f)))
         .collect();
-    let mut conclusion = expr::of_atom(&clause.head, &sym, &pred_name).normalize();
 
-    let vars: HashMap<String, usize> = clause
-        .vars
-        .indices()
-        .map(|v| (var_sym(v), v.index()))
-        .collect();
     let mut classes = Classes::new(clause.vars.len());
-    premises.retain(|p| match p {
-        Expr::App(f, args) if f == "=" && args.len() == 2 => {
-            match (var_of(&args[0], &vars), var_of(&args[1], &vars)) {
-                (Some(a), Some(b)) => {
-                    classes.union(a, b);
-                    false
-                }
-                _ => true,
-            }
+    premises.retain(|p| match equation(p) {
+        Some((chc::Term::Var(a), chc::Term::Var(b))) => {
+            classes.union(a.index(), b.index());
+            false
         }
         _ => true,
     });
@@ -331,61 +310,63 @@ fn render(
         used.insert(name.clone());
         class_name.insert(class, name);
     }
-    let mut subst: HashMap<String, Expr> = HashMap::new();
-    for v in clause.vars.indices() {
-        let class = classes.find(v.index());
-        let name = class_name
-            .get(&class)
-            .cloned()
-            .unwrap_or_else(|| unnamed_name(class));
-        subst.insert(var_sym(v), Expr::sym(name));
-    }
-    premises = premises.iter().map(|p| p.subst(&subst)).collect();
-    conclusion = conclusion.subst(&subst);
-
-    // Replace each unnamed variable a premise defines by its definition.
-    let unnamed: HashSet<String> = clause
+    // A variable of the clause the program does not name: `__tmp_chc_c<clause>_<n>`.
+    let mut unnamed = HashSet::new();
+    let var_names: Vec<Name> = clause
         .vars
         .indices()
-        .map(|v| classes.find(v.index()))
-        .filter(|class| !class_name.contains_key(class))
-        .map(unnamed_name)
+        .map(|v| {
+            let class = classes.find(v.index());
+            match class_name.get(&class) {
+                Some(name) => Name::new(name),
+                None => {
+                    let name = Name::new(&format!("__tmp_chc_{id:?}_{class}"));
+                    unnamed.insert(name);
+                    name
+                }
+            }
+        })
         .collect();
-    while let Some((i, var, definition)) = premises.iter().enumerate().find_map(|(i, p)| {
-        let Expr::App(f, args) = p else {
-            return None;
-        };
-        if f != "=" || args.len() != 2 {
-            return None;
-        }
-        [(&args[0], &args[1]), (&args[1], &args[0])]
+    let rename = |f: chc::Formula| f.map_var(|v| var_names[v.index()]);
+    let mut premises: Vec<Formula> = premises.into_iter().map(rename).collect();
+    let mut conclusion = rename(clause.head.clone().into());
+
+    // Replace each unnamed variable a premise defines by its definition.
+    let definition = |p: &Formula| {
+        let (a, b) = equation(p)?;
+        [(a, b), (b, a)]
             .into_iter()
             .find_map(|(lhs, rhs)| match lhs {
-                Expr::Sym(s) if unnamed.contains(s) && !rhs.mentions(s) => {
-                    Some((i, s.clone(), rhs.clone()))
+                Term::Var(v) if unnamed.contains(v) && rhs.fv().all(|w| w != v) => {
+                    Some((*v, rhs.clone()))
                 }
                 _ => None,
             })
-    }) {
+    };
+    while let Some((i, (var, def))) = premises
+        .iter()
+        .enumerate()
+        .find_map(|(i, p)| Some((i, definition(p)?)))
+    {
         premises.remove(i);
-        let one = HashMap::from([(var, definition)]);
-        premises = premises.iter().map(|p| p.subst(&one)).collect();
-        conclusion = conclusion.subst(&one);
+        let subst = |f: Formula| f.subst_var(|v| if v == var { def.clone() } else { Term::Var(v) });
+        premises = premises.into_iter().map(subst).collect();
+        conclusion = subst(conclusion);
     }
 
+    let mut premises: Vec<Formula> = premises
+        .into_iter()
+        .flat_map(|f| chc::conjuncts(&formula::tidy(f)))
+        .collect();
+    let mut conclusion = formula::tidy(conclusion);
     // A goal's last premise is the negated property it checks.
-    if conclusion.is_false() {
+    if conclusion.is_bottom() {
         if let Some(last) = premises.pop() {
-            conclusion = Expr::app("not", vec![last]);
+            conclusion = last.not();
         }
     }
     // A premise equating a term with itself says nothing.
-    let premises: Vec<Expr> = premises
-        .into_iter()
-        .flat_map(|p| p.normalize().into_conjuncts())
-        .filter(|p| !matches!(p, Expr::App(f, args) if f == "=" && args.len() == 2 && args[0] == args[1]))
-        .collect();
-    let conclusion = conclusion.normalize();
+    premises.retain(|p| !matches!(equation(p), Some((a, b)) if a == b));
     (premises, conclusion)
 }
 
@@ -405,11 +386,16 @@ pub fn constraint(
     };
     let kind = kind(tcx, clause, &provenance, body, names);
     let (premises, conclusion) = render(id, clause, provenance.def, names, body);
+    let formula = show(
+        &formula::and(premises.clone()).implies(conclusion.clone()),
+        names,
+    );
     Constraint {
         id,
         span,
         kind,
-        premises,
-        conclusion,
+        premises: premises.iter().map(|p| show(p, names)).collect(),
+        conclusion: show(&conclusion, names),
+        formula,
     }
 }

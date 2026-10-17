@@ -27,7 +27,7 @@ pub use debug::DebugInfo;
 pub use dedup::dedup_pred_args;
 pub use flatten::flatten_recursive_pred_args;
 pub use solver::{Answer, Capabilities, CheckSatError, Config, Requests};
-pub use unbox::unbox;
+pub use unbox::{unbox, unbox_formula, unbox_sort};
 
 /// A name of a datatype.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
