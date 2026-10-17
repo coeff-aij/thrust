@@ -239,13 +239,6 @@ fn tidy_atom<V: Clone + PartialEq>(atom: chc::Atom<V>) -> chc::Formula<V> {
         (Term::Tuple(xs), Term::Tuple(ys)) if equal && xs.len() == ys.len() => {
             componentwise(xs, ys)
         }
-        (Term::App(op, xs), Term::Bool(b)) | (Term::Bool(b), Term::App(op, xs))
-            if xs.len() == 2 && chc::KnownPred::named(op.name()).is_some() =>
-        {
-            let p = chc::KnownPred::named(op.name()).unwrap();
-            let p = if b == equal { p } else { negated(p).unwrap() };
-            chc::Atom::new(p.into(), xs).into()
-        }
         (a, b) => chc::Atom::new(atom.pred, vec![a, b]).into(),
     }
 }
@@ -273,10 +266,9 @@ pub fn tidy<V: Clone + PartialEq>(f: chc::Formula<V>) -> chc::Formula<V> {
     }
 }
 
-/// The bound `f` puts on a term, if it compares the term with another: `(x, y, below, above)`
-/// for `x <= y` (`below`), `x >= y` (`above`), `x = y` (both); a strict bound by an integer is
-/// read as the bound by its neighbour.
-fn bound<V: Clone>(f: &chc::Formula<V>) -> Option<(chc::Term<V>, chc::Term<V>, bool, bool)> {
+/// The bound `f` puts on `x` by `y`, if it is one: `(x, y, true)` for `x <= y`, `(x, y, false)`
+/// for `x >= y`; a strict bound by an integer is read as the bound by its neighbour.
+fn bound<V: Clone>(f: &chc::Formula<V>) -> Option<(chc::Term<V>, chc::Term<V>, bool)> {
     use chc::{KnownPred, Term};
     let chc::Formula::Atom(chc::Atom {
         guard: None,
@@ -288,32 +280,27 @@ fn bound<V: Clone>(f: &chc::Formula<V>) -> Option<(chc::Term<V>, chc::Term<V>, b
     };
     let [x, y] = <&[Term<V>; 2]>::try_from(args.as_slice()).ok()?;
     let step = |k: &num_bigint::BigInt, d: i32| Term::Int(k + d);
-    match (*p, y) {
-        (p, _) if p == KnownPred::LESS_THAN_OR_EQUAL => Some((x.clone(), y.clone(), true, false)),
-        (p, _) if p == KnownPred::GREATER_THAN_OR_EQUAL => {
-            Some((x.clone(), y.clone(), false, true))
-        }
-        (p, Term::Int(k)) if p == KnownPred::LESS_THAN => {
-            Some((x.clone(), step(k, -1), true, false))
-        }
-        (p, Term::Int(k)) if p == KnownPred::GREATER_THAN => {
-            Some((x.clone(), step(k, 1), false, true))
-        }
-        _ => None,
-    }
+    let (y, upper) = match (*p, y) {
+        (p, y) if p == KnownPred::LESS_THAN_OR_EQUAL => (y.clone(), true),
+        (p, y) if p == KnownPred::GREATER_THAN_OR_EQUAL => (y.clone(), false),
+        (p, Term::Int(k)) if p == KnownPred::LESS_THAN => (step(k, -1), true),
+        (p, Term::Int(k)) if p == KnownPred::GREATER_THAN => (step(k, 1), false),
+        _ => return None,
+    };
+    Some((x.clone(), y, upper))
 }
 
 /// `fs` with each two of them that bound a term from below and above by one value read as one
 /// equation: `x <= y ∧ y <= x` and `t > -1 ∧ t < 1` as `x = y` and `t = 0`.
-fn equalities<V: Clone + PartialEq>(mut fs: Vec<chc::Formula<V>>) -> Vec<chc::Formula<V>> {
+pub fn equalities<V: Clone + PartialEq>(mut fs: Vec<chc::Formula<V>>) -> Vec<chc::Formula<V>> {
     let mut i = 0;
     while i < fs.len() {
-        let partner = bound(&fs[i]).and_then(|(x, y, below, above)| {
+        let partner = bound(&fs[i]).and_then(|(x, y, upper)| {
             (i + 1..fs.len()).find_map(|j| {
-                let (x2, y2, below2, above2) = bound(&fs[j])?;
-                let same = x == x2 && y == y2 && below != below2 && above != above2;
-                let flipped = x == y2 && y == x2 && below == below2 && above == above2;
-                (same || flipped).then(|| (j, x.clone(), y.clone()))
+                let (x2, y2, upper2) = bound(&fs[j])?;
+                let opposite = x == x2 && y == y2 && upper != upper2;
+                let flipped = x == y2 && y == x2 && upper == upper2;
+                (opposite || flipped).then(|| (j, x.clone(), y.clone()))
             })
         });
         match partner {
@@ -368,5 +355,20 @@ mod tests {
             ),
         ]);
         assert_eq!(tidy(g).one_line(), "a = r");
+    }
+
+    #[test]
+    fn bounds_that_do_not_meet_stay_bounds() {
+        use chc::KnownPred;
+        let strict = Formula::And(vec![
+            atom(KnownPred::LESS_THAN, var("x"), var("y")),
+            atom(KnownPred::GREATER_THAN, var("x"), var("y")),
+        ]);
+        assert_eq!(tidy(strict).one_line(), "x < y ∧ x > y");
+        let same = Formula::And(vec![
+            atom(KnownPred::LESS_THAN_OR_EQUAL, var("x"), Term::int(1)),
+            atom(KnownPred::LESS_THAN_OR_EQUAL, var("x"), Term::int(1)),
+        ]);
+        assert_eq!(tidy(same).one_line(), "x <= 1 ∧ x <= 1");
     }
 }

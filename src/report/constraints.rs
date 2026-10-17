@@ -397,10 +397,13 @@ fn render(
         conclusion = subst(conclusion);
     }
 
-    let mut premises: Vec<Formula> = premises
-        .into_iter()
-        .flat_map(|f| chc::conjuncts(&formula::tidy(f)))
-        .collect();
+    // Tidied as one conjunction, as the formula shown is.
+    let mut premises: Vec<Formula> = formula::equalities(
+        premises
+            .into_iter()
+            .flat_map(|f| chc::conjuncts(&formula::tidy(f)))
+            .collect(),
+    );
     let mut conclusion = formula::tidy(conclusion);
     // A goal's last premise is the negated property it checks.
     if conclusion.is_bottom() {

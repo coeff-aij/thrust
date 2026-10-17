@@ -222,3 +222,28 @@ fn report_names_no_contract_of_the_injected_std() {
     );
     assert!(!stderr.contains("it assumes"), "{stderr}");
 }
+
+/// The premises of a constraint are those its formula shows: two bounds by one value are one
+/// equation in both, and a premise the refinements of a `&mut` repeat is shown once.
+#[test]
+fn premises_are_the_formula_s_and_each_is_once() {
+    let output = report_with(
+        "bounds.rs",
+        "failure,constraints",
+        &[("THRUST_REPORT_FORMAT", "json")],
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let check = stdout
+        .lines()
+        .find(|l| l.contains(r#""fn":"check""#) && l.contains("assertion"))
+        .unwrap_or_default();
+    assert!(
+        check.contains(r#""premises":["check.bb0 x x","x = 0"]"#),
+        "{stdout}"
+    );
+    let identity = stdout
+        .lines()
+        .find(|l| l.contains(r#""kind":"failure""#) && l.contains(r#""fn":"identity""#))
+        .unwrap_or_default();
+    assert_eq!(identity.matches(r#""°x >= 0""#).count(), 1, "{stdout}");
+}
