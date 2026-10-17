@@ -4,18 +4,52 @@
 
 import * as path from "path";
 
-/// A position as Thrust and rustc print it: a file, a 1-based line and a 1-based column.
+/// The version of the report this file reads, the `version` of its first line.
+export const REPORT_VERSION = 1;
+
+/// A span as the report writes it: 1-based lines and columns in characters, `end_column` after
+/// the last character, the file relative to the report's root.
+export interface Range {
+  file: string;
+  line: number;
+  column: number;
+  end_line: number;
+  end_column: number;
+}
+
+/// A position for the editor: a file, a 1-based line and a 1-based column in characters, and the
+/// end (exclusive) when the span has a width.
 export interface Location {
   file: string;
   line: number;
   column: number;
-  /// The end, when rustc gives one; Thrust's report gives only the start.
   endLine?: number;
   endColumn?: number;
 }
 
+export interface FnSpan {
+  fn: string;
+  span: Range;
+}
+
+/// The first line: the format's version, the directory relative files are in, the column unit.
+export interface Header {
+  version: number;
+  root: string;
+  columns: string;
+}
+
+export interface VerdictLine {
+  /// `sat`, `unsat`, `timeout`, `unknown` or `error`.
+  verdict: string;
+  /// `one per query` or `one per part`: how many obligations a failure is refuted at.
+  refutations: string;
+}
+
 export interface Part {
-  functions: string[];
+  id: number;
+  clauses: number;
+  functions: FnSpan[];
   verdict: string;
   cached: boolean;
 }
@@ -24,6 +58,8 @@ export interface Step {
   depth: number;
   fact: string;
   via: string | null;
+  obligation: string | null;
+  span: Range | null;
 }
 
 export interface Value {
@@ -32,9 +68,10 @@ export interface Value {
 }
 
 export interface Failure {
+  part: number | null;
   constraint: string;
   fn: string | null;
-  span: string | null;
+  span: Range | null;
   obligation: string | null;
   premises: string[] | null;
   conclusion: string | null;
@@ -42,12 +79,16 @@ export interface Failure {
   truncated: boolean;
   values: Value[];
   inferred: string[];
+  /// The written annotations the refuted obligation checks.
+  annotation: Range[];
+  /// The functions whose written `ensures` the run assumes at a call, at that annotation.
+  assumes: FnSpan[];
 }
 
 export interface Site {
   fn: string;
   site: string;
-  span: string;
+  span: Range;
   over: string;
   template: string;
   solution: string[] | null;
@@ -57,14 +98,16 @@ export interface Site {
 export interface Constraint {
   id: string;
   fn: string;
-  loop: string | null;
-  span: string | null;
+  loop: Range | null;
+  span: Range | null;
   obligation: string;
   premises: string[];
   conclusion: string;
 }
 
 export interface Report {
+  header?: Header;
+  verdict?: VerdictLine;
   parts: Part[];
   failures: Failure[];
   sites: Site[];
@@ -108,6 +151,7 @@ export interface Finding {
   severity: "error" | "warning" | "information";
   message: string;
   related: Related[];
+  /// `thrust` locations are relative to the report's root, `rustc` ones to the run's directory.
   source: "thrust" | "rustc";
 }
 
@@ -120,20 +164,25 @@ export interface Hint {
   kind: "inferred" | "fact";
 }
 
-/// Parses `file:line:column`, the form of every span in the report. The file may itself contain
-/// colons, so the line and the column are the last two fields.
-export function parseLocation(span: string | null | undefined): Location | undefined {
-  if (!span) {
+/// The location of a report's span; a zero-width span (after a function's closing brace) keeps
+/// its start only.
+export function locationOf(range: Range | null | undefined): Location | undefined {
+  if (!range) {
     return undefined;
   }
-  const match = /^(.*):(\d+):(\d+)$/.exec(span);
-  if (!match) {
-    return undefined;
+  const start = headOf(range);
+  if (range.end_line === range.line && range.end_column === range.column) {
+    return start;
   }
-  return { file: match[1], line: Number(match[2]), column: Number(match[3]) };
+  return { ...start, endLine: range.end_line, endColumn: range.end_column };
 }
 
-/// Reads the report's JSON lines into its four kinds of line.
+/// The start of a span only: where a function or a loop is shown without covering it.
+function headOf(range: Range): Location {
+  return { file: range.file, line: range.line, column: range.column };
+}
+
+/// Reads the report's JSON lines.
 export function parseReport(text: string): Report {
   const report: Report = { parts: [], failures: [], sites: [], constraints: [], unparsed: [] };
   for (const line of text.split("\n")) {
@@ -159,6 +208,12 @@ function parseObject(line: string): Record<string, unknown> | undefined {
 
 function addLine(report: Report, object: Record<string, unknown> | undefined): boolean {
   switch (object?.kind) {
+    case "report":
+      report.header = object as unknown as Header;
+      return true;
+    case "verdict":
+      report.verdict = object as unknown as VerdictLine;
+      return true;
     case "part":
       report.parts.push(object as unknown as Part);
       return true;
@@ -174,6 +229,27 @@ function addLine(report: Report, object: Record<string, unknown> | undefined): b
     default:
       return false;
   }
+}
+
+/// Why the report cannot be read, if it cannot: it has lines but no header (a Thrust before the
+/// header), or a version other than the one read here. An empty report (a run that stopped
+/// before writing one) is no refusal.
+export function refusal(report: Report): string | undefined {
+  if (report.header) {
+    return report.header.version === REPORT_VERSION
+      ? undefined
+      : `the report is of version ${report.header.version}; this extension reads version ${REPORT_VERSION}`;
+  }
+  const lines =
+    report.parts.length + report.failures.length + report.sites.length + report.constraints.length + report.unparsed.length;
+  return lines > 0 || report.verdict
+    ? `the report has no header line (a Thrust older than report version ${REPORT_VERSION})`
+    : undefined;
+}
+
+/// The directory the report's files are relative to: its root, against the run's directory.
+export function reportRoot(report: Report, cwd: string): string {
+  return path.resolve(cwd, report.header?.root ?? ".");
 }
 
 /// Reads rustc's JSON diagnostics from standard error; other lines (a panic, a wrapper's output)
@@ -195,34 +271,35 @@ export function parseDiagnostics(stderr: string): { diagnostics: RustcDiagnostic
   return { diagnostics, other };
 }
 
-const VERIFICATION_ERROR = /^verification error: (.*)$/;
+const VERDICTS: Record<string, Verdict> = {
+  sat: "safe",
+  unsat: "unsafe",
+  timeout: "unknown",
+  unknown: "unknown",
+  error: "error",
+};
 
-/// The solver's answers the run reports as errors: `Unsat`, `Timeout(2s)`, ...
-function verificationErrors(diagnostics: RustcDiagnostic[]): string[] {
-  return diagnostics
-    .map((d) => VERIFICATION_ERROR.exec(d.message)?.[1])
-    .filter((kind): kind is string => kind !== undefined);
+/// The verdict of a run, from the report's `verdict` line. A run without one stopped before
+/// verification (a compile error, a crash) and is an error, described by rustc's first error.
+export function verdictOf(exitCode: number | null, report: Report, diagnostics: RustcDiagnostic[]): Outcome {
+  const refused = refusal(report);
+  if (refused) {
+    return { verdict: "error", detail: refused };
+  }
+  if (!report.verdict) {
+    const firstError = diagnostics.find((d) => d.level === "error");
+    return { verdict: "error", detail: firstError?.message ?? `no verdict in the report, exit status ${exitCode}` };
+  }
+  const verdict = VERDICTS[report.verdict.verdict] ?? "error";
+  const detail = partsDetail(report.parts) ?? queryDetail(report.verdict, report.failures.length);
+  return { verdict, detail };
 }
 
-/// The verdict of a run. Exit 0 is safe; otherwise a refuted part or query is unsafe, a part or
-/// query without an answer (a timeout, `unknown`, a solver error) is unknown, and a failure before
-/// any solver answer (a compile error, a crash) is an error.
-export function verdictOf(exitCode: number | null, report: Report, diagnostics: RustcDiagnostic[]): Outcome {
-  if (exitCode === 0) {
-    return { verdict: "safe", detail: partsDetail(report.parts) ?? "verified" };
+function queryDetail(line: VerdictLine, failures: number): string {
+  if (line.verdict !== "unsat") {
+    return `the solver answered ${line.verdict}`;
   }
-  const answers = verificationErrors(diagnostics).concat(
-    report.parts.filter((p) => p.verdict !== "sat").map((p) => p.verdict),
-  );
-  const refuted = answers.filter((a) => a.toLowerCase().startsWith("unsat"));
-  if (refuted.length > 0) {
-    return { verdict: "unsafe", detail: partsDetail(report.parts) ?? "refuted" };
-  }
-  if (answers.length > 0) {
-    return { verdict: "unknown", detail: partsDetail(report.parts) ?? answers[0] };
-  }
-  const firstError = diagnostics.find((d) => d.level === "error");
-  return { verdict: "error", detail: firstError?.message ?? `exit status ${exitCode}` };
+  return failures > 0 ? `refuted, ${line.refutations}; other obligations may fail too` : "refuted, without a refutation to show";
 }
 
 function partsDetail(parts: Part[]): string | undefined {
@@ -236,23 +313,21 @@ function partsDetail(parts: Part[]): string | undefined {
   return `${parts.length} parts: ${count("sat")} sat, ${count("unsat")} unsat${others}; ${cached} from the cache`;
 }
 
-/// The diagnostics of a run: a refuted obligation at its span, with the run reaching it as
-/// related information; a part without an answer at the entries of its functions; rustc's own
-/// diagnostics that have a span. `fallback` takes what has no span (a query without an answer
-/// when not split).
+const VERIFICATION_ERROR = /^verification error: /;
+
+/// The diagnostics of a run: a refuted obligation at its span, with the annotation it checks, the
+/// written contracts it assumes and the run reaching it as related information; a part that is
+/// not `sat` and has no refutation at the start of each of its functions; rustc's own diagnostics
+/// that have a span. rustc's `verification error` is left out when the report is read, as the
+/// report places the same failure with more. `fallback` takes what has no span (a query without
+/// an answer when not split, a report that cannot be read).
 export function findings(report: Report, diagnostics: RustcDiagnostic[], outcome: Outcome, fallback: Location): Finding[] {
-  const constraints = new Map(report.constraints.map((c) => [c.id, c]));
-  const result: Finding[] = [];
-  for (const failure of report.failures) {
-    const finding = failureFinding(failure, constraints, report.sites);
-    if (finding) {
-      result.push(finding);
-    }
-  }
-  for (const part of report.parts.filter((p) => p.verdict !== "sat" && p.verdict !== "unsat")) {
-    result.push(...partFindings(part, report));
-  }
+  const readable = report.verdict !== undefined && refusal(report) === undefined;
+  const result = readable ? reportFindings(report, fallback) : [];
   for (const diagnostic of diagnostics) {
+    if (readable && VERIFICATION_ERROR.test(diagnostic.message)) {
+      continue;
+    }
     const finding = rustcFinding(diagnostic);
     if (finding) {
       result.push(finding);
@@ -270,12 +345,19 @@ export function findings(report: Report, diagnostics: RustcDiagnostic[], outcome
   return result;
 }
 
-function failureFinding(failure: Failure, constraints: Map<string, Constraint>, sites: Site[]): Finding | undefined {
-  const location = parseLocation(failure.span);
-  if (!location) {
-    return undefined;
+function reportFindings(report: Report, fallback: Location): Finding[] {
+  const parts = new Map(report.parts.map((p) => [p.id, p]));
+  const result = report.failures.map((f) => failureFinding(f, f.part === null ? undefined : parts.get(f.part), report.sites, fallback));
+  const refuted = new Set(report.failures.map((f) => f.part));
+  for (const part of report.parts.filter((p) => p.verdict !== "sat" && !refuted.has(p.id))) {
+    result.push(...partFindings(part));
   }
-  const lines = [`refuted: ${failure.obligation ?? "obligation"}${failure.fn ? ` in \`${failure.fn}\`` : ""}`];
+  return result;
+}
+
+function failureFinding(failure: Failure, part: Part | undefined, sites: Site[], fallback: Location): Finding {
+  const where = failure.fn ? ` in \`${failure.fn}\`` : "";
+  const lines = [`refuted: ${failure.obligation ?? "obligation"}${where}${part ? `, ${partName(part)}` : ""}`];
   if (failure.values.length > 0) {
     lines.push(`where it fails: ${formatValues(failure.values)}`);
   }
@@ -286,50 +368,49 @@ function failureFinding(failure: Failure, constraints: Map<string, Constraint>, 
     lines.push(`it goes through the contract inferred for ${failure.inferred.map((f) => `\`${f}\``).join(", ")}`);
   }
   return {
-    location,
+    location: locationOf(failure.span) ?? fallback,
     severity: "error",
     message: lines.join("\n"),
-    related: runRelated(failure, constraints).concat(inferredRelated(failure, sites)),
+    related: [...annotationRelated(failure), ...assumesRelated(failure), ...runRelated(failure), ...inferredRelated(failure, sites)],
     source: "thrust",
   };
 }
 
-/// Each fact of the run at the code of the constraint it was derived by.
-function runRelated(failure: Failure, constraints: Map<string, Constraint>): Related[] {
-  const related: Related[] = [];
-  for (const step of failure.run) {
-    const constraint = step.via ? constraints.get(step.via) : undefined;
-    const location = parseLocation(constraint?.span);
-    if (!constraint || !location) {
-      continue;
-    }
-    related.push({ location, message: `${step.fact}   [${constraint.id} ${constraint.obligation}]` });
-  }
-  return related;
+function partName(part: Part): string {
+  return `part ${part.id} (${part.functions.map((f) => `\`${f.fn}\``).join(", ")})`;
+}
+
+function annotationRelated(failure: Failure): Related[] {
+  return failure.annotation.map((range) => ({ location: locationOf(range) ?? headOf(range), message: "the annotation it checks" }));
+}
+
+function assumesRelated(failure: Failure): Related[] {
+  return failure.assumes.map((a) => ({
+    location: locationOf(a.span) ?? headOf(a.span),
+    message: `it assumes the written contract of \`${a.fn}\``,
+  }));
+}
+
+/// Each fact of the run at the start of the constraint it was derived by.
+function runRelated(failure: Failure): Related[] {
+  return failure.run.flatMap((step) =>
+    step.span ? [{ location: headOf(step.span), message: `${step.fact}   [${step.via ?? "?"} ${step.obligation ?? ""}]` }] : [],
+  );
 }
 
 function inferredRelated(failure: Failure, sites: Site[]): Related[] {
   return failure.inferred.flatMap((fn) => {
     const site = sites.find((s) => s.fn === fn && s.site === "contract");
-    const location = parseLocation(site?.span);
-    return location ? [{ location, message: `contract inferred for \`${fn}\`: ${site?.inferred ?? site?.template}` }] : [];
+    return site ? [{ location: headOf(site.span), message: `contract inferred for \`${fn}\`: ${site.inferred ?? site.template}` }] : [];
   });
 }
 
-/// A part without an answer names only its functions; it is shown at each function's entry, the
-/// span of its contract's template or of its `function entry` constraint.
-function partFindings(part: Part, report: Report): Finding[] {
-  const message = `Thrust: ${part.verdict} in the part of ${part.functions.map((f) => `\`${f}\``).join(", ")}; no refutation`;
-  return part.functions.flatMap((fn) => {
-    const location = functionLocation(fn, report);
-    return location ? [{ location, severity: "warning" as const, message, related: [], source: "thrust" as const }] : [];
-  });
-}
-
-function functionLocation(fn: string, report: Report): Location | undefined {
-  const contract = report.sites.find((s) => s.fn === fn && s.site === "contract");
-  const entry = report.constraints.find((c) => c.fn === fn && c.obligation === "function entry");
-  return parseLocation(contract?.span) ?? parseLocation(entry?.span);
+/// A part that is not `sat` and has no refutation (a timeout, or a refuted part whose second run
+/// gave none), at the start of each of its functions.
+function partFindings(part: Part): Finding[] {
+  const severity = part.verdict === "unsat" ? ("error" as const) : ("warning" as const);
+  const message = `Thrust: ${part.verdict} in ${partName(part)}; no refutation`;
+  return part.functions.map((f) => ({ location: headOf(f.span), severity, message, related: [], source: "thrust" as const }));
 }
 
 function rustcFinding(diagnostic: RustcDiagnostic): Finding | undefined {
@@ -371,28 +452,29 @@ const LABEL_LIMIT = 100;
 /// its span, and, for each refuted obligation, its values and the facts of the run at the code
 /// that derived them.
 export function hints(report: Report): Hint[] {
+  if (refusal(report)) {
+    return [];
+  }
   const result = report.sites.flatMap(siteHint);
-  const constraints = new Map(report.constraints.map((c) => [c.id, c]));
   for (const failure of report.failures) {
-    result.push(...failureHints(failure, constraints));
+    result.push(...failureHints(failure));
   }
   return result;
 }
 
 function siteHint(site: Site): Hint[] {
-  const location = parseLocation(site.span);
-  if (!location || site.inferred === null || (site.site !== "contract" && site.site !== "loop")) {
+  if (site.inferred === null || (site.site !== "contract" && site.site !== "loop")) {
     return [];
   }
   const what = site.site === "contract" ? "inferred contract" : "inferred invariant";
   const tooltip = [`${what} of \`${site.fn}\`:`, "", site.inferred, "", "template:", site.template]
     .concat(site.solution ? ["", "solution:", ...site.solution] : [])
     .join("\n");
-  return [{ location, label: truncate(`${what}: ${site.inferred}`), tooltip, kind: "inferred" }];
+  return [{ location: headOf(site.span), label: truncate(`${what}: ${site.inferred}`), tooltip, kind: "inferred" }];
 }
 
 /// One hint per line: the facts derived by the constraints of one line are joined, latest first.
-function failureHints(failure: Failure, constraints: Map<string, Constraint>): Hint[] {
+function failureHints(failure: Failure): Hint[] {
   const byLine = new Map<string, { location: Location; facts: string[] }>();
   const add = (location: Location, fact: string) => {
     const key = `${location.file}:${location.line}`;
@@ -400,14 +482,12 @@ function failureHints(failure: Failure, constraints: Map<string, Constraint>): H
     entry.facts.push(fact);
     byLine.set(key, entry);
   };
-  const failing = parseLocation(failure.span);
-  if (failing && failure.values.length > 0) {
-    add(failing, `fails with ${formatValues(failure.values)}`);
+  if (failure.span && failure.values.length > 0) {
+    add(headOf(failure.span), `fails with ${formatValues(failure.values)}`);
   }
   for (const step of failure.run) {
-    const location = parseLocation(step.via ? constraints.get(step.via)?.span : undefined);
-    if (location) {
-      add(location, step.fact);
+    if (step.span) {
+      add(headOf(step.span), step.fact);
     }
   }
   return [...byLine.values()].map(({ location, facts }) => ({
@@ -430,7 +510,24 @@ function truncate(text: string): string {
   return text.length <= LABEL_LIMIT ? text : `${text.slice(0, LABEL_LIMIT - 1)}…`;
 }
 
-/// The location with its file resolved against the directory the run was started in.
-export function resolveLocation(location: Location, cwd: string): Location {
-  return { ...location, file: path.resolve(cwd, location.file) };
+/// The location with its file resolved against `base`.
+export function resolveLocation(location: Location, base: string): Location {
+  return { ...location, file: path.resolve(base, location.file) };
+}
+
+/// The finding and its related information with their files resolved: Thrust's against the
+/// report's root, rustc's against the run's directory.
+export function resolveFinding(finding: Finding, root: string, cwd: string): Finding {
+  const base = finding.source === "thrust" ? root : cwd;
+  return {
+    ...finding,
+    location: resolveLocation(finding.location, base),
+    related: finding.related.map((r) => ({ ...r, location: resolveLocation(r.location, base) })),
+  };
+}
+
+/// The 1-based UTF-16 column, as VS Code counts, of the 1-based column in characters, as Thrust
+/// and rustc count, on the line `text`.
+export function utf16Column(text: string, column: number): number {
+  return Array.from(text).slice(0, Math.max(column - 1, 0)).join("").length + 1;
 }

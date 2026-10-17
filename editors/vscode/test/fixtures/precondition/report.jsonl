@@ -1,0 +1,3 @@
+{"kind":"report","version":1,"root":".","columns":"1-based, in characters; end_column after the last"}
+{"kind":"verdict","verdict":"unsat","refutations":"one per query"}
+{"kind":"failure","part":null,"constraint":"c2","fn":"main","span":{"file":"precondition.rs","line":8,"column":13,"end_line":8,"end_column":21},"obligation":"precondition of `grow`","premises":[],"conclusion":"-1 >= 0","run":[],"truncated":false,"values":[],"inferred":[],"annotation":[{"file":"precondition.rs","line":1,"column":27,"end_line":1,"end_column":33}],"assumes":[]}

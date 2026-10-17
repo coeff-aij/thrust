@@ -4,7 +4,8 @@
 #
 # Usage: test/capture.sh <thrust-rustc command...>
 #   e.g. test/capture.sh rustup run nightly-2025-09-08 ../../target/debug/thrust-rustc
-# The command runs in test/fixtures, so the report's spans name the files relatively.
+# The command runs in test/fixtures, so the report's spans name the files relatively; the
+# report's root, that directory, is written as `.` so the fixtures do not name the machine.
 set -eu
 [ $# -ge 1 ] || { echo "usage: $0 <thrust-rustc command...>" >&2; exit 2; }
 fixtures=$(cd "$(dirname "$0")/fixtures" && pwd)
@@ -22,14 +23,20 @@ capture() {
     THRUST_REPORT_FILE="$out/report.jsonl" \
     $thrust -Awarnings -C debug-assertions=off --error-format=json \
     --crate-type bin --out-dir "$scratch" "$source" 2> "$out/stderr.jsonl") || status=$?
+  if [ -f "$out/report.jsonl" ]; then
+    sed -i "1s|\"root\":\"$fixtures\"|\"root\":\".\"|" "$out/report.jsonl"
+  fi
   echo "$status" > "$out/exit"
   echo "$case_name: exit $status"
 }
 
 thrust="$*"
 capture safe safe.rs
+capture safe-split safe.rs THRUST_SPLIT=2 THRUST_CACHE_DIR="$scratch/cache"
 capture unsafe unsafe.rs
 capture split unsafe.rs THRUST_SPLIT=2 THRUST_CACHE_DIR="$scratch/cache"
 capture unknown unknown.rs THRUST_SOLVER_TIMEOUT_SECS=2
 capture unknown-split unknown.rs THRUST_SOLVER_TIMEOUT_SECS=2 THRUST_SPLIT=2
+capture contracts contracts.rs
+capture precondition precondition.rs
 capture broken broken.rs

@@ -122,10 +122,9 @@ class Thrust implements vscode.InlayHintsProvider, vscode.HoverProvider, vscode.
       ? { verdict: "unknown" as const, detail: "stopped at thrust.timeoutSecs" }
       : report.verdictOf(result.exitCode, parsed, diagnostics);
     const fallback = { file: document.uri.fsPath, line: 1, column: 1 };
-    const findings = report
-      .findings(parsed, diagnostics, outcome, fallback)
-      .map((f) => ({ ...f, location: report.resolveLocation(f.location, cwd) }));
-    const hints = report.hints(parsed).map((h) => ({ ...h, location: report.resolveLocation(h.location, cwd) }));
+    const root = report.reportRoot(parsed, cwd);
+    const findings = report.findings(parsed, diagnostics, outcome, fallback).map((f) => report.resolveFinding(f, root, cwd));
+    const hints = report.hints(parsed).map((h) => ({ ...h, location: report.resolveLocation(h.location, root) }));
     this.publish(findings, hints, document.uri.fsPath);
     this.showStatus(outcome.verdict, outcome.detail, document.uri.fsPath);
   }
@@ -199,17 +198,18 @@ function atStart(finding: report.Finding, file: string): report.Finding {
   };
 }
 
-/// The length of each line of the files the findings point into, read once per run.
+/// The lines of the files the findings point into, read once per run.
 class Lines {
   private readonly files = new Map<string, string[]>();
 
-  length(file: string, line: number): number {
+  /// The text of the 0-based `line` of `file`, empty when there is none.
+  text(file: string, line: number): string {
     let lines = this.files.get(file);
     if (!lines) {
       lines = readLines(file);
       this.files.set(file, lines);
     }
-    return lines[line]?.length ?? 0;
+    return lines[line] ?? "";
   }
 }
 
@@ -221,16 +221,19 @@ function readLines(file: string): string[] {
   }
 }
 
+/// The editor's range of a location, its columns turned from characters into UTF-16 units.
 function toRange(location: report.Location, lines: Lines): vscode.Range {
   const line = Math.max(location.line - 1, 0);
-  const start = Math.max(location.column - 1, 0);
+  const text = lines.text(location.file, line);
+  const start = report.utf16Column(text, location.column) - 1;
   if (location.endLine !== undefined && location.endColumn !== undefined) {
-    return new vscode.Range(line, start, location.endLine - 1, location.endColumn - 1);
+    const endLine = Math.max(location.endLine - 1, 0);
+    const end = report.utf16Column(lines.text(location.file, endLine), location.endColumn) - 1;
+    return new vscode.Range(line, start, endLine, end);
   }
-  // Thrust's report gives the start only: the range runs to the end of the line, or covers the
-  // line when the start is at or past its end (the zero-width span after a closing brace).
-  const length = lines.length(location.file, line);
-  return new vscode.Range(line, start < length ? start : 0, line, length);
+  // A start only (a function's or a loop's start, the zero-width span after a closing brace):
+  // the range runs to the end of the line, or covers the line when the start is at its end.
+  return new vscode.Range(line, start < text.length ? start : 0, line, text.length);
 }
 
 function toDiagnostic(finding: report.Finding, lines: Lines): vscode.Diagnostic {
