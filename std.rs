@@ -2319,9 +2319,17 @@ impl<'a, T> IteratorSpec for core::slice::Iter<'a, T>
 where
     T: thrust_models::Model,
 {
+    #[cfg(not(thrust_int_range))]
     #[thrust_macros::predicate]
     fn inv(self) -> bool {
         self.1 <= self.0.len()
+    }
+
+    // A slice holds at most `usize::MAX` items, which `enumerate`'s precondition needs.
+    #[cfg(thrust_int_range)]
+    #[thrust_macros::predicate]
+    fn inv(self) -> bool {
+        self.1 <= self.0.len() && self.0.len() <= <usize>::MAX
     }
 
     #[thrust_macros::predicate]
@@ -2356,9 +2364,17 @@ impl<T> IteratorSpec for std::vec::IntoIter<T>
 where
     T: thrust_models::Model,
 {
+    #[cfg(not(thrust_int_range))]
     #[thrust_macros::predicate]
     fn inv(self) -> bool {
         self.1 <= self.0.len()
+    }
+
+    // A slice holds at most `usize::MAX` items, which `enumerate`'s precondition needs.
+    #[cfg(thrust_int_range)]
+    #[thrust_macros::predicate]
+    fn inv(self) -> bool {
+        self.1 <= self.0.len() && self.0.len() <= <usize>::MAX
     }
 
     #[thrust_macros::predicate]
@@ -2427,8 +2443,28 @@ where
     }
 }
 
+// std counts with the checked crate's overflow checks, so the count wraps after `usize::MAX`
+// items. Without `THRUST_INT_RANGE` integers are unbounded and overflow is not modelled; with it,
+// the precondition bounds what the iterator can produce, as Creusot's does.
+#[cfg(not(thrust_int_range))]
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
+#[thrust_macros::ensures(result.0 == it && result.1 == 0)]
+fn _extern_spec_iterator_enumerate<I>(it: I) -> core::iter::Enumerate<I>
+    where I: IteratorSpec,
+          I::Item: thrust_models::Model
+{
+    <I as std::iter::Iterator>::enumerate(it)
+}
+
+#[cfg(thrust_int_range)]
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(
+    I::inv(it)
+        && thrust_models::forall(|s: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
+                                  i: <I as thrust_models::Model>::Ty|
+            !I::produces(it, s, i) || s.len() <= <usize>::MAX)
+)]
 #[thrust_macros::ensures(result.0 == it && result.1 == 0)]
 fn _extern_spec_iterator_enumerate<I>(it: I) -> core::iter::Enumerate<I>
     where I: IteratorSpec,

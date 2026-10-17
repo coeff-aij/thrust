@@ -1197,14 +1197,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         "loop invariant refers to `{name}`, which is not a live variable at the loop header"
                     ))
                 });
-                let local_ty = self.body.local_decls[local].ty;
-                if self.type_builder.build(local_ty).to_sort()
-                    != self.type_builder.build(input_ty).to_sort()
-                {
-                    self.tcx.dcx().fatal(format!(
-                        "loop invariant gives `{name}` the type `{input_ty}`, but the variable has the type `{local_ty}`"
-                    ));
-                }
                 mapping.push(bty.param_of_local(local).unwrap());
             }
         }
