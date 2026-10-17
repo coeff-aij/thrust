@@ -7,6 +7,28 @@
 
 pub mod origin;
 
+/// A variable of the analysis kept with its type erased, for the code that knows the type to
+/// read back (the report): what an argument of a template or an entry of a clause's typing
+/// environment was made for.
+#[derive(Clone)]
+pub struct ErasedVar(std::sync::Arc<dyn std::any::Any + Send + Sync>);
+
+impl ErasedVar {
+    pub fn new<T: std::any::Any + Send + Sync>(var: T) -> Self {
+        ErasedVar(std::sync::Arc::new(var))
+    }
+
+    pub fn downcast_ref<T: std::any::Any>(&self) -> Option<&T> {
+        self.0.downcast_ref()
+    }
+}
+
+impl std::fmt::Debug for ErasedVar {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ErasedVar")
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Display<'a> {
     inner: &'a DebugInfo,
@@ -68,15 +90,25 @@ impl std::fmt::Display for OriginLine<'_> {
 #[derive(Debug, Clone, Default)]
 pub struct DebugInfo {
     contexts: Vec<(String, String)>,
+    /// The fields recorded as numbers, as the analysis gave them (a def's index, a block's), in
+    /// the order of `contexts`.
+    numbers: Vec<(String, u64)>,
 }
 
-/// The fields of a span, in the order they were recorded.
+/// The fields of a span, in the order they were recorded, each also as a number when it was
+/// recorded as one.
 #[derive(Debug, Default)]
-struct SpanFields(Vec<(String, String)>);
+struct SpanFields(Vec<(String, String, Option<u64>)>);
 
 impl tracing::field::Visit for SpanFields {
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-        self.0.push((field.name().to_owned(), format!("{value:?}")));
+        self.0
+            .push((field.name().to_owned(), format!("{value:?}"), None));
+    }
+
+    fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+        self.0
+            .push((field.name().to_owned(), value.to_string(), Some(value)));
     }
 }
 
@@ -164,8 +196,11 @@ impl DebugInfo {
                     break;
                 };
                 if let Some(fields) = data.extensions().get::<SpanFields>() {
-                    for (key, value) in fields.0.iter().rev() {
+                    for (key, value, number) in fields.0.iter().rev() {
                         self.context(key, value.clone());
+                        if let Some(number) = number {
+                            self.numbers.push((key.clone(), *number));
+                        }
                     }
                 }
                 span_id = data.parent().cloned();
@@ -175,6 +210,11 @@ impl DebugInfo {
 
     pub fn is_empty(&self) -> bool {
         self.contexts.is_empty()
+    }
+
+    /// The number recorded as the field `key` of the innermost span that has one.
+    pub fn number(&self, key: &str) -> Option<u64> {
+        self.numbers.iter().find(|(k, _)| k == key).map(|(_, n)| *n)
     }
 
     /// The value of the field `key` of the innermost span that has one.

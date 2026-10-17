@@ -21,6 +21,8 @@ pub struct Entry {
 pub struct VarMapping {
     source: String,
     chc_var: TermVarIdx,
+    /// The variable of the analysis mapped, when it is one (not the value `ν`).
+    var: Option<super::ErasedVar>,
 }
 
 impl Entry {
@@ -60,10 +62,7 @@ impl Entry {
     }
 
     pub fn var_mapping<V: Var>(mut self, variable: V, chc_var: TermVarIdx) -> Self {
-        self.mappings.push(VarMapping {
-            source: format!("{variable:?}"),
-            chc_var,
-        });
+        self.add_var_mapping(variable, chc_var);
         self
     }
 
@@ -71,14 +70,26 @@ impl Entry {
         self.mappings.push(VarMapping {
             source: format!("{variable:?}"),
             chc_var,
+            var: Some(super::ErasedVar::new(variable)),
+        });
+    }
+
+    /// Maps `variable`, kept as `described`, what it holds as the code that made it says.
+    pub fn add_described_var_mapping<V: Var>(
+        &mut self,
+        variable: V,
+        chc_var: TermVarIdx,
+        described: super::ErasedVar,
+    ) {
+        self.mappings.push(VarMapping {
+            source: format!("{variable:?}"),
+            chc_var,
+            var: Some(described),
         });
     }
 
     pub fn value_var_mapping(mut self, chc_var: TermVarIdx) -> Self {
-        self.mappings.push(VarMapping {
-            source: "ν".to_owned(),
-            chc_var,
-        });
+        self.add_value_var_mapping(chc_var);
         self
     }
 
@@ -86,6 +97,7 @@ impl Entry {
         self.mappings.push(VarMapping {
             source: "ν".to_owned(),
             chc_var,
+            var: None,
         });
     }
 
@@ -94,10 +106,7 @@ impl Entry {
         variable: ExistentialVarIdx,
         chc_var: TermVarIdx,
     ) -> Self {
-        self.mappings.push(VarMapping {
-            source: variable.to_string(),
-            chc_var,
-        });
+        self.add_existential_var_mapping(variable, chc_var);
         self
     }
 
@@ -109,6 +118,7 @@ impl Entry {
         self.mappings.push(VarMapping {
             source: variable.to_string(),
             chc_var,
+            var: Some(super::ErasedVar::new(variable)),
         });
     }
 
@@ -118,6 +128,17 @@ impl Entry {
 
     pub fn mappings(&self) -> &[VarMapping] {
         &self.mappings
+    }
+}
+
+impl VarMapping {
+    pub fn chc_var(&self) -> TermVarIdx {
+        self.chc_var
+    }
+
+    /// The variable of the analysis mapped, for the code that knows its type.
+    pub fn var(&self) -> Option<&super::ErasedVar> {
+        self.var.as_ref()
     }
 }
 

@@ -12,6 +12,22 @@ use rustc_index::IndexVec;
 
 use crate::chc::{self, hoice::HoiceDatatypeRenamer};
 
+/// What a symbol the query declares for a datatype stands for, to read the solver's answers.
+#[derive(Debug, Clone)]
+pub enum DeclaredSymbol {
+    /// A datatype's name: the sort it is.
+    Sort(chc::Sort),
+    /// The constructor of a `Box`, a `Mut` or a tuple.
+    BoxCtor,
+    MutCtor,
+    TupleCtor,
+    /// The current value of a `Box` or a `Mut`, the final value of a `Mut`, the `i`-th component
+    /// of a tuple.
+    Current,
+    Final,
+    Field(usize),
+}
+
 /// A context for formatting a CHC system.
 ///
 /// This subsumes a representational difference between [`chc::System`] and resulting SMT-LIB2.
@@ -26,6 +42,8 @@ pub struct FormatContext {
     renamer: HoiceDatatypeRenamer,
     capabilities: chc::Capabilities,
     datatypes: Vec<chc::Datatype>,
+    /// The sort each datatype declared for a `Box`, a `Mut` or a tuple sort stands for.
+    builtin_sorts: HashMap<chc::DatatypeSymbol, chc::Sort>,
     /// Sizes of the consecutive groups in `datatypes`; see [`group_by_dependency`].
     datatype_group_sizes: Vec<usize>,
 }
@@ -541,9 +559,17 @@ impl FormatContext {
             }
         }
 
-        let datatypes: Vec<_> = sorts
+        let builtins: Vec<(chc::Sort, chc::Datatype)> = sorts
             .into_iter()
-            .flat_map(builtin_sort_datatype)
+            .filter_map(|s| Some((s.clone(), builtin_sort_datatype(s)?)))
+            .collect();
+        let builtin_sorts = builtins
+            .iter()
+            .map(|(s, d)| (d.symbol.clone(), s.clone()))
+            .collect();
+        let datatypes: Vec<_> = builtins
+            .into_iter()
+            .map(|(_, d)| d)
             .chain(datatypes)
             .filter(|d| d.params == 0)
             .collect();
@@ -555,8 +581,43 @@ impl FormatContext {
             renamer,
             capabilities,
             datatypes,
+            builtin_sorts,
             datatype_group_sizes,
         }
+    }
+
+    /// Each symbol the query declares for a datatype, as the query writes it, with what it stands
+    /// for: every datatype's name, and the constructor and selectors of a `Box`, a `Mut` or a
+    /// tuple.
+    pub fn declared_symbols(&self) -> Vec<(String, DeclaredSymbol)> {
+        let mut symbols = Vec::new();
+        for d in &self.datatypes {
+            let sort = self.builtin_sorts.get(&d.symbol).cloned();
+            let named = sort.clone().unwrap_or_else(|| {
+                chc::Sort::Datatype(chc::DatatypeSort::new(d.symbol.clone(), Vec::new()))
+            });
+            symbols.push((
+                self.fmt_datatype_symbol(&d.symbol).to_string(),
+                DeclaredSymbol::Sort(named),
+            ));
+            let (Some(sort), Some(ctor)) = (sort, d.ctors.first()) else {
+                continue;
+            };
+            let (ctor_meaning, selector_meaning): (_, fn(usize) -> DeclaredSymbol) = match sort {
+                chc::Sort::Box(_) => (DeclaredSymbol::BoxCtor, |_| DeclaredSymbol::Current),
+                chc::Sort::Mut(_) => (DeclaredSymbol::MutCtor, |i| match i {
+                    0 => DeclaredSymbol::Current,
+                    _ => DeclaredSymbol::Final,
+                }),
+                chc::Sort::Tuple(_) => (DeclaredSymbol::TupleCtor, DeclaredSymbol::Field),
+                _ => continue,
+            };
+            symbols.push((ctor.symbol.to_string(), ctor_meaning));
+            for (i, selector) in ctor.selectors.iter().enumerate() {
+                symbols.push((selector.symbol.to_string(), selector_meaning(i)));
+            }
+        }
+        symbols
     }
 
     pub fn capabilities(&self) -> chc::Capabilities {

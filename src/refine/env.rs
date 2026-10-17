@@ -138,6 +138,41 @@ enum TempVarBinding {
     Type(rty::RefinedType<Var>),
 }
 
+/// One step from a value to a value it holds, in a [`VarPath`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PathStep {
+    /// The current value of a `&mut`.
+    Current,
+    /// The final value of a `&mut`.
+    Final,
+    /// A component of a tuple.
+    Field(usize),
+    /// The discriminant of an enum value.
+    Discriminant,
+    /// A field of a variant of an enum value.
+    VariantField(VariantIdx, FieldIdx),
+}
+
+/// What a variable of the environment holds, as a local and the steps from it: the environment
+/// expands a local into temporaries, the content of a `Box` (no step), the current and final
+/// values of a `&mut`, the components of a tuple, and the discriminant and fields of an enum.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VarPath {
+    pub local: Local,
+    pub steps: Vec<PathStep>,
+}
+
+impl VarPath {
+    fn then(&self, step: PathStep) -> VarPath {
+        let mut steps = self.steps.clone();
+        steps.push(step);
+        VarPath {
+            local: self.local,
+            steps,
+        }
+    }
+}
+
 impl TempVarBinding {
     fn as_flow(&self) -> Option<&FlowBinding> {
         match self {
@@ -551,10 +586,11 @@ where
         for (v, sort) in self.dependencies() {
             builder.add_mapped_var(v, sort);
         }
+        let paths = self.temp_paths();
         for (var, rty) in self.bindings() {
             let mut origin = debug::origin::Entry::binding(var, rty);
             if let Some(chc_var) = builder.find_mapped_var(var) {
-                origin.add_var_mapping(var, chc_var);
+                origin.add_described_var_mapping(var, chc_var, self.described(var, &paths));
             }
             let formula = rty.formula();
             let mut instantiator = formula
@@ -596,8 +632,9 @@ where
     type Var = Var;
     fn build_template(&self) -> rty::TemplateBuilder<Var> {
         let mut builder = rty::TemplateBuilder::default();
+        let paths = self.temp_paths();
         for (v, sort) in self.dependencies() {
-            builder.add_dependency(v, sort);
+            builder.add_described_dependency(v, sort, self.described(v, &paths));
         }
         builder
     }
@@ -618,6 +655,70 @@ where
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(2),
+        }
+    }
+
+    /// The path from a local to each temporary the environment expands it into.
+    pub fn temp_paths(&self) -> HashMap<TempVarIdx, VarPath> {
+        let mut paths = HashMap::new();
+        for (local, binding) in &self.flow_locals {
+            let path = VarPath {
+                local: *local,
+                steps: Vec::new(),
+            };
+            self.walk_flow(binding, &path, &mut paths);
+        }
+        paths
+    }
+
+    fn walk_flow(
+        &self,
+        binding: &FlowBinding,
+        path: &VarPath,
+        paths: &mut HashMap<TempVarIdx, VarPath>,
+    ) {
+        let children: Vec<(TempVarIdx, VarPath)> = match binding {
+            FlowBinding::Box { current, .. } => vec![(*current, path.clone())],
+            FlowBinding::Mut(current, final_) => vec![
+                (*current, path.then(PathStep::Current)),
+                (*final_, path.then(PathStep::Final)),
+            ],
+            FlowBinding::Tuple(elems) => elems
+                .iter()
+                .enumerate()
+                .map(|(i, t)| (*t, path.then(PathStep::Field(i))))
+                .collect(),
+            FlowBinding::Enum {
+                discr, variants, ..
+            } => std::iter::once((*discr, path.then(PathStep::Discriminant)))
+                .chain(variants.iter_enumerated().flat_map(|(v, variant)| {
+                    variant
+                        .fields
+                        .iter_enumerated()
+                        .map(move |(f, t)| (*t, path.then(PathStep::VariantField(v, f))))
+                }))
+                .collect(),
+        };
+        for (temp, child) in children {
+            if let Some(TempVarBinding::Flow(inner)) = self.temp_vars.get(temp) {
+                self.walk_flow(inner, &child, paths);
+            }
+            paths.insert(temp, child);
+        }
+    }
+
+    /// What `var` holds, as a local and the steps from it (see [`VarPath`]), kept with its type
+    /// erased for the report; `var` itself when it is no temporary of a local.
+    fn described(&self, var: Var, paths: &HashMap<TempVarIdx, VarPath>) -> debug::ErasedVar {
+        match var {
+            Var::Local(local) => debug::ErasedVar::new(VarPath {
+                local,
+                steps: Vec::new(),
+            }),
+            Var::Temp(temp) => match paths.get(&temp) {
+                Some(path) => debug::ErasedVar::new(path.clone()),
+                None => debug::ErasedVar::new(var),
+            },
         }
     }
 

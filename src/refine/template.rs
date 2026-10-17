@@ -75,14 +75,14 @@ fn iterated_elem_ty<'tcx>(
 }
 
 pub trait TemplateRegistry {
-    fn register_template<V>(&mut self, tmpl: rty::Template<V>) -> rty::RefinedType<V>;
+    fn register_template<V: chc::Var>(&mut self, tmpl: rty::Template<V>) -> rty::RefinedType<V>;
 }
 
 impl<T> TemplateRegistry for &mut T
 where
     T: TemplateRegistry + ?Sized,
 {
-    fn register_template<V>(&mut self, tmpl: rty::Template<V>) -> rty::RefinedType<V> {
+    fn register_template<V: chc::Var>(&mut self, tmpl: rty::Template<V>) -> rty::RefinedType<V> {
         T::register_template(self, tmpl)
     }
 }
@@ -739,7 +739,10 @@ impl<'tcx> TypeBuilder<'tcx> {
     {
         struct FakeRegistry;
         impl TemplateRegistry for FakeRegistry {
-            fn register_template<V>(&mut self, _tmpl: rty::Template<V>) -> rty::RefinedType<V> {
+            fn register_template<V: chc::Var>(
+                &mut self,
+                _tmpl: rty::Template<V>,
+            ) -> rty::RefinedType<V> {
                 panic!("unexpected template registration")
             }
         }

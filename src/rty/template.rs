@@ -21,15 +21,31 @@ use super::{RefinedType, RefinedTypeVar, Type};
 pub struct Template<FV> {
     pred_sig: chc::PredSig,
     atom_args: Vec<chc::Term<RefinedTypeVar<FV>>>,
+    /// What each argument holds, as the scope describes it, if it does.
+    arg_descriptions: Vec<Option<chc::debug::ErasedVar>>,
     ty: Type<FV>,
 }
 
-impl<FV> Template<FV> {
+impl<FV> Template<FV>
+where
+    FV: chc::Var,
+{
+    /// Allocates the predicate variable by `pred_var_generator`, given its signature and, for each
+    /// of its arguments, what the scope describes it as, or else the variable it is.
     pub fn into_refined_type<F>(self, pred_var_generator: F) -> RefinedType<FV>
     where
-        F: FnOnce(chc::PredSig) -> chc::PredVarId,
+        F: FnOnce(chc::PredSig, Vec<Option<chc::debug::ErasedVar>>) -> chc::PredVarId,
     {
-        let pred_var = pred_var_generator(self.pred_sig);
+        let args = self
+            .atom_args
+            .iter()
+            .zip(self.arg_descriptions)
+            .map(|(arg, described)| match arg {
+                chc::Term::Var(v) => described.or_else(|| Some(chc::debug::ErasedVar::new(*v))),
+                _ => None,
+            })
+            .collect();
+        let pred_var = pred_var_generator(self.pred_sig, args);
         RefinedType::new(
             self.ty,
             chc::Atom::new(pred_var.into(), self.atom_args).into(),
@@ -45,12 +61,14 @@ impl<FV> Template<FV> {
 #[derive(Debug, Clone)]
 pub struct TemplateBuilder<FV> {
     dependencies: BTreeMap<RefinedTypeVar<FV>, chc::Sort>,
+    descriptions: BTreeMap<RefinedTypeVar<FV>, chc::debug::ErasedVar>,
 }
 
 impl<FV> Default for TemplateBuilder<FV> {
     fn default() -> Self {
         TemplateBuilder {
             dependencies: Default::default(),
+            descriptions: Default::default(),
         }
     }
 }
@@ -63,21 +81,35 @@ where
         self.dependencies.insert(RefinedTypeVar::Free(v), sort);
     }
 
+    /// Adds `v` as a dependency, described as `described` (what it holds, for the report).
+    pub fn add_described_dependency(
+        &mut self,
+        v: FV,
+        sort: chc::Sort,
+        described: chc::debug::ErasedVar,
+    ) {
+        self.descriptions.insert(RefinedTypeVar::Free(v), described);
+        self.add_dependency(v, sort);
+    }
+
     pub fn build(mut self, ty: Type<FV>) -> Template<FV> {
         self.dependencies
             .insert(RefinedTypeVar::Value, ty.to_sort());
         let mut atom_args = Vec::new();
+        let mut arg_descriptions = Vec::new();
         let mut pred_sig = chc::PredSig::new();
         for (v, sort) in self.dependencies.into_iter() {
             if sort.is_singleton() {
                 continue;
             }
+            arg_descriptions.push(self.descriptions.remove(&v));
             atom_args.push(chc::Term::Var(v));
             pred_sig.push(sort);
         }
         Template {
             pred_sig,
             atom_args,
+            arg_descriptions,
             ty,
         }
     }

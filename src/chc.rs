@@ -9,6 +9,7 @@ use rustc_index::IndexVec;
 
 use crate::pretty::PrettyDisplayExt as _;
 
+pub mod answer;
 mod cache;
 mod candidate_atoms;
 mod clause_builder;
@@ -19,6 +20,7 @@ mod flatten;
 pub(crate) mod format_context;
 mod hoice;
 mod prune;
+pub mod sexp;
 mod smtlib2;
 mod solver;
 mod unbox;
@@ -28,8 +30,8 @@ pub use clause_builder::{ClauseBuilder, Var};
 pub use debug::DebugInfo;
 pub use dedup::dedup_pred_args;
 pub use flatten::flatten_recursive_pred_args;
-pub use solver::{Capabilities, CheckSatError, Config};
-pub use unbox::unbox;
+pub use solver::{Answer, Capabilities, CheckSatError, Config, Requests};
+pub use unbox::{unbox, unbox_formula, unbox_sort};
 
 /// A name of a datatype.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -90,6 +92,14 @@ where
 impl DatatypeSort {
     pub fn new(symbol: DatatypeSymbol, args: Vec<Sort>) -> Self {
         DatatypeSort { symbol, args }
+    }
+
+    pub fn symbol(&self) -> &DatatypeSymbol {
+        &self.symbol
+    }
+
+    pub fn args(&self) -> &[Sort] {
+        &self.args
     }
 
     pub fn args_mut(&mut self) -> &mut Vec<Sort> {
@@ -469,6 +479,16 @@ impl TermVarIdx {
     }
 }
 
+/// Defines the constants of a known symbol type, `NAME = constructor("symbol");`, and `ALL`, the
+/// list of them, to read a symbol back by its name.
+macro_rules! known {
+    ($ty:ident, $($(#[$doc:meta])* $name:ident = $ctor:ident($symbol:literal $(, $negated:ident)?);)*) => {
+        $($(#[$doc])* pub const $name: $ty = $ty::$ctor($symbol)$(.$negated())?;)*
+        /// Every constant above.
+        pub const ALL: &'static [$ty] = &[$($ty::$name),*];
+    };
+}
+
 /// A known function symbol.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Function {
@@ -516,6 +536,17 @@ impl Function {
 
     pub fn is_infix(&self) -> bool {
         self.is_infix
+    }
+
+    /// How tightly an infix function binds its arguments, for printing: `*` over `+` and `-`
+    /// over the comparisons over `and` and `or`.
+    fn precedence(&self) -> u8 {
+        match *self {
+            Self::MUL => 3,
+            Self::ADD | Self::SUB => 2,
+            Self::AND | Self::OR => 0,
+            _ => 1,
+        }
     }
 
     fn sort<I>(&self, args: I) -> Sort
@@ -580,54 +611,68 @@ impl Function {
         }
     }
 
-    pub const ADD: Function = Function::infix("+");
-    pub const SUB: Function = Function::infix("-");
-    pub const MUL: Function = Function::infix("*");
-    /// SMT-LIB's integer modulus: never negative, so this is *not* Rust's `%`.
-    /// See [`Term::rem_trunc`].
-    pub const MOD: Function = Function::new("mod");
-    /// SMT-LIB's integer division: the remainder it leaves is never negative, so this is
-    /// *not* Rust's `/`. See [`Term::div_trunc`].
-    pub const EUCLIDEAN_DIV: Function = Function::new("div");
-    pub const EQ: Function = Function::infix("=");
-    pub const GE: Function = Function::infix(">=");
-    pub const GT: Function = Function::infix(">");
-    pub const LE: Function = Function::infix("<=");
-    pub const LT: Function = Function::infix("<");
-    pub const AND: Function = Function::infix("and");
-    pub const OR: Function = Function::infix("or");
-    pub const NOT: Function = Function::new("not");
-    pub const NEG: Function = Function::new("-");
-    pub const BVADD: Function = Function::new("bvadd");
-    pub const BVSUB: Function = Function::new("bvsub");
-    pub const BVMUL: Function = Function::new("bvmul");
-    pub const BVAND: Function = Function::new("bvand");
-    pub const BVOR: Function = Function::new("bvor");
-    pub const BVXOR: Function = Function::new("bvxor");
-    pub const BVSHL: Function = Function::new("bvshl");
-    pub const BVLSHR: Function = Function::new("bvlshr");
-    pub const BVASHR: Function = Function::new("bvashr");
-    pub const BVNOT: Function = Function::new("bvnot");
-    pub const BVNEG: Function = Function::new("bvneg");
-    pub const BVULT: Function = Function::new("bvult");
-    pub const BVULE: Function = Function::new("bvule");
-    pub const BVUGT: Function = Function::new("bvugt");
-    pub const BVUGE: Function = Function::new("bvuge");
-    pub const BVSLT: Function = Function::new("bvslt");
-    pub const BVSLE: Function = Function::new("bvsle");
-    pub const BVSGT: Function = Function::new("bvsgt");
-    pub const BVSGE: Function = Function::new("bvsge");
-    pub const UBV_TO_INT: Function = Function::new("ubv_to_int");
-    pub const SBV_TO_INT: Function = Function::new("sbv_to_int");
-    pub const STORE: Function = Function::new("store");
-    pub const SELECT: Function = Function::new("select");
-    pub const SEQ_CONCAT: Function = Function::new("seq.++");
-    pub const SEQ_EXTRACT: Function = Function::new("seq.extract");
-    pub const SEQ_LEN: Function = Function::new("seq.len");
-    pub const SEQ_UNIT: Function = Function::new("seq.unit");
-    pub const SEQ_NTH: Function = Function::new("seq.nth");
-    pub const SEQ_STORE: Function = Function::new("seq.store");
-    pub const ITE: Function = Function::new("ite");
+    known! {
+        Function,
+        ADD = infix("+");
+        SUB = infix("-");
+        MUL = infix("*");
+        /// SMT-LIB's integer modulus: never negative, so this is *not* Rust's `%`.
+        /// See [`Term::rem_trunc`].
+        MOD = new("mod");
+        /// SMT-LIB's integer division: the remainder it leaves is never negative, so this is
+        /// *not* Rust's `/`. See [`Term::div_trunc`].
+        EUCLIDEAN_DIV = new("div");
+        EQ = infix("=");
+        GE = infix(">=");
+        GT = infix(">");
+        LE = infix("<=");
+        LT = infix("<");
+        AND = infix("and");
+        OR = infix("or");
+        NOT = new("not");
+        NEG = new("-");
+        BVADD = new("bvadd");
+        BVSUB = new("bvsub");
+        BVMUL = new("bvmul");
+        BVAND = new("bvand");
+        BVOR = new("bvor");
+        BVXOR = new("bvxor");
+        BVSHL = new("bvshl");
+        BVLSHR = new("bvlshr");
+        BVASHR = new("bvashr");
+        BVNOT = new("bvnot");
+        BVNEG = new("bvneg");
+        BVULT = new("bvult");
+        BVULE = new("bvule");
+        BVUGT = new("bvugt");
+        BVUGE = new("bvuge");
+        BVSLT = new("bvslt");
+        BVSLE = new("bvsle");
+        BVSGT = new("bvsgt");
+        BVSGE = new("bvsge");
+        UBV_TO_INT = new("ubv_to_int");
+        SBV_TO_INT = new("sbv_to_int");
+        STORE = new("store");
+        SELECT = new("select");
+        SEQ_CONCAT = new("seq.++");
+        SEQ_EXTRACT = new("seq.extract");
+        SEQ_LEN = new("seq.len");
+        SEQ_UNIT = new("seq.unit");
+        SEQ_NTH = new("seq.nth");
+        SEQ_STORE = new("seq.store");
+        ITE = new("ite");
+    }
+
+    /// The function the SMT-LIB symbol `name` names at `arity` arguments, if it is known.
+    pub fn named(name: &str, arity: usize) -> Option<Function> {
+        if name == "-" && arity == 1 {
+            return Some(Function::NEG);
+        }
+        Function::ALL
+            .iter()
+            .find(|f| f.name == name && *f != &Function::NEG)
+            .copied()
+    }
 }
 
 /// A call found by [`Term::guarded_calls`]: its arguments, and the conditions under which the
@@ -696,7 +741,8 @@ where
                 .append(allocator.text(","))
                 .append(allocator.line())
                 .append(t2.pretty(allocator))
-                .angles(),
+                .angles()
+                .group(),
             Term::BoxCurrent(t) | Term::MutCurrent(t) => {
                 allocator.text("*").append(t.pretty(allocator))
             }
@@ -708,11 +754,11 @@ where
                 .append(t.pretty(allocator))
                 .parens(),
             Term::App(f, args) if f.is_infix() => args[0]
-                .pretty_atom(allocator)
+                .pretty_operand(allocator, f.precedence(), true)
                 .append(allocator.line())
                 .append(f.pretty(allocator))
                 .append(allocator.line())
-                .append(args[1].pretty_atom(allocator))
+                .append(args[1].pretty_operand(allocator, f.precedence(), false))
                 .group(),
             Term::App(f, args) => {
                 let inner = allocator.intersperse(
@@ -730,18 +776,25 @@ where
             Term::SeqEmpty(_) => allocator.text("seq.empty"),
             Term::Tuple(ts) => {
                 let separator = allocator.text(",").append(allocator.line());
-                if ts.len() == 1 {
+                let tuple = if ts.len() == 1 {
                     ts[0].pretty(allocator).append(separator).parens()
                 } else {
                     allocator
                         .intersperse(ts.iter().map(|t| t.pretty(allocator)), separator)
                         .parens()
-                }
+                };
+                tuple.group()
             }
-            Term::TupleProj(t, i) => t
-                .pretty_atom(allocator)
-                .append(allocator.text("."))
-                .append(allocator.as_string(i)),
+            // A projection binds tighter than `*` and `°`: `(*x).0`.
+            Term::TupleProj(t, i) => {
+                let t = match &**t {
+                    Term::BoxCurrent(_) | Term::MutCurrent(_) | Term::MutFinal(_) => {
+                        t.pretty(allocator).parens()
+                    }
+                    _ => t.pretty_atom(allocator),
+                };
+                t.append(allocator.text(".")).append(allocator.as_string(i))
+            }
             Term::DatatypeCtor(_, symbol, args) => {
                 let separator = allocator.text(",").append(allocator.line());
                 let args = allocator
@@ -787,6 +840,33 @@ impl<V> Term<V> {
         match &self {
             Term::App(_f, args) if !args.is_empty() => self.pretty(allocator).parens(),
             _ => self.pretty(allocator),
+        }
+    }
+
+    /// The term as an operand of an infix function of precedence `outer`, on its `left`: an
+    /// infix application binding tighter, or as tightly on the left of arithmetic, needs no
+    /// parentheses (`2 * n + r`, `a - b - c`).
+    fn pretty_operand<'b, 'a, D>(
+        &'b self,
+        allocator: &'a D,
+        outer: u8,
+        left: bool,
+    ) -> pretty::DocBuilder<'a, D, termcolor::ColorSpec>
+    where
+        V: Var,
+        D: pretty::DocAllocator<'a, termcolor::ColorSpec>,
+        D::Doc: Clone,
+    {
+        match self {
+            Term::App(f, args) if f.is_infix() && args.len() == 2 => {
+                let inner = f.precedence();
+                if inner > outer || (inner == outer && left && inner >= 2) {
+                    self.pretty(allocator)
+                } else {
+                    self.pretty(allocator).parens()
+                }
+            }
+            _ => self.pretty_atom(allocator),
         }
     }
 
@@ -1459,15 +1539,25 @@ impl KnownPred {
         self == &KnownPred::BOTTOM
     }
 
-    pub const TOP: KnownPred = KnownPred::new("true");
-    pub const BOTTOM: KnownPred = KnownPred::new("false");
-    pub const EQUAL: KnownPred = KnownPred::infix("=");
-    pub const NOT_EQUAL: KnownPred = KnownPred::infix("=").negated();
+    known! {
+        KnownPred,
+        TOP = new("true");
+        BOTTOM = new("false");
+        EQUAL = infix("=");
+        NOT_EQUAL = infix("=", negated);
+        LESS_THAN_OR_EQUAL = infix("<=");
+        GREATER_THAN_OR_EQUAL = infix(">=");
+        LESS_THAN = infix("<");
+        GREATER_THAN = infix(">");
+    }
 
-    pub const LESS_THAN_OR_EQUAL: KnownPred = KnownPred::infix("<=");
-    pub const GREATER_THAN_OR_EQUAL: KnownPred = KnownPred::infix(">=");
-    pub const LESS_THAN: KnownPred = KnownPred::infix("<");
-    pub const GREATER_THAN: KnownPred = KnownPred::infix(">");
+    /// The comparison the SMT-LIB symbol `name` names, if it is one.
+    pub fn named(name: &str) -> Option<KnownPred> {
+        KnownPred::ALL
+            .iter()
+            .find(|p| p.name == name && !p.is_negative && p.is_infix)
+            .copied()
+    }
 }
 
 /// A matcher predicate.
@@ -1832,13 +1922,14 @@ where
     D::Doc: Clone,
 {
     fn pretty(self, allocator: &'a D) -> pretty::DocBuilder<'a, D, termcolor::ColorSpec> {
+        // An infix predicate is a comparison, of the comparisons' precedence.
         let atom = if self.pred.is_infix() {
             self.args[0]
-                .pretty_atom(allocator)
+                .pretty_operand(allocator, 1, true)
                 .append(allocator.line())
                 .append(self.pred.pretty(allocator))
                 .append(allocator.line())
-                .append(self.args[1].pretty_atom(allocator))
+                .append(self.args[1].pretty_operand(allocator, 1, false))
                 .group()
         } else {
             let inner = allocator.intersperse(
@@ -1993,21 +2084,29 @@ where
     fn pretty(self, allocator: &'a D) -> pretty::DocBuilder<'a, D, termcolor::ColorSpec> {
         match self {
             Formula::Atom(atom) => atom.pretty(allocator),
-            Formula::Not(fo) => allocator
-                .text("¬")
-                .append(fo.pretty_atom(allocator))
-                .group(),
+            // `¬` binds tighter than an infix predicate: `¬(x = y)`.
+            Formula::Not(fo) => {
+                let inner = match &**fo {
+                    Formula::Atom(atom) if atom.pred.is_infix() => fo.pretty(allocator).parens(),
+                    _ => fo.pretty_atom(allocator),
+                };
+                allocator.text("¬").append(inner).group()
+            }
             Formula::And(fs) => {
                 let inner = allocator.intersperse(
                     fs.iter().map(|f| f.pretty_atom(allocator)),
-                    allocator.text("∧").append(allocator.line()),
+                    allocator
+                        .text("∧")
+                        .enclose(allocator.line(), allocator.space()),
                 );
                 inner.group()
             }
             Formula::Or(fs) => {
                 let inner = allocator.intersperse(
                     fs.iter().map(|f| f.pretty_atom(allocator)),
-                    allocator.text("∨").append(allocator.line()),
+                    allocator
+                        .text("∨")
+                        .enclose(allocator.line(), allocator.space()),
                 );
                 inner.group()
             }
@@ -3480,6 +3579,15 @@ impl System {
         propagated_forall_deps
     }
 
+    /// Each symbol the query declares for a datatype, with what it stands for (see
+    /// [`format_context::FormatContext::declared_symbols`]).
+    pub fn declared_symbols(
+        &self,
+        capabilities: Capabilities,
+    ) -> Vec<(String, format_context::DeclaredSymbol)> {
+        format_context::FormatContext::from_system(self, capabilities).declared_symbols()
+    }
+
     pub fn smtlib2(&self, capabilities: Capabilities) -> smtlib2::System<'_> {
         smtlib2::System::new(self, capabilities)
     }
@@ -3492,6 +3600,13 @@ impl System {
     /// variables
     /// (see <https://github.com/coord-e/thrust?tab=readme-ov-file#configuration>).
     pub fn solve(&self) -> Result<(), CheckSatError> {
+        self.solve_with(Requests::default()).result
+    }
+
+    /// Solves the system, also asking the solver for the evidence `requests` names (see
+    /// [`Config::answers`]).
+    pub fn solve_with(&self, requests: Requests) -> Answer {
+        let config = Config::from_env();
         let system = self.clone().prepared();
         if let Ok(file) = std::env::var("THRUST_PRETTY_OUTPUT") {
             let mut f = std::fs::File::create(file).unwrap();
@@ -3501,9 +3616,28 @@ impl System {
                 writeln!(f, "{:?}: {}", idx, c.display()).unwrap();
             }
         }
-        let config = Config::from_env();
         let query = system.smtlib2(config.capabilities()).to_string();
-        solve_query(&config, cache::Cache::from_env().as_ref(), &query).0
+        // A verdict alone may be that of an earlier run (`THRUST_CACHE_DIR`); the cache keeps no
+        // model or refutation.
+        let mut answer = if config.answers(requests) {
+            config.check_sat_with(&query, requests)
+        } else {
+            Answer::of(solve_query(&config, cache::Cache::from_env().as_ref(), &query).0)
+        };
+        if requests.model {
+            answer.query = Some(query);
+        }
+        // The refutation is asked of a second run on the system with its goals marked, so that
+        // the verdict is the one the query alone gets.
+        let refuted = matches!(answer.result, Err(CheckSatError::Unsat));
+        if requests.proof && refuted && config.answers(requests) {
+            let mut marked = self.clone();
+            answer.clause_tags = marked.tag_clauses();
+            answer.goal_markers = marked.mark_goals();
+            let marked = marked.prepared();
+            answer.proof = config.refute(marked.smtlib2(config.capabilities()));
+        }
+        answer
     }
 
     /// Solves each class of clauses that share an unknown on its own (see [`components`]),
@@ -3557,10 +3691,10 @@ impl System {
         // With `THRUST_FLAT_PRED_ARGS` set, the tuple, `Box` and `Mut` arguments of the loop
         // heads are split into their components (see `flatten`); with `THRUST_DEDUP_PRED_ARGS`
         // set, the loop heads' arguments inductively equal to another are removed (see `dedup`).
-        if std::env::var_os("THRUST_FLAT_PRED_ARGS").is_some() {
+        if flat_pred_args_enabled() {
             system = flatten_recursive_pred_args(system);
         }
-        if std::env::var_os("THRUST_DEDUP_PRED_ARGS").is_some() {
+        if dedup_pred_args_enabled() {
             system = dedup_pred_args(system);
         }
         system.populate_user_defined_pred_dependencies();
@@ -3569,6 +3703,88 @@ impl System {
         }
         system
     }
+
+    /// Gives each clause a nullary predicate variable of its own as a premise, made true by a
+    /// fact: `t ⇐ true` and `head ⇐ t ∧ body`, which the system is satisfiable with exactly when
+    /// it is without. A refutation then shows, at each step, the clause the step applies. Returns
+    /// the tags with their clauses.
+    fn tag_clauses(&mut self) -> Vec<(PredVarId, ClauseId)> {
+        let ids: Vec<ClauseId> = self.clauses.indices().collect();
+        let mut tags = Vec::new();
+        for id in ids {
+            let tag = self.new_pred_var(PredSig::new(), DebugInfo::default());
+            self.clauses[id]
+                .body
+                .atoms
+                .push(Atom::new(tag.into(), vec![]));
+            self.clauses.push(Clause {
+                origin: debug::origin::ClauseOrigin {
+                    environment: Vec::new(),
+                    body: Vec::new(),
+                    head: debug::origin::Entry::described("tag of a clause".to_owned()),
+                },
+                vars: IndexVec::new(),
+                head: Atom::new(tag.into(), vec![]),
+                body: Body::new(Vec::new(), Formula::top()),
+                debug_info: DebugInfo::default(),
+            });
+            tags.push((tag, id));
+        }
+        tags
+    }
+
+    /// Gives each goal (a clause whose head is no predicate variable: `false`, or a formula the
+    /// clause checks) a nullary predicate variable of its own between its body and `false`, which
+    /// the system is satisfiable with exactly when it is without: `g ⇐ body ∧ ¬head` and
+    /// `false ⇐ g`. A refutation then derives the marker of the goal it refutes. Returns the
+    /// markers with their goals.
+    fn mark_goals(&mut self) -> Vec<(PredVarId, ClauseId)> {
+        let goals: Vec<ClauseId> = self
+            .clauses
+            .iter_enumerated()
+            .filter(|(_, clause)| {
+                !matches!(clause.head.pred, Pred::Var(_)) && !clause.head.is_top()
+            })
+            .map(|(id, _)| id)
+            .collect();
+        let mut markers = Vec::new();
+        for id in goals {
+            let marker = self.new_pred_var(PredSig::new(), DebugInfo::default());
+            let clause = &mut self.clauses[id];
+            let head = std::mem::replace(&mut clause.head, Atom::new(marker.into(), vec![]));
+            if !head.is_bottom() {
+                clause.body.formula.push_conj(Formula::Atom(head).not());
+            }
+            self.clauses.push(Clause {
+                origin: debug::origin::ClauseOrigin {
+                    environment: Vec::new(),
+                    body: Vec::new(),
+                    head: debug::origin::Entry::described("marker of a goal".to_owned()),
+                },
+                vars: IndexVec::new(),
+                head: Atom::bottom(),
+                body: Body::new(vec![Atom::new(marker.into(), vec![])], Formula::top()),
+                debug_info: DebugInfo::default(),
+            });
+            markers.push((marker, id));
+        }
+        markers
+    }
+}
+
+fn flat_pred_args_enabled() -> bool {
+    std::env::var_os("THRUST_FLAT_PRED_ARGS").is_some()
+}
+
+fn dedup_pred_args_enabled() -> bool {
+    std::env::var_os("THRUST_DEDUP_PRED_ARGS").is_some()
+}
+
+/// Whether the arguments of the loop heads' predicate variables are rewritten before the query is
+/// written (`THRUST_FLAT_PRED_ARGS`, `THRUST_DEDUP_PRED_ARGS`), so that a model of the query
+/// interprets them over other arguments than the system's.
+pub fn pred_args_rewritten() -> bool {
+    flat_pred_args_enabled() || dedup_pred_args_enabled()
 }
 
 /// One class of clauses sharing an unknown, solved on its own.
@@ -3585,14 +3801,15 @@ type Solved = (Result<(), CheckSatError>, bool);
 
 /// The verdict on `query`, from `cache` when it has one, and whether it came from there.
 fn solve_query(config: &Config, cache: Option<&cache::Cache>, query: &str) -> Solved {
+    let check_sat = || config.check_sat_with(query, Requests::default()).result;
     let Some(cache) = cache else {
-        return (config.check_sat(query), false);
+        return (check_sat(), false);
     };
     let key = cache::Cache::key(query, &config.identity());
     if let Some(result) = cache.lookup(&key) {
         return (result, true);
     }
-    let result = config.check_sat(query);
+    let result = check_sat();
     cache.store(&key, &result);
     (result, false)
 }

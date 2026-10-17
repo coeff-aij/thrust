@@ -1214,7 +1214,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
         let mut builder = analyze::basic_block::DropPoints::builder(&self.body);
         for (bb, _data) in mir::traversal::postorder(&self.body) {
-            let span = tracing::info_span!("refine_basic_block", ?bb);
+            let span = tracing::info_span!("refine_basic_block", ?bb, bb_index = bb.as_u32());
             let _guard = span.enter();
 
             self.drop_points.insert(bb, builder.build(&mut results, bb));
@@ -1250,6 +1250,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         .push(a);
                 }
             }
+            let previous = self
+                .ctx
+                .enter_template_site(analyze::TemplateSite::Block(self.local_def_id, bb));
             // function return type is basic block return type
             let ret_ty = self.body.local_decls[mir::RETURN_PLACE].ty;
             if let Some(invariants) = loop_invariants.get(&bb) {
@@ -1301,6 +1304,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 self.ctx
                     .register_basic_block_ty_without_precondition(self.analysis_key(), bb, bty);
             };
+            self.ctx.leave_template_site(previous);
         }
     }
 
@@ -1668,7 +1672,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     }
 
     pub fn run(&mut self, expected: &rty::RefinedType) {
-        let span = tracing::info_span!("def", def = %self.tcx.def_path_str(self.local_def_id));
+        let span = tracing::info_span!(
+            "def",
+            def = %self.tcx.def_path_str(self.local_def_id),
+            def_index = self.local_def_id.local_def_index.as_u32()
+        );
         let _guard = span.enter();
 
         self.unelaborate_derefs();

@@ -36,7 +36,7 @@ mod lemma;
 mod local_def;
 mod pred_inst;
 mod reconstruct_slice_indexing;
-mod selection;
+pub(crate) mod selection;
 
 // TODO: organize structure and remove cross dependency between refine
 pub use did_cache::DefIdCache;
@@ -847,6 +847,12 @@ pub struct Analyzer<'tcx> {
     /// The local methods of trait impls that carry a contract of their own, given by an
     /// extern-spec wrapper; see [`Analyzer::has_own_impl_contract`].
     impl_methods_with_own_contract: rustc_data_structures::fx::FxIndexSet<DefId>,
+    /// The template being made now, for the predicate variables allocated meanwhile.
+    template_site: Option<TemplateSite>,
+    /// The variable each argument of a template's predicate variable is, by the variable.
+    template_vars: HashMap<chc::PredVarId, Vec<Option<chc::debug::ErasedVar>>>,
+    /// Where each template's predicate variable was made.
+    template_sites: HashMap<chc::PredVarId, TemplateSite>,
 }
 
 /// Whether loop heads get candidate atoms (`THRUST_CANDIDATE_ATOMS`, see
@@ -856,8 +862,15 @@ pub fn candidate_atoms_enabled() -> bool {
 }
 
 impl<'tcx> crate::refine::TemplateRegistry for Analyzer<'tcx> {
-    fn register_template<V>(&mut self, tmpl: rty::Template<V>) -> rty::RefinedType<V> {
-        tmpl.into_refined_type(|pred_sig| self.generate_pred_var(pred_sig))
+    fn register_template<V: chc::Var>(&mut self, tmpl: rty::Template<V>) -> rty::RefinedType<V> {
+        tmpl.into_refined_type(|pred_sig, args| {
+            let pred_var = self.generate_pred_var(pred_sig);
+            self.template_vars.insert(pred_var, args);
+            if let Some(site) = self.template_site {
+                self.template_sites.insert(pred_var, site);
+            }
+            pred_var
+        })
     }
 }
 
@@ -871,9 +884,28 @@ fn split_jobs() -> Option<usize> {
     }
 }
 
+/// Where the analysis makes a template, and so its predicate variables: a function's contract,
+/// a block's type, or the code of a block (the result of a call it makes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TemplateSite {
+    Contract(LocalDefId),
+    Block(LocalDefId, BasicBlock),
+    Code(LocalDefId, BasicBlock),
+}
+
 impl<'tcx> Analyzer<'tcx> {
     pub fn tcx(&self) -> TyCtxt<'tcx> {
         self.tcx
+    }
+
+    /// Makes the templates made until [`Analyzer::leave_template_site`] those of `site`, and
+    /// returns the site that was current.
+    pub fn enter_template_site(&mut self, site: TemplateSite) -> Option<TemplateSite> {
+        self.template_site.replace(site)
+    }
+
+    pub fn leave_template_site(&mut self, previous: Option<TemplateSite>) {
+        self.template_site = previous;
     }
 
     pub fn generate_pred_var(&mut self, sig: chc::PredSig) -> chc::PredVarId {
@@ -927,6 +959,9 @@ impl<'tcx> Analyzer<'tcx> {
             assumed_total_methods: Default::default(),
             called_fn_tys: Default::default(),
             impl_methods_with_own_contract: Default::default(),
+            template_site: None,
+            template_vars: Default::default(),
+            template_sites: Default::default(),
         }
     }
 
@@ -2453,7 +2488,16 @@ impl<'tcx> Analyzer<'tcx> {
             self.solve_parts();
             return;
         }
-        if let Err(err) = self.system.borrow().solve() {
+        let config = crate::report::Config::from_env(self.tcx);
+        let requests = config
+            .as_ref()
+            .map(crate::report::Config::requests)
+            .unwrap_or_default();
+        let answer = self.system.borrow().solve_with(requests);
+        if let Some(config) = &config {
+            self.report(config, &answer);
+        }
+        if let Err(err) = answer.result {
             self.tcx.dcx().err(format!("verification error: {:?}", err));
         }
     }
@@ -2496,6 +2540,40 @@ impl<'tcx> Analyzer<'tcx> {
             parts.len(),
             cached
         ));
+    }
+
+    fn report(&self, config: &crate::report::Config, answer: &chc::Answer) {
+        let contracts = self
+            .defs
+            .iter()
+            .filter_map(|(def_id, def_ty)| {
+                let rty = match def_ty {
+                    DefTy::Concrete(rty) => rty,
+                    DefTy::Generic(generic) => generic.rty.as_ref()?,
+                    DefTy::Deferred(_) => return None,
+                };
+                Some((def_id.as_local()?, rty.ty.as_function()?))
+            })
+            .collect();
+        let blocks = self
+            .basic_blocks
+            .iter()
+            .flat_map(|(key, blocks)| {
+                blocks
+                    .iter()
+                    .map(move |(bb, def)| (key.local_def_id, *bb, &def.ty))
+            })
+            .collect();
+        let system = self.system.borrow();
+        let input = crate::report::Input {
+            system: &system,
+            contracts,
+            blocks,
+            answer,
+            template_sites: &self.template_sites,
+            template_vars: &self.template_vars,
+        };
+        crate::report::emit(self.tcx, config, &input);
     }
 
     /// Computes the signature of the function using the given `body`.

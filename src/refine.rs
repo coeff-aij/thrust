@@ -15,7 +15,8 @@ pub use basic_block::{BasicBlockType, BasicBlockTypeParamKind};
 
 mod env;
 pub use env::{
-    Assumption, EnumDefProvider, Env, PlaceType, PlaceTypeBuilder, PlaceTypeVar, TempVarIdx, Var,
+    Assumption, EnumDefProvider, Env, PathStep, PlaceType, PlaceTypeBuilder, PlaceTypeVar,
+    TempVarIdx, Var, VarPath,
 };
 
 use crate::chc::{DatatypeSymbol, ForallPred, Sort, UserDefinedPred};
