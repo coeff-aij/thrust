@@ -262,17 +262,25 @@ impl Config {
         config
     }
 
-    /// The solver as a verdict depends on it: the command, its arguments, and the variables the
-    /// PCSat wrapper reads to choose its image and configuration.
+    /// The solver as a verdict depends on it: the command and the preprocessor with their
+    /// arguments, and `THRUST_CACHE_SALT`, which the caller sets to what else decides the verdict,
+    /// such as the build a solver command runs.
     pub fn identity(&self) -> String {
-        let env = ["COAR_IMAGE", "COAR_CONFIG"]
-            .map(|v| format!("{v}={}", std::env::var(v).unwrap_or_default()));
+        let command = |c: &CommandConfig| format!("{} {}", c.name, c.args.join(" "));
+        let preprocessor = self.preprocessor.as_ref().map(command).unwrap_or_default();
+        let salt = std::env::var("THRUST_CACHE_SALT").unwrap_or_default();
         format!(
-            "{} {} {}",
-            self.solver.name,
-            self.solver.args.join(" "),
-            env.join(" ")
+            "solver: {}; preprocessor: {preprocessor}; salt: {salt}",
+            command(&self.solver)
         )
+    }
+
+    /// Writes `query` with its `(check-sat)` to `name` in `THRUST_OUTPUT_DIR`, if it is set.
+    pub fn save_query(&self, name: &str, query: &str) -> std::io::Result<()> {
+        let Some(dir) = &self.output_dir else {
+            return Ok(());
+        };
+        std::fs::write(dir.join(name), format!("{query}\n(check-sat)\n"))
     }
 
     pub fn capabilities(&self) -> Capabilities {
@@ -375,9 +383,6 @@ impl Config {
             .tempfile()?;
         write!(file, "{}", smt2)?;
         file.flush()?;
-        if let Some(dir) = &self.output_dir {
-            std::fs::copy(&file, dir.join("thrust_output.smt2"))?;
-        }
         let answers = self.answers(requests);
         if answers && requests.model {
             writeln!(file, "(get-model)")?;

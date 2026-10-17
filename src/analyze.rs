@@ -875,12 +875,18 @@ impl<'tcx> crate::refine::TemplateRegistry for Analyzer<'tcx> {
 }
 
 /// `THRUST_SPLIT`: the number of parts of the system solved at a time, when the parts are solved
-/// on their own.
-fn split_jobs() -> Option<usize> {
-    let value = std::env::var("THRUST_SPLIT").ok()?;
+/// on their own; `None` when unset, empty or `0`, and an error for anything but a number.
+fn split_jobs() -> Result<Option<usize>, String> {
+    let Ok(value) = std::env::var("THRUST_SPLIT") else {
+        return Ok(None);
+    };
     match value.trim() {
-        "" | "0" => None,
-        jobs => Some(jobs.parse().unwrap_or(1)),
+        "" => Ok(None),
+        jobs => match jobs.parse::<usize>() {
+            Ok(0) => Ok(None),
+            Ok(n) => Ok(Some(n)),
+            Err(_) => Err(format!("`THRUST_SPLIT`: `{jobs}` is no number of parts")),
+        },
     }
 }
 
@@ -2484,11 +2490,23 @@ impl<'tcx> Analyzer<'tcx> {
             }
         }
         self.system.borrow_mut().type_params_reverse = reverse;
-        if split_jobs().is_some() {
-            self.solve_parts();
-            return;
-        }
         let config = crate::report::Config::from_env(self.tcx);
+        match split_jobs() {
+            Ok(None) => {}
+            Ok(Some(jobs)) => {
+                if config.is_some() {
+                    self.tcx
+                        .dcx()
+                        .warn("`THRUST_REPORT` is not made when `THRUST_SPLIT` solves in parts");
+                }
+                self.solve_parts(jobs);
+                return;
+            }
+            Err(err) => {
+                self.tcx.dcx().err(err);
+                return;
+            }
+        }
         let requests = config
             .as_ref()
             .map(crate::report::Config::requests)
@@ -2504,8 +2522,7 @@ impl<'tcx> Analyzer<'tcx> {
 
     /// Solves each part of the system that shares no unknown with the rest on its own
     /// (`THRUST_SPLIT`), and reports the failing ones with the functions their clauses come from.
-    fn solve_parts(&self) {
-        let jobs = split_jobs().unwrap_or(1);
+    fn solve_parts(&self, jobs: usize) {
         let system = self.system.borrow();
         let parts = system.solve_parts(jobs);
         let cached = parts.iter().filter(|p| p.cached).count();

@@ -2689,22 +2689,28 @@ pub struct UserDefinedPredDef {
     pub decreases: Option<Term<TermVarIdx>>,
 }
 
+/// The user-defined predicates and functions `atoms` apply, as predicates or in their arguments.
+fn user_defined_in<'a, V: 'a>(
+    atoms: impl Iterator<Item = &'a Atom<V>>,
+) -> Vec<&'a UserDefinedPred> {
+    atoms
+        .flat_map(|atom| {
+            let pred = match &atom.pred {
+                Pred::UserDefined(pred) => Some(pred),
+                _ => None,
+            };
+            pred.into_iter()
+                .chain(atom.args.iter().flat_map(Term::user_defined_fns))
+        })
+        .collect()
+}
+
 impl UserDefinedPredDef {
     /// The user-defined predicates and functions the body calls.
     fn callees(&self) -> Vec<&UserDefinedPred> {
         match &self.body {
             UserDefinedPredBody::Raw(_) => Vec::new(),
-            UserDefinedPredBody::Formula(formula) => formula
-                .iter_atoms()
-                .flat_map(|atom| {
-                    let pred = match &atom.pred {
-                        Pred::UserDefined(pred) => Some(pred),
-                        _ => None,
-                    };
-                    pred.into_iter()
-                        .chain(atom.args.iter().flat_map(Term::user_defined_fns))
-                })
-                .collect(),
+            UserDefinedPredBody::Formula(formula) => user_defined_in(formula.iter_atoms()),
             UserDefinedPredBody::Term(_, term) => term.user_defined_fns(),
         }
     }
@@ -3617,12 +3623,15 @@ impl System {
             }
         }
         let query = system.smtlib2(config.capabilities()).to_string();
+        if let Err(err) = config.save_query("thrust_output.smt2", &query) {
+            return Answer::of(Err(err.into()));
+        }
         // A verdict alone may be that of an earlier run (`THRUST_CACHE_DIR`); the cache keeps no
         // model or refutation.
         let mut answer = if config.answers(requests) {
             config.check_sat_with(&query, requests)
         } else {
-            Answer::of(solve_query(&config, cache::Cache::from_env().as_ref(), &query).0)
+            Answer::of(cache::solve(&config, cache::Cache::from_env().as_ref(), &query).result)
         };
         if requests.model {
             answer.query = Some(query);
@@ -3642,43 +3651,51 @@ impl System {
 
     /// Solves each class of clauses that share an unknown on its own (see [`components`]),
     /// `jobs` at a time, reusing the verdicts `THRUST_CACHE_DIR` keeps. The system is satisfiable
-    /// exactly when every part is.
+    /// exactly when every part is. `THRUST_OUTPUT_DIR` gets each part's query as
+    /// `thrust_output_part<i>.smt2`.
     pub fn solve_parts(&self, jobs: usize) -> Vec<Part> {
         use std::sync::atomic::{AtomicUsize, Ordering};
         let config = Config::from_env();
         let cache = cache::Cache::from_env();
         let parts = components::components(self);
-        let results: Vec<std::sync::Mutex<Option<Solved>>> =
-            parts.iter().map(|_| std::sync::Mutex::new(None)).collect();
+        // The system without its clauses, which each part puts its own into.
+        let mut base = self.clone();
+        let clauses = std::mem::take(&mut base.clauses);
+        let verdicts: Vec<std::sync::OnceLock<cache::Verdict>> =
+            parts.iter().map(|_| std::sync::OnceLock::new()).collect();
         let next = AtomicUsize::new(0);
-        let queries: Vec<String> = parts
-            .iter()
-            .map(|ids| {
-                let system = self.with_clauses(ids).prepared();
-                system.smtlib2(config.capabilities()).to_string()
-            })
-            .collect();
+        let solve = |i: usize| {
+            let mut system = base.clone();
+            system.clauses = parts[i].iter().map(|&id| clauses[id].clone()).collect();
+            let query = system.prepared().smtlib2(config.capabilities()).to_string();
+            if let Err(err) = config.save_query(&format!("thrust_output_part{i}.smt2"), &query) {
+                return cache::Verdict {
+                    result: Err(err.into()),
+                    cached: false,
+                };
+            }
+            cache::solve(&config, cache.as_ref(), &query)
+        };
         std::thread::scope(|scope| {
-            for _ in 0..jobs.max(1) {
+            for _ in 0..jobs {
                 scope.spawn(|| loop {
                     let i = next.fetch_add(1, Ordering::Relaxed);
-                    let Some(query) = queries.get(i) else {
+                    if i >= parts.len() {
                         break;
-                    };
-                    let answer = solve_query(&config, cache.as_ref(), query);
-                    *results[i].lock().unwrap() = Some(answer);
+                    }
+                    let _ = verdicts[i].set(solve(i));
                 });
             }
         });
         parts
             .into_iter()
-            .zip(results)
-            .map(|(clauses, result)| {
-                let (result, cached) = result.into_inner().unwrap().unwrap();
+            .zip(verdicts)
+            .map(|(clauses, verdict)| {
+                let verdict = verdict.into_inner().unwrap();
                 Part {
                     clauses,
-                    result,
-                    cached,
+                    result: verdict.result,
+                    cached: verdict.cached,
                 }
             })
             .collect()
@@ -3794,24 +3811,6 @@ pub struct Part {
     pub result: Result<(), CheckSatError>,
     /// Whether the verdict was that of an earlier run (`THRUST_CACHE_DIR`).
     pub cached: bool,
-}
-
-/// A verdict, and whether it came from the cache.
-type Solved = (Result<(), CheckSatError>, bool);
-
-/// The verdict on `query`, from `cache` when it has one, and whether it came from there.
-fn solve_query(config: &Config, cache: Option<&cache::Cache>, query: &str) -> Solved {
-    let check_sat = || config.check_sat_with(query, Requests::default()).result;
-    let Some(cache) = cache else {
-        return (check_sat(), false);
-    };
-    let key = cache::Cache::key(query, &config.identity());
-    if let Some(result) = cache.lookup(&key) {
-        return (result, true);
-    }
-    let result = check_sat();
-    cache.store(&key, &result);
-    (result, false)
 }
 
 /// Collects the forall sorts referenced via [`Term::ForallDefault`] in `term`

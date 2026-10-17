@@ -6,10 +6,11 @@
 //! system must hold for every interpretation of it), so sharing one does not join two classes:
 //! for every interpretation of the forall predicates, the classes are solved independently.
 //!
-//! An unknown can also occur outside the clauses: in the body of a user-defined predicate
-//! (through the predicates it calls) and in the laws of a forall predicate. A clause applying such
-//! a predicate is joined with the unknowns it carries. A written contract carries no unknown, so
-//! the classes are cut at the functions whose contracts are written.
+//! An unknown can also occur in the body of a user-defined predicate, directly or through the
+//! predicates it calls; a clause applying such a predicate is joined with the unknowns it reaches.
+//! A law of a forall predicate applies no unknown: the query states the laws before it declares
+//! the unknowns. A written contract carries no unknown, so the classes are cut at the functions
+//! whose contracts are written.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -48,114 +49,34 @@ impl UnionFind {
     }
 }
 
-/// What a clause applies besides its own unknowns: the user-defined predicates and functions and
-/// the forall predicates, read through every atom and term.
-#[derive(Default)]
-struct Applied<'a> {
-    pred_vars: Vec<PredVarId>,
-    user_defined: Vec<&'a UserDefinedPred>,
-    forall: Vec<&'a ForallPred>,
-}
-
-impl<'a> Applied<'a> {
-    fn term(&mut self, term: &'a Term<TermVarIdx>) {
-        for t in term.preorder() {
-            match t {
-                Term::UserDefinedFn(symbol, _, _) => self.user_defined.push(symbol),
-                Term::ForallFn(pred, _) => self.forall.push(pred),
-                _ => {}
-            }
-        }
-    }
-
-    fn atom(&mut self, atom: &'a Atom<TermVarIdx>) {
-        match &atom.pred {
-            Pred::Var(p) => self.pred_vars.push(*p),
-            Pred::UserDefined(symbol) => self.user_defined.push(symbol),
-            Pred::ForallPred(pred) => self.forall.push(pred),
-            _ => {}
-        }
-        for arg in &atom.args {
-            self.term(arg);
-        }
-        if let Some(guard) = &atom.guard {
-            self.formula(guard);
-        }
-    }
-
-    fn formula(&mut self, formula: &'a Formula<TermVarIdx>) {
-        for atom in formula.iter_atoms() {
-            self.atom(atom);
-        }
-    }
-
-    fn clause(clause: &'a Clause) -> Self {
-        let mut applied = Applied::default();
-        applied.atom(&clause.head);
-        for atom in &clause.body.atoms {
-            applied.atom(atom);
-        }
-        applied.formula(&clause.body.formula);
-        applied
-    }
-}
-
-/// The unknowns each user-defined predicate reaches through its body and the predicates it calls.
-fn user_defined_pred_vars(system: &System) -> HashMap<&UserDefinedPred, HashSet<PredVarId>> {
-    let mut direct: HashMap<&UserDefinedPred, (HashSet<PredVarId>, Vec<&UserDefinedPred>)> =
-        HashMap::new();
-    for def in &system.user_defined_pred_defs {
-        let pred_vars = match &def.body {
-            UserDefinedPredBody::Formula(formula) => formula
-                .iter_atoms()
-                .filter_map(|atom| match atom.pred {
-                    Pred::Var(p) => Some(p),
-                    _ => None,
-                })
-                .collect(),
-            UserDefinedPredBody::Raw(_) | UserDefinedPredBody::Term(..) => HashSet::new(),
-        };
-        direct.insert(&def.symbol, (pred_vars, def.callees()));
-    }
-    let mut reached: HashMap<&UserDefinedPred, HashSet<PredVarId>> = direct
+/// The unknowns the body of each user-defined predicate applies, directly or through the
+/// predicates it calls.
+fn reached_pred_vars(system: &System) -> HashMap<&UserDefinedPred, HashSet<PredVarId>> {
+    let applied = |def: &UserDefinedPredDef| match &def.body {
+        UserDefinedPredBody::Formula(formula) => formula
+            .iter_atoms()
+            .filter_map(|atom| match atom.pred {
+                Pred::Var(p) => Some(p),
+                _ => None,
+            })
+            .collect(),
+        UserDefinedPredBody::Raw(_) | UserDefinedPredBody::Term(..) => Vec::new(),
+    };
+    let defs: HashMap<&UserDefinedPred, &UserDefinedPredDef> = system
+        .user_defined_pred_defs
         .iter()
-        .map(|(symbol, (pred_vars, _))| (*symbol, pred_vars.clone()))
+        .map(|def| (&def.symbol, def))
         .collect();
-    loop {
-        let mut changed = false;
-        for (symbol, (_, callees)) in &direct {
-            let mut from_callees: HashSet<PredVarId> = HashSet::new();
-            for callee in callees {
-                if let Some(pred_vars) = reached.get(callee) {
-                    from_callees.extend(pred_vars);
-                }
-            }
-            let mine = reached.get_mut(symbol).unwrap();
-            let before = mine.len();
-            mine.extend(from_callees);
-            changed |= mine.len() != before;
-        }
-        if !changed {
-            return reached;
-        }
-    }
-}
-
-/// The unknowns the laws of each forall predicate apply.
-fn law_pred_vars(system: &System) -> HashMap<&ForallPred, HashSet<PredVarId>> {
-    system
-        .laws
+    let calls: HashMap<&UserDefinedPred, HashSet<&UserDefinedPred>> = defs
         .iter()
-        .map(|(pred, laws)| {
-            let pred_vars = laws
-                .iter()
-                .flat_map(Formula::iter_atoms)
-                .filter_map(|atom| match atom.pred {
-                    Pred::Var(p) => Some(p),
-                    _ => None,
-                })
-                .collect();
-            (pred, pred_vars)
+        .map(|(symbol, def)| (*symbol, def.callees().into_iter().collect()))
+        .collect();
+    let called = compute_transitive_closure(&calls);
+    defs.iter()
+        .map(|(symbol, def)| {
+            let callees = called[symbol].iter().filter_map(|c| defs.get(c).copied());
+            let pred_vars = std::iter::once(*def).chain(callees).flat_map(applied);
+            (*symbol, pred_vars.collect())
         })
         .collect()
 }
@@ -163,20 +84,21 @@ fn law_pred_vars(system: &System) -> HashMap<&ForallPred, HashSet<PredVarId>> {
 /// The classes of the clauses of `system` that share an unknown, each in the order of the
 /// clauses, and the classes in the order of their first clause.
 pub fn components(system: &System) -> Vec<Vec<ClauseId>> {
-    let by_user_defined = user_defined_pred_vars(system);
-    let by_law = law_pred_vars(system);
+    let reached = reached_pred_vars(system);
     // A node per clause, then one per unknown.
     let clause_count = system.clauses.len();
     let mut classes = UnionFind::new(clause_count + system.pred_vars.len());
     for (id, clause) in system.clauses.iter_enumerated() {
-        let applied = Applied::clause(clause);
-        let carried = applied
-            .user_defined
-            .iter()
-            .filter_map(|symbol| by_user_defined.get(symbol))
-            .chain(applied.forall.iter().filter_map(|pred| by_law.get(pred)))
-            .flatten();
-        for p in applied.pred_vars.iter().chain(carried) {
+        let atoms = std::iter::once(&clause.head)
+            .chain(&clause.body.atoms)
+            .chain(clause.body.formula.iter_atoms());
+        let through_definitions = user_defined_in(atoms)
+            .into_iter()
+            .filter_map(|symbol| reached.get(symbol))
+            .flatten()
+            .copied();
+        let applied = prune::pred_vars_of(std::iter::once(clause));
+        for p in applied.into_iter().chain(through_definitions) {
             classes.union(id.index(), clause_count + p.index());
         }
     }
@@ -190,16 +112,6 @@ pub fn components(system: &System) -> Vec<Vec<ClauseId>> {
     let mut components: Vec<Vec<ClauseId>> = by_root.into_values().collect();
     components.sort_by_key(|clauses| clauses[0].index());
     components
-}
-
-impl System {
-    /// The system with only the clauses `ids`, renumbered in their order; every declaration is
-    /// kept, and the query declares only the unknowns the remaining clauses apply.
-    pub fn with_clauses(&self, ids: &[ClauseId]) -> System {
-        let mut system = self.clone();
-        system.clauses = ids.iter().map(|&id| self.clauses[id].clone()).collect();
-        system
-    }
 }
 
 #[cfg(test)]
@@ -253,5 +165,23 @@ mod tests {
             .push_clause(clause(Atom::bottom(), vec![applies, atom(q)]))
             .unwrap();
         assert_eq!(components(&system), vec![vec![c0, c1, c2]]);
+    }
+
+    #[test]
+    fn an_unknown_a_callee_applies_joins_the_callers() {
+        let mut system = System::default();
+        let [p, q] = [(); 2].map(|()| system.new_pred_var(vec![], DebugInfo::default()));
+        let inner = UserDefinedPred::new("inner".into());
+        let outer = UserDefinedPred::new("outer".into());
+        system.push_pred_define_formula(inner.clone(), IndexVec::new(), Formula::Atom(atom(p)));
+        let calls_inner = Formula::Atom(Atom::new(Pred::UserDefined(inner), vec![]));
+        system.push_pred_define_formula(outer.clone(), IndexVec::new(), calls_inner);
+        let c0 = system.push_clause(clause(atom(p), vec![])).unwrap();
+        let c1 = system.push_clause(clause(atom(q), vec![])).unwrap();
+        let applies = Atom::new(Pred::UserDefined(outer), vec![]);
+        let c2 = system
+            .push_clause(clause(Atom::bottom(), vec![applies]))
+            .unwrap();
+        assert_eq!(components(&system), vec![vec![c0, c2], vec![c1]]);
     }
 }

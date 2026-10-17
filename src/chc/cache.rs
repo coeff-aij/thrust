@@ -3,15 +3,17 @@
 //!
 //! A query is keyed by its text with the comments left out and the unknowns renamed in the order
 //! they first occur, so that numbering the unknowns of other parts of the crate differently does
-//! not change the key, and by the solver it is given to. An entry keeps the text it was stored for,
-//! and a lookup compares it, so two queries with one hash are never confused. Only `sat` and
-//! `unsat` are kept; a timeout or an unknown is solved again.
+//! not change the key (other numbered symbols, such as the forall sorts, still do), and by the
+//! solver it is given to ([`Config::identity`]). An entry keeps the text it was stored for, and a
+//! lookup compares it, so two queries with one hash are never confused; a file name from another
+//! toolchain's hasher only misses. Only `sat` and `unsat` are kept; a timeout or an unknown is
+//! solved again. Entries are never removed.
 
 use std::collections::HashMap;
 use std::hash::{Hash as _, Hasher as _};
 use std::path::PathBuf;
 
-use super::solver::CheckSatError;
+use super::solver::{CheckSatError, Config, Requests};
 
 pub struct Cache {
     dir: PathBuf,
@@ -54,7 +56,10 @@ pub fn canonical(query: &str) -> String {
 impl Cache {
     pub fn from_env() -> Option<Self> {
         let dir = PathBuf::from(std::env::var_os("THRUST_CACHE_DIR")?);
-        std::fs::create_dir_all(&dir).ok()?;
+        if let Err(err) = std::fs::create_dir_all(&dir) {
+            tracing::warn!(?err, dir = %dir.display(), "no verdicts are kept");
+            return None;
+        }
         Some(Cache { dir })
     }
 
@@ -88,13 +93,48 @@ impl Cache {
             Err(CheckSatError::Unsat) => "unsat",
             Err(_) => return,
         };
+        use std::io::Write as _;
         let path = self.entry(key);
-        let temporary = path.with_extension("tmp");
-        let written = std::fs::write(&temporary, format!("{verdict}\n{key}"))
-            .and_then(|()| std::fs::rename(&temporary, &path));
+        // Written whole to a file of its own, then renamed, so that a reader or another writer of
+        // the entry never sees a part of it.
+        let written = tempfile::NamedTempFile::new_in(&self.dir).and_then(|mut file| {
+            write!(file, "{verdict}\n{key}")?;
+            file.persist(&path).map_err(|err| err.error)?;
+            Ok(())
+        });
         if let Err(err) = written {
             tracing::warn!(?err, path = %path.display(), "could not store a verdict");
         }
+    }
+}
+
+/// A verdict, and whether it was that of an earlier run.
+pub struct Verdict {
+    pub result: Result<(), CheckSatError>,
+    pub cached: bool,
+}
+
+/// The verdict of `config`'s solver on `query`, from `cache` when it keeps one.
+pub fn solve(config: &Config, cache: Option<&Cache>, query: &str) -> Verdict {
+    let check_sat = || config.check_sat_with(query, Requests::default()).result;
+    let Some(cache) = cache else {
+        return Verdict {
+            result: check_sat(),
+            cached: false,
+        };
+    };
+    let key = Cache::key(query, &config.identity());
+    if let Some(result) = cache.lookup(&key) {
+        return Verdict {
+            result,
+            cached: true,
+        };
+    }
+    let result = check_sat();
+    cache.store(&key, &result);
+    Verdict {
+        result,
+        cached: false,
     }
 }
 
