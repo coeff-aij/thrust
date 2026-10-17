@@ -2,6 +2,7 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 
 use num_bigint::BigInt;
+use rustc_abi::FieldIdx;
 use rustc_hir::def::DefKind;
 use rustc_index::IndexVec;
 use rustc_middle::mir::{
@@ -24,7 +25,8 @@ use crate::rty::{
 
 mod drop_point;
 mod visitor;
-pub use drop_point::DropPoints;
+use drop_point::MovedOut;
+pub use drop_point::{DropPoints, MoveState};
 
 /// Whether a basic block needs a precondition of its own, rather than
 /// inheriting its predecessor's outgoing env state.
@@ -1916,14 +1918,75 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// A ghost is a snapshot and is never resolved, as in Creusot: a `&mut` it holds is a second
     /// name of a borrow that the program still uses, whose final value the ghost's death says
     /// nothing about.
-    fn drop_local(&mut self, local: Local) {
+    ///
+    /// The parts `moved_out` of the local went with their moves, as a move consumes ownership in
+    /// RustHornBelt and Creusot resolves per move path: only what is left is resolved.
+    fn drop_local(&mut self, local: Local, moved_out: MovedOut) {
         let ghost_model = self.ctx.def_ids().ghost_model();
         let is_ghost = ghost_model.is_some()
             && self.local_decls[local].ty.ty_adt_def().map(|adt| adt.did()) == ghost_model;
         if is_ghost {
             return;
         }
-        self.env.drop_local(local);
+        if moved_out.is_empty() {
+            self.env.drop_local(local);
+            return;
+        }
+        self.drop_remaining(local.into(), &moved_out);
+    }
+
+    /// Drops what is left of `place` once the parts `moved_out` (field paths from `place`) went
+    /// out of it, field by field down to the moved parts. A value that is not a tuple in the
+    /// logic is not split, and nothing of it is resolved.
+    fn drop_remaining(&mut self, place: mir::Place<'tcx>, moved_out: &[Vec<FieldIdx>]) {
+        if moved_out.iter().any(|part| part.is_empty()) {
+            return;
+        }
+        if moved_out.is_empty() {
+            let place = self.elaborate_place(&place);
+            self.env.drop_place(place);
+            return;
+        }
+        let Some(field_tys) = self.tuple_fields(&place) else {
+            return;
+        };
+        for (idx, field_ty) in field_tys.into_iter().enumerate() {
+            let idx = FieldIdx::from_usize(idx);
+            let rest: Vec<_> = moved_out
+                .iter()
+                .filter(|part| part[0] == idx)
+                .map(|part| part[1..].to_vec())
+                .collect();
+            let field = self.tcx.mk_place_field(place, idx, field_ty);
+            self.drop_remaining(field, &rest);
+        }
+    }
+
+    /// The types of the fields of `place`, when the logic has its value as a tuple of them.
+    fn tuple_fields(&self, place: &mir::Place<'tcx>) -> Option<Vec<mir_ty::Ty<'tcx>>> {
+        let ty = place.ty(&self.local_decls, self.tcx).ty;
+        let field_tys: Vec<_> = match ty.kind() {
+            mir_ty::TyKind::Tuple(tys) => tys.to_vec(),
+            mir_ty::TyKind::Adt(adt, args) if adt.is_struct() => adt
+                .all_fields()
+                .map(|field| field.ty(self.tcx, args))
+                .collect(),
+            _ => return None,
+        };
+        let is_tuple = self
+            .type_builder
+            .build(ty)
+            .ty
+            .as_tuple()
+            .is_some_and(|tuple| tuple.elems.len() == field_tys.len());
+        (is_tuple && self.type_builder.transparent_field(ty).is_none()).then_some(field_tys)
+    }
+
+    fn drop_terminator_local(&mut self, local: Local) {
+        let moved_out = self
+            .drop_points
+            .moved_out(self.drop_points.terminator_index(), local);
+        self.drop_local(local, moved_out);
     }
 
     /// Schedules `local` to be implicitly dropped after this block's terminator,
@@ -2067,7 +2130,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     fn analyze_statements(&mut self) {
         for local in self.drop_points.before_statements.clone() {
             tracing::info!(?local, "implicitly dropped before statements");
-            self.drop_local(local);
+            self.drop_local(local, MovedOut::new());
         }
         let statements = self.body.basic_blocks[self.basic_block].statements.clone();
         for (stmt_idx, mut stmt) in statements.iter().cloned().enumerate() {
@@ -2089,7 +2152,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             }
             for local in self.drop_points.after_statement(stmt_idx).iter() {
                 tracing::info!(?local, ?stmt_idx, "implicitly dropped after statement");
-                self.drop_local(local);
+                let moved_out = self.drop_points.moved_out(stmt_idx, local);
+                self.drop_local(local, moved_out);
             }
         }
     }
@@ -2196,7 +2260,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     |a, target| {
                         for local in a.drop_points.after_terminator(&target) {
                             tracing::info!(?local, ?target, "implicitly dropped for target");
-                            a.drop_local(local);
+                            let moved_out = a
+                                .drop_points
+                                .moved_out(a.drop_points.terminator_index(), local);
+                            a.drop_local(local, moved_out);
                         }
                     },
                 );
@@ -2205,7 +2272,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 if let Some(target) = target {
                     for local in self.drop_points.after_terminator(target) {
                         tracing::info!(?local, "implicitly dropped after call");
-                        self.drop_local(local);
+                        self.drop_terminator_local(local);
                     }
                     self.type_goto(*target, outer_fn_param_vars);
                 }
@@ -2213,7 +2280,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             TerminatorKind::Drop { target, .. } => {
                 for local in self.drop_points.after_terminator(target) {
                     tracing::info!(?local, "dropped");
-                    self.drop_local(local);
+                    self.drop_terminator_local(local);
                 }
                 self.type_goto(*target, outer_fn_param_vars);
             }
@@ -2225,7 +2292,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             } => {
                 for local in self.drop_points.after_terminator(target) {
                     tracing::info!(?local, "dropped");
-                    self.drop_local(local);
+                    self.drop_terminator_local(local);
                 }
                 self.type_operand(
                     cond.clone(),

@@ -894,11 +894,45 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         }
     }
 
-    fn reassign_local_mutabilities(&mut self) {
-        use rustc_mir_dataflow::{
-            move_paths::{HasMoveData as _, MoveData},
-            Analysis as _, MaybeReachable,
+    /// The move paths of the body, gathered on a copy whose `CopyForDeref` destinations are
+    /// marked as deref temporaries.
+    fn move_data(&self) -> rustc_mir_dataflow::move_paths::MoveData<'tcx> {
+        use rustc_mir_dataflow::move_paths::MoveData;
+        // XXX: what...
+        let mut body = self.body.clone();
+        struct Visitor {
+            deref_temps: DenseBitSet<Local>,
+        }
+        impl<'tcx> mir::visit::Visitor<'tcx> for Visitor {
+            fn visit_assign(
+                &mut self,
+                place: &mir::Place<'tcx>,
+                rvalue: &mir::Rvalue<'tcx>,
+                _location: mir::Location,
+            ) {
+                if let mir::Rvalue::CopyForDeref { .. } = rvalue {
+                    self.deref_temps.insert(place.local);
+                }
+            }
+        }
+        let mut visitor = Visitor {
+            deref_temps: DenseBitSet::new_empty(body.local_decls.len()),
         };
+        use mir::visit::Visitor as _;
+        visitor.visit_body(&body);
+        for (local, local_decl) in body.local_decls.iter_enumerated_mut() {
+            let local_info = if visitor.deref_temps.contains(local) {
+                mir::LocalInfo::DerefTemp
+            } else {
+                mir::LocalInfo::Boring
+            };
+            local_decl.local_info = mir::ClearCrossCrate::Set(Box::new(local_info));
+        }
+        MoveData::gather_moves(&body, self.tcx, |_| true)
+    }
+
+    fn reassign_local_mutabilities(&mut self) {
+        use rustc_mir_dataflow::{move_paths::HasMoveData as _, Analysis as _, MaybeReachable};
 
         self.normalize_switch_int_discriminant_order();
 
@@ -906,39 +940,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             local_decl.mutability = mir::Mutability::Not;
         }
 
-        let move_data = {
-            // XXX: what...
-            let mut body = self.body.clone();
-            struct Visitor {
-                deref_temps: DenseBitSet<Local>,
-            }
-            impl<'tcx> mir::visit::Visitor<'tcx> for Visitor {
-                fn visit_assign(
-                    &mut self,
-                    place: &mir::Place<'tcx>,
-                    rvalue: &mir::Rvalue<'tcx>,
-                    _location: mir::Location,
-                ) {
-                    if let mir::Rvalue::CopyForDeref { .. } = rvalue {
-                        self.deref_temps.insert(place.local);
-                    }
-                }
-            }
-            let mut visitor = Visitor {
-                deref_temps: DenseBitSet::new_empty(body.local_decls.len()),
-            };
-            use mir::visit::Visitor as _;
-            visitor.visit_body(&body);
-            for (local, local_decl) in body.local_decls.iter_enumerated_mut() {
-                let local_info = if visitor.deref_temps.contains(local) {
-                    mir::LocalInfo::DerefTemp
-                } else {
-                    mir::LocalInfo::Boring
-                };
-                local_decl.local_info = mir::ClearCrossCrate::Set(Box::new(local_info));
-            }
-            MoveData::gather_moves(&body, self.tcx, |_| true)
-        };
+        let move_data = self.move_data();
         let tmp_body = self.body.clone();
         let mut results =
             rustc_mir_dataflow::impls::MaybeInitializedPlaces::new(self.tcx, &tmp_body, &move_data)
@@ -1214,13 +1216,26 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let mut results = rustc_mir_dataflow::impls::MaybeLiveLocals
             .iterate_to_fixpoint(self.tcx, &self.body, None)
             .into_results_cursor(&self.body);
+        let move_body = self.body.clone();
+        let move_data = self.move_data();
+        let mut uninit = rustc_mir_dataflow::impls::MaybeUninitializedPlaces::new(
+            self.tcx, &move_body, &move_data,
+        )
+        .iterate_to_fixpoint(self.tcx, &move_body, None)
+        .into_results_cursor(&move_body);
+        let mut moves = analyze::basic_block::MoveState {
+            tcx: self.tcx,
+            move_data: &move_data,
+            uninit: &mut uninit,
+        };
 
         let mut builder = analyze::basic_block::DropPoints::builder(&self.body);
         for (bb, _data) in mir::traversal::postorder(&self.body) {
             let span = tracing::info_span!("refine_basic_block", ?bb, bb_index = bb.as_u32());
             let _guard = span.enter();
 
-            self.drop_points.insert(bb, builder.build(&mut results, bb));
+            self.drop_points
+                .insert(bb, builder.build(&mut results, &mut moves, bb));
             results.seek_to_block_start(bb);
             let mut live_locals: Vec<_> = results
                 .get()
