@@ -88,7 +88,7 @@ fn json_report_shows_the_failure_alone() {
     let kinds: Vec<&str> = stdout.lines().filter_map(|l| l.split('"').nth(3)).collect();
     assert_eq!(kinds, ["report", "verdict", "failure"], "{stdout}");
     let root = env!("CARGO_MANIFEST_DIR");
-    let header = format!(r#"{{"kind":"report","version":1,"root":"{root}","#);
+    let header = format!(r#"{{"kind":"report","version":2,"root":"{root}","#);
     assert!(stdout.starts_with(&header), "{stdout}");
     let step = r#""via":"c0","obligation":"loop entry","span":{"file":"tests/report/loop_fail.rs","line":9,"column":5,"end_line":14,"end_column":6}"#;
     assert!(stdout.contains(step), "{stdout}");
@@ -103,7 +103,9 @@ fn report_states_the_verdict_and_one_refutation_per_query() {
     let json = report_with("loop_fail.rs", "1", &[("THRUST_REPORT_FORMAT", "json")]);
     let stdout = String::from_utf8_lossy(&json.stdout);
     assert!(
-        stdout.contains(r#"{"kind":"verdict","verdict":"unsat","refutations":"one per query"}"#),
+        stdout.contains(
+            r#"{"kind":"verdict","verdict":"unsat","refutations":"one per query","message":null}"#
+        ),
         "{stdout}"
     );
     let human = report("loop_fail.rs", "failure");
@@ -315,4 +317,38 @@ fn report_labels_the_invariant_a_loop_checks() {
 fn laws_and_their_proofs_raise_no_warning() {
     let stderr = warnings_of("law_proof.rs");
     assert!(!stderr.contains("warning"), "{stderr}");
+}
+
+/// The JSON header states how columns count as values, each step of a run gives its unknown and
+/// arguments apart from the fact's text, and a verdict that is no answer says what it was.
+#[test]
+fn json_states_columns_facts_and_the_solver_s_limit() {
+    let json = report_with("loop_fail.rs", "1", &[("THRUST_REPORT_FORMAT", "json")]);
+    let stdout = String::from_utf8_lossy(&json.stdout);
+    assert!(
+        stdout.contains(r#""columns":{"base":1,"unit":"char","end":"exclusive"}"#),
+        "{stdout}"
+    );
+    let step = r#""pred":"main.loop#1","args":[{"name":"x","value":"1"},{"name":"y","value":"1"}]"#;
+    assert!(stdout.contains(step), "{stdout}");
+
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = std::env::temp_dir().join(format!("thrust-slow-solver-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let solver = dir.join("slow");
+    std::fs::write(&solver, "#!/bin/sh\nsleep 5\necho sat\n").unwrap();
+    std::fs::set_permissions(&solver, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let slow = report_with(
+        "loop_fail.rs",
+        "1",
+        &[
+            ("THRUST_REPORT_FORMAT", "json"),
+            ("THRUST_SOLVER", solver.to_str().unwrap()),
+            ("THRUST_SOLVER_TIMEOUT_SECS", "1"),
+        ],
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+    let stdout = String::from_utf8_lossy(&slow.stdout);
+    let verdict = r#"{"kind":"verdict","verdict":"timeout","refutations":"one per query","message":"Timeout(1s)"}"#;
+    assert!(stdout.contains(verdict), "{stdout}");
 }

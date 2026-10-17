@@ -247,7 +247,8 @@ fn a_split_failure_names_its_part() {
         &[("THRUST_REPORT", "1"), ("THRUST_REPORT_FORMAT", "json")],
     );
     let stdout = String::from_utf8_lossy(&json.stdout);
-    let verdict = r#"{"kind":"verdict","verdict":"unsat","refutations":"one per part"}"#;
+    let verdict =
+        r#"{"kind":"verdict","verdict":"unsat","refutations":"one per part","message":null}"#;
     assert!(stdout.contains(verdict), "{stdout}");
     assert!(
         stdout.contains(r#"{"kind":"failure","part":2,"constraint":"#),

@@ -521,6 +521,12 @@ pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) -> Vec<Refuted>
                     .collect(),
                 parts: input.parts,
                 verdict,
+                message: match &input.answers[0].result {
+                    Err(err) if !split && !matches!(err, chc::CheckSatError::Unsat) => {
+                        Some(format!("{err:?}"))
+                    }
+                    _ => None,
+                },
             };
             let result = match &config.file {
                 Some(path) => {

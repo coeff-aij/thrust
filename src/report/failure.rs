@@ -21,6 +21,10 @@ const MAX_CHAIN: usize = 3;
 pub struct Step {
     pub depth: usize,
     pub fact: String,
+    /// The fact's unknown and the values of the arguments the program names (the latest state
+    /// of a loop shown by its first and last).
+    pub pred: String,
+    pub args: Vec<(String, String)>,
     /// The constraint deriving the fact, when one clause of the system matches the step.
     pub via: Option<chc::ClauseId>,
 }
@@ -86,28 +90,34 @@ impl Reader<'_> {
     /// The arguments of `fact` the program names, each with what it stands for, and `…` for those
     /// it does not.
     fn args(&self, fact: &Fact) -> String {
+        let (named, unnamed) = self.named_args(fact);
+        let mut shown: Vec<String> = named.iter().map(|(n, v)| format!("{n} = {v}")).collect();
+        if unnamed {
+            shown.push("…".to_owned());
+        }
+        shown.join(", ")
+    }
+
+    /// The arguments of `fact` the program names, each once, and whether it has others.
+    fn named_args(&self, fact: &Fact) -> (Vec<(String, String)>, bool) {
         let (values, names) = match self.preds.get(&fact.pred) {
             Some((p, info)) => (self.names.arrange(*p, &fact.args), info.args.as_slice()),
             None => (fact.args.clone(), [].as_slice()),
         };
-        let mut shown: Vec<String> = Vec::new();
+        let mut shown: Vec<(String, String)> = Vec::new();
         let mut unnamed = false;
         for (k, value) in values.iter().enumerate() {
             let Some(name) = names.get(k).cloned().flatten() else {
                 unnamed = true;
                 continue;
             };
-            for (name, value) in named(&name, value) {
-                let arg = format!("{name} = {value}");
+            for arg in named(&name, value) {
                 if !shown.contains(&arg) {
                     shown.push(arg);
                 }
             }
         }
-        if unnamed {
-            shown.push("…".to_owned());
-        }
-        shown.join(", ")
+        (shown, unnamed)
     }
 
     fn name(&self, fact: &Fact) -> String {
@@ -180,6 +190,8 @@ impl Reader<'_> {
         let step = Step {
             depth,
             fact: text,
+            pred: self.name(fact),
+            args: self.named_args(fact).0,
             via: self.via(fact),
         };
         if !self.push(step) {
