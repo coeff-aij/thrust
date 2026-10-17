@@ -8,7 +8,11 @@
 
 use std::collections::HashMap;
 
-use super::model::{self, Interpretation};
+use crate::chc::answer::{self, Symbols};
+use crate::chc::sexp;
+
+use super::formula::Name;
+use super::solution::Interpretation;
 
 const TACTIC: &str = "(then qe simplify (repeat (then ctx-solver-simplify simplify) 10))";
 
@@ -36,18 +40,15 @@ fn declarations(query: &str) -> String {
 pub fn simplify(
     interpretations: &mut HashMap<String, Interpretation>,
     query: &str,
-    symbols: &model::Symbols,
+    symbols: &Symbols,
     run: impl Fn(&str) -> Option<String>,
 ) {
     let mut names: Vec<&String> = interpretations.keys().collect();
     names.sort();
     let mut script = declarations(query);
     script.push('\n');
-    let prelude_len = script.len();
     for name in &names {
-        let Some((params, body)) = &interpretations[*name].source else {
-            continue;
-        };
+        let (params, body) = &interpretations[*name].source;
         script.push_str(&format!("(echo \"@{name}\")\n(push)\n"));
         for (param, sort) in params {
             script.push_str(&format!("(declare-const {param} {sort})\n"));
@@ -56,7 +57,7 @@ pub fn simplify(
             "(assert {body})\n(apply (try-for {TACTIC} {BUDGET_MS}))\n(pop)\n"
         ));
     }
-    if script.len() == prelude_len {
+    if names.is_empty() {
         return;
     }
     let Some(output) = run(&script) else {
@@ -67,7 +68,7 @@ pub fn simplify(
             continue;
         };
         let (Some(simplified), Some(interpretation)) = (
-            model::read_goals(text, symbols),
+            answer::goals(&sexp::parse_all(text), symbols, Name::new),
             interpretations.get_mut(name.trim()),
         ) else {
             continue;

@@ -13,11 +13,10 @@
 
 mod body;
 mod constraints;
-mod expr;
 mod failure;
+mod formula;
 mod human;
 mod json;
-mod model;
 mod proof;
 mod simplify;
 mod sites;
@@ -324,6 +323,7 @@ fn entries<'tcx>(
                 arguments: body.call_args(bb).into_iter().flatten().collect(),
             })
         },
+        |def, bb| Some(format!("{}.{bb:?}", entries.get(&def)?.name)),
         |def, path| entries[&def].body.path_name(path),
     );
     add_constraints(tcx, input.system, &names, &mut entries);
@@ -344,8 +344,7 @@ pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) {
         template_sites: input.template_sites,
         template_vars: input.template_vars,
     };
-    let symbols =
-        model::Symbols::new(system.declared_symbols(chc::Config::from_env().capabilities()));
+    let symbols = chc::answer::Symbols::of(&system, chc::Config::from_env().capabilities());
     let (entries, names) = entries(tcx, config, &input);
     let solution = match (solution_unavailable(input.answer), &input.answer.model) {
         (None, Some(model)) => {

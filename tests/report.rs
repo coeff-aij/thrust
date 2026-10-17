@@ -21,19 +21,19 @@ fn report_names_the_variables_of_a_refuted_assertion() {
     let output = report("loop_fail.rs", "template,constraints,failure");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!output.status.success(), "{stderr}");
-    assert!(stderr.contains("main.loop#1(x: Int, y: Int)"), "{stderr}");
+    assert!(stderr.contains("main.loop#1(x: int, y: int)"), "{stderr}");
     assert!(
         stderr.contains("thrust: refuted: assertion in `main`"),
         "{stderr}"
     );
     assert!(stderr.contains("==> y >= 2"), "{stderr}");
     assert!(
-        stderr.contains("x == 1 && y == 1 ==> main.loop#1(x, y)"),
+        stderr.contains("(x = 1 ∧ y = 1) ==> main.loop#1 x y"),
         "{stderr}"
     );
     assert!(stderr.contains("main.loop#1(x = 1, y = 1)"), "{stderr}");
     assert!(
-        stderr.contains("main.rand#1(__tmp_mir_main_3;; x, y)"),
+        stderr.contains("main.rand#1 __tmp_mir_main_3 x y"),
         "{stderr}"
     );
 }

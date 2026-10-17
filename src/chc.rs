@@ -9,6 +9,7 @@ use rustc_index::IndexVec;
 
 use crate::pretty::PrettyDisplayExt as _;
 
+pub mod answer;
 mod candidate_atoms;
 mod clause_builder;
 pub mod debug;
@@ -17,6 +18,7 @@ mod flatten;
 pub(crate) mod format_context;
 mod hoice;
 mod prune;
+pub mod sexp;
 mod smtlib2;
 mod solver;
 mod unbox;
@@ -27,7 +29,7 @@ pub use debug::DebugInfo;
 pub use dedup::dedup_pred_args;
 pub use flatten::flatten_recursive_pred_args;
 pub use solver::{Answer, Capabilities, CheckSatError, Config, Requests};
-pub use unbox::unbox;
+pub use unbox::{unbox, unbox_formula, unbox_sort};
 
 /// A name of a datatype.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -475,6 +477,16 @@ impl TermVarIdx {
     }
 }
 
+/// Defines the constants of a known symbol type, `NAME = constructor("symbol");`, and `ALL`, the
+/// list of them, to read a symbol back by its name.
+macro_rules! known {
+    ($ty:ident, $($(#[$doc:meta])* $name:ident = $ctor:ident($symbol:literal $(, $negated:ident)?);)*) => {
+        $($(#[$doc])* pub const $name: $ty = $ty::$ctor($symbol)$(.$negated())?;)*
+        /// Every constant above.
+        pub const ALL: &'static [$ty] = &[$($ty::$name),*];
+    };
+}
+
 /// A known function symbol.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Function {
@@ -522,6 +534,17 @@ impl Function {
 
     pub fn is_infix(&self) -> bool {
         self.is_infix
+    }
+
+    /// How tightly an infix function binds its arguments, for printing: `*` over `+` and `-`
+    /// over the comparisons over `and` and `or`.
+    fn precedence(&self) -> u8 {
+        match *self {
+            Self::MUL => 3,
+            Self::ADD | Self::SUB => 2,
+            Self::AND | Self::OR => 0,
+            _ => 1,
+        }
     }
 
     fn sort<I>(&self, args: I) -> Sort
@@ -586,54 +609,68 @@ impl Function {
         }
     }
 
-    pub const ADD: Function = Function::infix("+");
-    pub const SUB: Function = Function::infix("-");
-    pub const MUL: Function = Function::infix("*");
-    /// SMT-LIB's integer modulus: never negative, so this is *not* Rust's `%`.
-    /// See [`Term::rem_trunc`].
-    pub const MOD: Function = Function::new("mod");
-    /// SMT-LIB's integer division: the remainder it leaves is never negative, so this is
-    /// *not* Rust's `/`. See [`Term::div_trunc`].
-    pub const EUCLIDEAN_DIV: Function = Function::new("div");
-    pub const EQ: Function = Function::infix("=");
-    pub const GE: Function = Function::infix(">=");
-    pub const GT: Function = Function::infix(">");
-    pub const LE: Function = Function::infix("<=");
-    pub const LT: Function = Function::infix("<");
-    pub const AND: Function = Function::infix("and");
-    pub const OR: Function = Function::infix("or");
-    pub const NOT: Function = Function::new("not");
-    pub const NEG: Function = Function::new("-");
-    pub const BVADD: Function = Function::new("bvadd");
-    pub const BVSUB: Function = Function::new("bvsub");
-    pub const BVMUL: Function = Function::new("bvmul");
-    pub const BVAND: Function = Function::new("bvand");
-    pub const BVOR: Function = Function::new("bvor");
-    pub const BVXOR: Function = Function::new("bvxor");
-    pub const BVSHL: Function = Function::new("bvshl");
-    pub const BVLSHR: Function = Function::new("bvlshr");
-    pub const BVASHR: Function = Function::new("bvashr");
-    pub const BVNOT: Function = Function::new("bvnot");
-    pub const BVNEG: Function = Function::new("bvneg");
-    pub const BVULT: Function = Function::new("bvult");
-    pub const BVULE: Function = Function::new("bvule");
-    pub const BVUGT: Function = Function::new("bvugt");
-    pub const BVUGE: Function = Function::new("bvuge");
-    pub const BVSLT: Function = Function::new("bvslt");
-    pub const BVSLE: Function = Function::new("bvsle");
-    pub const BVSGT: Function = Function::new("bvsgt");
-    pub const BVSGE: Function = Function::new("bvsge");
-    pub const UBV_TO_INT: Function = Function::new("ubv_to_int");
-    pub const SBV_TO_INT: Function = Function::new("sbv_to_int");
-    pub const STORE: Function = Function::new("store");
-    pub const SELECT: Function = Function::new("select");
-    pub const SEQ_CONCAT: Function = Function::new("seq.++");
-    pub const SEQ_EXTRACT: Function = Function::new("seq.extract");
-    pub const SEQ_LEN: Function = Function::new("seq.len");
-    pub const SEQ_UNIT: Function = Function::new("seq.unit");
-    pub const SEQ_NTH: Function = Function::new("seq.nth");
-    pub const SEQ_STORE: Function = Function::new("seq.store");
-    pub const ITE: Function = Function::new("ite");
+    known! {
+        Function,
+        ADD = infix("+");
+        SUB = infix("-");
+        MUL = infix("*");
+        /// SMT-LIB's integer modulus: never negative, so this is *not* Rust's `%`.
+        /// See [`Term::rem_trunc`].
+        MOD = new("mod");
+        /// SMT-LIB's integer division: the remainder it leaves is never negative, so this is
+        /// *not* Rust's `/`. See [`Term::div_trunc`].
+        EUCLIDEAN_DIV = new("div");
+        EQ = infix("=");
+        GE = infix(">=");
+        GT = infix(">");
+        LE = infix("<=");
+        LT = infix("<");
+        AND = infix("and");
+        OR = infix("or");
+        NOT = new("not");
+        NEG = new("-");
+        BVADD = new("bvadd");
+        BVSUB = new("bvsub");
+        BVMUL = new("bvmul");
+        BVAND = new("bvand");
+        BVOR = new("bvor");
+        BVXOR = new("bvxor");
+        BVSHL = new("bvshl");
+        BVLSHR = new("bvlshr");
+        BVASHR = new("bvashr");
+        BVNOT = new("bvnot");
+        BVNEG = new("bvneg");
+        BVULT = new("bvult");
+        BVULE = new("bvule");
+        BVUGT = new("bvugt");
+        BVUGE = new("bvuge");
+        BVSLT = new("bvslt");
+        BVSLE = new("bvsle");
+        BVSGT = new("bvsgt");
+        BVSGE = new("bvsge");
+        UBV_TO_INT = new("ubv_to_int");
+        SBV_TO_INT = new("sbv_to_int");
+        STORE = new("store");
+        SELECT = new("select");
+        SEQ_CONCAT = new("seq.++");
+        SEQ_EXTRACT = new("seq.extract");
+        SEQ_LEN = new("seq.len");
+        SEQ_UNIT = new("seq.unit");
+        SEQ_NTH = new("seq.nth");
+        SEQ_STORE = new("seq.store");
+        ITE = new("ite");
+    }
+
+    /// The function the SMT-LIB symbol `name` names at `arity` arguments, if it is known.
+    pub fn named(name: &str, arity: usize) -> Option<Function> {
+        if name == "-" && arity == 1 {
+            return Some(Function::NEG);
+        }
+        Function::ALL
+            .iter()
+            .find(|f| f.name == name && *f != &Function::NEG)
+            .copied()
+    }
 }
 
 /// A call found by [`Term::guarded_calls`]: its arguments, and the conditions under which the
@@ -702,7 +739,8 @@ where
                 .append(allocator.text(","))
                 .append(allocator.line())
                 .append(t2.pretty(allocator))
-                .angles(),
+                .angles()
+                .group(),
             Term::BoxCurrent(t) | Term::MutCurrent(t) => {
                 allocator.text("*").append(t.pretty(allocator))
             }
@@ -714,11 +752,11 @@ where
                 .append(t.pretty(allocator))
                 .parens(),
             Term::App(f, args) if f.is_infix() => args[0]
-                .pretty_atom(allocator)
+                .pretty_operand(allocator, f.precedence(), true)
                 .append(allocator.line())
                 .append(f.pretty(allocator))
                 .append(allocator.line())
-                .append(args[1].pretty_atom(allocator))
+                .append(args[1].pretty_operand(allocator, f.precedence(), false))
                 .group(),
             Term::App(f, args) => {
                 let inner = allocator.intersperse(
@@ -736,18 +774,25 @@ where
             Term::SeqEmpty(_) => allocator.text("seq.empty"),
             Term::Tuple(ts) => {
                 let separator = allocator.text(",").append(allocator.line());
-                if ts.len() == 1 {
+                let tuple = if ts.len() == 1 {
                     ts[0].pretty(allocator).append(separator).parens()
                 } else {
                     allocator
                         .intersperse(ts.iter().map(|t| t.pretty(allocator)), separator)
                         .parens()
-                }
+                };
+                tuple.group()
             }
-            Term::TupleProj(t, i) => t
-                .pretty_atom(allocator)
-                .append(allocator.text("."))
-                .append(allocator.as_string(i)),
+            // A projection binds tighter than `*` and `°`: `(*x).0`.
+            Term::TupleProj(t, i) => {
+                let t = match &**t {
+                    Term::BoxCurrent(_) | Term::MutCurrent(_) | Term::MutFinal(_) => {
+                        t.pretty(allocator).parens()
+                    }
+                    _ => t.pretty_atom(allocator),
+                };
+                t.append(allocator.text(".")).append(allocator.as_string(i))
+            }
             Term::DatatypeCtor(_, symbol, args) => {
                 let separator = allocator.text(",").append(allocator.line());
                 let args = allocator
@@ -793,6 +838,33 @@ impl<V> Term<V> {
         match &self {
             Term::App(_f, args) if !args.is_empty() => self.pretty(allocator).parens(),
             _ => self.pretty(allocator),
+        }
+    }
+
+    /// The term as an operand of an infix function of precedence `outer`, on its `left`: an
+    /// infix application binding tighter, or as tightly on the left of arithmetic, needs no
+    /// parentheses (`2 * n + r`, `a - b - c`).
+    fn pretty_operand<'b, 'a, D>(
+        &'b self,
+        allocator: &'a D,
+        outer: u8,
+        left: bool,
+    ) -> pretty::DocBuilder<'a, D, termcolor::ColorSpec>
+    where
+        V: Var,
+        D: pretty::DocAllocator<'a, termcolor::ColorSpec>,
+        D::Doc: Clone,
+    {
+        match self {
+            Term::App(f, args) if f.is_infix() && args.len() == 2 => {
+                let inner = f.precedence();
+                if inner > outer || (inner == outer && left && inner >= 2) {
+                    self.pretty(allocator)
+                } else {
+                    self.pretty(allocator).parens()
+                }
+            }
+            _ => self.pretty_atom(allocator),
         }
     }
 
@@ -1465,15 +1537,25 @@ impl KnownPred {
         self == &KnownPred::BOTTOM
     }
 
-    pub const TOP: KnownPred = KnownPred::new("true");
-    pub const BOTTOM: KnownPred = KnownPred::new("false");
-    pub const EQUAL: KnownPred = KnownPred::infix("=");
-    pub const NOT_EQUAL: KnownPred = KnownPred::infix("=").negated();
+    known! {
+        KnownPred,
+        TOP = new("true");
+        BOTTOM = new("false");
+        EQUAL = infix("=");
+        NOT_EQUAL = infix("=", negated);
+        LESS_THAN_OR_EQUAL = infix("<=");
+        GREATER_THAN_OR_EQUAL = infix(">=");
+        LESS_THAN = infix("<");
+        GREATER_THAN = infix(">");
+    }
 
-    pub const LESS_THAN_OR_EQUAL: KnownPred = KnownPred::infix("<=");
-    pub const GREATER_THAN_OR_EQUAL: KnownPred = KnownPred::infix(">=");
-    pub const LESS_THAN: KnownPred = KnownPred::infix("<");
-    pub const GREATER_THAN: KnownPred = KnownPred::infix(">");
+    /// The comparison the SMT-LIB symbol `name` names, if it is one.
+    pub fn named(name: &str) -> Option<KnownPred> {
+        KnownPred::ALL
+            .iter()
+            .find(|p| p.name == name && !p.is_negative && p.is_infix)
+            .copied()
+    }
 }
 
 /// A matcher predicate.
@@ -1838,13 +1920,14 @@ where
     D::Doc: Clone,
 {
     fn pretty(self, allocator: &'a D) -> pretty::DocBuilder<'a, D, termcolor::ColorSpec> {
+        // An infix predicate is a comparison, of the comparisons' precedence.
         let atom = if self.pred.is_infix() {
             self.args[0]
-                .pretty_atom(allocator)
+                .pretty_operand(allocator, 1, true)
                 .append(allocator.line())
                 .append(self.pred.pretty(allocator))
                 .append(allocator.line())
-                .append(self.args[1].pretty_atom(allocator))
+                .append(self.args[1].pretty_operand(allocator, 1, false))
                 .group()
         } else {
             let inner = allocator.intersperse(
@@ -1999,21 +2082,29 @@ where
     fn pretty(self, allocator: &'a D) -> pretty::DocBuilder<'a, D, termcolor::ColorSpec> {
         match self {
             Formula::Atom(atom) => atom.pretty(allocator),
-            Formula::Not(fo) => allocator
-                .text("¬")
-                .append(fo.pretty_atom(allocator))
-                .group(),
+            // `¬` binds tighter than an infix predicate: `¬(x = y)`.
+            Formula::Not(fo) => {
+                let inner = match &**fo {
+                    Formula::Atom(atom) if atom.pred.is_infix() => fo.pretty(allocator).parens(),
+                    _ => fo.pretty_atom(allocator),
+                };
+                allocator.text("¬").append(inner).group()
+            }
             Formula::And(fs) => {
                 let inner = allocator.intersperse(
                     fs.iter().map(|f| f.pretty_atom(allocator)),
-                    allocator.text("∧").append(allocator.line()),
+                    allocator
+                        .text("∧")
+                        .enclose(allocator.line(), allocator.space()),
                 );
                 inner.group()
             }
             Formula::Or(fs) => {
                 let inner = allocator.intersperse(
                     fs.iter().map(|f| f.pretty_atom(allocator)),
-                    allocator.text("∨").append(allocator.line()),
+                    allocator
+                        .text("∨")
+                        .enclose(allocator.line(), allocator.space()),
                 );
                 inner.group()
             }

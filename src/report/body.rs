@@ -142,12 +142,12 @@ impl<'tcx> DefBody<'tcx> {
         self.calls.get(&bb)
     }
 
-    /// The name of what `path` holds: `x`, `*r` and `!r` for the current and final values of a
-    /// `&mut`, `p.0` for a component, `discriminant(e)`, `e#1.0` for a field of a variant.
+    /// The name of what `path` holds: `x`, `*r` and `°r` for the current and final values of a
+    /// `&mut` (as Thrust's printer writes them), `p.0` for a component, `discriminant(e)`, `e#1.0` for a field of a variant.
     pub fn path_name(&self, path: &crate::refine::VarPath) -> String {
         use crate::refine::PathStep;
         let wrapped = |name: &str| {
-            if name.starts_with(['*', '!']) {
+            if name.starts_with(['*', '°']) {
                 format!("({name})")
             } else {
                 name.to_owned()
@@ -157,7 +157,7 @@ impl<'tcx> DefBody<'tcx> {
         for step in &path.steps {
             name = match step {
                 PathStep::Current => format!("*{name}"),
-                PathStep::Final => format!("!{name}"),
+                PathStep::Final => format!("°{name}"),
                 PathStep::Field(i) => format!("{}.{i}", wrapped(&name)),
                 PathStep::Discriminant => format!("discriminant({name})"),
                 PathStep::VariantField(v, f) => {

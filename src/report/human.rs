@@ -7,8 +7,9 @@ use crate::chc;
 
 use super::constraints::Constraint;
 use super::failure::Failure;
+use super::formula::Formula;
 use super::sites::{Names, Site, SiteKind};
-use super::solution::{block_template, contract_help, invariant, over, signature, Solution};
+use super::solution::{block_template, invariant, over, signature, Solution};
 use super::{constraint_of, location, Entry, Items};
 
 pub(super) fn constraint_line(tcx: TyCtxt<'_>, c: &Constraint) -> String {
@@ -16,7 +17,7 @@ pub(super) fn constraint_line(tcx: TyCtxt<'_>, c: &Constraint) -> String {
         .span
         .map(|span| format!(" ({})", location(tcx, span)))
         .unwrap_or_default();
-    format!("{:?} {}{at}: {}", c.id, c.kind, c.formula())
+    format!("{:?} {}{at}: {}", c.id, c.kind, c.formula)
 }
 
 pub(super) struct Human<'a, 'tcx> {
@@ -27,7 +28,7 @@ pub(super) struct Human<'a, 'tcx> {
 }
 
 impl Human<'_, '_> {
-    fn site_notes(&self, notes: &mut Vec<Note>, entry: &Entry<'_>, site: &Site) {
+    fn site_notes(&self, notes: &mut Vec<String>, entry: &Entry<'_>, site: &Site) {
         // Without a solution, a site has only its template to show, if that was asked for.
         if self.solution.is_err() && !self.items.template {
             return;
@@ -45,13 +46,7 @@ impl Human<'_, '_> {
             SiteKind::Loop(_) => "invariant (inferred)".to_owned(),
             SiteKind::Block(bb) => format!("type of {bb:?}"),
         };
-        notes.push(Note::Note(format!("{title}\n{}", lines.join("\n"))));
-        let is_contract = site.kind == SiteKind::Contract;
-        if let (Ok(solution), true) = (&self.solution, self.items.inferred && is_contract) {
-            if let Some(help) = contract_help(site, solution) {
-                notes.push(Note::Help(help));
-            }
-        }
+        notes.push(format!("{title}\n{}", lines.join("\n")));
     }
 
     /// The solution, or why there is none when one is asked for.
@@ -70,7 +65,7 @@ impl Human<'_, '_> {
     fn contract_lines(&self, entry: &Entry<'_>, site: &Site) -> Vec<String> {
         let mut lines = Vec::new();
         if self.items.template {
-            let template = signature(&entry.name, site, &|e| e.clone());
+            let template = signature(&entry.name, site, self.names, &Formula::clone);
             lines.push(format!("template: {template}"));
         }
         let Some(solution) = self.solution(&mut lines) else {
@@ -81,7 +76,7 @@ impl Human<'_, '_> {
             lines.push(format!("solution: {}", solved.join("\n          ")));
         }
         if self.items.inferred {
-            let inferred = signature(&entry.name, site, &|e| solution.apply(e));
+            let inferred = signature(&entry.name, site, self.names, &|f| solution.apply(f));
             lines.push(format!("inferred: {inferred}"));
         }
         lines
@@ -99,11 +94,9 @@ impl Human<'_, '_> {
         if !(self.items.solution || self.items.inferred) {
             return lines;
         }
-        let interpreted = site
-            .signature
-            .is_some_and(|p| solution.interprets(&self.names.pred_head(p).name));
-        if interpreted {
-            lines.push(format!(":= {}", invariant(site, &|e| solution.apply(e))));
+        if site.signature.is_some_and(|p| solution.interprets(p)) {
+            let inferred = invariant(site, self.names, &|f| solution.apply(f));
+            lines.push(format!(":= {inferred}"));
         } else {
             lines.push(
                 "not in the query: `true` if no constraint depends on it, `false` if none \
@@ -127,13 +120,13 @@ impl Human<'_, '_> {
             lines.push(format!("solution: {}", solved.join("\n          ")));
         }
         if self.items.inferred {
-            let formula = invariant(site, &|e| solution.apply(e));
+            let formula = invariant(site, self.names, &|f| solution.apply(f));
             lines.push(format!("inferred: |{}| {formula}", over(site)));
         }
         lines
     }
 
-    fn constraint_notes(&self, notes: &mut Vec<Note>, constraints: &[Constraint]) {
+    fn constraint_notes(&self, notes: &mut Vec<String>, constraints: &[Constraint]) {
         if !self.items.constraints || constraints.is_empty() {
             return;
         }
@@ -141,23 +134,17 @@ impl Human<'_, '_> {
             .iter()
             .map(|c| format!("  {}", constraint_line(self.tcx, c)))
             .collect();
-        notes.push(Note::Note(format!(
-            "constraints from this code:\n{}",
-            lines.join("\n")
-        )));
+        notes.push(format!("constraints from this code:\n{}", lines.join("\n")));
     }
 
     /// Emits one note at `span` carrying `notes`, if there are any.
-    fn note(&self, span: Span, title: String, notes: Vec<Note>) {
+    fn note(&self, span: Span, title: String, notes: Vec<String>) {
         if notes.is_empty() {
             return;
         }
         let mut diag = self.tcx.dcx().struct_span_note(span, title);
         for note in notes {
-            match note {
-                Note::Note(text) => diag.note(text),
-                Note::Help(text) => diag.help(text),
-            };
+            diag.note(note);
         }
         diag.emit();
     }
@@ -190,7 +177,7 @@ impl Human<'_, '_> {
         };
         let mut notes = Vec::new();
         if let Some((_, c)) = found {
-            notes.push(Note::Note(format!("{:?}: {}", c.id, c.formula())));
+            notes.push(format!("{:?}: {}", c.id, c.formula));
         }
         let mut lines = Vec::new();
         for step in &failure.run {
@@ -207,11 +194,11 @@ impl Human<'_, '_> {
         if failure.truncated {
             lines.push("  …".to_owned());
         }
-        notes.push(Note::Note(format!(
+        notes.push(format!(
             "a run reaching it, from the solver's refutation (each fact above the ones it is \
              derived from):\n{}",
             lines.join("\n")
-        )));
+        ));
         let span = found
             .and_then(|(_, c)| c.span)
             .or_else(|| entries.first().map(|e| e.span));
@@ -220,9 +207,7 @@ impl Human<'_, '_> {
             None => {
                 let mut diag = self.tcx.dcx().struct_note(title);
                 for note in notes {
-                    if let Note::Note(text) = note {
-                        diag.note(text);
-                    }
+                    diag.note(note);
                 }
                 diag.emit();
             }
@@ -258,9 +243,4 @@ impl Human<'_, '_> {
             }
         }
     }
-}
-
-enum Note {
-    Note(String),
-    Help(String),
 }

@@ -5,6 +5,7 @@ use std::collections::HashMap;
 
 use crate::chc;
 
+use super::formula::OneLine as _;
 use super::proof::{self, Fact};
 use super::sites::{Names, PredInfo};
 
@@ -42,29 +43,21 @@ struct Reader<'a> {
 }
 
 impl Reader<'_> {
-    /// The arguments of `fact`, each with what it stands for, in the groups it is shown in.
+    /// The arguments of `fact`, each with what it stands for.
     fn args(&self, fact: &Fact) -> String {
-        let info = self.preds.get(&fact.pred).map(|(_, info)| *info);
-        let names = info.map(|info| &info.args);
-        let groups = info.map(|info| info.groups.clone()).unwrap_or_default();
-        let values = match info {
-            Some(_) => self
-                .names
-                .pred_head(self.preds[&fact.pred].0)
-                .arrange(&fact.args),
-            None => fact.args.clone(),
+        let (values, names) = match self.preds.get(&fact.pred) {
+            Some((p, info)) => (self.names.arrange(*p, &fact.args), info.args.as_slice()),
+            None => (fact.args.clone(), [].as_slice()),
         };
         let shown: Vec<String> = values
             .iter()
             .enumerate()
-            .map(
-                |(k, value)| match names.and_then(|n| n.get(k)).cloned().flatten() {
-                    Some(name) => format!("{name} = {value}"),
-                    None => value.to_string(),
-                },
-            )
+            .map(|(k, value)| match names.get(k).cloned().flatten() {
+                Some(name) => format!("{name} = {}", value.one_line()),
+                None => value.one_line(),
+            })
             .collect();
-        super::expr::grouped(&shown, &groups)
+        shown.join(", ")
     }
 
     fn name(&self, fact: &Fact) -> String {
@@ -163,7 +156,7 @@ fn single_same(fact: &Fact) -> Option<&Fact> {
 pub fn read(
     answer: &chc::Answer,
     names: &Names,
-    symbols: &super::model::Symbols,
+    symbols: &crate::chc::answer::Symbols,
 ) -> Option<Failure> {
     let facts = proof::read(answer.proof.as_ref()?, symbols);
     let (marker, goal) = answer

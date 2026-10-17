@@ -4,6 +4,8 @@
 //! CHC solver. It supports setting the solver command, arguments, and timeout, and can
 //! be configured through environment variables.
 
+use super::sexp::Sexp;
+
 /// An error that can occur when solving a [`crate::chc::System`].
 #[derive(Debug, thiserror::Error)]
 pub enum CheckSatError {
@@ -293,7 +295,7 @@ impl Config {
             }
         };
         if answer.result.is_ok() {
-            answer.model = evidence.into_iter().find(|e| !e.starts_with("(error"));
+            answer.model = evidence.into_iter().find(|e| !e.is_error());
         }
         answer
     }
@@ -322,7 +324,7 @@ impl Config {
     /// hyper-resolutions. Its preprocessing would fold clauses into one another, and with them
     /// the facts the refutation derives, and drop the premises a fact makes true, so the
     /// transformations doing so are turned off.
-    pub fn refute(&self, problem: impl std::fmt::Display) -> Option<String> {
+    pub fn refute(&self, problem: impl std::fmt::Display) -> Option<Sexp> {
         use std::io::Write as _;
         let mut file = tempfile::Builder::new()
             .prefix("thrust_tmp_")
@@ -348,7 +350,7 @@ impl Config {
         if read_verdict(&verdict)?.0 != Verdict::Unsat {
             return None;
         }
-        evidence.into_iter().find(|e| !e.starts_with("(error"))
+        evidence.into_iter().find(|e| !e.is_error())
     }
 
     fn run_check_sat(
@@ -408,12 +410,12 @@ pub struct Requests {
 }
 
 /// The verdict, with the model of a `sat` answer or the refutation of an `unsat` one as the
-/// solver printed them, if asked for and given.
+/// solver printed them, read as s-expressions, if asked for and given.
 #[derive(Debug)]
 pub struct Answer {
     pub result: Result<(), CheckSatError>,
-    pub model: Option<String>,
-    pub proof: Option<String>,
+    pub model: Option<Sexp>,
+    pub proof: Option<Sexp>,
     /// The predicate variable marking each goal of the system in the query, when a refutation
     /// is asked for (see [`crate::chc::System::solve_with`]).
     pub goal_markers: Vec<(crate::chc::PredVarId, crate::chc::ClauseId)>,
@@ -426,7 +428,7 @@ pub struct Answer {
 
 /// Splits the solver's output into the part with the verdict and the s-expressions printed after
 /// it, which are the answers to `(get-model)` and `(get-proof)` when `asked`.
-fn split_evidence(output: &str, asked: bool) -> (String, Vec<String>) {
+fn split_evidence(output: &str, asked: bool) -> (String, Vec<Sexp>) {
     if !asked {
         return (output.to_owned(), Vec::new());
     }
@@ -439,36 +441,7 @@ fn split_evidence(output: &str, asked: bool) -> (String, Vec<String>) {
     let lines: Vec<&str> = output.lines().collect();
     let verdict = lines[..=verdict_end].join("\n");
     let rest = lines[verdict_end + 1..].join("\n");
-    (verdict, top_level_sexprs(&rest))
-}
-
-/// The top-level s-expressions of `text`, as text.
-fn top_level_sexprs(text: &str) -> Vec<String> {
-    let mut exprs = Vec::new();
-    let mut depth = 0usize;
-    let mut start = 0;
-    let mut in_string = false;
-    let mut in_quoted = false;
-    for (i, c) in text.char_indices() {
-        match c {
-            '"' if !in_quoted => in_string = !in_string,
-            '|' if !in_string => in_quoted = !in_quoted,
-            '(' if !in_string && !in_quoted => {
-                if depth == 0 {
-                    start = i;
-                }
-                depth += 1;
-            }
-            ')' if !in_string && !in_quoted && depth > 0 => {
-                depth -= 1;
-                if depth == 0 {
-                    exprs.push(text[start..=i].to_owned());
-                }
-            }
-            _ => {}
-        }
-    }
-    exprs
+    (verdict, super::sexp::parse_all(&rest))
 }
 
 fn interpret_verdict(output: String) -> Result<(), CheckSatError> {
@@ -515,8 +488,8 @@ mod tests {
         let (verdict, evidence) = split_evidence(output, true);
         assert_eq!(verdict, "sat");
         assert_eq!(evidence.len(), 2);
-        assert!(evidence[0].contains("define-fun p0"));
-        assert!(evidence[1].starts_with("(error"));
+        assert!(evidence[0].to_string().contains("define-fun p0"));
+        assert!(evidence[1].is_error());
         let (verdict, evidence) = split_evidence(output, false);
         assert_eq!(verdict, output);
         assert!(evidence.is_empty());

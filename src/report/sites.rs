@@ -20,7 +20,7 @@ use crate::rty;
 use crate::rty::RefinedTypeVar;
 
 use super::body::DefBody;
-use super::expr::{self, Expr, PredHead};
+use super::formula::{self, Formula, Name, OneLine as _, Term};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SiteKind {
@@ -59,9 +59,6 @@ pub struct PredInfo {
     pub name: String,
     /// What each argument stands for in the template, if it is a variable of the template.
     pub args: Vec<Option<String>>,
-    /// The groups the arguments are shown in (see [`expr::grouped`]): for a call's result, the
-    /// result, the call's arguments, and the other variables live there.
-    pub groups: Vec<usize>,
     /// The order the arguments are shown in, when not their own: that of the variables of the
     /// template the predicate variable is the whole of (see [`Site::signature`]).
     pub order: Option<Vec<usize>>,
@@ -74,7 +71,7 @@ pub struct PredInfo {
 pub struct SiteParam {
     pub name: String,
     pub ty: String,
-    pub refinement: Expr,
+    pub refinement: Formula,
 }
 
 #[derive(Debug, Clone)]
@@ -107,8 +104,6 @@ pub struct Names {
     sites: HashMap<chc::PredVarId, TemplateSite>,
     /// The variable each argument of a template's predicate variable is.
     vars: HashMap<chc::PredVarId, Vec<Option<ErasedVar>>>,
-    /// The query's names of the system's predicate variables.
-    query_names: HashSet<String>,
     /// The predicate variables without arguments that every solution makes true: those a clause
     /// derives from nothing but others of them, such as a function's entry being reached. A
     /// constraint's premise that applies one says nothing and is not shown.
@@ -153,30 +148,31 @@ impl Names {
             preds: HashMap::new(),
             sites: sites.clone(),
             vars: vars.clone(),
-            query_names: system.pred_vars.indices().map(|p| p.to_string()).collect(),
             always_true: always_true(system),
         }
     }
 
-    /// How `p` is shown.
-    pub fn pred_head(&self, p: chc::PredVarId) -> PredHead {
-        match self.preds.get(&p) {
-            Some(info) => PredHead {
-                name: info.name.clone(),
-                groups: info.groups.clone(),
-                order: info.order.clone(),
-            },
-            None => PredHead {
-                name: p.to_string(),
-                groups: Vec::new(),
-                order: None,
-            },
+    /// The arguments of an application of `p` in the order they are shown in.
+    pub fn arrange<T: Clone>(&self, p: chc::PredVarId, args: &[T]) -> Vec<T> {
+        match self.preds.get(&p).and_then(|info| info.order.as_ref()) {
+            Some(order) if order.len() == args.len() => {
+                order.iter().map(|&k| args[k].clone()).collect()
+            }
+            _ => args.to_vec(),
         }
     }
 
-    /// Whether `name` is how the query names a predicate variable of the system.
-    pub fn is_pred_var(&self, name: &str) -> bool {
-        self.query_names.contains(name)
+    /// The arguments of an application of `p` in their own order, from those in the order they
+    /// are shown in.
+    pub fn unarrange<T: Clone>(&self, p: chc::PredVarId, shown: Vec<T>) -> Vec<T> {
+        let Some(order) = self.preds.get(&p).and_then(|info| info.order.as_ref()) else {
+            return shown;
+        };
+        let mut args = shown.clone();
+        for (&k, arg) in order.iter().zip(shown) {
+            args[k] = arg;
+        }
+        args
     }
 
     fn made_in_contract(&self, p: chc::PredVarId, def: LocalDefId) -> bool {
@@ -203,10 +199,13 @@ impl Names {
     /// it, `call_at(def, bb)` telling of the call and `path_name(def, path)` naming what a
     /// variable holds, and the refinements nested in the result's type. The result's template is
     /// over the variables in scope at the call, the nested ones over none; its arguments are
-    /// shown as the result, the call's arguments, and the other variables.
+    /// shown as the result, the call's arguments, and the other variables. A value the block
+    /// makes otherwise, such as an element it indexes, is `<block_name(def, bb)>.value`; the
+    /// variables of a function `block_name` names no block of are left unnamed.
     pub fn name_calls(
         &mut self,
         call_at: impl Fn(LocalDefId, BasicBlock) -> Option<CallAt>,
+        block_name: impl Fn(LocalDefId, BasicBlock) -> Option<String>,
         path_name: impl Fn(LocalDefId, &VarPath) -> String,
     ) {
         let mut made: Vec<(chc::PredVarId, LocalDefId, BasicBlock)> = self
@@ -221,6 +220,23 @@ impl Names {
         made.sort_by_key(|(p, _, _)| p.index());
         for (p, def, bb) in made {
             let Some(call) = call_at(def, bb) else {
+                let Some(block) = block_name(def, bb) else {
+                    continue;
+                };
+                let args = self.vars[&p]
+                    .iter()
+                    .map(|v| match CallArg::of(v)? {
+                        CallArg::Held(path) => Some(path_name(def, &path)),
+                        CallArg::Result | CallArg::Other => None,
+                    })
+                    .collect();
+                let info = PredInfo {
+                    name: self.fresh(format!("{block}.value")),
+                    args,
+                    order: None,
+                    owner: Owner::Other { def },
+                };
+                self.preds.insert(p, info);
                 continue;
             };
             let args: Vec<Option<CallArg>> = self.vars[&p].iter().map(CallArg::of).collect();
@@ -231,7 +247,6 @@ impl Names {
                 PredInfo {
                     name: self.fresh(format!("{}.inner", call.name)),
                     args: vec![None; args.len()],
-                    groups: Vec::new(),
                     order: None,
                     owner: Owner::Other { def },
                 }
@@ -253,13 +268,11 @@ impl Names {
             _ => None,
         };
         let mut order: Vec<usize> = (0..args.len()).filter(|&k| is_result(k)).collect();
-        let results = order.len();
         for argument in &call.arguments {
             let found =
                 (0..args.len()).find(|&k| local(k) == Some(*argument) && !order.contains(&k));
             order.extend(found);
         }
-        let arguments = order.len() - results;
         let rest: Vec<usize> = (0..args.len()).filter(|k| !order.contains(k)).collect();
         order.extend(rest);
         let names = order
@@ -273,7 +286,6 @@ impl Names {
         PredInfo {
             name: self.fresh(call.name.clone()),
             args: names,
-            groups: vec![results, arguments],
             order: Some(order),
             owner: Owner::Other { def },
         }
@@ -413,25 +425,33 @@ fn name_preds(
     }
     let mut named = Vec::new();
     for (i, own, name, p, atom) in found {
-        let args = atom
-            .args
-            .iter()
-            .map(|t| match t {
-                chc::Term::Var(rty::RefinedTypeVar::Existential(_)) => None,
-                chc::Term::Var(v) => Some(var_name(params, &own, v)),
-                chc::Term::BoxCurrent(inner) => match &**inner {
-                    chc::Term::Var(rty::RefinedTypeVar::Existential(_)) => None,
-                    chc::Term::Var(v) => Some(var_name(params, &own, v)),
-                    _ => None,
-                },
+        let var = |t: &chc::Term<rty::RefinedTypeVar<rty::FunctionParamIdx>>| match t {
+            chc::Term::Var(v) => Some(*v),
+            chc::Term::BoxCurrent(inner) => match &**inner {
+                chc::Term::Var(v) => Some(*v),
                 _ => None,
+            },
+            _ => None,
+        };
+        // The arguments are shown in the order of the parameters they are, the others after.
+        let position = |t| match var(t)? {
+            rty::RefinedTypeVar::Value => Some(i),
+            rty::RefinedTypeVar::Free(idx) => Some(idx.index()),
+            rty::RefinedTypeVar::Existential(_) => None,
+        };
+        let mut order: Vec<usize> = (0..atom.args.len()).collect();
+        order.sort_by_key(|&k| position(&atom.args[k]).unwrap_or(usize::MAX));
+        let args = order
+            .iter()
+            .map(|&k| match var(&atom.args[k])? {
+                rty::RefinedTypeVar::Existential(_) => None,
+                v => Some(var_name(params, &own, &v)),
             })
             .collect();
         let info = PredInfo {
             name,
             args,
-            groups: Vec::new(),
-            order: None,
+            order: Some(order),
             owner: owner_of(i),
         };
         names.preds.insert(p, info);
@@ -441,30 +461,46 @@ fn name_preds(
 }
 
 fn render_refinement(
-    names: &Names,
     params: &[Param<'_>],
     own: &str,
     refinement: &rty::Refinement<rty::FunctionParamIdx>,
-) -> Expr {
-    let name = |v: &rty::RefinedTypeVar<rty::FunctionParamIdx>| var_name(params, own, v);
-    let body = expr::of_body(&refinement.body, &name, &|p| names.pred_head(p));
+) -> Formula {
+    // An existential is bound by `exists`, as the variable of an annotation's quantifier.
+    let quantified = |e: rty::ExistentialVarIdx| chc::UserQuantifiedVarId::from_usize(e.index());
+    let sorts: HashMap<_, _> = refinement.existentials().collect();
+    let atoms = refinement
+        .body
+        .atoms
+        .iter()
+        .cloned()
+        .map(chc::Formula::Atom);
+    // A `Box` is read as its content, as the solver is given it (see `chc::unbox`).
+    let body = chc::unbox_formula(chc::Formula::And(
+        atoms.chain([refinement.body.formula.clone()]).collect(),
+    ));
+    let body = formula::and(vec![body.subst_var(|v| match v {
+        rty::RefinedTypeVar::Existential(e) => {
+            Term::UserQuantifiedVar(chc::unbox_sort(sorts[&e].clone()), quantified(e))
+        }
+        v => Term::Var(Name::new(&var_name(params, own, &v))),
+    })]);
     if !refinement.has_existentials() {
         return body;
     }
     let vars = refinement
         .existentials()
-        .map(|(e, sort)| (existential_name(e), expr::sort_name(sort)))
+        .map(|(e, sort)| (quantified(e), chc::unbox_sort(sort.clone())))
         .collect();
-    Expr::Quant("exists", vars, Box::new(body))
+    Formula::Exists(vars, Box::new(body))
 }
 
-fn site_params(names: &Names, params: &[Param<'_>]) -> Vec<SiteParam> {
+fn site_params(params: &[Param<'_>]) -> Vec<SiteParam> {
     params
         .iter()
         .map(|(own, ty)| SiteParam {
             name: own.clone(),
-            ty: expr::sort_name(&ty.ty.to_sort()),
-            refinement: render_refinement(names, params, own, &ty.refinement),
+            ty: chc::unbox_sort(ty.ty.to_sort()).one_line(),
+            refinement: render_refinement(params, own, &ty.refinement),
         })
         .collect()
 }
@@ -509,7 +545,7 @@ pub fn contract_site(
     Some(Site {
         kind: SiteKind::Contract,
         span,
-        params: site_params(names, &params),
+        params: site_params(&params),
         preds,
         signature: None,
     })
@@ -589,7 +625,7 @@ pub fn block_site(
             SiteKind::Block(bb)
         },
         span,
-        params: site_params(names, &params),
+        params: site_params(&params),
         preds,
         signature: signature.map(|(p, _)| p),
     })
