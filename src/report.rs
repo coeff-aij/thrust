@@ -323,6 +323,7 @@ fn entries<'tcx>(
                 arguments: body.call_args(bb).into_iter().flatten().collect(),
             })
         },
+        |def, bb| Some(format!("{}.{bb:?}", entries.get(&def)?.name)),
         |def, path| entries[&def].body.path_name(path),
     );
     add_constraints(tcx, input.system, &names, &mut entries);

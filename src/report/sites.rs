@@ -199,10 +199,13 @@ impl Names {
     /// it, `call_at(def, bb)` telling of the call and `path_name(def, path)` naming what a
     /// variable holds, and the refinements nested in the result's type. The result's template is
     /// over the variables in scope at the call, the nested ones over none; its arguments are
-    /// shown as the result, the call's arguments, and the other variables.
+    /// shown as the result, the call's arguments, and the other variables. A value the block
+    /// makes otherwise, such as an element it indexes, is `<block_name(def, bb)>.value`; the
+    /// variables of a function `block_name` names no block of are left unnamed.
     pub fn name_calls(
         &mut self,
         call_at: impl Fn(LocalDefId, BasicBlock) -> Option<CallAt>,
+        block_name: impl Fn(LocalDefId, BasicBlock) -> Option<String>,
         path_name: impl Fn(LocalDefId, &VarPath) -> String,
     ) {
         let mut made: Vec<(chc::PredVarId, LocalDefId, BasicBlock)> = self
@@ -217,6 +220,23 @@ impl Names {
         made.sort_by_key(|(p, _, _)| p.index());
         for (p, def, bb) in made {
             let Some(call) = call_at(def, bb) else {
+                let Some(block) = block_name(def, bb) else {
+                    continue;
+                };
+                let args = self.vars[&p]
+                    .iter()
+                    .map(|v| match CallArg::of(v)? {
+                        CallArg::Held(path) => Some(path_name(def, &path)),
+                        CallArg::Result | CallArg::Other => None,
+                    })
+                    .collect();
+                let info = PredInfo {
+                    name: self.fresh(format!("{block}.value")),
+                    args,
+                    order: None,
+                    owner: Owner::Other { def },
+                };
+                self.preds.insert(p, info);
                 continue;
             };
             let args: Vec<Option<CallArg>> = self.vars[&p].iter().map(CallArg::of).collect();
@@ -405,24 +425,33 @@ fn name_preds(
     }
     let mut named = Vec::new();
     for (i, own, name, p, atom) in found {
-        let args = atom
-            .args
-            .iter()
-            .map(|t| match t {
-                chc::Term::Var(rty::RefinedTypeVar::Existential(_)) => None,
-                chc::Term::Var(v) => Some(var_name(params, &own, v)),
-                chc::Term::BoxCurrent(inner) => match &**inner {
-                    chc::Term::Var(rty::RefinedTypeVar::Existential(_)) => None,
-                    chc::Term::Var(v) => Some(var_name(params, &own, v)),
-                    _ => None,
-                },
+        let var = |t: &chc::Term<rty::RefinedTypeVar<rty::FunctionParamIdx>>| match t {
+            chc::Term::Var(v) => Some(*v),
+            chc::Term::BoxCurrent(inner) => match &**inner {
+                chc::Term::Var(v) => Some(*v),
                 _ => None,
+            },
+            _ => None,
+        };
+        // The arguments are shown in the order of the parameters they are, the others after.
+        let position = |t| match var(t)? {
+            rty::RefinedTypeVar::Value => Some(i),
+            rty::RefinedTypeVar::Free(idx) => Some(idx.index()),
+            rty::RefinedTypeVar::Existential(_) => None,
+        };
+        let mut order: Vec<usize> = (0..atom.args.len()).collect();
+        order.sort_by_key(|&k| position(&atom.args[k]).unwrap_or(usize::MAX));
+        let args = order
+            .iter()
+            .map(|&k| match var(&atom.args[k])? {
+                rty::RefinedTypeVar::Existential(_) => None,
+                v => Some(var_name(params, &own, &v)),
             })
             .collect();
         let info = PredInfo {
             name,
             args,
-            order: None,
+            order: Some(order),
             owner: owner_of(i),
         };
         names.preds.insert(p, info);

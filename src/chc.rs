@@ -536,6 +536,17 @@ impl Function {
         self.is_infix
     }
 
+    /// How tightly an infix function binds its arguments, for printing: `*` over `+` and `-`
+    /// over the comparisons over `and` and `or`.
+    fn precedence(&self) -> u8 {
+        match *self {
+            Self::MUL => 3,
+            Self::ADD | Self::SUB => 2,
+            Self::AND | Self::OR => 0,
+            _ => 1,
+        }
+    }
+
     fn sort<I>(&self, args: I) -> Sort
     where
         I: IntoIterator<Item = Sort>,
@@ -728,7 +739,8 @@ where
                 .append(allocator.text(","))
                 .append(allocator.line())
                 .append(t2.pretty(allocator))
-                .angles(),
+                .angles()
+                .group(),
             Term::BoxCurrent(t) | Term::MutCurrent(t) => {
                 allocator.text("*").append(t.pretty(allocator))
             }
@@ -740,11 +752,11 @@ where
                 .append(t.pretty(allocator))
                 .parens(),
             Term::App(f, args) if f.is_infix() => args[0]
-                .pretty_atom(allocator)
+                .pretty_operand(allocator, f.precedence(), true)
                 .append(allocator.line())
                 .append(f.pretty(allocator))
                 .append(allocator.line())
-                .append(args[1].pretty_atom(allocator))
+                .append(args[1].pretty_operand(allocator, f.precedence(), false))
                 .group(),
             Term::App(f, args) => {
                 let inner = allocator.intersperse(
@@ -762,13 +774,14 @@ where
             Term::SeqEmpty(_) => allocator.text("seq.empty"),
             Term::Tuple(ts) => {
                 let separator = allocator.text(",").append(allocator.line());
-                if ts.len() == 1 {
+                let tuple = if ts.len() == 1 {
                     ts[0].pretty(allocator).append(separator).parens()
                 } else {
                     allocator
                         .intersperse(ts.iter().map(|t| t.pretty(allocator)), separator)
                         .parens()
-                }
+                };
+                tuple.group()
             }
             // A projection binds tighter than `*` and `°`: `(*x).0`.
             Term::TupleProj(t, i) => {
@@ -825,6 +838,33 @@ impl<V> Term<V> {
         match &self {
             Term::App(_f, args) if !args.is_empty() => self.pretty(allocator).parens(),
             _ => self.pretty(allocator),
+        }
+    }
+
+    /// The term as an operand of an infix function of precedence `outer`, on its `left`: an
+    /// infix application binding tighter, or as tightly on the left of arithmetic, needs no
+    /// parentheses (`2 * n + r`, `a - b - c`).
+    fn pretty_operand<'b, 'a, D>(
+        &'b self,
+        allocator: &'a D,
+        outer: u8,
+        left: bool,
+    ) -> pretty::DocBuilder<'a, D, termcolor::ColorSpec>
+    where
+        V: Var,
+        D: pretty::DocAllocator<'a, termcolor::ColorSpec>,
+        D::Doc: Clone,
+    {
+        match self {
+            Term::App(f, args) if f.is_infix() && args.len() == 2 => {
+                let inner = f.precedence();
+                if inner > outer || (inner == outer && left && inner >= 2) {
+                    self.pretty(allocator)
+                } else {
+                    self.pretty(allocator).parens()
+                }
+            }
+            _ => self.pretty_atom(allocator),
         }
     }
 
@@ -1880,13 +1920,14 @@ where
     D::Doc: Clone,
 {
     fn pretty(self, allocator: &'a D) -> pretty::DocBuilder<'a, D, termcolor::ColorSpec> {
+        // An infix predicate is a comparison, of the comparisons' precedence.
         let atom = if self.pred.is_infix() {
             self.args[0]
-                .pretty_atom(allocator)
+                .pretty_operand(allocator, 1, true)
                 .append(allocator.line())
                 .append(self.pred.pretty(allocator))
                 .append(allocator.line())
-                .append(self.args[1].pretty_atom(allocator))
+                .append(self.args[1].pretty_operand(allocator, 1, false))
                 .group()
         } else {
             let inner = allocator.intersperse(

@@ -413,7 +413,7 @@ mod tests {
         let symbols = Symbols::default();
         assert_eq!(
             applied(&m, &symbols, "p0", &["result", "x"]),
-            "result >= 0 ∧ result = (x + 1)"
+            "result >= 0 ∧ result = x + 1"
         );
         assert!(definitions(&m, &symbols, v)["p1"].body.is_top());
     }
@@ -425,7 +425,7 @@ mod tests {
         );
         assert_eq!(
             applied(&m, &Symbols::default(), "p0", &["n"]),
-            "∃q$0: int. n = (2 * q$0)"
+            "∃q$0: int. n = 2 * q$0"
         );
     }
 
@@ -451,6 +451,6 @@ mod tests {
             ],
             [],
         );
-        assert_eq!(applied(&m, &symbols, "p2", &["r"]), "°r = (*r + 1)");
+        assert_eq!(applied(&m, &symbols, "p2", &["r"]), "°r = *r + 1");
     }
 }

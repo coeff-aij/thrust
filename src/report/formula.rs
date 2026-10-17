@@ -6,7 +6,6 @@ use std::collections::BTreeSet;
 use std::sync::Mutex;
 
 use crate::chc;
-use crate::pretty::PrettyDisplayExt as _;
 
 use super::sites::Names;
 
@@ -47,9 +46,12 @@ macro_rules! one_line {
     ($($t:ty),*) => {$(
         impl OneLine for $t {
             fn one_line(&self) -> String {
-                let mut display = self.display();
-                display.width(1 << 20);
-                display.to_string()
+                // One group around the whole lays every line inside it flat.
+                let arena = pretty::Arena::new();
+                let doc = pretty::Pretty::pretty(self, &arena).group();
+                let mut out = String::new();
+                doc.1.render_fmt(1 << 20, &mut out).unwrap();
+                out
             }
         }
     )*};
