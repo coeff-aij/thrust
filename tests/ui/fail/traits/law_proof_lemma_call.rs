@@ -1,10 +1,11 @@
 //@compile-flags: -Adead_code -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
-// A law's proof calls a lemma that uses the law at the lemma's type parameter. Called at the
-// blanket impl's self type, the lemma uses the law being proved, as the direct call of
-// `fail/traits/law_proof_self_call.rs` does. Accepting it would prove the law, which does not
-// hold of `i64`, and `f(&1i64, &2i64)` would verify and panic.
+// A law's proof calls a lemma that uses the law at the lemma's type parameter, through another
+// lemma whose arguments are substituted in turn. Called at the blanket impl's self type, the
+// lemma uses the law being proved, as the direct call of `fail/traits/law_proof_self_call.rs`
+// does. Accepting it would prove the law, which does not hold of `i64`, and `f(&1i64, &2i64)`
+// would verify and panic.
 
 use thrust_models::Model;
 
@@ -37,9 +38,16 @@ impl<T: Model> Model for Wrap<T> {
 
 #[thrust_macros::lemma]
 #[thrust_macros::requires(true)]
+#[thrust_macros::ensures(B::small(*b) && *b == *c)]
+fn inner<A, B: Tagged>(a: &A, b: &B, c: &B) {
+    <B as Tagged>::all_small(b, c)
+}
+
+#[thrust_macros::lemma]
+#[thrust_macros::requires(true)]
 #[thrust_macros::ensures(T::small(*a) && *a == *b)]
 fn helper<T: Tagged>(a: &T, b: &T) {
-    <T as Tagged>::all_small(a, b)
+    inner::<i64, T>(&0i64, a, b)
 }
 
 #[thrust_macros::context]

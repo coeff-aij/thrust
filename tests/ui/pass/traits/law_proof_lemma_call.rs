@@ -3,7 +3,8 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // The twin of `fail/traits/law_proof_lemma_call.rs`: a lemma that uses the law at its type
-// parameter serves the proof of an impl for a type that wraps it, called at the wrapped type.
+// parameter, through another lemma, serves the proof of an impl for a type that wraps it, called
+// at the wrapped type.
 
 use thrust_models::Model;
 
@@ -36,9 +37,16 @@ impl<T: Model> Model for Wrap<T> {
 
 #[thrust_macros::lemma]
 #[thrust_macros::requires(true)]
+#[thrust_macros::ensures(B::small(*b) && *b == *c)]
+fn inner<A, B: Tagged>(a: &A, b: &B, c: &B) {
+    <B as Tagged>::all_small(b, c)
+}
+
+#[thrust_macros::lemma]
+#[thrust_macros::requires(true)]
 #[thrust_macros::ensures(T::small(*a) && *a == *b)]
 fn helper<T: Tagged>(a: &T, b: &T) {
-    <T as Tagged>::all_small(a, b)
+    inner::<i64, T>(&0i64, a, b)
 }
 
 #[thrust_macros::context]

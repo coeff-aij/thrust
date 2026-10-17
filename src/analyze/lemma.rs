@@ -33,6 +33,7 @@ pub fn check_lemmas(tcx: TyCtxt<'_>, proof_branch: Option<DefId>) {
             checker.is_lemma(def_id.to_def_id()) || checker.is_law_proof(def_id.to_def_id())
         })
         .collect();
+    checker.check_impl_lemmas();
     let mut calls = HashMap::new();
     for &lemma in &lemmas {
         // A law is run where it is called, and a call analyzed as any other, so it may take a
@@ -264,6 +265,9 @@ impl<'tcx> Checker<'tcx> {
             calls.laws.push(Call { def_id, args, span });
             return;
         }
+        let Some((def_id, args)) = self.resolve_trait_lemma(lemma, def_id, args, span) else {
+            return;
+        };
         let Some(local) = def_id
             .as_local()
             .filter(|_| self.is_lemma(def_id) || self.is_lemma_rec(def_id))
@@ -305,6 +309,54 @@ impl<'tcx> Checker<'tcx> {
                 span,
                 "a lemma's recursive call is at the lemma's own generic arguments",
             );
+        }
+    }
+
+    /// The function a call of a trait's lemma runs: the impl's lemma, or the trait's default body
+    /// at the impl's arguments. A call that resolves to no impl, at a type parameter, could run
+    /// any impl's, which [`Self::check_acyclic`] and [`Self::check_law_uses`] cannot follow, and is
+    /// rejected. A call of a free function is its own.
+    fn resolve_trait_lemma(
+        &self,
+        caller: LocalDefId,
+        def_id: DefId,
+        args: mir_ty::GenericArgsRef<'tcx>,
+        span: rustc_span::Span,
+    ) -> Option<(DefId, mir_ty::GenericArgsRef<'tcx>)> {
+        if self.tcx.trait_of_assoc(def_id).is_none() || !self.is_lemma(def_id) {
+            return Some((def_id, args));
+        }
+        let typing_env = mir_ty::TypingEnv::post_analysis(self.tcx, caller);
+        if let Ok(Some(instance)) =
+            mir_ty::Instance::try_resolve(self.tcx, typing_env, def_id, args)
+        {
+            return Some((instance.def_id(), instance.args));
+        }
+        self.tcx.dcx().span_err(
+            span,
+            "a lemma or a law's proof calls a trait's lemma only at a type that selects its impl",
+        );
+        None
+    }
+
+    /// An impl's definition of a trait's lemma is a lemma too, as Creusot and Verus require an
+    /// impl item to have its trait item's mode: a call of the trait's lemma runs it, and its
+    /// contract is assumed where it does not run.
+    fn check_impl_lemmas(&self) {
+        for &def_id in self.tcx.mir_keys(()) {
+            let trait_item = self
+                .tcx
+                .opt_associated_item(def_id.to_def_id())
+                .and_then(|item| item.trait_item_def_id);
+            let Some(trait_item) = trait_item else {
+                continue;
+            };
+            if self.is_lemma(trait_item) && !self.is_lemma(def_id.to_def_id()) {
+                self.tcx.dcx().span_err(
+                    self.tcx.def_span(def_id),
+                    "an impl's definition of a trait's lemma is a `#[thrust_macros::lemma]` too",
+                );
+            }
         }
     }
 
