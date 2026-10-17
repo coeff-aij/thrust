@@ -379,19 +379,27 @@ impl<'tcx> Checker<'tcx> {
     /// A law's proof uses a law only at a type parameter strictly inside the impl's self type
     /// (`T` of `Wrap<T>`), directly or through the lemmas it calls, at the arguments it calls
     /// them at. The proof of a law at a type then rests only on laws at smaller types, so the
-    /// proofs are well-founded.
+    /// proofs are well-founded. A trait's default body is checked at each impl that inherits it,
+    /// with the impl's arguments; a law at one of the law's own type parameters could be the
+    /// law at the impl's self type, and is rejected.
     fn check_law_uses(&self, lemmas: &[LocalDefId], calls: &Calls<'tcx>) {
         let mut memo = HashMap::new();
         for &proof in lemmas {
             if !self.is_law_proof(proof.to_def_id()) {
                 continue;
             }
-            let Some(impl_did) = self.tcx.impl_of_assoc(proof.to_def_id()) else {
-                continue;
-            };
             let uses = self.proof_law_uses(proof, calls, &mut memo);
-            let identity = mir_ty::GenericArgs::identity_for_item(self.tcx, proof);
-            self.check_law_uses_at_impl(impl_did, identity, &uses);
+            match self.tcx.impl_of_assoc(proof.to_def_id()) {
+                Some(impl_did) => {
+                    let identity = mir_ty::GenericArgs::identity_for_item(self.tcx, proof);
+                    self.check_law_uses_at_impl(proof, impl_did, identity, &uses);
+                }
+                None => {
+                    for (impl_did, args) in self.inheriting_impls(proof.to_def_id()) {
+                        self.check_law_uses_at_impl(proof, impl_did, args, &uses);
+                    }
+                }
+            }
         }
     }
 
@@ -443,21 +451,60 @@ impl<'tcx> Checker<'tcx> {
         uses
     }
 
-    /// Checks law uses, read at `args`, against the self type of `impl_did`.
+    /// The local impls that inherit the trait's default body `law`, each with the arguments
+    /// that body is checked at there: the impl's trait arguments, and the law's own parameters.
+    fn inheriting_impls(&self, law: DefId) -> Vec<(DefId, mir_ty::GenericArgsRef<'tcx>)> {
+        let Some(trait_did) = self.tcx.trait_of_assoc(law) else {
+            return Vec::new();
+        };
+        let impls = self.tcx.all_local_trait_impls(()).get(&trait_did);
+        impls
+            .into_iter()
+            .flatten()
+            .map(|impl_local| impl_local.to_def_id())
+            .filter(|impl_did| {
+                !self
+                    .tcx
+                    .impl_item_implementor_ids(*impl_did)
+                    .contains_key(&law)
+            })
+            .map(|impl_did| {
+                let trait_ref = self
+                    .tcx
+                    .impl_trait_ref(impl_did)
+                    .unwrap()
+                    .instantiate_identity();
+                let args = mir_ty::GenericArgs::identity_for_item(self.tcx, law).rebase_onto(
+                    self.tcx,
+                    trait_did,
+                    trait_ref.args,
+                );
+                (impl_did, args)
+            })
+            .collect()
+    }
+
+    /// Checks the law uses of `proof`, read at `args`, against the self type of `impl_did`.
     fn check_law_uses_at_impl(
         &self,
+        proof: LocalDefId,
         impl_did: DefId,
         args: mir_ty::GenericArgsRef<'tcx>,
         uses: &[(Call<'tcx>, Option<DefId>)],
     ) {
         let self_ty = self.tcx.type_of(impl_did).instantiate_identity();
+        let own_params = self.tcx.generics_of(proof).parent_count;
         for (law, lemma) in uses {
+            let at_own_param = matches!(
+                law.args.type_at(0).kind(),
+                mir_ty::Param(param) if param.index as usize >= own_params
+            );
             let law_args = mir_ty::EarlyBinder::bind(law.args).instantiate(self.tcx, args);
             let ty = law_args.type_at(0);
             let inside = matches!(ty.kind(), mir_ty::Param(_))
                 && self_ty != ty
                 && self_ty.walk().any(|arg| arg.as_type() == Some(ty));
-            if inside {
+            if inside && !at_own_param {
                 continue;
             }
             let through = lemma
