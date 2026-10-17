@@ -155,19 +155,26 @@ fn report_shows_a_mutable_reference_by_its_two_values() {
     assert!(!stderr.contains("= <"), "{stderr}");
 }
 
-/// The lints of the program are its own: none come from the injected `std.rs`.
-#[test]
-fn no_warning_comes_from_the_injected_std() {
+/// The warnings of compiling `fixture` with its lints on, without the report.
+fn warnings_of(fixture: &str) -> String {
     let root = env!("CARGO_MANIFEST_DIR");
     let output = Command::new(env!("CARGO_BIN_EXE_thrust-rustc"))
-        .args(["-C", "debug-assertions=off", "tests/report/unused_local.rs"])
+        .args(["-C", "debug-assertions=off"])
+        .arg(format!("tests/report/{fixture}"))
         .current_dir(root)
         .env_remove("THRUST_REPORT")
+        .env_remove("THRUST_SPLIT")
         .env_remove("THRUST_SOLVER")
         .env_remove("THRUST_OUTPUT_DIR")
         .output()
         .unwrap();
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
+/// The lints of the program are its own: none come from the injected `std.rs`.
+#[test]
+fn no_warning_comes_from_the_injected_std() {
+    let stderr = warnings_of("unused_local.rs");
     assert!(stderr.contains("unused variable: `unused`"), "{stderr}");
     assert!(!stderr.contains("thrust std injected"), "{stderr}");
 }
@@ -284,4 +291,12 @@ fn report_labels_the_invariant_a_loop_checks() {
         .nth(1)
         .unwrap_or_default();
     assert!(label.contains("the annotation it checks"), "{stderr}");
+}
+
+/// A law, its proof by an empty body and a lemma raise no lint: they are not called and need not
+/// read their parameters.
+#[test]
+fn laws_and_their_proofs_raise_no_warning() {
+    let stderr = warnings_of("law_proof.rs");
+    assert!(!stderr.contains("warning"), "{stderr}");
 }
