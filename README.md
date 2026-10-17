@@ -2,6 +2,9 @@
 
 Thrust is a refinement type checking and inference tool for Rust.
 
+A tutorial with small examples, from a first contract to reading a failure and verifying in
+parts, is in [doc/tutorial](doc/tutorial/README.md).
+
 ## Getting Started
 
 - Make sure [Z3](https://github.com/Z3Prover/z3) is installed.
