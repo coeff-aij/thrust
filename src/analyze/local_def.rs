@@ -786,6 +786,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 terminator: &mir::Terminator<'tcx>,
                 location: mir::Location,
             ) {
+                // a destructor of the crate is called with `&mut` of the dropped place; see
+                // analyze::basic_block::Analyzer::call_destructors
+                if let mir::TerminatorKind::Drop { place, .. } = &terminator.kind {
+                    let ty = place.ty(&self.body.local_decls, self.tcx).ty;
+                    if analyze::drop_runs_local_destructor(self.tcx, ty) {
+                        self.locals.insert(place.local);
+                    }
+                }
                 // calling an FnMut closure via FnOnce::call_once resolves to the closure
                 // function taking &mut {closure}, so RustCallVisitor mutably borrows the
                 // closure argument; see analyze::basic_block::visitor

@@ -440,6 +440,56 @@ fn compared_tys<'tcx>(tcx: TyCtxt<'tcx>, ty: mir_ty::Ty<'tcx>) -> Vec<mir_ty::Ty
     compared
 }
 
+/// The `drop` method of `ty`'s `Drop` impl, when `ty` is an ADT whose impl is in the crate.
+pub fn local_destructor(tcx: TyCtxt<'_>, ty: mir_ty::Ty<'_>) -> Option<DefId> {
+    let adt = ty.ty_adt_def()?;
+    let dtor = tcx.adt_destructor(adt.did())?;
+    dtor.did.is_local().then_some(dtor.did)
+}
+
+/// Whether dropping a value of `ty` may run a destructor of the crate.
+pub fn drop_runs_local_destructor<'tcx>(tcx: TyCtxt<'tcx>, ty: mir_ty::Ty<'tcx>) -> bool {
+    let mut visited = HashSet::new();
+    let mut pending = vec![ty];
+    while let Some(ty) = pending.pop() {
+        if !visited.insert(ty) {
+            continue;
+        }
+        if local_destructor(tcx, ty).is_some() {
+            return true;
+        }
+        pending.extend(dropped_parts(tcx, ty));
+    }
+    false
+}
+
+/// Whether dropping the parts of a value of `ty`, which its drop glue drops after its own
+/// destructor, may run a destructor of the crate.
+pub fn drop_of_parts_runs_local_destructor<'tcx>(tcx: TyCtxt<'tcx>, ty: mir_ty::Ty<'tcx>) -> bool {
+    dropped_parts(tcx, ty)
+        .into_iter()
+        .any(|part| drop_runs_local_destructor(tcx, part))
+}
+
+/// The types of the values that dropping a value of `ty` may drop: the fields of a local ADT, the
+/// type arguments of another, the components of a tuple, an array or a closure. Nothing is
+/// dropped through a reference, a pointer, a function or a `PhantomData`.
+fn dropped_parts<'tcx>(tcx: TyCtxt<'tcx>, ty: mir_ty::Ty<'tcx>) -> Vec<mir_ty::Ty<'tcx>> {
+    match ty.kind() {
+        mir_ty::TyKind::Adt(adt, _) if tcx.is_lang_item(adt.did(), LangItem::PhantomData) => {
+            Vec::new()
+        }
+        mir_ty::TyKind::Adt(adt, args) if adt.did().is_local() => {
+            adt.all_fields().map(|field| field.ty(tcx, args)).collect()
+        }
+        mir_ty::TyKind::Adt(_, args) => args.types().collect(),
+        mir_ty::TyKind::Tuple(tys) => tys.to_vec(),
+        mir_ty::TyKind::Array(elem, _) | mir_ty::TyKind::Slice(elem) => vec![*elem],
+        mir_ty::TyKind::Closure(_, args) => args.as_closure().upvar_tys().to_vec(),
+        _ => Vec::new(),
+    }
+}
+
 fn is_ghost(tcx: TyCtxt<'_>, def_id: DefId) -> bool {
     tcx.get_attrs_by_path(def_id, &analyze::annot::ghost_model_path())
         .next()

@@ -1636,6 +1636,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     where
         I: IntoIterator<Item = Operand<'tcx>>,
     {
+        let args: Vec<_> = args.into_iter().collect();
+        self.assert_destructors_stay_local(&func, &args);
         let mut args = args.into_iter();
         if let Some((def_id, _)) = func.const_fn_def() {
             if Some(def_id) == self.ctx.def_ids().box_new() {
@@ -1989,6 +1991,126 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.drop_local(local, moved_out);
     }
 
+    /// Types the calls of the crate's destructors that dropping `place` runs, as its drop glue
+    /// runs them through one `&mut`: `Drop::drop` of the value, then the drop glue of each field
+    /// in declaration order. Each destructor is a call, so its precondition is a goal and its
+    /// effect on the value is what the structural drop after it resolves.
+    fn call_destructors(&mut self, place: mir::Place<'tcx>) {
+        let ty = place.ty(&self.local_decls, self.tcx).ty;
+        if !analyze::drop_runs_local_destructor(self.tcx, ty) {
+            return;
+        }
+        let glue = self.borrow_to_temp(place, ty);
+        self.call_destructors_through(glue, ty);
+    }
+
+    /// Runs the drop glue of `*glue`, a `&mut` of `ty` that this consumes.
+    fn call_destructors_through(&mut self, glue: Local, ty: mir_ty::Ty<'tcx>) {
+        let target = self.tcx.mk_place_deref(glue.into());
+        let mut glue = glue;
+        if let Some(dtor) = analyze::local_destructor(self.tcx, ty) {
+            let arg = self.borrow_to_temp(target, ty);
+            self.call_destructor(dtor, ty, arg);
+            glue = self.rebind_temp(glue);
+        }
+        if analyze::drop_of_parts_runs_local_destructor(self.tcx, ty) {
+            let target = self.tcx.mk_place_deref(glue.into());
+            for (idx, field_ty) in self.dropped_fields(ty).into_iter().enumerate() {
+                if !analyze::drop_runs_local_destructor(self.tcx, field_ty) {
+                    continue;
+                }
+                let field = self
+                    .tcx
+                    .mk_place_field(target, FieldIdx::from_usize(idx), field_ty);
+                let field_glue = self.borrow_to_temp(field, field_ty);
+                self.call_destructors_through(field_glue, field_ty);
+            }
+        }
+        self.env.drop_local(glue);
+    }
+
+    /// The fields that the drop glue of `ty` drops after its destructor.
+    fn dropped_fields(&self, ty: mir_ty::Ty<'tcx>) -> Vec<mir_ty::Ty<'tcx>> {
+        match ty.kind() {
+            mir_ty::TyKind::Tuple(tys) => tys.to_vec(),
+            mir_ty::TyKind::Adt(adt, args) if adt.is_struct() && adt.did().is_local() => adt
+                .all_fields()
+                .map(|field| field.ty(self.tcx, args))
+                .collect(),
+            _ => unimplemented!(
+                "dropping a value of `{ty}` runs a destructor of the crate inside a value that \
+                 is not a tuple or a struct of the crate"
+            ),
+        }
+    }
+
+    /// A new local holding `&mut place`, which is never dropped on its own.
+    fn borrow_to_temp(&mut self, place: mir::Place<'tcx>, ty: mir_ty::Ty<'tcx>) -> Local {
+        let region = mir_ty::Region::new_from_kind(self.tcx, mir_ty::RegionKind::ReErased);
+        let ref_ty = mir_ty::Ty::new_mut_ref(self.tcx, region, ty);
+        let local = self
+            .local_decls
+            .push(mir::LocalDecl::new(ref_ty, rustc_span::DUMMY_SP).immutable());
+        let rty = self.borrow_place_(place, ty);
+        self.bind_local(local, rty);
+        local
+    }
+
+    /// Moves `local` into a new local, whose binding spells out the value again, so that a part
+    /// of it can be borrowed after the whole was.
+    fn rebind_temp(&mut self, local: Local) -> Local {
+        let decl =
+            mir::LocalDecl::new(self.local_decls[local].ty, rustc_span::DUMMY_SP).immutable();
+        let new_local = self.local_decls.push(decl);
+        let rty = self.operand_refined_type(Operand::Move(local.into()));
+        self.bind_local(new_local, rty);
+        new_local
+    }
+
+    fn call_destructor(&mut self, dtor: DefId, ty: mir_ty::Ty<'tcx>, arg: Local) {
+        let mir_ty::TyKind::Adt(_, args) = ty.kind() else {
+            unreachable!("a destructor of a type that is not an ADT")
+        };
+        // A `Drop` impl has the generics of its ADT, so the ADT's arguments instantiate it.
+        let func = analyze::fn_operand(self.tcx, dtor, args, rustc_span::DUMMY_SP);
+        tracing::info!(?dtor, ?ty, "destructor called");
+        let unit = self.tcx.types.unit;
+        let ret_local = self
+            .local_decls
+            .push(mir::LocalDecl::new(unit, rustc_span::DUMMY_SP).immutable());
+        let ret = self
+            .type_builder
+            .for_template(&mut self.ctx)
+            .with_scope(&self.env)
+            .build_refined(unit);
+        let ret = self.type_call(func, [Operand::Move(arg.into())], ret);
+        self.bind_local(ret_local, ret);
+    }
+
+    /// Stops at a call that hands a value whose drop runs a destructor of the crate to a function
+    /// of another crate, which may drop it where no destructor call is typed.
+    fn assert_destructors_stay_local(&self, func: &Operand<'tcx>, args: &[Operand<'tcx>]) {
+        let Some(ty) = args.iter().find_map(|arg| {
+            let ty = arg.ty(&self.local_decls, self.tcx);
+            analyze::drop_runs_local_destructor(self.tcx, ty).then_some(ty)
+        }) else {
+            return;
+        };
+        let Some((def_id, generic_args)) = func.const_fn_def() else {
+            return;
+        };
+        let ResolvedCallable::Concrete(callee, _) = self.resolve_callable(def_id, generic_args)
+        else {
+            return;
+        };
+        if !callee.is_local() {
+            unimplemented!(
+                "`{}` takes a value of `{ty}`, whose drop runs a destructor of the crate",
+                self.tcx.def_path_str(callee)
+            );
+        }
+    }
+
     /// Schedules `local` to be implicitly dropped after this block's terminator,
     /// in addition to the liveness-derived drop points.
     fn drop_after_terminator(&mut self, local: Local) {
@@ -2277,7 +2399,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     self.type_goto(*target, outer_fn_param_vars);
                 }
             }
-            TerminatorKind::Drop { target, .. } => {
+            TerminatorKind::Drop { place, target, .. } => {
+                self.call_destructors(*place);
                 for local in self.drop_points.after_terminator(target) {
                     tracing::info!(?local, "dropped");
                     self.drop_terminator_local(local);
