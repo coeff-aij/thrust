@@ -328,12 +328,14 @@ pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) {
         template_sites: input.template_sites,
         template_vars: input.template_vars,
     };
+    let symbols =
+        model::Symbols::new(system.declared_symbols(chc::Config::from_env().capabilities()));
     let (entries, names) = entries(tcx, config, &input);
     let solution = match (solution_unavailable(input.answer), &input.answer.model) {
         (None, Some(model)) => {
             let config = chc::Config::from_env();
             let query = input.answer.query.as_deref().unwrap_or_default();
-            Ok(Solution::new(model, query, &names, |script| {
+            Ok(Solution::new(model, query, &symbols, &names, |script| {
                 config.run_script(script)
             }))
         }
@@ -342,7 +344,7 @@ pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) {
     let failure = config
         .items
         .failure
-        .then(|| failure::read(input.answer, &system, &names))
+        .then(|| failure::read(input.answer, &system, &names, &symbols))
         .flatten();
     match config.format {
         Format::Human => {

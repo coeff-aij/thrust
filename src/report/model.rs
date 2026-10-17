@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 use super::expr::Expr;
+use crate::chc::format_context::DeclaredSymbol;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Sexp {
@@ -67,29 +68,6 @@ pub(super) fn parse(tokens: &[String], pos: &mut usize) -> Option<Sexp> {
     }
 }
 
-/// The report's name for a function of the query: the selectors and constructors Thrust declares
-/// for references and tuples read as the annotations write them.
-fn function_name(name: &str) -> String {
-    if name.starts_with("mut_current") || name.starts_with("box_current") {
-        return "deref".to_owned();
-    }
-    if name.starts_with("mut_final") {
-        return "final".to_owned();
-    }
-    if let Some(rest) = name.strip_prefix("tuple_proj") {
-        if let Some(idx) = rest.rsplit('.').next() {
-            return format!(".{idx}");
-        }
-    }
-    if name.starts_with("mut<") {
-        return "Mut::new".to_owned();
-    }
-    if name.starts_with("tuple<") || name == "tuple" {
-        return "tuple".to_owned();
-    }
-    name.to_owned()
-}
-
 fn bindings(s: &Sexp) -> Vec<(String, &Sexp)> {
     let Sexp::List(items) = s else {
         return Vec::new();
@@ -106,85 +84,100 @@ fn bindings(s: &Sexp) -> Vec<(String, &Sexp)> {
         .collect()
 }
 
-/// A sort of the solver's answer as [`super::expr::sort_name`] writes Thrust's: `(_ BitVec 32)`
-/// is `BitVec<32>`, `(Seq Int)` is `Seq<Int>`, and a datatype loses the prefix the query gives its
-/// name (`A0_Mut<Int>` is `Mut<Int>`).
-fn sort_name(s: &Sexp) -> String {
-    match s {
-        Sexp::Atom(a) => strip_datatype_prefix(a).to_owned(),
-        Sexp::List(items) => match items.as_slice() {
-            [Sexp::Atom(u), Sexp::Atom(bv), Sexp::Atom(w)] if u == "_" && bv == "BitVec" => {
-                format!("BitVec<{w}>")
-            }
-            [Sexp::Atom(head), args @ ..] => {
-                let args: Vec<String> = args.iter().map(sort_name).collect();
-                format!("{head}<{}>", args.join(", "))
-            }
-            _ => items.iter().map(sort_name).collect::<Vec<_>>().join(" "),
-        },
-    }
-}
-
-/// `A<n>_<name>`, how the query renames a datatype, as `<name>`.
-fn strip_datatype_prefix(name: &str) -> &str {
-    let Some(rest) = name.strip_prefix('A') else {
-        return name;
-    };
-    let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
-    match rest[digits..].strip_prefix('_') {
-        Some(stripped) if digits > 0 => stripped,
-        _ => name,
-    }
-}
-
 fn z3_bound_name(name: &str) -> String {
     let name: String = name.chars().filter(|c| c.is_alphanumeric()).collect();
     format!("__tmp_z3_model_{name}")
 }
 
-pub(super) fn to_expr(s: &Sexp) -> Expr {
-    let items = match s {
-        Sexp::Atom(a) => return Expr::sym(a.clone()),
-        Sexp::List(items) => items,
-    };
-    match items.as_slice() {
-        // An annotated term, `(! t :weight 0)`, is the term.
-        [Sexp::Atom(head), term, ..] if head == "!" => to_expr(term),
-        [Sexp::Atom(head), binds, body] if head == "let" => {
-            let subst: HashMap<String, Expr> = bindings(binds)
-                .into_iter()
-                .map(|(name, value)| (name, to_expr(value)))
-                .collect();
-            to_expr(body).subst(&subst)
+/// What the symbols the query declares for datatypes stand for, as the query says (see
+/// `chc::System::declared_symbols`), to read the solver's answers over them.
+#[derive(Debug, Default)]
+pub struct Symbols(HashMap<String, DeclaredSymbol>);
+
+impl Symbols {
+    pub fn new(declared: Vec<(String, DeclaredSymbol)>) -> Self {
+        Symbols(declared.into_iter().collect())
+    }
+
+    /// A sort of the solver's answer as [`super::expr::sort_name`] writes Thrust's: a datatype by
+    /// the sort it stands for, `(_ BitVec 32)` as `BitVec<32>`, `(Seq Int)` as `Seq<Int>`.
+    fn sort(&self, s: &Sexp) -> String {
+        match s {
+            Sexp::Atom(a) => match self.0.get(a) {
+                Some(DeclaredSymbol::Sort(sort)) => super::expr::sort_name(sort),
+                _ => a.clone(),
+            },
+            Sexp::List(items) => match items.as_slice() {
+                [Sexp::Atom(u), Sexp::Atom(bv), Sexp::Atom(w)] if u == "_" && bv == "BitVec" => {
+                    format!("BitVec<{w}>")
+                }
+                [Sexp::Atom(head), args @ ..] => {
+                    let args: Vec<String> = args.iter().map(|a| self.sort(a)).collect();
+                    format!("{head}<{}>", args.join(", "))
+                }
+                _ => items
+                    .iter()
+                    .map(|i| self.sort(i))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            },
         }
-        [Sexp::Atom(head), binds, body] if head == "forall" || head == "exists" => {
-            // A variable z3 binds in its answer stands for nothing in the program:
-            // `__tmp_z3_model_<its name>`.
-            let bound = bindings(binds);
-            let renamed: HashMap<String, Expr> = bound
-                .iter()
-                .map(|(name, _)| (name.clone(), Expr::sym(z3_bound_name(name))))
-                .collect();
-            let vars = bound
-                .into_iter()
-                .map(|(name, sort)| (z3_bound_name(&name), sort_name(sort)))
-                .collect();
-            let q = if head == "forall" { "forall" } else { "exists" };
-            Expr::Quant(q, vars, Box::new(to_expr(body).subst(&renamed)))
+    }
+
+    /// `head` applied to `args`, a constructor or selector of a `Box`, a `Mut` or a tuple read as
+    /// the annotations write it.
+    fn applied(&self, head: &str, args: Vec<Expr>) -> Expr {
+        match self.0.get(head) {
+            Some(DeclaredSymbol::BoxCtor) if args.len() == 1 => args.into_iter().next().unwrap(),
+            Some(DeclaredSymbol::MutCtor) => Expr::app("Mut::new", args),
+            Some(DeclaredSymbol::TupleCtor) => Expr::app("tuple", args),
+            Some(DeclaredSymbol::Current) => Expr::app("deref", args),
+            Some(DeclaredSymbol::Final) => Expr::app("final", args),
+            Some(DeclaredSymbol::Field(i)) => Expr::app(format!(".{i}"), args),
+            _ => Expr::app(head, args),
         }
-        [Sexp::Atom(head), args @ ..] => {
-            Expr::app(function_name(head), args.iter().map(to_expr).collect())
-        }
-        [Sexp::List(head), args @ ..] => match head.as_slice() {
-            [Sexp::Atom(u), Sexp::Atom(is), Sexp::Atom(ctor)] if u == "_" && is == "is" => {
-                Expr::app(format!("is_{ctor}"), args.iter().map(to_expr).collect())
+    }
+
+    pub(super) fn expr(&self, s: &Sexp) -> Expr {
+        let items = match s {
+            Sexp::Atom(a) => return Expr::sym(a.clone()),
+            Sexp::List(items) => items,
+        };
+        let all = |args: &[Sexp]| args.iter().map(|a| self.expr(a)).collect::<Vec<_>>();
+        match items.as_slice() {
+            // An annotated term, `(! t :weight 0)`, is the term.
+            [Sexp::Atom(head), term, ..] if head == "!" => self.expr(term),
+            [Sexp::Atom(head), binds, body] if head == "let" => {
+                let subst: HashMap<String, Expr> = bindings(binds)
+                    .into_iter()
+                    .map(|(name, value)| (name, self.expr(value)))
+                    .collect();
+                self.expr(body).subst(&subst)
             }
-            _ => Expr::app(
-                sort_name(&Sexp::List(head.clone())),
-                args.iter().map(to_expr).collect(),
-            ),
-        },
-        [] => Expr::sym("()"),
+            [Sexp::Atom(head), binds, body] if head == "forall" || head == "exists" => {
+                // A variable z3 binds in its answer stands for nothing in the program:
+                // `__tmp_z3_model_<its name>`.
+                let bound = bindings(binds);
+                let renamed: HashMap<String, Expr> = bound
+                    .iter()
+                    .map(|(name, _)| (name.clone(), Expr::sym(z3_bound_name(name))))
+                    .collect();
+                let vars = bound
+                    .into_iter()
+                    .map(|(name, sort)| (z3_bound_name(&name), self.sort(sort)))
+                    .collect();
+                let q = if head == "forall" { "forall" } else { "exists" };
+                Expr::Quant(q, vars, Box::new(self.expr(body).subst(&renamed)))
+            }
+            [Sexp::Atom(head), args @ ..] => self.applied(head, all(args)),
+            [Sexp::List(head), args @ ..] => match head.as_slice() {
+                [Sexp::Atom(u), Sexp::Atom(is), Sexp::Atom(ctor)] if u == "_" && is == "is" => {
+                    Expr::app(format!("is_{ctor}"), all(args))
+                }
+                _ => Expr::app(self.sort(&Sexp::List(head.clone())), all(args)),
+            },
+            [] => Expr::sym("()"),
+        }
     }
 }
 
@@ -201,7 +194,7 @@ fn smt_text(s: &Sexp) -> String {
 
 /// The formula `z3` prints after `(apply ...)`: the disjunction of its goals, each the
 /// conjunction of its formulas. `None` when the text holds an error or no goals.
-pub fn read_goals(text: &str) -> Option<Expr> {
+pub fn read_goals(text: &str, symbols: &Symbols) -> Option<Expr> {
     if text.contains("(error") {
         return None;
     }
@@ -224,7 +217,7 @@ pub fn read_goals(text: &str) -> Option<Expr> {
                     let formulas = parts[1..]
                         .iter()
                         .take_while(|p| !matches!(p, Sexp::Atom(a) if a.starts_with(':')))
-                        .map(to_expr)
+                        .map(|f| symbols.expr(f))
                         .collect();
                     Some(Expr::and(formulas))
                 }
@@ -264,7 +257,7 @@ impl Interpretation {
 }
 
 /// The `define-fun`s of a model as `z3` prints it after `(get-model)`, by name.
-pub fn read(model: &str) -> HashMap<String, Interpretation> {
+pub fn read(model: &str, symbols: &Symbols) -> HashMap<String, Interpretation> {
     let tokens = tokens(model);
     let mut pos = 0;
     let Some(Sexp::List(items)) = parse(&tokens, &mut pos) else {
@@ -286,7 +279,7 @@ pub fn read(model: &str) -> HashMap<String, Interpretation> {
                         .collect();
                     let interpretation = Interpretation {
                         params: typed.iter().map(|(p, _)| p.clone()).collect(),
-                        body: to_expr(body),
+                        body: symbols.expr(body),
                         source: Some((typed, smt_text(body))),
                     };
                     Some((name.clone(), interpretation))
@@ -305,7 +298,7 @@ mod tests {
     #[test]
     fn reads_define_funs() {
         let model = "(\n  (define-fun p0 ((x!0 Int) (x!1 Int)) Bool\n    (let ((a!1 (+ x!1 1))) (and (>= x!0 0) (= x!0 a!1))))\n  (define-fun p1 () Bool true)\n)";
-        let model = read(model);
+        let model = read(model, &Symbols::default());
         let p0 = &model["p0"];
         assert_eq!(p0.params, vec!["x!0", "x!1"]);
         let applied = p0.apply(&[Expr::sym("result"), Expr::sym("x")]);
@@ -317,7 +310,7 @@ mod tests {
     fn reads_annotated_terms_as_the_term() {
         let model =
             "((define-fun p0 ((x!0 Int)) Bool (exists ((y Int)) (! (= x!0 (* 2 y)) :weight 0))))";
-        let applied = read(model)["p0"].apply(&[Expr::sym("n")]);
+        let applied = read(model, &Symbols::default())["p0"].apply(&[Expr::sym("n")]);
         assert_eq!(
             applied.to_string(),
             "exists(|__tmp_z3_model_y: Int| n == 2 * __tmp_z3_model_y)"
@@ -328,18 +321,24 @@ mod tests {
     fn reads_the_goals_of_a_tactic() {
         let text = "(goals\n(goal\n  (>= x!0 2)\n  (= x!1 x!0)\n  :precision precise :depth 3)\n)";
         assert_eq!(
-            read_goals(text).unwrap().to_string(),
+            read_goals(text, &Symbols::default()).unwrap().to_string(),
             "x!0 >= 2 && x!1 == x!0"
         );
-        assert!(
-            read_goals("(error \"unknown constant foo\")\n(goals\n(goal\n :depth 1)\n)").is_none()
-        );
+        assert!(read_goals(
+            "(error \"unknown constant foo\")\n(goals\n(goal\n :depth 1)\n)",
+            &Symbols::default()
+        )
+        .is_none());
     }
 
     #[test]
     fn reads_reference_selectors() {
         let model = "((define-fun p2 ((x!0 A0_Mut<Int>)) Bool (= (mut_final<Int> x!0) (+ (mut_current<Int> x!0) 1))))";
-        let model = read(model);
+        let symbols = Symbols::new(vec![
+            ("mut_current<Int>".to_owned(), DeclaredSymbol::Current),
+            ("mut_final<Int>".to_owned(), DeclaredSymbol::Final),
+        ]);
+        let model = read(model, &symbols);
         let applied = model["p2"].apply(&[Expr::sym("r")]);
         assert_eq!(applied.to_string(), "!r == *r + 1");
     }

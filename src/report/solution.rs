@@ -20,10 +20,11 @@ impl Solution {
     pub(super) fn new(
         model: &str,
         query: &str,
+        symbols: &model::Symbols,
         names: &Names,
         run: impl Fn(&str) -> Option<String>,
     ) -> Self {
-        let mut model = model::read(model);
+        let mut model = model::read(model, symbols);
         // `z3`'s model of a system of clauses interprets the predicate variables by formulas over
         // their arguments; a function it made up besides would need its definition shown.
         if let Some(name) = model.keys().find(|name| !names.is_pred_var(name)) {
@@ -33,7 +34,7 @@ impl Solution {
         let named: std::collections::HashSet<String> =
             names.preds.keys().map(|p| p.to_string()).collect();
         model.retain(|name, _| named.contains(name));
-        super::simplify::simplify(&mut model, query, run);
+        super::simplify::simplify(&mut model, query, symbols, run);
         // An interpretation takes the arguments in the order they are shown.
         let by_name = names
             .preds

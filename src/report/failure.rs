@@ -172,8 +172,13 @@ fn single_same(fact: &Fact) -> Option<&Fact> {
 }
 
 /// The refuted goal and its run, if the answer is a refutation that derives a goal's marker.
-pub fn read(answer: &chc::Answer, system: &chc::System, names: &Names) -> Option<Failure> {
-    let facts = proof::read(answer.proof.as_ref()?);
+pub fn read(
+    answer: &chc::Answer,
+    system: &chc::System,
+    names: &Names,
+    symbols: &super::model::Symbols,
+) -> Option<Failure> {
+    let facts = proof::read(answer.proof.as_ref()?, symbols);
     let (marker, goal) = answer
         .goal_markers
         .iter()

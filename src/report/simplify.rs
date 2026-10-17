@@ -36,6 +36,7 @@ fn declarations(query: &str) -> String {
 pub fn simplify(
     interpretations: &mut HashMap<String, Interpretation>,
     query: &str,
+    symbols: &model::Symbols,
     run: impl Fn(&str) -> Option<String>,
 ) {
     let mut names: Vec<&String> = interpretations.keys().collect();
@@ -66,7 +67,7 @@ pub fn simplify(
             continue;
         };
         let (Some(simplified), Some(interpretation)) = (
-            model::read_goals(text),
+            model::read_goals(text, symbols),
             interpretations.get_mut(name.trim()),
         ) else {
             continue;

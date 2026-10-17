@@ -45,14 +45,14 @@ fn expand(s: &Sexp, env: &Env<'_>, depth: usize) -> Sexp {
     }
 }
 
-fn fact_of(s: &Sexp, env: &Env<'_>) -> Option<(String, Vec<Expr>)> {
+fn fact_of(s: &Sexp, env: &Env<'_>, symbols: &model::Symbols) -> Option<(String, Vec<Expr>)> {
     match resolve(s, env) {
         Sexp::Atom(name) => Some((name.clone(), Vec::new())),
         Sexp::List(items) => match items.as_slice() {
             [Sexp::Atom(pred), args @ ..] => {
                 let args = args
                     .iter()
-                    .map(|a| model::to_expr(&expand(a, env, 0)))
+                    .map(|a| symbols.expr(&expand(a, env, 0)))
                     .collect();
                 Some((pred.clone(), args))
             }
@@ -66,7 +66,7 @@ fn is_hyper_res(head: &Sexp) -> bool {
 }
 
 /// The facts the proof term `s` derives at its top.
-fn derive<'a>(s: &'a Sexp, env: &mut Env<'a>, depth: usize) -> Vec<Fact> {
+fn derive<'a>(s: &'a Sexp, env: &mut Env<'a>, symbols: &model::Symbols, depth: usize) -> Vec<Fact> {
     // A refutation of a long run is deep; past this depth the rest of the run is not shown.
     if depth > 4096 {
         return Vec::new();
@@ -84,18 +84,18 @@ fn derive<'a>(s: &'a Sexp, env: &mut Env<'a>, depth: usize) -> Vec<Fact> {
                     }
                 }
             }
-            derive(body, env, depth + 1)
+            derive(body, env, symbols, depth + 1)
         }
         [head, _clause, rest @ ..] if is_hyper_res(head) => {
             let Some((conclusion, premises)) = rest.split_last() else {
                 return Vec::new();
             };
-            let Some((pred, args)) = fact_of(conclusion, env) else {
+            let Some((pred, args)) = fact_of(conclusion, env, symbols) else {
                 return Vec::new();
             };
             let premises = premises
                 .iter()
-                .flat_map(|p| derive(p, env, depth + 1))
+                .flat_map(|p| derive(p, env, symbols, depth + 1))
                 .collect();
             vec![Fact {
                 pred,
@@ -106,14 +106,14 @@ fn derive<'a>(s: &'a Sexp, env: &mut Env<'a>, depth: usize) -> Vec<Fact> {
         [Sexp::Atom(a), _] if a == "asserted" => Vec::new(),
         [_, args @ ..] => args
             .iter()
-            .flat_map(|a| derive(a, env, depth + 1))
+            .flat_map(|a| derive(a, env, symbols, depth + 1))
             .collect(),
         [] => Vec::new(),
     }
 }
 
 /// The facts a refutation as `z3` prints it after `(get-proof)` derives last.
-pub fn read(proof: &str) -> Vec<Fact> {
+pub fn read(proof: &str, symbols: &model::Symbols) -> Vec<Fact> {
     let tokens = model::tokens(proof);
     let mut pos = 0;
     let Some(Sexp::List(items)) = model::parse(&tokens, &mut pos) else {
@@ -129,7 +129,7 @@ pub fn read(proof: &str) -> Vec<Fact> {
         return Vec::new();
     };
     let mut env = Env::new();
-    derive(term, &mut env, 0)
+    derive(term, &mut env, symbols, 0)
 }
 
 /// The first fact of `pred` in the tree under `facts`.
@@ -149,7 +149,7 @@ mod tests {
     #[test]
     fn reads_hyper_resolution_steps() {
         let proof = "((set-logic HORN)\n(declare-fun query!0 (Int) Bool)\n(proof\n(let (($x1 (query!0 6)))\n(let ((@x2 (asserted (forall ((A Int) (B Int)) (=> (and (P B) (= A (+ 1 B))) (P A))))))\n(let ((@x3 ((_ hyper-res 0 0 0 1) @x2 ((_ hyper-res 0 0) (asserted (P 0)) (P 0)) (P 1))))\n(mp ((_ hyper-res 0 0 0 1) (asserted (forall ((A Int)) (=> (P A) (query!0 A)))) @x3 $x1) (asserted (=> $x1 false)) false))))))";
-        let facts = read(proof);
+        let facts = read(proof, &model::Symbols::default());
         assert_eq!(facts.len(), 1);
         assert_eq!(facts[0].pred, "query!0");
         assert_eq!(facts[0].args, vec![Expr::sym("6")]);
@@ -161,7 +161,7 @@ mod tests {
     #[test]
     fn expands_the_terms_a_refutation_names() {
         let proof = "((set-logic HORN)\n(proof\n(let ((?x7 (tuple 5 5)))\n(mp ((_ hyper-res 0 0) (asserted (P ?x7)) (P ?x7)) (asserted (=> (P ?x7) false)) false))))";
-        let facts = read(proof);
+        let facts = read(proof, &model::Symbols::default());
         assert_eq!(facts[0].args[0].to_string(), "(5, 5)");
     }
 }

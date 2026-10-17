@@ -3486,6 +3486,15 @@ impl System {
         propagated_forall_deps
     }
 
+    /// Each symbol the query declares for a datatype, with what it stands for (see
+    /// [`format_context::FormatContext::declared_symbols`]).
+    pub fn declared_symbols(
+        &self,
+        capabilities: Capabilities,
+    ) -> Vec<(String, format_context::DeclaredSymbol)> {
+        format_context::FormatContext::from_system(self, capabilities).declared_symbols()
+    }
+
     pub fn smtlib2(&self, capabilities: Capabilities) -> smtlib2::System<'_> {
         smtlib2::System::new(self, capabilities)
     }
