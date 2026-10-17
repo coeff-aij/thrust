@@ -1686,6 +1686,8 @@ impl UserDefinedPred {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ForallPred {
     inner: String,
+    /// The `<...>` suffix of the symbol, which names the generic arguments it stands at.
+    type_arguments: String,
     type_parameters: Vec<Sort>,
     params: Vec<Sort>,
     /// `Bool` for a predicate; the result sort of a trait logic function read at a type
@@ -1722,18 +1724,25 @@ where
 }
 
 impl ForallPred {
-    pub fn new(inner: String, type_parameters: Vec<Sort>, params: Vec<Sort>) -> Self {
-        Self::function(inner, type_parameters, params, Sort::bool())
+    pub fn new(
+        inner: String,
+        type_arguments: String,
+        type_parameters: Vec<Sort>,
+        params: Vec<Sort>,
+    ) -> Self {
+        Self::function(inner, type_arguments, type_parameters, params, Sort::bool())
     }
 
     pub fn function(
         inner: String,
+        type_arguments: String,
         type_parameters: Vec<Sort>,
         params: Vec<Sort>,
         result: Sort,
     ) -> Self {
         Self {
             inner,
+            type_arguments,
             type_parameters,
             params,
             result,
@@ -1744,9 +1753,13 @@ impl ForallPred {
         &self.result
     }
 
-    /// The symbol without the `<...>` that names the sorts it stands over.
+    /// The symbol without the `<...>` that names the generic arguments it stands at.
     pub fn inner(&self) -> &str {
         &self.inner
+    }
+
+    pub fn type_arguments(&self) -> &str {
+        &self.type_arguments
     }
 
     pub fn type_parameters(&self) -> &[Sort] {
@@ -3949,7 +3962,7 @@ mod tests {
     #[test]
     fn an_unknown_depends_on_the_forall_preds_of_what_follows_it() {
         let mut system = System::default();
-        let q = ForallPred::new("q".into(), vec![], vec![Sort::int()]);
+        let q = ForallPred::new("q".into(), String::new(), vec![], vec![Sort::int()]);
         system.register_forall_pred(q.clone());
         let p = system.new_pred_var(vec![Sort::int()], DebugInfo::default());
         let x = || Term::var(0usize.into());
@@ -3984,6 +3997,7 @@ mod tests {
         system.new_forall_sort(DebugInfo::default());
         system.register_forall_pred(ForallPred::new(
             "q".into(),
+            String::new(),
             vec![],
             vec![Sort::forall(used)],
         ));
@@ -4011,7 +4025,12 @@ mod tests {
         let idx = system.new_forall_sort(
             DebugInfo::default().with_context("type_param", "ParamTy T/#0 (decl=DefId(...))"),
         );
-        system.register_forall_pred(ForallPred::new("q".into(), vec![], vec![Sort::forall(idx)]));
+        system.register_forall_pred(ForallPred::new(
+            "q".into(),
+            String::new(),
+            vec![],
+            vec![Sort::forall(idx)],
+        ));
 
         let smt = system.smtlib2(PCSAT).to_string();
         assert!(smt.contains("; type_param=ParamTy T/#0 (decl=DefId(...))"));
@@ -4025,6 +4044,7 @@ mod tests {
         let tuple = Sort::tuple(vec![Sort::forall(idx), Sort::int()]);
         system.register_forall_pred(ForallPred::new(
             "q".into(),
+            format!("<{idx}>"),
             vec![Sort::forall(idx)],
             vec![tuple, Sort::int()],
         ));

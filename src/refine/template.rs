@@ -158,6 +158,11 @@ struct ClosureTraitCall {
     kind: mir_ty::ClosureKind,
 }
 
+/// `s` with every character a symbol name cannot hold replaced by `_`.
+fn symbol_chars(s: &str) -> String {
+    s.replace(|c: char| !c.is_alphanumeric() && c != '_' && c != '.', "_")
+}
+
 /// The sort a closure precondition takes its upvars in.
 ///
 /// An `FnMut` closure receives its upvars behind a `&mut`, whose prophecy is still unconstrained
@@ -619,6 +624,87 @@ impl<'tcx> TypeBuilder<'tcx> {
         rty::RefinedType::unrefined(self.build_ty(ty))
     }
 
+    /// The `<A1-A2-...>` suffix of a symbol that stands for an item at the generic arguments
+    /// `args`, empty when there are none. The arguments are named as Rust types rather than by
+    /// their sorts, which many types share (every integer width, `&T` and `Box<T>`, structs with
+    /// the same fields), so that the item at two types is two symbols. A type parameter or a
+    /// projection that stays one is named by its sort, which is its own.
+    pub fn generic_args_symbol(&self, args: mir_ty::GenericArgsRef<'tcx>) -> String {
+        let names: Vec<String> = args
+            .iter()
+            .filter_map(|arg| match arg.kind() {
+                mir_ty::GenericArgKind::Type(ty) => Some(self.type_symbol(ty)),
+                mir_ty::GenericArgKind::Const(ct) => Some(symbol_chars(&ct.to_string())),
+                mir_ty::GenericArgKind::Lifetime(_) => None,
+            })
+            .collect();
+        if names.is_empty() {
+            return String::new();
+        }
+        format!("<{}>", names.join("-"))
+    }
+
+    fn type_symbol(&self, ty: mir_ty::Ty<'tcx>) -> String {
+        use mir_ty::TyKind;
+
+        let tcx = self.tcx;
+        match ty.kind() {
+            TyKind::Param(_) | TyKind::Alias(..) => {
+                chc::format_context::format_sort_symbol(&self.build(ty).to_sort())
+            }
+            TyKind::Bool | TyKind::Char | TyKind::Int(_) | TyKind::Uint(_) | TyKind::Float(_) => {
+                ty.to_string()
+            }
+            TyKind::Str => "str".to_owned(),
+            TyKind::Never => "Never".to_owned(),
+            TyKind::Ref(_, elem, mutbl) => {
+                let name = match mutbl {
+                    Mutability::Not => "Ref",
+                    Mutability::Mut => "RefMut",
+                };
+                format!("{name}<{}>", self.type_symbol(*elem))
+            }
+            TyKind::RawPtr(elem, mutbl) => {
+                let name = match mutbl {
+                    Mutability::Not => "Ptr",
+                    Mutability::Mut => "PtrMut",
+                };
+                format!("{name}<{}>", self.type_symbol(*elem))
+            }
+            TyKind::Tuple(tys) => {
+                let args = tcx.mk_args_from_iter(tys.iter().map(mir_ty::GenericArg::from));
+                format!("Tuple{}", self.generic_args_symbol(args))
+            }
+            TyKind::Slice(elem) => format!("Slice<{}>", self.type_symbol(*elem)),
+            TyKind::Array(elem, len) => format!(
+                "Array<{}-{}>",
+                self.type_symbol(*elem),
+                symbol_chars(&len.to_string())
+            ),
+            TyKind::Adt(adt, args) => format!(
+                "{}{}",
+                refine::datatype_symbol(tcx, adt.did()),
+                self.generic_args_symbol(args)
+            ),
+            TyKind::FnDef(def_id, args) => format!(
+                "{}{}",
+                refine::stable_def_id_symbol(tcx, *def_id, "fn"),
+                self.generic_args_symbol(args)
+            ),
+            TyKind::Closure(def_id, args) => format!(
+                "{}{}",
+                refine::stable_def_id_symbol(tcx, *def_id, "closure"),
+                self.generic_args_symbol(tcx.mk_args(args.as_closure().parent_args()))
+            ),
+            _ => {
+                use std::hash::{Hash as _, Hasher as _};
+                let mut hasher = std::hash::DefaultHasher::new();
+                format!("{ty:?}").hash(&mut hasher);
+                format!("Ty{:016x}", hasher.finish())
+            }
+        }
+    }
+
     // TODO: consolidate two impls
     fn build_ty(&self, ty: mir_ty::Ty<'tcx>) -> rty::Type<rty::Closed> {
         // An integer keeps its width, which its model `Int` or `UInt` does not have.
@@ -940,6 +1026,8 @@ impl<'tcx> TypeBuilder<'tcx> {
             .map(|(idx, _)| free(rty::FunctionParamIdx::from_usize(idx)))
             .collect();
 
+        let type_args =
+            self.generic_args_symbol(self.tcx.mk_args(&[param_ty.to_ty(self.tcx).into()]));
         let type_params = vec![self.build(param_ty.to_ty(self.tcx)).to_sort()];
         let mut params_sort: Vec<chc::Sort> = params.iter().map(|rty| rty.ty.to_sort()).collect();
         let ret_sort = ret.ty.to_sort();
@@ -955,6 +1043,7 @@ impl<'tcx> TypeBuilder<'tcx> {
         let pre_pred = refine::closure_pre_forall_pred(
             self.tcx,
             contract_owner,
+            type_args.clone(),
             type_params.clone(),
             pre_params_sort,
         );
@@ -962,8 +1051,13 @@ impl<'tcx> TypeBuilder<'tcx> {
             .borrow_mut()
             .register_forall_pred(pre_pred.clone());
         params_sort.push(ret_sort);
-        let post_pred =
-            refine::closure_post_forall_pred(self.tcx, contract_owner, type_params, params_sort);
+        let post_pred = refine::closure_post_forall_pred(
+            self.tcx,
+            contract_owner,
+            type_args,
+            type_params,
+            params_sort,
+        );
         self.system
             .borrow_mut()
             .register_forall_pred(post_pred.clone());
@@ -1015,6 +1109,7 @@ impl<'tcx> TypeBuilder<'tcx> {
             .collect();
         let mut ret = self.build(sig.output()).vacuous();
 
+        let type_args = self.generic_args_symbol(generic_args);
         let type_params = generic_args
             .types()
             .map(|ty| self.build(ty).to_sort())
@@ -1024,7 +1119,8 @@ impl<'tcx> TypeBuilder<'tcx> {
             .chain(std::iter::once(&ret))
             .map(|rty| rty.ty.to_sort())
             .collect();
-        let post_pred = refine::method_post_forall_pred(self.tcx, def_id, type_params, sorts);
+        let post_pred =
+            refine::method_post_forall_pred(self.tcx, def_id, type_args, type_params, sorts);
         self.system
             .borrow_mut()
             .register_forall_pred(post_pred.clone());
