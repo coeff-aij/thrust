@@ -580,6 +580,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
         let trait_item_ty = self.trait_item_ty();
         let is_fully_annotated = self.is_fully_annotated();
+        let is_callable = self.is_annotated_as_callable();
 
         let mut builder = self.type_builder.for_function_template(&mut self.ctx, sig);
         if let Some(require) = require_annot {
@@ -599,7 +600,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             builder.refinement_at(&position, refinement);
         }
 
-        if !is_fully_annotated {
+        // A call resolved to the method takes the trait's contract, so `callable` does not weaken
+        // what its body is checked against.
+        if !is_fully_annotated || is_callable {
             if let Some(trait_item_ty) = trait_item_ty {
                 return trait_item_ty;
             }
