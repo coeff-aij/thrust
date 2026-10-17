@@ -30,6 +30,14 @@ fn _extern_spec_vec_from_elem_word(elem: u64, n: usize) -> Vec<u64> {
     std::vec::from_elem(elem, n)
 }
 
+// `<[T]>::fill`, at the word type, for `insert_all`.
+#[thrust::extern_spec_fn]
+#[thrust_macros::ensures((!slice).len() == (*slice).len())]
+#[thrust_macros::ensures(forall(|k: USize| k < (*slice).len() ==> (!slice)[k] == value))]
+fn _extern_spec_slice_fill_word(slice: &mut [u64], value: u64) {
+    <[u64]>::fill(slice, value)
+}
+
 
 // The count of members, through `insert`'s contract: inserting 1 twice counts once.
 #[thrust_macros::ensures(result.3 == 2)]
