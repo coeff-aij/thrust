@@ -2721,12 +2721,13 @@ fn _extern_spec_iterator_copied<'a, I, T>(it: I) -> core::iter::Copied<I>
 }
 
 // Creusot's `Map` (creusot-std src/std/iter/map.rs). Its invariant asks that the closure accept
-// the next item (`map_next_precondition`), that each call leave it accepting the item after
-// (`map_preservation`), and that both hold again from wherever the inner iterator completes
-// (`map_reinitialize`). `produces` chains the closure's states `fs` along the inner items `s`:
-// `fs[k]` before and `fs[k + 1]` after the `k`-th call.
+// the next item (`_iter_spec_map_next_precondition`), that each call leave it accepting the item
+// after (`_iter_spec_map_preservation`), and that both hold again from wherever the inner
+// iterator completes (`_iter_spec_map_reinitialize`). `produces` chains the closure's states `fs`
+// along the inner items `s`: `fs[k]` before and `fs[k + 1]` after the `k`-th call. The helpers'
+// names start with `_iter_spec_` because std.rs is injected at the root of the checked crate.
 #[thrust_macros::predicate]
-fn map_next_precondition<I, B, F>(iter: I, func: F) -> bool
+fn _iter_spec_map_next_precondition<I, B, F>(iter: I, func: F) -> bool
 where
     I: IteratorSpec,
     I::Item: thrust_models::Model,
@@ -2738,7 +2739,7 @@ where
 }
 
 #[thrust_macros::predicate]
-fn map_preservation<I, B, F>(iter: I, func: F) -> bool
+fn _iter_spec_map_preservation<I, B, F>(iter: I, func: F) -> bool
 where
     I: IteratorSpec,
     I::Item: thrust_models::Model,
@@ -2760,7 +2761,7 @@ where
 }
 
 #[thrust_macros::predicate]
-fn map_reinitialize<I, B, F>() -> bool
+fn _iter_spec_map_reinitialize<I, B, F>() -> bool
 where
     I: IteratorSpec,
     I::Item: thrust_models::Model,
@@ -2771,7 +2772,7 @@ where
     thrust_models::forall(|fin: <I as thrust_models::Model>::Ty|
     thrust_models::forall(|f: thrust_models::model::Closure<F>|
         !I::completed(thrust_models::model::Mut::new(cur, fin))
-            || (map_next_precondition::<I, B, F>(fin, f) && map_preservation::<I, B, F>(fin, f)))))
+            || (_iter_spec_map_next_precondition::<I, B, F>(fin, f) && _iter_spec_map_preservation::<I, B, F>(fin, f)))))
 }
 
 #[thrust_macros::context]
@@ -2785,9 +2786,9 @@ where
     #[thrust_macros::predicate]
     fn inv(self) -> bool {
         I::inv(self.0)
-            && map_reinitialize::<I, B, F>()
-            && map_preservation::<I, B, F>(self.0, self.1)
-            && map_next_precondition::<I, B, F>(self.0, self.1)
+            && _iter_spec_map_reinitialize::<I, B, F>()
+            && _iter_spec_map_preservation::<I, B, F>(self.0, self.1)
+            && _iter_spec_map_next_precondition::<I, B, F>(self.0, self.1)
     }
 
     #[thrust_macros::predicate]
@@ -2826,9 +2827,9 @@ where
 
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(
-    map_next_precondition::<I, B, F>(it, f)
-        && map_reinitialize::<I, B, F>()
-        && map_preservation::<I, B, F>(it, f)
+    _iter_spec_map_next_precondition::<I, B, F>(it, f)
+        && _iter_spec_map_reinitialize::<I, B, F>()
+        && _iter_spec_map_preservation::<I, B, F>(it, f)
 )]
 #[thrust_macros::ensures(result.0 == it && result.1 == f)]
 fn _extern_spec_iterator_map<I, B, F>(it: I, f: F) -> core::iter::Map<I, F>
@@ -3088,6 +3089,70 @@ fn _extern_spec_iterator_rev<I>(it: I) -> core::iter::Rev<I>
           I::Item: thrust_models::Model
 {
     <I as std::iter::Iterator>::rev(it)
+}
+
+// `fold` runs the closure along what the iterator produces up to its completion: the closure's
+// states `fs` and the accumulators `accs` along the items `s` form a chain in which each step is
+// a call's postcondition, in the form of Creusot's `Map` (creusot-std src/std/iter/map.rs).
+// tests/ui/pass/creusot/generic/std/fold_map.rs verifies std's body of `fold` against this
+// contract.
+#[thrust_macros::predicate]
+fn _iter_spec_fold_chain<I, B, F>(
+    iter: I,
+    init: B,
+    f: F,
+    s: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
+    it: I,
+    accs: thrust_models::model::Seq<<B as thrust_models::Model>::Ty>,
+    fs: thrust_models::model::Seq<F>,
+) -> bool
+where
+    I: IteratorSpec,
+    I::Item: thrust_models::Model,
+    B: thrust_models::Model,
+    F: FnMut(B, I::Item) -> B,
+{
+    I::produces(iter, s, it)
+        && accs.len() == s.len() + 1
+        && fs.len() == s.len() + 1
+        && accs[0] == init
+        && fs[0] == f
+        && thrust_macros::hist_inv!(f, fs[s.len()])
+        && thrust_models::forall(|k: thrust_models::model::Int| !(0 <= k && k < s.len())
+            || (thrust_macros::hist_inv!(f, fs[k])
+                && thrust_macros::post!(thrust_models::model::Mut::new(fs[k], fs[k + 1])(accs[k], s[k]), accs[k + 1])))
+}
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(
+    I::inv(it)
+        && thrust_models::forall(|s: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
+                                  it1: <I as thrust_models::Model>::Ty,
+                                  accs: thrust_models::model::Seq<<B as thrust_models::Model>::Ty>,
+                                  fs: thrust_models::model::Seq<thrust_models::model::Closure<F>>,
+                                  x: <I::Item as thrust_models::Model>::Ty,
+                                  it2: <I as thrust_models::Model>::Ty|
+            !(_iter_spec_fold_chain::<I, B, F>(it, init, f, s, it1, accs, fs)
+                && I::produces(it1, thrust_models::model::Seq::singleton(x), it2))
+                || thrust_macros::pre!(fs[s.len()](accs[s.len()], x)))
+)]
+#[thrust_macros::ensures(
+    thrust_models::exists(|s: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
+                           it1: <I as thrust_models::Model>::Ty,
+                           accs: thrust_models::model::Seq<<B as thrust_models::Model>::Ty>,
+                           fs: thrust_models::model::Seq<thrust_models::model::Closure<F>>,
+                           it2: <I as thrust_models::Model>::Ty|
+        _iter_spec_fold_chain::<I, B, F>(it, init, f, s, it1, accs, fs)
+            && accs[s.len()] == result
+            && I::completed(thrust_models::model::Mut::new(it1, it2)))
+)]
+fn _extern_spec_iterator_fold<I, B, F>(it: I, init: B, f: F) -> B
+    where I: IteratorSpec,
+          I::Item: thrust_models::Model,
+          B: thrust_models::Model,
+          F: FnMut(B, I::Item) -> B
+{
+    <I as std::iter::Iterator>::fold(it, init, f)
 }
 
 // `into_iter` is specified once, through `into_iter_is`; a type gets an `into_iter` by
