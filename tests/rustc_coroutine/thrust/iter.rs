@@ -139,6 +139,7 @@ where
         forall(|fab: Seq<Closure<F>>| forall(|fbc: Seq<Closure<F>>|
         !(Self::produces_at(a, ab, b, sab, fab) && Self::produces_at(b, bc, c, sbc, fbc))
             || Self::produces_at(a, ab.concat(bc), c, sab.concat(sbc), fab.subsequence(0, ab.len()).concat(fbc)))))))]
+    #[thrust_macros::lemma]
     fn produces_trans_at(
         a: Ghost<Self>,
         ab: Ghost<Seq<<B as thrust_models::Model>::Ty>>,
@@ -305,6 +306,7 @@ where
     #[thrust_macros::ensures(forall(|sab: Seq<<I::Item as thrust_models::Model>::Ty>| forall(|sbc: Seq<<I::Item as thrust_models::Model>::Ty>|
         !(Self::produces_at(a, ab, b, sab) && Self::produces_at(b, bc, c, sbc))
             || Self::produces_at(a, ab.concat(bc), c, sab.concat(sbc)))))]
+    #[thrust_macros::lemma]
     fn produces_trans_at(
         a: Ghost<Self>,
         ab: Ghost<Seq<<I::Item as thrust_models::Model>::Ty>>,
