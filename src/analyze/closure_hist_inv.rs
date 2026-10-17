@@ -11,7 +11,9 @@
 //! unknown inferred under the same laws ([`by_value_relation_laws`]).
 
 use rustc_middle::ty as mir_ty;
+use rustc_span::def_id::LocalDefId;
 
+use crate::analyze::{self, Analyzer};
 use crate::chc;
 use crate::rty;
 
@@ -365,4 +367,122 @@ pub fn instance_obligations(
         "precondition independent of the receiver's final state",
     );
     Some((law_clauses, pre_clauses))
+}
+
+impl<'tcx> Analyzer<'tcx> {
+    /// The relation of `hist_inv!` at the concrete closure `closure_ty` whose upvars have the sort
+    /// `upvars_sort`, between the states `from` and `to`: the one its captures give, and the one
+    /// the `hist_inv` clause of its specification writes, if any.
+    pub fn closure_hist_inv_definition<V: chc::Var>(
+        &self,
+        closure_ty: mir_ty::Ty<'tcx>,
+        upvars_sort: &chc::Sort,
+        from: chc::Term<V>,
+        to: chc::Term<V>,
+    ) -> chc::Formula<V> {
+        let derived =
+            concrete_definition(self.tcx, closure_ty, upvars_sort, from.clone(), to.clone());
+        if let Some(explicit) =
+            self.closure_explicit_hist_inv(closure_ty, upvars_sort, from.clone(), to.clone())
+        {
+            return derived.and(explicit);
+        }
+        let positions: Vec<usize> = by_value_captures(self.tcx, closure_ty, upvars_sort)
+            .into_iter()
+            .map(|(idx, _)| idx)
+            .collect();
+        if positions.is_empty() {
+            return derived;
+        }
+        let relation = self.by_value_hist_inv(closure_ty, upvars_sort);
+        derived.and(by_value_related(relation, &positions, from, to))
+    }
+
+    /// The unknown relating the by-value captures of `closure_ty`, whose specification writes
+    /// no `hist_inv` clause, made with its laws on first use. Where Creusot says nothing of
+    /// those captures, the relation is inferred like any other unknown: reflexive and transitive
+    /// by these clauses, and implied by each call's postcondition, which includes it.
+    fn by_value_hist_inv(
+        &self,
+        closure_ty: mir_ty::Ty<'tcx>,
+        upvars_sort: &chc::Sort,
+    ) -> chc::PredVarId {
+        let key = (closure_ty, upvars_sort.clone());
+        if let Some(relation) = self.by_value_hist_invs.borrow().get(&key) {
+            return *relation;
+        }
+        let sorts: Vec<chc::Sort> = by_value_captures(self.tcx, closure_ty, upvars_sort)
+            .into_iter()
+            .map(|(_, sort)| sort)
+            .collect();
+        let sig = sorts.iter().chain(&sorts).cloned().collect();
+        let relation = self
+            .system
+            .borrow_mut()
+            .new_pred_var(sig, chc::DebugInfo::from_current_span());
+        for clause in by_value_relation_laws(relation, &sorts) {
+            self.system.borrow_mut().push_clause(clause);
+        }
+        // Its laws are pushed here and each call's step comes from the closure's body, so a
+        // callee whose contract reaches it needs no analysis at the instance to define it.
+        self.system.borrow_mut().mark_self_defined(relation);
+        self.by_value_hist_invs.borrow_mut().insert(key, relation);
+        relation
+    }
+
+    /// The relation the `hist_inv` clause of `closure_ty`'s specification writes, between the
+    /// states `from` and `to`, with its laws pushed on first use.
+    fn closure_explicit_hist_inv<V: chc::Var>(
+        &self,
+        closure_ty: mir_ty::Ty<'tcx>,
+        upvars_sort: &chc::Sort,
+        from: chc::Term<V>,
+        to: chc::Term<V>,
+    ) -> Option<chc::Formula<V>> {
+        let mir_ty::TyKind::Closure(def_id, closure_args) = closure_ty.kind() else {
+            return None;
+        };
+        let local_def_id = def_id.as_local()?;
+        let formula_def_id = self
+            .extract_path_with_attr(local_def_id, &analyze::annot::hist_inv_path_path())?
+            .expect_local();
+        let generic_args = self.closure_spec_args(formula_def_id, closure_args);
+        let owner_fn_id = self.tcx.typeck_root_def_id(*def_id);
+        let formula_fn = self
+            .formula_fn_with_args(formula_def_id, generic_args, owner_fn_id)
+            .expect("hist_inv clause is not a formula function");
+        let apply = |from: chc::Term<V>, to: chc::Term<V>| {
+            let pair = chc::Term::mut_(from, to);
+            formula_fn.formula().clone().subst_var(|_| pair.clone())
+        };
+        if self
+            .explicit_hist_inv_laws
+            .borrow_mut()
+            .insert((closure_ty, upvars_sort.clone()))
+        {
+            let related = |from: chc::Term<chc::TermVarIdx>, to: chc::Term<chc::TermVarIdx>| {
+                let pair = chc::Term::mut_(from, to);
+                formula_fn.formula().clone().subst_var(|_| pair.clone())
+            };
+            let laws = explicit_laws(closure_ty, upvars_sort, &related);
+            for clause in laws {
+                self.system.borrow_mut().push_clause(clause);
+            }
+        }
+        Some(apply(from, to))
+    }
+
+    /// The generic arguments of a `closure!` specification's formula function at the closure
+    /// arguments `closure_args`: none when it is lifted without the enclosing generics, and the
+    /// closure's parent arguments when `#[thrust_macros::context]` re-declared them on it.
+    pub(super) fn closure_spec_args(
+        &self,
+        formula_def_id: LocalDefId,
+        closure_args: mir_ty::GenericArgsRef<'tcx>,
+    ) -> mir_ty::GenericArgsRef<'tcx> {
+        if self.tcx.generics_of(formula_def_id).count() == 0 {
+            return self.tcx.mk_args(&[]);
+        }
+        self.tcx.mk_args(closure_args.as_closure().parent_args())
+    }
 }
