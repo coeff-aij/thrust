@@ -224,14 +224,13 @@ fn unbox_user_defined_pred_def(user_defined_pred_def: UserDefinedPredDef) -> Use
     }
 }
 
-/// The type parameters stay as they are: they name the predicate, and the predicate at `Box<T>`
-/// is another one than at `T`, which an impl may define differently.
 fn unbox_forall_pred_var_def(pred: ForallPred) -> ForallPred {
+    let type_parameters = pred.type_parameters.into_iter().map(unbox_sort).collect();
     let params = pred.params.into_iter().map(unbox_sort).collect();
     ForallPred {
         inner: pred.inner,
         type_arguments: pred.type_arguments,
-        type_parameters: pred.type_parameters,
+        type_parameters,
         params,
         result: unbox_sort(pred.result),
     }
