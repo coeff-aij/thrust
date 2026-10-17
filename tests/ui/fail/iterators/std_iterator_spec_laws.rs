@@ -4,7 +4,8 @@
 
 // The bodies of the injected std.rs are not analyzed in the crates it is injected into. Compiled
 // here as an ordinary source file, its bodies are checked: each `IteratorSpec` impl proves
-// `produces_refl` and `produces_trans` with an empty body.
+// `produces_refl` and `produces_trans` with an empty body, except the `produces_trans` of `Filter`
+// and `Chain`, which are trusted (std.rs says why).
 // On fptprove 2493045c3 the `produces_trans` of `Enumerate` and `Zip` time out: their `produces`
 // states the inner iterators' history under an existential, whose witness that build does not find.
 // Fail twin: one more impl, whose `produces` bounds the end state even when nothing is produced
