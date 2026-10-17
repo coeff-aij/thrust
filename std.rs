@@ -2488,6 +2488,11 @@ fn _extern_spec_iterator_enumerate<I>(it: I) -> core::iter::Enumerate<I>
     <I as std::iter::Iterator>::enumerate(it)
 }
 
+// When both iterators are `TrustedRandomAccess` (slice iterators and the adapters over them,
+// `Map` included), std's `Zip::next` steps neither of them and answers `None` once it has handed
+// out as many items as the shorter one has, so `completed` also allows the zip unchanged at a
+// point where one of the two could complete. A `Map` over the longer side then runs its closure
+// once less than the general `Zip::next` would.
 #[thrust_macros::context]
 impl<A, B> IteratorSpec for core::iter::Zip<A, B>
 where
@@ -2519,6 +2524,11 @@ where
             || thrust_models::exists(|x: <A::Item as thrust_models::Model>::Ty|
                 A::produces((*self).0, thrust_models::model::Seq::singleton(x), (!self).0)
                     && B::completed(thrust_models::model::Mut::new((*self).1, (!self).1)))
+            || (*self == !self
+                && (thrust_models::exists(|a: <A as thrust_models::Model>::Ty|
+                        A::completed(thrust_models::model::Mut::new((*self).0, a)))
+                    || thrust_models::exists(|b: <B as thrust_models::Model>::Ty|
+                        B::completed(thrust_models::model::Mut::new((*self).1, b)))))
     }
 
     fn produces_refl(a: &Self) {}
@@ -2592,6 +2602,8 @@ fn _extern_spec_iterator_skip<I>(it: I, n: usize) -> core::iter::Skip<I>
     <I as std::iter::Iterator>::skip(it, n)
 }
 
+// `next` counts down before it asks the inner iterator, but `try_fold` and `advance_by` do not
+// count the call on which the inner iterator runs out, so `completed` allows either count.
 #[thrust_macros::context]
 impl<I> IteratorSpec for core::iter::Take<I>
 where
@@ -2612,7 +2624,7 @@ where
     fn completed(&mut self) -> bool {
         ((*self).1 == 0 && *self == !self)
             || ((*self).1 > 0
-                && (*self).1 == (!self).1 + 1
+                && ((*self).1 == (!self).1 + 1 || (*self).1 == (!self).1)
                 && I::completed(thrust_models::model::Mut::new((*self).0, (!self).0)))
     }
 
