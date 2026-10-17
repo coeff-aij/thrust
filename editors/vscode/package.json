@@ -1,0 +1,94 @@
+{
+  "name": "thrust-vscode",
+  "displayName": "Thrust",
+  "description": "Runs the Thrust verifier on a Rust file and shows its report: refuted obligations with counterexamples, inferred contracts and loop invariants.",
+  "version": "0.0.1",
+  "publisher": "thrust-prototype",
+  "license": "MIT OR Apache-2.0",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/coeff-aij/thrust"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Linters"
+  ],
+  "activationEvents": [
+    "onLanguage:rust"
+  ],
+  "main": "./out/src/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "thrust.verifyFile",
+        "title": "Thrust: Verify current file"
+      },
+      {
+        "command": "thrust.showOutput",
+        "title": "Thrust: Show output"
+      }
+    ],
+    "configuration": {
+      "title": "Thrust",
+      "properties": {
+        "thrust.command": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["thrust-rustc"],
+          "description": "The program running Thrust and its leading arguments, for example [\"rustup\", \"run\", \"nightly-2025-09-08\", \"/path/to/thrust-rustc\"]. The extension appends the extra arguments, --error-format=json, --out-dir and the file."
+        },
+        "thrust.extraArgs": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["-Awarnings", "-C", "debug-assertions=off"],
+          "description": "Arguments passed before the file, for example [\"--crate-type\", \"lib\"] for a file without main."
+        },
+        "thrust.env": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "default": {},
+          "description": "Environment variables for the run, for example THRUST_SOLVER_TIMEOUT_SECS."
+        },
+        "thrust.split": {
+          "type": "number",
+          "default": 0,
+          "description": "THRUST_SPLIT: solve the parts of the constraints on their own, that many at a time. 0 solves one query."
+        },
+        "thrust.cacheDir": {
+          "type": "string",
+          "default": "",
+          "description": "THRUST_CACHE_DIR, relative to the workspace folder: keeps the verdict of each part between runs. Empty keeps nothing."
+        },
+        "thrust.verifyOnSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Verify a Rust file when it is saved."
+        },
+        "thrust.timeoutSecs": {
+          "type": "number",
+          "default": 300,
+          "description": "Seconds after which a run is stopped."
+        },
+        "thrust.inlayHints": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the inferred contracts and invariants and the counterexample's facts as inlay hints at the end of their lines."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "test": "npm run compile && node --test out/test/",
+    "package": "npx --yes @vscode/vsce@2.24.0 package --skip-license"
+  },
+  "devDependencies": {
+    "@types/node": "18.19.31",
+    "@types/vscode": "1.85.0",
+    "typescript": "5.6.3"
+  }
+}

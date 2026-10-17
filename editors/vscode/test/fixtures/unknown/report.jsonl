@@ -1,0 +1,14 @@
+{"kind":"site","fn":"mul","site":"contract","span":"unknown.rs:1:1","over":"x: int, y: int, result: int","template":"fn mul(x: int, y: {int | mul.pre x y}) -> {int | mul.post x y result}","preds":[{"name":"mul.pre","args":["x","y"]},{"name":"mul.post","args":["x","y","result"]}],"solution":null,"inferred":null}
+{"kind":"site","fn":"mul","site":"loop","span":"unknown.rs:4:11","over":"x: int, y: int, r: int, i: int, old(x): int, old(y): int","template":"mul.loop#1(x: int, y: int, r: int, i: int, old(x): int, old(y): int)","preds":[{"name":"mul.loop#1","args":["x","y","r","i","old(x)","old(y)"]}],"solution":null,"inferred":null}
+{"kind":"site","fn":"mul","site":"bb0","span":"unknown.rs:4:5","over":"x: int, y: int, old(x): int, old(y): int","template":"mul.bb0(x: int, y: int, old(x): int, old(y): int)","preds":[{"name":"mul.bb0","args":["x","y","old(x)","old(y)"]}],"solution":null,"inferred":null}
+{"kind":"constraint","id":"c0","fn":"mul","loop":null,"span":"unknown.rs:4:5","obligation":"loop entry","premises":["r = 0","i = 0","mul.bb0 x y x y"],"conclusion":"mul.loop#1 x y r i x y"}
+{"kind":"constraint","id":"c1","fn":"mul","loop":null,"span":"unknown.rs:9:2","obligation":"return value","premises":["mul.loop#1 x y r i x y","i >= y"],"conclusion":"mul.post x y r"}
+{"kind":"constraint","id":"c3","fn":"mul","loop":null,"span":"unknown.rs:1:1","obligation":"function entry","premises":["mul.pre x y"],"conclusion":"mul.bb0 x y x y"}
+{"kind":"constraint","id":"c2","fn":"mul","loop":"unknown.rs:4:11","span":"unknown.rs:4:5","obligation":"loop preservation","premises":["mul.loop#1 x y r i x y","i < y","°__tmp_mir_mul_7 = r + x","°__tmp_mir_mul_8 = i + 1"],"conclusion":"mul.loop#1 x y °__tmp_mir_mul_7 °__tmp_mir_mul_8 x y"}
+{"kind":"constraint","id":"c4","fn":"main","loop":null,"span":"unknown.rs:12:13","obligation":"argument of `mul`","premises":[],"conclusion":"mul.pre 7 9"}
+{"kind":"constraint","id":"c5","fn":"main","loop":null,"span":"unknown.rs:12:13","obligation":"after call to `mul`","premises":["mul.post 7 9 a"],"conclusion":"main.mul#1 a"}
+{"kind":"constraint","id":"c6","fn":"main","loop":null,"span":"unknown.rs:13:13","obligation":"argument of `mul`","premises":["main.mul#1 a"],"conclusion":"mul.pre 9 7"}
+{"kind":"constraint","id":"c7","fn":"main","loop":null,"span":"unknown.rs:13:13","obligation":"after call to `mul`","premises":["main.mul#1 a","mul.post 9 7 b"],"conclusion":"main.mul#2 b a"}
+{"kind":"constraint","id":"c8","fn":"main","loop":null,"span":"unknown.rs:15:2","obligation":"return value","premises":["main.mul#2 b a","main.mul#1 a","a * b = 3969"],"conclusion":"main.post"}
+{"kind":"constraint","id":"c9","fn":"main","loop":null,"span":"unknown.rs:14:5","obligation":"assertion","premises":["main.mul#2 b a","main.mul#1 a"],"conclusion":"a * b = 3969"}
+{"kind":"constraint","id":"c10","fn":"main","loop":null,"span":"unknown.rs:11:1","obligation":"function entry","premises":[],"conclusion":"main.bb0"}

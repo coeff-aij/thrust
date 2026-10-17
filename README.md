@@ -258,6 +258,8 @@ The unknowns are named after their templates: `f.pre` and `f.post` (`f.pre_x` wh
 
 Formulas are written as Thrust prints its constraints: `∧`, `∨`, `¬`, `==>`, `=`, `*x` and `°x` for the current and final values of a `&mut x`, `<c, f>` for a pair of them, and an unknown applied as `p x y`. A pair or a tuple equated with another is shown as its components equated, a comparison equated with `true` or `false` as the comparison or its negation, a negated comparison as the opposite one, and a component of a tuple written out as that component. `solution`, `inferred` and `failure` need the default `z3` solver, which is asked for a model or a refutation along with its verdict; with another solver the report says so. `THRUST_REPORT_FORMAT=json` writes the report as JSON lines, one object per template, constraint and failure, to `THRUST_REPORT_FILE` (default: standard output), and `THRUST_REPORT_ONLY` limits it to the functions it selects, written as for `THRUST_VERIFY_ONLY`. Unset, nothing is reported. The report is separate from `RUST_LOG`, whose log follows the analysis rather than the program.
 
+[editors/vscode](editors/vscode/README.md) is a prototype VS Code extension that runs Thrust on the file in the editor and shows the JSON report at the code: refuted obligations with their values as diagnostics, inferred contracts and invariants as inlay hints, the verdict in the status bar.
+
 ## Configuration
 
 Several environment variables are used by Thrust to configure its behavior:
