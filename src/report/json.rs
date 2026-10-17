@@ -44,6 +44,8 @@ enum Line<'a> {
         r#fn: Option<&'a str>,
         span: Option<String>,
         obligation: Option<&'a str>,
+        premises: Option<&'a [String]>,
+        conclusion: Option<&'a str>,
         run: Vec<Step>,
         truncated: bool,
         values: Vec<Value>,
@@ -155,6 +157,8 @@ impl Json<'_, '_> {
                 .and_then(|(_, c)| c.span)
                 .map(|s| location(self.tcx, s)),
             obligation: found.map(|(_, c)| c.kind.as_str()),
+            premises: found.map(|(_, c)| c.premises.as_slice()),
+            conclusion: found.map(|(_, c)| c.conclusion.as_str()),
             run,
             truncated: failure.truncated,
             values: found
