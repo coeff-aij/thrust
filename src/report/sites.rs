@@ -19,7 +19,7 @@ use crate::rty;
 
 use super::body::DefBody;
 use super::constraints::Provenance;
-use super::expr::{self, Expr};
+use super::expr::{self, Expr, PredHead};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SiteKind {
@@ -58,6 +58,12 @@ pub struct PredInfo {
     pub name: String,
     /// What each argument stands for in the template, if it is a variable of the template.
     pub args: Vec<Option<String>>,
+    /// How many of the first arguments are the values the template refines (the result of a
+    /// call), the rest being what they may depend on.
+    pub results: usize,
+    /// The order the arguments are shown in, when not their own: that of the variables of the
+    /// template the predicate variable is the whole of (see [`Site::signature`]).
+    pub order: Option<Vec<usize>>,
     pub owner: Owner,
 }
 
@@ -76,6 +82,10 @@ pub struct Site {
     pub span: Span,
     pub params: Vec<SiteParam>,
     pub preds: Vec<chc::PredVarId>,
+    /// The predicate variable that is the whole template, applied to every variable in the order
+    /// of `params`, when there is one: the template is then shown as its signature,
+    /// `main.loop#1(x: i64, y: i64)`.
+    pub signature: Option<chc::PredVarId>,
 }
 
 /// Where each predicate variable was made.
@@ -113,11 +123,39 @@ impl Names {
         }
     }
 
-    pub fn pred_name(&self, p: chc::PredVarId) -> String {
-        self.preds
-            .get(&p)
-            .map(|info| info.name.clone())
-            .unwrap_or_else(|| p.to_string())
+    /// How `p` is shown.
+    pub fn pred_head(&self, p: chc::PredVarId) -> PredHead {
+        match self.preds.get(&p) {
+            Some(info) => PredHead {
+                name: info.name.clone(),
+                results: info.results,
+                order: info.order.clone(),
+            },
+            None => PredHead {
+                name: p.to_string(),
+                results: 0,
+                order: None,
+            },
+        }
+    }
+
+    /// Names the arguments of the predicate variable `name` that its template leaves unnamed after
+    /// `args`, its arguments in the head of a constraint of the code that made it.
+    pub fn name_args_after(&mut self, name: &str, args: &[Expr]) {
+        let Some(info) = self.preds.values_mut().find(|info| info.name == name) else {
+            return;
+        };
+        if info.args.len() < args.len() {
+            info.args.resize(args.len(), None);
+        }
+        for (slot, arg) in info.args.iter_mut().zip(args) {
+            match arg {
+                Expr::Sym(s) if slot.is_none() && !s.starts_with("__tmp_chc_") => {
+                    *slot = Some(s.clone());
+                }
+                _ => {}
+            }
+        }
     }
 
     fn made_in_contract(&self, p: chc::PredVarId, def: LocalDefId) -> bool {
@@ -137,7 +175,7 @@ impl Names {
     /// for as far as the code tells.
     pub fn name_rest(
         &mut self,
-        name_of: impl Fn(LocalDefId, Option<BasicBlock>) -> Option<(String, Vec<Option<String>>)>,
+        name_of: impl Fn(LocalDefId, Option<BasicBlock>) -> Option<(String, Vec<Option<String>>, usize)>,
     ) {
         let mut rest: Vec<_> = self
             .made
@@ -148,7 +186,7 @@ impl Names {
         rest.sort_by_key(|(p, _, _)| p.index());
         let mut counts: HashMap<String, usize> = HashMap::new();
         for (p, def, bb) in rest {
-            let Some((base, args)) = name_of(def, bb) else {
+            let Some((base, args, results)) = name_of(def, bb) else {
                 continue;
             };
             let count = counts.entry(base.clone()).or_default();
@@ -161,11 +199,24 @@ impl Names {
             let info = PredInfo {
                 name,
                 args,
+                results,
+                order: None,
                 owner: Owner::Other { def },
             };
             self.preds.insert(p, info);
         }
     }
+}
+
+/// The type as the program writes it: a local the analysis holds behind an owned pointer
+/// (`own T`) is a `T`.
+fn rust_type(ty: &str) -> String {
+    ty.strip_prefix("own ").unwrap_or(ty).to_owned()
+}
+
+/// An existential of a refinement, which Thrust introduces in typing a value.
+fn existential_name(e: rty::ExistentialVarIdx) -> String {
+    format!("__tmp_rty_{e}")
 }
 
 fn pred_vars<V>(
@@ -195,7 +246,7 @@ fn var_name(
             .get(idx.index())
             .map(|(n, _)| n.clone())
             .unwrap_or_else(|| idx.to_string()),
-        rty::RefinedTypeVar::Existential(e) => e.to_string(),
+        rty::RefinedTypeVar::Existential(e) => existential_name(*e),
     }
 }
 
@@ -239,6 +290,8 @@ fn name_preds(
         let info = PredInfo {
             name: name_of(k, found.len(), own),
             args,
+            results: 0,
+            order: None,
             owner: owner_of(*i),
         };
         names.preds.insert(*p, info);
@@ -254,13 +307,13 @@ fn render_refinement(
     refinement: &rty::Refinement<rty::FunctionParamIdx>,
 ) -> Expr {
     let name = |v: &rty::RefinedTypeVar<rty::FunctionParamIdx>| var_name(params, own, v);
-    let body = expr::of_body(&refinement.body, &name, &|p| names.pred_name(p));
+    let body = expr::of_body(&refinement.body, &name, &|p| names.pred_head(p));
     if !refinement.has_existentials() {
         return body;
     }
     let vars = refinement
         .existentials()
-        .map(|(e, sort)| (e.to_string(), sort.display().to_string()))
+        .map(|(e, sort)| (existential_name(e), sort.display().to_string()))
         .collect();
     Expr::Quant("exists", vars, Box::new(body))
 }
@@ -270,7 +323,7 @@ fn site_params(names: &Names, params: &[Param<'_>]) -> Vec<SiteParam> {
         .iter()
         .map(|(own, ty)| SiteParam {
             name: own.clone(),
-            ty: ty.ty.display().to_string(),
+            ty: rust_type(&ty.ty.display().to_string()),
             refinement: render_refinement(names, params, own, &ty.refinement),
         })
         .collect()
@@ -318,6 +371,7 @@ pub fn contract_site(
         span,
         params: site_params(names, &params),
         preds,
+        signature: None,
     })
 }
 
@@ -339,8 +393,8 @@ fn block_param_names(body: &DefBody<'_>, ty: &BasicBlockType) -> Vec<String> {
                     name
                 }
             }
-            BasicBlockTypeParamKind::Synthetic => format!("_synthetic{}", idx.index()),
-            BasicBlockTypeParamKind::Captured => format!("_captured{}", idx.index()),
+            BasicBlockTypeParamKind::Synthetic => format!("__tmp_thrust_synthetic{}", idx.index()),
+            BasicBlockTypeParamKind::Captured => format!("__tmp_thrust_captured{}", idx.index()),
         })
         .collect()
 }
@@ -352,7 +406,6 @@ pub fn block_site(
     def: LocalDefId,
     body: &DefBody<'_>,
     bb: BasicBlock,
-    line: usize,
     ty: &BasicBlockType,
 ) -> Option<Site> {
     let fn_ty: &rty::FunctionType = ty.as_ref();
@@ -360,11 +413,11 @@ pub fn block_site(
         .into_iter()
         .zip(fn_ty.params.iter())
         .collect();
-    let is_loop = body.is_loop_header(bb);
-    let base = if is_loop {
-        format!("{fn_name}.loop@{line}")
-    } else {
-        format!("{fn_name}.{bb:?}")
+    let loop_number = body.loop_number(bb);
+    let is_loop = loop_number.is_some();
+    let base = match loop_number {
+        Some(n) => format!("{fn_name}.loop#{n}"),
+        None => format!("{fn_name}.{bb:?}"),
     };
     let preds = name_preds(
         names,
@@ -383,6 +436,12 @@ pub fn block_site(
         return None;
     }
     let span = body.span(bb, None)?;
+    let signature = whole_template(&params).filter(|(p, _)| preds.contains(p));
+    if let Some((p, order)) = &signature {
+        let info = names.preds.get_mut(p).unwrap();
+        info.args = params.iter().map(|(own, _)| Some(own.clone())).collect();
+        info.order = Some(order.clone());
+    }
     Some(Site {
         kind: if is_loop {
             SiteKind::Loop(bb)
@@ -392,5 +451,60 @@ pub fn block_site(
         span,
         params: site_params(names, &params),
         preds,
+        signature: signature.map(|(p, _)| p),
     })
+}
+
+/// The predicate variable that is the whole template over `params`, with the order to show its
+/// arguments in so that they follow `params`: one parameter's refinement is that variable applied
+/// to every parameter once, and the others' are `true`.
+fn whole_template(params: &[Param<'_>]) -> Option<(chc::PredVarId, Vec<usize>)> {
+    let mut found = None;
+    for (i, (_, ty)) in params.iter().enumerate() {
+        let refinement = &ty.refinement;
+        if refinement.is_top() {
+            continue;
+        }
+        let ([atom], true, false) = (
+            refinement.body.atoms.as_slice(),
+            refinement.body.formula.is_top(),
+            refinement.has_existentials(),
+        ) else {
+            return None;
+        };
+        let chc::Pred::Var(p) = atom.pred else {
+            return None;
+        };
+        if found.is_some() {
+            return None;
+        }
+        // The parameter each argument is.
+        let positions: Option<Vec<usize>> = atom
+            .args
+            .iter()
+            .map(|arg| {
+                let var = match arg {
+                    chc::Term::Var(v) => v,
+                    chc::Term::BoxCurrent(inner) => match &**inner {
+                        chc::Term::Var(v) => v,
+                        _ => return None,
+                    },
+                    _ => return None,
+                };
+                match var {
+                    rty::RefinedTypeVar::Value => Some(i),
+                    rty::RefinedTypeVar::Free(idx) => Some(idx.index()),
+                    rty::RefinedTypeVar::Existential(_) => None,
+                }
+            })
+            .collect();
+        found = Some((p, positions?));
+    }
+    let (p, positions) = found?;
+    // Every parameter once: the k-th shown is the argument at the position holding parameter k.
+    let order: Option<Vec<usize>> = (0..params.len())
+        .map(|k| positions.iter().position(|&q| q == k))
+        .collect();
+    let order = order?;
+    (positions.len() == params.len()).then_some((p, order))
 }

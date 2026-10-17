@@ -17,10 +17,19 @@ pub(super) struct Solution {
 impl Solution {
     pub(super) fn new(model: &str, names: &Names) -> Self {
         let model = model::read(model);
+        // An interpretation takes the arguments in the order they are shown.
         let by_name = names
             .preds
             .iter()
-            .filter_map(|(p, info)| Some((info.name.clone(), model.get(&p.to_string())?.clone())))
+            .filter_map(|(p, info)| {
+                let interpretation = model.get(&p.to_string())?;
+                let params = names.pred_head(*p).arrange(&interpretation.params);
+                let arranged = Interpretation {
+                    params,
+                    body: interpretation.body.clone(),
+                };
+                Some((info.name.clone(), arranged))
+            })
             .collect();
         Solution { by_name }
     }
@@ -37,6 +46,13 @@ impl Solution {
                 }
             }
             Expr::Quant(q, vars, body) => Expr::Quant(q, vars.clone(), Box::new(self.apply(body))),
+            Expr::Pred(p, results, args) => {
+                let args: Vec<Expr> = args.iter().map(|a| self.apply(a)).collect();
+                match self.by_name.get(p) {
+                    Some(interpretation) => interpretation.apply(&args),
+                    None => Expr::Pred(p.clone(), *results, args),
+                }
+            }
         }
     }
 
@@ -57,12 +73,10 @@ impl Solution {
                         _ => format!("x{k}"),
                     })
                     .collect();
-                let head = format!("{}({})", info.name, args.join(", "));
+                let args: Vec<Expr> = args.into_iter().map(Expr::sym).collect();
+                let head = Expr::Pred(info.name.clone(), info.results, args.clone());
                 match self.by_name.get(&info.name) {
-                    Some(interpretation) => {
-                        let args: Vec<Expr> = args.iter().map(|a| Expr::sym(a.clone())).collect();
-                        format!("{head} := {}", interpretation.apply(&args))
-                    }
+                    Some(interpretation) => format!("{head} := {}", interpretation.apply(&args)),
                     None => format!("{head}: not in the query"),
                 }
             })
@@ -108,9 +122,18 @@ pub(super) fn signature(name: &str, site: &Site, f: &impl Fn(&Expr) -> Expr) -> 
     )
 }
 
-/// The template of a block site as one formula over its parameters, passed through `f`.
+/// The template of a block site as one formula over its variables, passed through `f`.
 pub(super) fn invariant(site: &Site, f: &impl Fn(&Expr) -> Expr) -> Expr {
     Expr::and(site.params.iter().map(|p| f(&p.refinement)).collect())
+}
+
+/// The template of a block site: the signature of the predicate variable that is the whole of it,
+/// `main.loop#1(x: i64, y: i64)`, or else a closure over its variables, as `invariant!` takes it.
+pub(super) fn block_template(site: &Site, names: &Names) -> String {
+    match site.signature {
+        Some(p) => format!("{}({})", names.pred_head(p).name, over(site)),
+        None => format!("|{}| {}", over(site), invariant(site, &|e| e.clone())),
+    }
 }
 
 pub(super) fn over(site: &Site) -> String {

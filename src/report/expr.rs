@@ -14,6 +14,9 @@ pub enum Expr {
     Sym(String),
     App(String, Vec<Expr>),
     Quant(&'static str, Vec<(String, String)>, Box<Expr>),
+    /// A predicate variable applied to its arguments, the first `results` of which are the values
+    /// its template refines and the rest what it may depend on; printed `p(r; x, y)`.
+    Pred(String, usize, Vec<Expr>),
 }
 
 impl Expr {
@@ -72,6 +75,11 @@ impl Expr {
                 }
                 Expr::Quant(q, vars.clone(), Box::new(body.subst(&inner)))
             }
+            Expr::Pred(p, results, args) => Expr::Pred(
+                p.clone(),
+                *results,
+                args.iter().map(|a| a.subst(subst)).collect(),
+            ),
         }
     }
 
@@ -82,7 +90,7 @@ impl Expr {
     pub fn count(&self, sym: &str) -> usize {
         match self {
             Expr::Sym(s) => usize::from(s == sym),
-            Expr::App(_, args) => args.iter().map(|a| a.count(sym)).sum(),
+            Expr::App(_, args) | Expr::Pred(_, _, args) => args.iter().map(|a| a.count(sym)).sum(),
             Expr::Quant(_, vars, body) if vars.iter().all(|(v, _)| v != sym) => body.count(sym),
             Expr::Quant(..) => 0,
         }
@@ -98,6 +106,9 @@ impl Expr {
         let e = match self {
             Expr::App(f, args) => Expr::App(f, args.into_iter().map(Expr::normalize).collect()),
             Expr::Quant(q, vars, body) => Expr::Quant(q, vars, Box::new(body.normalize())),
+            Expr::Pred(p, results, args) => {
+                Expr::Pred(p, results, args.into_iter().map(Expr::normalize).collect())
+            }
             e => e,
         };
         let Expr::App(f, args) = e else {
@@ -182,11 +193,31 @@ pub fn of_term<V: chc::Var>(term: &chc::Term<V>, name: &impl Fn(&V) -> String) -
     }
 }
 
-/// Reads an atom, naming each predicate variable by `pred_name`.
+/// How a predicate variable is shown: its name, how many of its first arguments are results, and
+/// the order its arguments are shown in when it is not their own (the `i`-th shown is the
+/// `order[i]`-th).
+pub struct PredHead {
+    pub name: String,
+    pub results: usize,
+    pub order: Option<Vec<usize>>,
+}
+
+impl PredHead {
+    pub fn arrange<T: Clone>(&self, args: &[T]) -> Vec<T> {
+        match &self.order {
+            Some(order) if order.len() == args.len() => {
+                order.iter().map(|&k| args[k].clone()).collect()
+            }
+            _ => args.to_vec(),
+        }
+    }
+}
+
+/// Reads an atom, showing each predicate variable as `pred_head` says.
 pub fn of_atom<V: chc::Var>(
     atom: &chc::Atom<V>,
     name: &impl Fn(&V) -> String,
-    pred_name: &impl Fn(chc::PredVarId) -> String,
+    pred_name: &impl Fn(chc::PredVarId) -> PredHead,
 ) -> Expr {
     let args = atom.args.iter().map(|t| of_term(t, name)).collect();
     let applied = match &atom.pred {
@@ -194,7 +225,11 @@ pub fn of_atom<V: chc::Var>(
         chc::Pred::Known(p) if p.is_bottom() => Expr::sym("false"),
         chc::Pred::Known(p) if p.is_negative() => Expr::app("not", vec![Expr::app(p.name(), args)]),
         chc::Pred::Known(p) => Expr::app(p.name(), args),
-        chc::Pred::Var(p) => Expr::app(pred_name(*p), args),
+        chc::Pred::Var(p) => {
+            let head = pred_name(*p);
+            let args = head.arrange(&args);
+            Expr::Pred(head.name, head.results, args)
+        }
         chc::Pred::Tester(c) => Expr::app(format!("is_{c}"), args),
         pred => Expr::app(pred.to_string(), args),
     };
@@ -207,7 +242,7 @@ pub fn of_atom<V: chc::Var>(
 pub fn of_formula<V: chc::Var>(
     formula: &chc::Formula<V>,
     name: &impl Fn(&V) -> String,
-    pred_name: &impl Fn(chc::PredVarId) -> String,
+    pred_name: &impl Fn(chc::PredVarId) -> PredHead,
 ) -> Expr {
     use chc::Formula;
     let all = |fs: &[Formula<V>]| {
@@ -250,7 +285,7 @@ pub fn of_formula<V: chc::Var>(
 pub fn of_body<V: chc::Var>(
     body: &chc::Body<V>,
     name: &impl Fn(&V) -> String,
-    pred_name: &impl Fn(chc::PredVarId) -> String,
+    pred_name: &impl Fn(chc::PredVarId) -> PredHead,
 ) -> Expr {
     let atoms = body.atoms.iter().map(|a| of_atom(a, name, pred_name));
     Expr::and(
@@ -293,7 +328,7 @@ fn infix(f: &str) -> Option<(&'static str, u8)> {
 impl Expr {
     fn prec(&self) -> u8 {
         match self {
-            Expr::Sym(_) | Expr::Quant(..) => POSTFIX,
+            Expr::Sym(_) | Expr::Quant(..) | Expr::Pred(..) => POSTFIX,
             Expr::App(f, args) => match (f.as_str(), args.len()) {
                 ("not" | "-" | "deref" | "final", 1) => UNARY,
                 ("ite", 3) => 0,
@@ -323,6 +358,19 @@ impl Expr {
                 }
                 write!(f, "| ")?;
                 body.fmt_at(f, 0)?;
+                return write!(f, ")");
+            }
+            Expr::Pred(p, results, args) => {
+                write!(f, "{p}(")?;
+                for (i, x) in args.iter().enumerate() {
+                    let sep = match i {
+                        0 => "",
+                        i if i == *results => "; ",
+                        _ => ", ",
+                    };
+                    write!(f, "{sep}")?;
+                    x.fmt_at(f, 0)?;
+                }
                 return write!(f, ")");
             }
             Expr::App(head, args) => (head.as_str(), args.as_slice()),
@@ -498,6 +546,14 @@ mod tests {
             )],
         );
         assert_eq!(e.normalize().to_string(), "2 * i - s > -1");
+    }
+
+    #[test]
+    fn separates_the_results_of_a_predicate() {
+        let e = Expr::Pred("main.rand#1".into(), 1, vec![s("r"), s("x"), s("y")]);
+        assert_eq!(e.to_string(), "main.rand#1(r; x, y)");
+        let e = Expr::Pred("main.loop#1".into(), 0, vec![s("x"), s("y")]);
+        assert_eq!(e.to_string(), "main.loop#1(x, y)");
     }
 
     #[test]

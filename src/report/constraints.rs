@@ -206,7 +206,9 @@ fn candidate_names(
         if Some(info.owner.def()) != def {
             continue;
         }
-        for (arg, name) in atom.args.iter().zip(&info.args) {
+        // `info.args` follows the order the arguments are shown in.
+        let shown = names.pred_head(p).arrange(&atom.args);
+        for (arg, name) in shown.iter().zip(&info.args) {
             if let (chc::Term::Var(v), Some(name)) = (arg, name) {
                 candidates.push((*v, name.clone()));
             }
@@ -237,12 +239,15 @@ fn candidate_names(
 /// are merged, a variable without a name that a premise defines is replaced by its definition,
 /// and a goal's negated premise becomes its conclusion.
 fn render(
+    id: chc::ClauseId,
     clause: &chc::Clause,
     def: Option<LocalDefId>,
     names: &Names,
     body: Option<&DefBody<'_>>,
 ) -> (Vec<Expr>, Expr) {
-    let pred_name = |p| names.pred_name(p);
+    let pred_name = |p| names.pred_head(p);
+    // A variable of the clause the program does not name: `__tmp_chc_c<clause>_<n>`.
+    let unnamed_name = |class: usize| format!("__tmp_chc_{id:?}_{class}");
     let sym = |v: &chc::TermVarIdx| var_sym(*v);
     let mut premises: Vec<Expr> = clause
         .body
@@ -292,7 +297,7 @@ fn render(
         let name = class_name
             .get(&class)
             .cloned()
-            .unwrap_or_else(|| format!("v{class}"));
+            .unwrap_or_else(|| unnamed_name(class));
         subst.insert(var_sym(v), Expr::sym(name));
     }
     premises = premises.iter().map(|p| p.subst(&subst)).collect();
@@ -304,7 +309,7 @@ fn render(
         .indices()
         .map(|v| classes.find(v.index()))
         .filter(|class| !class_name.contains_key(class))
-        .map(|class| format!("v{class}"))
+        .map(unnamed_name)
         .collect();
     while let Some((i, var, definition)) = premises.iter().enumerate().find_map(|(i, p)| {
         let Expr::App(f, args) = p else {
@@ -357,7 +362,7 @@ pub fn constraint(
             .map(|def| tcx.def_span(def.to_def_id()).source_callsite()),
     };
     let kind = kind(tcx, clause, &provenance, body, names);
-    let (premises, conclusion) = render(clause, provenance.def, names, body);
+    let (premises, conclusion) = render(id, clause, provenance.def, names, body);
     Constraint {
         id,
         span,

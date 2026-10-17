@@ -6,10 +6,9 @@ use rustc_span::Span;
 use crate::chc;
 
 use super::constraints::Constraint;
-use super::expr::Expr;
 use super::failure::Failure;
 use super::sites::{Names, Site, SiteKind};
-use super::solution::{contract_help, invariant, over, signature, Solution};
+use super::solution::{block_template, contract_help, invariant, over, signature, Solution};
 use super::{constraint_of, location, Entry, Items};
 
 pub(super) fn constraint_line(tcx: TyCtxt<'_>, c: &Constraint) -> String {
@@ -29,45 +28,13 @@ pub(super) struct Human<'a, 'tcx> {
 
 impl Human<'_, '_> {
     fn site_notes(&self, notes: &mut Vec<Note>, entry: &Entry<'_>, site: &Site) {
-        let id = |e: &Expr| e.clone();
-        let is_contract = site.kind == SiteKind::Contract;
-        let mut lines = Vec::new();
-        if self.items.template {
-            let template = if is_contract {
-                signature(&entry.name, site, &id)
-            } else {
-                invariant(site, &id).to_string()
-            };
-            lines.push(format!("template: {template}"));
-        }
-        let wants_solution = self.items.solution || self.items.inferred;
-        let solution = match &self.solution {
-            Ok(solution) => Some(solution),
-            Err(why) => {
-                if wants_solution {
-                    lines.push((*why).to_owned());
-                }
-                None
-            }
+        let lines = match (site.kind, site.signature) {
+            (SiteKind::Contract, _) => self.contract_lines(entry, site),
+            (_, Some(_)) => self.signature_lines(site),
+            (_, None) => self.block_lines(site),
         };
-        if let (Some(solution), true) = (solution, self.items.solution) {
-            let solved = solution.lines(site, self.names);
-            lines.push(format!("solution: {}", solved.join("\n          ")));
-        }
-        if let (Some(solution), true) = (solution, self.items.inferred) {
-            let apply = |e: &Expr| solution.apply(e);
-            let inferred = if is_contract {
-                signature(&entry.name, site, &apply)
-            } else {
-                invariant(site, &apply).to_string()
-            };
-            lines.push(format!("inferred: {inferred}"));
-        }
         if lines.is_empty() {
             return;
-        }
-        if !is_contract {
-            lines.insert(0, format!("over: {}", over(site)));
         }
         let title = match site.kind {
             SiteKind::Contract => "contract (inferred)".to_owned(),
@@ -75,11 +42,79 @@ impl Human<'_, '_> {
             SiteKind::Block(bb) => format!("type of {bb:?}"),
         };
         notes.push(Note::Note(format!("{title}\n{}", lines.join("\n"))));
-        if let (Some(solution), true) = (solution, self.items.inferred && is_contract) {
+        let is_contract = site.kind == SiteKind::Contract;
+        if let (Ok(solution), true) = (&self.solution, self.items.inferred && is_contract) {
             if let Some(help) = contract_help(site, solution) {
                 notes.push(Note::Help(help));
             }
         }
+    }
+
+    /// The solution, or why there is none when one is asked for.
+    fn solution(&self, lines: &mut Vec<String>) -> Option<&Solution> {
+        match &self.solution {
+            Ok(solution) => Some(solution),
+            Err(why) => {
+                if self.items.solution || self.items.inferred {
+                    lines.push((*why).to_owned());
+                }
+                None
+            }
+        }
+    }
+
+    fn contract_lines(&self, entry: &Entry<'_>, site: &Site) -> Vec<String> {
+        let mut lines = Vec::new();
+        if self.items.template {
+            let template = signature(&entry.name, site, &|e| e.clone());
+            lines.push(format!("template: {template}"));
+        }
+        let Some(solution) = self.solution(&mut lines) else {
+            return lines;
+        };
+        if self.items.solution {
+            let solved = solution.lines(site, self.names);
+            lines.push(format!("solution: {}", solved.join("\n          ")));
+        }
+        if self.items.inferred {
+            let inferred = signature(&entry.name, site, &|e| solution.apply(e));
+            lines.push(format!("inferred: {inferred}"));
+        }
+        lines
+    }
+
+    /// A template that is one predicate variable: its signature, then its interpretation.
+    fn signature_lines(&self, site: &Site) -> Vec<String> {
+        let mut lines = Vec::new();
+        if self.items.template || self.items.solution || self.items.inferred {
+            lines.push(block_template(site, self.names));
+        }
+        let Some(solution) = self.solution(&mut lines) else {
+            return lines;
+        };
+        if self.items.solution || self.items.inferred {
+            lines.push(format!(":= {}", invariant(site, &|e| solution.apply(e))));
+        }
+        lines
+    }
+
+    fn block_lines(&self, site: &Site) -> Vec<String> {
+        let mut lines = Vec::new();
+        if self.items.template {
+            lines.push(format!("template: {}", block_template(site, self.names)));
+        }
+        let Some(solution) = self.solution(&mut lines) else {
+            return lines;
+        };
+        if self.items.solution {
+            let solved = solution.lines(site, self.names);
+            lines.push(format!("solution: {}", solved.join("\n          ")));
+        }
+        if self.items.inferred {
+            let formula = invariant(site, &|e| solution.apply(e));
+            lines.push(format!("inferred: |{}| {formula}", over(site)));
+        }
+        lines
     }
 
     fn constraint_notes(&self, notes: &mut Vec<Note>, constraints: &[Constraint]) {

@@ -116,6 +116,11 @@ fn sort_name(s: &Sexp) -> String {
     }
 }
 
+fn z3_bound_name(name: &str) -> String {
+    let name: String = name.chars().filter(|c| c.is_alphanumeric()).collect();
+    format!("__tmp_z3_model_{name}")
+}
+
 pub(super) fn to_expr(s: &Sexp) -> Expr {
     let items = match s {
         Sexp::Atom(a) => return Expr::sym(a.clone()),
@@ -132,12 +137,19 @@ pub(super) fn to_expr(s: &Sexp) -> Expr {
             to_expr(body).subst(&subst)
         }
         [Sexp::Atom(head), binds, body] if head == "forall" || head == "exists" => {
-            let vars = bindings(binds)
+            // A variable z3 binds in its answer stands for nothing in the program:
+            // `__tmp_z3_model_<its name>`.
+            let bound = bindings(binds);
+            let renamed: HashMap<String, Expr> = bound
+                .iter()
+                .map(|(name, _)| (name.clone(), Expr::sym(z3_bound_name(name))))
+                .collect();
+            let vars = bound
                 .into_iter()
-                .map(|(name, sort)| (name, sort_name(sort)))
+                .map(|(name, sort)| (z3_bound_name(&name), sort_name(sort)))
                 .collect();
             let q = if head == "forall" { "forall" } else { "exists" };
-            Expr::Quant(q, vars, Box::new(to_expr(body)))
+            Expr::Quant(q, vars, Box::new(to_expr(body).subst(&renamed)))
         }
         [Sexp::Atom(head), args @ ..] => {
             Expr::app(function_name(head), args.iter().map(to_expr).collect())
@@ -226,7 +238,10 @@ mod tests {
         let model =
             "((define-fun p0 ((x!0 Int)) Bool (exists ((y Int)) (! (= x!0 (* 2 y)) :weight 0))))";
         let applied = read(model)["p0"].apply(&[Expr::sym("n")]);
-        assert_eq!(applied.to_string(), "exists(|y: Int| n == 2 * y)");
+        assert_eq!(
+            applied.to_string(),
+            "exists(|__tmp_z3_model_y: Int| n == 2 * __tmp_z3_model_y)"
+        );
     }
 
     #[test]

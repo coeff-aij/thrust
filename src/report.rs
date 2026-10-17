@@ -36,6 +36,7 @@ use crate::rty;
 
 use body::DefBody;
 use constraints::Constraint;
+use expr::Expr;
 use human::Human;
 use json::Json;
 use sites::{Names, Site, SiteKind};
@@ -190,10 +191,6 @@ fn location(tcx: TyCtxt<'_>, span: Span) -> String {
     )
 }
 
-fn line(tcx: TyCtxt<'_>, span: Span) -> usize {
-    tcx.sess.source_map().lookup_char_pos(span.lo()).line
-}
-
 fn entries<'tcx>(
     tcx: TyCtxt<'tcx>,
     config: &Config,
@@ -246,12 +243,7 @@ fn entries<'tcx>(
         let Some(entry) = entries.get_mut(def) else {
             continue;
         };
-        let Some(span) = entry.body.span(*bb, None) else {
-            continue;
-        };
-        let line = line(tcx, span);
-        let Some(site) =
-            sites::block_site(&mut names, &entry.name, *def, &entry.body, *bb, line, ty)
+        let Some(site) = sites::block_site(&mut names, &entry.name, *def, &entry.body, *bb, ty)
         else {
             continue;
         };
@@ -264,18 +256,22 @@ fn entries<'tcx>(
             _ => {}
         }
     }
-    // The rest are made for the result of a call, the first argument standing for the result.
+    // The rest are made for the result of a call, the first argument standing for the result:
+    // `f.g#2` for the result of the second call to `g` in `f`.
     names.name_rest(|def, bb| {
         let entry = entries.get(&def)?;
         let bb = bb?;
-        let at = line(tcx, entry.body.span(bb, None)?);
-        let result = match &entry.body.terminator(bb)?.kind {
-            rustc_middle::mir::TerminatorKind::Call { destination, .. } => {
-                Some(entry.body.local_name(destination.local))
-            }
-            _ => None,
+        let rustc_middle::mir::TerminatorKind::Call { destination, .. } =
+            &entry.body.terminator(bb)?.kind
+        else {
+            return Some((format!("{}.{bb:?}", entry.name), Vec::new(), 0));
         };
-        Some((format!("{}.call@{at}", entry.name), vec![result]))
+        let result = Some(entry.body.local_name(destination.local));
+        let name = match entry.body.call(bb) {
+            Some((callee, n)) => format!("{}.{callee}#{n}", entry.name),
+            None => format!("{}.{bb:?}", entry.name),
+        };
+        Some((name, vec![result], 1))
     });
 
     for (id, clause) in input.system.clauses.iter_enumerated() {
@@ -287,6 +283,18 @@ fn entries<'tcx>(
         match provenance.bb.and_then(|bb| entry.body.innermost_loop(bb)) {
             Some(header) => entry.loops.entry(header).or_default().1.push(constraint),
             None => entry.constraints.push(constraint),
+        }
+    }
+    // A call's result has no template naming the variables it depends on; the constraint that
+    // defines it, made at the call, names them.
+    for entry in entries.values() {
+        let in_loops = entry.loops.values().flat_map(|(_, cs)| cs);
+        for c in entry.constraints.iter().chain(in_loops) {
+            if let Expr::Pred(name, results, args) = &c.conclusion {
+                if *results > 0 {
+                    names.name_args_after(name, args);
+                }
+            }
         }
     }
     let mut entries: Vec<_> = entries.into_values().collect();

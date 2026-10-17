@@ -1,5 +1,8 @@
-//! What the report reads off the MIR of an analyzed function: the names of its locals, its loops,
-//! and the source span of a block or a statement.
+//! What the report reads off the MIR of an analyzed function: the names of its locals, its loops
+//! and calls in the order they are written, and the source span of a block or a statement.
+//!
+//! A local the program does not name (a temporary of the MIR) is named `__tmp_mir_<fn>_<n>`, after
+//! the function and its index in the MIR.
 //!
 //! The analysis rewrites statements in place (`Nop`s, places) and never renumbers blocks or
 //! statements, so a block and a statement index recorded during it locate the same code in
@@ -15,10 +18,54 @@ use rustc_span::Span;
 
 pub struct DefBody<'tcx> {
     pub body: &'tcx mir::Body<'tcx>,
+    /// The function's path as an identifier, for the names of its temporaries.
+    label: String,
     local_names: HashMap<Local, String>,
-    /// The blocks of each loop, by its header.
+    /// The blocks of each loop, by its header, the headers in the order they are written.
     loops: Vec<(BasicBlock, HashSet<BasicBlock>)>,
     innermost_loop: IndexVec<BasicBlock, Option<BasicBlock>>,
+    /// The function each call calls, by the block ending in it, and which call to that function
+    /// it is in the order they are written, from 1.
+    calls: HashMap<BasicBlock, (String, usize)>,
+}
+
+/// `path` with every run of characters that cannot be in an identifier replaced by one `_`.
+fn identifier(path: &str) -> String {
+    let mut out = String::new();
+    for c in path.chars() {
+        if c.is_alphanumeric() {
+            out.push(c);
+        } else if !out.ends_with('_') && !out.is_empty() {
+            out.push('_');
+        }
+    }
+    out.trim_end_matches('_').to_owned()
+}
+
+/// The block ending in each call and the function it calls, in the order they are written.
+fn calls(tcx: TyCtxt<'_>, body: &mir::Body<'_>) -> HashMap<BasicBlock, (String, usize)> {
+    let mut found: Vec<(BasicBlock, rustc_span::def_id::DefId, Span)> = body
+        .basic_blocks
+        .iter_enumerated()
+        .filter_map(|(bb, data)| {
+            let terminator = data.terminator.as_ref()?;
+            let mir::TerminatorKind::Call { func, .. } = &terminator.kind else {
+                return None;
+            };
+            let (callee, _) = func.const_fn_def()?;
+            Some((bb, callee, terminator.source_info.span.source_callsite()))
+        })
+        .collect();
+    found.sort_by_key(|(bb, _, span)| (span.lo(), *bb));
+    let mut counts: HashMap<rustc_span::def_id::DefId, usize> = HashMap::new();
+    found
+        .into_iter()
+        .map(|(bb, callee, _)| {
+            let count = counts.entry(callee).or_default();
+            *count += 1;
+            (bb, (tcx.item_name(callee).to_string(), *count))
+        })
+        .collect()
 }
 
 impl<'tcx> DefBody<'tcx> {
@@ -34,7 +81,11 @@ impl<'tcx> DefBody<'tcx> {
                 }
             }
         }
-        let loops = natural_loops(body);
+        let mut loops = natural_loops(body);
+        loops.sort_by_key(|(header, _)| {
+            let span = body.basic_blocks[*header].terminator().source_info.span;
+            (span.source_callsite().lo(), *header)
+        });
         let innermost_loop = body
             .basic_blocks
             .indices()
@@ -48,9 +99,11 @@ impl<'tcx> DefBody<'tcx> {
             .collect();
         DefBody {
             body,
+            label: identifier(&tcx.def_path_str(def.to_def_id())),
             local_names,
             loops,
             innermost_loop,
+            calls: calls(tcx, body),
         }
     }
 
@@ -61,7 +114,18 @@ impl<'tcx> DefBody<'tcx> {
         self.local_names
             .get(&local)
             .cloned()
-            .unwrap_or_else(|| format!("{local:?}"))
+            .unwrap_or_else(|| format!("__tmp_mir_{}_{}", self.label, local.index()))
+    }
+
+    /// Which loop of the function the loop with header `bb` is, in the order they are written,
+    /// from 1.
+    pub fn loop_number(&self, bb: BasicBlock) -> Option<usize> {
+        self.loops.iter().position(|(h, _)| *h == bb).map(|i| i + 1)
+    }
+
+    /// The function the call ending block `bb` calls, and which call to it the call is.
+    pub fn call(&self, bb: BasicBlock) -> Option<&(String, usize)> {
+        self.calls.get(&bb)
     }
 
     /// The name of the `idx`-th parameter of the function (its local `_{idx + 1}`).

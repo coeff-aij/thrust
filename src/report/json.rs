@@ -7,7 +7,7 @@ use super::constraints::Constraint;
 use super::expr::Expr;
 use super::failure::Failure;
 use super::sites::{Names, Site, SiteKind};
-use super::solution::{invariant, over, signature, Solution};
+use super::solution::{block_template, invariant, over, signature, Solution};
 use super::{constraint_of, location, Entry, Items};
 
 fn json_str(s: &str) -> String {
@@ -87,7 +87,13 @@ impl Json<'_, '_> {
             ("site", json_str(&kind)),
             ("span", json_str(&location(self.tcx, site.span))),
             ("over", json_str(&over(site))),
-            ("template", json_str(&render(&id))),
+            (
+                "template",
+                json_str(&match site.kind {
+                    SiteKind::Contract => render(&id),
+                    _ => block_template(site, self.names),
+                }),
+            ),
             ("preds", json_list(preds)),
             ("solution", solution.unwrap_or_else(|| "null".to_owned())),
             ("inferred", json_opt(inferred)),

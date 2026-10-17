@@ -31,6 +31,7 @@ pub struct Failure {
 
 struct Reader<'a> {
     system: &'a chc::System,
+    names: &'a Names,
     /// The report's view of each predicate variable, by its name in the query.
     preds: HashMap<String, (chc::PredVarId, &'a PredInfo)>,
     run: Vec<Step>,
@@ -38,20 +39,32 @@ struct Reader<'a> {
 }
 
 impl Reader<'_> {
+    /// The arguments of `fact`, each with what it stands for, the results apart from the rest.
     fn args(&self, fact: &Fact) -> String {
-        let names = self.preds.get(&fact.pred).map(|(_, info)| &info.args);
-        let args: Vec<String> = fact
-            .args
-            .iter()
-            .enumerate()
-            .map(
-                |(k, value)| match names.and_then(|n| n.get(k)).cloned().flatten() {
-                    Some(name) => format!("{name} = {value}"),
-                    None => value.to_string(),
-                },
-            )
-            .collect();
-        args.join(", ")
+        let info = self.preds.get(&fact.pred).map(|(_, info)| *info);
+        let names = info.map(|info| &info.args);
+        let results = info.map_or(0, |info| info.results);
+        let values = match info {
+            Some(_) => self
+                .names
+                .pred_head(self.preds[&fact.pred].0)
+                .arrange(&fact.args),
+            None => fact.args.clone(),
+        };
+        let mut out = String::new();
+        for (k, value) in values.iter().enumerate() {
+            let sep = match k {
+                0 => "",
+                k if k == results => "; ",
+                _ => ", ",
+            };
+            out.push_str(sep);
+            match names.and_then(|n| n.get(k)).cloned().flatten() {
+                Some(name) => out.push_str(&format!("{name} = {value}")),
+                None => out.push_str(&value.to_string()),
+            }
+        }
+        out
     }
 
     fn name(&self, fact: &Fact) -> String {
@@ -163,6 +176,7 @@ pub fn read(answer: &chc::Answer, system: &chc::System, names: &Names) -> Option
         .collect();
     let mut reader = Reader {
         system,
+        names,
         preds,
         run: Vec::new(),
         truncated: false,
