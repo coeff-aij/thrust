@@ -544,12 +544,12 @@ impl<'tcx> TypeBuilder<'tcx> {
         }
     }
 
-    // TODO: consolidate two impls
-    fn model_adt(
+    fn model_adt_in<M: TyMode<'tcx>>(
         &self,
+        m: &mut M,
         adt: &mir_ty::AdtDef<'tcx>,
         args: &'tcx mir_ty::List<mir_ty::GenericArg<'tcx>>,
-    ) -> Option<rty::Type<rty::Closed>> {
+    ) -> Option<rty::Type<M::Var>> {
         if Some(adt.did()) == self.def_ids.int_model() {
             return Some(rty::Type::int());
         }
@@ -568,31 +568,31 @@ impl<'tcx> TypeBuilder<'tcx> {
         }
 
         if Some(adt.did()) == self.def_ids.mut_model() {
-            let elem_ty = self.build(args.type_at(0));
+            let elem_ty = self.build_in(m, args.type_at(0));
             return Some(rty::PointerType::mut_to_refined(elem_ty).into());
         }
 
         if Some(adt.did()) == self.def_ids.box_model() {
-            let elem_ty = self.build_ty(args.type_at(0));
+            let elem_ty = self.build_ty_in(m, args.type_at(0));
             return Some(rty::PointerType::own(elem_ty).into());
         }
 
         if Some(adt.did()) == self.def_ids.seq_model() {
-            let elem_ty = self.build_ty(args.type_at(0));
+            let elem_ty = self.build_ty_in(m, args.type_at(0));
             return Some(rty::Type::Seq(Box::new(rty::RefinedType::unrefined(
                 elem_ty,
             ))));
         }
 
         if Some(adt.did()) == self.def_ids.array_model() {
-            let idx_ty = self.build_ty(args.type_at(0));
-            let elem_ty = self.build_ty(args.type_at(1));
+            let idx_ty = self.build_ty_in(m, args.type_at(0));
+            let elem_ty = self.build_ty_in(m, args.type_at(1));
             return Some(rty::ArrayType::new(idx_ty, elem_ty).into());
         }
 
         if Some(adt.did()) == self.def_ids.closure_model() {
             let tupled_upvars_ty = args.type_at(0);
-            return Some(self.build_ty(tupled_upvars_ty));
+            return Some(self.build_ty_in(m, tupled_upvars_ty));
         }
 
         // TODO: keep this in step with `impl<T: Model> Model for Ghost<T>` in std.rs, which
@@ -604,23 +604,39 @@ impl<'tcx> TypeBuilder<'tcx> {
         // result. See that impl for why it cannot be a fixed point like the models above.
         if Some(adt.did()) == self.def_ids.ghost_model() {
             let content_ty = args.type_at(0);
-            return Some(self.build_ty(content_ty));
+            return Some(self.build_ty_in(m, content_ty));
         }
 
         None
     }
 
     /// The type of a tuple element or struct field, boxed (elaboration: all fields are boxed).
-    fn field_type(&self, ty: mir_ty::Ty<'tcx>) -> rty::PointerType<rty::Closed> {
-        rty::PointerType::own_refined(self.build(ty))
+    fn field_type_in<M: TyMode<'tcx>>(
+        &self,
+        m: &mut M,
+        ty: mir_ty::Ty<'tcx>,
+    ) -> rty::PointerType<M::Var> {
+        rty::PointerType::own_refined(self.build_in(m, ty))
     }
 
     pub fn build(&self, ty: mir_ty::Ty<'tcx>) -> rty::RefinedType<rty::Closed> {
         rty::RefinedType::unrefined(self.build_ty(ty))
     }
 
-    // TODO: consolidate two impls
     fn build_ty(&self, ty: mir_ty::Ty<'tcx>) -> rty::Type<rty::Closed> {
+        self.build_ty_in(&mut Unrefined, ty)
+    }
+
+    fn build_in<M: TyMode<'tcx>>(
+        &self,
+        m: &mut M,
+        ty: mir_ty::Ty<'tcx>,
+    ) -> rty::RefinedType<M::Var> {
+        rty::RefinedType::unrefined(self.build_ty_in(m, ty))
+    }
+
+    /// Builds `ty`, taking from `m` the parts where an unrefined type and a template differ.
+    fn build_ty_in<M: TyMode<'tcx>>(&self, m: &mut M, ty: mir_ty::Ty<'tcx>) -> rty::Type<M::Var> {
         // An integer keeps its width, which its model `Int` or `UInt` does not have.
         if ty.is_integral() {
             let width = ty.primitive_size(self.tcx).bits() as u32;
@@ -635,61 +651,59 @@ impl<'tcx> TypeBuilder<'tcx> {
             mir_ty::TyKind::Bool => rty::Type::bool(),
             mir_ty::TyKind::Str => rty::Type::string(),
             mir_ty::TyKind::Ref(_, elem_ty, mir_ty::Mutability::Not) => {
-                let elem_ty = self.build(*elem_ty);
+                let elem_ty = self.build_in(m, *elem_ty);
                 rty::PointerType::immut_to_refined(elem_ty).into()
             }
             mir_ty::TyKind::Ref(_, elem_ty, mir_ty::Mutability::Mut) => {
-                let elem_ty = self.build(*elem_ty);
+                let elem_ty = self.build_in(m, *elem_ty);
                 rty::PointerType::mut_to_refined(elem_ty).into()
             }
             mir_ty::TyKind::Tuple(ts) => {
                 // elaboration: all fields are boxed
-                let elems = ts.iter().map(|ty| self.field_type(ty).into()).collect();
+                let elems = ts
+                    .iter()
+                    .map(|ty| self.field_type_in(m, ty).into())
+                    .collect();
                 rty::TupleType::new(elems).into()
             }
             mir_ty::TyKind::Never => rty::Type::never(),
-            mir_ty::TyKind::Param(ty) => self.translate_param_type(ty),
+            mir_ty::TyKind::Param(ty) => m.lift(self.translate_param_type(ty)),
             mir_ty::TyKind::FnPtr(sig_tys, hdr) => {
                 // TODO: justification for skip_binder
                 let sig = sig_tys.with(*hdr).skip_binder();
-                let params = sig
-                    .inputs()
-                    .iter()
-                    .map(|ty| self.build(*ty).vacuous())
-                    .collect();
-                let ret = self.build(sig.output());
-                rty::FunctionType::new(params, ret.vacuous()).into()
+                m.fn_ptr(self, sig)
             }
             mir_ty::TyKind::Slice(elem_ty) | mir_ty::TyKind::Array(elem_ty, _) => {
-                let elem_ty = self.build_ty(*elem_ty);
+                let elem_ty = self.build_ty_in(m, *elem_ty);
                 seq_model_type(elem_ty)
             }
             mir_ty::TyKind::Adt(def, params) => {
-                if let Some(model_ty) = self.model_adt(def, params) {
+                if let Some(model_ty) = self.model_adt_in(m, def, params) {
                     return model_ty;
                 }
                 // Treat Box and Vec as opaque types to avoid traversing internal structure
                 if Some(def.did()) == self.def_ids.box_() {
-                    let elem_ty = self.build_ty(params.type_at(0));
+                    let elem_ty = self.build_ty_in(m, params.type_at(0));
                     return rty::PointerType::own(elem_ty).into();
                 }
                 if Some(def.did()) == self.def_ids.vec() {
-                    let elem_ty = self.build_ty(params.type_at(0));
+                    let elem_ty = self.build_ty_in(m, params.type_at(0));
                     return seq_model_type(elem_ty);
                 }
                 if Some(def.did()) == self.def_ids.slice_iter()
                     || Some(def.did()) == self.def_ids.vec_into_iter()
                 {
-                    let elem_ty = self.build_ty(iterated_elem_ty(ty, params));
+                    let elem_ty = self.build_ty_in(m, iterated_elem_ty(ty, params));
                     return seq_iter_model_type(seq_model_type(elem_ty));
                 }
                 if Some(def.did()) == self.def_ids.slice_iter_mut() {
-                    let elem_ty = self.build_ty(iterated_elem_ty(ty, params));
+                    let elem_ty = self.build_ty_in(m, iterated_elem_ty(ty, params));
                     return mut_seq_iter_model_type(seq_model_type(elem_ty));
                 }
                 if def.is_enum() {
                     let sym = refine::datatype_symbol(self.tcx, def.did());
-                    let args: IndexVec<_, _> = params.types().map(|ty| self.build(ty)).collect();
+                    let args: IndexVec<_, _> =
+                        params.types().map(|ty| m.enum_arg(self, ty)).collect();
                     rty::EnumType::new(sym, args).into()
                 } else if def.is_struct() {
                     let elem_tys = def
@@ -697,7 +711,7 @@ impl<'tcx> TypeBuilder<'tcx> {
                         .map(|field| {
                             let ty = field.ty(self.tcx, params);
                             // elaboration: all fields are boxed
-                            self.field_type(ty).into()
+                            self.field_type_in(m, ty).into()
                         })
                         .collect();
                     rty::TupleType::new(elem_tys).into()
@@ -718,13 +732,13 @@ impl<'tcx> TypeBuilder<'tcx> {
                         tracing::debug!(
                             "expanding projection to thrust_models::Model::Ty for {arg_ty:?}."
                         );
-                        return self.build_ty(arg_ty);
+                        return self.build_ty_in(m, arg_ty);
                     }
                 }
 
-                self.translate_alias_type(ty)
+                m.lift(self.translate_alias_type(ty))
             }
-            kind => unimplemented!("unrefined_ty: {:?}", kind),
+            kind => unimplemented!("unsupported type: {:?}", kind),
         }
     }
 
@@ -1039,6 +1053,91 @@ impl<'tcx> TypeBuilder<'tcx> {
     }
 }
 
+/// The parts of [`TypeBuilder::build_ty_in`] where an unrefined type ([`TypeBuilder::build`]) and
+/// a template ([`TemplateTypeBuilder::build`]) differ.
+trait TyMode<'tcx> {
+    type Var: chc::Var;
+    /// The type of a type parameter or an alias, which carries no refinement.
+    fn lift(&mut self, ty: rty::Type<rty::Closed>) -> rty::Type<Self::Var>;
+    fn fn_ptr(&mut self, b: &TypeBuilder<'tcx>, sig: mir_ty::FnSig<'tcx>) -> rty::Type<Self::Var>;
+    fn enum_arg(
+        &mut self,
+        b: &TypeBuilder<'tcx>,
+        ty: mir_ty::Ty<'tcx>,
+    ) -> rty::RefinedType<Self::Var>;
+}
+
+struct Unrefined;
+
+impl<'tcx> TyMode<'tcx> for Unrefined {
+    type Var = rty::Closed;
+
+    fn lift(&mut self, ty: rty::Type<rty::Closed>) -> rty::Type<rty::Closed> {
+        ty
+    }
+
+    fn fn_ptr(
+        &mut self,
+        b: &TypeBuilder<'tcx>,
+        sig: mir_ty::FnSig<'tcx>,
+    ) -> rty::Type<rty::Closed> {
+        let params = sig
+            .inputs()
+            .iter()
+            .map(|ty| b.build(*ty).vacuous())
+            .collect();
+        let ret = b.build(sig.output());
+        rty::FunctionType::new(params, ret.vacuous()).into()
+    }
+
+    fn enum_arg(
+        &mut self,
+        b: &TypeBuilder<'tcx>,
+        ty: mir_ty::Ty<'tcx>,
+    ) -> rty::RefinedType<rty::Closed> {
+        b.build(ty)
+    }
+}
+
+/// Templates registered in `registry`, whose predicates depend on the variables of `scope`.
+struct Templated<'r, 's, R, S> {
+    registry: &'r mut R,
+    scope: &'s S,
+}
+
+impl<'tcx, R, S> TyMode<'tcx> for Templated<'_, '_, R, S>
+where
+    R: TemplateRegistry,
+    S: TemplateScope,
+{
+    type Var = S::Var;
+
+    fn lift(&mut self, ty: rty::Type<rty::Closed>) -> rty::Type<S::Var> {
+        ty.vacuous()
+    }
+
+    fn fn_ptr(&mut self, b: &TypeBuilder<'tcx>, sig: mir_ty::FnSig<'tcx>) -> rty::Type<S::Var> {
+        let ty = b.for_function_template(self.registry, sig).build();
+        rty::Type::function(ty)
+    }
+
+    /// A refinement type whose refinement is an unknown predicate.
+    fn enum_arg(
+        &mut self,
+        b: &TypeBuilder<'tcx>,
+        ty: mir_ty::Ty<'tcx>,
+    ) -> rty::RefinedType<S::Var> {
+        // TODO: consider building ty with scope
+        let mut unscoped = Templated {
+            registry: &mut *self.registry,
+            scope: &EmptyTemplateScope,
+        };
+        let ty = b.build_ty_in(&mut unscoped, ty).vacuous();
+        let tmpl = self.scope.build_template().build(ty);
+        self.registry.register_template(tmpl)
+    }
+}
+
 /// Translates [`mir_ty::Ty`] to [`rty::RefinedType`] using templates for unknown refinements.
 ///
 /// [`rty::Template`] is a refinement type in the form of `{ T | P(x1, ..., xn) }` where `P` is a
@@ -1068,189 +1167,25 @@ where
     R: TemplateRegistry,
     S: TemplateScope,
 {
-    fn model_adt(
-        &mut self,
-        adt: &mir_ty::AdtDef<'tcx>,
-        args: &'tcx mir_ty::List<mir_ty::GenericArg<'tcx>>,
-    ) -> Option<rty::Type<S::Var>> {
-        if Some(adt.did()) == self.inner.def_ids.int_model() {
-            return Some(rty::Type::int());
-        }
-        if Some(adt.did()) == self.inner.def_ids.uint_model() {
-            return Some(rty::Type::uint());
-        }
-        if Some(adt.did()) == self.inner.def_ids.uint_n_model() {
-            return Some(rty::Type::uint_of_width(self.inner.uint_n_width(args)));
-        }
-        if Some(adt.did()) == self.inner.def_ids.int_n_model() {
-            return Some(rty::Type::int_of_width(self.inner.uint_n_width(args)));
-        }
-
-        if Some(adt.did()) == self.inner.def_ids.bit_vec_model() {
-            return Some(rty::Type::BitVec(self.inner.build_bit_vec(args)));
-        }
-
-        if Some(adt.did()) == self.inner.def_ids.mut_model() {
-            let elem_ty = self.build(args.type_at(0));
-            return Some(rty::PointerType::mut_to_refined(elem_ty).into());
-        }
-
-        if Some(adt.did()) == self.inner.def_ids.box_model() {
-            let elem_ty = self.build_ty(args.type_at(0));
-            return Some(rty::PointerType::own(elem_ty).into());
-        }
-
-        if Some(adt.did()) == self.inner.def_ids.seq_model() {
-            let elem_ty = self.build_ty(args.type_at(0));
-            return Some(rty::Type::Seq(Box::new(rty::RefinedType::unrefined(
-                elem_ty,
-            ))));
-        }
-
-        if Some(adt.did()) == self.inner.def_ids.array_model() {
-            let idx_ty = self.build_ty(args.type_at(0));
-            let elem_ty = self.build_ty(args.type_at(1));
-            return Some(rty::ArrayType::new(idx_ty, elem_ty).into());
-        }
-
-        if Some(adt.did()) == self.inner.def_ids.closure_model() {
-            let tupled_upvars_ty = args.type_at(0);
-            return Some(self.build_ty(tupled_upvars_ty));
-        }
-
-        // TODO: keep in step with `impl Model for Ghost` in std.rs; see
-        // `TypeBuilder::model_adt`.
-        if Some(adt.did()) == self.inner.def_ids.ghost_model() {
-            let content_ty = args.type_at(0);
-            return Some(self.build_ty(content_ty));
-        }
-
-        None
-    }
-
-    /// The type of a tuple element or struct field, boxed (elaboration: all fields are boxed).
-    fn field_type(&mut self, ty: mir_ty::Ty<'tcx>) -> rty::PointerType<S::Var> {
-        rty::PointerType::own_refined(self.build(ty))
-    }
-
     pub fn build(&mut self, ty: mir_ty::Ty<'tcx>) -> rty::RefinedType<S::Var> {
         rty::RefinedType::unrefined(self.build_ty(ty))
     }
 
     fn build_ty(&mut self, ty: mir_ty::Ty<'tcx>) -> rty::Type<S::Var> {
-        // An integer keeps its width, which its model `Int` or `UInt` does not have.
-        if ty.is_integral() {
-            let width = ty.primitive_size(self.inner.tcx).bits() as u32;
-            return if ty.is_signed() {
-                rty::Type::int_of_width(width)
-            } else {
-                rty::Type::uint_of_width(width)
-            };
-        }
-        let ty = self.inner.resolve_model_ty(ty);
-        match ty.kind() {
-            mir_ty::TyKind::Bool => rty::Type::bool(),
-            mir_ty::TyKind::Str => rty::Type::string(),
-            mir_ty::TyKind::Ref(_, elem_ty, mir_ty::Mutability::Not) => {
-                let elem_ty = self.build(*elem_ty);
-                rty::PointerType::immut_to_refined(elem_ty).into()
-            }
-            mir_ty::TyKind::Ref(_, elem_ty, mir_ty::Mutability::Mut) => {
-                let elem_ty = self.build(*elem_ty);
-                rty::PointerType::mut_to_refined(elem_ty).into()
-            }
-            mir_ty::TyKind::Tuple(ts) => {
-                // elaboration: all fields are boxed
-                let elems = ts.iter().map(|ty| self.field_type(ty).into()).collect();
-                rty::TupleType::new(elems).into()
-            }
-            mir_ty::TyKind::Never => rty::Type::never(),
-            mir_ty::TyKind::Param(ty) => self.inner.translate_param_type(ty).vacuous(),
-            mir_ty::TyKind::FnPtr(sig_tys, hdr) => {
-                // TODO: justification for skip_binder
-                let sig = sig_tys.with(*hdr).skip_binder();
-                let ty = self.inner.for_function_template(self.registry, sig).build();
-                rty::Type::function(ty)
-            }
-            mir_ty::TyKind::Slice(elem_ty) | mir_ty::TyKind::Array(elem_ty, _) => {
-                let elem_ty = self.build_ty(*elem_ty);
-                seq_model_type(elem_ty)
-            }
-            mir_ty::TyKind::Adt(def, params) => {
-                if let Some(model_ty) = self.model_adt(def, params) {
-                    return model_ty;
-                }
-                // Treat Box and Vec as opaque types to avoid traversing internal structure
-                if Some(def.did()) == self.inner.def_ids.box_() {
-                    let elem_ty = self.build_ty(params.type_at(0));
-                    return rty::PointerType::own(elem_ty).into();
-                }
-                if Some(def.did()) == self.inner.def_ids.vec() {
-                    let elem_ty = self.build_ty(params.type_at(0));
-                    return seq_model_type(elem_ty);
-                }
-                if Some(def.did()) == self.inner.def_ids.slice_iter()
-                    || Some(def.did()) == self.inner.def_ids.vec_into_iter()
-                {
-                    let elem_ty = self.build_ty(iterated_elem_ty(ty, params));
-                    return seq_iter_model_type(seq_model_type(elem_ty));
-                }
-                if Some(def.did()) == self.inner.def_ids.slice_iter_mut() {
-                    let elem_ty = self.build_ty(iterated_elem_ty(ty, params));
-                    return mut_seq_iter_model_type(seq_model_type(elem_ty));
-                }
-                if def.is_enum() {
-                    let sym = refine::datatype_symbol(self.inner.tcx, def.did());
-                    let args: IndexVec<_, _> =
-                        params.types().map(|ty| self.build_refined(ty)).collect();
-                    rty::EnumType::new(sym, args).into()
-                } else if def.is_struct() {
-                    let elem_tys = def
-                        .all_fields()
-                        .map(|field| {
-                            let ty = field.ty(self.inner.tcx, params);
-                            // elaboration: all fields are boxed
-                            self.field_type(ty).into()
-                        })
-                        .collect();
-                    rty::TupleType::new(elem_tys).into()
-                } else {
-                    unimplemented!("unsupported ADT: {:?}", ty);
-                }
-            }
-            mir_ty::TyKind::Alias(mir_ty::AliasTyKind::Projection, ty) => {
-                if let Some(model_ty_def_id) = self.inner.def_ids.model_ty() {
-                    let arg_ty = ty.args.type_at(0);
-
-                    if ty.def_id == model_ty_def_id
-                        && (matches!(
-                            arg_ty.kind(),
-                            mir_ty::TyKind::Param(_) | mir_ty::TyKind::Alias(..)
-                        ))
-                    {
-                        tracing::debug!(
-                            "expanding projection to thrust_models::Model::Ty for {arg_ty:?}."
-                        );
-                        return self.build_ty(arg_ty);
-                    }
-                }
-
-                self.inner.translate_alias_type(ty).vacuous()
-            }
-            kind => unimplemented!("ty: {:?}", kind),
-        }
+        let mut mode = Templated {
+            registry: &mut *self.registry,
+            scope: &self.scope,
+        };
+        self.inner.build_ty_in(&mut mode, ty)
     }
 
     /// Builds a refinement type whose refinement is an unknown predicate.
     pub fn build_refined(&mut self, ty: mir_ty::Ty<'tcx>) -> rty::RefinedType<S::Var> {
-        // TODO: consider building ty with scope
-        let ty = self
-            .inner
-            .for_template(self.registry)
-            .build_ty(ty)
-            .vacuous();
-        let tmpl = self.scope.build_template().build(ty);
-        self.registry.register_template(tmpl)
+        let mut mode = Templated {
+            registry: &mut *self.registry,
+            scope: &self.scope,
+        };
+        mode.enum_arg(&self.inner, ty)
     }
 
     fn build_basic_block_with_precondition(
