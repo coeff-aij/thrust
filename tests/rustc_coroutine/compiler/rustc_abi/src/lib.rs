@@ -18,7 +18,7 @@ use crate::{PartialOrdSpec, TryIntoSpec};
 
 mod layout;
 
-pub use layout::{LayoutCalculator, LayoutCalculatorError, LayoutRef};
+pub use layout::{LayoutCalculator, LayoutCalculatorError};
 
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 // #[cfg_attr(feature = "nightly", derive(Encodable_NoContext, Decodable_NoContext, StableHash))]

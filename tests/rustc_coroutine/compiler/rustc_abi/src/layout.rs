@@ -47,17 +47,6 @@ pub enum LayoutCalculatorError<F> {
 type LayoutCalculatorResult<FieldIdx, VariantIdx, F> =
     Result<LayoutData<FieldIdx, VariantIdx>, LayoutCalculatorError<F>>;
 
-// The layout an `F` dereferences to, for a contract to name: `layout_is(f, l)` says `**f` is `l`.
-// Rewrite (rewrites.md S10): `F`'s bound `Deref<Target = &'a LayoutData<..>>` becomes this trait,
-// which has it as a supertrait (probes/layout_ref_niche.rs).
-#[thrust_macros::context]
-pub trait LayoutRef<'a, FieldIdx: Idx, VariantIdx: Idx>:
-    Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model
-{
-    #[thrust_macros::predicate]
-    fn layout_is(self, l: LayoutData<FieldIdx, VariantIdx>) -> bool;
-}
-
 #[derive(Clone, Copy, Debug)]
 pub struct LayoutCalculator<Cx> {
     pub cx: Cx,
@@ -85,8 +74,9 @@ fn sum_first(ts: &[u64], k: usize) -> u64 {
 // bytes, which `Size::checked_add` needs), named by `Cx::dl_of(*self, dl)` since the calculator's
 // model is `self.cx`'s; `niche_wf` of every field's largest niche under that layout
 // (`Niche::wf_in`, which `Niche::available` and `Primitive::size` need), the field's layout named
-// by `LayoutRef::layout_is`; and every field's niche within the field, which rustc's layouts
-// satisfy and the sort key's subtractions and the niche of the result rely on.
+// by `post!` of `Deref::deref` (probes/layout_ref_niche.rs); and every field's niche within the
+// field, which rustc's layouts satisfy and the sort key's subtractions and the niche of the
+// result rely on.
 //
 // `univariant_biased` ensures, besides `arbitrary_of`: it fails only with `UnexpectedUnsized`,
 // exactly when an unsized field is not the tail of a `MaybeUnsized` struct, which does not depend
@@ -115,7 +105,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         'a,
         FieldIdx: Idx + thrust_models::Model,
         VariantIdx: Idx,
-        F: LayoutRef<'a, FieldIdx, VariantIdx> + thrust_models::Model,
+        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model,
     >(
         self,
         fields: &IndexSlice<FieldIdx, F>,
@@ -128,18 +118,18 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                 || dl.default_address_space_pointer_spec.pointer_size.raw == 2
                 || dl.default_address_space_pointer_spec.pointer_size.raw == 4
                 || dl.default_address_space_pointer_spec.pointer_size.raw == 8)
-            && forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, n: Niche|
+            && forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche|
                 !(Cx::dl_of(self, dl)
                     && 0 <= i
                     && i < (*fields).len()
-                    && F::layout_is((*fields)[i], l)
+                    && thrust_macros::post!(<F as core::ops::Deref>::deref(&(*fields)[i]), d) && **d == l
                     && l.largest_niche == Some(n))
                     || Niche::wf_in(n, dl))
-            && forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, n: Niche, s: Size|
+            && forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche, s: Size|
                 !(Cx::dl_of(self, dl)
                     && 0 <= i
                     && i < (*fields).len()
-                    && F::layout_is((*fields)[i], l)
+                    && thrust_macros::post!(<F as core::ops::Deref>::deref(&(*fields)[i]), d) && **d == l
                     && l.largest_niche == Some(n)
                     && Primitive::size_in(n.value, dl, s))
                     || n.offset.raw + s.raw <= l.size.raw)
@@ -152,15 +142,15 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         I: Idx,
         FieldIdx: Idx + thrust_models::Model,
         VariantIdx: Idx,
-        F: LayoutRef<'a, FieldIdx, VariantIdx> + thrust_models::Model,
+        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model,
     >(
         fields: &IndexSlice<I, F>,
         w: USize,
     ) -> bool {
         exists(|ts: Seq<USize>|
             ts.len() == (*fields).len()
-                && forall(|i: USize, l: LayoutData<FieldIdx, VariantIdx>, q: USize|
-                    !(0 <= i && i < ts.len() && F::layout_is((*fields)[i], l) && q == l.align.abi.pow2)
+                && forall(|i: USize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, q: USize|
+                    !(0 <= i && i < ts.len() && thrust_macros::post!(<F as core::ops::Deref>::deref(&(*fields)[i]), d) && **d == l && q == l.align.abi.pow2)
                         || ts[i] == pow2(q) * 2 + l.size.raw)
                 && w == sum_first(&ts, ts.len()))
     }
@@ -173,7 +163,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         'a,
         FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
         VariantIdx: Idx,
-        F: LayoutRef<'a, FieldIdx, VariantIdx> + thrust_models::Model<Ty: PartialEq>,
+        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model<Ty: PartialEq>,
     >(
         fields: &IndexSlice<FieldIdx, F>,
         repr: &ReprOptions,
@@ -199,7 +189,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         'a,
         FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
         VariantIdx: Idx,
-        F: LayoutRef<'a, FieldIdx, VariantIdx> + thrust_models::Model<Ty: PartialEq>,
+        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model<Ty: PartialEq>,
     >(
         self,
         fields: &IndexSlice<FieldIdx, F>,
@@ -221,14 +211,14 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         'a,
         FieldIdx: Idx + thrust_models::Model,
         VariantIdx: Idx,
-        F: LayoutRef<'a, FieldIdx, VariantIdx> + thrust_models::Model,
+        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model,
     >(
         fields: &IndexSlice<FieldIdx, F>,
         kind: StructKind,
     ) -> bool {
-        exists(|i: USize, l: LayoutData<FieldIdx, VariantIdx>|
+        exists(|i: USize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>|
             0 <= i && i < (*fields).len()
-                && F::layout_is((*fields)[i], l)
+                && thrust_macros::post!(<F as core::ops::Deref>::deref(&(*fields)[i]), d) && **d == l
                 && l.backend_repr == BackendRepr::Memory { sized: false }
                 && (!matches!(kind, StructKind::MaybeUnsized) || i + 1 < (*fields).len()))
     }
@@ -239,12 +229,12 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         'a,
         FieldIdx: Idx + thrust_models::Model,
         VariantIdx: Idx,
-        F: LayoutRef<'a, FieldIdx, VariantIdx> + thrust_models::Model,
+        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model,
     >(
         fields: &IndexSlice<FieldIdx, F>,
     ) -> bool {
-        exists(|i: USize, l: LayoutData<FieldIdx, VariantIdx>, n: Niche|
-            0 <= i && i < (*fields).len() && F::layout_is((*fields)[i], l) && l.largest_niche == Some(n))
+        exists(|i: USize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche|
+            0 <= i && i < (*fields).len() && thrust_macros::post!(<F as core::ops::Deref>::deref(&(*fields)[i]), d) && **d == l && l.largest_niche == Some(n))
     }
 
     #[thrust_macros::requires(Self::layout_pre::<FieldIdx, VariantIdx, F>(*self, fields, kind))]
@@ -261,7 +251,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         'a,
         FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
         VariantIdx: Idx,
-        F: LayoutRef<'a, FieldIdx, VariantIdx> + core::fmt::Debug + thrust_models::Model<Ty: PartialEq>,
+        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + thrust_models::Model<Ty: PartialEq>,
     >(
         &self,
         fields: &IndexSlice<FieldIdx, F>,
@@ -354,7 +344,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         'a,
         FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
         VariantIdx: Idx,
-        F: LayoutRef<'a, FieldIdx, VariantIdx> + core::fmt::Debug + thrust_models::Model<Ty: PartialEq>,
+        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + thrust_models::Model<Ty: PartialEq>,
     >(
         &self,
         fields: &IndexSlice<FieldIdx, F>,

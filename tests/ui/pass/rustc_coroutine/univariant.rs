@@ -19,7 +19,7 @@ pub mod rustc_abi;
 #[path = "../../../rustc_coroutine/thrust/mod.rs"]
 pub mod case_study;
 
-use rustc_abi::{HasDataLayout, LayoutCalculator, LayoutRef, ReprOptions, StructKind};
+use rustc_abi::{HasDataLayout, LayoutCalculator, LayoutData, ReprOptions, StructKind};
 use rustc_index::{Idx, IndexSlice};
 
 // A caller of `univariant` that establishes its precondition, the size bound included.
@@ -34,7 +34,7 @@ fn drive<
     Cx: HasDataLayout,
     FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
     VariantIdx: Idx,
-    F: LayoutRef<'a, FieldIdx, VariantIdx> + core::fmt::Debug + thrust_models::Model<Ty: PartialEq>,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + thrust_models::Model<Ty: PartialEq>,
 >(
     calc: &LayoutCalculator<Cx>,
     fields: &IndexSlice<FieldIdx, F>,
