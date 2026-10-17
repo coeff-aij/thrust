@@ -421,9 +421,19 @@ fn entries<'tcx>(
     (entries, names)
 }
 
-/// Reports `input`, and returns the span of the obligation the report shows refuted by each
-/// answer.
-pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) -> Vec<Option<Span>> {
+/// How the report shows the refutation of an answer.
+#[derive(Debug, Clone, Copy)]
+pub enum Refuted {
+    /// Not at all: the verification error is without it.
+    No,
+    /// At a span, where the verification error goes.
+    At(Span),
+    /// As the verification error itself, which the report emitted.
+    AsError,
+}
+
+/// Reports `input`, and returns how it shows the refutation of each answer.
+pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) -> Vec<Refuted> {
     // The clauses are read as the solver is given them, a `Box` being its content.
     let system = chc::unbox(input.system.clone());
     let input = Input {
@@ -465,11 +475,20 @@ pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) -> Vec<Option<S
         .filter(|_| config.items.failure)
         .map(|(answer, symbols)| (answer, failure::read(answer, &names, symbols)))
         .collect();
-    let refuted: Vec<Option<Span>> = (0..input.answers.len())
+    let refuted_at: Vec<Option<Span>> = (0..input.answers.len())
         .map(|i| {
             let (_, failure) = failures.get(i)?;
             let (_, c) = constraint_of(&entries, failure.as_ref()?.goal)?;
             c.span
+        })
+        .collect();
+    // A person reads the refutation as the error; a program, the error at its span.
+    let refuted: Vec<Refuted> = refuted_at
+        .iter()
+        .map(|span| match (span, config.format) {
+            (None, _) => Refuted::No,
+            (Some(_), Format::Human) => Refuted::AsError,
+            (Some(span), Format::Json) => Refuted::At(*span),
         })
         .collect();
     match config.format {
@@ -482,7 +501,10 @@ pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) -> Vec<Option<S
                 split,
             };
             for (i, (answer, failure)) in failures.iter().enumerate() {
-                human.failure(answer, input.asked.get(i), failure.as_ref(), &entries);
+                let asked = input.asked.get(i);
+                let part_note =
+                    asked.map(|a| input.parts[a.part - 1].error_note(tcx, input.parts.len()));
+                human.failure(answer, asked, part_note, failure.as_ref(), &entries);
             }
             human.emit(&entries);
         }

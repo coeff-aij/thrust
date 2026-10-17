@@ -179,12 +179,28 @@ fn no_warning_comes_from_the_injected_std() {
     assert!(!stderr.contains("thrust std injected"), "{stderr}");
 }
 
-/// With the report, the verification error is at the obligation the report shows refuted, so an
-/// editor that drops a diagnostic without a span shows it.
+/// With the report, the refutation is the verification error, at the obligation, so an editor
+/// that drops a diagnostic without a span shows it, and it is the one error; in JSON, the error
+/// is at that obligation.
 #[test]
-fn the_verification_error_is_at_the_refuted_obligation() {
+fn the_verification_error_is_the_refutation() {
     let output = report("loop_fail.rs", "failure");
     let stderr = String::from_utf8_lossy(&output.stderr);
+    let error = stderr
+        .split("error: verification error: Unsat (thrust: refuted: assertion in `main`)\n  --> ")
+        .nth(1)
+        .unwrap_or_default();
+    assert!(error.contains("loop_fail.rs:15:5\n"), "{stderr}");
+    assert!(
+        stderr.contains("aborting due to 1 previous error"),
+        "{stderr}"
+    );
+    let json = report_with(
+        "loop_fail.rs",
+        "failure",
+        &[("THRUST_REPORT_FORMAT", "json")],
+    );
+    let stderr = String::from_utf8_lossy(&json.stderr);
     let error = stderr
         .split("error: verification error: Unsat\n  --> ")
         .nth(1)

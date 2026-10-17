@@ -2658,11 +2658,17 @@ impl<'tcx> Analyzer<'tcx> {
                 let system = self.system.borrow();
                 self.report(config, &system, std::slice::from_ref(&answer), &[], &[])[0]
             }
-            None => None,
+            None => crate::report::Refuted::No,
         };
-        if let Err(err) = answer.result {
-            self.verification_error(&err, refuted).emit();
-        }
+        let Err(err) = answer.result else {
+            return;
+        };
+        let at = match refuted {
+            crate::report::Refuted::AsError => return,
+            crate::report::Refuted::At(span) => Some(span),
+            crate::report::Refuted::No => None,
+        };
+        self.verification_error(&err, at).emit();
     }
 
     /// The error of a failed verification, at the obligation the report shows refuted, if it does.
@@ -2691,11 +2697,16 @@ impl<'tcx> Analyzer<'tcx> {
             .collect();
         let refuted = match report {
             Some(config) => self.report_parts(config, jobs, &system, &parts, &summaries),
-            None => vec![None; parts.len()],
+            None => vec![crate::report::Refuted::No; parts.len()],
         };
         for ((part, summary), refuted) in parts.iter().zip(&summaries).zip(refuted) {
             let Err(err) = &part.result else {
                 continue;
+            };
+            let refuted = match refuted {
+                crate::report::Refuted::AsError => continue,
+                crate::report::Refuted::At(span) => Some(span),
+                crate::report::Refuted::No => None,
             };
             // Without a refutation, the error is at the code of the part: its first function,
             // the others labelled.
@@ -2713,8 +2724,7 @@ impl<'tcx> Analyzer<'tcx> {
     }
 
     /// Reports the parts refuted, as without `THRUST_SPLIT`: each is solved once more on its own,
-    /// asked for what the report needs. Returns the span of the obligation the report shows
-    /// refuted in each part.
+    /// asked for what the report needs. Returns how the report shows the refutation of each part.
     fn report_parts(
         &self,
         config: &crate::report::Config,
@@ -2722,7 +2732,7 @@ impl<'tcx> Analyzer<'tcx> {
         system: &chc::System,
         parts: &[chc::Part],
         summaries: &[crate::report::Part],
-    ) -> Vec<Option<rustc_span::Span>> {
+    ) -> Vec<crate::report::Refuted> {
         // Each part refuted is solved once more on its own, for its refutation, and each part
         // solved for its model when the report shows its unknowns; the report reads them over the
         // whole system, whose parts keep the clause ids. A solver that gives neither is not
@@ -2764,7 +2774,7 @@ impl<'tcx> Analyzer<'tcx> {
         }
         // The templates and constraints of every part are shown, solved again or not.
         let spans = self.report(config, system, &answers, &asked, summaries);
-        let mut refuted = vec![None; parts.len()];
+        let mut refuted = vec![crate::report::Refuted::No; parts.len()];
         for (a, span) in asked.iter().zip(spans) {
             refuted[a.part - 1] = span;
         }
@@ -2778,7 +2788,7 @@ impl<'tcx> Analyzer<'tcx> {
         answers: &[chc::Answer],
         asked: &[crate::report::Asked],
         parts: &[crate::report::Part],
-    ) -> Vec<Option<rustc_span::Span>> {
+    ) -> Vec<crate::report::Refuted> {
         let contracts = self
             .defs
             .iter()

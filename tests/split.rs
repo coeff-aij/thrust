@@ -64,7 +64,9 @@ fn a_split_run_reports_the_refuted_part() {
     );
     assert!(stderr.contains("where it fails: x = 0"), "{stderr}");
     assert!(
-        stderr.contains("error: verification error: Unsat\n  --> "),
+        stderr.contains(
+            "error: verification error: Unsat (thrust: refuted: ensures in `bad`)\n  --> "
+        ),
         "{stderr}"
     );
 }
