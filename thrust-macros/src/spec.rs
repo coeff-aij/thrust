@@ -250,11 +250,66 @@ fn is_raw_smt2_body(block: &syn::Block) -> bool {
 pub fn expand_law(item: TokenStream) -> TokenStream {
     let mut func = parse_macro_input!(item as FnItemWithSignature);
     func.attrs_mut().push(syn::parse_quote!(#[thrust::law]));
-    // A law is a statement the program does not call; as a trait's declaration it has no body to
-    // read its parameters.
+    // A law is a statement the program does not call.
     func.attrs_mut()
-        .push(syn::parse_quote!(#[allow(dead_code, unused_variables)]));
+        .push(syn::parse_quote!(#[allow(dead_code)]));
+    // A law proved by its contract alone, with an empty or no body, reads none of its parameters.
+    let proved_by_contract = func.block().is_none_or(|block| block.stmts.is_empty());
+    let attrs = func.attrs_mut().clone();
+    allow_unused_contract_params(&attrs, &mut func.sig_mut().inputs, proved_by_contract);
     func.into_token_stream().into()
+}
+
+/// Whether `attr` is one of the specification attributes whose tokens name the parameters a
+/// contract reads.
+fn is_contract_attr(attr: &syn::Attribute) -> bool {
+    let Some(last) = attr.path().segments.last() else {
+        return false;
+    };
+    matches!(
+        last.ident.to_string().as_str(),
+        "requires" | "ensures" | "_requires_ensures" | "variant"
+    )
+}
+
+/// The identifiers `tokens` mention.
+fn idents_in(tokens: proc_macro2::TokenStream, out: &mut std::collections::HashSet<String>) {
+    for token in tokens {
+        match token {
+            proc_macro2::TokenTree::Ident(ident) => {
+                out.insert(ident.to_string());
+            }
+            proc_macro2::TokenTree::Group(group) => idents_in(group.stream(), out),
+            _ => {}
+        }
+    }
+}
+
+/// Allows `unused_variables` on each parameter of `inputs` the contract attributes among `attrs`
+/// mention, which the contract reads although the body may not, or on every parameter when
+/// `all`; the other parameters keep their warning.
+pub fn allow_unused_contract_params(
+    attrs: &[syn::Attribute],
+    inputs: &mut syn::punctuated::Punctuated<syn::FnArg, syn::Token![,]>,
+    all: bool,
+) {
+    let mut mentioned = std::collections::HashSet::new();
+    for attr in attrs.iter().filter(|a| is_contract_attr(a)) {
+        idents_in(attr.meta.to_token_stream(), &mut mentioned);
+    }
+    for input in inputs.iter_mut() {
+        let syn::FnArg::Typed(param) = input else {
+            continue;
+        };
+        let syn::Pat::Ident(pat) = &*param.pat else {
+            continue;
+        };
+        if all || mentioned.contains(&pat.ident.to_string()) {
+            param
+                .attrs
+                .push(syn::parse_quote!(#[allow(unused_variables)]));
+        }
+    }
 }
 
 pub fn expand_requires(attr: TokenStream, item: TokenStream) -> TokenStream {
