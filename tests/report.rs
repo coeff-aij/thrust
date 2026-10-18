@@ -439,3 +439,19 @@ fn a_restated_law_must_be_one() {
         "{stderr}"
     );
 }
+
+/// A run's step for a return value is at the closing brace, apart from the function's entry; the
+/// error of a refuted `ensures` is at the signature.
+#[test]
+fn a_return_is_at_the_closing_brace() {
+    let output = report("swap_half.rs", "failure");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("return value, tests/report/swap_half.rs:3:1]"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("function entry, tests/report/swap_half.rs:1:1]"),
+        "{stderr}"
+    );
+}

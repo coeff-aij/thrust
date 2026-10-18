@@ -268,7 +268,7 @@ impl Human<'_, '_> {
             _ => &[],
         };
         // At the obligation, the refutation is the verification error (see `super::Refuted`).
-        match found.and_then(|(_, c)| c.span) {
+        match found.and_then(|(_, c)| c.error_span) {
             Some(span) => {
                 let message = format!("verification error: Unsat ({title})");
                 let mut diag = self.tcx.dcx().struct_span_err(span, message);

@@ -479,7 +479,7 @@ pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) -> Vec<Refuted>
         .map(|i| {
             let (_, failure) = failures.get(i)?;
             let (_, c) = constraint_of(&entries, failure.as_ref()?.goal)?;
-            c.span
+            c.error_span
         })
         .collect();
     // A person reads the refutation as the error; a program, the error at its span.
