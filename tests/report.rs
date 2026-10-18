@@ -263,7 +263,7 @@ fn premises_are_the_formula_s_and_each_is_once() {
         .find(|l| l.contains(r#""fn":"check""#) && l.contains("assertion"))
         .unwrap_or_default();
     assert!(
-        check.contains(r#""premises":["check.bb0(x, old(x) = x)","x = 0"]"#),
+        check.contains(r#""premises":["check.bb0(x, old(x) := x)","x = 0"]"#),
         "{stdout}"
     );
     let identity = stdout
@@ -274,7 +274,8 @@ fn premises_are_the_formula_s_and_each_is_once() {
 }
 
 /// A constraint applies an unknown as the run shows a fact: each argument by the variable of the
-/// template it is, a `&mut` as `*x` and `°x`, never as a `<current, final>` pair.
+/// template it is (`name := term`), a `&mut` as `*x` and `°x`, also where its term is a
+/// variable, never as a `<current, final>` pair.
 #[test]
 fn constraints_name_the_arguments_of_an_unknown() {
     let output = report_with(
@@ -288,10 +289,14 @@ fn constraints_name_the_arguments_of_an_unknown() {
         .filter(|l| l.contains(r#""fn":"swap""#))
         .collect();
     assert!(
-        swap.iter().any(|l| l.contains("swap.bb0(*x = ")),
+        swap.iter().any(|l| l.contains("swap.bb0(*x := ")),
         "{stdout}"
     );
     assert!(swap.iter().all(|l| !l.contains('<')), "{stdout}");
+    assert!(
+        swap.iter().any(|l| l.contains("swap.pre(*x, °x, *y, °y)")),
+        "{stdout}"
+    );
 }
 
 /// A refuted loop entry or preservation labels the `invariant!` it checks.
@@ -395,4 +400,15 @@ fn other_failures_get_no_pcsat_help() {
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!stderr.contains("PCSat"), "{stderr}");
+}
+
+/// A user predicate is applied as an unknown is, `p(x, y)`, not curried.
+#[test]
+fn a_user_predicate_is_applied_with_parentheses() {
+    let output = report("predicate_fail.rs", "failure");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("::is_double(*old(self), °old(self))"),
+        "{stderr}"
+    );
 }
