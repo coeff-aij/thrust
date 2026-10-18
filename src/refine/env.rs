@@ -90,6 +90,22 @@ enum FlowBinding {
     },
 }
 
+impl FlowBinding {
+    fn replace_part(&mut self, old: TempVarIdx, new: TempVarIdx) {
+        let parts: Vec<&mut TempVarIdx> = match self {
+            FlowBinding::Mut(current, _) | FlowBinding::Box { current, .. } => vec![current],
+            FlowBinding::Tuple(xs) => xs.iter_mut().collect(),
+            FlowBinding::Enum { variants, .. } => variants
+                .iter_mut()
+                .flat_map(|variant| variant.fields.iter_mut())
+                .collect(),
+        };
+        for part in parts.into_iter().filter(|part| **part == old) {
+            *part = new;
+        }
+    }
+}
+
 impl std::fmt::Display for FlowBinding {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -1244,6 +1260,27 @@ where
         }
     }
 
+    /// `part` of `parent`, given a flow binding when the environment holds it as a plain
+    /// variable of a `&mut` or `Box` type, so that a borrow can go through it. Such a value is
+    /// the prophecy of a borrow that `parent` was assigned through (`r = &mut b` for a mutable
+    /// local `r`); the fresh binding is equal to it and takes its place in `parent`.
+    fn flow_part(&mut self, parent: Var, part: TempVarIdx) -> TempVarIdx {
+        if self.flow_binding(part.into()).is_some() {
+            return part;
+        }
+        let ty = &self.var(part.into()).expect("unbound var").ty;
+        if !ty.as_pointer().is_some_and(|ty| ty.is_own() || ty.is_mut()) {
+            return part;
+        }
+        let rty = rty::RefinedType::refined_with_term(ty.clone(), chc::Term::var(part.into()));
+        let fresh = self.temp_vars.next_index();
+        self.bind_impl(fresh.into(), rty, 0);
+        let mut binding = self.flow_binding(parent).expect("unbound parent").clone();
+        binding.replace_part(part, fresh);
+        self.insert_flow_binding(parent, binding);
+        fresh
+    }
+
     pub fn borrow_place(&mut self, place: Place<'_>, prophecy_var: TempVarIdx) -> PlaceType {
         let mut var = place.local.into();
         let mut invariants = Vec::new();
@@ -1253,25 +1290,29 @@ where
             let Some(elem) = it.next() else {
                 break;
             };
-            var = match (elem, self.flow_binding(var).expect("deref unbound var")) {
+            let (part, invariant) = match (elem, self.flow_binding(var).expect("deref unbound var"))
+            {
                 (PlaceElem::Deref, FlowBinding::Box { current, elem }) => {
-                    invariants.push(((*current).into(), elem.refinement.clone()));
-                    (*current).into()
+                    (*current, Some(elem.refinement.clone()))
                 }
                 (PlaceElem::Deref, &FlowBinding::Mut(current, final_)) => {
                     let elem = self.var(final_.into()).expect("unbound prophecy");
-                    invariants.push((current.into(), elem.refinement.clone()));
-                    current.into()
+                    (current, Some(elem.refinement.clone()))
                 }
-                (PlaceElem::Field(idx, _), FlowBinding::Tuple(xs)) => xs[idx.as_usize()].into(),
+                (PlaceElem::Field(idx, _), FlowBinding::Tuple(xs)) => (xs[idx.as_usize()], None),
                 (PlaceElem::Downcast(_, variant_idx), FlowBinding::Enum { variants, .. }) => {
                     let Some(PlaceElem::Field(field_idx, _)) = it.next() else {
                         panic!("downcast not followed by field")
                     };
-                    variants[variant_idx].fields[field_idx].into()
+                    (variants[variant_idx].fields[field_idx], None)
                 }
                 _ => unimplemented!("elem={:?}", elem),
             };
+            let part = self.flow_part(var, part);
+            if let Some(refinement) = invariant {
+                invariants.push((part.into(), refinement));
+            }
+            var = part.into();
         }
 
         let mut borrowed = self.borrow_var(var, prophecy_var);
