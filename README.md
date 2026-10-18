@@ -204,6 +204,8 @@ fn g(x: i32) -> i32 {
 
 Refinements may be nested inside generic arguments and reference types, e.g. `Box<{ v: i64 | v > 0 }>` or `&mut { v: i32 | v >= 0 }`.
 
+A refinement on any parameter makes the precondition written, as `requires` does: it is the conjunction of the parameter refinements, a parameter without one is unconstrained, and the body is checked under it whether or not any function calls it. A parameter's refinement may refer only to the parameters before it.
+
 ### Loop invariants
 
 `thrust_macros::invariant!(|x: i64, y: i64| x >= 1 && y >= 1)`, written in a loop body, gives the invariant of the innermost enclosing loop. Its closure's parameters name the variables live at the loop head, and a parameter typed `thrust_models::FnParam<T>` names a parameter of the function, read at entry with `.at_entry()`. Several `invariant!`s at one loop are conjoined. A written invariant is the whole invariant of its loop: Thrust infers nothing there, so it states every fact the rest of the function needs about the live variables and the parameters' entry values.
