@@ -35,6 +35,8 @@ enum Line<'a> {
         clauses: usize,
         functions: Vec<FnSpan>,
         verdict: &'a str,
+        /// What the solver answered when it is neither `sat` nor `unsat`.
+        message: Option<&'a str>,
         cached: bool,
     },
     Site {
@@ -296,6 +298,7 @@ impl Json<'_, '_> {
                     })
                     .collect(),
                 verdict: part.verdict,
+                message: part.message.as_deref(),
                 cached: part.cached,
             })?;
         }

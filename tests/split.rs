@@ -331,3 +331,33 @@ fn a_part_error_names_signatures() {
         "{stdout}"
     );
 }
+
+/// In a split run, a part without an answer gives what the solver answered on its line, and the
+/// verdict line names the first such part.
+#[test]
+fn a_part_without_an_answer_gives_the_solver_s_limit() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = std::env::temp_dir().join(format!("thrust-slow-part-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let solver = dir.join("slow");
+    std::fs::write(&solver, "#!/bin/sh\nsleep 5\necho sat\n").unwrap();
+    std::fs::set_permissions(&solver, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let output = run_with(
+        "two_parts.rs",
+        Some("4"),
+        &[
+            ("THRUST_REPORT", "1"),
+            ("THRUST_REPORT_FORMAT", "json"),
+            ("THRUST_SOLVER", solver.to_str().unwrap()),
+            ("THRUST_SOLVER_TIMEOUT_SECS", "1"),
+        ],
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let verdict = r#"{"kind":"verdict","verdict":"timeout","refutations":"one per part","message":"part 1: Timeout(1s)"}"#;
+    assert!(stdout.contains(verdict), "{stdout}");
+    assert!(
+        stdout.contains(r#""verdict":"timeout","message":"Timeout(1s)","cached":false}"#),
+        "{stdout}"
+    );
+}

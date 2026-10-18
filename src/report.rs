@@ -521,11 +521,12 @@ pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) -> Vec<Refuted>
                     .collect(),
                 parts: input.parts,
                 verdict,
-                message: match &input.answers[0].result {
-                    Err(err) if !split && !matches!(err, chc::CheckSatError::Unsat) => {
-                        Some(format!("{err:?}"))
-                    }
-                    _ => None,
+                // With parts, that of the first part with the crate's verdict.
+                message: if split {
+                    let first = input.parts.iter().find(|p| p.verdict == verdict);
+                    first.and_then(|p| Some(format!("part {}: {}", p.id, p.message.as_ref()?)))
+                } else {
+                    parts::message(&input.answers[0].result)
                 },
             };
             let result = match &config.file {
