@@ -3035,8 +3035,6 @@ impl<'tcx> Analyzer<'tcx> {
         out
     }
 
-    /// Where a contract is annotated, from the companions it is read from: `requires`,
-    /// `ensures`, and each refinement at its position.
     /// The clauses of the formula function `def_id` as written, read off the tail of its body
     /// (the macros conjoin the clauses of an annotation into one); the function where it has no
     /// tail.
@@ -3068,6 +3066,8 @@ impl<'tcx> Analyzer<'tcx> {
         self.invariant_annotations.insert((def, header), spans);
     }
 
+    /// Where a contract is annotated, from the companions it is read from: `requires`,
+    /// `ensures`, and each refinement at its position.
     pub fn contract_annotations(
         &self,
         requires: Option<DefId>,

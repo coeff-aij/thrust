@@ -322,7 +322,8 @@ fn componentwise<V: Clone + PartialEq>(
 
 /// `atom` with its arguments tidied (see `tidy_term`), two pairs `<c, f>` or two tuples equal
 /// when their components are, a boolean term equated with `true` or `false` read as the formula
-/// it stands for or its negation, and `x - y` compared with `0` as `x` compared with `y`.
+/// it stands for or its negation, and `x - y` compared with an integer as `x` compared with `y`
+/// moved by it (see `compared_difference`).
 fn tidy_atom<V: Clone + PartialEq>(atom: chc::Atom<V>) -> chc::Formula<V> {
     use chc::{KnownPred, Term};
     let args: Vec<Term<V>> = atom.args.into_iter().map(tidy_term).collect();

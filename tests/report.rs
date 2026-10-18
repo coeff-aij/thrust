@@ -412,3 +412,20 @@ fn a_user_predicate_is_applied_with_parentheses() {
         "{stderr}"
     );
 }
+
+/// A refuted loop preservation labels the `invariant!` it checks, as a loop entry does.
+#[test]
+fn report_labels_the_invariant_a_preservation_checks() {
+    let output = report("invariant_not_preserved.rs", "failure");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("thrust: refuted: loop preservation in `main`"),
+        "{stderr}"
+    );
+    let label = stderr
+        .lines()
+        .skip_while(|l| !l.contains("thrust_macros::invariant!(|p: &mut i64| *p >= 1);"))
+        .nth(1)
+        .unwrap_or_default();
+    assert!(label.contains("the annotation it checks"), "{stderr}");
+}

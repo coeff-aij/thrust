@@ -361,3 +361,22 @@ fn a_part_without_an_answer_gives_the_solver_s_limit() {
         "{stdout}"
     );
 }
+
+/// With the JSON report, a split run's error of a refuted part is a plain error at the refuted
+/// obligation, the report's failure line naming the part.
+#[test]
+fn a_split_json_run_has_its_error_at_the_obligation() {
+    let output = run_with(
+        "two_parts.rs",
+        Some("2"),
+        &[("THRUST_REPORT", "1"), ("THRUST_REPORT_FORMAT", "json")],
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let at = stderr
+        .split("error: verification error: Unsat\n")
+        .nth(1)
+        .and_then(|rest| rest.lines().next())
+        .unwrap_or_default();
+    assert!(at.ends_with("two_parts.rs:9:1"), "{stderr}");
+    assert!(!stderr.contains("thrust: refuted"), "{stderr}");
+}
