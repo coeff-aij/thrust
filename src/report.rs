@@ -17,6 +17,7 @@ mod failure;
 mod formula;
 mod human;
 mod json;
+mod parts;
 mod proof;
 mod simplify;
 mod sites;
@@ -26,10 +27,11 @@ use std::collections::{BTreeMap, HashMap};
 
 use rustc_middle::mir::BasicBlock;
 use rustc_middle::ty::TyCtxt;
-use rustc_span::def_id::LocalDefId;
+use rustc_span::def_id::{DefId, LocalDefId};
 use rustc_span::Span;
 
 use crate::analyze::selection::Selection;
+use crate::analyze::ContractAnnotations;
 use crate::chc;
 use crate::refine::BasicBlockType;
 use crate::rty;
@@ -39,7 +41,9 @@ use constraints::Constraint;
 use human::Human;
 use json::Json;
 use sites::{Names, Site, SiteKind};
-use solution::{solution_unavailable, Solution};
+use solution::Solution;
+
+pub use parts::{emit_notes as emit_part_notes, Part};
 
 #[derive(Debug, Clone, Copy, Default)]
 struct Items {
@@ -61,18 +65,16 @@ impl Items {
         internal: true,
     };
 
-    /// What `THRUST_REPORT=1` shows: to a person, what was inferred and why verification failed;
-    /// to a program, everything.
-    fn default_for(format: Format) -> Items {
-        match format {
-            Format::Human => Items {
-                inferred: true,
-                failure: true,
-                ..Items::default()
-            },
-            Format::Json => Items::ALL,
-        }
-    }
+    /// What `THRUST_REPORT=1` shows, to a person and to a program: what was inferred and why
+    /// verification failed.
+    const DEFAULT: Items = Items {
+        template: false,
+        constraints: false,
+        solution: false,
+        inferred: true,
+        failure: true,
+        internal: false,
+    };
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,7 +109,7 @@ impl Config {
         let mut items = Items::default();
         for item in value.split(',').map(str::trim).filter(|i| !i.is_empty()) {
             match item {
-                "1" => items = Items::default_for(format),
+                "1" => items = Items::DEFAULT,
                 "all" => items = Items::ALL,
                 "template" => items.template = true,
                 "constraints" => items.constraints = true,
@@ -137,6 +139,15 @@ impl Config {
         })
     }
 
+    /// Whether the report shows `def`: written in the program, and among `THRUST_REPORT_ONLY`.
+    pub fn reports(&self, tcx: TyCtxt<'_>, def: LocalDefId) -> bool {
+        user_written(tcx, def)
+            && self
+                .only
+                .as_ref()
+                .is_none_or(|only| only.contains(tcx, def.to_def_id()))
+    }
+
     /// What the report needs from the solver besides the verdict.
     pub fn requests(&self) -> chc::Requests {
         chc::Requests {
@@ -152,11 +163,30 @@ pub struct Input<'a> {
     /// The contract of each function, written or a template.
     pub contracts: Vec<(LocalDefId, &'a rty::FunctionType)>,
     pub blocks: Vec<(LocalDefId, BasicBlock, &'a BasicBlockType)>,
-    pub answer: &'a chc::Answer,
+    /// The solver's answers: one for the whole system, or with `THRUST_SPLIT` one for each part
+    /// `asked` names. A solution is read from those with a model, a failure from each.
+    pub answers: &'a [chc::Answer],
+    pub asked: &'a [Asked],
     /// Where the analysis made each template's predicate variable.
     pub template_sites: &'a HashMap<chc::PredVarId, crate::analyze::TemplateSite>,
     /// The variable each argument of a template's predicate variable is.
     pub template_vars: &'a HashMap<chc::PredVarId, Vec<Option<chc::debug::ErasedVar>>>,
+    /// Where each function's written contract is annotated.
+    pub contract_annotations: &'a HashMap<DefId, ContractAnnotations>,
+    /// Where the written invariant of each loop, by its function and header, is annotated.
+    pub invariant_annotations: &'a HashMap<(LocalDefId, BasicBlock), Vec<Span>>,
+    /// The parts of the system solved on their own (`THRUST_SPLIT`); the system is then that of
+    /// the parts refuted.
+    pub parts: &'a [Part],
+}
+
+/// A part of the system solved once more for the report (`THRUST_SPLIT`): for its refutation
+/// when it is refuted, else for its model.
+pub struct Asked {
+    /// Its number among the parts, from 1.
+    pub part: usize,
+    pub clauses: Vec<chc::ClauseId>,
+    pub refuted: bool,
 }
 
 /// One function: its sites and constraints, the loops' ones under their headers.
@@ -187,6 +217,33 @@ fn constraint_of<'a, 'tcx>(
     })
 }
 
+/// The functions whose written `ensures` the run of `failure` assumes at a call, each with the
+/// first span of its annotation.
+fn assumed(
+    tcx: TyCtxt<'_>,
+    entries: &[Entry<'_>],
+    failure: &failure::Failure,
+) -> Vec<(String, Span)> {
+    let mut assumed: Vec<(String, Span)> = Vec::new();
+    for step in &failure.run {
+        let Some((_, c)) = step.via.and_then(|id| constraint_of(entries, id)) else {
+            continue;
+        };
+        let constraints::Annotation::Assumes(callee, spans) = &c.annotation else {
+            continue;
+        };
+        // The injected `std.rs` is no annotation of the program's.
+        if in_injected_std(tcx, spans[0]) {
+            continue;
+        }
+        let name = tcx.def_path_str(*callee);
+        if assumed.iter().all(|(n, _)| *n != name) {
+            assumed.push((name, spans[0]));
+        }
+    }
+    assumed
+}
+
 /// Whether `def` is written in the program, rather than injected (`std.rs`) or expanded from a
 /// macro (the companions of the annotations).
 fn user_written(tcx: TyCtxt<'_>, def: LocalDefId) -> bool {
@@ -199,28 +256,65 @@ fn user_written(tcx: TyCtxt<'_>, def: LocalDefId) -> bool {
             span.ctxt().outer_expn_data().kind,
             ExpnKind::Macro(MacroKind::Attr, _)
         );
-    written
-        && !matches!(
-            tcx.sess.source_map().span_to_filename(span),
-            rustc_span::FileName::Custom(name) if name == crate::INJECTED_STD_FILE_NAME
-        )
+    written && !in_injected_std(tcx, span)
 }
 
+/// The file of `span`, relative to the working directory when it is under it.
+fn file_name(tcx: TyCtxt<'_>, span: Span) -> String {
+    let file = tcx.sess.source_map().lookup_char_pos(span.lo()).file;
+    let name = file.name.prefer_local().to_string();
+    let cwd = std::env::current_dir().unwrap_or_default();
+    std::path::Path::new(&name)
+        .strip_prefix(&cwd)
+        .map(|relative| relative.display().to_string())
+        .unwrap_or(name)
+}
+
+/// Where a span starts and ends, as JSON writes it.
+#[derive(serde::Serialize)]
+struct Range {
+    file: String,
+    line: usize,
+    column: usize,
+    end_line: usize,
+    end_column: usize,
+}
+
+/// The range of `span`, its columns counted from 1 in characters, `end_column` after the last.
+fn range(tcx: TyCtxt<'_>, span: Span) -> Range {
+    let source_map = tcx.sess.source_map();
+    let (lo, hi) = (
+        source_map.lookup_char_pos(span.lo()),
+        source_map.lookup_char_pos(span.hi()),
+    );
+    Range {
+        file: file_name(tcx, span),
+        line: lo.line,
+        column: lo.col.0 + 1,
+        end_line: hi.line,
+        end_column: hi.col.0 + 1,
+    }
+}
+
+/// Whether `span` is in the injected `std.rs`.
+fn in_injected_std(tcx: TyCtxt<'_>, span: Span) -> bool {
+    matches!(
+        tcx.sess.source_map().span_to_filename(span),
+        rustc_span::FileName::Custom(name) if name == crate::INJECTED_STD_FILE_NAME
+    )
+}
+
+/// `file:line:column` of `span`.
 fn location(tcx: TyCtxt<'_>, span: Span) -> String {
     let loc = tcx.sess.source_map().lookup_char_pos(span.lo());
-    format!(
-        "{}:{}:{}",
-        loc.file.name.prefer_local(),
-        loc.line,
-        loc.col.0 + 1
-    )
+    format!("{}:{}:{}", file_name(tcx, span), loc.line, loc.col.0 + 1)
 }
 
 /// Puts each clause, as a constraint, in the entry of the code it was made in, in place of those
 /// there.
 fn add_constraints(
     tcx: TyCtxt<'_>,
-    system: &chc::System,
+    input: &Input<'_>,
     names: &Names,
     entries: &mut HashMap<LocalDefId, Entry<'_>>,
 ) {
@@ -230,12 +324,12 @@ fn add_constraints(
             constraints.clear();
         }
     }
-    for (id, clause) in system.clauses.iter_enumerated() {
+    for (id, clause) in input.system.clauses.iter_enumerated() {
         let provenance = constraints::Provenance::of(&clause.debug_info);
         let Some(entry) = provenance.def.and_then(|def| entries.get_mut(&def)) else {
             continue;
         };
-        let constraint = constraints::constraint(tcx, id, clause, names, Some(&entry.body));
+        let constraint = constraints::constraint(tcx, id, clause, names, Some(&entry.body), input);
         match provenance.bb.and_then(|bb| entry.body.innermost_loop(bb)) {
             Some(header) => entry.loops.entry(header).or_default().1.push(constraint),
             None => entry.constraints.push(constraint),
@@ -248,13 +342,7 @@ fn entries<'tcx>(
     config: &Config,
     input: &Input<'_>,
 ) -> (Vec<Entry<'tcx>>, Names) {
-    let selected = |def: LocalDefId| {
-        user_written(tcx, def)
-            && config
-                .only
-                .as_ref()
-                .is_none_or(|only| only.contains(tcx, def.to_def_id()))
-    };
+    let selected = |def: LocalDefId| config.reports(tcx, def);
     let mut entries: HashMap<LocalDefId, Entry<'tcx>> = HashMap::new();
     for (def, _, _) in &input.blocks {
         if entries.contains_key(def) || !selected(*def) {
@@ -326,41 +414,83 @@ fn entries<'tcx>(
         |def, bb| Some(format!("{}.{bb:?}", entries.get(&def)?.name)),
         |def, path| entries[&def].body.path_name(path),
     );
-    add_constraints(tcx, input.system, &names, &mut entries);
+    add_constraints(tcx, input, &names, &mut entries);
 
     let mut entries: Vec<_> = entries.into_values().collect();
     entries.sort_by_key(|e| (e.span.lo(), e.def.local_def_index));
     (entries, names)
 }
 
-pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) {
+/// How the report shows the refutation of an answer.
+#[derive(Debug, Clone, Copy)]
+pub enum Refuted {
+    /// Not at all: the verification error is without it.
+    No,
+    /// At a span, where the verification error goes.
+    At(Span),
+    /// As the verification error itself, which the report emitted.
+    AsError,
+}
+
+/// Reports `input`, and returns how it shows the refutation of each answer.
+pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) -> Vec<Refuted> {
     // The clauses are read as the solver is given them, a `Box` being its content.
     let system = chc::unbox(input.system.clone());
     let input = Input {
         system: &system,
         contracts: input.contracts.clone(),
         blocks: input.blocks.clone(),
-        answer: input.answer,
+        answers: input.answers,
+        asked: input.asked,
         template_sites: input.template_sites,
         template_vars: input.template_vars,
+        contract_annotations: input.contract_annotations,
+        invariant_annotations: input.invariant_annotations,
+        parts: input.parts,
     };
-    let symbols = chc::answer::Symbols::of(&system, chc::Config::from_env().capabilities());
+    // An answer is over the symbols of the query it answers: the whole system's, or a part's,
+    // which numbers its own sorts.
+    let capabilities = chc::Config::from_env().capabilities();
+    let symbols: Vec<chc::answer::Symbols> = (0..input.answers.len())
+        .map(|i| match input.asked.get(i) {
+            Some(asked) => {
+                chc::answer::Symbols::of(&chc::unbox(system.part(&asked.clauses)), capabilities)
+            }
+            None => chc::answer::Symbols::of(&system, capabilities),
+        })
+        .collect();
     let (entries, names) = entries(tcx, config, &input);
-    let solution = match (solution_unavailable(input.answer), &input.answer.model) {
-        (None, Some(model)) => {
-            let config = chc::Config::from_env();
-            let query = input.answer.query.as_deref().unwrap_or_default();
-            Ok(Solution::new(model, query, &symbols, &names, |script| {
-                config.run_script(script)
-            }))
-        }
-        (why, _) => Err(why.unwrap_or_else(|| "no solution".to_owned())),
+    let split = !input.parts.is_empty();
+    let solution = Solution::of_parts(input.answers, input.asked, &system, &symbols, &names);
+    let verdict = if split {
+        let verdicts: Vec<&'static str> = input.parts.iter().map(|p| p.verdict).collect();
+        parts::crate_verdict(&verdicts)
+    } else {
+        chc::verdict(&input.answers[0].result)
     };
-    let failure = config
-        .items
-        .failure
-        .then(|| failure::read(input.answer, &names, &symbols))
-        .flatten();
+    let failures: Vec<(&chc::Answer, Option<failure::Failure>)> = input
+        .answers
+        .iter()
+        .zip(&symbols)
+        .filter(|_| config.items.failure)
+        .map(|(answer, symbols)| (answer, failure::read(answer, &names, symbols)))
+        .collect();
+    let refuted_at: Vec<Option<Span>> = (0..input.answers.len())
+        .map(|i| {
+            let (_, failure) = failures.get(i)?;
+            let (_, c) = constraint_of(&entries, failure.as_ref()?.goal)?;
+            c.error_span
+        })
+        .collect();
+    // A person reads the refutation as the error; a program, the error at its span.
+    let refuted: Vec<Refuted> = refuted_at
+        .iter()
+        .map(|span| match (span, config.format) {
+            (None, _) => Refuted::No,
+            (Some(_), Format::Human) => Refuted::AsError,
+            (Some(span), Format::Json) => Refuted::At(*span),
+        })
+        .collect();
     match config.format {
         Format::Human => {
             let human = Human {
@@ -368,8 +498,13 @@ pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) {
                 items: config.items,
                 names: &names,
                 solution,
+                split,
             };
-            human.failure(input.answer, failure.as_ref(), &entries);
+            for (i, (answer, failure)) in failures.iter().enumerate() {
+                let asked = input.asked.get(i);
+                let part_note = asked.map(|a| input.parts[a.part - 1].error_note(tcx, input.parts));
+                human.failure(answer, asked, part_note, failure.as_ref(), &entries);
+            }
             human.emit(&entries);
         }
         Format::Json => {
@@ -378,7 +513,35 @@ pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) {
                 items: config.items,
                 names: &names,
                 solution: solution.ok(),
-                failure,
+                failures: failures
+                    .into_iter()
+                    .enumerate()
+                    .filter_map(|(i, (_, f))| Some((input.asked.get(i).map(|a| a.part), f?)))
+                    .collect(),
+                parts: input.parts,
+                verdict,
+                z3_answers: input
+                    .answers
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, a)| a.proof_by_z3 && a.proof.is_none())
+                    .filter_map(|(i, a)| {
+                        let part = input.asked.get(i).map(|asked| asked.part);
+                        Some((part, a.z3_refused.as_ref()?.to_string()))
+                    })
+                    .collect(),
+                // A whole query without an answer is at the code of its clauses, as a part is.
+                functions: (!split && !matches!(verdict, "sat" | "unsat")).then(|| {
+                    let ids: Vec<chc::ClauseId> = system.clauses.indices().collect();
+                    parts::code(tcx, &system, &ids)
+                }),
+                // With parts, that of the first part with the crate's verdict.
+                message: if split {
+                    let first = input.parts.iter().find(|p| p.verdict == verdict);
+                    first.and_then(|p| Some(format!("part {}: {}", p.id, p.message.as_ref()?)))
+                } else {
+                    parts::message(&input.answers[0].result)
+                },
             };
             let result = match &config.file {
                 Some(path) => {
@@ -391,4 +554,5 @@ pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) {
             }
         }
     }
+    refuted
 }

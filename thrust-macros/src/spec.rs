@@ -15,6 +15,9 @@ use syn::{
 
 use crate::{apit, fn_outer_item::FnOuterItem, FormulaFnTypeLowering};
 
+/// The error for `#[thrust::ignored]` together with a contract.
+pub(crate) const IGNORED_WITH_CONTRACT: &str = "`#[thrust::ignored]` cannot have a contract: an ignored function is invisible to Thrust and must not run; to trust a contract without checking the body, write `#[thrust::trusted]`";
+
 pub fn expand_predicate(item: TokenStream) -> TokenStream {
     expand_spec_fn(item, SpecFnKind::Predicate)
 }
@@ -250,7 +253,155 @@ fn is_raw_smt2_body(block: &syn::Block) -> bool {
 pub fn expand_law(item: TokenStream) -> TokenStream {
     let mut func = parse_macro_input!(item as FnItemWithSignature);
     func.attrs_mut().push(syn::parse_quote!(#[thrust::law]));
+    // A law is a statement the program does not call.
+    func.attrs_mut()
+        .push(syn::parse_quote!(#[allow(dead_code)]));
+    // A law proved by its contract alone, with an empty or no body, reads none of its parameters.
+    let proved_by_contract = func.block().is_none_or(|block| block.stmts.is_empty());
+    let attrs = func.attrs_mut().clone();
+    allow_unused_contract_params(&attrs, &mut func.sig_mut().inputs, proved_by_contract);
     func.into_token_stream().into()
+}
+
+/// Whether `attr` is one of the specification attributes whose tokens name the parameters a
+/// contract reads.
+fn is_contract_attr(attr: &syn::Attribute) -> bool {
+    let Some(last) = attr.path().segments.last() else {
+        return false;
+    };
+    matches!(
+        last.ident.to_string().as_str(),
+        "requires" | "ensures" | "_requires_ensures" | "variant"
+    )
+}
+
+/// The identifiers `tokens` mention, for an argument that does not parse as formulas.
+fn idents_in(tokens: proc_macro2::TokenStream, out: &mut std::collections::HashSet<String>) {
+    for token in tokens {
+        match token {
+            proc_macro2::TokenTree::Ident(ident) => {
+                out.insert(ident.to_string());
+            }
+            proc_macro2::TokenTree::Group(group) => idents_in(group.stream(), out),
+            _ => {}
+        }
+    }
+}
+
+/// The variables formulas read that no closure among them binds (`forall(|n| ..)`).
+#[derive(Default)]
+struct Mentions {
+    bound: Vec<std::collections::HashSet<String>>,
+    found: std::collections::HashSet<String>,
+}
+
+impl<'ast> syn::visit::Visit<'ast> for Mentions {
+    fn visit_expr_closure(&mut self, closure: &'ast syn::ExprClosure) {
+        #[derive(Default)]
+        struct Binders(std::collections::HashSet<String>);
+        impl<'ast> syn::visit::Visit<'ast> for Binders {
+            fn visit_pat_ident(&mut self, pat: &'ast syn::PatIdent) {
+                self.0.insert(pat.ident.to_string());
+            }
+        }
+        let mut binders = Binders::default();
+        for input in &closure.inputs {
+            syn::visit::Visit::visit_pat(&mut binders, input);
+        }
+        self.bound.push(binders.0);
+        syn::visit::Visit::visit_expr(self, &closure.body);
+        self.bound.pop();
+    }
+
+    // A formula macro (`pre!(f(x))`, `post!(f(x), y)`) reads its arguments; the visitor does not
+    // look into a macro's tokens by itself.
+    fn visit_macro(&mut self, mac: &'ast syn::Macro) {
+        use syn::parse::Parser as _;
+        let parser = Punctuated::<syn::Expr, syn::Token![,]>::parse_terminated;
+        match parser.parse2(mac.tokens.clone()) {
+            Ok(args) => {
+                for arg in &args {
+                    syn::visit::Visit::visit_expr(self, arg);
+                }
+            }
+            Err(_) => idents_in(mac.tokens.clone(), &mut self.found),
+        }
+    }
+
+    fn visit_expr_path(&mut self, path: &'ast syn::ExprPath) {
+        if let Some(ident) = path.path.get_ident() {
+            let name = ident.to_string();
+            if self.bound.iter().all(|scope| !scope.contains(&name)) {
+                self.found.insert(name);
+            }
+        }
+        syn::visit::visit_expr_path(self, path);
+    }
+}
+
+/// The variables the arguments of contract attribute `attr` read: its formulas (after the
+/// `==>` of the formula syntax is read), those inside formula macros (`pre!`) included, or,
+/// where the formula syntax cannot read them or they do not parse, every identifier.
+fn mentioned_by(attr: &syn::Attribute, out: &mut std::collections::HashSet<String>) {
+    use syn::parse::Parser as _;
+    let Ok(list) = attr.meta.require_list() else {
+        return;
+    };
+    let tokens = list.tokens.clone();
+    let parser = Punctuated::<syn::Expr, syn::Token![,]>::parse_separated_nonempty;
+    let raw = attr
+        .path()
+        .segments
+        .last()
+        .is_some_and(|s| s.ident != "_requires_ensures");
+    let expanded = if raw {
+        crate::formula::expand(tokens.clone())
+    } else {
+        tokens.clone()
+    };
+    // `formula::expand` reports an argument it cannot read as a `compile_error!`.
+    let failed = |exprs: &Punctuated<syn::Expr, syn::Token![,]>| {
+        exprs.iter().any(|e| {
+            matches!(e, syn::Expr::Macro(m) if m.mac.path.is_ident("compile_error")
+                || m.mac.path.segments.last().is_some_and(|s| s.ident == "compile_error"))
+        })
+    };
+    let exprs = match parser.parse2(expanded) {
+        Ok(exprs) if !failed(&exprs) => exprs,
+        _ => return idents_in(tokens, out),
+    };
+    let mut mentions = Mentions::default();
+    for expr in &exprs {
+        syn::visit::Visit::visit_expr(&mut mentions, expr);
+    }
+    out.extend(mentions.found);
+}
+
+/// Allows `unused_variables` on each parameter of `inputs` the contract attributes among `attrs`
+/// mention, which the contract reads although the body may not, or on every parameter when
+/// `all`; the other parameters keep their warning.
+pub fn allow_unused_contract_params(
+    attrs: &[syn::Attribute],
+    inputs: &mut syn::punctuated::Punctuated<syn::FnArg, syn::Token![,]>,
+    all: bool,
+) {
+    let mut mentioned = std::collections::HashSet::new();
+    for attr in attrs.iter().filter(|a| is_contract_attr(a)) {
+        mentioned_by(attr, &mut mentioned);
+    }
+    for input in inputs.iter_mut() {
+        let syn::FnArg::Typed(param) = input else {
+            continue;
+        };
+        let syn::Pat::Ident(pat) = &*param.pat else {
+            continue;
+        };
+        if all || mentioned.contains(&pat.ident.to_string()) {
+            param
+                .attrs
+                .push(syn::parse_quote!(#[allow(unused_variables)]));
+        }
+    }
 }
 
 pub fn expand_requires(attr: TokenStream, item: TokenStream) -> TokenStream {
@@ -608,12 +759,12 @@ impl ExpandedTokens {
     }
 
     fn expand(&self) -> TokenStream2 {
-        let mut func = self.func.clone();
-        let trusted_path: syn::Path = syn::parse_quote!(thrust::trusted);
-        for attr in func.attrs_mut() {
-            if attr.path() == &trusted_path {
-                *attr = syn::parse_quote!(#[thrust::ignored]);
-            }
+        let func = self.func.clone();
+        let ignored_path: syn::Path = syn::parse_quote!(thrust::ignored);
+        if func.attrs().iter().any(|attr| attr.path() == &ignored_path) {
+            let error =
+                syn::Error::new_spanned(func.sig(), IGNORED_WITH_CONTRACT).to_compile_error();
+            return quote! { #error #func };
         }
 
         let requires_fn = self.requires_fn();

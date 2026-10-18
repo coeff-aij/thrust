@@ -1,0 +1,64 @@
+use thrust_models::model::UInt;
+use thrust_models::Model;
+
+#[thrust_macros::context]
+trait Counter: Model {
+    #[thrust_macros::logic]
+    fn count(self) -> UInt;
+
+    #[thrust_macros::law]
+    #[thrust_macros::ensures(Self::count(*c) >= 0)]
+    fn count_nonneg(c: &Self);
+
+    #[thrust_macros::ensures(Self::count(!self) == Self::count(*self) + 1)]
+    fn tick(&mut self);
+}
+
+#[thrust_macros::context]
+#[thrust_macros::ensures(C::count(!c) == C::count(*c) + 2)]
+#[thrust_macros::ensures(C::count(!c) >= 2)]
+fn tick_twice<C: Counter>(c: &mut C) {
+    c.tick();
+    c.tick();
+}
+
+struct Clicks {
+    n: u64,
+}
+
+impl Model for Clicks {
+    type Ty = (UInt,);
+}
+
+#[thrust_macros::context]
+impl Counter for Clicks {
+    #[thrust_macros::logic]
+    fn count(self) -> UInt {
+        self.0
+    }
+
+    #[thrust_macros::law]
+    fn count_nonneg(c: &Clicks) {}
+
+    fn tick(&mut self) {
+        self.n += 1;
+    }
+}
+
+fn main() {
+    let mut c = Clicks { n: 0 };
+    tick_twice(&mut c);
+    assert!(c.n == 2);
+}
+
+#[thrust_macros::lemma]
+#[thrust_macros::requires(n >= 0)]
+#[thrust_macros::ensures(n + 1 > 0)]
+fn succ_positive(n: i64) {}
+
+#[thrust_macros::lemma]
+#[thrust_macros::requires(n >= 0)]
+#[thrust_macros::ensures(m + n >= m)]
+fn sum_grows(n: i64, m: i64) {
+    let _k = 0;
+}

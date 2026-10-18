@@ -108,8 +108,10 @@ impl<'a, 'tcx, 'ctx> mir::visit::MutVisitor<'tcx> for RustCallVisitor<'a, 'tcx, 
                         let borrowed_closure_local =
                             self.insert_immut_borrow(arg_closure_place, arg_closure_ty);
                         args[0].node = mir::Operand::Copy(borrowed_closure_local.into());
-                        // As in case 3, the closure is no longer consumed by the call, so its
-                        // drop obligation, which `moved_locals` stole, must be restored.
+                        // As in case 3, the call no longer consumes the closure, but the drop
+                        // points resolve nothing of it here (`moved_out_parts`), since the
+                        // original MIR moves it into the call: drop it whole after the call
+                        // instead (`DropPoints::after_terminator`).
                         if arg_closure_place.projection.is_empty() {
                             self.analyzer.drop_after_terminator(arg_closure_place.local);
                         }
@@ -128,12 +130,12 @@ impl<'a, 'tcx, 'ctx> mir::visit::MutVisitor<'tcx> for RustCallVisitor<'a, 'tcx, 
                     // only borrows it: drop the borrow and the environment after the
                     // call to resolve the prophecies of the captured mutable borrows.
                     self.analyzer.drop_after_terminator(borrowed_closure_local);
-                    // The original MIR moves the closure into the call, so `moved_locals`
-                    // dropped its drop obligation, expecting the callee to consume it; we
-                    // must restore it. `moved_locals` only steals whole-local moves, so we
-                    // only restore those: with a projection the obligation was never stolen
-                    // and the normal drop machinery still handles it (re-adding it would
-                    // double-drop). In practice a non-`Copy` closure (the only kind reaching
+                    // The original MIR moves the closure into the call, so the drop points
+                    // resolve nothing of it there (`moved_out_parts`), expecting the callee to
+                    // consume it; the closure is dropped here instead, whole, and in place of
+                    // its entry in the liveness drops (`DropPoints::after_terminator`). A move
+                    // through a projection moves only a part, which the normal drop machinery
+                    // still handles. In practice a non-`Copy` closure (the only kind reaching
                     // this case) is always moved through a projection-less temporary.
                     if arg_closure_place.projection.is_empty() {
                         self.analyzer.drop_after_terminator(arg_closure_place.local);

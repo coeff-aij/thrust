@@ -41,6 +41,17 @@ pub enum CheckSatError {
     Io(#[from] std::io::Error),
 }
 
+/// The name of a verdict: `sat`, `unsat`, `timeout`, `unknown` or `error`.
+pub fn verdict(result: &Result<(), CheckSatError>) -> &'static str {
+    match result {
+        Ok(()) => "sat",
+        Err(CheckSatError::Unsat) => "unsat",
+        Err(CheckSatError::Timeout(_)) => "timeout",
+        Err(CheckSatError::Unknown { .. }) => "unknown",
+        Err(_) => "error",
+    }
+}
+
 /// One of the three answers a solver can give `(check-sat)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Verdict {
@@ -220,7 +231,10 @@ impl Default for Config {
         Config {
             solver: CommandConfig {
                 name: "z3".to_owned(),
+                // Without `fp.engine`, z3 picks its engine from the query, and takes a query over
+                // bit-vectors alone for its finite-domain Datalog engine, which enumerates them.
                 args: vec![
+                    "fp.engine=spacer".to_owned(),
                     "fp.spacer.global=true".to_owned(),
                     "fp.validate=true".to_owned(),
                 ],
@@ -259,6 +273,38 @@ impl Config {
         config
     }
 
+    /// The solver as a verdict depends on it: the command and the preprocessor with their
+    /// arguments, and `THRUST_CACHE_SALT`, which the caller sets to what else decides the verdict,
+    /// such as the build a solver command runs.
+    pub fn identity(&self) -> String {
+        let command = |c: &CommandConfig| format!("{} {}", c.name, c.args.join(" "));
+        let preprocessor = self.preprocessor.as_ref().map(command).unwrap_or_default();
+        let salt = std::env::var("THRUST_CACHE_SALT").unwrap_or_default();
+        format!(
+            "solver: {}; preprocessor: {preprocessor}; salt: {salt}",
+            command(&self.solver)
+        )
+    }
+
+    /// Writes `query` with its `(check-sat)` to `name` in `THRUST_OUTPUT_DIR`, if it is set.
+    pub fn save_query(&self, name: &str, query: &str) -> std::io::Result<()> {
+        let Some(dir) = &self.output_dir else {
+            return Ok(());
+        };
+        std::fs::write(dir.join(name), format!("{query}\n(check-sat)\n"))
+    }
+
+    pub fn is_z3(&self) -> bool {
+        self.solver.is_z3()
+    }
+
+    /// Whether `z3` is asked for the refutation of a query the solver refuted, which it gives
+    /// none of: a refutation is asked for, and the solver is not `z3` alone (PCSat, or `z3`
+    /// after a preprocessor).
+    pub fn asks_z3_to_refute(&self, requests: Requests) -> bool {
+        requests.proof && !self.answers(requests)
+    }
+
     pub fn capabilities(&self) -> Capabilities {
         Capabilities {
             dependency_aware_declarations: !self.solver.is_z3(),
@@ -275,14 +321,7 @@ impl Config {
     /// Solves `problem`, also asking for the evidence `requests` names when the solver gives it
     /// (see [`Config::answers`]).
     pub fn check_sat_with(&self, problem: impl std::fmt::Display, requests: Requests) -> Answer {
-        let mut answer = Answer {
-            result: Ok(()),
-            model: None,
-            proof: None,
-            goal_markers: Vec::new(),
-            clause_tags: Vec::new(),
-            query: None,
-        };
+        let mut answer = Answer::of(Ok(()));
         let evidence = match self.run_check_sat(problem, requests) {
             Ok(output) => {
                 let (verdict, evidence) = split_evidence(&output, self.answers(requests));
@@ -324,15 +363,17 @@ impl Config {
     /// hyper-resolutions. Its preprocessing would fold clauses into one another, and with them
     /// the facts the refutation derives, and drop the premises a fact makes true, so the
     /// transformations doing so are turned off.
-    pub fn refute(&self, problem: impl std::fmt::Display) -> Option<Sexp> {
+    /// Without a refutation, what `z3` answered instead.
+    pub fn refute(&self, problem: impl std::fmt::Display) -> Result<Sexp, Refused> {
         use std::io::Write as _;
+        let failed = |err: std::io::Error| Refused::Failed(err.to_string());
         let mut file = tempfile::Builder::new()
             .prefix("thrust_tmp_")
             .suffix(".smt2")
             .tempfile()
-            .ok()?;
-        write!(file, "{problem}\n(check-sat)\n(get-proof)\n").ok()?;
-        file.flush().ok()?;
+            .map_err(failed)?;
+        write!(file, "{problem}\n(check-sat)\n(get-proof)\n").map_err(failed)?;
+        file.flush().map_err(failed)?;
         let mut solver = self.solver.clone();
         solver.args.extend(
             [
@@ -345,12 +386,30 @@ impl Config {
             ]
             .map(str::to_owned),
         );
-        let output = solver.run(file.path(), std::process::Stdio::piped()).ok()?;
-        let (verdict, evidence) = split_evidence(&output, true);
-        if read_verdict(&verdict)?.0 != Verdict::Unsat {
-            return None;
+        let output = match solver.run(file.path(), std::process::Stdio::piped()) {
+            Ok(output) | Err(CheckSatError::Error { stdout: output, .. }) => output,
+            Err(err) => return Err(Refused::Failed(format!("{err:?}"))),
+        };
+        let (answered, evidence) = split_evidence(&output, true);
+        match read_verdict(&answered) {
+            Some((Verdict::Unsat, _)) => {}
+            Some((Verdict::Sat, _)) => return Err(Refused::Sat),
+            Some((Verdict::Unknown, _)) => return Err(Refused::Unknown),
+            None => return Err(Refused::NoVerdict),
         }
-        evidence.into_iter().find(|e| !e.is_error())
+        let proof = evidence.into_iter().find(|e| !e.is_error());
+        proof.ok_or(Refused::NoRefutation)
+    }
+
+    /// `z3`, asked for the refutation of a query another solver refuted, with that solver's time
+    /// limit (`THRUST_SOLVER_TIMEOUT_SECS`) when it sets one, and else its own 30 s: a solver
+    /// without a limit (`0`) leaves `z3` its default.
+    pub fn z3_in_place_of_solver() -> Config {
+        let mut config = Config::default();
+        let default = config.solver.timeout;
+        config.solver.load_timeout("THRUST_SOLVER_TIMEOUT_SECS");
+        config.solver.timeout = config.solver.timeout.or(default);
+        config
     }
 
     fn run_check_sat(
@@ -366,9 +425,6 @@ impl Config {
             .tempfile()?;
         write!(file, "{}", smt2)?;
         file.flush()?;
-        if let Some(dir) = &self.output_dir {
-            std::fs::copy(&file, dir.join("thrust_output.smt2"))?;
-        }
         let answers = self.answers(requests);
         if answers && requests.model {
             writeln!(file, "(get-model)")?;
@@ -389,13 +445,40 @@ impl Config {
         drop(file);
         match output {
             // `z3` exits with an error when it cannot answer `(get-model)` after `unsat` or
-            // `(get-proof)` after `sat`, having printed the verdict.
+            // `(get-proof)` after `sat`, having printed the verdict. An error before the verdict
+            // (a line of the query it could not read) is an error whatever was asked, so that
+            // the verdict does not depend on the report.
             Err(CheckSatError::Error { stdout, .. })
-                if answers && read_verdict(&split_evidence(&stdout, true).0).is_some() =>
+                if answers && only_evidence_failed(&stdout) =>
             {
                 Ok(stdout)
             }
             output => output,
+        }
+    }
+}
+
+/// What `z3`, asked for a refutation, answered instead of one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Refused {
+    Sat,
+    Unknown,
+    /// It printed no verdict.
+    NoVerdict,
+    /// It answered `unsat` without a refutation.
+    NoRefutation,
+    /// It could not be run, or did not answer in time (`Timeout(30s)`).
+    Failed(String),
+}
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Refused::Sat => f.write_str("sat"),
+            Refused::Unknown => f.write_str("unknown"),
+            Refused::NoVerdict => f.write_str("no verdict"),
+            Refused::NoRefutation => f.write_str("no refutation"),
+            Refused::Failed(why) => f.write_str(why),
         }
     }
 }
@@ -424,6 +507,26 @@ pub struct Answer {
     /// The query, when a model is asked for: its declarations are what the model's terms are
     /// over.
     pub query: Option<String>,
+    /// Whether the refutation is `z3`'s, asked of a query another solver refuted.
+    pub proof_by_z3: bool,
+    /// What `z3`, asked for a refutation, answered instead.
+    pub z3_refused: Option<Refused>,
+}
+
+impl Answer {
+    /// The verdict `result`, without evidence.
+    pub fn of(result: Result<(), CheckSatError>) -> Self {
+        Answer {
+            result,
+            model: None,
+            proof: None,
+            goal_markers: Vec::new(),
+            clause_tags: Vec::new(),
+            query: None,
+            proof_by_z3: false,
+            z3_refused: None,
+        }
+    }
 }
 
 /// Splits the solver's output into the part with the verdict and the s-expressions printed after
@@ -442,6 +545,14 @@ fn split_evidence(output: &str, asked: bool) -> (String, Vec<Sexp>) {
     let verdict = lines[..=verdict_end].join("\n");
     let rest = lines[verdict_end + 1..].join("\n");
     (verdict, super::sexp::parse_all(&rest))
+}
+
+/// Whether `stdout` has a verdict and no `(error …)` line before it: only the evidence asked after
+/// the verdict failed.
+fn only_evidence_failed(stdout: &str) -> bool {
+    let (verdict, _) = split_evidence(stdout, true);
+    read_verdict(&verdict)
+        .is_some_and(|(_, rejected)| rejected.iter().all(|line| !line.starts_with("(error")))
 }
 
 fn interpret_verdict(output: String) -> Result<(), CheckSatError> {

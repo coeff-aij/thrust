@@ -28,6 +28,10 @@ pub struct Analyzer<'tcx, 'ctx> {
     ctx: &'ctx mut analyze::Analyzer<'tcx>,
 
     skip_analysis: HashSet<LocalDefId>,
+    /// The fn-like defs whose bodies are trusted rather than analyzed: `#[thrust::trusted]` ones,
+    /// those outside `THRUST_VERIFY_ONLY` that are trusted for their contract, and the closures in
+    /// them.
+    trusted: HashSet<LocalDefId>,
     selection: Option<analyze::selection::Selection>,
 }
 
@@ -97,6 +101,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         .is_some()
                     {
                         self.skip_analysis.insert(local_target_def_id);
+                        self.trusted.insert(local_target_def_id);
                     }
                 }
                 if matches!(
@@ -106,6 +111,17 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     trait_method_spec_keys.push(*local_def_id);
                     keys.swap_remove(local_def_id);
                 }
+            }
+            if analyzer.is_crate_destructor() {
+                check_destructor_annotations(self.tcx, &analyzer, *local_def_id);
+            }
+            if analyzer.is_annotated_as_ignored() && analyzer.has_contract_annotation() {
+                self.tcx.dcx().span_err(
+                    self.tcx.def_span(*local_def_id),
+                    "`#[thrust::ignored]` cannot have a contract: an ignored function is invisible \
+                     to Thrust and must not run; to trust a contract without checking the body, \
+                     write `#[thrust::trusted]`",
+                );
             }
             if analyzer.is_annotated_as_ignored() || analyzer.is_ignored_derive() {
                 self.skip_analysis.insert(*local_def_id);
@@ -133,6 +149,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         for local_target_def_id in local_spec_targets {
             if self.is_outside_selection(local_target_def_id) {
                 self.skip_analysis.insert(local_target_def_id);
+                self.trusted.insert(local_target_def_id);
             }
         }
         // A closure is skipped when its typeck root is, so roots are refined first.
@@ -216,6 +233,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 self.tcx.def_path_str(local_def_id)
             );
             self.skip_analysis.insert(local_def_id);
+            self.trusted.insert(local_def_id);
         }
 
         let is_injected_std = analyzer.is_injected_std();
@@ -228,6 +246,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         // method's spec does not apply its body is analyzed (`Analyzer::def_ty_with_args`).
         let trusted_derive = analyzer.is_trusted_derive() && analyzer.trait_item_ty().is_some();
         if trusted_derive {
+            analyzer.check_derived_field_impls();
             self.skip_analysis.insert(local_def_id);
         }
 
@@ -249,6 +268,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             if root_local_def_id != local_def_id && self.skip_analysis.contains(&root_local_def_id)
             {
                 self.skip_analysis.insert(local_def_id);
+                if self.trusted.contains(&root_local_def_id) {
+                    self.trusted.insert(local_def_id);
+                }
                 return;
             }
         }
@@ -262,6 +284,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             if !ty.has_pred_var() {
                 tracing::debug!("trusted outside THRUST_VERIFY_ONLY");
                 self.skip_analysis.insert(local_def_id);
+                self.trusted.insert(local_def_id);
             }
             expected = Some(ty);
         }
@@ -284,7 +307,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     local_def_id,
                     owner_fn_id_args,
                 );
-            } else if per_instance_generics() {
+            } else if per_instance_generics() && !analyzer.is_crate_destructor() {
+                // A destructor is checked once over its type parameters even so (D57): `std` may
+                // drop it at an instance that no call site of the crate reaches.
                 // Upstream Thrust's treatment: the body is analyzed at each instance a call site
                 // reaches, and not once over the type parameters.
                 self.ctx
@@ -652,6 +677,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             ctx,
             tcx,
             skip_analysis,
+            trusted: HashSet::new(),
             selection,
         }
     }
@@ -664,6 +690,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         analyze::lemma::check_lemmas(self.tcx, proof_branch);
         self.analyze_raw_command_annot();
         self.register_trait_laws();
+        self.check_restated_laws();
         self.report_unmatched_selection();
         self.refine_local_defs();
         self.check_impl_refinements();
@@ -676,10 +703,84 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.ctx.emit_pending_pred_instances();
         self.ctx.emit_pending_laws();
         self.ctx.emit_fn_mut_instance_obligations();
-        self.ctx.expand_dispatched_instances();
-        self.ctx.check_reused_total_methods();
-        self.ctx.check_reused_spec_bounds();
+        self.ctx.check_reused_instances();
+        self.check_ignored_not_run();
         self.assert_callable_entry();
+    }
+
+    /// Checks that each `#[thrust::law]` restated on an impl item (as Creusot writes it)
+    /// implements a law of a trait.
+    fn check_restated_laws(&self) {
+        for item_id in self.tcx.hir_crate_items(()).impl_items() {
+            let local_def_id = item_id.owner_id.def_id;
+            let restated = self
+                .tcx
+                .get_attrs_by_path(local_def_id.to_def_id(), &analyze::annot::law_path())
+                .next()
+                .is_some();
+            if restated && !self.is_law_impl(local_def_id) {
+                self.tcx.dcx().span_err(
+                    self.tcx.def_span(local_def_id),
+                    "`#[thrust_macros::law]` on a method that implements no law of a trait",
+                );
+            }
+        }
+    }
+
+    /// Checks that no function Thrust verifies can run an ignored one
+    /// ([`analyze::Analyzer::stop_ignored_reached`]): the roots are the fn-like defs whose bodies
+    /// are analyzed, monomorphic ones as instances and generic ones through their instances.
+    fn check_ignored_not_run(&self) {
+        let analyzed = self.tcx.mir_keys(()).iter().copied().filter(|def_id| {
+            let id = def_id.to_def_id();
+            !self.skip_analysis.contains(def_id)
+                && self.tcx.def_kind(id).is_fn_like()
+                && !self.tcx.is_closure_like(id)
+        });
+        let (generic, monomorphic): (Vec<_>, Vec<_>) =
+            analyzed.map(LocalDefId::to_def_id).partition(|def_id| {
+                self.tcx
+                    .generics_of(*def_id)
+                    .requires_monomorphization(self.tcx)
+            });
+        // A trusted function and the entry function are roots too: a trusted body may run
+        // verified code, which may not run an ignored function, though no verified caller exists.
+        let trusted = self
+            .trusted
+            .iter()
+            .map(|def_id| def_id.to_def_id())
+            .filter(|def_id| {
+                !self.tcx.is_closure_like(*def_id)
+                    && !self
+                        .tcx
+                        .generics_of(*def_id)
+                        .requires_monomorphization(self.tcx)
+            });
+        let entry = self.tcx.entry_fn(()).map(|(def_id, _)| def_id);
+        let roots = monomorphic
+            .into_iter()
+            .chain(trusted)
+            .chain(entry)
+            .map(|def_id| mir_ty::Instance::mono(self.tcx, def_id))
+            .collect();
+        let crate_mode = |def_id: rustc_span::def_id::DefId| {
+            let local = def_id.as_local()?;
+            if self.trusted.contains(&local) {
+                return Some(analyze::Mode::Trusted);
+            }
+            // A derived impl is not trusted by the user: its methods rely on the fields' impls.
+            let derived = self
+                .tcx
+                .impl_of_assoc(def_id)
+                .is_some_and(|impl_did| self.tcx.is_automatically_derived(impl_did));
+            if derived {
+                return Some(analyze::Mode::Verified);
+            }
+            let analyzed =
+                self.tcx.def_kind(def_id).is_fn_like() && !self.skip_analysis.contains(&local);
+            analyzed.then_some(analyze::Mode::Verified)
+        };
+        self.ctx.stop_ignored_reached(roots, generic, crate_mode);
     }
 
     /// Records every `#[thrust::law]` function declared in a local trait.
@@ -703,6 +804,31 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         }
     }
 }
+
+/// A `Drop::drop` of the crate is verified once under `requires(true)` and its postcondition
+/// inferred (D57): Rust runs it wherever a value is dropped, also in code Thrust does not
+/// analyze. So it takes no written contract, and is neither trusted nor ignored.
+fn check_destructor_annotations<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    analyzer: &analyze::local_def::Analyzer<'tcx, '_>,
+    local_def_id: LocalDefId,
+) {
+    let span = tcx.def_span(local_def_id);
+    if analyzer.has_contract_annotation() {
+        tcx.dcx().span_err(span, DESTRUCTOR_CONTRACT_ERROR);
+    }
+    if analyzer.is_annotated_as_trusted() || analyzer.is_annotated_as_ignored() {
+        tcx.dcx().span_err(
+            span,
+            "a `Drop::drop` cannot be `#[thrust::trusted]` or `#[thrust::ignored]`: Rust runs \
+             it wherever a value is dropped, so Thrust verifies it",
+        );
+    }
+}
+
+/// The error for a written contract on a `Drop::drop`; `thrust_macros::context` gives the same.
+const DESTRUCTOR_CONTRACT_ERROR: &str = "a `Drop::drop` takes no `requires` or `ensures`: Rust runs \
+     it wherever a value is dropped, so Thrust checks it under `requires(true)` and infers its effect";
 
 /// Whether a generic def with a body is verified at each instance rather than once over its type
 /// parameters (`THRUST_PER_INSTANCE_GENERICS=1`).

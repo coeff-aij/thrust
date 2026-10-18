@@ -25,7 +25,7 @@ use rustc_middle::ty::{self as mir_ty, TyCtxt, TypeVisitableExt as _};
 use rustc_span::def_id::DefId;
 use rustc_span::sym;
 
-use crate::analyze::{self, DefIdCache};
+use crate::analyze::{self, model_eq, DefIdCache};
 use crate::chc;
 use crate::refine::{self, TypeBuilder};
 
@@ -55,7 +55,7 @@ pub fn is_trusted<'tcx>(
         Some(sym::Hash | sym::Default | sym::Eq) => true,
         Some(sym::PartialEq) => {
             has_fields_model()
-                && !matches!(analyze::model_eq(tcx, self_ty), analyze::SpecBound::Fails)
+                && !matches!(model_eq::model_eq(tcx, self_ty), model_eq::SpecBound::Fails)
         }
         Some(sym::Clone) => has_fields_model(),
         Some(sym::PartialOrd | sym::Ord) => {
@@ -63,6 +63,29 @@ pub fn is_trusted<'tcx>(
         }
         _ => false,
     }
+}
+
+/// The bounds a trusted derived method `def_id` relies on: its trait at each field's type, whose
+/// method the derive calls on the field (`Clone::clone` of each field for `#[derive(Clone)]`).
+pub fn field_bounds<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> Vec<mir_ty::TraitRef<'tcx>> {
+    let Some(impl_did) = tcx.impl_of_assoc(def_id) else {
+        return Vec::new();
+    };
+    let Some(trait_ref) = tcx.impl_trait_ref(impl_did) else {
+        return Vec::new();
+    };
+    let trait_ref = trait_ref.instantiate_identity();
+    let self_ty = trait_ref.self_ty();
+    field_tys(tcx, self_ty)
+        .into_iter()
+        .map(|field_ty| {
+            let args = trait_ref.args.iter().map(|arg| match arg.as_type() {
+                Some(ty) if ty == self_ty => field_ty.into(),
+                _ => arg,
+            });
+            mir_ty::TraitRef::new(tcx, trait_ref.def_id, args)
+        })
+        .collect()
 }
 
 /// Whether `def_id` is the `fmt` of an impl rustc's built-in `Debug` derive generated: it is not

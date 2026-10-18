@@ -7,7 +7,7 @@
 //! CHC solver with the [`Analyzer::solve`] and subsequently reports the result.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::Hash;
 use std::rc::Rc;
 
@@ -32,14 +32,24 @@ mod closure_hist_inv;
 mod crate_;
 mod derive;
 mod did_cache;
+mod extern_spec;
+mod fn_mut_reuse;
 mod lemma;
 mod local_def;
+mod model_eq;
 mod pred_inst;
 mod reconstruct_slice_indexing;
 pub(crate) mod selection;
+mod two_phase_borrow;
 
 // TODO: organize structure and remove cross dependency between refine
 pub use did_cache::DefIdCache;
+
+// Also the paths siblings use: analyze::{predicate_typing_env, trait_bounds,
+// fn_mut_bounded_params}.
+use closure_hist_inv::HistInvRelations;
+use extern_spec::{predicate_typing_env, trait_bounds, SpecAssumptions};
+use fn_mut_reuse::{fn_mut_bounded_params, has_fn_mut_closure, FnMutReuse};
 
 fn scalar_const_term<T>(
     ty: mir_ty::Ty<'_>,
@@ -197,49 +207,6 @@ impl DeferredDefMode {
     }
 }
 
-/// See [`Analyzer::reuse_fn_mut_generic`].
-#[derive(Default)]
-struct FnMutInstanceObligations {
-    laws: Vec<chc::Clause>,
-    pre: Vec<chc::Clause>,
-    /// The defs an instance has used the contract of as instantiated.
-    reused: HashSet<DefId>,
-}
-
-/// The type parameters in scope of `def_id` (its own or an enclosing item's) bounded by `FnMut`.
-pub fn fn_mut_bounded_params(tcx: TyCtxt<'_>, def_id: DefId) -> Vec<DefId> {
-    let generics = tcx.generics_of(def_id);
-    let predicates = tcx.predicates_of(def_id).instantiate_identity(tcx);
-    predicates
-        .predicates
-        .iter()
-        .filter_map(|clause| {
-            let trait_ref = clause.as_trait_clause()?.skip_binder().trait_ref;
-            if tcx.fn_trait_kind_from_def_id(trait_ref.def_id) != Some(mir_ty::ClosureKind::FnMut) {
-                return None;
-            }
-            let mir_ty::TyKind::Param(param_ty) = trait_ref.self_ty().kind() else {
-                return None;
-            };
-            Some(generics.type_param(*param_ty, tcx).def_id)
-        })
-        .collect()
-}
-
-/// Whether a type argument contains a closure of kind `FnMut`.
-fn has_fn_mut_closure(generic_args: mir_ty::GenericArgsRef<'_>) -> bool {
-    generic_args.types().any(|ty| {
-        ty.walk().any(|arg| {
-            arg.as_type().is_some_and(|ty| match ty.kind() {
-                mir_ty::TyKind::Closure(_, args) => {
-                    args.as_closure().kind() == mir_ty::ClosureKind::FnMut
-                }
-                _ => false,
-            })
-        })
-    })
-}
-
 #[derive(Debug, Clone)]
 struct DeferredDefTy<'tcx> {
     // the def that provides the spec (`expected_ty`). this is different from a key in defs when
@@ -258,366 +225,142 @@ struct DeferredDefTy<'tcx> {
     target_args: Option<mir_ty::GenericArgsRef<'tcx>>,
 }
 
-/// Binds the parameters of an extern spec function to the arguments of an actual call, by
-/// matching `target_args` (the spec's own tail call, in the target's parameter space) against
-/// `generic_args` (the actual call's instantiation of the same target).
-///
-/// A parameter of the spec occurring in `target_args` is one the spec generalizes over and takes
-/// whatever the actual call has at that place. Anything else the spec fixed is covered only by
-/// the same type: the spec's body was checked once, against that one instantiation, and only
-/// handles it. Returns `None` when the call is not covered.
-fn bind_spec_args<'tcx>(
-    tcx: TyCtxt<'tcx>,
-    spec_def_id: LocalDefId,
-    target_args: mir_ty::GenericArgsRef<'tcx>,
-    generic_args: mir_ty::GenericArgsRef<'tcx>,
-) -> Option<mir_ty::GenericArgsRef<'tcx>> {
-    let mut bound = HashMap::new();
-    for (spec_arg, actual_arg) in target_args.iter().zip(generic_args.iter()) {
-        if !match_spec_arg(tcx, spec_arg, actual_arg, &mut bound) {
-            return None;
-        }
-    }
-    Some(mir_ty::GenericArgs::for_item(
-        tcx,
-        spec_def_id.to_def_id(),
-        |param, _| match param.kind {
-            mir_ty::GenericParamDefKind::Lifetime => tcx.lifetimes.re_erased.into(),
-            _ => bound
-                .get(&param.index)
-                .copied()
-                .unwrap_or_else(|| tcx.mk_param_from_def(param)),
-        },
-    ))
+/// The `drop` method of `ty`'s `Drop` impl, when `ty` is an ADT whose impl is in the crate.
+pub fn local_destructor(tcx: TyCtxt<'_>, ty: mir_ty::Ty<'_>) -> Option<DefId> {
+    let adt = ty.ty_adt_def()?;
+    let dtor = tcx.adt_destructor(adt.did())?;
+    dtor.did.is_local().then_some(dtor.did)
 }
 
-/// How a spec's bound stands at the arguments it was bound to, in a caller's environment.
-enum SpecBound {
-    Holds,
-    /// The bound's self type is a type parameter or an unresolved projection of the caller.
-    Assumed,
-    Fails,
-}
-
-/// The bounds an extern spec puts on its type parameters by traits of its own, and the associated
-/// types those fix. `Model` is left out: it is assumed of every type parameter.
-fn is_spec_bound(clause: mir_ty::Clause<'_>, model_trait: DefId) -> bool {
-    if clause.as_projection_clause().is_some() {
-        return true;
-    }
-    clause.as_trait_clause().is_some_and(|clause| {
-        let trait_def_id = clause.skip_binder().trait_ref.def_id;
-        trait_def_id.is_local() && trait_def_id != model_trait
-    })
-}
-
-/// Whether spec bounds (see [`is_spec_bound`]) hold in the environment of `caller_def_id`.
-/// Returns those assumed, or the first that fails.
-///
-/// A spec stated through a trait (`I: IteratorSpec`) says nothing about a type that does not
-/// implement it, so a call at such a type finds no specification. A bound whose self type is a
-/// type parameter or an unresolved projection is assumed: the caller's contract is then verified
-/// under it, and [`Analyzer::check_reused_spec_bounds`] checks it at each instance that reuses that
-/// contract.
-///
-/// `Model` and its `PartialEq` are assumed of every type parameter of the caller, as a spec
-/// assumes them of its own: they are what a bound like `usize: SliceIndexSpec<T>` needs of `T`.
-fn classify_spec_bounds<'tcx>(
-    tcx: TyCtxt<'tcx>,
-    clauses: impl IntoIterator<Item = mir_ty::Clause<'tcx>>,
-    caller_def_id: DefId,
-    model_ty: DefId,
-) -> Result<Vec<mir_ty::Clause<'tcx>>, mir_ty::Clause<'tcx>> {
-    use rustc_infer::infer::TyCtxtInferExt as _;
-
-    let typing_env = model_assuming_env(tcx, caller_def_id, model_ty);
-    let infcx = tcx.infer_ctxt().build(typing_env.typing_mode);
-    let mut assumed = Vec::new();
-    for clause in clauses {
-        let bound = match clause.as_projection_clause() {
-            Some(projection) => projection_bound(tcx, typing_env, projection.skip_binder()),
-            None if is_model_eq_clause(tcx, clause) => model_eq_bound(tcx, typing_env, clause),
-            None => trait_bound(tcx, &infcx, typing_env, clause),
-        };
-        match bound {
-            SpecBound::Holds => {}
-            SpecBound::Assumed => assumed.push(clause),
-            SpecBound::Fails => return Err(clause),
-        }
-    }
-    Ok(assumed)
-}
-
-fn is_model_eq_clause(tcx: TyCtxt<'_>, clause: mir_ty::Clause<'_>) -> bool {
-    clause.as_trait_clause().is_some_and(|pred| {
-        tcx.get_attrs_by_path(
-            pred.skip_binder().trait_ref.def_id,
-            &analyze::annot::model_eq_path(),
-        )
-        .next()
-        .is_some()
-    })
-}
-
-/// `ty: ModelEq` of std.rs, decided by [`model_eq`].
-fn model_eq_bound<'tcx>(
+/// Whether dropping a value of `ty` may run a destructor of the crate.
+pub fn drop_runs_local_destructor<'tcx>(
     tcx: TyCtxt<'tcx>,
     typing_env: mir_ty::TypingEnv<'tcx>,
-    clause: mir_ty::Clause<'tcx>,
-) -> SpecBound {
-    let self_ty = clause.as_trait_clause().unwrap().skip_binder().self_ty();
-    let self_ty = tcx
-        .try_normalize_erasing_regions(typing_env, self_ty)
-        .unwrap_or(self_ty);
-    model_eq(tcx, self_ty)
-}
-
-/// Whether `==` on values of `ty` is equality of their models, decided from the structure of
-/// `ty`. It is not when `ty` holds a `&mut` (its model also has the final value, which `==` does
-/// not read), a float (NaN), a raw or function pointer (compared by address), or a `Ghost`
-/// (which has no `PartialEq`, so a hand-written `eq` of a type holding one leaves it out). A
-/// type parameter or an unresolved projection in `ty` makes it assumed.
-fn model_eq<'tcx>(tcx: TyCtxt<'tcx>, ty: mir_ty::Ty<'tcx>) -> SpecBound {
-    let mut assumed = false;
-    for ty in compared_tys(tcx, ty) {
-        match ty.kind() {
-            mir_ty::TyKind::Ref(_, _, mir_ty::Mutability::Mut)
-            | mir_ty::TyKind::Float(_)
-            | mir_ty::TyKind::RawPtr(..)
-            | mir_ty::TyKind::FnPtr(..) => return SpecBound::Fails,
-            mir_ty::TyKind::Adt(adt, _) if is_ghost(tcx, adt.did()) => return SpecBound::Fails,
-            mir_ty::TyKind::Param(_) | mir_ty::TyKind::Alias(..) => assumed = true,
-            _ => {}
+    ty: mir_ty::Ty<'tcx>,
+) -> bool {
+    reaches(tcx, typing_env, ty, |ty| {
+        if local_destructor(tcx, ty).is_some() {
+            return Reach::Found;
         }
-    }
-    if assumed {
-        SpecBound::Assumed
-    } else {
-        SpecBound::Holds
-    }
+        if ty.needs_drop(tcx, typing_env) {
+            Reach::Parts
+        } else {
+            Reach::Stop
+        }
+    })
 }
 
-/// Whether `==` on values of `ty` compares a `Ghost`, as [`model_eq`] looks into `ty`.
-fn compares_ghost<'tcx>(tcx: TyCtxt<'tcx>, ty: mir_ty::Ty<'tcx>) -> bool {
-    compared_tys(tcx, ty)
-        .into_iter()
-        .any(|ty| ty.ty_adt_def().is_some_and(|adt| is_ghost(tcx, adt.did())))
+/// Whether dropping the parts of a value of `ty`, which its drop glue drops after its own
+/// destructor, may run a destructor of the crate.
+pub fn drop_of_parts_runs_local_destructor<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    typing_env: mir_ty::TypingEnv<'tcx>,
+    ty: mir_ty::Ty<'tcx>,
+) -> bool {
+    ty.needs_drop(tcx, typing_env)
+        && held_tys(tcx, typing_env, ty)
+            .into_iter()
+            .any(|part| drop_runs_local_destructor(tcx, typing_env, part))
 }
 
-/// The types in `ty` whose `==` the `==` on `ty` may run: a local ADT is looked into through its
-/// fields, a foreign one through its type arguments, and a `PhantomData` compares equal at any
-/// argument.
-fn compared_tys<'tcx>(tcx: TyCtxt<'tcx>, ty: mir_ty::Ty<'tcx>) -> Vec<mir_ty::Ty<'tcx>> {
-    let mut compared = Vec::new();
+/// Whether a value of `ty` may hold a `&mut`, whose prophecy its drop would resolve.
+pub fn may_hold_mut_ref<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    typing_env: mir_ty::TypingEnv<'tcx>,
+    ty: mir_ty::Ty<'tcx>,
+) -> bool {
+    reaches(tcx, typing_env, ty, |ty| match ty.kind() {
+        mir_ty::TyKind::Ref(_, _, m) if m.is_mut() => Reach::Found,
+        mir_ty::TyKind::Ref(..) | mir_ty::TyKind::RawPtr(..) => Reach::Stop,
+        _ => Reach::Parts,
+    })
+}
+
+/// What [`reaches`] does at a type.
+enum Reach {
+    Found,
+    Parts,
+    Stop,
+}
+
+/// The number of types [`reaches`] looks at before it gives up and answers yes, which every caller
+/// takes as the cautious answer. A polymorphically recursive type
+/// (`struct N<T>(Option<Box<N<(T, T)>>>)`) holds unboundedly many.
+const MAX_REACHED_TYS: usize = 1024;
+
+/// Whether `visit` finds a type among `ty` and the types it holds ([`held_tys`]), looking into the
+/// parts of a type where it says so.
+fn reaches<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    typing_env: mir_ty::TypingEnv<'tcx>,
+    ty: mir_ty::Ty<'tcx>,
+    mut visit: impl FnMut(mir_ty::Ty<'tcx>) -> Reach,
+) -> bool {
     let mut visited = HashSet::new();
     let mut pending = vec![ty];
     while let Some(ty) = pending.pop() {
         if !visited.insert(ty) {
             continue;
         }
-        let mut walker = ty.walk();
-        while let Some(arg) = walker.next() {
-            let Some(ty) = arg.as_type() else {
-                continue;
-            };
-            match ty.kind() {
-                mir_ty::TyKind::Adt(adt, _)
-                    if tcx.is_lang_item(adt.did(), LangItem::PhantomData) =>
-                {
-                    walker.skip_current_subtree();
-                    continue;
-                }
-                mir_ty::TyKind::Adt(adt, args)
-                    if adt.did().is_local() && !is_ghost(tcx, adt.did()) =>
-                {
-                    pending.extend(adt.all_fields().map(|field| field.ty(tcx, args)));
-                }
-                _ => {}
-            }
-            compared.push(ty);
+        if visited.len() > MAX_REACHED_TYS {
+            return true;
+        }
+        match visit(ty) {
+            Reach::Found => return true,
+            Reach::Parts => pending.extend(held_tys(tcx, typing_env, ty)),
+            Reach::Stop => {}
         }
     }
-    compared
+    false
 }
 
-fn is_ghost(tcx: TyCtxt<'_>, def_id: DefId) -> bool {
-    tcx.get_attrs_by_path(def_id, &analyze::annot::ghost_model_path())
-        .next()
-        .is_some()
-}
-
-fn trait_bound<'tcx>(
-    tcx: TyCtxt<'tcx>,
-    infcx: &rustc_infer::infer::InferCtxt<'tcx>,
-    typing_env: mir_ty::TypingEnv<'tcx>,
-    clause: mir_ty::Clause<'tcx>,
-) -> SpecBound {
-    use rustc_trait_selection::traits::query::evaluate_obligation::InferCtxtExt as _;
-    use rustc_trait_selection::traits::{Obligation, ObligationCause};
-
-    let trait_ref = clause.as_trait_clause().unwrap().skip_binder().trait_ref;
-    let Ok(trait_ref) = tcx.try_normalize_erasing_regions(typing_env, trait_ref) else {
-        return SpecBound::Assumed;
-    };
-    let obligation = Obligation::new(
-        tcx,
-        ObligationCause::dummy(),
-        typing_env.param_env,
-        trait_ref,
-    );
-    if infcx.predicate_must_hold_modulo_regions(&obligation) {
-        return SpecBound::Holds;
-    }
-    if matches!(
-        trait_ref.self_ty().kind(),
-        mir_ty::TyKind::Param(_) | mir_ty::TyKind::Alias(..)
-    ) {
-        SpecBound::Assumed
-    } else {
-        SpecBound::Fails
-    }
-}
-
-/// Whether an associated type a spec's bound fixes (`R: IntoSliceIdx<I, [T], Output = usize>`)
-/// is that type at the arguments the spec was bound to. A spec's contract is stated for the type it
-/// fixes: at another one the target's result is not the one the contract describes. A projection
-/// that stays unresolved is assumed, like a bound on a type parameter.
-fn projection_bound<'tcx>(
+/// The types of the values a value of `ty` holds or refers to: the fields of every variant of an
+/// ADT and its type arguments, the components of a tuple, an array or a closure, and the pointee
+/// of a reference or a pointer. Field types are normalized, so an associated type names the type
+/// it stands for.
+pub fn held_tys<'tcx>(
     tcx: TyCtxt<'tcx>,
     typing_env: mir_ty::TypingEnv<'tcx>,
-    projection: mir_ty::ProjectionPredicate<'tcx>,
-) -> SpecBound {
-    let normalize = |term| tcx.try_normalize_erasing_regions(typing_env, term).ok();
-    let (Some(actual), Some(fixed)) = (
-        normalize(projection.projection_term.to_term(tcx)),
-        normalize(projection.term),
-    ) else {
-        return SpecBound::Assumed;
-    };
-    if actual == fixed {
-        return SpecBound::Holds;
-    }
-    let unresolved = actual.as_type().is_some_and(|ty| {
-        matches!(
-            ty.kind(),
-            mir_ty::TyKind::Param(_) | mir_ty::TyKind::Alias(..)
-        )
-    });
-    if unresolved {
-        SpecBound::Assumed
-    } else {
-        SpecBound::Fails
+    ty: mir_ty::Ty<'tcx>,
+) -> Vec<mir_ty::Ty<'tcx>> {
+    match ty.kind() {
+        mir_ty::TyKind::Adt(adt, args) => adt
+            .all_fields()
+            .map(|field| normalize(tcx, typing_env, field.ty(tcx, args)))
+            .chain(args.types())
+            .collect(),
+        mir_ty::TyKind::Tuple(tys) => tys.to_vec(),
+        mir_ty::TyKind::Array(elem, _) | mir_ty::TyKind::Slice(elem) => vec![*elem],
+        mir_ty::TyKind::Closure(_, args) => args.as_closure().upvar_tys().to_vec(),
+        mir_ty::TyKind::Ref(_, pointee, _) | mir_ty::TyKind::RawPtr(pointee, _) => vec![*pointee],
+        _ => Vec::new(),
     }
 }
 
-/// The environment a predicate call in `owner_fn_id` is resolved in: the owner's own, with `Model`
-/// assumed of its type parameters as a spec assumes it, so that a call on a concrete type is
-/// resolved to the impl's predicate even when the impl needs `T: Model` of a type parameter `T`.
-fn predicate_typing_env<'tcx>(
+/// The types of the fields of a tuple or a struct, normalized.
+pub fn field_tys<'tcx>(
     tcx: TyCtxt<'tcx>,
-    owner_fn_id: DefId,
-    model_ty: Option<DefId>,
-) -> mir_ty::TypingEnv<'tcx> {
-    match model_ty {
-        Some(model_ty) => model_assuming_env(tcx, owner_fn_id, model_ty),
-        None => mir_ty::TypingEnv::post_analysis(tcx, owner_fn_id),
+    typing_env: mir_ty::TypingEnv<'tcx>,
+    ty: mir_ty::Ty<'tcx>,
+) -> Option<Vec<mir_ty::Ty<'tcx>>> {
+    match ty.kind() {
+        mir_ty::TyKind::Tuple(tys) => Some(tys.to_vec()),
+        mir_ty::TyKind::Adt(adt, args) if adt.is_struct() => Some(
+            adt.all_fields()
+                .map(|field| normalize(tcx, typing_env, field.ty(tcx, args)))
+                .collect(),
+        ),
+        _ => None,
     }
 }
 
-fn model_assuming_env<'tcx>(
+fn normalize<'tcx>(
     tcx: TyCtxt<'tcx>,
-    caller_def_id: DefId,
-    model_ty: DefId,
-) -> mir_ty::TypingEnv<'tcx> {
-    use mir_ty::Upcast as _;
-    let env = mir_ty::TypingEnv::post_analysis(tcx, caller_def_id);
-    let model_trait = tcx.parent(model_ty);
-    let Some(eq_trait) = tcx.lang_items().eq_trait() else {
-        return env;
-    };
-    let generics = tcx.generics_of(caller_def_id);
-    let assumed = (0..generics.count())
-        .map(|idx| generics.param_at(idx, tcx))
-        .filter(|param| matches!(param.kind, mir_ty::GenericParamDefKind::Type { .. }))
-        .map(|param| tcx.mk_param_from_def(param).expect_ty())
-        .flat_map(|ty| {
-            let model = mir_ty::Ty::new_projection(tcx, model_ty, [ty]);
-            [
-                mir_ty::TraitRef::new(tcx, model_trait, [ty]).upcast(tcx),
-                mir_ty::TraitRef::new(tcx, eq_trait, [model, model]).upcast(tcx),
-            ]
-        });
-    let clauses = tcx.mk_clauses_from_iter(env.param_env.caller_bounds().iter().chain(assumed));
-    mir_ty::TypingEnv {
-        param_env: mir_ty::ParamEnv::new(clauses),
-        ..env
-    }
-}
-
-fn match_spec_arg<'tcx>(
-    tcx: TyCtxt<'tcx>,
-    spec_arg: mir_ty::GenericArg<'tcx>,
-    actual_arg: mir_ty::GenericArg<'tcx>,
-    bound: &mut HashMap<u32, mir_ty::GenericArg<'tcx>>,
-) -> bool {
-    use mir_ty::GenericArgKind as K;
-    match (spec_arg.kind(), actual_arg.kind()) {
-        (K::Lifetime(_), K::Lifetime(_)) => true,
-        (K::Type(spec_ty), K::Type(actual_ty)) => match_spec_ty(tcx, spec_ty, actual_ty, bound),
-        (K::Const(spec_ct), K::Const(actual_ct)) => match spec_ct.kind() {
-            mir_ty::ConstKind::Param(p) => bind_spec_param(tcx, p.index, actual_arg, bound),
-            _ => spec_ct == actual_ct,
-        },
-        _ => false,
-    }
-}
-
-fn match_spec_ty<'tcx>(
-    tcx: TyCtxt<'tcx>,
-    spec_ty: mir_ty::Ty<'tcx>,
-    actual_ty: mir_ty::Ty<'tcx>,
-    bound: &mut HashMap<u32, mir_ty::GenericArg<'tcx>>,
-) -> bool {
-    use mir_ty::TyKind as T;
-    use mir_ty::TypeVisitableExt as _;
-    match (spec_ty.kind(), actual_ty.kind()) {
-        (T::Param(p), _) => bind_spec_param(tcx, p.index, actual_ty.into(), bound),
-        (T::Adt(spec_def, spec_args), T::Adt(actual_def, actual_args)) => {
-            spec_def == actual_def
-                && spec_args
-                    .iter()
-                    .zip(actual_args.iter())
-                    .all(|(s, a)| match_spec_arg(tcx, s, a, bound))
-        }
-        (T::Array(spec_elem, spec_len), T::Array(actual_elem, actual_len)) => {
-            match_spec_ty(tcx, *spec_elem, *actual_elem, bound)
-                && match_spec_arg(tcx, (*spec_len).into(), (*actual_len).into(), bound)
-        }
-        (T::Slice(spec_elem), T::Slice(actual_elem)) => {
-            match_spec_ty(tcx, *spec_elem, *actual_elem, bound)
-        }
-        (T::Ref(_, spec_inner, spec_mut), T::Ref(_, actual_inner, actual_mut)) => {
-            spec_mut == actual_mut && match_spec_ty(tcx, *spec_inner, *actual_inner, bound)
-        }
-        (T::Tuple(spec_tys), T::Tuple(actual_tys)) => {
-            spec_tys.len() == actual_tys.len()
-                && spec_tys
-                    .iter()
-                    .zip(actual_tys.iter())
-                    .all(|(s, a)| match_spec_ty(tcx, s, a, bound))
-        }
-        _ => !spec_ty.has_param() && tcx.erase_regions(spec_ty) == tcx.erase_regions(actual_ty),
-    }
-}
-
-fn bind_spec_param<'tcx>(
-    tcx: TyCtxt<'tcx>,
-    index: u32,
-    actual_arg: mir_ty::GenericArg<'tcx>,
-    bound: &mut HashMap<u32, mir_ty::GenericArg<'tcx>>,
-) -> bool {
-    let actual_arg = tcx.erase_regions(actual_arg);
-    *bound.entry(index).or_insert(actual_arg) == actual_arg
+    typing_env: mir_ty::TypingEnv<'tcx>,
+    ty: mir_ty::Ty<'tcx>,
+) -> mir_ty::Ty<'tcx> {
+    tcx.try_normalize_erasing_regions(typing_env, ty)
+        .unwrap_or(ty)
 }
 
 #[derive(Debug, Clone)]
@@ -657,6 +400,42 @@ pub fn is_injected_std(tcx: mir_ty::TyCtxt<'_>, def_id: LocalDefId) -> bool {
         tcx.sess.source_map().span_to_filename(span),
         rustc_span::FileName::Custom(name) if name == crate::INJECTED_STD_FILE_NAME
     )
+}
+
+/// Whether `def_id` is `#[thrust::ignored]`, so that its body is not analyzed.
+pub fn is_ignored(tcx: mir_ty::TyCtxt<'_>, def_id: DefId) -> bool {
+    tcx.get_attrs_by_path(def_id, &annot::ignored_path())
+        .next()
+        .is_some()
+}
+
+/// Whether `def_id` is a function of the crate, not of the injected `std.rs`, that is ignored:
+/// nothing checks its body against the specification of the trait method it implements.
+pub fn is_ignored_crate_fn(tcx: mir_ty::TyCtxt<'_>, def_id: DefId) -> bool {
+    def_id
+        .as_local()
+        .is_some_and(|local| !is_injected_std(tcx, local))
+        && is_ignored(tcx, def_id)
+}
+
+/// Stops at a call that resolves to an ignored function of the crate, which has no checked type.
+pub fn fatal_ignored_call<'tcx>(
+    tcx: mir_ty::TyCtxt<'tcx>,
+    def_id: DefId,
+    args: mir_ty::GenericArgsRef<'tcx>,
+) -> ! {
+    tcx.dcx().fatal(format!(
+        "`{}` is `#[thrust::ignored]`, so a call of it has no checked type",
+        tcx.def_path_str_with_args(def_id, args),
+    ))
+}
+
+/// Whether code on a path through the program ([`Analyzer::stop_ignored_reached`]) is verified
+/// code, which may not run an ignored function, or trusted code, which may.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Mode {
+    Verified,
+    Trusted,
 }
 
 /// Identifies one analysis instance of a function body.
@@ -751,11 +530,10 @@ pub enum TypeParam {
     /// **local** index within the declaring item (i.e. lifetime and const
     /// parameters are skipped). Using the local index lets monomorphization
     /// substitute it with the actual generic argument at the same position.
-    GenericType {
-        param_def_id: DefId,
-        local_idx: u32,
-    },
-    AssocType(DefId, Vec<rty::Type<rty::Closed>>),
+    GenericType { param_def_id: DefId, local_idx: u32 },
+    /// A projection that does not normalize: the associated item, its arguments' types and their
+    /// names ([`refine::TypeBuilder::generic_args_symbol`]), which tell apart arguments of one sort.
+    AssocType(DefId, Vec<rty::Type<rty::Closed>>, String),
 }
 
 #[derive(Debug, Clone)]
@@ -815,35 +593,17 @@ pub struct Analyzer<'tcx> {
     /// Defs whose body has been analyzed at fully concrete type arguments, as the callee of
     /// a call site; see [`Analyzer::has_concrete_instance`].
     concrete_instances: Rc<RefCell<HashSet<LocalDefId>>>,
-    /// The closure types, generic arguments included, with the sort of their upvars, whose
-    /// `hist_inv` clause has had its laws pushed; see [`closure_hist_inv::explicit_laws`].
-    explicit_hist_inv_laws: Rc<RefCell<HashSet<(mir_ty::Ty<'tcx>, chc::Sort)>>>,
-    /// The unknown relating the by-value captures of an `FnMut` closure whose specification has
-    /// no `hist_inv` clause, one per closure type and upvars sort; see
-    /// [`Analyzer::closure_hist_inv_definition`].
-    by_value_hist_invs: Rc<RefCell<HashMap<(mir_ty::Ty<'tcx>, chc::Sort), chc::PredVarId>>>,
-    /// The clauses [`closure_hist_inv::instance_obligations`] gave for the instances at an `FnMut`
-    /// closure that use a generic def's contract as instantiated: the `hist_inv!` laws and the
-    /// precondition clauses, pushed by [`Analyzer::emit_fn_mut_instance_obligations`].
-    fn_mut_instance_obligations: Rc<RefCell<FnMutInstanceObligations>>,
-    /// See [`Analyzer::record_hist_inv_specified_params`].
-    hist_inv_specified_params: Rc<RefCell<HashSet<DefId>>>,
-    /// The local fn-like defs with an `FnMut`-bounded type parameter, recorded with
-    /// [`Analyzer::hist_inv_specified_params`].
-    fn_mut_bounded_defs: Rc<RefCell<Vec<DefId>>>,
-    /// The spec bounds a body assumed at a type parameter or an unresolved projection, keyed by
-    /// the typeck root of the def it was analysed under; see [`classify_spec_bounds`].
-    assumed_spec_bounds: RefCell<HashMap<DefId, Vec<mir_ty::Clause<'tcx>>>>,
+    /// The generic defs whose bodies were analyzed at concrete arguments, and those arguments.
+    analyzed_instances: RefCell<Vec<(DefId, mir_ty::GenericArgsRef<'tcx>)>>,
+    /// See [`HistInvRelations`].
+    hist_inv_relations: HistInvRelations<'tcx>,
+    /// See [`FnMutReuse`].
+    fn_mut_reuse: FnMutReuse,
+    /// See [`SpecAssumptions`].
+    spec_assumptions: SpecAssumptions<'tcx>,
     /// The instances `(def, generic args, caller)` that use a generic def's contract as
     /// instantiated; see [`Analyzer::check_reused_spec_bounds`].
     reused_generic_instances: RefCell<Vec<(DefId, mir_ty::GenericArgsRef<'tcx>, DefId)>>,
-    /// The trait methods without a specification a body called, or a contract named by `pre!`, at
-    /// its type parameters, keyed like `assumed_spec_bounds`; see
-    /// [`Analyzer::check_reused_total_methods`].
-    assumed_total_methods: RefCell<HashMap<DefId, Vec<(DefId, mir_ty::GenericArgsRef<'tcx>)>>>,
-    /// The trait methods a body called at its type parameters with the trait's specification,
-    /// keyed like `assumed_spec_bounds`; see [`Analyzer::expand_dispatched_instances`].
-    dispatched_calls: RefCell<HashMap<DefId, Vec<(DefId, mir_ty::GenericArgsRef<'tcx>)>>>,
     /// The types of the functions each basic block calls, recorded only when
     /// [`candidate_atoms_enabled`], whose contracts give a loop head candidate atoms.
     called_fn_tys: HashMap<(AnalysisKey<'tcx>, BasicBlock), Vec<rty::FunctionType>>,
@@ -856,6 +616,63 @@ pub struct Analyzer<'tcx> {
     template_vars: HashMap<chc::PredVarId, Vec<Option<chc::debug::ErasedVar>>>,
     /// Where each template's predicate variable was made.
     template_sites: HashMap<chc::PredVarId, TemplateSite>,
+    /// Where the written contract of each function is annotated, for the report.
+    contract_annotations: HashMap<DefId, ContractAnnotations>,
+    /// Where the written invariant of each loop, by its header, is annotated, for the report.
+    invariant_annotations: HashMap<(LocalDefId, BasicBlock), Vec<rustc_span::Span>>,
+}
+
+/// Whether `expr` is the literal `true`.
+fn is_true(expr: &rustc_hir::Expr<'_>) -> bool {
+    let rustc_hir::ExprKind::Lit(lit) = expr.kind else {
+        return false;
+    };
+    matches!(lit.node, rustc_ast::LitKind::Bool(true))
+}
+
+/// The span covering the code of `expr` the program writes, if a macro made `expr` from some.
+fn user_span(expr: &rustc_hir::Expr<'_>) -> Option<rustc_span::Span> {
+    struct Written(Option<rustc_span::Span>);
+    impl<'v> rustc_hir::intravisit::Visitor<'v> for Written {
+        fn visit_expr(&mut self, e: &'v rustc_hir::Expr<'v>) {
+            if !e.span.from_expansion() {
+                self.0 = Some(self.0.map_or(e.span, |all| all.to(e.span)));
+            }
+            rustc_hir::intravisit::walk_expr(self, e);
+        }
+    }
+    let mut written = Written(None);
+    rustc_hir::intravisit::Visitor::visit_expr(&mut written, expr);
+    written.0
+}
+
+/// The spans of the clauses `expr` conjoins as the program writes them, but those that are
+/// `true`. A macro conjoins each clause to those before it (the specification attributes
+/// starting from `true`); a clause it rewrote is spanned by the code of it the program writes, or
+/// else by the conjunction, which a specification attribute spans by itself.
+fn written_clauses(expr: &rustc_hir::Expr<'_>) -> Vec<rustc_span::Span> {
+    use rustc_hir::{BinOpKind, ExprKind};
+    match expr.kind {
+        ExprKind::Binary(op, before, clause)
+            if expr.span.from_expansion() && op.node == BinOpKind::And =>
+        {
+            let this = (!is_true(clause)).then(|| user_span(clause).unwrap_or(expr.span));
+            [written_clauses(before), this.into_iter().collect()].concat()
+        }
+        ExprKind::DropTemps(e) => written_clauses(e),
+        _ if is_true(expr) => Vec::new(),
+        _ => vec![user_span(expr).unwrap_or(expr.span)],
+    }
+}
+
+/// The annotations a function's written contract is read from, by the spans of their companion
+/// functions: `requires` and the parameters' refinements, `ensures` and the result's.
+#[derive(Debug, Clone, Default)]
+pub struct ContractAnnotations {
+    pub requires: Vec<rustc_span::Span>,
+    pub ensures: Vec<rustc_span::Span>,
+    /// The refinements written in each parameter's type, by the parameter.
+    pub params: BTreeMap<rty::FunctionParamIdx, Vec<rustc_span::Span>>,
 }
 
 /// Whether loop heads get candidate atoms (`THRUST_CANDIDATE_ATOMS`, see
@@ -877,6 +694,22 @@ impl<'tcx> crate::refine::TemplateRegistry for Analyzer<'tcx> {
     }
 }
 
+/// `THRUST_SPLIT`: the number of parts of the system solved at a time, when the parts are solved
+/// on their own; `None` when unset, empty or `0`, and an error for anything but a number.
+fn split_jobs() -> Result<Option<usize>, String> {
+    let Ok(value) = std::env::var("THRUST_SPLIT") else {
+        return Ok(None);
+    };
+    match value.trim() {
+        "" => Ok(None),
+        jobs => match jobs.parse::<usize>() {
+            Ok(0) => Ok(None),
+            Ok(n) => Ok(Some(n)),
+            Err(_) => Err(format!("`THRUST_SPLIT`: `{jobs}` is no number of parts")),
+        },
+    }
+}
+
 /// Where the analysis makes a template, and so its predicate variables: a function's contract,
 /// a block's type, or the code of a block (the result of a call it makes).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -884,6 +717,16 @@ pub enum TemplateSite {
     Contract(LocalDefId),
     Block(LocalDefId, BasicBlock),
     Code(LocalDefId, BasicBlock),
+}
+
+impl TemplateSite {
+    pub fn def(self) -> LocalDefId {
+        match self {
+            TemplateSite::Contract(def)
+            | TemplateSite::Block(def, _)
+            | TemplateSite::Code(def, _) => def,
+        }
+    }
 }
 
 impl<'tcx> Analyzer<'tcx> {
@@ -942,20 +785,18 @@ impl<'tcx> Analyzer<'tcx> {
             trait_laws,
             pending_laws,
             concrete_instances: Default::default(),
-            explicit_hist_inv_laws: Default::default(),
-            by_value_hist_invs: Default::default(),
-            fn_mut_instance_obligations: Default::default(),
-            hist_inv_specified_params: Default::default(),
-            fn_mut_bounded_defs: Default::default(),
-            assumed_spec_bounds: Default::default(),
-            dispatched_calls: Default::default(),
+            analyzed_instances: Default::default(),
+            hist_inv_relations: Default::default(),
+            fn_mut_reuse: Default::default(),
+            spec_assumptions: Default::default(),
             reused_generic_instances: Default::default(),
-            assumed_total_methods: Default::default(),
             called_fn_tys: Default::default(),
             impl_methods_with_own_contract: Default::default(),
             template_site: None,
             template_vars: Default::default(),
             template_sites: Default::default(),
+            contract_annotations: Default::default(),
+            invariant_annotations: Default::default(),
         }
     }
 
@@ -1142,6 +983,216 @@ impl<'tcx> Analyzer<'tcx> {
         self.impl_methods_with_own_contract.contains(&def_id)
     }
 
+    /// Stops if a function Thrust verifies can run an ignored function of the crate, as Verus's
+    /// verified code may not use an `#[verifier::external]` item. An ignored function is
+    /// invisible to the analysis, so a contract the verified code relies on it to meet (the
+    /// trait's specification for `S::eq` that `<&S as PartialEq>::eq` or `vec![x; n]` takes) is
+    /// not checked.
+    ///
+    /// The roots are the monomorphic functions of the crate (`roots`: those Thrust verifies, the
+    /// trusted ones and the entry function), the instances Thrust analyzed or reused a generic
+    /// contract at, the calls a generic verified body makes at concrete arguments
+    /// (`generic_roots`), and the runtime's `start` at `main`'s return type, each in the mode its
+    /// function has. From them the calls, trait methods, vtables, drop
+    /// glue, function pointers and closures each instance uses (`items_of_instance`, as rustc's
+    /// monomorphization collector) are followed, into std code and trusted bodies too, each
+    /// instance in a mode ([`Mode`]): that of the crate function it is (`crate_mode`), or of the
+    /// path it is reached on. A trusted body may run an ignored function itself, as Verus's
+    /// `external_body` and Creusot's and Prusti's `#[trusted]` may, but a verified function it
+    /// runs may not. A generic trusted instance that verified code runs has its contract relied on,
+    /// which holds only where the code its type parameters are instantiated with meets its
+    /// specification, as for Creusot's trusted contracts, so everything its body runs at the
+    /// instance is verified code; a closure written in a generic trusted body is verified as that
+    /// body is, and a shim passes the mode to the instance inside it. A
+    /// non-generic trusted body is trusted throughout. A function pointer, trait object or
+    /// closure that a trusted body hands out carries the trusted mode: calling it is the trusted
+    /// author's responsibility. Static initializers are not followed: verified code cannot read a
+    /// static (the analysis stops), and a static has no type parameters, so what a trusted body
+    /// reaches through one is its author's fixed choice. An instance is followed once per mode it
+    /// is reached in. This over-approximates what the verified functions can run: an instance
+    /// reached only on a path to a panic counts.
+    pub fn stop_ignored_reached(
+        &self,
+        roots: Vec<mir_ty::Instance<'tcx>>,
+        generic_roots: Vec<DefId>,
+        crate_mode: impl Fn(DefId) -> Option<Mode>,
+    ) {
+        let mut parent = HashMap::new();
+        let mut pending = std::collections::VecDeque::new();
+        let verified_instances = self
+            .reused_and_analyzed_instances()
+            .into_iter()
+            .filter(|instance| crate_mode(instance.def_id()) == Some(Mode::Verified));
+        let roots = roots
+            .into_iter()
+            .chain(self.start_instance())
+            .chain(verified_instances)
+            .chain(
+                generic_roots
+                    .into_iter()
+                    .flat_map(|def_id| self.concrete_mentions(def_id)),
+            );
+        for root in roots {
+            let key = (root, crate_mode(root.def_id()).unwrap_or(Mode::Verified));
+            if parent.insert(key, None).is_none() {
+                pending.push_back(key);
+            }
+        }
+        let mut reached = Vec::new();
+        while let Some((instance, mode)) = pending.pop_front() {
+            if is_ignored_crate_fn(self.tcx, instance.def_id()) {
+                if mode == Mode::Verified {
+                    reached.push((instance, (instance, mode)));
+                }
+                continue;
+            }
+            if !self.runs_body(instance) {
+                continue;
+            }
+            for callee in self.callees(instance) {
+                // A generic trusted instance that verified code runs is verified code: its contract
+                // holds only where the code its type parameters bring meets its specification.
+                let callee_mode = match crate_mode(callee.def_id()) {
+                    Some(Mode::Trusted) if mode == Mode::Verified && self.is_generic(callee) => {
+                        Mode::Verified
+                    }
+                    Some(callee_mode) => callee_mode,
+                    None => mode,
+                };
+                let key = (callee, callee_mode);
+                if let std::collections::hash_map::Entry::Vacant(entry) = parent.entry(key) {
+                    entry.insert(Some((instance, mode)));
+                    pending.push_back(key);
+                }
+            }
+        }
+        let Some(&(first, key)) = reached.first() else {
+            return;
+        };
+        let mut path = Vec::new();
+        let mut cursor = Some(key);
+        while let Some(current) = cursor {
+            path.push(current.0.to_string());
+            cursor = parent.get(&current).copied().flatten();
+        }
+        path.reverse();
+        let mut diag = self.tcx.dcx().struct_span_fatal(
+            self.tcx.def_span(first.def_id()),
+            format!(
+                "`{first}` is `#[thrust::ignored]`, so a call of it has no checked type, but a \
+                 verified function can run it"
+            ),
+        );
+        diag.note(format!("reached through {}", path.join(" -> ")));
+        for (other, _) in &reached[1..] {
+            diag.span_note(
+                self.tcx.def_span(other.def_id()),
+                format!("`{other}` is ignored and reached too"),
+            );
+        }
+        diag.emit()
+    }
+
+    /// Whether `instance` is of a generic def, whose body runs code its arguments choose. A
+    /// closure is as generic as the function it is written in; its own synthetic parameters are
+    /// fixed by that function.
+    fn is_generic(&self, instance: mir_ty::Instance<'tcx>) -> bool {
+        let root = self.tcx.typeck_root_def_id(instance.def_id());
+        self.tcx
+            .generics_of(root)
+            .requires_monomorphization(self.tcx)
+    }
+
+    /// The functions `instance`'s body uses.
+    fn callees(&self, instance: mir_ty::Instance<'tcx>) -> Vec<mir_ty::Instance<'tcx>> {
+        use rustc_middle::mir::mono::{CollectionMode, MonoItem};
+
+        let (used, _) = self
+            .tcx
+            .items_of_instance((instance, CollectionMode::UsedItems));
+        used.iter()
+            .filter_map(|item| match item.node {
+                MonoItem::Fn(callee) => Some(callee),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The `start` lang item at `main`'s return type, which runs `main` and reports what it
+    /// returns (`Termination::report`, which prints an `Err` with `Debug`), as rustc's collector
+    /// roots it.
+    fn start_instance(&self) -> Option<mir_ty::Instance<'tcx>> {
+        let (main, _) = self.tcx.entry_fn(())?;
+        let start = self.tcx.lang_items().start_fn()?;
+        let ret = self.tcx.fn_sig(main).instantiate_identity().output();
+        let ret = self.tcx.instantiate_bound_regions_with_erased(ret);
+        let args = self.tcx.mk_args(&[ret.into()]);
+        let typing_env = mir_ty::TypingEnv::fully_monomorphized();
+        mir_ty::Instance::try_resolve(self.tcx, typing_env, start, args)
+            .ok()
+            .flatten()
+    }
+
+    /// The instances of generic defs that Thrust analyzed, or whose contract it reused, at
+    /// concrete arguments.
+    fn reused_and_analyzed_instances(&self) -> Vec<mir_ty::Instance<'tcx>> {
+        use mir_ty::TypeVisitableExt as _;
+
+        let typing_env = mir_ty::TypingEnv::fully_monomorphized();
+        self.reused_generic_instances
+            .borrow()
+            .iter()
+            .map(|(def_id, args, _)| (*def_id, *args))
+            .chain(self.analyzed_instances.borrow().iter().copied())
+            .filter(|(_, args)| !args.has_param())
+            .filter_map(|(def_id, args)| {
+                mir_ty::Instance::try_resolve(self.tcx, typing_env, def_id, args)
+                    .ok()
+                    .flatten()
+            })
+            .collect()
+    }
+
+    /// The functions and drop glue a generic body mentions at concrete arguments, which are the
+    /// same at every instance of it.
+    fn concrete_mentions(&self, def_id: DefId) -> Vec<mir_ty::Instance<'tcx>> {
+        use mir_ty::TypeVisitableExt as _;
+        use rustc_middle::mir::MentionedItem;
+
+        let typing_env = mir_ty::TypingEnv::fully_monomorphized();
+        let body = self.tcx.optimized_mir(def_id);
+        body.mentioned_items()
+            .iter()
+            .filter_map(|item| match item.node {
+                MentionedItem::Fn(ty) if !ty.has_param() => {
+                    let mir_ty::FnDef(callee, args) = *ty.kind() else {
+                        return None;
+                    };
+                    mir_ty::Instance::try_resolve(self.tcx, typing_env, callee, args)
+                        .ok()
+                        .flatten()
+                }
+                MentionedItem::Drop(ty) if !ty.has_param() => {
+                    Some(mir_ty::Instance::resolve_drop_in_place(self.tcx, ty))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Whether the body of `instance` is followed: not a virtual call or an intrinsic, which have
+    /// none, not a foreign item, and one whose MIR is available.
+    fn runs_body(&self, instance: mir_ty::Instance<'tcx>) -> bool {
+        let def_id = instance.def_id();
+        match instance.def {
+            mir_ty::InstanceKind::Virtual(..) | mir_ty::InstanceKind::Intrinsic(_) => false,
+            mir_ty::InstanceKind::Item(_) => {
+                !self.tcx.is_foreign_item(def_id) && self.tcx.is_mir_available(def_id)
+            }
+            _ => true,
+        }
+    }
+
     pub fn impl_methods_with_own_contract(&self) -> Vec<DefId> {
         self.impl_methods_with_own_contract
             .iter()
@@ -1310,7 +1361,8 @@ impl<'tcx> Analyzer<'tcx> {
             "{}_{}",
             refine::user_defined_pred(self.tcx, def_id),
             self.predicate_instances.borrow().len(),
-        ));
+        ))
+        .named(self.tcx.def_path_str(def_id));
         self.predicate_instances
             .borrow_mut()
             .insert(key, pred.clone());
@@ -1514,295 +1566,6 @@ impl<'tcx> Analyzer<'tcx> {
         );
     }
 
-    /// The generic arguments of `spec` at a call of its target at `generic_args`, or `None` when
-    /// the spec does not cover the call.
-    ///
-    /// A def_id key can be a blanket impl shared by more instantiations than an extern spec's own
-    /// tail call covers (e.g. `Vec::index` at some `Idx` other than the `usize`
-    /// `_extern_spec_vec_index` calls it at). Handing such a call that spec's contract would relate
-    /// its result to whatever the spec's own body happens to return, regardless of the real `Idx`
-    /// here.
-    fn spec_args(
-        &self,
-        spec: &DeferredDefTy<'tcx>,
-        generic_args: mir_ty::GenericArgsRef<'tcx>,
-        caller_def_id: DefId,
-    ) -> Option<mir_ty::GenericArgsRef<'tcx>> {
-        let Some(target_args) = spec.target_args else {
-            return Some(generic_args);
-        };
-        let bound = bind_spec_args(self.tcx, spec.local_def_id, target_args, generic_args)?;
-        let Some(model_ty) = self.def_ids().model_ty() else {
-            return Some(bound);
-        };
-        let model_trait = self.tcx.parent(model_ty);
-        let type_builder = self.type_builder(self.def_ids(), caller_def_id);
-        let clauses = self
-            .tcx
-            .predicates_of(spec.local_def_id)
-            .instantiate(self.tcx, bound)
-            .predicates
-            .into_iter()
-            .filter(|clause| is_spec_bound(*clause, model_trait))
-            .filter(|clause| {
-                !derive::holds_by_generated_compares(
-                    self.tcx,
-                    &self.def_ids(),
-                    &type_builder,
-                    *clause,
-                )
-            });
-        let assumed = classify_spec_bounds(self.tcx, clauses, caller_def_id, model_ty).ok()?;
-        self.record_assumed_spec_bounds(caller_def_id, assumed);
-        Some(bound)
-    }
-
-    /// Records spec bounds assumed while analysing a body owned by `owner_fn_id`, under its typeck
-    /// root: a closure's body is verified as part of the fn it is in. Returns whether any is new.
-    fn record_assumed_spec_bounds(
-        &self,
-        owner_fn_id: DefId,
-        clauses: Vec<mir_ty::Clause<'tcx>>,
-    ) -> bool {
-        let root = self.tcx.typeck_root_def_id(owner_fn_id);
-        let mut assumed = self.assumed_spec_bounds.borrow_mut();
-        let recorded = assumed.entry(root).or_default();
-        let mut grew = false;
-        for clause in clauses {
-            let clause = self.tcx.erase_regions(clause);
-            if !recorded.contains(&clause) {
-                recorded.push(clause);
-                grew = true;
-            }
-        }
-        grew
-    }
-
-    /// Checks the spec bounds each generic def's analysis assumed at its type parameters
-    /// ([`classify_spec_bounds`]) at every instance that uses its contract as instantiated.
-    ///
-    /// Creusot requires such a bound (`T::IntoIter: IteratorSpec` of `FromIterator::from_iter`'s
-    /// extern spec) to be provable at each call, so a generic caller must declare it and rustc
-    /// checks it at the caller's instantiations. Here the bound is assumed at the caller's type
-    /// parameters instead, so this checks it at each instance, after every body is analysed, when
-    /// all the assumptions are known. A bound still at a type parameter of the instance's caller
-    /// is assumed by that caller in turn, until nothing new is assumed. A program with an instance
-    /// at which a bound fails is rejected: the generic contract does not stand for it, and its
-    /// body would call a spec that does not cover it, as a direct call there does.
-    pub fn check_reused_spec_bounds(&self) {
-        let Some(model_ty) = self.def_ids().model_ty() else {
-            return;
-        };
-        loop {
-            let mut grew = false;
-            for &(def_id, generic_args, caller_def_id) in
-                self.reused_generic_instances.borrow().iter()
-            {
-                let root = self.tcx.typeck_root_def_id(def_id);
-                let assumed = self
-                    .assumed_spec_bounds
-                    .borrow()
-                    .get(&root)
-                    .cloned()
-                    .unwrap_or_default();
-                let clauses = assumed.into_iter().map(|clause| {
-                    mir_ty::EarlyBinder::bind(clause).instantiate(self.tcx, generic_args)
-                });
-                match classify_spec_bounds(self.tcx, clauses, caller_def_id, model_ty) {
-                    Ok(assumed) => grew |= self.record_assumed_spec_bounds(caller_def_id, assumed),
-                    Err(clause) => self.tcx.dcx().fatal(format!(
-                        "spec bound not satisfied: `{}` is verified generically under a spec \
-                         bound at its type parameters, which does not hold at its instance \
-                         `{}` used in `{}`: `{clause}`",
-                        self.tcx.def_path_str(def_id),
-                        self.tcx.def_path_str_with_args(def_id, generic_args),
-                        self.tcx.def_path_str(caller_def_id),
-                    )),
-                }
-            }
-            if !grew {
-                return;
-            }
-        }
-    }
-
-    /// Records that a body analysed under `owner_fn_id` called the trait method `def_id` at
-    /// `generic_args` that name type parameters, taking the trait's specification. Returns
-    /// whether it is new.
-    pub fn record_dispatched_call(
-        &self,
-        owner_fn_id: DefId,
-        def_id: DefId,
-        generic_args: mir_ty::GenericArgsRef<'tcx>,
-    ) -> bool {
-        let root = self.tcx.typeck_root_def_id(owner_fn_id);
-        let call = (def_id, self.tcx.erase_regions(generic_args));
-        let mut dispatched = self.dispatched_calls.borrow_mut();
-        let recorded = dispatched.entry(root).or_default();
-        if recorded.contains(&call) {
-            return false;
-        }
-        recorded.push(call);
-        true
-    }
-
-    /// Adds to the reused instances the impl methods that a reused generic body reaches through
-    /// a trait method called at its type parameters ([`Self::record_dispatched_call`]), resolved at
-    /// the instance's arguments, to a fixpoint. A generic impl method verified once may assume
-    /// spec bounds or total methods at its own type parameters, and an instance reached only
-    /// through such a call would otherwise never check them. A call still at a type parameter of
-    /// the instance's caller is recorded for that caller in turn.
-    pub fn expand_dispatched_instances(&self) {
-        use mir_ty::TypeVisitableExt as _;
-
-        let mut seen_instances = 0;
-        loop {
-            let instances = self.reused_generic_instances.borrow().clone();
-            let mut grew = instances.len() != seen_instances;
-            seen_instances = instances.len();
-            for (def_id, generic_args, caller_def_id) in instances {
-                let root = self.tcx.typeck_root_def_id(def_id);
-                let dispatched = self
-                    .dispatched_calls
-                    .borrow()
-                    .get(&root)
-                    .cloned()
-                    .unwrap_or_default();
-                for (method, method_args) in dispatched {
-                    let method_args =
-                        mir_ty::EarlyBinder::bind(method_args).instantiate(self.tcx, generic_args);
-                    if method_args.has_param() {
-                        grew |= self.record_dispatched_call(caller_def_id, method, method_args);
-                        continue;
-                    }
-                    let typing_env = mir_ty::TypingEnv::fully_monomorphized();
-                    let Ok(Some(instance)) =
-                        mir_ty::Instance::try_resolve(self.tcx, typing_env, method, method_args)
-                    else {
-                        continue;
-                    };
-                    if !instance.def_id().is_local()
-                        || !matches!(self.defs.get(&instance.def_id()), Some(DefTy::Generic(_)))
-                    {
-                        continue;
-                    }
-                    let reached = (instance.def_id(), instance.args, caller_def_id);
-                    let mut reused = self.reused_generic_instances.borrow_mut();
-                    if !reused.contains(&reached) {
-                        reused.push(reached);
-                        grew = true;
-                    }
-                }
-            }
-            if !grew {
-                return;
-            }
-        }
-    }
-
-    /// Records that a body or contract analysed under `owner_fn_id` called the trait method
-    /// `def_id`, which has no specification, or named its `pre!`, at `generic_args` that name type
-    /// parameters, and so took it to accept any arguments. Returns whether it is new.
-    pub fn record_assumed_total_method(
-        &self,
-        owner_fn_id: DefId,
-        def_id: DefId,
-        generic_args: mir_ty::GenericArgsRef<'tcx>,
-    ) -> bool {
-        let root = self.tcx.typeck_root_def_id(owner_fn_id);
-        let call = (def_id, self.tcx.erase_regions(generic_args));
-        let mut assumed = self.assumed_total_methods.borrow_mut();
-        let recorded = assumed.entry(root).or_default();
-        if recorded.contains(&call) {
-            return false;
-        }
-        recorded.push(call);
-        true
-    }
-
-    /// Checks, at each instance that uses a generic def's contract as instantiated, that every
-    /// trait method its analysis called without a specification at a type parameter
-    /// ([`Self::record_assumed_total_method`]) accepts any arguments there: the precondition of
-    /// the impl the call resolves to holds of all of them. A call still at a type parameter of
-    /// the instance's caller is assumed by that caller in turn, as
-    /// [`Self::check_reused_spec_bounds`] does with spec bounds. An impl Thrust knows no contract
-    /// of is not accepted, as a direct call to it is not.
-    pub fn check_reused_total_methods(&mut self) {
-        use mir_ty::TypeVisitableExt as _;
-
-        let mut checked = HashSet::new();
-        let mut seen_instances = 0;
-        loop {
-            let instances = self.reused_generic_instances.borrow().clone();
-            let mut grew = instances.len() != seen_instances;
-            seen_instances = instances.len();
-            for (def_id, generic_args, caller_def_id) in instances {
-                let root = self.tcx.typeck_root_def_id(def_id);
-                let assumed = self
-                    .assumed_total_methods
-                    .borrow()
-                    .get(&root)
-                    .cloned()
-                    .unwrap_or_default();
-                for (method, method_args) in assumed {
-                    let method_args =
-                        mir_ty::EarlyBinder::bind(method_args).instantiate(self.tcx, generic_args);
-                    if method_args.has_param() {
-                        grew |=
-                            self.record_assumed_total_method(caller_def_id, method, method_args);
-                    } else if checked.insert((method, method_args)) {
-                        self.check_total_method(method, method_args, caller_def_id);
-                    }
-                }
-            }
-            if !grew {
-                return;
-            }
-        }
-    }
-
-    fn check_total_method(
-        &mut self,
-        def_id: DefId,
-        generic_args: mir_ty::GenericArgsRef<'tcx>,
-        caller_def_id: DefId,
-    ) {
-        let typing_env = mir_ty::TypingEnv::fully_monomorphized();
-        let Ok(Some(instance)) =
-            mir_ty::Instance::try_resolve(self.tcx, typing_env, def_id, generic_args)
-        else {
-            return;
-        };
-        let Some(def_ty) = self.def_ty_with_args(instance.def_id(), instance.args, caller_def_id)
-        else {
-            panic!("unknown def (reached at a type parameter): {instance}");
-        };
-        let fn_ty = def_ty
-            .ty
-            .as_function()
-            .expect("a method has a function type");
-        let mut builder = chc::ClauseBuilder::default();
-        let args: IndexVec<rty::FunctionParamIdx, _> = fn_ty
-            .params
-            .iter()
-            .map(|param| chc::Term::var(builder.add_var(param.ty.to_sort())))
-            .collect();
-        let mut pre = chc::Body::top();
-        for (idx, param) in fn_ty.params.iter_enumerated() {
-            assert!(param.refinement.existentials.is_empty());
-            pre.push_conj(param.refinement.body.clone().subst_var(|v| match v {
-                rty::RefinedTypeVar::Value => args[idx].clone(),
-                rty::RefinedTypeVar::Free(j) => args[j].clone(),
-                rty::RefinedTypeVar::Existential(_) => unreachable!(),
-            }));
-        }
-        let origin = chc::debug::origin::Entry::described(format!(
-            "precondition of {instance} at any arguments, assumed by a generic analysis"
-        ));
-        let clauses = builder.head(pre, origin);
-        self.extend_clauses(clauses);
-    }
-
     pub fn def_ty_with_args(
         &mut self,
         def_id: DefId,
@@ -1930,279 +1693,12 @@ impl<'tcx> Analyzer<'tcx> {
                 self.concrete_instances
                     .borrow_mut()
                     .insert(body_local_def_id);
+                self.analyzed_instances
+                    .borrow_mut()
+                    .push((body_local_def_id.to_def_id(), generic_args));
             }
         }
         Some(expected)
-    }
-
-    /// Whether an instance of the generic def `def_id` at `generic_args`, which has an `FnMut`
-    /// closure among them, can use its contract as instantiated rather than analyzing the body
-    /// again. The generic analysis stands for the instance once the closures obey what it
-    /// assumed of their type parameters; those obligations are recorded here. It requires:
-    ///
-    /// - the def, if `FnMut`-bounded, to be hist_inv-specified ([`Analyzer::is_hist_inv_specified`]);
-    /// - each type argument that is an `FnMut` closure to sit at one of its `FnMut`-bounded
-    ///   parameters;
-    /// - each type argument that nests an `FnMut` closure (`Map<Range, F>` given to `collect`) to
-    ///   nest it in local ADTs only, and every `FnMut`-bounded def reachable through them
-    ///   ([`Analyzer::fn_mut_defs_reached_through`]) to be hist_inv-specified. Those defs then have
-    ///   their own generic analysis emitted, so no def verified per instance is reached only
-    ///   through this instance;
-    /// - no unknown reachable from the contract, and a known contract for each closure.
-    fn reuse_fn_mut_generic(
-        &mut self,
-        def_id: DefId,
-        expected: &rty::RefinedType,
-        generic_args: mir_ty::GenericArgsRef<'tcx>,
-        caller_def_id: DefId,
-    ) -> bool {
-        let callee_bounded = fn_mut_bounded_params(self.tcx, def_id);
-        if !callee_bounded.is_empty() && !self.is_hist_inv_specified(def_id) {
-            return false;
-        }
-        let generics = self.tcx.generics_of(def_id);
-        let mut reached = Vec::new();
-        for (idx, arg) in generic_args.iter().enumerate() {
-            let Some(ty) = arg.as_type() else {
-                continue;
-            };
-            if !has_fn_mut_closure(self.tcx.mk_args(&[arg])) {
-                continue;
-            }
-            if matches!(ty.kind(), mir_ty::TyKind::Closure(..)) {
-                if !callee_bounded.contains(&generics.param_at(idx, self.tcx).def_id) {
-                    tracing::info!(
-                        ?ty,
-                        "FnMut instance analyzed again: closure not at an FnMut-bounded parameter"
-                    );
-                    return false;
-                }
-                continue;
-            }
-            let Some(defs) = self.fn_mut_defs_reached_through(ty) else {
-                tracing::info!(
-                    ?ty,
-                    "FnMut instance analyzed again: closure nested in a type other than a local ADT"
-                );
-                return false;
-            };
-            if let Some(def) = defs.iter().find(|def| !self.is_hist_inv_specified(**def)) {
-                tracing::info!(
-                    ?ty,
-                    ?def,
-                    "FnMut instance analyzed again: a reachable FnMut-bounded def is verified per instance"
-                );
-                return false;
-            }
-            reached.extend(defs);
-        }
-        if self.may_have_pred_var(expected, generic_args, caller_def_id) {
-            tracing::info!(
-                ?generic_args,
-                "FnMut instance analyzed again: unknowns reachable"
-            );
-            return false;
-        }
-        let closures: Vec<_> = generic_args
-            .types()
-            .flat_map(|ty| ty.walk())
-            .filter_map(|arg| arg.as_type())
-            .filter(|ty| match ty.kind() {
-                mir_ty::TyKind::Closure(_, args) => {
-                    args.as_closure().kind() == mir_ty::ClosureKind::FnMut
-                }
-                _ => false,
-            })
-            .collect();
-        let mut obligations = Vec::new();
-        for closure_ty in closures {
-            let mir_ty::TyKind::Closure(def_id, args) = closure_ty.kind() else {
-                unreachable!()
-            };
-            let parent_args = self.tcx.mk_args(args.as_closure().parent_args());
-            let Some(contract) =
-                self.known_function_ty_with_args(*def_id, parent_args, caller_def_id)
-            else {
-                tracing::info!(
-                    ?closure_ty,
-                    "FnMut instance analyzed again: closure contract unknown"
-                );
-                return false;
-            };
-            let Some(clauses) =
-                closure_hist_inv::instance_obligations(closure_ty, &contract, &|from, to| {
-                    self.closure_hist_inv_definition(
-                        closure_ty,
-                        &contract.params[rty::FunctionParamIdx::from_usize(0)]
-                            .ty
-                            .to_sort()
-                            .deref(),
-                        from,
-                        to,
-                    )
-                })
-            else {
-                tracing::info!(
-                    ?closure_ty,
-                    "FnMut instance analyzed again: precondition unknown"
-                );
-                return false;
-            };
-            obligations.push(clauses);
-        }
-        tracing::info!(?generic_args, "FnMut instance reuses the generic analysis");
-        let mut pending = self.fn_mut_instance_obligations.borrow_mut();
-        if !callee_bounded.is_empty() {
-            pending.reused.insert(def_id);
-        }
-        pending.reused.extend(reached);
-        for (laws, pre) in obligations {
-            pending.laws.extend(laws);
-            pending.pre.extend(pre);
-        }
-        true
-    }
-
-    /// The local `FnMut`-bounded defs an `FnMut` closure nested in `ty` can reach as the value of
-    /// one of their type parameters: the items (and the closures in them) of the local impls
-    /// that name an ADT on the path from `ty` to the closure ([`Analyzer::enclosing_impl`]).
-    /// `None` if the path passes through
-    /// anything but a local ADT, whose impls are not all in view here.
-    ///
-    /// A generic body receives the closure only inside such an ADT, so it reaches the closure's
-    /// type only through the ADT's impls; any other call it makes at the closure's type is made
-    /// at its own type parameters and is analyzed within its own generic analysis.
-    fn fn_mut_defs_reached_through(&self, ty: mir_ty::Ty<'tcx>) -> Option<Vec<DefId>> {
-        let mut adts = Vec::new();
-        if !self.collect_adts_to_fn_mut_closures(ty, &mut adts) {
-            return None;
-        }
-        let names_adt = |ty: mir_ty::Ty<'tcx>| {
-            ty.walk().any(|arg| {
-                arg.as_type().is_some_and(|ty| {
-                    matches!(ty.kind(), mir_ty::TyKind::Adt(adt, _) if adts.contains(&adt.did()))
-                })
-            })
-        };
-        let defs = self
-            .fn_mut_bounded_defs
-            .borrow()
-            .iter()
-            .copied()
-            .filter(|def| {
-                let Some(impl_did) = self.enclosing_impl(*def) else {
-                    return false;
-                };
-                let self_ty = self.tcx.type_of(impl_did).instantiate_identity();
-                let trait_args_name_adt = self
-                    .tcx
-                    .impl_trait_ref(impl_did)
-                    .is_some_and(|tr| tr.instantiate_identity().args.types().any(names_adt));
-                names_adt(self_ty) || trait_args_name_adt
-            })
-            .collect();
-        Some(defs)
-    }
-
-    /// Collects the ADTs on the paths from `ty` to the `FnMut` closures in it; false if such a
-    /// path passes through a type other than a local ADT.
-    fn collect_adts_to_fn_mut_closures(&self, ty: mir_ty::Ty<'tcx>, adts: &mut Vec<DefId>) -> bool {
-        if !has_fn_mut_closure(self.tcx.mk_args(&[ty.into()])) {
-            return true;
-        }
-        match ty.kind() {
-            mir_ty::TyKind::Closure(..) => true,
-            mir_ty::TyKind::Adt(adt, args) if adt.did().is_local() => {
-                adts.push(adt.did());
-                args.types()
-                    .all(|ty| self.collect_adts_to_fn_mut_closures(ty, adts))
-            }
-            _ => false,
-        }
-    }
-
-    /// The impl whose type parameters `def_id` shares: that of an associated fn, or of the fn a
-    /// closure is in. A fn item nested in a body has generics of its own and no such impl; it is
-    /// called only from that body, at the body's type parameters.
-    fn enclosing_impl(&self, def_id: DefId) -> Option<DefId> {
-        let mut cursor = def_id;
-        while let Some(parent) = self.tcx.generics_of(cursor).parent {
-            if matches!(
-                self.tcx.def_kind(parent),
-                rustc_hir::def::DefKind::Impl { .. }
-            ) {
-                return Some(parent);
-            }
-            cursor = parent;
-        }
-        None
-    }
-
-    /// Pushes the obligations of [`Analyzer::reuse_fn_mut_generic`]: the precondition clauses
-    /// always, the `hist_inv!` law clauses when some analysis assumed the laws of a closure type
-    /// parameter's relation. That is coarser than tracking which instance reaches which
-    /// relation, and only adds checks.
-    pub fn emit_fn_mut_instance_obligations(&mut self) {
-        let mut pending = self.fn_mut_instance_obligations.borrow_mut();
-        let laws = std::mem::take(&mut pending.laws);
-        let pre = std::mem::take(&mut pending.pre);
-        let mut system = self.system.borrow_mut();
-        let laws_assumed = system.forall_preds().any(|pred| {
-            pred.inner().starts_with("q_hist_inv_") && !system.laws_of(pred).is_empty()
-        });
-        let clauses = if laws_assumed { laws } else { Vec::new() };
-        for clause in clauses.into_iter().chain(pre) {
-            system.push_clause(clause);
-        }
-    }
-
-    /// Records the `FnMut`-bounded type parameters whose `hist_inv!` relation the specifications
-    /// use: those whose relation carries its laws once every contract and predicate definition
-    /// has been translated. Taken once, after refinement, so the choice below does not depend
-    /// on the order bodies are analyzed in.
-    pub fn record_hist_inv_specified_params(&mut self, defs: impl Iterator<Item = LocalDefId>) {
-        let system = self.system.borrow();
-        let with_laws: HashSet<&str> = system
-            .forall_preds()
-            .filter(|pred| !system.laws_of(pred).is_empty())
-            .map(|pred| pred.inner())
-            .collect();
-        let mut specified = HashSet::new();
-        let mut fn_mut_bounded_defs = Vec::new();
-        for def in defs {
-            let params = fn_mut_bounded_params(self.tcx, def.to_def_id());
-            if self.tcx.def_kind(def).is_fn_like() && !params.is_empty() {
-                fn_mut_bounded_defs.push(def.to_def_id());
-            }
-            for param in params {
-                let name = crate::refine::stable_def_id_symbol(self.tcx, param, "q_hist_inv");
-                if with_laws.contains(name.as_str()) {
-                    specified.insert(param);
-                }
-            }
-        }
-        drop(system);
-        *self.hist_inv_specified_params.borrow_mut() = specified;
-        *self.fn_mut_bounded_defs.borrow_mut() = fn_mut_bounded_defs;
-    }
-
-    /// Whether `def_id` has an `FnMut`-bounded type parameter and each of them is one whose
-    /// `hist_inv!` relation the specifications use. Only such a def's instances at concrete
-    /// closures may use its generic analysis ([`Analyzer::reuse_fn_mut_generic`]); any other
-    /// `FnMut`-bounded def is verified per instance (D34).
-    pub fn is_hist_inv_specified(&self, def_id: DefId) -> bool {
-        let params = fn_mut_bounded_params(self.tcx, def_id);
-        let specified = self.hist_inv_specified_params.borrow();
-        !params.is_empty() && params.iter().all(|param| specified.contains(param))
-    }
-
-    /// Whether an instance has used the contract of `local_def_id` as instantiated, so its
-    /// generic analysis stands for that instance and must be emitted.
-    pub fn has_reused_instance(&self, local_def_id: LocalDefId) -> bool {
-        self.fn_mut_instance_obligations
-            .borrow()
-            .reused
-            .contains(&local_def_id.to_def_id())
     }
 
     /// Whether the body of `local_def_id` has been analyzed at type arguments that mention no
@@ -2212,131 +1708,6 @@ impl<'tcx> Analyzer<'tcx> {
     /// (see [`Analyzer::def_ty_with_args`]), so such an instance checks the body against the
     /// contract instantiated at the call site, including the concrete closure contract of an
     /// `FnMut`-bounded type parameter.
-    /// The relation of `hist_inv!` at the concrete closure `closure_ty` whose upvars have the sort
-    /// `upvars_sort`, between the states `from` and `to`: the one its captures give, and the one
-    /// the `hist_inv` clause of its specification writes, if any.
-    pub fn closure_hist_inv_definition<V: chc::Var>(
-        &self,
-        closure_ty: mir_ty::Ty<'tcx>,
-        upvars_sort: &chc::Sort,
-        from: chc::Term<V>,
-        to: chc::Term<V>,
-    ) -> chc::Formula<V> {
-        let derived = closure_hist_inv::concrete_definition(
-            self.tcx,
-            closure_ty,
-            upvars_sort,
-            from.clone(),
-            to.clone(),
-        );
-        if let Some(explicit) =
-            self.closure_explicit_hist_inv(closure_ty, upvars_sort, from.clone(), to.clone())
-        {
-            return derived.and(explicit);
-        }
-        let positions: Vec<usize> =
-            closure_hist_inv::by_value_captures(self.tcx, closure_ty, upvars_sort)
-                .into_iter()
-                .map(|(idx, _)| idx)
-                .collect();
-        if positions.is_empty() {
-            return derived;
-        }
-        let relation = self.by_value_hist_inv(closure_ty, upvars_sort);
-        derived.and(closure_hist_inv::by_value_related(
-            relation, &positions, from, to,
-        ))
-    }
-
-    /// The unknown relating the by-value captures of `closure_ty`, whose specification writes
-    /// no `hist_inv` clause, made with its laws on first use. Where Creusot says nothing of
-    /// those captures, the relation is inferred like any other unknown: reflexive and transitive
-    /// by these clauses, and implied by each call's postcondition, which includes it.
-    fn by_value_hist_inv(
-        &self,
-        closure_ty: mir_ty::Ty<'tcx>,
-        upvars_sort: &chc::Sort,
-    ) -> chc::PredVarId {
-        let key = (closure_ty, upvars_sort.clone());
-        if let Some(relation) = self.by_value_hist_invs.borrow().get(&key) {
-            return *relation;
-        }
-        let sorts: Vec<chc::Sort> =
-            closure_hist_inv::by_value_captures(self.tcx, closure_ty, upvars_sort)
-                .into_iter()
-                .map(|(_, sort)| sort)
-                .collect();
-        let sig = sorts.iter().chain(&sorts).cloned().collect();
-        let relation = self
-            .system
-            .borrow_mut()
-            .new_pred_var(sig, chc::DebugInfo::from_current_span());
-        for clause in closure_hist_inv::by_value_relation_laws(relation, &sorts) {
-            self.system.borrow_mut().push_clause(clause);
-        }
-        // Its laws are pushed here and each call's step comes from the closure's body, so a
-        // callee whose contract reaches it needs no analysis at the instance to define it.
-        self.system.borrow_mut().mark_self_defined(relation);
-        self.by_value_hist_invs.borrow_mut().insert(key, relation);
-        relation
-    }
-
-    /// The relation the `hist_inv` clause of `closure_ty`'s specification writes, between the
-    /// states `from` and `to`, with its laws pushed on first use.
-    fn closure_explicit_hist_inv<V: chc::Var>(
-        &self,
-        closure_ty: mir_ty::Ty<'tcx>,
-        upvars_sort: &chc::Sort,
-        from: chc::Term<V>,
-        to: chc::Term<V>,
-    ) -> Option<chc::Formula<V>> {
-        let mir_ty::TyKind::Closure(def_id, closure_args) = closure_ty.kind() else {
-            return None;
-        };
-        let local_def_id = def_id.as_local()?;
-        let formula_def_id = self
-            .extract_path_with_attr(local_def_id, &analyze::annot::hist_inv_path_path())?
-            .expect_local();
-        let generic_args = self.closure_spec_args(formula_def_id, closure_args);
-        let owner_fn_id = self.tcx.typeck_root_def_id(*def_id);
-        let formula_fn = self
-            .formula_fn_with_args(formula_def_id, generic_args, owner_fn_id)
-            .expect("hist_inv clause is not a formula function");
-        let apply = |from: chc::Term<V>, to: chc::Term<V>| {
-            let pair = chc::Term::mut_(from, to);
-            formula_fn.formula().clone().subst_var(|_| pair.clone())
-        };
-        if self
-            .explicit_hist_inv_laws
-            .borrow_mut()
-            .insert((closure_ty, upvars_sort.clone()))
-        {
-            let related = |from: chc::Term<chc::TermVarIdx>, to: chc::Term<chc::TermVarIdx>| {
-                let pair = chc::Term::mut_(from, to);
-                formula_fn.formula().clone().subst_var(|_| pair.clone())
-            };
-            let laws = closure_hist_inv::explicit_laws(closure_ty, upvars_sort, &related);
-            for clause in laws {
-                self.system.borrow_mut().push_clause(clause);
-            }
-        }
-        Some(apply(from, to))
-    }
-
-    /// The generic arguments of a `closure!` specification's formula function at the closure
-    /// arguments `closure_args`: none when it is lifted without the enclosing generics, and the
-    /// closure's parent arguments when `#[thrust_macros::context]` re-declared them on it.
-    fn closure_spec_args(
-        &self,
-        formula_def_id: LocalDefId,
-        closure_args: mir_ty::GenericArgsRef<'tcx>,
-    ) -> mir_ty::GenericArgsRef<'tcx> {
-        if self.tcx.generics_of(formula_def_id).count() == 0 {
-            return self.tcx.mk_args(&[]);
-        }
-        self.tcx.mk_args(closure_args.as_closure().parent_args())
-    }
-
     pub fn has_concrete_instance(&self, local_def_id: LocalDefId) -> bool {
         self.concrete_instances.borrow().contains(&local_def_id)
     }
@@ -2553,20 +1924,181 @@ impl<'tcx> Analyzer<'tcx> {
         }
         self.system.borrow_mut().type_params_reverse = reverse;
         let config = crate::report::Config::from_env(self.tcx);
+        match split_jobs() {
+            Ok(None) => {}
+            Ok(Some(jobs)) => {
+                self.solve_parts(jobs, config.as_ref());
+                return;
+            }
+            Err(err) => {
+                self.tcx.dcx().err(err);
+                return;
+            }
+        }
         let requests = config
             .as_ref()
             .map(crate::report::Config::requests)
             .unwrap_or_default();
         let answer = self.system.borrow().solve_with(requests);
-        if let Some(config) = &config {
-            self.report(config, &answer);
-        }
-        if let Err(err) = answer.result {
-            self.tcx.dcx().err(format!("verification error: {:?}", err));
-        }
+        let refuted = match &config {
+            Some(config) => {
+                let system = self.system.borrow();
+                self.report(config, &system, std::slice::from_ref(&answer), &[], &[])[0]
+            }
+            None => crate::report::Refuted::No,
+        };
+        let Err(err) = answer.result else {
+            return;
+        };
+        let at = match refuted {
+            crate::report::Refuted::AsError => return,
+            crate::report::Refuted::At(span) => Some(span),
+            crate::report::Refuted::No => None,
+        };
+        self.verification_error(&self.system.borrow(), &err, at)
+            .emit();
     }
 
-    fn report(&self, config: &crate::report::Config, answer: &chc::Answer) {
+    /// The error of a failed verification of `system` (the whole or a part), at the obligation
+    /// the report shows refuted, if it does.
+    fn verification_error(
+        &self,
+        system: &chc::System,
+        err: &chc::CheckSatError,
+        refuted: Option<rustc_span::Span>,
+    ) -> rustc_errors::Diag<'tcx> {
+        let message = format!("verification error: {:?}", err);
+        let mut diag = match refuted {
+            Some(span) => self.tcx.dcx().struct_span_err(span, message),
+            None => self.tcx.dcx().struct_err(message),
+        };
+        // `z3` reports what it cannot read as `(error …)` lines.
+        let unread = matches!(err, chc::CheckSatError::Error { stdout, .. } if stdout.contains("(error "))
+            && chc::Config::from_env().is_z3()
+            && system.needs_pcsat();
+        if unread {
+            diag.help(
+                "the query has forall sorts or sequences, which `z3` does not read; PCSat, the \
+                 CHC solver of CoAR, does: set `THRUST_SOLVER` to the PCSat wrapper of Thrust \
+                 (`tests/thrust-pcsat-wrapper` in its repository), which runs the CoAR image \
+                 `COAR_IMAGE` in Docker",
+            );
+        }
+        diag
+    }
+
+    /// Solves each part of the system that shares no unknown with the rest on its own
+    /// (`THRUST_SPLIT`), reports the failing ones with the code their clauses come from and, with
+    /// `report`, reports the parts as without `THRUST_SPLIT`.
+    fn solve_parts(&self, jobs: usize, report: Option<&crate::report::Config>) {
+        let system = self.system.borrow();
+        let parts = system.solve_parts(jobs);
+        let summaries: Vec<crate::report::Part> = parts
+            .iter()
+            .enumerate()
+            .map(|(id, part)| crate::report::Part::new(self.tcx, &system, id, part))
+            .collect();
+        let refuted = match report {
+            Some(config) => self.report_parts(config, jobs, &system, &parts, &summaries),
+            None => vec![crate::report::Refuted::No; parts.len()],
+        };
+        for ((part, summary), refuted) in parts.iter().zip(&summaries).zip(refuted) {
+            let Err(err) = &part.result else {
+                continue;
+            };
+            let refuted = match refuted {
+                crate::report::Refuted::AsError => continue,
+                crate::report::Refuted::At(span) => Some(span),
+                crate::report::Refuted::No => None,
+            };
+            // Without a refutation, the error is at the code of the part: its first function,
+            // the others labelled.
+            let code = summary.functions.first().map(|f| f.head);
+            let mut diag =
+                self.verification_error(&system.part(&part.clauses), err, refuted.or(code));
+            if refuted.is_none() {
+                for f in summary.functions.iter().skip(1) {
+                    diag.span_label(f.head, format!("`{}` is in this part too", f.r#fn));
+                }
+            }
+            diag.with_note(summary.error_note(self.tcx, &summaries))
+                .emit();
+        }
+        crate::report::emit_part_notes(self.tcx, &summaries);
+    }
+
+    /// Reports the parts refuted, as without `THRUST_SPLIT`: each is solved once more on its own,
+    /// asked for what the report needs. Returns how the report shows the refutation of each part.
+    fn report_parts(
+        &self,
+        config: &crate::report::Config,
+        jobs: usize,
+        system: &chc::System,
+        parts: &[chc::Part],
+        summaries: &[crate::report::Part],
+    ) -> Vec<crate::report::Refuted> {
+        // Each part refuted is solved once more on its own, for its refutation, and each part
+        // solved for its model when the report shows its unknowns; the report reads them over the
+        // whole system, whose parts keep the clause ids. A solver that gives neither is not
+        // asked again.
+        let requests = config.requests();
+        let solver = chc::Config::from_env();
+        let evidence = solver.answers(requests);
+        let shown = |part: &chc::Part| {
+            let defs = system
+                .pred_vars_of(&part.clauses)
+                .into_iter()
+                .filter_map(|p| self.template_sites.get(&p).map(|site| site.def()));
+            defs.into_iter().any(|def| config.reports(self.tcx, def))
+        };
+        let asked: Vec<crate::report::Asked> = parts
+            .iter()
+            .enumerate()
+            .filter_map(|(i, part)| {
+                let refuted = match part.result {
+                    Ok(()) if requests.model && evidence && shown(part) => false,
+                    Err(chc::CheckSatError::Unsat) if requests.proof => true,
+                    _ => return None,
+                };
+                Some(crate::report::Asked {
+                    part: i + 1,
+                    clauses: part.clauses.clone(),
+                    refuted,
+                })
+            })
+            .collect();
+        // A refuted part of a solver that gives no refutation is refuted by `z3` when it reads it.
+        let mut answers = chc::in_parallel(jobs, asked.len(), |i| {
+            let part = system.part(&asked[i].clauses);
+            if evidence {
+                return part.solve_part_with(requests);
+            }
+            let mut answer = chc::Answer::of(Err(chc::CheckSatError::Unsat));
+            if solver.asks_z3_to_refute(requests) {
+                part.refute_by_z3(&mut answer);
+            }
+            answer
+        });
+        if answers.is_empty() {
+            answers.push(chc::Answer::of(Ok(())));
+        }
+        // The templates and constraints of every part are shown, solved again or not.
+        let spans = self.report(config, system, &answers, &asked, summaries);
+        let mut refuted = vec![crate::report::Refuted::No; parts.len()];
+        for (a, span) in asked.iter().zip(spans) {
+            refuted[a.part - 1] = span;
+        }
+        refuted
+    }
+
+    fn report(
+        &self,
+        config: &crate::report::Config,
+        system: &chc::System,
+        answers: &[chc::Answer],
+        asked: &[crate::report::Asked],
+        parts: &[crate::report::Part],
+    ) -> Vec<crate::report::Refuted> {
         let contracts = self
             .defs
             .iter()
@@ -2588,16 +2120,19 @@ impl<'tcx> Analyzer<'tcx> {
                     .map(move |(bb, def)| (key.local_def_id, *bb, &def.ty))
             })
             .collect();
-        let system = self.system.borrow();
         let input = crate::report::Input {
-            system: &system,
+            system,
             contracts,
             blocks,
-            answer,
+            answers,
+            asked,
             template_sites: &self.template_sites,
             template_vars: &self.template_vars,
+            contract_annotations: &self.contract_annotations,
+            invariant_annotations: &self.invariant_annotations,
+            parts,
         };
-        crate::report::emit(self.tcx, config, &input);
+        crate::report::emit(self.tcx, config, &input)
     }
 
     /// Computes the signature of the function using the given `body`.
@@ -2683,7 +2218,7 @@ impl<'tcx> Analyzer<'tcx> {
         local_def_id: LocalDefId,
         generic_args: mir_ty::GenericArgsRef<'tcx>,
         owner_fn_id: DefId,
-    ) -> Option<chc::Formula<rty::FunctionParamIdx>> {
+    ) -> Option<(DefId, chc::Formula<rty::FunctionParamIdx>)> {
         let formula_def_id =
             self.extract_path_with_attr(local_def_id, &analyze::annot::requires_path_path())?;
         let Some(formula_def_id) = formula_def_id.as_local() else {
@@ -2704,7 +2239,7 @@ impl<'tcx> Analyzer<'tcx> {
                 formula_def_id
             );
         };
-        Some(formula_fn.to_require_formula())
+        Some((formula_def_id.to_def_id(), formula_fn.to_require_formula()))
     }
 
     fn extract_ensure_annot(
@@ -2712,7 +2247,10 @@ impl<'tcx> Analyzer<'tcx> {
         local_def_id: LocalDefId,
         generic_args: mir_ty::GenericArgsRef<'tcx>,
         owner_fn_id: DefId,
-    ) -> Option<chc::Formula<rty::RefinedTypeVar<rty::FunctionParamIdx>>> {
+    ) -> Option<(
+        DefId,
+        chc::Formula<rty::RefinedTypeVar<rty::FunctionParamIdx>>,
+    )> {
         let formula_def_id =
             self.extract_path_with_attr(local_def_id, &analyze::annot::ensures_path_path())?;
         let Some(formula_def_id) = formula_def_id.as_local() else {
@@ -2733,7 +2271,7 @@ impl<'tcx> Analyzer<'tcx> {
                 formula_def_id
             );
         };
-        Some(formula_fn.to_ensure_formula())
+        Some((formula_def_id.to_def_id(), formula_fn.to_ensure_formula()))
     }
 
     /// Collects every `#[thrust::refinement_path(..)]` path statement in the
@@ -2789,14 +2327,86 @@ impl<'tcx> Analyzer<'tcx> {
         out
     }
 
+    /// The clauses of the formula function `def_id` as written, read off the tail of its body
+    /// (the macros conjoin the clauses of an annotation into one); the function where it has no
+    /// tail.
+    fn written_spans(&self, def_id: DefId) -> Vec<rustc_span::Span> {
+        let body = def_id
+            .as_local()
+            .and_then(|def| self.tcx.hir_maybe_body_owned_by(def));
+        let tail = body.and_then(|body| match body.value.kind {
+            rustc_hir::ExprKind::Block(block, _) => block.expr,
+            _ => None,
+        });
+        match tail {
+            Some(tail) => written_clauses(tail),
+            None => vec![self.tcx.def_span(def_id)],
+        }
+    }
+
+    /// Keeps where the written invariant of the loop at `header` of `def` is annotated, from the
+    /// formula functions of its `invariant!`s.
+    pub fn record_invariant_annotations(
+        &mut self,
+        def: LocalDefId,
+        header: BasicBlock,
+        formulas: impl Iterator<Item = LocalDefId>,
+    ) {
+        let spans = formulas
+            .flat_map(|f| self.written_spans(f.to_def_id()))
+            .collect();
+        self.invariant_annotations.insert((def, header), spans);
+    }
+
+    /// Where a contract is annotated, from the companions it is read from: `requires`,
+    /// `ensures`, and each refinement at its position.
+    pub fn contract_annotations(
+        &self,
+        requires: Option<DefId>,
+        ensures: Option<DefId>,
+        refinements: impl Iterator<Item = (rty::TypePosition, DefId)>,
+    ) -> ContractAnnotations {
+        let spans = |def_id: DefId| self.written_spans(def_id);
+        let mut annotations = ContractAnnotations {
+            requires: requires.into_iter().flat_map(spans).collect(),
+            ensures: ensures.into_iter().flat_map(spans).collect(),
+            params: BTreeMap::new(),
+        };
+        for (position, def_id) in refinements {
+            match position.steps().first() {
+                Some(rty::TypePositionStep::Return) => annotations.ensures.extend(spans(def_id)),
+                Some(rty::TypePositionStep::Param(idx)) => {
+                    annotations.requires.extend(spans(def_id));
+                    let param = annotations.params.entry(*idx).or_default();
+                    param.extend(spans(def_id));
+                }
+                _ => annotations.requires.extend(spans(def_id)),
+            }
+        }
+        annotations
+    }
+
+    /// Keeps where the written contract of `def_id` is annotated, for the report.
+    pub fn record_contract_annotations(&mut self, def_id: DefId, annotations: ContractAnnotations) {
+        if annotations.requires.is_empty() && annotations.ensures.is_empty() {
+            return;
+        }
+        self.contract_annotations.insert(def_id, annotations);
+    }
+
     /// Resolves every `#[thrust::refinement_path(..)]` annotation into a
-    /// positioned refinement, by translating the referenced formula function.
+    /// positioned refinement, by translating the referenced formula function, which it returns
+    /// too.
     pub fn extract_refinement_annots(
         &self,
         local_def_id: LocalDefId,
         generic_args: mir_ty::GenericArgsRef<'tcx>,
         owner_fn_id: DefId,
-    ) -> Vec<(rty::TypePosition, rty::Refinement<rty::FunctionParamIdx>)> {
+    ) -> Vec<(
+        rty::TypePosition,
+        DefId,
+        rty::Refinement<rty::FunctionParamIdx>,
+    )> {
         let mut out = Vec::new();
         for (position, def_id) in self.extract_refinement_paths(local_def_id) {
             let Some(formula_def_id) = def_id.as_local() else {
@@ -2813,7 +2423,7 @@ impl<'tcx> Analyzer<'tcx> {
                     formula_def_id
                 );
             };
-            out.push((position, formula_fn.to_refinement()));
+            out.push((position, def_id, formula_fn.to_refinement()));
         }
         out
     }

@@ -10,8 +10,10 @@ use rustc_index::IndexVec;
 use crate::pretty::PrettyDisplayExt as _;
 
 pub mod answer;
+mod cache;
 mod candidate_atoms;
 mod clause_builder;
+mod components;
 pub mod debug;
 mod dedup;
 mod flatten;
@@ -28,7 +30,7 @@ pub use clause_builder::{ClauseBuilder, Var};
 pub use debug::DebugInfo;
 pub use dedup::dedup_pred_args;
 pub use flatten::flatten_recursive_pred_args;
-pub use solver::{Answer, Capabilities, CheckSatError, Config, Requests};
+pub use solver::{verdict, Answer, Capabilities, CheckSatError, Config, Refused, Requests};
 pub use unbox::{unbox, unbox_formula, unbox_sort};
 
 /// A name of a datatype.
@@ -1624,13 +1626,30 @@ impl MatcherPred {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone)]
 pub struct UserDefinedPred {
     inner: String,
     /// The sorts this predicate was emitted at. Empty for the definition read
     /// straight off the source, whose parameter sorts are the declaring item's
     /// own; non-empty for a copy emitted at one instantiation of them.
     instance: Vec<Sort>,
+    /// The path of the item it was read from, which the printer shows in place of `inner`;
+    /// not part of its identity.
+    name: Option<String>,
+}
+
+impl PartialEq for UserDefinedPred {
+    fn eq(&self, other: &Self) -> bool {
+        (&self.inner, &self.instance) == (&other.inner, &other.instance)
+    }
+}
+
+impl Eq for UserDefinedPred {}
+
+impl Hash for UserDefinedPred {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        (&self.inner, &self.instance).hash(state)
+    }
 }
 
 impl std::fmt::Display for UserDefinedPred {
@@ -1656,7 +1675,7 @@ where
     D: pretty::DocAllocator<'a, termcolor::ColorSpec>,
 {
     fn pretty(self, allocator: &'a D) -> pretty::DocBuilder<'a, D, termcolor::ColorSpec> {
-        allocator.text(self.inner.clone())
+        allocator.text(self.name.clone().unwrap_or_else(|| self.inner.clone()))
     }
 }
 
@@ -1665,11 +1684,24 @@ impl UserDefinedPred {
         Self {
             inner,
             instance: Vec::new(),
+            name: None,
         }
     }
 
     pub fn at_instance(inner: String, instance: Vec<Sort>) -> Self {
-        Self { inner, instance }
+        Self {
+            inner,
+            instance,
+            name: None,
+        }
+    }
+
+    /// This predicate, printed as `name`, the path of the item it was read from.
+    pub fn named(self, name: String) -> Self {
+        Self {
+            name: Some(name),
+            ..self
+        }
     }
 
     pub fn instance(&self) -> &[Sort] {
@@ -1686,6 +1718,8 @@ impl UserDefinedPred {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ForallPred {
     inner: String,
+    /// The `<...>` suffix of the symbol, which names the generic arguments it stands at.
+    type_arguments: String,
     type_parameters: Vec<Sort>,
     params: Vec<Sort>,
     /// `Bool` for a predicate; the result sort of a trait logic function read at a type
@@ -1722,18 +1756,25 @@ where
 }
 
 impl ForallPred {
-    pub fn new(inner: String, type_parameters: Vec<Sort>, params: Vec<Sort>) -> Self {
-        Self::function(inner, type_parameters, params, Sort::bool())
+    pub fn new(
+        inner: String,
+        type_arguments: String,
+        type_parameters: Vec<Sort>,
+        params: Vec<Sort>,
+    ) -> Self {
+        Self::function(inner, type_arguments, type_parameters, params, Sort::bool())
     }
 
     pub fn function(
         inner: String,
+        type_arguments: String,
         type_parameters: Vec<Sort>,
         params: Vec<Sort>,
         result: Sort,
     ) -> Self {
         Self {
             inner,
+            type_arguments,
             type_parameters,
             params,
             result,
@@ -1744,9 +1785,13 @@ impl ForallPred {
         &self.result
     }
 
-    /// The symbol without the `<...>` that names the sorts it stands over.
+    /// The symbol without the `<...>` that names the generic arguments it stands at.
     pub fn inner(&self) -> &str {
         &self.inner
+    }
+
+    pub fn type_arguments(&self) -> &str {
+        &self.type_arguments
     }
 
     pub fn type_parameters(&self) -> &[Sort] {
@@ -2687,22 +2732,55 @@ pub struct UserDefinedPredDef {
     pub decreases: Option<Term<TermVarIdx>>,
 }
 
+/// The forall predicates and functions `atoms` apply, as predicates or in their arguments, and in
+/// their guards, as `user_defined_in` reads them.
+fn forall_in<'a, V: 'a>(atoms: impl Iterator<Item = &'a Atom<V>>) -> Vec<&'a ForallPred> {
+    atoms
+        .flat_map(|atom| {
+            let pred = match &atom.pred {
+                Pred::ForallPred(pred) => Some(pred),
+                _ => None,
+            };
+            let in_guard = atom
+                .guard
+                .iter()
+                .flat_map(|guard| forall_in(guard.iter_atoms()));
+            pred.into_iter()
+                .chain(atom.args.iter().flat_map(Term::forall_fns))
+                .chain(in_guard)
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// The user-defined predicates and functions `atoms` apply, as predicates or in their arguments.
+fn user_defined_in<'a, V: 'a>(
+    atoms: impl Iterator<Item = &'a Atom<V>>,
+) -> Vec<&'a UserDefinedPred> {
+    atoms
+        .flat_map(|atom| {
+            let pred = match &atom.pred {
+                Pred::UserDefined(pred) => Some(pred),
+                _ => None,
+            };
+            let in_guard = atom
+                .guard
+                .iter()
+                .flat_map(|guard| user_defined_in(guard.iter_atoms()));
+            pred.into_iter()
+                .chain(atom.args.iter().flat_map(Term::user_defined_fns))
+                .chain(in_guard)
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
 impl UserDefinedPredDef {
     /// The user-defined predicates and functions the body calls.
     fn callees(&self) -> Vec<&UserDefinedPred> {
         match &self.body {
             UserDefinedPredBody::Raw(_) => Vec::new(),
-            UserDefinedPredBody::Formula(formula) => formula
-                .iter_atoms()
-                .flat_map(|atom| {
-                    let pred = match &atom.pred {
-                        Pred::UserDefined(pred) => Some(pred),
-                        _ => None,
-                    };
-                    pred.into_iter()
-                        .chain(atom.args.iter().flat_map(Term::user_defined_fns))
-                })
-                .collect(),
+            UserDefinedPredBody::Formula(formula) => user_defined_in(formula.iter_atoms()),
             UserDefinedPredBody::Term(_, term) => term.user_defined_fns(),
         }
     }
@@ -3086,19 +3164,8 @@ impl System {
                     }
                 }
                 UserDefinedPredBody::Formula(formula) => {
-                    udpd.dependencies.extend(formula.iter_atoms().filter_map(
-                        |atom| match &atom.pred {
-                            Pred::ForallPred(pred) => Some(pred.clone()),
-                            _ => None,
-                        },
-                    ));
-                    udpd.dependencies.extend(
-                        formula
-                            .iter_atoms()
-                            .flat_map(|atom| &atom.args)
-                            .flat_map(Term::forall_fns)
-                            .cloned(),
-                    );
+                    udpd.dependencies
+                        .extend(forall_in(formula.iter_atoms()).into_iter().cloned());
                 }
             }
         }
@@ -3615,7 +3682,34 @@ impl System {
             }
         }
         let query = system.smtlib2(config.capabilities()).to_string();
-        let mut answer = config.check_sat_with(&query, requests);
+        if let Err(err) = config.save_query("thrust_output.smt2", &query) {
+            return Answer::of(Err(err.into()));
+        }
+        self.answer(&config, query, requests)
+    }
+
+    /// Solves a part of the system (see [`System::part`]) once more for the evidence `requests`
+    /// names. Its query was saved when its verdict was taken ([`System::solve_parts`]), so this
+    /// writes no file.
+    pub fn solve_part_with(&self, requests: Requests) -> Answer {
+        let config = Config::from_env();
+        let query = self
+            .clone()
+            .prepared()
+            .smtlib2(config.capabilities())
+            .to_string();
+        self.answer(&config, query, requests)
+    }
+
+    /// The answer to `query`, the system's, with the evidence `requests` names.
+    fn answer(&self, config: &Config, query: String, requests: Requests) -> Answer {
+        // A verdict alone may be that of an earlier run (`THRUST_CACHE_DIR`); the cache keeps no
+        // model or refutation.
+        let mut answer = if config.answers(requests) {
+            config.check_sat_with(&query, requests)
+        } else {
+            Answer::of(cache::solve(config, cache::Cache::from_env().as_ref(), &query).result)
+        };
         if requests.model {
             answer.query = Some(query);
         }
@@ -3623,13 +3717,87 @@ impl System {
         // the verdict is the one the query alone gets.
         let refuted = matches!(answer.result, Err(CheckSatError::Unsat));
         if requests.proof && refuted && config.answers(requests) {
-            let mut marked = self.clone();
-            answer.clause_tags = marked.tag_clauses();
-            answer.goal_markers = marked.mark_goals();
-            let marked = marked.prepared();
-            answer.proof = config.refute(marked.smtlib2(config.capabilities()));
+            self.refute(config, &mut answer);
+        }
+        if refuted && config.asks_z3_to_refute(requests) {
+            self.refute_by_z3(&mut answer);
         }
         answer
+    }
+
+    /// Asks `config`'s solver for the refutation of the system, which is refuted, with its
+    /// clauses tagged and its goals marked.
+    fn refute(&self, config: &Config, answer: &mut Answer) {
+        let mut marked = self.clone();
+        answer.clause_tags = marked.tag_clauses();
+        answer.goal_markers = marked.mark_goals();
+        let marked = marked.prepared();
+        match config.refute(marked.smtlib2(config.capabilities())) {
+            Ok(proof) => answer.proof = Some(proof),
+            Err(refused) => answer.z3_refused = Some(refused),
+        }
+    }
+
+    /// Asks `z3` for the refutation of the system, which another solver refuted (PCSat, which
+    /// gives none), when `z3` reads its query.
+    pub fn refute_by_z3(&self, answer: &mut Answer) {
+        if self.needs_pcsat() {
+            return;
+        }
+        self.refute(&Config::z3_in_place_of_solver(), answer);
+        answer.proof_by_z3 = true;
+    }
+
+    /// Whether the query uses what `z3` does not read: a forall sort or a sequence in a clause,
+    /// an unknown's signature or a definition's.
+    pub fn needs_pcsat(&self) -> bool {
+        let unread = |sort: &Sort| {
+            let mut found = false;
+            sort.walk(|s| found |= matches!(s, Sort::Seq(_) | Sort::Forall(_)));
+            found
+        };
+        let vars = self.clauses.iter().flat_map(|c| c.vars.iter());
+        let sigs = self.pred_vars.iter().flat_map(|p| p.sig.iter());
+        let definitions = self
+            .user_defined_pred_defs
+            .iter()
+            .flat_map(|def| def.sig.iter().map(|(_, sort)| sort));
+        vars.chain(sigs).chain(definitions).any(unread)
+    }
+
+    /// Solves each class of clauses that share an unknown on its own (see [`components`]),
+    /// `jobs` at a time, reusing the verdicts `THRUST_CACHE_DIR` keeps. The system is satisfiable
+    /// exactly when every part is. `THRUST_OUTPUT_DIR` gets each part's query as
+    /// `thrust_output_part<i>.smt2`, numbered from 1 as the parts are named.
+    pub fn solve_parts(&self, jobs: usize) -> Vec<Part> {
+        let config = Config::from_env();
+        let cache = cache::Cache::from_env();
+        let parts = components::components(self);
+        let solve = |i: usize| {
+            let query = self
+                .part(&parts[i])
+                .prepared()
+                .smtlib2(config.capabilities())
+                .to_string();
+            let file = format!("thrust_output_part{}.smt2", i + 1);
+            if let Err(err) = config.save_query(&file, &query) {
+                return cache::Verdict {
+                    result: Err(err.into()),
+                    cached: false,
+                };
+            }
+            cache::solve(&config, cache.as_ref(), &query)
+        };
+        let verdicts = in_parallel(jobs, parts.len(), solve);
+        parts
+            .into_iter()
+            .zip(verdicts)
+            .map(|(clauses, verdict)| Part {
+                clauses,
+                result: verdict.result,
+                cached: verdict.cached,
+            })
+            .collect()
     }
 
     /// The system as the query states it.
@@ -3682,10 +3850,10 @@ impl System {
     }
 
     /// Gives each goal (a clause whose head is no predicate variable: `false`, or a formula the
-    /// clause checks) a nullary predicate variable of its own between its body and `false`, which
-    /// the system is satisfiable with exactly when it is without: `g ⇐ body ∧ ¬head` and
-    /// `false ⇐ g`. A refutation then derives the marker of the goal it refutes. Returns the
-    /// markers with their goals.
+    /// clause checks) a predicate variable of its own over the goal's variables between its body
+    /// and `false`, which the system is satisfiable with exactly when it is without:
+    /// `g(x) ⇐ body ∧ ¬head` and `false ⇐ g(x)`. A refutation then derives the marker of the
+    /// goal it refutes, at the values of its variables. Returns the markers with their goals.
     fn mark_goals(&mut self) -> Vec<(PredVarId, ClauseId)> {
         let goals: Vec<ClauseId> = self
             .clauses
@@ -3697,9 +3865,14 @@ impl System {
             .collect();
         let mut markers = Vec::new();
         for id in goals {
-            let marker = self.new_pred_var(PredSig::new(), DebugInfo::default());
+            // The marker takes the goal's variables, so that the refutation's last fact gives the
+            // values they have where the goal fails.
+            let vars = self.clauses[id].vars.clone();
+            let args: Vec<Term> = vars.indices().map(Term::Var).collect();
+            let marker = self.new_pred_var(vars.raw.clone(), DebugInfo::default());
             let clause = &mut self.clauses[id];
-            let head = std::mem::replace(&mut clause.head, Atom::new(marker.into(), vec![]));
+            let marked = Atom::new(marker.into(), args.clone());
+            let head = std::mem::replace(&mut clause.head, marked);
             if !head.is_bottom() {
                 clause.body.formula.push_conj(Formula::Atom(head).not());
             }
@@ -3709,9 +3882,9 @@ impl System {
                     body: Vec::new(),
                     head: debug::origin::Entry::described("marker of a goal".to_owned()),
                 },
-                vars: IndexVec::new(),
+                vars,
                 head: Atom::bottom(),
-                body: Body::new(vec![Atom::new(marker.into(), vec![])], Formula::top()),
+                body: Body::new(vec![Atom::new(marker.into(), args)], Formula::top()),
                 debug_info: DebugInfo::default(),
             });
             markers.push((marker, id));
@@ -3733,6 +3906,37 @@ fn dedup_pred_args_enabled() -> bool {
 /// interprets them over other arguments than the system's.
 pub fn pred_args_rewritten() -> bool {
     flat_pred_args_enabled() || dedup_pred_args_enabled()
+}
+
+/// `f` of `0..n`, `jobs` at a time, in that order.
+pub fn in_parallel<T: Send + Sync>(jobs: usize, n: usize, f: impl Fn(usize) -> T + Sync) -> Vec<T> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let results: Vec<std::sync::OnceLock<T>> = (0..n).map(|_| std::sync::OnceLock::new()).collect();
+    let next = AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        for _ in 0..jobs {
+            scope.spawn(|| loop {
+                let i = next.fetch_add(1, Ordering::Relaxed);
+                if i >= n {
+                    break;
+                }
+                let _ = results[i].set(f(i));
+            });
+        }
+    });
+    results
+        .into_iter()
+        .map(|result| result.into_inner().unwrap())
+        .collect()
+}
+
+/// One class of clauses sharing an unknown, solved on its own.
+#[derive(Debug)]
+pub struct Part {
+    pub clauses: Vec<ClauseId>,
+    pub result: Result<(), CheckSatError>,
+    /// Whether the verdict was that of an earlier run (`THRUST_CACHE_DIR`).
+    pub cached: bool,
 }
 
 /// Collects the forall sorts referenced via [`Term::ForallDefault`] in `term`
@@ -3949,7 +4153,7 @@ mod tests {
     #[test]
     fn an_unknown_depends_on_the_forall_preds_of_what_follows_it() {
         let mut system = System::default();
-        let q = ForallPred::new("q".into(), vec![], vec![Sort::int()]);
+        let q = ForallPred::new("q".into(), String::new(), vec![], vec![Sort::int()]);
         system.register_forall_pred(q.clone());
         let p = system.new_pred_var(vec![Sort::int()], DebugInfo::default());
         let x = || Term::var(0usize.into());
@@ -3984,6 +4188,7 @@ mod tests {
         system.new_forall_sort(DebugInfo::default());
         system.register_forall_pred(ForallPred::new(
             "q".into(),
+            String::new(),
             vec![],
             vec![Sort::forall(used)],
         ));
@@ -4011,7 +4216,12 @@ mod tests {
         let idx = system.new_forall_sort(
             DebugInfo::default().with_context("type_param", "ParamTy T/#0 (decl=DefId(...))"),
         );
-        system.register_forall_pred(ForallPred::new("q".into(), vec![], vec![Sort::forall(idx)]));
+        system.register_forall_pred(ForallPred::new(
+            "q".into(),
+            String::new(),
+            vec![],
+            vec![Sort::forall(idx)],
+        ));
 
         // The query carries the debug info in comments only at the full comment level.
         let smt = system
@@ -4029,6 +4239,7 @@ mod tests {
         let tuple = Sort::tuple(vec![Sort::forall(idx), Sort::int()]);
         system.register_forall_pred(ForallPred::new(
             "q".into(),
+            format!("<{idx}>"),
             vec![Sort::forall(idx)],
             vec![tuple, Sort::int()],
         ));

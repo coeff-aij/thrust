@@ -4,21 +4,53 @@ use rustc_middle::mir::BasicBlock;
 use rustc_middle::ty::TyCtxt;
 use serde::Serialize;
 
-use super::constraints::Constraint;
+use super::constraints::{Annotation, Constraint};
 use super::failure::Failure;
 use super::formula::Formula;
 use super::sites::{Names, Site, SiteKind};
 use super::solution::{block_template, invariant, over, signature, Solution};
-use super::{constraint_of, location, Entry, Items};
+use super::{assumed, constraint_of, range, Entry, Items, Range};
 
 /// One line of the report, its `kind` the variant's name.
 #[derive(Serialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 enum Line<'a> {
+    /// What the report is: its version, the directory its relative files are in, and how its
+    /// columns count.
+    Report {
+        version: u32,
+        root: String,
+        columns: Columns,
+    },
+    /// The crate's verdict, and how many obligations a failure is refuted at: one per query, or
+    /// one per part.
+    Verdict {
+        verdict: &'a str,
+        refutations: &'a str,
+        /// What the solver answered when it is neither `sat` nor `unsat` (`Timeout(30s)`).
+        message: Option<String>,
+        /// Of a whole query without an answer, the functions its clauses come from, as a part
+        /// line gives them.
+        functions: Option<Vec<FnSpan>>,
+        /// What `z3`, asked for the run of the whole query the solver refuted, answered instead
+        /// (`sat`: the solvers disagree).
+        z3_answer: Option<String>,
+    },
+    Part {
+        id: usize,
+        clauses: usize,
+        functions: Vec<FnSpan>,
+        verdict: &'a str,
+        /// What the solver answered when it is neither `sat` nor `unsat`.
+        message: Option<&'a str>,
+        cached: bool,
+        /// What `z3`, asked for the run of the part the solver refuted, answered instead.
+        z3_answer: Option<String>,
+    },
     Site {
         r#fn: &'a str,
         site: String,
-        span: String,
+        span: Range,
         over: String,
         template: String,
         preds: Vec<Pred<'a>>,
@@ -28,20 +60,62 @@ enum Line<'a> {
     Constraint {
         id: String,
         r#fn: &'a str,
-        r#loop: Option<String>,
-        span: Option<String>,
+        r#loop: Option<Range>,
+        span: Option<Range>,
         obligation: &'a str,
-        premises: &'a [String],
+        premises: Vec<Premise<'a>>,
         conclusion: &'a str,
     },
     Failure {
+        /// The number of its part (`THRUST_SPLIT`).
+        part: Option<usize>,
         constraint: String,
         r#fn: Option<&'a str>,
-        span: Option<String>,
+        span: Option<Range>,
         obligation: Option<&'a str>,
-        run: Vec<Step>,
+        premises: Option<Vec<Premise<'a>>>,
+        conclusion: Option<&'a str>,
+        run: Vec<Step<'a>>,
+        /// Whether the run is `z3`'s, asked of a query the solver refuted without one.
+        run_by_z3: bool,
         truncated: bool,
+        values: Vec<Value>,
+        /// The functions whose inferred contract the run goes through.
+        inferred: Vec<&'a str>,
+        /// The written annotations the refuted obligation checks.
+        annotation: Vec<Range>,
+        /// The functions whose written `ensures` the run assumes at a call.
+        assumes: Vec<FnSpan>,
     },
+}
+
+/// How a span's columns count: from `base`, in `unit`, `end_column` after the last.
+#[derive(Serialize)]
+struct Columns {
+    base: u32,
+    unit: &'static str,
+    end: &'static str,
+}
+
+/// A function and a span in it.
+#[derive(Serialize)]
+struct FnSpan {
+    r#fn: String,
+    span: Range,
+}
+
+/// A premise of a constraint, with the span it was made at when the clause tells it (an unknown
+/// applied, at its template's code).
+#[derive(Serialize)]
+struct Premise<'a> {
+    text: &'a str,
+    span: Option<Range>,
+}
+
+#[derive(Serialize)]
+struct Value {
+    name: String,
+    value: String,
 }
 
 #[derive(Serialize)]
@@ -51,10 +125,16 @@ struct Pred<'a> {
 }
 
 #[derive(Serialize)]
-struct Step {
+struct Step<'a> {
     depth: usize,
     fact: String,
+    /// The constraint deriving the fact, with what it stands for and where.
     via: Option<String>,
+    obligation: Option<&'a str>,
+    span: Option<Range>,
+    /// The fact's unknown and the arguments the program names, as `fact` shows them.
+    pred: &'a str,
+    args: Vec<Value>,
 }
 
 pub(super) struct Json<'a, 'tcx> {
@@ -62,7 +142,16 @@ pub(super) struct Json<'a, 'tcx> {
     pub(super) items: Items,
     pub(super) names: &'a Names,
     pub(super) solution: Option<Solution>,
-    pub(super) failure: Option<Failure>,
+    /// Each failure, with the number of its part (`THRUST_SPLIT`).
+    pub(super) failures: Vec<(Option<usize>, Failure)>,
+    pub(super) parts: &'a [super::Part],
+    pub(super) verdict: &'a str,
+    pub(super) message: Option<String>,
+    /// Of a whole query without an answer, the functions its clauses come from.
+    pub(super) functions: Option<Vec<super::parts::PartCode>>,
+    /// What `z3`, asked for a run in place of the solver, answered instead, by the number of
+    /// the part, `None` for the whole query.
+    pub(super) z3_answers: Vec<(Option<usize>, String)>,
 }
 
 impl Json<'_, '_> {
@@ -85,11 +174,11 @@ impl Json<'_, '_> {
                 args: &info.args,
             })
             .collect();
-        let solution = self.solution.as_ref();
+        let solution = self.solution.as_ref().filter(|s| s.solves(site));
         Line::Site {
             r#fn: &entry.name,
             site: kind,
-            span: location(self.tcx, site.span),
+            span: range(self.tcx, site.span),
             over: over(site),
             template: match site.kind {
                 SiteKind::Contract => render(&Formula::clone),
@@ -116,35 +205,109 @@ impl Json<'_, '_> {
             r#fn: &entry.name,
             r#loop: header
                 .and_then(|h| entry.body.span(h, None))
-                .map(|span| location(self.tcx, span)),
-            span: c.span.map(|span| location(self.tcx, span)),
+                .map(|span| range(self.tcx, span)),
+            span: c.span.map(|span| range(self.tcx, span)),
             obligation: &c.kind,
-            premises: &c.premises,
+            premises: self.premises(c),
             conclusion: &c.conclusion,
         }
     }
 
-    fn failure<'a>(&self, entries: &'a [Entry<'_>], failure: &Failure) -> Line<'a> {
+    fn failure<'a>(
+        &self,
+        entries: &'a [Entry<'_>],
+        part: Option<usize>,
+        failure: &'a Failure,
+    ) -> Line<'a> {
         let found = constraint_of(entries, failure.goal);
         let run = failure
             .run
             .iter()
-            .map(|step| Step {
-                depth: step.depth,
-                fact: step.fact.clone(),
-                via: step.via.map(|id| format!("{id:?}")),
+            .map(|step| {
+                let via = step.via.and_then(|id| constraint_of(entries, id));
+                Step {
+                    depth: step.depth,
+                    fact: step.fact.clone(),
+                    via: step.via.map(|id| format!("{id:?}")),
+                    obligation: via.map(|(_, c)| c.kind.as_str()),
+                    span: via.and_then(|(_, c)| c.span).map(|s| range(self.tcx, s)),
+                    pred: &step.pred,
+                    args: step
+                        .args
+                        .iter()
+                        .map(|(name, value)| Value {
+                            name: name.clone(),
+                            value: value.clone(),
+                        })
+                        .collect(),
+                }
             })
             .collect();
         Line::Failure {
+            part,
             constraint: format!("{:?}", failure.goal),
             r#fn: found.map(|(e, _)| e.name.as_str()),
             span: found
-                .and_then(|(_, c)| c.span)
-                .map(|s| location(self.tcx, s)),
+                .and_then(|(_, c)| c.error_span)
+                .map(|s| range(self.tcx, s)),
             obligation: found.map(|(_, c)| c.kind.as_str()),
+            premises: found.map(|(_, c)| self.premises(c)),
+            conclusion: found.map(|(_, c)| c.conclusion.as_str()),
             run,
+            run_by_z3: failure.by_z3,
             truncated: failure.truncated,
+            values: found
+                .map(|(_, c)| failure.named_values(c))
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(name, value)| Value { name, value })
+                .collect(),
+            inferred: failure
+                .inferred
+                .iter()
+                .filter_map(|def| entries.iter().find(|e| e.def == *def))
+                .map(|e| e.name.as_str())
+                .collect(),
+            annotation: match found.map(|(_, c)| &c.annotation) {
+                Some(Annotation::Checks(spans)) => {
+                    spans.iter().map(|s| range(self.tcx, *s)).collect()
+                }
+                _ => Vec::new(),
+            },
+            assumes: assumed(self.tcx, entries, failure)
+                .into_iter()
+                .map(|(name, span)| FnSpan {
+                    r#fn: name,
+                    span: range(self.tcx, span),
+                })
+                .collect(),
         }
+    }
+
+    fn premises<'a>(&self, c: &'a Constraint) -> Vec<Premise<'a>> {
+        c.premises
+            .iter()
+            .zip(&c.premise_spans)
+            .map(|(text, span)| Premise {
+                text,
+                span: span.map(|s| range(self.tcx, s)),
+            })
+            .collect()
+    }
+
+    fn z3_answer(&self, part: Option<usize>) -> Option<String> {
+        let found = self.z3_answers.iter().find(|(p, _)| *p == part);
+        found.map(|(_, answer)| answer.clone())
+    }
+
+    fn fn_spans(&self, functions: &[super::parts::PartCode]) -> Vec<FnSpan> {
+        functions
+            .iter()
+            .map(|f| FnSpan {
+                r#fn: f.r#fn.clone(),
+                span: range(self.tcx, f.span),
+            })
+            .collect()
     }
 
     pub(super) fn write(
@@ -153,13 +316,56 @@ impl Json<'_, '_> {
         out: &mut dyn std::io::Write,
     ) -> std::io::Result<()> {
         let mut line = |line: Line<'_>| writeln!(out, "{}", serde_json::to_string(&line)?);
-        if let Some(failure) = self.failure.as_ref().filter(|_| self.items.failure) {
-            line(self.failure(entries, failure))?;
+        line(Line::Report {
+            version: 3,
+            root: std::env::current_dir()
+                .unwrap_or_default()
+                .display()
+                .to_string(),
+            columns: Columns {
+                base: 1,
+                unit: "char",
+                end: "exclusive",
+            },
+        })?;
+        line(Line::Verdict {
+            verdict: self.verdict,
+            refutations: if self.parts.is_empty() {
+                "one per query"
+            } else {
+                "one per part"
+            },
+            message: self.message.clone(),
+            functions: self
+                .functions
+                .as_ref()
+                .map(|functions| self.fn_spans(functions)),
+            z3_answer: self.z3_answer(None),
+        })?;
+        for part in self.parts {
+            line(Line::Part {
+                id: part.id,
+                clauses: part.clauses,
+                functions: self.fn_spans(&part.functions),
+                verdict: part.verdict,
+                message: part.message.as_deref(),
+                cached: part.cached,
+                z3_answer: self.z3_answer(Some(part.id)),
+            })?;
         }
+        for (part, failure) in &self.failures {
+            line(self.failure(entries, *part, failure))?;
+        }
+        // Without a solution, a site has only its template to show, if that was asked for.
+        let shown = |site: &Site| {
+            let solved = self.solution.as_ref().is_some_and(|s| s.solves(site));
+            self.items.template || (solved && (self.items.solution || self.items.inferred))
+        };
         for entry in entries {
             let loop_sites = entry.loops.values().filter_map(|(site, _)| site.as_ref());
             let internal = entry.blocks.iter().filter(|_| self.items.internal);
-            for site in entry.contract.iter().chain(loop_sites).chain(internal) {
+            let entry_sites = entry.contract.iter().chain(loop_sites).chain(internal);
+            for site in entry_sites.filter(|site| shown(site)) {
                 line(self.site(entry, site))?;
             }
             if !self.items.constraints {

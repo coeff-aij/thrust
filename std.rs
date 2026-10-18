@@ -1385,7 +1385,7 @@ fn _extern_spec_result_is_err<T, E>(res: &Result<T, E>) -> bool
 }
 
 #[thrust::extern_spec_fn]
-#[thrust_macros::requires(true)] // TODO: require x != i32::MIN
+#[thrust_macros::requires(x > <i32>::MIN)]
 #[thrust_macros::ensures(result >= 0 && (result == x || result == -x))]
 fn _extern_spec_i32_abs(x: i32) -> i32 {
     i32::abs(x)
@@ -2523,6 +2523,7 @@ where
 macro_rules! range_iterator_spec {
     ($($t:ty)*) => {
         $(
+            #[allow(warnings)]
             #[thrust_macros::context]
             impl IteratorSpec for core::ops::Range<$t> {
                 #[thrust_macros::predicate]
@@ -2902,6 +2903,7 @@ trait PartialOrdSpec: PartialOrd + thrust_models::Model {
 
 macro_rules! int_partial_ord_spec {
     ($T:ty) => {
+        #[allow(warnings)]
         #[thrust_macros::context]
         impl PartialOrdSpec for $T {
             #[thrust_macros::predicate]

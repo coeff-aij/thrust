@@ -231,8 +231,7 @@ pub fn format_sort_symbol(sort: &chc::Sort) -> String {
 /// [`chc::System::populate_user_defined_pred_dependencies`] to substring-match
 /// `ForallPred` references inside user-defined predicate bodies.
 pub fn format_forall_pred_name(p: &chc::ForallPred) -> String {
-    let ss = SortSymbols::new(&p.type_parameters);
-    format!("{}{}", p.inner, ss)
+    format!("{}{}", p.inner(), p.type_arguments())
 }
 
 fn builtin_sort_datatype(s: chc::Sort) -> Option<chc::Datatype> {
@@ -525,6 +524,15 @@ impl FormatContext {
         //         datatypes.push(mono_datatype);
         let mut datatypes = system.datatypes.clone();
         let mut sorts = collect_sorts(system);
+        // A datatype without parameters is declared whether or not a clause applies it, so the
+        // sorts of its selectors are declared too.
+        for datatype in system.datatypes.iter().filter(|d| d.params == 0) {
+            for selector in datatype.selectors() {
+                selector.sort.walk(|sort| {
+                    sorts.insert(sort.clone());
+                });
+            }
+        }
 
         let mut pending: Vec<_> = sorts.clone().into_iter().collect();
         while let Some(sort) = pending.pop() {
