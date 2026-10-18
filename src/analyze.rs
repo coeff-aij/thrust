@@ -374,9 +374,10 @@ fn model_eq_bound<'tcx>(
 
 /// Whether `==` on values of `ty` is equality of their models, decided from the structure of
 /// `ty`. It is not when `ty` holds a `&mut` (its model also has the final value, which `==` does
-/// not read), a float (NaN), a raw or function pointer (compared by address), or a `Ghost`
-/// (which has no `PartialEq`, so a hand-written `eq` of a type holding one leaves it out). A
-/// type parameter or an unresolved projection in `ty` makes it assumed.
+/// not read), a float (NaN), a raw or function pointer (compared by address), a trait object
+/// (opaque, so all of them have one model), or a `Ghost` (which has no `PartialEq`, so a
+/// hand-written `eq` of a type holding one leaves it out). A type parameter or an unresolved
+/// projection in `ty` makes it assumed.
 fn model_eq<'tcx>(tcx: TyCtxt<'tcx>, ty: mir_ty::Ty<'tcx>) -> SpecBound {
     let mut assumed = false;
     for ty in compared_tys(tcx, ty) {
@@ -384,7 +385,8 @@ fn model_eq<'tcx>(tcx: TyCtxt<'tcx>, ty: mir_ty::Ty<'tcx>) -> SpecBound {
             mir_ty::TyKind::Ref(_, _, mir_ty::Mutability::Mut)
             | mir_ty::TyKind::Float(_)
             | mir_ty::TyKind::RawPtr(..)
-            | mir_ty::TyKind::FnPtr(..) => return SpecBound::Fails,
+            | mir_ty::TyKind::FnPtr(..)
+            | mir_ty::TyKind::Dynamic(..) => return SpecBound::Fails,
             mir_ty::TyKind::Adt(adt, _) if is_ghost(tcx, adt.did()) => return SpecBound::Fails,
             mir_ty::TyKind::Param(_) | mir_ty::TyKind::Alias(..) => assumed = true,
             _ => {}

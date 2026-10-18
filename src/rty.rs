@@ -1134,11 +1134,13 @@ pub enum Type<T> {
     BitVec(BitVecType),
     Bool,
     String,
-    /// A raw pointer or a trait object, opaque as in Creusot: its value has the null sort, so
-    /// all values of it have the same model. That is sound only because verified code cannot
-    /// observe one: dereferencing, comparing or casting a raw pointer and calling a method of a
-    /// trait object are not supported. It lets a type hold one in a field, as `fmt::Arguments`
-    /// does, when verified code only passes the value on.
+    /// A raw pointer or a trait object, whose value Thrust does not reason about. It has the null
+    /// sort, so all values of it have the same model; unlike Creusot's opaque `ptr`, whose values
+    /// are not provably equal, two of them are equal here. That is sound only while nothing reads
+    /// the model: dereferencing, comparing and casting a raw pointer and calling a method of a
+    /// trait object are not supported, and `==` on a type holding an opaque value is never
+    /// taken as equality of models (`model_eq`). It lets a type hold one in a field, as
+    /// `fmt::Arguments` does, when verified code only passes the value on.
     Opaque,
     Never,
     Param(ParamType),
