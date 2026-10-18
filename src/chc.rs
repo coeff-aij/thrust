@@ -2719,6 +2719,27 @@ pub struct UserDefinedPredDef {
     pub decreases: Option<Term<TermVarIdx>>,
 }
 
+/// The forall predicates and functions `atoms` apply, as predicates or in their arguments, and in
+/// their guards, as `user_defined_in` reads them.
+fn forall_in<'a, V: 'a>(atoms: impl Iterator<Item = &'a Atom<V>>) -> Vec<&'a ForallPred> {
+    atoms
+        .flat_map(|atom| {
+            let pred = match &atom.pred {
+                Pred::ForallPred(pred) => Some(pred),
+                _ => None,
+            };
+            let in_guard = atom
+                .guard
+                .iter()
+                .flat_map(|guard| forall_in(guard.iter_atoms()));
+            pred.into_iter()
+                .chain(atom.args.iter().flat_map(Term::forall_fns))
+                .chain(in_guard)
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
 /// The user-defined predicates and functions `atoms` apply, as predicates or in their arguments.
 fn user_defined_in<'a, V: 'a>(
     atoms: impl Iterator<Item = &'a Atom<V>>,
@@ -3130,25 +3151,8 @@ impl System {
                     }
                 }
                 UserDefinedPredBody::Formula(formula) => {
-                    // The atoms of the formula and of their guards, as `user_defined_in` reads.
-                    let guards = formula
-                        .iter_atoms()
-                        .filter_map(|atom| atom.guard.as_deref())
-                        .flat_map(Formula::iter_atoms);
                     udpd.dependencies
-                        .extend(formula.iter_atoms().chain(guards).filter_map(|atom| {
-                            match &atom.pred {
-                                Pred::ForallPred(pred) => Some(pred.clone()),
-                                _ => None,
-                            }
-                        }));
-                    udpd.dependencies.extend(
-                        formula
-                            .iter_atoms()
-                            .flat_map(|atom| &atom.args)
-                            .flat_map(Term::forall_fns)
-                            .cloned(),
-                    );
+                        .extend(forall_in(formula.iter_atoms()).into_iter().cloned());
                 }
             }
         }
