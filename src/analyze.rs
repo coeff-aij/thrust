@@ -1879,7 +1879,11 @@ impl<'tcx> Analyzer<'tcx> {
             };
             pending.extend(nested.into_iter().filter_map(|obligation| {
                 let predicate = infcx.resolve_vars_if_possible(obligation.predicate);
-                let trait_ref = predicate.as_trait_clause()?.skip_binder().trait_ref;
+                let pred = predicate.as_trait_clause()?;
+                let trait_ref = self
+                    .tcx
+                    .instantiate_bound_regions_with_erased(pred)
+                    .trait_ref;
                 let trait_ref = self.tcx.erase_regions(trait_ref);
                 (!trait_ref.has_infer()).then_some(trait_ref)
             }));
