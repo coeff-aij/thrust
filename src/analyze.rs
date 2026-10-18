@@ -1293,11 +1293,15 @@ impl<'tcx> Analyzer<'tcx> {
             .reused_and_analyzed_instances()
             .into_iter()
             .filter(|instance| crate_mode(instance.def_id()) == Some(Mode::Verified));
-        let roots = roots.into_iter().chain(verified_instances).chain(
-            generic_roots
-                .into_iter()
-                .flat_map(|def_id| self.concrete_mentions(def_id)),
-        );
+        let roots = roots
+            .into_iter()
+            .chain(self.start_instance())
+            .chain(verified_instances)
+            .chain(
+                generic_roots
+                    .into_iter()
+                    .flat_map(|def_id| self.concrete_mentions(def_id)),
+            );
         for root in roots {
             if parent.insert((root, Mode::Verified), None).is_none() {
                 pending.push_back((root, Mode::Verified));
@@ -1384,23 +1388,32 @@ impl<'tcx> Analyzer<'tcx> {
         let (used, _) = self
             .tcx
             .items_of_instance((instance, CollectionMode::UsedItems));
+        // A static's initializer is followed as a body, for the function pointers it holds.
         let used = used.iter().filter_map(|item| match item.node {
             MonoItem::Fn(callee) => Some(callee),
-            _ => None,
+            MonoItem::Static(def_id) => Some(mir_ty::Instance::mono(self.tcx, def_id)),
+            MonoItem::GlobalAsm(_) => None,
         });
         if mode != Mode::Relied {
             return used.map(|callee| (callee, mode)).collect();
         }
-        let fixed: Vec<_> = match instance.def {
-            mir_ty::InstanceKind::Item(def_id) => self
-                .concrete_mentions(def_id)
-                .into_iter()
-                .map(|fixed| (fixed.def_id(), fixed.args))
-                .collect(),
-            _ => Vec::new(),
+        let key = |callee: mir_ty::Instance<'tcx>| (callee.def_id(), callee.args);
+        let (fixed, dependent): (Vec<_>, Vec<_>) = match instance.def {
+            mir_ty::InstanceKind::Item(def_id) => (
+                self.concrete_mentions(def_id)
+                    .into_iter()
+                    .map(key)
+                    .collect(),
+                self.dependent_mentions(instance)
+                    .into_iter()
+                    .map(key)
+                    .collect(),
+            ),
+            _ => (Vec::new(), Vec::new()),
         };
         used.map(|callee| {
-            let callee_mode = if fixed.contains(&(callee.def_id(), callee.args)) {
+            let only_fixed = fixed.contains(&key(callee)) && !dependent.contains(&key(callee));
+            let callee_mode = if only_fixed {
                 Mode::Trusted
             } else {
                 Mode::Verified
@@ -1408,6 +1421,57 @@ impl<'tcx> Analyzer<'tcx> {
             (callee, callee_mode)
         })
         .collect()
+    }
+
+    /// The calls and drops of `instance`'s generic body that depend on its type parameters,
+    /// resolved at its arguments. One that resolves to the same instance as a parameter-free
+    /// mention makes that instance verified code too.
+    fn dependent_mentions(&self, instance: mir_ty::Instance<'tcx>) -> Vec<mir_ty::Instance<'tcx>> {
+        use mir_ty::TypeVisitableExt as _;
+        use rustc_middle::mir::MentionedItem;
+
+        let typing_env = mir_ty::TypingEnv::fully_monomorphized();
+        let body = self.tcx.optimized_mir(instance.def_id());
+        body.mentioned_items()
+            .iter()
+            .filter_map(|item| {
+                let (MentionedItem::Fn(ty) | MentionedItem::Drop(ty)) = item.node else {
+                    return None;
+                };
+                if !ty.has_param() {
+                    return None;
+                }
+                let ty = instance.instantiate_mir_and_normalize_erasing_regions(
+                    self.tcx,
+                    typing_env,
+                    mir_ty::EarlyBinder::bind(ty),
+                );
+                if let MentionedItem::Drop(_) = item.node {
+                    return Some(mir_ty::Instance::resolve_drop_in_place(self.tcx, ty));
+                }
+                let mir_ty::FnDef(callee, args) = *ty.kind() else {
+                    return None;
+                };
+                mir_ty::Instance::try_resolve(self.tcx, typing_env, callee, args)
+                    .ok()
+                    .flatten()
+            })
+            .collect()
+    }
+
+    /// The `start` lang item at `main`'s return type, which runs `main` and reports what it
+    /// returns (`Termination::report`, which prints an `Err` with `Debug`), as rustc's collector
+    /// roots it.
+    fn start_instance(&self) -> Option<mir_ty::Instance<'tcx>> {
+        let (main, _) = self.tcx.entry_fn(())?;
+        let start = self.tcx.lang_items().start_fn()?;
+        let ret = self.tcx.fn_sig(main).instantiate_identity().output();
+        let ret = self.tcx.instantiate_bound_regions_with_erased(ret);
+        let args = self.tcx.mk_args(&[ret.into()]);
+        let typing_env = mir_ty::TypingEnv::fully_monomorphized();
+        mir_ty::Instance::try_resolve(self.tcx, typing_env, start, args)
+            .ok()
+            .flatten()
     }
 
     /// The instances of generic defs that Thrust analyzed, or whose contract it reused, at
