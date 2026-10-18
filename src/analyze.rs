@@ -1244,10 +1244,46 @@ impl<'tcx> Analyzer<'tcx> {
     }
 
     /// Whether `def_id` is an ignored function of the crate with no contract of its own, so that
-    /// a call of it has no checked type. A `#[thrust::trusted]` impl method with a contract is
-    /// ignored too, and has that contract.
+    /// a call of it has no checked type. A `#[thrust::trusted]` function with a contract is
+    /// ignored too, and has that contract, given by an extern-spec wrapper.
     pub fn is_unchecked_crate_fn(&self, def_id: DefId) -> bool {
-        is_ignored_crate_fn(self.tcx, def_id) && !self.has_own_impl_contract(def_id)
+        is_ignored_crate_fn(self.tcx, def_id)
+            && !self.has_own_impl_contract(def_id)
+            && !self.defs.contains_key(&def_id)
+    }
+
+    /// Stops if the program runs an ignored function of the crate, as Verus's
+    /// `#[verifier::external]` items may not be used by verified code. An ignored function is
+    /// invisible to the analysis, so a contract that the verified code relies on and that the
+    /// function would have to meet (the trait's specification for `S::eq` that `<&S as
+    /// PartialEq>::eq` or `vec![x; n]` takes) is not checked. The program's monomorphic
+    /// instances, which rustc's collector finds from `main` (or a library's public items)
+    /// through every call, trait method, vtable and std function, decide what runs. An instance
+    /// reached only on a path to a panic counts too, which the collector cannot tell apart.
+    pub fn check_ignored_not_run(&self) {
+        use rustc_middle::mir::mono::MonoItem;
+
+        let mono = self.tcx.collect_and_partition_mono_items(());
+        let mut run: Vec<_> = mono
+            .codegen_units
+            .iter()
+            .flat_map(|cgu| cgu.items().keys())
+            .filter_map(|item| match item {
+                MonoItem::Fn(instance) => Some(*instance),
+                _ => None,
+            })
+            .filter(|instance| self.is_unchecked_crate_fn(instance.def_id()))
+            .map(|instance| instance.to_string())
+            .collect();
+        run.sort();
+        run.dedup();
+        let Some(first) = run.first() else {
+            return;
+        };
+        self.tcx.dcx().fatal(format!(
+            "`{first}` is `#[thrust::ignored]`, so a call of it has no checked type, but the \
+             program runs it"
+        ));
     }
 
     pub fn impl_methods_with_own_contract(&self) -> Vec<DefId> {
@@ -1769,9 +1805,6 @@ impl<'tcx> Analyzer<'tcx> {
                 else {
                     return false;
                 };
-                if this.is_unchecked_crate_fn(instance.def_id()) {
-                    fatal_ignored_call(this.tcx, instance.def_id(), instance.args);
-                }
                 if !instance.def_id().is_local()
                     || !matches!(this.defs.get(&instance.def_id()), Some(DefTy::Generic(_)))
                 {
@@ -1788,15 +1821,16 @@ impl<'tcx> Analyzer<'tcx> {
         );
     }
 
-    /// Checks that `bounds`, which a call of a std function or a trusted derive in `owner_fn_id`
-    /// relies on, select no impl of the crate with an ignored function, and records for
-    /// `owner_fn_id` those at its type parameters. A std function's specification, the trait's
-    /// or its own, holds only where the impls its trait bounds select meet their traits'
-    /// specifications (`<&S as PartialEq>::eq` runs `S::eq`, `vec![x; n]` runs `x.clone()`), and
-    /// an ignored body is not checked against them. Each bound is followed through the nested
-    /// obligations of the impl that trait selection picks for it, a std impl's, a crate impl's
-    /// or a builtin one (the `Clone` of a tuple); a bound at a type parameter is checked at each
-    /// instance that reuses the contract of the body ([`Self::check_reused_bound_impls`]).
+    /// Follows `bounds`, which a call of a std function or a trusted derive in `owner_fn_id`
+    /// relies on, to the crate impls they select, whose methods at the selected arguments become
+    /// reused instances ([`Self::reuse_impl_methods`]), and records for `owner_fn_id` the bounds
+    /// at its type parameters. A std function's specification, the trait's or its own, holds
+    /// only where the impls its trait bounds select meet their traits' specifications
+    /// (`Option<W<F>>::clone` runs `W::clone`), which a generic impl method's analysis assumed of
+    /// its own parameters. Each bound is followed through the nested obligations of the impl that
+    /// trait selection picks for it, a std impl's, a crate impl's or a builtin one (the `Clone` of
+    /// a tuple); a bound at a type parameter is followed at each instance that reuses the
+    /// contract of the body ([`Self::check_reused_bound_impls`]).
     pub fn check_bound_impls(
         &self,
         owner_fn_id: DefId,
@@ -1826,7 +1860,6 @@ impl<'tcx> Analyzer<'tcx> {
             let nested = match selcx.select(&obligation) {
                 Ok(Some(ImplSource::UserDefined(data))) => {
                     if data.impl_def_id.is_local() {
-                        self.check_impl_not_ignored(data.impl_def_id);
                         let args = self
                             .tcx
                             .erase_regions(infcx.resolve_vars_if_possible(data.args));
@@ -1884,20 +1917,6 @@ impl<'tcx> Analyzer<'tcx> {
             }
         }
         grew
-    }
-
-    /// Stops at an ignored function of the crate's impl `impl_def_id`.
-    fn check_impl_not_ignored(&self, impl_def_id: DefId) {
-        let ignored = self
-            .tcx
-            .associated_item_def_ids(impl_def_id)
-            .iter()
-            .copied()
-            .find(|def_id| self.is_unchecked_crate_fn(*def_id));
-        if let Some(def_id) = ignored {
-            let identity = mir_ty::GenericArgs::identity_for_item(self.tcx, def_id);
-            fatal_ignored_call(self.tcx, def_id, identity);
-        }
     }
 
     fn record_assumed_bound_impl(&self, owner_fn_id: DefId, bound: mir_ty::TraitRef<'tcx>) -> bool {
