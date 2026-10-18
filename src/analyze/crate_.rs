@@ -107,6 +107,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     keys.swap_remove(local_def_id);
                 }
             }
+            if analyzer.is_annotated_as_ignored() && analyzer.has_contract_annotation() {
+                self.tcx.dcx().span_err(
+                    self.tcx.def_span(*local_def_id),
+                    "`#[thrust::ignored]` cannot have a contract: an ignored function is invisible \
+                     to Thrust and must not run; to trust a contract without checking the body, \
+                     write `#[thrust::trusted]`",
+                );
+            }
             if analyzer.is_annotated_as_ignored() || analyzer.is_ignored_derive() {
                 self.skip_analysis.insert(*local_def_id);
                 keys.swap_remove(local_def_id);

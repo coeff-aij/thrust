@@ -243,6 +243,19 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         analyze::is_ignored(self.tcx, self.local_def_id.to_def_id())
     }
 
+    /// Whether the def carries a contract: `#[thrust::callable]`, or the `requires`/`ensures`
+    /// paths the specification macros attach.
+    pub fn has_contract_annotation(&self) -> bool {
+        let def_id = self.local_def_id.to_def_id();
+        [
+            analyze::annot::callable_path(),
+            analyze::annot::requires_path_path(),
+            analyze::annot::ensures_path_path(),
+        ]
+        .iter()
+        .any(|path| self.tcx.get_attrs_by_path(def_id, path).next().is_some())
+    }
+
     pub fn is_ignored_derive(&self) -> bool {
         analyze::derive::is_ignored(self.tcx, self.local_def_id.to_def_id())
     }
