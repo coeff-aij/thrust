@@ -516,10 +516,10 @@ pub(crate) enum Comments {
 }
 
 impl Comments {
-    /// The level the current log configuration asks for on this thread. What
-    /// `tracing::enabled!` answers on a thread other than the one the subscriber was set up on
-    /// varies between runs, so the level is decided once, on the main thread, by
-    /// [`chc::Config::from_env`], and passed to [`System::with_comments`].
+    /// The level the current log configuration asks for. What `tracing::enabled!` answers on the
+    /// worker threads of [`chc::in_parallel`] varies between runs, so the level is decided once,
+    /// on the main thread, by [`chc::Config::from_env`], and passed to
+    /// [`System::with_comments`].
     pub(crate) fn from_log_level() -> Self {
         if tracing::enabled!(tracing::Level::DEBUG) {
             Comments::Full

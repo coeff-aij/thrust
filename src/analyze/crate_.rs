@@ -410,7 +410,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 self.body_checks.record(
                     *local_def_id,
                     analyze::BodyCheck::NotAnalyzed(
-                        "a law, checked at each impl that inherits it, and none does",
+                        "a law, checked at the impls that inherit it, and none was",
                     ),
                 );
                 continue;

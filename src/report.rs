@@ -484,9 +484,10 @@ pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) -> Vec<Refuted>
         .filter(|_| config.items.failure)
         .map(|(answer, symbols)| (answer, failure::read(answer, &names, symbols)))
         .collect();
-    let functions = match config.items.functions {
-        true => functions::functions(tcx, config, &input, verdict),
-        false => Vec::new(),
+    let functions = if config.items.functions {
+        functions::functions(tcx, config, &input, verdict)
+    } else {
+        Vec::new()
     };
     let refuted_at: Vec<Option<Span>> = (0..input.answers.len())
         .map(|i| {

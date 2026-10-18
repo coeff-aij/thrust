@@ -15,7 +15,11 @@ fn cargo_check_in(
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/cargo")
         .join(fixture);
-    Command::new(env!("CARGO"))
+    let mut command = Command::new(env!("CARGO"));
+    for (var, _) in std::env::vars().filter(|(var, _)| var.starts_with("THRUST_")) {
+        command.env_remove(var);
+    }
+    command
         .args(["check", "--offline", "--locked"])
         .args(args)
         .arg("--manifest-path")
@@ -26,7 +30,6 @@ fn cargo_check_in(
         .env_remove("CARGO_ENCODED_RUSTFLAGS")
         .env_remove("RUSTC_WRAPPER")
         .env_remove("RUSTC_WORKSPACE_WRAPPER")
-        .env_remove("THRUST_OUTPUT_DIR")
         .envs(envs.iter().copied())
         .output()
         .unwrap()
@@ -82,17 +85,17 @@ fn fresh(output: &Output) -> Vec<bool> {
 fn cargo_check_keeps_verified_crates_fresh() {
     let target_dir = tempfile::tempdir().unwrap();
     let first = check_workspace(target_dir.path(), &[]);
-    let stderr = String::from_utf8_lossy(&first.stdout);
-    assert!(first.status.success(), "{stderr}");
-    assert_eq!(fresh(&first), [false, false], "{stderr}");
+    let messages = String::from_utf8_lossy(&first.stdout);
+    assert!(first.status.success(), "{messages}");
+    assert_eq!(fresh(&first), [false, false], "{messages}");
 
     let second = check_workspace(target_dir.path(), &[]);
-    let stderr = String::from_utf8_lossy(&second.stdout);
-    assert!(second.status.success(), "{stderr}");
-    assert_eq!(fresh(&second), [true, true], "{stderr}");
+    let messages = String::from_utf8_lossy(&second.stdout);
+    assert!(second.status.success(), "{messages}");
+    assert_eq!(fresh(&second), [true, true], "{messages}");
 
     let changed = check_workspace(target_dir.path(), &[("THRUST_SOLVER_TIMEOUT_SECS", "31")]);
-    let stderr = String::from_utf8_lossy(&changed.stdout);
-    assert!(changed.status.success(), "{stderr}");
-    assert_eq!(fresh(&changed), [false, false], "{stderr}");
+    let messages = String::from_utf8_lossy(&changed.stdout);
+    assert!(changed.status.success(), "{messages}");
+    assert_eq!(fresh(&changed), [false, false], "{messages}");
 }

@@ -67,12 +67,11 @@ fn function(
         .iter()
         .filter(|p| p.functions.iter().any(|f| f.def == def))
         .collect();
-    let verdict = match split {
-        true => {
-            let verdicts: Vec<&'static str> = in_parts.iter().map(|p| p.verdict).collect();
-            parts::crate_verdict(&verdicts)
-        }
-        false => verdict,
+    let verdicts: Vec<&'static str> = in_parts.iter().map(|p| p.verdict).collect();
+    let verdict = if split {
+        parts::crate_verdict(&verdicts)
+    } else {
+        verdict
     };
     Function {
         name: tcx.def_path_str(def.to_def_id()),
