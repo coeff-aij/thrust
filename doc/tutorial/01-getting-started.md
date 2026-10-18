@@ -41,8 +41,9 @@ Thrust needs a CHC solver. Two are used:
 
 - z3 (the default, `THRUST_SOLVER` unset): fast, on your `PATH`. It cannot read the parts of a
   query that sequences, quantified functions and generic code produce, and on the loop of
-  [chapter 3](03-loops.md) whose invariant needs a product it times out. Only z3 gives the report its solutions and
-  counterexamples ([chapter 7](07-reading-a-failure.md)).
+  [chapter 3](03-loops.md) whose invariant needs a product it times out. Only z3 gives the report its solutions;
+  the counterexamples of a query PCSat refutes come from z3 as well, when it can read that query
+  ([chapter 7](07-reading-a-failure.md)).
 - PCSat, from [CoAR](https://github.com/hiroshi-unno/coar): needed for `Vec`, slices, iterators,
   predicates over generic types and laws. Thrust runs it in Docker through
   [tests/thrust-pcsat-wrapper](../../tests/thrust-pcsat-wrapper). Build an image from CoAR's

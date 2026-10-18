@@ -32,5 +32,5 @@ express, and a reader runs them with the same command the text shows.
 tutorial shows; `check.sh -n` lists the runs without making them, and `THRUST_RUSTC` names the
 `thrust-rustc` binary to run (default: the debug build of this checkout).
 
-The outputs were taken on fork branch `incremental` at 170fdd2c, with z3 4.15.2 and PCSat built
-from fptprove f7ddc51c0.
+The outputs were taken on fork main 58df7914 (with the tutorial merged in), with z3 4.15.2 and
+PCSat built from fptprove develop 9dc5c6d3b.

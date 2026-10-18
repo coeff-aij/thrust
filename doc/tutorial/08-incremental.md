@@ -141,34 +141,27 @@ Each run here takes under a second; the cache matters when a part takes the solv
 
 ## With PCSat
 
-The same session with PCSat gives the same parts and verdicts, without refutations: each error is
-at the signature of the first function of its part, with the other functions' signatures
-labelled. Set `THRUST_CACHE_SALT` to the image's id, so that a new solver build does not reuse
-the old one's verdicts:
+The same session with PCSat gives the same parts and verdicts. PCSat gives no refutation, so z3
+refutes each failing part in its place where it can read the query, as here, and the notes say
+so (chapter 7). Where it cannot, each error is at the signature of the first function of its
+part, with the other functions' signatures labelled. Set `THRUST_CACHE_SALT` to the image's id,
+so that a new solver build does not reuse the old one's verdicts:
 
 ```console
 $ export THRUST_SOLVER=$THRUST/tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60
 $ export THRUST_CACHE_SALT=$(docker image inspect --format '{{.Id}}' "$COAR_IMAGE")
 $ cp 08_shop_2.rs shop.rs; thrust shop.rs        # after a run on 08_shop_1.rs
-note: thrust: no failing obligation to show: the solver gave no refutation (only `z3` is asked for one)
-
-error: verification error: Unsat
+error: verification error: Unsat (thrust: refuted: ensures in `shipping`)
  --> shop.rs:9:1
-  |
-9 | fn shipping(n: i64) -> i64 {
-  | ^^^^^^^^^^^^^^^^^^^^^^^^^^
-  |
+...
+  = note: where it fails: cost = 3, n = 0, i = 1
+  = note: how `z3` (asked for the run, as the solver gives none) reaches it: each fact follows, by the constraint in brackets, from the facts indented under it (a derivation, not an order of execution):
+...
   = note: in part 2 of 3, of 4 clauses from `shipping` (shop.rs:9-17)
 
-error: verification error: Unsat
-  --> shop.rs:19:1
-   |
-19 | fn price(units: i64) -> i64 {
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+error: verification error: Unsat (thrust: refuted: assertion in `main`)
+  --> shop.rs:29:5
 ...
-27 | fn main() {
-   | --------- `main` is in this part too
-   |
    = note: in part 3 of 3, of 16 clauses from `price` (shop.rs:19-25), `main` (shop.rs:27-33)
 
 note: thrust: 3 parts solved on their own, 2 of them from earlier runs; solved now: part 1 from `withdraw` (shop.rs:3-5)

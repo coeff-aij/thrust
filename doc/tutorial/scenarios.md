@@ -27,8 +27,8 @@ those runs. Each refuted obligation is itself the error,
 | 7 | wrong branch returning `&mut` | [s07](examples/scenarios/s07_wrong_branch_mut.rs) | z3 | `ensures in take_max`, `*a = -1, °a = 2, *b = 0, °b = 0` | `*a >= *b` |
 | 8 | contract too weak for a caller | [s08](examples/scenarios/s08_contract_too_weak.rs) | z3 | `assertion in main`, `abs#1 = 6`, assumes the written contract of `abs` | add `ensures(result == x \|\| result == -x)` |
 | 9 | impl breaks the trait's contract | [s09](examples/scenarios/s09_impl_breaks_trait.rs) | z3 | `ensures in <Meter as Double>::double`, the trait's `ensures` labelled | `self.m += self.m` |
-| 10 | law not provable at an impl | [s10](examples/scenarios/s10_law_fails_at_impl.rs) | PCSat | no refutation; the error at `<Clicks as Counter>::count_nonneg` | model and `count` over `UInt` |
-| 11 | wrong assertion in a `for` over a range | [s11](examples/scenarios/s11_for_range_bound.rs) | PCSat | no refutation; the error at `last_index`, part of `last_index`, `main` | `assert!(i < n)` |
+| 10 | law not provable at an impl | [s10](examples/scenarios/s10_law_fails_at_impl.rs) | PCSat | `ensures in <Clicks as Counter>::count_nonneg`, refuted by z3: `c = (-1,)` | model and `count` over `UInt` |
+| 11 | wrong assertion in a `for` over a range | [s11](examples/scenarios/s11_for_range_bound.rs) | PCSat | no refutation (z3 cannot read the query); the error at `last_index`, part of `last_index`, `main` | `assert!(i < n)` |
 | 12 | invariant not found in time | [s12](examples/scenarios/s12_timeout_needs_invariant.rs) | PCSat | `Timeout(60s)` at `sum_capped` | write the `for` invariant |
 
 ## 1. Wrong arithmetic
@@ -109,15 +109,15 @@ error: verification error: Unsat (thrust: refuted: assertion in `main`)
 `invariant!(.. 2 * s == i * (i + 1))` for `i * (i - 1)`. The whole query shows the
 `loop preservation` failure ([chapter 3](03-loops.md)). Split, the written invariant cuts
 `sum_below` into three parts, and two fail: the `ensures` is refuted too, with the invariant's
-variables shown as `__tmp_chc_c1_4` and `__tmp_chc_c1_2`. Each part note gives the lines its
+variables shown by their names, `i` and `n`. Each part note gives the lines its
 clauses were made at (13, the return; 6-11, the loop), and a last note says why one function is
 in several parts.
 
 ```
 error: verification error: Unsat (thrust: refuted: ensures in `sum_below`)
 ...
-  = note: c1: (__tmp_chc_c1_4 = __tmp_chc_c1_2 ∧ 0 <= __tmp_chc_c1_4 ∧ 2 * result = __tmp_chc_c1_4 * (__tmp_chc_c1_4 + 1)) ==> 2 * result = __tmp_chc_c1_2 * (__tmp_chc_c1_2 - 1)
-  = note: where it fails: result = 1
+  = note: c1: (i = n ∧ 0 <= i ∧ 2 * result = i * (i + 1)) ==> 2 * result = n * (n - 1)
+  = note: where it fails: result = 1, n = 1, i = 1
   = note: in part 2 of 4, of 1 clause from `sum_below` (s05_invariant_not_preserved.rs:3-13, made at 13)
 error: verification error: Unsat (thrust: refuted: loop preservation in `sum_below`)
 ...
@@ -134,8 +134,8 @@ points at the same line.
 
 ```
 error: verification error: Unsat (thrust: refuted: ensures in `swap`)
-  = note: c0: (t = *__tmp_mir_swap_5 ∧ swap.bb0(*a ← *__tmp_mir_swap_5, °a ← __tmp_mir_swap_4, *b ← __tmp_mir_swap_4, °b ← __tmp_mir_swap_4, *old(a), °old(a), *old(b), °old(b))) ==> (°old(a) = *old(b) ∧ °old(b) = *old(a))
-  = note: where it fails: t = 0, __tmp_mir_swap_4 = 1, *__tmp_mir_swap_5 = 0, *old(a) = 0, °old(a) = 1, *old(b) = 1, °old(b) = 1, result = ()
+  = note: c0: (t = *__tmp_mir_swap_5 ∧ swap.bb0(*a ← *__tmp_mir_swap_5, °a, *b ← °a, °b ← °a, *old(a), °old(a), *old(b), °old(b))) ==> (°old(a) = *old(b) ∧ °old(b) = *old(a))
+  = note: where it fails: t = 0, °a = 1, *__tmp_mir_swap_5 = 0, *old(a) = 0, °old(a) = 1, *old(b) = 1, °old(b) = 1
 ```
 
 ## 7. Wrong branch returning `&mut`
@@ -155,10 +155,10 @@ error: verification error: Unsat (thrust: refuted: ensures in `take_max`)
 3 | fn take_max<'a>(a: &'a mut i64, b: &'a mut i64) -> &'a mut i64 {
   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 ...
-  = note: where it fails: °__tmp_mir_take_max_3 = 2, *__tmp_mir_take_max_7 = -1, *a = -1, °a = 2, *b = 0, °b = 0
+  = note: where it fails: °result = 2, *result = -1, *a = -1, °a = 2, *b = 0, °b = 0
 ```
 
-`*a = -1 < *b = 0`, yet the result is `a` (its current value `*__tmp_mir_take_max_7 = -1`).
+`*a = -1 < *b = 0`, yet the result is `a` (its current value `*result = -1`).
 
 ## 8. Contract too weak for a caller
 
@@ -190,38 +190,42 @@ error: verification error: Unsat (thrust: refuted: ensures in `<Meter as Double>
 26 |     fn double(&mut self) {
    |     ^^^^^^^^^^^^^^^^^^^^
    |
-   = note: c0: (<Meter as Double>::double.bb0(*self ← (*__tmp_mir_Meter_as_Double_double_2, ), °self, *old(self), °old(self)) ∧ (*self).0 = *__tmp_mir_Meter_as_Double_double_2 + 2 ∧ °self = ((*self).0, )) ==> <Meter as Double>::is_double(*old(self), °old(self))
-   = note: where it fails: °self = (3, ), *__tmp_mir_Meter_as_Double_double_2 = 1, *old(self) = (1, ), °old(self) = (3, ), (*self).0 = 3, result = ()
+   = note: c0: (<Meter as Double>::double.bb0(*self ← (*__tmp_mir_Meter_as_Double_double_2,), °self, *old(self), °old(self)) ∧ (*self).0 = *__tmp_mir_Meter_as_Double_double_2 + 2 ∧ °self = ((*self).0,)) ==> <Meter as Double>::is_double(*old(self), °old(self))
+   = note: where it fails: °self = (3,), *__tmp_mir_Meter_as_Double_double_2 = 1, *old(self) = (1,), °old(self) = (3,), (*self).0 = 3
 ```
 
 ## 10. A law not provable at an impl
 
 The `Counter` of [chapter 5](05-traits-and-generics.md) with `count` returning `Int` over a model
-`(Int,)`: the law `count(*c) >= 0` has nothing to stand on. PCSat only (z3 cannot read the query),
-so there is no refutation; the error is at the law's impl, and the part names it.
+`(Int,)`: the law `count(*c) >= 0` has nothing to stand on. z3 cannot read the whole query, so it
+is solved with PCSat; z3 can read the part PCSat refutes, and gives the refutation
+the report shows, a negative count. The error is at the law's impl, and the part names it.
 
 ```
-note: thrust: no failing obligation to show: the solver gave no refutation (only `z3` is asked for one)
-
-error: verification error: Unsat
+error: verification error: Unsat (thrust: refuted: ensures in `<Clicks as Counter>::count_nonneg`)
   --> s10_law_fails_at_impl.rs:41:5
    |
+10 |     #[thrust_macros::ensures(Self::count(*c) >= 0)]
+   |                              -------------------- the annotation it checks
+...
 41 |     fn count_nonneg(c: &Clicks) {}
    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
    |
+   = note: c4: <Clicks as Counter>::count_nonneg.bb0(c, old(c) ← c) ==> <Clicks as Counter>::count(c) >= 0
+   = note: where it fails: c = (-1,)
+   = note: how `z3` (asked for the run, as the solver gives none) reaches it: ...
+             <Clicks as Counter>::count_nonneg.bb0(c = (-1,), old(c) = (-1,))   [c5 function entry, s10_law_fails_at_impl.rs:41:5]
    = note: in part 2 of 4, of 2 clauses from `<Clicks as Counter>::count_nonneg` (s10_law_fails_at_impl.rs:41)
 ```
 
-With `THRUST_REPORT=failure,constraints THRUST_REPORT_ONLY='Clicks::count_nonneg'` the same run
-shows the obligation ([chapter 7](07-reading-a-failure.md)).
-
 ## 11. A wrong assertion in a `for` over a range
 
-`for i in 0..n { assert!(i < n - 1); .. }`. PCSat only. The error is at the first function of the
-part, and the other function of the part is labelled.
+`for i in 0..n { assert!(i < n - 1); .. }`. PCSat only, and z3 cannot read the query of the
+part either, so there is no refutation. The error is at the first function of the part, and the
+other function of the part is labelled.
 
 ```
-note: thrust: no failing obligation to show: the solver gave no refutation (only `z3` is asked for one)
+note: thrust: no failing obligation to show for part 1: the solver gives no refutation, and `z3`, asked in its place, does not read the query (it has forall sorts or sequences)
 
 error: verification error: Unsat
   --> s11_for_range_bound.rs:1:1

@@ -3,7 +3,8 @@
 `verification error: Unsat` says that something fails, not what. With `THRUST_REPORT=1` the
 error is the obligation the solver refuted, at its code, with notes giving the values where it
 fails and the run that reaches it; on success, notes show the contracts and loop invariants Thrust
-inferred. The failure and the inferred contracts need z3, the default solver.
+inferred. The inferred contracts need z3, the default solver; a failure needs z3 to refute it,
+which it does also for a query PCSat refutes, when z3 can read the query ([With PCSat](#with-pcsat)).
 
 The program of this chapter and the next, [examples/08_shop_1.rs](examples/08_shop_1.rs), has
 three bugs:
@@ -227,13 +228,13 @@ The full list is in [Reading what Thrust infers](../../README.md#reading-what-th
 ## JSON, for tools and agents
 
 `THRUST_REPORT_FORMAT=json` writes the same report as JSON lines to `THRUST_REPORT_FILE` (default
-standard output). The first line is a header: the format `version` (2), `root`, the absolute
+standard output). The first line is a header: the format `version` (3), `root`, the absolute
 directory the spans' files are relative to, and `columns`, how a span's columns count
 (`{"base":1,"unit":"char","end":"exclusive"}`: from 1, in characters, `end_column` after the
 last). The second is the verdict, with the solver's `message` when the answer is neither `sat` nor
 `unsat` (such as `Timeout(30s)`, or with `THRUST_SPLIT` the first such part's, `part 2:
-Timeout(30s)`); then, with `THRUST_SPLIT`, one `part` line per part, with its own `message`, and
-one `failure` line per refuted obligation (or, on success, a `site` line per inferred contract and
+Timeout(30s)`); then, with `THRUST_SPLIT`, one `part` line per part, with its own `message` and `z3_answer`,
+and one `failure` line per refuted obligation (or, on success, a `site` line per inferred contract and
 loop invariant).
 
 ```console
@@ -241,8 +242,8 @@ $ THRUST_SPLIT=4 THRUST_REPORT=1 THRUST_REPORT_FORMAT=json THRUST_REPORT_FILE=re
 error: verification error: Unsat
 ...
 $ sed -n 2,3p report.jsonl
-{"kind":"verdict","verdict":"unsat","refutations":"one per part","message":null}
-{"kind":"part","id":1,"clauses":2,"functions":[{"fn":"withdraw","span":{"file":"shop.rs","line":3,"column":1,"end_line":5,"end_column":2}}],"verdict":"unsat","message":null,"cached":false}
+{"kind":"verdict","verdict":"unsat","refutations":"one per part","message":null,"functions":null,"z3_answer":null}
+{"kind":"part","id":1,"clauses":2,"functions":[{"fn":"withdraw","span":{"file":"shop.rs","line":3,"column":1,"end_line":5,"end_column":2}}],"verdict":"unsat","message":null,"cached":false,"z3_answer":null}
 $ jq -c 'select(.kind == "failure" and .fn == "main") | {part, obligation, span, conclusion, values, inferred, assumes}' report.jsonl
 {"part":3,"obligation":"assertion","span":{"file":"shop.rs","line":29,"column":5,"end_line":29,"end_column":21},"conclusion":"p = 90","values":[{"name":"p","value":"100"}],"inferred":["price"],"assumes":[]}
 ```
@@ -265,20 +266,41 @@ the refutation's text.
 
 ## With PCSat
 
-PCSat gives verdicts but no refutation or model yet, so the report says:
+PCSat gives verdicts but no refutation or model. For a query or a part it refutes, Thrust asks
+z3 for the refutation instead, when z3 can read the query (no forall sorts or sequences), and the
+report says so: the run's note reads `how `z3` (asked for the run, as the solver gives none)
+reaches it`. A query z3 cannot read gets a note in place of the failure:
 
 ```console
-note: thrust: no failing obligation to show: the solver gave no refutation (only `z3` is asked for one)
+note: thrust: no failing obligation to show for part 1: the solver gives no refutation, and `z3`, asked in its place, does not read the query (it has forall sorts or sequences)
 ```
 
-`THRUST_SPLIT` still names the functions of each failing part, with their lines, and puts the
-error at the signature of the part's first function; with `constraints` in `THRUST_REPORT` and
-`THRUST_REPORT_ONLY`, the same run shows the constraints of those functions. For the law of
-[scenario 10](scenarios.md), the constraints of the impl show the obligation the law puts on it:
+and the error is the verdict at the signature of the part's first function, with the lines of
+each function of the part (this is the case of [scenario 11](scenarios.md)). In JSON, the
+`verdict` line (without `THRUST_SPLIT`) or a `part` line gives what z3 answered as `z3_answer`,
+and a verdict line with no answer lists the `functions` of its query. Inferred contracts and
+loop invariants still need z3 as the solver.
+
+For the law of [scenario 10](scenarios.md), z3 reads the query, so the failure is shown; the
+constraints of the impl, selected with `THRUST_REPORT_ONLY`, show the obligation the law puts
+on it:
 
 ```console
 $ THRUST_SPLIT=4 THRUST_REPORT=failure,constraints THRUST_REPORT_ONLY='Clicks::count_nonneg' thrust s10_law_fails_at_impl.rs
-note: thrust: no failing obligation to show: the solver gave no refutation (only `z3` is asked for one)
+error: verification error: Unsat (thrust: refuted: ensures in `<Clicks as Counter>::count_nonneg`)
+  --> s10_law_fails_at_impl.rs:41:5
+   |
+10 |     #[thrust_macros::ensures(Self::count(*c) >= 0)]
+   |                              -------------------- the annotation it checks
+...
+41 |     fn count_nonneg(c: &Clicks) {}
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: c4: <Clicks as Counter>::count_nonneg.bb0(c, old(c) ← c) ==> <Clicks as Counter>::count(c) >= 0
+   = note: where it fails: c = (-1,)
+   = note: how `z3` (asked for the run, as the solver gives none) reaches it: each fact follows, by the constraint in brackets, from the facts indented under it (a derivation, not an order of execution):
+             <Clicks as Counter>::count_nonneg.bb0(c = (-1,), old(c) = (-1,))   [c5 function entry, s10_law_fails_at_impl.rs:41:5]
+   = note: in part 2 of 4, of 2 clauses from `<Clicks as Counter>::count_nonneg` (s10_law_fails_at_impl.rs:41)
 
 note: thrust: `<Clicks as Counter>::count_nonneg`
   --> s10_law_fails_at_impl.rs:41:5
@@ -290,14 +312,6 @@ note: thrust: `<Clicks as Counter>::count_nonneg`
              c4 ensures (s10_law_fails_at_impl.rs:10:30): <Clicks as Counter>::count_nonneg.bb0(c, old(c) ← c) ==> <Clicks as Counter>::count(c) >= 0
              c5 function entry (s10_law_fails_at_impl.rs:41:5): <Clicks as Counter>::count_nonneg.bb0(c, old(c) ← c)
 
-error: verification error: Unsat
-  --> s10_law_fails_at_impl.rs:41:5
-   |
-41 |     fn count_nonneg(c: &Clicks) {}
-   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
-   |
-   = note: in part 2 of 4, of 2 clauses from `<Clicks as Counter>::count_nonneg` (s10_law_fails_at_impl.rs:41)
-
 note: thrust: 4 parts solved on their own, 0 of them from earlier runs
 
 error: aborting due to 1 previous error
@@ -305,4 +319,4 @@ error: aborting due to 1 previous error
 
 The impl's proof has an empty body, so its `ensures` constraint points at the law's `ensures` in
 the trait (line 10). Nothing in the premises bounds `<Clicks as Counter>::count(c)`, so the law's
-`ensures` cannot hold for every `c`.
+`ensures` cannot hold for every `c`: the counterexample is a negative count, `c = (-1,)`.

@@ -109,8 +109,8 @@ error: verification error: Unsat (thrust: refuted: ensures in `swap`)
 2 | fn swap(a: &mut i64, b: &mut i64) {
   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   |
-  = note: c0: (t = *__tmp_mir_swap_5 ∧ swap.bb0(*a ← *__tmp_mir_swap_5, °a ← __tmp_mir_swap_4, *b ← __tmp_mir_swap_4, °b ← __tmp_mir_swap_4, *old(a), °old(a), *old(b), °old(b))) ==> (°old(a) = *old(b) ∧ °old(b) = *old(a))
-  = note: where it fails: t = 0, __tmp_mir_swap_4 = 1, *__tmp_mir_swap_5 = 0, *old(a) = 0, °old(a) = 1, *old(b) = 1, °old(b) = 1, result = ()
+  = note: c0: (t = *__tmp_mir_swap_5 ∧ swap.bb0(*a ← *__tmp_mir_swap_5, °a, *b ← °a, °b ← °a, *old(a), °old(a), *old(b), °old(b))) ==> (°old(a) = *old(b) ∧ °old(b) = *old(a))
+  = note: where it fails: t = 0, °a = 1, *__tmp_mir_swap_5 = 0, *old(a) = 0, °old(a) = 1, *old(b) = 1, °old(b) = 1
   = note: how the solver reaches it: each fact follows, by the constraint in brackets, from the facts indented under it (a derivation, not an order of execution):
             swap.bb0(*a = 0, °a = 1, *b = 1, °b = 1, *old(a) = 0, °old(a) = 1, *old(b) = 1, °old(b) = 1)   [c1 function entry, s06_missing_write.rs:2:1]
   = note: the solver refutes one obligation of a query: others may fail too (`THRUST_SPLIT` refutes one in each part)
