@@ -1,7 +1,7 @@
 //! The parts of a system solved on their own (`THRUST_SPLIT`) as the output names them: each
 //! by its number and the code its clauses come from, with its verdict.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 use rustc_middle::ty::TyCtxt;
 use rustc_span::def_id::LocalDefId;
@@ -48,8 +48,7 @@ pub fn crate_verdict(verdicts: &[&'static str]) -> &'static str {
         .unwrap_or("sat")
 }
 
-/// A function some clauses of a part come from, and the code they were made at, from the first
-/// to the last.
+/// A function some clauses of a part come from, with the span of the whole function.
 pub struct PartCode {
     pub r#fn: String,
     pub span: Span,
@@ -96,22 +95,21 @@ impl Part {
     }
 }
 
-/// The functions the clauses `ids` come from, each with the code its clauses were made at.
+/// The functions the clauses `ids` come from, each with its whole span.
 fn code(tcx: TyCtxt<'_>, system: &chc::System, ids: &[chc::ClauseId]) -> Vec<PartCode> {
-    let mut spans: HashMap<LocalDefId, Span> = HashMap::new();
-    for &id in ids {
-        let provenance = Provenance::of(&system.clauses[id].debug_info);
-        let (Some(def), Some(span)) = (provenance.def, provenance.span(tcx)) else {
-            continue;
-        };
-        let all = spans.entry(def).or_insert(span);
-        *all = all.to(span);
-    }
-    let mut code: Vec<PartCode> = spans
+    let mut defs: Vec<LocalDefId> = ids
+        .iter()
+        .filter_map(|&id| Provenance::of(&system.clauses[id].debug_info).def)
+        .collect();
+    defs.sort_unstable_by_key(|def| def.local_def_index);
+    defs.dedup();
+    let mut code: Vec<PartCode> = defs
         .into_iter()
-        .map(|(def, span)| PartCode {
+        .map(|def| PartCode {
             r#fn: tcx.def_path_str(def.to_def_id()),
-            span,
+            span: tcx
+                .hir_span_with_body(tcx.local_def_id_to_hir_id(def))
+                .source_callsite(),
             head: tcx.def_span(def.to_def_id()).source_callsite(),
         })
         .collect();

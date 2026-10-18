@@ -79,7 +79,7 @@ fn a_function_in_two_parts_is_explained() {
     // Parts are numbered from 1.
     assert!(stderr.contains("in part 1 of 2, of "), "{stderr}");
     assert!(
-        stderr.contains("invariant_parts.rs:1-6), `main` ("),
+        stderr.contains("invariant_parts.rs:1-8), `main` (tests/split/invariant_parts.rs:10-12)"),
         "{stderr}"
     );
     assert!(
