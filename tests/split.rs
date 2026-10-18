@@ -426,3 +426,21 @@ fn the_parts_of_one_function_tell_apart() {
     assert_eq!(made_at.len(), 2, "{stderr}");
     assert_ne!(made_at[0], made_at[1], "{stderr}");
 }
+
+/// Where a refuted constraint still reads variables the program does not name (those of a
+/// written invariant at the loop's exit), their values are shown too.
+#[test]
+fn unnamed_variables_a_constraint_reads_have_values() {
+    let output = run_with(
+        "invariant_not_preserved.rs",
+        Some("4"),
+        &[("THRUST_REPORT", "failure")],
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let exit = stderr
+        .lines()
+        .filter(|l| l.contains("where it fails:"))
+        .find(|l| l.contains("result = "))
+        .unwrap_or_default();
+    assert!(exit.contains("__tmp_chc_"), "{stderr}");
+}

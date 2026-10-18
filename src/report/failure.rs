@@ -42,11 +42,13 @@ pub struct Failure {
 }
 
 impl Failure {
-    /// The values where the goal fails of the variables of `goal` the program names, once each.
+    /// The values where the goal fails of the variables of `goal` the program names, and of those
+    /// it does not name that its formula still reads, once each.
     pub fn named_values(&self, goal: &super::constraints::Constraint) -> Vec<(String, String)> {
         let mut shown: Vec<(String, String)> = Vec::new();
         for (name, value) in goal.vars.iter().zip(&self.values) {
-            if name.starts_with("__tmp_chc_") {
+            // A variable the program does not name is shown where the constraint still reads it.
+            if name.starts_with("__tmp_chc_") && !goal.formula.contains(name.as_str()) {
                 continue;
             }
             for (name, value) in named(name, value) {
