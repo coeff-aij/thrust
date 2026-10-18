@@ -1261,9 +1261,10 @@ where
     }
 
     /// `part` of `parent`, given a flow binding when the environment holds it as a plain
-    /// variable of a `&mut` or `Box` type, so that a borrow can go through it. Such a value is
-    /// the prophecy of a borrow that `parent` was assigned through (`r = &mut b` for a mutable
-    /// local `r`); the fresh binding is equal to it and takes its place in `parent`.
+    /// variable of a `&mut` or `Box` type, so that a borrow can go through it: the prophecy of a
+    /// borrow that `parent` was assigned through (`r = &mut b` for a mutable local `r`), or a
+    /// pointer bound past the enum expansion depth. The fresh binding is equal to it and takes
+    /// its place in `parent`.
     fn flow_part(&mut self, parent: Var, part: TempVarIdx) -> TempVarIdx {
         if self.flow_binding(part.into()).is_some() {
             return part;

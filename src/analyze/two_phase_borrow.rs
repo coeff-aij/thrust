@@ -1,63 +1,61 @@
-//! Moves each two-phase mutable borrow to its activation.
+//! Creates each two-phase mutable borrow at its activation, as Creusot does.
 //!
-//! A two-phase borrow `_t = &mut place` (an autoref'd method receiver, an overloaded compound
-//! assignment) only reserves `place`: until `_t` is first used, `place` may still be read, as
-//! in `c.set(c.get() + 1)`. Thrust replaces a borrowed place by the borrow's prophecy when the
-//! borrow is created, so a read in between would see the prophecy instead of the value. Creating
-//! the borrow at the activation, as Creusot does, gives those reads the value at the reservation:
-//! the borrow checker allows no write to `place` before the activation.
-//!
-//! The activation is the unique use of `_t` after the reservation, found as rustc's `BorrowSet`
-//! finds it. When the code between the two reads the local `place` starts from, the reservation
-//! is moved right before the activation, into the same block; otherwise the move would change
-//! nothing and the borrow stays. A borrow that is never activated is removed. The borrow checker
-//! does allow a write to a pointer that `place` goes through, as in
-//! `p.0.set({ p = &mut b; p.0.get() })`, which would make the moved borrow name another place;
-//! such a borrow is not supported.
+//! A two-phase borrow `_t = &mut place` (an autoref'd receiver) only reserves `place` until `_t`
+//! is used, and code in between may read `place`, as in `c.set(c.get() + 1)`. Thrust replaces
+//! a borrowed place by the borrow's prophecy where the borrow is created, so the borrow is moved
+//! right before the activation, the unique use of `_t`, when the code in between reads the
+//! lender (the local `place` starts from). `InstSimplify` turns a reborrow `&mut *p` into
+//! `copy p`, which Thrust reborrows as well; such a copy into a local used once is moved the same
+//! way. When a pointer `place` goes through is overwritten before the activation
+//! (`p.0.set({ p = &mut b; 5 })`), the borrow is created before the first such write instead.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use rustc_middle::mir::{
     self, visit::PlaceContext, BasicBlock, Body, Local, Location, Place, PlaceElem, PlaceRef,
 };
+use rustc_middle::ty::{self as mir_ty, TyCtxt};
 
 struct Reservation<'tcx> {
     location: Location,
     temp: Local,
     place: Place<'tcx>,
+    /// A reborrow that `InstSimplify` turned into `copy p`: it may not be two-phase at all, and
+    /// it is moved only when its temporary has one use.
+    copied: bool,
 }
 
-struct UseCollector<'tcx> {
-    reservations: Vec<Reservation<'tcx>>,
-    uses: Vec<Vec<Location>>,
+/// The borrow statement at `from` moves before `to`, or is removed when there is no `to`.
+struct Move {
+    from: Location,
+    to: Option<Location>,
 }
 
-impl<'tcx> mir::visit::Visitor<'tcx> for UseCollector<'tcx> {
-    fn visit_local(&mut self, local: Local, context: PlaceContext, location: Location) {
-        if !context.is_use() {
-            return;
-        }
-        for (reservation, uses) in self.reservations.iter().zip(self.uses.iter_mut()) {
-            if reservation.temp == local && reservation.location != location {
-                uses.push(location);
-            }
-        }
-    }
+pub fn move_to_activation<'tcx>(tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
+    let moves = plan(body, reservations(tcx, body));
+    apply(body, moves);
 }
 
-fn reservations<'tcx>(body: &Body<'tcx>) -> Vec<Reservation<'tcx>> {
+fn reservations<'tcx>(tcx: TyCtxt<'tcx>, body: &Body<'tcx>) -> Vec<Reservation<'tcx>> {
     let mut reservations = Vec::new();
     for (block, data) in body.basic_blocks.iter_enumerated() {
         for (statement_index, stmt) in data.statements.iter().enumerate() {
-            let Some((lhs, mir::Rvalue::Ref(_, kind, place))) = stmt.kind.as_assign() else {
+            let Some((lhs, rvalue)) = stmt.kind.as_assign() else {
                 continue;
             };
-            if !kind.allows_two_phase_borrow() {
+            let (place, copied) = match rvalue {
+                mir::Rvalue::Ref(_, kind, place) if kind.allows_two_phase_borrow() => {
+                    (*place, false)
+                }
+                mir::Rvalue::Use(mir::Operand::Copy(p)) if is_mut_ref(tcx, body, p) => {
+                    (tcx.mk_place_deref(*p), true)
+                }
+                _ => continue,
+            };
+            let Some(temp) = lhs.as_local() else {
+                assert!(copied, "two-phase borrow must assign to a local");
                 continue;
-            }
-            let temp = lhs
-                .as_local()
-                .expect("two-phase borrow must assign to a local");
+            };
             let location = Location {
                 block,
                 statement_index,
@@ -65,75 +63,164 @@ fn reservations<'tcx>(body: &Body<'tcx>) -> Vec<Reservation<'tcx>> {
             reservations.push(Reservation {
                 location,
                 temp,
-                place: *place,
+                place,
+                copied,
             });
         }
     }
     reservations
 }
 
-/// The activation of each reservation, `None` when the borrow is never used.
-fn activations<'tcx>(
-    body: &Body<'tcx>,
-    reservations: Vec<Reservation<'tcx>>,
-) -> Vec<(Reservation<'tcx>, Option<Location>)> {
-    use mir::visit::Visitor as _;
-    let uses = reservations.iter().map(|_| Vec::new()).collect();
-    let mut collector = UseCollector { reservations, uses };
-    collector.visit_body(body);
-    collector
-        .reservations
-        .into_iter()
-        .zip(collector.uses)
-        .map(|(reservation, uses)| {
-            assert!(
-                uses.len() <= 1,
-                "two-phase borrow temporary {:?} used more than once: {:?}",
-                reservation.temp,
-                uses
-            );
-            let activation = uses.first().copied();
-            (reservation, activation)
-        })
-        .collect()
+fn is_mut_ref<'tcx>(tcx: TyCtxt<'tcx>, body: &Body<'tcx>, place: &Place<'tcx>) -> bool {
+    matches!(
+        place.ty(body, tcx).ty.kind(),
+        mir_ty::TyKind::Ref(_, _, mir_ty::Mutability::Mut)
+    )
 }
 
-pub fn move_to_activation(body: &mut Body<'_>) {
+fn plan<'tcx>(body: &Body<'tcx>, reservations: Vec<Reservation<'tcx>>) -> Vec<Move> {
+    let uses = temp_uses(body, &reservations);
     let mut moves = Vec::new();
-    for (reservation, activation) in activations(body, reservations(body)) {
-        let Some(activation) = activation else {
-            moves.push((reservation.location, None));
+    for reservation in reservations {
+        let uses = &uses[&reservation.temp];
+        if reservation.copied && uses.len() != 1 {
+            continue;
+        }
+        let Some(activation) = activation(body, &reservation, uses) else {
+            moves.push(Move {
+                from: reservation.location,
+                to: None,
+            });
             continue;
         };
         let between = Between::visit(body, &reservation, activation);
         if !between.reads_lender {
             continue;
         }
+        let to = creation_point(body, &between.address_writes, activation).unwrap_or_else(|| {
+            unimplemented!(
+                "two-phase borrow of {:?}: the pointers it goes through are overwritten on several paths",
+                reservation.place
+            )
+        });
         assert!(
-            !between.writes_address,
-            "two-phase borrow of {:?}: a pointer it goes through is written before its activation",
+            !reads_at(body, reservation.place.local, to),
+            "two-phase borrow of {:?}: its lender is read where it is created",
             reservation.place
         );
-        moves.push((reservation.location, Some(activation)));
+        moves.push(Move {
+            from: reservation.location,
+            to: Some(to),
+        });
     }
+    moves
+}
+
+fn apply(body: &mut Body<'_>, moves: Vec<Move>) {
     let blocks = body.basic_blocks.as_mut_preserves_cfg();
     let mut inserts = Vec::new();
-    for (reservation, activation) in moves {
-        let stmt = &mut blocks[reservation.block].statements[reservation.statement_index];
+    for Move { from, to } in moves {
+        let stmt = &mut blocks[from.block].statements[from.statement_index];
         let moved = stmt.clone();
         stmt.make_nop();
-        if let Some(activation) = activation {
-            inserts.push((activation, moved));
+        if let Some(to) = to {
+            inserts.push((to, moved));
         }
     }
     // Inserting from the last location down keeps the earlier indices valid; the stable sort
-    // keeps borrows activated at one location in reservation order.
+    // keeps borrows created at one location in reservation order.
     inserts.sort_by_key(|(location, _)| (location.block, location.statement_index));
     for (location, stmt) in inserts.into_iter().rev() {
         blocks[location.block]
             .statements
             .insert(location.statement_index, stmt);
     }
+}
+
+/// The locations using each reservation's temporary, the reservation excluded.
+fn temp_uses(body: &Body<'_>, reservations: &[Reservation<'_>]) -> HashMap<Local, Vec<Location>> {
+    use mir::visit::Visitor as _;
+    struct UseCollector<'a> {
+        reservations: HashMap<Local, Vec<Location>>,
+        uses: &'a mut HashMap<Local, Vec<Location>>,
+    }
+    impl<'tcx> mir::visit::Visitor<'tcx> for UseCollector<'_> {
+        fn visit_local(&mut self, local: Local, context: PlaceContext, location: Location) {
+            let Some(reserved_at) = self.reservations.get(&local) else {
+                return;
+            };
+            if !context.is_use() || reserved_at.contains(&location) {
+                return;
+            }
+            let uses = self.uses.entry(local).or_default();
+            if !uses.contains(&location) {
+                uses.push(location);
+            }
+        }
+    }
+    let mut reserved_at: HashMap<Local, Vec<Location>> = HashMap::new();
+    for reservation in reservations {
+        reserved_at
+            .entry(reservation.temp)
+            .or_default()
+            .push(reservation.location);
+    }
+    let mut uses: HashMap<Local, Vec<Location>> =
+        reserved_at.keys().map(|&temp| (temp, Vec::new())).collect();
+    // A temporary assigned by two copies counts the other copy as a use.
+    for (&temp, locations) in &reserved_at {
+        if locations.len() > 1 {
+            uses.get_mut(&temp).unwrap().extend(locations);
+        }
+    }
+    UseCollector {
+        reservations: reserved_at,
+        uses: &mut uses,
+    }
+    .visit_body(body);
+    uses
+}
+
+/// The use of a two-phase borrow's temporary that dominates its other uses; rustc's `BorrowSet`
+/// finds the only one before optimization.
+fn activation(
+    body: &Body<'_>,
+    reservation: &Reservation<'_>,
+    uses: &[Location],
+) -> Option<Location> {
+    let dominators = body.basic_blocks.dominators();
+    let first = uses
+        .iter()
+        .copied()
+        .find(|first| uses.iter().all(|other| first.dominates(*other, dominators)));
+    assert!(
+        uses.is_empty() || first.is_some(),
+        "two-phase borrow temporary {:?} used on several paths: {:?}",
+        reservation.temp,
+        uses
+    );
+    first
+}
+
+/// Where the moved borrow is created: before the first overwrite of a pointer the borrowed place
+/// goes through, so that the place still names the reserved one, or at the activation when there
+/// is none. The first overwrite must come before the others and the activation.
+fn creation_point(
+    body: &Body<'_>,
+    address_writes: &[Location],
+    activation: Location,
+) -> Option<Location> {
+    if address_writes.is_empty() {
+        return Some(activation);
+    }
+    let dominators = body.basic_blocks.dominators();
+    let dominates_rest = |first: &Location| {
+        address_writes
+            .iter()
+            .chain([&activation])
+            .all(|other| first.dominates(*other, dominators))
+    };
+    address_writes.iter().copied().find(dominates_rest)
 }
 
 /// The places whose value decides which place `place` names: each pointer it dereferences and
@@ -154,30 +241,23 @@ fn address_places<'tcx>(place: Place<'tcx>) -> Vec<PlaceRef<'tcx>> {
 }
 
 /// What the code on a path from a reservation to its activation does with the borrowed place.
-/// Moving the borrow matters only when that code reads the lender, the local the place starts
-/// from.
 struct Between<'tcx> {
     lender: Local,
     address_places: Vec<PlaceRef<'tcx>>,
     reads_lender: bool,
-    writes_address: bool,
+    address_writes: Vec<Location>,
 }
 
 impl<'tcx> Between<'tcx> {
     fn visit(body: &Body<'tcx>, reservation: &Reservation<'tcx>, activation: Location) -> Self {
-        use mir::visit::Visitor as _;
         let mut between = Between {
             lender: reservation.place.local,
             address_places: address_places(reservation.place),
             reads_lender: false,
-            writes_address: false,
+            address_writes: Vec::new(),
         };
         for location in locations_between(body, reservation.location, activation) {
-            let data = &body.basic_blocks[location.block];
-            match data.statements.get(location.statement_index) {
-                Some(stmt) => between.visit_statement(stmt, location),
-                None => between.visit_terminator(data.terminator(), location),
-            }
+            visit_location(body, &mut between, location);
         }
         between
     }
@@ -185,16 +265,52 @@ impl<'tcx> Between<'tcx> {
 
 impl<'tcx> mir::visit::Visitor<'tcx> for Between<'tcx> {
     fn visit_place(&mut self, place: &Place<'tcx>, context: PlaceContext, location: Location) {
-        if matches!(context, PlaceContext::NonMutatingUse(_)) && place.local == self.lender {
-            self.reads_lender = true;
-        }
         let is_prefix = |address: &PlaceRef<'tcx>| {
             place.local == address.local && address.projection.starts_with(place.projection)
         };
         if context.is_mutating_use() && self.address_places.iter().any(is_prefix) {
-            self.writes_address = true;
+            self.address_writes.push(location);
         }
         self.super_place(place, context, location);
+    }
+
+    fn visit_local(&mut self, local: Local, context: PlaceContext, _location: Location) {
+        if local == self.lender && matches!(context, PlaceContext::NonMutatingUse(_)) {
+            self.reads_lender = true;
+        }
+    }
+}
+
+/// Whether the statement or terminator at `location` reads `lender`.
+fn reads_at(body: &Body<'_>, lender: Local, location: Location) -> bool {
+    struct Reader {
+        lender: Local,
+        reads: bool,
+    }
+    impl<'tcx> mir::visit::Visitor<'tcx> for Reader {
+        fn visit_local(&mut self, local: Local, context: PlaceContext, _location: Location) {
+            if local == self.lender && matches!(context, PlaceContext::NonMutatingUse(_)) {
+                self.reads = true;
+            }
+        }
+    }
+    let mut reader = Reader {
+        lender,
+        reads: false,
+    };
+    visit_location(body, &mut reader, location);
+    reader.reads
+}
+
+fn visit_location<'tcx>(
+    body: &Body<'tcx>,
+    visitor: &mut impl mir::visit::Visitor<'tcx>,
+    location: Location,
+) {
+    let data = &body.basic_blocks[location.block];
+    match data.statements.get(location.statement_index) {
+        Some(stmt) => visitor.visit_statement(stmt, location),
+        None => visitor.visit_terminator(data.terminator(), location),
     }
 }
 
