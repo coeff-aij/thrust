@@ -138,7 +138,9 @@ error: aborting due to 3 previous errors
   written contract, the note names it: `it assumes the written contract of `abs` (...): a wrong
   `ensures` there shows here` ([scenario 8](scenarios.md)).
 - Each error ends with its part: its number (from 1), its size, and the functions its clauses
-  come from, each with the lines from its signature to its closing brace.
+  come from, each with the lines from its signature to its closing brace. A function whose clauses
+  fall into several parts also gets the lines its clauses in this part were made at, as
+  `(s05_invariant_not_preserved.rs:3-13, made at 6-11)` in [scenario 5](scenarios.md).
 
 ## Inferred contracts
 
@@ -245,7 +247,8 @@ $ jq -c 'select(.kind == "failure" and .fn == "main") | {part, obligation, span,
 {"part":3,"obligation":"assertion","span":{"file":"shop.rs","line":29,"column":5,"end_line":29,"end_column":21},"conclusion":"p = 90","values":[{"name":"p","value":"100"}],"inferred":["price"],"assumes":[]}
 ```
 
-A span is a range. A `failure` also has its `premises`, its `annotation` (the spans of the
+A span is a range; a `failure`'s is the human error's, so a refuted `ensures` is at the
+signature there too. A `failure` also has its `premises`, its `annotation` (the spans of the
 annotation it checks), and its `run`; `inferred` lists the functions left to inference that the
 run goes through, `assumes` the written contracts it relies on. Each step of the run has its
 `depth`, the `fact` as the human report prints it, the unknown (`pred`) and the values of the
@@ -284,7 +287,7 @@ note: thrust: `<Clicks as Counter>::count_nonneg`
    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
    |
    = note: constraints from this code:
-             c4 ensures (s10_law_fails_at_impl.rs:41:34): <Clicks as Counter>::count_nonneg.bb0(c, old(c) ← c) ==> <Clicks as Counter>::count(c) >= 0
+             c4 ensures (s10_law_fails_at_impl.rs:10:30): <Clicks as Counter>::count_nonneg.bb0(c, old(c) ← c) ==> <Clicks as Counter>::count(c) >= 0
              c5 function entry (s10_law_fails_at_impl.rs:41:5): <Clicks as Counter>::count_nonneg.bb0(c, old(c) ← c)
 
 error: verification error: Unsat
@@ -300,5 +303,6 @@ note: thrust: 4 parts solved on their own, 0 of them from earlier runs
 error: aborting due to 1 previous error
 ```
 
-Nothing in the premises bounds `<Clicks as Counter>::count(c)`, so the law's `ensures` cannot
-hold for every `c`.
+The impl's proof has an empty body, so its `ensures` constraint points at the law's `ensures` in
+the trait (line 10). Nothing in the premises bounds `<Clicks as Counter>::count(c)`, so the law's
+`ensures` cannot hold for every `c`.

@@ -109,19 +109,20 @@ error: verification error: Unsat (thrust: refuted: assertion in `main`)
 `invariant!(.. 2 * s == i * (i + 1))` for `i * (i - 1)`. The whole query shows the
 `loop preservation` failure ([chapter 3](03-loops.md)). Split, the written invariant cuts
 `sum_below` into three parts, and two fail: the `ensures` is refuted too, with the invariant's
-variables shown as `__tmp_chc_c1_4` and `__tmp_chc_c1_2`, and a note says why one function is in
-several parts.
+variables shown as `__tmp_chc_c1_4` and `__tmp_chc_c1_2`. Each part note gives the lines its
+clauses were made at (13, the return; 6-11, the loop), and a last note says why one function is
+in several parts.
 
 ```
 error: verification error: Unsat (thrust: refuted: ensures in `sum_below`)
 ...
   = note: c1: (__tmp_chc_c1_4 = __tmp_chc_c1_2 ∧ 0 <= __tmp_chc_c1_4 ∧ 2 * result = __tmp_chc_c1_4 * (__tmp_chc_c1_4 + 1)) ==> 2 * result = __tmp_chc_c1_2 * (__tmp_chc_c1_2 - 1)
   = note: where it fails: result = 1
-  = note: in part 2 of 4, of 1 clause from `sum_below` (s05_invariant_not_preserved.rs:3-13)
+  = note: in part 2 of 4, of 1 clause from `sum_below` (s05_invariant_not_preserved.rs:3-13, made at 13)
 error: verification error: Unsat (thrust: refuted: loop preservation in `sum_below`)
 ...
    = note: where it fails: n = 1, __tmp_mir_sum_below_7 = 0, *__tmp_mir_sum_below_8 = 0, s = 0, i = 1
-   = note: in part 3 of 4, of 1 clause from `sum_below` (s05_invariant_not_preserved.rs:3-13)
+   = note: in part 3 of 4, of 1 clause from `sum_below` (s05_invariant_not_preserved.rs:3-13, made at 6-11)
 note: thrust: 4 parts solved on their own, 0 of them from earlier runs
 note: thrust: a function can be in several parts: `sum_below` in 3. Its clauses fall apart where they share no unknown, as on the two sides of a written annotation (a contract, an `invariant!`, a refined type), and a clause with no unknown is a part of its own
 ```
