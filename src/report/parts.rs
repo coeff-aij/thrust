@@ -43,6 +43,8 @@ pub fn crate_verdict(verdicts: &[&'static str]) -> &'static str {
 pub struct PartCode {
     pub r#fn: String,
     pub span: Span,
+    /// The function's signature, where an error names it.
+    pub head: Span,
 }
 
 impl Part {
@@ -99,6 +101,7 @@ fn code(tcx: TyCtxt<'_>, system: &chc::System, ids: &[chc::ClauseId]) -> Vec<Par
         .map(|(def, span)| PartCode {
             r#fn: tcx.def_path_str(def.to_def_id()),
             span,
+            head: tcx.def_span(def.to_def_id()).source_callsite(),
         })
         .collect();
     code.sort_by_key(|c| c.span.lo());

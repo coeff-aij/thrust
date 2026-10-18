@@ -2727,12 +2727,12 @@ impl<'tcx> Analyzer<'tcx> {
             };
             // Without a refutation, the error is at the code of the part: its first function,
             // the others labelled.
-            let code = summary.functions.first().map(|f| f.span);
+            let code = summary.functions.first().map(|f| f.head);
             let mut diag =
                 self.verification_error(&system.part(&part.clauses), err, refuted.or(code));
             if refuted.is_none() {
                 for f in summary.functions.iter().skip(1) {
-                    diag.span_label(f.span, format!("`{}` is in this part too", f.r#fn));
+                    diag.span_label(f.head, format!("`{}` is in this part too", f.r#fn));
                 }
             }
             diag.with_note(summary.error_note(self.tcx, parts.len()))
