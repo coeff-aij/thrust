@@ -204,7 +204,7 @@ fn g(x: i32) -> i32 {
 
 Refinements may be nested inside generic arguments and reference types, e.g. `Box<{ v: i64 | v > 0 }>` or `&mut { v: i32 | v >= 0 }`.
 
-A refinement on any parameter makes the precondition written, as `requires` does: it is the conjunction of the parameter refinements, a parameter without one is unconstrained, and the body is checked under it whether or not any function calls it. A parameter's refinement may refer only to the parameters before it.
+A refinement on any parameter makes the precondition written, as `requires` does: it is the conjunction of the parameter refinements, a parameter without one is unconstrained, and the body is checked under it whether or not any function calls it. A parameter's refinement may refer only to the parameters before it. `param`, `ret` and `sig` cannot be combined with `requires` or `ensures` on one function.
 
 ### Loop invariants
 
