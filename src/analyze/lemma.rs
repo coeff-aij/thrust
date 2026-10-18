@@ -33,6 +33,7 @@ pub fn check_lemmas(tcx: TyCtxt<'_>, proof_branch: Option<DefId>) {
             checker.is_lemma(def_id.to_def_id()) || checker.is_law_proof(def_id.to_def_id())
         })
         .collect();
+    checker.check_impl_lemmas();
     let mut calls = HashMap::new();
     for &lemma in &lemmas {
         // A law is run where it is called, and a call analyzed as any other, so it may take a
@@ -41,9 +42,19 @@ pub fn check_lemmas(tcx: TyCtxt<'_>, proof_branch: Option<DefId>) {
             checker.check_signature(lemma);
         }
         checker.check_safe(lemma);
-        calls.insert(lemma, checker.lemma_calls(lemma));
+        calls.insert(lemma, checker.proof_calls(lemma));
     }
     checker.check_acyclic(&lemmas, &calls);
+    checker.check_law_uses(&lemmas, &calls);
+}
+
+/// Whether `def_id` is a lemma or a law's proof, whose contract is assumed where it does not run.
+pub fn is_proof(tcx: TyCtxt<'_>, def_id: DefId) -> bool {
+    let checker = Checker {
+        tcx,
+        proof_branch: None,
+    };
+    checker.is_lemma(def_id) || checker.is_lemma_rec(def_id) || checker.is_law_proof(def_id)
 }
 
 /// Checks the `proof!` branches of the functions whose bodies the analysis reads
@@ -73,6 +84,24 @@ struct Checker<'tcx> {
     proof_branch: Option<DefId>,
 }
 
+/// A call a lemma or a law's proof makes, at generic arguments in the caller's own parameters.
+#[derive(Clone, Copy)]
+struct Call<'tcx> {
+    def_id: DefId,
+    args: mir_ty::GenericArgsRef<'tcx>,
+    span: rustc_span::Span,
+}
+
+/// The calls a proof rests on: the lemmas it calls, other than itself under its variant, and
+/// the laws it calls at a type parameter.
+#[derive(Default)]
+struct ProofCalls<'tcx> {
+    lemmas: Vec<Call<'tcx>>,
+    laws: Vec<Call<'tcx>>,
+}
+
+type Calls<'tcx> = HashMap<LocalDefId, ProofCalls<'tcx>>;
+
 impl<'tcx> Checker<'tcx> {
     fn has_attr(&self, def_id: DefId, path: &[rustc_span::Symbol]) -> bool {
         self.tcx.get_attrs_by_path(def_id, path).next().is_some()
@@ -100,14 +129,16 @@ impl<'tcx> Checker<'tcx> {
                 .is_some_and(|trait_item| self.is_law(trait_item))
     }
 
-    /// Whether a call of `def_id` at `args` uses a law at another type than the one being proved:
-    /// a type parameter other than `Self`, as a generic impl's proof uses the laws of the types it
-    /// wraps. A law used at `Self` or at a concrete type could be the one being proved.
+    /// Whether a call of `def_id` at `args` is of a law at a type parameter other than `Self`,
+    /// whose proof is another impl's or, in a law's proof, has to be (see
+    /// [`Self::check_law_uses`]). A law used at `Self` or at a concrete type could be the one
+    /// being proved.
     fn is_law_at_type_param(&self, def_id: DefId, args: mir_ty::GenericArgsRef<'tcx>) -> bool {
-        self.is_law(def_id)
-            && args.types().next().is_some_and(|ty| {
-                matches!(ty.kind(), mir_ty::Param(param) if param.name != rustc_span::symbol::kw::SelfUpper)
-            })
+        if !self.is_law(def_id) {
+            return false;
+        }
+        let ty = args.type_at(0);
+        matches!(ty.kind(), mir_ty::Param(param) if param.name != rustc_span::symbol::kw::SelfUpper)
     }
 
     /// The types a value of `ty` is made of: the types `ty` names and, through the fields of
@@ -177,14 +208,13 @@ impl<'tcx> Checker<'tcx> {
         let model_operation = def_id
             .as_local()
             .is_some_and(|local| analyze::is_injected_std(self.tcx, local))
-            && (self.has_attr(def_id, &analyze::annot::ignored_path())
-                || Some(def_id) == self.proof_branch);
+            && (analyze::is_ignored(self.tcx, def_id) || Some(def_id) == self.proof_branch);
         spec.iter().any(|path| self.has_attr(def_id, path)) || model_operation
     }
 
-    /// The lemmas `lemma` calls, other than itself under its variant, after checking that it
-    /// calls nothing else that could fail to terminate.
-    fn lemma_calls(&self, lemma: LocalDefId) -> Vec<(LocalDefId, rustc_span::Span)> {
+    /// The lemmas and the laws `lemma` calls, after checking that it calls nothing else that
+    /// could fail to terminate.
+    fn proof_calls(&self, lemma: LocalDefId) -> ProofCalls<'tcx> {
         let body = self.tcx.optimized_mir(lemma);
         let dcx = self.tcx.dcx();
         if rustc_data_structures::graph::is_cyclic(&body.basic_blocks) {
@@ -193,7 +223,7 @@ impl<'tcx> Checker<'tcx> {
                 "a lemma or a law's proof cannot contain a loop",
             );
         }
-        let mut lemmas = Vec::new();
+        let mut calls = ProofCalls::default();
         for data in body.basic_blocks.iter() {
             let terminator = data.terminator();
             match &terminator.kind {
@@ -202,64 +232,69 @@ impl<'tcx> Checker<'tcx> {
                     args,
                     fn_span,
                     ..
-                } => {
-                    if let Some(callee) = self.lemma_callee(lemma, body, func, args, *fn_span) {
-                        lemmas.push((callee, *fn_span));
-                    }
-                }
+                } => self.add_call(&mut calls, lemma, body, func, args, *fn_span),
                 TerminatorKind::Drop { place, .. } => {
                     self.check_drop(place.ty(body, self.tcx).ty, terminator.source_info.span)
                 }
                 _ => {}
             }
         }
-        lemmas
+        calls
     }
 
-    /// The lemma a call in `lemma` makes, other than to itself under its variant, after checking
-    /// that the callee is one a lemma may call.
-    fn lemma_callee(
+    /// Adds a call in `lemma` to `calls`, after checking that the callee is one a lemma may
+    /// call.
+    fn add_call(
         &self,
+        calls: &mut ProofCalls<'tcx>,
         lemma: LocalDefId,
         body: &mir::Body<'tcx>,
         func: &mir::Operand<'tcx>,
         call_args: &[rustc_span::source_map::Spanned<mir::Operand<'tcx>>],
         span: rustc_span::Span,
-    ) -> Option<LocalDefId> {
+    ) {
         let dcx = self.tcx.dcx();
-        let callee = func.const_fn_def().map(|(def_id, _)| def_id);
-        if callee.is_some_and(|def_id| self.is_ghost_fn(def_id)) {
-            return None;
-        }
-        if func
-            .const_fn_def()
-            .is_some_and(|(def_id, args)| self.is_law_at_type_param(def_id, args))
-        {
-            return None;
-        }
-        let Some(local) = callee
-            .filter(|def_id| self.is_lemma(*def_id) || self.is_lemma_rec(*def_id))
-            .and_then(DefId::as_local)
-        else {
-            dcx.span_err(
-                span,
-                "a lemma or a law's proof calls only lemmas, logic functions, predicates, model operations and laws at a type parameter",
-            );
-            return None;
+        let Some((def_id, args)) = func.const_fn_def() else {
+            dcx.span_err(span, CALLEE_ERROR);
+            return;
         };
-        if self.is_lemma(local.to_def_id()) {
+        if self.is_ghost_fn(def_id) {
+            return;
+        }
+        if self.is_law_at_type_param(def_id, args) {
+            calls.laws.push(Call { def_id, args, span });
+            return;
+        }
+        let Some((def_id, args)) = self.resolve_trait_lemma(lemma, def_id, args, span) else {
+            return;
+        };
+        let Some(local) = def_id
+            .as_local()
+            .filter(|_| self.is_lemma(def_id) || self.is_lemma_rec(def_id))
+        else {
+            dcx.span_err(span, CALLEE_ERROR);
+            return;
+        };
+        if self.is_lemma(def_id) {
             if local == lemma {
                 dcx.span_err(
                     span,
                     "a lemma calling itself needs #[thrust_macros::variant(..)]",
                 );
-                return None;
+                return;
             }
-            return Some(local);
+            calls.lemmas.push(Call { def_id, args, span });
+            return;
         }
+        // The companion has the lemma's generics and calls it at its own arguments.
         let target = self.rec_target(local);
         if target != lemma {
-            return Some(target);
+            calls.lemmas.push(Call {
+                def_id: target.to_def_id(),
+                args,
+                span,
+            });
+            return;
         }
         if !passes_own_entries(body, call_args) {
             dcx.span_err(
@@ -267,7 +302,62 @@ impl<'tcx> Checker<'tcx> {
                 "a lemma's recursive call passes the lemma's own parameters as the entry values",
             );
         }
+        // A recursive call at other arguments could use a law at a larger type at each step.
+        let identity = mir_ty::GenericArgs::identity_for_item(self.tcx, lemma);
+        if self.tcx.erase_regions(args) != self.tcx.erase_regions(identity) {
+            dcx.span_err(
+                span,
+                "a lemma's recursive call is at the lemma's own generic arguments",
+            );
+        }
+    }
+
+    /// The function a call of a trait's lemma runs: the impl's lemma, or the trait's default body
+    /// at the impl's arguments. A call that resolves to no impl, at a type parameter, could run
+    /// any impl's, which [`Self::check_acyclic`] and [`Self::check_law_uses`] cannot follow, and is
+    /// rejected. A call of a free function is its own.
+    fn resolve_trait_lemma(
+        &self,
+        caller: LocalDefId,
+        def_id: DefId,
+        args: mir_ty::GenericArgsRef<'tcx>,
+        span: rustc_span::Span,
+    ) -> Option<(DefId, mir_ty::GenericArgsRef<'tcx>)> {
+        if self.tcx.trait_of_assoc(def_id).is_none() || !self.is_lemma(def_id) {
+            return Some((def_id, args));
+        }
+        let typing_env = mir_ty::TypingEnv::post_analysis(self.tcx, caller);
+        if let Ok(Some(instance)) =
+            mir_ty::Instance::try_resolve(self.tcx, typing_env, def_id, args)
+        {
+            return Some((instance.def_id(), instance.args));
+        }
+        self.tcx.dcx().span_err(
+            span,
+            "a lemma or a law's proof calls a trait's lemma only at a type that selects its impl",
+        );
         None
+    }
+
+    /// An impl's definition of a trait's lemma is a lemma too, as Creusot and Verus require an
+    /// impl item to have its trait item's mode: a call of the trait's lemma runs it, and its
+    /// contract is assumed where it does not run.
+    fn check_impl_lemmas(&self) {
+        for &def_id in self.tcx.mir_keys(()) {
+            let trait_item = self
+                .tcx
+                .opt_associated_item(def_id.to_def_id())
+                .and_then(|item| item.trait_item_def_id);
+            let Some(trait_item) = trait_item else {
+                continue;
+            };
+            if self.is_lemma(trait_item) && !self.is_lemma(def_id.to_def_id()) {
+                self.tcx.dcx().span_err(
+                    self.tcx.def_span(def_id),
+                    "an impl's definition of a trait's lemma is a `#[thrust_macros::lemma]` too",
+                );
+            }
+        }
     }
 
     fn check_drop(&self, ty: mir_ty::Ty<'tcx>, span: rustc_span::Span) {
@@ -304,11 +394,7 @@ impl<'tcx> Checker<'tcx> {
             .expect("a lemma's companion calls the lemma")
     }
 
-    fn check_acyclic(
-        &self,
-        lemmas: &[LocalDefId],
-        calls: &HashMap<LocalDefId, Vec<(LocalDefId, rustc_span::Span)>>,
-    ) {
+    fn check_acyclic(&self, lemmas: &[LocalDefId], calls: &Calls<'tcx>) {
         let mut done = Vec::new();
         for &lemma in lemmas {
             self.visit(lemma, calls, &mut Vec::new(), &mut done);
@@ -318,7 +404,7 @@ impl<'tcx> Checker<'tcx> {
     fn visit(
         &self,
         lemma: LocalDefId,
-        calls: &HashMap<LocalDefId, Vec<(LocalDefId, rustc_span::Span)>>,
+        calls: &Calls<'tcx>,
         path: &mut Vec<LocalDefId>,
         done: &mut Vec<LocalDefId>,
     ) {
@@ -326,17 +412,168 @@ impl<'tcx> Checker<'tcx> {
             return;
         }
         path.push(lemma);
-        for &(callee, span) in calls.get(&lemma).into_iter().flatten() {
+        for call in calls.get(&lemma).into_iter().flat_map(|c| &c.lemmas) {
+            let callee = call.def_id.expect_local();
             if path.contains(&callee) {
-                self.tcx
-                    .dcx()
-                    .span_err(span, "mutual recursion between lemmas is not supported");
+                self.tcx.dcx().span_err(
+                    call.span,
+                    "mutual recursion between lemmas is not supported",
+                );
                 continue;
             }
             self.visit(callee, calls, path, done);
         }
         path.pop();
         done.push(lemma);
+    }
+
+    /// A law's proof uses a law only at a type parameter strictly inside the impl's self type
+    /// (`T` of `Wrap<T>`), directly or through the lemmas it calls, at the arguments it calls
+    /// them at. The proof of a law at a type then rests only on laws at smaller types, so the
+    /// proofs are well-founded. A trait's default body is checked at each impl that inherits it,
+    /// with the impl's arguments; a law at one of the law's own type parameters could be the
+    /// law at the impl's self type, and is rejected.
+    fn check_law_uses(&self, lemmas: &[LocalDefId], calls: &Calls<'tcx>) {
+        let mut memo = HashMap::new();
+        for &proof in lemmas {
+            if !self.is_law_proof(proof.to_def_id()) {
+                continue;
+            }
+            let uses = self.proof_law_uses(proof, calls, &mut memo);
+            match self.tcx.impl_of_assoc(proof.to_def_id()) {
+                Some(impl_did) => {
+                    let identity = mir_ty::GenericArgs::identity_for_item(self.tcx, proof);
+                    self.check_law_uses_at_impl(proof, impl_did, identity, &uses);
+                }
+                None => {
+                    for (impl_did, args) in self.inheriting_impls(proof.to_def_id()) {
+                        self.check_law_uses_at_impl(proof, impl_did, args, &uses);
+                    }
+                }
+            }
+        }
+    }
+
+    /// The laws `proof` uses, at arguments in its own parameters, each with the span of the
+    /// call in `proof` that uses it: its own calls of laws, and those of the lemmas it calls.
+    fn proof_law_uses(
+        &self,
+        proof: LocalDefId,
+        calls: &Calls<'tcx>,
+        memo: &mut HashMap<LocalDefId, Vec<Call<'tcx>>>,
+    ) -> Vec<(Call<'tcx>, Option<DefId>)> {
+        let Some(proof_calls) = calls.get(&proof) else {
+            return Vec::new();
+        };
+        let direct = proof_calls.laws.iter().map(|call| (*call, None));
+        let through_lemmas = proof_calls.lemmas.iter().flat_map(|call| {
+            let uses = self.lemma_law_uses(call.def_id.expect_local(), calls, memo);
+            uses.into_iter().map(move |law| {
+                let args = mir_ty::EarlyBinder::bind(law.args).instantiate(self.tcx, call.args);
+                let law = Call {
+                    def_id: law.def_id,
+                    args,
+                    span: call.span,
+                };
+                (law, Some(call.def_id))
+            })
+        });
+        direct.chain(through_lemmas).collect()
+    }
+
+    /// The laws `lemma` uses, directly or through the lemmas it calls, at arguments in its own
+    /// parameters. A cycle among lemmas is reported by [`Self::check_acyclic`] and adds nothing.
+    fn lemma_law_uses(
+        &self,
+        lemma: LocalDefId,
+        calls: &Calls<'tcx>,
+        memo: &mut HashMap<LocalDefId, Vec<Call<'tcx>>>,
+    ) -> Vec<Call<'tcx>> {
+        if let Some(uses) = memo.get(&lemma) {
+            return uses.clone();
+        }
+        memo.insert(lemma, Vec::new());
+        let uses: Vec<_> = self
+            .proof_law_uses(lemma, calls, memo)
+            .into_iter()
+            .map(|(law, _)| law)
+            .collect();
+        memo.insert(lemma, uses.clone());
+        uses
+    }
+
+    /// The local impls that inherit the trait's default body `law`, each with the arguments
+    /// that body is checked at there: the impl's trait arguments, and the law's own parameters.
+    fn inheriting_impls(&self, law: DefId) -> Vec<(DefId, mir_ty::GenericArgsRef<'tcx>)> {
+        let Some(trait_did) = self.tcx.trait_of_assoc(law) else {
+            return Vec::new();
+        };
+        let impls = self.tcx.all_local_trait_impls(()).get(&trait_did);
+        impls
+            .into_iter()
+            .flatten()
+            .map(|impl_local| impl_local.to_def_id())
+            .filter(|impl_did| {
+                !self
+                    .tcx
+                    .impl_item_implementor_ids(*impl_did)
+                    .contains_key(&law)
+            })
+            .map(|impl_did| {
+                let trait_ref = self
+                    .tcx
+                    .impl_trait_ref(impl_did)
+                    .unwrap()
+                    .instantiate_identity();
+                let args = mir_ty::GenericArgs::identity_for_item(self.tcx, law).rebase_onto(
+                    self.tcx,
+                    trait_did,
+                    trait_ref.args,
+                );
+                (impl_did, args)
+            })
+            .collect()
+    }
+
+    /// Checks the law uses of `proof`, read at `args`, against the self type of `impl_did`.
+    fn check_law_uses_at_impl(
+        &self,
+        proof: LocalDefId,
+        impl_did: DefId,
+        args: mir_ty::GenericArgsRef<'tcx>,
+        uses: &[(Call<'tcx>, Option<DefId>)],
+    ) {
+        let self_ty = self.tcx.type_of(impl_did).instantiate_identity();
+        let own_params = self.tcx.generics_of(proof).parent_count;
+        for (law, lemma) in uses {
+            let at_own_param = matches!(
+                law.args.type_at(0).kind(),
+                mir_ty::Param(param) if param.index as usize >= own_params
+            );
+            let law_args = mir_ty::EarlyBinder::bind(law.args).instantiate(self.tcx, args);
+            let ty = law_args.type_at(0);
+            let inside = matches!(ty.kind(), mir_ty::Param(_))
+                && self_ty != ty
+                && self_ty.walk().any(|arg| arg.as_type() == Some(ty));
+            if inside && !at_own_param {
+                continue;
+            }
+            let through = lemma
+                .map(|lemma| format!(" through `{}`", self.tcx.def_path_str(lemma)))
+                .unwrap_or_default();
+            self.tcx
+                .dcx()
+                .struct_span_err(
+                    law.span,
+                    format!(
+                        "a law's proof uses a law only at a type parameter strictly inside the \
+                         impl's self type `{self_ty}`, but this one uses `{}`{through}",
+                        self.tcx.def_path_str_with_args(law.def_id, law_args),
+                    ),
+                )
+                .with_span_note(self.tcx.def_span(impl_did), "in the proof for this impl")
+                .emit();
+        }
     }
 
     /// Each use of `__proof_branch` in `def_id` is the condition of a `proof!` branch: the
@@ -465,6 +702,9 @@ impl<'tcx> Checker<'tcx> {
         (lemma_calls == 1).then_some((path, assigned))
     }
 }
+
+const CALLEE_ERROR: &str = "a lemma or a law's proof calls only lemmas, logic functions, \
+     predicates, model operations and laws at a type parameter";
 
 /// The `unsafe` blocks written in a body, and the raw pointers it takes (`&raw`).
 struct UnsafeFinder {

@@ -15,6 +15,9 @@ use syn::{
 
 use crate::{apit, fn_outer_item::FnOuterItem, FormulaFnTypeLowering};
 
+/// The error for `#[thrust::ignored]` together with a contract.
+pub(crate) const IGNORED_WITH_CONTRACT: &str = "`#[thrust::ignored]` cannot have a contract: an ignored function is invisible to Thrust and must not run; to trust a contract without checking the body, write `#[thrust::trusted]`";
+
 pub fn expand_predicate(item: TokenStream) -> TokenStream {
     expand_spec_fn(item, SpecFnKind::Predicate)
 }
@@ -756,12 +759,12 @@ impl ExpandedTokens {
     }
 
     fn expand(&self) -> TokenStream2 {
-        let mut func = self.func.clone();
-        let trusted_path: syn::Path = syn::parse_quote!(thrust::trusted);
-        for attr in func.attrs_mut() {
-            if attr.path() == &trusted_path {
-                *attr = syn::parse_quote!(#[thrust::ignored]);
-            }
+        let func = self.func.clone();
+        let ignored_path: syn::Path = syn::parse_quote!(thrust::ignored);
+        if func.attrs().iter().any(|attr| attr.path() == &ignored_path) {
+            let error =
+                syn::Error::new_spanned(func.sig(), IGNORED_WITH_CONTRACT).to_compile_error();
+            return quote! { #error #func };
         }
 
         let requires_fn = self.requires_fn();

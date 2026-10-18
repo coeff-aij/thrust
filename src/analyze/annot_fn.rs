@@ -813,7 +813,9 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             .map(|expr| self.type_builder.build(self.expr_ty(expr)).to_sort())
             .collect();
         let result = self.type_builder.build(self.expr_ty(hir)).to_sort();
-        let pred = refine::trait_forall_fn(self.tcx, def_id, type_params, params, result);
+        let type_args = self.type_builder.generic_args_symbol(generic_args);
+        let pred =
+            refine::trait_forall_fn(self.tcx, def_id, type_args, type_params, params, result);
         self.register_forall_pred(pred.clone());
         self.analyzer.register_forall_pred_origin(
             pred.clone(),
@@ -1022,10 +1024,13 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         let contract = self
             .receiver_closure_fn_type(model_ty)
             .unwrap_or_else(|| panic!("hist_inv! at {param_ty:?}, which has no closure bound"));
-        let sort = self.type_builder.build(param_ty.to_ty(self.tcx)).to_sort();
+        let param = param_ty.to_ty(self.tcx);
+        let sort = self.type_builder.build(param).to_sort();
         let pred = refine::closure_hist_inv_forall_pred(
             self.tcx,
             self.type_builder.param_def_id(&param_ty),
+            self.type_builder
+                .generic_args_symbol(self.tcx.mk_args(&[param.into()])),
             vec![sort.clone()],
             vec![sort.clone(), sort],
         );
@@ -1865,6 +1870,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                                     let pred = refine::trait_forall_pred(
                                         self.tcx,
                                         def_id,
+                                        self.type_builder.generic_args_symbol(generic_args),
                                         type_params,
                                         params,
                                     );

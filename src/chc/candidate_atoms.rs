@@ -480,8 +480,16 @@ pub(super) fn entry_atoms(system: &System, pred: PredVarId) -> Vec<Formula> {
             out.extend(split);
         }
     }
-    out.retain(|atom| !is_trivial(atom));
+    out.retain(|atom| !is_trivial(atom) && !applies_unknown(atom));
     out
+}
+
+/// Whether `formula`, an atom's guard included, applies a predicate variable. A candidate atom is
+/// a hint over known predicates only, and the solver rejects one that applies an unknown.
+fn applies_unknown(formula: &Formula) -> bool {
+    formula.iter_atoms().any(|atom| {
+        matches!(atom.pred, Pred::Var(_)) || atom.guard.as_deref().is_some_and(applies_unknown)
+    })
 }
 
 /// How many levels of single-clause predicate variables [`clause_facts`] unfolds.
@@ -760,4 +768,52 @@ fn int_equality_halves(atom: &Formula, sig: &[Sort]) -> Vec<Formula> {
     .into_iter()
     .map(|p| Formula::Atom(Atom::new(p.into(), vec![a.clone(), b.clone()])))
     .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn v(i: usize) -> Term {
+        Term::var(i.into())
+    }
+
+    fn clause(head: Atom, body: Body) -> Clause {
+        let sort = Sort::int();
+        Clause {
+            origin: debug::origin::ClauseOrigin {
+                environment: Vec::new(),
+                body: Vec::new(),
+                head: debug::origin::Entry::parameter(TermVarIdx::from(0usize), &sort),
+            },
+            vars: vec![sort].into_iter().collect(),
+            head,
+            body,
+            debug_info: DebugInfo::default(),
+        }
+    }
+
+    #[test]
+    fn entry_atoms_skip_facts_that_apply_an_unknown() {
+        let mut system = System::default();
+        let p = system.new_pred_var(vec![Sort::int()], DebugInfo::default());
+        let q = system.new_pred_var(vec![Sort::int()], DebugInfo::default());
+        let known = Formula::Atom(Atom::new(
+            Pred::Known(KnownPred::GREATER_THAN_OR_EQUAL),
+            vec![v(0), Term::int(0)],
+        ));
+        let unknown = Formula::Atom(Atom::new(Pred::Var(q), vec![v(0)]));
+        let under_forall = Formula::Forall(
+            vec![],
+            Box::new(Formula::Atom(Atom::new(Pred::Var(q), vec![v(0)]))),
+        );
+        // x >= 0 /\ Q(x) /\ forall. Q(x) => P(x)
+        system.push_clause(clause(
+            Atom::new(Pred::Var(p), vec![v(0)]),
+            Body::new(vec![], Formula::And(vec![known, unknown, under_forall])),
+        ));
+        let atoms = entry_atoms(&system, p);
+        assert!(!atoms.is_empty());
+        assert!(atoms.iter().all(|a| !applies_unknown(a)));
+    }
 }

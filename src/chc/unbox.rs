@@ -229,6 +229,7 @@ fn unbox_forall_pred_var_def(pred: ForallPred) -> ForallPred {
     let params = pred.params.into_iter().map(unbox_sort).collect();
     ForallPred {
         inner: pred.inner,
+        type_arguments: pred.type_arguments,
         type_parameters,
         params,
         result: unbox_sort(pred.result),

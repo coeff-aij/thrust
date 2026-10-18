@@ -271,39 +271,15 @@ where
     let mut facts = Refinement::top();
     match (got, expected) {
         (Type::Int(_) | Type::UInt(_), Type::Int(_) | Type::UInt(_)) => {
-            let signed = matches!(expected, Type::Int(_));
-            if !signed && matches!(got, Type::Int(_)) {
-                facts.push_conj(
-                    chc::Atom::new(
-                        chc::KnownPred::GREATER_THAN_OR_EQUAL.into(),
-                        vec![value(), chc::Term::int(0)],
-                    )
-                    .into(),
-                );
+            let bounds = super::int_range_bounds(expected, value()).expect("an integer type");
+            // An unsigned value entering an unsigned type is already `>= 0`.
+            let nonnegative = matches!((got, expected), (Type::UInt(_), Type::UInt(_)));
+            let in_range = fits(got, expected);
+            if let Some(atom) = bounds.lower.filter(|_| !in_range && !nonnegative) {
+                facts.push_conj(atom.into());
             }
-            let width = match expected {
-                Type::Int(width) | Type::UInt(width) => *width,
-                _ => None,
-            };
-            if let Some((min, end)) =
-                super::int_range(signed, width).filter(|_| !fits(got, expected))
-            {
-                if signed {
-                    facts.push_conj(
-                        chc::Atom::new(
-                            chc::KnownPred::GREATER_THAN_OR_EQUAL.into(),
-                            vec![value(), chc::Term::int(min)],
-                        )
-                        .into(),
-                    );
-                }
-                facts.push_conj(
-                    chc::Atom::new(
-                        chc::KnownPred::LESS_THAN.into(),
-                        vec![value(), chc::Term::int(end)],
-                    )
-                    .into(),
-                );
+            if let Some(atom) = bounds.upper.filter(|_| !in_range) {
+                facts.push_conj(atom.into());
             }
         }
         (Type::Seq(got), Type::Seq(expected)) if !fits(&got.ty, &expected.ty) => {
@@ -351,9 +327,22 @@ pub fn relate_sub_param_types(
         }
     }
 
-    for (got_ty, expected_ty) in got.iter().zip(expected.iter()) {
+    // A parameter's refinement is assumed of the parameters after it, as at a call site.
+    for ((param_idx, got_ty), expected_ty) in got.iter_enumerated().zip(expected.iter()) {
         let cs = builder.relate_sub_refined_type(expected_ty, got_ty);
         clauses.extend(cs);
+        if expected_ty.refinement.is_top() {
+            continue;
+        }
+        if expected_ty.ty.to_sort().is_singleton() {
+            builder
+                .with_value_var(&expected_ty.ty)
+                .add_body(expected_ty.formula());
+        } else {
+            builder
+                .with_mapped_value_var(param_idx)
+                .add_body(expected_ty.formula());
+        }
     }
 
     clauses
