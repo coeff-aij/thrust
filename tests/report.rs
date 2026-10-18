@@ -465,3 +465,32 @@ fn solutions_and_arguments_read_apart() {
     assert!(stderr.contains("main.loop#1(x ← "), "{stderr}");
     assert!(!stderr.contains(" := "), "{stderr}");
 }
+
+/// The constraint of a law proved by an empty body is at the law's `ensures`, which it checks,
+/// not at the empty body; and JSON places a refuted `ensures` where the error is, at the
+/// signature.
+#[test]
+fn a_law_proof_and_a_refuted_ensures_are_where_they_are_read() {
+    let output = report("law_proof.rs", "constraints");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let law = stderr
+        .lines()
+        .find(|l| l.contains("ensures (") && l.contains("count_nonneg"))
+        .unwrap_or_default();
+    assert!(
+        law.contains("ensures (tests/report/law_proof.rs:10:"),
+        "{stderr}"
+    );
+    let json = report_with(
+        "ensures_fail.rs",
+        "failure",
+        &[("THRUST_REPORT_FORMAT", "json")],
+    );
+    let stdout = String::from_utf8_lossy(&json.stdout);
+    let at = r#""obligation":"ensures""#;
+    let failure = stdout.lines().find(|l| l.contains(at)).unwrap_or_default();
+    assert!(
+        failure.contains(r#""span":{"file":"tests/report/ensures_fail.rs","line":3,"column":1,"#),
+        "{stdout}"
+    );
+}

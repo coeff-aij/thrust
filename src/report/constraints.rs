@@ -41,17 +41,31 @@ impl Provenance {
     pub fn span(&self, tcx: TyCtxt<'_>) -> Option<Span> {
         let def = self.def?.to_def_id();
         let body = tcx.is_mir_available(def).then(|| tcx.optimized_mir(def));
-        let in_body = body
-            .zip(self.bb)
-            .and_then(|(body, bb)| super::body::span_in(body, bb, self.stmt))
-            .and_then(|span| {
-                if !span.is_empty() {
-                    return Some(span);
-                }
-                let brace = span.lo().0.checked_sub(1)?;
-                Some(span.with_lo(rustc_span::BytePos(brace)))
-            });
+        let in_body = body.zip(self.bb).and_then(|(body, bb)| {
+            let span = super::body::span_in(body, bb, self.stmt)?;
+            if !span.is_empty() {
+                return Some(span);
+            }
+            if !self.at_return(body) {
+                return None;
+            }
+            let brace = span.with_lo(rustc_span::BytePos(span.lo().0.checked_sub(1)?));
+            let snippet = tcx.sess.source_map().span_to_snippet(brace).ok()?;
+            (snippet == "}").then_some(brace)
+        });
         Some(in_body.unwrap_or_else(|| tcx.def_span(def).source_callsite()))
+    }
+
+    /// Whether the clause was made at a return: the terminator of its block, not a statement.
+    pub fn at_return(&self, body: &mir::Body<'_>) -> bool {
+        let terminator = self
+            .bb
+            .filter(|_| self.stmt.is_none())
+            .and_then(|bb| body.basic_blocks.get(bb)?.terminator.as_ref());
+        matches!(
+            terminator.map(|t| &t.kind),
+            Some(mir::TerminatorKind::Return)
+        )
     }
 }
 
@@ -449,6 +463,18 @@ fn render(
     (premises, conclusion, var_names)
 }
 
+/// Whether `span` is in the body of `def`, a block with nothing in it.
+fn is_empty_body(tcx: TyCtxt<'_>, def: LocalDefId, span: Option<Span>) -> bool {
+    let Some(body) = tcx.hir_maybe_body_owned_by(def) else {
+        return false;
+    };
+    let rustc_hir::ExprKind::Block(block, _) = body.value.kind else {
+        return false;
+    };
+    let within = span.is_some_and(|span| body.value.span.contains(span));
+    block.stmts.is_empty() && block.expr.is_none() && within
+}
+
 pub fn constraint(
     tcx: TyCtxt<'_>,
     id: chc::ClauseId,
@@ -459,18 +485,19 @@ pub fn constraint(
 ) -> Constraint {
     let provenance = Provenance::of(&clause.debug_info);
     let span = provenance.span(tcx);
-    let at_return = matches!(
-        (body, provenance.bb),
-        (Some(body), Some(bb)) if matches!(
-            body.terminator(bb).map(|t| &t.kind),
-            Some(mir::TerminatorKind::Return)
-        )
-    );
+    let at_return = body.is_some_and(|body| provenance.at_return(body.body));
     let error_span = match provenance.def {
         Some(def) if at_return => Some(tcx.def_span(def.to_def_id()).source_callsite()),
         _ => span,
     };
     let (kind, annotation) = kind(tcx, clause, &provenance, body, names, input);
+    // An empty body (a law's proof by its contract) checks the annotation it is given.
+    let span = match (&annotation, provenance.def) {
+        (Annotation::Checks(spans), Some(def)) if at_return && is_empty_body(tcx, def, span) => {
+            spans.first().copied().or(span)
+        }
+        _ => span,
+    };
     let (premises, conclusion, vars) = render(id, clause, provenance.def, names, body);
     let formula = show(
         &formula::and(premises.clone()).implies(conclusion.clone()),
