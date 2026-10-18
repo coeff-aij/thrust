@@ -1,0 +1,181 @@
+// The compiled extension under the VS Code stub (test/vscode-stub.js), on a copy of the fixture
+// workspace with cargo replaced by test/fake-cargo.js replaying the captured checks: what the
+// Testing view and the diagnostics show after a run of the workspace, a run of one function, a
+// run that does not reach a crate, and a run that gives no report.
+
+import * as assert from "assert";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
+import { test } from "node:test";
+
+const here = path.join(__dirname, "..", "..");
+const fixtures = path.join(here, "test", "fixtures", "cargo");
+
+// The extension's `import * as vscode from "vscode"` resolves to the stub.
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const Module = require("module");
+const resolve = Module._resolveFilename;
+Module._resolveFilename = function (request: string, ...rest: unknown[]) {
+  return request === "vscode" ? path.join(here, "test", "vscode-stub.js") : resolve.call(this, request, ...rest);
+};
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const vscode = require("vscode");
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const extension = require("../src/extension");
+
+interface State {
+  state: string;
+  id: string;
+  messages: string[];
+}
+
+interface Thrust {
+  verify(document: unknown, fn?: unknown): Promise<void>;
+}
+
+interface Session {
+  workspace: string;
+  thrust: Thrust;
+  /// Replays the captured case `name` (or a directory) at the next cargo check.
+  replay(name: string): void;
+  /// The arguments of each cargo call so far.
+  calls(): string[];
+  document(relative: string, dirty?: boolean): unknown;
+  lens(relative: string, name: string): unknown;
+  /// The states of the last test run, by item id relative to the workspace.
+  states(): Map<string, State>;
+  /// The diagnostics' first lines, `file:line message`.
+  diagnostics(): string[];
+  children(rootSuffix: string): string[];
+}
+
+function session(): Session {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "thrust-extension-"));
+  fs.cpSync(path.join(fixtures, "workspace"), workspace, { recursive: true });
+  const log = path.join(workspace, "cargo.log");
+  vscode.__reset();
+  const s = vscode.__state;
+  s.folder = workspace;
+  const replay = (name: string) => {
+    s.config = { command: ["thrust-rustc"], cargoCommand: [process.execPath, path.join(here, "test", "fake-cargo.js"), path.isAbsolute(name) ? name : path.join(fixtures, name)] };
+  };
+  replay("check");
+  process.env.FAKE_WORKSPACE = workspace;
+  process.env.FAKE_LOG = log;
+  const context = { subscriptions: [] as unknown[], asAbsolutePath: (p: string) => path.join(here, p) };
+  extension.activate(context);
+  const relative = (id: string) => id.split(workspace).join("");
+  return {
+    workspace,
+    thrust: context.subscriptions[0] as Thrust,
+    replay,
+    calls: () => (fs.existsSync(log) ? fs.readFileSync(log, "utf8").trim().split("\n") : []),
+    document: (file, dirty = false) => vscode.__document(path.join(workspace, file), dirty),
+    lens: (file, name) => {
+      const lenses = s.providers.lens.provideCodeLenses(vscode.__document(path.join(workspace, file)));
+      const lens = lenses.find((l: { command: { arguments: { name: string }[] } }) => l.command.arguments[1].name === name);
+      assert.ok(lens, name);
+      return lens.command.arguments[1];
+    },
+    states: () => {
+      const run = s.runs[s.runs.length - 1];
+      return new Map(run.states.filter((x: State) => x.state !== "started").map((x: State) => [relative(x.id), { ...x, id: relative(x.id) }]));
+    },
+    diagnostics: () =>
+      [...s.diagnostics.entries()].flatMap(([file, list]: [string, { range: { start: { line: number } }; message: string }[]]) =>
+        list.map((d) => `${path.relative(workspace, file)}:${d.range.start.line + 1} ${d.message.split("\n")[0]}`),
+      ),
+    children: (rootSuffix) => {
+      let found: string[] = [];
+      s.controller.items.forEach((root: { id: string; children: { forEach(f: (c: { label: string }) => void): void } }) => {
+        if (root.id.endsWith(rootSuffix)) {
+          found = [];
+          root.children.forEach((c) => found.push(c.label));
+        }
+      });
+      return found;
+    },
+  };
+}
+
+function stateOf(states: Map<string, State>, id: string): string | undefined {
+  return states.get(id)?.state;
+}
+
+test("a run of the workspace: an item per crate with its verdict, its functions under it, the refutation as a diagnostic", async () => {
+  const t = session();
+  await t.thrust.verify(t.document("app/src/main.rs"));
+  const states = t.states();
+  assert.strictEqual(stateOf(states, "#arith/lib/arith"), "passed");
+  assert.strictEqual(stateOf(states, "#arith/lib/arith::<Pair as Scale>::scale"), "passed");
+  assert.strictEqual(stateOf(states, "#app/bin/app"), "failed");
+  assert.strictEqual(stateOf(states, "#app/bin/app::shrink"), "failed");
+  assert.deepStrictEqual(t.diagnostics(), ["app/src/main.rs:9 refuted: ensures in `shrink`"]);
+});
+
+test("a crate the run does not reach is skipped with its functions, not left passing", async () => {
+  const t = session();
+  await t.thrust.verify(t.document("app/src/main.rs"));
+  t.replay("only");
+  await t.thrust.verify(t.document("arith/src/lib.rs"));
+  const states = t.states();
+  assert.strictEqual(stateOf(states, "#arith/lib/arith"), "passed");
+  assert.strictEqual(stateOf(states, "#app/bin/app"), "skipped");
+  assert.strictEqual(stateOf(states, "#app/bin/app::shrink"), "skipped");
+  assert.strictEqual(stateOf(states, "#both/lib/both"), "skipped");
+  // The run's diagnostics replace those of the workspace's last run.
+  assert.deepStrictEqual(t.diagnostics(), []);
+});
+
+test("a run of one function updates its item, found by its lines, and only the diagnostics on its lines", async () => {
+  const t = session();
+  await t.thrust.verify(t.document("app/src/main.rs"));
+  const before = t.children("#arith/lib/arith");
+  t.replay("only");
+  await t.thrust.verify(t.document("arith/src/lib.rs"), t.lens("arith/src/lib.rs", "scale"));
+  const states = t.states();
+  assert.deepStrictEqual([...states.keys()], ["#arith/lib/arith::<Pair as Scale>::scale"]);
+  assert.strictEqual(stateOf(states, "#arith/lib/arith::<Pair as Scale>::scale"), "passed");
+  assert.deepStrictEqual(t.children("#arith/lib/arith"), before);
+  assert.deepStrictEqual(t.diagnostics(), ["app/src/main.rs:9 refuted: ensures in `shrink`"]);
+  const last = t.calls()[t.calls().length - 1];
+  assert.match(last, /check --message-format=json --manifest-path \S+ -p arith --lib$/);
+});
+
+test("a run of one function without a report to read: its item errored with why, its old diagnostics kept, the error shown", async () => {
+  const t = session();
+  await t.thrust.verify(t.document("app/src/main.rs"));
+  const failed = path.join(t.workspace, "selects-nothing");
+  fs.mkdirSync(failed);
+  const message = { message: "`THRUST_VERIFY_ONLY` entry `shrink` selects no function", level: "error", spans: [], children: [] };
+  const target = { kind: ["bin"], crate_types: ["bin"], name: "app", src_path: "/workspace/app/src/main.rs" };
+  fs.writeFileSync(path.join(failed, "stdout.jsonl"), `${JSON.stringify({ reason: "compiler-message", target, message })}\n`);
+  fs.writeFileSync(path.join(failed, "exit"), "101\n");
+  fs.copyFileSync(path.join(fixtures, "metadata.json"), path.join(t.workspace, "metadata.json"));
+  t.replay(failed);
+  await t.thrust.verify(t.document("app/src/main.rs"), t.lens("app/src/main.rs", "shrink"));
+  const states = t.states();
+  assert.strictEqual(states.get("#app/bin/app::shrink")?.state, "errored");
+  assert.match(states.get("#app/bin/app::shrink")?.messages[0] ?? "", /selects no function/);
+  assert.deepStrictEqual(t.diagnostics().sort(), [
+    "app/src/main.rs:1 Thrust: error (`THRUST_VERIFY_ONLY` entry `shrink` selects no function)",
+    "app/src/main.rs:9 refuted: ensures in `shrink`",
+  ]);
+});
+
+test("a file with unsaved changes is not run", async () => {
+  const t = session();
+  await t.thrust.verify(t.document("app/src/main.rs", true));
+  assert.deepStrictEqual(t.calls(), []);
+  assert.match(vscode.__state.warnings[0], /unsaved changes/);
+});
+
+test("running all items from the Testing view checks the workspace once", async () => {
+  const t = session();
+  await t.thrust.verify(t.document("app/src/main.rs"));
+  const checks = () => t.calls().filter((c) => c.startsWith("check")).length;
+  assert.strictEqual(checks(), 1);
+  await vscode.__state.profile(new vscode.TestRunRequest(undefined), { isCancellationRequested: false });
+  assert.strictEqual(checks(), 2);
+});

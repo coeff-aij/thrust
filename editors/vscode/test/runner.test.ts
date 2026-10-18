@@ -62,3 +62,11 @@ test("invocation: a selection sets THRUST_VERIFY_ONLY", () => {
   const inv = invocation("/a/b.rs", config(["thrust-rustc"]), "/tmp/s", "m::Pair::twice");
   assert.strictEqual(inv.env.THRUST_VERIFY_ONLY, "m::Pair::twice");
 });
+
+test("run: a run ignoring SIGTERM at the time limit is killed", async () => {
+  const started = Date.now();
+  const ignoring = [process.execPath, "-e", "process.on('SIGTERM', () => {}); setTimeout(() => {}, 20000)", "--"];
+  const result = await run(path.join(fixtures, "safe.rs"), config(ignoring, { extraArgs: [], timeoutSecs: 0.2 }));
+  assert.strictEqual(result.timedOut, true);
+  assert.ok(Date.now() - started < 10000, `${Date.now() - started} ms`);
+});

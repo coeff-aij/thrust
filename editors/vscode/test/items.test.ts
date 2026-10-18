@@ -96,3 +96,32 @@ test("selection path: the module's path, then the function's in the file", () =>
   assert.strictEqual(selectionPath(["ops"], fn), "ops::Pair::twice");
   assert.strictEqual(selectionPath([], fn), "Pair::twice");
 });
+
+test("functions: brackets and braces in a header, a parenthesized self type", () => {
+  const text = [
+    "fn f(a: [u8; 4], b: (u8, u8)) -> [u8; { 1 }] { [0] }",
+    "impl Tr for (Foo) { fn p() {} }",
+    "impl Tr for ((Foo)) { fn q() {} }",
+    "impl Tr for (A, B) { fn r() {} }",
+    "fn g() {}",
+  ].join("\n");
+  assert.deepStrictEqual(paths(text), ["f", "Foo::p", "Foo::q", "{impl}::r", "g"]);
+});
+
+test("functions: none compiled for tests only, which cargo check leaves out", () => {
+  const text = [
+    "#[cfg(test)]",
+    "mod tests {",
+    "    fn helper() {}",
+    "    #[test]",
+    "    fn t() {}",
+    "}",
+    "#[test]",
+    "fn top() {}",
+    "#[tokio::test]",
+    "async fn asynchronous() {}",
+    "#[cfg(not(test))]",
+    "fn kept() {}",
+  ].join("\n");
+  assert.deepStrictEqual(paths(text), ["kept"]);
+});

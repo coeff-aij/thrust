@@ -4,8 +4,8 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import { RustcDiagnostic } from "./report";
-import { Command, execute, readIfPresent, RunConfig } from "./runner";
+import { Outcome, Report, RustcDiagnostic, verdictOf } from "./report";
+import { Command, execute, readIfPresent, RunConfig, thrustEnv } from "./runner";
 
 /// The separator of the words of a list passed to the wrapper in one variable.
 const SEPARATOR = "\x1f";
@@ -79,7 +79,7 @@ function isInside(file: string, dir: string): boolean {
 
 /// The name of a crate's report as bin/thrust-rustc-cargo writes it.
 export function reportFileName(target: Target): string {
-  return `${target.package}.${target.name.replace(/-/g, "_")}.${target.crateType}.jsonl`;
+  return `${target.package}.${crateName(target)}.${target.crateType}.jsonl`;
 }
 
 /// The directory cargo builds into for Thrust, apart from the workspace's own builds, as Kani
@@ -92,8 +92,8 @@ export function reportDir(metadata: Metadata): string {
   return path.join(thrustTargetDir(metadata), "reports");
 }
 
-/// What a check executes: the whole workspace, or with `only` the one target and
-/// `THRUST_VERIFY_ONLY` set to the selection.
+/// What a check executes: the whole workspace, or with `only` the one target, whose crate the
+/// wrapper runs with `THRUST_VERIFY_ONLY` set to the selection.
 export function cargoInvocation(
   metadata: Metadata,
   config: CargoConfig,
@@ -105,32 +105,47 @@ export function cargoInvocation(
     throw new Error("thrust.cargoCommand is empty");
   }
   const env: Record<string, string> = {
-    ...config.env,
+    ...thrustEnv(config),
     RUSTC: wrapper,
     RUSTC_WRAPPER: "",
     RUSTC_WORKSPACE_WRAPPER: "",
     CARGO_TARGET_DIR: thrustTargetDir(metadata),
     THRUST_VSCODE_COMMAND: config.command.join(SEPARATOR),
     THRUST_VSCODE_ARGS: config.extraArgs.join(SEPARATOR),
+    THRUST_VSCODE_THRUST_ID: commandIdentity(config.command),
+    THRUST_VSCODE_ENV_KEYS: Object.keys(config.env).join(SEPARATOR),
     THRUST_VSCODE_REPORT_DIR: reportDir(metadata),
-    THRUST_REPORT: "1",
-    THRUST_REPORT_FORMAT: "json",
   };
-  if (config.split > 0) {
-    env.THRUST_SPLIT = String(config.split);
-  }
-  if (config.cacheDir !== "") {
-    env.THRUST_CACHE_DIR = config.cacheDir;
-  }
   const manifest = path.join(metadata.workspaceRoot, "Cargo.toml");
   const args = [...leading, "check", "--message-format=json", "--manifest-path", manifest];
   if (only) {
-    env.THRUST_VERIFY_ONLY = only.selection;
+    env.THRUST_VSCODE_VERIFY_ONLY = only.selection;
+    env.THRUST_VSCODE_VERIFY_CRATE = `${crateName(only.target)}.${only.target.crateType}`;
     args.push("-p", only.target.package, ...targetArgs(only.target));
   } else {
     args.push("--workspace", "--keep-going");
   }
   return { program, args, env, cwd: metadata.workspaceRoot, reportDir: reportDir(metadata) };
+}
+
+/// What tells builds of the command apart: each of its words that is the absolute path of a
+/// file (the Thrust binary), with the file's size and modification time.
+export function commandIdentity(command: string[]): string {
+  return command
+    .filter((word) => path.isAbsolute(word))
+    .flatMap((word) => {
+      try {
+        const stat = fs.statSync(word);
+        return stat.isFile() ? [`${word}:${stat.size}:${stat.mtimeMs}`] : [];
+      } catch {
+        return [];
+      }
+    })
+    .join(SEPARATOR);
+}
+
+function crateName(target: Target): string {
+  return target.name.replace(/-/g, "_");
 }
 
 function targetArgs(target: Target): string[] {
@@ -154,8 +169,9 @@ interface CargoMessage {
 }
 
 /// The crates of the workspace a check went through, from cargo's JSON messages, each with its
-/// diagnostics and, from `reports`, the report of its run.
-export function crateRuns(stdout: string, metadata: Metadata, reports: string): CrateRun[] {
+/// diagnostics and, from `reports`, the report of its run: of every crate, or of `only` when the
+/// check was of that target, as the others ran as dependencies, without a report.
+export function crateRuns(stdout: string, metadata: Metadata, reports: string, only?: Target): CrateRun[] {
   const runs = new Map<Target, CrateRun>();
   for (const message of cargoMessages(stdout)) {
     const target = message.target && findTarget(metadata, message.target.name, message.target.kind[0]);
@@ -171,9 +187,23 @@ export function crateRuns(stdout: string, metadata: Metadata, reports: string): 
     }
   }
   for (const run of runs.values()) {
-    run.report = readIfPresent(path.join(reports, reportFileName(run.target)));
+    if (!only || run.target === only) {
+      run.report = readIfPresent(path.join(reports, reportFileName(run.target)));
+    }
   }
   return [...runs.values()];
+}
+
+const NOT_A_CRATE_ERROR = /^(verification error: |aborting due to )/;
+
+/// The outcome of a crate: an error when cargo did not compile it for an error other than a
+/// refutation (a compile error, a `THRUST_VERIFY_ONLY` entry selecting nothing), whatever its
+/// report says; otherwise the report's.
+export function crateOutcome(run: CrateRun, report: Report): Outcome {
+  const error = run.compiled
+    ? undefined
+    : run.diagnostics.find((d) => d.level === "error" && !NOT_A_CRATE_ERROR.test(d.message));
+  return error ? { verdict: "error", detail: error.message } : verdictOf(null, report, run.diagnostics);
 }
 
 function findTarget(metadata: Metadata, name: string, kind: string): Target | undefined {
@@ -233,7 +263,7 @@ export async function runCargo(
     invocation: inv,
     exitCode: outcome.exitCode,
     stderr: outcome.stderr,
-    crates: crateRuns(outcome.stdout, metadata, inv.reportDir),
+    crates: crateRuns(outcome.stdout, metadata, inv.reportDir, only?.target),
     timedOut: outcome.timedOut,
     cancelled: outcome.cancelled,
     durationMs: Date.now() - started,

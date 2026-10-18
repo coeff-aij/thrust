@@ -1,28 +1,35 @@
 #!/bin/sh
 # RUSTC for the extension's `cargo check`: runs the command of THRUST_VSCODE_COMMAND (its words
 # separated by the unit separator, 0x1f) with cargo's arguments, then those of
-# THRUST_VSCODE_ARGS (separated alike). For a crate of a package cargo was asked to check, it
+# THRUST_VSCODE_ARGS (separated alike), for every crate and for cargo's queries of the compiler
+# (`-vV`, `--print`). For each crate it
 #
-# - writes the JSON report to THRUST_VSCODE_REPORT_DIR/<package>.<crate>.<crate type>.jsonl,
-#   removing the one of an earlier check first, so a crate that fails to compile leaves none;
-# - records Thrust's variables in the crate's dep-info as `env-dep` lines, as rustc does for
-#   `env!`, so that cargo checks the crate again when one of them changes (`THRUST_VERIFY_ONLY`
-#   of another function, `THRUST_SPLIT`) instead of keeping its earlier result.
-#
-# Other crates (dependencies) run without a report; cargo's queries of the compiler (`-vV`,
-# `--print`) run with cargo's arguments only.
+# - removes the report of an earlier check, THRUST_VSCODE_REPORT_DIR/<package>.<crate>.<crate
+#   type>.jsonl, so a crate that fails to compile or is not reported leaves none;
+# - for a crate of a package cargo was asked to check (CARGO_PRIMARY_PACKAGE), writes its JSON
+#   report there; other crates (dependencies) run without a report;
+# - sets THRUST_VERIFY_ONLY to THRUST_VSCODE_VERIFY_ONLY for the crate THRUST_VSCODE_VERIFY_CRATE
+#   names (`<crate>.<crate type>`) only, so a run of one function of a binary leaves the
+#   package's library whole;
+# - records in the crate's dep-info, as `env-dep` lines as rustc does for `env!`, the variables
+#   Thrust reads, the extension's (the command, its arguments, the selection, the identity of the
+#   Thrust binary) and those THRUST_VSCODE_ENV_KEYS names, so that cargo checks the crate again
+#   when one of them changes instead of keeping its earlier result.
 set -eu
 set -f
 
 sep=$(printf '\037')
 
-# The variables Thrust reads (`std::env::var` under src/ and thrust-macros/src/).
+# The variables Thrust reads (`std::env::var` under src/ and thrust-macros/src/), and the
+# extension's.
 tracked="THRUST_CACHE_DIR THRUST_CACHE_SALT THRUST_CANDIDATE_ATOMS THRUST_CHECK_UINT_FACTS
 THRUST_DEDUP_PRED_ARGS THRUST_ENUM_EXPANSION_DEPTH_LIMIT THRUST_FLAT_PRED_ARGS THRUST_INT_RANGE
 THRUST_NO_INJECT_STD THRUST_OUTPUT_DIR THRUST_PER_INSTANCE_GENERICS THRUST_PREPROCESSOR
 THRUST_PREPROCESSOR_ARGS THRUST_PREPROCESSOR_TIMEOUT_SECS THRUST_PRETTY_OUTPUT THRUST_REPORT
 THRUST_REPORT_FORMAT THRUST_REPORT_ONLY THRUST_SOLVER THRUST_SOLVER_ARGS
-THRUST_SOLVER_TIMEOUT_SECS THRUST_SPLIT THRUST_TRY_SPECS THRUST_VERIFY_ONLY"
+THRUST_SOLVER_TIMEOUT_SECS THRUST_SPLIT THRUST_TRY_SPECS THRUST_VERIFY_ONLY
+THRUST_VSCODE_COMMAND THRUST_VSCODE_ARGS THRUST_VSCODE_THRUST_ID THRUST_VSCODE_VERIFY_ONLY
+THRUST_VSCODE_VERIFY_CRATE THRUST_VSCODE_ENV_KEYS"
 
 # run [args...]: the command with the arguments and the extra arguments.
 run() {
@@ -33,8 +40,7 @@ run() {
   "$@"
 }
 
-# The value of the option `$1` in the arguments after it (`--out-dir x`, `--out-dir=x`, and for
-# a codegen option `-C name=x` or `-Cname=x`).
+# The value of the option `$1` in the arguments after it (`--out-dir x` or `--out-dir=x`).
 option() {
   name=$1
   shift
@@ -63,38 +69,58 @@ codegen() {
   done
 }
 
+# The value escaped as rustc escapes an `env-dep` value: `\`, newline and carriage return.
+escape() {
+  printf '%sx' "$1" | awk '
+    { gsub(/\\/, "\\\\"); gsub(/\r/, "\\r"); printf "%s%s", (NR > 1 ? "\\n" : ""), $0 }
+  ' | sed 's/x$//'
+}
+
 # Appends an `env-dep` line for each tracked variable to the dep-info file `$1`, if it exists.
 record_env() {
   [ -f "$1" ] || return 0
-  for var in $tracked; do
+  names="$tracked $(printf '%s' "${THRUST_VSCODE_ENV_KEYS:-}" | tr "$sep" ' ')"
+  for var in $names; do
+    case $var in
+      '' | [0-9]* | *[!A-Za-z0-9_]*) continue ;;
+    esac
     if eval "[ -n \"\${$var+set}\" ]"; then
       eval "value=\$$var"
-      escaped=$(printf '%s' "$value" | sed 's/\\/\\\\/g')
-      printf '# env-dep:%s=%s\n' "$var" "$escaped" >> "$1"
+      printf '# env-dep:%s=%s\n' "$var" "$(escape "$value")" >> "$1"
     else
       printf '# env-dep:%s\n' "$var" >> "$1"
     fi
   done
 }
 
-if [ -z "${CARGO_CRATE_NAME:-}" ]; then
-  run "$@"
-  exit
-fi
-if [ -z "${CARGO_PRIMARY_PACKAGE:-}" ] || [ -z "${THRUST_VSCODE_REPORT_DIR:-}" ]; then
-  unset THRUST_REPORT
+if [ -z "${CARGO_CRATE_NAME:-}" ] || [ -z "${THRUST_VSCODE_REPORT_DIR:-}" ]; then
   run "$@"
   exit
 fi
 
 crate=$(option --crate-name "$@")
 crate_type=$(option --crate-type "$@")
+crate_type=${crate_type:-bin}
 out_dir=$(option --out-dir "$@")
 extra=$(codegen extra-filename "$@")
-THRUST_REPORT_FILE="$THRUST_VSCODE_REPORT_DIR/${CARGO_PKG_NAME}.${crate}.${crate_type:-bin}.jsonl"
-export THRUST_REPORT_FILE
+report="$THRUST_VSCODE_REPORT_DIR/${CARGO_PKG_NAME}.${crate}.${crate_type}.jsonl"
 mkdir -p "$THRUST_VSCODE_REPORT_DIR"
-rm -f "$THRUST_REPORT_FILE"
+rm -f "$report"
+
+if [ -n "${CARGO_PRIMARY_PACKAGE:-}" ]; then
+  THRUST_REPORT_FILE=$report
+  export THRUST_REPORT_FILE
+else
+  unset THRUST_REPORT
+fi
+if [ -n "${THRUST_VSCODE_VERIFY_CRATE:-}" ]; then
+  if [ "$THRUST_VSCODE_VERIFY_CRATE" = "$crate.$crate_type" ]; then
+    THRUST_VERIFY_ONLY=${THRUST_VSCODE_VERIFY_ONLY:-}
+    export THRUST_VERIFY_ONLY
+  else
+    unset THRUST_VERIFY_ONLY
+  fi
+fi
 
 status=0
 run "$@" || status=$?

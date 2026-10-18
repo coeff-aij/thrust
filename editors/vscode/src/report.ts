@@ -688,20 +688,29 @@ function failureLine(failure: Failure): string {
 }
 
 /// The status of the function on the lines `line` to `endLine` of `file` (relative to the
-/// report's root), in a run of that function only (`THRUST_VERIFY_ONLY`): failing when a
-/// refutation is in it, else its part's when the run is split, else the run's when it is sat;
-/// unknown otherwise, as other functions the run checks may be what fails.
+/// report's root), in a run of that function only (`THRUST_VERIFY_ONLY`), from what the report
+/// names on those lines: a refutation fails it; a part (when split) or a contract or loop site
+/// (in one query) gives its status, since Thrust checks the body of a function the report names
+/// so (a function with an unknown in its contract is never trusted, `src/analyze/crate_.rs`).
+/// Lines the report names nothing on are undecided, never passing: the function may be trusted
+/// (`#[thrust::trusted]`, a written contract outside the selection), not compiled (`cfg`), or
+/// checked in one query without a site.
 export function statusWithin(report: Report, file: string, line: number, endLine: number): FunctionResult | undefined {
   if (refusal(report) || !report.verdict) {
     return undefined;
   }
   const inside = (span: Range | null) => span !== null && span.file === file && span.line >= line && span.line <= endLine;
-  const results = functionResults(report);
-  const own = results.filter((r) => inside(r.span) || r.failures.some((f) => inside(f.span)));
-  const failed = own.find((r) => r.status === "fail");
-  if (failed || own.length > 0) {
-    return failed ?? own[0];
+  const own = functionResults(report).filter((r) => inside(r.span) || r.failures.some((f) => inside(f.span)));
+  const result = own.find((r) => r.status === "fail") ?? own.find((r) => r.status === "unknown") ?? own[0];
+  if (result) {
+    return result;
   }
-  const fn = `lines ${line}-${endLine}`;
-  return { fn, span: null, failures: [], ...queryStatus(report.verdict, []) };
+  const split = report.parts.length > 0 ? "" : "; a split run (thrust.split) names every function it checks";
+  return {
+    fn: `lines ${line}-${endLine}`,
+    span: null,
+    failures: [],
+    status: "unknown",
+    message: `the report names nothing on these lines: trusted, not compiled, or without a site${split}`,
+  };
 }

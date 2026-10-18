@@ -9,3 +9,7 @@ version = "0.1.0"
 [[package]]
 name = "arith"
 version = "0.1.0"
+
+[[package]]
+name = "both"
+version = "0.1.0"

@@ -192,6 +192,9 @@ interface Frame {
   kind: FrameKind;
   /// The path segments a function inside this frame is under.
   path: string[];
+  /// Whether the frame is compiled only for tests (`#[cfg(test)]`, `#[test]`), which
+  /// `cargo check` leaves out, so its functions get no lens.
+  testOnly: boolean;
   /// For a function's frame, what it was opened for.
   fn?: FnItem;
 }
@@ -206,12 +209,17 @@ const PRIMITIVES = new Set([
 const NOT_PATHS = new Set(["dyn", "impl", "fn", "unsafe", "extern"]);
 
 class Scanner {
-  private readonly frames: Frame[] = [{ kind: "container", path: [] }];
+  private readonly frames: Frame[] = [{ kind: "container", path: [], testOnly: false }];
   private readonly found: FnItem[] = [];
   /// The tokens of the item being read in a container, attributes left out, and the line it
   /// starts at, its first attribute's.
   private header: Token[] = [];
   private headerLine: number | undefined;
+  /// The item's attributes, each its tokens joined (`cfg(test)`).
+  private attributes: string[] = [];
+  /// The depth of parentheses and brackets in the header, where `;`, `{` and `}` belong to it
+  /// (`fn f(a: [u8; 4])`, `-> [u8; { N }]`).
+  private nesting = 0;
   private i = 0;
 
   constructor(private readonly tokens: Token[]) {}
@@ -235,11 +243,14 @@ class Scanner {
     }
     if (token.text === "#" && this.isAttribute()) {
       this.headerLine ??= token.line;
-      this.skipAttribute();
+      this.attributes.push(this.skipAttribute());
       return;
     }
     this.i++;
-    if (token.text === "{") {
+    if (this.nesting > 0 || "([".includes(token.text)) {
+      this.nesting += "([{".includes(token.text) ? 1 : ")]}".includes(token.text) ? -1 : 0;
+      this.header.push(token);
+    } else if (token.text === "{") {
       this.open();
     } else if (token.text === "}") {
       this.close(token);
@@ -255,7 +266,7 @@ class Scanner {
   private inBody(token: Token): void {
     this.i++;
     if (token.text === "{") {
-      this.frames.push({ kind: "other", path: this.top().path });
+      this.frames.push({ kind: "other", path: this.top().path, testOnly: this.top().testOnly });
     } else if (token.text === "}") {
       this.close(token);
     }
@@ -266,24 +277,29 @@ class Scanner {
     return next === "[" || (next === "!" && this.tokens[this.i + 2]?.text === "[");
   }
 
-  private skipAttribute(): void {
+  /// Skips the attribute at the cursor; its tokens inside the brackets, joined.
+  private skipAttribute(): string {
     while (this.tokens[this.i].text !== "[") {
       this.i++;
     }
+    const start = this.i + 1;
     let depth = 0;
     for (; this.i < this.tokens.length; this.i++) {
       const text = this.tokens[this.i].text;
       depth += "([{".includes(text) ? 1 : ")]}".includes(text) ? -1 : 0;
       if (depth === 0) {
         this.i++;
-        return;
+        break;
       }
     }
+    return this.tokens.slice(start, this.i - 1).map((t) => t.text).join("");
   }
 
   private reset(): void {
     this.header = [];
     this.headerLine = undefined;
+    this.attributes = [];
+    this.nesting = 0;
   }
 
   /// A `{` in a container opens the item its header says.
@@ -291,25 +307,27 @@ class Scanner {
     const parent = this.top();
     const words = withoutVisibility(this.header);
     const fnName = functionName(words);
+    const testOnly = parent.testOnly || this.attributes.some(isTestAttribute);
+    const container = (name: string): Frame => ({ kind: "container", path: [...parent.path, name], testOnly });
     if (fnName !== undefined) {
       const fn: FnItem = { name: fnName, path: [...parent.path, fnName], line: this.headerLine ?? 1, endLine: 0 };
-      this.frames.push({ kind: "fn", path: fn.path, fn });
+      this.frames.push({ kind: "fn", path: fn.path, fn, testOnly });
     } else if (words[0]?.text === "mod" && words[1]?.kind === "ident") {
-      this.frames.push({ kind: "container", path: [...parent.path, words[1].text] });
+      this.frames.push(container(words[1].text));
     } else if (words[0]?.text === "trait" || (words[0]?.text === "unsafe" && words[1]?.text === "trait")) {
       const name = words.find((w, k) => k > 0 && w.kind === "ident" && w.text !== "trait");
-      this.frames.push({ kind: "container", path: [...parent.path, name?.text ?? "_"] });
+      this.frames.push(container(name?.text ?? "_"));
     } else if (isImplHeader(words)) {
-      this.frames.push({ kind: "container", path: [...parent.path, implSelfName(words)] });
+      this.frames.push(container(implSelfName(words)));
     } else {
-      this.frames.push({ kind: "other", path: parent.path });
+      this.frames.push({ kind: "other", path: parent.path, testOnly });
     }
     this.reset();
   }
 
   private close(token: Token): void {
     const frame = this.frames.length > 1 ? this.frames.pop() : undefined;
-    if (frame?.fn) {
+    if (frame?.fn && !frame.testOnly) {
       frame.fn.endLine = token.line;
       this.found.push(frame.fn);
     }
@@ -317,6 +335,12 @@ class Scanner {
       this.reset();
     }
   }
+}
+
+/// Whether an attribute makes its item compiled for tests only: `cfg(test)`, or a test
+/// function's (`test`, `tokio::test`).
+function isTestAttribute(attribute: string): boolean {
+  return attribute === "cfg(test)" || /^(\w+::)*test$/.test(attribute);
 }
 
 /// The header without a leading `pub`, `pub(crate)` or `pub(in path)`.
@@ -357,7 +381,7 @@ function implSelfName(words: Token[]): string {
   const type = words.slice(k, end < 0 ? words.length : end);
   const forAt = topLevelIndex(type, "for");
   const selfType = forAt < 0 ? type : type.slice(forAt + 1);
-  return pathTypeName(selfType, params) ?? "{impl}";
+  return pathTypeName(withoutParens(selfType), params) ?? "{impl}";
 }
 
 /// Reads the generic parameters `<...>` at `k` into `params`: the first identifier of each, after
@@ -383,6 +407,28 @@ function genericParams(words: Token[], k: number, params: Set<string>): number {
     }
   }
   return k;
+}
+
+/// A parenthesized type without its parentheses (`(Foo)` is `Foo`); a tuple is left as it is.
+function withoutParens(type: Token[]): Token[] {
+  if (type[0]?.text !== "(" || type[type.length - 1]?.text !== ")") {
+    return type;
+  }
+  const inner = type.slice(1, -1);
+  return closingBefore(inner) || topLevelIndex(inner, ",") >= 0 ? type : withoutParens(inner);
+}
+
+/// Whether the tokens close more than they open somewhere: `(A) -> (B)` read without its outer
+/// parentheses.
+function closingBefore(tokens: Token[]): boolean {
+  let depth = 0;
+  for (const token of tokens) {
+    depth += "(<[".includes(token.text) ? 1 : ")>]".includes(token.text) ? -1 : 0;
+    if (depth < 0) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function topLevelIndex(tokens: Token[], text: string): number {

@@ -1,0 +1,3 @@
+{"kind":"report","version":2,"root":".","columns":{"base":1,"unit":"char","end":"exclusive"}}
+{"kind":"verdict","verdict":"sat","refutations":"one per query","message":null}
+{"kind":"site","fn":"add_one","site":"contract","span":{"file":"safe.rs","line":1,"column":1,"end_line":1,"end_column":26},"over":"x: int, result: int","template":"fn add_one(x: {int | add_one.pre(x)}) -> {int | add_one.post(x, result)}","preds":[{"name":"add_one.pre","args":["x"]},{"name":"add_one.post","args":["x","result"]}],"solution":null,"inferred":"fn add_one(x: {int | x = 1}) -> {int | result = 2 ∧ x = 1}"}

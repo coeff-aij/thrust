@@ -41,6 +41,18 @@ export interface RunResult {
   durationMs: number;
 }
 
+/// The variables of a run of Thrust with the JSON report, on top of `thrust.env`.
+export function thrustEnv(config: RunConfig): Record<string, string> {
+  const env: Record<string, string> = { ...config.env, THRUST_REPORT: "1", THRUST_REPORT_FORMAT: "json" };
+  if (config.split > 0) {
+    env.THRUST_SPLIT = String(config.split);
+  }
+  if (config.cacheDir !== "") {
+    env.THRUST_CACHE_DIR = config.cacheDir;
+  }
+  return env;
+}
+
 /// What a run of `file` executes, with its output in `scratch`; with `selection`, of the functions
 /// it names only (`THRUST_VERIFY_ONLY`). The file is passed relative to its directory, where the
 /// run starts, so the report's spans name it as the editor does after resolving them against
@@ -51,18 +63,7 @@ export function invocation(file: string, config: RunConfig, scratch: string, sel
     throw new Error("thrust.command is empty");
   }
   const reportFile = path.join(scratch, "report.jsonl");
-  const env: Record<string, string> = {
-    ...config.env,
-    THRUST_REPORT: "1",
-    THRUST_REPORT_FORMAT: "json",
-    THRUST_REPORT_FILE: reportFile,
-  };
-  if (config.split > 0) {
-    env.THRUST_SPLIT = String(config.split);
-  }
-  if (config.cacheDir !== "") {
-    env.THRUST_CACHE_DIR = config.cacheDir;
-  }
+  const env: Record<string, string> = { ...thrustEnv(config), THRUST_REPORT_FILE: reportFile };
   if (selection !== undefined) {
     env.THRUST_VERIFY_ONLY = selection;
   }
@@ -100,8 +101,12 @@ export interface Execution {
   cancelled: boolean;
 }
 
+/// How long a stopped run has to exit after SIGTERM before it is killed.
+const KILL_AFTER_MS = 3000;
+
 /// Runs `command` in a process group of its own, which the time limit and `signal` stop as a
-/// whole (cargo, the compilers it started and their solvers).
+/// whole (cargo, the compilers it started and their solvers): SIGTERM, then SIGKILL to what is
+/// left after KILL_AFTER_MS.
 export function execute(command: Command, timeoutSecs: number, signal?: AbortSignal): Promise<Execution> {
   return new Promise((resolve) => {
     const child = spawn(command.program, command.args, {
@@ -114,7 +119,11 @@ export function execute(command: Command, timeoutSecs: number, signal?: AbortSig
     let stderr = "";
     let timedOut = false;
     let cancelled = false;
-    const stop = () => stopGroup(child.pid);
+    let killer: NodeJS.Timeout | undefined;
+    const stop = () => {
+      signalGroup(child.pid, "SIGTERM");
+      killer ??= setTimeout(() => signalGroup(child.pid, "SIGKILL"), KILL_AFTER_MS);
+    };
     const timer = setTimeout(() => {
       timedOut = true;
       stop();
@@ -128,6 +137,7 @@ export function execute(command: Command, timeoutSecs: number, signal?: AbortSig
     child.stderr.on("data", (chunk: Buffer) => (stderr += chunk.toString("utf8")));
     const finish = (exitCode: number | null, extra = "") => {
       clearTimeout(timer);
+      clearTimeout(killer);
       signal?.removeEventListener("abort", onAbort);
       resolve({ exitCode, stdout, stderr: stderr + extra, timedOut, cancelled });
     };
@@ -136,12 +146,12 @@ export function execute(command: Command, timeoutSecs: number, signal?: AbortSig
   });
 }
 
-function stopGroup(pid: number | undefined): void {
+function signalGroup(pid: number | undefined, name: NodeJS.Signals): void {
   if (pid === undefined) {
     return;
   }
   try {
-    process.kill(-pid, "SIGTERM");
+    process.kill(-pid, name);
   } catch {
     // The group has exited.
   }
