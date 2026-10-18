@@ -9,7 +9,7 @@ use rustc_span::def_id::{DefId, DefIndex, LocalDefId};
 use rustc_span::Span;
 
 use crate::chc;
-use crate::refine::VarPath;
+use crate::refine::{EntryValue, VarPath};
 
 use super::body::DefBody;
 use super::formula::{self, show, Formula, Name, Term};
@@ -278,7 +278,9 @@ fn equation<V>(f: &chc::Formula<V>) -> Option<(&chc::Term<V>, &chc::Term<V>)> {
 
 /// The names the clause's variables may take, best first: what an argument of a predicate of
 /// the same function stands for in its template (the body's atoms before the head's), then the
-/// program variable a typing environment entry mapped to it. The arguments of another function's
+/// program variable a typing environment entry mapped to it, also one a block before held (the
+/// existentials of an inherited precondition, the variables of a written invariant among them),
+/// and a parameter's value on entry. The arguments of another function's
 /// predicates are named in that function, so they name nothing here.
 fn candidate_names(
     clause: &chc::Clause,
@@ -316,11 +318,20 @@ fn candidate_names(
         .iter()
         .chain(&origin.body)
         .chain(std::iter::once(&origin.head));
+    let Some(body) = body else {
+        return candidates;
+    };
     for entry in entries {
         for mapping in entry.mappings() {
-            let path = mapping.var().and_then(path_of);
-            if let (Some(path), Some(body)) = (path, body) {
-                candidates.push((mapping.chc_var(), body.path_name(&path)));
+            let Some(var) = mapping.var() else {
+                continue;
+            };
+            let v = mapping.chc_var();
+            if let Some(path) = path_of(var) {
+                candidates.push((v, body.path_name(&path)));
+            }
+            if let Some(EntryValue(local)) = var.downcast_ref::<EntryValue>() {
+                candidates.push((v, format!("old({})", body.local_name(*local))));
             }
         }
     }
@@ -384,8 +395,9 @@ fn render(
     let mut class_name: BTreeMap<usize, String> = BTreeMap::new();
     let mut used = HashSet::new();
     let mut candidates = candidate_names(clause, def, names, body);
-    // Of two names of one value, a variable's own reads better than its entry value's `old(x)`.
-    candidates.sort_by_key(|(_, name)| name.starts_with("old("));
+    // Of two names of one value, a variable of the program reads better than a temporary of the
+    // MIR, and a variable's own name better than its entry value's `old(x)`.
+    candidates.sort_by_key(|(_, name)| (name.starts_with("__tmp_mir_"), name.starts_with("old(")));
     for (v, name) in candidates {
         let class = classes.find(v.index());
         if class_name.contains_key(&class) || used.contains(&name) {

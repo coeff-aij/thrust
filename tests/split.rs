@@ -427,10 +427,10 @@ fn the_parts_of_one_function_tell_apart() {
     assert_ne!(made_at[0], made_at[1], "{stderr}");
 }
 
-/// Where a refuted constraint still reads variables the program does not name (those of a
-/// written invariant at the loop's exit), their values are shown too.
+/// The variables of a written invariant at the loop's exit, which no longer hold a variable of
+/// the program there, are named by the variables they held at the loop's head.
 #[test]
-fn unnamed_variables_a_constraint_reads_have_values() {
+fn the_variables_of_an_invariant_keep_their_names_after_the_loop() {
     let output = run_with(
         "invariant_not_preserved.rs",
         Some("4"),
@@ -442,5 +442,15 @@ fn unnamed_variables_a_constraint_reads_have_values() {
         .filter(|l| l.contains("where it fails:"))
         .find(|l| l.contains("result = "))
         .unwrap_or_default();
-    assert!(exit.contains("__tmp_chc_"), "{stderr}");
+    assert_eq!(
+        exit.trim(),
+        "= note: where it fails: result = 1, n = 1, i = 1",
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(
+            "c1: (i = n ∧ 0 <= i ∧ 2 * result = i * (i + 1)) ==> 2 * result = n * (n - 1)"
+        ),
+        "{stderr}"
+    );
 }

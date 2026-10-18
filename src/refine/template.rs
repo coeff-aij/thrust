@@ -1295,6 +1295,7 @@ where
             ty,
             locals,
             outer_fn_param_count: body.arg_count,
+            precondition_names: Default::default(),
         }
     }
 

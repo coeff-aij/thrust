@@ -46,6 +46,9 @@ pub struct BasicBlockType {
     // XXX: needs this to disambiguate synthetic unit param from outer fn unit param
     pub(super) outer_fn_param_count: usize,
     pub(super) captured_param_count: usize,
+    /// What the existentials of the precondition hold, for the report, when it is inherited
+    /// from the block before (see [`BasicBlockType::describe_precondition`]).
+    pub(super) precondition_names: crate::refine::ExistentialNames,
 }
 
 impl<'a, D> Pretty<'a, D, termcolor::ColorSpec> for &BasicBlockType
@@ -165,6 +168,16 @@ impl BasicBlockType {
                 v
             }
         });
+    }
+
+    /// Keeps what the existentials of the precondition hold: the variables of the block before,
+    /// which an inherited precondition quantifies.
+    pub fn describe_precondition(&mut self, names: crate::refine::ExistentialNames) {
+        self.precondition_names = names;
+    }
+
+    pub fn precondition_names(&self) -> &crate::refine::ExistentialNames {
+        &self.precondition_names
     }
 
     /// Adds `refinement` to the block's precondition, keeping what is there. On a block

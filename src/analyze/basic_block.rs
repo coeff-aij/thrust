@@ -169,6 +169,8 @@ fn int_term_in_range<'tcx, V: Clone>(
 #[derive(Default)]
 struct PrecondCapture {
     existentials: IndexVec<rty::ExistentialVarIdx, chc::Sort>,
+    /// What the existentials hold in the block before, for the report.
+    names: crate::refine::ExistentialNames,
     body: chc::Body<rty::RefinedTypeVar<Var>>,
     target_equations: Vec<(
         rty::RefinedTypeVar<rty::FunctionParamIdx>,
@@ -204,10 +206,13 @@ impl PrecondCapture {
             });
             self.body.push_conj(body);
         }
-        for assumption in env.assumptions() {
+        for (i, assumption) in env.assumptions().iter().enumerate() {
             let base = self.existentials.len();
             self.existentials
                 .extend(assumption.existentials.iter().cloned());
+            for (ev, name) in env.assumption_names(i).into_iter().flatten() {
+                self.names.insert(*ev + base, name.clone());
+            }
             let body = assumption.body.clone().map_var(|v| match v {
                 PlaceTypeVar::Var(v) => rty::RefinedTypeVar::Free(v),
                 PlaceTypeVar::Existential(ev) => rty::RefinedTypeVar::Existential(ev + base),
@@ -216,11 +221,22 @@ impl PrecondCapture {
         }
     }
 
-    fn finish(mut self, env: &analyze::Env) -> rty::Refinement<rty::FunctionParamIdx> {
+    /// The precondition, and what its existentials hold in the block before.
+    fn finish(
+        mut self,
+        env: &analyze::Env,
+    ) -> (
+        rty::Refinement<rty::FunctionParamIdx>,
+        crate::refine::ExistentialNames,
+    ) {
         let mut substs = HashMap::new();
+        let paths = env.temp_paths();
         for (v, sort) in env.dependencies() {
             let ev = self.existentials.push(sort);
             substs.insert(v, ev);
+            if let Some(name) = env.description(v, &paths) {
+                self.names.insert(ev, name);
+            }
         }
 
         let map = |v| match v {
@@ -232,7 +248,7 @@ impl PrecondCapture {
         for (t, term) in self.target_equations {
             body.push_conj(chc::Term::var(t).equal_to(term.map_var(map)));
         }
-        rty::Refinement::new(self.existentials, body)
+        (rty::Refinement::new(self.existentials, body), self.names)
     }
 }
 
@@ -1312,9 +1328,23 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             capture.push(rty::RefinedTypeVar::Free(param_idx), pty);
         }
         capture.push_env_state(&self.env);
-        bty.set_precondition(capture.finish(&self.env));
+        let (precondition, mut names) = capture.finish(&self.env);
+        // Of what the block before held, the report names the program's variables.
+        names.retain(|_, name| {
+            let path = name.downcast_ref::<crate::refine::VarPath>();
+            path.is_none_or(|path| self.names_local(path.local))
+        });
+        bty.set_precondition(precondition);
+        bty.describe_precondition(names);
         self.ctx
             .register_basic_block_ty_with_precondition(self.analysis_key, bb, bty);
+    }
+
+    /// Whether the program names `local`, as its debug info says.
+    fn names_local(&self, local: Local) -> bool {
+        self.body.var_debug_info.iter().any(|info| {
+            matches!(info.value, mir::VarDebugInfoContents::Place(place) if place.local == local && place.projection.is_empty())
+        })
     }
 
     fn with_assumptions<F, T>(&mut self, assumptions: Vec<impl Into<Assumption>>, callback: F) -> T
@@ -2289,7 +2319,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     param_terms.insert(param_idx, term);
                 }
                 BasicBlockTypeParamKind::OuterFnParam(outer_idx) => {
-                    let var = self.env.immut_bind_tmp(param_unrefined_rty);
+                    let local = analyze::local_of_function_param(outer_idx);
+                    let var = self.env.bind_entry_value(local, param_unrefined_rty);
                     param_terms.insert(param_idx, chc::Term::var(var.into()));
                     outer_fn_param_vars.insert(outer_idx, var);
 
@@ -2298,7 +2329,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     // (`OuterFnParam`) and its current local. The invariant cannot express both
                     // views of the same argument with the current syntax. As an ad-hoc workaround,
                     // equate them when the local is non-flow, since its representation cannot change.
-                    let local = analyze::local_of_function_param(outer_idx);
                     if !param_ty.to_sort().is_singleton() && self.env.is_non_flow_local(local) {
                         assumption.body.push_conj(
                             chc::Term::var(PlaceTypeVar::Var(var))
@@ -2320,19 +2350,26 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             );
         }
 
+        // The precondition, which the last parameter carries, may say what its existentials hold.
+        let mut names = crate::refine::ExistentialNames::new();
         for (idx, param) in expected_params.iter_enumerated() {
             let rty::Refinement { existentials, body } = param.refinement.clone();
+            let base = assumption.existentials.len();
             assumption.body.push_conj(body.subst_var(|v| match v {
                 rty::RefinedTypeVar::Value => param_terms[&idx].clone(),
                 rty::RefinedTypeVar::Free(v) => param_terms[&v].clone(),
-                rty::RefinedTypeVar::Existential(ev) => chc::Term::var(PlaceTypeVar::Existential(
-                    ev + assumption.existentials.len(),
-                )),
+                rty::RefinedTypeVar::Existential(ev) => {
+                    chc::Term::var(PlaceTypeVar::Existential(ev + base))
+                }
             }));
             assumption.existentials.extend(existentials);
+            if Some(idx) == expected_params.last_index() {
+                let precondition_names = bb_ty.precondition_names().iter();
+                names.extend(precondition_names.map(|(ev, name)| (*ev + base, name.clone())));
+            }
         }
 
-        self.env.assume(assumption);
+        self.env.assume_described(assumption, names);
 
         outer_fn_param_vars
     }

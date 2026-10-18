@@ -162,6 +162,15 @@ pub struct VarPath {
     pub steps: Vec<PathStep>,
 }
 
+/// The value a function's parameter, the local, had on entry, which a block's type keeps beside
+/// the local's current value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EntryValue(pub Local);
+
+/// What the existentials of an assumption hold, by their index, for the report: a [`VarPath`] or
+/// an [`EntryValue`].
+pub type ExistentialNames = HashMap<rty::ExistentialVarIdx, debug::ErasedVar>;
+
 impl VarPath {
     fn then(&self, step: PathStep) -> VarPath {
         let mut steps = self.steps.clone();
@@ -570,7 +579,11 @@ pub struct Env<T> {
     locals: BTreeMap<Local, rty::RefinedType<Var>>,
     flow_locals: BTreeMap<Local, FlowBinding>,
     temp_vars: IndexVec<TempVarIdx, TempVarBinding>,
+    /// The temporaries bound to a parameter's value on entry.
+    entry_values: HashMap<TempVarIdx, EntryValue>,
     assumptions: Vec<Assumption>,
+    /// What the existentials of an assumption hold, by its index in `assumptions`.
+    assumption_names: HashMap<usize, ExistentialNames>,
 
     enum_defs: T,
 
@@ -607,12 +620,16 @@ where
             }
             builder.add_environment(instantiator.instantiate(), origin);
         }
-        for assumption in &self.assumptions {
+        for (i, assumption) in self.assumptions.iter().enumerate() {
             let mut origin = debug::origin::Entry::assumption(assumption);
             let mut evs = HashMap::new();
+            let names = self.assumption_names.get(&i);
             for (ev, sort) in assumption.existentials.iter_enumerated() {
                 let tv = builder.add_var(sort.clone());
-                origin.add_existential_var_mapping(ev, tv);
+                match names.and_then(|names| names.get(&ev)) {
+                    Some(name) => origin.add_described_var_mapping(ev, tv, name.clone()),
+                    None => origin.add_existential_var_mapping(ev, tv),
+                }
                 evs.insert(ev, tv);
             }
             let body = assumption.body.clone().map_var(|v| match v {
@@ -649,7 +666,9 @@ where
             locals: Default::default(),
             flow_locals: Default::default(),
             temp_vars: IndexVec::new(),
+            entry_values: HashMap::new(),
             assumptions: Vec::new(),
+            assumption_names: HashMap::new(),
             enum_defs,
             enum_expansion_depth_limit: std::env::var("THRUST_ENUM_EXPANSION_DEPTH_LIMIT")
                 .ok()
@@ -710,16 +729,36 @@ where
     /// What `var` holds, as a local and the steps from it (see [`VarPath`]), kept with its type
     /// erased for the report; `var` itself when it is no temporary of a local.
     fn described(&self, var: Var, paths: &HashMap<TempVarIdx, VarPath>) -> debug::ErasedVar {
+        self.description(var, paths)
+            .unwrap_or_else(|| debug::ErasedVar::new(var))
+    }
+
+    /// What `var` holds, when it is a local, a temporary of one or a parameter's value on entry.
+    pub fn description(
+        &self,
+        var: Var,
+        paths: &HashMap<TempVarIdx, VarPath>,
+    ) -> Option<debug::ErasedVar> {
         match var {
-            Var::Local(local) => debug::ErasedVar::new(VarPath {
+            Var::Local(local) => Some(debug::ErasedVar::new(VarPath {
                 local,
                 steps: Vec::new(),
-            }),
-            Var::Temp(temp) => match paths.get(&temp) {
-                Some(path) => debug::ErasedVar::new(path.clone()),
-                None => debug::ErasedVar::new(var),
+            })),
+            Var::Temp(temp) => match (paths.get(&temp), self.entry_values.get(&temp)) {
+                (Some(path), _) => Some(debug::ErasedVar::new(path.clone())),
+                (None, Some(entry)) => Some(debug::ErasedVar::new(*entry)),
+                (None, None) => None,
             },
         }
+    }
+
+    /// Binds a temporary to the value parameter `local` had on entry.
+    pub fn bind_entry_value(&mut self, local: Local, rty: rty::RefinedType<Var>) -> Var {
+        let var = self.immut_bind_tmp(rty);
+        if let Var::Temp(temp) = var {
+            self.entry_values.insert(temp, EntryValue(local));
+        }
+        var
     }
 
     pub fn push_temp_var(&mut self, ty: rty::Type<Var>) -> TempVarIdx {
@@ -1004,6 +1043,19 @@ where
         let assumption = assumption.into();
         tracing::debug!(assumption = %assumption.display(), "assume");
         self.assumptions.push(assumption);
+    }
+
+    /// Assumes `assumption`, whose existentials hold what `names` says.
+    pub fn assume_described(&mut self, assumption: Assumption, names: ExistentialNames) {
+        if !names.is_empty() {
+            self.assumption_names.insert(self.assumptions.len(), names);
+        }
+        self.assume(assumption);
+    }
+
+    /// What the existentials of each assumption hold, by its index in [`Env::assumptions`].
+    pub fn assumption_names(&self, i: usize) -> Option<&ExistentialNames> {
+        self.assumption_names.get(&i)
     }
 
     pub fn extend_assumptions(&mut self, assumptions: Vec<impl Into<Assumption>>) {
