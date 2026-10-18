@@ -33,10 +33,41 @@ pub use flatten::flatten_recursive_pred_args;
 pub use solver::{verdict, Answer, Capabilities, CheckSatError, Config, Refused, Requests};
 pub use unbox::{unbox, unbox_formula, unbox_sort};
 
-/// A name of a datatype.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+/// A name of a datatype, or of a constructor or a selector of one.
+///
+/// Two symbols are the same when they are written the same in the query; `name` only changes
+/// how Thrust's printer shows one.
+#[derive(Debug, Clone)]
 pub struct DatatypeSymbol {
     inner: String,
+    /// The path of the item it was made from, shown in place of `inner`.
+    name: Option<String>,
+}
+
+impl PartialEq for DatatypeSymbol {
+    fn eq(&self, other: &Self) -> bool {
+        self.inner == other.inner
+    }
+}
+
+impl Eq for DatatypeSymbol {}
+
+impl Hash for DatatypeSymbol {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.inner.hash(state)
+    }
+}
+
+impl PartialOrd for DatatypeSymbol {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for DatatypeSymbol {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.inner.cmp(&other.inner)
+    }
 }
 
 impl std::fmt::Display for DatatypeSymbol {
@@ -50,13 +81,37 @@ where
     D: pretty::DocAllocator<'a, termcolor::ColorSpec>,
 {
     fn pretty(self, allocator: &'a D) -> pretty::DocBuilder<'a, D, termcolor::ColorSpec> {
-        allocator.text(self.inner.clone())
+        allocator.text(self.name.as_deref().unwrap_or(&self.inner).to_owned())
     }
 }
 
 impl DatatypeSymbol {
     pub fn new(inner: String) -> Self {
-        DatatypeSymbol { inner }
+        DatatypeSymbol { inner, name: None }
+    }
+
+    /// This symbol, printed as `name`, the path of the item it was made from.
+    pub fn named(self, name: String) -> Self {
+        Self {
+            name: Some(name),
+            ..self
+        }
+    }
+
+    /// The symbol of `member` of this one, `<self>.<member>`, printed as `<name>::<member>`.
+    pub fn member(&self, member: impl std::fmt::Display) -> Self {
+        DatatypeSymbol {
+            inner: format!("{}.{}", self.inner, member),
+            name: self.name.as_ref().map(|name| format!("{name}::{member}")),
+        }
+    }
+
+    /// This symbol with `suffix` appended, printed by the same name.
+    pub fn suffixed(&self, suffix: impl std::fmt::Display) -> Self {
+        DatatypeSymbol {
+            inner: format!("{}{}", self.inner, suffix),
+            name: self.name.clone(),
+        }
     }
 }
 
@@ -1607,8 +1662,8 @@ where
         allocator
             .text("matcher_pred")
             .append(
-                allocator
-                    .as_string(&self.datatype_symbol)
+                self.datatype_symbol
+                    .pretty(allocator)
                     .append(args.angles())
                     .angles(),
             )
@@ -1843,7 +1898,7 @@ where
             Pred::Matcher(p) => p.pretty(allocator),
             Pred::UserDefined(p) => p.pretty(allocator),
             Pred::ForallPred(p) => p.pretty(allocator),
-            Pred::Tester(c) => allocator.text(format!("is<{c}>")),
+            Pred::Tester(c) => allocator.text("is").append(c.pretty(allocator).angles()),
         }
     }
 }

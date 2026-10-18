@@ -151,7 +151,7 @@ impl std::fmt::Display for FlowBinding {
 #[derive(Debug, Clone)]
 enum TempVarBinding {
     Flow(FlowBinding),
-    Type(rty::RefinedType<Var>),
+    Type(Box<rty::RefinedType<Var>>),
 }
 
 /// One step from a value to a value it holds, in a [`VarPath`].
@@ -775,7 +775,9 @@ where
 
     pub fn push_temp_var(&mut self, ty: rty::Type<Var>) -> TempVarIdx {
         self.temp_vars
-            .push(TempVarBinding::Type(rty::RefinedType::unrefined(ty)))
+            .push(TempVarBinding::Type(Box::new(rty::RefinedType::unrefined(
+                ty,
+            ))))
     }
 
     // when var = Var::Temp(idx), idx must be temp_vars.next_index() in bind_*
@@ -848,7 +850,7 @@ where
         };
         assert_eq!(
             final_,
-            self.temp_vars.push(TempVarBinding::Type(*ty.elem.clone()))
+            self.temp_vars.push(TempVarBinding::Type(ty.elem.clone()))
         );
         let mut inner_ty = *ty.elem;
         inner_ty.extend_refinement(current_refinement);
@@ -921,11 +923,11 @@ where
         let def = self.enum_defs.enum_def(&ty.symbol);
         let matcher_pred = chc::MatcherPred::new(ty.symbol.clone(), ty.arg_sorts());
 
-        let discr_var = self
-            .temp_vars
-            .push(TempVarBinding::Type(rty::RefinedType::unrefined(
-                rty::Type::int(),
-            )));
+        let discr_var =
+            self.temp_vars
+                .push(TempVarBinding::Type(Box::new(rty::RefinedType::unrefined(
+                    rty::Type::int(),
+                ))));
 
         let mut variants = IndexVec::new();
         for variant_def in &def.variants {
@@ -1012,7 +1014,10 @@ where
                 self.locals.insert(local, rty);
             }
             Var::Temp(temp) => {
-                assert_eq!(temp, self.temp_vars.push(TempVarBinding::Type(rty)));
+                assert_eq!(
+                    temp,
+                    self.temp_vars.push(TempVarBinding::Type(Box::new(rty)))
+                );
             }
         }
     }
@@ -1046,7 +1051,9 @@ where
     }
 
     pub fn immut_bind_tmp(&mut self, rty: rty::RefinedType<Var>) -> Var {
-        let idx = self.temp_vars.push(TempVarBinding::Type(rty.clone()));
+        let idx = self
+            .temp_vars
+            .push(TempVarBinding::Type(Box::new(rty.clone())));
         tracing::debug!(temp = ?idx, rty = %rty.display(), "immut_bind_tmp");
         Var::Temp(idx)
     }
@@ -1287,7 +1294,7 @@ where
         {
             FlowBinding::Box { current: x, elem } => {
                 let inner_ty = self.var_type(x.into());
-                self.temp_vars[prophecy] = TempVarBinding::Type(*elem.clone());
+                self.temp_vars[prophecy] = TempVarBinding::Type(elem.clone());
                 self.insert_flow_binding(
                     var,
                     FlowBinding::Box {
@@ -1300,7 +1307,7 @@ where
             FlowBinding::Mut(x1, x2) => {
                 let inner_ty = self.var_type(x1.into());
                 let elem = self.var(x2.into()).expect("unbound prophecy").clone();
-                self.temp_vars[prophecy] = TempVarBinding::Type(elem.clone());
+                self.temp_vars[prophecy] = TempVarBinding::Type(Box::new(elem.clone()));
                 self.insert_flow_binding(var, FlowBinding::Mut(prophecy, x2));
                 inner_ty.mut_with(prophecy, elem)
             }
@@ -1386,7 +1393,7 @@ where
                 });
             pointer.elem.refinement.push_conj(invariant);
         }
-        self.temp_vars[prophecy_var] = TempVarBinding::Type(*pointer.elem.clone());
+        self.temp_vars[prophecy_var] = TempVarBinding::Type(pointer.elem.clone());
         borrowed
     }
 }
