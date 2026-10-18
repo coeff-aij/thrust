@@ -1243,13 +1243,9 @@ impl<'tcx> Analyzer<'tcx> {
         self.impl_methods_with_own_contract.contains(&def_id)
     }
 
-    /// Whether `def_id` is an ignored function of the crate with no contract of its own, so that
-    /// a call of it has no checked type. A `#[thrust::trusted]` function with a contract is
-    /// ignored too, and has that contract, given by an extern-spec wrapper.
+    /// Whether `def_id` is a function of the crate marked `#[thrust::ignored]`, which has no type.
     pub fn is_unchecked_crate_fn(&self, def_id: DefId) -> bool {
         is_ignored_crate_fn(self.tcx, def_id)
-            && !self.has_own_impl_contract(def_id)
-            && !self.defs.contains_key(&def_id)
     }
 
     /// Stops if the program runs an ignored function of the crate, as Verus's

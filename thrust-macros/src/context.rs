@@ -134,7 +134,7 @@ fn extern_spec_impl(item_impl: &mut syn::ItemImpl) -> syn::Result<TokenStream2> 
         })
         .collect();
 
-    let trusted_path: syn::Path = syn::parse_quote!(thrust::trusted);
+    let ignored_path: syn::Path = syn::parse_quote!(thrust::ignored);
     let mut wrappers = Vec::new();
     for item in &mut item_impl.items {
         let syn::ImplItem::Fn(method) = item else {
@@ -144,12 +144,11 @@ fn extern_spec_impl(item_impl: &mut syn::ItemImpl) -> syn::Result<TokenStream2> 
         if specs.is_empty() {
             continue;
         }
-        // A trusted body is not verified against the specification the wrapper now
-        // carries, mirroring what an inherent impl's expansion does with the attribute.
-        for attr in &mut method.attrs {
-            if attr.path() == &trusted_path {
-                *attr = syn::parse_quote!(#[thrust::ignored]);
-            }
+        if method.attrs.iter().any(|attr| attr.path() == &ignored_path) {
+            return Err(syn::Error::new_spanned(
+                &method.sig,
+                crate::spec::IGNORED_WITH_CONTRACT,
+            ));
         }
         wrappers.push(extern_spec_wrapper(
             method,
