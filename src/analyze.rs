@@ -688,7 +688,7 @@ pub fn fatal_ignored_call<'tcx>(
 }
 
 /// The trait bounds `def_id` puts on `args`, its own and its parent's.
-fn trait_bounds<'tcx>(
+pub fn trait_bounds<'tcx>(
     tcx: TyCtxt<'tcx>,
     def_id: DefId,
     args: mir_ty::GenericArgsRef<'tcx>,
@@ -1758,57 +1758,58 @@ impl<'tcx> Analyzer<'tcx> {
         }
     }
 
-    /// Checks that a trait method call resolved to `def_id`, a std impl's method or a trait's
-    /// default body, at `args` relies on no ignored function of the crate, and records for
-    /// `owner_fn_id` the bounds it relies on at type parameters. The specification such a call
-    /// takes, the trait's or the std impl's own, holds of the std impl only where the impls its
-    /// trait bounds resolve to meet their traits' specifications (`<&S as PartialEq>::eq` runs
-    /// `S::eq`), and an ignored body is not checked against them. The bounds are followed
-    /// through the std impls they resolve to; a bound at a type parameter is checked at each
+    /// Checks that `bounds`, which a call of a std function or a trusted derive in `owner_fn_id`
+    /// relies on, select no impl of the crate with an ignored function, and records for
+    /// `owner_fn_id` those at its type parameters. A std function's specification, the trait's
+    /// or its own, holds only where the impls its trait bounds select meet their traits'
+    /// specifications (`<&S as PartialEq>::eq` runs `S::eq`, `vec![x; n]` runs `x.clone()`), and
+    /// an ignored body is not checked against them. Each bound is followed through the nested
+    /// obligations of the impl that trait selection picks for it, a std impl's, a crate impl's
+    /// or a builtin one (the `Clone` of a tuple); a bound at a type parameter is checked at each
     /// instance that reuses the contract of the body ([`Self::check_reused_bound_impls`]).
-    pub fn check_std_call_bounds(
+    pub fn check_bound_impls(
         &self,
         owner_fn_id: DefId,
         typing_env: mir_ty::TypingEnv<'tcx>,
-        def_id: DefId,
-        args: mir_ty::GenericArgsRef<'tcx>,
-    ) {
-        for bound in self.bounds_at_params(typing_env, trait_bounds(self.tcx, def_id, args)) {
-            self.record_assumed_bound_impl(owner_fn_id, bound);
-        }
-    }
-
-    /// Follows `bounds` through the impls they resolve to in `typing_env`, stopping at an impl of
-    /// the crate with an ignored function, and returns those still at a type parameter.
-    fn bounds_at_params(
-        &self,
-        typing_env: mir_ty::TypingEnv<'tcx>,
         bounds: Vec<mir_ty::TraitRef<'tcx>>,
-    ) -> Vec<mir_ty::TraitRef<'tcx>> {
+    ) -> bool {
+        use mir_ty::TypeVisitableExt as _;
+        use rustc_infer::infer::TyCtxtInferExt as _;
         use rustc_middle::traits::ImplSource;
+        use rustc_trait_selection::traits::{Obligation, ObligationCause, SelectionContext};
 
-        let mut at_params = Vec::new();
+        let (infcx, param_env) = self.tcx.infer_ctxt().build_with_typing_env(typing_env);
+        let mut selcx = SelectionContext::new(&infcx);
+        let mut grew = false;
         let mut visited = HashSet::new();
         let mut pending = bounds;
         while let Some(bound) = pending.pop() {
             if !visited.insert(bound) {
                 continue;
             }
-            let selected = self
-                .tcx
-                .codegen_select_candidate(typing_env.as_query_input(bound));
-            match selected {
-                Ok(ImplSource::UserDefined(data)) if data.impl_def_id.is_local() => {
-                    self.check_impl_not_ignored(data.impl_def_id);
+            let obligation = Obligation::new(self.tcx, ObligationCause::dummy(), param_env, bound);
+            let nested = match selcx.select(&obligation) {
+                Ok(Some(ImplSource::UserDefined(data))) => {
+                    if data.impl_def_id.is_local() {
+                        self.check_impl_not_ignored(data.impl_def_id);
+                    }
+                    data.nested
                 }
-                Ok(ImplSource::UserDefined(data)) => {
-                    pending.extend(trait_bounds(self.tcx, data.impl_def_id, data.args));
+                Ok(Some(ImplSource::Builtin(_, nested))) => nested,
+                Ok(Some(ImplSource::Param(_))) => {
+                    grew |= self.record_assumed_bound_impl(owner_fn_id, bound);
+                    continue;
                 }
-                Ok(ImplSource::Param(_)) => at_params.push(bound),
-                _ => {}
-            }
+                _ => continue,
+            };
+            pending.extend(nested.into_iter().filter_map(|obligation| {
+                let predicate = infcx.resolve_vars_if_possible(obligation.predicate);
+                let trait_ref = predicate.as_trait_clause()?.skip_binder().trait_ref;
+                let trait_ref = self.tcx.erase_regions(trait_ref);
+                (!trait_ref.has_infer()).then_some(trait_ref)
+            }));
         }
-        at_params
+        grew
     }
 
     /// Stops at an ignored function of the crate's impl `impl_def_id`.
@@ -1842,8 +1843,6 @@ impl<'tcx> Analyzer<'tcx> {
     /// ([`Self::check_std_call_bounds`]). A bound still at a type parameter of the instance's
     /// caller is recorded for that caller in turn.
     pub fn check_reused_bound_impls(&self) {
-        use mir_ty::TypeVisitableExt as _;
-
         let mut seen_instances = 0;
         loop {
             let instances = self.reused_generic_instances.borrow().clone();
@@ -1857,16 +1856,14 @@ impl<'tcx> Analyzer<'tcx> {
                     .get(&root)
                     .cloned()
                     .unwrap_or_default();
-                for bound in assumed {
-                    let bound =
-                        mir_ty::EarlyBinder::bind(bound).instantiate(self.tcx, generic_args);
-                    if bound.has_param() {
-                        grew |= self.record_assumed_bound_impl(caller_def_id, bound);
-                        continue;
-                    }
-                    let typing_env = mir_ty::TypingEnv::fully_monomorphized();
-                    self.bounds_at_params(typing_env, vec![bound]);
-                }
+                let bounds = assumed
+                    .into_iter()
+                    .map(|bound| {
+                        mir_ty::EarlyBinder::bind(bound).instantiate(self.tcx, generic_args)
+                    })
+                    .collect();
+                let typing_env = mir_ty::TypingEnv::post_analysis(self.tcx, caller_def_id);
+                grew |= self.check_bound_impls(caller_def_id, typing_env, bounds);
             }
             if !grew {
                 return;

@@ -227,6 +227,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         // method's spec does not apply its body is analyzed (`Analyzer::def_ty_with_args`).
         let trusted_derive = analyzer.is_trusted_derive() && analyzer.trait_item_ty().is_some();
         if trusted_derive {
+            analyzer.check_derived_field_impls();
             self.skip_analysis.insert(local_def_id);
         }
 

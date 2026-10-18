@@ -1499,13 +1499,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 }
             }
             ResolvedCallable::Concrete(resolved_def_id, resolved_args) => {
-                if !resolved_def_id.is_local() && self.tcx.trait_of_assoc(def_id).is_some() {
-                    self.ctx.check_std_call_bounds(
-                        caller_def_id,
-                        self.typing_env,
-                        resolved_def_id,
-                        resolved_args,
-                    );
+                if !resolved_def_id.is_local() {
+                    let bounds = analyze::trait_bounds(self.tcx, resolved_def_id, resolved_args);
+                    self.ctx
+                        .check_bound_impls(caller_def_id, self.typing_env, bounds);
                 }
                 // The impl the call resolves to is the one that runs, so its spec is used when it
                 // has one: an extern spec of a std impl, or a local impl method's own contract,
