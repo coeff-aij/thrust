@@ -129,7 +129,7 @@ pub fn components(name: &str, value: Term) -> Vec<(String, Term)> {
 /// `p(…)` with each argument by the variable of the template it is, as `name ← term`, a `&mut`
 /// as its current and final values `*name` and `°name` (by `sorts`, also when the term is a
 /// variable), and the name alone where the term is that variable; an argument of no variable of
-/// the template is its term.
+/// the template is `_ ← term`, and a user predicate's arguments are their terms.
 fn applied(pred: &str, params: &[Option<String>], sorts: &[chc::Sort], args: Vec<Term>) -> String {
     if args.is_empty() {
         return pred.to_owned();
@@ -137,9 +137,18 @@ fn applied(pred: &str, params: &[Option<String>], sorts: &[chc::Sort], args: Vec
     let mut shown = Vec::new();
     for (k, arg) in args.into_iter().enumerate() {
         let arg = tidy_term(arg);
-        let Some(Some(name)) = params.get(k) else {
-            shown.push(arg.one_line());
-            continue;
+        let name = match params.get(k) {
+            Some(Some(name)) => name,
+            // An argument of no variable of the template, apart from the named ones.
+            Some(None) => {
+                shown.push(format!("_ ← {}", arg.one_line()));
+                continue;
+            }
+            // A user predicate's, by position.
+            None => {
+                shown.push(arg.one_line());
+                continue;
+            }
         };
         let arg = match (arg, sorts.get(k)) {
             (Term::Var(v), Some(chc::Sort::Mut(_))) => Term::Mut(

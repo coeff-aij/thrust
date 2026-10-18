@@ -458,14 +458,23 @@ fn a_return_is_at_the_closing_brace() {
     );
 }
 
-/// A solution defines an unknown with `:=`; an unknown's argument is given with `←`, so the two
-/// read apart.
+/// A solution defines an unknown with `:=`; an unknown's argument is given with `←`, and one of
+/// no template variable as `_ ← term`, so the three read apart.
 #[test]
 fn solutions_and_arguments_read_apart() {
     let output = report("loop_fail.rs", "constraints");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("main.loop#1(x ← "), "{stderr}");
     assert!(!stderr.contains(" := "), "{stderr}");
+    let solved = report("inferred_pass.rs", "solution,constraints");
+    let stderr = String::from_utf8_lossy(&solved.stderr);
+    assert!(stderr.contains("double.pre(x) := "), "{stderr}");
+    let call = report("take_max_same.rs", "constraints");
+    let stderr = String::from_utf8_lossy(&call.stderr);
+    assert!(
+        stderr.contains("main.take_max#1(*m, °m, _ ← a, _ ← b, "),
+        "{stderr}"
+    );
 }
 
 /// The constraint of a law proved by an empty body is at the law's `ensures`, which it checks,
