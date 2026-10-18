@@ -28,6 +28,10 @@ pub struct Analyzer<'tcx, 'ctx> {
     ctx: &'ctx mut analyze::Analyzer<'tcx>,
 
     skip_analysis: HashSet<LocalDefId>,
+    /// The fn-like defs whose bodies are trusted rather than analyzed: `#[thrust::trusted]` ones,
+    /// those outside `THRUST_VERIFY_ONLY` that are trusted for their contract, and the closures in
+    /// them.
+    trusted: HashSet<LocalDefId>,
     selection: Option<analyze::selection::Selection>,
 }
 
@@ -97,6 +101,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         .is_some()
                     {
                         self.skip_analysis.insert(local_target_def_id);
+                        self.trusted.insert(local_target_def_id);
                     }
                 }
                 if matches!(
@@ -141,6 +146,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         for local_target_def_id in local_spec_targets {
             if self.is_outside_selection(local_target_def_id) {
                 self.skip_analysis.insert(local_target_def_id);
+                self.trusted.insert(local_target_def_id);
             }
         }
         // A closure is skipped when its typeck root is, so roots are refined first.
@@ -223,6 +229,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 self.tcx.def_path_str(local_def_id)
             );
             self.skip_analysis.insert(local_def_id);
+            self.trusted.insert(local_def_id);
         }
 
         let is_injected_std = analyzer.is_injected_std();
@@ -257,6 +264,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             if root_local_def_id != local_def_id && self.skip_analysis.contains(&root_local_def_id)
             {
                 self.skip_analysis.insert(local_def_id);
+                if self.trusted.contains(&root_local_def_id) {
+                    self.trusted.insert(local_def_id);
+                }
                 return;
             }
         }
@@ -270,6 +280,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             if !ty.has_pred_var() {
                 tracing::debug!("trusted outside THRUST_VERIFY_ONLY");
                 self.skip_analysis.insert(local_def_id);
+                self.trusted.insert(local_def_id);
             }
             expected = Some(ty);
         }
@@ -650,6 +661,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             ctx,
             tcx,
             skip_analysis,
+            trusted: HashSet::new(),
             selection,
         }
     }
@@ -699,13 +711,16 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .into_iter()
             .map(|def_id| mir_ty::Instance::mono(self.tcx, def_id))
             .collect();
-        let trusted = |def_id: rustc_span::def_id::DefId| {
-            self.tcx
-                .get_attrs_by_path(def_id, &analyze::annot::trusted_path())
-                .next()
-                .is_some()
+        let crate_mode = |def_id: rustc_span::def_id::DefId| {
+            let local = def_id.as_local()?;
+            if self.trusted.contains(&local) {
+                return Some(analyze::Mode::Trusted);
+            }
+            let analyzed =
+                self.tcx.def_kind(def_id).is_fn_like() && !self.skip_analysis.contains(&local);
+            analyzed.then_some(analyze::Mode::Verified)
         };
-        self.ctx.check_ignored_not_run(roots, generic, trusted);
+        self.ctx.stop_ignored_reached(roots, generic, crate_mode);
     }
 
     /// Records every `#[thrust::law]` function declared in a local trait.

@@ -723,6 +723,14 @@ fn clause_args<'tcx>(clause: &mir_ty::Clause<'tcx>) -> Vec<mir_ty::GenericArg<'t
     Vec::new()
 }
 
+/// Whether the nearest crate function on a path through the program is one Thrust verifies or a
+/// trusted one, whose body may run an ignored function ([`Analyzer::stop_ignored_reached`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Mode {
+    Verified,
+    Trusted,
+}
+
 /// A trait method at generic arguments.
 type MethodCall<'tcx> = (DefId, mir_ty::GenericArgsRef<'tcx>);
 
@@ -1246,11 +1254,6 @@ impl<'tcx> Analyzer<'tcx> {
         self.impl_methods_with_own_contract.contains(&def_id)
     }
 
-    /// Whether `def_id` is a function of the crate marked `#[thrust::ignored]`, which has no type.
-    pub fn is_unchecked_crate_fn(&self, def_id: DefId) -> bool {
-        is_ignored_crate_fn(self.tcx, def_id)
-    }
-
     /// Stops if a function Thrust verifies can run an ignored function of the crate, as Verus's
     /// verified code may not use an `#[verifier::external]` item. An ignored function is
     /// invisible to the analysis, so a contract the verified code relies on it to meet (the
@@ -1261,40 +1264,47 @@ impl<'tcx> Analyzer<'tcx> {
     /// Thrust analyzed or reused a generic contract at, and the calls a generic body makes at
     /// concrete arguments (`generic_roots`). From them the calls, trait methods, vtables, drop
     /// glue, function pointers and closures each instance uses (`items_of_instance`, as rustc's
-    /// monomorphization collector) are followed, into std code too, but not into a body the
-    /// crate marked `#[thrust::trusted]` (`trusted`), which may run anything, as Verus's
-    /// `external_body` and Creusot's and Prusti's `#[trusted]` may. This over-approximates what
-    /// the verified functions can run: an instance reached only on a path to a panic counts.
-    pub fn check_ignored_not_run(
+    /// monomorphization collector) are followed, into std code and trusted bodies too, each in
+    /// the mode of the nearest crate function on the path (`crate_mode`): a trusted body may run
+    /// an ignored function, as Verus's `external_body` and Creusot's and Prusti's `#[trusted]`
+    /// may, but a verified function it runs may not. A trusted instance entered from verified
+    /// code has its contract relied on, which holds only where the impls its bounds select meet
+    /// their traits' specifications, so those impls must not have ignored functions either. This
+    /// over-approximates what the verified functions can run: an instance reached only on a path
+    /// to a panic counts.
+    pub fn stop_ignored_reached(
         &self,
         roots: Vec<mir_ty::Instance<'tcx>>,
         generic_roots: Vec<DefId>,
-        trusted: impl Fn(DefId) -> bool,
+        crate_mode: impl Fn(DefId) -> Option<Mode>,
     ) {
         use rustc_middle::mir::mono::{CollectionMode, MonoItem};
 
         let mut parent = HashMap::new();
         let mut pending = std::collections::VecDeque::new();
-        let roots = roots
+        let verified_instances = self
+            .reused_and_analyzed_instances()
             .into_iter()
-            .chain(self.reused_and_analyzed_instances())
-            .chain(
-                generic_roots
-                    .into_iter()
-                    .flat_map(|def_id| self.concrete_mentions(def_id)),
-            );
+            .filter(|instance| crate_mode(instance.def_id()) == Some(Mode::Verified));
+        let roots = roots.into_iter().chain(verified_instances).chain(
+            generic_roots
+                .into_iter()
+                .flat_map(|def_id| self.concrete_mentions(def_id)),
+        );
         for root in roots {
-            if parent.insert(root, None).is_none() {
-                pending.push_back(root);
+            if parent.insert((root, Mode::Verified), None).is_none() {
+                pending.push_back((root, Mode::Verified));
             }
         }
         let mut reached = Vec::new();
-        while let Some(instance) = pending.pop_front() {
-            if self.is_unchecked_crate_fn(instance.def_id()) {
-                reached.push(instance);
+        while let Some((instance, mode)) = pending.pop_front() {
+            if is_ignored_crate_fn(self.tcx, instance.def_id()) {
+                if mode == Mode::Verified {
+                    reached.push((instance, instance.def_id(), (instance, mode)));
+                }
                 continue;
             }
-            if !self.runs_body(instance, &trusted) {
+            if !self.runs_body(instance) {
                 continue;
             }
             let (used, _) = self
@@ -1304,37 +1314,76 @@ impl<'tcx> Analyzer<'tcx> {
                 let MonoItem::Fn(callee) = item.node else {
                     continue;
                 };
-                if let std::collections::hash_map::Entry::Vacant(entry) = parent.entry(callee) {
-                    entry.insert(Some(instance));
-                    pending.push_back(callee);
+                let callee_mode = crate_mode(callee.def_id()).unwrap_or(mode);
+                let key = (callee, callee_mode);
+                let std::collections::hash_map::Entry::Vacant(entry) = parent.entry(key) else {
+                    continue;
+                };
+                entry.insert(Some((instance, mode)));
+                pending.push_back(key);
+                if mode == Mode::Verified && callee_mode == Mode::Trusted {
+                    for ignored in self.ignored_in_bounds(callee) {
+                        reached.push((callee, ignored, key));
+                    }
                 }
             }
         }
-        let Some(first) = reached.first() else {
+        let Some(&(first, ignored, key)) = reached.first() else {
             return;
         };
-        let mut path = vec![first.to_string()];
-        let mut cursor = *first;
-        while let Some(Some(caller)) = parent.get(&cursor) {
-            path.push(caller.to_string());
-            cursor = *caller;
+        let mut path = Vec::new();
+        let mut cursor = Some(key);
+        while let Some(current) = cursor {
+            path.push(current.0.to_string());
+            cursor = parent.get(&current).copied().flatten();
         }
         path.reverse();
-        let mut diag = self.tcx.dcx().struct_span_fatal(
-            self.tcx.def_span(first.def_id()),
+        let message = if ignored == first.def_id() {
             format!(
                 "`{first}` is `#[thrust::ignored]`, so a call of it has no checked type, but a \
                  verified function can run it"
-            ),
-        );
+            )
+        } else {
+            format!(
+                "`{}` is `#[thrust::ignored]`, but the trusted `{first}`, which a verified \
+                 function runs, relies on its trait's specification through its bounds",
+                self.tcx.def_path_str(ignored),
+            )
+        };
+        let mut diag = self
+            .tcx
+            .dcx()
+            .struct_span_fatal(self.tcx.def_span(ignored), message);
         diag.note(format!("reached through {}", path.join(" -> ")));
-        for other in &reached[1..] {
+        for (_, other, _) in &reached[1..] {
             diag.span_note(
-                self.tcx.def_span(other.def_id()),
-                format!("`{other}` is ignored and reached too"),
+                self.tcx.def_span(*other),
+                format!(
+                    "`{}` is ignored and reached too",
+                    self.tcx.def_path_str(*other)
+                ),
             );
         }
         diag.emit()
+    }
+
+    /// The ignored functions of the crate impls that the bounds of the trusted `instance` select
+    /// at its arguments.
+    fn ignored_in_bounds(&self, instance: mir_ty::Instance<'tcx>) -> Vec<DefId> {
+        let typing_env = mir_ty::TypingEnv::fully_monomorphized();
+        let bounds = trait_bounds(self.tcx, instance.def_id(), instance.args);
+        let mut ignored = Vec::new();
+        let on_crate_impl = &mut |impl_def_id: DefId, _| {
+            let methods = self.tcx.associated_item_def_ids(impl_def_id);
+            ignored.extend(
+                methods
+                    .iter()
+                    .copied()
+                    .filter(|method| is_ignored_crate_fn(self.tcx, *method)),
+            );
+        };
+        self.select_bound_impls(instance.def_id(), typing_env, bounds, on_crate_impl);
+        ignored
     }
 
     /// The instances of generic defs that Thrust analyzed, or whose contract it reused, at
@@ -1384,18 +1433,14 @@ impl<'tcx> Analyzer<'tcx> {
             .collect()
     }
 
-    /// Whether the body of `instance` runs in the crate's program and is followed: not a virtual
-    /// call or an intrinsic, which have none, not a crate body marked trusted, and one whose
-    /// MIR is available.
-    fn runs_body(&self, instance: mir_ty::Instance<'tcx>, trusted: impl Fn(DefId) -> bool) -> bool {
+    /// Whether the body of `instance` is followed: not a virtual call or an intrinsic, which have
+    /// none, not a foreign item, and one whose MIR is available.
+    fn runs_body(&self, instance: mir_ty::Instance<'tcx>) -> bool {
         let def_id = instance.def_id();
         match instance.def {
             mir_ty::InstanceKind::Virtual(..) | mir_ty::InstanceKind::Intrinsic(_) => false,
             mir_ty::InstanceKind::Item(_) => {
-                let trusted_here = def_id.is_local() && trusted(def_id);
-                !trusted_here
-                    && !self.tcx.is_foreign_item(def_id)
-                    && self.tcx.is_mir_available(def_id)
+                !self.tcx.is_foreign_item(def_id) && self.tcx.is_mir_available(def_id)
             }
             _ => true,
         }
@@ -1952,6 +1997,28 @@ impl<'tcx> Analyzer<'tcx> {
         typing_env: mir_ty::TypingEnv<'tcx>,
         bounds: Vec<mir_ty::TraitRef<'tcx>>,
     ) -> bool {
+        let mut grew = false;
+        let on_crate_impl = &mut |impl_def_id, args| {
+            grew |= self.reuse_impl_methods(impl_def_id, args, owner_fn_id);
+        };
+        let at_params = self.select_bound_impls(owner_fn_id, typing_env, bounds, on_crate_impl);
+        for bound in at_params {
+            grew |= self.record_assumed_bound_impl(owner_fn_id, bound);
+        }
+        grew
+    }
+
+    /// Follows `bounds` through the impls trait selection picks for them in `typing_env`: each
+    /// bound normalized, with its supertraits, through the nested obligations of a std impl, a
+    /// crate impl (passed to `on_crate_impl` at its selected arguments) or a builtin one. Returns
+    /// the bounds left at a type parameter. A bound that selects no impl stops the analysis.
+    fn select_bound_impls(
+        &self,
+        owner_fn_id: DefId,
+        typing_env: mir_ty::TypingEnv<'tcx>,
+        bounds: Vec<mir_ty::TraitRef<'tcx>>,
+        on_crate_impl: &mut dyn FnMut(DefId, mir_ty::GenericArgsRef<'tcx>),
+    ) -> Vec<mir_ty::TraitRef<'tcx>> {
         use mir_ty::TypeVisitableExt as _;
         use rustc_infer::infer::TyCtxtInferExt as _;
         use rustc_middle::traits::ImplSource;
@@ -1959,7 +2026,7 @@ impl<'tcx> Analyzer<'tcx> {
 
         let (infcx, param_env) = self.tcx.infer_ctxt().build_with_typing_env(typing_env);
         let mut selcx = SelectionContext::new(&infcx);
-        let mut grew = false;
+        let mut at_params = Vec::new();
         let mut visited = HashSet::new();
         let mut pending = bounds;
         while let Some(bound) = pending.pop() {
@@ -1978,13 +2045,13 @@ impl<'tcx> Analyzer<'tcx> {
                         let args = self
                             .tcx
                             .erase_regions(infcx.resolve_vars_if_possible(data.args));
-                        grew |= self.reuse_impl_methods(data.impl_def_id, args, owner_fn_id);
+                        on_crate_impl(data.impl_def_id, args);
                     }
                     data.nested
                 }
                 Ok(Some(ImplSource::Builtin(_, nested))) => nested,
                 Ok(Some(ImplSource::Param(_))) => {
-                    grew |= self.record_assumed_bound_impl(owner_fn_id, bound);
+                    at_params.push(bound);
                     continue;
                 }
                 Err(_) | Ok(None) => self.tcx.dcx().fatal(format!(
@@ -2003,7 +2070,7 @@ impl<'tcx> Analyzer<'tcx> {
                 (!trait_ref.has_infer()).then_some(trait_ref)
             }));
         }
-        grew
+        at_params
     }
 
     /// Adds the methods of the crate's generic impl `impl_def_id`, at `impl_args`, to the instances
