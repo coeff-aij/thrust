@@ -455,7 +455,10 @@ fn trait_bound<'tcx>(
     use rustc_trait_selection::traits::query::evaluate_obligation::InferCtxtExt as _;
     use rustc_trait_selection::traits::{Obligation, ObligationCause};
 
-    let trait_ref = clause.as_trait_clause().unwrap().skip_binder().trait_ref;
+    // A higher-ranked bound (`for<'a> &'a T: Tr`) is read with its bound regions erased, which
+    // trait selection modulo regions decides as it decides the bound.
+    let pred = clause.as_trait_clause().unwrap();
+    let trait_ref = tcx.instantiate_bound_regions_with_erased(pred).trait_ref;
     let Ok(trait_ref) = tcx.try_normalize_erasing_regions(typing_env, trait_ref) else {
         return SpecBound::Assumed;
     };
