@@ -250,14 +250,18 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.tcx.trait_id_of_impl(impl_def_id) == self.tcx.lang_items().drop_trait()
     }
 
-    /// Whether the def's annotations state a precondition: a `requires`, or a refinement of a
-    /// parameter (`param`, `sig`).
-    pub fn has_precondition_annotation(&self) -> bool {
-        let has_requires = self
-            .ctx
-            .extract_path_with_attr(self.local_def_id, &analyze::annot::requires_path_path())
-            .is_some();
-        has_requires
+    /// Whether the def carries a written contract: a `requires` or an `ensures` (also through
+    /// `#[thrust::callable]`), or a refinement of a parameter or of the result (`param`, `ret`,
+    /// `sig`).
+    pub fn has_contract_annotation(&self) -> bool {
+        let has_path = |path: &[rustc_span::Symbol]| {
+            self.ctx
+                .extract_path_with_attr(self.local_def_id, path)
+                .is_some()
+        };
+        self.is_annotated_as_callable()
+            || has_path(&analyze::annot::requires_path_path())
+            || has_path(&analyze::annot::ensures_path_path())
             || !self
                 .ctx
                 .extract_refinement_paths(self.local_def_id)

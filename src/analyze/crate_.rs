@@ -107,6 +107,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     keys.swap_remove(local_def_id);
                 }
             }
+            if analyzer.is_crate_destructor() {
+                check_destructor_annotations(self.tcx, &analyzer, *local_def_id);
+            }
             if analyzer.is_annotated_as_ignored() || analyzer.is_ignored_derive() {
                 self.skip_analysis.insert(*local_def_id);
                 keys.swap_remove(local_def_id);
@@ -208,14 +211,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let outside_selection = self.is_outside_selection(local_def_id);
         let mut analyzer = self.ctx.local_def_analyzer(local_def_id);
 
-        if analyzer.is_crate_destructor() && analyzer.has_precondition_annotation() {
-            self.tcx.dcx().span_err(
-                self.tcx.def_span(local_def_id),
-                "a `Drop::drop` cannot have a precondition: Rust runs it wherever a value is \
-                 dropped, so it is checked under `requires(true)`",
-            );
-        }
-
         if analyzer.is_annotated_as_trusted() {
             assert!(
                 analyzer.is_fully_annotated(),
@@ -289,7 +284,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     local_def_id,
                     owner_fn_id_args,
                 );
-            } else if per_instance_generics() {
+            } else if per_instance_generics() && !analyzer.is_crate_destructor() {
+                // A destructor is checked once over its type parameters even so (D57): `std` may
+                // drop it at an instance that no call site of the crate reaches.
                 // Upstream Thrust's treatment: the body is analyzed at each instance a call site
                 // reaches, and not once over the type parameters.
                 self.ctx
@@ -700,6 +697,31 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         }
     }
 }
+
+/// A `Drop::drop` of the crate is verified once under `requires(true)` and its postcondition
+/// inferred (D57): Rust runs it wherever a value is dropped, also in code Thrust does not
+/// analyze. So it takes no written contract, and is neither trusted nor ignored.
+fn check_destructor_annotations<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    analyzer: &analyze::local_def::Analyzer<'tcx, '_>,
+    local_def_id: LocalDefId,
+) {
+    let span = tcx.def_span(local_def_id);
+    if analyzer.has_contract_annotation() {
+        tcx.dcx().span_err(span, DESTRUCTOR_CONTRACT_ERROR);
+    }
+    if analyzer.is_annotated_as_trusted() || analyzer.is_annotated_as_ignored() {
+        tcx.dcx().span_err(
+            span,
+            "a `Drop::drop` cannot be `#[thrust::trusted]` or `#[thrust::ignored]`: Rust runs \
+             it wherever a value is dropped, so Thrust verifies it",
+        );
+    }
+}
+
+/// The error for a written contract on a `Drop::drop`; `thrust_macros::context` gives the same.
+const DESTRUCTOR_CONTRACT_ERROR: &str = "a `Drop::drop` takes no `requires` or `ensures`: Rust runs \
+     it wherever a value is dropped, so Thrust checks it under `requires(true)` and infers its effect";
 
 /// Whether a generic def with a body is verified at each instance rather than once over its type
 /// parameters (`THRUST_PER_INSTANCE_GENERICS=1`).

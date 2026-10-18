@@ -2035,8 +2035,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
     /// Types the calls of the crate's destructors that dropping `place` runs, as its drop glue
     /// runs them through one `&mut`: `Drop::drop` of the value, then the drop glue of each field
-    /// in declaration order. Each destructor is a call, so its precondition is a goal and its
-    /// effect on the value is what the structural drop after it resolves.
+    /// in declaration order. Each destructor is a call, whose precondition is `true` (D57) and
+    /// whose postcondition gives the value that the structural drop after it resolves.
     fn call_destructors(&mut self, place: mir::Place<'tcx>) {
         let ty = place.ty(&self.local_decls, self.tcx).ty;
         if !analyze::drop_runs_local_destructor(self.tcx, self.typing_env, ty) {
