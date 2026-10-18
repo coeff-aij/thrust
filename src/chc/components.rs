@@ -136,9 +136,12 @@ fn reached_definitions(system: &System, ids: &[ClauseId]) -> HashSet<UserDefined
             .chain(c.body.formula.iter_atoms())
     });
     let law_atoms = system.laws.values().flatten().flat_map(Formula::iter_atoms);
+    // The candidates of the part's unknowns only.
+    let unknowns = system.pred_vars_of(ids);
     let candidate_atoms = system
         .candidate_atoms
         .iter()
+        .filter(|c| unknowns.contains(&c.pred))
         .flat_map(|c| c.atoms.iter().flat_map(Formula::iter_atoms));
     let mut pending: Vec<UserDefinedPred> = user_defined_in(clause_atoms)
         .into_iter()
@@ -195,6 +198,16 @@ impl System {
                     body: Body::top(),
                     debug_info: DebugInfo::default(),
                 };
+            }
+        }
+        // An unknown the part's query does not declare has no sorts there, so that the part
+        // declares no datatype (a sequence) only another part applies.
+        let emitted = prune::emitted_clauses(&system);
+        let mut declared = prune::pred_vars_of(emitted.iter().map(|&id| &system.clauses[id]));
+        declared.extend(system.pred_vars_in_definitions());
+        for (p, def) in system.pred_vars.iter_enumerated_mut() {
+            if !declared.contains(&p) {
+                def.sig.clear();
             }
         }
         system

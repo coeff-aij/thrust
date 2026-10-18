@@ -380,3 +380,16 @@ fn a_split_json_run_has_its_error_at_the_obligation() {
     assert!(at.ends_with("two_parts.rs:9:1"), "{stderr}");
     assert!(!stderr.contains("thrust: refuted"), "{stderr}");
 }
+
+/// A part declares the datatypes of its own unknowns only: the part of `bad` is refuted by `z3`
+/// although the unknowns of `first_or_zero`, in another part, take a sequence.
+#[test]
+fn a_part_declares_only_its_unknowns_sorts() {
+    let output = run("sequence_in_signature.rs", Some("2"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let bad = stderr
+        .split("error: verification error: ")
+        .find(|e| e.contains("clauses from `bad`"))
+        .unwrap_or_default();
+    assert!(bad.starts_with("Unsat"), "{stderr}");
+}

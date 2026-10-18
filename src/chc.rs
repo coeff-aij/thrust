@@ -2729,8 +2729,14 @@ fn user_defined_in<'a, V: 'a>(
                 Pred::UserDefined(pred) => Some(pred),
                 _ => None,
             };
+            let in_guard = atom
+                .guard
+                .iter()
+                .flat_map(|guard| user_defined_in(guard.iter_atoms()));
             pred.into_iter()
                 .chain(atom.args.iter().flat_map(Term::user_defined_fns))
+                .chain(in_guard)
+                .collect::<Vec<_>>()
         })
         .collect()
 }
