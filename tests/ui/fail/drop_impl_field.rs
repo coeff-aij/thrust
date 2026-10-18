@@ -1,31 +1,31 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
 
-// Dropping `_o` runs `Outer`'s destructor and then `Guard`'s, which sets `a` to 2.
+// Dropping `_o` runs `Outer`'s destructor (`a = 5`) and then `Inner`'s (`a + 1`), so `a` is 6,
+// not the 5 the other order would leave.
 
-struct Guard<'a>(&'a mut i32);
+struct Inner<'a>(&'a mut i32);
 
-impl Drop for Guard<'_> {
+impl Drop for Inner<'_> {
     fn drop(&mut self) {
-        assert!(*self.0 == 0);
-        *self.0 = 2;
+        *self.0 += 1;
     }
 }
 
 struct Outer<'a> {
-    g: Guard<'a>,
+    g: Inner<'a>,
 }
 
 impl Drop for Outer<'_> {
     fn drop(&mut self) {
-        *self.g.0 = 0;
+        *self.g.0 = 5;
     }
 }
 
 fn main() {
-    let mut a = 1;
+    let mut a = 0;
     {
-        let _o = Outer { g: Guard(&mut a) };
+        let _o = Outer { g: Inner(&mut a) };
     }
-    assert!(a == 1);
+    assert!(a == 5);
 }

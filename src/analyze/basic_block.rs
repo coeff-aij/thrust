@@ -1643,8 +1643,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     where
         I: IntoIterator<Item = Operand<'tcx>>,
     {
-        let args: Vec<_> = args.into_iter().collect();
-        self.assert_destructors_stay_local(&func, &args);
         let mut args = args.into_iter();
         if let Some((def_id, _)) = func.const_fn_def() {
             if Some(def_id) == self.ctx.def_ids().box_new() {
@@ -2128,93 +2126,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .build_refined(unit);
         let ret = self.type_call(func, [Operand::Move(arg.into())], ret);
         self.bind_local(ret_local, ret);
-    }
-
-    /// Stops at a call through which a destructor of the crate may run where Thrust types no call
-    /// of it:
-    ///
-    /// - a function of another crate given a value by value whose drop runs one, since the
-    ///   function may drop it (`Option::unwrap_or`, `mem::drop`), except `mem::forget` and
-    ///   `ManuallyDrop::new`, which never drop it;
-    /// - a function of another crate given a `&mut` to such a value that drops through it
-    ///   ([`Self::drops_through_mut_ref`]). Through a `&mut` a function drops only what it removes
-    ///   from the value: an assignment that replaces a part (`mem::replace`, `Option::take`) hands
-    ///   the old part back, while removing elements from a collection or an iterator drops them.
-    ///   Through a `&` nothing is dropped without interior mutability, which no contract in
-    ///   `std.rs` gives;
-    /// - a function Thrust cannot resolve (a function pointer, a trait method at a caller's type
-    ///   parameter) given anything through which one may run.
-    ///
-    /// A function of the crate drops in its own body, where its `Drop` terminators type the
-    /// calls, and so does a closure at a type parameter, at the instantiation.
-    fn assert_destructors_stay_local(&self, func: &Operand<'tcx>, args: &[Operand<'tcx>]) {
-        let arg_tys: Vec<_> = args
-            .iter()
-            .map(|arg| arg.ty(&self.local_decls, self.tcx))
-            .collect();
-        let callee = func
-            .const_fn_def()
-            .map(|(def_id, generic_args)| self.resolve_callable(def_id, generic_args));
-        let stops = match callee {
-            Some(ResolvedCallable::Concrete(callee, _)) if callee.is_local() => None,
-            Some(ResolvedCallable::Generic(_)) => None,
-            Some(ResolvedCallable::Concrete(callee, _)) => self
-                .dropped_by_foreign(callee, &arg_tys)
-                .map(|ty| (format!("`{}`", self.tcx.def_path_str(callee)), ty)),
-            Some(ResolvedCallable::Unresolved) | None => arg_tys
-                .iter()
-                .find(|ty| analyze::reaches_local_destructor(self.tcx, self.typing_env, **ty))
-                .map(|ty| ("a function Thrust cannot resolve".to_string(), *ty)),
-        };
-        if let Some((callee, ty)) = stops {
-            unimplemented!(
-                "a call of {callee} takes a value of `{ty}`, through which a destructor of the \
-                 crate may run"
-            );
-        }
-    }
-
-    /// The type of an argument of `callee`, a function of another crate, whose value it may drop
-    /// with a destructor of the crate.
-    fn dropped_by_foreign(
-        &self,
-        callee: DefId,
-        arg_tys: &[mir_ty::Ty<'tcx>],
-    ) -> Option<mir_ty::Ty<'tcx>> {
-        let never_drops = self
-            .tcx
-            .is_diagnostic_item(rustc_span::sym::mem_forget, callee)
-            || self.is_manually_drop_new(callee);
-        let drops_through_mut_ref = self.drops_through_mut_ref(callee);
-        let runs = |ty| analyze::drop_runs_local_destructor(self.tcx, self.typing_env, ty);
-        arg_tys.iter().copied().find(|ty| match ty.kind() {
-            mir_ty::TyKind::Ref(_, pointee, mir_ty::Mutability::Mut) => {
-                drops_through_mut_ref && runs(*pointee)
-            }
-            mir_ty::TyKind::Ref(..) => false,
-            _ => !never_drops && runs(*ty),
-        })
-    }
-
-    /// Whether `callee` drops values it removes from what a `&mut` argument points to: the
-    /// methods of `Vec` that remove elements, and `Iterator::find`, which drops the items it
-    /// passes over.
-    fn drops_through_mut_ref(&self, callee: DefId) -> bool {
-        let name = self.tcx.item_name(callee);
-        if let Some(trait_def_id) = self.tcx.trait_of_assoc(callee) {
-            return self
-                .tcx
-                .is_diagnostic_item(rustc_span::sym::Iterator, trait_def_id)
-                && name.as_str() == "find";
-        }
-        let Some(impl_def_id) = self.tcx.inherent_impl_of_assoc(callee) else {
-            return false;
-        };
-        let self_ty = self.tcx.type_of(impl_def_id).skip_binder();
-        self_ty
-            .ty_adt_def()
-            .is_some_and(|adt| self.tcx.is_diagnostic_item(rustc_span::sym::Vec, adt.did()))
-            && matches!(name.as_str(), "clear" | "truncate" | "retain")
     }
 
     /// Schedules `local` to be implicitly dropped after this block's terminator,

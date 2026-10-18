@@ -240,6 +240,30 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .is_some()
     }
 
+    /// Whether the def is the `drop` method of a `Drop` impl. Rust runs it wherever a value of the
+    /// type is dropped, also in code Thrust does not analyze, so as in Verus it takes no
+    /// precondition: it is checked under `requires(true)`, and no drop can panic.
+    pub fn is_crate_destructor(&self) -> bool {
+        let Some(impl_def_id) = self.tcx.impl_of_assoc(self.local_def_id.to_def_id()) else {
+            return false;
+        };
+        self.tcx.trait_id_of_impl(impl_def_id) == self.tcx.lang_items().drop_trait()
+    }
+
+    /// Whether the def's annotations state a precondition: a `requires`, or a refinement of a
+    /// parameter (`param`, `sig`).
+    pub fn has_precondition_annotation(&self) -> bool {
+        let has_requires = self
+            .ctx
+            .extract_path_with_attr(self.local_def_id, &analyze::annot::requires_path_path())
+            .is_some();
+        has_requires
+            || !self
+                .ctx
+                .extract_refinement_paths(self.local_def_id)
+                .is_empty()
+    }
+
     pub fn is_annotated_as_extern_spec_fn(&self) -> bool {
         is_annotated_as_extern_spec_fn_impl(&self.tcx, &self.local_def_id)
     }
@@ -585,6 +609,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             assert!(require_annot.is_none() && ensure_annot.is_none());
             require_annot = Some(chc::Formula::top());
             ensure_annot = Some(chc::Formula::top());
+        }
+        if self.is_crate_destructor() {
+            require_annot = Some(chc::Formula::top());
         }
 
         let refinement_annots = self.ctx.extract_refinement_annots(

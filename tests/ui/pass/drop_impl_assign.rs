@@ -1,18 +1,21 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
 
-// The twin of `fail/drop_impl_assign.rs`: both values `g` holds pass the destructor's assertion.
+// The twin of `fail/drop_impl_assign.rs`: the assignment drops the value `w` held.
 
-struct Guard(i32);
+struct W<'a>(&'a mut i32);
 
-impl Drop for Guard {
+impl Drop for W<'_> {
     fn drop(&mut self) {
-        assert!(self.0 == 0);
+        *self.0 = 1;
     }
 }
 
 fn main() {
-    let mut g = Guard(0);
-    g = Guard(0);
-    let _ = &g;
+    let mut a = 0;
+    let mut b = 0;
+    let mut w = W(&mut a);
+    w = W(&mut b);
+    assert!(a == 1);
+    let _ = &w;
 }

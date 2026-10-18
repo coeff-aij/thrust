@@ -1,8 +1,9 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
 
-// A value of a type with a `Drop` impl runs `drop` where it is dropped: `_g` panics at the end of
-// `main`.
+// A destructor takes no precondition, since Rust runs it wherever a value is dropped, also in
+// code Thrust does not analyze: it is checked under `requires(true)`, and `Guard(1)` would panic,
+// although `main` drops only `Guard(0)`.
 
 struct Guard(i32);
 
@@ -13,5 +14,5 @@ impl Drop for Guard {
 }
 
 fn main() {
-    let _g = Guard(1);
+    let _g = Guard(0);
 }

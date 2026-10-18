@@ -208,6 +208,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let outside_selection = self.is_outside_selection(local_def_id);
         let mut analyzer = self.ctx.local_def_analyzer(local_def_id);
 
+        if analyzer.is_crate_destructor() && analyzer.has_precondition_annotation() {
+            self.tcx.dcx().span_err(
+                self.tcx.def_span(local_def_id),
+                "a `Drop::drop` cannot have a precondition: Rust runs it wherever a value is \
+                 dropped, so it is checked under `requires(true)`",
+            );
+        }
+
         if analyzer.is_annotated_as_trusted() {
             assert!(
                 analyzer.is_fully_annotated(),

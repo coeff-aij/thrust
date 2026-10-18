@@ -478,25 +478,6 @@ pub fn drop_of_parts_runs_local_destructor<'tcx>(
             .any(|part| drop_runs_local_destructor(tcx, typing_env, part))
 }
 
-/// Whether dropping a value of `ty`, or a value it refers to, may run a destructor of the crate:
-/// code that holds a value of `ty` can drop what a `&mut` in it points to by assigning to it.
-pub fn reaches_local_destructor<'tcx>(
-    tcx: TyCtxt<'tcx>,
-    typing_env: mir_ty::TypingEnv<'tcx>,
-    ty: mir_ty::Ty<'tcx>,
-) -> bool {
-    reaches(tcx, typing_env, ty, |ty| {
-        if local_destructor(tcx, ty).is_some() {
-            return Reach::Found;
-        }
-        if ty.is_ref() || ty.is_raw_ptr() || ty.needs_drop(tcx, typing_env) {
-            Reach::Parts
-        } else {
-            Reach::Stop
-        }
-    })
-}
-
 /// Whether a value of `ty` may hold a `&mut`, whose prophecy its drop would resolve.
 pub fn may_hold_mut_ref<'tcx>(
     tcx: TyCtxt<'tcx>,
@@ -2041,13 +2022,11 @@ impl<'tcx> Analyzer<'tcx> {
         // unknown contract, possibly reached through a predicate's definition), and when the
         // instance is not faithful to the generic check: an `FnMut` closure among the type
         // arguments, whose by-value receiver the instantiated `pre!` reads at a final state equal
-        // to the current one, or a value whose drop runs a destructor of the crate where the
-        // generic check typed none. Otherwise the contract is used as instantiated.
+        // to the current one. Otherwise the contract is used as instantiated.
         let analyze_body = deferred_ty_mode.is_some_and(|mode| mode.should_analyze())
             && (!is_generic
                 || (has_fn_mut_closure(generic_args)
                     && !self.reuse_fn_mut_generic(def_id, &expected, generic_args, caller_def_id))
-                || self.instance_runs_local_destructor(local_def_id, generic_args, caller_def_id)
                 || self.may_have_pred_var(&expected, generic_args, caller_def_id));
         if is_generic && !analyze_body {
             self.reused_generic_instances
@@ -2092,29 +2071,6 @@ impl<'tcx> Analyzer<'tcx> {
             }
         }
         Some(expected)
-    }
-
-    /// Whether the body of `local_def_id` at `generic_args` holds, in a local whose type mentions a
-    /// type parameter, a value whose drop may run a destructor of the crate. The generic check
-    /// typed no call of it: a type parameter, or an associated type it could not normalize, runs
-    /// none there.
-    fn instance_runs_local_destructor(
-        &self,
-        local_def_id: LocalDefId,
-        generic_args: mir_ty::GenericArgsRef<'tcx>,
-        caller_def_id: DefId,
-    ) -> bool {
-        use mir_ty::TypeVisitableExt as _;
-        let typing_env = mir_ty::TypingEnv::post_analysis(self.tcx, caller_def_id);
-        let body = self.tcx.optimized_mir(local_def_id.to_def_id());
-        body.local_decls.iter().any(|decl| {
-            if !decl.ty.has_param() {
-                return false;
-            }
-            let ty = mir_ty::EarlyBinder::bind(decl.ty).instantiate(self.tcx, generic_args);
-            let ty = normalize(self.tcx, typing_env, ty);
-            reaches_local_destructor(self.tcx, typing_env, ty)
-        })
     }
 
     /// Whether an instance of the generic def `def_id` at `generic_args`, which has an `FnMut`

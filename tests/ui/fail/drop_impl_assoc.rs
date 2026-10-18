@@ -2,13 +2,15 @@
 //@compile-flags: -C debug-assertions=off
 
 // A field whose type is an associated type is dropped as the type it stands for: dropping `_h`
-// runs `Guard`'s destructor, which panics.
+// runs `W`'s destructor, which sets `a` to 1.
 
-struct Guard(i32);
+use std::marker::PhantomData;
 
-impl Drop for Guard {
+struct W<'a>(&'a mut i32);
+
+impl Drop for W<'_> {
     fn drop(&mut self) {
-        assert!(self.0 == 0);
+        *self.0 = 1;
     }
 }
 
@@ -16,8 +18,10 @@ trait Tr {
     type Out;
 }
 
-impl Tr for () {
-    type Out = Guard;
+struct X<'a>(PhantomData<&'a ()>);
+
+impl<'a> Tr for X<'a> {
+    type Out = W<'a>;
 }
 
 struct H<T: Tr> {
@@ -25,5 +29,9 @@ struct H<T: Tr> {
 }
 
 fn main() {
-    let _h = H::<()> { x: Guard(1) };
+    let mut a = 0;
+    {
+        let _h = H::<X> { x: W(&mut a) };
+    }
+    assert!(a == 0);
 }

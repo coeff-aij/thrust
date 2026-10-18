@@ -144,6 +144,13 @@ fn extern_spec_impl(item_impl: &mut syn::ItemImpl) -> syn::Result<TokenStream2> 
         if specs.is_empty() {
             continue;
         }
+        if is_destructor(&trait_path, method) {
+            return Err(syn::Error::new_spanned(
+                &specs[0],
+                "a `Drop::drop` takes no `requires` or `ensures`: Rust runs it wherever a value \
+                 is dropped, so Thrust checks it under `requires(true)` and infers its effect",
+            ));
+        }
         // A trusted body is not verified against the specification the wrapper now
         // carries, mirroring what an inherent impl's expansion does with the attribute.
         for attr in &mut method.attrs {
@@ -219,6 +226,16 @@ fn extern_spec_wrapper(
 }
 
 /// Takes the specification attributes off a method, keeping their order.
+/// Whether `method` is `drop` of an impl of `Drop`, which a specification wrapper cannot call
+/// (E0040).
+fn is_destructor(trait_path: &syn::Path, method: &syn::ImplItemFn) -> bool {
+    trait_path
+        .segments
+        .last()
+        .is_some_and(|segment| segment.ident == "Drop")
+        && method.sig.ident == "drop"
+}
+
 fn take_spec_attrs(attrs: &mut Vec<syn::Attribute>) -> Vec<syn::Attribute> {
     let (specs, rest) = std::mem::take(attrs).into_iter().partition(is_spec_attr);
     *attrs = rest;
