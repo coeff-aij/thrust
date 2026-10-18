@@ -37,6 +37,7 @@ mod local_def;
 mod pred_inst;
 mod reconstruct_slice_indexing;
 pub(crate) mod selection;
+mod two_phase_borrow;
 
 // TODO: organize structure and remove cross dependency between refine
 pub use did_cache::DefIdCache;

@@ -1998,6 +1998,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
         self.unelaborate_derefs();
         analyze::reconstruct_slice_indexing::reconstruct(self.tcx, &mut self.body);
+        analyze::two_phase_borrow::move_to_activation(self.tcx, &mut self.body);
         self.normalize_switch_int_discriminant_order();
         let move_data = self.move_data();
         self.reassign_local_mutabilities(&move_data);
