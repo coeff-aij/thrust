@@ -5,6 +5,11 @@ use std::collections::{HashMap, HashSet};
 use rustc_index::bit_set::DenseBitSet;
 use rustc_middle::mir::{self, BasicBlock, Body, Local};
 use rustc_middle::ty::{self as mir_ty, TyCtxt, TypeAndMut};
+use rustc_mir_dataflow::impls::{
+    EverInitializedPlaces, MaybeInitializedPlaces, MaybeLiveLocals, MaybeUninitializedPlaces,
+};
+use rustc_mir_dataflow::move_paths::{MoveData, MovePathIndex};
+use rustc_mir_dataflow::{Analysis as _, MaybeReachable};
 use rustc_span::def_id::{DefId, LocalDefId};
 
 use crate::analyze;
@@ -139,67 +144,13 @@ pub struct Analyzer<'tcx, 'ctx> {
     type_builder: TypeBuilder<'tcx>,
 }
 
-/// The move paths of a body, with the copy of the body they were gathered on.
-struct MovePaths<'tcx> {
-    body: Body<'tcx>,
-    data: rustc_mir_dataflow::move_paths::MoveData<'tcx>,
-}
-
-/// The locals of which some part may be initialized, or `None` where the state is unreachable.
-fn initialized_locals<'tcx>(
-    init: &rustc_mir_dataflow::MaybeReachable<
-        rustc_index::bit_set::MixedBitSet<rustc_mir_dataflow::move_paths::MovePathIndex>,
-    >,
-    move_data: &rustc_mir_dataflow::move_paths::MoveData<'tcx>,
-) -> Option<HashSet<Local>> {
-    let rustc_mir_dataflow::MaybeReachable::Reachable(init) = init else {
-        return None;
-    };
-    Some(
-        init.iter()
-            .map(|path| move_data.move_paths[path].place.local)
-            .collect(),
-    )
-}
-
-impl<'tcx> MovePaths<'tcx> {
-    fn maybe_init<'a>(
-        &'a self,
-        tcx: TyCtxt<'tcx>,
-    ) -> rustc_mir_dataflow::ResultsCursor<
-        'a,
-        'tcx,
-        rustc_mir_dataflow::impls::MaybeInitializedPlaces<'a, 'tcx>,
-    > {
-        use rustc_mir_dataflow::Analysis as _;
-        rustc_mir_dataflow::impls::MaybeInitializedPlaces::new(tcx, &self.body, &self.data)
-            .iterate_to_fixpoint(tcx, &self.body, None)
-            .into_results_cursor(&self.body)
-    }
-
-    fn ever_init<'a>(
-        &'a self,
-        tcx: TyCtxt<'tcx>,
-    ) -> rustc_mir_dataflow::ResultsCursor<
-        'a,
-        'tcx,
-        rustc_mir_dataflow::impls::EverInitializedPlaces<'a, 'tcx>,
-    > {
-        use rustc_mir_dataflow::Analysis as _;
-        rustc_mir_dataflow::impls::EverInitializedPlaces::new(&self.body, &self.data)
-            .iterate_to_fixpoint(tcx, &self.body, None)
-            .into_results_cursor(&self.body)
-    }
-}
-
-/// The locals of which some part may have been set before, by the initializations `ever_init`.
-fn ever_set_locals<'tcx>(
-    ever_init: &rustc_index::bit_set::MixedBitSet<rustc_mir_dataflow::move_paths::InitIndex>,
-    move_data: &rustc_mir_dataflow::move_paths::MoveData<'tcx>,
+/// The locals that the move paths `paths` are parts of.
+fn locals_of<'tcx>(
+    paths: impl Iterator<Item = MovePathIndex>,
+    move_data: &MoveData<'tcx>,
 ) -> HashSet<Local> {
-    ever_init
-        .iter()
-        .map(|init| move_data.move_paths[move_data.inits[init].path].place.local)
+    paths
+        .map(|path| move_data.move_paths[path].place.local)
         .collect()
 }
 
@@ -970,8 +921,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
     /// The move paths of the body, gathered on a copy whose `CopyForDeref` destinations are
     /// marked as deref temporaries.
-    fn move_paths(&self) -> MovePaths<'tcx> {
-        use rustc_mir_dataflow::move_paths::MoveData;
+    fn move_data(&self) -> MoveData<'tcx> {
         let mut body = self.body.clone();
         struct Visitor {
             deref_temps: DenseBitSet<Local>,
@@ -1001,8 +951,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             };
             local_decl.local_info = mir::ClearCrossCrate::Set(Box::new(local_info));
         }
-        let data = MoveData::gather_moves(&body, self.tcx, |_| true);
-        MovePaths { body, data }
+        MoveData::gather_moves(&body, self.tcx, |_| true)
     }
 
     fn zst_locals(&self) -> DenseBitSet<Local> {
@@ -1021,24 +970,27 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         zst_locals
     }
 
-    fn reassign_local_mutabilities(&mut self, move_paths: &MovePaths<'tcx>) {
+    fn reassign_local_mutabilities(&mut self, move_data: &MoveData<'tcx>) {
         for local_decl in &mut self.body.local_decls {
             local_decl.mutability = mir::Mutability::Not;
         }
 
-        let mut results = move_paths.maybe_init(self.tcx);
         let zst_locals = self.zst_locals();
-
-        for (block, data) in mir::traversal::preorder(&move_paths.body) {
+        let mut marked = Vec::new();
+        let mut results = MaybeInitializedPlaces::new(self.tcx, &self.body, move_data)
+            .iterate_to_fixpoint(self.tcx, &self.body, None)
+            .into_results_cursor(&self.body);
+        for (block, data) in mir::traversal::preorder(&self.body) {
             for statement_index in 0..=data.statements.len() {
                 let loc = mir::Location {
                     statement_index,
                     block,
                 };
                 results.seek_before_primary_effect(loc);
-                let Some(init_locals) = initialized_locals(results.get(), &move_paths.data) else {
+                let MaybeReachable::Reachable(init_places) = results.get() else {
                     continue;
                 };
+                let init_locals = locals_of(init_places.iter(), move_data);
                 let mut_locals = self.mut_locals(data, statement_index);
                 tracing::info!(
                     ?init_locals,
@@ -1050,11 +1002,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 );
                 for mut_local in mut_locals.iter() {
                     if init_locals.contains(&mut_local) || zst_locals.contains(mut_local) {
-                        self.body.local_decls[mut_local].mutability = mir::Mutability::Mut;
+                        marked.push(mut_local);
                         tracing::info!(?mut_local, ?statement_index, ?block, "marking mut");
                     }
                 }
             }
+        }
+        for local in marked {
+            self.body.local_decls[local].mutability = mir::Mutability::Mut;
         }
     }
 
@@ -1275,25 +1230,22 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .into()
     }
 
-    fn refine_basic_blocks(&mut self, move_paths: &MovePaths<'tcx>) {
-        use rustc_mir_dataflow::Analysis as _;
+    fn refine_basic_blocks(&mut self, move_data: &MoveData<'tcx>) {
         let loop_invariants = self.collect_loop_invariant_annotations();
-        let mut results = rustc_mir_dataflow::impls::MaybeLiveLocals
+        let zst_locals = self.zst_locals();
+        let mut results = MaybeLiveLocals
             .iterate_to_fixpoint(self.tcx, &self.body, None)
             .into_results_cursor(&self.body);
-        let mut ever_init = move_paths.ever_init(self.tcx);
-        let zst_locals = self.zst_locals();
-        let mut uninit = rustc_mir_dataflow::impls::MaybeUninitializedPlaces::new(
-            self.tcx,
-            &move_paths.body,
-            &move_paths.data,
-        )
-        .iterate_to_fixpoint(self.tcx, &move_paths.body, None)
-        .into_results_cursor(&move_paths.body);
+        let mut ever_init = EverInitializedPlaces::new(&self.body, move_data)
+            .iterate_to_fixpoint(self.tcx, &self.body, None)
+            .into_results_cursor(&self.body);
+        let mut uninit = MaybeUninitializedPlaces::new(self.tcx, &self.body, move_data)
+            .iterate_to_fixpoint(self.tcx, &self.body, None)
+            .into_results_cursor(&self.body);
         let mut moves = analyze::basic_block::MoveState {
             tcx: self.tcx,
             typing_env: self.analysis_key().typing_env(self.tcx),
-            move_data: &move_paths.data,
+            move_data,
             uninit: &mut uninit,
         };
 
@@ -1309,7 +1261,13 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             // skips, and holds no value, so it is no parameter of the block; an edge into a block
             // where it may be set passes it as any value. A ZST's one value needs no setting.
             ever_init.seek_to_block_start(bb);
-            let ever_set = ever_set_locals(ever_init.get(), &move_paths.data);
+            let ever_set = locals_of(
+                ever_init
+                    .get()
+                    .iter()
+                    .map(|init| move_data.inits[init].path),
+                move_data,
+            );
             let mut live_locals: Vec<_> = results
                 .get()
                 .iter()
@@ -1774,9 +1732,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.unelaborate_derefs();
         analyze::reconstruct_slice_indexing::reconstruct(self.tcx, &mut self.body);
         self.normalize_switch_int_discriminant_order();
-        let move_paths = self.move_paths();
-        self.reassign_local_mutabilities(&move_paths);
-        self.refine_basic_blocks(&move_paths);
+        let move_data = self.move_data();
+        self.reassign_local_mutabilities(&move_data);
+        self.refine_basic_blocks(&move_data);
         self.analyze_basic_blocks(expected);
         self.assert_entry(expected);
         if analyze::candidate_atoms_enabled() {

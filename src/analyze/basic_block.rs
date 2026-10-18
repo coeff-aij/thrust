@@ -1651,6 +1651,18 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 self.type_box(args.next().expect("Box::new argument"), &expected_ret);
                 return expected_ret;
             }
+            if self
+                .tcx
+                .is_diagnostic_item(rustc_span::sym::mem_forget, def_id)
+            {
+                self.type_forget(&expected_ret);
+                return expected_ret;
+            }
+            if self.is_manually_drop_new(def_id) {
+                let value = args.next().expect("ManuallyDrop::new argument");
+                self.type_manually_drop_new(value, &expected_ret);
+                return expected_ret;
+            }
         }
 
         // TODO: handle const_fn_def on Env side
@@ -1694,6 +1706,44 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let (_, term) = builder.subsume(value);
         let boxed = builder.build(expected.ty.clone(), term.boxed());
         let clauses = self.env.relate_sub_refined_type(&boxed.into(), expected);
+        self.ctx.extend_clauses(clauses);
+    }
+
+    /// `std::mem::forget(x)`: `x` is consumed and nothing is dropped.
+    fn type_forget(&mut self, expected: &rty::RefinedType<Var>) {
+        let unit: rty::RefinedType<Var> = rty::RefinedType::unrefined(rty::Type::unit());
+        let clauses = self.env.relate_sub_refined_type(&unit, expected);
+        self.ctx.extend_clauses(clauses);
+    }
+
+    fn is_manually_drop_new(&self, def_id: DefId) -> bool {
+        let Some(impl_def_id) = self.tcx.inherent_impl_of_assoc(def_id) else {
+            return false;
+        };
+        let self_ty = self.tcx.type_of(impl_def_id).skip_binder();
+        self.tcx.item_name(def_id).as_str() == "new"
+            && self_ty
+                .ty_adt_def()
+                .is_some_and(|adt| adt.is_manually_drop())
+    }
+
+    /// `ManuallyDrop::new(value)`: the struct of its one field, `value`, which is never dropped.
+    fn type_manually_drop_new(&mut self, value: Operand<'tcx>, expected: &rty::RefinedType<Var>) {
+        let value = self.operand_type(value);
+        let field = expected
+            .ty
+            .as_tuple()
+            .and_then(|tuple| tuple.elems[0].ty.as_pointer())
+            .expect("ManuallyDrop is the tuple of its boxed value");
+        let clauses = self
+            .env
+            .relate_sub_refined_type(&value.clone().into(), &field.elem);
+        self.ctx.extend_clauses(clauses);
+
+        let mut builder = PlaceTypeBuilder::default();
+        let (_, term) = builder.subsume(value);
+        let wrapped = builder.build(expected.ty.clone(), chc::Term::tuple(vec![term.boxed()]));
+        let clauses = self.env.relate_sub_refined_type(&wrapped.into(), expected);
         self.ctx.extend_clauses(clauses);
     }
 
@@ -2025,18 +2075,16 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
     /// The fields that the drop glue of `ty` drops after its destructor.
     fn dropped_fields(&self, ty: mir_ty::Ty<'tcx>) -> Vec<mir_ty::Ty<'tcx>> {
-        let is_followed = match ty.kind() {
-            mir_ty::TyKind::Tuple(_) => true,
-            mir_ty::TyKind::Adt(adt, _) => adt.is_struct() && adt.did().is_local(),
-            _ => false,
-        };
-        if !is_followed {
-            unimplemented!(
+        match ty.kind() {
+            mir_ty::TyKind::Tuple(tys) => tys.to_vec(),
+            mir_ty::TyKind::Adt(adt, _) if adt.is_struct() && adt.did().is_local() => {
+                analyze::field_tys(self.tcx, self.typing_env, ty).expect("a struct")
+            }
+            _ => unimplemented!(
                 "dropping a value of `{ty}` runs a destructor of the crate inside a value that \
                  is not a tuple or a struct of the crate"
-            );
+            ),
         }
-        analyze::field_tys(self.tcx, self.typing_env, ty).expect("a tuple or a struct")
     }
 
     /// A new local holding `&mut place`, which is never dropped on its own.
@@ -2082,36 +2130,91 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.bind_local(ret_local, ret);
     }
 
-    /// Stops at a call that hands a value through which a destructor of the crate may run to a
-    /// function Thrust does not follow: one of another crate, or a function pointer. The value may
-    /// be passed by value, or behind a reference through which the callee drops or replaces it
-    /// (`Vec::clear`, `Cell::set`). A closure at a type parameter is followed where the function
-    /// is instantiated.
+    /// Stops at a call through which a destructor of the crate may run where Thrust types no call
+    /// of it:
+    ///
+    /// - a function of another crate given a value by value whose drop runs one, since the
+    ///   function may drop it (`Option::unwrap_or`, `mem::drop`), except `mem::forget` and
+    ///   `ManuallyDrop::new`, which never drop it;
+    /// - a function of another crate given a `&mut` to such a value that drops through it
+    ///   ([`Self::drops_through_mut_ref`]). Through a `&mut` a function drops only what it removes
+    ///   from the value: an assignment that replaces a part (`mem::replace`, `Option::take`) hands
+    ///   the old part back, while removing elements from a collection or an iterator drops them.
+    ///   Through a `&` nothing is dropped without interior mutability, which no contract in
+    ///   `std.rs` gives;
+    /// - a function Thrust cannot resolve (a function pointer, a trait method at a caller's type
+    ///   parameter) given anything through which one may run.
+    ///
+    /// A function of the crate drops in its own body, where its `Drop` terminators type the
+    /// calls, and so does a closure at a type parameter, at the instantiation.
     fn assert_destructors_stay_local(&self, func: &Operand<'tcx>, args: &[Operand<'tcx>]) {
-        let Some(ty) = args
+        let arg_tys: Vec<_> = args
             .iter()
             .map(|arg| arg.ty(&self.local_decls, self.tcx))
-            .find(|ty| analyze::reaches_local_destructor(self.tcx, self.typing_env, *ty))
-        else {
-            return;
-        };
+            .collect();
         let callee = func
             .const_fn_def()
             .map(|(def_id, generic_args)| self.resolve_callable(def_id, generic_args));
-        let callee = match callee {
-            Some(ResolvedCallable::Concrete(callee, _)) if callee.is_local() => return,
-            Some(ResolvedCallable::Generic(_)) => return,
-            Some(ResolvedCallable::Concrete(callee, _)) => {
-                format!("`{}`", self.tcx.def_path_str(callee))
-            }
-            Some(ResolvedCallable::Unresolved) | None => {
-                "a function Thrust cannot resolve".to_string()
-            }
+        let stops = match callee {
+            Some(ResolvedCallable::Concrete(callee, _)) if callee.is_local() => None,
+            Some(ResolvedCallable::Generic(_)) => None,
+            Some(ResolvedCallable::Concrete(callee, _)) => self
+                .dropped_by_foreign(callee, &arg_tys)
+                .map(|ty| (format!("`{}`", self.tcx.def_path_str(callee)), ty)),
+            Some(ResolvedCallable::Unresolved) | None => arg_tys
+                .iter()
+                .find(|ty| analyze::reaches_local_destructor(self.tcx, self.typing_env, **ty))
+                .map(|ty| ("a function Thrust cannot resolve".to_string(), *ty)),
         };
-        unimplemented!(
-            "a call of {callee} takes a value of `{ty}`, through which a destructor of the crate \
-             may run"
-        );
+        if let Some((callee, ty)) = stops {
+            unimplemented!(
+                "a call of {callee} takes a value of `{ty}`, through which a destructor of the \
+                 crate may run"
+            );
+        }
+    }
+
+    /// The type of an argument of `callee`, a function of another crate, whose value it may drop
+    /// with a destructor of the crate.
+    fn dropped_by_foreign(
+        &self,
+        callee: DefId,
+        arg_tys: &[mir_ty::Ty<'tcx>],
+    ) -> Option<mir_ty::Ty<'tcx>> {
+        let never_drops = self
+            .tcx
+            .is_diagnostic_item(rustc_span::sym::mem_forget, callee)
+            || self.is_manually_drop_new(callee);
+        let drops_through_mut_ref = self.drops_through_mut_ref(callee);
+        let runs = |ty| analyze::drop_runs_local_destructor(self.tcx, self.typing_env, ty);
+        arg_tys.iter().copied().find(|ty| match ty.kind() {
+            mir_ty::TyKind::Ref(_, pointee, mir_ty::Mutability::Mut) => {
+                drops_through_mut_ref && runs(*pointee)
+            }
+            mir_ty::TyKind::Ref(..) => false,
+            _ => !never_drops && runs(*ty),
+        })
+    }
+
+    /// Whether `callee` drops values it removes from what a `&mut` argument points to: the
+    /// methods of `Vec` that remove elements, and `Iterator::find`, which drops the items it
+    /// passes over.
+    fn drops_through_mut_ref(&self, callee: DefId) -> bool {
+        let name = self.tcx.item_name(callee);
+        if let Some(trait_def_id) = self.tcx.trait_of_assoc(callee) {
+            return self
+                .tcx
+                .is_diagnostic_item(rustc_span::sym::Iterator, trait_def_id)
+                && name.as_str() == "find";
+        }
+        let Some(impl_def_id) = self.tcx.inherent_impl_of_assoc(callee) else {
+            return false;
+        };
+        let self_ty = self.tcx.type_of(impl_def_id).skip_binder();
+        self_ty
+            .ty_adt_def()
+            .is_some_and(|adt| self.tcx.is_diagnostic_item(rustc_span::sym::Vec, adt.did()))
+            && matches!(name.as_str(), "clear" | "truncate" | "retain")
     }
 
     /// Schedules `local` to be implicitly dropped after this block's terminator,

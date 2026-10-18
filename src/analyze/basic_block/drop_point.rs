@@ -79,13 +79,14 @@ impl DropPoints {
     }
 
     /// The locals dropped after the terminator on the edge to `target`, each with the parts moved
-    /// out of it. A local scheduled by [`Self::insert_after_terminator`] is dropped whole: its
-    /// move was turned into a borrow.
+    /// out of it. A local scheduled by [`Self::insert_after_terminator`] is dropped once, whole:
+    /// its move was turned into a borrow.
     pub fn after_terminator(&self, target: &BasicBlock) -> Vec<(Local, MovedOut)> {
         let terminator_index = self.after_statements.len() - 1;
         let mut t = self.after_terminator[target].clone();
         t.union(self.after_statements.last().unwrap());
         t.iter()
+            .filter(|local| !self.after_terminator_extra.contains(local))
             .map(|local| (local, self.moved_out(terminator_index, local)))
             .chain(
                 self.after_terminator_extra
@@ -103,10 +104,10 @@ pub struct DropPointsBuilder<'mir, 'tcx> {
 }
 
 /// The parts of `local`, dropped after the statement or terminator at `location`, that its drop
-/// must not resolve: the whole local if this very statement moves it out, and any part that may
-/// have been moved out (`uninit`) and may hold a `&mut`, whose pair went with the move. A part
-/// that is a reference is never one, since a moved `&mut` becomes a reborrow and the source still
-/// resolves to it.
+/// must not resolve: the whole local if this very statement moves it out, and otherwise any part
+/// that may have been moved out (`uninit`) and may hold a `&mut`, whose pair went with the move.
+/// A part that is a reference is never one, since a moved `&mut` becomes a reborrow and the
+/// source still resolves to it.
 fn moved_out_parts<'tcx>(
     moves: &MoveState<'_, '_, 'tcx>,
     body: &Body<'tcx>,
@@ -118,20 +119,20 @@ fn moved_out_parts<'tcx>(
     let Some(root) = move_data.rev_lookup.find_local(local) else {
         return MovedOut::new();
     };
-    let moved_here = |mpi| {
-        move_data.loc_map[location]
-            .iter()
-            .any(|&out| move_data.moves[out].path == mpi)
-    };
+    let moved_here = move_data.loc_map[location]
+        .iter()
+        .any(|&out| move_data.moves[out].path == root);
+    if moved_here && !body.local_decls[local].ty.is_ref() {
+        return vec![Vec::new()];
+    }
     let mut parts = MovedOut::new();
     let mut pending = vec![root];
     while let Some(mpi) = pending.pop() {
         let path = &move_data.move_paths[mpi];
         let ty = path.place.ty(body, moves.tcx).ty;
         let moved = !ty.is_ref()
-            && ((mpi == root && moved_here(mpi))
-                || (uninit.contains(mpi)
-                    && analyze::may_hold_mut_ref(moves.tcx, moves.typing_env, ty)));
+            && uninit.contains(mpi)
+            && analyze::may_hold_mut_ref(moves.tcx, moves.typing_env, ty);
         if !moved {
             pending.extend(path.children(&move_data.move_paths).map(|(child, _)| child));
             continue;
