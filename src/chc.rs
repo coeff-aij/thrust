@@ -3130,12 +3130,18 @@ impl System {
                     }
                 }
                 UserDefinedPredBody::Formula(formula) => {
-                    udpd.dependencies.extend(formula.iter_atoms().filter_map(
-                        |atom| match &atom.pred {
-                            Pred::ForallPred(pred) => Some(pred.clone()),
-                            _ => None,
-                        },
-                    ));
+                    // The atoms of the formula and of their guards, as `user_defined_in` reads.
+                    let guards = formula
+                        .iter_atoms()
+                        .filter_map(|atom| atom.guard.as_deref())
+                        .flat_map(Formula::iter_atoms);
+                    udpd.dependencies
+                        .extend(formula.iter_atoms().chain(guards).filter_map(|atom| {
+                            match &atom.pred {
+                                Pred::ForallPred(pred) => Some(pred.clone()),
+                                _ => None,
+                            }
+                        }));
                     udpd.dependencies.extend(
                         formula
                             .iter_atoms()
@@ -3703,7 +3709,8 @@ impl System {
         answer
     }
 
-    /// Whether the query declares what `z3` does not read: forall sorts, or sequences.
+    /// Whether the query declares what `z3` does not read: forall sorts, or sequences in a clause,
+    /// an unknown's signature or a definition's.
     pub fn needs_pcsat(&self) -> bool {
         let seq = |sort: &Sort| {
             let mut found = false;
@@ -3712,7 +3719,11 @@ impl System {
         };
         let vars = self.clauses.iter().flat_map(|c| c.vars.iter());
         let sigs = self.pred_vars.iter().flat_map(|p| p.sig.iter());
-        !self.forall_sorts.is_empty() || vars.chain(sigs).any(seq)
+        let definitions = self
+            .user_defined_pred_defs
+            .iter()
+            .flat_map(|def| def.sig.iter().map(|(_, sort)| sort));
+        !self.forall_sorts.is_empty() || vars.chain(sigs).chain(definitions).any(seq)
     }
 
     /// Solves each class of clauses that share an unknown on its own (see [`components`]),
@@ -4166,7 +4177,13 @@ mod tests {
         );
         system.register_forall_pred(ForallPred::new("q".into(), vec![], vec![Sort::forall(idx)]));
 
-        let smt = system.smtlib2(PCSAT).to_string();
+        // The query carries the debug info in comments only at the debug level.
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .with_writer(std::io::sink)
+            .finish();
+        let smt =
+            tracing::subscriber::with_default(subscriber, || system.smtlib2(PCSAT).to_string());
         assert!(smt.contains("; type_param=ParamTy T/#0 (decl=DefId(...))"));
         assert!(smt.contains("(declare-forall-sort a0)"));
     }

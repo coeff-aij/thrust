@@ -2734,7 +2734,7 @@ impl<'tcx> Analyzer<'tcx> {
                     diag.span_label(f.head, format!("`{}` is in this part too", f.r#fn));
                 }
             }
-            diag.with_note(summary.error_note(self.tcx, parts.len()))
+            diag.with_note(summary.error_note(self.tcx, &summaries))
                 .emit();
         }
         crate::report::emit_part_notes(self.tcx, &summaries);

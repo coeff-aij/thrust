@@ -101,9 +101,35 @@ fn mutable_pointee_refinements_are_facts_about_both_values() {
     check_subtype(&refined, &pointer).unwrap();
 }
 
+/// The content of a mutable reference is an invariant both the lender and the borrower rely on,
+/// so a refinement of the reference's current and final values does not replace it.
 #[test]
-fn pointer_invariants_cannot_be_replaced_by_outer_refinements() {
-    for kind in [PointerKind::Own, PointerKind::Ref(RefKind::Mut)] {
+fn mutable_reference_invariants_cannot_be_replaced_by_outer_refinements() {
+    let kind = PointerKind::Ref(RefKind::Mut);
+    let nested = RefinedType::unrefined(Type::Pointer(PointerType {
+        kind,
+        elem: Box::new(RefinedType::new(Type::Int(None), nonnegative(value()))),
+    }));
+    let outer = RefinedType::new(
+        Type::Pointer(PointerType::new(kind, Type::Int(None))),
+        nested.formula(),
+    );
+
+    assert!(matches!(
+        check_subtype(&nested, &outer),
+        Err(chc::CheckSatError::Unsat)
+    ));
+    assert!(matches!(
+        check_subtype(&outer, &nested),
+        Err(chc::CheckSatError::Unsat)
+    ));
+}
+
+/// The content of an owned pointer or a shared reference is a value nobody else writes, so a
+/// refinement of it is the same as the refinement of the pointer that states it of the content.
+#[test]
+fn owned_and_shared_content_refinements_are_refinements_of_the_pointer() {
+    for kind in [PointerKind::Own, PointerKind::Ref(RefKind::Immut)] {
         let nested = RefinedType::unrefined(Type::Pointer(PointerType {
             kind,
             elem: Box::new(RefinedType::new(Type::Int(None), nonnegative(value()))),
@@ -113,13 +139,7 @@ fn pointer_invariants_cannot_be_replaced_by_outer_refinements() {
             nested.formula(),
         );
 
-        assert!(matches!(
-            check_subtype(&nested, &outer),
-            Err(chc::CheckSatError::Unsat)
-        ));
-        assert!(matches!(
-            check_subtype(&outer, &nested),
-            Err(chc::CheckSatError::Unsat)
-        ));
+        check_subtype(&nested, &outer).unwrap();
+        check_subtype(&outer, &nested).unwrap();
     }
 }

@@ -502,8 +502,7 @@ pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) -> Vec<Refuted>
             };
             for (i, (answer, failure)) in failures.iter().enumerate() {
                 let asked = input.asked.get(i);
-                let part_note =
-                    asked.map(|a| input.parts[a.part - 1].error_note(tcx, input.parts.len()));
+                let part_note = asked.map(|a| input.parts[a.part - 1].error_note(tcx, input.parts));
                 human.failure(answer, asked, part_note, failure.as_ref(), &entries);
             }
             human.emit(&entries);
