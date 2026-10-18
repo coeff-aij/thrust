@@ -1635,10 +1635,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         "std" | "core" | "alloc"
                     );
                 if unchecked_foreign_impl {
-                    panic!(
-                        "unknown def: {:?} of another crate, which no trait-level spec covers",
-                        resolved_def_id
-                    );
+                    self.no_specification(resolved_def_id, resolved_args);
                 }
                 if let Some(def_ty) = self.ctx.def_ty_with_args(def_id, args, caller_def_id) {
                     // otherwise nothing asks for a deferred impl method's type and its body goes unchecked
