@@ -1,0 +1,102 @@
+#!/bin/sh
+# RUSTC for the extension's `cargo check`: runs the command of THRUST_VSCODE_COMMAND (its words
+# separated by the unit separator, 0x1f) with cargo's arguments, then those of
+# THRUST_VSCODE_ARGS (separated alike). For a crate of a package cargo was asked to check, it
+#
+# - writes the JSON report to THRUST_VSCODE_REPORT_DIR/<package>.<crate>.<crate type>.jsonl,
+#   removing the one of an earlier check first, so a crate that fails to compile leaves none;
+# - records Thrust's variables in the crate's dep-info as `env-dep` lines, as rustc does for
+#   `env!`, so that cargo checks the crate again when one of them changes (`THRUST_VERIFY_ONLY`
+#   of another function, `THRUST_SPLIT`) instead of keeping its earlier result.
+#
+# Other crates (dependencies) run without a report; cargo's queries of the compiler (`-vV`,
+# `--print`) run with cargo's arguments only.
+set -eu
+set -f
+
+sep=$(printf '\037')
+
+# The variables Thrust reads (`std::env::var` under src/ and thrust-macros/src/).
+tracked="THRUST_CACHE_DIR THRUST_CACHE_SALT THRUST_CANDIDATE_ATOMS THRUST_CHECK_UINT_FACTS
+THRUST_DEDUP_PRED_ARGS THRUST_ENUM_EXPANSION_DEPTH_LIMIT THRUST_FLAT_PRED_ARGS THRUST_INT_RANGE
+THRUST_NO_INJECT_STD THRUST_OUTPUT_DIR THRUST_PER_INSTANCE_GENERICS THRUST_PREPROCESSOR
+THRUST_PREPROCESSOR_ARGS THRUST_PREPROCESSOR_TIMEOUT_SECS THRUST_PRETTY_OUTPUT THRUST_REPORT
+THRUST_REPORT_FORMAT THRUST_REPORT_ONLY THRUST_SOLVER THRUST_SOLVER_ARGS
+THRUST_SOLVER_TIMEOUT_SECS THRUST_SPLIT THRUST_TRY_SPECS THRUST_VERIFY_ONLY"
+
+# run [args...]: the command with the arguments and the extra arguments.
+run() {
+  IFS=$sep
+  # shellcheck disable=SC2086
+  set -- $THRUST_VSCODE_COMMAND "$@" ${THRUST_VSCODE_ARGS:-}
+  unset IFS
+  "$@"
+}
+
+# The value of the option `$1` in the arguments after it (`--out-dir x`, `--out-dir=x`, and for
+# a codegen option `-C name=x` or `-Cname=x`).
+option() {
+  name=$1
+  shift
+  while [ $# -gt 0 ]; do
+    case $1 in
+      "$name") [ $# -ge 2 ] && { printf '%s' "$2"; return; } ;;
+      "$name"=*) printf '%s' "${1#"$name"=}"; return ;;
+    esac
+    shift
+  done
+}
+
+# The value of the codegen option `-C $1=...`.
+codegen() {
+  name=$1
+  shift
+  previous=
+  for arg in "$@"; do
+    case $previous:$arg in
+      -C:"$name"=*) printf '%s' "${arg#"$name"=}"; return ;;
+    esac
+    case $arg in
+      -C"$name"=*) printf '%s' "${arg#-C"$name"=}"; return ;;
+    esac
+    previous=$arg
+  done
+}
+
+# Appends an `env-dep` line for each tracked variable to the dep-info file `$1`, if it exists.
+record_env() {
+  [ -f "$1" ] || return 0
+  for var in $tracked; do
+    if eval "[ -n \"\${$var+set}\" ]"; then
+      eval "value=\$$var"
+      escaped=$(printf '%s' "$value" | sed 's/\\/\\\\/g')
+      printf '# env-dep:%s=%s\n' "$var" "$escaped" >> "$1"
+    else
+      printf '# env-dep:%s\n' "$var" >> "$1"
+    fi
+  done
+}
+
+if [ -z "${CARGO_CRATE_NAME:-}" ]; then
+  run "$@"
+  exit
+fi
+if [ -z "${CARGO_PRIMARY_PACKAGE:-}" ] || [ -z "${THRUST_VSCODE_REPORT_DIR:-}" ]; then
+  unset THRUST_REPORT
+  run "$@"
+  exit
+fi
+
+crate=$(option --crate-name "$@")
+crate_type=$(option --crate-type "$@")
+out_dir=$(option --out-dir "$@")
+extra=$(codegen extra-filename "$@")
+THRUST_REPORT_FILE="$THRUST_VSCODE_REPORT_DIR/${CARGO_PKG_NAME}.${crate}.${crate_type:-bin}.jsonl"
+export THRUST_REPORT_FILE
+mkdir -p "$THRUST_VSCODE_REPORT_DIR"
+rm -f "$THRUST_REPORT_FILE"
+
+status=0
+run "$@" || status=$?
+record_env "$out_dir/$crate$extra.d"
+exit $status

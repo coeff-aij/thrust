@@ -306,3 +306,53 @@ test("resolveFinding resolves Thrust's files against the report's root and rustc
   const [rustc] = findingsOf(load("broken"));
   assert.strictEqual(report.resolveFinding(rustc, "/root", "/cwd").location.file, path.resolve("/cwd", "broken.rs"));
 });
+
+function results(name: string): [string, report.Status, number | undefined][] {
+  return report.functionResults(load(name).report).map((r) => [r.fn, r.status, r.span?.line]);
+}
+
+test("functions of a split run: each with its part's verdict, a refuted one at its refutation", () => {
+  assert.deepStrictEqual(results("split"), [
+    ["withdraw", "fail", 3],
+    ["count_to", "fail", 9],
+    ["main", "pass", 19],
+  ]);
+  assert.deepStrictEqual(results("safe-split"), [
+    ["add_one", "pass", 1],
+    ["main", "pass", 15],
+    ["count_to", "pass", 7],
+  ]);
+  const timedOut = report.functionResults(load("unknown-split").report);
+  assert.deepStrictEqual(timedOut.map((r) => [r.fn, r.status]), [["mul", "unknown"], ["main", "unknown"]]);
+  assert.match(timedOut[0].message, /Timeout\(2s\)/);
+});
+
+test("functions of a run in one query: those it names, a refuted one failing", () => {
+  assert.deepStrictEqual(results("safe"), [
+    ["add_one", "pass", 1],
+    ["count_to", "pass", 9],
+  ]);
+  const refuted = report.functionResults(load("unsafe").report);
+  assert.deepStrictEqual(refuted.map((r) => [r.fn, r.status]), [["withdraw", "fail"]]);
+  assert.match(refuted[0].message, /^refuted: ensures with result = -1/);
+  assert.deepStrictEqual(results("unknown"), []);
+});
+
+test("functions: a refuted part without a refutation fails, one refuted at another function is unknown", () => {
+  const text = load("split").text.replace(/^\{"kind":"failure","part":2.*$/m, "");
+  const parsed = report.parseReport(text);
+  assert.deepStrictEqual(report.functionResults(parsed).map((r) => [r.fn, r.status]), [["withdraw", "fail"], ["count_to", "fail"], ["main", "pass"]]);
+  assert.match(report.functionResults(parsed)[1].message, /unsat, without a refutation/);
+  const shared = report.parseReport(load("split").text.replace('"functions":[{"fn":"withdraw"', '"functions":[{"fn":"other","span":null},{"fn":"withdraw"'));
+  assert.deepStrictEqual(report.functionResults(shared).slice(0, 2).map((r) => [r.fn, r.status]), [["other", "unknown"], ["withdraw", "fail"]]);
+});
+
+test("the status of one function's lines: its refutation, its part, else the run's when sat", () => {
+  const split = load("split").report;
+  assert.strictEqual(report.statusWithin(split, "unsafe.rs", 9, 17)?.status, "fail");
+  assert.strictEqual(report.statusWithin(split, "unsafe.rs", 19, 24)?.status, "pass");
+  // Lines the report names nothing in: the run's verdict, unknown unless sat.
+  assert.strictEqual(report.statusWithin(load("safe").report, "safe.rs", 15, 20)?.status, "pass");
+  assert.strictEqual(report.statusWithin(load("unsafe").report, "unsafe.rs", 19, 24)?.status, "unknown");
+  assert.strictEqual(report.statusWithin(report.parseReport(""), "a.rs", 1, 2), undefined);
+});

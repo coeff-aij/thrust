@@ -593,3 +593,115 @@ export function resolveFinding(finding: Finding, root: string, cwd: string): Fin
 export function utf16Column(text: string, column: number): number {
   return Array.from(text).slice(0, Math.max(column - 1, 0)).join("").length + 1;
 }
+
+/// What a run says of one function: `pass` when its obligations hold, `fail` when one is refuted,
+/// `unknown` when the run decides neither (no answer, or a refutation elsewhere in its query).
+export type Status = "pass" | "fail" | "unknown";
+
+export interface FunctionResult {
+  /// The function as the report names it (`Pair::twice`, `<Pair as Scale>::scale`).
+  fn: string;
+  /// Where it is: its part's span (the whole function), else its contract site's or its first
+  /// failure's.
+  span: Range | null;
+  status: Status;
+  /// Why, in one line.
+  message: string;
+  /// The refutations at it.
+  failures: Failure[];
+}
+
+/// The status of each function the report names, in the order it first names them. A run split
+/// in parts (`THRUST_SPLIT`) names every function, each with its part's verdict; a run in one
+/// query names only those with an inferred contract, a loop or a refutation.
+export function functionResults(report: Report): FunctionResult[] {
+  if (refusal(report) || !report.verdict) {
+    return [];
+  }
+  return report.parts.length > 0 ? partResults(report) : queryResults(report, report.verdict);
+}
+
+function failuresAt(report: Report, fn: string): Failure[] {
+  return report.failures.filter((f) => f.fn === fn);
+}
+
+function partResults(report: Report): FunctionResult[] {
+  return report.parts.flatMap((part) =>
+    part.functions.map((f) => {
+      const failures = failuresAt(report, f.fn).filter((x) => x.part === part.id);
+      const refuted = report.failures.some((x) => x.part === part.id);
+      return { fn: f.fn, span: f.span, failures, ...partStatus(part, failures, refuted) };
+    }),
+  );
+}
+
+function partStatus(part: Part, failures: Failure[], refuted: boolean): { status: Status; message: string } {
+  const name = partName(part);
+  if (part.verdict === "sat") {
+    return { status: "pass", message: `${name}: sat${part.cached ? " (from the cache)" : ""}` };
+  }
+  if (part.verdict !== "unsat") {
+    return { status: "unknown", message: `${name}: ${part.message ?? part.verdict}` };
+  }
+  if (failures.length > 0) {
+    return { status: "fail", message: failures.map(failureLine).join("\n") };
+  }
+  return refuted
+    ? { status: "unknown", message: `${name}: refuted at another function of the part` }
+    : { status: "fail", message: `${name}: unsat, without a refutation` };
+}
+
+function queryResults(report: Report, line: VerdictLine): FunctionResult[] {
+  const names: string[] = [];
+  for (const fn of [...report.sites.map((s) => s.fn), ...report.failures.flatMap((f) => (f.fn ? [f.fn] : []))]) {
+    if (!names.includes(fn)) {
+      names.push(fn);
+    }
+  }
+  return names.map((fn) => {
+    const failures = failuresAt(report, fn);
+    const site = report.sites.find((s) => s.fn === fn && s.site === "contract");
+    const span = site?.span ?? failures[0]?.span ?? report.sites.find((s) => s.fn === fn)?.span ?? null;
+    return { fn, span, failures, ...queryStatus(line, failures) };
+  });
+}
+
+function queryStatus(line: VerdictLine, failures: Failure[]): { status: Status; message: string } {
+  if (failures.length > 0) {
+    return { status: "fail", message: failures.map(failureLine).join("\n") };
+  }
+  if (line.verdict === "sat") {
+    return { status: "pass", message: "the query is sat" };
+  }
+  if (line.verdict === "unsat") {
+    return {
+      status: "unknown",
+      message: `the query is refuted elsewhere, ${line.refutations}; split it (THRUST_SPLIT) to decide each function`,
+    };
+  }
+  return { status: "unknown", message: `the solver answered ${line.message ?? line.verdict}` };
+}
+
+function failureLine(failure: Failure): string {
+  const values = failure.values.length > 0 ? ` with ${formatValues(failure.values)}` : "";
+  return `refuted: ${failure.obligation ?? "obligation"}${values}`;
+}
+
+/// The status of the function on the lines `line` to `endLine` of `file` (relative to the
+/// report's root), in a run of that function only (`THRUST_VERIFY_ONLY`): failing when a
+/// refutation is in it, else its part's when the run is split, else the run's when it is sat;
+/// unknown otherwise, as other functions the run checks may be what fails.
+export function statusWithin(report: Report, file: string, line: number, endLine: number): FunctionResult | undefined {
+  if (refusal(report) || !report.verdict) {
+    return undefined;
+  }
+  const inside = (span: Range | null) => span !== null && span.file === file && span.line >= line && span.line <= endLine;
+  const results = functionResults(report);
+  const own = results.filter((r) => inside(r.span) || r.failures.some((f) => inside(f.span)));
+  const failed = own.find((r) => r.status === "fail");
+  if (failed || own.length > 0) {
+    return failed ?? own[0];
+  }
+  const fn = `lines ${line}-${endLine}`;
+  return { fn, span: null, failures: [], ...queryStatus(report.verdict, []) };
+}

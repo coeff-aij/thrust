@@ -18,12 +18,16 @@ export interface RunConfig {
   timeoutSecs: number;
 }
 
-export interface Invocation {
+/// A program to run.
+export interface Command {
   program: string;
   args: string[];
   /// The variables the run sets on top of the inherited environment.
   env: Record<string, string>;
   cwd: string;
+}
+
+export interface Invocation extends Command {
   reportFile: string;
 }
 
@@ -37,10 +41,11 @@ export interface RunResult {
   durationMs: number;
 }
 
-/// What a run of `file` executes, with its output in `scratch`. The file is passed relative to
-/// its directory, where the run starts, so the report's spans name it as the editor does after
-/// resolving them against that directory.
-export function invocation(file: string, config: RunConfig, scratch: string): Invocation {
+/// What a run of `file` executes, with its output in `scratch`; with `selection`, of the functions
+/// it names only (`THRUST_VERIFY_ONLY`). The file is passed relative to its directory, where the
+/// run starts, so the report's spans name it as the editor does after resolving them against
+/// that directory.
+export function invocation(file: string, config: RunConfig, scratch: string, selection?: string): Invocation {
   const [program, ...leading] = config.command;
   if (!program) {
     throw new Error("thrust.command is empty");
@@ -58,20 +63,27 @@ export function invocation(file: string, config: RunConfig, scratch: string): In
   if (config.cacheDir !== "") {
     env.THRUST_CACHE_DIR = config.cacheDir;
   }
+  if (selection !== undefined) {
+    env.THRUST_VERIFY_ONLY = selection;
+  }
   const args = [...leading, ...config.extraArgs, "--error-format=json", "--out-dir", scratch, path.basename(file)];
   return { program, args, env, cwd: path.dirname(file), reportFile };
 }
 
-/// Runs Thrust on `file`; `signal` stops it (a newer run of the same file).
-export async function run(file: string, config: RunConfig, signal?: AbortSignal): Promise<RunResult> {
+/// Runs Thrust on `file`, or on the functions `selection` names; `signal` stops it (a newer run
+/// of the same file).
+export async function run(file: string, config: RunConfig, signal?: AbortSignal, selection?: string): Promise<RunResult> {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "thrust-vscode-"));
   try {
-    const inv = invocation(file, config, scratch);
+    const inv = invocation(file, config, scratch, selection);
     const started = Date.now();
     const outcome = await execute(inv, config.timeoutSecs, signal);
     return {
       invocation: inv,
-      ...outcome,
+      exitCode: outcome.exitCode,
+      stderr: outcome.stderr,
+      timedOut: outcome.timedOut,
+      cancelled: outcome.cancelled,
       report: readIfPresent(inv.reportFile),
       durationMs: Date.now() - started,
     };
@@ -80,24 +92,29 @@ export async function run(file: string, config: RunConfig, signal?: AbortSignal)
   }
 }
 
-interface Execution {
+export interface Execution {
   exitCode: number | null;
+  stdout: string;
   stderr: string;
   timedOut: boolean;
   cancelled: boolean;
 }
 
-function execute(inv: Invocation, timeoutSecs: number, signal?: AbortSignal): Promise<Execution> {
+/// Runs `command` in a process group of its own, which the time limit and `signal` stop as a
+/// whole (cargo, the compilers it started and their solvers).
+export function execute(command: Command, timeoutSecs: number, signal?: AbortSignal): Promise<Execution> {
   return new Promise((resolve) => {
-    const child = spawn(inv.program, inv.args, {
-      cwd: inv.cwd,
-      env: { ...process.env, ...inv.env },
-      stdio: ["ignore", "ignore", "pipe"],
+    const child = spawn(command.program, command.args, {
+      cwd: command.cwd,
+      env: { ...process.env, ...command.env },
+      stdio: ["ignore", "pipe", "pipe"],
+      detached: true,
     });
+    let stdout = "";
     let stderr = "";
     let timedOut = false;
     let cancelled = false;
-    const stop = () => child.kill("SIGTERM");
+    const stop = () => stopGroup(child.pid);
     const timer = setTimeout(() => {
       timedOut = true;
       stop();
@@ -107,18 +124,30 @@ function execute(inv: Invocation, timeoutSecs: number, signal?: AbortSignal): Pr
       stop();
     };
     signal?.addEventListener("abort", onAbort);
+    child.stdout.on("data", (chunk: Buffer) => (stdout += chunk.toString("utf8")));
     child.stderr.on("data", (chunk: Buffer) => (stderr += chunk.toString("utf8")));
     const finish = (exitCode: number | null, extra = "") => {
       clearTimeout(timer);
       signal?.removeEventListener("abort", onAbort);
-      resolve({ exitCode, stderr: stderr + extra, timedOut, cancelled });
+      resolve({ exitCode, stdout, stderr: stderr + extra, timedOut, cancelled });
     };
     child.on("error", (err) => finish(null, `${err.message}\n`));
     child.on("close", (code) => finish(code));
   });
 }
 
-function readIfPresent(file: string): string {
+function stopGroup(pid: number | undefined): void {
+  if (pid === undefined) {
+    return;
+  }
+  try {
+    process.kill(-pid, "SIGTERM");
+  } catch {
+    // The group has exited.
+  }
+}
+
+export function readIfPresent(file: string): string {
   try {
     return fs.readFileSync(file, "utf8");
   } catch {

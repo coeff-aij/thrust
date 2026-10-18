@@ -57,3 +57,8 @@ test("run: a command that does not exist is an exit without status", async () =>
   assert.strictEqual(result.exitCode, null);
   assert.match(result.stderr, /ENOENT/);
 });
+
+test("invocation: a selection sets THRUST_VERIFY_ONLY", () => {
+  const inv = invocation("/a/b.rs", config(["thrust-rustc"]), "/tmp/s", "m::Pair::twice");
+  assert.strictEqual(inv.env.THRUST_VERIFY_ONLY, "m::Pair::twice");
+});
