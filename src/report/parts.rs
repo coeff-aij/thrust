@@ -21,8 +21,18 @@ pub struct Part {
     pub functions: Vec<PartCode>,
     /// See [`chc::verdict`].
     pub verdict: &'static str,
+    /// What the solver answered when it is neither `sat` nor `unsat` (`Timeout(30s)`).
+    pub message: Option<String>,
     /// Whether the verdict was that of an earlier run (`THRUST_CACHE_DIR`).
     pub cached: bool,
+}
+
+/// What the solver answered for `result` when it is neither `sat` nor `unsat`.
+pub fn message(result: &Result<(), chc::CheckSatError>) -> Option<String> {
+    match result {
+        Ok(()) | Err(chc::CheckSatError::Unsat) => None,
+        Err(err) => Some(format!("{err:?}")),
+    }
 }
 
 /// The verdict of the crate from those of its parts: `unsat` if a part is, else the first that
@@ -43,6 +53,8 @@ pub fn crate_verdict(verdicts: &[&'static str]) -> &'static str {
 pub struct PartCode {
     pub r#fn: String,
     pub span: Span,
+    /// The function's signature, where an error names it.
+    pub head: Span,
 }
 
 impl Part {
@@ -52,6 +64,7 @@ impl Part {
             clauses: part.clauses.len(),
             functions: code(tcx, system, &part.clauses),
             verdict: chc::verdict(&part.result),
+            message: message(&part.result),
             cached: part.cached,
         }
     }
@@ -99,6 +112,7 @@ fn code(tcx: TyCtxt<'_>, system: &chc::System, ids: &[chc::ClauseId]) -> Vec<Par
         .map(|(def, span)| PartCode {
             r#fn: tcx.def_path_str(def.to_def_id()),
             span,
+            head: tcx.def_span(def.to_def_id()).source_callsite(),
         })
         .collect();
     code.sort_by_key(|c| c.span.lo());

@@ -85,17 +85,26 @@ pub fn map_atoms(f: Formula, g: &impl Fn(Atom) -> Formula) -> Formula {
 /// arguments in the order they are shown in (see [`Names::arrange`]).
 pub fn show(f: &Formula, names: &Names) -> String {
     let f = map_atoms(f.clone(), &|atom| {
-        let chc::Pred::Var(p) = atom.pred else {
+        let shown = match &atom.pred {
+            chc::Pred::Var(p) => names.preds.get(p).map(|info| {
+                let args = names.arrange(*p, &atom.args);
+                applied(&info.name, &info.args, &names.sorts(*p), args)
+            }),
+            chc::Pred::UserDefined(pred) => {
+                let name = OneLine::one_line(&Formula::Atom(chc::Atom::new(
+                    chc::Pred::UserDefined(pred.clone()),
+                    Vec::new(),
+                )));
+                Some(applied(&name, &[], &[], atom.args.clone()))
+            }
+            _ => None,
+        };
+        let Some(shown) = shown else {
             return Formula::Atom(atom);
         };
-        let Some(info) = names.preds.get(&p) else {
-            return Formula::Atom(atom);
-        };
-        let args = names.arrange(p, &atom.args);
-        let applied = applied(&info.name, &info.args, args);
         Formula::Atom(chc::Atom {
             guard: atom.guard,
-            pred: chc::UserDefinedPred::new(applied).into(),
+            pred: chc::UserDefinedPred::new(shown).into(),
             args: Vec::new(),
         })
     });
@@ -104,39 +113,51 @@ pub fn show(f: &Formula, names: &Names) -> String {
     f.one_line()
 }
 
-/// `p(…)` with each argument as the run shows a fact's: `name = term` for the variable of the
-/// template it is, a `&mut` as its current and final values `*name` and `°name`, and the name
-/// alone where the term is that variable.
-fn applied(pred: &str, params: &[Option<String>], args: Vec<Term>) -> String {
+/// `name` and `value` of a variable, or each of the current and final values of a `&mut`,
+/// `*name` and `°name`: the values `value` holds, read by the name they are shown with.
+pub fn components(name: &str, value: Term) -> Vec<(String, Term)> {
+    match value {
+        Term::Mut(current, last) => [
+            components(&format!("*{name}"), *current),
+            components(&format!("°{name}"), *last),
+        ]
+        .concat(),
+        value => vec![(name.to_owned(), value)],
+    }
+}
+
+/// `p(…)` with each argument by the variable of the template it is, as `name := term`, a `&mut`
+/// as its current and final values `*name` and `°name` (by `sorts`, also when the term is a
+/// variable), and the name alone where the term is that variable; an argument of no variable of
+/// the template is its term.
+fn applied(pred: &str, params: &[Option<String>], sorts: &[chc::Sort], args: Vec<Term>) -> String {
     if args.is_empty() {
         return pred.to_owned();
     }
     let mut shown = Vec::new();
-    for (param, arg) in params
-        .iter()
-        .map(Option::as_deref)
-        .chain(std::iter::repeat(None))
-        .zip(args)
-    {
-        push_argument(&mut shown, param, tidy_term(arg));
+    for (k, arg) in args.into_iter().enumerate() {
+        let arg = tidy_term(arg);
+        let Some(Some(name)) = params.get(k) else {
+            shown.push(arg.one_line());
+            continue;
+        };
+        let arg = match (arg, sorts.get(k)) {
+            (Term::Var(v), Some(chc::Sort::Mut(_))) => Term::Mut(
+                Box::new(Term::MutCurrent(Box::new(Term::Var(v)))),
+                Box::new(Term::MutFinal(Box::new(Term::Var(v)))),
+            ),
+            (arg, _) => arg,
+        };
+        for (name, term) in components(name, arg) {
+            let term = term.one_line();
+            if term == name {
+                shown.push(name);
+            } else {
+                shown.push(format!("{name} := {term}"));
+            }
+        }
     }
     format!("{pred}({})", shown.join(", "))
-}
-
-fn push_argument(shown: &mut Vec<String>, param: Option<&str>, arg: Term) {
-    let Some(name) = param else {
-        shown.push(arg.one_line());
-        return;
-    };
-    if let Term::Mut(current, last) = arg {
-        push_argument(shown, Some(&format!("*{name}")), *current);
-        push_argument(shown, Some(&format!("°{name}")), *last);
-        return;
-    }
-    match arg {
-        Term::Var(v) if v.as_str() == name => shown.push(name.to_owned()),
-        arg => shown.push(format!("{name} = {}", arg.one_line())),
-    }
 }
 
 pub fn and(fs: Vec<Formula>) -> Formula {
@@ -240,7 +261,7 @@ fn compared_difference<V>(
     y: chc::Term<V>,
     k: num_bigint::BigInt,
 ) -> chc::Atom<V> {
-    use chc::{KnownPred, Term};
+    use chc::KnownPred;
     let (p, k) = match p {
         p if p == KnownPred::LESS_THAN => (KnownPred::LESS_THAN_OR_EQUAL, k - 1),
         p if p == KnownPred::GREATER_THAN => (KnownPred::GREATER_THAN_OR_EQUAL, k + 1),
@@ -256,12 +277,38 @@ fn compared_difference<V>(
         }
         p => (p, k),
     };
-    let y = match k {
-        k if k == 0.into() => y,
-        k if k > 0.into() => Term::App(chc::Function::ADD, vec![y, Term::Int(k)]),
-        k => Term::App(chc::Function::SUB, vec![y, Term::Int(-k)]),
+    chc::Atom::new(p.into(), vec![x, plus(y, k)])
+}
+
+/// `y + k` over the integers, `y` itself an integer moved by one (`z + j`, `z - j`) moved once.
+fn plus<V>(y: chc::Term<V>, k: num_bigint::BigInt) -> chc::Term<V> {
+    use chc::{Function, Term};
+    let (base, k) = match y {
+        Term::Int(j) => return Term::Int(j + k),
+        Term::App(f, mut ts) if ts.len() == 2 && matches!(ts[1], Term::Int(_)) => {
+            let Term::Int(j) = ts.pop().unwrap() else {
+                unreachable!()
+            };
+            let base = ts.pop().unwrap();
+            match f {
+                f if f == Function::ADD => (base, k + j),
+                f if f == Function::SUB => (base, k - j),
+                f => return plus_at(Term::App(f, vec![base, Term::Int(j)]), k),
+            }
+        }
+        y => (y, k),
     };
-    chc::Atom::new(p.into(), vec![x, y])
+    plus_at(base, k)
+}
+
+/// `base + k`, `base - k` for a negative `k`, `base` for `0`.
+fn plus_at<V>(base: chc::Term<V>, k: num_bigint::BigInt) -> chc::Term<V> {
+    use chc::{Function, Term};
+    match k {
+        k if k == 0.into() => base,
+        k if k > 0.into() => Term::App(Function::ADD, vec![base, Term::Int(k)]),
+        k => Term::App(Function::SUB, vec![base, Term::Int(-k)]),
+    }
 }
 
 /// The components of two pairs or tuples equated.
@@ -275,7 +322,8 @@ fn componentwise<V: Clone + PartialEq>(
 
 /// `atom` with its arguments tidied (see `tidy_term`), two pairs `<c, f>` or two tuples equal
 /// when their components are, a boolean term equated with `true` or `false` read as the formula
-/// it stands for or its negation, and `x - y` compared with `0` as `x` compared with `y`.
+/// it stands for or its negation, and `x - y` compared with an integer as `x` compared with `y`
+/// moved by it (see `compared_difference`).
 fn tidy_atom<V: Clone + PartialEq>(atom: chc::Atom<V>) -> chc::Formula<V> {
     use chc::{KnownPred, Term};
     let args: Vec<Term<V>> = atom.args.into_iter().map(tidy_term).collect();
@@ -342,7 +390,8 @@ pub fn tidy<V: Clone + PartialEq>(f: chc::Formula<V>) -> chc::Formula<V> {
 }
 
 /// The bound `f` puts on `x` by `y`, if it is one: `(x, y, true)` for `x <= y`, `(x, y, false)`
-/// for `x >= y`; a strict bound by an integer is read as the bound by its neighbour.
+/// for `x >= y`; over the integers a strict bound is the bound by the neighbour, `x < y` as
+/// `x <= y - 1`.
 fn bound<V: Clone>(f: &chc::Formula<V>) -> Option<(chc::Term<V>, chc::Term<V>, bool)> {
     use chc::{KnownPred, Term};
     let chc::Formula::Atom(chc::Atom {
@@ -354,12 +403,11 @@ fn bound<V: Clone>(f: &chc::Formula<V>) -> Option<(chc::Term<V>, chc::Term<V>, b
         return None;
     };
     let [x, y] = <&[Term<V>; 2]>::try_from(args.as_slice()).ok()?;
-    let step = |k: &num_bigint::BigInt, d: i32| Term::Int(k + d);
-    let (y, upper) = match (*p, y) {
-        (p, y) if p == KnownPred::LESS_THAN_OR_EQUAL => (y.clone(), true),
-        (p, y) if p == KnownPred::GREATER_THAN_OR_EQUAL => (y.clone(), false),
-        (p, Term::Int(k)) if p == KnownPred::LESS_THAN => (step(k, -1), true),
-        (p, Term::Int(k)) if p == KnownPred::GREATER_THAN => (step(k, 1), false),
+    let (y, upper) = match *p {
+        p if p == KnownPred::LESS_THAN_OR_EQUAL => (y.clone(), true),
+        p if p == KnownPred::GREATER_THAN_OR_EQUAL => (y.clone(), false),
+        p if p == KnownPred::LESS_THAN => (plus(y.clone(), (-1).into()), true),
+        p if p == KnownPred::GREATER_THAN => (plus(y.clone(), 1.into()), false),
         _ => return None,
     };
     Some((x.clone(), y, upper))
@@ -453,6 +501,22 @@ mod tests {
             Term::int(2),
         );
         assert_eq!(tidy(moved).one_line(), "x <= y + 2");
+    }
+
+    #[test]
+    fn bounds_by_a_neighbour_meet() {
+        use chc::KnownPred;
+        let d = || var("a").sub(var("b"));
+        let both = Formula::And(vec![
+            atom(KnownPred::GREATER_THAN_OR_EQUAL, d(), Term::int(1)),
+            atom(KnownPred::LESS_THAN_OR_EQUAL, d(), Term::int(1)),
+        ]);
+        assert_eq!(tidy(both).one_line(), "a = b + 1");
+        let strict = Formula::And(vec![
+            atom(KnownPred::GREATER_THAN, d(), Term::int(0)),
+            atom(KnownPred::LESS_THAN, d(), Term::int(2)),
+        ]);
+        assert_eq!(tidy(strict).one_line(), "a = b + 1");
     }
 
     #[test]

@@ -64,9 +64,7 @@ fn a_split_run_reports_the_refuted_part() {
     );
     assert!(stderr.contains("where it fails: x = 0"), "{stderr}");
     assert!(
-        stderr.contains(
-            "error: verification error: Unsat (thrust: refuted: ensures in `bad`)\n  --> "
-        ),
+        stderr.contains("error: verification error: Unsat (thrust: refuted: ensures in `bad`)\n"),
         "{stderr}"
     );
 }
@@ -81,7 +79,7 @@ fn a_function_in_two_parts_is_explained() {
     // Parts are numbered from 1.
     assert!(stderr.contains("in part 1 of 2, of "), "{stderr}");
     assert!(
-        stderr.contains("invariant_parts.rs:1-8), `main` ("),
+        stderr.contains("invariant_parts.rs:1-6), `main` ("),
         "{stderr}"
     );
     assert!(
@@ -256,11 +254,12 @@ fn a_split_failure_names_its_part() {
     );
     let plain = run("two_parts.rs", Some("2"));
     let stderr = String::from_utf8_lossy(&plain.stderr);
-    let error = stderr
-        .split("error: verification error: Unsat\n  --> ")
+    let at = stderr
+        .split("error: verification error: Unsat\n")
         .nth(1)
+        .and_then(|rest| rest.lines().next())
         .unwrap_or_default();
-    assert!(error.contains("two_parts.rs:9:1\n"), "{stderr}");
+    assert!(at.ends_with("two_parts.rs:9:1"), "{stderr}");
 }
 
 /// What needs no answer of the solver, the templates and the constraints, is shown of every part
@@ -290,4 +289,94 @@ fn a_part_of_several_functions_spans_each() {
     let output = run("several_functions.rs", Some("2"));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("`main` is in this part too"), "{stderr}");
+}
+
+/// A part declares only the definitions its clauses reach: the part of `bad`, which has no
+/// sequence, is refuted by `z3` although the part of `count` uses sequences, which `z3` cannot
+/// read, and only that part's error says PCSat reads it.
+#[test]
+fn a_part_without_sequences_declares_none() {
+    let output = run("sequence_and_not.rs", Some("2"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("error: verification error: Unsat"),
+        "{stderr}"
+    );
+    assert_eq!(
+        stderr.matches("which `z3` does not read").count(),
+        1,
+        "{stderr}"
+    );
+}
+
+/// A failing part's error and the labels of its other functions are at the functions'
+/// signatures, not their bodies; a return's constraint, whose span is empty, is at the signature.
+#[test]
+fn a_part_error_names_signatures() {
+    let output = run("several_functions.rs", Some("2"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("units * 9"), "{stderr}");
+    let json = run_with(
+        "two_parts.rs",
+        Some("2"),
+        &[("THRUST_REPORT", "1"), ("THRUST_REPORT_FORMAT", "json")],
+    );
+    let stdout = String::from_utf8_lossy(&json.stdout);
+    let failure = stdout
+        .lines()
+        .find(|l| l.contains(r#""kind":"failure""#))
+        .unwrap_or_default();
+    assert!(
+        !failure.contains(r#""line":11,"column":2,"end_line":11,"end_column":2"#),
+        "{stdout}"
+    );
+}
+
+/// In a split run, a part without an answer gives what the solver answered on its line, and the
+/// verdict line names the first such part.
+#[test]
+fn a_part_without_an_answer_gives_the_solver_s_limit() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = std::env::temp_dir().join(format!("thrust-slow-part-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let solver = dir.join("slow");
+    std::fs::write(&solver, "#!/bin/sh\nsleep 5\necho sat\n").unwrap();
+    std::fs::set_permissions(&solver, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let output = run_with(
+        "two_parts.rs",
+        Some("4"),
+        &[
+            ("THRUST_REPORT", "1"),
+            ("THRUST_REPORT_FORMAT", "json"),
+            ("THRUST_SOLVER", solver.to_str().unwrap()),
+            ("THRUST_SOLVER_TIMEOUT_SECS", "1"),
+        ],
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let verdict = r#"{"kind":"verdict","verdict":"timeout","refutations":"one per part","message":"part 1: Timeout(1s)"}"#;
+    assert!(stdout.contains(verdict), "{stdout}");
+    assert!(
+        stdout.contains(r#""verdict":"timeout","message":"Timeout(1s)","cached":false}"#),
+        "{stdout}"
+    );
+}
+
+/// With the JSON report, a split run's error of a refuted part is a plain error at the refuted
+/// obligation, the report's failure line naming the part.
+#[test]
+fn a_split_json_run_has_its_error_at_the_obligation() {
+    let output = run_with(
+        "two_parts.rs",
+        Some("2"),
+        &[("THRUST_REPORT", "1"), ("THRUST_REPORT_FORMAT", "json")],
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let at = stderr
+        .split("error: verification error: Unsat\n")
+        .nth(1)
+        .and_then(|rest| rest.lines().next())
+        .unwrap_or_default();
+    assert!(at.ends_with("two_parts.rs:9:1"), "{stderr}");
+    assert!(!stderr.contains("thrust: refuted"), "{stderr}");
 }

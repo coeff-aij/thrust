@@ -36,14 +36,15 @@ impl Provenance {
         Provenance { def, bb, stmt }
     }
 
-    /// The span of the code the clause was made at: its statement or terminator, or else its
-    /// function.
+    /// The span of the code the clause was made at: its statement or terminator, or else, and
+    /// for a return, whose span is empty (after the closing brace), its function's signature.
     pub fn span(&self, tcx: TyCtxt<'_>) -> Option<Span> {
         let def = self.def?.to_def_id();
         let body = tcx.is_mir_available(def).then(|| tcx.optimized_mir(def));
         let in_body = body
             .zip(self.bb)
-            .and_then(|(body, bb)| super::body::span_in(body, bb, self.stmt));
+            .and_then(|(body, bb)| super::body::span_in(body, bb, self.stmt))
+            .filter(|span| !span.is_empty());
         Some(in_body.unwrap_or_else(|| tcx.def_span(def).source_callsite()))
     }
 }

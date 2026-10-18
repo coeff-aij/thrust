@@ -114,6 +114,57 @@ pub fn components(system: &System) -> Vec<Vec<ClauseId>> {
     components
 }
 
+/// The user-defined predicates and functions the clauses `ids` apply, and with them those the
+/// laws, the raw commands and the candidate atoms apply, closed under the definitions' callees (a
+/// raw body or command by the names its text mentions).
+fn reached_definitions(system: &System, ids: &[ClauseId]) -> HashSet<UserDefinedPred> {
+    let defs: Vec<(&UserDefinedPredDef, String)> = system
+        .user_defined_pred_defs
+        .iter()
+        .map(|def| (def, def.symbol.to_string()))
+        .collect();
+    let named_in = |text: &str| -> Vec<UserDefinedPred> {
+        defs.iter()
+            .filter(|(_, name)| text.contains(name.as_str()))
+            .map(|(def, _)| def.symbol.clone())
+            .collect()
+    };
+    let clauses = ids.iter().map(|&id| &system.clauses[id]);
+    let clause_atoms = clauses.flat_map(|c| {
+        std::iter::once(&c.head)
+            .chain(&c.body.atoms)
+            .chain(c.body.formula.iter_atoms())
+    });
+    let law_atoms = system.laws.values().flatten().flat_map(Formula::iter_atoms);
+    let candidate_atoms = system
+        .candidate_atoms
+        .iter()
+        .flat_map(|c| c.atoms.iter().flat_map(Formula::iter_atoms));
+    let mut pending: Vec<UserDefinedPred> = user_defined_in(clause_atoms)
+        .into_iter()
+        .chain(user_defined_in(law_atoms))
+        .chain(user_defined_in(candidate_atoms))
+        .cloned()
+        .collect();
+    for raw in &system.raw_commands {
+        pending.extend(named_in(&raw.command));
+    }
+    let mut reached = HashSet::new();
+    while let Some(symbol) = pending.pop() {
+        if !reached.insert(symbol.clone()) {
+            continue;
+        }
+        let Some((def, _)) = defs.iter().find(|(def, _)| def.symbol == symbol) else {
+            continue;
+        };
+        pending.extend(def.callees().into_iter().cloned());
+        if let UserDefinedPredBody::Raw(text) = &def.body {
+            pending.extend(named_in(text));
+        }
+    }
+    reached
+}
+
 impl System {
     /// The unknowns the clauses `ids` apply.
     pub fn pred_vars_of(&self, ids: &[ClauseId]) -> HashSet<PredVarId> {
@@ -121,10 +172,16 @@ impl System {
     }
 
     /// The system with only the clauses `ids`; each other clause is replaced by `true ⇐ true`,
-    /// which the query leaves out, so that every clause keeps its id.
+    /// which the query leaves out, so that every clause keeps its id. Of the definitions, it
+    /// keeps those the clauses reach, so that a part declares no sort (a sequence) it does not
+    /// use.
     pub fn part(&self, ids: &[ClauseId]) -> System {
         let kept: HashSet<ClauseId> = ids.iter().copied().collect();
         let mut system = self.clone();
+        let reached = reached_definitions(self, ids);
+        system
+            .user_defined_pred_defs
+            .retain(|def| reached.contains(&def.symbol));
         for id in self.clauses.indices() {
             if !kept.contains(&id) {
                 system.clauses[id] = Clause {

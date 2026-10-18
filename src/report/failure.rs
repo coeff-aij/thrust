@@ -60,16 +60,12 @@ impl Failure {
 }
 
 /// `name = value`, a `&mut` pair `<c, f>` as its current value `*name = c` and its final one
-/// `°name = f`.
+/// `°name = f` (see [`super::formula::components`]).
 fn named(name: &str, value: &Term) -> Vec<(String, String)> {
-    match value {
-        Term::Mut(current, last) => [
-            named(&format!("*{name}"), current),
-            named(&format!("°{name}"), last),
-        ]
-        .concat(),
-        value => vec![(name.to_owned(), value.one_line())],
-    }
+    super::formula::components(name, value.clone())
+        .into_iter()
+        .map(|(name, value)| (name, value.one_line()))
+        .collect()
 }
 
 struct Reader<'a> {
