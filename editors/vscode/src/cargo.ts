@@ -118,6 +118,9 @@ export function cargoInvocation(
   if (!program) {
     throw new Error("thrust.cargoCommand is empty");
   }
+  if (config.env.THRUST_REPORT_FILE !== undefined) {
+    throw new Error("thrust.env sets THRUST_REPORT_FILE; in a cargo workspace each crate's report is Thrust's standard output");
+  }
   const env: Record<string, string> = {
     ...thrustEnv(config),
     RUSTC: wrapper,
@@ -126,6 +129,7 @@ export function cargoInvocation(
     CARGO_TARGET_DIR: thrustTargetDir(metadata),
     THRUST_VSCODE_COMMAND: config.command.join(SEPARATOR),
     THRUST_VSCODE_ARGS: config.extraArgs.join(SEPARATOR),
+    THRUST_VSCODE_THRUST_ID: commandIdentity(config.command, metadata.workspaceRoot),
     THRUST_VSCODE_SOLVER_ID: solverIdentity(config, metadata.workspaceRoot),
     // Thrust records its own variables.
     THRUST_VSCODE_ENV_KEYS: Object.keys(config.env)
@@ -142,7 +146,17 @@ export function cargoInvocation(
   } else {
     args.push("--workspace", "--keep-going");
   }
-  return { program, args, env, cwd: metadata.workspaceRoot, reportDir: reportDir(metadata) };
+  // Thrust writes its report to standard output, which the wrapper keeps, only without a file.
+  return { program, args, env, unset: ["THRUST_REPORT_FILE"], cwd: metadata.workspaceRoot, reportDir: reportDir(metadata) };
+}
+
+/// What tells builds of the Thrust command apart beyond the binary Thrust records (the one that
+/// ran, which may stay while the command names another): each of its words that names a file.
+export function commandIdentity(command: string[], cwd: string): string {
+  return command
+    .map((word, k) => (k === 0 || word.includes("/") ? fileIdentity(word, cwd) : ""))
+    .filter((id) => id !== "")
+    .join(SEPARATOR);
 }
 
 /// What tells builds of the solver apart, which Thrust does not record: the path, size and
@@ -199,7 +213,7 @@ interface CargoMessage {
 
 /// The crates a check went through, from cargo's JSON messages, each with its diagnostics and,
 /// from `reports`, the report of its run: of every crate, or of `only` when the check was of
-/// that target, as the others ran as dependencies, without a report. A crate that is not a lib
+/// that target, as the others' reports are of their runs as dependencies. A crate that is not a lib
 /// or bin target of the workspace (a build script, a dependency) is one too, under its own
 /// target.
 export function crateRuns(stdout: string, metadata: Metadata, reports: string, only?: Target): CrateRun[] {

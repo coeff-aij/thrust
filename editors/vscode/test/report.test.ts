@@ -384,6 +384,20 @@ test("functions: a refutation belongs to the innermost function holding it, a cl
   assert.strictEqual(byClosure.get("count_to"), "fail");
 });
 
+test("functions: a refutation whose span no function holds is its named function's; a split run's message names the part", () => {
+  const split = load("split").text;
+  const elsewhere = split.replace(/("kind":"failure","part":1,"constraint":"c\d+","fn":"withdraw","span":)\{[^}]*\}/, '$1{"file":"<std>","line":1,"column":1,"end_line":1,"end_column":2}');
+  const byName = new Map(report.functionResults(report.parseReport(elsewhere)).map((r) => [r.fn, r.status]));
+  assert.strictEqual(byName.get("withdraw"), "fail");
+  // Another function of a refuted part, without a refutation of its own.
+  const shared = report.parseReport(
+    split.replace('{"kind":"function","fn":"main"', '{"kind":"function","fn":"other","span":{"file":"unsafe.rs","line":30,"column":1,"end_line":31,"end_column":2},"body":"checked","reason":null,"parts":[1],"verdict":"unsat"}\n{"kind":"function","fn":"main"'),
+  );
+  const other = report.functionResults(shared).find((r) => r.fn === "other");
+  assert.strictEqual(other?.status, "unknown");
+  assert.match(other?.message ?? "", /refuted at another function of its part$/);
+});
+
 test("the status of one function: the function line of its name at its fn line", () => {
   const split = load("split").report;
   assert.strictEqual(report.statusWithin(split, "unsafe.rs", at("count_to", 7, 9, 17))?.status, "fail");

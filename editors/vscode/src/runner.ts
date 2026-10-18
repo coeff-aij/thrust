@@ -24,6 +24,8 @@ export interface Command {
   args: string[];
   /// The variables the run sets on top of the inherited environment.
   env: Record<string, string>;
+  /// The inherited variables the run removes.
+  unset?: string[];
   cwd: string;
 }
 
@@ -113,7 +115,7 @@ export function execute(command: Command, timeoutSecs: number, signal?: AbortSig
   return new Promise((resolve) => {
     const child = spawn(command.program, command.args, {
       cwd: command.cwd,
-      env: { ...process.env, ...command.env },
+      env: environment(command),
       stdio: ["ignore", "pipe", "pipe"],
       detached: true,
     });
@@ -146,6 +148,14 @@ export function execute(command: Command, timeoutSecs: number, signal?: AbortSig
     child.on("error", (err) => finish(null, `${err.message}\n`));
     child.on("close", (code) => finish(code));
   });
+}
+
+function environment(command: Command): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, ...command.env };
+  for (const name of command.unset ?? []) {
+    delete env[name];
+  }
+  return env;
 }
 
 function signalGroup(pid: number | undefined, name: NodeJS.Signals): void {

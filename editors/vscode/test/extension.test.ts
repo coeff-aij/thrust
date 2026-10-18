@@ -299,7 +299,8 @@ function fileSession(file: string): { thrust: Thrust; folder: string; replay(nam
   const s = vscode.__state;
   s.folder = folder;
   const replay = (name: string) => {
-    s.config = { command: [process.execPath, path.join(here, "test", "fake-thrust.js"), path.join(here, "test", "fixtures", name)], extraArgs: [] };
+    const dir = path.isAbsolute(name) ? name : path.join(here, "test", "fixtures", name);
+    s.config = { command: [process.execPath, path.join(here, "test", "fake-thrust.js"), dir], extraArgs: [] };
   };
   const context = { subscriptions: [] as unknown[], asAbsolutePath: (p: string) => path.join(here, p) };
   extension.activate(context);
@@ -334,6 +335,36 @@ test("the item of a function defined inside another errs instead of running the 
   assert.strictEqual(vscode.__state.runs.length, runs + 1);
   const states = vscode.__state.runs[runs].states.filter((x: State) => x.state !== "started");
   assert.deepStrictEqual(states.map((x: State) => [x.state, x.messages[0]]), [["errored", "defined inside `outer`: run that function"]]);
+});
+
+test("a function's run sets the item of its own function line, not another found at its lines", async () => {
+  const t = session();
+  await t.thrust.verify(t.document("app/src/main.rs"));
+  // An item of another function moved onto `Pair::scale`'s lines, as after an edit.
+  let twice: { range?: unknown } | undefined;
+  vscode.__state.controller.items.forEach((root: { children: { forEach(f: (c: { label: string; range?: unknown }) => void): void } }) =>
+    root.children.forEach((c) => (twice = c.label === "Pair::twice" ? c : twice)),
+  );
+  assert.ok(twice);
+  twice.range = new vscode.Range(20, 0, 22, 0);
+  t.replay("only");
+  await t.thrust.verify(t.document("arith/src/lib.rs"), t.lens("arith/src/lib.rs", "scale"));
+  assert.deepStrictEqual([...t.states().keys()], ["#arith/lib/arith::<Pair as Scale>::scale"]);
+});
+
+test("functions of one name get items of their own", async () => {
+  const t = fileSession("nested.rs");
+  const twice = path.join(t.folder, "twice");
+  fs.mkdirSync(twice);
+  const lines = fs.readFileSync(path.join(here, "test", "fixtures", "only-nested", "report.jsonl"), "utf8").split("\n");
+  const inner = lines.find((l) => l.includes('"fn":"outer::inner"')) ?? "";
+  fs.writeFileSync(path.join(twice, "report.jsonl"), [...lines, inner.replace('"line":5,', '"line":12,').replace('"end_line":7,', '"end_line":13,')].join("\n"));
+  fs.writeFileSync(path.join(twice, "stderr.jsonl"), "");
+  fs.writeFileSync(path.join(twice, "exit"), "0\n");
+  t.replay(twice);
+  await t.thrust.verify(vscode.__document(path.join(t.folder, "nested.rs")));
+  const ids = vscode.__state.runs[vscode.__state.runs.length - 1].states.map((x: State) => x.id.split(t.folder).join(""));
+  assert.ok(ids.includes("/nested.rs::outer::inner") && ids.includes("/nested.rs::outer::inner#2"), ids.join("\n"));
 });
 
 test("a function's run whose report can be read replaces rustc's diagnostics in its crate", async () => {

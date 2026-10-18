@@ -693,18 +693,27 @@ export function functionResults(report: Report): FunctionResult[] {
       owned.set(owner, [...(owned.get(owner) ?? []), failure]);
     }
   }
-  return report.functions.map((f) => functionResult(report, f, owned.get(f) ?? []));
+  // A function holding another that owns a refutation: refuted inside it.
+  const refutedInside = (f: FunctionLine) =>
+    report.functions.some((g) => g !== f && (owned.get(g)?.length ?? 0) > 0 && contains(f.span, g.span)) ||
+    report.failures.some((x) => x.span !== null && contains(f.span, x.span));
+  return report.functions.map((f) => functionResult(report, f, owned.get(f) ?? [], refutedInside(f)));
 }
 
-/// The functions a refutation is of: the innermost function holding its span (by name when it has
-/// none), and when that is a closure, the functions around it up to the first that is not.
+/// The functions a refutation is of: the innermost function holding its span, or, when no
+/// function holds it (no span, a span in a macro's or the injected std.rs), the function it names;
+/// and when that is a closure, the functions around it up to the first that is not.
 function ownersOf(functions: FunctionLine[], failure: Failure): FunctionLine[] {
-  const holding = failure.span
-    ? functions.filter((f) => contains(f.span, failure.span as Range))
-    : functions.filter((f) => f.fn === failure.fn);
-  const inner = holding.sort((a, b) => size(a.span) - size(b.span));
+  const span = failure.span;
+  const holding = span ? functions.filter((f) => contains(f.span, span)) : [];
+  const named = functions.filter((f) => f.fn === failure.fn);
+  const innermost = (holding.length > 0 ? holding : named).sort((a, b) => size(a.span) - size(b.span))[0];
+  if (!innermost) {
+    return [];
+  }
+  const around = functions.filter((f) => contains(f.span, innermost.span)).sort((a, b) => size(a.span) - size(b.span));
   const owners: FunctionLine[] = [];
-  for (const f of inner) {
+  for (const f of around) {
     owners.push(f);
     if (!lastSegment(f.fn).startsWith("{closure")) {
       break;
@@ -713,7 +722,7 @@ function ownersOf(functions: FunctionLine[], failure: Failure): FunctionLine[] {
   return owners;
 }
 
-function functionResult(report: Report, f: FunctionLine, failures: Failure[]): FunctionResult {
+function functionResult(report: Report, f: FunctionLine, failures: Failure[], refutedInside: boolean): FunctionResult {
   const result = { fn: f.fn, span: f.span, failures };
   if (failures.length > 0) {
     return { ...result, status: "fail", message: failures.map(failureLine).join("\n") };
@@ -724,7 +733,6 @@ function functionResult(report: Report, f: FunctionLine, failures: Failure[]): F
   }
   const where = f.parts ? ` in ${f.parts.length === 1 ? "part" : "parts"} ${f.parts.join(", ")}` : "";
   if (f.verdict === "sat") {
-    const refutedInside = report.failures.some((x) => x.span && contains(f.span, x.span));
     return refutedInside
       ? { ...result, status: "unknown", message: `checked${where} (sat), but a function defined inside it is refuted` }
       : { ...result, status: "pass", message: `checked${where} (sat)` };
@@ -734,7 +742,7 @@ function functionResult(report: Report, f: FunctionLine, failures: Failure[]): F
 
 function unknownWhy(report: Report, f: FunctionLine): string {
   if (f.verdict === "unsat") {
-    return ": refuted at another function; split the run (THRUST_SPLIT) to decide each";
+    return f.parts ? ": refuted at another function of its part" : ": refuted at another function; split the run (THRUST_SPLIT) to decide each";
   }
   const messages = f.parts
     ? report.parts.filter((p) => f.parts?.includes(p.id) && p.message).map((p) => p.message)

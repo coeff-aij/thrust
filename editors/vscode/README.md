@@ -90,15 +90,17 @@ workspace (`cargo metadata --no-deps`), a run is `cargo check --workspace --keep
 - sets `THRUST_VERIFY_ONLY` for the selected crate only, so a function's run of a binary leaves
   the package's library (built as its dependency) whole;
 - writes into the crate's dep-info as `env-dep` lines, as rustc does for `env!`, what decides a
-  verdict that Thrust does not record itself: the extra arguments, the size and modification
-  time of the solver binary `THRUST_SOLVER` names (`z3`), and the variables of `thrust.env`
-  that are not Thrust's, with the values cargo ran it with.
+  verdict that Thrust does not record itself: the command and the size and modification time of
+  its files (another build behind the same path of a binary Thrust records), the extra
+  arguments, the size and modification time of the solver binary `THRUST_SOLVER` names (`z3`),
+  and the variables of `thrust.env` that are not Thrust's, with the values cargo ran it with.
 
 Thrust records its `THRUST_` variables, its binary and thrust-macros in the dep-info and writes
 a crate's metadata when it verifies, so a crate using another of the workspace compiles, and
 cargo finds a crate fresh at the next check when nothing it reads changed; its report from the
-check that made it so stays. The wrapper changes no variable Thrust reads but the selection, as
-cargo compares the recorded values with its own.
+check that made it so stays. The wrapper changes no variable Thrust reads but the selected
+crate's `THRUST_VERIFY_ONLY`, as cargo compares the recorded values with its own; the extension
+runs cargo without `THRUST_REPORT_FILE` and refuses one in `thrust.env`.
 
 The extension reads the report of each crate cargo's messages name (told apart by package),
 with the crate's own diagnostics from those messages; in a function's run only the selected
@@ -154,8 +156,9 @@ refuted `ensures`) and `both` (a library and a binary). `test/capture-cargo.sh <
 command>` captures its `cargo metadata` and, through `bin/thrust-rustc-cargo`, cargo's
 messages, exit status and reports of `check` (the workspace), `check-again` (the same check
 again: the verified crates fresh), `check-split` (`THRUST_SPLIT=2`), `only` (`Pair::scale` in
-`arith`) and `only-bin` (`helper` in the binary of `both`), one after the other on one target
-and report directory, writing the workspace as `/workspace`. The tests read the crates' runs, verdicts and functions' statuses from them, the
+`arith`), `only-bin` (`helper` in the binary of `both`) and `check-after-only` (the workspace
+again: the crates checked under a selection run, `both`'s library stays fresh), one after the
+other on one target and report directory, writing the workspace as `/workspace`. The tests read the crates' runs, verdicts and functions' statuses from them, the
 wrapper is run with a stand-in compiler (`test/fake-rustc.js`), and the functions of a file and
 their paths are read from the fixture's sources and from synthetic ones.
 

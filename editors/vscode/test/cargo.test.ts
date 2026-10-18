@@ -88,11 +88,15 @@ test("invocation: the workspace, or one target whose crate the wrapper gives THR
     CARGO_TARGET_DIR: "/workspace/target/thrust",
     THRUST_VSCODE_COMMAND: "rustup\x1frun\x1ftc\x1fthrust-rustc",
     THRUST_VSCODE_ARGS: "-Awarnings",
+    THRUST_VSCODE_THRUST_ID: cargo.commandIdentity(["rustup", "run", "tc", "thrust-rustc"], "/workspace"),
     THRUST_VSCODE_SOLVER_ID: cargo.fileIdentity("z3", "/workspace"),
     // Thrust records its own variables; the wrapper the others of thrust.env.
     THRUST_VSCODE_ENV_KEYS: "RUST_LOG",
     THRUST_VSCODE_REPORT_DIR: "/workspace/target/thrust/reports",
   });
+  // Thrust writes the report to standard output only without a file.
+  assert.deepStrictEqual(whole.unset, ["THRUST_REPORT_FILE"]);
+  assert.throws(() => cargo.cargoInvocation(metadata, config({ env: { THRUST_REPORT_FILE: "/r" } }), "/w"), /THRUST_REPORT_FILE/);
   const bin = cargo.cargoInvocation(metadata, config(), "/w", { target: target("both", "bin"), selection: "helper" });
   assert.deepStrictEqual(bin.args.slice(-4), ["-p", "both", "--bin", "both"]);
   assert.strictEqual(bin.env.THRUST_VERIFY_ONLY, "");
@@ -101,6 +105,19 @@ test("invocation: the workspace, or one target whose crate the wrapper gives THR
   const lib = cargo.cargoInvocation(metadata, config(), "/w", { target: target("arith", "lib"), selection: "inc" });
   assert.deepStrictEqual(lib.args.slice(-3), ["-p", "arith", "--lib"]);
   assert.strictEqual(lib.env.THRUST_VSCODE_VERIFY_CRATE, "arith.lib");
+});
+
+test("identity of the command: its program found on PATH and its words that are paths", () => {
+  const stat = fs.statSync(process.execPath);
+  const id = `${process.execPath}:${stat.size}:${stat.mtimeMs}`;
+  assert.strictEqual(cargo.commandIdentity(["/nonexistent/rustup", "run", "tc", process.execPath], "/"), id);
+  const saved = process.env.PATH;
+  process.env.PATH = path.dirname(process.execPath);
+  try {
+    assert.strictEqual(cargo.commandIdentity([path.basename(process.execPath), "x"], "/"), id);
+  } finally {
+    process.env.PATH = saved;
+  }
 });
 
 test("identity of the solver: the file THRUST_SOLVER names, on PATH or against the directory", () => {
@@ -214,8 +231,9 @@ test("wrapper: THRUST_VERIFY_ONLY for the selected crate only, not the package's
     const selection = { CARGO_PKG_NAME: "both", CARGO_PRIMARY_PACKAGE: "1", THRUST_VSCODE_VERIFY_ONLY: "helper", THRUST_VSCODE_VERIFY_CRATE: "both.bin" };
     const bin = runWrapper(dir, { ...selection, CARGO_CRATE_NAME: "both", THRUST_VERIFY_ONLY: "" }, crateArgs(dir, "both", "bin"));
     assert.strictEqual(bin.env.THRUST_VERIFY_ONLY, "helper");
+    // The other crate keeps cargo's empty selection, which Thrust records as cargo has it.
     const lib = runWrapper(dir, { ...selection, CARGO_CRATE_NAME: "both", THRUST_VERIFY_ONLY: "" }, crateArgs(dir, "both", "lib"));
-    assert.strictEqual(lib.env.THRUST_VERIFY_ONLY, undefined);
+    assert.strictEqual(lib.env.THRUST_VERIFY_ONLY, "");
   });
 });
 
@@ -262,14 +280,19 @@ test("a split check: every function of each crate with its part's verdict", () =
   assert.deepStrictEqual(app.map((r) => [r.fn, r.status]), [["dec", "pass"], ["shrink", "fail"], ["main", "fail"]]);
 });
 
-test("a second check: the crates that passed are fresh and keep their reports", () => {
-  const stdout = fs.readFileSync(path.join(fixtures, "check-again", "stdout.jsonl"), "utf8");
-  const fresh = stdout
+/// The crates cargo compiled in a captured check, each with whether it found it fresh.
+function freshness(name: string): [string, string, boolean][] {
+  return fs
+    .readFileSync(path.join(fixtures, name, "stdout.jsonl"), "utf8")
     .split("\n")
     .filter((l) => l.includes('"reason":"compiler-artifact"'))
     .map((l) => JSON.parse(l) as { target: { name: string; kind: string[] }; fresh: boolean })
-    .map((m) => [m.target.name, m.target.kind[0], m.fresh]);
-  assert.deepStrictEqual(fresh.sort(), [["arith", "lib", true], ["both", "bin", true], ["both", "lib", true]]);
+    .map((m): [string, string, boolean] => [m.target.name, m.target.kind[0], m.fresh])
+    .sort();
+}
+
+test("a second check: the crates that passed are fresh and keep their reports", () => {
+  assert.deepStrictEqual(freshness("check-again"), [["arith", "lib", true], ["both", "bin", true], ["both", "lib", true]]);
   const runs = crates("check-again");
   assert.deepStrictEqual(
     report.functionResults(report.parseReport(find(runs, "arith").report)).map((r) => r.status),
@@ -277,6 +300,12 @@ test("a second check: the crates that passed are fresh and keep their reports", 
   );
   // The refuted crate wrote no metadata, so it is checked again.
   assert.strictEqual(cargo.crateOutcome(find(runs, "app"), report.parseReport(find(runs, "app").report)).verdict, "unsafe");
+});
+
+test("a check after runs of one function: only the crates checked under a selection run again", () => {
+  // `only` selected in arith's library, `only-bin` in both's binary; both's library kept cargo's
+  // empty selection, so it stays fresh.
+  assert.deepStrictEqual(freshness("check-after-only"), [["arith", "lib", false], ["both", "bin", false], ["both", "lib", true]]);
 });
 
 test("a check of one function: its status from the lines it spans, the reports of the other crates not read", () => {

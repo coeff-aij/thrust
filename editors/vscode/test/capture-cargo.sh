@@ -70,3 +70,4 @@ capture check-again -- --workspace --keep-going
 capture check-split THRUST_SPLIT=2 THRUST_CACHE_DIR="$scratch/cache" -- --workspace --keep-going
 capture only THRUST_VSCODE_VERIFY_ONLY=Pair::scale THRUST_VSCODE_VERIFY_CRATE=arith.lib -- -p arith --lib
 capture only-bin THRUST_VSCODE_VERIFY_ONLY=helper THRUST_VSCODE_VERIFY_CRATE=both.bin -- -p both --bin both
+capture check-after-only -- --workspace --keep-going

@@ -426,19 +426,16 @@ class Thrust implements vscode.InlayHintsProvider, vscode.HoverProvider, vscode.
 
   private showUnit(unit: Unit, unitItem: vscode.TestItem, testRun: vscode.TestRun): void {
     const results = report.functionResults(unit.report);
-    unitItem.children.replace(results.map((r) => this.fnItem(unit, r)));
-    for (const result of results) {
-      const item = unitItem.children.get(fnItemId(unit, result.fn));
-      if (item) {
-        setState(testRun, item, result.status, resultMessages(result, unit));
-      }
-    }
+    const ids = itemIds(unit, results);
+    const items = results.map((r, k) => this.fnItem(unit, r, ids[k]));
+    unitItem.children.replace(items);
+    results.forEach((result, k) => setState(testRun, items[k], result.status, resultMessages(result, unit)));
     setState(testRun, unitItem, unitStatus(unit.outcome.verdict), [new vscode.TestMessage(unit.outcome.detail)]);
   }
 
-  /// The function's item, found by its lines (the report and the selection may name it apart:
-  /// `<Pair as Scale>::scale`, `Pair::scale`): its status in the run, or errored with the run's
-  /// outcome when the run gave no report to read.
+  /// The function's item: the one of the report's function line for it, by its id (created if
+  /// missing, its range moved to the line's span); without such a line (the function not
+  /// compiled, no report to read), found by its lines and name, errored with why.
   private showScoped(unit: Unit, unitItem: vscode.TestItem, scope: Scope, testRun: vscode.TestRun): report.FunctionResult {
     const file = path.relative(unit.root, scope.file);
     const found = report.statusWithin(unit.report, file, scope.fn);
@@ -452,7 +449,7 @@ class Thrust implements vscode.InlayHintsProvider, vscode.HoverProvider, vscode.
       status: found?.status ?? "unknown",
       message: found?.message ?? unit.outcome.detail,
     };
-    const item = itemOf(unitItem, scope, own?.span?.line) ?? unitItem.children.get(fnItemId(unit, result.fn)) ?? this.fnItem(unit, result);
+    const item = own ? this.ownItem(unit, unitItem, own) : (itemOf(unitItem, scope) ?? this.fnItem(unit, result, `${unit.id}::${result.fn}`));
     unitItem.children.add(item);
     setState(testRun, item, result.status, resultMessages(result, unit));
     return result;
@@ -469,12 +466,20 @@ class Thrust implements vscode.InlayHintsProvider, vscode.HoverProvider, vscode.
     return item;
   }
 
-  private fnItem(unit: Unit, result: report.FunctionResult): vscode.TestItem {
+  /// The item of a function line of the report, by the id the unit's results give it.
+  private ownItem(unit: Unit, unitItem: vscode.TestItem, own: report.FunctionResult): vscode.TestItem {
+    const results = report.functionResults(unit.report);
+    const k = results.findIndex((r) => r.fn === own.fn && r.span?.file === own.span?.file && r.span?.line === own.span?.line);
+    const id = itemIds(unit, results)[k] ?? `${unit.id}::${own.fn}`;
+    const item = unitItem.children.get(id) ?? this.fnItem(unit, own, id);
+    setRange(item, own.span);
+    return item;
+  }
+
+  private fnItem(unit: Unit, result: report.FunctionResult, id: string): vscode.TestItem {
     const file = result.span ? path.resolve(unit.root, result.span.file) : unit.file;
-    const item = this.tests.createTestItem(fnItemId(unit, result.fn), result.fn, vscode.Uri.file(file));
-    if (result.span) {
-      item.range = new vscode.Range(result.span.line - 1, 0, result.span.end_line - 1, 0);
-    }
+    const item = this.tests.createTestItem(id, result.fn, vscode.Uri.file(file));
+    setRange(item, result.span);
     return item;
   }
 
@@ -643,20 +648,16 @@ function onLines(item: vscode.TestItem, scope: Scope): boolean {
 }
 
 /// The function's item among the children starting on its lines, which may be its closures' or
-/// its nested functions': the one of its name at the line the report gives the function, else
-/// one at that line, else one of its name (`<Pair as Scale>::scale` for `scale`); none when
+/// its nested functions': the one of its name (`<Pair as Scale>::scale` for `scale`); none when
 /// none is.
-function itemOf(unitItem: vscode.TestItem, scope: Scope, reportLine: number | undefined): vscode.TestItem | undefined {
-  const candidates: vscode.TestItem[] = [];
+function itemOf(unitItem: vscode.TestItem, scope: Scope): vscode.TestItem | undefined {
+  let found: vscode.TestItem | undefined;
   unitItem.children.forEach((child) => {
-    if (onLines(child, scope)) {
-      candidates.push(child);
+    if (!found && onLines(child, scope) && report.lastSegment(child.label) === scope.fn.name) {
+      found = child;
     }
   });
-  const start = (item: vscode.TestItem) => (item.range?.start.line ?? 0) + 1;
-  const atLine = (c: vscode.TestItem) => reportLine !== undefined && start(c) === reportLine;
-  const named = (c: vscode.TestItem) => report.lastSegment(c.label) === scope.fn.name;
-  return candidates.find((c) => atLine(c) && named(c)) ?? candidates.find(atLine) ?? candidates.find(named);
+  return found;
 }
 
 function byFile(findings: report.Finding[]): Map<string, report.Finding[]> {
@@ -683,8 +684,21 @@ function spanOf(file: string, fn: items.FnItem): report.Range {
   return { file, line: fn.line, column: 1, end_line: fn.endLine, end_column: 1 };
 }
 
-function fnItemId(unit: Unit, fn: string): string {
-  return `${unit.id}::${fn}`;
+/// The ids of the items of the unit's functions: by name, the second and later of one name (two
+/// `_::helper` in two `const _` blocks) numbered after it, so that an id stays as the code moves.
+function itemIds(unit: Unit, results: report.FunctionResult[]): string[] {
+  const seen = new Map<string, number>();
+  return results.map((r) => {
+    const n = (seen.get(r.fn) ?? 0) + 1;
+    seen.set(r.fn, n);
+    return n === 1 ? `${unit.id}::${r.fn}` : `${unit.id}::${r.fn}#${n}`;
+  });
+}
+
+function setRange(item: vscode.TestItem, span: report.Range | null): void {
+  if (span) {
+    item.range = new vscode.Range(span.line - 1, 0, span.end_line - 1, 0);
+  }
 }
 
 /// The findings of a unit with their files resolved; one outside the user's files (the injected

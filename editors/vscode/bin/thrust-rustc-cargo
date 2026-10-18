@@ -10,12 +10,14 @@
 #   of the check that made it so;
 # - sets THRUST_VERIFY_ONLY to THRUST_VSCODE_VERIFY_ONLY for the crate THRUST_VSCODE_VERIFY_CRATE
 #   names (`<crate>.<crate type>`) only, so a run of one function of a binary leaves the
-#   package's library whole;
+#   package's library whole; the other crates keep cargo's value (empty: everything), so that
+#   what Thrust records for them matches cargo's and they stay fresh;
 # - records in the crate's dep-info, as `env-dep` lines as rustc does for `env!`, what decides
-#   the verdict that Thrust does not record itself (it records its `THRUST_` variables, its binary
-#   and thrust-macros): the extra arguments, the identity of the solver binary, and the
-#   variables of `thrust.env` that are not Thrust's, with the values cargo ran it with, so that
-#   cargo checks the crate again when one of them changes.
+#   the verdict that Thrust does not record itself (it records its `THRUST_` variables, the
+#   binary that ran and thrust-macros): the command and the identity of its files (another
+#   Thrust build behind the same wrapper), the extra arguments, the identity of the solver
+#   binary, and the variables of `thrust.env` that are not Thrust's, with the values cargo ran it
+#   with, so that cargo checks the crate again when one of them changes.
 #
 # It changes no other variable: Thrust records the values it reads, and cargo compares them with
 # its own. Its own shell variables start with `_tv_`, so that it changes none of the environment
@@ -27,7 +29,8 @@ _tv_sep=$(printf '\037')
 _tv_cr=$(printf '\r')
 
 # The extension's variables for what Thrust does not record.
-_tv_tracked="THRUST_VSCODE_ARGS THRUST_VSCODE_SOLVER_ID THRUST_VSCODE_ENV_KEYS"
+_tv_tracked="THRUST_VSCODE_COMMAND THRUST_VSCODE_THRUST_ID THRUST_VSCODE_ARGS THRUST_VSCODE_SOLVER_ID
+THRUST_VSCODE_ENV_KEYS"
 
 # run [args...]: the command with the arguments and the extra arguments.
 run() {
@@ -108,13 +111,9 @@ _tv_extra=$(codegen extra-filename "$@")
 _tv_report="$THRUST_VSCODE_REPORT_DIR/${CARGO_PKG_NAME}.${_tv_crate}.${_tv_crate_type}.jsonl"
 mkdir -p "$THRUST_VSCODE_REPORT_DIR"
 
-if [ -n "${THRUST_VSCODE_VERIFY_CRATE:-}" ]; then
-  if [ "$THRUST_VSCODE_VERIFY_CRATE" = "$_tv_crate.$_tv_crate_type" ]; then
-    THRUST_VERIFY_ONLY=${THRUST_VSCODE_VERIFY_ONLY:-}
-    export THRUST_VERIFY_ONLY
-  else
-    unset THRUST_VERIFY_ONLY
-  fi
+if [ "${THRUST_VSCODE_VERIFY_CRATE:-}" = "$_tv_crate.$_tv_crate_type" ]; then
+  THRUST_VERIFY_ONLY=${THRUST_VSCODE_VERIFY_ONLY:-}
+  export THRUST_VERIFY_ONLY
 fi
 
 _tv_status=0
