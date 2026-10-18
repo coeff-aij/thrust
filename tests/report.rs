@@ -316,8 +316,8 @@ fn report_labels_the_invariant_a_loop_checks() {
     assert!(label.contains("the annotation it checks"), "{stderr}");
 }
 
-/// A law and a lemma with an empty body raise no lint: they are not called and need not read
-/// their parameters.
+/// A law, its proof restated as a law on the impl, and the parameters a lemma's contract reads
+/// raise no lint.
 #[test]
 fn laws_and_lemmas_raise_no_warning() {
     let stderr = warnings_of("law_proof.rs");
@@ -428,4 +428,14 @@ fn report_labels_the_invariant_a_preservation_checks() {
         .nth(1)
         .unwrap_or_default();
     assert!(label.contains("the annotation it checks"), "{stderr}");
+}
+
+/// `#[thrust_macros::law]` on an impl item must implement a law of its trait.
+#[test]
+fn a_restated_law_must_be_one() {
+    let stderr = warnings_of("law_not_a_law.rs");
+    assert!(
+        stderr.contains("`#[thrust_macros::law]` on a method that implements no law of its trait"),
+        "{stderr}"
+    );
 }
