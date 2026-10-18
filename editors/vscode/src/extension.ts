@@ -231,7 +231,7 @@ function toRange(location: report.Location, lines: Lines): vscode.Range {
     const end = report.utf16Column(lines.text(location.file, endLine), location.endColumn) - 1;
     return new vscode.Range(line, start, endLine, end);
   }
-  // A start only (a function's or a loop's start, the zero-width span after a closing brace):
+  // A start only (a function's or a loop's start, a zero-width span):
   // the range runs to the end of the line, or covers the line when the start is at its end.
   return new vscode.Range(line, start < text.length ? start : 0, line, text.length);
 }

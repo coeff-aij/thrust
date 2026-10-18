@@ -9,7 +9,8 @@ Runs Thrust on the Rust file in the editor and shows its report (`THRUST_REPORT=
   facts of the run reaching it at the code of the constraint that derived each;
 - a part of the constraints without an answer (a timeout), or refuted without a refutation, at
   the first line of each of its functions, and a whole query without an answer as a warning at
-  the top of the file, with what the solver answered (`Timeout(30s)`);
+  the top of the file, each with what the solver answered (`Timeout(30s)`, the part line's
+  `message`);
 - rustc's own errors at their spans; its `verification error` is left out, since the report
   places the same failure;
 - the inferred contract of each function and invariant of each loop as an inlay hint at the end
@@ -82,8 +83,8 @@ the VS Code side (`src/extension.ts`) is only compiled.
 
 - One file at a time, as `thrust-rustc <file>`; there is no `cargo` integration, and results of
   another file's run replace the shown ones.
-- A failing `ensures` is at the zero-width span after the function's closing brace, where it
-  fails; the diagnostic covers that line, and the annotation is related information.
+- A failing `ensures` is at the function's signature, which the diagnostic covers; the
+  annotation is related information.
 - A premise of a constraint has no span, so only the run's facts are related information.
 - Refutations and inferred contracts come only with `z3`; with PCSat only the verdicts and the
   parts are shown.

@@ -55,7 +55,7 @@ export interface VerdictLine {
   /// `one per query` or `one per part`: how many obligations a failure is refuted at.
   refutations: string;
   /// What the solver answered when it is neither `sat` nor `unsat` (`Timeout(30s)`), for a
-  /// query solved whole; null otherwise.
+  /// query solved in parts the first such part's (`part 1: Timeout(30s)`); null otherwise.
   message: string | null;
 }
 
@@ -64,6 +64,8 @@ export interface Part {
   clauses: number;
   functions: FnSpan[];
   verdict: string;
+  /// What the solver answered for the part when it is neither `sat` nor `unsat`; null otherwise.
+  message: string | null;
   cached: boolean;
 }
 
@@ -180,8 +182,7 @@ export interface Hint {
   kind: "inferred" | "fact";
 }
 
-/// The location of a report's span; a zero-width span (after a function's closing brace) keeps
-/// its start only.
+/// The location of a report's span; a zero-width span keeps its start only.
 export function locationOf(range: Range | null | undefined): Location | undefined {
   if (!range) {
     return undefined;
@@ -316,7 +317,7 @@ export function verdictOf(exitCode: number | null, report: Report, diagnostics: 
     return { verdict: "error", detail: firstError?.message ?? `no verdict in the report, exit status ${exitCode}` };
   }
   const verdict = VERDICTS[report.verdict.verdict] ?? "error";
-  const detail = partsDetail(report.parts) ?? queryDetail(report.verdict, report.failures.length);
+  const detail = partsDetail(report.parts, report.verdict) ?? queryDetail(report.verdict, report.failures.length);
   return { verdict, detail };
 }
 
@@ -327,14 +328,15 @@ function queryDetail(line: VerdictLine, failures: number): string {
   return failures > 0 ? `refuted, ${line.refutations}; other obligations may fail too` : "refuted, without a refutation to show";
 }
 
-function partsDetail(parts: Part[]): string | undefined {
+function partsDetail(parts: Part[], line: VerdictLine): string | undefined {
   if (parts.length === 0) {
     return undefined;
   }
   const count = (verdict: string) => parts.filter((p) => p.verdict === verdict).length;
   const cached = parts.filter((p) => p.cached).length;
   const failed = parts.length - count("sat") - count("unsat");
-  const others = failed > 0 ? `, ${failed} without an answer` : "";
+  const answered = line.message ? ` (${line.message})` : "";
+  const others = failed > 0 ? `, ${failed} without an answer${answered}` : "";
   return `${parts.length} parts: ${count("sat")} sat, ${count("unsat")} unsat${others}; ${cached} from the cache`;
 }
 
@@ -434,7 +436,7 @@ function inferredRelated(failure: Failure, sites: Site[]): Related[] {
 /// gave none), at the start of each of its functions.
 function partFindings(part: Part): Finding[] {
   const severity = part.verdict === "unsat" ? ("error" as const) : ("warning" as const);
-  const message = `Thrust: ${part.verdict} in ${partName(part)}; no refutation`;
+  const message = `Thrust: ${part.message ?? part.verdict} in ${partName(part)}; no refutation`;
   return part.functions.map((f) => ({ location: headOf(f.span), severity, message, related: [], source: "thrust" as const }));
 }
 
