@@ -33,11 +33,14 @@ fn _extern_spec_result_branch<T, E>(res: Result<T, E>) -> std::ops::ControlFlow<
 }
 
 #[thrust::extern_spec_fn]
-#[thrust_macros::requires(true)]
-#[thrust_macros::ensures(thrust_models::exists(|e| residual == Err(e) && result == Err(e)))]
-fn _extern_spec_result_from_residual<T, E>(residual: Result<std::convert::Infallible, E>) -> Result<T, E>
+#[thrust_macros::requires(thrust_models::exists(|e| residual == Err(e)
+    && thrust_macros::pre!(<F as From<E>>::from(e))))]
+#[thrust_macros::ensures(thrust_models::exists(|e| residual == Err(e)
+    && thrust_models::exists(|f| result == Err(f) && thrust_macros::post!(<F as From<E>>::from(e), f))))]
+fn _extern_spec_result_from_residual<T, E, F: From<E>>(residual: Result<std::convert::Infallible, E>) -> Result<T, F>
   where T: thrust_models::Model,
         E: thrust_models::Model,
+        F: thrust_models::Model,
 {
-    <Result<T, E> as std::ops::FromResidual<Result<std::convert::Infallible, E>>>::from_residual(residual)
+    <Result<T, F> as std::ops::FromResidual<Result<std::convert::Infallible, E>>>::from_residual(residual)
 }
