@@ -692,7 +692,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     }
 
     /// Checks that no function Thrust verifies can run an ignored one
-    /// ([`analyze::Analyzer::check_ignored_not_run`]): the roots are the fn-like defs whose bodies
+    /// ([`analyze::Analyzer::stop_ignored_reached`]): the roots are the fn-like defs whose bodies
     /// are analyzed, monomorphic ones as instances and generic ones through their instances.
     fn check_ignored_not_run(&self) {
         let analyzed = self.tcx.mir_keys(()).iter().copied().filter(|def_id| {

@@ -1273,14 +1273,18 @@ impl<'tcx> Analyzer<'tcx> {
     /// instance in a mode ([`Mode`]): that of the crate function it is (`crate_mode`), or of the
     /// path it is reached on. A trusted body may run an ignored function itself, as Verus's
     /// `external_body` and Creusot's and Prusti's `#[trusted]` may, but a verified function it
-    /// runs may not. A trusted instance that verified code runs has its contract relied on, which
-    /// holds only where the code its type parameters are instantiated with meets its
-    /// specification, as for Creusot's trusted contracts, so what its body runs is verified code,
-    /// except the items its generic body mentions without type parameters ([`Self::callees`]). A
-    /// shim of such an instance passes the mode on to the instance inside it, and a closure in
-    /// it is trusted code relied on in turn. An instance is followed once per mode it is reached
-    /// in. This over-approximates what the verified functions can run: an
-    /// instance reached only on a path to a panic counts.
+    /// runs may not. A generic trusted instance that verified code runs has its contract relied on,
+    /// which holds only where the code its type parameters are instantiated with meets its
+    /// specification, as for Creusot's trusted contracts, so everything its body runs at the
+    /// instance is verified code ([`Self::callees`]); a closure written in a generic trusted body
+    /// is relied on as that body is, and a shim passes the mode to the instance inside it. A
+    /// non-generic trusted body is trusted throughout. A function pointer, trait object or
+    /// closure that a trusted body hands out carries the trusted mode: calling it is the trusted
+    /// author's responsibility. Static initializers are not followed: verified code cannot read a
+    /// static (the analysis stops), and a static has no type parameters, so what a trusted body
+    /// reaches through one is its author's fixed choice. An instance is followed once per mode it
+    /// is reached in. This over-approximates what the verified functions can run: an instance
+    /// reached only on a path to a panic counts.
     pub fn stop_ignored_reached(
         &self,
         roots: Vec<mir_ty::Instance<'tcx>>,
@@ -1363,21 +1367,21 @@ impl<'tcx> Analyzer<'tcx> {
         diag.emit()
     }
 
-    /// Whether `instance` is of a generic def, whose body runs code its arguments choose.
+    /// Whether `instance` is of a generic def, whose body runs code its arguments choose. A
+    /// closure is as generic as the function it is written in; its own synthetic parameters are
+    /// fixed by that function.
     fn is_generic(&self, instance: mir_ty::Instance<'tcx>) -> bool {
+        let root = self.tcx.typeck_root_def_id(instance.def_id());
         self.tcx
-            .generics_of(instance.def_id())
+            .generics_of(root)
             .requires_monomorphization(self.tcx)
     }
 
-    /// The functions `instance`'s body uses, each with the mode it runs in: the body's own, or
-    /// for a trusted body whose contract verified code relies on (`Mode::Relied`), `Trusted` for
-    /// the items its generic body mentions without type parameters, the trusted author's fixed
-    /// choice, the same at every instance, and `Verified` for every other item. A trusted generic
+    /// The functions `instance`'s body uses, each in the mode the body runs in, and as verified
+    /// code for a trusted body whose contract verified code relies on (`Mode::Relied`): such a
     /// contract holds only where the code its type parameters are instantiated with meets its
-    /// specification, and anything that cannot be matched to a parameter-free mention, a call
-    /// that dispatches on the parameters, a closure, a vtable, a constant's function pointer, a
-    /// shim, is taken as such code.
+    /// specification, and everything the body runs at the instance is taken as such code. A
+    /// shim is a body like any other, so the instance inside it is relied on again.
     fn callees(
         &self,
         instance: mir_ty::Instance<'tcx>,
@@ -1385,76 +1389,17 @@ impl<'tcx> Analyzer<'tcx> {
     ) -> Vec<(mir_ty::Instance<'tcx>, Mode)> {
         use rustc_middle::mir::mono::{CollectionMode, MonoItem};
 
+        let callee_mode = match mode {
+            Mode::Relied => Mode::Verified,
+            other => other,
+        };
         let (used, _) = self
             .tcx
             .items_of_instance((instance, CollectionMode::UsedItems));
-        // A static's initializer is followed as a body, for the function pointers it holds.
-        let used = used.iter().filter_map(|item| match item.node {
-            MonoItem::Fn(callee) => Some(callee),
-            MonoItem::Static(def_id) => Some(mir_ty::Instance::mono(self.tcx, def_id)),
-            MonoItem::GlobalAsm(_) => None,
-        });
-        if mode != Mode::Relied {
-            return used.map(|callee| (callee, mode)).collect();
-        }
-        let key = |callee: mir_ty::Instance<'tcx>| (callee.def_id(), callee.args);
-        let (fixed, dependent): (Vec<_>, Vec<_>) = match instance.def {
-            mir_ty::InstanceKind::Item(def_id) => (
-                self.concrete_mentions(def_id)
-                    .into_iter()
-                    .map(key)
-                    .collect(),
-                self.dependent_mentions(instance)
-                    .into_iter()
-                    .map(key)
-                    .collect(),
-            ),
-            _ => (Vec::new(), Vec::new()),
-        };
-        used.map(|callee| {
-            let only_fixed = fixed.contains(&key(callee)) && !dependent.contains(&key(callee));
-            let callee_mode = if only_fixed {
-                Mode::Trusted
-            } else {
-                Mode::Verified
-            };
-            (callee, callee_mode)
-        })
-        .collect()
-    }
-
-    /// The calls and drops of `instance`'s generic body that depend on its type parameters,
-    /// resolved at its arguments. One that resolves to the same instance as a parameter-free
-    /// mention makes that instance verified code too.
-    fn dependent_mentions(&self, instance: mir_ty::Instance<'tcx>) -> Vec<mir_ty::Instance<'tcx>> {
-        use mir_ty::TypeVisitableExt as _;
-        use rustc_middle::mir::MentionedItem;
-
-        let typing_env = mir_ty::TypingEnv::fully_monomorphized();
-        let body = self.tcx.optimized_mir(instance.def_id());
-        body.mentioned_items()
-            .iter()
-            .filter_map(|item| {
-                let (MentionedItem::Fn(ty) | MentionedItem::Drop(ty)) = item.node else {
-                    return None;
-                };
-                if !ty.has_param() {
-                    return None;
-                }
-                let ty = instance.instantiate_mir_and_normalize_erasing_regions(
-                    self.tcx,
-                    typing_env,
-                    mir_ty::EarlyBinder::bind(ty),
-                );
-                if let MentionedItem::Drop(_) = item.node {
-                    return Some(mir_ty::Instance::resolve_drop_in_place(self.tcx, ty));
-                }
-                let mir_ty::FnDef(callee, args) = *ty.kind() else {
-                    return None;
-                };
-                mir_ty::Instance::try_resolve(self.tcx, typing_env, callee, args)
-                    .ok()
-                    .flatten()
+        used.iter()
+            .filter_map(|item| match item.node {
+                MonoItem::Fn(callee) => Some((callee, callee_mode)),
+                _ => None,
             })
             .collect()
     }

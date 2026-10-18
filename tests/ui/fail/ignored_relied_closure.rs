@@ -2,7 +2,8 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // `h`'s trusted contract, which `main` relies on at `S`, holds only where the code `T` brings
-// meets its specification: a closure in `h`'s body, coerced to a function pointer, dispatches on `T`, and it runs `S`'s ignored `m`.
+// meets its specification: a closure in `h`'s body, coerced to a function pointer, dispatches
+// on `T`, and it runs `S`'s ignored `m`.
 
 struct S(i32);
 
