@@ -44,7 +44,7 @@ error: verification error: Unsat (thrust: refuted: ensures in `withdraw`)
 3 | fn withdraw(balance: i64, amount: i64) -> i64 {
   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   |
-  = note: c0: (result = __tmp_mir_withdraw_3 - 1 ∧ __tmp_mir_withdraw_3 = balance - amount ∧ withdraw.bb0(balance, amount, old(balance) := balance, old(amount) := amount)) ==> result = balance - amount
+  = note: c0: (result = __tmp_mir_withdraw_3 - 1 ∧ __tmp_mir_withdraw_3 = balance - amount ∧ withdraw.bb0(balance, amount, old(balance) ← balance, old(amount) ← amount)) ==> result = balance - amount
   = note: where it fails: result = -1, balance = 0, amount = 0, __tmp_mir_withdraw_3 = 0
 ```
 
@@ -64,7 +64,7 @@ error: verification error: Unsat (thrust: refuted: precondition of `withdraw` in
 8 |     withdraw(balance, bill)
   |     ^^^^^^^^^^^^^^^^^^^^^^^
   |
-  = note: c2: pay.bb0(balance, bill, old(balance) := balance, old(bill) := bill) ==> bill <= balance
+  = note: c2: pay.bb0(balance, bill, old(balance) ← balance, old(bill) ← bill) ==> bill <= balance
   = note: where it fails: balance = 50, bill = 80
   = note: how the solver reaches it: ...
             pay.bb0(balance = 50, bill = 80, old(balance) = 50, old(bill) = 80)   [c5 function entry, s02_caller_breaks_pre.rs:7:1]
@@ -79,7 +79,7 @@ Which side to change (the call, or `pay`'s missing precondition) is the program'
 
 ```
 error: verification error: Unsat (thrust: refuted: ensures in `shipping`)
-  = note: c1: (shipping.loop#1(n, i, cost, old(n) := n) ∧ i > n) ==> cost = 3 * n
+  = note: c1: (shipping.loop#1(n, i, cost, old(n) ← n) ∧ i > n) ==> cost = 3 * n
   = note: where it fails: cost = 3, n = 0, i = 1
   = note: how the solver reaches it: ...
             shipping.loop#1(n = 0, i = 1, cost = 3, old(n) = 0)   [c2 loop preservation, s03_loop_off_by_one.rs:6:5]
@@ -97,7 +97,7 @@ error: verification error: Unsat (thrust: refuted: assertion in `main`)
    = note: where it fails: p = 100
    = note: how the solver reaches it: ...
              main.price#1(p = 100)   [c5 after call to `price`, s04_bug_in_inferred_callee.rs:10:13]
-               price.post(units = 10, result = 100)   [c2 return value, s04_bug_in_inferred_callee.rs:1:1]
+               price.post(units = 10, result = 100)   [c2 return value, s04_bug_in_inferred_callee.rs:7:1]
                  price.bb3(result = 100, units = 10)   [c0 jump to bb3, s04_bug_in_inferred_callee.rs:2:5]
                    price.bb0(units = 10, old(units) = 10)   [c3 function entry, s04_bug_in_inferred_callee.rs:1:1]
                      price.pre(units = 10)   [c4 argument of `price`, s04_bug_in_inferred_callee.rs:10:13]
@@ -117,11 +117,11 @@ error: verification error: Unsat (thrust: refuted: ensures in `sum_below`)
 ...
   = note: c1: (__tmp_chc_c1_4 = __tmp_chc_c1_2 ∧ 0 <= __tmp_chc_c1_4 ∧ 2 * result = __tmp_chc_c1_4 * (__tmp_chc_c1_4 + 1)) ==> 2 * result = __tmp_chc_c1_2 * (__tmp_chc_c1_2 - 1)
   = note: where it fails: result = 1
-  = note: in part 2 of 4, of 1 clause from `sum_below` (s05_invariant_not_preserved.rs:3)
+  = note: in part 2 of 4, of 1 clause from `sum_below` (s05_invariant_not_preserved.rs:3-13)
 error: verification error: Unsat (thrust: refuted: loop preservation in `sum_below`)
 ...
    = note: where it fails: n = 1, __tmp_mir_sum_below_7 = 0, *__tmp_mir_sum_below_8 = 0, s = 0, i = 1
-   = note: in part 3 of 4, of 1 clause from `sum_below` (s05_invariant_not_preserved.rs:6-11)
+   = note: in part 3 of 4, of 1 clause from `sum_below` (s05_invariant_not_preserved.rs:3-13)
 note: thrust: 4 parts solved on their own, 0 of them from earlier runs
 note: thrust: a function can be in several parts: `sum_below` in 3. Its clauses fall apart where they share no unknown, as on the two sides of a written annotation (a contract, an `invariant!`, a refined type), and a clause with no unknown is a part of its own
 ```
@@ -133,7 +133,7 @@ points at the same line.
 
 ```
 error: verification error: Unsat (thrust: refuted: ensures in `swap`)
-  = note: c0: (t = *__tmp_mir_swap_5 ∧ swap.bb0(*a := *__tmp_mir_swap_5, °a := __tmp_mir_swap_4, *b := __tmp_mir_swap_4, °b := __tmp_mir_swap_4, *old(a), °old(a), *old(b), °old(b))) ==> (°old(a) = *old(b) ∧ °old(b) = *old(a))
+  = note: c0: (t = *__tmp_mir_swap_5 ∧ swap.bb0(*a ← *__tmp_mir_swap_5, °a ← __tmp_mir_swap_4, *b ← __tmp_mir_swap_4, °b ← __tmp_mir_swap_4, *old(a), °old(a), *old(b), °old(b))) ==> (°old(a) = *old(b) ∧ °old(b) = *old(a))
   = note: where it fails: t = 0, __tmp_mir_swap_4 = 1, *__tmp_mir_swap_5 = 0, *old(a) = 0, °old(a) = 1, *old(b) = 1, °old(b) = 1, result = ()
 ```
 
@@ -189,7 +189,7 @@ error: verification error: Unsat (thrust: refuted: ensures in `<Meter as Double>
 26 |     fn double(&mut self) {
    |     ^^^^^^^^^^^^^^^^^^^^
    |
-   = note: c0: (<Meter as Double>::double.bb0(*self := (*__tmp_mir_Meter_as_Double_double_2, ), °self, *old(self), °old(self)) ∧ (*self).0 = *__tmp_mir_Meter_as_Double_double_2 + 2 ∧ °self = ((*self).0, )) ==> <Meter as Double>::is_double(*old(self), °old(self))
+   = note: c0: (<Meter as Double>::double.bb0(*self ← (*__tmp_mir_Meter_as_Double_double_2, ), °self, *old(self), °old(self)) ∧ (*self).0 = *__tmp_mir_Meter_as_Double_double_2 + 2 ∧ °self = ((*self).0, )) ==> <Meter as Double>::is_double(*old(self), °old(self))
    = note: where it fails: °self = (3, ), *__tmp_mir_Meter_as_Double_double_2 = 1, *old(self) = (1, ), °old(self) = (3, ), (*self).0 = 3, result = ()
 ```
 
@@ -203,12 +203,12 @@ so there is no refutation; the error is at the law's impl, and the part names it
 note: thrust: no failing obligation to show: the solver gave no refutation (only `z3` is asked for one)
 
 error: verification error: Unsat
-  --> s10_law_fails_at_impl.rs:40:5
+  --> s10_law_fails_at_impl.rs:41:5
    |
-40 |     fn count_nonneg(_c: &Clicks) {}
-   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+41 |     fn count_nonneg(c: &Clicks) {}
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
    |
-   = note: in part 2 of 4, of 2 clauses from `<Clicks as Counter>::count_nonneg` (s10_law_fails_at_impl.rs:40)
+   = note: in part 2 of 4, of 2 clauses from `<Clicks as Counter>::count_nonneg` (s10_law_fails_at_impl.rs:41)
 ```
 
 With `THRUST_REPORT=failure,constraints THRUST_REPORT_ONLY='Clicks::count_nonneg'` the same run
@@ -231,7 +231,7 @@ error: verification error: Unsat
 10 | fn main() {
    | --------- `main` is in this part too
    |
-   = note: in part 1 of 1, of 14 clauses from `last_index` (s11_for_range_bound.rs:1-6), `main` (s11_for_range_bound.rs:10-11)
+   = note: in part 1 of 1, of 14 clauses from `last_index` (s11_for_range_bound.rs:1-8), `main` (s11_for_range_bound.rs:10-12)
 ```
 
 ## 12. An invariant not found in time
@@ -245,7 +245,7 @@ error: verification error: Timeout(60s)
 2 | fn sum_capped(v: &Vec<i64>) -> i64 {
   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   |
-  = note: in part 1 of 2, of 11 clauses from `sum_capped` (s12_timeout_needs_invariant.rs:2-10)
+  = note: in part 1 of 2, of 11 clauses from `sum_capped` (s12_timeout_needs_invariant.rs:2-12)
 ```
 
 A timeout is not a failure: the fix adds the invariant, not a code change.

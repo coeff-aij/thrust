@@ -104,7 +104,8 @@ impl Counter for Clicks {
         self.0
     }
 
-    fn count_nonneg(_c: &Clicks) {}
+    #[thrust_macros::law]
+    fn count_nonneg(c: &Clicks) {}
 
     fn tick(&mut self) {
         self.n += 1;
@@ -118,10 +119,11 @@ $ thrust 05_counter.rs; echo "exit $?"
 exit 0
 ```
 
-A law is used by the verifier only, so rustc does not warn that nothing calls it. Its proof in an
-impl usually has an empty body, where the parameter is unused: name it with a leading underscore
-(`_c`), as any unused parameter in Rust, or rustc warns. The law's `ensures` still names it `c`,
-as the trait declares it.
+A law is used by the verifier only. The impl restates `#[thrust_macros::law]` on its proof, as
+Creusot does, and the parameter keeps the law's name, `c`, which the law's `ensures` reads. A law
+proved by its contract alone, with an empty body as here, is not warned about by rustc: neither
+that nothing calls it nor that its parameter is unused. Without the attribute on the impl's proof,
+rustc warns of both; on a method that implements no law of the trait, the attribute is an error.
 
 - A `#[thrust_macros::logic]` function returns any model value, here the count. Its body is one
   expression over the model: `Clicks`'s model is the tuple `(UInt,)`, so the field is `self.0`.
@@ -144,12 +146,12 @@ as the trait declares it.
   ```console
   $ THRUST_SPLIT=4 thrust 05_counter_int_model.rs
   error: verification error: Unsat
-    --> 05_counter_int_model.rs:40:5
+    --> 05_counter_int_model.rs:41:5
      |
-  40 |     fn count_nonneg(_c: &Clicks) {}
-     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  41 |     fn count_nonneg(c: &Clicks) {}
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
      |
-     = note: in part 2 of 4, of 2 clauses from `<Clicks as Counter>::count_nonneg` (05_counter_int_model.rs:40)
+     = note: in part 2 of 4, of 2 clauses from `<Clicks as Counter>::count_nonneg` (05_counter_int_model.rs:41)
 
   note: thrust: 4 parts solved on their own, 0 of them from earlier runs
   ```

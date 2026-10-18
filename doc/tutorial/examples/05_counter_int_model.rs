@@ -37,7 +37,8 @@ impl Counter for Clicks {
         self.0
     }
 
-    fn count_nonneg(_c: &Clicks) {}
+    #[thrust_macros::law]
+    fn count_nonneg(c: &Clicks) {}
 
     fn tick(&mut self) {
         self.n += 1;
