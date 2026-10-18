@@ -793,16 +793,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// Fixes the precondition of each crate function with an inferred contract that code Thrust
     /// does not analyze can run ([`analyze::unanalyzed_entry`]): a function or method entered
     /// so is checked under its precondition holding of every argument, unless the entering
-    /// contract names it with `pre!`, and a closure must have been handed over by a call that
-    /// states its obligation.
+    /// contract names it with `pre!`, and a closure must have been handed over, with its
+    /// obligation, by the analyzed call that leads into the code that runs it. The closures are
+    /// checked on a second walk, after the bodies the first one's entries analyze at new
+    /// instances have recorded their hand-overs.
     fn fix_entered_preconditions(&mut self) {
-        let (roots, generic) = self.walk_roots();
-        let roots = self.ctx.walk_roots(roots, generic, |def_id| {
-            self.crate_mode(def_id) == Some(analyze::Mode::Verified)
-        });
-        let entries = self
-            .ctx
-            .unanalyzed_entries(roots, |def_id| self.is_analyzed(def_id));
+        let entries = self.unanalyzed_entries();
         let mut fixed = HashSet::new();
         for (callee, _) in &entries.items {
             if !fixed.insert(*callee) {
@@ -815,22 +811,30 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             let clauses = analyze::Analyzer::accepts_every_argument(&fn_ty);
             self.ctx.extend_clauses(clauses);
         }
-        let handed_over = self.ctx.handed_over_closures(&entries.analyzed);
-        for (closure, from) in &entries.closures {
+        for (closure, from) in self.unanalyzed_entries().unhanded_closures {
             let def_id = closure.def_id();
-            if handed_over.contains(&def_id) || self.ctx.has_written_requires(def_id) {
+            if self.ctx.has_written_requires(def_id) {
                 continue;
             }
             self.tcx.dcx().span_fatal(
                 self.tcx.def_span(def_id),
                 format!(
                     "`{from}`, which Thrust does not analyze, can run the closure `{closure}`, \
-                     whose precondition is inferred, but no analyzed call hands it over to code \
-                     Thrust does not analyze: give the closure a `requires` with \
+                     whose precondition is inferred, without an analyzed call handing it over \
+                     to it with its obligation: give the closure a `requires` with \
                      `thrust_macros::closure!`"
                 ),
             );
         }
+    }
+
+    fn unanalyzed_entries(&self) -> analyze::unanalyzed_entry::Entries<'tcx> {
+        let (roots, generic) = self.walk_roots();
+        let roots = self.ctx.walk_roots(roots, generic, |def_id| {
+            self.crate_mode(def_id) == Some(analyze::Mode::Verified)
+        });
+        self.ctx
+            .unanalyzed_entries(roots, |def_id| self.is_analyzed(def_id))
     }
 
     /// Records every `#[thrust::law]` function declared in a local trait.

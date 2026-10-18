@@ -41,7 +41,7 @@ mod pred_inst;
 mod reconstruct_slice_indexing;
 pub(crate) mod selection;
 mod two_phase_borrow;
-mod unanalyzed_entry;
+pub mod unanalyzed_entry;
 
 // TODO: organize structure and remove cross dependency between refine
 pub use did_cache::DefIdCache;
@@ -623,8 +623,9 @@ pub struct Analyzer<'tcx> {
     invariant_annotations: HashMap<(LocalDefId, BasicBlock), Vec<rustc_span::Span>>,
     /// The fn-like defs whose bodies are trusted rather than analyzed.
     trusted_bodies: HashSet<LocalDefId>,
-    /// The closures each analyzed body hands over to code Thrust does not analyze, by the body.
-    handovers: Vec<(DefId, unanalyzed_entry::HandedOver)>,
+    /// The closures each analyzed body hands over to code Thrust does not analyze, by the body
+    /// and the function called.
+    handovers: Vec<(DefId, DefId, unanalyzed_entry::HandedOver)>,
 }
 
 /// Whether `expr` is the literal `true`.

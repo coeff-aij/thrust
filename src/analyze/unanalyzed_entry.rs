@@ -13,7 +13,8 @@
 //!   argument ([`Analyzer::accepts_every_argument`]).
 //! - A closure is handed over as a value, with captures the walk does not see. Its obligation is
 //!   stated at the analyzed call that hands it over (`basic_block::closure_escape`), which records
-//!   the hand-over; an entry the walk finds into a closure no call handed over stops.
+//!   the hand-over; an entry the walk finds into a closure on a path where the analyzed call
+//!   that led into unanalyzed code did not hand it over stops, whatever other calls hand over.
 
 use std::collections::{HashSet, VecDeque};
 
@@ -54,10 +55,18 @@ impl StatedPres {
 pub struct Entries<'tcx> {
     /// Functions and methods, with the unanalyzed instance each is entered from.
     pub items: Vec<(mir_ty::Instance<'tcx>, mir_ty::Instance<'tcx>)>,
-    /// Closures, likewise.
-    pub closures: Vec<(mir_ty::Instance<'tcx>, mir_ty::Instance<'tcx>)>,
-    /// The analyzed instances the walk reached, whose hand-overs cover the closures.
-    pub analyzed: Vec<mir_ty::Instance<'tcx>>,
+    /// Closures entered on a path on which no analyzed call handed them over, likewise.
+    pub unhanded_closures: Vec<(mir_ty::Instance<'tcx>, mir_ty::Instance<'tcx>)>,
+}
+
+/// An instance on the walk: whether its body is analyzed, and, for one that is not, the
+/// closures the analyzed call that led into unanalyzed code on its path handed over.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct Node<'tcx> {
+    instance: mir_ty::Instance<'tcx>,
+    analyzed: bool,
+    /// Sorted by [`def_order`], without repeats.
+    handed_over: Vec<DefId>,
 }
 
 impl<'tcx> analyze::Analyzer<'tcx> {
@@ -81,8 +90,9 @@ impl<'tcx> analyze::Analyzer<'tcx> {
         })
     }
 
-    pub fn record_handover(&mut self, owner: DefId, handed_over: HandedOver) {
-        self.handovers.push((owner, handed_over));
+    /// Records that the analyzed body `owner` hands `handed_over` to `callee` at a call.
+    pub fn record_handover(&mut self, owner: DefId, callee: DefId, handed_over: HandedOver) {
+        self.handovers.push((owner, callee, handed_over));
     }
 
     /// What the `requires` of `contract_def_id` names the precondition of: the type parameters
@@ -203,35 +213,46 @@ impl<'tcx> analyze::Analyzer<'tcx> {
         let mut seen = HashSet::new();
         let mut pending = VecDeque::new();
         for root in roots {
-            let key = (root, item_analyzed(root));
-            if seen.insert(key) {
-                pending.push_back(key);
+            let node = Node {
+                instance: root,
+                analyzed: item_analyzed(root),
+                handed_over: Vec::new(),
+            };
+            if seen.insert(node.clone()) {
+                pending.push_back(node);
             }
         }
         let mut entries = Entries::default();
-        while let Some((instance, analyzed)) = pending.pop_front() {
-            if analyzed {
-                entries.analyzed.push(instance);
-            }
+        while let Some(node) = pending.pop_front() {
+            let instance = node.instance;
             if !self.runs_body(instance) || self.nests_past_recursion_limit(instance) {
                 continue;
             }
-            let stated = (!analyzed).then(|| {
+            let stated = (!node.analyzed).then(|| {
                 self.contract_of(instance.def_id(), instance.args)
                     .map(|(contract_def_id, _)| self.stated_pres(contract_def_id))
                     .unwrap_or_default()
             });
             for callee in self.callees(instance) {
-                let callee_analyzed = match callee.def {
+                let analyzed = match callee.def {
                     mir_ty::InstanceKind::ClosureOnceShim { .. }
-                    | mir_ty::InstanceKind::FnPtrShim(..) => analyzed,
+                    | mir_ty::InstanceKind::FnPtrShim(..) => node.analyzed,
                     _ => item_analyzed(callee),
                 };
-                let key = (callee, callee_analyzed);
-                if seen.insert(key) {
-                    pending.push_back(key);
+                let handed_over = match (node.analyzed, analyzed) {
+                    (_, true) => Vec::new(),
+                    (true, false) => self.handed_over_at(instance, callee.def_id()),
+                    (false, false) => node.handed_over.clone(),
+                };
+                let child = Node {
+                    instance: callee,
+                    analyzed,
+                    handed_over,
+                };
+                if seen.insert(child.clone()) {
+                    pending.push_back(child);
                 }
-                let Some(stated) = stated.as_ref().filter(|_| callee_analyzed) else {
+                let Some(stated) = stated.as_ref().filter(|_| analyzed) else {
                     continue;
                 };
                 let callee_def_id = callee.def_id();
@@ -239,7 +260,9 @@ impl<'tcx> analyze::Analyzer<'tcx> {
                     continue;
                 }
                 if self.tcx.is_closure_like(callee_def_id) {
-                    entries.closures.push((callee, instance));
+                    if !node.handed_over.contains(&callee_def_id) {
+                        entries.unhanded_closures.push((callee, instance));
+                    }
                 } else if !self.names_fn_item(stated, callee_def_id) {
                     entries.items.push((callee, instance));
                 }
@@ -316,37 +339,46 @@ impl<'tcx> analyze::Analyzer<'tcx> {
         )
     }
 
-    /// The closures the hand-overs of the analyzed instances `analyzed` cover, by def id.
-    pub fn handed_over_closures(&self, analyzed: &[mir_ty::Instance<'tcx>]) -> HashSet<DefId> {
-        let mut covered = HashSet::new();
-        for instance in analyzed {
-            let owner = instance.def_id();
-            for (_, handed_over) in self.handovers.iter().filter(|(o, _)| *o == owner) {
-                match *handed_over {
-                    HandedOver::Closure(def_id) => {
-                        covered.insert(def_id);
-                    }
-                    HandedOver::Param(param_def_id) => {
-                        let generics = self.tcx.generics_of(owner);
-                        let Some(&index) = generics.param_def_id_to_index.get(&param_def_id) else {
-                            continue;
-                        };
-                        let Some(ty) = instance.args.get(index as usize).and_then(|a| a.as_type())
-                        else {
-                            continue;
-                        };
-                        covered.extend(ty.walk().filter_map(|arg| {
-                            match arg.as_type().map(|ty| *ty.kind()) {
-                                Some(mir_ty::TyKind::Closure(def_id, _)) => Some(def_id),
-                                _ => None,
-                            }
-                        }));
-                    }
+    /// The closures, by def id, that the analyzed instance `owner` hands over at its calls of
+    /// `callee`.
+    fn handed_over_at(&self, owner: mir_ty::Instance<'tcx>, callee: DefId) -> Vec<DefId> {
+        let owner_def_id = owner.def_id();
+        let mut handed_over = Vec::new();
+        let recorded = self
+            .handovers
+            .iter()
+            .filter(|(o, c, _)| *o == owner_def_id && *c == callee);
+        for (_, _, closure) in recorded {
+            match *closure {
+                HandedOver::Closure(def_id) => {
+                    handed_over.push(def_id);
+                }
+                HandedOver::Param(param_def_id) => {
+                    let generics = self.tcx.generics_of(owner_def_id);
+                    let Some(&index) = generics.param_def_id_to_index.get(&param_def_id) else {
+                        continue;
+                    };
+                    let Some(ty) = owner.args.get(index as usize).and_then(|a| a.as_type()) else {
+                        continue;
+                    };
+                    handed_over.extend(ty.walk().filter_map(|arg| {
+                        match arg.as_type().map(|ty| *ty.kind()) {
+                            Some(mir_ty::TyKind::Closure(def_id, _)) => Some(def_id),
+                            _ => None,
+                        }
+                    }));
                 }
             }
         }
-        covered
+        handed_over.sort_by_key(|def_id| def_order(*def_id));
+        handed_over.dedup();
+        handed_over
     }
+}
+
+/// An order of def ids within one compilation.
+fn def_order(def_id: DefId) -> (u32, u32) {
+    (def_id.krate.as_u32(), def_id.index.as_u32())
 }
 
 /// The type of the receiver of each `pre!` (a call of `closure_precondition`) in `expr`, closures

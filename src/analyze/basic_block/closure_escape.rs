@@ -61,7 +61,7 @@ impl<'tcx> Analyzer<'tcx, '_> {
             let ty = mir_ty::EarlyBinder::bind(param.to_ty(self.tcx))
                 .instantiate(self.tcx, contract_args);
             let ty = self.tcx.erase_regions(ty);
-            self.record_handover(ty);
+            self.record_handover(ty, def_id, resolved_def_id);
             if stated.names_param(param.name) {
                 continue;
             }
@@ -103,8 +103,9 @@ impl<'tcx> Analyzer<'tcx, '_> {
         params
     }
 
-    /// Records that the closure `ty` stands for is handed over.
-    fn record_handover(&mut self, ty: mir_ty::Ty<'tcx>) {
+    /// Records that the closure `ty` stands for is handed over at a call of `def_id`, which
+    /// resolves to `resolved_def_id`.
+    fn record_handover(&mut self, ty: mir_ty::Ty<'tcx>, def_id: DefId, resolved_def_id: DefId) {
         let owner = self.local_def_id.to_def_id();
         let handed_over = match *peel_refs(ty).kind() {
             mir_ty::TyKind::Closure(def_id, _) => HandedOver::Closure(def_id),
@@ -113,7 +114,11 @@ impl<'tcx> Analyzer<'tcx, '_> {
             }
             _ => return,
         };
-        self.ctx.record_handover(owner, handed_over);
+        self.ctx.record_handover(owner, def_id, handed_over);
+        if resolved_def_id != def_id {
+            self.ctx
+                .record_handover(owner, resolved_def_id, handed_over);
+        }
     }
 
     /// States the obligation of the value of type `ty` that `operand` holds, if it holds one.
