@@ -23,35 +23,18 @@ jobs:
       - uses: actions/checkout@v7
       - run: rustup component add clippy
       - run: cargo clippy -- -D warnings
+  # The ui tests that name a CoAR wrapper need the CoAR image built from fptprove, which CI does
+  # not have; THRUST_UI_SKIP_COAR=1 skips them and runs the ones Z3 decides.
   test:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-z3
-      - name: Install PCSat dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install \
-            libblas3 \
-            libgcc-s1 \
-            libgmp10 \
-            liblapack3 \
-            libmpfr6 \
-            libstdc++6 \
-            zlib1g
-      - name: Download latest PCSat
-        run: |
-          cd $(mktemp -d)
-          curl -fsS "$PCSAT_URL" -o thrust-pcsat-wrapper.tar.gz
-          echo "$PCSAT_SHA256 thrust-pcsat-wrapper.tar.gz" | sha256sum -c --strict
-          tar --strip-components=1 -xf thrust-pcsat-wrapper.tar.gz
-          mv thrust-pcsat-wrapper "$GITHUB_WORKSPACE/tests/thrust-pcsat-wrapper"
-        env:
-          PCSAT_URL: https://thrust-ci-public.s3.ap-northeast-1.amazonaws.com/pcsat/thrust-pcsat-wrapper-49ed9fe340.tar.gz
-          PCSAT_SHA256: 7a606b60050e8e04aece7a58297fcd80055783084996d2f1c9fa99d9d51d6114
       - run: rustup show
       - uses: Swatinem/rust-cache@v2
       - run: cargo test
+        env:
+          THRUST_UI_SKIP_COAR: 1

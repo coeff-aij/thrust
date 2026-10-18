@@ -66,6 +66,10 @@ safe
 
 Integration test examples are located under `tests/ui/` and can be executed using `cargo test`. You can review these examples to understand what the current Thrust implementation can handle.
 
+The ui tests whose header sets `THRUST_SOLVER` to `tests/thrust-pcsat-wrapper` or `tests/thrust-spacer-wrapper` run CoAR in Docker, from the image `COAR_IMAGE` names (default `coar:latest`); `THRUST_UI_THREADS` sets how many tests run at once (default 8). With `THRUST_UI_SKIP_COAR=1` those tests are skipped and counted as filtered out, and only the tests Z3 decides run.
+
+CI (`.github/workflows/ci.yml`) checks `cargo fmt` and `cargo clippy` and runs `cargo test` with `THRUST_UI_SKIP_COAR=1` and the Z3 that `.github/actions/setup-z3` pins: it has no CoAR image, so a ui test that needs PCSat is checked only locally.
+
 ### Using Thrust with Cargo
 
 Thrust can check Cargo projects that have no dependencies. External crates are not supported yet (#255).
