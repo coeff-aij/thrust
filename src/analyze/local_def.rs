@@ -843,11 +843,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             uses.entry(*temp).or_default().retain(|loc| loc != def);
         }
         let uses = with_uses_through_copies(uses, replaced);
+        let mentions = local_mentions(&self.body);
         let mut kept = HashSet::new();
         for (temp, def, place) in replaced {
             if defs[temp].len() != 1
                 || self.has_unknown_aliases(place)
-                || self.written_before_use(place, *def, &uses[temp])
+                || self.written_before_use(place, *def, &uses[temp], &mentions)
             {
                 kept.insert(*temp);
             }
@@ -863,23 +864,65 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         })
     }
 
-    /// Whether a use in `uses` can be reached from a change of `place` without passing `def`,
-    /// or from an alias that may change it later, whether or not passing `def`.
+    /// Whether a use in `uses` can be reached without passing `def` from a change of `place`:
+    /// a write, or a use of an alias that may write it.
     fn written_before_use(
         &self,
         place: &mir::Place<'tcx>,
         def: mir::Location,
         uses: &[mir::Location],
+        mentions: &HashMap<Local, Vec<mir::Location>>,
     ) -> bool {
         let uses: HashSet<_> = uses.iter().copied().collect();
-        let (writes, aliases) = self.changes_of(place);
-        self.reaches_any(&writes, Some(def), &uses) || self.reaches_any(&aliases, None, &uses)
+        let (mut changes, aliases) = self.changes_of(place);
+        for local in self.alias_locals(&aliases, mentions) {
+            changes.extend(mentions[&local].iter().copied());
+        }
+        changes.extend(aliases);
+        self.reaches_any(&changes, def, &uses)
+    }
+
+    /// The locals assigned from the aliases made at `aliases`, and from those locals.
+    fn alias_locals(
+        &self,
+        aliases: &[mir::Location],
+        mentions: &HashMap<Local, Vec<mir::Location>>,
+    ) -> HashSet<Local> {
+        let mut pending: Vec<_> = aliases
+            .iter()
+            .filter_map(|loc| self.assigned_local(*loc))
+            .collect();
+        let mut locals = HashSet::new();
+        while let Some(local) = pending.pop() {
+            if !locals.insert(local) {
+                continue;
+            }
+            let assigned = mentions[&local]
+                .iter()
+                .filter_map(|loc| self.assigned_local(*loc));
+            pending.extend(assigned.filter(|assigned| *assigned != local));
+        }
+        locals
+    }
+
+    fn assigned_local(&self, loc: mir::Location) -> Option<Local> {
+        let data = &self.body.basic_blocks[loc.block];
+        let Some(stmt) = data.statements.get(loc.statement_index) else {
+            let mir::TerminatorKind::Call { destination, .. } = &data.terminator().kind else {
+                return None;
+            };
+            return Some(destination.local);
+        };
+        let mir::StatementKind::Assign(assign) = &stmt.kind else {
+            return None;
+        };
+        Some(assign.0.local)
     }
 
     fn reaches_any(
         &self,
         from: &[mir::Location],
-        barrier: Option<mir::Location>,
+        barrier: mir::Location,
         targets: &HashSet<mir::Location>,
     ) -> bool {
         let mut stack: Vec<_> = from
@@ -888,7 +931,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .collect();
         let mut seen = HashSet::new();
         while let Some(loc) = stack.pop() {
-            if Some(loc) == barrier || !seen.insert(loc) {
+            if loc == barrier || !seen.insert(loc) {
                 continue;
             }
             if targets.contains(&loc) {
@@ -900,8 +943,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     }
 
     /// The locations that may change the value at `place`: writes to and moves out of a place
-    /// it is read through, and aliases of such a place that may write it later, a mutable or
-    /// raw borrow or a copy of a non-`Copy` value such as a `&mut` it is reached through.
+    /// it is read through, and the aliases of such a place that may write it, a mutable or raw
+    /// borrow or a copy of a non-`Copy` value such as a `&mut` it is reached through.
     fn changes_of(&self, place: &mir::Place<'tcx>) -> (Vec<mir::Location>, Vec<mir::Location>) {
         use mir::visit::{MutatingUseContext, NonMutatingUseContext, PlaceContext};
         struct Visitor<'a, 'tcx> {
