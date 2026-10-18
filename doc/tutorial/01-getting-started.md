@@ -102,15 +102,16 @@ exit 0
 ```
 
 When z3 meets a query it cannot read, the run ends with its raw parse errors, for example on the
-`for` loop of [chapter 6](06-iterators.md), and a help line names the solver to use instead:
+`for` loop of [chapter 6](06-iterators.md), and a help line says how to run PCSat instead:
 
 ```console
 $ thrust 06_for_range.rs
 error: verification error: Error { stdout: "(error \"line 48 column 87: unknown sort 'Seq'\")\n(error \"line 71 column 911: unknown constant seq.unit (Int) \")\nsat\n", stderr: "" }
   |
-  = help: the query has forall sorts or sequences, which `z3` does not read: `THRUST_SOLVER=tests/thrust-pcsat-wrapper` solves it with PCSat
+  = help: the query has forall sorts or sequences, which `z3` does not read; PCSat, the CHC solver of CoAR, does: set `THRUST_SOLVER` to the PCSat wrapper of Thrust (`tests/thrust-pcsat-wrapper` in its repository), which runs the CoAR image `COAR_IMAGE` in Docker
 
 error: aborting due to 1 previous error
 ```
 
-The wrapper's path in the help line is relative to the Thrust checkout.
+The help comes only when z3's answer has such `(error` lines; with `THRUST_SPLIT`
+([chapter 8](08-incremental.md)), only on the parts that have them.

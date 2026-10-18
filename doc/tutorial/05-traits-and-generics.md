@@ -104,7 +104,7 @@ impl Counter for Clicks {
         self.0
     }
 
-    fn count_nonneg(c: &Clicks) {}
+    fn count_nonneg(_c: &Clicks) {}
 
     fn tick(&mut self) {
         self.n += 1;
@@ -118,8 +118,10 @@ $ thrust 05_counter.rs; echo "exit $?"
 exit 0
 ```
 
-A law is used by the verifier only, so rustc does not warn that nothing calls it or that its
-parameter is unused.
+A law is used by the verifier only, so rustc does not warn that nothing calls it. Its proof in an
+impl usually has an empty body, where the parameter is unused: name it with a leading underscore
+(`_c`), as any unused parameter in Rust, or rustc warns. The law's `ensures` still names it `c`,
+as the trait declares it.
 
 - A `#[thrust_macros::logic]` function returns any model value, here the count. Its body is one
   expression over the model: `Clicks`'s model is the tuple `(UInt,)`, so the field is `self.0`.
@@ -144,8 +146,8 @@ parameter is unused.
   error: verification error: Unsat
     --> 05_counter_int_model.rs:40:5
      |
-  40 |     fn count_nonneg(c: &Clicks) {}
-     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  40 |     fn count_nonneg(_c: &Clicks) {}
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
      |
      = note: in part 2 of 4, of 2 clauses from `<Clicks as Counter>::count_nonneg` (05_counter_int_model.rs:40)
 
@@ -156,10 +158,9 @@ z3 cannot read the query of a generic function over a trait's logic function:
 
 ```console
 $ unset THRUST_SOLVER; thrust 05_counter.rs
-...
 error: verification error: Error { stdout: "unsupported\n(error \"line 23 column 19: invalid datatype declaration, unknown sort 'a0'\")\n ...
   |
-  = help: the query has forall sorts or sequences, which `z3` does not read: `THRUST_SOLVER=tests/thrust-pcsat-wrapper` solves it with PCSat
+  = help: the query has forall sorts or sequences, which `z3` does not read; PCSat, the CHC solver of CoAR, does: set `THRUST_SOLVER` to the PCSat wrapper of Thrust (`tests/thrust-pcsat-wrapper` in its repository), which runs the CoAR image `COAR_IMAGE` in Docker
 ```
 
 ## More

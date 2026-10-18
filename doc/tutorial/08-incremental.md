@@ -29,21 +29,21 @@ Run 1, three bugs: three parts, all solved, all failing.
 ```console
 $ cp 08_shop_1.rs shop.rs; thrust shop.rs
 error: verification error: Unsat (thrust: refuted: ensures in `withdraw`)
- --> shop.rs:5:2
+ --> shop.rs:3:1
 ...
   = note: where it fails: result = -1, balance = 0, amount = 0, __tmp_mir_withdraw_3 = 0
 ...
-  = note: in part 1 of 3, of 2 clauses from `withdraw` (shop.rs:3-5)
+  = note: in part 1 of 3, of 2 clauses from `withdraw` (shop.rs:3)
 
 error: verification error: Unsat (thrust: refuted: ensures in `shipping`)
-  --> shop.rs:17:2
+ --> shop.rs:9:1
 ...
-   = note: in part 2 of 3, of 4 clauses from `shipping` (shop.rs:9-17)
+  = note: in part 2 of 3, of 4 clauses from `shipping` (shop.rs:9-15)
 
 error: verification error: Unsat (thrust: refuted: assertion in `main`)
   --> shop.rs:29:5
 ...
-   = note: in part 3 of 3, of 16 clauses from `price` (shop.rs:19-25), `main` (shop.rs:27-33)
+   = note: in part 3 of 3, of 16 clauses from `price` (shop.rs:19-24), `main` (shop.rs:27-32)
 
 note: thrust: 3 parts solved on their own, 0 of them from earlier runs
 
@@ -56,16 +56,16 @@ other two come from the cache and still fail. The last note names the parts solv
 ```console
 $ cp 08_shop_2.rs shop.rs; thrust shop.rs
 error: verification error: Unsat (thrust: refuted: ensures in `shipping`)
-  --> shop.rs:17:2
+ --> shop.rs:9:1
 ...
-   = note: in part 2 of 3, of 4 clauses from `shipping` (shop.rs:9-17)
+  = note: in part 2 of 3, of 4 clauses from `shipping` (shop.rs:9-15)
 
 error: verification error: Unsat (thrust: refuted: assertion in `main`)
   --> shop.rs:29:5
 ...
-   = note: in part 3 of 3, of 16 clauses from `price` (shop.rs:19-25), `main` (shop.rs:27-33)
+   = note: in part 3 of 3, of 16 clauses from `price` (shop.rs:19-24), `main` (shop.rs:27-32)
 
-note: thrust: 3 parts solved on their own, 2 of them from earlier runs; solved now: part 1 from `withdraw` (shop.rs:3-5)
+note: thrust: 3 parts solved on their own, 2 of them from earlier runs; solved now: part 1 from `withdraw` (shop.rs:3)
 
 error: aborting due to 2 previous errors
 ```
@@ -90,7 +90,7 @@ error: verification error: Unsat (thrust: refuted: assertion in `main`)
   --> shop.rs:29:5
 ...
    = note: it goes through the contract inferred for `price`: a wrong result there shows here
-   = note: in part 3 of 3, of 16 clauses from `price` (shop.rs:19-25), `main` (shop.rs:27-33)
+   = note: in part 3 of 3, of 16 clauses from `price` (shop.rs:19-24), `main` (shop.rs:27-32)
 
 note: thrust: loop in `shipping`
   --> shop.rs:12:11
@@ -102,7 +102,7 @@ note: thrust: loop in `shipping`
            shipping.loop#1(n: int, i: int, cost: int, old(n): int)
            := (3 * i = cost ∧ 3 * old(n) >= cost) ∨ (old(n) >= 0 ∧ n = old(n) ∧ i = 0 ∧ cost = 0)
 
-note: thrust: 3 parts solved on their own, 2 of them from earlier runs; solved now: part 2 from `shipping` (shop.rs:9-17)
+note: thrust: 3 parts solved on their own, 2 of them from earlier runs; solved now: part 2 from `shipping` (shop.rs:9-15)
 
 error: aborting due to 1 previous error
 ```
@@ -116,7 +116,7 @@ note: thrust: loop in `shipping`
 ...
 note: thrust: `price`
 ...
-note: thrust: 3 parts solved on their own, 2 of them from earlier runs; solved now: part 3 from `price` (shop.rs:19-25), `main` (shop.rs:27-33)
+note: thrust: 3 parts solved on their own, 2 of them from earlier runs; solved now: part 3 from `price` (shop.rs:19-24), `main` (shop.rs:27-32)
 
 exit 0
 ```
@@ -127,7 +127,7 @@ with nothing changed takes every verdict from the cache:
 ```console
 $ cp 08_shop_5.rs shop.rs; thrust shop.rs; echo "exit $?"
 ...
-note: thrust: 3 parts solved on their own, 2 of them from earlier runs; solved now: part 3 from `price` (shop.rs:19-25), `main` (shop.rs:27-34)
+note: thrust: 3 parts solved on their own, 2 of them from earlier runs; solved now: part 3 from `price` (shop.rs:19-24), `main` (shop.rs:27-33)
 
 exit 0
 $ thrust shop.rs; echo "exit $?"
@@ -142,8 +142,9 @@ Each run here takes under a second; the cache matters when a part takes the solv
 ## With PCSat
 
 The same session with PCSat gives the same parts and verdicts, without refutations: each error is
-at the code of its part, the first function's, with the other functions of the part labelled. Set `THRUST_CACHE_SALT` to the image's id, so that a new solver build
-does not reuse the old one's verdicts:
+at the signature of the first function of its part, with the other functions' signatures
+labelled. Set `THRUST_CACHE_SALT` to the image's id, so that a new solver build does not reuse
+the old one's verdicts:
 
 ```console
 $ export THRUST_SOLVER=$THRUST/tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60
@@ -152,35 +153,25 @@ $ cp 08_shop_2.rs shop.rs; thrust shop.rs        # after a run on 08_shop_1.rs
 note: thrust: no failing obligation to show: the solver gave no refutation (only `z3` is asked for one)
 
 error: verification error: Unsat
-  --> shop.rs:9:1
-   |
- 9 | / fn shipping(n: i64) -> i64 {
-10 | |     let mut i = 0;
-11 | |     let mut cost = 0;
-12 | |     while i <= n {
-...  |
-16 | |     cost
-17 | | }
-   | |_^
-   |
-   = note: in part 2 of 3, of 4 clauses from `shipping` (shop.rs:9-17)
+ --> shop.rs:9:1
+  |
+9 | fn shipping(n: i64) -> i64 {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: in part 2 of 3, of 4 clauses from `shipping` (shop.rs:9-15)
 
 error: verification error: Unsat
   --> shop.rs:19:1
    |
-19 | / fn price(units: i64) -> i64 {
+19 | fn price(units: i64) -> i64 {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^
 ...
-25 | | }
-   | |_^
-26 |
-27 | / fn main() {
-...
-33 | | }
-   | |_- `main` is in this part too
+27 | fn main() {
+   | --------- `main` is in this part too
    |
-   = note: in part 3 of 3, of 16 clauses from `price` (shop.rs:19-25), `main` (shop.rs:27-33)
+   = note: in part 3 of 3, of 16 clauses from `price` (shop.rs:19-24), `main` (shop.rs:27-32)
 
-note: thrust: 3 parts solved on their own, 2 of them from earlier runs; solved now: part 1 from `withdraw` (shop.rs:3-5)
+note: thrust: 3 parts solved on their own, 2 of them from earlier runs; solved now: part 1 from `withdraw` (shop.rs:3)
 
 error: aborting due to 2 previous errors
 ```
@@ -190,8 +181,10 @@ error: aborting due to 2 previous errors
 - Without `THRUST_SPLIT`, one refutation per run; with it, one per failing part.
 - The solver's time limit applies to each part. A part can time out alone where the whole query
   does not, and the other way round. A part that times out is an error without a refutation.
-- Every part carries the crate's datatypes and definitions, so adding a type or a logic function
-  anywhere solves every part again.
+- Every part carries the crate's datatypes, so adding a type anywhere solves every part again. Of
+  the definitions of predicates and logic functions, a part carries those its constraints or a
+  law use, so adding one solves again only the parts that use it, and z3 can still solve a part
+  that uses no sequence in a crate that does elsewhere.
 - A part that passes is solved once more for its model, so the report shows what is inferred in
   it, as without `THRUST_SPLIT` (run 3 above).
 - The clauses of one function can fall into several parts: they are cut where they share no

@@ -102,25 +102,27 @@ warning: unused variable: `t`
   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
 
 error: verification error: Unsat (thrust: refuted: ensures in `swap`)
- --> s06_missing_write.rs:5:2
+ --> s06_missing_write.rs:2:1
   |
 1 | #[thrust_macros::ensures(!a == *b && !b == *a)]
   |                          -------------------- the annotation it checks
-...
-5 | }
-  |  ^
+2 | fn swap(a: &mut i64, b: &mut i64) {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   |
-  = note: c0: (t = *__tmp_mir_swap_5 ∧ swap.bb0(*a = *__tmp_mir_swap_5, °a = __tmp_mir_swap_4, *b = __tmp_mir_swap_4, °b = __tmp_mir_swap_4, old(a), old(b))) ==> (°old(a) = *old(b) ∧ °old(b) = *old(a))
+  = note: c0: (t = *__tmp_mir_swap_5 ∧ swap.bb0(*a := *__tmp_mir_swap_5, °a := __tmp_mir_swap_4, *b := __tmp_mir_swap_4, °b := __tmp_mir_swap_4, *old(a), °old(a), *old(b), °old(b))) ==> (°old(a) = *old(b) ∧ °old(b) = *old(a))
   = note: where it fails: t = 0, __tmp_mir_swap_4 = 1, *__tmp_mir_swap_5 = 0, *old(a) = 0, °old(a) = 1, *old(b) = 1, °old(b) = 1, result = ()
   = note: how the solver reaches it: each fact follows, by the constraint in brackets, from the facts indented under it (a derivation, not an order of execution):
             swap.bb0(*a = 0, °a = 1, *b = 1, °b = 1, *old(a) = 0, °old(a) = 1, *old(b) = 1, °old(b) = 1)   [c1 function entry, s06_missing_write.rs:2:1]
-...
+  = note: the solver refutes one obligation of a query: others may fail too (`THRUST_SPLIT` refutes one in each part)
+
+error: aborting due to 1 previous error; 1 warning emitted
 ```
 
 The values give each reference its current and final value: `*old(b) = 1, °old(b) = 1` says `b`
 pointed to 1 and still does at the end, while the contract asks for `°b = *a = 0`. In the
-constraint, a reference passed to an unknown is given by its two values (`*b = ...`,
-`°b = ...`). rustc's warning that `t` is unused points at the same bug.
+constraint, a reference passed to an unknown is given by its two values (`*b := ...`,
+`°b := ...`), and one that is the template's own variable by its two names (`*old(a), °old(a)`).
+rustc's warning that `t` is unused points at the same bug.
 
 Mutable references inside data (`Option<&mut T>`, a `Vec` of them, a struct field) follow the same
 model; see [Mutable references](../../README.md#mutable-references) for the notation.

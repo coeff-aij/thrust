@@ -51,15 +51,14 @@ fn main() {
 ```console
 $ THRUST_REPORT=1 thrust shop.rs
 error: verification error: Unsat (thrust: refuted: ensures in `withdraw`)
- --> shop.rs:5:2
+ --> shop.rs:3:1
   |
 2 | #[thrust_macros::ensures(result == balance - amount)]
   |                          -------------------------- the annotation it checks
-...
-5 | }
-  |  ^
+3 | fn withdraw(balance: i64, amount: i64) -> i64 {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   |
-  = note: c0: (result = __tmp_mir_withdraw_3 - 1 ∧ __tmp_mir_withdraw_3 = balance - amount ∧ withdraw.bb0(balance, amount, old(balance) = balance, old(amount) = amount)) ==> result = balance - amount
+  = note: c0: (result = __tmp_mir_withdraw_3 - 1 ∧ __tmp_mir_withdraw_3 = balance - amount ∧ withdraw.bb0(balance, amount, old(balance) := balance, old(amount) := amount)) ==> result = balance - amount
   = note: where it fails: result = -1, balance = 0, amount = 0, __tmp_mir_withdraw_3 = 0
   = note: how the solver reaches it: each fact follows, by the constraint in brackets, from the facts indented under it (a derivation, not an order of execution):
             withdraw.bb0(balance = 0, amount = 0, old(balance) = 0, old(amount) = 0)   [c1 function entry, shop.rs:3:1]
@@ -70,13 +69,13 @@ error: aborting due to 1 previous error
 
 - After `thrust: refuted:` the error names what is checked (`ensures`, `assertion`,
   `precondition of f`, `loop preservation`, `argument of f`, ...) and in which function. The span
-  is where it is checked, for `ensures` the end of the body, so an editor shows the error there;
-  the label marks the annotation checked there (each clause, "a clause of the annotation it
+  is where it is checked, for `ensures` the function's signature, so an editor shows the error
+  there; the label marks the annotation checked there (each clause, "a clause of the annotation it
   checks", when there are several: the refutation does not say which one fails).
 - `c0:` is the constraint: premises `==>` conclusion, over the program's variables.
   `__tmp_mir_withdraw_3` is a value the program does not name (here `balance - amount`). An
   unknown is applied to its arguments by the names of its template:
-  `old(balance) = balance` in `withdraw.bb0(...)` gives the template's `old(balance)` the value
+  `old(balance) := balance` in `withdraw.bb0(...)` gives the template's `old(balance)` the value
   `balance`, and an argument that is the template's variable itself is written alone.
 - `where it fails` gives values that make the premises true and the conclusion false: one
   counterexample, chosen by the solver.
@@ -91,24 +90,23 @@ parts (chapter 8) shows one per failing part:
 $ THRUST_SPLIT=4 THRUST_REPORT=1 thrust shop.rs
 error: verification error: Unsat (thrust: refuted: ensures in `withdraw`)
 ...
-  = note: in part 1 of 3, of 2 clauses from `withdraw` (shop.rs:3-5)
+  = note: in part 1 of 3, of 2 clauses from `withdraw` (shop.rs:3)
 
 error: verification error: Unsat (thrust: refuted: ensures in `shipping`)
-  --> shop.rs:17:2
-   |
- 8 | #[thrust_macros::ensures(result == 3 * n)]
-   |                          --------------- the annotation it checks
-...
-17 | }
-   |  ^
-   |
-   = note: c3: (shipping.loop#1(n, i, cost, old(n) = n) ∧ i > n) ==> cost = 3 * n
-   = note: where it fails: cost = 3, n = 0, i = 1
-   = note: how the solver reaches it: each fact follows, by the constraint in brackets, from the facts indented under it (a derivation, not an order of execution):
-             shipping.loop#1(n = 0, i = 1, cost = 3, old(n) = 0)   [c4 loop preservation, shop.rs:12:5]
-               shipping.loop#1(n = 0, i = 0, cost = 0, old(n) = 0)   [c2 loop entry, shop.rs:12:5]
-                 shipping.bb0(n = 0, old(n) = 0)   [c5 function entry, shop.rs:9:1]
-   = note: in part 2 of 3, of 4 clauses from `shipping` (shop.rs:9-17)
+ --> shop.rs:9:1
+  |
+8 | #[thrust_macros::ensures(result == 3 * n)]
+  |                          --------------- the annotation it checks
+9 | fn shipping(n: i64) -> i64 {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: c3: (shipping.loop#1(n, i, cost, old(n) := n) ∧ i > n) ==> cost = 3 * n
+  = note: where it fails: cost = 3, n = 0, i = 1
+  = note: how the solver reaches it: each fact follows, by the constraint in brackets, from the facts indented under it (a derivation, not an order of execution):
+            shipping.loop#1(n = 0, i = 1, cost = 3, old(n) = 0)   [c4 loop preservation, shop.rs:12:5]
+              shipping.loop#1(n = 0, i = 0, cost = 0, old(n) = 0)   [c2 loop entry, shop.rs:12:5]
+                shipping.bb0(n = 0, old(n) = 0)   [c5 function entry, shop.rs:9:1]
+  = note: in part 2 of 3, of 4 clauses from `shipping` (shop.rs:9-15)
 
 error: verification error: Unsat (thrust: refuted: assertion in `main`)
   --> shop.rs:29:5
@@ -120,12 +118,12 @@ error: verification error: Unsat (thrust: refuted: assertion in `main`)
    = note: where it fails: p = 100
    = note: how the solver reaches it: each fact follows, by the constraint in brackets, from the facts indented under it (a derivation, not an order of execution):
              main.price#1(p = 100)   [c11 after call to `price`, shop.rs:28:13]
-               price.post(units = 10, result = 100)   [c8 return value, shop.rs:25:2]
+               price.post(units = 10, result = 100)   [c8 return value, shop.rs:19:1]
                  price.bb3(result = 100, units = 10)   [c6 jump to bb3, shop.rs:20:5]
                    price.bb0(units = 10, old(units) = 10)   [c9 function entry, shop.rs:19:1]
                      price.pre(units = 10)   [c10 argument of `price`, shop.rs:28:13]
    = note: it goes through the contract inferred for `price`: a wrong result there shows here
-   = note: in part 3 of 3, of 16 clauses from `price` (shop.rs:19-25), `main` (shop.rs:27-33)
+   = note: in part 3 of 3, of 16 clauses from `price` (shop.rs:19-24), `main` (shop.rs:27-32)
 
 note: thrust: 3 parts solved on their own, 0 of them from earlier runs
 
@@ -187,8 +185,8 @@ note: thrust: `double`
                     double.post(x, result) := result = 6 ∧ x = 3
           inferred: fn double(x: {int | x = 3}) -> {int | result = 6 ∧ x = 3}
   = note: constraints from this code:
-            c0 return value (02_inferred.rs:3:2): (result = x + x ∧ double.bb0(x, old(x) = x)) ==> double.post(x, result)
-            c1 function entry (02_inferred.rs:1:1): double.pre(x) ==> double.bb0(x, old(x) = x)
+            c0 return value (02_inferred.rs:1:1): (result = x + x ∧ double.bb0(x, old(x) := x)) ==> double.post(x, result)
+            c1 function entry (02_inferred.rs:1:1): double.pre(x) ==> double.bb0(x, old(x) := x)
 
 note: thrust: `main`
  --> 02_inferred.rs:5:1
@@ -197,9 +195,9 @@ note: thrust: `main`
   | ^^^^^^^^^
   |
   = note: constraints from this code:
-            c2 argument of `double` (02_inferred.rs:6:13): double.pre(x = 3)
-            c3 after call to `double` (02_inferred.rs:6:13): double.post(x = 3, result = y) ==> main.double#1(y)
-            c4 return value (02_inferred.rs:8:2): (main.double#1(y) ∧ y = 6) ==> main.post
+            c2 argument of `double` (02_inferred.rs:6:13): double.pre(x := 3)
+            c3 after call to `double` (02_inferred.rs:6:13): double.post(x := 3, result := y) ==> main.double#1(y)
+            c4 return value (02_inferred.rs:5:1): (main.double#1(y) ∧ y = 6) ==> main.post
             c5 assertion (02_inferred.rs:7:5): main.double#1(y) ==> y = 6
             c6 function entry (02_inferred.rs:5:1): main.bb0
 ```
@@ -212,12 +210,12 @@ note: thrust: `main`
 | Name | Stands for |
 |---|---|
 | `f.pre`, `f.post` | the contract of `f`, when it is inferred; arguments in parameter order, `result` last |
-| `p(x, y = t)` | the unknown `p` applied: `x` where the argument is the template's variable `x`, `y = t` where it is the term `t` |
+| `p(x, y := t)` | the unknown `p` applied: `x` where the argument is the template's variable `x`, `y := t` where it is the term `t` |
 | `f.loop#k` | the invariant of the `k`-th loop of `f` |
 | `f.g#k r ...` | the result `r` of the `k`-th call to `g` in `f` |
 | `f.bb3` | the state at block 3 of `f`'s MIR |
 | `old(x)` | the value of parameter `x` on entry |
-| `*r`, `°r` | the current and the final value of a `&mut` (an unknown takes both: `*r = c, °r = f`) |
+| `*r`, `°r` | the current and the final value of a `&mut` (an unknown takes both: `*r := c, °r := f`) |
 | `…` | in a run's fact, the arguments the program does not name |
 | `__tmp_mir_f_3` | a value the program does not name (local `_3` of `f`'s MIR) |
 | `x@2` | the second variable `f` names `x` |
@@ -231,8 +229,9 @@ standard output). The first line is a header: the format `version` (2), `root`, 
 directory the spans' files are relative to, and `columns`, how a span's columns count
 (`{"base":1,"unit":"char","end":"exclusive"}`: from 1, in characters, `end_column` after the
 last). The second is the verdict, with the solver's `message` when the answer is neither `sat` nor
-`unsat` (such as `Timeout(30s)`); then, with `THRUST_SPLIT`, one `part` line per part, and one
-`failure` line per refuted obligation (or, on success, a `site` line per inferred contract and
+`unsat` (such as `Timeout(30s)`, or with `THRUST_SPLIT` the first such part's, `part 2:
+Timeout(30s)`); then, with `THRUST_SPLIT`, one `part` line per part, with its own `message`, and
+one `failure` line per refuted obligation (or, on success, a `site` line per inferred contract and
 loop invariant).
 
 ```console
@@ -241,7 +240,7 @@ error: verification error: Unsat
 ...
 $ sed -n 2,3p report.jsonl
 {"kind":"verdict","verdict":"unsat","refutations":"one per part","message":null}
-{"kind":"part","id":1,"clauses":2,"functions":[{"fn":"withdraw","span":{"file":"shop.rs","line":3,"column":1,"end_line":5,"end_column":2}}],"verdict":"unsat","cached":false}
+{"kind":"part","id":1,"clauses":2,"functions":[{"fn":"withdraw","span":{"file":"shop.rs","line":3,"column":1,"end_line":3,"end_column":46}}],"verdict":"unsat","message":null,"cached":false}
 $ jq -c 'select(.kind == "failure" and .fn == "main") | {part, obligation, span, conclusion, values, inferred, assumes}' report.jsonl
 {"part":3,"obligation":"assertion","span":{"file":"shop.rs","line":29,"column":5,"end_line":29,"end_column":21},"conclusion":"p = 90","values":[{"name":"p","value":"100"}],"inferred":["price"],"assumes":[]}
 ```
@@ -255,7 +254,7 @@ arguments the program names (`args`), and the constraint deriving it (`via`, `ob
 
 ```console
 $ jq -c 'select(.kind == "failure" and .fn == "main") | .run[1]' report.jsonl
-{"depth":1,"fact":"price.post(units = 10, result = 100)","via":"c8","obligation":"return value","span":{"file":"shop.rs","line":25,"column":2,"end_line":25,"end_column":2},"pred":"price.post","args":[{"name":"units","value":"10"},{"name":"result","value":"100"}]}
+{"depth":1,"fact":"price.post(units = 10, result = 100)","via":"c8","obligation":"return value","span":{"file":"shop.rs","line":19,"column":1,"end_line":19,"end_column":28},"pred":"price.post","args":[{"name":"units","value":"10"},{"name":"result","value":"100"}]}
 ```
 
 With the JSON format the human error stays `verification error: Unsat` at the obligation, without
@@ -270,9 +269,9 @@ note: thrust: no failing obligation to show: the solver gave no refutation (only
 ```
 
 `THRUST_SPLIT` still names the functions of each failing part, with their lines, and puts the
-error at the code of the part; with `constraints` in `THRUST_REPORT` and `THRUST_REPORT_ONLY`, the
-same run shows the constraints of those functions. For the law of [scenario 10](scenarios.md), the
-constraints of the impl show the obligation the law puts on it:
+error at the signature of the part's first function; with `constraints` in `THRUST_REPORT` and
+`THRUST_REPORT_ONLY`, the same run shows the constraints of those functions. For the law of
+[scenario 10](scenarios.md), the constraints of the impl show the obligation the law puts on it:
 
 ```console
 $ THRUST_SPLIT=4 THRUST_REPORT=failure,constraints THRUST_REPORT_ONLY='Clicks::count_nonneg' thrust s10_law_fails_at_impl.rs
@@ -281,18 +280,18 @@ note: thrust: no failing obligation to show: the solver gave no refutation (only
 note: thrust: `<Clicks as Counter>::count_nonneg`
   --> s10_law_fails_at_impl.rs:40:5
    |
-40 |     fn count_nonneg(c: &Clicks) {}
-   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+40 |     fn count_nonneg(_c: &Clicks) {}
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
    |
    = note: constraints from this code:
-             c4 ensures (s10_law_fails_at_impl.rs:40:35): <Clicks as Counter>::count_nonneg.bb0(c, old(c) = c) ==> <Clicks as Counter>::count(c) >= 0
-             c5 function entry (s10_law_fails_at_impl.rs:40:5): <Clicks as Counter>::count_nonneg.bb0(c, old(c) = c)
+             c4 ensures (s10_law_fails_at_impl.rs:40:5): <Clicks as Counter>::count_nonneg.bb0(_c, old(_c) := _c) ==> <Clicks as Counter>::count(_c) >= 0
+             c5 function entry (s10_law_fails_at_impl.rs:40:5): <Clicks as Counter>::count_nonneg.bb0(_c, old(_c) := _c)
 
 error: verification error: Unsat
   --> s10_law_fails_at_impl.rs:40:5
    |
-40 |     fn count_nonneg(c: &Clicks) {}
-   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+40 |     fn count_nonneg(_c: &Clicks) {}
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
    |
    = note: in part 2 of 4, of 2 clauses from `<Clicks as Counter>::count_nonneg` (s10_law_fails_at_impl.rs:40)
 
@@ -301,5 +300,5 @@ note: thrust: 4 parts solved on their own, 0 of them from earlier runs
 error: aborting due to 1 previous error
 ```
 
-Nothing in the premises bounds `<Clicks as Counter>::count(c)`, so the law's `ensures` cannot
-hold for every `c`.
+Nothing in the premises bounds `<Clicks as Counter>::count(_c)`, so the law's `ensures` cannot
+hold for every `_c`.
