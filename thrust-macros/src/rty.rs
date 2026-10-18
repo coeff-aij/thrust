@@ -66,6 +66,12 @@ fn collect_param_annotations(
     func: &FnItemWithSignature,
     attr_tokens: &[TokenTree2],
 ) -> syn::Result<Vec<RefinedTypeAnnotation>> {
+    if split_top_level_commas(attr_tokens).len() > 1 {
+        return Err(err_tokens(
+            attr_tokens,
+            "expected one `name: type` binding; write one `param` attribute per parameter",
+        ));
+    }
     let (name, ty_tokens) = parse_name_typed_binding(attr_tokens)?;
     let idx = param_index(func, &name)?;
     let (annotations, _) = parse_refined_type_annotations(&ty_tokens)?;
@@ -166,6 +172,14 @@ fn expand_with_annotations(
     outer_context: Option<FnOuterItem>,
     annotations: Vec<RefinedTypeAnnotation>,
 ) -> TokenStream {
+    if let Some(attr) = func.attrs().iter().find(|attr| is_contract_attr(attr)) {
+        let err = syn::Error::new_spanned(
+            attr,
+            "refinement-type annotations cannot be combined with `requires`/`ensures` on one function; write the conditions in one form",
+        )
+        .into_compile_error();
+        return quote! { #err #func }.into();
+    }
     let has_receiver = func.sig().receiver().is_some();
     let mut formula_fns = Vec::new();
     let mut path_stmts = Vec::new();
@@ -202,6 +216,15 @@ fn expand_with_annotations(
         #func
     }
     .into()
+}
+
+/// Whether `attr` is `requires`, `ensures`, or the `_requires_ensures` they expand to, whose
+/// contract replaces the function's own type and so would drop the refinements.
+fn is_contract_attr(attr: &syn::Attribute) -> bool {
+    let segments = &attr.path().segments;
+    let in_crate = segments.len() == 1 || segments[0].ident == "thrust_macros";
+    let name = &segments.last().expect("attribute path").ident;
+    in_crate && (name == "requires" || name == "ensures" || name == "_requires_ensures")
 }
 
 /// Parses the type expression in `tokens` and returns both the refined-type

@@ -231,8 +231,7 @@ pub fn format_sort_symbol(sort: &chc::Sort) -> String {
 /// [`chc::System::populate_user_defined_pred_dependencies`] to substring-match
 /// `ForallPred` references inside user-defined predicate bodies.
 pub fn format_forall_pred_name(p: &chc::ForallPred) -> String {
-    let ss = SortSymbols::new(&p.type_parameters);
-    format!("{}{}", p.inner, ss)
+    format!("{}{}", p.inner(), p.type_arguments())
 }
 
 fn builtin_sort_datatype(s: chc::Sort) -> Option<chc::Datatype> {

@@ -374,9 +374,10 @@ fn model_eq_bound<'tcx>(
 
 /// Whether `==` on values of `ty` is equality of their models, decided from the structure of
 /// `ty`. It is not when `ty` holds a `&mut` (its model also has the final value, which `==` does
-/// not read), a float (NaN), a raw or function pointer (compared by address), or a `Ghost`
-/// (which has no `PartialEq`, so a hand-written `eq` of a type holding one leaves it out). A
-/// type parameter or an unresolved projection in `ty` makes it assumed.
+/// not read), a float (NaN), a raw or function pointer (compared by address), a `str` (its model
+/// is the null sort, so all strings have one model), or a `Ghost` (which has no `PartialEq`, so a
+/// hand-written `eq` of a type holding one leaves it out). A type parameter or an unresolved
+/// projection in `ty` makes it assumed.
 fn model_eq<'tcx>(tcx: TyCtxt<'tcx>, ty: mir_ty::Ty<'tcx>) -> SpecBound {
     let mut assumed = false;
     for ty in compared_tys(tcx, ty) {
@@ -384,7 +385,8 @@ fn model_eq<'tcx>(tcx: TyCtxt<'tcx>, ty: mir_ty::Ty<'tcx>) -> SpecBound {
             mir_ty::TyKind::Ref(_, _, mir_ty::Mutability::Mut)
             | mir_ty::TyKind::Float(_)
             | mir_ty::TyKind::RawPtr(..)
-            | mir_ty::TyKind::FnPtr(..) => return SpecBound::Fails,
+            | mir_ty::TyKind::FnPtr(..)
+            | mir_ty::TyKind::Str => return SpecBound::Fails,
             mir_ty::TyKind::Adt(adt, _) if is_ghost(tcx, adt.did()) => return SpecBound::Fails,
             mir_ty::TyKind::Param(_) | mir_ty::TyKind::Alias(..) => assumed = true,
             _ => {}
@@ -593,7 +595,10 @@ fn trait_bound<'tcx>(
     use rustc_trait_selection::traits::query::evaluate_obligation::InferCtxtExt as _;
     use rustc_trait_selection::traits::{Obligation, ObligationCause};
 
-    let trait_ref = clause.as_trait_clause().unwrap().skip_binder().trait_ref;
+    // A higher-ranked bound (`for<'a> &'a T: Tr`) is read with its bound regions erased, which
+    // trait selection modulo regions decides as it decides the bound.
+    let pred = clause.as_trait_clause().unwrap();
+    let trait_ref = tcx.instantiate_bound_regions_with_erased(pred).trait_ref;
     let Ok(trait_ref) = tcx.try_normalize_erasing_regions(typing_env, trait_ref) else {
         return SpecBound::Assumed;
     };
@@ -797,6 +802,112 @@ pub fn is_injected_std(tcx: mir_ty::TyCtxt<'_>, def_id: LocalDefId) -> bool {
     )
 }
 
+/// Whether `def_id` is `#[thrust::ignored]`, so that its body is not analyzed.
+pub fn is_ignored(tcx: mir_ty::TyCtxt<'_>, def_id: DefId) -> bool {
+    tcx.get_attrs_by_path(def_id, &annot::ignored_path())
+        .next()
+        .is_some()
+}
+
+/// Whether `def_id` is a function of the crate, not of the injected `std.rs`, that is ignored:
+/// nothing checks its body against the specification of the trait method it implements.
+pub fn is_ignored_crate_fn(tcx: mir_ty::TyCtxt<'_>, def_id: DefId) -> bool {
+    def_id
+        .as_local()
+        .is_some_and(|local| !is_injected_std(tcx, local))
+        && is_ignored(tcx, def_id)
+}
+
+/// Stops at a call that resolves to an ignored function of the crate, which has no checked type.
+pub fn fatal_ignored_call<'tcx>(
+    tcx: mir_ty::TyCtxt<'tcx>,
+    def_id: DefId,
+    args: mir_ty::GenericArgsRef<'tcx>,
+) -> ! {
+    tcx.dcx().fatal(format!(
+        "`{}` is `#[thrust::ignored]`, so a call of it has no checked type",
+        tcx.def_path_str_with_args(def_id, args),
+    ))
+}
+
+/// The supertrait bounds `bound` implies (`T: PartialOrd` of `T: Ord`), which a callee bounded by
+/// `bound` may rely on too.
+fn supertrait_bounds<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    bound: mir_ty::TraitRef<'tcx>,
+) -> Vec<mir_ty::TraitRef<'tcx>> {
+    tcx.explicit_super_predicates_of(bound.def_id)
+        .iter_instantiated_copied(tcx, bound.args)
+        .filter_map(|(clause, _)| clause.as_trait_clause())
+        .map(|pred| tcx.instantiate_bound_regions_with_erased(pred).trait_ref)
+        .collect()
+}
+
+/// How deeply the types in `arg` nest.
+fn type_depth(arg: mir_ty::GenericArg<'_>) -> usize {
+    let mut walker = arg.walk();
+    walker.next();
+    let mut depth = 0;
+    while let Some(child) = walker.next() {
+        depth = depth.max(type_depth(child));
+        walker.skip_current_subtree();
+    }
+    depth + 1
+}
+
+/// The generic arguments of a trait or projection clause, which [`type_depth`] measures.
+fn clause_args<'tcx>(clause: &mir_ty::Clause<'tcx>) -> Vec<mir_ty::GenericArg<'tcx>> {
+    if let Some(pred) = clause.as_trait_clause() {
+        return pred.skip_binder().trait_ref.args.to_vec();
+    }
+    if let Some(pred) = clause.as_projection_clause() {
+        return pred.skip_binder().projection_term.args.to_vec();
+    }
+    Vec::new()
+}
+
+/// Whether code on a path through the program ([`Analyzer::stop_ignored_reached`]) is verified
+/// code, which may not run an ignored function, or trusted code, which may.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Mode {
+    Verified,
+    Trusted,
+}
+
+/// A trait method at generic arguments.
+type MethodCall<'tcx> = (DefId, mir_ty::GenericArgsRef<'tcx>);
+
+/// A def whose generic contract is reused at generic arguments, and the caller that reuses it.
+type ReusedInstance<'tcx> = (DefId, mir_ty::GenericArgsRef<'tcx>, DefId);
+
+fn instantiate_method_call<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    (method, method_args): MethodCall<'tcx>,
+    args: mir_ty::GenericArgsRef<'tcx>,
+) -> MethodCall<'tcx> {
+    (
+        method,
+        mir_ty::EarlyBinder::bind(method_args).instantiate(tcx, args),
+    )
+}
+
+/// The trait bounds `def_id` puts on `args`, its own and its parent's.
+pub fn trait_bounds<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    def_id: DefId,
+    args: mir_ty::GenericArgsRef<'tcx>,
+) -> Vec<mir_ty::TraitRef<'tcx>> {
+    tcx.predicates_of(def_id)
+        .instantiate(tcx, args)
+        .predicates
+        .into_iter()
+        .filter_map(|clause| clause.as_trait_clause())
+        .filter(|pred| pred.skip_binder().polarity == mir_ty::PredicatePolarity::Positive)
+        .map(|pred| tcx.instantiate_bound_regions_with_erased(pred).trait_ref)
+        .map(|trait_ref| tcx.erase_regions(trait_ref))
+        .collect()
+}
+
 /// Identifies one analysis instance of a function body.
 ///
 /// A def may be analyzed more than once: the placeholder analysis (with the
@@ -889,11 +1000,10 @@ pub enum TypeParam {
     /// **local** index within the declaring item (i.e. lifetime and const
     /// parameters are skipped). Using the local index lets monomorphization
     /// substitute it with the actual generic argument at the same position.
-    GenericType {
-        param_def_id: DefId,
-        local_idx: u32,
-    },
-    AssocType(DefId, Vec<rty::Type<rty::Closed>>),
+    GenericType { param_def_id: DefId, local_idx: u32 },
+    /// A projection that does not normalize: the associated item, its arguments' types and their
+    /// names ([`refine::TypeBuilder::generic_args_symbol`]), which tell apart arguments of one sort.
+    AssocType(DefId, Vec<rty::Type<rty::Closed>>, String),
 }
 
 #[derive(Debug, Clone)]
@@ -953,6 +1063,8 @@ pub struct Analyzer<'tcx> {
     /// Defs whose body has been analyzed at fully concrete type arguments, as the callee of
     /// a call site; see [`Analyzer::has_concrete_instance`].
     concrete_instances: Rc<RefCell<HashSet<LocalDefId>>>,
+    /// The generic defs whose bodies were analyzed at concrete arguments, and those arguments.
+    analyzed_instances: RefCell<Vec<(DefId, mir_ty::GenericArgsRef<'tcx>)>>,
     /// The closure types, generic arguments included, with the sort of their upvars, whose
     /// `hist_inv` clause has had its laws pushed; see [`closure_hist_inv::explicit_laws`].
     explicit_hist_inv_laws: Rc<RefCell<HashSet<(mir_ty::Ty<'tcx>, chc::Sort)>>>,
@@ -982,6 +1094,9 @@ pub struct Analyzer<'tcx> {
     /// The trait methods a body called at its type parameters with the trait's specification,
     /// keyed like `assumed_spec_bounds`; see [`Analyzer::expand_dispatched_instances`].
     dispatched_calls: RefCell<HashMap<DefId, Vec<(DefId, mir_ty::GenericArgsRef<'tcx>)>>>,
+    /// The trait bounds of std impls a body called at its type parameters, keyed like
+    /// `assumed_spec_bounds`; see [`Analyzer::check_reused_bound_impls`].
+    assumed_bound_impls: RefCell<HashMap<DefId, Vec<mir_ty::TraitRef<'tcx>>>>,
     /// The types of the functions each basic block calls, recorded only when
     /// [`candidate_atoms_enabled`], whose contracts give a loop head candidate atoms.
     called_fn_tys: HashMap<(AnalysisKey<'tcx>, BasicBlock), Vec<rty::FunctionType>>,
@@ -1080,6 +1195,7 @@ impl<'tcx> Analyzer<'tcx> {
             trait_laws,
             pending_laws,
             concrete_instances: Default::default(),
+            analyzed_instances: Default::default(),
             explicit_hist_inv_laws: Default::default(),
             by_value_hist_invs: Default::default(),
             fn_mut_instance_obligations: Default::default(),
@@ -1087,6 +1203,7 @@ impl<'tcx> Analyzer<'tcx> {
             fn_mut_bounded_defs: Default::default(),
             assumed_spec_bounds: Default::default(),
             dispatched_calls: Default::default(),
+            assumed_bound_impls: Default::default(),
             reused_generic_instances: Default::default(),
             assumed_total_methods: Default::default(),
             called_fn_tys: Default::default(),
@@ -1278,6 +1395,216 @@ impl<'tcx> Analyzer<'tcx> {
     /// [`crate_`]); one without its own contract takes the trait's.
     pub fn has_own_impl_contract(&self, def_id: DefId) -> bool {
         self.impl_methods_with_own_contract.contains(&def_id)
+    }
+
+    /// Stops if a function Thrust verifies can run an ignored function of the crate, as Verus's
+    /// verified code may not use an `#[verifier::external]` item. An ignored function is
+    /// invisible to the analysis, so a contract the verified code relies on it to meet (the
+    /// trait's specification for `S::eq` that `<&S as PartialEq>::eq` or `vec![x; n]` takes) is
+    /// not checked.
+    ///
+    /// The roots are the monomorphic functions of the crate (`roots`: those Thrust verifies, the
+    /// trusted ones and the entry function), the instances Thrust analyzed or reused a generic
+    /// contract at, the calls a generic verified body makes at concrete arguments
+    /// (`generic_roots`), and the runtime's `start` at `main`'s return type, each in the mode its
+    /// function has. From them the calls, trait methods, vtables, drop
+    /// glue, function pointers and closures each instance uses (`items_of_instance`, as rustc's
+    /// monomorphization collector) are followed, into std code and trusted bodies too, each
+    /// instance in a mode ([`Mode`]): that of the crate function it is (`crate_mode`), or of the
+    /// path it is reached on. A trusted body may run an ignored function itself, as Verus's
+    /// `external_body` and Creusot's and Prusti's `#[trusted]` may, but a verified function it
+    /// runs may not. A generic trusted instance that verified code runs has its contract relied on,
+    /// which holds only where the code its type parameters are instantiated with meets its
+    /// specification, as for Creusot's trusted contracts, so everything its body runs at the
+    /// instance is verified code; a closure written in a generic trusted body is verified as that
+    /// body is, and a shim passes the mode to the instance inside it. A
+    /// non-generic trusted body is trusted throughout. A function pointer, trait object or
+    /// closure that a trusted body hands out carries the trusted mode: calling it is the trusted
+    /// author's responsibility. Static initializers are not followed: verified code cannot read a
+    /// static (the analysis stops), and a static has no type parameters, so what a trusted body
+    /// reaches through one is its author's fixed choice. An instance is followed once per mode it
+    /// is reached in. This over-approximates what the verified functions can run: an instance
+    /// reached only on a path to a panic counts.
+    pub fn stop_ignored_reached(
+        &self,
+        roots: Vec<mir_ty::Instance<'tcx>>,
+        generic_roots: Vec<DefId>,
+        crate_mode: impl Fn(DefId) -> Option<Mode>,
+    ) {
+        let mut parent = HashMap::new();
+        let mut pending = std::collections::VecDeque::new();
+        let verified_instances = self
+            .reused_and_analyzed_instances()
+            .into_iter()
+            .filter(|instance| crate_mode(instance.def_id()) == Some(Mode::Verified));
+        let roots = roots
+            .into_iter()
+            .chain(self.start_instance())
+            .chain(verified_instances)
+            .chain(
+                generic_roots
+                    .into_iter()
+                    .flat_map(|def_id| self.concrete_mentions(def_id)),
+            );
+        for root in roots {
+            let key = (root, crate_mode(root.def_id()).unwrap_or(Mode::Verified));
+            if parent.insert(key, None).is_none() {
+                pending.push_back(key);
+            }
+        }
+        let mut reached = Vec::new();
+        while let Some((instance, mode)) = pending.pop_front() {
+            if is_ignored_crate_fn(self.tcx, instance.def_id()) {
+                if mode == Mode::Verified {
+                    reached.push((instance, (instance, mode)));
+                }
+                continue;
+            }
+            if !self.runs_body(instance) {
+                continue;
+            }
+            for callee in self.callees(instance) {
+                // A generic trusted instance that verified code runs is verified code: its contract
+                // holds only where the code its type parameters bring meets its specification.
+                let callee_mode = match crate_mode(callee.def_id()) {
+                    Some(Mode::Trusted) if mode == Mode::Verified && self.is_generic(callee) => {
+                        Mode::Verified
+                    }
+                    Some(callee_mode) => callee_mode,
+                    None => mode,
+                };
+                let key = (callee, callee_mode);
+                if let std::collections::hash_map::Entry::Vacant(entry) = parent.entry(key) {
+                    entry.insert(Some((instance, mode)));
+                    pending.push_back(key);
+                }
+            }
+        }
+        let Some(&(first, key)) = reached.first() else {
+            return;
+        };
+        let mut path = Vec::new();
+        let mut cursor = Some(key);
+        while let Some(current) = cursor {
+            path.push(current.0.to_string());
+            cursor = parent.get(&current).copied().flatten();
+        }
+        path.reverse();
+        let mut diag = self.tcx.dcx().struct_span_fatal(
+            self.tcx.def_span(first.def_id()),
+            format!(
+                "`{first}` is `#[thrust::ignored]`, so a call of it has no checked type, but a \
+                 verified function can run it"
+            ),
+        );
+        diag.note(format!("reached through {}", path.join(" -> ")));
+        for (other, _) in &reached[1..] {
+            diag.span_note(
+                self.tcx.def_span(other.def_id()),
+                format!("`{other}` is ignored and reached too"),
+            );
+        }
+        diag.emit()
+    }
+
+    /// Whether `instance` is of a generic def, whose body runs code its arguments choose. A
+    /// closure is as generic as the function it is written in; its own synthetic parameters are
+    /// fixed by that function.
+    fn is_generic(&self, instance: mir_ty::Instance<'tcx>) -> bool {
+        let root = self.tcx.typeck_root_def_id(instance.def_id());
+        self.tcx
+            .generics_of(root)
+            .requires_monomorphization(self.tcx)
+    }
+
+    /// The functions `instance`'s body uses.
+    fn callees(&self, instance: mir_ty::Instance<'tcx>) -> Vec<mir_ty::Instance<'tcx>> {
+        use rustc_middle::mir::mono::{CollectionMode, MonoItem};
+
+        let (used, _) = self
+            .tcx
+            .items_of_instance((instance, CollectionMode::UsedItems));
+        used.iter()
+            .filter_map(|item| match item.node {
+                MonoItem::Fn(callee) => Some(callee),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The `start` lang item at `main`'s return type, which runs `main` and reports what it
+    /// returns (`Termination::report`, which prints an `Err` with `Debug`), as rustc's collector
+    /// roots it.
+    fn start_instance(&self) -> Option<mir_ty::Instance<'tcx>> {
+        let (main, _) = self.tcx.entry_fn(())?;
+        let start = self.tcx.lang_items().start_fn()?;
+        let ret = self.tcx.fn_sig(main).instantiate_identity().output();
+        let ret = self.tcx.instantiate_bound_regions_with_erased(ret);
+        let args = self.tcx.mk_args(&[ret.into()]);
+        let typing_env = mir_ty::TypingEnv::fully_monomorphized();
+        mir_ty::Instance::try_resolve(self.tcx, typing_env, start, args)
+            .ok()
+            .flatten()
+    }
+
+    /// The instances of generic defs that Thrust analyzed, or whose contract it reused, at
+    /// concrete arguments.
+    fn reused_and_analyzed_instances(&self) -> Vec<mir_ty::Instance<'tcx>> {
+        use mir_ty::TypeVisitableExt as _;
+
+        let typing_env = mir_ty::TypingEnv::fully_monomorphized();
+        self.reused_generic_instances
+            .borrow()
+            .iter()
+            .map(|(def_id, args, _)| (*def_id, *args))
+            .chain(self.analyzed_instances.borrow().iter().copied())
+            .filter(|(_, args)| !args.has_param())
+            .filter_map(|(def_id, args)| {
+                mir_ty::Instance::try_resolve(self.tcx, typing_env, def_id, args)
+                    .ok()
+                    .flatten()
+            })
+            .collect()
+    }
+
+    /// The functions and drop glue a generic body mentions at concrete arguments, which are the
+    /// same at every instance of it.
+    fn concrete_mentions(&self, def_id: DefId) -> Vec<mir_ty::Instance<'tcx>> {
+        use mir_ty::TypeVisitableExt as _;
+        use rustc_middle::mir::MentionedItem;
+
+        let typing_env = mir_ty::TypingEnv::fully_monomorphized();
+        let body = self.tcx.optimized_mir(def_id);
+        body.mentioned_items()
+            .iter()
+            .filter_map(|item| match item.node {
+                MentionedItem::Fn(ty) if !ty.has_param() => {
+                    let mir_ty::FnDef(callee, args) = *ty.kind() else {
+                        return None;
+                    };
+                    mir_ty::Instance::try_resolve(self.tcx, typing_env, callee, args)
+                        .ok()
+                        .flatten()
+                }
+                MentionedItem::Drop(ty) if !ty.has_param() => {
+                    Some(mir_ty::Instance::resolve_drop_in_place(self.tcx, ty))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Whether the body of `instance` is followed: not a virtual call or an intrinsic, which have
+    /// none, not a foreign item, and one whose MIR is available.
+    fn runs_body(&self, instance: mir_ty::Instance<'tcx>) -> bool {
+        let def_id = instance.def_id();
+        match instance.def {
+            mir_ty::InstanceKind::Virtual(..) | mir_ty::InstanceKind::Intrinsic(_) => false,
+            mir_ty::InstanceKind::Item(_) => {
+                !self.tcx.is_foreign_item(def_id) && self.tcx.is_mir_available(def_id)
+            }
+            _ => true,
+        }
     }
 
     pub fn impl_methods_with_own_contract(&self) -> Vec<DefId> {
@@ -1727,41 +2054,32 @@ impl<'tcx> Analyzer<'tcx> {
     /// is assumed by that caller in turn, until nothing new is assumed. A program with an instance
     /// at which a bound fails is rejected: the generic contract does not stand for it, and its
     /// body would call a spec that does not cover it, as a direct call there does.
-    pub fn check_reused_spec_bounds(&self) {
+    fn check_reused_spec_bounds(&mut self, seen: &mut HashSet<(mir_ty::Clause<'tcx>, DefId)>) {
         let Some(model_ty) = self.def_ids().model_ty() else {
             return;
         };
-        loop {
-            let mut grew = false;
-            for &(def_id, generic_args, caller_def_id) in
-                self.reused_generic_instances.borrow().iter()
-            {
-                let root = self.tcx.typeck_root_def_id(def_id);
-                let assumed = self
-                    .assumed_spec_bounds
-                    .borrow()
-                    .get(&root)
-                    .cloned()
-                    .unwrap_or_default();
-                let clauses = assumed.into_iter().map(|clause| {
-                    mir_ty::EarlyBinder::bind(clause).instantiate(self.tcx, generic_args)
-                });
-                match classify_spec_bounds(self.tcx, clauses, caller_def_id, model_ty) {
-                    Ok(assumed) => grew |= self.record_assumed_spec_bounds(caller_def_id, assumed),
-                    Err(clause) => self.tcx.dcx().fatal(format!(
-                        "spec bound not satisfied: `{}` is verified generically under a spec \
+        self.propagate_reused(
+            |this| &this.assumed_spec_bounds,
+            |tcx, clause, args| mir_ty::EarlyBinder::bind(clause).instantiate(tcx, args),
+            clause_args,
+            seen,
+            |this, clause, (def_id, generic_args, caller_def_id)| match classify_spec_bounds(
+                this.tcx,
+                [clause],
+                caller_def_id,
+                model_ty,
+            ) {
+                Ok(assumed) => this.record_assumed_spec_bounds(caller_def_id, assumed),
+                Err(clause) => this.tcx.dcx().fatal(format!(
+                    "spec bound not satisfied: `{}` is verified generically under a spec \
                          bound at its type parameters, which does not hold at its instance \
                          `{}` used in `{}`: `{clause}`",
-                        self.tcx.def_path_str(def_id),
-                        self.tcx.def_path_str_with_args(def_id, generic_args),
-                        self.tcx.def_path_str(caller_def_id),
-                    )),
-                }
-            }
-            if !grew {
-                return;
-            }
-        }
+                    this.tcx.def_path_str(def_id),
+                    this.tcx.def_path_str_with_args(def_id, generic_args),
+                    this.tcx.def_path_str(caller_def_id),
+                )),
+            },
+        );
     }
 
     /// Records that a body analysed under `owner_fn_id` called the trait method `def_id` at
@@ -1790,52 +2108,191 @@ impl<'tcx> Analyzer<'tcx> {
     /// spec bounds or total methods at its own type parameters, and an instance reached only
     /// through such a call would otherwise never check them. A call still at a type parameter of
     /// the instance's caller is recorded for that caller in turn.
-    pub fn expand_dispatched_instances(&self) {
+    fn expand_dispatched_instances(&mut self, seen: &mut HashSet<(MethodCall<'tcx>, DefId)>) {
         use mir_ty::TypeVisitableExt as _;
 
-        let mut seen_instances = 0;
-        loop {
-            let instances = self.reused_generic_instances.borrow().clone();
-            let mut grew = instances.len() != seen_instances;
-            seen_instances = instances.len();
-            for (def_id, generic_args, caller_def_id) in instances {
-                let root = self.tcx.typeck_root_def_id(def_id);
-                let dispatched = self
-                    .dispatched_calls
-                    .borrow()
-                    .get(&root)
-                    .cloned()
-                    .unwrap_or_default();
-                for (method, method_args) in dispatched {
-                    let method_args =
-                        mir_ty::EarlyBinder::bind(method_args).instantiate(self.tcx, generic_args);
-                    if method_args.has_param() {
-                        grew |= self.record_dispatched_call(caller_def_id, method, method_args);
-                        continue;
-                    }
-                    let typing_env = mir_ty::TypingEnv::fully_monomorphized();
-                    let Ok(Some(instance)) =
-                        mir_ty::Instance::try_resolve(self.tcx, typing_env, method, method_args)
-                    else {
-                        continue;
-                    };
-                    if !instance.def_id().is_local()
-                        || !matches!(self.defs.get(&instance.def_id()), Some(DefTy::Generic(_)))
-                    {
-                        continue;
-                    }
-                    let reached = (instance.def_id(), instance.args, caller_def_id);
-                    let mut reused = self.reused_generic_instances.borrow_mut();
-                    if !reused.contains(&reached) {
-                        reused.push(reached);
-                        grew = true;
-                    }
+        self.propagate_reused(
+            |this| &this.dispatched_calls,
+            instantiate_method_call,
+            |(_, args)| args.to_vec(),
+            seen,
+            |this, (method, method_args), (_, _, caller_def_id)| {
+                if method_args.has_param() {
+                    return this.record_dispatched_call(caller_def_id, method, method_args);
                 }
+                let typing_env = mir_ty::TypingEnv::fully_monomorphized();
+                let Ok(Some(instance)) =
+                    mir_ty::Instance::try_resolve(this.tcx, typing_env, method, method_args)
+                else {
+                    return false;
+                };
+                if !instance.def_id().is_local()
+                    || !matches!(this.defs.get(&instance.def_id()), Some(DefTy::Generic(_)))
+                {
+                    return false;
+                }
+                let reached = (instance.def_id(), instance.args, caller_def_id);
+                let mut reused = this.reused_generic_instances.borrow_mut();
+                if reused.contains(&reached) {
+                    return false;
+                }
+                reused.push(reached);
+                true
+            },
+        );
+    }
+
+    /// Follows `bounds`, which a call of a std function or a trusted derive in `owner_fn_id`
+    /// relies on, to the crate impls they select, whose methods at the selected arguments become
+    /// reused instances ([`Self::reuse_impl_methods`]), and records for `owner_fn_id` the bounds
+    /// at its type parameters. A std function's specification, the trait's or its own, holds
+    /// only where the impls its trait bounds select meet their traits' specifications
+    /// (`Option<W<F>>::clone` runs `W::clone`), which a generic impl method's analysis assumed of
+    /// its own parameters. Each bound is followed through the nested obligations of the impl that
+    /// trait selection picks for it, a std impl's, a crate impl's or a builtin one (the `Clone` of
+    /// a tuple); a bound at a type parameter is followed at each instance that reuses the
+    /// contract of the body ([`Self::check_reused_bound_impls`]).
+    pub fn check_bound_impls(
+        &self,
+        owner_fn_id: DefId,
+        typing_env: mir_ty::TypingEnv<'tcx>,
+        bounds: Vec<mir_ty::TraitRef<'tcx>>,
+    ) -> bool {
+        let mut grew = false;
+        let on_crate_impl = &mut |impl_def_id, args| {
+            grew |= self.reuse_impl_methods(impl_def_id, args, owner_fn_id);
+        };
+        let at_params = self.select_bound_impls(owner_fn_id, typing_env, bounds, on_crate_impl);
+        for bound in at_params {
+            grew |= self.record_assumed_bound_impl(owner_fn_id, bound);
+        }
+        grew
+    }
+
+    /// Follows `bounds` through the impls trait selection picks for them in `typing_env`: each
+    /// bound normalized, with its supertraits, through the nested obligations of a std impl, a
+    /// crate impl (passed to `on_crate_impl` at its selected arguments) or a builtin one. Returns
+    /// the bounds left at a type parameter. A bound that selects no impl stops the analysis.
+    fn select_bound_impls(
+        &self,
+        owner_fn_id: DefId,
+        typing_env: mir_ty::TypingEnv<'tcx>,
+        bounds: Vec<mir_ty::TraitRef<'tcx>>,
+        on_crate_impl: &mut dyn FnMut(DefId, mir_ty::GenericArgsRef<'tcx>),
+    ) -> Vec<mir_ty::TraitRef<'tcx>> {
+        use mir_ty::TypeVisitableExt as _;
+        use rustc_infer::infer::TyCtxtInferExt as _;
+        use rustc_middle::traits::ImplSource;
+        use rustc_trait_selection::traits::{Obligation, ObligationCause, SelectionContext};
+
+        let (infcx, param_env) = self.tcx.infer_ctxt().build_with_typing_env(typing_env);
+        let mut selcx = SelectionContext::new(&infcx);
+        let mut at_params = Vec::new();
+        let mut visited = HashSet::new();
+        let mut pending = bounds;
+        while let Some(bound) = pending.pop() {
+            let bound = self
+                .tcx
+                .try_normalize_erasing_regions(typing_env, bound)
+                .unwrap_or(bound);
+            if !visited.insert(bound) {
+                continue;
             }
-            if !grew {
-                return;
+            pending.extend(supertrait_bounds(self.tcx, bound));
+            let obligation = Obligation::new(self.tcx, ObligationCause::dummy(), param_env, bound);
+            let nested = match selcx.select(&obligation) {
+                Ok(Some(ImplSource::UserDefined(data))) => {
+                    if data.impl_def_id.is_local() {
+                        let args = self
+                            .tcx
+                            .erase_regions(infcx.resolve_vars_if_possible(data.args));
+                        on_crate_impl(data.impl_def_id, args);
+                    }
+                    data.nested
+                }
+                Ok(Some(ImplSource::Builtin(_, nested))) => nested,
+                Ok(Some(ImplSource::Param(_))) => {
+                    at_params.push(bound);
+                    continue;
+                }
+                Err(_) | Ok(None) => self.tcx.dcx().fatal(format!(
+                    "no impl of `{bound}` is selected for `{}`, whose callee relies on it",
+                    self.tcx.def_path_str(owner_fn_id),
+                )),
+            };
+            pending.extend(nested.into_iter().filter_map(|obligation| {
+                let predicate = infcx.resolve_vars_if_possible(obligation.predicate);
+                let pred = predicate.as_trait_clause()?;
+                let trait_ref = self
+                    .tcx
+                    .instantiate_bound_regions_with_erased(pred)
+                    .trait_ref;
+                let trait_ref = self.tcx.erase_regions(trait_ref);
+                (!trait_ref.has_infer()).then_some(trait_ref)
+            }));
+        }
+        at_params
+    }
+
+    /// Adds the methods of the crate's generic impl `impl_def_id`, at `impl_args`, to the instances
+    /// that reuse a generic def's contract for `caller_def_id`. A std function whose specification
+    /// rests on the impl runs its methods there, so the assumptions their generic analysis made at
+    /// the impl's parameters (total methods, dispatched calls, spec bounds) are checked at these
+    /// arguments, as at a direct call. Returns whether an instance is new.
+    fn reuse_impl_methods(
+        &self,
+        impl_def_id: DefId,
+        impl_args: mir_ty::GenericArgsRef<'tcx>,
+        caller_def_id: DefId,
+    ) -> bool {
+        use mir_ty::TypeVisitableExt as _;
+
+        if impl_args.is_empty() || impl_args.has_infer() {
+            return false;
+        }
+        let mut grew = false;
+        for &method in self.tcx.associated_item_def_ids(impl_def_id) {
+            let own_generics = self.tcx.generics_of(method).own_requires_monomorphization();
+            if !self.tcx.def_kind(method).is_fn_like() || own_generics {
+                continue;
+            }
+            let reached = (method, impl_args, caller_def_id);
+            let mut reused = self.reused_generic_instances.borrow_mut();
+            if !reused.contains(&reached) {
+                reused.push(reached);
+                grew = true;
             }
         }
+        grew
+    }
+
+    fn record_assumed_bound_impl(&self, owner_fn_id: DefId, bound: mir_ty::TraitRef<'tcx>) -> bool {
+        let root = self.tcx.typeck_root_def_id(owner_fn_id);
+        let bound = self.tcx.erase_regions(bound);
+        let mut assumed = self.assumed_bound_impls.borrow_mut();
+        let recorded = assumed.entry(root).or_default();
+        if recorded.contains(&bound) {
+            return false;
+        }
+        recorded.push(bound);
+        true
+    }
+
+    /// Checks, at each instance that uses a generic def's contract as instantiated, the bounds
+    /// of std impls its analysis relied on at type parameters
+    /// ([`Self::check_std_call_bounds`]). A bound still at a type parameter of the instance's
+    /// caller is recorded for that caller in turn.
+    fn check_reused_bound_impls(&mut self, seen: &mut HashSet<(mir_ty::TraitRef<'tcx>, DefId)>) {
+        self.propagate_reused(
+            |this| &this.assumed_bound_impls,
+            |tcx, bound, args| mir_ty::EarlyBinder::bind(bound).instantiate(tcx, args),
+            |bound| bound.args.to_vec(),
+            seen,
+            |this, bound, (_, _, caller_def_id)| {
+                let typing_env = mir_ty::TypingEnv::post_analysis(this.tcx, caller_def_id);
+                this.check_bound_impls(caller_def_id, typing_env, vec![bound])
+            },
+        );
     }
 
     /// Records that a body or contract analysed under `owner_fn_id` called the trait method
@@ -1865,31 +2322,94 @@ impl<'tcx> Analyzer<'tcx> {
     /// the instance's caller is assumed by that caller in turn, as
     /// [`Self::check_reused_spec_bounds`] does with spec bounds. An impl Thrust knows no contract
     /// of is not accepted, as a direct call to it is not.
-    pub fn check_reused_total_methods(&mut self) {
+    fn check_reused_total_methods(
+        &mut self,
+        seen: &mut HashSet<(MethodCall<'tcx>, DefId)>,
+        checked: &mut HashSet<MethodCall<'tcx>>,
+    ) {
         use mir_ty::TypeVisitableExt as _;
 
-        let mut checked = HashSet::new();
+        self.propagate_reused(
+            |this| &this.assumed_total_methods,
+            instantiate_method_call,
+            |(_, args)| args.to_vec(),
+            seen,
+            |this, (method, method_args), (_, _, caller_def_id)| {
+                if method_args.has_param() {
+                    return this.record_assumed_total_method(caller_def_id, method, method_args);
+                }
+                if checked.insert((method, method_args)) {
+                    this.check_total_method(method, method_args, caller_def_id);
+                }
+                false
+            },
+        );
+    }
+
+    /// Runs the checks at the instances that reuse a generic def's contract until none of them
+    /// adds an instance or an assumption: an instance a check adds (resolving a dispatched call,
+    /// or typing a total method) is checked in turn by all of them.
+    pub fn check_reused_instances(&mut self) {
+        let mut dispatched = HashSet::new();
+        let mut bound_impls = HashSet::new();
+        let mut total_methods = HashSet::new();
+        let mut checked_methods = HashSet::new();
+        let mut spec_bounds = HashSet::new();
+        loop {
+            let instances = self.reused_generic_instances.borrow().len();
+            self.expand_dispatched_instances(&mut dispatched);
+            self.check_reused_bound_impls(&mut bound_impls);
+            self.check_reused_total_methods(&mut total_methods, &mut checked_methods);
+            self.check_reused_spec_bounds(&mut spec_bounds);
+            if self.reused_generic_instances.borrow().len() == instances {
+                return;
+            }
+        }
+    }
+
+    /// Runs `check` on each assumption that `recorded` keeps for the typeck root of a reused
+    /// instance's def, read at the instance's arguments by `instantiate`, with the instance, once
+    /// per assumption and caller (`seen`), until no check reports that it recorded something and
+    /// no instance is added. The assumptions a caller records for itself are checked at its own
+    /// instances in turn. A def that reuses its own contract at a larger type (polymorphic
+    /// recursion, `f::<T>` calling `f::<W<T>>`) would record its assumptions at ever larger
+    /// types, so an assumption whose generic arguments (`type_args`) nest deeper than the crate's
+    /// recursion limit stops the analysis, as rustc stops instantiating such a function.
+    #[allow(clippy::too_many_arguments)]
+    fn propagate_reused<T: Clone + Eq + std::hash::Hash>(
+        &mut self,
+        recorded: impl Fn(&Self) -> &RefCell<HashMap<DefId, Vec<T>>>,
+        instantiate: impl Fn(TyCtxt<'tcx>, T, mir_ty::GenericArgsRef<'tcx>) -> T,
+        type_args: impl Fn(&T) -> Vec<mir_ty::GenericArg<'tcx>>,
+        seen: &mut HashSet<(T, DefId)>,
+        mut check: impl FnMut(&mut Self, T, ReusedInstance<'tcx>) -> bool,
+    ) {
         let mut seen_instances = 0;
         loop {
             let instances = self.reused_generic_instances.borrow().clone();
             let mut grew = instances.len() != seen_instances;
             seen_instances = instances.len();
-            for (def_id, generic_args, caller_def_id) in instances {
+            for instance in instances {
+                let (def_id, generic_args, caller_def_id) = instance;
                 let root = self.tcx.typeck_root_def_id(def_id);
-                let assumed = self
-                    .assumed_total_methods
+                let assumed = recorded(self)
                     .borrow()
                     .get(&root)
                     .cloned()
                     .unwrap_or_default();
-                for (method, method_args) in assumed {
-                    let method_args =
-                        mir_ty::EarlyBinder::bind(method_args).instantiate(self.tcx, generic_args);
-                    if method_args.has_param() {
-                        grew |=
-                            self.record_assumed_total_method(caller_def_id, method, method_args);
-                    } else if checked.insert((method, method_args)) {
-                        self.check_total_method(method, method_args, caller_def_id);
+                for assumption in assumed {
+                    let assumption = instantiate(self.tcx, assumption, generic_args);
+                    let limit = self.tcx.recursion_limit().0;
+                    if type_args(&assumption).into_iter().map(type_depth).max() > Some(limit) {
+                        self.tcx.dcx().fatal(format!(
+                            "`{}` reuses its contract at types nested deeper than the recursion \
+                             limit ({limit}), as a polymorphically recursive function does, which \
+                             is not supported",
+                            self.tcx.def_path_str(def_id),
+                        ));
+                    }
+                    if seen.insert((assumption.clone(), caller_def_id)) {
+                        grew |= check(self, assumption, instance);
                     }
                 }
             }
@@ -2068,6 +2588,9 @@ impl<'tcx> Analyzer<'tcx> {
                 self.concrete_instances
                     .borrow_mut()
                     .insert(body_local_def_id);
+                self.analyzed_instances
+                    .borrow_mut()
+                    .push((body_local_def_id.to_def_id(), generic_args));
             }
         }
         Some(expected)

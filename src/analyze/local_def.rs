@@ -283,13 +283,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     }
 
     pub fn is_annotated_as_ignored(&self) -> bool {
-        self.tcx
-            .get_attrs_by_path(
-                self.local_def_id.to_def_id(),
-                &analyze::annot::ignored_path(),
-            )
-            .next()
-            .is_some()
+        analyze::is_ignored(self.tcx, self.local_def_id.to_def_id())
     }
 
     pub fn is_ignored_derive(&self) -> bool {
@@ -303,6 +297,15 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             &self.type_builder,
             self.local_def_id.to_def_id(),
         )
+    }
+
+    /// A trusted derive's contract holds only where the impls of its trait at the fields' types
+    /// meet the trait's specification ([`analyze::Analyzer::check_bound_impls`]).
+    pub fn check_derived_field_impls(&self) {
+        let def_id = self.local_def_id.to_def_id();
+        let typing_env = mir_ty::TypingEnv::post_analysis(self.tcx, def_id);
+        let bounds = analyze::derive::field_bounds(self.tcx, def_id);
+        self.ctx.check_bound_impls(def_id, typing_env, bounds);
     }
 
     pub fn is_annotated_as_formula_fn(&self) -> bool {

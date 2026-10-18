@@ -43,6 +43,5 @@ keep from reaching it.
 Neither prerequisite of `cargo test` is set up in the session container. Install Z3 at the
 version `.github/actions/setup-z3` pins for CI.
 
-For PCSat, do what `.github/workflows/ci.yml` does: install the packages it lists, download
-the pinned `thrust-pcsat-wrapper` binary, and put it in place of `tests/thrust-pcsat-wrapper`.
-That path is a tracked Docker-based script, so restore it before committing.
+Without Docker the ui tests that name a CoAR wrapper cannot run; set `THRUST_UI_SKIP_COAR=1`,
+as CI does, to run the others.

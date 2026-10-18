@@ -4,8 +4,8 @@
 
 // `S` has no value, so `match a.0 {}` ends the proof in `Unreachable`. The law is assumed of every
 // value of `T`'s sort, which is never empty, so a proof must show such a block unreachable in the
-// logic. Accepting it would prove `false` of every `T: Absurd`, and `f` would verify, though
-// `f::<S>` panics.
+// logic. Accepting it would let any law hold of `S`; with `ensures(false)`, every `f<T: Absurd>`
+// would verify.
 
 #![feature(never_type)]
 
@@ -22,7 +22,7 @@ where
 
     #[thrust_macros::law]
     #[thrust_macros::requires(true)]
-    #[thrust_macros::ensures(false)]
+    #[thrust_macros::ensures(Self::tag(*a))]
     fn absurd(a: &Self);
 }
 
@@ -31,6 +31,16 @@ struct S(!);
 impl Model for S {
     type Ty = S;
 }
+
+#[thrust_macros::lemma]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(true)]
+fn at_a() {}
+
+#[thrust_macros::lemma]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(true)]
+fn at_b() {}
 
 #[thrust_macros::context]
 impl Absurd for S {
@@ -45,10 +55,10 @@ impl Absurd for S {
 }
 
 #[thrust_macros::context]
-#[thrust_macros::requires(exists(|y| T::tag(y)))]
+#[thrust_macros::requires(exists(|y| T::tag(y)) && n == 0)]
 #[thrust_macros::ensures(true)]
 fn f<T: Absurd>(n: i64) {
-    assert!(false);
+    assert!(n == 0);
 }
 
 fn main() {

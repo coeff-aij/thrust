@@ -745,25 +745,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         (tuple_ty.into(), term)
     }
 
-    /// Asserts that an unsigned subtraction without overflow checks does not go below zero.
-    ///
-    /// With overflow checks on, rustc asserts that `SubWithOverflow` did not overflow; without
-    /// them the subtraction is modelled on unbounded integers. This is the same assertion, on
-    /// the lower bound only, so that no negative value of [`rty::Type::UInt`] is produced: every
-    /// such value is assumed non-negative without an obligation. Flux puts the same precondition
-    /// on unsigned subtraction when overflow checking is off.
-    fn assert_no_underflow(&mut self, no_underflow: PlaceType) {
-        let got: rty::RefinedType<Var> = no_underflow.into();
-        let expected =
-            rty::RefinedType::<Var>::refined_with_term(rty::Type::bool(), chc::Term::bool(true));
-        let clauses = self.env.relate_sub_refined_type(&got, &expected);
-        self.ctx.extend_clauses(clauses);
-    }
-
-    /// Asserts that the current block is not reached.
-    fn assert_unreachable(&mut self) {
-        let got =
-            rty::RefinedType::<Var>::refined_with_term(rty::Type::bool(), chc::Term::bool(false));
+    /// Asserts that the bool `term`, over the variables of `builder`, holds where the current
+    /// block is reached.
+    fn assert_term(&mut self, builder: PlaceTypeBuilder, term: chc::Term<PlaceTypeVar>) {
+        let got: rty::RefinedType<Var> = builder.build(rty::Type::bool(), term).into();
         let expected =
             rty::RefinedType::<Var>::refined_with_term(rty::Type::bool(), chc::Term::bool(true));
         let clauses = self.env.relate_sub_refined_type(&got, &expected);
@@ -774,7 +759,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// [`rty::IntRange::All`]. Without overflow checks the operation is modelled on unbounded
     /// integers, and the range is assumed of its result as of every value of the type; with them,
     /// rustc's own assertion on `AddWithOverflow` and the like does this. The lower bound of an
-    /// unsigned result is left to [`Self::assert_no_underflow`], which is on in every mode.
+    /// unsigned result is left to the underflow assertion of a subtraction, which is on in every
+    /// mode.
     fn assert_no_overflow(
         &mut self,
         builder: &PlaceTypeBuilder,
@@ -796,12 +782,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         if signed {
             no_overflow = term.clone().ge(chc::Term::int(min)).and(no_overflow);
         }
-        let got: rty::RefinedType<Var> =
-            builder.clone().build(rty::Type::bool(), no_overflow).into();
-        let expected =
-            rty::RefinedType::<Var>::refined_with_term(rty::Type::bool(), chc::Term::bool(true));
-        let clauses = self.env.relate_sub_refined_type(&got, &expected);
-        self.ctx.extend_clauses(clauses);
+        self.assert_term(builder.clone(), no_overflow);
     }
 
     /// The result of an arithmetic operation of type `ty`. In the unsigned-fact check mode
@@ -815,14 +796,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     ) -> PlaceType {
         if matches!(ty, rty::Type::UInt(_)) && rty::check_uint_facts_mode() {
             let nonnegative = term.clone().ge(chc::Term::int(0));
-            let got: rty::RefinedType<Var> =
-                builder.clone().build(rty::Type::bool(), nonnegative).into();
-            let expected = rty::RefinedType::<Var>::refined_with_term(
-                rty::Type::bool(),
-                chc::Term::bool(true),
-            );
-            let clauses = self.env.relate_sub_refined_type(&got, &expected);
-            self.ctx.extend_clauses(clauses);
+            self.assert_term(builder.clone(), nonnegative);
         }
         builder.build(ty, term)
     }
@@ -879,8 +853,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         // assertion covers in every mode; a signed one goes out on either side.
                         if !lhs_mir_ty.is_signed() {
                             let no_underflow = result.clone().ge(chc::Term::int(0));
-                            let guard = builder.clone().build(rty::Type::bool(), no_underflow);
-                            self.assert_no_underflow(guard);
+                            // With overflow checks on, rustc asserts that `SubWithOverflow` did
+                            // not overflow; without them the subtraction is unbounded, and this
+                            // is the same assertion on the lower bound, so that no negative
+                            // `UInt` is produced, as Flux requires of unsigned subtraction.
+                            self.assert_term(builder.clone(), no_underflow);
                         } else {
                             self.assert_no_overflow(&builder, &lhs_ty, &result);
                         }
@@ -1105,8 +1082,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 if !op_ty.is_integral() || !ty.is_integral() {
                     unimplemented!("int cast: {:?} -> {:?}", op_ty, ty);
                 }
-                // The result has the target's type, whose range the wrapped term is in, so that
-                // the operations on it are typed and checked at the target's width.
+                // The result has the target's type, so that the operations on it are typed and
+                // checked at the target's width: a widening keeps the operand's term, which is in
+                // the target's range, and a narrowing wraps it into that range.
                 let target_ty = self.type_builder.build(ty).vacuous().ty;
                 let mut op_pty = self.operand_type(operand);
                 if int_ty_includes(self.tcx, ty, op_ty) {
@@ -1481,19 +1459,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             && args.types().any(|ty| analyze::compares_ghost(self.tcx, ty))
     }
 
-    /// Whether `def_id` is a method of the crate's own (not the injected `std.rs`) marked
-    /// `#[thrust::ignored]`.
-    fn is_ignored_impl_method(&self, def_id: DefId) -> bool {
-        def_id
-            .as_local()
-            .is_some_and(|local| !analyze::is_injected_std(self.tcx, local))
-            && self
-                .tcx
-                .get_attrs_by_path(def_id, &analyze::annot::ignored_path())
-                .next()
-                .is_some()
-    }
-
     fn callable_ty(
         &mut self,
         def_id: DefId,
@@ -1533,6 +1498,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 }
             }
             ResolvedCallable::Concrete(resolved_def_id, resolved_args) => {
+                if !resolved_def_id.is_local() {
+                    let bounds = analyze::trait_bounds(self.tcx, resolved_def_id, resolved_args);
+                    self.ctx
+                        .check_bound_impls(caller_def_id, self.typing_env, bounds);
+                }
                 // The impl the call resolves to is the one that runs, so its spec is used when it
                 // has one: an extern spec of a std impl, or a local impl method's own contract,
                 // which refines the trait's. A trait-level spec may hold only by assuming a bound
@@ -1566,12 +1536,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     );
                 }
                 // Nor is an ignored impl method's body checked against it.
-                if resolved_def_id != def_id && self.is_ignored_impl_method(resolved_def_id) {
-                    self.tcx.dcx().fatal(format!(
-                        "`{}` is `#[thrust::ignored]`, so a call of it has no checked type",
-                        self.tcx
-                            .def_path_str_with_args(resolved_def_id, resolved_args),
-                    ));
+                if analyze::is_ignored_crate_fn(self.tcx, resolved_def_id) {
+                    analyze::fatal_ignored_call(self.tcx, resolved_def_id, resolved_args);
                 }
                 if let Some(def_ty) = self.ctx.def_ty_with_args(def_id, args, caller_def_id) {
                     // otherwise nothing asks for a deferred impl method's type and its body goes unchecked
@@ -2442,12 +2408,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             }
             TerminatorKind::UnwindResume {} => {}
             TerminatorKind::Unreachable {} => {
-                // rustc reaches `Unreachable` only with a value of an uninhabited type, which the
-                // logic's sorts never are. A proof's contract is assumed of every value of the
-                // sorts, so in a proof the block must be unreachable in the logic, as Creusot's
-                // `absurd` requires.
+                // rustc ends a block in `Unreachable` where no value reaches it: a value of an
+                // uninhabited type, or the `otherwise` arm of an exhaustive match. A proof's
+                // contract is assumed of every value of the sorts, which are never empty, so in a
+                // proof the block must be unreachable in the logic, as Creusot's `absurd` requires.
                 if analyze::lemma::is_proof(self.tcx, self.local_def_id.to_def_id()) {
-                    self.assert_unreachable();
+                    self.assert_term(PlaceTypeBuilder::default(), chc::Term::bool(false));
                 }
             }
             _ => unimplemented!("term={:?}", term.kind),
