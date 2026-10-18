@@ -111,9 +111,17 @@ impl Idx for usize {
 
 #[thrust_macros::context]
 impl Idx for u32 {
+    #[cfg(not(thrust_int_range))]
     #[thrust_macros::logic]
     fn index_logic(self) -> USize {
         self
+    }
+
+    // With `THRUST_INT_RANGE` the model of a `u32` has 32 bits and that of a `usize` 64.
+    #[cfg(thrust_int_range)]
+    #[thrust_macros::logic]
+    fn index_logic(self) -> USize {
+        self.to_uint().to_uint_n::<64>()
     }
 
     #[thrust_macros::predicate]
