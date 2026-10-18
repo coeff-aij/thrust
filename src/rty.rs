@@ -1001,9 +1001,15 @@ pub fn int_range(signed: bool, width: Option<u32>) -> Option<(BigInt, BigInt)> {
     }
 }
 
-/// The range of a value `x` of the integer type `ty` as atoms: `0 <= x` of an unsigned type, and
+/// The lower and the upper bound of an integer value as atoms; see [`int_range_bounds`].
+pub struct IntRangeBounds<V> {
+    pub lower: Option<chc::Atom<V>>,
+    pub upper: Option<chc::Atom<V>>,
+}
+
+/// The bounds of a value `x` of the integer type `ty` as atoms: `0 <= x` of an unsigned type, and
 /// the bounds of [`int_range`] when they are in use. `None` when `ty` is not an integer type.
-pub fn int_range_atoms<T, V>(ty: &Type<T>, x: chc::Term<V>) -> Option<Vec<chc::Atom<V>>>
+pub fn int_range_bounds<T, V>(ty: &Type<T>, x: chc::Term<V>) -> Option<IntRangeBounds<V>>
 where
     V: Clone,
 {
@@ -1012,26 +1018,35 @@ where
         Type::UInt(width) => (false, *width),
         _ => return None,
     };
-    let mut atoms = Vec::new();
     let range = int_range(signed, width);
     let min = match &range {
         Some((min, _)) => Some(min.clone()),
         None if !signed => Some(BigInt::from(0)),
         None => None,
     };
-    if let Some(min) = min {
-        atoms.push(chc::Atom::new(
+    let lower = min.map(|min| {
+        chc::Atom::new(
             chc::KnownPred::GREATER_THAN_OR_EQUAL.into(),
             vec![x.clone(), chc::Term::int(min)],
-        ));
-    }
-    if let Some((_, end)) = range {
-        atoms.push(chc::Atom::new(
+        )
+    });
+    let upper = range.map(|(_, end)| {
+        chc::Atom::new(
             chc::KnownPred::LESS_THAN.into(),
             vec![x, chc::Term::int(end)],
-        ));
-    }
-    Some(atoms)
+        )
+    });
+    Some(IntRangeBounds { lower, upper })
+}
+
+/// The atoms of [`int_range_bounds`], the lower bound first. `None` when `ty` is not an integer
+/// type.
+pub fn int_range_atoms<T, V>(ty: &Type<T>, x: chc::Term<V>) -> Option<Vec<chc::Atom<V>>>
+where
+    V: Clone,
+{
+    let bounds = int_range_bounds(ty, x)?;
+    Some(bounds.lower.into_iter().chain(bounds.upper).collect())
 }
 
 /// The range of a value `x` of the integer type `ty` as a formula, when [`int_range`] is in use for
@@ -2032,41 +2047,11 @@ impl<FV> RefinedType<FV> {
     {
         let mut formula = self.refinement.clone();
         match &self.ty {
-            Type::UInt(width) => {
-                formula.push_conj(
-                    chc::Atom::new(
-                        chc::KnownPred::GREATER_THAN_OR_EQUAL.into(),
-                        vec![chc::Term::var(RefinedTypeVar::Value), chc::Term::int(0)],
-                    )
-                    .into(),
-                );
-                if let Some((_, end)) = int_range(false, *width) {
-                    formula.push_conj(
-                        chc::Atom::new(
-                            chc::KnownPred::LESS_THAN.into(),
-                            vec![chc::Term::var(RefinedTypeVar::Value), chc::Term::int(end)],
-                        )
-                        .into(),
-                    );
-                }
-            }
-            Type::Int(width) => {
-                if let Some((min, end)) = int_range(true, *width) {
-                    let value = || chc::Term::var(RefinedTypeVar::Value);
-                    formula.push_conj(
-                        chc::Atom::new(
-                            chc::KnownPred::GREATER_THAN_OR_EQUAL.into(),
-                            vec![value(), chc::Term::int(min)],
-                        )
-                        .into(),
-                    );
-                    formula.push_conj(
-                        chc::Atom::new(
-                            chc::KnownPred::LESS_THAN.into(),
-                            vec![value(), chc::Term::int(end)],
-                        )
-                        .into(),
-                    );
+            Type::UInt(_) | Type::Int(_) => {
+                let atoms = int_range_atoms(&self.ty, chc::Term::var(RefinedTypeVar::Value))
+                    .expect("an integer type");
+                for atom in atoms {
+                    formula.push_conj(atom.into());
                 }
             }
             Type::Seq(elem) => {
