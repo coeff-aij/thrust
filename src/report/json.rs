@@ -29,6 +29,9 @@ enum Line<'a> {
         refutations: &'a str,
         /// What the solver answered when it is neither `sat` nor `unsat` (`Timeout(30s)`).
         message: Option<String>,
+        /// Of a whole query without an answer, the functions its clauses come from, as a part
+        /// line gives them.
+        functions: Option<Vec<FnSpan>>,
     },
     Part {
         id: usize,
@@ -129,6 +132,8 @@ pub(super) struct Json<'a, 'tcx> {
     pub(super) parts: &'a [super::Part],
     pub(super) verdict: &'a str,
     pub(super) message: Option<String>,
+    /// Of a whole query without an answer, the functions its clauses come from.
+    pub(super) functions: Option<Vec<super::parts::PartCode>>,
 }
 
 impl Json<'_, '_> {
@@ -260,6 +265,16 @@ impl Json<'_, '_> {
         }
     }
 
+    fn fn_spans(&self, functions: &[super::parts::PartCode]) -> Vec<FnSpan> {
+        functions
+            .iter()
+            .map(|f| FnSpan {
+                r#fn: f.r#fn.clone(),
+                span: range(self.tcx, f.span),
+            })
+            .collect()
+    }
+
     pub(super) fn write(
         &self,
         entries: &[Entry<'_>],
@@ -286,19 +301,16 @@ impl Json<'_, '_> {
                 "one per part"
             },
             message: self.message.clone(),
+            functions: self
+                .functions
+                .as_ref()
+                .map(|functions| self.fn_spans(functions)),
         })?;
         for part in self.parts {
             line(Line::Part {
                 id: part.id,
                 clauses: part.clauses,
-                functions: part
-                    .functions
-                    .iter()
-                    .map(|f| FnSpan {
-                        r#fn: f.r#fn.clone(),
-                        span: range(self.tcx, f.span),
-                    })
-                    .collect(),
+                functions: self.fn_spans(&part.functions),
                 verdict: part.verdict,
                 message: part.message.as_deref(),
                 cached: part.cached,

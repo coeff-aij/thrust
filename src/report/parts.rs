@@ -114,7 +114,7 @@ impl Part {
 }
 
 /// The functions the clauses `ids` come from, each with its whole span.
-fn code(tcx: TyCtxt<'_>, system: &chc::System, ids: &[chc::ClauseId]) -> Vec<PartCode> {
+pub fn code(tcx: TyCtxt<'_>, system: &chc::System, ids: &[chc::ClauseId]) -> Vec<PartCode> {
     let mut clauses: Vec<(LocalDefId, Span)> = Vec::new();
     for &id in ids {
         let provenance = Provenance::of(&system.clauses[id].debug_info);

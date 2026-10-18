@@ -247,8 +247,7 @@ fn a_split_failure_names_its_part() {
         &[("THRUST_REPORT", "1"), ("THRUST_REPORT_FORMAT", "json")],
     );
     let stdout = String::from_utf8_lossy(&json.stdout);
-    let verdict =
-        r#"{"kind":"verdict","verdict":"unsat","refutations":"one per part","message":null}"#;
+    let verdict = r#"{"kind":"verdict","verdict":"unsat","refutations":"one per part","message":null,"functions":null}"#;
     assert!(stdout.contains(verdict), "{stdout}");
     assert!(
         stdout.contains(r#"{"kind":"failure","part":2,"constraint":"#),
@@ -356,7 +355,7 @@ fn a_part_without_an_answer_gives_the_solver_s_limit() {
     );
     std::fs::remove_dir_all(&dir).unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let verdict = r#"{"kind":"verdict","verdict":"timeout","refutations":"one per part","message":"part 1: Timeout(1s)"}"#;
+    let verdict = r#"{"kind":"verdict","verdict":"timeout","refutations":"one per part","message":"part 1: Timeout(1s)","functions":null}"#;
     assert!(stdout.contains(verdict), "{stdout}");
     assert!(
         stdout.contains(r#""verdict":"timeout","message":"Timeout(1s)","cached":false}"#),
