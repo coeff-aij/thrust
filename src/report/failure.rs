@@ -52,7 +52,8 @@ impl Failure {
                 continue;
             }
             for (name, value) in named(name, value) {
-                if shown.iter().all(|(n, _)| *n != name) {
+                // A unit value tells nothing.
+                if value != "()" && shown.iter().all(|(n, _)| *n != name) {
                     shown.push((name, value));
                 }
             }

@@ -459,7 +459,8 @@ fn a_return_is_at_the_closing_brace() {
 }
 
 /// A solution defines an unknown with `:=`; an unknown's argument is given with `←`, and one of
-/// no template variable as `_ ← term`, so the three read apart.
+/// no template variable as `_ ← term` unless another argument shows that term, so they read
+/// apart; a 1-tuple reads `(x,)`, and a unit value is not listed where a goal fails.
 #[test]
 fn solutions_and_arguments_read_apart() {
     let output = report("loop_fail.rs", "constraints");
@@ -469,12 +470,11 @@ fn solutions_and_arguments_read_apart() {
     let solved = report("inferred_pass.rs", "solution,constraints");
     let stderr = String::from_utf8_lossy(&solved.stderr);
     assert!(stderr.contains("double.pre(x) := "), "{stderr}");
+    // An argument of no template variable is left out where another argument shows its term.
     let call = report("take_max_same.rs", "constraints");
     let stderr = String::from_utf8_lossy(&call.stderr);
-    assert!(
-        stderr.contains("main.take_max#1(*m, °m, _ ← a, _ ← b, "),
-        "{stderr}"
-    );
+    assert!(stderr.contains("main.take_max#1(*m, °m, a ← "), "{stderr}");
+    assert!(!stderr.contains("_ ← a,"), "{stderr}");
 }
 
 /// The constraint of a law proved by an empty body is at the law's `ensures`, which it checks,
@@ -538,4 +538,17 @@ fn an_unreadable_query_is_an_error_with_the_report_too() {
         "{stderr}"
     );
     assert!(stderr.contains("which `z3` does not read"), "{stderr}");
+}
+
+/// A 1-tuple reads as Rust writes it, and a unit result is not among the values.
+#[test]
+fn tuples_and_units_read_as_rust_writes_them() {
+    let output = report("predicate_fail.rs", "failure");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let values = stderr
+        .lines()
+        .find(|l| l.contains("where it fails"))
+        .unwrap_or_default();
+    assert!(values.contains(",)") && !values.contains(", )"), "{stderr}");
+    assert!(!values.contains("= ()"), "{stderr}");
 }

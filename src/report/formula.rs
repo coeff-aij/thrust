@@ -57,7 +57,8 @@ macro_rules! one_line {
                 let doc = pretty::Pretty::pretty(self, &arena).group();
                 let mut out = String::new();
                 doc.1.render_fmt(1 << 20, &mut out).unwrap();
-                out
+                // A 1-tuple as Rust writes it, `(x,)`.
+                out.replace(", )", ",)")
             }
         }
     )*};
@@ -134,14 +135,26 @@ fn applied(pred: &str, params: &[Option<String>], sorts: &[chc::Sort], args: Vec
     if args.is_empty() {
         return pred.to_owned();
     }
+    let args: Vec<Term> = args.into_iter().map(tidy_term).collect();
+    // An argument of no template variable whose term another argument shows says nothing more.
+    let named_terms: Vec<String> = args
+        .iter()
+        .enumerate()
+        .filter(|(k, _)| matches!(params.get(*k), Some(Some(_))))
+        .map(|(_, arg)| arg.one_line())
+        .collect();
+    let mut unnamed_terms: Vec<String> = Vec::new();
     let mut shown = Vec::new();
     for (k, arg) in args.into_iter().enumerate() {
-        let arg = tidy_term(arg);
         let name = match params.get(k) {
             Some(Some(name)) => name,
             // An argument of no variable of the template, apart from the named ones.
             Some(None) => {
-                shown.push(format!("_ ← {}", arg.one_line()));
+                let term = arg.one_line();
+                if !named_terms.contains(&term) && !unnamed_terms.contains(&term) {
+                    shown.push(format!("_ ← {term}"));
+                    unnamed_terms.push(term);
+                }
                 continue;
             }
             // A user predicate's, by position.
