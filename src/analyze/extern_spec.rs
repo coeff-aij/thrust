@@ -41,7 +41,7 @@ pub(super) struct SpecAssumptions<'tcx> {
 /// whatever the actual call has at that place. Anything else the spec fixed is covered only by
 /// the same type: the spec's body was checked once, against that one instantiation, and only
 /// handles it. Returns `None` when the call is not covered.
-fn bind_spec_args<'tcx>(
+pub(super) fn bind_spec_args<'tcx>(
     tcx: TyCtxt<'tcx>,
     spec_def_id: LocalDefId,
     target_args: mir_ty::GenericArgsRef<'tcx>,

@@ -688,7 +688,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         });
         let keys: Vec<_> = self.tcx.mir_keys(()).iter().copied().collect();
         self.ctx.record_hist_inv_specified_params(keys.into_iter());
+        self.ctx.set_trusted_bodies(self.trusted.clone());
         self.analyze_local_defs();
+        self.fix_entered_preconditions();
         self.ctx.emit_pending_pred_instances();
         self.ctx.emit_pending_laws();
         self.ctx.emit_fn_mut_instance_obligations();
@@ -720,6 +722,15 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// ([`analyze::Analyzer::stop_ignored_reached`]): the roots are the fn-like defs whose bodies
     /// are analyzed, monomorphic ones as instances and generic ones through their instances.
     fn check_ignored_not_run(&self) {
+        let (roots, generic) = self.walk_roots();
+        self.ctx
+            .stop_ignored_reached(roots, generic, |def_id| self.crate_mode(def_id));
+    }
+
+    /// The roots of the walks over what the crate can run: the fn-like defs whose bodies are
+    /// analyzed, monomorphic ones as instances and generic ones by def, the monomorphic trusted
+    /// functions and the entry function.
+    fn walk_roots(&self) -> (Vec<mir_ty::Instance<'tcx>>, Vec<rustc_span::def_id::DefId>) {
         let analyzed = self.tcx.mir_keys(()).iter().copied().filter(|def_id| {
             let id = def_id.to_def_id();
             !self.skip_analysis.contains(def_id)
@@ -752,24 +763,76 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .chain(entry)
             .map(|def_id| mir_ty::Instance::mono(self.tcx, def_id))
             .collect();
-        let crate_mode = |def_id: rustc_span::def_id::DefId| {
-            let local = def_id.as_local()?;
-            if self.trusted.contains(&local) {
-                return Some(analyze::Mode::Trusted);
+        (roots, generic)
+    }
+
+    /// The mode of a crate function on the ignored walk ([`analyze::Mode`]).
+    fn crate_mode(&self, def_id: rustc_span::def_id::DefId) -> Option<analyze::Mode> {
+        let local = def_id.as_local()?;
+        if self.trusted.contains(&local) {
+            return Some(analyze::Mode::Trusted);
+        }
+        // A derived impl is not trusted by the user: its methods rely on the fields' impls.
+        let derived = self
+            .tcx
+            .impl_of_assoc(def_id)
+            .is_some_and(|impl_did| self.tcx.is_automatically_derived(impl_did));
+        if derived {
+            return Some(analyze::Mode::Verified);
+        }
+        self.is_analyzed(def_id).then_some(analyze::Mode::Verified)
+    }
+
+    /// Whether `def_id` is a fn-like def of the crate whose body Thrust analyzes.
+    fn is_analyzed(&self, def_id: rustc_span::def_id::DefId) -> bool {
+        def_id.as_local().is_some_and(|local| {
+            self.tcx.def_kind(def_id).is_fn_like() && !self.skip_analysis.contains(&local)
+        })
+    }
+
+    /// Fixes the precondition of each crate function with an inferred contract that code Thrust
+    /// does not analyze can run ([`analyze::unanalyzed_entry`]): a function or method entered
+    /// so is checked under its precondition holding of every argument, unless the entering
+    /// contract names it with `pre!`, and a closure must have been handed over by a call that
+    /// states its obligation.
+    fn fix_entered_preconditions(&mut self) {
+        let (roots, generic) = self.walk_roots();
+        let roots = self.ctx.walk_roots(roots, generic, |def_id| {
+            self.crate_mode(def_id) == Some(analyze::Mode::Verified)
+        });
+        let entries = self
+            .ctx
+            .unanalyzed_entries(roots, |def_id| self.is_analyzed(def_id));
+        let mut fixed = HashSet::new();
+        for (callee, _) in &entries.items {
+            if !fixed.insert(*callee) {
+                continue;
             }
-            // A derived impl is not trusted by the user: its methods rely on the fields' impls.
-            let derived = self
-                .tcx
-                .impl_of_assoc(def_id)
-                .is_some_and(|impl_did| self.tcx.is_automatically_derived(impl_did));
-            if derived {
-                return Some(analyze::Mode::Verified);
+            let Some(fn_ty) = self.ctx.entered_fn_ty(*callee) else {
+                continue;
+            };
+            if self.ctx.infers_precondition(&fn_ty) {
+                tracing::debug!(%callee, "entered from code Thrust does not analyze");
+                let clauses = analyze::Analyzer::accepts_every_argument(&fn_ty);
+                self.ctx.extend_clauses(clauses);
             }
-            let analyzed =
-                self.tcx.def_kind(def_id).is_fn_like() && !self.skip_analysis.contains(&local);
-            analyzed.then_some(analyze::Mode::Verified)
-        };
-        self.ctx.stop_ignored_reached(roots, generic, crate_mode);
+        }
+        let handed_over = self.ctx.handed_over_closures(&entries.analyzed);
+        for (closure, from) in &entries.closures {
+            let def_id = closure.def_id();
+            if handed_over.contains(&def_id) || self.ctx.has_written_requires(def_id) {
+                continue;
+            }
+            self.tcx.dcx().span_fatal(
+                self.tcx.def_span(def_id),
+                format!(
+                    "`{from}`, which Thrust does not analyze, can run the closure `{closure}`, \
+                     whose precondition is inferred, but no analyzed call hands it over to code \
+                     Thrust does not analyze: give the closure a `requires` with \
+                     `thrust_macros::closure!`"
+                ),
+            );
+        }
     }
 
     /// Records every `#[thrust::law]` function declared in a local trait.

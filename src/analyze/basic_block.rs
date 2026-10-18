@@ -24,6 +24,7 @@ use crate::rty::{
     self, ClauseBuilderExt as _, ClauseScope as _, ShiftExistential as _, Subtyping as _,
 };
 
+mod closure_escape;
 mod drop_point;
 mod visitor;
 use drop_point::MovedOut;
@@ -445,36 +446,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             }
         }
 
-        assert!(got_args.len() == expected_args.len());
-        let singleton_params = singleton_params(&got_args);
-        let got_args: IndexVec<rty::FunctionParamIdx, _> = got_args
-            .into_iter()
-            .map(|rty| subst_singleton_params(rty, &singleton_params))
-            .collect();
-        // TODO: check stys are equal
-        for (param_idx, param_rty) in got_args.iter_enumerated() {
-            let param_sort = param_rty.ty.to_sort();
-            if !param_sort.is_singleton() {
-                let chc_var = builder.add_mapped_var(param_idx, param_sort.clone());
-                builder.add_environment_origin(
-                    debug::origin::Entry::parameter(param_idx, &param_sort)
-                        .var_mapping(param_idx, chc_var),
-                );
-            }
-        }
-        for ((param_idx, got_ty), expected_ty) in got_args.iter_enumerated().zip(&expected_args) {
-            clauses.extend(builder.relate_sub_refined_type(expected_ty, got_ty));
-            if singleton_params.contains_key(&param_idx) {
-                builder
-                    .with_value_var(&got_ty.ty)
-                    .add_body(expected_ty.formula());
-            } else {
-                builder
-                    .with_mapped_value_var(param_idx)
-                    .add_body(expected_ty.formula());
-            }
-        }
-
+        clauses.extend(relate_param_sub_types(got_args, &expected_args, builder));
         clauses
     }
 
@@ -1798,7 +1770,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         } else {
             self.operand_type(func.clone()).ty
         };
-        let expected_args: IndexVec<_, _> = args.map(|op| self.operand_refined_type(op)).collect();
+        let operands: Vec<_> = args.collect();
+        let expected_args: IndexVec<_, _> = operands
+            .iter()
+            .map(|op| self.operand_refined_type(op.clone()))
+            .collect();
+        if let Some((def_id, generic_args)) = func.const_fn_def() {
+            self.hand_over_closures(def_id, generic_args, &operands, &expected_args);
+        }
         if let rty::Type::Function(func_ty) = func_ty {
             let mut arguments = HashMap::new();
             expected_ret
@@ -2793,6 +2772,47 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.analyze_terminator_goto(&term, expected_fn, &outer_fn_param_vars);
         self.ctx.leave_template_site(previous);
     }
+}
+
+/// The clauses that make arguments of `expected_args` acceptable to parameters of `got_args`,
+/// one for one, each parameter's refinement under the earlier arguments' refinements, in the
+/// environment `builder` holds.
+pub(crate) fn relate_param_sub_types<T: chc::Var>(
+    got_args: IndexVec<rty::FunctionParamIdx, rty::RefinedType<rty::FunctionParamIdx>>,
+    expected_args: &IndexVec<rty::FunctionParamIdx, rty::RefinedType<T>>,
+    builder: &mut chc::ClauseBuilder,
+) -> Vec<chc::Clause> {
+    assert!(got_args.len() == expected_args.len());
+    let singleton_params = singleton_params(&got_args);
+    let got_args: IndexVec<rty::FunctionParamIdx, _> = got_args
+        .into_iter()
+        .map(|rty| subst_singleton_params(rty, &singleton_params))
+        .collect();
+    // TODO: check stys are equal
+    for (param_idx, param_rty) in got_args.iter_enumerated() {
+        let param_sort = param_rty.ty.to_sort();
+        if !param_sort.is_singleton() {
+            let chc_var = builder.add_mapped_var(param_idx, param_sort.clone());
+            builder.add_environment_origin(
+                debug::origin::Entry::parameter(param_idx, &param_sort)
+                    .var_mapping(param_idx, chc_var),
+            );
+        }
+    }
+    let mut clauses = Vec::new();
+    for ((param_idx, got_ty), expected_ty) in got_args.iter_enumerated().zip(expected_args) {
+        clauses.extend(builder.relate_sub_refined_type(expected_ty, got_ty));
+        if singleton_params.contains_key(&param_idx) {
+            builder
+                .with_value_var(&got_ty.ty)
+                .add_body(expected_ty.formula());
+        } else {
+            builder
+                .with_mapped_value_var(param_idx)
+                .add_body(expected_ty.formula());
+        }
+    }
+    clauses
 }
 
 /// The parameters of a singleton sort (such as `()`). They get no clause variable, so a

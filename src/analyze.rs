@@ -41,6 +41,7 @@ mod pred_inst;
 mod reconstruct_slice_indexing;
 pub(crate) mod selection;
 mod two_phase_borrow;
+mod unanalyzed_entry;
 
 // TODO: organize structure and remove cross dependency between refine
 pub use did_cache::DefIdCache;
@@ -620,6 +621,10 @@ pub struct Analyzer<'tcx> {
     contract_annotations: HashMap<DefId, ContractAnnotations>,
     /// Where the written invariant of each loop, by its header, is annotated, for the report.
     invariant_annotations: HashMap<(LocalDefId, BasicBlock), Vec<rustc_span::Span>>,
+    /// The fn-like defs whose bodies are trusted rather than analyzed.
+    trusted_bodies: HashSet<LocalDefId>,
+    /// The closures each analyzed body hands over to code Thrust does not analyze, by the body.
+    handovers: Vec<(DefId, unanalyzed_entry::HandedOver)>,
 }
 
 /// Whether `expr` is the literal `true`.
@@ -797,6 +802,8 @@ impl<'tcx> Analyzer<'tcx> {
             template_sites: Default::default(),
             contract_annotations: Default::default(),
             invariant_annotations: Default::default(),
+            trusted_bodies: Default::default(),
+            handovers: Default::default(),
         }
     }
 
@@ -1019,19 +1026,9 @@ impl<'tcx> Analyzer<'tcx> {
     ) {
         let mut parent = HashMap::new();
         let mut pending = std::collections::VecDeque::new();
-        let verified_instances = self
-            .reused_and_analyzed_instances()
-            .into_iter()
-            .filter(|instance| crate_mode(instance.def_id()) == Some(Mode::Verified));
-        let roots = roots
-            .into_iter()
-            .chain(self.start_instance())
-            .chain(verified_instances)
-            .chain(
-                generic_roots
-                    .into_iter()
-                    .flat_map(|def_id| self.concrete_mentions(def_id)),
-            );
+        let roots = self.walk_roots(roots, generic_roots, |def_id| {
+            crate_mode(def_id) == Some(Mode::Verified)
+        });
         for root in roots {
             let key = (root, crate_mode(root.def_id()).unwrap_or(Mode::Verified));
             if parent.insert(key, None).is_none() {
@@ -1091,6 +1088,32 @@ impl<'tcx> Analyzer<'tcx> {
             );
         }
         diag.emit()
+    }
+
+    /// The roots of a walk over what the crate can run: `roots`, the runtime's `start` at `main`'s
+    /// return type, the instances of generic defs Thrust analyzed or reused a contract at whose
+    /// def `verified` holds of, and the calls the generic bodies `generic_roots` make at concrete
+    /// arguments.
+    pub fn walk_roots(
+        &self,
+        roots: Vec<mir_ty::Instance<'tcx>>,
+        generic_roots: Vec<DefId>,
+        verified: impl Fn(DefId) -> bool,
+    ) -> Vec<mir_ty::Instance<'tcx>> {
+        let verified_instances = self
+            .reused_and_analyzed_instances()
+            .into_iter()
+            .filter(|instance| verified(instance.def_id()));
+        roots
+            .into_iter()
+            .chain(self.start_instance())
+            .chain(verified_instances)
+            .chain(
+                generic_roots
+                    .into_iter()
+                    .flat_map(|def_id| self.concrete_mentions(def_id)),
+            )
+            .collect()
     }
 
     /// Whether `instance` is of a generic def, whose body runs code its arguments choose. A
@@ -1744,13 +1767,14 @@ impl<'tcx> Analyzer<'tcx> {
                 ) else {
                     return true;
                 };
-                let reach = self.pred_var_reach(&rty::RefinedType::unrefined(fn_ty.into()));
+                let reach =
+                    self.pred_var_reach(&rty::RefinedType::<rty::Closed>::unrefined(fn_ty.into()));
                 reach.found || reach.undefined
             })
         })
     }
 
-    fn pred_var_reach(&self, rty: &rty::RefinedType) -> chc::PredVarReach {
+    fn pred_var_reach<FV>(&self, rty: &rty::RefinedType<FV>) -> chc::PredVarReach {
         let system = self.system.borrow();
         let mut reach = chc::PredVarReach::default();
         rty.any_pred(&mut |pred| {
