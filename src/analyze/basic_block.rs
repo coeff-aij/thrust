@@ -743,21 +743,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         (tuple_ty.into(), term)
     }
 
-    /// Asserts that an unsigned subtraction without overflow checks does not go below zero.
-    ///
-    /// With overflow checks on, rustc asserts that `SubWithOverflow` did not overflow; without
-    /// them the subtraction is modelled on unbounded integers. This is the same assertion, on
-    /// the lower bound only, so that no negative value of [`rty::Type::UInt`] is produced: every
-    /// such value is assumed non-negative without an obligation. Flux puts the same precondition
-    /// on unsigned subtraction when overflow checking is off.
-    fn assert_no_underflow(
-        &mut self,
-        builder: PlaceTypeBuilder,
-        no_underflow: chc::Term<PlaceTypeVar>,
-    ) {
-        self.assert_term(builder, no_underflow);
-    }
-
     /// Asserts that the bool `term`, over the variables of `builder`, holds where the current
     /// block is reached.
     fn assert_term(&mut self, builder: PlaceTypeBuilder, term: chc::Term<PlaceTypeVar>) {
@@ -772,7 +757,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// [`rty::IntRange::All`]. Without overflow checks the operation is modelled on unbounded
     /// integers, and the range is assumed of its result as of every value of the type; with them,
     /// rustc's own assertion on `AddWithOverflow` and the like does this. The lower bound of an
-    /// unsigned result is left to [`Self::assert_no_underflow`], which is on in every mode.
+    /// unsigned result is left to the underflow assertion of a subtraction, which is on in every
+    /// mode.
     fn assert_no_overflow(
         &mut self,
         builder: &PlaceTypeBuilder,
@@ -865,7 +851,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         // assertion covers in every mode; a signed one goes out on either side.
                         if !lhs_mir_ty.is_signed() {
                             let no_underflow = result.clone().ge(chc::Term::int(0));
-                            self.assert_no_underflow(builder.clone(), no_underflow);
+                            // With overflow checks on, rustc asserts that `SubWithOverflow` did
+                            // not overflow; without them the subtraction is unbounded, and this
+                            // is the same assertion on the lower bound, so that no negative
+                            // `UInt` is produced, as Flux requires of unsigned subtraction.
+                            self.assert_term(builder.clone(), no_underflow);
                         } else {
                             self.assert_no_overflow(&builder, &lhs_ty, &result);
                         }

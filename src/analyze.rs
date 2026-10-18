@@ -687,6 +687,23 @@ pub fn fatal_ignored_call<'tcx>(
     ))
 }
 
+/// A trait method at generic arguments.
+type MethodCall<'tcx> = (DefId, mir_ty::GenericArgsRef<'tcx>);
+
+/// A def whose generic contract is reused at generic arguments, and the caller that reuses it.
+type ReusedInstance<'tcx> = (DefId, mir_ty::GenericArgsRef<'tcx>, DefId);
+
+fn instantiate_method_call<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    (method, method_args): MethodCall<'tcx>,
+    args: mir_ty::GenericArgsRef<'tcx>,
+) -> MethodCall<'tcx> {
+    (
+        method,
+        mir_ty::EarlyBinder::bind(method_args).instantiate(tcx, args),
+    )
+}
+
 /// The trait bounds `def_id` puts on `args`, its own and its parent's.
 pub fn trait_bounds<'tcx>(
     tcx: TyCtxt<'tcx>,
@@ -1644,41 +1661,31 @@ impl<'tcx> Analyzer<'tcx> {
     /// is assumed by that caller in turn, until nothing new is assumed. A program with an instance
     /// at which a bound fails is rejected: the generic contract does not stand for it, and its
     /// body would call a spec that does not cover it, as a direct call there does.
-    pub fn check_reused_spec_bounds(&self) {
+    fn check_reused_spec_bounds(&mut self, seen: &mut HashSet<(mir_ty::Clause<'tcx>, DefId)>) {
         let Some(model_ty) = self.def_ids().model_ty() else {
             return;
         };
-        loop {
-            let mut grew = false;
-            for &(def_id, generic_args, caller_def_id) in
-                self.reused_generic_instances.borrow().iter()
-            {
-                let root = self.tcx.typeck_root_def_id(def_id);
-                let assumed = self
-                    .assumed_spec_bounds
-                    .borrow()
-                    .get(&root)
-                    .cloned()
-                    .unwrap_or_default();
-                let clauses = assumed.into_iter().map(|clause| {
-                    mir_ty::EarlyBinder::bind(clause).instantiate(self.tcx, generic_args)
-                });
-                match classify_spec_bounds(self.tcx, clauses, caller_def_id, model_ty) {
-                    Ok(assumed) => grew |= self.record_assumed_spec_bounds(caller_def_id, assumed),
-                    Err(clause) => self.tcx.dcx().fatal(format!(
-                        "spec bound not satisfied: `{}` is verified generically under a spec \
+        self.propagate_reused(
+            |this| &this.assumed_spec_bounds,
+            |tcx, clause, args| mir_ty::EarlyBinder::bind(clause).instantiate(tcx, args),
+            seen,
+            |this, clause, (def_id, generic_args, caller_def_id)| match classify_spec_bounds(
+                this.tcx,
+                [clause],
+                caller_def_id,
+                model_ty,
+            ) {
+                Ok(assumed) => this.record_assumed_spec_bounds(caller_def_id, assumed),
+                Err(clause) => this.tcx.dcx().fatal(format!(
+                    "spec bound not satisfied: `{}` is verified generically under a spec \
                          bound at its type parameters, which does not hold at its instance \
                          `{}` used in `{}`: `{clause}`",
-                        self.tcx.def_path_str(def_id),
-                        self.tcx.def_path_str_with_args(def_id, generic_args),
-                        self.tcx.def_path_str(caller_def_id),
-                    )),
-                }
-            }
-            if !grew {
-                return;
-            }
-        }
+                    this.tcx.def_path_str(def_id),
+                    this.tcx.def_path_str_with_args(def_id, generic_args),
+                    this.tcx.def_path_str(caller_def_id),
+                )),
+            },
+        );
     }
 
     /// Records that a body analysed under `owner_fn_id` called the trait method `def_id` at
@@ -1707,55 +1714,40 @@ impl<'tcx> Analyzer<'tcx> {
     /// spec bounds or total methods at its own type parameters, and an instance reached only
     /// through such a call would otherwise never check them. A call still at a type parameter of
     /// the instance's caller is recorded for that caller in turn.
-    pub fn expand_dispatched_instances(&self) {
+    fn expand_dispatched_instances(&mut self, seen: &mut HashSet<(MethodCall<'tcx>, DefId)>) {
         use mir_ty::TypeVisitableExt as _;
 
-        let mut seen_instances = 0;
-        loop {
-            let instances = self.reused_generic_instances.borrow().clone();
-            let mut grew = instances.len() != seen_instances;
-            seen_instances = instances.len();
-            for (def_id, generic_args, caller_def_id) in instances {
-                let root = self.tcx.typeck_root_def_id(def_id);
-                let dispatched = self
-                    .dispatched_calls
-                    .borrow()
-                    .get(&root)
-                    .cloned()
-                    .unwrap_or_default();
-                for (method, method_args) in dispatched {
-                    let method_args =
-                        mir_ty::EarlyBinder::bind(method_args).instantiate(self.tcx, generic_args);
-                    if method_args.has_param() {
-                        grew |= self.record_dispatched_call(caller_def_id, method, method_args);
-                        continue;
-                    }
-                    let typing_env = mir_ty::TypingEnv::fully_monomorphized();
-                    let Ok(Some(instance)) =
-                        mir_ty::Instance::try_resolve(self.tcx, typing_env, method, method_args)
-                    else {
-                        continue;
-                    };
-                    if self.is_unchecked_crate_fn(instance.def_id()) {
-                        fatal_ignored_call(self.tcx, instance.def_id(), instance.args);
-                    }
-                    if !instance.def_id().is_local()
-                        || !matches!(self.defs.get(&instance.def_id()), Some(DefTy::Generic(_)))
-                    {
-                        continue;
-                    }
-                    let reached = (instance.def_id(), instance.args, caller_def_id);
-                    let mut reused = self.reused_generic_instances.borrow_mut();
-                    if !reused.contains(&reached) {
-                        reused.push(reached);
-                        grew = true;
-                    }
+        self.propagate_reused(
+            |this| &this.dispatched_calls,
+            instantiate_method_call,
+            seen,
+            |this, (method, method_args), (_, _, caller_def_id)| {
+                if method_args.has_param() {
+                    return this.record_dispatched_call(caller_def_id, method, method_args);
                 }
-            }
-            if !grew {
-                return;
-            }
-        }
+                let typing_env = mir_ty::TypingEnv::fully_monomorphized();
+                let Ok(Some(instance)) =
+                    mir_ty::Instance::try_resolve(this.tcx, typing_env, method, method_args)
+                else {
+                    return false;
+                };
+                if this.is_unchecked_crate_fn(instance.def_id()) {
+                    fatal_ignored_call(this.tcx, instance.def_id(), instance.args);
+                }
+                if !instance.def_id().is_local()
+                    || !matches!(this.defs.get(&instance.def_id()), Some(DefTy::Generic(_)))
+                {
+                    return false;
+                }
+                let reached = (instance.def_id(), instance.args, caller_def_id);
+                let mut reused = this.reused_generic_instances.borrow_mut();
+                if reused.contains(&reached) {
+                    return false;
+                }
+                reused.push(reached);
+                true
+            },
+        );
     }
 
     /// Checks that `bounds`, which a call of a std function or a trusted derive in `owner_fn_id`
@@ -1842,33 +1834,16 @@ impl<'tcx> Analyzer<'tcx> {
     /// of std impls its analysis relied on at type parameters
     /// ([`Self::check_std_call_bounds`]). A bound still at a type parameter of the instance's
     /// caller is recorded for that caller in turn.
-    pub fn check_reused_bound_impls(&self) {
-        let mut seen_instances = 0;
-        loop {
-            let instances = self.reused_generic_instances.borrow().clone();
-            let mut grew = instances.len() != seen_instances;
-            seen_instances = instances.len();
-            for (def_id, generic_args, caller_def_id) in instances {
-                let root = self.tcx.typeck_root_def_id(def_id);
-                let assumed = self
-                    .assumed_bound_impls
-                    .borrow()
-                    .get(&root)
-                    .cloned()
-                    .unwrap_or_default();
-                let bounds = assumed
-                    .into_iter()
-                    .map(|bound| {
-                        mir_ty::EarlyBinder::bind(bound).instantiate(self.tcx, generic_args)
-                    })
-                    .collect();
-                let typing_env = mir_ty::TypingEnv::post_analysis(self.tcx, caller_def_id);
-                grew |= self.check_bound_impls(caller_def_id, typing_env, bounds);
-            }
-            if !grew {
-                return;
-            }
-        }
+    fn check_reused_bound_impls(&mut self, seen: &mut HashSet<(mir_ty::TraitRef<'tcx>, DefId)>) {
+        self.propagate_reused(
+            |this| &this.assumed_bound_impls,
+            |tcx, bound, args| mir_ty::EarlyBinder::bind(bound).instantiate(tcx, args),
+            seen,
+            |this, bound, (_, _, caller_def_id)| {
+                let typing_env = mir_ty::TypingEnv::post_analysis(this.tcx, caller_def_id);
+                this.check_bound_impls(caller_def_id, typing_env, vec![bound])
+            },
+        );
     }
 
     /// Records that a body or contract analysed under `owner_fn_id` called the trait method
@@ -1898,31 +1873,79 @@ impl<'tcx> Analyzer<'tcx> {
     /// the instance's caller is assumed by that caller in turn, as
     /// [`Self::check_reused_spec_bounds`] does with spec bounds. An impl Thrust knows no contract
     /// of is not accepted, as a direct call to it is not.
-    pub fn check_reused_total_methods(&mut self) {
+    fn check_reused_total_methods(
+        &mut self,
+        seen: &mut HashSet<(MethodCall<'tcx>, DefId)>,
+        checked: &mut HashSet<MethodCall<'tcx>>,
+    ) {
         use mir_ty::TypeVisitableExt as _;
 
-        let mut checked = HashSet::new();
+        self.propagate_reused(
+            |this| &this.assumed_total_methods,
+            instantiate_method_call,
+            seen,
+            |this, (method, method_args), (_, _, caller_def_id)| {
+                if method_args.has_param() {
+                    return this.record_assumed_total_method(caller_def_id, method, method_args);
+                }
+                if checked.insert((method, method_args)) {
+                    this.check_total_method(method, method_args, caller_def_id);
+                }
+                false
+            },
+        );
+    }
+
+    /// Runs the checks at the instances that reuse a generic def's contract until none of them
+    /// adds an instance or an assumption: an instance a check adds (resolving a dispatched call,
+    /// or typing a total method) is checked in turn by all of them.
+    pub fn check_reused_instances(&mut self) {
+        let mut dispatched = HashSet::new();
+        let mut bound_impls = HashSet::new();
+        let mut total_methods = HashSet::new();
+        let mut checked_methods = HashSet::new();
+        let mut spec_bounds = HashSet::new();
+        loop {
+            let instances = self.reused_generic_instances.borrow().len();
+            self.expand_dispatched_instances(&mut dispatched);
+            self.check_reused_bound_impls(&mut bound_impls);
+            self.check_reused_total_methods(&mut total_methods, &mut checked_methods);
+            self.check_reused_spec_bounds(&mut spec_bounds);
+            if self.reused_generic_instances.borrow().len() == instances {
+                return;
+            }
+        }
+    }
+
+    /// Runs `check` on each assumption that `recorded` keeps for the typeck root of a reused
+    /// instance's def, read at the instance's arguments by `instantiate`, with the instance, once
+    /// per assumption and caller (`seen`), until no check reports that it recorded something and
+    /// no instance is added. The assumptions a caller records for itself are checked at its own
+    /// instances in turn.
+    fn propagate_reused<T: Clone + Eq + std::hash::Hash>(
+        &mut self,
+        recorded: impl Fn(&Self) -> &RefCell<HashMap<DefId, Vec<T>>>,
+        instantiate: impl Fn(TyCtxt<'tcx>, T, mir_ty::GenericArgsRef<'tcx>) -> T,
+        seen: &mut HashSet<(T, DefId)>,
+        mut check: impl FnMut(&mut Self, T, ReusedInstance<'tcx>) -> bool,
+    ) {
         let mut seen_instances = 0;
         loop {
             let instances = self.reused_generic_instances.borrow().clone();
             let mut grew = instances.len() != seen_instances;
             seen_instances = instances.len();
-            for (def_id, generic_args, caller_def_id) in instances {
+            for instance in instances {
+                let (def_id, generic_args, caller_def_id) = instance;
                 let root = self.tcx.typeck_root_def_id(def_id);
-                let assumed = self
-                    .assumed_total_methods
+                let assumed = recorded(self)
                     .borrow()
                     .get(&root)
                     .cloned()
                     .unwrap_or_default();
-                for (method, method_args) in assumed {
-                    let method_args =
-                        mir_ty::EarlyBinder::bind(method_args).instantiate(self.tcx, generic_args);
-                    if method_args.has_param() {
-                        grew |=
-                            self.record_assumed_total_method(caller_def_id, method, method_args);
-                    } else if checked.insert((method, method_args)) {
-                        self.check_total_method(method, method_args, caller_def_id);
+                for assumption in assumed {
+                    let assumption = instantiate(self.tcx, assumption, generic_args);
+                    if seen.insert((assumption.clone(), caller_def_id)) {
+                        grew |= check(self, assumption, instance);
                     }
                 }
             }
