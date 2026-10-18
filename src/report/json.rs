@@ -58,7 +58,7 @@ enum Line<'a> {
         r#loop: Option<Range>,
         span: Option<Range>,
         obligation: &'a str,
-        premises: &'a [String],
+        premises: Vec<Premise<'a>>,
         conclusion: &'a str,
     },
     Failure {
@@ -68,7 +68,7 @@ enum Line<'a> {
         r#fn: Option<&'a str>,
         span: Option<Range>,
         obligation: Option<&'a str>,
-        premises: Option<&'a [String]>,
+        premises: Option<Vec<Premise<'a>>>,
         conclusion: Option<&'a str>,
         run: Vec<Step<'a>>,
         truncated: bool,
@@ -95,6 +95,14 @@ struct Columns {
 struct FnSpan {
     r#fn: String,
     span: Range,
+}
+
+/// A premise of a constraint, with the span it was made at when the clause tells it (an unknown
+/// applied, at its template's code).
+#[derive(Serialize)]
+struct Premise<'a> {
+    text: &'a str,
+    span: Option<Range>,
 }
 
 #[derive(Serialize)]
@@ -190,7 +198,7 @@ impl Json<'_, '_> {
                 .map(|span| range(self.tcx, span)),
             span: c.span.map(|span| range(self.tcx, span)),
             obligation: &c.kind,
-            premises: &c.premises,
+            premises: self.premises(c),
             conclusion: &c.conclusion,
         }
     }
@@ -233,7 +241,7 @@ impl Json<'_, '_> {
                 .and_then(|(_, c)| c.error_span)
                 .map(|s| range(self.tcx, s)),
             obligation: found.map(|(_, c)| c.kind.as_str()),
-            premises: found.map(|(_, c)| c.premises.as_slice()),
+            premises: found.map(|(_, c)| self.premises(c)),
             conclusion: found.map(|(_, c)| c.conclusion.as_str()),
             run,
             truncated: failure.truncated,
@@ -265,6 +273,17 @@ impl Json<'_, '_> {
         }
     }
 
+    fn premises<'a>(&self, c: &'a Constraint) -> Vec<Premise<'a>> {
+        c.premises
+            .iter()
+            .zip(&c.premise_spans)
+            .map(|(text, span)| Premise {
+                text,
+                span: span.map(|s| range(self.tcx, s)),
+            })
+            .collect()
+    }
+
     fn fn_spans(&self, functions: &[super::parts::PartCode]) -> Vec<FnSpan> {
         functions
             .iter()
@@ -282,7 +301,7 @@ impl Json<'_, '_> {
     ) -> std::io::Result<()> {
         let mut line = |line: Line<'_>| writeln!(out, "{}", serde_json::to_string(&line)?);
         line(Line::Report {
-            version: 2,
+            version: 3,
             root: std::env::current_dir()
                 .unwrap_or_default()
                 .display()

@@ -8,6 +8,7 @@ use rustc_middle::ty::TyCtxt;
 use rustc_span::def_id::{DefId, DefIndex, LocalDefId};
 use rustc_span::Span;
 
+use crate::analyze::TemplateSite;
 use crate::chc;
 use crate::refine::{EntryValue, VarPath};
 
@@ -75,6 +76,9 @@ pub struct Constraint {
     pub span: Option<Span>,
     pub kind: String,
     pub premises: Vec<String>,
+    /// Where each premise was made, as far as the clause tells: an unknown applied, at the code
+    /// of its template (see [`template_span`]); `None` for the others.
+    pub premise_spans: Vec<Option<Span>>,
     pub conclusion: String,
     /// The premises implying the conclusion.
     pub formula: String,
@@ -505,6 +509,31 @@ fn render(
     (premises, conclusion, var_names)
 }
 
+/// The code of the template whose unknown `premise` applies, if it applies one: a contract's
+/// signature, a loop's or a call's code, a block's (the entry block's at the signature). A
+/// clause keeps no site for each of its atoms, so a premise is placed where its unknown was made.
+fn template_span(tcx: TyCtxt<'_>, premise: &Formula, input: &super::Input<'_>) -> Option<Span> {
+    let chc::Formula::Atom(chc::Atom {
+        pred: chc::Pred::Var(p),
+        ..
+    }) = premise
+    else {
+        return None;
+    };
+    let signature = |def: LocalDefId| tcx.def_span(def.to_def_id()).source_callsite();
+    match *input.template_sites.get(p)? {
+        TemplateSite::Contract(def) => Some(signature(def)),
+        TemplateSite::Block(def, bb) if bb == mir::START_BLOCK => Some(signature(def)),
+        TemplateSite::Block(def, bb) | TemplateSite::Code(def, bb) => {
+            let def_id = def.to_def_id();
+            let body = tcx
+                .is_mir_available(def_id)
+                .then(|| tcx.optimized_mir(def_id))?;
+            super::body::span_in(body, bb, None)
+        }
+    }
+}
+
 /// Whether `span` is in the body of `def`, a block with nothing in it.
 fn is_empty_body(tcx: TyCtxt<'_>, def: LocalDefId, span: Option<Span>) -> bool {
     let Some(body) = tcx.hir_maybe_body_owned_by(def) else {
@@ -550,6 +579,10 @@ pub fn constraint(
         span,
         kind,
         premises: premises.iter().map(|p| show(p, names)).collect(),
+        premise_spans: premises
+            .iter()
+            .map(|p| template_span(tcx, p, input))
+            .collect(),
         conclusion: show(&conclusion, names),
         formula,
         vars: vars.iter().map(|v| v.as_str().to_owned()).collect(),

@@ -88,10 +88,12 @@ fn json_report_shows_the_failure_alone() {
     let kinds: Vec<&str> = stdout.lines().filter_map(|l| l.split('"').nth(3)).collect();
     assert_eq!(kinds, ["report", "verdict", "failure"], "{stdout}");
     let root = env!("CARGO_MANIFEST_DIR");
-    let header = format!(r#"{{"kind":"report","version":2,"root":"{root}","#);
+    let header = format!(r#"{{"kind":"report","version":3,"root":"{root}","#);
     assert!(stdout.starts_with(&header), "{stdout}");
     let step = r#""via":"c0","obligation":"loop entry","span":{"file":"tests/report/loop_fail.rs","line":9,"column":5,"end_line":14,"end_column":6}"#;
     assert!(stdout.contains(step), "{stdout}");
+    let premise = r#"{"text":"main.loop#1(x, y)","span":{"file":"tests/report/loop_fail.rs","line":9,"column":11,"end_line":9,"end_column":17}}"#;
+    assert!(stdout.contains(premise), "{stdout}");
     // `rand`'s `ensures(true)` assumes nothing.
     assert!(stdout.contains(r#""assumes":[]"#), "{stdout}");
 }
@@ -291,7 +293,9 @@ fn report_names_no_contract_of_the_injected_std() {
 }
 
 /// The premises of a constraint are those its formula shows: two bounds by one value are one
-/// equation in both, and a premise the refinements of a `&mut` repeat is shown once.
+/// equation in both, and a premise the refinements of a `&mut` repeat is shown once. In JSON an
+/// unknown applied is at the code of its template, the entry block's at the signature; another
+/// premise has no span.
 #[test]
 fn premises_are_the_formula_s_and_each_is_once() {
     let output = report_with(
@@ -305,14 +309,20 @@ fn premises_are_the_formula_s_and_each_is_once() {
         .find(|l| l.contains(r#""fn":"check""#) && l.contains("assertion"))
         .unwrap_or_default();
     assert!(
-        check.contains(r#""premises":["check.bb0(x, old(x) ← x)","x = 0"]"#),
+        check.contains(
+            r#""premises":[{"text":"check.bb0(x, old(x) ← x)","span":{"file":"tests/report/bounds.rs","line":2,"column":1,"end_line":2,"end_column":17}},{"text":"x = 0","span":null}]"#
+        ),
         "{stdout}"
     );
     let identity = stdout
         .lines()
         .find(|l| l.contains(r#""kind":"failure""#) && l.contains(r#""fn":"identity""#))
         .unwrap_or_default();
-    assert_eq!(identity.matches(r#""°x >= 0""#).count(), 1, "{stdout}");
+    assert_eq!(
+        identity.matches(r#""text":"°x >= 0""#).count(),
+        1,
+        "{stdout}"
+    );
 }
 
 /// A constraint applies an unknown as the run shows a fact: each argument by the variable of the
