@@ -2672,7 +2672,6 @@ impl<'tcx> Analyzer<'tcx> {
             .emit();
     }
 
-    /// The error of a failed verification, at the obligation the report shows refuted, if it does.
     /// The error of a failed verification of `system` (the whole or a part), at the obligation
     /// the report shows refuted, if it does.
     fn verification_error(
