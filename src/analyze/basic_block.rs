@@ -1527,7 +1527,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     );
                 }
                 // Nor is an ignored impl method's body checked against it.
-                if resolved_def_id != def_id && self.ctx.is_unchecked_crate_fn(resolved_def_id) {
+                if self.ctx.is_unchecked_crate_fn(resolved_def_id) {
                     analyze::fatal_ignored_call(self.tcx, resolved_def_id, resolved_args);
                 }
                 if let Some(def_ty) = self.ctx.def_ty_with_args(def_id, args, caller_def_id) {
