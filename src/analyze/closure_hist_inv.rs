@@ -10,12 +10,28 @@
 //! where Creusot says nothing of a capture taken by value, the relation of those captures is an
 //! unknown inferred under the same laws ([`by_value_relation_laws`]).
 
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
+
 use rustc_middle::ty as mir_ty;
 use rustc_span::def_id::LocalDefId;
 
 use crate::analyze::{self, Analyzer};
 use crate::chc;
 use crate::rty;
+
+/// The relations `hist_inv!` stands for at concrete closures, made on first use.
+#[derive(Clone, Default)]
+pub(super) struct HistInvRelations<'tcx> {
+    /// The closure types, generic arguments included, with the sort of their upvars, whose
+    /// `hist_inv` clause has had its laws pushed; see [`explicit_laws`].
+    explicit_hist_inv_laws: Rc<RefCell<HashSet<(mir_ty::Ty<'tcx>, chc::Sort)>>>,
+    /// The unknown relating the by-value captures of an `FnMut` closure whose specification has
+    /// no `hist_inv` clause, one per closure type and upvars sort; see
+    /// [`Analyzer::closure_hist_inv_definition`].
+    by_value_hist_invs: Rc<RefCell<HashMap<(mir_ty::Ty<'tcx>, chc::Sort), chc::PredVarId>>>,
+}
 
 /// The positions and sorts of the captures of the `FnMut` closure `closure_ty` taken by value,
 /// which the relation [`concrete_definition`] derives says nothing of. Empty for an `Fn` closure.
@@ -408,7 +424,12 @@ impl<'tcx> Analyzer<'tcx> {
         upvars_sort: &chc::Sort,
     ) -> chc::PredVarId {
         let key = (closure_ty, upvars_sort.clone());
-        if let Some(relation) = self.by_value_hist_invs.borrow().get(&key) {
+        if let Some(relation) = self
+            .hist_inv_relations
+            .by_value_hist_invs
+            .borrow()
+            .get(&key)
+        {
             return *relation;
         }
         let sorts: Vec<chc::Sort> = by_value_captures(self.tcx, closure_ty, upvars_sort)
@@ -426,7 +447,10 @@ impl<'tcx> Analyzer<'tcx> {
         // Its laws are pushed here and each call's step comes from the closure's body, so a
         // callee whose contract reaches it needs no analysis at the instance to define it.
         self.system.borrow_mut().mark_self_defined(relation);
-        self.by_value_hist_invs.borrow_mut().insert(key, relation);
+        self.hist_inv_relations
+            .by_value_hist_invs
+            .borrow_mut()
+            .insert(key, relation);
         relation
     }
 
@@ -456,6 +480,7 @@ impl<'tcx> Analyzer<'tcx> {
             formula_fn.formula().clone().subst_var(|_| pair.clone())
         };
         if self
+            .hist_inv_relations
             .explicit_hist_inv_laws
             .borrow_mut()
             .insert((closure_ty, upvars_sort.clone()))

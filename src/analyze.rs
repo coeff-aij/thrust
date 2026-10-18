@@ -33,7 +33,7 @@ mod crate_;
 mod derive;
 mod did_cache;
 mod extern_spec;
-mod fn_mut;
+mod fn_mut_reuse;
 mod lemma;
 mod local_def;
 mod model_eq;
@@ -46,8 +46,9 @@ pub use did_cache::DefIdCache;
 
 // Also the paths siblings use: analyze::{predicate_typing_env, trait_bounds,
 // fn_mut_bounded_params}.
-use extern_spec::{predicate_typing_env, trait_bounds};
-use fn_mut::{fn_mut_bounded_params, has_fn_mut_closure, FnMutInstanceObligations};
+use closure_hist_inv::HistInvRelations;
+use extern_spec::{predicate_typing_env, trait_bounds, SpecAssumptions};
+use fn_mut_reuse::{fn_mut_bounded_params, has_fn_mut_closure, FnMutReuse};
 
 fn scalar_const_term<T>(
     ty: mir_ty::Ty<'_>,
@@ -593,38 +594,15 @@ pub struct Analyzer<'tcx> {
     concrete_instances: Rc<RefCell<HashSet<LocalDefId>>>,
     /// The generic defs whose bodies were analyzed at concrete arguments, and those arguments.
     analyzed_instances: RefCell<Vec<(DefId, mir_ty::GenericArgsRef<'tcx>)>>,
-    /// The closure types, generic arguments included, with the sort of their upvars, whose
-    /// `hist_inv` clause has had its laws pushed; see [`closure_hist_inv::explicit_laws`].
-    explicit_hist_inv_laws: Rc<RefCell<HashSet<(mir_ty::Ty<'tcx>, chc::Sort)>>>,
-    /// The unknown relating the by-value captures of an `FnMut` closure whose specification has
-    /// no `hist_inv` clause, one per closure type and upvars sort; see
-    /// [`Analyzer::closure_hist_inv_definition`].
-    by_value_hist_invs: Rc<RefCell<HashMap<(mir_ty::Ty<'tcx>, chc::Sort), chc::PredVarId>>>,
-    /// The clauses [`closure_hist_inv::instance_obligations`] gave for the instances at an `FnMut`
-    /// closure that use a generic def's contract as instantiated: the `hist_inv!` laws and the
-    /// precondition clauses, pushed by [`Analyzer::emit_fn_mut_instance_obligations`].
-    fn_mut_instance_obligations: Rc<RefCell<FnMutInstanceObligations>>,
-    /// See [`Analyzer::record_hist_inv_specified_params`].
-    hist_inv_specified_params: Rc<RefCell<HashSet<DefId>>>,
-    /// The local fn-like defs with an `FnMut`-bounded type parameter, recorded with
-    /// [`Analyzer::hist_inv_specified_params`].
-    fn_mut_bounded_defs: Rc<RefCell<Vec<DefId>>>,
-    /// The spec bounds a body assumed at a type parameter or an unresolved projection, keyed by
-    /// the typeck root of the def it was analysed under; see [`extern_spec::classify_spec_bounds`].
-    assumed_spec_bounds: RefCell<HashMap<DefId, Vec<mir_ty::Clause<'tcx>>>>,
+    /// See [`HistInvRelations`].
+    hist_inv_relations: HistInvRelations<'tcx>,
+    /// See [`FnMutReuse`].
+    fn_mut_reuse: FnMutReuse,
+    /// See [`SpecAssumptions`].
+    spec_assumptions: SpecAssumptions<'tcx>,
     /// The instances `(def, generic args, caller)` that use a generic def's contract as
     /// instantiated; see [`Analyzer::check_reused_spec_bounds`].
     reused_generic_instances: RefCell<Vec<(DefId, mir_ty::GenericArgsRef<'tcx>, DefId)>>,
-    /// The trait methods without a specification a body called, or a contract named by `pre!`, at
-    /// its type parameters, keyed like `assumed_spec_bounds`; see
-    /// [`Analyzer::check_reused_total_methods`].
-    assumed_total_methods: RefCell<HashMap<DefId, Vec<(DefId, mir_ty::GenericArgsRef<'tcx>)>>>,
-    /// The trait methods a body called at its type parameters with the trait's specification,
-    /// keyed like `assumed_spec_bounds`; see [`Analyzer::expand_dispatched_instances`].
-    dispatched_calls: RefCell<HashMap<DefId, Vec<(DefId, mir_ty::GenericArgsRef<'tcx>)>>>,
-    /// The trait bounds of std impls a body called at its type parameters, keyed like
-    /// `assumed_spec_bounds`; see [`Analyzer::check_reused_bound_impls`].
-    assumed_bound_impls: RefCell<HashMap<DefId, Vec<mir_ty::TraitRef<'tcx>>>>,
     /// The types of the functions each basic block calls, recorded only when
     /// [`candidate_atoms_enabled`], whose contracts give a loop head candidate atoms.
     called_fn_tys: HashMap<(AnalysisKey<'tcx>, BasicBlock), Vec<rty::FunctionType>>,
@@ -724,16 +702,10 @@ impl<'tcx> Analyzer<'tcx> {
             pending_laws,
             concrete_instances: Default::default(),
             analyzed_instances: Default::default(),
-            explicit_hist_inv_laws: Default::default(),
-            by_value_hist_invs: Default::default(),
-            fn_mut_instance_obligations: Default::default(),
-            hist_inv_specified_params: Default::default(),
-            fn_mut_bounded_defs: Default::default(),
-            assumed_spec_bounds: Default::default(),
-            dispatched_calls: Default::default(),
-            assumed_bound_impls: Default::default(),
+            hist_inv_relations: Default::default(),
+            fn_mut_reuse: Default::default(),
+            spec_assumptions: Default::default(),
             reused_generic_instances: Default::default(),
-            assumed_total_methods: Default::default(),
             called_fn_tys: Default::default(),
             impl_methods_with_own_contract: Default::default(),
             template_site: None,

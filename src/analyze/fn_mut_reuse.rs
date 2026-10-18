@@ -1,7 +1,9 @@
 //! Reusing the generic analysis of a def at an instance whose type arguments are `FnMut`
 //! closures, and the obligations that reuse records.
 
+use std::cell::RefCell;
 use std::collections::HashSet;
+use std::rc::Rc;
 
 use rustc_middle::ty::{self as mir_ty, TyCtxt};
 use rustc_span::def_id::{DefId, LocalDefId};
@@ -10,9 +12,23 @@ use crate::analyze::{closure_hist_inv, Analyzer};
 use crate::chc;
 use crate::rty;
 
+/// What the reuse of generic analyses at `FnMut` instances records in the [`Analyzer`].
+#[derive(Clone, Default)]
+pub(super) struct FnMutReuse {
+    /// The clauses [`closure_hist_inv::instance_obligations`] gave for the instances at an `FnMut`
+    /// closure that use a generic def's contract as instantiated: the `hist_inv!` laws and the
+    /// precondition clauses, pushed by [`Analyzer::emit_fn_mut_instance_obligations`].
+    fn_mut_instance_obligations: Rc<RefCell<FnMutInstanceObligations>>,
+    /// See [`Analyzer::record_hist_inv_specified_params`].
+    hist_inv_specified_params: Rc<RefCell<HashSet<DefId>>>,
+    /// The local fn-like defs with an `FnMut`-bounded type parameter, recorded with
+    /// [`FnMutReuse::hist_inv_specified_params`].
+    fn_mut_bounded_defs: Rc<RefCell<Vec<DefId>>>,
+}
+
 /// See [`Analyzer::reuse_fn_mut_generic`].
 #[derive(Default)]
-pub(super) struct FnMutInstanceObligations {
+struct FnMutInstanceObligations {
     laws: Vec<chc::Clause>,
     pre: Vec<chc::Clause>,
     /// The defs an instance has used the contract of as instantiated.
@@ -170,7 +186,7 @@ impl<'tcx> Analyzer<'tcx> {
             obligations.push(clauses);
         }
         tracing::info!(?generic_args, "FnMut instance reuses the generic analysis");
-        let mut pending = self.fn_mut_instance_obligations.borrow_mut();
+        let mut pending = self.fn_mut_reuse.fn_mut_instance_obligations.borrow_mut();
         if !callee_bounded.is_empty() {
             pending.reused.insert(def_id);
         }
@@ -204,6 +220,7 @@ impl<'tcx> Analyzer<'tcx> {
             })
         };
         let defs = self
+            .fn_mut_reuse
             .fn_mut_bounded_defs
             .borrow()
             .iter()
@@ -262,7 +279,7 @@ impl<'tcx> Analyzer<'tcx> {
     /// parameter's relation. That is coarser than tracking which instance reaches which
     /// relation, and only adds checks.
     pub fn emit_fn_mut_instance_obligations(&mut self) {
-        let mut pending = self.fn_mut_instance_obligations.borrow_mut();
+        let mut pending = self.fn_mut_reuse.fn_mut_instance_obligations.borrow_mut();
         let laws = std::mem::take(&mut pending.laws);
         let pre = std::mem::take(&mut pending.pre);
         let mut system = self.system.borrow_mut();
@@ -301,8 +318,8 @@ impl<'tcx> Analyzer<'tcx> {
             }
         }
         drop(system);
-        *self.hist_inv_specified_params.borrow_mut() = specified;
-        *self.fn_mut_bounded_defs.borrow_mut() = fn_mut_bounded_defs;
+        *self.fn_mut_reuse.hist_inv_specified_params.borrow_mut() = specified;
+        *self.fn_mut_reuse.fn_mut_bounded_defs.borrow_mut() = fn_mut_bounded_defs;
     }
 
     /// Whether `def_id` has an `FnMut`-bounded type parameter and each of them is one whose
@@ -311,14 +328,15 @@ impl<'tcx> Analyzer<'tcx> {
     /// `FnMut`-bounded def is verified per instance (D34).
     pub fn is_hist_inv_specified(&self, def_id: DefId) -> bool {
         let params = fn_mut_bounded_params(self.tcx, def_id);
-        let specified = self.hist_inv_specified_params.borrow();
+        let specified = self.fn_mut_reuse.hist_inv_specified_params.borrow();
         !params.is_empty() && params.iter().all(|param| specified.contains(param))
     }
 
     /// Whether an instance has used the contract of `local_def_id` as instantiated, so its
     /// generic analysis stands for that instance and must be emitted.
     pub fn has_reused_instance(&self, local_def_id: LocalDefId) -> bool {
-        self.fn_mut_instance_obligations
+        self.fn_mut_reuse
+            .fn_mut_instance_obligations
             .borrow()
             .reused
             .contains(&local_def_id.to_def_id())

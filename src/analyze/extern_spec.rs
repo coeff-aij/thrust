@@ -14,6 +14,25 @@ use crate::analyze::{derive, Analyzer, DefTy, DeferredDefTy};
 use crate::chc;
 use crate::rty;
 
+/// What generic analyses assumed at their type parameters, checked at each instance once every
+/// body is analysed.
+#[derive(Clone, Default)]
+pub(super) struct SpecAssumptions<'tcx> {
+    /// The spec bounds a body assumed at a type parameter or an unresolved projection, keyed by
+    /// the typeck root of the def it was analysed under; see [`classify_spec_bounds`].
+    assumed_spec_bounds: RefCell<HashMap<DefId, Vec<mir_ty::Clause<'tcx>>>>,
+    /// The trait methods without a specification a body called, or a contract named by `pre!`, at
+    /// its type parameters, keyed like `assumed_spec_bounds`; see
+    /// [`Analyzer::check_reused_total_methods`].
+    assumed_total_methods: RefCell<HashMap<DefId, Vec<(DefId, mir_ty::GenericArgsRef<'tcx>)>>>,
+    /// The trait methods a body called at its type parameters with the trait's specification,
+    /// keyed like `assumed_spec_bounds`; see [`Analyzer::expand_dispatched_instances`].
+    dispatched_calls: RefCell<HashMap<DefId, Vec<(DefId, mir_ty::GenericArgsRef<'tcx>)>>>,
+    /// The trait bounds of std impls a body called at its type parameters, keyed like
+    /// `assumed_spec_bounds`; see [`Analyzer::check_reused_bound_impls`].
+    assumed_bound_impls: RefCell<HashMap<DefId, Vec<mir_ty::TraitRef<'tcx>>>>,
+}
+
 /// Binds the parameters of an extern spec function to the arguments of an actual call, by
 /// matching `target_args` (the spec's own tail call, in the target's parameter space) against
 /// `generic_args` (the actual call's instantiation of the same target).
@@ -395,7 +414,7 @@ impl<'tcx> Analyzer<'tcx> {
         clauses: Vec<mir_ty::Clause<'tcx>>,
     ) -> bool {
         let root = self.tcx.typeck_root_def_id(owner_fn_id);
-        let mut assumed = self.assumed_spec_bounds.borrow_mut();
+        let mut assumed = self.spec_assumptions.assumed_spec_bounds.borrow_mut();
         let recorded = assumed.entry(root).or_default();
         let mut grew = false;
         for clause in clauses {
@@ -424,7 +443,7 @@ impl<'tcx> Analyzer<'tcx> {
             return;
         };
         self.propagate_reused(
-            |this| &this.assumed_spec_bounds,
+            |this| &this.spec_assumptions.assumed_spec_bounds,
             |tcx, clause, args| mir_ty::EarlyBinder::bind(clause).instantiate(tcx, args),
             clause_args,
             seen,
@@ -458,7 +477,7 @@ impl<'tcx> Analyzer<'tcx> {
     ) -> bool {
         let root = self.tcx.typeck_root_def_id(owner_fn_id);
         let call = (def_id, self.tcx.erase_regions(generic_args));
-        let mut dispatched = self.dispatched_calls.borrow_mut();
+        let mut dispatched = self.spec_assumptions.dispatched_calls.borrow_mut();
         let recorded = dispatched.entry(root).or_default();
         if recorded.contains(&call) {
             return false;
@@ -477,7 +496,7 @@ impl<'tcx> Analyzer<'tcx> {
         use mir_ty::TypeVisitableExt as _;
 
         self.propagate_reused(
-            |this| &this.dispatched_calls,
+            |this| &this.spec_assumptions.dispatched_calls,
             instantiate_method_call,
             |(_, args)| args.to_vec(),
             seen,
@@ -634,7 +653,7 @@ impl<'tcx> Analyzer<'tcx> {
     fn record_assumed_bound_impl(&self, owner_fn_id: DefId, bound: mir_ty::TraitRef<'tcx>) -> bool {
         let root = self.tcx.typeck_root_def_id(owner_fn_id);
         let bound = self.tcx.erase_regions(bound);
-        let mut assumed = self.assumed_bound_impls.borrow_mut();
+        let mut assumed = self.spec_assumptions.assumed_bound_impls.borrow_mut();
         let recorded = assumed.entry(root).or_default();
         if recorded.contains(&bound) {
             return false;
@@ -649,7 +668,7 @@ impl<'tcx> Analyzer<'tcx> {
     /// caller is recorded for that caller in turn.
     fn check_reused_bound_impls(&mut self, seen: &mut HashSet<(mir_ty::TraitRef<'tcx>, DefId)>) {
         self.propagate_reused(
-            |this| &this.assumed_bound_impls,
+            |this| &this.spec_assumptions.assumed_bound_impls,
             |tcx, bound, args| mir_ty::EarlyBinder::bind(bound).instantiate(tcx, args),
             |bound| bound.args.to_vec(),
             seen,
@@ -671,7 +690,7 @@ impl<'tcx> Analyzer<'tcx> {
     ) -> bool {
         let root = self.tcx.typeck_root_def_id(owner_fn_id);
         let call = (def_id, self.tcx.erase_regions(generic_args));
-        let mut assumed = self.assumed_total_methods.borrow_mut();
+        let mut assumed = self.spec_assumptions.assumed_total_methods.borrow_mut();
         let recorded = assumed.entry(root).or_default();
         if recorded.contains(&call) {
             return false;
@@ -695,7 +714,7 @@ impl<'tcx> Analyzer<'tcx> {
         use mir_ty::TypeVisitableExt as _;
 
         self.propagate_reused(
-            |this| &this.assumed_total_methods,
+            |this| &this.spec_assumptions.assumed_total_methods,
             instantiate_method_call,
             |(_, args)| args.to_vec(),
             seen,
