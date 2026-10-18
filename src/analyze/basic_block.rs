@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, HashMap};
 use num_bigint::BigInt;
 use rustc_hir::def::DefKind;
 use rustc_index::IndexVec;
+use rustc_middle::mir::visit::{NonMutatingUseContext, NonUseContext, PlaceContext, Visitor};
 use rustc_middle::mir::{
     self, BasicBlock, Body, Local, Operand, Rvalue, StatementKind, TerminatorKind,
 };
@@ -250,6 +251,28 @@ impl PrecondCapture {
         }
         (rty::Refinement::new(self.existentials, body), self.names)
     }
+}
+
+/// Finds a use of `local` that `uses` accepts.
+struct FindUse<F> {
+    local: Local,
+    found: bool,
+    uses: F,
+}
+
+impl<'tcx, F: Fn(PlaceContext) -> bool> Visitor<'tcx> for FindUse<F> {
+    fn visit_local(&mut self, l: Local, context: PlaceContext, _: mir::Location) {
+        self.found |= l == self.local && (self.uses)(context);
+    }
+}
+
+/// Whether `context` moves a value out, or ends the storage of the local.
+fn is_move(context: PlaceContext) -> bool {
+    matches!(
+        context,
+        PlaceContext::NonMutatingUse(NonMutatingUseContext::Move)
+            | PlaceContext::NonUse(NonUseContext::StorageDead)
+    )
 }
 
 enum ResolvedCallable<'tcx> {
@@ -1342,8 +1365,66 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
     /// Whether the program names `local`, as its debug info says.
     fn names_local(&self, local: Local) -> bool {
-        self.body.var_debug_info.iter().any(|info| {
-            matches!(info.value, mir::VarDebugInfoContents::Place(place) if place.local == local && place.projection.is_empty())
+        self.debug_name(local).is_some()
+    }
+
+    /// The name the program gives `local`, as its debug info says.
+    fn debug_name(&self, local: Local) -> Option<rustc_span::Symbol> {
+        self.body
+            .var_debug_info
+            .iter()
+            .find_map(|info| match info.value {
+                mir::VarDebugInfoContents::Place(place)
+                    if place.local == local && place.projection.is_empty() =>
+                {
+                    Some(info.name)
+                }
+                _ => None,
+            })
+    }
+
+    /// Whether the current block writes `local`, mutably borrows it or moves it out.
+    fn block_writes(&self, local: Local) -> bool {
+        let data = &self.body.basic_blocks[self.basic_block];
+        let mut find = FindUse {
+            local,
+            found: false,
+            uses: |context: PlaceContext| context.is_mutating_use() || is_move(context),
+        };
+        find.visit_basic_block_data(self.basic_block, data);
+        find.found
+    }
+
+    /// Whether the name of `local` stands for another variable at the end of the current block,
+    /// the innermost of that name in scope there (a shadowing `let`).
+    fn shadowed_in_block(&self, local: Local) -> bool {
+        let Some(name) = self.debug_name(local) else {
+            return false;
+        };
+        let scope = self.body.basic_blocks[self.basic_block]
+            .terminator()
+            .source_info
+            .scope;
+        let depth = |mut s: mir::SourceScope, of: mir::SourceScope| {
+            let mut depth = 0;
+            loop {
+                if s == of {
+                    return Some(depth);
+                }
+                s = self.body.source_scopes[s].parent_scope?;
+                depth += 1;
+            }
+        };
+        let innermost = self
+            .body
+            .var_debug_info
+            .iter()
+            .filter(|info| info.name == name)
+            .filter_map(|info| Some((depth(scope, info.source_info.scope)?, info)))
+            .min_by_key(|(depth, _)| *depth);
+        innermost.is_some_and(|(_, info)| {
+            !matches!(info.value, mir::VarDebugInfoContents::Place(place)
+                if place.local == local && place.projection.is_empty())
         })
     }
 
@@ -2420,6 +2501,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             }
         }
 
+        // A name is kept only while the variable holds the value: this block does not write,
+        // move or mutably borrow it, and no other variable of its name is in scope.
+        names.retain(|_, name| {
+            let path = name.downcast_ref::<crate::refine::VarPath>();
+            path.is_none_or(|path| {
+                !self.block_writes(path.local) && !self.shadowed_in_block(path.local)
+            })
+        });
         self.env.assume_described(assumption, names);
 
         outer_fn_param_vars

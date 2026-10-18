@@ -12,7 +12,7 @@ use crate::analyze::TemplateSite;
 use crate::chc;
 use crate::refine::{EntryValue, VarPath};
 
-use super::body::DefBody;
+use super::body::{DefBody, NameKind};
 use super::formula::{self, show, Formula, Name, Term};
 use super::sites::{Names, Owner};
 
@@ -315,13 +315,14 @@ fn equation<V>(f: &chc::Formula<V>) -> Option<(&chc::Term<V>, &chc::Term<V>)> {
 /// program variable a typing environment entry mapped to it, also one a block before held (the
 /// existentials of an inherited precondition, the variables of a written invariant among them),
 /// and a parameter's value on entry. The arguments of another function's
-/// predicates are named in that function, so they name nothing here.
+/// predicates are named in that function, so they name nothing here. A variable the clause's code
+/// may have moved out names no value. Each name comes with its kind, which ranks it.
 fn candidate_names(
     clause: &chc::Clause,
     def: Option<LocalDefId>,
     names: &Names,
     body: Option<&DefBody<'_>>,
-) -> Vec<(chc::TermVarIdx, String)> {
+) -> Vec<(chc::TermVarIdx, String, NameKind)> {
     let mut candidates = Vec::new();
     let atoms = clause
         .body
@@ -342,7 +343,8 @@ fn candidate_names(
         let shown = names.arrange(p, &atom.args);
         for (arg, name) in shown.iter().zip(&info.args) {
             if let (chc::Term::Var(v), Some(name)) = (arg, name) {
-                candidates.push((*v, name.clone()));
+                let kind = body.map_or(NameKind::Program, |body| body.kind_of_name(name));
+                candidates.push((*v, name.clone(), kind));
             }
         }
     }
@@ -355,17 +357,28 @@ fn candidate_names(
     let Some(body) = body else {
         return candidates;
     };
+    let provenance = Provenance::of(&clause.debug_info);
+    let moved = |local| {
+        let at = provenance.bb.map(|bb| (bb, provenance.stmt));
+        at.is_some_and(|(bb, stmt)| body.moved_before(local, bb, stmt))
+    };
     for entry in entries {
         for mapping in entry.mappings() {
             let Some(var) = mapping.var() else {
                 continue;
             };
             let v = mapping.chc_var();
-            if let Some(path) = path_of(var) {
-                candidates.push((v, body.path_name(&path)));
+            if let Some(path) = path_of(var).filter(|path| !moved(path.local)) {
+                let kind = match body.names_local(path.local) {
+                    true => NameKind::Program,
+                    false => NameKind::Temporary,
+                };
+                candidates.push((v, body.path_name(&path), kind));
             }
+            // A clause may show the parameter's current value, or its components, beside it.
             if let Some(EntryValue(local)) = var.downcast_ref::<EntryValue>() {
-                candidates.push((v, format!("old({})", body.local_name(*local))));
+                let name = body.entry_value_name(local.index() - 1, true);
+                candidates.push((v, name, NameKind::EntryValue));
             }
         }
     }
@@ -429,10 +442,9 @@ fn render(
     let mut class_name: BTreeMap<usize, String> = BTreeMap::new();
     let mut used = HashSet::new();
     let mut candidates = candidate_names(clause, def, names, body);
-    // Of two names of one value, a variable of the program reads better than a temporary of the
-    // MIR, and a variable's own name better than its entry value's `old(x)`.
-    candidates.sort_by_key(|(_, name)| (name.starts_with("__tmp_mir_"), name.starts_with("old(")));
-    for (v, name) in candidates {
+    // Of two names of one value, the better kind (see `NameKind`).
+    candidates.sort_by_key(|(_, _, kind)| *kind);
+    for (v, name, _) in candidates {
         let class = classes.find(v.index());
         if class_name.contains_key(&class) || used.contains(&name) {
             continue;

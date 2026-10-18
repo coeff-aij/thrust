@@ -179,6 +179,36 @@ fn a_call_without_a_specification_is_an_error_at_the_call() {
     assert_eq!(output.status.code(), Some(1), "{stderr}");
 }
 
+/// The line of the refuted constraint and that of its values.
+fn refuted_lines(fixture: &str) -> (String, String) {
+    let output = report(fixture, "failure");
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let line = |prefix: &str| {
+        let found = stderr.lines().find(|l| l.contains(prefix));
+        found.unwrap_or_default().to_owned()
+    };
+    (line("= note: c"), line("where it fails:"))
+}
+
+/// A variable is never named for a value it no longer holds: after a loop with a written
+/// invariant, a variable assigned again shows its new value, and the value it held at the loop
+/// is unnamed; so is one a shadowing `let` hides and one moved out.
+#[test]
+fn a_name_stands_only_for_the_value_the_variable_holds() {
+    let (constraint, values) = refuted_lines("name_after_reassign.rs");
+    assert!(
+        constraint.contains("(k >= n ∧ i = 5 ∧ k != n + 1) ==> k < 0"),
+        "{constraint}"
+    );
+    assert!(values.contains("i = 5"), "{values}");
+    let (constraint, _) = refuted_lines("name_after_shadow.rs");
+    assert!(!constraint.contains(" i >= n"), "{constraint}");
+    assert!(constraint.contains("__tmp_chc_"), "{constraint}");
+    let (constraint, _) = refuted_lines("name_after_moved.rs");
+    assert!(!constraint.contains(" b >= n"), "{constraint}");
+    assert!(constraint.contains("__tmp_chc_"), "{constraint}");
+}
+
 /// A refuted `assert!(a != b)` reads as its condition, not as the boolean term the MIR compares
 /// with `false`.
 #[test]
