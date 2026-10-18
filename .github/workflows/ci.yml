@@ -1,8 +1,17 @@
 on:
   pull_request:
+  # Branches other than main get CI through a pull request or a manual run.
   push:
+    branches:
+      - main
+  workflow_dispatch:
 
 permissions: {}
+
+# A newer run of the same ref cancels the one in progress.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   fmt:
