@@ -19,3 +19,8 @@ fn trivial(n: i64) {
 fn main() {
     Counter.visit(1);
 }
+
+#[thrust_macros::lemma]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(forall(|n: thrust_models::model::Int| n == n))]
+fn shadowed(n: i64) {}

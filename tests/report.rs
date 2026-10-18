@@ -331,6 +331,8 @@ fn ordinary_warnings_survive() {
     let stderr = warnings_of("ordinary_warnings.rs");
     assert!(stderr.contains("unused variable: `node`"), "{stderr}");
     assert!(stderr.contains("unused variable: `unused`"), "{stderr}");
+    // A parameter its contract names only as a closure's binder is not read.
+    assert!(stderr.contains("unused variable: `n`"), "{stderr}");
 }
 
 /// The JSON header states how columns count as values, each step of a run gives its unknown and
