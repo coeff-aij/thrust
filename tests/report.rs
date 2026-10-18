@@ -155,6 +155,28 @@ fn report_labels_the_refinement_a_write_breaks() {
     );
 }
 
+/// A call to a std function without a specification stops the analysis with an error at the
+/// call naming the function and how to give it a contract, not a panic.
+#[test]
+fn a_call_without_a_specification_is_an_error_at_the_call() {
+    let output = report("no_spec.rs", "1");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("panicked"), "{stderr}");
+    assert!(
+        stderr.contains(
+            "error: thrust: no specification of `core::num::<impl i64>::pow`, which `main` calls\n \
+             --> "
+        ),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("tests/report/no_spec.rs:2:13\n"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("`#[thrust::trusted]`"), "{stderr}");
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+}
+
 /// A refuted `assert!(a != b)` reads as its condition, not as the boolean term the MIR compares
 /// with `false`.
 #[test]

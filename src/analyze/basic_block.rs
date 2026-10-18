@@ -1570,6 +1570,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     }
                     return def_ty.ty;
                 }
+                if resolved_def_id == def_id && !def_id.is_local() {
+                    self.no_specification(def_id, args);
+                }
                 if resolved_def_id == def_id {
                     panic!("unknown def: {:?}, args: {:?}", def_id, args);
                 }
@@ -1589,6 +1592,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     }
                     // Also reached when the def's only specification is an extern spec written
                     // for another instantiation of it (see `bind_spec_args`).
+                    if !resolved_def_id.is_local() {
+                        self.no_specification(resolved_def_id, resolved_args);
+                    }
                     panic!(
                         "unknown def (resolved): {:?}, args: {:?}",
                         resolved_def_id, resolved_args
@@ -1596,6 +1602,51 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 };
                 def_ty.ty
             }
+        }
+    }
+
+    /// Stops at the call to `def_id`, a function of another crate that has no specification at
+    /// `args`, which the analysis cannot go past.
+    fn no_specification(&self, def_id: DefId, args: mir_ty::GenericArgsRef<'tcx>) -> ! {
+        self.tcx
+            .dcx()
+            .struct_span_fatal(
+                self.call_span(def_id),
+                format!(
+                    "thrust: no specification of `{}`, which `{}` calls",
+                    self.tcx.def_path_str_with_args(def_id, args),
+                    self.tcx.def_path_str(self.type_builder.owner_fn_id()),
+                ),
+            )
+            .with_help(
+                "give the call a contract: call it through a function marked \
+                 `#[thrust::trusted]` with `requires` and `ensures`, or write a specification of \
+                 it as Thrust's `std.rs` does (`#[thrust::extern_spec_fn]`)",
+            )
+            .emit()
+    }
+
+    /// The span of the code of the current block that calls or names `def_id`: its terminator,
+    /// or a statement naming the function.
+    fn call_span(&self, def_id: DefId) -> rustc_span::Span {
+        let data = &self.body.basic_blocks[self.basic_block];
+        let names = |operand: &Operand<'tcx>| {
+            operand
+                .const_fn_def()
+                .is_some_and(|(callee, _)| callee == def_id)
+        };
+        let statement = data.statements.iter().find(|stmt| match &stmt.kind {
+            StatementKind::Assign(assign) => match &assign.1 {
+                Rvalue::Cast(_, operand, _) | Rvalue::Use(operand) => names(operand),
+                _ => false,
+            },
+            _ => false,
+        });
+        let terminator = data.terminator();
+        let calls = matches!(&terminator.kind, TerminatorKind::Call { func, .. } if names(func));
+        match statement {
+            Some(stmt) if !calls => stmt.source_info.span,
+            _ => terminator.source_info.span,
         }
     }
 
