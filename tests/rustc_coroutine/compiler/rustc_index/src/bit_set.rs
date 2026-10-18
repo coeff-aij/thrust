@@ -303,7 +303,6 @@ impl<'a, T: Idx> BitIter<'a, T> {
 // Its only callers, the two trusted `iter`s, state the ghost fields.
 impl<'a, T: Idx> BitIter<'a, T> {
     #[inline]
-    #[thrust::trusted]
     #[thrust::callable]
     fn new(words: &'a [Word]) -> BitIter<'a, T> {
         BitIter {
