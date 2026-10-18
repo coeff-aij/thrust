@@ -72,7 +72,7 @@ CI (`.github/workflows/ci.yml`) checks `cargo fmt` and `cargo clippy` and runs `
 
 ### Using Thrust with Cargo
 
-Thrust can check Cargo projects that have no dependencies. External crates are not supported yet (#255).
+Thrust can check Cargo projects and workspaces whose crates depend only on one another; external crates are not supported yet (#255). A contract is read in the crate it is written in, so a crate calling a function of another gives that function an extern spec, as `std.rs` does for the standard library (`tests/cargo/workspace`).
 
 First, build Thrust in its source directory:
 
@@ -108,6 +108,8 @@ cargo +nightly-2025-09-08 check
 ```
 
 For the example above, the check succeeds. Changing the assertion to `add(1, 2) == 2` makes it fail with `verification error: Unsat` and a nonzero exit status.
+
+Under `cargo check`, a crate that verifies goes on to write its metadata, as `rustc` would, so that the crates using it compile; one that fails writes none. Thrust records in each crate's dep-info the `THRUST_` variables with their values and the Thrust binary, so that cargo checks a crate again only when its sources, one of those variables or Thrust changes, and finds it fresh otherwise. A compilation asking for more than metadata (`cargo build`) stops after the verification: Thrust turns off MIR passes for its analysis that a program to run needs.
 
 ## Annotation
 

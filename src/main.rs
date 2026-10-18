@@ -10,6 +10,7 @@ extern crate rustc_span;
 
 use rustc_driver::{Callbacks, Compilation};
 use rustc_interface::interface::{Compiler, Config};
+use rustc_session::config::OutputType;
 
 fn try_specs_enabled() -> bool {
     matches!(std::env::var("THRUST_TRY_SPECS").as_deref(), Ok("1"))
@@ -68,6 +69,16 @@ impl Callbacks for CompilerCalls {
         config.override_queries = Some(|_sess, providers| {
             providers.mir_borrowck = thrust::mir_borrowck_skip_formula_fn;
         });
+
+        // The dep-info is written before the analysis, so what the run reads is recorded when
+        // the session is made, as clippy-driver records `CLIPPY_ARGS`.
+        config.psess_created = Some(Box::new(track_inputs));
+
+        // A crate using this one reads the bodies of the functions it calls here, as it reads
+        // those of `std`, which is built with this option too.
+        if only_metadata(&config.opts) {
+            config.opts.unstable_opts.always_encode_mir = true;
+        }
     }
 
     fn after_crate_root_parsing(
@@ -113,7 +124,43 @@ impl Callbacks for CompilerCalls {
         ctx.register_well_known_defs();
         ctx.crate_analyzer().run();
         ctx.solve();
-        Compilation::Stop
+        // A crate that verifies goes on to its metadata when only that is asked for (`cargo
+        // check`), so that the crates depending on it compile and cargo finds it fresh. Its code
+        // is not generated: the MIR passes above are turned off for the analysis, not for a
+        // program to run.
+        if tcx.dcx().has_errors().is_some() || !only_metadata(&tcx.sess.opts) {
+            return Compilation::Stop;
+        }
+        Compilation::Continue
+    }
+}
+
+/// Whether the compilation emits only metadata and dep-info.
+fn only_metadata(opts: &rustc_session::config::Options) -> bool {
+    opts.output_types
+        .keys()
+        .all(|t| matches!(t, OutputType::Metadata | OutputType::DepInfo))
+}
+
+/// Records in the dep-info the variables the run reads, with their values, and the Thrust binary,
+/// so that cargo checks the crate again when one of them changes.
+fn track_inputs(psess: &mut rustc_session::parse::ParseSess) {
+    let env_depinfo = psess.env_depinfo.get_mut();
+    for var in thrust::ENV_VARS {
+        let value = std::env::var(var).ok();
+        env_depinfo.insert((
+            rustc_span::Symbol::intern(var),
+            value.as_deref().map(rustc_span::Symbol::intern),
+        ));
+    }
+    if let Some(exe) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.to_str().map(str::to_owned))
+    {
+        psess
+            .file_depinfo
+            .get_mut()
+            .insert(rustc_span::Symbol::intern(&exe));
     }
 }
 
