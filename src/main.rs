@@ -60,6 +60,11 @@ impl Callbacks for CompilerCalls {
                 .push((pass.to_owned(), false));
         }
 
+        // Thrust reads each body as written: an inlined callee's body would be analyzed under the
+        // caller's mode (a verified generic function inlined into a trusted one), whatever the
+        // optimization level.
+        config.opts.unstable_opts.inline_mir = Some(false);
+
         config.override_queries = Some(|_sess, providers| {
             providers.mir_borrowck = thrust::mir_borrowck_skip_formula_fn;
         });

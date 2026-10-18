@@ -8,10 +8,11 @@ use rustc_middle::ty::TyCtxt;
 use rustc_span::def_id::{DefId, DefIndex, LocalDefId};
 use rustc_span::Span;
 
+use crate::analyze::TemplateSite;
 use crate::chc;
-use crate::refine::VarPath;
+use crate::refine::{EntryValue, VarPath};
 
-use super::body::DefBody;
+use super::body::{DefBody, NameKind};
 use super::formula::{self, show, Formula, Name, Term};
 use super::sites::{Names, Owner};
 
@@ -75,6 +76,9 @@ pub struct Constraint {
     pub span: Option<Span>,
     pub kind: String,
     pub premises: Vec<String>,
+    /// Where each premise was made, as far as the clause tells: an unknown applied, at the code
+    /// of its template (see [`template_span`]); `None` for the others.
+    pub premise_spans: Vec<Option<Span>>,
     pub conclusion: String,
     /// The premises implying the conclusion.
     pub formula: String,
@@ -151,12 +155,19 @@ fn kind(
             _ => "function".to_owned(),
         });
     }
-    if provenance.stmt.is_some() {
-        return plain("statement".to_owned());
-    }
     let (Some(body), Some(bb)) = (body, provenance.bb) else {
         return plain(span_name.to_owned());
     };
+    if let Some(stmt) = provenance.stmt {
+        let written = provenance
+            .def
+            .and_then(|def| annotations.get(&def.to_def_id()));
+        return match written.filter(|_| goal) {
+            Some(written) => written_refinement(body, bb, stmt, written)
+                .unwrap_or_else(|| plain("statement".to_owned())),
+            None => plain("statement".to_owned()),
+        };
+    }
     let Some(terminator) = body.terminator(bb) else {
         return plain(span_name.to_owned());
     };
@@ -237,6 +248,29 @@ fn kind(
     plain(kind)
 }
 
+/// The written refinement of the parameter statement `stmt` of `bb` writes through, which a goal
+/// made at the statement checks: `*x = -1` against `param(x: &mut { v: i64 | v >= 0 })`.
+fn written_refinement(
+    body: &DefBody<'_>,
+    bb: BasicBlock,
+    stmt: usize,
+    written: &crate::analyze::ContractAnnotations,
+) -> Option<(String, Annotation)> {
+    let statement = body.body.basic_blocks.get(bb)?.statements.get(stmt)?;
+    let mir::StatementKind::Assign(assign) = &statement.kind else {
+        return None;
+    };
+    let local = assign.0.local;
+    if !(1..=body.body.arg_count).contains(&local.index()) {
+        return None;
+    }
+    let spans = written
+        .params
+        .get(&crate::analyze::function_param_of_local(local))?;
+    let kind = format!("refinement of `{}`", body.local_name(local));
+    Some((kind, Annotation::Checks(spans.clone())))
+}
+
 /// A union-find over the clause's variables.
 struct Classes {
     parent: Vec<usize>,
@@ -278,14 +312,17 @@ fn equation<V>(f: &chc::Formula<V>) -> Option<(&chc::Term<V>, &chc::Term<V>)> {
 
 /// The names the clause's variables may take, best first: what an argument of a predicate of
 /// the same function stands for in its template (the body's atoms before the head's), then the
-/// program variable a typing environment entry mapped to it. The arguments of another function's
-/// predicates are named in that function, so they name nothing here.
+/// program variable a typing environment entry mapped to it, also one a block before held (the
+/// existentials of an inherited precondition, the variables of a written invariant among them),
+/// and a parameter's value on entry. The arguments of another function's
+/// predicates are named in that function, so they name nothing here. A variable the clause's code
+/// may have moved out names no value. Each name comes with its kind, which ranks it.
 fn candidate_names(
     clause: &chc::Clause,
     def: Option<LocalDefId>,
     names: &Names,
     body: Option<&DefBody<'_>>,
-) -> Vec<(chc::TermVarIdx, String)> {
+) -> Vec<(chc::TermVarIdx, String, NameKind)> {
     let mut candidates = Vec::new();
     let atoms = clause
         .body
@@ -306,7 +343,8 @@ fn candidate_names(
         let shown = names.arrange(p, &atom.args);
         for (arg, name) in shown.iter().zip(&info.args) {
             if let (chc::Term::Var(v), Some(name)) = (arg, name) {
-                candidates.push((*v, name.clone()));
+                let kind = body.map_or(NameKind::Program, |body| body.kind_of_name(name));
+                candidates.push((*v, name.clone(), kind));
             }
         }
     }
@@ -316,11 +354,31 @@ fn candidate_names(
         .iter()
         .chain(&origin.body)
         .chain(std::iter::once(&origin.head));
+    let Some(body) = body else {
+        return candidates;
+    };
+    let provenance = Provenance::of(&clause.debug_info);
+    let moved = |local| {
+        let at = provenance.bb.map(|bb| (bb, provenance.stmt));
+        at.is_some_and(|(bb, stmt)| body.moved_before(local, bb, stmt))
+    };
     for entry in entries {
         for mapping in entry.mappings() {
-            let path = mapping.var().and_then(path_of);
-            if let (Some(path), Some(body)) = (path, body) {
-                candidates.push((mapping.chc_var(), body.path_name(&path)));
+            let Some(var) = mapping.var() else {
+                continue;
+            };
+            let v = mapping.chc_var();
+            if let Some(path) = path_of(var).filter(|path| !moved(path.local)) {
+                let kind = match body.names_local(path.local) {
+                    true => NameKind::Program,
+                    false => NameKind::Temporary,
+                };
+                candidates.push((v, body.path_name(&path), kind));
+            }
+            // A clause may show the parameter's current value, or its components, beside it.
+            if let Some(EntryValue(local)) = var.downcast_ref::<EntryValue>() {
+                let name = body.entry_value_name(local.index() - 1, true);
+                candidates.push((v, name, NameKind::EntryValue));
             }
         }
     }
@@ -384,9 +442,9 @@ fn render(
     let mut class_name: BTreeMap<usize, String> = BTreeMap::new();
     let mut used = HashSet::new();
     let mut candidates = candidate_names(clause, def, names, body);
-    // Of two names of one value, a variable's own reads better than its entry value's `old(x)`.
-    candidates.sort_by_key(|(_, name)| name.starts_with("old("));
-    for (v, name) in candidates {
+    // Of two names of one value, the better kind (see `NameKind`).
+    candidates.sort_by_key(|(_, _, kind)| *kind);
+    for (v, name, _) in candidates {
         let class = classes.find(v.index());
         if class_name.contains_key(&class) || used.contains(&name) {
             continue;
@@ -463,6 +521,31 @@ fn render(
     (premises, conclusion, var_names)
 }
 
+/// The code of the template whose unknown `premise` applies, if it applies one: a contract's
+/// signature, a loop's or a call's code, a block's (the entry block's at the signature). A
+/// clause keeps no site for each of its atoms, so a premise is placed where its unknown was made.
+fn template_span(tcx: TyCtxt<'_>, premise: &Formula, input: &super::Input<'_>) -> Option<Span> {
+    let chc::Formula::Atom(chc::Atom {
+        pred: chc::Pred::Var(p),
+        ..
+    }) = premise
+    else {
+        return None;
+    };
+    let signature = |def: LocalDefId| tcx.def_span(def.to_def_id()).source_callsite();
+    match *input.template_sites.get(p)? {
+        TemplateSite::Contract(def) => Some(signature(def)),
+        TemplateSite::Block(def, bb) if bb == mir::START_BLOCK => Some(signature(def)),
+        TemplateSite::Block(def, bb) | TemplateSite::Code(def, bb) => {
+            let def_id = def.to_def_id();
+            let body = tcx
+                .is_mir_available(def_id)
+                .then(|| tcx.optimized_mir(def_id))?;
+            super::body::span_in(body, bb, None)
+        }
+    }
+}
+
 /// Whether `span` is in the body of `def`, a block with nothing in it.
 fn is_empty_body(tcx: TyCtxt<'_>, def: LocalDefId, span: Option<Span>) -> bool {
     let Some(body) = tcx.hir_maybe_body_owned_by(def) else {
@@ -508,6 +591,10 @@ pub fn constraint(
         span,
         kind,
         premises: premises.iter().map(|p| show(p, names)).collect(),
+        premise_spans: premises
+            .iter()
+            .map(|p| template_span(tcx, p, input))
+            .collect(),
         conclusion: show(&conclusion, names),
         formula,
         vars: vars.iter().map(|v| v.as_str().to_owned()).collect(),

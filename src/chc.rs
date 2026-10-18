@@ -30,7 +30,7 @@ pub use clause_builder::{ClauseBuilder, Var};
 pub use debug::DebugInfo;
 pub use dedup::dedup_pred_args;
 pub use flatten::flatten_recursive_pred_args;
-pub use solver::{verdict, Answer, Capabilities, CheckSatError, Config, Requests};
+pub use solver::{verdict, Answer, Capabilities, CheckSatError, Config, Refused, Requests};
 pub use unbox::{unbox, unbox_formula, unbox_sort};
 
 /// A name of a datatype.
@@ -1718,6 +1718,8 @@ impl UserDefinedPred {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ForallPred {
     inner: String,
+    /// The `<...>` suffix of the symbol, which names the generic arguments it stands at.
+    type_arguments: String,
     type_parameters: Vec<Sort>,
     params: Vec<Sort>,
     /// `Bool` for a predicate; the result sort of a trait logic function read at a type
@@ -1754,18 +1756,25 @@ where
 }
 
 impl ForallPred {
-    pub fn new(inner: String, type_parameters: Vec<Sort>, params: Vec<Sort>) -> Self {
-        Self::function(inner, type_parameters, params, Sort::bool())
+    pub fn new(
+        inner: String,
+        type_arguments: String,
+        type_parameters: Vec<Sort>,
+        params: Vec<Sort>,
+    ) -> Self {
+        Self::function(inner, type_arguments, type_parameters, params, Sort::bool())
     }
 
     pub fn function(
         inner: String,
+        type_arguments: String,
         type_parameters: Vec<Sort>,
         params: Vec<Sort>,
         result: Sort,
     ) -> Self {
         Self {
             inner,
+            type_arguments,
             type_parameters,
             params,
             result,
@@ -1776,9 +1785,13 @@ impl ForallPred {
         &self.result
     }
 
-    /// The symbol without the `<...>` that names the sorts it stands over.
+    /// The symbol without the `<...>` that names the generic arguments it stands at.
     pub fn inner(&self) -> &str {
         &self.inner
+    }
+
+    pub fn type_arguments(&self) -> &str {
+        &self.type_arguments
     }
 
     pub fn type_parameters(&self) -> &[Sort] {
@@ -2719,6 +2732,27 @@ pub struct UserDefinedPredDef {
     pub decreases: Option<Term<TermVarIdx>>,
 }
 
+/// The forall predicates and functions `atoms` apply, as predicates or in their arguments, and in
+/// their guards, as `user_defined_in` reads them.
+fn forall_in<'a, V: 'a>(atoms: impl Iterator<Item = &'a Atom<V>>) -> Vec<&'a ForallPred> {
+    atoms
+        .flat_map(|atom| {
+            let pred = match &atom.pred {
+                Pred::ForallPred(pred) => Some(pred),
+                _ => None,
+            };
+            let in_guard = atom
+                .guard
+                .iter()
+                .flat_map(|guard| forall_in(guard.iter_atoms()));
+            pred.into_iter()
+                .chain(atom.args.iter().flat_map(Term::forall_fns))
+                .chain(in_guard)
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
 /// The user-defined predicates and functions `atoms` apply, as predicates or in their arguments.
 fn user_defined_in<'a, V: 'a>(
     atoms: impl Iterator<Item = &'a Atom<V>>,
@@ -3130,25 +3164,8 @@ impl System {
                     }
                 }
                 UserDefinedPredBody::Formula(formula) => {
-                    // The atoms of the formula and of their guards, as `user_defined_in` reads.
-                    let guards = formula
-                        .iter_atoms()
-                        .filter_map(|atom| atom.guard.as_deref())
-                        .flat_map(Formula::iter_atoms);
                     udpd.dependencies
-                        .extend(formula.iter_atoms().chain(guards).filter_map(|atom| {
-                            match &atom.pred {
-                                Pred::ForallPred(pred) => Some(pred.clone()),
-                                _ => None,
-                            }
-                        }));
-                    udpd.dependencies.extend(
-                        formula
-                            .iter_atoms()
-                            .flat_map(|atom| &atom.args)
-                            .flat_map(Term::forall_fns)
-                            .cloned(),
-                    );
+                        .extend(forall_in(formula.iter_atoms()).into_iter().cloned());
                 }
             }
         }
@@ -3700,21 +3717,43 @@ impl System {
         // the verdict is the one the query alone gets.
         let refuted = matches!(answer.result, Err(CheckSatError::Unsat));
         if requests.proof && refuted && config.answers(requests) {
-            let mut marked = self.clone();
-            answer.clause_tags = marked.tag_clauses();
-            answer.goal_markers = marked.mark_goals();
-            let marked = marked.prepared();
-            answer.proof = config.refute(marked.smtlib2(config.capabilities()));
+            self.refute(config, &mut answer);
+        }
+        if refuted && config.asks_z3_to_refute(requests) {
+            self.refute_by_z3(&mut answer);
         }
         answer
     }
 
-    /// Whether the query declares what `z3` does not read: forall sorts, or sequences in a clause,
+    /// Asks `config`'s solver for the refutation of the system, which is refuted, with its
+    /// clauses tagged and its goals marked.
+    fn refute(&self, config: &Config, answer: &mut Answer) {
+        let mut marked = self.clone();
+        answer.clause_tags = marked.tag_clauses();
+        answer.goal_markers = marked.mark_goals();
+        let marked = marked.prepared();
+        match config.refute(marked.smtlib2(config.capabilities())) {
+            Ok(proof) => answer.proof = Some(proof),
+            Err(refused) => answer.z3_refused = Some(refused),
+        }
+    }
+
+    /// Asks `z3` for the refutation of the system, which another solver refuted (PCSat, which
+    /// gives none), when `z3` reads its query.
+    pub fn refute_by_z3(&self, answer: &mut Answer) {
+        if self.needs_pcsat() {
+            return;
+        }
+        self.refute(&Config::z3_in_place_of_solver(), answer);
+        answer.proof_by_z3 = true;
+    }
+
+    /// Whether the query uses what `z3` does not read: a forall sort or a sequence in a clause,
     /// an unknown's signature or a definition's.
     pub fn needs_pcsat(&self) -> bool {
-        let seq = |sort: &Sort| {
+        let unread = |sort: &Sort| {
             let mut found = false;
-            sort.walk(|s| found |= matches!(s, Sort::Seq(_)));
+            sort.walk(|s| found |= matches!(s, Sort::Seq(_) | Sort::Forall(_)));
             found
         };
         let vars = self.clauses.iter().flat_map(|c| c.vars.iter());
@@ -3723,13 +3762,13 @@ impl System {
             .user_defined_pred_defs
             .iter()
             .flat_map(|def| def.sig.iter().map(|(_, sort)| sort));
-        !self.forall_sorts.is_empty() || vars.chain(sigs).chain(definitions).any(seq)
+        vars.chain(sigs).chain(definitions).any(unread)
     }
 
     /// Solves each class of clauses that share an unknown on its own (see [`components`]),
     /// `jobs` at a time, reusing the verdicts `THRUST_CACHE_DIR` keeps. The system is satisfiable
     /// exactly when every part is. `THRUST_OUTPUT_DIR` gets each part's query as
-    /// `thrust_output_part<i>.smt2`.
+    /// `thrust_output_part<i>.smt2`, numbered from 1 as the parts are named.
     pub fn solve_parts(&self, jobs: usize) -> Vec<Part> {
         let config = Config::from_env();
         let cache = cache::Cache::from_env();
@@ -3740,7 +3779,8 @@ impl System {
                 .prepared()
                 .smtlib2(config.capabilities())
                 .to_string();
-            if let Err(err) = config.save_query(&format!("thrust_output_part{i}.smt2"), &query) {
+            let file = format!("thrust_output_part{}.smt2", i + 1);
+            if let Err(err) = config.save_query(&file, &query) {
                 return cache::Verdict {
                     result: Err(err.into()),
                     cached: false,
@@ -4113,7 +4153,7 @@ mod tests {
     #[test]
     fn an_unknown_depends_on_the_forall_preds_of_what_follows_it() {
         let mut system = System::default();
-        let q = ForallPred::new("q".into(), vec![], vec![Sort::int()]);
+        let q = ForallPred::new("q".into(), String::new(), vec![], vec![Sort::int()]);
         system.register_forall_pred(q.clone());
         let p = system.new_pred_var(vec![Sort::int()], DebugInfo::default());
         let x = || Term::var(0usize.into());
@@ -4148,6 +4188,7 @@ mod tests {
         system.new_forall_sort(DebugInfo::default());
         system.register_forall_pred(ForallPred::new(
             "q".into(),
+            String::new(),
             vec![],
             vec![Sort::forall(used)],
         ));
@@ -4175,15 +4216,18 @@ mod tests {
         let idx = system.new_forall_sort(
             DebugInfo::default().with_context("type_param", "ParamTy T/#0 (decl=DefId(...))"),
         );
-        system.register_forall_pred(ForallPred::new("q".into(), vec![], vec![Sort::forall(idx)]));
+        system.register_forall_pred(ForallPred::new(
+            "q".into(),
+            String::new(),
+            vec![],
+            vec![Sort::forall(idx)],
+        ));
 
-        // The query carries the debug info in comments only at the debug level.
-        let subscriber = tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::DEBUG)
-            .with_writer(std::io::sink)
-            .finish();
-        let smt =
-            tracing::subscriber::with_default(subscriber, || system.smtlib2(PCSAT).to_string());
+        // The query carries the debug info in comments only at the full comment level.
+        let smt = system
+            .smtlib2(PCSAT)
+            .with_comments(smtlib2::Comments::Full)
+            .to_string();
         assert!(smt.contains("; type_param=ParamTy T/#0 (decl=DefId(...))"));
         assert!(smt.contains("(declare-forall-sort a0)"));
     }
@@ -4195,6 +4239,7 @@ mod tests {
         let tuple = Sort::tuple(vec![Sort::forall(idx), Sort::int()]);
         system.register_forall_pred(ForallPred::new(
             "q".into(),
+            format!("<{idx}>"),
             vec![Sort::forall(idx)],
             vec![tuple, Sort::int()],
         ));

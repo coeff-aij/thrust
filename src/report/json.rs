@@ -29,6 +29,12 @@ enum Line<'a> {
         refutations: &'a str,
         /// What the solver answered when it is neither `sat` nor `unsat` (`Timeout(30s)`).
         message: Option<String>,
+        /// Of a whole query without an answer, the functions its clauses come from, as a part
+        /// line gives them.
+        functions: Option<Vec<FnSpan>>,
+        /// What `z3`, asked for the run of the whole query the solver refuted, answered instead
+        /// (`sat`: the solvers disagree).
+        z3_answer: Option<String>,
     },
     Part {
         id: usize,
@@ -38,6 +44,8 @@ enum Line<'a> {
         /// What the solver answered when it is neither `sat` nor `unsat`.
         message: Option<&'a str>,
         cached: bool,
+        /// What `z3`, asked for the run of the part the solver refuted, answered instead.
+        z3_answer: Option<String>,
     },
     Site {
         r#fn: &'a str,
@@ -55,7 +63,7 @@ enum Line<'a> {
         r#loop: Option<Range>,
         span: Option<Range>,
         obligation: &'a str,
-        premises: &'a [String],
+        premises: Vec<Premise<'a>>,
         conclusion: &'a str,
     },
     Failure {
@@ -65,9 +73,11 @@ enum Line<'a> {
         r#fn: Option<&'a str>,
         span: Option<Range>,
         obligation: Option<&'a str>,
-        premises: Option<&'a [String]>,
+        premises: Option<Vec<Premise<'a>>>,
         conclusion: Option<&'a str>,
         run: Vec<Step<'a>>,
+        /// Whether the run is `z3`'s, asked of a query the solver refuted without one.
+        run_by_z3: bool,
         truncated: bool,
         values: Vec<Value>,
         /// The functions whose inferred contract the run goes through.
@@ -92,6 +102,14 @@ struct Columns {
 struct FnSpan {
     r#fn: String,
     span: Range,
+}
+
+/// A premise of a constraint, with the span it was made at when the clause tells it (an unknown
+/// applied, at its template's code).
+#[derive(Serialize)]
+struct Premise<'a> {
+    text: &'a str,
+    span: Option<Range>,
 }
 
 #[derive(Serialize)]
@@ -129,6 +147,11 @@ pub(super) struct Json<'a, 'tcx> {
     pub(super) parts: &'a [super::Part],
     pub(super) verdict: &'a str,
     pub(super) message: Option<String>,
+    /// Of a whole query without an answer, the functions its clauses come from.
+    pub(super) functions: Option<Vec<super::parts::PartCode>>,
+    /// What `z3`, asked for a run in place of the solver, answered instead, by the number of
+    /// the part, `None` for the whole query.
+    pub(super) z3_answers: Vec<(Option<usize>, String)>,
 }
 
 impl Json<'_, '_> {
@@ -185,7 +208,7 @@ impl Json<'_, '_> {
                 .map(|span| range(self.tcx, span)),
             span: c.span.map(|span| range(self.tcx, span)),
             obligation: &c.kind,
-            premises: &c.premises,
+            premises: self.premises(c),
             conclusion: &c.conclusion,
         }
     }
@@ -228,9 +251,10 @@ impl Json<'_, '_> {
                 .and_then(|(_, c)| c.error_span)
                 .map(|s| range(self.tcx, s)),
             obligation: found.map(|(_, c)| c.kind.as_str()),
-            premises: found.map(|(_, c)| c.premises.as_slice()),
+            premises: found.map(|(_, c)| self.premises(c)),
             conclusion: found.map(|(_, c)| c.conclusion.as_str()),
             run,
+            run_by_z3: failure.by_z3,
             truncated: failure.truncated,
             values: found
                 .map(|(_, c)| failure.named_values(c))
@@ -260,6 +284,32 @@ impl Json<'_, '_> {
         }
     }
 
+    fn premises<'a>(&self, c: &'a Constraint) -> Vec<Premise<'a>> {
+        c.premises
+            .iter()
+            .zip(&c.premise_spans)
+            .map(|(text, span)| Premise {
+                text,
+                span: span.map(|s| range(self.tcx, s)),
+            })
+            .collect()
+    }
+
+    fn z3_answer(&self, part: Option<usize>) -> Option<String> {
+        let found = self.z3_answers.iter().find(|(p, _)| *p == part);
+        found.map(|(_, answer)| answer.clone())
+    }
+
+    fn fn_spans(&self, functions: &[super::parts::PartCode]) -> Vec<FnSpan> {
+        functions
+            .iter()
+            .map(|f| FnSpan {
+                r#fn: f.r#fn.clone(),
+                span: range(self.tcx, f.span),
+            })
+            .collect()
+    }
+
     pub(super) fn write(
         &self,
         entries: &[Entry<'_>],
@@ -267,7 +317,7 @@ impl Json<'_, '_> {
     ) -> std::io::Result<()> {
         let mut line = |line: Line<'_>| writeln!(out, "{}", serde_json::to_string(&line)?);
         line(Line::Report {
-            version: 2,
+            version: 3,
             root: std::env::current_dir()
                 .unwrap_or_default()
                 .display()
@@ -286,22 +336,21 @@ impl Json<'_, '_> {
                 "one per part"
             },
             message: self.message.clone(),
+            functions: self
+                .functions
+                .as_ref()
+                .map(|functions| self.fn_spans(functions)),
+            z3_answer: self.z3_answer(None),
         })?;
         for part in self.parts {
             line(Line::Part {
                 id: part.id,
                 clauses: part.clauses,
-                functions: part
-                    .functions
-                    .iter()
-                    .map(|f| FnSpan {
-                        r#fn: f.r#fn.clone(),
-                        span: range(self.tcx, f.span),
-                    })
-                    .collect(),
+                functions: self.fn_spans(&part.functions),
                 verdict: part.verdict,
                 message: part.message.as_deref(),
                 cached: part.cached,
+                z3_answer: self.z3_answer(Some(part.id)),
             })?;
         }
         for (part, failure) in &self.failures {

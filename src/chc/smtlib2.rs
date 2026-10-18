@@ -509,13 +509,16 @@ impl<'ctx, 'a> Clause<'ctx, 'a> {
 /// for and one line placing each clause and declaration in the source; at `debug`, every field
 /// of the spans each was made in and the typing environment, body and head of each clause.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum Comments {
+pub(crate) enum Comments {
     None,
     Origin,
     Full,
 }
 
 impl Comments {
+    /// The level the current log configuration asks for. `tracing::enabled!` caches its answer
+    /// per call site across threads, so a caller that needs a fixed level passes [`Comments`]
+    /// to [`System::with_comments`] instead.
     fn from_log_level() -> Self {
         if tracing::enabled!(tracing::Level::DEBUG) {
             Comments::Full
@@ -1004,6 +1007,7 @@ impl<'ctx, 'a> DepExistsPredVarDef<'ctx, 'a> {
 pub struct System<'a> {
     ctx: FormatContext,
     inner: &'a chc::System,
+    comments: Comments,
 }
 
 /// What each quantified variable `q$<n>` stands for: a binder of an annotation, with its source
@@ -1025,7 +1029,7 @@ fn write_quantified_var_names(
 
 impl<'a> std::fmt::Display for System<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let comments = Comments::from_log_level();
+        let comments = self.comments;
         writeln!(f, "(set-logic HORN)\n")?;
         if comments >= Comments::Origin {
             write_quantified_var_names(f, self.inner)?;
@@ -1221,6 +1225,16 @@ impl<'a> System<'a> {
 
     pub fn new(inner: &'a chc::System, capabilities: chc::Capabilities) -> Self {
         let ctx = FormatContext::from_system(inner, capabilities);
-        Self { ctx, inner }
+        Self {
+            ctx,
+            inner,
+            comments: Comments::from_log_level(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_comments(mut self, comments: Comments) -> Self {
+        self.comments = comments;
+        self
     }
 }

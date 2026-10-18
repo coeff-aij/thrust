@@ -152,7 +152,7 @@ fn the_report_of_a_split_run_writes_only_the_parts() {
         .collect();
     std::fs::remove_dir_all(&dir).unwrap();
     assert!(
-        files.iter().any(|f| f == "thrust_output_part0.smt2"),
+        files.iter().any(|f| f == "thrust_output_part1.smt2"),
         "{files:?} {stderr}"
     );
     assert!(
@@ -237,6 +237,86 @@ fn a_solver_without_evidence_solves_each_part_once() {
     assert_eq!(runs, 3, "{stderr}");
 }
 
+/// A solver other than `z3` that reads PCSat's declarations: the stand-in turns them into
+/// `z3`'s and runs `z3`, so that it refutes as PCSat would and gives no refutation.
+fn pcsat_stand_in() -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = std::env::temp_dir().join(format!("thrust-pcsat-stand-in-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let solver = dir.join("pcsat");
+    let script = "#!/bin/sh\n\
+        file=\"\"; for a in \"$@\"; do file=\"$a\"; done\n\
+        sed 's/(declare-dep-exists-fun \\([^ ]*\\) () /(declare-fun \\1 /' \"$file\" > \"$file.z3\"\n\
+        z3 fp.engine=spacer -smt2 \"$file.z3\"; status=$?\n\
+        rm -f \"$file.z3\"; exit $status\n";
+    std::fs::write(&solver, script).unwrap();
+    std::fs::set_permissions(&solver, std::fs::Permissions::from_mode(0o755)).unwrap();
+    solver
+}
+
+/// A part a solver without refutations refutes is refuted by `z3` for the report when `z3` reads
+/// it, which the run says; so is the whole query.
+#[test]
+fn z3_gives_the_run_of_a_part_another_solver_refutes() {
+    let solver = pcsat_stand_in();
+    let env = [
+        ("THRUST_REPORT", "1"),
+        ("THRUST_SOLVER", solver.to_str().unwrap()),
+    ];
+    let split = run_with("two_parts.rs", Some("2"), &env);
+    let mut json_env = env.to_vec();
+    json_env.push(("THRUST_REPORT_FORMAT", "json"));
+    let whole = run_with("two_parts.rs", None, &json_env);
+    std::fs::remove_dir_all(solver.parent().unwrap()).unwrap();
+    let stderr = String::from_utf8_lossy(&split.stderr);
+    assert!(
+        stderr.contains("thrust: refuted: ensures in `bad`"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("how `z3` (asked for the run, as the solver gives none) reaches it"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("bad.bb0(x = 0, old(x) = 0)"), "{stderr}");
+    let stdout = String::from_utf8_lossy(&whole.stdout);
+    assert!(stdout.contains(r#""run_by_z3":true"#), "{stdout}");
+}
+
+/// When `z3`, asked in place of a solver that gives no refutation, finds a part the solver
+/// refutes satisfiable, the report says the solvers disagree rather than showing nothing.
+#[test]
+fn z3_finding_a_refuted_part_sat_is_a_disagreement() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = std::env::temp_dir().join(format!("thrust-unsat-solver-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let solver = dir.join("always-unsat");
+    std::fs::write(&solver, "#!/bin/sh\necho unsat\n").unwrap();
+    std::fs::set_permissions(&solver, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let env = [
+        ("THRUST_REPORT", "1"),
+        ("THRUST_SOLVER", solver.to_str().unwrap()),
+    ];
+    let output = run_with("two_parts.rs", Some("2"), &env);
+    let mut json_env = env.to_vec();
+    json_env.push(("THRUST_REPORT_FORMAT", "json"));
+    let json = run_with("two_parts.rs", Some("2"), &json_env);
+    std::fs::remove_dir_all(&dir).unwrap();
+    let stdout = String::from_utf8_lossy(&json.stdout);
+    let part = stdout
+        .lines()
+        .find(|l| l.contains(r#""kind":"part","id":1,"#))
+        .unwrap_or_default();
+    assert!(part.ends_with(r#""z3_answer":"sat"}"#), "{stdout}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(
+            "thrust: no failing obligation to show for part 1: `z3`, asked for the run as the \
+             solver gives none, answers `sat`: the two solvers disagree on the query"
+        ),
+        "{stderr}"
+    );
+}
+
 /// A split run's JSON states one refutation per part, and each failure names its part; without
 /// the report, a failing part's error is at the code of the part.
 #[test]
@@ -247,8 +327,7 @@ fn a_split_failure_names_its_part() {
         &[("THRUST_REPORT", "1"), ("THRUST_REPORT_FORMAT", "json")],
     );
     let stdout = String::from_utf8_lossy(&json.stdout);
-    let verdict =
-        r#"{"kind":"verdict","verdict":"unsat","refutations":"one per part","message":null}"#;
+    let verdict = r#"{"kind":"verdict","verdict":"unsat","refutations":"one per part","message":null,"functions":null,"z3_answer":null}"#;
     assert!(stdout.contains(verdict), "{stdout}");
     assert!(
         stdout.contains(r#"{"kind":"failure","part":2,"constraint":"#),
@@ -356,10 +435,12 @@ fn a_part_without_an_answer_gives_the_solver_s_limit() {
     );
     std::fs::remove_dir_all(&dir).unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let verdict = r#"{"kind":"verdict","verdict":"timeout","refutations":"one per part","message":"part 1: Timeout(1s)"}"#;
+    let verdict = r#"{"kind":"verdict","verdict":"timeout","refutations":"one per part","message":"part 1: Timeout(1s)","functions":null,"z3_answer":null}"#;
     assert!(stdout.contains(verdict), "{stdout}");
     assert!(
-        stdout.contains(r#""verdict":"timeout","message":"Timeout(1s)","cached":false}"#),
+        stdout.contains(
+            r#""verdict":"timeout","message":"Timeout(1s)","cached":false,"z3_answer":null}"#
+        ),
         "{stdout}"
     );
 }
@@ -425,4 +506,32 @@ fn the_parts_of_one_function_tell_apart() {
         .collect();
     assert_eq!(made_at.len(), 2, "{stderr}");
     assert_ne!(made_at[0], made_at[1], "{stderr}");
+}
+
+/// The variables of a written invariant at the loop's exit, which no longer hold a variable of
+/// the program there, are named by the variables they held at the loop's head.
+#[test]
+fn the_variables_of_an_invariant_keep_their_names_after_the_loop() {
+    let output = run_with(
+        "invariant_not_preserved.rs",
+        Some("4"),
+        &[("THRUST_REPORT", "failure")],
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let exit = stderr
+        .lines()
+        .filter(|l| l.contains("where it fails:"))
+        .find(|l| l.contains("result = "))
+        .unwrap_or_default();
+    assert_eq!(
+        exit.trim(),
+        "= note: where it fails: result = 1, n = 1, i = 1",
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(
+            "c1: (i = n ∧ 0 <= i ∧ 2 * result = i * (i + 1)) ==> 2 * result = n * (n - 1)"
+        ),
+        "{stderr}"
+    );
 }

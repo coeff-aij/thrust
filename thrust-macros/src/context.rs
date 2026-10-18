@@ -134,7 +134,7 @@ fn extern_spec_impl(item_impl: &mut syn::ItemImpl) -> syn::Result<TokenStream2> 
         })
         .collect();
 
-    let trusted_path: syn::Path = syn::parse_quote!(thrust::trusted);
+    let ignored_path: syn::Path = syn::parse_quote!(thrust::ignored);
     let mut wrappers = Vec::new();
     for item in &mut item_impl.items {
         let syn::ImplItem::Fn(method) = item else {
@@ -144,12 +144,18 @@ fn extern_spec_impl(item_impl: &mut syn::ItemImpl) -> syn::Result<TokenStream2> 
         if specs.is_empty() {
             continue;
         }
-        // A trusted body is not verified against the specification the wrapper now
-        // carries, mirroring what an inherent impl's expansion does with the attribute.
-        for attr in &mut method.attrs {
-            if attr.path() == &trusted_path {
-                *attr = syn::parse_quote!(#[thrust::ignored]);
-            }
+        if is_destructor(&trait_path, method) {
+            return Err(syn::Error::new_spanned(
+                &specs[0],
+                "a `Drop::drop` takes no `requires` or `ensures`: Rust runs it wherever a value \
+                 is dropped, so Thrust checks it under `requires(true)` and infers its effect",
+            ));
+        }
+        if method.attrs.iter().any(|attr| attr.path() == &ignored_path) {
+            return Err(syn::Error::new_spanned(
+                &method.sig,
+                crate::spec::IGNORED_WITH_CONTRACT,
+            ));
         }
         wrappers.push(extern_spec_wrapper(
             method,
@@ -216,6 +222,16 @@ fn extern_spec_wrapper(
             <#self_ty as #trait_path>::#name #turbofish(#(#args),*)
         }
     })
+}
+
+/// Whether `method` is `drop` of an impl of `Drop`, which a specification wrapper cannot call
+/// (E0040).
+fn is_destructor(trait_path: &syn::Path, method: &syn::ImplItemFn) -> bool {
+    trait_path
+        .segments
+        .last()
+        .is_some_and(|segment| segment.ident == "Drop")
+        && method.sig.ident == "drop"
 }
 
 /// Takes the specification attributes off a method, keeping their order.

@@ -88,10 +88,12 @@ fn json_report_shows_the_failure_alone() {
     let kinds: Vec<&str> = stdout.lines().filter_map(|l| l.split('"').nth(3)).collect();
     assert_eq!(kinds, ["report", "verdict", "failure"], "{stdout}");
     let root = env!("CARGO_MANIFEST_DIR");
-    let header = format!(r#"{{"kind":"report","version":2,"root":"{root}","#);
+    let header = format!(r#"{{"kind":"report","version":3,"root":"{root}","#);
     assert!(stdout.starts_with(&header), "{stdout}");
     let step = r#""via":"c0","obligation":"loop entry","span":{"file":"tests/report/loop_fail.rs","line":9,"column":5,"end_line":14,"end_column":6}"#;
     assert!(stdout.contains(step), "{stdout}");
+    let premise = r#"{"text":"main.loop#1(x, y)","span":{"file":"tests/report/loop_fail.rs","line":9,"column":11,"end_line":9,"end_column":17}}"#;
+    assert!(stdout.contains(premise), "{stdout}");
     // `rand`'s `ensures(true)` assumes nothing.
     assert!(stdout.contains(r#""assumes":[]"#), "{stdout}");
 }
@@ -104,7 +106,7 @@ fn report_states_the_verdict_and_one_refutation_per_query() {
     let stdout = String::from_utf8_lossy(&json.stdout);
     assert!(
         stdout.contains(
-            r#"{"kind":"verdict","verdict":"unsat","refutations":"one per query","message":null}"#
+            r#"{"kind":"verdict","verdict":"unsat","refutations":"one per query","message":null,"functions":null,"z3_answer":null}"#
         ),
         "{stdout}"
     );
@@ -133,6 +135,81 @@ fn report_labels_the_requires_a_call_breaks() {
         .unwrap_or_default();
     assert!(label.contains("the annotation it checks"), "{stderr}");
     assert!(!stderr.contains("how the solver reaches it"), "{stderr}");
+}
+
+/// A write breaking a parameter's written refinement labels that refinement.
+#[test]
+fn report_labels_the_refinement_a_write_breaks() {
+    let output = report("refinement_write.rs", "failure");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("thrust: refuted: refinement of `x` in `set`"),
+        "{stderr}"
+    );
+    let label = stderr
+        .lines()
+        .skip_while(|l| !l.contains("#[thrust_macros::param(x: &mut { v: i64 | v >= 0 })]"))
+        .nth(1)
+        .unwrap_or_default();
+    assert!(
+        label.contains("------ the annotation it checks"),
+        "{stderr}"
+    );
+}
+
+/// A call to a std function without a specification stops the analysis with an error at the
+/// call naming the function and how to give it a contract, not a panic.
+#[test]
+fn a_call_without_a_specification_is_an_error_at_the_call() {
+    let output = report("no_spec.rs", "1");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("panicked"), "{stderr}");
+    assert!(
+        stderr.contains(
+            "error: thrust: no specification of `core::num::<impl i64>::pow`, which `main` calls\n \
+             --> "
+        ),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("tests/report/no_spec.rs:2:13\n"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("`#[thrust::trusted]`"), "{stderr}");
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+}
+
+/// The line of the refuted constraint and that of its values.
+fn refuted_lines(fixture: &str) -> (String, String) {
+    let output = report(fixture, "failure");
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let line = |prefix: &str| {
+        let found = stderr.lines().find(|l| l.contains(prefix));
+        found.unwrap_or_default().to_owned()
+    };
+    (line("= note: c"), line("where it fails:"))
+}
+
+/// A variable is never named for a value it no longer holds: after a loop with a written
+/// invariant, a variable assigned again shows its new value, and the value it held at the loop
+/// is unnamed; so is one a shadowing `let` hides and one moved out.
+#[test]
+fn a_name_stands_only_for_the_value_the_variable_holds() {
+    let (constraint, values) = refuted_lines("name_after_reassign.rs");
+    assert!(
+        constraint.contains("(k >= n ∧ i = 5 ∧ k != n + 1) ==> k < 0"),
+        "{constraint}"
+    );
+    assert!(values.contains("i = 5"), "{values}");
+    let (constraint, _) = refuted_lines("name_after_shadow.rs");
+    assert!(!constraint.contains(" i >= n"), "{constraint}");
+    assert!(constraint.contains("__tmp_chc_"), "{constraint}");
+    let (constraint, _) = refuted_lines("name_after_moved.rs");
+    assert!(!constraint.contains(" b >= n"), "{constraint}");
+    assert!(constraint.contains("__tmp_chc_"), "{constraint}");
+    // A variable written again after its value was moved out holds the new value.
+    let (_, values) = refuted_lines("name_after_move_then_assign.rs");
+    assert!(values.contains("b = 7"), "{values}");
 }
 
 /// A refuted `assert!(a != b)` reads as its condition, not as the boolean term the MIR compares
@@ -249,7 +326,9 @@ fn report_names_no_contract_of_the_injected_std() {
 }
 
 /// The premises of a constraint are those its formula shows: two bounds by one value are one
-/// equation in both, and a premise the refinements of a `&mut` repeat is shown once.
+/// equation in both, and a premise the refinements of a `&mut` repeat is shown once. In JSON an
+/// unknown applied is at the code of its template, the entry block's at the signature; another
+/// premise has no span.
 #[test]
 fn premises_are_the_formula_s_and_each_is_once() {
     let output = report_with(
@@ -263,14 +342,20 @@ fn premises_are_the_formula_s_and_each_is_once() {
         .find(|l| l.contains(r#""fn":"check""#) && l.contains("assertion"))
         .unwrap_or_default();
     assert!(
-        check.contains(r#""premises":["check.bb0(x, old(x) ← x)","x = 0"]"#),
+        check.contains(
+            r#""premises":[{"text":"check.bb0(x, old(x) ← x)","span":{"file":"tests/report/bounds.rs","line":2,"column":1,"end_line":2,"end_column":17}},{"text":"x = 0","span":null}]"#
+        ),
         "{stdout}"
     );
     let identity = stdout
         .lines()
         .find(|l| l.contains(r#""kind":"failure""#) && l.contains(r#""fn":"identity""#))
         .unwrap_or_default();
-    assert_eq!(identity.matches(r#""°x >= 0""#).count(), 1, "{stdout}");
+    assert_eq!(
+        identity.matches(r#""text":"°x >= 0""#).count(),
+        1,
+        "{stdout}"
+    );
 }
 
 /// A constraint applies an unknown as the run shows a fact: each argument by the variable of the
@@ -365,7 +450,8 @@ fn json_states_columns_facts_and_the_solver_s_limit() {
     );
     std::fs::remove_dir_all(&dir).unwrap();
     let stdout = String::from_utf8_lossy(&slow.stdout);
-    let verdict = r#"{"kind":"verdict","verdict":"timeout","refutations":"one per query","message":"Timeout(1s)"}"#;
+    // A whole query without an answer names the functions of its clauses, as a part does.
+    let verdict = r#"{"kind":"verdict","verdict":"timeout","refutations":"one per query","message":"Timeout(1s)","functions":[{"fn":"main","span":{"file":"tests/report/loop_fail.rs","line":6,"column":1,"end_line":16,"end_column":2}}],"z3_answer":null}"#;
     assert!(stdout.contains(verdict), "{stdout}");
 }
 
@@ -459,7 +545,8 @@ fn a_return_is_at_the_closing_brace() {
 }
 
 /// A solution defines an unknown with `:=`; an unknown's argument is given with `←`, and one of
-/// no template variable as `_ ← term`, so the three read apart.
+/// no template variable as `_ ← term` unless another argument shows that term, so they read
+/// apart; a 1-tuple reads `(x,)`, and a unit value is not listed where a goal fails.
 #[test]
 fn solutions_and_arguments_read_apart() {
     let output = report("loop_fail.rs", "constraints");
@@ -469,12 +556,11 @@ fn solutions_and_arguments_read_apart() {
     let solved = report("inferred_pass.rs", "solution,constraints");
     let stderr = String::from_utf8_lossy(&solved.stderr);
     assert!(stderr.contains("double.pre(x) := "), "{stderr}");
+    // An argument of no template variable is left out where another argument shows its term.
     let call = report("take_max_same.rs", "constraints");
     let stderr = String::from_utf8_lossy(&call.stderr);
-    assert!(
-        stderr.contains("main.take_max#1(*m, °m, _ ← a, _ ← b, "),
-        "{stderr}"
-    );
+    assert!(stderr.contains("main.take_max#1(*m, °m, a ← "), "{stderr}");
+    assert!(!stderr.contains("_ ← a,"), "{stderr}");
 }
 
 /// The constraint of a law proved by an empty body is at the law's `ensures`, which it checks,
@@ -504,4 +590,51 @@ fn a_law_proof_and_a_refuted_ensures_are_where_they_are_read() {
         failure.contains(r#""span":{"file":"tests/report/ensures_fail.rs","line":3,"column":1,"#),
         "{stdout}"
     );
+}
+
+/// A parameter read only inside a formula macro of a lemma's contract (`pre!`, `post!`) is read;
+/// one only a closure's binder names is not.
+#[test]
+fn parameters_read_inside_formula_macros_raise_no_warning() {
+    let stderr = warnings_of("macro_mentions.rs");
+    for read in ["`f`", "`x`", "`y`"] {
+        assert!(
+            !stderr.contains(&format!("unused variable: {read}")),
+            "{stderr}"
+        );
+    }
+    assert!(stderr.contains("unused variable: `n`"), "{stderr}");
+}
+
+/// A query z3 cannot read (its forall sorts) is an error with the PCSat help, with the report as
+/// without it: the error lines before z3's verdict are not taken for the failed evidence the
+/// report asks for after it.
+#[test]
+fn an_unreadable_query_is_an_error_with_the_report_too() {
+    let plain = warnings_of("law_fails_at_impl.rs");
+    assert!(
+        plain.contains("error: verification error: Error"),
+        "{plain}"
+    );
+    assert!(plain.contains("which `z3` does not read"), "{plain}");
+    let output = report("law_fails_at_impl.rs", "1");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("error: verification error: Error"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("which `z3` does not read"), "{stderr}");
+}
+
+/// A 1-tuple reads as Rust writes it, and a unit result is not among the values.
+#[test]
+fn tuples_and_units_read_as_rust_writes_them() {
+    let output = report("predicate_fail.rs", "failure");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let values = stderr
+        .lines()
+        .find(|l| l.contains("where it fails"))
+        .unwrap_or_default();
+    assert!(values.contains(",)") && !values.contains(", )"), "{stderr}");
+    assert!(!values.contains("= ()"), "{stderr}");
 }

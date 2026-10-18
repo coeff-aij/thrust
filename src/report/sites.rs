@@ -574,12 +574,8 @@ fn block_param_names(body: &DefBody<'_>, ty: &BasicBlockType) -> Vec<String> {
         .map(|idx| match ty.param_kind(idx) {
             BasicBlockTypeParamKind::Local(local, _) => body.local_name(local),
             BasicBlockTypeParamKind::OuterFnParam(i) => {
-                let name = body.param_name(i.index());
-                if locals.contains(&name) {
-                    format!("old({name})")
-                } else {
-                    name
-                }
+                let beside = locals.contains(&body.param_name(i.index()));
+                body.entry_value_name(i.index(), beside)
             }
             BasicBlockTypeParamKind::Synthetic => format!("__tmp_thrust_synthetic{}", idx.index()),
             BasicBlockTypeParamKind::Captured => format!("__tmp_thrust_captured{}", idx.index()),

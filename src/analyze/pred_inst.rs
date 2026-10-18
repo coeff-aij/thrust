@@ -340,7 +340,7 @@ impl<'tcx> analyze::Analyzer<'tcx> {
         // A projection's arguments are type parameters of the same item, so the
         // instantiation resolves it by normalizing it at the arguments above.
         for (type_param, idx) in &entries {
-            let analyze::TypeParam::AssocType(def_id, alias_args) = type_param else {
+            let analyze::TypeParam::AssocType(def_id, alias_args, _) = type_param else {
                 continue;
             };
             let mapped: Option<Vec<_>> = alias_args
