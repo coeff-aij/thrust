@@ -4032,7 +4032,11 @@ mod tests {
             vec![Sort::forall(idx)],
         ));
 
-        let smt = system.smtlib2(PCSAT).to_string();
+        // The query carries the debug info in comments only at the full comment level.
+        let smt = system
+            .smtlib2(PCSAT)
+            .with_comments(smtlib2::Comments::Full)
+            .to_string();
         assert!(smt.contains("; type_param=ParamTy T/#0 (decl=DefId(...))"));
         assert!(smt.contains("(declare-forall-sort a0)"));
     }

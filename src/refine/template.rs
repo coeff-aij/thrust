@@ -1536,23 +1536,27 @@ where
     pub fn build(&mut self) -> rty::FunctionType {
         let mut builder = rty::TemplateBuilder::default();
         let mut param_rtys = IndexVec::<rty::FunctionParamIdx, _>::new();
+        // A refinement written on any parameter makes the precondition written, as `requires`
+        // does: the parameters it leaves out are unconstrained.
+        let infers_precondition = self.param_refinement.is_none() && self.param_rtys.is_empty();
         for (idx, param_ty) in self.param_tys.iter().enumerate() {
             let param_rty = self
                 .param_rtys
                 .get(&idx.into())
                 .cloned()
                 .unwrap_or_else(|| {
-                    if idx == self.param_tys.len() - 1 {
-                        if let Some(param_refinement) = &self.param_refinement {
-                            let mut rty = self.inner.build(param_ty.ty).vacuous();
-                            rty.refinement.push_conj(param_refinement.clone());
-                            rty
-                        } else {
-                            self.inner
-                                .for_template(self.registry)
-                                .with_scope(&builder)
-                                .build_refined(param_ty.ty)
-                        }
+                    let is_last = idx == self.param_tys.len() - 1;
+                    if let Some(param_refinement) =
+                        self.param_refinement.as_ref().filter(|_| is_last)
+                    {
+                        let mut rty = self.inner.build(param_ty.ty).vacuous();
+                        rty.refinement.push_conj(param_refinement.clone());
+                        rty
+                    } else if is_last && infers_precondition {
+                        self.inner
+                            .for_template(self.registry)
+                            .with_scope(&builder)
+                            .build_refined(param_ty.ty)
                     } else if self.param_refinement.is_some() {
                         self.inner.build(param_ty.ty).vacuous()
                     } else {

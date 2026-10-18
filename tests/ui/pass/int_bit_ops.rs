@@ -1,5 +1,6 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
+//@rustc-env: THRUST_SOLVER_TIMEOUT_SECS=120
 
 // Integer bitwise and shift operators in bodies, computed on bit-vectors of the operand width.
 

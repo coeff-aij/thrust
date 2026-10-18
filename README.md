@@ -66,6 +66,10 @@ safe
 
 Integration test examples are located under `tests/ui/` and can be executed using `cargo test`. You can review these examples to understand what the current Thrust implementation can handle.
 
+The ui tests whose header sets `THRUST_SOLVER` to `tests/thrust-pcsat-wrapper` or `tests/thrust-spacer-wrapper` run CoAR in Docker, from the image `COAR_IMAGE` names (default `coar:latest`); `THRUST_UI_THREADS` sets how many tests run at once (default 8). With `THRUST_UI_SKIP_COAR=1` those tests are skipped and counted as filtered out, and only the tests Z3 decides run.
+
+CI (`.github/workflows/ci.yml`) checks `cargo fmt` and `cargo clippy` and runs `cargo test` with `THRUST_UI_SKIP_COAR=1` and the Z3 that `.github/actions/setup-z3` pins: it has no CoAR image, so a ui test that needs PCSat is checked only locally. It runs on pushes to `main`, on pull requests, and on a manual run (`gh workflow run ci.yml --ref <branch>`); a newer run of the same ref cancels the one in progress. `.github/workflows/docs.yml` builds the API docs on every push to `main` and deploys them only from coord-e/thrust, the repository with GitHub Pages.
+
 ### Using Thrust with Cargo
 
 Thrust can check Cargo projects that have no dependencies. External crates are not supported yet (#255).
@@ -199,6 +203,8 @@ fn g(x: i32) -> i32 {
 ```
 
 Refinements may be nested inside generic arguments and reference types, e.g. `Box<{ v: i64 | v > 0 }>` or `&mut { v: i32 | v >= 0 }`.
+
+A refinement on any parameter makes the precondition written, as `requires` does: it is the conjunction of the parameter refinements, a parameter without one is unconstrained, and the body is checked under it whether or not any function calls it. A parameter's refinement may refer only to the parameters before it. `param`, `ret` and `sig` cannot be combined with `requires` or `ensures` on one function.
 
 ### Loop invariants
 
