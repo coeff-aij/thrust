@@ -4013,7 +4013,13 @@ mod tests {
         );
         system.register_forall_pred(ForallPred::new("q".into(), vec![], vec![Sort::forall(idx)]));
 
-        let smt = system.smtlib2(PCSAT).to_string();
+        // The query carries the debug info in comments only at the debug level.
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .with_writer(std::io::sink)
+            .finish();
+        let smt =
+            tracing::subscriber::with_default(subscriber, || system.smtlib2(PCSAT).to_string());
         assert!(smt.contains("; type_param=ParamTy T/#0 (decl=DefId(...))"));
         assert!(smt.contains("(declare-forall-sort a0)"));
     }
