@@ -393,3 +393,19 @@ fn a_part_declares_only_its_unknowns_sorts() {
         .unwrap_or_default();
     assert!(bad.starts_with("Unsat"), "{stderr}");
 }
+
+/// With candidate atoms (`THRUST_CANDIDATE_ATOMS`), a part keeps those of its own unknowns: the
+/// others have no sorts there.
+#[test]
+fn a_part_keeps_its_own_candidate_atoms() {
+    for mode in ["1", "2"] {
+        let output = run_with(
+            "candidate_atoms.rs",
+            Some("2"),
+            &[("THRUST_CANDIDATE_ATOMS", mode)],
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!stderr.contains("panicked"), "{stderr}");
+        assert!(stderr.contains("parts solved on their own"), "{stderr}");
+    }
+}
