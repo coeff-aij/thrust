@@ -707,8 +707,24 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     .generics_of(*def_id)
                     .requires_monomorphization(self.tcx)
             });
+        // A trusted function and the entry function are roots too: a trusted body may run
+        // verified code, which may not run an ignored function, though no verified caller exists.
+        let trusted = self
+            .trusted
+            .iter()
+            .map(|def_id| def_id.to_def_id())
+            .filter(|def_id| {
+                !self.tcx.is_closure_like(*def_id)
+                    && !self
+                        .tcx
+                        .generics_of(*def_id)
+                        .requires_monomorphization(self.tcx)
+            });
+        let entry = self.tcx.entry_fn(()).map(|(def_id, _)| def_id);
         let roots = monomorphic
             .into_iter()
+            .chain(trusted)
+            .chain(entry)
             .map(|def_id| mir_ty::Instance::mono(self.tcx, def_id))
             .collect();
         let crate_mode = |def_id: rustc_span::def_id::DefId| {

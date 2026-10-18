@@ -726,13 +726,11 @@ fn clause_args<'tcx>(clause: &mir_ty::Clause<'tcx>) -> Vec<mir_ty::GenericArg<'t
     Vec::new()
 }
 
-/// How code on a path through the program is checked ([`Analyzer::stop_ignored_reached`]): run by
-/// a function Thrust verifies, by a trusted body, or by a trusted body whose contract verified code
-/// relies on, which runs verified code again except for its parameter-free mentions.
+/// Whether code on a path through the program ([`Analyzer::stop_ignored_reached`]) is verified
+/// code, which may not run an ignored function, or trusted code, which may.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Mode {
     Verified,
-    Relied,
     Trusted,
 }
 
@@ -1265,9 +1263,11 @@ impl<'tcx> Analyzer<'tcx> {
     /// trait's specification for `S::eq` that `<&S as PartialEq>::eq` or `vec![x; n]` takes) is
     /// not checked.
     ///
-    /// The roots are the functions Thrust verifies: `roots`, monomorphic, and the instances
-    /// Thrust analyzed or reused a generic contract at, and the calls a generic body makes at
-    /// concrete arguments (`generic_roots`). From them the calls, trait methods, vtables, drop
+    /// The roots are the monomorphic functions of the crate (`roots`: those Thrust verifies, the
+    /// trusted ones and the entry function), the instances Thrust analyzed or reused a generic
+    /// contract at, the calls a generic verified body makes at concrete arguments
+    /// (`generic_roots`), and the runtime's `start` at `main`'s return type, each in the mode its
+    /// function has. From them the calls, trait methods, vtables, drop
     /// glue, function pointers and closures each instance uses (`items_of_instance`, as rustc's
     /// monomorphization collector) are followed, into std code and trusted bodies too, each
     /// instance in a mode ([`Mode`]): that of the crate function it is (`crate_mode`), or of the
@@ -1276,8 +1276,8 @@ impl<'tcx> Analyzer<'tcx> {
     /// runs may not. A generic trusted instance that verified code runs has its contract relied on,
     /// which holds only where the code its type parameters are instantiated with meets its
     /// specification, as for Creusot's trusted contracts, so everything its body runs at the
-    /// instance is verified code ([`Self::callees`]); a closure written in a generic trusted body
-    /// is relied on as that body is, and a shim passes the mode to the instance inside it. A
+    /// instance is verified code; a closure written in a generic trusted body is verified as that
+    /// body is, and a shim passes the mode to the instance inside it. A
     /// non-generic trusted body is trusted throughout. A function pointer, trait object or
     /// closure that a trusted body hands out carries the trusted mode: calling it is the trusted
     /// author's responsibility. Static initializers are not followed: verified code cannot read a
@@ -1307,8 +1307,9 @@ impl<'tcx> Analyzer<'tcx> {
                     .flat_map(|def_id| self.concrete_mentions(def_id)),
             );
         for root in roots {
-            if parent.insert((root, Mode::Verified), None).is_none() {
-                pending.push_back((root, Mode::Verified));
+            let key = (root, crate_mode(root.def_id()).unwrap_or(Mode::Verified));
+            if parent.insert(key, None).is_none() {
+                pending.push_back(key);
             }
         }
         let mut reached = Vec::new();
@@ -1322,16 +1323,15 @@ impl<'tcx> Analyzer<'tcx> {
             if !self.runs_body(instance) {
                 continue;
             }
-            for (callee, edge_mode) in self.callees(instance, mode) {
+            for callee in self.callees(instance) {
+                // A generic trusted instance that verified code runs is verified code: its contract
+                // holds only where the code its type parameters bring meets its specification.
                 let callee_mode = match crate_mode(callee.def_id()) {
-                    Some(Mode::Trusted)
-                        if edge_mode == Mode::Verified && self.is_generic(callee) =>
-                    {
-                        Mode::Relied
+                    Some(Mode::Trusted) if mode == Mode::Verified && self.is_generic(callee) => {
+                        Mode::Verified
                     }
-                    Some(Mode::Trusted) => Mode::Trusted,
-                    Some(other) => other,
-                    None => edge_mode,
+                    Some(callee_mode) => callee_mode,
+                    None => mode,
                 };
                 let key = (callee, callee_mode);
                 if let std::collections::hash_map::Entry::Vacant(entry) = parent.entry(key) {
@@ -1377,28 +1377,16 @@ impl<'tcx> Analyzer<'tcx> {
             .requires_monomorphization(self.tcx)
     }
 
-    /// The functions `instance`'s body uses, each in the mode the body runs in, and as verified
-    /// code for a trusted body whose contract verified code relies on (`Mode::Relied`): such a
-    /// contract holds only where the code its type parameters are instantiated with meets its
-    /// specification, and everything the body runs at the instance is taken as such code. A
-    /// shim is a body like any other, so the instance inside it is relied on again.
-    fn callees(
-        &self,
-        instance: mir_ty::Instance<'tcx>,
-        mode: Mode,
-    ) -> Vec<(mir_ty::Instance<'tcx>, Mode)> {
+    /// The functions `instance`'s body uses.
+    fn callees(&self, instance: mir_ty::Instance<'tcx>) -> Vec<mir_ty::Instance<'tcx>> {
         use rustc_middle::mir::mono::{CollectionMode, MonoItem};
 
-        let callee_mode = match mode {
-            Mode::Relied => Mode::Verified,
-            other => other,
-        };
         let (used, _) = self
             .tcx
             .items_of_instance((instance, CollectionMode::UsedItems));
         used.iter()
             .filter_map(|item| match item.node {
-                MonoItem::Fn(callee) => Some((callee, callee_mode)),
+                MonoItem::Fn(callee) => Some(callee),
                 _ => None,
             })
             .collect()
