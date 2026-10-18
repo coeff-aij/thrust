@@ -282,6 +282,35 @@ fn z3_gives_the_run_of_a_part_another_solver_refutes() {
     assert!(stdout.contains(r#""run_by_z3":true"#), "{stdout}");
 }
 
+/// When `z3`, asked in place of a solver that gives no refutation, finds a part the solver
+/// refutes satisfiable, the report says the solvers disagree rather than showing nothing.
+#[test]
+fn z3_finding_a_refuted_part_sat_is_a_disagreement() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = std::env::temp_dir().join(format!("thrust-unsat-solver-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let solver = dir.join("always-unsat");
+    std::fs::write(&solver, "#!/bin/sh\necho unsat\n").unwrap();
+    std::fs::set_permissions(&solver, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let output = run_with(
+        "two_parts.rs",
+        Some("2"),
+        &[
+            ("THRUST_REPORT", "1"),
+            ("THRUST_SOLVER", solver.to_str().unwrap()),
+        ],
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(
+            "thrust: no failing obligation to show for part 1: `z3`, asked for the run as the \
+             solver gives none, answers `sat`: the two solvers disagree on the query"
+        ),
+        "{stderr}"
+    );
+}
+
 /// A split run's JSON states one refutation per part, and each failure names its part; without
 /// the report, a failing part's error is at the code of the part.
 #[test]

@@ -3719,7 +3719,10 @@ impl System {
         answer.clause_tags = marked.tag_clauses();
         answer.goal_markers = marked.mark_goals();
         let marked = marked.prepared();
-        answer.proof = config.refute(marked.smtlib2(config.capabilities()));
+        match config.refute(marked.smtlib2(config.capabilities())) {
+            Ok(proof) => answer.proof = Some(proof),
+            Err(refused) => answer.z3_refused = Some(refused),
+        }
     }
 
     /// Asks `z3` for the refutation of the system, which another solver refuted (PCSat, which
@@ -3728,8 +3731,8 @@ impl System {
         if self.needs_pcsat() {
             return;
         }
-        self.refute(&Config::default(), answer);
-        answer.proof_by_z3 = answer.proof.is_some();
+        self.refute(&Config::z3_in_place_of_solver(), answer);
+        answer.proof_by_z3 = true;
     }
 
     /// Whether the query uses what `z3` does not read: a forall sort or a sequence in a clause,

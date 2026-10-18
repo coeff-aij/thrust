@@ -183,17 +183,31 @@ impl Human<'_, '_> {
             return;
         }
         let Some(failure) = failure else {
+            let refused = answer.z3_refused.as_deref().unwrap_or("none");
             let why = match (&answer.proof, answer.goal_markers.is_empty()) {
-                (None, true) => {
-                    "the solver gives no refutation, and `z3`, asked in its place, does not read \
-                     the query (it has forall sorts or sequences)"
+                (None, true) => "the solver gives no refutation, and `z3`, asked in its place, \
+                                 does not read the query (it has forall sorts or sequences)"
+                    .to_owned(),
+                // A `sat` here contradicts the solver's verdict.
+                (None, false) if answer.proof_by_z3 && refused == "sat" => {
+                    "`z3`, asked for the run as the solver gives none, answers `sat`: the two \
+                     solvers disagree on the query"
+                        .to_owned()
                 }
-                (None, false) => "the second run, asked for a refutation, gave none",
-                (Some(_), _) => "the refutation derives no goal of the system",
+                (None, false) if answer.proof_by_z3 => format!(
+                    "`z3`, asked for the run as the solver gives none, gave none ({refused})"
+                ),
+                (None, false) => {
+                    format!("the second run, asked for a refutation, gave none ({refused})")
+                }
+                (Some(_), _) => "the refutation derives no goal of the system".to_owned(),
             };
-            self.tcx
-                .dcx()
-                .note(format!("thrust: no failing obligation to show: {why}"));
+            let part = asked
+                .map(|a| format!(" for part {}", a.part))
+                .unwrap_or_default();
+            self.tcx.dcx().note(format!(
+                "thrust: no failing obligation to show{part}: {why}"
+            ));
             return;
         };
         let found = constraint_of(entries, failure.goal);
