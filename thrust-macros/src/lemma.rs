@@ -15,18 +15,17 @@ use crate::spec::{generic_params_tokens, generic_turbofish, has_last_segment, ta
 
 pub fn expand(item: TokenStream) -> TokenStream {
     let mut func = syn::parse_macro_input!(item as syn::ItemFn);
+    // The parameters its contract (and its variant) mentions are read by it, whatever the body
+    // reads.
+    let attrs = func.attrs.clone();
+    crate::spec::allow_unused_contract_params(&attrs, &mut func.sig.inputs, false);
     let variant = match take_variant(&mut func.attrs) {
         Ok(variant) => variant,
         Err(e) => return error_with(e, &func),
     };
     func.attrs.push(syn::parse_quote!(#[thrust::lemma]));
-    // A lemma is a statement the program uses only through `proof!`; one with an empty body is
-    // proved by its contract and reads no parameter.
+    // A lemma is a statement the program uses only through `proof!`.
     func.attrs.push(syn::parse_quote!(#[allow(dead_code)]));
-    if func.block.stmts.is_empty() {
-        func.attrs
-            .push(syn::parse_quote!(#[allow(unused_variables)]));
-    }
     let Some(variant) = variant else {
         return func.into_token_stream().into();
     };

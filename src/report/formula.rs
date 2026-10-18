@@ -126,7 +126,7 @@ pub fn components(name: &str, value: Term) -> Vec<(String, Term)> {
     }
 }
 
-/// `p(…)` with each argument by the variable of the template it is, as `name := term`, a `&mut`
+/// `p(…)` with each argument by the variable of the template it is, as `name ← term`, a `&mut`
 /// as its current and final values `*name` and `°name` (by `sorts`, also when the term is a
 /// variable), and the name alone where the term is that variable; an argument of no variable of
 /// the template is its term.
@@ -153,7 +153,7 @@ fn applied(pred: &str, params: &[Option<String>], sorts: &[chc::Sort], args: Vec
             if term == name {
                 shown.push(name);
             } else {
-                shown.push(format!("{name} := {term}"));
+                shown.push(format!("{name} ← {term}"));
             }
         }
     }
@@ -280,25 +280,22 @@ fn compared_difference<V>(
     chc::Atom::new(p.into(), vec![x, plus(y, k)])
 }
 
-/// `y + k` over the integers, `y` itself an integer moved by one (`z + j`, `z - j`) moved once.
+/// `y + k` over the integers, folded into `y` when `y` is an integer or a term plus or minus one
+/// (`z + j` moved by `k` is `z + (j + k)`).
 fn plus<V>(y: chc::Term<V>, k: num_bigint::BigInt) -> chc::Term<V> {
     use chc::{Function, Term};
-    let (base, k) = match y {
-        Term::Int(j) => return Term::Int(j + k),
-        Term::App(f, mut ts) if ts.len() == 2 && matches!(ts[1], Term::Int(_)) => {
-            let Term::Int(j) = ts.pop().unwrap() else {
-                unreachable!()
-            };
-            let base = ts.pop().unwrap();
-            match f {
-                f if f == Function::ADD => (base, k + j),
-                f if f == Function::SUB => (base, k - j),
-                f => return plus_at(Term::App(f, vec![base, Term::Int(j)]), k),
+    match y {
+        Term::Int(j) => Term::Int(j + k),
+        Term::App(f, ts) if f == Function::ADD || f == Function::SUB => {
+            match <[Term<V>; 2]>::try_from(ts) {
+                Ok([base, Term::Int(j)]) if f == Function::ADD => plus_at(base, k + j),
+                Ok([base, Term::Int(j)]) => plus_at(base, k - j),
+                Ok(ts) => plus_at(Term::App(f, ts.into()), k),
+                Err(ts) => plus_at(Term::App(f, ts), k),
             }
         }
-        y => (y, k),
-    };
-    plus_at(base, k)
+        y => plus_at(y, k),
+    }
 }
 
 /// `base + k`, `base - k` for a negative `k`, `base` for `0`.

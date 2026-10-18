@@ -263,7 +263,7 @@ fn premises_are_the_formula_s_and_each_is_once() {
         .find(|l| l.contains(r#""fn":"check""#) && l.contains("assertion"))
         .unwrap_or_default();
     assert!(
-        check.contains(r#""premises":["check.bb0(x, old(x) := x)","x = 0"]"#),
+        check.contains(r#""premises":["check.bb0(x, old(x) ← x)","x = 0"]"#),
         "{stdout}"
     );
     let identity = stdout
@@ -274,7 +274,7 @@ fn premises_are_the_formula_s_and_each_is_once() {
 }
 
 /// A constraint applies an unknown as the run shows a fact: each argument by the variable of the
-/// template it is (`name := term`), a `&mut` as `*x` and `°x`, also where its term is a
+/// template it is (`name ← term`, apart from the `:=` of a solution), a `&mut` as `*x` and `°x`, also where its term is a
 /// variable, never as a `<current, final>` pair.
 #[test]
 fn constraints_name_the_arguments_of_an_unknown() {
@@ -289,7 +289,7 @@ fn constraints_name_the_arguments_of_an_unknown() {
         .filter(|l| l.contains(r#""fn":"swap""#))
         .collect();
     assert!(
-        swap.iter().any(|l| l.contains("swap.bb0(*x := ")),
+        swap.iter().any(|l| l.contains("swap.bb0(*x ← ")),
         "{stdout}"
     );
     assert!(swap.iter().all(|l| !l.contains('<')), "{stdout}");
@@ -316,8 +316,8 @@ fn report_labels_the_invariant_a_loop_checks() {
     assert!(label.contains("the annotation it checks"), "{stderr}");
 }
 
-/// A law and a lemma with an empty body raise no lint: they are not called and need not read
-/// their parameters.
+/// A law, its proof restated as a law on the impl, and the parameters a lemma's contract reads
+/// raise no lint.
 #[test]
 fn laws_and_lemmas_raise_no_warning() {
     let stderr = warnings_of("law_proof.rs");
@@ -428,4 +428,40 @@ fn report_labels_the_invariant_a_preservation_checks() {
         .nth(1)
         .unwrap_or_default();
     assert!(label.contains("the annotation it checks"), "{stderr}");
+}
+
+/// `#[thrust_macros::law]` on an impl item must implement a law of its trait.
+#[test]
+fn a_restated_law_must_be_one() {
+    let stderr = warnings_of("law_not_a_law.rs");
+    assert!(
+        stderr.contains("`#[thrust_macros::law]` on a method that implements no law of its trait"),
+        "{stderr}"
+    );
+}
+
+/// A run's step for a return value is at the closing brace, apart from the function's entry; the
+/// error of a refuted `ensures` is at the signature.
+#[test]
+fn a_return_is_at_the_closing_brace() {
+    let output = report("swap_half.rs", "failure");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("return value, tests/report/swap_half.rs:3:1]"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("function entry, tests/report/swap_half.rs:1:1]"),
+        "{stderr}"
+    );
+}
+
+/// A solution defines an unknown with `:=`; an unknown's argument is given with `←`, so the two
+/// read apart.
+#[test]
+fn solutions_and_arguments_read_apart() {
+    let output = report("loop_fail.rs", "constraints");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("main.loop#1(x ← "), "{stderr}");
+    assert!(!stderr.contains(" := "), "{stderr}");
 }

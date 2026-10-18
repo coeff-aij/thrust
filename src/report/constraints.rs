@@ -36,15 +36,21 @@ impl Provenance {
         Provenance { def, bb, stmt }
     }
 
-    /// The span of the code the clause was made at: its statement or terminator, or else, and
-    /// for a return, whose span is empty (after the closing brace), its function's signature.
+    /// The span of the code the clause was made at: its statement or terminator (a return's,
+    /// empty after the closing brace, widened over the brace), or else its function's signature.
     pub fn span(&self, tcx: TyCtxt<'_>) -> Option<Span> {
         let def = self.def?.to_def_id();
         let body = tcx.is_mir_available(def).then(|| tcx.optimized_mir(def));
         let in_body = body
             .zip(self.bb)
             .and_then(|(body, bb)| super::body::span_in(body, bb, self.stmt))
-            .filter(|span| !span.is_empty());
+            .and_then(|span| {
+                if !span.is_empty() {
+                    return Some(span);
+                }
+                let brace = span.lo().0.checked_sub(1)?;
+                Some(span.with_lo(rustc_span::BytePos(brace)))
+            });
         Some(in_body.unwrap_or_else(|| tcx.def_span(def).source_callsite()))
     }
 }
@@ -61,6 +67,9 @@ pub struct Constraint {
     /// The name of each variable of the clause, by its index.
     pub vars: Vec<String>,
     pub annotation: Annotation,
+    /// Where an error of the constraint goes: its span, or for one made at a return, the
+    /// function's signature.
+    pub error_span: Option<Span>,
 }
 
 /// The written annotation a constraint checks or assumes, by its spans.
@@ -450,6 +459,17 @@ pub fn constraint(
 ) -> Constraint {
     let provenance = Provenance::of(&clause.debug_info);
     let span = provenance.span(tcx);
+    let at_return = matches!(
+        (body, provenance.bb),
+        (Some(body), Some(bb)) if matches!(
+            body.terminator(bb).map(|t| &t.kind),
+            Some(mir::TerminatorKind::Return)
+        )
+    );
+    let error_span = match provenance.def {
+        Some(def) if at_return => Some(tcx.def_span(def.to_def_id()).source_callsite()),
+        _ => span,
+    };
     let (kind, annotation) = kind(tcx, clause, &provenance, body, names, input);
     let (premises, conclusion, vars) = render(id, clause, provenance.def, names, body);
     let formula = show(
@@ -465,5 +485,6 @@ pub fn constraint(
         formula,
         vars: vars.iter().map(|v| v.as_str().to_owned()).collect(),
         annotation,
+        error_span,
     }
 }
