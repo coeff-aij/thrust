@@ -808,14 +808,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             if !fixed.insert(*callee) {
                 continue;
             }
-            let Some(fn_ty) = self.ctx.entered_fn_ty(*callee) else {
+            let Some(fn_ty) = self.ctx.entered_inferred_fn_ty(*callee) else {
                 continue;
             };
-            if self.ctx.infers_precondition(&fn_ty) {
-                tracing::debug!(%callee, "entered from code Thrust does not analyze");
-                let clauses = analyze::Analyzer::accepts_every_argument(&fn_ty);
-                self.ctx.extend_clauses(clauses);
-            }
+            tracing::debug!(%callee, "entered from code Thrust does not analyze");
+            let clauses = analyze::Analyzer::accepts_every_argument(&fn_ty);
+            self.ctx.extend_clauses(clauses);
         }
         let handed_over = self.ctx.handed_over_closures(&entries.analyzed);
         for (closure, from) in &entries.closures {

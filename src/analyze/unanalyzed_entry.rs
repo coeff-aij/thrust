@@ -213,7 +213,7 @@ impl<'tcx> analyze::Analyzer<'tcx> {
             if analyzed {
                 entries.analyzed.push(instance);
             }
-            if !self.runs_body(instance) {
+            if !self.runs_body(instance) || self.nests_past_recursion_limit(instance) {
                 continue;
             }
             let stated = (!analyzed).then(|| {
@@ -248,19 +248,47 @@ impl<'tcx> analyze::Analyzer<'tcx> {
         entries
     }
 
-    /// The contract of the function `instance` runs, at its generic arguments.
-    pub fn entered_fn_ty(&mut self, instance: mir_ty::Instance<'tcx>) -> Option<rty::FunctionType> {
+    /// Whether the generic arguments of `instance` nest as deeply as the recursion limit, as
+    /// those of a polymorphically recursive function do. Such an instance is not followed:
+    /// rustc's collector stops at it, and so does `check_reused_instances` afterwards.
+    fn nests_past_recursion_limit(&self, instance: mir_ty::Instance<'tcx>) -> bool {
+        let limit = self.tcx.recursion_limit().0;
+        instance
+            .args
+            .iter()
+            .any(|arg| analyze::extern_spec::type_depth(arg) >= limit)
+    }
+
+    /// The contract of the function `instance` runs, at its generic arguments, when its
+    /// precondition is inferred. A generic def's template tells before its body is analyzed at
+    /// the instance.
+    pub fn entered_inferred_fn_ty(
+        &mut self,
+        instance: mir_ty::Instance<'tcx>,
+    ) -> Option<rty::FunctionType> {
         let def_id = instance.def_id();
+        let template = self
+            .concrete_def_ty(def_id)
+            .and_then(|def_ty| def_ty.ty.as_function().cloned());
+        if template
+            .as_ref()
+            .is_some_and(|fn_ty| !self.infers_precondition(fn_ty))
+        {
+            return None;
+        }
         let generic = self
             .tcx
             .generics_of(def_id)
             .requires_monomorphization(self.tcx);
-        let def_ty = if generic {
+        let fn_ty = if generic {
             self.def_ty_with_args(def_id, instance.args, def_id)?
+                .ty
+                .as_function()
+                .cloned()?
         } else {
-            self.concrete_def_ty(def_id)?.clone()
+            template?
         };
-        def_ty.ty.as_function().cloned()
+        self.infers_precondition(&fn_ty).then_some(fn_ty)
     }
 
     /// Whether the precondition of `fn_ty` is inferred: a parameter's refinement names an

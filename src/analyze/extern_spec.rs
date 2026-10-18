@@ -306,7 +306,7 @@ fn supertrait_bounds<'tcx>(
 }
 
 /// How deeply the types in `arg` nest.
-fn type_depth(arg: mir_ty::GenericArg<'_>) -> usize {
+pub(super) fn type_depth(arg: mir_ty::GenericArg<'_>) -> usize {
     let mut walker = arg.walk();
     walker.next();
     let mut depth = 0;
