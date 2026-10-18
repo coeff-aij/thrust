@@ -1,4 +1,3 @@
-//@error-in-other-file: is `#[thrust::ignored]`
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
@@ -14,7 +13,7 @@ impl thrust_models::Model for S {
 
 impl PartialEq for S {
     #[thrust::ignored]
-    fn eq(&self, _o: &S) -> bool {
+    fn eq(&self, _o: &S) -> bool { //~ ERROR: a verified function can run it
         assert!(false);
         true
     }

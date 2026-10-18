@@ -912,6 +912,8 @@ pub struct Analyzer<'tcx> {
     /// Defs whose body has been analyzed at fully concrete type arguments, as the callee of
     /// a call site; see [`Analyzer::has_concrete_instance`].
     concrete_instances: Rc<RefCell<HashSet<LocalDefId>>>,
+    /// The generic defs whose bodies were analyzed at concrete arguments, and those arguments.
+    analyzed_instances: RefCell<Vec<(DefId, mir_ty::GenericArgsRef<'tcx>)>>,
     /// The closure types, generic arguments included, with the sort of their upvars, whose
     /// `hist_inv` clause has had its laws pushed; see [`closure_hist_inv::explicit_laws`].
     explicit_hist_inv_laws: Rc<RefCell<HashSet<(mir_ty::Ty<'tcx>, chc::Sort)>>>,
@@ -1042,6 +1044,7 @@ impl<'tcx> Analyzer<'tcx> {
             trait_laws,
             pending_laws,
             concrete_instances: Default::default(),
+            analyzed_instances: Default::default(),
             explicit_hist_inv_laws: Default::default(),
             by_value_hist_invs: Default::default(),
             fn_mut_instance_obligations: Default::default(),
@@ -1248,38 +1251,154 @@ impl<'tcx> Analyzer<'tcx> {
         is_ignored_crate_fn(self.tcx, def_id)
     }
 
-    /// Stops if the program runs an ignored function of the crate, as Verus's
-    /// `#[verifier::external]` items may not be used by verified code. An ignored function is
-    /// invisible to the analysis, so a contract that the verified code relies on and that the
-    /// function would have to meet (the trait's specification for `S::eq` that `<&S as
-    /// PartialEq>::eq` or `vec![x; n]` takes) is not checked. The program's monomorphic
-    /// instances, which rustc's collector finds from `main` (or a library's public items)
-    /// through every call, trait method, vtable and std function, decide what runs. An instance
-    /// reached only on a path to a panic counts too, which the collector cannot tell apart.
-    pub fn check_ignored_not_run(&self) {
-        use rustc_middle::mir::mono::MonoItem;
+    /// Stops if a function Thrust verifies can run an ignored function of the crate, as Verus's
+    /// verified code may not use an `#[verifier::external]` item. An ignored function is
+    /// invisible to the analysis, so a contract the verified code relies on it to meet (the
+    /// trait's specification for `S::eq` that `<&S as PartialEq>::eq` or `vec![x; n]` takes) is
+    /// not checked.
+    ///
+    /// The roots are the functions Thrust verifies: `roots`, monomorphic, and the instances
+    /// Thrust analyzed or reused a generic contract at, and the calls a generic body makes at
+    /// concrete arguments (`generic_roots`). From them the calls, trait methods, vtables, drop
+    /// glue, function pointers and closures each instance uses (`items_of_instance`, as rustc's
+    /// monomorphization collector) are followed, into std code too, but not into a body the
+    /// crate marked `#[thrust::trusted]` (`trusted`), which may run anything, as Verus's
+    /// `external_body` and Creusot's and Prusti's `#[trusted]` may. This over-approximates what
+    /// the verified functions can run: an instance reached only on a path to a panic counts.
+    pub fn check_ignored_not_run(
+        &self,
+        roots: Vec<mir_ty::Instance<'tcx>>,
+        generic_roots: Vec<DefId>,
+        trusted: impl Fn(DefId) -> bool,
+    ) {
+        use rustc_middle::mir::mono::{CollectionMode, MonoItem};
 
-        let mono = self.tcx.collect_and_partition_mono_items(());
-        let mut run: Vec<_> = mono
-            .codegen_units
-            .iter()
-            .flat_map(|cgu| cgu.items().keys())
-            .filter_map(|item| match item {
-                MonoItem::Fn(instance) => Some(*instance),
-                _ => None,
-            })
-            .filter(|instance| self.is_unchecked_crate_fn(instance.def_id()))
-            .map(|instance| instance.to_string())
-            .collect();
-        run.sort();
-        run.dedup();
-        let Some(first) = run.first() else {
+        let mut parent = HashMap::new();
+        let mut pending = std::collections::VecDeque::new();
+        let roots = roots
+            .into_iter()
+            .chain(self.reused_and_analyzed_instances())
+            .chain(
+                generic_roots
+                    .into_iter()
+                    .flat_map(|def_id| self.concrete_mentions(def_id)),
+            );
+        for root in roots {
+            if parent.insert(root, None).is_none() {
+                pending.push_back(root);
+            }
+        }
+        let mut reached = Vec::new();
+        while let Some(instance) = pending.pop_front() {
+            if self.is_unchecked_crate_fn(instance.def_id()) {
+                reached.push(instance);
+                continue;
+            }
+            if !self.runs_body(instance, &trusted) {
+                continue;
+            }
+            let (used, _) = self
+                .tcx
+                .items_of_instance((instance, CollectionMode::UsedItems));
+            for item in used {
+                let MonoItem::Fn(callee) = item.node else {
+                    continue;
+                };
+                if let std::collections::hash_map::Entry::Vacant(entry) = parent.entry(callee) {
+                    entry.insert(Some(instance));
+                    pending.push_back(callee);
+                }
+            }
+        }
+        let Some(first) = reached.first() else {
             return;
         };
-        self.tcx.dcx().fatal(format!(
-            "`{first}` is `#[thrust::ignored]`, so a call of it has no checked type, but the \
-             program runs it"
-        ));
+        let mut path = vec![first.to_string()];
+        let mut cursor = *first;
+        while let Some(Some(caller)) = parent.get(&cursor) {
+            path.push(caller.to_string());
+            cursor = *caller;
+        }
+        path.reverse();
+        let mut diag = self.tcx.dcx().struct_span_fatal(
+            self.tcx.def_span(first.def_id()),
+            format!(
+                "`{first}` is `#[thrust::ignored]`, so a call of it has no checked type, but a \
+                 verified function can run it"
+            ),
+        );
+        diag.note(format!("reached through {}", path.join(" -> ")));
+        for other in &reached[1..] {
+            diag.span_note(
+                self.tcx.def_span(other.def_id()),
+                format!("`{other}` is ignored and reached too"),
+            );
+        }
+        diag.emit()
+    }
+
+    /// The instances of generic defs that Thrust analyzed, or whose contract it reused, at
+    /// concrete arguments.
+    fn reused_and_analyzed_instances(&self) -> Vec<mir_ty::Instance<'tcx>> {
+        use mir_ty::TypeVisitableExt as _;
+
+        let typing_env = mir_ty::TypingEnv::fully_monomorphized();
+        self.reused_generic_instances
+            .borrow()
+            .iter()
+            .map(|(def_id, args, _)| (*def_id, *args))
+            .chain(self.analyzed_instances.borrow().iter().copied())
+            .filter(|(_, args)| !args.has_param())
+            .filter_map(|(def_id, args)| {
+                mir_ty::Instance::try_resolve(self.tcx, typing_env, def_id, args)
+                    .ok()
+                    .flatten()
+            })
+            .collect()
+    }
+
+    /// The functions and drop glue a generic body mentions at concrete arguments, which run at
+    /// every instance of it.
+    fn concrete_mentions(&self, def_id: DefId) -> Vec<mir_ty::Instance<'tcx>> {
+        use mir_ty::TypeVisitableExt as _;
+        use rustc_middle::mir::MentionedItem;
+
+        let typing_env = mir_ty::TypingEnv::fully_monomorphized();
+        let body = self.tcx.optimized_mir(def_id);
+        body.mentioned_items()
+            .iter()
+            .filter_map(|item| match item.node {
+                MentionedItem::Fn(ty) if !ty.has_param() => {
+                    let mir_ty::FnDef(callee, args) = *ty.kind() else {
+                        return None;
+                    };
+                    mir_ty::Instance::try_resolve(self.tcx, typing_env, callee, args)
+                        .ok()
+                        .flatten()
+                }
+                MentionedItem::Drop(ty) if !ty.has_param() => {
+                    Some(mir_ty::Instance::resolve_drop_in_place(self.tcx, ty))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Whether the body of `instance` runs in the crate's program and is followed: not a virtual
+    /// call or an intrinsic, which have none, not a crate body marked trusted, and one whose
+    /// MIR is available.
+    fn runs_body(&self, instance: mir_ty::Instance<'tcx>, trusted: impl Fn(DefId) -> bool) -> bool {
+        let def_id = instance.def_id();
+        match instance.def {
+            mir_ty::InstanceKind::Virtual(..) | mir_ty::InstanceKind::Intrinsic(_) => false,
+            mir_ty::InstanceKind::Item(_) => {
+                let trusted_here = def_id.is_local() && trusted(def_id);
+                !trusted_here
+                    && !self.tcx.is_foreign_item(def_id)
+                    && self.tcx.is_mir_available(def_id)
+            }
+            _ => true,
+        }
     }
 
     pub fn impl_methods_with_own_contract(&self) -> Vec<DefId> {
@@ -2241,6 +2360,9 @@ impl<'tcx> Analyzer<'tcx> {
                 self.concrete_instances
                     .borrow_mut()
                     .insert(body_local_def_id);
+                self.analyzed_instances
+                    .borrow_mut()
+                    .push((body_local_def_id.to_def_id(), generic_args));
             }
         }
         Some(expected)

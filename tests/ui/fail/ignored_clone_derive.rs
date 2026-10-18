@@ -1,4 +1,3 @@
-//@error-in-other-file: is `#[thrust::ignored]`
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
@@ -13,7 +12,7 @@ impl thrust_models::Model for S {
 
 impl Clone for S {
     #[thrust::ignored]
-    fn clone(&self) -> S {
+    fn clone(&self) -> S { //~ ERROR: a verified function can run it
         S(0)
     }
 }

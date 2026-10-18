@@ -667,8 +667,37 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.ctx.emit_pending_laws();
         self.ctx.emit_fn_mut_instance_obligations();
         self.ctx.check_reused_instances();
-        self.ctx.check_ignored_not_run();
+        self.check_ignored_not_run();
         self.assert_callable_entry();
+    }
+
+    /// Checks that no function Thrust verifies can run an ignored one
+    /// ([`analyze::Analyzer::check_ignored_not_run`]): the roots are the fn-like defs whose bodies
+    /// are analyzed, monomorphic ones as instances and generic ones through their instances.
+    fn check_ignored_not_run(&self) {
+        let analyzed = self.tcx.mir_keys(()).iter().copied().filter(|def_id| {
+            let id = def_id.to_def_id();
+            !self.skip_analysis.contains(def_id)
+                && self.tcx.def_kind(id).is_fn_like()
+                && !self.tcx.is_closure_like(id)
+        });
+        let (generic, monomorphic): (Vec<_>, Vec<_>) =
+            analyzed.map(LocalDefId::to_def_id).partition(|def_id| {
+                self.tcx
+                    .generics_of(*def_id)
+                    .requires_monomorphization(self.tcx)
+            });
+        let roots = monomorphic
+            .into_iter()
+            .map(|def_id| mir_ty::Instance::mono(self.tcx, def_id))
+            .collect();
+        let trusted = |def_id: rustc_span::def_id::DefId| {
+            self.tcx
+                .get_attrs_by_path(def_id, &analyze::annot::trusted_path())
+                .next()
+                .is_some()
+        };
+        self.ctx.check_ignored_not_run(roots, generic, trusted);
     }
 
     /// Records every `#[thrust::law]` function declared in a local trait.
