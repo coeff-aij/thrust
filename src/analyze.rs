@@ -2071,7 +2071,7 @@ impl<'tcx> Analyzer<'tcx> {
         let mut answers = chc::in_parallel(jobs, asked.len(), |i| {
             let part = system.part(&asked[i].clauses);
             if evidence {
-                return part.solve_part_with(requests);
+                return part.solve_part_with(&solver, requests);
             }
             let mut answer = chc::Answer::of(Err(chc::CheckSatError::Unsat));
             if solver.asks_z3_to_refute(requests) {
