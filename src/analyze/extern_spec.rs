@@ -9,7 +9,8 @@ use rustc_index::IndexVec;
 use rustc_middle::ty::{self as mir_ty, TyCtxt};
 use rustc_span::def_id::{DefId, LocalDefId};
 
-use crate::analyze::{derive, is_model_eq_clause, model_eq_bound, Analyzer, DefTy, DeferredDefTy};
+use crate::analyze::model_eq::{is_model_eq_clause, model_eq_bound, SpecBound};
+use crate::analyze::{derive, Analyzer, DefTy, DeferredDefTy};
 use crate::chc;
 use crate::rty;
 
@@ -44,14 +45,6 @@ fn bind_spec_args<'tcx>(
                 .unwrap_or_else(|| tcx.mk_param_from_def(param)),
         },
     ))
-}
-
-/// How a spec's bound stands at the arguments it was bound to, in a caller's environment.
-pub(super) enum SpecBound {
-    Holds,
-    /// The bound's self type is a type parameter or an unresolved projection of the caller.
-    Assumed,
-    Fails,
 }
 
 /// The bounds an extern spec puts on its type parameters by traits of its own, and the associated

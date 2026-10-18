@@ -1456,7 +1456,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// specs of `PartialEq` are bounded by `ModelEq`, which fails on a `Ghost`.
     fn compares_ghost(&self, def_id: DefId, args: mir_ty::GenericArgsRef<'tcx>) -> bool {
         self.tcx.trait_of_assoc(def_id) == self.tcx.lang_items().eq_trait()
-            && args.types().any(|ty| analyze::compares_ghost(self.tcx, ty))
+            && args
+                .types()
+                .any(|ty| analyze::model_eq::compares_ghost(self.tcx, ty))
     }
 
     fn callable_ty(
