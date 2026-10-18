@@ -199,6 +199,7 @@ interface Frame {
   fn?: FnItem;
 }
 
+const GENERIC_ITEMS = new Set(["fn", "impl", "trait", "struct", "enum", "union", "type"]);
 const QUALIFIERS = new Set(["default", "const", "async", "unsafe", "safe", "extern"]);
 const PRIMITIVES = new Set([
   "bool", "char", "str", "i8", "i16", "i32", "i64", "i128", "isize",
@@ -217,8 +218,9 @@ class Scanner {
   private headerLine: number | undefined;
   /// The item's attributes, each its tokens joined (`cfg(test)`).
   private attributes: string[] = [];
-  /// The depth of parentheses and brackets in the header, where `;`, `{` and `}` belong to it
-  /// (`fn f(a: [u8; 4])`, `-> [u8; { N }]`).
+  /// The depth of parentheses, brackets and, in the header of an item with generics, angle
+  /// brackets, where `;`, `{` and `}` belong to the header (`fn f(a: [u8; 4])`, `-> [u8; { N }]`,
+  /// `impl Foo<{ N }>`). `->` and `=>` are tokens of their own, so their `>` is no bracket.
   private nesting = 0;
   private i = 0;
 
@@ -247,8 +249,8 @@ class Scanner {
       return;
     }
     this.i++;
-    if (this.nesting > 0 || "([".includes(token.text)) {
-      this.nesting += "([{".includes(token.text) ? 1 : ")]}".includes(token.text) ? -1 : 0;
+    if (this.nesting > 0 || this.opens(token)) {
+      this.nesting += this.opens(token) || token.text === "{" ? 1 : this.closes(token) || token.text === "}" ? -1 : 0;
       this.header.push(token);
     } else if (token.text === "{") {
       this.open();
@@ -260,6 +262,22 @@ class Scanner {
       this.headerLine ??= token.line;
       this.header.push(token);
     }
+  }
+
+  private opens(token: Token): boolean {
+    return token.text === "(" || token.text === "[" || (token.text === "<" && this.hasGenerics());
+  }
+
+  private closes(token: Token): boolean {
+    return token.text === ")" || token.text === "]" || (token.text === ">" && this.hasGenerics());
+  }
+
+  /// Whether the header is of an item whose `<` opens generics (`fn`, `impl`, `struct`, ...),
+  /// not of one whose `<` may compare (`const`, `static`).
+  private hasGenerics(): boolean {
+    const words = withoutVisibility(this.header);
+    const first = words.find((w) => !QUALIFIERS.has(w.text) && w.kind !== "literal");
+    return first !== undefined && GENERIC_ITEMS.has(first.text);
   }
 
   /// Inside a function's body or another block: only the braces count.

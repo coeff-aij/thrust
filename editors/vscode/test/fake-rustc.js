@@ -11,4 +11,6 @@ if (args.includes("--out-dir")) {
   fs.writeFileSync(file, "deps: src/lib.rs\n");
 }
 const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith("THRUST_") && !k.startsWith("THRUST_VSCODE_")));
-process.stdout.write(JSON.stringify({ args, env }));
+// The variables of the wrapper's test named as the wrapper's own shell variables would be.
+const kept = Object.fromEntries(["name", "crate", "status", "report", "sep"].filter((k) => k in process.env).map((k) => [k, process.env[k]]));
+process.stdout.write(JSON.stringify({ args, env, kept }));

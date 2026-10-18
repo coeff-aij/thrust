@@ -14,15 +14,20 @@
 # - records in the crate's dep-info, as `env-dep` lines as rustc does for `env!`, the variables
 #   Thrust reads, the extension's (the command, its arguments, the selection, the identity of the
 #   Thrust binary) and those THRUST_VSCODE_ENV_KEYS names, so that cargo checks the crate again
-#   when one of them changes instead of keeping its earlier result.
+#   when one of them changes instead of keeping its earlier result. The values are those cargo
+#   ran it with, before the changes above, as cargo compares them with its own environment.
+#
+# Its own shell variables start with `_tv_`, so that it changes no variable of the environment
+# it passes on.
 set -eu
 set -f
 
-sep=$(printf '\037')
+_tv_sep=$(printf '\037')
+_tv_cr=$(printf '\r')
 
 # The variables Thrust reads (`std::env::var` under src/ and thrust-macros/src/), and the
 # extension's.
-tracked="THRUST_CACHE_DIR THRUST_CACHE_SALT THRUST_CANDIDATE_ATOMS THRUST_CHECK_UINT_FACTS
+_tv_tracked="THRUST_CACHE_DIR THRUST_CACHE_SALT THRUST_CANDIDATE_ATOMS THRUST_CHECK_UINT_FACTS
 THRUST_DEDUP_PRED_ARGS THRUST_ENUM_EXPANSION_DEPTH_LIMIT THRUST_FLAT_PRED_ARGS THRUST_INT_RANGE
 THRUST_NO_INJECT_STD THRUST_OUTPUT_DIR THRUST_PER_INSTANCE_GENERICS THRUST_PREPROCESSOR
 THRUST_PREPROCESSOR_ARGS THRUST_PREPROCESSOR_TIMEOUT_SECS THRUST_PRETTY_OUTPUT THRUST_REPORT
@@ -33,7 +38,7 @@ THRUST_VSCODE_VERIFY_CRATE THRUST_VSCODE_ENV_KEYS"
 
 # run [args...]: the command with the arguments and the extra arguments.
 run() {
-  IFS=$sep
+  IFS=$_tv_sep
   # shellcheck disable=SC2086
   set -- $THRUST_VSCODE_COMMAND "$@" ${THRUST_VSCODE_ARGS:-}
   unset IFS
@@ -42,12 +47,12 @@ run() {
 
 # The value of the option `$1` in the arguments after it (`--out-dir x` or `--out-dir=x`).
 option() {
-  name=$1
+  _tv_name=$1
   shift
   while [ $# -gt 0 ]; do
     case $1 in
-      "$name") [ $# -ge 2 ] && { printf '%s' "$2"; return; } ;;
-      "$name"=*) printf '%s' "${1#"$name"=}"; return ;;
+      "$_tv_name") [ $# -ge 2 ] && { printf '%s' "$2"; return; } ;;
+      "$_tv_name"=*) printf '%s' "${1#"$_tv_name"=}"; return ;;
     esac
     shift
   done
@@ -55,40 +60,42 @@ option() {
 
 # The value of the codegen option `-C $1=...`.
 codegen() {
-  name=$1
+  _tv_name=$1
   shift
-  previous=
-  for arg in "$@"; do
-    case $previous:$arg in
-      -C:"$name"=*) printf '%s' "${arg#"$name"=}"; return ;;
+  _tv_previous=
+  for _tv_arg in "$@"; do
+    case $_tv_previous:$_tv_arg in
+      -C:"$_tv_name"=*) printf '%s' "${_tv_arg#"$_tv_name"=}"; return ;;
     esac
-    case $arg in
-      -C"$name"=*) printf '%s' "${arg#-C"$name"=}"; return ;;
+    case $_tv_arg in
+      -C"$_tv_name"=*) printf '%s' "${_tv_arg#-C"$_tv_name"=}"; return ;;
     esac
-    previous=$arg
+    _tv_previous=$_tv_arg
   done
 }
 
-# The value escaped as rustc escapes an `env-dep` value: `\`, newline and carriage return.
+# The value escaped as rustc escapes an `env-dep` value: `\` as `\\`, a carriage return as `\r`
+# (both by sed), a newline as `\n` (awk joining the lines, printing a fixed string). The `x`
+# keeps a trailing newline from being dropped.
 escape() {
-  printf '%sx' "$1" | awk '
-    { gsub(/\\/, "\\\\"); gsub(/\r/, "\\r"); printf "%s%s", (NR > 1 ? "\\n" : ""), $0 }
-  ' | sed 's/x$//'
+  printf '%sx' "$1" |
+    sed -e 's/\\/\\\\/g' -e "s/$_tv_cr/\\\\r/g" |
+    awk '{ printf "%s%s", (NR > 1 ? "\\n" : ""), $0 }' |
+    sed 's/x$//'
 }
 
-# Appends an `env-dep` line for each tracked variable to the dep-info file `$1`, if it exists.
-record_env() {
-  [ -f "$1" ] || return 0
-  names="$tracked $(printf '%s' "${THRUST_VSCODE_ENV_KEYS:-}" | tr "$sep" ' ')"
-  for var in $names; do
-    case $var in
+# The `env-dep` lines of the tracked variables, one per line, as the environment holds them now.
+env_lines() {
+  _tv_names="$_tv_tracked $(printf '%s' "${THRUST_VSCODE_ENV_KEYS:-}" | tr "$_tv_sep" ' ')"
+  for _tv_var in $_tv_names; do
+    case $_tv_var in
       '' | [0-9]* | *[!A-Za-z0-9_]*) continue ;;
     esac
-    if eval "[ -n \"\${$var+set}\" ]"; then
-      eval "value=\$$var"
-      printf '# env-dep:%s=%s\n' "$var" "$(escape "$value")" >> "$1"
+    if eval "[ -n \"\${$_tv_var+set}\" ]"; then
+      eval "_tv_value=\$$_tv_var"
+      printf '# env-dep:%s=%s\n' "$_tv_var" "$(escape "$_tv_value")"
     else
-      printf '# env-dep:%s\n' "$var" >> "$1"
+      printf '# env-dep:%s\n' "$_tv_var"
     fi
   done
 }
@@ -98,23 +105,24 @@ if [ -z "${CARGO_CRATE_NAME:-}" ] || [ -z "${THRUST_VSCODE_REPORT_DIR:-}" ]; the
   exit
 fi
 
-crate=$(option --crate-name "$@")
-crate_type=$(option --crate-type "$@")
-crate_type=${crate_type:-bin}
-out_dir=$(option --out-dir "$@")
-extra=$(codegen extra-filename "$@")
-report="$THRUST_VSCODE_REPORT_DIR/${CARGO_PKG_NAME}.${crate}.${crate_type}.jsonl"
+_tv_deps=$(env_lines)
+_tv_crate=$(option --crate-name "$@")
+_tv_crate_type=$(option --crate-type "$@")
+_tv_crate_type=${_tv_crate_type:-bin}
+_tv_out_dir=$(option --out-dir "$@")
+_tv_extra=$(codegen extra-filename "$@")
+_tv_report="$THRUST_VSCODE_REPORT_DIR/${CARGO_PKG_NAME}.${_tv_crate}.${_tv_crate_type}.jsonl"
 mkdir -p "$THRUST_VSCODE_REPORT_DIR"
-rm -f "$report"
+rm -f "$_tv_report"
 
 if [ -n "${CARGO_PRIMARY_PACKAGE:-}" ]; then
-  THRUST_REPORT_FILE=$report
+  THRUST_REPORT_FILE=$_tv_report
   export THRUST_REPORT_FILE
 else
   unset THRUST_REPORT
 fi
 if [ -n "${THRUST_VSCODE_VERIFY_CRATE:-}" ]; then
-  if [ "$THRUST_VSCODE_VERIFY_CRATE" = "$crate.$crate_type" ]; then
+  if [ "$THRUST_VSCODE_VERIFY_CRATE" = "$_tv_crate.$_tv_crate_type" ]; then
     THRUST_VERIFY_ONLY=${THRUST_VSCODE_VERIFY_ONLY:-}
     export THRUST_VERIFY_ONLY
   else
@@ -122,7 +130,10 @@ if [ -n "${THRUST_VSCODE_VERIFY_CRATE:-}" ]; then
   fi
 fi
 
-status=0
-run "$@" || status=$?
-record_env "$out_dir/$crate$extra.d"
-exit $status
+_tv_status=0
+run "$@" || _tv_status=$?
+_tv_dep_info="$_tv_out_dir/$_tv_crate$_tv_extra.d"
+if [ -f "$_tv_dep_info" ]; then
+  printf '%s\n' "$_tv_deps" >> "$_tv_dep_info"
+fi
+exit $_tv_status

@@ -1,0 +1,3 @@
+{"kind":"report","version":2,"root":".","columns":{"base":1,"unit":"char","end":"exclusive"}}
+{"kind":"verdict","verdict":"sat","refutations":"one per query","message":null}
+{"kind":"site","fn":"outer::inner","site":"contract","span":{"file":"nested.rs","line":5,"column":5,"end_line":5,"end_column":28},"over":"y: int, result: int","template":"fn outer::inner(y: {int | outer::inner.pre(y)}) -> {int | outer::inner.post(y, result)}","preds":[{"name":"outer::inner.pre","args":["y"]},{"name":"outer::inner.post","args":["y","result"]}],"solution":null,"inferred":"fn outer::inner(y: {int | outer::inner.pre(y)}) -> {int | outer::inner.post(y, result)}"}

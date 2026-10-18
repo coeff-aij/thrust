@@ -21,14 +21,16 @@ test("invocation: the report's variables, the split and the cache, the file rela
     A: "1",
     THRUST_REPORT: "1",
     THRUST_REPORT_FORMAT: "json",
+    THRUST_VERIFY_ONLY: "",
     THRUST_REPORT_FILE: path.join("/tmp/s", "report.jsonl"),
     THRUST_SPLIT: "4",
     THRUST_CACHE_DIR: "/work/cache",
   });
 });
 
-test("invocation: no split and no cache unless asked", () => {
-  const inv = invocation("/a/b.rs", config(["thrust-rustc"]), "/tmp/s");
+test("invocation: no split and no cache unless asked; a run of the whole selects everything", () => {
+  const inv = invocation("/a/b.rs", config(["thrust-rustc"], { env: { THRUST_VERIFY_ONLY: "f" } }), "/tmp/s");
+  assert.strictEqual(inv.env.THRUST_VERIFY_ONLY, "");
   assert.strictEqual(inv.env.THRUST_SPLIT, undefined);
   assert.strictEqual(inv.env.THRUST_CACHE_DIR, undefined);
 });

@@ -1,8 +1,8 @@
 // A stub of the part of the VS Code API the extension uses, so that the compiled extension runs
 // under plain node: test/extension.test.ts drives it with stand-ins for cargo, and
 // test/drive-real.js with a real thrust-rustc. `__state` holds what the extension did:
-// diagnostics by file, the test runs with each item's states, the registered commands and
-// providers, the warnings shown.
+// diagnostics by file, the test runs with each item's states, the items it invalidated, the
+// registered commands, providers and save handler, the warnings shown; and the open documents.
 const fs = require("fs");
 
 const state = {};
@@ -20,6 +20,9 @@ function reset() {
     log: "",
     controller: undefined,
     profile: undefined,
+    documents: new Map(),
+    invalidated: [],
+    onSave: undefined,
   });
 }
 reset();
@@ -171,24 +174,40 @@ function createTestRun(request) {
   return run;
 }
 
-/// A text document of the file on disk; `dirty` makes it one with unsaved changes.
-function document(file, dirty = false) {
+/// The open text document of the file on disk, opened at its first use; `dirty` makes it one
+/// with unsaved changes. `version` counts edits, as `__edit` makes one.
+function document(file, dirty) {
+  const open = state.documents.get(file);
+  if (open) {
+    open.isDirty = dirty ?? open.isDirty;
+    return open;
+  }
   const text = fs.readFileSync(file, "utf8");
   const lines = text.split("\n");
-  return {
+  const opened = {
     uri: Uri.file(file),
     languageId: "rust",
-    isDirty: dirty,
+    isDirty: dirty ?? false,
+    version: 1,
     getText: () => text,
     lineCount: lines.length,
     lineAt: (line) => ({ range: { end: new Position(line, lines[line].length) } }),
   };
+  state.documents.set(file, opened);
+  return opened;
+}
+
+function edit(file) {
+  const opened = document(file);
+  opened.version += 1;
+  opened.isDirty = true;
 }
 
 module.exports = {
   __state: state,
   __reset: reset,
   __document: document,
+  __edit: edit,
   Uri,
   Position,
   Range,
@@ -226,7 +245,13 @@ module.exports = {
     getConfiguration: () => ({ get: (key, fallback) => (key in state.config ? state.config[key] : fallback) }),
     getWorkspaceFolder: () => ({ uri: Uri.file(state.folder) }),
     openTextDocument: async (uri) => document(uri.fsPath),
-    onDidSaveTextDocument: () => ({ dispose() {} }),
+    get textDocuments() {
+      return [...state.documents.values()];
+    },
+    onDidSaveTextDocument: (handler) => {
+      state.onSave = handler;
+      return { dispose() {} };
+    },
   },
   commands: {
     registerCommand: (name, f) => {
@@ -241,6 +266,7 @@ module.exports = {
         createTestItem,
         createRunProfile: (label, kind, handler) => (state.profile = handler),
         createTestRun,
+        invalidateTestResults: (list) => state.invalidated.push(...(Array.isArray(list) ? list : [list]).map((item) => item.id)),
         dispose() {},
       };
       return state.controller;

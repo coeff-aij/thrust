@@ -45,3 +45,5 @@ capture only-main-split safe.rs THRUST_VERIFY_ONLY=main THRUST_SPLIT=2
 capture only-trusted trusted.rs THRUST_VERIFY_ONLY=bad
 capture only-trusted-split trusted.rs THRUST_VERIFY_ONLY=bad THRUST_SPLIT=2
 capture only-twin-split trusted.rs THRUST_VERIFY_ONLY=twin THRUST_SPLIT=2
+capture only-nested nested.rs THRUST_VERIFY_ONLY=outer
+capture only-nested-split nested.rs THRUST_VERIFY_ONLY=outer THRUST_SPLIT=2

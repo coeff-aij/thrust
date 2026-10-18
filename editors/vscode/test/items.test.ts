@@ -125,3 +125,13 @@ test("functions: none compiled for tests only, which cargo check leaves out", ()
   ].join("\n");
   assert.deepStrictEqual(paths(text), ["kept"]);
 });
+
+test("functions: braces inside generics of a header; a comparison in a constant is no bracket", () => {
+  const text = [
+    "impl Foo<{ 1 }> { fn a() {} }",
+    "fn b<const N: usize>() -> Option<[u8; { N }]> { None }",
+    "const C: bool = 1 < 2;",
+    "fn c() {}",
+  ].join("\n");
+  assert.deepStrictEqual(paths(text), ["Foo::a", "b", "c"]);
+});

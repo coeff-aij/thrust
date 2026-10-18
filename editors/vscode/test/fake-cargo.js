@@ -4,6 +4,7 @@
 // THRUST_VSCODE_REPORT_DIR, as the wrapper removes the report of each crate it runs and a check
 // runs every crate, copies the case's reports there and prints its messages. With FAKE_WORKSPACE set,
 // /workspace is replaced by it, and with FAKE_LOG set each call appends its arguments there.
+// With FAKE_HOLD set, a check waits until that file exists before it answers.
 const fs = require("fs");
 const path = require("path");
 
@@ -19,6 +20,11 @@ if (process.env.FAKE_LOG) {
 if (args.includes("metadata")) {
   process.stdout.write(read(path.join(dir, "..", "metadata.json")));
   return;
+}
+const hold = process.env.FAKE_HOLD;
+const deadline = Date.now() + 10000;
+while (hold && !fs.existsSync(hold) && Date.now() < deadline) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
 }
 const reports = path.join(dir, "reports");
 const reportDir = process.env.THRUST_VSCODE_REPORT_DIR;

@@ -77,6 +77,7 @@ test("invocation: the workspace, or one target whose crate the wrapper gives THR
     RUST_LOG: "x",
     THRUST_REPORT: "1",
     THRUST_REPORT_FORMAT: "json",
+    THRUST_VERIFY_ONLY: "",
     THRUST_SPLIT: "2",
     THRUST_CACHE_DIR: "/c",
     RUSTC: "/ext/bin/thrust-rustc-cargo",
@@ -85,13 +86,13 @@ test("invocation: the workspace, or one target whose crate the wrapper gives THR
     CARGO_TARGET_DIR: "/workspace/target/thrust",
     THRUST_VSCODE_COMMAND: "rustup\x1frun\x1ftc\x1fthrust-rustc",
     THRUST_VSCODE_ARGS: "-Awarnings",
-    THRUST_VSCODE_THRUST_ID: "",
+    THRUST_VSCODE_THRUST_ID: cargo.commandIdentity(["rustup", "run", "tc", "thrust-rustc"], "/workspace"),
     THRUST_VSCODE_ENV_KEYS: "RUST_LOG",
     THRUST_VSCODE_REPORT_DIR: "/workspace/target/thrust/reports",
   });
   const bin = cargo.cargoInvocation(metadata, config(), "/w", { target: target("both", "bin"), selection: "helper" });
   assert.deepStrictEqual(bin.args.slice(-4), ["-p", "both", "--bin", "both"]);
-  assert.strictEqual(bin.env.THRUST_VERIFY_ONLY, undefined);
+  assert.strictEqual(bin.env.THRUST_VERIFY_ONLY, "");
   assert.strictEqual(bin.env.THRUST_VSCODE_VERIFY_ONLY, "helper");
   assert.strictEqual(bin.env.THRUST_VSCODE_VERIFY_CRATE, "both.bin");
   const lib = cargo.cargoInvocation(metadata, config(), "/w", { target: target("arith", "lib"), selection: "inc" });
@@ -100,14 +101,26 @@ test("invocation: the workspace, or one target whose crate the wrapper gives THR
 });
 
 test("identity of the command: its absolute paths of files with their size and time", () => {
-  const id = cargo.commandIdentity(["rustup", "run", "tc", process.execPath, "/nonexistent/thrust-rustc"]);
+  const id = cargo.commandIdentity(["rustup", "run", "tc", process.execPath, "/nonexistent/thrust-rustc"], "/");
   const stat = fs.statSync(process.execPath);
-  assert.strictEqual(id, `${process.execPath}:${stat.size}:${stat.mtimeMs}`);
+  assert.strictEqual(id.split("\x1f").pop(), `${process.execPath}:${stat.size}:${stat.mtimeMs}`);
+  // The program found on PATH, and a relative path against the directory of the run.
+  const dir = path.dirname(process.execPath);
+  const program = path.basename(process.execPath);
+  const saved = process.env.PATH;
+  process.env.PATH = dir;
+  try {
+    assert.strictEqual(cargo.commandIdentity([program, "x"], "/"), `${process.execPath}:${stat.size}:${stat.mtimeMs}`);
+  } finally {
+    process.env.PATH = saved;
+  }
+  assert.strictEqual(cargo.commandIdentity(["cargo", program], dir).split("\x1f").pop(), `${process.execPath}:${stat.size}:${stat.mtimeMs}`);
 });
 
 interface WrapperRun {
   args: string[];
   env: Record<string, string>;
+  kept: Record<string, string>;
 }
 
 function runWrapper(dir: string, env: Record<string, string>, args: string[]): WrapperRun {
@@ -245,7 +258,7 @@ test("a check of one function: its status from the lines it spans, the reports o
   const runs = crates("only", target("arith", "lib"));
   assert.deepStrictEqual(runs.map((r) => r.target.name), ["arith"]);
   const parsed = report.parseReport(runs[0].report);
-  const status = report.statusWithin(parsed, "arith/src/lib.rs", 21, 23);
+  const status = report.statusWithin(parsed, "arith/src/lib.rs", "scale", 21, 23);
   assert.deepStrictEqual([status?.fn, status?.status], ["<Pair as Scale>::scale", "pass"]);
   // Of the whole workspace's messages, only the checked target's report is read.
   const scoped = crates("check", target("arith", "lib"));
@@ -259,7 +272,7 @@ test("a check of a binary's function: the package's library checked whole, witho
   assert.deepStrictEqual(runs.map((r) => [r.target.kind, r.compiled, r.diagnostics.length]).sort(), [["bin", true, 0], ["lib", true, 0]]);
   const binRun = runs.find((r) => r.target === bin);
   assert.ok(binRun);
-  const status = report.statusWithin(report.parseReport(binRun.report), "both/src/main.rs", 1, 3);
+  const status = report.statusWithin(report.parseReport(binRun.report), "both/src/main.rs", "helper", 1, 3);
   assert.deepStrictEqual([status?.fn, status?.status], ["helper", "pass"]);
 });
 
@@ -285,4 +298,76 @@ test("run: the fake cargo's reports and messages, read per crate", async () => {
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("crate outcome: a crate not compiled whose report is sat is an error", () => {
+  const arith = find(crates("check"), "arith");
+  const outcome = cargo.crateOutcome({ ...arith, compiled: false }, report.parseReport(arith.report));
+  assert.deepStrictEqual(outcome.verdict, "error");
+  assert.match(outcome.detail, /did not compile the crate, though its report is sat/);
+});
+
+test("crate runs: a build script's error is a run of its own; targets are told apart by their package", () => {
+  const buildScript = { kind: ["custom-build"], crate_types: ["bin"], name: "build-script-build", src_path: "/workspace/app/build.rs" };
+  const message = { message: "a build script's error", level: "error", spans: [], children: [] };
+  const other = { kind: ["bin"], crate_types: ["bin"], name: "app", src_path: "/elsewhere/src/main.rs" };
+  const stdout = [
+    { reason: "compiler-message", manifest_path: "/workspace/app/Cargo.toml", target: buildScript, message },
+    { reason: "compiler-artifact", manifest_path: "/elsewhere/Cargo.toml", target: other },
+  ].map((m) => JSON.stringify(m)).join("\n");
+  const runs = cargo.crateRuns(stdout, metadata, "/nonexistent");
+  assert.deepStrictEqual(
+    runs.map((r) => [r.target.package, r.target.kind, r.target.manifestPath, r.diagnostics.length]),
+    [["app", "custom-build", "/workspace/app/Cargo.toml", 1], ["app", "bin", "/elsewhere/Cargo.toml", 0]],
+  );
+  assert.notStrictEqual(cargo.targetKey(runs[1].target), cargo.targetKey(target("app", "bin")));
+});
+
+test("wrapper: the dep-info records the variables as cargo ran it, before its own changes", () => {
+  withScratch((dir) => {
+    const env = { CARGO_CRATE_NAME: "dep", CARGO_PKG_NAME: "dep", THRUST_VERIFY_ONLY: "", THRUST_VSCODE_VERIFY_CRATE: "app.bin" };
+    runWrapper(dir, env, crateArgs(dir, "dep", "lib"));
+    const depInfo = fs.readFileSync(path.join(dir, "deps", "dep-lib.d"), "utf8").split("\n");
+    // A dependency runs without THRUST_REPORT, and with THRUST_VERIFY_ONLY unset, but cargo has them.
+    assert.ok(depInfo.includes("# env-dep:THRUST_REPORT=1"), depInfo.join("\n"));
+    assert.ok(depInfo.includes("# env-dep:THRUST_VERIFY_ONLY="), depInfo.join("\n"));
+    assert.ok(!depInfo.some((l) => l.startsWith("# env-dep:THRUST_REPORT_FILE")));
+  });
+});
+
+test("wrapper: the environment it passes on keeps variables named as its own would be", () => {
+  withScratch((dir) => {
+    const names = { name: "n", crate: "c", status: "s", report: "r", sep: "x" };
+    const ran = runWrapper(dir, { CARGO_CRATE_NAME: "arith", CARGO_PKG_NAME: "arith", CARGO_PRIMARY_PACKAGE: "1", ...names }, crateArgs(dir, "arith", "lib"));
+    assert.deepStrictEqual(ran.kept, names);
+  });
+});
+
+/// The awk and sed implementations installed here, each as a directory to put first on PATH.
+function toolSets(dir: string): string[] {
+  const awks = ["/usr/bin/mawk", "/usr/bin/gawk", "/usr/bin/original-awk", "/usr/bin/busybox"].filter((f) => fs.existsSync(f));
+  const seds = ["/bin/sed", "/usr/bin/busybox"].filter((f) => fs.existsSync(f));
+  return awks.flatMap((awk) =>
+    seds.map((sed) => {
+      const set = path.join(dir, `${path.basename(awk)}-${path.basename(sed)}`);
+      fs.mkdirSync(set);
+      fs.symlinkSync(awk, path.join(set, "awk"));
+      fs.symlinkSync(sed, path.join(set, "sed"));
+      return set;
+    }),
+  );
+}
+
+test("wrapper: env-dep values escaped as rustc escapes them, with each awk and sed installed", () => {
+  withScratch((dir) => {
+    const sets = toolSets(dir);
+    assert.ok(sets.length > 0);
+    for (const set of sets) {
+      const env = { CARGO_CRATE_NAME: "arith", CARGO_PKG_NAME: "arith", THRUST_SOLVER_ARGS: "a\\b\nc\rd\n", PATH: `${set}:${process.env.PATH}` };
+      runWrapper(dir, env, crateArgs(dir, "arith", "lib"));
+      const depInfo = fs.readFileSync(path.join(dir, "deps", "arith-lib.d"), "utf8").split("\n");
+      assert.ok(depInfo.includes("# env-dep:THRUST_SOLVER_ARGS=a\\\\b\\nc\\rd\\n"), `${set}\n${depInfo.join("\n")}`);
+      fs.rmSync(path.join(dir, "deps", "arith-lib.d"));
+    }
+  });
 });

@@ -27,6 +27,8 @@ export interface Target {
   kind: string;
   crateType: string;
   srcPath: string;
+  /// The package's Cargo.toml, which cargo's messages name.
+  manifestPath: string;
 }
 
 export interface Metadata {
@@ -45,7 +47,7 @@ export function parseMetadata(text: string): Metadata {
     workspace_root: string;
     target_directory: string;
     workspace_members: string[];
-    packages: { id: string; name: string; targets: { name: string; kind: string[]; crate_types: string[]; src_path: string }[] }[];
+    packages: { id: string; name: string; manifest_path: string; targets: MessageTarget[] }[];
   };
   const members = new Set(json.workspace_members);
   const targets = json.packages
@@ -53,9 +55,21 @@ export function parseMetadata(text: string): Metadata {
     .flatMap((p) =>
       p.targets
         .filter((t) => CHECKED_KINDS.has(t.kind[0]))
-        .map((t) => ({ package: p.name, name: t.name, kind: t.kind[0], crateType: t.crate_types[0], srcPath: t.src_path })),
+        .map((t) => targetFrom(p.name, p.manifest_path, t)),
     );
   return { workspaceRoot: json.workspace_root, targetDirectory: json.target_directory, targets };
+}
+
+/// A target as cargo's metadata and messages give it.
+interface MessageTarget {
+  name: string;
+  kind: string[];
+  crate_types: string[];
+  src_path: string;
+}
+
+function targetFrom(pkg: string, manifestPath: string, t: MessageTarget): Target {
+  return { package: pkg, name: t.name, kind: t.kind[0], crateType: t.crate_types[0], srcPath: t.src_path, manifestPath };
 }
 
 /// The target `file` belongs to: the one whose root file it is, else the one whose root's
@@ -112,7 +126,7 @@ export function cargoInvocation(
     CARGO_TARGET_DIR: thrustTargetDir(metadata),
     THRUST_VSCODE_COMMAND: config.command.join(SEPARATOR),
     THRUST_VSCODE_ARGS: config.extraArgs.join(SEPARATOR),
-    THRUST_VSCODE_THRUST_ID: commandIdentity(config.command),
+    THRUST_VSCODE_THRUST_ID: commandIdentity(config.command, metadata.workspaceRoot),
     THRUST_VSCODE_ENV_KEYS: Object.keys(config.env).join(SEPARATOR),
     THRUST_VSCODE_REPORT_DIR: reportDir(metadata),
   };
@@ -128,20 +142,30 @@ export function cargoInvocation(
   return { program, args, env, cwd: metadata.workspaceRoot, reportDir: reportDir(metadata) };
 }
 
-/// What tells builds of the command apart: each of its words that is the absolute path of a
-/// file (the Thrust binary), with the file's size and modification time.
-export function commandIdentity(command: string[]): string {
+/// What tells builds of the command apart: each of its words that names a file (the Thrust
+/// binary; the program found on PATH; a relative path against `cwd`), with the file's path,
+/// size and modification time.
+export function commandIdentity(command: string[], cwd: string): string {
   return command
-    .filter((word) => path.isAbsolute(word))
-    .flatMap((word) => {
-      try {
-        const stat = fs.statSync(word);
-        return stat.isFile() ? [`${word}:${stat.size}:${stat.mtimeMs}`] : [];
-      } catch {
-        return [];
-      }
+    .flatMap((word, k) => {
+      const file = k === 0 && !word.includes("/") ? onPath(word) : path.resolve(cwd, word);
+      const stat = file === undefined ? undefined : statOf(file);
+      return stat?.isFile() ? [`${file}:${stat.size}:${stat.mtimeMs}`] : [];
     })
     .join(SEPARATOR);
+}
+
+function onPath(program: string): string | undefined {
+  const dirs = (process.env.PATH ?? "").split(path.delimiter).filter((d) => d !== "");
+  return dirs.map((d) => path.join(d, program)).find((file) => statOf(file)?.isFile());
+}
+
+function statOf(file: string): fs.Stats | undefined {
+  try {
+    return fs.statSync(file);
+  } catch {
+    return undefined;
+  }
 }
 
 function crateName(target: Target): string {
@@ -164,22 +188,24 @@ export interface CrateRun {
 interface CargoMessage {
   reason: string;
   manifest_path?: string;
-  target?: { name: string; kind: string[] };
+  target?: MessageTarget;
   message?: RustcDiagnostic;
 }
 
-/// The crates of the workspace a check went through, from cargo's JSON messages, each with its
-/// diagnostics and, from `reports`, the report of its run: of every crate, or of `only` when the
-/// check was of that target, as the others ran as dependencies, without a report.
+/// The crates a check went through, from cargo's JSON messages, each with its diagnostics and,
+/// from `reports`, the report of its run: of every crate, or of `only` when the check was of
+/// that target, as the others ran as dependencies, without a report. A crate that is not a lib
+/// or bin target of the workspace (a build script, a dependency) is one too, under its own
+/// target.
 export function crateRuns(stdout: string, metadata: Metadata, reports: string, only?: Target): CrateRun[] {
-  const runs = new Map<Target, CrateRun>();
+  const runs = new Map<string, CrateRun>();
   for (const message of cargoMessages(stdout)) {
-    const target = message.target && findTarget(metadata, message.target.name, message.target.kind[0]);
-    if (!target || (message.reason !== "compiler-message" && message.reason !== "compiler-artifact")) {
+    if (!message.target || (message.reason !== "compiler-message" && message.reason !== "compiler-artifact")) {
       continue;
     }
-    const run = runs.get(target) ?? { target, report: "", diagnostics: [], compiled: false };
-    runs.set(target, run);
+    const target = findTarget(metadata, message.manifest_path, message.target);
+    const run = runs.get(targetKey(target)) ?? { target, report: "", diagnostics: [], compiled: false };
+    runs.set(targetKey(target), run);
     if (message.reason === "compiler-artifact") {
       run.compiled = true;
     } else if (message.message) {
@@ -187,7 +213,7 @@ export function crateRuns(stdout: string, metadata: Metadata, reports: string, o
     }
   }
   for (const run of runs.values()) {
-    if (!only || run.target === only) {
+    if (!only || targetKey(run.target) === targetKey(only)) {
       run.report = readIfPresent(path.join(reports, reportFileName(run.target)));
     }
   }
@@ -198,16 +224,36 @@ const NOT_A_CRATE_ERROR = /^(verification error: |aborting due to )/;
 
 /// The outcome of a crate: an error when cargo did not compile it for an error other than a
 /// refutation (a compile error, a `THRUST_VERIFY_ONLY` entry selecting nothing), whatever its
-/// report says; otherwise the report's.
+/// report says, or when it did not compile it though its report is `sat`; otherwise the
+/// report's.
 export function crateOutcome(run: CrateRun, report: Report): Outcome {
-  const error = run.compiled
-    ? undefined
-    : run.diagnostics.find((d) => d.level === "error" && !NOT_A_CRATE_ERROR.test(d.message));
-  return error ? { verdict: "error", detail: error.message } : verdictOf(null, report, run.diagnostics);
+  if (run.compiled) {
+    return verdictOf(null, report, run.diagnostics);
+  }
+  const error = run.diagnostics.find((d) => d.level === "error" && !NOT_A_CRATE_ERROR.test(d.message));
+  if (error) {
+    return { verdict: "error", detail: error.message };
+  }
+  if (report.verdict?.verdict === "sat") {
+    return { verdict: "error", detail: "cargo did not compile the crate, though its report is sat" };
+  }
+  return verdictOf(null, report, run.diagnostics);
 }
 
-function findTarget(metadata: Metadata, name: string, kind: string): Target | undefined {
-  return metadata.targets.find((t) => t.name === name && t.kind === kind);
+/// The workspace's target a message is of, by its package's manifest, name and kind; another
+/// target (a build script) as the message gives it.
+function findTarget(metadata: Metadata, manifestPath: string | undefined, t: MessageTarget): Target {
+  const kind = t.kind[0];
+  const known = metadata.targets.find(
+    (x) => x.name === t.name && x.kind === kind && (manifestPath === undefined || x.manifestPath === manifestPath),
+  );
+  const pkg = metadata.targets.find((x) => x.manifestPath === manifestPath)?.package ?? t.name;
+  return known ?? targetFrom(pkg, manifestPath ?? "", t);
+}
+
+/// What tells targets apart: a package's lib and bin of one name, two packages' bins of one name.
+export function targetKey(target: Target): string {
+  return `${target.manifestPath}#${target.kind}#${target.name}`;
 }
 
 function cargoMessages(stdout: string): CargoMessage[] {

@@ -41,9 +41,11 @@ export interface RunResult {
   durationMs: number;
 }
 
-/// The variables of a run of Thrust with the JSON report, on top of `thrust.env`.
+/// The variables of a run of Thrust with the JSON report, on top of `thrust.env`;
+/// `THRUST_VERIFY_ONLY` empty, which selects everything.
 export function thrustEnv(config: RunConfig): Record<string, string> {
-  const env: Record<string, string> = { ...config.env, THRUST_REPORT: "1", THRUST_REPORT_FORMAT: "json" };
+  // A run of the whole checks every function, whatever thrust.env says; one of a function sets it.
+  const env: Record<string, string> = { ...config.env, THRUST_REPORT: "1", THRUST_REPORT_FORMAT: "json", THRUST_VERIFY_ONLY: "" };
   if (config.split > 0) {
     env.THRUST_SPLIT = String(config.split);
   }
@@ -105,8 +107,8 @@ export interface Execution {
 const KILL_AFTER_MS = 3000;
 
 /// Runs `command` in a process group of its own, which the time limit and `signal` stop as a
-/// whole (cargo, the compilers it started and their solvers): SIGTERM, then SIGKILL to what is
-/// left after KILL_AFTER_MS.
+/// whole (cargo, the compilers it started and their solvers): SIGTERM, then SIGKILL to the group
+/// after KILL_AFTER_MS, also when its first process has exited by then and others are left.
 export function execute(command: Command, timeoutSecs: number, signal?: AbortSignal): Promise<Execution> {
   return new Promise((resolve) => {
     const child = spawn(command.program, command.args, {
@@ -123,6 +125,7 @@ export function execute(command: Command, timeoutSecs: number, signal?: AbortSig
     const stop = () => {
       signalGroup(child.pid, "SIGTERM");
       killer ??= setTimeout(() => signalGroup(child.pid, "SIGKILL"), KILL_AFTER_MS);
+      killer.unref();
     };
     const timer = setTimeout(() => {
       timedOut = true;
@@ -137,7 +140,6 @@ export function execute(command: Command, timeoutSecs: number, signal?: AbortSig
     child.stderr.on("data", (chunk: Buffer) => (stderr += chunk.toString("utf8")));
     const finish = (exitCode: number | null, extra = "") => {
       clearTimeout(timer);
-      clearTimeout(killer);
       signal?.removeEventListener("abort", onAbort);
       resolve({ exitCode, stdout, stderr: stderr + extra, timedOut, cancelled });
     };

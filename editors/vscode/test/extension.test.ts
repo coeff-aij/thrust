@@ -31,7 +31,16 @@ interface State {
 }
 
 interface Thrust {
-  verify(document: unknown, fn?: unknown): Promise<void>;
+  verify(document: unknown, fn?: unknown): Promise<string | undefined>;
+}
+
+/// Waits until `condition` holds, checking every 20 ms, for at most 10 s.
+async function until(condition: () => boolean): Promise<void> {
+  const deadline = Date.now() + 10000;
+  while (!condition()) {
+    assert.ok(Date.now() < deadline, "timed out");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
 }
 
 interface Session {
@@ -164,18 +173,134 @@ test("a run of one function without a report to read: its item errored with why,
   ]);
 });
 
-test("a file with unsaved changes is not run", async () => {
+const checks = (t: Session) => t.calls().filter((c) => c.startsWith("check")).length;
+
+test("no run while a Rust file of the workspace has unsaved changes", async () => {
   const t = session();
-  await t.thrust.verify(t.document("app/src/main.rs", true));
-  assert.deepStrictEqual(t.calls(), []);
+  t.document("arith/src/ops.rs", true);
+  assert.match((await t.thrust.verify(t.document("app/src/main.rs"))) ?? "", /ops.rs has unsaved changes/);
+  assert.strictEqual(checks(t), 0);
   assert.match(vscode.__state.warnings[0], /unsaved changes/);
+});
+
+test("a run's result is not shown when a file of the workspace changed during it", async () => {
+  const t = session();
+  const hold = path.join(t.workspace, "hold");
+  process.env.FAKE_HOLD = hold;
+  try {
+    const running = t.thrust.verify(t.document("app/src/main.rs"));
+    await until(() => checks(t) === 1);
+    vscode.__edit(path.join(t.workspace, "arith/src/lib.rs"));
+    fs.writeFileSync(hold, "");
+    assert.match((await running) ?? "", /lib.rs changed during the run/);
+    assert.strictEqual(vscode.__state.runs.length, 0);
+    assert.deepStrictEqual(t.diagnostics(), []);
+  } finally {
+    delete process.env.FAKE_HOLD;
+  }
+});
+
+test("saving a file and starting a run invalidate the results they make outdated", async () => {
+  const t = session();
+  await t.thrust.verify(t.document("app/src/main.rs"));
+  vscode.__state.config.verifyOnSave = false;
+  vscode.__state.onSave(t.document("arith/src/ops.rs"));
+  assert.deepStrictEqual(vscode.__state.invalidated.map((id: string) => id.split(t.workspace).join("")), ["#arith/lib/arith"]);
+  vscode.__state.invalidated.length = 0;
+  t.replay("only");
+  await t.thrust.verify(t.document("arith/src/lib.rs"), t.lens("arith/src/lib.rs", "scale"));
+  assert.deepStrictEqual(vscode.__state.invalidated.map((id: string) => id.split(t.workspace).join("")), ["#arith/lib/arith::<Pair as Scale>::scale"]);
+});
+
+test("a run stopped from the Testing view errs its items, left invalidated", async () => {
+  const t = session();
+  await t.thrust.verify(t.document("app/src/main.rs"));
+  const hold = path.join(t.workspace, "hold");
+  process.env.FAKE_HOLD = hold;
+  try {
+    let cancel = () => {};
+    const token = { isCancellationRequested: false, onCancellationRequested: (f: () => void) => {
+      cancel = f;
+      return { dispose() {} };
+    } };
+    let root: unknown;
+    vscode.__state.controller.items.forEach((item: { id: string }) => (root = item.id.endsWith("#app/bin/app") ? item : root));
+    const running = vscode.__state.profile(new vscode.TestRunRequest([root]), token);
+    await until(() => checks(t) === 2);
+    cancel();
+    await running;
+    const states = t.states();
+    assert.strictEqual(states.get("#app/bin/app")?.state, "errored");
+    assert.deepStrictEqual(states.get("#app/bin/app")?.messages, ["stopped"]);
+  } finally {
+    delete process.env.FAKE_HOLD;
+  }
+});
+
+test("a function's run shows the function's status in the status bar, not the crate's", async () => {
+  const t = session();
+  t.replay("only");
+  // `inc` has a written contract: the run in one query says nothing of it, though the crate is sat.
+  await t.thrust.verify(t.document("arith/src/lib.rs"), t.lens("arith/src/lib.rs", "inc"));
+  assert.strictEqual(vscode.__state.status.text, "$(question) Thrust: unknown");
+  assert.strictEqual(t.states().get("#arith/lib/arith::inc")?.state, "errored");
+  await t.thrust.verify(t.document("arith/src/lib.rs"), t.lens("arith/src/lib.rs", "scale"));
+  assert.strictEqual(vscode.__state.status.text, "$(pass) Thrust: safe");
 });
 
 test("running all items from the Testing view checks the workspace once", async () => {
   const t = session();
   await t.thrust.verify(t.document("app/src/main.rs"));
-  const checks = () => t.calls().filter((c) => c.startsWith("check")).length;
-  assert.strictEqual(checks(), 1);
-  await vscode.__state.profile(new vscode.TestRunRequest(undefined), { isCancellationRequested: false });
-  assert.strictEqual(checks(), 2);
+  assert.strictEqual(checks(t), 1);
+  await vscode.__state.profile(new vscode.TestRunRequest(undefined), { isCancellationRequested: false, onCancellationRequested: () => ({ dispose() {} }) });
+  assert.strictEqual(checks(t), 2);
+});
+
+/// A session on a folder without Cargo.toml holding `file` of the fixtures, Thrust replaced by
+/// test/fake-thrust.js replaying the captured case `name`.
+function fileSession(file: string): { thrust: Thrust; folder: string; replay(name: string): void } {
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), "thrust-extension-"));
+  fs.copyFileSync(path.join(here, "test", "fixtures", file), path.join(folder, file));
+  vscode.__reset();
+  const s = vscode.__state;
+  s.folder = folder;
+  const replay = (name: string) => {
+    s.config = { command: [process.execPath, path.join(here, "test", "fake-thrust.js"), path.join(here, "test", "fixtures", name)], extraArgs: [] };
+  };
+  const context = { subscriptions: [] as unknown[], asAbsolutePath: (p: string) => path.join(here, p) };
+  extension.activate(context);
+  return { thrust: context.subscriptions[0] as Thrust, folder, replay };
+}
+
+test("a function's run does not put its status on the item of a function nested in it", async () => {
+  const t = fileSession("nested.rs");
+  const file = path.join(t.folder, "nested.rs");
+  t.replay("only-nested-split");
+  await t.thrust.verify(vscode.__document(file));
+  const lenses = vscode.__state.providers.lens.provideCodeLenses(vscode.__document(file));
+  const outer = lenses.find((l: { command: { arguments: { name: string }[] } }) => l.command.arguments[1].name === "outer").command.arguments[1];
+  await t.thrust.verify(vscode.__document(file), outer);
+  const run = vscode.__state.runs[vscode.__state.runs.length - 1];
+  assert.deepStrictEqual(
+    run.states.map((x: State) => [x.state, x.id.split(t.folder).join("")]),
+    [["errored", "/nested.rs::outer"]],
+  );
+});
+
+test("a function's run whose report can be read replaces rustc's diagnostics in its crate", async () => {
+  const t = session();
+  const broken = path.join(t.workspace, "broken");
+  fs.mkdirSync(broken);
+  const span = { file_name: "arith/src/lib.rs", line_start: 2, line_end: 2, column_start: 1, column_end: 2, is_primary: true, label: null };
+  const message = { message: "an error rustc gave", level: "error", spans: [span], children: [] };
+  const target = { kind: ["lib"], crate_types: ["lib"], name: "arith", src_path: "/workspace/arith/src/lib.rs" };
+  fs.writeFileSync(path.join(broken, "stdout.jsonl"), `${JSON.stringify({ reason: "compiler-message", manifest_path: "/workspace/arith/Cargo.toml", target, message })}\n`);
+  fs.writeFileSync(path.join(broken, "exit"), "101\n");
+  fs.copyFileSync(path.join(fixtures, "metadata.json"), path.join(t.workspace, "metadata.json"));
+  t.replay(broken);
+  await t.thrust.verify(t.document("arith/src/lib.rs"));
+  assert.deepStrictEqual(t.diagnostics(), ["arith/src/lib.rs:2 an error rustc gave"]);
+  t.replay("only");
+  await t.thrust.verify(t.document("arith/src/lib.rs"), t.lens("arith/src/lib.rs", "scale"));
+  assert.deepStrictEqual(t.diagnostics(), []);
 });

@@ -32,7 +32,11 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.commands.registerCommand("thrust.showOutput", () => thrust.output.show()),
     vscode.workspace.onDidSaveTextDocument((document) => {
-      if (document.languageId === "rust" && settings(document).get<boolean>("verifyOnSave", true)) {
+      if (document.languageId !== "rust") {
+        return;
+      }
+      thrust.invalidateFile(document.uri.fsPath);
+      if (settings(document).get<boolean>("verifyOnSave", true)) {
         void thrust.verify(document);
       }
     }),
@@ -137,26 +141,34 @@ class Thrust implements vscode.InlayHintsProvider, vscode.HoverProvider, vscode.
   }
 
   /// Verifies the document, or only the function `fn` of it, and shows the result; `testRun`
-  /// takes the functions' statuses when the Testing view started the run. A file with unsaved
-  /// changes is not run, since Thrust would check another text than the one shown.
-  async verify(document: vscode.TextDocument, fn?: items.FnItem, testRun?: vscode.TestRun): Promise<void> {
-    if (document.isDirty) {
-      vscode.window.showWarningMessage(`Thrust: ${path.basename(document.uri.fsPath)} has unsaved changes; ${UNSAVED}.`);
-      return;
-    }
+  /// takes the functions' statuses, and `token` stops the run, when the Testing view started it.
+  /// The items the run decides are invalidated at its start. It does not run while a Rust file
+  /// of its crate or workspace has unsaved changes, since Thrust checks the files as saved, and
+  /// discards its result when one changed meanwhile; it returns why it did not show a result.
+  async verify(document: vscode.TextDocument, fn?: items.FnItem, testRun?: vscode.TestRun, token?: vscode.CancellationToken): Promise<string | undefined> {
     const config = runConfig(document);
     let place: Place;
     try {
       place = await placeOf(document, config);
     } catch (err) {
       this.showStatus("error", String(err), path.basename(document.uri.fsPath));
-      return;
+      return String(err);
     }
+    const domain = domainOf(place);
+    const dirty = rustDocuments(domain).find((d) => d.isDirty);
+    if (dirty) {
+      const why = `${path.basename(dirty.uri.fsPath)} has unsaved changes; ${UNSAVED}`;
+      vscode.window.showWarningMessage(`Thrust: ${why}.`);
+      return why;
+    }
+    const versions = new Map(rustDocuments(domain).map((d) => [d.uri.fsPath, d.version]));
     const key = keyOf(place);
     this.running.get(key)?.abort();
     const controller = new AbortController();
     this.running.set(key, controller);
+    const cancelling = token?.onCancellationRequested(() => controller.abort());
     const scope = fn ? scopeOf(document, place, fn) : undefined;
+    this.invalidate(key, scope);
     this.status.text = `$(sync~spin) Thrust: verifying${scope ? ` ${scope.selection}` : ""}`;
     this.status.tooltip = path.basename(document.uri.fsPath);
     let units: Unit[] | undefined;
@@ -169,12 +181,65 @@ class Thrust implements vscode.InlayHintsProvider, vscode.HoverProvider, vscode.
       this.showStatus("error", String(err), path.basename(document.uri.fsPath));
       return;
     } finally {
+      cancelling?.dispose();
       if (this.running.get(key) === controller) {
         this.running.delete(key);
       }
     }
-    if (units) {
-      this.show(key, units, scope, testRun);
+    if (!units) {
+      return "stopped";
+    }
+    const changed = rustDocuments(domain).find((d) => d.isDirty || versions.get(d.uri.fsPath) !== d.version);
+    if (changed) {
+      const why = `${path.basename(changed.uri.fsPath)} changed during the run; its result is not shown`;
+      this.showStatus("unknown", why, path.basename(document.uri.fsPath));
+      return why;
+    }
+    this.show(key, units, scope, testRun);
+    return undefined;
+  }
+
+  /// Marks the results of the items a run of `key` decides as outdated: the whole key's, or the
+  /// items on the lines of the scope's function.
+  private invalidate(key: string, scope: Scope | undefined): void {
+    const outdated: vscode.TestItem[] = [];
+    this.tests.items.forEach((root) => {
+      if (this.unitKeys.get(root) !== key) {
+        return;
+      }
+      if (!scope) {
+        outdated.push(root);
+        return;
+      }
+      root.children.forEach((child) => {
+        if (onLines(child, scope)) {
+          outdated.push(child);
+        }
+      });
+    });
+    if (outdated.length > 0) {
+      this.tests.invalidateTestResults(outdated);
+    }
+  }
+
+  /// Marks the results of the items of a saved file as outdated: its functions', and those of
+  /// the crates or files whose root file's directory holds it.
+  invalidateFile(file: string): void {
+    const outdated: vscode.TestItem[] = [];
+    this.tests.items.forEach((root) => {
+      const rootFile = root.uri?.fsPath ?? "";
+      if (rootFile === file || isInside(file, path.dirname(rootFile))) {
+        outdated.push(root);
+        return;
+      }
+      root.children.forEach((child) => {
+        if (child.uri?.fsPath === file) {
+          outdated.push(child);
+        }
+      });
+    });
+    if (outdated.length > 0) {
+      this.tests.invalidateTestResults(outdated);
     }
   }
 
@@ -193,7 +258,8 @@ class Thrust implements vscode.InlayHintsProvider, vscode.HoverProvider, vscode.
   }
 
   /// The crates of a check: for the workspace, every lib and bin target, those cargo did not
-  /// reach unchecked; for one function, its target, and the crates that failed on the way.
+  /// reach unchecked; for one function, its target; and the other crates that failed on the way
+  /// (a build script, a dependency).
   private async runCargo(
     place: { metadata: cargo.Metadata; target: cargo.Target },
     config: cargo.CargoConfig,
@@ -215,12 +281,16 @@ class Thrust implements vscode.InlayHintsProvider, vscode.HoverProvider, vscode.
       const diagnostics = crate?.diagnostics ?? [];
       return { id, label, file: target.srcPath, checked: crate !== undefined, report: parsed, diagnostics, outcome, root: report.reportRoot(parsed, cwd), cwd };
     };
+    const key = cargo.targetKey;
+    const failedElsewhere = (selected: cargo.Target[]) =>
+      result.crates.filter((c) => !selected.some((t) => key(t) === key(c.target)) && c.diagnostics.some((d) => d.level === "error"));
     if (only) {
-      const failed = result.crates.filter((c) => c.target !== only.target && c.diagnostics.some((d) => d.level === "error"));
-      const own = result.crates.find((c) => c.target === only.target);
-      return [unitOf(only.target, own), ...failed.map((c) => unitOf(c.target, c))];
+      const own = result.crates.find((c) => key(c.target) === key(only.target));
+      return [unitOf(only.target, own), ...failedElsewhere([only.target]).map((c) => unitOf(c.target, c))];
     }
-    return place.metadata.targets.map((t) => unitOf(t, result.crates.find((c) => c.target === t)));
+    const targets = place.metadata.targets;
+    const units = targets.map((t) => unitOf(t, result.crates.find((c) => key(c.target) === key(t))));
+    return [...units, ...failedElsewhere(targets).map((c) => unitOf(c.target, c))];
   }
 
   private log(
@@ -242,15 +312,19 @@ class Thrust implements vscode.InlayHintsProvider, vscode.HoverProvider, vscode.
     const findings = checked.flatMap(unitFindings);
     const hints = checked.flatMap((u) => report.hints(u.report).map((h) => ({ ...h, location: report.resolveLocation(h.location, u.root) })));
     if (scope) {
-      this.publishScoped(key, findings, hints, scope, readable(units[0]));
+      this.publishScoped(key, findings, hints, scope, readable(units[0]) ? path.dirname(units[0].file) : undefined);
     } else {
       this.publish(key, findings, hints);
     }
-    this.showTests(key, units, scope, testRun);
+    const scoped = this.showTests(key, units, scope, testRun);
+    if (scope && scoped) {
+      this.showStatus(functionVerdict(scoped.status, units[0].outcome.verdict), scoped.message, scope.selection);
+      return;
+    }
     const verdict = overallVerdict(checked.map((u) => u.outcome.verdict));
     const detail =
       units.length === 1 ? units[0].outcome.detail : units.map((u) => `${u.label}: ${u.outcome.verdict} (${u.outcome.detail})`).join("\n");
-    this.showStatus(verdict, detail || "no crate was checked", scope ? scope.selection : checked.map((u) => u.label).join(", "));
+    this.showStatus(verdict, detail || "no crate was checked", checked.map((u) => u.label).join(", "));
   }
 
   /// Replaces the diagnostics and hints of the key's last runs with the run's.
@@ -274,14 +348,19 @@ class Thrust implements vscode.InlayHintsProvider, vscode.HoverProvider, vscode.
   }
 
   /// A run of one function: when its report can be read, its findings and hints on the
-  /// function's lines replace those there; rustc's errors anywhere, and all of its findings when
-  /// the report cannot be read (a compile error, an entry selecting nothing), are added to what
-  /// is shown.
-  private publishScoped(key: string, findings: report.Finding[], hints: report.Hint[], scope: Scope, replaces: boolean): void {
+  /// function's lines replace those there, and rustc's diagnostics in the files of its crate
+  /// (under `crateDir`) are replaced by its own, as the crate compiled; when it cannot be read (a
+  /// compile error, an entry selecting nothing), all of its findings are added to what is shown.
+  private publishScoped(key: string, findings: report.Finding[], hints: report.Hint[], scope: Scope, crateDir: string | undefined): void {
+    const replaces = crateDir !== undefined;
     const inScope = (location: report.Location) =>
       location.file === scope.file && location.line >= scope.fn.line && location.line <= scope.fn.endLine;
     const added = findings.filter((f) => !replaces || inScope(f.location) || f.source === "rustc");
     const files = this.published.get(key) ?? new Set<string>();
+    for (const file of crateDir === undefined ? [] : [...files].filter((f) => isInside(f, crateDir))) {
+      const uri = vscode.Uri.file(file);
+      this.diagnostics.set(uri, (this.diagnostics.get(uri) ?? []).filter((d) => d.source !== "rustc"));
+    }
     const lines = new Lines();
     const grouped = byFile(added);
     if (replaces && !grouped.has(scope.file)) {
@@ -316,12 +395,18 @@ class Thrust implements vscode.InlayHintsProvider, vscode.HoverProvider, vscode.
   /// function the report names with its status. A crate the run did not reach is skipped with its
   /// functions. A run of one function updates that function's item, and the items of crates
   /// that failed on the way.
-  private showTests(key: string, units: Unit[], scope: Scope | undefined, testRun: vscode.TestRun | undefined): void {
+  private showTests(
+    key: string,
+    units: Unit[],
+    scope: Scope | undefined,
+    testRun: vscode.TestRun | undefined,
+  ): report.FunctionResult | undefined {
     const target = testRun ?? this.tests.createTestRun(new vscode.TestRunRequest(), "Thrust", false);
+    let scoped: report.FunctionResult | undefined;
     for (const unit of units) {
       const unitItem = this.unitItem(key, unit);
       if (scope && unit === units[0]) {
-        this.showScoped(unit, unitItem, scope, target);
+        scoped = this.showScoped(unit, unitItem, scope, target);
       } else if (!unit.checked) {
         target.skipped(unitItem);
         unitItem.children.forEach((child) => target.skipped(child));
@@ -334,6 +419,7 @@ class Thrust implements vscode.InlayHintsProvider, vscode.HoverProvider, vscode.
     if (!testRun) {
       target.end();
     }
+    return scoped;
   }
 
   private showUnit(unit: Unit, unitItem: vscode.TestItem, testRun: vscode.TestRun): void {
@@ -351,21 +437,23 @@ class Thrust implements vscode.InlayHintsProvider, vscode.HoverProvider, vscode.
   /// The function's item, found by its lines (the report and the selection may name it apart:
   /// `<Pair as Scale>::scale`, `Pair::scale`): its status in the run, or errored with the run's
   /// outcome when the run gave no report to read.
-  private showScoped(unit: Unit, unitItem: vscode.TestItem, scope: Scope, testRun: vscode.TestRun): void {
+  private showScoped(unit: Unit, unitItem: vscode.TestItem, scope: Scope, testRun: vscode.TestRun): report.FunctionResult {
     const file = path.relative(unit.root, scope.file);
-    const found = report.statusWithin(unit.report, file, scope.fn.line, scope.fn.endLine);
-    const result: report.FunctionResult = found?.span
-      ? found
-      : {
-          fn: scope.selection,
-          span: spanOf(file, scope.fn),
-          failures: [],
-          status: found?.status ?? "unknown",
-          message: found?.message ?? unit.outcome.detail,
-        };
-    const item = itemOnLines(unitItem, scope) ?? unitItem.children.get(fnItemId(unit, result.fn)) ?? this.fnItem(unit, result);
+    const found = report.statusWithin(unit.report, file, scope.fn.name, scope.fn.line, scope.fn.endLine);
+    // The report's own line for the function, or one in its name when the result is another's
+    // on its lines (a refutation in a nested function, nothing said).
+    const own = found?.span && report.lastSegment(found.fn) === scope.fn.name ? found : undefined;
+    const result: report.FunctionResult = own ?? {
+      fn: scope.selection,
+      span: spanOf(file, scope.fn),
+      failures: found?.failures ?? [],
+      status: found?.status ?? "unknown",
+      message: found?.message ?? unit.outcome.detail,
+    };
+    const item = itemOf(unitItem, scope, own?.span?.line) ?? unitItem.children.get(fnItemId(unit, result.fn)) ?? this.fnItem(unit, result);
     unitItem.children.add(item);
     setState(testRun, item, result.status, resultMessages(result, unit));
+    return result;
   }
 
   private unitItem(key: string, unit: Unit): vscode.TestItem {
@@ -399,6 +487,8 @@ class Thrust implements vscode.InlayHintsProvider, vscode.HoverProvider, vscode.
     } else {
       this.tests.items.forEach((item) => requested.push(item));
     }
+    const excluded = new Set(request.exclude ?? []);
+    requested.splice(0, requested.length, ...requested.filter((item) => !excluded.has(item)));
     const wholeKeys = new Set(requested.flatMap((item) => this.unitKeys.get(item) ?? []));
     const done = new Set<string>();
     for (const item of requested) {
@@ -417,28 +507,27 @@ class Thrust implements vscode.InlayHintsProvider, vscode.HoverProvider, vscode.
       if (key !== undefined) {
         done.add(key);
       }
-      await this.runItem(item, key === undefined, testRun);
+      await this.runItem(item, key === undefined, testRun, token);
     }
     testRun.end();
   }
 
   /// Runs an item: a function's by the function of the file at its line, as the code lens does.
-  private async runItem(item: vscode.TestItem, isFunction: boolean, testRun: vscode.TestRun): Promise<void> {
+  private async runItem(item: vscode.TestItem, isFunction: boolean, testRun: vscode.TestRun, token: vscode.CancellationToken): Promise<void> {
     if (!item.uri) {
       return;
     }
     const document = await vscode.workspace.openTextDocument(item.uri);
-    if (document.isDirty) {
-      testRun.errored(item, new vscode.TestMessage(UNSAVED));
-      return;
-    }
     const line = (item.range?.start.line ?? 0) + 1;
     const fn = isFunction ? items.functionsIn(document.getText()).find((f) => f.line <= line && line <= f.endLine) : undefined;
     if (isFunction && !fn) {
       testRun.errored(item, new vscode.TestMessage("no function with a body at this line of the file"));
       return;
     }
-    await this.verify(document, fn, testRun);
+    const refused = await this.verify(document, fn, testRun, token);
+    if (refused) {
+      testRun.errored(item, new vscode.TestMessage(refused));
+    }
   }
 
   provideCodeLenses(document: vscode.TextDocument): vscode.CodeLens[] {
@@ -508,21 +597,58 @@ function scopeOf(document: vscode.TextDocument, place: Place, fn: items.FnItem):
   return { file, fn, selection: items.selectionPath(modulePath, fn) };
 }
 
+/// The verdict of a function's run in the status bar: its status's, an error when the run gave
+/// no report to read.
+function functionVerdict(status: report.Status, crate: report.Verdict): report.Verdict {
+  if (status === "pass") {
+    return "safe";
+  }
+  if (status === "fail") {
+    return "unsafe";
+  }
+  return crate === "error" ? "error" : "unknown";
+}
+
+/// The directory whose Rust files a run of the place reads: the workspace's, or the file's.
+function domainOf(place: Place): string {
+  return place.kind === "cargo" ? place.metadata.workspaceRoot : path.dirname(place.file);
+}
+
+function rustDocuments(dir: string): readonly vscode.TextDocument[] {
+  return vscode.workspace.textDocuments.filter((d) => d.languageId === "rust" && isInside(d.uri.fsPath, dir));
+}
+
+function isInside(file: string, dir: string): boolean {
+  const relative = path.relative(dir, file);
+  return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative);
+}
+
 /// Whether the unit's report can be read: it has a verdict, of a version this extension reads.
 function readable(unit: Unit): boolean {
   return unit.report.verdict !== undefined && report.refusal(unit.report) === undefined;
 }
 
 /// The child of `unitItem` whose range starts on the lines of the scope's function.
-function itemOnLines(unitItem: vscode.TestItem, scope: Scope): vscode.TestItem | undefined {
-  let found: vscode.TestItem | undefined;
+function onLines(item: vscode.TestItem, scope: Scope): boolean {
+  const line = item.range ? item.range.start.line + 1 : 0;
+  return item.uri?.fsPath === scope.file && line >= scope.fn.line && line <= scope.fn.endLine;
+}
+
+/// The function's item among the children starting on its lines, which may be its closures' or
+/// its nested functions': the one at the line the report gives the function, else the one of its
+/// name (`<Pair as Scale>::scale` for `scale`); none when neither is there.
+function itemOf(unitItem: vscode.TestItem, scope: Scope, reportLine: number | undefined): vscode.TestItem | undefined {
+  const candidates: vscode.TestItem[] = [];
   unitItem.children.forEach((child) => {
-    const line = child.range ? child.range.start.line + 1 : 0;
-    if (!found && child.uri?.fsPath === scope.file && line >= scope.fn.line && line <= scope.fn.endLine) {
-      found = child;
+    if (onLines(child, scope)) {
+      candidates.push(child);
     }
   });
-  return found;
+  const start = (item: vscode.TestItem) => (item.range?.start.line ?? 0) + 1;
+  return (
+    candidates.find((c) => reportLine !== undefined && start(c) === reportLine) ??
+    candidates.find((c) => report.lastSegment(c.label) === scope.fn.name)
+  );
 }
 
 function byFile(findings: report.Finding[]): Map<string, report.Finding[]> {

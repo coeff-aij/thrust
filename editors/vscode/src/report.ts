@@ -687,23 +687,30 @@ function failureLine(failure: Failure): string {
   return `refuted: ${failure.obligation ?? "obligation"}${values}`;
 }
 
-/// The status of the function on the lines `line` to `endLine` of `file` (relative to the
+/// The status of the function `name` on the lines `line` to `endLine` of `file` (relative to the
 /// report's root), in a run of that function only (`THRUST_VERIFY_ONLY`), from what the report
-/// names on those lines: a refutation fails it; a part (when split) or a contract or loop site
-/// (in one query) gives its status, since Thrust checks the body of a function the report names
-/// so (a function with an unknown in its contract is never trusted, `src/analyze/crate_.rs`).
-/// Lines the report names nothing on are undecided, never passing: the function may be trusted
-/// (`#[thrust::trusted]`, a written contract outside the selection), not compiled (`cfg`), or
-/// checked in one query without a site.
-export function statusWithin(report: Report, file: string, line: number, endLine: number): FunctionResult | undefined {
+/// names on those lines. A refutation anywhere on them fails it. Otherwise only what the report
+/// says of the function itself, or of its closures, decides it: its part (when split) or its
+/// contract or loop site (in one query), since Thrust checks the body of a function the report
+/// names so (a function with an unknown in its contract is never trusted, `src/analyze/crate_.rs`).
+/// A function defined inside it is no evidence for it: a `#[thrust::trusted]` function's nested
+/// function is checked while its own body is not. Lines the report says nothing of the function
+/// on are undecided, never passing: it may be trusted (`#[thrust::trusted]`, a written contract
+/// outside the selection), not compiled (`cfg`), or checked in one query without a site.
+export function statusWithin(report: Report, file: string, name: string, line: number, endLine: number): FunctionResult | undefined {
   if (refusal(report) || !report.verdict) {
     return undefined;
   }
   const inside = (span: Range | null) => span !== null && span.file === file && span.line >= line && span.line <= endLine;
-  const own = functionResults(report).filter((r) => inside(r.span) || r.failures.some((f) => inside(f.span)));
-  const result = own.find((r) => r.status === "fail") ?? own.find((r) => r.status === "unknown") ?? own[0];
-  if (result) {
-    return result;
+  const onLines = functionResults(report).filter((r) => inside(r.span) || r.failures.some((f) => inside(f.span)));
+  const failed = onLines.find((r) => r.status === "fail");
+  if (failed) {
+    return failed;
+  }
+  const own = onLines.filter((r) => lastSegment(r.fn) === name || lastSegment(r.fn).startsWith("{closure"));
+  const named = own.filter((r) => lastSegment(r.fn) === name);
+  if (named.length > 0) {
+    return own.find((r) => r.status === "unknown") ?? named[0];
   }
   const split = report.parts.length > 0 ? "" : "; a split run (thrust.split) names every function it checks";
   return {
@@ -711,6 +718,13 @@ export function statusWithin(report: Report, file: string, line: number, endLine
     span: null,
     failures: [],
     status: "unknown",
-    message: `the report names nothing on these lines: trusted, not compiled, or without a site${split}`,
+    message: `the report says nothing of \`${name}\` on these lines: trusted, not compiled, or without a site${split}`,
   };
+}
+
+/// The last segment of a function's name as the report gives it (`scale` of
+/// `<Pair as Scale>::scale`).
+export function lastSegment(fn: string): string {
+  const at = fn.lastIndexOf("::");
+  return at < 0 ? fn : fn.slice(at + 2);
 }

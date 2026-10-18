@@ -1,7 +1,7 @@
 // Drives the compiled extension under the VS Code stub with a real thrust-rustc, on copies of the
-// fixture workspace and of single-file fixtures, and prints what it shows: the Testing view's
-// states and the diagnostics after each step. Not part of `npm test`; it needs Thrust built, z3
-// and the toolchain.
+// fixture workspace and of single-file fixtures (unsafe.rs, trusted.rs, nested.rs), and prints
+// what it shows: the Testing view's states and the diagnostics after each step. Not part of
+// `npm test`; it needs Thrust built, z3 and the toolchain.
 //
 // Usage: npm run compile && node test/drive-real.js <thrust-rustc> [split]
 //   e.g. node test/drive-real.js /path/to/thrust/target/debug/thrust-rustc 2
@@ -43,6 +43,8 @@ function start(source, cargo) {
   return { folder, thrust: context.subscriptions[0] };
 }
 
+const token = { isCancellationRequested: false, onCancellationRequested: () => ({ dispose() {} }) };
+
 function lens(file, name) {
   const found = s.providers.lens.provideCodeLenses(vscode.__document(file)).find((l) => l.command.arguments[1].name === name);
   return found.command.arguments[1];
@@ -71,9 +73,9 @@ async function workspace() {
   dump("helper of the binary of a package with a library", folder);
   let item;
   s.controller.items.forEach((root) => root.children.forEach((child) => (item = child.label === "sextuple" ? child : item)));
-  await s.profile(new vscode.TestRunRequest([item]), { isCancellationRequested: false });
+  await s.profile(new vscode.TestRunRequest([item]), token);
   dump("sextuple from the Testing view", folder);
-  await s.profile(new vscode.TestRunRequest(undefined), { isCancellationRequested: false });
+  await s.profile(new vscode.TestRunRequest(undefined), token);
   dump("all from the Testing view", folder);
 }
 
@@ -92,4 +94,5 @@ async function singleFile(name, fns) {
   await workspace();
   await singleFile("unsafe.rs", ["main", "withdraw"]);
   await singleFile("trusted.rs", ["bad", "twin"]);
+  await singleFile("nested.rs", ["outer"]);
 })();
