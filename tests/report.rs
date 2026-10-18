@@ -638,3 +638,18 @@ fn tuples_and_units_read_as_rust_writes_them() {
     assert!(values.contains(",)") && !values.contains(", )"), "{stderr}");
     assert!(!values.contains("= ()"), "{stderr}");
 }
+
+/// An enum, its constructors and its values are named by their Rust paths, in the constraints
+/// and in the values the solver gives.
+#[test]
+fn enums_read_by_their_paths() {
+    let output = report("enum_fail.rs", "template,constraints,failure");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("fn area(s: {Shape | area.pre(s)})"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("Shape::Rect(2, 3)"), "{stderr}");
+    assert!(stderr.contains("std::option::Option::Some(6)"), "{stderr}");
+    assert!(!stderr.contains("d_Shape_"), "{stderr}");
+}

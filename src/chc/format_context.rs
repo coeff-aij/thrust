@@ -17,6 +17,8 @@ use crate::chc::{self, hoice::HoiceDatatypeRenamer};
 pub enum DeclaredSymbol {
     /// A datatype's name: the sort it is.
     Sort(chc::Sort),
+    /// A constructor of an enum's datatype, of the sort it is in.
+    Ctor(chc::DatatypeSort, chc::DatatypeSymbol),
     /// The constructor of a `Box`, a `Mut` or a tuple.
     BoxCtor,
     MutCtor,
@@ -384,13 +386,13 @@ fn monomorphize_datatype(
     }
     let ss = SortSymbols::new(&sort.args);
     let mono_datatype = chc::Datatype {
-        symbol: chc::DatatypeSymbol::new(format!("{}{}", datatype.symbol, ss)),
+        symbol: datatype.symbol.suffixed(&ss),
         params: 0,
         ctors: datatype
             .ctors
             .iter()
             .map(|c| chc::DatatypeCtor {
-                symbol: chc::DatatypeSymbol::new(format!("{}{}", c.symbol, ss)),
+                symbol: c.symbol.suffixed(&ss),
                 selectors: c
                     .selectors
                     .iter()
@@ -398,7 +400,7 @@ fn monomorphize_datatype(
                         let mut sel_sort = s.sort.clone();
                         sel_sort.instantiate_params(&sort.args, forall_sort_resolver);
                         chc::DatatypeSelector {
-                            symbol: chc::DatatypeSymbol::new(format!("{}{}", s.symbol, ss)),
+                            symbol: s.symbol.suffixed(&ss),
                             sort: sel_sort,
                         }
                     })
@@ -586,8 +588,8 @@ impl FormatContext {
     }
 
     /// Each symbol the query declares for a datatype, as the query writes it, with what it stands
-    /// for: every datatype's name, and the constructor and selectors of a `Box`, a `Mut` or a
-    /// tuple.
+    /// for: every datatype's name, the constructors of an enum's, and the constructor and
+    /// selectors of a `Box`, a `Mut` or a tuple.
     pub fn declared_symbols(&self) -> Vec<(String, DeclaredSymbol)> {
         let mut symbols = Vec::new();
         for d in &self.datatypes {
@@ -599,7 +601,15 @@ impl FormatContext {
                 self.fmt_datatype_symbol(&d.symbol).to_string(),
                 DeclaredSymbol::Sort(named),
             ));
-            let (Some(sort), Some(ctor)) = (sort, d.ctors.first()) else {
+            let Some(sort) = sort else {
+                let sort = chc::DatatypeSort::new(d.symbol.clone(), Vec::new());
+                symbols.extend(d.ctors.iter().map(|c| {
+                    let meaning = DeclaredSymbol::Ctor(sort.clone(), c.symbol.clone());
+                    (c.symbol.to_string(), meaning)
+                }));
+                continue;
+            };
+            let Some(ctor) = d.ctors.first() else {
                 continue;
             };
             let (ctor_meaning, selector_meaning): (_, fn(usize) -> DeclaredSymbol) = match sort {
