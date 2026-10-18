@@ -294,7 +294,7 @@ fn bind_spec_param<'tcx>(
 
 /// The supertrait bounds `bound` implies (`T: PartialOrd` of `T: Ord`), which a callee bounded by
 /// `bound` may rely on too.
-fn supertrait_bounds<'tcx>(
+pub(super) fn supertrait_bounds<'tcx>(
     tcx: TyCtxt<'tcx>,
     bound: mir_ty::TraitRef<'tcx>,
 ) -> Vec<mir_ty::TraitRef<'tcx>> {

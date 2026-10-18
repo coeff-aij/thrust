@@ -72,8 +72,9 @@ impl<'tcx> Analyzer<'tcx, '_> {
         }
     }
 
-    /// The type parameters of `contract_def_id` with an `Fn`, `FnMut` or `FnOnce` bound, and how
-    /// often the bound lets the function call a value of each.
+    /// The type parameters of `contract_def_id` with an `Fn`, `FnMut` or `FnOnce` bound, directly
+    /// or through a supertrait, and how often the bounds let the function call a value of each:
+    /// repeatedly if any bound is `Fn` or `FnMut`.
     fn fn_bounded_params(&self, contract_def_id: DefId) -> Vec<(mir_ty::ParamTy, Calls)> {
         let mut params: Vec<(mir_ty::ParamTy, Calls)> = Vec::new();
         let predicates = self
@@ -84,23 +85,43 @@ impl<'tcx> Analyzer<'tcx, '_> {
             let Some(trait_clause) = clause.as_trait_clause() else {
                 continue;
             };
-            let trait_ref = trait_clause.skip_binder().trait_ref;
-            let Some(kind) = self.tcx.fn_trait_kind_from_def_id(trait_ref.def_id) else {
-                continue;
-            };
+            let trait_ref = self
+                .tcx
+                .instantiate_bound_regions_with_erased(trait_clause)
+                .trait_ref;
             let mir_ty::TyKind::Param(param) = *trait_ref.self_ty().kind() else {
                 continue;
             };
-            if params.iter().any(|(p, _)| *p == param) {
-                continue;
+            for kind in self.fn_trait_kinds(trait_ref) {
+                let calls = match kind {
+                    mir_ty::ClosureKind::FnOnce => Calls::Once,
+                    mir_ty::ClosureKind::Fn | mir_ty::ClosureKind::FnMut => Calls::Repeatedly,
+                };
+                match params.iter_mut().find(|(p, _)| *p == param) {
+                    Some((_, known)) if calls == Calls::Repeatedly => *known = calls,
+                    Some(_) => {}
+                    None => params.push((param, calls)),
+                }
             }
-            let calls = match kind {
-                mir_ty::ClosureKind::FnOnce => Calls::Once,
-                mir_ty::ClosureKind::Fn | mir_ty::ClosureKind::FnMut => Calls::Repeatedly,
-            };
-            params.push((param, calls));
         }
         params
+    }
+
+    /// The closure traits among `trait_ref` and its supertraits.
+    fn fn_trait_kinds(&self, trait_ref: mir_ty::TraitRef<'tcx>) -> Vec<mir_ty::ClosureKind> {
+        let mut kinds = Vec::new();
+        let mut pending = vec![trait_ref];
+        let mut seen = std::collections::HashSet::new();
+        while let Some(trait_ref) = pending.pop() {
+            if !seen.insert(trait_ref.def_id) {
+                continue;
+            }
+            kinds.extend(self.tcx.fn_trait_kind_from_def_id(trait_ref.def_id));
+            pending.extend(crate::analyze::extern_spec::supertrait_bounds(
+                self.tcx, trait_ref,
+            ));
+        }
+        kinds
     }
 
     /// Records that the closure `ty` stands for is handed over at a call of `def_id`, which
@@ -233,22 +254,33 @@ impl<'tcx> Analyzer<'tcx, '_> {
     }
 }
 
-/// `ty` without the references around it.
-fn peel_refs(mut ty: mir_ty::Ty<'_>) -> mir_ty::Ty<'_> {
-    while let mir_ty::TyKind::Ref(_, inner, _) = ty.kind() {
-        ty = *inner;
+/// `ty` without the references and boxes around it.
+fn peel_refs(ty: mir_ty::Ty<'_>) -> mir_ty::Ty<'_> {
+    let mut ty = ty;
+    while let Some(inner) = pointee(ty) {
+        ty = inner;
     }
     ty
 }
 
-/// The number of references around `ty`.
-fn count_refs(mut ty: mir_ty::Ty<'_>) -> usize {
+/// The number of references and boxes around `ty`.
+fn count_refs(ty: mir_ty::Ty<'_>) -> usize {
+    let mut ty = ty;
     let mut count = 0;
-    while let mir_ty::TyKind::Ref(_, inner, _) = ty.kind() {
-        ty = *inner;
+    while let Some(inner) = pointee(ty) {
+        ty = inner;
         count += 1;
     }
     count
+}
+
+/// What `ty` points to, if it is a reference or a box.
+fn pointee(ty: mir_ty::Ty<'_>) -> Option<mir_ty::Ty<'_>> {
+    match ty.kind() {
+        mir_ty::TyKind::Ref(_, inner, _) => Some(*inner),
+        mir_ty::TyKind::Adt(adt, args) if adt.is_box() => Some(args.type_at(0)),
+        _ => None,
+    }
 }
 
 /// The number of references and boxes a value of `held` is behind which is of type `ty`, or
@@ -256,11 +288,7 @@ fn count_refs(mut ty: mir_ty::Ty<'_>) -> usize {
 fn derefs_to<'tcx>(mut held: mir_ty::Ty<'tcx>, ty: mir_ty::Ty<'tcx>) -> Option<usize> {
     let mut derefs = 0;
     while held != ty {
-        held = match held.kind() {
-            mir_ty::TyKind::Ref(_, inner, _) => *inner,
-            mir_ty::TyKind::Adt(adt, args) if adt.is_box() => args.type_at(0),
-            _ => return None,
-        };
+        held = pointee(held)?;
         derefs += 1;
     }
     Some(derefs)

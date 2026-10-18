@@ -57,6 +57,14 @@ pub struct Entries<'tcx> {
     pub items: Vec<(mir_ty::Instance<'tcx>, mir_ty::Instance<'tcx>)>,
     /// Closures entered on a path on which no analyzed call handed them over, likewise.
     pub unhanded_closures: Vec<(mir_ty::Instance<'tcx>, mir_ty::Instance<'tcx>)>,
+    /// The closure and function pointer types an entered function returns, or can store
+    /// behind a `&mut` argument, to the unanalyzed instance it is entered from: values the
+    /// walk does not see handed over.
+    pub escaping: Vec<(
+        mir_ty::Instance<'tcx>,
+        mir_ty::Instance<'tcx>,
+        mir_ty::Ty<'tcx>,
+    )>,
 }
 
 /// An instance on the walk: whether its body is analyzed, and, for one that is not, the
@@ -259,6 +267,11 @@ impl<'tcx> analyze::Analyzer<'tcx> {
                 if Some(callee_def_id) == entry_fn {
                     continue;
                 }
+                entries.escaping.extend(
+                    self.escaping_callables(callee)
+                        .into_iter()
+                        .map(|ty| (callee, instance, ty)),
+                );
                 if self.tcx.is_closure_like(callee_def_id) {
                     if !node.handed_over.contains(&callee_def_id) {
                         entries.unhanded_closures.push((callee, instance));
@@ -269,6 +282,48 @@ impl<'tcx> analyze::Analyzer<'tcx> {
             }
         }
         entries
+    }
+
+    /// The closure and function pointer types in what `instance` returns and in the types
+    /// behind a `&mut` among its parameters.
+    fn escaping_callables(&self, instance: mir_ty::Instance<'tcx>) -> Vec<mir_ty::Ty<'tcx>> {
+        let typing_env = mir_ty::TypingEnv::fully_monomorphized();
+        let fn_ty = instance.ty(self.tcx, typing_env);
+        let sig = match fn_ty.kind() {
+            mir_ty::TyKind::Closure(_, args) => args.as_closure().sig(),
+            mir_ty::TyKind::FnDef(..) => fn_ty.fn_sig(self.tcx),
+            _ => return Vec::new(),
+        };
+        let sig = self.tcx.instantiate_bound_regions_with_erased(sig);
+        let sig = self.tcx.normalize_erasing_regions(typing_env, sig);
+        let holds_mut_ref = |ty: &mir_ty::Ty<'tcx>| {
+            ty.walk().any(|arg| {
+                matches!(
+                    arg.as_type().map(|ty| *ty.kind()),
+                    Some(mir_ty::TyKind::Ref(_, _, mir_ty::Mutability::Mut))
+                )
+            })
+        };
+        let written = sig.inputs().iter().filter(|ty| holds_mut_ref(ty));
+        let mut callables = Vec::new();
+        for ty in std::iter::once(&sig.output()).chain(written) {
+            let mut walker = ty.walk();
+            while let Some(arg) = walker.next() {
+                let Some(ty) = arg.as_type() else {
+                    continue;
+                };
+                match ty.kind() {
+                    // A closure's own arguments (its signature, its captures) are its own.
+                    mir_ty::TyKind::Closure(..) => {
+                        callables.push(ty);
+                        walker.skip_current_subtree();
+                    }
+                    mir_ty::TyKind::FnPtr(..) => callables.push(ty),
+                    _ => {}
+                }
+            }
+        }
+        callables
     }
 
     /// Whether the generic arguments of `instance` nest as deeply as the recursion limit, as

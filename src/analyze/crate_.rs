@@ -799,11 +799,15 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// instances have recorded their hand-overs.
     fn fix_entered_preconditions(&mut self) {
         let entries = self.unanalyzed_entries();
+        for (callee, from, ty) in &entries.escaping {
+            self.stop_escaping_callable(*callee, *from, *ty);
+        }
         let mut fixed = HashSet::new();
-        for (callee, _) in &entries.items {
+        for (callee, from) in &entries.items {
             if !fixed.insert(*callee) {
                 continue;
             }
+            self.stop_unanalyzed_closure_arg(*callee, *from);
             let Some(fn_ty) = self.ctx.entered_inferred_fn_ty(*callee) else {
                 continue;
             };
@@ -826,6 +830,77 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 ),
             );
         }
+    }
+
+    /// Stops at a closure of the crate with an inferred precondition, or a function pointer,
+    /// that the analyzed `callee` hands to `from`, which Thrust does not analyze, by returning
+    /// it or storing it behind a `&mut`: no hand-over states its obligation. A closure with a
+    /// written `requires`, or one of a trusted body, is trusted to be called as it says.
+    fn stop_escaping_callable(
+        &self,
+        callee: mir_ty::Instance<'tcx>,
+        from: mir_ty::Instance<'tcx>,
+        ty: mir_ty::Ty<'tcx>,
+    ) {
+        let remedy = match *ty.kind() {
+            mir_ty::TyKind::Closure(def_id, _) => {
+                if !self.is_analyzed(def_id) || self.ctx.has_written_requires(def_id) {
+                    return;
+                }
+                "give the closure a `requires` with `thrust_macros::closure!`"
+            }
+            _ => "keep the function pointer in verified code",
+        };
+        self.tcx.dcx().span_fatal(
+            self.tcx.def_span(callee.def_id()),
+            format!(
+                "`{callee}` gives `{ty}` to `{from}`, which Thrust does not analyze, and nothing \
+                 requires its precondition there: {remedy}"
+            ),
+        );
+    }
+
+    /// Stops at `callee`, entered from `from`, which Thrust does not analyze, at a closure of a
+    /// body Thrust does not analyze either: such a closure has no contract to check `callee`'s
+    /// body against.
+    fn stop_unanalyzed_closure_arg(
+        &self,
+        callee: mir_ty::Instance<'tcx>,
+        from: mir_ty::Instance<'tcx>,
+    ) {
+        let closure = callee
+            .args
+            .types()
+            .flat_map(|ty| ty.walk())
+            .find_map(|arg| match arg.as_type().map(|ty| *ty.kind()) {
+                Some(mir_ty::TyKind::Closure(def_id, _))
+                    if def_id.is_local() && !self.is_analyzed(def_id) =>
+                {
+                    Some(def_id)
+                }
+                _ => None,
+            });
+        let Some(closure) = closure else {
+            return;
+        };
+        let written = self
+            .ctx
+            .concrete_def_ty(callee.def_id())
+            .and_then(|def_ty| def_ty.ty.as_function())
+            .is_some_and(|fn_ty| !self.ctx.infers_precondition(fn_ty));
+        if written {
+            return;
+        }
+        self.tcx.dcx().span_fatal(
+            self.tcx.def_span(callee.def_id()),
+            format!(
+                "`{from}`, which Thrust does not analyze, runs `{callee}` at the closure `{}` of \
+                 a body Thrust does not analyze either, which has no contract to check it \
+                 against: give `{}` a contract",
+                self.tcx.def_path_str(closure),
+                self.tcx.def_path_str(callee.def_id()),
+            ),
+        );
     }
 
     fn unanalyzed_entries(&self) -> analyze::unanalyzed_entry::Entries<'tcx> {
