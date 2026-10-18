@@ -691,11 +691,13 @@ impl<'tcx> TypeBuilder<'tcx> {
                 format!("Tuple{}", self.generic_args_symbol(args))
             }
             TyKind::Slice(elem) => format!("Slice<{}>", self.type_symbol(*elem)),
-            TyKind::Array(elem, len) => format!(
-                "Array<{}-{}>",
-                self.type_symbol(*elem),
-                symbol_chars(&len.to_string())
-            ),
+            TyKind::Array(elem, len) => {
+                format!(
+                    "Array<{}-{}>",
+                    self.type_symbol(*elem),
+                    self.const_symbol(*len)
+                )
+            }
             TyKind::Adt(adt, args) => format!(
                 "{}{}",
                 refine::datatype_symbol(tcx, adt.did()),
@@ -721,10 +723,16 @@ impl<'tcx> TypeBuilder<'tcx> {
     }
 
     /// A const argument: a const parameter by the def path hash of its declaration, so that the
-    /// parameters of two items are two names, and a value by its text.
+    /// parameters of two items are two names, and any other const by its text, readable, with a
+    /// hash of the full text, which tells apart texts that differ only in characters a symbol
+    /// cannot hold (`'+'` and `'-'`).
     fn const_symbol(&self, ct: mir_ty::Const<'tcx>) -> String {
         let mir_ty::ConstKind::Param(param) = ct.kind() else {
-            return symbol_chars(&ct.to_string());
+            use std::hash::{Hash as _, Hasher as _};
+            let text = ct.to_string();
+            let mut hasher = std::hash::DefaultHasher::new();
+            text.hash(&mut hasher);
+            return format!("{}_{:016x}", symbol_chars(&text), hasher.finish());
         };
         let generics = self.tcx.generics_of(self.owner_fn_id);
         let def_id = generics.param_at(param.index as usize, self.tcx).def_id;
