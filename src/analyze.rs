@@ -687,6 +687,19 @@ pub fn fatal_ignored_call<'tcx>(
     ))
 }
 
+/// The supertrait bounds `bound` implies (`T: PartialOrd` of `T: Ord`), which a callee bounded by
+/// `bound` may rely on too.
+fn supertrait_bounds<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    bound: mir_ty::TraitRef<'tcx>,
+) -> Vec<mir_ty::TraitRef<'tcx>> {
+    tcx.explicit_super_predicates_of(bound.def_id)
+        .iter_instantiated_copied(tcx, bound.args)
+        .filter_map(|(clause, _)| clause.as_trait_clause())
+        .map(|pred| tcx.instantiate_bound_regions_with_erased(pred).trait_ref)
+        .collect()
+}
+
 /// How deeply the types in `arg` nest.
 fn type_depth(arg: mir_ty::GenericArg<'_>) -> usize {
     let mut walker = arg.walk();
@@ -1801,14 +1814,23 @@ impl<'tcx> Analyzer<'tcx> {
         let mut visited = HashSet::new();
         let mut pending = bounds;
         while let Some(bound) = pending.pop() {
+            let bound = self
+                .tcx
+                .try_normalize_erasing_regions(typing_env, bound)
+                .unwrap_or(bound);
             if !visited.insert(bound) {
                 continue;
             }
+            pending.extend(supertrait_bounds(self.tcx, bound));
             let obligation = Obligation::new(self.tcx, ObligationCause::dummy(), param_env, bound);
             let nested = match selcx.select(&obligation) {
                 Ok(Some(ImplSource::UserDefined(data))) => {
                     if data.impl_def_id.is_local() {
                         self.check_impl_not_ignored(data.impl_def_id);
+                        let args = self
+                            .tcx
+                            .erase_regions(infcx.resolve_vars_if_possible(data.args));
+                        grew |= self.reuse_impl_methods(data.impl_def_id, args, owner_fn_id);
                     }
                     data.nested
                 }
@@ -1817,7 +1839,10 @@ impl<'tcx> Analyzer<'tcx> {
                     grew |= self.record_assumed_bound_impl(owner_fn_id, bound);
                     continue;
                 }
-                _ => continue,
+                Err(_) | Ok(None) => self.tcx.dcx().fatal(format!(
+                    "no impl of `{bound}` is selected for `{}`, whose callee relies on it",
+                    self.tcx.def_path_str(owner_fn_id),
+                )),
             };
             pending.extend(nested.into_iter().filter_map(|obligation| {
                 let predicate = infcx.resolve_vars_if_possible(obligation.predicate);
@@ -1825,6 +1850,38 @@ impl<'tcx> Analyzer<'tcx> {
                 let trait_ref = self.tcx.erase_regions(trait_ref);
                 (!trait_ref.has_infer()).then_some(trait_ref)
             }));
+        }
+        grew
+    }
+
+    /// Adds the methods of the crate's generic impl `impl_def_id`, at `impl_args`, to the instances
+    /// that reuse a generic def's contract for `caller_def_id`. A std function whose specification
+    /// rests on the impl runs its methods there, so the assumptions their generic analysis made at
+    /// the impl's parameters (total methods, dispatched calls, spec bounds) are checked at these
+    /// arguments, as at a direct call. Returns whether an instance is new.
+    fn reuse_impl_methods(
+        &self,
+        impl_def_id: DefId,
+        impl_args: mir_ty::GenericArgsRef<'tcx>,
+        caller_def_id: DefId,
+    ) -> bool {
+        use mir_ty::TypeVisitableExt as _;
+
+        if impl_args.is_empty() || impl_args.has_infer() {
+            return false;
+        }
+        let mut grew = false;
+        for &method in self.tcx.associated_item_def_ids(impl_def_id) {
+            let own_generics = self.tcx.generics_of(method).own_requires_monomorphization();
+            if !self.tcx.def_kind(method).is_fn_like() || own_generics {
+                continue;
+            }
+            let reached = (method, impl_args, caller_def_id);
+            let mut reused = self.reused_generic_instances.borrow_mut();
+            if !reused.contains(&reached) {
+                reused.push(reached);
+                grew = true;
+            }
         }
         grew
     }
