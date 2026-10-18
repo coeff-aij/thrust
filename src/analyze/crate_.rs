@@ -33,6 +33,25 @@ pub struct Analyzer<'tcx, 'ctx> {
     /// them.
     trusted: HashSet<LocalDefId>,
     selection: Option<analyze::selection::Selection>,
+    body_checks: analyze::BodyChecks,
+}
+
+const TRUSTED_ATTR: &str = "#[thrust::trusted]";
+const OUTSIDE_SELECTION: &str = "outside THRUST_VERIFY_ONLY, its written contract assumed";
+
+/// What is done with the body of a closure in a function whose body is not analyzed, which
+/// `enclosing` says.
+fn enclosed(enclosing: Option<analyze::BodyCheck>) -> analyze::BodyCheck {
+    use analyze::BodyCheck;
+    match enclosing {
+        Some(BodyCheck::Trusted(_)) => BodyCheck::Trusted("in a trusted function"),
+        Some(BodyCheck::Ignored(_)) => BodyCheck::Ignored("in an ignored function"),
+        Some(BodyCheck::Unselected(_)) => {
+            BodyCheck::Unselected("in a function outside THRUST_VERIFY_ONLY")
+        }
+        Some(BodyCheck::Specification) => BodyCheck::Specification,
+        _ => BodyCheck::NotAnalyzed("in a function whose body is not analyzed"),
+    }
 }
 
 impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
@@ -102,8 +121,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     {
                         self.skip_analysis.insert(local_target_def_id);
                         self.trusted.insert(local_target_def_id);
+                        self.body_checks.record(
+                            local_target_def_id,
+                            analyze::BodyCheck::Trusted(TRUSTED_ATTR),
+                        );
                     }
                 }
+                self.body_checks
+                    .record(*local_def_id, analyze::BodyCheck::Specification);
                 if matches!(
                     self.tcx.def_kind(target_def_id),
                     rustc_hir::def::DefKind::AssocFn
@@ -123,8 +148,17 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                      write `#[thrust::trusted]`",
                 );
             }
-            if analyzer.is_annotated_as_ignored() || analyzer.is_ignored_derive() {
+            let ignored = if analyzer.is_annotated_as_ignored() {
+                Some("#[thrust::ignored]")
+            } else if analyzer.is_ignored_derive() {
+                Some("a derived method")
+            } else {
+                None
+            };
+            if let Some(reason) = ignored {
                 self.skip_analysis.insert(*local_def_id);
+                self.body_checks
+                    .record(*local_def_id, analyze::BodyCheck::Ignored(reason));
                 keys.swap_remove(local_def_id);
             }
             let is_predicate = analyzer.is_annotated_as_predicate();
@@ -139,6 +173,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         .analyze_predicate_definition();
                 }
                 self.skip_analysis.insert(*local_def_id);
+                self.body_checks
+                    .record(*local_def_id, analyze::BodyCheck::Specification);
                 keys.swap_remove(local_def_id);
             }
         }
@@ -150,6 +186,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             if self.is_outside_selection(local_target_def_id) {
                 self.skip_analysis.insert(local_target_def_id);
                 self.trusted.insert(local_target_def_id);
+                self.body_checks.record(
+                    local_target_def_id,
+                    analyze::BodyCheck::Unselected(OUTSIDE_SELECTION),
+                );
             }
         }
         // A closure is skipped when its typeck root is, so roots are refined first.
@@ -233,6 +273,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             );
             self.skip_analysis.insert(local_def_id);
             self.trusted.insert(local_def_id);
+            self.body_checks
+                .record(local_def_id, analyze::BodyCheck::Trusted(TRUSTED_ATTR));
         }
 
         let is_injected_std = analyzer.is_injected_std();
@@ -247,6 +289,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         if trusted_derive {
             analyzer.check_derived_field_impls();
             self.skip_analysis.insert(local_def_id);
+            self.body_checks.record(
+                local_def_id,
+                analyze::BodyCheck::NotAnalyzed(
+                    "a derived method, with the contract of its trait method",
+                ),
+            );
         }
 
         if analyzer.is_annotated_as_extern_spec_fn() {
@@ -267,6 +315,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             if root_local_def_id != local_def_id && self.skip_analysis.contains(&root_local_def_id)
             {
                 self.skip_analysis.insert(local_def_id);
+                let enclosing = self.body_checks.get(root_local_def_id);
+                self.body_checks.record(local_def_id, enclosed(enclosing));
                 if self.trusted.contains(&root_local_def_id) {
                     self.trusted.insert(local_def_id);
                 }
@@ -284,6 +334,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 tracing::debug!("trusted outside THRUST_VERIFY_ONLY");
                 self.skip_analysis.insert(local_def_id);
                 self.trusted.insert(local_def_id);
+                self.body_checks.record(
+                    local_def_id,
+                    analyze::BodyCheck::Unselected(OUTSIDE_SELECTION),
+                );
             }
             expected = Some(ty);
         }
@@ -299,6 +353,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             } else if owner_fn_id.as_local().is_none_or(|def_id| {
                 self.skip_analysis.contains(&def_id) || !self.tcx.is_mir_available(def_id)
             }) {
+                self.body_checks.record(
+                    local_def_id,
+                    analyze::BodyCheck::NotAnalyzed("generic, with no body to analyze"),
+                );
                 self.ctx.register_deferred_def_without_analysis(
                     owner_fn_id,
                     local_def_id,
@@ -309,6 +367,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 // drop it at an instance that no call site of the crate reaches.
                 // Upstream Thrust's treatment: the body is analyzed at each instance a call site
                 // reaches, and not once over the type parameters.
+                self.body_checks.record(
+                    local_def_id,
+                    analyze::BodyCheck::NotAnalyzed(
+                        "generic, analyzed at each instance a call reaches, and none does",
+                    ),
+                );
                 self.ctx
                     .register_deferred_def(owner_fn_id, local_def_id, owner_fn_id_args);
             } else {
@@ -343,6 +407,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 // A law's default body over `Self` would be checked with the law itself among
                 // the premises of `Self`'s predicates, which proves nothing; it is checked at
                 // each impl instead (`analyze_inherited_laws`).
+                self.body_checks.record(
+                    *local_def_id,
+                    analyze::BodyCheck::NotAnalyzed(
+                        "a law, checked at the impls that inherit it, and none was",
+                    ),
+                );
                 continue;
             }
             if self.has_fn_mut_bounded_param(*local_def_id) {
@@ -662,12 +732,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let tcx = ctx.tcx;
         let skip_analysis = HashSet::default();
         let selection = analyze::selection::Selection::from_env();
+        let body_checks = ctx.body_checks();
         Self {
             ctx,
             tcx,
             skip_analysis,
             trusted: HashSet::new(),
             selection,
+            body_checks,
         }
     }
 

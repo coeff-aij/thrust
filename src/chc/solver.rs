@@ -224,6 +224,8 @@ pub struct Config {
     pub solver: CommandConfig,
     pub preprocessor: Option<CommandConfig>,
     pub output_dir: Option<std::path::PathBuf>,
+    /// The comments the queries carry, decided once by the thread that reads the configuration.
+    pub(crate) comments: super::smtlib2::Comments,
 }
 
 impl Default for Config {
@@ -242,6 +244,7 @@ impl Default for Config {
             },
             preprocessor: None,
             output_dir: None,
+            comments: super::smtlib2::Comments::None,
         }
     }
 }
@@ -270,6 +273,7 @@ impl Config {
         if let Ok(dir) = std::env::var("THRUST_OUTPUT_DIR") {
             config.output_dir = Some(dir.into());
         }
+        config.comments = super::smtlib2::Comments::from_log_level();
         config
     }
 

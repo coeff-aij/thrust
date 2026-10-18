@@ -10,6 +10,7 @@ extern crate rustc_span;
 
 use rustc_driver::{Callbacks, Compilation};
 use rustc_interface::interface::{Compiler, Config};
+use rustc_session::config::OutputType;
 
 fn try_specs_enabled() -> bool {
     matches!(std::env::var("THRUST_TRY_SPECS").as_deref(), Ok("1"))
@@ -68,6 +69,14 @@ impl Callbacks for CompilerCalls {
         config.override_queries = Some(|_sess, providers| {
             providers.mir_borrowck = thrust::mir_borrowck_skip_formula_fn;
         });
+
+        // The dep-info is written before the analysis, as clippy-driver records `CLIPPY_ARGS`.
+        config.psess_created = Some(Box::new(track_inputs));
+
+        // The analysis of a crate using this one reads the MIR of the functions it calls here.
+        if only_metadata(&config.opts) {
+            config.opts.unstable_opts.always_encode_mir = true;
+        }
     }
 
     fn after_crate_root_parsing(
@@ -113,7 +122,39 @@ impl Callbacks for CompilerCalls {
         ctx.register_well_known_defs();
         ctx.crate_analyzer().run();
         ctx.solve();
-        Compilation::Stop
+        // `cargo check` of a crate that verifies writes its metadata; no code is generated with
+        // the MIR passes turned off above.
+        if tcx.dcx().has_errors().is_some() || !only_metadata(&tcx.sess.opts) {
+            return Compilation::Stop;
+        }
+        Compilation::Continue
+    }
+}
+
+/// Whether the compilation emits only metadata and dep-info.
+fn only_metadata(opts: &rustc_session::config::Options) -> bool {
+    opts.output_types
+        .keys()
+        .all(|t| matches!(t, OutputType::Metadata | OutputType::DepInfo))
+}
+
+/// Records in the dep-info the variables the run reads, with their values, the Thrust binary and
+/// the thrust-macros library, so that cargo checks the crate again when one of them changes.
+fn track_inputs(psess: &mut rustc_session::parse::ParseSess) {
+    let env_depinfo = psess.env_depinfo.get_mut();
+    for var in thrust::ENV_VARS {
+        let value = std::env::var(var).ok();
+        env_depinfo.insert((
+            rustc_span::Symbol::intern(var),
+            value.as_deref().map(rustc_span::Symbol::intern),
+        ));
+    }
+    let files = [std::env::current_exe().ok(), thrust_macros_path()];
+    for file in files.iter().flatten().filter_map(|f| f.to_str()) {
+        psess
+            .file_depinfo
+            .get_mut()
+            .insert(rustc_span::Symbol::intern(file));
     }
 }
 

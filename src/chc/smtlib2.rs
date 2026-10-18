@@ -516,10 +516,11 @@ pub(crate) enum Comments {
 }
 
 impl Comments {
-    /// The level the current log configuration asks for. `tracing::enabled!` caches its answer
-    /// per call site across threads, so a caller that needs a fixed level passes [`Comments`]
-    /// to [`System::with_comments`] instead.
-    fn from_log_level() -> Self {
+    /// The level the current log configuration asks for. What `tracing::enabled!` answers on the
+    /// worker threads of [`chc::in_parallel`] varies between runs, so the level is decided once,
+    /// on the main thread, by [`chc::Config::from_env`], and passed to
+    /// [`System::with_comments`].
+    pub(crate) fn from_log_level() -> Self {
         if tracing::enabled!(tracing::Level::DEBUG) {
             Comments::Full
         } else if tracing::enabled!(tracing::Level::INFO) {
@@ -1228,11 +1229,10 @@ impl<'a> System<'a> {
         Self {
             ctx,
             inner,
-            comments: Comments::from_log_level(),
+            comments: Comments::None,
         }
     }
 
-    #[cfg(test)]
     pub(crate) fn with_comments(mut self, comments: Comments) -> Self {
         self.comments = comments;
         self

@@ -15,6 +15,7 @@ mod body;
 mod constraints;
 mod failure;
 mod formula;
+mod functions;
 mod human;
 mod json;
 mod parts;
@@ -53,6 +54,7 @@ struct Items {
     inferred: bool,
     failure: bool,
     internal: bool,
+    functions: bool,
 }
 
 impl Items {
@@ -63,10 +65,11 @@ impl Items {
         inferred: true,
         failure: true,
         internal: true,
+        functions: true,
     };
 
-    /// What `THRUST_REPORT=1` shows, to a person and to a program: what was inferred and why
-    /// verification failed.
+    /// What `THRUST_REPORT=1` shows, to a person and to a program: what was inferred, why
+    /// verification failed, and what was checked.
     const DEFAULT: Items = Items {
         template: false,
         constraints: false,
@@ -74,6 +77,7 @@ impl Items {
         inferred: true,
         failure: true,
         internal: false,
+        functions: true,
     };
 }
 
@@ -117,6 +121,7 @@ impl Config {
                 "inferred" => items.inferred = true,
                 "failure" => items.failure = true,
                 "internal" => items.internal = true,
+                "functions" => items.functions = true,
                 _ => {
                     tcx.dcx()
                         .warn(format!("`THRUST_REPORT`: unknown item `{item}` ignored"));
@@ -127,7 +132,8 @@ impl Config {
             || items.constraints
             || items.solution
             || items.inferred
-            || items.failure)
+            || items.failure
+            || items.functions)
         {
             return None;
         }
@@ -175,6 +181,8 @@ pub struct Input<'a> {
     pub contract_annotations: &'a HashMap<DefId, ContractAnnotations>,
     /// Where the written invariant of each loop, by its function and header, is annotated.
     pub invariant_annotations: &'a HashMap<(LocalDefId, BasicBlock), Vec<Span>>,
+    /// What the analysis did with the body of each function.
+    pub body_checks: &'a HashMap<LocalDefId, crate::analyze::BodyCheck>,
     /// The parts of the system solved on their own (`THRUST_SPLIT`); the system is then that of
     /// the parts refuted.
     pub parts: &'a [Part],
@@ -446,6 +454,7 @@ pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) -> Vec<Refuted>
         template_vars: input.template_vars,
         contract_annotations: input.contract_annotations,
         invariant_annotations: input.invariant_annotations,
+        body_checks: input.body_checks,
         parts: input.parts,
     };
     // An answer is over the symbols of the query it answers: the whole system's, or a part's,
@@ -475,6 +484,11 @@ pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) -> Vec<Refuted>
         .filter(|_| config.items.failure)
         .map(|(answer, symbols)| (answer, failure::read(answer, &names, symbols)))
         .collect();
+    let functions = if config.items.functions {
+        functions::functions(tcx, config, &input, verdict)
+    } else {
+        Vec::new()
+    };
     let refuted_at: Vec<Option<Span>> = (0..input.answers.len())
         .map(|i| {
             let (_, failure) = failures.get(i)?;
@@ -506,6 +520,7 @@ pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) -> Vec<Refuted>
                 human.failure(answer, asked, part_note, failure.as_ref(), &entries);
             }
             human.emit(&entries);
+            human.functions(&functions);
         }
         Format::Json => {
             let json = Json {
@@ -519,6 +534,7 @@ pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) -> Vec<Refuted>
                     .filter_map(|(i, (_, f))| Some((input.asked.get(i).map(|a| a.part), f?)))
                     .collect(),
                 parts: input.parts,
+                functions: &functions,
                 verdict,
                 z3_answers: input
                     .answers
@@ -531,7 +547,7 @@ pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) -> Vec<Refuted>
                     })
                     .collect(),
                 // A whole query without an answer is at the code of its clauses, as a part is.
-                functions: (!split && !matches!(verdict, "sat" | "unsat")).then(|| {
+                query_functions: (!split && !matches!(verdict, "sat" | "unsat")).then(|| {
                     let ids: Vec<chc::ClauseId> = system.clauses.indices().collect();
                     parts::code(tcx, &system, &ids)
                 }),

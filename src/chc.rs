@@ -3657,6 +3657,12 @@ impl System {
         smtlib2::System::new(self, capabilities)
     }
 
+    /// The query `config`'s solver is given, with the comments `config` decided on.
+    fn query(&self, config: &Config) -> smtlib2::System<'_> {
+        self.smtlib2(config.capabilities())
+            .with_comments(config.comments)
+    }
+
     /// Solves the CHC using an external SMT solver.
     ///
     /// This method first performs some optimization of the CHC,
@@ -3681,7 +3687,7 @@ impl System {
                 writeln!(f, "{:?}: {}", idx, c.display()).unwrap();
             }
         }
-        let query = system.smtlib2(config.capabilities()).to_string();
+        let query = system.query(&config).to_string();
         if let Err(err) = config.save_query("thrust_output.smt2", &query) {
             return Answer::of(Err(err.into()));
         }
@@ -3691,14 +3697,9 @@ impl System {
     /// Solves a part of the system (see [`System::part`]) once more for the evidence `requests`
     /// names. Its query was saved when its verdict was taken ([`System::solve_parts`]), so this
     /// writes no file.
-    pub fn solve_part_with(&self, requests: Requests) -> Answer {
-        let config = Config::from_env();
-        let query = self
-            .clone()
-            .prepared()
-            .smtlib2(config.capabilities())
-            .to_string();
-        self.answer(&config, query, requests)
+    pub fn solve_part_with(&self, config: &Config, requests: Requests) -> Answer {
+        let query = self.clone().prepared().query(config).to_string();
+        self.answer(config, query, requests)
     }
 
     /// The answer to `query`, the system's, with the evidence `requests` names.
@@ -3732,7 +3733,7 @@ impl System {
         answer.clause_tags = marked.tag_clauses();
         answer.goal_markers = marked.mark_goals();
         let marked = marked.prepared();
-        match config.refute(marked.smtlib2(config.capabilities())) {
+        match config.refute(marked.query(config)) {
             Ok(proof) => answer.proof = Some(proof),
             Err(refused) => answer.z3_refused = Some(refused),
         }
@@ -3774,11 +3775,7 @@ impl System {
         let cache = cache::Cache::from_env();
         let parts = components::components(self);
         let solve = |i: usize| {
-            let query = self
-                .part(&parts[i])
-                .prepared()
-                .smtlib2(config.capabilities())
-                .to_string();
+            let query = self.part(&parts[i]).prepared().query(&config).to_string();
             let file = format!("thrust_output_part{}.smt2", i + 1);
             if let Err(err) = config.save_query(&file, &query) {
                 return cache::Verdict {

@@ -162,6 +162,47 @@ fn the_report_of_a_split_run_writes_only_the_parts() {
     assert!(!files.iter().any(|f| f == "pretty.txt"), "{files:?}");
 }
 
+/// The part queries `THRUST_OUTPUT_DIR` gets, each with whether it has a comment line, from a
+/// run of `fixture` split in two with `RUST_LOG` set to `log`.
+fn part_comments(fixture: &str, run_id: usize, log: &str) -> Vec<(String, bool)> {
+    let dir = std::env::temp_dir().join(format!(
+        "thrust-split-comments-{}-{run_id}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let env = [
+        ("THRUST_OUTPUT_DIR", dir.to_str().unwrap()),
+        ("RUST_LOG", log),
+    ];
+    run_with(fixture, Some("2"), &env);
+    let mut parts: Vec<(String, bool)> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .map(|path| {
+            let text = std::fs::read_to_string(&path).unwrap();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            (name, text.lines().any(|l| l.starts_with(';')))
+        })
+        .collect();
+    std::fs::remove_dir_all(&dir).unwrap();
+    parts.sort();
+    parts
+}
+
+/// Every part's query has the comments the log level asks for, whichever thread formats it:
+/// none by default, the origin of each clause at `info`.
+#[test]
+fn part_queries_have_the_comments_of_the_log_level() {
+    for run_id in 0..4 {
+        let quiet = part_comments("two_parts.rs", run_id, "");
+        assert!(quiet.len() > 1, "{quiet:?}");
+        assert!(quiet.iter().all(|(_, comments)| !comments), "{quiet:?}");
+        let info = part_comments("two_parts.rs", run_id, "thrust::chc::smtlib2=info");
+        assert!(info.len() > 1, "{info:?}");
+        assert!(info.iter().all(|(_, comments)| *comments), "{info:?}");
+    }
+}
+
 /// A `z3` on `PATH` that answers `unknown` when asked for a model or a refutation, so that only
 /// the report's second runs fail.
 fn z3_without_evidence() -> std::path::PathBuf {
