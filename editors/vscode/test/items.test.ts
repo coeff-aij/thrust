@@ -135,3 +135,12 @@ test("functions: braces inside generics of a header; a comparison in a constant 
   ].join("\n");
   assert.deepStrictEqual(paths(text), ["Foo::a", "b", "c"]);
 });
+
+test("functions: a shift in a header's brackets opens no angle bracket", () => {
+  const text = ["fn a() -> [u8; 1 << 3] { [0; 8] }", "fn b<T: Into<Vec<u8>>>(x: [u8; 8 >> 1]) -> Option<T> { None }", "fn c() {}"].join("\n");
+  assert.deepStrictEqual(
+    functionsIn(text).map((f) => [f.path.join("::"), f.line, f.fnLine]),
+    [["a", 1, 1], ["b", 2, 2], ["c", 3, 3]],
+  );
+  assert.strictEqual(functionsIn("#[inline]\npub\nfn d() {}")[0].fnLine, 3);
+});

@@ -188,13 +188,31 @@ test("a run's result is not shown when a file of the workspace changed during it
   const hold = path.join(t.workspace, "hold");
   process.env.FAKE_HOLD = hold;
   try {
+    const lib = t.document("arith/src/lib.rs") as { version: number };
     const running = t.thrust.verify(t.document("app/src/main.rs"));
     await until(() => checks(t) === 1);
-    vscode.__edit(path.join(t.workspace, "arith/src/lib.rs"));
+    // An edit saved during the run, so the document is not dirty, but of another version.
+    lib.version += 1;
     fs.writeFileSync(hold, "");
     assert.match((await running) ?? "", /lib.rs changed during the run/);
     assert.strictEqual(vscode.__state.runs.length, 0);
     assert.deepStrictEqual(t.diagnostics(), []);
+  } finally {
+    delete process.env.FAKE_HOLD;
+  }
+});
+
+test("a document opened during a run, without changes, does not drop its result", async () => {
+  const t = session();
+  const hold = path.join(t.workspace, "hold");
+  process.env.FAKE_HOLD = hold;
+  try {
+    const running = t.thrust.verify(t.document("app/src/main.rs"));
+    await until(() => checks(t) === 1);
+    t.document("arith/src/ops.rs");
+    fs.writeFileSync(hold, "");
+    assert.strictEqual(await running, undefined);
+    assert.deepStrictEqual(t.diagnostics(), ["app/src/main.rs:9 refuted: ensures in `shrink`"]);
   } finally {
     delete process.env.FAKE_HOLD;
   }
@@ -205,7 +223,11 @@ test("saving a file and starting a run invalidate the results they make outdated
   await t.thrust.verify(t.document("app/src/main.rs"));
   vscode.__state.config.verifyOnSave = false;
   vscode.__state.onSave(t.document("arith/src/ops.rs"));
-  assert.deepStrictEqual(vscode.__state.invalidated.map((id: string) => id.split(t.workspace).join("")), ["#arith/lib/arith"]);
+  // Every crate of the workspace: a crate may use the one saved.
+  assert.deepStrictEqual(
+    vscode.__state.invalidated.map((id: string) => id.split(t.workspace).join("")),
+    ["#arith/lib/arith", "#app/bin/app", "#both/lib/both", "#both/bin/both"],
+  );
   vscode.__state.invalidated.length = 0;
   t.replay("only");
   await t.thrust.verify(t.document("arith/src/lib.rs"), t.lens("arith/src/lib.rs", "scale"));
@@ -219,16 +241,23 @@ test("a run stopped from the Testing view errs its items, left invalidated", asy
   process.env.FAKE_HOLD = hold;
   try {
     let cancel = () => {};
-    const token = { isCancellationRequested: false, onCancellationRequested: (f: () => void) => {
+    const onCancellationRequested = (f: () => void) => {
       cancel = f;
       return { dispose() {} };
-    } };
+    };
     let root: unknown;
     vscode.__state.controller.items.forEach((item: { id: string }) => (root = item.id.endsWith("#app/bin/app") ? item : root));
-    const running = vscode.__state.profile(new vscode.TestRunRequest([root]), token);
+    vscode.__state.invalidated.length = 0;
+    const running = vscode.__state.profile(new vscode.TestRunRequest([root]), { isCancellationRequested: false, onCancellationRequested });
     await until(() => checks(t) === 2);
+    // The run of the crate's item invalidated the workspace's results at its start.
+    assert.deepStrictEqual(
+      vscode.__state.invalidated.map((id: string) => id.split(t.workspace).join("")),
+      ["#arith/lib/arith", "#app/bin/app", "#both/lib/both", "#both/bin/both"],
+    );
     cancel();
     await running;
+    assert.match(vscode.__state.status.text, /Thrust: unknown/);
     const states = t.states();
     assert.strictEqual(states.get("#app/bin/app")?.state, "errored");
     assert.deepStrictEqual(states.get("#app/bin/app")?.messages, ["stopped"]);
@@ -285,6 +314,21 @@ test("a function's run does not put its status on the item of a function nested 
     run.states.map((x: State) => [x.state, x.id.split(t.folder).join("")]),
     [["errored", "/nested.rs::outer"]],
   );
+});
+
+test("the item of a function defined inside another errs instead of running the outer one", async () => {
+  const t = fileSession("nested.rs");
+  t.replay("only-nested-split");
+  await t.thrust.verify(vscode.__document(path.join(t.folder, "nested.rs")));
+  let inner: unknown;
+  vscode.__state.controller.items.forEach((root: { children: { forEach(f: (c: { label: string }) => void): void } }) =>
+    root.children.forEach((c) => (inner = c.label === "outer::inner" ? c : inner)),
+  );
+  const runs = vscode.__state.runs.length;
+  await vscode.__state.profile(new vscode.TestRunRequest([inner]), { isCancellationRequested: false, onCancellationRequested: () => ({ dispose() {} }) });
+  assert.strictEqual(vscode.__state.runs.length, runs + 1);
+  const states = vscode.__state.runs[runs].states.filter((x: State) => x.state !== "started");
+  assert.deepStrictEqual(states.map((x: State) => [x.state, x.messages[0]]), [["errored", "defined inside `outer`: run that function"]]);
 });
 
 test("a function's run whose report can be read replaces rustc's diagnostics in its crate", async () => {

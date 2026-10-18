@@ -258,7 +258,7 @@ test("a check of one function: its status from the lines it spans, the reports o
   const runs = crates("only", target("arith", "lib"));
   assert.deepStrictEqual(runs.map((r) => r.target.name), ["arith"]);
   const parsed = report.parseReport(runs[0].report);
-  const status = report.statusWithin(parsed, "arith/src/lib.rs", "scale", 21, 23);
+  const status = report.statusWithin(parsed, "arith/src/lib.rs", { name: "scale", line: 21, fnLine: 21, endLine: 23 });
   assert.deepStrictEqual([status?.fn, status?.status], ["<Pair as Scale>::scale", "pass"]);
   // Of the whole workspace's messages, only the checked target's report is read.
   const scoped = crates("check", target("arith", "lib"));
@@ -272,7 +272,7 @@ test("a check of a binary's function: the package's library checked whole, witho
   assert.deepStrictEqual(runs.map((r) => [r.target.kind, r.compiled, r.diagnostics.length]).sort(), [["bin", true, 0], ["lib", true, 0]]);
   const binRun = runs.find((r) => r.target === bin);
   assert.ok(binRun);
-  const status = report.statusWithin(report.parseReport(binRun.report), "both/src/main.rs", "helper", 1, 3);
+  const status = report.statusWithin(report.parseReport(binRun.report), "both/src/main.rs", { name: "helper", line: 1, fnLine: 1, endLine: 3 });
   assert.deepStrictEqual([status?.fn, status?.status], ["helper", "pass"]);
 });
 

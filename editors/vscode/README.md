@@ -23,11 +23,14 @@ code is:
   item per file or crate with the run's verdict, and under it an item per function the report
   names, passed, failed (with each refutation at its span) or errored when the run decides
   neither way (no answer, or a refutation elsewhere in its query), with the gutter icons the
-  Testing view puts at each. A function passes only on what the report says of it by its name:
-  its part (`THRUST_SPLIT`) or, in one query, its contract or loop site, as Thrust checks the body
-  of a function with an unknown in its contract; a function defined inside it is no evidence. A
-  crate of the workspace the check did not reach (a crate it depends on failed) is skipped with
-  its functions. Saving a file, and starting a run, mark the results they make outdated;
+  Testing view puts at each. In a run of one function, the function passes only on what the
+  report says of it by its name at its `fn` line: its part (`THRUST_SPLIT`) or, in one query, its
+  contract site, as Thrust checks the body of a function with an unknown in its contract; a
+  function defined inside it, or a loop site alone, is no evidence. A crate of the workspace the
+  check did not reach (a crate it depends on failed) is skipped with its functions. Saving a
+  file marks the results of its workspace's crates (or of the files run on their own beside it)
+  outdated, and starting a run those it will decide; the item of a function defined inside
+  another cannot be run on its own;
 - the verdict of the report's `verdict` line (`safe`, `unsafe`, `unknown`, or `error` for a run
   that wrote none, such as a compile error) in the status bar, the worst of the crates' in a
   cargo workspace, and for a run of one function that function's status; clicking it opens the

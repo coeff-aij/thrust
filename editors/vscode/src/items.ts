@@ -10,8 +10,10 @@ export interface FnItem {
   name: string;
   /// The path within the file: modules, the `impl`'s self type or the trait, the function.
   path: string[];
-  /// The 1-based line of the item's first attribute or keyword, and of its closing brace.
+  /// The 1-based line of the item's first attribute or keyword, of its `fn` keyword, and of its
+  /// closing brace.
   line: number;
+  fnLine: number;
   endLine: number;
 }
 
@@ -220,8 +222,11 @@ class Scanner {
   private attributes: string[] = [];
   /// The depth of parentheses, brackets and, in the header of an item with generics, angle
   /// brackets, where `;`, `{` and `}` belong to the header (`fn f(a: [u8; 4])`, `-> [u8; { N }]`,
-  /// `impl Foo<{ N }>`). `->` and `=>` are tokens of their own, so their `>` is no bracket.
+  /// `impl Foo<{ N }>`), and of the angle brackets among them. A `<` opens one after a name or
+  /// `::` only (`Option<u8>`, not `1 << 3`), and a `>` closes one only when one is open; `->` and
+  /// `=>` are tokens of their own.
   private nesting = 0;
+  private angles = 0;
   private i = 0;
 
   constructor(private readonly tokens: Token[]) {}
@@ -249,8 +254,10 @@ class Scanner {
       return;
     }
     this.i++;
-    if (this.nesting > 0 || this.opens(token)) {
-      this.nesting += this.opens(token) || token.text === "{" ? 1 : this.closes(token) || token.text === "}" ? -1 : 0;
+    const change = this.bracket(token);
+    if (this.nesting > 0 || change > 0) {
+      this.nesting += change;
+      this.headerLine ??= token.line;
       this.header.push(token);
     } else if (token.text === "{") {
       this.open();
@@ -264,12 +271,25 @@ class Scanner {
     }
   }
 
-  private opens(token: Token): boolean {
-    return token.text === "(" || token.text === "[" || (token.text === "<" && this.hasGenerics());
-  }
-
-  private closes(token: Token): boolean {
-    return token.text === ")" || token.text === "]" || (token.text === ">" && this.hasGenerics());
+  /// How the token changes the header's nesting: +1 for an opening bracket, -1 for a closing one.
+  private bracket(token: Token): number {
+    const text = token.text;
+    if (text === "(" || text === "[" || (text === "{" && this.nesting > 0)) {
+      return 1;
+    }
+    if (text === ")" || text === "]" || (text === "}" && this.nesting > 0)) {
+      return -1;
+    }
+    const previous = this.header[this.header.length - 1];
+    if (text === "<" && this.hasGenerics() && (previous?.kind === "ident" || previous?.text === "::")) {
+      this.angles++;
+      return 1;
+    }
+    if (text === ">" && this.angles > 0) {
+      this.angles--;
+      return -1;
+    }
+    return 0;
   }
 
   /// Whether the header is of an item whose `<` opens generics (`fn`, `impl`, `struct`, ...),
@@ -318,6 +338,7 @@ class Scanner {
     this.headerLine = undefined;
     this.attributes = [];
     this.nesting = 0;
+    this.angles = 0;
   }
 
   /// A `{` in a container opens the item its header says.
@@ -325,10 +346,11 @@ class Scanner {
     const parent = this.top();
     const words = withoutVisibility(this.header);
     const fnName = functionName(words);
+    const fnLine = words.find((w) => w.text === "fn")?.line ?? this.headerLine ?? 1;
     const testOnly = parent.testOnly || this.attributes.some(isTestAttribute);
     const container = (name: string): Frame => ({ kind: "container", path: [...parent.path, name], testOnly });
     if (fnName !== undefined) {
-      const fn: FnItem = { name: fnName, path: [...parent.path, fnName], line: this.headerLine ?? 1, endLine: 0 };
+      const fn: FnItem = { name: fnName, path: [...parent.path, fnName], line: this.headerLine ?? 1, fnLine, endLine: 0 };
       this.frames.push({ kind: "fn", path: fn.path, fn, testOnly });
     } else if (words[0]?.text === "mod" && words[1]?.kind === "ident") {
       this.frames.push(container(words[1].text));

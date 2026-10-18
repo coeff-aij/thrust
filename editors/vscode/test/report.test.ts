@@ -311,6 +311,10 @@ test("resolveFinding resolves Thrust's files against the report's root and rustc
   assert.strictEqual(report.resolveFinding(rustc, "/root", "/cwd").location.file, path.resolve("/cwd", "broken.rs"));
 });
 
+function at(name: string, line: number, fnLine: number, endLine: number): report.FnLines {
+  return { name, line, fnLine, endLine };
+}
+
 function results(name: string): [string, report.Status, number | undefined][] {
   return report.functionResults(load(name).report).map((r) => [r.fn, r.status, r.span?.line]);
 }
@@ -353,29 +357,29 @@ test("functions: a refuted part without a refutation fails, one refuted at anoth
 
 test("the status of one function's lines: its refutation, its part, its site", () => {
   const split = load("split").report;
-  assert.strictEqual(report.statusWithin(split, "unsafe.rs", "count_to", 7, 17)?.status, "fail");
-  assert.strictEqual(report.statusWithin(split, "unsafe.rs", "main", 19, 24)?.status, "pass");
-  assert.strictEqual(report.statusWithin(load("only-main-split").report, "safe.rs", "main", 15, 20)?.status, "pass");
+  assert.strictEqual(report.statusWithin(split, "unsafe.rs", at("count_to", 7, 9, 17))?.status, "fail");
+  assert.strictEqual(report.statusWithin(split, "unsafe.rs", at("main", 19, 19, 24))?.status, "pass");
+  assert.strictEqual(report.statusWithin(load("only-main-split").report, "safe.rs", at("main", 15, 15, 20))?.status, "pass");
   // A site in a run in one query: the function's body was checked.
-  assert.strictEqual(report.statusWithin(load("safe").report, "safe.rs", "add_one", 1, 3)?.status, "pass");
-  assert.strictEqual(report.statusWithin(report.parseReport(""), "a.rs", "f", 1, 2), undefined);
+  assert.strictEqual(report.statusWithin(load("safe").report, "safe.rs", at("add_one", 1, 1, 3))?.status, "pass");
+  assert.strictEqual(report.statusWithin(report.parseReport(""), "a.rs", at("f", 1, 1, 2)), undefined);
 });
 
 test("the status of one function's lines the report names nothing on is undecided, never passing", () => {
   // `main` run on its own in one query: a sat run, but no site of `main`.
-  const main = report.statusWithin(load("only-main").report, "safe.rs", "main", 15, 20);
+  const main = report.statusWithin(load("only-main").report, "safe.rs", at("main", 15, 15, 20));
   assert.strictEqual(main?.status, "unknown");
   assert.match(main?.message ?? "", /split run \(thrust.split\) names every function/);
   // A refuted query elsewhere.
-  assert.strictEqual(report.statusWithin(load("unsafe").report, "unsafe.rs", "main", 19, 24)?.status, "unknown");
+  assert.strictEqual(report.statusWithin(load("unsafe").report, "unsafe.rs", at("main", 19, 19, 24))?.status, "unknown");
   // `bad` is #[thrust::trusted] with a broken ensures: its body is not checked, split or not.
   for (const name of ["only-trusted", "only-trusted-split"]) {
-    assert.strictEqual(report.statusWithin(load(name).report, "trusted.rs", "bad", 1, 6)?.status, "unknown", name);
+    assert.strictEqual(report.statusWithin(load(name).report, "trusted.rs", at("bad", 1, 4, 6))?.status, "unknown", name);
   }
   // The #[cfg(test)] `twin` is not compiled; the report's `twin` is the other one.
   const twin = load("only-twin-split").report;
-  assert.strictEqual(report.statusWithin(twin, "trusted.rs", "twin", 8, 12)?.status, "unknown");
-  assert.strictEqual(report.statusWithin(twin, "trusted.rs", "twin", 14, 17)?.status, "pass");
+  assert.strictEqual(report.statusWithin(twin, "trusted.rs", at("twin", 8, 9, 12))?.status, "unknown");
+  assert.strictEqual(report.statusWithin(twin, "trusted.rs", at("twin", 14, 15, 17))?.status, "pass");
 });
 
 test("a function defined inside a trusted one is no evidence for it", () => {
@@ -383,7 +387,9 @@ test("a function defined inside a trusted one is no evidence for it", () => {
   for (const name of ["only-nested", "only-nested-split"]) {
     const parsed = load(name).report;
     assert.deepStrictEqual(report.functionResults(parsed).map((r) => r.fn).slice(0, 1), ["outer::inner"], name);
-    assert.strictEqual(report.statusWithin(parsed, "nested.rs", "outer", 1, 9)?.status, "unknown", name);
-    assert.strictEqual(report.statusWithin(parsed, "nested.rs", "inner", 5, 7)?.status, "pass", name);
+    assert.strictEqual(report.statusWithin(parsed, "nested.rs", at("outer", 1, 4, 9))?.status, "unknown", name);
+    assert.strictEqual(report.statusWithin(parsed, "nested.rs", at("inner", 5, 5, 7))?.status, "pass", name);
+    // A function of the same name as the one defined inside it is not passed by the inner one.
+    assert.strictEqual(report.statusWithin(parsed, "nested.rs", at("inner", 1, 4, 9))?.status, "unknown", name);
   }
 });

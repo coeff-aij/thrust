@@ -29,6 +29,7 @@ reset();
 
 class Uri {
   constructor(fsPath) {
+    this.scheme = "file";
     this.fsPath = fsPath;
   }
   static file(fsPath) {

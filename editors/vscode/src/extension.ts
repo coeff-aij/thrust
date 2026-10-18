@@ -179,7 +179,7 @@ class Thrust implements vscode.InlayHintsProvider, vscode.HoverProvider, vscode.
           : await this.runFile(place.file, config, scope, controller.signal);
     } catch (err) {
       this.showStatus("error", String(err), path.basename(document.uri.fsPath));
-      return;
+      return String(err);
     } finally {
       cancelling?.dispose();
       if (this.running.get(key) === controller) {
@@ -187,9 +187,15 @@ class Thrust implements vscode.InlayHintsProvider, vscode.HoverProvider, vscode.
       }
     }
     if (!units) {
+      if (!this.running.has(key)) {
+        this.showStatus("unknown", "stopped", path.basename(document.uri.fsPath));
+      }
       return "stopped";
     }
-    const changed = rustDocuments(domain).find((d) => d.isDirty || versions.get(d.uri.fsPath) !== d.version);
+    // A document opened during the run counts only when it has unsaved changes.
+    const changed = rustDocuments(domain).find((d) =>
+      versions.has(d.uri.fsPath) ? versions.get(d.uri.fsPath) !== d.version : d.isDirty,
+    );
     if (changed) {
       const why = `${path.basename(changed.uri.fsPath)} changed during the run; its result is not shown`;
       this.showStatus("unknown", why, path.basename(document.uri.fsPath));
@@ -222,21 +228,17 @@ class Thrust implements vscode.InlayHintsProvider, vscode.HoverProvider, vscode.
     }
   }
 
-  /// Marks the results of the items of a saved file as outdated: its functions', and those of
-  /// the crates or files whose root file's directory holds it.
+  /// Marks the results a saved file makes outdated: those of every crate of a cargo workspace
+  /// holding it (a crate may use another), and of a file run on its own whose directory holds it
+  /// (a module of it).
   invalidateFile(file: string): void {
     const outdated: vscode.TestItem[] = [];
     this.tests.items.forEach((root) => {
-      const rootFile = root.uri?.fsPath ?? "";
-      if (rootFile === file || isInside(file, path.dirname(rootFile))) {
+      const key = this.unitKeys.get(root) ?? "";
+      const dir = key.endsWith(".rs") ? path.dirname(key) : key;
+      if (key === file || isInside(file, dir)) {
         outdated.push(root);
-        return;
       }
-      root.children.forEach((child) => {
-        if (child.uri?.fsPath === file) {
-          outdated.push(child);
-        }
-      });
     });
     if (outdated.length > 0) {
       this.tests.invalidateTestResults(outdated);
@@ -439,10 +441,10 @@ class Thrust implements vscode.InlayHintsProvider, vscode.HoverProvider, vscode.
   /// outcome when the run gave no report to read.
   private showScoped(unit: Unit, unitItem: vscode.TestItem, scope: Scope, testRun: vscode.TestRun): report.FunctionResult {
     const file = path.relative(unit.root, scope.file);
-    const found = report.statusWithin(unit.report, file, scope.fn.name, scope.fn.line, scope.fn.endLine);
+    const found = report.statusWithin(unit.report, file, scope.fn);
     // The report's own line for the function, or one in its name when the result is another's
     // on its lines (a refutation in a nested function, nothing said).
-    const own = found?.span && report.lastSegment(found.fn) === scope.fn.name ? found : undefined;
+    const own = found?.span?.line === scope.fn.fnLine && report.lastSegment(found.fn) === scope.fn.name ? found : undefined;
     const result: report.FunctionResult = own ?? {
       fn: scope.selection,
       span: spanOf(file, scope.fn),
@@ -522,6 +524,10 @@ class Thrust implements vscode.InlayHintsProvider, vscode.HoverProvider, vscode.
     const fn = isFunction ? items.functionsIn(document.getText()).find((f) => f.line <= line && line <= f.endLine) : undefined;
     if (isFunction && !fn) {
       testRun.errored(item, new vscode.TestMessage("no function with a body at this line of the file"));
+      return;
+    }
+    if (fn && report.lastSegment(item.label) !== fn.name) {
+      testRun.errored(item, new vscode.TestMessage(`defined inside \`${fn.name}\`: run that function`));
       return;
     }
     const refused = await this.verify(document, fn, testRun, token);
@@ -615,7 +621,9 @@ function domainOf(place: Place): string {
 }
 
 function rustDocuments(dir: string): readonly vscode.TextDocument[] {
-  return vscode.workspace.textDocuments.filter((d) => d.languageId === "rust" && isInside(d.uri.fsPath, dir));
+  return vscode.workspace.textDocuments.filter(
+    (d) => d.uri.scheme === "file" && d.languageId === "rust" && isInside(d.uri.fsPath, dir),
+  );
 }
 
 function isInside(file: string, dir: string): boolean {
@@ -635,8 +643,9 @@ function onLines(item: vscode.TestItem, scope: Scope): boolean {
 }
 
 /// The function's item among the children starting on its lines, which may be its closures' or
-/// its nested functions': the one at the line the report gives the function, else the one of its
-/// name (`<Pair as Scale>::scale` for `scale`); none when neither is there.
+/// its nested functions': the one of its name at the line the report gives the function, else
+/// one at that line, else one of its name (`<Pair as Scale>::scale` for `scale`); none when
+/// none is.
 function itemOf(unitItem: vscode.TestItem, scope: Scope, reportLine: number | undefined): vscode.TestItem | undefined {
   const candidates: vscode.TestItem[] = [];
   unitItem.children.forEach((child) => {
@@ -645,10 +654,9 @@ function itemOf(unitItem: vscode.TestItem, scope: Scope, reportLine: number | un
     }
   });
   const start = (item: vscode.TestItem) => (item.range?.start.line ?? 0) + 1;
-  return (
-    candidates.find((c) => reportLine !== undefined && start(c) === reportLine) ??
-    candidates.find((c) => report.lastSegment(c.label) === scope.fn.name)
-  );
+  const atLine = (c: vscode.TestItem) => reportLine !== undefined && start(c) === reportLine;
+  const named = (c: vscode.TestItem) => report.lastSegment(c.label) === scope.fn.name;
+  return candidates.find((c) => atLine(c) && named(c)) ?? candidates.find(atLine) ?? candidates.find(named);
 }
 
 function byFile(findings: report.Finding[]): Map<string, report.Finding[]> {
