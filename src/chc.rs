@@ -2719,6 +2719,27 @@ pub struct UserDefinedPredDef {
     pub decreases: Option<Term<TermVarIdx>>,
 }
 
+/// The forall predicates and functions `atoms` apply, as predicates or in their arguments, and in
+/// their guards, as `user_defined_in` reads them.
+fn forall_in<'a, V: 'a>(atoms: impl Iterator<Item = &'a Atom<V>>) -> Vec<&'a ForallPred> {
+    atoms
+        .flat_map(|atom| {
+            let pred = match &atom.pred {
+                Pred::ForallPred(pred) => Some(pred),
+                _ => None,
+            };
+            let in_guard = atom
+                .guard
+                .iter()
+                .flat_map(|guard| forall_in(guard.iter_atoms()));
+            pred.into_iter()
+                .chain(atom.args.iter().flat_map(Term::forall_fns))
+                .chain(in_guard)
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
 /// The user-defined predicates and functions `atoms` apply, as predicates or in their arguments.
 fn user_defined_in<'a, V: 'a>(
     atoms: impl Iterator<Item = &'a Atom<V>>,
@@ -3130,25 +3151,8 @@ impl System {
                     }
                 }
                 UserDefinedPredBody::Formula(formula) => {
-                    // The atoms of the formula and of their guards, as `user_defined_in` reads.
-                    let guards = formula
-                        .iter_atoms()
-                        .filter_map(|atom| atom.guard.as_deref())
-                        .flat_map(Formula::iter_atoms);
                     udpd.dependencies
-                        .extend(formula.iter_atoms().chain(guards).filter_map(|atom| {
-                            match &atom.pred {
-                                Pred::ForallPred(pred) => Some(pred.clone()),
-                                _ => None,
-                            }
-                        }));
-                    udpd.dependencies.extend(
-                        formula
-                            .iter_atoms()
-                            .flat_map(|atom| &atom.args)
-                            .flat_map(Term::forall_fns)
-                            .cloned(),
-                    );
+                        .extend(forall_in(formula.iter_atoms()).into_iter().cloned());
                 }
             }
         }
@@ -3709,12 +3713,12 @@ impl System {
         answer
     }
 
-    /// Whether the query declares what `z3` does not read: forall sorts, or sequences in a clause,
+    /// Whether the query uses what `z3` does not read: a forall sort or a sequence in a clause,
     /// an unknown's signature or a definition's.
     pub fn needs_pcsat(&self) -> bool {
-        let seq = |sort: &Sort| {
+        let unread = |sort: &Sort| {
             let mut found = false;
-            sort.walk(|s| found |= matches!(s, Sort::Seq(_)));
+            sort.walk(|s| found |= matches!(s, Sort::Seq(_) | Sort::Forall(_)));
             found
         };
         let vars = self.clauses.iter().flat_map(|c| c.vars.iter());
@@ -3723,13 +3727,13 @@ impl System {
             .user_defined_pred_defs
             .iter()
             .flat_map(|def| def.sig.iter().map(|(_, sort)| sort));
-        !self.forall_sorts.is_empty() || vars.chain(sigs).chain(definitions).any(seq)
+        vars.chain(sigs).chain(definitions).any(unread)
     }
 
     /// Solves each class of clauses that share an unknown on its own (see [`components`]),
     /// `jobs` at a time, reusing the verdicts `THRUST_CACHE_DIR` keeps. The system is satisfiable
     /// exactly when every part is. `THRUST_OUTPUT_DIR` gets each part's query as
-    /// `thrust_output_part<i>.smt2`.
+    /// `thrust_output_part<i>.smt2`, numbered from 1 as the parts are named.
     pub fn solve_parts(&self, jobs: usize) -> Vec<Part> {
         let config = Config::from_env();
         let cache = cache::Cache::from_env();
@@ -3740,7 +3744,8 @@ impl System {
                 .prepared()
                 .smtlib2(config.capabilities())
                 .to_string();
-            if let Err(err) = config.save_query(&format!("thrust_output_part{i}.smt2"), &query) {
+            let file = format!("thrust_output_part{}.smt2", i + 1);
+            if let Err(err) = config.save_query(&file, &query) {
                 return cache::Verdict {
                     result: Err(err.into()),
                     cached: false,

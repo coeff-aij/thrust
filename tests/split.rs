@@ -152,7 +152,7 @@ fn the_report_of_a_split_run_writes_only_the_parts() {
         .collect();
     std::fs::remove_dir_all(&dir).unwrap();
     assert!(
-        files.iter().any(|f| f == "thrust_output_part0.smt2"),
+        files.iter().any(|f| f == "thrust_output_part1.smt2"),
         "{files:?} {stderr}"
     );
     assert!(
@@ -425,4 +425,22 @@ fn the_parts_of_one_function_tell_apart() {
         .collect();
     assert_eq!(made_at.len(), 2, "{stderr}");
     assert_ne!(made_at[0], made_at[1], "{stderr}");
+}
+
+/// Where a refuted constraint still reads variables the program does not name (those of a
+/// written invariant at the loop's exit), their values are shown too.
+#[test]
+fn unnamed_variables_a_constraint_reads_have_values() {
+    let output = run_with(
+        "invariant_not_preserved.rs",
+        Some("4"),
+        &[("THRUST_REPORT", "failure")],
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let exit = stderr
+        .lines()
+        .filter(|l| l.contains("where it fails:"))
+        .find(|l| l.contains("result = "))
+        .unwrap_or_default();
+    assert!(exit.contains("__tmp_chc_"), "{stderr}");
 }

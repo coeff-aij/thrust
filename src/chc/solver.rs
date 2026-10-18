@@ -418,9 +418,11 @@ impl Config {
         drop(file);
         match output {
             // `z3` exits with an error when it cannot answer `(get-model)` after `unsat` or
-            // `(get-proof)` after `sat`, having printed the verdict.
+            // `(get-proof)` after `sat`, having printed the verdict. An error before the verdict
+            // (a line of the query it could not read) is an error whatever was asked, so that
+            // the verdict does not depend on the report.
             Err(CheckSatError::Error { stdout, .. })
-                if answers && read_verdict(&split_evidence(&stdout, true).0).is_some() =>
+                if answers && only_evidence_failed(&stdout) =>
             {
                 Ok(stdout)
             }
@@ -485,6 +487,14 @@ fn split_evidence(output: &str, asked: bool) -> (String, Vec<Sexp>) {
     let verdict = lines[..=verdict_end].join("\n");
     let rest = lines[verdict_end + 1..].join("\n");
     (verdict, super::sexp::parse_all(&rest))
+}
+
+/// Whether `stdout` has a verdict and no `(error …)` line before it: only the evidence asked after
+/// the verdict failed.
+fn only_evidence_failed(stdout: &str) -> bool {
+    let (verdict, _) = split_evidence(stdout, true);
+    read_verdict(&verdict)
+        .is_some_and(|(_, rejected)| rejected.iter().all(|line| !line.starts_with("(error")))
 }
 
 fn interpret_verdict(output: String) -> Result<(), CheckSatError> {

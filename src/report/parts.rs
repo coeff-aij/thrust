@@ -121,6 +121,8 @@ fn code(tcx: TyCtxt<'_>, system: &chc::System, ids: &[chc::ClauseId]) -> Vec<Par
         let (Some(def), Some(span)) = (provenance.def, provenance.span(tcx)) else {
             continue;
         };
+        // Joined in the program's own context, not across macro expansions.
+        let span = span.source_callsite();
         match clauses.iter_mut().find(|(d, _)| *d == def) {
             Some((_, all)) => *all = all.to(span),
             None => clauses.push((def, span)),
