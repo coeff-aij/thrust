@@ -1,3 +1,4 @@
-{"kind":"report","version":2,"root":"/workspace","columns":{"base":1,"unit":"char","end":"exclusive"}}
-{"kind":"verdict","verdict":"sat","refutations":"one per query","message":null}
+{"kind":"report","version":3,"root":"/workspace","columns":{"base":1,"unit":"char","end":"exclusive"}}
+{"kind":"verdict","verdict":"sat","refutations":"one per query","message":null,"functions":null,"z3_answer":null}
+{"kind":"function","fn":"identity","span":{"file":"both/src/lib.rs","line":1,"column":1,"end_line":3,"end_column":2},"body":"checked","reason":null,"parts":null,"verdict":"sat"}
 {"kind":"site","fn":"identity","site":"contract","span":{"file":"both/src/lib.rs","line":1,"column":1,"end_line":1,"end_column":31},"over":"x: int, result: int","template":"fn identity(x: {int | identity.pre(x)}) -> {int | identity.post(x, result)}","preds":[{"name":"identity.pre","args":["x"]},{"name":"identity.post","args":["x","result"]}],"solution":null,"inferred":"fn identity(x: {int | identity.pre(x)}) -> {int | identity.post(x, result)}"}

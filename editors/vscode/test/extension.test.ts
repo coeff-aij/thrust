@@ -269,10 +269,15 @@ test("a run stopped from the Testing view errs its items, left invalidated", asy
 test("a function's run shows the function's status in the status bar, not the crate's", async () => {
   const t = session();
   t.replay("only");
-  // `inc` has a written contract: the run in one query says nothing of it, though the crate is sat.
+  // The replayed check selected `Pair::scale`: `inc`'s body was not checked, though the crate is sat.
   await t.thrust.verify(t.document("arith/src/lib.rs"), t.lens("arith/src/lib.rs", "inc"));
   assert.strictEqual(vscode.__state.status.text, "$(question) Thrust: unknown");
-  assert.strictEqual(t.states().get("#arith/lib/arith::inc")?.state, "errored");
+  assert.strictEqual(t.states().get("#arith/lib/arith::inc")?.state, "skipped");
+  let inc: { description?: string } | undefined;
+  vscode.__state.controller.items.forEach((root: { children: { forEach(f: (c: { label: string; description?: string }) => void): void } }) =>
+    root.children.forEach((c) => (inc = c.label === "inc" ? c : inc)),
+  );
+  assert.strictEqual(inc?.description, "unselected: outside THRUST_VERIFY_ONLY, its written contract assumed");
   await t.thrust.verify(t.document("arith/src/lib.rs"), t.lens("arith/src/lib.rs", "scale"));
   assert.strictEqual(vscode.__state.status.text, "$(pass) Thrust: safe");
 });
@@ -312,7 +317,7 @@ test("a function's run does not put its status on the item of a function nested 
   const run = vscode.__state.runs[vscode.__state.runs.length - 1];
   assert.deepStrictEqual(
     run.states.map((x: State) => [x.state, x.id.split(t.folder).join("")]),
-    [["errored", "/nested.rs::outer"]],
+    [["skipped", "/nested.rs::outer"]],
   );
 });
 

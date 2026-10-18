@@ -126,8 +126,11 @@ export function cargoInvocation(
     CARGO_TARGET_DIR: thrustTargetDir(metadata),
     THRUST_VSCODE_COMMAND: config.command.join(SEPARATOR),
     THRUST_VSCODE_ARGS: config.extraArgs.join(SEPARATOR),
-    THRUST_VSCODE_THRUST_ID: commandIdentity(config.command, metadata.workspaceRoot),
-    THRUST_VSCODE_ENV_KEYS: Object.keys(config.env).join(SEPARATOR),
+    THRUST_VSCODE_SOLVER_ID: solverIdentity(config, metadata.workspaceRoot),
+    // Thrust records its own variables.
+    THRUST_VSCODE_ENV_KEYS: Object.keys(config.env)
+      .filter((k) => !k.startsWith("THRUST_"))
+      .join(SEPARATOR),
     THRUST_VSCODE_REPORT_DIR: reportDir(metadata),
   };
   const manifest = path.join(metadata.workspaceRoot, "Cargo.toml");
@@ -142,17 +145,19 @@ export function cargoInvocation(
   return { program, args, env, cwd: metadata.workspaceRoot, reportDir: reportDir(metadata) };
 }
 
-/// What tells builds of the command apart: each of its words that names a file (the Thrust
-/// binary; the program found on PATH; a relative path against `cwd`), with the file's path,
-/// size and modification time.
-export function commandIdentity(command: string[], cwd: string): string {
-  return command
-    .flatMap((word, k) => {
-      const file = k === 0 && !word.includes("/") ? onPath(word) : path.resolve(cwd, word);
-      const stat = file === undefined ? undefined : statOf(file);
-      return stat?.isFile() ? [`${file}:${stat.size}:${stat.mtimeMs}`] : [];
-    })
-    .join(SEPARATOR);
+/// What tells builds of the solver apart, which Thrust does not record: the path, size and
+/// modification time of the file THRUST_SOLVER (`z3` by default) names, found on PATH or
+/// against `cwd`. A solver behind a script (a container's image) is not told apart.
+export function solverIdentity(config: RunConfig, cwd: string): string {
+  return fileIdentity(config.env.THRUST_SOLVER ?? process.env.THRUST_SOLVER ?? "z3", cwd);
+}
+
+/// The path, size and modification time of the program `word` names, on PATH when it has no
+/// `/`; empty when there is none.
+export function fileIdentity(word: string, cwd: string): string {
+  const file = word.includes("/") ? path.resolve(cwd, word) : onPath(word);
+  const stat = file === undefined ? undefined : statOf(file);
+  return stat?.isFile() ? `${file}:${stat.size}:${stat.mtimeMs}` : "";
 }
 
 function onPath(program: string): string | undefined {

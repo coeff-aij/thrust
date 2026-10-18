@@ -11,5 +11,6 @@ fn shrink(x: i64) -> i64 {
 }
 
 fn main() {
+    let _ = arith::Pair;
     assert!(shrink(2) == 1);
 }

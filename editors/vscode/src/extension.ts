@@ -708,13 +708,17 @@ function unitStatus(verdict: report.Verdict): report.Status {
   return verdict === "safe" ? "pass" : verdict === "unsafe" ? "fail" : "unknown";
 }
 
-/// A passing function passes, a failing one fails, and one the run decides neither way is
-/// errored: the run could not give it a verdict.
+/// A passing function passes, a failing one fails, one whose body was not checked is skipped with
+/// the reason as its description, and one the run decides neither way is errored: the run could
+/// not give it a verdict.
 function setState(testRun: vscode.TestRun, item: vscode.TestItem, status: report.Status, messages: vscode.TestMessage[]): void {
+  item.description = status === "not_checked" ? messages.map((m) => String(m.message)).join("; ") : undefined;
   if (status === "pass") {
     testRun.passed(item);
   } else if (status === "fail") {
     testRun.failed(item, messages);
+  } else if (status === "not_checked") {
+    testRun.skipped(item);
   } else {
     testRun.errored(item, messages);
   }

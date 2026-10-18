@@ -4,20 +4,21 @@
 # THRUST_VSCODE_ARGS (separated alike), for every crate and for cargo's queries of the compiler
 # (`-vV`, `--print`). For each crate it
 #
-# - removes the report of an earlier check, THRUST_VSCODE_REPORT_DIR/<package>.<crate>.<crate
-#   type>.jsonl, so a crate that fails to compile or is not reported leaves none;
-# - for a crate of a package cargo was asked to check (CARGO_PRIMARY_PACKAGE), writes its JSON
-#   report there; other crates (dependencies) run without a report;
+# - writes Thrust's JSON report, which Thrust prints on standard output without
+#   THRUST_REPORT_FILE, to THRUST_VSCODE_REPORT_DIR/<package>.<crate>.<crate type>.jsonl, so a
+#   crate that fails to compile leaves an empty one and a crate cargo finds fresh keeps the one
+#   of the check that made it so;
 # - sets THRUST_VERIFY_ONLY to THRUST_VSCODE_VERIFY_ONLY for the crate THRUST_VSCODE_VERIFY_CRATE
 #   names (`<crate>.<crate type>`) only, so a run of one function of a binary leaves the
 #   package's library whole;
-# - records in the crate's dep-info, as `env-dep` lines as rustc does for `env!`, the variables
-#   Thrust reads, the extension's (the command, its arguments, the selection, the identity of the
-#   Thrust binary) and those THRUST_VSCODE_ENV_KEYS names, so that cargo checks the crate again
-#   when one of them changes instead of keeping its earlier result. The values are those cargo
-#   ran it with, before the changes above, as cargo compares them with its own environment.
+# - records in the crate's dep-info, as `env-dep` lines as rustc does for `env!`, what decides
+#   the verdict that Thrust does not record itself (it records its `THRUST_` variables, its binary
+#   and thrust-macros): the extra arguments, the identity of the solver binary, and the
+#   variables of `thrust.env` that are not Thrust's, with the values cargo ran it with, so that
+#   cargo checks the crate again when one of them changes.
 #
-# Its own shell variables start with `_tv_`, so that it changes no variable of the environment
+# It changes no other variable: Thrust records the values it reads, and cargo compares them with
+# its own. Its own shell variables start with `_tv_`, so that it changes none of the environment
 # it passes on.
 set -eu
 set -f
@@ -25,16 +26,8 @@ set -f
 _tv_sep=$(printf '\037')
 _tv_cr=$(printf '\r')
 
-# The variables Thrust reads (`std::env::var` under src/ and thrust-macros/src/), and the
-# extension's.
-_tv_tracked="THRUST_CACHE_DIR THRUST_CACHE_SALT THRUST_CANDIDATE_ATOMS THRUST_CHECK_UINT_FACTS
-THRUST_DEDUP_PRED_ARGS THRUST_ENUM_EXPANSION_DEPTH_LIMIT THRUST_FLAT_PRED_ARGS THRUST_INT_RANGE
-THRUST_NO_INJECT_STD THRUST_OUTPUT_DIR THRUST_PER_INSTANCE_GENERICS THRUST_PREPROCESSOR
-THRUST_PREPROCESSOR_ARGS THRUST_PREPROCESSOR_TIMEOUT_SECS THRUST_PRETTY_OUTPUT THRUST_REPORT
-THRUST_REPORT_FORMAT THRUST_REPORT_ONLY THRUST_SOLVER THRUST_SOLVER_ARGS
-THRUST_SOLVER_TIMEOUT_SECS THRUST_SPLIT THRUST_TRY_SPECS THRUST_VERIFY_ONLY
-THRUST_VSCODE_COMMAND THRUST_VSCODE_ARGS THRUST_VSCODE_THRUST_ID THRUST_VSCODE_VERIFY_ONLY
-THRUST_VSCODE_VERIFY_CRATE THRUST_VSCODE_ENV_KEYS"
+# The extension's variables for what Thrust does not record.
+_tv_tracked="THRUST_VSCODE_ARGS THRUST_VSCODE_SOLVER_ID THRUST_VSCODE_ENV_KEYS"
 
 # run [args...]: the command with the arguments and the extra arguments.
 run() {
@@ -84,7 +77,8 @@ escape() {
     sed 's/x$//'
 }
 
-# The `env-dep` lines of the tracked variables, one per line, as the environment holds them now.
+# The `env-dep` lines of the tracked variables, one per line, as the environment holds them now:
+# the extension's, and those THRUST_VSCODE_ENV_KEYS names.
 env_lines() {
   _tv_names="$_tv_tracked $(printf '%s' "${THRUST_VSCODE_ENV_KEYS:-}" | tr "$_tv_sep" ' ')"
   for _tv_var in $_tv_names; do
@@ -113,14 +107,7 @@ _tv_out_dir=$(option --out-dir "$@")
 _tv_extra=$(codegen extra-filename "$@")
 _tv_report="$THRUST_VSCODE_REPORT_DIR/${CARGO_PKG_NAME}.${_tv_crate}.${_tv_crate_type}.jsonl"
 mkdir -p "$THRUST_VSCODE_REPORT_DIR"
-rm -f "$_tv_report"
 
-if [ -n "${CARGO_PRIMARY_PACKAGE:-}" ]; then
-  THRUST_REPORT_FILE=$_tv_report
-  export THRUST_REPORT_FILE
-else
-  unset THRUST_REPORT
-fi
 if [ -n "${THRUST_VSCODE_VERIFY_CRATE:-}" ]; then
   if [ "$THRUST_VSCODE_VERIFY_CRATE" = "$_tv_crate.$_tv_crate_type" ]; then
     THRUST_VERIFY_ONLY=${THRUST_VSCODE_VERIFY_ONLY:-}
@@ -131,7 +118,7 @@ if [ -n "${THRUST_VSCODE_VERIFY_CRATE:-}" ]; then
 fi
 
 _tv_status=0
-run "$@" || _tv_status=$?
+run "$@" > "$_tv_report" || _tv_status=$?
 _tv_dep_info="$_tv_out_dir/$_tv_crate$_tv_extra.d"
 if [ -f "$_tv_dep_info" ]; then
   printf '%s\n' "$_tv_deps" >> "$_tv_dep_info"

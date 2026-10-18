@@ -1,4 +1,7 @@
-{"kind":"report","version":2,"root":".","columns":{"base":1,"unit":"char","end":"exclusive"}}
-{"kind":"verdict","verdict":"sat","refutations":"one per part","message":null}
-{"kind":"part","id":1,"clauses":11,"functions":[{"fn":"add_one","span":{"file":"safe.rs","line":1,"column":1,"end_line":3,"end_column":2}},{"fn":"main","span":{"file":"safe.rs","line":15,"column":1,"end_line":20,"end_column":2}}],"verdict":"sat","message":null,"cached":false}
+{"kind":"report","version":3,"root":".","columns":{"base":1,"unit":"char","end":"exclusive"}}
+{"kind":"verdict","verdict":"sat","refutations":"one per part","message":null,"functions":null,"z3_answer":null}
+{"kind":"part","id":1,"clauses":11,"functions":[{"fn":"add_one","span":{"file":"safe.rs","line":1,"column":1,"end_line":3,"end_column":2}},{"fn":"main","span":{"file":"safe.rs","line":15,"column":1,"end_line":20,"end_column":2}}],"verdict":"sat","message":null,"cached":false,"z3_answer":null}
+{"kind":"function","fn":"add_one","span":{"file":"safe.rs","line":1,"column":1,"end_line":3,"end_column":2},"body":"checked","reason":null,"parts":[1],"verdict":"sat"}
+{"kind":"function","fn":"count_to","span":{"file":"safe.rs","line":7,"column":1,"end_line":13,"end_column":2},"body":"unselected","reason":"outside THRUST_VERIFY_ONLY, its written contract assumed","parts":null,"verdict":null}
+{"kind":"function","fn":"main","span":{"file":"safe.rs","line":15,"column":1,"end_line":20,"end_column":2},"body":"checked","reason":null,"parts":[1],"verdict":"sat"}
 {"kind":"site","fn":"add_one","site":"contract","span":{"file":"safe.rs","line":1,"column":1,"end_line":1,"end_column":26},"over":"x: int, result: int","template":"fn add_one(x: {int | add_one.pre(x)}) -> {int | add_one.post(x, result)}","preds":[{"name":"add_one.pre","args":["x"]},{"name":"add_one.post","args":["x","result"]}],"solution":null,"inferred":"fn add_one(x: {int | x = 1}) -> {int | result = 2 ∧ x = 1}"}

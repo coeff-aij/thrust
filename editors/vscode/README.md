@@ -6,12 +6,13 @@ code is:
 
 - a refuted obligation as an error at its span, with the values where it fails, the constraint
   and its part, and as related information the annotation it checks (an `ensures`, or the
-  callee's `requires` of a precondition), the written contracts the run assumes at calls, and the
-  facts of the run reaching it at the code of the constraint that derived each;
-- a part of the constraints without an answer (a timeout), or refuted without a refutation, at
-  the first line of each of its functions, and a whole query without an answer as a warning at
-  the top of the file, each with what the solver answered (`Timeout(30s)`, the part line's
-  `message`);
+  callee's `requires` of a precondition), the written contracts the run assumes at calls, the
+  premises of the refuted constraint at the code they were made at, and the facts of the run
+  reaching it at the code of the constraint that derived each;
+- a part of the constraints without an answer (a timeout), or refuted without a refutation, and
+  a whole query without an answer, as a warning at the first line of each of its functions, with
+  what the solver answered (`Timeout(30s)`, the part line's `message`), and what z3 answered when
+  asked of a refuted query (`z3_answer`);
 - rustc's own errors at their spans; its `verification error` is left out, since the report
   places the same failure;
 - the inferred contract of each function and invariant of each loop as an inlay hint at the end
@@ -20,17 +21,17 @@ code is:
   each variable once with its values from the last fact back (`i = 1 ← 0`), so a loop header
   shows its iterations, and the facts in full on hover;
 - the status of each function in the Testing view, as Dafny's extension shows its methods: an
-  item per file or crate with the run's verdict, and under it an item per function the report
-  names, passed, failed (with each refutation at its span) or errored when the run decides
-  neither way (no answer, or a refutation elsewhere in its query), with the gutter icons the
-  Testing view puts at each. In a run of one function, the function passes only on what the
-  report says of it by its name at its `fn` line: its part (`THRUST_SPLIT`) or, in one query, its
-  contract site, as Thrust checks the body of a function with an unknown in its contract; a
-  function defined inside it, or a loop site alone, is no evidence. A crate of the workspace the
-  check did not reach (a crate it depends on failed) is skipped with its functions. Saving a
-  file marks the results of its workspace's crates (or of the files run on their own beside it)
-  outdated, and starting a run those it will decide; the item of a function defined inside
-  another cannot be run on its own;
+  item per file or crate with the run's verdict, and under it an item per function of the
+  report's `function` lines, with the gutter icons the Testing view puts at each. A function
+  passes only when its body is `checked` and its query or parts are `sat`; it fails at each
+  refutation of its own (in its span and in no function inside it, a closure's counting for the
+  function around it too); a checked body with neither is errored (no answer, or a refutation
+  elsewhere in its query); a body not checked (`trusted`, `ignored`, `unselected`,
+  `not_analyzed`) is skipped with the reason as the item's description. A crate of the
+  workspace the check did not reach (a crate it depends on failed) is skipped with its
+  functions. Saving a file marks the results of its workspace's crates (or of the files run on
+  their own beside it) outdated, and starting a run those it will decide; the item of a function
+  defined inside another cannot be run on its own;
 - the verdict of the report's `verdict` line (`safe`, `unsafe`, `unknown`, or `error` for a run
   that wrote none, such as a compile error) in the status bar, the worst of the crates' in a
   cargo workspace, and for a run of one function that function's status; clicking it opens the
@@ -41,9 +42,8 @@ A code lens "Verify this function" above each function (but those compiled for t
 item in the Testing view, run Thrust with `THRUST_VERIFY_ONLY` set to that function's path (`f`,
 `m::f`, `m::Type::method`; an impl is named by its self type, see `src/analyze/selection.rs`), so
 only its body is checked and its callees' written contracts are trusted. Such a run updates the
-status of that function's item, found by its lines and name; it errs when the report says
-nothing of the function there (a `#[thrust::trusted]` function, one not compiled, or, in one
-query, one without a site: `thrust.split` names every function checked). When its report can be
+status of that function's item from the `function` line of its name whose span starts at its
+`fn` line; without one (a function not compiled) the item errs. When its report can be
 read, it replaces the diagnostics and hints on the function's lines and rustc's diagnostics in
 its crate's files; otherwise (a compile error, an entry selecting nothing) it keeps them and adds
 its errors. Nothing is run while a Rust file of the run's workspace (or of the file's directory)
@@ -51,7 +51,7 @@ has unsaved changes, since Thrust checks the files as saved, and a run's result 
 one of them changed during it. A run of the whole checks every function, whatever
 `THRUST_VERIFY_ONLY` `thrust.env` sets.
 
-It reads version 2 of the report, the `version` of its first line, with columns counted as that
+It reads version 3 of the report, the `version` of its first line, with columns counted as that
 line's `columns` says, `{"base":1,"unit":"char","end":"exclusive"}`, and resolves the report's
 files against the `root` that line gives. A report without that line, of another version or with
 other columns is shown as an error and not read.
@@ -85,24 +85,29 @@ workspace (`cargo metadata --no-deps`), a run is `cargo check --workspace --keep
 `thrust.extraArgs`, as the fork's `README.md` and `tests/cargo.rs` set `RUSTC` to
 `thrust-rustc`, and in addition, for each crate:
 
-- removes the crate's report of an earlier check, `<package>.<crate>.<crate type>.jsonl` in
-  `target/thrust/reports`, and for a crate of a package cargo was asked to check writes the new
-  one there; other crates (dependencies) run without a report;
+- writes the JSON report Thrust prints on standard output (it is run without
+  `THRUST_REPORT_FILE`) to `<package>.<crate>.<crate type>.jsonl` in `target/thrust/reports`;
 - sets `THRUST_VERIFY_ONLY` for the selected crate only, so a function's run of a binary leaves
   the package's library (built as its dependency) whole;
-- writes into the crate's dep-info as `env-dep` lines, as rustc does for `env!`, Thrust's
-  variables, the command and its arguments, the size and modification time of the command's
-  files (the Thrust binary, the program found on `PATH`) and the variables `thrust.env` names,
-  with the values cargo ran it with, so cargo checks the crate again when one of them changes.
+- writes into the crate's dep-info as `env-dep` lines, as rustc does for `env!`, what decides a
+  verdict that Thrust does not record itself: the extra arguments, the size and modification
+  time of the solver binary `THRUST_SOLVER` names (`z3`), and the variables of `thrust.env`
+  that are not Thrust's, with the values cargo ran it with.
+
+Thrust records its `THRUST_` variables, its binary and thrust-macros in the dep-info and writes
+a crate's metadata when it verifies, so a crate using another of the workspace compiles, and
+cargo finds a crate fresh at the next check when nothing it reads changed; its report from the
+check that made it so stays. The wrapper changes no variable Thrust reads but the selection, as
+cargo compares the recorded values with its own.
 
 The extension reads the report of each crate cargo's messages name (told apart by package),
 with the crate's own diagnostics from those messages; in a function's run only the selected
 target's. A crate cargo did not compile for an error other than a refutation, or did not compile
 though its report is `sat`, is an error; a build script's errors are shown as its own. The
 build goes to `target/thrust`, apart from the workspace's own builds, as Kani's (`target/kani`)
-and Flux's (`target/flux`) do. Any other file is run on its own, as `thrust-rustc <file>` from its directory, with the
-file's name as the last argument after `--error-format=json --out-dir <temporary directory>`, so
-rustc's output files do not land next to the source.
+and Flux's (`target/flux`) do. Any other file is run on its own, as `thrust-rustc <file>` from
+its directory, with the file's name as the last argument after `--error-format=json --out-dir
+<temporary directory>`, so rustc's output files do not land next to the source.
 
 ## Settings
 
@@ -144,12 +149,13 @@ defined inside it, which is checked).
 `test/capture.sh <thrust-rustc command>` captures them again, writing the report's root as `.`.
 
 `test/fixtures/cargo/workspace` is a workspace of three packages, `arith` (a library with a
-module, an inherent and a trait impl, all verified), `app` (a binary with a refuted `ensures`)
-and `both` (a library and a binary). `test/capture-cargo.sh <thrust-rustc command>` captures its
-`cargo metadata` and, through `bin/thrust-rustc-cargo`, cargo's messages, exit status and
-reports of `check` (the workspace), `check-split` (`THRUST_SPLIT=2`), `only` (`Pair::scale` in
-`arith`) and `only-bin` (`helper` in the binary of `both`), writing the workspace as
-`/workspace`. The tests read the crates' runs, verdicts and functions' statuses from them, the
+module, an inherent and a trait impl, all verified), `app` (a binary using `arith`, with a
+refuted `ensures`) and `both` (a library and a binary). `test/capture-cargo.sh <thrust-rustc
+command>` captures its `cargo metadata` and, through `bin/thrust-rustc-cargo`, cargo's
+messages, exit status and reports of `check` (the workspace), `check-again` (the same check
+again: the verified crates fresh), `check-split` (`THRUST_SPLIT=2`), `only` (`Pair::scale` in
+`arith`) and `only-bin` (`helper` in the binary of `both`), one after the other on one target
+and report directory, writing the workspace as `/workspace`. The tests read the crates' runs, verdicts and functions' statuses from them, the
 wrapper is run with a stand-in compiler (`test/fake-rustc.js`), and the functions of a file and
 their paths are read from the fixture's sources and from synthetic ones.
 
@@ -160,30 +166,32 @@ the fake Thrust: a run of the workspace, of one function, one not reaching a cra
 report, an unsaved file, a file changed during a run, invalidation on save and at a run's start,
 a run stopped from the Testing view, the status bar of a function's run, a nested function's
 item, rustc's diagnostics replaced, and "run all". The wrapper's escaping is tested with each awk
-and sed installed (mawk, busybox here). `node test/drive-real.js <thrust-rustc> [split]` drives it the
-same way with a real `thrust-rustc` on the workspace and on `unsafe.rs` and `trusted.rs`, and
-prints the Testing view's states and the diagnostics after each step; it is not part of `npm
+and sed installed (mawk, busybox here). `node test/drive-real.js <thrust-rustc> [split]` drives
+it the same way with a real `thrust-rustc` on the workspace and on `unsafe.rs`, `trusted.rs` and
+`nested.rs`, and prints the Testing view's states and the diagnostics after each step; it is not part of `npm
 test`. Nothing here starts VS Code.
 
 ## Limits
 
-- Thrust writes no metadata for a crate it checked (`after_analysis` stops the compilation), so
-  in a cargo workspace a crate that uses another crate of the workspace fails with `extern
-  location for <crate> does not exist`, and cargo never keeps a crate fresh: every check runs
-  Thrust on every crate again.
+- A crate calling a function of another crate fails with ``no specification of `arith::inc` ``:
+  Thrust does not carry a crate's contracts to the crates using it. A crate using another's
+  types compiles. A crate whose verification fails writes no metadata, so the crates using it
+  are not checked (skipped).
+- The solver behind a script (a container's image) is not told apart; change
+  `THRUST_CACHE_SALT` with it.
 - The functions for the code lens are read from the text, not by the compiler: functions in
   function bodies or made by macros have no lens, a module file is placed by its path (`#[path]`
   is not read), a module file shared by a library and a binary in one directory is taken as the
   library's, and an impl of a type alias is named by the alias where Thrust names the type.
 - A function's run also checks the bodies of the other functions without a written contract, but
-  only the selected function's lines are updated. In one query (without `thrust.split`) the
-  report says nothing of a function with a written contract, so its run errs instead of passing.
+  only the selected function's lines are updated. In one query (without `thrust.split`) a
+  refutation decides only its own function; the others of the query are undecided.
 - In a cargo workspace, dependencies outside the workspace are verified too, without a report,
   as Thrust verifies every crate it compiles.
 - A failing `ensures` is at the function's signature, as the report's `failure` span and
   rustc's error give it, not at the `return` that breaks it; the annotation is related
   information.
-- A premise of a constraint has no span, so only the run's facts are related information.
+- A premise without an unknown has no span; only those with one are related information.
 - Refutations and inferred contracts come only with `z3`; with PCSat only the verdicts and the
   parts are shown.
 - Diagnostics and hints are not moved when the file is edited; they are replaced at the next run.

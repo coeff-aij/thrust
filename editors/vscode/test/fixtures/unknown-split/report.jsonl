@@ -1,3 +1,5 @@
-{"kind":"report","version":2,"root":".","columns":{"base":1,"unit":"char","end":"exclusive"}}
-{"kind":"verdict","verdict":"timeout","refutations":"one per part","message":"part 1: Timeout(2s)"}
-{"kind":"part","id":1,"clauses":12,"functions":[{"fn":"mul","span":{"file":"unknown.rs","line":1,"column":1,"end_line":9,"end_column":2}},{"fn":"main","span":{"file":"unknown.rs","line":11,"column":1,"end_line":15,"end_column":2}}],"verdict":"timeout","message":"Timeout(2s)","cached":false}
+{"kind":"report","version":3,"root":".","columns":{"base":1,"unit":"char","end":"exclusive"}}
+{"kind":"verdict","verdict":"timeout","refutations":"one per part","message":"part 1: Timeout(2s)","functions":null,"z3_answer":null}
+{"kind":"part","id":1,"clauses":12,"functions":[{"fn":"mul","span":{"file":"unknown.rs","line":1,"column":1,"end_line":9,"end_column":2}},{"fn":"main","span":{"file":"unknown.rs","line":11,"column":1,"end_line":15,"end_column":2}}],"verdict":"timeout","message":"Timeout(2s)","cached":false,"z3_answer":null}
+{"kind":"function","fn":"mul","span":{"file":"unknown.rs","line":1,"column":1,"end_line":9,"end_column":2},"body":"checked","reason":null,"parts":[1],"verdict":"timeout"}
+{"kind":"function","fn":"main","span":{"file":"unknown.rs","line":11,"column":1,"end_line":15,"end_column":2},"body":"checked","reason":null,"parts":[1],"verdict":"timeout"}

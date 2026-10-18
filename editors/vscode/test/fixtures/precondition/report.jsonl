@@ -1,3 +1,5 @@
-{"kind":"report","version":2,"root":".","columns":{"base":1,"unit":"char","end":"exclusive"}}
-{"kind":"verdict","verdict":"unsat","refutations":"one per query","message":null}
-{"kind":"failure","part":null,"constraint":"c2","fn":"main","span":{"file":"precondition.rs","line":8,"column":13,"end_line":8,"end_column":21},"obligation":"precondition of `grow`","premises":[],"conclusion":"-1 >= 0","run":[],"truncated":false,"values":[],"inferred":[],"annotation":[{"file":"precondition.rs","line":1,"column":27,"end_line":1,"end_column":33}],"assumes":[]}
+{"kind":"report","version":3,"root":".","columns":{"base":1,"unit":"char","end":"exclusive"}}
+{"kind":"verdict","verdict":"unsat","refutations":"one per query","message":null,"functions":null,"z3_answer":null}
+{"kind":"function","fn":"grow","span":{"file":"precondition.rs","line":3,"column":1,"end_line":5,"end_column":2},"body":"checked","reason":null,"parts":null,"verdict":"unsat"}
+{"kind":"function","fn":"main","span":{"file":"precondition.rs","line":7,"column":1,"end_line":10,"end_column":2},"body":"checked","reason":null,"parts":null,"verdict":"unsat"}
+{"kind":"failure","part":null,"constraint":"c2","fn":"main","span":{"file":"precondition.rs","line":8,"column":13,"end_line":8,"end_column":21},"obligation":"precondition of `grow`","premises":[],"conclusion":"-1 >= 0","run":[],"run_by_z3":false,"truncated":false,"values":[],"inferred":[],"annotation":[{"file":"precondition.rs","line":1,"column":27,"end_line":1,"end_column":33}],"assumes":[]}

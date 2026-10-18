@@ -1,2 +1,4 @@
-{"kind":"report","version":2,"root":".","columns":{"base":1,"unit":"char","end":"exclusive"}}
-{"kind":"verdict","verdict":"timeout","refutations":"one per query","message":"Timeout(2s)"}
+{"kind":"report","version":3,"root":".","columns":{"base":1,"unit":"char","end":"exclusive"}}
+{"kind":"verdict","verdict":"timeout","refutations":"one per query","message":"Timeout(2s)","functions":[{"fn":"mul","span":{"file":"unknown.rs","line":1,"column":1,"end_line":9,"end_column":2}},{"fn":"main","span":{"file":"unknown.rs","line":11,"column":1,"end_line":15,"end_column":2}}],"z3_answer":null}
+{"kind":"function","fn":"mul","span":{"file":"unknown.rs","line":1,"column":1,"end_line":9,"end_column":2},"body":"checked","reason":null,"parts":null,"verdict":"timeout"}
+{"kind":"function","fn":"main","span":{"file":"unknown.rs","line":11,"column":1,"end_line":15,"end_column":2},"body":"checked","reason":null,"parts":null,"verdict":"timeout"}

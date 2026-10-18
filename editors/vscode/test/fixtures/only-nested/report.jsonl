@@ -1,3 +1,6 @@
-{"kind":"report","version":2,"root":".","columns":{"base":1,"unit":"char","end":"exclusive"}}
-{"kind":"verdict","verdict":"sat","refutations":"one per query","message":null}
+{"kind":"report","version":3,"root":".","columns":{"base":1,"unit":"char","end":"exclusive"}}
+{"kind":"verdict","verdict":"sat","refutations":"one per query","message":null,"functions":null,"z3_answer":null}
+{"kind":"function","fn":"outer","span":{"file":"nested.rs","line":4,"column":1,"end_line":9,"end_column":2},"body":"trusted","reason":"#[thrust::trusted]","parts":null,"verdict":null}
+{"kind":"function","fn":"outer::inner","span":{"file":"nested.rs","line":5,"column":5,"end_line":7,"end_column":6},"body":"checked","reason":null,"parts":null,"verdict":"sat"}
+{"kind":"function","fn":"main","span":{"file":"nested.rs","line":11,"column":1,"end_line":14,"end_column":2},"body":"checked","reason":null,"parts":null,"verdict":"sat"}
 {"kind":"site","fn":"outer::inner","site":"contract","span":{"file":"nested.rs","line":5,"column":5,"end_line":5,"end_column":28},"over":"y: int, result: int","template":"fn outer::inner(y: {int | outer::inner.pre(y)}) -> {int | outer::inner.post(y, result)}","preds":[{"name":"outer::inner.pre","args":["y"]},{"name":"outer::inner.post","args":["y","result"]}],"solution":null,"inferred":"fn outer::inner(y: {int | outer::inner.pre(y)}) -> {int | outer::inner.post(y, result)}"}

@@ -69,12 +69,14 @@ test("target of a file: its root file, a module under it (the library's when bot
 });
 
 test("invocation: the workspace, or one target whose crate the wrapper gives THRUST_VERIFY_ONLY", () => {
-  const whole = cargo.cargoInvocation(metadata, config({ split: 2, cacheDir: "/c", env: { RUST_LOG: "x" } }), "/ext/bin/thrust-rustc-cargo");
+  const env = { RUST_LOG: "x", THRUST_SOLVER_TIMEOUT_SECS: "5" };
+  const whole = cargo.cargoInvocation(metadata, config({ split: 2, cacheDir: "/c", env }), "/ext/bin/thrust-rustc-cargo");
   assert.strictEqual(whole.program, "cargo");
   assert.deepStrictEqual(whole.args, ["check", "--message-format=json", "--manifest-path", "/workspace/Cargo.toml", "--workspace", "--keep-going"]);
   assert.strictEqual(whole.cwd, "/workspace");
   assert.deepStrictEqual(whole.env, {
     RUST_LOG: "x",
+    THRUST_SOLVER_TIMEOUT_SECS: "5",
     THRUST_REPORT: "1",
     THRUST_REPORT_FORMAT: "json",
     THRUST_VERIFY_ONLY: "",
@@ -86,7 +88,8 @@ test("invocation: the workspace, or one target whose crate the wrapper gives THR
     CARGO_TARGET_DIR: "/workspace/target/thrust",
     THRUST_VSCODE_COMMAND: "rustup\x1frun\x1ftc\x1fthrust-rustc",
     THRUST_VSCODE_ARGS: "-Awarnings",
-    THRUST_VSCODE_THRUST_ID: cargo.commandIdentity(["rustup", "run", "tc", "thrust-rustc"], "/workspace"),
+    THRUST_VSCODE_SOLVER_ID: cargo.fileIdentity("z3", "/workspace"),
+    // Thrust records its own variables; the wrapper the others of thrust.env.
     THRUST_VSCODE_ENV_KEYS: "RUST_LOG",
     THRUST_VSCODE_REPORT_DIR: "/workspace/target/thrust/reports",
   });
@@ -100,42 +103,46 @@ test("invocation: the workspace, or one target whose crate the wrapper gives THR
   assert.strictEqual(lib.env.THRUST_VSCODE_VERIFY_CRATE, "arith.lib");
 });
 
-test("identity of the command: its absolute paths of files with their size and time", () => {
-  const id = cargo.commandIdentity(["rustup", "run", "tc", process.execPath, "/nonexistent/thrust-rustc"], "/");
+test("identity of the solver: the file THRUST_SOLVER names, on PATH or against the directory", () => {
   const stat = fs.statSync(process.execPath);
-  assert.strictEqual(id.split("\x1f").pop(), `${process.execPath}:${stat.size}:${stat.mtimeMs}`);
-  // The program found on PATH, and a relative path against the directory of the run.
+  const id = `${process.execPath}:${stat.size}:${stat.mtimeMs}`;
   const dir = path.dirname(process.execPath);
   const program = path.basename(process.execPath);
+  assert.strictEqual(cargo.fileIdentity(process.execPath, "/"), id);
+  assert.strictEqual(cargo.fileIdentity(`./${program}`, dir), id);
+  assert.strictEqual(cargo.fileIdentity("/nonexistent/z3", "/"), "");
   const saved = process.env.PATH;
   process.env.PATH = dir;
   try {
-    assert.strictEqual(cargo.commandIdentity([program, "x"], "/"), `${process.execPath}:${stat.size}:${stat.mtimeMs}`);
+    assert.strictEqual(cargo.solverIdentity(config({ env: { THRUST_SOLVER: program } }), "/"), id);
   } finally {
     process.env.PATH = saved;
   }
-  assert.strictEqual(cargo.commandIdentity(["cargo", program], dir).split("\x1f").pop(), `${process.execPath}:${stat.size}:${stat.mtimeMs}`);
 });
 
 interface WrapperRun {
   args: string[];
   env: Record<string, string>;
   kept: Record<string, string>;
+  /// What the wrapper printed on standard output.
+  stdout: string;
 }
 
 function runWrapper(dir: string, env: Record<string, string>, args: string[]): WrapperRun {
   const fake = path.join(here, "test", "fake-rustc.js");
-  const out = execFileSync("sh", [wrapper, ...args], {
+  const out = path.join(dir, "fake-rustc.json");
+  const stdout = execFileSync("sh", [wrapper, ...args], {
     env: {
       PATH: process.env.PATH ?? "",
       THRUST_VSCODE_COMMAND: [process.execPath, fake].join("\x1f"),
       THRUST_VSCODE_ARGS: ["-C", "debug-assertions=off"].join("\x1f"),
       THRUST_VSCODE_REPORT_DIR: path.join(dir, "reports"),
       THRUST_REPORT: "1",
+      FAKE_RUSTC_OUT: out,
       ...env,
     },
-  });
-  return JSON.parse(out.toString("utf8"));
+  }).toString("utf8");
+  return { ...JSON.parse(fs.readFileSync(out, "utf8")), stdout };
 }
 
 /// The arguments cargo gives a crate, writing its dep-info into `dir`/deps.
@@ -155,7 +162,11 @@ function withScratch(body: (dir: string) => void): void {
   }
 }
 
-test("wrapper: a report file per crate, the tracked variables in its dep-info, cargo's arguments then the extra ones", () => {
+function depInfo(dir: string, crate: string, crateType: string): string[] {
+  return fs.readFileSync(path.join(dir, "deps", `${crate}-${crateType}.d`), "utf8").split("\n");
+}
+
+test("wrapper: Thrust's standard output as the crate's report, cargo's arguments then the extra ones, what Thrust does not record in the dep-info", () => {
   withScratch((dir) => {
     const reportFile = path.join(dir, "reports", "arith.arith.lib.jsonl");
     fs.writeFileSync(reportFile, "an earlier check's report");
@@ -164,55 +175,51 @@ test("wrapper: a report file per crate, the tracked variables in its dep-info, c
       CARGO_CRATE_NAME: "arith",
       CARGO_PKG_NAME: "arith",
       CARGO_PRIMARY_PACKAGE: "1",
-      THRUST_SOLVER_ARGS: "a\\b\nc",
-      THRUST_VSCODE_THRUST_ID: "/t/thrust-rustc:1:2",
+      THRUST_SPLIT: "2",
+      THRUST_VSCODE_SOLVER_ID: "/usr/bin/z3:1:2",
       THRUST_VSCODE_ENV_KEYS: ["RUST_LOG", "bad-name"].join("\x1f"),
       RUST_LOG: "info",
     };
     const ran = runWrapper(dir, env, args);
     assert.deepStrictEqual(ran.args, [...args, "-C", "debug-assertions=off"]);
-    assert.strictEqual(ran.env.THRUST_REPORT_FILE, reportFile);
-    assert.strictEqual(fs.existsSync(reportFile), false);
-    const depInfo = fs.readFileSync(path.join(dir, "deps", "arith-lib.d"), "utf8").split("\n");
+    assert.strictEqual(ran.stdout, "");
+    assert.strictEqual(fs.readFileSync(reportFile, "utf8"), '{"kind":"report"}\n');
+    // Thrust's variables pass unchanged; Thrust records them itself.
+    assert.deepStrictEqual(ran.env, { THRUST_REPORT: "1", THRUST_SPLIT: "2" });
+    const lines = depInfo(dir, "arith", "lib");
     for (const line of [
-      "# env-dep:THRUST_REPORT=1",
-      "# env-dep:THRUST_SPLIT",
-      "# env-dep:THRUST_SOLVER_ARGS=a\\\\b\\nc",
-      `# env-dep:THRUST_VSCODE_COMMAND=${process.execPath}\x1f${path.join(here, "test", "fake-rustc.js")}`,
       "# env-dep:THRUST_VSCODE_ARGS=-C\x1fdebug-assertions=off",
-      "# env-dep:THRUST_VSCODE_THRUST_ID=/t/thrust-rustc:1:2",
+      "# env-dep:THRUST_VSCODE_SOLVER_ID=/usr/bin/z3:1:2",
       "# env-dep:RUST_LOG=info",
     ]) {
-      assert.ok(depInfo.includes(line), `${line}\n${depInfo.join("\n")}`);
+      assert.ok(lines.includes(line), `${line}\n${lines.join("\n")}`);
     }
-    assert.ok(!depInfo.some((l) => l.startsWith("# env-dep:bad-name")));
+    assert.ok(!lines.some((l) => l.startsWith("# env-dep:THRUST_SPLIT") || l.startsWith("# env-dep:bad-name")), lines.join("\n"));
   });
 });
 
-test("wrapper: a dependency's earlier report is removed and it runs without one; queries get the extra arguments too", () => {
+test("wrapper: a dependency's report too; cargo's queries print to cargo and get the extra arguments", () => {
   withScratch((dir) => {
-    const stale = path.join(dir, "reports", "arith.arith.lib.jsonl");
-    fs.writeFileSync(stale, "a report of an earlier check of the workspace");
-    const dependency = runWrapper(dir, { CARGO_CRATE_NAME: "arith", CARGO_PKG_NAME: "arith" }, crateArgs(dir, "arith", "lib"));
-    assert.strictEqual(fs.existsSync(stale), false);
-    assert.strictEqual(dependency.env.THRUST_REPORT, undefined);
-    assert.strictEqual(dependency.env.THRUST_REPORT_FILE, undefined);
-    assert.deepStrictEqual(runWrapper(dir, {}, ["-vV"]).args, ["-vV", "-C", "debug-assertions=off"]);
+    const dependency = runWrapper(dir, { CARGO_CRATE_NAME: "dep", CARGO_PKG_NAME: "dep" }, crateArgs(dir, "dep", "lib"));
+    assert.strictEqual(dependency.env.THRUST_REPORT, "1");
+    assert.ok(fs.existsSync(path.join(dir, "reports", "dep.dep.lib.jsonl")));
+    const query = runWrapper(dir, {}, ["-vV"]);
+    assert.deepStrictEqual(query.args, ["-vV", "-C", "debug-assertions=off"]);
+    assert.strictEqual(query.stdout, '{"kind":"report"}\n');
   });
 });
 
 test("wrapper: THRUST_VERIFY_ONLY for the selected crate only, not the package's other one", () => {
   withScratch((dir) => {
     const selection = { CARGO_PKG_NAME: "both", CARGO_PRIMARY_PACKAGE: "1", THRUST_VSCODE_VERIFY_ONLY: "helper", THRUST_VSCODE_VERIFY_CRATE: "both.bin" };
-    const bin = runWrapper(dir, { ...selection, CARGO_CRATE_NAME: "both" }, crateArgs(dir, "both", "bin"));
+    const bin = runWrapper(dir, { ...selection, CARGO_CRATE_NAME: "both", THRUST_VERIFY_ONLY: "" }, crateArgs(dir, "both", "bin"));
     assert.strictEqual(bin.env.THRUST_VERIFY_ONLY, "helper");
-    const lib = runWrapper(dir, { ...selection, CARGO_CRATE_NAME: "both", THRUST_VERIFY_ONLY: "set by the user" }, crateArgs(dir, "both", "lib"));
+    const lib = runWrapper(dir, { ...selection, CARGO_CRATE_NAME: "both", THRUST_VERIFY_ONLY: "" }, crateArgs(dir, "both", "lib"));
     assert.strictEqual(lib.env.THRUST_VERIFY_ONLY, undefined);
-    assert.ok(fs.readFileSync(path.join(dir, "deps", "both-lib.d"), "utf8").includes("# env-dep:THRUST_VSCODE_VERIFY_CRATE=both.bin"));
   });
 });
 
-test("a check of the workspace: a report per crate, the verdict and the functions of each", () => {
+test("a check of the workspace: a report per crate, the verdict and the functions of each; a crate using another compiles", () => {
   const runs = crates("check");
   assert.deepStrictEqual(
     runs.map((r) => [r.target.name, r.target.kind, r.compiled]).sort(),
@@ -224,16 +231,17 @@ test("a check of the workspace: a report per crate, the verdict and the function
   assert.strictEqual(cargo.crateOutcome(arith, parsed).verdict, "safe");
   assert.deepStrictEqual(
     report.functionResults(parsed).map((r) => [r.fn, r.status]),
-    [["Pair::twice", "pass"], ["<Pair as Scale>::scale", "pass"], ["sextuple", "pass"]],
+    [["inc", "pass"], ["Pair::twice", "pass"], ["<Pair as Scale>::scale", "pass"], ["sextuple", "pass"], ["ops::dec", "pass"]],
   );
+  // `app` uses `arith`, whose metadata Thrust wrote as it verified; `app` is refuted.
   const app = find(runs, "app");
   const appReport = report.parseReport(app.report);
   assert.strictEqual(cargo.crateOutcome(app, appReport).verdict, "unsafe");
   const results = report.functionResults(appReport);
-  assert.deepStrictEqual(results.map((r) => [r.fn, r.status]), [["shrink", "fail"]]);
-  assert.match(results[0].message, /refuted: ensures with result = 0, x = 1/);
+  assert.deepStrictEqual(results.map((r) => [r.fn, r.status]), [["dec", "unknown"], ["shrink", "fail"], ["main", "unknown"]]);
+  assert.match(results[1].message, /refuted: ensures with result = 0, x = 1/);
   // The report's spans and rustc's are relative to the workspace's root.
-  assert.strictEqual(results[0].span?.file, "app/src/main.rs");
+  assert.strictEqual(results[1].span?.file, "app/src/main.rs");
   assert.ok(app.diagnostics.every((d) => d.spans.every((s) => s.file_name === "app/src/main.rs")));
 });
 
@@ -243,15 +251,32 @@ test("a split check: every function of each crate with its part's verdict", () =
   assert.deepStrictEqual(
     arith.map((r) => [r.fn, r.status, r.span?.line]),
     [
-      ["ops::dec", "pass", 3],
       ["inc", "pass", 4],
       ["Pair::twice", "pass", 11],
       ["<Pair as Scale>::scale", "pass", 21],
       ["sextuple", "pass", 26],
+      ["ops::dec", "pass", 3],
     ],
   );
   const app = report.functionResults(report.parseReport(find(runs, "app").report));
   assert.deepStrictEqual(app.map((r) => [r.fn, r.status]), [["dec", "pass"], ["shrink", "fail"], ["main", "fail"]]);
+});
+
+test("a second check: the crates that passed are fresh and keep their reports", () => {
+  const stdout = fs.readFileSync(path.join(fixtures, "check-again", "stdout.jsonl"), "utf8");
+  const fresh = stdout
+    .split("\n")
+    .filter((l) => l.includes('"reason":"compiler-artifact"'))
+    .map((l) => JSON.parse(l) as { target: { name: string; kind: string[] }; fresh: boolean })
+    .map((m) => [m.target.name, m.target.kind[0], m.fresh]);
+  assert.deepStrictEqual(fresh.sort(), [["arith", "lib", true], ["both", "bin", true], ["both", "lib", true]]);
+  const runs = crates("check-again");
+  assert.deepStrictEqual(
+    report.functionResults(report.parseReport(find(runs, "arith").report)).map((r) => r.status),
+    ["pass", "pass", "pass", "pass", "pass"],
+  );
+  // The refuted crate wrote no metadata, so it is checked again.
+  assert.strictEqual(cargo.crateOutcome(find(runs, "app"), report.parseReport(find(runs, "app").report)).verdict, "unsafe");
 });
 
 test("a check of one function: its status from the lines it spans, the reports of the other crates not read", () => {
@@ -323,15 +348,13 @@ test("crate runs: a build script's error is a run of its own; targets are told a
   assert.notStrictEqual(cargo.targetKey(runs[1].target), cargo.targetKey(target("app", "bin")));
 });
 
-test("wrapper: the dep-info records the variables as cargo ran it, before its own changes", () => {
+test("wrapper: the dep-info records the values cargo ran it with", () => {
   withScratch((dir) => {
-    const env = { CARGO_CRATE_NAME: "dep", CARGO_PKG_NAME: "dep", THRUST_VERIFY_ONLY: "", THRUST_VSCODE_VERIFY_CRATE: "app.bin" };
+    const env = { CARGO_CRATE_NAME: "dep", CARGO_PKG_NAME: "dep", THRUST_VSCODE_ENV_KEYS: "MY_FLAG" };
     runWrapper(dir, env, crateArgs(dir, "dep", "lib"));
-    const depInfo = fs.readFileSync(path.join(dir, "deps", "dep-lib.d"), "utf8").split("\n");
-    // A dependency runs without THRUST_REPORT, and with THRUST_VERIFY_ONLY unset, but cargo has them.
-    assert.ok(depInfo.includes("# env-dep:THRUST_REPORT=1"), depInfo.join("\n"));
-    assert.ok(depInfo.includes("# env-dep:THRUST_VERIFY_ONLY="), depInfo.join("\n"));
-    assert.ok(!depInfo.some((l) => l.startsWith("# env-dep:THRUST_REPORT_FILE")));
+    const lines = depInfo(dir, "dep", "lib");
+    assert.ok(lines.includes("# env-dep:MY_FLAG"), lines.join("\n"));
+    assert.ok(lines.includes("# env-dep:THRUST_VSCODE_ENV_KEYS=MY_FLAG"), lines.join("\n"));
   });
 });
 
@@ -363,10 +386,10 @@ test("wrapper: env-dep values escaped as rustc escapes them, with each awk and s
     const sets = toolSets(dir);
     assert.ok(sets.length > 0);
     for (const set of sets) {
-      const env = { CARGO_CRATE_NAME: "arith", CARGO_PKG_NAME: "arith", THRUST_SOLVER_ARGS: "a\\b\nc\rd\n", PATH: `${set}:${process.env.PATH}` };
+      const env = { CARGO_CRATE_NAME: "arith", CARGO_PKG_NAME: "arith", THRUST_VSCODE_ENV_KEYS: "MY_ARGS", MY_ARGS: "a\\b\nc\rd\n", PATH: `${set}:${process.env.PATH}` };
       runWrapper(dir, env, crateArgs(dir, "arith", "lib"));
-      const depInfo = fs.readFileSync(path.join(dir, "deps", "arith-lib.d"), "utf8").split("\n");
-      assert.ok(depInfo.includes("# env-dep:THRUST_SOLVER_ARGS=a\\\\b\\nc\\rd\\n"), `${set}\n${depInfo.join("\n")}`);
+      const lines = depInfo(dir, "arith", "lib");
+      assert.ok(lines.includes("# env-dep:MY_ARGS=a\\\\b\\nc\\rd\\n"), `${set}\n${lines.join("\n")}`);
       fs.rmSync(path.join(dir, "deps", "arith-lib.d"));
     }
   });

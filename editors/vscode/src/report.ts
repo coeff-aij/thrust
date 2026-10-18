@@ -5,7 +5,7 @@
 import * as path from "path";
 
 /// The version of the report this file reads, the `version` of its first line.
-export const REPORT_VERSION = 2;
+export const REPORT_VERSION = 3;
 
 /// How the spans' columns count, as the header states it; the only convention this file reads.
 export const COLUMNS: Columns = { base: 1, unit: "char", end: "exclusive" };
@@ -57,6 +57,10 @@ export interface VerdictLine {
   /// What the solver answered when it is neither `sat` nor `unsat` (`Timeout(30s)`), for a
   /// query solved in parts the first such part's (`part 1: Timeout(30s)`); null otherwise.
   message: string | null;
+  /// Of a whole query without an answer, the functions its clauses come from.
+  functions: FnSpan[] | null;
+  /// What z3 answered for the query the solver refuted, when asked (`sat`: they disagree).
+  z3_answer: string | null;
 }
 
 export interface Part {
@@ -67,6 +71,28 @@ export interface Part {
   /// What the solver answered for the part when it is neither `sat` nor `unsat`; null otherwise.
   message: string | null;
   cached: boolean;
+  z3_answer: string | null;
+}
+
+/// What the analysis did with the body of a function of the crate.
+export interface FunctionLine {
+  fn: string;
+  /// The whole function, from its `fn` line.
+  span: Range;
+  /// `checked`, `trusted`, `ignored`, `unselected` or `not_analyzed`.
+  body: string;
+  /// Why the body is not checked.
+  reason: string | null;
+  /// Of a checked body when split, the parts its clauses are in.
+  parts: number[] | null;
+  /// Of a checked body, the verdict of the query or of its parts.
+  verdict: string | null;
+}
+
+/// A premise of a constraint, at the code it was made at when the clause tells it.
+export interface Premise {
+  text: string;
+  span: Range | null;
 }
 
 export interface Step {
@@ -91,9 +117,11 @@ export interface Failure {
   fn: string | null;
   span: Range | null;
   obligation: string | null;
-  premises: string[] | null;
+  premises: Premise[] | null;
   conclusion: string | null;
   run: Step[];
+  /// Whether the run is z3's, asked of a query the solver refuted without one.
+  run_by_z3: boolean;
   truncated: boolean;
   values: Value[];
   inferred: string[];
@@ -119,7 +147,7 @@ export interface Constraint {
   loop: Range | null;
   span: Range | null;
   obligation: string;
-  premises: string[];
+  premises: Premise[];
   conclusion: string;
 }
 
@@ -127,6 +155,7 @@ export interface Report {
   header?: Header;
   verdict?: VerdictLine;
   parts: Part[];
+  functions: FunctionLine[];
   failures: Failure[];
   sites: Site[];
   constraints: Constraint[];
@@ -201,7 +230,7 @@ function headOf(range: Range): Location {
 
 /// Reads the report's JSON lines.
 export function parseReport(text: string): Report {
-  const report: Report = { parts: [], failures: [], sites: [], constraints: [], unparsed: [] };
+  const report: Report = { parts: [], functions: [], failures: [], sites: [], constraints: [], unparsed: [] };
   for (const line of text.split("\n")) {
     if (line.trim() === "") {
       continue;
@@ -234,6 +263,9 @@ function addLine(report: Report, object: Record<string, unknown> | undefined): b
     case "part":
       report.parts.push(object as unknown as Part);
       return true;
+    case "function":
+      report.functions.push(object as unknown as FunctionLine);
+      return true;
     case "failure":
       report.failures.push(object as unknown as Failure);
       return true;
@@ -256,7 +288,12 @@ export function refusal(report: Report): string | undefined {
     return headerRefusal(report.header);
   }
   const lines =
-    report.parts.length + report.failures.length + report.sites.length + report.constraints.length + report.unparsed.length;
+    report.parts.length +
+    report.functions.length +
+    report.failures.length +
+    report.sites.length +
+    report.constraints.length +
+    report.unparsed.length;
   return lines > 0 || report.verdict
     ? `the report has no header line (a Thrust older than report version ${REPORT_VERSION})`
     : undefined;
@@ -318,7 +355,13 @@ export function verdictOf(exitCode: number | null, report: Report, diagnostics: 
   }
   const verdict = VERDICTS[report.verdict.verdict] ?? "error";
   const detail = partsDetail(report.parts, report.verdict) ?? queryDetail(report.verdict, report.failures.length);
-  return { verdict, detail };
+  return { verdict, detail: detail + z3Detail(report) };
+}
+
+/// What z3 answered where the solver refuted, when it disagrees or gave no run.
+function z3Detail(report: Report): string {
+  const answers = [report.verdict?.z3_answer, ...report.parts.map((p) => p.z3_answer)].filter((a): a is string => !!a);
+  return answers.length > 0 ? `; z3 answered ${answers.join(", ")}` : "";
 }
 
 function queryDetail(line: VerdictLine, failures: number): string {
@@ -380,7 +423,17 @@ function reportFindings(report: Report, fallback: Location): Finding[] {
   for (const part of report.parts.filter((p) => p.verdict !== "sat" && !refuted.has(p.id))) {
     result.push(...partFindings(part));
   }
+  result.push(...unansweredFindings(report.verdict));
   return result;
+}
+
+/// A whole query without an answer, at the start of each of the functions its clauses come from.
+function unansweredFindings(line: VerdictLine | undefined): Finding[] {
+  if (!line || line.verdict === "sat" || line.verdict === "unsat" || !line.functions) {
+    return [];
+  }
+  const message = `Thrust: ${line.message ?? line.verdict} for the query of ${line.functions.map((f) => `\`${f.fn}\``).join(", ")}`;
+  return line.functions.map((f) => ({ location: headOf(f.span), severity: "warning" as const, message, related: [], source: "thrust" as const }));
 }
 
 function failureFinding(failure: Failure, part: Part | undefined, sites: Site[], fallback: Location): Finding {
@@ -392,6 +445,9 @@ function failureFinding(failure: Failure, part: Part | undefined, sites: Site[],
   if (failure.conclusion !== null) {
     lines.push(`${failure.constraint}: ${formatConstraint(failure.premises ?? [], failure.conclusion)}`);
   }
+  if (failure.run_by_z3) {
+    lines.push("the run is z3's, as the solver refuted the query without one");
+  }
   if (failure.inferred.length > 0) {
     lines.push(`it goes through the contract inferred for ${failure.inferred.map((f) => `\`${f}\``).join(", ")}`);
   }
@@ -399,7 +455,13 @@ function failureFinding(failure: Failure, part: Part | undefined, sites: Site[],
     location: locationOf(failure.span) ?? fallback,
     severity: "error",
     message: lines.join("\n"),
-    related: [...annotationRelated(failure), ...assumesRelated(failure), ...runRelated(failure), ...inferredRelated(failure, sites)],
+    related: [
+      ...annotationRelated(failure),
+      ...assumesRelated(failure),
+      ...premiseRelated(failure),
+      ...runRelated(failure),
+      ...inferredRelated(failure, sites),
+    ],
     source: "thrust",
   };
 }
@@ -417,6 +479,11 @@ function assumesRelated(failure: Failure): Related[] {
     location: locationOf(a.span) ?? headOf(a.span),
     message: `it assumes the written contract of \`${a.fn}\``,
   }));
+}
+
+/// Each premise of the refuted constraint at the code it was made at, when the report gives it.
+function premiseRelated(failure: Failure): Related[] {
+  return (failure.premises ?? []).flatMap((p) => (p.span ? [{ location: headOf(p.span), message: `premise: ${p.text}` }] : []));
 }
 
 /// Each fact of the run at the start of the constraint it was derived by.
@@ -564,8 +631,8 @@ export function formatValues(values: Value[]): string {
   return values.map((v) => `${v.name} = ${v.value}`).join(", ");
 }
 
-export function formatConstraint(premises: string[], conclusion: string): string {
-  return premises.length === 0 ? conclusion : `(${premises.join(" ∧ ")}) ==> ${conclusion}`;
+export function formatConstraint(premises: Premise[], conclusion: string): string {
+  return premises.length === 0 ? conclusion : `(${premises.map((p) => p.text).join(" ∧ ")}) ==> ${conclusion}`;
 }
 
 function truncate(text: string): string {
@@ -594,92 +661,98 @@ export function utf16Column(text: string, column: number): number {
   return Array.from(text).slice(0, Math.max(column - 1, 0)).join("").length + 1;
 }
 
-/// What a run says of one function: `pass` when its obligations hold, `fail` when one is refuted,
-/// `unknown` when the run decides neither (no answer, or a refutation elsewhere in its query).
-export type Status = "pass" | "fail" | "unknown";
+/// What a run says of one function: `pass` when its body was checked and its query or parts are
+/// `sat`, `fail` when an obligation of it is refuted, `unknown` when its body was checked without
+/// either (no answer, or a refutation elsewhere), `not_checked` when its body was not checked
+/// (trusted, ignored, outside the selection, not analyzed), with the reason.
+export type Status = "pass" | "fail" | "unknown" | "not_checked";
 
 export interface FunctionResult {
   /// The function as the report names it (`Pair::twice`, `<Pair as Scale>::scale`).
   fn: string;
-  /// Where it is: its part's span (the whole function), else its contract site's or its first
-  /// failure's.
+  /// The whole function, from its `fn` line.
   span: Range | null;
   status: Status;
   /// Why, in one line.
   message: string;
-  /// The refutations at it.
+  /// The refutations of its obligations.
   failures: Failure[];
 }
 
-/// The status of each function the report names, in the order it first names them. A run split
-/// in parts (`THRUST_SPLIT`) names every function, each with its part's verdict; a run in one
-/// query names only those with an inferred contract, a loop or a refutation.
+/// The status of each function of the report's `function` lines, in their order. A function
+/// passes only when its body is `checked` with the verdict `sat`; a refutation is its own when
+/// its span lies in the function and in no other function inside it, a closure's counting for the
+/// functions around it too.
 export function functionResults(report: Report): FunctionResult[] {
   if (refusal(report) || !report.verdict) {
     return [];
   }
-  return report.parts.length > 0 ? partResults(report) : queryResults(report, report.verdict);
-}
-
-function failuresAt(report: Report, fn: string): Failure[] {
-  return report.failures.filter((f) => f.fn === fn);
-}
-
-function partResults(report: Report): FunctionResult[] {
-  return report.parts.flatMap((part) =>
-    part.functions.map((f) => {
-      const failures = failuresAt(report, f.fn).filter((x) => x.part === part.id);
-      const refuted = report.failures.some((x) => x.part === part.id);
-      return { fn: f.fn, span: f.span, failures, ...partStatus(part, failures, refuted) };
-    }),
-  );
-}
-
-function partStatus(part: Part, failures: Failure[], refuted: boolean): { status: Status; message: string } {
-  const name = partName(part);
-  if (part.verdict === "sat") {
-    return { status: "pass", message: `${name}: sat${part.cached ? " (from the cache)" : ""}` };
-  }
-  if (part.verdict !== "unsat") {
-    return { status: "unknown", message: `${name}: ${part.message ?? part.verdict}` };
-  }
-  if (failures.length > 0) {
-    return { status: "fail", message: failures.map(failureLine).join("\n") };
-  }
-  return refuted
-    ? { status: "unknown", message: `${name}: refuted at another function of the part` }
-    : { status: "fail", message: `${name}: unsat, without a refutation` };
-}
-
-function queryResults(report: Report, line: VerdictLine): FunctionResult[] {
-  const names: string[] = [];
-  for (const fn of [...report.sites.map((s) => s.fn), ...report.failures.flatMap((f) => (f.fn ? [f.fn] : []))]) {
-    if (!names.includes(fn)) {
-      names.push(fn);
+  const owned = new Map<FunctionLine, Failure[]>();
+  for (const failure of report.failures) {
+    for (const owner of ownersOf(report.functions, failure)) {
+      owned.set(owner, [...(owned.get(owner) ?? []), failure]);
     }
   }
-  return names.map((fn) => {
-    const failures = failuresAt(report, fn);
-    const site = report.sites.find((s) => s.fn === fn && s.site === "contract");
-    const span = site?.span ?? failures[0]?.span ?? report.sites.find((s) => s.fn === fn)?.span ?? null;
-    return { fn, span, failures, ...queryStatus(line, failures) };
-  });
+  return report.functions.map((f) => functionResult(report, f, owned.get(f) ?? []));
 }
 
-function queryStatus(line: VerdictLine, failures: Failure[]): { status: Status; message: string } {
+/// The functions a refutation is of: the innermost function holding its span (by name when it has
+/// none), and when that is a closure, the functions around it up to the first that is not.
+function ownersOf(functions: FunctionLine[], failure: Failure): FunctionLine[] {
+  const holding = failure.span
+    ? functions.filter((f) => contains(f.span, failure.span as Range))
+    : functions.filter((f) => f.fn === failure.fn);
+  const inner = holding.sort((a, b) => size(a.span) - size(b.span));
+  const owners: FunctionLine[] = [];
+  for (const f of inner) {
+    owners.push(f);
+    if (!lastSegment(f.fn).startsWith("{closure")) {
+      break;
+    }
+  }
+  return owners;
+}
+
+function functionResult(report: Report, f: FunctionLine, failures: Failure[]): FunctionResult {
+  const result = { fn: f.fn, span: f.span, failures };
   if (failures.length > 0) {
-    return { status: "fail", message: failures.map(failureLine).join("\n") };
+    return { ...result, status: "fail", message: failures.map(failureLine).join("\n") };
   }
-  if (line.verdict === "sat") {
-    return { status: "pass", message: "the query is sat" };
+  if (f.body !== "checked") {
+    const body = f.body.replace(/_/g, " ");
+    return { ...result, status: "not_checked", message: f.reason ? `${body}: ${f.reason}` : body };
   }
-  if (line.verdict === "unsat") {
-    return {
-      status: "unknown",
-      message: `the query is refuted elsewhere, ${line.refutations}; split it (THRUST_SPLIT) to decide each function`,
-    };
+  const where = f.parts ? ` in ${f.parts.length === 1 ? "part" : "parts"} ${f.parts.join(", ")}` : "";
+  if (f.verdict === "sat") {
+    const refutedInside = report.failures.some((x) => x.span && contains(f.span, x.span));
+    return refutedInside
+      ? { ...result, status: "unknown", message: `checked${where} (sat), but a function defined inside it is refuted` }
+      : { ...result, status: "pass", message: `checked${where} (sat)` };
   }
-  return { status: "unknown", message: `the solver answered ${line.message ?? line.verdict}` };
+  return { ...result, status: "unknown", message: `checked${where} (${f.verdict ?? "no verdict"})${unknownWhy(report, f)}` };
+}
+
+function unknownWhy(report: Report, f: FunctionLine): string {
+  if (f.verdict === "unsat") {
+    return ": refuted at another function; split the run (THRUST_SPLIT) to decide each";
+  }
+  const messages = f.parts
+    ? report.parts.filter((p) => f.parts?.includes(p.id) && p.message).map((p) => p.message)
+    : [report.verdict?.message];
+  const answered = messages.filter((m) => !!m);
+  return answered.length > 0 ? `: ${answered.join(", ")}` : "";
+}
+
+function contains(outer: Range, inner: Range): boolean {
+  if (outer.file !== inner.file) {
+    return false;
+  }
+  const before = (a: [number, number], b: [number, number]) => a[0] < b[0] || (a[0] === b[0] && a[1] <= b[1]);
+  return before([outer.line, outer.column], [inner.line, inner.column]) && before([inner.end_line, inner.end_column], [outer.end_line, outer.end_column]);
+}
+
+function size(range: Range): number {
+  return (range.end_line - range.line) * 100000 + (range.end_column - range.column);
 }
 
 function failureLine(failure: Failure): string {
@@ -696,42 +769,25 @@ export interface FnLines {
   endLine: number;
 }
 
-/// The status of the function `fn` of `file` (relative to the report's root), in a run of that
-/// function only (`THRUST_VERIFY_ONLY`), from what the report names on its lines. A refutation
-/// anywhere on them fails it. Otherwise only what the report says of the function itself, or of
-/// its closures, decides it: its part (when split) or its contract site (in one query), which
-/// start at its `fn` line, since Thrust checks the body of a function the report names so (a
-/// function with an unknown in its contract is never trusted, `src/analyze/crate_.rs`). A
-/// function defined inside it is no evidence for it, even of the same name: a
-/// `#[thrust::trusted]` function's nested function is checked while its own body is not. Lines
-/// the report says nothing of the function on are undecided, never passing: it may be trusted
-/// (`#[thrust::trusted]`, a written contract outside the selection), not compiled (`cfg`), or
-/// checked in one query without a contract site (a loop site alone is not taken as its own).
+/// The status of the function `fn` of `file` (relative to the report's root) in a run of that
+/// function only (`THRUST_VERIFY_ONLY`): that of the report's `function` line of its name whose
+/// span starts at its `fn` line. Without one (a function not compiled, `cfg`), it is undecided.
 export function statusWithin(report: Report, file: string, fn: FnLines): FunctionResult | undefined {
   if (refusal(report) || !report.verdict) {
     return undefined;
   }
-  const { name, line, endLine } = fn;
-  const inside = (span: Range | null) => span !== null && span.file === file && span.line >= line && span.line <= endLine;
-  const onLines = functionResults(report).filter((r) => inside(r.span) || r.failures.some((f) => inside(f.span)));
-  const failed = onLines.find((r) => r.status === "fail");
-  if (failed) {
-    return failed;
-  }
-  const isOwn = (r: FunctionResult) => lastSegment(r.fn) === name && r.span?.line === fn.fnLine;
-  const own = onLines.filter((r) => isOwn(r) || lastSegment(r.fn).startsWith("{closure"));
-  const named = own.filter(isOwn);
-  if (named.length > 0) {
-    return own.find((r) => r.status === "unknown") ?? named[0];
-  }
-  const split = report.parts.length > 0 ? "" : "; a split run (thrust.split) names every function it checks";
-  return {
-    fn: `lines ${line}-${endLine}`,
-    span: null,
-    failures: [],
-    status: "unknown",
-    message: `the report says nothing of \`${name}\` on these lines: trusted, not compiled, or without a site${split}`,
-  };
+  const own = functionResults(report).find(
+    (r) => r.span?.file === file && r.span.line === fn.fnLine && lastSegment(r.fn) === fn.name,
+  );
+  return (
+    own ?? {
+      fn: fn.name,
+      span: null,
+      failures: [],
+      status: "unknown",
+      message: `the report has no function \`${fn.name}\` at line ${fn.fnLine}: not compiled?`,
+    }
+  );
 }
 
 /// The last segment of a function's name as the report gives it (`scale` of

@@ -1,3 +1,6 @@
-{"kind":"report","version":2,"root":".","columns":{"base":1,"unit":"char","end":"exclusive"}}
-{"kind":"verdict","verdict":"sat","refutations":"one per query","message":null}
+{"kind":"report","version":3,"root":".","columns":{"base":1,"unit":"char","end":"exclusive"}}
+{"kind":"verdict","verdict":"sat","refutations":"one per query","message":null,"functions":null,"z3_answer":null}
+{"kind":"function","fn":"bad","span":{"file":"trusted.rs","line":4,"column":1,"end_line":6,"end_column":2},"body":"trusted","reason":"#[thrust::trusted]","parts":null,"verdict":null}
+{"kind":"function","fn":"twin","span":{"file":"trusted.rs","line":15,"column":1,"end_line":17,"end_column":2},"body":"checked","reason":null,"parts":null,"verdict":"sat"}
+{"kind":"function","fn":"main","span":{"file":"trusted.rs","line":19,"column":1,"end_line":23,"end_column":2},"body":"checked","reason":null,"parts":null,"verdict":"sat"}
 {"kind":"site","fn":"twin","site":"contract","span":{"file":"trusted.rs","line":15,"column":1,"end_line":15,"end_column":23},"over":"x: int, result: int","template":"fn twin(x: {int | twin.pre(x)}) -> {int | twin.post(x, result)}","preds":[{"name":"twin.pre","args":["x"]},{"name":"twin.post","args":["x","result"]}],"solution":null,"inferred":"fn twin(x: {int | twin.pre(x)}) -> {int | twin.post(x, result)}"}

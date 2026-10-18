@@ -1,5 +1,10 @@
-{"kind":"report","version":2,"root":"/workspace","columns":{"base":1,"unit":"char","end":"exclusive"}}
-{"kind":"verdict","verdict":"sat","refutations":"one per part","message":null}
-{"kind":"part","id":1,"clauses":2,"functions":[{"fn":"ops::dec","span":{"file":"arith/src/ops.rs","line":3,"column":1,"end_line":5,"end_column":2}}],"verdict":"sat","message":null,"cached":true}
-{"kind":"part","id":2,"clauses":2,"functions":[{"fn":"inc","span":{"file":"arith/src/lib.rs","line":4,"column":1,"end_line":6,"end_column":2}}],"verdict":"sat","message":null,"cached":false}
-{"kind":"part","id":3,"clauses":13,"functions":[{"fn":"Pair::twice","span":{"file":"arith/src/lib.rs","line":11,"column":5,"end_line":13,"end_column":6}},{"fn":"<Pair as Scale>::scale","span":{"file":"arith/src/lib.rs","line":21,"column":5,"end_line":23,"end_column":6}},{"fn":"sextuple","span":{"file":"arith/src/lib.rs","line":26,"column":1,"end_line":30,"end_column":2}}],"verdict":"sat","message":null,"cached":false}
+{"kind":"report","version":3,"root":"/workspace","columns":{"base":1,"unit":"char","end":"exclusive"}}
+{"kind":"verdict","verdict":"sat","refutations":"one per part","message":null,"functions":null,"z3_answer":null}
+{"kind":"part","id":1,"clauses":2,"functions":[{"fn":"ops::dec","span":{"file":"arith/src/ops.rs","line":3,"column":1,"end_line":5,"end_column":2}}],"verdict":"sat","message":null,"cached":false,"z3_answer":null}
+{"kind":"part","id":2,"clauses":2,"functions":[{"fn":"inc","span":{"file":"arith/src/lib.rs","line":4,"column":1,"end_line":6,"end_column":2}}],"verdict":"sat","message":null,"cached":false,"z3_answer":null}
+{"kind":"part","id":3,"clauses":13,"functions":[{"fn":"Pair::twice","span":{"file":"arith/src/lib.rs","line":11,"column":5,"end_line":13,"end_column":6}},{"fn":"<Pair as Scale>::scale","span":{"file":"arith/src/lib.rs","line":21,"column":5,"end_line":23,"end_column":6}},{"fn":"sextuple","span":{"file":"arith/src/lib.rs","line":26,"column":1,"end_line":30,"end_column":2}}],"verdict":"sat","message":null,"cached":true,"z3_answer":null}
+{"kind":"function","fn":"inc","span":{"file":"arith/src/lib.rs","line":4,"column":1,"end_line":6,"end_column":2},"body":"checked","reason":null,"parts":[2],"verdict":"sat"}
+{"kind":"function","fn":"Pair::twice","span":{"file":"arith/src/lib.rs","line":11,"column":5,"end_line":13,"end_column":6},"body":"checked","reason":null,"parts":[3],"verdict":"sat"}
+{"kind":"function","fn":"<Pair as Scale>::scale","span":{"file":"arith/src/lib.rs","line":21,"column":5,"end_line":23,"end_column":6},"body":"checked","reason":null,"parts":[3],"verdict":"sat"}
+{"kind":"function","fn":"sextuple","span":{"file":"arith/src/lib.rs","line":26,"column":1,"end_line":30,"end_column":2},"body":"checked","reason":null,"parts":[3],"verdict":"sat"}
+{"kind":"function","fn":"ops::dec","span":{"file":"arith/src/ops.rs","line":3,"column":1,"end_line":5,"end_column":2},"body":"checked","reason":null,"parts":[1],"verdict":"sat"}

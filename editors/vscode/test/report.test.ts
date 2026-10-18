@@ -39,12 +39,12 @@ function findingsOf(c: Case): report.Finding[] {
 
 const fallback: report.Location = { file: "fallback.rs", line: 1, column: 1 };
 
-test("every line of every captured report is of a known kind, after a header of version 2", () => {
+test("every line of every captured report is of a known kind, after a header of version 3", () => {
   for (const name of cases) {
     const c = load(name);
     assert.deepStrictEqual(c.report.unparsed, [], name);
     assert.deepStrictEqual(c.other, [], name);
-    assert.deepStrictEqual(c.report.header, { kind: "report", version: 2, root: ".", columns: { base: 1, unit: "char", end: "exclusive" } }, name);
+    assert.deepStrictEqual(c.report.header, { kind: "report", version: 3, root: ".", columns: { base: 1, unit: "char", end: "exclusive" } }, name);
     assert.ok(c.report.verdict, name);
   }
 });
@@ -57,8 +57,8 @@ test("a report without a header or of another version is refused", () => {
   assert.strictEqual(o.verdict, "error");
   assert.deepStrictEqual(report.findings(headless, [], o, fallback).map((f) => f.location), [fallback]);
   assert.deepStrictEqual(report.hints(headless), []);
-  const older = report.parseReport([unsafe[0].replace('"version":2', '"version":1'), ...unsafe.slice(1)].join("\n"));
-  assert.match(report.verdictOf(1, older, []).detail, /version 1; this extension reads version 2/);
+  const older = report.parseReport([unsafe[0].replace('"version":3', '"version":2'), ...unsafe.slice(1)].join("\n"));
+  assert.match(report.verdictOf(1, older, []).detail, /version 2; this extension reads version 3/);
   // Columns counted otherwise than the extension counts them.
   const utf8 = report.parseReport([unsafe[0].replace('"unit":"char"', '"unit":"utf-8"'), ...unsafe.slice(1)].join("\n"));
   assert.match(report.verdictOf(1, utf8, []).detail, /counts columns as \{"base":1,"unit":"utf-8","end":"exclusive"\}/);
@@ -131,6 +131,8 @@ test("unsafe: the refuted ensures with its values, its annotation and the run as
   assert.match(failure.message, /c0: \(result = __tmp_mir_withdraw_3 - 1 ∧ .*\) ==> result = b - a/);
   assert.deepStrictEqual(failure.related, [
     { location: { file: "unsafe.rs", line: 2, column: 26, endLine: 2, endColumn: 41 }, message: "the annotation it checks" },
+    // A premise applying an unknown at its template's code, the entry block's at the signature.
+    { location: { file: "unsafe.rs", line: 3, column: 1 }, message: "premise: withdraw.bb0(b, a, old(b) ← b, old(a) ← a)" },
     {
       location: { file: "unsafe.rs", line: 3, column: 1 },
       message: "withdraw.bb0(b = 0, a = 0, old(b) = 0, old(a) = 0)   [c1 function entry]",
@@ -176,6 +178,7 @@ test("split: every part, a refutation per refuted part named by its part, a loop
     loop.related.map((r) => [r.location.line, r.message.split("   ")[1] ?? r.message]),
     [
       [8, "the annotation it checks"],
+      [12, "premise: count_to.loop#1(n, i, s, old(n) ← n)"],
       [12, "[c4 loop preservation]"],
       [12, "[c2 loop entry]"],
       [9, "[c5 function entry]"],
@@ -201,13 +204,15 @@ test("split: a refuted part without a refutation is an error at its functions", 
   );
 });
 
-test("unknown: a timeout of the whole query is read from the verdict line, with the solver's message, and shown at the file", () => {
+test("unknown: a timeout of the whole query is read from the verdict line, with the solver's message, and shown at its functions", () => {
   const c = load("unknown");
   assert.strictEqual(c.report.verdict?.message, "Timeout(2s)");
   const o = outcome(c);
   assert.deepStrictEqual(o, { verdict: "unknown", detail: "the solver answered Timeout(2s)" });
+  const message = "Thrust: Timeout(2s) for the query of `mul`, `main`";
   assert.deepStrictEqual(findingsOf(c), [
-    { location: fallback, severity: "warning", message: "Thrust: unknown (the solver answered Timeout(2s))", related: [], source: "thrust" },
+    { location: { file: "unknown.rs", line: 1, column: 1 }, severity: "warning", message, related: [], source: "thrust" },
+    { location: { file: "unknown.rs", line: 11, column: 1 }, severity: "warning", message, related: [], source: "thrust" },
   ]);
   assert.deepStrictEqual(report.hints(c.report), []);
 });
@@ -234,6 +239,8 @@ test("contracts: a refuted assertion over a call names the written contract it a
   assert.match(failure.message, /^refuted: assertion in `main`\nwhere it fails: y = 3\n/);
   assert.deepStrictEqual(failure.related, [
     { location: { file: "contracts.rs", line: 2, column: 26, endLine: 2, endColumn: 37 }, message: "it assumes the written contract of `grow`" },
+    // A call's result at the call.
+    { location: { file: "contracts.rs", line: 8, column: 13 }, message: "premise: main.grow#1(y)" },
     { location: { file: "contracts.rs", line: 8, column: 13 }, message: "main.grow#1(y = 3)   [c3 after call to `grow`]" },
   ]);
 });
@@ -268,6 +275,7 @@ test("hints: the steps of one line grouped by unknown, a step without named argu
     obligation: "assertion",
     premises: [],
     conclusion: "false",
+    run_by_z3: false,
     run: [
       step("main.price#1", [["p", "100"]], "main.price#1(p = 100)"),
       step("price.pre", [["units", "10"]], "price.pre(units = 10)"),
@@ -305,7 +313,7 @@ test("resolveFinding resolves Thrust's files against the report's root and rustc
   assert.strictEqual(resolved.location.file, path.resolve("/root", "unsafe.rs"));
   assert.deepStrictEqual(
     resolved.related.map((r) => r.location.file),
-    [path.resolve("/root", "unsafe.rs"), path.resolve("/root", "unsafe.rs")],
+    [path.resolve("/root", "unsafe.rs"), path.resolve("/root", "unsafe.rs"), path.resolve("/root", "unsafe.rs")],
   );
   const [rustc] = findingsOf(load("broken"));
   assert.strictEqual(report.resolveFinding(rustc, "/root", "/cwd").location.file, path.resolve("/cwd", "broken.rs"));
@@ -319,7 +327,7 @@ function results(name: string): [string, report.Status, number | undefined][] {
   return report.functionResults(load(name).report).map((r) => [r.fn, r.status, r.span?.line]);
 }
 
-test("functions of a split run: each with its part's verdict, a refuted one at its refutation", () => {
+test("functions from the report's function lines: a checked body passes only when sat; a refutation fails its function", () => {
   assert.deepStrictEqual(results("split"), [
     ["withdraw", "fail", 3],
     ["count_to", "fail", 9],
@@ -327,58 +335,75 @@ test("functions of a split run: each with its part's verdict, a refuted one at i
   ]);
   assert.deepStrictEqual(results("safe-split"), [
     ["add_one", "pass", 1],
-    ["main", "pass", 15],
     ["count_to", "pass", 7],
+    ["main", "pass", 15],
   ]);
-  const timedOut = report.functionResults(load("unknown-split").report);
-  assert.deepStrictEqual(timedOut.map((r) => [r.fn, r.status]), [["mul", "unknown"], ["main", "unknown"]]);
-  assert.match(timedOut[0].message, /Timeout\(2s\)/);
-});
-
-test("functions of a run in one query: those it names, a refuted one failing", () => {
+  // In one query, every function is named; a refutation elsewhere leaves the others undecided.
   assert.deepStrictEqual(results("safe"), [
     ["add_one", "pass", 1],
-    ["count_to", "pass", 9],
+    ["count_to", "pass", 7],
+    ["main", "pass", 15],
   ]);
   const refuted = report.functionResults(load("unsafe").report);
-  assert.deepStrictEqual(refuted.map((r) => [r.fn, r.status]), [["withdraw", "fail"]]);
+  assert.deepStrictEqual(refuted.map((r) => [r.fn, r.status]), [["withdraw", "fail"], ["count_to", "unknown"], ["main", "unknown"]]);
   assert.match(refuted[0].message, /^refuted: ensures with result = -1/);
-  assert.deepStrictEqual(results("unknown"), []);
+  assert.match(refuted[1].message, /^checked \(unsat\): refuted at another function/);
 });
 
-test("functions: a refuted part without a refutation fails, one refuted at another function is unknown", () => {
-  const text = load("split").text.replace(/^\{"kind":"failure","part":2.*$/m, "");
-  const parsed = report.parseReport(text);
-  assert.deepStrictEqual(report.functionResults(parsed).map((r) => [r.fn, r.status]), [["withdraw", "fail"], ["count_to", "fail"], ["main", "pass"]]);
-  assert.match(report.functionResults(parsed)[1].message, /unsat, without a refutation/);
-  const shared = report.parseReport(load("split").text.replace('"functions":[{"fn":"withdraw"', '"functions":[{"fn":"other","span":null},{"fn":"withdraw"'));
-  assert.deepStrictEqual(report.functionResults(shared).slice(0, 2).map((r) => [r.fn, r.status]), [["other", "unknown"], ["withdraw", "fail"]]);
+test("functions without an answer are undecided, with the solver's message", () => {
+  for (const name of ["unknown", "unknown-split"]) {
+    const timedOut = report.functionResults(load(name).report);
+    assert.deepStrictEqual(timedOut.map((r) => [r.fn, r.status]), [["mul", "unknown"], ["main", "unknown"]], name);
+    assert.match(timedOut[0].message, /Timeout\(2s\)/, name);
+  }
 });
 
-test("the status of one function's lines: its refutation, its part, its site", () => {
+test("functions whose body is not checked are shown with the reason, never passing", () => {
+  const trusted = report.functionResults(load("only-trusted").report);
+  assert.deepStrictEqual(trusted.map((r) => [r.fn, r.status, r.message]), [
+    ["bad", "not_checked", "trusted: #[thrust::trusted]"],
+    ["twin", "pass", "checked (sat)"],
+    ["main", "pass", "checked (sat)"],
+  ]);
+  const unselected = report.functionResults(load("only-main").report).find((r) => r.fn === "count_to");
+  assert.deepStrictEqual([unselected?.status, unselected?.message], ["not_checked", "unselected: outside THRUST_VERIFY_ONLY, its written contract assumed"]);
+});
+
+test("functions: a refutation belongs to the innermost function holding it, a closure's also to the one around", () => {
+  const split = load("split").text;
+  // `count_to`'s refutation placed in a nested function `count_to::inner` on its lines 10-11.
+  const nested = '{"kind":"function","fn":"count_to::inner","span":{"file":"unsafe.rs","line":10,"column":5,"end_line":11,"end_column":6},"body":"checked","reason":null,"parts":[2],"verdict":"unsat"}';
+  const moved = split.replace(/("kind":"failure","part":2,"constraint":"c\d+","fn":"count_to","span":)\{[^}]*\}/, '$1{"file":"unsafe.rs","line":10,"column":9,"end_line":10,"end_column":12}');
+  const withNested = report.parseReport(`${moved}\n${nested}`);
+  const byName = new Map(report.functionResults(withNested).map((r) => [r.fn, r.status]));
+  assert.strictEqual(byName.get("count_to::inner"), "fail");
+  assert.strictEqual(byName.get("count_to"), "unknown");
+  const closure = report.parseReport(`${moved}\n${nested.replace("count_to::inner", "count_to::{closure#0}")}`);
+  const byClosure = new Map(report.functionResults(closure).map((r) => [r.fn, r.status]));
+  assert.strictEqual(byClosure.get("count_to::{closure#0}"), "fail");
+  assert.strictEqual(byClosure.get("count_to"), "fail");
+});
+
+test("the status of one function: the function line of its name at its fn line", () => {
   const split = load("split").report;
   assert.strictEqual(report.statusWithin(split, "unsafe.rs", at("count_to", 7, 9, 17))?.status, "fail");
   assert.strictEqual(report.statusWithin(split, "unsafe.rs", at("main", 19, 19, 24))?.status, "pass");
-  assert.strictEqual(report.statusWithin(load("only-main-split").report, "safe.rs", at("main", 15, 15, 20))?.status, "pass");
-  // A site in a run in one query: the function's body was checked.
-  assert.strictEqual(report.statusWithin(load("safe").report, "safe.rs", at("add_one", 1, 1, 3))?.status, "pass");
+  // `main` run on its own in one query: its body checked, and sat.
+  assert.strictEqual(report.statusWithin(load("only-main").report, "safe.rs", at("main", 15, 15, 20))?.status, "pass");
+  assert.strictEqual(report.statusWithin(load("only-main").report, "safe.rs", at("count_to", 5, 7, 13))?.status, "not_checked");
+  assert.strictEqual(report.statusWithin(load("unsafe").report, "unsafe.rs", at("main", 19, 19, 24))?.status, "unknown");
   assert.strictEqual(report.statusWithin(report.parseReport(""), "a.rs", at("f", 1, 1, 2)), undefined);
 });
 
-test("the status of one function's lines the report names nothing on is undecided, never passing", () => {
-  // `main` run on its own in one query: a sat run, but no site of `main`.
-  const main = report.statusWithin(load("only-main").report, "safe.rs", at("main", 15, 15, 20));
-  assert.strictEqual(main?.status, "unknown");
-  assert.match(main?.message ?? "", /split run \(thrust.split\) names every function/);
-  // A refuted query elsewhere.
-  assert.strictEqual(report.statusWithin(load("unsafe").report, "unsafe.rs", at("main", 19, 19, 24))?.status, "unknown");
-  // `bad` is #[thrust::trusted] with a broken ensures: its body is not checked, split or not.
+test("the status of one function without its function line is undecided, never passing", () => {
   for (const name of ["only-trusted", "only-trusted-split"]) {
-    assert.strictEqual(report.statusWithin(load(name).report, "trusted.rs", at("bad", 1, 4, 6))?.status, "unknown", name);
+    assert.strictEqual(report.statusWithin(load(name).report, "trusted.rs", at("bad", 1, 4, 6))?.status, "not_checked", name);
   }
   // The #[cfg(test)] `twin` is not compiled; the report's `twin` is the other one.
   const twin = load("only-twin-split").report;
-  assert.strictEqual(report.statusWithin(twin, "trusted.rs", at("twin", 8, 9, 12))?.status, "unknown");
+  const uncompiled = report.statusWithin(twin, "trusted.rs", at("twin", 8, 9, 12));
+  assert.strictEqual(uncompiled?.status, "unknown");
+  assert.match(uncompiled?.message ?? "", /no function `twin` at line 9/);
   assert.strictEqual(report.statusWithin(twin, "trusted.rs", at("twin", 14, 15, 17))?.status, "pass");
 });
 
@@ -386,8 +411,7 @@ test("a function defined inside a trusted one is no evidence for it", () => {
   // `outer` is #[thrust::trusted] with a broken `ensures`; `outer::inner`, on its lines, is checked.
   for (const name of ["only-nested", "only-nested-split"]) {
     const parsed = load(name).report;
-    assert.deepStrictEqual(report.functionResults(parsed).map((r) => r.fn).slice(0, 1), ["outer::inner"], name);
-    assert.strictEqual(report.statusWithin(parsed, "nested.rs", at("outer", 1, 4, 9))?.status, "unknown", name);
+    assert.strictEqual(report.statusWithin(parsed, "nested.rs", at("outer", 1, 4, 9))?.status, "not_checked", name);
     assert.strictEqual(report.statusWithin(parsed, "nested.rs", at("inner", 5, 5, 7))?.status, "pass", name);
     // A function of the same name as the one defined inside it is not passed by the inner one.
     assert.strictEqual(report.statusWithin(parsed, "nested.rs", at("inner", 1, 4, 9))?.status, "unknown", name);
