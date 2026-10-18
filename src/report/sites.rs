@@ -108,6 +108,8 @@ pub struct Names {
     /// derives from nothing but others of them, such as a function's entry being reached. A
     /// constraint's premise that applies one says nothing and is not shown.
     pub always_true: HashSet<chc::PredVarId>,
+    /// The sort of each argument of each predicate variable, in its own order.
+    sigs: HashMap<chc::PredVarId, Vec<chc::Sort>>,
 }
 
 /// The predicate variables without arguments that clauses with nothing but such variables in
@@ -149,7 +151,17 @@ impl Names {
             sites: sites.clone(),
             vars: vars.clone(),
             always_true: always_true(system),
+            sigs: system
+                .pred_vars
+                .iter_enumerated()
+                .map(|(p, def)| (p, def.sig.clone()))
+                .collect(),
         }
+    }
+
+    /// The sorts of the arguments of `p` in the order they are shown in.
+    pub fn sorts(&self, p: chc::PredVarId) -> Vec<chc::Sort> {
+        self.arrange(p, self.sigs.get(&p).map_or(&[][..], Vec::as_slice))
     }
 
     /// The arguments of an application of `p` in the order they are shown in.

@@ -37,7 +37,7 @@ impl Counter for Clicks {
         self.0
     }
 
-    fn count_nonneg(c: &Clicks) {}
+    fn count_nonneg(_c: &Clicks) {}
 
     fn tick(&mut self) {
         self.n += 1;
@@ -49,3 +49,8 @@ fn main() {
     tick_twice(&mut c);
     assert!(c.n == 2);
 }
+
+#[thrust_macros::lemma]
+#[thrust_macros::requires(n >= 0)]
+#[thrust_macros::ensures(n + 1 > 0)]
+fn succ_positive(n: i64) {}

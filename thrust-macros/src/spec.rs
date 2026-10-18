@@ -250,7 +250,8 @@ fn is_raw_smt2_body(block: &syn::Block) -> bool {
 pub fn expand_law(item: TokenStream) -> TokenStream {
     let mut func = parse_macro_input!(item as FnItemWithSignature);
     func.attrs_mut().push(syn::parse_quote!(#[thrust::law]));
-    // A law is a statement the program does not call, over parameters its proofs need not read.
+    // A law is a statement the program does not call; as a trait's declaration it has no body to
+    // read its parameters.
     func.attrs_mut()
         .push(syn::parse_quote!(#[allow(dead_code, unused_variables)]));
     func.into_token_stream().into()
