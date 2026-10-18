@@ -460,15 +460,18 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 } else {
                     mir_ty::EarlyBinder::bind(args).instantiate(self.tcx, self.generic_args)
                 };
-                if args.has_param() {
-                    // A trait-level spec, as a call at the type parameters takes.
-                    let _ = self.ctx.def_ty_with_args(def_id, args, self.owner_fn_id);
-                    continue;
-                }
-                let typing_env = mir_ty::TypingEnv::fully_monomorphized();
+                // Resolved as the translation resolves it (`annot_fn`'s `fn_item_contract`):
+                // under the owner's bounds, so that an impl applying whatever the owner's type
+                // parameters are, such as the reflexive `From`, is found at arguments naming them.
+                let typing_env =
+                    analyze::predicate_typing_env(self.tcx, self.owner_fn_id, def_ids.model_ty());
                 let Ok(Some(instance)) =
                     mir_ty::Instance::try_resolve(self.tcx, typing_env, def_id, args)
                 else {
+                    if args.has_param() {
+                        // A trait-level spec, as a call at the type parameters takes.
+                        let _ = self.ctx.def_ty_with_args(def_id, args, self.owner_fn_id);
+                    }
                     continue;
                 };
                 if instance.def_id() != self.local_def_id.to_def_id() {
