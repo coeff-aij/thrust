@@ -363,16 +363,17 @@ impl Config {
     /// hyper-resolutions. Its preprocessing would fold clauses into one another, and with them
     /// the facts the refutation derives, and drop the premises a fact makes true, so the
     /// transformations doing so are turned off.
-    /// Without a refutation, what `z3` answered instead (`sat`, `unknown`, a timeout).
-    pub fn refute(&self, problem: impl std::fmt::Display) -> Result<Sexp, String> {
+    /// Without a refutation, what `z3` answered instead.
+    pub fn refute(&self, problem: impl std::fmt::Display) -> Result<Sexp, Refused> {
         use std::io::Write as _;
+        let failed = |err: std::io::Error| Refused::Failed(err.to_string());
         let mut file = tempfile::Builder::new()
             .prefix("thrust_tmp_")
             .suffix(".smt2")
             .tempfile()
-            .map_err(|err| err.to_string())?;
-        write!(file, "{problem}\n(check-sat)\n(get-proof)\n").map_err(|err| err.to_string())?;
-        file.flush().map_err(|err| err.to_string())?;
+            .map_err(failed)?;
+        write!(file, "{problem}\n(check-sat)\n(get-proof)\n").map_err(failed)?;
+        file.flush().map_err(failed)?;
         let mut solver = self.solver.clone();
         solver.args.extend(
             [
@@ -387,24 +388,27 @@ impl Config {
         );
         let output = match solver.run(file.path(), std::process::Stdio::piped()) {
             Ok(output) | Err(CheckSatError::Error { stdout: output, .. }) => output,
-            Err(err) => return Err(verdict(&Err(err)).to_owned()),
+            Err(err) => return Err(Refused::Failed(format!("{err:?}"))),
         };
         let (answered, evidence) = split_evidence(&output, true);
         match read_verdict(&answered) {
             Some((Verdict::Unsat, _)) => {}
-            Some((Verdict::Sat, _)) => return Err("sat".to_owned()),
-            Some((Verdict::Unknown, _)) => return Err("unknown".to_owned()),
-            None => return Err("no verdict".to_owned()),
+            Some((Verdict::Sat, _)) => return Err(Refused::Sat),
+            Some((Verdict::Unknown, _)) => return Err(Refused::Unknown),
+            None => return Err(Refused::NoVerdict),
         }
         let proof = evidence.into_iter().find(|e| !e.is_error());
-        proof.ok_or_else(|| "no refutation".to_owned())
+        proof.ok_or(Refused::NoRefutation)
     }
 
     /// `z3`, asked for the refutation of a query another solver refuted, with that solver's time
-    /// limit (`THRUST_SOLVER_TIMEOUT_SECS`) when one is set.
+    /// limit (`THRUST_SOLVER_TIMEOUT_SECS`) when it sets one, and else its own 30 s: a solver
+    /// without a limit (`0`) leaves `z3` its default.
     pub fn z3_in_place_of_solver() -> Config {
         let mut config = Config::default();
+        let default = config.solver.timeout;
         config.solver.load_timeout("THRUST_SOLVER_TIMEOUT_SECS");
+        config.solver.timeout = config.solver.timeout.or(default);
         config
     }
 
@@ -454,6 +458,31 @@ impl Config {
     }
 }
 
+/// What `z3`, asked for a refutation, answered instead of one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Refused {
+    Sat,
+    Unknown,
+    /// It printed no verdict.
+    NoVerdict,
+    /// It answered `unsat` without a refutation.
+    NoRefutation,
+    /// It could not be run, or did not answer in time (`Timeout(30s)`).
+    Failed(String),
+}
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Refused::Sat => f.write_str("sat"),
+            Refused::Unknown => f.write_str("unknown"),
+            Refused::NoVerdict => f.write_str("no verdict"),
+            Refused::NoRefutation => f.write_str("no refutation"),
+            Refused::Failed(why) => f.write_str(why),
+        }
+    }
+}
+
 /// What a caller wants besides the verdict.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Requests {
@@ -480,8 +509,8 @@ pub struct Answer {
     pub query: Option<String>,
     /// Whether the refutation is `z3`'s, asked of a query another solver refuted.
     pub proof_by_z3: bool,
-    /// What `z3`, asked in place of the solver, answered instead of a refutation.
-    pub z3_refused: Option<String>,
+    /// What `z3`, asked for a refutation, answered instead.
+    pub z3_refused: Option<Refused>,
 }
 
 impl Answer {

@@ -183,13 +183,17 @@ impl Human<'_, '_> {
             return;
         }
         let Some(failure) = failure else {
-            let refused = answer.z3_refused.as_deref().unwrap_or("none");
+            let refused = match &answer.z3_refused {
+                Some(refused) => refused.to_string(),
+                None => "none".to_owned(),
+            };
+            let disagrees = answer.z3_refused == Some(chc::Refused::Sat);
             let why = match (&answer.proof, answer.goal_markers.is_empty()) {
                 (None, true) => "the solver gives no refutation, and `z3`, asked in its place, \
                                  does not read the query (it has forall sorts or sequences)"
                     .to_owned(),
                 // A `sat` here contradicts the solver's verdict.
-                (None, false) if answer.proof_by_z3 && refused == "sat" => {
+                (None, false) if answer.proof_by_z3 && disagrees => {
                     "`z3`, asked for the run as the solver gives none, answers `sat`: the two \
                      solvers disagree on the query"
                         .to_owned()

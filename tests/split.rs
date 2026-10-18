@@ -292,15 +292,21 @@ fn z3_finding_a_refuted_part_sat_is_a_disagreement() {
     let solver = dir.join("always-unsat");
     std::fs::write(&solver, "#!/bin/sh\necho unsat\n").unwrap();
     std::fs::set_permissions(&solver, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let output = run_with(
-        "two_parts.rs",
-        Some("2"),
-        &[
-            ("THRUST_REPORT", "1"),
-            ("THRUST_SOLVER", solver.to_str().unwrap()),
-        ],
-    );
+    let env = [
+        ("THRUST_REPORT", "1"),
+        ("THRUST_SOLVER", solver.to_str().unwrap()),
+    ];
+    let output = run_with("two_parts.rs", Some("2"), &env);
+    let mut json_env = env.to_vec();
+    json_env.push(("THRUST_REPORT_FORMAT", "json"));
+    let json = run_with("two_parts.rs", Some("2"), &json_env);
     std::fs::remove_dir_all(&dir).unwrap();
+    let stdout = String::from_utf8_lossy(&json.stdout);
+    let part = stdout
+        .lines()
+        .find(|l| l.contains(r#""kind":"part","id":1,"#))
+        .unwrap_or_default();
+    assert!(part.ends_with(r#""z3_answer":"sat"}"#), "{stdout}");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains(
@@ -321,7 +327,7 @@ fn a_split_failure_names_its_part() {
         &[("THRUST_REPORT", "1"), ("THRUST_REPORT_FORMAT", "json")],
     );
     let stdout = String::from_utf8_lossy(&json.stdout);
-    let verdict = r#"{"kind":"verdict","verdict":"unsat","refutations":"one per part","message":null,"functions":null}"#;
+    let verdict = r#"{"kind":"verdict","verdict":"unsat","refutations":"one per part","message":null,"functions":null,"z3_answer":null}"#;
     assert!(stdout.contains(verdict), "{stdout}");
     assert!(
         stdout.contains(r#"{"kind":"failure","part":2,"constraint":"#),
@@ -429,10 +435,12 @@ fn a_part_without_an_answer_gives_the_solver_s_limit() {
     );
     std::fs::remove_dir_all(&dir).unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let verdict = r#"{"kind":"verdict","verdict":"timeout","refutations":"one per part","message":"part 1: Timeout(1s)","functions":null}"#;
+    let verdict = r#"{"kind":"verdict","verdict":"timeout","refutations":"one per part","message":"part 1: Timeout(1s)","functions":null,"z3_answer":null}"#;
     assert!(stdout.contains(verdict), "{stdout}");
     assert!(
-        stdout.contains(r#""verdict":"timeout","message":"Timeout(1s)","cached":false}"#),
+        stdout.contains(
+            r#""verdict":"timeout","message":"Timeout(1s)","cached":false,"z3_answer":null}"#
+        ),
         "{stdout}"
     );
 }

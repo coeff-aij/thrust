@@ -520,6 +520,16 @@ pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) -> Vec<Refuted>
                     .collect(),
                 parts: input.parts,
                 verdict,
+                z3_answers: input
+                    .answers
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, a)| a.proof_by_z3 && a.proof.is_none())
+                    .filter_map(|(i, a)| {
+                        let part = input.asked.get(i).map(|asked| asked.part);
+                        Some((part, a.z3_refused.as_ref()?.to_string()))
+                    })
+                    .collect(),
                 // A whole query without an answer is at the code of its clauses, as a part is.
                 functions: (!split && !matches!(verdict, "sat" | "unsat")).then(|| {
                     let ids: Vec<chc::ClauseId> = system.clauses.indices().collect();

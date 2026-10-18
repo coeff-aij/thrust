@@ -32,6 +32,9 @@ enum Line<'a> {
         /// Of a whole query without an answer, the functions its clauses come from, as a part
         /// line gives them.
         functions: Option<Vec<FnSpan>>,
+        /// What `z3`, asked for the run of the whole query the solver refuted, answered instead
+        /// (`sat`: the solvers disagree).
+        z3_answer: Option<String>,
     },
     Part {
         id: usize,
@@ -41,6 +44,8 @@ enum Line<'a> {
         /// What the solver answered when it is neither `sat` nor `unsat`.
         message: Option<&'a str>,
         cached: bool,
+        /// What `z3`, asked for the run of the part the solver refuted, answered instead.
+        z3_answer: Option<String>,
     },
     Site {
         r#fn: &'a str,
@@ -144,6 +149,9 @@ pub(super) struct Json<'a, 'tcx> {
     pub(super) message: Option<String>,
     /// Of a whole query without an answer, the functions its clauses come from.
     pub(super) functions: Option<Vec<super::parts::PartCode>>,
+    /// What `z3`, asked for a run in place of the solver, answered instead, by the number of
+    /// the part, `None` for the whole query.
+    pub(super) z3_answers: Vec<(Option<usize>, String)>,
 }
 
 impl Json<'_, '_> {
@@ -287,6 +295,11 @@ impl Json<'_, '_> {
             .collect()
     }
 
+    fn z3_answer(&self, part: Option<usize>) -> Option<String> {
+        let found = self.z3_answers.iter().find(|(p, _)| *p == part);
+        found.map(|(_, answer)| answer.clone())
+    }
+
     fn fn_spans(&self, functions: &[super::parts::PartCode]) -> Vec<FnSpan> {
         functions
             .iter()
@@ -327,6 +340,7 @@ impl Json<'_, '_> {
                 .functions
                 .as_ref()
                 .map(|functions| self.fn_spans(functions)),
+            z3_answer: self.z3_answer(None),
         })?;
         for part in self.parts {
             line(Line::Part {
@@ -336,6 +350,7 @@ impl Json<'_, '_> {
                 verdict: part.verdict,
                 message: part.message.as_deref(),
                 cached: part.cached,
+                z3_answer: self.z3_answer(Some(part.id)),
             })?;
         }
         for (part, failure) in &self.failures {

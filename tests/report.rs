@@ -106,7 +106,7 @@ fn report_states_the_verdict_and_one_refutation_per_query() {
     let stdout = String::from_utf8_lossy(&json.stdout);
     assert!(
         stdout.contains(
-            r#"{"kind":"verdict","verdict":"unsat","refutations":"one per query","message":null,"functions":null}"#
+            r#"{"kind":"verdict","verdict":"unsat","refutations":"one per query","message":null,"functions":null,"z3_answer":null}"#
         ),
         "{stdout}"
     );
@@ -451,7 +451,7 @@ fn json_states_columns_facts_and_the_solver_s_limit() {
     std::fs::remove_dir_all(&dir).unwrap();
     let stdout = String::from_utf8_lossy(&slow.stdout);
     // A whole query without an answer names the functions of its clauses, as a part does.
-    let verdict = r#"{"kind":"verdict","verdict":"timeout","refutations":"one per query","message":"Timeout(1s)","functions":[{"fn":"main","span":{"file":"tests/report/loop_fail.rs","line":6,"column":1,"end_line":16,"end_column":2}}]}"#;
+    let verdict = r#"{"kind":"verdict","verdict":"timeout","refutations":"one per query","message":"Timeout(1s)","functions":[{"fn":"main","span":{"file":"tests/report/loop_fail.rs","line":6,"column":1,"end_line":16,"end_column":2}}],"z3_answer":null}"#;
     assert!(stdout.contains(verdict), "{stdout}");
 }
 
