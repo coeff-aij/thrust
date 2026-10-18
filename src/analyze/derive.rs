@@ -55,7 +55,12 @@ pub fn is_trusted<'tcx>(
         Some(sym::Hash | sym::Default | sym::Eq) => true,
         Some(sym::PartialEq) => {
             has_fields_model()
-                && !matches!(analyze::model_eq(tcx, self_ty), analyze::SpecBound::Fails)
+                && !def_ids.model_ty().is_some_and(|model_ty| {
+                    matches!(
+                        analyze::model_eq(tcx, tcx.parent(model_ty), self_ty),
+                        analyze::SpecBound::Fails
+                    )
+                })
         }
         Some(sym::Clone) => has_fields_model(),
         Some(sym::PartialOrd | sym::Ord) => {

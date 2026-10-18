@@ -336,7 +336,9 @@ fn classify_spec_bounds<'tcx>(
     for clause in clauses {
         let bound = match clause.as_projection_clause() {
             Some(projection) => projection_bound(tcx, typing_env, projection.skip_binder()),
-            None if is_model_eq_clause(tcx, clause) => model_eq_bound(tcx, typing_env, clause),
+            None if is_model_eq_clause(tcx, clause) => {
+                model_eq_bound(tcx, typing_env, tcx.parent(model_ty), clause)
+            }
             None => trait_bound(tcx, &infcx, typing_env, clause),
         };
         match bound {
@@ -363,13 +365,14 @@ fn is_model_eq_clause(tcx: TyCtxt<'_>, clause: mir_ty::Clause<'_>) -> bool {
 fn model_eq_bound<'tcx>(
     tcx: TyCtxt<'tcx>,
     typing_env: mir_ty::TypingEnv<'tcx>,
+    model_trait: DefId,
     clause: mir_ty::Clause<'tcx>,
 ) -> SpecBound {
     let self_ty = clause.as_trait_clause().unwrap().skip_binder().self_ty();
     let self_ty = tcx
         .try_normalize_erasing_regions(typing_env, self_ty)
         .unwrap_or(self_ty);
-    model_eq(tcx, self_ty)
+    model_eq(tcx, model_trait, self_ty)
 }
 
 /// Whether `==` on values of `ty` is equality of their models, decided from the structure of
@@ -377,10 +380,10 @@ fn model_eq_bound<'tcx>(
 /// not read), a float (NaN), a raw or function pointer (compared by address), a trait object or a
 /// `str` (of the null sort, so all values of one have one model), or a `Ghost` (which has no
 /// `PartialEq`, so a hand-written `eq` of a type holding one leaves it out). A type parameter or
-/// an unresolved projection in `ty` makes it assumed.
-fn model_eq<'tcx>(tcx: TyCtxt<'tcx>, ty: mir_ty::Ty<'tcx>) -> SpecBound {
+/// an unresolved projection in `ty` makes it assumed. `model_trait` is `thrust_models::Model`.
+fn model_eq<'tcx>(tcx: TyCtxt<'tcx>, model_trait: DefId, ty: mir_ty::Ty<'tcx>) -> SpecBound {
     let mut assumed = false;
-    for ty in compared_tys(tcx, ty) {
+    for ty in compared_tys(tcx, Some(model_trait), ty) {
         match ty.kind() {
             mir_ty::TyKind::Ref(_, _, mir_ty::Mutability::Mut)
             | mir_ty::TyKind::Float(_)
@@ -402,15 +405,21 @@ fn model_eq<'tcx>(tcx: TyCtxt<'tcx>, ty: mir_ty::Ty<'tcx>) -> SpecBound {
 
 /// Whether `==` on values of `ty` compares a `Ghost`, as [`model_eq`] looks into `ty`.
 fn compares_ghost<'tcx>(tcx: TyCtxt<'tcx>, ty: mir_ty::Ty<'tcx>) -> bool {
-    compared_tys(tcx, ty)
+    compared_tys(tcx, None, ty)
         .into_iter()
         .any(|ty| ty.ty_adt_def().is_some_and(|adt| is_ghost(tcx, adt.did())))
 }
 
-/// The types in `ty` whose `==` the `==` on `ty` may run: a local ADT is looked into through its
-/// fields, a foreign one through its type arguments, and a `PhantomData` compares equal at any
-/// argument.
-fn compared_tys<'tcx>(tcx: TyCtxt<'tcx>, ty: mir_ty::Ty<'tcx>) -> Vec<mir_ty::Ty<'tcx>> {
+/// The types in `ty` whose `==` the `==` on `ty` may run, or whose models the model of `ty` is
+/// built from: a local ADT is looked into through its fields, a foreign one through its type
+/// arguments, and also through its fields when `model_trait` is given and the ADT has no `Model`
+/// impl, since its model is then the tuple of its fields' (a raw pointer inside `Rc` or `NonNull`
+/// gives all their values one model); a `PhantomData` compares equal at any argument.
+fn compared_tys<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    model_trait: Option<DefId>,
+    ty: mir_ty::Ty<'tcx>,
+) -> Vec<mir_ty::Ty<'tcx>> {
     let mut compared = Vec::new();
     let mut visited = HashSet::new();
     let mut pending = vec![ty];
@@ -435,12 +444,27 @@ fn compared_tys<'tcx>(tcx: TyCtxt<'tcx>, ty: mir_ty::Ty<'tcx>) -> Vec<mir_ty::Ty
                 {
                     pending.extend(adt.all_fields().map(|field| field.ty(tcx, args)));
                 }
+                mir_ty::TyKind::Adt(adt, args)
+                    if model_trait.is_some_and(|t| !has_model_impl(tcx, t, adt.did())) =>
+                {
+                    pending.extend(adt.all_fields().map(|field| field.ty(tcx, args)));
+                }
                 _ => {}
             }
             compared.push(ty);
         }
     }
     compared
+}
+
+/// Whether an impl of `model_trait` (`thrust_models::Model`) is for the ADT `adt`.
+fn has_model_impl(tcx: TyCtxt<'_>, model_trait: DefId, adt: DefId) -> bool {
+    tcx.all_impls(model_trait).any(|impl_did| {
+        tcx.type_of(impl_did)
+            .instantiate_identity()
+            .ty_adt_def()
+            .is_some_and(|impl_adt| impl_adt.did() == adt)
+    })
 }
 
 fn is_ghost(tcx: TyCtxt<'_>, def_id: DefId) -> bool {

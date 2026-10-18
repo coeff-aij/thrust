@@ -7,8 +7,10 @@ mod thrust_models {
     }
 
     /// `==` on the type is equality of its models: the type holds no `&mut` (whose model also has
-    /// the final value, which `==` does not read), float, raw or function pointer, or `Ghost` (which
-    /// has no `PartialEq`, so `==` on a type holding one leaves it out).
+    /// the final value, which `==` does not read), float, raw or function pointer, trait object,
+    /// `str` (opaque, so all values of one have one model), or `Ghost` (which has no `PartialEq`, so
+    /// `==` on a type holding one leaves it out), also not in the fields of a std type without a
+    /// `Model` impl, whose model is the tuple of its fields' (`Rc`, `NonNull`).
     /// Thrust decides it from the type's structure (`analyze::model_eq`); the specs that state
     /// `PartialEq` as model equality are bounded by it, and so is a derived `eq`.
     #[thrust::def::model_eq]
