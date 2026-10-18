@@ -83,8 +83,9 @@ the VS Code side (`src/extension.ts`) is only compiled.
 
 - One file at a time, as `thrust-rustc <file>`; there is no `cargo` integration, and results of
   another file's run replace the shown ones.
-- A failing `ensures` is at the function's signature, which the diagnostic covers; the
-  annotation is related information.
+- A failing `ensures` is at the function's closing brace, where it returns, as the report's
+  `failure` span gives it (rustc's error is at the signature); the annotation is related
+  information.
 - A premise of a constraint has no span, so only the run's facts are related information.
 - Refutations and inferred contracts come only with `z3`; with PCSat only the verdicts and the
   parts are shown.

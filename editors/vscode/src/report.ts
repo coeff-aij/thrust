@@ -337,7 +337,8 @@ function partsDetail(parts: Part[], line: VerdictLine): string | undefined {
   const failed = parts.length - count("sat") - count("unsat");
   const answered = line.message ? ` (${line.message})` : "";
   const others = failed > 0 ? `, ${failed} without an answer${answered}` : "";
-  return `${parts.length} parts: ${count("sat")} sat, ${count("unsat")} unsat${others}; ${cached} from the cache`;
+  const noun = parts.length === 1 ? "part" : "parts";
+  return `${parts.length} ${noun}: ${count("sat")} sat, ${count("unsat")} unsat${others}; ${cached} from the cache`;
 }
 
 const VERIFICATION_ERROR = /^verification error: /;

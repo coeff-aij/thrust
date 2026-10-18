@@ -119,8 +119,9 @@ test("unsafe: the refuted ensures with its values, its annotation and the run as
   const findings = findingsOf(c);
   assert.strictEqual(findings.length, 1);
   const [failure] = findings;
-  // A refuted `ensures` is at the function's signature.
-  assert.deepStrictEqual(failure.location, { file: "unsafe.rs", line: 3, column: 1, endLine: 3, endColumn: 35 });
+  // A refuted `ensures` is at the closing brace, where the function returns (rustc's error is at
+  // the signature).
+  assert.deepStrictEqual(failure.location, { file: "unsafe.rs", line: 5, column: 1, endLine: 5, endColumn: 2 });
   assert.strictEqual(failure.severity, "error");
   assert.match(failure.message, /^refuted: ensures in `withdraw`\n/);
   assert.match(failure.message, /where it fails: result = -1, b = 0, a = 0/);
@@ -140,7 +141,8 @@ test("unsafe: the values at the failing line and each fact at its constraint's l
   assert.deepStrictEqual(
     facts.map((h) => [h.location.line, h.label]),
     [
-      [3, "fails with result = -1, b = 0, a = 0, __tmp_mir_withdraw_3 = 0; b = 0, a = 0, old(b) = 0, old(a) = 0"],
+      [5, "fails with result = -1, b = 0, a = 0, __tmp_mir_withdraw_3 = 0"],
+      [3, "b = 0, a = 0, old(b) = 0, old(a) = 0"],
     ],
   );
 });
@@ -153,17 +155,17 @@ test("split: every part, a refutation per refuted part named by its part, a loop
   assert.deepStrictEqual(
     c.report.parts.map((p) => [p.id, p.functions.map((f) => `${f.fn}@${f.span.line}-${f.span.end_line}`).join(","), p.verdict]),
     [
-      [1, "withdraw@3-3", "unsat"],
-      [2, "count_to@9-15", "unsat"],
-      [3, "main@19-23", "sat"],
+      [1, "withdraw@3-5", "unsat"],
+      [2, "count_to@9-17", "unsat"],
+      [3, "main@19-24", "sat"],
     ],
   );
   const findings = findingsOf(c);
   assert.deepStrictEqual(
     findings.map((f) => [f.location.line, f.message.split("\n")[0]]),
     [
-      [3, "refuted: ensures in `withdraw`, part 1 (`withdraw`)"],
-      [9, "refuted: ensures in `count_to`, part 2 (`count_to`)"],
+      [5, "refuted: ensures in `withdraw`, part 1 (`withdraw`)"],
+      [17, "refuted: ensures in `count_to`, part 2 (`count_to`)"],
     ],
   );
   const loop = findings[1];
@@ -191,7 +193,7 @@ test("split: a refuted part without a refutation is an error at its functions", 
   assert.deepStrictEqual(
     findings.map((f) => [f.location, f.severity, f.message.split("\n")[0]]),
     [
-      [{ file: "unsafe.rs", line: 9, column: 1, endLine: 9, endColumn: 27 }, "error", "refuted: ensures in `count_to`, part 2 (`count_to`)"],
+      [{ file: "unsafe.rs", line: 17, column: 1, endLine: 17, endColumn: 2 }, "error", "refuted: ensures in `count_to`, part 2 (`count_to`)"],
       [{ file: "unsafe.rs", line: 3, column: 1 }, "error", "Thrust: unsat in part 1 (`withdraw`); no refutation"],
     ],
   );
@@ -212,7 +214,7 @@ test("unknown-split: a part that times out is shown at the start of each of its 
   const c = load("unknown-split");
   const o = outcome(c);
   assert.strictEqual(c.report.verdict?.message, "part 1: Timeout(2s)");
-  assert.deepStrictEqual(o, { verdict: "unknown", detail: "1 parts: 0 sat, 0 unsat, 1 without an answer (part 1: Timeout(2s)); 0 from the cache" });
+  assert.deepStrictEqual(o, { verdict: "unknown", detail: "1 part: 0 sat, 0 unsat, 1 without an answer (part 1: Timeout(2s)); 0 from the cache" });
   assert.deepStrictEqual(
     findingsOf(c).map((f) => [f.location, f.severity, f.message]),
     [
