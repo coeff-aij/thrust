@@ -79,7 +79,9 @@ fn a_function_in_two_parts_is_explained() {
     // Parts are numbered from 1.
     assert!(stderr.contains("in part 1 of 2, of "), "{stderr}");
     assert!(
-        stderr.contains("invariant_parts.rs:1-8), `main` (tests/split/invariant_parts.rs:10-12)"),
+        stderr.contains(
+            "invariant_parts.rs:1-8, made at 1-8), `main` (tests/split/invariant_parts.rs:10-12)"
+        ),
         "{stderr}"
     );
     assert!(
@@ -392,4 +394,35 @@ fn a_part_declares_only_its_unknowns_sorts() {
         .find(|e| e.contains("clauses from `bad`"))
         .unwrap_or_default();
     assert!(bad.starts_with("Unsat"), "{stderr}");
+}
+
+/// With candidate atoms (`THRUST_CANDIDATE_ATOMS`), a part keeps those of its own unknowns: the
+/// others have no sorts there.
+#[test]
+fn a_part_keeps_its_own_candidate_atoms() {
+    for mode in ["1", "2"] {
+        let output = run_with(
+            "candidate_atoms.rs",
+            Some("2"),
+            &[("THRUST_CANDIDATE_ATOMS", mode)],
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!stderr.contains("panicked"), "{stderr}");
+        assert!(stderr.contains("parts solved on their own"), "{stderr}");
+    }
+}
+
+/// Two parts of one function, on the two sides of a written invariant, tell apart by the lines
+/// their clauses were made at.
+#[test]
+fn the_parts_of_one_function_tell_apart() {
+    let output = run("invariant_not_preserved.rs", Some("4"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let made_at: Vec<&str> = stderr
+        .lines()
+        .filter(|l| l.contains("note: in part"))
+        .filter_map(|l| l.split(", made at ").nth(1))
+        .collect();
+    assert_eq!(made_at.len(), 2, "{stderr}");
+    assert_ne!(made_at[0], made_at[1], "{stderr}");
 }

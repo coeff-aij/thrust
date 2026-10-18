@@ -211,6 +211,9 @@ impl System {
             }
         }
         system
+            .candidate_atoms
+            .retain(|c| declared.contains(&c.pred));
+        system
     }
 }
 

@@ -274,8 +274,8 @@ fn premises_are_the_formula_s_and_each_is_once() {
 }
 
 /// A constraint applies an unknown as the run shows a fact: each argument by the variable of the
-/// template it is (`name ← term`, apart from the `:=` of a solution), a `&mut` as `*x` and `°x`, also where its term is a
-/// variable, never as a `<current, final>` pair.
+/// template it is (`name ← term`, apart from the `:=` of a solution), a `&mut` as `*x` and `°x`,
+/// also where its term is a variable, never as a `<current, final>` pair.
 #[test]
 fn constraints_name_the_arguments_of_an_unknown() {
     let output = report_with(
@@ -331,6 +331,8 @@ fn ordinary_warnings_survive() {
     let stderr = warnings_of("ordinary_warnings.rs");
     assert!(stderr.contains("unused variable: `node`"), "{stderr}");
     assert!(stderr.contains("unused variable: `unused`"), "{stderr}");
+    // A parameter its contract names only as a closure's binder is not read.
+    assert!(stderr.contains("unused variable: `n`"), "{stderr}");
 }
 
 /// The JSON header states how columns count as values, each step of a run gives its unknown and
@@ -435,7 +437,7 @@ fn report_labels_the_invariant_a_preservation_checks() {
 fn a_restated_law_must_be_one() {
     let stderr = warnings_of("law_not_a_law.rs");
     assert!(
-        stderr.contains("`#[thrust_macros::law]` on a method that implements no law of its trait"),
+        stderr.contains("`#[thrust_macros::law]` on a method that implements no law of a trait"),
         "{stderr}"
     );
 }
@@ -456,12 +458,50 @@ fn a_return_is_at_the_closing_brace() {
     );
 }
 
-/// A solution defines an unknown with `:=`; an unknown's argument is given with `←`, so the two
-/// read apart.
+/// A solution defines an unknown with `:=`; an unknown's argument is given with `←`, and one of
+/// no template variable as `_ ← term`, so the three read apart.
 #[test]
 fn solutions_and_arguments_read_apart() {
     let output = report("loop_fail.rs", "constraints");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("main.loop#1(x ← "), "{stderr}");
     assert!(!stderr.contains(" := "), "{stderr}");
+    let solved = report("inferred_pass.rs", "solution,constraints");
+    let stderr = String::from_utf8_lossy(&solved.stderr);
+    assert!(stderr.contains("double.pre(x) := "), "{stderr}");
+    let call = report("take_max_same.rs", "constraints");
+    let stderr = String::from_utf8_lossy(&call.stderr);
+    assert!(
+        stderr.contains("main.take_max#1(*m, °m, _ ← a, _ ← b, "),
+        "{stderr}"
+    );
+}
+
+/// The constraint of a law proved by an empty body is at the law's `ensures`, which it checks,
+/// not at the empty body; and JSON places a refuted `ensures` where the error is, at the
+/// signature.
+#[test]
+fn a_law_proof_and_a_refuted_ensures_are_where_they_are_read() {
+    let output = report("law_proof.rs", "constraints");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let law = stderr
+        .lines()
+        .find(|l| l.contains("ensures (") && l.contains("count_nonneg"))
+        .unwrap_or_default();
+    assert!(
+        law.contains("ensures (tests/report/law_proof.rs:10:"),
+        "{stderr}"
+    );
+    let json = report_with(
+        "ensures_fail.rs",
+        "failure",
+        &[("THRUST_REPORT_FORMAT", "json")],
+    );
+    let stdout = String::from_utf8_lossy(&json.stdout);
+    let at = r#""obligation":"ensures""#;
+    let failure = stdout.lines().find(|l| l.contains(at)).unwrap_or_default();
+    assert!(
+        failure.contains(r#""span":{"file":"tests/report/ensures_fail.rs","line":3,"column":1,"#),
+        "{stdout}"
+    );
 }

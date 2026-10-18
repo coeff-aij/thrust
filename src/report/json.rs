@@ -224,7 +224,9 @@ impl Json<'_, '_> {
             part,
             constraint: format!("{:?}", failure.goal),
             r#fn: found.map(|(e, _)| e.name.as_str()),
-            span: found.and_then(|(_, c)| c.span).map(|s| range(self.tcx, s)),
+            span: found
+                .and_then(|(_, c)| c.error_span)
+                .map(|s| range(self.tcx, s)),
             obligation: found.map(|(_, c)| c.kind.as_str()),
             premises: found.map(|(_, c)| c.premises.as_slice()),
             conclusion: found.map(|(_, c)| c.conclusion.as_str()),
