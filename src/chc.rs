@@ -3729,7 +3729,7 @@ impl System {
     /// Solves each class of clauses that share an unknown on its own (see [`components`]),
     /// `jobs` at a time, reusing the verdicts `THRUST_CACHE_DIR` keeps. The system is satisfiable
     /// exactly when every part is. `THRUST_OUTPUT_DIR` gets each part's query as
-    /// `thrust_output_part<i>.smt2`.
+    /// `thrust_output_part<i>.smt2`, numbered from 1 as the parts are named.
     pub fn solve_parts(&self, jobs: usize) -> Vec<Part> {
         let config = Config::from_env();
         let cache = cache::Cache::from_env();
@@ -3740,7 +3740,8 @@ impl System {
                 .prepared()
                 .smtlib2(config.capabilities())
                 .to_string();
-            if let Err(err) = config.save_query(&format!("thrust_output_part{i}.smt2"), &query) {
+            let file = format!("thrust_output_part{}.smt2", i + 1);
+            if let Err(err) = config.save_query(&file, &query) {
                 return cache::Verdict {
                     result: Err(err.into()),
                     cached: false,

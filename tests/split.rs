@@ -152,7 +152,7 @@ fn the_report_of_a_split_run_writes_only_the_parts() {
         .collect();
     std::fs::remove_dir_all(&dir).unwrap();
     assert!(
-        files.iter().any(|f| f == "thrust_output_part0.smt2"),
+        files.iter().any(|f| f == "thrust_output_part1.smt2"),
         "{files:?} {stderr}"
     );
     assert!(
