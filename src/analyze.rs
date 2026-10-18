@@ -687,6 +687,29 @@ pub fn fatal_ignored_call<'tcx>(
     ))
 }
 
+/// How deeply the types in `arg` nest.
+fn type_depth(arg: mir_ty::GenericArg<'_>) -> usize {
+    let mut walker = arg.walk();
+    walker.next();
+    let mut depth = 0;
+    while let Some(child) = walker.next() {
+        depth = depth.max(type_depth(child));
+        walker.skip_current_subtree();
+    }
+    depth + 1
+}
+
+/// The generic arguments of a trait or projection clause, which [`type_depth`] measures.
+fn clause_args<'tcx>(clause: &mir_ty::Clause<'tcx>) -> Vec<mir_ty::GenericArg<'tcx>> {
+    if let Some(pred) = clause.as_trait_clause() {
+        return pred.skip_binder().trait_ref.args.to_vec();
+    }
+    if let Some(pred) = clause.as_projection_clause() {
+        return pred.skip_binder().projection_term.args.to_vec();
+    }
+    Vec::new()
+}
+
 /// A trait method at generic arguments.
 type MethodCall<'tcx> = (DefId, mir_ty::GenericArgsRef<'tcx>);
 
@@ -1668,6 +1691,7 @@ impl<'tcx> Analyzer<'tcx> {
         self.propagate_reused(
             |this| &this.assumed_spec_bounds,
             |tcx, clause, args| mir_ty::EarlyBinder::bind(clause).instantiate(tcx, args),
+            clause_args,
             seen,
             |this, clause, (def_id, generic_args, caller_def_id)| match classify_spec_bounds(
                 this.tcx,
@@ -1720,6 +1744,7 @@ impl<'tcx> Analyzer<'tcx> {
         self.propagate_reused(
             |this| &this.dispatched_calls,
             instantiate_method_call,
+            |(_, args)| args.to_vec(),
             seen,
             |this, (method, method_args), (_, _, caller_def_id)| {
                 if method_args.has_param() {
@@ -1838,6 +1863,7 @@ impl<'tcx> Analyzer<'tcx> {
         self.propagate_reused(
             |this| &this.assumed_bound_impls,
             |tcx, bound, args| mir_ty::EarlyBinder::bind(bound).instantiate(tcx, args),
+            |bound| bound.args.to_vec(),
             seen,
             |this, bound, (_, _, caller_def_id)| {
                 let typing_env = mir_ty::TypingEnv::post_analysis(this.tcx, caller_def_id);
@@ -1883,6 +1909,7 @@ impl<'tcx> Analyzer<'tcx> {
         self.propagate_reused(
             |this| &this.assumed_total_methods,
             instantiate_method_call,
+            |(_, args)| args.to_vec(),
             seen,
             |this, (method, method_args), (_, _, caller_def_id)| {
                 if method_args.has_param() {
@@ -1921,11 +1948,16 @@ impl<'tcx> Analyzer<'tcx> {
     /// instance's def, read at the instance's arguments by `instantiate`, with the instance, once
     /// per assumption and caller (`seen`), until no check reports that it recorded something and
     /// no instance is added. The assumptions a caller records for itself are checked at its own
-    /// instances in turn.
+    /// instances in turn. A def that reuses its own contract at a larger type (polymorphic
+    /// recursion, `f::<T>` calling `f::<W<T>>`) would record its assumptions at ever larger
+    /// types, so an assumption whose generic arguments (`type_args`) nest deeper than the crate's
+    /// recursion limit stops the analysis, as rustc stops instantiating such a function.
+    #[allow(clippy::too_many_arguments)]
     fn propagate_reused<T: Clone + Eq + std::hash::Hash>(
         &mut self,
         recorded: impl Fn(&Self) -> &RefCell<HashMap<DefId, Vec<T>>>,
         instantiate: impl Fn(TyCtxt<'tcx>, T, mir_ty::GenericArgsRef<'tcx>) -> T,
+        type_args: impl Fn(&T) -> Vec<mir_ty::GenericArg<'tcx>>,
         seen: &mut HashSet<(T, DefId)>,
         mut check: impl FnMut(&mut Self, T, ReusedInstance<'tcx>) -> bool,
     ) {
@@ -1944,6 +1976,15 @@ impl<'tcx> Analyzer<'tcx> {
                     .unwrap_or_default();
                 for assumption in assumed {
                     let assumption = instantiate(self.tcx, assumption, generic_args);
+                    let limit = self.tcx.recursion_limit().0;
+                    if type_args(&assumption).into_iter().map(type_depth).max() > Some(limit) {
+                        self.tcx.dcx().fatal(format!(
+                            "`{}` reuses its contract at types nested deeper than the recursion \
+                             limit ({limit}), as a polymorphically recursive function does, which \
+                             is not supported",
+                            self.tcx.def_path_str(def_id),
+                        ));
+                    }
                     if seen.insert((assumption.clone(), caller_def_id)) {
                         grew |= check(self, assumption, instance);
                     }
