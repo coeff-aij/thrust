@@ -214,6 +214,8 @@ The bodies of functions marked with `#[thrust::trusted]` are not analyzed by Thr
 
 The methods rustc's built-in `#[derive(..)]`s generate are not analyzed either; each has the contract `std.rs` gives its trait method, which the derive implies. `PartialEq::eq` and `Clone::clone` are so treated when the type's model is the tuple (or enum) of its fields' models, or the model of its one field besides `PhantomData`s, and the fields' `==` and `clone` act on their models, and `Hash::hash`, `Default::default` and `Eq::assert_receiver_is_total_eq` (a no-op at run time) always. A type with a derived `PartialOrd` and no `PartialOrdSpec` impl is ordered as the derive orders it, lexicographically by its fields (a fieldless enum by its discriminants), when each field has a `PartialOrdSpec` order, so `<`, `cmp`, `max` and `min` need no annotation. A derived `Debug::fmt` is not verified, and a call to it is not supported.
 
+A raw pointer, a trait object and a `str` are opaque: their model carries no information, so all values of such a type have one model. A type may hold one, as `fmt::Arguments` does, and verified code may pass it on, but dereferencing, comparing or casting a raw pointer, calling a method of a trait object and comparing strings are not supported, and `==` on a type holding one of them is not taken as equality of models: a derived `PartialEq` of such a type is analyzed, and std's generic `PartialEq` contracts do not apply to it.
+
 ```rust
 #[thrust::trusted]
 #[thrust::callable]
