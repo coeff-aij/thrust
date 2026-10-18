@@ -183,6 +183,49 @@ fn pre_upvars_term<V>(upvars: chc::Term<V>, closure_kind: mir_ty::ClosureKind) -
     }
 }
 
+/// The parts of [`TypeBuilder::build_ty_in`] where an unrefined type ([`TypeBuilder::build`]) and
+/// a template ([`TemplateTypeBuilder::build`]) differ: the two that allocate predicate variables
+/// in a template.
+trait TyMode<'tcx> {
+    type Var: chc::Var;
+    /// The type of a function pointer with the signature `sig`.
+    fn fn_ptr(&mut self, b: &TypeBuilder<'tcx>, sig: mir_ty::FnSig<'tcx>) -> rty::Type<Self::Var>;
+    /// The type of a type argument `ty` of an enum.
+    fn enum_arg(
+        &mut self,
+        b: &TypeBuilder<'tcx>,
+        ty: mir_ty::Ty<'tcx>,
+    ) -> rty::RefinedType<Self::Var>;
+}
+
+struct Unrefined;
+
+impl<'tcx> TyMode<'tcx> for Unrefined {
+    type Var = rty::Closed;
+
+    fn fn_ptr(
+        &mut self,
+        b: &TypeBuilder<'tcx>,
+        sig: mir_ty::FnSig<'tcx>,
+    ) -> rty::Type<rty::Closed> {
+        let params = sig
+            .inputs()
+            .iter()
+            .map(|ty| b.build(*ty).vacuous())
+            .collect();
+        let ret = b.build(sig.output());
+        rty::FunctionType::new(params, ret.vacuous()).into()
+    }
+
+    fn enum_arg(
+        &mut self,
+        b: &TypeBuilder<'tcx>,
+        ty: mir_ty::Ty<'tcx>,
+    ) -> rty::RefinedType<rty::Closed> {
+        b.build(ty)
+    }
+}
+
 impl<'tcx> TypeBuilder<'tcx> {
     pub fn new(
         tcx: mir_ty::TyCtxt<'tcx>,
@@ -552,7 +595,7 @@ impl<'tcx> TypeBuilder<'tcx> {
         }
     }
 
-    fn model_adt_in<M: TyMode<'tcx>>(
+    fn model_adt<M: TyMode<'tcx>>(
         &self,
         m: &mut M,
         adt: &mir_ty::AdtDef<'tcx>,
@@ -619,7 +662,7 @@ impl<'tcx> TypeBuilder<'tcx> {
     }
 
     /// The type of a tuple element or struct field, boxed (elaboration: all fields are boxed).
-    fn field_type_in<M: TyMode<'tcx>>(
+    fn field_type<M: TyMode<'tcx>>(
         &self,
         m: &mut M,
         ty: mir_ty::Ty<'tcx>,
@@ -780,14 +823,11 @@ impl<'tcx> TypeBuilder<'tcx> {
             }
             mir_ty::TyKind::Tuple(ts) => {
                 // elaboration: all fields are boxed
-                let elems = ts
-                    .iter()
-                    .map(|ty| self.field_type_in(m, ty).into())
-                    .collect();
+                let elems = ts.iter().map(|ty| self.field_type(m, ty).into()).collect();
                 rty::TupleType::new(elems).into()
             }
             mir_ty::TyKind::Never => rty::Type::never(),
-            mir_ty::TyKind::Param(ty) => m.lift(self.translate_param_type(ty)),
+            mir_ty::TyKind::Param(ty) => self.translate_param_type(ty).vacuous(),
             mir_ty::TyKind::FnPtr(sig_tys, hdr) => {
                 // TODO: justification for skip_binder
                 let sig = sig_tys.with(*hdr).skip_binder();
@@ -798,7 +838,7 @@ impl<'tcx> TypeBuilder<'tcx> {
                 seq_model_type(elem_ty)
             }
             mir_ty::TyKind::Adt(def, params) => {
-                if let Some(model_ty) = self.model_adt_in(m, def, params) {
+                if let Some(model_ty) = self.model_adt(m, def, params) {
                     return model_ty;
                 }
                 // Treat Box and Vec as opaque types to avoid traversing internal structure
@@ -831,7 +871,7 @@ impl<'tcx> TypeBuilder<'tcx> {
                         .map(|field| {
                             let ty = field.ty(self.tcx, params);
                             // elaboration: all fields are boxed
-                            self.field_type_in(m, ty).into()
+                            self.field_type(m, ty).into()
                         })
                         .collect();
                     rty::TupleType::new(elem_tys).into()
@@ -856,7 +896,7 @@ impl<'tcx> TypeBuilder<'tcx> {
                     }
                 }
 
-                m.lift(self.translate_alias_type(ty))
+                self.translate_alias_type(ty).vacuous()
             }
             kind => unimplemented!("unsupported type: {:?}", kind),
         }
@@ -1183,52 +1223,6 @@ impl<'tcx> TypeBuilder<'tcx> {
     }
 }
 
-/// The parts of [`TypeBuilder::build_ty_in`] where an unrefined type ([`TypeBuilder::build`]) and
-/// a template ([`TemplateTypeBuilder::build`]) differ.
-trait TyMode<'tcx> {
-    type Var: chc::Var;
-    /// The type of a type parameter or an alias, which carries no refinement.
-    fn lift(&mut self, ty: rty::Type<rty::Closed>) -> rty::Type<Self::Var>;
-    fn fn_ptr(&mut self, b: &TypeBuilder<'tcx>, sig: mir_ty::FnSig<'tcx>) -> rty::Type<Self::Var>;
-    fn enum_arg(
-        &mut self,
-        b: &TypeBuilder<'tcx>,
-        ty: mir_ty::Ty<'tcx>,
-    ) -> rty::RefinedType<Self::Var>;
-}
-
-struct Unrefined;
-
-impl<'tcx> TyMode<'tcx> for Unrefined {
-    type Var = rty::Closed;
-
-    fn lift(&mut self, ty: rty::Type<rty::Closed>) -> rty::Type<rty::Closed> {
-        ty
-    }
-
-    fn fn_ptr(
-        &mut self,
-        b: &TypeBuilder<'tcx>,
-        sig: mir_ty::FnSig<'tcx>,
-    ) -> rty::Type<rty::Closed> {
-        let params = sig
-            .inputs()
-            .iter()
-            .map(|ty| b.build(*ty).vacuous())
-            .collect();
-        let ret = b.build(sig.output());
-        rty::FunctionType::new(params, ret.vacuous()).into()
-    }
-
-    fn enum_arg(
-        &mut self,
-        b: &TypeBuilder<'tcx>,
-        ty: mir_ty::Ty<'tcx>,
-    ) -> rty::RefinedType<rty::Closed> {
-        b.build(ty)
-    }
-}
-
 /// Templates registered in `registry`, whose predicates depend on the variables of `scope`.
 struct Templated<'r, 's, R, S> {
     registry: &'r mut R,
@@ -1242,21 +1236,27 @@ where
 {
     type Var = S::Var;
 
-    fn lift(&mut self, ty: rty::Type<rty::Closed>) -> rty::Type<S::Var> {
-        ty.vacuous()
-    }
-
     fn fn_ptr(&mut self, b: &TypeBuilder<'tcx>, sig: mir_ty::FnSig<'tcx>) -> rty::Type<S::Var> {
         let ty = b.for_function_template(self.registry, sig).build();
         rty::Type::function(ty)
     }
 
-    /// A refinement type whose refinement is an unknown predicate.
     fn enum_arg(
         &mut self,
         b: &TypeBuilder<'tcx>,
         ty: mir_ty::Ty<'tcx>,
     ) -> rty::RefinedType<S::Var> {
+        self.refined(b, ty)
+    }
+}
+
+impl<'tcx, R, S> Templated<'_, '_, R, S>
+where
+    R: TemplateRegistry,
+    S: TemplateScope,
+{
+    /// A refinement type of `ty` whose refinement is an unknown predicate.
+    fn refined(&mut self, b: &TypeBuilder<'tcx>, ty: mir_ty::Ty<'tcx>) -> rty::RefinedType<S::Var> {
         // TODO: consider building ty with scope
         let mut unscoped = Templated {
             registry: &mut *self.registry,
@@ -1315,7 +1315,7 @@ where
             registry: &mut *self.registry,
             scope: &self.scope,
         };
-        mode.enum_arg(&self.inner, ty)
+        mode.refined(&self.inner, ty)
     }
 
     fn build_basic_block_with_precondition(
