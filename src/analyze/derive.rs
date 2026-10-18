@@ -65,6 +65,29 @@ pub fn is_trusted<'tcx>(
     }
 }
 
+/// The bounds a trusted derived method `def_id` relies on: its trait at each field's type, whose
+/// method the derive calls on the field (`Clone::clone` of each field for `#[derive(Clone)]`).
+pub fn field_bounds<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> Vec<mir_ty::TraitRef<'tcx>> {
+    let Some(impl_did) = tcx.impl_of_assoc(def_id) else {
+        return Vec::new();
+    };
+    let Some(trait_ref) = tcx.impl_trait_ref(impl_did) else {
+        return Vec::new();
+    };
+    let trait_ref = trait_ref.instantiate_identity();
+    let self_ty = trait_ref.self_ty();
+    field_tys(tcx, self_ty)
+        .into_iter()
+        .map(|field_ty| {
+            let args = trait_ref.args.iter().map(|arg| match arg.as_type() {
+                Some(ty) if ty == self_ty => field_ty.into(),
+                _ => arg,
+            });
+            mir_ty::TraitRef::new(tcx, trait_ref.def_id, args)
+        })
+        .collect()
+}
+
 /// Whether `def_id` is the `fmt` of an impl rustc's built-in `Debug` derive generated: it is not
 /// verified, and a call to it is not supported.
 pub fn is_ignored(tcx: TyCtxt<'_>, def_id: DefId) -> bool {

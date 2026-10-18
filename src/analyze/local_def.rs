@@ -5,6 +5,11 @@ use std::collections::{HashMap, HashSet};
 use rustc_index::bit_set::DenseBitSet;
 use rustc_middle::mir::{self, BasicBlock, Body, Local};
 use rustc_middle::ty::{self as mir_ty, TyCtxt, TypeAndMut};
+use rustc_mir_dataflow::impls::{
+    EverInitializedPlaces, MaybeInitializedPlaces, MaybeLiveLocals, MaybeUninitializedPlaces,
+};
+use rustc_mir_dataflow::move_paths::{MoveData, MovePathIndex};
+use rustc_mir_dataflow::{Analysis as _, MaybeReachable};
 use rustc_span::def_id::{DefId, LocalDefId};
 
 use crate::analyze;
@@ -139,6 +144,16 @@ pub struct Analyzer<'tcx, 'ctx> {
     type_builder: TypeBuilder<'tcx>,
 }
 
+/// The locals that the move paths `paths` are parts of.
+fn locals_of<'tcx>(
+    paths: impl Iterator<Item = MovePathIndex>,
+    move_data: &MoveData<'tcx>,
+) -> HashSet<Local> {
+    paths
+        .map(|path| move_data.move_paths[path].place.local)
+        .collect()
+}
+
 impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     pub fn analyze_predicate_definition(&self) {
         let (sig, body) = self.predicate_definition();
@@ -225,6 +240,34 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .is_some()
     }
 
+    /// Whether the def is the `drop` method of a `Drop` impl. Rust runs it wherever a value of the
+    /// type is dropped, also in code Thrust does not analyze, so as in Verus it takes no
+    /// precondition: it is checked under `requires(true)`, and no drop can panic.
+    pub fn is_crate_destructor(&self) -> bool {
+        let Some(impl_def_id) = self.tcx.impl_of_assoc(self.local_def_id.to_def_id()) else {
+            return false;
+        };
+        self.tcx.trait_id_of_impl(impl_def_id) == self.tcx.lang_items().drop_trait()
+    }
+
+    /// Whether the def carries a written contract: a `requires` or an `ensures` (also through
+    /// `#[thrust::callable]`), or a refinement of a parameter or of the result (`param`, `ret`,
+    /// `sig`).
+    pub fn has_contract_annotation(&self) -> bool {
+        let has_path = |path: &[rustc_span::Symbol]| {
+            self.ctx
+                .extract_path_with_attr(self.local_def_id, path)
+                .is_some()
+        };
+        self.is_annotated_as_callable()
+            || has_path(&analyze::annot::requires_path_path())
+            || has_path(&analyze::annot::ensures_path_path())
+            || !self
+                .ctx
+                .extract_refinement_paths(self.local_def_id)
+                .is_empty()
+    }
+
     pub fn is_annotated_as_extern_spec_fn(&self) -> bool {
         is_annotated_as_extern_spec_fn_impl(&self.tcx, &self.local_def_id)
     }
@@ -240,13 +283,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     }
 
     pub fn is_annotated_as_ignored(&self) -> bool {
-        self.tcx
-            .get_attrs_by_path(
-                self.local_def_id.to_def_id(),
-                &analyze::annot::ignored_path(),
-            )
-            .next()
-            .is_some()
+        analyze::is_ignored(self.tcx, self.local_def_id.to_def_id())
     }
 
     pub fn is_ignored_derive(&self) -> bool {
@@ -260,6 +297,15 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             &self.type_builder,
             self.local_def_id.to_def_id(),
         )
+    }
+
+    /// A trusted derive's contract holds only where the impls of its trait at the fields' types
+    /// meet the trait's specification ([`analyze::Analyzer::check_bound_impls`]).
+    pub fn check_derived_field_impls(&self) {
+        let def_id = self.local_def_id.to_def_id();
+        let typing_env = mir_ty::TypingEnv::post_analysis(self.tcx, def_id);
+        let bounds = analyze::derive::field_bounds(self.tcx, def_id);
+        self.ctx.check_bound_impls(def_id, typing_env, bounds);
     }
 
     pub fn is_annotated_as_formula_fn(&self) -> bool {
@@ -570,6 +616,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             assert!(require_annot.is_none() && ensure_annot.is_none());
             require_annot = Some(chc::Formula::top());
             ensure_annot = Some(chc::Formula::top());
+        }
+        if self.is_crate_destructor() {
+            require_annot = Some(chc::Formula::top());
         }
 
         let refinement_annots = self.ctx.extract_refinement_annots(
@@ -943,6 +992,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     ) -> DenseBitSet<Local> {
         struct Visitor<'tcx, 'a> {
             tcx: TyCtxt<'tcx>,
+            typing_env: mir_ty::TypingEnv<'tcx>,
             body: &'a Body<'tcx>,
 
             locals: DenseBitSet<Local>,
@@ -976,6 +1026,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 terminator: &mir::Terminator<'tcx>,
                 location: mir::Location,
             ) {
+                // a destructor of the crate is called with `&mut` of the dropped place; see
+                // analyze::basic_block::Analyzer::call_destructors
+                if let mir::TerminatorKind::Drop { place, .. } = &terminator.kind {
+                    let ty = place.ty(&self.body.local_decls, self.tcx).ty;
+                    if analyze::drop_runs_local_destructor(self.tcx, self.typing_env, ty) {
+                        self.locals.insert(place.local);
+                    }
+                }
                 // calling an FnMut closure via FnOnce::call_once resolves to the closure
                 // function taking &mut {closure}, so RustCallVisitor mutably borrows the
                 // closure argument; see analyze::basic_block::visitor
@@ -1015,6 +1073,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
         let mut visitor = Visitor {
             tcx: self.tcx,
+            typing_env: self.analysis_key().typing_env(self.tcx),
             body: &self.body,
             locals: DenseBitSet::new_empty(self.body.local_decls.len()),
         };
@@ -1084,71 +1143,68 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         }
     }
 
-    fn reassign_local_mutabilities(&mut self) {
-        use rustc_mir_dataflow::{
-            move_paths::{HasMoveData as _, MoveData},
-            Analysis as _, MaybeReachable,
-        };
-
-        self.normalize_switch_int_discriminant_order();
-
-        for local_decl in &mut self.body.local_decls {
-            local_decl.mutability = mir::Mutability::Not;
+    /// The move paths of the body, gathered on a copy whose `CopyForDeref` destinations are
+    /// marked as deref temporaries.
+    fn move_data(&self) -> MoveData<'tcx> {
+        let mut body = self.body.clone();
+        struct Visitor {
+            deref_temps: DenseBitSet<Local>,
         }
-
-        let move_data = {
-            // XXX: what...
-            let mut body = self.body.clone();
-            struct Visitor {
-                deref_temps: DenseBitSet<Local>,
-            }
-            impl<'tcx> mir::visit::Visitor<'tcx> for Visitor {
-                fn visit_assign(
-                    &mut self,
-                    place: &mir::Place<'tcx>,
-                    rvalue: &mir::Rvalue<'tcx>,
-                    _location: mir::Location,
-                ) {
-                    if let mir::Rvalue::CopyForDeref { .. } = rvalue {
-                        self.deref_temps.insert(place.local);
-                    }
+        impl<'tcx> mir::visit::Visitor<'tcx> for Visitor {
+            fn visit_assign(
+                &mut self,
+                place: &mir::Place<'tcx>,
+                rvalue: &mir::Rvalue<'tcx>,
+                _location: mir::Location,
+            ) {
+                if let mir::Rvalue::CopyForDeref { .. } = rvalue {
+                    self.deref_temps.insert(place.local);
                 }
             }
-            let mut visitor = Visitor {
-                deref_temps: DenseBitSet::new_empty(body.local_decls.len()),
-            };
-            use mir::visit::Visitor as _;
-            visitor.visit_body(&body);
-            for (local, local_decl) in body.local_decls.iter_enumerated_mut() {
-                let local_info = if visitor.deref_temps.contains(local) {
-                    mir::LocalInfo::DerefTemp
-                } else {
-                    mir::LocalInfo::Boring
-                };
-                local_decl.local_info = mir::ClearCrossCrate::Set(Box::new(local_info));
-            }
-            MoveData::gather_moves(&body, self.tcx, |_| true)
+        }
+        let mut visitor = Visitor {
+            deref_temps: DenseBitSet::new_empty(body.local_decls.len()),
         };
-        let tmp_body = self.body.clone();
-        let mut results =
-            rustc_mir_dataflow::impls::MaybeInitializedPlaces::new(self.tcx, &tmp_body, &move_data)
-                .iterate_to_fixpoint(self.tcx, &self.body, None)
-                .into_results_cursor(&tmp_body);
+        use mir::visit::Visitor as _;
+        visitor.visit_body(&body);
+        for (local, local_decl) in body.local_decls.iter_enumerated_mut() {
+            let local_info = if visitor.deref_temps.contains(local) {
+                mir::LocalInfo::DerefTemp
+            } else {
+                mir::LocalInfo::Boring
+            };
+            local_decl.local_info = mir::ClearCrossCrate::Set(Box::new(local_info));
+        }
+        MoveData::gather_moves(&body, self.tcx, |_| true)
+    }
 
+    fn zst_locals(&self) -> DenseBitSet<Local> {
+        let typing_env = self.analysis_key().typing_env(self.tcx);
         let mut zst_locals = DenseBitSet::new_empty(self.body.local_decls.len());
         for (local, local_decl) in self.body.local_decls.iter_enumerated() {
-            let ty = local_decl.ty;
             if self
                 .tcx
-                .layout_of(self.analysis_key().typing_env(self.tcx).as_query_input(ty))
+                .layout_of(typing_env.as_query_input(local_decl.ty))
                 .map(|l| l.is_zst())
                 .unwrap_or(false)
             {
                 zst_locals.insert(local);
             }
         }
+        zst_locals
+    }
 
-        for (block, data) in mir::traversal::preorder(&tmp_body) {
+    fn reassign_local_mutabilities(&mut self, move_data: &MoveData<'tcx>) {
+        for local_decl in &mut self.body.local_decls {
+            local_decl.mutability = mir::Mutability::Not;
+        }
+
+        let zst_locals = self.zst_locals();
+        let mut marked = Vec::new();
+        let mut results = MaybeInitializedPlaces::new(self.tcx, &self.body, move_data)
+            .iterate_to_fixpoint(self.tcx, &self.body, None)
+            .into_results_cursor(&self.body);
+        for (block, data) in mir::traversal::preorder(&self.body) {
             for statement_index in 0..=data.statements.len() {
                 let loc = mir::Location {
                     statement_index,
@@ -1158,10 +1214,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 let MaybeReachable::Reachable(init_places) = results.get() else {
                     continue;
                 };
-                let init_locals: HashSet<_> = init_places
-                    .iter()
-                    .map(|p| results.analysis().move_data().move_paths[p].place.local)
-                    .collect();
+                let init_locals = locals_of(init_places.iter(), move_data);
                 let mut_locals = self.mut_locals(data, statement_index);
                 tracing::info!(
                     ?init_locals,
@@ -1173,11 +1226,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 );
                 for mut_local in mut_locals.iter() {
                     if init_locals.contains(&mut_local) || zst_locals.contains(mut_local) {
-                        self.body.local_decls[mut_local].mutability = mir::Mutability::Mut;
+                        marked.push(mut_local);
                         tracing::info!(?mut_local, ?statement_index, ?block, "marking mut");
                     }
                 }
             }
+        }
+        for local in marked {
+            self.body.local_decls[local].mutability = mir::Mutability::Mut;
         }
     }
 
@@ -1398,23 +1454,48 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .into()
     }
 
-    fn refine_basic_blocks(&mut self) {
-        use rustc_mir_dataflow::Analysis as _;
+    fn refine_basic_blocks(&mut self, move_data: &MoveData<'tcx>) {
         let loop_invariants = self.collect_loop_invariant_annotations();
-        let mut results = rustc_mir_dataflow::impls::MaybeLiveLocals
+        let zst_locals = self.zst_locals();
+        let mut results = MaybeLiveLocals
             .iterate_to_fixpoint(self.tcx, &self.body, None)
             .into_results_cursor(&self.body);
+        let mut ever_init = EverInitializedPlaces::new(&self.body, move_data)
+            .iterate_to_fixpoint(self.tcx, &self.body, None)
+            .into_results_cursor(&self.body);
+        let mut uninit = MaybeUninitializedPlaces::new(self.tcx, &self.body, move_data)
+            .iterate_to_fixpoint(self.tcx, &self.body, None)
+            .into_results_cursor(&self.body);
+        let mut moves = analyze::basic_block::MoveState {
+            tcx: self.tcx,
+            typing_env: self.analysis_key().typing_env(self.tcx),
+            move_data,
+            uninit: &mut uninit,
+        };
 
         let mut builder = analyze::basic_block::DropPoints::builder(&self.body);
         for (bb, _data) in mir::traversal::postorder(&self.body) {
             let span = tracing::info_span!("refine_basic_block", ?bb, bb_index = bb.as_u32());
             let _guard = span.enter();
 
-            self.drop_points.insert(bb, builder.build(&mut results, bb));
+            self.drop_points
+                .insert(bb, builder.build(&mut results, &mut moves, bb));
             results.seek_to_block_start(bb);
+            // A local never set on any path here is live only for a drop that its drop flag
+            // skips, and holds no value, so it is no parameter of the block; an edge into a block
+            // where it may be set passes it as any value. A ZST's one value needs no setting.
+            ever_init.seek_to_block_start(bb);
+            let ever_set = locals_of(
+                ever_init
+                    .get()
+                    .iter()
+                    .map(|init| move_data.inits[init].path),
+                move_data,
+            );
             let mut live_locals: Vec<_> = results
                 .get()
                 .iter()
+                .filter(|local| zst_locals.contains(*local) || ever_set.contains(local))
                 .map(|in_local| {
                     let decl = &self.body.local_decls[in_local];
                     let type_and_mut = TypeAndMut {
@@ -1874,8 +1955,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
         self.unelaborate_derefs();
         analyze::reconstruct_slice_indexing::reconstruct(self.tcx, &mut self.body);
-        self.reassign_local_mutabilities();
-        self.refine_basic_blocks();
+        self.normalize_switch_int_discriminant_order();
+        let move_data = self.move_data();
+        self.reassign_local_mutabilities(&move_data);
+        self.refine_basic_blocks(&move_data);
         self.analyze_basic_blocks(expected);
         self.assert_entry(expected);
         if analyze::candidate_atoms_enabled() {
