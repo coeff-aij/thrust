@@ -1,5 +1,5 @@
-//! Rewriting of a `for` loop whose body starts with an `invariant!` or `partial_invariant!` naming
-//! the iterator.
+//! Rewriting of a `for` loop whose body starts with `invariant!` or `partial_invariant!` calls
+//! naming the iterator.
 //!
 //! The loop is desugared as Creusot does (`creusot-std-proc/src/creusot/invariant.rs`,
 //! `desugar_for`): the iterator is a variable, stepped by `Iterator::next` at the loop head, where
@@ -19,11 +19,14 @@ use quote::format_ident;
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
-/// The desugaring of `for_loop`, or `None` when its body does not start with an `invariant!` or a
-/// `partial_invariant!` that has a parameter `iter`, whose type is the iterator's.
+/// The desugaring of `for_loop`, or `None` when its body does not start with `invariant!` or
+/// `partial_invariant!` calls one of which has a parameter `iter`, whose type is the iterator's.
+/// Every invariant of that leading run names the loop's ghosts.
 pub fn desugar(for_loop: &syn::ExprForLoop) -> Option<syn::Expr> {
-    let (invariant, rest) = for_loop.body.stmts.split_first()?;
-    let params = invariant_params(invariant)?;
+    let stmts = &for_loop.body.stmts;
+    let leading: Vec<_> = stmts.iter().map_while(invariant_params).collect();
+    let (invariants, rest) = stmts.split_at(leading.len());
+    let params: Vec<_> = leading.into_iter().flatten().collect();
     let iter_ty = params
         .iter()
         .find(|(name, _)| name == "iter")
@@ -37,14 +40,15 @@ pub fn desugar(for_loop: &syn::ExprForLoop) -> Option<syn::Expr> {
     let iter_old = format_ident!("__thrust_for_iter_old_{}", n);
     let produced = format_ident!("__thrust_for_produced_{}", n);
     let item = format_ident!("__thrust_for_item_{}", n);
-    let invariant = rename_in_stmt(
-        invariant,
-        &[
-            ("iter", &iter),
-            ("iter_old", &iter_old),
-            ("produced", &produced),
-        ],
-    );
+    let renames = [
+        ("iter", &iter),
+        ("iter_old", &iter_old),
+        ("produced", &produced),
+    ];
+    let invariants: Vec<_> = invariants
+        .iter()
+        .map(|invariant| rename_in_stmt(invariant, &renames))
+        .collect();
 
     let syn::ExprForLoop {
         label, pat, expr, ..
@@ -62,7 +66,7 @@ pub fn desugar(for_loop: &syn::ExprForLoop) -> Option<syn::Expr> {
             match ::core::iter::IntoIterator::into_iter(#expr) {
                 mut #iter => #label loop {
                     let _: &#iter_ty = &#iter;
-                    #invariant
+                    #(#invariants)*
                     match ::core::iter::Iterator::next(&mut #iter) {
                         ::core::option::Option::Some(#item) => {
                             let #pat = #item;
@@ -89,7 +93,7 @@ pub fn desugar(for_loop: &syn::ExprForLoop) -> Option<syn::Expr> {
                 let #iter_old = thrust_macros::ghost!(|#iter: #iter_ty| -> #iter_ty { #iter });
                 let mut #produced = thrust_macros::ghost!(|| -> #seq { crate::thrust_models::model::Seq::empty() });
                 #label loop {
-                    #invariant
+                    #(#invariants)*
                     thrust_macros::invariant!(
                         |#iter: #iter_ty,
                          #iter_old: crate::thrust_models::Ghost<#iter_ty>,
