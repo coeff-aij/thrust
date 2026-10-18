@@ -3709,12 +3709,12 @@ impl System {
         answer
     }
 
-    /// Whether the query declares what `z3` does not read: forall sorts, or sequences in a clause,
+    /// Whether the query uses what `z3` does not read: a forall sort or a sequence in a clause,
     /// an unknown's signature or a definition's.
     pub fn needs_pcsat(&self) -> bool {
-        let seq = |sort: &Sort| {
+        let unread = |sort: &Sort| {
             let mut found = false;
-            sort.walk(|s| found |= matches!(s, Sort::Seq(_)));
+            sort.walk(|s| found |= matches!(s, Sort::Seq(_) | Sort::Forall(_)));
             found
         };
         let vars = self.clauses.iter().flat_map(|c| c.vars.iter());
@@ -3723,7 +3723,7 @@ impl System {
             .user_defined_pred_defs
             .iter()
             .flat_map(|def| def.sig.iter().map(|(_, sort)| sort));
-        !self.forall_sorts.is_empty() || vars.chain(sigs).chain(definitions).any(seq)
+        vars.chain(sigs).chain(definitions).any(unread)
     }
 
     /// Solves each class of clauses that share an unknown on its own (see [`components`]),

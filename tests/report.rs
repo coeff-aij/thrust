@@ -519,3 +519,23 @@ fn parameters_read_inside_formula_macros_raise_no_warning() {
     }
     assert!(stderr.contains("unused variable: `n`"), "{stderr}");
 }
+
+/// A query z3 cannot read (its forall sorts) is an error with the PCSat help, with the report as
+/// without it: the error lines before z3's verdict are not taken for the failed evidence the
+/// report asks for after it.
+#[test]
+fn an_unreadable_query_is_an_error_with_the_report_too() {
+    let plain = warnings_of("law_fails_at_impl.rs");
+    assert!(
+        plain.contains("error: verification error: Error"),
+        "{plain}"
+    );
+    assert!(plain.contains("which `z3` does not read"), "{plain}");
+    let output = report("law_fails_at_impl.rs", "1");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("error: verification error: Error"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("which `z3` does not read"), "{stderr}");
+}
