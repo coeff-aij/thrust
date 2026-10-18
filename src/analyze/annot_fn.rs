@@ -360,7 +360,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         ty: &rty::Type<rty::Closed>,
     ) -> Option<chc::Term<rty::FunctionParamIdx>> {
         match ty {
-            rty::Type::String | rty::Type::Never | rty::Type::Function(_) => {
+            rty::Type::String | rty::Type::Opaque | rty::Type::Never | rty::Type::Function(_) => {
                 Some(chc::Term::null())
             }
             rty::Type::Tuple(ty) => ty

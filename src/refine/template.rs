@@ -634,6 +634,7 @@ impl<'tcx> TypeBuilder<'tcx> {
         match ty.kind() {
             mir_ty::TyKind::Bool => rty::Type::bool(),
             mir_ty::TyKind::Str => rty::Type::string(),
+            mir_ty::TyKind::RawPtr(..) | mir_ty::TyKind::Dynamic(..) => rty::Type::opaque(),
             mir_ty::TyKind::Ref(_, elem_ty, mir_ty::Mutability::Not) => {
                 let elem_ty = self.build(*elem_ty);
                 rty::PointerType::immut_to_refined(elem_ty).into()
@@ -1151,6 +1152,7 @@ where
         match ty.kind() {
             mir_ty::TyKind::Bool => rty::Type::bool(),
             mir_ty::TyKind::Str => rty::Type::string(),
+            mir_ty::TyKind::RawPtr(..) | mir_ty::TyKind::Dynamic(..) => rty::Type::opaque(),
             mir_ty::TyKind::Ref(_, elem_ty, mir_ty::Mutability::Not) => {
                 let elem_ty = self.build(*elem_ty);
                 rty::PointerType::immut_to_refined(elem_ty).into()

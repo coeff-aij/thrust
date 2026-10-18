@@ -1134,6 +1134,12 @@ pub enum Type<T> {
     BitVec(BitVecType),
     Bool,
     String,
+    /// A raw pointer or a trait object, opaque as in Creusot: its value has the null sort, so
+    /// all values of it have the same model. That is sound only because verified code cannot
+    /// observe one: dereferencing, comparing or casting a raw pointer and calling a method of a
+    /// trait object are not supported. It lets a type hold one in a field, as `fmt::Arguments`
+    /// does, when verified code only passes the value on.
+    Opaque,
     Never,
     Param(ParamType),
     Alias(AliasType),
@@ -1202,6 +1208,7 @@ where
             Type::BitVec(ty) => ty.pretty(allocator),
             Type::Bool => allocator.text("bool"),
             Type::String => allocator.text("string"),
+            Type::Opaque => allocator.text("opaque"),
             Type::Never => allocator.text("!"),
             Type::Param(ty) => ty.pretty(allocator),
             Type::Alias(ty) => ty.pretty(allocator),
@@ -1301,6 +1308,10 @@ impl<T> Type<T> {
         Type::String
     }
 
+    pub fn opaque() -> Self {
+        Type::Opaque
+    }
+
     pub fn never() -> Self {
         Type::Never
     }
@@ -1392,6 +1403,7 @@ impl<T> Type<T> {
             // TODO: enable string reasoning
             //       currently String sort seems not available in HORN logic of Z3
             Type::String => chc::Sort::null(),
+            Type::Opaque => chc::Sort::null(),
             Type::Never => chc::Sort::null(),
             Type::Param(ty) => chc::Sort::forall(ty.forall_sort_index()),
             Type::Alias(ty) => chc::Sort::Forall(ty.forall_sort_index()),
@@ -1433,6 +1445,7 @@ impl<T> Type<T> {
             Type::BitVec(ty) => Type::BitVec(ty),
             Type::Bool => Type::Bool,
             Type::String => Type::String,
+            Type::Opaque => Type::Opaque,
             Type::Never => Type::Never,
             Type::Param(ty) => Type::Param(ty),
             Type::Alias(ty) => Type::Alias(ty),
@@ -1455,6 +1468,7 @@ impl<T> Type<T> {
             Type::BitVec(ty) => Type::BitVec(ty),
             Type::Bool => Type::Bool,
             Type::String => Type::String,
+            Type::Opaque => Type::Opaque,
             Type::Never => Type::Never,
             Type::Param(ty) => Type::Param(ty),
             Type::Alias(ty) => Type::Alias(ty),
@@ -1479,6 +1493,7 @@ impl<T> Type<T> {
             | Type::BitVec(_)
             | Type::Bool
             | Type::String
+            | Type::Opaque
             | Type::Never
             | Type::Param(_)
             | Type::Alias(_) => false,
@@ -1500,6 +1515,7 @@ impl<T> Type<T> {
             Type::BitVec(ty) => Type::BitVec(ty),
             Type::Bool => Type::Bool,
             Type::String => Type::String,
+            Type::Opaque => Type::Opaque,
             Type::Never => Type::Never,
             Type::Param(ty) => Type::Param(ty),
             Type::Alias(ty) => Type::Alias(ty),
@@ -2249,6 +2265,7 @@ impl<FV> RefinedType<FV> {
             | Type::BitVec(_)
             | Type::Bool
             | Type::String
+            | Type::Opaque
             | Type::Never => {}
             Type::Param(ty) => {
                 if let Some(rty) = subst.get(ty.type_param_index()) {
@@ -2304,6 +2321,7 @@ impl<FV> RefinedType<FV> {
                 | Type::BitVec(_)
                 | Type::Bool
                 | Type::String
+                | Type::Opaque
                 | Type::Never
                 | Type::Param(_)
                 | Type::Alias(_) => false,
