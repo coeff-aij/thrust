@@ -79,20 +79,27 @@ fn is_mut_ref<'tcx>(tcx: TyCtxt<'tcx>, body: &Body<'tcx>, place: &Place<'tcx>) -
 }
 
 fn plan<'tcx>(body: &Body<'tcx>, reservations: Vec<Reservation<'tcx>>) -> Vec<Move> {
-    let uses = temp_uses(body, &reservations);
+    let temp_uses = temp_uses(body, &reservations);
     let mut moves = Vec::new();
     for reservation in reservations {
-        let uses = &uses[&reservation.temp];
+        let uses: Vec<Location> = temp_uses[&reservation.temp]
+            .iter()
+            .copied()
+            .filter(|location| *location != reservation.location)
+            .collect();
         if reservation.copied && uses.len() != 1 {
             continue;
         }
-        let Some(activation) = activation(body, &reservation, uses) else {
+        let Some(activation) = activation(body, &reservation, &uses) else {
             moves.push(Move {
                 from: reservation.location,
                 to: None,
             });
             continue;
         };
+        if reservation.copied && repeats_without(body, reservation.location, activation) {
+            continue;
+        }
         let between = Between::visit(body, &reservation, activation);
         if !between.reads_lender {
             continue;
@@ -104,8 +111,13 @@ fn plan<'tcx>(body: &Body<'tcx>, reservations: Vec<Reservation<'tcx>>) -> Vec<Mo
             )
         });
         assert!(
-            !reads_at(body, reservation.place.local, to),
-            "two-phase borrow of {:?}: its lender is read where it is created",
+            !repeats_without(body, reservation.location, to),
+            "two-phase borrow of {:?}: it would be created again in a loop",
+            reservation.place
+        );
+        assert!(
+            !reads_overlapping_at(body, reservation.place, to),
+            "two-phase borrow of {:?}: the borrowed place is read where the borrow is created",
             reservation.place
         );
         moves.push(Move {
@@ -114,6 +126,16 @@ fn plan<'tcx>(body: &Body<'tcx>, reservations: Vec<Reservation<'tcx>>) -> Vec<Mo
         });
     }
     moves
+}
+
+/// Whether `to` can run again after itself without `from` running in between, as in a loop
+/// that `from` is outside of.
+fn repeats_without(body: &Body<'_>, from: Location, to: Location) -> bool {
+    if from.block == to.block {
+        return false;
+    }
+    let successors = |bb: BasicBlock| body.basic_blocks[bb].terminator().successors().collect();
+    reachable(to.block, &[from.block, to.block], successors).contains(&to.block)
 }
 
 fn apply(body: &mut Body<'_>, moves: Vec<Move>) {
@@ -137,48 +159,29 @@ fn apply(body: &mut Body<'_>, moves: Vec<Move>) {
     }
 }
 
-/// The locations using each reservation's temporary, the reservation excluded.
+/// The locations using each reservation's temporary, its assignments included.
 fn temp_uses(body: &Body<'_>, reservations: &[Reservation<'_>]) -> HashMap<Local, Vec<Location>> {
     use mir::visit::Visitor as _;
-    struct UseCollector<'a> {
-        reservations: HashMap<Local, Vec<Location>>,
-        uses: &'a mut HashMap<Local, Vec<Location>>,
+    struct UseCollector {
+        uses: HashMap<Local, Vec<Location>>,
     }
-    impl<'tcx> mir::visit::Visitor<'tcx> for UseCollector<'_> {
+    impl<'tcx> mir::visit::Visitor<'tcx> for UseCollector {
         fn visit_local(&mut self, local: Local, context: PlaceContext, location: Location) {
-            let Some(reserved_at) = self.reservations.get(&local) else {
+            let Some(uses) = self.uses.get_mut(&local) else {
                 return;
             };
-            if !context.is_use() || reserved_at.contains(&location) {
-                return;
-            }
-            let uses = self.uses.entry(local).or_default();
-            if !uses.contains(&location) {
+            if context.is_use() && !uses.contains(&location) {
                 uses.push(location);
             }
         }
     }
-    let mut reserved_at: HashMap<Local, Vec<Location>> = HashMap::new();
-    for reservation in reservations {
-        reserved_at
-            .entry(reservation.temp)
-            .or_default()
-            .push(reservation.location);
-    }
-    let mut uses: HashMap<Local, Vec<Location>> =
-        reserved_at.keys().map(|&temp| (temp, Vec::new())).collect();
-    // A temporary assigned by two copies counts the other copy as a use.
-    for (&temp, locations) in &reserved_at {
-        if locations.len() > 1 {
-            uses.get_mut(&temp).unwrap().extend(locations);
-        }
-    }
-    UseCollector {
-        reservations: reserved_at,
-        uses: &mut uses,
-    }
-    .visit_body(body);
-    uses
+    let uses = reservations
+        .iter()
+        .map(|reservation| (reservation.temp, Vec::new()))
+        .collect();
+    let mut collector = UseCollector { uses };
+    collector.visit_body(body);
+    collector.uses
 }
 
 /// The use of a two-phase borrow's temporary that dominates its other uses; rustc's `BorrowSet`
@@ -281,21 +284,28 @@ impl<'tcx> mir::visit::Visitor<'tcx> for Between<'tcx> {
     }
 }
 
-/// Whether the statement or terminator at `location` reads `lender`.
-fn reads_at(body: &Body<'_>, lender: Local, location: Location) -> bool {
-    struct Reader {
-        lender: Local,
+/// Whether the statement or terminator at `location` reads a place overlapping `borrowed`.
+fn reads_overlapping_at<'tcx>(
+    body: &Body<'tcx>,
+    borrowed: Place<'tcx>,
+    location: Location,
+) -> bool {
+    struct Reader<'tcx> {
+        borrowed: Place<'tcx>,
         reads: bool,
     }
-    impl<'tcx> mir::visit::Visitor<'tcx> for Reader {
-        fn visit_local(&mut self, local: Local, context: PlaceContext, _location: Location) {
-            if local == self.lender && matches!(context, PlaceContext::NonMutatingUse(_)) {
+    impl<'tcx> mir::visit::Visitor<'tcx> for Reader<'tcx> {
+        fn visit_place(&mut self, place: &Place<'tcx>, context: PlaceContext, _location: Location) {
+            let overlaps = place.local == self.borrowed.local
+                && (place.projection.starts_with(self.borrowed.projection)
+                    || self.borrowed.projection.starts_with(place.projection));
+            if overlaps && matches!(context, PlaceContext::NonMutatingUse(_)) {
                 self.reads = true;
             }
         }
     }
     let mut reader = Reader {
-        lender,
+        borrowed,
         reads: false,
     };
     visit_location(body, &mut reader, location);
