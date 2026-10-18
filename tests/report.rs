@@ -274,8 +274,8 @@ fn premises_are_the_formula_s_and_each_is_once() {
 }
 
 /// A constraint applies an unknown as the run shows a fact: each argument by the variable of the
-/// template it is (`name ← term`, apart from the `:=` of a solution), a `&mut` as `*x` and `°x`, also where its term is a
-/// variable, never as a `<current, final>` pair.
+/// template it is (`name ← term`, apart from the `:=` of a solution), a `&mut` as `*x` and `°x`,
+/// also where its term is a variable, never as a `<current, final>` pair.
 #[test]
 fn constraints_name_the_arguments_of_an_unknown() {
     let output = report_with(
@@ -437,7 +437,7 @@ fn report_labels_the_invariant_a_preservation_checks() {
 fn a_restated_law_must_be_one() {
     let stderr = warnings_of("law_not_a_law.rs");
     assert!(
-        stderr.contains("`#[thrust_macros::law]` on a method that implements no law of its trait"),
+        stderr.contains("`#[thrust_macros::law]` on a method that implements no law of a trait"),
         "{stderr}"
     );
 }

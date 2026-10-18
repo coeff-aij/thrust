@@ -653,6 +653,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         analyze::lemma::check_lemmas(self.tcx, proof_branch);
         self.analyze_raw_command_annot();
         self.register_trait_laws();
+        self.check_restated_laws();
         self.report_unmatched_selection();
         self.refine_local_defs();
         self.check_impl_refinements();
@@ -669,6 +670,25 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.ctx.check_reused_total_methods();
         self.ctx.check_reused_spec_bounds();
         self.assert_callable_entry();
+    }
+
+    /// Checks that each `#[thrust::law]` restated on an impl item (as Creusot writes it)
+    /// implements a law of a trait.
+    fn check_restated_laws(&self) {
+        for item_id in self.tcx.hir_crate_items(()).impl_items() {
+            let local_def_id = item_id.owner_id.def_id;
+            let restated = self
+                .tcx
+                .get_attrs_by_path(local_def_id.to_def_id(), &analyze::annot::law_path())
+                .next()
+                .is_some();
+            if restated && !self.is_law_impl(local_def_id) {
+                self.tcx.dcx().span_err(
+                    self.tcx.def_span(local_def_id),
+                    "`#[thrust_macros::law]` on a method that implements no law of a trait",
+                );
+            }
+        }
     }
 
     /// Records every `#[thrust::law]` function declared in a local trait.
@@ -689,21 +709,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 .and_then(|item| item.trait_container(self.tcx))
                 .expect("a trait item has a trait");
             self.ctx.register_trait_law(trait_def_id, def_id);
-        }
-        // A law restated on an impl item (as Creusot writes it) must implement one.
-        for item_id in self.tcx.hir_crate_items(()).impl_items() {
-            let local_def_id = item_id.owner_id.def_id;
-            let restated = self
-                .tcx
-                .get_attrs_by_path(local_def_id.to_def_id(), &analyze::annot::law_path())
-                .next()
-                .is_some();
-            if restated && !self.is_law_impl(local_def_id) {
-                self.tcx.dcx().span_err(
-                    self.tcx.def_span(local_def_id),
-                    "`#[thrust_macros::law]` on a method that implements no law of its trait",
-                );
-            }
         }
     }
 }
