@@ -814,8 +814,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         })
     }
 
-    /// Whether a use in `uses` can be reached from a write that may change `place` without
-    /// passing `def`.
+    /// Whether a use in `uses` can be reached from a change of `place` without passing `def`,
+    /// or from an alias that may change it later, whether or not passing `def`.
     fn written_before_use(
         &self,
         place: &mir::Place<'tcx>,
@@ -823,17 +823,26 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         uses: &[mir::Location],
     ) -> bool {
         let uses: HashSet<_> = uses.iter().copied().collect();
-        let mut stack: Vec<_> = self
-            .writes_changing(place)
-            .into_iter()
-            .flat_map(|loc| location_successors(&self.body, loc))
+        let (writes, aliases) = self.changes_of(place);
+        self.reaches_any(&writes, Some(def), &uses) || self.reaches_any(&aliases, None, &uses)
+    }
+
+    fn reaches_any(
+        &self,
+        from: &[mir::Location],
+        barrier: Option<mir::Location>,
+        targets: &HashSet<mir::Location>,
+    ) -> bool {
+        let mut stack: Vec<_> = from
+            .iter()
+            .flat_map(|loc| location_successors(&self.body, *loc))
             .collect();
         let mut seen = HashSet::new();
         while let Some(loc) = stack.pop() {
-            if loc == def || !seen.insert(loc) {
+            if Some(loc) == barrier || !seen.insert(loc) {
                 continue;
             }
-            if uses.contains(&loc) {
+            if targets.contains(&loc) {
                 return true;
             }
             stack.extend(location_successors(&self.body, loc));
@@ -841,15 +850,16 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         false
     }
 
-    /// The locations that may change the value at `place`: a write to, a move out of, or a
-    /// mutable or raw borrow of a place overlapping it, other than through a pointer it holds,
-    /// and a copy of a non-`Copy` value holding it, such as a `&mut` it is reached through.
-    fn writes_changing(&self, place: &mir::Place<'tcx>) -> Vec<mir::Location> {
-        use mir::visit::{NonMutatingUseContext, PlaceContext};
+    /// The locations that may change the value at `place`: writes to and moves out of a place
+    /// it is read through, and aliases of such a place that may write it later, a mutable or
+    /// raw borrow or a copy of a non-`Copy` value such as a `&mut` it is reached through.
+    fn changes_of(&self, place: &mir::Place<'tcx>) -> (Vec<mir::Location>, Vec<mir::Location>) {
+        use mir::visit::{MutatingUseContext, NonMutatingUseContext, PlaceContext};
         struct Visitor<'a, 'tcx> {
             analyzer: &'a Analyzer<'tcx, 'a>,
             place: &'a mir::Place<'tcx>,
-            locations: Vec<mir::Location>,
+            writes: Vec<mir::Location>,
+            aliases: Vec<mir::Location>,
         }
         impl<'tcx> mir::visit::Visitor<'tcx> for Visitor<'_, 'tcx> {
             fn visit_place(
@@ -858,61 +868,66 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 context: PlaceContext,
                 location: mir::Location,
             ) {
-                if other.local != self.place.local || !self.analyzer.overlaps(other, self.place) {
+                if other.local != self.place.local
+                    || !self.analyzer.changes_place(other, self.place)
+                {
                     return;
                 }
-                let changes = match context {
-                    PlaceContext::MutatingUse(_)
-                    | PlaceContext::NonMutatingUse(
-                        NonMutatingUseContext::Move | NonMutatingUseContext::RawBorrow,
-                    ) => true,
-                    PlaceContext::NonMutatingUse(NonMutatingUseContext::Copy) => {
-                        other.projection.len() < self.place.projection.len()
-                            && !self.analyzer.is_copy(other)
+                match context {
+                    PlaceContext::MutatingUse(
+                        MutatingUseContext::Borrow | MutatingUseContext::RawBorrow,
+                    )
+                    | PlaceContext::NonMutatingUse(NonMutatingUseContext::RawBorrow) => {
+                        self.aliases.push(location)
                     }
-                    _ => false,
-                };
-                if changes {
-                    self.locations.push(location);
+                    PlaceContext::NonMutatingUse(
+                        NonMutatingUseContext::Copy | NonMutatingUseContext::Move,
+                    ) if other.projection.len() < self.place.projection.len()
+                        && !self.analyzer.is_copy(other) =>
+                    {
+                        self.aliases.push(location)
+                    }
+                    PlaceContext::MutatingUse(_)
+                    | PlaceContext::NonMutatingUse(NonMutatingUseContext::Move) => {
+                        self.writes.push(location)
+                    }
+                    _ => {}
                 }
             }
         }
         let mut visitor = Visitor {
             analyzer: self,
             place,
-            locations: Vec::new(),
+            writes: Vec::new(),
+            aliases: Vec::new(),
         };
         mir::visit::Visitor::visit_body(&mut visitor, &self.body);
-        visitor.locations
+        (visitor.writes, visitor.aliases)
     }
 
-    /// Whether `a` and `b`, of one local, may share memory other than through a pointer that
-    /// one of them holds.
-    fn overlaps(&self, a: &mir::Place<'tcx>, b: &mir::Place<'tcx>) -> bool {
-        let common = a.projection.len().min(b.projection.len());
+    /// Whether writing `written`, of the local of `place`, may change the value read at
+    /// `place`: it does unless it is a disjoint field or is reached through a pointer `place`
+    /// holds.
+    fn changes_place(&self, written: &mir::Place<'tcx>, place: &mir::Place<'tcx>) -> bool {
+        let common = written.projection.len().min(place.projection.len());
         for i in 0..common {
-            let (ea, eb) = (a.projection[i], b.projection[i]);
-            if ea == eb {
+            let (ew, ep) = (written.projection[i], place.projection[i]);
+            if ew == ep {
                 continue;
             }
             let base = mir::PlaceRef {
-                local: a.local,
-                projection: &a.projection[..i],
+                local: place.local,
+                projection: &place.projection[..i],
             };
             let is_union = base.ty(&self.body.local_decls, self.tcx).ty.is_union();
-            return match (ea, eb) {
-                (mir::ProjectionElem::Field(fa, _), mir::ProjectionElem::Field(fb, _)) => {
-                    fa == fb || is_union
+            return match (ew, ep) {
+                (mir::ProjectionElem::Field(fw, _), mir::ProjectionElem::Field(fp, _)) => {
+                    fw == fp || is_union
                 }
                 _ => true,
             };
         }
-        let longer = if a.projection.len() > b.projection.len() {
-            a
-        } else {
-            b
-        };
-        longer.projection.get(common) != Some(&mir::ProjectionElem::Deref)
+        written.projection.get(common) != Some(&mir::ProjectionElem::Deref)
     }
 
     fn is_copy(&self, place: &mir::Place<'tcx>) -> bool {
