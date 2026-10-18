@@ -7,7 +7,7 @@
 //! CHC solver with the [`Analyzer::solve`] and subsequently reports the result.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::Hash;
 use std::rc::Rc;
 
@@ -911,6 +911,8 @@ fn written_clauses(expr: &rustc_hir::Expr<'_>) -> Vec<rustc_span::Span> {
 pub struct ContractAnnotations {
     pub requires: Vec<rustc_span::Span>,
     pub ensures: Vec<rustc_span::Span>,
+    /// The refinements written in each parameter's type, by the parameter.
+    pub params: BTreeMap<rty::FunctionParamIdx, Vec<rustc_span::Span>>,
 }
 
 /// Whether loop heads get candidate atoms (`THRUST_CANDIDATE_ATOMS`, see
@@ -3077,10 +3079,16 @@ impl<'tcx> Analyzer<'tcx> {
         let mut annotations = ContractAnnotations {
             requires: requires.into_iter().flat_map(spans).collect(),
             ensures: ensures.into_iter().flat_map(spans).collect(),
+            params: BTreeMap::new(),
         };
         for (position, def_id) in refinements {
             match position.steps().first() {
                 Some(rty::TypePositionStep::Return) => annotations.ensures.extend(spans(def_id)),
+                Some(rty::TypePositionStep::Param(idx)) => {
+                    annotations.requires.extend(spans(def_id));
+                    let param = annotations.params.entry(*idx).or_default();
+                    param.extend(spans(def_id));
+                }
                 _ => annotations.requires.extend(spans(def_id)),
             }
         }

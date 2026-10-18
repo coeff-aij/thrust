@@ -151,12 +151,19 @@ fn kind(
             _ => "function".to_owned(),
         });
     }
-    if provenance.stmt.is_some() {
-        return plain("statement".to_owned());
-    }
     let (Some(body), Some(bb)) = (body, provenance.bb) else {
         return plain(span_name.to_owned());
     };
+    if let Some(stmt) = provenance.stmt {
+        let written = provenance
+            .def
+            .and_then(|def| annotations.get(&def.to_def_id()));
+        return match written.filter(|_| goal) {
+            Some(written) => written_refinement(body, bb, stmt, written)
+                .unwrap_or_else(|| plain("statement".to_owned())),
+            None => plain("statement".to_owned()),
+        };
+    }
     let Some(terminator) = body.terminator(bb) else {
         return plain(span_name.to_owned());
     };
@@ -235,6 +242,29 @@ fn kind(
         _ => span_name.to_owned(),
     };
     plain(kind)
+}
+
+/// The written refinement of the parameter statement `stmt` of `bb` writes through, which a goal
+/// made at the statement checks: `*x = -1` against `param(x: &mut { v: i64 | v >= 0 })`.
+fn written_refinement(
+    body: &DefBody<'_>,
+    bb: BasicBlock,
+    stmt: usize,
+    written: &crate::analyze::ContractAnnotations,
+) -> Option<(String, Annotation)> {
+    let statement = body.body.basic_blocks.get(bb)?.statements.get(stmt)?;
+    let mir::StatementKind::Assign(assign) = &statement.kind else {
+        return None;
+    };
+    let local = assign.0.local;
+    if !(1..=body.body.arg_count).contains(&local.index()) {
+        return None;
+    }
+    let spans = written
+        .params
+        .get(&crate::analyze::function_param_of_local(local))?;
+    let kind = format!("refinement of `{}`", body.local_name(local));
+    Some((kind, Annotation::Checks(spans.clone())))
 }
 
 /// A union-find over the clause's variables.

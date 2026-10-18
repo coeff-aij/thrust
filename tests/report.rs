@@ -135,6 +135,26 @@ fn report_labels_the_requires_a_call_breaks() {
     assert!(!stderr.contains("how the solver reaches it"), "{stderr}");
 }
 
+/// A write breaking a parameter's written refinement labels that refinement.
+#[test]
+fn report_labels_the_refinement_a_write_breaks() {
+    let output = report("refinement_write.rs", "failure");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("thrust: refuted: refinement of `x` in `set`"),
+        "{stderr}"
+    );
+    let label = stderr
+        .lines()
+        .skip_while(|l| !l.contains("#[thrust_macros::param(x: &mut { v: i64 | v >= 0 })]"))
+        .nth(1)
+        .unwrap_or_default();
+    assert!(
+        label.contains("------ the annotation it checks"),
+        "{stderr}"
+    );
+}
+
 /// A refuted `assert!(a != b)` reads as its condition, not as the boolean term the MIR compares
 /// with `false`.
 #[test]
