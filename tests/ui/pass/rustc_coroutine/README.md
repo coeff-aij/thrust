@@ -23,7 +23,7 @@ with the driver broken, regenerated and checked by `tests/rustc_coroutine/fail/c
 | `bitset.rs` | `rustc_index::bit_set` | verified as stage file |
 | `simple.rs` | `rustc_abi::layout::simple` | draft, `ignore-on-host` |
 | `univariant.rs` | `LayoutCalculator::univariant`, `univariant_biased` trusted on its contract | draft, `ignore-on-host`: no answer at 300 s, also for its panic obligations alone (query 17.8 MB) |
-| `univariant_biased.rs` | `LayoutCalculator::univariant_biased` | draft, `ignore-on-host`: query about 323 MB |
+| `univariant_biased.rs` | `LayoutCalculator::univariant_biased` | draft, `ignore-on-host`: stops in the frontend at the panic payloads of an `assert_eq!` and a `panic!` with a message (`core::panicking::assert_failed`, `fmt::Arguments::new_const`) |
 | `eligibility.rs` | `coroutine_saved_local_eligibility` | draft, `ignore-on-host` |
 | `layout.rs` | `layout()` and the adapters of `thrust/iter.rs` | draft, `ignore-on-host` |
 
