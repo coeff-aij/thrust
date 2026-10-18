@@ -13,7 +13,7 @@ impl thrust_models::Model for S {
 
 impl PartialEq for S {
     #[thrust::ignored]
-    fn eq(&self, _o: &S) -> bool { //~ ERROR: relies on its trait's specification through its bounds
+    fn eq(&self, _o: &S) -> bool { //~ ERROR: a verified function can run it
         false
     }
 }

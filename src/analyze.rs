@@ -726,11 +726,13 @@ fn clause_args<'tcx>(clause: &mir_ty::Clause<'tcx>) -> Vec<mir_ty::GenericArg<'t
     Vec::new()
 }
 
-/// Whether the nearest crate function on a path through the program is one Thrust verifies or a
-/// trusted one, whose body may run an ignored function ([`Analyzer::stop_ignored_reached`]).
+/// How code on a path through the program is checked ([`Analyzer::stop_ignored_reached`]): run by
+/// a function Thrust verifies, by a trusted body, or by a trusted body whose contract verified code
+/// relies on, whose calls that dispatch on its type parameters are verified code again.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Mode {
     Verified,
+    Relied,
     Trusted,
 }
 
@@ -1267,22 +1269,22 @@ impl<'tcx> Analyzer<'tcx> {
     /// Thrust analyzed or reused a generic contract at, and the calls a generic body makes at
     /// concrete arguments (`generic_roots`). From them the calls, trait methods, vtables, drop
     /// glue, function pointers and closures each instance uses (`items_of_instance`, as rustc's
-    /// monomorphization collector) are followed, into std code and trusted bodies too, each in
-    /// the mode of the nearest crate function on the path (`crate_mode`): a trusted body may run
-    /// an ignored function, as Verus's `external_body` and Creusot's and Prusti's `#[trusted]`
-    /// may, but a verified function it runs may not. A trusted instance entered from verified
-    /// code has its contract relied on, which holds only where the impls its bounds select meet
-    /// their traits' specifications, so those impls must not have ignored functions either. This
-    /// over-approximates what the verified functions can run: an instance reached only on a path
-    /// to a panic counts.
+    /// monomorphization collector) are followed, into std code and trusted bodies too, each
+    /// instance in a mode ([`Mode`]): that of the crate function it is (`crate_mode`), or of the
+    /// path it is reached on. A trusted body may run an ignored function itself, as Verus's
+    /// `external_body` and Creusot's and Prusti's `#[trusted]` may, but a verified function it
+    /// runs may not. A trusted instance that verified code runs has its contract relied on, which
+    /// holds only where the code its type parameters are instantiated with meets its
+    /// specification, as for Creusot's trusted contracts, so the calls of its body that dispatch on
+    /// its type parameters are verified code ([`Self::callees`]). An instance is followed once per
+    /// mode it is reached in. This over-approximates what the verified functions can run: an
+    /// instance reached only on a path to a panic counts.
     pub fn stop_ignored_reached(
         &self,
         roots: Vec<mir_ty::Instance<'tcx>>,
         generic_roots: Vec<DefId>,
         crate_mode: impl Fn(DefId) -> Option<Mode>,
     ) {
-        use rustc_middle::mir::mono::{CollectionMode, MonoItem};
-
         let mut parent = HashMap::new();
         let mut pending = std::collections::VecDeque::new();
         let verified_instances = self
@@ -1303,35 +1305,28 @@ impl<'tcx> Analyzer<'tcx> {
         while let Some((instance, mode)) = pending.pop_front() {
             if is_ignored_crate_fn(self.tcx, instance.def_id()) {
                 if mode == Mode::Verified {
-                    reached.push((instance, instance.def_id(), (instance, mode)));
+                    reached.push((instance, (instance, mode)));
                 }
                 continue;
             }
             if !self.runs_body(instance) {
                 continue;
             }
-            let (used, _) = self
-                .tcx
-                .items_of_instance((instance, CollectionMode::UsedItems));
-            for item in used {
-                let MonoItem::Fn(callee) = item.node else {
-                    continue;
+            for (callee, edge_mode) in self.callees(instance, mode) {
+                let callee_mode = match crate_mode(callee.def_id()) {
+                    Some(Mode::Trusted) if edge_mode == Mode::Verified => Mode::Relied,
+                    Some(Mode::Trusted) => Mode::Trusted,
+                    Some(other) => other,
+                    None => edge_mode,
                 };
-                let callee_mode = crate_mode(callee.def_id()).unwrap_or(mode);
                 let key = (callee, callee_mode);
-                let std::collections::hash_map::Entry::Vacant(entry) = parent.entry(key) else {
-                    continue;
-                };
-                entry.insert(Some((instance, mode)));
-                pending.push_back(key);
-                if mode == Mode::Verified && callee_mode == Mode::Trusted {
-                    for ignored in self.ignored_in_bounds(callee) {
-                        reached.push((callee, ignored, key));
-                    }
+                if let std::collections::hash_map::Entry::Vacant(entry) = parent.entry(key) {
+                    entry.insert(Some((instance, mode)));
+                    pending.push_back(key);
                 }
             }
         }
-        let Some(&(first, ignored, key)) = reached.first() else {
+        let Some(&(first, key)) = reached.first() else {
             return;
         };
         let mut path = Vec::new();
@@ -1341,52 +1336,95 @@ impl<'tcx> Analyzer<'tcx> {
             cursor = parent.get(&current).copied().flatten();
         }
         path.reverse();
-        let message = if ignored == first.def_id() {
+        let mut diag = self.tcx.dcx().struct_span_fatal(
+            self.tcx.def_span(first.def_id()),
             format!(
                 "`{first}` is `#[thrust::ignored]`, so a call of it has no checked type, but a \
                  verified function can run it"
-            )
-        } else {
-            format!(
-                "`{}` is `#[thrust::ignored]`, but the trusted `{first}`, which a verified \
-                 function runs, relies on its trait's specification through its bounds",
-                self.tcx.def_path_str(ignored),
-            )
-        };
-        let mut diag = self
-            .tcx
-            .dcx()
-            .struct_span_fatal(self.tcx.def_span(ignored), message);
+            ),
+        );
         diag.note(format!("reached through {}", path.join(" -> ")));
-        for (_, other, _) in &reached[1..] {
+        for (other, _) in &reached[1..] {
             diag.span_note(
-                self.tcx.def_span(*other),
-                format!(
-                    "`{}` is ignored and reached too",
-                    self.tcx.def_path_str(*other)
-                ),
+                self.tcx.def_span(other.def_id()),
+                format!("`{other}` is ignored and reached too"),
             );
         }
         diag.emit()
     }
 
-    /// The ignored functions of the crate impls that the bounds of the trusted `instance` select
-    /// at its arguments.
-    fn ignored_in_bounds(&self, instance: mir_ty::Instance<'tcx>) -> Vec<DefId> {
-        let typing_env = mir_ty::TypingEnv::fully_monomorphized();
-        let bounds = trait_bounds(self.tcx, instance.def_id(), instance.args);
-        let mut ignored = Vec::new();
-        let on_crate_impl = &mut |impl_def_id: DefId, _| {
-            let methods = self.tcx.associated_item_def_ids(impl_def_id);
-            ignored.extend(
-                methods
-                    .iter()
-                    .copied()
-                    .filter(|method| is_ignored_crate_fn(self.tcx, *method)),
-            );
+    /// The functions `instance`'s body uses, each with the mode it runs in: the body's own, or
+    /// for a trusted body whose contract verified code relies on (`Mode::Relied`), `Verified` for
+    /// the calls and drops that dispatch on its type parameters and `Trusted` for the others. A
+    /// trusted generic contract holds only where the code its type parameters are instantiated
+    /// with (trait methods, inherited defaults, associated types' impls, derived impls, drop glue)
+    /// meets its specification, which is the code those calls run.
+    fn callees(
+        &self,
+        instance: mir_ty::Instance<'tcx>,
+        mode: Mode,
+    ) -> Vec<(mir_ty::Instance<'tcx>, Mode)> {
+        use rustc_middle::mir::mono::{CollectionMode, MonoItem};
+
+        let (used, _) = self
+            .tcx
+            .items_of_instance((instance, CollectionMode::UsedItems));
+        let used = used.iter().filter_map(|item| match item.node {
+            MonoItem::Fn(callee) => Some(callee),
+            _ => None,
+        });
+        if mode != Mode::Relied {
+            return used.map(|callee| (callee, mode)).collect();
+        }
+        let dispatched = self.dispatched_callees(instance);
+        used.map(|callee| {
+            let callee_mode = if dispatched.contains(&callee) {
+                Mode::Verified
+            } else {
+                Mode::Trusted
+            };
+            (callee, callee_mode)
+        })
+        .chain(dispatched.iter().map(|callee| (*callee, Mode::Verified)))
+        .collect()
+    }
+
+    /// The calls and drops of `instance`'s generic body whose callee depends on its type
+    /// parameters, resolved at its arguments.
+    fn dispatched_callees(&self, instance: mir_ty::Instance<'tcx>) -> Vec<mir_ty::Instance<'tcx>> {
+        use mir_ty::TypeVisitableExt as _;
+        use rustc_middle::mir::MentionedItem;
+
+        let mir_ty::InstanceKind::Item(def_id) = instance.def else {
+            return Vec::new();
         };
-        self.select_bound_impls(instance.def_id(), typing_env, bounds, on_crate_impl);
-        ignored
+        let typing_env = mir_ty::TypingEnv::fully_monomorphized();
+        let body = self.tcx.optimized_mir(def_id);
+        body.mentioned_items()
+            .iter()
+            .filter_map(|item| {
+                let ty = match item.node {
+                    MentionedItem::Fn(ty) | MentionedItem::Drop(ty) if ty.has_param() => ty,
+                    _ => return None,
+                };
+                let ty = instance.instantiate_mir_and_normalize_erasing_regions(
+                    self.tcx,
+                    typing_env,
+                    mir_ty::EarlyBinder::bind(ty),
+                );
+                match item.node {
+                    MentionedItem::Fn(_) => {
+                        let mir_ty::FnDef(callee, args) = *ty.kind() else {
+                            return None;
+                        };
+                        mir_ty::Instance::try_resolve(self.tcx, typing_env, callee, args)
+                            .ok()
+                            .flatten()
+                    }
+                    _ => Some(mir_ty::Instance::resolve_drop_in_place(self.tcx, ty)),
+                }
+            })
+            .collect()
     }
 
     /// The instances of generic defs that Thrust analyzed, or whose contract it reused, at

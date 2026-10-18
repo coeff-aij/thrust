@@ -716,6 +716,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             if self.trusted.contains(&local) {
                 return Some(analyze::Mode::Trusted);
             }
+            // A derived impl is not trusted by the user: its methods rely on the fields' impls.
+            let derived = self
+                .tcx
+                .impl_of_assoc(def_id)
+                .is_some_and(|impl_did| self.tcx.is_automatically_derived(impl_did));
+            if derived {
+                return Some(analyze::Mode::Verified);
+            }
             let analyzed =
                 self.tcx.def_kind(def_id).is_fn_like() && !self.skip_analysis.contains(&local);
             analyzed.then_some(analyze::Mode::Verified)
