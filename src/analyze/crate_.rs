@@ -204,6 +204,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
     fn refine_fn_def_at_site(&mut self, local_def_id: LocalDefId) {
         let sig = self.ctx.fn_sig(local_def_id.to_def_id());
+        let has_constrained_type_param = !self.constrained_type_params(local_def_id).is_empty();
         let is_law_impl = self.is_law_impl(local_def_id);
         let outside_selection = self.is_outside_selection(local_def_id);
         let mut analyzer = self.ctx.local_def_analyzer(local_def_id);
@@ -268,7 +269,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let owner_fn_id = analyzer.owner_fn_id;
         let owner_fn_id_args = analyzer.owner_fn_id_args;
         use mir_ty::TypeVisitableExt as _;
-        if sig.has_param() {
+        // A trait-bounded type parameter must stay generic even when the signature does not
+        // mention it, since the body depends on which impl it is instantiated with.
+        if sig.has_param() || has_constrained_type_param {
             if trusted_derive {
                 let expected = analyzer.expected_ty();
                 self.ctx
@@ -548,11 +551,16 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             && !analyze::fn_mut_bounded_params(self.tcx, local_def_id.to_def_id()).is_empty()
     }
 
-    fn placeholder_generic_args(&self, local_def_id: LocalDefId) -> mir_ty::GenericArgsRef<'tcx> {
+    /// Indices of the type parameters bound by a trait other than `Sized`, including bounds
+    /// inherited from the parent impl or trait.
+    fn constrained_type_params(&self, local_def_id: LocalDefId) -> HashSet<u32> {
         let mut constrained_params = HashSet::new();
-        let predicates = self.tcx.predicates_of(local_def_id);
+        let predicates = self
+            .tcx
+            .predicates_of(local_def_id)
+            .instantiate_identity(self.tcx);
         let sized_trait = self.tcx.lang_items().sized_trait().unwrap();
-        for (clause, _) in predicates.predicates {
+        for clause in predicates.predicates {
             let mir_ty::ClauseKind::Trait(pred) = clause.kind().skip_binder() else {
                 continue;
             };
@@ -569,7 +577,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 constrained_params.insert(param_ty.index);
             }
         }
+        constrained_params
+    }
 
+    fn placeholder_generic_args(&self, local_def_id: LocalDefId) -> mir_ty::GenericArgsRef<'tcx> {
         let mut args: Vec<mir_ty::GenericArg<'tcx>> = Vec::new();
 
         let generics = self.tcx.generics_of(local_def_id);
