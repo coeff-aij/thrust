@@ -505,3 +505,17 @@ fn a_law_proof_and_a_refuted_ensures_are_where_they_are_read() {
         "{stdout}"
     );
 }
+
+/// A parameter read only inside a formula macro of a lemma's contract (`pre!`, `post!`) is read;
+/// one only a closure's binder names is not.
+#[test]
+fn parameters_read_inside_formula_macros_raise_no_warning() {
+    let stderr = warnings_of("macro_mentions.rs");
+    for read in ["`f`", "`x`", "`y`"] {
+        assert!(
+            !stderr.contains(&format!("unused variable: {read}")),
+            "{stderr}"
+        );
+    }
+    assert!(stderr.contains("unused variable: `n`"), "{stderr}");
+}
