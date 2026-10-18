@@ -3704,13 +3704,32 @@ impl System {
         // the verdict is the one the query alone gets.
         let refuted = matches!(answer.result, Err(CheckSatError::Unsat));
         if requests.proof && refuted && config.answers(requests) {
-            let mut marked = self.clone();
-            answer.clause_tags = marked.tag_clauses();
-            answer.goal_markers = marked.mark_goals();
-            let marked = marked.prepared();
-            answer.proof = config.refute(marked.smtlib2(config.capabilities()));
+            self.refute(config, &mut answer);
+        }
+        if refuted && config.asks_z3_to_refute(requests) {
+            self.refute_by_z3(&mut answer);
         }
         answer
+    }
+
+    /// Asks `config`'s solver for the refutation of the system, which is refuted, with its
+    /// clauses tagged and its goals marked.
+    fn refute(&self, config: &Config, answer: &mut Answer) {
+        let mut marked = self.clone();
+        answer.clause_tags = marked.tag_clauses();
+        answer.goal_markers = marked.mark_goals();
+        let marked = marked.prepared();
+        answer.proof = config.refute(marked.smtlib2(config.capabilities()));
+    }
+
+    /// Asks `z3` for the refutation of the system, which another solver refuted (PCSat, which
+    /// gives none), when `z3` reads its query.
+    pub fn refute_by_z3(&self, answer: &mut Answer) {
+        if self.needs_pcsat() {
+            return;
+        }
+        self.refute(&Config::default(), answer);
+        answer.proof_by_z3 = answer.proof.is_some();
     }
 
     /// Whether the query uses what `z3` does not read: a forall sort or a sequence in a clause,

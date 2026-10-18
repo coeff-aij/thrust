@@ -2757,7 +2757,8 @@ impl<'tcx> Analyzer<'tcx> {
         // whole system, whose parts keep the clause ids. A solver that gives neither is not
         // asked again.
         let requests = config.requests();
-        let evidence = chc::Config::from_env().answers(requests);
+        let solver = chc::Config::from_env();
+        let evidence = solver.answers(requests);
         let shown = |part: &chc::Part| {
             let defs = system
                 .pred_vars_of(&part.clauses)
@@ -2781,12 +2782,17 @@ impl<'tcx> Analyzer<'tcx> {
                 })
             })
             .collect();
+        // A refuted part of a solver that gives no refutation is refuted by `z3` when it reads it.
         let mut answers = chc::in_parallel(jobs, asked.len(), |i| {
+            let part = system.part(&asked[i].clauses);
             if evidence {
-                system.part(&asked[i].clauses).solve_part_with(requests)
-            } else {
-                chc::Answer::of(Err(chc::CheckSatError::Unsat))
+                return part.solve_part_with(requests);
             }
+            let mut answer = chc::Answer::of(Err(chc::CheckSatError::Unsat));
+            if solver.asks_z3_to_refute(requests) {
+                part.refute_by_z3(&mut answer);
+            }
+            answer
         });
         if answers.is_empty() {
             answers.push(chc::Answer::of(Ok(())));

@@ -184,7 +184,10 @@ impl Human<'_, '_> {
         }
         let Some(failure) = failure else {
             let why = match (&answer.proof, answer.goal_markers.is_empty()) {
-                (None, true) => "the solver gave no refutation (only `z3` is asked for one)",
+                (None, true) => {
+                    "the solver gives no refutation, and `z3`, asked in its place, does not read \
+                     the query (it has forall sorts or sequences)"
+                }
                 (None, false) => "the second run, asked for a refutation, gave none",
                 (Some(_), _) => "the refutation derives no goal of the system",
             };
@@ -227,8 +230,12 @@ impl Human<'_, '_> {
         }
         // A goal over no unknown fails by its constraint alone, without a run.
         if !lines.is_empty() {
+            let who = match failure.by_z3 {
+                true => "`z3` (asked for the run, as the solver gives none)",
+                false => "the solver",
+            };
             notes.push(format!(
-                "how the solver reaches it: each fact follows, by the constraint in brackets, \
+                "how {who} reaches it: each fact follows, by the constraint in brackets, \
                  from the facts indented under it (a derivation, not an order of execution):\n{}",
                 lines.join("\n")
             ));

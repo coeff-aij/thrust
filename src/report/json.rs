@@ -71,6 +71,8 @@ enum Line<'a> {
         premises: Option<Vec<Premise<'a>>>,
         conclusion: Option<&'a str>,
         run: Vec<Step<'a>>,
+        /// Whether the run is `z3`'s, asked of a query the solver refuted without one.
+        run_by_z3: bool,
         truncated: bool,
         values: Vec<Value>,
         /// The functions whose inferred contract the run goes through.
@@ -244,6 +246,7 @@ impl Json<'_, '_> {
             premises: found.map(|(_, c)| self.premises(c)),
             conclusion: found.map(|(_, c)| c.conclusion.as_str()),
             run,
+            run_by_z3: failure.by_z3,
             truncated: failure.truncated,
             values: found
                 .map(|(_, c)| failure.named_values(c))

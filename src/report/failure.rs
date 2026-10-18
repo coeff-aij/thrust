@@ -39,6 +39,8 @@ pub struct Failure {
     /// The functions whose inferred contract the run goes through: a wrong result of theirs
     /// shows here.
     pub inferred: Vec<LocalDefId>,
+    /// Whether the run is `z3`'s, asked of a query the solver refuted without one.
+    pub by_z3: bool,
 }
 
 impl Failure {
@@ -257,5 +259,6 @@ pub fn read(
         truncated: reader.truncated,
         values: marker.args.clone(),
         inferred: reader.inferred,
+        by_z3: answer.proof_by_z3,
     })
 }

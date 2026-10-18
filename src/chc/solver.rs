@@ -298,6 +298,13 @@ impl Config {
         self.solver.is_z3()
     }
 
+    /// Whether `z3` is asked for the refutation of a query the solver refuted, which it gives
+    /// none of: a refutation is asked for, and the solver is not `z3` alone (PCSat, or `z3`
+    /// after a preprocessor).
+    pub fn asks_z3_to_refute(&self, requests: Requests) -> bool {
+        requests.proof && !self.answers(requests)
+    }
+
     pub fn capabilities(&self) -> Capabilities {
         Capabilities {
             dependency_aware_declarations: !self.solver.is_z3(),
@@ -455,6 +462,8 @@ pub struct Answer {
     /// The query, when a model is asked for: its declarations are what the model's terms are
     /// over.
     pub query: Option<String>,
+    /// Whether the refutation is `z3`'s, asked of a query another solver refuted.
+    pub proof_by_z3: bool,
 }
 
 impl Answer {
@@ -467,6 +476,7 @@ impl Answer {
             goal_markers: Vec::new(),
             clause_tags: Vec::new(),
             query: None,
+            proof_by_z3: false,
         }
     }
 }

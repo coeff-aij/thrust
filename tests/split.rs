@@ -237,6 +237,51 @@ fn a_solver_without_evidence_solves_each_part_once() {
     assert_eq!(runs, 3, "{stderr}");
 }
 
+/// A solver other than `z3` that reads PCSat's declarations: the stand-in turns them into
+/// `z3`'s and runs `z3`, so that it refutes as PCSat would and gives no refutation.
+fn pcsat_stand_in() -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = std::env::temp_dir().join(format!("thrust-pcsat-stand-in-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let solver = dir.join("pcsat");
+    let script = "#!/bin/sh\n\
+        file=\"\"; for a in \"$@\"; do file=\"$a\"; done\n\
+        sed 's/(declare-dep-exists-fun \\([^ ]*\\) () /(declare-fun \\1 /' \"$file\" > \"$file.z3\"\n\
+        z3 fp.engine=spacer -smt2 \"$file.z3\"; status=$?\n\
+        rm -f \"$file.z3\"; exit $status\n";
+    std::fs::write(&solver, script).unwrap();
+    std::fs::set_permissions(&solver, std::fs::Permissions::from_mode(0o755)).unwrap();
+    solver
+}
+
+/// A part a solver without refutations refutes is refuted by `z3` for the report when `z3` reads
+/// it, which the run says; so is the whole query.
+#[test]
+fn z3_gives_the_run_of_a_part_another_solver_refutes() {
+    let solver = pcsat_stand_in();
+    let env = [
+        ("THRUST_REPORT", "1"),
+        ("THRUST_SOLVER", solver.to_str().unwrap()),
+    ];
+    let split = run_with("two_parts.rs", Some("2"), &env);
+    let mut json_env = env.to_vec();
+    json_env.push(("THRUST_REPORT_FORMAT", "json"));
+    let whole = run_with("two_parts.rs", None, &json_env);
+    std::fs::remove_dir_all(solver.parent().unwrap()).unwrap();
+    let stderr = String::from_utf8_lossy(&split.stderr);
+    assert!(
+        stderr.contains("thrust: refuted: ensures in `bad`"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("how `z3` (asked for the run, as the solver gives none) reaches it"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("bad.bb0(x = 0, old(x) = 0)"), "{stderr}");
+    let stdout = String::from_utf8_lossy(&whole.stdout);
+    assert!(stdout.contains(r#""run_by_z3":true"#), "{stdout}");
+}
+
 /// A split run's JSON states one refutation per part, and each failure names its part; without
 /// the report, a failing part's error is at the code of the part.
 #[test]
