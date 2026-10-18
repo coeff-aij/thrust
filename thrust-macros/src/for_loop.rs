@@ -27,10 +27,12 @@ pub fn desugar(for_loop: &syn::ExprForLoop) -> Option<syn::Expr> {
     let leading: Vec<_> = stmts.iter().map_while(invariant_params).collect();
     let (invariants, rest) = stmts.split_at(leading.len());
     let params: Vec<_> = leading.into_iter().flatten().collect();
-    let iter_ty = params
+    let iter_tys: Vec<_> = params
         .iter()
-        .find(|(name, _)| name == "iter")
-        .map(|(_, ty)| ty.clone())?;
+        .filter(|(name, _)| name == "iter")
+        .map(|(_, ty)| ty.clone())
+        .collect();
+    let iter_ty = iter_tys.first()?.clone();
     let names_history = params
         .iter()
         .any(|(name, _)| name == "iter_old" || name == "produced");
@@ -59,13 +61,13 @@ pub fn desugar(for_loop: &syn::ExprForLoop) -> Option<syn::Expr> {
         expr => expr,
     };
     // As in rustc's lowering, the iterator is bound by a `match`, so that the temporaries of the
-    // `for` head live as long as the loop. The type the invariant gives `iter` is checked by rustc
+    // `for` head live as long as the loop. The type each invariant gives `iter` is checked by rustc
     // against the iterator's.
     if !names_history {
         return Some(syn::parse_quote!(
             match ::core::iter::IntoIterator::into_iter(#expr) {
                 mut #iter => #label loop {
-                    let _: &#iter_ty = &#iter;
+                    #(let _: &#iter_tys = &#iter;)*
                     #(#invariants)*
                     match ::core::iter::Iterator::next(&mut #iter) {
                         ::core::option::Option::Some(#item) => {
@@ -89,7 +91,7 @@ pub fn desugar(for_loop: &syn::ExprForLoop) -> Option<syn::Expr> {
     Some(syn::parse_quote!(
         match ::core::iter::IntoIterator::into_iter(#expr) {
             mut #iter => {
-                let _: &#iter_ty = &#iter;
+                #(let _: &#iter_tys = &#iter;)*
                 let #iter_old = thrust_macros::ghost!(|#iter: #iter_ty| -> #iter_ty { #iter });
                 let mut #produced = thrust_macros::ghost!(|| -> #seq { crate::thrust_models::model::Seq::empty() });
                 #label loop {
