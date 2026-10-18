@@ -28,10 +28,22 @@
         "title": "Thrust: Verify current file"
       },
       {
+        "command": "thrust.verifyFunction",
+        "title": "Thrust: Verify this function"
+      },
+      {
         "command": "thrust.showOutput",
         "title": "Thrust: Show output"
       }
     ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "thrust.verifyFunction",
+          "when": "false"
+        }
+      ]
+    },
     "configuration": {
       "title": "Thrust",
       "properties": {
@@ -39,13 +51,19 @@
           "type": "array",
           "items": { "type": "string" },
           "default": ["thrust-rustc"],
-          "description": "The program running Thrust and its leading arguments, for example [\"rustup\", \"run\", \"nightly-2025-09-08\", \"/path/to/thrust-rustc\"]. The extension appends the extra arguments, --error-format=json, --out-dir and the file."
+          "description": "The program running Thrust and its leading arguments, for example [\"rustup\", \"run\", \"nightly-2025-09-08\", \"/path/to/thrust-rustc\"]. For a file on its own the extension appends the extra arguments, --error-format=json, --out-dir and the file; in a cargo workspace cargo's arguments, then the extra arguments."
+        },
+        "thrust.cargoCommand": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["cargo"],
+          "description": "The program running cargo and its leading arguments, for a workspace folder with a Cargo.toml, for example [\"cargo\", \"+nightly-2025-09-08\"]."
         },
         "thrust.extraArgs": {
           "type": "array",
           "items": { "type": "string" },
           "default": ["-Awarnings", "-C", "debug-assertions=off"],
-          "description": "Arguments passed before the file, for example [\"--crate-type\", \"lib\"] for a file without main."
+          "description": "Arguments passed before the file, for example [\"--crate-type\", \"lib\"] for a file without main; in a cargo workspace, after cargo's arguments to each crate's run."
         },
         "thrust.env": {
           "type": "object",
@@ -77,6 +95,11 @@
           "type": "boolean",
           "default": true,
           "description": "Show the inferred contracts and invariants and the counterexample's facts as inlay hints at the end of their lines."
+        },
+        "thrust.codeLens": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a code lens \"Verify this function\" above each function, which runs Thrust with THRUST_VERIFY_ONLY on that function."
         }
       }
     }
