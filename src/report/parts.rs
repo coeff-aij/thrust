@@ -54,6 +54,8 @@ pub struct PartCode {
     pub span: Span,
     /// The function's signature, where an error names it.
     pub head: Span,
+    /// The code the part's clauses of the function were made at, from the first to the last.
+    pub clauses: Span,
 }
 
 impl Part {
@@ -68,53 +70,87 @@ impl Part {
         }
     }
 
-    /// `` `f` (a.rs:3-6), `g` (a.rs:9) ``.
-    fn functions(&self, tcx: TyCtxt<'_>) -> String {
+    /// `` `f` (a.rs:3-6), `g` (a.rs:9) ``, and for a function in other `parts` too the lines
+    /// of its clauses in this one, which tell its parts apart (`, made at 6-11`).
+    fn functions(&self, tcx: TyCtxt<'_>, parts: &[Part]) -> String {
         if self.functions.is_empty() {
             return "no function".to_owned();
         }
+        let elsewhere = |f: &PartCode| {
+            parts
+                .iter()
+                .filter(|p| p.id != self.id)
+                .any(|p| p.functions.iter().any(|g| g.r#fn == f.r#fn))
+        };
         let named: Vec<String> = self
             .functions
             .iter()
-            .map(|f| format!("`{}` ({})", f.r#fn, lines(tcx, f.span)))
+            .map(|f| {
+                let code = lines(tcx, f.span);
+                if elsewhere(f) {
+                    let clauses = line_range(tcx, f.clauses);
+                    format!("`{}` ({code}, made at {clauses})", f.r#fn)
+                } else {
+                    format!("`{}` ({code})", f.r#fn)
+                }
+            })
             .collect();
         named.join(", ")
     }
 
-    /// What the error of a part that fails says of it.
-    pub fn error_note(&self, tcx: TyCtxt<'_>, parts: usize) -> String {
+    /// What the error of a part that fails says of it, among `parts`.
+    pub fn error_note(&self, tcx: TyCtxt<'_>, parts: &[Part]) -> String {
         let clauses = match self.clauses {
             1 => "1 clause".to_owned(),
             n => format!("{n} clauses"),
         };
         format!(
-            "in part {} of {parts}, of {clauses} from {}",
+            "in part {} of {}, of {clauses} from {}",
             self.id,
-            self.functions(tcx)
+            parts.len(),
+            self.functions(tcx, parts)
         )
     }
 }
 
 /// The functions the clauses `ids` come from, each with its whole span.
 fn code(tcx: TyCtxt<'_>, system: &chc::System, ids: &[chc::ClauseId]) -> Vec<PartCode> {
-    let mut defs: Vec<LocalDefId> = ids
-        .iter()
-        .filter_map(|&id| Provenance::of(&system.clauses[id].debug_info).def)
-        .collect();
-    defs.sort_unstable_by_key(|def| def.local_def_index);
-    defs.dedup();
-    let mut code: Vec<PartCode> = defs
+    let mut clauses: Vec<(LocalDefId, Span)> = Vec::new();
+    for &id in ids {
+        let provenance = Provenance::of(&system.clauses[id].debug_info);
+        let (Some(def), Some(span)) = (provenance.def, provenance.span(tcx)) else {
+            continue;
+        };
+        match clauses.iter_mut().find(|(d, _)| *d == def) {
+            Some((_, all)) => *all = all.to(span),
+            None => clauses.push((def, span)),
+        }
+    }
+    let mut code: Vec<PartCode> = clauses
         .into_iter()
-        .map(|def| PartCode {
+        .map(|(def, clauses)| PartCode {
             r#fn: tcx.def_path_str(def.to_def_id()),
             span: tcx
                 .hir_span_with_body(tcx.local_def_id_to_hir_id(def))
                 .source_callsite(),
             head: tcx.def_span(def.to_def_id()).source_callsite(),
+            clauses,
         })
         .collect();
     code.sort_by_key(|c| c.span.lo());
     code
+}
+
+/// `first-last` of the lines of `span`, or `line`.
+fn line_range(tcx: TyCtxt<'_>, span: Span) -> String {
+    let source_map = tcx.sess.source_map();
+    let first = source_map.lookup_char_pos(span.lo()).line;
+    let last = source_map.lookup_char_pos(span.hi()).line;
+    if last > first {
+        format!("{first}-{last}")
+    } else {
+        format!("{first}")
+    }
 }
 
 /// `file:first-last` of the lines of `span`, or `file:line`.
@@ -139,7 +175,7 @@ pub fn emit_notes(tcx: TyCtxt<'_>, parts: &[Part]) {
     let solved: Vec<String> = parts
         .iter()
         .filter(|p| !p.cached)
-        .map(|p| format!("part {} from {}", p.id, p.functions(tcx)))
+        .map(|p| format!("part {} from {}", p.id, p.functions(tcx, parts)))
         .collect();
     let mut note = match parts.len() {
         1 if cached == 1 => "thrust: 1 part solved on its own, from an earlier run".to_owned(),
