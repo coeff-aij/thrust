@@ -126,7 +126,7 @@ pub fn components(name: &str, value: Term) -> Vec<(String, Term)> {
     }
 }
 
-/// `p(…)` with each argument by the variable of the template it is, as `name := term`, a `&mut`
+/// `p(…)` with each argument by the variable of the template it is, as `name ← term`, a `&mut`
 /// as its current and final values `*name` and `°name` (by `sorts`, also when the term is a
 /// variable), and the name alone where the term is that variable; an argument of no variable of
 /// the template is its term.
@@ -153,7 +153,7 @@ fn applied(pred: &str, params: &[Option<String>], sorts: &[chc::Sort], args: Vec
             if term == name {
                 shown.push(name);
             } else {
-                shown.push(format!("{name} := {term}"));
+                shown.push(format!("{name} ← {term}"));
             }
         }
     }

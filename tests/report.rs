@@ -263,7 +263,7 @@ fn premises_are_the_formula_s_and_each_is_once() {
         .find(|l| l.contains(r#""fn":"check""#) && l.contains("assertion"))
         .unwrap_or_default();
     assert!(
-        check.contains(r#""premises":["check.bb0(x, old(x) := x)","x = 0"]"#),
+        check.contains(r#""premises":["check.bb0(x, old(x) ← x)","x = 0"]"#),
         "{stdout}"
     );
     let identity = stdout
@@ -274,7 +274,7 @@ fn premises_are_the_formula_s_and_each_is_once() {
 }
 
 /// A constraint applies an unknown as the run shows a fact: each argument by the variable of the
-/// template it is (`name := term`), a `&mut` as `*x` and `°x`, also where its term is a
+/// template it is (`name ← term`, apart from the `:=` of a solution), a `&mut` as `*x` and `°x`, also where its term is a
 /// variable, never as a `<current, final>` pair.
 #[test]
 fn constraints_name_the_arguments_of_an_unknown() {
@@ -289,7 +289,7 @@ fn constraints_name_the_arguments_of_an_unknown() {
         .filter(|l| l.contains(r#""fn":"swap""#))
         .collect();
     assert!(
-        swap.iter().any(|l| l.contains("swap.bb0(*x := ")),
+        swap.iter().any(|l| l.contains("swap.bb0(*x ← ")),
         "{stdout}"
     );
     assert!(swap.iter().all(|l| !l.contains('<')), "{stdout}");
@@ -454,4 +454,14 @@ fn a_return_is_at_the_closing_brace() {
         stderr.contains("function entry, tests/report/swap_half.rs:1:1]"),
         "{stderr}"
     );
+}
+
+/// A solution defines an unknown with `:=`; an unknown's argument is given with `←`, so the two
+/// read apart.
+#[test]
+fn solutions_and_arguments_read_apart() {
+    let output = report("loop_fail.rs", "constraints");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("main.loop#1(x ← "), "{stderr}");
+    assert!(!stderr.contains(" := "), "{stderr}");
 }
