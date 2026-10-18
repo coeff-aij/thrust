@@ -63,21 +63,29 @@ pub fn user_defined_pred_at_instance(
 pub fn trait_forall_pred(
     tcx: mir_ty::TyCtxt<'_>,
     did: DefId,
+    type_arguments: String,
     type_parameters: Vec<Sort>,
     params: Vec<Sort>,
 ) -> ForallPred {
-    ForallPred::new(stable_def_id_symbol(tcx, did, "q"), type_parameters, params)
+    ForallPred::new(
+        stable_def_id_symbol(tcx, did, "q"),
+        type_arguments,
+        type_parameters,
+        params,
+    )
 }
 
 pub fn trait_forall_fn(
     tcx: mir_ty::TyCtxt<'_>,
     did: DefId,
+    type_arguments: String,
     type_parameters: Vec<Sort>,
     params: Vec<Sort>,
     result: Sort,
 ) -> ForallPred {
     ForallPred::function(
         stable_def_id_symbol(tcx, did, "q"),
+        type_arguments,
         type_parameters,
         params,
         result,
@@ -87,11 +95,13 @@ pub fn trait_forall_fn(
 pub fn closure_pre_forall_pred(
     tcx: mir_ty::TyCtxt<'_>,
     did: DefId,
+    type_arguments: String,
     type_parameters: Vec<Sort>,
     params: Vec<Sort>,
 ) -> ForallPred {
     ForallPred::new(
         stable_def_id_symbol(tcx, did, "q_pre"),
+        type_arguments,
         type_parameters,
         params,
     )
@@ -100,11 +110,13 @@ pub fn closure_pre_forall_pred(
 pub fn closure_post_forall_pred(
     tcx: mir_ty::TyCtxt<'_>,
     did: DefId,
+    type_arguments: String,
     type_parameters: Vec<Sort>,
     params: Vec<Sort>,
 ) -> ForallPred {
     ForallPred::new(
         stable_def_id_symbol(tcx, did, "q_post"),
+        type_arguments,
         type_parameters,
         params,
     )
@@ -116,11 +128,13 @@ pub fn closure_post_forall_pred(
 pub fn method_post_forall_pred(
     tcx: mir_ty::TyCtxt<'_>,
     did: DefId,
+    type_arguments: String,
     type_parameters: Vec<Sort>,
     params: Vec<Sort>,
 ) -> ForallPred {
     ForallPred::new(
         stable_def_id_symbol(tcx, did, "q_method_post"),
+        type_arguments,
         type_parameters,
         params,
     )
@@ -129,11 +143,13 @@ pub fn method_post_forall_pred(
 pub fn closure_hist_inv_forall_pred(
     tcx: mir_ty::TyCtxt<'_>,
     did: DefId,
+    type_arguments: String,
     type_parameters: Vec<Sort>,
     params: Vec<Sort>,
 ) -> ForallPred {
     ForallPred::new(
         stable_def_id_symbol(tcx, did, "q_hist_inv"),
+        type_arguments,
         type_parameters,
         params,
     )
