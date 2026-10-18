@@ -620,6 +620,73 @@ pub struct Analyzer<'tcx> {
     contract_annotations: HashMap<DefId, ContractAnnotations>,
     /// Where the written invariant of each loop, by its header, is annotated, for the report.
     invariant_annotations: HashMap<(LocalDefId, BasicBlock), Vec<rustc_span::Span>>,
+    /// What the analysis did with the body of each function, for the report.
+    body_checks: BodyChecks,
+}
+
+/// What the analysis did with the body of each function, shared by the analyzers that decide it.
+#[derive(Debug, Clone, Default)]
+pub struct BodyChecks(Rc<RefCell<HashMap<LocalDefId, BodyCheck>>>);
+
+impl BodyChecks {
+    /// Keeps what the analysis did with the body of `def`. An analysis of the body overrides any
+    /// earlier decision (a generic def left to its instances, then analyzed at one), and is
+    /// overridden by none; otherwise the first decision is kept.
+    pub fn record(&self, def: LocalDefId, check: BodyCheck) {
+        let mut checks = self.0.borrow_mut();
+        let kept = checks.entry(def).or_insert(check);
+        if check == BodyCheck::Checked {
+            *kept = check;
+        }
+    }
+
+    pub fn get(&self, def: LocalDefId) -> Option<BodyCheck> {
+        self.0.borrow().get(&def).copied()
+    }
+
+    pub fn snapshot(&self) -> HashMap<LocalDefId, BodyCheck> {
+        self.0.borrow().clone()
+    }
+}
+
+/// What the analysis did with the body of a function, recorded where it decides it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BodyCheck {
+    /// Analyzed, over its type parameters or at an instance: its clauses are in the system.
+    Checked,
+    /// Not analyzed, its written contract assumed.
+    Trusted(&'static str),
+    /// Not analyzed, and verified code is checked not to run it.
+    Ignored(&'static str),
+    /// Outside `THRUST_VERIFY_ONLY`, so not analyzed, its written contract assumed.
+    Unselected(&'static str),
+    /// Not analyzed for another reason.
+    NotAnalyzed(&'static str),
+    /// A specification function (a predicate, a formula, an extern spec), which is no code.
+    Specification,
+}
+
+impl BodyCheck {
+    pub fn status(self) -> &'static str {
+        match self {
+            BodyCheck::Checked => "checked",
+            BodyCheck::Trusted(_) => "trusted",
+            BodyCheck::Ignored(_) => "ignored",
+            BodyCheck::Unselected(_) => "unselected",
+            BodyCheck::NotAnalyzed(_) | BodyCheck::Specification => "not_analyzed",
+        }
+    }
+
+    pub fn reason(self) -> Option<&'static str> {
+        match self {
+            BodyCheck::Checked => None,
+            BodyCheck::Trusted(reason)
+            | BodyCheck::Ignored(reason)
+            | BodyCheck::Unselected(reason)
+            | BodyCheck::NotAnalyzed(reason) => Some(reason),
+            BodyCheck::Specification => Some("a specification function"),
+        }
+    }
 }
 
 /// Whether `expr` is the literal `true`.
@@ -797,6 +864,7 @@ impl<'tcx> Analyzer<'tcx> {
             template_sites: Default::default(),
             contract_annotations: Default::default(),
             invariant_annotations: Default::default(),
+            body_checks: Default::default(),
         }
     }
 
@@ -2120,6 +2188,7 @@ impl<'tcx> Analyzer<'tcx> {
                     .map(move |(bb, def)| (key.local_def_id, *bb, &def.ty))
             })
             .collect();
+        let body_checks = self.body_checks.snapshot();
         let input = crate::report::Input {
             system,
             contracts,
@@ -2130,6 +2199,7 @@ impl<'tcx> Analyzer<'tcx> {
             template_vars: &self.template_vars,
             contract_annotations: &self.contract_annotations,
             invariant_annotations: &self.invariant_annotations,
+            body_checks: &body_checks,
             parts,
         };
         crate::report::emit(self.tcx, config, &input)
@@ -2342,6 +2412,11 @@ impl<'tcx> Analyzer<'tcx> {
             Some(tail) => written_clauses(tail),
             None => vec![self.tcx.def_span(def_id)],
         }
+    }
+
+    /// See [`BodyChecks`].
+    pub fn body_checks(&self) -> BodyChecks {
+        self.body_checks.clone()
     }
 
     /// Keeps where the written invariant of the loop at `header` of `def` is annotated, from the

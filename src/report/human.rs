@@ -324,6 +324,20 @@ impl Human<'_, '_> {
         }
     }
 
+    /// One note for the functions of the crate, with a line at each saying what the analysis
+    /// did with its body.
+    pub(super) fn functions(&self, functions: &[super::functions::Function]) {
+        if functions.is_empty() {
+            return;
+        }
+        let summary = super::functions::summary(functions);
+        let mut diag = self.tcx.dcx().struct_note(format!("thrust: {summary}"));
+        for f in functions {
+            diag.span_note(f.head, format!("`{}`: {}", f.name, f.describe()));
+        }
+        diag.emit();
+    }
+
     pub(super) fn emit(&self, entries: &[Entry<'_>]) {
         for entry in entries {
             let mut notes = Vec::new();

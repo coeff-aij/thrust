@@ -47,6 +47,19 @@ enum Line<'a> {
         /// What `z3`, asked for the run of the part the solver refuted, answered instead.
         z3_answer: Option<String>,
     },
+    /// A function of the crate and what the analysis did with its body.
+    Function {
+        r#fn: &'a str,
+        span: Range,
+        /// `checked`, `trusted`, `ignored`, `unselected` or `not_analyzed`.
+        body: &'static str,
+        /// Why the body is not checked.
+        reason: Option<&'static str>,
+        /// Of a checked body with `THRUST_SPLIT`, the parts its clauses are in.
+        parts: Option<&'a [usize]>,
+        /// Of a checked body, the verdict of the query or of the parts its clauses are in.
+        verdict: Option<&'static str>,
+    },
     Site {
         r#fn: &'a str,
         site: String,
@@ -145,10 +158,11 @@ pub(super) struct Json<'a, 'tcx> {
     /// Each failure, with the number of its part (`THRUST_SPLIT`).
     pub(super) failures: Vec<(Option<usize>, Failure)>,
     pub(super) parts: &'a [super::Part],
+    pub(super) functions: &'a [super::functions::Function],
     pub(super) verdict: &'a str,
     pub(super) message: Option<String>,
     /// Of a whole query without an answer, the functions its clauses come from.
-    pub(super) functions: Option<Vec<super::parts::PartCode>>,
+    pub(super) query_functions: Option<Vec<super::parts::PartCode>>,
     /// What `z3`, asked for a run in place of the solver, answered instead, by the number of
     /// the part, `None` for the whole query.
     pub(super) z3_answers: Vec<(Option<usize>, String)>,
@@ -337,7 +351,7 @@ impl Json<'_, '_> {
             },
             message: self.message.clone(),
             functions: self
-                .functions
+                .query_functions
                 .as_ref()
                 .map(|functions| self.fn_spans(functions)),
             z3_answer: self.z3_answer(None),
@@ -351,6 +365,16 @@ impl Json<'_, '_> {
                 message: part.message.as_deref(),
                 cached: part.cached,
                 z3_answer: self.z3_answer(Some(part.id)),
+            })?;
+        }
+        for f in self.functions {
+            line(Line::Function {
+                r#fn: &f.name,
+                span: range(self.tcx, f.span),
+                body: f.check.status(),
+                reason: f.check.reason(),
+                parts: f.parts.as_deref(),
+                verdict: f.verdict,
             })?;
         }
         for (part, failure) in &self.failures {

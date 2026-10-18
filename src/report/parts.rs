@@ -50,6 +50,7 @@ pub fn crate_verdict(verdicts: &[&'static str]) -> &'static str {
 
 /// A function some clauses of a part come from, with the span of the whole function.
 pub struct PartCode {
+    pub def: LocalDefId,
     pub r#fn: String,
     pub span: Span,
     /// The function's signature, where an error names it.
@@ -131,6 +132,7 @@ pub fn code(tcx: TyCtxt<'_>, system: &chc::System, ids: &[chc::ClauseId]) -> Vec
     let mut code: Vec<PartCode> = clauses
         .into_iter()
         .map(|(def, clauses)| PartCode {
+            def,
             r#fn: tcx.def_path_str(def.to_def_id()),
             span: tcx
                 .hir_span_with_body(tcx.local_def_id_to_hir_id(def))

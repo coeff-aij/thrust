@@ -77,16 +77,20 @@ fn report_names_the_written_contract_a_run_assumes() {
     );
 }
 
-/// `THRUST_REPORT=1` writes to a program what it shows a person: after the header and the
-/// verdict, the failure, each step of its run with the obligation and the span deriving it, spans
-/// as ranges relative to the root the header names, and no template or constraint without a
-/// solution.
+/// `THRUST_REPORT=1` writes to a program what it shows a person: after the header, the verdict
+/// and the functions, the failure, each step of its run with the obligation and the span deriving
+/// it, spans as ranges relative to the root the header names, and no template or constraint
+/// without a solution.
 #[test]
 fn json_report_shows_the_failure_alone() {
     let output = report_with("loop_fail.rs", "1", &[("THRUST_REPORT_FORMAT", "json")]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let kinds: Vec<&str> = stdout.lines().filter_map(|l| l.split('"').nth(3)).collect();
-    assert_eq!(kinds, ["report", "verdict", "failure"], "{stdout}");
+    assert_eq!(
+        kinds,
+        ["report", "verdict", "function", "function", "failure"],
+        "{stdout}"
+    );
     let root = env!("CARGO_MANIFEST_DIR");
     let header = format!(r#"{{"kind":"report","version":3,"root":"{root}","#);
     assert!(stdout.starts_with(&header), "{stdout}");
@@ -637,4 +641,106 @@ fn tuples_and_units_read_as_rust_writes_them() {
         .unwrap_or_default();
     assert!(values.contains(",)") && !values.contains(", )"), "{stderr}");
     assert!(!values.contains("= ()"), "{stderr}");
+}
+
+/// The `function` lines of a JSON report of `fixture`, by the function they name.
+fn function_lines(fixture: &str, env: &[(&str, &str)]) -> Vec<(String, String)> {
+    let mut env = env.to_vec();
+    env.push(("THRUST_REPORT_FORMAT", "json"));
+    let output = report_with(fixture, "1", &env);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{stdout}");
+    stdout
+        .lines()
+        .filter(|line| line.starts_with(r#"{"kind":"function","#))
+        .map(|line| {
+            let name = line.split(r#""fn":""#).nth(1).unwrap();
+            let name = name.split('"').next().unwrap().to_owned();
+            (name, line.to_owned())
+        })
+        .collect()
+}
+
+fn function_line<'a>(lines: &'a [(String, String)], name: &str) -> &'a str {
+    let found = lines.iter().find(|(n, _)| n == name);
+    &found
+        .unwrap_or_else(|| panic!("no line for `{name}`: {lines:?}"))
+        .1
+}
+
+/// Each function of the crate gets a line saying what the analysis did with its body, a checked
+/// one with the verdict of the query holding its clauses; a specification function gets none.
+#[test]
+fn each_function_says_what_was_done_with_its_body() {
+    let lines = function_lines("function_bodies.rs", &[]);
+    let names: Vec<&str> = lines.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "log",
+            "inc",
+            "double",
+            "twice",
+            "twice::{closure#0}",
+            "main"
+        ],
+        "{lines:?}"
+    );
+    let checked = r#""body":"checked","reason":null,"parts":null,"verdict":"sat"}"#;
+    for name in ["double", "twice", "twice::{closure#0}", "main"] {
+        assert!(function_line(&lines, name).ends_with(checked), "{lines:?}");
+    }
+    let main = r#"{"kind":"function","fn":"main","span":{"file":"tests/report/function_bodies.rs","line":29,"column":1,"end_line":33,"end_column":2},"#;
+    assert!(function_line(&lines, "main").starts_with(main), "{lines:?}");
+    let trusted =
+        r##""body":"trusted","reason":"#[thrust::trusted]","parts":null,"verdict":null}"##;
+    assert!(function_line(&lines, "inc").ends_with(trusted), "{lines:?}");
+    let ignored =
+        r##""body":"ignored","reason":"#[thrust::ignored]","parts":null,"verdict":null}"##;
+    assert!(function_line(&lines, "log").ends_with(ignored), "{lines:?}");
+}
+
+/// Outside `THRUST_VERIFY_ONLY`, a function with a written contract is unselected and one left
+/// to inference is checked; split, a checked body names the parts of its clauses, and a generic
+/// function analyzed only at its instances, which no call reaches, is not analyzed.
+#[test]
+fn a_function_line_says_why_a_body_is_not_checked() {
+    let lines = function_lines("function_bodies.rs", &[("THRUST_VERIFY_ONLY", "main")]);
+    let unselected = r#""body":"unselected","reason":"outside THRUST_VERIFY_ONLY, its written contract assumed","#;
+    assert!(
+        function_line(&lines, "double").contains(unselected),
+        "{lines:?}"
+    );
+    assert!(
+        function_line(&lines, "twice").contains(r#""body":"checked""#),
+        "{lines:?}"
+    );
+
+    let lines = function_lines("function_bodies.rs", &[("THRUST_SPLIT", "2")]);
+    let double = function_line(&lines, "double");
+    assert!(double.contains(r#""parts":["#), "{lines:?}");
+    assert!(double.ends_with(r#""verdict":"sat"}"#), "{lines:?}");
+
+    let lines = function_lines(
+        "uncalled_generic.rs",
+        &[("THRUST_PER_INSTANCE_GENERICS", "1")],
+    );
+    let id = r#""body":"not_analyzed","reason":"generic, analyzed at each instance a call reaches, and none does","#;
+    assert!(function_line(&lines, "id").contains(id), "{lines:?}");
+}
+
+/// The human report says the same in one note, a line at each function's signature.
+#[test]
+fn the_human_report_lists_the_functions() {
+    let output = report("function_bodies.rs", "1");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("note: thrust: 6 functions: 4 checked, 1 trusted, 1 ignored"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("`inc`: trusted: #[thrust::trusted]"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("`main`: checked (sat)"), "{stderr}");
 }
