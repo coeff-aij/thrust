@@ -224,6 +224,8 @@ pub struct Config {
     pub solver: CommandConfig,
     pub preprocessor: Option<CommandConfig>,
     pub output_dir: Option<std::path::PathBuf>,
+    /// The comments the queries carry, decided once by the thread that reads the configuration.
+    pub(crate) comments: super::smtlib2::Comments,
 }
 
 impl Default for Config {
@@ -242,6 +244,7 @@ impl Default for Config {
             },
             preprocessor: None,
             output_dir: None,
+            comments: super::smtlib2::Comments::None,
         }
     }
 }
@@ -270,6 +273,7 @@ impl Config {
         if let Ok(dir) = std::env::var("THRUST_OUTPUT_DIR") {
             config.output_dir = Some(dir.into());
         }
+        config.comments = super::smtlib2::Comments::from_log_level();
         config
     }
 
@@ -296,6 +300,13 @@ impl Config {
 
     pub fn is_z3(&self) -> bool {
         self.solver.is_z3()
+    }
+
+    /// Whether `z3` is asked for the refutation of a query the solver refuted, which it gives
+    /// none of: a refutation is asked for, and the solver is not `z3` alone (PCSat, or `z3`
+    /// after a preprocessor).
+    pub fn asks_z3_to_refute(&self, requests: Requests) -> bool {
+        requests.proof && !self.answers(requests)
     }
 
     pub fn capabilities(&self) -> Capabilities {
@@ -356,15 +367,17 @@ impl Config {
     /// hyper-resolutions. Its preprocessing would fold clauses into one another, and with them
     /// the facts the refutation derives, and drop the premises a fact makes true, so the
     /// transformations doing so are turned off.
-    pub fn refute(&self, problem: impl std::fmt::Display) -> Option<Sexp> {
+    /// Without a refutation, what `z3` answered instead.
+    pub fn refute(&self, problem: impl std::fmt::Display) -> Result<Sexp, Refused> {
         use std::io::Write as _;
+        let failed = |err: std::io::Error| Refused::Failed(err.to_string());
         let mut file = tempfile::Builder::new()
             .prefix("thrust_tmp_")
             .suffix(".smt2")
             .tempfile()
-            .ok()?;
-        write!(file, "{problem}\n(check-sat)\n(get-proof)\n").ok()?;
-        file.flush().ok()?;
+            .map_err(failed)?;
+        write!(file, "{problem}\n(check-sat)\n(get-proof)\n").map_err(failed)?;
+        file.flush().map_err(failed)?;
         let mut solver = self.solver.clone();
         solver.args.extend(
             [
@@ -377,12 +390,30 @@ impl Config {
             ]
             .map(str::to_owned),
         );
-        let output = solver.run(file.path(), std::process::Stdio::piped()).ok()?;
-        let (verdict, evidence) = split_evidence(&output, true);
-        if read_verdict(&verdict)?.0 != Verdict::Unsat {
-            return None;
+        let output = match solver.run(file.path(), std::process::Stdio::piped()) {
+            Ok(output) | Err(CheckSatError::Error { stdout: output, .. }) => output,
+            Err(err) => return Err(Refused::Failed(format!("{err:?}"))),
+        };
+        let (answered, evidence) = split_evidence(&output, true);
+        match read_verdict(&answered) {
+            Some((Verdict::Unsat, _)) => {}
+            Some((Verdict::Sat, _)) => return Err(Refused::Sat),
+            Some((Verdict::Unknown, _)) => return Err(Refused::Unknown),
+            None => return Err(Refused::NoVerdict),
         }
-        evidence.into_iter().find(|e| !e.is_error())
+        let proof = evidence.into_iter().find(|e| !e.is_error());
+        proof.ok_or(Refused::NoRefutation)
+    }
+
+    /// `z3`, asked for the refutation of a query another solver refuted, with that solver's time
+    /// limit (`THRUST_SOLVER_TIMEOUT_SECS`) when it sets one, and else its own 30 s: a solver
+    /// without a limit (`0`) leaves `z3` its default.
+    pub fn z3_in_place_of_solver() -> Config {
+        let mut config = Config::default();
+        let default = config.solver.timeout;
+        config.solver.load_timeout("THRUST_SOLVER_TIMEOUT_SECS");
+        config.solver.timeout = config.solver.timeout.or(default);
+        config
     }
 
     fn run_check_sat(
@@ -431,6 +462,31 @@ impl Config {
     }
 }
 
+/// What `z3`, asked for a refutation, answered instead of one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Refused {
+    Sat,
+    Unknown,
+    /// It printed no verdict.
+    NoVerdict,
+    /// It answered `unsat` without a refutation.
+    NoRefutation,
+    /// It could not be run, or did not answer in time (`Timeout(30s)`).
+    Failed(String),
+}
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Refused::Sat => f.write_str("sat"),
+            Refused::Unknown => f.write_str("unknown"),
+            Refused::NoVerdict => f.write_str("no verdict"),
+            Refused::NoRefutation => f.write_str("no refutation"),
+            Refused::Failed(why) => f.write_str(why),
+        }
+    }
+}
+
 /// What a caller wants besides the verdict.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Requests {
@@ -455,6 +511,10 @@ pub struct Answer {
     /// The query, when a model is asked for: its declarations are what the model's terms are
     /// over.
     pub query: Option<String>,
+    /// Whether the refutation is `z3`'s, asked of a query another solver refuted.
+    pub proof_by_z3: bool,
+    /// What `z3`, asked for a refutation, answered instead.
+    pub z3_refused: Option<Refused>,
 }
 
 impl Answer {
@@ -467,6 +527,8 @@ impl Answer {
             goal_markers: Vec::new(),
             clause_tags: Vec::new(),
             query: None,
+            proof_by_z3: false,
+            z3_refused: None,
         }
     }
 }

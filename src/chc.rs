@@ -30,7 +30,7 @@ pub use clause_builder::{ClauseBuilder, Var};
 pub use debug::DebugInfo;
 pub use dedup::dedup_pred_args;
 pub use flatten::flatten_recursive_pred_args;
-pub use solver::{verdict, Answer, Capabilities, CheckSatError, Config, Requests};
+pub use solver::{verdict, Answer, Capabilities, CheckSatError, Config, Refused, Requests};
 pub use unbox::{unbox, unbox_formula, unbox_sort};
 
 /// A name of a datatype.
@@ -1718,6 +1718,8 @@ impl UserDefinedPred {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ForallPred {
     inner: String,
+    /// The `<...>` suffix of the symbol, which names the generic arguments it stands at.
+    type_arguments: String,
     type_parameters: Vec<Sort>,
     params: Vec<Sort>,
     /// `Bool` for a predicate; the result sort of a trait logic function read at a type
@@ -1754,18 +1756,25 @@ where
 }
 
 impl ForallPred {
-    pub fn new(inner: String, type_parameters: Vec<Sort>, params: Vec<Sort>) -> Self {
-        Self::function(inner, type_parameters, params, Sort::bool())
+    pub fn new(
+        inner: String,
+        type_arguments: String,
+        type_parameters: Vec<Sort>,
+        params: Vec<Sort>,
+    ) -> Self {
+        Self::function(inner, type_arguments, type_parameters, params, Sort::bool())
     }
 
     pub fn function(
         inner: String,
+        type_arguments: String,
         type_parameters: Vec<Sort>,
         params: Vec<Sort>,
         result: Sort,
     ) -> Self {
         Self {
             inner,
+            type_arguments,
             type_parameters,
             params,
             result,
@@ -1776,9 +1785,13 @@ impl ForallPred {
         &self.result
     }
 
-    /// The symbol without the `<...>` that names the sorts it stands over.
+    /// The symbol without the `<...>` that names the generic arguments it stands at.
     pub fn inner(&self) -> &str {
         &self.inner
+    }
+
+    pub fn type_arguments(&self) -> &str {
+        &self.type_arguments
     }
 
     pub fn type_parameters(&self) -> &[Sort] {
@@ -3644,6 +3657,12 @@ impl System {
         smtlib2::System::new(self, capabilities)
     }
 
+    /// The query `config`'s solver is given, with the comments `config` decided on.
+    fn query(&self, config: &Config) -> smtlib2::System<'_> {
+        self.smtlib2(config.capabilities())
+            .with_comments(config.comments)
+    }
+
     /// Solves the CHC using an external SMT solver.
     ///
     /// This method first performs some optimization of the CHC,
@@ -3668,7 +3687,7 @@ impl System {
                 writeln!(f, "{:?}: {}", idx, c.display()).unwrap();
             }
         }
-        let query = system.smtlib2(config.capabilities()).to_string();
+        let query = system.query(&config).to_string();
         if let Err(err) = config.save_query("thrust_output.smt2", &query) {
             return Answer::of(Err(err.into()));
         }
@@ -3678,14 +3697,9 @@ impl System {
     /// Solves a part of the system (see [`System::part`]) once more for the evidence `requests`
     /// names. Its query was saved when its verdict was taken ([`System::solve_parts`]), so this
     /// writes no file.
-    pub fn solve_part_with(&self, requests: Requests) -> Answer {
-        let config = Config::from_env();
-        let query = self
-            .clone()
-            .prepared()
-            .smtlib2(config.capabilities())
-            .to_string();
-        self.answer(&config, query, requests)
+    pub fn solve_part_with(&self, config: &Config, requests: Requests) -> Answer {
+        let query = self.clone().prepared().query(config).to_string();
+        self.answer(config, query, requests)
     }
 
     /// The answer to `query`, the system's, with the evidence `requests` names.
@@ -3704,13 +3718,35 @@ impl System {
         // the verdict is the one the query alone gets.
         let refuted = matches!(answer.result, Err(CheckSatError::Unsat));
         if requests.proof && refuted && config.answers(requests) {
-            let mut marked = self.clone();
-            answer.clause_tags = marked.tag_clauses();
-            answer.goal_markers = marked.mark_goals();
-            let marked = marked.prepared();
-            answer.proof = config.refute(marked.smtlib2(config.capabilities()));
+            self.refute(config, &mut answer);
+        }
+        if refuted && config.asks_z3_to_refute(requests) {
+            self.refute_by_z3(&mut answer);
         }
         answer
+    }
+
+    /// Asks `config`'s solver for the refutation of the system, which is refuted, with its
+    /// clauses tagged and its goals marked.
+    fn refute(&self, config: &Config, answer: &mut Answer) {
+        let mut marked = self.clone();
+        answer.clause_tags = marked.tag_clauses();
+        answer.goal_markers = marked.mark_goals();
+        let marked = marked.prepared();
+        match config.refute(marked.query(config)) {
+            Ok(proof) => answer.proof = Some(proof),
+            Err(refused) => answer.z3_refused = Some(refused),
+        }
+    }
+
+    /// Asks `z3` for the refutation of the system, which another solver refuted (PCSat, which
+    /// gives none), when `z3` reads its query.
+    pub fn refute_by_z3(&self, answer: &mut Answer) {
+        if self.needs_pcsat() {
+            return;
+        }
+        self.refute(&Config::z3_in_place_of_solver(), answer);
+        answer.proof_by_z3 = true;
     }
 
     /// Whether the query uses what `z3` does not read: a forall sort or a sequence in a clause,
@@ -3739,11 +3775,7 @@ impl System {
         let cache = cache::Cache::from_env();
         let parts = components::components(self);
         let solve = |i: usize| {
-            let query = self
-                .part(&parts[i])
-                .prepared()
-                .smtlib2(config.capabilities())
-                .to_string();
+            let query = self.part(&parts[i]).prepared().query(&config).to_string();
             let file = format!("thrust_output_part{}.smt2", i + 1);
             if let Err(err) = config.save_query(&file, &query) {
                 return cache::Verdict {
@@ -4118,7 +4150,7 @@ mod tests {
     #[test]
     fn an_unknown_depends_on_the_forall_preds_of_what_follows_it() {
         let mut system = System::default();
-        let q = ForallPred::new("q".into(), vec![], vec![Sort::int()]);
+        let q = ForallPred::new("q".into(), String::new(), vec![], vec![Sort::int()]);
         system.register_forall_pred(q.clone());
         let p = system.new_pred_var(vec![Sort::int()], DebugInfo::default());
         let x = || Term::var(0usize.into());
@@ -4153,6 +4185,7 @@ mod tests {
         system.new_forall_sort(DebugInfo::default());
         system.register_forall_pred(ForallPred::new(
             "q".into(),
+            String::new(),
             vec![],
             vec![Sort::forall(used)],
         ));
@@ -4180,15 +4213,18 @@ mod tests {
         let idx = system.new_forall_sort(
             DebugInfo::default().with_context("type_param", "ParamTy T/#0 (decl=DefId(...))"),
         );
-        system.register_forall_pred(ForallPred::new("q".into(), vec![], vec![Sort::forall(idx)]));
+        system.register_forall_pred(ForallPred::new(
+            "q".into(),
+            String::new(),
+            vec![],
+            vec![Sort::forall(idx)],
+        ));
 
-        // The query carries the debug info in comments only at the debug level.
-        let subscriber = tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::DEBUG)
-            .with_writer(std::io::sink)
-            .finish();
-        let smt =
-            tracing::subscriber::with_default(subscriber, || system.smtlib2(PCSAT).to_string());
+        // The query carries the debug info in comments only at the full comment level.
+        let smt = system
+            .smtlib2(PCSAT)
+            .with_comments(smtlib2::Comments::Full)
+            .to_string();
         assert!(smt.contains("; type_param=ParamTy T/#0 (decl=DefId(...))"));
         assert!(smt.contains("(declare-forall-sort a0)"));
     }
@@ -4200,6 +4236,7 @@ mod tests {
         let tuple = Sort::tuple(vec![Sort::forall(idx), Sort::int()]);
         system.register_forall_pred(ForallPred::new(
             "q".into(),
+            format!("<{idx}>"),
             vec![Sort::forall(idx)],
             vec![tuple, Sort::int()],
         ));

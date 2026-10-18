@@ -77,21 +77,27 @@ fn report_names_the_written_contract_a_run_assumes() {
     );
 }
 
-/// `THRUST_REPORT=1` writes to a program what it shows a person: after the header and the
-/// verdict, the failure, each step of its run with the obligation and the span deriving it, spans
-/// as ranges relative to the root the header names, and no template or constraint without a
-/// solution.
+/// `THRUST_REPORT=1` writes to a program what it shows a person: after the header, the verdict
+/// and the functions, the failure, each step of its run with the obligation and the span deriving
+/// it, spans as ranges relative to the root the header names, and no template or constraint
+/// without a solution.
 #[test]
 fn json_report_shows_the_failure_alone() {
     let output = report_with("loop_fail.rs", "1", &[("THRUST_REPORT_FORMAT", "json")]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let kinds: Vec<&str> = stdout.lines().filter_map(|l| l.split('"').nth(3)).collect();
-    assert_eq!(kinds, ["report", "verdict", "failure"], "{stdout}");
+    assert_eq!(
+        kinds,
+        ["report", "verdict", "function", "function", "failure"],
+        "{stdout}"
+    );
     let root = env!("CARGO_MANIFEST_DIR");
-    let header = format!(r#"{{"kind":"report","version":2,"root":"{root}","#);
+    let header = format!(r#"{{"kind":"report","version":3,"root":"{root}","#);
     assert!(stdout.starts_with(&header), "{stdout}");
     let step = r#""via":"c0","obligation":"loop entry","span":{"file":"tests/report/loop_fail.rs","line":9,"column":5,"end_line":14,"end_column":6}"#;
     assert!(stdout.contains(step), "{stdout}");
+    let premise = r#"{"text":"main.loop#1(x, y)","span":{"file":"tests/report/loop_fail.rs","line":9,"column":11,"end_line":9,"end_column":17}}"#;
+    assert!(stdout.contains(premise), "{stdout}");
     // `rand`'s `ensures(true)` assumes nothing.
     assert!(stdout.contains(r#""assumes":[]"#), "{stdout}");
 }
@@ -104,7 +110,7 @@ fn report_states_the_verdict_and_one_refutation_per_query() {
     let stdout = String::from_utf8_lossy(&json.stdout);
     assert!(
         stdout.contains(
-            r#"{"kind":"verdict","verdict":"unsat","refutations":"one per query","message":null}"#
+            r#"{"kind":"verdict","verdict":"unsat","refutations":"one per query","message":null,"functions":null,"z3_answer":null}"#
         ),
         "{stdout}"
     );
@@ -133,6 +139,81 @@ fn report_labels_the_requires_a_call_breaks() {
         .unwrap_or_default();
     assert!(label.contains("the annotation it checks"), "{stderr}");
     assert!(!stderr.contains("how the solver reaches it"), "{stderr}");
+}
+
+/// A write breaking a parameter's written refinement labels that refinement.
+#[test]
+fn report_labels_the_refinement_a_write_breaks() {
+    let output = report("refinement_write.rs", "failure");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("thrust: refuted: refinement of `x` in `set`"),
+        "{stderr}"
+    );
+    let label = stderr
+        .lines()
+        .skip_while(|l| !l.contains("#[thrust_macros::param(x: &mut { v: i64 | v >= 0 })]"))
+        .nth(1)
+        .unwrap_or_default();
+    assert!(
+        label.contains("------ the annotation it checks"),
+        "{stderr}"
+    );
+}
+
+/// A call to a std function without a specification stops the analysis with an error at the
+/// call naming the function and how to give it a contract, not a panic.
+#[test]
+fn a_call_without_a_specification_is_an_error_at_the_call() {
+    let output = report("no_spec.rs", "1");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("panicked"), "{stderr}");
+    assert!(
+        stderr.contains(
+            "error: thrust: no specification of `core::num::<impl i64>::pow`, which `main` calls\n \
+             --> "
+        ),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("tests/report/no_spec.rs:2:13\n"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("`#[thrust::trusted]`"), "{stderr}");
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+}
+
+/// The line of the refuted constraint and that of its values.
+fn refuted_lines(fixture: &str) -> (String, String) {
+    let output = report(fixture, "failure");
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let line = |prefix: &str| {
+        let found = stderr.lines().find(|l| l.contains(prefix));
+        found.unwrap_or_default().to_owned()
+    };
+    (line("= note: c"), line("where it fails:"))
+}
+
+/// A variable is never named for a value it no longer holds: after a loop with a written
+/// invariant, a variable assigned again shows its new value, and the value it held at the loop
+/// is unnamed; so is one a shadowing `let` hides and one moved out.
+#[test]
+fn a_name_stands_only_for_the_value_the_variable_holds() {
+    let (constraint, values) = refuted_lines("name_after_reassign.rs");
+    assert!(
+        constraint.contains("(k >= n ∧ i = 5 ∧ k != n + 1) ==> k < 0"),
+        "{constraint}"
+    );
+    assert!(values.contains("i = 5"), "{values}");
+    let (constraint, _) = refuted_lines("name_after_shadow.rs");
+    assert!(!constraint.contains(" i >= n"), "{constraint}");
+    assert!(constraint.contains("__tmp_chc_"), "{constraint}");
+    let (constraint, _) = refuted_lines("name_after_moved.rs");
+    assert!(!constraint.contains(" b >= n"), "{constraint}");
+    assert!(constraint.contains("__tmp_chc_"), "{constraint}");
+    // A variable written again after its value was moved out holds the new value.
+    let (_, values) = refuted_lines("name_after_move_then_assign.rs");
+    assert!(values.contains("b = 7"), "{values}");
 }
 
 /// A refuted `assert!(a != b)` reads as its condition, not as the boolean term the MIR compares
@@ -249,7 +330,9 @@ fn report_names_no_contract_of_the_injected_std() {
 }
 
 /// The premises of a constraint are those its formula shows: two bounds by one value are one
-/// equation in both, and a premise the refinements of a `&mut` repeat is shown once.
+/// equation in both, and a premise the refinements of a `&mut` repeat is shown once. In JSON an
+/// unknown applied is at the code of its template, the entry block's at the signature; another
+/// premise has no span.
 #[test]
 fn premises_are_the_formula_s_and_each_is_once() {
     let output = report_with(
@@ -263,14 +346,20 @@ fn premises_are_the_formula_s_and_each_is_once() {
         .find(|l| l.contains(r#""fn":"check""#) && l.contains("assertion"))
         .unwrap_or_default();
     assert!(
-        check.contains(r#""premises":["check.bb0(x, old(x) ← x)","x = 0"]"#),
+        check.contains(
+            r#""premises":[{"text":"check.bb0(x, old(x) ← x)","span":{"file":"tests/report/bounds.rs","line":2,"column":1,"end_line":2,"end_column":17}},{"text":"x = 0","span":null}]"#
+        ),
         "{stdout}"
     );
     let identity = stdout
         .lines()
         .find(|l| l.contains(r#""kind":"failure""#) && l.contains(r#""fn":"identity""#))
         .unwrap_or_default();
-    assert_eq!(identity.matches(r#""°x >= 0""#).count(), 1, "{stdout}");
+    assert_eq!(
+        identity.matches(r#""text":"°x >= 0""#).count(),
+        1,
+        "{stdout}"
+    );
 }
 
 /// A constraint applies an unknown as the run shows a fact: each argument by the variable of the
@@ -365,7 +454,8 @@ fn json_states_columns_facts_and_the_solver_s_limit() {
     );
     std::fs::remove_dir_all(&dir).unwrap();
     let stdout = String::from_utf8_lossy(&slow.stdout);
-    let verdict = r#"{"kind":"verdict","verdict":"timeout","refutations":"one per query","message":"Timeout(1s)"}"#;
+    // A whole query without an answer names the functions of its clauses, as a part does.
+    let verdict = r#"{"kind":"verdict","verdict":"timeout","refutations":"one per query","message":"Timeout(1s)","functions":[{"fn":"main","span":{"file":"tests/report/loop_fail.rs","line":6,"column":1,"end_line":16,"end_column":2}}],"z3_answer":null}"#;
     assert!(stdout.contains(verdict), "{stdout}");
 }
 
@@ -551,4 +641,106 @@ fn tuples_and_units_read_as_rust_writes_them() {
         .unwrap_or_default();
     assert!(values.contains(",)") && !values.contains(", )"), "{stderr}");
     assert!(!values.contains("= ()"), "{stderr}");
+}
+
+/// The `function` lines of a JSON report of `fixture`, by the function they name.
+fn function_lines(fixture: &str, env: &[(&str, &str)]) -> Vec<(String, String)> {
+    let mut env = env.to_vec();
+    env.push(("THRUST_REPORT_FORMAT", "json"));
+    let output = report_with(fixture, "1", &env);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{stdout}");
+    stdout
+        .lines()
+        .filter(|line| line.starts_with(r#"{"kind":"function","#))
+        .map(|line| {
+            let name = line.split(r#""fn":""#).nth(1).unwrap();
+            let name = name.split('"').next().unwrap().to_owned();
+            (name, line.to_owned())
+        })
+        .collect()
+}
+
+fn function_line<'a>(lines: &'a [(String, String)], name: &str) -> &'a str {
+    let found = lines.iter().find(|(n, _)| n == name);
+    &found
+        .unwrap_or_else(|| panic!("no line for `{name}`: {lines:?}"))
+        .1
+}
+
+/// Each function of the crate gets a line saying what the analysis did with its body, a checked
+/// one with the verdict of the query holding its clauses; a specification function gets none.
+#[test]
+fn each_function_says_what_was_done_with_its_body() {
+    let lines = function_lines("function_bodies.rs", &[]);
+    let names: Vec<&str> = lines.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "log",
+            "inc",
+            "double",
+            "twice",
+            "twice::{closure#0}",
+            "main"
+        ],
+        "{lines:?}"
+    );
+    let checked = r#""body":"checked","reason":null,"parts":null,"verdict":"sat"}"#;
+    for name in ["double", "twice", "twice::{closure#0}", "main"] {
+        assert!(function_line(&lines, name).ends_with(checked), "{lines:?}");
+    }
+    let main = r#"{"kind":"function","fn":"main","span":{"file":"tests/report/function_bodies.rs","line":29,"column":1,"end_line":33,"end_column":2},"#;
+    assert!(function_line(&lines, "main").starts_with(main), "{lines:?}");
+    let trusted =
+        r##""body":"trusted","reason":"#[thrust::trusted]","parts":null,"verdict":null}"##;
+    assert!(function_line(&lines, "inc").ends_with(trusted), "{lines:?}");
+    let ignored =
+        r##""body":"ignored","reason":"#[thrust::ignored]","parts":null,"verdict":null}"##;
+    assert!(function_line(&lines, "log").ends_with(ignored), "{lines:?}");
+}
+
+/// Outside `THRUST_VERIFY_ONLY`, a function with a written contract is unselected and one left
+/// to inference is checked; split, a checked body names the parts of its clauses, and a generic
+/// function analyzed only at its instances, which no call reaches, is not analyzed.
+#[test]
+fn a_function_line_says_why_a_body_is_not_checked() {
+    let lines = function_lines("function_bodies.rs", &[("THRUST_VERIFY_ONLY", "main")]);
+    let unselected = r#""body":"unselected","reason":"outside THRUST_VERIFY_ONLY, its written contract assumed","#;
+    assert!(
+        function_line(&lines, "double").contains(unselected),
+        "{lines:?}"
+    );
+    assert!(
+        function_line(&lines, "twice").contains(r#""body":"checked""#),
+        "{lines:?}"
+    );
+
+    let lines = function_lines("function_bodies.rs", &[("THRUST_SPLIT", "2")]);
+    let double = function_line(&lines, "double");
+    assert!(double.contains(r#""parts":["#), "{lines:?}");
+    assert!(double.ends_with(r#""verdict":"sat"}"#), "{lines:?}");
+
+    let lines = function_lines(
+        "uncalled_generic.rs",
+        &[("THRUST_PER_INSTANCE_GENERICS", "1")],
+    );
+    let id = r#""body":"not_analyzed","reason":"generic, analyzed at each instance a call reaches, and none does","#;
+    assert!(function_line(&lines, "id").contains(id), "{lines:?}");
+}
+
+/// The human report says the same in one note, a line at each function's signature.
+#[test]
+fn the_human_report_lists_the_functions() {
+    let output = report("function_bodies.rs", "1");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("note: thrust: 6 functions: 4 checked, 1 trusted, 1 ignored"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("`inc`: trusted: #[thrust::trusted]"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("`main`: checked (sat)"), "{stderr}");
 }

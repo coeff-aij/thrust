@@ -90,6 +90,22 @@ enum FlowBinding {
     },
 }
 
+impl FlowBinding {
+    fn replace_part(&mut self, old: TempVarIdx, new: TempVarIdx) {
+        let parts: Vec<&mut TempVarIdx> = match self {
+            FlowBinding::Mut(current, _) | FlowBinding::Box { current, .. } => vec![current],
+            FlowBinding::Tuple(xs) => xs.iter_mut().collect(),
+            FlowBinding::Enum { variants, .. } => variants
+                .iter_mut()
+                .flat_map(|variant| variant.fields.iter_mut())
+                .collect(),
+        };
+        for part in parts.into_iter().filter(|part| **part == old) {
+            *part = new;
+        }
+    }
+}
+
 impl std::fmt::Display for FlowBinding {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -161,6 +177,15 @@ pub struct VarPath {
     pub local: Local,
     pub steps: Vec<PathStep>,
 }
+
+/// The value a function's parameter, the local, had on entry, which a block's type keeps beside
+/// the local's current value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EntryValue(pub Local);
+
+/// What the existentials of an assumption hold, by their index, for the report: a [`VarPath`] or
+/// an [`EntryValue`].
+pub type ExistentialNames = HashMap<rty::ExistentialVarIdx, debug::ErasedVar>;
 
 impl VarPath {
     fn then(&self, step: PathStep) -> VarPath {
@@ -570,7 +595,11 @@ pub struct Env<T> {
     locals: BTreeMap<Local, rty::RefinedType<Var>>,
     flow_locals: BTreeMap<Local, FlowBinding>,
     temp_vars: IndexVec<TempVarIdx, TempVarBinding>,
+    /// The temporaries bound to a parameter's value on entry.
+    entry_values: HashMap<TempVarIdx, EntryValue>,
     assumptions: Vec<Assumption>,
+    /// What the existentials of an assumption hold, by its index in `assumptions`.
+    assumption_names: HashMap<usize, ExistentialNames>,
 
     enum_defs: T,
 
@@ -607,12 +636,16 @@ where
             }
             builder.add_environment(instantiator.instantiate(), origin);
         }
-        for assumption in &self.assumptions {
+        for (i, assumption) in self.assumptions.iter().enumerate() {
             let mut origin = debug::origin::Entry::assumption(assumption);
             let mut evs = HashMap::new();
+            let names = self.assumption_names.get(&i);
             for (ev, sort) in assumption.existentials.iter_enumerated() {
                 let tv = builder.add_var(sort.clone());
-                origin.add_existential_var_mapping(ev, tv);
+                match names.and_then(|names| names.get(&ev)) {
+                    Some(name) => origin.add_described_var_mapping(ev, tv, name.clone()),
+                    None => origin.add_existential_var_mapping(ev, tv),
+                }
                 evs.insert(ev, tv);
             }
             let body = assumption.body.clone().map_var(|v| match v {
@@ -649,7 +682,9 @@ where
             locals: Default::default(),
             flow_locals: Default::default(),
             temp_vars: IndexVec::new(),
+            entry_values: HashMap::new(),
             assumptions: Vec::new(),
+            assumption_names: HashMap::new(),
             enum_defs,
             enum_expansion_depth_limit: std::env::var("THRUST_ENUM_EXPANSION_DEPTH_LIMIT")
                 .ok()
@@ -710,16 +745,36 @@ where
     /// What `var` holds, as a local and the steps from it (see [`VarPath`]), kept with its type
     /// erased for the report; `var` itself when it is no temporary of a local.
     fn described(&self, var: Var, paths: &HashMap<TempVarIdx, VarPath>) -> debug::ErasedVar {
+        self.description(var, paths)
+            .unwrap_or_else(|| debug::ErasedVar::new(var))
+    }
+
+    /// What `var` holds, when it is a local, a temporary of one or a parameter's value on entry.
+    pub fn description(
+        &self,
+        var: Var,
+        paths: &HashMap<TempVarIdx, VarPath>,
+    ) -> Option<debug::ErasedVar> {
         match var {
-            Var::Local(local) => debug::ErasedVar::new(VarPath {
+            Var::Local(local) => Some(debug::ErasedVar::new(VarPath {
                 local,
                 steps: Vec::new(),
-            }),
-            Var::Temp(temp) => match paths.get(&temp) {
-                Some(path) => debug::ErasedVar::new(path.clone()),
-                None => debug::ErasedVar::new(var),
+            })),
+            Var::Temp(temp) => match (paths.get(&temp), self.entry_values.get(&temp)) {
+                (Some(path), _) => Some(debug::ErasedVar::new(path.clone())),
+                (None, Some(entry)) => Some(debug::ErasedVar::new(*entry)),
+                (None, None) => None,
             },
         }
+    }
+
+    /// Binds a temporary to the value parameter `local` had on entry.
+    pub fn bind_entry_value(&mut self, local: Local, rty: rty::RefinedType<Var>) -> Var {
+        let var = self.immut_bind_tmp(rty);
+        if let Var::Temp(temp) = var {
+            self.entry_values.insert(temp, EntryValue(local));
+        }
+        var
     }
 
     pub fn push_temp_var(&mut self, ty: rty::Type<Var>) -> TempVarIdx {
@@ -1006,6 +1061,19 @@ where
         self.assumptions.push(assumption);
     }
 
+    /// Assumes `assumption`, whose existentials hold what `names` says.
+    pub fn assume_described(&mut self, assumption: Assumption, names: ExistentialNames) {
+        if !names.is_empty() {
+            self.assumption_names.insert(self.assumptions.len(), names);
+        }
+        self.assume(assumption);
+    }
+
+    /// What the existentials of each assumption hold, by its index in [`Env::assumptions`].
+    pub fn assumption_names(&self, i: usize) -> Option<&ExistentialNames> {
+        self.assumption_names.get(&i)
+    }
+
     pub fn extend_assumptions(&mut self, assumptions: Vec<impl Into<Assumption>>) {
         self.assumptions
             .extend(assumptions.into_iter().map(Into::into));
@@ -1244,6 +1312,28 @@ where
         }
     }
 
+    /// `part` of `parent`, given a flow binding when the environment holds it as a plain
+    /// variable of a `&mut` or `Box` type, so that a borrow can go through it: the prophecy of a
+    /// borrow that `parent` was assigned through (`r = &mut b` for a mutable local `r`), or a
+    /// pointer bound past the enum expansion depth. The fresh binding is equal to it and takes
+    /// its place in `parent`.
+    fn flow_part(&mut self, parent: Var, part: TempVarIdx) -> TempVarIdx {
+        if self.flow_binding(part.into()).is_some() {
+            return part;
+        }
+        let ty = &self.var(part.into()).expect("unbound var").ty;
+        if !ty.as_pointer().is_some_and(|ty| ty.is_own() || ty.is_mut()) {
+            return part;
+        }
+        let rty = rty::RefinedType::refined_with_term(ty.clone(), chc::Term::var(part.into()));
+        let fresh = self.temp_vars.next_index();
+        self.bind_impl(fresh.into(), rty, 0);
+        let mut binding = self.flow_binding(parent).expect("unbound parent").clone();
+        binding.replace_part(part, fresh);
+        self.insert_flow_binding(parent, binding);
+        fresh
+    }
+
     pub fn borrow_place(&mut self, place: Place<'_>, prophecy_var: TempVarIdx) -> PlaceType {
         let mut var = place.local.into();
         let mut invariants = Vec::new();
@@ -1253,25 +1343,29 @@ where
             let Some(elem) = it.next() else {
                 break;
             };
-            var = match (elem, self.flow_binding(var).expect("deref unbound var")) {
+            let (part, invariant) = match (elem, self.flow_binding(var).expect("deref unbound var"))
+            {
                 (PlaceElem::Deref, FlowBinding::Box { current, elem }) => {
-                    invariants.push(((*current).into(), elem.refinement.clone()));
-                    (*current).into()
+                    (*current, Some(elem.refinement.clone()))
                 }
                 (PlaceElem::Deref, &FlowBinding::Mut(current, final_)) => {
                     let elem = self.var(final_.into()).expect("unbound prophecy");
-                    invariants.push((current.into(), elem.refinement.clone()));
-                    current.into()
+                    (current, Some(elem.refinement.clone()))
                 }
-                (PlaceElem::Field(idx, _), FlowBinding::Tuple(xs)) => xs[idx.as_usize()].into(),
+                (PlaceElem::Field(idx, _), FlowBinding::Tuple(xs)) => (xs[idx.as_usize()], None),
                 (PlaceElem::Downcast(_, variant_idx), FlowBinding::Enum { variants, .. }) => {
                     let Some(PlaceElem::Field(field_idx, _)) = it.next() else {
                         panic!("downcast not followed by field")
                     };
-                    variants[variant_idx].fields[field_idx].into()
+                    (variants[variant_idx].fields[field_idx], None)
                 }
                 _ => unimplemented!("elem={:?}", elem),
             };
+            let part = self.flow_part(var, part);
+            if let Some(refinement) = invariant {
+                invariants.push((part.into(), refinement));
+            }
+            var = part.into();
         }
 
         let mut borrowed = self.borrow_var(var, prophecy_var);
@@ -1423,7 +1517,15 @@ where
     }
 
     pub fn drop_local(&mut self, local: Local) {
-        let assumption = self.dropping_assumption(&Path::Local(local));
+        self.drop_path(&Path::Local(local));
+    }
+
+    pub fn drop_place(&mut self, place: Place) {
+        self.drop_path(&place.into());
+    }
+
+    fn drop_path(&mut self, path: &Path) {
+        let assumption = self.dropping_assumption(path);
         if !assumption.is_top() {
             self.assume(assumption);
         }

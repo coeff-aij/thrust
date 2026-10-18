@@ -509,14 +509,18 @@ impl<'ctx, 'a> Clause<'ctx, 'a> {
 /// for and one line placing each clause and declaration in the source; at `debug`, every field
 /// of the spans each was made in and the typing environment, body and head of each clause.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum Comments {
+pub(crate) enum Comments {
     None,
     Origin,
     Full,
 }
 
 impl Comments {
-    fn from_log_level() -> Self {
+    /// The level the current log configuration asks for. What `tracing::enabled!` answers on the
+    /// worker threads of [`chc::in_parallel`] varies between runs, so the level is decided once,
+    /// on the main thread, by [`chc::Config::from_env`], and passed to
+    /// [`System::with_comments`].
+    pub(crate) fn from_log_level() -> Self {
         if tracing::enabled!(tracing::Level::DEBUG) {
             Comments::Full
         } else if tracing::enabled!(tracing::Level::INFO) {
@@ -1004,6 +1008,7 @@ impl<'ctx, 'a> DepExistsPredVarDef<'ctx, 'a> {
 pub struct System<'a> {
     ctx: FormatContext,
     inner: &'a chc::System,
+    comments: Comments,
 }
 
 /// What each quantified variable `q$<n>` stands for: a binder of an annotation, with its source
@@ -1025,7 +1030,7 @@ fn write_quantified_var_names(
 
 impl<'a> std::fmt::Display for System<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let comments = Comments::from_log_level();
+        let comments = self.comments;
         writeln!(f, "(set-logic HORN)\n")?;
         if comments >= Comments::Origin {
             write_quantified_var_names(f, self.inner)?;
@@ -1221,6 +1226,15 @@ impl<'a> System<'a> {
 
     pub fn new(inner: &'a chc::System, capabilities: chc::Capabilities) -> Self {
         let ctx = FormatContext::from_system(inner, capabilities);
-        Self { ctx, inner }
+        Self {
+            ctx,
+            inner,
+            comments: Comments::None,
+        }
+    }
+
+    pub(crate) fn with_comments(mut self, comments: Comments) -> Self {
+        self.comments = comments;
+        self
     }
 }

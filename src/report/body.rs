@@ -29,6 +29,80 @@ pub struct DefBody<'tcx> {
     /// The function each call calls, by the block ending in it, and which call to that function
     /// it is in the order they are written, from 1.
     calls: HashMap<BasicBlock, (String, usize)>,
+    /// Where each local of a type that is not `Copy` that the body moves out is moved out or
+    /// written whole (see [`move_events`]).
+    moves: HashMap<Local, Vec<(mir::Location, MoveEvent)>>,
+}
+
+/// What a name the report gives a value is, best first: a variable of the program, the value a
+/// parameter had on entry, a temporary of the MIR.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum NameKind {
+    Program,
+    EntryValue,
+    Temporary,
+}
+
+/// What a statement or terminator does to a local, as far as moving it out goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MoveEvent {
+    /// Moves it, or a part of it, out.
+    Moved,
+    /// Writes the whole local again.
+    Assigned,
+}
+
+/// Where `body` moves out each local of a type that is not `Copy`, or a part of one, and where
+/// it writes such a local whole, in the order the code does them (MIR also moves a `Copy` value
+/// it does not read again, which leaves the local as it was).
+fn move_events<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    def: LocalDefId,
+    body: &mir::Body<'tcx>,
+) -> HashMap<Local, Vec<(mir::Location, MoveEvent)>> {
+    use mir::visit::{MutatingUseContext, NonMutatingUseContext, PlaceContext, Visitor};
+    struct Events<'a, 'tcx> {
+        tcx: TyCtxt<'tcx>,
+        typing_env: rustc_middle::ty::TypingEnv<'tcx>,
+        body: &'a mir::Body<'tcx>,
+        found: HashMap<Local, Vec<(mir::Location, MoveEvent)>>,
+    }
+    impl<'tcx> Visitor<'tcx> for Events<'_, 'tcx> {
+        // The context of the place as a whole, before a projection turns it into one of
+        // `Projection` for its local.
+        fn visit_place(
+            &mut self,
+            place: &mir::Place<'tcx>,
+            context: PlaceContext,
+            location: mir::Location,
+        ) {
+            let ty = self.body.local_decls[place.local].ty;
+            if self.tcx.type_is_copy_modulo_regions(self.typing_env, ty) {
+                return;
+            }
+            let event =
+                match context {
+                    PlaceContext::NonMutatingUse(NonMutatingUseContext::Move) => MoveEvent::Moved,
+                    PlaceContext::MutatingUse(
+                        MutatingUseContext::Store | MutatingUseContext::Call,
+                    ) if place.projection.is_empty() => MoveEvent::Assigned,
+                    _ => return,
+                };
+            let events = self.found.entry(place.local).or_default();
+            events.push((location, event));
+        }
+    }
+    let mut events = Events {
+        tcx,
+        typing_env: rustc_middle::ty::TypingEnv::post_analysis(tcx, def.to_def_id()),
+        body,
+        found: HashMap::new(),
+    };
+    events.visit_body(body);
+    events
+        .found
+        .retain(|_, events| events.iter().any(|(_, e)| *e == MoveEvent::Moved));
+    events.found
 }
 
 /// `path` with every run of characters that cannot be in an identifier replaced by one `_`.
@@ -159,7 +233,61 @@ impl<'tcx> DefBody<'tcx> {
             loops,
             innermost_loop,
             calls,
+            moves: move_events(tcx, def, body),
         }
+    }
+
+    /// The name of the value the `idx`-th parameter had on entry: `old(x)` when the local `x` may
+    /// be shown beside it, else `x`.
+    pub fn entry_value_name(&self, idx: usize, beside_local: bool) -> String {
+        let name = self.param_name(idx);
+        if beside_local {
+            format!("old({name})")
+        } else {
+            name
+        }
+    }
+
+    /// Whether the program names `local`, rather than it being a temporary of the MIR.
+    pub fn names_local(&self, local: Local) -> bool {
+        local == mir::RETURN_PLACE || self.local_names.contains_key(&local)
+    }
+
+    /// Whether `local` may have been moved out, and not written again since, when statement
+    /// `stmt` of `bb` (its terminator when `None`) is reached, on some path from the entry. A
+    /// value moved out is not the local's any more, so it is not named after it.
+    pub fn moved_before(&self, local: Local, bb: BasicBlock, stmt: Option<usize>) -> bool {
+        let Some(events) = self.moves.get(&local) else {
+            return false;
+        };
+        let at = stmt.unwrap_or(self.body.basic_blocks[bb].statements.len());
+        let before = events
+            .iter()
+            .filter(|(l, _)| l.block == bb && l.statement_index < at);
+        let moved_at_entry = self.moved_at_entries(events).contains(&bb);
+        before.fold(moved_at_entry, |_, (_, e)| *e == MoveEvent::Moved)
+    }
+
+    /// The blocks `events`' local may be moved out at the entry of: a forward "maybe moved"
+    /// analysis, a move setting it and a write of the whole local clearing it.
+    fn moved_at_entries(&self, events: &[(mir::Location, MoveEvent)]) -> HashSet<BasicBlock> {
+        let moved_at_exit = |bb: BasicBlock, at_entry: bool| {
+            let in_block = events.iter().filter(|(l, _)| l.block == bb);
+            in_block.fold(at_entry, |_, (_, e)| *e == MoveEvent::Moved)
+        };
+        let mut entries = HashSet::new();
+        let mut work: Vec<BasicBlock> = self.body.basic_blocks.indices().collect();
+        while let Some(bb) = work.pop() {
+            if !moved_at_exit(bb, entries.contains(&bb)) {
+                continue;
+            }
+            for succ in self.body.basic_blocks[bb].terminator().successors() {
+                if entries.insert(succ) {
+                    work.push(succ);
+                }
+            }
+        }
+        entries
     }
 
     pub fn local_name(&self, local: Local) -> String {
@@ -169,7 +297,26 @@ impl<'tcx> DefBody<'tcx> {
         self.local_names
             .get(&local)
             .cloned()
-            .unwrap_or_else(|| format!("__tmp_mir_{}_{}", self.label, local.index()))
+            .unwrap_or_else(|| format!("{}{}", self.temporary_prefix(), local.index()))
+    }
+
+    /// How the name of a temporary of the MIR starts.
+    fn temporary_prefix(&self) -> String {
+        format!("__tmp_mir_{}_", self.label)
+    }
+
+    /// The kind of `name`, one this body gave a template's variable: the name of a temporary, of
+    /// a parameter's entry value, or else of a variable of the program.
+    pub fn kind_of_name(&self, name: &str) -> NameKind {
+        let root = name.trim_start_matches(['(', '*', '°']);
+        if root.starts_with(&self.temporary_prefix()) {
+            return NameKind::Temporary;
+        }
+        let entry = |idx| self.entry_value_name(idx, true) == name;
+        match (0..self.body.arg_count).any(entry) {
+            true => NameKind::EntryValue,
+            false => NameKind::Program,
+        }
     }
 
     /// Which loop of the function the loop with header `bb` is, in the order they are written,

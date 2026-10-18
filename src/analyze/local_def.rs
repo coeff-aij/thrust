@@ -5,6 +5,11 @@ use std::collections::{HashMap, HashSet};
 use rustc_index::bit_set::DenseBitSet;
 use rustc_middle::mir::{self, BasicBlock, Body, Local};
 use rustc_middle::ty::{self as mir_ty, TyCtxt, TypeAndMut};
+use rustc_mir_dataflow::impls::{
+    EverInitializedPlaces, MaybeInitializedPlaces, MaybeLiveLocals, MaybeUninitializedPlaces,
+};
+use rustc_mir_dataflow::move_paths::{MoveData, MovePathIndex};
+use rustc_mir_dataflow::{Analysis as _, MaybeReachable};
 use rustc_span::def_id::{DefId, LocalDefId};
 
 use crate::analyze;
@@ -139,6 +144,16 @@ pub struct Analyzer<'tcx, 'ctx> {
     type_builder: TypeBuilder<'tcx>,
 }
 
+/// The locals that the move paths `paths` are parts of.
+fn locals_of<'tcx>(
+    paths: impl Iterator<Item = MovePathIndex>,
+    move_data: &MoveData<'tcx>,
+) -> HashSet<Local> {
+    paths
+        .map(|path| move_data.move_paths[path].place.local)
+        .collect()
+}
+
 impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     pub fn analyze_predicate_definition(&self) {
         let (sig, body) = self.predicate_definition();
@@ -225,6 +240,34 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .is_some()
     }
 
+    /// Whether the def is the `drop` method of a `Drop` impl. Rust runs it wherever a value of the
+    /// type is dropped, also in code Thrust does not analyze, so as in Verus it takes no
+    /// precondition: it is checked under `requires(true)`, and no drop can panic.
+    pub fn is_crate_destructor(&self) -> bool {
+        let Some(impl_def_id) = self.tcx.impl_of_assoc(self.local_def_id.to_def_id()) else {
+            return false;
+        };
+        self.tcx.trait_id_of_impl(impl_def_id) == self.tcx.lang_items().drop_trait()
+    }
+
+    /// Whether the def carries a written contract: a `requires` or an `ensures` (also through
+    /// `#[thrust::callable]`), or a refinement of a parameter or of the result (`param`, `ret`,
+    /// `sig`).
+    pub fn has_contract_annotation(&self) -> bool {
+        let has_path = |path: &[rustc_span::Symbol]| {
+            self.ctx
+                .extract_path_with_attr(self.local_def_id, path)
+                .is_some()
+        };
+        self.is_annotated_as_callable()
+            || has_path(&analyze::annot::requires_path_path())
+            || has_path(&analyze::annot::ensures_path_path())
+            || !self
+                .ctx
+                .extract_refinement_paths(self.local_def_id)
+                .is_empty()
+    }
+
     pub fn is_annotated_as_extern_spec_fn(&self) -> bool {
         is_annotated_as_extern_spec_fn_impl(&self.tcx, &self.local_def_id)
     }
@@ -240,13 +283,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     }
 
     pub fn is_annotated_as_ignored(&self) -> bool {
-        self.tcx
-            .get_attrs_by_path(
-                self.local_def_id.to_def_id(),
-                &analyze::annot::ignored_path(),
-            )
-            .next()
-            .is_some()
+        analyze::is_ignored(self.tcx, self.local_def_id.to_def_id())
     }
 
     pub fn is_ignored_derive(&self) -> bool {
@@ -260,6 +297,15 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             &self.type_builder,
             self.local_def_id.to_def_id(),
         )
+    }
+
+    /// A trusted derive's contract holds only where the impls of its trait at the fields' types
+    /// meet the trait's specification ([`analyze::Analyzer::check_bound_impls`]).
+    pub fn check_derived_field_impls(&self) {
+        let def_id = self.local_def_id.to_def_id();
+        let typing_env = mir_ty::TypingEnv::post_analysis(self.tcx, def_id);
+        let bounds = analyze::derive::field_bounds(self.tcx, def_id);
+        self.ctx.check_bound_impls(def_id, typing_env, bounds);
     }
 
     pub fn is_annotated_as_formula_fn(&self) -> bool {
@@ -592,6 +638,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             require_annot = Some(chc::Formula::top());
             ensure_annot = Some(chc::Formula::top());
         }
+        if self.is_crate_destructor() {
+            require_annot = Some(chc::Formula::top());
+        }
 
         let trait_item_ty = self.trait_item_ty();
         let is_fully_annotated = self.is_fully_annotated();
@@ -738,7 +787,28 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         Some((lhs_local, rest_place))
     }
 
+    /// Replaces each temporary that copies a pointer for a deref (`CopyForDeref`, and the
+    /// transmuted pointer of a `Box`) with the place it copies, unless that place may change
+    /// between the copy and a use of the temporary. Optimizations make that possible: a
+    /// reborrow `q = &mut *_k` becomes `q = copy _k` and `q` is merged into `_k`.
     fn unelaborate_derefs(&mut self) {
+        let original = self.body.clone();
+        let replaced = self.replace_deref_temps(&HashSet::new());
+        let kept = self.deref_temps_read_after_change(&original, &replaced);
+        if kept.is_empty() {
+            return;
+        }
+        self.body = original;
+        self.replace_deref_temps(&kept);
+    }
+
+    /// Replaces the deref temporaries other than `kept`, each kept one becoming a copy of its
+    /// place, and returns the replaced ones with their definitions and places.
+    fn replace_deref_temps(
+        &mut self,
+        kept: &HashSet<Local>,
+    ) -> Vec<(Local, mir::Location, mir::Place<'tcx>)> {
+        let mut replaced = Vec::new();
         let mut v = analyze::ReplacePlacesVisitor::new(self.tcx);
         for (block, data) in self.body.basic_blocks.clone().iter_enumerated() {
             for (idx, _stmt) in data.statements.iter().enumerate() {
@@ -746,12 +816,21 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     &mut self.body.basic_blocks.as_mut().as_mut_slice()[block].statements[idx];
                 v.visit_statement(stmt);
                 let stmt = stmt.clone();
-                let Some((dest_local, box_place)) = self.extract_elaborated_deref(&stmt) else {
+                let Some((dest_local, place)) = self.extract_elaborated_deref(&stmt) else {
                     continue;
                 };
-                self.body.basic_blocks.as_mut().as_mut_slice()[block].statements[idx].kind =
-                    mir::StatementKind::Nop;
-                v.add_replacement(dest_local.into(), box_place);
+                let kind = if kept.contains(&dest_local) {
+                    kept_deref_temp(&stmt, dest_local, place)
+                } else {
+                    v.add_replacement(dest_local.into(), place);
+                    let def = mir::Location {
+                        block,
+                        statement_index: idx,
+                    };
+                    replaced.push((dest_local, def, place));
+                    mir::StatementKind::Nop
+                };
+                self.body.basic_blocks.as_mut().as_mut_slice()[block].statements[idx].kind = kind;
             }
             if let Some(tmnt) =
                 &mut self.body.basic_blocks.as_mut().as_mut_slice()[block].terminator
@@ -759,6 +838,209 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 v.visit_terminator(tmnt);
             }
         }
+        replaced
+    }
+
+    /// The deref temporaries of `replaced` whose place may be written, in `self.body` where
+    /// every one is replaced, between the copy and a use: a use of `original`'s temporary, or
+    /// a use of a temporary copied through it.
+    fn deref_temps_read_after_change(
+        &self,
+        original: &Body<'tcx>,
+        replaced: &[(Local, mir::Location, mir::Place<'tcx>)],
+    ) -> HashSet<Local> {
+        let mut uses = local_mentions(original);
+        let mut defs: HashMap<Local, Vec<mir::Location>> = HashMap::new();
+        for (temp, def, _) in replaced {
+            defs.entry(*temp).or_default().push(*def);
+        }
+        for (temp, def, _) in replaced {
+            uses.entry(*temp).or_default().retain(|loc| loc != def);
+        }
+        let uses = with_uses_through_copies(uses, replaced);
+        let mentions = local_mentions(&self.body);
+        let mut kept = HashSet::new();
+        for (temp, def, place) in replaced {
+            if defs[temp].len() != 1
+                || self.has_unknown_aliases(place)
+                || self.written_before_use(place, *def, &uses[temp], &mentions)
+            {
+                kept.insert(*temp);
+            }
+        }
+        kept
+    }
+
+    fn has_unknown_aliases(&self, place: &mir::Place<'tcx>) -> bool {
+        place.iter_projections().any(|(base, elem)| match elem {
+            mir::ProjectionElem::Deref => base.ty(&self.body.local_decls, self.tcx).ty.is_raw_ptr(),
+            mir::ProjectionElem::Index(_) => true,
+            _ => false,
+        })
+    }
+
+    /// Whether a use in `uses` can be reached without passing `def` from a change of `place`:
+    /// a write, or a use of an alias that may write it.
+    fn written_before_use(
+        &self,
+        place: &mir::Place<'tcx>,
+        def: mir::Location,
+        uses: &[mir::Location],
+        mentions: &HashMap<Local, Vec<mir::Location>>,
+    ) -> bool {
+        let uses: HashSet<_> = uses.iter().copied().collect();
+        let (mut changes, aliases) = self.changes_of(place);
+        for local in self.alias_locals(&aliases, mentions) {
+            changes.extend(mentions[&local].iter().copied());
+        }
+        changes.extend(aliases);
+        self.reaches_any(&changes, def, &uses)
+    }
+
+    /// The locals assigned from the aliases made at `aliases`, and from those locals.
+    fn alias_locals(
+        &self,
+        aliases: &[mir::Location],
+        mentions: &HashMap<Local, Vec<mir::Location>>,
+    ) -> HashSet<Local> {
+        let mut pending: Vec<_> = aliases
+            .iter()
+            .filter_map(|loc| self.assigned_local(*loc))
+            .collect();
+        let mut locals = HashSet::new();
+        while let Some(local) = pending.pop() {
+            if !locals.insert(local) {
+                continue;
+            }
+            let assigned = mentions[&local]
+                .iter()
+                .filter_map(|loc| self.assigned_local(*loc));
+            pending.extend(assigned.filter(|assigned| *assigned != local));
+        }
+        locals
+    }
+
+    fn assigned_local(&self, loc: mir::Location) -> Option<Local> {
+        let data = &self.body.basic_blocks[loc.block];
+        let Some(stmt) = data.statements.get(loc.statement_index) else {
+            let mir::TerminatorKind::Call { destination, .. } = &data.terminator().kind else {
+                return None;
+            };
+            return Some(destination.local);
+        };
+        let mir::StatementKind::Assign(assign) = &stmt.kind else {
+            return None;
+        };
+        Some(assign.0.local)
+    }
+
+    fn reaches_any(
+        &self,
+        from: &[mir::Location],
+        barrier: mir::Location,
+        targets: &HashSet<mir::Location>,
+    ) -> bool {
+        let mut stack: Vec<_> = from
+            .iter()
+            .flat_map(|loc| location_successors(&self.body, *loc))
+            .collect();
+        let mut seen = HashSet::new();
+        while let Some(loc) = stack.pop() {
+            if loc == barrier || !seen.insert(loc) {
+                continue;
+            }
+            if targets.contains(&loc) {
+                return true;
+            }
+            stack.extend(location_successors(&self.body, loc));
+        }
+        false
+    }
+
+    /// The locations that may change the value at `place`: writes to and moves out of a place
+    /// it is read through, and the aliases of such a place that may write it, a mutable or raw
+    /// borrow or a copy of a non-`Copy` value such as a `&mut` it is reached through.
+    fn changes_of(&self, place: &mir::Place<'tcx>) -> (Vec<mir::Location>, Vec<mir::Location>) {
+        use mir::visit::{MutatingUseContext, NonMutatingUseContext, PlaceContext};
+        struct Visitor<'a, 'tcx> {
+            analyzer: &'a Analyzer<'tcx, 'a>,
+            place: &'a mir::Place<'tcx>,
+            writes: Vec<mir::Location>,
+            aliases: Vec<mir::Location>,
+        }
+        impl<'tcx> mir::visit::Visitor<'tcx> for Visitor<'_, 'tcx> {
+            fn visit_place(
+                &mut self,
+                other: &mir::Place<'tcx>,
+                context: PlaceContext,
+                location: mir::Location,
+            ) {
+                if other.local != self.place.local
+                    || !self.analyzer.changes_place(other, self.place)
+                {
+                    return;
+                }
+                match context {
+                    PlaceContext::MutatingUse(
+                        MutatingUseContext::Borrow | MutatingUseContext::RawBorrow,
+                    )
+                    | PlaceContext::NonMutatingUse(NonMutatingUseContext::RawBorrow) => {
+                        self.aliases.push(location)
+                    }
+                    PlaceContext::NonMutatingUse(
+                        NonMutatingUseContext::Copy | NonMutatingUseContext::Move,
+                    ) if other.projection.len() < self.place.projection.len()
+                        && !self.analyzer.is_copy(other) =>
+                    {
+                        self.aliases.push(location)
+                    }
+                    PlaceContext::MutatingUse(_)
+                    | PlaceContext::NonMutatingUse(NonMutatingUseContext::Move) => {
+                        self.writes.push(location)
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut visitor = Visitor {
+            analyzer: self,
+            place,
+            writes: Vec::new(),
+            aliases: Vec::new(),
+        };
+        mir::visit::Visitor::visit_body(&mut visitor, &self.body);
+        (visitor.writes, visitor.aliases)
+    }
+
+    /// Whether writing `written`, of the local of `place`, may change the value read at
+    /// `place`: it does unless it is a disjoint field or is reached through a pointer `place`
+    /// holds.
+    fn changes_place(&self, written: &mir::Place<'tcx>, place: &mir::Place<'tcx>) -> bool {
+        let common = written.projection.len().min(place.projection.len());
+        for i in 0..common {
+            let (ew, ep) = (written.projection[i], place.projection[i]);
+            if ew == ep {
+                continue;
+            }
+            let base = mir::PlaceRef {
+                local: place.local,
+                projection: &place.projection[..i],
+            };
+            let is_union = base.ty(&self.body.local_decls, self.tcx).ty.is_union();
+            return match (ew, ep) {
+                (mir::ProjectionElem::Field(fw, _), mir::ProjectionElem::Field(fp, _)) => {
+                    fw == fp || is_union
+                }
+                _ => true,
+            };
+        }
+        written.projection.get(common) != Some(&mir::ProjectionElem::Deref)
+    }
+
+    fn is_copy(&self, place: &mir::Place<'tcx>) -> bool {
+        let ty = place.ty(&self.body.local_decls, self.tcx).ty;
+        self.tcx
+            .type_is_copy_modulo_regions(self.analysis_key().typing_env(self.tcx), ty)
     }
 
     fn mut_locals(
@@ -768,6 +1050,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     ) -> DenseBitSet<Local> {
         struct Visitor<'tcx, 'a> {
             tcx: TyCtxt<'tcx>,
+            typing_env: mir_ty::TypingEnv<'tcx>,
             body: &'a Body<'tcx>,
 
             locals: DenseBitSet<Local>,
@@ -801,6 +1084,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 terminator: &mir::Terminator<'tcx>,
                 location: mir::Location,
             ) {
+                // a destructor of the crate is called with `&mut` of the dropped place; see
+                // analyze::basic_block::Analyzer::call_destructors
+                if let mir::TerminatorKind::Drop { place, .. } = &terminator.kind {
+                    let ty = place.ty(&self.body.local_decls, self.tcx).ty;
+                    if analyze::drop_runs_local_destructor(self.tcx, self.typing_env, ty) {
+                        self.locals.insert(place.local);
+                    }
+                }
                 // calling an FnMut closure via FnOnce::call_once resolves to the closure
                 // function taking &mut {closure}, so RustCallVisitor mutably borrows the
                 // closure argument; see analyze::basic_block::visitor
@@ -840,6 +1131,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
         let mut visitor = Visitor {
             tcx: self.tcx,
+            typing_env: self.analysis_key().typing_env(self.tcx),
             body: &self.body,
             locals: DenseBitSet::new_empty(self.body.local_decls.len()),
         };
@@ -909,71 +1201,68 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         }
     }
 
-    fn reassign_local_mutabilities(&mut self) {
-        use rustc_mir_dataflow::{
-            move_paths::{HasMoveData as _, MoveData},
-            Analysis as _, MaybeReachable,
-        };
-
-        self.normalize_switch_int_discriminant_order();
-
-        for local_decl in &mut self.body.local_decls {
-            local_decl.mutability = mir::Mutability::Not;
+    /// The move paths of the body, gathered on a copy whose `CopyForDeref` destinations are
+    /// marked as deref temporaries.
+    fn move_data(&self) -> MoveData<'tcx> {
+        let mut body = self.body.clone();
+        struct Visitor {
+            deref_temps: DenseBitSet<Local>,
         }
-
-        let move_data = {
-            // XXX: what...
-            let mut body = self.body.clone();
-            struct Visitor {
-                deref_temps: DenseBitSet<Local>,
-            }
-            impl<'tcx> mir::visit::Visitor<'tcx> for Visitor {
-                fn visit_assign(
-                    &mut self,
-                    place: &mir::Place<'tcx>,
-                    rvalue: &mir::Rvalue<'tcx>,
-                    _location: mir::Location,
-                ) {
-                    if let mir::Rvalue::CopyForDeref { .. } = rvalue {
-                        self.deref_temps.insert(place.local);
-                    }
+        impl<'tcx> mir::visit::Visitor<'tcx> for Visitor {
+            fn visit_assign(
+                &mut self,
+                place: &mir::Place<'tcx>,
+                rvalue: &mir::Rvalue<'tcx>,
+                _location: mir::Location,
+            ) {
+                if let mir::Rvalue::CopyForDeref { .. } = rvalue {
+                    self.deref_temps.insert(place.local);
                 }
             }
-            let mut visitor = Visitor {
-                deref_temps: DenseBitSet::new_empty(body.local_decls.len()),
-            };
-            use mir::visit::Visitor as _;
-            visitor.visit_body(&body);
-            for (local, local_decl) in body.local_decls.iter_enumerated_mut() {
-                let local_info = if visitor.deref_temps.contains(local) {
-                    mir::LocalInfo::DerefTemp
-                } else {
-                    mir::LocalInfo::Boring
-                };
-                local_decl.local_info = mir::ClearCrossCrate::Set(Box::new(local_info));
-            }
-            MoveData::gather_moves(&body, self.tcx, |_| true)
+        }
+        let mut visitor = Visitor {
+            deref_temps: DenseBitSet::new_empty(body.local_decls.len()),
         };
-        let tmp_body = self.body.clone();
-        let mut results =
-            rustc_mir_dataflow::impls::MaybeInitializedPlaces::new(self.tcx, &tmp_body, &move_data)
-                .iterate_to_fixpoint(self.tcx, &self.body, None)
-                .into_results_cursor(&tmp_body);
+        use mir::visit::Visitor as _;
+        visitor.visit_body(&body);
+        for (local, local_decl) in body.local_decls.iter_enumerated_mut() {
+            let local_info = if visitor.deref_temps.contains(local) {
+                mir::LocalInfo::DerefTemp
+            } else {
+                mir::LocalInfo::Boring
+            };
+            local_decl.local_info = mir::ClearCrossCrate::Set(Box::new(local_info));
+        }
+        MoveData::gather_moves(&body, self.tcx, |_| true)
+    }
 
+    fn zst_locals(&self) -> DenseBitSet<Local> {
+        let typing_env = self.analysis_key().typing_env(self.tcx);
         let mut zst_locals = DenseBitSet::new_empty(self.body.local_decls.len());
         for (local, local_decl) in self.body.local_decls.iter_enumerated() {
-            let ty = local_decl.ty;
             if self
                 .tcx
-                .layout_of(self.analysis_key().typing_env(self.tcx).as_query_input(ty))
+                .layout_of(typing_env.as_query_input(local_decl.ty))
                 .map(|l| l.is_zst())
                 .unwrap_or(false)
             {
                 zst_locals.insert(local);
             }
         }
+        zst_locals
+    }
 
-        for (block, data) in mir::traversal::preorder(&tmp_body) {
+    fn reassign_local_mutabilities(&mut self, move_data: &MoveData<'tcx>) {
+        for local_decl in &mut self.body.local_decls {
+            local_decl.mutability = mir::Mutability::Not;
+        }
+
+        let zst_locals = self.zst_locals();
+        let mut marked = Vec::new();
+        let mut results = MaybeInitializedPlaces::new(self.tcx, &self.body, move_data)
+            .iterate_to_fixpoint(self.tcx, &self.body, None)
+            .into_results_cursor(&self.body);
+        for (block, data) in mir::traversal::preorder(&self.body) {
             for statement_index in 0..=data.statements.len() {
                 let loc = mir::Location {
                     statement_index,
@@ -983,10 +1272,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 let MaybeReachable::Reachable(init_places) = results.get() else {
                     continue;
                 };
-                let init_locals: HashSet<_> = init_places
-                    .iter()
-                    .map(|p| results.analysis().move_data().move_paths[p].place.local)
-                    .collect();
+                let init_locals = locals_of(init_places.iter(), move_data);
                 let mut_locals = self.mut_locals(data, statement_index);
                 tracing::info!(
                     ?init_locals,
@@ -998,11 +1284,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 );
                 for mut_local in mut_locals.iter() {
                     if init_locals.contains(&mut_local) || zst_locals.contains(mut_local) {
-                        self.body.local_decls[mut_local].mutability = mir::Mutability::Mut;
+                        marked.push(mut_local);
                         tracing::info!(?mut_local, ?statement_index, ?block, "marking mut");
                     }
                 }
             }
+        }
+        for local in marked {
+            self.body.local_decls[local].mutability = mir::Mutability::Mut;
         }
     }
 
@@ -1223,28 +1512,53 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .into()
     }
 
-    fn refine_basic_blocks(&mut self) {
-        use rustc_mir_dataflow::Analysis as _;
+    fn refine_basic_blocks(&mut self, move_data: &MoveData<'tcx>) {
         let loop_invariants = self.collect_loop_invariant_annotations();
         for (header, invariants) in &loop_invariants {
             let formulas = invariants.iter().map(|(formula, _, _)| *formula);
             self.ctx
                 .record_invariant_annotations(self.local_def_id, *header, formulas);
         }
-        let mut results = rustc_mir_dataflow::impls::MaybeLiveLocals
+        let zst_locals = self.zst_locals();
+        let mut results = MaybeLiveLocals
             .iterate_to_fixpoint(self.tcx, &self.body, None)
             .into_results_cursor(&self.body);
+        let mut ever_init = EverInitializedPlaces::new(&self.body, move_data)
+            .iterate_to_fixpoint(self.tcx, &self.body, None)
+            .into_results_cursor(&self.body);
+        let mut uninit = MaybeUninitializedPlaces::new(self.tcx, &self.body, move_data)
+            .iterate_to_fixpoint(self.tcx, &self.body, None)
+            .into_results_cursor(&self.body);
+        let mut moves = analyze::basic_block::MoveState {
+            tcx: self.tcx,
+            typing_env: self.analysis_key().typing_env(self.tcx),
+            move_data,
+            uninit: &mut uninit,
+        };
 
         let mut builder = analyze::basic_block::DropPoints::builder(&self.body);
         for (bb, _data) in mir::traversal::postorder(&self.body) {
             let span = tracing::info_span!("refine_basic_block", ?bb, bb_index = bb.as_u32());
             let _guard = span.enter();
 
-            self.drop_points.insert(bb, builder.build(&mut results, bb));
+            self.drop_points
+                .insert(bb, builder.build(&mut results, &mut moves, bb));
             results.seek_to_block_start(bb);
+            // A local never set on any path here is live only for a drop that its drop flag
+            // skips, and holds no value, so it is no parameter of the block; an edge into a block
+            // where it may be set passes it as any value. A ZST's one value needs no setting.
+            ever_init.seek_to_block_start(bb);
+            let ever_set = locals_of(
+                ever_init
+                    .get()
+                    .iter()
+                    .map(|init| move_data.inits[init].path),
+                move_data,
+            );
             let mut live_locals: Vec<_> = results
                 .get()
                 .iter()
+                .filter(|local| zst_locals.contains(*local) || ever_set.contains(local))
                 .map(|in_local| {
                     let decl = &self.body.local_decls[in_local];
                     let type_and_mut = TypeAndMut {
@@ -1702,16 +2016,104 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         );
         let _guard = span.enter();
 
+        self.ctx
+            .body_checks()
+            .record(self.local_def_id, analyze::BodyCheck::Checked);
         self.unelaborate_derefs();
         analyze::reconstruct_slice_indexing::reconstruct(self.tcx, &mut self.body);
-        self.reassign_local_mutabilities();
-        self.refine_basic_blocks();
+        analyze::two_phase_borrow::move_to_activation(self.tcx, &mut self.body);
+        self.normalize_switch_int_discriminant_order();
+        let move_data = self.move_data();
+        self.reassign_local_mutabilities(&move_data);
+        self.refine_basic_blocks(&move_data);
         self.analyze_basic_blocks(expected);
         self.assert_entry(expected);
         if analyze::candidate_atoms_enabled() {
             self.declare_candidate_atoms(expected);
         }
     }
+}
+
+/// A deref temporary that is not replaced: a copy of its place, which is reborrowed where it
+/// is a `&mut` (`ReborrowVisitor`), as the reborrow it stands for.
+fn kept_deref_temp<'tcx>(
+    stmt: &mir::Statement<'tcx>,
+    temp: Local,
+    place: mir::Place<'tcx>,
+) -> mir::StatementKind<'tcx> {
+    let mir::StatementKind::Assign(assign) = &stmt.kind else {
+        unreachable!()
+    };
+    if !matches!(assign.1, mir::Rvalue::CopyForDeref(_)) {
+        unimplemented!("Box pointer {temp:?} of {place:?} used after the Box may have changed");
+    }
+    let rvalue = mir::Rvalue::Use(mir::Operand::Copy(place));
+    mir::StatementKind::Assign(Box::new((temp.into(), rvalue)))
+}
+
+/// `uses` with the uses of each temporary of `replaced` added to those of the temporaries its
+/// place goes through, transitively.
+fn with_uses_through_copies<'tcx>(
+    mut uses: HashMap<Local, Vec<mir::Location>>,
+    replaced: &[(Local, mir::Location, mir::Place<'tcx>)],
+) -> HashMap<Local, Vec<mir::Location>> {
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for (child, child_def, _) in replaced {
+            let child_uses = uses.get(child).cloned().unwrap_or_default();
+            for (parent, _, _) in replaced {
+                let parent_uses = uses.entry(*parent).or_default();
+                if !parent_uses.contains(child_def) {
+                    continue;
+                }
+                for loc in &child_uses {
+                    if !parent_uses.contains(loc) {
+                        parent_uses.push(*loc);
+                        changed = true;
+                    }
+                }
+            }
+        }
+    }
+    uses
+}
+
+fn location_successors(body: &Body<'_>, loc: mir::Location) -> Vec<mir::Location> {
+    let data = &body.basic_blocks[loc.block];
+    if loc.statement_index < data.statements.len() {
+        return vec![loc.successor_within_block()];
+    }
+    data.terminator()
+        .successors()
+        .map(|bb| bb.start_location())
+        .collect()
+}
+
+/// The locations of the statements and terminators that mention each local.
+fn local_mentions(body: &Body<'_>) -> HashMap<Local, Vec<mir::Location>> {
+    struct Visitor {
+        mentions: HashMap<Local, Vec<mir::Location>>,
+    }
+    impl<'tcx> mir::visit::Visitor<'tcx> for Visitor {
+        fn visit_local(
+            &mut self,
+            local: Local,
+            context: mir::visit::PlaceContext,
+            location: mir::Location,
+        ) {
+            if !matches!(context, mir::visit::PlaceContext::NonUse(_)) {
+                self.mentions.entry(local).or_default().push(location);
+            }
+        }
+    }
+    let mut visitor = Visitor {
+        mentions: HashMap::new(),
+    };
+    for (block, data) in body.basic_blocks.iter_enumerated() {
+        mir::visit::Visitor::visit_basic_block_data(&mut visitor, block, data);
+    }
+    visitor.mentions
 }
 
 /// At most this many instances of one contract conjunct, and candidate atoms of one loop head.

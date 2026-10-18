@@ -2,8 +2,10 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 
 use num_bigint::BigInt;
+use rustc_abi::FieldIdx;
 use rustc_hir::def::DefKind;
 use rustc_index::IndexVec;
+use rustc_middle::mir::visit::{NonMutatingUseContext, PlaceContext, Visitor};
 use rustc_middle::mir::{
     self, BasicBlock, Body, Local, Operand, Rvalue, StatementKind, TerminatorKind,
 };
@@ -24,7 +26,8 @@ use crate::rty::{
 
 mod drop_point;
 mod visitor;
-pub use drop_point::DropPoints;
+use drop_point::MovedOut;
+pub use drop_point::{DropPoints, MoveState};
 
 /// Whether a basic block needs a precondition of its own, rather than
 /// inheriting its predecessor's outgoing env state.
@@ -169,6 +172,8 @@ fn int_term_in_range<'tcx, V: Clone>(
 #[derive(Default)]
 struct PrecondCapture {
     existentials: IndexVec<rty::ExistentialVarIdx, chc::Sort>,
+    /// What the existentials hold in the block before, for the report.
+    names: crate::refine::ExistentialNames,
     body: chc::Body<rty::RefinedTypeVar<Var>>,
     target_equations: Vec<(
         rty::RefinedTypeVar<rty::FunctionParamIdx>,
@@ -204,10 +209,13 @@ impl PrecondCapture {
             });
             self.body.push_conj(body);
         }
-        for assumption in env.assumptions() {
+        for (i, assumption) in env.assumptions().iter().enumerate() {
             let base = self.existentials.len();
             self.existentials
                 .extend(assumption.existentials.iter().cloned());
+            for (ev, name) in env.assumption_names(i).into_iter().flatten() {
+                self.names.insert(*ev + base, name.clone());
+            }
             let body = assumption.body.clone().map_var(|v| match v {
                 PlaceTypeVar::Var(v) => rty::RefinedTypeVar::Free(v),
                 PlaceTypeVar::Existential(ev) => rty::RefinedTypeVar::Existential(ev + base),
@@ -216,11 +224,22 @@ impl PrecondCapture {
         }
     }
 
-    fn finish(mut self, env: &analyze::Env) -> rty::Refinement<rty::FunctionParamIdx> {
+    /// The precondition, and what its existentials hold in the block before.
+    fn finish(
+        mut self,
+        env: &analyze::Env,
+    ) -> (
+        rty::Refinement<rty::FunctionParamIdx>,
+        crate::refine::ExistentialNames,
+    ) {
         let mut substs = HashMap::new();
+        let paths = env.temp_paths();
         for (v, sort) in env.dependencies() {
             let ev = self.existentials.push(sort);
             substs.insert(v, ev);
+            if let Some(name) = env.description(v, &paths) {
+                self.names.insert(ev, name);
+            }
         }
 
         let map = |v| match v {
@@ -232,8 +251,28 @@ impl PrecondCapture {
         for (t, term) in self.target_equations {
             body.push_conj(chc::Term::var(t).equal_to(term.map_var(map)));
         }
-        rty::Refinement::new(self.existentials, body)
+        (rty::Refinement::new(self.existentials, body), self.names)
     }
+}
+
+/// Finds a use of `local` that `uses` accepts.
+struct FindUse<F> {
+    local: Local,
+    found: bool,
+    uses: F,
+}
+
+impl<'tcx, F: Fn(PlaceContext) -> bool> Visitor<'tcx> for FindUse<F> {
+    // The context of the place as a whole: a projection would make it `Projection` for its local,
+    // which hides a move out of a part (`let y = *b`).
+    fn visit_place(&mut self, place: &mir::Place<'tcx>, context: PlaceContext, _: mir::Location) {
+        self.found |= place.local == self.local && (self.uses)(context);
+    }
+}
+
+/// Whether `context` moves a value out.
+fn is_move(context: PlaceContext) -> bool {
+    context == PlaceContext::NonMutatingUse(NonMutatingUseContext::Move)
 }
 
 enum ResolvedCallable<'tcx> {
@@ -743,15 +782,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         (tuple_ty.into(), term)
     }
 
-    /// Asserts that an unsigned subtraction without overflow checks does not go below zero.
-    ///
-    /// With overflow checks on, rustc asserts that `SubWithOverflow` did not overflow; without
-    /// them the subtraction is modelled on unbounded integers. This is the same assertion, on
-    /// the lower bound only, so that no negative value of [`rty::Type::UInt`] is produced: every
-    /// such value is assumed non-negative without an obligation. Flux puts the same precondition
-    /// on unsigned subtraction when overflow checking is off.
-    fn assert_no_underflow(&mut self, no_underflow: PlaceType) {
-        let got: rty::RefinedType<Var> = no_underflow.into();
+    /// Asserts that the bool `term`, over the variables of `builder`, holds where the current
+    /// block is reached.
+    fn assert_term(&mut self, builder: PlaceTypeBuilder, term: chc::Term<PlaceTypeVar>) {
+        let got: rty::RefinedType<Var> = builder.build(rty::Type::bool(), term).into();
         let expected =
             rty::RefinedType::<Var>::refined_with_term(rty::Type::bool(), chc::Term::bool(true));
         let clauses = self.env.relate_sub_refined_type(&got, &expected);
@@ -762,7 +796,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// [`rty::IntRange::All`]. Without overflow checks the operation is modelled on unbounded
     /// integers, and the range is assumed of its result as of every value of the type; with them,
     /// rustc's own assertion on `AddWithOverflow` and the like does this. The lower bound of an
-    /// unsigned result is left to [`Self::assert_no_underflow`], which is on in every mode.
+    /// unsigned result is left to the underflow assertion of a subtraction, which is on in every
+    /// mode.
     fn assert_no_overflow(
         &mut self,
         builder: &PlaceTypeBuilder,
@@ -784,12 +819,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         if signed {
             no_overflow = term.clone().ge(chc::Term::int(min)).and(no_overflow);
         }
-        let got: rty::RefinedType<Var> =
-            builder.clone().build(rty::Type::bool(), no_overflow).into();
-        let expected =
-            rty::RefinedType::<Var>::refined_with_term(rty::Type::bool(), chc::Term::bool(true));
-        let clauses = self.env.relate_sub_refined_type(&got, &expected);
-        self.ctx.extend_clauses(clauses);
+        self.assert_term(builder.clone(), no_overflow);
     }
 
     /// The result of an arithmetic operation of type `ty`. In the unsigned-fact check mode
@@ -803,14 +833,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     ) -> PlaceType {
         if matches!(ty, rty::Type::UInt(_)) && rty::check_uint_facts_mode() {
             let nonnegative = term.clone().ge(chc::Term::int(0));
-            let got: rty::RefinedType<Var> =
-                builder.clone().build(rty::Type::bool(), nonnegative).into();
-            let expected = rty::RefinedType::<Var>::refined_with_term(
-                rty::Type::bool(),
-                chc::Term::bool(true),
-            );
-            let clauses = self.env.relate_sub_refined_type(&got, &expected);
-            self.ctx.extend_clauses(clauses);
+            self.assert_term(builder.clone(), nonnegative);
         }
         builder.build(ty, term)
     }
@@ -867,8 +890,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         // assertion covers in every mode; a signed one goes out on either side.
                         if !lhs_mir_ty.is_signed() {
                             let no_underflow = result.clone().ge(chc::Term::int(0));
-                            let guard = builder.clone().build(rty::Type::bool(), no_underflow);
-                            self.assert_no_underflow(guard);
+                            // With overflow checks on, rustc asserts that `SubWithOverflow` did
+                            // not overflow; without them the subtraction is unbounded, and this
+                            // is the same assertion on the lower bound, so that no negative
+                            // `UInt` is produced, as Flux requires of unsigned subtraction.
+                            self.assert_term(builder.clone(), no_underflow);
                         } else {
                             self.assert_no_overflow(&builder, &lhs_ty, &result);
                         }
@@ -1093,13 +1119,18 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 if !op_ty.is_integral() || !ty.is_integral() {
                     unimplemented!("int cast: {:?} -> {:?}", op_ty, ty);
                 }
-                let op_pty = self.operand_type(operand);
+                // The result has the target's type, so that the operations on it are typed and
+                // checked at the target's width: a widening keeps the operand's term, which is in
+                // the target's range, and a narrowing wraps it into that range.
+                let target_ty = self.type_builder.build(ty).vacuous().ty;
+                let mut op_pty = self.operand_type(operand);
                 if int_ty_includes(self.tcx, ty, op_ty) {
+                    op_pty.ty = target_ty;
                     op_pty
                 } else {
                     let mut builder = PlaceTypeBuilder::default();
                     let (_, op_term) = builder.subsume(op_pty);
-                    builder.build(rty::Type::int(), wrap_int_term(self.tcx, op_term, ty))
+                    builder.build(target_ty, wrap_int_term(self.tcx, op_term, ty))
                 }
             }
             Rvalue::Discriminant(place) => {
@@ -1212,6 +1243,13 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .iter_enumerated()
             .map(|(param_idx, rty)| {
                 match bty.param_kind(param_idx) {
+                    // A local that holds no value on this edge, live only for a drop that its
+                    // drop flag skips, is passed as any value.
+                    BasicBlockTypeParamKind::Local(arg_local, _)
+                        if !self.env.contains_local(arg_local) =>
+                    {
+                        rty::RefinedType::unrefined(rty.ty.clone().assert_closed().vacuous())
+                    }
                     BasicBlockTypeParamKind::Local(arg_local, _) => {
                         let arg_local_ty = self.env.local_type(arg_local);
                         // TODO: should we cover "is_singleton" ness in relate_* methods or here?
@@ -1312,9 +1350,81 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             capture.push(rty::RefinedTypeVar::Free(param_idx), pty);
         }
         capture.push_env_state(&self.env);
-        bty.set_precondition(capture.finish(&self.env));
+        let (precondition, mut names) = capture.finish(&self.env);
+        // Of what the block before held, the report names the program's variables.
+        names.retain(|_, name| {
+            let path = name.downcast_ref::<crate::refine::VarPath>();
+            path.is_none_or(|path| self.names_local(path.local))
+        });
+        bty.set_precondition(precondition);
+        bty.describe_precondition(names);
         self.ctx
             .register_basic_block_ty_with_precondition(self.analysis_key, bb, bty);
+    }
+
+    /// Whether the program names `local`, as its debug info says.
+    fn names_local(&self, local: Local) -> bool {
+        self.debug_name(local).is_some()
+    }
+
+    /// The name the program gives `local`, as its debug info says.
+    fn debug_name(&self, local: Local) -> Option<rustc_span::Symbol> {
+        self.body
+            .var_debug_info
+            .iter()
+            .find_map(|info| match info.value {
+                mir::VarDebugInfoContents::Place(place)
+                    if place.local == local && place.projection.is_empty() =>
+                {
+                    Some(info.name)
+                }
+                _ => None,
+            })
+    }
+
+    /// Whether the current block writes `local`, mutably borrows it or moves it out.
+    fn block_writes(&self, local: Local) -> bool {
+        let data = &self.body.basic_blocks[self.basic_block];
+        let mut find = FindUse {
+            local,
+            found: false,
+            uses: |context: PlaceContext| context.is_mutating_use() || is_move(context),
+        };
+        find.visit_basic_block_data(self.basic_block, data);
+        find.found
+    }
+
+    /// Whether the name of `local` stands for another variable at the end of the current block,
+    /// the innermost of that name in scope there (a shadowing `let`).
+    fn shadowed_in_block(&self, local: Local) -> bool {
+        let Some(name) = self.debug_name(local) else {
+            return false;
+        };
+        let scope = self.body.basic_blocks[self.basic_block]
+            .terminator()
+            .source_info
+            .scope;
+        let depth = |mut s: mir::SourceScope, of: mir::SourceScope| {
+            let mut depth = 0;
+            loop {
+                if s == of {
+                    return Some(depth);
+                }
+                s = self.body.source_scopes[s].parent_scope?;
+                depth += 1;
+            }
+        };
+        let innermost = self
+            .body
+            .var_debug_info
+            .iter()
+            .filter(|info| info.name == name)
+            .filter_map(|info| Some((depth(scope, info.source_info.scope)?, info)))
+            .min_by_key(|(depth, _)| *depth);
+        innermost.is_some_and(|(_, info)| {
+            !matches!(info.value, mir::VarDebugInfoContents::Place(place)
+                if place.local == local && place.projection.is_empty())
+        })
     }
 
     fn with_assumptions<F, T>(&mut self, assumptions: Vec<impl Into<Assumption>>, callback: F) -> T
@@ -1455,7 +1565,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// specs of `PartialEq` are bounded by `ModelEq`, which fails on a `Ghost`.
     fn compares_ghost(&self, def_id: DefId, args: mir_ty::GenericArgsRef<'tcx>) -> bool {
         self.tcx.trait_of_assoc(def_id) == self.tcx.lang_items().eq_trait()
-            && args.types().any(|ty| analyze::compares_ghost(self.tcx, ty))
+            && args
+                .types()
+                .any(|ty| analyze::model_eq::compares_ghost(self.tcx, ty))
     }
 
     fn callable_ty(
@@ -1497,6 +1609,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 }
             }
             ResolvedCallable::Concrete(resolved_def_id, resolved_args) => {
+                if !resolved_def_id.is_local() {
+                    let bounds = analyze::trait_bounds(self.tcx, resolved_def_id, resolved_args);
+                    self.ctx
+                        .check_bound_impls(caller_def_id, self.typing_env, bounds);
+                }
                 // The impl the call resolves to is the one that runs, so its spec is used when it
                 // has one: an extern spec of a std impl, or a local impl method's own contract,
                 // which refines the trait's. A trait-level spec may hold only by assuming a bound
@@ -1524,10 +1641,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         "std" | "core" | "alloc"
                     );
                 if unchecked_foreign_impl {
-                    panic!(
-                        "unknown def: {:?} of another crate, which no trait-level spec covers",
-                        resolved_def_id
-                    );
+                    self.no_specification(resolved_def_id, resolved_args);
+                }
+                // Nor is an ignored impl method's body checked against it.
+                if analyze::is_ignored_crate_fn(self.tcx, resolved_def_id) {
+                    analyze::fatal_ignored_call(self.tcx, resolved_def_id, resolved_args);
                 }
                 if let Some(def_ty) = self.ctx.def_ty_with_args(def_id, args, caller_def_id) {
                     // otherwise nothing asks for a deferred impl method's type and its body goes unchecked
@@ -1539,6 +1657,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         );
                     }
                     return def_ty.ty;
+                }
+                if resolved_def_id == def_id && !def_id.is_local() {
+                    self.no_specification(def_id, args);
                 }
                 if resolved_def_id == def_id {
                     panic!("unknown def: {:?}, args: {:?}", def_id, args);
@@ -1559,6 +1680,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     }
                     // Also reached when the def's only specification is an extern spec written
                     // for another instantiation of it (see `bind_spec_args`).
+                    if !resolved_def_id.is_local() {
+                        self.no_specification(resolved_def_id, resolved_args);
+                    }
                     panic!(
                         "unknown def (resolved): {:?}, args: {:?}",
                         resolved_def_id, resolved_args
@@ -1566,6 +1690,51 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 };
                 def_ty.ty
             }
+        }
+    }
+
+    /// Stops at the call to `def_id`, a function of another crate that has no specification at
+    /// `args`, which the analysis cannot go past.
+    fn no_specification(&self, def_id: DefId, args: mir_ty::GenericArgsRef<'tcx>) -> ! {
+        self.tcx
+            .dcx()
+            .struct_span_fatal(
+                self.call_span(def_id),
+                format!(
+                    "thrust: no specification of `{}`, which `{}` calls",
+                    self.tcx.def_path_str_with_args(def_id, args),
+                    self.tcx.def_path_str(self.type_builder.owner_fn_id()),
+                ),
+            )
+            .with_help(
+                "give the call a contract: call it through a function marked \
+                 `#[thrust::trusted]` with `requires` and `ensures`, or write a specification of \
+                 it as Thrust's `std.rs` does (`#[thrust::extern_spec_fn]`)",
+            )
+            .emit()
+    }
+
+    /// The span of the code of the current block that calls or names `def_id`: its terminator,
+    /// or a statement naming the function.
+    fn call_span(&self, def_id: DefId) -> rustc_span::Span {
+        let data = &self.body.basic_blocks[self.basic_block];
+        let names = |operand: &Operand<'tcx>| {
+            operand
+                .const_fn_def()
+                .is_some_and(|(callee, _)| callee == def_id)
+        };
+        let statement = data.statements.iter().find(|stmt| match &stmt.kind {
+            StatementKind::Assign(assign) => match &assign.1 {
+                Rvalue::Cast(_, operand, _) | Rvalue::Use(operand) => names(operand),
+                _ => false,
+            },
+            _ => false,
+        });
+        let terminator = data.terminator();
+        let calls = matches!(&terminator.kind, TerminatorKind::Call { func, .. } if names(func));
+        match statement {
+            Some(stmt) if !calls => stmt.source_info.span,
+            _ => terminator.source_info.span,
         }
     }
 
@@ -1603,6 +1772,18 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         if let Some((def_id, _)) = func.const_fn_def() {
             if Some(def_id) == self.ctx.def_ids().box_new() {
                 self.type_box(args.next().expect("Box::new argument"), &expected_ret);
+                return expected_ret;
+            }
+            if self
+                .tcx
+                .is_diagnostic_item(rustc_span::sym::mem_forget, def_id)
+            {
+                self.type_forget(&expected_ret);
+                return expected_ret;
+            }
+            if self.is_manually_drop_new(def_id) {
+                let value = args.next().expect("ManuallyDrop::new argument");
+                self.type_manually_drop_new(value, &expected_ret);
                 return expected_ret;
             }
         }
@@ -1648,6 +1829,44 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let (_, term) = builder.subsume(value);
         let boxed = builder.build(expected.ty.clone(), term.boxed());
         let clauses = self.env.relate_sub_refined_type(&boxed.into(), expected);
+        self.ctx.extend_clauses(clauses);
+    }
+
+    /// `std::mem::forget(x)`: `x` is consumed and nothing is dropped.
+    fn type_forget(&mut self, expected: &rty::RefinedType<Var>) {
+        let unit: rty::RefinedType<Var> = rty::RefinedType::unrefined(rty::Type::unit());
+        let clauses = self.env.relate_sub_refined_type(&unit, expected);
+        self.ctx.extend_clauses(clauses);
+    }
+
+    fn is_manually_drop_new(&self, def_id: DefId) -> bool {
+        let Some(impl_def_id) = self.tcx.inherent_impl_of_assoc(def_id) else {
+            return false;
+        };
+        let self_ty = self.tcx.type_of(impl_def_id).skip_binder();
+        self.tcx.item_name(def_id).as_str() == "new"
+            && self_ty
+                .ty_adt_def()
+                .is_some_and(|adt| adt.is_manually_drop())
+    }
+
+    /// `ManuallyDrop::new(value)`: the struct of its one field, `value`, which is never dropped.
+    fn type_manually_drop_new(&mut self, value: Operand<'tcx>, expected: &rty::RefinedType<Var>) {
+        let value = self.operand_type(value);
+        let field = expected
+            .ty
+            .as_tuple()
+            .and_then(|tuple| tuple.elems[0].ty.as_pointer())
+            .expect("ManuallyDrop is the tuple of its boxed value");
+        let clauses = self
+            .env
+            .relate_sub_refined_type(&value.clone().into(), &field.elem);
+        self.ctx.extend_clauses(clauses);
+
+        let mut builder = PlaceTypeBuilder::default();
+        let (_, term) = builder.subsume(value);
+        let wrapped = builder.build(expected.ty.clone(), chc::Term::tuple(vec![term.boxed()]));
+        let clauses = self.env.relate_sub_refined_type(&wrapped.into(), expected);
         self.ctx.extend_clauses(clauses);
     }
 
@@ -1881,14 +2100,157 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// A ghost is a snapshot and is never resolved, as in Creusot: a `&mut` it holds is a second
     /// name of a borrow that the program still uses, whose final value the ghost's death says
     /// nothing about.
-    fn drop_local(&mut self, local: Local) {
+    ///
+    /// The parts `moved_out` of the local went with their moves, as a move consumes ownership in
+    /// RustHornBelt and Creusot resolves per move path: only what is left is resolved.
+    /// A local without a value, live only for a drop that its drop flag skips, resolves nothing.
+    fn drop_local(&mut self, local: Local, moved_out: MovedOut) {
         let ghost_model = self.ctx.def_ids().ghost_model();
         let is_ghost = ghost_model.is_some()
             && self.local_decls[local].ty.ty_adt_def().map(|adt| adt.did()) == ghost_model;
-        if is_ghost {
+        if is_ghost || !self.env.contains_local(local) {
             return;
         }
-        self.env.drop_local(local);
+        if moved_out.is_empty() {
+            self.env.drop_local(local);
+            return;
+        }
+        self.drop_remaining(local.into(), &moved_out);
+    }
+
+    /// Drops what is left of `place` once the parts `moved_out` (field paths from `place`) went
+    /// out of it, field by field down to the moved parts. A value that is not a tuple in the
+    /// logic is not split, and nothing of it is resolved.
+    fn drop_remaining(&mut self, place: mir::Place<'tcx>, moved_out: &[Vec<FieldIdx>]) {
+        if moved_out.iter().any(|part| part.is_empty()) {
+            return;
+        }
+        if moved_out.is_empty() {
+            let place = self.elaborate_place(&place);
+            self.env.drop_place(place);
+            return;
+        }
+        let Some(field_tys) = self.tuple_fields(&place) else {
+            return;
+        };
+        for (idx, field_ty) in field_tys.into_iter().enumerate() {
+            let idx = FieldIdx::from_usize(idx);
+            let rest: Vec<_> = moved_out
+                .iter()
+                .filter(|part| part[0] == idx)
+                .map(|part| part[1..].to_vec())
+                .collect();
+            let field = self.tcx.mk_place_field(place, idx, field_ty);
+            self.drop_remaining(field, &rest);
+        }
+    }
+
+    /// The types of the fields of `place`, when the logic has its value as a tuple of them.
+    fn tuple_fields(&self, place: &mir::Place<'tcx>) -> Option<Vec<mir_ty::Ty<'tcx>>> {
+        let ty = place.ty(&self.local_decls, self.tcx).ty;
+        let field_tys = analyze::field_tys(self.tcx, self.typing_env, ty)?;
+        let is_tuple = self
+            .type_builder
+            .build(ty)
+            .ty
+            .as_tuple()
+            .is_some_and(|tuple| tuple.elems.len() == field_tys.len());
+        (is_tuple && self.type_builder.transparent_field(ty).is_none()).then_some(field_tys)
+    }
+
+    /// Types the calls of the crate's destructors that dropping `place` runs, as its drop glue
+    /// runs them through one `&mut`: `Drop::drop` of the value, then the drop glue of each field
+    /// in declaration order. Each destructor is a call, whose precondition is `true` (D57) and
+    /// whose postcondition gives the value that the structural drop after it resolves.
+    fn call_destructors(&mut self, place: mir::Place<'tcx>) {
+        let ty = place.ty(&self.local_decls, self.tcx).ty;
+        if !analyze::drop_runs_local_destructor(self.tcx, self.typing_env, ty) {
+            return;
+        }
+        let glue = self.borrow_to_temp(place, ty);
+        self.call_destructors_through(glue, ty);
+    }
+
+    /// Runs the drop glue of `*glue`, a `&mut` of `ty` that this consumes.
+    fn call_destructors_through(&mut self, glue: Local, ty: mir_ty::Ty<'tcx>) {
+        let target = self.tcx.mk_place_deref(glue.into());
+        let mut glue = glue;
+        if let Some(dtor) = analyze::local_destructor(self.tcx, ty) {
+            let arg = self.borrow_to_temp(target, ty);
+            self.call_destructor(dtor, ty, arg);
+            glue = self.rebind_temp(glue);
+        }
+        if analyze::drop_of_parts_runs_local_destructor(self.tcx, self.typing_env, ty) {
+            let target = self.tcx.mk_place_deref(glue.into());
+            for (idx, field_ty) in self.dropped_fields(ty).into_iter().enumerate() {
+                if !analyze::drop_runs_local_destructor(self.tcx, self.typing_env, field_ty) {
+                    continue;
+                }
+                let field = self
+                    .tcx
+                    .mk_place_field(target, FieldIdx::from_usize(idx), field_ty);
+                let field_glue = self.borrow_to_temp(field, field_ty);
+                self.call_destructors_through(field_glue, field_ty);
+            }
+        }
+        self.env.drop_local(glue);
+    }
+
+    /// The fields that the drop glue of `ty` drops after its destructor.
+    fn dropped_fields(&self, ty: mir_ty::Ty<'tcx>) -> Vec<mir_ty::Ty<'tcx>> {
+        match ty.kind() {
+            mir_ty::TyKind::Tuple(tys) => tys.to_vec(),
+            mir_ty::TyKind::Adt(adt, _) if adt.is_struct() && adt.did().is_local() => {
+                analyze::field_tys(self.tcx, self.typing_env, ty).expect("a struct")
+            }
+            _ => unimplemented!(
+                "dropping a value of `{ty}` runs a destructor of the crate inside a value that \
+                 is not a tuple or a struct of the crate"
+            ),
+        }
+    }
+
+    /// A new local holding `&mut place`, which is never dropped on its own.
+    fn borrow_to_temp(&mut self, place: mir::Place<'tcx>, ty: mir_ty::Ty<'tcx>) -> Local {
+        let region = mir_ty::Region::new_from_kind(self.tcx, mir_ty::RegionKind::ReErased);
+        let ref_ty = mir_ty::Ty::new_mut_ref(self.tcx, region, ty);
+        let local = self
+            .local_decls
+            .push(mir::LocalDecl::new(ref_ty, rustc_span::DUMMY_SP).immutable());
+        let rty = self.borrow_place_(place, ty);
+        self.bind_local(local, rty);
+        local
+    }
+
+    /// Moves `local` into a new local, whose binding spells out the value again, so that a part
+    /// of it can be borrowed after the whole was.
+    fn rebind_temp(&mut self, local: Local) -> Local {
+        let decl =
+            mir::LocalDecl::new(self.local_decls[local].ty, rustc_span::DUMMY_SP).immutable();
+        let new_local = self.local_decls.push(decl);
+        let rty = self.operand_refined_type(Operand::Move(local.into()));
+        self.bind_local(new_local, rty);
+        new_local
+    }
+
+    fn call_destructor(&mut self, dtor: DefId, ty: mir_ty::Ty<'tcx>, arg: Local) {
+        let mir_ty::TyKind::Adt(_, args) = ty.kind() else {
+            unreachable!("a destructor of a type that is not an ADT")
+        };
+        // A `Drop` impl has the generics of its ADT, so the ADT's arguments instantiate it.
+        let func = analyze::fn_operand(self.tcx, dtor, args, rustc_span::DUMMY_SP);
+        tracing::info!(?dtor, ?ty, "destructor called");
+        let unit = self.tcx.types.unit;
+        let ret_local = self
+            .local_decls
+            .push(mir::LocalDecl::new(unit, rustc_span::DUMMY_SP).immutable());
+        let ret = self
+            .type_builder
+            .for_template(&mut self.ctx)
+            .with_scope(&self.env)
+            .build_refined(unit);
+        let ret = self.type_call(func, [Operand::Move(arg.into())], ret);
+        self.bind_local(ret_local, ret);
     }
 
     /// Schedules `local` to be implicitly dropped after this block's terminator,
@@ -2032,7 +2394,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     fn analyze_statements(&mut self) {
         for local in self.drop_points.before_statements.clone() {
             tracing::info!(?local, "implicitly dropped before statements");
-            self.drop_local(local);
+            self.drop_local(local, MovedOut::new());
         }
         let statements = self.body.basic_blocks[self.basic_block].statements.clone();
         for (stmt_idx, mut stmt) in statements.iter().cloned().enumerate() {
@@ -2054,7 +2416,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             }
             for local in self.drop_points.after_statement(stmt_idx).iter() {
                 tracing::info!(?local, ?stmt_idx, "implicitly dropped after statement");
-                self.drop_local(local);
+                let moved_out = self.drop_points.moved_out(stmt_idx, local);
+                self.drop_local(local, moved_out);
             }
         }
     }
@@ -2159,26 +2522,27 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     targets.clone(),
                     outer_fn_param_vars,
                     |a, target| {
-                        for local in a.drop_points.after_terminator(&target) {
+                        for (local, moved_out) in a.drop_points.after_terminator(&target) {
                             tracing::info!(?local, ?target, "implicitly dropped for target");
-                            a.drop_local(local);
+                            a.drop_local(local, moved_out);
                         }
                     },
                 );
             }
             TerminatorKind::Call { target, .. } => {
                 if let Some(target) = target {
-                    for local in self.drop_points.after_terminator(target) {
+                    for (local, moved_out) in self.drop_points.after_terminator(target) {
                         tracing::info!(?local, "implicitly dropped after call");
-                        self.drop_local(local);
+                        self.drop_local(local, moved_out);
                     }
                     self.type_goto(*target, outer_fn_param_vars);
                 }
             }
-            TerminatorKind::Drop { target, .. } => {
-                for local in self.drop_points.after_terminator(target) {
+            TerminatorKind::Drop { place, target, .. } => {
+                self.call_destructors(*place);
+                for (local, moved_out) in self.drop_points.after_terminator(target) {
                     tracing::info!(?local, "dropped");
-                    self.drop_local(local);
+                    self.drop_local(local, moved_out);
                 }
                 self.type_goto(*target, outer_fn_param_vars);
             }
@@ -2188,9 +2552,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 target,
                 ..
             } => {
-                for local in self.drop_points.after_terminator(target) {
+                for (local, moved_out) in self.drop_points.after_terminator(target) {
                     tracing::info!(?local, "dropped");
-                    self.drop_local(local);
+                    self.drop_local(local, moved_out);
                 }
                 self.type_operand(
                     cond.clone(),
@@ -2202,7 +2566,15 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 self.type_goto(*target, outer_fn_param_vars);
             }
             TerminatorKind::UnwindResume {} => {}
-            TerminatorKind::Unreachable {} => {}
+            TerminatorKind::Unreachable {} => {
+                // rustc ends a block in `Unreachable` where no value reaches it: a value of an
+                // uninhabited type, or the `otherwise` arm of an exhaustive match. A proof's
+                // contract is assumed of every value of the sorts, which are never empty, so in a
+                // proof the block must be unreachable in the logic, as Creusot's `absurd` requires.
+                if analyze::lemma::is_proof(self.tcx, self.local_def_id.to_def_id()) {
+                    self.assert_term(PlaceTypeBuilder::default(), chc::Term::bool(false));
+                }
+            }
             _ => unimplemented!("term={:?}", term.kind),
         }
     }
@@ -2289,7 +2661,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     param_terms.insert(param_idx, term);
                 }
                 BasicBlockTypeParamKind::OuterFnParam(outer_idx) => {
-                    let var = self.env.immut_bind_tmp(param_unrefined_rty);
+                    let local = analyze::local_of_function_param(outer_idx);
+                    let var = self.env.bind_entry_value(local, param_unrefined_rty);
                     param_terms.insert(param_idx, chc::Term::var(var.into()));
                     outer_fn_param_vars.insert(outer_idx, var);
 
@@ -2298,7 +2671,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     // (`OuterFnParam`) and its current local. The invariant cannot express both
                     // views of the same argument with the current syntax. As an ad-hoc workaround,
                     // equate them when the local is non-flow, since its representation cannot change.
-                    let local = analyze::local_of_function_param(outer_idx);
                     if !param_ty.to_sort().is_singleton() && self.env.is_non_flow_local(local) {
                         assumption.body.push_conj(
                             chc::Term::var(PlaceTypeVar::Var(var))
@@ -2320,19 +2692,34 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             );
         }
 
+        // The precondition, which the last parameter carries, may say what its existentials hold.
+        let mut names = crate::refine::ExistentialNames::new();
         for (idx, param) in expected_params.iter_enumerated() {
             let rty::Refinement { existentials, body } = param.refinement.clone();
+            let base = assumption.existentials.len();
             assumption.body.push_conj(body.subst_var(|v| match v {
                 rty::RefinedTypeVar::Value => param_terms[&idx].clone(),
                 rty::RefinedTypeVar::Free(v) => param_terms[&v].clone(),
-                rty::RefinedTypeVar::Existential(ev) => chc::Term::var(PlaceTypeVar::Existential(
-                    ev + assumption.existentials.len(),
-                )),
+                rty::RefinedTypeVar::Existential(ev) => {
+                    chc::Term::var(PlaceTypeVar::Existential(ev + base))
+                }
             }));
             assumption.existentials.extend(existentials);
+            if Some(idx) == expected_params.last_index() {
+                let precondition_names = bb_ty.precondition_names().iter();
+                names.extend(precondition_names.map(|(ev, name)| (*ev + base, name.clone())));
+            }
         }
 
-        self.env.assume(assumption);
+        // A name is kept only while the variable holds the value: this block does not write,
+        // move or mutably borrow it, and no other variable of its name is in scope.
+        names.retain(|_, name| {
+            let path = name.downcast_ref::<crate::refine::VarPath>();
+            path.is_none_or(|path| {
+                !self.block_writes(path.local) && !self.shadowed_in_block(path.local)
+            })
+        });
+        self.env.assume_described(assumption, names);
 
         outer_fn_param_vars
     }
