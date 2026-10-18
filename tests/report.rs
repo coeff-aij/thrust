@@ -207,6 +207,9 @@ fn a_name_stands_only_for_the_value_the_variable_holds() {
     let (constraint, _) = refuted_lines("name_after_moved.rs");
     assert!(!constraint.contains(" b >= n"), "{constraint}");
     assert!(constraint.contains("__tmp_chc_"), "{constraint}");
+    // A variable written again after its value was moved out holds the new value.
+    let (_, values) = refuted_lines("name_after_move_then_assign.rs");
+    assert!(values.contains("b = 7"), "{values}");
 }
 
 /// A refuted `assert!(a != b)` reads as its condition, not as the boolean term the MIR compares

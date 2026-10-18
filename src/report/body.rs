@@ -29,8 +29,9 @@ pub struct DefBody<'tcx> {
     /// The function each call calls, by the block ending in it, and which call to that function
     /// it is in the order they are written, from 1.
     calls: HashMap<BasicBlock, (String, usize)>,
-    /// Where each local of a type that is not `Copy` is moved out.
-    moves: HashMap<Local, Vec<mir::Location>>,
+    /// Where each local of a type that is not `Copy` that the body moves out is moved out or
+    /// written whole (see [`move_events`]).
+    moves: HashMap<Local, Vec<(mir::Location, MoveEvent)>>,
 }
 
 /// What a name the report gives a value is, best first: a variable of the program, the value a
@@ -42,40 +43,66 @@ pub enum NameKind {
     Temporary,
 }
 
-/// Where `body` moves out each local of a type that is not `Copy` (MIR also moves a `Copy`
-/// value it does not read again, which leaves the local as it was).
-fn moves<'tcx>(
+/// What a statement or terminator does to a local, as far as moving it out goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MoveEvent {
+    /// Moves it, or a part of it, out.
+    Moved,
+    /// Writes the whole local again.
+    Assigned,
+}
+
+/// Where `body` moves out each local of a type that is not `Copy`, or a part of one, and where
+/// it writes such a local whole, in the order the code does them (MIR also moves a `Copy` value
+/// it does not read again, which leaves the local as it was).
+fn move_events<'tcx>(
     tcx: TyCtxt<'tcx>,
     def: LocalDefId,
     body: &mir::Body<'tcx>,
-) -> HashMap<Local, Vec<mir::Location>> {
-    use mir::visit::{NonMutatingUseContext, PlaceContext, Visitor};
-    struct Moves<'a, 'tcx> {
+) -> HashMap<Local, Vec<(mir::Location, MoveEvent)>> {
+    use mir::visit::{MutatingUseContext, NonMutatingUseContext, PlaceContext, Visitor};
+    struct Events<'a, 'tcx> {
         tcx: TyCtxt<'tcx>,
         typing_env: rustc_middle::ty::TypingEnv<'tcx>,
         body: &'a mir::Body<'tcx>,
-        found: HashMap<Local, Vec<mir::Location>>,
+        found: HashMap<Local, Vec<(mir::Location, MoveEvent)>>,
     }
-    impl<'tcx> Visitor<'tcx> for Moves<'_, 'tcx> {
-        fn visit_local(&mut self, local: Local, context: PlaceContext, location: mir::Location) {
-            if context != PlaceContext::NonMutatingUse(NonMutatingUseContext::Move) {
-                return;
-            }
-            let ty = self.body.local_decls[local].ty;
+    impl<'tcx> Visitor<'tcx> for Events<'_, 'tcx> {
+        // The context of the place as a whole, before a projection turns it into one of
+        // `Projection` for its local.
+        fn visit_place(
+            &mut self,
+            place: &mir::Place<'tcx>,
+            context: PlaceContext,
+            location: mir::Location,
+        ) {
+            let ty = self.body.local_decls[place.local].ty;
             if self.tcx.type_is_copy_modulo_regions(self.typing_env, ty) {
                 return;
             }
-            self.found.entry(local).or_default().push(location);
+            let event =
+                match context {
+                    PlaceContext::NonMutatingUse(NonMutatingUseContext::Move) => MoveEvent::Moved,
+                    PlaceContext::MutatingUse(
+                        MutatingUseContext::Store | MutatingUseContext::Call,
+                    ) if place.projection.is_empty() => MoveEvent::Assigned,
+                    _ => return,
+                };
+            let events = self.found.entry(place.local).or_default();
+            events.push((location, event));
         }
     }
-    let mut moves = Moves {
+    let mut events = Events {
         tcx,
         typing_env: rustc_middle::ty::TypingEnv::post_analysis(tcx, def.to_def_id()),
         body,
         found: HashMap::new(),
     };
-    moves.visit_body(body);
-    moves.found
+    events.visit_body(body);
+    events
+        .found
+        .retain(|_, events| events.iter().any(|(_, e)| *e == MoveEvent::Moved));
+    events.found
 }
 
 /// `path` with every run of characters that cannot be in an identifier replaced by one `_`.
@@ -206,7 +233,7 @@ impl<'tcx> DefBody<'tcx> {
             loops,
             innermost_loop,
             calls,
-            moves: moves(tcx, def, body),
+            moves: move_events(tcx, def, body),
         }
     }
 
@@ -226,35 +253,41 @@ impl<'tcx> DefBody<'tcx> {
         local == mir::RETURN_PLACE || self.local_names.contains_key(&local)
     }
 
-    /// Whether `local` may have been moved out before statement `stmt` of `bb` (its terminator
-    /// when `None`) is reached: a move earlier in `bb`, or one in a block from which `bb` is
-    /// reached. A value moved out is not the local's any more, so it is not named after it.
+    /// Whether `local` may have been moved out, and not written again since, when statement
+    /// `stmt` of `bb` (its terminator when `None`) is reached, on some path from the entry. A
+    /// value moved out is not the local's any more, so it is not named after it.
     pub fn moved_before(&self, local: Local, bb: BasicBlock, stmt: Option<usize>) -> bool {
-        let Some(moves) = self.moves.get(&local) else {
+        let Some(events) = self.moves.get(&local) else {
             return false;
         };
         let at = stmt.unwrap_or(self.body.basic_blocks[bb].statements.len());
-        moves
+        let before = events
             .iter()
-            .any(|m| (m.block == bb && m.statement_index < at) || self.reaches(m.block, bb))
+            .filter(|(l, _)| l.block == bb && l.statement_index < at);
+        let moved_at_entry = self.moved_at_entries(events).contains(&bb);
+        before.fold(moved_at_entry, |_, (_, e)| *e == MoveEvent::Moved)
     }
 
-    /// Whether `to` is reached from a successor of `from`.
-    fn reaches(&self, from: BasicBlock, to: BasicBlock) -> bool {
-        let mut seen = HashSet::new();
-        let mut stack: Vec<BasicBlock> = self.body.basic_blocks[from]
-            .terminator()
-            .successors()
-            .collect();
-        while let Some(bb) = stack.pop() {
-            if bb == to {
-                return true;
+    /// The blocks `events`' local may be moved out at the entry of: a forward "maybe moved"
+    /// analysis, a move setting it and a write of the whole local clearing it.
+    fn moved_at_entries(&self, events: &[(mir::Location, MoveEvent)]) -> HashSet<BasicBlock> {
+        let moved_at_exit = |bb: BasicBlock, at_entry: bool| {
+            let in_block = events.iter().filter(|(l, _)| l.block == bb);
+            in_block.fold(at_entry, |_, (_, e)| *e == MoveEvent::Moved)
+        };
+        let mut entries = HashSet::new();
+        let mut work: Vec<BasicBlock> = self.body.basic_blocks.indices().collect();
+        while let Some(bb) = work.pop() {
+            if !moved_at_exit(bb, entries.contains(&bb)) {
+                continue;
             }
-            if seen.insert(bb) {
-                stack.extend(self.body.basic_blocks[bb].terminator().successors());
+            for succ in self.body.basic_blocks[bb].terminator().successors() {
+                if entries.insert(succ) {
+                    work.push(succ);
+                }
             }
         }
-        false
+        entries
     }
 
     pub fn local_name(&self, local: Local) -> String {

@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, HashMap};
 use num_bigint::BigInt;
 use rustc_hir::def::DefKind;
 use rustc_index::IndexVec;
-use rustc_middle::mir::visit::{NonMutatingUseContext, NonUseContext, PlaceContext, Visitor};
+use rustc_middle::mir::visit::{NonMutatingUseContext, PlaceContext, Visitor};
 use rustc_middle::mir::{
     self, BasicBlock, Body, Local, Operand, Rvalue, StatementKind, TerminatorKind,
 };
@@ -261,18 +261,16 @@ struct FindUse<F> {
 }
 
 impl<'tcx, F: Fn(PlaceContext) -> bool> Visitor<'tcx> for FindUse<F> {
-    fn visit_local(&mut self, l: Local, context: PlaceContext, _: mir::Location) {
-        self.found |= l == self.local && (self.uses)(context);
+    // The context of the place as a whole: a projection would make it `Projection` for its local,
+    // which hides a move out of a part (`let y = *b`).
+    fn visit_place(&mut self, place: &mir::Place<'tcx>, context: PlaceContext, _: mir::Location) {
+        self.found |= place.local == self.local && (self.uses)(context);
     }
 }
 
-/// Whether `context` moves a value out, or ends the storage of the local.
+/// Whether `context` moves a value out.
 fn is_move(context: PlaceContext) -> bool {
-    matches!(
-        context,
-        PlaceContext::NonMutatingUse(NonMutatingUseContext::Move)
-            | PlaceContext::NonUse(NonUseContext::StorageDead)
-    )
+    context == PlaceContext::NonMutatingUse(NonMutatingUseContext::Move)
 }
 
 enum ResolvedCallable<'tcx> {
