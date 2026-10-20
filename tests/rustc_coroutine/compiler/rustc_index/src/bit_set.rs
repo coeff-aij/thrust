@@ -140,7 +140,7 @@ impl<T: Idx> DenseBitSet<T> {
     #[thrust::trusted]
     #[thrust_macros::ensures((!self).0 == (*self).0)]
     #[thrust_macros::ensures(Self::words_cover_domain(*self) ==> Self::words_cover_domain(!self))]
-    #[thrust_macros::ensures(forall(|i: USize| i < (*self).0 ==> Self::mem(!self, i)))]
+    #[thrust_macros::ensures(forall(|i: USize| 0 <= i && i < (*self).0 ==> Self::mem(!self, i)))]
     #[thrust_macros::ensures((!self).3 == (*self).0)]
     pub fn insert_all(&mut self) {
         self.words.fill(!0);
