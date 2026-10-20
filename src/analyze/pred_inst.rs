@@ -156,7 +156,7 @@ impl<'tcx> analyze::Analyzer<'tcx> {
                 .iter()
                 .map(|(v, sort)| chc::Term::UserQuantifiedVar(sort.clone(), *v))
                 .collect();
-            // A law variable ranges over its parameter's type, as an annotation's `forall` does.
+            // A law variable ranges over the values its proof assumes of the parameter.
             let mut pre = fn_ty.precondition_formula(&args);
             for (param, arg) in fn_ty.params.iter().zip(&args) {
                 if let Some(range) = rty::int_range_type_formula(&param.ty, arg.clone()) {

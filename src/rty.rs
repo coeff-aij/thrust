@@ -1080,8 +1080,12 @@ where
     Some(RefinedType::unrefined(ty.clone()).formula())
 }
 
-/// [`int_range_type_facts`] of `ty` as a formula about `value`; `None` when they are not in use or
-/// `ty` holds no integer with a range.
+/// The facts [`RefinedType::formula`] states of every value of `ty`, as a formula about `value`:
+/// [`int_range_type_facts`] when [`int_range_mode`] is on, and `0 <=` of the unsigned integers `ty`
+/// holds through tuples and pointers when it is off. `None` when there are none.
+///
+/// A binding is assumed to have these facts, so a variable that stands for a binding of a proof,
+/// such as a law's, ranges over them.
 pub fn int_range_type_formula<W>(
     ty: &Type<FunctionParamIdx>,
     value: chc::Term<W>,
@@ -1089,7 +1093,7 @@ pub fn int_range_type_formula<W>(
 where
     W: chc::Var,
 {
-    let facts = int_range_type_facts(ty)?;
+    let facts = RefinedType::unrefined(ty.clone()).formula();
     if facts.is_top() {
         return None;
     }
