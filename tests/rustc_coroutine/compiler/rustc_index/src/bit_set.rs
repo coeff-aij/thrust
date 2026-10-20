@@ -85,8 +85,8 @@ impl<T: Idx> DenseBitSet<T> {
     #[thrust_macros::requires(Self::words_cover_domain(*self))]
     #[thrust_macros::ensures((!self).0 == (*self).0 && (!self).3 == (*self).3)]
     #[thrust_macros::ensures(Self::words_cover_domain(!self))]
-    #[thrust_macros::ensures(forall(|i: USize| i < (*self).0 && Self::mem(*self, i) ==> Self::mem(!self, i)))]
-    #[thrust_macros::ensures(forall(|i: USize| i < (*self).0 && Self::mem(!self, i) ==> Self::mem(*self, i)))]
+    #[thrust_macros::ensures(forall(|i: USize| 0 <= i && i < (*self).0 && Self::mem(*self, i) ==> Self::mem(!self, i)))]
+    #[thrust_macros::ensures(forall(|i: USize| 0 <= i && i < (*self).0 && Self::mem(!self, i) ==> Self::mem(*self, i)))]
     fn clear_excess_bits(&mut self) {
         clear_excess_bits_in_final_word(self.domain_size, &mut self.words);
     }
@@ -142,7 +142,7 @@ impl<T: Idx> DenseBitSet<T> {
     #[thrust_macros::requires(Self::words_cover_domain(*self))]
     #[thrust_macros::ensures((!self).0 == (*self).0)]
     #[thrust_macros::ensures(Self::words_cover_domain(!self))]
-    #[thrust_macros::ensures(forall(|i: USize| i < (*self).0 ==> Self::mem(!self, i)))]
+    #[thrust_macros::ensures(forall(|i: USize| 0 <= i && i < (*self).0 ==> Self::mem(!self, i)))]
     #[thrust_macros::ensures((!self).3 == (*self).0)]
     pub fn insert_all(&mut self) {
         self.words.fill(!0);
@@ -505,7 +505,7 @@ fn word_index_and_mask<T: Idx>(elem: T) -> (usize, Word) {
 
 #[thrust_macros::requires((*words).len() == (domain_size + 63) / 64)]
 #[thrust_macros::ensures((!words).len() == (*words).len())]
-#[thrust_macros::ensures(forall(|i: USize| i < domain_size
+#[thrust_macros::ensures(forall(|i: USize| 0 <= i && i < domain_size
     ==> ((BitVec::<64, false>::from_int((!words)[i / 64]) >> BitVec::from_int(i % 64)) & BitVec::from_int(1))
         == ((BitVec::<64, false>::from_int((*words)[i / 64]) >> BitVec::from_int(i % 64)) & BitVec::from_int(1))))]
 fn clear_excess_bits_in_final_word(domain_size: usize, words: &mut [Word]) {
