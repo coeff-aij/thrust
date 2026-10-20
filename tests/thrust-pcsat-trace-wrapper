@@ -1,23 +1,33 @@
 #!/bin/bash
 
 # PCSat with its debug log, for THRUST_PCSAT_TRACE: the verdict on stdout, as
-# thrust-pcsat-wrapper prints it, and PCSat's debug log on stderr. The image and the container's
-# limits are thrust-pcsat-wrapper's (COAR_IMAGE, THRUST_PCSAT_CPUS, THRUST_PCSAT_MEMORY).
+# thrust-pcsat-wrapper prints it, followed by PCSat's evidence of an `unsat` (`(unsat-witness …)`),
+# and PCSat's debug log on stderr. The image and the container's limits are
+# thrust-pcsat-wrapper's (COAR_IMAGE, THRUST_PCSAT_CPUS, THRUST_PCSAT_MEMORY).
 #
 # The configuration is that of dbg_pcsat_tbq_ar.json without its checks of the answer, which
 # print their reports on stdout after the verdict.
 
-# thrust-pcsat-wrapper mounts the working directory at /mnt; the paths in the configuration are
-# the image's.
+# thrust-pcsat-wrapper mounts the working directory at /mnt; the configuration names the image's
+# files and the printer's, written next to it.
 config=$(mktemp -p . --suffix .json)
-trap 'rm -f "$config"' EXIT
-cat > "$config" <<'EOF'
+printer=$(mktemp -p . --suffix .json)
+trap 'rm -f "$config" "$printer"' EXIT
+cat > "$printer" <<'EOF'
+{ "output_iteration": false, "print_unsat_witness": true }
+EOF
+cat > "$config" <<EOF
 ["PCSat", {
   "preprocessor": ["Filename", "./config/pcsat/preprocessor/dbg_enable.json"],
   "coordinator": ["Filename", "./config/pcsat/coordinator/dbg_tbq_ar.json"],
-  "sol_printer": ["Filename", "./config/pcsat/sol_printer/wo_iter.json"],
+  "sol_printer": ["Filename", "/mnt/$(basename "$printer")"],
   "load_oracle_sol": false
 }]
 EOF
 
-COAR_CONFIG="/mnt/$(basename "$config")" "$(dirname "$0")/thrust-pcsat-wrapper" "$@"
+# Thrust stops this script at its time limit by TERM, which thrust-pcsat-wrapper turns into
+# removing its container.
+COAR_CONFIG="/mnt/$(basename "$config")" "$(dirname "$0")/thrust-pcsat-wrapper" "$@" &
+solver=$!
+trap 'kill -TERM "$solver"; wait "$solver"; exit 143' TERM
+wait "$solver"

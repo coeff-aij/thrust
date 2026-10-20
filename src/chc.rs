@@ -3736,36 +3736,53 @@ impl System {
         }
     }
 
-    /// Reads the goals PCSat refutes and those it shows hold from its debug log, which `config`'s
-    /// command prints for the system with its goals marked by name.
+    /// Reads the goals PCSat refutes from its refutation and its debug log, which `config`'s
+    /// command prints for the system with its goals marked by number.
     fn trace_by_pcsat(&self, config: &Config, answer: &mut Answer) {
         let mut marked = self.clone();
-        let markers = marked.mark_goals_by_name();
+        let (marker, goals) = marked.mark_goals_by_number(None);
         let marked = marked.prepared();
-        let log = match config.run_for_log(marked.query(config)) {
-            Ok(log) => log,
+        let (refutation, log) = match config.run_for_trace(marked.query(config)) {
+            Ok(printed) => printed,
             Err(why) => {
                 answer.pcsat_trace = Some(Err(why));
                 return;
             }
         };
-        let goals: HashMap<String, ClauseId> = markers
-            .iter()
-            .map(|(marker, goal)| (marker.to_string(), *goal))
-            .collect();
-        let trace = pcsat_trace::read(&log, |name| goals.contains_key(name));
+        let mut trace = pcsat_trace::read(&refutation, &log, &marker.to_string(), goals.len());
+        // Several goals PCSat reaches, or none it names, are told apart by solving the system with
+        // one goal marked at a time.
+        if trace.goals.len() != 1 {
+            let candidates: Vec<usize> = match trace.goals.is_empty() {
+                true => (0..goals.len()).collect(),
+                false => trace.goals.clone(),
+            };
+            if let Some(n) = self.refuted_alone(&candidates) {
+                trace.goals = vec![n];
+            }
+        }
         let preds: HashMap<String, PredVarId> = self
             .pred_vars
             .indices()
             .map(|p| (p.to_string(), p))
             .collect();
         let dependencies = marked.compute_dependency();
-        answer.pcsat_trace = Some(Ok(pcsat_trace::Refutation::of(
-            trace,
-            &goals,
-            &preds,
-            &dependencies,
-        )));
+        let refutation = pcsat_trace::Refutation::of(trace, &goals, &preds, &dependencies);
+        answer.pcsat_trace = Some(Ok(refutation));
+    }
+
+    /// The first of the goals numbered `candidates` (as [`System::mark_goals_by_number`] numbers
+    /// them) the solver refutes with the other goals left out, of the first
+    /// [`MAX_GOALS_ALONE`].
+    fn refuted_alone(&self, candidates: &[usize]) -> Option<usize> {
+        let config = Config::from_env();
+        candidates.iter().take(MAX_GOALS_ALONE).copied().find(|n| {
+            let mut marked = self.clone();
+            marked.mark_goals_by_number(Some(*n));
+            let query = marked.prepared().query(&config).to_string();
+            let answer = config.check_sat_with(&query, Requests::default());
+            matches!(answer.result, Err(CheckSatError::Unsat))
+        })
     }
 
     /// Asks `config`'s solver for the refutation of the system, which is refuted, with its
@@ -3901,30 +3918,51 @@ impl System {
             let vars = self.clauses[id].vars.clone();
             let args: Vec<Term> = vars.indices().map(Term::Var).collect();
             let marker = self.new_pred_var(vars.raw.clone(), DebugInfo::default());
-            let body = Body::new(vec![Atom::new(marker.into(), args.clone())], Formula::top());
-            self.mark_goal(id, Atom::new(marker.into(), args), vars, body);
+            self.mark_goal(id, Atom::new(marker.into(), args.clone()));
+            let body = Body::new(vec![Atom::new(marker.into(), args)], Formula::top());
+            self.push_marker_clause(vars, Atom::bottom(), body);
             markers.push((marker, id));
         }
         markers
     }
 
-    /// Gives each goal a marker PCSat keeps until it settles the goal, so that its debug log
-    /// names the goal ([`pcsat_trace`]): `g(0) ⇐ body ∧ ¬head` and `false ⇐ g(x) ∧ x = 0`. A
-    /// marker of `false ⇐ g(x)`, as [`System::mark_goals`] makes, PCSat assigns `false` before
-    /// any elimination, its upper bound being `false`; the guard keeps it. Returns the markers
-    /// with their goals.
-    fn mark_goals_by_name(&mut self) -> Vec<(PredVarId, ClauseId)> {
-        let mut markers = Vec::new();
-        for id in self.goals() {
-            let marker = self.new_pred_var(vec![Sort::int()], DebugInfo::default());
-            let mut vars = IndexVec::new();
-            let x = vars.push(Sort::int());
-            let guard = Formula::Atom(Term::var(x).equal_to(Term::int(0)));
-            let body = Body::new(vec![Atom::new(marker.into(), vec![Term::var(x)])], guard);
-            self.mark_goal(id, Atom::new(marker.into(), vec![Term::int(0)]), vars, body);
-            markers.push((marker, id));
+    /// Marks every goal by one unknown `g` over the goal's number `i`, so that PCSat's debug log
+    /// and its refutation name the goals it reaches by their numbers ([`pcsat_trace`]):
+    /// `g(i) ⇐ body ∧ ¬head` for each goal, `false ⇐ g(x) ∧ x >= 0` and
+    /// `g(x - 1) ⇐ g(x) ∧ x < 0`. With `only`, the goal of that number alone is checked:
+    /// `false ⇐ g(x) ∧ x = only`. A marker of `false ⇐ g(x)`, as [`System::mark_goals`] makes,
+    /// PCSat assigns `false` before any elimination, its upper bound being `false`; the guard
+    /// keeps it. An unknown defined by goals alone PCSat resolves away before it learns from
+    /// examples; the last clause, which never applies (`g` holds at numbers `>= 0` only), makes
+    /// it recursive, so that it stays. Returns the marker and the goals by their numbers.
+    fn mark_goals_by_number(&mut self, only: Option<usize>) -> (PredVarId, Vec<ClauseId>) {
+        let goals = self.goals();
+        let marker = self.new_pred_var(vec![Sort::int()], DebugInfo::default());
+        let at = |t: Term| Atom::new(marker.into(), vec![t]);
+        for (i, id) in goals.iter().enumerate() {
+            self.mark_goal(*id, at(Term::int(i)));
         }
-        markers
+        let mut vars = IndexVec::new();
+        let x = vars.push(Sort::int());
+        let compared = |pred: KnownPred| {
+            Formula::Atom(Atom::new(pred.into(), vec![Term::var(x), Term::int(0)]))
+        };
+        let guard = match only {
+            None => compared(KnownPred::GREATER_THAN_OR_EQUAL),
+            Some(n) => Formula::Atom(Term::var(x).equal_to(Term::int(n))),
+        };
+        self.push_marker_clause(
+            vars.clone(),
+            Atom::bottom(),
+            Body::new(vec![at(Term::var(x))], guard),
+        );
+        let never = compared(KnownPred::LESS_THAN);
+        self.push_marker_clause(
+            vars,
+            at(Term::var(x).sub(Term::int(1))),
+            Body::new(vec![at(Term::var(x))], never),
+        );
+        (marker, goals)
     }
 
     /// The goals: the clauses whose head is no predicate variable (`false`, or a formula the
@@ -3939,21 +3977,23 @@ impl System {
             .collect()
     }
 
-    /// Makes `marked` the head of the goal `id`, its head negated in its body, and adds `false ⇐
-    /// body` over `vars`, `body` the marker's: the system is satisfiable with them exactly when it
-    /// is without.
-    fn mark_goal(
-        &mut self,
-        id: ClauseId,
-        marked: Atom<TermVarIdx>,
-        vars: IndexVec<TermVarIdx, Sort>,
-        body: Body<TermVarIdx>,
-    ) {
+    /// Makes `marked` the head of the goal `id`, its head negated in its body.
+    fn mark_goal(&mut self, id: ClauseId, marked: Atom<TermVarIdx>) {
         let clause = &mut self.clauses[id];
         let head = std::mem::replace(&mut clause.head, marked);
         if !head.is_bottom() {
             clause.body.formula.push_conj(Formula::Atom(head).not());
         }
+    }
+
+    /// Adds a clause about a goal's marker: the system is satisfiable with the markers exactly
+    /// when it is without.
+    fn push_marker_clause(
+        &mut self,
+        vars: IndexVec<TermVarIdx, Sort>,
+        head: Atom<TermVarIdx>,
+        body: Body<TermVarIdx>,
+    ) {
         self.clauses.push(Clause {
             origin: debug::origin::ClauseOrigin {
                 environment: Vec::new(),
@@ -3961,12 +4001,16 @@ impl System {
                 head: debug::origin::Entry::described("marker of a goal".to_owned()),
             },
             vars,
-            head: Atom::bottom(),
+            head,
             body,
             debug_info: DebugInfo::default(),
         });
     }
 }
+
+/// How many goals PCSat is asked to refute alone, one at a time, when what it prints does not
+/// tell the goal it refutes ([`System::refuted_alone`]).
+const MAX_GOALS_ALONE: usize = 8;
 
 fn flat_pred_args_enabled() -> bool {
     std::env::var_os("THRUST_FLAT_PRED_ARGS").is_some()

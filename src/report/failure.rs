@@ -41,18 +41,16 @@ pub struct Failure {
     pub inferred: Vec<LocalDefId>,
     /// Whether the run is `z3`'s, asked of a query the solver refuted without one.
     pub by_z3: bool,
-    /// What PCSat's debug log says, when the goal is read from it (`THRUST_PCSAT_TRACE`): it
-    /// gives no run and no values.
+    /// What PCSat prints besides the goal, when the goal is read from it (`THRUST_PCSAT_TRACE`):
+    /// it gives no run and no values.
     pub by_pcsat_log: Option<PcsatLog>,
 }
 
-/// What PCSat's debug log says besides the goal it refutes.
+/// What PCSat prints besides the goal it refutes.
 #[derive(Debug, Clone)]
 pub struct PcsatLog {
-    /// The other goals PCSat resolved in the same step: one of them and the goal is refuted.
+    /// The other goals PCSat reaches: it refutes the goal or one of them.
     pub or: Vec<chc::ClauseId>,
-    /// The goals the log shows hold.
-    pub held: Vec<(chc::ClauseId, chc::pcsat_trace::Held)>,
     /// What reaches each unknown the goal assumes: PCSat's lower bound of it, over the
     /// unknown's arguments as the report names them, in PCSat's notation.
     pub reached: Vec<String>,
@@ -284,18 +282,14 @@ pub fn read(
     })
 }
 
-/// The goal PCSat's debug log shows refuted (the first of those one of which is, when it does
-/// not tell which), with what reaches the unknowns it assumes.
+/// The goal PCSat refutes (the first of those it reaches, when it does not tell which), with
+/// what reaches the unknowns it assumes.
 fn read_pcsat_log(answer: &chc::Answer, system: &chc::System, names: &Names) -> Option<Failure> {
     let Some(Ok(log)) = &answer.pcsat_trace else {
         return None;
     };
-    let (goal, or) = match (log.refuted.first(), log.candidates.split_first()) {
-        (Some(goal), _) => (*goal, Vec::new()),
-        (None, Some((goal, or))) => (*goal, or.to_vec()),
-        (None, None) => return None,
-    };
-    let assumed: Vec<chc::PredVarId> = system.clauses[goal]
+    let (goal, or) = log.goals.split_first()?;
+    let assumed: Vec<chc::PredVarId> = system.clauses[*goal]
         .body
         .atoms
         .iter()
@@ -311,15 +305,14 @@ fn read_pcsat_log(answer: &chc::Answer, system: &chc::System, names: &Names) -> 
         .filter_map(|b| Some(reached(names.preds.get(&b.pred)?, b)))
         .collect();
     Some(Failure {
-        goal,
+        goal: *goal,
         run: Vec::new(),
         truncated: false,
         values: Vec::new(),
         inferred: Vec::new(),
         by_z3: false,
         by_pcsat_log: Some(PcsatLog {
-            or,
-            held: log.held.clone(),
+            or: or.to_vec(),
             reached,
         }),
     })

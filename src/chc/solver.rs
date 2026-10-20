@@ -438,9 +438,12 @@ impl Config {
         Some(config)
     }
 
-    /// What the command prints on stderr for `problem`, which it refutes; or why there is
-    /// nothing to read.
-    pub fn run_for_log(&self, problem: impl std::fmt::Display) -> Result<String, String> {
+    /// What the command prints after its verdict on stdout and on stderr for `problem`, which
+    /// it refutes; or why there is nothing to read.
+    pub fn run_for_trace(
+        &self,
+        problem: impl std::fmt::Display,
+    ) -> Result<(String, String), String> {
         use std::io::Write as _;
         let mut file = tempfile::Builder::new()
             .prefix("thrust_tmp_")
@@ -454,10 +457,10 @@ impl Config {
             .run_with_stderr(file.path(), std::process::Stdio::piped())
             .map_err(|err| format!("{err}"))?;
         match read_verdict(&stdout) {
-            Some((Verdict::Unsat, _)) => Ok(stderr),
+            Some((Verdict::Unsat, _)) => Ok((stdout, stderr)),
             _ => Err(format!(
                 "it answered `{}` with its goals marked",
-                stdout.trim()
+                stdout.lines().next().unwrap_or_default().trim()
             )),
         }
     }
