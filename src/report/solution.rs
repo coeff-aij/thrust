@@ -38,12 +38,15 @@ impl Solution {
     ) -> Self {
         let mut model = answer::definitions(model, symbols, Name::new);
         // `z3`'s model of a system of clauses interprets the predicate variables by formulas over
-        // their arguments; a function it made up besides would need its definition shown.
-        if let Some(name) = model.keys().find(|name| symbols.pred(name).is_none()) {
-            unimplemented!("a model defining `{name}`, which is no predicate variable");
-        }
-        // Only the predicate variables the report names are shown.
-        model.retain(|name, _| names.preds.contains_key(&symbols.pred(name).unwrap()));
+        // their arguments. PCSat's also defines the predicates its preprocessing made
+        // (`p2_shared163`, `p2` with its equal arguments shared), besides an interpretation of
+        // each predicate variable over its own arguments; those are left out. Only the predicate
+        // variables the report names are shown.
+        model.retain(|name, _| {
+            symbols
+                .pred(name)
+                .is_some_and(|pred| names.preds.contains_key(&pred))
+        });
         super::simplify::simplify(&mut model, query, symbols, run);
         let by_pred = model
             .into_iter()
@@ -66,7 +69,8 @@ impl Solution {
         symbols: &[Symbols],
         names: &Names,
     ) -> Result<Self, String> {
-        let config = chc::Config::from_env();
+        // Whichever solver gave the model, `z3` simplifies it.
+        let config = chc::Config::z3_in_place_of_solver();
         let mut solutions = answers.iter().zip(symbols).filter_map(|(answer, symbols)| {
             let (None, Some(model)) = (solution_unavailable(answer), &answer.model) else {
                 return None;
@@ -188,9 +192,7 @@ pub(super) fn solution_unavailable(answer: &chc::Answer) -> Option<String> {
         );
     }
     if answer.model.is_none() {
-        return Some(
-            "no solution: the solver gave no model (only `z3` is asked for one)".to_owned(),
-        );
+        return Some("no solution: the solver gave no model after `(get-model)`".to_owned());
     }
     None
 }

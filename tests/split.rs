@@ -245,10 +245,10 @@ fn a_failed_second_run_is_reported_with_its_verdict() {
     );
 }
 
-/// A solver that gives no model or refutation (any but `z3`) is not asked again by the report:
-/// each part is solved once.
+/// A solver other than `z3` is asked once more for the model of each part it solves, by
+/// `(get-model)`; one that gives none leaves the report without a solution.
 #[test]
-fn a_solver_without_evidence_solves_each_part_once() {
+fn a_solver_without_evidence_is_asked_once_more_for_each_model() {
     use std::os::unix::fs::PermissionsExt as _;
     let dir = std::env::temp_dir().join(format!("thrust-sat-solver-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -275,7 +275,7 @@ fn a_solver_without_evidence_solves_each_part_once() {
         stderr.contains("thrust: 3 parts solved on their own"),
         "{stderr}"
     );
-    assert_eq!(runs, 3, "{stderr}");
+    assert_eq!(runs, 6, "{stderr}");
 }
 
 /// A solver other than `z3` that reads PCSat's declarations: the stand-in turns them into
