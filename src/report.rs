@@ -482,7 +482,7 @@ pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) -> Vec<Refuted>
         .iter()
         .zip(&symbols)
         .filter(|_| config.items.failure)
-        .map(|(answer, symbols)| (answer, failure::read(answer, &names, symbols)))
+        .map(|(answer, symbols)| (answer, failure::read(answer, &system, &names, symbols)))
         .collect();
     let functions = if config.items.functions {
         functions::functions(tcx, config, &input, verdict)

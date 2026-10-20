@@ -1,0 +1,23 @@
+#!/bin/bash
+
+# PCSat with its debug log, for THRUST_PCSAT_TRACE: the verdict on stdout, as
+# thrust-pcsat-wrapper prints it, and PCSat's debug log on stderr. The image and the container's
+# limits are thrust-pcsat-wrapper's (COAR_IMAGE, THRUST_PCSAT_CPUS, THRUST_PCSAT_MEMORY).
+#
+# The configuration is that of dbg_pcsat_tbq_ar.json without its checks of the answer, which
+# print their reports on stdout after the verdict.
+
+# thrust-pcsat-wrapper mounts the working directory at /mnt; the paths in the configuration are
+# the image's.
+config=$(mktemp -p . --suffix .json)
+trap 'rm -f "$config"' EXIT
+cat > "$config" <<'EOF'
+["PCSat", {
+  "preprocessor": ["Filename", "./config/pcsat/preprocessor/dbg_enable.json"],
+  "coordinator": ["Filename", "./config/pcsat/coordinator/dbg_tbq_ar.json"],
+  "sol_printer": ["Filename", "./config/pcsat/sol_printer/wo_iter.json"],
+  "load_oracle_sol": false
+}]
+EOF
+
+COAR_CONFIG="/mnt/$(basename "$config")" "$(dirname "$0")/thrust-pcsat-wrapper" "$@"

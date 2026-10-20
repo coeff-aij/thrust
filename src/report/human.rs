@@ -189,6 +189,10 @@ impl Human<'_, '_> {
             };
             let disagrees = answer.z3_refused == Some(chc::Refused::Sat);
             let why = match (&answer.proof, answer.goal_markers.is_empty()) {
+                (None, true) if answer.pcsat_trace.is_some() => match &answer.pcsat_trace {
+                    Some(Err(why)) => format!("PCSat's debug log could not be read: {why}"),
+                    _ => "PCSat's debug log names no goal it refutes".to_owned(),
+                },
                 (None, true) => "the solver gives no refutation, and `z3`, asked in its place, \
                                  does not read the query (it has forall sorts or sequences)"
                     .to_owned(),
@@ -257,6 +261,9 @@ impl Human<'_, '_> {
                  from the facts indented under it (a derivation, not an order of execution):\n{}",
                 lines.join("\n")
             ));
+        }
+        if let Some(log) = &failure.by_pcsat_log {
+            notes.extend(pcsat_log_notes(log, entries));
         }
         let inferred: Vec<String> = failure
             .inferred
@@ -367,4 +374,49 @@ impl Human<'_, '_> {
             }
         }
     }
+}
+
+/// What PCSat's debug log says of a goal it refutes: the goals one of which it may be in its
+/// place, what reaches the unknowns the goal assumes, and the goals it shows hold.
+fn pcsat_log_notes(log: &super::failure::PcsatLog, entries: &[Entry<'_>]) -> Vec<String> {
+    let describe = |id: chc::ClauseId| match constraint_of(entries, id) {
+        Some((entry, c)) => format!("{:?} ({} in `{}`)", id, c.kind, entry.name),
+        None => format!("{id:?}"),
+    };
+    let or = match log.or.as_slice() {
+        [] => String::new(),
+        or => format!(
+            ", or from one of {}: the log does not tell which",
+            or.iter()
+                .map(|id| describe(*id))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    };
+    let mut notes = vec![format!(
+        "how PCSat refutes it, read from its debug log (`THRUST_PCSAT_TRACE`): its \
+         preprocessing derives `false` from this obligation{or}; the log gives no run and no values"
+    )];
+    if !log.reached.is_empty() {
+        notes.push(format!(
+            "what reaches the unknowns it assumes, as PCSat bounds them from below (in its \
+             notation):\n{}",
+            log.reached
+                .iter()
+                .map(|r| format!("  {r}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ));
+    }
+    if !log.held.is_empty() {
+        notes.push(format!(
+            "PCSat's preprocessing shows these obligations hold: {}",
+            log.held
+                .iter()
+                .map(|(id, why)| format!("{} ({why})", describe(*id)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    notes
 }

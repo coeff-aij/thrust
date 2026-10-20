@@ -99,7 +99,20 @@ enum Line<'a> {
         annotation: Vec<Range>,
         /// The functions whose written `ensures` the run assumes at a call.
         assumes: Vec<FnSpan>,
+        /// What PCSat's debug log says, when the goal is read from it (`THRUST_PCSAT_TRACE`).
+        pcsat_log: Option<PcsatLog>,
     },
+}
+
+/// What PCSat's debug log says besides the goal it refutes (see [`super::failure::PcsatLog`]).
+#[derive(Serialize)]
+struct PcsatLog {
+    /// The other constraints one of which or the goal is refuted.
+    or: Vec<String>,
+    /// The constraints the log shows hold.
+    holds: Vec<String>,
+    /// PCSat's lower bound of each unknown the goal assumes, in its notation.
+    reached: Vec<String>,
 }
 
 /// How a span's columns count: from `base`, in `unit`, `end_column` after the last.
@@ -295,6 +308,11 @@ impl Json<'_, '_> {
                     span: range(self.tcx, span),
                 })
                 .collect(),
+            pcsat_log: failure.by_pcsat_log.as_ref().map(|log| PcsatLog {
+                or: log.or.iter().map(|id| format!("{id:?}")).collect(),
+                holds: log.held.iter().map(|(id, _)| format!("{id:?}")).collect(),
+                reached: log.reached.clone(),
+            }),
         }
     }
 

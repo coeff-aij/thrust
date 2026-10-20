@@ -744,3 +744,57 @@ fn the_human_report_lists_the_functions() {
     );
     assert!(stderr.contains("`main`: checked (sat)"), "{stderr}");
 }
+
+/// A command standing in for PCSat for `THRUST_PCSAT_TRACE`: `unsat` on stdout and, on stderr,
+/// a log in which the marker of the query's first goal is resolved into `false` and the marker of
+/// its second has no lower bound. The markers are the unknowns `p` of `false ⇐ p(x) ∧ x = 0`.
+fn pcsat_trace_stand_in() -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = std::env::temp_dir().join(format!("thrust-pcsat-trace-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let command = dir.join("pcsat-trace");
+    let script = "#!/bin/sh\n\
+        for a in \"$@\"; do file=\"$a\"; done\n\
+        markers=$(sed -n 's/.*(and (\\(p[0-9]*\\) v0) (= v0 0)) false.*/\\1/p' \"$file\")\n\
+        first=$(echo \"$markers\" | sed -n 1p); second=$(echo \"$markers\" | sed -n 2p)\n\
+        [ -n \"$second\" ] && echo \"$second is assigned false because there is no LB\" >&2\n\
+        echo '[elim_pvs] begin elim_pvars_by_resolution [2]:' >&2\n\
+        echo \"eliminating $first\" >&2\n\
+        echo '[elim_pvs] begin result [1]:' >&2\n\
+        echo '  false' >&2\n\
+        echo unsat\n";
+    std::fs::write(&command, script).unwrap();
+    std::fs::set_permissions(&command, std::fs::Permissions::from_mode(0o755)).unwrap();
+    command
+}
+
+/// With `THRUST_PCSAT_TRACE`, a query a solver other than `z3` refutes is refuted from PCSat's
+/// debug log in place of `z3`: the goal whose marker the log resolves into `false`, without a
+/// run or values.
+#[test]
+fn the_pcsat_log_names_the_refuted_goal() {
+    let trace = pcsat_trace_stand_in();
+    let dir = trace.parent().unwrap();
+    let solver = dir.join("always-unsat");
+    std::fs::write(&solver, "#!/bin/sh\necho unsat\n").unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&solver, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let output = report_with(
+        "loop_fail.rs",
+        "failure",
+        &[
+            ("THRUST_SOLVER", solver.to_str().unwrap()),
+            ("THRUST_PCSAT_TRACE", trace.to_str().unwrap()),
+        ],
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("thrust: refuted: assertion in `main`"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("read from its debug log"), "{stderr}");
+    assert!(!stderr.contains("where it fails"), "{stderr}");
+}

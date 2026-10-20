@@ -19,6 +19,7 @@ mod dedup;
 mod flatten;
 pub(crate) mod format_context;
 mod hoice;
+pub mod pcsat_trace;
 mod prune;
 pub mod sexp;
 mod smtlib2;
@@ -3721,9 +3722,50 @@ impl System {
             self.refute(config, &mut answer);
         }
         if refuted && config.asks_z3_to_refute(requests) {
-            self.refute_by_z3(&mut answer);
+            self.refute_in_place_of_solver(&mut answer);
         }
         answer
+    }
+
+    /// Asks for the refutation of the system, which a solver giving none refuted: PCSat's debug
+    /// log when `THRUST_PCSAT_TRACE` names the command printing it, else `z3`.
+    pub fn refute_in_place_of_solver(&self, answer: &mut Answer) {
+        match Config::pcsat_trace() {
+            Some(config) => self.trace_by_pcsat(&config, answer),
+            None => self.refute_by_z3(answer),
+        }
+    }
+
+    /// Reads the goals PCSat refutes and those it shows hold from its debug log, which `config`'s
+    /// command prints for the system with its goals marked by name.
+    fn trace_by_pcsat(&self, config: &Config, answer: &mut Answer) {
+        let mut marked = self.clone();
+        let markers = marked.mark_goals_by_name();
+        let marked = marked.prepared();
+        let log = match config.run_for_log(marked.query(config)) {
+            Ok(log) => log,
+            Err(why) => {
+                answer.pcsat_trace = Some(Err(why));
+                return;
+            }
+        };
+        let goals: HashMap<String, ClauseId> = markers
+            .iter()
+            .map(|(marker, goal)| (marker.to_string(), *goal))
+            .collect();
+        let trace = pcsat_trace::read(&log, |name| goals.contains_key(name));
+        let preds: HashMap<String, PredVarId> = self
+            .pred_vars
+            .indices()
+            .map(|p| (p.to_string(), p))
+            .collect();
+        let dependencies = marked.compute_dependency();
+        answer.pcsat_trace = Some(Ok(pcsat_trace::Refutation::of(
+            trace,
+            &goals,
+            &preds,
+            &dependencies,
+        )));
     }
 
     /// Asks `config`'s solver for the refutation of the system, which is refuted, with its
@@ -3741,7 +3783,7 @@ impl System {
 
     /// Asks `z3` for the refutation of the system, which another solver refuted (PCSat, which
     /// gives none), when `z3` reads its query.
-    pub fn refute_by_z3(&self, answer: &mut Answer) {
+    fn refute_by_z3(&self, answer: &mut Answer) {
         if self.needs_pcsat() {
             return;
         }
@@ -3852,41 +3894,77 @@ impl System {
     /// `g(x) ⇐ body ∧ ¬head` and `false ⇐ g(x)`. A refutation then derives the marker of the
     /// goal it refutes, at the values of its variables. Returns the markers with their goals.
     fn mark_goals(&mut self) -> Vec<(PredVarId, ClauseId)> {
-        let goals: Vec<ClauseId> = self
-            .clauses
-            .iter_enumerated()
-            .filter(|(_, clause)| {
-                !matches!(clause.head.pred, Pred::Var(_)) && !clause.head.is_top()
-            })
-            .map(|(id, _)| id)
-            .collect();
         let mut markers = Vec::new();
-        for id in goals {
+        for id in self.goals() {
             // The marker takes the goal's variables, so that the refutation's last fact gives the
             // values they have where the goal fails.
             let vars = self.clauses[id].vars.clone();
             let args: Vec<Term> = vars.indices().map(Term::Var).collect();
             let marker = self.new_pred_var(vars.raw.clone(), DebugInfo::default());
-            let clause = &mut self.clauses[id];
-            let marked = Atom::new(marker.into(), args.clone());
-            let head = std::mem::replace(&mut clause.head, marked);
-            if !head.is_bottom() {
-                clause.body.formula.push_conj(Formula::Atom(head).not());
-            }
-            self.clauses.push(Clause {
-                origin: debug::origin::ClauseOrigin {
-                    environment: Vec::new(),
-                    body: Vec::new(),
-                    head: debug::origin::Entry::described("marker of a goal".to_owned()),
-                },
-                vars,
-                head: Atom::bottom(),
-                body: Body::new(vec![Atom::new(marker.into(), args)], Formula::top()),
-                debug_info: DebugInfo::default(),
-            });
+            let body = Body::new(vec![Atom::new(marker.into(), args.clone())], Formula::top());
+            self.mark_goal(id, Atom::new(marker.into(), args), vars, body);
             markers.push((marker, id));
         }
         markers
+    }
+
+    /// Gives each goal a marker PCSat keeps until it settles the goal, so that its debug log
+    /// names the goal ([`pcsat_trace`]): `g(0) ⇐ body ∧ ¬head` and `false ⇐ g(x) ∧ x = 0`. A
+    /// marker of `false ⇐ g(x)`, as [`System::mark_goals`] makes, PCSat assigns `false` before
+    /// any elimination, its upper bound being `false`; the guard keeps it. Returns the markers
+    /// with their goals.
+    fn mark_goals_by_name(&mut self) -> Vec<(PredVarId, ClauseId)> {
+        let mut markers = Vec::new();
+        for id in self.goals() {
+            let marker = self.new_pred_var(vec![Sort::int()], DebugInfo::default());
+            let mut vars = IndexVec::new();
+            let x = vars.push(Sort::int());
+            let guard = Formula::Atom(Term::var(x).equal_to(Term::int(0)));
+            let body = Body::new(vec![Atom::new(marker.into(), vec![Term::var(x)])], guard);
+            self.mark_goal(id, Atom::new(marker.into(), vec![Term::int(0)]), vars, body);
+            markers.push((marker, id));
+        }
+        markers
+    }
+
+    /// The goals: the clauses whose head is no predicate variable (`false`, or a formula the
+    /// clause checks).
+    fn goals(&self) -> Vec<ClauseId> {
+        self.clauses
+            .iter_enumerated()
+            .filter(|(_, clause)| {
+                !matches!(clause.head.pred, Pred::Var(_)) && !clause.head.is_top()
+            })
+            .map(|(id, _)| id)
+            .collect()
+    }
+
+    /// Makes `marked` the head of the goal `id`, its head negated in its body, and adds `false ⇐
+    /// body` over `vars`, `body` the marker's: the system is satisfiable with them exactly when it
+    /// is without.
+    fn mark_goal(
+        &mut self,
+        id: ClauseId,
+        marked: Atom<TermVarIdx>,
+        vars: IndexVec<TermVarIdx, Sort>,
+        body: Body<TermVarIdx>,
+    ) {
+        let clause = &mut self.clauses[id];
+        let head = std::mem::replace(&mut clause.head, marked);
+        if !head.is_bottom() {
+            clause.body.formula.push_conj(Formula::Atom(head).not());
+        }
+        self.clauses.push(Clause {
+            origin: debug::origin::ClauseOrigin {
+                environment: Vec::new(),
+                body: Vec::new(),
+                head: debug::origin::Entry::described("marker of a goal".to_owned()),
+            },
+            vars,
+            head: Atom::bottom(),
+            body,
+            debug_info: DebugInfo::default(),
+        });
     }
 }
 

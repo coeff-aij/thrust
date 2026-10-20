@@ -189,6 +189,16 @@ impl CommandConfig {
         path_arg: impl AsRef<std::path::Path>,
         stdout: impl Into<std::process::Stdio>,
     ) -> Result<String, CheckSatError> {
+        self.run_with_stderr(path_arg, stdout)
+            .map(|(stdout, _)| stdout)
+    }
+
+    /// What the command prints on stdout and on stderr for `path_arg`.
+    fn run_with_stderr(
+        &self,
+        path_arg: impl AsRef<std::path::Path>,
+        stdout: impl Into<std::process::Stdio>,
+    ) -> Result<(String, String), CheckSatError> {
         let path_arg = path_arg.as_ref();
         let child = std::process::Command::new(&self.name)
             .args(&self.args)
@@ -208,7 +218,7 @@ impl CommandConfig {
                 stderr: stderr.into_owned(),
             });
         }
-        Ok(stdout.into_owned())
+        Ok((stdout.into_owned(), stderr.into_owned()))
     }
 }
 
@@ -416,6 +426,42 @@ impl Config {
         config
     }
 
+    /// The command `THRUST_PCSAT_TRACE` names, which prints PCSat's debug log on stderr for a
+    /// query (`tests/thrust-pcsat-trace-wrapper`), with the solver's time limit
+    /// (`THRUST_SOLVER_TIMEOUT_SECS`), else 30 s. It is not `z3`, so a query for it is PCSat's.
+    pub fn pcsat_trace() -> Option<Config> {
+        let name = std::env::var("THRUST_PCSAT_TRACE").ok()?;
+        let mut config = Config::default();
+        config.solver.name = name;
+        config.solver.args.clear();
+        config.solver.load_timeout("THRUST_SOLVER_TIMEOUT_SECS");
+        Some(config)
+    }
+
+    /// What the command prints on stderr for `problem`, which it refutes; or why there is
+    /// nothing to read.
+    pub fn run_for_log(&self, problem: impl std::fmt::Display) -> Result<String, String> {
+        use std::io::Write as _;
+        let mut file = tempfile::Builder::new()
+            .prefix("thrust_tmp_")
+            .suffix(".smt2")
+            .tempfile()
+            .map_err(|err| err.to_string())?;
+        write!(file, "{problem}\n(check-sat)\n").map_err(|err| err.to_string())?;
+        file.flush().map_err(|err| err.to_string())?;
+        let (stdout, stderr) = self
+            .solver
+            .run_with_stderr(file.path(), std::process::Stdio::piped())
+            .map_err(|err| format!("{err}"))?;
+        match read_verdict(&stdout) {
+            Some((Verdict::Unsat, _)) => Ok(stderr),
+            _ => Err(format!(
+                "it answered `{}` with its goals marked",
+                stdout.trim()
+            )),
+        }
+    }
+
     fn run_check_sat(
         &self,
         problem: impl std::fmt::Display,
@@ -515,6 +561,9 @@ pub struct Answer {
     pub proof_by_z3: bool,
     /// What `z3`, asked for a refutation, answered instead.
     pub z3_refused: Option<Refused>,
+    /// What PCSat's debug log says of the query it refuted (`THRUST_PCSAT_TRACE`), or why it
+    /// says nothing.
+    pub pcsat_trace: Option<Result<super::pcsat_trace::Refutation, String>>,
 }
 
 impl Answer {
@@ -529,6 +578,7 @@ impl Answer {
             query: None,
             proof_by_z3: false,
             z3_refused: None,
+            pcsat_trace: None,
         }
     }
 }
