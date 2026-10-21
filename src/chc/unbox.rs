@@ -149,9 +149,17 @@ fn unbox_clause(clause: Clause) -> Clause {
 }
 
 fn unbox_pred_var_def(pred_var_def: PredVarDef) -> PredVarDef {
-    let PredVarDef { sig, debug_info } = pred_var_def;
+    let PredVarDef {
+        sig,
+        debug_info,
+        scope,
+    } = pred_var_def;
     let sig = sig.into_iter().map(unbox_sort).collect();
-    PredVarDef { sig, debug_info }
+    PredVarDef {
+        sig,
+        debug_info,
+        scope,
+    }
 }
 
 fn unbox_datatype_selector(selector: DatatypeSelector) -> DatatypeSelector {

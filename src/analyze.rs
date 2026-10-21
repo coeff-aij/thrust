@@ -7,7 +7,7 @@
 //! CHC solver with the [`Analyzer::solve`] and subsequently reports the result.
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::hash::Hash;
 use std::rc::Rc;
 
@@ -613,6 +613,12 @@ pub struct Analyzer<'tcx> {
     impl_methods_with_own_contract: rustc_data_structures::fx::FxIndexSet<DefId>,
     /// The template being made now, for the predicate variables allocated meanwhile.
     template_site: Option<TemplateSite>,
+    /// The item whose type parameters interpret the template being made now: the function
+    /// itself for its contract, the owner of the analysis for a block or its code.
+    template_owner: Option<DefId>,
+    /// The item each predicate variable was made for, by [`Self::template_owner`]; its type
+    /// parameters bound the variable's dependency set (see [`Self::pred_var_scopes`]).
+    pred_var_owners: HashMap<chc::PredVarId, DefId>,
     /// The variable each argument of a template's predicate variable is, by the variable.
     template_vars: HashMap<chc::PredVarId, Vec<Option<chc::debug::ErasedVar>>>,
     /// Where each template's predicate variable was made.
@@ -807,20 +813,85 @@ impl<'tcx> Analyzer<'tcx> {
         self.tcx
     }
 
-    /// Makes the templates made until [`Analyzer::leave_template_site`] those of `site`, and
-    /// returns the site that was current.
-    pub fn enter_template_site(&mut self, site: TemplateSite) -> Option<TemplateSite> {
-        self.template_site.replace(site)
+    /// Makes the templates made until [`Analyzer::leave_template_site`] those of `site`, whose
+    /// type parameters are `owner`'s, and returns the site and owner that were current.
+    pub fn enter_template_site(
+        &mut self,
+        site: TemplateSite,
+        owner: DefId,
+    ) -> (Option<TemplateSite>, Option<DefId>) {
+        (
+            self.template_site.replace(site),
+            self.template_owner.replace(owner),
+        )
     }
 
-    pub fn leave_template_site(&mut self, previous: Option<TemplateSite>) {
-        self.template_site = previous;
+    pub fn leave_template_site(&mut self, previous: (Option<TemplateSite>, Option<DefId>)) {
+        (self.template_site, self.template_owner) = previous;
     }
 
     pub fn generate_pred_var(&mut self, sig: chc::PredSig) -> chc::PredVarId {
-        self.system
+        let pred_var = self
+            .system
             .borrow_mut()
-            .new_pred_var(sig, chc::DebugInfo::from_current_span())
+            .new_pred_var(sig, chc::DebugInfo::from_current_span());
+        if let Some(owner) = self.template_owner {
+            self.pred_var_owners.insert(pred_var, owner);
+        }
+        pred_var
+    }
+
+    /// The forall sorts in scope of `owner`: those issued for the type parameters of `owner`
+    /// and of its parents (an impl or trait, the function around a closure), and those of the
+    /// projections over them.
+    fn scope_forall_sorts(&self, owner: DefId) -> BTreeSet<chc::ForallSortIdx> {
+        let mut params = HashSet::new();
+        let mut generics = Some(self.tcx.generics_of(owner));
+        while let Some(g) = generics {
+            params.extend(g.own_params.iter().map(|p| p.def_id));
+            generics = g.parent.map(|parent| self.tcx.generics_of(parent));
+        }
+        let type_params = self.type_params.borrow();
+        let mut scope: BTreeSet<_> = type_params
+            .iter()
+            .filter_map(|(tp, &idx)| match tp {
+                TypeParam::GenericType { param_def_id, .. } => {
+                    params.contains(param_def_id).then_some(idx)
+                }
+                TypeParam::AssocType(..) => None,
+            })
+            .collect();
+        // A projection's arguments may themselves be projections, so repeat until none is added.
+        loop {
+            let added: Vec<_> = type_params
+                .iter()
+                .filter_map(|(tp, &idx)| match tp {
+                    TypeParam::AssocType(_, args, _) if !scope.contains(&idx) => {
+                        let in_scope = args
+                            .iter()
+                            .all(|arg| arg.to_sort().forall_sorts().is_subset(&scope));
+                        in_scope.then_some(idx)
+                    }
+                    _ => None,
+                })
+                .collect();
+            if added.is_empty() {
+                return scope;
+            }
+            scope.extend(added);
+        }
+    }
+
+    /// Gives each predicate variable made for an item the forall sorts of that item's scope.
+    fn pred_var_scopes(&self) {
+        let mut scopes: HashMap<DefId, BTreeSet<chc::ForallSortIdx>> = HashMap::new();
+        let mut system = self.system.borrow_mut();
+        for (&pred_var, &owner) in &self.pred_var_owners {
+            let scope = scopes
+                .entry(owner)
+                .or_insert_with(|| self.scope_forall_sorts(owner));
+            system.set_pred_var_scope(pred_var, scope.clone());
+        }
     }
 
     pub fn generate_user_quantified_var(&self, name: String) -> chc::UserQuantifiedVarId {
@@ -866,6 +937,8 @@ impl<'tcx> Analyzer<'tcx> {
             called_fn_tys: Default::default(),
             impl_methods_with_own_contract: Default::default(),
             template_site: None,
+            template_owner: None,
+            pred_var_owners: Default::default(),
             template_vars: Default::default(),
             template_sites: Default::default(),
             contract_annotations: Default::default(),
@@ -2016,6 +2089,7 @@ impl<'tcx> Analyzer<'tcx> {
             }
         }
         self.system.borrow_mut().type_params_reverse = reverse;
+        self.pred_var_scopes();
         let config = crate::report::Config::from_env(self.tcx);
         match split_jobs() {
             Ok(None) => {}

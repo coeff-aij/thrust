@@ -2760,7 +2760,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         );
         let _guard = span.enter();
         let site = analyze::TemplateSite::Code(self.local_def_id, self.basic_block);
-        let previous = self.ctx.enter_template_site(site);
+        let previous = self
+            .ctx
+            .enter_template_site(site, self.type_builder.owner_fn_id());
         self.register_enum_defs();
 
         let outer_fn_param_vars = self.bind_locals(&expected.as_ref().params);

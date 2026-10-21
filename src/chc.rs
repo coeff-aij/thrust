@@ -260,6 +260,17 @@ impl Sort {
         }
     }
 
+    /// The forall sorts the sort is built from.
+    pub fn forall_sorts(&self) -> BTreeSet<ForallSortIdx> {
+        let mut sorts = BTreeSet::new();
+        self.walk(|s| {
+            if let Sort::Forall(idx) = s {
+                sorts.insert(*idx);
+            }
+        });
+        sorts
+    }
+
     fn walk<'a>(&'a self, f: impl FnMut(&'a Sort)) {
         self.walk_impl(Box::new(f))
     }
@@ -1798,6 +1809,15 @@ impl ForallPred {
         &self.type_parameters
     }
 
+    /// The forall sorts the predicate is stated over: those in its type parameters, its
+    /// parameters and its result.
+    pub fn forall_sorts(&self) -> BTreeSet<ForallSortIdx> {
+        let all = self.type_parameters.iter().chain(&self.params);
+        all.chain(std::iter::once(&self.result))
+            .flat_map(Sort::forall_sorts)
+            .collect()
+    }
+
     pub fn params(&self) -> &[Sort] {
         &self.params
     }
@@ -2697,6 +2717,10 @@ pub struct PredVarDef {
     /// We may attach a debug information to include in the resulting SMT-LIB2 file to indicate the
     /// origin of predicate variables.
     pub debug_info: DebugInfo,
+    /// The forall sorts in scope of the item whose analysis made the variable: those of its own
+    /// type parameters and its parents', and the projections over them. Its dependency set keeps
+    /// only the forall preds over these sorts. `None` leaves the set as the clauses give it.
+    pub scope: Option<BTreeSet<ForallSortIdx>>,
 }
 
 pub type UserDefinedPredSig = Vec<(String, Sort)>;
@@ -2908,7 +2932,16 @@ impl System {
     }
 
     pub fn new_pred_var(&mut self, sig: PredSig, debug_info: DebugInfo) -> PredVarId {
-        self.pred_vars.push(PredVarDef { sig, debug_info })
+        self.pred_vars.push(PredVarDef {
+            sig,
+            debug_info,
+            scope: None,
+        })
+    }
+
+    /// Limits the dependency set of `pred` to the forall preds over the sorts of `scope`.
+    pub fn set_pred_var_scope(&mut self, pred: PredVarId, scope: BTreeSet<ForallSortIdx>) {
+        self.pred_vars[pred].scope = Some(scope);
     }
 
     pub fn register_forall_pred(&mut self, pred: ForallPred) {
@@ -3641,6 +3674,15 @@ impl System {
             }
         }
 
+        // An unknown shared by several items, such as the contract of a non-generic function
+        // left to inference, is defined by clauses of each of its callers and so reaches their
+        // forall preds. Its solution is the item's own: keep the forall preds of its scope.
+        for (pred, deps) in propagated_forall_deps.iter_mut() {
+            if let Some(scope) = &self.pred_vars[*pred].scope {
+                deps.retain(|dep| dep.forall_sorts().is_subset(scope));
+            }
+        }
+
         propagated_forall_deps
     }
 
@@ -4175,6 +4217,35 @@ mod tests {
             debug_info: DebugInfo::default(),
         });
 
+        assert!(system.compute_dependency()[&p].contains(&q));
+    }
+
+    /// `p` is defined by a clause that assumes `q`, a forall pred over a sort outside `p`'s scope
+    /// (another item's type parameter), so its set leaves `q` out; without a scope it keeps it.
+    #[test]
+    fn a_dependency_set_keeps_the_forall_preds_of_the_unknowns_scope() {
+        let mut system = System::default();
+        let a = system.new_forall_sort(DebugInfo::default());
+        let q = ForallPred::new(
+            "q".into(),
+            String::new(),
+            vec![Sort::forall(a)],
+            vec![Sort::forall(a)],
+        );
+        system.register_forall_pred(q.clone());
+        let p = system.new_pred_var(vec![Sort::int()], DebugInfo::default());
+        system.push_clause(Clause {
+            origin: test_origin(0usize.into(), &Sort::int()),
+            vars: [Sort::int(), Sort::forall(a)].into_iter().collect(),
+            head: Atom::new(Pred::Var(p), vec![Term::var(0usize.into())]),
+            body: Atom::new(q.clone().into(), vec![Term::var(1usize.into())]).into(),
+            debug_info: DebugInfo::default(),
+        });
+
+        assert!(system.compute_dependency()[&p].contains(&q));
+        system.set_pred_var_scope(p, BTreeSet::new());
+        assert!(system.compute_dependency()[&p].is_empty());
+        system.set_pred_var_scope(p, [a].into_iter().collect());
         assert!(system.compute_dependency()[&p].contains(&q));
     }
 

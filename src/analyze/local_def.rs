@@ -1587,9 +1587,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         .push(a);
                 }
             }
-            let previous = self
-                .ctx
-                .enter_template_site(analyze::TemplateSite::Block(self.local_def_id, bb));
+            let previous = self.ctx.enter_template_site(
+                analyze::TemplateSite::Block(self.local_def_id, bb),
+                self.owner_fn_id,
+            );
             // function return type is basic block return type
             let ret_ty = self.body.local_decls[mir::RETURN_PLACE].ty;
             if let Some(invariants) = loop_invariants.get(&bb) {

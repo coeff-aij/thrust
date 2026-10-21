@@ -252,9 +252,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         )
     )]
     fn refine_fn_def(&mut self, local_def_id: LocalDefId) {
-        let previous = self
-            .ctx
-            .enter_template_site(analyze::TemplateSite::Contract(local_def_id));
+        let previous = self.ctx.enter_template_site(
+            analyze::TemplateSite::Contract(local_def_id),
+            local_def_id.to_def_id(),
+        );
         self.refine_fn_def_at_site(local_def_id);
         self.ctx.leave_template_site(previous);
     }
