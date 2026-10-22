@@ -1,0 +1,33 @@
+#!/bin/bash
+
+# A stand-in for a PCSat that answers `(get-model)`, which it skips: the verdict is that of
+# thrust-pcsat-wrapper; after `sat`, when the query asks for the model, PCSat solves the query once
+# more with its SyGuS printer, and its `define-fun`s are printed as the answer to `(get-model)`.
+# The SyGuS printer knows the sorts Int, Bool and arrays only; for a query over other sorts it
+# fails, and no model follows the verdict.
+
+wrapper=$(dirname "$0")/thrust-pcsat-wrapper
+
+verdict=$("$wrapper" "$1")
+status=$?
+echo "$verdict"
+if [[ $verdict != sat ]] || ! grep -qx '(get-model)' "$1"; then
+    exit "$status"
+fi
+
+# The wrapper mounts the working directory at /mnt; the paths in the configuration are the image's.
+config=$(mktemp -p . --suffix .json)
+trap 'rm -f "$config"' EXIT
+cat > "$config" <<'EOF'
+["PCSat", {
+  "preprocessor": ["Filename", "./config/pcsat/preprocessor/enable.json"],
+  "coordinator": ["Filename", "./config/pcsat/coordinator/tbq_ar.json"],
+  "sol_printer": ["Filename", "./config/pcsat/sol_printer/sygus_comp.json"],
+  "load_oracle_sol": false
+}]
+EOF
+
+definitions=$(COAR_CONFIG="/mnt/$(basename "$config")" "$wrapper" "$1" 2>/dev/null | grep '^(define-fun ')
+if [[ -n $definitions ]]; then
+    printf '(\n%s\n)\n' "$definitions"
+fi

@@ -3718,7 +3718,7 @@ impl System {
         // The refutation is asked of a second run on the system with its goals marked, so that
         // the verdict is the one the query alone gets.
         let refuted = matches!(answer.result, Err(CheckSatError::Unsat));
-        if requests.proof && refuted && config.answers(requests) {
+        if refuted && config.asks_for_proof(requests) {
             self.refute(config, &mut answer);
         }
         if refuted && config.asks_z3_to_refute(requests) {

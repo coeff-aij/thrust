@@ -316,7 +316,7 @@ impl Config {
     /// none of: a refutation is asked for, and the solver is not `z3` alone (PCSat, or `z3`
     /// after a preprocessor).
     pub fn asks_z3_to_refute(&self, requests: Requests) -> bool {
-        requests.proof && !self.answers(requests)
+        requests.proof && !self.asks_for_proof(requests)
     }
 
     pub fn capabilities(&self) -> Capabilities {
@@ -325,11 +325,22 @@ impl Config {
         }
     }
 
-    /// Whether the solver is asked for the evidence `requests` names along with its verdict:
-    /// only `z3` is, which prints a model after `(get-model)` and a refutation after
-    /// `(get-proof)`.
+    /// Whether the solver is asked for a model along with its verdict, by `(get-model)` after
+    /// `(check-sat)`: any solver run on the query itself. One that does not answer it (PCSat
+    /// skips the command) gives none, and its verdict is the same.
+    pub fn asks_for_model(&self, requests: Requests) -> bool {
+        requests.model && self.preprocessor.is_none()
+    }
+
+    /// Whether the solver is asked for the refutation of the query it refutes: only `z3` is, by
+    /// a second run ([`Config::refute`]).
+    pub fn asks_for_proof(&self, requests: Requests) -> bool {
+        requests.proof && self.solver.is_z3() && self.preprocessor.is_none()
+    }
+
+    /// Whether the solver is asked for some evidence `requests` names.
     pub fn answers(&self, requests: Requests) -> bool {
-        (requests.model || requests.proof) && self.solver.is_z3() && self.preprocessor.is_none()
+        self.asks_for_model(requests) || self.asks_for_proof(requests)
     }
 
     /// Solves `problem`, also asking for the evidence `requests` names when the solver gives it
@@ -479,7 +490,7 @@ impl Config {
         write!(file, "{}", smt2)?;
         file.flush()?;
         let answers = self.answers(requests);
-        if answers && requests.model {
+        if self.asks_for_model(requests) {
             writeln!(file, "(get-model)")?;
             file.flush()?;
         }

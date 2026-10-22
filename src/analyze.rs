@@ -2132,11 +2132,10 @@ impl<'tcx> Analyzer<'tcx> {
     ) -> Vec<crate::report::Refuted> {
         // Each part refuted is solved once more on its own, for its refutation, and each part
         // solved for its model when the report shows its unknowns; the report reads them over the
-        // whole system, whose parts keep the clause ids. A solver that gives neither is not
-        // asked again.
+        // whole system, whose parts keep the clause ids. A part is not solved again for a
+        // refutation the solver does not give.
         let requests = config.requests();
         let solver = chc::Config::from_env();
-        let evidence = solver.answers(requests);
         let shown = |part: &chc::Part| {
             let defs = system
                 .pred_vars_of(&part.clauses)
@@ -2149,7 +2148,7 @@ impl<'tcx> Analyzer<'tcx> {
             .enumerate()
             .filter_map(|(i, part)| {
                 let refuted = match part.result {
-                    Ok(()) if requests.model && evidence && shown(part) => false,
+                    Ok(()) if solver.asks_for_model(requests) && shown(part) => false,
                     Err(chc::CheckSatError::Unsat) if requests.proof => true,
                     _ => return None,
                 };
@@ -2164,7 +2163,7 @@ impl<'tcx> Analyzer<'tcx> {
         // or read from PCSat's debug log (`THRUST_PCSAT_TRACE`).
         let mut answers = chc::in_parallel(jobs, asked.len(), |i| {
             let part = system.part(&asked[i].clauses);
-            if evidence {
+            if !asked[i].refuted || solver.asks_for_proof(requests) {
                 return part.solve_part_with(&solver, requests);
             }
             let mut answer = chc::Answer::of(Err(chc::CheckSatError::Unsat));
