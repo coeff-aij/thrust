@@ -2,25 +2,24 @@
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 extern crate thrust_macros;
-use thrust_macros::{context, requires, ensures, predicate};
-use thrust_models::{exists, forall, Model};
+use thrust_macros::{context, ensures, logic, requires};
+use thrust_models::model::UInt;
+use thrust_models::Model;
 
 #[context]
 trait Account {
-    #[ensures(Self::is_balance(*self, result))]
+    #[ensures(result == Self::balance_logic(*self))]
     fn balance(&self) -> u32;
-    #[requires(exists(|x| Self::is_balance(*self, x)))]
-    #[ensures(forall(|x| Self::is_balance(*self, x) ==> Self::is_balance(!self, x + amount)))]
+    #[ensures(Self::balance_logic(!self) == Self::balance_logic(*self) + amount)]
     fn deposit(&mut self, amount: u32);
-    #[requires(exists(|x| Self::is_balance(*self, x) && x >= amount))]
-    #[ensures(forall(|x| Self::is_balance(*self, x) ==> Self::is_balance(!self, x - amount)))]
+    #[requires(Self::balance_logic(*self) >= amount)]
+    #[ensures(Self::balance_logic(!self) == Self::balance_logic(*self) - amount)]
     fn withdraw(&mut self, amount: u32);
-    #[predicate]
-    fn is_balance(self, balance: u32) -> bool;
+    #[logic]
+    fn balance_logic(self) -> UInt;
 }
 
-#[requires(exists(|from| A::is_balance(*a, from)))]
-#[ensures(forall(|from| A::is_balance(*a, from) ==> exists(|to| A::is_balance(!a, to) && to + result == from)))]
+#[ensures(A::balance_logic(!a) + result == A::balance_logic(*a))]
 fn try_withdraw<A: Account>(a: &mut A, amount: u32) -> u32
 where
     A: Model,
