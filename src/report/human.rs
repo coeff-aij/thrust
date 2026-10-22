@@ -189,6 +189,12 @@ impl Human<'_, '_> {
             };
             let disagrees = answer.z3_refused == Some(chc::Refused::Sat);
             let why = match (&answer.proof, answer.goal_markers.is_empty()) {
+                (None, true) if answer.pcsat_trace.is_some() => match &answer.pcsat_trace {
+                    Some(Err(why)) => {
+                        format!("PCSat, asked for the goal it refutes, gave none: {why}")
+                    }
+                    _ => "PCSat names no goal it refutes".to_owned(),
+                },
                 (None, true) => "the solver gives no refutation, and `z3`, asked in its place, \
                                  does not read the query (it has forall sorts or sequences)"
                     .to_owned(),
@@ -257,6 +263,9 @@ impl Human<'_, '_> {
                  from the facts indented under it (a derivation, not an order of execution):\n{}",
                 lines.join("\n")
             ));
+        }
+        if let Some(log) = &failure.by_pcsat_log {
+            notes.extend(pcsat_log_notes(log, entries));
         }
         let inferred: Vec<String> = failure
             .inferred
@@ -367,4 +376,23 @@ impl Human<'_, '_> {
             }
         }
     }
+}
+
+/// What PCSat prints besides a goal it refutes: the goals it may refute in its place, and what
+/// reaches the unknowns the goal assumes (see `THRUST_PCSAT_TRACE` in the README).
+fn pcsat_log_notes(log: &super::failure::PcsatLog, entries: &[Entry<'_>]) -> Vec<String> {
+    let describe = |id: chc::ClauseId| match constraint_of(entries, id) {
+        Some((entry, c)) => format!("{:?} ({} in `{}`)", id, c.kind, entry.name),
+        None => format!("{id:?}"),
+    };
+    let mut notes = Vec::new();
+    if !log.or.is_empty() {
+        let or: Vec<String> = log.or.iter().map(|id| describe(*id)).collect();
+        notes.push(format!("PCSat refutes this or {}", or.join(", or ")));
+    }
+    if !log.reached.is_empty() {
+        let reached: Vec<String> = log.reached.iter().map(|r| format!("  {r}")).collect();
+        notes.push(format!("reaching it (PCSat):\n{}", reached.join("\n")));
+    }
+    notes
 }

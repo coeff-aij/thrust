@@ -744,3 +744,51 @@ fn the_human_report_lists_the_functions() {
     );
     assert!(stderr.contains("`main`: checked (sat)"), "{stderr}");
 }
+
+/// A command standing in for PCSat for `THRUST_PCSAT_TRACE`: `unsat` on stdout, then a
+/// refutation whose conflict is the marker at the goal `0`. The marker is the unknown `g` of
+/// `false ⇐ g(x) ∧ x >= 0`.
+fn pcsat_trace_stand_in() -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = std::env::temp_dir().join(format!("thrust-pcsat-trace-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let command = dir.join("pcsat-trace");
+    let script = "#!/bin/sh\n\
+        for a in \"$@\"; do file=\"$a\"; done\n\
+        marker=$(sed -n 's/.*(and (\\(p[0-9]*\\) v0) (>= v0 0)) false.*/\\1/p' \"$file\")\n\
+        echo unsat\n\
+        echo \"(unsat-witness (conflict $marker(0))\"\n";
+    std::fs::write(&command, script).unwrap();
+    std::fs::set_permissions(&command, std::fs::Permissions::from_mode(0o755)).unwrap();
+    command
+}
+
+/// With `THRUST_PCSAT_TRACE`, a query a solver other than `z3` refutes is refuted from what PCSat
+/// prints in place of `z3`: the goal its refutation reaches the marker at, without a run or
+/// values.
+#[test]
+fn pcsat_names_the_refuted_goal() {
+    let trace = pcsat_trace_stand_in();
+    let dir = trace.parent().unwrap();
+    let solver = dir.join("always-unsat");
+    std::fs::write(&solver, "#!/bin/sh\necho unsat\n").unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&solver, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let output = report_with(
+        "ensures_fail.rs",
+        "failure",
+        &[
+            ("THRUST_SOLVER", solver.to_str().unwrap()),
+            ("THRUST_PCSAT_TRACE", trace.to_str().unwrap()),
+        ],
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("thrust: refuted: ensures in `next`"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("where it fails"), "{stderr}");
+}

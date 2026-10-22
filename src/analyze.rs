@@ -2160,7 +2160,8 @@ impl<'tcx> Analyzer<'tcx> {
                 })
             })
             .collect();
-        // A refuted part of a solver that gives no refutation is refuted by `z3` when it reads it.
+        // A refuted part of a solver that gives no refutation is refuted by `z3` when it reads it,
+        // or read from PCSat's debug log (`THRUST_PCSAT_TRACE`).
         let mut answers = chc::in_parallel(jobs, asked.len(), |i| {
             let part = system.part(&asked[i].clauses);
             if evidence {
@@ -2168,7 +2169,7 @@ impl<'tcx> Analyzer<'tcx> {
             }
             let mut answer = chc::Answer::of(Err(chc::CheckSatError::Unsat));
             if solver.asks_z3_to_refute(requests) {
-                part.refute_by_z3(&mut answer);
+                part.refute_in_place_of_solver(&mut answer);
             }
             answer
         });

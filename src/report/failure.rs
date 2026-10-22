@@ -41,6 +41,19 @@ pub struct Failure {
     pub inferred: Vec<LocalDefId>,
     /// Whether the run is `z3`'s, asked of a query the solver refuted without one.
     pub by_z3: bool,
+    /// What PCSat prints besides the goal, when the goal is read from it (`THRUST_PCSAT_TRACE`):
+    /// it gives no run and no values.
+    pub by_pcsat_log: Option<PcsatLog>,
+}
+
+/// What PCSat prints besides the goal it refutes.
+#[derive(Debug, Clone)]
+pub struct PcsatLog {
+    /// The other goals PCSat reaches: it refutes the goal or one of them.
+    pub or: Vec<chc::ClauseId>,
+    /// What reaches each unknown the goal assumes: PCSat's lower bound of it, over the
+    /// unknown's arguments as the report names them, in PCSat's notation.
+    pub reached: Vec<String>,
 }
 
 impl Failure {
@@ -217,13 +230,18 @@ fn single_same(fact: &Fact) -> Option<&Fact> {
     same.next().is_none().then_some(next)
 }
 
-/// The refuted goal and its run, if the answer is a refutation that derives a goal's marker.
+/// The refuted goal and its run, if the answer is a refutation that derives a goal's marker;
+/// or the goal PCSat's debug log shows refuted.
 pub fn read(
     answer: &chc::Answer,
+    system: &chc::System,
     names: &Names,
     symbols: &crate::chc::answer::Symbols,
 ) -> Option<Failure> {
-    let facts = proof::read(answer.proof.as_ref()?, symbols);
+    let Some(proof) = answer.proof.as_ref() else {
+        return read_pcsat_log(answer, system, names);
+    };
+    let facts = proof::read(proof, symbols);
     let (marker, goal) = answer
         .goal_markers
         .iter()
@@ -260,5 +278,76 @@ pub fn read(
         values: marker.args.clone(),
         inferred: reader.inferred,
         by_z3: answer.proof_by_z3,
+        by_pcsat_log: None,
     })
+}
+
+/// The goal PCSat refutes (the first of those it reaches, when it does not tell which), with
+/// what reaches the unknowns it assumes.
+fn read_pcsat_log(answer: &chc::Answer, system: &chc::System, names: &Names) -> Option<Failure> {
+    let Some(Ok(log)) = &answer.pcsat_trace else {
+        return None;
+    };
+    let (goal, or) = log.goals.split_first()?;
+    let assumed: Vec<chc::PredVarId> = system.clauses[*goal]
+        .body
+        .atoms
+        .iter()
+        .filter_map(|atom| match atom.pred {
+            chc::Pred::Var(p) => Some(p),
+            _ => None,
+        })
+        .collect();
+    let reached = log
+        .lower_bounds
+        .iter()
+        .filter(|b| assumed.contains(&b.pred))
+        .filter_map(|b| Some(reached(names.preds.get(&b.pred)?, b)))
+        .collect();
+    Some(Failure {
+        goal: *goal,
+        run: Vec::new(),
+        truncated: false,
+        values: Vec::new(),
+        inferred: Vec::new(),
+        by_z3: false,
+        by_pcsat_log: Some(PcsatLog {
+            or: or.to_vec(),
+            reached,
+        }),
+    })
+}
+
+/// `p(x, y): φ`, PCSat's lower bound `φ` of the unknown `info` names, its parameters renamed
+/// to the forall predicates the unknown depends on and the arguments the report names.
+fn reached(info: &PredInfo, lower: &chc::pcsat_trace::LowerBound) -> String {
+    let bound = &lower.bound;
+    let deps = lower.dependencies.len();
+    let names: Vec<String> = bound
+        .params
+        .iter()
+        .enumerate()
+        .map(|(i, param)| match i.checked_sub(deps) {
+            None => lower.dependencies[i].clone(),
+            Some(k) => info.args.get(k).cloned().flatten().unwrap_or(param.clone()),
+        })
+        .collect();
+    let args = &names[deps.min(names.len())..];
+    let mut formula = String::new();
+    let mut rest = bound.formula.as_str();
+    // A parameter is a whole name: `#tvar10` is not the start of `#tvar104`.
+    while let Some(at) = rest.find('#') {
+        formula.push_str(&rest[..at]);
+        let end = rest[at + 1..]
+            .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .map_or(rest.len(), |e| at + 1 + e);
+        let name = &rest[at..end];
+        match bound.params.iter().position(|p| p == name) {
+            Some(i) => formula.push_str(&names[i]),
+            None => formula.push_str(name),
+        }
+        rest = &rest[end..];
+    }
+    formula.push_str(rest);
+    format!("{}({}): {formula}", info.name, args.join(", "))
 }
