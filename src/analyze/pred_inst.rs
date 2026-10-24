@@ -186,7 +186,8 @@ impl<'tcx> analyze::Analyzer<'tcx> {
                 // Its rules at a generic impl would have to be instantiated with the impl.
                 self.tcx().dcx().span_fatal(
                     self.tcx().def_span(owner_fn_id),
-                    "a derived predicate left undefined by a generic impl is not supported; define it in the impl",
+                    "a derived predicate left undefined by a generic impl is not supported; \
+                     define it in the impl",
                 );
             }
             return refine::user_defined_pred(self.tcx(), pred_def_id);
@@ -274,16 +275,17 @@ impl<'tcx> analyze::Analyzer<'tcx> {
         }
 
         let local_def_id = pred_def_id.expect_local();
-        let (sig, body) = {
-            let mut analyzer = self.local_def_analyzer(local_def_id);
-            analyzer.owner_fn_id(owner_fn_id).generic_args(generic_args);
-            analyzer.predicate_definition()
-        };
-        if self.is_derived_predicate(pred_def_id) {
-            // A trait item's first type argument is `Self`.
-            self.declare_derived_pred(symbol, sig, pred_def_id, generic_args.type_at(0));
+        let derived = self.is_derived_predicate(pred_def_id);
+        let mut analyzer = self.local_def_analyzer(local_def_id);
+        analyzer.owner_fn_id(owner_fn_id).generic_args(generic_args);
+        if derived {
+            let sig = analyzer.predicate_signature();
+            drop(analyzer);
+            self.declare_derived_pred(symbol, sig, pred_def_id, generic_args, owner_fn_id);
             return;
         }
+        let (sig, body) = analyzer.predicate_definition();
+        drop(analyzer);
 
         let sort_subst = self.forall_sort_substitution(pred_def_id, generic_args, owner_fn_id);
         let body = self.substitute_forall_preds(&body, &sort_subst, generic_args, owner_fn_id);

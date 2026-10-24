@@ -21,20 +21,31 @@ use super::sites::{Names, Owner};
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Provenance {
     pub def: Option<LocalDefId>,
+    /// The function of an impl a trait's default body (an inherited law) was analyzed for.
+    pub owner: Option<LocalDefId>,
     pub bb: Option<BasicBlock>,
     pub stmt: Option<usize>,
 }
 
 impl Provenance {
     pub fn of(debug_info: &chc::DebugInfo) -> Self {
-        let def = debug_info.number("def_index").map(|i| LocalDefId {
-            local_def_index: DefIndex::from_u32(i as u32),
-        });
+        let def_at = |key| {
+            debug_info.number(key).map(|i| LocalDefId {
+                local_def_index: DefIndex::from_u32(i as u32),
+            })
+        };
+        let def = def_at("def_index");
+        let owner = def_at("owner_index");
         let bb = debug_info
             .number("bb_index")
             .map(|i| BasicBlock::from_u32(i as u32));
         let stmt = debug_info.number("stmt_idx").map(|i| i as usize);
-        Provenance { def, bb, stmt }
+        Provenance {
+            def,
+            owner,
+            bb,
+            stmt,
+        }
     }
 
     /// The span of the code the clause was made at: its statement or terminator (a return's,

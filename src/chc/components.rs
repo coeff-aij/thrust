@@ -83,34 +83,71 @@ fn reached_pred_vars(system: &System) -> HashMap<&UserDefinedPred, HashSet<PredV
         .collect()
 }
 
+/// The derived predicates (unknowns declared without a body) each user-defined predicate is or
+/// applies through the predicates it calls.
+fn reached_derived(system: &System) -> HashMap<&UserDefinedPred, HashSet<&UserDefinedPred>> {
+    let defs: HashMap<&UserDefinedPred, &UserDefinedPredDef> = system
+        .user_defined_pred_defs
+        .iter()
+        .map(|def| (&def.symbol, def))
+        .collect();
+    let is_derived = |symbol: &UserDefinedPred| {
+        defs.get(symbol)
+            .is_some_and(|def| matches!(def.body, UserDefinedPredBody::Derived))
+    };
+    let calls: HashMap<&UserDefinedPred, HashSet<&UserDefinedPred>> = defs
+        .iter()
+        .map(|(symbol, def)| (*symbol, def.callees().into_iter().collect()))
+        .collect();
+    let called = compute_transitive_closure(&calls);
+    defs.keys()
+        .map(|symbol| {
+            let reached = std::iter::once(*symbol)
+                .chain(called[symbol].iter().copied())
+                .filter(|s| is_derived(s))
+                .collect();
+            (*symbol, reached)
+        })
+        .collect()
+}
+
 /// The classes of the clauses of `system` that share an unknown, each in the order of the
 /// clauses, and the classes in the order of their first clause.
 pub fn components(system: &System) -> Vec<Vec<ClauseId>> {
-    // A derived predicate is an unknown that is not a predicate variable; the system is kept
-    // whole rather than joined through it.
-    let has_derived = system
+    let reached = reached_pred_vars(system);
+    let derived = reached_derived(system);
+    let derived_nodes: HashMap<&UserDefinedPred, usize> = system
         .user_defined_pred_defs
         .iter()
-        .any(|def| matches!(def.body, UserDefinedPredBody::Derived));
-    if has_derived {
-        return vec![system.clauses.indices().collect()];
-    }
-    let reached = reached_pred_vars(system);
-    // A node per clause, then one per unknown.
+        .filter(|def| matches!(def.body, UserDefinedPredBody::Derived))
+        .enumerate()
+        .map(|(i, def)| (&def.symbol, i))
+        .collect();
+    // A node per clause, then one per unknown: each predicate variable, then each derived
+    // predicate.
     let clause_count = system.clauses.len();
-    let mut classes = UnionFind::new(clause_count + system.pred_vars.len());
+    let derived_base = clause_count + system.pred_vars.len();
+    let mut classes = UnionFind::new(derived_base + derived_nodes.len());
     for (id, clause) in system.clauses.iter_enumerated() {
         let atoms = std::iter::once(&clause.head)
             .chain(&clause.body.atoms)
             .chain(clause.body.formula.iter_atoms());
-        let through_definitions = user_defined_in(atoms)
-            .into_iter()
+        let applied_defs = user_defined_in(atoms);
+        let through_definitions = applied_defs
+            .iter()
             .filter_map(|symbol| reached.get(symbol))
             .flatten()
             .copied();
         let applied = prune::pred_vars_of(std::iter::once(clause));
         for p in applied.into_iter().chain(through_definitions) {
             classes.union(id.index(), clause_count + p.index());
+        }
+        let derived_applied = applied_defs
+            .iter()
+            .filter_map(|symbol| derived.get(symbol))
+            .flatten();
+        for symbol in derived_applied {
+            classes.union(id.index(), derived_base + derived_nodes[symbol]);
         }
     }
     let mut by_root: BTreeMap<usize, Vec<ClauseId>> = BTreeMap::new();

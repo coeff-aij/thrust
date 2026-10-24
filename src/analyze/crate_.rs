@@ -497,13 +497,17 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 trait_ty = %trait_ty.display(),
                 "impl refinement"
             );
+            // The span places the clauses at the method, as the analysis of its body does.
+            let span = tracing::info_span!(
+                "impl_refinement",
+                def_index = def_id.expect_local().local_def_index.as_u32()
+            );
+            let _guard = span.enter();
             let clauses = crate::rty::relate_refining_function_type(
                 impl_ty.ty.as_function().unwrap(),
                 trait_ty.ty.as_function().unwrap(),
             );
-            let start = self.ctx.clause_count();
             self.ctx.extend_clauses(clauses);
-            self.ctx.record_clause_site(start, def_id);
         }
     }
 

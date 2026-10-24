@@ -45,6 +45,6 @@ impl Iter for Range {
 #[thrust_macros::requires(Range::produces(r, i))]
 fn take_produced(r: Range, i: isize) {}
 
-fn main() { //~ ERROR: the derived predicate
-    take_produced(Range { start: 0, end: 5 }, 3);
+fn main() {
+    take_produced(Range { start: 0, end: 5 }, 3); //~ ERROR: the derived predicate
 }

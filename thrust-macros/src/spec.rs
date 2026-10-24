@@ -161,12 +161,9 @@ fn expand_spec_fn(item: TokenStream, kind: SpecFnKind, derived: bool) -> TokenSt
     };
     let mut block = match func.block() {
         Some(block) => block.clone(),
-        // The default body lets an impl leave a derived predicate out. Thrust declares the
-        // predicate as an unknown and never emits this text, which the solver would reject.
-        None if derived => syn::parse_quote!({
-            "thrust:derived";
-            true
-        }),
+        // The default body lets an impl leave a derived predicate out. Thrust reads the
+        // `#[thrust::derived]` marker instead and never analyzes this body.
+        None if derived => syn::parse_quote!({ true }),
         None => return quote! { #sig; }.into(),
     };
     // The receiver `self` is lowered to a named `self_` parameter, so rewrite

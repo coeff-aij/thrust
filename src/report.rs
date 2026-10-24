@@ -12,7 +12,7 @@
 //! entries refer to one another through the predicate variables' names.
 
 mod body;
-mod constraints;
+pub(crate) mod constraints;
 mod failure;
 mod formula;
 mod functions;

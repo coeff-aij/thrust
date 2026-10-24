@@ -16,6 +16,7 @@ mod clause_builder;
 mod components;
 pub mod debug;
 mod dedup;
+mod definite;
 mod flatten;
 pub(crate) mod format_context;
 mod hoice;
@@ -2353,6 +2354,14 @@ impl<V> Formula<V> {
         self.iter_atoms_impl()
     }
 
+    /// Pushes the conjuncts of the formula, nested conjunctions flattened.
+    pub fn conjuncts_into<'a>(&'a self, out: &mut Vec<&'a Formula<V>>) {
+        match self {
+            Formula::And(fs) => fs.iter().for_each(|f| f.conjuncts_into(out)),
+            f => out.push(f),
+        }
+    }
+
     /// Calls `f` with each atom and whether it occurs positively, given that the formula itself
     /// occurs positively when `positive` holds. In a clause body, an atom that occurs negatively
     /// is part of what the clause concludes: `φ ∧ ¬ψ` is the clause `φ ⇒ ψ`.
@@ -3478,95 +3487,38 @@ impl System {
             .collect()
     }
 
-    /// The atoms a clause concludes as its encoding puts them: its head, and each atom that
-    /// occurs positively in a conjunct `¬ψ` of its body (the clause `φ ⇒ ψ`, which is how a
-    /// precondition at a call and an ensures are checked). Unlike [`Self::polarized_atoms`],
-    /// the rest of the body is assumed whatever its polarity: an assumed `A ⇒ B` concludes
-    /// nothing of `A`. The polarity is followed into the formula bodies of the user-defined
-    /// predicates concluded (`bodies`).
-    fn concluded_atoms<'a>(
-        clause: &'a Clause,
-        bodies: &HashMap<&'a UserDefinedPred, &'a Formula>,
-    ) -> Vec<&'a Atom<TermVarIdx>> {
-        fn conjuncts<'a>(formula: &'a Formula, out: &mut Vec<&'a Formula>) {
-            match formula {
-                Formula::And(fs) => fs.iter().for_each(|f| conjuncts(f, out)),
-                f => out.push(f),
-            }
-        }
-        let mut obligations = Vec::new();
-        conjuncts(&clause.body.formula, &mut obligations);
-        let mut pending: Vec<&Formula> = obligations
-            .into_iter()
-            .filter_map(|f| match f {
-                Formula::Not(obligation) => Some(&**obligation),
-                _ => None,
-            })
-            .collect();
-        let mut concluded = vec![&clause.head];
-        let mut entered = HashSet::new();
-        let mut next = 0;
-        loop {
-            while let Some(obligation) = pending.pop() {
-                obligation.for_each_polarized_atom(true, &mut |atom, positive| {
-                    if positive {
-                        concluded.push(atom)
-                    }
-                });
-            }
-            let Some(atom) = concluded.get(next).copied() else {
-                return concluded;
-            };
-            next += 1;
-            if let Pred::UserDefined(pred) = &atom.pred {
-                if let Some(body) = bodies.get(pred).copied() {
-                    if entered.insert(pred) {
-                        pending.push(body);
-                    }
+    /// Each clause that concludes one of `preds` in what it checks, with the predicate and whether
+    /// the clause is definite in it ([`definite::DefiniteWalk`]). What a clause checks is its head and each
+    /// conjunct `¬ψ` of its body, the clause `φ ⇒ ψ`, which is how a precondition at a call and an
+    /// ensures are put; it concludes a predicate occurring positively there. The other conjuncts
+    /// are assumptions, which `preds` may occur in with either polarity; whether an assumption
+    /// may conclude one is a question of where it comes from, which the clause does not record.
+    pub fn conclusions_of<'p>(
+        &self,
+        preds: &HashSet<&'p UserDefinedPred>,
+    ) -> Vec<(ClauseId, &'p UserDefinedPred, bool)> {
+        let bodies = self.formula_bodies();
+        let mut conclusions = Vec::new();
+        for (id, clause) in self.clauses.iter_enumerated() {
+            for &pred in preds {
+                if !definite::DefiniteWalk::new(pred, &bodies).checks(clause) {
+                    continue;
                 }
+                let definite = definite::DefiniteWalk::new(pred, &bodies).clause(clause);
+                conclusions.push((id, pred, definite));
             }
         }
+        conclusions
     }
 
-    /// The user-defined predicates each clause concludes ([`Self::concluded_atoms`]). A raw
-    /// SMT-LIB2 body cannot be followed, so a raw predicate concluded stands for every
-    /// predicate whose symbol its text names.
-    pub fn concluded_user_defined_preds(&self) -> Vec<(ClauseId, &UserDefinedPred)> {
+    /// Whether `pred` occurs negatively in `formula` read as an assumption, following the
+    /// formula bodies of the user-defined predicates it applies.
+    pub fn occurs_negatively(&self, formula: &Formula, pred: &UserDefinedPred) -> bool {
         let bodies = self.formula_bodies();
-        let symbols: Vec<(&UserDefinedPred, String)> = self
-            .user_defined_pred_defs
-            .iter()
-            .map(|def| (&def.symbol, def.symbol.to_string()))
-            .collect();
-        let raw_mentions: HashMap<&UserDefinedPred, Vec<&UserDefinedPred>> = self
-            .user_defined_pred_defs
-            .iter()
-            .filter_map(|def| match &def.body {
-                UserDefinedPredBody::Raw(text) => Some((&def.symbol, text)),
-                _ => None,
-            })
-            .map(|(symbol, text)| {
-                let named = symbols
-                    .iter()
-                    .filter(|(_, name)| text.contains(name.as_str()))
-                    .map(|(pred, _)| *pred)
-                    .collect();
-                (symbol, named)
-            })
-            .collect();
-        let mut concluded = Vec::new();
-        for (id, clause) in self.clauses.iter_enumerated() {
-            for atom in Self::concluded_atoms(clause, &bodies) {
-                let Pred::UserDefined(pred) = &atom.pred else {
-                    continue;
-                };
-                concluded.push((id, pred));
-                if let Some(named) = raw_mentions.get(pred) {
-                    concluded.extend(named.iter().map(|named| (id, *named)));
-                }
-            }
-        }
-        concluded
+        !matches!(
+            definite::DefiniteWalk::new(pred, &bodies).formula(formula, false),
+            Ok(false)
+        )
     }
 
     /// The forall predicates of what a clause concludes: its head, and the part of its body

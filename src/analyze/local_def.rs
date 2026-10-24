@@ -189,7 +189,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             _ => panic!("expected function body, got: {hir_body:?}"),
         };
 
-        // names and sorts of arguments
+        (self.predicate_signature(), predicate_body)
+    }
+
+    /// The signature of a `#[thrust_macros::predicate]`, read off the (possibly instantiated)
+    /// body as in [`Self::predicate_definition`].
+    pub fn predicate_signature(&self) -> chc::UserDefinedPredSig {
         let arg_names = self
             .tcx
             .fn_arg_idents(self.local_def_id.to_def_id())
@@ -209,12 +214,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .iter()
             .map(|input_ty| self.type_builder.build(*input_ty).to_sort());
 
-        let arg_name_and_sorts = arg_names.into_iter().zip(arg_sorts).collect::<Vec<_>>();
-
-        (
-            chc::UserDefinedPredSig::from(arg_name_and_sorts),
-            predicate_body,
-        )
+        chc::UserDefinedPredSig::from(arg_names.into_iter().zip(arg_sorts).collect::<Vec<_>>())
     }
 
     /// Whether the def comes from the injected `std.rs`. The bodies there are the specification
@@ -2016,14 +2016,17 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let span = tracing::info_span!(
             "def",
             def = %self.tcx.def_path_str(self.local_def_id),
-            def_index = self.local_def_id.local_def_index.as_u32()
+            def_index = self.local_def_id.local_def_index.as_u32(),
+            owner_index = tracing::field::Empty,
         );
+        if let Some(owner) = self.inherited_owner() {
+            span.record("owner_index", owner.local_def_index.as_u32());
+        }
         let _guard = span.enter();
 
         self.ctx
             .body_checks()
             .record(self.local_def_id, analyze::BodyCheck::Checked);
-        let start = self.ctx.clause_count();
         self.unelaborate_derefs();
         analyze::reconstruct_slice_indexing::reconstruct(self.tcx, &mut self.body);
         analyze::two_phase_borrow::move_to_activation(self.tcx, &mut self.body);
@@ -2036,24 +2039,22 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         if analyze::candidate_atoms_enabled() {
             self.declare_candidate_atoms(expected);
         }
-        self.ctx.record_clause_site(start, self.clause_site());
     }
 
-    /// The function the clauses of this analysis belong to: the def itself, or for a trait's
-    /// default body analyzed for an impl (an inherited law), the impl's function it is analyzed
-    /// under.
-    fn clause_site(&self) -> DefId {
+    /// The function of an impl this def is analyzed for when it is a trait's default body (an
+    /// inherited law), which [`crate::report::constraints::Provenance`] reads as the clauses'
+    /// owner.
+    fn inherited_owner(&self) -> Option<LocalDefId> {
         let def_id = self.local_def_id.to_def_id();
         let is_trait_item = self
             .tcx
             .opt_associated_item(def_id)
             .and_then(|item| item.trait_container(self.tcx))
             .is_some();
-        if is_trait_item {
-            self.owner_fn_id
-        } else {
-            def_id
+        if !is_trait_item {
+            return None;
         }
+        self.owner_fn_id.as_local()
     }
 }
 
