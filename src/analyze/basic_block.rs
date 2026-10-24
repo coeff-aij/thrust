@@ -673,6 +673,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     return PlaceType::with_ty_and_term(rty::Type::string(), chc::Term::null())
                         .immut();
                 }
+                if !pointee.is_sized(self.tcx, self.typing_env) {
+                    unimplemented!("const reference to an unsized value in a constant: {ty:?}");
+                }
                 self.const_alloc_ty(target, target_offset, *pointee).immut()
             }
             _ => {
