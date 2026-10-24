@@ -20,6 +20,7 @@ mod flatten;
 pub(crate) mod format_context;
 mod hoice;
 mod prune;
+mod raw_symbols;
 pub mod sexp;
 mod smtlib2;
 mod solver;
@@ -3688,6 +3689,9 @@ impl System {
             }
         }
         let query = system.query(&config).to_string();
+        if let Err(undeclared) = raw_symbols::check(&system, &query) {
+            return Answer::of(Err(undeclared.into()));
+        }
         if let Err(err) = config.save_query("thrust_output.smt2", &query) {
             return Answer::of(Err(err.into()));
         }
@@ -3775,7 +3779,14 @@ impl System {
         let cache = cache::Cache::from_env();
         let parts = components::components(self);
         let solve = |i: usize| {
-            let query = self.part(&parts[i]).prepared().query(&config).to_string();
+            let part = self.part(&parts[i]).prepared();
+            let query = part.query(&config).to_string();
+            if let Err(undeclared) = raw_symbols::check(&part, &query) {
+                return cache::Verdict {
+                    result: Err(undeclared.into()),
+                    cached: false,
+                };
+            }
             let file = format!("thrust_output_part{}.smt2", i + 1);
             if let Err(err) = config.save_query(&file, &query) {
                 return cache::Verdict {

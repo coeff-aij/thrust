@@ -1,4 +1,5 @@
-//! S-expressions in SMT-LIB's concrete syntax, to read what a solver prints besides its verdict.
+//! S-expressions in SMT-LIB's concrete syntax, to read what a solver prints besides its verdict
+//! and the raw texts of a query (see [`super::raw_symbols`]).
 
 /// An s-expression: an atom (a symbol, with its `|` quotes removed, a numeral, a string literal
 /// with its quotes, a keyword) or a list.
@@ -29,6 +30,9 @@ fn tokens(text: &str) -> Vec<Token> {
             }
             c if c.is_whitespace() => {
                 chars.next();
+            }
+            ';' => {
+                chars.by_ref().take_while(|&c| c != '\n').for_each(drop);
             }
             '|' => {
                 chars.next();
@@ -152,5 +156,12 @@ mod tests {
         assert_eq!(all.len(), 2);
         assert_eq!(all[0].to_string(), "(f |a b| \"c d\" 12)");
         assert!(all[1].is_error());
+    }
+
+    #[test]
+    fn skips_comments() {
+        let all = parse_all("; a (comment\n(f |;| \";\") ; (g)\n(h)");
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].to_string(), "(f ; \";\")");
     }
 }

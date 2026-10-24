@@ -2060,7 +2060,10 @@ impl<'tcx> Analyzer<'tcx> {
         err: &chc::CheckSatError,
         refuted: Option<rustc_span::Span>,
     ) -> rustc_errors::Diag<'tcx> {
-        let message = format!("verification error: {:?}", err);
+        let message = match err {
+            chc::CheckSatError::Undeclared(undeclared) => undeclared.to_string(),
+            _ => format!("verification error: {:?}", err),
+        };
         let mut diag = match refuted {
             Some(span) => self.tcx.dcx().struct_span_err(span, message),
             None => self.tcx.dcx().struct_err(message),
@@ -2075,6 +2078,13 @@ impl<'tcx> Analyzer<'tcx> {
                  CHC solver of CoAR, does: set `THRUST_SOLVER` to the PCSat wrapper of Thrust \
                  (`tests/thrust-pcsat-wrapper` in its repository), which runs the CoAR image \
                  `COAR_IMAGE` in Docker",
+            );
+        }
+        if let chc::CheckSatError::Undeclared(_) = err {
+            diag.help(
+                "the names Thrust generates change with the items and sorts they come from; \
+                 write the formula in Rust syntax, which Thrust translates with the names it \
+                 declares",
             );
         }
         diag
