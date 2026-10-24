@@ -1513,8 +1513,18 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     }
 
     /// The body with each ghost marker call also using, as an operand, the locals its ghost term
-    /// reads, so that its liveness is the runtime liveness extended to the ghost reads.
-    fn body_with_ghost_reads(&self) -> Body<'tcx> {
+    /// reads, so that its liveness is the runtime liveness extended to the ghost reads; `None`
+    /// when the body has no ghost term.
+    fn body_with_ghost_reads(&self) -> Option<Body<'tcx>> {
+        let has_ghost_term = self.body.basic_blocks.iter().any(|data| {
+            matches!(&data.terminator().kind, mir::TerminatorKind::Call { func, args, .. }
+                if analyze::basic_block::ghost_marker_formula_fn(
+                    self.ctx, &self.body.local_decls, func, args,
+                ).is_some())
+        });
+        if !has_ghost_term {
+            return None;
+        }
         let mut body = self.body.clone();
         for data in body.basic_blocks.as_mut() {
             let terminator = data.terminator_mut();
@@ -1527,7 +1537,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             };
             let mut operands = args.to_vec();
             for name in names {
-                for local in self.locals_named_in_scope(name, scope) {
+                let bindings = analyze::basic_block::bindings_in_scope(&self.body, name, scope);
+                let locals = bindings.into_iter().filter_map(|vdi| match &vdi.value {
+                    mir::VarDebugInfoContents::Place(place) if place.projection.is_empty() => {
+                        Some(place.local)
+                    }
+                    _ => None,
+                });
+                for local in locals {
                     let span = operands[0].span;
                     let node = mir::Operand::Copy(local.into());
                     operands.push(rustc_span::source_map::Spanned { node, span });
@@ -1535,7 +1552,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             }
             *args = operands.into_boxed_slice();
         }
-        body
+        Some(body)
     }
 
     /// The names of the variables the ghost term of a ghost marker call reads; `None` for any
@@ -1567,37 +1584,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         Some(names)
     }
 
-    /// The locals the variable `name` can stand for in `scope`: those the innermost enclosing
-    /// scope that binds the name binds it to, as Rust's shadowing resolves it.
-    fn locals_named_in_scope(
-        &self,
-        name: rustc_span::Symbol,
-        scope: mir::SourceScope,
-    ) -> Vec<Local> {
-        let mut scope = Some(scope);
-        while let Some(current) = scope {
-            let bound: Vec<_> = self
-                .body
-                .var_debug_info
-                .iter()
-                .filter(|vdi| vdi.name == name && vdi.source_info.scope == current)
-                .collect();
-            if !bound.is_empty() {
-                return bound
-                    .into_iter()
-                    .filter_map(|vdi| match &vdi.value {
-                        mir::VarDebugInfoContents::Place(place) if place.projection.is_empty() => {
-                            Some(place.local)
-                        }
-                        _ => None,
-                    })
-                    .collect();
-            }
-            scope = self.body.source_scopes[current].parent_scope;
-        }
-        Vec::new()
-    }
-
     fn refine_basic_blocks(&mut self, move_data: &MoveData<'tcx>) {
         let loop_invariants = self.collect_loop_invariant_annotations();
         for (header, invariants) in &loop_invariants {
@@ -1613,9 +1599,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         // parameter of every block up to the read, while its drops, and so the resolution of a
         // `&mut`, stay where the runtime liveness puts them.
         let ghost_read_body = self.body_with_ghost_reads();
-        let mut ghost_live = MaybeLiveLocals
-            .iterate_to_fixpoint(self.tcx, &ghost_read_body, None)
-            .into_results_cursor(&ghost_read_body);
+        let mut ghost_live = ghost_read_body.as_ref().map(|body| {
+            MaybeLiveLocals
+                .iterate_to_fixpoint(self.tcx, body, None)
+                .into_results_cursor(body)
+        });
         let mut ever_init = EverInitializedPlaces::new(&self.body, move_data)
             .iterate_to_fixpoint(self.tcx, &self.body, None)
             .into_results_cursor(&self.body);
@@ -1648,9 +1636,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     .map(|init| move_data.inits[init].path),
                 move_data,
             );
-            ghost_live.seek_to_block_start(bb);
-            let mut live_locals: Vec<_> = ghost_live
-                .get()
+            let carried = match &mut ghost_live {
+                Some(ghost_live) => {
+                    ghost_live.seek_to_block_start(bb);
+                    ghost_live.get().clone()
+                }
+                None => results.get().clone(),
+            };
+            let mut live_locals: Vec<_> = carried
                 .iter()
                 .filter(|local| zst_locals.contains(*local) || ever_set.contains(local))
                 .map(|in_local| {
