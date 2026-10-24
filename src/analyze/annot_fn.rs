@@ -940,10 +940,49 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             "closure precondition arity mismatch: closure takes {} argument(s)",
             fn_ty.params.len() - 1
         );
+        // An `FnMut` closure held as a value is called through a `&mut` to it, whose final state
+        // the call does not fix: its precondition is a property of the current state, as
+        // Creusot's `FnMut` precondition takes `self` by value, so it must hold whatever the
+        // final state is.
+        if let Some(sort) = self.free_final_state_sort(receiver, &fn_ty) {
+            let final_ = self
+                .analyzer
+                .generate_user_quantified_var("final state of a closure in pre!".to_owned());
+            let current = self.to_term(receiver);
+            let receiver_term =
+                chc::Term::mut_(current, chc::Term::UserQuantifiedVar(sort.clone(), final_));
+            let param_args: Vec<_> = std::iter::once(receiver_term).chain(logical_args).collect();
+            return FormulaOrTerm::Formula(chc::Formula::forall(
+                vec![(final_, sort)],
+                fn_ty.precondition_formula(&param_args),
+            ));
+        }
         let param_args: Vec<_> = std::iter::once(self.closure_receiver_term(receiver, &fn_ty))
             .chain(logical_args)
             .collect();
         FormulaOrTerm::Formula(fn_ty.precondition_formula(&param_args))
+    }
+
+    /// The sort of the closure state, when `receiver` holds the state as a value and the closure
+    /// takes it through a `&mut`: the final state is then not the receiver's.
+    fn free_final_state_sort(
+        &self,
+        receiver: &'tcx rustc_hir::Expr<'tcx>,
+        fn_ty: &rty::FunctionType,
+    ) -> Option<chc::Sort> {
+        let held_as_value = !matches!(
+            self.expr_ty(receiver).kind(),
+            mir_ty::TyKind::Ref(_, _, mir_ty::Mutability::Not)
+        ) && !matches!(
+            self.expr_ty(receiver).kind(),
+            mir_ty::TyKind::Adt(adt, _) if Some(adt.did()) == self.def_ids.mut_model()
+        );
+        let upvars_ty = &fn_ty.params[rty::FunctionParamIdx::from(0usize)].ty;
+        let received_as_mut = matches!(
+            upvars_ty.as_pointer().map(|ty| ty.kind),
+            Some(rty::PointerKind::Ref(rty::RefKind::Mut))
+        );
+        (held_as_value && received_as_mut).then(|| upvars_ty.to_sort().deref())
     }
 
     fn translate_closure_postcondition(

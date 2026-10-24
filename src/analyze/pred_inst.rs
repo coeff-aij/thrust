@@ -502,10 +502,30 @@ impl<'tcx> analyze::Analyzer<'tcx> {
                 fn_ty.postcondition_formula(&call_args, result.clone())
             }
             ClosureContractPart::Pre => {
-                let call_args: Vec<_> = std::iter::once(upvars())
-                    .chain(terms.get(1..)?.iter().cloned())
-                    .collect();
-                fn_ty.precondition_formula(&call_args)
+                let args = terms.get(1..)?.iter().cloned();
+                match final_state_sort(&params[0], &fn_ty) {
+                    // The precondition of an `FnMut` closure is a property of its current state
+                    // (Creusot's `FnMut` precondition takes `self` by value), so it must hold
+                    // whatever final state the call through the `&mut` ends in.
+                    Some(sort) => {
+                        let final_ = self.system.borrow_mut().new_named_user_quantified_var(
+                            "final state of a closure in its precondition".to_owned(),
+                        );
+                        let receiver = chc::Term::mut_(
+                            terms[0].clone(),
+                            chc::Term::UserQuantifiedVar(sort.clone(), final_),
+                        );
+                        let call_args: Vec<_> = std::iter::once(receiver).chain(args).collect();
+                        chc::Formula::forall(
+                            vec![(final_, sort)],
+                            fn_ty.precondition_formula(&call_args),
+                        )
+                    }
+                    None => {
+                        let call_args: Vec<_> = std::iter::once(upvars()).chain(args).collect();
+                        fn_ty.precondition_formula(&call_args)
+                    }
+                }
             }
         };
 
@@ -534,6 +554,15 @@ enum ClosureContractPart {
     Pre,
     Post,
     HistInv,
+}
+
+/// The sort of the closure state when the predicate declares the current state alone and the
+/// contract takes it through a `&mut`.
+fn final_state_sort(declared: &chc::Sort, fn_ty: &rty::FunctionType) -> Option<chc::Sort> {
+    let contract_sort = fn_ty.params[rty::FunctionParamIdx::from_usize(0)]
+        .ty
+        .to_sort();
+    (contract_sort == chc::Sort::mut_(declared.clone())).then(|| declared.clone())
 }
 
 /// The upvars argument a closure contract takes, given the sort the predicate
