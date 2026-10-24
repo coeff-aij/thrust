@@ -2,7 +2,7 @@ use crate::thrust_models;
 use std::marker::PhantomData;
 
 use thrust_models::model::{BitVec, Seq};
-use thrust_models::{exists, forall};
+use thrust_models::{exists, forall, Ghost};
 
 use crate::rustc_index::{Idx, IdxRange};
 use crate::IteratorSpec;
@@ -25,21 +25,21 @@ impl<T: Idx> DenseBitSet<T> {
     /// `i` is a member of the set: bit `i % 64` of word `i / 64`, rustc's layout.
     #[thrust_macros::predicate]
     pub(crate) fn mem(self, i: usize) -> bool {
-        (BitVec::<64, false>::from_int(self.1[i / 64]) >> BitVec::from_int(i % 64))
-            & BitVec::from_int(1)
-            == BitVec::from_int(1)
+        bit_at(self.1, i)
     }
 
     /// `dist` is `self` with `i` inserted: same domain, and bit `i % 64` of word `i / 64` set.
     #[thrust_macros::predicate]
     fn inserted(self, i: usize, dist: Self) -> bool {
         dist.0 == self.0
-            && forall(|w: USize| {
-                !(w == (BitVec::<64, false>::from_int(self.1[i / 64])
-                    | (BitVec::from_int(1) << BitVec::from_int(i % 64)))
-                .to_int())
-                    || dist.1 == self.1.store(i / 64, w)
-            })
+            && forall(|w: USize| !set_bit_word(self.1, i, w) || dist.1 == self.1.store(i / 64, w))
+    }
+
+    /// The bits at or past `domain_size` are clear, which rustc's `clear_excess_bits` maintains
+    /// and `iter` relies on: it yields every set bit of the words.
+    #[thrust_macros::predicate]
+    pub(crate) fn excess_clear(self) -> bool {
+        forall(|i: USize| !(self.0 <= i && i < self.1.len() * 64) || !bit_at(self.1, i))
     }
 
     /// `forall i: !Self::mem(self, i)` over the positions the word sequence
@@ -59,23 +59,21 @@ impl<T: Idx> DenseBitSet<T> {
         self.1.len() == (self.0 + 63) / 64
     }
 
-    /// The number of members: the set bits of the words, which `count` returns. It is at most
-    /// `domain_size` because the bits past `domain_size` are clear, an invariant the trusted
-    /// contracts below rely on (a type invariant, Creusot's `Invariant` or Verus's
-    /// `type_invariant`, would make it checked).
+    /// The number of members: the set bits below `domain_size`.
     #[thrust_macros::logic]
     pub(crate) fn card(self) -> USize {
-        ones(self.1, self.1.len() * 64)
+        ones(self.1, self.0)
     }
 
     #[inline]
     #[thrust_macros::ensures(result.0 == domain_size)]
     #[thrust_macros::ensures(Self::no_mem(result))]
     #[thrust_macros::ensures(Self::words_cover_domain(result))]
+    #[thrust_macros::ensures(Self::excess_clear(result))]
     #[thrust_macros::ensures(Self::card(result) == 0)]
     pub fn new_empty(domain_size: usize) -> DenseBitSet<T> {
         let num_words = num_words(domain_size);
-        thrust_macros::proof!(zero_words_ones(num_words));
+        thrust_macros::proof!(zero_bits_ones(domain_size));
         DenseBitSet {
             domain_size,
             words: vec![0; num_words],
@@ -84,11 +82,15 @@ impl<T: Idx> DenseBitSet<T> {
     }
 
     #[thrust_macros::requires(Self::words_cover_domain(*self))]
+    #[thrust_macros::ensures((!self).0 == (*self).0)]
+    #[thrust_macros::ensures(Self::words_cover_domain(!self))]
+    #[thrust_macros::ensures(forall(|i: USize| 0 <= i && i < (*self).0 ==> ((Self::mem(!self, i) && Self::mem(*self, i)) || (!Self::mem(!self, i) && !Self::mem(*self, i)))))]
+    #[thrust_macros::ensures(Self::excess_clear(!self))]
     fn clear_excess_bits(&mut self) {
         clear_excess_bits_in_final_word(self.domain_size, &mut self.words);
     }
 
-    #[thrust_macros::ensures(result == Self::card(*self))]
+    #[thrust::callable]
     pub fn count(&self) -> usize {
         count_ones(&self.words)
     }
@@ -105,10 +107,10 @@ impl<T: Idx> DenseBitSet<T> {
     }
 
     #[inline]
-    #[thrust::trusted]
     #[thrust_macros::requires(forall(|i: USize| <T as Idx>::index_is(elem, i) ==> i < (*self).0))]
+    #[thrust_macros::requires(Self::words_cover_domain(*self))]
     #[thrust_macros::ensures((!self).0 == (*self).0)]
-    #[thrust_macros::ensures(Self::words_cover_domain(*self) ==> Self::words_cover_domain(!self))]
+    #[thrust_macros::ensures(Self::words_cover_domain(!self))]
     // `Self::inserted` gives, for `i` the index of `elem`:
     //   `Self::mem(!self, i)`, and
     //   `forall j != i: Self::mem(!self, j) <==> Self::mem(*self, j)`.
@@ -120,37 +122,46 @@ impl<T: Idx> DenseBitSet<T> {
     #[thrust_macros::ensures((result == true) ==> Self::card(!self) == Self::card(*self) + 1)]
     #[thrust_macros::ensures((result == false) ==> Self::card(!self) == Self::card(*self))]
     #[thrust_macros::ensures(Self::card(!self) <= (!self).0)]
+    #[thrust_macros::ensures(Self::excess_clear(*self) ==> Self::excess_clear(!self))]
     pub fn insert(&mut self, elem: T) -> bool {
-        assert!(
-            elem.index() < self.domain_size,
-            "inserting element at index {} but domain size is {}",
-            elem.index(),
-            self.domain_size,
-        );
+        assert!(elem.index() < self.domain_size);
+        thrust_macros::proof!(ones_le(self.domain_size));
         let (word_index, mask) = word_index_and_mask(elem);
+        let words = &self.words;
+        let s = thrust_macros::ghost!(|words: &Vec<u64>| -> Seq<USize> { *words });
         let word_ref = &mut self.words[word_index];
         let word = *word_ref;
         let new_word = word | mask;
+        thrust_macros::proof!(set_bit_pointwise(s, new_word, elem.index()));
         *word_ref = new_word;
+        if new_word != word {
+            let words = &self.words;
+            let t = thrust_macros::ghost!(|words: &Vec<u64>| -> Seq<USize> { *words });
+            thrust_macros::proof!(ones_one_more(s, t, elem.index(), self.domain_size));
+        }
         new_word != word
     }
 
-    // Trusted: with `<[T]>::fill` specified and the bits below `domain_size` kept by
-    // `clear_excess_bits`, the solver gives no answer at 120 s.
-    #[thrust::trusted]
+    // `clear_excess_bits` indexes the last word, which exists when the words cover the domain.
+    #[thrust_macros::requires(Self::words_cover_domain(*self))]
     #[thrust_macros::ensures((!self).0 == (*self).0)]
-    #[thrust_macros::ensures(Self::words_cover_domain(*self) ==> Self::words_cover_domain(!self))]
+    #[thrust_macros::ensures(Self::words_cover_domain(!self))]
     #[thrust_macros::ensures(forall(|i: USize| 0 <= i && i < (*self).0 ==> Self::mem(!self, i)))]
+    #[thrust_macros::ensures(Self::excess_clear(!self))]
     #[thrust_macros::ensures(Self::card(!self) == (*self).0)]
     pub fn insert_all(&mut self) {
         self.words.fill(!0);
         self.clear_excess_bits();
+        let words = &self.words;
+        let s = thrust_macros::ghost!(|words: &Vec<u64>| -> Seq<USize> { *words });
+        thrust_macros::proof!(ones_full(s, self.domain_size));
     }
 
     // Trusted: the iterator's ghost state is the set's members, which `BitIter::new` does not
     // state.
     #[inline]
     #[thrust::trusted]
+    #[thrust_macros::requires(Self::excess_clear(*self))]
     #[thrust_macros::ensures(result.4 == (*self).0 && result.5 == 0)]
     #[thrust_macros::ensures(0 <= result.6 && result.6 <= (*self).0)]
     #[thrust_macros::ensures(result.6 == Self::card(*self))]
@@ -499,12 +510,45 @@ fn word_index_and_mask<T: Idx>(elem: T) -> (usize, Word) {
 }
 
 #[thrust_macros::requires((*words).len() == (domain_size + 63) / 64)]
+#[thrust_macros::ensures((!words).len() == (*words).len())]
+#[thrust_macros::ensures(forall(|i: USize| 0 <= i && i < domain_size ==> ((bit_at(*words, i) && bit_at(!words, i)) || (!bit_at(*words, i) && !bit_at(!words, i)))))]
+#[thrust_macros::ensures(forall(|i: USize| !(domain_size <= i && i < (!words).len() * 64) || !bit_at(!words, i)))]
 fn clear_excess_bits_in_final_word(domain_size: usize, words: &mut [Word]) {
     let num_bits_in_final_word = domain_size % WORD_BITS;
     if num_bits_in_final_word > 0 {
         let mask = (1 << num_bits_in_final_word) - 1;
+        thrust_macros::proof!(low_mask_bits());
         words[words.len() - 1] &= mask;
     }
+}
+
+/// `x & ((1 << r) - 1)` keeps the bits of `x` below `r` and clears the others.
+#[thrust_macros::lemma]
+#[thrust_macros::ensures(forall(|x: USize, r: USize, b: USize| !(0 < r && r < 64 && 0 <= b && b < 64)
+    || ((BitVec::<64, false>::from_int(x)
+            & BitVec::from_int((BitVec::<64, false>::from_int(1) << BitVec::from_int(r)).to_int() - 1))
+            >> BitVec::from_int(b))
+        & BitVec::from_int(1)
+        == if b < r {
+            (BitVec::<64, false>::from_int(x) >> BitVec::from_int(b)) & BitVec::from_int(1)
+        } else {
+            BitVec::from_int(0)
+        }))]
+fn low_mask_bits() {}
+
+/// Bit `i % 64` of word `i / 64`, rustc's layout.
+#[thrust_macros::predicate]
+pub(crate) fn bit_at(words: Seq<USize>, i: USize) -> bool {
+    (BitVec::<64, false>::from_int(words[i / 64]) >> BitVec::from_int(i % 64))
+        & BitVec::from_int(1)
+        == BitVec::from_int(1)
+}
+
+/// `w` is word `i / 64` of `words` with bit `i % 64` set.
+#[thrust_macros::predicate]
+pub(crate) fn set_bit_word(words: Seq<USize>, i: USize, w: USize) -> bool {
+    w == (BitVec::<64, false>::from_int(words[i / 64]) | (BitVec::from_int(1) << BitVec::from_int(i % 64)))
+        .to_int()
 }
 
 /// The set bits among the first `m` bits of `words`, bit `i` being bit `i % 64` of word `i / 64`
@@ -538,18 +582,55 @@ fn zero_bits_ones(m: usize) {
     }
 }
 
-/// `n` zero words have no set bits.
+/// `ones` counts at most the bits it reads.
 #[thrust_macros::lemma]
-#[thrust_macros::ensures(forall(|s: Seq<USize>|
-    !forall(|k: USize| !(k < n) || s[k] == 0) || ones(s, n * 64) == 0))]
-fn zero_words_ones(n: usize) {
-    zero_bits_ones(n * 64);
+#[thrust_macros::variant(m)]
+#[thrust_macros::ensures(forall(|s: Seq<USize>| 0 <= ones(s, m) && ones(s, m) <= m))]
+fn ones_le(m: usize) {
+    if m > 0 {
+        ones_le(m - 1);
+    }
+}
+
+/// When the first `m` bits of `s` are set, `ones` counts each of them.
+#[thrust_macros::lemma]
+#[thrust_macros::variant(m)]
+#[thrust_macros::requires(forall(|p: USize| !(0 <= p && p < m) || bit_at(s, p)))]
+#[thrust_macros::ensures(ones(s, m) == m)]
+fn ones_full(s: Ghost<Seq<USize>>, m: usize) {
+    if m > 0 {
+        ones_full(s, m - 1);
+    }
+}
+
+/// Setting bit `i` of word `i / 64` sets it and leaves every other bit of the words as it was.
+#[thrust_macros::lemma]
+#[thrust_macros::requires(i / 64 < s.len() && set_bit_word(s, i, w))]
+#[thrust_macros::ensures(bit_at(s.store(i / 64, w), i))]
+#[thrust_macros::ensures(forall(|p: USize| !(0 <= p && p / 64 < s.len() && p != i)
+    || (bit_at(s.store(i / 64, w), p) && bit_at(s, p))
+    || (!bit_at(s.store(i / 64, w), p) && !bit_at(s, p))))]
+fn set_bit_pointwise(s: Ghost<Seq<USize>>, w: u64, i: usize) {}
+
+/// When `t` differs from `s` among the first `m` bits only in bit `i`, set in `t` and clear in
+/// `s`, `t` has one more set bit among them if `i < m`, and as many otherwise.
+#[thrust_macros::lemma]
+#[thrust_macros::variant(m)]
+#[thrust_macros::requires(bit_at(t, i) && !bit_at(s, i))]
+#[thrust_macros::requires(forall(|p: USize| !(0 <= p && p < m && p != i)
+    || (bit_at(t, p) && bit_at(s, p)) || (!bit_at(t, p) && !bit_at(s, p))))]
+#[thrust_macros::ensures(!(i < m) || ones(t, m) == ones(s, m) + 1)]
+#[thrust_macros::ensures(!(m <= i) || ones(t, m) == ones(s, m))]
+fn ones_one_more(s: Ghost<Seq<USize>>, t: Ghost<Seq<USize>>, i: usize, m: usize) {
+    if m > 0 {
+        ones_one_more(s, t, i, m - 1);
+    }
 }
 
 // Trusted: std's `Iterator::sum` has no specification.
 #[inline]
 #[thrust::trusted]
-#[thrust_macros::ensures(result == ones(*words, (*words).len() * 64))]
+#[thrust::callable]
 fn count_ones(words: &[Word]) -> usize {
     words.iter().map(|word| word.count_ones() as usize).sum()
 }
