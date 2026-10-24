@@ -676,13 +676,16 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .map(|(_, trait_args)| trait_args.type_at(0))
             .collect();
         // Every trait with an impl of the set, at each type a derived predicate is requested at.
-        let law_traits: HashSet<DefId> = self
+        // Sorted, so that the checks, and the query, come in one order.
+        let mut law_traits: Vec<DefId> = self
             .ctx
             .per_instance_law_impls
             .iter()
             .filter_map(|impl_def_id| tcx.trait_id_of_impl(*impl_def_id))
             .filter(|trait_def_id| tcx.generics_of(*trait_def_id).count() == 1)
             .collect();
+        law_traits.sort_by_key(|trait_def_id| tcx.def_path_hash(*trait_def_id));
+        law_traits.dedup();
         let at_derived = derived_self_tys.iter().flat_map(|ty| {
             law_traits
                 .iter()
