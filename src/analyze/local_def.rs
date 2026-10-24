@@ -684,24 +684,28 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// Creusot's `Invariant` does (`creusot/src/backend/ty_inv.rs`, `sig_add_type_invariant_spec`):
     /// a parameter of a type `T` with an `Invariant` impl in std.rs's sense, or a `&T` or
     /// `&mut T` to one, requires `T::invariant` of its value (the current value of a reference);
-    /// a `&mut T` parameter also ensures it of its final value; a result of such a type, or a
-    /// reference to one, ensures it of its (current) value. Since the invariant becomes a
+    /// a `&mut T` parameter also ensures it of its final value, unless the borrow may outlive the
+    /// call (`borrow_may_escape`); a result of such a type, or a reference to one, ensures it of
+    /// its (current) value. Since the invariant becomes a
     /// conjunct of the contract, the body is checked against it at its exits and every caller
     /// proves it at the call, as for a written `requires`/`ensures`; a function's body may break
-    /// it between those points. It is not assumed of the final value of a returned `&mut`, which
-    /// the caller sets: unlike Creusot, Thrust does not check the invariant where a borrow is
-    /// resolved. `#[thrust::open_inv]` on a parameter and `#[thrust::open_inv_result]` on the
-    /// function leave theirs out. Closures, lemmas and laws get none, and a type parameter, whose
+    /// it between those points. Unlike Creusot, Thrust does not check the invariant where a
+    /// borrow is resolved, so it is ensured of a final value only where the callee resolves the
+    /// borrow: not of a returned `&mut`, nor of a `&mut` parameter whose borrow the result or
+    /// another parameter may hold, whose final value the caller sets. `#[thrust::open_inv]` on a parameter and `#[thrust::open_inv_result]` on the
+    /// function leave theirs out. Closures, lemmas, laws and destructors (which take no
+    /// precondition, D57) get none, and a type parameter, whose
     /// `Invariant` impl does not resolve, has none.
     fn conjoin_type_invariants(&mut self, sig: mir_ty::FnSig<'tcx>, fn_ty: &mut rty::FunctionType) {
         if self.ctx.def_ids.type_invariant().is_none()
             || self.tcx.is_closure_like(self.local_def_id.to_def_id())
             || self.has_attr(&analyze::annot::lemma_path())
             || self.has_attr(&analyze::annot::law_path())
+            || self.is_crate_destructor()
         {
             return;
         }
-        let open_params = self.open_inv_params();
+        let open_params = self.open_inv_params(sig.inputs().len());
         let last = sig.inputs().len().wrapping_sub(1);
         let mut requires = Vec::new();
         let mut ensures = Vec::new();
@@ -721,8 +725,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         continue;
                     };
                     requires.push(type_invariant_atom(&pred, at_entry.mut_current()));
-                    let at_exit = chc::Term::var(rty::RefinedTypeVar::Free(param_idx));
-                    ensures.push(type_invariant_atom(&pred, at_exit.mut_final()));
+                    if !borrow_may_escape(sig, idx) {
+                        let at_exit = chc::Term::var(rty::RefinedTypeVar::Free(param_idx));
+                        ensures.push(type_invariant_atom(&pred, at_exit.mut_final()));
+                    }
                 }
                 mir_ty::TyKind::Ref(_, inner, mir_ty::Mutability::Not) => {
                     if let Some(pred) = self.type_invariant_pred(*inner) {
@@ -766,7 +772,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// owner's environment.
     fn type_invariant_pred(&self, ty: mir_ty::Ty<'tcx>) -> Option<chc::Pred> {
         let trait_did = self.ctx.def_ids.type_invariant()?;
-        let inv_did = *self.tcx.associated_item_def_ids(trait_did).first()?;
+        let inv_did = self
+            .tcx
+            .associated_items(trait_did)
+            .filter_by_name_unhygienic(rustc_span::Symbol::intern("invariant"))
+            .next()?
+            .def_id;
         if self.type_builder.build(ty).ty.to_sort().is_singleton() {
             return None;
         }
@@ -786,8 +797,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         )
     }
 
-    /// The indices of the parameters marked `#[thrust::open_inv]`.
-    fn open_inv_params(&self) -> HashSet<usize> {
+    /// The indices of the parameters marked `#[thrust::open_inv]`, of the `arity` parameters of
+    /// the contract. The spec `requires`/`ensures` generate for a function has its parameters, so
+    /// an index of either is the contract's; a def with another number of parameters cannot mark
+    /// one.
+    fn open_inv_params(&self, arity: usize) -> HashSet<usize> {
         let path = analyze::annot::open_inv_path();
         let mut open = HashSet::new();
         for local_def_id in self.attributed_defs() {
@@ -795,14 +809,21 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 continue;
             };
             for (idx, param) in body.params.iter().enumerate() {
-                if self
+                if !self
                     .tcx
                     .hir_attrs(param.hir_id)
                     .iter()
                     .any(|attr| attr.path_matches(&path))
                 {
-                    open.insert(idx);
+                    continue;
                 }
+                if body.params.len() != arity {
+                    self.tcx.dcx().span_fatal(
+                        param.span,
+                        "`#[thrust::open_inv]` on a function whose extern spec has other parameters",
+                    );
+                }
+                open.insert(idx);
             }
         }
         open
@@ -2368,4 +2389,40 @@ fn refinement_instances(
 
 fn type_invariant_atom<V>(pred: &chc::Pred, term: chc::Term<V>) -> chc::Formula<V> {
     chc::Formula::Atom(chc::Atom::new(pred.clone(), vec![term]))
+}
+
+/// Whether the borrow of the `&mut` parameter `idx` may outlive the call: the result may hold a
+/// borrow (a reference, an `impl Trait`, a trait object or a closure in its type), or another
+/// parameter is a `&mut` to a place that may hold one. Then the caller, not the callee, resolves
+/// the borrow, and the callee cannot prove the invariant of its final value.
+fn borrow_may_escape<'tcx>(sig: mir_ty::FnSig<'tcx>, idx: usize) -> bool {
+    if may_hold_borrow(sig.output()) {
+        return true;
+    }
+    sig.inputs()
+        .iter()
+        .enumerate()
+        .filter(|(other, _)| *other != idx)
+        .any(|(_, ty)| {
+            ty.walk().any(|arg| match arg.kind() {
+                mir_ty::GenericArgKind::Type(ty) => matches!(
+                    ty.kind(),
+                    mir_ty::TyKind::Ref(_, inner, mir_ty::Mutability::Mut) if may_hold_borrow(*inner)
+                ),
+                _ => false,
+            })
+        })
+}
+
+/// Whether a value of `ty` may hold a borrow: its type mentions a lifetime, an `impl Trait` or a
+/// trait object.
+fn may_hold_borrow<'tcx>(ty: mir_ty::Ty<'tcx>) -> bool {
+    ty.walk().any(|arg| match arg.kind() {
+        mir_ty::GenericArgKind::Lifetime(_) => true,
+        mir_ty::GenericArgKind::Type(ty) => matches!(
+            ty.kind(),
+            mir_ty::TyKind::Alias(mir_ty::AliasTyKind::Opaque, _) | mir_ty::TyKind::Dynamic(..)
+        ),
+        mir_ty::GenericArgKind::Const(_) => false,
+    })
 }

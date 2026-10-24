@@ -1734,7 +1734,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     return self.unspecified_extern_ty(def_id, def_id, args);
                 }
                 if resolved_def_id == def_id {
-                    panic!("unknown def: {:?}, args: {:?}", def_id, args);
+                    self.fatal_uncovered_instance(def_id, args, caller_def_id);
                 }
                 tracing::info!(?def_id, ?resolved_def_id, ?resolved_args, "resolved");
                 let Some(def_ty) =
@@ -1755,14 +1755,30 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     if !resolved_def_id.is_local() {
                         return self.unspecified_extern_ty(def_id, resolved_def_id, resolved_args);
                     }
-                    panic!(
-                        "unknown def (resolved): {:?}, args: {:?}",
-                        resolved_def_id, resolved_args
-                    );
+                    self.fatal_uncovered_instance(resolved_def_id, resolved_args, caller_def_id);
                 };
                 def_ty.ty
             }
         }
+    }
+
+    /// Stops at a call of a local function at arguments no definition of it covers: its only
+    /// definition is an extern spec that fixes a type argument or bounds an associated type, and
+    /// the call is at other arguments, or at a type parameter of the caller, where the spec's
+    /// instances cannot be told apart from the others.
+    fn fatal_uncovered_instance(
+        &self,
+        def_id: DefId,
+        args: mir_ty::GenericArgsRef<'tcx>,
+        caller_def_id: DefId,
+    ) -> ! {
+        self.tcx.dcx().fatal(format!(
+            "`{}`, called in `{}`, has no specification at these arguments: an extern spec that \
+             fixes a type argument or bounds an associated type covers only those instances, and \
+             a call at a type parameter is not one of them",
+            self.tcx.def_path_str_with_args(def_id, args),
+            self.tcx.def_path_str(caller_def_id),
+        ))
     }
 
     /// The type of `def_id`, a function of another crate that has no specification at `args`, which
