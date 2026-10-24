@@ -1,3 +1,4 @@
+//@ignore-on-host: draft with its pass twin; with its generic helpers instantiated at each instance (thrust-research experiments/2026-10-25-trait-logic-no-self.md) PCSat answers `timeout` after 76 s on fptprove develop 3f9ee2482, `unsat` 21 s before
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_TRY_SPECS=1 THRUST_SOLVER_TIMEOUT_SECS=300

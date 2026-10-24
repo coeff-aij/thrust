@@ -261,6 +261,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
     fn refine_fn_def_at_site(&mut self, local_def_id: LocalDefId) {
         let sig = self.ctx.fn_sig(local_def_id.to_def_id());
+        let contract_generic = !self.tcx.is_closure_like(local_def_id.to_def_id())
+            && self.ctx.contract_names_type_param(local_def_id);
         let is_law_impl = self.is_law_impl(local_def_id);
         let outside_selection = self.is_outside_selection(local_def_id);
         let mut analyzer = self.ctx.local_def_analyzer(local_def_id);
@@ -345,11 +347,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let owner_fn_id = analyzer.owner_fn_id;
         let owner_fn_id_args = analyzer.owner_fn_id_args;
         use mir_ty::TypeVisitableExt as _;
-        // A trait method's contract is generic in `Self` even when its signature does not mention
-        // it: it may name `Self` only in a logic function (`Self::score(x)`), which each impl
-        // resolves to its own.
+        // A function is generic when its contract names a type parameter its signature does not
+        // mention: a trait method's `Self::score(x)`, or `T::score(x)` of `fn via<T: Score>`,
+        // resolves at each instance to the impl's own logic function. Closures keep their
+        // treatment.
         let trait_method = self.tcx.trait_of_assoc(owner_fn_id).is_some();
-        if sig.has_param() || trait_method {
+        if sig.has_param() || trait_method || contract_generic {
             if trusted_derive {
                 let expected = analyzer.expected_ty();
                 self.ctx
