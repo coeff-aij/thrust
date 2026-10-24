@@ -31,3 +31,4 @@ the postcondition of a call that does not resolve to an analyzed body) are rejec
 | `../../fail/derived_pred/extern_spec.rs` | an extern specification of a foreign function with it in a premise | rejected |
 | `../../fail/derived_pred/unselected_law.rs` | the inherited law outside `THRUST_VERIFY_ONLY` | rejected: not checked for the impl |
 | `../../fail/derived_pred/default_in_rule_site.rs` | `next` calls a default method concluding it, under `THRUST_PER_INSTANCE_GENERICS` | rejected |
+| `../../fail/derived_pred/via_trusted.rs`, `via_impl.rs` | a verified generic body assumes, over its type parameter, a trusted function's or a trait method's `ensures` with it in a premise; `main` calls the body at the type | rejected inside the generic body |

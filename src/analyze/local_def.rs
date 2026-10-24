@@ -2041,10 +2041,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         if let Some(fn_ty) = expected.ty.as_function() {
             // The body assumes its own precondition, which the system proves only at this
             // crate's calls.
-            self.ctx.derived_evidence().assume(
+            self.ctx.assume_contract(
                 analyze::derived_pred::Assumption::OwnRequires,
                 self.tcx.def_span(self.local_def_id),
-                fn_ty.clone(),
+                fn_ty,
             );
         }
         self.unelaborate_derefs();

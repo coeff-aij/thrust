@@ -1783,10 +1783,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 .terminator()
                 .source_info
                 .span;
-            self.ctx.derived_evidence().assume(
+            self.ctx.assume_contract(
                 analyze::derived_pred::Assumption::CallEnsures(callee),
                 span,
-                fn_ty.clone(),
+                fn_ty,
             );
         }
         let operands: Vec<_> = args.collect();

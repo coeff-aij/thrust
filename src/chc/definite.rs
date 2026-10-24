@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use super::{Atom, Clause, Formula, Pred, TermVarIdx, UserDefinedPred};
 
-/// Whether a clause is definite in one predicate `pred`, the others fixed: read as the formula
+/// Whether a clause is definite in one predicate `pred` (the [`Target`]), the others fixed: read as the formula
 /// `¬body ∨ head` and put in prenex conjunctive form, every conjunct has at most one positive
 /// atom of `pred`, and none lies under an existential quantifier. Such a clause is a conjunction
 /// of definite clauses `∀x. B ⇒ pred(t)` whose `B` is monotone in `pred`, the form whose
@@ -14,8 +14,26 @@ use super::{Atom, Clause, Formula, Pred, TermVarIdx, UserDefinedPred};
 /// The walk reads each connective as it acts in the clause: in a negative position (the body)
 /// `∧` is a disjunction and `∀` an existential, by De Morgan. A predicate with a formula body is
 /// followed into its body.
+/// The predicate a [`DefiniteWalk`] follows: a user-defined one, or a forall predicate by its
+/// symbol (a trait's predicate at a type parameter, all of its instantiations).
+#[derive(Clone, Copy)]
+pub(super) enum Target<'a> {
+    UserDefined(&'a UserDefinedPred),
+    Forall(&'a str),
+}
+
+impl Target<'_> {
+    fn matches(&self, pred: &Pred) -> bool {
+        match (self, pred) {
+            (Target::UserDefined(target), Pred::UserDefined(pred)) => *target == pred,
+            (Target::Forall(symbol), Pred::ForallPred(pred)) => pred.symbol() == *symbol,
+            _ => false,
+        }
+    }
+}
+
 pub(super) struct DefiniteWalk<'a> {
-    pred: &'a UserDefinedPred,
+    target: Target<'a>,
     bodies: &'a HashMap<&'a UserDefinedPred, &'a Formula>,
 }
 
@@ -24,10 +42,10 @@ pub(super) struct Indefinite;
 
 impl<'a> DefiniteWalk<'a> {
     pub(super) fn new(
-        pred: &'a UserDefinedPred,
+        target: Target<'a>,
         bodies: &'a HashMap<&'a UserDefinedPred, &'a Formula>,
     ) -> Self {
-        Self { pred, bodies }
+        Self { target, bodies }
     }
 
     /// Whether the clause concludes `pred` in what it checks: its head or a conjunct `¬ψ` of its
@@ -135,12 +153,12 @@ impl<'a> DefiniteWalk<'a> {
     }
 
     fn atom(&mut self, atom: &'a Atom<TermVarIdx>, positive: bool) -> Result<bool, Indefinite> {
+        if self.target.matches(&atom.pred) {
+            return Ok(positive);
+        }
         let Pred::UserDefined(pred) = &atom.pred else {
             return Ok(false);
         };
-        if pred == self.pred {
-            return Ok(positive);
-        }
         // A predicate does not call itself (`annot_fn` rejects it; a recursive definition is a
         // logic function, whose body is a term), so following the bodies terminates.
         match self.bodies.get(pred).copied() {

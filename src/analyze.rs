@@ -633,6 +633,9 @@ pub struct Analyzer<'tcx> {
     derived_preds: Rc<RefCell<HashMap<chc::UserDefinedPred, derived_pred::DerivedAt<'tcx>>>>,
     /// What the derived predicates are checked against; see [`derived_pred::Evidence`].
     derived_evidence: Rc<RefCell<derived_pred::Evidence<'tcx>>>,
+    /// Whether a trait item of the crate is `#[thrust_macros::predicate(derived)]`, decided once;
+    /// without one, no evidence is recorded.
+    derived_declared: Rc<std::cell::OnceCell<bool>>,
 }
 
 /// What the analysis did with the body of each function, shared by the analyzers that decide it.
@@ -869,6 +872,7 @@ impl<'tcx> Analyzer<'tcx> {
             spec_assumptions: Default::default(),
             derived_preds: Default::default(),
             derived_evidence: Default::default(),
+            derived_declared: Default::default(),
             reused_generic_instances: Default::default(),
             called_fn_tys: Default::default(),
             impl_methods_with_own_contract: Default::default(),
@@ -938,6 +942,26 @@ impl<'tcx> Analyzer<'tcx> {
 
     pub fn derived_evidence(&self) -> std::cell::RefMut<'_, derived_pred::Evidence<'tcx>> {
         self.derived_evidence.borrow_mut()
+    }
+
+    /// Records a contract assumed, for the derived predicates, when the crate declares one.
+    pub fn assume_contract(
+        &self,
+        assumption: derived_pred::Assumption<'tcx>,
+        span: rustc_span::Span,
+        contract: &rty::FunctionType,
+    ) {
+        let declared = *self.derived_declared.get_or_init(|| {
+            self.tcx
+                .hir_crate_items(())
+                .definitions()
+                .any(|def| self.is_derived_predicate(def.to_def_id()))
+        });
+        if declared {
+            self.derived_evidence
+                .borrow_mut()
+                .assume(assumption, span, contract.clone());
+        }
     }
 
     fn build_enum_def(&self, def_id: DefId) -> rty::EnumDatatypeDef {

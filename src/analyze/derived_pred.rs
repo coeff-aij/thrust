@@ -19,7 +19,8 @@
 //! debug information: [`Evidence`] records which clauses check whose `ensures`, which inherited
 //! laws were checked for which impl, and every contract assumed (a body's own precondition, and
 //! the postcondition at each call with what it resolves to). An assumption counts as discharged
-//! only when it is the postcondition of a call that resolves to a body the crate analyzes; every
+//! only when it is the postcondition of a call that resolves to a body the crate analyzes (for a
+//! trait's method called at a type parameter, every impl's); every
 //! other one (a trusted function, generic or a trait's default method included, an extern
 //! specification, `std.rs`, a function outside `THRUST_VERIFY_ONLY`, a call through a value) gets
 //! condition A at the instance it is assumed at.
@@ -135,19 +136,36 @@ fn is_discharged<'tcx>(
     let Assumption::CallEnsures(Some((def_id, args))) = assumption else {
         return false;
     };
-    let resolved = if args.has_param() {
-        *def_id
-    } else {
+    let analyzed = |def_id: DefId| {
+        def_id
+            .as_local()
+            .and_then(|local| body_checks.get(local))
+            .is_some_and(|check| check == BodyCheck::Checked)
+    };
+    // A call in a generic body names the callee it is written with. A trait's method called at a
+    // type parameter reaches, at each instance, the method of one impl, so the call is
+    // discharged when every impl's method (or the default it inherits) is analyzed.
+    if args.has_param() {
+        let Some(trait_def_id) = tcx.trait_of_assoc(*def_id) else {
+            return analyzed(*def_id);
+        };
+        return tcx.all_impls(trait_def_id).all(|impl_def_id| {
+            let implementors = tcx.impl_item_implementor_ids(impl_def_id);
+            analyzed(implementors.get(def_id).copied().unwrap_or(*def_id))
+        });
+    }
+    // One that does not resolve is not known to reach an analyzed body.
+    let resolved = {
         let typing_env = mir_ty::TypingEnv::fully_monomorphized();
-        mir_ty::Instance::try_resolve(tcx, typing_env, *def_id, args)
+        let Some(instance) = mir_ty::Instance::try_resolve(tcx, typing_env, *def_id, args)
             .ok()
             .flatten()
-            .map_or(*def_id, |instance| instance.def_id())
+        else {
+            return false;
+        };
+        instance.def_id()
     };
-    resolved
-        .as_local()
-        .and_then(|local| body_checks.get(local))
-        .is_some_and(|check| check == BodyCheck::Checked)
+    analyzed(resolved)
 }
 
 /// Reports what breaks the conditions of the module documentation for the derived predicates
@@ -240,6 +258,7 @@ fn check_assumptions<'tcx>(
         assumed.push((assumption, *span, formula));
     }
     let formulas: Vec<&chc::Formula> = assumed.iter().map(|(_, _, f)| f).collect();
+    check_assumptions_at_type_parameters(tcx, system, derived, &assumed, &formulas);
     let mut reported = HashSet::new();
     for (idx, pred) in system.negative_occurrences(&formulas, preds) {
         let (assumption, span, _) = &assumed[idx];
@@ -307,5 +326,50 @@ fn check_conclusions<'tcx>(
         if reported.insert((span, pred.clone())) {
             tcx.dcx().span_err(span, message);
         }
+    }
+}
+
+/// Condition A for the undischarged postconditions a generic body assumes over its type
+/// parameters. Such an assumption names a trait's predicate as a forall predicate, and a body
+/// verified once is a valid premise at an instance only if the assumption, instantiated there,
+/// passes A: A ranges over the assumptions not discharged within the system, closed under
+/// instantiation. Instantiating each generic body's assumptions at every instance it is used at,
+/// transitively through generic callees, is not implemented; instead an undischarged
+/// postcondition in which the forall predicate of a derived trait predicate occurs negatively is
+/// rejected wherever it is assumed. A body's own precondition over type parameters is left
+/// alone: the body is verified for every interpretation, the least relation included, and
+/// callers establish it at their instances.
+fn check_assumptions_at_type_parameters<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    system: &chc::System,
+    derived: &HashMap<chc::UserDefinedPred, DerivedAt<'tcx>>,
+    assumed: &[(&Assumption<'tcx>, Span, chc::Formula)],
+    formulas: &[&chc::Formula],
+) {
+    let mut symbols: Vec<(String, &DerivedAt<'tcx>)> = Vec::new();
+    for at in derived.values() {
+        let symbol = crate::refine::stable_def_id_symbol(tcx, at.pred_def_id, "q");
+        if !symbols.iter().any(|(s, _)| *s == symbol) {
+            symbols.push((symbol, at));
+        }
+    }
+    let names: Vec<&str> = symbols.iter().map(|(s, _)| s.as_str()).collect();
+    let mut reported = HashSet::new();
+    for (idx, symbol) in system.negative_forall_occurrences(formulas, &names) {
+        let (assumption, span, _) = &assumed[idx];
+        if matches!(assumption, Assumption::OwnRequires) || !reported.insert((*span, symbol)) {
+            continue;
+        }
+        let at = symbols.iter().find(|(s, _)| s == symbol).unwrap().1;
+        tcx.dcx().span_err(
+            *span,
+            format!(
+                "the postcondition of this call, whose callee's body is not analyzed, assumes \
+                 `{}` negated or in a premise over a type parameter; at an instance where it is \
+                 the derived predicate it states the least relation, which this check does not \
+                 follow into the instance; define the predicate in the impl",
+                tcx.def_path_str(at.pred_def_id)
+            ),
+        );
     }
 }
