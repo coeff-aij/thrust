@@ -743,12 +743,45 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         }
     }
 
+    /// Stops at a `Model` impl of the crate whose model holds a value without a model (a `str`, a
+    /// raw or function pointer, a trait object; `model_eq::modelless_part`), such as `impl Model
+    /// for S { type Ty = S; }` of a struct holding a `&str`: the part has the null sort, so a
+    /// specification comparing models of the type, also at a type parameter instantiated with it,
+    /// would hold of any two values (`==`) or of none (`!=`).
+    fn check_model_impls(&self) {
+        let Some(model_ty) = self.ctx.def_ids().model_ty() else {
+            return;
+        };
+        let model_trait = self.tcx.parent(model_ty);
+        for &impl_did in self.tcx.local_trait_impls(model_trait) {
+            let Some(assoc) = self
+                .tcx
+                .associated_items(impl_did.to_def_id())
+                .in_definition_order()
+                .find(|item| item.trait_item_def_id == Some(model_ty))
+            else {
+                continue;
+            };
+            let ty = self.tcx.type_of(assoc.def_id).instantiate_identity();
+            if let Some(part) = analyze::model_eq::modelless_part(self.tcx, model_trait, ty) {
+                self.tcx.dcx().span_fatal(
+                    self.tcx.def_span(impl_did),
+                    format!(
+                        "thrust: the model `{ty}` holds `{part}`, which has no model, so \
+                         specifications could not tell its values apart"
+                    ),
+                );
+            }
+        }
+    }
+
     pub fn run(&mut self) {
         let span = tracing::debug_span!("crate", krate = %self.tcx.crate_name(rustc_span::def_id::LOCAL_CRATE));
         let _guard = span.enter();
 
         let proof_branch = self.ctx.def_ids().proof_branch();
         analyze::lemma::check_lemmas(self.tcx, proof_branch);
+        self.check_model_impls();
         self.analyze_raw_command_annot();
         self.register_trait_laws();
         self.check_restated_laws();

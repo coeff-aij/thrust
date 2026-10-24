@@ -17,6 +17,12 @@ mod thrust_models {
     pub mod model {
         use std::marker::PhantomData;
 
+        /// The formula type of a parameter of type `&str`, which has no model: a specification
+        /// can name it but neither compare it (Thrust rejects `==` on it) nor pass it to a
+        /// predicate (it has no `Model`). `expect`'s message is one.
+        #[thrust::def::no_model]
+        pub struct NoModel;
+
         /// Models denoting a mathematical integer.
         ///
         /// Arithmetic and comparison mix these freely: the model of an unsigned integer
@@ -756,11 +762,6 @@ mod thrust_models {
         type Ty = bool;
     }
 
-    /// A message of `expect`; a `str` is opaque, so its model carries nothing.
-    impl<'a> Model for &'a str {
-        type Ty = &'a str;
-    }
-
     impl Model for std::cmp::Ordering {
         type Ty = std::cmp::Ordering;
     }
@@ -1160,7 +1161,8 @@ fn _extern_spec_option_unwrap<T>(opt: Option<T>) -> T where T: thrust_models::Mo
     Option::unwrap(opt)
 }
 
-// `expect` is `unwrap` with a message, as Creusot and Verus specify it.
+// `expect` is `unwrap` with a message, as Creusot and Verus specify it; the message, a `&str`,
+// has no model and is not named.
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(opt != None)]
 #[thrust_macros::ensures(Some(result) == opt)]

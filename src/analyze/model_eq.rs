@@ -75,6 +75,31 @@ pub(super) fn model_eq<'tcx>(
     }
 }
 
+/// The first type in `ty` whose values have no model, as [`model_eq`] looks into `ty`: a `str`, a
+/// raw or function pointer, a trait object (all of the null sort) or std.rs's `NoModel`, the
+/// formula type of a parameter whose type has no model. A specification may not compare a value
+/// holding one, and a `Model` impl may not make one part of a model: `==` would hold of any two
+/// values and `!=` of none. `model_trait` is `thrust_models::Model`.
+pub(super) fn modelless_part<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    model_trait: DefId,
+    ty: mir_ty::Ty<'tcx>,
+) -> Option<mir_ty::Ty<'tcx>> {
+    compared_tys(tcx, Some(model_trait), ty)
+        .into_iter()
+        .find(|ty| match ty.kind() {
+            mir_ty::TyKind::Str
+            | mir_ty::TyKind::RawPtr(..)
+            | mir_ty::TyKind::FnPtr(..)
+            | mir_ty::TyKind::Dynamic(..) => true,
+            mir_ty::TyKind::Adt(adt, _) => tcx
+                .get_attrs_by_path(adt.did(), &analyze::annot::no_model_path())
+                .next()
+                .is_some(),
+            _ => false,
+        })
+}
+
 /// Whether `==` on values of `ty` compares a `Ghost`, as [`model_eq`] looks into `ty`.
 pub(super) fn compares_ghost<'tcx>(tcx: TyCtxt<'tcx>, ty: mir_ty::Ty<'tcx>) -> bool {
     compared_tys(tcx, None, ty)
@@ -86,7 +111,8 @@ pub(super) fn compares_ghost<'tcx>(tcx: TyCtxt<'tcx>, ty: mir_ty::Ty<'tcx>) -> b
 /// built from: a local ADT is looked into through its fields, a foreign one through its type
 /// arguments, and also through its fields when `model_trait` is given and the ADT has no `Model`
 /// impl, since its model is then the tuple of its fields' (a raw pointer inside `Rc` or `NonNull`
-/// gives all their values one model); a `PhantomData` compares equal at any argument.
+/// gives all their values one model); a `PhantomData` compares equal at any argument, and a closure
+/// is looked into through its captures only.
 fn compared_tys<'tcx>(
     tcx: TyCtxt<'tcx>,
     model_trait: Option<DefId>,
@@ -108,6 +134,15 @@ fn compared_tys<'tcx>(
                 mir_ty::TyKind::Adt(adt, _)
                     if tcx.is_lang_item(adt.did(), LangItem::PhantomData) =>
                 {
+                    walker.skip_current_subtree();
+                    continue;
+                }
+                mir_ty::TyKind::Closure(_, args) => {
+                    pending.push(args.as_closure().tupled_upvars_ty());
+                    walker.skip_current_subtree();
+                    continue;
+                }
+                mir_ty::TyKind::FnDef(..) => {
                     walker.skip_current_subtree();
                     continue;
                 }

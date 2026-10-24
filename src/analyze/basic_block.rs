@@ -539,12 +539,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let layout = self.tcx.layout_of(typing_env.as_query_input(ty)).unwrap();
         let lcx = mir_ty::layout::LayoutCx::new(self.tcx, typing_env);
         match ty.kind() {
+            // A `str` has the null sort, as `rty::Type::String` gives it; its content is not
+            // modelled (a string literal term would not have that sort).
             mir_ty::TyKind::Str => {
-                let content = std::str::from_utf8(bytes).unwrap();
-                PlaceType::with_ty_and_term(
-                    rty::Type::string(),
-                    chc::Term::string(content.to_owned()),
-                )
+                PlaceType::with_ty_and_term(rty::Type::string(), chc::Term::null())
             }
             mir_ty::TyKind::Bool => {
                 PlaceType::with_ty_and_term(rty::Type::bool(), chc::Term::bool(bytes[0] != 0))
@@ -691,9 +689,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             }
             mir_ty::TyKind::Ref(_, pointee, mir::Mutability::Not) => {
                 if pointee.is_str() {
-                    // A `str` has the null sort; its content is not modelled.
-                    return PlaceType::with_ty_and_term(rty::Type::string(), chc::Term::null())
-                        .immut();
+                    return self.const_bytes_ty(*pointee, &[]).immut();
                 }
                 if !pointee.is_sized(self.tcx, typing_env) {
                     unimplemented!("const reference to an unsized value in a constant: {ty:?}");
@@ -1717,7 +1713,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         "std" | "core" | "alloc"
                     );
                 if unchecked_foreign_impl {
-                    return self.unspecified_extern_ty(resolved_def_id, resolved_args);
+                    return self.unspecified_extern_ty(def_id, resolved_def_id, resolved_args);
                 }
                 // Nor is an ignored impl method's body checked against it.
                 if analyze::is_ignored_crate_fn(self.tcx, resolved_def_id) {
@@ -1735,7 +1731,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     return def_ty.ty;
                 }
                 if resolved_def_id == def_id && !def_id.is_local() {
-                    return self.unspecified_extern_ty(def_id, args);
+                    return self.unspecified_extern_ty(def_id, def_id, args);
                 }
                 if resolved_def_id == def_id {
                     panic!("unknown def: {:?}, args: {:?}", def_id, args);
@@ -1757,7 +1753,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     // Also reached when the def's only specification is an extern spec written
                     // for another instantiation of it (see `bind_spec_args`).
                     if !resolved_def_id.is_local() {
-                        return self.unspecified_extern_ty(resolved_def_id, resolved_args);
+                        return self.unspecified_extern_ty(def_id, resolved_def_id, resolved_args);
                     }
                     panic!(
                         "unknown def (resolved): {:?}, args: {:?}",
@@ -1769,29 +1765,38 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         }
     }
 
-    /// The type of `def_id`, a function of another crate that has no specification at `args`:
-    /// its precondition is `false`, so the call must be unreachable, as Creusot specifies a
-    /// contractless external function. This is how a panic reaches its entry points
-    /// (`panic_fmt`, `assert_failed`, ...) and the constructors of its payload
-    /// (`fmt::Arguments::new_v1`, ...), which only a panicking path calls. A call that may be
-    /// on a path that does not panic is verified as well, and a warning names the function.
+    /// The type of `def_id`, a function of another crate that has no specification at `args`, which
+    /// the code names as `called` (a trait method resolved to `def_id`, or `def_id` itself): its
+    /// precondition is `false`, so a call must be unreachable, as Creusot specifies a contractless
+    /// external function. This is how a panic reaches its entry points (`panic_fmt`,
+    /// `assert_failed`, ...) and the constructors of its payload (`fmt::Arguments::new_v1`, ...),
+    /// which only a panicking path calls. A warning names a call that may be on a path that does
+    /// not panic, and a function pointer made of the function, whose calls are under the same rule.
     fn unspecified_extern_ty(
         &self,
+        called: DefId,
         def_id: DefId,
         args: mir_ty::GenericArgsRef<'tcx>,
     ) -> rty::Type<rty::Closed> {
-        if self.calls_here(def_id) && !self.diverges(def_id) && !self.only_diverges_after() {
+        let name = self.tcx.def_path_str_with_args(def_id, args);
+        let owner = self.tcx.def_path_str(self.type_builder.owner_fn_id());
+        let message = if !self.calls_here(called) {
+            Some(format!(
+                "thrust: no specification of `{name}`, of which `{owner}` makes a function \
+                 pointer; a call through it must be proven unreachable"
+            ))
+        } else if !self.diverges(def_id) && !self.only_diverges_after() {
+            Some(format!(
+                "thrust: no specification of `{name}`, which `{owner}` calls; the call must be \
+                 proven unreachable"
+            ))
+        } else {
+            None
+        };
+        if let Some(message) = message {
             self.tcx
                 .dcx()
-                .struct_span_warn(
-                    self.call_span(def_id),
-                    format!(
-                        "thrust: no specification of `{}`, which `{}` calls; the call must be \
-                         proven unreachable",
-                        self.tcx.def_path_str_with_args(def_id, args),
-                        self.tcx.def_path_str(self.type_builder.owner_fn_id()),
-                    ),
-                )
+                .struct_span_warn(self.call_span(called), message)
                 .with_help(
                     "to call it, give the call a contract: call it through a function marked \
                      `#[thrust::trusted]` with `requires` and `ensures`, or write a \
@@ -1831,8 +1836,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         true
     }
 
-    /// Whether the current block's terminator calls `def_id`; a function pointer made of it in a
-    /// statement is not a call.
+    /// Whether the current block's terminator calls `def_id` by name (a trait method by the trait's
+    /// method); a function pointer made of it in a statement is not a call.
     fn calls_here(&self, def_id: DefId) -> bool {
         let TerminatorKind::Call { func, .. } =
             &self.body.basic_blocks[self.basic_block].terminator().kind

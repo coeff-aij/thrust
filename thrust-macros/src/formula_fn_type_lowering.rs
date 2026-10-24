@@ -53,6 +53,13 @@ impl<'a> FormulaFnTypeLowering<'a> {
                     model_inputs
                         .push(syn::parse_quote!(self_: <#ty as crate::thrust_models::Model>::Ty));
                 }
+                syn::FnArg::Typed(pt) if is_str_ref(&pt.ty) => {
+                    let attrs = &pt.attrs;
+                    let pat = &pt.pat;
+                    model_inputs.push(syn::parse_quote!(
+                        #(#attrs)* #pat: crate::thrust_models::model::NoModel
+                    ));
+                }
                 syn::FnArg::Typed(pt) => {
                     let attrs = &pt.attrs;
                     let pat = &pt.pat;
@@ -315,4 +322,14 @@ pub fn model_partial_eq_predicates(predicates: &[syn::WherePredicate]) -> Vec<sy
 
 fn model_predicates(ty: &impl quote::ToTokens) -> [syn::WherePredicate; 1] {
     [syn::parse_quote!(#ty: crate::thrust_models::Model)]
+}
+
+/// Whether `ty` is `&str` (any lifetime), which has no model: a specification sees such a
+/// parameter as `thrust_models::model::NoModel`.
+fn is_str_ref(ty: &syn::Type) -> bool {
+    let syn::Type::Reference(reference) = ty else {
+        return false;
+    };
+    reference.mutability.is_none()
+        && matches!(&*reference.elem, syn::Type::Path(path) if path.qself.is_none() && path.path.is_ident("str"))
 }

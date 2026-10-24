@@ -504,11 +504,26 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
     ) -> FormulaOrTerm<rty::FunctionParamIdx> {
         use rustc_hir::BinOpKind;
 
+        match op {
+            BinOpKind::Eq | BinOpKind::Ne => {
+                let binop = if op == BinOpKind::Eq {
+                    AmbiguousBinOp::Eq
+                } else {
+                    AmbiguousBinOp::Ne
+                };
+                let span = lhs.span.to(rhs.span);
+                return self.equality(
+                    span,
+                    self.plain_operand(lhs),
+                    binop,
+                    self.plain_operand(rhs),
+                );
+            }
+            _ => {}
+        }
         let lhs = self.to_term(lhs);
         let rhs = self.to_term(rhs);
         let fun = match (op, ty.signed) {
-            (BinOpKind::Eq, _) => return FormulaOrTerm::BinOp(lhs, AmbiguousBinOp::Eq, rhs),
-            (BinOpKind::Ne, _) => return FormulaOrTerm::BinOp(lhs, AmbiguousBinOp::Ne, rhs),
             (BinOpKind::Add, _) => chc::Function::BVADD,
             (BinOpKind::Sub, _) => chc::Function::BVSUB,
             (BinOpKind::Mul, _) => chc::Function::BVMUL,
@@ -681,58 +696,61 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         (Some(def_id) == self.def_ids.log_eq_args()).then_some((lhs, rhs))
     }
 
-    /// The term of the value an argument of `log_eq_args` refers to: `a` of the `&a` that `==`
-    /// is rewritten to, or the referent of any other reference.
-    fn log_eq_operand(&self, arg: &'tcx rustc_hir::Expr<'tcx>) -> chc::Term<rty::FunctionParamIdx> {
+    /// The type and term of the value an argument of `log_eq_args` refers to: `a` of the `&a`
+    /// that `==` is rewritten to, or the referent of any other reference.
+    fn log_eq_operand(
+        &self,
+        arg: &'tcx rustc_hir::Expr<'tcx>,
+    ) -> (mir_ty::Ty<'tcx>, chc::Term<rty::FunctionParamIdx>) {
         match arg.kind {
             rustc_hir::ExprKind::AddrOf(
                 rustc_hir::BorrowKind::Ref,
                 rustc_hir::Mutability::Not,
                 operand,
-            ) => self.to_term(operand),
-            _ => self.to_term(arg).box_current(),
+            ) => (self.typeck.expr_ty(operand), self.to_term(operand)),
+            _ => (
+                self.typeck.expr_ty(arg).peel_refs(),
+                self.to_term(arg).box_current(),
+            ),
         }
     }
 
-    /// Stops at a specification's `==` or `!=` on a value whose model carries no information:
-    /// one that holds a `str`, a raw pointer, a trait object or a function pointer has the null
-    /// sort there, so `==` would hold of any two values and `!=` of none, and a contract stating
-    /// either would not describe the function (a `!=` in a trusted `ensures` makes the code after
-    /// the call vacuous). This is `model_eq`'s condition for an executable `==`, applied to the
-    /// logical one; a closure's and a `PhantomData`'s parameters are not looked into.
-    fn check_comparable(&self, arg: &'tcx rustc_hir::Expr<'tcx>) {
-        let ty = match arg.kind {
-            rustc_hir::ExprKind::AddrOf(_, _, operand) => self.typeck.expr_ty(operand),
-            _ => self.typeck.expr_ty(arg).peel_refs(),
-        };
-        let mut walker = ty.walk();
-        while let Some(arg_ty) = walker.next() {
-            let Some(inner) = arg_ty.as_type() else {
-                continue;
-            };
-            match inner.kind() {
-                mir_ty::TyKind::Adt(adt, _) if adt.is_phantom_data() => {
-                    walker.skip_current_subtree();
-                }
-                mir_ty::TyKind::Closure(..)
-                | mir_ty::TyKind::FnDef(..)
-                | mir_ty::TyKind::Coroutine(..) => walker.skip_current_subtree(),
-                mir_ty::TyKind::Str
-                | mir_ty::TyKind::RawPtr(..)
-                | mir_ty::TyKind::Dynamic(..)
-                | mir_ty::TyKind::FnPtr(..) => {
-                    self.tcx.dcx().span_fatal(
-                        arg.span,
-                        format!(
-                            "thrust: a specification cannot compare values of `{ty}`: its \
-                             `{inner}` has no model, so `==` would hold of any two values and `!=` \
-                             of none"
-                        ),
-                    );
-                }
-                _ => {}
+    /// The type and term of a plain operand of `==` or `!=`.
+    fn plain_operand(
+        &self,
+        expr: &'tcx rustc_hir::Expr<'tcx>,
+    ) -> (mir_ty::Ty<'tcx>, chc::Term<rty::FunctionParamIdx>) {
+        (self.typeck.expr_ty(expr), self.to_term(expr))
+    }
+
+    /// A specification's `lhs == rhs` or `lhs != rhs` (`op`), the only place these atoms are
+    /// built, from the operands' types and terms. It stops at an operand holding a value without
+    /// a model (`model_eq::modelless_part`: a `str`, a raw or function pointer, a trait object,
+    /// also in a field of a local type): its model is the null sort, so `==` would hold of any two
+    /// values and `!=` of none, and a contract stating either would not describe the function (a
+    /// `!=` in a trusted `ensures` makes the code after the call vacuous).
+    fn equality(
+        &self,
+        span: rustc_span::Span,
+        (lhs_ty, lhs): (mir_ty::Ty<'tcx>, chc::Term<rty::FunctionParamIdx>),
+        op: AmbiguousBinOp,
+        (rhs_ty, rhs): (mir_ty::Ty<'tcx>, chc::Term<rty::FunctionParamIdx>),
+    ) -> FormulaOrTerm<rty::FunctionParamIdx> {
+        for ty in [lhs_ty, rhs_ty] {
+            let modelless = self.def_ids.model_ty().and_then(|model_ty| {
+                analyze::model_eq::modelless_part(self.tcx, self.tcx.parent(model_ty), ty)
+            });
+            if let Some(part) = modelless {
+                self.tcx.dcx().span_fatal(
+                    span,
+                    format!(
+                        "thrust: a specification cannot compare values of `{ty}`: its `{part}` \
+                         has no model, so `==` would hold of any two values and `!=` of none"
+                    ),
+                );
             }
         }
+        FormulaOrTerm::BinOp(lhs, op, rhs)
     }
 
     fn to_term(&self, hir: &'tcx rustc_hir::Expr<'tcx>) -> chc::Term<rty::FunctionParamIdx> {
@@ -1434,8 +1452,19 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 }
 
                 let binop = match op.node {
-                    rustc_hir::BinOpKind::Eq => AmbiguousBinOp::Eq,
-                    rustc_hir::BinOpKind::Ne => AmbiguousBinOp::Ne,
+                    rustc_hir::BinOpKind::Eq | rustc_hir::BinOpKind::Ne => {
+                        let binop = if op.node == rustc_hir::BinOpKind::Eq {
+                            AmbiguousBinOp::Eq
+                        } else {
+                            AmbiguousBinOp::Ne
+                        };
+                        return self.equality(
+                            hir.span,
+                            self.plain_operand(lhs),
+                            binop,
+                            self.plain_operand(rhs),
+                        );
+                    }
                     rustc_hir::BinOpKind::Ge => AmbiguousBinOp::Ge,
                     rustc_hir::BinOpKind::Le => AmbiguousBinOp::Le,
                     rustc_hir::BinOpKind::Gt => AmbiguousBinOp::Gt,
@@ -1608,14 +1637,13 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             }
             ExprKind::MethodCall(method, receiver, args, _) => {
                 if let Some((lhs, rhs)) = self.log_eq_args(receiver) {
-                    self.check_comparable(lhs);
-                    self.check_comparable(rhs);
                     let binop = match method.ident.as_str() {
                         "log_eq" => AmbiguousBinOp::Eq,
                         "log_ne" => AmbiguousBinOp::Ne,
                         name => panic!("unknown method of log_eq_args: {name}"),
                     };
-                    return FormulaOrTerm::BinOp(
+                    return self.equality(
+                        hir.span,
                         self.log_eq_operand(lhs),
                         binop,
                         self.log_eq_operand(rhs),
