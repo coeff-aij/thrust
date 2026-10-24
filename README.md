@@ -179,6 +179,20 @@ fn add(ma: &mut i32, a: i32) {
 }
 ```
 
+### Type invariants
+
+A type implementing `Invariant` (in `std.rs`, Creusot's trait) has its `invariant` predicate in every function's contract: required of each parameter of the type, or of the value behind a `&` or `&mut` parameter to it; ensured of the result (the value behind a returned reference) and of each `&mut` parameter's final value. A body may break the invariant between its entry and its exits. `#[thrust::open_inv]` on a parameter and `#[thrust::open_inv_result]` on a function leave out the parameter's and the result's. Closures, lemmas and laws get none; neither do values inside other types, nor a type parameter.
+
+```rust
+#[thrust_macros::context]
+impl Invariant for Even {
+    #[thrust_macros::predicate]
+    fn invariant(self) -> bool {
+        self.0 % 2 == 0
+    }
+}
+```
+
 ### Refinement types
 
 The conditions on `requires`/`ensures` are internally encoded as refinement types of the parameter and return types. You can also specify these refinement types directly. A refinement type is written `{ binder: type | formula }`, where `type` is a Rust type and `formula` constrains the value bound to `binder`. Use `#[thrust_macros::param(name: type)]` for a parameter and `#[thrust_macros::ret(type)]` for the return value:

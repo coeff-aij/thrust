@@ -2904,6 +2904,18 @@ fn _extern_spec_clone<T>(x: &T) -> T
     Clone::clone(x)
 }
 
+// A type's invariant, Creusot's `Invariant`: a type implements it to have `invariant` required of
+// each parameter of the type (or a reference to one) and ensured of each result and of each
+// `&mut` parameter's final value, in every function's contract (`#[thrust::open_inv]` and
+// `#[thrust::open_inv_result]` leave a parameter's or the result's out). A function's body may
+// break it between its entry and its exits.
+#[thrust_macros::context]
+#[thrust::def::type_invariant]
+trait Invariant: thrust_models::Model {
+    #[thrust_macros::predicate]
+    fn invariant(self) -> bool;
+}
+
 // Comparison is specified through `PartialOrdSpec`, which relates two values to the outcome of
 // comparing them. A type gets the specs of `partial_cmp`, the comparison operators, `cmp`, `max`
 // and `min` by implementing it, as Creusot's `OrdLogic` does with `cmp_log`; the relation must
