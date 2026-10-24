@@ -18,14 +18,21 @@ use crate::{apit, fn_outer_item::FnOuterItem, FormulaFnTypeLowering};
 /// The error for `#[thrust::ignored]` together with a contract.
 pub(crate) const IGNORED_WITH_CONTRACT: &str = "`#[thrust::ignored]` cannot have a contract: an ignored function is invisible to Thrust and must not run; to trust a contract without checking the body, write `#[thrust::trusted]`";
 
-pub fn expand_predicate(item: TokenStream) -> TokenStream {
-    expand_spec_fn(item, SpecFnKind::Predicate)
+pub fn expand_predicate(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let attr = TokenStream2::from(attr);
+    let derived = !attr.is_empty();
+    if derived && attr.to_string() != "derived" {
+        return syn::Error::new_spanned(attr, "expected `derived` or no argument")
+            .to_compile_error()
+            .into();
+    }
+    expand_spec_fn(item, SpecFnKind::Predicate, derived)
 }
 
 /// Like a predicate, but the return type is any model type: the function is callable in the
 /// term position of a specification.
 pub fn expand_logic(item: TokenStream) -> TokenStream {
-    expand_spec_fn(item, SpecFnKind::Logic)
+    expand_spec_fn(item, SpecFnKind::Logic, false)
 }
 
 /// `#[variant(e)]` written above `#[logic]` or `#[lemma]` is moved below it, where that attribute
@@ -79,11 +86,21 @@ pub(crate) fn take_variant(attrs: &mut Vec<syn::Attribute>) -> syn::Result<Optio
     Ok(variant)
 }
 
-fn expand_spec_fn(item: TokenStream, kind: SpecFnKind) -> TokenStream {
+/// `derived` marks a trait predicate declared without a body as `#[thrust::derived]`.
+fn expand_spec_fn(item: TokenStream, kind: SpecFnKind, derived: bool) -> TokenStream {
     let mut func = parse_macro_input!(item as FnItemWithSignature);
-    let marker = match kind {
-        SpecFnKind::Predicate => quote!(#[thrust::predicate]),
-        SpecFnKind::Logic => quote!(#[thrust::logic]),
+    if derived && func.block().is_some() {
+        let err = syn::Error::new_spanned(
+            &func.sig().ident,
+            "a derived predicate is declared in a trait without a body",
+        )
+        .to_compile_error();
+        return quote! { #err #func }.into();
+    }
+    let marker = match (&kind, derived) {
+        (SpecFnKind::Predicate, false) => quote!(#[thrust::predicate]),
+        (SpecFnKind::Predicate, true) => quote!(#[thrust::predicate] #[thrust::derived]),
+        (SpecFnKind::Logic, _) => quote!(#[thrust::logic]),
     };
     let variant = match take_variant(func.attrs_mut()) {
         Ok(Some(_)) if kind != SpecFnKind::Logic => {
@@ -142,10 +159,16 @@ fn expand_spec_fn(item: TokenStream, kind: SpecFnKind) -> TokenStream {
         #marker
         #vis fn #name #def_generics(#model_ty_params) -> #model_ret #extended_where
     };
-    let Some(block) = func.block() else {
-        return quote! { #sig; }.into();
+    let mut block = match func.block() {
+        Some(block) => block.clone(),
+        // The default body lets an impl leave a derived predicate out. Thrust declares the
+        // predicate as an unknown and never emits this text, which the solver would reject.
+        None if derived => syn::parse_quote!({
+            "thrust:derived";
+            true
+        }),
+        None => return quote! { #sig; }.into(),
     };
-    let mut block = block.clone();
     // The receiver `self` is lowered to a named `self_` parameter, so rewrite
     // references in the (Rust) body to match.
     if is_rust_body {

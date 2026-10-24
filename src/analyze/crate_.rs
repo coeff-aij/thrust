@@ -501,7 +501,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 impl_ty.ty.as_function().unwrap(),
                 trait_ty.ty.as_function().unwrap(),
             );
+            let start = self.ctx.clause_count();
             self.ctx.extend_clauses(clauses);
+            self.ctx.record_clause_site(start, def_id);
         }
     }
 
@@ -768,6 +770,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.ctx.emit_fn_mut_instance_obligations();
         self.ctx.check_reused_instances();
         self.check_ignored_not_run();
+        self.ctx.check_derived_predicates();
         self.assert_callable_entry();
     }
 

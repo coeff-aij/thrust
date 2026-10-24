@@ -207,6 +207,7 @@ fn unbox_user_defined_pred_def(user_defined_pred_def: UserDefinedPredDef) -> Use
         .collect();
     let body = match body {
         UserDefinedPredBody::Raw(s) => UserDefinedPredBody::Raw(s),
+        UserDefinedPredBody::Derived => UserDefinedPredBody::Derived,
         UserDefinedPredBody::Formula(formula) => {
             UserDefinedPredBody::Formula(unbox_formula(formula))
         }

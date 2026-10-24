@@ -140,9 +140,13 @@ pub fn _partial_invariant_with_context(input: TokenStream) -> TokenStream {
     invariant::expand_with_context(input, invariant::Marker::Partial)
 }
 
+/// Declares a predicate of the specification language. Its body is a Rust expression or a raw
+/// SMT-LIB2 string. In a trait, `#[thrust_macros::predicate(derived)]` without a body declares a
+/// predicate an impl may leave undefined: its meaning there is the least fixpoint of what the
+/// impl's own bodies conclude of it (the trait's laws and contracts), which the solver infers.
 #[proc_macro_attribute]
-pub fn predicate(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    spec::expand_predicate(item)
+pub fn predicate(attr: TokenStream, item: TokenStream) -> TokenStream {
+    spec::expand_predicate(attr, item)
 }
 
 /// Declares a function callable in the term position of specifications: its body is a single

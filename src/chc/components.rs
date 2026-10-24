@@ -60,7 +60,9 @@ fn reached_pred_vars(system: &System) -> HashMap<&UserDefinedPred, HashSet<PredV
                 _ => None,
             })
             .collect(),
-        UserDefinedPredBody::Raw(_) | UserDefinedPredBody::Term(..) => Vec::new(),
+        UserDefinedPredBody::Raw(_)
+        | UserDefinedPredBody::Term(..)
+        | UserDefinedPredBody::Derived => Vec::new(),
     };
     let defs: HashMap<&UserDefinedPred, &UserDefinedPredDef> = system
         .user_defined_pred_defs
@@ -84,6 +86,15 @@ fn reached_pred_vars(system: &System) -> HashMap<&UserDefinedPred, HashSet<PredV
 /// The classes of the clauses of `system` that share an unknown, each in the order of the
 /// clauses, and the classes in the order of their first clause.
 pub fn components(system: &System) -> Vec<Vec<ClauseId>> {
+    // A derived predicate is an unknown that is not a predicate variable; the system is kept
+    // whole rather than joined through it.
+    let has_derived = system
+        .user_defined_pred_defs
+        .iter()
+        .any(|def| matches!(def.body, UserDefinedPredBody::Derived));
+    if has_derived {
+        return vec![system.clauses.indices().collect()];
+    }
     let reached = reached_pred_vars(system);
     // A node per clause, then one per unknown.
     let clause_count = system.clauses.len();

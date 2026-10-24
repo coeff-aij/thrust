@@ -31,6 +31,7 @@ mod basic_block;
 mod closure_hist_inv;
 mod crate_;
 mod derive;
+mod derived_pred;
 mod did_cache;
 mod extern_spec;
 mod fn_mut_reuse;
@@ -628,6 +629,11 @@ pub struct Analyzer<'tcx> {
     handovers: Vec<(DefId, DefId, unanalyzed_entry::HandedOver)>,
     /// What the analysis did with the body of each function, for the report.
     body_checks: BodyChecks,
+    /// Each derived predicate declared at an impl, by symbol, with the impl's `Self` type and the
+    /// predicate's trait; see [`derived_pred`].
+    derived_preds: Rc<RefCell<HashMap<chc::UserDefinedPred, derived_pred::DerivedAt<'tcx>>>>,
+    /// The function each clause comes from, for [`Analyzer::check_derived_predicates`].
+    clause_sites: Rc<RefCell<derived_pred::ClauseSites>>,
 }
 
 /// What the analysis did with the body of each function, shared by the analyzers that decide it.
@@ -862,6 +868,8 @@ impl<'tcx> Analyzer<'tcx> {
             hist_inv_relations: Default::default(),
             fn_mut_reuse: Default::default(),
             spec_assumptions: Default::default(),
+            derived_preds: Default::default(),
+            clause_sites: Default::default(),
             reused_generic_instances: Default::default(),
             called_fn_tys: Default::default(),
             impl_methods_with_own_contract: Default::default(),
@@ -1283,6 +1291,64 @@ impl<'tcx> Analyzer<'tcx> {
             }
             _ => true,
         }
+    }
+
+    /// Whether `def_id` is a trait's `#[thrust_macros::predicate(derived)]`.
+    pub fn is_derived_predicate(&self, def_id: DefId) -> bool {
+        self.tcx
+            .get_attrs_by_path(def_id, &analyze::annot::derived_path())
+            .next()
+            .is_some()
+    }
+
+    /// Declares `symbol`, the derived predicate `pred_def_id` of a trait, at its impl for
+    /// `self_ty`.
+    pub fn declare_derived_pred(
+        &self,
+        symbol: chc::UserDefinedPred,
+        sig: chc::UserDefinedPredSig,
+        pred_def_id: DefId,
+        self_ty: mir_ty::Ty<'tcx>,
+    ) {
+        let trait_def_id = self
+            .tcx
+            .trait_of_assoc(pred_def_id)
+            .expect("a derived predicate is a trait item");
+        self.system
+            .borrow_mut()
+            .push_derived_pred(symbol.clone(), sig);
+        self.derived_preds.borrow_mut().insert(
+            symbol,
+            derived_pred::DerivedAt {
+                self_ty,
+                trait_def_id,
+            },
+        );
+    }
+
+    /// The number of clauses pushed so far, where the clauses of a function start.
+    pub fn clause_count(&self) -> usize {
+        self.system.borrow().clauses.len()
+    }
+
+    /// Records that the clauses pushed since `start` come from `site`.
+    pub fn record_clause_site(&self, start: usize, site: DefId) {
+        let end = self.clause_count();
+        self.clause_sites.borrow_mut().record(start..end, site);
+    }
+
+    /// Reports each clause that concludes a derived predicate outside its impl.
+    pub fn check_derived_predicates(&self) {
+        let derived = self.derived_preds.borrow();
+        if derived.is_empty() {
+            return;
+        }
+        derived_pred::check_head_closed(
+            self.tcx,
+            &self.system.borrow(),
+            &self.clause_sites.borrow(),
+            &derived,
+        );
     }
 
     pub fn impl_methods_with_own_contract(&self) -> Vec<DefId> {
