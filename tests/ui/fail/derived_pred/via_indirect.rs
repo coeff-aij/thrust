@@ -50,12 +50,12 @@ impl Iter for Small {
 #[thrust::trusted]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(I::bounded(*it, k))]
-fn below_five<I: Iter<Item = isize>>(it: &I, k: isize) {}
+fn below_five<I: Iter<Item = isize>>(it: &I, k: isize) {} //~ ERROR: assumed without being checked against a body
 
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(I::bounded(*it, k))]
 fn via<I: Iter<Item = isize>>(it: &I, k: isize) {
-    below_five(it, k) //~ ERROR: dependency closure
+    below_five(it, k)
 }
 
 fn main() {

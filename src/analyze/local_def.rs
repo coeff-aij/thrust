@@ -142,9 +142,6 @@ pub struct Analyzer<'tcx, 'ctx> {
     generic_args: mir_ty::GenericArgsRef<'tcx>,
     drop_points: HashMap<BasicBlock, analyze::basic_block::DropPoints>,
     type_builder: TypeBuilder<'tcx>,
-    /// The impl, or the impl's function, a trait's default law is checked for
-    /// ([`Self::law_owner`]): the site its `ensures` checks are rules of.
-    law_owner: Option<DefId>,
 }
 
 /// The locals that the move paths `paths` are parts of.
@@ -160,7 +157,7 @@ fn locals_of<'tcx>(
 impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     pub fn analyze_predicate_definition(&self) {
         if self.ctx.is_derived_predicate(self.local_def_id.to_def_id()) {
-            // Declared at each impl that leaves it undefined, when that instance is emitted.
+            // Declared at each impl that leaves it out, when that instance is emitted.
             return;
         }
         let (sig, body) = self.predicate_definition();
@@ -1696,14 +1693,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 .basic_block_ty_with_precondition(self.analysis_key(), bb)
                 .clone();
             let drop_points = self.drop_points[&bb].clone();
-            let ensures_site = self
-                .law_owner
-                .unwrap_or_else(|| self.local_def_id.to_def_id());
             self.ctx
                 .basic_block_analyzer(self.analysis_key(), bb)
                 .body(self.body.clone())
                 .drop_points(drop_points)
-                .ensures_site(ensures_site)
                 .run(&rty, expected_fn_ty);
         }
     }
@@ -1848,7 +1841,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             generic_args,
             drop_points,
             type_builder,
-            law_owner: None,
         }
     }
 
@@ -1858,13 +1850,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
     pub fn analysis_key(&self) -> analyze::AnalysisKey<'tcx> {
         analyze::AnalysisKey::new(self.local_def_id, self.generic_args, self.owner_fn_id)
-    }
-
-    /// Marks this analysis as the check of a trait's default law for an impl, `owner` being the
-    /// impl's function it is typed under, or the impl when it has none.
-    pub fn law_owner(&mut self, owner: DefId) -> &mut Self {
-        self.law_owner = Some(owner);
-        self
     }
 
     pub fn owner_fn_id(&mut self, owner_fn_id: DefId) -> &mut Self {
@@ -2038,15 +2023,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.ctx
             .body_checks()
             .record(self.local_def_id, analyze::BodyCheck::Checked);
-        if let Some(fn_ty) = expected.ty.as_function() {
-            // The body assumes its own precondition, which the system proves only at this
-            // crate's calls.
-            self.ctx.assume_contract(
-                analyze::derived_pred::Assumption::OwnRequires,
-                self.tcx.def_span(self.local_def_id),
-                fn_ty,
-            );
-        }
         self.unelaborate_derefs();
         analyze::reconstruct_slice_indexing::reconstruct(self.tcx, &mut self.body);
         analyze::two_phase_borrow::move_to_activation(self.tcx, &mut self.body);

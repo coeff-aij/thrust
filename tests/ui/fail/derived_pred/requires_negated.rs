@@ -1,9 +1,10 @@
+//@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -A unused-variables -A dead_code
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
-// Rejected, not Unsat. A function's own precondition negates `produces`: as `requires_premise`.
-// The negated conjunct is also read as a check (a conjunct `¬ψ` of a clause body), which the
-// clause cannot tell from an assumption, so it is reported twice.
+// Unsat. A function's own precondition negates `produces`, and a trusted function, which Thrust
+// does not analyze, calls it: as for a precondition left to inference, it must hold of every
+// argument there (the entry rule of D59), which `k == 0` alone refutes.
 
 #[thrust_macros::context]
 trait Iter {
@@ -42,8 +43,16 @@ impl Iter for Range {
 }
 
 #[thrust_macros::requires(!Range::produces(*r, k) && k == 0)]
-fn own_requires_neg(r: &Range, k: isize) { //~ ERROR: is concluded here
-    assert!(false); //~^ ERROR: own precondition
+fn own_requires_neg(r: &Range, k: isize) {
+    assert!(false);
+}
+
+// Code Thrust does not analyze enters `own_requires_neg`.
+#[thrust::trusted]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(true)]
+fn enter(r: &Range) {
+    own_requires_neg(r, 1);
 }
 
 fn main() {}

@@ -1,8 +1,8 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120
-// `pass/derived_pred/take.rs` asserting an item `Range` never yields first: refuted, since the
-// least fixpoint of `Range::produces`'s rules does not contain it.
+// `pass/derived_pred/take.rs` asserting an item `Range` never yields first: refuted, since any
+// inferred relation contains the item `next` yields, and the assertion must hold of it too.
 use thrust_models::forall;
 use thrust_models::model::{Mut, Seq};
 use thrust_models::Model;

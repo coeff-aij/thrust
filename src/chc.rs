@@ -16,8 +16,6 @@ mod clause_builder;
 mod components;
 pub mod debug;
 mod dedup;
-mod definite;
-pub mod dependence;
 mod flatten;
 pub(crate) mod format_context;
 mod hoice;
@@ -2355,38 +2353,6 @@ impl<V> Formula<V> {
         self.iter_atoms_impl()
     }
 
-    /// Pushes the conjuncts of the formula, nested conjunctions flattened.
-    pub fn conjuncts_into<'a>(&'a self, out: &mut Vec<&'a Formula<V>>) {
-        match self {
-            Formula::And(fs) => fs.iter().for_each(|f| f.conjuncts_into(out)),
-            f => out.push(f),
-        }
-    }
-
-    /// Calls `f` with each atom and whether it occurs positively, given that the formula itself
-    /// occurs positively when `positive` holds. In a clause body, an atom that occurs negatively
-    /// is part of what the clause concludes: `φ ∧ ¬ψ` is the clause `φ ⇒ ψ`.
-    pub fn for_each_polarized_atom<'a>(
-        &'a self,
-        positive: bool,
-        f: &mut impl FnMut(&'a Atom<V>, bool),
-    ) {
-        match self {
-            Formula::Atom(atom) => f(atom, positive),
-            Formula::Not(fo) => fo.for_each_polarized_atom(!positive, f),
-            Formula::And(fs) | Formula::Or(fs) => fs
-                .iter()
-                .for_each(|fo| fo.for_each_polarized_atom(positive, f)),
-            Formula::Implies(lhs, rhs) => {
-                lhs.for_each_polarized_atom(!positive, f);
-                rhs.for_each_polarized_atom(positive, f);
-            }
-            Formula::Exists(_, fo) | Formula::Forall(_, fo) => {
-                fo.for_each_polarized_atom(positive, f)
-            }
-        }
-    }
-
     fn iter_atoms_impl(&self) -> Box<dyn Iterator<Item = &Atom<V>> + '_> {
         match self {
             Formula::Atom(atom) => Box::new(std::iter::once(atom)),
@@ -2746,9 +2712,8 @@ pub enum UserDefinedPredBody {
     Raw(String),
     Formula(Formula<TermVarIdx>),
     Term(Sort, Term<TermVarIdx>),
-    /// No body: an unknown of the system, defined by the clauses that conclude it. This is a
-    /// `#[thrust_macros::predicate(derived)]` of a trait at an impl that does not define it, whose
-    /// meaning is the least fixpoint of the clauses its impl's bodies conclude.
+    /// No body: an unknown of the system, a `#[thrust_macros::predicate(derived)]` of a trait at
+    /// an impl that leaves it out, inferred like a loop invariant (`analyze::derived_pred`).
     Derived,
 }
 
@@ -2821,6 +2786,11 @@ impl UserDefinedPredDef {
             UserDefinedPredBody::Formula(formula) => user_defined_in(formula.iter_atoms()),
             UserDefinedPredBody::Term(_, term) => term.user_defined_fns(),
         }
+    }
+
+    /// Whether this is a derived predicate, an unknown with no body.
+    pub fn is_derived(&self) -> bool {
+        matches!(self.body, UserDefinedPredBody::Derived)
     }
 
     /// Whether the body calls the definition itself, which makes it a `define-fun-rec`.
@@ -3076,6 +3046,18 @@ impl System {
 
     /// Defines `symbol` as `body` read under `sort_subst`, the substitution that
     /// takes the declaring item's forall sorts to one instantiation of them.
+    /// Declares `symbol` as an unknown of the system ([`UserDefinedPredBody::Derived`]).
+    pub fn push_derived_pred(&mut self, symbol: UserDefinedPred, sig: UserDefinedPredSig) {
+        self.user_defined_pred_defs.push(UserDefinedPredDef {
+            symbol,
+            sig,
+            body: UserDefinedPredBody::Derived,
+            sort_subst: Vec::new(),
+            dependencies: HashSet::new(),
+            decreases: None,
+        })
+    }
+
     pub fn push_pred_define_at_instance(
         &mut self,
         symbol: UserDefinedPred,
@@ -3093,18 +3075,6 @@ impl System {
         })
     }
 
-    /// Declares `symbol` as an unknown of the system ([`UserDefinedPredBody::Derived`]).
-    pub fn push_derived_pred(&mut self, symbol: UserDefinedPred, sig: UserDefinedPredSig) {
-        self.user_defined_pred_defs.push(UserDefinedPredDef {
-            symbol,
-            sig,
-            body: UserDefinedPredBody::Derived,
-            sort_subst: Vec::new(),
-            dependencies: HashSet::new(),
-            decreases: None,
-        })
-    }
-
     /// Records that `id` comes with every clause that defines it; see `self_defined_pred_vars`.
     pub fn mark_self_defined(&mut self, id: PredVarId) {
         self.self_defined_pred_vars.insert(id);
@@ -3117,6 +3087,37 @@ impl System {
     /// What the definition of `symbol`, and those of the user-defined predicates it calls, say
     /// about predicate variables. A raw SMT-LIB2 body read off the source names none, since the
     /// variables are numbered by the analysis.
+    /// Whether `symbol` is a derived predicate, applies one through its definition, or is not
+    /// defined yet (a predicate instance emitted at the end, a derived one among them).
+    pub fn reaches_derived(&self, symbol: &UserDefinedPred) -> bool {
+        let mut pending = vec![symbol];
+        let mut seen: HashSet<&UserDefinedPred> = HashSet::new();
+        while let Some(symbol) = pending.pop() {
+            if !seen.insert(symbol) {
+                continue;
+            }
+            let mut defs = self
+                .user_defined_pred_defs
+                .iter()
+                .filter(|d| &d.symbol == symbol)
+                .peekable();
+            if defs.peek().is_none() {
+                return true;
+            }
+            for def in defs {
+                match &def.body {
+                    UserDefinedPredBody::Derived => return true,
+                    UserDefinedPredBody::Formula(formula) => {
+                        pending.extend(user_defined_in(formula.iter_atoms()))
+                    }
+                    UserDefinedPredBody::Term(_, term) => pending.extend(term.user_defined_fns()),
+                    UserDefinedPredBody::Raw(_) => {}
+                }
+            }
+        }
+        false
+    }
+
     pub fn pred_var_reach_of(&self, symbol: &UserDefinedPred) -> PredVarReach {
         let mut reach = PredVarReach::default();
         let mut pending = vec![symbol];
@@ -3215,11 +3216,12 @@ impl System {
                             .extend(decreases.forall_fns().into_iter().cloned());
                     }
                 }
-                UserDefinedPredBody::Derived => {}
                 UserDefinedPredBody::Formula(formula) => {
                     udpd.dependencies
                         .extend(forall_in(formula.iter_atoms()).into_iter().cloned());
                 }
+                // Independent of every forall predicate: declared before them.
+                UserDefinedPredBody::Derived => {}
             }
         }
         let callees: HashMap<UserDefinedPred, HashSet<UserDefinedPred>> = user_defined_pred_defs
@@ -3425,91 +3427,68 @@ impl System {
         preds
     }
 
-    /// Each atom a clause applies, with whether it is assumed (`true`) or concluded (`false`):
-    /// its head is concluded, and a body atom is concluded where it occurs negatively. A body
-    /// `φ ∧ ¬ψ` is the clause `φ ⇒ ψ`, which is how a call's quantified precondition
-    /// (`∀c x. pre(c, x)`) and an ensures are put. The polarity is followed into the formula
-    /// bodies of the user-defined predicates applied (`bodies`), whose atoms are listed as well.
-    fn polarized_atoms<'a>(
-        clause: &'a Clause,
-        bodies: &HashMap<&'a UserDefinedPred, &'a Formula>,
-    ) -> Vec<(&'a Atom<TermVarIdx>, bool)> {
-        let mut atoms = vec![(&clause.head, false)];
-        atoms.extend(clause.body.atoms.iter().map(|atom| (atom, true)));
-        clause
-            .body
-            .formula
-            .for_each_polarized_atom(true, &mut |atom, positive| atoms.push((atom, positive)));
-        let mut entered = HashSet::new();
-        let mut next = 0;
-        while let Some(&(atom, positive)) = atoms.get(next) {
-            next += 1;
-            let Pred::UserDefined(pred) = &atom.pred else {
-                continue;
-            };
-            let Some(body) = bodies.get(pred).copied() else {
-                continue;
-            };
-            if entered.insert((pred, positive)) {
-                body.for_each_polarized_atom(positive, &mut |atom, positive| {
-                    atoms.push((atom, positive))
-                });
-            }
-        }
-        atoms
-    }
-
-    /// The predicate variables a clause defines: those it concludes ([`Self::polarized_atoms`]),
-    /// so that a predicate variable in the `ψ` of a body `φ ∧ ¬ψ` is solved from the rest of the
-    /// clause as a head is.
+    /// The predicate variables a clause defines: its head, and each one that occurs negatively
+    /// in its body. A body `φ ∧ ¬ψ` is the clause `φ ⇒ ψ`, which is how a call's quantified
+    /// precondition (`∀c x. pre(c, x)`) is put, so a predicate variable in `ψ` is solved from
+    /// the rest of the clause as a head is. The polarity is followed into the formula bodies of
+    /// the user-defined predicates the clause applies (`bodies`), which may apply predicate
+    /// variables in turn.
     fn head_pred_vars<'a>(
         clause: &'a Clause,
         bodies: &HashMap<&'a UserDefinedPred, &'a Formula>,
     ) -> Vec<PredVarId> {
-        let mut seen = HashSet::new();
-        Self::polarized_atoms(clause, bodies)
-            .into_iter()
-            .filter_map(|(atom, assumed)| match atom.pred {
-                Pred::Var(id) if !assumed => Some(id),
-                _ => None,
-            })
-            .filter(|id| seen.insert(*id))
-            .collect()
-    }
-
-    /// The formula bodies of the user-defined predicates, by symbol.
-    pub(crate) fn formula_bodies(&self) -> HashMap<&UserDefinedPred, &Formula> {
-        self.user_defined_pred_defs
-            .iter()
-            .filter_map(|def| match &def.body {
-                UserDefinedPredBody::Formula(formula) => Some((&def.symbol, formula)),
-                _ => None,
-            })
-            .collect()
-    }
-
-    /// Each clause that concludes one of `preds` in what it checks, with the predicate and whether
-    /// the clause is definite in it ([`definite::DefiniteWalk`]). What a clause checks is its head and each
-    /// conjunct `¬ψ` of its body, the clause `φ ⇒ ψ`, which is how a precondition at a call and an
-    /// ensures are put; it concludes a predicate occurring positively there. The other conjuncts
-    /// are assumptions, which `preds` may occur in with either polarity; whether an assumption
-    /// may conclude one is a question of where it comes from, which the clause does not record.
-    pub fn conclusions_of<'p>(
-        &self,
-        preds: &HashSet<&'p UserDefinedPred>,
-    ) -> Vec<(ClauseId, &'p UserDefinedPred, bool)> {
-        let bodies = self.formula_bodies();
-        let mut conclusions = Vec::new();
-        for (id, clause) in self.clauses.iter_enumerated() {
-            for &pred in preds {
-                if !definite::DefiniteWalk::new(pred, &bodies).checks(clause) {
-                    continue;
+        struct Walk<'a, 'b> {
+            bodies: &'b HashMap<&'a UserDefinedPred, &'a Formula>,
+            entered: HashSet<(&'a UserDefinedPred, bool)>,
+            heads: Vec<PredVarId>,
+        }
+        impl<'a> Walk<'a, '_> {
+            fn atom(&mut self, atom: &'a Atom<TermVarIdx>, positive: bool) {
+                match &atom.pred {
+                    Pred::Var(id) if !positive => self.heads.push(*id),
+                    Pred::UserDefined(pred) => {
+                        let Some(body) = self.bodies.get(pred).copied() else {
+                            return;
+                        };
+                        if self.entered.insert((pred, positive)) {
+                            self.formula(body, positive);
+                        }
+                    }
+                    _ => {}
                 }
-                let definite = definite::DefiniteWalk::new(pred, &bodies).clause(clause);
-                conclusions.push((id, pred, definite));
+            }
+            fn formula(&mut self, formula: &'a Formula, positive: bool) {
+                match formula {
+                    Formula::Atom(atom) => self.atom(atom, positive),
+                    Formula::Not(f) => self.formula(f, !positive),
+                    Formula::And(fs) | Formula::Or(fs) => {
+                        fs.iter().for_each(|f| self.formula(f, positive))
+                    }
+                    Formula::Implies(lhs, rhs) => {
+                        self.formula(lhs, !positive);
+                        self.formula(rhs, positive);
+                    }
+                    Formula::Exists(_, f) | Formula::Forall(_, f) => self.formula(f, positive),
+                }
             }
         }
-        conclusions
+        let mut walk = Walk {
+            bodies,
+            entered: HashSet::new(),
+            heads: Vec::new(),
+        };
+        if let Pred::Var(head_id) = clause.head.pred {
+            walk.heads.push(head_id);
+        }
+        clause
+            .body
+            .atoms
+            .iter()
+            .for_each(|atom| walk.atom(atom, true));
+        walk.formula(&clause.body.formula, true);
+        let mut seen = HashSet::new();
+        walk.heads.retain(|id| seen.insert(*id));
+        walk.heads
     }
 
     /// The forall predicates of what a clause concludes: its head, and the part of its body
@@ -3521,16 +3500,31 @@ impl System {
         clause: &Clause,
         udp_deps: &HashMap<&UserDefinedPred, &HashSet<ForallPred>>,
     ) -> HashSet<ForallPred> {
+        fn walk(
+            formula: &Formula,
+            positive: bool,
+            udp_deps: &HashMap<&UserDefinedPred, &HashSet<ForallPred>>,
+            preds: &mut HashSet<ForallPred>,
+        ) {
+            match formula {
+                Formula::Atom(atom) if !positive => {
+                    preds.extend(System::atom_forall_preds(atom, udp_deps))
+                }
+                Formula::Atom(_) => {}
+                Formula::Not(f) => walk(f, !positive, udp_deps, preds),
+                Formula::And(fs) | Formula::Or(fs) => {
+                    fs.iter().for_each(|f| walk(f, positive, udp_deps, preds))
+                }
+                Formula::Implies(lhs, rhs) => {
+                    walk(lhs, !positive, udp_deps, preds);
+                    walk(rhs, positive, udp_deps, preds);
+                }
+                Formula::Exists(_, f) | Formula::Forall(_, f) => walk(f, positive, udp_deps, preds),
+            }
+        }
         let mut preds: HashSet<ForallPred> =
             Self::atom_forall_preds(&clause.head, udp_deps).collect();
-        clause
-            .body
-            .formula
-            .for_each_polarized_atom(true, &mut |atom, positive| {
-                if !positive {
-                    preds.extend(Self::atom_forall_preds(atom, udp_deps));
-                }
-            });
+        walk(&clause.body.formula, true, udp_deps, &mut preds);
         self.with_law_dependencies(preds, udp_deps)
     }
 
@@ -3596,7 +3590,14 @@ impl System {
         let mut exists_deps: HashMap<ExistsDep, HashSet<ExistsDep>> = HashMap::new();
         let mut forall_deps: HashMap<ExistsDep, BTreeSet<ForallPred>> = HashMap::new();
 
-        let bodies = self.formula_bodies();
+        let bodies: HashMap<&UserDefinedPred, &Formula> = self
+            .user_defined_pred_defs
+            .iter()
+            .filter_map(|def| match &def.body {
+                UserDefinedPredBody::Formula(formula) => Some((&def.symbol, formula)),
+                _ => None,
+            })
+            .collect();
         let udp_deps = Self::udp_deps(&self.user_defined_pred_defs);
         for (clause_idx, clause) in self.clauses.iter_enumerated() {
             let heads = Self::head_pred_vars(clause, &bodies);

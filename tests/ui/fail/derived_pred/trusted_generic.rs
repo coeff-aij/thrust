@@ -1,9 +1,8 @@
 //@compile-flags: -C debug-assertions=off -A unused-variables -A dead_code
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
-// Rejected, not Unsat. A trusted generic function's `ensures` has `produces` in a premise. Read at
-// `Small` it is the user's statement of the least relation (`Small` never yields 7), which a
-// larger relation could make false and `main`'s assertion unreachable.
+// Rejected, not Unsat. A trusted generic function's `ensures` has `produces` in a premise; read at
+// `Small` it is the user's statement of a relation the inferred one need not be.
 
 #[thrust_macros::context]
 trait Iter {
@@ -43,10 +42,10 @@ impl Iter for Small {
 #[thrust::trusted]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(I::produces(*it, k) ==> k < 5)]
-fn below_five<I: Iter<Item = isize>>(it: &I, k: isize) {}
+fn below_five<I: Iter<Item = isize>>(it: &I, k: isize) {} //~ ERROR: assumed without being checked against a body
 
 fn main() {
     let s = Small { n: 0 };
-    below_five(&s, 7); //~ ERROR: the postcondition of this call
+    below_five(&s, 7);
     assert!(false);
 }

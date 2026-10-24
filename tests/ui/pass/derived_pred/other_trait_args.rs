@@ -1,8 +1,9 @@
+//@check-pass
 //@compile-flags: -C debug-assertions=off -A unused-variables -A dead_code
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
-// Rejected. `p` is derived at the impl of `Tr<isize>` for `S`; the impl of `Tr<bool>` for the same
-// type is not one of its rule sites.
+// The impl of `Tr<bool>` concludes `p`, derived at `Tr<isize>` for the same type. Accepted, as
+// `client_requires`.
 
 #[thrust_macros::context]
 trait Tr<X> {
@@ -30,7 +31,7 @@ impl Tr<isize> for S {
 #[thrust_macros::context]
 impl Tr<bool> for S {
     fn step(&self, x: bool) {
-        need(*self, 42); //~ ERROR: the derived predicate
+        need(*self, 42);
     }
 }
 

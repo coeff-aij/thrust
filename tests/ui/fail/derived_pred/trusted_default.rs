@@ -43,13 +43,13 @@ trait Probe: Iter<Item = isize> + Sized {
     #[thrust::trusted]
     #[thrust_macros::requires(true)]
     #[thrust_macros::ensures(Self::produces(*self, k) ==> k < 5)]
-    fn below_five(&self, k: isize) {}
+    fn below_five(&self, k: isize) {} //~ ERROR: assumed without being checked against a body
 }
 
 impl Probe for Small {}
 
 fn main() {
     let s = Small { n: 0 };
-    s.below_five(7); //~ ERROR: the postcondition of this call
+    s.below_five(7);
     assert!(false);
 }

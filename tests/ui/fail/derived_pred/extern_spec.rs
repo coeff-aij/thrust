@@ -32,12 +32,12 @@ impl Iter for u32 {
 
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
-#[thrust_macros::ensures(<u32 as Iter>::produces(x, n) ==> n < 5)]
+#[thrust_macros::ensures(<u32 as Iter>::produces(x, n) ==> n < 5)] //~ ERROR: assumed without being checked against a body
 fn _extern_spec_u32_rotate_left(x: u32, n: u32) -> u32 {
     u32::rotate_left(x, n)
 }
 
 fn main() {
-    let _ = 0u32.rotate_left(7); //~ ERROR: the postcondition of this call
+    let _ = 0u32.rotate_left(7);
     assert!(false);
 }

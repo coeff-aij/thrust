@@ -1,9 +1,9 @@
+//@check-pass
 //@compile-flags: -C debug-assertions=off -A unused-variables -A dead_code
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
-// Rejected, not Unsat. `produces` is derived and `Range`'s impl of `Iter` leaves it undefined, so
-// its rules come from that impl only. An inherent impl of `Range` is not one of its rule sites:
-// `claim`'s postcondition concludes `Range::produces` of an item `next` never yields.
+// An inherent impl of `Range` concludes `produces` of an item `next` never yields. Accepted, as
+// `client_requires`.
 
 #[thrust_macros::context]
 trait Iter {
@@ -44,7 +44,7 @@ impl Iter for Range {
 #[thrust_macros::context]
 impl Range {
     #[thrust_macros::ensures(Range::produces(r, i))]
-    fn claim(r: Range, i: isize) {} //~ ERROR: the derived predicate
+    fn claim(r: Range, i: isize) {}
 }
 
 fn main() {

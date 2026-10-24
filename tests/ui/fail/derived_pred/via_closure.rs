@@ -43,12 +43,12 @@ impl Iter for Small {
 #[thrust::trusted]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(thrust_macros::post!(f(k), ()))]
-fn apply<F: Fn(isize)>(f: &F, k: isize) {}
+fn apply<F: Fn(isize)>(f: &F, k: isize) {} //~ ERROR: assumed without being checked against a body
 
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(thrust_macros::post!(f(k), ()))]
 fn via<F: Fn(isize)>(f: &F, k: isize) {
-    apply(f, k) //~ ERROR: dependency closure
+    apply(f, k)
 }
 
 fn main() {

@@ -1,9 +1,8 @@
 //@compile-flags: -C debug-assertions=off -A unused-variables -A dead_code
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
-// Rejected, not Unsat. `next` is trusted, so its body gives `produces` no rule: the least
-// relation is empty, and `main`'s branch on an item would be unreachable. With `produces`
-// written, the branch is reachable and the assertion refuted.
+// Rejected, not Unsat. `next` is trusted: its contract, which mentions `produces`, is not checked
+// against its body, so the inferred relation need not hold of what `next` yields.
 
 #[thrust_macros::context]
 trait Iter {
@@ -33,7 +32,7 @@ impl Iter for Range {
     #[thrust::trusted]
     #[thrust_macros::requires(true)]
     #[thrust_macros::ensures(thrust_models::forall(|i| result == Some(i) ==> Self::produces(*self, i)))]
-    fn next(&mut self) -> Option<Self::Item> { //~ ERROR: `next` is trusted for
+    fn next(&mut self) -> Option<Self::Item> { //~ ERROR: assumed without being checked against a body
         if self.start < self.end {
             let item = self.start;
             self.start += 1;

@@ -31,7 +31,7 @@ mod basic_block;
 mod closure_hist_inv;
 mod crate_;
 mod derive;
-mod derived_pred;
+pub(crate) mod derived_pred;
 mod did_cache;
 mod extern_spec;
 mod fn_mut_reuse;
@@ -612,6 +612,10 @@ pub struct Analyzer<'tcx> {
     /// The local methods of trait impls that carry a contract of their own, given by an
     /// extern-spec wrapper; see [`Analyzer::has_own_impl_contract`].
     impl_methods_with_own_contract: rustc_data_structures::fx::FxIndexSet<DefId>,
+    /// Each derived predicate declared at an impl, by symbol; see [`derived_pred`].
+    derived_preds: Rc<RefCell<HashMap<chc::UserDefinedPred, derived_pred::DerivedAt>>>,
+    /// Each trait law checked for an impl that inherits it, as (impl, law).
+    inherited_laws_checked: Rc<RefCell<HashSet<(DefId, DefId)>>>,
     /// The template being made now, for the predicate variables allocated meanwhile.
     template_site: Option<TemplateSite>,
     /// The variable each argument of a template's predicate variable is, by the variable.
@@ -629,13 +633,6 @@ pub struct Analyzer<'tcx> {
     handovers: Vec<(DefId, DefId, unanalyzed_entry::HandedOver)>,
     /// What the analysis did with the body of each function, for the report.
     body_checks: BodyChecks,
-    /// Each derived predicate declared at an impl, by symbol, with the impl; see [`derived_pred`].
-    derived_preds: Rc<RefCell<HashMap<chc::UserDefinedPred, derived_pred::DerivedAt<'tcx>>>>,
-    /// What the derived predicates are checked against; see [`derived_pred::Evidence`].
-    derived_evidence: Rc<RefCell<derived_pred::Evidence<'tcx>>>,
-    /// Whether a trait item of the crate is `#[thrust_macros::predicate(derived)]`, decided once;
-    /// without one, no evidence is recorded.
-    derived_declared: Rc<std::cell::OnceCell<bool>>,
 }
 
 /// What the analysis did with the body of each function, shared by the analyzers that decide it.
@@ -870,12 +867,11 @@ impl<'tcx> Analyzer<'tcx> {
             hist_inv_relations: Default::default(),
             fn_mut_reuse: Default::default(),
             spec_assumptions: Default::default(),
-            derived_preds: Default::default(),
-            derived_evidence: Default::default(),
-            derived_declared: Default::default(),
             reused_generic_instances: Default::default(),
             called_fn_tys: Default::default(),
             impl_methods_with_own_contract: Default::default(),
+            derived_preds: Default::default(),
+            inherited_laws_checked: Default::default(),
             template_site: None,
             template_vars: Default::default(),
             template_sites: Default::default(),
@@ -923,44 +919,6 @@ impl<'tcx> Analyzer<'tcx> {
     pub fn extend_clauses(&mut self, clauses: impl IntoIterator<Item = chc::Clause>) {
         for clause in clauses {
             self.add_clause(clause);
-        }
-    }
-
-    /// Adds clauses that check the `ensures` of `site`, marked so for the derived predicates.
-    pub fn extend_ensures_checks(
-        &mut self,
-        clauses: impl IntoIterator<Item = chc::Clause>,
-        site: DefId,
-    ) {
-        let start = self.system.borrow().clauses.len();
-        self.extend_clauses(clauses);
-        let end = self.system.borrow().clauses.len();
-        self.derived_evidence
-            .borrow_mut()
-            .ensures_checked(start..end, site);
-    }
-
-    pub fn derived_evidence(&self) -> std::cell::RefMut<'_, derived_pred::Evidence<'tcx>> {
-        self.derived_evidence.borrow_mut()
-    }
-
-    /// Records a contract assumed, for the derived predicates, when the crate declares one.
-    pub fn assume_contract(
-        &self,
-        assumption: derived_pred::Assumption<'tcx>,
-        span: rustc_span::Span,
-        contract: &rty::FunctionType,
-    ) {
-        let declared = *self.derived_declared.get_or_init(|| {
-            self.tcx
-                .hir_crate_items(())
-                .definitions()
-                .any(|def| self.is_derived_predicate(def.to_def_id()))
-        });
-        if declared {
-            self.derived_evidence
-                .borrow_mut()
-                .assume(assumption, span, contract.clone());
         }
     }
 
@@ -1383,8 +1341,29 @@ impl<'tcx> Analyzer<'tcx> {
         self.derived_preds.borrow_mut().insert(symbol, at);
     }
 
-    /// Reports each derived predicate whose rules are not those of its impl: a clause that
-    /// concludes it elsewhere, a rule that is not definite, an impl function left unanalyzed.
+    /// Records that the trait law `law`, inherited by `impl_def_id`, was checked for it.
+    pub fn inherited_law_checked(&self, impl_def_id: DefId, law: DefId) {
+        self.inherited_laws_checked
+            .borrow_mut()
+            .insert((impl_def_id, law));
+    }
+
+    /// Whether a predicate the refinements of `rty` apply is derived, directly or through a
+    /// definition, or not defined yet.
+    pub fn may_apply_derived<FV>(&self, rty: &rty::RefinedType<FV>) -> bool {
+        let system = self.system.borrow();
+        let mut found = false;
+        rty.any_pred(&mut |pred| {
+            if let chc::Pred::UserDefined(p) = pred {
+                found |= system.reaches_derived(p);
+            }
+            found
+        });
+        found
+    }
+
+    /// Stops if a derived predicate, or a predicate whose definition depends on one, appears in a
+    /// contract Thrust does not check against a body; see [`derived_pred`].
     pub fn check_derived_predicates(&self) {
         let derived = self.derived_preds.borrow();
         if derived.is_empty() {
@@ -1392,12 +1371,15 @@ impl<'tcx> Analyzer<'tcx> {
         }
         derived_pred::check(
             self.tcx,
-            &self.system.borrow(),
             &derived,
-            &self.forall_pred_origins.borrow(),
-            &self.derived_evidence.borrow(),
             &self.body_checks,
             &self.trait_laws.borrow(),
+            &self.inherited_laws_checked.borrow(),
+            [
+                self.def_ids.closure_precondition(),
+                self.def_ids.closure_postcondition(),
+                self.def_ids.closure_hist_inv(),
+            ],
         );
     }
 

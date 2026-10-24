@@ -333,7 +333,7 @@ fn add_constraints(
         }
     }
     for (id, clause) in input.system.clauses.iter_enumerated() {
-        let provenance = crate::chc::debug::Provenance::of(&clause.debug_info);
+        let provenance = constraints::Provenance::of(&clause.debug_info);
         let Some(entry) = provenance.def.and_then(|def| entries.get_mut(&def)) else {
             continue;
         };

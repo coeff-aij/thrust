@@ -501,8 +501,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 impl_ty.ty.as_function().unwrap(),
                 trait_ty.ty.as_function().unwrap(),
             );
-            // The trait's `ensures` checked from the method's own: a check of its `ensures`.
-            self.ctx.extend_ensures_checks(clauses, def_id);
+            self.ctx.extend_clauses(clauses);
         }
     }
 
@@ -604,14 +603,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         continue;
                     };
                     let mut analyzer = self.ctx.local_def_analyzer(law_local);
-                    analyzer
-                        .owner_fn_id(owner)
-                        .generic_args(args)
-                        .law_owner(owner);
+                    analyzer.owner_fn_id(owner).generic_args(args);
                     analyzer.run(&expected);
-                    self.ctx
-                        .derived_evidence()
-                        .inherited_law_checked(impl_def_id, *law_def_id);
+                    self.ctx.inherited_law_checked(impl_def_id, *law_def_id);
                 }
             }
         }
@@ -774,8 +768,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.ctx.emit_pending_laws();
         self.ctx.emit_fn_mut_instance_obligations();
         self.ctx.check_reused_instances();
-        self.check_ignored_not_run();
         self.ctx.check_derived_predicates();
+        self.check_ignored_not_run();
         self.assert_callable_entry();
     }
 

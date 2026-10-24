@@ -1,8 +1,10 @@
+//@check-pass
 //@compile-flags: -C debug-assertions=off -A unused-variables -A dead_code
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
-// Rejected. `next`'s `ensures` concludes `produces` of the state before or the state after: a disjunctive rule,
-// which has no least relation.
+// A precondition at a call outside the impl concludes `Range::produces` of an item: the inferred
+// relation includes it. Accepted: the relation is the solver's, not the least one, and the
+// program does not depend on what it is.
 
 #[thrust_macros::context]
 trait Iter {
@@ -11,7 +13,7 @@ trait Iter {
     #[thrust_macros::predicate(derived)]
     fn produces(self, item: Self::Item) -> bool;
 
-    #[thrust_macros::ensures(thrust_models::forall(|i| result == Some(i) ==> (Self::produces(*self, i) || Self::produces(!self, i))))]
+    #[thrust_macros::ensures(thrust_models::forall(|i| result == Some(i) ==> Self::produces(*self, i)))]
     fn next(&mut self) -> Option<Self::Item>;
 }
 
@@ -37,7 +39,12 @@ impl Iter for Range {
         } else {
             None
         }
-    } //~ ERROR: this `ensures` concludes
+    }
 }
 
-fn main() {}
+#[thrust_macros::requires(Range::produces(r, i))]
+fn take_produced(r: Range, i: isize) {}
+
+fn main() {
+    take_produced(Range { start: 0, end: 5 }, 3);
+}

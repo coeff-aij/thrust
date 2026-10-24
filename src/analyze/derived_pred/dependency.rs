@@ -19,7 +19,7 @@ use rustc_span::def_id::{DefId, LocalDefId};
 use crate::analyze;
 
 /// The functions `owner`'s body refers to, nested closures' bodies included.
-fn referenced_fns(tcx: TyCtxt<'_>, owner: LocalDefId) -> Vec<DefId> {
+pub fn referenced_fns(tcx: TyCtxt<'_>, owner: LocalDefId) -> Vec<DefId> {
     struct Refs<'tcx> {
         tcx: TyCtxt<'tcx>,
         typeck: &'tcx rustc_middle::ty::TypeckResults<'tcx>,
@@ -64,11 +64,13 @@ fn referenced_fns(tcx: TyCtxt<'_>, owner: LocalDefId) -> Vec<DefId> {
 }
 
 /// The formula functions of `owner`'s written contract: the paths its body names under the
-/// `requires`, `ensures` and `hist_inv` markers (a closure's `closure!` specification).
+/// `requires`, `ensures`, refinement and `hist_inv` markers, as the attributes and `closure!`
+/// write them.
 pub fn contract_fns(tcx: TyCtxt<'_>, owner: LocalDefId) -> Vec<DefId> {
     let markers = [
         analyze::annot::requires_path_path(),
         analyze::annot::ensures_path_path(),
+        analyze::annot::refinement_path_path(),
         analyze::annot::hist_inv_path_path(),
     ];
     let Some(body) = tcx.hir_maybe_body_owned_by(owner) else {
@@ -101,7 +103,8 @@ pub fn contract_fns(tcx: TyCtxt<'_>, owner: LocalDefId) -> Vec<DefId> {
 /// seeds included.
 pub fn dependent_items(tcx: TyCtxt<'_>, seeds: &HashSet<DefId>) -> HashSet<DefId> {
     let mut edges: HashMap<DefId, Vec<DefId>> = HashMap::new();
-    for def in tcx.hir_crate_items(()).definitions() {
+    // Closures are body owners, not items.
+    for def in tcx.hir_body_owners() {
         if matches!(
             tcx.def_kind(def),
             DefKind::Fn | DefKind::AssocFn | DefKind::Closure
@@ -139,28 +142,4 @@ pub fn dependent_items(tcx: TyCtxt<'_>, seeds: &HashSet<DefId>) -> HashSet<DefId
         }
         dependent.extend(grown);
     }
-}
-
-/// Whether a trait item left out by some impl (a derived seed) is defined by another impl of
-/// the crate whose definition refers to a dependent item, the seed itself included: such an
-/// instance may depend on the derived predicate with either polarity.
-pub fn written_dependent_instance(
-    tcx: TyCtxt<'_>,
-    seed: DefId,
-    dependent: &HashSet<DefId>,
-) -> bool {
-    let Some(trait_def_id) = tcx.trait_of_assoc(seed) else {
-        return true;
-    };
-    let impls = tcx.all_local_trait_impls(()).get(&trait_def_id);
-    impls.into_iter().flatten().any(|impl_def_id| {
-        let implementors = tcx.impl_item_implementor_ids(impl_def_id.to_def_id());
-        implementors.get(&seed).is_some_and(|item| {
-            item.as_local().is_some_and(|local| {
-                referenced_fns(tcx, local)
-                    .iter()
-                    .any(|r| dependent.contains(r))
-            })
-        })
-    })
 }

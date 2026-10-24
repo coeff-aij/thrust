@@ -51,13 +51,13 @@ impl Peek for Small {
     #[thrust::trusted]
     #[thrust_macros::requires(true)]
     #[thrust_macros::ensures(Self::produces(*self, k) ==> k < 5)]
-    fn check(&self, k: isize) {}
+    fn check(&self, k: isize) {} //~ ERROR: assumed without being checked against a body
 }
 
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(I::produces(*it, k) ==> k < 5)]
 fn via<I: Peek>(it: &I, k: isize) {
-    it.check(k) //~ ERROR: dependency closure
+    it.check(k)
 }
 
 fn main() {

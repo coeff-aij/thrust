@@ -1,10 +1,9 @@
+//@check-pass
 //@compile-flags: -C debug-assertions=off -A unused-variables -A dead_code
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
-// Rejected, not Unsat. `produces` is derived and `Range` leaves it undefined, so its meaning is
-// what `Range::next` concludes of it. `main` calls `take_produced`, whose precondition concludes
-// `Range::produces` outside `Range`'s impl: the solver could satisfy it by adding the fact,
-// whether or not `next` derives it.
+// A call inside `next` concludes `produces` of an item `next` never yields: the inferred relation
+// includes it. Accepted, as `client_requires`.
 
 #[thrust_macros::context]
 trait Iter {
@@ -27,11 +26,15 @@ impl thrust_models::Model for Range {
     type Ty = Range;
 }
 
+#[thrust_macros::requires(Range::produces(r, i))]
+fn take_produced(r: Range, i: isize) {}
+
 #[thrust_macros::context]
 impl Iter for Range {
     type Item = isize;
 
     fn next(&mut self) -> Option<Self::Item> {
+        take_produced(Range { start: 0, end: 5 }, 42);
         if self.start < self.end {
             let item = self.start;
             self.start += 1;
@@ -42,9 +45,4 @@ impl Iter for Range {
     }
 }
 
-#[thrust_macros::requires(Range::produces(r, i))]
-fn take_produced(r: Range, i: isize) {}
-
-fn main() {
-    take_produced(Range { start: 0, end: 5 }, 3); //~ ERROR: the derived predicate
-}
+fn main() {}

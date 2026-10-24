@@ -11,7 +11,7 @@ trait Rel {
 
     #[thrust_macros::law]
     #[thrust_macros::ensures(Self::r(*a, *a))]
-    fn r_refl(a: &Self) {} //~ ERROR: is not checked for
+    fn r_refl(a: &Self) {} //~ ERROR: assumed without being checked against a body
 
     #[thrust_macros::ensures(Self::r(*self, !self))]
     fn step(&mut self);

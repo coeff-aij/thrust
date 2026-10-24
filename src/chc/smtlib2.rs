@@ -806,8 +806,8 @@ impl<'ctx, 'a> std::fmt::Display for UserDefinedPredDef<'ctx, 'a> {
                 .map(|(name, sort)| format!("({} {})", name, self.ctx.fmt_sort(sort))),
         );
         if let chc::UserDefinedPredBody::Derived = &self.inner.body {
-            // An unknown: to a dependency-aware solver a plain `declare-fun` may depend on every
-            // forall pred declared before it, as the clauses defining it may.
+            // An unknown, declared before every forall predicate (see `System`'s output), so
+            // that to a dependency-aware solver it depends on none.
             let sorts = List::closed(
                 self.inner
                     .sig
@@ -1083,6 +1083,14 @@ impl<'a> std::fmt::Display for System<'a> {
             writeln!(f, "{}", MatcherPredFun::new(&self.ctx, datatype))?;
         }
 
+        // A derived predicate is one relation independent of every forall predicate: to a
+        // dependency-aware solver a `declare-fun` may depend on the forall predicates declared
+        // before it, so it comes before them.
+        let derived = |def: &&chc::UserDefinedPredDef| def.is_derived();
+        for def in self.inner.user_defined_pred_defs.iter().filter(derived) {
+            writeln!(f, "{}\n", UserDefinedPredDef::new(&self.ctx, def))?;
+        }
+
         for pred in &self.inner.forall_pred_vars {
             writeln!(
                 f,
@@ -1108,6 +1116,9 @@ impl<'a> std::fmt::Display for System<'a> {
         }
 
         for user_defined_pred_def in self.inner.user_defined_preds_in_dependency_order() {
+            if user_defined_pred_def.is_derived() {
+                continue;
+            }
             writeln!(
                 f,
                 "{}\n",
