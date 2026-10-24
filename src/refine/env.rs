@@ -355,15 +355,7 @@ impl PlaceTypeBuilder {
     }
 }
 
-pub trait EnumDefProvider {
-    fn enum_def(&self, name: &chc::DatatypeSymbol) -> rty::EnumDatatypeDef;
-}
-
-impl<T: EnumDefProvider> EnumDefProvider for &T {
-    fn enum_def(&self, name: &chc::DatatypeSymbol) -> rty::EnumDatatypeDef {
-        <T as EnumDefProvider>::enum_def(self, name)
-    }
-}
+pub use crate::rty::EnumDefProvider;
 
 #[derive(Debug, Clone)]
 pub struct PlaceType {
@@ -490,8 +482,8 @@ impl PlaceType {
             let mut rty = field_ty.vacuous();
             rty.instantiate_ty_params(inner_ty.args.clone());
             // A field is a fresh existential here, so the facts of its type are stated with it,
-            // as `formula` states them of a binding.
-            if let Some(facts) = rty::int_range_type_facts(&rty.ty) {
+            // as `formula_with` states them of a binding.
+            if let Some(facts) = rty::int_range_type_facts(&rty.ty, &enum_defs) {
                 rty.refinement.push_conj(facts);
             }
             let (ty, field_ex_var) = builder.subsume_rty(rty.boxed());
@@ -610,6 +602,10 @@ impl<T> rty::ClauseScope for Env<T>
 where
     T: EnumDefProvider,
 {
+    fn enum_defs(&self) -> Option<&dyn EnumDefProvider> {
+        Some(&self.enum_defs)
+    }
+
     fn build_clause(&self) -> chc::ClauseBuilder {
         let mut builder = chc::ClauseBuilder::default();
         for (v, sort) in self.dependencies() {
@@ -621,7 +617,7 @@ where
             if let Some(chc_var) = builder.find_mapped_var(var) {
                 origin.add_described_var_mapping(var, chc_var, self.described(var, &paths));
             }
-            let formula = rty.formula();
+            let formula = rty.formula_with(Some(&self.enum_defs));
             let mut instantiator = formula
                 .clone()
                 .map_free_var(|v| builder.mapped_var(v))

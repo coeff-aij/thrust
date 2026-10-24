@@ -1808,7 +1808,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let entry_ty = self.drop_bb_zst_params(&entry_ty);
 
         tracing::debug!(expected = %expected.display(), entry = %entry_ty.display(), "assert_entry after");
-        let clauses = rty::relate_sub_param_types(&entry_ty.params, &expected.params);
+        let clauses = rty::relate_sub_param_types(
+            &entry_ty.params,
+            &expected.params,
+            Some(&self.ctx.enum_defs),
+        );
         self.ctx.extend_clauses(clauses);
     }
 }

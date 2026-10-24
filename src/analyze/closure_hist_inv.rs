@@ -214,6 +214,7 @@ pub fn laws(
     system: &mut chc::System,
     pred: &chc::ForallPred,
     contract: &rty::FunctionType,
+    enum_defs: &dyn rty::EnumDefProvider,
 ) -> Vec<chc::Formula<chc::TermVarIdx>> {
     let sort = pred.params()[0].clone();
     let var = |v| chc::Term::UserQuantifiedVar(sort.clone(), v);
@@ -263,7 +264,9 @@ pub fn laws(
             .map(|(param, arg)| (&param.ty, arg));
         for (ty, term) in typed.chain([(&contract.ret.ty, &result)]) {
             let payload = || fresh(system, "hist_inv_payload");
-            if let Some((vars, range)) = rty::int_range_type_formula(ty, term.clone(), payload) {
+            if let Some((vars, range)) =
+                rty::int_range_type_formula(ty, term.clone(), payload, enum_defs)
+            {
                 params.extend(vars);
                 premise = range.and(premise);
             }

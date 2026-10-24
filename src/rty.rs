@@ -36,7 +36,7 @@
 //! - [`subtyping`]: Generates CHC constraints [`crate::chc`] from subtyping relations between types.
 //! - [`clause_builder`]: Helper to build [`crate::chc::Clause`] from the refinement types.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::HashMap;
 
 use num_bigint::BigInt;
 use pretty::{termcolor, Pretty};
@@ -44,6 +44,7 @@ use rustc_abi::VariantIdx;
 use rustc_index::IndexVec;
 
 use crate::chc::{self, ForallSortIdx};
+use crate::pretty::PrettyDisplayExt as _;
 
 mod template;
 pub use template::{Template, TemplateBuilder};
@@ -53,7 +54,7 @@ pub use clause_builder::ClauseBuilderExt;
 
 mod subtyping;
 pub use subtyping::{
-    int_range_facts, relate_refining_function_type, relate_sub_param_types, ClauseScope, Subtyping,
+    relate_refining_function_type, relate_sub_param_types, ClauseScope, ScopedBuilder, Subtyping,
 };
 
 mod params;
@@ -680,36 +681,17 @@ impl EnumDatatypeDef {
     }
 }
 
-/// The definitions of the enums the types built so far name, by name, while [`int_range_mode`] is
-/// on. An [`EnumType`] names its definition without holding it; the facts of its payloads
-/// ([`RefinedType::formula`]) and their checks are read from here.
-static ENUM_DEFS: std::sync::Mutex<EnumDefs> = std::sync::Mutex::new(EnumDefs {
-    defs: BTreeMap::new(),
-    building: BTreeSet::new(),
-});
-
-struct EnumDefs {
-    defs: BTreeMap<chc::DatatypeSymbol, EnumDatatypeDef>,
-    /// The enums whose definitions are being built: a field of a recursive enum names it again.
-    building: BTreeSet<chc::DatatypeSymbol>,
+/// The definitions of the enums a crate's types name, by the enum's name. An [`EnumType`] names its
+/// definition without holding it; the facts of its payloads ([`RefinedType::formula_with`],
+/// [`type_fact_checks`]) are read from a provider.
+pub trait EnumDefProvider {
+    fn enum_def(&self, name: &chc::DatatypeSymbol) -> EnumDatatypeDef;
 }
 
-/// Registers the definition `build` makes of the enum `symbol`, unless it is registered or being
-/// built.
-pub fn register_enum_def_with(
-    symbol: &chc::DatatypeSymbol,
-    build: impl FnOnce() -> EnumDatatypeDef,
-) {
-    {
-        let mut defs = ENUM_DEFS.lock().unwrap();
-        if defs.defs.contains_key(symbol) || !defs.building.insert(symbol.clone()) {
-            return;
-        }
+impl<T: EnumDefProvider> EnumDefProvider for &T {
+    fn enum_def(&self, name: &chc::DatatypeSymbol) -> EnumDatatypeDef {
+        <T as EnumDefProvider>::enum_def(self, name)
     }
-    let def = build();
-    let mut defs = ENUM_DEFS.lock().unwrap();
-    defs.building.remove(symbol);
-    defs.defs.insert(symbol.clone(), def);
 }
 
 /// A variant of an enum type: its constructor, its discriminant and the types of its fields at the
@@ -722,15 +704,9 @@ pub struct EnumVariant {
 }
 
 impl EnumType<Closed> {
-    pub fn variants(&self) -> Vec<EnumVariant> {
-        let def = ENUM_DEFS
-            .lock()
-            .unwrap()
-            .defs
-            .get(&self.symbol)
-            .cloned()
-            .unwrap_or_else(|| panic!("enum {:?} has no registered definition", self.symbol));
-        def.variants
+    pub fn variants(&self, defs: &dyn EnumDefProvider) -> Vec<EnumVariant> {
+        defs.enum_def(&self.symbol)
+            .variants
             .into_iter()
             .map(|variant| EnumVariant {
                 ctor: variant.name,
@@ -1136,25 +1112,25 @@ where
         .reduce(chc::Formula::and)
 }
 
-/// The facts [`RefinedType::formula`] states of every value of `ty`, the ranges of the integers it
-/// holds through tuples, pointers, sequences and enum payloads, when [`int_range_mode`] is on;
+/// The facts [`RefinedType::formula_with`] states of every value of `ty`, the ranges of the integers
+/// it holds through tuples, pointers, sequences and enum payloads, when [`int_range_mode`] is on;
 /// `None` when it is off.
-pub fn int_range_type_facts<FV>(ty: &Type<FV>) -> Option<Refinement<FV>>
+pub fn int_range_type_facts<FV>(ty: &Type<FV>, defs: &dyn EnumDefProvider) -> Option<Refinement<FV>>
 where
     FV: chc::Var,
 {
     if int_range_mode() == IntRange::Off {
         return None;
     }
-    Some(RefinedType::unrefined(ty.clone()).formula())
+    Some(RefinedType::unrefined(ty.clone()).formula_with(Some(defs)))
 }
 
 /// Variables a quantifier binds, with their sorts.
 pub type QuantifiedVars = Vec<(chc::UserQuantifiedVarId, chc::Sort)>;
 
-/// The facts [`RefinedType::formula`] states of every value of `ty`, as a formula about `value`:
-/// [`int_range_type_facts`] when [`int_range_mode`] is on, and `0 <=` of the unsigned integers `ty`
-/// holds through tuples and pointers when it is off. `None` when there are none.
+/// The facts [`RefinedType::formula_with`] states of every value of `ty`, as a formula about
+/// `value`: [`int_range_type_facts`] when [`int_range_mode`] is on, and `0 <=` of the unsigned
+/// integers `ty` holds through tuples and pointers when it is off. `None` when there are none.
 ///
 /// A binding is assumed to have these facts, so a variable that stands for a binding of a proof,
 /// such as a law's, ranges over them: the law's quantifier gets them as a premise. Their
@@ -1165,11 +1141,12 @@ pub fn int_range_type_formula<W>(
     ty: &Type<FunctionParamIdx>,
     value: chc::Term<W>,
     mut fresh: impl FnMut() -> chc::UserQuantifiedVarId,
+    defs: &dyn EnumDefProvider,
 ) -> Option<(QuantifiedVars, chc::Formula<W>)>
 where
     W: chc::Var,
 {
-    let facts = RefinedType::unrefined(ty.clone()).formula();
+    let facts = RefinedType::unrefined(ty.clone()).formula_with(Some(defs));
     if facts.is_top() {
         return None;
     }
@@ -1225,65 +1202,195 @@ where
     ))
 }
 
-/// The facts [`RefinedType::formula`] states of the payloads of a value of the enum type `ty` when
-/// [`int_range_mode`] is on: for each variant whose fields have facts,
-/// `exists f. discr(v) = d => v = C(f) && facts(f)`. Where the variant is the value's, `f` is its
-/// payload; elsewhere the implication holds for any `f`. This is quantifier-free in a clause body,
-/// and equivalent to the check `subtyping` makes where a value enters the type,
-/// `forall f. v = C(f) => facts(f)`.
+/// Whether facts of a type are stated of a value as an assumption (in a clause body) or as an
+/// obligation (in a clause head).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FactsUse {
+    Assumed,
+    Checked,
+}
+
+/// The enum types nested more deeply than this, through their payloads, get no facts: the bound
+/// of a type whose definition recurses at other arguments (`enum N<T> { A(Box<N<(T, T)>>) }`).
+const ENUM_NESTING_LIMIT: usize = 8;
+
+/// What a traversal stating the facts of a type is at: how the facts are used, where the
+/// definitions of enums come from (none: their payloads get no facts) and the enum types whose
+/// payloads enclose the position.
+struct FactsCx<'a> {
+    use_: FactsUse,
+    defs: Option<&'a dyn EnumDefProvider>,
+    enclosing: Vec<EnumType<Closed>>,
+}
+
+impl<'a> FactsCx<'a> {
+    fn new(use_: FactsUse, defs: Option<&'a dyn EnumDefProvider>) -> Self {
+        FactsCx {
+            use_,
+            defs,
+            enclosing: Vec::new(),
+        }
+    }
+}
+
+/// The facts of every value of `ty` ([`RefinedType::formula_with`]) as an obligation on a value,
+/// for a value made from a logical term, a ghost term, whose arithmetic is unbounded: the same
+/// traversal, with each enum payload checked as `forall f. v = C(f) => checks(f)` for each variant.
+/// A recursive enum whose payloads hold integers with facts cannot be checked by a finite formula
+/// and is `unimplemented!`.
+pub fn type_fact_checks(ty: &Type<Closed>, defs: &dyn EnumDefProvider) -> Refinement<Closed> {
+    RefinedType::unrefined(ty.clone()).facts(&mut FactsCx::new(FactsUse::Checked, Some(defs)))
+}
+
+/// The facts of the payloads of a value of the enum type `ty` when [`int_range_mode`] is on and
+/// `cx` has the definitions, for each variant whose fields have facts. Assumed:
+/// `exists f. discr(v) = d => v = C(f) && facts(f)`, quantifier-free in a clause body; where the
+/// variant is the value's, `f` is its payload, and elsewhere the implication holds for any `f`.
+/// Checked: `forall f. v = C(f) => facts(f)`. Both say of the value's payload what the facts of
+/// its type say, and nothing of the other variants.
 ///
-/// An enum inside a payload of an enum of `enclosing` has no facts here, since a finite formula
-/// cannot follow a recursive type; `subtyping` rejects a value whose check would need them.
-fn enum_payload_facts(
-    ty: &EnumType<Closed>,
-    enclosing: &mut Vec<chc::DatatypeSymbol>,
-) -> Refinement<Closed> {
+/// An enum type inside its own payload (the same type, as a recursive definition makes it) gets no
+/// facts, since a finite formula cannot follow it; nor does one nested past
+/// [`ENUM_NESTING_LIMIT`]. Its check is `unimplemented!` when it holds integers with facts, so no
+/// fact is assumed that is not checked.
+fn enum_payload_facts(ty: &EnumType<Closed>, cx: &mut FactsCx) -> Refinement<Closed> {
+    let Some(defs) = cx.defs.filter(|_| int_range_mode() != IntRange::Off) else {
+        return Refinement::top();
+    };
+    if cx.enclosing.contains(ty) || cx.enclosing.len() >= ENUM_NESTING_LIMIT {
+        let enum_ty = Type::Enum(ty.clone());
+        if cx.use_ == FactsUse::Checked && has_range_facts(&enum_ty, defs, &mut Vec::new()) {
+            unimplemented!("the payload ranges of {}", enum_ty.display());
+        }
+        return Refinement::top();
+    }
+    cx.enclosing.push(ty.clone());
     let mut facts = Refinement::top();
-    if int_range_mode() == IntRange::Off || enclosing.contains(&ty.symbol) {
-        return facts;
+    for variant in ty.variants(defs) {
+        let variant_facts = match cx.use_ {
+            FactsUse::Assumed => assumed_variant_facts(ty, variant, cx),
+            FactsUse::Checked => checked_variant_facts(ty, variant, cx),
+        };
+        facts.push_conj(variant_facts);
     }
-    enclosing.push(ty.symbol.clone());
-    let value = || chc::Term::var(RefinedTypeVar::Value);
-    for variant in ty.variants() {
-        let mut variant_facts = Refinement::top();
-        let mut fields = Vec::new();
-        for field_ty in &variant.field_tys {
-            // `exists f. facts(f)`, `f` the first existential.
-            let mut field = Refinement::new(
-                IndexVec::from_raw(vec![field_ty.to_sort()]),
-                chc::Body::top(),
-            );
-            field.push_conj(RefinedType::unrefined(field_ty.clone()).formula_within(enclosing));
-            let field = field.subst_value_var(|| {
-                chc::Term::var(RefinedTypeVar::Existential(ExistentialVarIdx::from_u32(0)))
-            });
-            let field_var = variant_facts.existentials.next_index();
-            fields.push(chc::Term::var(RefinedTypeVar::Existential(field_var)));
-            variant_facts.push_conj(field);
-        }
-        if variant_facts.is_top() {
-            continue;
-        }
-        let ctor =
-            chc::Term::datatype_ctor(ty.symbol.clone(), ty.arg_sorts(), variant.ctor, fields);
-        // Into the body itself: `push_conj` would shift the existentials `ctor` refers to.
-        variant_facts.body.push_conj(value().equal_to(ctor));
-        let discr = chc::Term::datatype_discr(ty.symbol.clone(), value())
-            .equal_to(chc::Term::int(variant.discr));
-        facts.push_conj(variant_facts.guarded(discr.into()));
-    }
-    enclosing.pop();
+    cx.enclosing.pop();
     facts
 }
 
+/// `exists f. discr(v) = d => v = C(f) && facts(f)` of `variant` of `ty`; top when its fields have
+/// no facts.
+fn assumed_variant_facts(
+    ty: &EnumType<Closed>,
+    variant: EnumVariant,
+    cx: &mut FactsCx,
+) -> Refinement<Closed> {
+    let value = || chc::Term::var(RefinedTypeVar::Value);
+    let mut facts = Refinement::top();
+    let mut fields = Vec::new();
+    for field_ty in &variant.field_tys {
+        // `exists f. facts(f)`, `f` the first existential.
+        let mut field = Refinement::new(
+            IndexVec::from_raw(vec![field_ty.to_sort()]),
+            chc::Body::top(),
+        );
+        field.push_conj(RefinedType::unrefined(field_ty.clone()).facts(cx));
+        let field = field.subst_value_var(|| {
+            chc::Term::var(RefinedTypeVar::Existential(ExistentialVarIdx::from_u32(0)))
+        });
+        let field_var = facts.existentials.next_index();
+        fields.push(chc::Term::var(RefinedTypeVar::Existential(field_var)));
+        facts.push_conj(field);
+    }
+    if facts.is_top() {
+        return facts;
+    }
+    let ctor = chc::Term::datatype_ctor(ty.symbol.clone(), ty.arg_sorts(), variant.ctor, fields);
+    // Into the body itself: `push_conj` would shift the existentials `ctor` refers to.
+    facts.body.push_conj(value().equal_to(ctor));
+    let discr = chc::Term::datatype_discr(ty.symbol.clone(), value())
+        .equal_to(chc::Term::int(variant.discr));
+    facts.guarded(discr.into())
+}
+
+/// `forall f. v = C(f) => checks(f)` of `variant` of `ty`; top when its fields have no facts.
+fn checked_variant_facts(
+    ty: &EnumType<Closed>,
+    variant: EnumVariant,
+    cx: &mut FactsCx,
+) -> Refinement<Closed> {
+    let depth = cx.enclosing.len() - 1;
+    let vars: QuantifiedVars = variant
+        .field_tys
+        .iter()
+        .enumerate()
+        .map(|(index, field_ty)| (enum_payload_var(depth, index), field_ty.to_sort()))
+        .collect();
+    let field = |(var, sort): &(chc::UserQuantifiedVarId, chc::Sort)| {
+        chc::Term::UserQuantifiedVar(sort.clone(), *var)
+    };
+    let mut checks = Refinement::top();
+    for (field_ty, var) in variant.field_tys.iter().zip(&vars) {
+        let field_checks = RefinedType::unrefined(field_ty.clone()).facts(cx);
+        checks.push_conj(field_checks.subst_value_var(|| field(var)));
+    }
+    if checks.is_top() {
+        return checks;
+    }
+    assert!(!checks.has_existentials(), "a check states no existential");
+    let fields = vars.iter().map(field).collect();
+    let ctor = chc::Term::datatype_ctor(ty.symbol.clone(), ty.arg_sorts(), variant.ctor, fields);
+    let is_variant = chc::Formula::Atom(chc::Term::var(RefinedTypeVar::Value).equal_to(ctor));
+    chc::Formula::forall(vars, is_variant.implies(checks.body.into_formula())).into()
+}
+
 /// The variable of the field `field` of a variant in the check of an enum's payloads at nesting
-/// `depth` (`subtyping`). Quantifiers of different depths nest, those of one depth do not.
-pub(super) fn enum_payload_var(depth: usize, field: usize) -> chc::UserQuantifiedVarId {
+/// `depth` ([`checked_variant_facts`]). Quantifiers of different depths nest, those of one depth
+/// do not; the identifiers are reserved, as [`seq_elem_var`]'s is.
+fn enum_payload_var(depth: usize, field: usize) -> chc::UserQuantifiedVarId {
     assert!(
         depth < 0x100 && field < 0x100,
         "enum payload check too deep or too wide"
     );
     chc::UserQuantifiedVarId::from_usize(0xFFFE_0000 + (depth << 8) + field)
+}
+
+/// Whether a value of `ty` holds an integer with facts under [`int_range_mode`], through tuples,
+/// pointers, sequences and enum payloads. An enum met again on the way (`visited`) is searched no
+/// further, except in its arguments: what its recursive fields add over the first visit comes from
+/// them.
+fn has_range_facts(
+    ty: &Type<Closed>,
+    defs: &dyn EnumDefProvider,
+    visited: &mut Vec<chc::DatatypeSymbol>,
+) -> bool {
+    let value = chc::Term::<RefinedTypeVar<Closed>>::var(RefinedTypeVar::Value);
+    match ty {
+        Type::Int(_) | Type::UInt(_) => {
+            int_range_atoms(ty, value).is_some_and(|atoms| !atoms.is_empty())
+        }
+        Type::Seq(elem) => seq_elem_range(&elem.ty, value).is_some(),
+        Type::Tuple(ty) => ty
+            .elems
+            .iter()
+            .any(|elem| has_range_facts(&elem.ty, defs, visited)),
+        Type::Pointer(ty) => has_range_facts(&ty.elem.ty, defs, visited),
+        Type::Enum(ty) if visited.contains(&ty.symbol) => ty
+            .args
+            .iter()
+            .any(|arg| has_range_facts(&arg.ty, defs, visited)),
+        Type::Enum(ty) => {
+            visited.push(ty.symbol.clone());
+            let found = ty.variants(defs).iter().any(|variant| {
+                variant
+                    .field_tys
+                    .iter()
+                    .any(|field_ty| has_range_facts(field_ty, defs, visited))
+            });
+            visited.pop();
+            found
+        }
+        _ => false,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -1684,40 +1791,6 @@ impl<T> Type<T> {
 impl Type<Closed> {
     pub fn vacuous<FV>(self) -> Type<FV> {
         self.map_var(|v| match v {})
-    }
-
-    /// This type with every integer type in it, through pointers, tuples, sequences, arrays and
-    /// enum arguments, replaced by the unbounded [`Type::int`]: the type of a logical term of this
-    /// type, whose arithmetic is unbounded.
-    pub fn with_unbounded_ints(self) -> Type<Closed> {
-        let unbounded =
-            |ty: RefinedType<Closed>| RefinedType::unrefined(ty.ty.with_unbounded_ints());
-        match self {
-            Type::Int(_) | Type::UInt(_) => Type::int(),
-            Type::Pointer(ty) => Type::Pointer(PointerType {
-                kind: ty.kind,
-                elem: Box::new(unbounded(*ty.elem)),
-            }),
-            Type::Tuple(ty) => Type::Tuple(TupleType {
-                elems: ty.elems.into_iter().map(unbounded).collect(),
-            }),
-            Type::Seq(elem) => Type::Seq(Box::new(unbounded(*elem))),
-            Type::Array(ty) => Type::Array(ArrayType {
-                index: Box::new(unbounded(*ty.index)),
-                elem: Box::new(unbounded(*ty.elem)),
-            }),
-            Type::Enum(ty) => Type::Enum(EnumType {
-                symbol: ty.symbol,
-                args: ty.args.into_iter().map(unbounded).collect(),
-            }),
-            ty @ (Type::BitVec(_)
-            | Type::Bool
-            | Type::String
-            | Type::Never
-            | Type::Param(_)
-            | Type::Alias(_)
-            | Type::Function(_)) => ty,
-        }
     }
 }
 
@@ -2228,15 +2301,28 @@ impl<FV> RefinedType<FV> {
         RefinedType { ty, refinement }
     }
 
+    /// The facts of a binding of this type: its refinement and the ranges of the integers it holds
+    /// through tuples, pointers and sequences, but not those in the payloads of enums, which need
+    /// the enums' definitions ([`Self::formula_with`]).
     pub fn formula(&self) -> Refinement<FV>
     where
         FV: chc::Var,
     {
-        self.formula_within(&mut Vec::new())
+        self.facts(&mut FactsCx::new(FactsUse::Assumed, None))
     }
 
-    /// [`Self::formula`] of a value inside the payloads of the enums `enclosing` names.
-    fn formula_within(&self, enclosing: &mut Vec<chc::DatatypeSymbol>) -> Refinement<FV>
+    /// [`Self::formula`] with the facts of the payloads of enums, whose definitions `defs` gives
+    /// (none: as [`Self::formula`]).
+    pub fn formula_with(&self, defs: Option<&dyn EnumDefProvider>) -> Refinement<FV>
+    where
+        FV: chc::Var,
+    {
+        self.facts(&mut FactsCx::new(FactsUse::Assumed, defs))
+    }
+
+    /// The facts of a value of this type as `cx` states them. Both uses traverse the type alike and
+    /// differ only in how an enum's payloads are stated ([`enum_payload_facts`]).
+    fn facts(&self, cx: &mut FactsCx) -> Refinement<FV>
     where
         FV: chc::Var,
     {
@@ -2257,28 +2343,28 @@ impl<FV> RefinedType<FV> {
             }
             Type::Tuple(ty) => {
                 for (index, elem) in ty.elems.iter().enumerate() {
-                    formula.push_conj(elem.formula_within(enclosing).subst_value_var(|| {
+                    formula.push_conj(elem.facts(cx).subst_value_var(|| {
                         chc::Term::var(RefinedTypeVar::Value).tuple_proj(index)
                     }));
                 }
             }
             Type::Pointer(ty) => {
                 formula.push_conj(
-                    ty.elem.formula_within(enclosing).subst_value_var(|| {
+                    ty.elem.facts(cx).subst_value_var(|| {
                         ty.kind.deref_term(chc::Term::var(RefinedTypeVar::Value))
                     }),
                 );
                 if ty.is_mut() {
                     formula.push_conj(
                         ty.elem
-                            .formula_within(enclosing)
+                            .facts(cx)
                             .subst_value_var(|| chc::Term::var(RefinedTypeVar::Value).mut_final()),
                     );
                 }
             }
             Type::Enum(ty) => {
                 let ty = ty.clone().strip_refinement();
-                formula.push_conj(enum_payload_facts(&ty, enclosing).map_free_var(|v| match v {}));
+                formula.push_conj(enum_payload_facts(&ty, cx).map_free_var(|v| match v {}));
             }
             _ => {}
         }

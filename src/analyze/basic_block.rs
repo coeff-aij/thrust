@@ -366,7 +366,36 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         );
         clauses.extend(cs);
 
-        clauses.extend(builder.relate_sub_refined_type(&got_ret, &expected_ret));
+        let scope = rty::ScopedBuilder {
+            builder,
+            enum_defs: Some(&self.ctx.enum_defs),
+        };
+        clauses.extend(scope.relate_sub_refined_type(&got_ret, &expected_ret));
+        clauses
+    }
+
+    /// The clauses that a ghost term's value, `term` of the arguments `args` of the types `params`,
+    /// satisfies `checks`. The value is assumed nothing of its type `value_ty`: the term's
+    /// arithmetic is unbounded, and `checks` are the facts its type would assume.
+    fn check_ghost_term(
+        &mut self,
+        params: IndexVec<rty::FunctionParamIdx, rty::RefinedType<rty::FunctionParamIdx>>,
+        args: IndexVec<rty::FunctionParamIdx, rty::RefinedType<Var>>,
+        value_ty: &rty::Type<rty::Closed>,
+        term: rty::Refinement<rty::FunctionParamIdx>,
+        checks: rty::Refinement<rty::Closed>,
+    ) -> Vec<chc::Clause> {
+        let term = rty::RefinedType::new(value_ty.clone().vacuous(), term);
+        let term = subst_singleton_params(term, &singleton_params(&params)).refinement;
+        let mut builder = self.env.build_clause();
+        let mut clauses = self.relate_fn_param_sub_types_with_builder(
+            params,
+            args,
+            &mut builder,
+            rty::FunctionAbi::Rust,
+        );
+        let checks: rty::Refinement<rty::FunctionParamIdx> = checks.map_free_var(|v| match v {});
+        clauses.extend(builder.with_value_var(value_ty).add_body(term).head(checks));
         clauses
     }
 
@@ -436,7 +465,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             }
         }
 
-        clauses.extend(relate_param_sub_types(got_args, &expected_args, builder));
+        clauses.extend(relate_param_sub_types(
+            got_args,
+            &expected_args,
+            builder,
+            Some(&self.ctx.enum_defs),
+        ));
         clauses
     }
 
@@ -1184,7 +1218,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
         let ret_rty = self.operand_refined_type(Operand::Move(mir::RETURN_PLACE.into()));
 
-        clauses.extend(builder.relate_sub_refined_type(&ret_rty, &expected_fn.ret));
+        let scope = rty::ScopedBuilder {
+            builder,
+            enum_defs: Some(&self.ctx.enum_defs),
+        };
+        clauses.extend(scope.relate_sub_refined_type(&ret_rty, &expected_fn.ret));
 
         self.ctx.extend_clauses(clauses);
     }
@@ -1916,19 +1954,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let mut value_rty = self.type_builder.build(*value_ty).vacuous();
         value_rty.refinement.push_conj(formula_fn.to_refinement());
         // The term itself is logical: model arithmetic is unbounded, so the integers in a value
-        // made from it are required here to have the facts its type states of them
-        // (`RefinedType::formula`), as an unchecked subtraction is: the term, typed with every
-        // integer unbounded, enters the value's type.
+        // made from it are required here to have the facts its type states of them, as an
+        // unchecked subtraction is.
         let value_ty = value_rty.ty.clone().strip_refinement();
-        let unbounded_ty = value_ty.clone().with_unbounded_ints();
-        let range = rty::int_range_facts(&unbounded_ty, &value_ty);
-        let term_check = (!range.is_top()).then(|| {
-            let term_rty =
-                rty::RefinedType::new(unbounded_ty.clone().vacuous(), formula_fn.to_refinement());
-            let range = range.map_free_var(|v| match v {});
-            let in_range = rty::RefinedType::new(unbounded_ty.vacuous(), range);
-            (rty::FunctionType::new(params.clone(), term_rty), in_range)
-        });
+        let checks = rty::type_fact_checks(&value_ty, &self.ctx.enum_defs);
+        let term_check = (!checks.is_top()).then(|| (params.clone(), formula_fn.to_refinement()));
         let func_ty = rty::FunctionType::new(params, value_rty);
 
         let args: IndexVec<_, _> = formula_fn
@@ -1947,8 +1977,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             })
             .collect();
 
-        if let Some((term_ty, in_range)) = term_check {
-            let clauses = self.relate_fn_sub_type(term_ty, args.clone(), in_range);
+        if let Some((params, term)) = term_check {
+            let clauses = self.check_ghost_term(params, args.clone(), &value_ty, term, checks);
             self.ctx.extend_clauses(clauses);
         }
         let clauses = self.relate_fn_sub_type(func_ty, args, expected.clone());
@@ -2743,6 +2773,7 @@ pub(crate) fn relate_param_sub_types<T: chc::Var>(
     got_args: IndexVec<rty::FunctionParamIdx, rty::RefinedType<rty::FunctionParamIdx>>,
     expected_args: &IndexVec<rty::FunctionParamIdx, rty::RefinedType<T>>,
     builder: &mut chc::ClauseBuilder,
+    enum_defs: Option<&dyn rty::EnumDefProvider>,
 ) -> Vec<chc::Clause> {
     assert!(got_args.len() == expected_args.len());
     let singleton_params = singleton_params(&got_args);
@@ -2763,15 +2794,19 @@ pub(crate) fn relate_param_sub_types<T: chc::Var>(
     }
     let mut clauses = Vec::new();
     for ((param_idx, got_ty), expected_ty) in got_args.iter_enumerated().zip(expected_args) {
-        clauses.extend(builder.relate_sub_refined_type(expected_ty, got_ty));
+        let scope = rty::ScopedBuilder {
+            builder: builder.clone(),
+            enum_defs,
+        };
+        clauses.extend(scope.relate_sub_refined_type(expected_ty, got_ty));
         if singleton_params.contains_key(&param_idx) {
             builder
                 .with_value_var(&got_ty.ty)
-                .add_body(expected_ty.formula());
+                .add_body(expected_ty.formula_with(enum_defs));
         } else {
             builder
                 .with_mapped_value_var(param_idx)
-                .add_body(expected_ty.formula());
+                .add_body(expected_ty.formula_with(enum_defs));
         }
     }
     clauses

@@ -414,6 +414,7 @@ impl<'tcx> analyze::Analyzer<'tcx> {
             fn_ty.params.clone(),
             &expected,
             &mut chc::ClauseBuilder::default(),
+            None,
         )
     }
 

@@ -487,9 +487,17 @@ struct BasicBlockDef {
     has_param_types: bool,
 }
 
+/// The definitions of the enums the crate's types name: those whose datatypes the query declares
+/// ([`Analyzer::get_or_register_enum_def`]) and, under `THRUST_INT_RANGE`, every enum a type built
+/// so far names, whose definition the facts of its payloads read
+/// ([`refine::TypeBuilder::register_enum_def`]).
 #[derive(Debug, Clone, Default)]
 pub struct EnumDefs {
     defs: HashMap<DefId, rty::EnumDatatypeDef>,
+    /// The enums whose datatypes the query declares.
+    declared: HashSet<DefId>,
+    /// The enums whose definitions are being built: a field of a recursive enum names it again.
+    building: HashSet<DefId>,
 }
 
 impl EnumDefs {
@@ -502,7 +510,19 @@ impl EnumDefs {
     }
 
     pub fn insert(&mut self, def_id: DefId, def: rty::EnumDatatypeDef) {
+        self.building.remove(&def_id);
         self.defs.insert(def_id, def);
+    }
+
+    /// Whether the definition of `def_id` is to be built now: it is neither registered nor being
+    /// built. Marks it as being built.
+    pub fn start_building(&mut self, def_id: DefId) -> bool {
+        !self.defs.contains_key(&def_id) && self.building.insert(def_id)
+    }
+
+    /// Marks the datatype of `def_id` declared; whether it was not yet.
+    pub fn declare(&mut self, def_id: DefId) -> bool {
+        self.declared.insert(def_id)
     }
 }
 
@@ -906,14 +926,18 @@ impl<'tcx> Analyzer<'tcx> {
     }
 
     pub fn get_or_register_enum_def(&self, def_id: DefId) -> rty::EnumDatatypeDef {
-        let mut enum_defs = self.enum_defs.borrow_mut();
-        if let Some(enum_def) = enum_defs.get(def_id) {
-            return enum_def.clone();
+        let registered = self.enum_defs.borrow().get(def_id).cloned();
+        let enum_def = registered.unwrap_or_else(|| {
+            let enum_def = self
+                .type_builder(self.def_ids(), def_id)
+                .build_enum_def(def_id);
+            self.enum_defs.borrow_mut().insert(def_id, enum_def.clone());
+            enum_def
+        });
+        if !self.enum_defs.borrow_mut().declare(def_id) {
+            return enum_def;
         }
 
-        let enum_def = self
-            .type_builder(self.def_ids(), def_id)
-            .build_enum_def(def_id);
         tracing::debug!(def_id = ?def_id, enum_def = ?enum_def, "register_enum_def");
         let ctors = enum_def
             .variants
@@ -938,7 +962,6 @@ impl<'tcx> Analyzer<'tcx> {
             params: enum_def.ty_params,
             ctors,
         };
-        enum_defs.insert(def_id, enum_def.clone());
         self.system.borrow_mut().datatypes.push(datatype);
 
         enum_def
@@ -1342,6 +1365,7 @@ impl<'tcx> Analyzer<'tcx> {
             self.type_params.clone(),
             self.closure_type_params.clone(),
             self.system.clone(),
+            self.enum_defs.clone(),
         );
         let key = InstantiationKey {
             generic_args,
@@ -1953,6 +1977,7 @@ impl<'tcx> Analyzer<'tcx> {
             self.type_params.clone(),
             self.closure_type_params.clone(),
             self.system.clone(),
+            self.enum_defs.clone(),
         )
     }
 

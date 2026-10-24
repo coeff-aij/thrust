@@ -353,7 +353,13 @@ fn once_obligation(
         _ => value.equal_to(state).into(),
     };
     let args = call_args(contract, receiver);
-    super::relate_param_sub_types(contract.params.clone(), &args, &mut env.build_clause())
+    let enum_defs = rty::ClauseScope::enum_defs(env);
+    super::relate_param_sub_types(
+        contract.params.clone(),
+        &args,
+        &mut env.build_clause(),
+        enum_defs,
+    )
 }
 
 /// E1-E3 of the module documentation, with a fresh unknown over the closure's state for the
@@ -380,6 +386,7 @@ fn reachable_states_obligation(
         contract.params.clone(),
         &args,
         &mut chc::ClauseBuilder::default(),
+        Some(&ctx.enum_defs),
     ));
 
     let singletons = singleton_params(&contract.params);

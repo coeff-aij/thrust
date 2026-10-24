@@ -9,7 +9,7 @@ use rustc_middle::ty as mir_ty;
 use rustc_span::def_id::DefId;
 
 use super::basic_block::BasicBlockType;
-use crate::analyze::{DefIdCache, TypeParam, TypeParamMap};
+use crate::analyze::{DefIdCache, EnumDefs, TypeParam, TypeParamMap};
 use crate::chc;
 use crate::refine;
 use crate::rty;
@@ -146,6 +146,7 @@ pub struct TypeBuilder<'tcx> {
     type_params: Rc<RefCell<TypeParamMap<'tcx>>>,
     closure_type_params: Rc<RefCell<HashMap<TypeParam, rty::FunctionType>>>,
     system: Rc<RefCell<chc::System>>,
+    enum_defs: Rc<RefCell<EnumDefs>>,
 }
 
 // TODO: Fold `TypeBuilder::closure_trait_ret` into `closure_trait_call` so that one function
@@ -235,6 +236,7 @@ impl<'tcx> TypeBuilder<'tcx> {
         type_params: Rc<RefCell<TypeParamMap<'tcx>>>,
         closure_type_params: Rc<RefCell<HashMap<TypeParam, rty::FunctionType>>>,
         system: Rc<RefCell<chc::System>>,
+        enum_defs: Rc<RefCell<EnumDefs>>,
     ) -> Self {
         let generics = tcx.generics_of(owner_fn_id);
         let mut param_idx_mapping: HashMap<u32, rty::TypeParamIdx> = Default::default();
@@ -260,11 +262,23 @@ impl<'tcx> TypeBuilder<'tcx> {
             type_params,
             closure_type_params,
             system,
+            enum_defs,
         }
     }
 
     pub fn owner_fn_id(&self) -> DefId {
         self.owner_fn_id
+    }
+
+    /// Registers the definition of the enum `def_id` in the crate's enum definitions, unless it is
+    /// registered or being built, so that the facts of its payloads can be read wherever a type
+    /// this builder makes is used (`rty::RefinedType::formula_with`).
+    fn register_enum_def(&self, def_id: DefId) {
+        if !self.enum_defs.borrow_mut().start_building(def_id) {
+            return;
+        }
+        let def = self.build_enum_def(def_id);
+        self.enum_defs.borrow_mut().insert(def_id, def);
     }
 
     /// The definition of the enum `def_id`: its variants with their discriminants and the types
@@ -278,6 +292,7 @@ impl<'tcx> TypeBuilder<'tcx> {
             self.type_params.clone(),
             self.closure_type_params.clone(),
             self.system.clone(),
+            self.enum_defs.clone(),
         );
 
         let name = refine::datatype_symbol(self.tcx, def_id);
@@ -915,7 +930,7 @@ impl<'tcx> TypeBuilder<'tcx> {
                 if def.is_enum() {
                     let sym = refine::datatype_symbol(self.tcx, def.did());
                     if rty::int_range_mode() != rty::IntRange::Off {
-                        rty::register_enum_def_with(&sym, || self.build_enum_def(def.did()));
+                        self.register_enum_def(def.did());
                     }
                     let args: IndexVec<_, _> =
                         params.types().map(|ty| m.enum_arg(self, ty)).collect();

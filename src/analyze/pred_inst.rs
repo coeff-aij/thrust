@@ -164,7 +164,7 @@ impl<'tcx> analyze::Analyzer<'tcx> {
                     self.system.borrow_mut().new_named_user_quantified_var(name)
                 };
                 if let Some((payloads, range)) =
-                    rty::int_range_type_formula(&param.ty, arg.clone(), payload)
+                    rty::int_range_type_formula(&param.ty, arg.clone(), payload, &self.enum_defs)
                 {
                     vars.extend(payloads);
                     pre = range.and(pre);

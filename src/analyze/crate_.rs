@@ -500,6 +500,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             let clauses = crate::rty::relate_refining_function_type(
                 impl_ty.ty.as_function().unwrap(),
                 trait_ty.ty.as_function().unwrap(),
+                Some(&self.ctx.enum_defs),
             );
             self.ctx.extend_clauses(clauses);
         }
