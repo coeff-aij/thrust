@@ -345,7 +345,30 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let owner_fn_id = analyzer.owner_fn_id;
         let owner_fn_id_args = analyzer.owner_fn_id_args;
         use mir_ty::TypeVisitableExt as _;
-        if sig.has_param() {
+        if analyzer.is_annotated_as_extern_spec_fn()
+            && is_narrower_local_spec(self.tcx, local_def_id, owner_fn_id, owner_fn_id_args)
+        {
+            // The spec covers the local target only at some of its instances, so it is not the
+            // contract of the target's generic body: the body is analyzed at each covered
+            // instance a call reaches, in the caller's environment, against the spec there
+            // (`Analyzer::def_ty_with_args`). Checked over the target's own type parameters, the
+            // spec's types, normalized under the spec's bounds or at its fixed arguments,
+            // disagree with the body's. A trusted target, or one outside `THRUST_VERIFY_ONLY`,
+            // is not analyzed.
+            let skips_target = owner_fn_id
+                .as_local()
+                .is_some_and(|def_id| self.skip_analysis.contains(&def_id));
+            if skips_target {
+                self.ctx.register_deferred_def_without_analysis(
+                    owner_fn_id,
+                    local_def_id,
+                    owner_fn_id_args,
+                );
+            } else {
+                self.ctx
+                    .register_deferred_def(owner_fn_id, local_def_id, owner_fn_id_args);
+            }
+        } else if sig.has_param() {
             if trusted_derive {
                 let expected = analyzer.expected_ty();
                 self.ctx
@@ -1071,4 +1094,42 @@ fn per_instance_generics() -> bool {
         std::env::var("THRUST_PER_INSTANCE_GENERICS").as_deref(),
         Ok("1")
     )
+}
+
+/// Whether `local_def_id` is an extern spec of a function of this crate, `target`, that covers
+/// only some of its instances: it calls the target at an argument that is not one of the
+/// spec's type parameters, or bounds an associated type the target leaves free (`R:
+/// IntoSliceIdx<I, [T], Output = usize>` where the target has `R: IntoSliceIdx<I, [T]>`). The
+/// spec `requires`/`ensures` generate for a function repeats its bounds, so it covers all of it.
+fn is_narrower_local_spec<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    local_def_id: LocalDefId,
+    target: rustc_span::def_id::DefId,
+    target_args: Option<mir_ty::GenericArgsRef<'tcx>>,
+) -> bool {
+    let Some(target_args) = target_args else {
+        return false;
+    };
+    if !target.is_local() {
+        return false;
+    }
+    let fixes_an_arg = target_args
+        .types()
+        .any(|ty| !matches!(ty.kind(), mir_ty::TyKind::Param(_)));
+    if fixes_an_arg {
+        return true;
+    }
+    let target_projections: Vec<_> = tcx
+        .predicates_of(target)
+        .instantiate(tcx, target_args)
+        .predicates
+        .into_iter()
+        .filter(|clause| clause.as_projection_clause().is_some())
+        .map(|clause| tcx.erase_regions(clause))
+        .collect();
+    tcx.predicates_of(local_def_id)
+        .predicates
+        .iter()
+        .filter(|(clause, _)| clause.as_projection_clause().is_some())
+        .any(|(clause, _)| !target_projections.contains(&tcx.erase_regions(*clause)))
 }

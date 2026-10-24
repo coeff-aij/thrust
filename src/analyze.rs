@@ -1659,6 +1659,8 @@ impl<'tcx> Analyzer<'tcx> {
         caller_def_id: DefId,
     ) -> Option<rty::RefinedType> {
         let type_builder = self.type_builder(self.def_ids(), caller_def_id);
+        // The call's arguments, in the target's parameter space; a spec's are bound below.
+        let call_args = generic_args;
 
         let is_generic = matches!(self.defs.get(&def_id)?, DefTy::Generic(_));
         let (local_def_id, instantiated_ty_cache, deferred_ty_mode, generic_args) =
@@ -1753,6 +1755,13 @@ impl<'tcx> Analyzer<'tcx> {
             );
         }
         if analyze_body {
+            // The arguments the body is instantiated at: the spec's own body at the bound
+            // arguments, a target's body at the call's.
+            let body_args = if local_def_id.to_def_id() == def_id {
+                generic_args
+            } else {
+                call_args
+            };
             let mut body_analyzer = if local_def_id.to_def_id() == def_id {
                 let mut body_analyzer = self.local_def_analyzer(local_def_id);
                 body_analyzer
@@ -1766,22 +1775,24 @@ impl<'tcx> Analyzer<'tcx> {
                 // The body is checked against `expected`, which was built under the caller
                 // as its owner; analyzing it under the same owner keeps the contracts it reads
                 // (a closure argument's, minted while building `expected`) the same instances.
+                // The body is the target's, so it is instantiated at the call's arguments, not at
+                // the spec's.
                 let mut body_analyzer = self.local_def_analyzer(body_local_def_id);
                 body_analyzer
                     .owner_fn_id(caller_def_id)
-                    .generic_args(generic_args);
+                    .generic_args(body_args);
                 body_analyzer
             };
             let body_local_def_id = body_analyzer.local_def_id();
             body_analyzer.run(&expected);
             use mir_ty::TypeVisitableExt as _;
-            if !generic_args.has_param() {
+            if !body_args.has_param() {
                 self.concrete_instances
                     .borrow_mut()
                     .insert(body_local_def_id);
                 self.analyzed_instances
                     .borrow_mut()
-                    .push((body_local_def_id.to_def_id(), generic_args));
+                    .push((body_local_def_id.to_def_id(), body_args));
             }
         }
         Some(expected)
