@@ -34,7 +34,7 @@ the law (the joined witness put into `produces`' `exists`) times out.
 ## skip_take_range.rs (+ fail/)
 
 `Skip<Take<Range>>`, a concrete instantiation of `skip_take.rs`, with the adapters' predicates in
-Rust syntax as there. On fptprove develop 3f9ee2482 both sides give no answer at 60 s.
+Rust syntax as there. On fptprove 3f9ee2482 both sides give no answer at 60 s.
 
 ## decuple_range_closure_inferred.rs (+ fail/)
 
