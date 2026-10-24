@@ -3044,8 +3044,6 @@ impl System {
         })
     }
 
-    /// Defines `symbol` as `body` read under `sort_subst`, the substitution that
-    /// takes the declaring item's forall sorts to one instantiation of them.
     /// Declares `symbol` as an unknown of the system ([`UserDefinedPredBody::Derived`]).
     pub fn push_derived_pred(&mut self, symbol: UserDefinedPred, sig: UserDefinedPredSig) {
         self.user_defined_pred_defs.push(UserDefinedPredDef {
@@ -3058,6 +3056,8 @@ impl System {
         })
     }
 
+    /// Defines `symbol` as `body` read under `sort_subst`, the substitution that
+    /// takes the declaring item's forall sorts to one instantiation of them.
     pub fn push_pred_define_at_instance(
         &mut self,
         symbol: UserDefinedPred,
@@ -3084,12 +3084,12 @@ impl System {
         self.self_defined_pred_vars.contains(&id)
     }
 
-    /// What the definition of `symbol`, and those of the user-defined predicates it calls, say
-    /// about predicate variables. A raw SMT-LIB2 body read off the source names none, since the
-    /// variables are numbered by the analysis.
     /// Whether `symbol` is a derived predicate, applies one through its definition, or is not
-    /// defined yet (a predicate instance emitted at the end, a derived one among them).
+    /// defined yet (a predicate instance emitted at the end, a derived one among them). When the
+    /// system has a derived predicate, a raw SMT-LIB2 body counts as applying one: its text may
+    /// name the derived predicate's symbol, and it is not read.
     pub fn reaches_derived(&self, symbol: &UserDefinedPred) -> bool {
+        let has_derived = self.user_defined_pred_defs.iter().any(|d| d.is_derived());
         let mut pending = vec![symbol];
         let mut seen: HashSet<&UserDefinedPred> = HashSet::new();
         while let Some(symbol) = pending.pop() {
@@ -3111,6 +3111,7 @@ impl System {
                         pending.extend(user_defined_in(formula.iter_atoms()))
                     }
                     UserDefinedPredBody::Term(_, term) => pending.extend(term.user_defined_fns()),
+                    UserDefinedPredBody::Raw(_) if has_derived => return true,
                     UserDefinedPredBody::Raw(_) => {}
                 }
             }
@@ -3118,6 +3119,9 @@ impl System {
         false
     }
 
+    /// What the definition of `symbol`, and those of the user-defined predicates it calls, say
+    /// about predicate variables. A raw SMT-LIB2 body read off the source names none, since the
+    /// variables are numbered by the analysis.
     pub fn pred_var_reach_of(&self, symbol: &UserDefinedPred) -> PredVarReach {
         let mut reach = PredVarReach::default();
         let mut pending = vec![symbol];

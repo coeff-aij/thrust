@@ -141,6 +141,14 @@ pub fn check<'tcx>(
     closure_contract_fns: [Option<DefId>; 3],
 ) {
     let mut seeds: HashSet<DefId> = derived.values().map(|at| at.pred_def_id).collect();
+    // A raw SMT-LIB2 body may name a derived predicate's symbol, and the closure cannot read it,
+    // so every raw-body predicate is taken to depend on one.
+    seeds.extend(
+        tcx.hir_crate_items(())
+            .definitions()
+            .filter(|def| dependency::is_raw_predicate(tcx, *def))
+            .map(LocalDefId::to_def_id),
+    );
     let mut dependent = dependency::dependent_items(tcx, &seeds);
     // `pre!`, `post!` and `hist_inv!` of a closure at a type parameter stand for the contract of
     // whatever closure it is instantiated with, so they depend on a derived predicate when some
@@ -228,7 +236,7 @@ pub fn check<'tcx>(
                     report(
                         law,
                         &format!(
-                            "the law `{}`, not checked for `{}`,",
+                            "the law `{}`, not checked for `{}`",
                             tcx.item_name(law),
                             tcx.type_of(impl_def_id).instantiate_identity()
                         ),

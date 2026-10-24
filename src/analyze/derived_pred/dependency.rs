@@ -143,3 +143,27 @@ pub fn dependent_items(tcx: TyCtxt<'_>, seeds: &HashSet<DefId>) -> HashSet<DefId
         dependent.extend(grown);
     }
 }
+
+/// Whether `def` is a `#[thrust_macros::predicate]` with a raw SMT-LIB2 body: a string literal
+/// statement, which the closure cannot read.
+pub fn is_raw_predicate(tcx: TyCtxt<'_>, def: LocalDefId) -> bool {
+    let is_predicate = tcx
+        .get_attrs_by_path(def.to_def_id(), &analyze::annot::predicate_path())
+        .next()
+        .is_some();
+    let Some(body) = tcx.hir_maybe_body_owned_by(def).filter(|_| is_predicate) else {
+        return false;
+    };
+    let rustc_hir::ExprKind::Block(block, _) = body.value.kind else {
+        return false;
+    };
+    block.stmts.iter().any(|stmt| {
+        let (rustc_hir::StmtKind::Semi(expr) | rustc_hir::StmtKind::Expr(expr)) = stmt.kind else {
+            return false;
+        };
+        matches!(
+            expr.kind,
+            rustc_hir::ExprKind::Lit(lit) if matches!(lit.node, rustc_ast::LitKind::Str(..))
+        )
+    })
+}

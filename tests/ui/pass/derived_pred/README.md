@@ -20,6 +20,7 @@ argument there (D59). Fail twins and rejected files are in `../../fail/derived_p
 | `disjunctive_rule.rs` | `next`'s `ensures` concludes it of one of two states | verifies, likewise |
 | `../../fail/derived_pred/trusted_next.rs`, `trusted_assumption.rs`, `trusted_generic.rs`, `trusted_default.rs`, `refine.rs`, `method_post.rs` | a trusted function's contract mentions it (`next`, a function, generic or a default method, an impl method weaker than the trait's, a method without a trait specification) | rejected |
 | `../../fail/derived_pred/extern_spec.rs` | an extern specification of a foreign function mentions it | rejected |
+| `../../fail/derived_pred/raw_derived.rs` | a trusted contract mentions a raw SMT-LIB2 predicate that names it | rejected: a raw body, which is not read, counts as depending on it |
 | `../../fail/derived_pred/unselected_law.rs` | the inherited law outside `THRUST_VERIFY_ONLY` | rejected |
 | `../../fail/derived_pred/via_trusted.rs`, `via_impl.rs`, `via_indirect.rs`, `via_closure.rs` | a trusted contract behind a verified generic function, through a trait method, a written trait predicate defined through it, a closure's contract | rejected |
 | `../../fail/derived_pred/law_other.rs` | a law of another trait states that `Small` yields nothing | refuted: the predicate depends on no forall predicate |
