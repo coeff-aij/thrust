@@ -707,9 +707,9 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 rustc_hir::BorrowKind::Ref,
                 rustc_hir::Mutability::Not,
                 operand,
-            ) => (self.typeck.expr_ty(operand), self.to_term(operand)),
+            ) => (self.expr_ty(operand), self.to_term(operand)),
             _ => (
-                self.typeck.expr_ty(arg).peel_refs(),
+                self.expr_ty(arg).peel_refs(),
                 self.to_term(arg).box_current(),
             ),
         }
@@ -720,11 +720,12 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         &self,
         expr: &'tcx rustc_hir::Expr<'tcx>,
     ) -> (mir_ty::Ty<'tcx>, chc::Term<rty::FunctionParamIdx>) {
-        (self.typeck.expr_ty(expr), self.to_term(expr))
+        (self.expr_ty(expr), self.to_term(expr))
     }
 
     /// A specification's `lhs == rhs` or `lhs != rhs` (`op`), the only place these atoms are
-    /// built, from the operands' types and terms. It stops at an operand holding a value without
+    /// built, from the operands' types (at the instance the formula is translated for, so a
+    /// generic contract is checked at each type it is used at) and terms. It stops at an operand holding a value without
     /// a model (`model_eq::modelless_part`: a `str`, a raw or function pointer, a trait object,
     /// also in a field of a local type): its model is the null sort, so `==` would hold of any two
     /// values and `!=` of none, and a contract stating either would not describe the function (a
