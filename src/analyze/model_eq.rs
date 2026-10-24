@@ -129,7 +129,9 @@ fn compared_tys<'tcx>(
     compared
 }
 
-/// Whether an impl of `model_trait` (`thrust_models::Model`) is for the ADT `adt`.
+/// Whether an impl of `model_trait` (`thrust_models::Model`) is for the ADT `adt`, at any type
+/// arguments: an impl for one instance counts for all, which is exact for std.rs, whose `Model`
+/// impls of std types are generic over their arguments.
 fn has_model_impl(tcx: TyCtxt<'_>, model_trait: DefId, adt: DefId) -> bool {
     tcx.all_impls(model_trait).any(|impl_did| {
         tcx.type_of(impl_did)

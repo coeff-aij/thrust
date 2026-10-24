@@ -609,29 +609,33 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         }
     }
 
-    /// The value of type `ty` at `offset` in the constant allocation `alloc`. An array is read
-    /// element by element and a shared reference through the pointer the allocation holds there,
-    /// as a promoted `&[&str; N]` of a panic message is; anything else from its bytes.
+    /// The value of type `ty` at `offset` in the constant allocation `alloc`, which may hold
+    /// pointers: an array is read element by element, a tuple, struct or enum field by field, and
+    /// a shared reference through the pointer the allocation holds there (a promoted `&[&str; N]`
+    /// of a panic message is one); an integer or a `bool` is read by [`Self::const_bytes_ty`],
+    /// which reads values without pointers, such as a scalar constant's.
     fn const_alloc_ty(
         &self,
         alloc: mir::interpret::ConstAllocation<'tcx>,
         offset: rustc_abi::Size,
         ty: mir_ty::Ty<'tcx>,
     ) -> PlaceType {
-        let layout = self
-            .tcx
-            .layout_of(self.typing_env.as_query_input(ty))
-            .unwrap();
+        let typing_env = self.typing_env;
+        let layout = self.tcx.layout_of(typing_env.as_query_input(ty)).unwrap();
+        let lcx = mir_ty::layout::LayoutCx::new(self.tcx, typing_env);
+        let bytes_at = |offset: rustc_abi::Size, size: rustc_abi::Size| {
+            alloc
+                .inner()
+                .inspect_with_uninit_and_ptr_outside_interpreter(
+                    offset.bytes() as usize..(offset + size).bytes() as usize,
+                )
+        };
         match ty.kind() {
             mir_ty::TyKind::Array(elem, len) => {
                 let len = len
                     .try_to_target_usize(self.tcx)
                     .expect("array constant of unevaluated length");
-                let elem_size = self
-                    .tcx
-                    .layout_of(self.typing_env.as_query_input(*elem))
-                    .unwrap()
-                    .size;
+                let elem_size = layout.field(&lcx, 0).size;
                 let mut builder = PlaceTypeBuilder::default();
                 let elem_ty = self.type_builder.build(*elem).vacuous().ty;
                 let mut seq = chc::Term::seq_empty(elem_ty.to_sort());
@@ -645,47 +649,71 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     seq,
                 )
             }
+            mir_ty::TyKind::Tuple(tys) => {
+                let pts = tys
+                    .iter()
+                    .enumerate()
+                    .map(|(i, field_ty)| {
+                        self.const_alloc_ty(alloc, offset + layout.fields.offset(i), field_ty)
+                            .boxed()
+                    })
+                    .collect();
+                PlaceType::tuple(pts)
+            }
+            mir_ty::TyKind::Adt(def, args) if def.is_struct() => {
+                let pts = def
+                    .all_fields()
+                    .enumerate()
+                    .map(|(i, field)| {
+                        let field_ty = field.ty(self.tcx, args);
+                        self.const_alloc_ty(alloc, offset + layout.fields.offset(i), field_ty)
+                            .boxed()
+                    })
+                    .collect();
+                PlaceType::tuple(pts)
+            }
+            mir_ty::TyKind::Adt(def, args) if def.is_enum() => {
+                let variant_idx =
+                    self.const_variant_idx(ty, &layout, bytes_at(offset, layout.size));
+                let variant_layout = layout.for_variant(&lcx, variant_idx);
+                let pts = def
+                    .variant(variant_idx)
+                    .fields
+                    .iter()
+                    .enumerate()
+                    .map(|(i, field)| {
+                        let field_ty = field.ty(self.tcx, args);
+                        let field_offset = offset + variant_layout.fields.offset(i);
+                        self.const_alloc_ty(alloc, field_offset, field_ty)
+                    })
+                    .collect();
+                self.const_enum_ty(ty, variant_idx, pts)
+            }
             mir_ty::TyKind::Ref(_, pointee, mir::Mutability::Not) => {
-                let ptr_size = self.tcx.data_layout.pointer_size();
-                let prov = alloc
-                    .inner()
-                    .provenance()
-                    .get_ptr(offset)
-                    .expect("reference in a constant without provenance");
-                let read_usize = |at: rustc_abi::Size| {
-                    let range = at.bytes() as usize..(at + ptr_size).bytes() as usize;
-                    let bytes = alloc
-                        .inner()
-                        .inspect_with_uninit_and_ptr_outside_interpreter(range);
-                    let mut buf = [0u8; 8];
-                    buf[..bytes.len()].copy_from_slice(bytes);
-                    // TODO: see target endianness
-                    u64::from_ne_bytes(buf)
-                };
-                let target_offset = rustc_abi::Size::from_bytes(read_usize(offset));
-                let mir::interpret::GlobalAlloc::Memory(target) =
-                    self.tcx.global_alloc(prov.alloc_id())
-                else {
-                    unimplemented!("const ref alloc in a constant");
-                };
                 if pointee.is_str() {
                     // A `str` has the null sort; its content is not modelled.
                     return PlaceType::with_ty_and_term(rty::Type::string(), chc::Term::null())
                         .immut();
                 }
-                if !pointee.is_sized(self.tcx, self.typing_env) {
+                if !pointee.is_sized(self.tcx, typing_env) {
                     unimplemented!("const reference to an unsized value in a constant: {ty:?}");
                 }
+                let ptr_size = self.tcx.data_layout.pointer_size();
+                let range = mir::interpret::alloc_range(offset, ptr_size);
+                let Ok(mir::interpret::Scalar::Ptr(ptr, _)) =
+                    alloc.inner().read_scalar(&self.tcx, range, true)
+                else {
+                    panic!("reference in a constant without provenance");
+                };
+                let (prov, target_offset) = ptr.prov_and_relative_offset();
+                let mir::interpret::GlobalAlloc::Memory(target) =
+                    self.tcx.global_alloc(prov.alloc_id())
+                else {
+                    unimplemented!("const ref alloc in a constant");
+                };
                 self.const_alloc_ty(target, target_offset, *pointee).immut()
             }
-            _ => {
-                let range =
-                    offset.bytes() as usize..(offset.bytes() + layout.size.bytes()) as usize;
-                let bytes = alloc
-                    .inner()
-                    .inspect_with_uninit_and_ptr_outside_interpreter(range);
-                self.const_bytes_ty(ty, bytes)
-            }
+            _ => self.const_bytes_ty(ty, bytes_at(offset, layout.size)),
         }
     }
 
@@ -766,6 +794,13 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     .inner()
                     .inspect_with_uninit_and_ptr_outside_interpreter(0..end);
                 self.const_bytes_ty(*elem, bytes).immut()
+            }
+            (_, ConstValue::Indirect { alloc_id, offset }) => {
+                let mir::interpret::GlobalAlloc::Memory(alloc) = self.tcx.global_alloc(*alloc_id)
+                else {
+                    unimplemented!("const indirect alloc: {:?}", alloc_id);
+                };
+                self.const_alloc_ty(alloc, *offset, *ty)
             }
             _ => unimplemented!("const: {:?}, ty: {:?}", val, ty),
         }
@@ -1745,14 +1780,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         def_id: DefId,
         args: mir_ty::GenericArgsRef<'tcx>,
     ) -> rty::Type<rty::Closed> {
-        if !self.diverges(def_id) && !self.only_diverges_after() {
+        if self.calls_here(def_id) && !self.diverges(def_id) && !self.only_diverges_after() {
             self.tcx
                 .dcx()
                 .struct_span_warn(
                     self.call_span(def_id),
                     format!(
-                        "thrust: no specification of `{}`, which `{}` calls; the call is \
-                         verified unreachable",
+                        "thrust: no specification of `{}`, which `{}` calls; the call must be \
+                         proven unreachable",
                         self.tcx.def_path_str_with_args(def_id, args),
                         self.tcx.def_path_str(self.type_builder.owner_fn_id()),
                     ),
@@ -1770,14 +1805,15 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     }
 
     /// Whether every path from the current block ends in a call that does not return or in
-    /// `Unreachable`, as the blocks that build a panic's payload do. Only the warning of
+    /// `Unreachable`, as the blocks that build a panic's payload do; a path that comes back to a
+    /// block already seen ends nowhere else. Only the warning of
     /// [`Self::unspecified_extern_ty`] depends on it.
     fn only_diverges_after(&self) -> bool {
         let mut visited = std::collections::HashSet::new();
         let mut pending = vec![self.basic_block];
         while let Some(bb) = pending.pop() {
             if !visited.insert(bb) {
-                return false;
+                continue;
             }
             match &self.body.basic_blocks[bb].terminator().kind {
                 TerminatorKind::Call { target: None, .. } | TerminatorKind::Unreachable => {}
@@ -1793,6 +1829,18 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             }
         }
         true
+    }
+
+    /// Whether the current block's terminator calls `def_id`; a function pointer made of it in a
+    /// statement is not a call.
+    fn calls_here(&self, def_id: DefId) -> bool {
+        let TerminatorKind::Call { func, .. } =
+            &self.body.basic_blocks[self.basic_block].terminator().kind
+        else {
+            return false;
+        };
+        func.const_fn_def()
+            .is_some_and(|(callee, _)| callee == def_id)
     }
 
     /// Whether `def_id` returns `!`, as the panic entry points do.
@@ -2164,6 +2212,61 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.env.place_type(self.elaborate_place(place))
     }
 
+    /// Stops at a statement that would read the value of a raw pointer or a trait object, whose
+    /// model carries no information (`rty::Type::Opaque`): dereferencing, comparing, casting or
+    /// taking one. They are not supported; reading the null model would make any two values equal.
+    fn check_opaque_use(
+        &self,
+        lhs: &mir::Place<'tcx>,
+        rvalue: &Rvalue<'tcx>,
+        span: rustc_span::Span,
+    ) {
+        let is_opaque = |ty: mir_ty::Ty<'tcx>| {
+            ty.is_raw_ptr() || ty.is_fn_ptr() || matches!(ty.kind(), mir_ty::TyKind::Dynamic(..))
+        };
+        let derefs_raw_pointer = |place: &mir::Place<'tcx>| {
+            place.iter_projections().any(|(base, elem)| {
+                elem == mir::ProjectionElem::Deref
+                    && base.ty(&self.local_decls, self.tcx).ty.is_raw_ptr()
+            })
+        };
+        let mut places: Vec<mir::Place<'tcx>> = vec![*lhs];
+        let what = match rvalue {
+            Rvalue::BinaryOp(_, operands)
+                if is_opaque(operands.0.ty(&self.local_decls, self.tcx)) =>
+            {
+                Some("comparing or computing with a raw or function pointer")
+            }
+            Rvalue::Cast(_, operand, _) if operand.ty(&self.local_decls, self.tcx).is_raw_ptr() => {
+                Some("casting a raw pointer")
+            }
+            Rvalue::RawPtr(..) => Some("taking a raw pointer"),
+            Rvalue::Use(operand) | Rvalue::Cast(_, operand, _) | Rvalue::UnaryOp(_, operand) => {
+                places.extend(operand.place());
+                None
+            }
+            Rvalue::Ref(_, _, place)
+            | Rvalue::Discriminant(place)
+            | Rvalue::CopyForDeref(place) => {
+                places.push(*place);
+                None
+            }
+            _ => None,
+        };
+        let what = what.or_else(|| {
+            places
+                .iter()
+                .any(derefs_raw_pointer)
+                .then_some("dereferencing a raw pointer")
+        });
+        if let Some(what) = what {
+            self.tcx.dcx().span_fatal(
+                span,
+                format!("thrust: {what} is not supported: its model carries no information"),
+            );
+        }
+    }
+
     fn elaborate_place_for_borrow(&self, place: &mir::Place<'tcx>) -> mir::Place<'tcx> {
         let mut place = self.elaborate_place(place);
         assert!(place.projection.last() == Some(&mir::ProjectionElem::Deref));
@@ -2505,6 +2608,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             match &stmt.kind {
                 StatementKind::Assign(x) => {
                     let (lhs, rvalue) = &**x;
+                    self.check_opaque_use(lhs, rvalue, stmt.source_info.span);
                     self.analyze_assignment(lhs, rvalue, stmt_idx);
                 }
                 StatementKind::Nop

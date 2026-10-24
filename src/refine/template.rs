@@ -208,11 +208,16 @@ impl<'tcx> TyMode<'tcx> for Unrefined {
         b: &TypeBuilder<'tcx>,
         sig: mir_ty::FnSig<'tcx>,
     ) -> rty::Type<rty::Closed> {
-        let params = sig
+        let mut params: IndexVec<rty::FunctionParamIdx, _> = sig
             .inputs()
             .iter()
             .map(|ty| b.build(*ty).vacuous())
             .collect();
+        // A function without parameters has a unit one in its type, as the template builder
+        // gives it, so that a function of either kind is a value of this pointer type.
+        if params.is_empty() {
+            params.push(rty::RefinedType::unrefined(rty::Type::unit()));
+        }
         let ret = b.build(sig.output());
         rty::FunctionType::new(params, ret.vacuous()).into()
     }
@@ -1178,9 +1183,6 @@ impl<'tcx> TypeBuilder<'tcx> {
         })
     }
 
-    /// The contract of the trait method `def_id`, which has no specification, called at
-    /// `generic_args` that still name type parameters: it can be called with any arguments, and
-    /// its result is related to them by a forall predicate, which `post!` names.
     /// The type of a function whose precondition is `false`: its last parameter, or a unit
     /// parameter when it has none, is refined by `false`, and its result is unconstrained.
     pub fn build_unreachable_function_type(
@@ -1211,6 +1213,9 @@ impl<'tcx> TypeBuilder<'tcx> {
         rty::FunctionType::new(params, ret)
     }
 
+    /// The contract of the trait method `def_id`, which has no specification, called at
+    /// `generic_args` that still name type parameters: it can be called with any arguments, and
+    /// its result is related to them by a forall predicate, which `post!` names.
     pub fn build_unspecified_method_type(
         &self,
         def_id: DefId,

@@ -694,6 +694,47 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         }
     }
 
+    /// Stops at a specification's `==` or `!=` on a value whose model carries no information:
+    /// one that holds a `str`, a raw pointer, a trait object or a function pointer has the null
+    /// sort there, so `==` would hold of any two values and `!=` of none, and a contract stating
+    /// either would not describe the function (a `!=` in a trusted `ensures` makes the code after
+    /// the call vacuous). This is `model_eq`'s condition for an executable `==`, applied to the
+    /// logical one; a closure's and a `PhantomData`'s parameters are not looked into.
+    fn check_comparable(&self, arg: &'tcx rustc_hir::Expr<'tcx>) {
+        let ty = match arg.kind {
+            rustc_hir::ExprKind::AddrOf(_, _, operand) => self.typeck.expr_ty(operand),
+            _ => self.typeck.expr_ty(arg).peel_refs(),
+        };
+        let mut walker = ty.walk();
+        while let Some(arg_ty) = walker.next() {
+            let Some(inner) = arg_ty.as_type() else {
+                continue;
+            };
+            match inner.kind() {
+                mir_ty::TyKind::Adt(adt, _) if adt.is_phantom_data() => {
+                    walker.skip_current_subtree();
+                }
+                mir_ty::TyKind::Closure(..)
+                | mir_ty::TyKind::FnDef(..)
+                | mir_ty::TyKind::Coroutine(..) => walker.skip_current_subtree(),
+                mir_ty::TyKind::Str
+                | mir_ty::TyKind::RawPtr(..)
+                | mir_ty::TyKind::Dynamic(..)
+                | mir_ty::TyKind::FnPtr(..) => {
+                    self.tcx.dcx().span_fatal(
+                        arg.span,
+                        format!(
+                            "thrust: a specification cannot compare values of `{ty}`: its \
+                             `{inner}` has no model, so `==` would hold of any two values and `!=` \
+                             of none"
+                        ),
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+
     fn to_term(&self, hir: &'tcx rustc_hir::Expr<'tcx>) -> chc::Term<rty::FunctionParamIdx> {
         self.to_formula_or_term(hir)
             .into_term()
@@ -1567,6 +1608,8 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             }
             ExprKind::MethodCall(method, receiver, args, _) => {
                 if let Some((lhs, rhs)) = self.log_eq_args(receiver) {
+                    self.check_comparable(lhs);
+                    self.check_comparable(rhs);
                     let binop = match method.ident.as_str() {
                         "log_eq" => AmbiguousBinOp::Eq,
                         "log_ne" => AmbiguousBinOp::Ne,
