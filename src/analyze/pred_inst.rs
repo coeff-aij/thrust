@@ -228,14 +228,6 @@ impl<'tcx> analyze::Analyzer<'tcx> {
         Some(sorts)
     }
 
-    /// Emits every predicate definition requested during analysis, and every one
-    /// those definitions request in turn.
-    ///
-    /// A definition is emitted after every instance its body refers to, since
-    /// the solver reads a `define-fun` only against what precedes it: the
-    /// requests are drained depth-first and each definition is pushed once its
-    /// own requests are. Requests that do not depend on one another keep the
-    /// order they were made in.
     /// The trait items and generic arguments of the predicate instances waiting to be emitted.
     pub fn pending_pred_instance_requests(&self) -> Vec<(DefId, mir_ty::GenericArgsRef<'tcx>)> {
         self.pending_pred_instances
@@ -245,6 +237,14 @@ impl<'tcx> analyze::Analyzer<'tcx> {
             .collect()
     }
 
+    /// Emits every predicate definition requested during analysis, and every one
+    /// those definitions request in turn.
+    ///
+    /// A definition is emitted after every instance its body refers to, since
+    /// the solver reads a `define-fun` only against what precedes it: the
+    /// requests are drained depth-first and each definition is pushed once its
+    /// own requests are. Requests that do not depend on one another keep the
+    /// order they were made in.
     pub fn emit_pending_pred_instances(&mut self) {
         let mut seen = HashSet::new();
         let mut in_progress = Vec::new();

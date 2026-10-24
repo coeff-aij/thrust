@@ -1803,6 +1803,27 @@ impl<'tcx> Analyzer<'tcx> {
         generic_args: mir_ty::GenericArgsRef<'tcx>,
         caller_def_id: DefId,
     ) -> Option<rty::RefinedType> {
+        self.def_ty_at(def_id, generic_args, caller_def_id, true)
+    }
+
+    /// The contract of `def_id` at `generic_args`, as [`Analyzer::def_ty_with_args`] gives it,
+    /// without analyzing its body there: for a law whose proof the caller analyzes itself.
+    pub fn contract_with_args(
+        &mut self,
+        def_id: DefId,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
+        caller_def_id: DefId,
+    ) -> Option<rty::RefinedType> {
+        self.def_ty_at(def_id, generic_args, caller_def_id, false)
+    }
+
+    fn def_ty_at(
+        &mut self,
+        def_id: DefId,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
+        caller_def_id: DefId,
+        may_analyze: bool,
+    ) -> Option<rty::RefinedType> {
         if !self.per_instance_law_impls.is_empty() && self.is_trait_law(def_id) {
             self.law_uses.borrow_mut().push((def_id, generic_args));
         }
@@ -1882,7 +1903,8 @@ impl<'tcx> Analyzer<'tcx> {
         // instance is not faithful to the generic check: an `FnMut` closure among the type
         // arguments, whose by-value receiver the instantiated `pre!` reads at a final state equal
         // to the current one. Otherwise the contract is used as instantiated.
-        let analyze_body = deferred_ty_mode.is_some_and(|mode| mode.should_analyze())
+        let analyze_body = may_analyze
+            && deferred_ty_mode.is_some_and(|mode| mode.should_analyze())
             && (!is_generic
                 || (has_fn_mut_closure(generic_args)
                     && !self.reuse_fn_mut_generic(def_id, &expected, generic_args, caller_def_id))

@@ -616,17 +616,42 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             ?args,
             "inherited law checked at impl"
         );
+        if !self.check_law_body(law_local, law_def_id, args, args, owner) {
+            return false;
+        }
+        self.ctx.inherited_law_checked(impl_def_id, law_def_id);
+        true
+    }
+
+    /// Analyzes `body`, a law's proof (the trait's default body or an impl's own), at `body_args`
+    /// against the contract of the trait law `law_def_id` at the trait arguments `trait_args`, and
+    /// returns whether it did.
+    fn check_law_body(
+        &mut self,
+        body: LocalDefId,
+        law_def_id: DefId,
+        trait_args: mir_ty::GenericArgsRef<'tcx>,
+        body_args: mir_ty::GenericArgsRef<'tcx>,
+        owner: DefId,
+    ) -> bool {
         // A trait method with a default body carries its contract on the spec function the macro
         // generates, so the contract is read as a call site reads it, at the impl's arguments.
-        let Some(expected) = self.ctx.def_ty_with_args(law_def_id, args, owner) else {
-            tracing::warn!(?law_def_id, ?impl_def_id, "inherited law has no contract");
+        // An impl's own proof is analyzed only here; reading the contract as a call site does
+        // would analyze the trait's default body there as well.
+        let own = body.to_def_id() != law_def_id;
+        let expected = if own {
+            self.ctx.contract_with_args(law_def_id, trait_args, owner)
+        } else {
+            self.ctx.def_ty_with_args(law_def_id, trait_args, owner)
+        };
+        let Some(expected) = expected else {
+            tracing::warn!(?law_def_id, ?trait_args, "law has no contract");
             return false;
         };
-        let mut analyzer = self.ctx.local_def_analyzer(law_local);
-        analyzer.owner_fn_id(owner).generic_args(args);
+        let mut analyzer = self.ctx.local_def_analyzer(body);
+        analyzer.owner_fn_id(owner).generic_args(body_args);
         analyzer.run(&expected);
-        self.ctx.inherited_law_checked(impl_def_id, law_def_id);
-        self.ctx.instance_law_checked(law_def_id, args);
+        self.ctx.instance_law_checked(law_def_id, trait_args);
         true
     }
 
@@ -676,7 +701,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .map(|(_, trait_args)| trait_args.type_at(0))
             .collect();
         // Every trait with an impl of the set, at each type a derived predicate is requested at.
-        // Sorted, so that the checks, and the query, come in one order.
+        // Only traits with no parameter beside `Self`, whose arguments the type alone gives; a
+        // law of another trait is checked where its contract is used (`law_uses`), and a use not
+        // checked is rejected (`derived_pred::check_law_uses`). Sorted, so that the checks, and
+        // the query, come in one order.
         let mut law_traits: Vec<DefId> = self
             .ctx
             .per_instance_law_impls
@@ -723,9 +751,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 self.check_inherited_law(impl_def_id, law_def_id, trait_args);
                 continue;
             };
-            // A deferred def's body is analyzed at each instance its type is taken at.
-            if self.ctx.def_ty_with_args(*own, impl_args, *own).is_some() {
-                self.ctx.instance_law_checked(law_def_id, trait_args);
+            // The impl's own proof, at the instance, against the trait's contract there.
+            if let Some(own_local) = own.as_local() {
+                self.check_law_body(own_local, law_def_id, trait_args, impl_args, *own);
             }
         }
     }
