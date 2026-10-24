@@ -497,17 +497,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 trait_ty = %trait_ty.display(),
                 "impl refinement"
             );
-            // The span places the clauses at the method, as the analysis of its body does.
-            let span = tracing::info_span!(
-                "impl_refinement",
-                def_index = def_id.expect_local().local_def_index.as_u32()
-            );
-            let _guard = span.enter();
             let clauses = crate::rty::relate_refining_function_type(
                 impl_ty.ty.as_function().unwrap(),
                 trait_ty.ty.as_function().unwrap(),
             );
-            self.ctx.extend_clauses(clauses);
+            // The trait's `ensures` checked from the method's own: a check of its `ensures`.
+            self.ctx.extend_ensures_checks(clauses, def_id);
         }
     }
 
@@ -609,8 +604,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         continue;
                     };
                     let mut analyzer = self.ctx.local_def_analyzer(law_local);
-                    analyzer.owner_fn_id(owner).generic_args(args);
+                    analyzer
+                        .owner_fn_id(owner)
+                        .generic_args(args)
+                        .law_owner(owner);
                     analyzer.run(&expected);
+                    self.ctx
+                        .derived_evidence()
+                        .inherited_law_checked(impl_def_id, *law_def_id);
                 }
             }
         }

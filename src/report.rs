@@ -12,7 +12,7 @@
 //! entries refer to one another through the predicate variables' names.
 
 mod body;
-pub(crate) mod constraints;
+mod constraints;
 mod failure;
 mod formula;
 mod functions;
@@ -333,7 +333,7 @@ fn add_constraints(
         }
     }
     for (id, clause) in input.system.clauses.iter_enumerated() {
-        let provenance = constraints::Provenance::of(&clause.debug_info);
+        let provenance = crate::chc::debug::Provenance::of(&clause.debug_info);
         let Some(entry) = provenance.def.and_then(|def| entries.get_mut(&def)) else {
             continue;
         };

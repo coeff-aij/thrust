@@ -33,7 +33,7 @@ impl Iter for Range {
     #[thrust::trusted]
     #[thrust_macros::requires(true)]
     #[thrust_macros::ensures(thrust_models::forall(|i| result == Some(i) ==> Self::produces(*self, i)))]
-    fn next(&mut self) -> Option<Self::Item> { //~ ERROR: `next` is trusted here
+    fn next(&mut self) -> Option<Self::Item> { //~ ERROR: `next` is trusted for
         if self.start < self.end {
             let item = self.start;
             self.start += 1;

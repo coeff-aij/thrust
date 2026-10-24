@@ -631,6 +631,8 @@ pub struct Analyzer<'tcx> {
     body_checks: BodyChecks,
     /// Each derived predicate declared at an impl, by symbol, with the impl; see [`derived_pred`].
     derived_preds: Rc<RefCell<HashMap<chc::UserDefinedPred, derived_pred::DerivedAt<'tcx>>>>,
+    /// What the derived predicates are checked against; see [`derived_pred::Evidence`].
+    derived_evidence: Rc<RefCell<derived_pred::Evidence<'tcx>>>,
 }
 
 /// What the analysis did with the body of each function, shared by the analyzers that decide it.
@@ -866,6 +868,7 @@ impl<'tcx> Analyzer<'tcx> {
             fn_mut_reuse: Default::default(),
             spec_assumptions: Default::default(),
             derived_preds: Default::default(),
+            derived_evidence: Default::default(),
             reused_generic_instances: Default::default(),
             called_fn_tys: Default::default(),
             impl_methods_with_own_contract: Default::default(),
@@ -917,6 +920,24 @@ impl<'tcx> Analyzer<'tcx> {
         for clause in clauses {
             self.add_clause(clause);
         }
+    }
+
+    /// Adds clauses that check the `ensures` of `site`, marked so for the derived predicates.
+    pub fn extend_ensures_checks(
+        &mut self,
+        clauses: impl IntoIterator<Item = chc::Clause>,
+        site: DefId,
+    ) {
+        let start = self.system.borrow().clauses.len();
+        self.extend_clauses(clauses);
+        let end = self.system.borrow().clauses.len();
+        self.derived_evidence
+            .borrow_mut()
+            .ensures_checked(start..end, site);
+    }
+
+    pub fn derived_evidence(&self) -> std::cell::RefMut<'_, derived_pred::Evidence<'tcx>> {
+        self.derived_evidence.borrow_mut()
     }
 
     fn build_enum_def(&self, def_id: DefId) -> rty::EnumDatatypeDef {
@@ -1345,20 +1366,13 @@ impl<'tcx> Analyzer<'tcx> {
         if derived.is_empty() {
             return;
         }
-        let contracts: Vec<(LocalDefId, rty::FunctionType)> = self
-            .defs
-            .iter()
-            .filter_map(|(def_id, def_ty)| match def_ty {
-                DefTy::Concrete(rty) => Some((def_id.as_local()?, rty.ty.as_function()?.clone())),
-                _ => None,
-            })
-            .collect();
         derived_pred::check(
             self.tcx,
             &self.system.borrow(),
             &derived,
-            &contracts,
+            &self.derived_evidence.borrow(),
             &self.body_checks,
+            &self.trait_laws.borrow(),
         );
     }
 

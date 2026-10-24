@@ -305,6 +305,9 @@ pub struct Analyzer<'tcx, 'ctx> {
     /// so this is the owner's env (`analysis_key.owner_fn_id`), not `body`'s own def, which
     /// would lack the caller's where-clauses and fail to normalize such a projection.
     typing_env: mir_ty::TypingEnv<'tcx>,
+    /// The function whose `ensures` the return of `body` checks: the function itself, or for a
+    /// trait's default law checked for an impl, the impl's (see `local_def::Analyzer::law_owner`).
+    ensures_site: DefId,
 }
 
 impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
@@ -1196,7 +1199,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
         clauses.extend(builder.relate_sub_refined_type(&ret_rty, &expected_fn.ret));
 
-        self.ctx.extend_clauses(clauses);
+        self.ctx.extend_ensures_checks(clauses, self.ensures_site);
     }
 
     fn type_goto(
@@ -1770,6 +1773,22 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         } else {
             self.operand_type(func.clone()).ty
         };
+        // The postcondition is assumed after the call; whether the system proves it depends on
+        // what the call resolves to, decided once every body is analyzed.
+        if let rty::Type::Function(fn_ty) = &func_ty {
+            let callee = func
+                .const_fn_def()
+                .map(|(def_id, args)| (def_id, self.tcx.erase_regions(args)));
+            let span = self.body.basic_blocks[self.basic_block]
+                .terminator()
+                .source_info
+                .span;
+            self.ctx.derived_evidence().assume(
+                analyze::derived_pred::Assumption::CallEnsures(callee),
+                span,
+                fn_ty.clone(),
+            );
+        }
         let operands: Vec<_> = args.collect();
         let expected_args: IndexVec<_, _> = operands
             .iter()
@@ -2733,7 +2752,13 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             local_decls,
             prophecy_vars,
             typing_env,
+            ensures_site: local_def_id.to_def_id(),
         }
+    }
+
+    pub fn ensures_site(&mut self, site: DefId) -> &mut Self {
+        self.ensures_site = site;
+        self
     }
 
     pub fn drop_points(&mut self, drop_points: DropPoints) -> &mut Self {

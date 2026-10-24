@@ -142,6 +142,9 @@ pub struct Analyzer<'tcx, 'ctx> {
     generic_args: mir_ty::GenericArgsRef<'tcx>,
     drop_points: HashMap<BasicBlock, analyze::basic_block::DropPoints>,
     type_builder: TypeBuilder<'tcx>,
+    /// The impl, or the impl's function, a trait's default law is checked for
+    /// ([`Self::law_owner`]): the site its `ensures` checks are rules of.
+    law_owner: Option<DefId>,
 }
 
 /// The locals that the move paths `paths` are parts of.
@@ -1693,10 +1696,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 .basic_block_ty_with_precondition(self.analysis_key(), bb)
                 .clone();
             let drop_points = self.drop_points[&bb].clone();
+            let ensures_site = self
+                .law_owner
+                .unwrap_or_else(|| self.local_def_id.to_def_id());
             self.ctx
                 .basic_block_analyzer(self.analysis_key(), bb)
                 .body(self.body.clone())
                 .drop_points(drop_points)
+                .ensures_site(ensures_site)
                 .run(&rty, expected_fn_ty);
         }
     }
@@ -1841,6 +1848,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             generic_args,
             drop_points,
             type_builder,
+            law_owner: None,
         }
     }
 
@@ -1850,6 +1858,13 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
     pub fn analysis_key(&self) -> analyze::AnalysisKey<'tcx> {
         analyze::AnalysisKey::new(self.local_def_id, self.generic_args, self.owner_fn_id)
+    }
+
+    /// Marks this analysis as the check of a trait's default law for an impl, `owner` being the
+    /// impl's function it is typed under, or the impl when it has none.
+    pub fn law_owner(&mut self, owner: DefId) -> &mut Self {
+        self.law_owner = Some(owner);
+        self
     }
 
     pub fn owner_fn_id(&mut self, owner_fn_id: DefId) -> &mut Self {
@@ -2016,17 +2031,22 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let span = tracing::info_span!(
             "def",
             def = %self.tcx.def_path_str(self.local_def_id),
-            def_index = self.local_def_id.local_def_index.as_u32(),
-            owner_index = tracing::field::Empty,
+            def_index = self.local_def_id.local_def_index.as_u32()
         );
-        if let Some(owner) = self.inherited_owner() {
-            span.record("owner_index", owner.local_def_index.as_u32());
-        }
         let _guard = span.enter();
 
         self.ctx
             .body_checks()
             .record(self.local_def_id, analyze::BodyCheck::Checked);
+        if let Some(fn_ty) = expected.ty.as_function() {
+            // The body assumes its own precondition, which the system proves only at this
+            // crate's calls.
+            self.ctx.derived_evidence().assume(
+                analyze::derived_pred::Assumption::OwnRequires,
+                self.tcx.def_span(self.local_def_id),
+                fn_ty.clone(),
+            );
+        }
         self.unelaborate_derefs();
         analyze::reconstruct_slice_indexing::reconstruct(self.tcx, &mut self.body);
         analyze::two_phase_borrow::move_to_activation(self.tcx, &mut self.body);
@@ -2039,22 +2059,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         if analyze::candidate_atoms_enabled() {
             self.declare_candidate_atoms(expected);
         }
-    }
-
-    /// The function of an impl this def is analyzed for when it is a trait's default body (an
-    /// inherited law), which [`crate::report::constraints::Provenance`] reads as the clauses'
-    /// owner.
-    fn inherited_owner(&self) -> Option<LocalDefId> {
-        let def_id = self.local_def_id.to_def_id();
-        let is_trait_item = self
-            .tcx
-            .opt_associated_item(def_id)
-            .and_then(|item| item.trait_container(self.tcx))
-            .is_some();
-        if !is_trait_item {
-            return None;
-        }
-        self.owner_fn_id.as_local()
     }
 }
 

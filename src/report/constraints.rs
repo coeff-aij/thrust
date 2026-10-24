@@ -5,81 +5,17 @@ use std::collections::{BTreeMap, HashSet};
 
 use rustc_middle::mir::{self, BasicBlock};
 use rustc_middle::ty::TyCtxt;
-use rustc_span::def_id::{DefId, DefIndex, LocalDefId};
+use rustc_span::def_id::{DefId, LocalDefId};
 use rustc_span::Span;
 
 use crate::analyze::TemplateSite;
 use crate::chc;
+use crate::chc::debug::Provenance;
 use crate::refine::{EntryValue, VarPath};
 
 use super::body::{DefBody, NameKind};
 use super::formula::{self, show, Formula, Name, Term};
 use super::sites::{Names, Owner};
-
-/// Where a clause was made, read from the spans it was made in (see
-/// [`crate::chc::debug::SpanFieldsLayer`]).
-#[derive(Debug, Clone, Copy, Default)]
-pub struct Provenance {
-    pub def: Option<LocalDefId>,
-    /// The function of an impl a trait's default body (an inherited law) was analyzed for.
-    pub owner: Option<LocalDefId>,
-    pub bb: Option<BasicBlock>,
-    pub stmt: Option<usize>,
-}
-
-impl Provenance {
-    pub fn of(debug_info: &chc::DebugInfo) -> Self {
-        let def_at = |key| {
-            debug_info.number(key).map(|i| LocalDefId {
-                local_def_index: DefIndex::from_u32(i as u32),
-            })
-        };
-        let def = def_at("def_index");
-        let owner = def_at("owner_index");
-        let bb = debug_info
-            .number("bb_index")
-            .map(|i| BasicBlock::from_u32(i as u32));
-        let stmt = debug_info.number("stmt_idx").map(|i| i as usize);
-        Provenance {
-            def,
-            owner,
-            bb,
-            stmt,
-        }
-    }
-
-    /// The span of the code the clause was made at: its statement or terminator (a return's,
-    /// empty after the closing brace, widened over the brace), or else its function's signature.
-    pub fn span(&self, tcx: TyCtxt<'_>) -> Option<Span> {
-        let def = self.def?.to_def_id();
-        let body = tcx.is_mir_available(def).then(|| tcx.optimized_mir(def));
-        let in_body = body.zip(self.bb).and_then(|(body, bb)| {
-            let span = super::body::span_in(body, bb, self.stmt)?;
-            if !span.is_empty() {
-                return Some(span);
-            }
-            if !self.at_return(body) {
-                return None;
-            }
-            let brace = span.with_lo(rustc_span::BytePos(span.lo().0.checked_sub(1)?));
-            let snippet = tcx.sess.source_map().span_to_snippet(brace).ok()?;
-            (snippet == "}").then_some(brace)
-        });
-        Some(in_body.unwrap_or_else(|| tcx.def_span(def).source_callsite()))
-    }
-
-    /// Whether the clause was made at a return: the terminator of its block, not a statement.
-    pub fn at_return(&self, body: &mir::Body<'_>) -> bool {
-        let terminator = self
-            .bb
-            .filter(|_| self.stmt.is_none())
-            .and_then(|bb| body.basic_blocks.get(bb)?.terminator.as_ref());
-        matches!(
-            terminator.map(|t| &t.kind),
-            Some(mir::TerminatorKind::Return)
-        )
-    }
-}
 
 #[derive(Debug, Clone)]
 pub struct Constraint {
@@ -552,7 +488,7 @@ fn template_span(tcx: TyCtxt<'_>, premise: &Formula, input: &super::Input<'_>) -
             let body = tcx
                 .is_mir_available(def_id)
                 .then(|| tcx.optimized_mir(def_id))?;
-            super::body::span_in(body, bb, None)
+            chc::debug::span_in(body, bb, None)
         }
     }
 }

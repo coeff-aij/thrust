@@ -1,11 +1,13 @@
 # Derived trait predicates
 
 A `#[thrust_macros::predicate(derived)]` of a trait that an impl leaves out is declared as an
-unknown. Its rules are the checks of the `ensures` of the impl's functions and laws; any other
-check that concludes it, a rule that is not definite in it, an unanalyzed function of the impl,
-and an unproven assumption with it negated or in a premise (a function's own precondition, a
-trusted function's postcondition) are rejected (`src/analyze/derived_pred.rs`). Each fail twin
-and each rejected file is in `../../fail/derived_pred/`.
+unknown. Its rules are the checks of the `ensures` of the impl's functions and of the laws it
+inherits, marked where Thrust makes them; any other check that concludes it, a rule that is not
+definite in it, a function or inherited law of the impl left unanalyzed, and an assumption the
+crate does not prove with the predicate negated or in a premise (a function's own precondition,
+the postcondition of a call that does not resolve to an analyzed body) are rejected
+(`src/analyze/derived_pred.rs`). Each fail twin and each rejected file is in
+`../../fail/derived_pred/`.
 
 | file | what it shows | state |
 | --- | --- | --- |
@@ -25,3 +27,7 @@ and each rejected file is in `../../fail/derived_pred/`.
 | `../../fail/derived_pred/requires_premise.rs`, `requires_negated.rs` | a function's own `requires` has it in a premise, negated | rejected |
 | `../../fail/derived_pred/generic_impl.rs` | a generic impl leaves it out | rejected |
 | `../../fail/derived_pred/not_in_trait.rs`, `impl_item.rs` | the attribute on a free function, on an impl's item | rejected |
+| `../../fail/derived_pred/trusted_generic.rs`, `trusted_default.rs` | a trusted generic function's, a trusted default method's `ensures` with it in a premise, called at the type | rejected |
+| `../../fail/derived_pred/extern_spec.rs` | an extern specification of a foreign function with it in a premise | rejected |
+| `../../fail/derived_pred/unselected_law.rs` | the inherited law outside `THRUST_VERIFY_ONLY` | rejected: not checked for the impl |
+| `../../fail/derived_pred/default_in_rule_site.rs` | `next` calls a default method concluding it, under `THRUST_PER_INSTANCE_GENERICS` | rejected |

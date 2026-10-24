@@ -3511,14 +3511,24 @@ impl System {
         conclusions
     }
 
-    /// Whether `pred` occurs negatively in `formula` read as an assumption, following the
-    /// formula bodies of the user-defined predicates it applies.
-    pub fn occurs_negatively(&self, formula: &Formula, pred: &UserDefinedPred) -> bool {
+    /// Each of `formulas` (by index) read as an assumption, with each of `preds` that occurs
+    /// negatively in it, following the formula bodies of the user-defined predicates applied.
+    pub fn negative_occurrences<'p>(
+        &self,
+        formulas: &[&Formula],
+        preds: &HashSet<&'p UserDefinedPred>,
+    ) -> Vec<(usize, &'p UserDefinedPred)> {
         let bodies = self.formula_bodies();
-        !matches!(
-            definite::DefiniteWalk::new(pred, &bodies).formula(formula, false),
-            Ok(false)
-        )
+        let mut occurrences = Vec::new();
+        for (idx, formula) in formulas.iter().enumerate() {
+            for &pred in preds {
+                let mut walk = definite::DefiniteWalk::new(pred, &bodies);
+                if !matches!(walk.formula(formula, false), Ok(false)) {
+                    occurrences.push((idx, pred));
+                }
+            }
+        }
+        occurrences
     }
 
     /// The forall predicates of what a clause concludes: its head, and the part of its body

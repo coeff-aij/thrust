@@ -7,6 +7,11 @@
 
 pub mod origin;
 
+use rustc_middle::mir::{self, BasicBlock};
+use rustc_middle::ty::TyCtxt;
+use rustc_span::def_id::{DefIndex, LocalDefId};
+use rustc_span::Span;
+
 /// A variable of the analysis kept with its type erased, for the code that knows the type to
 /// read back (the report): what an argument of a template or an entry of a clause's typing
 /// environment was made for.
@@ -245,4 +250,69 @@ impl DebugInfo {
     pub fn origin_line(&self) -> OriginLine<'_> {
         OriginLine { inner: self }
     }
+}
+
+/// Where a clause was made, read from the spans it was made in (see
+/// [`SpanFieldsLayer`]).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Provenance {
+    pub def: Option<LocalDefId>,
+    pub bb: Option<BasicBlock>,
+    pub stmt: Option<usize>,
+}
+
+impl Provenance {
+    pub fn of(debug_info: &DebugInfo) -> Self {
+        let def = debug_info.number("def_index").map(|i| LocalDefId {
+            local_def_index: DefIndex::from_u32(i as u32),
+        });
+        let bb = debug_info
+            .number("bb_index")
+            .map(|i| BasicBlock::from_u32(i as u32));
+        let stmt = debug_info.number("stmt_idx").map(|i| i as usize);
+        Provenance { def, bb, stmt }
+    }
+
+    /// The span of the code the clause was made at: its statement or terminator (a return's,
+    /// empty after the closing brace, widened over the brace), or else its function's signature.
+    pub fn span(&self, tcx: TyCtxt<'_>) -> Option<Span> {
+        let def = self.def?.to_def_id();
+        let body = tcx.is_mir_available(def).then(|| tcx.optimized_mir(def));
+        let in_body = body.zip(self.bb).and_then(|(body, bb)| {
+            let span = span_in(body, bb, self.stmt)?;
+            if !span.is_empty() {
+                return Some(span);
+            }
+            if !self.at_return(body) {
+                return None;
+            }
+            let brace = span.with_lo(rustc_span::BytePos(span.lo().0.checked_sub(1)?));
+            let snippet = tcx.sess.source_map().span_to_snippet(brace).ok()?;
+            (snippet == "}").then_some(brace)
+        });
+        Some(in_body.unwrap_or_else(|| tcx.def_span(def).source_callsite()))
+    }
+
+    /// Whether the clause was made at a return: the terminator of its block, not a statement.
+    pub fn at_return(&self, body: &mir::Body<'_>) -> bool {
+        let terminator = self
+            .bb
+            .filter(|_| self.stmt.is_none())
+            .and_then(|bb| body.basic_blocks.get(bb)?.terminator.as_ref());
+        matches!(
+            terminator.map(|t| &t.kind),
+            Some(mir::TerminatorKind::Return)
+        )
+    }
+}
+
+/// The span of statement `stmt` of `bb` of `body`, or of its terminator, as the user wrote it (the
+/// call site of a macro such as `assert!`).
+pub fn span_in(body: &mir::Body<'_>, bb: BasicBlock, stmt: Option<usize>) -> Option<Span> {
+    let data = body.basic_blocks.get(bb)?;
+    let span = match stmt {
+        Some(idx) if idx < data.statements.len() => data.statements[idx].source_info.span,
+        _ => data.terminator.as_ref()?.source_info.span,
+    };
+    Some(span.source_callsite())
 }

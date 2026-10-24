@@ -43,7 +43,7 @@ impl Iter for Range {
 
 #[thrust_macros::requires(!Range::produces(*r, k) && k == 0)]
 fn own_requires_neg(r: &Range, k: isize) { //~ ERROR: is concluded here
-    assert!(false); //~^ ERROR: the precondition of
+    assert!(false); //~^ ERROR: own precondition
 }
 
 fn main() {}

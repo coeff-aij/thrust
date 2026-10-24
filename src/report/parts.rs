@@ -9,8 +9,8 @@ use rustc_span::Span;
 
 use crate::chc;
 
-use super::constraints::Provenance;
 use super::file_name;
+use crate::chc::debug::Provenance;
 
 /// A part of the system solved on its own.
 pub struct Part {

@@ -1,9 +1,10 @@
 //! Whether a clause is definite in one user-defined predicate, for the derived predicates of
 //! `crate::analyze::derived_pred`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use super::{Atom, Clause, Formula, Pred, TermVarIdx, UserDefinedPred};
+
 /// Whether a clause is definite in one predicate `pred`, the others fixed: read as the formula
 /// `¬body ∨ head` and put in prenex conjunctive form, every conjunct has at most one positive
 /// atom of `pred`, and none lies under an existential quantifier. Such a clause is a conjunction
@@ -12,12 +13,10 @@ use super::{Atom, Clause, Formula, Pred, TermVarIdx, UserDefinedPred};
 ///
 /// The walk reads each connective as it acts in the clause: in a negative position (the body)
 /// `∧` is a disjunction and `∀` an existential, by De Morgan. A predicate with a formula body is
-/// followed into its body; one entered again (a recursive body) is definite only if its body
-/// does not mention `pred`.
+/// followed into its body.
 pub(super) struct DefiniteWalk<'a> {
     pred: &'a UserDefinedPred,
     bodies: &'a HashMap<&'a UserDefinedPred, &'a Formula>,
-    entered: HashSet<&'a UserDefinedPred>,
 }
 
 /// Not definite.
@@ -28,46 +27,45 @@ impl<'a> DefiniteWalk<'a> {
         pred: &'a UserDefinedPred,
         bodies: &'a HashMap<&'a UserDefinedPred, &'a Formula>,
     ) -> Self {
-        Self {
-            pred,
-            bodies,
-            entered: HashSet::new(),
-        }
+        Self { pred, bodies }
     }
 
     /// Whether the clause concludes `pred` in what it checks: its head or a conjunct `¬ψ` of its
     /// body.
     pub(super) fn checks(mut self, clause: &'a Clause) -> bool {
-        let mut conjuncts = Vec::new();
-        clause.body.formula.conjuncts_into(&mut conjuncts);
-        let obligations = conjuncts.into_iter().filter_map(|f| match f {
-            Formula::Not(psi) => Some(&**psi),
-            _ => None,
-        });
-        let mut concludes = !matches!(self.atom(&clause.head, true), Ok(false));
-        for psi in obligations {
-            concludes |= !matches!(self.formula(psi, true), Ok(false));
-        }
-        concludes
+        !matches!(self.concluding_parts(clause, true), Ok(0))
     }
 
+    /// Whether the clause is definite in `pred`.
     pub(super) fn clause(mut self, clause: &'a Clause) -> bool {
-        let head = std::iter::once((&clause.head, true));
-        let body = clause.body.atoms.iter().map(|atom| (atom, false));
-        let mut concluding = 0;
-        for (atom, positive) in head.chain(body) {
-            match self.atom(atom, positive) {
-                Ok(true) => concluding += 1,
-                Ok(false) => {}
-                Err(Indefinite) => return false,
+        matches!(self.concluding_parts(clause, false), Ok(n) if n <= 1)
+    }
+
+    /// The parts of the clause, the disjuncts of `¬body ∨ head`, that conclude `pred`: its head
+    /// and its body's atoms and conjuncts, or with `only_checks` its head and the `ψ` of each
+    /// conjunct `¬ψ`.
+    fn concluding_parts(
+        &mut self,
+        clause: &'a Clause,
+        only_checks: bool,
+    ) -> Result<usize, Indefinite> {
+        let mut conjuncts = Vec::new();
+        clause.body.formula.conjuncts_into(&mut conjuncts);
+        let mut concluding = usize::from(self.atom(&clause.head, true)?);
+        if !only_checks {
+            for atom in &clause.body.atoms {
+                concluding += usize::from(self.atom(atom, false)?);
             }
         }
-        match self.formula(&clause.body.formula, false) {
-            Ok(true) => concluding += 1,
-            Ok(false) => {}
-            Err(Indefinite) => return false,
+        for conjunct in conjuncts {
+            let part = match (conjunct, only_checks) {
+                (Formula::Not(psi), true) => self.formula(psi, true)?,
+                (_, true) => false,
+                (f, false) => self.formula(f, false)?,
+            };
+            concluding += usize::from(part);
         }
-        concluding <= 1
+        Ok(concluding)
     }
 
     /// Whether `formula`, at the polarity `positive` in the clause, contains a positive atom of
@@ -143,17 +141,11 @@ impl<'a> DefiniteWalk<'a> {
         if pred == self.pred {
             return Ok(positive);
         }
-        let Some(body) = self.bodies.get(pred).copied() else {
-            return Ok(false);
-        };
-        if !self.entered.insert(pred) {
-            let mentions = body
-                .iter_atoms()
-                .any(|a| a.pred == Pred::UserDefined(self.pred.clone()));
-            return if mentions { Err(Indefinite) } else { Ok(false) };
+        // A predicate does not call itself (`annot_fn` rejects it; a recursive definition is a
+        // logic function, whose body is a term), so following the bodies terminates.
+        match self.bodies.get(pred).copied() {
+            Some(body) => self.formula(body, positive),
+            None => Ok(false),
         }
-        let concludes = self.formula(body, positive);
-        self.entered.remove(pred);
-        concludes
     }
 }

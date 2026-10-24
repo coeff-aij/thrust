@@ -44,10 +44,10 @@ impl Iter for Range {
 #[thrust::trusted]
 #[thrust_macros::requires((*r).start == 0)]
 #[thrust_macros::ensures(Range::produces(*r, k) ==> k != 7)]
-fn never_seven(r: &Range, k: isize) {} //~ ERROR: the postcondition, assumed without its body analyzed,
+fn never_seven(r: &Range, k: isize) {}
 
 fn main() {
     let r = Range { start: 0, end: 5 };
-    never_seven(&r, 7);
+    never_seven(&r, 7); //~ ERROR: the postcondition of this call
     assert!(false);
 }
