@@ -1394,6 +1394,7 @@ impl<'tcx> Analyzer<'tcx> {
             self.tcx,
             &self.system.borrow(),
             &derived,
+            &self.forall_pred_origins.borrow(),
             &self.derived_evidence.borrow(),
             &self.body_checks,
             &self.trait_laws.borrow(),

@@ -17,6 +17,7 @@ mod components;
 pub mod debug;
 mod dedup;
 mod definite;
+pub mod dependence;
 mod flatten;
 pub(crate) mod format_context;
 mod hoice;
@@ -1757,12 +1758,6 @@ where
 }
 
 impl ForallPred {
-    /// The symbol without the type arguments, the same for every instantiation of one trait
-    /// item (`refine::trait_forall_pred`).
-    pub fn symbol(&self) -> &str {
-        &self.inner
-    }
-
     pub fn new(
         inner: String,
         type_arguments: String,
@@ -3483,7 +3478,7 @@ impl System {
     }
 
     /// The formula bodies of the user-defined predicates, by symbol.
-    fn formula_bodies(&self) -> HashMap<&UserDefinedPred, &Formula> {
+    pub(crate) fn formula_bodies(&self) -> HashMap<&UserDefinedPred, &Formula> {
         self.user_defined_pred_defs
             .iter()
             .filter_map(|def| match &def.body {
@@ -3507,64 +3502,14 @@ impl System {
         let mut conclusions = Vec::new();
         for (id, clause) in self.clauses.iter_enumerated() {
             for &pred in preds {
-                if !definite::DefiniteWalk::new(definite::Target::UserDefined(pred), &bodies)
-                    .checks(clause)
-                {
+                if !definite::DefiniteWalk::new(pred, &bodies).checks(clause) {
                     continue;
                 }
-                let definite =
-                    definite::DefiniteWalk::new(definite::Target::UserDefined(pred), &bodies)
-                        .clause(clause);
+                let definite = definite::DefiniteWalk::new(pred, &bodies).clause(clause);
                 conclusions.push((id, pred, definite));
             }
         }
         conclusions
-    }
-
-    /// Each of `formulas` (by index) read as an assumption, with each of `preds` that occurs
-    /// negatively in it, following the formula bodies of the user-defined predicates applied.
-    pub fn negative_occurrences<'p>(
-        &self,
-        formulas: &[&Formula],
-        preds: &HashSet<&'p UserDefinedPred>,
-    ) -> Vec<(usize, &'p UserDefinedPred)> {
-        let targets: Vec<_> = preds
-            .iter()
-            .map(|&pred| (pred, definite::Target::UserDefined(pred)))
-            .collect();
-        self.negative_targets(formulas, &targets)
-    }
-
-    /// As [`Self::negative_occurrences`], for the forall predicates of the symbols `symbols`
-    /// (see [`ForallPred::symbol`]).
-    pub fn negative_forall_occurrences<'p>(
-        &self,
-        formulas: &[&Formula],
-        symbols: &[&'p str],
-    ) -> Vec<(usize, &'p str)> {
-        let targets: Vec<_> = symbols
-            .iter()
-            .map(|&s| (s, definite::Target::Forall(s)))
-            .collect();
-        self.negative_targets(formulas, &targets)
-    }
-
-    fn negative_targets<'t, T: Copy>(
-        &self,
-        formulas: &[&Formula],
-        targets: &[(T, definite::Target<'t>)],
-    ) -> Vec<(usize, T)> {
-        let bodies = self.formula_bodies();
-        let mut occurrences = Vec::new();
-        for (idx, formula) in formulas.iter().enumerate() {
-            for &(key, target) in targets {
-                let mut walk = definite::DefiniteWalk::new(target, &bodies);
-                if !matches!(walk.formula(formula, false), Ok(false)) {
-                    occurrences.push((idx, key));
-                }
-            }
-        }
-        occurrences
     }
 
     /// The forall predicates of what a clause concludes: its head, and the part of its body

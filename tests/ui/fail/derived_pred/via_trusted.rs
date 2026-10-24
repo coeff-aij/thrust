@@ -49,7 +49,7 @@ fn below_five<I: Iter<Item = isize>>(it: &I, k: isize) {}
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(I::produces(*it, k) ==> k < 5)]
 fn via<I: Iter<Item = isize>>(it: &I, k: isize) {
-    below_five(it, k) //~ ERROR: over a type parameter
+    below_five(it, k) //~ ERROR: dependency closure
 }
 
 fn main() {

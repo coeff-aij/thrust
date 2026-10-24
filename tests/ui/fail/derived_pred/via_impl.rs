@@ -57,7 +57,7 @@ impl Peek for Small {
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(I::produces(*it, k) ==> k < 5)]
 fn via<I: Peek>(it: &I, k: isize) {
-    it.check(k) //~ ERROR: over a type parameter
+    it.check(k) //~ ERROR: dependency closure
 }
 
 fn main() {

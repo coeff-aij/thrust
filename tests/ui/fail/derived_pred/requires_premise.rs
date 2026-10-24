@@ -43,7 +43,7 @@ impl Iter for Range {
 
 #[thrust_macros::requires(k == 0)]
 #[thrust_macros::requires(Range::produces(*r, k) ==> k != 0)]
-fn own_requires_imp(r: &Range, k: isize) { //~ ERROR: the derived predicate
+fn own_requires_imp(r: &Range, k: isize) { //~ ERROR: own precondition
     assert!(false);
 }
 

@@ -12,8 +12,11 @@
 //!   least fixed point of a monotone operator, `tarski1955lattice`).
 //! - C: every other check has `P` only negatively, so what it proves of a solution's `P` holds of
 //!   the least relation.
-//! - A: every assumption the system does not discharge has `P` only positively, so a statement
-//!   true of the least relation stays true of a solution's.
+//! - A: every assumption the system does not discharge depends on `P` only monotonically, so a
+//!   statement true of the least relation stays true of a solution's. It is checked against the
+//!   dependency closure `D` of the derived predicates ([`dependency`] by item,
+//!   `chc::dependence` by symbol): walked with its polarity through the bodies known where it is
+//!   assumed, an assumption may apply `P` only positively and no other member without a body.
 //!
 //! The marks this needs are set where the clauses and assumptions are made, not read back from
 //! debug information: [`Evidence`] records which clauses check whose `ensures`, which inherited
@@ -23,19 +26,23 @@
 //! trait's method called at a type parameter, every impl's); every
 //! other one (a trusted function, generic or a trait's default method included, an extern
 //! specification, `std.rs`, a function outside `THRUST_VERIFY_ONLY`, a call through a value) gets
-//! condition A at the instance it is assumed at.
+//! condition A where it is assumed, over a generic body's type parameters too.
 
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
+use rustc_hir::def::DefKind;
 use rustc_middle::ty::{self as mir_ty, TyCtxt, TypeVisitableExt as _};
-use rustc_span::def_id::DefId;
+use rustc_span::def_id::{DefId, LocalDefId};
 use rustc_span::Span;
 
-use crate::analyze::{BodyCheck, BodyChecks};
+use crate::analyze::{pred_inst, BodyCheck, BodyChecks};
 use crate::chc;
 use crate::chc::debug::Provenance;
+use crate::chc::dependence::ForallMember;
 use crate::rty;
+
+mod dependency;
 
 /// Where a derived predicate is declared: the trait item `pred_def_id` at the impl
 /// `impl_def_id`.
@@ -174,6 +181,7 @@ pub fn check<'tcx>(
     tcx: TyCtxt<'tcx>,
     system: &chc::System,
     derived: &HashMap<chc::UserDefinedPred, DerivedAt<'tcx>>,
+    origins: &HashMap<chc::ForallPred, pred_inst::ForallPredOrigin<'tcx>>,
     evidence: &Evidence<'tcx>,
     body_checks: &BodyChecks,
     trait_laws: &rustc_data_structures::fx::FxIndexMap<DefId, Vec<DefId>>,
@@ -182,7 +190,7 @@ pub fn check<'tcx>(
         check_rule_sites_analyzed(tcx, at, evidence, body_checks, trait_laws);
     }
     let preds: HashSet<&chc::UserDefinedPred> = derived.keys().collect();
-    check_assumptions(tcx, system, derived, &preds, evidence, body_checks);
+    check_assumptions(tcx, system, derived, origins, evidence, body_checks);
     check_conclusions(tcx, system, derived, &preds, evidence);
     tcx.dcx().abort_if_errors();
 }
@@ -230,13 +238,78 @@ fn check_rule_sites_analyzed<'tcx>(
     }
 }
 
-/// Condition A: each assumption the system does not discharge has the derived predicates only
-/// positively, at the instance it is assumed at.
+/// What each forall predicate or function is with respect to the derived predicates, by the
+/// item it stands for ([`dependency::dependent_items`]). One without a recorded origin is a
+/// closure's contract (dependent when some closure's specification refers to a dependent item),
+/// the postcondition of a trait's method without a specification (dependent when some impl
+/// method of a foreign trait has a specification that does), or else dependent.
+fn forall_members<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    derived: &HashMap<chc::UserDefinedPred, DerivedAt<'tcx>>,
+    origins: &HashMap<chc::ForallPred, pred_inst::ForallPredOrigin<'tcx>>,
+) -> impl Fn(&chc::ForallPred) -> ForallMember {
+    let seeds: HashSet<DefId> = derived.values().map(|at| at.pred_def_id).collect();
+    let dependent = dependency::dependent_items(tcx, &seeds);
+    let positive_seeds: HashSet<DefId> = seeds
+        .iter()
+        .copied()
+        .filter(|seed| !dependency::written_dependent_instance(tcx, *seed, &dependent))
+        .collect();
+    let specifies_dependent = |def: LocalDefId| {
+        dependency::contract_fns(tcx, def)
+            .iter()
+            .any(|f| dependent.contains(f))
+    };
+    let local_defs: Vec<LocalDefId> = tcx.hir_crate_items(()).definitions().collect();
+    let closures = local_defs
+        .iter()
+        .copied()
+        .filter(|def| tcx.def_kind(*def) == DefKind::Closure)
+        .any(specifies_dependent);
+    let method_posts = local_defs
+        .into_iter()
+        .filter(|def| {
+            tcx.impl_of_assoc(def.to_def_id())
+                .and_then(|impl_def_id| tcx.impl_trait_ref(impl_def_id))
+                .is_some_and(|trait_ref| !trait_ref.skip_binder().def_id.is_local())
+        })
+        .any(specifies_dependent);
+    let origins: HashMap<chc::ForallPred, DefId> = origins
+        .iter()
+        .map(|(pred, origin)| (pred.clone(), origin.def_id))
+        .collect();
+    let member = |depends: bool| {
+        if depends {
+            ForallMember::Dependent
+        } else {
+            ForallMember::Independent
+        }
+    };
+    move |pred: &chc::ForallPred| match origins.get(pred) {
+        Some(def_id) if positive_seeds.contains(def_id) => ForallMember::Derived,
+        Some(def_id) => member(dependent.contains(def_id)),
+        None if ["q_pre_", "q_post_", "q_hist_inv_"]
+            .iter()
+            .any(|prefix| pred.inner().starts_with(prefix)) =>
+        {
+            member(closures)
+        }
+        None if pred.inner().starts_with("q_method_post_") => member(method_posts),
+        None => ForallMember::Dependent,
+    }
+}
+
+/// Condition A: each assumption the system does not discharge is walked with its polarity
+/// through the bodies known here; a derived predicate must occur positively, and any other
+/// member of the dependency closure reached without a body (a forall predicate at a type
+/// parameter, a term) is rejected. A generic body's own precondition is walked for the
+/// user-defined predicates only: the body is verified for every interpretation of its type
+/// parameters' predicates, and its callers establish it at their instances.
 fn check_assumptions<'tcx>(
     tcx: TyCtxt<'tcx>,
     system: &chc::System,
     derived: &HashMap<chc::UserDefinedPred, DerivedAt<'tcx>>,
-    preds: &HashSet<&chc::UserDefinedPred>,
+    origins: &HashMap<chc::ForallPred, pred_inst::ForallPredOrigin<'tcx>>,
     evidence: &Evidence<'tcx>,
     body_checks: &BodyChecks,
 ) {
@@ -257,33 +330,38 @@ fn check_assumptions<'tcx>(
         };
         assumed.push((assumption, *span, formula));
     }
-    let formulas: Vec<&chc::Formula> = assumed.iter().map(|(_, _, f)| f).collect();
-    check_assumptions_at_type_parameters(tcx, system, derived, &assumed, &formulas);
+    if assumed.is_empty() {
+        return;
+    }
+    let derived_preds: HashSet<&chc::UserDefinedPred> = derived.keys().collect();
+    let members = forall_members(tcx, derived, origins);
+    let dependence = system.dependence(&derived_preds, &members);
     let mut reported = HashSet::new();
-    for (idx, pred) in system.negative_occurrences(&formulas, preds) {
-        let (assumption, span, _) = &assumed[idx];
-        if !reported.insert((*span, pred.clone())) {
-            continue;
+    for (assumption, span, formula) in &assumed {
+        let exempt = matches!(assumption, Assumption::OwnRequires);
+        for violation in dependence.violations(formula, exempt) {
+            if !reported.insert((*span, violation.clone())) {
+                continue;
+            }
+            let what = match assumption {
+                Assumption::OwnRequires => {
+                    "this function's own precondition, which only this \
+                                            crate's callers establish,"
+                }
+                Assumption::CallEnsures(_) => {
+                    "the postcondition of this call, whose callee's \
+                                               body is not analyzed,"
+                }
+            };
+            tcx.dcx().span_err(
+                *span,
+                format!(
+                    "{what} assumes {violation}, of a derived predicate's dependency closure; a \
+                     larger relation than the least one could make it stronger than stated; \
+                     define the predicate in the impl"
+                ),
+            );
         }
-        let what = match assumption {
-            Assumption::OwnRequires => {
-                "this function's own precondition, which only this \
-                                        crate's callers establish,"
-            }
-            Assumption::CallEnsures(_) => {
-                "the postcondition of this call, whose callee's body \
-                                           is not analyzed,"
-            }
-        };
-        tcx.dcx().span_err(
-            *span,
-            format!(
-                "{what} assumes the derived predicate `{}` negated or in a premise, which a \
-                 larger relation than the least one could make stronger than stated; define the \
-                 predicate in the impl",
-                derived[pred].path(tcx)
-            ),
-        );
     }
 }
 
@@ -326,50 +404,5 @@ fn check_conclusions<'tcx>(
         if reported.insert((span, pred.clone())) {
             tcx.dcx().span_err(span, message);
         }
-    }
-}
-
-/// Condition A for the undischarged postconditions a generic body assumes over its type
-/// parameters. Such an assumption names a trait's predicate as a forall predicate, and a body
-/// verified once is a valid premise at an instance only if the assumption, instantiated there,
-/// passes A: A ranges over the assumptions not discharged within the system, closed under
-/// instantiation. Instantiating each generic body's assumptions at every instance it is used at,
-/// transitively through generic callees, is not implemented; instead an undischarged
-/// postcondition in which the forall predicate of a derived trait predicate occurs negatively is
-/// rejected wherever it is assumed. A body's own precondition over type parameters is left
-/// alone: the body is verified for every interpretation, the least relation included, and
-/// callers establish it at their instances.
-fn check_assumptions_at_type_parameters<'tcx>(
-    tcx: TyCtxt<'tcx>,
-    system: &chc::System,
-    derived: &HashMap<chc::UserDefinedPred, DerivedAt<'tcx>>,
-    assumed: &[(&Assumption<'tcx>, Span, chc::Formula)],
-    formulas: &[&chc::Formula],
-) {
-    let mut symbols: Vec<(String, &DerivedAt<'tcx>)> = Vec::new();
-    for at in derived.values() {
-        let symbol = crate::refine::stable_def_id_symbol(tcx, at.pred_def_id, "q");
-        if !symbols.iter().any(|(s, _)| *s == symbol) {
-            symbols.push((symbol, at));
-        }
-    }
-    let names: Vec<&str> = symbols.iter().map(|(s, _)| s.as_str()).collect();
-    let mut reported = HashSet::new();
-    for (idx, symbol) in system.negative_forall_occurrences(formulas, &names) {
-        let (assumption, span, _) = &assumed[idx];
-        if matches!(assumption, Assumption::OwnRequires) || !reported.insert((*span, symbol)) {
-            continue;
-        }
-        let at = symbols.iter().find(|(s, _)| s == symbol).unwrap().1;
-        tcx.dcx().span_err(
-            *span,
-            format!(
-                "the postcondition of this call, whose callee's body is not analyzed, assumes \
-                 `{}` negated or in a premise over a type parameter; at an instance where it is \
-                 the derived predicate it states the least relation, which this check does not \
-                 follow into the instance; define the predicate in the impl",
-                tcx.def_path_str(at.pred_def_id)
-            ),
-        );
     }
 }
