@@ -226,8 +226,6 @@ impl<I: Idx + thrust_models::Model, J: Idx + thrust_models::Model> IndexSlice<I,
     // `debug_assert_eq!` calls dropped (debug assertions are off; rewrites.md S6). The body
     // panics when an element is not below the length (`inverse[i2]`) or an index up to the length
     // cannot be built (`iter_enumerated`).
-    #[thrust::trusted]
-    #[thrust::callable]
     #[thrust_macros::requires(forall(|k: USize| !(0 <= k && k <= (*self).len()) || <I as Idx>::can_new(k)))]
     #[thrust_macros::requires(forall(|k: USize, i: USize|
         !(0 <= k && k < (*self).len() && <J as Idx>::index_is((*self)[k], i)) || i < (*self).len()))]
