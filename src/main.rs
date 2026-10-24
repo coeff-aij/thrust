@@ -36,6 +36,9 @@ impl Callbacks for CompilerCalls {
         config
             .crate_check_cfg
             .push("cfg(thrust_int_range)".to_owned());
+        config
+            .crate_check_cfg
+            .push("cfg(thrust_std_conformance)".to_owned());
         if int_range_enabled() {
             config.crate_cfg.push("thrust_int_range".to_owned());
         }

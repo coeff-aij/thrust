@@ -1109,6 +1109,24 @@ mod thrust_models {
     }
 }
 
+// The target of an extern spec whose std body is safe code: std's function, or under
+// `cfg(thrust_std_conformance)` the transcription of that body which a test of
+// `tests/ui/pass/std_specs/` defines, and which Thrust then checks against the spec as it checks
+// any local target.
+#[cfg(not(thrust_std_conformance))]
+macro_rules! thrust_std_target {
+    ($std:expr, $transcription:expr) => {
+        $std
+    };
+}
+
+#[cfg(thrust_std_conformance)]
+macro_rules! thrust_std_target {
+    ($std:expr, $transcription:expr) => {
+        $transcription
+    };
+}
+
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(result == thrust_models::model::Box::new(x))]
@@ -1145,7 +1163,10 @@ fn _extern_spec_std_mem_replace<T>(dest: &mut T, src: T) -> T where T: thrust_mo
 fn _extern_spec_option_partialeq_eq<T>(x: &Option<T>, y: &Option<T>) -> bool
   where T: thrust_models::Model + thrust_models::ModelEq + PartialEq
 {
-    <Option<T> as PartialEq>::eq(x, y)
+    thrust_std_target!(
+        <Option<T> as PartialEq>::eq(x, y),
+        crate::std_transcriptions::option_eq(x, y)
+    )
 }
 
 #[thrust::extern_spec_fn]
