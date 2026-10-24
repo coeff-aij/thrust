@@ -813,6 +813,7 @@ impl<'tcx> TypeBuilder<'tcx> {
         match ty.kind() {
             mir_ty::TyKind::Bool => rty::Type::bool(),
             mir_ty::TyKind::Str => rty::Type::string(),
+            mir_ty::TyKind::RawPtr(..) | mir_ty::TyKind::Dynamic(..) => rty::Type::opaque(),
             mir_ty::TyKind::Ref(_, elem_ty, mir_ty::Mutability::Not) => {
                 let elem_ty = self.build_in(m, *elem_ty);
                 rty::PointerType::immut_to_refined(elem_ty).into()
@@ -1180,6 +1181,36 @@ impl<'tcx> TypeBuilder<'tcx> {
     /// The contract of the trait method `def_id`, which has no specification, called at
     /// `generic_args` that still name type parameters: it can be called with any arguments, and
     /// its result is related to them by a forall predicate, which `post!` names.
+    /// The type of a function whose precondition is `false`: its last parameter, or a unit
+    /// parameter when it has none, is refined by `false`, and its result is unconstrained.
+    pub fn build_unreachable_function_type(
+        &self,
+        def_id: DefId,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
+    ) -> rty::FunctionType {
+        let sig = self
+            .tcx
+            .fn_sig(def_id)
+            .instantiate(self.tcx, generic_args)
+            .skip_binder();
+        let mut params: IndexVec<rty::FunctionParamIdx, rty::RefinedType<rty::FunctionParamIdx>> =
+            sig.inputs()
+                .iter()
+                .map(|ty| self.build(*ty).vacuous())
+                .collect();
+        if params.is_empty() {
+            params.push(rty::RefinedType::unrefined(rty::Type::unit()));
+        }
+        params
+            .raw
+            .last_mut()
+            .unwrap()
+            .refinement
+            .push_conj(rty::Refinement::bottom());
+        let ret = self.build(sig.output()).vacuous();
+        rty::FunctionType::new(params, ret)
+    }
+
     pub fn build_unspecified_method_type(
         &self,
         def_id: DefId,

@@ -70,6 +70,11 @@ impl<'a> FormulaFnTypeLowering<'a> {
     pub fn lower_return_type(&self, ret: &syn::ReturnType) -> syn::Type {
         match ret {
             syn::ReturnType::Default => syn::parse_quote!(<() as crate::thrust_models::Model>::Ty),
+            // A function that does not return has no result for a formula to name; `!` is not a
+            // stable type outside a return position, so its formulas bind `result` at `()`.
+            syn::ReturnType::Type(_, ty) if matches!(**ty, syn::Type::Never(_)) => {
+                syn::parse_quote!(<() as crate::thrust_models::Model>::Ty)
+            }
             syn::ReturnType::Type(_, ty) => {
                 let lowered_ty = self.lower_closure_type_params_in_ty(ty);
                 syn::parse_quote!(<#lowered_ty as crate::thrust_models::Model>::Ty)

@@ -756,6 +756,11 @@ mod thrust_models {
         type Ty = bool;
     }
 
+    /// A message of `expect`; a `str` is opaque, so its model carries nothing.
+    impl<'a> Model for &'a str {
+        type Ty = &'a str;
+    }
+
     impl Model for std::cmp::Ordering {
         type Ty = std::cmp::Ordering;
     }
@@ -1155,6 +1160,14 @@ fn _extern_spec_option_unwrap<T>(opt: Option<T>) -> T where T: thrust_models::Mo
     Option::unwrap(opt)
 }
 
+// `expect` is `unwrap` with a message, as Creusot and Verus specify it.
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(opt != None)]
+#[thrust_macros::ensures(Some(result) == opt)]
+fn _extern_spec_option_expect<T>(opt: Option<T>, msg: &str) -> T where T: thrust_models::Model {
+    Option::expect(opt, msg)
+}
+
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(
@@ -1320,6 +1333,16 @@ fn _extern_spec_result_unwrap<T, E: std::fmt::Debug>(res: Result<T, E>) -> T
         E: thrust_models::Model,
 {
     Result::unwrap(res)
+}
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(thrust_models::exists(|x| res == Ok(x)))]
+#[thrust_macros::ensures(Ok(result) == res)]
+fn _extern_spec_result_expect<T, E: std::fmt::Debug>(res: Result<T, E>, msg: &str) -> T
+  where T: thrust_models::Model,
+        E: thrust_models::Model,
+{
+    Result::expect(res, msg)
 }
 
 #[thrust::extern_spec_fn]

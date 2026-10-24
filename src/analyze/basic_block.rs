@@ -609,6 +609,83 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         }
     }
 
+    /// The value of type `ty` at `offset` in the constant allocation `alloc`. An array is read
+    /// element by element and a shared reference through the pointer the allocation holds there,
+    /// as a promoted `&[&str; N]` of a panic message is; anything else from its bytes.
+    fn const_alloc_ty(
+        &self,
+        alloc: mir::interpret::ConstAllocation<'tcx>,
+        offset: rustc_abi::Size,
+        ty: mir_ty::Ty<'tcx>,
+    ) -> PlaceType {
+        let layout = self
+            .tcx
+            .layout_of(self.typing_env.as_query_input(ty))
+            .unwrap();
+        match ty.kind() {
+            mir_ty::TyKind::Array(elem, len) => {
+                let len = len
+                    .try_to_target_usize(self.tcx)
+                    .expect("array constant of unevaluated length");
+                let elem_size = self
+                    .tcx
+                    .layout_of(self.typing_env.as_query_input(*elem))
+                    .unwrap()
+                    .size;
+                let mut builder = PlaceTypeBuilder::default();
+                let elem_ty = self.type_builder.build(*elem).vacuous().ty;
+                let mut seq = chc::Term::seq_empty(elem_ty.to_sort());
+                for i in 0..len {
+                    let pty = self.const_alloc_ty(alloc, offset + elem_size * i, *elem);
+                    let (_, elem_term) = builder.subsume(pty);
+                    seq = seq.seq_concat(elem_term.seq_unit());
+                }
+                builder.build(
+                    rty::Type::Seq(Box::new(rty::RefinedType::unrefined(elem_ty))),
+                    seq,
+                )
+            }
+            mir_ty::TyKind::Ref(_, pointee, mir::Mutability::Not) => {
+                let ptr_size = self.tcx.data_layout.pointer_size();
+                let prov = alloc
+                    .inner()
+                    .provenance()
+                    .get_ptr(offset)
+                    .expect("reference in a constant without provenance");
+                let read_usize = |at: rustc_abi::Size| {
+                    let range = at.bytes() as usize..(at + ptr_size).bytes() as usize;
+                    let bytes = alloc
+                        .inner()
+                        .inspect_with_uninit_and_ptr_outside_interpreter(range);
+                    let mut buf = [0u8; 8];
+                    buf[..bytes.len()].copy_from_slice(bytes);
+                    // TODO: see target endianness
+                    u64::from_ne_bytes(buf)
+                };
+                let target_offset = rustc_abi::Size::from_bytes(read_usize(offset));
+                let mir::interpret::GlobalAlloc::Memory(target) =
+                    self.tcx.global_alloc(prov.alloc_id())
+                else {
+                    unimplemented!("const ref alloc in a constant");
+                };
+                if pointee.is_str() {
+                    // A `str` has the null sort; its content is not modelled.
+                    return PlaceType::with_ty_and_term(rty::Type::string(), chc::Term::null())
+                        .immut();
+                }
+                self.const_alloc_ty(target, target_offset, *pointee).immut()
+            }
+            _ => {
+                let range =
+                    offset.bytes() as usize..(offset.bytes() + layout.size.bytes()) as usize;
+                let bytes = alloc
+                    .inner()
+                    .inspect_with_uninit_and_ptr_outside_interpreter(range);
+                self.const_bytes_ty(ty, bytes)
+            }
+        }
+    }
+
     fn const_value_ty(&self, val: &mir::ConstValue, ty: &mir_ty::Ty<'tcx>) -> PlaceType {
         if let Some((scalar_ty, term)) = analyze::scalar_const_term(*ty, val) {
             return PlaceType::with_ty_and_term(scalar_ty, term);
@@ -668,18 +745,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 let global_alloc = self.tcx.global_alloc(prov.alloc_id());
                 match global_alloc {
                     mir::interpret::GlobalAlloc::Memory(alloc) => {
-                        let typing_env = self.typing_env;
-                        let layout = self
-                            .tcx
-                            .layout_of(typing_env.as_query_input(*elem))
-                            .unwrap();
-                        let size = layout.size;
-                        let range =
-                            offset.bytes() as usize..(offset.bytes() + size.bytes()) as usize;
-                        let bytes = alloc
-                            .inner()
-                            .inspect_with_uninit_and_ptr_outside_interpreter(range);
-                        self.const_bytes_ty(*elem, bytes).immut()
+                        self.const_alloc_ty(alloc, offset, *elem).immut()
                     }
                     _ => unimplemented!("const ptr alloc: {:?}", global_alloc),
                 }
@@ -1613,7 +1679,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         "std" | "core" | "alloc"
                     );
                 if unchecked_foreign_impl {
-                    self.no_specification(resolved_def_id, resolved_args);
+                    return self.unspecified_extern_ty(resolved_def_id, resolved_args);
                 }
                 // Nor is an ignored impl method's body checked against it.
                 if analyze::is_ignored_crate_fn(self.tcx, resolved_def_id) {
@@ -1631,7 +1697,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     return def_ty.ty;
                 }
                 if resolved_def_id == def_id && !def_id.is_local() {
-                    self.no_specification(def_id, args);
+                    return self.unspecified_extern_ty(def_id, args);
                 }
                 if resolved_def_id == def_id {
                     panic!("unknown def: {:?}, args: {:?}", def_id, args);
@@ -1653,7 +1719,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     // Also reached when the def's only specification is an extern spec written
                     // for another instantiation of it (see `bind_spec_args`).
                     if !resolved_def_id.is_local() {
-                        self.no_specification(resolved_def_id, resolved_args);
+                        return self.unspecified_extern_ty(resolved_def_id, resolved_args);
                     }
                     panic!(
                         "unknown def (resolved): {:?}, args: {:?}",
@@ -1665,25 +1731,75 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         }
     }
 
-    /// Stops at the call to `def_id`, a function of another crate that has no specification at
-    /// `args`, which the analysis cannot go past.
-    fn no_specification(&self, def_id: DefId, args: mir_ty::GenericArgsRef<'tcx>) -> ! {
+    /// The type of `def_id`, a function of another crate that has no specification at `args`:
+    /// its precondition is `false`, so the call must be unreachable, as Creusot specifies a
+    /// contractless external function. This is how a panic reaches its entry points
+    /// (`panic_fmt`, `assert_failed`, ...) and the constructors of its payload
+    /// (`fmt::Arguments::new_v1`, ...), which only a panicking path calls. A call that may be
+    /// on a path that does not panic is verified as well, and a warning names the function.
+    fn unspecified_extern_ty(
+        &self,
+        def_id: DefId,
+        args: mir_ty::GenericArgsRef<'tcx>,
+    ) -> rty::Type<rty::Closed> {
+        if !self.diverges(def_id) && !self.only_diverges_after() {
+            self.tcx
+                .dcx()
+                .struct_span_warn(
+                    self.call_span(def_id),
+                    format!(
+                        "thrust: no specification of `{}`, which `{}` calls; the call is \
+                         verified unreachable",
+                        self.tcx.def_path_str_with_args(def_id, args),
+                        self.tcx.def_path_str(self.type_builder.owner_fn_id()),
+                    ),
+                )
+                .with_help(
+                    "to call it, give the call a contract: call it through a function marked \
+                     `#[thrust::trusted]` with `requires` and `ensures`, or write a \
+                     specification of it as Thrust's `std.rs` does (`#[thrust::extern_spec_fn]`)",
+                )
+                .emit();
+        }
+        self.type_builder
+            .build_unreachable_function_type(def_id, args)
+            .into()
+    }
+
+    /// Whether every path from the current block ends in a call that does not return or in
+    /// `Unreachable`, as the blocks that build a panic's payload do. Only the warning of
+    /// [`Self::unspecified_extern_ty`] depends on it.
+    fn only_diverges_after(&self) -> bool {
+        let mut visited = std::collections::HashSet::new();
+        let mut pending = vec![self.basic_block];
+        while let Some(bb) = pending.pop() {
+            if !visited.insert(bb) {
+                return false;
+            }
+            match &self.body.basic_blocks[bb].terminator().kind {
+                TerminatorKind::Call { target: None, .. } | TerminatorKind::Unreachable => {}
+                TerminatorKind::Call {
+                    target: Some(target),
+                    ..
+                }
+                | TerminatorKind::Goto { target }
+                | TerminatorKind::Assert { target, .. }
+                | TerminatorKind::Drop { target, .. } => pending.push(*target),
+                TerminatorKind::SwitchInt { targets, .. } => pending.extend(targets.all_targets()),
+                _ => return false,
+            }
+        }
+        true
+    }
+
+    /// Whether `def_id` returns `!`, as the panic entry points do.
+    fn diverges(&self, def_id: DefId) -> bool {
         self.tcx
-            .dcx()
-            .struct_span_fatal(
-                self.call_span(def_id),
-                format!(
-                    "thrust: no specification of `{}`, which `{}` calls",
-                    self.tcx.def_path_str_with_args(def_id, args),
-                    self.tcx.def_path_str(self.type_builder.owner_fn_id()),
-                ),
-            )
-            .with_help(
-                "give the call a contract: call it through a function marked \
-                 `#[thrust::trusted]` with `requires` and `ensures`, or write a specification of \
-                 it as Thrust's `std.rs` does (`#[thrust::extern_spec_fn]`)",
-            )
-            .emit()
+            .fn_sig(def_id)
+            .skip_binder()
+            .output()
+            .skip_binder()
+            .is_never()
     }
 
     /// The span of the code of the current block that calls or names `def_id`: its terminator,
