@@ -26,7 +26,6 @@ impl Hash64 {
     }
 
     #[inline]
-    #[thrust::trusted]
     #[thrust::callable]
     pub fn wrapping_add(self, other: Self) -> Self {
         Self {

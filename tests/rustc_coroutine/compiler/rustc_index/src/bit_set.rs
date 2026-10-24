@@ -93,7 +93,6 @@ impl<T: Idx> DenseBitSet<T> {
     }
 
     #[inline]
-    #[thrust::trusted]
     #[thrust_macros::requires(forall(|i: USize| <T as Idx>::index_is(elem, i) ==> i < (*self).0))]
     #[thrust_macros::requires(Self::words_cover_domain(*self))]
     #[thrust_macros::ensures(forall(|i: USize| <T as Idx>::index_is(elem, i) && (result == true) ==> Self::mem(*self, i)))]
@@ -481,8 +480,6 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
 }
 
 #[inline]
-#[thrust_macros::requires(forall(|i: USize, j: USize|
-    <T as Idx>::index_is(domain_size, i) && <T as Idx>::index_is(domain_size, j) ==> i == j))]
 #[thrust_macros::ensures(forall(|i: USize| <T as Idx>::index_is(domain_size, i)
     ==> 64 * result >= i && 64 * result < i + 64))]
 fn num_words<T: Idx>(domain_size: T) -> usize {
@@ -490,9 +487,6 @@ fn num_words<T: Idx>(domain_size: T) -> usize {
 }
 
 #[inline]
-// Trusted: the body verifies against this contract only with `index_is` functional, and then
-// the solver gives no answer at 120 s.
-#[thrust::trusted]
 #[thrust_macros::ensures(forall(|i: USize| <T as Idx>::index_is(elem, i)
     ==> result.0 == i / 64
         && result.1 == (BitVec::<64, false>::from_int(1) << BitVec::from_int(i % 64)).to_int()))]

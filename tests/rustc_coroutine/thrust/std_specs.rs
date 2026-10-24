@@ -1,4 +1,7 @@
 //! Specifications of std functions the case study calls that std.rs does not specify.
+//!
+//! The exact `wrapping_add` and `wrapping_sub` specs below are full functional specs, valid at every
+//! call site, and belong in std.rs; they stay here until they move there.
 
 use crate::thrust_models;
 use thrust_models::model::BitVec;
@@ -14,6 +17,13 @@ fn _extern_spec_u128_wrapping_add(x: u128, y: u128) -> u128 {
 #[thrust_macros::ensures(result == (BitVec::<128, false>::from_int(x) - BitVec::from_int(y)).to_int())]
 fn _extern_spec_u128_wrapping_sub(x: u128, y: u128) -> u128 {
     u128::wrapping_sub(x, y)
+}
+
+// `Hash64::wrapping_add` and the layout seeds, exact over 64-bit bit-vectors.
+#[thrust::extern_spec_fn]
+#[thrust_macros::ensures(result == (BitVec::<64, false>::from_int(x) + BitVec::from_int(y)).to_int())]
+fn _extern_spec_u64_wrapping_add(x: u64, y: u64) -> u64 {
+    u64::wrapping_add(x, y)
 }
 
 // `fold` over a slice iterator calls the closure on each item from the cursor on. Its result is

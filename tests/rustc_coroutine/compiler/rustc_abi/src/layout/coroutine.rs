@@ -1,7 +1,7 @@
 use crate::thrust_models;
 use thrust_models::{exists, forall};
 
-use crate::rustc_abi::layout::{LayoutCalculator, LayoutCalculatorResult, LayoutRef, pow2};
+use crate::rustc_abi::layout::{LayoutCalculator, LayoutCalculatorResult, pow2};
 use crate::rustc_abi::{
     BackendRepr, FieldsShape, HasDataLayout, Integer, LayoutData, Niche, Primitive, ReprOptions,
     Scalar, Size, StructKind, TagEncoding, TargetDataLayout, VariantLayout, Variants, WrappingRange,
@@ -537,7 +537,9 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
 // - `dl_wf` of the data layout `calc.cx` names, which `univariant` requires.
 // - `niche_wf` of the largest niche of every layout `univariant` may receive, and the niche
 //   within that layout: each of `local_layouts` and `prefix_layouts`, and `tag_to_layout`'s
-//   result for any scalar (through its postcondition), each named by `LayoutRef::layout_is`.
+//   result for any scalar (through its postcondition), each named by `post!` of `Deref::deref`.
+// - `F`'s `deref` is a function (`deref_functional`), which `univariant` requires; rustc's
+//   `Layout` dereferences to the interned pointer it holds.
 // - The size bound: with T the weight (`weight`: each layout's size and twice its alignment) of
 //   `prefix_layouts`, the tag's layout and all of `local_layouts`, plus the aggregate and `i8`
 //   alignments 2^qa and 2^qi, 3T + 2^qa + 2^qi is below the object size bound. It gives
@@ -550,6 +552,7 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
 //   weigh at most `local_layouts`' weight, and the sum is below 3T + 2^qa + 2^qi.
 #[thrust_macros::requires(
     (*variant_fields).len() > 0
+        && LayoutCalculator::<C>::deref_functional::<FieldIdx, VariantIdx, F>()
         && (*storage_conflicts).num_rows <= (*local_layouts).len()
         && *(*storage_conflicts).col_bound <= (*storage_conflicts).num_rows
         && BitMatrix::<LocalIdx, LocalIdx>::wf(*storage_conflicts)
@@ -572,29 +575,29 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
             || dl.default_address_space_pointer_spec.pointer_size.raw == 2
             || dl.default_address_space_pointer_spec.pointer_size.raw == 4
             || dl.default_address_space_pointer_spec.pointer_size.raw == 8)
-        && forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, n: Niche, z: Size|
+        && forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche, z: Size|
             !(C::dl_of(*calc, dl)
                 && 0 <= i
                 && i < (*local_layouts).len()
-                && F::layout_is((*local_layouts)[i], l)
+                && thrust_macros::post!(<F as core::ops::Deref>::deref(&(*local_layouts)[i]), d) && **d == l
                 && l.largest_niche == Some(n))
                 || (Niche::wf_in(n, dl) && (!Primitive::size_in(n.value, dl, z) || n.offset.raw + z.raw <= l.size.raw)))
-        && forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, n: Niche, z: Size|
+        && forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche, z: Size|
             !(C::dl_of(*calc, dl)
                 && 0 <= i
                 && i < prefix_layouts.len()
-                && F::layout_is(prefix_layouts[i], l)
+                && thrust_macros::post!(<F as core::ops::Deref>::deref(&prefix_layouts[i]), d) && **d == l
                 && l.largest_niche == Some(n))
                 || (Niche::wf_in(n, dl) && (!Primitive::size_in(n.value, dl, z) || n.offset.raw + z.raw <= l.size.raw)))
         && forall(|dl: TargetDataLayout, s: Scalar, r: <F as thrust_models::Model>::Ty,
-                l: LayoutData<FieldIdx, VariantIdx>, n: Niche, z: Size|
+                l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche, z: Size|
             !(C::dl_of(*calc, dl)
                 && thrust_macros::post!(tag_to_layout(s), r)
-                && F::layout_is(r, l)
+                && thrust_macros::post!(<F as core::ops::Deref>::deref(&r), d) && **d == l
                 && l.largest_niche == Some(n))
                 || (Niche::wf_in(n, dl) && (!Primitive::size_in(n.value, dl, z) || n.offset.raw + z.raw <= l.size.raw)))
-        && forall(|dl: TargetDataLayout, s: Scalar, r: <F as thrust_models::Model>::Ty, l: LayoutData<FieldIdx, VariantIdx>|
-            !(C::dl_of(*calc, dl) && thrust_macros::post!(tag_to_layout(s), r) && F::layout_is(r, l))
+        && forall(|dl: TargetDataLayout, s: Scalar, r: <F as thrust_models::Model>::Ty, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>|
+            !(C::dl_of(*calc, dl) && thrust_macros::post!(tag_to_layout(s), r) && thrust_macros::post!(<F as core::ops::Deref>::deref(&r), d) && **d == l)
                 || exists(|wp: USize, wl: USize, q: USize, qa: USize, qi: USize, b: USize|
                     LayoutCalculator::<C>::weight::<FieldIdx, FieldIdx, VariantIdx, F>(&prefix_layouts, wp)
                         && LayoutCalculator::<C>::weight::<LocalIdx, FieldIdx, VariantIdx, F>(local_layouts, wl)
@@ -610,8 +613,7 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
 #[thrust_macros::context]
 pub fn layout<
     'a,
-    // Rewrite (rewrites.md S10): `LayoutRef` for `core::ops::Deref<Target = &'a LayoutData<..>>`.
-    F: LayoutRef<'a, FieldIdx, VariantIdx> + core::fmt::Debug + Copy + thrust_models::Model,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + thrust_models::Model,
     VariantIdx: Idx + thrust_models::Model,
     FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
     LocalIdx: Idx + thrust_models::Model,

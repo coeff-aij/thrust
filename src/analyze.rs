@@ -1387,14 +1387,8 @@ impl<'tcx> Analyzer<'tcx> {
         generic_args: mir_ty::GenericArgsRef<'tcx>,
         caller_def_id: DefId,
     ) -> Option<rty::FunctionType> {
-        let type_builder = TypeBuilder::new(
-            self.tcx,
-            self.def_ids(),
-            def_id,
-            self.type_params.clone(),
-            self.closure_type_params.clone(),
-            self.system.clone(),
-        );
+        // The arguments are in the caller's parameter space.
+        let type_builder = self.type_builder(self.def_ids(), caller_def_id);
         let key = InstantiationKey {
             generic_args,
             caller_def_id,
