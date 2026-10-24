@@ -2364,8 +2364,11 @@ fn seq_sum(
 // `Iterator::sum` of `usize` items into a `usize`: core's `Sum` for an integer folds the items
 // with `+` (core/src/iter/traits/accum.rs), running the iterator to its end, as Creusot states of
 // `collect` (creusot-std/src/std/iter.rs 172-175). `+` is unbounded here, as everywhere without
-// `THRUST_INT_RANGE`, under which `sum` has no specification.
-#[cfg(not(thrust_int_range))]
+// `THRUST_INT_RANGE`, under which `sum` has no specification. Nor has it one with overflow checks
+// on, where core's `+` panics past `usize::MAX` (`#[rustc_inherit_overflow_checks]`): a bound on
+// every sum the iterator can produce, as Creusot's `enumerate` bounds what its iterator produces,
+// gets no answer even for two items.
+#[cfg(all(not(thrust_int_range), not(overflow_checks)))]
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(I::inv(it))]
 #[thrust_macros::ensures(

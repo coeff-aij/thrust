@@ -33,6 +33,9 @@ impl Callbacks for CompilerCalls {
             attrs.push("feature(try_trait_v2)".to_owned());
         }
         attrs.push("register_tool(thrust)".to_owned());
+        // std.rs specifies an operation that panics on overflow only with overflow checks on
+        // (`Iterator::sum`) by `cfg(overflow_checks)`.
+        attrs.push("feature(cfg_overflow_checks)".to_owned());
         config
             .crate_check_cfg
             .push("cfg(thrust_int_range)".to_owned());

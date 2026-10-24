@@ -86,15 +86,17 @@ impl<'tcx> Analyzer<'tcx, '_> {
         }
     }
 
-    /// The type parameters of `contract_def_id` with an `Fn`, `FnMut` or `FnOnce` bound, directly
-    /// or through a supertrait, and how often the bounds let the function call a value of each:
-    /// repeatedly if any bound is `Fn` or `FnMut`.
-    fn fn_bounded_params(&self, contract_def_id: DefId) -> Vec<(mir_ty::ParamTy, Calls)> {
-        let mut params: Vec<(mir_ty::ParamTy, Calls)> = Vec::new();
+    /// The bounds of `contract_def_id` on its type parameters: each parameter with the trait it
+    /// is bounded by.
+    fn param_bounds(
+        &self,
+        contract_def_id: DefId,
+    ) -> Vec<(mir_ty::ParamTy, mir_ty::TraitRef<'tcx>)> {
         let predicates = self
             .tcx
             .predicates_of(contract_def_id)
             .instantiate_identity(self.tcx);
+        let mut bounds = Vec::new();
         for clause in predicates.predicates {
             let Some(trait_clause) = clause.as_trait_clause() else {
                 continue;
@@ -103,9 +105,19 @@ impl<'tcx> Analyzer<'tcx, '_> {
                 .tcx
                 .instantiate_bound_regions_with_erased(trait_clause)
                 .trait_ref;
-            let mir_ty::TyKind::Param(param) = *trait_ref.self_ty().kind() else {
-                continue;
-            };
+            if let mir_ty::TyKind::Param(param) = *trait_ref.self_ty().kind() {
+                bounds.push((param, trait_ref));
+            }
+        }
+        bounds
+    }
+
+    /// The type parameters of `contract_def_id` with an `Fn`, `FnMut` or `FnOnce` bound, directly
+    /// or through a supertrait, and how often the bounds let the function call a value of each:
+    /// repeatedly if any bound is `Fn` or `FnMut`.
+    fn fn_bounded_params(&self, contract_def_id: DefId) -> Vec<(mir_ty::ParamTy, Calls)> {
+        let mut params: Vec<(mir_ty::ParamTy, Calls)> = Vec::new();
+        for (param, trait_ref) in self.param_bounds(contract_def_id) {
             for kind in self.fn_trait_kinds(trait_ref) {
                 let calls = match kind {
                     mir_ty::ClosureKind::FnOnce => Calls::Once,
@@ -123,30 +135,19 @@ impl<'tcx> Analyzer<'tcx, '_> {
 
     /// The type parameters of `contract_def_id` bounded by std.rs's `IteratorSpec`. A closure
     /// inside the iterator one is instantiated with (the function of a `Map`) is run by the
-    /// iterator's `next`, which the callee calls; its obligation is the iterator's `inv`, which
-    /// the contract requires and which, for an adapter holding a closure, states the closure's
-    /// `pre!` of every item it can be called on (std.rs's `Map`). So the call hands it over.
+    /// iterator's `next`, so the call hands it over. Its obligation is met where the iterator
+    /// holding it was made: `map` requires `Map`'s `inv`, which states the closure's `pre!` of
+    /// every item it can be called on and is kept by every `next`, the only way std.rs lets the
+    /// state of a `Map` change. So it holds of every `Map` a callee receives, whether or not the
+    /// callee's contract requires `inv` (a trusted consumer's need not).
     fn iterator_spec_params(&self, contract_def_id: DefId) -> Vec<mir_ty::ParamTy> {
         let Some(iterator_spec) = self.ctx.def_ids.iterator_spec() else {
             return Vec::new();
         };
-        let predicates = self
-            .tcx
-            .predicates_of(contract_def_id)
-            .instantiate_identity(self.tcx);
         let mut params = Vec::new();
-        for clause in predicates.predicates {
-            let Some(trait_clause) = clause.as_trait_clause() else {
-                continue;
-            };
-            let trait_ref = trait_clause.skip_binder().trait_ref;
-            if trait_ref.def_id != iterator_spec {
-                continue;
-            }
-            if let mir_ty::TyKind::Param(param) = *trait_ref.self_ty().kind() {
-                if !params.contains(&param) {
-                    params.push(param);
-                }
+        for (param, trait_ref) in self.param_bounds(contract_def_id) {
+            if trait_ref.def_id == iterator_spec && !params.contains(&param) {
+                params.push(param);
             }
         }
         params
