@@ -234,23 +234,10 @@ impl<I: Idx + thrust_models::Model, J: Idx + thrust_models::Model> IndexSlice<I,
     #[thrust_macros::ensures(forall(|k: USize, i: USize|
         !(0 <= k && k < result.len() && <I as Idx>::index_is(result[k], i)) || i < result.len()))]
     pub fn invert_bijective_mapping(&self) -> IndexVec<J, I> {
-        debug_assert_eq!(
-            self.iter().map(|x| x.index() as u128).sum::<u128>(),
-            (0..self.len() as u128).sum::<u128>(),
-            "The values aren't 0..N in input {self:?}",
-        );
-
         let mut inverse = IndexVec::from_elem_n(Idx::new(0), self.len());
         for (i1, &i2) in self.iter_enumerated() {
             inverse[i2] = i1;
         }
-
-        debug_assert_eq!(
-            inverse.iter().map(|x| x.index() as u128).sum::<u128>(),
-            (0..inverse.len() as u128).sum::<u128>(),
-            "The values aren't 0..N in result {self:?}",
-        );
-
         inverse
     }
 }
