@@ -691,8 +691,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// proves it at the call, as for a written `requires`/`ensures`; a function's body may break
     /// it between those points. Unlike Creusot, Thrust does not check the invariant where a
     /// borrow is resolved, so it is ensured of a final value only where the callee resolves the
-    /// borrow: not of a returned `&mut`, nor of a `&mut` parameter whose borrow the result or
-    /// another parameter may hold, whose final value the caller sets. `#[thrust::open_inv]` on a parameter and `#[thrust::open_inv_result]` on the
+    /// borrow: not of a returned `&mut`, nor of a `&mut` parameter whose region the signature
+    /// names elsewhere, whose final value the caller may set. `#[thrust::open_inv]` on a parameter and `#[thrust::open_inv_result]` on the
     /// function leave theirs out. Closures, lemmas, laws and destructors (which take no
     /// precondition, D57) get none, and a type parameter, whose
     /// `Invariant` impl does not resolve, has none.
@@ -725,7 +725,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         continue;
                     };
                     requires.push(type_invariant_atom(&pred, at_entry.mut_current()));
-                    if !borrow_may_escape(sig, idx) {
+                    if !borrow_may_escape(self.tcx, self.local_def_id.to_def_id(), idx) {
                         let at_exit = chc::Term::var(rty::RefinedTypeVar::Free(param_idx));
                         ensures.push(type_invariant_atom(&pred, at_exit.mut_final()));
                     }
@@ -2391,38 +2391,45 @@ fn type_invariant_atom<V>(pred: &chc::Pred, term: chc::Term<V>) -> chc::Formula<
     chc::Formula::Atom(chc::Atom::new(pred.clone(), vec![term]))
 }
 
-/// Whether the borrow of the `&mut` parameter `idx` may outlive the call: the result may hold a
-/// borrow (a reference, an `impl Trait`, a trait object or a closure in its type), or another
-/// parameter is a `&mut` to a place that may hold one. Then the caller, not the callee, resolves
-/// the borrow, and the callee cannot prove the invariant of its final value.
-fn borrow_may_escape<'tcx>(sig: mir_ty::FnSig<'tcx>, idx: usize) -> bool {
-    if may_hold_borrow(sig.output()) {
+/// Whether the borrow of the `&mut` parameter `idx` of `def_id` may outlive the call. The borrow
+/// checker lets it outlive the call only if its region is named elsewhere in the signature: in
+/// the result, in another parameter, in the parameter's own target, or in a `where` clause or
+/// outlives bound (which makes it early-bound, as does a region of the enclosing impl), or if it
+/// is `'static`. A late-bound region that occurs nowhere else is the parameter's own: no other
+/// value of the signature can hold the borrow, so it ends before the call returns, and the callee
+/// resolves it. An `impl Trait` or a trait object in the result may capture it, so they count too.
+fn borrow_may_escape<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId, idx: usize) -> bool {
+    let sig = tcx.liberate_late_bound_regions(def_id, tcx.fn_sig(def_id).instantiate_identity());
+    let Some(param) = sig.inputs().get(idx) else {
+        return true;
+    };
+    let mir_ty::TyKind::Ref(region, target, mir_ty::Mutability::Mut) = param.kind() else {
+        return true;
+    };
+    if !matches!(region.kind(), mir_ty::RegionKind::ReLateParam(_)) {
         return true;
     }
-    sig.inputs()
-        .iter()
-        .enumerate()
-        .filter(|(other, _)| *other != idx)
-        .any(|(_, ty)| {
-            ty.walk().any(|arg| match arg.kind() {
-                mir_ty::GenericArgKind::Type(ty) => matches!(
+    let names_region = |ty: mir_ty::Ty<'tcx>| {
+        ty.walk()
+            .any(|arg| arg.as_region().is_some_and(|r| r == *region))
+    };
+    let captures = |ty: mir_ty::Ty<'tcx>| {
+        ty.walk().any(|arg| {
+            arg.as_type().is_some_and(|ty| {
+                matches!(
                     ty.kind(),
-                    mir_ty::TyKind::Ref(_, inner, mir_ty::Mutability::Mut) if may_hold_borrow(*inner)
-                ),
-                _ => false,
+                    mir_ty::TyKind::Alias(mir_ty::AliasTyKind::Opaque, _)
+                        | mir_ty::TyKind::Dynamic(..)
+                )
             })
         })
-}
-
-/// Whether a value of `ty` may hold a borrow: its type mentions a lifetime, an `impl Trait` or a
-/// trait object.
-fn may_hold_borrow<'tcx>(ty: mir_ty::Ty<'tcx>) -> bool {
-    ty.walk().any(|arg| match arg.kind() {
-        mir_ty::GenericArgKind::Lifetime(_) => true,
-        mir_ty::GenericArgKind::Type(ty) => matches!(
-            ty.kind(),
-            mir_ty::TyKind::Alias(mir_ty::AliasTyKind::Opaque, _) | mir_ty::TyKind::Dynamic(..)
-        ),
-        mir_ty::GenericArgKind::Const(_) => false,
-    })
+    };
+    names_region(*target)
+        || names_region(sig.output())
+        || captures(sig.output())
+        || sig
+            .inputs()
+            .iter()
+            .enumerate()
+            .any(|(other, ty)| other != idx && names_region(*ty))
 }
