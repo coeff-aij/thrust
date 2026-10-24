@@ -1111,8 +1111,10 @@ mod thrust_models {
 
 // The target of an extern spec whose std body is safe code: std's function, or under
 // `cfg(thrust_std_conformance)` the transcription of that body which a test of
-// `tests/ui/pass/std_specs/` defines, and which Thrust then checks against the spec as it checks
-// any local target.
+// `tests/ui/pass/std_specs/` defines in `mod std_transcriptions`, and which Thrust then checks
+// against the spec as it checks any local target. The transcriptions live in the test rather than
+// beside their specs so that a fail twin can break one body while the specs stay the text that is
+// injected.
 #[cfg(not(thrust_std_conformance))]
 macro_rules! thrust_std_target {
     ($std:expr, $transcription:expr) => {

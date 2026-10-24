@@ -2,12 +2,8 @@
 //@compile-flags: -C debug-assertions=off --cfg thrust_std_conformance
 //@rustc-env: THRUST_NO_INJECT_STD=1 THRUST_TRY_SPECS=1 THRUST_VERIFY_ONLY=std_transcriptions::** THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
-// The specs of `Option`'s methods in `std.rs` and `std_try.rs` whose std bodies are safe code,
-// checked against those bodies: under `cfg(thrust_std_conformance)` each spec's target is the
-// transcription below, a local function whose body Thrust checks against the spec. Each body is
-// std's at the line of the pinned toolchain's `rust-src` (rustc 12eb345e5) that its comment names,
-// with the parameters named as the spec names them; thrust-research
-// `scripts/check_std_transcriptions.py` compares the two.
+// Fail twin of `tests/ui/pass/std_specs/option.rs`: `branch` breaks for `Some`, which its
+// spec does not allow.
 
 include!("../../../../std.rs");
 include!("../../../../std_try.rs");
@@ -17,7 +13,7 @@ mod std_transcriptions {
     use std::convert::Infallible;
     use std::ops::ControlFlow;
 
-    // `<Option<T> as PartialEq>::eq`, library/core/src/option.rs:2350
+    // library/core/src/option.rs, `impl<T: [const] PartialEq> const PartialEq for Option<T>`, `fn eq(&self, other: &Self) -> bool`
     pub fn option_eq<T>(x: &Option<T>, y: &Option<T>) -> bool
     where
         T: thrust_models::Model + thrust_models::ModelEq + PartialEq,
@@ -30,7 +26,7 @@ mod std_transcriptions {
         }
     }
 
-    // `<Option<T> as Try>::branch`, library/core/src/option.rs:2651
+    // library/core/src/option.rs, `impl<T> const ops::Try for Option<T>`, `fn branch(self) -> ControlFlow<Self::Residual, Self::Output>`
     pub fn option_branch<T>(opt: Option<T>) -> ControlFlow<Option<Infallible>, T> {
         match opt {
             Some(_) => ControlFlow::Break(None),
@@ -38,7 +34,7 @@ mod std_transcriptions {
         }
     }
 
-    // `<Option<T> as FromResidual<Option<Infallible>>>::from_residual`, library/core/src/option.rs:2665
+    // library/core/src/option.rs, `impl<T> const ops::FromResidual<Option<convert::Infallible>> for Option<T>`, `fn from_residual(residual: Option<convert::Infallible>) -> Self`
     pub fn option_from_residual<T>(residual: Option<Infallible>) -> Option<T> {
         match residual {
             None => None,
