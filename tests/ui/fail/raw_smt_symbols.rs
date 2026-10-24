@@ -1,4 +1,4 @@
-//@error-in-other-file: which the query does not declare
+//@error-in-other-file: which the query does not declare (a name Thrust generates, by its hash)
 //@compile-flags: -Adead_code -A unused-variables -C debug-assertions=off
 #![feature(custom_inner_attributes)]
 #![thrust::raw_command("(define-fun is_double ((x Int) (y Int)) Bool (= (* x 2) y))")]

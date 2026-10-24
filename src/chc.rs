@@ -31,6 +31,7 @@ pub use clause_builder::{ClauseBuilder, Var};
 pub use debug::DebugInfo;
 pub use dedup::dedup_pred_args;
 pub use flatten::flatten_recursive_pred_args;
+pub use raw_symbols::RawTextError;
 pub use solver::{verdict, Answer, Capabilities, CheckSatError, Config, Refused, Requests};
 pub use unbox::{unbox, unbox_formula, unbox_sort};
 
@@ -3689,10 +3690,10 @@ impl System {
             }
         }
         let query = system.query(&config).to_string();
-        if let Err(undeclared) = raw_symbols::check(&system, &query) {
-            return Answer::of(Err(undeclared.into()));
-        }
         if let Err(err) = config.save_query("thrust_output.smt2", &query) {
+            return Answer::of(Err(err.into()));
+        }
+        if let Err(err) = raw_symbols::check(&system, &query) {
             return Answer::of(Err(err.into()));
         }
         self.answer(&config, query, requests)
@@ -3781,14 +3782,14 @@ impl System {
         let solve = |i: usize| {
             let part = self.part(&parts[i]).prepared();
             let query = part.query(&config).to_string();
-            if let Err(undeclared) = raw_symbols::check(&part, &query) {
+            let file = format!("thrust_output_part{}.smt2", i + 1);
+            if let Err(err) = config.save_query(&file, &query) {
                 return cache::Verdict {
-                    result: Err(undeclared.into()),
+                    result: Err(err.into()),
                     cached: false,
                 };
             }
-            let file = format!("thrust_output_part{}.smt2", i + 1);
-            if let Err(err) = config.save_query(&file, &query) {
+            if let Err(err) = raw_symbols::check(&part, &query) {
                 return cache::Verdict {
                     result: Err(err.into()),
                     cached: false,

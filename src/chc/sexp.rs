@@ -47,7 +47,7 @@ fn tokens(text: &str) -> Vec<Token> {
             _ => {
                 let mut atom = String::new();
                 while let Some(&c) = chars.peek() {
-                    if c.is_whitespace() || c == '(' || c == ')' {
+                    if c.is_whitespace() || "();\"|".contains(c) {
                         break;
                     }
                     atom.push(c);
@@ -163,5 +163,11 @@ mod tests {
         let all = parse_all("; a (comment\n(f |;| \";\") ; (g)\n(h)");
         assert_eq!(all.len(), 2);
         assert_eq!(all[0].to_string(), "(f ; \";\")");
+    }
+
+    #[test]
+    fn ends_a_bare_atom_where_a_comment_string_or_quoted_symbol_starts() {
+        let all = parse_all("(f a;(g)\nb\"s\"c|d e|)");
+        assert_eq!(all, parse_all("(f a b \"s\" c |d e|)"));
     }
 }

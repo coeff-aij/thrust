@@ -2061,7 +2061,7 @@ impl<'tcx> Analyzer<'tcx> {
         refuted: Option<rustc_span::Span>,
     ) -> rustc_errors::Diag<'tcx> {
         let message = match err {
-            chc::CheckSatError::Undeclared(undeclared) => undeclared.to_string(),
+            chc::CheckSatError::RawText(raw) => raw.to_string(),
             _ => format!("verification error: {:?}", err),
         };
         let mut diag = match refuted {
@@ -2080,7 +2080,7 @@ impl<'tcx> Analyzer<'tcx> {
                  `COAR_IMAGE` in Docker",
             );
         }
-        if let chc::CheckSatError::Undeclared(_) = err {
+        if let chc::CheckSatError::RawText(chc::RawTextError::Undeclared { .. }) = err {
             diag.help(
                 "the names Thrust generates change with the items and sorts they come from; \
                  write the formula in Rust syntax, which Thrust translates with the names it \
@@ -2105,10 +2105,18 @@ impl<'tcx> Analyzer<'tcx> {
             Some(config) => self.report_parts(config, jobs, &system, &parts, &summaries),
             None => vec![crate::report::Refuted::No; parts.len()],
         };
+        // A raw text is in every part whose query has it, and its error is not about the part.
+        let mut raw_errors = HashSet::new();
         for ((part, summary), refuted) in parts.iter().zip(&summaries).zip(refuted) {
             let Err(err) = &part.result else {
                 continue;
             };
+            if let chc::CheckSatError::RawText(raw) = err {
+                if raw_errors.insert(raw.to_string()) {
+                    self.verification_error(&system, err, None).emit();
+                }
+                continue;
+            }
             let refuted = match refuted {
                 crate::report::Refuted::AsError => continue,
                 crate::report::Refuted::At(span) => Some(span),

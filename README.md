@@ -165,6 +165,8 @@ fn f(s: &[i64]) {
 }
 ```
 
+A `#[thrust_macros::predicate]` may give its body in SMT-LIB2 instead, as a string literal statement before a Rust body that stands for it (`"(> x 0)"; true`): the text becomes the body of the predicate's `define-fun`, its parameters named as in Rust (`self` as `self_`). `#![thrust::raw_command("...")]` on the crate puts a whole command into the query, for debugging and experiments. Thrust copies both texts without reading them, so they cannot follow a change of the names Thrust generates, which carry the sorts they stand at (`tuple_proj<Int-Int>.0`) or a hash of the item they come from (`q_invariant_<hash><a0>`). Once the query is written (and saved to `THRUST_OUTPUT_DIR`), each symbol in such a text spelled like one of those names, with a `<...>` sort decoration or an `_` followed by 16 or more hex digits, must be bound in the text or declared by the query (a function, a constant, a datatype, a constructor or selector, or `is-C` of a declared constructor `C`); otherwise Thrust stops with an error that names the predicate or command and the symbol, instead of solving a query the solver rejects. A formula written in Rust syntax is translated with the names the query declares.
+
 ### Mutable references
 
 Within an annotation, a mutable reference `ma: &mut T` is modeled by its value at the time the function is called and its value when the function returns (the *prophecy* value). Use the deref operator `*ma` to denote the current value and the unary `!ma` to denote the final value. You can also construct a mutable-reference model directly with `thrust_models::model::Mut::new(current, final)`.

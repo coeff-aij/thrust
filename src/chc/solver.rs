@@ -39,9 +39,10 @@ pub enum CheckSatError {
     Timeout(std::time::Duration),
     #[error("io error")]
     Io(#[from] std::io::Error),
-    /// The query was not solved: a raw text in it names a symbol of Thrust's it does not declare.
+    /// The query was not solved: a raw SMT-LIB2 text in it names a symbol of Thrust's it does not
+    /// declare, or its definition cannot be read back.
     #[error(transparent)]
-    Undeclared(#[from] super::raw_symbols::Undeclared),
+    RawText(#[from] super::raw_symbols::RawTextError),
 }
 
 /// The name of a verdict: `sat`, `unsat`, `timeout`, `unknown` or `error`.
