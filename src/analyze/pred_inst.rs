@@ -236,6 +236,15 @@ impl<'tcx> analyze::Analyzer<'tcx> {
     /// requests are drained depth-first and each definition is pushed once its
     /// own requests are. Requests that do not depend on one another keep the
     /// order they were made in.
+    /// The trait items and generic arguments of the predicate instances waiting to be emitted.
+    pub fn pending_pred_instance_requests(&self) -> Vec<(DefId, mir_ty::GenericArgsRef<'tcx>)> {
+        self.pending_pred_instances
+            .borrow()
+            .iter()
+            .map(|request| (request.pred_def_id, request.generic_args))
+            .collect()
+    }
+
     pub fn emit_pending_pred_instances(&mut self) {
         let mut seen = HashSet::new();
         let mut in_progress = Vec::new();

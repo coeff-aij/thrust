@@ -7,7 +7,9 @@ no dependency on forall predicates, and a contract Thrust assumes without checki
 body (trusted, ignored, unselected, an extern specification, an inherited law not checked for its
 impl) may not mention it or a predicate depending on it (`src/analyze/derived_pred.rs`). An
 analyzed function whose precondition mentions it, entered from unanalyzed code, must accept every
-argument there (D59). Fail twins and rejected files are in `../../fail/derived_pred/`.
+argument there (D59). A generic impl may leave it out only under `THRUST_PER_INSTANCE_GENERICS=1`:
+each concrete instance is then an unknown of its own, and the laws over it are checked at every
+instance the crate uses. Fail twins and rejected files are in `../../fail/derived_pred/`.
 
 | file | what it shows | state |
 | --- | --- | --- |
@@ -25,5 +27,7 @@ argument there (D59). Fail twins and rejected files are in `../../fail/derived_p
 | `../../fail/derived_pred/via_trusted.rs`, `via_impl.rs`, `via_indirect.rs`, `via_closure.rs` | a trusted contract behind a verified generic function, through a trait method, a written trait predicate defined through it, a closure's contract | rejected |
 | `../../fail/derived_pred/law_other.rs` | a law of another trait states that `Small` yields nothing | refuted: the predicate depends on no forall predicate |
 | `../../fail/derived_pred/requires_premise.rs`, `requires_negated.rs` | a function whose precondition has it in a premise, negated, entered from a trusted function | refuted: the precondition must accept every argument there (D59) |
-| `../../fail/derived_pred/generic_impl.rs` | a generic impl leaves it out | rejected |
+| `generic_take.rs` | `take.rs` with `Take<I>`'s `produces` left out too, under `THRUST_PER_INSTANCE_GENERICS=1`: `Take<Range>` has an unknown of its own | verifies; the fail twin `generic_take_value.rs` (an item `Range` never yields first) is refuted |
+| `generic_law_instance.rs`, `generic_law_override.rs`, `generic_other_trait_law.rs` | under `THRUST_PER_INSTANCE_GENERICS=1`, a law over it of a generic impl that leaves it out is checked at the instance `main` uses: inherited, written by the impl, of a subtrait | verify where `next` yields only what the law allows; the fail twins, where it yields more, are refuted |
+| `../../fail/derived_pred/generic_impl.rs` | a generic impl leaves it out without `THRUST_PER_INSTANCE_GENERICS=1` | rejected |
 | `../../fail/derived_pred/not_in_trait.rs`, `impl_item.rs` | the attribute on a free function, on an impl's item | rejected |

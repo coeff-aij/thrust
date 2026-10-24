@@ -616,6 +616,14 @@ pub struct Analyzer<'tcx> {
     derived_preds: Rc<RefCell<HashMap<chc::UserDefinedPred, derived_pred::DerivedAt>>>,
     /// Each trait law checked for an impl that inherits it, as (impl, law).
     inherited_laws_checked: Rc<RefCell<HashSet<(DefId, DefId)>>>,
+    /// The local generic impls whose laws are checked at each instance; see
+    /// [`derived_pred::per_instance_law_impls`].
+    pub(crate) per_instance_law_impls: HashSet<DefId>,
+    /// Each trait law checked at the trait arguments of an instance of such an impl, as (law,
+    /// trait arguments).
+    instance_laws_checked: RefCell<HashSet<(DefId, mir_ty::GenericArgsRef<'tcx>)>>,
+    /// Each use of a trait law's contract while there are such impls, as (law, arguments).
+    law_uses: RefCell<Vec<(DefId, mir_ty::GenericArgsRef<'tcx>)>>,
     /// The template being made now, for the predicate variables allocated meanwhile.
     template_site: Option<TemplateSite>,
     /// The variable each argument of a template's predicate variable is, by the variable.
@@ -872,6 +880,9 @@ impl<'tcx> Analyzer<'tcx> {
             impl_methods_with_own_contract: Default::default(),
             derived_preds: Default::default(),
             inherited_laws_checked: Default::default(),
+            per_instance_law_impls: Default::default(),
+            instance_laws_checked: Default::default(),
+            law_uses: Default::default(),
             template_site: None,
             template_vars: Default::default(),
             template_sites: Default::default(),
@@ -1323,22 +1334,33 @@ impl<'tcx> Analyzer<'tcx> {
         generic_args: mir_ty::GenericArgsRef<'tcx>,
         owner_fn_id: DefId,
     ) {
-        let at = derived_pred::DerivedAt::new(self.tcx, pred_def_id, generic_args).unwrap_or_else(
-            || {
+        let per_instance = crate_::per_instance_generics();
+        let at = derived_pred::DerivedAt::new(self.tcx, pred_def_id, generic_args, per_instance)
+            .unwrap_or_else(|| {
                 self.tcx.dcx().span_fatal(
                     self.tcx.def_span(owner_fn_id),
                     format!(
                         "the derived predicate `{}` is left undefined by a generic impl, which \
-                         is not supported; define it in the impl",
+                         needs each instance analyzed (`THRUST_PER_INSTANCE_GENERICS=1`); define \
+                         it in the impl",
                         self.tcx.def_path_str_with_args(pred_def_id, generic_args)
                     ),
                 )
-            },
-        );
+            });
         self.system
             .borrow_mut()
             .push_derived_pred(symbol.clone(), sig);
         self.derived_preds.borrow_mut().insert(symbol, at);
+    }
+
+    /// Whether `def_id` is a `#[thrust::law]` declared in a local trait.
+    fn is_trait_law(&self, def_id: DefId) -> bool {
+        self.tcx.trait_of_assoc(def_id).is_some_and(|t| {
+            self.trait_laws
+                .borrow()
+                .get(&t)
+                .is_some_and(|laws| laws.contains(&def_id))
+        })
     }
 
     /// Records that the trait law `law`, inherited by `impl_def_id`, was checked for it.
@@ -1346,6 +1368,18 @@ impl<'tcx> Analyzer<'tcx> {
         self.inherited_laws_checked
             .borrow_mut()
             .insert((impl_def_id, law));
+    }
+
+    /// Records that the trait law `law` was checked at the trait arguments `trait_args`.
+    pub fn instance_law_checked(&self, law: DefId, trait_args: mir_ty::GenericArgsRef<'tcx>) {
+        self.instance_laws_checked
+            .borrow_mut()
+            .insert((law, self.tcx.erase_regions(trait_args)));
+    }
+
+    /// The uses of trait laws' contracts recorded so far, as (law, arguments).
+    pub fn law_uses(&self) -> Vec<(DefId, mir_ty::GenericArgsRef<'tcx>)> {
+        self.law_uses.borrow().clone()
     }
 
     /// Whether a predicate the refinements of `rty` apply is derived, directly or through a
@@ -1365,6 +1399,12 @@ impl<'tcx> Analyzer<'tcx> {
     /// Stops if a derived predicate, or a predicate whose definition depends on one, appears in a
     /// contract Thrust does not check against a body; see [`derived_pred`].
     pub fn check_derived_predicates(&self) {
+        derived_pred::check_law_uses(
+            self.tcx,
+            &self.per_instance_law_impls,
+            &self.law_uses.borrow(),
+            &self.instance_laws_checked.borrow(),
+        );
         let derived = self.derived_preds.borrow();
         if derived.is_empty() {
             return;
@@ -1375,6 +1415,7 @@ impl<'tcx> Analyzer<'tcx> {
             &self.body_checks,
             &self.trait_laws.borrow(),
             &self.inherited_laws_checked.borrow(),
+            &self.per_instance_law_impls,
             [
                 self.def_ids.closure_precondition(),
                 self.def_ids.closure_postcondition(),
@@ -1762,6 +1803,9 @@ impl<'tcx> Analyzer<'tcx> {
         generic_args: mir_ty::GenericArgsRef<'tcx>,
         caller_def_id: DefId,
     ) -> Option<rty::RefinedType> {
+        if !self.per_instance_law_impls.is_empty() && self.is_trait_law(def_id) {
+            self.law_uses.borrow_mut().push((def_id, generic_args));
+        }
         let type_builder = self.type_builder(self.def_ids(), caller_def_id);
 
         let is_generic = matches!(self.defs.get(&def_id)?, DefTy::Generic(_));

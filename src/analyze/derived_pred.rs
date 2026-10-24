@@ -20,6 +20,12 @@
 //! An analyzed function whose own precondition mentions `P` and which code Thrust does not analyze
 //! may enter is handled as one whose precondition is inferred, by the entry rule of
 //! `unanalyzed_entry`: its precondition must hold of every argument there.
+//!
+//! A generic impl may leave `P` out only when each instance is analyzed
+//! (`THRUST_PER_INSTANCE_GENERICS=1`): each concrete instance is then an unknown of its own, the
+//! impl's functions are analyzed there, and the laws of [`per_instance_law_impls`] are checked at
+//! every instance the crate uses ([`check_law_uses`]). A solution is a written body per instance,
+//! which types the program instance by instance.
 
 mod dependency;
 
@@ -40,23 +46,178 @@ pub struct DerivedAt {
 
 impl DerivedAt {
     /// The derived predicate `pred_def_id` at `generic_args`, when an impl of the crate is for
-    /// exactly their trait arguments: `None` for an instance of a generic impl, whose relation
-    /// would have to be one per instance.
+    /// exactly their trait arguments, or, with `per_instance`, when they are concrete and select
+    /// an impl of the crate, generic or not ([`generic_impl_instance`]). `None` otherwise: an
+    /// instance whose relation would have to be one per instance of a generic impl verified once.
     pub fn new<'tcx>(
         tcx: TyCtxt<'tcx>,
         pred_def_id: DefId,
         generic_args: mir_ty::GenericArgsRef<'tcx>,
+        per_instance: bool,
     ) -> Option<Self> {
         let trait_def_id = tcx.trait_of_assoc(pred_def_id)?;
         let trait_args = generic_args.truncate_to(tcx, tcx.generics_of(trait_def_id));
         let trait_ref = tcx.erase_regions(mir_ty::TraitRef::new(tcx, trait_def_id, trait_args));
-        tcx.all_impls(trait_def_id)
-            .any(|impl_def_id| {
-                let impl_ref = tcx.impl_trait_ref(impl_def_id).unwrap();
-                let impl_ref = tcx.erase_regions(impl_ref.instantiate_identity());
-                !impl_ref.has_param() && impl_ref == trait_ref
-            })
-            .then_some(Self { pred_def_id })
+        let concrete_impl = tcx.all_impls(trait_def_id).any(|impl_def_id| {
+            let impl_ref = tcx.impl_trait_ref(impl_def_id).unwrap();
+            let impl_ref = tcx.erase_regions(impl_ref.instantiate_identity());
+            !impl_ref.has_param() && impl_ref == trait_ref
+        });
+        let instance =
+            per_instance && generic_impl_instance(tcx, pred_def_id, generic_args).is_some();
+        (concrete_impl || instance).then_some(Self { pred_def_id })
+    }
+}
+
+/// The local generic impl that concrete `generic_args` of the trait item `pred_def_id` select,
+/// with the trait's arguments there: an instance of a generic impl, at which a derived predicate
+/// it leaves out is one unknown of its own.
+pub fn generic_impl_instance<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    pred_def_id: DefId,
+    generic_args: mir_ty::GenericArgsRef<'tcx>,
+) -> Option<(DefId, mir_ty::GenericArgsRef<'tcx>)> {
+    let trait_def_id = tcx.trait_of_assoc(pred_def_id)?;
+    let trait_args =
+        tcx.erase_regions(generic_args.truncate_to(tcx, tcx.generics_of(trait_def_id)));
+    let (impl_def_id, _) = select_generic_impl(tcx, trait_def_id, trait_args)?;
+    Some((impl_def_id, trait_args))
+}
+
+/// The local generic impl of `trait_def_id` that the concrete `trait_args` select, with the impl's
+/// own arguments there.
+pub fn select_generic_impl<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    trait_def_id: DefId,
+    trait_args: mir_ty::GenericArgsRef<'tcx>,
+) -> Option<(DefId, mir_ty::GenericArgsRef<'tcx>)> {
+    if trait_args.has_param() {
+        return None;
+    }
+    let trait_ref = mir_ty::TraitRef::new(tcx, trait_def_id, trait_args);
+    let typing_env = mir_ty::TypingEnv::fully_monomorphized();
+    let source = tcx
+        .codegen_select_candidate(typing_env.as_query_input(trait_ref))
+        .ok()?;
+    let rustc_middle::traits::ImplSource::UserDefined(data) = source else {
+        return None;
+    };
+    let impl_ref = tcx.impl_trait_ref(data.impl_def_id)?.instantiate_identity();
+    (data.impl_def_id.is_local() && impl_ref.has_param()).then_some((data.impl_def_id, data.args))
+}
+
+/// The local generic impls whose laws are checked at each instance (`THRUST_PER_INSTANCE_GENERICS`)
+/// rather than once over their type parameters: those for a type whose local impls of a trait all
+/// leave a derived predicate out, of a trait with a law whose contract mentions that predicate or
+/// one whose definition may depend on it. Over the type parameters the predicate is no relation;
+/// at each instance it is an unknown of its own, which the law is checked of.
+pub fn per_instance_law_impls(
+    tcx: TyCtxt<'_>,
+    trait_laws: &rustc_data_structures::fx::FxIndexMap<DefId, Vec<DefId>>,
+) -> HashSet<DefId> {
+    let self_adt = |impl_def_id: DefId| {
+        tcx.type_of(impl_def_id)
+            .instantiate_identity()
+            .ty_adt_def()
+            .map(|adt| adt.did())
+    };
+    let derived = tcx.hir_crate_items(()).definitions().filter(|def| {
+        tcx.get_attrs_by_path(def.to_def_id(), &analyze::annot::derived_path())
+            .next()
+            .is_some()
+    });
+    let contracts = Contracts::new(tcx);
+    let mut out = HashSet::new();
+    for pred in derived {
+        let pred = pred.to_def_id();
+        let Some(trait_def_id) = tcx.trait_of_assoc(pred) else {
+            continue;
+        };
+        // The types whose local impls of the trait all leave the predicate out.
+        let mut leaves_out: HashMap<DefId, bool> = HashMap::new();
+        for impl_def_id in tcx
+            .all_local_trait_impls(())
+            .get(&trait_def_id)
+            .into_iter()
+            .flatten()
+        {
+            let impl_def_id = impl_def_id.to_def_id();
+            let Some(adt) = self_adt(impl_def_id) else {
+                continue;
+            };
+            let left_out = !tcx
+                .impl_item_implementor_ids(impl_def_id)
+                .contains_key(&pred)
+                && tcx
+                    .impl_trait_ref(impl_def_id)
+                    .unwrap()
+                    .instantiate_identity()
+                    .has_param();
+            *leaves_out.entry(adt).or_insert(true) &= left_out;
+        }
+        let dependent = dependency::dependent_items(tcx, &HashSet::from([pred]));
+        for (law_trait, laws) in trait_laws {
+            let mentions = laws
+                .iter()
+                .any(|law| contracts.of(*law).iter().any(|f| dependent.contains(f)));
+            if !mentions {
+                continue;
+            }
+            let impls = tcx
+                .all_local_trait_impls(())
+                .get(law_trait)
+                .into_iter()
+                .flatten();
+            out.extend(
+                impls
+                    .map(|impl_def_id| impl_def_id.to_def_id())
+                    .filter(|impl_def_id| {
+                        self_adt(*impl_def_id)
+                            .is_some_and(|adt| leaves_out.get(&adt) == Some(&true))
+                    }),
+            );
+        }
+    }
+    out
+}
+
+/// Reports each use of a trait law's contract that relies on an impl of `per_instance` without the
+/// law checked there: at concrete arguments that select such an impl, or at type parameters where
+/// a local impl of the law's trait is one.
+pub fn check_law_uses<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    per_instance: &HashSet<DefId>,
+    law_uses: &[(DefId, mir_ty::GenericArgsRef<'tcx>)],
+    checked: &HashSet<(DefId, mir_ty::GenericArgsRef<'tcx>)>,
+) {
+    let mut reported = HashSet::new();
+    for &(law, args) in law_uses {
+        let Some(trait_def_id) = tcx.trait_of_assoc(law) else {
+            continue;
+        };
+        let trait_args = tcx.erase_regions(args.truncate_to(tcx, tcx.generics_of(trait_def_id)));
+        if checked.contains(&(law, trait_args)) || !reported.insert((law, trait_args)) {
+            continue;
+        }
+        let relies = if trait_args.has_param() {
+            per_instance
+                .iter()
+                .any(|impl_def_id| tcx.trait_id_of_impl(*impl_def_id) == Some(trait_def_id))
+        } else {
+            select_generic_impl(tcx, trait_def_id, trait_args)
+                .is_some_and(|(impl_def_id, _)| per_instance.contains(&impl_def_id))
+        };
+        if relies {
+            tcx.dcx().span_err(
+                tcx.def_span(law),
+                format!(
+                    "the law `{}` is assumed at `{}`, where it is checked only at each instance \
+                     of an impl that leaves a derived predicate out, and is not checked there",
+                    tcx.item_name(law),
+                    trait_args.type_at(0)
+                ),
+            );
+        }
     }
 }
 
@@ -138,6 +299,7 @@ pub fn check<'tcx>(
     body_checks: &BodyChecks,
     trait_laws: &rustc_data_structures::fx::FxIndexMap<DefId, Vec<DefId>>,
     inherited_laws_checked: &HashSet<(DefId, DefId)>,
+    per_instance: &HashSet<DefId>,
     closure_contract_fns: [Option<DefId>; 3],
 ) {
     let mut seeds: HashSet<DefId> = derived.values().map(|at| at.pred_def_id).collect();
@@ -219,7 +381,8 @@ pub fn check<'tcx>(
             );
         }
     }
-    // Inherited laws, checked per impl.
+    // Inherited laws, checked per impl; those of an impl of `per_instance` at each instance where
+    // one is used ([`check_law_uses`]).
     for (trait_def_id, laws) in trait_laws {
         let impls = tcx
             .all_local_trait_impls(())
@@ -228,6 +391,9 @@ pub fn check<'tcx>(
             .flatten();
         for impl_def_id in impls {
             let impl_def_id = impl_def_id.to_def_id();
+            if per_instance.contains(&impl_def_id) {
+                continue;
+            }
             let implemented = tcx.impl_item_implementor_ids(impl_def_id);
             for &law in laws {
                 let inherited = !implemented.contains_key(&law);

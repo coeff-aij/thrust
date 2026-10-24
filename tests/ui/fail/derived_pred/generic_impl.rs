@@ -1,8 +1,9 @@
 //@compile-flags: -C debug-assertions=off -A unused-variables -A dead_code
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
-// Rejected. A generic impl may not leave a derived predicate out: its rules would have to be
-// instantiated with the impl.
+// Rejected. A generic impl verified once over its type parameters may not leave a derived
+// predicate out: each instance needs a relation of its own, which only analyzing the impl at each
+// instance gives (`THRUST_PER_INSTANCE_GENERICS=1`, `generic_law_instance.rs`).
 
 #[thrust_macros::context]
 trait Iter {
