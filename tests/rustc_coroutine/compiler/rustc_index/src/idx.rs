@@ -57,12 +57,10 @@ pub trait Idx: Copy + 'static + Eq + PartialEq + Debug + Hash {
     #[thrust_macros::law]
     #[thrust_macros::requires(Self::index_is(*a, i) && Self::index_is(*a, j))]
     #[thrust_macros::ensures(i == j)]
-    #[thrust::trusted]
     fn index_is_unique(a: &Self, i: usize, j: usize) {}
 
     #[thrust_macros::law]
     #[thrust_macros::ensures(exists(|i: USize| Self::index_is(*a, i)))]
-    #[thrust::trusted]
     fn index_is_total(a: &Self) {}
 
     #[thrust_macros::law]
@@ -71,14 +69,12 @@ pub trait Idx: Copy + 'static + Eq + PartialEq + Debug + Hash {
             && Self::index_is(*a, Self::index_logic(*a))
             && forall(|i: USize| Self::index_is(*a, i) ==> i == Self::index_logic(*a))
     )]
-    #[thrust::trusted]
     fn index_logic_is(a: &Self) {}
 
     // Two elements with the same index are equal, which `layout()`'s `v == index` needs.
     #[thrust_macros::law]
     #[thrust_macros::requires(Self::index_is(*a, i) && Self::index_is(*b, i))]
     #[thrust_macros::ensures(*a == *b)]
-    #[thrust::trusted]
     fn index_is_injective(a: &Self, b: &Self, i: usize) {}
 }
 
