@@ -4,7 +4,7 @@ The target is rustc's `rustc_abi::layout::coroutine` and its dependencies. `targ
 whole extraction in one file (`//@ignore-on-host`). The verified code lives in rustc's module
 layout under `tests/rustc_coroutine/compiler/` (`rustc_hashes`, `rustc_index`, `rustc_abi`, one
 crate of three modules), with the case study's own code (the iterator adapters of rewrites.md R8,
-`SliceIter::find` of R9, `Model` declarations, std specifications, `Unwrap`, lemmas) under
+`SliceIter::find` of R9, `Model` declarations, std specifications, lemmas) under
 `tests/rustc_coroutine/thrust/`. The goal is a proof that `layout()` does not panic.
 
 Each file below is a crate root that includes the whole tree and selects one stage with a

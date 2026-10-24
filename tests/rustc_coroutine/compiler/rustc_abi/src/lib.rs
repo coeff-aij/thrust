@@ -192,9 +192,7 @@ impl TargetDataLayout {
             16 => 1 << 15,
             32 => 1 << 31,
             64 => 1 << 61,
-            // Rewrite (rewrites.md R6): the message is dropped; a message makes
-            // `fmt::Arguments`, which Thrust cannot type in analysed code.
-            _ => panic!(),
+            bits => panic!("obj_size_bound: unknown pointer bit size {bits}"),
         }
     }
 
@@ -223,9 +221,7 @@ impl TargetDataLayout {
         )) {
             e.1.pointer_size
         } else {
-            // Rewrite (rewrites.md R6): the message is dropped; a message makes
-            // `fmt::Arguments`, which Thrust cannot type in analysed code.
-            panic!();
+            panic!("Use of unknown address space {c:?}");
         }
     }
 
@@ -244,9 +240,7 @@ impl TargetDataLayout {
         )) {
             e.1.pointer_align
         } else {
-            // Rewrite (rewrites.md R6): the message is dropped; a message makes
-            // `fmt::Arguments`, which Thrust cannot type in analysed code.
-            panic!();
+            panic!("Use of unknown address space {c:?}");
         })
     }
 }
@@ -371,8 +365,7 @@ impl Size {
     #[thrust_macros::ensures(result == self.raw * 8)]
     pub fn bits(self) -> u64 {
         #[cold]
-        #[thrust::trusted]
-        #[thrust::callable]
+        #[thrust_macros::requires(false)]
         fn overflow(bytes: u64) -> ! {
             panic!("Size::bits: {bytes} bytes in bits doesn't fit in u64")
         }
@@ -422,9 +415,9 @@ impl Add for Size {
     type Output = Size;
     #[inline]
     fn add(self, other: Size) -> Size {
-        // Rewrite (rewrites.md R6): the message is dropped; a message makes
-        // `fmt::Arguments`, which Thrust cannot type in analysed code.
-        Size::from_bytes(self.bytes().checked_add(other.bytes()).unwrap_or_else(|| panic!()))
+        Size::from_bytes(self.bytes().checked_add(other.bytes()).unwrap_or_else(|| {
+            panic!("Size::add: {} + {} doesn't fit in u64", self.bytes(), other.bytes())
+        }))
     }
 }
 
@@ -977,7 +970,7 @@ impl<FieldIdx: Idx> VariantLayout<FieldIdx> {
             in_memory_order,
         } = layout.fields
         else {
-            panic!();
+            panic!("Layout of fields should be Arbitrary for variants");
         };
 
         Self {

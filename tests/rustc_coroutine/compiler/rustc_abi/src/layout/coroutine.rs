@@ -749,7 +749,7 @@ pub fn layout<
                     Assigned(v) if v == index => true,
                     // Unreachable by property 2b (a listed local is Assigned to its own variant)
                     // and `Idx::index_is_injective` (`v == index`).
-                    Assigned(_) => unreachable!(),
+                    Assigned(_) => unreachable!("assignment does not match variant"),
                     Ineligible(_) => false,
                 }),
                 |local| local_layouts[*local],

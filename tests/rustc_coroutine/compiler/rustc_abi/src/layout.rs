@@ -13,7 +13,6 @@ use crate::rustc_hashes::Hash64;
 use crate::rustc_index::{Idx, IndexSlice, IndexVec};
 use crate::case_study::USize;
 use crate::case_study::iter::{Filter, Map, collect_index_vec, iter_all};
-use crate::case_study::unwrap::Unwrap;
 
 mod coroutine;
 mod simple;
@@ -86,7 +85,7 @@ fn sum_first(ts: &[u64], k: usize) -> u64 {
 // that `F`'s `deref` is a function (`deref_functional`): the code reads each field's layout once,
 // so the directions that conclude from some layout `post!` allows (an unsized field gives
 // `UnexpectedUnsized`, a field's niche gives `End` one) hold only for the layout `deref` returns. `univariant` needs these
-// for its two `unwrap_without_debug`s on the `End` layout, and requires that the fields fit in any
+// for its two `expect`s on the `End` layout, and requires that the fields fit in any
 // order: rustc assumes the `End` layout succeeds whenever the `Start` one does
 // (`expect("alt layout should always work")`), but the two orders pad differently, so one of them
 // can overflow `checked_add` or `obj_size_bound` alone; summing every field's size and twice its
@@ -293,12 +292,10 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                     if fields.len() > 1 && head_space != 0 && tail_space > 0 {
                         let alt_layout = self
                             .univariant_biased(fields, repr, kind, NicheBias::End)
-                            // .expect("alt layout should always work");
-                            .unwrap_without_debug();
+                            .expect("alt layout should always work");
                         let alt_niche = alt_layout
                             .largest_niche
-                            // .expect("alt layout should have a niche like the regular one");
-                            .unwrap_without_debug();
+                            .expect("alt layout should have a niche like the regular one");
                         let alt_head_space = alt_niche.offset.bytes();
                         let alt_niche_len = alt_niche.value.size(dl).bytes();
                         let alt_tail_space =
