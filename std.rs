@@ -876,6 +876,17 @@ mod thrust_models {
         type Ty = Option<<T as Model>::Ty>;
     }
 
+    // The item still to come, as Creusot's view of `option::IntoIter`.
+    impl<T> Model for core::option::IntoIter<T> where T: Model {
+        type Ty = Option<<T as Model>::Ty>;
+    }
+
+    // The iterator it maps and the closure's state, as Creusot's `Map` (creusot-std/src/std/iter/
+    // map.rs); it has the shape of the struct.
+    impl<I, F> Model for core::iter::Map<I, F> where I: Model {
+        type Ty = (<I as Model>::Ty, model::Closure<F>);
+    }
+
     impl<T, E> Model for Result<T, E> where T: Model, E: Model {
         type Ty = Result<<T as Model>::Ty, <E as Model>::Ty>;
     }
@@ -2265,6 +2276,7 @@ fn _extern_spec_slice_iter_mut_next<'a, T>(
 // `produces_refl` holds at the states that satisfy it. The laws are Creusot's; they let a loop
 // over a type parameter accumulate what `next` produced.
 #[thrust_macros::context]
+#[thrust::def::iterator_spec]
 trait IteratorSpec: std::iter::Iterator + thrust_models::Model
 where
     Self::Item: thrust_models::Model,
@@ -2337,6 +2349,79 @@ fn _extern_spec_iterator_find<I, P>(it: &mut I, predicate: P) -> Option<I::Item>
           P: FnMut(&I::Item) -> bool
 {
     <I as std::iter::Iterator>::find(it, predicate)
+}
+
+// The sum of the first `n` items of `s`.
+#[thrust_macros::logic]
+#[thrust_macros::variant(n)]
+fn seq_sum(
+    s: thrust_models::model::Seq<<usize as thrust_models::Model>::Ty>,
+    n: <usize as thrust_models::Model>::Ty,
+) -> <usize as thrust_models::Model>::Ty {
+    if n <= 0 { 0 } else { seq_sum(s, n - 1) + s[n - 1] }
+}
+
+// `Iterator::sum` of `usize` items into a `usize`: core's `Sum` for an integer folds the items
+// with `+` (core/src/iter/traits/accum.rs), running the iterator to its end, as Creusot states of
+// `collect` (creusot-std/src/std/iter.rs 172-175). `+` is unbounded here, as everywhere without
+// `THRUST_INT_RANGE`, under which `sum` has no specification.
+#[cfg(not(thrust_int_range))]
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(I::inv(it))]
+#[thrust_macros::ensures(
+    thrust_models::exists(|prod: thrust_models::model::Seq<<usize as thrust_models::Model>::Ty>,
+                           done: <I as thrust_models::Model>::Ty,
+                           fin: <I as thrust_models::Model>::Ty|
+        I::produces(it, prod, done)
+            && I::completed(thrust_models::model::Mut::new(done, fin))
+            && result == seq_sum(prod, prod.len()))
+)]
+fn _extern_spec_iterator_sum_usize<I>(it: I) -> usize
+    where I: IteratorSpec<Item = usize>
+{
+    <I as std::iter::Iterator>::sum::<usize>(it)
+}
+
+// `Iterator::max_by_key`: core maps each item to its key and keeps the later of two items whose
+// keys are equal (core/src/iter/traits/iterator.rs, `max_by_key`, and `cmp::max_by`), so the
+// result is the last item of greatest key, `None` for no item. `f` is called once per item, in
+// order; the key of an item is one `f` may return for it in some state, as `find` above states its
+// closure's answers.
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(
+    I::inv(it)
+        && thrust_models::forall(|c: thrust_models::model::Closure<F>|
+            thrust_models::forall(|x: <I::Item as thrust_models::Model>::Ty| thrust_macros::pre!(c(&x))))
+)]
+#[thrust_macros::ensures(
+    thrust_models::exists(|prod: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
+                           keys: thrust_models::model::Seq<<B as thrust_models::Model>::Ty>,
+                           done: <I as thrust_models::Model>::Ty,
+                           fin: <I as thrust_models::Model>::Ty|
+        I::produces(it, prod, done)
+            && I::completed(thrust_models::model::Mut::new(done, fin))
+            && keys.len() == prod.len()
+            && thrust_models::forall(|k: thrust_models::model::Int| !(0 <= k && k < prod.len())
+                || thrust_models::exists(|c: thrust_models::model::Closure<F>, d: thrust_models::model::Closure<F>|
+                    thrust_macros::post!(thrust_models::model::Mut::new(c, d)(&prod[k]), keys[k])))
+            && (result == None) == (prod.len() == 0)
+            && thrust_models::forall(|x: <I::Item as thrust_models::Model>::Ty| !(result == Some(x))
+                || thrust_models::exists(|j: thrust_models::model::Int|
+                    0 <= j && j < prod.len() && x == prod[j]
+                        && thrust_models::forall(|k: thrust_models::model::Int| !(0 <= k && k < prod.len())
+                            || B::compares(keys[k], keys[j], Some(std::cmp::Ordering::Less))
+                            || B::compares(keys[k], keys[j], Some(std::cmp::Ordering::Equal)))
+                        && thrust_models::forall(|k: thrust_models::model::Int| !(j < k && k < prod.len())
+                            || B::compares(keys[k], keys[j], Some(std::cmp::Ordering::Less)))))
+    )
+)]
+fn _extern_spec_iterator_max_by_key<I, B, F>(it: I, f: F) -> Option<I::Item>
+    where I: IteratorSpec,
+          I::Item: thrust_models::Model,
+          B: Ord + PartialOrdSpec,
+          F: FnMut(&I::Item) -> B
+{
+    <I as std::iter::Iterator>::max_by_key(it, f)
 }
 
 #[thrust_macros::context]
@@ -2588,6 +2673,167 @@ macro_rules! range_iterator_spec {
 
 range_iterator_spec!(i8 i16 i32 i64 i128 isize u8 u16 u32 u64 u128 usize);
 
+// std's `Map`, Creusot's `Map` (creusot-std/src/std/iter/map.rs) in the form of the case study's
+// adapter (fork tests/rustc_coroutine/thrust/iter.rs): `produces` carries the input items and the
+// chain of closure states, each call's postcondition relating two consecutive states. The
+// closure may be called on every item the iterator can still yield (`map_next_precondition`),
+// a call keeps that so for the next item (`map_preservation_inv`), and both hold again from any
+// completed state (`map_reinitialize`).
+#[thrust_macros::predicate]
+fn map_next_precondition<I, B, F>(iter: I, func: F) -> bool
+where
+    I: IteratorSpec,
+    I::Item: thrust_models::Model,
+    B: thrust_models::Model,
+    F: FnMut(I::Item) -> B,
+{
+    thrust_models::forall(|e: <I::Item as thrust_models::Model>::Ty| thrust_models::forall(|i: <I as thrust_models::Model>::Ty|
+        !I::produces(iter, thrust_models::model::Seq::singleton(e), i) || thrust_macros::pre!(func(e))))
+}
+
+#[thrust_macros::predicate]
+fn map_preservation_inv<I, B, F>(iter: I, func: F) -> bool
+where
+    I: IteratorSpec,
+    I::Item: thrust_models::Model,
+    B: thrust_models::Model,
+    F: FnMut(I::Item) -> B,
+{
+    thrust_models::forall(|s: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
+                           e1: <I::Item as thrust_models::Model>::Ty,
+                           e2: <I::Item as thrust_models::Model>::Ty,
+                           i: <I as thrust_models::Model>::Ty,
+                           f1: thrust_models::model::Closure<F>,
+                           f2: thrust_models::model::Closure<F>,
+                           b: <B as thrust_models::Model>::Ty|
+        !(thrust_macros::hist_inv!(func, f1)
+            && I::produces(iter, s.push(e1).push(e2), i)
+            && thrust_macros::pre!(f1(e1))
+            && thrust_macros::post!(thrust_models::model::Mut::new(f1, f2)(e1), b))
+            || thrust_macros::pre!(f2(e2)))
+}
+
+#[thrust_macros::predicate]
+fn map_reinitialize<I, B, F>(func: F) -> bool
+where
+    I: IteratorSpec,
+    I::Item: thrust_models::Model,
+    B: thrust_models::Model,
+    F: FnMut(I::Item) -> B,
+{
+    thrust_models::forall(|cur: <I as thrust_models::Model>::Ty,
+                           fin: <I as thrust_models::Model>::Ty,
+                           f: thrust_models::model::Closure<F>|
+        !(thrust_macros::hist_inv!(func, f) && I::completed(thrust_models::model::Mut::new(cur, fin)))
+            || (map_next_precondition::<I, B, F>(fin, f) && map_preservation_inv::<I, B, F>(fin, f)))
+}
+
+#[thrust_macros::context]
+impl<I, B, F> IteratorSpec for core::iter::Map<I, F>
+where
+    I: IteratorSpec,
+    I::Item: thrust_models::Model,
+    B: thrust_models::Model,
+    F: FnMut(I::Item) -> B,
+{
+    #[thrust_macros::predicate]
+    fn inv(self) -> bool {
+        map_reinitialize::<I, B, F>(self.1)
+            && map_preservation_inv::<I, B, F>(self.0, self.1)
+            && I::inv(self.0)
+            && map_next_precondition::<I, B, F>(self.0, self.1)
+    }
+
+    #[thrust_macros::predicate]
+    fn produces(self, visited: Vec<B>, o: Self) -> bool {
+        thrust_macros::hist_inv!(self.1, o.1)
+            && thrust_models::exists(|s: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
+                                      fs: thrust_models::model::Seq<thrust_models::model::Closure<F>>|
+                s.len() == visited.len()
+                    && I::produces(self.0, s, o.0)
+                    && fs.len() == visited.len() + 1
+                    && fs[0] == self.1
+                    && fs[visited.len()] == o.1
+                    && thrust_models::forall(|k: thrust_models::model::Int|
+                        !(0 <= k && k < visited.len())
+                            || (thrust_macros::hist_inv!(self.1, fs[k])
+                                && thrust_macros::post!(thrust_models::model::Mut::new(fs[k], fs[k + 1])(s[k]), visited[k]))))
+    }
+
+    #[thrust_macros::predicate]
+    fn completed(&mut self) -> bool {
+        I::completed(thrust_models::model::Mut::new((*self).0, (!self).0)) && (*self).1 == (!self).1
+    }
+
+    fn produces_refl(a: &Self) {}
+
+    fn produces_trans(
+        a: &Self,
+        ab: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        b: &Self,
+        bc: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        c: &Self,
+    ) {
+    }
+}
+
+// `Iterator::map`, Creusot's (creusot-std/src/std/iter.rs, `map`): the closure may be called on
+// every item, and keeps that so, as `inv` above states. The first item's `pre!` is written out
+// (`map_next_precondition`), which names the closure's precondition as what the call asks of it.
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(
+    I::inv(it)
+        && map_reinitialize::<I, B, F>(f)
+        && map_preservation_inv::<I, B, F>(it, f)
+        && thrust_models::forall(|e: <I::Item as thrust_models::Model>::Ty, i: <I as thrust_models::Model>::Ty|
+            !I::produces(it, thrust_models::model::Seq::singleton(e), i) || thrust_macros::pre!(f(e)))
+)]
+#[thrust_macros::ensures(result.0 == it && result.1 == f)]
+fn _extern_spec_iterator_map<I, B, F>(it: I, f: F) -> core::iter::Map<I, F>
+    where I: IteratorSpec,
+          I::Item: thrust_models::Model,
+          B: thrust_models::Model,
+          F: FnMut(I::Item) -> B
+{
+    <I as std::iter::Iterator>::map(it, f)
+}
+
+// `option::IntoIter`, Creusot's (creusot-std/src/std/option.rs 667-689): the option's item, then
+// nothing.
+#[thrust_macros::context]
+impl<T> IteratorSpec for core::option::IntoIter<T>
+where
+    T: thrust_models::Model,
+{
+    #[thrust_macros::predicate]
+    fn inv(self) -> bool {
+        true
+    }
+
+    #[thrust_macros::predicate]
+    fn produces(self, visited: Vec<T>, o: Self) -> bool {
+        (visited.len() == 0 && self == o)
+            || thrust_models::exists(|e: <T as thrust_models::Model>::Ty|
+                self == Some(e) && visited == thrust_models::model::Seq::singleton(e) && o == None)
+    }
+
+    #[thrust_macros::predicate]
+    fn completed(&mut self) -> bool {
+        *self == None && *self == !self
+    }
+
+    fn produces_refl(a: &Self) {}
+
+    fn produces_trans(
+        a: &Self,
+        ab: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        b: &Self,
+        bc: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        c: &Self,
+    ) {
+    }
+}
+
 // `into_iter` is specified once, through `into_iter_is`; a type gets an `into_iter` by
 // implementing the trait. An iterator is its own `into_iter`.
 #[thrust_macros::context]
@@ -2685,6 +2931,17 @@ where
     #[thrust_macros::predicate]
     fn into_iter_is(self, it: core::slice::IterMut<'a, T>) -> bool {
         it.0 == *self && it.1 == !self && it.2 == 0 && (!self).len() == (*self).len()
+    }
+}
+
+#[thrust_macros::context]
+impl<T> IntoIteratorSpec for Option<T>
+where
+    T: thrust_models::Model,
+{
+    #[thrust_macros::predicate]
+    fn into_iter_is(self, it: core::option::IntoIter<T>) -> bool {
+        it == self
     }
 }
 

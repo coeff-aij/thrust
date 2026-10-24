@@ -57,6 +57,20 @@ impl<'tcx> Analyzer<'tcx, '_> {
             return;
         };
         let stated = self.ctx.stated_pres(contract_def_id);
+        for param in self.iterator_spec_params(contract_def_id) {
+            let ty = mir_ty::EarlyBinder::bind(param.to_ty(self.tcx))
+                .instantiate(self.tcx, contract_args);
+            for closure in self
+                .tcx
+                .erase_regions(ty)
+                .walk()
+                .filter_map(|arg| arg.as_type())
+            {
+                if matches!(closure.kind(), mir_ty::TyKind::Closure(..)) {
+                    self.record_handover(closure, def_id, resolved_def_id);
+                }
+            }
+        }
         for (param, calls) in self.fn_bounded_params(contract_def_id) {
             let ty = mir_ty::EarlyBinder::bind(param.to_ty(self.tcx))
                 .instantiate(self.tcx, contract_args);
@@ -101,6 +115,37 @@ impl<'tcx> Analyzer<'tcx, '_> {
                     Some((_, known)) if calls == Calls::Repeatedly => *known = calls,
                     Some(_) => {}
                     None => params.push((param, calls)),
+                }
+            }
+        }
+        params
+    }
+
+    /// The type parameters of `contract_def_id` bounded by std.rs's `IteratorSpec`. A closure
+    /// inside the iterator one is instantiated with (the function of a `Map`) is run by the
+    /// iterator's `next`, which the callee calls; its obligation is the iterator's `inv`, which
+    /// the contract requires and which, for an adapter holding a closure, states the closure's
+    /// `pre!` of every item it can be called on (std.rs's `Map`). So the call hands it over.
+    fn iterator_spec_params(&self, contract_def_id: DefId) -> Vec<mir_ty::ParamTy> {
+        let Some(iterator_spec) = self.ctx.def_ids.iterator_spec() else {
+            return Vec::new();
+        };
+        let predicates = self
+            .tcx
+            .predicates_of(contract_def_id)
+            .instantiate_identity(self.tcx);
+        let mut params = Vec::new();
+        for clause in predicates.predicates {
+            let Some(trait_clause) = clause.as_trait_clause() else {
+                continue;
+            };
+            let trait_ref = trait_clause.skip_binder().trait_ref;
+            if trait_ref.def_id != iterator_spec {
+                continue;
+            }
+            if let mir_ty::TyKind::Param(param) = *trait_ref.self_ty().kind() {
+                if !params.contains(&param) {
+                    params.push(param);
                 }
             }
         }

@@ -190,6 +190,14 @@ pub fn closure_model_path() -> [Symbol; 3] {
     ]
 }
 
+pub fn iterator_spec_path() -> [Symbol; 3] {
+    [
+        Symbol::intern("thrust"),
+        Symbol::intern("def"),
+        Symbol::intern("iterator_spec"),
+    ]
+}
+
 pub fn partial_ord_spec_path() -> [Symbol; 3] {
     [
         Symbol::intern("thrust"),

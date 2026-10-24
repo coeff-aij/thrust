@@ -37,6 +37,7 @@ struct DefIds {
     closure_model: OnceCell<Option<DefId>>,
     ghost_model: OnceCell<Option<DefId>>,
     partial_ord_spec: OnceCell<Option<DefId>>,
+    iterator_spec: OnceCell<Option<DefId>>,
     type_invariant: OnceCell<Option<DefId>>,
 
     mut_model_new: OnceCell<Option<DefId>>,
@@ -294,6 +295,14 @@ impl<'tcx> DefIdCache<'tcx> {
             .def_ids
             .ghost_model
             .get_or_init(|| self.annotated_def(&crate::analyze::annot::ghost_model_path()))
+    }
+
+    /// The `IteratorSpec` trait of std.rs.
+    pub fn iterator_spec(&self) -> Option<DefId> {
+        *self
+            .def_ids
+            .iterator_spec
+            .get_or_init(|| self.annotated_def(&crate::analyze::annot::iterator_spec_path()))
     }
 
     /// The `PartialOrdSpec` trait of std.rs.

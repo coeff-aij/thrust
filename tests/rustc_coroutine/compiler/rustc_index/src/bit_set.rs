@@ -544,9 +544,7 @@ fn zero_bits_ones(m: usize) {
     }
 }
 
-// Trusted: std's `Iterator::sum` has no specification.
 #[inline]
-#[thrust::trusted]
 #[thrust::callable]
 fn count_ones(words: &[Word]) -> usize {
     words.iter().map(|word| word.count_ones() as usize).sum()
