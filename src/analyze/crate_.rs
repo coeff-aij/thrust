@@ -345,7 +345,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let owner_fn_id = analyzer.owner_fn_id;
         let owner_fn_id_args = analyzer.owner_fn_id_args;
         use mir_ty::TypeVisitableExt as _;
-        if sig.has_param() {
+        // A trait method's contract is generic in `Self` even when its signature does not mention
+        // it: it may name `Self` only in a logic function (`Self::score(x)`), which each impl
+        // resolves to its own.
+        let trait_method = self.tcx.trait_of_assoc(owner_fn_id).is_some();
+        if sig.has_param() || trait_method {
             if trusted_derive {
                 let expected = analyzer.expected_ty();
                 self.ctx
