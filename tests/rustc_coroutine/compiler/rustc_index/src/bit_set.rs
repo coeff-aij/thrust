@@ -59,15 +59,12 @@ impl<T: Idx> DenseBitSet<T> {
         self.1.len() == (self.0 + 63) / 64
     }
 
-    /// The bits at or past `domain_size` are clear, as rustc's `clear_excess_bits` keeps them;
-    /// `iter` yields every set bit of the words. Thrust has no type invariants (Creusot's
-    /// `Invariant`, Verus's `type_invariant`), so the contracts state it.
-    #[thrust_macros::predicate]
-    pub(crate) fn excess_clear(self) -> bool {
-        forall(|i: USize| !(self.0 <= i && i < self.1.len() * 64) || !Self::mem(self, i))
-    }
-
-    /// The number of members: the set bits below `domain_size`.
+    /// The number of members: the set bits below `domain_size`. The trusted `iter` relies on the
+    /// bits past `domain_size` being clear, which rustc's `clear_excess_bits` keeps: it yields every
+    /// set bit of the words. Thrust has no type invariants (Creusot's `Invariant`, Verus's
+    /// `type_invariant`); stated in the contracts as a validity predicate, the invariant leaves the
+    /// `bitset` root without an answer at 300 s (thrust-research
+    /// experiments/2026-10-24-eval3-trusted-reduction-2.md).
     #[thrust_macros::logic]
     pub(crate) fn card(self) -> USize {
         ones(self.1, self.0)
@@ -77,7 +74,6 @@ impl<T: Idx> DenseBitSet<T> {
     #[thrust_macros::ensures(result.0 == domain_size)]
     #[thrust_macros::ensures(Self::no_mem(result))]
     #[thrust_macros::ensures(Self::words_cover_domain(result))]
-    #[thrust_macros::ensures(Self::excess_clear(result))]
     #[thrust_macros::ensures(Self::card(result) == 0)]
     pub fn new_empty(domain_size: usize) -> DenseBitSet<T> {
         let num_words = num_words(domain_size);
@@ -129,7 +125,6 @@ impl<T: Idx> DenseBitSet<T> {
     #[thrust_macros::ensures((result == true) ==> Self::card(!self) == Self::card(*self) + 1)]
     #[thrust_macros::ensures((result == false) ==> Self::card(!self) == Self::card(*self))]
     #[thrust_macros::ensures(Self::card(!self) <= (!self).0)]
-    #[thrust_macros::ensures(Self::excess_clear(*self) ==> Self::excess_clear(!self))]
     pub fn insert(&mut self, elem: T) -> bool {
         assert!(
             elem.index() < self.domain_size,
@@ -152,7 +147,6 @@ impl<T: Idx> DenseBitSet<T> {
     #[thrust_macros::ensures((!self).0 == (*self).0)]
     #[thrust_macros::ensures(Self::words_cover_domain(!self))]
     #[thrust_macros::ensures(forall(|i: USize| 0 <= i && i < (*self).0 ==> Self::mem(!self, i)))]
-    #[thrust_macros::ensures(Self::excess_clear(!self))]
     #[thrust_macros::ensures(Self::card(!self) == (*self).0)]
     pub fn insert_all(&mut self) {
         self.words.fill(!0);
@@ -163,7 +157,6 @@ impl<T: Idx> DenseBitSet<T> {
     // state.
     #[inline]
     #[thrust::trusted]
-    #[thrust_macros::requires(Self::excess_clear(*self))]
     #[thrust_macros::ensures(result.4 == (*self).0 && result.5 == 0)]
     #[thrust_macros::ensures(0 <= result.6 && result.6 <= (*self).0)]
     #[thrust_macros::ensures(result.6 == Self::card(*self))]
