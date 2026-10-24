@@ -3,14 +3,13 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120
 
 use thrust_models::model::{Closure, Int, Mut, Seq};
-use thrust_models::{exists, forall, Ghost, Model};
+use thrust_models::{exists, forall, Model};
 
 // Creusot's `Map` (`iterators/map.rs`) in its `produces` form over an `FnMut` closure, fully
 // checked: `produces` carries the chain `fs` of closure states and relates them by `hist_inv!`
 // (Creusot's `hist_inv`, `unnest` in earlier versions), and `preservation_inv` and `reinitialize`
-// quantify over every closure state, as in `counter_creusot.rs`. `produces_trans` is proved by
-// one lemma, `produces_trans_at`, that names the joined witnesses, and nothing else needs a
-// lemma; `produces_refl` is inherited. The call site is `map_creusot.rs`'s two `next`s over `Range`.
+// quantify over every closure state, as in `counter_creusot.rs`. Both laws are inherited and
+// checked at the impl with no lemma. The call site is two `next`s over `Range`.
 
 // Creusot's `common.rs`, the iterator specification every case shares: the trait predicates
 // `produces(self, visited, o)`, `completed` and `invariant` (`true` unless the impl says otherwise),
@@ -109,56 +108,6 @@ where
                     && Self::preservation_inv(fin, f)))))
     }
 
-    // Creusot's `produces_one`: one closure call from `s0.func` to `s1.func` (Creusot's
-    // `f: &mut F` with `*f == self.func && ^f == succ.func`), one inner item `e` mapped to
-    // `visited`.
-    #[thrust_macros::predicate]
-    fn produces_one(s0: Self, visited: B, s1: Self) -> bool {
-        exists(|e: A|
-            I::produces(s0.0, Seq::singleton(e), s1.0)
-                && thrust_macros::post!(Mut::new(s0.1, s1.1)(e), visited))
-    }
-
-    // `produces` with its input sequence `s` and closure chain `fs` given: the body of `produces`
-    // under its `exists`.
-    #[thrust_macros::predicate]
-    fn produces_at(s0: Self, visited: Seq<<B as Model>::Ty>, o: Self, s: Seq<A>, fs: Seq<F>) -> bool {
-        thrust_macros::hist_inv!(s0.1, o.1)
-            && s.len() == visited.len()
-            && I::produces(s0.0, s, o.0)
-            && fs.len() == visited.len() + 1
-            && fs[0] == s0.1
-            && fs[visited.len()] == o.1
-            && forall(|k: Int|
-                !(0 <= k && k < visited.len())
-                    || (thrust_macros::hist_inv!(s0.1, fs[k])
-                        && thrust_macros::post!(Mut::new(fs[k], fs[k + 1])(s[k]), visited[k])))
-    }
-
-    // `produces` with its input sequence `s` given: `produces_at` under the `exists` of the chain.
-    #[thrust_macros::predicate]
-    fn produces_with(s0: Self, visited: Seq<<B as Model>::Ty>, o: Self, s: Seq<A>) -> bool {
-        exists(|fs: Seq<Closure<F>>| Self::produces_at(s0, visited, o, s, fs))
-    }
-
-    // `produces_at` of the joined witnesses, with the witnesses of the two halves' `exists`
-    // universally quantified: the input sequences concatenated (the session's `exists (s1 ++ s)`)
-    // and the closure chains joined at their shared state `b.func`, `fab[..ab.len()] ++ fbc` (the
-    // session's `exists (fs1 ++ fs)`; Thrust's chain holds the states, one more than Creusot's
-    // `&mut F` steps, so the shared one is dropped once).
-    #[thrust_macros::ensures(forall(|sab: Seq<A>| forall(|sbc: Seq<A>|
-        forall(|fab: Seq<Closure<F>>| forall(|fbc: Seq<Closure<F>>|
-        !(Self::produces_at(a, ab, b, sab, fab) && Self::produces_at(b, bc, c, sbc, fbc))
-            || Self::produces_at(a, ab.concat(bc), c, sab.concat(sbc), fab.subsequence(0, ab.len()).concat(fbc)))))))]
-    #[thrust_macros::lemma]
-    fn produces_trans_at(
-        a: Ghost<Self>,
-        ab: Ghost<Seq<<B as Model>::Ty>>,
-        b: Ghost<Self>,
-        bc: Ghost<Seq<<B as Model>::Ty>>,
-        c: Ghost<Self>,
-    ) {
-    }
 }
 
 #[thrust_macros::context]
@@ -175,32 +124,14 @@ where
     type Item = B;
 
     fn next(&mut self) -> Option<B> {
-        let pre = thrust_macros::ghost!(|self: &mut Self| -> Self { *self });
         let r = self.iter.next();
         match r {
             Some(v) => {
-                let e = thrust_macros::ghost!(|v: <I as Iterator>::Item| -> <I as Iterator>::Item { v });
                 let b = (self.func)(v);
-                let post = thrust_macros::ghost!(|self: &mut Self| -> Self { *self });
-                let bm = thrust_macros::ghost!(|b: B| -> B { b });
-                // Keeps `self` live at the snapshot `post`, as the history update does in
-                // `counter_creusot.rs`.
-                let _keep = &*self;
                 Some(b)
             }
             None => None,
         }
-    }
-
-    fn produces_trans(a: &Map<I, F>, ab: Seq<<Self::Item as Model>::Ty>, b: &Map<I, F>, bc: Seq<<Self::Item as Model>::Ty>, c: &Map<I, F>) {
-        let ga = thrust_macros::ghost!(|a: &Self| -> Self { *a });
-        let gb = thrust_macros::ghost!(|b: &Self| -> Self { *b });
-        let gc = thrust_macros::ghost!(|c: &Self| -> Self { *c });
-        let gab = thrust_macros::ghost!(|ab: Seq<<B as Model>::Ty>| -> Seq<<B as Model>::Ty> { ab });
-        let gbc = thrust_macros::ghost!(|bc: Seq<<B as Model>::Ty>| -> Seq<<B as Model>::Ty> { bc });
-        Self::produces_trans_at(ga, gab, gb, gbc, gc);
-        // Keeps the parameters live at the snapshots above.
-        let _live = (a, &ab, b, &bc, c);
     }
 
     #[thrust_macros::predicate]

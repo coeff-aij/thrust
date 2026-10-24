@@ -13,10 +13,9 @@ the predicates, the laws `produces_refl` and `produces_trans` in concatenation f
 without Creusot's invariant premises, which a Thrust loop head cannot supply for its entry state),
 `invariant` defaulting to `true`, and `next` with Creusot's contract. Each law has a default empty
 body in the trait, and Thrust checks it at every impl that does not write it, where Creusot restates
-it in each impl with an empty body; an impl writes a law only when it needs proof steps (the
-`produces_trans` of `map`, `map_ext` and `counter_creusot`), or when the solver does not answer the
-inherited check (`map`'s `produces_refl`). The step-form files repeat theirs in the
-same layout. A case that needs `collect` adds it to its copy after `next`.
+it in each impl with an empty body; no impl writes a proof of its own, and no case calls a lemma
+(`fuse_produces_result.rs` declares its trait's laws without a default and restates them per impl
+with empty bodies, as Creusot does). The step-form files repeat theirs in the same layout. A case that needs `collect` adds it to its copy after `next`.
 
 | file | Creusot benchmark file | form |
 | --- | --- | --- |
@@ -26,7 +25,7 @@ same layout. A case that needs `collect` adds it to its copy after `next`.
 | `fuse.rs` | `iterators/fuse.rs` | `step` |
 | `fuse_produces.rs` | the current Creusot's `examples/iterators/07_fuse.rs` (3620de437) | `produces` + `FusedIterator::is_fused` with its state `Option<I>` and its `completed` and `produces` |
 | `fuse_produces_result.rs` | `iterators/fuse.rs` | `produces` + `FusedIterator::is_fused` with Creusot's state `Result<I, Ghost<I>>`; `next` keeps `iter` live past the ghost of the exhausted iterator, as Creusot's `ghost! { *iter }` reads it |
-| `map.rs` | `iterators/map.rs` | `produces` over an `FnMut` closure with the chain `fs` of closure states and `hist_inv!`, `produces_trans` by one source-level lemma, nothing else needs one, fully checked |
+| `map.rs` | `iterators/map.rs` | `produces` over an `FnMut` closure with the chain `fs` of closure states and `hist_inv!`, both laws inherited with no lemma, fully checked |
 | `iter_mut.rs` | `iterators/iter_mut.rs` | `produces` |
 | `collect.rs` | `common.rs` (`collect` / `FromIterator`) | `produces` |
 | `all_zero.rs` | `examples/all_zero.rs` | `produces`, via `iter_mut` |
