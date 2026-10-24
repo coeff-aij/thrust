@@ -7,8 +7,8 @@ use crate::chc::debug;
 use crate::pretty::PrettyDisplayExt;
 
 use super::{
-    ClauseBuilderExt as _, FunctionParamIdx, FunctionType, PointerKind, RefKind, RefinedType,
-    RefinedTypeVar, Refinement, Type,
+    ClauseBuilderExt as _, Closed, EnumType, FunctionParamIdx, FunctionType, PointerKind, RefKind,
+    RefinedType, RefinedTypeVar, Refinement, Type,
 };
 
 #[cfg(test)]
@@ -249,6 +249,7 @@ where
 /// whose refinement is what says something about it.
 fn head_of<T, U>(got_ty: &Type<T>, expected: &RefinedType<U>, position: Position) -> Refinement<U>
 where
+    T: Clone,
     U: chc::Var,
 {
     let mut head = expected.refinement.clone();
@@ -260,11 +261,26 @@ where
 
 /// The range of the integer type of `expected` at each position where a value of `got` enters
 /// it: `v >= 0` where an integer of [`Type::Int`] becomes a [`Type::UInt`], and the bounds of
-/// [`super::int_range`] where `got` is not a type within that range, through tuples and the
-/// current value of pointers, and of each element of a sequence of such a type. The final value of a mutable reference is produced by its borrower,
-/// which is checked where it writes it.
-fn int_range_facts<T, U>(got: &Type<T>, expected: &Type<U>) -> Refinement<U>
+/// [`super::int_range`] where `got` is not a type within that range, through tuples, the current
+/// value of pointers and the payloads of enums, and of each element of a sequence of such a type.
+/// These are the facts [`RefinedType::formula`] states of a value of `expected`. The final value of
+/// a mutable reference is produced by its borrower, which is checked where it writes it.
+pub fn int_range_facts<T, U>(got: &Type<T>, expected: &Type<U>) -> Refinement<U>
 where
+    T: Clone,
+    U: chc::Var,
+{
+    int_range_facts_within(got, expected, &mut Vec::new())
+}
+
+/// [`int_range_facts`] at a position inside the payloads of the enums `enclosing` names.
+fn int_range_facts_within<T, U>(
+    got: &Type<T>,
+    expected: &Type<U>,
+    enclosing: &mut Vec<chc::DatatypeSymbol>,
+) -> Refinement<U>
+where
+    T: Clone,
     U: chc::Var,
 {
     let value = || chc::Term::var(RefinedTypeVar::Value);
@@ -290,19 +306,90 @@ where
         (Type::Tuple(got), Type::Tuple(expected)) if got.elems.len() == expected.elems.len() => {
             for (index, (got, expected)) in got.elems.iter().zip(&expected.elems).enumerate() {
                 facts.push_conj(
-                    int_range_facts(&got.ty, &expected.ty)
+                    int_range_facts_within(&got.ty, &expected.ty, enclosing)
                         .subst_value_var(|| value().tuple_proj(index)),
                 );
             }
         }
         (Type::Pointer(got), Type::Pointer(expected)) if got.kind == expected.kind => {
             facts.push_conj(
-                int_range_facts(&got.elem.ty, &expected.elem.ty)
+                int_range_facts_within(&got.elem.ty, &expected.elem.ty, enclosing)
                     .subst_value_var(|| expected.kind.deref_term(value())),
+            );
+        }
+        (Type::Enum(got), Type::Enum(expected)) if got.symbol == expected.symbol => {
+            let got = got.clone().strip_refinement();
+            let expected = expected.clone().strip_refinement();
+            facts.push_conj(
+                enum_payload_checks(&got, &expected, enclosing).map_free_var(|v| match v {}),
             );
         }
         _ => {}
     }
+    facts
+}
+
+/// The facts of the payloads of `expected` (`RefinedType::formula`) where a value of `got` enters
+/// it: `forall f. v = C(f) => facts(f)` for each variant whose fields have facts to check. None when
+/// the two types are the same, as for an integer type that fits.
+fn enum_payload_checks(
+    got: &EnumType<Closed>,
+    expected: &EnumType<Closed>,
+    enclosing: &mut Vec<chc::DatatypeSymbol>,
+) -> Refinement<Closed> {
+    let mut facts = Refinement::top();
+    if super::int_range_mode() == super::IntRange::Off || got == expected {
+        return facts;
+    }
+    if enclosing.contains(&expected.symbol) {
+        unimplemented!(
+            "the payload range of the recursive enum {:?} where a value of {} enters {}",
+            expected.symbol,
+            got.display(),
+            expected.display()
+        );
+    }
+    let depth = enclosing.len();
+    enclosing.push(expected.symbol.clone());
+    let value = || chc::Term::var(RefinedTypeVar::Value);
+    for (got_variant, expected_variant) in got.variants().into_iter().zip(expected.variants()) {
+        let vars: Vec<_> = expected_variant
+            .field_tys
+            .iter()
+            .enumerate()
+            .map(|(index, ty)| (super::enum_payload_var(depth, index), ty.to_sort()))
+            .collect();
+        let mut checks = Refinement::top();
+        let fields = got_variant
+            .field_tys
+            .iter()
+            .zip(&expected_variant.field_tys);
+        for ((got_ty, expected_ty), (var, sort)) in fields.zip(&vars) {
+            let field = chc::Term::UserQuantifiedVar(sort.clone(), *var);
+            checks.push_conj(
+                int_range_facts_within(got_ty, expected_ty, enclosing)
+                    .subst_value_var(|| field.clone()),
+            );
+        }
+        if checks.is_top() {
+            continue;
+        }
+        assert!(!checks.has_existentials(), "a check states no existential");
+        let fields = vars
+            .iter()
+            .map(|(var, sort)| chc::Term::UserQuantifiedVar(sort.clone(), *var))
+            .collect();
+        let ctor = chc::Term::datatype_ctor(
+            expected.symbol.clone(),
+            expected.arg_sorts(),
+            expected_variant.ctor,
+            fields,
+        );
+        let is_variant = chc::Formula::Atom(value().equal_to(ctor));
+        let checks = checks.body.into_formula();
+        facts.push_conj(chc::Formula::forall(vars, is_variant.implies(checks)).into());
+    }
+    enclosing.pop();
     facts
 }
 

@@ -11,7 +11,6 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::Hash;
 use std::rc::Rc;
 
-use num_bigint::BigInt;
 use rustc_hir::lang_items::LangItem;
 use rustc_index::IndexVec;
 use rustc_middle::mir::{self, BasicBlock, Local};
@@ -122,15 +121,6 @@ pub fn local_of_function_param(idx: rty::FunctionParamIdx) -> Local {
 
 pub fn function_param_of_local(local: Local) -> rty::FunctionParamIdx {
     rty::FunctionParamIdx::from(local.as_usize() - 1)
-}
-
-fn discr_value<'tcx>(tcx: TyCtxt<'tcx>, discr: mir_ty::util::Discr<'tcx>) -> BigInt {
-    let (size, signed) = discr.ty.int_size_and_signed(tcx);
-    if signed {
-        size.sign_extend(discr.val).into()
-    } else {
-        discr.val.into()
-    }
 }
 
 pub struct ReplacePlacesVisitor<'tcx> {
@@ -915,57 +905,15 @@ impl<'tcx> Analyzer<'tcx> {
         }
     }
 
-    fn build_enum_def(&self, def_id: DefId) -> rty::EnumDatatypeDef {
-        let adt = self.tcx.adt_def(def_id);
-
-        let name = refine::datatype_symbol(self.tcx, def_id);
-        let variants: IndexVec<_, _> = adt
-            .variants()
-            .iter()
-            .zip(adt.discriminants(self.tcx))
-            .map(|(variant, (_, discr))| {
-                let discr = discr_value(self.tcx, discr);
-                let field_tys = variant
-                    .fields
-                    .iter()
-                    .map(|field| {
-                        let field_ty = self.tcx.type_of(field.did).instantiate_identity();
-                        self.type_builder(self.def_ids(), def_id).build(field_ty)
-                    })
-                    .collect();
-                rty::EnumVariantDef {
-                    name: refine::variant_symbol(&name, variant.name),
-                    discr,
-                    field_tys,
-                }
-            })
-            .collect();
-
-        let generics = self.tcx.generics_of(def_id);
-        let ty_params = (0..generics.count())
-            .filter(|idx| {
-                matches!(
-                    generics.param_at(*idx, self.tcx).kind,
-                    mir_ty::GenericParamDefKind::Type { .. }
-                )
-            })
-            .count();
-        tracing::debug!(?def_id, ?name, ?ty_params, "ty_params count");
-
-        rty::EnumDatatypeDef {
-            name,
-            ty_params,
-            variants,
-        }
-    }
-
     pub fn get_or_register_enum_def(&self, def_id: DefId) -> rty::EnumDatatypeDef {
         let mut enum_defs = self.enum_defs.borrow_mut();
         if let Some(enum_def) = enum_defs.get(def_id) {
             return enum_def.clone();
         }
 
-        let enum_def = self.build_enum_def(def_id);
+        let enum_def = self
+            .type_builder(self.def_ids(), def_id)
+            .build_enum_def(def_id);
         tracing::debug!(def_id = ?def_id, enum_def = ?enum_def, "register_enum_def");
         let ctors = enum_def
             .variants

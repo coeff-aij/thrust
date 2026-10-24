@@ -2499,6 +2499,16 @@ impl<V> Body<V> {
         self.atoms.iter().any(|a| matches!(a.pred, Pred::Var(_)))
     }
 
+    /// The body as one formula; it must have no predicate variable.
+    pub fn into_formula(self) -> Formula<V> {
+        assert!(!self.has_pred_var(), "a formula has no predicate variable");
+        let Body { atoms, formula } = self;
+        atoms
+            .into_iter()
+            .map(Formula::Atom)
+            .fold(formula, Formula::and)
+    }
+
     pub fn push_conj(&mut self, other: impl Into<Body<V>>) {
         let Body { atoms, formula } = other.into();
         self.atoms.extend(atoms);

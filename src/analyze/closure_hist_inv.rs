@@ -262,7 +262,9 @@ pub fn laws(
             .zip(&args)
             .map(|(param, arg)| (&param.ty, arg));
         for (ty, term) in typed.chain([(&contract.ret.ty, &result)]) {
-            if let Some(range) = rty::int_range_type_formula(ty, term.clone()) {
+            let payload = || fresh(system, "hist_inv_payload");
+            if let Some((vars, range)) = rty::int_range_type_formula(ty, term.clone(), payload) {
+                params.extend(vars);
                 premise = range.and(premise);
             }
         }
