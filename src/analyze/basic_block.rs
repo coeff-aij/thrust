@@ -80,6 +80,28 @@ fn unbounded_range_ty<T>(seq: bool) -> rty::Type<T> {
     }
 }
 
+/// The formula function a ghost marker call carries, or `None` for any other call.
+pub fn ghost_marker_formula_fn<'tcx>(
+    ctx: &analyze::Analyzer<'tcx>,
+    local_decls: &mir::LocalDecls<'tcx>,
+    func: &Operand<'tcx>,
+    args: &[rustc_span::source_map::Spanned<Operand<'tcx>>],
+) -> Option<(LocalDefId, mir_ty::GenericArgsRef<'tcx>)> {
+    let (def_id, _) = func.const_fn_def()?;
+    if Some(def_id) != ctx.def_ids().ghost_marker() {
+        return None;
+    }
+
+    let arg_ty = args[0].node.ty(local_decls, ctx.tcx());
+    let mir_ty::TyKind::FnDef(formula_def_id, generic_args) = arg_ty.kind() else {
+        panic!("ghost marker argument must be a formula function item");
+    };
+    let formula_def_id = formula_def_id
+        .as_local()
+        .expect("ghost formula function must be local");
+    Some((formula_def_id, generic_args))
+}
+
 /// Wraps the integer `term` around into the range of the integer type `ty`, as an `as` cast does.
 fn wrap_int_term<'tcx, V>(
     tcx: TyCtxt<'tcx>,
@@ -1849,27 +1871,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.ctx.extend_clauses(clauses);
     }
 
-    /// The formula function a ghost marker call carries, or `None` for any other call.
-    fn ghost_marker_formula_fn(
-        &self,
-        func: &Operand<'tcx>,
-        args: &[rustc_span::source_map::Spanned<Operand<'tcx>>],
-    ) -> Option<(LocalDefId, mir_ty::GenericArgsRef<'tcx>)> {
-        let (def_id, _) = func.const_fn_def()?;
-        if Some(def_id) != self.ctx.def_ids().ghost_marker() {
-            return None;
-        }
-
-        let arg_ty = args[0].node.ty(&self.local_decls, self.tcx);
-        let mir_ty::TyKind::FnDef(formula_def_id, generic_args) = arg_ty.kind() else {
-            panic!("ghost marker argument must be a formula function item");
-        };
-        let formula_def_id = formula_def_id
-            .as_local()
-            .expect("ghost formula function must be local");
-        Some((formula_def_id, generic_args))
-    }
-
     /// Forges an operand for a live variable named `name` using var_debug_info
     ///
     /// Shadowing can leave several entries sharing a name, and debug info does not say
@@ -2460,7 +2461,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     .clone()
                     .subst_var(|idx| chc::Term::var(outer_fn_param_vars[&idx]));
             }
-            if let Some((formula_def_id, generic_args)) = self.ghost_marker_formula_fn(func, args) {
+            if let Some((formula_def_id, generic_args)) =
+                ghost_marker_formula_fn(self.ctx, &self.local_decls, func, args)
+            {
                 let formula_fn = self
                     .ctx
                     .formula_fn_with_args(
