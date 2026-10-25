@@ -184,11 +184,23 @@ def earlier_reviews(repo: str, pr: str) -> str:
     return "\n\n".join(parts)
 
 
+def system_blocks(prompt_file: Path) -> list[dict]:
+    """The review instructions and the repository's guidelines, which every review shares.
+
+    They are cached, so that reviews within a few minutes of each other read them at a tenth of
+    the price.
+    """
+    guidelines = "\n\n".join(
+        f"# Guidelines: {name}\n\n{Path(name).read_text()}" for name in GUIDELINE_FILES if Path(name).is_file()
+    )
+    return [
+        {"type": "text", "text": prompt_file.read_text()},
+        {"type": "text", "text": guidelines, "cache_control": {"type": "ephemeral"}},
+    ]
+
+
 def build_prompt(pr: dict, diff: str, contents: dict[str, str], omitted: list[str], earlier: str) -> str:
     parts = [f"# Pull request: {pr['title']}\n\n{pr['body'] or '(no description)'}"]
-    for name in GUIDELINE_FILES:
-        if Path(name).is_file():
-            parts.append(f"# Guidelines: {name}\n\n{Path(name).read_text()}")
     parts.append(f"# Diff\n\n```diff\n{diff}\n```")
     for path, text in contents.items():
         parts.append(f"# File after the change: {path}\n\n```\n{text}\n```")
@@ -199,7 +211,9 @@ def build_prompt(pr: dict, diff: str, contents: dict[str, str], omitted: list[st
     return "\n\n".join(parts)
 
 
-def request_review(client: anthropic.Anthropic, model: str, system: str, prompt: str) -> Review:
+def request_review(client: anthropic.Anthropic, model: str, system: list[dict], prompt: str) -> Review:
+    """Runs the review; the conversation is cached as it grows, so each tool call re-reads the
+    earlier turns from the cache."""
     runner = client.beta.messages.tool_runner(
         model=model,
         max_tokens=16000,
@@ -207,16 +221,19 @@ def request_review(client: anthropic.Anthropic, model: str, system: str, prompt:
         messages=[{"role": "user", "content": prompt}],
         tools=[grep, list_files, read_file],
         max_iterations=MAX_TOOL_CALLS + 5,
+        cache_control={"type": "ephemeral"},
         output_config={"effort": "high"},
         output_format=Review,
         betas=["server-side-fallback-2026-07-01"],
         fallbacks="default",
     )
-    input_tokens = output_tokens = 0
+    usage = {"input": 0, "cache_write": 0, "cache_read": 0, "output": 0}
     for message in runner:
-        input_tokens += message.usage.input_tokens
-        output_tokens += message.usage.output_tokens
-    print(f"usage: {tool_calls} tool calls, input {input_tokens}, output {output_tokens} tokens", file=sys.stderr)
+        usage["input"] += message.usage.input_tokens
+        usage["cache_write"] += message.usage.cache_creation_input_tokens or 0
+        usage["cache_read"] += message.usage.cache_read_input_tokens or 0
+        usage["output"] += message.usage.output_tokens
+    print(f"usage: {tool_calls} tool calls, tokens {usage}", file=sys.stderr)
     response = runner.until_done()
     if response.stop_reason != "end_turn":
         sys.exit(f"no review: stop_reason {response.stop_reason}")
@@ -265,14 +282,15 @@ def main() -> None:
     prompt = build_prompt(pr, diff, contents, omitted, earlier)
 
     if args.dry_run:
-        print(f"model: {args.model}\nsystem: {args.prompt}\nprompt: {len(prompt)} chars")
+        system = sum(len(block["text"]) for block in system_blocks(args.prompt))
+        print(f"model: {args.model}\nsystem: {system} chars\nprompt: {len(prompt)} chars")
         print(f"earlier reviews: {len(earlier)} chars")
         print("included:", *contents, sep="\n  ")
         print("omitted:", *omitted, sep="\n  ")
         print("commentable lines:", *(f"{p}: {len(n)}" for p, n in lines.items()), sep="\n  ")
         return
 
-    review = request_review(anthropic.Anthropic(), args.model, args.prompt.read_text(), prompt)
+    review = request_review(anthropic.Anthropic(), args.model, system_blocks(args.prompt), prompt)
     payload = review_payload(review, pr["headRefOid"], lines, omitted)
     if args.print:
         print(json.dumps(payload, indent=2, ensure_ascii=False))

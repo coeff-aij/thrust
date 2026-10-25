@@ -52,8 +52,10 @@ as CI does, to run the others.
 When developing with an agent, use it as a loop at the points where a coherent set of commits
 is pushed, not after every commit:
 
-1. Request a review with `gh pr comment <n> --body /claude-review` and wait for the run
-   (`gh run list -w claude-review.yml -L 1`, then `gh run watch <id>`).
+1. Request a review with `gh workflow run claude-review.yml -f pr=<n>`, which leaves nothing
+   in the pull request's conversation, and wait for the run
+   (`gh run list -w claude-review.yml -e workflow_dispatch -L 1`, then `gh run watch <id>`).
+   A `/claude-review` comment does the same where a person should see the request.
 2. Read the newest review and its inline comments:
    `gh api repos/{owner}/{repo}/pulls/<n>/reviews --jq '.[-1] | {id, body}'` and
    `gh api repos/{owner}/{repo}/pulls/<n>/reviews/<id>/comments --jq '.[] | {id, path, line, body}'`.
