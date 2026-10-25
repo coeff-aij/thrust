@@ -366,7 +366,11 @@ where
             };
             if super::has_range_facts(&expected, defs, &mut Vec::new()) {
                 facts.push_conj(
-                    super::type_fact_checks(&expected, defs).map_free_var(|v| match v {}),
+                    super::type_fact_checks(&expected, defs)
+                        .unwrap_or_else(|ty| {
+                            unimplemented!("a value of {} entering {}", got.display(), ty.display())
+                        })
+                        .map_free_var(|v| match v {}),
                 );
             }
         }

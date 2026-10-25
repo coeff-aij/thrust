@@ -574,6 +574,9 @@ pub struct Analyzer<'tcx> {
     predicate_instances: Rc<RefCell<HashMap<PredicateInstanceKey<'tcx>, chc::UserDefinedPred>>>,
     /// The predicate instances whose bodies are being translated, innermost last.
     defining_predicates: Rc<RefCell<Vec<PredicateInstanceKey<'tcx>>>>,
+    /// The result type of each logic function defined so far, by its symbol: what a call of it in
+    /// another definition's body is known to have (`checked_logic_fn_body`).
+    logic_fn_results: Rc<RefCell<HashMap<chc::UserDefinedPred, rty::Type<rty::Closed>>>>,
 
     /// Resulting CHC system.
     system: Rc<RefCell<chc::System>>,
@@ -857,6 +860,7 @@ impl<'tcx> Analyzer<'tcx> {
             formula_fns,
             predicate_instances: Default::default(),
             defining_predicates: Default::default(),
+            logic_fn_results: Default::default(),
             system,
             basic_blocks,
             def_ids: did_cache::DefIdCache::new(tcx),
@@ -1460,7 +1464,7 @@ impl<'tcx> Analyzer<'tcx> {
                 )
             }
             annot_fn::FormulaFnBody::Term(term) => {
-                let term = term
+                let body = term
                     .clone()
                     .map_var(|idx| chc::TermVarIdx::from(idx.index()));
                 let (termination, decreases) = self.termination_clauses(
@@ -1469,7 +1473,7 @@ impl<'tcx> Analyzer<'tcx> {
                     owner_fn_id,
                     &pred,
                     &arg_sorts,
-                    &term,
+                    &body,
                 );
                 let params: Vec<_> = formula_fn
                     .params()
@@ -1477,16 +1481,20 @@ impl<'tcx> Analyzer<'tcx> {
                     .map(|ty| type_builder.build(*ty).ty)
                     .collect();
                 let ret = type_builder.build(formula_fn.ret()).ty;
-                let range = self.logic_fn_range_clauses(&pred, &params, &ret, &term);
+                self.logic_fn_results
+                    .borrow_mut()
+                    .insert(pred.clone(), ret.clone());
+                let (checks, definition) =
+                    self.checked_logic_fn_body(local_def_id, &params, &ret, body);
                 let mut system = self.system.borrow_mut();
-                for clause in termination.into_iter().chain(range) {
+                for clause in termination.into_iter().chain(checks) {
                     system.push_clause(clause);
                 }
                 system.push_fn_define_term(
                     pred.clone(),
                     arg_sorts,
-                    type_builder.build(formula_fn.ret()).to_sort(),
-                    term,
+                    ret.to_sort(),
+                    definition,
                     decreases,
                 );
             }
@@ -1495,29 +1503,53 @@ impl<'tcx> Analyzer<'tcx> {
         pred
     }
 
-    /// The clauses requiring the value `body` of the logic function `pred` to have the facts its
-    /// result type states (`rty::type_fact_checks`), under those its parameters' types state: a
-    /// call's result is a value of that type, which every binding of it assumes, while the body's
-    /// arithmetic is unbounded. This is the check a ghost term gets
-    /// (`basic_block::Analyzer::check_ghost_term`), made once per definition.
+    /// The definition of a logic function from its `body`, and the clauses checking that
+    /// its value has the facts of its result type `ret` (`rty::type_fact_checks`), which every
+    /// binding of a call's result assumes, while the body's arithmetic is unbounded.
     ///
-    /// A recursive call in the body is assumed to have the facts of the result type where its
-    /// arguments have those of the parameters' types: the induction hypothesis, which the variant
-    /// the termination clauses check makes well-founded. A call whose arguments' facts hold an
-    /// existential (an enum's payloads) gets no hypothesis.
-    fn logic_fn_range_clauses(
+    /// The definition is total in the facts: where the arguments lack the quantifier-free facts of
+    /// the parameters' types (`rty::domain_guard`), its value is a fixed value of `ret` that has
+    /// them (`rty::fact_witness`), as a cast in Verus's specifications gives some value of the
+    /// type and a Why3 range type has no value outside its range. So a call has the facts at any
+    /// arguments, and the check is made where the arguments have those facts. A call in the body
+    /// of a logic function defined before or of this one is assumed to have its result type's
+    /// facts under the conditions on the way to it: for this one, the induction hypothesis, which
+    /// the variant the termination clauses check makes well-founded.
+    fn checked_logic_fn_body(
         &self,
-        pred: &chc::UserDefinedPred,
+        local_def_id: LocalDefId,
         params: &[rty::Type<rty::Closed>],
         ret: &rty::Type<rty::Closed>,
-        body: &chc::Term,
-    ) -> Vec<chc::Clause> {
+        body: chc::Term,
+    ) -> (Vec<chc::Clause>, chc::Term) {
         use rty::ClauseBuilderExt as _;
-        let checks = rty::type_fact_checks(ret, &self.enum_defs);
+        let span = self.tcx.def_span(local_def_id);
+        let checks = rty::type_fact_checks(ret, &self.enum_defs).unwrap_or_else(|ty| {
+            self.tcx.dcx().span_fatal(
+                span,
+                format!(
+                    "a logic function of result type {}: the ranges of the integers a recursive \
+                     enum holds cannot be checked",
+                    ty.display()
+                ),
+            )
+        });
         if checks.is_top() {
-            return Vec::new();
+            return (Vec::new(), body);
         }
-        let param_idx = |i: usize| rty::FunctionParamIdx::from_usize(i);
+        let param_idx = rty::FunctionParamIdx::from_usize;
+        let free = |term: &chc::Term| {
+            term.clone()
+                .map_var(|v| rty::RefinedTypeVar::Free(param_idx(v.index())))
+        };
+        let guard = params
+            .iter()
+            .enumerate()
+            .filter_map(|(i, param)| {
+                rty::domain_guard(param, chc::Term::var(chc::TermVarIdx::from_usize(i)))
+            })
+            .reduce(chc::Term::and);
+
         let mut builder = chc::ClauseBuilder::default();
         for (i, param) in params.iter().enumerate() {
             let sort = param.to_sort();
@@ -1527,56 +1559,64 @@ impl<'tcx> Analyzer<'tcx> {
                     .var_mapping(param_idx(i), var),
             );
         }
-        for (i, param) in params.iter().enumerate() {
-            let facts: rty::Refinement<rty::FunctionParamIdx> =
-                rty::RefinedType::unrefined(param.clone())
+        if let Some(guard) = &guard {
+            let in_domain = chc::Formula::Atom(free(guard).equal_to(chc::Term::bool(true)));
+            builder.add_refinement(rty::Refinement::<rty::FunctionParamIdx>::from(in_domain));
+        }
+        for hypothesis in self.logic_fn_call_facts(&body) {
+            builder.add_refinement(hypothesis.map_free_var(|v| param_idx(v.index())));
+        }
+        let value = rty::Refinement::<rty::FunctionParamIdx>::from(
+            chc::Term::var(rty::RefinedTypeVar::Value).equal_to(free(&body)),
+        );
+        let clauses = rty::fact_check_clauses(&mut builder, ret, value, checks);
+
+        let definition = match guard {
+            Some(guard) => {
+                let witness = rty::fact_witness(ret, &self.enum_defs).unwrap_or_else(|| {
+                    self.tcx.dcx().span_fatal(
+                        span,
+                        format!(
+                            "no value of type {} has the facts of its type",
+                            ret.display()
+                        ),
+                    )
+                });
+                chc::Term::ite(guard, body, witness)
+            }
+            None => body,
+        };
+        (clauses, definition)
+    }
+
+    /// The facts of the result type of each call in `body` to a logic function defined so far,
+    /// under the `ite` conditions on the way to it.
+    fn logic_fn_call_facts(&self, body: &chc::Term) -> Vec<rty::Refinement<chc::TermVarIdx>> {
+        let results = self.logic_fn_results.borrow();
+        body.guarded_user_defined_calls()
+            .into_iter()
+            .filter_map(|(callee, sort, call)| {
+                let ret = results.get(&callee)?;
+                let result = chc::Term::user_defined_fn(callee.clone(), sort, call.args)
+                    .map_var(rty::RefinedTypeVar::Free);
+                let conditions = call
+                    .guards
+                    .into_iter()
+                    .map(|guard| {
+                        chc::Formula::Atom(
+                            guard
+                                .map_var(rty::RefinedTypeVar::Free)
+                                .equal_to(chc::Term::bool(true)),
+                        )
+                    })
+                    .fold(chc::Formula::top(), chc::Formula::and);
+                let facts = rty::RefinedType::unrefined(ret.clone())
                     .formula_with(Some(&self.enum_defs))
-                    .map_free_var(|v| match v {});
-            builder.with_mapped_value_var(param_idx(i)).add_body(facts);
-        }
-        let to_free = |term: &chc::Term| {
-            term.clone()
-                .map_var(|v| rty::RefinedTypeVar::Free(param_idx(v.index())))
-        };
-        let facts_of = |ty: &rty::Type<rty::Closed>| -> rty::Refinement<rty::FunctionParamIdx> {
-            rty::RefinedType::unrefined(ty.clone())
-                .formula_with(Some(&self.enum_defs))
-                .map_free_var(|v| match v {})
-        };
-        for call in body.guarded_calls(pred) {
-            let mut premise = chc::Formula::top();
-            for guard in &call.guards {
-                premise = premise.and(chc::Formula::Atom(
-                    to_free(guard).equal_to(chc::Term::bool(true)),
-                ));
-            }
-            let mut hypothesis = true;
-            for (param, arg) in params.iter().zip(&call.args) {
-                let facts = facts_of(param);
-                if facts.has_existentials() {
-                    hypothesis = false;
-                    break;
-                }
-                premise = premise.and(facts.subst_value_var(|| to_free(arg)).body.into_formula());
-            }
-            if !hypothesis {
-                continue;
-            }
-            let args = call.args.iter().map(to_free).collect();
-            let result = chc::Term::user_defined_fn(pred.clone(), ret.to_sort(), args);
-            let ih = facts_of(ret)
-                .subst_value_var(|| result.clone())
-                .guarded(premise);
-            match params.first() {
-                Some(_) => builder.with_mapped_value_var(param_idx(0)).add_body(ih),
-                None => builder.with_value_var(ret).add_body(ih),
-            };
-        }
-        let value = to_free(body);
-        let checks: rty::Refinement<rty::FunctionParamIdx> = checks
-            .map_free_var(|v| match v {})
-            .subst_value_var(|| value.clone());
-        builder.with_value_var(ret).head(checks)
+                    .map_free_var(|v| match v {})
+                    .subst_value_var(|| result.clone());
+                Some(facts.guarded(conditions))
+            })
+            .collect()
     }
 
     /// The clauses requiring the variant of the logic function `local_def_id` to be

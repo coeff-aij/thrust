@@ -375,8 +375,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     }
 
     /// The clauses that a ghost term's value, `term` of the arguments `args` of the types `params`,
-    /// satisfies `checks`. The value is assumed nothing of its type `value_ty`: the term's
-    /// arithmetic is unbounded, and `checks` are the facts its type would assume.
+    /// has `checks`, the facts of its type `value_ty`, which its value is not assumed to have: the
+    /// term's arithmetic is unbounded.
     fn check_ghost_term(
         &mut self,
         params: IndexVec<rty::FunctionParamIdx, rty::RefinedType<rty::FunctionParamIdx>>,
@@ -394,8 +394,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             &mut builder,
             rty::FunctionAbi::Rust,
         );
-        let checks: rty::Refinement<rty::FunctionParamIdx> = checks.map_free_var(|v| match v {});
-        clauses.extend(builder.with_value_var(value_ty).add_body(term).head(checks));
+        clauses.extend(rty::fact_check_clauses(
+            &mut builder,
+            value_ty,
+            term,
+            checks,
+        ));
         clauses
     }
 
@@ -1957,7 +1961,13 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         // made from it are required here to have the facts its type states of them, as an
         // unchecked subtraction is.
         let value_ty = value_rty.ty.clone().strip_refinement();
-        let checks = rty::type_fact_checks(&value_ty, &self.ctx.enum_defs);
+        let checks = rty::type_fact_checks(&value_ty, &self.ctx.enum_defs).unwrap_or_else(|ty| {
+            self.tcx.dcx().fatal(format!(
+                "a ghost term of type {}: the ranges of the integers a recursive enum holds cannot \
+                 be checked",
+                ty.display()
+            ))
+        });
         let term_check = (!checks.is_top()).then(|| (params.clone(), formula_fn.to_refinement()));
         let func_ty = rty::FunctionType::new(params, value_rty);
 

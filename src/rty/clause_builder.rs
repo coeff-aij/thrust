@@ -20,6 +20,11 @@ pub trait ClauseBuilderExt {
     fn with_mapped_value_var<T>(&mut self, v: T) -> RefinementClauseBuilder<'_>
     where
         T: chc::Var;
+
+    /// Adds `refinement`, which does not mention the value variable, to the body.
+    fn add_refinement<T>(&mut self, refinement: Refinement<T>)
+    where
+        T: chc::Var;
 }
 
 impl ClauseBuilderExt for chc::ClauseBuilder {
@@ -45,6 +50,17 @@ impl ClauseBuilderExt for chc::ClauseBuilder {
             builder: self,
             value_term: value_var.map(chc::Term::var),
         }
+    }
+
+    fn add_refinement<T>(&mut self, refinement: Refinement<T>)
+    where
+        T: chc::Var,
+    {
+        RefinementClauseBuilder {
+            builder: self,
+            value_term: None,
+        }
+        .add_body(refinement);
     }
 }
 

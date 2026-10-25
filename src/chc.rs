@@ -1068,6 +1068,52 @@ impl<V> Term<V> {
         calls
     }
 
+    /// The calls to user-defined functions in this term outside `lambda`s, each with its callee,
+    /// its result sort and the `ite` conditions on the way to it.
+    pub fn guarded_user_defined_calls(&self) -> Vec<(UserDefinedPred, Sort, GuardedCall<V>)>
+    where
+        V: Clone,
+    {
+        let mut calls = Vec::new();
+        self.collect_guarded_user_defined_calls(&mut Vec::new(), &mut calls);
+        calls
+    }
+
+    fn collect_guarded_user_defined_calls(
+        &self,
+        guards: &mut Vec<Term<V>>,
+        calls: &mut Vec<(UserDefinedPred, Sort, GuardedCall<V>)>,
+    ) where
+        V: Clone,
+    {
+        match self {
+            Term::App(fun, args) if *fun == Function::ITE => {
+                let [cond, then_, else_] = &args[..] else {
+                    panic!("ite takes three arguments");
+                };
+                cond.collect_guarded_user_defined_calls(guards, calls);
+                guards.push(cond.clone());
+                then_.collect_guarded_user_defined_calls(guards, calls);
+                *guards.last_mut().unwrap() = cond.clone().not();
+                else_.collect_guarded_user_defined_calls(guards, calls);
+                guards.pop();
+                return;
+            }
+            Term::ArrayLambda(_, _, _) => return,
+            Term::UserDefinedFn(callee, sort, args) => {
+                let call = GuardedCall {
+                    guards: guards.clone(),
+                    args: args.clone(),
+                };
+                calls.push((callee.clone(), sort.clone(), call));
+            }
+            _ => {}
+        }
+        for t in self.subterms() {
+            t.collect_guarded_user_defined_calls(guards, calls);
+        }
+    }
+
     fn collect_guarded_calls(
         &self,
         symbol: &UserDefinedPred,

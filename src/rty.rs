@@ -44,7 +44,6 @@ use rustc_abi::VariantIdx;
 use rustc_index::IndexVec;
 
 use crate::chc::{self, ForallSortIdx};
-use crate::pretty::PrettyDisplayExt as _;
 
 mod template;
 pub use template::{Template, TemplateBuilder};
@@ -1221,6 +1220,8 @@ struct FactsCx<'a> {
     use_: FactsUse,
     defs: Option<&'a dyn EnumDefProvider>,
     enclosing: Vec<EnumType<Closed>>,
+    /// A checked enum type whose facts no finite formula states, met on the way.
+    unsupported: Option<Type<Closed>>,
 }
 
 impl<'a> FactsCx<'a> {
@@ -1229,17 +1230,140 @@ impl<'a> FactsCx<'a> {
             use_,
             defs,
             enclosing: Vec::new(),
+            unsupported: None,
         }
     }
 }
 
 /// The facts of every value of `ty` ([`RefinedType::formula_with`]) as an obligation on a value,
-/// for a value made from a logical term, a ghost term, whose arithmetic is unbounded: the same
-/// traversal, with each enum payload checked as `forall f. v = C(f) => checks(f)` for each variant.
-/// A recursive enum whose payloads hold integers with facts cannot be checked by a finite formula
-/// and is `unimplemented!`.
-pub fn type_fact_checks(ty: &Type<Closed>, defs: &dyn EnumDefProvider) -> Refinement<Closed> {
-    RefinedType::unrefined(ty.clone()).facts(&mut FactsCx::new(FactsUse::Checked, Some(defs)))
+/// for a value made from a logical term, whose arithmetic is unbounded: the same traversal, with
+/// each enum payload checked as `forall f. v = C(f) => checks(f)` for each variant. A recursive
+/// enum whose payloads hold integers with facts cannot be checked by a finite formula: the error
+/// names it.
+pub fn type_fact_checks(
+    ty: &Type<Closed>,
+    defs: &dyn EnumDefProvider,
+) -> Result<Refinement<Closed>, Type<Closed>> {
+    let mut cx = FactsCx::new(FactsUse::Checked, Some(defs));
+    let checks = RefinedType::unrefined(ty.clone()).facts(&mut cx);
+    match cx.unsupported {
+        Some(ty) => Err(ty),
+        None => Ok(checks),
+    }
+}
+
+/// The clauses that a value of type `ty`, which `value` states in the scope `builder` holds, has
+/// `checks`, the facts of its type (`type_fact_checks`), with nothing of its type assumed: the
+/// check of a value made from a logical term, a ghost term or a logic function's definition.
+pub fn fact_check_clauses<FV>(
+    builder: &mut chc::ClauseBuilder,
+    ty: &Type<Closed>,
+    value: Refinement<FV>,
+    checks: Refinement<Closed>,
+) -> Vec<chc::Clause>
+where
+    FV: chc::Var,
+{
+    let checks: Refinement<FV> = checks.map_free_var(|v| match v {});
+    builder.with_value_var(ty).add_body(value).head(checks)
+}
+
+/// The quantifier-free part of the facts of a value of `ty`, the ranges of the integers it holds
+/// through tuples and pointers, as a Boolean term about `value`; `None` when there are none. A
+/// logic function's definition is restricted to arguments that have these (see
+/// `Analyzer::predicate_with_args`).
+pub fn domain_guard<V>(ty: &Type<Closed>, value: chc::Term<V>) -> Option<chc::Term<V>>
+where
+    V: Clone,
+{
+    let conj = |a: Option<chc::Term<V>>, b: Option<chc::Term<V>>| match (a, b) {
+        (Some(a), Some(b)) => Some(a.and(b)),
+        (a, b) => a.or(b),
+    };
+    match ty {
+        Type::Int(width) | Type::UInt(width) => {
+            let signed = matches!(ty, Type::Int(_));
+            let range = int_range(signed, *width);
+            let min = match &range {
+                Some((min, _)) => Some(min.clone()),
+                None if !signed => Some(BigInt::from(0)),
+                None => None,
+            };
+            let lower = min.map(|min| value.clone().ge(chc::Term::int(min)));
+            let upper = range.map(|(_, end)| value.lt(chc::Term::int(end)));
+            conj(lower, upper)
+        }
+        Type::Tuple(tuple) => tuple
+            .elems
+            .iter()
+            .enumerate()
+            .map(|(index, elem)| domain_guard(&elem.ty, value.clone().tuple_proj(index)))
+            .fold(None, conj),
+        Type::Pointer(pointer) => {
+            let current = domain_guard(&pointer.elem.ty, pointer.kind.deref_term(value.clone()));
+            let final_ = pointer
+                .is_mut()
+                .then(|| domain_guard(&pointer.elem.ty, value.mut_final()))
+                .flatten();
+            conj(current, final_)
+        }
+        _ => None,
+    }
+}
+
+/// A value of `ty` that has the facts of its type (`type_fact_checks`): zero for an integer, the
+/// empty sequence, and a variant of an enum whose fields have such values, the first one that does
+/// without going through the enum itself; `None` when there is none.
+pub fn fact_witness<V: Clone>(
+    ty: &Type<Closed>,
+    defs: &dyn EnumDefProvider,
+) -> Option<chc::Term<V>> {
+    fact_witness_within(ty, defs, &mut Vec::new())
+}
+
+fn fact_witness_within<V: Clone>(
+    ty: &Type<Closed>,
+    defs: &dyn EnumDefProvider,
+    enclosing: &mut Vec<chc::DatatypeSymbol>,
+) -> Option<chc::Term<V>> {
+    match ty {
+        Type::Enum(enum_ty) => {
+            if enclosing.contains(&enum_ty.symbol) {
+                return None;
+            }
+            enclosing.push(enum_ty.symbol.clone());
+            let witness = enum_ty.variants(defs).into_iter().find_map(|variant| {
+                let fields = variant
+                    .field_tys
+                    .iter()
+                    .map(|field_ty| fact_witness_within(field_ty, defs, enclosing))
+                    .collect::<Option<Vec<_>>>()?;
+                Some(chc::Term::datatype_ctor(
+                    enum_ty.symbol.clone(),
+                    enum_ty.arg_sorts(),
+                    variant.ctor,
+                    fields,
+                ))
+            });
+            enclosing.pop();
+            witness
+        }
+        Type::Tuple(tuple) => tuple
+            .elems
+            .iter()
+            .map(|elem| fact_witness_within(&elem.ty, defs, enclosing))
+            .collect::<Option<Vec<_>>>()
+            .map(chc::Term::tuple),
+        Type::Pointer(pointer) => {
+            let elem = fact_witness_within(&pointer.elem.ty, defs, enclosing)?;
+            Some(match pointer.kind {
+                PointerKind::Ref(RefKind::Mut) => chc::Term::mut_(elem.clone(), elem),
+                _ => chc::Term::box_(elem),
+            })
+        }
+        Type::Param(_) | Type::Alias(_) | Type::Function(_) => None,
+        _ => Some(chc::Term::default_for(&ty.to_sort())),
+    }
 }
 
 /// The facts of the payloads of a value of the enum type `ty` when [`int_range_mode`] is on and
@@ -1251,8 +1375,8 @@ pub fn type_fact_checks(ty: &Type<Closed>, defs: &dyn EnumDefProvider) -> Refine
 ///
 /// An enum type inside its own payload (the same type, as a recursive definition makes it) gets no
 /// facts, since a finite formula cannot follow it; nor does one nested past
-/// [`ENUM_NESTING_LIMIT`]. Its check is `unimplemented!` when it holds integers with facts, so no
-/// fact is assumed that is not checked.
+/// [`ENUM_NESTING_LIMIT`]. Its check is an error ([`type_fact_checks`]) when it holds integers with
+/// facts, so no fact is assumed that is not checked.
 fn enum_payload_facts(ty: &EnumType<Closed>, cx: &mut FactsCx) -> Refinement<Closed> {
     let Some(defs) = cx.defs.filter(|_| int_range_mode() != IntRange::Off) else {
         return Refinement::top();
@@ -1260,7 +1384,7 @@ fn enum_payload_facts(ty: &EnumType<Closed>, cx: &mut FactsCx) -> Refinement<Clo
     if cx.enclosing.contains(ty) || cx.enclosing.len() >= ENUM_NESTING_LIMIT {
         let enum_ty = Type::Enum(ty.clone());
         if cx.use_ == FactsUse::Checked && has_range_facts(&enum_ty, defs, &mut Vec::new()) {
-            unimplemented!("the payload ranges of {}", enum_ty.display());
+            cx.unsupported.get_or_insert(enum_ty);
         }
         return Refinement::top();
     }

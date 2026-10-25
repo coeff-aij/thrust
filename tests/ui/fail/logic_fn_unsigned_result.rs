@@ -6,7 +6,6 @@
 // it, and a caller assumes the facts of the result's type, `>= 0` with `THRUST_INT_RANGE` unset.
 // The definition is checked against them: here its value is `-1` at `n = 0` (model arithmetic is
 // unbounded), and the expected error is that check.
-use thrust_models::model::UIntN;
 use thrust_models::{Ghost, Model};
 
 #[thrust_macros::context]
