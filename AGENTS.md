@@ -45,3 +45,24 @@ version `.github/actions/setup-z3` pins for CI.
 
 Without Docker the ui tests that name a CoAR wrapper cannot run; set `THRUST_UI_SKIP_COAR=1`,
 as CI does, to run the others.
+
+## Automated review
+
+`.github/workflows/claude-review.yml` reviews a pull request with the Claude API (README, CI).
+Each comment is marked `blocking`, `check` or `suggestion`. When developing with an agent, use
+it as a loop at the points where a coherent set of commits is pushed, not after every commit:
+
+1. Request a review with `gh workflow run claude-review.yml -f pr=<n>` and wait for the run
+   (`gh run list -w claude-review.yml -L 1`, then `gh run watch <id>`).
+2. Read the reviews and the comments with their replies:
+   `gh api repos/{owner}/{repo}/pulls/<n>/reviews --paginate --jq '.[] | {id, commit_id, body}'` and
+   `gh api repos/{owner}/{repo}/pulls/<n>/comments --paginate --jq '.[] | {id, in_reply_to_id, user: .user.login, path, line, body}'`.
+3. Check each open comment against the code before acting on it; the reviewer can be wrong.
+   Fix a `blocking` comment that holds, confirm or refute a `check`, and take a `suggestion`
+   only when it is small and inside the change. Do not edit code outside the change only to
+   satisfy a comment. With many comments, give each to its own subagent.
+4. Reply to every comment, so the next review knows how it was settled:
+   `gh api repos/{owner}/{repo}/pulls/<n>/comments/<id>/replies -f body='Fixed in <commit>'`,
+   or `Declined: <reason>`, or `Refuted: <evidence>`.
+5. Push and request again. Stop when a review raises no open `blocking` or `check` comment, or
+   after three rounds, and leave what remains, and the merge, to a person.
