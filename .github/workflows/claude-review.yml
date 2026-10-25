@@ -1,0 +1,43 @@
+name: Claude review
+
+# Reviews a pull request once when it is opened or marked ready; a re-review after new
+# commits is started by hand with the pull request number.
+on:
+  pull_request:
+    types: [opened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number
+        required: true
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || inputs.pr }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    timeout-minutes: 10
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      GH_TOKEN: ${{ github.token }}
+      PR: ${{ github.event.pull_request.number || inputs.pr }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/pull/${{ env.PR }}/head
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install anthropic==2.3.0 pydantic==2.14.1
+      - if: ${{ env.ANTHROPIC_API_KEY != '' }}
+        run: python .github/scripts/claude_review.py --repo "$GITHUB_REPOSITORY" --pr "$PR"
+      - if: ${{ env.ANTHROPIC_API_KEY == '' }}
+        run: python .github/scripts/claude_review.py --repo "$GITHUB_REPOSITORY" --pr "$PR" --dry-run
