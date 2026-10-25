@@ -385,6 +385,28 @@ struct InstantiationKey<'tcx> {
 /// arguments, and the calling function when those arguments mention its type parameters.
 type PredicateInstanceKey<'tcx> = (DefId, mir_ty::GenericArgsRef<'tcx>, Option<DefId>);
 
+/// The arguments `def_id`'s body is instantiated at, given those Thrust analyzes it at. Thrust
+/// analyzes a closure at its parent's arguments, but its body may also name the parameters rustc
+/// adds after the parent's (the kind, the signature and the upvars), as a promoted constant such
+/// as a panic message does; they take the values of the closure's own type at the parent's
+/// arguments.
+pub fn body_args<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    def_id: DefId,
+    args: mir_ty::GenericArgsRef<'tcx>,
+) -> mir_ty::GenericArgsRef<'tcx> {
+    if !tcx.is_closure_like(def_id) || args.len() != tcx.generics_of(def_id).parent_count {
+        return args;
+    }
+    let own_args = match tcx.type_of(def_id).instantiate_identity().kind() {
+        mir_ty::TyKind::Closure(_, own_args)
+        | mir_ty::TyKind::CoroutineClosure(_, own_args)
+        | mir_ty::TyKind::Coroutine(_, own_args) => *own_args,
+        _ => return args,
+    };
+    mir_ty::EarlyBinder::bind(own_args).instantiate(tcx, args)
+}
+
 /// Whether `def_id` comes from the injected `std.rs`.
 pub fn is_injected_std(tcx: mir_ty::TyCtxt<'_>, def_id: LocalDefId) -> bool {
     let span = tcx.def_span(def_id);
@@ -1231,6 +1253,7 @@ impl<'tcx> Analyzer<'tcx> {
             .chain(self.analyzed_instances.borrow().iter().copied())
             .filter(|(_, args)| !args.has_param())
             .filter_map(|(def_id, args)| {
+                let args = body_args(self.tcx, def_id, args);
                 mir_ty::Instance::try_resolve(self.tcx, typing_env, def_id, args)
                     .ok()
                     .flatten()

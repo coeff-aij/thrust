@@ -2134,6 +2134,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         use mir_ty::TypeVisitableExt as _;
 
         self.generic_args = generic_args;
+        let generic_args =
+            analyze::body_args(self.tcx, self.local_def_id.to_def_id(), generic_args);
         let body = mir_ty::EarlyBinder::bind(self.body.clone());
         // Substitution on its own leaves `<I as Iterator>::Item` behind as
         // `<Range as Iterator>::Item`. Resolving that projection has to happen here, while
