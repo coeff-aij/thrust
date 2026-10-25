@@ -948,6 +948,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         };
         let model_trait = self.tcx.parent(model_ty);
         for &impl_did in self.tcx.local_trait_impls(model_trait) {
+            let self_ty = self.tcx.type_of(impl_did).instantiate_identity();
+            if self_ty.ty_adt_def().map(|adt| adt.did()) == self.ctx.def_ids().dyn_model() {
+                continue;
+            }
             let Some(assoc) = self
                 .tcx
                 .associated_items(impl_did.to_def_id())

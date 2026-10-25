@@ -63,8 +63,8 @@ impl<'a> FormulaFnTypeLowering<'a> {
                 syn::FnArg::Typed(pt) => {
                     let attrs = &pt.attrs;
                     let pat = &pt.pat;
-                    let ty = &pt.ty;
-                    let lowered_ty = self.lower_closure_type_params_in_ty(ty);
+                    let ty = lower_trait_objects(&pt.ty);
+                    let lowered_ty = self.lower_closure_type_params_in_ty(&ty);
                     model_inputs.push(syn::parse_quote!(
                         #(#attrs)* #pat: <#lowered_ty as crate::thrust_models::Model>::Ty
                     ));
@@ -83,7 +83,7 @@ impl<'a> FormulaFnTypeLowering<'a> {
                 syn::parse_quote!(<() as crate::thrust_models::Model>::Ty)
             }
             syn::ReturnType::Type(_, ty) => {
-                let lowered_ty = self.lower_closure_type_params_in_ty(ty);
+                let lowered_ty = self.lower_closure_type_params_in_ty(&lower_trait_objects(ty));
                 syn::parse_quote!(<#lowered_ty as crate::thrust_models::Model>::Ty)
             }
         }
@@ -250,6 +250,24 @@ impl<'a> FormulaFnTypeLowering<'a> {
             _ => ty.clone(),
         }
     }
+}
+
+/// `ty` with each trait object (`dyn Tr`) replaced by `thrust_models::model::Dyn`, the opaque
+/// model all trait objects share, so that a contract over `&dyn Tr` needs no `Model` impl for it.
+fn lower_trait_objects(ty: &syn::Type) -> syn::Type {
+    struct Lower;
+    impl syn::visit_mut::VisitMut for Lower {
+        fn visit_type_mut(&mut self, ty: &mut syn::Type) {
+            if matches!(ty, syn::Type::TraitObject(_)) {
+                *ty = syn::parse_quote!(crate::thrust_models::model::Dyn);
+                return;
+            }
+            syn::visit_mut::visit_type_mut(self, ty);
+        }
+    }
+    let mut ty = ty.clone();
+    syn::visit_mut::VisitMut::visit_type_mut(&mut Lower, &mut ty);
+    ty
 }
 
 /// The specification types, whose arguments are models (`Seq`, `Mut`) or are read through their

@@ -36,6 +36,7 @@ struct DefIds {
     array_model: OnceCell<Option<DefId>>,
     closure_model: OnceCell<Option<DefId>>,
     ghost_model: OnceCell<Option<DefId>>,
+    dyn_model: OnceCell<Option<DefId>>,
     partial_ord_spec: OnceCell<Option<DefId>>,
     iterator_spec: OnceCell<Option<DefId>>,
     type_invariant: OnceCell<Option<DefId>>,
@@ -288,6 +289,13 @@ impl<'tcx> DefIdCache<'tcx> {
             .def_ids
             .closure_model
             .get_or_init(|| self.annotated_def(&crate::analyze::annot::closure_model_path()))
+    }
+
+    pub fn dyn_model(&self) -> Option<DefId> {
+        *self
+            .def_ids
+            .dyn_model
+            .get_or_init(|| self.annotated_def(&crate::analyze::annot::dyn_model_path()))
     }
 
     pub fn ghost_model(&self) -> Option<DefId> {

@@ -226,6 +226,14 @@ pub fn no_model_path() -> [Symbol; 3] {
     ]
 }
 
+pub fn dyn_model_path() -> [Symbol; 3] {
+    [
+        Symbol::intern("thrust"),
+        Symbol::intern("def"),
+        Symbol::intern("dyn_model"),
+    ]
+}
+
 pub fn ghost_model_path() -> [Symbol; 3] {
     [
         Symbol::intern("thrust"),

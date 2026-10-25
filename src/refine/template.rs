@@ -676,6 +676,9 @@ impl<'tcx> TypeBuilder<'tcx> {
         if Some(adt.did()) == self.def_ids.int_model() {
             return Some(rty::Type::int());
         }
+        if Some(adt.did()) == self.def_ids.dyn_model() {
+            return Some(rty::Type::opaque());
+        }
         if Some(adt.did()) == self.def_ids.uint_model() {
             return Some(rty::Type::uint());
         }
@@ -880,6 +883,10 @@ impl<'tcx> TypeBuilder<'tcx> {
             } else {
                 rty::Type::uint_of_width(width)
             };
+        }
+        // A trait object is opaque whatever `Model` impl it has: its value is never read.
+        if ty.is_trait() {
+            return rty::Type::opaque();
         }
         let ty = self.resolve_model_ty(ty);
         match ty.kind() {

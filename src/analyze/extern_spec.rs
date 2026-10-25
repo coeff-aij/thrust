@@ -818,6 +818,15 @@ impl<'tcx> Analyzer<'tcx> {
         else {
             return;
         };
+        if let mir_ty::InstanceKind::Virtual(..) = instance.def {
+            self.tcx.dcx().fatal(format!(
+                "a generic body reused for `{}` at a trait object calls `{}` through it, which \
+                 has no contract on the trait: a call through a trait object takes the trait's \
+                 contract",
+                self.tcx.def_path_str(caller_def_id),
+                self.tcx.def_path_str_with_args(def_id, generic_args),
+            ));
+        }
         let Some(def_ty) = self.def_ty_with_args(instance.def_id(), instance.args, caller_def_id)
         else {
             panic!("unknown def (reached at a type parameter): {instance}");

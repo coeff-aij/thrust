@@ -754,12 +754,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// precondition, D57) get none, and a type parameter, whose
     /// `Invariant` impl does not resolve, has none.
     fn conjoin_type_invariants(&mut self, sig: mir_ty::FnSig<'tcx>, fn_ty: &mut rty::FunctionType) {
-        if self.ctx.def_ids.type_invariant().is_none()
-            || self.tcx.is_closure_like(self.local_def_id.to_def_id())
-            || self.has_attr(&analyze::annot::lemma_path())
-            || self.has_attr(&analyze::annot::law_path())
-            || self.is_crate_destructor()
-        {
+        if !self.takes_type_invariants() {
             return;
         }
         let open_params = self.open_inv_params(sig.inputs().len());
@@ -782,7 +777,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         continue;
                     };
                     requires.push(type_invariant_atom(&pred, at_entry.mut_current()));
-                    if !borrow_may_escape(self.tcx, self.local_def_id.to_def_id(), idx) {
+                    if self.final_invariant_kept(&open_params, idx) {
                         let at_exit = chc::Term::var(rty::RefinedTypeVar::Free(param_idx));
                         ensures.push(type_invariant_atom(&pred, at_exit.mut_final()));
                     }
@@ -825,8 +820,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         }
     }
 
-    /// The predicate `T::invariant` of std.rs's `Invariant` at `ty`, when its impl resolves in the
-    /// owner's environment.
     fn type_invariant_pred(&self, ty: mir_ty::Ty<'tcx>) -> Option<chc::Pred> {
         let instance = self.ctx.type_invariant_instance(ty, self.owner_fn_id)?;
         Some(
@@ -834,6 +827,37 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 .predicate_with_args(instance.def_id(), instance.args, self.owner_fn_id)
                 .into(),
         )
+    }
+
+    /// Whether the contract gets type-invariant conjuncts at all: closures, lemmas, laws and
+    /// destructors get none.
+    fn takes_type_invariants(&self) -> bool {
+        self.ctx.def_ids.type_invariant().is_some()
+            && !self.tcx.is_closure_like(self.local_def_id.to_def_id())
+            && !self.has_attr(&analyze::annot::lemma_path())
+            && !self.has_attr(&analyze::annot::law_path())
+            && !self.is_crate_destructor()
+    }
+
+    /// Whether the contract ensures the type invariant of the final value of its `&mut`
+    /// parameter `idx`, given the parameters `open_params` marked `#[thrust::open_inv]`: unless
+    /// it is one of them or its borrow may outlive the call.
+    fn final_invariant_kept(&self, open_params: &HashSet<usize>, idx: usize) -> bool {
+        !open_params.contains(&idx)
+            && !borrow_may_escape(self.tcx, self.local_def_id.to_def_id(), idx)
+    }
+
+    /// Whether the contract this def gives ensures the type invariant of the final value of its
+    /// `&mut` parameter `idx`, when that type has one ([`Self::conjoin_type_invariants`]).
+    pub fn ensures_final_invariant(&self, idx: usize) -> bool {
+        let arity = self
+            .tcx
+            .fn_sig(self.local_def_id)
+            .skip_binder()
+            .inputs()
+            .skip_binder()
+            .len();
+        self.takes_type_invariants() && self.final_invariant_kept(&self.open_inv_params(arity), idx)
     }
 
     /// The indices of the parameters marked `#[thrust::open_inv]`, of the `arity` parameters of

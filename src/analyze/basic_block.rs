@@ -26,6 +26,7 @@ use crate::rty::{
 
 mod closure_escape;
 mod drop_point;
+mod trait_object;
 mod visitor;
 use drop_point::MovedOut;
 pub use drop_point::{DropPoints, MoveState};
@@ -701,6 +702,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 )
         };
         match ty.kind() {
+            mir_ty::TyKind::Closure(_, args) if args.as_closure().upvar_tys().is_empty() => {
+                PlaceType::with_ty_and_term(rty::Type::unit(), chc::Term::tuple(vec![]))
+            }
             mir_ty::TyKind::Array(elem, len) => {
                 let len = len
                     .try_to_target_usize(self.tcx)
@@ -762,6 +766,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             mir_ty::TyKind::Ref(_, pointee, mir::Mutability::Not) => {
                 if pointee.is_str() {
                     return self.const_bytes_ty(*pointee, &[]).immut();
+                }
+                if pointee.is_trait() {
+                    self.tcx.dcx().fatal(format!(
+                        "a constant holding a trait object (`{ty}` in `{}`) is not supported",
+                        self.tcx.def_path_str(self.type_builder.owner_fn_id()),
+                    ));
                 }
                 if !pointee.is_sized(self.tcx, typing_env) {
                     unimplemented!("const reference to an unsized value in a constant: {ty:?}");
@@ -1249,6 +1259,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 operand,
                 ty,
             ) => {
+                if let Some(dyn_ty) = trait_object::dyn_pointee(ty) {
+                    return self.unsize_to_dyn(operand, ty, dyn_ty);
+                }
+                self.check_other_unsize(operand.ty(&self.local_decls, self.tcx), ty);
                 // Only treat unsizing as identity when both sides resolve to the same model.
                 let mut op_pty = self.operand_type(operand);
                 let expected_ty = self.type_builder.build(ty).vacuous().ty;
@@ -1668,6 +1682,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     let parent_args = self.tcx.mk_args(&closure_args[..parent_count]);
                     ResolvedCallable::Concrete(*closure_def_id, parent_args)
                 }
+                // A call through `dyn Fn*`, which `check_dyn_instance` rejects.
+                mir_ty::TyKind::Dynamic(..) => ResolvedCallable::Concrete(def_id, args),
                 mir_ty::TyKind::Param(ty) => ResolvedCallable::Generic(TypeParam::GenericType {
                     param_def_id: self.type_builder.param_def_id(ty),
                     local_idx: self.type_builder.param_local_idx(ty),
@@ -1724,6 +1740,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         args: mir_ty::GenericArgsRef<'tcx>,
     ) -> rty::Type<rty::Closed> {
         let caller_def_id = self.type_builder.owner_fn_id();
+        let resolved = self.resolve_callable(def_id, args);
+        self.check_dyn_instance(def_id, args, &resolved);
         if self.needs_ghost_formula_impl(def_id, args) {
             self.tcx.dcx().fatal(format!(
                 "a Ghost value cannot be used in executable code: `{}` in `{}` needs the \
@@ -1732,7 +1750,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 self.tcx.def_path_str(caller_def_id),
             ));
         }
-        match self.resolve_callable(def_id, args) {
+        match resolved {
             ResolvedCallable::Generic(type_param) => {
                 tracing::debug!(?type_param, ?self.ctx.closure_type_params);
                 self.ctx
