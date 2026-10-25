@@ -347,12 +347,35 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let owner_fn_id = analyzer.owner_fn_id;
         let owner_fn_id_args = analyzer.owner_fn_id_args;
         use mir_ty::TypeVisitableExt as _;
-        // A function is generic when its contract names a type parameter its signature does not
-        // mention: a trait method's `Self::score(x)`, or `T::score(x)` of `fn via<T: Score>`,
-        // resolves at each instance to the impl's own logic function. Closures keep their
-        // treatment.
         let trait_method = self.tcx.trait_of_assoc(owner_fn_id).is_some();
-        if sig.has_param() || trait_method || contract_generic {
+        if analyzer.is_annotated_as_extern_spec_fn()
+            && is_narrower_local_spec(self.tcx, local_def_id, owner_fn_id, owner_fn_id_args)
+        {
+            // The spec covers the local target only at some of its instances, so it is not the
+            // contract of the target's generic body: the body is analyzed at each covered
+            // instance a call reaches, in the caller's environment, against the spec there
+            // (`Analyzer::def_ty_with_args`). Checked over the target's own type parameters, the
+            // spec's types, normalized under the spec's bounds or at its fixed arguments,
+            // disagree with the body's. A trusted target, or one outside `THRUST_VERIFY_ONLY`,
+            // is not analyzed.
+            let skips_target = owner_fn_id
+                .as_local()
+                .is_some_and(|def_id| self.skip_analysis.contains(&def_id));
+            if skips_target {
+                self.ctx.register_deferred_def_without_analysis(
+                    owner_fn_id,
+                    local_def_id,
+                    owner_fn_id_args,
+                );
+            } else {
+                self.ctx
+                    .register_deferred_def(owner_fn_id, local_def_id, owner_fn_id_args);
+            }
+        } else if sig.has_param() || trait_method || contract_generic {
+            // A function is generic when its contract names a type parameter its signature does
+            // not mention: a trait method's `Self::score(x)`, or `T::score(x)` of
+            // `fn via<T: Score>`, resolves at each instance to the impl's own logic function.
+            // Closures keep their treatment.
             if trusted_derive {
                 let expected = analyzer.expected_ty();
                 self.ctx
@@ -912,12 +935,45 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         }
     }
 
+    /// Stops at a `Model` impl of the crate whose model holds a value without a model (a `str`, a
+    /// raw or function pointer, a trait object; `model_eq::modelless_part`), such as `impl Model
+    /// for S { type Ty = S; }` of a struct holding a `&str`: the part has the null sort, so a
+    /// specification comparing models of the type, also at a type parameter instantiated with it,
+    /// would hold of any two values (`==`) or of none (`!=`).
+    fn check_model_impls(&self) {
+        let Some(model_ty) = self.ctx.def_ids().model_ty() else {
+            return;
+        };
+        let model_trait = self.tcx.parent(model_ty);
+        for &impl_did in self.tcx.local_trait_impls(model_trait) {
+            let Some(assoc) = self
+                .tcx
+                .associated_items(impl_did.to_def_id())
+                .in_definition_order()
+                .find(|item| item.trait_item_def_id == Some(model_ty))
+            else {
+                continue;
+            };
+            let ty = self.tcx.type_of(assoc.def_id).instantiate_identity();
+            if let Some(part) = analyze::model_eq::modelless_part(self.tcx, model_trait, ty) {
+                self.tcx.dcx().span_fatal(
+                    self.tcx.def_span(impl_did),
+                    format!(
+                        "thrust: the model `{ty}` holds `{part}`, which has no model, so \
+                         specifications could not tell its values apart"
+                    ),
+                );
+            }
+        }
+    }
+
     pub fn run(&mut self) {
         let span = tracing::debug_span!("crate", krate = %self.tcx.crate_name(rustc_span::def_id::LOCAL_CRATE));
         let _guard = span.enter();
 
         let proof_branch = self.ctx.def_ids().proof_branch();
         analyze::lemma::check_lemmas(self.tcx, proof_branch);
+        self.check_model_impls();
         self.analyze_raw_command_annot();
         self.register_trait_laws();
         self.check_restated_laws();
@@ -1215,4 +1271,42 @@ pub(super) fn per_instance_generics() -> bool {
         std::env::var("THRUST_PER_INSTANCE_GENERICS").as_deref(),
         Ok("1")
     )
+}
+
+/// Whether `local_def_id` is an extern spec of a function of this crate, `target`, that covers
+/// only some of its instances: it calls the target at an argument that is not one of the
+/// spec's type parameters, or bounds an associated type the target leaves free (`R:
+/// IntoSliceIdx<I, [T], Output = usize>` where the target has `R: IntoSliceIdx<I, [T]>`). The
+/// spec `requires`/`ensures` generate for a function repeats its bounds, so it covers all of it.
+fn is_narrower_local_spec<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    local_def_id: LocalDefId,
+    target: rustc_span::def_id::DefId,
+    target_args: Option<mir_ty::GenericArgsRef<'tcx>>,
+) -> bool {
+    let Some(target_args) = target_args else {
+        return false;
+    };
+    if !target.is_local() {
+        return false;
+    }
+    let fixes_an_arg = target_args
+        .types()
+        .any(|ty| !matches!(ty.kind(), mir_ty::TyKind::Param(_)));
+    if fixes_an_arg {
+        return true;
+    }
+    let target_projections: Vec<_> = tcx
+        .predicates_of(target)
+        .instantiate(tcx, target_args)
+        .predicates
+        .into_iter()
+        .filter(|clause| clause.as_projection_clause().is_some())
+        .map(|clause| tcx.erase_regions(clause))
+        .collect();
+    tcx.predicates_of(local_def_id)
+        .predicates
+        .iter()
+        .filter(|(clause, _)| clause.as_projection_clause().is_some())
+        .any(|(clause, _)| !target_projections.contains(&tcx.erase_regions(*clause)))
 }

@@ -13,19 +13,11 @@ const WORD_BYTES: usize = size_of::<Word>();
 const WORD_BITS: usize = WORD_BYTES * 8;
 
 // #[cfg_attr(feature = "nightly", derive(Decodable_NoContext, Encodable_NoContext))]
-// `Eq, PartialEq` commented out: the ghost field `card` (rewrites.md S11) has no executable `eq`.
-#[derive(/* Eq, PartialEq, */ Hash)]
+#[derive(Eq, PartialEq, Hash)]
 pub struct DenseBitSet<T> {
     domain_size: usize,
     words: Vec<Word>,
     marker: PhantomData<T>,
-    // Rewrite (rewrites.md S11): the number of members, proof-only (`Ghost` has no runtime data).
-    // The bodies are trusted, so the contracts of `new_empty`, `insert` and `insert_all` define it.
-    // The trusted `iter` relies on it being the number of members below `domain_size`. That holds
-    // because the fields are private to this module and those three (with `clear_excess_bits`,
-    // called only by `insert_all`) are their only writers; a
-    // type invariant (Creusot's `Invariant`, Verus's `type_invariant`) would make it checked.
-    card: thrust_models::Ghost<USize>,
 }
 
 #[thrust_macros::context]
@@ -67,18 +59,29 @@ impl<T: Idx> DenseBitSet<T> {
         self.1.len() == (self.0 + 63) / 64
     }
 
+    /// The number of members: the set bits below `domain_size`. The trusted `iter` relies on the
+    /// bits past `domain_size` being clear, which rustc's `clear_excess_bits` keeps: it yields every
+    /// set bit of the words. Stated as a validity predicate in the contracts, or as a type
+    /// invariant (9a4b1dab), the invariant leaves the `bitset` root without an answer at 300 s
+    /// (thrust-research experiments/2026-10-24-eval3-trusted-reduction-2.md and
+    /// experiments/2026-10-24-rq4-gaps-16-17.md).
+    #[thrust_macros::logic]
+    pub(crate) fn card(self) -> USize {
+        ones(self.1, self.0)
+    }
+
     #[inline]
     #[thrust_macros::ensures(result.0 == domain_size)]
     #[thrust_macros::ensures(Self::no_mem(result))]
     #[thrust_macros::ensures(Self::words_cover_domain(result))]
-    #[thrust_macros::ensures(result.3 == 0)]
+    #[thrust_macros::ensures(Self::card(result) == 0)]
     pub fn new_empty(domain_size: usize) -> DenseBitSet<T> {
         let num_words = num_words(domain_size);
+        thrust_macros::proof!(zero_bits_ones(domain_size));
         DenseBitSet {
             domain_size,
             words: vec![0; num_words],
             marker: PhantomData,
-            card: thrust_macros::ghost!(|| -> USize { 0 }),
         }
     }
 
@@ -93,7 +96,6 @@ impl<T: Idx> DenseBitSet<T> {
     }
 
     #[inline]
-    #[thrust::trusted]
     #[thrust_macros::requires(forall(|i: USize| <T as Idx>::index_is(elem, i) ==> i < (*self).0))]
     #[thrust_macros::requires(Self::words_cover_domain(*self))]
     #[thrust_macros::ensures(forall(|i: USize| <T as Idx>::index_is(elem, i) && (result == true) ==> Self::mem(*self, i)))]
@@ -105,10 +107,13 @@ impl<T: Idx> DenseBitSet<T> {
     }
 
     #[inline]
+    // Trusted: analyzed with lemmas that setting one clear bit adds one to `ones`, it gets no answer
+    // at 300 s; the induction those lemmas need gets none either (same record).
     #[thrust::trusted]
     #[thrust_macros::requires(forall(|i: USize| <T as Idx>::index_is(elem, i) ==> i < (*self).0))]
+    #[thrust_macros::requires(Self::words_cover_domain(*self))]
     #[thrust_macros::ensures((!self).0 == (*self).0)]
-    #[thrust_macros::ensures(Self::words_cover_domain(*self) ==> Self::words_cover_domain(!self))]
+    #[thrust_macros::ensures(Self::words_cover_domain(!self))]
     // `Self::inserted` gives, for `i` the index of `elem`:
     //   `Self::mem(!self, i)`, and
     //   `forall j != i: Self::mem(!self, j) <==> Self::mem(*self, j)`.
@@ -117,9 +122,9 @@ impl<T: Idx> DenseBitSet<T> {
     #[thrust_macros::ensures(forall(|i: USize| <T as Idx>::index_is(elem, i) && (result == true) ==> !Self::mem(*self, i)))]
     #[thrust_macros::ensures(forall(|i: USize| <T as Idx>::index_is(elem, i) && Self::mem(*self, i) ==> (result == false)))]
     #[thrust_macros::ensures(forall(|i: USize| <T as Idx>::index_is(elem, i) && !Self::mem(*self, i) ==> (result == true)))]
-    #[thrust_macros::ensures((result == true) ==> (!self).3 == (*self).3 + 1)]
-    #[thrust_macros::ensures((result == false) ==> (!self).3 == (*self).3)]
-    #[thrust_macros::ensures(0 <= (!self).3 && (!self).3 <= (!self).0)]
+    #[thrust_macros::ensures((result == true) ==> Self::card(!self) == Self::card(*self) + 1)]
+    #[thrust_macros::ensures((result == false) ==> Self::card(!self) == Self::card(*self))]
+    #[thrust_macros::ensures(Self::card(!self) <= (!self).0)]
     pub fn insert(&mut self, elem: T) -> bool {
         assert!(
             elem.index() < self.domain_size,
@@ -135,25 +140,26 @@ impl<T: Idx> DenseBitSet<T> {
         new_word != word
     }
 
-    // Trusted: with `<[T]>::fill` specified, the bits below `domain_size` kept by
-    // `clear_excess_bits` and `card` set by `ghost!`, the solver gives no answer at 120 s.
+    // Trusted: analyzed with a lemma that a prefix of set bits counts fully, it gets no answer at
+    // 300 s (thrust-research experiments/2026-10-24-eval3-trusted-reduction-2.md).
     #[thrust::trusted]
+    #[thrust_macros::requires(Self::words_cover_domain(*self))]
     #[thrust_macros::ensures((!self).0 == (*self).0)]
-    #[thrust_macros::ensures(Self::words_cover_domain(*self) ==> Self::words_cover_domain(!self))]
+    #[thrust_macros::ensures(Self::words_cover_domain(!self))]
     #[thrust_macros::ensures(forall(|i: USize| 0 <= i && i < (*self).0 ==> Self::mem(!self, i)))]
-    #[thrust_macros::ensures((!self).3 == (*self).0)]
+    #[thrust_macros::ensures(Self::card(!self) == (*self).0)]
     pub fn insert_all(&mut self) {
         self.words.fill(!0);
         self.clear_excess_bits();
     }
 
-    // Trusted: the iterator's ghost state is the set's members, which relates the words to the
-    // ghost count only through the trusted contracts above.
+    // Trusted: the iterator's ghost state is the set's members, which `BitIter::new` does not
+    // state.
     #[inline]
     #[thrust::trusted]
     #[thrust_macros::ensures(result.4 == (*self).0 && result.5 == 0)]
     #[thrust_macros::ensures(0 <= result.6 && result.6 <= (*self).0)]
-    #[thrust_macros::ensures(result.6 == (*self).3)]
+    #[thrust_macros::ensures(result.6 == Self::card(*self))]
     #[thrust_macros::ensures(forall(|k: USize| !(result.7[k] != 0) || (0 <= k && k < (*self).0 && Self::mem(*self, k))))]
     #[thrust_macros::ensures(forall(|k: USize| !(0 <= k && k < (*self).0 && Self::mem(*self, k)) || result.7[k] != 0))]
     pub fn iter(&self) -> BitIter<'_, T> {
@@ -481,8 +487,6 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
 }
 
 #[inline]
-#[thrust_macros::requires(forall(|i: USize, j: USize|
-    <T as Idx>::index_is(domain_size, i) && <T as Idx>::index_is(domain_size, j) ==> i == j))]
 #[thrust_macros::ensures(forall(|i: USize| <T as Idx>::index_is(domain_size, i)
     ==> 64 * result >= i && 64 * result < i + 64))]
 fn num_words<T: Idx>(domain_size: T) -> usize {
@@ -490,9 +494,6 @@ fn num_words<T: Idx>(domain_size: T) -> usize {
 }
 
 #[inline]
-// Trusted: the body verifies against this contract only with `index_is` functional, and then
-// the solver gives no answer at 120 s.
-#[thrust::trusted]
 #[thrust_macros::ensures(forall(|i: USize| <T as Idx>::index_is(elem, i)
     ==> result.0 == i / 64
         && result.1 == (BitVec::<64, false>::from_int(1) << BitVec::from_int(i % 64)).to_int()))]
@@ -512,8 +513,38 @@ fn clear_excess_bits_in_final_word(domain_size: usize, words: &mut [Word]) {
     }
 }
 
+/// The set bits among the first `m` bits of `words`, bit `i` being bit `i % 64` of word `i / 64`
+/// as in `DenseBitSet::mem`.
+#[thrust_macros::logic]
+#[thrust_macros::variant(m)]
+pub(crate) fn ones(words: Seq<USize>, m: USize) -> USize {
+    if m <= 0 {
+        0
+    } else {
+        ones(words, m - 1)
+            + if (BitVec::<64, false>::from_int(words[(m - 1) / 64]) >> BitVec::from_int((m - 1) % 64))
+                & BitVec::from_int(1)
+                == BitVec::from_int(1)
+            {
+                1
+            } else {
+                0
+            }
+    }
+}
+
+/// The first `m` bits are clear when the words they lie in are zero.
+#[thrust_macros::lemma]
+#[thrust_macros::variant(m)]
+#[thrust_macros::ensures(forall(|s: Seq<USize>|
+    !forall(|k: USize| !(k * 64 < m) || s[k] == 0) || ones(s, m) == 0))]
+fn zero_bits_ones(m: usize) {
+    if m > 0 {
+        zero_bits_ones(m - 1);
+    }
+}
+
 #[inline]
-#[thrust::trusted]
 #[thrust::callable]
 fn count_ones(words: &[Word]) -> usize {
     words.iter().map(|word| word.count_ones() as usize).sum()

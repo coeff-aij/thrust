@@ -74,6 +74,26 @@ pub fn hist_inv_path_path() -> [Symbol; 2] {
     [Symbol::intern("thrust"), Symbol::intern("hist_inv_path")]
 }
 
+/// `#[thrust::open_inv]` on a parameter: its type invariant is neither assumed at entry nor, for a
+/// `&mut`, required of its final value (Creusot's `#[creusot::open_inv]`).
+pub fn open_inv_path() -> [Symbol; 2] {
+    [Symbol::intern("thrust"), Symbol::intern("open_inv")]
+}
+
+/// `#[thrust::open_inv_result]` on a function: its result's type invariant is not ensured
+/// (Creusot's `#[open_inv_result]`).
+pub fn open_inv_result_path() -> [Symbol; 2] {
+    [Symbol::intern("thrust"), Symbol::intern("open_inv_result")]
+}
+
+pub fn type_invariant_path() -> [Symbol; 3] {
+    [
+        Symbol::intern("thrust"),
+        Symbol::intern("def"),
+        Symbol::intern("type_invariant"),
+    ]
+}
+
 pub fn closure_upvars_path() -> [Symbol; 2] {
     [Symbol::intern("thrust"), Symbol::intern("closure_upvars")]
 }
@@ -174,6 +194,14 @@ pub fn closure_model_path() -> [Symbol; 3] {
     ]
 }
 
+pub fn iterator_spec_path() -> [Symbol; 3] {
+    [
+        Symbol::intern("thrust"),
+        Symbol::intern("def"),
+        Symbol::intern("iterator_spec"),
+    ]
+}
+
 pub fn partial_ord_spec_path() -> [Symbol; 3] {
     [
         Symbol::intern("thrust"),
@@ -187,6 +215,14 @@ pub fn model_eq_path() -> [Symbol; 3] {
         Symbol::intern("thrust"),
         Symbol::intern("def"),
         Symbol::intern("model_eq"),
+    ]
+}
+
+pub fn no_model_path() -> [Symbol; 3] {
+    [
+        Symbol::intern("thrust"),
+        Symbol::intern("def"),
+        Symbol::intern("no_model"),
     ]
 }
 

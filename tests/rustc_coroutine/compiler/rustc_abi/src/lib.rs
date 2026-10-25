@@ -18,7 +18,7 @@ use crate::{PartialOrdSpec, TryIntoSpec};
 
 mod layout;
 
-pub use layout::{LayoutCalculator, LayoutCalculatorError, LayoutRef};
+pub use layout::{LayoutCalculator, LayoutCalculatorError};
 
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 // #[cfg_attr(feature = "nightly", derive(Encodable_NoContext, Decodable_NoContext, StableHash))]
@@ -51,13 +51,11 @@ impl ReprFlags {
         self.0
     }
 
-    #[thrust::trusted]
     #[thrust::callable]
     pub const fn contains(&self, other: Self) -> bool {
         self.0 & other.0 == other.0
     }
 
-    #[thrust::trusted]
     #[thrust::callable]
     pub const fn intersects(&self, other: Self) -> bool {
         self.0 & other.0 != 0
@@ -95,25 +93,21 @@ pub struct ReprOptions {
 
 impl ReprOptions {
     #[inline]
-    #[thrust::trusted]
     #[thrust::callable]
     pub fn transparent(&self) -> bool {
         self.flags.contains(ReprFlags::IS_TRANSPARENT)
     }
 
-    #[thrust::trusted]
     #[thrust::callable]
     pub fn inhibit_newtype_abi_optimization(&self) -> bool {
         self.flags.intersects(ReprFlags::ABI_UNOPTIMIZABLE)
     }
 
-    #[thrust::trusted]
     #[thrust::callable]
     pub fn inhibit_struct_field_reordering(&self) -> bool {
         self.flags.intersects(ReprFlags::FIELD_ORDER_UNOPTIMIZABLE) || self.int.is_some()
     }
 
-    #[thrust::trusted]
     #[thrust::callable]
     pub fn can_randomize_type_layout(&self) -> bool {
         !self.inhibit_struct_field_reordering() && self.flags.contains(ReprFlags::RANDOMIZE_LAYOUT)
@@ -198,9 +192,7 @@ impl TargetDataLayout {
             16 => 1 << 15,
             32 => 1 << 31,
             64 => 1 << 61,
-            // Rewrite (rewrites.md R6): the message is dropped; a message makes
-            // `fmt::Arguments`, which Thrust cannot type in analysed code.
-            _ => panic!(),
+            bits => panic!("obj_size_bound: unknown pointer bit size {bits}"),
         }
     }
 
@@ -229,9 +221,7 @@ impl TargetDataLayout {
         )) {
             e.1.pointer_size
         } else {
-            // Rewrite (rewrites.md R6): the message is dropped; a message makes
-            // `fmt::Arguments`, which Thrust cannot type in analysed code.
-            panic!();
+            panic!("Use of unknown address space {c:?}");
         }
     }
 
@@ -250,9 +240,7 @@ impl TargetDataLayout {
         )) {
             e.1.pointer_align
         } else {
-            // Rewrite (rewrites.md R6): the message is dropped; a message makes
-            // `fmt::Arguments`, which Thrust cannot type in analysed code.
-            panic!();
+            panic!("Use of unknown address space {c:?}");
         })
     }
 }
@@ -377,8 +365,7 @@ impl Size {
     #[thrust_macros::ensures(result == self.raw * 8)]
     pub fn bits(self) -> u64 {
         #[cold]
-        #[thrust::trusted]
-        #[thrust::callable]
+        #[thrust_macros::requires(false)]
         fn overflow(bytes: u64) -> ! {
             panic!("Size::bits: {bytes} bytes in bits doesn't fit in u64")
         }
@@ -428,9 +415,9 @@ impl Add for Size {
     type Output = Size;
     #[inline]
     fn add(self, other: Size) -> Size {
-        // Rewrite (rewrites.md R6): the message is dropped; a message makes
-        // `fmt::Arguments`, which Thrust cannot type in analysed code.
-        Size::from_bytes(self.bytes().checked_add(other.bytes()).unwrap_or_else(|| panic!()))
+        Size::from_bytes(self.bytes().checked_add(other.bytes()).unwrap_or_else(|| {
+            panic!("Size::add: {} + {} doesn't fit in u64", self.bytes(), other.bytes())
+        }))
     }
 }
 
@@ -983,7 +970,7 @@ impl<FieldIdx: Idx> VariantLayout<FieldIdx> {
             in_memory_order,
         } = layout.fields
         else {
-            panic!();
+            panic!("Layout of fields should be Arbitrary for variants");
         };
 
         Self {

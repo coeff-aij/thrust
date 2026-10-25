@@ -103,7 +103,9 @@ fn classify_spec_bounds<'tcx>(
     for clause in clauses {
         let bound = match clause.as_projection_clause() {
             Some(projection) => projection_bound(tcx, typing_env, projection.skip_binder()),
-            None if is_model_eq_clause(tcx, clause) => model_eq_bound(tcx, typing_env, clause),
+            None if is_model_eq_clause(tcx, clause) => {
+                model_eq_bound(tcx, typing_env, tcx.parent(model_ty), clause)
+            }
             None => trait_bound(tcx, &infcx, typing_env, clause),
         };
         match bound {

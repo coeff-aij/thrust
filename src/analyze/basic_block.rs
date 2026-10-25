@@ -611,12 +611,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let layout = self.tcx.layout_of(typing_env.as_query_input(ty)).unwrap();
         let lcx = mir_ty::layout::LayoutCx::new(self.tcx, typing_env);
         match ty.kind() {
+            // A `str` has the null sort, as `rty::Type::String` gives it; its content is not
+            // modelled (a string literal term would not have that sort).
             mir_ty::TyKind::Str => {
-                let content = std::str::from_utf8(bytes).unwrap();
-                PlaceType::with_ty_and_term(
-                    rty::Type::string(),
-                    chc::Term::string(content.to_owned()),
-                )
+                PlaceType::with_ty_and_term(rty::Type::string(), chc::Term::null())
             }
             mir_ty::TyKind::Bool => {
                 PlaceType::with_ty_and_term(rty::Type::bool(), chc::Term::bool(bytes[0] != 0))
@@ -681,6 +679,112 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         }
     }
 
+    /// The value of type `ty` at `offset` in the constant allocation `alloc`, which may hold
+    /// pointers: an array is read element by element, a tuple, struct or enum field by field, and
+    /// a shared reference through the pointer the allocation holds there (a promoted `&[&str; N]`
+    /// of a panic message is one); an integer or a `bool` is read by [`Self::const_bytes_ty`],
+    /// which reads values without pointers, such as a scalar constant's.
+    fn const_alloc_ty(
+        &self,
+        alloc: mir::interpret::ConstAllocation<'tcx>,
+        offset: rustc_abi::Size,
+        ty: mir_ty::Ty<'tcx>,
+    ) -> PlaceType {
+        let typing_env = self.typing_env;
+        let layout = self.tcx.layout_of(typing_env.as_query_input(ty)).unwrap();
+        let lcx = mir_ty::layout::LayoutCx::new(self.tcx, typing_env);
+        let bytes_at = |offset: rustc_abi::Size, size: rustc_abi::Size| {
+            alloc
+                .inner()
+                .inspect_with_uninit_and_ptr_outside_interpreter(
+                    offset.bytes() as usize..(offset + size).bytes() as usize,
+                )
+        };
+        match ty.kind() {
+            mir_ty::TyKind::Array(elem, len) => {
+                let len = len
+                    .try_to_target_usize(self.tcx)
+                    .expect("array constant of unevaluated length");
+                let elem_size = layout.field(&lcx, 0).size;
+                let mut builder = PlaceTypeBuilder::default();
+                let elem_ty = self.type_builder.build(*elem).vacuous().ty;
+                let mut seq = chc::Term::seq_empty(elem_ty.to_sort());
+                for i in 0..len {
+                    let pty = self.const_alloc_ty(alloc, offset + elem_size * i, *elem);
+                    let (_, elem_term) = builder.subsume(pty);
+                    seq = seq.seq_concat(elem_term.seq_unit());
+                }
+                builder.build(
+                    rty::Type::Seq(Box::new(rty::RefinedType::unrefined(elem_ty))),
+                    seq,
+                )
+            }
+            mir_ty::TyKind::Tuple(tys) => {
+                let pts = tys
+                    .iter()
+                    .enumerate()
+                    .map(|(i, field_ty)| {
+                        self.const_alloc_ty(alloc, offset + layout.fields.offset(i), field_ty)
+                            .boxed()
+                    })
+                    .collect();
+                PlaceType::tuple(pts)
+            }
+            mir_ty::TyKind::Adt(def, args) if def.is_struct() => {
+                let pts = def
+                    .all_fields()
+                    .enumerate()
+                    .map(|(i, field)| {
+                        let field_ty = field.ty(self.tcx, args);
+                        self.const_alloc_ty(alloc, offset + layout.fields.offset(i), field_ty)
+                            .boxed()
+                    })
+                    .collect();
+                PlaceType::tuple(pts)
+            }
+            mir_ty::TyKind::Adt(def, args) if def.is_enum() => {
+                let variant_idx =
+                    self.const_variant_idx(ty, &layout, bytes_at(offset, layout.size));
+                let variant_layout = layout.for_variant(&lcx, variant_idx);
+                let pts = def
+                    .variant(variant_idx)
+                    .fields
+                    .iter()
+                    .enumerate()
+                    .map(|(i, field)| {
+                        let field_ty = field.ty(self.tcx, args);
+                        let field_offset = offset + variant_layout.fields.offset(i);
+                        self.const_alloc_ty(alloc, field_offset, field_ty)
+                    })
+                    .collect();
+                self.const_enum_ty(ty, variant_idx, pts)
+            }
+            mir_ty::TyKind::Ref(_, pointee, mir::Mutability::Not) => {
+                if pointee.is_str() {
+                    return self.const_bytes_ty(*pointee, &[]).immut();
+                }
+                if !pointee.is_sized(self.tcx, typing_env) {
+                    unimplemented!("const reference to an unsized value in a constant: {ty:?}");
+                }
+                let ptr_size = self.tcx.data_layout.pointer_size();
+                let range = mir::interpret::alloc_range(offset, ptr_size);
+                let Ok(mir::interpret::Scalar::Ptr(ptr, _)) =
+                    alloc.inner().read_scalar(&self.tcx, range, true)
+                else {
+                    panic!("reference in a constant without provenance");
+                };
+                let (prov, target_offset) = ptr.prov_and_relative_offset();
+                let mir::interpret::GlobalAlloc::Memory(target) =
+                    self.tcx.global_alloc(prov.alloc_id())
+                else {
+                    unimplemented!("const ref alloc in a constant");
+                };
+                self.const_alloc_ty(target, target_offset, *pointee).immut()
+            }
+            _ => self.const_bytes_ty(ty, bytes_at(offset, layout.size)),
+        }
+    }
+
     fn const_value_ty(&self, val: &mir::ConstValue, ty: &mir_ty::Ty<'tcx>) -> PlaceType {
         if let Some((scalar_ty, term)) = analyze::scalar_const_term(*ty, val) {
             return PlaceType::with_ty_and_term(scalar_ty, term);
@@ -740,18 +844,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 let global_alloc = self.tcx.global_alloc(prov.alloc_id());
                 match global_alloc {
                     mir::interpret::GlobalAlloc::Memory(alloc) => {
-                        let typing_env = self.typing_env;
-                        let layout = self
-                            .tcx
-                            .layout_of(typing_env.as_query_input(*elem))
-                            .unwrap();
-                        let size = layout.size;
-                        let range =
-                            offset.bytes() as usize..(offset.bytes() + size.bytes()) as usize;
-                        let bytes = alloc
-                            .inner()
-                            .inspect_with_uninit_and_ptr_outside_interpreter(range);
-                        self.const_bytes_ty(*elem, bytes).immut()
+                        self.const_alloc_ty(alloc, offset, *elem).immut()
                     }
                     _ => unimplemented!("const ptr alloc: {:?}", global_alloc),
                 }
@@ -769,6 +862,13 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     .inner()
                     .inspect_with_uninit_and_ptr_outside_interpreter(0..end);
                 self.const_bytes_ty(*elem, bytes).immut()
+            }
+            (_, ConstValue::Indirect { alloc_id, offset }) => {
+                let mir::interpret::GlobalAlloc::Memory(alloc) = self.tcx.global_alloc(*alloc_id)
+                else {
+                    unimplemented!("const indirect alloc: {:?}", alloc_id);
+                };
+                self.const_alloc_ty(alloc, *offset, *ty)
             }
             _ => unimplemented!("const: {:?}, ty: {:?}", val, ty),
         }
@@ -1689,7 +1789,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         "std" | "core" | "alloc"
                     );
                 if unchecked_foreign_impl {
-                    self.no_specification(resolved_def_id, resolved_args);
+                    return self.unspecified_extern_ty(def_id, resolved_def_id, resolved_args);
                 }
                 // Nor is an ignored impl method's body checked against it.
                 if analyze::is_ignored_crate_fn(self.tcx, resolved_def_id) {
@@ -1707,10 +1807,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     return def_ty.ty;
                 }
                 if resolved_def_id == def_id && !def_id.is_local() {
-                    self.no_specification(def_id, args);
+                    return self.unspecified_extern_ty(def_id, def_id, args);
                 }
                 if resolved_def_id == def_id {
-                    panic!("unknown def: {:?}, args: {:?}", def_id, args);
+                    self.fatal_uncovered_instance(def_id, args, caller_def_id);
                 }
                 tracing::info!(?def_id, ?resolved_def_id, ?resolved_args, "resolved");
                 let Some(def_ty) =
@@ -1729,37 +1829,125 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     // Also reached when the def's only specification is an extern spec written
                     // for another instantiation of it (see `bind_spec_args`).
                     if !resolved_def_id.is_local() {
-                        self.no_specification(resolved_def_id, resolved_args);
+                        return self.unspecified_extern_ty(def_id, resolved_def_id, resolved_args);
                     }
-                    panic!(
-                        "unknown def (resolved): {:?}, args: {:?}",
-                        resolved_def_id, resolved_args
-                    );
+                    self.fatal_uncovered_instance(resolved_def_id, resolved_args, caller_def_id);
                 };
                 def_ty.ty
             }
         }
     }
 
-    /// Stops at the call to `def_id`, a function of another crate that has no specification at
-    /// `args`, which the analysis cannot go past.
-    fn no_specification(&self, def_id: DefId, args: mir_ty::GenericArgsRef<'tcx>) -> ! {
+    /// Stops at a call of a local function at arguments no definition of it covers: its only
+    /// definition is an extern spec that fixes a type argument or bounds an associated type, and
+    /// the call is at other arguments, or at a type parameter of the caller, where the spec's
+    /// instances cannot be told apart from the others.
+    fn fatal_uncovered_instance(
+        &self,
+        def_id: DefId,
+        args: mir_ty::GenericArgsRef<'tcx>,
+        caller_def_id: DefId,
+    ) -> ! {
+        self.tcx.dcx().fatal(format!(
+            "`{}`, called in `{}`, has no specification at these arguments: an extern spec that \
+             fixes a type argument or bounds an associated type covers only those instances, and \
+             a call at a type parameter is not one of them",
+            self.tcx.def_path_str_with_args(def_id, args),
+            self.tcx.def_path_str(caller_def_id),
+        ))
+    }
+
+    /// The type of `def_id`, a function of another crate that has no specification at `args`, which
+    /// the code names as `called` (a trait method resolved to `def_id`, or `def_id` itself): its
+    /// precondition is `false`, so a call must be unreachable, as Creusot specifies a contractless
+    /// external function. This is how a panic reaches its entry points (`panic_fmt`,
+    /// `assert_failed`, ...) and the constructors of its payload (`fmt::Arguments::new_v1`, ...),
+    /// which only a panicking path calls. A warning names a call that may be on a path that does
+    /// not panic, and a function pointer made of the function, whose calls are under the same rule.
+    fn unspecified_extern_ty(
+        &self,
+        called: DefId,
+        def_id: DefId,
+        args: mir_ty::GenericArgsRef<'tcx>,
+    ) -> rty::Type<rty::Closed> {
+        let name = self.tcx.def_path_str_with_args(def_id, args);
+        let owner = self.tcx.def_path_str(self.type_builder.owner_fn_id());
+        let message = if !self.calls_here(called) {
+            Some(format!(
+                "thrust: no specification of `{name}`, of which `{owner}` makes a function \
+                 pointer; a call through it must be proven unreachable"
+            ))
+        } else if !self.diverges(def_id) && !self.only_diverges_after() {
+            Some(format!(
+                "thrust: no specification of `{name}`, which `{owner}` calls; the call must be \
+                 proven unreachable"
+            ))
+        } else {
+            None
+        };
+        if let Some(message) = message {
+            self.tcx
+                .dcx()
+                .struct_span_warn(self.call_span(called), message)
+                .with_help(
+                    "to call it, give the call a contract: call it through a function marked \
+                     `#[thrust::trusted]` with `requires` and `ensures`, or write a \
+                     specification of it as Thrust's `std.rs` does (`#[thrust::extern_spec_fn]`)",
+                )
+                .emit();
+        }
+        self.type_builder
+            .build_unreachable_function_type(def_id, args)
+            .into()
+    }
+
+    /// Whether every path from the current block ends in a call that does not return or in
+    /// `Unreachable`, as the blocks that build a panic's payload do; a path that comes back to a
+    /// block already seen ends nowhere else. Only the warning of
+    /// [`Self::unspecified_extern_ty`] depends on it.
+    fn only_diverges_after(&self) -> bool {
+        let mut visited = std::collections::HashSet::new();
+        let mut pending = vec![self.basic_block];
+        while let Some(bb) = pending.pop() {
+            if !visited.insert(bb) {
+                continue;
+            }
+            match &self.body.basic_blocks[bb].terminator().kind {
+                TerminatorKind::Call { target: None, .. } | TerminatorKind::Unreachable => {}
+                TerminatorKind::Call {
+                    target: Some(target),
+                    ..
+                }
+                | TerminatorKind::Goto { target }
+                | TerminatorKind::Assert { target, .. }
+                | TerminatorKind::Drop { target, .. } => pending.push(*target),
+                TerminatorKind::SwitchInt { targets, .. } => pending.extend(targets.all_targets()),
+                _ => return false,
+            }
+        }
+        true
+    }
+
+    /// Whether the current block's terminator calls `def_id` by name (a trait method by the trait's
+    /// method); a function pointer made of it in a statement is not a call.
+    fn calls_here(&self, def_id: DefId) -> bool {
+        let TerminatorKind::Call { func, .. } =
+            &self.body.basic_blocks[self.basic_block].terminator().kind
+        else {
+            return false;
+        };
+        func.const_fn_def()
+            .is_some_and(|(callee, _)| callee == def_id)
+    }
+
+    /// Whether `def_id` returns `!`, as the panic entry points do.
+    fn diverges(&self, def_id: DefId) -> bool {
         self.tcx
-            .dcx()
-            .struct_span_fatal(
-                self.call_span(def_id),
-                format!(
-                    "thrust: no specification of `{}`, which `{}` calls",
-                    self.tcx.def_path_str_with_args(def_id, args),
-                    self.tcx.def_path_str(self.type_builder.owner_fn_id()),
-                ),
-            )
-            .with_help(
-                "give the call a contract: call it through a function marked \
-                 `#[thrust::trusted]` with `requires` and `ensures`, or write a specification of \
-                 it as Thrust's `std.rs` does (`#[thrust::extern_spec_fn]`)",
-            )
-            .emit()
+            .fn_sig(def_id)
+            .skip_binder()
+            .output()
+            .skip_binder()
+            .is_never()
     }
 
     /// The span of the code of the current block that calls or names `def_id`: its terminator,
@@ -2072,6 +2260,61 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             base = base.projection_ty(self.tcx, elem);
         }
         self.env.place_type(self.elaborate_place(place))
+    }
+
+    /// Stops at a statement that would read the value of a raw pointer or a trait object, whose
+    /// model carries no information (`rty::Type::Opaque`): dereferencing, comparing, casting or
+    /// taking one. They are not supported; reading the null model would make any two values equal.
+    fn check_opaque_use(
+        &self,
+        lhs: &mir::Place<'tcx>,
+        rvalue: &Rvalue<'tcx>,
+        span: rustc_span::Span,
+    ) {
+        let is_opaque = |ty: mir_ty::Ty<'tcx>| {
+            ty.is_raw_ptr() || ty.is_fn_ptr() || matches!(ty.kind(), mir_ty::TyKind::Dynamic(..))
+        };
+        let derefs_raw_pointer = |place: &mir::Place<'tcx>| {
+            place.iter_projections().any(|(base, elem)| {
+                elem == mir::ProjectionElem::Deref
+                    && base.ty(&self.local_decls, self.tcx).ty.is_raw_ptr()
+            })
+        };
+        let mut places: Vec<mir::Place<'tcx>> = vec![*lhs];
+        let what = match rvalue {
+            Rvalue::BinaryOp(_, operands)
+                if is_opaque(operands.0.ty(&self.local_decls, self.tcx)) =>
+            {
+                Some("comparing or computing with a raw or function pointer")
+            }
+            Rvalue::Cast(_, operand, _) if operand.ty(&self.local_decls, self.tcx).is_raw_ptr() => {
+                Some("casting a raw pointer")
+            }
+            Rvalue::RawPtr(..) => Some("taking a raw pointer"),
+            Rvalue::Use(operand) | Rvalue::Cast(_, operand, _) | Rvalue::UnaryOp(_, operand) => {
+                places.extend(operand.place());
+                None
+            }
+            Rvalue::Ref(_, _, place)
+            | Rvalue::Discriminant(place)
+            | Rvalue::CopyForDeref(place) => {
+                places.push(*place);
+                None
+            }
+            _ => None,
+        };
+        let what = what.or_else(|| {
+            places
+                .iter()
+                .any(derefs_raw_pointer)
+                .then_some("dereferencing a raw pointer")
+        });
+        if let Some(what) = what {
+            self.tcx.dcx().span_fatal(
+                span,
+                format!("thrust: {what} is not supported: its model carries no information"),
+            );
+        }
     }
 
     fn elaborate_place_for_borrow(&self, place: &mir::Place<'tcx>) -> mir::Place<'tcx> {
@@ -2415,6 +2658,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             match &stmt.kind {
                 StatementKind::Assign(x) => {
                     let (lhs, rvalue) = &**x;
+                    self.check_opaque_use(lhs, rvalue, stmt.source_info.span);
                     self.analyze_assignment(lhs, rvalue, stmt_idx);
                 }
                 StatementKind::Nop

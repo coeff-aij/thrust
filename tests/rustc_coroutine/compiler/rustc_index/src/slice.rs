@@ -213,7 +213,6 @@ impl<I: Idx, T> IndexSlice<I, T> {
 impl<I: Idx, T: thrust_models::Model> IndexSlice<I, T>
 {
     #[inline]
-    #[thrust::trusted]
     #[thrust_macros::requires(true)]
     #[thrust_macros::ensures(result.0 == *self && result.1 == !self && result.2 == 0 && (!self).len() == (*self).len())]
     pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, T> {
@@ -226,8 +225,6 @@ impl<I: Idx + thrust_models::Model, J: Idx + thrust_models::Model> IndexSlice<I,
     // `debug_assert_eq!` calls dropped (debug assertions are off; rewrites.md S6). The body
     // panics when an element is not below the length (`inverse[i2]`) or an index up to the length
     // cannot be built (`iter_enumerated`).
-    #[thrust::trusted]
-    #[thrust::callable]
     #[thrust_macros::requires(forall(|k: USize| !(0 <= k && k <= (*self).len()) || <I as Idx>::can_new(k)))]
     #[thrust_macros::requires(forall(|k: USize, i: USize|
         !(0 <= k && k < (*self).len() && <J as Idx>::index_is((*self)[k], i)) || i < (*self).len()))]
@@ -248,7 +245,6 @@ impl<I: Idx + thrust_models::Model, J: Idx + thrust_models::Model> IndexSlice<I,
 impl<I: Idx, T: thrust_models::Model, R: IntoSliceIdx<I, [T]>> std::ops::Index<R> for IndexSlice<I, T> {
     type Output = <R::Output as SliceIndex<[T]>>::Output;
 
-    #[thrust::trusted]
     #[inline]
     fn index(&self, index: R) -> &Self::Output {
         &self.raw[index.into_slice_idx()]
@@ -256,15 +252,15 @@ impl<I: Idx, T: thrust_models::Model, R: IntoSliceIdx<I, [T]>> std::ops::Index<R
 }
 
 impl<I: Idx, T: thrust_models::Model, R: IntoSliceIdx<I, [T]>> std::ops::IndexMut<R> for IndexSlice<I, T> {
-    #[thrust::trusted]
     #[inline]
     fn index_mut(&mut self, index: R) -> &mut Self::Output {
         &mut self.raw[index.into_slice_idx()]
     }
 }
 
-// `Index`/`IndexMut` are foreign traits, so the contract is an extern spec (the impl methods
-// are `trusted`). `IntoSliceIdx` has one impl, `I: Idx` into `usize`, through `Idx::index_is`.
+// `Index`/`IndexMut` are foreign traits, so the contract is an extern spec. It covers the
+// instances whose `R::Output` is `usize`, and the bodies are checked against it at each instance
+// a call reaches. `IntoSliceIdx` has one impl, `I: Idx` into `usize`, through `Idx::index_is`.
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(forall(|i: USize| <R as IntoSliceIdx<I, [T]>>::into_is(index, i) ==> i < (*slf).len()))]
 #[thrust_macros::ensures(forall(|i: USize| <R as IntoSliceIdx<I, [T]>>::into_is(index, i) ==> *result == (*slf)[i]))]

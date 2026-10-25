@@ -4,7 +4,7 @@ The target is rustc's `rustc_abi::layout::coroutine` and its dependencies. `targ
 whole extraction in one file (`//@ignore-on-host`). The verified code lives in rustc's module
 layout under `tests/rustc_coroutine/compiler/` (`rustc_hashes`, `rustc_index`, `rustc_abi`, one
 crate of three modules), with the case study's own code (the iterator adapters of rewrites.md R8,
-`SliceIter::find` of R9, `Model` declarations, std specifications, `Unwrap`, lemmas) under
+`SliceIter::find` of R9, `Model` declarations, std specifications, lemmas) under
 `tests/rustc_coroutine/thrust/`. The goal is a proof that `layout()` does not panic.
 
 Each file below is a crate root that includes the whole tree and selects one stage with a
@@ -36,5 +36,7 @@ The probes keep their own copy of Creusot's iterator trait.
 
 `probes/` holds one small pass/fail pair per language feature the stages rely on (a `forall` over a
 `Vec`, nested `Vec`s, an enum payload equality, an `Option` existential, a generic predicate in a
-free function, a nested field, a `forall` in an invariant, the enumerate position over a bit-set iterator staying below the domain size, the length that the local `extend_from` and `collect_wrapped` give from the items the iterator produced, through the local `Map` and `Filter` adapters of layout.rs (rewrites.md R8), the closure precondition `Map` requires on every yielded item, the local `iter_all` requiring it too, and `max` through a `PartialOrdSpec` that states a struct's derived order), `probes/layout_call_site.rs`, rustc's call site establishing the dimension, matrix well-formedness and index conjuncts of `layout()`'s precondition, and `probes/permutation_split.rs`, `layout()`'s split of univariant's memory order over a generic `FieldIdx` with the counting lemmas of `thrust/lemmas.rs` (`ignore-on-host` until fptprove reads a forall function inside a `define-fun-rec`). `probes/nested_vec.rs`'s fail twin is
+free function, the layout a generic `Deref` gives through `post!` and the requirement that its
+`deref` is a function (`deref_functional`), the local `u64::wrapping_add` spec on a wrapping and
+a small sum, a nested field, a `forall` in an invariant, the enumerate position over a bit-set iterator staying below the domain size, the length that the local `extend_from` and `collect_wrapped` give from the items the iterator produced, through the local `Map` and `Filter` adapters of layout.rs (rewrites.md R8), the closure precondition `Map` requires on every yielded item, the local `iter_all` requiring it too, and `max` through a `PartialOrdSpec` that states a struct's derived order), `probes/layout_call_site.rs`, rustc's call site establishing the dimension, matrix well-formedness and index conjuncts of `layout()`'s precondition, and `probes/permutation_split.rs`, `layout()`'s split of univariant's memory order over a generic `FieldIdx` with the counting lemmas of `thrust/lemmas.rs` (`ignore-on-host` until fptprove reads a forall function inside a `define-fun-rec`). `probes/nested_vec.rs`'s fail twin is
 not refuted under native sequences.

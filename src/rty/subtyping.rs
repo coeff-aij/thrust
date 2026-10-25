@@ -130,6 +130,7 @@ where
         (Type::Int(_) | Type::UInt(_), Type::Int(_) | Type::UInt(_))
         | (Type::Bool, Type::Bool)
         | (Type::String, Type::String)
+        | (Type::Opaque, Type::Opaque)
         | (Type::Never, Type::Never) => {}
         (Type::BitVec(got), Type::BitVec(expected)) if got == expected => {}
         (Type::Enum(got), Type::Enum(expected)) if got.symbol() == expected.symbol() => {

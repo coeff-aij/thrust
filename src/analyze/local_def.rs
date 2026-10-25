@@ -510,15 +510,18 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 } else {
                     mir_ty::EarlyBinder::bind(args).instantiate(self.tcx, self.generic_args)
                 };
-                if args.has_param() {
-                    // A trait-level spec, as a call at the type parameters takes.
-                    let _ = self.ctx.def_ty_with_args(def_id, args, self.owner_fn_id);
-                    continue;
-                }
-                let typing_env = mir_ty::TypingEnv::fully_monomorphized();
+                // Resolved as the translation resolves it (`annot_fn`'s `fn_item_contract`):
+                // under the owner's bounds, so that an impl applying whatever the owner's type
+                // parameters are, such as the reflexive `From`, is found at arguments naming them.
+                let typing_env =
+                    analyze::predicate_typing_env(self.tcx, self.owner_fn_id, def_ids.model_ty());
                 let Ok(Some(instance)) =
                     mir_ty::Instance::try_resolve(self.tcx, typing_env, def_id, args)
                 else {
+                    if args.has_param() {
+                        // A trait-level spec, as a call at the type parameters takes.
+                        let _ = self.ctx.def_ty_with_args(def_id, args, self.owner_fn_id);
+                    }
                     continue;
                 };
                 if instance.def_id() != self.local_def_id.to_def_id() {
@@ -677,7 +680,178 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         }
         let mut fn_ty = builder.build();
         self.conjoin_fn_mut_hist_inv(&mut fn_ty);
+        self.conjoin_type_invariants(sig, &mut fn_ty);
         rty::RefinedType::unrefined(fn_ty.into())
+    }
+
+    /// Conjoins the type invariants of the parameters and the result to the contract, as
+    /// Creusot's `Invariant` does (`creusot/src/backend/ty_inv.rs`, `sig_add_type_invariant_spec`):
+    /// a parameter of a type `T` with an `Invariant` impl in std.rs's sense, or a `&T` or
+    /// `&mut T` to one, requires `T::invariant` of its value (the current value of a reference);
+    /// a `&mut T` parameter also ensures it of its final value, unless the borrow may outlive the
+    /// call (`borrow_may_escape`); a result of such a type, or a reference to one, ensures it of
+    /// its (current) value. Since the invariant becomes a
+    /// conjunct of the contract, the body is checked against it at its exits and every caller
+    /// proves it at the call, as for a written `requires`/`ensures`; a function's body may break
+    /// it between those points. Unlike Creusot, Thrust does not check the invariant where a
+    /// borrow is resolved, so it is ensured of a final value only where the callee resolves the
+    /// borrow: not of a returned `&mut`, nor of a `&mut` parameter whose region the signature
+    /// names elsewhere, whose final value the caller may set. `#[thrust::open_inv]` on a parameter and `#[thrust::open_inv_result]` on the
+    /// function leave theirs out. Closures, lemmas, laws and destructors (which take no
+    /// precondition, D57) get none, and a type parameter, whose
+    /// `Invariant` impl does not resolve, has none.
+    fn conjoin_type_invariants(&mut self, sig: mir_ty::FnSig<'tcx>, fn_ty: &mut rty::FunctionType) {
+        if self.ctx.def_ids.type_invariant().is_none()
+            || self.tcx.is_closure_like(self.local_def_id.to_def_id())
+            || self.has_attr(&analyze::annot::lemma_path())
+            || self.has_attr(&analyze::annot::law_path())
+            || self.is_crate_destructor()
+        {
+            return;
+        }
+        let open_params = self.open_inv_params(sig.inputs().len());
+        let last = sig.inputs().len().wrapping_sub(1);
+        let mut requires = Vec::new();
+        let mut ensures = Vec::new();
+        for (idx, ty) in sig.inputs().iter().enumerate() {
+            if open_params.contains(&idx) {
+                continue;
+            }
+            let param_idx = rty::FunctionParamIdx::from_usize(idx);
+            let at_entry = if idx == last {
+                chc::Term::var(rty::RefinedTypeVar::Value)
+            } else {
+                chc::Term::var(rty::RefinedTypeVar::Free(param_idx))
+            };
+            match ty.kind() {
+                mir_ty::TyKind::Ref(_, inner, mir_ty::Mutability::Mut) => {
+                    let Some(pred) = self.type_invariant_pred(*inner) else {
+                        continue;
+                    };
+                    requires.push(type_invariant_atom(&pred, at_entry.mut_current()));
+                    if !borrow_may_escape(self.tcx, self.local_def_id.to_def_id(), idx) {
+                        let at_exit = chc::Term::var(rty::RefinedTypeVar::Free(param_idx));
+                        ensures.push(type_invariant_atom(&pred, at_exit.mut_final()));
+                    }
+                }
+                mir_ty::TyKind::Ref(_, inner, mir_ty::Mutability::Not) => {
+                    if let Some(pred) = self.type_invariant_pred(*inner) {
+                        requires.push(type_invariant_atom(&pred, at_entry.box_current()));
+                    }
+                }
+                _ => {
+                    if let Some(pred) = self.type_invariant_pred(*ty) {
+                        requires.push(type_invariant_atom(&pred, at_entry));
+                    }
+                }
+            }
+        }
+        if !self.has_attr(&analyze::annot::open_inv_result_path()) {
+            let result = chc::Term::var(rty::RefinedTypeVar::Value);
+            let ret = sig.output();
+            let (ty, term) = match ret.kind() {
+                mir_ty::TyKind::Ref(_, inner, mir_ty::Mutability::Mut) => {
+                    (*inner, result.mut_current())
+                }
+                mir_ty::TyKind::Ref(_, inner, mir_ty::Mutability::Not) => {
+                    (*inner, result.box_current())
+                }
+                _ => (ret, result),
+            };
+            if let Some(pred) = self.type_invariant_pred(ty) {
+                ensures.push(type_invariant_atom(&pred, term));
+            }
+        }
+        if let Some(last_idx) = fn_ty.params.last_index() {
+            for formula in requires {
+                fn_ty.params[last_idx].extend_refinement(formula.into());
+            }
+        }
+        for formula in ensures {
+            fn_ty.ret.extend_refinement(formula.into());
+        }
+    }
+
+    /// The predicate `T::invariant` of std.rs's `Invariant` at `ty`, when its impl resolves in the
+    /// owner's environment.
+    fn type_invariant_pred(&self, ty: mir_ty::Ty<'tcx>) -> Option<chc::Pred> {
+        let trait_did = self.ctx.def_ids.type_invariant()?;
+        let inv_did = self
+            .tcx
+            .associated_items(trait_did)
+            .filter_by_name_unhygienic(rustc_span::Symbol::intern("invariant"))
+            .next()?
+            .def_id;
+        if self.type_builder.build(ty).ty.to_sort().is_singleton() {
+            return None;
+        }
+        let typing_env =
+            analyze::predicate_typing_env(self.tcx, self.owner_fn_id, self.ctx.def_ids.model_ty());
+        let args = self.tcx.mk_args(&[ty.into()]);
+        let instance = mir_ty::Instance::try_resolve(self.tcx, typing_env, inv_did, args)
+            .ok()
+            .flatten()?;
+        if instance.def_id() == inv_did {
+            return None;
+        }
+        Some(
+            self.ctx
+                .predicate_with_args(instance.def_id(), instance.args, self.owner_fn_id)
+                .into(),
+        )
+    }
+
+    /// The indices of the parameters marked `#[thrust::open_inv]`, of the `arity` parameters of
+    /// the contract. The spec `requires`/`ensures` generate for a function has its parameters, so
+    /// an index of either is the contract's; a def with another number of parameters cannot mark
+    /// one.
+    fn open_inv_params(&self, arity: usize) -> HashSet<usize> {
+        let path = analyze::annot::open_inv_path();
+        let mut open = HashSet::new();
+        for local_def_id in self.attributed_defs() {
+            let Some(body) = self.tcx.hir_maybe_body_owned_by(local_def_id) else {
+                continue;
+            };
+            for (idx, param) in body.params.iter().enumerate() {
+                if !self
+                    .tcx
+                    .hir_attrs(param.hir_id)
+                    .iter()
+                    .any(|attr| attr.path_matches(&path))
+                {
+                    continue;
+                }
+                if body.params.len() != arity {
+                    self.tcx.dcx().span_fatal(
+                        param.span,
+                        "`#[thrust::open_inv]` on a function whose extern spec has other parameters",
+                    );
+                }
+                open.insert(idx);
+            }
+        }
+        open
+    }
+
+    /// The defs whose attributes apply to this def's contract: the def, and the local function
+    /// an extern spec specifies (the one `requires`/`ensures` generate for a local function).
+    fn attributed_defs(&self) -> Vec<LocalDefId> {
+        let mut defs = vec![self.local_def_id];
+        if self.is_annotated_as_extern_spec_fn() {
+            if let Some(target) = self.extern_spec_fn_target_def_id().as_local() {
+                defs.push(target);
+            }
+        }
+        defs
+    }
+
+    fn has_attr(&self, path: &[rustc_span::Symbol]) -> bool {
+        self.attributed_defs().into_iter().any(|def| {
+            self.tcx
+                .get_attrs_by_path(def.to_def_id(), path)
+                .next()
+                .is_some()
+        })
     }
 
     /// Conjoins to an `FnMut` closure's postcondition that the call keeps the closure's state
@@ -2308,4 +2482,51 @@ fn refinement_instances(
         ));
     }
     out
+}
+
+fn type_invariant_atom<V>(pred: &chc::Pred, term: chc::Term<V>) -> chc::Formula<V> {
+    chc::Formula::Atom(chc::Atom::new(pred.clone(), vec![term]))
+}
+
+/// Whether the borrow of the `&mut` parameter `idx` of `def_id` may outlive the call. The borrow
+/// checker lets it outlive the call only if its region is named elsewhere in the signature: in
+/// the result, in another parameter, in the parameter's own target, or in a `where` clause or
+/// outlives bound (which makes it early-bound, as does a region of the enclosing impl), or if it
+/// is `'static`. A late-bound region that occurs nowhere else is the parameter's own: no other
+/// value of the signature can hold the borrow, so it ends before the call returns, and the callee
+/// resolves it. An `impl Trait` or a trait object in the result may capture it, so they count too.
+fn borrow_may_escape<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId, idx: usize) -> bool {
+    let sig = tcx.liberate_late_bound_regions(def_id, tcx.fn_sig(def_id).instantiate_identity());
+    let Some(param) = sig.inputs().get(idx) else {
+        return true;
+    };
+    let mir_ty::TyKind::Ref(region, target, mir_ty::Mutability::Mut) = param.kind() else {
+        return true;
+    };
+    if !matches!(region.kind(), mir_ty::RegionKind::ReLateParam(_)) {
+        return true;
+    }
+    let names_region = |ty: mir_ty::Ty<'tcx>| {
+        ty.walk()
+            .any(|arg| arg.as_region().is_some_and(|r| r == *region))
+    };
+    let captures = |ty: mir_ty::Ty<'tcx>| {
+        ty.walk().any(|arg| {
+            arg.as_type().is_some_and(|ty| {
+                matches!(
+                    ty.kind(),
+                    mir_ty::TyKind::Alias(mir_ty::AliasTyKind::Opaque, _)
+                        | mir_ty::TyKind::Dynamic(..)
+                )
+            })
+        })
+    };
+    names_region(*target)
+        || names_region(sig.output())
+        || captures(sig.output())
+        || sig
+            .inputs()
+            .iter()
+            .enumerate()
+            .any(|(other, ty)| other != idx && names_region(*ty))
 }

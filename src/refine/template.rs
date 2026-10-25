@@ -210,11 +210,16 @@ impl<'tcx> TyMode<'tcx> for Unrefined {
         b: &TypeBuilder<'tcx>,
         sig: mir_ty::FnSig<'tcx>,
     ) -> rty::Type<rty::Closed> {
-        let params = sig
+        let mut params: IndexVec<rty::FunctionParamIdx, _> = sig
             .inputs()
             .iter()
             .map(|ty| b.build(*ty).vacuous())
             .collect();
+        // A function without parameters has a unit one in its type, as the template builder
+        // gives it, so that a function of either kind is a value of this pointer type.
+        if params.is_empty() {
+            params.push(rty::RefinedType::unrefined(rty::Type::unit()));
+        }
         let ret = b.build(sig.output());
         rty::FunctionType::new(params, ret.vacuous()).into()
     }
@@ -880,6 +885,7 @@ impl<'tcx> TypeBuilder<'tcx> {
         match ty.kind() {
             mir_ty::TyKind::Bool => rty::Type::bool(),
             mir_ty::TyKind::Str => rty::Type::string(),
+            mir_ty::TyKind::RawPtr(..) | mir_ty::TyKind::Dynamic(..) => rty::Type::opaque(),
             mir_ty::TyKind::Ref(_, elem_ty, mir_ty::Mutability::Not) => {
                 let elem_ty = self.build_in(m, *elem_ty);
                 rty::PointerType::immut_to_refined(elem_ty).into()
@@ -1245,6 +1251,36 @@ impl<'tcx> TypeBuilder<'tcx> {
             ret,
             abi: rty::FunctionAbi::RustCall,
         })
+    }
+
+    /// The type of a function whose precondition is `false`: its last parameter, or a unit
+    /// parameter when it has none, is refined by `false`, and its result is unconstrained.
+    pub fn build_unreachable_function_type(
+        &self,
+        def_id: DefId,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
+    ) -> rty::FunctionType {
+        let sig = self
+            .tcx
+            .fn_sig(def_id)
+            .instantiate(self.tcx, generic_args)
+            .skip_binder();
+        let mut params: IndexVec<rty::FunctionParamIdx, rty::RefinedType<rty::FunctionParamIdx>> =
+            sig.inputs()
+                .iter()
+                .map(|ty| self.build(*ty).vacuous())
+                .collect();
+        if params.is_empty() {
+            params.push(rty::RefinedType::unrefined(rty::Type::unit()));
+        }
+        params
+            .raw
+            .last_mut()
+            .unwrap()
+            .refinement
+            .push_conj(rty::Refinement::bottom());
+        let ret = self.build(sig.output()).vacuous();
+        rty::FunctionType::new(params, ret)
     }
 
     /// The contract of the trait method `def_id`, which has no specification, called at
