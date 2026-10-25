@@ -145,7 +145,7 @@ impl<'tcx> analyze::Analyzer<'tcx> {
     /// parameters, at an instance that holds a type with an invariant (std's `unwrap_or` dropping a
     /// `W<C>`), whose calls at a type parameter run impls that assume it. The walk is the one of
     /// [`Self::stop_ignored_reached`], from the same roots: a body is analyzed when `analyzed`
-    /// says so of its def, and drop glue or a shim that forwards a call (to a function pointer, a
+    /// says so of its def and, for a generic def, when it was analyzed at that instance; drop glue or a shim that forwards a call (to a function pointer, a
     /// closure, a vtable entry) runs its callees on behalf of whoever entered it. The `clone` of a
     /// tuple or an array is a shim that Thrust does not analyze.
     pub fn stop_invariant_assumed_unanalyzed(
@@ -157,6 +157,7 @@ impl<'tcx> analyze::Analyzer<'tcx> {
         if self.crate_type_invariant().is_none() {
             return;
         }
+        let analyzed_at = self.analyzed_instance_set();
         type Node<'tcx> = (mir_ty::Instance<'tcx>, bool);
         let mut parent: HashMap<Node<'tcx>, Option<Node<'tcx>>> = HashMap::new();
         let mut pending = std::collections::VecDeque::new();
@@ -176,7 +177,10 @@ impl<'tcx> analyze::Analyzer<'tcx> {
                 continue;
             }
             let body_unanalyzed = match instance.def {
-                mir_ty::InstanceKind::Item(def_id) => !analyzed(def_id),
+                mir_ty::InstanceKind::Item(def_id) => {
+                    !analyzed(def_id)
+                        || (self.is_generic(instance) && !analyzed_at.contains(&instance))
+                }
                 _ if forwards(instance) => entered_unanalyzed,
                 _ => true,
             };
@@ -188,6 +192,25 @@ impl<'tcx> analyze::Analyzer<'tcx> {
                 }
             }
         }
+    }
+
+    /// The instances of generic defs whose bodies were analyzed at concrete arguments. A
+    /// generic body verified over its type parameters lacks the invariant's conjuncts there, so
+    /// at another instance it counts as not analyzed.
+    fn analyzed_instance_set(&self) -> HashSet<mir_ty::Instance<'tcx>> {
+        use mir_ty::TypeVisitableExt as _;
+        let typing_env = mir_ty::TypingEnv::fully_monomorphized();
+        self.analyzed_instances
+            .borrow()
+            .iter()
+            .filter(|(_, args)| !args.has_param())
+            .filter_map(|&(def_id, args)| {
+                let args = analyze::body_args(self.tcx, def_id, args);
+                mir_ty::Instance::try_resolve(self.tcx, typing_env, def_id, args)
+                    .ok()
+                    .flatten()
+            })
+            .collect()
     }
 
     /// What `instance`, a function of the crate, relies on of a type's invariant when code Thrust

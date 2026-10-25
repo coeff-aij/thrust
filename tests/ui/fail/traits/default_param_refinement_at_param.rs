@@ -3,9 +3,8 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // `sides` writes only a parameter refinement, so its contract is not written in full: a call at
-// `T` takes the unspecified type, which accepts any argument, and the method that runs at an
-// instance must accept any argument there. `Sq`'s override does; the default, which requires
-// `k > 0`, does not (`fail/traits/default_param_refinement_at_param.rs`).
+// `T` takes the unspecified type, which accepts any argument. The default runs at `Sq` and requires
+// `k > 0`, which the call at `T` did not establish.
 #[thrust_macros::context]
 trait Shape: thrust_models::Model {
     #[thrust_macros::param(k: { v: u32 | v > 0 })]
