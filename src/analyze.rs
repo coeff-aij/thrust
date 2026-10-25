@@ -2693,13 +2693,8 @@ impl<'tcx> Analyzer<'tcx> {
     /// or its refinement-type annotations, read from the defs that carry its contract. Empty when
     /// none is written, as for a trait method whose type is inferred from its default body.
     pub fn written_contract_formulas(&self, def_id: DefId) -> Vec<LocalDefId> {
-        let spec_def_ids = match self.defs.get(&def_id) {
-            Some(DefTy::Generic(generic)) => vec![generic.local_def_id],
-            Some(DefTy::Deferred(specs)) => specs.iter().map(|spec| spec.local_def_id).collect(),
-            Some(DefTy::Concrete(_)) | None => return Vec::new(),
-        };
         let mut formulas = Vec::new();
-        for spec in spec_def_ids {
+        for spec in self.contract_spec_defs(def_id) {
             for path in [
                 analyze::annot::requires_path_path(),
                 analyze::annot::ensures_path_path(),
@@ -2716,6 +2711,16 @@ impl<'tcx> Analyzer<'tcx> {
             .into_iter()
             .filter_map(|def_id| def_id.as_local())
             .collect()
+    }
+
+    /// The defs whose expected types give the contract of `def_id`: itself, or the extern specs
+    /// of it. Empty for a def with no body-carried contract.
+    pub fn contract_spec_defs(&self, def_id: DefId) -> Vec<LocalDefId> {
+        match self.defs.get(&def_id) {
+            Some(DefTy::Generic(generic)) => vec![generic.local_def_id],
+            Some(DefTy::Deferred(specs)) => specs.iter().map(|spec| spec.local_def_id).collect(),
+            Some(DefTy::Concrete(_)) | None => Vec::new(),
+        }
     }
 
     /// Whether one of `formulas`, formula functions of a trait's contract, mentions the receiver
