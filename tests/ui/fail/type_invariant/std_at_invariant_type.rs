@@ -1,6 +1,5 @@
-//@error-in-other-file: which has an invariant
+//@error-in-other-file: would promise the invariant
 //@compile-flags: -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // std's `Option::unwrap` is not analyzed, and its contract at `C` would promise the invariant of
 // the result, which the `Some` does not have: std code at a type with an invariant is rejected.

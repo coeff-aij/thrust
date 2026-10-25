@@ -1,6 +1,5 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -Adead_code -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 //@rustc-env: THRUST_PER_INSTANCE_GENERICS=1
 
 // `fail/traits/default_without_contract_at_param.rs` with each generic body analyzed at its

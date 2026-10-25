@@ -1,6 +1,5 @@
 //@check-pass
 //@compile-flags: -Adead_code -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // A generic impl calls `bump` on its field at `T`. At `W<C>` its body is analyzed again, where the
 // call runs `C::bump`, which assumes the invariant of the field. `W<C>`'s own invariant states it,
