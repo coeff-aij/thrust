@@ -4,10 +4,11 @@ The review points out places for the developers to check, as inline comments on 
 lines. The system prompt, with the aspects to look at and what not to report, is a file each
 repository keeps.
 
-Usage: claude_review.py --repo OWNER/NAME --pr NUMBER --prompt FILE [--model MODEL] [--dry-run]
+Usage: claude_review.py --repo OWNER/NAME --pr NUMBER --prompt FILE [--model MODEL]
+                        [--dry-run | --print]
 
 --dry-run fetches the pull request and prints what would be sent, without calling the API or
-posting anything.
+posting anything. --print calls the API and prints the review instead of posting it.
 """
 
 import argparse
@@ -208,7 +209,9 @@ def main() -> None:
     parser.add_argument("--pr", required=True)
     parser.add_argument("--prompt", required=True, type=Path)
     parser.add_argument("--model", default="claude-opus-5-5")
-    parser.add_argument("--dry-run", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--dry-run", action="store_true")
+    mode.add_argument("--print", action="store_true")
     args = parser.parse_args()
 
     pr = json.loads(gh("pr", "view", args.pr, "-R", args.repo, "--json", "title,body,headRefOid,files"))
@@ -226,6 +229,9 @@ def main() -> None:
 
     review = request_review(anthropic.Anthropic(), args.model, args.prompt.read_text(), prompt)
     payload = review_payload(review, pr["headRefOid"], lines, omitted)
+    if args.print:
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return
     subprocess.run(
         ["gh", "api", f"repos/{args.repo}/pulls/{args.pr}/reviews", "--method", "POST", "--input", "-"],
         input=json.dumps(payload), check=True, text=True,
