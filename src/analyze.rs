@@ -394,21 +394,47 @@ pub fn is_injected_std(tcx: mir_ty::TyCtxt<'_>, def_id: LocalDefId) -> bool {
     )
 }
 
-/// Whether an expression of the body of `def_id` has a type or generic arguments naming `Self`.
+/// Whether the formula function `def_id` of a trait's contract mentions the receiver or `Self`:
+/// it uses its parameter `self_` (the receiver's model, which a `Model` supertrait may have
+/// normalized to a concrete type), or an expression, closures' bodies included, has a type or
+/// generic arguments naming `Self` (a closure's own type, which carries its parent's `Self`, is
+/// not looked into).
 fn formula_names_self(tcx: mir_ty::TyCtxt<'_>, def_id: LocalDefId) -> bool {
     struct Finder<'a, 'tcx> {
+        tcx: mir_ty::TyCtxt<'tcx>,
         typeck: &'a mir_ty::TypeckResults<'tcx>,
+        receiver: Option<rustc_hir::HirId>,
         found: bool,
     }
     fn names_self(ty: mir_ty::Ty<'_>) -> bool {
-        ty.walk().any(|arg| {
-            matches!(arg.kind(), mir_ty::GenericArgKind::Type(ty)
-                if matches!(ty.kind(), mir_ty::TyKind::Param(param)
-                    if param.name == rustc_span::symbol::kw::SelfUpper))
-        })
+        let mut walker = ty.walk();
+        while let Some(arg) = walker.next() {
+            let mir_ty::GenericArgKind::Type(ty) = arg.kind() else {
+                continue;
+            };
+            match ty.kind() {
+                mir_ty::TyKind::Closure(..) => walker.skip_current_subtree(),
+                mir_ty::TyKind::Param(param) if param.name == rustc_span::symbol::kw::SelfUpper => {
+                    return true
+                }
+                _ => {}
+            }
+        }
+        false
     }
     impl<'tcx> rustc_hir::intravisit::Visitor<'tcx> for Finder<'_, 'tcx> {
+        type NestedFilter = rustc_middle::hir::nested_filter::OnlyBodies;
+
+        fn maybe_tcx(&mut self) -> mir_ty::TyCtxt<'tcx> {
+            self.tcx
+        }
+
         fn visit_expr(&mut self, expr: &'tcx rustc_hir::Expr<'tcx>) {
+            if let rustc_hir::ExprKind::Path(rustc_hir::QPath::Resolved(None, path)) = expr.kind {
+                if let rustc_hir::def::Res::Local(id) = path.res {
+                    self.found |= Some(id) == self.receiver;
+                }
+            }
             let ty_names_self = self
                 .typeck
                 .node_type_opt(expr.hir_id)
@@ -421,11 +447,20 @@ fn formula_names_self(tcx: mir_ty::TyCtxt<'_>, def_id: LocalDefId) -> bool {
             rustc_hir::intravisit::walk_expr(self, expr);
         }
     }
+    let body = tcx.hir_body_owned_by(def_id);
+    let receiver = body.params.iter().find_map(|param| match param.pat.kind {
+        rustc_hir::PatKind::Binding(_, hir_id, ident, _) if ident.name.as_str() == "self_" => {
+            Some(hir_id)
+        }
+        _ => None,
+    });
     let mut finder = Finder {
+        tcx,
         typeck: tcx.typeck(def_id),
+        receiver,
         found: false,
     };
-    rustc_hir::intravisit::Visitor::visit_expr(&mut finder, tcx.hir_body_owned_by(def_id).value);
+    rustc_hir::intravisit::Visitor::visit_expr(&mut finder, body.value);
     finder.found
 }
 
@@ -2654,29 +2689,75 @@ impl<'tcx> Analyzer<'tcx> {
         })
     }
 
-    /// The defs that carry the contract of `def_id` (an extern spec of it, or itself), or `None`
-    /// if it has no contract.
-    pub fn contract_spec_def_ids(&self, def_id: DefId) -> Option<Vec<LocalDefId>> {
-        match self.defs.get(&def_id)? {
-            DefTy::Concrete(_) => Some(def_id.as_local().into_iter().collect()),
-            DefTy::Generic(generic) => Some(vec![generic.local_def_id]),
-            DefTy::Deferred(specs) => Some(specs.iter().map(|spec| spec.local_def_id).collect()),
+    /// The formula functions of the contract written on `def_id`: its `requires` and `ensures`,
+    /// or its refinement-type annotations, read from the defs that carry its contract. Empty when
+    /// none is written, as for a trait method whose type is inferred from its default body.
+    pub fn written_contract_formulas(&self, def_id: DefId) -> Vec<LocalDefId> {
+        let spec_def_ids = match self.defs.get(&def_id) {
+            Some(DefTy::Generic(generic)) => vec![generic.local_def_id],
+            Some(DefTy::Deferred(specs)) => specs.iter().map(|spec| spec.local_def_id).collect(),
+            Some(DefTy::Concrete(_)) | None => return Vec::new(),
+        };
+        let mut formulas = Vec::new();
+        for spec in spec_def_ids {
+            for path in [
+                analyze::annot::requires_path_path(),
+                analyze::annot::ensures_path_path(),
+            ] {
+                formulas.extend(self.extract_path_with_attr(spec, &path));
+            }
+            formulas.extend(
+                self.extract_refinement_paths(spec)
+                    .into_iter()
+                    .map(|(_, def_id)| def_id),
+            );
         }
+        formulas
+            .into_iter()
+            .filter_map(|def_id| def_id.as_local())
+            .collect()
     }
 
-    /// Whether the `requires` or `ensures` of `local_def_id`, in a trait, mentions `Self`: an
-    /// expression of its formula function whose type or generic arguments name it, a use of the
-    /// receiver included. Read before instantiation, as at `Self = dyn Tr` the receiver's model
-    /// is single-valued and folds to a constant.
-    pub fn contract_names_self(&self, local_def_id: LocalDefId) -> bool {
-        [
-            analyze::annot::requires_path_path(),
-            analyze::annot::ensures_path_path(),
-        ]
-        .iter()
-        .filter_map(|path| self.extract_path_with_attr(local_def_id, path))
-        .filter_map(|def_id| def_id.as_local())
-        .any(|formula_def_id| formula_names_self(self.tcx, formula_def_id))
+    /// Whether one of `formulas`, formula functions of a trait's contract, mentions the receiver
+    /// or `Self`. Read before instantiation: at `Self = dyn Tr` the receiver's model is
+    /// single-valued and folds to a constant.
+    pub fn contract_names_self(&self, formulas: &[LocalDefId]) -> bool {
+        formulas
+            .iter()
+            .any(|formula| formula_names_self(self.tcx, *formula))
+    }
+
+    /// The predicate `T::invariant` of std.rs's `Invariant` at `ty`, when its impl resolves in the
+    /// environment of `owner_fn_id`.
+    pub fn type_invariant_pred(
+        &self,
+        type_builder: &TypeBuilder<'tcx>,
+        owner_fn_id: DefId,
+        ty: mir_ty::Ty<'tcx>,
+    ) -> Option<chc::Pred> {
+        let trait_did = self.def_ids.type_invariant()?;
+        let inv_did = self
+            .tcx
+            .associated_items(trait_did)
+            .filter_by_name_unhygienic(rustc_span::Symbol::intern("invariant"))
+            .next()?
+            .def_id;
+        if type_builder.build(ty).ty.to_sort().is_singleton() {
+            return None;
+        }
+        let typing_env =
+            analyze::predicate_typing_env(self.tcx, owner_fn_id, self.def_ids.model_ty());
+        let args = self.tcx.mk_args(&[ty.into()]);
+        let instance = mir_ty::Instance::try_resolve(self.tcx, typing_env, inv_did, args)
+            .ok()
+            .flatten()?;
+        if instance.def_id() == inv_did {
+            return None;
+        }
+        Some(
+            self.predicate_with_args(instance.def_id(), instance.args, owner_fn_id)
+                .into(),
+        )
     }
 
     fn extract_require_annot(

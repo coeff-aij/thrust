@@ -772,33 +772,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         }
     }
 
-    /// The predicate `T::invariant` of std.rs's `Invariant` at `ty`, when its impl resolves in the
-    /// owner's environment.
     fn type_invariant_pred(&self, ty: mir_ty::Ty<'tcx>) -> Option<chc::Pred> {
-        let trait_did = self.ctx.def_ids.type_invariant()?;
-        let inv_did = self
-            .tcx
-            .associated_items(trait_did)
-            .filter_by_name_unhygienic(rustc_span::Symbol::intern("invariant"))
-            .next()?
-            .def_id;
-        if self.type_builder.build(ty).ty.to_sort().is_singleton() {
-            return None;
-        }
-        let typing_env =
-            analyze::predicate_typing_env(self.tcx, self.owner_fn_id, self.ctx.def_ids.model_ty());
-        let args = self.tcx.mk_args(&[ty.into()]);
-        let instance = mir_ty::Instance::try_resolve(self.tcx, typing_env, inv_did, args)
-            .ok()
-            .flatten()?;
-        if instance.def_id() == inv_did {
-            return None;
-        }
-        Some(
-            self.ctx
-                .predicate_with_args(instance.def_id(), instance.args, self.owner_fn_id)
-                .into(),
-        )
+        self.ctx
+            .type_invariant_pred(&self.type_builder, self.owner_fn_id, ty)
     }
 
     /// The indices of the parameters marked `#[thrust::open_inv]`, of the `arity` parameters of
@@ -2495,7 +2471,7 @@ fn type_invariant_atom<V>(pred: &chc::Pred, term: chc::Term<V>) -> chc::Formula<
 /// is `'static`. A late-bound region that occurs nowhere else is the parameter's own: no other
 /// value of the signature can hold the borrow, so it ends before the call returns, and the callee
 /// resolves it. An `impl Trait` or a trait object in the result may capture it, so they count too.
-fn borrow_may_escape<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId, idx: usize) -> bool {
+pub(super) fn borrow_may_escape<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId, idx: usize) -> bool {
     let sig = tcx.liberate_late_bound_regions(def_id, tcx.fn_sig(def_id).instantiate_identity());
     let Some(param) = sig.inputs().get(idx) else {
         return true;

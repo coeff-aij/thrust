@@ -702,6 +702,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 )
         };
         match ty.kind() {
+            mir_ty::TyKind::Closure(_, args) if args.as_closure().upvar_tys().is_empty() => {
+                PlaceType::with_ty_and_term(rty::Type::unit(), chc::Term::tuple(vec![]))
+            }
             mir_ty::TyKind::Array(elem, len) => {
                 let len = len
                     .try_to_target_usize(self.tcx)
@@ -763,6 +766,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             mir_ty::TyKind::Ref(_, pointee, mir::Mutability::Not) => {
                 if pointee.is_str() {
                     return self.const_bytes_ty(*pointee, &[]).immut();
+                }
+                if pointee.is_trait() {
+                    self.tcx.dcx().fatal(format!(
+                        "a constant holding a trait object (`{ty}` in `{}`) is not supported",
+                        self.tcx.def_path_str(self.type_builder.owner_fn_id()),
+                    ));
                 }
                 if !pointee.is_sized(self.tcx, typing_env) {
                     unimplemented!("const reference to an unsized value in a constant: {ty:?}");
@@ -1253,6 +1262,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 if let Some(dyn_ty) = trait_object::dyn_pointee(ty) {
                     return self.unsize_to_dyn(operand, ty, dyn_ty);
                 }
+                trait_object::fatal_unsupported_unsize(
+                    self.tcx,
+                    ty,
+                    self.type_builder.owner_fn_id(),
+                );
                 // Only treat unsizing as identity when both sides resolve to the same model.
                 let mut op_pty = self.operand_type(operand);
                 let expected_ty = self.type_builder.build(ty).vacuous().ty;
@@ -1728,10 +1742,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         args: mir_ty::GenericArgsRef<'tcx>,
     ) -> rty::Type<rty::Closed> {
         let caller_def_id = self.type_builder.owner_fn_id();
-        if self.tcx.trait_of_assoc(def_id).is_some() && args.type_at(0).is_trait() {
+        if self.is_virtual_call(def_id, args) {
             self.check_dyn_call(def_id, args);
+            self.check_no_dyn_type_arg(def_id, args, 1);
         } else {
-            self.check_no_dyn_type_arg(def_id, args);
+            // A trait method's `Self` may be a trait object with an impl of its own
+            // (`impl Tr for dyn Other`); a type parameter it resolves to is checked below.
+            let from = usize::from(self.tcx.trait_of_assoc(def_id).is_some());
+            self.check_no_dyn_type_arg(def_id, args, from);
         }
         if self.needs_ghost_formula_impl(def_id, args) {
             self.tcx.dcx().fatal(format!(
@@ -1766,6 +1784,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 }
             }
             ResolvedCallable::Concrete(resolved_def_id, resolved_args) => {
+                if resolved_def_id != def_id {
+                    self.check_no_dyn_type_arg(resolved_def_id, resolved_args, 0);
+                }
                 if !resolved_def_id.is_local() {
                     let bounds = analyze::trait_bounds(self.tcx, resolved_def_id, resolved_args);
                     self.ctx
