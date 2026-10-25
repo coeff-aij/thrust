@@ -1,6 +1,6 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
+//@rustc-env: THRUST_UNSPECIFIED_UNREACHABLE=1 THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // `==` on `Option<&str>` is not equality of models (a `str` has none), so it has no
 // specification and the call must be unreachable.

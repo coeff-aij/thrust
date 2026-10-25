@@ -1,6 +1,6 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -C overflow-checks=on
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60
+//@rustc-env: THRUST_UNSPECIFIED_UNREACHABLE=1 THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60
 
 // With overflow checks on, core's `sum` panics past `usize::MAX`; std.rs gives it no specification
 // then, so its call must be unreachable.

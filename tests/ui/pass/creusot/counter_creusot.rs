@@ -168,8 +168,6 @@ where
                 let b = (self.func)(v, self.produced);
                 self.produced =
                     thrust_macros::ghost!(|self: &mut Self, e: Ghost<<I as Iterator>::Item>| -> Seq<A> { (*self).2.push(e) });
-                // Keeps `e` live up to the ghost term above, which reads it.
-                let _keep = &e;
                 Some(b)
             }
             None => {

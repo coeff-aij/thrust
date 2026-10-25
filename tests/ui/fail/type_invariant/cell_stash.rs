@@ -1,6 +1,6 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -Adead_code -Aunused
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
+//@rustc-env: THRUST_UNSPECIFIED_UNREACHABLE=1 THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // A trusted function stores the borrow of its `&mut Even` parameter in a `Cell` named by a shared
 // parameter of the same lifetime, and another hands it back to the caller, who writes an odd value:

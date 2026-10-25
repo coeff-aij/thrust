@@ -1862,8 +1862,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// precondition is `false`, so a call must be unreachable, as Creusot specifies a contractless
     /// external function. This is how a panic reaches its entry points (`panic_fmt`,
     /// `assert_failed`, ...) and the constructors of its payload (`fmt::Arguments::new_v1`, ...),
-    /// which only a panicking path calls. A warning names a call that may be on a path that does
-    /// not panic, and a function pointer made of the function, whose calls are under the same rule.
+    /// which only a panicking path calls. A call that may be on a path that does not panic, and a
+    /// function pointer made of the function, whose calls are under the same rule, stop the analysis
+    /// unless `THRUST_UNSPECIFIED_UNREACHABLE=1`, which only warns at them.
     fn unspecified_extern_ty(
         &self,
         called: DefId,
@@ -1886,14 +1887,23 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             None
         };
         if let Some(message) = message {
+            let help = "to call it, give the call a contract: call it through a function marked \
+                        `#[thrust::trusted]` with `requires` and `ensures`, or write a \
+                        specification of it as Thrust's `std.rs` does (`#[thrust::extern_spec_fn]`)";
+            if !unspecified_unreachable() {
+                self.tcx
+                    .dcx()
+                    .struct_span_fatal(self.call_span(called), message)
+                    .with_help(help)
+                    .with_note(
+                        "`THRUST_UNSPECIFIED_UNREACHABLE=1` checks such a call to be unreachable",
+                    )
+                    .emit();
+            }
             self.tcx
                 .dcx()
                 .struct_span_warn(self.call_span(called), message)
-                .with_help(
-                    "to call it, give the call a contract: call it through a function marked \
-                     `#[thrust::trusted]` with `requires` and `ensures`, or write a \
-                     specification of it as Thrust's `std.rs` does (`#[thrust::extern_spec_fn]`)",
-                )
+                .with_help(help)
                 .emit();
         }
         self.type_builder
@@ -1903,8 +1913,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
     /// Whether every path from the current block ends in a call that does not return or in
     /// `Unreachable`, as the blocks that build a panic's payload do; a path that comes back to a
-    /// block already seen ends nowhere else. Only the warning of
-    /// [`Self::unspecified_extern_ty`] depends on it.
+    /// block already seen ends nowhere else. Whether [`Self::unspecified_extern_ty`] stops or warns
+    /// depends on it.
     fn only_diverges_after(&self) -> bool {
         let mut visited = std::collections::HashSet::new();
         let mut pending = vec![self.basic_block];
@@ -3115,4 +3125,14 @@ fn subst_singleton_params(
         Some(sort) => chc::Term::default_for(sort),
         None => chc::Term::var(v),
     })
+}
+
+/// Whether a call of an external function without a specification that is not on a panicking path
+/// is checked to be unreachable (`THRUST_UNSPECIFIED_UNREACHABLE=1`) rather than stopping the
+/// analysis.
+fn unspecified_unreachable() -> bool {
+    matches!(
+        std::env::var("THRUST_UNSPECIFIED_UNREACHABLE").as_deref(),
+        Ok("1")
+    )
 }

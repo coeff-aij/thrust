@@ -1,4 +1,3 @@
-//@ignore-on-host: unsound until the fix of issues/2026-10-25-fnmut-pre-final-equals-current.md (thrust-research) is merged: verifies
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60
