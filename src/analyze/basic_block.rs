@@ -1887,36 +1887,44 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     ) -> rty::Type<rty::Closed> {
         let name = self.tcx.def_path_str_with_args(def_id, args);
         let owner = self.tcx.def_path_str(self.type_builder.owner_fn_id());
-        let message = if !self.calls_here(called) {
-            Some(format!(
-                "thrust: no specification of `{name}`, of which `{owner}` makes a function \
-                 pointer; a call through it must be proven unreachable"
+        // What the call is; the warning under `THRUST_UNSPECIFIED_UNREACHABLE=1` adds that it must
+        // be proven unreachable, the default error does not, since it stops instead.
+        let subject = if !self.calls_here(called) {
+            Some((
+                format!(
+                    "thrust: no specification of `{name}`, of which `{owner}` makes a function pointer"
+                ),
+                "every call through it",
             ))
         } else if !self.diverges(def_id) && !self.only_diverges_after() {
-            Some(format!(
-                "thrust: no specification of `{name}`, which `{owner}` calls; the call must be \
-                 proven unreachable"
+            Some((
+                format!("thrust: no specification of `{name}`, which `{owner}` calls"),
+                "the call",
             ))
         } else {
             None
         };
-        if let Some(message) = message {
+        if let Some((subject, checked)) = subject {
             let help = "to call it, give the call a contract: call it through a function marked \
                         `#[thrust::trusted]` with `requires` and `ensures`, or write a \
                         specification of it as Thrust's `std.rs` does (`#[thrust::extern_spec_fn]`)";
             if !unspecified_unreachable() {
                 self.tcx
                     .dcx()
-                    .struct_span_fatal(self.call_span(called), message)
+                    .struct_span_fatal(self.call_span(called), subject)
                     .with_help(help)
-                    .with_note(
-                        "`THRUST_UNSPECIFIED_UNREACHABLE=1` checks such a call to be unreachable",
-                    )
+                    .with_note(format!(
+                        "with `THRUST_UNSPECIFIED_UNREACHABLE=1`, Thrust checks instead that \
+                         {checked} is unreachable"
+                    ))
                     .emit();
             }
             self.tcx
                 .dcx()
-                .struct_span_warn(self.call_span(called), message)
+                .struct_span_warn(
+                    self.call_span(called),
+                    format!("{subject}; {checked} must be proven unreachable"),
+                )
                 .with_help(help)
                 .emit();
         }
