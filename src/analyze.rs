@@ -2780,6 +2780,36 @@ impl<'tcx> Analyzer<'tcx> {
             .collect()
     }
 
+    /// Whether the contract `def_id` has at `generic_args`, for `caller_def_id`, ensures the type
+    /// invariant of the final value of its `&mut` parameter `idx` where that type has one, read
+    /// from the def that gives the contract there, as [`Analyzer::def_ty_with_args`] picks it. A
+    /// def registered with its contract built in (an impl method with its own contract) gives
+    /// its own.
+    pub fn ensures_final_invariant_at(
+        &mut self,
+        def_id: DefId,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
+        caller_def_id: DefId,
+        idx: usize,
+    ) -> bool {
+        let spec = match self.defs.get(&def_id) {
+            Some(DefTy::Generic(generic)) => Some((generic.local_def_id, generic_args)),
+            Some(DefTy::Deferred(specs)) => specs.iter().find_map(|spec| {
+                Some((
+                    spec.local_def_id,
+                    self.spec_args(spec, generic_args, caller_def_id)?,
+                ))
+            }),
+            Some(DefTy::Concrete(_)) | None => def_id.as_local().map(|local| (local, generic_args)),
+        };
+        let Some((spec, args)) = spec else {
+            return false;
+        };
+        let mut analyzer = self.local_def_analyzer(spec);
+        analyzer.owner_fn_id(caller_def_id).generic_args(args);
+        analyzer.ensures_final_invariant(idx)
+    }
+
     /// The defs whose expected types give the contract of `def_id`: itself, or the extern specs
     /// of it. Empty for a def with no body-carried contract.
     pub fn contract_spec_defs(&self, def_id: DefId) -> Vec<LocalDefId> {

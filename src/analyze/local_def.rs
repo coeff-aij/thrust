@@ -794,15 +794,13 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         }
     }
 
-    /// Whether the contract this def gives ensures the type invariant of the final value of its
-    /// `&mut` parameter `idx`, when that type has one: whether [`Self::type_invariant_sites`] has
+    /// Whether the contract this def gives at its generic arguments ensures the type invariant of
+    /// the final value of its `&mut` parameter `idx`: whether [`Self::type_invariant_sites`] has
     /// that place.
     pub fn ensures_final_invariant(&self, idx: usize) -> bool {
         let sig = self
-            .tcx
-            .fn_sig(self.local_def_id)
-            .instantiate_identity()
-            .skip_binder();
+            .ctx
+            .fn_sig_with_body(self.local_def_id.to_def_id(), &self.body);
         self.type_invariant_sites(sig).iter().any(|site| {
             matches!(site.position, InvariantPosition::Param(i) if i == idx)
                 && matches!(site.place, InvariantPlace::MutFinal)

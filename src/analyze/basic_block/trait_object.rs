@@ -321,7 +321,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             analyze::fatal_ignored_call(self.tcx, resolved, instance.args);
         }
         if has_invariant {
-            self.check_invariant_kept(def_id, resolved, args.type_at(0), dyn_ty);
+            self.check_invariant_kept(def_id, args, resolved, instance.args, dyn_ty);
         }
         let owner = self.type_builder.owner_fn_id();
         let _ = self.ctx.def_ty_with_args(resolved, instance.args, owner);
@@ -337,30 +337,26 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     fn check_invariant_kept(
         &mut self,
         def_id: DefId,
+        args: mir_ty::GenericArgsRef<'tcx>,
         resolved: DefId,
-        hidden_ty: mir_ty::Ty<'tcx>,
+        resolved_args: mir_ty::GenericArgsRef<'tcx>,
         dyn_ty: mir_ty::Ty<'tcx>,
     ) {
         let tcx = self.tcx;
+        let hidden_ty = args.type_at(0);
         let receiver = tcx.fn_sig(def_id).skip_binder().inputs().skip_binder()[0];
         if !receiver.is_mutable_ptr() {
             return;
         }
-        let contract_def = if self.ctx.has_own_impl_contract(resolved) {
-            resolved
+        let (contract_def, contract_args) = if self.ctx.has_own_impl_contract(resolved) {
+            (resolved, resolved_args)
         } else {
-            def_id
+            (def_id, args)
         };
-        // A def registered with its contract built in (an impl method with its own contract) is
-        // its own spec.
-        let mut specs = self.ctx.contract_spec_defs(contract_def);
-        if specs.is_empty() {
-            specs.extend(contract_def.as_local());
-        }
-        let kept = !specs.is_empty()
-            && specs
-                .into_iter()
-                .all(|spec| self.ctx.local_def_analyzer(spec).ensures_final_invariant(0));
+        let owner = self.type_builder.owner_fn_id();
+        let kept = self
+            .ctx
+            .ensures_final_invariant_at(contract_def, contract_args, owner, 0);
         if kept {
             return;
         }
