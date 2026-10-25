@@ -249,7 +249,7 @@ where
 
     // A clause whose head is `true` is dropped by `push_clause`, so it is not built: building
     // one instantiates the whole environment.
-    let head = head_of(&got.ty, &expected, position);
+    let head = head_of(&got.ty, &expected, position, scope.enum_defs());
     if !head.is_top() {
         let cs = scope
             .build_clause()
@@ -260,7 +260,7 @@ where
     }
 
     if relation == Relation::Equal {
-        let head = head_of(&expected.ty, &got, position);
+        let head = head_of(&expected.ty, &got, position, scope.enum_defs());
         if !head.is_top() {
             let cs = scope
                 .build_clause()
@@ -281,14 +281,19 @@ where
 /// integer that becomes one, such as the result of a cast or of a checked operation, has to be
 /// shown in range where it does. A nested position is checked through the value at the top,
 /// whose refinement is what says something about it.
-fn head_of<T, U>(got_ty: &Type<T>, expected: &RefinedType<U>, position: Position) -> Refinement<U>
+fn head_of<T, U>(
+    got_ty: &Type<T>,
+    expected: &RefinedType<U>,
+    position: Position,
+    enum_defs: Option<&dyn EnumDefProvider>,
+) -> Refinement<U>
 where
     T: chc::Var,
     U: chc::Var,
 {
     let mut head = expected.refinement.clone();
     if position == Position::Top {
-        head.push_conj(int_range_facts(got_ty, &expected.ty));
+        head.push_conj(int_range_facts(got_ty, &expected.ty, enum_defs));
     }
     head
 }
@@ -296,9 +301,15 @@ where
 /// The range of the integer type of `expected` at each position where a value of `got` enters
 /// it: `v >= 0` where an integer of [`Type::Int`] becomes a [`Type::UInt`], and the bounds of
 /// [`super::int_range`] where `got` is not a type within that range, through tuples and the
-/// current value of pointers, and of each element of a sequence of such a type. The final value of a mutable reference is produced by its borrower,
-/// which is checked where it writes it.
-fn int_range_facts<T, U>(got: &Type<T>, expected: &Type<U>) -> Refinement<U>
+/// current value of pointers, and of each element of a sequence of such a type; and all the facts
+/// of an enum type entered at other arguments whose values have facts ([`super::type_fact_checks`]).
+/// The final value of a mutable reference is produced by its borrower, which is checked where it
+/// writes it.
+fn int_range_facts<T, U>(
+    got: &Type<T>,
+    expected: &Type<U>,
+    enum_defs: Option<&dyn EnumDefProvider>,
+) -> Refinement<U>
 where
     T: chc::Var,
     U: chc::Var,
@@ -326,29 +337,38 @@ where
         (Type::Tuple(got), Type::Tuple(expected)) if got.elems.len() == expected.elems.len() => {
             for (index, (got, expected)) in got.elems.iter().zip(&expected.elems).enumerate() {
                 facts.push_conj(
-                    int_range_facts(&got.ty, &expected.ty)
+                    int_range_facts(&got.ty, &expected.ty, enum_defs)
                         .subst_value_var(|| value().tuple_proj(index)),
                 );
             }
         }
         (Type::Pointer(got), Type::Pointer(expected)) if got.kind == expected.kind => {
             facts.push_conj(
-                int_range_facts(&got.elem.ty, &expected.elem.ty)
+                int_range_facts(&got.elem.ty, &expected.elem.ty, enum_defs)
                     .subst_value_var(|| expected.kind.deref_term(value())),
             );
         }
-        // An enum's payloads have facts under `THRUST_INT_RANGE` (`RefinedType::formula_with`);
-        // a value entering the type at other arguments would have to be checked against them,
-        // which is done only where a ghost term makes a value (`super::type_fact_checks`).
+        // An enum's payloads have facts under `THRUST_INT_RANGE` (`RefinedType::formula_with`).
+        // A value entering the type at other arguments (a type parameter, an alias, another
+        // integer type) is checked against them when the type has any; without the enums'
+        // definitions that cannot be told, which no analysis scope lacks.
         (Type::Enum(got), Type::Enum(expected))
             if super::int_range_mode() != super::IntRange::Off
                 && got.clone().strip_refinement() != expected.clone().strip_refinement() =>
         {
-            unimplemented!(
-                "a value of {} entering {} under THRUST_INT_RANGE",
-                got.display(),
-                expected.display()
-            )
+            let expected = Type::Enum(expected.clone().strip_refinement());
+            let Some(defs) = enum_defs else {
+                unimplemented!(
+                    "a value of {} entering {} without the enums' definitions",
+                    got.display(),
+                    expected.display()
+                );
+            };
+            if super::has_range_facts(&expected, defs, &mut Vec::new()) {
+                facts.push_conj(
+                    super::type_fact_checks(&expected, defs).map_free_var(|v| match v {}),
+                );
+            }
         }
         _ => {}
     }

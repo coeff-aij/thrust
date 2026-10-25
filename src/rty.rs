@@ -1358,7 +1358,7 @@ fn enum_payload_var(depth: usize, field: usize) -> chc::UserQuantifiedVarId {
 /// pointers, sequences and enum payloads. An enum met again on the way (`visited`) is searched no
 /// further, except in its arguments: what its recursive fields add over the first visit comes from
 /// them.
-fn has_range_facts(
+pub(super) fn has_range_facts(
     ty: &Type<Closed>,
     defs: &dyn EnumDefProvider,
     visited: &mut Vec<chc::DatatypeSymbol>,
