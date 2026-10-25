@@ -52,10 +52,8 @@ as CI does, to run the others.
 Each comment is marked `blocking`, `check` or `suggestion`. When developing with an agent, use
 it as a loop at the points where a coherent set of commits is pushed, not after every commit:
 
-1. Request a review with `gh workflow run claude-review.yml -f pr=<n>`, which leaves nothing
-   in the pull request's conversation, and wait for the run
-   (`gh run list -w claude-review.yml -e workflow_dispatch -L 1`, then `gh run watch <id>`).
-   A `/claude-review` comment does the same where a person should see the request.
+1. Request a review with `gh workflow run claude-review.yml -f pr=<n>` and wait for the run
+   (`gh run list -w claude-review.yml -L 1`, then `gh run watch <id>`).
 2. Read the reviews and the comments with their replies:
    `gh api repos/{owner}/{repo}/pulls/<n>/reviews --paginate --jq '.[] | {id, commit_id, body}'` and
    `gh api repos/{owner}/{repo}/pulls/<n>/comments --paginate --jq '.[] | {id, in_reply_to_id, user: .user.login, path, line, body}'`.
