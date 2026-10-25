@@ -351,11 +351,16 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         } else {
             def_id
         };
-        let kept = self
-            .ctx
-            .contract_spec_defs(contract_def)
-            .into_iter()
-            .all(|spec| self.ctx.local_def_analyzer(spec).ensures_final_invariant(0));
+        // A def registered with its contract built in (an impl method with its own contract) is
+        // its own spec.
+        let mut specs = self.ctx.contract_spec_defs(contract_def);
+        if specs.is_empty() {
+            specs.extend(contract_def.as_local());
+        }
+        let kept = !specs.is_empty()
+            && specs
+                .into_iter()
+                .all(|spec| self.ctx.local_def_analyzer(spec).ensures_final_invariant(0));
         if kept {
             return;
         }
