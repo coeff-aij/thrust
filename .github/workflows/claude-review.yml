@@ -38,6 +38,6 @@ jobs:
           python-version: "3.12"
       - run: pip install anthropic==2.3.0 pydantic==2.14.1
       - if: ${{ env.ANTHROPIC_API_KEY != '' }}
-        run: python .github/scripts/claude_review.py --repo "$GITHUB_REPOSITORY" --pr "$PR"
+        run: python .github/scripts/claude_review.py --repo "$GITHUB_REPOSITORY" --pr "$PR" --prompt .github/claude-review-prompt.md
       - if: ${{ env.ANTHROPIC_API_KEY == '' }}
-        run: python .github/scripts/claude_review.py --repo "$GITHUB_REPOSITORY" --pr "$PR" --dry-run
+        run: python .github/scripts/claude_review.py --repo "$GITHUB_REPOSITORY" --pr "$PR" --prompt .github/claude-review-prompt.md --dry-run

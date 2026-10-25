@@ -1,10 +1,10 @@
 """Review a pull request with the Claude API and post the result as one PR review.
 
-The review points out places for the developers to check, on soundness, theory, usability and
-maintainability, as inline comments on the changed lines. What not to report follows the
-code-review plugin of anthropics/claude-code.
+The review points out places for the developers to check, as inline comments on the changed
+lines. The system prompt, with the aspects to look at and what not to report, is a file each
+repository keeps.
 
-Usage: claude_review.py --repo OWNER/NAME --pr NUMBER [--model MODEL] [--dry-run]
+Usage: claude_review.py --repo OWNER/NAME --pr NUMBER --prompt FILE [--model MODEL] [--dry-run]
 
 --dry-run fetches the pull request and prints what would be sent, without calling the API or
 posting anything.
@@ -16,7 +16,6 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Literal
 
 import anthropic
 from pydantic import BaseModel
@@ -24,37 +23,10 @@ from pydantic import BaseModel
 GUIDELINE_FILES = ["AGENTS.md", "CLAUDE.md", "README.md"]
 MAX_FILE_CHARS = 100_000
 
-SYSTEM_PROMPT = """\
-You review a pull request to Thrust, a refinement-type verifier for Rust built as a rustc
-driver that emits CHC constraints. You get the pull request description, the repository's
-guidelines and user documentation, the diff, and the full post-change contents of the changed
-files.
-
-Point out the places a developer should look at; the developers confirm and fix them. Look at
-four aspects:
-- soundness: an encoding or a shortcut that could let a wrong program verify, or a case the
-  change silently drops;
-- theory: a change to the encoding or the type system whose justification is missing or does
-  not follow from the known formulations (RustHorn-style prophecies, refinement types, CHC);
-- usability: a change in what users write or see (annotations, diagnostics, configuration)
-  that is confusing, undocumented in the README, or breaks existing usage;
-- maintainability: duplicated logic, a special case that belongs in an existing mechanism,
-  or a violation of the repository guidelines (quote the rule).
-
-Do not report pre-existing issues, formatting, things rustfmt, clippy or the compiler catch,
-or nitpicks a senior engineer would not raise. Include an issue you are unsure of when it
-would matter if real, and say what would confirm it. Reporting nothing is a good outcome.
-
-Each comment names one issue on one changed line of the new version of a file (`path` as in
-the diff, `line` as a line number in the new file) and says briefly what may be wrong and why.
-The summary is two or three sentences on the overall change and the most important concern.
-"""
-
-
 class Comment(BaseModel):
     path: str
     line: int
-    aspect: Literal["soundness", "theory", "usability", "maintainability"]
+    aspect: str
     certain: bool
     body: str
 
@@ -121,11 +93,11 @@ def build_prompt(pr: dict, diff: str, contents: dict[str, str], omitted: list[st
     return "\n\n".join(parts)
 
 
-def request_review(client: anthropic.Anthropic, model: str, prompt: str) -> Review:
+def request_review(client: anthropic.Anthropic, model: str, system: str, prompt: str) -> Review:
     response = client.beta.messages.parse(
         model=model,
         max_tokens=16000,
-        system=SYSTEM_PROMPT,
+        system=system,
         messages=[{"role": "user", "content": prompt}],
         output_config={"effort": "high"},
         output_format=Review,
@@ -163,6 +135,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo", required=True)
     parser.add_argument("--pr", required=True)
+    parser.add_argument("--prompt", required=True, type=Path)
     parser.add_argument("--model", default="claude-opus-5-5")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
@@ -174,13 +147,13 @@ def main() -> None:
     prompt = build_prompt(pr, diff, contents, omitted)
 
     if args.dry_run:
-        print(f"model: {args.model}\nprompt: {len(prompt)} chars")
+        print(f"model: {args.model}\nsystem: {args.prompt}\nprompt: {len(prompt)} chars")
         print("included:", *contents, sep="\n  ")
         print("omitted:", *omitted, sep="\n  ")
         print("commentable lines:", *(f"{p}: {len(n)}" for p, n in lines.items()), sep="\n  ")
         return
 
-    review = request_review(anthropic.Anthropic(), args.model, prompt)
+    review = request_review(anthropic.Anthropic(), args.model, args.prompt.read_text(), prompt)
     payload = review_payload(review, pr["headRefOid"], lines, omitted)
     subprocess.run(
         ["gh", "api", f"repos/{args.repo}/pulls/{args.pr}/reviews", "--method", "POST", "--input", "-"],
