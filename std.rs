@@ -2374,13 +2374,14 @@ fn _extern_spec_iterator_find<I, P>(it: &mut I, predicate: P) -> Option<I::Item>
     <I as std::iter::Iterator>::find(it, predicate)
 }
 
-// The sum of the first `n` items of `s`.
+// The sum of the first `n` items of `s`. It returns `Int`: the definition of a logic function
+// is checked against the facts of its result type without those of a sequence's elements.
 #[thrust_macros::logic]
 #[thrust_macros::variant(n)]
 fn seq_sum(
     s: thrust_models::model::Seq<<usize as thrust_models::Model>::Ty>,
     n: <usize as thrust_models::Model>::Ty,
-) -> <usize as thrust_models::Model>::Ty {
+) -> thrust_models::model::Int {
     if n <= 0 { 0 } else { seq_sum(s, n - 1) + s[n - 1] }
 }
 
