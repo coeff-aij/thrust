@@ -4,8 +4,12 @@ The review points out places for the developers to check, as inline comments on 
 lines. The system prompt, with the aspects to look at and what not to report, is a file each
 repository keeps.
 
-Usage: claude_review.py --repo OWNER/NAME --pr NUMBER --prompt FILE [--model MODEL]
+Usage: claude_review.py --repo OWNER/NAME --pr NUMBER --prompt FILE --head DIR [--model MODEL]
                         [--dry-run | --print]
+
+The prompt and the guidelines are read from the current directory, the reviewed code from the
+checkout of the pull request's head in DIR, so that a pull request cannot change how it is
+reviewed or what runs with the API key.
 
 --dry-run fetches the pull request and prints what would be sent, without calling the API or
 posting anything. --print calls the API and prints the review instead of posting it.
@@ -26,7 +30,7 @@ GUIDELINE_FILES = ["AGENTS.md", "CLAUDE.md", "README.md"]
 MAX_FILE_CHARS = 100_000
 MAX_TOOL_CALLS = 20
 MAX_TOOL_OUTPUT_CHARS = 20_000
-REPO_ROOT = Path.cwd().resolve()
+REPO_ROOT = Path()
 
 tool_calls = 0
 
@@ -73,7 +77,7 @@ def read_changed_files(paths: list[str]) -> tuple[dict[str, str], list[str]]:
     contents: dict[str, str] = {}
     omitted: list[str] = []
     for path in paths:
-        file = Path(path)
+        file = REPO_ROOT / path
         if not file.is_file():
             continue
         try:
@@ -208,11 +212,14 @@ def main() -> None:
     parser.add_argument("--repo", required=True)
     parser.add_argument("--pr", required=True)
     parser.add_argument("--prompt", required=True, type=Path)
+    parser.add_argument("--head", required=True, type=Path)
     parser.add_argument("--model", default="claude-opus-5-5")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true")
     mode.add_argument("--print", action="store_true")
     args = parser.parse_args()
+    global REPO_ROOT
+    REPO_ROOT = args.head.resolve()
 
     pr = json.loads(gh("pr", "view", args.pr, "-R", args.repo, "--json", "title,body,headRefOid,files"))
     diff = gh("pr", "diff", args.pr, "-R", args.repo)
