@@ -18,10 +18,17 @@ import sys
 from pathlib import Path
 
 import anthropic
+from anthropic import beta_tool
 from pydantic import BaseModel
 
 GUIDELINE_FILES = ["AGENTS.md", "CLAUDE.md", "README.md"]
 MAX_FILE_CHARS = 100_000
+MAX_TOOL_CALLS = 20
+MAX_TOOL_OUTPUT_CHARS = 20_000
+REPO_ROOT = Path.cwd().resolve()
+
+tool_calls = 0
+
 
 class Comment(BaseModel):
     path: str
@@ -80,6 +87,64 @@ def read_changed_files(paths: list[str]) -> tuple[dict[str, str], list[str]]:
     return contents, omitted
 
 
+def use_tool(run) -> str:
+    """Runs one tool call within the budget and cuts its output to a size the context can take."""
+    global tool_calls
+    tool_calls += 1
+    if tool_calls > MAX_TOOL_CALLS:
+        return f"The budget of {MAX_TOOL_CALLS} tool calls is used up; write the review from what you have."
+    output = run()
+    if len(output) > MAX_TOOL_OUTPUT_CHARS:
+        return output[:MAX_TOOL_OUTPUT_CHARS] + "\n[output cut; narrow the request]"
+    return output
+
+
+def git(*args: str) -> str:
+    result = subprocess.run(["git", *args], cwd=REPO_ROOT, capture_output=True, text=True)
+    return result.stdout or result.stderr
+
+
+@beta_tool
+def grep(pattern: str, path: str = ".") -> str:
+    """Search the repository's tracked files and return the matching lines as path:line:text.
+
+    Args:
+        pattern: An extended regular expression.
+        path: A file or directory relative to the repository root.
+    """
+    return use_tool(lambda: git("grep", "-n", "-E", "-e", pattern, "--", path) or "no matches")
+
+
+@beta_tool
+def list_files(path: str = ".") -> str:
+    """List the repository's tracked files under a directory.
+
+    Args:
+        path: A directory relative to the repository root.
+    """
+    return use_tool(lambda: git("ls-files", "--", path) or "no files")
+
+
+@beta_tool
+def read_file(path: str, start_line: int = 1, end_line: int = 400) -> str:
+    """Read lines of a file in the repository, numbered.
+
+    Args:
+        path: A file relative to the repository root.
+        start_line: The first line to read, from 1.
+        end_line: The last line to read.
+    """
+    return use_tool(lambda: numbered_lines(path, start_line, end_line))
+
+
+def numbered_lines(path: str, start_line: int, end_line: int) -> str:
+    file = (REPO_ROOT / path).resolve()
+    if not file.is_relative_to(REPO_ROOT) or not file.is_file():
+        return f"no file {path} in the repository"
+    lines = file.read_text(errors="replace").splitlines()[start_line - 1 : end_line]
+    return "\n".join(f"{n}: {line}" for n, line in enumerate(lines, start_line))
+
+
 def build_prompt(pr: dict, diff: str, contents: dict[str, str], omitted: list[str]) -> str:
     parts = [f"# Pull request: {pr['title']}\n\n{pr['body'] or '(no description)'}"]
     for name in GUIDELINE_FILES:
@@ -94,18 +159,24 @@ def build_prompt(pr: dict, diff: str, contents: dict[str, str], omitted: list[st
 
 
 def request_review(client: anthropic.Anthropic, model: str, system: str, prompt: str) -> Review:
-    response = client.beta.messages.parse(
+    runner = client.beta.messages.tool_runner(
         model=model,
         max_tokens=16000,
         system=system,
         messages=[{"role": "user", "content": prompt}],
+        tools=[grep, list_files, read_file],
+        max_iterations=MAX_TOOL_CALLS + 5,
         output_config={"effort": "high"},
         output_format=Review,
         betas=["server-side-fallback-2026-07-01"],
         fallbacks="default",
     )
-    usage = response.usage
-    print(f"usage: input {usage.input_tokens}, output {usage.output_tokens} tokens", file=sys.stderr)
+    input_tokens = output_tokens = 0
+    for message in runner:
+        input_tokens += message.usage.input_tokens
+        output_tokens += message.usage.output_tokens
+    print(f"usage: {tool_calls} tool calls, input {input_tokens}, output {output_tokens} tokens", file=sys.stderr)
+    response = runner.until_done()
     if response.stop_reason != "end_turn":
         sys.exit(f"no review: stop_reason {response.stop_reason}")
     return response.parsed_output
