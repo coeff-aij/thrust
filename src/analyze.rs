@@ -1572,32 +1572,43 @@ impl<'tcx> Analyzer<'tcx> {
         let clauses = rty::fact_check_clauses(&mut builder, ret, value, checks);
 
         let definition = match guard {
-            Some(guard) => {
-                let witness = rty::fact_witness(ret, &self.enum_defs).unwrap_or_else(|| {
-                    self.tcx.dcx().span_fatal(
-                        span,
-                        format!(
-                            "no value of type {} has the facts of its type",
-                            ret.display()
-                        ),
-                    )
-                });
-                chc::Term::ite(guard, body, witness)
-            }
+            Some(guard) => self.totalized_logic_fn(span, ret, guard, body),
             None => body,
         };
         (clauses, definition)
+    }
+
+    /// `ite(guard, body, w)`: the logic function of `body`, at arguments outside its domain `guard`
+    /// a value `w` of its result type `ret` that has the type's facts (`rty::fact_witness`).
+    fn totalized_logic_fn(
+        &self,
+        span: rustc_span::Span,
+        ret: &rty::Type<rty::Closed>,
+        guard: chc::Term,
+        body: chc::Term,
+    ) -> chc::Term {
+        let witness = rty::fact_witness(ret, body.clone(), &self.enum_defs).unwrap_or_else(|| {
+            self.tcx.dcx().span_fatal(
+                span,
+                format!(
+                    "a logic function of result type {}: no value of a part of it with facts can be \
+                     built",
+                    ret.display()
+                ),
+            )
+        });
+        chc::Term::ite(guard, body, witness)
     }
 
     /// The facts of the result type of each call in `body` to a logic function defined so far,
     /// under the `ite` conditions on the way to it.
     fn logic_fn_call_facts(&self, body: &chc::Term) -> Vec<rty::Refinement<chc::TermVarIdx>> {
         let results = self.logic_fn_results.borrow();
-        body.guarded_user_defined_calls()
+        body.guarded_calls()
             .into_iter()
-            .filter_map(|(callee, sort, call)| {
-                let ret = results.get(&callee)?;
-                let result = chc::Term::user_defined_fn(callee.clone(), sort, call.args)
+            .filter_map(|call| {
+                let ret = results.get(&call.callee)?;
+                let result = chc::Term::user_defined_fn(call.callee, call.sort, call.args)
                     .map_var(rty::RefinedTypeVar::Free);
                 let conditions = call
                     .guards
@@ -1633,7 +1644,14 @@ impl<'tcx> Analyzer<'tcx> {
         arg_sorts: &IndexVec<chc::TermVarIdx, chc::Sort>,
         body: &chc::Term,
     ) -> (Vec<chc::Clause>, Option<chc::Term>) {
-        let calls = body.guarded_calls(pred);
+        if body.calls_under_lambda(pred) {
+            unimplemented!("a recursive call under a lambda: {pred}");
+        }
+        let calls: Vec<_> = body
+            .guarded_calls()
+            .into_iter()
+            .filter(|call| &call.callee == pred)
+            .collect();
         if calls.is_empty() {
             return (Vec::new(), None);
         }

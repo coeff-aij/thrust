@@ -1962,11 +1962,18 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         // unchecked subtraction is.
         let value_ty = value_rty.ty.clone().strip_refinement();
         let checks = rty::type_fact_checks(&value_ty, &self.ctx.enum_defs).unwrap_or_else(|ty| {
-            self.tcx.dcx().fatal(format!(
-                "a ghost term of type {}: the ranges of the integers a recursive enum holds cannot \
-                 be checked",
-                ty.display()
-            ))
+            let span = self.body.basic_blocks[self.basic_block]
+                .terminator()
+                .source_info
+                .span;
+            self.tcx.dcx().span_fatal(
+                span,
+                format!(
+                    "a ghost term of type {}: the ranges of the integers a recursive enum holds \
+                     cannot be checked",
+                    ty.display()
+                ),
+            )
         });
         let term_check = (!checks.is_top()).then(|| (params.clone(), formula_fn.to_refinement()));
         let func_ty = rty::FunctionType::new(params, value_rty);

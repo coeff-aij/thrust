@@ -368,7 +368,14 @@ where
                 facts.push_conj(
                     super::type_fact_checks(&expected, defs)
                         .unwrap_or_else(|ty| {
-                            unimplemented!("a value of {} entering {}", got.display(), ty.display())
+                            // This layer has no span; the analysis knows the value only by type.
+                            let message = format!(
+                                "a value of {} entering {}: the ranges of the integers a \
+                                 recursive enum holds cannot be checked",
+                                got.display(),
+                                ty.display()
+                            );
+                            rustc_middle::ty::tls::with(|tcx| tcx.dcx().fatal(message))
                         })
                         .map_free_var(|v| match v {}),
                 );

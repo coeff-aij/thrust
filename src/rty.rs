@@ -1269,9 +1269,9 @@ where
 }
 
 /// The quantifier-free part of the facts of a value of `ty`, the ranges of the integers it holds
-/// through tuples and pointers, as a Boolean term about `value`; `None` when there are none. A
-/// logic function's definition is restricted to arguments that have these (see
-/// `Analyzer::predicate_with_args`).
+/// through tuples and pointers ([`int_range_bounds`]), as a Boolean term about `value`; `None`
+/// when there are none. A logic function's definition is restricted to arguments that have these
+/// (`Analyzer::checked_logic_fn_body`).
 pub fn domain_guard<V>(ty: &Type<Closed>, value: chc::Term<V>) -> Option<chc::Term<V>>
 where
     V: Clone,
@@ -1281,17 +1281,18 @@ where
         (a, b) => a.or(b),
     };
     match ty {
-        Type::Int(width) | Type::UInt(width) => {
-            let signed = matches!(ty, Type::Int(_));
-            let range = int_range(signed, *width);
-            let min = match &range {
-                Some((min, _)) => Some(min.clone()),
-                None if !signed => Some(BigInt::from(0)),
-                None => None,
-            };
-            let lower = min.map(|min| value.clone().ge(chc::Term::int(min)));
-            let upper = range.map(|(_, end)| value.lt(chc::Term::int(end)));
-            conj(lower, upper)
+        Type::Int(_) | Type::UInt(_) => {
+            let bounds = int_range_bounds(ty, value)?;
+            // `lower` is `x >= min` and `upper` is `x < end`.
+            let lower = bounds.lower.map(|atom| {
+                let [x, min]: [chc::Term<V>; 2] = atom.args.try_into().ok()?;
+                Some(x.ge(min))
+            });
+            let upper = bounds.upper.map(|atom| {
+                let [x, end]: [chc::Term<V>; 2] = atom.args.try_into().ok()?;
+                Some(x.lt(end))
+            });
+            conj(lower.flatten(), upper.flatten())
         }
         Type::Tuple(tuple) => tuple
             .elems
@@ -1311,59 +1312,110 @@ where
     }
 }
 
-/// A value of `ty` that has the facts of its type (`type_fact_checks`): zero for an integer, the
-/// empty sequence, and a variant of an enum whose fields have such values, the first one that does
-/// without going through the enum itself; `None` when there is none.
+/// A value of `ty` that has the facts of its type (`type_fact_checks`), for the value of a logic
+/// function at arguments outside its domain (`Analyzer::checked_logic_fn_body`), whose value
+/// elsewhere is `value`. A part of `ty` that holds no integer with facts ([`has_range_facts`]) may
+/// be anything, so it is the matching part of `value`. Otherwise: zero for an integer, the empty
+/// sequence, a tuple, box or `&mut` (its current and final values) of such values, and the first
+/// variant of an enum whose fields have such values, a field without facts being any value of its
+/// sort. `None` when an enum has no such variant without going through itself, or a field of a
+/// constructed variant is of a sort with no value to take (a type parameter's, a function's).
 pub fn fact_witness<V: Clone>(
     ty: &Type<Closed>,
+    value: chc::Term<V>,
     defs: &dyn EnumDefProvider,
 ) -> Option<chc::Term<V>> {
-    fact_witness_within(ty, defs, &mut Vec::new())
+    fact_witness_within(ty, Some(value), defs, &mut Vec::new())
 }
 
 fn fact_witness_within<V: Clone>(
+    ty: &Type<Closed>,
+    value: Option<chc::Term<V>>,
+    defs: &dyn EnumDefProvider,
+    enclosing: &mut Vec<chc::DatatypeSymbol>,
+) -> Option<chc::Term<V>> {
+    if !has_range_facts(ty, defs, &mut Vec::new()) {
+        return value.or_else(|| any_value(ty, defs, enclosing));
+    }
+    match ty {
+        Type::Tuple(tuple) => tuple
+            .elems
+            .iter()
+            .enumerate()
+            .map(|(index, elem)| {
+                let part = value.clone().map(|value| value.tuple_proj(index));
+                fact_witness_within(&elem.ty, part, defs, enclosing)
+            })
+            .collect::<Option<Vec<_>>>()
+            .map(chc::Term::tuple),
+        Type::Pointer(pointer) if pointer.is_mut() => {
+            let current = value.clone().map(chc::Term::mut_current);
+            let final_ = value.map(chc::Term::mut_final);
+            let current = fact_witness_within(&pointer.elem.ty, current, defs, enclosing)?;
+            let final_ = fact_witness_within(&pointer.elem.ty, final_, defs, enclosing)?;
+            Some(chc::Term::mut_(current, final_))
+        }
+        Type::Pointer(pointer) => {
+            let elem = value.map(|value| pointer.kind.deref_term(value));
+            Some(chc::Term::box_(fact_witness_within(
+                &pointer.elem.ty,
+                elem,
+                defs,
+                enclosing,
+            )?))
+        }
+        Type::Enum(enum_ty) => enum_value(enum_ty, defs, enclosing, |field_ty, enclosing| {
+            fact_witness_within(field_ty, None, defs, enclosing)
+        }),
+        _ => Some(chc::Term::default_for(&ty.to_sort())),
+    }
+}
+
+/// Some value of `ty`, with no facts to have; `None` for a type parameter's or a function's sort.
+fn any_value<V: Clone>(
     ty: &Type<Closed>,
     defs: &dyn EnumDefProvider,
     enclosing: &mut Vec<chc::DatatypeSymbol>,
 ) -> Option<chc::Term<V>> {
     match ty {
-        Type::Enum(enum_ty) => {
-            if enclosing.contains(&enum_ty.symbol) {
-                return None;
-            }
-            enclosing.push(enum_ty.symbol.clone());
-            let witness = enum_ty.variants(defs).into_iter().find_map(|variant| {
-                let fields = variant
-                    .field_tys
-                    .iter()
-                    .map(|field_ty| fact_witness_within(field_ty, defs, enclosing))
-                    .collect::<Option<Vec<_>>>()?;
-                Some(chc::Term::datatype_ctor(
-                    enum_ty.symbol.clone(),
-                    enum_ty.arg_sorts(),
-                    variant.ctor,
-                    fields,
-                ))
-            });
-            enclosing.pop();
-            witness
-        }
-        Type::Tuple(tuple) => tuple
-            .elems
-            .iter()
-            .map(|elem| fact_witness_within(&elem.ty, defs, enclosing))
-            .collect::<Option<Vec<_>>>()
-            .map(chc::Term::tuple),
-        Type::Pointer(pointer) => {
-            let elem = fact_witness_within(&pointer.elem.ty, defs, enclosing)?;
-            Some(match pointer.kind {
-                PointerKind::Ref(RefKind::Mut) => chc::Term::mut_(elem.clone(), elem),
-                _ => chc::Term::box_(elem),
-            })
-        }
-        Type::Param(_) | Type::Alias(_) | Type::Function(_) => None,
-        _ => Some(chc::Term::default_for(&ty.to_sort())),
+        Type::Enum(enum_ty) => enum_value(enum_ty, defs, enclosing, |field_ty, enclosing| {
+            any_value(field_ty, defs, enclosing)
+        }),
+        Type::Function(_) => None,
+        _ => match ty.to_sort() {
+            chc::Sort::Param(_) | chc::Sort::Datatype(_) => None,
+            sort => Some(chc::Term::default_for(&sort)),
+        },
     }
+}
+
+/// The first variant of `enum_ty` whose fields `field` gives values for, without going through the
+/// enum itself.
+fn enum_value<V: Clone>(
+    enum_ty: &EnumType<Closed>,
+    defs: &dyn EnumDefProvider,
+    enclosing: &mut Vec<chc::DatatypeSymbol>,
+    mut field: impl FnMut(&Type<Closed>, &mut Vec<chc::DatatypeSymbol>) -> Option<chc::Term<V>>,
+) -> Option<chc::Term<V>> {
+    if enclosing.contains(&enum_ty.symbol) {
+        return None;
+    }
+    enclosing.push(enum_ty.symbol.clone());
+    let value = enum_ty.variants(defs).into_iter().find_map(|variant| {
+        let fields = variant
+            .field_tys
+            .iter()
+            .map(|field_ty| field(field_ty, enclosing))
+            .collect::<Option<Vec<_>>>()?;
+        Some(chc::Term::datatype_ctor(
+            enum_ty.symbol.clone(),
+            enum_ty.arg_sorts(),
+            variant.ctor,
+            fields,
+        ))
+    });
+    enclosing.pop();
+    value
 }
 
 /// The facts of the payloads of a value of the enum type `ty` when [`int_range_mode`] is on and
