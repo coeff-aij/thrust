@@ -1,14 +1,15 @@
-//! Where a type with an invariant (std.rs's `Invariant`) meets code whose contract was not
-//! established at it.
+//! Where a type with an invariant (std.rs's `Invariant`) meets code that does not check it.
 //!
 //! The invariant is conjoined to a contract at the positions where the signature has the type
 //! (`local_def::Analyzer::conjoin_type_invariants`), read on the signature at the instance. A
 //! contract established over type parameters has no conjunct where it has a type parameter. In a
 //! crate with an `Invariant` impl every generic body is therefore analyzed at each instance
-//! ([`analyze::Analyzer::per_instance_generics`]); what is left is code Thrust does not analyze,
-//! which is rejected at an instance that holds such a type.
+//! ([`analyze::Analyzer::per_instance_generics`]). What is left is code Thrust does not analyze:
+//! its contract may not promise an invariant at an instance
+//! ([`analyze::Analyzer::stop_promised_invariant`]), and what it runs may not assume one
+//! ([`analyze::Analyzer::stop_invariant_assumed_unanalyzed`]).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use rustc_middle::ty::{self as mir_ty, TyCtxt};
 use rustc_span::def_id::DefId;
@@ -103,75 +104,173 @@ impl<'tcx> analyze::Analyzer<'tcx> {
         None
     }
 
-    /// Stops when `def_id`, a generic function whose body Thrust does not analyze at `args` (std
-    /// code, a trusted function, a derived method), is used there by `caller_def_id` through its
-    /// contract while its type arguments or its signature at them hold a type with an invariant:
-    /// the contract was established over its type parameters, where it has no conjunct of that
-    /// invariant, and the code may run that type's impls on values nobody checked.
-    pub fn stop_unanalyzed_at_invariant(
-        &self,
+    /// Stops when the contract of `local_def_id` (the def `def_id`'s contract comes from) at
+    /// `generic_args`, used by `caller_def_id` without a body analyzed there (std code, a trusted
+    /// function, a derived method), promises a type's invariant: of its result, or of a `&mut`
+    /// parameter's final value. The contract was established over type parameters, where it has
+    /// no such conjunct.
+    pub fn stop_promised_invariant(
+        &mut self,
         def_id: DefId,
-        args: mir_ty::GenericArgsRef<'tcx>,
+        local_def_id: rustc_span::def_id::LocalDefId,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
         caller_def_id: DefId,
     ) {
-        if args.types().next().is_none() {
+        if self.crate_type_invariant().is_none() || generic_args.types().next().is_none() {
             return;
         }
-        let sig = self.tcx.fn_sig(def_id).instantiate(self.tcx, args);
-        let sig = self.tcx.instantiate_bound_regions_with_erased(sig);
-        let roots = args.types().chain(sig.inputs_and_output.iter());
-        let Some(ty) = self.invariant_type_in(roots, caller_def_id) else {
+        let promised = {
+            let mut analyzer = self.local_def_analyzer(local_def_id);
+            analyzer
+                .owner_fn_id(caller_def_id)
+                .generic_args(generic_args);
+            analyzer.invariant_in_contract(false)
+        };
+        let Some(ty) = promised else {
             return;
         };
         self.tcx.dcx().fatal(format!(
-            "`{}`, which Thrust does not analyze, is used in `{}` at `{ty}`, which has an \
-             invariant: call it at types without one, or through a function of the crate \
-             whose contract states what it keeps",
-            self.tcx.def_path_str_with_args(def_id, args),
+            "`{}`, which Thrust does not analyze, would promise the invariant of `{ty}` in `{}`; \
+             its contract was written over type parameters, which have none: use it at types \
+             without one, or through a function of the crate whose contract states what it keeps",
+            self.tcx.def_path_str_with_args(def_id, generic_args),
             self.tcx.def_path_str(caller_def_id),
         ))
     }
 
-    /// Stops at a generic def's contract reused at an instance that holds a type with an
-    /// invariant, which no body analyzed there has checked.
-    pub fn stop_reused_at_invariant(&self) {
-        let reused = self.reused_generic_instances.borrow().clone();
-        for (def_id, args, caller_def_id) in reused {
-            self.stop_unanalyzed_at_invariant(def_id, args, caller_def_id);
-        }
-    }
-
-    /// Stops when an associated type of a trait impl of the crate, other than a model type,
-    /// holds a type with an invariant. Code Thrust does not analyze, generic over a type whose
-    /// impl binds it, reads its values through the projection and may pass them to that type's
-    /// impls, while neither its type arguments nor its signature show the type.
-    pub fn check_associated_types_without_invariant(&self) {
+    /// Stops when code Thrust does not analyze runs crate code that relies on a type's invariant
+    /// nobody checked there: a function whose contract requires the invariant (std's
+    /// `Option::<C>::clone` running `C::clone`, a derived `PartialEq` of a struct running its field's
+    /// `eq`, a trusted function calling one), or a generic destructor, checked once over its type
+    /// parameters, at an instance that holds a type with an invariant (std's `unwrap_or` dropping a
+    /// `W<C>`), whose calls at a type parameter run impls that assume it. The walk is the one of
+    /// [`Self::stop_ignored_reached`], from the same roots: a body is analyzed when `analyzed`
+    /// says so of its def, and drop glue or a shim that forwards a call (to a function pointer, a
+    /// closure, a vtable entry) runs its callees on behalf of whoever entered it. The `clone` of a
+    /// tuple or an array is a shim that Thrust does not analyze.
+    pub fn stop_invariant_assumed_unanalyzed(
+        &mut self,
+        roots: Vec<mir_ty::Instance<'tcx>>,
+        generic_roots: Vec<DefId>,
+        analyzed: impl Fn(DefId) -> bool,
+    ) {
         if self.crate_type_invariant().is_none() {
             return;
         }
-        for item_id in self.tcx.hir_crate_items(()).impl_items() {
-            let def_id = item_id.owner_id.to_def_id();
-            if self.tcx.def_kind(def_id) != rustc_hir::def::DefKind::AssocTy {
+        type Node<'tcx> = (mir_ty::Instance<'tcx>, bool);
+        let mut parent: HashMap<Node<'tcx>, Option<Node<'tcx>>> = HashMap::new();
+        let mut pending = std::collections::VecDeque::new();
+        for root in self.walk_roots(roots, generic_roots, |_| true) {
+            let node = (root, false);
+            if parent.insert(node, None).is_none() {
+                pending.push_back(node);
+            }
+        }
+        while let Some(node @ (instance, entered_unanalyzed)) = pending.pop_front() {
+            if entered_unanalyzed {
+                if let Some(message) = self.assumed_invariant(instance) {
+                    self.stop_with_path(instance, &message, node, &parent);
+                }
+            }
+            if !self.runs_body(instance) {
                 continue;
             }
-            // A model type is a type of the logic, of which executable code holds no value.
-            let trait_item = self.tcx.associated_item(def_id).trait_item_def_id;
-            if trait_item.is_some() && trait_item == self.def_ids().model_ty() {
-                continue;
-            }
-            let ty = self.tcx.type_of(def_id).instantiate_identity();
-            if let Some(inv_ty) = self.invariant_type_in([ty], self.tcx.parent(def_id)) {
-                self.tcx.dcx().span_fatal(
-                    self.tcx.def_span(def_id),
-                    format!(
-                        "the associated type `{}` holds `{inv_ty}`, which has an invariant: code \
-                         Thrust does not analyze could read it through the projection",
-                        self.tcx.def_path_str(def_id),
-                    ),
-                );
+            let body_unanalyzed = match instance.def {
+                mir_ty::InstanceKind::Item(def_id) => !analyzed(def_id),
+                _ if forwards(instance) => entered_unanalyzed,
+                _ => true,
+            };
+            for callee in self.callees(instance) {
+                let next = (callee, body_unanalyzed);
+                if let std::collections::hash_map::Entry::Vacant(entry) = parent.entry(next) {
+                    entry.insert(Some(node));
+                    pending.push_back(next);
+                }
             }
         }
     }
+
+    /// What `instance`, a function of the crate, relies on of a type's invariant when code Thrust
+    /// does not analyze runs it, as the error to report.
+    fn assumed_invariant(&mut self, instance: mir_ty::Instance<'tcx>) -> Option<String> {
+        let mir_ty::InstanceKind::Item(def_id) = instance.def else {
+            return None;
+        };
+        let local_def_id = def_id.as_local()?;
+        if !self.tcx.def_kind(def_id).is_fn_like() || self.tcx.is_closure_like(def_id) {
+            return None;
+        }
+        if is_destructor(self.tcx, def_id) {
+            let ty = self.invariant_type_in(instance.args.types(), def_id)?;
+            return Some(format!(
+                "the destructor `{instance}` is checked once over its type parameters, and here it \
+                 runs at `{ty}`, which has an invariant that the impls it calls may assume"
+            ));
+        }
+        let ty = {
+            let mut analyzer = self.local_def_analyzer(local_def_id);
+            analyzer.generic_args(instance.args);
+            analyzer.invariant_in_contract(true)
+        }?;
+        Some(format!("`{instance}` assumes the invariant of `{ty}`"))
+    }
+
+    fn stop_with_path(
+        &self,
+        instance: mir_ty::Instance<'tcx>,
+        message: &str,
+        node: (mir_ty::Instance<'tcx>, bool),
+        parent: &HashMap<(mir_ty::Instance<'tcx>, bool), Option<(mir_ty::Instance<'tcx>, bool)>>,
+    ) -> ! {
+        let mut path = Vec::new();
+        let mut cursor = Some(node);
+        while let Some(current) = cursor {
+            path.push(current);
+            cursor = parent.get(&current).copied().flatten();
+        }
+        path.reverse();
+        let caller = path
+            .iter()
+            .rev()
+            .skip(1)
+            .find(|(instance, _)| !forwards(*instance))
+            .map(|(instance, _)| instance.to_string())
+            .unwrap_or_default();
+        let path: Vec<_> = path
+            .iter()
+            .map(|(instance, _)| instance.to_string())
+            .collect();
+        self.tcx
+            .dcx()
+            .struct_span_fatal(
+                self.tcx.def_span(instance.def_id()),
+                format!(
+                    "{message}, but `{caller}`, which Thrust does not analyze, runs it, so nothing \
+                     checks the invariant there"
+                ),
+            )
+            .with_note(format!("reached through {}", path.join(" -> ")))
+            .emit()
+    }
+}
+
+/// Whether `instance` is drop glue or a shim that forwards a call (to a function pointer, a
+/// closure, a vtable entry), which runs its callees on behalf of whoever entered it.
+fn forwards(instance: mir_ty::Instance<'_>) -> bool {
+    matches!(
+        instance.def,
+        mir_ty::InstanceKind::DropGlue(..)
+            | mir_ty::InstanceKind::FnPtrShim(..)
+            | mir_ty::InstanceKind::ReifyShim(..)
+            | mir_ty::InstanceKind::ClosureOnceShim { .. }
+            | mir_ty::InstanceKind::VTableShim(..)
+    )
+}
+
+fn is_destructor(tcx: TyCtxt<'_>, def_id: DefId) -> bool {
+    tcx.impl_of_assoc(def_id).is_some_and(|impl_def_id| {
+        tcx.trait_id_of_impl(impl_def_id) == tcx.lang_items().drop_trait()
+    })
 }
 
 fn invariant_pred(tcx: TyCtxt<'_>, trait_did: DefId) -> Option<DefId> {

@@ -265,6 +265,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             && self.ctx.contract_names_type_param(local_def_id);
         let is_law_impl = self.is_law_impl(local_def_id);
         let per_instance = self.ctx.per_instance_generics();
+        let per_instance_too = per_instance && !per_instance_generics_requested();
         let outside_selection = self.is_outside_selection(local_def_id);
         let mut analyzer = self.ctx.local_def_analyzer(local_def_id);
 
@@ -394,7 +395,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     local_def_id,
                     owner_fn_id_args,
                 );
-            } else if per_instance && !analyzer.is_crate_destructor() {
+            } else if per_instance
+                && !analyzer.is_crate_destructor()
+                && !(per_instance_too && analyzer.has_contract_annotation())
+            {
                 // A destructor is checked once over its type parameters even so (D57): `std` may
                 // drop it at an instance that no call site of the crate reaches.
                 // Upstream Thrust's treatment: the body is analyzed at each instance a call site
@@ -408,9 +412,16 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 self.ctx
                     .register_deferred_def(owner_fn_id, local_def_id, owner_fn_id_args);
             } else {
+                // In a crate analyzed per instance for its type invariants, a written contract is
+                // also verified once over the type parameters, as in any other crate, so that a
+                // generic function no call reaches is still checked against it.
+                let too = per_instance_too && !analyzer.is_crate_destructor();
                 let expected = expected.unwrap_or_else(|| analyzer.expected_ty());
                 self.ctx
                     .register_generic_def(owner_fn_id, local_def_id, Some(expected));
+                if too {
+                    self.ctx.analyze_per_instance_too(owner_fn_id);
+                }
             }
         } else if is_injected_std && is_law_impl {
             // The contract of an injected impl's law instantiates the trait's predicates at the
@@ -976,7 +987,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let proof_branch = self.ctx.def_ids().proof_branch();
         analyze::lemma::check_lemmas(self.tcx, proof_branch);
         self.check_model_impls();
-        self.ctx.check_associated_types_without_invariant();
         self.analyze_raw_command_annot();
         self.register_trait_laws();
         self.check_restated_laws();
@@ -1004,6 +1014,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.ctx.check_reused_instances();
         self.ctx.check_derived_predicates();
         self.check_ignored_not_run();
+        self.check_invariants_not_assumed_unanalyzed();
         self.assert_callable_entry();
     }
 
@@ -1033,6 +1044,21 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let (roots, generic) = self.walk_roots();
         self.ctx
             .stop_ignored_reached(roots, generic, |def_id| self.crate_mode(def_id));
+    }
+
+    /// Checks that no code Thrust does not analyze runs crate code that relies on a type's
+    /// invariant ([`analyze::Analyzer::stop_invariant_assumed_unanalyzed`]).
+    fn check_invariants_not_assumed_unanalyzed(&mut self) {
+        let (roots, generic) = self.walk_roots();
+        let tcx = self.tcx;
+        let skip = &self.skip_analysis;
+        self.ctx
+            .stop_invariant_assumed_unanalyzed(roots, generic, |def_id| {
+                def_id
+                    .as_local()
+                    .is_some_and(|local| !skip.contains(&local))
+                    && tcx.def_kind(def_id).is_fn_like()
+            });
     }
 
     /// The roots of the walks over what the crate can run: the fn-like defs whose bodies are

@@ -2,9 +2,9 @@
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
-// `g` is verified over `T` and calls `bump` at `T`, where its contract has no invariant. At `C`
-// its body is analyzed again, where the call runs `C::bump`, which assumes the invariant of the
-// value inside the `Box`, which the contract of `g` does not require.
+// `g`'s written contract is verified over `T`, where `bump` assumes nothing, and at `C`, where the
+// call runs `C::bump`, which assumes the invariant of the value inside the `Box`. A contract
+// written at `T` cannot require it, so `g` fails at `C` whatever the argument.
 
 #[thrust_macros::context]
 trait Counter {

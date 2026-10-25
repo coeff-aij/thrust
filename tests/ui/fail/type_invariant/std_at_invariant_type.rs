@@ -1,4 +1,4 @@
-//@error-in-other-file: which has an invariant
+//@error-in-other-file: would promise the invariant
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
