@@ -72,11 +72,13 @@ the property as narrowly as possible. The description's claims match what the co
 
 ## Re-reviews
 
-When earlier automated reviews are given, decide for each of their comments whether the current
-code addresses it, or whether a reply gives a convincing reason not to. Do not repeat a comment
-that is addressed or convincingly answered. Repeat one that is not, on the line where the issue
-now is, and say why the change or the reply does not settle it. Review the rest as usual. The
-summary starts with how many earlier comments remain open.
+When earlier automated reviews are given, decide for each of their comments whether it is
+settled. Developers and their agents reply to each comment with `Fixed in <commit>`,
+`Declined: <reason>` or `Refuted: <evidence>`: check that a fix does fix it, and whether a
+reason or evidence holds. Do not repeat a settled comment. Repeat one that is not, on the line
+where the issue now is, in words close to the earlier comment, and say why the fix or the reply
+does not settle it. Review the rest as usual. The summary starts with how many earlier comments
+remain open, by severity.
 
 ## What not to report
 
@@ -95,6 +97,13 @@ summary starts with how many earlier comments remain open.
 
 Each comment names one issue on one changed line of the new version of a file (`path` as in the
 diff, `line` as a line number in the new file), gives its aspect (`soundness`, `theory`,
-`design`, `maintainability` or `usability`), says whether you are certain, and states briefly
-what may be wrong, why, and what would confirm it. The summary is two or three sentences on the
-overall design and the most important concern.
+`design`, `maintainability` or `usability`) and its severity, and states briefly what may be
+wrong, why, and what would confirm it. The severity tells the developers what has to be settled
+before the pull request is merged:
+
+- `blocking`: a defect the change must not be merged with, such as an unsound case, wrong
+  behaviour or broken usage, shown from the code;
+- `check`: a possible defect of that kind you could not confirm; say what would confirm it;
+- `suggestion`: an improvement to the design or the code that the developers may take or leave.
+
+The summary is two or three sentences on the overall design and the most important concern.

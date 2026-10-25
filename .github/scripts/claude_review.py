@@ -21,6 +21,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import Literal
 
 import anthropic
 from anthropic import beta_tool
@@ -40,7 +41,7 @@ class Comment(BaseModel):
     path: str
     line: int
     aspect: str
-    certain: bool
+    severity: Literal["blocking", "check", "suggestion"]
     body: str
 
 
@@ -256,8 +257,7 @@ def review_payload(review: Review, head_sha: str, lines: dict[str, set[int]], om
 
 
 def comment_text(comment: Comment) -> str:
-    label = comment.aspect if comment.certain else f"{comment.aspect}, to check"
-    return f"[{label}] {comment.body}"
+    return f"[{comment.severity}, {comment.aspect}] {comment.body}"
 
 
 def main() -> None:
