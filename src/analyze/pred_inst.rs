@@ -189,6 +189,14 @@ impl<'tcx> analyze::Analyzer<'tcx> {
     ) -> chc::UserDefinedPred {
         let Some(instance) = self.pred_instance_sorts(pred_def_id, generic_args, owner_fn_id)
         else {
+            if self.is_derived_predicate(pred_def_id) {
+                // Its rules at a generic impl would have to be instantiated with the impl.
+                self.tcx().dcx().span_fatal(
+                    self.tcx().def_span(owner_fn_id),
+                    "a derived predicate left undefined by a generic impl is not supported; \
+                     define it in the impl",
+                );
+            }
             return refine::user_defined_pred(self.tcx(), pred_def_id);
         };
         self.pending_pred_instances
@@ -225,6 +233,15 @@ impl<'tcx> analyze::Analyzer<'tcx> {
             return None;
         }
         Some(sorts)
+    }
+
+    /// The trait items and generic arguments of the predicate instances waiting to be emitted.
+    pub fn pending_pred_instance_requests(&self) -> Vec<(DefId, mir_ty::GenericArgsRef<'tcx>)> {
+        self.pending_pred_instances
+            .borrow()
+            .iter()
+            .map(|request| (request.pred_def_id, request.generic_args))
+            .collect()
     }
 
     /// Emits every predicate definition requested during analysis, and every one
@@ -274,11 +291,17 @@ impl<'tcx> analyze::Analyzer<'tcx> {
         }
 
         let local_def_id = pred_def_id.expect_local();
-        let (sig, body) = {
-            let mut analyzer = self.local_def_analyzer(local_def_id);
-            analyzer.owner_fn_id(owner_fn_id).generic_args(generic_args);
-            analyzer.predicate_definition()
-        };
+        let derived = self.is_derived_predicate(pred_def_id);
+        let mut analyzer = self.local_def_analyzer(local_def_id);
+        analyzer.owner_fn_id(owner_fn_id).generic_args(generic_args);
+        if derived {
+            let sig = analyzer.predicate_signature();
+            drop(analyzer);
+            self.declare_derived_pred(symbol, sig, pred_def_id, generic_args, owner_fn_id);
+            return;
+        }
+        let (sig, body) = analyzer.predicate_definition();
+        drop(analyzer);
 
         let sort_subst = self.forall_sort_substitution(pred_def_id, generic_args, owner_fn_id);
         let body = self.substitute_forall_preds(&body, &sort_subst, generic_args, owner_fn_id);

@@ -38,6 +38,10 @@ pub fn lemma_rec_path() -> [Symbol; 2] {
     [Symbol::intern("thrust"), Symbol::intern("lemma_rec")]
 }
 
+pub fn derived_path() -> [Symbol; 2] {
+    [Symbol::intern("thrust"), Symbol::intern("derived")]
+}
+
 pub fn law_path() -> [Symbol; 2] {
     [Symbol::intern("thrust"), Symbol::intern("law")]
 }

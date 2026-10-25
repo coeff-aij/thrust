@@ -156,6 +156,10 @@ fn locals_of<'tcx>(
 
 impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     pub fn analyze_predicate_definition(&self) {
+        if self.ctx.is_derived_predicate(self.local_def_id.to_def_id()) {
+            // Declared at each impl that leaves it out, when that instance is emitted.
+            return;
+        }
         let (sig, body) = self.predicate_definition();
         self.ctx.system.borrow_mut().push_pred_define(
             refine::user_defined_pred(self.tcx, self.local_def_id.to_def_id()),
@@ -185,7 +189,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             _ => panic!("expected function body, got: {hir_body:?}"),
         };
 
-        // names and sorts of arguments
+        (self.predicate_signature(), predicate_body)
+    }
+
+    /// The signature of a `#[thrust_macros::predicate]`, read off the (possibly instantiated)
+    /// body as in [`Self::predicate_definition`].
+    pub fn predicate_signature(&self) -> chc::UserDefinedPredSig {
         let arg_names = self
             .tcx
             .fn_arg_idents(self.local_def_id.to_def_id())
@@ -205,12 +214,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .iter()
             .map(|input_ty| self.type_builder.build(*input_ty).to_sort());
 
-        let arg_name_and_sorts = arg_names.into_iter().zip(arg_sorts).collect::<Vec<_>>();
-
-        (
-            chc::UserDefinedPredSig::from(arg_name_and_sorts),
-            predicate_body,
-        )
+        chc::UserDefinedPredSig::from(arg_names.into_iter().zip(arg_sorts).collect::<Vec<_>>())
     }
 
     /// Whether the def comes from the injected `std.rs`. The bodies there are the specification

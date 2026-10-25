@@ -2725,6 +2725,9 @@ pub enum UserDefinedPredBody {
     Raw(String),
     Formula(Formula<TermVarIdx>),
     Term(Sort, Term<TermVarIdx>),
+    /// No body: an unknown of the system, a `#[thrust_macros::predicate(derived)]` of a trait at
+    /// an impl that leaves it out, inferred like a loop invariant (`analyze::derived_pred`).
+    Derived,
 }
 
 #[derive(Debug, Clone)]
@@ -2792,10 +2795,15 @@ impl UserDefinedPredDef {
     /// The user-defined predicates and functions the body calls.
     fn callees(&self) -> Vec<&UserDefinedPred> {
         match &self.body {
-            UserDefinedPredBody::Raw(_) => Vec::new(),
+            UserDefinedPredBody::Raw(_) | UserDefinedPredBody::Derived => Vec::new(),
             UserDefinedPredBody::Formula(formula) => user_defined_in(formula.iter_atoms()),
             UserDefinedPredBody::Term(_, term) => term.user_defined_fns(),
         }
+    }
+
+    /// Whether this is a derived predicate, an unknown with no body.
+    pub fn is_derived(&self) -> bool {
+        matches!(self.body, UserDefinedPredBody::Derived)
     }
 
     /// Whether the body calls the definition itself, which makes it a `define-fun-rec`.
@@ -3049,6 +3057,18 @@ impl System {
         })
     }
 
+    /// Declares `symbol` as an unknown of the system ([`UserDefinedPredBody::Derived`]).
+    pub fn push_derived_pred(&mut self, symbol: UserDefinedPred, sig: UserDefinedPredSig) {
+        self.user_defined_pred_defs.push(UserDefinedPredDef {
+            symbol,
+            sig,
+            body: UserDefinedPredBody::Derived,
+            sort_subst: Vec::new(),
+            dependencies: HashSet::new(),
+            decreases: None,
+        })
+    }
+
     /// Defines `symbol` as `body` read under `sort_subst`, the substitution that
     /// takes the declaring item's forall sorts to one instantiation of them.
     pub fn push_pred_define_at_instance(
@@ -3075,6 +3095,41 @@ impl System {
 
     pub fn is_self_defined(&self, id: PredVarId) -> bool {
         self.self_defined_pred_vars.contains(&id)
+    }
+
+    /// Whether `symbol` is a derived predicate, applies one through its definition, or is not
+    /// defined yet (a predicate instance emitted at the end, a derived one among them). When the
+    /// system has a derived predicate, a raw SMT-LIB2 body counts as applying one: its text may
+    /// name the derived predicate's symbol, and it is not read.
+    pub fn reaches_derived(&self, symbol: &UserDefinedPred) -> bool {
+        let has_derived = self.user_defined_pred_defs.iter().any(|d| d.is_derived());
+        let mut pending = vec![symbol];
+        let mut seen: HashSet<&UserDefinedPred> = HashSet::new();
+        while let Some(symbol) = pending.pop() {
+            if !seen.insert(symbol) {
+                continue;
+            }
+            let mut defs = self
+                .user_defined_pred_defs
+                .iter()
+                .filter(|d| &d.symbol == symbol)
+                .peekable();
+            if defs.peek().is_none() {
+                return true;
+            }
+            for def in defs {
+                match &def.body {
+                    UserDefinedPredBody::Derived => return true,
+                    UserDefinedPredBody::Formula(formula) => {
+                        pending.extend(user_defined_in(formula.iter_atoms()))
+                    }
+                    UserDefinedPredBody::Term(_, term) => pending.extend(term.user_defined_fns()),
+                    UserDefinedPredBody::Raw(_) if has_derived => return true,
+                    UserDefinedPredBody::Raw(_) => {}
+                }
+            }
+        }
+        false
     }
 
     /// What the definition of `symbol`, and those of the user-defined predicates it calls, say
@@ -3120,7 +3175,9 @@ impl System {
             .iter()
             .filter_map(|def| match &def.body {
                 UserDefinedPredBody::Formula(formula) => Some(formula),
-                UserDefinedPredBody::Raw(_) | UserDefinedPredBody::Term(..) => None,
+                UserDefinedPredBody::Raw(_)
+                | UserDefinedPredBody::Term(..)
+                | UserDefinedPredBody::Derived => None,
             })
             .flat_map(Formula::iter_atoms)
             .filter_map(|atom| match atom.pred {
@@ -3180,6 +3237,8 @@ impl System {
                     udpd.dependencies
                         .extend(forall_in(formula.iter_atoms()).into_iter().cloned());
                 }
+                // Independent of every forall predicate: declared before them.
+                UserDefinedPredBody::Derived => {}
             }
         }
         let callees: HashMap<UserDefinedPred, HashSet<UserDefinedPred>> = user_defined_pred_defs
@@ -3319,7 +3378,9 @@ impl System {
             .iter()
             .filter_map(|d| match &d.body {
                 UserDefinedPredBody::Raw(body) => Some(body.as_str()),
-                UserDefinedPredBody::Formula(_) | UserDefinedPredBody::Term(..) => None,
+                UserDefinedPredBody::Formula(_)
+                | UserDefinedPredBody::Term(..)
+                | UserDefinedPredBody::Derived => None,
             })
             .chain(self.raw_commands.iter().map(|c| c.command.as_str()))
             .collect();

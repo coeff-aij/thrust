@@ -393,11 +393,11 @@ impl<'tcx> analyze::Analyzer<'tcx> {
     }
 
     /// Whether the precondition of `fn_ty` is inferred: a parameter's refinement names an
-    /// unknown, directly or through a predicate's definition.
+    /// unknown, directly or through a predicate's definition, a derived predicate among them.
     pub fn infers_precondition(&self, fn_ty: &rty::FunctionType) -> bool {
         fn_ty.params.iter().any(|param| {
             let reach = self.pred_var_reach(param);
-            reach.found || reach.undefined
+            reach.found || reach.undefined || self.may_apply_derived(param)
         })
     }
 
