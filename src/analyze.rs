@@ -2308,6 +2308,27 @@ impl<'tcx> Analyzer<'tcx> {
         None
     }
 
+    /// Whether the `requires` or `ensures` of `local_def_id` mentions a type parameter: the type
+    /// of an expression of its formula function, a called path's (`T::score`) included.
+    pub fn contract_names_type_param(&self, local_def_id: LocalDefId) -> bool {
+        use mir_ty::TypeVisitableExt as _;
+        [
+            analyze::annot::requires_path_path(),
+            analyze::annot::ensures_path_path(),
+        ]
+        .iter()
+        .filter_map(|path| self.extract_path_with_attr(local_def_id, path))
+        .filter_map(|def_id| def_id.as_local())
+        .any(|formula_def_id| {
+            self.tcx
+                .typeck(formula_def_id)
+                .node_types()
+                .items_in_stable_order()
+                .into_iter()
+                .any(|(_, ty)| ty.has_param())
+        })
+    }
+
     fn extract_require_annot(
         &self,
         local_def_id: LocalDefId,
