@@ -116,7 +116,10 @@ impl<'tcx> analyze::Analyzer<'tcx> {
         generic_args: mir_ty::GenericArgsRef<'tcx>,
         caller_def_id: DefId,
     ) {
-        if self.crate_type_invariant().is_none() || generic_args.types().next().is_none() {
+        if self.crate_type_invariant().is_none()
+            || generic_args.types().next().is_none()
+            || self.is_derived_clone(def_id)
+        {
             return;
         }
         let promised = {
@@ -136,6 +139,16 @@ impl<'tcx> analyze::Analyzer<'tcx> {
             self.tcx.def_path_str_with_args(def_id, generic_args),
             self.tcx.def_path_str(caller_def_id),
         ))
+    }
+
+    /// Whether `def_id` is the `clone` of a derived `Clone`, which keeps the invariant: its
+    /// contract makes the result's model that of `*self`, whose invariant it requires.
+    pub(super) fn is_derived_clone(&self, def_id: DefId) -> bool {
+        let Some(impl_def_id) = self.tcx.impl_of_assoc(def_id) else {
+            return false;
+        };
+        self.tcx.is_automatically_derived(impl_def_id)
+            && self.tcx.trait_id_of_impl(impl_def_id) == self.tcx.lang_items().clone_trait()
     }
 
     /// Stops when code Thrust does not analyze runs crate code that relies on a type's invariant

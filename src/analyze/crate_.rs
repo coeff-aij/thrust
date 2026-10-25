@@ -519,6 +519,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             {
                 continue;
             }
+            // A trait contract inferred from the default body is not one the impl refines.
+            let trait_item = self.tcx.associated_item(def_id).trait_item_def_id;
+            if trait_item.is_some_and(|item| !self.ctx.trait_method_contract_written(item)) {
+                continue;
+            }
             let impl_ty = self.ctx.concrete_def_ty(def_id).cloned();
             let Some(trait_ty) = self
                 .ctx

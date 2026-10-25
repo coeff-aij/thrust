@@ -319,9 +319,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// whose invariant it requires.
     pub fn check_derive_keeps_invariant(&self) {
         let def_id = self.local_def_id.to_def_id();
-        let trait_item = self.tcx.associated_item(def_id).trait_item_def_id;
-        let clone = self.tcx.lang_items().clone_trait();
-        if clone.is_some() && trait_item.and_then(|t| self.tcx.trait_of_assoc(t)) == clone {
+        if self.ctx.is_derived_clone(def_id) {
             return;
         }
         let sig = self.ctx.fn_sig(def_id);
