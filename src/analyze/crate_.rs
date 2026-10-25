@@ -264,6 +264,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let contract_generic = !self.tcx.is_closure_like(local_def_id.to_def_id())
             && self.ctx.contract_names_type_param(local_def_id);
         let is_law_impl = self.is_law_impl(local_def_id);
+        let per_instance = self.ctx.per_instance_generics();
+        let per_instance_too = per_instance && !per_instance_generics_requested();
         let outside_selection = self.is_outside_selection(local_def_id);
         let mut analyzer = self.ctx.local_def_analyzer(local_def_id);
 
@@ -290,6 +292,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let trusted_derive = analyzer.is_trusted_derive() && analyzer.trait_item_ty().is_some();
         if trusted_derive {
             analyzer.check_derived_field_impls();
+            analyzer.check_derive_keeps_invariant();
             self.skip_analysis.insert(local_def_id);
             self.body_checks.record(
                 local_def_id,
@@ -392,7 +395,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     local_def_id,
                     owner_fn_id_args,
                 );
-            } else if per_instance_generics() && !analyzer.is_crate_destructor() {
+            } else if per_instance
+                && !analyzer.is_crate_destructor()
+                && !(per_instance_too && analyzer.has_contract_annotation())
+            {
                 // A destructor is checked once over its type parameters even so (D57): `std` may
                 // drop it at an instance that no call site of the crate reaches.
                 // Upstream Thrust's treatment: the body is analyzed at each instance a call site
@@ -406,9 +412,16 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 self.ctx
                     .register_deferred_def(owner_fn_id, local_def_id, owner_fn_id_args);
             } else {
+                // In a crate analyzed per instance for its type invariants, a written contract is
+                // also verified once over the type parameters, as in any other crate, so that a
+                // generic function no call reaches is still checked against it.
+                let too = per_instance_too && !analyzer.is_crate_destructor();
                 let expected = expected.unwrap_or_else(|| analyzer.expected_ty());
                 self.ctx
                     .register_generic_def(owner_fn_id, local_def_id, Some(expected));
+                if too {
+                    self.ctx.analyze_per_instance_too(owner_fn_id);
+                }
             }
         } else if is_injected_std && is_law_impl {
             // The contract of an injected impl's law instantiates the trait's predicates at the
@@ -504,6 +517,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 .as_ref()
                 .is_some_and(|selection| !selection.contains(self.tcx, def_id))
             {
+                continue;
+            }
+            // A trait contract inferred from the default body is not one the impl refines.
+            let trait_item = self.tcx.associated_item(def_id).trait_item_def_id;
+            if trait_item.is_some_and(|item| !self.ctx.trait_method_contract_written(item)) {
                 continue;
             }
             let impl_ty = self.ctx.concrete_def_ty(def_id).cloned();
@@ -986,7 +1004,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let keys: Vec<_> = self.tcx.mir_keys(()).iter().copied().collect();
         self.ctx.record_hist_inv_specified_params(keys.into_iter());
         self.ctx.set_trusted_bodies(self.trusted.clone());
-        if per_instance_generics() {
+        if self.ctx.per_instance_generics() {
             self.ctx.per_instance_law_impls = analyze::derived_pred::per_instance_law_impls(
                 self.tcx,
                 &self.ctx.trait_laws.borrow(),
@@ -1001,6 +1019,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.ctx.check_reused_instances();
         self.ctx.check_derived_predicates();
         self.check_ignored_not_run();
+        self.check_invariants_not_assumed_unanalyzed();
         self.assert_callable_entry();
     }
 
@@ -1030,6 +1049,21 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let (roots, generic) = self.walk_roots();
         self.ctx
             .stop_ignored_reached(roots, generic, |def_id| self.crate_mode(def_id));
+    }
+
+    /// Checks that no code Thrust does not analyze runs crate code that relies on a type's
+    /// invariant ([`analyze::Analyzer::stop_invariant_assumed_unanalyzed`]).
+    fn check_invariants_not_assumed_unanalyzed(&mut self) {
+        let (roots, generic) = self.walk_roots();
+        let tcx = self.tcx;
+        let skip = &self.skip_analysis;
+        self.ctx
+            .stop_invariant_assumed_unanalyzed(roots, generic, |def_id| {
+                def_id
+                    .as_local()
+                    .is_some_and(|local| !skip.contains(&local))
+                    && tcx.def_kind(def_id).is_fn_like()
+            });
     }
 
     /// The roots of the walks over what the crate can run: the fn-like defs whose bodies are
@@ -1264,9 +1298,9 @@ fn check_destructor_annotations<'tcx>(
 const DESTRUCTOR_CONTRACT_ERROR: &str = "a `Drop::drop` takes no `requires` or `ensures`: Rust runs \
      it wherever a value is dropped, so Thrust checks it under `requires(true)` and infers its effect";
 
-/// Whether a generic def with a body is verified at each instance rather than once over its type
-/// parameters (`THRUST_PER_INSTANCE_GENERICS=1`).
-pub(super) fn per_instance_generics() -> bool {
+/// Whether `THRUST_PER_INSTANCE_GENERICS=1` asks for each generic def with a body to be verified
+/// at each instance rather than once over its type parameters.
+pub(super) fn per_instance_generics_requested() -> bool {
     matches!(
         std::env::var("THRUST_PER_INSTANCE_GENERICS").as_deref(),
         Ok("1")

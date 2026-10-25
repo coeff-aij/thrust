@@ -34,6 +34,7 @@ pub(crate) mod derived_pred;
 mod did_cache;
 mod extern_spec;
 mod fn_mut_reuse;
+mod invariant_args;
 mod lemma;
 mod local_def;
 mod model_eq;
@@ -196,6 +197,28 @@ enum DeferredDefMode {
 impl DeferredDefMode {
     fn should_analyze(&self) -> bool {
         matches!(self, DeferredDefMode::Analyze)
+    }
+}
+
+/// How a use of a def reads its type ([`Analyzer::def_ty_with_args`] and its variants).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DefUse {
+    /// Its contract only, without analyzing its body: a law whose proof the caller analyzes.
+    Contract,
+    /// A call or a function value: the body that runs, except for a trait method, whose
+    /// trait-level contract a call reads while an impl's body runs.
+    Call,
+    /// A call that runs the def's own body, a trait method's default body included.
+    Run,
+}
+
+impl DefUse {
+    fn runs_body(self, tcx: TyCtxt<'_>, def_id: DefId) -> bool {
+        match self {
+            DefUse::Contract => false,
+            DefUse::Call => tcx.trait_of_assoc(def_id).is_none(),
+            DefUse::Run => true,
+        }
     }
 }
 
@@ -641,6 +664,11 @@ pub struct Analyzer<'tcx> {
     /// The instances `(def, generic args, caller)` that use a generic def's contract as
     /// instantiated; see [`Analyzer::check_reused_spec_bounds`].
     reused_generic_instances: RefCell<Vec<(DefId, mir_ty::GenericArgsRef<'tcx>, DefId)>>,
+    /// See [`Analyzer::contract_written`].
+    contract_written: RefCell<HashMap<LocalDefId, bool>>,
+    /// The generic defs of a crate with an `Invariant` impl that are verified once over their
+    /// type parameters for their written contract and analyzed at each instance as well.
+    per_instance_too: HashSet<DefId>,
     /// The types of the functions each basic block calls, recorded only when
     /// [`candidate_atoms_enabled`], whose contracts give a loop head candidate atoms.
     called_fn_tys: HashMap<(AnalysisKey<'tcx>, BasicBlock), Vec<rty::FunctionType>>,
@@ -912,6 +940,8 @@ impl<'tcx> Analyzer<'tcx> {
             fn_mut_reuse: Default::default(),
             spec_assumptions: Default::default(),
             reused_generic_instances: Default::default(),
+            contract_written: Default::default(),
+            per_instance_too: Default::default(),
             called_fn_tys: Default::default(),
             impl_methods_with_own_contract: Default::default(),
             derived_preds: Default::default(),
@@ -1332,7 +1362,7 @@ impl<'tcx> Analyzer<'tcx> {
         generic_args: mir_ty::GenericArgsRef<'tcx>,
         owner_fn_id: DefId,
     ) {
-        let per_instance = crate_::per_instance_generics();
+        let per_instance = self.per_instance_generics();
         let at = derived_pred::DerivedAt::new(self.tcx, pred_def_id, generic_args, per_instance)
             .unwrap_or_else(|| {
                 self.tcx.dcx().span_fatal(
@@ -1505,6 +1535,72 @@ impl<'tcx> Analyzer<'tcx> {
 
     pub fn get_closure_type(&self, type_param: TypeParam) -> Option<rty::FunctionType> {
         self.closure_type_params.borrow().get(&type_param).cloned()
+    }
+
+    /// Whether a generic def with a body is analyzed at each instance a call reaches rather than
+    /// once over its type parameters: when `THRUST_PER_INSTANCE_GENERICS=1` asks for it, and in a
+    /// crate with an `Invariant` impl, where a contract established over type parameters lacks
+    /// the invariant's conjuncts at an instance that holds the type (`invariant_args`).
+    pub fn per_instance_generics(&self) -> bool {
+        crate_::per_instance_generics_requested() || self.crate_type_invariant().is_some()
+    }
+
+    /// Analyzes the generic def `def_id`, verified once over its type parameters, at each instance
+    /// a call reaches as well ([`Analyzer::per_instance_generics`]).
+    pub fn analyze_per_instance_too(&mut self, def_id: DefId) {
+        self.per_instance_too.insert(def_id);
+    }
+
+    /// Whether the trait method `def_id` has a trait-level contract that leaves nothing to
+    /// inference: written `requires` and `ensures` (or `#[thrust::callable]`), refinements of
+    /// both its parameters and its result, or an extern spec. A method of another crate has its
+    /// spec or none. A contract inferred from a default body is not the type of an impl that
+    /// overrides the method, so such a method is called at a type parameter with the
+    /// unspecified type, and at an impl with the impl's own type.
+    pub fn trait_method_contract_written(&self, def_id: DefId) -> bool {
+        let Some(local_def_id) = def_id.as_local() else {
+            return true;
+        };
+        let has_spec = match self.defs.get(&def_id) {
+            Some(DefTy::Generic(generic)) => generic.local_def_id != local_def_id,
+            Some(DefTy::Deferred(specs)) => {
+                specs.iter().any(|spec| spec.local_def_id != local_def_id)
+            }
+            _ => false,
+        };
+        has_spec || self.contract_written(local_def_id)
+    }
+
+    /// Whether the contract written on `local_def_id` leaves nothing to inference: `requires` and
+    /// `ensures` (the macros write both when either is written), `#[thrust::callable]`, or
+    /// refinements of both a parameter and the result. A refinement of only the parameters or
+    /// only the result leaves the other side to inference, so it counts as not written.
+    pub fn contract_written(&self, local_def_id: LocalDefId) -> bool {
+        if let Some(written) = self.contract_written.borrow().get(&local_def_id) {
+            return *written;
+        }
+        let callable = self
+            .tcx
+            .get_attrs_by_path(local_def_id.to_def_id(), &analyze::annot::callable_path())
+            .next()
+            .is_some();
+        let has_path = |path: &[Symbol]| self.extract_path_with_attr(local_def_id, path).is_some();
+        let refinements = self.extract_refinement_paths(local_def_id);
+        let refines = |is_ret: bool| {
+            refinements.iter().any(|(position, _)| {
+                position
+                    .steps()
+                    .first()
+                    .is_some_and(|step| matches!(step, rty::TypePositionStep::Return) == is_ret)
+            })
+        };
+        let pre = has_path(&analyze::annot::requires_path_path()) || refines(false);
+        let post = has_path(&analyze::annot::ensures_path_path()) || refines(true);
+        let written = callable || (pre && post);
+        self.contract_written
+            .borrow_mut()
+            .insert(local_def_id, written);
+        written
     }
 
     pub fn concrete_def_ty(&self, def_id: DefId) -> Option<&rty::RefinedType> {
@@ -1940,7 +2036,18 @@ impl<'tcx> Analyzer<'tcx> {
         generic_args: mir_ty::GenericArgsRef<'tcx>,
         caller_def_id: DefId,
     ) -> Option<rty::RefinedType> {
-        self.def_ty_at(def_id, generic_args, caller_def_id, true)
+        self.def_ty_at(def_id, generic_args, caller_def_id, DefUse::Call)
+    }
+
+    /// The type of `def_id` at `generic_args`, as [`Analyzer::def_ty_with_args`] gives it, for a
+    /// call that runs its body there: a trait method's default body as well as any other.
+    pub fn running_def_ty_with_args(
+        &mut self,
+        def_id: DefId,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
+        caller_def_id: DefId,
+    ) -> Option<rty::RefinedType> {
+        self.def_ty_at(def_id, generic_args, caller_def_id, DefUse::Run)
     }
 
     /// The contract of `def_id` at `generic_args`, as [`Analyzer::def_ty_with_args`] gives it,
@@ -1951,7 +2058,7 @@ impl<'tcx> Analyzer<'tcx> {
         generic_args: mir_ty::GenericArgsRef<'tcx>,
         caller_def_id: DefId,
     ) -> Option<rty::RefinedType> {
-        self.def_ty_at(def_id, generic_args, caller_def_id, false)
+        self.def_ty_at(def_id, generic_args, caller_def_id, DefUse::Contract)
     }
 
     fn def_ty_at(
@@ -1959,8 +2066,9 @@ impl<'tcx> Analyzer<'tcx> {
         def_id: DefId,
         generic_args: mir_ty::GenericArgsRef<'tcx>,
         caller_def_id: DefId,
-        may_analyze: bool,
+        def_use: DefUse,
     ) -> Option<rty::RefinedType> {
+        let may_analyze = def_use != DefUse::Contract;
         if !self.per_instance_law_impls.is_empty() && self.is_trait_law(def_id) {
             self.law_uses.borrow_mut().push((def_id, generic_args));
         }
@@ -2019,6 +2127,11 @@ impl<'tcx> Analyzer<'tcx> {
             generic_args,
             caller_def_id,
         };
+        let body_unanalyzed = !deferred_ty_mode.is_some_and(|mode| mode.should_analyze())
+            || (is_generic && !self.per_instance_too.contains(&def_id));
+        if def_use.runs_body(self.tcx, def_id) && body_unanalyzed {
+            self.stop_promised_invariant(def_id, local_def_id, generic_args, caller_def_id);
+        }
         if let Some(rty) = instantiated_ty_cache.borrow().get(&key) {
             return Some(rty.clone());
         }
@@ -2045,6 +2158,7 @@ impl<'tcx> Analyzer<'tcx> {
         let analyze_body = may_analyze
             && deferred_ty_mode.is_some_and(|mode| mode.should_analyze())
             && (!is_generic
+                || self.per_instance_too.contains(&def_id)
                 || (has_fn_mut_closure(generic_args)
                     && !self.reuse_fn_mut_generic(def_id, &expected, generic_args, caller_def_id))
                 || self.may_have_pred_var(&expected, generic_args, caller_def_id));

@@ -312,6 +312,46 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.ctx.check_bound_impls(def_id, typing_env, bounds);
     }
 
+    /// Stops at a derived method whose contract would promise a type's invariant of its result
+    /// or of a `&mut` parameter's final value. The derive implies its trait's std.rs contract,
+    /// not the invariant: a derived `Default` builds its value from the fields' defaults. A
+    /// derived `clone` keeps it, since its contract makes the result's model that of `*self`,
+    /// whose invariant it requires.
+    pub fn check_derive_keeps_invariant(&self) {
+        let def_id = self.local_def_id.to_def_id();
+        if self.ctx.is_derived_clone(def_id) {
+            return;
+        }
+        let sig = self.ctx.fn_sig(def_id);
+        let promised = sig
+            .inputs()
+            .iter()
+            .filter_map(|ty| match ty.kind() {
+                mir_ty::TyKind::Ref(_, inner, mir_ty::Mutability::Mut) => Some(*inner),
+                _ => None,
+            })
+            .chain(std::iter::once(match sig.output().kind() {
+                mir_ty::TyKind::Ref(_, inner, _) => *inner,
+                _ => sig.output(),
+            }));
+        for ty in promised {
+            if self
+                .ctx
+                .type_invariant_instance(ty, self.owner_fn_id)
+                .is_some()
+            {
+                self.tcx.dcx().span_fatal(
+                    self.tcx.def_span(def_id),
+                    format!(
+                        "the derived `{}` would promise the invariant of `{ty}`, which the derive \
+                         does not keep; write the impl",
+                        self.tcx.def_path_str(def_id),
+                    ),
+                );
+            }
+        }
+    }
+
     pub fn is_annotated_as_formula_fn(&self) -> bool {
         self.tcx
             .get_attrs_by_path(
@@ -323,16 +363,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     }
 
     pub fn is_fully_annotated(&self) -> bool {
-        let has_requires = self
-            .ctx
-            .extract_path_with_attr(self.local_def_id, &analyze::annot::requires_path_path())
-            .is_some();
-        let has_ensures = self
-            .ctx
-            .extract_path_with_attr(self.local_def_id, &analyze::annot::ensures_path_path())
-            .is_some();
-
-        self.is_annotated_as_callable() || (has_requires && has_ensures)
+        self.ctx.contract_written(self.local_def_id)
     }
 
     pub fn local_trait_item_id(&self) -> Option<LocalDefId> {
@@ -649,7 +680,18 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             require_annot = Some(chc::Formula::top());
         }
 
-        let trait_item_ty = self.trait_item_ty();
+        // A trait contract inferred from the default body is not this impl's: the impl's is
+        // inferred from its own body.
+        let trait_contract_written = self
+            .tcx
+            .opt_associated_item(self.local_def_id.to_def_id())
+            .and_then(|item| item.trait_item_def_id)
+            .is_none_or(|trait_item| self.ctx.trait_method_contract_written(trait_item));
+        let trait_item_ty = if trait_contract_written {
+            self.trait_item_ty()
+        } else {
+            None
+        };
         let is_fully_annotated = self.is_fully_annotated();
         let is_callable = self.is_annotated_as_callable();
 
@@ -701,65 +743,45 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// precondition, D57) get none, and a type parameter, whose
     /// `Invariant` impl does not resolve, has none.
     fn conjoin_type_invariants(&mut self, sig: mir_ty::FnSig<'tcx>, fn_ty: &mut rty::FunctionType) {
-        if self.ctx.def_ids.type_invariant().is_none()
-            || self.tcx.is_closure_like(self.local_def_id.to_def_id())
-            || self.has_attr(&analyze::annot::lemma_path())
-            || self.has_attr(&analyze::annot::law_path())
-            || self.is_crate_destructor()
-        {
-            return;
-        }
-        let open_params = self.open_inv_params(sig.inputs().len());
         let last = sig.inputs().len().wrapping_sub(1);
         let mut requires = Vec::new();
         let mut ensures = Vec::new();
-        for (idx, ty) in sig.inputs().iter().enumerate() {
-            if open_params.contains(&idx) {
+        for site in self.type_invariant_sites(sig) {
+            let Some(pred) = self.type_invariant_pred(site.ty) else {
                 continue;
-            }
-            let param_idx = rty::FunctionParamIdx::from_usize(idx);
-            let at_entry = if idx == last {
-                chc::Term::var(rty::RefinedTypeVar::Value)
-            } else {
-                chc::Term::var(rty::RefinedTypeVar::Free(param_idx))
             };
-            match ty.kind() {
-                mir_ty::TyKind::Ref(_, inner, mir_ty::Mutability::Mut) => {
-                    let Some(pred) = self.type_invariant_pred(*inner) else {
-                        continue;
+            let term = match site.position {
+                InvariantPosition::Param(idx) => {
+                    let param_idx = rty::FunctionParamIdx::from_usize(idx);
+                    let at_entry = if idx == last {
+                        chc::Term::var(rty::RefinedTypeVar::Value)
+                    } else {
+                        chc::Term::var(rty::RefinedTypeVar::Free(param_idx))
                     };
-                    requires.push(type_invariant_atom(&pred, at_entry.mut_current()));
-                    if !borrow_may_escape(self.tcx, self.local_def_id.to_def_id(), idx) {
-                        let at_exit = chc::Term::var(rty::RefinedTypeVar::Free(param_idx));
-                        ensures.push(type_invariant_atom(&pred, at_exit.mut_final()));
+                    match site.place {
+                        InvariantPlace::Value => at_entry,
+                        InvariantPlace::Current => at_entry.box_current(),
+                        InvariantPlace::MutCurrent => at_entry.mut_current(),
+                        InvariantPlace::MutFinal => {
+                            chc::Term::var(rty::RefinedTypeVar::Free(param_idx)).mut_final()
+                        }
                     }
                 }
-                mir_ty::TyKind::Ref(_, inner, mir_ty::Mutability::Not) => {
-                    if let Some(pred) = self.type_invariant_pred(*inner) {
-                        requires.push(type_invariant_atom(&pred, at_entry.box_current()));
+                InvariantPosition::Result => {
+                    let result = chc::Term::var(rty::RefinedTypeVar::Value);
+                    match site.place {
+                        InvariantPlace::Value => result,
+                        InvariantPlace::Current => result.box_current(),
+                        InvariantPlace::MutCurrent => result.mut_current(),
+                        InvariantPlace::MutFinal => unreachable!("a result is not resolved"),
                     }
                 }
-                _ => {
-                    if let Some(pred) = self.type_invariant_pred(*ty) {
-                        requires.push(type_invariant_atom(&pred, at_entry));
-                    }
-                }
-            }
-        }
-        if !self.has_attr(&analyze::annot::open_inv_result_path()) {
-            let result = chc::Term::var(rty::RefinedTypeVar::Value);
-            let ret = sig.output();
-            let (ty, term) = match ret.kind() {
-                mir_ty::TyKind::Ref(_, inner, mir_ty::Mutability::Mut) => {
-                    (*inner, result.mut_current())
-                }
-                mir_ty::TyKind::Ref(_, inner, mir_ty::Mutability::Not) => {
-                    (*inner, result.box_current())
-                }
-                _ => (ret, result),
             };
-            if let Some(pred) = self.type_invariant_pred(ty) {
-                ensures.push(type_invariant_atom(&pred, term));
+            let atom = type_invariant_atom(&pred, term);
+            if site.is_required() {
+                requires.push(atom);
+            } else {
+                ensures.push(atom);
             }
         }
         if let Some(last_idx) = fn_ty.params.last_index() {
@@ -772,28 +794,88 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         }
     }
 
+    /// Where the contract has a type's invariant (see [`Self::conjoin_type_invariants`]), at the
+    /// types of `sig`.
+    fn type_invariant_sites(&self, sig: mir_ty::FnSig<'tcx>) -> Vec<InvariantSite<'tcx>> {
+        if self.ctx.def_ids.type_invariant().is_none()
+            || self.tcx.is_closure_like(self.local_def_id.to_def_id())
+            || self.has_attr(&analyze::annot::lemma_path())
+            || self.has_attr(&analyze::annot::law_path())
+            || self.is_crate_destructor()
+        {
+            return Vec::new();
+        }
+        let open_params = self.open_inv_params(sig.inputs().len());
+        let mut sites = Vec::new();
+        for (idx, ty) in sig.inputs().iter().enumerate() {
+            if open_params.contains(&idx) {
+                continue;
+            }
+            let position = InvariantPosition::Param(idx);
+            match ty.kind() {
+                mir_ty::TyKind::Ref(_, inner, mir_ty::Mutability::Mut) => {
+                    sites.push(InvariantSite::new(
+                        *inner,
+                        position,
+                        InvariantPlace::MutCurrent,
+                    ));
+                    if !borrow_may_escape(self.tcx, self.local_def_id.to_def_id(), idx) {
+                        sites.push(InvariantSite::new(
+                            *inner,
+                            position,
+                            InvariantPlace::MutFinal,
+                        ));
+                    }
+                }
+                mir_ty::TyKind::Ref(_, inner, mir_ty::Mutability::Not) => {
+                    sites.push(InvariantSite::new(
+                        *inner,
+                        position,
+                        InvariantPlace::Current,
+                    ));
+                }
+                _ => sites.push(InvariantSite::new(*ty, position, InvariantPlace::Value)),
+            }
+        }
+        if !self.has_attr(&analyze::annot::open_inv_result_path()) {
+            let ret = sig.output();
+            let (ty, place) = match ret.kind() {
+                mir_ty::TyKind::Ref(_, inner, mir_ty::Mutability::Mut) => {
+                    (*inner, InvariantPlace::MutCurrent)
+                }
+                mir_ty::TyKind::Ref(_, inner, mir_ty::Mutability::Not) => {
+                    (*inner, InvariantPlace::Current)
+                }
+                _ => (ret, InvariantPlace::Value),
+            };
+            sites.push(InvariantSite::new(ty, InvariantPosition::Result, place));
+        }
+        sites
+            .into_iter()
+            .filter(|site| {
+                self.ctx
+                    .type_invariant_instance(site.ty, self.owner_fn_id)
+                    .is_some()
+            })
+            .collect()
+    }
+
+    /// A type whose invariant this def's contract at its generic arguments requires (`Some(_,
+    /// true)`) or ensures (`Some(_, false)`), the first one found of the kind asked for.
+    pub fn invariant_in_contract(&self, required: bool) -> Option<mir_ty::Ty<'tcx>> {
+        let sig = self
+            .ctx
+            .fn_sig_with_body(self.local_def_id.to_def_id(), &self.body);
+        self.type_invariant_sites(sig)
+            .into_iter()
+            .find(|site| site.is_required() == required)
+            .map(|site| site.ty)
+    }
+
     /// The predicate `T::invariant` of std.rs's `Invariant` at `ty`, when its impl resolves in the
     /// owner's environment.
     fn type_invariant_pred(&self, ty: mir_ty::Ty<'tcx>) -> Option<chc::Pred> {
-        let trait_did = self.ctx.def_ids.type_invariant()?;
-        let inv_did = self
-            .tcx
-            .associated_items(trait_did)
-            .filter_by_name_unhygienic(rustc_span::Symbol::intern("invariant"))
-            .next()?
-            .def_id;
-        if self.type_builder.build(ty).ty.to_sort().is_singleton() {
-            return None;
-        }
-        let typing_env =
-            analyze::predicate_typing_env(self.tcx, self.owner_fn_id, self.ctx.def_ids.model_ty());
-        let args = self.tcx.mk_args(&[ty.into()]);
-        let instance = mir_ty::Instance::try_resolve(self.tcx, typing_env, inv_did, args)
-            .ok()
-            .flatten()?;
-        if instance.def_id() == inv_did {
-            return None;
-        }
+        let instance = self.ctx.type_invariant_instance(ty, self.owner_fn_id)?;
         Some(
             self.ctx
                 .predicate_with_args(instance.def_id(), instance.args, self.owner_fn_id)
@@ -2484,6 +2566,46 @@ fn refinement_instances(
         ));
     }
     out
+}
+
+/// A place of a signature where a contract has a type's invariant.
+#[derive(Debug, Clone, Copy)]
+struct InvariantSite<'tcx> {
+    ty: mir_ty::Ty<'tcx>,
+    position: InvariantPosition,
+    place: InvariantPlace,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum InvariantPosition {
+    Param(usize),
+    Result,
+}
+
+/// Which value of the position: the value itself, the current value behind a reference, or the
+/// final value of a `&mut` parameter.
+#[derive(Debug, Clone, Copy)]
+enum InvariantPlace {
+    Value,
+    Current,
+    MutCurrent,
+    MutFinal,
+}
+
+impl<'tcx> InvariantSite<'tcx> {
+    fn new(ty: mir_ty::Ty<'tcx>, position: InvariantPosition, place: InvariantPlace) -> Self {
+        Self {
+            ty,
+            position,
+            place,
+        }
+    }
+
+    /// Whether the contract requires the invariant here; otherwise it ensures it.
+    fn is_required(&self) -> bool {
+        matches!(self.position, InvariantPosition::Param(_))
+            && !matches!(self.place, InvariantPlace::MutFinal)
+    }
 }
 
 fn type_invariant_atom<V>(pred: &chc::Pred, term: chc::Term<V>) -> chc::Formula<V> {

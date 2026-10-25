@@ -1741,6 +1741,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     .into()
             }
             ResolvedCallable::Unresolved => {
+                // The type inferred from a default body is not the type of the impls that
+                // override it, so a call that may reach any of them takes the unspecified type.
+                if !self.ctx.trait_method_contract_written(def_id) {
+                    return self.abstract_callable_ty(def_id, args);
+                }
                 match self.ctx.def_ty_with_args(def_id, args, caller_def_id) {
                     Some(def_ty) => {
                         self.ctx.record_dispatched_call(
@@ -1767,10 +1772,13 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 // which refines the trait's. A trait-level spec may hold only by assuming a bound
                 // of its own (`I: IntoIteratorSpec` of `IntoIterator::into_iter`), which the
                 // resolved impl does not need (the blanket `impl<I: Iterator> IntoIterator for I`).
-                // A local impl method without a contract of its own takes the trait's.
+                // A local impl method without a contract of its own takes the trait's, when the
+                // trait writes one; a contract the trait leaves to inference from its default body
+                // is not the impl's, which is inferred from the impl's own body.
                 if resolved_def_id != def_id
                     && (!resolved_def_id.is_local()
-                        || self.ctx.has_own_impl_contract(resolved_def_id))
+                        || self.ctx.has_own_impl_contract(resolved_def_id)
+                        || !self.ctx.trait_method_contract_written(def_id))
                 {
                     if let Some(def_ty) =
                         self.ctx
@@ -1795,7 +1803,13 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 if analyze::is_ignored_crate_fn(self.tcx, resolved_def_id) {
                     analyze::fatal_ignored_call(self.tcx, resolved_def_id, resolved_args);
                 }
-                if let Some(def_ty) = self.ctx.def_ty_with_args(def_id, args, caller_def_id) {
+                let def_ty = if resolved_def_id == def_id {
+                    self.ctx
+                        .running_def_ty_with_args(def_id, args, caller_def_id)
+                } else {
+                    self.ctx.def_ty_with_args(def_id, args, caller_def_id)
+                };
+                if let Some(def_ty) = def_ty {
                     // otherwise nothing asks for a deferred impl method's type and its body goes unchecked
                     if resolved_def_id != def_id {
                         let _ = self.ctx.def_ty_with_args(
