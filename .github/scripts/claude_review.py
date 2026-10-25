@@ -77,8 +77,8 @@ def read_changed_files(paths: list[str]) -> tuple[dict[str, str], list[str]]:
     contents: dict[str, str] = {}
     omitted: list[str] = []
     for path in paths:
-        file = REPO_ROOT / path
-        if not file.is_file():
+        file = repo_file(path)
+        if file is None:
             continue
         try:
             text = file.read_text()
@@ -142,9 +142,17 @@ def read_file(path: str, start_line: int = 1, end_line: int = 400) -> str:
     return use_tool(lambda: numbered_lines(path, start_line, end_line))
 
 
-def numbered_lines(path: str, start_line: int, end_line: int) -> str:
+def repo_file(path: str) -> Path | None:
+    """The file at path in the checkout, or None when it is missing or a link leads outside it."""
     file = (REPO_ROOT / path).resolve()
     if not file.is_relative_to(REPO_ROOT) or not file.is_file():
+        return None
+    return file
+
+
+def numbered_lines(path: str, start_line: int, end_line: int) -> str:
+    file = repo_file(path)
+    if file is None:
         return f"no file {path} in the repository"
     lines = file.read_text(errors="replace").splitlines()[start_line - 1 : end_line]
     return "\n".join(f"{n}: {line}" for n, line in enumerate(lines, start_line))

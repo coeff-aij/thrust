@@ -10,6 +10,7 @@ on:
       pr:
         description: Pull request number
         required: true
+        type: number
 
 permissions: {}
 
@@ -17,6 +18,8 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || inputs.pr }}
   cancel-in-progress: true
 
+# This job holds the API key, so its actions are pinned to commits, its packages to hashes, and
+# the key and the token are given only to the step that runs the script.
 jobs:
   review:
     if: ${{ !github.event.pull_request.draft }}
@@ -26,26 +29,30 @@ jobs:
       pull-requests: write
     timeout-minutes: 10
     env:
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      GH_TOKEN: ${{ github.token }}
       PR: ${{ github.event.pull_request.number || inputs.pr }}
+      HAS_API_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
     steps:
       # The script and the prompt come from the default branch; the pull request's head is
       # checked out apart, only to be read.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: refs/pull/${{ env.PR }}/head
           path: pr-head
           persist-credentials: false
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.12"
-      - run: pip install anthropic==2.3.0 pydantic==2.14.1
-      - if: ${{ env.ANTHROPIC_API_KEY != '' }}
+      - run: pip install --require-hashes -r .github/scripts/requirements.txt
+      - if: ${{ env.HAS_API_KEY == 'true' }}
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GH_TOKEN: ${{ github.token }}
         run: python .github/scripts/claude_review.py --repo "$GITHUB_REPOSITORY" --pr "$PR" --prompt .github/claude-review-prompt.md --head pr-head
-      - if: ${{ env.ANTHROPIC_API_KEY == '' }}
+      - if: ${{ env.HAS_API_KEY != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: python .github/scripts/claude_review.py --repo "$GITHUB_REPOSITORY" --pr "$PR" --prompt .github/claude-review-prompt.md --head pr-head --dry-run
