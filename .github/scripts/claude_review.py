@@ -1,7 +1,8 @@
 """Review a pull request with the Claude API and post the result as one PR review.
 
-The review criteria follow the code-review plugin of anthropics/claude-code: only issues that
-are certain to be real are reported, as inline comments on the changed lines.
+The review points out places for the developers to check, on soundness, theory, usability and
+maintainability, as inline comments on the changed lines. What not to report follows the
+code-review plugin of anthropics/claude-code.
 
 Usage: claude_review.py --repo OWNER/NAME --pr NUMBER [--model MODEL] [--dry-run]
 
@@ -15,39 +16,46 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import Literal
 
 import anthropic
 from pydantic import BaseModel
 
-GUIDELINE_FILES = ["AGENTS.md", "CLAUDE.md"]
+GUIDELINE_FILES = ["AGENTS.md", "CLAUDE.md", "README.md"]
 MAX_FILE_CHARS = 100_000
 
 SYSTEM_PROMPT = """\
 You review a pull request to Thrust, a refinement-type verifier for Rust built as a rustc
 driver that emits CHC constraints. You get the pull request description, the repository's
-guidelines, the diff, and the full post-change contents of the changed files.
+guidelines and user documentation, the diff, and the full post-change contents of the changed
+files.
 
-Report only high-signal issues:
-- code that will fail to compile, or references something that does not exist;
-- code that produces a wrong result regardless of input, such as a logic error, or an
-  unsound encoding that lets a wrong program verify;
-- a clear violation of the repository guidelines, quoting the rule.
+Point out the places a developer should look at; the developers confirm and fix them. Look at
+four aspects:
+- soundness: an encoding or a shortcut that could let a wrong program verify, or a case the
+  change silently drops;
+- theory: a change to the encoding or the type system whose justification is missing or does
+  not follow from the known formulations (RustHorn-style prophecies, refinement types, CHC);
+- usability: a change in what users write or see (annotations, diagnostics, configuration)
+  that is confusing, undocumented in the README, or breaks existing usage;
+- maintainability: duplicated logic, a special case that belongs in an existing mechanism,
+  or a violation of the repository guidelines (quote the rule).
 
-Do not report pre-existing issues, style, nitpicks a senior engineer would not raise, things a
-linter or the compiler's warnings would catch, missing tests, or speculative problems that
-depend on particular inputs. If you are not certain an issue is real, leave it out. Reporting
-nothing is a good outcome.
+Do not report pre-existing issues, formatting, things rustfmt, clippy or the compiler catch,
+or nitpicks a senior engineer would not raise. Include an issue you are unsure of when it
+would matter if real, and say what would confirm it. Reporting nothing is a good outcome.
 
 Each comment names one issue on one changed line of the new version of a file (`path` as in
-the diff, `line` as a line number in the new file), says briefly what is wrong and why, and
-may end with a ```suggestion block when a fix of a few lines fully resolves it.
-The summary is one or two sentences on what was checked and what was found.
+the diff, `line` as a line number in the new file) and says briefly what may be wrong and why.
+The summary is two or three sentences on the overall change and the most important concern.
 """
 
 
 class Comment(BaseModel):
     path: str
     line: int
+    aspect: Literal["soundness", "theory", "usability", "maintainability"]
+    certain: bool
     body: str
 
 
@@ -135,15 +143,20 @@ def review_payload(review: Review, head_sha: str, lines: dict[str, set[int]], om
     inline = [c for c in review.comments if c.line in lines.get(c.path, set())]
     outside = [c for c in review.comments if c not in inline]
     body = [f"**Claude review** (automated)\n\n{review.summary}"]
-    body += [f"- `{c.path}:{c.line}`: {c.body}" for c in outside]
+    body += [f"- `{c.path}:{c.line}`: {comment_text(c)}" for c in outside]
     if omitted:
         body.append("Not reviewed (too large or binary): " + ", ".join(f"`{p}`" for p in omitted))
     return {
         "commit_id": head_sha,
         "event": "COMMENT",
         "body": "\n\n".join(body),
-        "comments": [{"path": c.path, "line": c.line, "side": "RIGHT", "body": c.body} for c in inline],
+        "comments": [{"path": c.path, "line": c.line, "side": "RIGHT", "body": comment_text(c)} for c in inline],
     }
+
+
+def comment_text(comment: Comment) -> str:
+    label = comment.aspect if comment.certain else f"{comment.aspect}, to check"
+    return f"[{label}] {comment.body}"
 
 
 def main() -> None:
