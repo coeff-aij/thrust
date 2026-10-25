@@ -928,7 +928,9 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         let instance =
             mir_ty::Instance::try_resolve(self.tcx, typing_env, def_id, generic_args).unwrap();
         let Some(instance) = instance else {
-            let known = (!self.analyzer.infers_trait_method_contract(def_id))
+            let known = self
+                .analyzer
+                .trait_method_contract_written(def_id)
                 .then(|| {
                     self.analyzer
                         .known_function_ty_with_args(def_id, generic_args, owner_fn_id)

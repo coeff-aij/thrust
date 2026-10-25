@@ -44,7 +44,7 @@ impl thrust_models::Model for S {
 }
 
 impl Source for S {
-    type Item = C; //~ ERROR: a type with an invariant
+    type Item = C; //~ ERROR: which has an invariant
     fn take(&self) -> Option<C> {
         Some(C { n: 1 })
     }
