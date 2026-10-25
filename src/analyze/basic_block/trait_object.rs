@@ -9,7 +9,7 @@
 //! the opaque value does not have; a contract that does is rejected at the call.
 
 use rustc_middle::mir::Operand;
-use rustc_middle::ty::{self as mir_ty, TypeVisitableExt as _};
+use rustc_middle::ty::{self as mir_ty};
 use rustc_span::def_id::{DefId, LocalDefId};
 
 use super::{Analyzer, ResolvedCallable};
@@ -167,7 +167,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         if hidden_ty.is_trait() {
             self.check_auto_trait_drop(hidden_ty, dyn_ty);
         } else {
-            self.check_packed_type(hidden_ty, dyn_ty);
             let owner = self.type_builder.owner_fn_id();
             let invariant = self
                 .ctx
@@ -193,22 +192,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             chc::Term::box_(chc::Term::null())
         };
         builder.build(expected_ty, term)
-    }
-
-    /// Stops at packing a value whose type is or holds a type parameter in a crate with an
-    /// `Invariant` impl, where its invariant, which the impl's methods assume at the instance,
-    /// would not be required. Such a crate analyzes generic bodies at each instance
-    /// ([`analyze::Analyzer::per_instance_generics`]), where the packed type is concrete, so this
-    /// is not expected to be reached; in a crate without one no type has an invariant.
-    fn check_packed_type(&self, hidden_ty: mir_ty::Ty<'tcx>, dyn_ty: mir_ty::Ty<'tcx>) {
-        if !hidden_ty.has_param() || self.ctx.crate_type_invariant().is_none() {
-            return;
-        }
-        self.tcx.dcx().fatal(format!(
-            "packing `{hidden_ty}` into `{dyn_ty}` in {} is not supported: a value whose type \
-             holds a type parameter has no known type invariant to require",
-            self.site(),
-        ));
     }
 
     /// Stops at a coercion between trait objects unless it only drops auto traits
