@@ -974,6 +974,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let proof_branch = self.ctx.def_ids().proof_branch();
         analyze::lemma::check_lemmas(self.tcx, proof_branch);
         self.check_model_impls();
+        self.ctx.check_associated_types_without_invariant();
         self.analyze_raw_command_annot();
         self.register_trait_laws();
         self.check_restated_laws();

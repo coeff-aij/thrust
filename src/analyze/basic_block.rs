@@ -1741,6 +1741,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     .into()
             }
             ResolvedCallable::Unresolved => {
+                // The type inferred from a default body is not the type of the impls that
+                // override it, so a call that may reach any of them takes the unspecified type.
+                if self.ctx.infers_trait_method_contract(def_id) {
+                    return self.abstract_callable_ty(def_id, args);
+                }
                 match self.ctx.def_ty_with_args(def_id, args, caller_def_id) {
                     Some(def_ty) => {
                         self.ctx.record_dispatched_call(
@@ -1795,7 +1800,13 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 if analyze::is_ignored_crate_fn(self.tcx, resolved_def_id) {
                     analyze::fatal_ignored_call(self.tcx, resolved_def_id, resolved_args);
                 }
-                if let Some(def_ty) = self.ctx.def_ty_with_args(def_id, args, caller_def_id) {
+                let def_ty = if resolved_def_id == def_id {
+                    self.ctx
+                        .running_def_ty_with_args(def_id, args, caller_def_id)
+                } else {
+                    self.ctx.def_ty_with_args(def_id, args, caller_def_id)
+                };
+                if let Some(def_ty) = def_ty {
                     // otherwise nothing asks for a deferred impl method's type and its body goes unchecked
                     if resolved_def_id != def_id {
                         let _ = self.ctx.def_ty_with_args(

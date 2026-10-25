@@ -748,9 +748,10 @@ impl<'tcx> Analyzer<'tcx> {
             self.check_reused_total_methods(&mut total_methods, &mut checked_methods);
             self.check_reused_spec_bounds(&mut spec_bounds);
             if self.reused_generic_instances.borrow().len() == instances {
-                return;
+                break;
             }
         }
+        self.stop_reused_at_invariant();
     }
 
     /// Runs `check` on each assumption that `recorded` keeps for the typeck root of a reused

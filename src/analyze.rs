@@ -34,6 +34,7 @@ pub(crate) mod derived_pred;
 mod did_cache;
 mod extern_spec;
 mod fn_mut_reuse;
+mod invariant_args;
 mod lemma;
 mod local_def;
 mod model_eq;
@@ -619,6 +620,9 @@ pub struct Analyzer<'tcx> {
     /// The instances `(def, generic args, caller)` that use a generic def's contract as
     /// instantiated; see [`Analyzer::check_reused_spec_bounds`].
     reused_generic_instances: RefCell<Vec<(DefId, mir_ty::GenericArgsRef<'tcx>, DefId)>>,
+    /// The instances whose bodies have been analyzed, so that one at a type argument with an
+    /// invariant ([`Analyzer::invariant_type_in`]) is analyzed once.
+    analyzed_instance_keys: RefCell<HashSet<(DefId, InstantiationKey<'tcx>)>>,
     /// The types of the functions each basic block calls, recorded only when
     /// [`candidate_atoms_enabled`], whose contracts give a loop head candidate atoms.
     called_fn_tys: HashMap<(AnalysisKey<'tcx>, BasicBlock), Vec<rty::FunctionType>>,
@@ -890,6 +894,7 @@ impl<'tcx> Analyzer<'tcx> {
             fn_mut_reuse: Default::default(),
             spec_assumptions: Default::default(),
             reused_generic_instances: Default::default(),
+            analyzed_instance_keys: Default::default(),
             called_fn_tys: Default::default(),
             impl_methods_with_own_contract: Default::default(),
             derived_preds: Default::default(),
@@ -1484,6 +1489,17 @@ impl<'tcx> Analyzer<'tcx> {
         self.closure_type_params.borrow().get(&type_param).cloned()
     }
 
+    /// Whether `def_id` is a trait method of the crate whose trait-level contract is left, wholly
+    /// or in part, to inference from its default body. That type is not the type of an impl
+    /// that overrides the method, so at a type parameter the method has the unspecified type, as
+    /// a bodiless method without a contract does.
+    pub fn infers_trait_method_contract(&self, def_id: DefId) -> bool {
+        self.tcx.trait_of_assoc(def_id).is_some()
+            && self
+                .concrete_def_ty(def_id)
+                .is_some_and(|rty| rty.has_pred_var())
+    }
+
     pub fn concrete_def_ty(&self, def_id: DefId) -> Option<&rty::RefinedType> {
         self.defs.get(&def_id).and_then(|def_ty| match def_ty {
             DefTy::Concrete(rty) => Some(rty),
@@ -1917,7 +1933,19 @@ impl<'tcx> Analyzer<'tcx> {
         generic_args: mir_ty::GenericArgsRef<'tcx>,
         caller_def_id: DefId,
     ) -> Option<rty::RefinedType> {
-        self.def_ty_at(def_id, generic_args, caller_def_id, true)
+        let runs = self.tcx.trait_of_assoc(def_id).is_none();
+        self.def_ty_at(def_id, generic_args, caller_def_id, true, runs)
+    }
+
+    /// The type of `def_id` at `generic_args`, as [`Analyzer::def_ty_with_args`] gives it, for a
+    /// call that runs its body there: a trait method's default body as well as any other.
+    pub fn running_def_ty_with_args(
+        &mut self,
+        def_id: DefId,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
+        caller_def_id: DefId,
+    ) -> Option<rty::RefinedType> {
+        self.def_ty_at(def_id, generic_args, caller_def_id, true, true)
     }
 
     /// The contract of `def_id` at `generic_args`, as [`Analyzer::def_ty_with_args`] gives it,
@@ -1928,7 +1956,7 @@ impl<'tcx> Analyzer<'tcx> {
         generic_args: mir_ty::GenericArgsRef<'tcx>,
         caller_def_id: DefId,
     ) -> Option<rty::RefinedType> {
-        self.def_ty_at(def_id, generic_args, caller_def_id, false)
+        self.def_ty_at(def_id, generic_args, caller_def_id, false, false)
     }
 
     fn def_ty_at(
@@ -1937,6 +1965,7 @@ impl<'tcx> Analyzer<'tcx> {
         generic_args: mir_ty::GenericArgsRef<'tcx>,
         caller_def_id: DefId,
         may_analyze: bool,
+        runs: bool,
     ) -> Option<rty::RefinedType> {
         if !self.per_instance_law_impls.is_empty() && self.is_trait_law(def_id) {
             self.law_uses.borrow_mut().push((def_id, generic_args));
@@ -1996,21 +2025,42 @@ impl<'tcx> Analyzer<'tcx> {
             generic_args,
             caller_def_id,
         };
-        if let Some(rty) = instantiated_ty_cache.borrow().get(&key) {
-            return Some(rty.clone());
+        // A contract established over type parameters is not the contract at a type argument
+        // that holds a type with an invariant, so the body that runs there is analyzed there.
+        let at_invariant = may_analyze
+            && runs
+            && !self
+                .analyzed_instance_keys
+                .borrow()
+                .contains(&(def_id, key))
+            && self.invariant_type_in(call_args, caller_def_id).is_some();
+        let cached = instantiated_ty_cache.borrow().get(&key).cloned();
+        if let Some(rty) = &cached {
+            if !at_invariant {
+                return Some(rty.clone());
+            }
+        }
+        if at_invariant && !deferred_ty_mode.is_some_and(|mode| mode.should_analyze()) {
+            self.stop_unanalyzed_at_invariant(def_id, call_args, caller_def_id);
         }
 
-        let expected = {
-            let mut analyzer = self.local_def_analyzer(local_def_id);
-            analyzer
-                .owner_fn_id(caller_def_id)
-                .generic_args(generic_args);
-            analyzer.expected_ty()
+        let expected = match cached {
+            Some(rty) => rty,
+            None => {
+                let expected = {
+                    let mut analyzer = self.local_def_analyzer(local_def_id);
+                    analyzer
+                        .owner_fn_id(caller_def_id)
+                        .generic_args(generic_args);
+                    analyzer.expected_ty()
+                };
+                instantiated_ty_cache
+                    .borrow_mut()
+                    .insert(key, expected.clone());
+                tracing::info!(?def_id, rty = %expected.display(), ?generic_args, "deferred def");
+                expected
+            }
         };
-        instantiated_ty_cache
-            .borrow_mut()
-            .insert(key, expected.clone());
-        tracing::info!(?def_id, rty = %expected.display(), ?generic_args, "deferred def");
 
         // A generic def's body has been checked once over forall sorts against this contract.
         // Analyzing it again at the instance is needed to define the unknowns minted in
@@ -2021,7 +2071,8 @@ impl<'tcx> Analyzer<'tcx> {
         // to the current one. Otherwise the contract is used as instantiated.
         let analyze_body = may_analyze
             && deferred_ty_mode.is_some_and(|mode| mode.should_analyze())
-            && (!is_generic
+            && (at_invariant
+                || !is_generic
                 || (has_fn_mut_closure(generic_args)
                     && !self.reuse_fn_mut_generic(def_id, &expected, generic_args, caller_def_id))
                 || self.may_have_pred_var(&expected, generic_args, caller_def_id));
@@ -2039,6 +2090,9 @@ impl<'tcx> Analyzer<'tcx> {
             );
         }
         if analyze_body {
+            self.analyzed_instance_keys
+                .borrow_mut()
+                .insert((def_id, key));
             // The arguments the body is instantiated at: the spec's own body at the bound
             // arguments, a target's body at the call's.
             let body_args = if local_def_id.to_def_id() == def_id {
