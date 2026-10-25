@@ -1,9 +1,9 @@
-//@error-in-other-file: a value whose type holds a type parameter
+//@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
-// Packing at a type parameter is rejected: `T`'s invariant, which `C`'s methods assume at the
-// instance, is not known there, so it could not be required.
+// `pack` is analyzed at `T = C`, where packing requires `C`'s invariant, which `C { n: 1 }` breaks:
+// `bump` would return 1000.
 
 #[thrust_macros::context]
 trait Counter {
@@ -42,7 +42,7 @@ fn pack<T: Counter + 'static>(x: Box<T>) -> Box<dyn Counter> {
 }
 
 fn main() {
-    let mut d = pack(Box::new(C { n: 2 }));
+    let mut d = pack(Box::new(C { n: 1 }));
     let r = d.bump();
     assert!(r <= 100);
 }

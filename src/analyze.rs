@@ -439,76 +439,6 @@ pub fn is_injected_std(tcx: mir_ty::TyCtxt<'_>, def_id: LocalDefId) -> bool {
     )
 }
 
-/// Whether the formula function `def_id` of a trait's contract mentions the receiver or `Self`:
-/// it uses its parameter `self_` (the receiver's model, which a `Model` supertrait may have
-/// normalized to a concrete type), or an expression, closures' bodies included, has a type or
-/// generic arguments naming `Self` (a closure's own type, which carries its parent's `Self`, is
-/// not looked into).
-fn formula_names_self(tcx: mir_ty::TyCtxt<'_>, def_id: LocalDefId) -> bool {
-    struct Finder<'a, 'tcx> {
-        tcx: mir_ty::TyCtxt<'tcx>,
-        typeck: &'a mir_ty::TypeckResults<'tcx>,
-        receiver: Option<rustc_hir::HirId>,
-        found: bool,
-    }
-    fn names_self(ty: mir_ty::Ty<'_>) -> bool {
-        let mut walker = ty.walk();
-        while let Some(arg) = walker.next() {
-            let mir_ty::GenericArgKind::Type(ty) = arg.kind() else {
-                continue;
-            };
-            match ty.kind() {
-                mir_ty::TyKind::Closure(..) => walker.skip_current_subtree(),
-                mir_ty::TyKind::Param(param) if param.name == rustc_span::symbol::kw::SelfUpper => {
-                    return true
-                }
-                _ => {}
-            }
-        }
-        false
-    }
-    impl<'tcx> rustc_hir::intravisit::Visitor<'tcx> for Finder<'_, 'tcx> {
-        type NestedFilter = rustc_middle::hir::nested_filter::OnlyBodies;
-
-        fn maybe_tcx(&mut self) -> mir_ty::TyCtxt<'tcx> {
-            self.tcx
-        }
-
-        fn visit_expr(&mut self, expr: &'tcx rustc_hir::Expr<'tcx>) {
-            if let rustc_hir::ExprKind::Path(rustc_hir::QPath::Resolved(None, path)) = expr.kind {
-                if let rustc_hir::def::Res::Local(id) = path.res {
-                    self.found |= Some(id) == self.receiver;
-                }
-            }
-            let ty_names_self = self
-                .typeck
-                .node_type_opt(expr.hir_id)
-                .is_some_and(names_self);
-            let args_name_self = self
-                .typeck
-                .node_args_opt(expr.hir_id)
-                .is_some_and(|args| args.types().any(names_self));
-            self.found |= ty_names_self || args_name_self;
-            rustc_hir::intravisit::walk_expr(self, expr);
-        }
-    }
-    let body = tcx.hir_body_owned_by(def_id);
-    let receiver = body.params.iter().find_map(|param| match param.pat.kind {
-        rustc_hir::PatKind::Binding(_, hir_id, ident, _) if ident.name.as_str() == "self_" => {
-            Some(hir_id)
-        }
-        _ => None,
-    });
-    let mut finder = Finder {
-        tcx,
-        typeck: tcx.typeck(def_id),
-        receiver,
-        found: false,
-    };
-    rustc_hir::intravisit::Visitor::visit_expr(&mut finder, body.value);
-    finder.found
-}
-
 /// Whether `def_id` is `#[thrust::ignored]`, so that its body is not analyzed.
 pub fn is_ignored(tcx: mir_ty::TyCtxt<'_>, def_id: DefId) -> bool {
     tcx.get_attrs_by_path(def_id, &annot::ignored_path())
@@ -2829,48 +2759,6 @@ impl<'tcx> Analyzer<'tcx> {
             Some(DefTy::Deferred(specs)) => specs.iter().map(|spec| spec.local_def_id).collect(),
             Some(DefTy::Concrete(_)) | None => Vec::new(),
         }
-    }
-
-    /// Whether one of `formulas`, formula functions of a trait's contract, mentions the receiver
-    /// or `Self`. Read before instantiation: at `Self = dyn Tr` the receiver's model is
-    /// single-valued and folds to a constant.
-    pub fn contract_names_self(&self, formulas: &[LocalDefId]) -> bool {
-        formulas
-            .iter()
-            .any(|formula| formula_names_self(self.tcx, *formula))
-    }
-
-    /// The predicate `T::invariant` of std.rs's `Invariant` at `ty`, when its impl resolves in the
-    /// environment of `owner_fn_id`.
-    pub fn type_invariant_pred(
-        &self,
-        type_builder: &TypeBuilder<'tcx>,
-        owner_fn_id: DefId,
-        ty: mir_ty::Ty<'tcx>,
-    ) -> Option<chc::Pred> {
-        let trait_did = self.def_ids.type_invariant()?;
-        let inv_did = self
-            .tcx
-            .associated_items(trait_did)
-            .filter_by_name_unhygienic(rustc_span::Symbol::intern("invariant"))
-            .next()?
-            .def_id;
-        if type_builder.build(ty).ty.to_sort().is_singleton() {
-            return None;
-        }
-        let typing_env =
-            analyze::predicate_typing_env(self.tcx, owner_fn_id, self.def_ids.model_ty());
-        let args = self.tcx.mk_args(&[ty.into()]);
-        let instance = mir_ty::Instance::try_resolve(self.tcx, typing_env, inv_did, args)
-            .ok()
-            .flatten()?;
-        if instance.def_id() == inv_did {
-            return None;
-        }
-        Some(
-            self.predicate_with_args(instance.def_id(), instance.args, owner_fn_id)
-                .into(),
-        )
     }
 
     fn extract_require_annot(

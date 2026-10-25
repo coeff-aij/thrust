@@ -10,7 +10,7 @@
 
 use rustc_middle::mir::Operand;
 use rustc_middle::ty::{self as mir_ty, TypeVisitableExt as _};
-use rustc_span::def_id::DefId;
+use rustc_span::def_id::{DefId, LocalDefId};
 
 use super::{Analyzer, ResolvedCallable};
 use crate::analyze;
@@ -34,6 +34,78 @@ fn trait_objects<'tcx>(ty: mir_ty::Ty<'tcx>) -> Vec<mir_ty::Ty<'tcx>> {
         .filter_map(|arg| arg.as_type())
         .filter(|ty| ty.is_trait())
         .collect()
+}
+
+/// Whether the formula function `def_id` of a trait's contract mentions the receiver or `Self`:
+/// it uses its parameter `self_` (the receiver's model, which a `Model` supertrait may have
+/// normalized to a concrete type), or an expression, closures' bodies included, has a type or
+/// generic arguments naming `Self` (a closure's own type, which carries its parent's `Self`, is
+/// not looked into).
+/// Read before instantiation: at `Self = dyn Tr` the receiver's model is single-valued and folds
+/// to a constant.
+fn formula_names_self(tcx: mir_ty::TyCtxt<'_>, def_id: LocalDefId) -> bool {
+    struct Finder<'a, 'tcx> {
+        tcx: mir_ty::TyCtxt<'tcx>,
+        typeck: &'a mir_ty::TypeckResults<'tcx>,
+        receiver: Option<rustc_hir::HirId>,
+        found: bool,
+    }
+    fn names_self(ty: mir_ty::Ty<'_>) -> bool {
+        let mut walker = ty.walk();
+        while let Some(arg) = walker.next() {
+            let mir_ty::GenericArgKind::Type(ty) = arg.kind() else {
+                continue;
+            };
+            match ty.kind() {
+                mir_ty::TyKind::Closure(..) => walker.skip_current_subtree(),
+                mir_ty::TyKind::Param(param) if param.name == rustc_span::symbol::kw::SelfUpper => {
+                    return true
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+    impl<'tcx> rustc_hir::intravisit::Visitor<'tcx> for Finder<'_, 'tcx> {
+        type NestedFilter = rustc_middle::hir::nested_filter::OnlyBodies;
+
+        fn maybe_tcx(&mut self) -> mir_ty::TyCtxt<'tcx> {
+            self.tcx
+        }
+
+        fn visit_expr(&mut self, expr: &'tcx rustc_hir::Expr<'tcx>) {
+            if let rustc_hir::ExprKind::Path(rustc_hir::QPath::Resolved(None, path)) = expr.kind {
+                if let rustc_hir::def::Res::Local(id) = path.res {
+                    self.found |= Some(id) == self.receiver;
+                }
+            }
+            let ty_names_self = self
+                .typeck
+                .node_type_opt(expr.hir_id)
+                .is_some_and(names_self);
+            let args_name_self = self
+                .typeck
+                .node_args_opt(expr.hir_id)
+                .is_some_and(|args| args.types().any(names_self));
+            self.found |= ty_names_self || args_name_self;
+            rustc_hir::intravisit::walk_expr(self, expr);
+        }
+    }
+    let body = tcx.hir_body_owned_by(def_id);
+    let receiver = body.params.iter().find_map(|param| match param.pat.kind {
+        rustc_hir::PatKind::Binding(_, hir_id, ident, _) if ident.name.as_str() == "self_" => {
+            Some(hir_id)
+        }
+        _ => None,
+    });
+    let mut finder = Finder {
+        tcx,
+        typeck: tcx.typeck(def_id),
+        receiver,
+        found: false,
+    };
+    rustc_hir::intravisit::Visitor::visit_expr(&mut finder, body.value);
+    finder.found
 }
 
 /// The principal trait of the trait object `ty`.
@@ -99,7 +171,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             let owner = self.type_builder.owner_fn_id();
             let invariant = self
                 .ctx
-                .type_invariant_pred(&self.type_builder, owner, hidden_ty);
+                .type_invariant_instance(hidden_ty, owner)
+                .map(|instance| {
+                    chc::Pred::from(self.ctx.predicate_with_args(
+                        instance.def_id(),
+                        instance.args,
+                        owner,
+                    ))
+                });
             self.check_vtable_methods(hidden_ty, dyn_ty, invariant.is_some());
             if let Some(pred) = invariant {
                 self.require_hidden_invariant(source_ty, pred, source.clone());
@@ -116,12 +195,13 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         builder.build(expected_ty, term)
     }
 
-    /// Stops at packing a value whose type is or holds a type parameter: its type invariant,
-    /// which the impl's methods assume at the instance, is not known at the parameter, so it
-    /// could not be required. An abstract invariant of type parameters (Creusot's
-    /// `is_tyinv_trivial` is false at one) would lift this.
+    /// Stops at packing a value whose type is or holds a type parameter in a crate with an
+    /// `Invariant` impl, where its invariant, which the impl's methods assume at the instance,
+    /// would not be required. Such a crate analyzes generic bodies at each instance
+    /// ([`analyze::Analyzer::per_instance_generics`]), where the packed type is concrete, so this
+    /// is not expected to be reached; in a crate without one no type has an invariant.
     fn check_packed_type(&self, hidden_ty: mir_ty::Ty<'tcx>, dyn_ty: mir_ty::Ty<'tcx>) {
-        if !hidden_ty.has_param() {
+        if !hidden_ty.has_param() || self.ctx.crate_type_invariant().is_none() {
             return;
         }
         self.tcx.dcx().fatal(format!(
@@ -202,7 +282,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         trait_ref.def_id,
                         *method,
                     )
-                    || self.ctx.written_contract_formulas(method.def_id).is_empty()
+                    || !self.ctx.trait_method_contract_written(method.def_id)
                 {
                     continue;
                 }
@@ -228,10 +308,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         dyn_ty: mir_ty::Ty<'tcx>,
         has_invariant: bool,
     ) {
-        let instance = mir_ty::Instance::try_resolve(self.tcx, self.typing_env, def_id, args)
+        // At a type parameter of a crate without invariants the impl is not known here; each
+        // impl of the crate is checked against the trait's contract on its own.
+        let Some(instance) = mir_ty::Instance::try_resolve(self.tcx, self.typing_env, def_id, args)
             .ok()
             .flatten()
-            .expect("a vtable method resolves at the packed type");
+        else {
+            return;
+        };
         let resolved = instance.def_id();
         if analyze::is_ignored_crate_fn(self.tcx, resolved) {
             analyze::fatal_ignored_call(self.tcx, resolved, instance.args);
@@ -246,9 +330,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// Stops unless the body `resolved` the vtable holds for the trait method `def_id`, if it
     /// takes `&mut self`, ensures the type invariant of the receiver's final value, as its
     /// contract does unless the receiver is `#[thrust::open_inv]` or its borrow may outlive the
-    /// call ([`analyze::local_def::Analyzer::ensures_final_invariant`]). A trait's default body is
-    /// checked at `Self`, where it has no invariant, so it ensures none. Calls through the trait
-    /// object assume the invariant of the packed value, which only these bodies change.
+    /// call ([`analyze::local_def::Analyzer::ensures_final_invariant`]). A trait's default body
+    /// is analyzed at the packed type, as generic bodies are in a crate with an invariant, so its
+    /// contract there has the conjunct too. Calls through the trait object assume the invariant
+    /// of the packed value, which only these bodies change.
     fn check_invariant_kept(
         &mut self,
         def_id: DefId,
@@ -266,19 +351,18 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         } else {
             def_id
         };
-        let kept = resolved != def_id
-            && self
-                .ctx
-                .contract_spec_defs(contract_def)
-                .into_iter()
-                .all(|spec| self.ctx.local_def_analyzer(spec).ensures_final_invariant(0));
+        let kept = self
+            .ctx
+            .contract_spec_defs(contract_def)
+            .into_iter()
+            .all(|spec| self.ctx.local_def_analyzer(spec).ensures_final_invariant(0));
         if kept {
             return;
         }
         tcx.dcx().fatal(format!(
             "`{hidden_ty}` packed into `{dyn_ty}` in {} is not supported: its invariant is not \
-             ensured after `{}`, a default body or one whose `&mut self` is \
-             `#[thrust::open_inv]` or may outlive the call, and calls through the trait object \
+             ensured after `{}`, whose `&mut self` is `#[thrust::open_inv]` or may \
+             outlive the call, and calls through the trait object \
              assume it",
             self.site(),
             tcx.def_path_str(resolved),
@@ -393,14 +477,17 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.check_dyn_trait(trait_def_id, dyn_ty);
         let site = self.site();
         let method = tcx.def_path_str(def_id);
-        let formulas = self.ctx.written_contract_formulas(def_id);
-        if formulas.is_empty() {
+        if !self.ctx.trait_method_contract_written(def_id) {
             tcx.dcx().fatal(format!(
                 "`{method}` is called through `{dyn_ty}` in {site}, but has no contract on the \
                  trait: a call through a trait object takes the trait's contract"
             ));
         }
-        if self.ctx.contract_names_self(&formulas) {
+        let formulas = self.ctx.written_contract_formulas(def_id);
+        if formulas
+            .iter()
+            .any(|formula| formula_names_self(tcx, *formula))
+        {
             tcx.dcx().fatal(format!(
                 "`{method}` is called through `{dyn_ty}` in {site}, but its contract mentions \
                  `self` or `Self`, whose model a trait object does not have"

@@ -2,7 +2,8 @@
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
-// The twin of `fail/dyn_trait_generic_pack.rs`: packing a `C`, whose invariant is required.
+// Packing at a type parameter, in a crate with an invariant: `pack` is analyzed at `T = C`, where
+// packing requires `C`'s invariant, which `C { n: 2 }` has.
 
 #[thrust_macros::context]
 trait Counter {
@@ -36,7 +37,7 @@ impl Counter for C {
     }
 }
 
-fn pack(x: Box<C>) -> Box<dyn Counter> {
+fn pack<T: Counter + 'static>(x: Box<T>) -> Box<dyn Counter> {
     x
 }
 
