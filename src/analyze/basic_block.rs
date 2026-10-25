@@ -26,6 +26,7 @@ use crate::rty::{
 
 mod closure_escape;
 mod drop_point;
+mod trait_object;
 mod visitor;
 use drop_point::MovedOut;
 pub use drop_point::{DropPoints, MoveState};
@@ -1249,6 +1250,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 operand,
                 ty,
             ) => {
+                if let Some(dyn_ty) = trait_object::dyn_pointee(ty) {
+                    return self.unsize_to_dyn(operand, ty, dyn_ty);
+                }
                 // Only treat unsizing as identity when both sides resolve to the same model.
                 let mut op_pty = self.operand_type(operand);
                 let expected_ty = self.type_builder.build(ty).vacuous().ty;
@@ -1724,6 +1728,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         args: mir_ty::GenericArgsRef<'tcx>,
     ) -> rty::Type<rty::Closed> {
         let caller_def_id = self.type_builder.owner_fn_id();
+        if self.tcx.trait_of_assoc(def_id).is_some() && args.type_at(0).is_trait() {
+            self.check_dyn_call(def_id, args);
+        } else {
+            self.check_no_dyn_type_arg(def_id, args);
+        }
         if self.needs_ghost_formula_impl(def_id, args) {
             self.tcx.dcx().fatal(format!(
                 "a Ghost value cannot be used in executable code: `{}` in `{}` needs the \
