@@ -4,7 +4,6 @@
 
 // The twin of the fail file: the logic function's value at `u64` is in range, so its
 // definition meets the facts of its result type.
-use thrust_models::model::UIntN;
 use thrust_models::{Ghost, Model};
 
 #[thrust_macros::context]

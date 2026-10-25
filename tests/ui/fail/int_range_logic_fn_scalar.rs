@@ -6,7 +6,6 @@
 // it, and a caller assumes the facts of the result's type. The definition is checked against
 // them: here its value is at least `2^64` (model arithmetic is unbounded), and the
 // expected error is that check.
-use thrust_models::model::UIntN;
 use thrust_models::{Ghost, Model};
 
 #[thrust_macros::context]
