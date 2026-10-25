@@ -30,6 +30,7 @@ from pydantic import BaseModel
 GUIDELINE_FILES = ["AGENTS.md", "CLAUDE.md", "README.md"]
 MAX_FILE_CHARS = 100_000
 REVIEW_HEADING = "**Claude review** (automated)"
+REVIEW_AUTHOR = "github-actions[bot]"
 MAX_TOOL_CALLS = 20
 MAX_TOOL_OUTPUT_CHARS = 20_000
 REPO_ROOT = Path()
@@ -168,7 +169,11 @@ def gh_api_items(path: str) -> list[dict]:
 
 def earlier_reviews(repo: str, pr: str) -> str:
     """The earlier automated reviews of the pull request, with the replies to their comments."""
-    reviews = [r for r in gh_api_items(f"repos/{repo}/pulls/{pr}/reviews") if r["body"].startswith(REVIEW_HEADING)]
+    reviews = [
+        r
+        for r in gh_api_items(f"repos/{repo}/pulls/{pr}/reviews")
+        if r["user"]["login"] == REVIEW_AUTHOR and r["body"].startswith(REVIEW_HEADING)
+    ]
     comments = gh_api_items(f"repos/{repo}/pulls/{pr}/comments")
     parts = []
     for review in reviews:
@@ -275,6 +280,9 @@ def main() -> None:
     REPO_ROOT = args.head.resolve()
 
     pr = json.loads(gh("pr", "view", args.pr, "-R", args.repo, "--json", "title,body,headRefOid,files"))
+    checked_out = git("rev-parse", "HEAD").strip()
+    if checked_out != pr["headRefOid"]:
+        sys.exit(f"the pull request moved from {checked_out} to {pr['headRefOid']} after the checkout; run again")
     diff = gh("pr", "diff", args.pr, "-R", args.repo)
     lines = commentable_lines(diff)
     contents, omitted = read_changed_files([f["path"] for f in pr["files"]])
