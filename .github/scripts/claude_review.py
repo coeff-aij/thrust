@@ -28,6 +28,7 @@ from pydantic import BaseModel
 
 GUIDELINE_FILES = ["AGENTS.md", "CLAUDE.md", "README.md"]
 MAX_FILE_CHARS = 100_000
+REVIEW_HEADING = "**Claude review** (automated)"
 MAX_TOOL_CALLS = 20
 MAX_TOOL_OUTPUT_CHARS = 20_000
 REPO_ROOT = Path()
@@ -158,7 +159,32 @@ def numbered_lines(path: str, start_line: int, end_line: int) -> str:
     return "\n".join(f"{n}: {line}" for n, line in enumerate(lines, start_line))
 
 
-def build_prompt(pr: dict, diff: str, contents: dict[str, str], omitted: list[str]) -> str:
+def gh_api_items(path: str) -> list[dict]:
+    """The items of a paginated GitHub API list."""
+    output = gh("api", "--paginate", path, "--jq", ".[]")
+    return [json.loads(line) for line in output.splitlines()]
+
+
+def earlier_reviews(repo: str, pr: str) -> str:
+    """The earlier automated reviews of the pull request, with the replies to their comments."""
+    reviews = [r for r in gh_api_items(f"repos/{repo}/pulls/{pr}/reviews") if r["body"].startswith(REVIEW_HEADING)]
+    comments = gh_api_items(f"repos/{repo}/pulls/{pr}/comments")
+    parts = []
+    for review in reviews:
+        parts.append(f"## Review of commit {review['commit_id']}\n\n{review['body']}")
+        for comment in comments:
+            if comment["pull_request_review_id"] != review["id"] or comment.get("in_reply_to_id"):
+                continue
+            parts.append(f"### {comment['path']}:{comment['original_line']}\n\n{comment['body']}")
+            parts += [
+                f"Reply from {reply['user']['login']}: {reply['body']}"
+                for reply in comments
+                if reply.get("in_reply_to_id") == comment["id"]
+            ]
+    return "\n\n".join(parts)
+
+
+def build_prompt(pr: dict, diff: str, contents: dict[str, str], omitted: list[str], earlier: str) -> str:
     parts = [f"# Pull request: {pr['title']}\n\n{pr['body'] or '(no description)'}"]
     for name in GUIDELINE_FILES:
         if Path(name).is_file():
@@ -168,6 +194,8 @@ def build_prompt(pr: dict, diff: str, contents: dict[str, str], omitted: list[st
         parts.append(f"# File after the change: {path}\n\n```\n{text}\n```")
     if omitted:
         parts.append("# Changed files not included (too large or binary)\n\n" + "\n".join(omitted))
+    if earlier:
+        parts.append(f"# Earlier automated reviews\n\n{earlier}")
     return "\n\n".join(parts)
 
 
@@ -198,7 +226,7 @@ def request_review(client: anthropic.Anthropic, model: str, system: str, prompt:
 def review_payload(review: Review, head_sha: str, lines: dict[str, set[int]], omitted: list[str]) -> dict:
     inline = [c for c in review.comments if c.line in lines.get(c.path, set())]
     outside = [c for c in review.comments if c not in inline]
-    body = [f"**Claude review** (automated)\n\n{review.summary}"]
+    body = [f"{REVIEW_HEADING}\n\n{review.summary}"]
     body += [f"- `{c.path}:{c.line}`: {comment_text(c)}" for c in outside]
     if omitted:
         body.append("Not reviewed (too large or binary): " + ", ".join(f"`{p}`" for p in omitted))
@@ -233,10 +261,12 @@ def main() -> None:
     diff = gh("pr", "diff", args.pr, "-R", args.repo)
     lines = commentable_lines(diff)
     contents, omitted = read_changed_files([f["path"] for f in pr["files"]])
-    prompt = build_prompt(pr, diff, contents, omitted)
+    earlier = earlier_reviews(args.repo, args.pr)
+    prompt = build_prompt(pr, diff, contents, omitted, earlier)
 
     if args.dry_run:
         print(f"model: {args.model}\nsystem: {args.prompt}\nprompt: {len(prompt)} chars")
+        print(f"earlier reviews: {len(earlier)} chars")
         print("included:", *contents, sep="\n  ")
         print("omitted:", *omitted, sep="\n  ")
         print("commentable lines:", *(f"{p}: {len(n)}" for p, n in lines.items()), sep="\n  ")

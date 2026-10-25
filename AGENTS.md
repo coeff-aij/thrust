@@ -45,3 +45,20 @@ version `.github/actions/setup-z3` pins for CI.
 
 Without Docker the ui tests that name a CoAR wrapper cannot run; set `THRUST_UI_SKIP_COAR=1`,
 as CI does, to run the others.
+
+## Automated review
+
+`.github/workflows/claude-review.yml` reviews a pull request with the Claude API (README, CI).
+When developing with an agent, use it as a loop at the points where a coherent set of commits
+is pushed, not after every commit:
+
+1. Request a review with `gh pr comment <n> --body /claude-review` and wait for the run
+   (`gh run list -w claude-review.yml -L 1`, then `gh run watch <id>`).
+2. Read the newest review and its inline comments:
+   `gh api repos/{owner}/{repo}/pulls/<n>/reviews --jq '.[-1] | {id, body}'` and
+   `gh api repos/{owner}/{repo}/pulls/<n>/reviews/<id>/comments --jq '.[] | {id, path, line, body}'`.
+3. Fix what holds. Answer a comment you do not act on with the reason, as a reply to it
+   (`gh api repos/{owner}/{repo}/pulls/<n>/comments/<id>/replies -f body=...`); the next review
+   reads the replies and does not repeat a comment they settle.
+4. Request again. Stop when a review raises nothing new, or after three rounds, and leave what
+   remains to a person.

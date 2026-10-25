@@ -1,10 +1,15 @@
 name: Claude review
 
-# Reviews a pull request once when it is opened or marked ready; a re-review after new
-# commits is started by hand with the pull request number.
+# A pull request from a branch of this repository is reviewed when it is opened or marked
+# ready. Any pull request, a draft or one from a fork included, is reviewed when someone with
+# write access comments `/claude-review` on it, or by a manual run with its number.
 on:
   pull_request:
     types: [opened, ready_for_review]
+  # Runs with the secret on any pull request, so the job checks the commenter's access, runs
+  # only code from the default branch, and only reads the pull request's head.
+  issue_comment: # zizmor: ignore[dangerous-triggers]
+    types: [created]
   workflow_dispatch:
     inputs:
       pr:
@@ -15,23 +20,40 @@ on:
 permissions: {}
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || inputs.pr }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.issue.number || inputs.pr }}
   cancel-in-progress: true
 
 # This job holds the API key, so its actions are pinned to commits, its packages to hashes, and
-# the key and the token are given only to the step that runs the script.
+# the key and the token are given only to the steps that need them.
 jobs:
   review:
-    if: ${{ !github.event.pull_request.draft }}
+    if: >-
+      (github.event_name == 'pull_request' && !github.event.pull_request.draft &&
+       github.event.pull_request.head.repo.full_name == github.repository) ||
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request &&
+       startsWith(github.event.comment.body, '/claude-review')) ||
+      github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: read
       pull-requests: write
     timeout-minutes: 10
     env:
-      PR: ${{ github.event.pull_request.number || inputs.pr }}
+      PR: ${{ github.event.pull_request.number || github.event.issue.number || inputs.pr }}
       HAS_API_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
     steps:
+      - if: ${{ github.event_name == 'issue_comment' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMENTER: ${{ github.event.comment.user.login }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+        run: |
+          role=$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$COMMENTER/permission" -q .role_name)
+          case "$role" in
+            admin|maintain|write) ;;
+            *) echo "$COMMENTER has $role access; a review needs write access"; exit 1 ;;
+          esac
+          gh api "repos/$GITHUB_REPOSITORY/issues/comments/$COMMENT_ID/reactions" -f content=eyes > /dev/null
       # The script and the prompt come from the default branch; the pull request's head is
       # checked out apart, only to be read.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

@@ -70,6 +70,14 @@ unsupported input fails loudly.
 A verified property is pinned down from both sides by a pass test and a fail test that breaks
 the property as narrowly as possible. The description's claims match what the code does.
 
+## Re-reviews
+
+When earlier automated reviews are given, decide for each of their comments whether the current
+code addresses it, or whether a reply gives a convincing reason not to. Do not repeat a comment
+that is addressed or convincingly answered. Repeat one that is not, on the line where the issue
+now is, and say why the change or the reply does not settle it. Review the rest as usual. The
+summary starts with how many earlier comments remain open.
+
 ## What not to report
 
 - Pre-existing issues and broader support the pull request does not claim. Mention at most one
