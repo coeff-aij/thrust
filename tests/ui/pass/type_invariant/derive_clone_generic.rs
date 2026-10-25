@@ -1,6 +1,5 @@
 //@check-pass
 //@compile-flags: -Adead_code -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // A derived `clone` of a generic type keeps the invariant at an instance that has one, as a
 // non-generic one does (`pass/type_invariant/derive_clone.rs`).

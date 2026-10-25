@@ -1,6 +1,5 @@
 //@check-pass
 //@compile-flags: -Adead_code -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 //@rustc-env: THRUST_PER_INSTANCE_GENERICS=1
 
 // `sides` has no contract, so a call at `T` takes no type from the default body, which `Sq`

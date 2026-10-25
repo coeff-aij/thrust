@@ -1,5 +1,4 @@
 //@compile-flags: -Adead_code -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // The derived `clone` of `W<T>`, at `W<C>`, runs `C::clone`, which assumes the invariant of a field
 // nobody checked.

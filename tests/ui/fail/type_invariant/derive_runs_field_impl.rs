@@ -1,5 +1,4 @@
 //@compile-flags: -Adead_code -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // The derived `eq` of `Wrap`, which Thrust does not analyze, runs `C::eq`, which assumes the
 // invariant of a field nobody checked.

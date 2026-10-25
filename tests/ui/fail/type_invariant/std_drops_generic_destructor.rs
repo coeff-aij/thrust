@@ -1,5 +1,4 @@
 //@compile-flags: -Adead_code -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // `W<T>`'s destructor is checked once over `T`, where `get` assumes nothing; std's `unwrap_or`
 // drops a `W<C>`, where `get` runs `C::get`, which assumes the invariant.

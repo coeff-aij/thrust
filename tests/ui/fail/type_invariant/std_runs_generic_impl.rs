@@ -1,5 +1,4 @@
 //@compile-flags: -Adead_code -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // `W<T>`'s `clone` is verified over `T` and at the instances verified code calls it at. std's
 // `Option::<W<C>>::clone` runs it at `C`, where nothing analyzed it, and it runs `C::clone`, which

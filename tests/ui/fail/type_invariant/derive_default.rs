@@ -1,5 +1,4 @@
 //@compile-flags: -Adead_code -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // A derived `Default` builds `D` from its fields' defaults, which break the invariant: a derived
 // method that would promise it is rejected.

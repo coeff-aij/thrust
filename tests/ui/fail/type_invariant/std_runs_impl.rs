@@ -1,5 +1,4 @@
 //@compile-flags: -Adead_code -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // std's `Option::<C>::clone`, which Thrust does not analyze, runs `C::clone`, which assumes the
 // invariant of a `C` nobody checked.
