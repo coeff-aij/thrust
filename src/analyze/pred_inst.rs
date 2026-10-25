@@ -143,7 +143,7 @@ impl<'tcx> analyze::Analyzer<'tcx> {
             let Some(fn_ty) = def_ty.ty.as_function() else {
                 continue;
             };
-            let vars: Vec<(chc::UserQuantifiedVarId, chc::Sort)> = fn_ty
+            let mut vars: Vec<(chc::UserQuantifiedVarId, chc::Sort)> = fn_ty
                 .params
                 .iter_enumerated()
                 .map(|(idx, param)| {
@@ -159,7 +159,14 @@ impl<'tcx> analyze::Analyzer<'tcx> {
             // A law variable ranges over the values its proof assumes of the parameter.
             let mut pre = fn_ty.precondition_formula(&args);
             for (param, arg) in fn_ty.params.iter().zip(&args) {
-                if let Some(range) = rty::int_range_type_formula(&param.ty, arg.clone()) {
+                let payload = || {
+                    let name = format!("law payload of {:?}", law_def_id);
+                    self.system.borrow_mut().new_named_user_quantified_var(name)
+                };
+                if let Some((payloads, range)) =
+                    rty::int_range_type_formula(&param.ty, arg.clone(), payload, &self.enum_defs)
+                {
+                    vars.extend(payloads);
                     pre = range.and(pre);
                 }
             }

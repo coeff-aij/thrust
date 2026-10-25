@@ -11,7 +11,6 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::Hash;
 use std::rc::Rc;
 
-use num_bigint::BigInt;
 use rustc_hir::lang_items::LangItem;
 use rustc_index::IndexVec;
 use rustc_middle::mir::{self, BasicBlock, Local};
@@ -122,15 +121,6 @@ pub fn local_of_function_param(idx: rty::FunctionParamIdx) -> Local {
 
 pub fn function_param_of_local(local: Local) -> rty::FunctionParamIdx {
     rty::FunctionParamIdx::from(local.as_usize() - 1)
-}
-
-fn discr_value<'tcx>(tcx: TyCtxt<'tcx>, discr: mir_ty::util::Discr<'tcx>) -> BigInt {
-    let (size, signed) = discr.ty.int_size_and_signed(tcx);
-    if signed {
-        size.sign_extend(discr.val).into()
-    } else {
-        discr.val.into()
-    }
 }
 
 pub struct ReplacePlacesVisitor<'tcx> {
@@ -497,9 +487,17 @@ struct BasicBlockDef {
     has_param_types: bool,
 }
 
+/// The definitions of the enums the crate's types name: those whose datatypes the query declares
+/// ([`Analyzer::get_or_register_enum_def`]) and, under `THRUST_INT_RANGE`, every enum a type built
+/// so far names, whose definition the facts of its payloads read
+/// ([`refine::TypeBuilder::register_enum_def`]).
 #[derive(Debug, Clone, Default)]
 pub struct EnumDefs {
     defs: HashMap<DefId, rty::EnumDatatypeDef>,
+    /// The enums whose datatypes the query declares.
+    declared: HashSet<DefId>,
+    /// The enums whose definitions are being built: a field of a recursive enum names it again.
+    building: HashSet<DefId>,
 }
 
 impl EnumDefs {
@@ -512,7 +510,19 @@ impl EnumDefs {
     }
 
     pub fn insert(&mut self, def_id: DefId, def: rty::EnumDatatypeDef) {
+        self.building.remove(&def_id);
         self.defs.insert(def_id, def);
+    }
+
+    /// Whether the definition of `def_id` is to be built now: it is neither registered nor being
+    /// built. Marks it as being built.
+    pub fn start_building(&mut self, def_id: DefId) -> bool {
+        !self.defs.contains_key(&def_id) && self.building.insert(def_id)
+    }
+
+    /// Marks the datatype of `def_id` declared; whether it was not yet.
+    pub fn declare(&mut self, def_id: DefId) -> bool {
+        self.declared.insert(def_id)
     }
 }
 
@@ -564,6 +574,9 @@ pub struct Analyzer<'tcx> {
     predicate_instances: Rc<RefCell<HashMap<PredicateInstanceKey<'tcx>, chc::UserDefinedPred>>>,
     /// The predicate instances whose bodies are being translated, innermost last.
     defining_predicates: Rc<RefCell<Vec<PredicateInstanceKey<'tcx>>>>,
+    /// The result type of each logic function defined so far, by its symbol: what a call of it in
+    /// another definition's body is known to have (`checked_logic_fn_body`).
+    logic_fn_results: Rc<RefCell<HashMap<chc::UserDefinedPred, rty::Type<rty::Closed>>>>,
 
     /// Resulting CHC system.
     system: Rc<RefCell<chc::System>>,
@@ -847,6 +860,7 @@ impl<'tcx> Analyzer<'tcx> {
             formula_fns,
             predicate_instances: Default::default(),
             defining_predicates: Default::default(),
+            logic_fn_results: Default::default(),
             system,
             basic_blocks,
             def_ids: did_cache::DefIdCache::new(tcx),
@@ -915,57 +929,19 @@ impl<'tcx> Analyzer<'tcx> {
         }
     }
 
-    fn build_enum_def(&self, def_id: DefId) -> rty::EnumDatatypeDef {
-        let adt = self.tcx.adt_def(def_id);
-
-        let name = refine::datatype_symbol(self.tcx, def_id);
-        let variants: IndexVec<_, _> = adt
-            .variants()
-            .iter()
-            .zip(adt.discriminants(self.tcx))
-            .map(|(variant, (_, discr))| {
-                let discr = discr_value(self.tcx, discr);
-                let field_tys = variant
-                    .fields
-                    .iter()
-                    .map(|field| {
-                        let field_ty = self.tcx.type_of(field.did).instantiate_identity();
-                        self.type_builder(self.def_ids(), def_id).build(field_ty)
-                    })
-                    .collect();
-                rty::EnumVariantDef {
-                    name: refine::variant_symbol(&name, variant.name),
-                    discr,
-                    field_tys,
-                }
-            })
-            .collect();
-
-        let generics = self.tcx.generics_of(def_id);
-        let ty_params = (0..generics.count())
-            .filter(|idx| {
-                matches!(
-                    generics.param_at(*idx, self.tcx).kind,
-                    mir_ty::GenericParamDefKind::Type { .. }
-                )
-            })
-            .count();
-        tracing::debug!(?def_id, ?name, ?ty_params, "ty_params count");
-
-        rty::EnumDatatypeDef {
-            name,
-            ty_params,
-            variants,
-        }
-    }
-
     pub fn get_or_register_enum_def(&self, def_id: DefId) -> rty::EnumDatatypeDef {
-        let mut enum_defs = self.enum_defs.borrow_mut();
-        if let Some(enum_def) = enum_defs.get(def_id) {
-            return enum_def.clone();
+        let registered = self.enum_defs.borrow().get(def_id).cloned();
+        let enum_def = registered.unwrap_or_else(|| {
+            let enum_def = self
+                .type_builder(self.def_ids(), def_id)
+                .build_enum_def(def_id);
+            self.enum_defs.borrow_mut().insert(def_id, enum_def.clone());
+            enum_def
+        });
+        if !self.enum_defs.borrow_mut().declare(def_id) {
+            return enum_def;
         }
 
-        let enum_def = self.build_enum_def(def_id);
         tracing::debug!(def_id = ?def_id, enum_def = ?enum_def, "register_enum_def");
         let ctors = enum_def
             .variants
@@ -990,7 +966,6 @@ impl<'tcx> Analyzer<'tcx> {
             params: enum_def.ty_params,
             ctors,
         };
-        enum_defs.insert(def_id, enum_def.clone());
         self.system.borrow_mut().datatypes.push(datatype);
 
         enum_def
@@ -1394,6 +1369,7 @@ impl<'tcx> Analyzer<'tcx> {
             self.type_params.clone(),
             self.closure_type_params.clone(),
             self.system.clone(),
+            self.enum_defs.clone(),
         );
         let key = InstantiationKey {
             generic_args,
@@ -1488,7 +1464,7 @@ impl<'tcx> Analyzer<'tcx> {
                 )
             }
             annot_fn::FormulaFnBody::Term(term) => {
-                let term = term
+                let body = term
                     .clone()
                     .map_var(|idx| chc::TermVarIdx::from(idx.index()));
                 let (termination, decreases) = self.termination_clauses(
@@ -1497,23 +1473,161 @@ impl<'tcx> Analyzer<'tcx> {
                     owner_fn_id,
                     &pred,
                     &arg_sorts,
-                    &term,
+                    &body,
                 );
+                let params: Vec<_> = formula_fn
+                    .params()
+                    .iter()
+                    .map(|ty| type_builder.build(*ty).ty)
+                    .collect();
+                let ret = type_builder.build(formula_fn.ret()).ty;
+                self.logic_fn_results
+                    .borrow_mut()
+                    .insert(pred.clone(), ret.clone());
+                let (checks, definition) =
+                    self.checked_logic_fn_body(local_def_id, &params, &ret, body);
                 let mut system = self.system.borrow_mut();
-                for clause in termination {
+                for clause in termination.into_iter().chain(checks) {
                     system.push_clause(clause);
                 }
                 system.push_fn_define_term(
                     pred.clone(),
                     arg_sorts,
-                    type_builder.build(formula_fn.ret()).to_sort(),
-                    term,
+                    ret.to_sort(),
+                    definition,
                     decreases,
                 );
             }
         }
         self.defining_predicates.borrow_mut().pop();
         pred
+    }
+
+    /// The definition of a logic function from its `body`, and the clauses checking that
+    /// its value has the facts of its result type `ret` (`rty::type_fact_checks`), which every
+    /// binding of a call's result assumes, while the body's arithmetic is unbounded.
+    ///
+    /// The definition is total in the facts: where the arguments lack the quantifier-free facts of
+    /// the parameters' types (`rty::domain_guard`), its value is a fixed value of `ret` that has
+    /// them (`rty::fact_witness`), as a cast in Verus's specifications gives some value of the
+    /// type and a Why3 range type has no value outside its range. So a call has the facts at any
+    /// arguments, and the check is made where the arguments have those facts. A call in the body
+    /// of a logic function defined before or of this one is assumed to have its result type's
+    /// facts under the conditions on the way to it: for this one, the induction hypothesis, which
+    /// the variant the termination clauses check makes well-founded.
+    fn checked_logic_fn_body(
+        &self,
+        local_def_id: LocalDefId,
+        params: &[rty::Type<rty::Closed>],
+        ret: &rty::Type<rty::Closed>,
+        body: chc::Term,
+    ) -> (Vec<chc::Clause>, chc::Term) {
+        use rty::ClauseBuilderExt as _;
+        let span = self.tcx.def_span(local_def_id);
+        let checks = rty::type_fact_checks(ret, &self.enum_defs).unwrap_or_else(|ty| {
+            self.tcx.dcx().span_fatal(
+                span,
+                format!(
+                    "a logic function of result type {}: the ranges of the integers a recursive \
+                     enum holds cannot be checked",
+                    ty.display()
+                ),
+            )
+        });
+        if checks.is_top() {
+            return (Vec::new(), body);
+        }
+        let param_idx = rty::FunctionParamIdx::from_usize;
+        let free = |term: &chc::Term| {
+            term.clone()
+                .map_var(|v| rty::RefinedTypeVar::Free(param_idx(v.index())))
+        };
+        let guard = params
+            .iter()
+            .enumerate()
+            .filter_map(|(i, param)| {
+                rty::domain_guard(param, chc::Term::var(chc::TermVarIdx::from_usize(i)))
+            })
+            .reduce(chc::Term::and);
+
+        let mut builder = chc::ClauseBuilder::default();
+        for (i, param) in params.iter().enumerate() {
+            let sort = param.to_sort();
+            let var = builder.add_mapped_var(param_idx(i), sort.clone());
+            builder.add_environment_origin(
+                chc::debug::origin::Entry::parameter(param_idx(i), &sort)
+                    .var_mapping(param_idx(i), var),
+            );
+        }
+        if let Some(guard) = &guard {
+            let in_domain = chc::Formula::Atom(free(guard).equal_to(chc::Term::bool(true)));
+            builder.add_refinement(rty::Refinement::<rty::FunctionParamIdx>::from(in_domain));
+        }
+        for hypothesis in self.logic_fn_call_facts(&body) {
+            builder.add_refinement(hypothesis.map_free_var(|v| param_idx(v.index())));
+        }
+        let value = rty::Refinement::<rty::FunctionParamIdx>::from(
+            chc::Term::var(rty::RefinedTypeVar::Value).equal_to(free(&body)),
+        );
+        let clauses = rty::fact_check_clauses(&mut builder, ret, value, checks);
+
+        let definition = match guard {
+            Some(guard) => self.totalized_logic_fn(span, ret, guard, body),
+            None => body,
+        };
+        (clauses, definition)
+    }
+
+    /// `ite(guard, body, w)`: the logic function of `body`, at arguments outside its domain `guard`
+    /// a value `w` of its result type `ret` that has the type's facts (`rty::fact_witness`).
+    fn totalized_logic_fn(
+        &self,
+        span: rustc_span::Span,
+        ret: &rty::Type<rty::Closed>,
+        guard: chc::Term,
+        body: chc::Term,
+    ) -> chc::Term {
+        let witness = rty::fact_witness(ret, body.clone(), &self.enum_defs).unwrap_or_else(|| {
+            self.tcx.dcx().span_fatal(
+                span,
+                format!(
+                    "a logic function of result type {}: no value of a part of it with facts can be \
+                     built",
+                    ret.display()
+                ),
+            )
+        });
+        chc::Term::ite(guard, body, witness)
+    }
+
+    /// The facts of the result type of each call in `body` to a logic function defined so far,
+    /// under the `ite` conditions on the way to it.
+    fn logic_fn_call_facts(&self, body: &chc::Term) -> Vec<rty::Refinement<chc::TermVarIdx>> {
+        let results = self.logic_fn_results.borrow();
+        body.guarded_calls()
+            .into_iter()
+            .filter_map(|call| {
+                let ret = results.get(&call.callee)?;
+                let result = chc::Term::user_defined_fn(call.callee, call.sort, call.args)
+                    .map_var(rty::RefinedTypeVar::Free);
+                let conditions = call
+                    .guards
+                    .into_iter()
+                    .map(|guard| {
+                        chc::Formula::Atom(
+                            guard
+                                .map_var(rty::RefinedTypeVar::Free)
+                                .equal_to(chc::Term::bool(true)),
+                        )
+                    })
+                    .fold(chc::Formula::top(), chc::Formula::and);
+                let facts = rty::RefinedType::unrefined(ret.clone())
+                    .formula_with(Some(&self.enum_defs))
+                    .map_free_var(|v| match v {})
+                    .subst_value_var(|| result.clone());
+                Some(facts.guarded(conditions))
+            })
+            .collect()
     }
 
     /// The clauses requiring the variant of the logic function `local_def_id` to be
@@ -1530,7 +1644,14 @@ impl<'tcx> Analyzer<'tcx> {
         arg_sorts: &IndexVec<chc::TermVarIdx, chc::Sort>,
         body: &chc::Term,
     ) -> (Vec<chc::Clause>, Option<chc::Term>) {
-        let calls = body.guarded_calls(pred);
+        if body.calls_under_lambda(pred) {
+            unimplemented!("a recursive call under a lambda: {pred}");
+        }
+        let calls: Vec<_> = body
+            .guarded_calls()
+            .into_iter()
+            .filter(|call| &call.callee == pred)
+            .collect();
         if calls.is_empty() {
             return (Vec::new(), None);
         }
@@ -2005,6 +2126,7 @@ impl<'tcx> Analyzer<'tcx> {
             self.type_params.clone(),
             self.closure_type_params.clone(),
             self.system.clone(),
+            self.enum_defs.clone(),
         )
     }
 

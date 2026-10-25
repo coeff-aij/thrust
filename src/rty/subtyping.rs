@@ -7,8 +7,8 @@ use crate::chc::debug;
 use crate::pretty::PrettyDisplayExt;
 
 use super::{
-    ClauseBuilderExt as _, FunctionParamIdx, FunctionType, PointerKind, RefKind, RefinedType,
-    RefinedTypeVar, Refinement, Type,
+    ClauseBuilderExt as _, EnumDefProvider, FunctionParamIdx, FunctionType, PointerKind, RefKind,
+    RefinedType, RefinedTypeVar, Refinement, Type,
 };
 
 #[cfg(test)]
@@ -21,8 +21,13 @@ mod tests;
 /// This trait abstracts the preparation of a [`chc::ClauseBuilder`] to allow an
 /// environment defined outside of this module (in Thrust, [`crate::refine::Env`])
 /// to build a [`chc::ClauseBuilder`] equipped with in-scope variables and assumptions.
+///
+/// A scope also gives the definitions of enums, from which the facts of their payloads are read
+/// ([`RefinedType::formula_with`]); without them a value's facts leave its enum payloads out.
 pub trait ClauseScope {
     fn build_clause(&self) -> chc::ClauseBuilder;
+
+    fn enum_defs(&self) -> Option<&dyn EnumDefProvider>;
 }
 
 impl<T> ClauseScope for &T
@@ -32,11 +37,35 @@ where
     fn build_clause(&self) -> chc::ClauseBuilder {
         T::build_clause(self)
     }
+
+    fn enum_defs(&self) -> Option<&dyn EnumDefProvider> {
+        T::enum_defs(self)
+    }
 }
 
 impl ClauseScope for chc::ClauseBuilder {
     fn build_clause(&self) -> chc::ClauseBuilder {
         self.clone()
+    }
+
+    fn enum_defs(&self) -> Option<&dyn EnumDefProvider> {
+        None
+    }
+}
+
+/// A clause builder as a scope, with the definitions of enums.
+pub struct ScopedBuilder<'a> {
+    pub builder: chc::ClauseBuilder,
+    pub enum_defs: Option<&'a dyn EnumDefProvider>,
+}
+
+impl ClauseScope for ScopedBuilder<'_> {
+    fn build_clause(&self) -> chc::ClauseBuilder {
+        self.builder.clone()
+    }
+
+    fn enum_defs(&self) -> Option<&dyn EnumDefProvider> {
+        self.enum_defs
     }
 }
 
@@ -134,12 +163,17 @@ where
         (Type::Function(got), Type::Function(expected))
             if got.params.len() == expected.params.len() =>
         {
-            let mut builder = chc::ClauseBuilder::default();
+            let mut builder = ScopedBuilder {
+                builder: chc::ClauseBuilder::default(),
+                enum_defs: scope.enum_defs(),
+            };
             for (param_idx, param_rty) in got.params.iter_enumerated() {
                 let param_sort = param_rty.ty.to_sort();
                 if !param_sort.is_singleton() {
-                    let chc_var = builder.add_mapped_var(param_idx, param_sort.clone());
-                    builder.add_environment_origin(
+                    let chc_var = builder
+                        .builder
+                        .add_mapped_var(param_idx, param_sort.clone());
+                    builder.builder.add_environment_origin(
                         debug::origin::Entry::parameter(param_idx, &param_sort)
                             .var_mapping(param_idx, chc_var),
                     );
@@ -215,23 +249,23 @@ where
 
     // A clause whose head is `true` is dropped by `push_clause`, so it is not built: building
     // one instantiates the whole environment.
-    let head = head_of(&got.ty, &expected, position);
+    let head = head_of(&got.ty, &expected, position, scope.enum_defs());
     if !head.is_top() {
         let cs = scope
             .build_clause()
             .with_value_var(&got.ty)
-            .add_body(got.formula())
+            .add_body(got.formula_with(scope.enum_defs()))
             .head(head);
         clauses.extend(cs);
     }
 
     if relation == Relation::Equal {
-        let head = head_of(&expected.ty, &got, position);
+        let head = head_of(&expected.ty, &got, position, scope.enum_defs());
         if !head.is_top() {
             let cs = scope
                 .build_clause()
                 .with_value_var(&expected.ty)
-                .add_body(expected.formula())
+                .add_body(expected.formula_with(scope.enum_defs()))
                 .head(head);
             clauses.extend(cs);
         }
@@ -247,13 +281,19 @@ where
 /// integer that becomes one, such as the result of a cast or of a checked operation, has to be
 /// shown in range where it does. A nested position is checked through the value at the top,
 /// whose refinement is what says something about it.
-fn head_of<T, U>(got_ty: &Type<T>, expected: &RefinedType<U>, position: Position) -> Refinement<U>
+fn head_of<T, U>(
+    got_ty: &Type<T>,
+    expected: &RefinedType<U>,
+    position: Position,
+    enum_defs: Option<&dyn EnumDefProvider>,
+) -> Refinement<U>
 where
+    T: chc::Var,
     U: chc::Var,
 {
     let mut head = expected.refinement.clone();
     if position == Position::Top {
-        head.push_conj(int_range_facts(got_ty, &expected.ty));
+        head.push_conj(int_range_facts(got_ty, &expected.ty, enum_defs));
     }
     head
 }
@@ -261,10 +301,17 @@ where
 /// The range of the integer type of `expected` at each position where a value of `got` enters
 /// it: `v >= 0` where an integer of [`Type::Int`] becomes a [`Type::UInt`], and the bounds of
 /// [`super::int_range`] where `got` is not a type within that range, through tuples and the
-/// current value of pointers, and of each element of a sequence of such a type. The final value of a mutable reference is produced by its borrower,
-/// which is checked where it writes it.
-fn int_range_facts<T, U>(got: &Type<T>, expected: &Type<U>) -> Refinement<U>
+/// current value of pointers, and of each element of a sequence of such a type; and all the facts
+/// of an enum type entered at other arguments whose values have facts ([`super::type_fact_checks`]).
+/// The final value of a mutable reference is produced by its borrower, which is checked where it
+/// writes it.
+fn int_range_facts<T, U>(
+    got: &Type<T>,
+    expected: &Type<U>,
+    enum_defs: Option<&dyn EnumDefProvider>,
+) -> Refinement<U>
 where
+    T: chc::Var,
     U: chc::Var,
 {
     let value = || chc::Term::var(RefinedTypeVar::Value);
@@ -290,16 +337,49 @@ where
         (Type::Tuple(got), Type::Tuple(expected)) if got.elems.len() == expected.elems.len() => {
             for (index, (got, expected)) in got.elems.iter().zip(&expected.elems).enumerate() {
                 facts.push_conj(
-                    int_range_facts(&got.ty, &expected.ty)
+                    int_range_facts(&got.ty, &expected.ty, enum_defs)
                         .subst_value_var(|| value().tuple_proj(index)),
                 );
             }
         }
         (Type::Pointer(got), Type::Pointer(expected)) if got.kind == expected.kind => {
             facts.push_conj(
-                int_range_facts(&got.elem.ty, &expected.elem.ty)
+                int_range_facts(&got.elem.ty, &expected.elem.ty, enum_defs)
                     .subst_value_var(|| expected.kind.deref_term(value())),
             );
+        }
+        // An enum's payloads have facts under `THRUST_INT_RANGE` (`RefinedType::formula_with`).
+        // A value entering the type at other arguments (a type parameter, an alias, another
+        // integer type) is checked against them when the type has any; without the enums'
+        // definitions that cannot be told, which no analysis scope lacks.
+        (Type::Enum(got), Type::Enum(expected))
+            if super::int_range_mode() != super::IntRange::Off
+                && got.clone().strip_refinement() != expected.clone().strip_refinement() =>
+        {
+            let expected = Type::Enum(expected.clone().strip_refinement());
+            let Some(defs) = enum_defs else {
+                unimplemented!(
+                    "a value of {} entering {} without the enums' definitions",
+                    got.display(),
+                    expected.display()
+                );
+            };
+            if super::has_range_facts(&expected, defs, &mut Vec::new()) {
+                facts.push_conj(
+                    super::type_fact_checks(&expected, defs)
+                        .unwrap_or_else(|ty| {
+                            // This layer has no span; the analysis knows the value only by type.
+                            let message = format!(
+                                "a value of {} entering {}: the ranges of the integers a \
+                                 recursive enum holds cannot be checked",
+                                got.display(),
+                                ty.display()
+                            );
+                            rustc_middle::ty::tls::with(|tcx| tcx.dcx().fatal(message))
+                        })
+                        .map_free_var(|v| match v {}),
+                );
+            }
         }
         _ => {}
     }
@@ -310,6 +390,7 @@ where
 pub fn relate_sub_param_types(
     got: &IndexVec<FunctionParamIdx, RefinedType<FunctionParamIdx>>,
     expected: &IndexVec<FunctionParamIdx, RefinedType<FunctionParamIdx>>,
+    enum_defs: Option<&dyn EnumDefProvider>,
 ) -> Vec<chc::Clause> {
     assert_eq!(got.len(), expected.len());
 
@@ -329,19 +410,22 @@ pub fn relate_sub_param_types(
 
     // A parameter's refinement is assumed of the parameters after it, as at a call site.
     for ((param_idx, got_ty), expected_ty) in got.iter_enumerated().zip(expected.iter()) {
-        let cs = builder.relate_sub_refined_type(expected_ty, got_ty);
-        clauses.extend(cs);
+        let scope = ScopedBuilder {
+            builder: builder.clone(),
+            enum_defs,
+        };
+        clauses.extend(scope.relate_sub_refined_type(expected_ty, got_ty));
         if expected_ty.refinement.is_top() {
             continue;
         }
         if expected_ty.ty.to_sort().is_singleton() {
             builder
                 .with_value_var(&expected_ty.ty)
-                .add_body(expected_ty.formula());
+                .add_body(expected_ty.formula_with(enum_defs));
         } else {
             builder
                 .with_mapped_value_var(param_idx)
-                .add_body(expected_ty.formula());
+                .add_body(expected_ty.formula_with(enum_defs));
         }
     }
 
@@ -359,6 +443,7 @@ pub fn relate_sub_param_types(
 pub fn relate_refining_function_type(
     got: &FunctionType,
     expected: &FunctionType,
+    enum_defs: Option<&dyn EnumDefProvider>,
 ) -> Vec<chc::Clause> {
     assert_eq!(got.params.len(), expected.params.len());
 
@@ -376,13 +461,17 @@ pub fn relate_refining_function_type(
     for (param_idx, param_rty) in expected.params.iter_enumerated() {
         builder
             .with_mapped_value_var(param_idx)
-            .add_body(param_rty.formula());
+            .add_body(param_rty.formula_with(enum_defs));
     }
 
     let mut clauses = Vec::new();
     for ((param_idx, got_rty), expected_rty) in got.params.iter_enumerated().zip(&expected.params) {
+        let scope = ScopedBuilder {
+            builder: builder.clone(),
+            enum_defs,
+        };
         clauses.extend(relate_type(
-            &builder,
+            &scope,
             &expected_rty.ty,
             &got_rty.ty,
             Relation::Sub,
@@ -396,8 +485,12 @@ pub fn relate_refining_function_type(
             );
         }
     }
+    let scope = ScopedBuilder {
+        builder: builder.clone(),
+        enum_defs,
+    };
     clauses.extend(relate_type(
-        &builder,
+        &scope,
         &got.ret.ty,
         &expected.ret.ty,
         Relation::Sub,
@@ -407,7 +500,7 @@ pub fn relate_refining_function_type(
             builder
                 .clone()
                 .with_value_var(&got.ret.ty)
-                .add_body(got.ret.formula())
+                .add_body(got.ret.formula_with(enum_defs))
                 .head(expected.ret.refinement.clone()),
         );
     }

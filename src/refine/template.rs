@@ -2,13 +2,14 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use num_bigint::BigInt;
 use rustc_index::IndexVec;
 use rustc_middle::mir::{Local, Mutability};
 use rustc_middle::ty as mir_ty;
 use rustc_span::def_id::DefId;
 
 use super::basic_block::BasicBlockType;
-use crate::analyze::{DefIdCache, TypeParam, TypeParamMap};
+use crate::analyze::{DefIdCache, EnumDefs, TypeParam, TypeParamMap};
 use crate::chc;
 use crate::refine;
 use crate::rty;
@@ -145,6 +146,7 @@ pub struct TypeBuilder<'tcx> {
     type_params: Rc<RefCell<TypeParamMap<'tcx>>>,
     closure_type_params: Rc<RefCell<HashMap<TypeParam, rty::FunctionType>>>,
     system: Rc<RefCell<chc::System>>,
+    enum_defs: Rc<RefCell<EnumDefs>>,
 }
 
 // TODO: Fold `TypeBuilder::closure_trait_ret` into `closure_trait_call` so that one function
@@ -234,6 +236,7 @@ impl<'tcx> TypeBuilder<'tcx> {
         type_params: Rc<RefCell<TypeParamMap<'tcx>>>,
         closure_type_params: Rc<RefCell<HashMap<TypeParam, rty::FunctionType>>>,
         system: Rc<RefCell<chc::System>>,
+        enum_defs: Rc<RefCell<EnumDefs>>,
     ) -> Self {
         let generics = tcx.generics_of(owner_fn_id);
         let mut param_idx_mapping: HashMap<u32, rty::TypeParamIdx> = Default::default();
@@ -259,11 +262,75 @@ impl<'tcx> TypeBuilder<'tcx> {
             type_params,
             closure_type_params,
             system,
+            enum_defs,
         }
     }
 
     pub fn owner_fn_id(&self) -> DefId {
         self.owner_fn_id
+    }
+
+    /// Registers the definition of the enum `def_id` in the crate's enum definitions, unless it is
+    /// registered or being built, so that the facts of its payloads can be read wherever a type
+    /// this builder makes is used (`rty::RefinedType::formula_with`).
+    fn register_enum_def(&self, def_id: DefId) {
+        if !self.enum_defs.borrow_mut().start_building(def_id) {
+            return;
+        }
+        let def = self.build_enum_def(def_id);
+        self.enum_defs.borrow_mut().insert(def_id, def);
+    }
+
+    /// The definition of the enum `def_id`: its variants with their discriminants and the types
+    /// of their fields over the enum's own type parameters.
+    pub fn build_enum_def(&self, def_id: DefId) -> rty::EnumDatatypeDef {
+        let adt = self.tcx.adt_def(def_id);
+        let builder = TypeBuilder::new(
+            self.tcx,
+            self.def_ids.clone(),
+            def_id,
+            self.type_params.clone(),
+            self.closure_type_params.clone(),
+            self.system.clone(),
+            self.enum_defs.clone(),
+        );
+
+        let name = refine::datatype_symbol(self.tcx, def_id);
+        let variants: IndexVec<_, _> = adt
+            .variants()
+            .iter()
+            .zip(adt.discriminants(self.tcx))
+            .map(|(variant, (_, discr))| {
+                let discr = discr_value(self.tcx, discr);
+                let field_tys = variant
+                    .fields
+                    .iter()
+                    .map(|field| builder.build(self.tcx.type_of(field.did).instantiate_identity()))
+                    .collect();
+                rty::EnumVariantDef {
+                    name: refine::variant_symbol(&name, variant.name),
+                    discr,
+                    field_tys,
+                }
+            })
+            .collect();
+
+        let generics = self.tcx.generics_of(def_id);
+        let ty_params = (0..generics.count())
+            .filter(|idx| {
+                matches!(
+                    generics.param_at(*idx, self.tcx).kind,
+                    mir_ty::GenericParamDefKind::Type { .. }
+                )
+            })
+            .count();
+        tracing::debug!(?def_id, ?name, ?ty_params, "ty_params count");
+
+        rty::EnumDatatypeDef {
+            name,
+            ty_params,
+            variants,
+        }
     }
 
     /// Returns the def_id of the declaration site of the given type parameter.
@@ -862,6 +929,9 @@ impl<'tcx> TypeBuilder<'tcx> {
                 }
                 if def.is_enum() {
                     let sym = refine::datatype_symbol(self.tcx, def.did());
+                    if rty::int_range_mode() != rty::IntRange::Off {
+                        self.register_enum_def(def.did());
+                    }
                     let args: IndexVec<_, _> =
                         params.types().map(|ty| m.enum_arg(self, ty)).collect();
                     rty::EnumType::new(sym, args).into()
@@ -1534,5 +1604,14 @@ where
                 .build_refined(self.ret_ty)
         });
         rty::FunctionType::new(param_rtys, ret_rty).with_abi(self.abi)
+    }
+}
+
+fn discr_value<'tcx>(tcx: mir_ty::TyCtxt<'tcx>, discr: mir_ty::util::Discr<'tcx>) -> BigInt {
+    let (size, signed) = discr.ty.int_size_and_signed(tcx);
+    if signed {
+        size.sign_extend(discr.val).into()
+    } else {
+        discr.val.into()
     }
 }

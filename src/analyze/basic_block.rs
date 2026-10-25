@@ -70,16 +70,6 @@ fn int_ty_includes<'tcx>(
     }
 }
 
-/// The type of a ghost term checked against the range of its value type: an integer with no
-/// bounds, or a sequence of them.
-fn unbounded_range_ty<T>(seq: bool) -> rty::Type<T> {
-    if seq {
-        rty::Type::Seq(Box::new(rty::RefinedType::unrefined(rty::Type::int())))
-    } else {
-        rty::Type::int()
-    }
-}
-
 /// The formula function a ghost marker call carries, or `None` for any other call.
 pub fn ghost_marker_formula_fn<'tcx>(
     ctx: &analyze::Analyzer<'tcx>,
@@ -420,7 +410,40 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         );
         clauses.extend(cs);
 
-        clauses.extend(builder.relate_sub_refined_type(&got_ret, &expected_ret));
+        let scope = rty::ScopedBuilder {
+            builder,
+            enum_defs: Some(&self.ctx.enum_defs),
+        };
+        clauses.extend(scope.relate_sub_refined_type(&got_ret, &expected_ret));
+        clauses
+    }
+
+    /// The clauses that a ghost term's value, `term` of the arguments `args` of the types `params`,
+    /// has `checks`, the facts of its type `value_ty`, which its value is not assumed to have: the
+    /// term's arithmetic is unbounded.
+    fn check_ghost_term(
+        &mut self,
+        params: IndexVec<rty::FunctionParamIdx, rty::RefinedType<rty::FunctionParamIdx>>,
+        args: IndexVec<rty::FunctionParamIdx, rty::RefinedType<Var>>,
+        value_ty: &rty::Type<rty::Closed>,
+        term: rty::Refinement<rty::FunctionParamIdx>,
+        checks: rty::Refinement<rty::Closed>,
+    ) -> Vec<chc::Clause> {
+        let term = rty::RefinedType::new(value_ty.clone().vacuous(), term);
+        let term = subst_singleton_params(term, &singleton_params(&params)).refinement;
+        let mut builder = self.env.build_clause();
+        let mut clauses = self.relate_fn_param_sub_types_with_builder(
+            params,
+            args,
+            &mut builder,
+            rty::FunctionAbi::Rust,
+        );
+        clauses.extend(rty::fact_check_clauses(
+            &mut builder,
+            value_ty,
+            term,
+            checks,
+        ));
         clauses
     }
 
@@ -490,7 +513,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             }
         }
 
-        clauses.extend(relate_param_sub_types(got_args, &expected_args, builder));
+        clauses.extend(relate_param_sub_types(
+            got_args,
+            &expected_args,
+            builder,
+            Some(&self.ctx.enum_defs),
+        ));
         clauses
     }
 
@@ -1238,7 +1266,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
         let ret_rty = self.operand_refined_type(Operand::Move(mir::RETURN_PLACE.into()));
 
-        clauses.extend(builder.relate_sub_refined_type(&ret_rty, &expected_fn.ret));
+        let scope = rty::ScopedBuilder {
+            builder,
+            enum_defs: Some(&self.ctx.enum_defs),
+        };
+        clauses.extend(scope.relate_sub_refined_type(&ret_rty, &expected_fn.ret));
 
         self.ctx.extend_clauses(clauses);
     }
@@ -1945,35 +1977,25 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         }
         let mut value_rty = self.type_builder.build(*value_ty).vacuous();
         value_rty.refinement.push_conj(formula_fn.to_refinement());
-        // The term itself is a logical integer: model arithmetic is unbounded, so a value of a
-        // type with a range made from it is required in that range here, as an unchecked
-        // subtraction is.
-        // `(sequence, signed, width)` of a value type with a range: an integer type, or a
-        // sequence of one, whose elements are then in range.
-        let range_kind = match &value_rty.ty {
-            rty::Type::UInt(width) => Some((false, false, *width)),
-            rty::Type::Int(width) if rty::int_range(true, *width).is_some() => {
-                Some((false, true, *width))
-            }
-            rty::Type::Seq(elem) => match elem.ty {
-                rty::Type::UInt(width) if rty::int_range(false, width).is_some() => {
-                    Some((true, false, width))
-                }
-                rty::Type::Int(width) if rty::int_range(true, width).is_some() => {
-                    Some((true, true, width))
-                }
-                _ => None,
-            },
-            _ => None,
-        };
-        let term_check = range_kind.map(|(seq, signed, width)| {
-            let term_rty =
-                rty::RefinedType::new(unbounded_range_ty(seq), formula_fn.to_refinement());
-            (
-                rty::FunctionType::new(params.clone(), term_rty),
-                (seq, signed, width),
+        // The term itself is logical: model arithmetic is unbounded, so the integers in a value
+        // made from it are required here to have the facts its type states of them, as an
+        // unchecked subtraction is.
+        let value_ty = value_rty.ty.clone().strip_refinement();
+        let checks = rty::type_fact_checks(&value_ty, &self.ctx.enum_defs).unwrap_or_else(|ty| {
+            let span = self.body.basic_blocks[self.basic_block]
+                .terminator()
+                .source_info
+                .span;
+            self.tcx.dcx().span_fatal(
+                span,
+                format!(
+                    "a ghost term of type {}: the ranges of the integers a recursive enum holds \
+                     cannot be checked",
+                    ty.display()
+                ),
             )
         });
+        let term_check = (!checks.is_top()).then(|| (params.clone(), formula_fn.to_refinement()));
         let func_ty = rty::FunctionType::new(params, value_rty);
 
         let args: IndexVec<_, _> = formula_fn
@@ -1992,21 +2014,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             })
             .collect();
 
-        if let Some((term_ty, (seq, signed, width))) = term_check {
-            let int_ty = if signed {
-                rty::Type::Int(width)
-            } else {
-                rty::Type::UInt(width)
-            };
-            let range = if seq {
-                rty::seq_elem_range(&int_ty, chc::Term::var(rty::RefinedTypeVar::Value))
-                    .expect("a sequence of a type with a range")
-                    .into()
-            } else {
-                rty::RefinedType::unrefined(int_ty).formula()
-            };
-            let in_range = rty::RefinedType::new(unbounded_range_ty(seq), range);
-            let clauses = self.relate_fn_sub_type(term_ty, args.clone(), in_range);
+        if let Some((params, term)) = term_check {
+            let clauses = self.check_ghost_term(params, args.clone(), &value_ty, term, checks);
             self.ctx.extend_clauses(clauses);
         }
         let clauses = self.relate_fn_sub_type(func_ty, args, expected.clone());
@@ -2803,6 +2812,7 @@ pub(crate) fn relate_param_sub_types<T: chc::Var>(
     got_args: IndexVec<rty::FunctionParamIdx, rty::RefinedType<rty::FunctionParamIdx>>,
     expected_args: &IndexVec<rty::FunctionParamIdx, rty::RefinedType<T>>,
     builder: &mut chc::ClauseBuilder,
+    enum_defs: Option<&dyn rty::EnumDefProvider>,
 ) -> Vec<chc::Clause> {
     assert!(got_args.len() == expected_args.len());
     let singleton_params = singleton_params(&got_args);
@@ -2823,15 +2833,19 @@ pub(crate) fn relate_param_sub_types<T: chc::Var>(
     }
     let mut clauses = Vec::new();
     for ((param_idx, got_ty), expected_ty) in got_args.iter_enumerated().zip(expected_args) {
-        clauses.extend(builder.relate_sub_refined_type(expected_ty, got_ty));
+        let scope = rty::ScopedBuilder {
+            builder: builder.clone(),
+            enum_defs,
+        };
+        clauses.extend(scope.relate_sub_refined_type(expected_ty, got_ty));
         if singleton_params.contains_key(&param_idx) {
             builder
                 .with_value_var(&got_ty.ty)
-                .add_body(expected_ty.formula());
+                .add_body(expected_ty.formula_with(enum_defs));
         } else {
             builder
                 .with_mapped_value_var(param_idx)
-                .add_body(expected_ty.formula());
+                .add_body(expected_ty.formula_with(enum_defs));
         }
     }
     clauses

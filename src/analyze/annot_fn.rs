@@ -251,6 +251,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             analyzer.type_params.clone(),
             analyzer.closure_type_params.clone(),
             analyzer.system.clone(),
+            analyzer.enum_defs.clone(),
         );
         let mut translator = Self {
             tcx,
@@ -1076,7 +1077,12 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         self.register_forall_pred(pred.clone());
         let mut system = self.analyzer.system.borrow_mut();
         if system.laws_of(&pred).is_empty() {
-            for law in analyze::closure_hist_inv::laws(&mut system, &pred, &contract) {
+            for law in analyze::closure_hist_inv::laws(
+                &mut system,
+                &pred,
+                &contract,
+                &self.analyzer.enum_defs,
+            ) {
                 system.add_law(pred.clone(), law);
             }
         }
