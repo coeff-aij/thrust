@@ -4,7 +4,7 @@ use std::collections::HashSet;
 
 use rustc_hir::def_id::CRATE_DEF_ID;
 use rustc_middle::ty::{self as mir_ty, TyCtxt};
-use rustc_span::def_id::LocalDefId;
+use rustc_span::def_id::{DefId, LocalDefId};
 
 use crate::analyze;
 use crate::analyze::selection::ItemPath;
@@ -594,7 +594,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         continue;
                     };
                     if !self.tcx.is_mir_available(*law_def_id) {
-                        tracing::warn!(?law_def_id, ?impl_def_id, "inherited law has no body");
+                        self.report_unchecked_inherited_law(*law_def_id, impl_def_id, "no body");
                         continue;
                     }
                     tracing::info!(
@@ -607,7 +607,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     // function the macro generates, so the contract is read as a call site
                     // reads it, at the impl's arguments.
                     let Some(expected) = self.ctx.def_ty_with_args(*law_def_id, args, owner) else {
-                        tracing::warn!(?law_def_id, ?impl_def_id, "inherited law has no contract");
+                        self.report_unchecked_inherited_law(
+                            *law_def_id,
+                            impl_def_id,
+                            "no contract",
+                        );
                         continue;
                     };
                     let mut analyzer = self.ctx.local_def_analyzer(law_local);
@@ -616,6 +620,18 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 }
             }
         }
+    }
+
+    /// A law inherited by a local impl that cannot be checked there is an error: a law is assumed
+    /// at every type parameter of its trait only because each impl proves it.
+    fn report_unchecked_inherited_law(&self, law_def_id: DefId, impl_def_id: DefId, what: &str) {
+        self.tcx.dcx().span_err(
+            self.tcx.def_span(impl_def_id),
+            format!(
+                "the law `{}` this impl inherits has {what} to check it against here",
+                self.tcx.def_path_str(law_def_id)
+            ),
+        );
     }
 
     /// Check a local def's body with its type parameters left as opaque types (a no-op

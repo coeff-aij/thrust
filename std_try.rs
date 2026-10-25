@@ -7,7 +7,10 @@
 fn _extern_spec_option_branch<T>(opt: Option<T>) -> std::ops::ControlFlow<Option<std::convert::Infallible>, T>
     where T: thrust_models::Model,
 {
-    <Option<T> as std::ops::Try>::branch(opt)
+    thrust_std_target!(
+        <Option<T> as std::ops::Try>::branch(opt),
+        crate::std_transcriptions::option_branch(opt)
+    )
 }
 
 #[thrust::extern_spec_fn]
@@ -16,7 +19,10 @@ fn _extern_spec_option_branch<T>(opt: Option<T>) -> std::ops::ControlFlow<Option
 fn _extern_spec_option_from_residual<T>(residual: Option<std::convert::Infallible>) -> Option<T>
     where T: thrust_models::Model,
 {
-    <Option<T> as std::ops::FromResidual<Option<std::convert::Infallible>>>::from_residual(residual)
+    thrust_std_target!(
+        <Option<T> as std::ops::FromResidual<Option<std::convert::Infallible>>>::from_residual(residual),
+        crate::std_transcriptions::option_from_residual(residual)
+    )
 }
 
 #[thrust::extern_spec_fn]
