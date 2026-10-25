@@ -1512,6 +1512,78 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .into()
     }
 
+    /// The body with each ghost marker call also using, as an operand, the locals its ghost term
+    /// reads, so that its liveness is the runtime liveness extended to the ghost reads; `None`
+    /// when the body has no ghost term.
+    fn body_with_ghost_reads(&self) -> Option<Body<'tcx>> {
+        let has_ghost_term = self.body.basic_blocks.iter().any(|data| {
+            matches!(&data.terminator().kind, mir::TerminatorKind::Call { func, args, .. }
+                if analyze::basic_block::ghost_marker_formula_fn(
+                    self.ctx, &self.body.local_decls, func, args,
+                ).is_some())
+        });
+        if !has_ghost_term {
+            return None;
+        }
+        let mut body = self.body.clone();
+        for data in body.basic_blocks.as_mut() {
+            let terminator = data.terminator_mut();
+            let scope = terminator.source_info.scope;
+            let mir::TerminatorKind::Call { func, args, .. } = &mut terminator.kind else {
+                continue;
+            };
+            let Some(names) = self.ghost_term_reads(func, args) else {
+                continue;
+            };
+            let mut operands = args.to_vec();
+            for name in names {
+                let bindings = analyze::basic_block::bindings_in_scope(&self.body, name, scope);
+                let locals = bindings.into_iter().filter_map(|vdi| match &vdi.value {
+                    mir::VarDebugInfoContents::Place(place) if place.projection.is_empty() => {
+                        Some(place.local)
+                    }
+                    _ => None,
+                });
+                for local in locals {
+                    let span = operands[0].span;
+                    let node = mir::Operand::Copy(local.into());
+                    operands.push(rustc_span::source_map::Spanned { node, span });
+                }
+            }
+            *args = operands.into_boxed_slice();
+        }
+        Some(body)
+    }
+
+    /// The names of the variables the ghost term of a ghost marker call reads; `None` for any
+    /// other call.
+    fn ghost_term_reads(
+        &self,
+        func: &mir::Operand<'tcx>,
+        args: &[rustc_span::source_map::Spanned<mir::Operand<'tcx>>],
+    ) -> Option<Vec<rustc_span::Symbol>> {
+        let (formula_def_id, generic_args) = analyze::basic_block::ghost_marker_formula_fn(
+            self.ctx,
+            &self.body.local_decls,
+            func,
+            args,
+        )?;
+        let formula_fn = self
+            .ctx
+            .formula_fn_with_args(formula_def_id, generic_args, self.local_def_id.to_def_id())
+            .expect("ghost formula function is not registered");
+        let names = formula_fn
+            .param_idents()
+            .iter()
+            .skip(1)
+            .map(|ident| {
+                let ident = ident.expect("ghost term parameters must be named");
+                analyze::annot_fn::lifted_param_source_name(ident)
+            })
+            .collect();
+        Some(names)
+    }
+
     fn refine_basic_blocks(&mut self, move_data: &MoveData<'tcx>) {
         let loop_invariants = self.collect_loop_invariant_annotations();
         for (header, invariants) in &loop_invariants {
@@ -1523,6 +1595,15 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let mut results = MaybeLiveLocals
             .iterate_to_fixpoint(self.tcx, &self.body, None)
             .into_results_cursor(&self.body);
+        // Ghost terms read locals the MIR does not use, so a local a ghost term reads is a
+        // parameter of every block up to the read, while its drops, and so the resolution of a
+        // `&mut`, stay where the runtime liveness puts them.
+        let ghost_read_body = self.body_with_ghost_reads();
+        let mut ghost_live = ghost_read_body.as_ref().map(|body| {
+            MaybeLiveLocals
+                .iterate_to_fixpoint(self.tcx, body, None)
+                .into_results_cursor(body)
+        });
         let mut ever_init = EverInitializedPlaces::new(&self.body, move_data)
             .iterate_to_fixpoint(self.tcx, &self.body, None)
             .into_results_cursor(&self.body);
@@ -1555,8 +1636,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     .map(|init| move_data.inits[init].path),
                 move_data,
             );
-            let mut live_locals: Vec<_> = results
-                .get()
+            let carried = match &mut ghost_live {
+                Some(ghost_live) => {
+                    ghost_live.seek_to_block_start(bb);
+                    ghost_live.get().clone()
+                }
+                None => results.get().clone(),
+            };
+            let mut live_locals: Vec<_> = carried
                 .iter()
                 .filter(|local| zst_locals.contains(*local) || ever_set.contains(local))
                 .map(|in_local| {
@@ -1571,15 +1658,17 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             // TODO: ad-hoc
             if bb == mir::START_BLOCK {
                 for a in self.body.args_iter() {
-                    if live_locals.iter().any(|(l, _)| *l == a) {
+                    if results.get().contains(a) {
                         continue;
                     }
-                    let decl = &self.body.local_decls[a];
-                    let type_and_mut = TypeAndMut {
-                        ty: decl.ty,
-                        mutbl: decl.mutability,
-                    };
-                    live_locals.push((a, type_and_mut));
+                    if !live_locals.iter().any(|(l, _)| *l == a) {
+                        let decl = &self.body.local_decls[a];
+                        let type_and_mut = TypeAndMut {
+                            ty: decl.ty,
+                            mutbl: decl.mutability,
+                        };
+                        live_locals.push((a, type_and_mut));
+                    }
                     self.drop_points
                         .get_mut(&bb)
                         .unwrap()

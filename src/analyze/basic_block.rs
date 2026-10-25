@@ -80,6 +80,50 @@ fn unbounded_range_ty<T>(seq: bool) -> rty::Type<T> {
     }
 }
 
+/// The formula function a ghost marker call carries, or `None` for any other call.
+pub fn ghost_marker_formula_fn<'tcx>(
+    ctx: &analyze::Analyzer<'tcx>,
+    local_decls: &mir::LocalDecls<'tcx>,
+    func: &Operand<'tcx>,
+    args: &[rustc_span::source_map::Spanned<Operand<'tcx>>],
+) -> Option<(LocalDefId, mir_ty::GenericArgsRef<'tcx>)> {
+    let (def_id, _) = func.const_fn_def()?;
+    if Some(def_id) != ctx.def_ids().ghost_marker() {
+        return None;
+    }
+
+    let arg_ty = args[0].node.ty(local_decls, ctx.tcx());
+    let mir_ty::TyKind::FnDef(formula_def_id, generic_args) = arg_ty.kind() else {
+        panic!("ghost marker argument must be a formula function item");
+    };
+    let formula_def_id = formula_def_id
+        .as_local()
+        .expect("ghost formula function must be local");
+    Some((formula_def_id, generic_args))
+}
+
+/// The debug entries of the variables the name `name` can stand for in `scope`: those of the
+/// innermost enclosing scope that binds the name, as Rust's shadowing resolves it.
+pub fn bindings_in_scope<'a, 'tcx>(
+    body: &'a mir::Body<'tcx>,
+    name: rustc_span::Symbol,
+    scope: mir::SourceScope,
+) -> Vec<&'a mir::VarDebugInfo<'tcx>> {
+    let mut scope = Some(scope);
+    while let Some(current) = scope {
+        let bound: Vec<_> = body
+            .var_debug_info
+            .iter()
+            .filter(|vdi| vdi.name == name && vdi.source_info.scope == current)
+            .collect();
+        if !bound.is_empty() {
+            return bound;
+        }
+        scope = body.source_scopes[current].parent_scope;
+    }
+    Vec::new()
+}
+
 /// Wraps the integer `term` around into the range of the integer type `ty`, as an `as` cast does.
 fn wrap_int_term<'tcx, V>(
     tcx: TyCtxt<'tcx>,
@@ -1849,39 +1893,16 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.ctx.extend_clauses(clauses);
     }
 
-    /// The formula function a ghost marker call carries, or `None` for any other call.
-    fn ghost_marker_formula_fn(
-        &self,
-        func: &Operand<'tcx>,
-        args: &[rustc_span::source_map::Spanned<Operand<'tcx>>],
-    ) -> Option<(LocalDefId, mir_ty::GenericArgsRef<'tcx>)> {
-        let (def_id, _) = func.const_fn_def()?;
-        if Some(def_id) != self.ctx.def_ids().ghost_marker() {
-            return None;
-        }
-
-        let arg_ty = args[0].node.ty(&self.local_decls, self.tcx);
-        let mir_ty::TyKind::FnDef(formula_def_id, generic_args) = arg_ty.kind() else {
-            panic!("ghost marker argument must be a formula function item");
-        };
-        let formula_def_id = formula_def_id
-            .as_local()
-            .expect("ghost formula function must be local");
-        Some((formula_def_id, generic_args))
-    }
-
-    /// Forges an operand for a live variable named `name` using var_debug_info
-    ///
-    /// Shadowing can leave several entries sharing a name, and debug info does not say
-    /// which one the source that named it meant, so this refuses to guess.
+    /// The operand a ghost term at the current terminator reads for the variable `name`: the
+    /// binding Rust's scoping resolves it to ([`bindings_in_scope`], as the liveness the block
+    /// parameters come from resolves it), when it holds a value here.
     fn operand_of_name(&self, name: rustc_span::Symbol) -> Option<Operand<'tcx>> {
+        let scope = self.body.basic_blocks[self.basic_block]
+            .terminator()
+            .source_info
+            .scope;
         let mut found: Option<Operand<'tcx>> = None;
-        for vdi in self
-            .body
-            .var_debug_info
-            .iter()
-            .filter(|vdi| vdi.name == name)
-        {
+        for vdi in bindings_in_scope(&self.body, name, scope) {
             let operand = match &vdi.value {
                 mir::VarDebugInfoContents::Place(place) => {
                     if !place.projection.is_empty() || !self.is_defined(place.local) {
@@ -1897,9 +1918,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 None => found = Some(operand),
                 Some(prev) if *prev == operand => {}
                 Some(_) => self.tcx.dcx().fatal(format!(
-                    "ghost term refers to `{name}`, which is ambiguous here: multiple live \
-                     variables share this name (e.g. through shadowing). Rename the variables \
-                     to disambiguate."
+                    "ghost term refers to `{name}`, which is ambiguous here: one scope binds \
+                     several variables of this name. Rename the variables to disambiguate."
                 )),
             }
         }
@@ -2460,7 +2480,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     .clone()
                     .subst_var(|idx| chc::Term::var(outer_fn_param_vars[&idx]));
             }
-            if let Some((formula_def_id, generic_args)) = self.ghost_marker_formula_fn(func, args) {
+            if let Some((formula_def_id, generic_args)) =
+                ghost_marker_formula_fn(self.ctx, &self.local_decls, func, args)
+            {
                 let formula_fn = self
                     .ctx
                     .formula_fn_with_args(
