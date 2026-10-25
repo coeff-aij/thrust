@@ -3,7 +3,6 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // A string literal in a value of the program has the null sort of `str`.
-#[derive(Clone, Copy)]
 enum E {
     A(&'static str),
     B,
