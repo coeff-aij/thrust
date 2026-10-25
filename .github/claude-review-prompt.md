@@ -107,3 +107,10 @@ before the pull request is merged:
 - `suggestion`: an improvement to the design or the code that the developers may take or leave.
 
 The summary is two or three sentences on the overall design and the most important concern.
+
+The review is public. Write it in English, whatever language the pull request is written in.
+Refer only to what any reader of the repository can reach: files and commits of this
+repository, and published papers and tools by title or public link. Do not repeat local paths,
+links to private repositories or documents, internal labels or names of people or sessions that
+appear in the pull request, even when they bear on a comment; say what is missing in general
+terms instead.
