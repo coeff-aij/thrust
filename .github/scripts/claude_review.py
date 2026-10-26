@@ -28,10 +28,15 @@ from anthropic import beta_tool
 from pydantic import BaseModel
 
 GUIDELINE_FILES = ["AGENTS.md", "CLAUDE.md", "README.md"]
-MAX_FILE_CHARS = 100_000
+# A changed file up to this size is sent whole; a larger one as the regions around its changes.
+WHOLE_FILE_CHARS = 20_000
+# Lines of context around each changed region of a larger file.
+EXCERPT_CONTEXT = 40
+# Room for adaptive thinking and the review together; thinking counts against it.
+MAX_OUTPUT_TOKENS = 64_000
 REVIEW_HEADING = "**Claude review** (automated)"
 REVIEW_AUTHOR = "github-actions[bot]"
-MAX_TOOL_CALLS = 20
+MAX_TOOL_CALLS = 40
 MAX_TOOL_OUTPUT_CHARS = 20_000
 REPO_ROOT = Path()
 
@@ -76,10 +81,29 @@ def commentable_lines(diff: str) -> dict[str, set[int]]:
     return lines
 
 
-def read_changed_files(paths: list[str]) -> tuple[dict[str, str], list[str]]:
+def excerpt(text: str, changed: set[int]) -> str:
+    """The numbered lines of text within EXCERPT_CONTEXT lines of a changed line, the gaps marked."""
+    lines = text.splitlines()
+    keep = sorted(
+        {n for line in changed for n in range(line - EXCERPT_CONTEXT, line + EXCERPT_CONTEXT + 1) if 1 <= n <= len(lines)}
+    )
+    out, previous = [], 0
+    for n in keep:
+        if n != previous + 1:
+            out.append(f"[lines {previous + 1}-{n - 1} not shown; read them with read_file]")
+        out.append(f"{n}: {lines[n - 1]}")
+        previous = n
+    if previous < len(lines):
+        out.append(f"[lines {previous + 1}-{len(lines)} not shown; read them with read_file]")
+    return "\n".join(out)
+
+
+def read_changed_files(changed: dict[str, set[int]]) -> tuple[dict[str, str], list[str]]:
+    """Each changed file after the change: whole when small, otherwise the regions around its
+    changed lines. Binary files are listed apart."""
     contents: dict[str, str] = {}
     omitted: list[str] = []
-    for path in paths:
+    for path, lines in changed.items():
         file = repo_file(path)
         if file is None:
             continue
@@ -88,10 +112,7 @@ def read_changed_files(paths: list[str]) -> tuple[dict[str, str], list[str]]:
         except UnicodeDecodeError:
             omitted.append(path)
             continue
-        if len(text) > MAX_FILE_CHARS:
-            omitted.append(path)
-            continue
-        contents[path] = text
+        contents[path] = text if len(text) <= WHOLE_FILE_CHARS else excerpt(text, lines)
     return contents, omitted
 
 
@@ -167,8 +188,9 @@ def gh_api_items(path: str) -> list[dict]:
     return [json.loads(line) for line in output.splitlines()]
 
 
-def earlier_reviews(repo: str, pr: str) -> str:
-    """The earlier automated reviews of the pull request, with the replies to their comments."""
+def earlier_reviews(repo: str, pr: str) -> tuple[str, str | None]:
+    """The earlier automated reviews of the pull request, with the replies to their comments, and
+    the commit the latest of them reviewed."""
     reviews = [
         r
         for r in gh_api_items(f"repos/{repo}/pulls/{pr}/reviews")
@@ -187,27 +209,51 @@ def earlier_reviews(repo: str, pr: str) -> str:
                 for reply in comments
                 if reply.get("in_reply_to_id") == comment["id"]
             ]
-    return "\n\n".join(parts)
+    return "\n\n".join(parts), (reviews[-1]["commit_id"] if reviews else None)
+
+
+def diff_since(repo: str, base: str, head: str) -> str | None:
+    """The changes from base to head as a unified diff, or None when GitHub cannot compare them
+    (base rewritten by a force-push, or a file without a patch)."""
+    try:
+        compare = json.loads(gh("api", f"repos/{repo}/compare/{base}...{head}"))
+    except subprocess.CalledProcessError:
+        return None
+    if compare.get("status") not in ("ahead", "identical"):
+        return None
+    parts = []
+    for f in compare.get("files", []):
+        if "patch" not in f:
+            return None
+        parts.append(f"--- a/{f.get('previous_filename', f['filename'])}\n+++ b/{f['filename']}\n{f['patch']}")
+    return "\n".join(parts)
 
 
 def system_blocks(prompt_file: Path) -> list[dict]:
     """The review instructions and the repository's guidelines, which every review shares.
 
-    They are cached, so that reviews within a few minutes of each other read them at a tenth of
-    the price.
+    They are cached for an hour, so that the re-review after a round of fixes reads them at a
+    twentieth of the price.
     """
     guidelines = "\n\n".join(
         f"# Guidelines: {name}\n\n{Path(name).read_text()}" for name in GUIDELINE_FILES if Path(name).is_file()
     )
     return [
         {"type": "text", "text": prompt_file.read_text()},
-        {"type": "text", "text": guidelines, "cache_control": {"type": "ephemeral"}},
+        {"type": "text", "text": guidelines, "cache_control": {"type": "ephemeral", "ttl": "1h"}},
     ]
 
 
-def build_prompt(pr: dict, diff: str, contents: dict[str, str], omitted: list[str], earlier: str) -> str:
+def build_prompt(
+    pr: dict, diff: str, since: str | None, contents: dict[str, str], omitted: list[str], earlier: str
+) -> str:
     parts = [f"# Pull request: {pr['title']}\n\n{pr['body'] or '(no description)'}"]
-    parts.append(f"# Diff\n\n```diff\n{diff}\n```")
+    if since is None:
+        parts.append(f"# Diff\n\n```diff\n{diff}\n```")
+    else:
+        files = "\n".join(f["path"] for f in pr["files"])
+        parts.append(f"# Files the pull request changes\n\n{files}")
+        parts.append(f"# Diff since the commit the latest review saw ({since})\n\n```diff\n{diff}\n```")
     for path, text in contents.items():
         parts.append(f"# File after the change: {path}\n\n```\n{text}\n```")
     if omitted:
@@ -222,19 +268,21 @@ def request_review(client: anthropic.Anthropic, model: str, system: list[dict], 
     earlier turns from the cache."""
     runner = client.beta.messages.tool_runner(
         model=model,
-        max_tokens=16000,
+        max_tokens=MAX_OUTPUT_TOKENS,
+        stream=True,
         system=system,
         messages=[{"role": "user", "content": prompt}],
         tools=[grep, list_files, read_file],
         max_iterations=MAX_TOOL_CALLS + 5,
-        cache_control={"type": "ephemeral"},
+        cache_control={"type": "ephemeral", "ttl": "1h"},
         output_config={"effort": "high"},
         output_format=Review,
         betas=["server-side-fallback-2026-07-01"],
         fallbacks="default",
     )
     usage = {"input": 0, "cache_write": 0, "cache_read": 0, "output": 0}
-    for message in runner:
+    for stream in runner:
+        message = stream.get_final_message()
         usage["input"] += message.usage.input_tokens
         usage["cache_write"] += message.usage.cache_creation_input_tokens or 0
         usage["cache_read"] += message.usage.cache_read_input_tokens or 0
@@ -285,14 +333,19 @@ def main() -> None:
         sys.exit(f"the pull request moved from {checked_out} to {pr['headRefOid']} after the checkout; run again")
     diff = gh("pr", "diff", args.pr, "-R", args.repo)
     lines = commentable_lines(diff)
-    contents, omitted = read_changed_files([f["path"] for f in pr["files"]])
-    earlier = earlier_reviews(args.repo, args.pr)
-    prompt = build_prompt(pr, diff, contents, omitted, earlier)
+    earlier, reviewed = earlier_reviews(args.repo, args.pr)
+    # A re-review is sent the changes since the commit the latest review saw.
+    since_diff = diff_since(args.repo, reviewed, pr["headRefOid"]) if reviewed else None
+    since = reviewed if since_diff is not None else None
+    sent = since_diff if since_diff is not None else diff
+    contents, omitted = read_changed_files(commentable_lines(sent))
+    prompt = build_prompt(pr, sent, since, contents, omitted, earlier)
 
     if args.dry_run:
         system = sum(len(block["text"]) for block in system_blocks(args.prompt))
         print(f"model: {args.model}\nsystem: {system} chars\nprompt: {len(prompt)} chars")
         print(f"earlier reviews: {len(earlier)} chars")
+        print(f"diff: {'since ' + since if since else 'whole pull request'}, {len(sent)} chars")
         print("included:", *contents, sep="\n  ")
         print("omitted:", *omitted, sep="\n  ")
         print("commentable lines:", *(f"{p}: {len(n)}" for p, n in lines.items()), sep="\n  ")
