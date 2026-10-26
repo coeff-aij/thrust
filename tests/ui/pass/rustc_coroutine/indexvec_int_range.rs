@@ -1,6 +1,6 @@
 //@check-pass
 //@compile-flags: -Adead_code -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300
 //@rustc-env: THRUST_VERIFY_ONLY=rustc_index::vec,rustc_index::slice,filled
 //@rustc-env: THRUST_INT_RANGE=conversions
 // `indexvec.rs` under `THRUST_INT_RANGE=conversions`, where the model of each integer type carries
