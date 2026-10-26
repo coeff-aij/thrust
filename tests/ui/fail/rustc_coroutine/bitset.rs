@@ -2,10 +2,11 @@
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@no-rustfix
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 THRUST_TRY_SPECS=1
-//@rustc-env: THRUST_VERIFY_ONLY=rustc_index::bit_set,column_bound
+//@rustc-env: THRUST_VERIFY_ONLY=column_bound
 // Stage 3 of the rustc-coroutine verification target: rustc_index's bit sets.
 // The code is the module tree under tests/rustc_coroutine/; this file selects the stage and
-// drives it.
+// drives it. This twin verifies only `column_bound`, against the contracts of the bit sets, which
+// the pass twin verifies.
 #![feature(new_range_api)]
 
 #[path = "../../../rustc_coroutine/compiler/rustc_hashes/src/lib.rs"]
