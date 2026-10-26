@@ -1,3 +1,4 @@
+//@ignore-on-host: not yet verifiable: PCSat gives no answer within 150 s on fptprove develop c471e831b since Skip's `completed` allows the TrustedRandomAccess case
 //@check-pass
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
