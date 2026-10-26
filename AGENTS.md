@@ -82,7 +82,12 @@ the next round:
    satisfy a comment. With many comments, give each to its own subagent.
 4. Reply to every comment, so the next review knows how it was settled:
    `gh api repos/{owner}/{repo}/pulls/<n>/comments/<id>/replies -f body='Fixed in <commit>'`,
-   or `Declined: <reason>`, or `Refuted: <evidence>`.
+   `Fixed in the description`, `Declined: <reason>`, or `Refuted: <evidence>`. Evidence the
+   reviewer can read is a file and line: of this repository, or of the standard library's source
+   (`core/src/iter/adapters/zip.rs:305`) for a claim about std; a run's result is evidence it can
+   only take as reported.
 5. Push and request again. Stop when a review raises no open `blocking` or `check` comment, or
    after three rounds, and leave what remains, the CoAR runs that could not run, and the merge,
-   to a person.
+   to a person. After a round with nothing open, request another only when later commits change
+   what Thrust does (`src/`, `thrust-macros/`, the meaning of a `std.rs` specification), not for
+   tests, documentation or ignore reasons.
