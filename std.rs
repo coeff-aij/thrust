@@ -912,6 +912,11 @@ mod thrust_models {
         type Ty = (<I as Model>::Ty, model::Closure<P>);
     }
 
+    // The two iterators, the first `None` once it has completed.
+    impl<A, B> Model for core::iter::Chain<A, B> where A: Model, B: Model {
+        type Ty = (Option<<A as Model>::Ty>, Option<<B as Model>::Ty>);
+    }
+
     impl<T> Model for Option<T> where T: Model {
         type Ty = Option<<T as Model>::Ty>;
     }
@@ -3462,6 +3467,98 @@ fn _extern_spec_iterator_filter<I, P>(it: I, p: P) -> core::iter::Filter<I, P>
           P: FnMut(&I::Item) -> bool
 {
     <I as std::iter::Iterator>::filter(it, p)
+}
+
+// `Chain` hands out the first iterator's items, drops that iterator once it completes, then hands
+// out the second's (std's `Chain::next`). Creusot has no `Chain`; the form follows its `Fuse` for
+// the dropped iterator and its `Zip` for the two parts of the produced sequence.
+// `_iter_spec_chain_second` is what the second iterator contributes.
+#[thrust_macros::predicate]
+fn _iter_spec_chain_second<B>(
+    b: Option<B>,
+    ys: thrust_models::model::Seq<<B::Item as thrust_models::Model>::Ty>,
+    b2: Option<B>,
+) -> bool
+where
+    B: IteratorSpec,
+    B::Item: thrust_models::Model,
+{
+    (b == None && ys.len() == 0 && b2 == None)
+        || thrust_models::exists(|x: <B as thrust_models::Model>::Ty, x2: <B as thrust_models::Model>::Ty|
+            b == Some(x) && b2 == Some(x2) && B::produces(x, ys, x2))
+}
+
+#[thrust_macros::context]
+impl<A, B> IteratorSpec for core::iter::Chain<A, B>
+where
+    A: IteratorSpec,
+    B: IteratorSpec<Item = A::Item>,
+    A::Item: thrust_models::Model,
+{
+    #[thrust_macros::predicate]
+    fn inv(self) -> bool {
+        thrust_models::forall(|x: <A as thrust_models::Model>::Ty| self.0 != Some(x) || A::inv(x))
+            && thrust_models::forall(|y: <B as thrust_models::Model>::Ty| self.1 != Some(y) || B::inv(y))
+    }
+
+    #[thrust_macros::predicate]
+    fn produces(self, visited: Vec<A::Item>, o: Self) -> bool {
+        (self.0 == None && o.0 == None && _iter_spec_chain_second::<B>(self.1, visited, o.1))
+            || thrust_models::exists(|x: <A as thrust_models::Model>::Ty, x2: <A as thrust_models::Model>::Ty|
+                self.0 == Some(x) && o.0 == Some(x2) && A::produces(x, visited, x2) && o.1 == self.1)
+            || thrust_models::exists(|x: <A as thrust_models::Model>::Ty,
+                                      x2: <A as thrust_models::Model>::Ty,
+                                      x3: <A as thrust_models::Model>::Ty,
+                                      xs: thrust_models::model::Seq<<A::Item as thrust_models::Model>::Ty>,
+                                      ys: thrust_models::model::Seq<<A::Item as thrust_models::Model>::Ty>|
+                self.0 == Some(x)
+                    && o.0 == None
+                    && visited == xs.concat(ys)
+                    && A::produces(x, xs, x2)
+                    && A::completed(thrust_models::model::Mut::new(x2, x3))
+                    && _iter_spec_chain_second::<B>(self.1, ys, o.1))
+    }
+
+    #[thrust_macros::predicate]
+    fn completed(&mut self) -> bool {
+        ((*self).0 == None
+            || thrust_models::exists(|x: <A as thrust_models::Model>::Ty, x2: <A as thrust_models::Model>::Ty|
+                (*self).0 == Some(x) && A::completed(thrust_models::model::Mut::new(x, x2))))
+            && (!self).0 == None
+            && (((*self).1 == None && (!self).1 == None)
+                || thrust_models::exists(|y: <B as thrust_models::Model>::Ty, y2: <B as thrust_models::Model>::Ty|
+                    (*self).1 == Some(y) && (!self).1 == Some(y2) && B::completed(thrust_models::model::Mut::new(y, y2))))
+    }
+
+    fn produces_refl(a: &Self) {}
+
+    // Trusted: PCSat (fptprove 8746111b4) gives no answer on this law. It follows from the laws of
+    // `A` and `B` by cases on whether each of the two steps leaves the first iterator in place.
+    #[thrust::trusted]
+    fn produces_trans(
+        a: &Self,
+        ab: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        b: &Self,
+        bc: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        c: &Self,
+    ) {
+    }
+}
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(
+    result.0 == Some(it)
+        && thrust_models::exists(|y: <U::IntoIter as thrust_models::Model>::Ty|
+            result.1 == Some(y) && U::into_iter_is(other, y))
+)]
+fn _extern_spec_iterator_chain<I, U>(it: I, other: U) -> core::iter::Chain<I, U::IntoIter>
+    where I: IteratorSpec,
+          I::Item: thrust_models::Model,
+          U: IntoIteratorSpec<Item = I::Item>,
+          U::IntoIter: IteratorSpec<Item = I::Item>
+{
+    <I as std::iter::Iterator>::chain(it, other)
 }
 
 // Creusot's `&mut I` (creusot-std src/std/iter.rs): stepping the reference steps the iterator it

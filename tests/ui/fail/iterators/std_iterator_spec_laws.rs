@@ -5,8 +5,8 @@
 // The bodies of the injected std.rs are not analyzed in the crates it is injected into. Compiled
 // here as an ordinary source file, its bodies are checked: each `IteratorSpec` impl proves
 // `produces_refl` and `produces_trans`, and each `DoubleEndedIteratorSpec` impl `produces_back_refl`
-// and `produces_back_trans`, with an empty body, except the `produces_trans` of `Filter`, which is
-// trusted (std.rs says why).
+// and `produces_back_trans`, with an empty body, except the `produces_trans` of `Filter` and
+// `Chain`, which are trusted (std.rs says why).
 // Fail twin: one more impl, whose `produces` bounds the end state even when nothing is produced
 // but whose `inv` does not imply that bound, so `produces_refl` does not hold.
 
