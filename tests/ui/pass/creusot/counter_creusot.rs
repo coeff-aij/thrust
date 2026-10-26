@@ -1,4 +1,4 @@
-//@ignore-on-host: not yet verifiable, the solver gives no answer within 300 s (fptprove thrust-benchmarks unsolved/counter_creusot_2026-09-29/)
+//@ignore-on-host: not yet verifiable: PCSat answers `timeout` at 300 s (fptprove develop c471e831b)
 //@check-pass
 //@compile-flags: -C debug-assertions=off -A unused-variables -A unused_parens
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300
