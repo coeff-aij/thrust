@@ -37,9 +37,10 @@ MAX_OUTPUT_TOKENS = 64_000
 REVIEW_HEADING = "**Claude review** (automated)"
 REVIEW_AUTHOR = "github-actions[bot]"
 MAX_TOOL_CALLS = 40
-# A run past this many tokens (read, written and generated) gets no more tool results and writes
-# the review from what it has; the largest runs so far took about 350,000.
-MAX_RUN_TOKENS = 1_500_000
+# A run past this many tokens sent anew, written to the cache or generated, the bulk of what a run
+# costs, gets no more tool results and writes the review from what it has; the largest runs so far
+# took about 160,000. Cache reads, a small part of the cost, are bounded by MAX_TOOL_CALLS.
+MAX_RUN_TOKENS = 500_000
 MAX_TOOL_OUTPUT_CHARS = 20_000
 # The compare API lists at most this many changed files.
 COMPARE_MAX_FILES = 300
@@ -346,7 +347,7 @@ def request_review(client: anthropic.Anthropic, model: str, system: list[dict], 
     usage = dict.fromkeys(["input", "write_5m", "write_1h", "read", "output", "thinking"], 0)
     for stream in runner:
         add_usage(usage, stream.get_final_message().usage)
-        run_tokens = sum(usage[kind] for kind in ("input", "write_5m", "write_1h", "read", "output"))
+        run_tokens = sum(usage[kind] for kind in ("input", "write_5m", "write_1h", "output"))
     summary = f"{tool_calls} tool calls, tokens {usage}"
     print(f"usage: {summary}", file=sys.stderr)
     response = runner.until_done()
