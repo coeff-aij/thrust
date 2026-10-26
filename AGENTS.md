@@ -49,8 +49,24 @@ as CI does, to run the others.
 ## Automated review
 
 `.github/workflows/claude-review.yml` reviews a pull request with the Claude API (README, CI).
-Each comment is marked `blocking`, `check` or `suggestion`. When developing with an agent, use
-it as a loop at the points where a coherent set of commits is pushed, not after every commit:
+Each comment is marked `blocking`, `check` or `suggestion`.
+
+The review reads the diff and the code around it and runs nothing. It covers what reading
+shows: agreement with the README and this file, design and maintainability, a soundness gap
+visible in the code, a test that does not check what it says. A run costs $0.1 to $1 (its
+tokens and cost are at the end of its body), an agent's audit a few dollars. What needs Thrust
+or the solver to run stays with the developer and is not delegated to the review:
+
+- the ui tests the change affects, run locally, including those that name a CoAR wrapper;
+- for a change to the analysis or the emitted constraints, an audit by an agent that did not
+  write the change: it compares the design with how other verifiers handle the case, writes
+  probe programs that try to make Thrust accept a wrong program, and runs them;
+- before the merge of such a change, a full `cargo test --test ui` with the CoAR wrappers.
+
+When developing with an agent, use the review as a loop at the points where a coherent set of
+commits is pushed, not after every commit; a run with no new commit and no new reply stops
+before calling the API. An audit runs alongside the loop or after it, and its fixes go through
+the next round:
 
 1. Request a review with `gh workflow run claude-review.yml -f pr=<n>` and wait for the run
    (`gh run list -w claude-review.yml -L 1`, then `gh run watch <id>`).
