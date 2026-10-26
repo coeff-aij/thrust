@@ -38,7 +38,7 @@ pub fn stable_def_id_symbol(tcx: mir_ty::TyCtxt<'_>, did: DefId, prefix: &str) -
 }
 
 pub fn datatype_symbol(tcx: mir_ty::TyCtxt<'_>, did: DefId) -> DatatypeSymbol {
-    DatatypeSymbol::new(tcx.def_path_str(did).replace("::", "."))
+    DatatypeSymbol::new(stable_def_id_symbol(tcx, did, "d"))
 }
 
 /// The symbol of the constructor of `variant` of the datatype `d_sym`.

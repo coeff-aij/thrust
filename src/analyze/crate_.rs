@@ -263,6 +263,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let sig = self.ctx.fn_sig(local_def_id.to_def_id());
         let contract_generic = !self.tcx.is_closure_like(local_def_id.to_def_id())
             && self.ctx.contract_names_type_param(local_def_id);
+        let has_constrained_type_param = !self.constrained_type_params(local_def_id).is_empty();
         let is_law_impl = self.is_law_impl(local_def_id);
         let per_instance = self.ctx.per_instance_generics();
         let per_instance_too = per_instance && !per_instance_generics_requested();
@@ -374,11 +375,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 self.ctx
                     .register_deferred_def(owner_fn_id, local_def_id, owner_fn_id_args);
             }
-        } else if sig.has_param() || trait_method || contract_generic {
+        } else if sig.has_param() || trait_method || contract_generic || has_constrained_type_param
+        {
             // A function is generic when its contract names a type parameter its signature does
             // not mention: a trait method's `Self::score(x)`, or `T::score(x)` of
             // `fn via<T: Score>`, resolves at each instance to the impl's own logic function.
-            // Closures keep their treatment.
+            // Closures keep their treatment. So is a function with a trait-bounded type
+            // parameter, its own or its parent's (`impl<T: K> W<T>`), since its body depends on
+            // the impl the parameter is instantiated with.
             if trusted_derive {
                 let expected = analyzer.expected_ty();
                 self.ctx
@@ -853,11 +857,16 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             && !analyze::fn_mut_bounded_params(self.tcx, local_def_id.to_def_id()).is_empty()
     }
 
-    fn placeholder_generic_args(&self, local_def_id: LocalDefId) -> mir_ty::GenericArgsRef<'tcx> {
+    /// Indices of the type parameters bound by a trait other than `Sized`, including bounds
+    /// inherited from the parent impl or trait.
+    fn constrained_type_params(&self, local_def_id: LocalDefId) -> HashSet<u32> {
         let mut constrained_params = HashSet::new();
-        let predicates = self.tcx.predicates_of(local_def_id);
+        let predicates = self
+            .tcx
+            .predicates_of(local_def_id)
+            .instantiate_identity(self.tcx);
         let sized_trait = self.tcx.lang_items().sized_trait().unwrap();
-        for (clause, _) in predicates.predicates {
+        for clause in predicates.predicates {
             let mir_ty::ClauseKind::Trait(pred) = clause.kind().skip_binder() else {
                 continue;
             };
@@ -874,7 +883,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 constrained_params.insert(param_ty.index);
             }
         }
+        constrained_params
+    }
 
+    fn placeholder_generic_args(&self, local_def_id: LocalDefId) -> mir_ty::GenericArgsRef<'tcx> {
         let mut args: Vec<mir_ty::GenericArg<'tcx>> = Vec::new();
 
         let generics = self.tcx.generics_of(local_def_id);
