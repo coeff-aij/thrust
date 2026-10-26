@@ -37,17 +37,17 @@ MAX_OUTPUT_TOKENS = 64_000
 REVIEW_HEADING = "**Claude review** (automated)"
 REVIEW_AUTHOR = "github-actions[bot]"
 MAX_TOOL_CALLS = 40
-# A run past this many dollars gets no more tool results and writes the review from what it has.
-MAX_RUN_DOLLARS = 3.0
-# Dollars per million tokens: input, output, cache writes for 5 minutes and for an hour, cache reads.
-PRICES = {"claude-opus-5-5": {"input": 4.0, "output": 20.0, "write_5m": 5.0, "write_1h": 8.0, "read": 0.2}}
+# A run past this many tokens sent anew, written to the cache or generated, the bulk of what a run
+# costs, gets no more tool results and writes the review from what it has; the largest runs so far
+# took about 160,000. Cache reads, a small part of the cost, are bounded by MAX_TOOL_CALLS.
+MAX_RUN_TOKENS = 500_000
 MAX_TOOL_OUTPUT_CHARS = 20_000
 # The compare API lists at most this many changed files.
 COMPARE_MAX_FILES = 300
 REPO_ROOT = Path()
 
 tool_calls = 0
-spent = 0.0
+run_tokens = 0
 
 
 class Comment(BaseModel):
@@ -138,7 +138,7 @@ def use_tool(run) -> str:
     """Runs one tool call within the budget and cuts its output to a size the context can take."""
     global tool_calls
     tool_calls += 1
-    if tool_calls > MAX_TOOL_CALLS or spent > MAX_RUN_DOLLARS:
+    if tool_calls > MAX_TOOL_CALLS or run_tokens > MAX_RUN_TOKENS:
         return "The budget of this review is used up; write the review from what you have."
     output = run()
     if len(output) > MAX_TOOL_OUTPUT_CHARS:
@@ -329,7 +329,7 @@ def build_prompt(
 def request_review(client: anthropic.Anthropic, model: str, system: list[dict], prompt: str) -> tuple[Review, str]:
     """Runs the review; the conversation is cached as it grows (5 minutes: a later review sends
     another prompt), so each tool call re-reads the earlier turns from the cache."""
-    global spent
+    global run_tokens
     runner = client.beta.messages.tool_runner(
         model=model,
         max_tokens=MAX_OUTPUT_TOKENS,
@@ -344,12 +344,11 @@ def request_review(client: anthropic.Anthropic, model: str, system: list[dict], 
         betas=["server-side-fallback-2026-07-01"],
         fallbacks="default",
     )
-    prices = PRICES.get(model)
     usage = dict.fromkeys(["input", "write_5m", "write_1h", "read", "output", "thinking"], 0)
     for stream in runner:
         add_usage(usage, stream.get_final_message().usage)
-        spent = run_dollars(usage, prices)
-    summary = f"{tool_calls} tool calls, tokens {usage}" + (f", ${spent:.2f}" if prices else "")
+        run_tokens = sum(usage[kind] for kind in ("input", "write_5m", "write_1h", "output"))
+    summary = f"{tool_calls} tool calls, tokens {usage}"
     print(f"usage: {summary}", file=sys.stderr)
     response = runner.until_done()
     if response.stop_reason != "end_turn":
@@ -369,13 +368,6 @@ def add_usage(usage: dict[str, int], part) -> None:
         usage["write_5m"] += part.cache_creation_input_tokens or 0
     if part.output_tokens_details:
         usage["thinking"] += part.output_tokens_details.thinking_tokens or 0
-
-
-def run_dollars(usage: dict[str, int], prices: dict[str, float] | None) -> float:
-    """What the tokens so far cost; thinking is counted in output. 0 for a model without prices."""
-    if prices is None:
-        return 0.0
-    return sum(usage[kind] * price for kind, price in prices.items()) / 1_000_000
 
 
 def review_payload(review: Review, head_sha: str, lines: dict[str, set[int]], omitted: list[str], usage: str) -> dict:
