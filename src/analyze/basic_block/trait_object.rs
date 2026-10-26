@@ -37,17 +37,16 @@ fn trait_objects<'tcx>(ty: mir_ty::Ty<'tcx>) -> Vec<mir_ty::Ty<'tcx>> {
 }
 
 /// Whether the formula function `def_id` of a trait's contract mentions the receiver or `Self`:
-/// it uses its parameter `self_` (the receiver's model, which a `Model` supertrait may have
-/// normalized to a concrete type), or an expression, closures' bodies included, has a type or
-/// generic arguments naming `Self` (a closure's own type, which carries its parent's `Self`, is
-/// not looked into).
+/// an expression, closures' bodies included, has a type or generic arguments naming `Self` (a
+/// closure's own type, which carries its parent's `Self`, is not looked into). The receiver's
+/// model is at a type naming `Self`, unless a `Model` supertrait fixes it, which
+/// `check_dyn_trait` rejects first.
 /// Read before instantiation: at `Self = dyn Tr` the receiver's model is single-valued and folds
 /// to a constant.
 fn formula_names_self(tcx: mir_ty::TyCtxt<'_>, def_id: LocalDefId) -> bool {
     struct Finder<'a, 'tcx> {
         tcx: mir_ty::TyCtxt<'tcx>,
         typeck: &'a mir_ty::TypeckResults<'tcx>,
-        receiver: Option<rustc_hir::HirId>,
         found: bool,
     }
     fn names_self(ty: mir_ty::Ty<'_>) -> bool {
@@ -74,11 +73,6 @@ fn formula_names_self(tcx: mir_ty::TyCtxt<'_>, def_id: LocalDefId) -> bool {
         }
 
         fn visit_expr(&mut self, expr: &'tcx rustc_hir::Expr<'tcx>) {
-            if let rustc_hir::ExprKind::Path(rustc_hir::QPath::Resolved(None, path)) = expr.kind {
-                if let rustc_hir::def::Res::Local(id) = path.res {
-                    self.found |= Some(id) == self.receiver;
-                }
-            }
             let ty_names_self = self
                 .typeck
                 .node_type_opt(expr.hir_id)
@@ -92,16 +86,9 @@ fn formula_names_self(tcx: mir_ty::TyCtxt<'_>, def_id: LocalDefId) -> bool {
         }
     }
     let body = tcx.hir_body_owned_by(def_id);
-    let receiver = body.params.iter().find_map(|param| match param.pat.kind {
-        rustc_hir::PatKind::Binding(_, hir_id, ident, _) if ident.name.as_str() == "self_" => {
-            Some(hir_id)
-        }
-        _ => None,
-    });
     let mut finder = Finder {
         tcx,
         typeck: tcx.typeck(def_id),
-        receiver,
         found: false,
     };
     rustc_hir::intravisit::Visitor::visit_expr(&mut finder, body.value);
