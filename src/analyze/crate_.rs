@@ -274,8 +274,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         // would add its types to every crate's query.
         if analyzer.is_annotated_as_trusted() {
             let is_checked = analyzer.is_fully_annotated()
-                || analyzer.is_injected_std()
-                || (is_law_impl && !analyzer.expected_ty().has_pred_var());
+                || (is_law_impl
+                    && (analyzer.is_injected_std() || !analyzer.expected_ty().has_pred_var()));
             assert!(
                 is_checked,
                 "`#[thrust::trusted]` needs both `requires` and `ensures` (or `#[thrust::callable]`), or the contract of the trait law it defines, on `{}`",
