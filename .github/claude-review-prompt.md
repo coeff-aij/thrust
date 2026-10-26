@@ -57,8 +57,8 @@ constraints is the solver's problem, not a reason to reshape the constraints.
 Does the change duplicate logic, representations or traversals that already exist elsewhere, or
 add a parallel path that could share one implementation? Is refactoring left undone: dead or
 speculative code, modes nothing uses, scaffolding from development, comments and documentation
-the change made stale? Do names and APIs follow the codebase and Rust conventions? You see only
-the changed files in full; when you suspect duplication with code not shown, say where to look.
+the change made stale? Do names and APIs follow the codebase and Rust conventions? You see the
+large changed files only around their changes; when you suspect duplication with code not shown, say where to look.
 
 ### What users write, see and rely on
 
@@ -79,7 +79,9 @@ settled. Developers and their agents reply to each comment with `Fixed in <commi
 `Declined: <reason>` or `Refuted: <evidence>`: check that a fix does fix it, and whether a
 reason or evidence holds. Do not repeat a settled comment. Repeat one that is not, on the line
 where the issue now is, in words close to the earlier comment, and say why the fix or the reply
-does not settle it. Review the rest as usual. The summary starts with how many earlier comments
+does not settle it. A re-review is sent only the diff since the commit the latest review saw;
+the rest of the pull request is in its files, which `read_file` reads, and a comment must still
+be on a line the pull request changes. Review the rest as usual. The summary starts with how many earlier comments
 remain open, by severity.
 
 ## What not to report

@@ -98,12 +98,13 @@ def excerpt(text: str, changed: set[int]) -> str:
     return "\n".join(out)
 
 
-def read_changed_files(changed: dict[str, set[int]]) -> tuple[dict[str, str], list[str]]:
+def read_changed_files(paths: list[str], changed: dict[str, set[int]]) -> tuple[dict[str, str], list[str]]:
     """Each changed file after the change: whole when small, otherwise the regions around its
-    changed lines. Binary files are listed apart."""
+    changed lines in `changed`. Files that are not text are listed apart."""
     contents: dict[str, str] = {}
     omitted: list[str] = []
-    for path, lines in changed.items():
+    for path in paths:
+        lines = changed.get(path)
         file = repo_file(path)
         if file is None:
             continue
@@ -111,6 +112,8 @@ def read_changed_files(changed: dict[str, set[int]]) -> tuple[dict[str, str], li
             text = file.read_text()
         except UnicodeDecodeError:
             omitted.append(path)
+            continue
+        if lines is None:
             continue
         contents[path] = text if len(text) <= WHOLE_FILE_CHARS else excerpt(text, lines)
     return contents, omitted
@@ -212,17 +215,22 @@ def earlier_reviews(repo: str, pr: str) -> tuple[str, str | None]:
     return "\n\n".join(parts), (reviews[-1]["commit_id"] if reviews else None)
 
 
-def diff_since(repo: str, base: str, head: str) -> str | None:
-    """The changes from base to head as a unified diff, or None when GitHub cannot compare them
-    (base rewritten by a force-push, or a file without a patch)."""
+def diff_since(repo: str, base: str, head: str, pr_files: set[str]) -> str | None:
+    """The pull request's changes from base to head as a unified diff, or None when they cannot be
+    told apart from other changes: base rewritten by a force-push, a merge commit in between (it
+    may bring in changes of the base branch), or a file without a patch."""
     try:
         compare = json.loads(gh("api", f"repos/{repo}/compare/{base}...{head}"))
     except subprocess.CalledProcessError:
         return None
     if compare.get("status") not in ("ahead", "identical"):
         return None
+    if any(len(c["parents"]) > 1 for c in compare.get("commits", [])):
+        return None
     parts = []
     for f in compare.get("files", []):
+        if f["filename"] not in pr_files:
+            continue
         if "patch" not in f:
             return None
         parts.append(f"--- a/{f.get('previous_filename', f['filename'])}\n+++ b/{f['filename']}\n{f['patch']}")
@@ -257,15 +265,15 @@ def build_prompt(
     for path, text in contents.items():
         parts.append(f"# File after the change: {path}\n\n```\n{text}\n```")
     if omitted:
-        parts.append("# Changed files not included (too large or binary)\n\n" + "\n".join(omitted))
+        parts.append("# Changed files not included (not text)\n\n" + "\n".join(omitted))
     if earlier:
         parts.append(f"# Earlier automated reviews\n\n{earlier}")
     return "\n\n".join(parts)
 
 
 def request_review(client: anthropic.Anthropic, model: str, system: list[dict], prompt: str) -> Review:
-    """Runs the review; the conversation is cached as it grows, so each tool call re-reads the
-    earlier turns from the cache."""
+    """Runs the review; the conversation is cached as it grows (5 minutes: a later review sends
+    another prompt), so each tool call re-reads the earlier turns from the cache."""
     runner = client.beta.messages.tool_runner(
         model=model,
         max_tokens=MAX_OUTPUT_TOKENS,
@@ -274,7 +282,7 @@ def request_review(client: anthropic.Anthropic, model: str, system: list[dict], 
         messages=[{"role": "user", "content": prompt}],
         tools=[grep, list_files, read_file],
         max_iterations=MAX_TOOL_CALLS + 5,
-        cache_control={"type": "ephemeral", "ttl": "1h"},
+        cache_control={"type": "ephemeral"},
         output_config={"effort": "high"},
         output_format=Review,
         betas=["server-side-fallback-2026-07-01"],
@@ -300,7 +308,7 @@ def review_payload(review: Review, head_sha: str, lines: dict[str, set[int]], om
     body = [f"{REVIEW_HEADING}\n\n{review.summary}"]
     body += [f"- `{c.path}:{c.line}`: {comment_text(c)}" for c in outside]
     if omitted:
-        body.append("Not reviewed (too large or binary): " + ", ".join(f"`{p}`" for p in omitted))
+        body.append("Not reviewed (not text): " + ", ".join(f"`{p}`" for p in omitted))
     return {
         "commit_id": head_sha,
         "event": "COMMENT",
@@ -335,10 +343,11 @@ def main() -> None:
     lines = commentable_lines(diff)
     earlier, reviewed = earlier_reviews(args.repo, args.pr)
     # A re-review is sent the changes since the commit the latest review saw.
-    since_diff = diff_since(args.repo, reviewed, pr["headRefOid"]) if reviewed else None
+    paths = [f["path"] for f in pr["files"]]
+    since_diff = diff_since(args.repo, reviewed, pr["headRefOid"], set(paths)) if reviewed else None
     since = reviewed if since_diff is not None else None
     sent = since_diff if since_diff is not None else diff
-    contents, omitted = read_changed_files(commentable_lines(sent))
+    contents, omitted = read_changed_files(paths, commentable_lines(sent))
     prompt = build_prompt(pr, sent, since, contents, omitted, earlier)
 
     if args.dry_run:
