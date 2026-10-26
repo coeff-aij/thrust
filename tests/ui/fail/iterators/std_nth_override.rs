@@ -1,0 +1,73 @@
+//@error-in-other-file: Unsat
+//@compile-flags: -C debug-assertions=off
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
+
+// `Skip` over an iterator with its own `IteratorSpec`: std's `Skip::next` calls the iterator's
+// `nth`, which is checked against `Iterator::nth`'s contract.
+// Fail twin: an `nth` that ignores `n`, under which `skip(2)` hands out 0 first.
+
+#[derive(PartialEq)]
+struct Up {
+    n: i64,
+}
+
+impl thrust_models::Model for Up {
+    type Ty = Up;
+}
+
+impl Iterator for Up {
+    type Item = i64;
+
+    fn next(&mut self) -> Option<i64> {
+        if self.n < 10 {
+            let x = self.n;
+            self.n += 1;
+            Some(x)
+        } else {
+            None
+        }
+    }
+
+    fn nth(&mut self, _k: usize) -> Option<i64> {
+        self.next()
+    }
+}
+
+#[thrust_macros::context]
+impl IteratorSpec for Up {
+    #[thrust_macros::predicate]
+    fn inv(self) -> bool {
+        self.n <= 10
+    }
+
+    #[thrust_macros::predicate]
+    fn produces(self, visited: Vec<i64>, o: Self) -> bool {
+        self.n <= o.n
+            && o.n <= 10
+            && visited.len() == o.n - self.n
+            && thrust_models::forall(|i: thrust_models::model::Int|
+                !(0 <= i && i < visited.len()) || visited[i] == self.n + i)
+    }
+
+    #[thrust_macros::predicate]
+    fn completed(&mut self) -> bool {
+        (*self).n >= 10 && *self == !self
+    }
+
+    fn produces_refl(a: &Self) {}
+
+    fn produces_trans(
+        a: &Self,
+        ab: thrust_models::model::Seq<thrust_models::model::Int>,
+        b: &Self,
+        bc: thrust_models::model::Seq<thrust_models::model::Int>,
+        c: &Self,
+    ) {
+    }
+}
+
+fn main() {
+    let mut s = (Up { n: 0 }).skip(2);
+    let x = s.next();
+    assert!(matches!(x, Some(2)));
+}
