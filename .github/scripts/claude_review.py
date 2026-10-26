@@ -38,6 +38,8 @@ REVIEW_HEADING = "**Claude review** (automated)"
 REVIEW_AUTHOR = "github-actions[bot]"
 MAX_TOOL_CALLS = 40
 MAX_TOOL_OUTPUT_CHARS = 20_000
+# The compare API lists at most this many changed files.
+COMPARE_MAX_FILES = 300
 REPO_ROOT = Path()
 
 tool_calls = 0
@@ -219,16 +221,20 @@ def earlier_reviews(repo: str, pr: str) -> tuple[str, str | None]:
 def diff_since(repo: str, base: str, head: str, pr_files: set[str]) -> tuple[str, bool] | None:
     """The changes from base to head to the pull request's files as a unified diff, and whether a
     merge commit lies in between (it may bring in changes of the base branch to those files); None
-    when base was rewritten by a force-push or a file has no patch."""
+    when base was rewritten by a force-push, a file has no patch, or the comparison is longer than
+    the lists the compare API returns (250 commits, 300 files)."""
     try:
         compare = json.loads(gh("api", f"repos/{repo}/compare/{base}...{head}"))
     except subprocess.CalledProcessError:
         return None
     if compare.get("status") not in ("ahead", "identical"):
         return None
-    merged = any(len(c["parents"]) > 1 for c in compare.get("commits", []))
+    commits, files = compare.get("commits", []), compare.get("files", [])
+    if compare.get("total_commits", 0) > len(commits) or len(files) >= COMPARE_MAX_FILES:
+        return None
+    merged = any(len(c["parents"]) > 1 for c in commits)
     parts = []
-    for f in compare.get("files", []):
+    for f in files:
         if f["filename"] not in pr_files:
             continue
         if "patch" not in f:
