@@ -2752,6 +2752,10 @@ where
 // The first `next` drops the `n` items ahead of the first item it hands out (std calls `nth`).
 // `completed` leaves the inner iterator's state after the call open: where `nth` gives up, it can
 // leave the inner iterator elsewhere than `next` would (an inverted `Range` is set to `end..end`).
+// Over a `TrustedRandomAccess` inner, std's `Zip::next`, `Take::fold` and in-place `collect` read
+// the `Skip`'s size, the inner's less `n`, and take nothing from it when that is 0 (core/src/iter/
+// adapters/skip.rs), so `completed` also allows the `Skip` unchanged when the inner cannot produce
+// more than `n` items: a `Map` inside does not run its closure on them.
 #[thrust_macros::context]
 impl<I> IteratorSpec for core::iter::Skip<I>
 where
@@ -2781,6 +2785,10 @@ where
                 s.len() <= (*self).1
                     && I::produces((*self).0, s, j)
                     && I::completed(thrust_models::model::Mut::new(j, j2)))
+            || (*self == !self
+                && thrust_models::forall(|s: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
+                                          j: I::Ty|
+                    !I::produces((*self).0, s, j) || s.len() <= (*self).1))
     }
 
     fn produces_refl(a: &Self) {}
