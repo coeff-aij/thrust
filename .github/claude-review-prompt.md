@@ -81,7 +81,9 @@ reason or evidence holds. Do not repeat a settled comment. Repeat one that is no
 where the issue now is, in words close to the earlier comment, and say why the fix or the reply
 does not settle it. A re-review is sent only the diff since the commit the latest review saw;
 the list of files gives, for each, the lines of the whole pull request's diff, which `read_file`
-reads in the head version, and a comment must still be on one of those lines. Review the rest as usual. The summary starts with how many earlier comments
+reads in the head version, and a comment must still be on one of those lines. When the commits
+since include a merge of the base branch, the diff says so: a change that the pull request's own
+diff does not contain came from the base branch and is not reviewed. Review the rest as usual. The summary starts with how many earlier comments
 remain open, by severity.
 
 ## What not to report

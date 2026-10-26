@@ -202,7 +202,8 @@ def earlier_reviews(repo: str, pr: str) -> tuple[str, str | None]:
     comments = gh_api_items(f"repos/{repo}/pulls/{pr}/comments")
     parts = []
     for review in reviews:
-        parts.append(f"## Review of commit {review['commit_id']}\n\n{review['body']}")
+        body = re.sub(r"\n*<!-- usage: .* -->", "", review["body"])
+        parts.append(f"## Review of commit {review['commit_id']}\n\n{body}")
         for comment in comments:
             if comment["pull_request_review_id"] != review["id"] or comment.get("in_reply_to_id"):
                 continue
@@ -215,18 +216,17 @@ def earlier_reviews(repo: str, pr: str) -> tuple[str, str | None]:
     return "\n\n".join(parts), (reviews[-1]["commit_id"] if reviews else None)
 
 
-def diff_since(repo: str, base: str, head: str, pr_files: set[str]) -> str | None:
-    """The pull request's changes from base to head as a unified diff, or None when they cannot be
-    told apart from other changes: base rewritten by a force-push, a merge commit in between (it
-    may bring in changes of the base branch), or a file without a patch."""
+def diff_since(repo: str, base: str, head: str, pr_files: set[str]) -> tuple[str, bool] | None:
+    """The changes from base to head to the pull request's files as a unified diff, and whether a
+    merge commit lies in between (it may bring in changes of the base branch to those files); None
+    when base was rewritten by a force-push or a file has no patch."""
     try:
         compare = json.loads(gh("api", f"repos/{repo}/compare/{base}...{head}"))
     except subprocess.CalledProcessError:
         return None
     if compare.get("status") not in ("ahead", "identical"):
         return None
-    if any(len(c["parents"]) > 1 for c in compare.get("commits", [])):
-        return None
+    merged = any(len(c["parents"]) > 1 for c in compare.get("commits", []))
     parts = []
     for f in compare.get("files", []):
         if f["filename"] not in pr_files:
@@ -234,7 +234,7 @@ def diff_since(repo: str, base: str, head: str, pr_files: set[str]) -> str | Non
         if "patch" not in f:
             return None
         parts.append(f"--- a/{f.get('previous_filename', f['filename'])}\n+++ b/{f['filename']}\n{f['patch']}")
-    return "\n".join(parts)
+    return "\n".join(parts), merged
 
 
 def system_blocks(prompt_file: Path) -> list[dict]:
@@ -267,6 +267,7 @@ def build_prompt(
     pr: dict,
     diff: str,
     since: str | None,
+    merged: bool,
     lines: dict[str, set[int]],
     contents: dict[str, str],
     omitted: list[str],
@@ -278,7 +279,13 @@ def build_prompt(
     else:
         files = "\n".join(f"{path}: {line_ranges(lines.get(path, set()))}" for path in (f["path"] for f in pr["files"]))
         parts.append(f"# Files the pull request changes, with the lines it changes or keeps as context\n\n{files}")
-        parts.append(f"# Diff since the commit the latest review saw ({since})\n\n```diff\n{diff}\n```")
+        note = (
+            "\n\nThe commits since include a merge of the base branch, so a change below may come from the base"
+            " branch rather than from this pull request; the whole pull request is in its files above."
+            if merged
+            else ""
+        )
+        parts.append(f"# Diff since the commit the latest review saw ({since}){note}\n\n```diff\n{diff}\n```")
     for path, text in contents.items():
         parts.append(f"# File after the change: {path}\n\n```\n{text}\n```")
     if omitted:
@@ -288,7 +295,7 @@ def build_prompt(
     return "\n\n".join(parts)
 
 
-def request_review(client: anthropic.Anthropic, model: str, system: list[dict], prompt: str) -> Review:
+def request_review(client: anthropic.Anthropic, model: str, system: list[dict], prompt: str) -> tuple[Review, str]:
     """Runs the review; the conversation is cached as it grows (5 minutes: a later review sends
     another prompt), so each tool call re-reads the earlier turns from the cache."""
     runner = client.beta.messages.tool_runner(
@@ -312,20 +319,23 @@ def request_review(client: anthropic.Anthropic, model: str, system: list[dict], 
         usage["cache_write"] += message.usage.cache_creation_input_tokens or 0
         usage["cache_read"] += message.usage.cache_read_input_tokens or 0
         usage["output"] += message.usage.output_tokens
-    print(f"usage: {tool_calls} tool calls, tokens {usage}", file=sys.stderr)
+    summary = f"{tool_calls} tool calls, tokens {usage}"
+    print(f"usage: {summary}", file=sys.stderr)
     response = runner.until_done()
     if response.stop_reason != "end_turn":
         sys.exit(f"no review: stop_reason {response.stop_reason}")
-    return response.parsed_output
+    return response.parsed_output, summary
 
 
-def review_payload(review: Review, head_sha: str, lines: dict[str, set[int]], omitted: list[str]) -> dict:
+def review_payload(review: Review, head_sha: str, lines: dict[str, set[int]], omitted: list[str], usage: str) -> dict:
     inline = [c for c in review.comments if c.line in lines.get(c.path, set())]
     outside = [c for c in review.comments if c not in inline]
     body = [f"{REVIEW_HEADING}\n\n{review.summary}"]
     body += [f"- `{c.path}:{c.line}`: {comment_text(c)}" for c in outside]
     if omitted:
         body.append("Not reviewed (not text): " + ", ".join(f"`{p}`" for p in omitted))
+    # Kept with the review, where the API can read it back after the run's log has expired.
+    body.append(f"<!-- usage: {usage} -->")
     return {
         "commit_id": head_sha,
         "event": "COMMENT",
@@ -363,27 +373,28 @@ def main() -> None:
     paths = [f["path"] for f in pr["files"]]
     since_diff = diff_since(args.repo, reviewed, pr["headRefOid"], set(paths)) if reviewed else None
     since = reviewed if since_diff is not None else None
-    sent = since_diff if since_diff is not None else diff
+    sent, merged = since_diff if since_diff is not None else (diff, False)
     contents, omitted = read_changed_files(paths, commentable_lines(sent))
-    prompt = build_prompt(pr, sent, since, lines, contents, omitted, earlier)
+    prompt = build_prompt(pr, sent, since, merged, lines, contents, omitted, earlier)
 
     if args.dry_run:
         system = sum(len(block["text"]) for block in system_blocks(args.prompt))
         print(f"model: {args.model}\nsystem: {system} chars\nprompt: {len(prompt)} chars")
         print(f"earlier reviews: {len(earlier)} chars")
-        print(f"diff: {'since ' + since if since else 'whole pull request'}, {len(sent)} chars")
+        merge_note = " (across a merge of the base branch)" if merged else ""
+        print(f"diff: {'since ' + since + merge_note if since else 'whole pull request'}, {len(sent)} chars")
         print("included:", *contents, sep="\n  ")
         print("omitted:", *omitted, sep="\n  ")
         print("commentable lines:", *(f"{p}: {len(n)}" for p, n in lines.items()), sep="\n  ")
         return
 
-    review = request_review(anthropic.Anthropic(), args.model, system_blocks(args.prompt), prompt)
-    payload = review_payload(review, pr["headRefOid"], lines, omitted)
+    review, usage = request_review(anthropic.Anthropic(), args.model, system_blocks(args.prompt), prompt)
+    payload = review_payload(review, pr["headRefOid"], lines, omitted, usage)
     if args.print:
         print(json.dumps(payload, indent=2, ensure_ascii=False))
         return
     subprocess.run(
-        ["gh", "api", f"repos/{args.repo}/pulls/{args.pr}/reviews", "--method", "POST", "--input", "-"],
+        ["gh", "api", f"repos/{args.repo}/pulls/{args.pr}/reviews", "--method", "POST", "--input", "-", "--jq", ".html_url"],
         input=json.dumps(payload), check=True, text=True,
     )
 
