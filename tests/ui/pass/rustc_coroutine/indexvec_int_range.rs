@@ -1,13 +1,10 @@
-//@ignore-on-host: no answer at 120 s (fptprove develop c471e831b): under the option, `ones` in bit_set.rs returns `USize`, and its value's range check is the one part of the query PCSat does not answer
 //@check-pass
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120
-//@rustc-env: THRUST_VERIFY_ONLY=filled
+//@rustc-env: THRUST_VERIFY_ONLY=rustc_index::vec,rustc_index::slice,filled
 //@rustc-env: THRUST_INT_RANGE=conversions
 // `indexvec.rs` under `THRUST_INT_RANGE=conversions`, where the model of each integer type carries
 // its width: the module tree type-checks with the option, which bounds unsigned values above.
-// It verifies only `filled`, against the contracts of `IndexVec` and `IndexSlice` that
-// `indexvec.rs` verifies.
 // Stage 2 of the rustc-coroutine verification target: rustc_index's `IndexVec` and `IndexSlice`.
 // `filled` is the caller the trusted `IndexVec` contracts are checked against (rewrites.md S5).
 // The code is the module tree under tests/rustc_coroutine/; this file selects the stage and
