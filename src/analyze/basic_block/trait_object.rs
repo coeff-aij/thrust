@@ -235,7 +235,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
     /// Requests each method of `hidden_ty`'s impl of `dyn_ty`'s trait and its supertraits that a
     /// call through the vtable may reach, a method with a written trait contract, so that its body
-    /// is checked against that contract.
+    /// is checked against that contract. Auto traits and `Sized`, which have no methods, are
+    /// skipped.
     fn check_vtable_methods(
         &mut self,
         hidden_ty: mir_ty::Ty<'tcx>,
@@ -248,6 +249,13 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let principal = principal.with_self_ty(self.tcx, hidden_ty);
         for trait_ref in rustc_trait_selection::traits::supertraits(self.tcx, principal) {
             let trait_ref = self.tcx.instantiate_bound_regions_with_erased(trait_ref);
+            if self.tcx.trait_is_auto(trait_ref.def_id)
+                || self
+                    .tcx
+                    .is_lang_item(trait_ref.def_id, rustc_hir::LangItem::Sized)
+            {
+                continue;
+            }
             self.check_dyn_trait(trait_ref.def_id, dyn_ty);
             for method in self
                 .tcx
