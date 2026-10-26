@@ -2,8 +2,8 @@
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
-// The impl breaks the contract of a trait with auto-trait supertraits, which packing it into the
-// trait object checks.
+// The impl breaks the contract of a trait with auto-trait supertraits, which still binds the
+// impls of a trait used as a trait object.
 
 #[thrust_macros::context]
 trait Shape: Send + Sync {
