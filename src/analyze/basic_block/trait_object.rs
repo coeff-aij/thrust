@@ -109,11 +109,15 @@ fn formula_names_self(tcx: mir_ty::TyCtxt<'_>, def_id: LocalDefId) -> bool {
 }
 
 /// The principal trait of the trait object `ty`.
-fn principal_def_id(ty: mir_ty::Ty<'_>) -> Option<DefId> {
+fn principal<'tcx>(ty: mir_ty::Ty<'tcx>) -> Option<mir_ty::PolyExistentialTraitRef<'tcx>> {
     let mir_ty::TyKind::Dynamic(preds, ..) = ty.kind() else {
         unreachable!("not a trait object: {ty:?}");
     };
-    preds.principal_def_id()
+    preds.principal()
+}
+
+fn principal_def_id(ty: mir_ty::Ty<'_>) -> Option<DefId> {
+    principal(ty).map(|principal| principal.def_id())
 }
 
 impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
@@ -238,21 +242,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         dyn_ty: mir_ty::Ty<'tcx>,
         has_invariant: bool,
     ) {
-        let mir_ty::TyKind::Dynamic(preds, ..) = dyn_ty.kind() else {
-            unreachable!("not a trait object: {dyn_ty:?}");
-        };
-        let Some(principal) = preds.principal() else {
+        let Some(principal) = principal(dyn_ty) else {
             return;
         };
-        let trait_ref = self
-            .tcx
-            .instantiate_bound_regions_with_erased(principal.with_self_ty(self.tcx, hidden_ty));
-        let mut pending = vec![trait_ref];
-        let mut seen = std::collections::HashSet::new();
-        while let Some(trait_ref) = pending.pop() {
-            if !seen.insert(trait_ref) {
-                continue;
-            }
+        let principal = principal.with_self_ty(self.tcx, hidden_ty);
+        for trait_ref in rustc_trait_selection::traits::supertraits(self.tcx, principal) {
+            let trait_ref = self.tcx.instantiate_bound_regions_with_erased(trait_ref);
             self.check_dyn_trait(trait_ref.def_id, dyn_ty);
             for method in self
                 .tcx
@@ -278,7 +273,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 });
                 self.request_vtable_method(method.def_id, args, dyn_ty, has_invariant);
             }
-            pending.extend(analyze::extern_spec::supertrait_bounds(self.tcx, trait_ref));
         }
     }
 
@@ -403,25 +397,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             return false;
         };
         let model_trait = self.tcx.parent(model_ty);
-        let mut pending = vec![trait_def_id];
-        let mut seen = std::collections::HashSet::new();
-        while let Some(def_id) = pending.pop() {
-            if def_id == model_trait {
-                return true;
-            }
-            if !seen.insert(def_id) {
-                continue;
-            }
-            pending.extend(
-                self.tcx
-                    .explicit_super_predicates_of(def_id)
-                    .skip_binder()
-                    .iter()
-                    .filter_map(|(clause, _)| clause.as_trait_clause())
-                    .map(|pred| pred.def_id()),
-            );
-        }
-        false
+        rustc_trait_selection::traits::supertrait_def_ids(self.tcx, trait_def_id)
+            .any(|def_id| def_id == model_trait)
     }
 
     /// The trait-object checks of a call of `def_id` at `args`, which resolves to `resolved`: a
