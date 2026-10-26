@@ -270,20 +270,28 @@ impl<'tcx> analyze::Analyzer<'tcx> {
             .rev()
             .skip(1)
             .find(|(instance, _)| !forwards(*instance))
-            .map(|(instance, _)| instance.to_string())
-            .unwrap_or_default();
+            .map(|(instance, _)| *instance);
+        let packing = caller.and_then(|caller| packing_coercion(self.tcx, caller, instance));
+        let caller = caller.map(|caller| caller.to_string()).unwrap_or_default();
         let path: Vec<_> = path
             .iter()
             .map(|(instance, _)| instance.to_string())
             .collect();
+        let reason = match packing {
+            Some((source, target)) => format!(
+                "`{caller}`, which Thrust does not analyze, coerces `{source}` to `{target}`, \
+                 whose vtable holds it, so nothing checks the invariant of the value it packs"
+            ),
+            None => format!(
+                "`{caller}`, which Thrust does not analyze, runs it, so nothing checks the \
+                 invariant there"
+            ),
+        };
         self.tcx
             .dcx()
             .struct_span_fatal(
                 self.tcx.def_span(instance.def_id()),
-                format!(
-                    "{message}, but `{caller}`, which Thrust does not analyze, runs it, so nothing \
-                     checks the invariant there"
-                ),
+                format!("{message}, but {reason}"),
             )
             .with_note(format!("reached through {}", path.join(" -> ")))
             .emit()
@@ -301,6 +309,77 @@ fn forwards(instance: mir_ty::Instance<'_>) -> bool {
             | mir_ty::InstanceKind::ClosureOnceShim { .. }
             | mir_ty::InstanceKind::VTableShim(..)
     )
+}
+
+/// The unsize coercion in `caller`'s body, as its source and target types, that puts `callee`, a
+/// method of a type's trait impl, into a vtable: one from a type holding that type to one holding
+/// a trait object of the trait or a subtrait, where `caller` does not call `callee` itself.
+fn packing_coercion<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    caller: mir_ty::Instance<'tcx>,
+    callee: mir_ty::Instance<'tcx>,
+) -> Option<(mir_ty::Ty<'tcx>, mir_ty::Ty<'tcx>)> {
+    use rustc_middle::mir::MentionedItem;
+
+    let (mir_ty::InstanceKind::Item(caller_def_id), mir_ty::InstanceKind::Item(callee_def_id)) =
+        (caller.def, callee.def)
+    else {
+        return None;
+    };
+    let trait_ref = match tcx.trait_of_assoc(callee_def_id) {
+        Some(trait_def_id) => mir_ty::TraitRef::from_assoc(tcx, trait_def_id, callee.args),
+        None => tcx
+            .impl_trait_ref(tcx.impl_of_assoc(callee_def_id)?)?
+            .instantiate(tcx, callee.args),
+    };
+    let typing_env = mir_ty::TypingEnv::fully_monomorphized();
+    let instantiate = |ty: mir_ty::Ty<'tcx>| {
+        caller.instantiate_mir_and_normalize_erasing_regions(
+            tcx,
+            typing_env,
+            mir_ty::EarlyBinder::bind(ty),
+        )
+    };
+    let holds_dyn_of_trait = |ty: mir_ty::Ty<'tcx>| {
+        ty.walk()
+            .filter_map(|arg| arg.as_type())
+            .filter_map(|ty| match ty.kind() {
+                mir_ty::TyKind::Dynamic(preds, ..) => preds.principal_def_id(),
+                _ => None,
+            })
+            .any(|principal| {
+                rustc_trait_selection::traits::supertrait_def_ids(tcx, principal)
+                    .any(|def_id| def_id == trait_ref.def_id)
+            })
+    };
+    let mut coercion = None;
+    for item in tcx.optimized_mir(caller_def_id).mentioned_items() {
+        match item.node {
+            MentionedItem::Fn(ty) => {
+                let mir_ty::FnDef(def_id, args) = *instantiate(ty).kind() else {
+                    continue;
+                };
+                let resolved = mir_ty::Instance::try_resolve(tcx, typing_env, def_id, args);
+                if resolved.ok().flatten() == Some(callee) {
+                    return None;
+                }
+            }
+            MentionedItem::UnsizeCast {
+                source_ty,
+                target_ty,
+            } => {
+                let (source, target) = (instantiate(source_ty), instantiate(target_ty));
+                let holds_self = source
+                    .walk()
+                    .any(|arg| arg.as_type() == Some(trait_ref.self_ty()));
+                if coercion.is_none() && holds_self && holds_dyn_of_trait(target) {
+                    coercion = Some((source, target));
+                }
+            }
+            _ => {}
+        }
+    }
+    coercion
 }
 
 fn is_destructor(tcx: TyCtxt<'_>, def_id: DefId) -> bool {

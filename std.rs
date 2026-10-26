@@ -23,6 +23,16 @@ mod thrust_models {
         #[thrust::def::no_model]
         pub struct NoModel;
 
+        /// The model a contract gives a trait object (`dyn Tr`): opaque, so all trait objects
+        /// have one model, which a specification can neither compare nor read.
+        #[thrust::def::dyn_model]
+        #[thrust::def::no_model]
+        pub struct Dyn;
+
+        impl super::Model for Dyn {
+            type Ty = Dyn;
+        }
+
         /// Models denoting a mathematical integer.
         ///
         /// Arithmetic and comparison mix these freely: the model of an unsigned integer

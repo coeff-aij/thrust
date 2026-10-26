@@ -720,12 +720,13 @@ impl<'tcx> Analyzer<'tcx> {
             instantiate_method_call,
             |(_, args)| args.to_vec(),
             seen,
-            |this, (method, method_args), (_, _, caller_def_id)| {
+            |this, (method, method_args), (reused, reused_args, caller_def_id)| {
                 if method_args.has_param() {
                     return this.record_assumed_total_method(caller_def_id, method, method_args);
                 }
                 if checked.insert((method, method_args)) {
-                    this.check_total_method(method, method_args, caller_def_id);
+                    let reused = (reused, reused_args);
+                    this.check_total_method(method, method_args, reused, caller_def_id);
                 }
                 false
             },
@@ -809,6 +810,7 @@ impl<'tcx> Analyzer<'tcx> {
         &mut self,
         def_id: DefId,
         generic_args: mir_ty::GenericArgsRef<'tcx>,
+        (reused, reused_args): MethodCall<'tcx>,
         caller_def_id: DefId,
     ) {
         let typing_env = mir_ty::TypingEnv::fully_monomorphized();
@@ -817,6 +819,18 @@ impl<'tcx> Analyzer<'tcx> {
         else {
             return;
         };
+        if let mir_ty::InstanceKind::Virtual(..) = instance.def {
+            self.tcx.dcx().fatal(format!(
+                "`{}` uses the contract of `{}`, whose body was analyzed over its type parameters \
+                 assuming that `{}`, which has no contract on the trait, accepts any arguments; \
+                 at the trait object `{}` this cannot be checked of the impls it stands for, \
+                 which is not supported",
+                self.tcx.def_path_str(caller_def_id),
+                self.tcx.def_path_str_with_args(reused, reused_args),
+                self.tcx.def_path_str(def_id),
+                generic_args.type_at(0),
+            ));
+        }
         let Some(def_ty) = self.def_ty_with_args(instance.def_id(), instance.args, caller_def_id)
         else {
             panic!("unknown def (reached at a type parameter): {instance}");

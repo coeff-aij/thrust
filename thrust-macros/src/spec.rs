@@ -725,9 +725,15 @@ impl ExpandedTokens {
         }
     }
 
+    /// The companions' where clause: the function's own predicates and the `Model` bounds of its
+    /// types. In a trait, `Self: Sized` keeps the companions, which take no `self`, out of the
+    /// vtable, so that a trait with contracts stays dyn compatible.
     fn extended_where_clause(&self) -> TokenStream2 {
-        let model_preds = self.type_lowering().model_where_predicates();
-        extended_where_clause(&self.func, &model_preds)
+        let mut preds = self.type_lowering().model_where_predicates();
+        if matches!(self.outer_context, Some(FnOuterItem::ItemTrait(_))) {
+            preds.push(syn::parse_quote!(Self: ::core::marker::Sized));
+        }
+        extended_where_clause(&self.func, &preds)
     }
 
     fn is_extern_spec_fn(&self) -> bool {
