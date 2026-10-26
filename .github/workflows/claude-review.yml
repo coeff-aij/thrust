@@ -47,6 +47,8 @@ jobs:
       # The standard library's source of the toolchain the default branch pins, which the
       # review reads with its grep_std and read_std tools.
       - name: Fetch the standard library source
+        # Without it the review runs, and its std tools say the source is not available.
+        continue-on-error: true
         run: |
           channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
           rustup toolchain install "$channel" --profile minimal --component rust-src --no-self-update

@@ -58,8 +58,7 @@ query", "the solver is too slow on correct constraints". Read the code a claim i
 the standard library's with `grep_std` and `read_std`; never state from memory what code you have
 not read in this run does, but write a `check` that says what would confirm it. Results of runs
 (verdicts, timings, query comparisons) cannot be checked by reading: take them as reported and
-say so. In the summary, separate what you checked, naming the files and lines you read, from
-what you take from the description.
+say so. The summary says what you checked and what you took as reported (see Output).
 
 ### General mechanisms in the right place
 
@@ -103,8 +102,7 @@ does not settle it. A re-review is sent only the diff since the commit the lates
 the list of files gives, for each, the lines of the whole pull request's diff, which `read_file`
 reads in the head version, and a comment must still be on one of those lines. When the commits
 since include a merge of the base branch, the diff says so: a change that the pull request's own
-diff does not contain came from the base branch and is not reviewed. Review the rest as usual. The summary starts with how many earlier comments
-remain open, by severity.
+diff does not contain came from the base branch and is not reviewed. Review the rest as usual.
 
 ## What not to report
 
@@ -132,7 +130,10 @@ before the pull request is merged:
 - `check`: a possible defect of that kind you could not confirm; say what would confirm it;
 - `suggestion`: an improvement to the design or the code that the developers may take or leave.
 
-The summary is two or three sentences on the overall design and the most important concern.
+The summary starts, on a re-review, with how many earlier comments remain open, by severity;
+then two or three sentences on the overall design and the most important concern; then one
+sentence on what you checked, by file and line, and what you took from the description or from
+reported runs.
 
 The review is public. Write it in English, whatever language the pull request is written in.
 Refer only to what any reader of the repository can reach: files and commits of this

@@ -99,7 +99,9 @@ def file_diffs(diff: str) -> dict[str, str]:
     for chunk in re.split(r"^(?=diff --git )", diff, flags=re.M):
         new = re.search(r"^\+\+\+ b/(.*)$", chunk, re.M)
         old = re.search(r"^--- a/(.*)$", chunk, re.M)
-        path = new.group(1) if new else old.group(1) if old else None
+        # A binary file, a rename or a mode change has no `+++`/`---` line, only the header.
+        header = re.match(r"diff --git a/.* b/(.*)$", chunk, re.M)
+        path = new.group(1) if new else old.group(1) if old else header.group(1) if header else None
         if path:
             parts[path] = chunk
     return parts
