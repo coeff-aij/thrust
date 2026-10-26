@@ -1,7 +1,7 @@
 use crate::thrust_models;
 use std::marker::PhantomData;
 
-use thrust_models::model::{BitVec, Seq};
+use thrust_models::model::{BitVec, Int, Seq};
 use thrust_models::{exists, forall};
 
 use crate::rustc_index::{Idx, IdxRange};
@@ -66,7 +66,7 @@ impl<T: Idx> DenseBitSet<T> {
     /// (thrust-research experiments/2026-10-24-eval3-trusted-reduction-2.md and
     /// experiments/2026-10-24-rq4-gaps-16-17.md).
     #[thrust_macros::logic]
-    pub(crate) fn card(self) -> USize {
+    pub(crate) fn card(self) -> Int {
         ones(self.1, self.0)
     }
 
@@ -513,10 +513,11 @@ fn clear_excess_bits_in_final_word(domain_size: usize, words: &mut [Word]) {
 }
 
 /// The set bits among the first `m` bits of `words`, bit `i` being bit `i % 64` of word `i / 64`
-/// as in `DenseBitSet::mem`.
+/// as in `DenseBitSet::mem`. A count, it returns `Int`, as `card` does: at `USize`, its definition
+/// would have to show it below `2^64` under `THRUST_INT_RANGE`.
 #[thrust_macros::logic]
 #[thrust_macros::variant(m)]
-pub(crate) fn ones(words: Seq<USize>, m: USize) -> USize {
+pub(crate) fn ones(words: Seq<USize>, m: USize) -> Int {
     if m <= 0 {
         0
     } else {
