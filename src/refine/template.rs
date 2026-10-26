@@ -1303,11 +1303,11 @@ impl<'tcx> TypeBuilder<'tcx> {
             .fn_sig(def_id)
             .instantiate(self.tcx, generic_args)
             .skip_binder();
-        let params: IndexVec<rty::FunctionParamIdx, rty::RefinedType<rty::FunctionParamIdx>> = sig
-            .inputs()
-            .iter()
-            .map(|ty| self.build(*ty).vacuous())
-            .collect();
+        let mut params: IndexVec<rty::FunctionParamIdx, rty::RefinedType<rty::FunctionParamIdx>> =
+            sig.inputs()
+                .iter()
+                .map(|ty| self.build(*ty).vacuous())
+                .collect();
         let mut ret = self.build(sig.output()).vacuous();
 
         let type_args = self.generic_args_symbol(generic_args);
@@ -1332,6 +1332,10 @@ impl<'tcx> TypeBuilder<'tcx> {
             .chain(std::iter::once(chc::Term::var(rty::RefinedTypeVar::Value)))
             .collect();
         ret.extend_refinement(chc::Atom::new(post_pred.into(), args).into());
+        // A function type has at least one parameter, as `FunctionTemplateTypeBuilder` builds it.
+        if params.is_empty() {
+            params.push(self.build(self.tcx.types.unit).vacuous());
+        }
         rty::FunctionType::new(params, ret)
     }
 }
