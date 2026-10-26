@@ -1,3 +1,4 @@
+//@ignore-on-host: no answer at 120 s, nor at 300 s on the dumped query (fptprove develop c471e831b); the fail twin type-checks the tree under the option
 //@check-pass
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120
