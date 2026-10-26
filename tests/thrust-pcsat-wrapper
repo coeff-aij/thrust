@@ -29,4 +29,8 @@ exit_code=$?
 
 out=$(< "$solver_out")
 echo "${out%,*}"
+# 137 is a kill, such as by the container's memory limit
+if [[ $exit_code -ne 0 ]]; then
+    echo "thrust-pcsat-wrapper: the solver exited with status $exit_code" >&2
+fi
 exit "$exit_code"

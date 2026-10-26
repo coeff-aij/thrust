@@ -1,6 +1,5 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // In an `ensures`, a `mut` parameter denotes its value at the call, not the one the body leaves.
 

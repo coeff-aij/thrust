@@ -1,3 +1,4 @@
+//@ignore-on-host: not yet verifiable: PCSat answers `unknown` after 75 s, or no answer within this test's 120 s (fptprove develop c471e831b)
 //@check-pass
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120

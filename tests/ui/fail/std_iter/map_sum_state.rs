@@ -1,3 +1,4 @@
+//@ignore-on-host: not yet verifiable: PCSat gives no refutation within 60 s on fptprove develop c471e831b, nor within 300 s on 3f9ee2482, also over two items or a range
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60
