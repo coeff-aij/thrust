@@ -11,6 +11,6 @@ fn main() {
     Vec::push(&mut v, 1);
     Vec::push(&mut v, 2);
     append(&mut v, Vec::new());
-    assert!(v.len() >= 2);
+    assert!(v.len() == 2);
     assert!(v[1] == 2);
 }
