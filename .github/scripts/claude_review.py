@@ -252,15 +252,32 @@ def system_blocks(prompt_file: Path) -> list[dict]:
     ]
 
 
+def line_ranges(lines: set[int]) -> str:
+    """Lines as ranges, `3-7, 12`."""
+    ranges: list[list[int]] = []
+    for n in sorted(lines):
+        if ranges and n == ranges[-1][1] + 1:
+            ranges[-1][1] = n
+        else:
+            ranges.append([n, n])
+    return ", ".join(f"{a}-{b}" if a != b else f"{a}" for a, b in ranges) or "none"
+
+
 def build_prompt(
-    pr: dict, diff: str, since: str | None, contents: dict[str, str], omitted: list[str], earlier: str
+    pr: dict,
+    diff: str,
+    since: str | None,
+    lines: dict[str, set[int]],
+    contents: dict[str, str],
+    omitted: list[str],
+    earlier: str,
 ) -> str:
     parts = [f"# Pull request: {pr['title']}\n\n{pr['body'] or '(no description)'}"]
     if since is None:
         parts.append(f"# Diff\n\n```diff\n{diff}\n```")
     else:
-        files = "\n".join(f["path"] for f in pr["files"])
-        parts.append(f"# Files the pull request changes\n\n{files}")
+        files = "\n".join(f"{path}: {line_ranges(lines.get(path, set()))}" for path in (f["path"] for f in pr["files"]))
+        parts.append(f"# Files the pull request changes, with the lines it changes or keeps as context\n\n{files}")
         parts.append(f"# Diff since the commit the latest review saw ({since})\n\n```diff\n{diff}\n```")
     for path, text in contents.items():
         parts.append(f"# File after the change: {path}\n\n```\n{text}\n```")
@@ -348,7 +365,7 @@ def main() -> None:
     since = reviewed if since_diff is not None else None
     sent = since_diff if since_diff is not None else diff
     contents, omitted = read_changed_files(paths, commentable_lines(sent))
-    prompt = build_prompt(pr, sent, since, contents, omitted, earlier)
+    prompt = build_prompt(pr, sent, since, lines, contents, omitted, earlier)
 
     if args.dry_run:
         system = sum(len(block["text"]) for block in system_blocks(args.prompt))

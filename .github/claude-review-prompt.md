@@ -80,8 +80,8 @@ settled. Developers and their agents reply to each comment with `Fixed in <commi
 reason or evidence holds. Do not repeat a settled comment. Repeat one that is not, on the line
 where the issue now is, in words close to the earlier comment, and say why the fix or the reply
 does not settle it. A re-review is sent only the diff since the commit the latest review saw;
-the rest of the pull request is in its files, which `read_file` reads, and a comment must still
-be on a line the pull request changes. Review the rest as usual. The summary starts with how many earlier comments
+the list of files gives, for each, the lines of the whole pull request's diff, which `read_file`
+reads in the head version, and a comment must still be on one of those lines. Review the rest as usual. The summary starts with how many earlier comments
 remain open, by severity.
 
 ## What not to report
