@@ -54,7 +54,7 @@ Each comment is marked `blocking`, `check` or `suggestion`.
 The review reads the diff and the code around it and runs nothing. It covers what reading
 shows: agreement with the README and this file, design and maintainability, a soundness gap
 visible in the code, a test that does not check what it says, at a small fraction of what an
-agent's audit costs (each review records its own cost). What needs Thrust or the solver to run
+agent's audit costs (each review records its tokens). What needs Thrust or the solver to run
 stays with the developer and is not delegated to the review:
 
 - the ui tests the change affects, run locally, including those that name a CoAR wrapper;
