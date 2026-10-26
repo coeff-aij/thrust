@@ -1,3 +1,4 @@
+//@ignore-on-host: not yet verifiable, the solver gives no answer within 120 s (fptprove thrust-benchmarks unsolved/skip_step_2026-10-26/)
 //@check-pass
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120

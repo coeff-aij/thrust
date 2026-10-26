@@ -1,3 +1,4 @@
+//@ignore-on-host: not yet verifiable, the solver gives no refutation within 300 s (fptprove thrust-benchmarks unsolved/std_iter_map_sum_state_2026-10-25/)
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60
