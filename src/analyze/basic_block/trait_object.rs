@@ -291,8 +291,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         dyn_ty: mir_ty::Ty<'tcx>,
         has_invariant: bool,
     ) {
-        // At a type parameter of a crate without invariants the impl is not known here; each
-        // impl of the crate is checked against the trait's contract on its own.
+        // At a type parameter (a body verified once over it) the impl is not known here. It is
+        // requested where the body is analyzed at an instance, which a crate with an invariant
+        // does at each instance a call reaches; otherwise each impl of the crate is checked
+        // against the trait's contract on its own.
         let Some(instance) = mir_ty::Instance::try_resolve(self.tcx, self.typing_env, def_id, args)
             .ok()
             .flatten()

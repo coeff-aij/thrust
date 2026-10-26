@@ -2,13 +2,18 @@
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
-// As `dyn_trait_generic_pack`, with a written contract on `pack`, which is verified once over `T`
-// (where `T` has no invariant to require) and also at `T = C`, where packing requires `C`'s.
+// The twin of `fail/dyn_trait_generic_pack_written.rs`: `pack`, with a written contract, packs
+// at `T = C` a value whose invariant holds.
 
 #[thrust_macros::context]
 trait Counter {
     #[thrust_macros::ensures(result <= 100)]
     fn bump(&mut self) -> u32;
+
+    #[thrust_macros::ensures(true)]
+    fn spoil(#[thrust::open_inv] &mut self)
+    where
+        Self: Sized;
 }
 
 struct C {
@@ -28,6 +33,10 @@ impl Invariant for C {
 }
 
 impl Counter for C {
+    fn spoil(&mut self) {
+        self.n = 1;
+    }
+
     fn bump(&mut self) -> u32 {
         if self.n % 2 == 1 {
             1000
