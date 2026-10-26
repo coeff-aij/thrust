@@ -44,6 +44,13 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install --require-hashes -r .github/scripts/requirements.txt
+      # The standard library's source of the toolchain the default branch pins, which the
+      # review reads with its grep_std and read_std tools.
+      - name: Fetch the standard library source
+        run: |
+          channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
+          rustup toolchain install "$channel" --profile minimal --component rust-src --no-self-update
+          echo "RUST_SRC=$(rustup run "$channel" rustc --print sysroot)/lib/rustlib/src/rust/library" >> "$GITHUB_ENV"
       - if: ${{ env.HAS_API_KEY == 'true' }}
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
