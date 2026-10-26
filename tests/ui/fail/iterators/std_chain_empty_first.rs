@@ -1,3 +1,4 @@
+//@ignore-on-host: not yet verifiable: PCSat gives no answer within 30 s on fptprove develop c471e831b
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper

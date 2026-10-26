@@ -3204,6 +3204,7 @@ fn _extern_spec_double_ended_iterator_next_back<I>(it: &mut I) -> Option<I::Item
 macro_rules! range_double_ended_iterator_spec {
     ($($t:ty)*) => {
         $(
+            #[allow(warnings)]
             #[thrust_macros::context]
             impl DoubleEndedIteratorSpec for core::ops::Range<$t> {
                 #[thrust_macros::predicate]
@@ -3240,6 +3241,7 @@ range_double_ended_iterator_spec!(i8 i16 i32 i64 i128 isize u8 u16 u32 u64 u128 
 macro_rules! range_inclusive_iterator_spec {
     ($($t:ty)*) => {
         $(
+            #[allow(warnings)]
             #[thrust_macros::context]
             impl IteratorSpec for core::ops::RangeInclusive<$t> {
                 #[thrust_macros::predicate]
@@ -3276,6 +3278,7 @@ macro_rules! range_inclusive_iterator_spec {
                 }
             }
 
+            #[allow(warnings)]
             #[thrust_macros::context]
             impl DoubleEndedIteratorSpec for core::ops::RangeInclusive<$t> {
                 #[thrust_macros::predicate]
