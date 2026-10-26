@@ -3,7 +3,8 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // A `for` whose body starts with two invariants naming the iterator: each of them names the
-// desugared loop's `iter`.
+// desugared loop's `iter`. The second does not hold on entry, and nothing else fails when it is
+// assumed there.
 
 #[thrust_macros::context]
 #[thrust_macros::requires(n >= 0)]
@@ -13,12 +14,12 @@ fn count(n: i64) -> i64 {
     for _i in 0..n {
         thrust_macros::invariant!(|iter: core::ops::Range<i64>, c: i64, n: thrust_models::FnParam<i64>|
             0 <= c && c <= n.at_entry() && iter.end == n.at_entry());
-        thrust_macros::invariant!(|iter: core::ops::Range<i64>, c: i64| iter.start == c);
+        thrust_macros::invariant!(|iter: core::ops::Range<i64>, c: i64| iter.start == c && 1 <= c);
         c += 1;
     }
     c
 }
 
 fn main() {
-    assert!(count(3) == 4);
+    assert!(count(3) == 3);
 }
