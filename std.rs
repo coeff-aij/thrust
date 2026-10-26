@@ -2620,6 +2620,11 @@ fn _extern_spec_iterator_enumerate<I>(it: I) -> core::iter::Enumerate<I>
     <I as std::iter::Iterator>::enumerate(it)
 }
 
+// When both iterators are `TrustedRandomAccess` (slice iterators, ranges and the adapters over
+// them, `Map` included), std's `Zip::next` steps neither of them and answers `None` once it has
+// handed out as many items as the shorter one has (core/src/iter/adapters/zip.rs), so `completed`
+// also allows the zip unchanged at a point where one of the two could complete: a `Map` on the
+// longer side does not run its closure on the item the general `Zip::next` takes from it.
 #[thrust_macros::context]
 impl<A, B> IteratorSpec for core::iter::Zip<A, B>
 where
@@ -2651,6 +2656,11 @@ where
             || thrust_models::exists(|x: <A::Item as thrust_models::Model>::Ty|
                 A::produces((*self).0, thrust_models::model::Seq::singleton(x), (!self).0)
                     && B::completed(thrust_models::model::Mut::new((*self).1, (!self).1)))
+            || (*self == !self
+                && (thrust_models::exists(|a: <A as thrust_models::Model>::Ty|
+                        A::completed(thrust_models::model::Mut::new((*self).0, a)))
+                    || thrust_models::exists(|b: <B as thrust_models::Model>::Ty|
+                        B::completed(thrust_models::model::Mut::new((*self).1, b)))))
     }
 
     fn produces_refl(a: &Self) {}
