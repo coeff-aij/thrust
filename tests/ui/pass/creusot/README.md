@@ -13,7 +13,8 @@ the predicates, the laws `produces_refl` and `produces_trans` in concatenation f
 without Creusot's invariant premises, which a Thrust loop head cannot supply for its entry state),
 `invariant` defaulting to `true`, and `next` with Creusot's contract. Each law has a default empty
 body in the trait, and Thrust checks it at every impl that does not write it, where Creusot restates
-it in each impl with an empty body; no impl writes a proof of its own, and no case calls a lemma
+it in each impl with an empty body; no impl writes a proof of its own, and no case calls a lemma,
+except `counter_creusot_lemma.rs`, whose `Map` impl proves `produces_trans` by lemmas
 (`fuse_produces_result.rs` declares its trait's laws without a default and restates them per impl
 with empty bodies, as Creusot does). The step-form files repeat theirs in the same layout. A case that needs `collect` adds it to its copy after `next`.
 
@@ -32,7 +33,7 @@ with empty bodies, as Creusot does). The step-form files repeat theirs in the sa
 | `decuple_range.rs` | `examples/decuple_range.rs` | `produces`, positional property, fully checked |
 | `skip_take.rs` | `examples/skip_take.rs` | `produces`, concatenated `Skip`, generic in `I` |
 | `counter.rs` | `examples/counter.rs` | `step` + a unary `next_item` guard, `MapInv`'s ghost history |
-| `counter_creusot.rs` | `examples/counter.rs` | `produces` with Creusot's property (`x == v`, `cnt == x.len()`), `MapInv` over an `FnMut` closure whose states are related by `hist_inv!` (Creusot's `hist_inv`), as in creusot-std's `std/iter/map_inv.rs` |
+| `counter_creusot.rs` | `examples/counter.rs` | ignored on the host (PCSat times out at 300 s); `produces` with Creusot's property (`x == v`, `cnt == x.len()`), `MapInv` over an `FnMut` closure whose states are related by `hist_inv!` (Creusot's `hist_inv`), as in creusot-std's `std/iter/map_inv.rs` |
 | `counter_creusot_lemma.rs` | `examples/counter.rs` | `counter_creusot.rs` with the witnesses of `produces_trans` written as source-level lemmas (Creusot's session gives them by hand), which the solver verifies today |
 | `map_ext.rs` | `iterators/map_ext.rs` | `produces` with an existential input sequence, `MapInv`'s ghost history, over an `FnMut` closure with the chain `fs` and `hist_inv!` as `counter_creusot.rs` (the ninth adapter) |
 | `extend.rs` | `examples/extend.rs` | `produces` |
