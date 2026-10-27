@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use proc_macro2::{Ident, TokenStream, TokenTree};
 use quote::format_ident;
+use syn::spanned::Spanned as _;
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -27,12 +28,10 @@ pub fn desugar(for_loop: &syn::ExprForLoop) -> Option<syn::Expr> {
     let leading: Vec<_> = stmts.iter().map_while(invariant_params).collect();
     let (invariants, rest) = stmts.split_at(leading.len());
     let params: Vec<_> = leading.into_iter().flatten().collect();
-    let iter_tys: Vec<_> = params
+    let iter_ty = params
         .iter()
-        .filter(|(name, _)| name == "iter")
-        .map(|(_, ty)| ty.clone())
-        .collect();
-    let iter_ty = iter_tys.first()?.clone();
+        .find(|(name, _)| name == "iter")
+        .map(|(_, ty)| ty.clone())?;
     let names_history = params
         .iter()
         .any(|(name, _)| name == "iter_old" || name == "produced");
@@ -42,6 +41,7 @@ pub fn desugar(for_loop: &syn::ExprForLoop) -> Option<syn::Expr> {
     let iter_old = format_ident!("__thrust_for_iter_old_{}", n);
     let produced = format_ident!("__thrust_for_produced_{}", n);
     let item = format_ident!("__thrust_for_item_{}", n);
+    let iter_checks = type_checks(&params, "iter", &iter);
     let renames = [
         ("iter", &iter),
         ("iter_old", &iter_old),
@@ -61,13 +61,12 @@ pub fn desugar(for_loop: &syn::ExprForLoop) -> Option<syn::Expr> {
         expr => expr,
     };
     // As in rustc's lowering, the iterator is bound by a `match`, so that the temporaries of the
-    // `for` head live as long as the loop. The type each invariant gives `iter` is checked by rustc
-    // against the iterator's.
+    // `for` head live as long as the loop.
     if !names_history {
         return Some(syn::parse_quote!(
             match ::core::iter::IntoIterator::into_iter(#expr) {
                 mut #iter => #label loop {
-                    #(let _: &#iter_tys = &#iter;)*
+                    #iter_checks
                     #(#invariants)*
                     match ::core::iter::Iterator::next(&mut #iter) {
                         ::core::option::Option::Some(#item) => {
@@ -86,14 +85,18 @@ pub fn desugar(for_loop: &syn::ExprForLoop) -> Option<syn::Expr> {
             <<#iter_ty as ::core::iter::Iterator>::Item as crate::thrust_models::Model>::Ty
         >
     );
+    let iter_old_checks = type_checks(&params, "iter_old", &iter_old);
+    let produced_checks = type_checks(&params, "produced", &produced);
     let next_produced = format_ident!("__thrust_for_next_produced_{}", n);
     let live = format_ident!("__thrust_for_live_{}", n);
     Some(syn::parse_quote!(
         match ::core::iter::IntoIterator::into_iter(#expr) {
             mut #iter => {
-                #(let _: &#iter_tys = &#iter;)*
+                #iter_checks
                 let #iter_old = thrust_macros::ghost!(|#iter: #iter_ty| -> #iter_ty { #iter });
+                #iter_old_checks
                 let mut #produced = thrust_macros::ghost!(|| -> #seq { crate::thrust_models::model::Seq::empty() });
+                #produced_checks
                 #label loop {
                     #(#invariants)*
                     thrust_macros::invariant!(
@@ -125,6 +128,23 @@ pub fn desugar(for_loop: &syn::ExprForLoop) -> Option<syn::Expr> {
             }
         }
     ))
+}
+
+/// Statements checking that each type the invariants give the parameter `name` is the type of
+/// `var`. `(&var,)` is built inside another tuple and projected out, so that the annotation's
+/// expected type does not reach it, and a tuple value is not coerced: rustc compares the types as
+/// they are. A reference alone would be coerced, through `Deref` among others, and so would the
+/// fields of a tuple expression checked against the annotation. Only temporaries are made, so
+/// that nothing of the check is part of the loop's state.
+fn type_checks(params: &[(Ident, syn::Type)], name: &str, var: &Ident) -> TokenStream {
+    params
+        .iter()
+        .filter(|(param, _)| param == name)
+        .map(|(_, ty)| {
+            let var = Ident::new(&var.to_string(), ty.span());
+            quote::quote_spanned!(ty.span()=> let _: (&#ty,) = ((&#var,),).0;)
+        })
+        .collect()
 }
 
 /// `stmt`, an invariant macro, with each identifier `from` that is not a field, method or path
