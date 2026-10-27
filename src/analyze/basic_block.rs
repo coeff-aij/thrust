@@ -884,6 +884,30 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         }
     }
 
+    /// `pty`, a reference of type `ref_ty` unsized to a slice reference, with the length its
+    /// referent has when `ref_ty` is a reference to an array `[T; N]`: the sequence model of an
+    /// array does not carry `N`.
+    fn with_array_len(&self, pty: PlaceType, ref_ty: mir_ty::Ty<'tcx>) -> PlaceType {
+        let mir_ty::TyKind::Ref(_, pointee, mutability) = ref_ty.kind() else {
+            return pty;
+        };
+        let mir_ty::TyKind::Array(_, len) = pointee.kind() else {
+            return pty;
+        };
+        let Some(len) = len.try_to_target_usize(self.tcx) else {
+            return pty;
+        };
+        let mut builder = PlaceTypeBuilder::default();
+        let (ty, term) = builder.subsume(pty);
+        let referent = if mutability.is_mut() {
+            term.clone().mut_current()
+        } else {
+            term.clone().box_current()
+        };
+        builder.push_formula(referent.seq_len().equal_to(chc::Term::int(len)));
+        builder.build(ty, term)
+    }
+
     fn const_ty(&self, const_: &mir::Const<'tcx>) -> PlaceType {
         match const_ {
             mir::Const::Val(val, ty) => self.const_value_ty(val, ty),
@@ -1262,7 +1286,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 if let Some(dyn_ty) = trait_object::dyn_pointee(ty) {
                     return self.unsize_to_dyn(operand, ty, dyn_ty);
                 }
-                self.check_other_unsize(operand.ty(&self.local_decls, self.tcx), ty);
+                let operand_ty = operand.ty(&self.local_decls, self.tcx);
+                self.check_other_unsize(operand_ty, ty);
                 // Only treat unsizing as identity when both sides resolve to the same model.
                 let mut op_pty = self.operand_type(operand);
                 let expected_ty = self.type_builder.build(ty).vacuous().ty;
@@ -1270,7 +1295,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     unimplemented!("unsize cast: {:?} -> {:?}", op_pty.ty, expected_ty);
                 }
                 op_pty.ty = expected_ty;
-                op_pty
+                self.with_array_len(op_pty, operand_ty)
             }
             Rvalue::Cast(mir::CastKind::IntToInt, operand, ty) => {
                 let op_ty = operand.ty(&self.body.local_decls, self.tcx);

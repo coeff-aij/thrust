@@ -213,8 +213,9 @@ pub fn reconstruct<'tcx>(tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
 }
 
 /// Finds an array indexed at a constant without a bounds check, which constant propagation
-/// leaves of `array[2]` (`_1[2 of 3]`), as the block, the statement (the number of statements
-/// for the terminator) and the index.
+/// leaves of `array[2]` (`_1[2 of 3]`) and an array pattern makes (`let [a, b] = array`), as the
+/// block, the statement (the number of statements for the terminator) and the index. A move out
+/// of the element is left as it is.
 fn find_unchecked_array_index<'tcx>(
     tcx: TyCtxt<'tcx>,
     body: &Body<'tcx>,
@@ -230,10 +231,19 @@ fn find_unchecked_array_index<'tcx>(
         fn visit_place(
             &mut self,
             place: &mir::Place<'tcx>,
-            _context: mir::visit::PlaceContext,
+            context: mir::visit::PlaceContext,
             location: mir::Location,
         ) {
-            if self.found.is_some() {
+            use mir::visit::{MutatingUseContext, NonMutatingUseContext, PlaceContext};
+            // A move out of an element (an array pattern binding a non-`Copy` element) or the
+            // drop of one left behind is not an access through a reference.
+            if self.found.is_some()
+                || matches!(
+                    context,
+                    PlaceContext::NonMutatingUse(NonMutatingUseContext::Move)
+                        | PlaceContext::MutatingUse(MutatingUseContext::Drop)
+                )
+            {
                 return;
             }
             self.found = place
