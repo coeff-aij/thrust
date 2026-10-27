@@ -234,6 +234,35 @@ fn thrust_macros_path() -> Option<std::path::PathBuf> {
         .map(|entry| entry.path())
 }
 
+/// Writes log events to stderr with the continuation lines of an event indented. An event spans
+/// several lines when a field's pretty-printed value does, and under `--error-format=json` a line
+/// that starts with `{` is read as one of rustc's JSON diagnostics.
+struct LogWriter;
+
+impl std::io::Write for LogWriter {
+    /// Takes `buf` as whole events, as the `fmt` layer writes each event with one `write_all`.
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let (body, end) = match buf.strip_suffix(b"\n") {
+            Some(body) => (body, &b"\n"[..]),
+            None => (buf, &b""[..]),
+        };
+        let mut out = Vec::with_capacity(buf.len());
+        for (i, line) in body.split(|&b| b == b'\n').enumerate() {
+            if i > 0 {
+                out.extend_from_slice(b"\n    ");
+            }
+            out.extend_from_slice(line);
+        }
+        out.extend_from_slice(end);
+        std::io::stderr().write_all(&out)?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        std::io::stderr().flush()
+    }
+}
+
 pub fn main() {
     let mut args = std::env::args().collect::<Vec<_>>();
 
@@ -241,7 +270,7 @@ pub fn main() {
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::fmt::layer()
-                .with_writer(std::io::stderr)
+                .with_writer(|| LogWriter)
                 .compact()
                 .without_time()
                 .with_filter(EnvFilter::from_default_env()),
