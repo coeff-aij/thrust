@@ -11,7 +11,7 @@ impl Sides for Tri {
     const N: u32 = 3;
 }
 
-// Checked over `S`, at which `S::N` is any `u32`, and again at `Tri`.
+// Checked once over `S`, at which `S::N` is any `u32`; a caller at `Tri` uses the contract.
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(result == 3)]
 fn sides<S: Sides>() -> u32 {
