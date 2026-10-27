@@ -1015,9 +1015,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         if let mir::Rvalue::CopyForDeref(place) = &rvalue {
             return Some((lhs_local, *place));
         }
-        // Optimizations turn the `deref_copy` of a `Box` into a `copy`.
+        // Optimizations turn the `deref_copy` of a `Box` into a `copy` to a temporary.
         if let mir::Rvalue::Use(mir::Operand::Copy(place)) = &rvalue {
-            if place.ty(&self.body.local_decls, self.tcx).ty.is_box() {
+            if place.ty(&self.body.local_decls, self.tcx).ty.is_box() && !self.is_named(lhs_local) {
                 return Some((lhs_local, *place));
             }
         }
@@ -1066,8 +1066,16 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         Some((lhs_local, rest_place))
     }
 
-    /// Replaces each temporary that copies a pointer for a deref (`CopyForDeref`, and the
-    /// transmuted pointer of a `Box`) with the place it copies, unless that place may change
+    /// Whether `local` holds a user variable, which optimized MIR records only in its debug info.
+    fn is_named(&self, local: Local) -> bool {
+        self.body.var_debug_info.iter().any(|info| {
+            matches!(info.value, mir::VarDebugInfoContents::Place(place) if place.local == local)
+        })
+    }
+
+    /// Replaces each temporary that copies a pointer for a deref (`CopyForDeref`, the `copy` of a
+    /// `Box` optimizations make of one, and the transmuted pointer of a `Box`) with the place it
+    /// copies, unless that place may change
     /// between the copy and a use of the temporary. Optimizations make that possible: a
     /// reborrow `q = &mut *_k` becomes `q = copy _k` and `q` is merged into `_k`.
     fn unelaborate_derefs(&mut self) {
@@ -2423,10 +2431,7 @@ fn kept_deref_temp<'tcx>(
     let mir::StatementKind::Assign(assign) = &stmt.kind else {
         unreachable!()
     };
-    if !matches!(
-        assign.1,
-        mir::Rvalue::CopyForDeref(_) | mir::Rvalue::Use(mir::Operand::Copy(_))
-    ) {
+    if !matches!(assign.1, mir::Rvalue::CopyForDeref(_)) {
         unimplemented!("Box pointer {temp:?} of {place:?} used after the Box may have changed");
     }
     let rvalue = mir::Rvalue::Use(mir::Operand::Copy(place));
