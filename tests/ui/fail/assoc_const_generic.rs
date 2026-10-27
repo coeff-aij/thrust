@@ -12,10 +12,12 @@ impl Sides for Tri {
 }
 
 // Checked over `S`, at which `S::N` is any `u32`, and again at `Tri`.
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(result == 3)]
 fn sides<S: Sides>() -> u32 {
     S::N
 }
 
 fn main() {
-    assert!(sides::<Tri>() == 4);
+    assert!(sides::<Tri>() == 3);
 }
