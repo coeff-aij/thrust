@@ -1015,6 +1015,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         if let mir::Rvalue::CopyForDeref(place) = &rvalue {
             return Some((lhs_local, *place));
         }
+        // Optimizations turn the `deref_copy` of a `Box` into a `copy`.
+        if let mir::Rvalue::Use(mir::Operand::Copy(place)) = &rvalue {
+            if place.ty(&self.body.local_decls, self.tcx).ty.is_box() {
+                return Some((lhs_local, *place));
+            }
+        }
 
         let unique_did = self.ctx.def_ids.unique()?;
         let nonnull_did = self.ctx.def_ids.nonnull()?;
@@ -1114,9 +1120,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         replaced
     }
 
-    /// The deref temporaries of `replaced` whose place may be written, in `self.body` where
-    /// every one is replaced, between the copy and a use: a use of `original`'s temporary, or
-    /// a use of a temporary copied through it.
+    /// The deref temporaries of `replaced` whose place, or an index local it is read at, may be
+    /// written, in `self.body` where every one is replaced, between the copy and a use: a use of
+    /// `original`'s temporary, or a use of a temporary copied through it.
     fn deref_temps_read_after_change(
         &self,
         original: &Body<'tcx>,
@@ -1134,9 +1140,15 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let mentions = local_mentions(&self.body);
         let mut kept = HashSet::new();
         for (temp, def, place) in replaced {
+            let index_locals = place.projection.iter().filter_map(|elem| match elem {
+                mir::ProjectionElem::Index(local) => Some(mir::Place::from(local)),
+                _ => None,
+            });
             if defs[temp].len() != 1
                 || self.has_unknown_aliases(place)
-                || self.written_before_use(place, *def, &uses[temp], &mentions)
+                || std::iter::once(*place)
+                    .chain(index_locals)
+                    .any(|read| self.written_before_use(&read, *def, &uses[temp], &mentions))
             {
                 kept.insert(*temp);
             }
@@ -1145,10 +1157,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     }
 
     fn has_unknown_aliases(&self, place: &mir::Place<'tcx>) -> bool {
-        place.iter_projections().any(|(base, elem)| match elem {
-            mir::ProjectionElem::Deref => base.ty(&self.body.local_decls, self.tcx).ty.is_raw_ptr(),
-            mir::ProjectionElem::Index(_) => true,
-            _ => false,
+        place.iter_projections().any(|(base, elem)| {
+            elem == mir::ProjectionElem::Deref
+                && base.ty(&self.body.local_decls, self.tcx).ty.is_raw_ptr()
         })
     }
 
@@ -2412,7 +2423,10 @@ fn kept_deref_temp<'tcx>(
     let mir::StatementKind::Assign(assign) = &stmt.kind else {
         unreachable!()
     };
-    if !matches!(assign.1, mir::Rvalue::CopyForDeref(_)) {
+    if !matches!(
+        assign.1,
+        mir::Rvalue::CopyForDeref(_) | mir::Rvalue::Use(mir::Operand::Copy(_))
+    ) {
         unimplemented!("Box pointer {temp:?} of {place:?} used after the Box may have changed");
     }
     let rvalue = mir::Rvalue::Use(mir::Operand::Copy(place));
