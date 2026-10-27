@@ -41,7 +41,7 @@ pub fn desugar(for_loop: &syn::ExprForLoop) -> Option<syn::Expr> {
     let iter_old = format_ident!("__thrust_for_iter_old_{}", n);
     let produced = format_ident!("__thrust_for_produced_{}", n);
     let item = format_ident!("__thrust_for_item_{}", n);
-    let iter_checks = type_checks(&params, "iter", &iter, n);
+    let iter_checks = type_checks(&params, "iter", &iter);
     let renames = [
         ("iter", &iter),
         ("iter_old", &iter_old),
@@ -85,8 +85,8 @@ pub fn desugar(for_loop: &syn::ExprForLoop) -> Option<syn::Expr> {
             <<#iter_ty as ::core::iter::Iterator>::Item as crate::thrust_models::Model>::Ty
         >
     );
-    let iter_old_checks = type_checks(&params, "iter_old", &iter_old, n);
-    let produced_checks = type_checks(&params, "produced", &produced, n);
+    let iter_old_checks = type_checks(&params, "iter_old", &iter_old);
+    let produced_checks = type_checks(&params, "produced", &produced);
     let next_produced = format_ident!("__thrust_for_next_produced_{}", n);
     let live = format_ident!("__thrust_for_live_{}", n);
     Some(syn::parse_quote!(
@@ -131,26 +131,20 @@ pub fn desugar(for_loop: &syn::ExprForLoop) -> Option<syn::Expr> {
 }
 
 /// Statements checking that each type the invariants give the parameter `name` is the type of
-/// `var`. The reference to `var` is wrapped in a tuple bound without a type, so that rustc compares
-/// the types as they are: a reference alone would be coerced, through `Deref` among others.
-fn type_checks(params: &[(Ident, syn::Type)], name: &str, var: &Ident, n: usize) -> TokenStream {
-    let tys: Vec<_> = params
+/// `var`. `(&var,)` is built inside another tuple and projected out, so that the annotation's
+/// expected type does not reach it, and a tuple value is not coerced: rustc compares the types as
+/// they are. A reference alone would be coerced, through `Deref` among others, and so would the
+/// fields of a tuple expression checked against the annotation. Only temporaries are made, so
+/// that nothing of the check is part of the loop's state.
+fn type_checks(params: &[(Ident, syn::Type)], name: &str, var: &Ident) -> TokenStream {
+    params
         .iter()
         .filter(|(param, _)| param == name)
-        .map(|(_, ty)| ty)
-        .collect();
-    if tys.is_empty() {
-        return TokenStream::new();
-    }
-    let typed = format_ident!("__thrust_for_typed_{}_{}", name, n);
-    let checks = tys.iter().map(|ty| {
-        let typed = Ident::new(&typed.to_string(), ty.span());
-        quote::quote_spanned!(ty.span()=> let _: (&#ty,) = #typed;)
-    });
-    quote::quote!(
-        let #typed = (&#var,);
-        #(#checks)*
-    )
+        .map(|(_, ty)| {
+            let var = Ident::new(&var.to_string(), ty.span());
+            quote::quote_spanned!(ty.span()=> let _: (&#ty,) = ((&#var,),).0;)
+        })
+        .collect()
 }
 
 /// `stmt`, an invariant macro, with each identifier `from` that is not a field, method or path
