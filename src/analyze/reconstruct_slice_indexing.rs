@@ -374,15 +374,15 @@ fn find_bounds_check<'tcx>(
     })
 }
 
-/// Whether the bounds check covers `access`, the first use of its index in its target block: the
-/// check compares with the constant `N` of the type of the array `access` indexes in place, or with
-/// the `PtrMetadata` of the slice reference `access` indexes, which holds one value from that
-/// `PtrMetadata` to the access: either the `PtrMetadata` is in the check block and nothing between
-/// it and the access writes a place other than a local the body never borrows, or the reference is
-/// a local or a field of one whose local the body assigns at most once and never borrows mutably.
-/// With optimizations a check whose own access is gone (`let _ = s[3];`) can be followed by
-/// another sequence's access at the same index whose check was dropped, which it does not cover;
-/// any other shape is left to rustc's check.
+/// Whether the bounds check covers `access`, the first use of its index in its target block. For
+/// an array indexed in place, the check compares with the constant `N` of the array's type. For a
+/// slice, the check compares with a `PtrMetadata` computed in the check block of the access's
+/// reference, read directly or through a copy or reborrow of it made in that block, and every
+/// statement from there to the access writes, if anything, a local other than the reference's and
+/// the copy's. This is how rustc lowers an indexing expression at opt-level 0; with
+/// optimizations a check whose own access is gone (`let _ = s[3];`) can be followed by another
+/// access at the same index whose check was dropped, which it does not cover, and any shape other
+/// than these is left to rustc's check.
 fn checks_length_of<'tcx>(
     tcx: TyCtxt<'tcx>,
     body: &Body<'tcx>,
@@ -402,149 +402,62 @@ fn checks_length_of<'tcx>(
             .map(|int| int.to_target_usize(tcx));
         return constant.is_some() && constant == array_len.try_to_target_usize(tcx);
     }
-    let receiver = access.receiver;
-    if !is_metadata_of(tcx, body, len, receiver) {
-        return false;
-    }
-    let assigned_once = !receiver.projection.contains(&mir::PlaceElem::Deref)
-        && changes_of(body, receiver.local).len() <= 1;
-    assigned_once || nothing_written_between(body, bounds_check, len, access)
-}
-
-/// Whether the `PtrMetadata` the check compares with is in the check block, and every statement
-/// after it there and before the access in the target block writes, if anything, a local that
-/// the body never borrows.
-fn nothing_written_between<'tcx>(
-    body: &Body<'tcx>,
-    bounds_check: &BoundsCheck<'tcx>,
-    len: &Operand<'tcx>,
-    access: &SliceAccess<'tcx>,
-) -> bool {
-    let check_statements = &body.basic_blocks[bounds_check.block].statements;
-    let Some(metadata) = len.place().and_then(|len| {
-        check_statements.iter().position(|statement| {
-            statement
-                .kind
-                .as_assign()
-                .is_some_and(|(place, _)| *place == len)
-        })
-    }) else {
+    let Some(len) = len.place() else {
         return false;
     };
-    let target_statements =
-        &body.basic_blocks[access.location.block].statements[..access.location.statement_index];
-    check_statements[metadata + 1..]
-        .iter()
-        .chain(target_statements)
-        .all(|statement| match &statement.kind {
-            StatementKind::Assign(assign) => assign
-                .0
-                .as_local()
-                .is_some_and(|local| !is_borrowed(body, local)),
-            StatementKind::StorageLive(_)
-            | StatementKind::StorageDead(_)
-            | StatementKind::FakeRead(_)
-            | StatementKind::Nop => true,
-            _ => false,
-        })
-}
-
-/// Whether the body borrows `local` or a part of it not behind a pointer.
-fn is_borrowed(body: &Body<'_>, local: Local) -> bool {
-    body.basic_blocks
-        .iter()
-        .flat_map(|data| &data.statements)
-        .filter_map(|statement| statement.kind.as_assign())
-        .any(|(_, rvalue)| match rvalue {
-            Rvalue::Ref(_, _, place) | Rvalue::RawPtr(_, place) => {
-                place.local == local && place.projection.first() != Some(&mir::PlaceElem::Deref)
-            }
-            _ => false,
-        })
-}
-
-/// Whether the local `len` holds the `PtrMetadata` of `receiver`, read directly or through a
-/// local that copies or reborrows it.
-fn is_metadata_of<'tcx>(
-    tcx: TyCtxt<'tcx>,
-    body: &Body<'tcx>,
-    len: &Operand<'tcx>,
-    receiver: mir::Place<'tcx>,
-) -> bool {
-    let Some(Rvalue::UnaryOp(mir::UnOp::PtrMetadata, reference)) = len
-        .place()
-        .and_then(|len| single_assignment(body, len.as_local()?))
+    let receiver = access.receiver;
+    let check_statements = &body.basic_blocks[bounds_check.block].statements;
+    let assignment_in_check_block = |local: Local| {
+        check_statements
+            .iter()
+            .enumerate()
+            .find_map(|(index, statement)| {
+                let (place, rvalue) = statement.kind.as_assign()?;
+                (place.as_local() == Some(local)).then_some((index, rvalue))
+            })
+    };
+    let Some((metadata, Rvalue::UnaryOp(mir::UnOp::PtrMetadata, reference))) =
+        len.as_local().and_then(assignment_in_check_block)
     else {
         return false;
     };
     let Some(reference) = reference.place() else {
         return false;
     };
-    if reference == receiver {
-        return true;
-    }
-    let receiver_deref = tcx.mk_place_deref(receiver);
-    let reference_from = reference
-        .as_local()
-        .and_then(|local| single_assignment(body, local));
-    matches!(
-        reference_from,
-        Some(Rvalue::Use(Operand::Copy(place) | Operand::Move(place))) if *place == receiver
-    ) || matches!(
-        reference_from,
-        Some(Rvalue::Ref(_, _, place) | Rvalue::RawPtr(_, place)) if *place == receiver_deref
-    )
-}
-
-/// The locations that assign `local`, or a part of it not behind a pointer, or borrow it
-/// mutably.
-fn changes_of(body: &Body<'_>, local: Local) -> Vec<mir::Location> {
-    use mir::visit::Visitor as _;
-
-    struct Changes {
-        local: Local,
-        locations: Vec<mir::Location>,
-    }
-    impl<'tcx> mir::visit::Visitor<'tcx> for Changes {
-        fn visit_place(
-            &mut self,
-            place: &mir::Place<'tcx>,
-            context: mir::visit::PlaceContext,
-            location: mir::Location,
-        ) {
-            let through_pointer = place.projection.first() == Some(&mir::PlaceElem::Deref);
-            if place.local == self.local && context.is_mutating_use() && !through_pointer {
-                self.locations.push(location);
-            }
+    let (start, copy) = if reference == receiver {
+        (metadata, None)
+    } else {
+        let receiver_deref = tcx.mk_place_deref(receiver);
+        let Some((copied_at, rvalue)) = reference.as_local().and_then(assignment_in_check_block)
+        else {
+            return false;
+        };
+        let copies = match rvalue {
+            Rvalue::Use(Operand::Copy(place) | Operand::Move(place)) => *place == receiver,
+            Rvalue::Ref(_, _, place) | Rvalue::RawPtr(_, place) => *place == receiver_deref,
+            _ => false,
+        };
+        if !copies || copied_at > metadata {
+            return false;
         }
-    }
-
-    let mut changes = Changes {
-        local,
-        locations: Vec::new(),
+        (copied_at, reference.as_local())
     };
-    changes.visit_body(body);
-    changes.locations
-}
-
-/// The right-hand side of the only assignment to `local` in `body`, if it has one and no call
-/// writes it.
-fn single_assignment<'a, 'tcx>(body: &'a Body<'tcx>, local: Local) -> Option<&'a Rvalue<'tcx>> {
-    let called_into = body.basic_blocks.iter().any(|data| {
-        matches!(&data.terminator().kind, TerminatorKind::Call { destination, .. }
-            if destination.local == local)
-    });
-    if called_into {
-        return None;
-    }
-    let mut assignments = body
-        .basic_blocks
+    let target_statements =
+        &body.basic_blocks[access.location.block].statements[..access.location.statement_index];
+    check_statements[start + 1..]
         .iter()
-        .flat_map(|data| &data.statements)
-        .filter_map(|statement| statement.kind.as_assign())
-        .filter(|(place, _)| place.as_local() == Some(local));
-    let (_, rvalue) = assignments.next()?;
-    assignments.next().is_none().then_some(rvalue)
+        .chain(target_statements)
+        .all(|statement| match &statement.kind {
+            StatementKind::Assign(assign) => assign
+                .0
+                .as_local()
+                .is_some_and(|local| local != receiver.local && Some(local) != copy),
+            StatementKind::StorageLive(_)
+            | StatementKind::StorageDead(_)
+            | StatementKind::FakeRead(_)
+            | StatementKind::Nop => true,
+            _ => false,
+        })
 }
 
 /// Finds the matching `(*slice)[index]` place in the bounds check's target block.
