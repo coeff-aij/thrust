@@ -2,6 +2,8 @@
 //@compile-flags: -C opt-level=3
 //@rustc-env: THRUST_SOLVER_TIMEOUT_SECS=120
 
+// `-C opt-level=3` turns the overflow checks off.
+
 enum List {
   Cons(i32, Box<List>),
   Nil,

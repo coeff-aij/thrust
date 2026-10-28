@@ -22,6 +22,12 @@ fn int_range_enabled() -> bool {
     std::env::var_os("THRUST_INT_RANGE").is_some()
 }
 
+/// Whether `THRUST_OPTIMIZED_MIR` is set to `1`: Thrust then analyzes the MIR of the optimization
+/// level the command line asks for instead of the MIR of `-C opt-level=0`.
+fn optimized_mir_enabled() -> bool {
+    matches!(std::env::var("THRUST_OPTIMIZED_MIR").as_deref(), Ok("1"))
+}
+
 struct CompilerCalls {}
 
 impl Callbacks for CompilerCalls {
@@ -44,6 +50,15 @@ impl Callbacks for CompilerCalls {
             .push("cfg(thrust_std_conformance)".to_owned());
         if int_range_enabled() {
             config.crate_cfg.push("thrust_int_range".to_owned());
+        }
+
+        // The MIR optimizations preserve the meaning of a program without undefined behaviour
+        // and only reshape its MIR. `debug_assertions`, the default of the overflow and UB
+        // checks, is settled from the command line before this callback runs.
+        if !optimized_mir_enabled() {
+            config.opts.optimize = rustc_session::config::OptLevel::No;
+            config.opts.unstable_opts.mir_opt_level = None;
+            config.opts.unstable_opts.mir_enable_passes.clear();
         }
 
         // Refinements live on MIR locals, and `RemoveZsts` rewrites reads of zero-sized
