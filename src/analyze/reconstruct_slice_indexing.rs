@@ -395,7 +395,9 @@ fn find_bounds_check<'tcx>(
 }
 
 /// Whether the bounds check covers `access`, the first use of its index in its target block: for
-/// an array indexed in place, the check compares with the constant `N` of the array's type; for a
+/// an array indexed in place, the check compares with the constant `N` of the array's type and
+/// every statement before the access in the target block, after the call borrows the array at the
+/// check, writes, if anything, a plain local other than the array's; for a
 /// slice, with a `PtrMetadata` of the access's reference computed next to the access
 /// ([`adjacent_metadata`], how rustc lowers an indexing expression at opt-level 0), or of an
 /// argument the body never writes ([`argument_metadata`]). With optimizations a check whose own
@@ -419,7 +421,11 @@ fn checks_length_of<'tcx>(
             .constant()
             .and_then(|constant| constant.const_.try_to_scalar_int())
             .map(|int| int.to_target_usize(tcx));
-        return constant.is_some() && constant == array_len.try_to_target_usize(tcx);
+        let target_statements =
+            &body.basic_blocks[access.location.block].statements[..access.location.statement_index];
+        return constant.is_some()
+            && constant == array_len.try_to_target_usize(tcx)
+            && writes_only_other_locals(target_statements, &[access.receiver.local]);
     }
     let Some(len) = len.place() else {
         return false;
@@ -477,20 +483,25 @@ fn adjacent_metadata<'tcx>(
     };
     let target_statements =
         &body.basic_blocks[access.location.block].statements[..access.location.statement_index];
-    check_statements[start + 1..]
-        .iter()
-        .chain(target_statements)
-        .all(|statement| match &statement.kind {
-            StatementKind::Assign(assign) => assign
-                .0
-                .as_local()
-                .is_some_and(|local| local != receiver.local && Some(local) != copy),
-            StatementKind::StorageLive(_)
-            | StatementKind::StorageDead(_)
-            | StatementKind::FakeRead(_)
-            | StatementKind::Nop => true,
-            _ => false,
-        })
+    let excluded: Vec<Local> = std::iter::once(receiver.local).chain(copy).collect();
+    writes_only_other_locals(&check_statements[start + 1..], &excluded)
+        && writes_only_other_locals(target_statements, &excluded)
+}
+
+/// Whether each of `statements` writes, if anything, a plain local not in `excluded`: no write
+/// to a projection or through a pointer, and none to an excluded local.
+fn writes_only_other_locals(statements: &[mir::Statement<'_>], excluded: &[Local]) -> bool {
+    statements.iter().all(|statement| match &statement.kind {
+        StatementKind::Assign(assign) => assign
+            .0
+            .as_local()
+            .is_some_and(|local| !excluded.contains(&local)),
+        StatementKind::StorageLive(_)
+        | StatementKind::StorageDead(_)
+        | StatementKind::FakeRead(_)
+        | StatementKind::Nop => true,
+        _ => false,
+    })
 }
 
 /// Whether `receiver` is an argument that the body never writes and `len` holds its
