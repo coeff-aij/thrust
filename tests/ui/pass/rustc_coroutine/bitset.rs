@@ -41,8 +41,10 @@ fn two_members() -> DenseBitSet<usize> {
     set
 }
 
-// Every column a row of a matrix yields is below its column bound, whatever the bits.
-#[thrust_macros::requires(BitMatrix::<usize, usize>::wf(*m) && 0 < (*m).num_rows && *(*m).col_bound == 5)]
+// Every column a row of a matrix yields is below its column bound, given that no bit is set at
+// or past it.
+#[thrust_macros::requires(BitMatrix::<usize, usize>::wf(*m) && 0 < (*m).num_rows && *(*m).col_bound == 5
+    && BitMatrix::<usize, usize>::cols_below(*m, *(*m).col_bound))]
 #[thrust_macros::ensures(true)]
 fn column_bound(m: &BitMatrix<usize, usize>) {
     let mut it = m.iter(0);

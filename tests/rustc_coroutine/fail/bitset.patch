@@ -16,7 +16,7 @@
  #![feature(new_range_api)]
  
  #[path = "../../../rustc_coroutine/compiler/rustc_hashes/src/lib.rs"]
-@@ -31,23 +33,14 @@
+@@ -31,16 +33,6 @@
  }
  
  
@@ -30,9 +30,10 @@
 -    set
 -}
 -
- // Every column a row of a matrix yields is below its column bound, whatever the bits.
- #[thrust_macros::requires(BitMatrix::<usize, usize>::wf(*m) && 0 < (*m).num_rows && *(*m).col_bound == 5)]
- #[thrust_macros::ensures(true)]
+ // Every column a row of a matrix yields is below its column bound, given that no bit is set at
+ // or past it.
+ #[thrust_macros::requires(BitMatrix::<usize, usize>::wf(*m) && 0 < (*m).num_rows && *(*m).col_bound == 5
+@@ -49,7 +41,8 @@
  fn column_bound(m: &BitMatrix<usize, usize>) {
      let mut it = m.iter(0);
      match it.next() {

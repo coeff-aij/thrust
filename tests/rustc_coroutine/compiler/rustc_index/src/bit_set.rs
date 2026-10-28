@@ -446,6 +446,22 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
         }) && 0 <= *self.col_bound && *self.col_bound <= self.num_columns
     }
 
+    /// Every set bit is at a column below `b`: the fact the ghost `col_bound` stands for
+    /// (rewrites.md S11). rustc's matrices have it at `b = num_columns`: `insert` asserts
+    /// `column < num_columns` and `insert_all_into_row` clears the bits past it.
+    #[thrust_macros::predicate]
+    pub(crate) fn cols_below(self, b: usize) -> bool {
+        forall(|rw: usize, r: usize, c: usize|
+            !(self.words.len() == self.num_rows * rw
+                && 64 * rw >= self.num_columns
+                && 64 * rw < self.num_columns + 64
+                && 0 <= r && r < self.num_rows
+                && b <= c && c < 64 * rw)
+                || (BitVec::<64, false>::from_int(self.words[r * rw + c / 64]) >> BitVec::from_int(c % 64))
+                    & BitVec::from_int(1)
+                    == BitVec::from_int(0))
+    }
+
     #[thrust_macros::ensures(result.start == 0)]
     #[thrust_macros::ensures(result.end == (*self).num_rows)]
     pub fn rows(&self) -> IdxRange<R> {
@@ -464,9 +480,10 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
     }
 
     // Trusted, as `DenseBitSet::iter`: the iterator's ghost state is the row's members, below the
-    // ghost column bound.
+    // ghost column bound, which `cols_below` ties to the bits.
     #[thrust::trusted]
     #[thrust_macros::requires(Self::wf(*self))]
+    #[thrust_macros::requires(Self::cols_below(*self, *(*self).col_bound))]
     #[thrust_macros::requires(forall(|i: USize| <R as Idx>::index_is(row, i) ==> i < (*self).num_rows))]
     #[thrust_macros::ensures(result.4 == *(*self).col_bound && result.5 == 0)]
     #[thrust_macros::ensures(0 <= result.6 && result.6 <= *(*self).col_bound)]
