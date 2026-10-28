@@ -1,5 +1,6 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -C opt-level=1
+//@rustc-env: THRUST_OPTIMIZED_MIR=1
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // At `-C opt-level=1` an unused `a[k]` leaves at most its bounds check, followed by the access

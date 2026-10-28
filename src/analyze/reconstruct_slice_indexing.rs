@@ -54,6 +54,8 @@ struct BoundsCheck<'tcx> {
 /// The slice access in the target of a [`BoundsCheck`].
 struct SliceAccess<'tcx> {
     indexed_place: mir::Place<'tcx>,
+    /// Where `indexed_place` is first used in the target block.
+    location: mir::Location,
     receiver: mir::Place<'tcx>,
     receiver_mutability: mir_ty::Mutability,
     /// The type of `receiver` when it is an array indexed in place (`array[index]`), which the
@@ -69,7 +71,7 @@ struct IndexedPlaceFinder<'a, 'tcx> {
     body: &'a Body<'tcx>,
     tcx: TyCtxt<'tcx>,
     index: IndexElem,
-    found: Option<(mir::Place<'tcx>, bool)>,
+    found: Option<(mir::Place<'tcx>, bool, mir::Location)>,
 }
 
 impl<'tcx> mir::visit::Visitor<'tcx> for IndexedPlaceFinder<'_, 'tcx> {
@@ -77,7 +79,7 @@ impl<'tcx> mir::visit::Visitor<'tcx> for IndexedPlaceFinder<'_, 'tcx> {
         &mut self,
         place: &mir::Place<'tcx>,
         context: mir::visit::PlaceContext,
-        _location: mir::Location,
+        location: mir::Location,
     ) {
         if self.found.is_some() {
             return;
@@ -105,7 +107,7 @@ impl<'tcx> mir::visit::Visitor<'tcx> for IndexedPlaceFinder<'_, 'tcx> {
             base.ty(&self.body.local_decls, self.tcx).ty.kind(),
             mir_ty::TyKind::Slice(_) | mir_ty::TyKind::Array(..)
         ) {
-            self.found = Some((indexed, context.is_mutating_use()));
+            self.found = Some((indexed, context.is_mutating_use(), location));
         }
     }
 }
@@ -372,10 +374,11 @@ fn find_bounds_check<'tcx>(
     })
 }
 
-/// Whether the bounds check compares with the length of the sequence `access` indexes: the
-/// constant `N` of an array `[T; N]`, or the `PtrMetadata` of the reference to the slice. With
-/// optimizations a check whose own access is gone (`let _ = s[3];`) can be followed by another
-/// sequence's access at the same index whose check was dropped, which it does not cover.
+/// Whether the bounds check covers `access`: it compares with the length of the sequence
+/// `access` indexes, the constant `N` of an array `[T; N]` or the `PtrMetadata` of the same slice
+/// reference, which is not reassigned between the length and the access. With optimizations a
+/// check whose own access is gone (`let _ = s[3];`) can be followed by another sequence's access
+/// at the same index whose check was dropped, which it does not cover.
 fn checks_length_of<'tcx>(
     tcx: TyCtxt<'tcx>,
     body: &Body<'tcx>,
@@ -386,59 +389,105 @@ fn checks_length_of<'tcx>(
         return true;
     };
     if let Some(array_ty) = access.array_ty {
-        let mir_ty::TyKind::Array(_, array_len) = array_ty.kind() else {
-            unreachable!("an array access of a non-array type");
-        };
-        let constant = |len: &Operand<'tcx>| {
-            Some(
-                len.constant()?
-                    .const_
-                    .try_to_scalar_int()?
-                    .to_target_usize(tcx),
-            )
-        };
-        return array_len.try_to_target_usize(tcx).is_some()
-            && constant(len) == array_len.try_to_target_usize(tcx);
+        return constant_len(tcx, len).is_some()
+            && constant_len(tcx, len) == array_len(tcx, array_ty);
     }
-    let Some(len_place) = len.place().filter(|place| place.projection.is_empty()) else {
-        return false;
+    let (receiver, chain) = reference_origin(tcx, body, access.receiver);
+    let same_reference = match constant_len(tcx, len) {
+        // GVN folds the length of a slice unsized from a `&[T; N]` to `N`.
+        Some(n) => unsized_array_len(tcx, body, receiver) == Some(n),
+        None => metadata_origin(tcx, body, len) == Some(receiver),
     };
-    let Some(Rvalue::UnaryOp(mir::UnOp::PtrMetadata, metadata_of)) =
-        single_assignment(body, len_place.local)
+    same_reference && !written_before_access(body, bounds_check, access, len, &chain)
+}
+
+fn constant_len<'tcx>(tcx: TyCtxt<'tcx>, len: &Operand<'tcx>) -> Option<u64> {
+    Some(
+        len.constant()?
+            .const_
+            .try_to_scalar_int()?
+            .to_target_usize(tcx),
+    )
+}
+
+fn array_len<'tcx>(tcx: TyCtxt<'tcx>, array_ty: Ty<'tcx>) -> Option<u64> {
+    let mir_ty::TyKind::Array(_, len) = array_ty.kind() else {
+        return None;
+    };
+    len.try_to_target_usize(tcx)
+}
+
+/// The origin of the slice reference whose `PtrMetadata` the length local `len` holds.
+fn metadata_origin<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    body: &Body<'tcx>,
+    len: &Operand<'tcx>,
+) -> Option<mir::Place<'tcx>> {
+    let len = len.place()?.as_local()?;
+    let Some(Rvalue::UnaryOp(mir::UnOp::PtrMetadata, reference)) = single_assignment(body, len)
     else {
-        return false;
+        return None;
     };
-    let Some(metadata_of) = metadata_of.place() else {
-        return false;
+    Some(reference_origin(tcx, body, reference.place()?).0)
+}
+
+/// The length `N` of the array whose `&[T; N]` the local `reference` is unsized from.
+fn unsized_array_len<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    body: &Body<'tcx>,
+    reference: mir::Place<'tcx>,
+) -> Option<u64> {
+    let Some(Rvalue::Cast(
+        mir::CastKind::PointerCoercion(mir_ty::adjustment::PointerCoercion::Unsize, _),
+        array_ref,
+        _,
+    )) = single_assignment(body, reference.as_local()?)
+    else {
+        return None;
     };
-    reference_origin(tcx, body, metadata_of) == reference_origin(tcx, body, access.receiver)
+    let mir_ty::TyKind::Ref(_, array_ty, _) = array_ref.ty(&body.local_decls, tcx).kind() else {
+        return None;
+    };
+    array_len(tcx, *array_ty)
 }
 
 /// The reference `place` copies or reborrows, through locals assigned once (`_5 = &(*_1)`,
-/// `_5 = &raw const (*_1)`, `_5 = copy _1`), back to the first that is not such a local.
+/// `_5 = &raw const (*_1)`, `_5 = copy _1`), back to the first that is not such a local, with
+/// the locals passed through.
 fn reference_origin<'tcx>(
     tcx: TyCtxt<'tcx>,
     body: &Body<'tcx>,
     mut place: mir::Place<'tcx>,
-) -> mir::Place<'tcx> {
+) -> (mir::Place<'tcx>, Vec<Local>) {
+    let mut chain = Vec::new();
     while let Some(local) = place.as_local() {
+        chain.push(local);
         let origin = match single_assignment(body, local) {
             Some(Rvalue::Use(Operand::Copy(origin) | Operand::Move(origin))) => *origin,
             Some(Rvalue::Ref(_, _, referent) | Rvalue::RawPtr(_, referent)) => {
                 match referent.as_ref().last_projection() {
                     Some((base, mir::PlaceElem::Deref)) => base.to_place(tcx),
-                    _ => return place,
+                    _ => break,
                 }
             }
-            _ => return place,
+            _ => break,
         };
         place = origin;
     }
-    place
+    chain.extend(place.as_local().filter(|local| !chain.contains(local)));
+    (place, chain)
 }
 
-/// The right-hand side of the only assignment to `local` in `body`, if it has one.
+/// The right-hand side of the only assignment to `local` in `body`, if it has one and no call
+/// writes it.
 fn single_assignment<'a, 'tcx>(body: &'a Body<'tcx>, local: Local) -> Option<&'a Rvalue<'tcx>> {
+    let called_into = body.basic_blocks.iter().any(|data| {
+        matches!(&data.terminator().kind, TerminatorKind::Call { destination, .. }
+            if destination.local == local)
+    });
+    if called_into {
+        return None;
+    }
     let mut assignments = body
         .basic_blocks
         .iter()
@@ -447,6 +496,73 @@ fn single_assignment<'a, 'tcx>(body: &'a Body<'tcx>, local: Local) -> Option<&'a
         .filter(|(place, _)| place.as_local() == Some(local));
     let (_, rvalue) = assignments.next()?;
     assignments.next().is_none().then_some(rvalue)
+}
+
+/// Whether a local of `chain` may be written between the length the check compares with and
+/// the access: after `len`'s assignment in the check block (in all of it when `len` is a
+/// constant or assigned elsewhere), or in the target block before the access.
+fn written_before_access<'tcx>(
+    body: &Body<'tcx>,
+    bounds_check: &BoundsCheck<'tcx>,
+    access: &SliceAccess<'tcx>,
+    len: &Operand<'tcx>,
+    chain: &[Local],
+) -> bool {
+    use mir::visit::Visitor as _;
+
+    struct Writes<'a> {
+        chain: &'a [Local],
+        found: bool,
+    }
+    impl<'tcx> mir::visit::Visitor<'tcx> for Writes<'_> {
+        fn visit_place(
+            &mut self,
+            place: &mir::Place<'tcx>,
+            context: mir::visit::PlaceContext,
+            _location: mir::Location,
+        ) {
+            let through_pointer = place.projection.first() == Some(&mir::PlaceElem::Deref);
+            if self.chain.contains(&place.local) && context.is_mutating_use() && !through_pointer {
+                self.found = true;
+            }
+        }
+    }
+
+    let check_statements = &body.basic_blocks[bounds_check.block].statements;
+    let len_local = len.place().and_then(|place| place.as_local());
+    let after_len = check_statements
+        .iter()
+        .position(|statement| {
+            statement
+                .kind
+                .as_assign()
+                .is_some_and(|(place, _)| place.as_local() == len_local)
+        })
+        .map_or(0, |index| index + 1);
+    let target_statements =
+        &body.basic_blocks[access.location.block].statements[..access.location.statement_index];
+    let mut writes = Writes {
+        chain,
+        found: false,
+    };
+    for (statement, block) in check_statements[after_len..]
+        .iter()
+        .map(|statement| (statement, bounds_check.block))
+        .chain(
+            target_statements
+                .iter()
+                .map(|statement| (statement, access.location.block)),
+        )
+    {
+        writes.visit_statement(
+            statement,
+            mir::Location {
+                block,
+                statement_index: 0,
+            },
+        );
+    }
+    writes.found
 }
 
 /// Finds the matching `(*slice)[index]` place in the bounds check's target block.
@@ -464,7 +580,7 @@ fn find_slice_access<'tcx>(
         found: None,
     };
     finder.visit_basic_block_data(bounds_check.target, &body.basic_blocks[bounds_check.target]);
-    let (indexed_place, mutable) = finder.found?;
+    let (indexed_place, mutable, location) = finder.found?;
 
     // The indexed place has the shape `receiver.*[index]`, or `array[index]`; strip the index
     // and the dereference to recover the reference passed to `Index::index` or
@@ -484,6 +600,7 @@ fn find_slice_access<'tcx>(
     if let mir_ty::TyKind::Array(elem_ty, _) = array_ty.kind() {
         return Some(SliceAccess {
             indexed_place,
+            location,
             receiver: array,
             receiver_mutability: if mutable {
                 mir_ty::Mutability::Mut
@@ -517,6 +634,7 @@ fn find_slice_access<'tcx>(
 
     Some(SliceAccess {
         indexed_place,
+        location,
         receiver,
         receiver_mutability: *receiver_mutability,
         array_ty: None,
