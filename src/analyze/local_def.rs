@@ -1015,6 +1015,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         if let mir::Rvalue::CopyForDeref(place) = &rvalue {
             return Some((lhs_local, *place));
         }
+        // Optimizations turn the `deref_copy` of a `Box` into a `copy` to a temporary.
+        if let mir::Rvalue::Use(mir::Operand::Copy(place)) = &rvalue {
+            if place.ty(&self.body.local_decls, self.tcx).ty.is_box() && !self.is_named(lhs_local) {
+                return Some((lhs_local, *place));
+            }
+        }
 
         let unique_did = self.ctx.def_ids.unique()?;
         let nonnull_did = self.ctx.def_ids.nonnull()?;
@@ -1060,8 +1066,16 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         Some((lhs_local, rest_place))
     }
 
-    /// Replaces each temporary that copies a pointer for a deref (`CopyForDeref`, and the
-    /// transmuted pointer of a `Box`) with the place it copies, unless that place may change
+    /// Whether `local` holds a user variable, which optimized MIR records only in its debug info.
+    fn is_named(&self, local: Local) -> bool {
+        self.body.var_debug_info.iter().any(|info| {
+            matches!(info.value, mir::VarDebugInfoContents::Place(place) if place.local == local)
+        })
+    }
+
+    /// Replaces each temporary that copies a pointer for a deref (`CopyForDeref`, the `copy` of a
+    /// `Box` optimizations make of one, and the transmuted pointer of a `Box`) with the place it
+    /// copies, unless that place may change
     /// between the copy and a use of the temporary. Optimizations make that possible: a
     /// reborrow `q = &mut *_k` becomes `q = copy _k` and `q` is merged into `_k`.
     fn unelaborate_derefs(&mut self) {
@@ -1114,9 +1128,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         replaced
     }
 
-    /// The deref temporaries of `replaced` whose place may be written, in `self.body` where
-    /// every one is replaced, between the copy and a use: a use of `original`'s temporary, or
-    /// a use of a temporary copied through it.
+    /// The deref temporaries of `replaced` whose place, or an index local it is read at, may be
+    /// written, in `self.body` where every one is replaced, between the copy and a use: a use of
+    /// `original`'s temporary, or a use of a temporary copied through it.
     fn deref_temps_read_after_change(
         &self,
         original: &Body<'tcx>,
@@ -1134,9 +1148,15 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let mentions = local_mentions(&self.body);
         let mut kept = HashSet::new();
         for (temp, def, place) in replaced {
+            let index_locals = place.projection.iter().filter_map(|elem| match elem {
+                mir::ProjectionElem::Index(local) => Some(mir::Place::from(local)),
+                _ => None,
+            });
             if defs[temp].len() != 1
                 || self.has_unknown_aliases(place)
-                || self.written_before_use(place, *def, &uses[temp], &mentions)
+                || std::iter::once(*place)
+                    .chain(index_locals)
+                    .any(|read| self.written_before_use(&read, *def, &uses[temp], &mentions))
             {
                 kept.insert(*temp);
             }
@@ -1145,10 +1165,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     }
 
     fn has_unknown_aliases(&self, place: &mir::Place<'tcx>) -> bool {
-        place.iter_projections().any(|(base, elem)| match elem {
-            mir::ProjectionElem::Deref => base.ty(&self.body.local_decls, self.tcx).ty.is_raw_ptr(),
-            mir::ProjectionElem::Index(_) => true,
-            _ => false,
+        place.iter_projections().any(|(base, elem)| {
+            elem == mir::ProjectionElem::Deref
+                && base.ty(&self.body.local_decls, self.tcx).ty.is_raw_ptr()
         })
     }
 
