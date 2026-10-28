@@ -175,7 +175,9 @@ pub fn reconstruct<'tcx>(tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
         let Some(bounds_check) = find_bounds_check(tcx, body, block) else {
             continue;
         };
-        let Some(access) = find_slice_access(tcx, body, &bounds_check) else {
+        let Some(access) = find_slice_access(tcx, body, &bounds_check)
+            .filter(|access| checks_length_of(tcx, body, &bounds_check, access))
+        else {
             tracing::trace!(?block, "bounds check is not followed by slice indexing");
             continue;
         };
@@ -368,6 +370,83 @@ fn find_bounds_check<'tcx>(
         unwind: *unwind,
         source_info: terminator.source_info,
     })
+}
+
+/// Whether the bounds check compares with the length of the sequence `access` indexes: the
+/// constant `N` of an array `[T; N]`, or the `PtrMetadata` of the reference to the slice. With
+/// optimizations a check whose own access is gone (`let _ = s[3];`) can be followed by another
+/// sequence's access at the same index whose check was dropped, which it does not cover.
+fn checks_length_of<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    body: &Body<'tcx>,
+    bounds_check: &BoundsCheck<'tcx>,
+    access: &SliceAccess<'tcx>,
+) -> bool {
+    let Some(len) = &bounds_check.len else {
+        return true;
+    };
+    if let Some(array_ty) = access.array_ty {
+        let mir_ty::TyKind::Array(_, array_len) = array_ty.kind() else {
+            unreachable!("an array access of a non-array type");
+        };
+        let constant = |len: &Operand<'tcx>| {
+            Some(
+                len.constant()?
+                    .const_
+                    .try_to_scalar_int()?
+                    .to_target_usize(tcx),
+            )
+        };
+        return array_len.try_to_target_usize(tcx).is_some()
+            && constant(len) == array_len.try_to_target_usize(tcx);
+    }
+    let Some(len_place) = len.place().filter(|place| place.projection.is_empty()) else {
+        return false;
+    };
+    let Some(Rvalue::UnaryOp(mir::UnOp::PtrMetadata, metadata_of)) =
+        single_assignment(body, len_place.local)
+    else {
+        return false;
+    };
+    let Some(metadata_of) = metadata_of.place() else {
+        return false;
+    };
+    reference_origin(tcx, body, metadata_of) == reference_origin(tcx, body, access.receiver)
+}
+
+/// The reference `place` copies or reborrows, through locals assigned once (`_5 = &(*_1)`,
+/// `_5 = &raw const (*_1)`, `_5 = copy _1`), back to the first that is not such a local.
+fn reference_origin<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    body: &Body<'tcx>,
+    mut place: mir::Place<'tcx>,
+) -> mir::Place<'tcx> {
+    while let Some(local) = place.as_local() {
+        let origin = match single_assignment(body, local) {
+            Some(Rvalue::Use(Operand::Copy(origin) | Operand::Move(origin))) => *origin,
+            Some(Rvalue::Ref(_, _, referent) | Rvalue::RawPtr(_, referent)) => {
+                match referent.as_ref().last_projection() {
+                    Some((base, mir::PlaceElem::Deref)) => base.to_place(tcx),
+                    _ => return place,
+                }
+            }
+            _ => return place,
+        };
+        place = origin;
+    }
+    place
+}
+
+/// The right-hand side of the only assignment to `local` in `body`, if it has one.
+fn single_assignment<'a, 'tcx>(body: &'a Body<'tcx>, local: Local) -> Option<&'a Rvalue<'tcx>> {
+    let mut assignments = body
+        .basic_blocks
+        .iter()
+        .flat_map(|data| &data.statements)
+        .filter_map(|statement| statement.kind.as_assign())
+        .filter(|(place, _)| place.as_local() == Some(local));
+    let (_, rvalue) = assignments.next()?;
+    assignments.next().is_none().then_some(rvalue)
 }
 
 /// Finds the matching `(*slice)[index]` place in the bounds check's target block.
