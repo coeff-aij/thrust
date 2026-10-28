@@ -2,7 +2,7 @@ use crate::thrust_models;
 use std::cmp;
 use std::ops::Deref;
 
-use thrust_models::model::Seq;
+use thrust_models::model::{Int, Seq};
 use thrust_models::{exists, forall};
 
 use crate::rustc_abi::{
@@ -58,10 +58,12 @@ fn pow2(q: u64) -> u64 {
     if q <= 0 { 1 } else { pow2(q - 1) * 2 }
 }
 
-/// The sum of the first `k` entries of `ts`.
+/// The sum of the first `k` entries of `ts`, as a mathematical integer: signed, so that no
+/// range fact of its result is checked (an unsigned result would be checked non-negative at
+/// every sequence, also at one with negative entries).
 #[thrust_macros::logic]
 #[thrust_macros::variant(k)]
-fn sum_first(ts: &[u64], k: usize) -> u64 {
+fn sum_first(ts: &[i64], k: usize) -> i64 {
     if k <= 0 { 0 } else { sum_first(ts, k - 1) + ts[k - 1] }
 }
 
@@ -149,7 +151,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         fields: &IndexSlice<I, F>,
         w: USize,
     ) -> bool {
-        exists(|ts: Seq<USize>|
+        exists(|ts: Seq<Int>|
             ts.len() == (*fields).len()
                 && forall(|i: USize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, q: USize|
                     !(0 <= i && i < ts.len() && thrust_macros::post!(<F as core::ops::Deref>::deref(&(*fields)[i]), d) && **d == l && q == l.align.abi.pow2)
