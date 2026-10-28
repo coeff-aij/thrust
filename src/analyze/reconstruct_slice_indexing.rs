@@ -179,6 +179,7 @@ pub fn reconstruct<'tcx>(tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
         };
         let Some(access) = find_slice_access(tcx, body, &bounds_check)
             .filter(|access| checks_length_of(tcx, body, &bounds_check, access))
+            .filter(|access| !is_borrowed_until_later_activation(tcx, body, access.location))
         else {
             tracing::trace!(?block, "bounds check is not followed by slice indexing");
             continue;
@@ -214,6 +215,21 @@ pub fn reconstruct<'tcx>(tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
         );
         reconstruct_access(tcx, body, bounds_check, access);
     }
+}
+
+/// Whether the access at `location` is a two-phase borrow (an autoref'd receiver,
+/// `a[0].bump(a[0])`) that code before its activation reads the lender of. The index call stands
+/// where the access is, so its mutable borrow of the sequence would be created at the
+/// reservation, where that code then reads the borrow's prophecy; Creusot creates a two-phase
+/// borrow at its activation, as `two_phase_borrow` does for a plain place, and such an access is
+/// left to rustc's check.
+fn is_borrowed_until_later_activation<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    body: &Body<'tcx>,
+    location: mir::Location,
+) -> bool {
+    location.statement_index < body.basic_blocks[location.block].statements.len()
+        && analyze::two_phase_borrow::is_moved_to_activation(tcx, body, location)
 }
 
 /// Finds an array indexed at a constant without a bounds check, which constant propagation
@@ -257,7 +273,11 @@ fn find_unchecked_array_index<'tcx>(
                         offset,
                         from_end: false,
                         ..
-                    } if base.ty(&self.body.local_decls, self.tcx).ty.is_array() => Some(offset),
+                    } if base.ty(&self.body.local_decls, self.tcx).ty.is_array()
+                        && !is_borrowed_until_later_activation(self.tcx, self.body, location) =>
+                    {
+                        Some(offset)
+                    }
                     _ => None,
                 })
                 .map(|offset| (location, offset));

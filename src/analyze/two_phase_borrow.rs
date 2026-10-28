@@ -36,6 +36,29 @@ pub fn move_to_activation<'tcx>(tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
     apply(body, moves);
 }
 
+/// Whether the statement at `location` is a two-phase borrow that [`move_to_activation`] moves:
+/// the code between it and its activation reads the lender.
+pub fn is_moved_to_activation<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    body: &Body<'tcx>,
+    location: Location,
+) -> bool {
+    let Some(reservation) = reservations(tcx, body)
+        .into_iter()
+        .find(|reservation| reservation.location == location && !reservation.copied)
+    else {
+        return false;
+    };
+    let uses: Vec<Location> = temp_uses(body, std::slice::from_ref(&reservation))
+        [&reservation.temp]
+        .iter()
+        .copied()
+        .filter(|use_location| *use_location != location)
+        .collect();
+    activation(body, &reservation, &uses)
+        .is_some_and(|activation| Between::visit(body, &reservation, activation).reads_lender)
+}
+
 fn reservations<'tcx>(tcx: TyCtxt<'tcx>, body: &Body<'tcx>) -> Vec<Reservation<'tcx>> {
     let mut reservations = Vec::new();
     for (block, data) in body.basic_blocks.iter_enumerated() {
