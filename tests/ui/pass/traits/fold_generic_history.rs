@@ -74,7 +74,7 @@ trait Iterator {
                  h: FnParam<&mut History<Self::Item, B>>,
                  f: F,
                  acc: B,
-                 cnt: i64|
+                 cnt: i32|
                 Self::invariant(self_)
                     && !hh == !h.at_entry()
                     && 0 <= cnt
