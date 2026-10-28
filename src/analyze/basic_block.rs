@@ -908,6 +908,13 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         builder.build(ty, term)
     }
 
+    fn unknown_value_ty(&self, ty: mir_ty::Ty<'tcx>) -> PlaceType {
+        let ty = self.type_builder.build(ty).vacuous().ty;
+        let mut builder = PlaceTypeBuilder::default();
+        let value = builder.push_existential(ty.to_sort());
+        builder.build(ty, chc::Term::var(value.into()))
+    }
+
     fn const_ty(&self, const_: &mir::Const<'tcx>) -> PlaceType {
         match const_ {
             mir::Const::Val(val, ty) => self.const_value_ty(val, ty),
@@ -915,11 +922,16 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 // since all constants are immutable in current setup,
                 // it should be okay to evaluate them here on-the-fly
                 let typing_env = self.typing_env;
-                let val = self
+                match self
                     .tcx
                     .const_eval_resolve(typing_env, *unevaluated, rustc_span::DUMMY_SP)
-                    .unwrap();
-                self.const_value_ty(&val, ty)
+                {
+                    Ok(val) => self.const_value_ty(&val, ty),
+                    // An associated constant at a type parameter (`T::N`) is any value of its
+                    // type, as the body is checked for every instance.
+                    Err(mir::interpret::ErrorHandled::TooGeneric(_)) => self.unknown_value_ty(*ty),
+                    Err(err) => panic!("failed to evaluate constant {unevaluated:?}: {err:?}"),
+                }
             }
             mir::Const::Ty(ty, _) => {
                 let scalar_int = const_

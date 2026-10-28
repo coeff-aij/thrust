@@ -1015,6 +1015,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         if let mir::Rvalue::CopyForDeref(place) = &rvalue {
             return Some((lhs_local, *place));
         }
+        // Optimizations turn the `deref_copy` of a `Box` into a `copy` to a temporary.
+        if let mir::Rvalue::Use(mir::Operand::Copy(place)) = &rvalue {
+            if place.ty(&self.body.local_decls, self.tcx).ty.is_box() && !self.is_named(lhs_local) {
+                return Some((lhs_local, *place));
+            }
+        }
 
         let unique_did = self.ctx.def_ids.unique()?;
         let nonnull_did = self.ctx.def_ids.nonnull()?;
@@ -1060,8 +1066,16 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         Some((lhs_local, rest_place))
     }
 
-    /// Replaces each temporary that copies a pointer for a deref (`CopyForDeref`, and the
-    /// transmuted pointer of a `Box`) with the place it copies, unless that place may change
+    /// Whether `local` holds a user variable, which optimized MIR records only in its debug info.
+    fn is_named(&self, local: Local) -> bool {
+        self.body.var_debug_info.iter().any(|info| {
+            matches!(info.value, mir::VarDebugInfoContents::Place(place) if place.local == local)
+        })
+    }
+
+    /// Replaces each temporary that copies a pointer for a deref (`CopyForDeref`, the `copy` of a
+    /// `Box` optimizations make of one, and the transmuted pointer of a `Box`) with the place it
+    /// copies, unless that place may change
     /// between the copy and a use of the temporary. Optimizations make that possible: a
     /// reborrow `q = &mut *_k` becomes `q = copy _k` and `q` is merged into `_k`.
     fn unelaborate_derefs(&mut self) {
@@ -1114,9 +1128,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         replaced
     }
 
-    /// The deref temporaries of `replaced` whose place may be written, in `self.body` where
-    /// every one is replaced, between the copy and a use: a use of `original`'s temporary, or
-    /// a use of a temporary copied through it.
+    /// The deref temporaries of `replaced` whose place, or an index local it is read at, may be
+    /// written, in `self.body` where every one is replaced, between the copy and a use: a use of
+    /// `original`'s temporary, or a use of a temporary copied through it.
     fn deref_temps_read_after_change(
         &self,
         original: &Body<'tcx>,
@@ -1134,9 +1148,15 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let mentions = local_mentions(&self.body);
         let mut kept = HashSet::new();
         for (temp, def, place) in replaced {
+            let index_locals = place.projection.iter().filter_map(|elem| match elem {
+                mir::ProjectionElem::Index(local) => Some(mir::Place::from(local)),
+                _ => None,
+            });
             if defs[temp].len() != 1
                 || self.has_unknown_aliases(place)
-                || self.written_before_use(place, *def, &uses[temp], &mentions)
+                || std::iter::once(*place)
+                    .chain(index_locals)
+                    .any(|read| self.written_before_use(&read, *def, &uses[temp], &mentions))
             {
                 kept.insert(*temp);
             }
@@ -1145,10 +1165,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     }
 
     fn has_unknown_aliases(&self, place: &mir::Place<'tcx>) -> bool {
-        place.iter_projections().any(|(base, elem)| match elem {
-            mir::ProjectionElem::Deref => base.ty(&self.body.local_decls, self.tcx).ty.is_raw_ptr(),
-            mir::ProjectionElem::Index(_) => true,
-            _ => false,
+        place.iter_projections().any(|(base, elem)| {
+            elem == mir::ProjectionElem::Deref
+                && base.ty(&self.body.local_decls, self.tcx).ty.is_raw_ptr()
         })
     }
 
@@ -1712,6 +1731,127 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         ty
     }
 
+    /// The type an invariant's parameter is written with, from the type of the formula function's
+    /// parameter: `thrust_macros` gives a parameter written `x: T` the type `<T as Model>::Ty`, and
+    /// one written `x: &str` the type `NoModel` (`thrust-macros/src/formula_fn_type_lowering.rs`).
+    fn invariant_param_written_ty(&self, input_ty: mir_ty::Ty<'tcx>) -> mir_ty::Ty<'tcx> {
+        match input_ty.kind() {
+            mir_ty::Alias(mir_ty::AliasTyKind::Projection, alias)
+                if Some(alias.def_id) == self.ctx.def_ids().model_ty() =>
+            {
+                alias.args.type_at(0)
+            }
+            mir_ty::TyKind::Adt(adt, _)
+                if self
+                    .tcx
+                    .get_attrs_by_path(adt.did(), &analyze::annot::no_model_path())
+                    .next()
+                    .is_some() =>
+            {
+                mir_ty::Ty::new_imm_ref(self.tcx, self.tcx.lifetimes.re_erased, self.tcx.types.str_)
+            }
+            _ => panic!("invariant parameter of unexpected type {input_ty:?}"),
+        }
+    }
+
+    /// The source text of the type an invariant writes for its parameter `ident`, the `idx`-th:
+    /// the self type of the formula function's `<T as Model>::Ty`. `None` for `&str`, whose
+    /// parameter is `NoModel`, and where `T` ends or starts with tokens `thrust_macros` made
+    /// (`Closure<F>` for a closure type parameter, `Dyn` for a trait object), whose span is
+    /// the macro's.
+    fn invariant_param_source_text(
+        &self,
+        formula_def_id: LocalDefId,
+        idx: usize,
+        ident: rustc_span::symbol::Ident,
+    ) -> Option<String> {
+        let decl = self.tcx.hir_node_by_def_id(formula_def_id).fn_decl()?;
+        let rustc_hir::TyKind::Path(rustc_hir::QPath::Resolved(Some(qself), _)) =
+            decl.inputs[idx].kind
+        else {
+            return None;
+        };
+        let span = qself.span;
+        if span.ctxt() != ident.span.ctxt() || span.lo() <= ident.span.hi() {
+            return None;
+        }
+        self.tcx.sess.source_map().span_to_snippet(span).ok()
+    }
+
+    /// Stops unless `written_ty`, the type an invariant gives its parameter `name`, is the type
+    /// of `local`, the variable the parameter names, up to normalization and lifetimes.
+    fn check_invariant_param_ty(
+        &self,
+        span: rustc_span::Span,
+        name: rustc_span::Symbol,
+        written_ty: mir_ty::Ty<'tcx>,
+        written_text: &str,
+        local: Local,
+        local_desc: String,
+    ) {
+        let local_ty = self.body.local_decls[local].ty;
+        let written = self.invariant_param_compared_ty(written_ty);
+        let actual = self.invariant_param_compared_ty(local_ty);
+        if written != actual {
+            self.tcx.dcx().span_fatal(
+                span,
+                format!(
+                    "loop invariant gives `{name}` the type `{written_text}`, \
+                     but {local_desc} has type `{local_ty}`"
+                ),
+            );
+        }
+    }
+
+    /// `ty` as it is compared with the type written in an invariant, where `thrust_macros` has
+    /// replaced each trait object with `Dyn` and wrapped each closure type parameter `F` in
+    /// `Closure<F>`: normalized, without lifetimes, with trait objects as `Dyn` and `Closure<F>`
+    /// as `F`.
+    fn invariant_param_compared_ty(&self, ty: mir_ty::Ty<'tcx>) -> mir_ty::Ty<'tcx> {
+        use mir_ty::TypeFoldable as _;
+
+        struct SpecParamView<'tcx> {
+            tcx: TyCtxt<'tcx>,
+            closure_model: Option<DefId>,
+            dyn_model: Option<DefId>,
+        }
+
+        impl<'tcx> mir_ty::TypeFolder<TyCtxt<'tcx>> for SpecParamView<'tcx> {
+            fn cx(&self) -> TyCtxt<'tcx> {
+                self.tcx
+            }
+
+            fn fold_ty(&mut self, ty: mir_ty::Ty<'tcx>) -> mir_ty::Ty<'tcx> {
+                use mir_ty::TypeSuperFoldable as _;
+                match ty.kind() {
+                    mir_ty::TyKind::Adt(adt, args) if Some(adt.did()) == self.closure_model => {
+                        args.type_at(0).fold_with(self)
+                    }
+                    mir_ty::TyKind::Dynamic(..) => {
+                        let dyn_model = self.dyn_model.expect("trait object without `Dyn`");
+                        mir_ty::Ty::new_adt(
+                            self.tcx,
+                            self.tcx.adt_def(dyn_model),
+                            mir_ty::List::empty(),
+                        )
+                    }
+                    _ => ty.super_fold_with(self),
+                }
+            }
+        }
+
+        let typing_env = mir_ty::TypingEnv::post_analysis(self.tcx, self.local_def_id);
+        let ty = self
+            .tcx
+            .try_normalize_erasing_regions(typing_env, ty)
+            .unwrap_or_else(|_| self.tcx.erase_regions(ty));
+        ty.fold_with(&mut SpecParamView {
+            tcx: self.tcx,
+            closure_model: self.ctx.def_ids().closure_model(),
+            dyn_model: self.ctx.def_ids().dyn_model(),
+        })
+    }
+
     /// Translates a user-provided loop invariant (a formula function over named
     /// live variables) into a precondition refinement over `bty`'s parameters.
     /// Each formula parameter names a live variable at the loop header and is
@@ -1739,9 +1879,20 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .fn_sig(formula_def_id.to_def_id())
             .instantiate(self.tcx, generic_args);
 
+        let written_sig = self.tcx.instantiate_bound_regions_with_erased(sig);
+
         let mut mapping: Vec<rty::FunctionParamIdx> = Vec::with_capacity(idents.len());
-        for (ident, input_ty) in idents.iter().zip(sig.skip_binder().inputs()) {
+        for (idx, ((ident, input_ty), written_input_ty)) in idents
+            .iter()
+            .zip(sig.skip_binder().inputs())
+            .zip(written_sig.inputs())
+            .enumerate()
+        {
             let ident = ident.expect("invariant parameters must be named");
+            let written_ty = self.invariant_param_written_ty(*written_input_ty);
+            let written_text = self
+                .invariant_param_source_text(formula_def_id, idx, ident)
+                .unwrap_or_else(|| self.invariant_param_compared_ty(written_ty).to_string());
             let input_ty = {
                 let typing_env =
                     mir_ty::TypingEnv::post_analysis(self.tcx, formula_def_id.to_def_id());
@@ -1765,6 +1916,17 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         "loop invariant refers to `{name}` via FnParam, but it is not a function parameter"
                     ))
                 });
+                let mir_ty::TyKind::Adt(_, fn_param_args) = written_ty.kind() else {
+                    panic!("`FnParam` parameter written as {written_ty:?}");
+                };
+                self.check_invariant_param_ty(
+                    ident.span,
+                    name,
+                    fn_param_args.type_at(0),
+                    &written_text,
+                    local,
+                    format!("the function parameter `{name}`"),
+                );
                 let param_idx = crate::analyze::function_param_of_local(local);
                 mapping.push(bty.param_of_outer_fn_param(param_idx).unwrap());
             } else {
@@ -1774,6 +1936,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         "loop invariant refers to `{name}`, which is not a live variable at the loop header"
                     ))
                 });
+                self.check_invariant_param_ty(
+                    ident.span,
+                    name,
+                    written_ty,
+                    &written_text,
+                    local,
+                    format!("`{name}` at the loop header"),
+                );
                 mapping.push(bty.param_of_local(local).unwrap());
             }
         }

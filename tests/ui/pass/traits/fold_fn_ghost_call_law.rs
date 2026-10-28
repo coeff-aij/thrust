@@ -62,7 +62,7 @@ fn fold<I: Iterator<Item = i64> + Model, F: Fn(i64, i64) -> i64>(
     let mut cnt = 0;
     while let Some(x) = rr.iter.next() {
         thrust_macros::invariant!(
-            |rr: &mut Run<I>, r: thrust_models::FnParam<&mut Run<I>>, f: F, acc: i64, cnt: i64, init: thrust_models::FnParam<i64>|
+            |rr: &mut Run<I>, r: thrust_models::FnParam<&mut Run<I>>, f: F, acc: i64, cnt: i32, init: thrust_models::FnParam<i64>|
             I::invariant((*rr).0)
                 && !rr == !r.at_entry()
                 && 0 <= cnt

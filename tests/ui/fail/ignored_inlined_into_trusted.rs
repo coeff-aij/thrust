@@ -1,4 +1,5 @@
 //@compile-flags: -C debug-assertions=off -C opt-level=3
+//@rustc-env: THRUST_OPTIMIZED_MIR=1
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // At `-C opt-level=3` rustc would inline the verified `g` into the trusted `t`; Thrust reads MIR
