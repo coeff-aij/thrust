@@ -1,5 +1,6 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off -C opt-level=1
+//@rustc-env: THRUST_OPTIMIZED_MIR=1
 
 // At `-C opt-level=1` the `deref_copy` of the `Box` behind `b` becomes a `copy`, through which
 // the field is written.
