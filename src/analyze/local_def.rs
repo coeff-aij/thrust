@@ -1754,6 +1754,30 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         }
     }
 
+    /// The source text of the type an invariant writes for its parameter `ident`, the `idx`-th:
+    /// the self type of the formula function's `<T as Model>::Ty`. `None` for `&str`, whose
+    /// parameter is `NoModel`, and where `T` ends or starts with tokens `thrust_macros` made
+    /// (`Closure<F>` for a closure type parameter, `Dyn` for a trait object), whose span is
+    /// the macro's.
+    fn invariant_param_source_text(
+        &self,
+        formula_def_id: LocalDefId,
+        idx: usize,
+        ident: rustc_span::symbol::Ident,
+    ) -> Option<String> {
+        let decl = self.tcx.hir_node_by_def_id(formula_def_id).fn_decl()?;
+        let rustc_hir::TyKind::Path(rustc_hir::QPath::Resolved(Some(qself), _)) =
+            decl.inputs[idx].kind
+        else {
+            return None;
+        };
+        let span = qself.span;
+        if span.ctxt() != ident.span.ctxt() || span.lo() <= ident.span.hi() {
+            return None;
+        }
+        self.tcx.sess.source_map().span_to_snippet(span).ok()
+    }
+
     /// Stops unless `written_ty`, the type an invariant gives its parameter `name`, is the type
     /// of `local`, the variable the parameter names, up to normalization and lifetimes.
     fn check_invariant_param_ty(
@@ -1761,6 +1785,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         span: rustc_span::Span,
         name: rustc_span::Symbol,
         written_ty: mir_ty::Ty<'tcx>,
+        written_text: &str,
         local: Local,
         local_desc: String,
     ) {
@@ -1771,7 +1796,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             self.tcx.dcx().span_fatal(
                 span,
                 format!(
-                    "loop invariant gives `{name}` the type `{written_ty}`, \
+                    "loop invariant gives `{name}` the type `{written_text}`, \
                      but {local_desc} has type `{local_ty}`"
                 ),
             );
@@ -1857,13 +1882,17 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let written_sig = self.tcx.instantiate_bound_regions_with_erased(sig);
 
         let mut mapping: Vec<rty::FunctionParamIdx> = Vec::with_capacity(idents.len());
-        for ((ident, input_ty), written_input_ty) in idents
+        for (idx, ((ident, input_ty), written_input_ty)) in idents
             .iter()
             .zip(sig.skip_binder().inputs())
             .zip(written_sig.inputs())
+            .enumerate()
         {
             let ident = ident.expect("invariant parameters must be named");
             let written_ty = self.invariant_param_written_ty(*written_input_ty);
+            let written_text = self
+                .invariant_param_source_text(formula_def_id, idx, ident)
+                .unwrap_or_else(|| self.invariant_param_compared_ty(written_ty).to_string());
             let input_ty = {
                 let typing_env =
                     mir_ty::TypingEnv::post_analysis(self.tcx, formula_def_id.to_def_id());
@@ -1894,6 +1923,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     ident.span,
                     name,
                     fn_param_args.type_at(0),
+                    &written_text,
                     local,
                     format!("the function parameter `{name}`"),
                 );
@@ -1910,6 +1940,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     ident.span,
                     name,
                     written_ty,
+                    &written_text,
                     local,
                     format!("`{name}` at the loop header"),
                 );
