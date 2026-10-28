@@ -374,15 +374,14 @@ fn find_bounds_check<'tcx>(
     })
 }
 
-/// Whether the bounds check covers `access`, the first use of its index in its target block. For
-/// an array indexed in place, the check compares with the constant `N` of the array's type. For a
-/// slice, the check compares with a `PtrMetadata` computed in the check block of the access's
-/// reference, read directly or through a copy or reborrow of it made in that block, and every
-/// statement from there to the access writes, if anything, a local other than the reference's and
-/// the copy's. This is how rustc lowers an indexing expression at opt-level 0; with
-/// optimizations a check whose own access is gone (`let _ = s[3];`) can be followed by another
-/// access at the same index whose check was dropped, which it does not cover, and any shape other
-/// than these is left to rustc's check.
+/// Whether the bounds check covers `access`, the first use of its index in its target block: for
+/// an array indexed in place, the check compares with the constant `N` of the array's type; for a
+/// slice, with a `PtrMetadata` of the access's reference computed next to the access
+/// ([`adjacent_metadata`], how rustc lowers an indexing expression at opt-level 0), or of an
+/// argument the body never writes ([`argument_metadata`]). With optimizations a check whose own
+/// access is gone (`let _ = s[3];`) can be followed by another access at the same index whose
+/// check was dropped, which it does not cover; any shape other than these is left to rustc's
+/// check.
 fn checks_length_of<'tcx>(
     tcx: TyCtxt<'tcx>,
     body: &Body<'tcx>,
@@ -405,6 +404,20 @@ fn checks_length_of<'tcx>(
     let Some(len) = len.place() else {
         return false;
     };
+    adjacent_metadata(tcx, body, bounds_check, len, access)
+        || argument_metadata(body, len, access.receiver)
+}
+
+/// Whether `len` is a `PtrMetadata` computed in the check block of the access's reference,
+/// directly or through a copy or reborrow of it made in that block, and every statement from
+/// there to the access writes, if anything, a local other than the reference's and the copy's.
+fn adjacent_metadata<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    body: &Body<'tcx>,
+    bounds_check: &BoundsCheck<'tcx>,
+    len: mir::Place<'tcx>,
+    access: &SliceAccess<'tcx>,
+) -> bool {
     let receiver = access.receiver;
     let check_statements = &body.basic_blocks[bounds_check.block].statements;
     let assignment_in_check_block = |local: Local| {
@@ -458,6 +471,68 @@ fn checks_length_of<'tcx>(
             | StatementKind::Nop => true,
             _ => false,
         })
+}
+
+/// Whether `receiver` is an argument that the body never writes and `len` holds its
+/// `PtrMetadata`, wherever that is computed: an argument never written holds its entry value at
+/// every point, and a slice's length is part of the reference value. With optimizations rustc
+/// reuses the length a guard computed (`if i < v.len() { v[i] = 7; }`).
+fn argument_metadata<'tcx>(
+    body: &Body<'tcx>,
+    len: mir::Place<'tcx>,
+    receiver: mir::Place<'tcx>,
+) -> bool {
+    let Some(argument) = receiver
+        .as_local()
+        .filter(|local| body.args_iter().any(|arg| arg == *local))
+    else {
+        return false;
+    };
+    let Some(len) = len.as_local() else {
+        return false;
+    };
+    let len_writes = writes_of(body, len);
+    let len_is_metadata = len_writes.len() == 1
+        && len_writes.iter().all(|location| {
+            body.stmt_at(*location).left().and_then(|statement| statement.kind.as_assign()).is_some_and(
+                |(_, rvalue)| {
+                    matches!(rvalue, Rvalue::UnaryOp(mir::UnOp::PtrMetadata, Operand::Copy(place) | Operand::Move(place)) if *place == receiver)
+                },
+            )
+        });
+    len_is_metadata && writes_of(body, argument).is_empty()
+}
+
+/// The locations in the whole body, statements and terminators, that write `local` or a part of
+/// it not behind a pointer: assignments, call destinations, mutable borrows, drops and any other
+/// mutating use.
+fn writes_of(body: &Body<'_>, local: Local) -> Vec<mir::Location> {
+    use mir::visit::Visitor as _;
+
+    struct Writes {
+        local: Local,
+        locations: Vec<mir::Location>,
+    }
+    impl<'tcx> mir::visit::Visitor<'tcx> for Writes {
+        fn visit_place(
+            &mut self,
+            place: &mir::Place<'tcx>,
+            context: mir::visit::PlaceContext,
+            location: mir::Location,
+        ) {
+            let through_pointer = place.projection.first() == Some(&mir::PlaceElem::Deref);
+            if place.local == self.local && context.is_mutating_use() && !through_pointer {
+                self.locations.push(location);
+            }
+        }
+    }
+
+    let mut writes = Writes {
+        local,
+        locations: Vec::new(),
+    };
+    writes.visit_body(body);
+    writes.locations
 }
 
 /// Finds the matching `(*slice)[index]` place in the bounds check's target block.

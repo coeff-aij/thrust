@@ -5,17 +5,13 @@
 
 // At `-C opt-level=1` and above a constant index reaches MIR as a constant projection
 // (`(*_1)[1 of 2]`) instead of an index local.
-#[thrust::trusted]
-#[thrust_macros::requires(true)]
-#[thrust_macros::ensures(
-    (*result).len() > 1 && (*result)[1] == 20
-)]
-fn slice() -> &'static mut [i32] {
-    unimplemented!()
+#[thrust::callable]
+fn bump(slice: &mut [i32]) {
+    if slice.len() > 1 {
+        let before = slice[1];
+        slice[1] += 1;
+        assert!(slice[1] == before);
+    }
 }
 
-fn main() {
-    let slice = slice();
-    slice[1] += 1;
-    assert!(slice[1] == 22);
-}
+fn main() {}
