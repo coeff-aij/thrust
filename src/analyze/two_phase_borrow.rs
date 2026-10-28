@@ -36,6 +36,26 @@ pub fn move_to_activation<'tcx>(tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
     apply(body, moves);
 }
 
+/// Whether the statement at `location` is a two-phase borrow that [`move_to_activation`] moves:
+/// the code between it and its activation reads the lender.
+pub fn is_moved_to_activation<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    body: &Body<'tcx>,
+    location: Location,
+) -> bool {
+    let Some(reservation) = reservations(tcx, body)
+        .into_iter()
+        .find(|reservation| reservation.location == location && !reservation.copied)
+    else {
+        return false;
+    };
+    let uses = other_uses(
+        &temp_uses(body, std::slice::from_ref(&reservation)),
+        &reservation,
+    );
+    moved_activation(body, &reservation, &uses).is_some()
+}
+
 fn reservations<'tcx>(tcx: TyCtxt<'tcx>, body: &Body<'tcx>) -> Vec<Reservation<'tcx>> {
     let mut reservations = Vec::new();
     for (block, data) in body.basic_blocks.iter_enumerated() {
@@ -82,28 +102,20 @@ fn plan<'tcx>(body: &Body<'tcx>, reservations: Vec<Reservation<'tcx>>) -> Vec<Mo
     let temp_uses = temp_uses(body, &reservations);
     let mut moves = Vec::new();
     for reservation in reservations {
-        let uses: Vec<Location> = temp_uses[&reservation.temp]
-            .iter()
-            .copied()
-            .filter(|location| *location != reservation.location)
-            .collect();
+        let uses = other_uses(&temp_uses, &reservation);
         if reservation.copied && uses.len() != 1 {
             continue;
         }
-        let Some(activation) = activation(body, &reservation, &uses) else {
+        if activation(body, &reservation, &uses).is_none() {
             moves.push(Move {
                 from: reservation.location,
                 to: None,
             });
             continue;
+        }
+        let Some((activation, between)) = moved_activation(body, &reservation, &uses) else {
+            continue;
         };
-        if reservation.copied && repeats_without(body, reservation.location, activation) {
-            continue;
-        }
-        let between = Between::visit(body, &reservation, activation);
-        if !between.reads_lender {
-            continue;
-        }
         let to = creation_point(body, &between.address_writes, activation).unwrap_or_else(|| {
             unimplemented!(
                 "two-phase borrow of {:?}: the pointers it goes through are overwritten on several paths",
@@ -126,6 +138,34 @@ fn plan<'tcx>(body: &Body<'tcx>, reservations: Vec<Reservation<'tcx>>) -> Vec<Mo
         });
     }
     moves
+}
+
+/// The uses of the reservation's temporary other than the reservation itself.
+fn other_uses(
+    temp_uses: &HashMap<Local, Vec<Location>>,
+    reservation: &Reservation<'_>,
+) -> Vec<Location> {
+    temp_uses[&reservation.temp]
+        .iter()
+        .copied()
+        .filter(|location| *location != reservation.location)
+        .collect()
+}
+
+/// The activation of a reservation whose borrow [`move_to_activation`] moves, with what lies
+/// between: the code before the activation reads the lender (and a copied reborrow does not run
+/// again without its reservation).
+fn moved_activation<'tcx>(
+    body: &Body<'tcx>,
+    reservation: &Reservation<'tcx>,
+    uses: &[Location],
+) -> Option<(Location, Between<'tcx>)> {
+    let activation = activation(body, reservation, uses)?;
+    if reservation.copied && repeats_without(body, reservation.location, activation) {
+        return None;
+    }
+    let between = Between::visit(body, reservation, activation);
+    between.reads_lender.then_some((activation, between))
 }
 
 /// Whether `to` can run again after itself without `from` running in between, as in a loop
