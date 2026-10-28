@@ -376,13 +376,13 @@ fn find_bounds_check<'tcx>(
 
 /// Whether the bounds check covers `access`, the first use of its index in its target block: the
 /// check compares with the constant `N` of the type of the array `access` indexes in place, or with
-/// the `PtrMetadata` of the slice reference `access` indexes, a local or a field of one, whose
-/// local holds one value from that `PtrMetadata` to the access: the body assigns it at most once,
-/// or the `PtrMetadata` is in the check block and the local is not assigned between it and the
-/// access. A mutable borrow of the local counts as an assignment. With optimizations a check
-/// whose own access is gone (`let _ = s[3];`) can be followed by another sequence's access at the
-/// same index whose check was dropped, which it does not cover; any other shape is left to
-/// rustc's check.
+/// the `PtrMetadata` of the slice reference `access` indexes, which holds one value from that
+/// `PtrMetadata` to the access: either the `PtrMetadata` is in the check block and nothing between
+/// it and the access writes a place other than a local the body never borrows, or the reference is
+/// a local or a field of one whose local the body assigns at most once and never borrows mutably.
+/// With optimizations a check whose own access is gone (`let _ = s[3];`) can be followed by
+/// another sequence's access at the same index whose check was dropped, which it does not cover;
+/// any other shape is left to rustc's check.
 fn checks_length_of<'tcx>(
     tcx: TyCtxt<'tcx>,
     body: &Body<'tcx>,
@@ -403,34 +403,64 @@ fn checks_length_of<'tcx>(
         return constant.is_some() && constant == array_len.try_to_target_usize(tcx);
     }
     let receiver = access.receiver;
-    if receiver.projection.contains(&mir::PlaceElem::Deref)
-        || !is_metadata_of(tcx, body, len, receiver)
-    {
+    if !is_metadata_of(tcx, body, len, receiver) {
         return false;
     }
-    let changes = changes_of(body, receiver.local);
-    if changes.len() <= 1 {
-        return true;
-    }
+    let assigned_once = !receiver.projection.contains(&mir::PlaceElem::Deref)
+        && changes_of(body, receiver.local).len() <= 1;
+    assigned_once || nothing_written_between(body, bounds_check, len, access)
+}
+
+/// Whether the `PtrMetadata` the check compares with is in the check block, and every statement
+/// after it there and before the access in the target block writes, if anything, a local that
+/// the body never borrows.
+fn nothing_written_between<'tcx>(
+    body: &Body<'tcx>,
+    bounds_check: &BoundsCheck<'tcx>,
+    len: &Operand<'tcx>,
+    access: &SliceAccess<'tcx>,
+) -> bool {
+    let check_statements = &body.basic_blocks[bounds_check.block].statements;
     let Some(metadata) = len.place().and_then(|len| {
-        body.basic_blocks[bounds_check.block]
-            .statements
-            .iter()
-            .position(|statement| {
-                statement
-                    .kind
-                    .as_assign()
-                    .is_some_and(|(place, _)| *place == len)
-            })
+        check_statements.iter().position(|statement| {
+            statement
+                .kind
+                .as_assign()
+                .is_some_and(|(place, _)| *place == len)
+        })
     }) else {
         return false;
     };
-    let between = |location: &mir::Location| {
-        (location.block == bounds_check.block && location.statement_index > metadata)
-            || (location.block == access.location.block
-                && location.statement_index < access.location.statement_index)
-    };
-    !changes.iter().any(between)
+    let target_statements =
+        &body.basic_blocks[access.location.block].statements[..access.location.statement_index];
+    check_statements[metadata + 1..]
+        .iter()
+        .chain(target_statements)
+        .all(|statement| match &statement.kind {
+            StatementKind::Assign(assign) => assign
+                .0
+                .as_local()
+                .is_some_and(|local| !is_borrowed(body, local)),
+            StatementKind::StorageLive(_)
+            | StatementKind::StorageDead(_)
+            | StatementKind::FakeRead(_)
+            | StatementKind::Nop => true,
+            _ => false,
+        })
+}
+
+/// Whether the body borrows `local` or a part of it not behind a pointer.
+fn is_borrowed(body: &Body<'_>, local: Local) -> bool {
+    body.basic_blocks
+        .iter()
+        .flat_map(|data| &data.statements)
+        .filter_map(|statement| statement.kind.as_assign())
+        .any(|(_, rvalue)| match rvalue {
+            Rvalue::Ref(_, _, place) | Rvalue::RawPtr(_, place) => {
+                place.local == local && place.projection.first() != Some(&mir::PlaceElem::Deref)
+            }
+            _ => false,
+        })
 }
 
 /// Whether the local `len` holds the `PtrMetadata` of `receiver`, read directly or through a
