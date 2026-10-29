@@ -2694,6 +2694,17 @@ impl<'tcx> Analyzer<'tcx> {
         local_def_id: LocalDefId,
         attr_path: &[Symbol],
     ) -> Option<DefId> {
+        self.extract_path_and_args_with_attr(local_def_id, attr_path)
+            .map(|(def_id, _)| def_id)
+    }
+
+    /// The definition a statement of `local_def_id`'s body marked with `attr_path` names, and the
+    /// generic arguments it is written with, as type checking resolved them.
+    fn extract_path_and_args_with_attr(
+        &self,
+        local_def_id: LocalDefId,
+        attr_path: &[Symbol],
+    ) -> Option<(DefId, mir_ty::GenericArgsRef<'tcx>)> {
         let body = self.tcx.hir_maybe_body_owned_by(local_def_id)?;
 
         let rustc_hir::ExprKind::Block(block, _) = body.value.kind else {
@@ -2730,7 +2741,7 @@ impl<'tcx> Analyzer<'tcx> {
                 );
                 continue;
             };
-            return Some(def_id);
+            return Some((def_id, typeck.node_args(expr.hir_id)));
         }
         None
     }
@@ -2826,8 +2837,8 @@ impl<'tcx> Analyzer<'tcx> {
         generic_args: mir_ty::GenericArgsRef<'tcx>,
         owner_fn_id: DefId,
     ) -> Option<(DefId, chc::Formula<rty::FunctionParamIdx>)> {
-        let formula_def_id =
-            self.extract_path_with_attr(local_def_id, &analyze::annot::requires_path_path())?;
+        let (formula_def_id, path_args) = self
+            .extract_path_and_args_with_attr(local_def_id, &analyze::annot::requires_path_path())?;
         let Some(formula_def_id) = formula_def_id.as_local() else {
             panic!(
                 "require annotation with path is expected to refer to a local def, but found: {:?}",
@@ -2835,7 +2846,7 @@ impl<'tcx> Analyzer<'tcx> {
             );
         };
         let generic_args = if self.tcx.is_closure_like(local_def_id.to_def_id()) {
-            self.closure_spec_args(formula_def_id, local_def_id.to_def_id(), generic_args)
+            self.closure_spec_args(path_args, local_def_id.to_def_id(), generic_args)
         } else {
             generic_args
         };
@@ -2858,8 +2869,8 @@ impl<'tcx> Analyzer<'tcx> {
         DefId,
         chc::Formula<rty::RefinedTypeVar<rty::FunctionParamIdx>>,
     )> {
-        let formula_def_id =
-            self.extract_path_with_attr(local_def_id, &analyze::annot::ensures_path_path())?;
+        let (formula_def_id, path_args) = self
+            .extract_path_and_args_with_attr(local_def_id, &analyze::annot::ensures_path_path())?;
         let Some(formula_def_id) = formula_def_id.as_local() else {
             panic!(
                 "ensure annotation with path is expected to refer to a local def, but found: {:?}",
@@ -2867,7 +2878,7 @@ impl<'tcx> Analyzer<'tcx> {
             );
         };
         let generic_args = if self.tcx.is_closure_like(local_def_id.to_def_id()) {
-            self.closure_spec_args(formula_def_id, local_def_id.to_def_id(), generic_args)
+            self.closure_spec_args(path_args, local_def_id.to_def_id(), generic_args)
         } else {
             generic_args
         };
