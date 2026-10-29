@@ -59,7 +59,8 @@ fn pow2(q: u64) -> u64 {
 }
 
 /// The sum of the first `k` entries of `ts`. A sum, it is an `Int` over `Int`s, as `ones` is: at
-/// `u64` it would be checked below `2^64` under `THRUST_INT_RANGE`, which a sum of sizes is not.
+/// `u64` its result would be checked `>= 0` without the facts of the sequence's elements, which
+/// the README says such a sum cannot be shown.
 #[thrust_macros::logic]
 #[thrust_macros::variant(k)]
 fn sum_first(ts: Seq<Int>, k: USize) -> Int {
