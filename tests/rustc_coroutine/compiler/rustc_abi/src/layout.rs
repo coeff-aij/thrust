@@ -58,12 +58,11 @@ fn pow2(q: u64) -> u64 {
     if q <= 0 { 1 } else { pow2(q - 1) * 2 }
 }
 
-/// The sum of the first `k` entries of `ts`, as a mathematical integer: signed, so that no
-/// range fact of its result is checked (an unsigned result would be checked non-negative at
-/// every sequence, also at one with negative entries).
+/// The sum of the first `k` entries of `ts`. A sum, it is an `Int` over `Int`s, as `ones` is: at
+/// `u64` it would be checked below `2^64` under `THRUST_INT_RANGE`, which a sum of sizes is not.
 #[thrust_macros::logic]
 #[thrust_macros::variant(k)]
-fn sum_first(ts: &[i64], k: usize) -> i64 {
+fn sum_first(ts: Seq<Int>, k: USize) -> Int {
     if k <= 0 { 0 } else { sum_first(ts, k - 1) + ts[k - 1] }
 }
 
@@ -156,7 +155,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                 && forall(|i: USize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, q: USize|
                     !(0 <= i && i < ts.len() && thrust_macros::post!(<F as core::ops::Deref>::deref(&(*fields)[i]), d) && **d == l && q == l.align.abi.pow2)
                         || ts[i] == pow2(q) * 2 + l.size.raw)
-                && w == sum_first(&ts, ts.len()))
+                && w == sum_first(ts, ts.len()))
     }
 
     /// `s` is the weight of `fields` with the prefix's size and twice its alignment, the `repr`
