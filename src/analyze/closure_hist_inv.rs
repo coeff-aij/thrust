@@ -505,18 +505,44 @@ impl<'tcx> Analyzer<'tcx> {
     /// The generic arguments of a `closure!` specification's formula function at the closure
     /// arguments `closure_args`: none when it is lifted without the enclosing generics, and the
     /// closure's parent arguments when `#[thrust_macros::context]` re-declared them on it.
-    /// `closure_args` may be the closure's own arguments or its parent's alone, as an analyzer of
-    /// the closure's body holds them before `body_args` widens them.
+    /// `closure_args` may be the closure's own arguments or its parent's alone, the key a
+    /// deferred closure is analyzed under; `body_args` widens the latter. The formula function
+    /// re-declares the parent's parameters in the macro's order (the function's own before the
+    /// `impl`'s or the trait's, a trait's `Self` as `__ThrustSelf`), not in rustc's, so each is
+    /// matched by name. A late-bound lifetime has no parent argument and is erased.
     pub(super) fn closure_spec_args(
         &self,
         formula_def_id: LocalDefId,
         closure_def_id: DefId,
         closure_args: mir_ty::GenericArgsRef<'tcx>,
     ) -> mir_ty::GenericArgsRef<'tcx> {
-        if self.tcx.generics_of(formula_def_id).count() == 0 {
+        let formula_generics = self.tcx.generics_of(formula_def_id);
+        if formula_generics.count() == 0 {
             return self.tcx.mk_args(&[]);
         }
         let closure_args = analyze::body_args(self.tcx, closure_def_id, closure_args);
-        self.tcx.mk_args(closure_args.as_closure().parent_args())
+        let closure_generics = self.tcx.generics_of(closure_def_id);
+        let args: Vec<mir_ty::GenericArg<'tcx>> = (0..formula_generics.count())
+            .map(|i| {
+                let param = formula_generics.param_at(i, self.tcx);
+                let name = match param.name.as_str() {
+                    "__ThrustSelf" => rustc_span::symbol::kw::SelfUpper,
+                    _ => param.name,
+                };
+                let parent = (0..closure_generics.parent_count)
+                    .map(|j| closure_generics.param_at(j, self.tcx))
+                    .find(|p| p.name == name);
+                match (parent, &param.kind) {
+                    (Some(p), _) => closure_args[p.index as usize],
+                    (None, mir_ty::GenericParamDefKind::Lifetime) => {
+                        self.tcx.lifetimes.re_erased.into()
+                    }
+                    (None, _) => panic!(
+                        "the formula function of a closure! clause names {name}, which no parent of the closure declares"
+                    ),
+                }
+            })
+            .collect();
+        self.tcx.mk_args(&args)
     }
 }
