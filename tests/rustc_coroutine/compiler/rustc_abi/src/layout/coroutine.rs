@@ -64,6 +64,7 @@ impl<VariantIdx: thrust_models::Model, FieldIdx: thrust_models::Model> thrust_mo
     // the number of rows: the panic condition, through the matrix's ghost column bound.
     && (*storage_conflicts).num_rows <= nb_locals
     && *(*storage_conflicts).col_bound <= (*storage_conflicts).num_rows
+    && BitMatrix::<LocalIdx, LocalIdx>::cols_below(*storage_conflicts, *(*storage_conflicts).col_bound)
     && BitMatrix::<LocalIdx, LocalIdx>::wf(*storage_conflicts)
     && forall(|k: USize| !(0 <= k && k < nb_locals) || LocalIdx::can_new(k))
     && forall(|n: USize| !(0 <= n && n <= nb_locals) || FieldIdx::can_new(n))
@@ -167,6 +168,7 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
                 || i < (*variant_fields).len())
             && (*storage_conflicts).num_rows <= nb_locals.at_entry()
             && *(*storage_conflicts).col_bound <= (*storage_conflicts).num_rows
+            && BitMatrix::<LocalIdx, LocalIdx>::cols_below(*storage_conflicts, *(*storage_conflicts).col_bound)
             && BitMatrix::<LocalIdx, LocalIdx>::wf(*storage_conflicts)
             && forall(|k: USize| !(0 <= k && k < nb_locals.at_entry()) || <LocalIdx as Idx>::can_new(k))
             && forall(|n: USize| !(0 <= n && n <= nb_locals.at_entry()) || <FieldIdx as Idx>::can_new(n))
@@ -217,6 +219,7 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
                     || i < (*variant_fields).len())
                 && (*storage_conflicts).num_rows <= nb_locals.at_entry()
                 && *(*storage_conflicts).col_bound <= (*storage_conflicts).num_rows
+                && BitMatrix::<LocalIdx, LocalIdx>::cols_below(*storage_conflicts, *(*storage_conflicts).col_bound)
                 && BitMatrix::<LocalIdx, LocalIdx>::wf(*storage_conflicts)
                 && forall(|k: USize| !(0 <= k && k < nb_locals.at_entry()) || <LocalIdx as Idx>::can_new(k))
                 && forall(|n: USize| !(0 <= n && n <= nb_locals.at_entry()) || <FieldIdx as Idx>::can_new(n))
@@ -299,6 +302,7 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
                 || i < (*variant_fields).len())
             && (*storage_conflicts).num_rows <= nb_locals.at_entry()
             && *(*storage_conflicts).col_bound <= (*storage_conflicts).num_rows
+            && BitMatrix::<LocalIdx, LocalIdx>::cols_below(*storage_conflicts, *(*storage_conflicts).col_bound)
             && BitMatrix::<LocalIdx, LocalIdx>::wf(*storage_conflicts)
             && forall(|k: USize| !(0 <= k && k < nb_locals.at_entry()) || <LocalIdx as Idx>::can_new(k))
             && forall(|n: USize| !(0 <= n && n <= nb_locals.at_entry()) || <FieldIdx as Idx>::can_new(n))
@@ -348,6 +352,7 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
                     || i < (*variant_fields).len())
                 && (*storage_conflicts).num_rows <= nb_locals.at_entry()
                 && *(*storage_conflicts).col_bound <= (*storage_conflicts).num_rows
+                && BitMatrix::<LocalIdx, LocalIdx>::cols_below(*storage_conflicts, *(*storage_conflicts).col_bound)
                 && BitMatrix::<LocalIdx, LocalIdx>::wf(*storage_conflicts)
                 && forall(|k: USize| !(0 <= k && k < nb_locals.at_entry()) || <LocalIdx as Idx>::can_new(k))
                 && forall(|n: USize| !(0 <= n && n <= nb_locals.at_entry()) || <FieldIdx as Idx>::can_new(n))
@@ -555,6 +560,7 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
         && LayoutCalculator::<C>::deref_functional::<FieldIdx, VariantIdx, F>()
         && (*storage_conflicts).num_rows <= (*local_layouts).len()
         && *(*storage_conflicts).col_bound <= (*storage_conflicts).num_rows
+        && BitMatrix::<LocalIdx, LocalIdx>::cols_below(*storage_conflicts, *(*storage_conflicts).col_bound)
         && BitMatrix::<LocalIdx, LocalIdx>::wf(*storage_conflicts)
         && forall(|v: usize, f: usize|
             !(0 <= v && v < (*variant_fields).len()

@@ -250,6 +250,7 @@ pub trait IntoSliceIdx<I, T: ?Sized + thrust_models::Model> {
     #[thrust_macros::predicate]
     fn into_is(self, out: Self::Output) -> bool;
 
+    #[thrust_macros::ensures(Self::into_is(self, result))]
     fn into_slice_idx(self) -> Self::Output;
 }
 
