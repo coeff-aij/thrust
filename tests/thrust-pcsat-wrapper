@@ -1,7 +1,7 @@
 #!/bin/bash
 
 COAR_IMAGE=${COAR_IMAGE:-coar:latest}
-COAR_CONFIG=${COAR_CONFIG:-./config/solver/pcsat_tbq_ar.json}
+COAR_CONFIG=${COAR_CONFIG:-./config/solver/pcsat_thrust.json}
 
 # Each container gets a fixed share of the machine (the limits coar-run uses), so that eight
 # containers started by the test harness do not oversubscribe the cores: PCSat's validity checks
