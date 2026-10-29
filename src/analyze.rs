@@ -2835,7 +2835,7 @@ impl<'tcx> Analyzer<'tcx> {
             );
         };
         let generic_args = if self.tcx.is_closure_like(local_def_id.to_def_id()) {
-            self.closure_spec_args(formula_def_id, generic_args)
+            self.closure_spec_args(formula_def_id, local_def_id.to_def_id(), generic_args)
         } else {
             generic_args
         };
@@ -2867,7 +2867,7 @@ impl<'tcx> Analyzer<'tcx> {
             );
         };
         let generic_args = if self.tcx.is_closure_like(local_def_id.to_def_id()) {
-            self.closure_spec_args(formula_def_id, generic_args)
+            self.closure_spec_args(formula_def_id, local_def_id.to_def_id(), generic_args)
         } else {
             generic_args
         };
