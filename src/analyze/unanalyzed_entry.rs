@@ -498,7 +498,8 @@ fn collect_pre_receivers_in<'tcx>(
         visiting: &'a mut HashSet<LocalDefId>,
     }
     impl<'tcx> Collector<'_, 'tcx> {
-        /// The `pre!` receivers of the predicate or logic function `callee`, called at `args`.
+        /// The `pre!` receivers of the predicate or logic function `callee`, called at `args`. A
+        /// trait's item is not followed: which impl a call of it runs is not known here.
         fn follow(&mut self, callee: DefId, args: mir_ty::GenericArgsRef<'tcx>) {
             let Some(local) = callee.as_local() else {
                 return;
@@ -509,7 +510,9 @@ fn collect_pre_receivers_in<'tcx>(
             ]
             .iter()
             .any(|path| self.tcx.get_attrs_by_path(callee, path).next().is_some());
-            if !is_formula || !self.visiting.insert(local) {
+            let in_trait = self.tcx.trait_of_assoc(callee).is_some();
+            let has_body = self.tcx.hir_maybe_body_owned_by(local).is_some();
+            if !is_formula || in_trait || !has_body || !self.visiting.insert(local) {
                 return;
             }
             let mut inner = Vec::new();
