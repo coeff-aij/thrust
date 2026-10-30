@@ -461,7 +461,9 @@ fn def_order(def_id: DefId) -> (u32, u32) {
 }
 
 /// The type of the receiver of each `pre!` (a call of `closure_precondition`) in `expr`, closures
-/// in it included.
+/// in it included, and in the bodies of the crate's predicates and logic functions it calls, each
+/// read at the call's generic arguments: a `pre!` stated through a predicate is stated by the
+/// contract that calls it.
 fn collect_pre_receivers<'tcx>(
     tcx: mir_ty::TyCtxt<'tcx>,
     typeck: &'tcx mir_ty::TypeckResults<'tcx>,
@@ -469,21 +471,86 @@ fn collect_pre_receivers<'tcx>(
     expr: &'tcx rustc_hir::Expr<'tcx>,
     receivers: &mut Vec<mir_ty::Ty<'tcx>>,
 ) {
+    let mut visiting = HashSet::new();
+    collect_pre_receivers_in(
+        tcx,
+        typeck,
+        closure_precondition,
+        expr,
+        receivers,
+        &mut visiting,
+    );
+}
+
+fn collect_pre_receivers_in<'tcx>(
+    tcx: mir_ty::TyCtxt<'tcx>,
+    typeck: &'tcx mir_ty::TypeckResults<'tcx>,
+    closure_precondition: DefId,
+    expr: &'tcx rustc_hir::Expr<'tcx>,
+    receivers: &mut Vec<mir_ty::Ty<'tcx>>,
+    visiting: &mut HashSet<LocalDefId>,
+) {
     struct Collector<'a, 'tcx> {
         tcx: mir_ty::TyCtxt<'tcx>,
         typeck: &'tcx mir_ty::TypeckResults<'tcx>,
         closure_precondition: DefId,
         receivers: &'a mut Vec<mir_ty::Ty<'tcx>>,
+        visiting: &'a mut HashSet<LocalDefId>,
+    }
+    impl<'tcx> Collector<'_, 'tcx> {
+        /// The `pre!` receivers of the predicate or logic function `callee`, called at `args`.
+        fn follow(&mut self, callee: DefId, args: mir_ty::GenericArgsRef<'tcx>) {
+            let Some(local) = callee.as_local() else {
+                return;
+            };
+            let is_formula = [
+                analyze::annot::predicate_path(),
+                analyze::annot::logic_path(),
+            ]
+            .iter()
+            .any(|path| self.tcx.get_attrs_by_path(callee, path).next().is_some());
+            if !is_formula || !self.visiting.insert(local) {
+                return;
+            }
+            let mut inner = Vec::new();
+            collect_pre_receivers_in(
+                self.tcx,
+                self.tcx.typeck(local),
+                self.closure_precondition,
+                self.tcx.hir_body_owned_by(local).value,
+                &mut inner,
+                self.visiting,
+            );
+            self.visiting.remove(&local);
+            self.receivers.extend(
+                inner
+                    .into_iter()
+                    .map(|ty| mir_ty::EarlyBinder::bind(ty).instantiate(self.tcx, args)),
+            );
+        }
     }
     impl<'tcx> rustc_hir::intravisit::Visitor<'tcx> for Collector<'_, 'tcx> {
         fn visit_expr(&mut self, expr: &'tcx rustc_hir::Expr<'tcx>) {
             match expr.kind {
-                rustc_hir::ExprKind::Call(func, [receiver, ..]) => {
+                rustc_hir::ExprKind::Call(func, args) => {
                     if let rustc_hir::ExprKind::Path(qpath) = &func.kind {
                         let res = self.typeck.qpath_res(qpath, func.hir_id);
-                        if res.opt_def_id() == Some(self.closure_precondition) {
-                            self.receivers.push(self.typeck.expr_ty(receiver));
+                        match (res.opt_def_id(), args) {
+                            (Some(def_id), [receiver, ..])
+                                if def_id == self.closure_precondition =>
+                            {
+                                self.receivers.push(self.typeck.expr_ty(receiver));
+                            }
+                            (Some(def_id), _) => {
+                                self.follow(def_id, self.typeck.node_args(func.hir_id));
+                            }
+                            _ => {}
                         }
+                    }
+                }
+                rustc_hir::ExprKind::MethodCall(..) => {
+                    if let Some(def_id) = self.typeck.type_dependent_def_id(expr.hir_id) {
+                        self.follow(def_id, self.typeck.node_args(expr.hir_id));
                     }
                 }
                 rustc_hir::ExprKind::Closure(closure) => {
@@ -499,6 +566,7 @@ fn collect_pre_receivers<'tcx>(
         typeck,
         closure_precondition,
         receivers,
+        visiting,
     };
     rustc_hir::intravisit::Visitor::visit_expr(&mut collector, expr);
 }
