@@ -1,11 +1,11 @@
 //@error-in-other-file: Unsat
-//@ignore-on-host: the pass twin's entry and `Filter::next` get no answer from the solver (README.md); the loop is refuted
+//@ignore-on-host: the pass twin's entry gets no answer from the solver (README.md); the loop is refuted
 //@edition: 2024
 //@compile-flags: -Adead_code -C debug-assertions=off -A unused-variables -A unused_parens
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 THRUST_TRY_SPECS=1
-//@rustc-env: THRUST_VERIFY_ONLY=take_per_accepted,case_study::iter::Filter
+//@rustc-env: THRUST_VERIFY_ONLY=take_per_accepted
 // The fail twin of probes/filter_positions.rs: the pass takes an item at every entry, accepted or
-// not, so it can run out. `Filter` is selected with the probe, as in the pass twin.
+// not, so it can run out.
 #![feature(new_range_api)]
 
 #[path = "../../../../rustc_coroutine/compiler/rustc_hashes/src/lib.rs"]
