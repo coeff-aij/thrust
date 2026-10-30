@@ -1,14 +1,12 @@
-//@ignore-on-host: the loop verifies; its entry, the index map from `collect`'s postcondition, gets no answer from the solver, nor does `Filter::next` (README.md)
+//@ignore-on-host: the loop verifies; its entry, the index map from `collect`'s postcondition, gets no answer from the solver (README.md)
 //@edition: 2024
 //@compile-flags: -Adead_code -C debug-assertions=off -A unused-variables -A unused_parens
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 THRUST_TRY_SPECS=1
-//@rustc-env: THRUST_VERIFY_ONLY=take_per_accepted,case_study::iter::Filter
+//@rustc-env: THRUST_VERIFY_ONLY=take_per_accepted
 // The second pass of `layout()` over a variant's fields (stage 7, `combined_offsets`): the items a
 // `Filter` collects are as many as the entries its closure accepts, so a pass that takes one item
 // per accepted entry never runs out. The count follows from Creusot's index map of the case
 // study's `Filter`, which the pass walks with the number taken so far, without a count function.
-// `Filter` is selected with the probe: a closure with a precondition passed to a generic function
-// outside the selection is required to accept every argument.
 #![feature(new_range_api)]
 
 #[path = "../../../../rustc_coroutine/compiler/rustc_hashes/src/lib.rs"]
