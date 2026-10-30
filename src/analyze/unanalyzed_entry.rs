@@ -461,9 +461,10 @@ fn def_order(def_id: DefId) -> (u32, u32) {
 }
 
 /// The type of the receiver of each `pre!` (a call of `closure_precondition`) in `expr`, closures
-/// in it included, and in the bodies of the crate's predicates and logic functions it calls, each
-/// read at the call's generic arguments: a `pre!` stated through a predicate is stated by the
-/// contract that calls it.
+/// in it included, and in the bodies of the crate's predicates it calls, each read at the call's
+/// generic arguments: a `pre!` stated through a predicate is stated by the contract that calls it.
+/// A logic function's body is not followed: there a `pre!` can only decide a value, not be asked
+/// for.
 fn collect_pre_receivers<'tcx>(
     tcx: mir_ty::TyCtxt<'tcx>,
     typeck: &'tcx mir_ty::TypeckResults<'tcx>,
@@ -498,21 +499,20 @@ fn collect_pre_receivers_in<'tcx>(
         visiting: &'a mut HashSet<LocalDefId>,
     }
     impl<'tcx> Collector<'_, 'tcx> {
-        /// The `pre!` receivers of the predicate or logic function `callee`, called at `args`. A
-        /// trait's item is not followed: which impl a call of it runs is not known here.
+        /// The `pre!` receivers of the predicate `callee`, called at `args`. A trait's item is not
+        /// followed: which impl a call of it runs is not known here.
         fn follow(&mut self, callee: DefId, args: mir_ty::GenericArgsRef<'tcx>) {
             let Some(local) = callee.as_local() else {
                 return;
             };
-            let is_formula = [
-                analyze::annot::predicate_path(),
-                analyze::annot::logic_path(),
-            ]
-            .iter()
-            .any(|path| self.tcx.get_attrs_by_path(callee, path).next().is_some());
+            let is_predicate = self
+                .tcx
+                .get_attrs_by_path(callee, &analyze::annot::predicate_path())
+                .next()
+                .is_some();
             let in_trait = self.tcx.trait_of_assoc(callee).is_some();
             let has_body = self.tcx.hir_maybe_body_owned_by(local).is_some();
-            if !is_formula || in_trait || !has_body || !self.visiting.insert(local) {
+            if !is_predicate || in_trait || !has_body || !self.visiting.insert(local) {
                 return;
             }
             let mut inner = Vec::new();
