@@ -860,15 +860,15 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.body_clauses.insert(local_def_id, start..end);
     }
 
-    /// Assumes each free law (a lemma marked `#[thrust::law]` outside a trait) wherever a function
+    /// Assumes each logic function law (a lemma marked `#[thrust::law]` outside a trait) wherever a function
     /// its contract applies is used, as Verus's `broadcast use` of a `broadcast proof fn` does: its
     /// contract, closed under a `forall` over its parameters, becomes a premise of every clause
     /// that reaches such a function. A lemma's contract is otherwise assumed only at the arguments
     /// it is called with, which a statement over values the program does not name (the witnesses
-    /// of an `exists`) cannot do. The clauses of a free law's proof and of the lemmas it calls
-    /// assume no free law, so that no proof rests on its own statement.
-    fn assume_free_laws(&mut self) {
-        let laws = analyze::lemma::free_laws(self.tcx);
+    /// of an `exists`) cannot do. The clauses of such a law's proof and of the lemmas it calls
+    /// assume no such law, so that no proof rests on its own statement.
+    fn assume_logic_fn_laws(&mut self) {
+        let laws = analyze::lemma::logic_fn_laws(self.tcx);
         let mut excluded = HashSet::new();
         for &law in &laws {
             for proof in analyze::lemma::proof_closure(self.tcx, law) {
@@ -886,7 +886,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             else {
                 continue;
             };
-            tracing::debug!(?law, "free law stated");
+            tracing::debug!(?law, "logic function law stated");
             self.ctx
                 .system
                 .borrow_mut()
@@ -1077,7 +1077,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.check_instance_laws();
         self.ctx.emit_pending_pred_instances();
         self.ctx.emit_pending_laws();
-        self.assume_free_laws();
+        self.assume_logic_fn_laws();
         self.ctx.emit_fn_mut_instance_obligations();
         self.ctx.check_reused_instances();
         self.ctx.check_derived_predicates();
