@@ -136,46 +136,58 @@ impl<'tcx> analyze::Analyzer<'tcx> {
             .cloned()
             .unwrap_or_default();
         for law_def_id in laws {
-            let Some(def_ty) = self.def_ty_with_args(law_def_id, generic_args, owner_fn_id) else {
-                tracing::warn!(?law_def_id, ?generic_args, "law has no type at this use");
+            let Some(law) = self.law_formula(law_def_id, generic_args, owner_fn_id) else {
                 continue;
             };
-            let Some(fn_ty) = def_ty.ty.as_function() else {
-                continue;
-            };
-            let mut vars: Vec<(chc::UserQuantifiedVarId, chc::Sort)> = fn_ty
-                .params
-                .iter_enumerated()
-                .map(|(idx, param)| {
-                    let name = format!("law_{} of {:?}", idx.index(), law_def_id);
-                    let v = self.system.borrow_mut().new_named_user_quantified_var(name);
-                    (v, param.ty.to_sort())
-                })
-                .collect();
-            let args: Vec<chc::Term<chc::TermVarIdx>> = vars
-                .iter()
-                .map(|(v, sort)| chc::Term::UserQuantifiedVar(sort.clone(), *v))
-                .collect();
-            // A law variable ranges over the values its proof assumes of the parameter.
-            let mut pre = fn_ty.precondition_formula(&args);
-            for (param, arg) in fn_ty.params.iter().zip(&args) {
-                let payload = || {
-                    let name = format!("law payload of {:?}", law_def_id);
-                    self.system.borrow_mut().new_named_user_quantified_var(name)
-                };
-                if let Some((payloads, range)) =
-                    rty::int_range_type_formula(&param.ty, arg.clone(), payload, &self.enum_defs)
-                {
-                    vars.extend(payloads);
-                    pre = range.and(pre);
-                }
-            }
-            let post = fn_ty.postcondition_formula(&args, chc::Term::tuple(vec![]));
-            let mut law = chc::Formula::forall(vars, pre.implies(post));
-            law.simplify();
             tracing::debug!(?pred, ?law_def_id, "law stated");
             self.system.borrow_mut().add_law(pred.clone(), law);
         }
+    }
+
+    /// The contract of the law `law_def_id` at `generic_args`, closed under a `forall` over its
+    /// parameters: `requires` implies `ensures` at every argument.
+    pub fn law_formula(
+        &mut self,
+        law_def_id: DefId,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
+        owner_fn_id: DefId,
+    ) -> Option<chc::Formula> {
+        let Some(def_ty) = self.def_ty_with_args(law_def_id, generic_args, owner_fn_id) else {
+            tracing::warn!(?law_def_id, ?generic_args, "law has no type at this use");
+            return None;
+        };
+        let fn_ty = def_ty.ty.as_function()?;
+        let mut vars: Vec<(chc::UserQuantifiedVarId, chc::Sort)> = fn_ty
+            .params
+            .iter_enumerated()
+            .map(|(idx, param)| {
+                let name = format!("law_{} of {:?}", idx.index(), law_def_id);
+                let v = self.system.borrow_mut().new_named_user_quantified_var(name);
+                (v, param.ty.to_sort())
+            })
+            .collect();
+        let args: Vec<chc::Term<chc::TermVarIdx>> = vars
+            .iter()
+            .map(|(v, sort)| chc::Term::UserQuantifiedVar(sort.clone(), *v))
+            .collect();
+        // A law variable ranges over the values its proof assumes of the parameter.
+        let mut pre = fn_ty.precondition_formula(&args);
+        for (param, arg) in fn_ty.params.iter().zip(&args) {
+            let payload = || {
+                let name = format!("law payload of {:?}", law_def_id);
+                self.system.borrow_mut().new_named_user_quantified_var(name)
+            };
+            if let Some((payloads, range)) =
+                rty::int_range_type_formula(&param.ty, arg.clone(), payload, &self.enum_defs)
+            {
+                vars.extend(payloads);
+                pre = range.and(pre);
+            }
+        }
+        let post = fn_ty.postcondition_formula(&args, chc::Term::tuple(vec![]));
+        let mut law = chc::Formula::forall(vars, pre.implies(post));
+        law.simplify();
+        Some(law)
     }
 
     /// The symbol a reference to `pred_def_id` at `generic_args` must use, and,
