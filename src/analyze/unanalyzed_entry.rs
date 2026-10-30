@@ -16,7 +16,7 @@
 //!   the hand-over; an entry the walk finds into a closure on a path where the analyzed call
 //!   that led into unanalyzed code did not hand it over stops, whatever other calls hand over.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use rustc_middle::ty::{self as mir_ty};
 use rustc_span::def_id::{DefId, LocalDefId};
@@ -120,16 +120,16 @@ impl<'tcx> analyze::Analyzer<'tcx> {
         let Some(closure_precondition) = self.def_ids().closure_precondition() else {
             return stated;
         };
+        let ops = FormulaOps {
+            closure_precondition,
+            forall: self.def_ids().forall(),
+            exists: self.def_ids().exists(),
+            implies: self.def_ids().implies(),
+        };
         let typeck = self.tcx.typeck(formula_def_id);
         let mut receivers = Vec::new();
         let body = self.tcx.hir_body_owned_by(formula_def_id);
-        collect_pre_receivers(
-            self.tcx,
-            typeck,
-            closure_precondition,
-            body.value,
-            &mut receivers,
-        );
+        collect_pre_receivers(self.tcx, typeck, &ops, body.value, &mut receivers);
         for ty in receivers {
             for arg in ty.walk() {
                 match arg.as_type().map(|ty| *ty.kind()) {
@@ -460,116 +460,142 @@ fn def_order(def_id: DefId) -> (u32, u32) {
     (def_id.krate.as_u32(), def_id.index.as_u32())
 }
 
-/// The type of the receiver of each `pre!` (a call of `closure_precondition`) in `expr`, closures
-/// in it included, and in the bodies of the crate's predicates it calls, each read at the call's
-/// generic arguments: a `pre!` stated through a predicate is stated by the contract that calls it.
-/// A logic function's body is not followed: there a `pre!` can only decide a value, not be asked
-/// for.
+/// The formula operators a `requires` asks for a `pre!` through.
+struct FormulaOps {
+    closure_precondition: DefId,
+    forall: Option<DefId>,
+    exists: Option<DefId>,
+    implies: Option<DefId>,
+}
+
+/// The type of the receiver of each `pre!` (a call of `closure_precondition`) that `expr` asks
+/// for: one in a positive position, under the `&&`, `||`, `forall`, `exists`, the consequent of
+/// `==>` and the branches of `if` that lead to it, and under an even number of `!` and antecedents.
+/// A `pre!` elsewhere (negated, compared with `==`, in a condition or an argument) does not make
+/// the formula ask for it. A call of the crate's own predicate in a positive position is followed
+/// into its body, whose receivers are read at the call's generic arguments; a trait's predicate is
+/// not, since the impl that runs is not known here, and neither is a logic function.
 fn collect_pre_receivers<'tcx>(
     tcx: mir_ty::TyCtxt<'tcx>,
     typeck: &'tcx mir_ty::TypeckResults<'tcx>,
-    closure_precondition: DefId,
+    ops: &FormulaOps,
     expr: &'tcx rustc_hir::Expr<'tcx>,
     receivers: &mut Vec<mir_ty::Ty<'tcx>>,
 ) {
-    let mut visiting = HashSet::new();
-    collect_pre_receivers_in(
-        tcx,
-        typeck,
-        closure_precondition,
-        expr,
-        receivers,
-        &mut visiting,
-    );
-}
-
-fn collect_pre_receivers_in<'tcx>(
-    tcx: mir_ty::TyCtxt<'tcx>,
-    typeck: &'tcx mir_ty::TypeckResults<'tcx>,
-    closure_precondition: DefId,
-    expr: &'tcx rustc_hir::Expr<'tcx>,
-    receivers: &mut Vec<mir_ty::Ty<'tcx>>,
-    visiting: &mut HashSet<LocalDefId>,
-) {
-    struct Collector<'a, 'tcx> {
-        tcx: mir_ty::TyCtxt<'tcx>,
-        typeck: &'tcx mir_ty::TypeckResults<'tcx>,
-        closure_precondition: DefId,
-        receivers: &'a mut Vec<mir_ty::Ty<'tcx>>,
-        visiting: &'a mut HashSet<LocalDefId>,
-    }
-    impl<'tcx> Collector<'_, 'tcx> {
-        /// The `pre!` receivers of the predicate `callee`, called at `args`. A trait's item is not
-        /// followed: which impl a call of it runs is not known here.
-        fn follow(&mut self, callee: DefId, args: mir_ty::GenericArgsRef<'tcx>) {
-            let Some(local) = callee.as_local() else {
-                return;
-            };
-            let is_predicate = self
-                .tcx
-                .get_attrs_by_path(callee, &analyze::annot::predicate_path())
-                .next()
-                .is_some();
-            let in_trait = self.tcx.trait_of_assoc(callee).is_some();
-            let has_body = self.tcx.hir_maybe_body_owned_by(local).is_some();
-            if !is_predicate || in_trait || !has_body || !self.visiting.insert(local) {
-                return;
-            }
-            let mut inner = Vec::new();
-            collect_pre_receivers_in(
-                self.tcx,
-                self.tcx.typeck(local),
-                self.closure_precondition,
-                self.tcx.hir_body_owned_by(local).value,
-                &mut inner,
-                self.visiting,
-            );
-            self.visiting.remove(&local);
-            self.receivers.extend(
-                inner
-                    .into_iter()
-                    .map(|ty| mir_ty::EarlyBinder::bind(ty).instantiate(self.tcx, args)),
-            );
-        }
-    }
-    impl<'tcx> rustc_hir::intravisit::Visitor<'tcx> for Collector<'_, 'tcx> {
-        fn visit_expr(&mut self, expr: &'tcx rustc_hir::Expr<'tcx>) {
-            match expr.kind {
-                rustc_hir::ExprKind::Call(func, args) => {
-                    if let rustc_hir::ExprKind::Path(qpath) = &func.kind {
-                        let res = self.typeck.qpath_res(qpath, func.hir_id);
-                        match (res.opt_def_id(), args) {
-                            (Some(def_id), [receiver, ..])
-                                if def_id == self.closure_precondition =>
-                            {
-                                self.receivers.push(self.typeck.expr_ty(receiver));
-                            }
-                            (Some(def_id), _) => {
-                                self.follow(def_id, self.typeck.node_args(func.hir_id));
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                rustc_hir::ExprKind::MethodCall(..) => {
-                    if let Some(def_id) = self.typeck.type_dependent_def_id(expr.hir_id) {
-                        self.follow(def_id, self.typeck.node_args(expr.hir_id));
-                    }
-                }
-                rustc_hir::ExprKind::Closure(closure) => {
-                    self.visit_expr(self.tcx.hir_body(closure.body).value);
-                }
-                _ => {}
-            }
-            rustc_hir::intravisit::walk_expr(self, expr);
-        }
-    }
     let mut collector = Collector {
         tcx,
-        typeck,
-        closure_precondition,
-        receivers,
-        visiting,
+        ops,
+        receivers: HashMap::new(),
+        visiting: HashSet::new(),
     };
-    rustc_hir::intravisit::Visitor::visit_expr(&mut collector, expr);
+    collector.asked(typeck, expr, true, receivers);
+}
+
+struct Collector<'a, 'tcx> {
+    tcx: mir_ty::TyCtxt<'tcx>,
+    ops: &'a FormulaOps,
+    /// The receivers each predicate followed so far asks for, over its own generic parameters.
+    receivers: HashMap<LocalDefId, Vec<mir_ty::Ty<'tcx>>>,
+    visiting: HashSet<LocalDefId>,
+}
+
+impl<'tcx> Collector<'_, 'tcx> {
+    /// Adds to `out` the receivers `expr` asks for when `positive`, and reads no further where
+    /// the position stops being one of a formula.
+    fn asked(
+        &mut self,
+        typeck: &'tcx mir_ty::TypeckResults<'tcx>,
+        expr: &'tcx rustc_hir::Expr<'tcx>,
+        positive: bool,
+        out: &mut Vec<mir_ty::Ty<'tcx>>,
+    ) {
+        use rustc_hir::{BinOpKind, ExprKind, UnOp};
+        match expr.kind {
+            ExprKind::DropTemps(inner) => self.asked(typeck, inner, positive, out),
+            ExprKind::Block(block, _) if block.stmts.is_empty() => {
+                if let Some(inner) = block.expr {
+                    self.asked(typeck, inner, positive, out);
+                }
+            }
+            ExprKind::Unary(UnOp::Not, inner) => self.asked(typeck, inner, !positive, out),
+            ExprKind::Binary(op, lhs, rhs) if matches!(op.node, BinOpKind::And | BinOpKind::Or) => {
+                self.asked(typeck, lhs, positive, out);
+                self.asked(typeck, rhs, positive, out);
+            }
+            ExprKind::If(_, then, otherwise) => {
+                self.asked(typeck, then, positive, out);
+                if let Some(otherwise) = otherwise {
+                    self.asked(typeck, otherwise, positive, out);
+                }
+            }
+            ExprKind::Call(func, args) => self.asked_call(typeck, func, args, positive, out),
+            _ => {}
+        }
+    }
+
+    fn asked_call(
+        &mut self,
+        typeck: &'tcx mir_ty::TypeckResults<'tcx>,
+        func: &'tcx rustc_hir::Expr<'tcx>,
+        args: &'tcx [rustc_hir::Expr<'tcx>],
+        positive: bool,
+        out: &mut Vec<mir_ty::Ty<'tcx>>,
+    ) {
+        let rustc_hir::ExprKind::Path(qpath) = &func.kind else {
+            return;
+        };
+        let Some(def_id) = typeck.qpath_res(qpath, func.hir_id).opt_def_id() else {
+            return;
+        };
+        if def_id == self.ops.closure_precondition {
+            if let (true, [receiver, ..]) = (positive, args) {
+                out.push(typeck.expr_ty(receiver));
+            }
+        } else if Some(def_id) == self.ops.forall || Some(def_id) == self.ops.exists {
+            for arg in args {
+                if let rustc_hir::ExprKind::Closure(closure) = arg.kind {
+                    let body = self.tcx.hir_body(closure.body).value;
+                    self.asked(typeck, body, positive, out);
+                }
+            }
+        } else if Some(def_id) == self.ops.implies {
+            if let [antecedent, consequent] = args {
+                self.asked(typeck, antecedent, !positive, out);
+                self.asked(typeck, consequent, positive, out);
+            }
+        } else if positive {
+            let call_args = typeck.node_args(func.hir_id);
+            for ty in self.predicate_receivers(def_id) {
+                out.push(mir_ty::EarlyBinder::bind(ty).instantiate(self.tcx, call_args));
+            }
+        }
+    }
+
+    /// The receivers the crate's own predicate `callee` asks for, over its own generic parameters;
+    /// none for any other function.
+    fn predicate_receivers(&mut self, callee: DefId) -> Vec<mir_ty::Ty<'tcx>> {
+        let Some(local) = callee.as_local() else {
+            return Vec::new();
+        };
+        if let Some(found) = self.receivers.get(&local) {
+            return found.clone();
+        }
+        let is_predicate = self
+            .tcx
+            .get_attrs_by_path(callee, &analyze::annot::predicate_path())
+            .next()
+            .is_some();
+        let in_trait = self.tcx.trait_of_assoc(callee).is_some();
+        let Some(body) = self.tcx.hir_maybe_body_owned_by(local) else {
+            return Vec::new();
+        };
+        if !is_predicate || in_trait || !self.visiting.insert(local) {
+            return Vec::new();
+        }
+        let mut found = Vec::new();
+        self.asked(self.tcx.typeck(local), body.value, true, &mut found);
+        self.visiting.remove(&local);
+        self.receivers.insert(local, found.clone());
+        found
+    }
 }
