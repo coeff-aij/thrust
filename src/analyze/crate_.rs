@@ -1,6 +1,6 @@
 //! Analyze a local crate.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use rustc_hir::def_id::CRATE_DEF_ID;
 use rustc_middle::ty::{self as mir_ty, TyCtxt};
@@ -34,6 +34,8 @@ pub struct Analyzer<'tcx, 'ctx> {
     trusted: HashSet<LocalDefId>,
     selection: Option<analyze::selection::Selection>,
     body_checks: analyze::BodyChecks,
+    /// The clauses each analyzed body pushed, as a range of clause ids.
+    body_clauses: HashMap<LocalDefId, std::ops::Range<usize>>,
 }
 
 const TRUSTED_ATTR: &str = "#[thrust::trusted]";
@@ -849,10 +851,47 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
         let expected = expected.clone();
         let generic_args = self.placeholder_generic_args(local_def_id);
+        let start = self.ctx.system.borrow().clauses.len();
         self.ctx
             .local_def_analyzer(local_def_id)
             .generic_args(generic_args)
             .run(&expected);
+        let end = self.ctx.system.borrow().clauses.len();
+        self.body_clauses.insert(local_def_id, start..end);
+    }
+
+    /// Assumes each logic function law (a lemma marked `#[thrust::law]` outside a trait) wherever a function
+    /// its contract applies is used, as Verus's `broadcast use` of a `broadcast proof fn` does: its
+    /// contract, closed under a `forall` over its parameters, becomes a premise of every clause
+    /// that reaches such a function. A lemma's contract is otherwise assumed only at the arguments
+    /// it is called with, which a statement over values the program does not name (the witnesses
+    /// of an `exists`) cannot do. The clauses of such a law's proof and of the lemmas it calls
+    /// assume no such law, so that no proof rests on its own statement.
+    fn assume_logic_fn_laws(&mut self) {
+        let laws = analyze::lemma::logic_fn_laws(self.tcx);
+        let mut excluded = HashSet::new();
+        for &law in &laws {
+            for proof in analyze::lemma::proof_closure(self.tcx, law) {
+                let Some(range) = self.body_clauses.get(&proof) else {
+                    continue;
+                };
+                excluded.extend(range.clone().map(chc::ClauseId::from_usize));
+            }
+        }
+        for law in laws {
+            let identity = mir_ty::GenericArgs::identity_for_item(self.tcx, law.to_def_id());
+            let Some(formula) = self
+                .ctx
+                .law_formula(law.to_def_id(), identity, law.to_def_id())
+            else {
+                continue;
+            };
+            tracing::debug!(?law, "logic function law stated");
+            self.ctx
+                .system
+                .borrow_mut()
+                .assume_in_reaching_clauses(&formula, &excluded);
+        }
     }
 
     /// Whether a type parameter in scope of `local_def_id` (its own or an enclosing item's) is
@@ -968,6 +1007,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             trusted: HashSet::new(),
             selection,
             body_checks,
+            body_clauses: HashMap::new(),
         }
     }
 
@@ -1037,6 +1077,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.check_instance_laws();
         self.ctx.emit_pending_pred_instances();
         self.ctx.emit_pending_laws();
+        self.assume_logic_fn_laws();
         self.ctx.emit_fn_mut_instance_obligations();
         self.ctx.check_reused_instances();
         self.ctx.check_derived_predicates();

@@ -3007,6 +3007,55 @@ impl System {
         self.laws.get(pred).map(Vec::as_slice).unwrap_or(&[])
     }
 
+    /// Adds `law`, a closed formula, to the premises of every clause outside `excluded` that
+    /// reaches a user-defined function or predicate `law` applies, directly or through the
+    /// definitions it applies: what the solver does with a `:law` of a forall predicate.
+    pub fn assume_in_reaching_clauses(
+        &mut self,
+        law: &Formula<TermVarIdx>,
+        excluded: &HashSet<ClauseId>,
+    ) {
+        let targets: HashSet<UserDefinedPred> = user_defined_in(law.iter_atoms())
+            .into_iter()
+            .cloned()
+            .collect();
+        let reaching: Vec<ClauseId> = self
+            .clauses
+            .iter_enumerated()
+            .filter(|(id, clause)| !excluded.contains(id) && self.clause_reaches(clause, &targets))
+            .map(|(id, _)| id)
+            .collect();
+        for id in reaching {
+            self.clauses[id].body.formula.push_conj(law.clone());
+        }
+    }
+
+    /// Whether `clause` applies one of `targets`, directly or through the definitions it applies.
+    fn clause_reaches(&self, clause: &Clause, targets: &HashSet<UserDefinedPred>) -> bool {
+        let atoms = clause
+            .body
+            .iter_atoms()
+            .chain(std::iter::once(&clause.head));
+        let mut pending = user_defined_in(atoms);
+        let mut seen: HashSet<&UserDefinedPred> = HashSet::new();
+        while let Some(symbol) = pending.pop() {
+            if targets.contains(symbol) {
+                return true;
+            }
+            if !seen.insert(symbol) {
+                continue;
+            }
+            for def in self
+                .user_defined_pred_defs
+                .iter()
+                .filter(|d| &d.symbol == symbol)
+            {
+                pending.extend(def.callees());
+            }
+        }
+        false
+    }
+
     pub fn new_forall_sort(&mut self, debug_info: DebugInfo) -> ForallSortIdx {
         let new_idx = self.num_forall_sort_idx;
         self.num_forall_sort_idx += 1;

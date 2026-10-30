@@ -9,7 +9,7 @@
 //! no call. A lemma has no loop and no unsafe code, and takes no `&mut`, so that what it
 //! assigns stays its own.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use rustc_middle::mir::visit::Visitor;
 use rustc_middle::mir::{self, TerminatorKind};
@@ -55,6 +55,60 @@ pub fn is_proof(tcx: TyCtxt<'_>, def_id: DefId) -> bool {
         proof_branch: None,
     };
     checker.is_lemma(def_id) || checker.is_lemma_rec(def_id) || checker.is_law_proof(def_id)
+}
+
+/// The logic function laws of the crate (lemmas marked law outside a trait, see [`Checker::is_logic_fn_law`]).
+pub fn logic_fn_laws(tcx: TyCtxt<'_>) -> Vec<LocalDefId> {
+    let checker = Checker {
+        tcx,
+        proof_branch: None,
+    };
+    tcx.mir_keys(())
+        .iter()
+        .copied()
+        .filter(|def_id| checker.is_logic_fn_law(def_id.to_def_id()))
+        .collect()
+}
+
+/// `lemma` and the lemmas its proof calls, directly or through others, with the companion through
+/// which each of them calls itself. They are the proof of a logic function law, which assumes no
+/// such law and uses no trait law at a type parameter, since an impl's proof of that trait law may
+/// assume the logic function law.
+pub fn proof_closure(tcx: TyCtxt<'_>, lemma: LocalDefId) -> HashSet<LocalDefId> {
+    let checker = Checker {
+        tcx,
+        proof_branch: None,
+    };
+    let mut seen = HashSet::new();
+    let mut pending = vec![lemma];
+    while let Some(lemma) = pending.pop() {
+        if !seen.insert(lemma) {
+            continue;
+        }
+        let calls = checker.proof_calls(lemma);
+        for call in &calls.laws {
+            tcx.dcx().span_err(
+                call.span,
+                "the proof of a law outside a trait cannot use a trait law at a type parameter",
+            );
+        }
+        pending.extend(
+            calls
+                .lemmas
+                .iter()
+                .filter_map(|call| call.def_id.as_local()),
+        );
+    }
+    let companions: Vec<LocalDefId> = tcx
+        .mir_keys(())
+        .iter()
+        .copied()
+        .filter(|def_id| {
+            checker.is_lemma_rec(def_id.to_def_id()) && seen.contains(&checker.rec_target(*def_id))
+        })
+        .collect();
+    seen.extend(companions);
+    seen
 }
 
 /// Checks the `proof!` branches of the functions whose bodies the analysis reads
@@ -119,6 +173,12 @@ impl<'tcx> Checker<'tcx> {
         self.has_attr(def_id, &analyze::annot::law_path())
     }
 
+    /// Whether `def_id` is a law outside a trait: a lemma whose contract is assumed wherever a
+    /// function it applies is (`crate_::Analyzer::assume_logic_fn_laws`).
+    fn is_logic_fn_law(&self, def_id: DefId) -> bool {
+        self.is_law(def_id) && self.tcx.opt_associated_item(def_id).is_none()
+    }
+
     /// Whether `def_id` is a trait law with a default body or an impl's definition of one.
     fn is_law_proof(&self, def_id: DefId) -> bool {
         self.is_law(def_id)
@@ -134,7 +194,7 @@ impl<'tcx> Checker<'tcx> {
     /// [`Self::check_law_uses`]). A law used at `Self` or at a concrete type could be the one
     /// being proved.
     fn is_law_at_type_param(&self, def_id: DefId, args: mir_ty::GenericArgsRef<'tcx>) -> bool {
-        if !self.is_law(def_id) {
+        if !self.is_law(def_id) || self.is_logic_fn_law(def_id) {
             return false;
         }
         let ty = args.type_at(0);
