@@ -188,9 +188,13 @@ impl<'tcx> Checker<'tcx> {
         seen.push(ty);
         match ty.kind() {
             mir_ty::Ref(_, _, mir_ty::Mutability::Mut) => true,
-            mir_ty::Adt(adt, args) => adt
-                .all_fields()
-                .any(|field| self.holds_writable_mut(field.ty(self.tcx, args), seen)),
+            // The generic arguments too: `Box<&mut T>` keeps its `T` behind a raw pointer.
+            mir_ty::Adt(adt, args) => {
+                args.types().any(|ty| self.holds_writable_mut(ty, seen))
+                    || adt
+                        .all_fields()
+                        .any(|field| self.holds_writable_mut(field.ty(self.tcx, args), seen))
+            }
             mir_ty::Tuple(tys) => tys.iter().any(|ty| self.holds_writable_mut(ty, seen)),
             mir_ty::Array(elem, _) | mir_ty::Slice(elem) => self.holds_writable_mut(*elem, seen),
             mir_ty::Closure(_, args) => args
