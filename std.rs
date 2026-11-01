@@ -1869,7 +1869,7 @@ fn _extern_spec_vec_deref<T>(vec: &Vec<T>) -> &[T]
 
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
-#[thrust_macros::ensures(*result == *vec && !result == !vec)]
+#[thrust_macros::ensures(*result == *vec && !result == !vec && (!vec).len() == (*vec).len())]
 fn _extern_spec_vec_deref_mut<T>(vec: &mut Vec<T>) -> &mut [T]
     where T: thrust_models::Model
 {
