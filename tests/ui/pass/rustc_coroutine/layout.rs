@@ -4,7 +4,8 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_TRY_SPECS=1
 //@rustc-env: THRUST_VERIFY_ONLY=rustc_abi::layout::coroutine::layout,case_study::iter
 // Stage 7 of the rustc-coroutine verification target: `layout()` of rustc_abi's
-// layout/coroutine.rs, with the local iterator adapters it calls (rewrites.md R8).
+// layout/coroutine.rs, with the local iterator adapters it calls (rewrites.md R8). The counting
+// lemmas it uses (thrust/lemmas.rs) are assumed here and verified by the `lemmas.rs` root.
 // The code is the module tree under tests/rustc_coroutine/; this file selects the stage and
 // drives it.
 #![feature(new_range_api)]
