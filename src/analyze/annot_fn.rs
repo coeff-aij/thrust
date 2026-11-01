@@ -869,15 +869,20 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
     /// The receiver type is instantiated to the actual closure type in the formula function; its
     /// `DefId` is used to look up the contract collected by the analyzer.
     fn receiver_closure_fn_type(&self, receiver_ty: mir_ty::Ty<'tcx>) -> Option<rty::FunctionType> {
-        let (closure_ty, _) = self.receiver_closure_behind_refs(receiver_ty)?;
+        let (closure_ty, refs) = self.receiver_closure_behind_refs(receiver_ty)?;
         let mir_ty::TyKind::Closure(def_id, args) = closure_ty.kind() else {
             if let mir_ty::TyKind::Param(ty) = closure_ty.kind() {
                 tracing::debug!("ParamTy is found: {ty:?}");
-                let closure_fun_ty = self.type_builder.build_closure_type_for_param(
-                    *ty,
-                    self.local_def_id,
-                    self.generic_args,
-                );
+                // Behind a reference, `ty` is a parameter of the function being analyzed
+                // (`G = &H`): its `Fn` bound is among that function's predicates, not among the
+                // instantiated predicates of the annotated one, which state `&H: Fn(..)`.
+                let (bound_owner, bound_args) = match self.type_builder.owner_fn_id().as_local() {
+                    Some(owner) if refs > 0 => (owner, mir_ty::GenericArgs::empty()),
+                    _ => (self.local_def_id, self.generic_args),
+                };
+                let closure_fun_ty =
+                    self.type_builder
+                        .build_closure_type_for_param(*ty, bound_owner, bound_args);
                 tracing::debug!(
                     "the obtained FunctionType for the closure {ty:?}: {closure_fun_ty:#?}"
                 );
