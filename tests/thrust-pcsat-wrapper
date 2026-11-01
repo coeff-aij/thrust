@@ -1,6 +1,18 @@
 #!/bin/bash
 
 COAR_IMAGE=${COAR_IMAGE:-coar:latest}
+
+# COAR_CONFIG_DIR, if set, is a host directory mounted read-only at /config in the container, and
+# COAR_CONFIG (required then) names the solver configuration file inside it.
+config_mount=()
+if [[ -n ${COAR_CONFIG_DIR:-} ]]; then
+    if [[ -z ${COAR_CONFIG:-} ]]; then
+        echo "thrust-pcsat-wrapper: COAR_CONFIG_DIR needs COAR_CONFIG, the file in it" >&2
+        exit 2
+    fi
+    config_mount=(-v "$COAR_CONFIG_DIR:/config:ro")
+    COAR_CONFIG=/config/$COAR_CONFIG
+fi
 COAR_CONFIG=${COAR_CONFIG:-./config/solver/pcsat_thrust.json}
 
 # Each container gets a fixed share of the machine (the limits coar-run uses), so that eight
@@ -18,7 +30,7 @@ cp "$1" "$smt2"
 # THRUST_PCSAT_LABEL (key=value), if set, labels the container, so that a caller can tell its own
 # containers from those of other runs.
 container=$(docker create --rm --cpus="$cpus" --memory="$memory" ${THRUST_PCSAT_LABEL:+--label "$THRUST_PCSAT_LABEL"} \
-    -v "$PWD:/mnt" -w /root/coar "$COAR_IMAGE" \
+    -v "$PWD:/mnt" "${config_mount[@]}" -w /root/coar "$COAR_IMAGE" \
     main.exe -c "$COAR_CONFIG" -p pcsp "/mnt/$smt2")
 trap 'docker rm --force "$container" >/dev/null; exit 143' TERM
 
@@ -27,7 +39,13 @@ docker start --attach "$container" > "$solver_out" &
 wait $!
 exit_code=$?
 
-out=$(< "$solver_out")
+# THRUST_PCSAT_OUTPUT, if set, is a file the solver's whole output is copied to.
+if [[ -n ${THRUST_PCSAT_OUTPUT:-} ]]; then
+    cp "$solver_out" "$THRUST_PCSAT_OUTPUT"
+fi
+# The verdict is the first line, without the marker CoAR may append after a comma; lines after it
+# (such as the result of `check_solution`) are not passed on.
+read -r out < "$solver_out"
 echo "${out%,*}"
 # 137 is a kill, such as by the container's memory limit
 if [[ $exit_code -ne 0 ]]; then

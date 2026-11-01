@@ -345,7 +345,7 @@ Several environment variables are used by Thrust to configure its behavior:
 
 ### PCSat
 
-Thrust is developed alongside [CoAR](https://github.com/hiroshi-unno/coar), which provides the PCSat solver. Some Thrust features require PCSat. Set `THRUST_SOLVER=tests/thrust-pcsat-wrapper` to use PCSat through Docker.
+Thrust is developed alongside [CoAR](https://github.com/hiroshi-unno/coar), which provides the PCSat solver. Some Thrust features require PCSat. Set `THRUST_SOLVER=tests/thrust-pcsat-wrapper` to use PCSat through Docker. The wrapper reads `COAR_IMAGE` and `COAR_CONFIG` (the solver configuration inside the image). Two optional variables change what it mounts and keeps: `COAR_CONFIG_DIR=<dir>` mounts that host directory in the container and takes the configuration from the file `COAR_CONFIG` names inside it (for example a configuration with `check_solution` on), and `THRUST_PCSAT_OUTPUT=<file>` copies the solver's whole output to that file, where the lines after the verdict are. Thrust itself gets the first line only. With neither set the wrapper behaves as without them.
 
 ## Development
 
