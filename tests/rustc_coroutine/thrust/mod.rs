@@ -5,6 +5,7 @@
 use crate::thrust_models;
 
 pub mod iter;
+pub mod counts;
 pub mod lemmas;
 pub mod models;
 pub mod std_specs;

@@ -9,7 +9,7 @@ use crate::rustc_abi::{
 use crate::rustc_index::bit_set::{BitIter, BitMatrix, DenseBitSet};
 use crate::rustc_index::{Idx, IdxRange, IndexSlice, IndexVec, IterEnumerated, SliceIter};
 use crate::case_study::USize;
-use crate::case_study::lemmas;
+use crate::case_study::{counts, lemmas};
 use crate::case_study::iter::{Filter, Map, collect_index_vec, collect_index_vec_result, iter_all};
 use std::iter::{self, Enumerate};
 use std::slice::IterMut;
@@ -784,8 +784,11 @@ pub fn layout<
     // of this expression.
     // The per-variant closure's contract: its `requires` states, of the variant it is given, what
     // its body reads of the captures. These are stage 5's properties 1, 2b, 2c and 3 at the
-    // variant's entries, the lengths of the captures, and the conjuncts of `layout()`'s
-    // `requires` that the variant's `univariant` call needs of `calc` and `local_layouts`. Its
+    // variant's entries, the lengths of the captures, the count c + (locals Assigned to the
+    // variant) <= n that sites 1 and 3 need, and the conjuncts of `layout()`'s `requires` that the
+    // variant's `univariant` call needs of `calc` and `local_layouts`. For the count at
+    // `Map::new`, `layout()` needs c to be the number of Ineligible locals (`DenseBitSet::card`
+    // and property 4) and the classes to be disjoint, which no lemma states yet. Its
     // `ensures` is `true`: `layout()` states nothing of the variants it returns. The closure is
     // `FnMut` (it updates `size` and `align`), so a clause reads each capture through the
     // receiver, as `&mut` of the type it is captured by.
@@ -839,6 +842,15 @@ pub fn layout<
                             && forall(|i: USize|
                                 !<FieldIdx as Idx>::index_is(k, i)
                                     || (i < (**promoted_offsets).len() && i < (**promoted_memory_index).len()))))
+                // Sites 1 and 3: the promoted fields' count c and the locals Assigned to the
+                // variant are no more than the n locals (the classes are disjoint and c is the
+                // number of Ineligible ones, property 4), and `FieldIdx` and `u32` reach n.
+                && (**promoted_memory_index).len()
+                    + counts::class_cnt::<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>(
+                        **assignments, (**assignments).len(), SavedLocalEligibility::Assigned(index))
+                    <= (**assignments).len()
+                && forall(|k: USize| !(0 <= k && k <= (**local_layouts).len()) || <FieldIdx as Idx>::can_new(k))
+                && (**local_layouts).len() <= 4294967295usize
                 // `univariant`'s `layout_pre` and `deref_functional` at the variant's fields,
                 // which are entries of `local_layouts`.
                 && LayoutCalculator::<C>::deref_functional::<FieldIdx, VariantIdx, F>()
@@ -879,6 +891,18 @@ pub fn layout<
                 |local| local_layouts[*local],
             );
 
+            // The fields collected below are no more than the locals Assigned to the variant: the
+            // filter accepts the entries Assigned to it, which name distinct locals (property
+            // 2c). With the `requires` on c, the count sites 1 and 3 need.
+            thrust_macros::proof!(counts::filter_count(
+                &variant_only_tys,
+                variant_fields,
+                &assignments,
+                &Assigned(index),
+                variant_fields.len(),
+                assignments.len(),
+            ));
+
             // Rewrite (rewrites.md R8): `collect_index_vec` for `collect`.
             // TODO(proof): `fits_in_any_order` by the size bound needs the variant's Assigned locals
             // and the promoted ones to weigh at most `local_layouts`, a sum over distinct locals
@@ -898,12 +922,9 @@ pub fn layout<
                 unreachable!();
             };
 
-            // TODO(proof): `invert_bijective_mapping` needs `u32::can_new` up to the number of
-            // fields m, and `FieldIdx::new(invalid_field_idx)` needs `FieldIdx::can_new(c + m)`:
-            // both need m, the variant's Assigned locals, bounded by the distinct locals
-            // (c + m <= n). It holds by eligibility's property 2c (an Assigned local appears once
-            // in its variant) and property 4 (the c ineligible locals are not Assigned), but it is
-            // a count of distinct locals, which no contract states.
+            // `invert_bijective_mapping` needs `u32::can_new` up to the number of fields m, and
+            // `FieldIdx::new(invalid_field_idx)` needs `FieldIdx::can_new(c + m)`: c + m <= n by
+            // `filter_count` above and the closure's `requires` on c.
             let memory_index = in_memory_order.invert_bijective_mapping();
             let invalid_field_idx = promoted_memory_index.len() + memory_index.len();
             let mut combined_in_memory_order =
@@ -942,9 +963,10 @@ pub fn layout<
                     };
                     // TODO(proof): `combined_in_memory_order[memory_index]`
                     // needs `promoted_memory_index.len() + memory_index <
-                    // invalid_field_idx` -- README stage 7: `memory_index` of an Assigned local
-                    // is below the variant's field count m by its own permutation (the counts of
-                    // the variant's Assigned locals, still open), and an Ineligible local's
+                    // invalid_field_idx`, and the `u32` sum above c + m <= n (`filter_count`):
+                    // `memory_index` of an Assigned local is an entry of `memory_index`, below m
+                    // by `invert_bijective_mapping`, which needs the state of
+                    // `offsets_and_memory_index` (site 2), and an Ineligible local's
                     // `promoted_memory_index` entry is below its length by the permutation split.
                     combined_in_memory_order[memory_index] = i;
                     offset

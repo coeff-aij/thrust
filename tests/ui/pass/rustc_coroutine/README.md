@@ -25,8 +25,9 @@ with the driver broken, regenerated and checked by `tests/rustc_coroutine/fail/c
 | `univariant.rs` | `LayoutCalculator::univariant`, `univariant_biased` trusted on its contract | draft, `ignore-on-host`: no answer at 300 s, also for its panic obligations alone (query 17.8 MB) |
 | `univariant_biased.rs` | `LayoutCalculator::univariant_biased` | draft, `ignore-on-host`: query about 323 MB |
 | `eligibility.rs` | `coroutine_saved_local_eligibility` | draft, `ignore-on-host` |
-| `layout.rs` | `layout()` and the adapters of `thrust/iter.rs`; the lemmas of `thrust/lemmas.rs` assumed | draft, `ignore-on-host` |
+| `layout.rs` | `layout()`, the adapters of `thrust/iter.rs` and `counts::filter_count`; the lemmas of `thrust/lemmas.rs` and `thrust/counts.rs` assumed | draft, `ignore-on-host` |
 | `lemmas.rs` | the counting lemmas of `thrust/lemmas.rs` that `layout()` uses | verified |
+| `counts.rs` | the count of a variant's fields, `thrust/counts.rs`, which `layout()`'s per-variant closure uses | draft, `ignore-on-host`: the lemmas over the field list verify; the step of `map_bound` (the bound of `Filter`'s index map) and `filter_count` get no answer |
 
 The roots that are not drafts answer over the module tree in the ui suite; the states of the
 drafts are those of the single-file stage files.
