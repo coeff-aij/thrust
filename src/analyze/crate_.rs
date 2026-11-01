@@ -443,7 +443,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             );
         } else {
             let expected = expected.unwrap_or_else(|| analyzer.expected_ty());
-            self.ctx.register_def(owner_fn_id, expected);
+            self.ctx
+                .register_def(owner_fn_id, expected, Some(local_def_id));
         }
     }
 
@@ -1092,6 +1093,21 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// analyzed, monomorphic ones as instances and generic ones by def, the monomorphic trusted
     /// functions and the entry function.
     fn walk_roots(&self) -> (Vec<mir_ty::Instance<'tcx>>, Vec<rustc_span::def_id::DefId>) {
+        let (mut roots, trusted, generic) = self.walk_roots_with_trusted_apart();
+        roots.extend(trusted);
+        (roots, generic)
+    }
+
+    /// [`Self::walk_roots`] with the monomorphic trusted functions returned apart from the other
+    /// roots.
+    #[allow(clippy::type_complexity)]
+    fn walk_roots_with_trusted_apart(
+        &self,
+    ) -> (
+        Vec<mir_ty::Instance<'tcx>>,
+        Vec<mir_ty::Instance<'tcx>>,
+        Vec<rustc_span::def_id::DefId>,
+    ) {
         let analyzed = self.tcx.mir_keys(()).iter().copied().filter(|def_id| {
             let id = def_id.to_def_id();
             !self.skip_analysis.contains(def_id)
@@ -1118,13 +1134,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         .requires_monomorphization(self.tcx)
             });
         let entry = self.tcx.entry_fn(()).map(|(def_id, _)| def_id);
-        let roots = monomorphic
-            .into_iter()
-            .chain(trusted)
-            .chain(entry)
-            .map(|def_id| mir_ty::Instance::mono(self.tcx, def_id))
-            .collect();
-        (roots, generic)
+        let instances = |def_ids: Vec<_>| -> Vec<_> {
+            def_ids
+                .into_iter()
+                .map(|def_id| mir_ty::Instance::mono(self.tcx, def_id))
+                .collect()
+        };
+        let roots = instances(monomorphic.into_iter().chain(entry).collect());
+        (roots, instances(trusted.collect()), generic)
     }
 
     /// The mode of a crate function on the ignored walk ([`analyze::Mode`]).
@@ -1265,12 +1282,15 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     }
 
     fn unanalyzed_entries(&self) -> analyze::unanalyzed_entry::Entries<'tcx> {
-        let (roots, generic) = self.walk_roots();
+        // A monomorphic trusted function is entered from its analyzed callers, with what their
+        // calls cover, as a generic one is; it is a root only for the paths no analyzed call
+        // leads into.
+        let (roots, trusted_roots, generic) = self.walk_roots_with_trusted_apart();
         let roots = self.ctx.walk_roots(roots, generic, |def_id| {
             self.crate_mode(def_id) == Some(analyze::Mode::Verified)
         });
         self.ctx
-            .unanalyzed_entries(roots, |def_id| self.is_analyzed(def_id))
+            .unanalyzed_entries(roots, trusted_roots, |def_id| self.is_analyzed(def_id))
     }
 
     /// Records every `#[thrust::law]` function declared in a local trait.

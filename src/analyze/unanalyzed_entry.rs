@@ -161,11 +161,27 @@ impl<'tcx> analyze::Analyzer<'tcx> {
             .and_then(|formula_def_id| {
                 self.formula_fn_with_args(formula_def_id, contract_args, owner_fn_id)
             });
-        StatedPres {
-            receivers: formula_fn
-                .map(|formula_fn| formula_fn.pre_receivers().to_vec())
-                .unwrap_or_default(),
-        }
+        // A precondition the `requires` reads in a position other than only positive ones is
+        // not fixed by it: the solver may choose it smaller than the real one. A closure with a
+        // written contract has no such unknown, and its precondition is the written one.
+        let receivers = formula_fn
+            .map(|formula_fn| {
+                let written =
+                    formula_fn
+                        .mixed_pre_receivers()
+                        .into_iter()
+                        .filter(|ty| match *ty.kind() {
+                            mir_ty::TyKind::Closure(def_id, _) => self.has_written_requires(def_id),
+                            _ => false,
+                        });
+                formula_fn
+                    .pre_receivers()
+                    .into_iter()
+                    .chain(written)
+                    .collect()
+            })
+            .unwrap_or_default();
+        StatedPres { receivers }
     }
 
     /// The contract a call of `def_id` at `args` from an analyzed body is checked against when
@@ -193,8 +209,13 @@ impl<'tcx> analyze::Analyzer<'tcx> {
         def_id: DefId,
         args: mir_ty::GenericArgsRef<'tcx>,
     ) -> Option<(DefId, mir_ty::GenericArgsRef<'tcx>)> {
-        let analyze::DefTy::Deferred(specs) = self.defs.get(&def_id)? else {
-            return Some((def_id, args));
+        let specs = match self.defs.get(&def_id)? {
+            analyze::DefTy::Concrete(_, spec) => {
+                let spec = spec.map_or(def_id, |spec| spec.to_def_id());
+                return Some((spec, args));
+            }
+            analyze::DefTy::Deferred(specs) => specs,
+            analyze::DefTy::Generic(_) => return Some((def_id, args)),
         };
         specs.iter().find_map(|spec| {
             let spec_def_id = spec.local_def_id.to_def_id();
@@ -212,7 +233,7 @@ impl<'tcx> analyze::Analyzer<'tcx> {
     }
 
     /// Walks the instances the verified functions can run, as
-    /// [`analyze::Analyzer::stop_ignored_reached`] does from the same roots, and returns the
+    /// [`analyze::Analyzer::stop_ignored_reached`] does from `roots`, and returns the
     /// edges from an instance whose body Thrust does not analyze into a crate function it
     /// analyzes: a closure, or a function or method that the analyzed call leading into the
     /// unanalyzed code on its path does not cover ([`HandedOver::Function`]). A non-local
@@ -221,9 +242,14 @@ impl<'tcx> analyze::Analyzer<'tcx> {
     /// it, and so does std's `impl Fn for &F`, which forwards the call to `F`; other shims are
     /// not analyzed. The entry function is left out: its precondition is
     /// required of every argument already (`crate_::Analyzer::assert_callable_entry`).
+    ///
+    /// `fallback_roots` are the trusted functions of the crate: each is entered from the analyzed
+    /// calls that lead into it, and is walked as a root, with nothing covered, only when the walk
+    /// from `roots` reached none of its instances.
     pub fn unanalyzed_entries(
         &self,
         roots: Vec<mir_ty::Instance<'tcx>>,
+        fallback_roots: Vec<mir_ty::Instance<'tcx>>,
         is_analyzed: impl Fn(DefId) -> bool,
     ) -> Entries<'tcx> {
         let entry_fn = self.tcx.entry_fn(()).map(|(def_id, _)| def_id);
@@ -232,6 +258,29 @@ impl<'tcx> analyze::Analyzer<'tcx> {
             _ => false,
         };
         let mut seen = HashSet::new();
+        let mut entries = Entries::default();
+        self.walk_entries(roots, &item_analyzed, entry_fn, &mut seen, &mut entries);
+        // A fallback root that no walk reached is reached by no analyzed call, so nothing is
+        // covered there. One reached has been walked with what its callers cover.
+        let reached: HashSet<_> = seen.iter().map(|node| node.instance).collect();
+        let unreached = fallback_roots
+            .into_iter()
+            .filter(|root| !reached.contains(root))
+            .collect();
+        self.walk_entries(unreached, &item_analyzed, entry_fn, &mut seen, &mut entries);
+        entries
+    }
+
+    /// Continues the walk of [`Self::unanalyzed_entries`] from `roots`, which start with nothing
+    /// covered, over the nodes `seen`.
+    fn walk_entries(
+        &self,
+        roots: Vec<mir_ty::Instance<'tcx>>,
+        item_analyzed: &impl Fn(mir_ty::Instance<'tcx>) -> bool,
+        entry_fn: Option<DefId>,
+        seen: &mut HashSet<Node<'tcx>>,
+        entries: &mut Entries<'tcx>,
+    ) {
         let mut pending = VecDeque::new();
         for root in roots {
             let node = Node {
@@ -243,7 +292,6 @@ impl<'tcx> analyze::Analyzer<'tcx> {
                 pending.push_back(node);
             }
         }
-        let mut entries = Entries::default();
         while let Some(node) = pending.pop_front() {
             let instance = node.instance;
             if !self.runs_body(instance) || self.nests_past_recursion_limit(instance) {
@@ -294,7 +342,6 @@ impl<'tcx> analyze::Analyzer<'tcx> {
                 }
             }
         }
-        entries
     }
 
     /// Whether `def_id` is a method of std's `impl Fn*<A> for &F`, which forwards a call to `F`:
