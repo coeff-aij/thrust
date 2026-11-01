@@ -104,17 +104,18 @@ impl<'tcx> RustCallVisitor<'_, 'tcx, '_> {
                     .type_is_copy_modulo_regions(self.analyzer.typing_env, ty)
                 {
                     mir::Operand::Copy(field)
-                } else {
-                    // Moved into a local of its own, which the reborrow of a `&mut` argument
-                    // (`ReborrowVisitor`) reads, as it does the argument of any other call.
+                } else if ty.is_mutable_ptr() {
+                    // A `&mut` argument is reborrowed by `ReborrowVisitor`, which reads a local
+                    // as it does the argument of any other call. The local is dropped after the
+                    // call, resolving the prophecy of what is left of the reference.
                     let decl = mir::LocalDecl::new(ty, Default::default()).immutable();
                     let new_local = self.analyzer.local_decls.push(decl);
                     let new_local_ty = self.analyzer.place_type(&field);
                     self.analyzer.bind_local(new_local, new_local_ty.into());
-                    // The callee takes what is left of it by the call, a reborrow, so it is
-                    // dropped after the call, resolving the prophecy of a `&mut` it holds.
                     self.analyzer.drop_after_terminator(new_local);
                     mir::Operand::Move(new_local.into())
+                } else {
+                    mir::Operand::Move(field)
                 };
                 untupled.push(rustc_span::source_map::Spanned {
                     node: operand,

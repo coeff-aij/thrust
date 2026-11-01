@@ -1,5 +1,4 @@
 //@compile-flags: -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 // `hist_inv!` relates the states of a closure; a function item has none, and is rejected.
 
 #[thrust::trusted]

@@ -1,5 +1,4 @@
 //@compile-flags: -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 // A call through `&mut F` has no contract here, as `pre!` of a `&mut` closure has none.
 
 fn inc(x: i32) -> i32 {

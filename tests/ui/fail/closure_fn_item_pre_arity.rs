@@ -1,5 +1,4 @@
 //@compile-flags: -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 // `pre!` of a function item takes as many arguments as the function.
 
 #[thrust_macros::requires(x < 100)]
