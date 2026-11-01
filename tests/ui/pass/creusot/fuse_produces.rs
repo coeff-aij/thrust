@@ -58,10 +58,10 @@ where
     Self::Item: Model,
 {
     #[thrust_macros::law]
-    #[thrust_macros::requires(Self::completed(s))]
-    #[thrust_macros::requires(Self::produces(!s, steps, *next))]
-    #[thrust_macros::ensures(steps == Seq::empty() && !s == *next)]
-    fn is_fused(s: &mut Self, steps: Seq<<Self::Item as Model>::Ty>, next: &Self) {}
+    #[thrust_macros::requires(Self::completed(Mut::new(*s, *t)))]
+    #[thrust_macros::requires(Self::produces(*t, steps, *next))]
+    #[thrust_macros::ensures(steps == Seq::empty() && *t == *next)]
+    fn is_fused(s: &Self, t: &Self, steps: Seq<<Self::Item as Model>::Ty>, next: &Self) {}
 }
 
 pub struct Fuse<I> {
