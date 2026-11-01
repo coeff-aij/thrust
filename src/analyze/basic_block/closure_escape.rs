@@ -16,7 +16,7 @@ use rustc_middle::ty::{self as mir_ty};
 use rustc_span::def_id::DefId;
 
 use super::{singleton_params, subst_singleton_params, Analyzer, ResolvedCallable};
-use crate::analyze::unanalyzed_entry::HandedOver;
+use crate::analyze::unanalyzed_entry::{count_held, peel_refs, pointee, HandedOver, HandoverCount};
 use crate::analyze::TypeParam;
 use crate::chc;
 use crate::refine::Var;
@@ -56,11 +56,20 @@ impl<'tcx> Analyzer<'tcx, '_> {
         let Some((contract_def_id, contract_args)) = contract else {
             return;
         };
-        let stated = self.ctx.stated_pres(
-            contract_def_id,
-            contract_args,
-            self.type_builder.owner_fn_id(),
-        );
+        // The `pre!` stated are those of the contract the call is checked against, which is the
+        // trait method's for a local impl method without its own; the bounds that let the
+        // function call a closure are those of the function that runs.
+        let inherited = self.ctx.inherited_contract(def_id, args, resolved_def_id);
+        let (stated_def_id, stated_args) = inherited.unwrap_or((contract_def_id, contract_args));
+        // A stop names the trait method, not the extern spec carrying its contract.
+        let requires_of = if inherited.is_some() {
+            def_id
+        } else {
+            contract_def_id
+        };
+        let stated =
+            self.ctx
+                .stated_pres(stated_def_id, stated_args, self.type_builder.owner_fn_id());
         for (function, function_args) in stated.functions() {
             let function = HandedOver::Function(function, function_args);
             self.record_covered(function, def_id, args);
@@ -68,14 +77,15 @@ impl<'tcx> Analyzer<'tcx, '_> {
         for param in self.iterator_spec_params(contract_def_id) {
             let ty = mir_ty::EarlyBinder::bind(param.to_ty(self.tcx))
                 .instantiate(self.tcx, contract_args);
-            for closure in self
-                .tcx
-                .erase_regions(ty)
-                .walk()
-                .filter_map(|arg| arg.as_type())
-            {
+            let ty = self.tcx.erase_regions(ty);
+            // The iterator's `inv` states the obligation of the closures held by the arguments
+            // at the parameters of the bounded type, not of a value of their type another
+            // argument holds, whatever its type.
+            let others = self.operands_not_at(contract_def_id, param, operands);
+            for closure in ty.walk().filter_map(|arg| arg.as_type()) {
                 if matches!(closure.kind(), mir_ty::TyKind::Closure(..)) {
                     self.record_handover(closure, def_id, args);
+                    self.record_handover_count(closure, def_id, args, others.clone(), 0);
                 }
             }
         }
@@ -84,17 +94,94 @@ impl<'tcx> Analyzer<'tcx, '_> {
                 .instantiate(self.tcx, contract_args);
             let ty = self.tcx.erase_regions(ty);
             self.record_handover(ty, def_id, args);
-            let holders = self.holders(ty, operands);
             // `stated` records types, not values, so a `pre!` stated of a value of `ty` counts
-            // only when exactly one argument holds one, itself or behind references: not for a
-            // second value of `ty`, nor for one inside a collection.
-            if stated.names(ty) && matches!(holders[..], [(_, _, Some(_))]) {
-                continue;
-            }
-            for (idx, held, derefs) in holders {
-                self.hand_over(ty, calls, &operand_tys[idx], held, derefs, contract_def_id);
-            }
+            // only when the arguments hold exactly one: itself, behind references and boxes, or
+            // in a field of a struct or tuple (the function of an iterator adapter), not a second
+            // value of `ty`, nor one inside a collection. Otherwise each value is handed over with
+            // its obligation. A type parameter here may stand for a type holding more values, so
+            // the walk over unanalyzed code counts them again at each instance of the caller
+            // ([`HandoverCount`]).
+            let operand_types = self.operand_types(operands);
+            let count = operand_types
+                .iter()
+                .map(|held| count_held(self.tcx, *held, ty))
+                .sum::<Option<usize>>();
+            let accounted = if stated.names(ty) && count == Some(1) {
+                1
+            } else {
+                let holders = self.holders(ty, operands);
+                for (idx, held, derefs) in &holders {
+                    let handed = (contract_def_id, requires_of);
+                    self.hand_over(ty, calls, &operand_tys[*idx], *held, *derefs, handed);
+                }
+                holders.len()
+            };
+            self.record_handover_count(ty, def_id, args, operand_types, accounted);
         }
+    }
+
+    /// Records that the call of `def_id` at `args` states the obligation of `accounted` values
+    /// of the closure type `ty` held by arguments of the types `operand_types`
+    /// ([`HandoverCount`]).
+    fn record_handover_count(
+        &mut self,
+        ty: mir_ty::Ty<'tcx>,
+        def_id: DefId,
+        args: mir_ty::GenericArgsRef<'tcx>,
+        operand_types: Vec<mir_ty::Ty<'tcx>>,
+        accounted: usize,
+    ) {
+        let span = self.body.basic_blocks[self.basic_block]
+            .terminator()
+            .source_info
+            .span;
+        self.ctx.record_handover_count(HandoverCount {
+            owner: self.local_def_id.to_def_id(),
+            callee: def_id,
+            callee_args: args,
+            ty,
+            operand_types,
+            accounted,
+            span,
+        });
+    }
+
+    /// The types of the arguments `operands` other than those at the parameters of
+    /// `contract_def_id` whose declared type is `param`, itself or behind references and boxes;
+    /// all of them for a closure or when the arguments do not match the parameters one to one.
+    fn operands_not_at(
+        &self,
+        contract_def_id: DefId,
+        param: mir_ty::ParamTy,
+        operands: &[Operand<'tcx>],
+    ) -> Vec<mir_ty::Ty<'tcx>> {
+        let operand_types = self.operand_types(operands);
+        if self.tcx.is_closure_like(contract_def_id) {
+            return operand_types;
+        }
+        let sig = self.tcx.fn_sig(contract_def_id).instantiate_identity();
+        let inputs = sig.skip_binder().inputs();
+        if inputs.len() != operand_types.len() {
+            return operand_types;
+        }
+        let param_ty = param.to_ty(self.tcx);
+        operand_types
+            .into_iter()
+            .zip(inputs)
+            .filter(|(_, declared)| peel_refs(**declared) != param_ty)
+            .map(|(held, _)| held)
+            .collect()
+    }
+
+    /// The types of the arguments `operands`, without regions.
+    fn operand_types(&self, operands: &[Operand<'tcx>]) -> Vec<mir_ty::Ty<'tcx>> {
+        operands
+            .iter()
+            .map(|operand| {
+                self.tcx
+                    .erase_regions(operand.ty(&self.local_decls, self.tcx))
+            })
+            .collect()
     }
 
     /// The arguments among `operands` that hold a value of `ty`, each with its type and the
@@ -167,11 +254,14 @@ impl<'tcx> Analyzer<'tcx, '_> {
 
     /// The type parameters of `contract_def_id` bounded by std.rs's `IteratorSpec`. A closure
     /// inside the iterator one is instantiated with (the function of a `Map`) is run by the
-    /// iterator's `next`, so the call hands it over. Its obligation is met where the iterator
-    /// holding it was made: `map` requires `Map`'s `inv`, which states the closure's `pre!` of
+    /// iterator's `next`, so the call hands it over. For std's `Map` its obligation is met where
+    /// the iterator was made: `map` requires `Map`'s `inv`, which states the closure's `pre!` of
     /// every item it can be called on and is kept by every `next`, the only way std.rs lets the
     /// state of a `Map` change. So it holds of every `Map` a callee receives, whether or not the
-    /// callee's contract requires `inv` (a trusted consumer's need not).
+    /// callee's contract requires `inv` (a trusted consumer's need not). A user adapter's `inv`
+    /// is established only where a call discharges it, such as a direct call of its `next`
+    /// through the trait's contract; nothing here checks that it holds, nor that it states the
+    /// `pre!` of the closures the adapter holds.
     fn iterator_spec_params(&self, contract_def_id: DefId) -> Vec<mir_ty::ParamTy> {
         let Some(iterator_spec) = self.ctx.def_ids.iterator_spec() else {
             return Vec::new();
@@ -233,7 +323,9 @@ impl<'tcx> Analyzer<'tcx, '_> {
 
     /// States the obligation of the value of type `ty` that an argument of type `held`, typed
     /// `operand_ty`, holds behind `derefs` references and boxes; `None` stops, as the value is
-    /// held some way Thrust cannot follow.
+    /// held some way Thrust cannot follow. The value is handed to the function `contract_def_id`
+    /// gives the contract of, and `requires_of` is the function whose contract the call is
+    /// checked against, in whose `requires` a stop asks to state its `pre!`.
     fn hand_over(
         &mut self,
         ty: mir_ty::Ty<'tcx>,
@@ -241,7 +333,7 @@ impl<'tcx> Analyzer<'tcx, '_> {
         operand_ty: &rty::RefinedType<Var>,
         held: mir_ty::Ty<'tcx>,
         derefs: Option<usize>,
-        contract_def_id: DefId,
+        (contract_def_id, requires_of): (DefId, DefId),
     ) {
         let Some(derefs) = derefs else {
             self.tcx.dcx().span_fatal(
@@ -254,7 +346,7 @@ impl<'tcx> Analyzer<'tcx, '_> {
                      `{held}`, where Thrust cannot follow it: state the `pre!` it needs in the \
                      `requires` of `{}`",
                     self.tcx.def_path_str(contract_def_id),
-                    self.tcx.def_path_str(contract_def_id),
+                    self.tcx.def_path_str(requires_of),
                 ),
             );
         };
@@ -281,7 +373,7 @@ impl<'tcx> Analyzer<'tcx, '_> {
                      contract Thrust can require of it: state the `pre!` it needs in the \
                      `requires` of `{}`",
                     self.tcx.def_path_str(contract_def_id),
-                    self.tcx.def_path_str(contract_def_id),
+                    self.tcx.def_path_str(requires_of),
                 ),
             );
         };
@@ -340,15 +432,6 @@ impl<'tcx> Analyzer<'tcx, '_> {
     }
 }
 
-/// `ty` without the references and boxes around it.
-fn peel_refs(ty: mir_ty::Ty<'_>) -> mir_ty::Ty<'_> {
-    let mut ty = ty;
-    while let Some(inner) = pointee(ty) {
-        ty = inner;
-    }
-    ty
-}
-
 /// The number of references and boxes around `ty`.
 fn count_refs(ty: mir_ty::Ty<'_>) -> usize {
     let mut ty = ty;
@@ -358,15 +441,6 @@ fn count_refs(ty: mir_ty::Ty<'_>) -> usize {
         count += 1;
     }
     count
-}
-
-/// What `ty` points to, if it is a reference or a box.
-fn pointee(ty: mir_ty::Ty<'_>) -> Option<mir_ty::Ty<'_>> {
-    match ty.kind() {
-        mir_ty::TyKind::Ref(_, inner, _) => Some(*inner),
-        mir_ty::TyKind::Adt(adt, args) if adt.is_box() => Some(args.type_at(0)),
-        _ => None,
-    }
 }
 
 /// The number of references and boxes a value of `held` is behind which is of type `ty`, or

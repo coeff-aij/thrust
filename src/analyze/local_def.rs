@@ -322,33 +322,15 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         if self.ctx.is_derived_clone(def_id) {
             return;
         }
-        let sig = self.ctx.fn_sig(def_id);
-        let promised = sig
-            .inputs()
-            .iter()
-            .filter_map(|ty| match ty.kind() {
-                mir_ty::TyKind::Ref(_, inner, mir_ty::Mutability::Mut) => Some(*inner),
-                _ => None,
-            })
-            .chain(std::iter::once(match sig.output().kind() {
-                mir_ty::TyKind::Ref(_, inner, _) => *inner,
-                _ => sig.output(),
-            }));
-        for ty in promised {
-            if self
-                .ctx
-                .type_invariant_instance(ty, self.owner_fn_id)
-                .is_some()
-            {
-                self.tcx.dcx().span_fatal(
-                    self.tcx.def_span(def_id),
-                    format!(
-                        "the derived `{}` would promise the invariant of `{ty}`, which the derive \
-                         does not keep; write the impl",
-                        self.tcx.def_path_str(def_id),
-                    ),
-                );
-            }
+        if let Some(ty) = self.invariant_in_contract(false) {
+            self.tcx.dcx().span_fatal(
+                self.tcx.def_span(def_id),
+                format!(
+                    "the derived `{}` would promise the invariant of `{ty}`, which the derive \
+                     does not keep; write the impl",
+                    self.tcx.def_path_str(def_id),
+                ),
+            );
         }
     }
 
@@ -863,6 +845,31 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.type_invariant_sites(sig)
             .into_iter()
             .find(|site| site.is_required() == required)
+            .map(|site| site.ty)
+    }
+
+    /// A type whose invariant the contract at its generic arguments ensures at a position whose
+    /// type in the def's own signature mentions a type parameter. At a position with a concrete
+    /// type the contract carries the invariant over type parameters as well.
+    pub fn invariant_promised_over_parameters(&self) -> Option<mir_ty::Ty<'tcx>> {
+        use mir_ty::TypeVisitableExt as _;
+        let def_id = self.local_def_id.to_def_id();
+        let sig = self.ctx.fn_sig_with_body(def_id, &self.body);
+        let own_sig = self.ctx.fn_sig(def_id);
+        self.type_invariant_sites(sig)
+            .into_iter()
+            .filter(|site| !site.is_required())
+            .find(|site| {
+                let own_ty = match site.position {
+                    InvariantPosition::Param(idx) => own_sig.inputs()[idx],
+                    InvariantPosition::Result => own_sig.output(),
+                };
+                let own_ty = match own_ty.kind() {
+                    mir_ty::TyKind::Ref(_, inner, _) => *inner,
+                    _ => own_ty,
+                };
+                own_ty.has_param()
+            })
             .map(|site| site.ty)
     }
 
@@ -1738,8 +1745,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// The source text of the type an invariant writes for its parameter `ident`, the `idx`-th:
     /// the self type of the formula function's `<T as Model>::Ty`. `None` for `&str`, whose
     /// parameter is `NoModel`, and where `T` ends or starts with tokens `thrust_macros` made
-    /// (`Closure<F>` for a closure type parameter, `Dyn` for a trait object), whose span is
-    /// the macro's.
+    /// (`Closure<F>` for a closure type parameter), whose span is the macro's.
     fn invariant_param_source_text(
         &self,
         formula_def_id: LocalDefId,

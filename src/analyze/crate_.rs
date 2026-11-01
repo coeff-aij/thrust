@@ -1015,6 +1015,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let proof_branch = self.ctx.def_ids().proof_branch();
         analyze::lemma::check_lemmas(self.tcx, proof_branch);
         self.check_model_impls();
+        self.check_invariant_impls();
         self.analyze_raw_command_annot();
         self.register_trait_laws();
         self.check_restated_laws();
@@ -1044,6 +1045,34 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.check_ignored_not_run();
         self.check_invariants_not_assumed_unanalyzed();
         self.assert_callable_entry();
+    }
+
+    /// Stops at an `Invariant` impl whose self type is not an ADT defined in the crate (not in the injected
+    /// `std.rs`), as Creusot allows
+    /// type invariants only on a crate's own types. The functions of a foreign type, std's
+    /// among them, are not written over its invariant, so they could return values that break it.
+    fn check_invariant_impls(&self) {
+        let Some(trait_did) = self.ctx.def_ids().type_invariant() else {
+            return;
+        };
+        for &impl_did in self.tcx.local_trait_impls(trait_did) {
+            let self_ty = self.tcx.type_of(impl_did).instantiate_identity();
+            let own_adt = self_ty.ty_adt_def().is_some_and(|adt| {
+                adt.did()
+                    .as_local()
+                    .is_some_and(|local| !analyze::is_injected_std(self.tcx, local))
+            });
+            if own_adt {
+                continue;
+            }
+            self.tcx.dcx().span_fatal(
+                self.tcx.def_span(impl_did),
+                format!(
+                    "`Invariant` can be implemented only for a type defined in this crate, \
+                     not `{self_ty}`"
+                ),
+            );
+        }
     }
 
     /// Checks that each `#[thrust::law]` restated on an impl item (as Creusot writes it)
@@ -1193,7 +1222,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             let clauses = analyze::Analyzer::accepts_every_argument(&fn_ty);
             self.ctx.extend_clauses(clauses);
         }
-        for (closure, from) in self.unanalyzed_entries().unhanded_closures {
+        let entries = self.unanalyzed_entries();
+        if let Some(miscounted) = entries.miscounted.first() {
+            self.stop_miscounted_handover(miscounted);
+        }
+        for (closure, from) in entries.unhanded_closures {
             let def_id = closure.def_id();
             if self.ctx.has_written_requires(def_id) {
                 continue;
@@ -1208,6 +1241,28 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 ),
             );
         }
+    }
+
+    /// Stops at a call that hands values of a closure type to code Thrust does not analyze, at
+    /// an instance of its caller where its analysis does not state the obligation of each.
+    fn stop_miscounted_handover(&self, miscounted: &analyze::unanalyzed_entry::Miscounted<'tcx>) {
+        let held = match miscounted.held {
+            Some(1) => "1 value".to_string(),
+            Some(held) => format!("{held} values"),
+            None => "values, held some way Thrust cannot count,".to_string(),
+        };
+        self.tcx.dcx().span_fatal(
+            miscounted.count.span,
+            format!(
+                "at `{}`, this call hands `{}`, which Thrust does not analyze, {held} of the \
+                 closure type `{}`, and states the obligation of {}: a `pre!` stated of one \
+                 value does not cover another value of its type",
+                miscounted.owner,
+                self.tcx.def_path_str(miscounted.count.callee),
+                miscounted.closure,
+                miscounted.count.accounted,
+            ),
+        );
     }
 
     /// Stops at a closure of the crate with an inferred precondition, or a function pointer,
