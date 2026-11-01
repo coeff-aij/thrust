@@ -9,6 +9,9 @@ use thrust_models::Model;
 // `next` hands out the first element by `split_off_first_mut` and keeps the rest. Its model is the
 // model of `inner`, the slice's current and final sequences. The associated `Item` is `&'a mut T`,
 // so `visited` is a sequence of `Mut` pairs.
+// Creusot's constructor `iter_mut(v)` and its `all_zero` client are left out: std.rs does not state
+// that `&mut v[..]` keeps the length, which the constructor's contract needs. `all_zero.rs` runs on
+// std's `slice::IterMut`.
 
 // Creusot's `common.rs`, the iterator specification every case shares: the trait predicates
 // `produces(self, visited, o)`, `completed` and `invariant` (`true` unless the impl says otherwise),
