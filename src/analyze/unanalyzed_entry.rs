@@ -191,7 +191,8 @@ impl<'tcx> analyze::Analyzer<'tcx> {
         args: mir_ty::GenericArgsRef<'tcx>,
     ) -> Option<(DefId, mir_ty::GenericArgsRef<'tcx>)> {
         let analyze::DefTy::Deferred(specs) = self.defs.get(&def_id)? else {
-            return Some((def_id, args));
+            let spec = self.concrete_spec_defs.get(&def_id);
+            return Some((spec.map_or(def_id, |spec| spec.to_def_id()), args));
         };
         specs.iter().find_map(|spec| {
             let spec_def_id = spec.local_def_id.to_def_id();
@@ -220,6 +221,7 @@ impl<'tcx> analyze::Analyzer<'tcx> {
     pub fn unanalyzed_entries(
         &self,
         roots: Vec<mir_ty::Instance<'tcx>>,
+        fallback_roots: Vec<mir_ty::Instance<'tcx>>,
         is_analyzed: impl Fn(DefId) -> bool,
     ) -> Entries<'tcx> {
         let entry_fn = self.tcx.entry_fn(()).map(|(def_id, _)| def_id);
@@ -228,6 +230,28 @@ impl<'tcx> analyze::Analyzer<'tcx> {
             _ => false,
         };
         let mut seen = HashSet::new();
+        let mut entries = Entries::default();
+        self.walk_entries(roots, &item_analyzed, entry_fn, &mut seen, &mut entries);
+        // A fallback root that no walk reached is reached by no analyzed call, so nothing is
+        // covered there. One reached has been walked with what its callers cover.
+        let unreached = fallback_roots
+            .into_iter()
+            .filter(|root| !seen.iter().any(|node| node.instance == *root))
+            .collect();
+        self.walk_entries(unreached, &item_analyzed, entry_fn, &mut seen, &mut entries);
+        entries
+    }
+
+    /// Continues the walk of [`Self::unanalyzed_entries`] from `roots`, which start with nothing
+    /// covered, over the nodes `seen`.
+    fn walk_entries(
+        &self,
+        roots: Vec<mir_ty::Instance<'tcx>>,
+        item_analyzed: &impl Fn(mir_ty::Instance<'tcx>) -> bool,
+        entry_fn: Option<DefId>,
+        seen: &mut HashSet<Node<'tcx>>,
+        entries: &mut Entries<'tcx>,
+    ) {
         let mut pending = VecDeque::new();
         for root in roots {
             let node = Node {
@@ -239,7 +263,6 @@ impl<'tcx> analyze::Analyzer<'tcx> {
                 pending.push_back(node);
             }
         }
-        let mut entries = Entries::default();
         while let Some(node) = pending.pop_front() {
             let instance = node.instance;
             if !self.runs_body(instance) || self.nests_past_recursion_limit(instance) {
@@ -285,7 +308,6 @@ impl<'tcx> analyze::Analyzer<'tcx> {
                 }
             }
         }
-        entries
     }
 
     /// The closure and function pointer types in what `instance` returns and in the types

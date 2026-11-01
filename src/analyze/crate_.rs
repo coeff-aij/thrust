@@ -444,6 +444,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         } else {
             let expected = expected.unwrap_or_else(|| analyzer.expected_ty());
             self.ctx.register_def(owner_fn_id, expected);
+            self.ctx.register_concrete_spec(owner_fn_id, local_def_id);
         }
     }
 
@@ -1266,11 +1267,19 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
     fn unanalyzed_entries(&self) -> analyze::unanalyzed_entry::Entries<'tcx> {
         let (roots, generic) = self.walk_roots();
+        // A monomorphic trusted function is entered from its analyzed callers, with what their
+        // calls cover, as a generic one is; it is a root only for the paths no analyzed call
+        // leads into.
+        let (trusted_roots, roots): (Vec<_>, Vec<_>) = roots.into_iter().partition(|root| {
+            root.def_id()
+                .as_local()
+                .is_some_and(|local| self.trusted.contains(&local))
+        });
         let roots = self.ctx.walk_roots(roots, generic, |def_id| {
             self.crate_mode(def_id) == Some(analyze::Mode::Verified)
         });
         self.ctx
-            .unanalyzed_entries(roots, |def_id| self.is_analyzed(def_id))
+            .unanalyzed_entries(roots, trusted_roots, |def_id| self.is_analyzed(def_id))
     }
 
     /// Records every `#[thrust::law]` function declared in a local trait.

@@ -614,6 +614,10 @@ pub struct Analyzer<'tcx> {
     /// (at least for every defs referenced by local def bodies)
     defs: HashMap<DefId, DefTy<'tcx>>,
 
+    /// The def that carries the written contract of a function whose type is `DefTy::Concrete`:
+    /// the function itself or its extern spec. Absent for a function with no written contract.
+    concrete_spec_defs: HashMap<DefId, LocalDefId>,
+
     /// Collection of functions with `#[thrust::formula_fn]` attribute.
     formula_fns: HashMap<LocalDefId, DeferredFormulaFnDef<'tcx>>,
     /// Instances of predicates with a Rust body; see [`Analyzer::predicate_with_args`].
@@ -961,6 +965,7 @@ impl<'tcx> Analyzer<'tcx> {
             invariant_annotations: Default::default(),
             trusted_bodies: Default::default(),
             handovers: Default::default(),
+            concrete_spec_defs: Default::default(),
             body_checks: Default::default(),
         }
     }
@@ -1096,6 +1101,12 @@ impl<'tcx> Analyzer<'tcx> {
     pub fn register_def(&mut self, def_id: DefId, rty: rty::RefinedType) {
         tracing::info!(def_id = ?def_id, rty = %rty.display(), "register_def");
         self.defs.insert(def_id, DefTy::Concrete(rty));
+    }
+
+    /// Records that `spec` carries the written contract of `target`, registered with
+    /// [`Analyzer::register_def`].
+    pub fn register_concrete_spec(&mut self, target: DefId, spec: LocalDefId) {
+        self.concrete_spec_defs.insert(target, spec);
     }
 
     pub fn register_impl_method_with_own_contract(&mut self, def_id: DefId) {
