@@ -172,22 +172,74 @@ impl<'a> TieText<'a> {
     /// The premises that `u`, of sort `generic`, reads as `x`. A sequence is related element by
     /// element, its projection's law at `u`: PCSat does not insert the law for a projection
     /// applied on its own, and an equation through the projection function slows its refutations
-    /// (no answer at 60 s on `take`'s fail twin, against 1.2 s without it).
+    /// (no answer at 60 s on `take`'s fail twin, against 1.2 s without it). A tuple, `Box` or
+    /// `Mut` that holds such a sequence is related component by component; any other value by
+    /// one equation, since relating `take`'s `(a2, Int)` component by component also left its
+    /// fail twin without an answer at 60 s.
     fn premises(&mut self, generic: &chc::Sort, u: &str, x: &str) -> Vec<String> {
-        let chc::Sort::Seq(elem) = generic else {
-            return vec![format!("(= {} {x})", self.project(generic, u))];
-        };
-        if self.instance_sort(generic) == *generic {
+        let instance = self.instance_sort(generic);
+        if instance == *generic {
             return vec![format!("(= {u} {x})")];
         }
-        let k = self.projections.fresh_var("thrust_k");
-        let elem_u = self.project(elem, &format!("(seq.nth {u} {k})"));
-        vec![
-            format!("(= (seq.len {u}) (seq.len {x}))"),
-            format!(
-                "(forall (({k} Int)) (=> (and (<= 0 {k}) (< {k} (seq.len {x}))) (= {elem_u} (seq.nth {x} {k}))))"
-            ),
-        ]
+        if !self.holds_projected_seq(generic) {
+            return vec![format!("(= {} {x})", self.project(generic, u))];
+        }
+        match generic {
+            chc::Sort::Tuple(gs) => {
+                let is: Vec<_> = gs.iter().map(|g| self.instance_sort(g)).collect();
+                let mut premises = Vec::new();
+                for (i, g) in gs.iter().enumerate() {
+                    let u_i = format!("({} {u})", self.ctx.tuple_proj(gs, i));
+                    let x_i = format!("({} {x})", self.ctx.tuple_proj(&is, i));
+                    premises.extend(self.premises(g, &u_i, &x_i));
+                }
+                premises
+            }
+            chc::Sort::Box(g) => {
+                let u_c = format!("({} {u})", self.ctx.box_current(g));
+                let x_c = format!("({} {x})", self.ctx.box_current(&self.instance_sort(g)));
+                self.premises(g, &u_c, &x_c)
+            }
+            chc::Sort::Mut(g) => {
+                let i = self.instance_sort(g);
+                let (u_c, x_c) = (
+                    format!("({} {u})", self.ctx.mut_current(g)),
+                    format!("({} {x})", self.ctx.mut_current(&i)),
+                );
+                let (u_f, x_f) = (
+                    format!("({} {u})", self.ctx.mut_final(g)),
+                    format!("({} {x})", self.ctx.mut_final(&i)),
+                );
+                let mut premises = self.premises(g, &u_c, &x_c);
+                premises.extend(self.premises(g, &u_f, &x_f));
+                premises
+            }
+            chc::Sort::Seq(elem) => {
+                let k = self.projections.fresh_var("thrust_k");
+                let elem_u = self.project(elem, &format!("(seq.nth {u} {k})"));
+                vec![
+                    format!("(= (seq.len {u}) (seq.len {x}))"),
+                    format!(
+                        "(forall (({k} Int)) (=> (and (<= 0 {k}) (< {k} (seq.len {x}))) (= {elem_u} (seq.nth {x} {k}))))"
+                    ),
+                ]
+            }
+            _ => vec![format!("(= {} {x})", self.project(generic, u))],
+        }
+    }
+
+    /// Whether `generic` holds, through tuples, `Box` and `Mut`, a sequence whose projection is
+    /// not the identity.
+    fn holds_projected_seq(&self, generic: &chc::Sort) -> bool {
+        if self.instance_sort(generic) == *generic {
+            return false;
+        }
+        match generic {
+            chc::Sort::Seq(_) => true,
+            chc::Sort::Tuple(gs) => gs.iter().any(|g| self.holds_projected_seq(g)),
+            chc::Sort::Box(g) | chc::Sort::Mut(g) => self.holds_projected_seq(g),
+            _ => false,
+        }
     }
 
     /// The `lambda` stating `definition` as the value of the universal `pred`, curried over its
