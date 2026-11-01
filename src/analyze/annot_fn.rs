@@ -94,9 +94,11 @@ impl<'tcx> FormulaFn<'tcx> {
     /// directly or in the body of a predicate it calls: a closure or a type parameter for a
     /// closure receiver, a function item's type for a function.
     ///
-    /// A receiver is listed only when every occurrence is positive ([`Polarity`]): a formula that
-    /// also reads its precondition elsewhere in another position is not monotone in it, so it
-    /// states nothing of it.
+    /// A receiver is listed only when the formula is monotone in its precondition ([`Polarity`]):
+    /// every occurrence in a conjunct is positive, in at least one conjunct the formula requires.
+    /// A formula that reads it in another position as well, within a conjunct, lets the solver
+    /// shrink the precondition, and states nothing of it. The formula implies each required
+    /// conjunct, so one that is monotone in it suffices whatever the others read.
     pub fn pre_receivers(&self) -> Vec<mir_ty::Ty<'tcx>> {
         self.pre_receivers
             .iter()
@@ -317,9 +319,6 @@ pub struct AnnotFnTranslator<'a, 'tcx> {
     /// The [`Polarity`] of the subformula being translated, shared with the translators of
     /// quantifier bodies.
     polarity: Rc<Cell<Polarity>>,
-    /// Whether the expression being translated is required of the whole formula: the formula, or
-    /// an operand of a required conjunction.
-    conjunctive: Rc<Cell<bool>>,
 }
 
 impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
@@ -354,7 +353,6 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             env: HashMap::default(),
             pre_receivers: Rc::default(),
             polarity: Rc::new(Cell::new(Polarity::Positive)),
-            conjunctive: Rc::new(Cell::new(true)),
         };
         translator.build_env_from_params();
         translator
@@ -678,7 +676,11 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         let body = if self.is_logic(self.local_def_id.to_def_id()) {
             FormulaFnBody::Term(self.to_term(self.logic_body_expr().0))
         } else {
-            FormulaFnBody::Formula(self.to_formula(self.body.value))
+            FormulaFnBody::Formula(
+                self.to_formula_or_term_in(self.body.value, true)
+                    .into_formula()
+                    .expect("expected a formula"),
+            )
         };
         let fn_sig = self.tcx.fn_sig(self.local_def_id.to_def_id());
         let binder = if self.generic_args.is_empty() {
@@ -1713,10 +1715,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         &self,
         hir: &'tcx rustc_hir::Expr<'tcx>,
     ) -> FormulaOrTerm<rty::FunctionParamIdx> {
-        let conjunctive = self.conjunctive.replace(false);
-        let translated = self.to_formula_or_term_in(hir, conjunctive);
-        self.conjunctive.set(conjunctive);
-        translated
+        self.to_formula_or_term_in(hir, false)
     }
 
     /// Translates one operand of a conjunction that is itself required: the `pre!` receivers it
@@ -1726,8 +1725,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         hir: &'tcx rustc_hir::Expr<'tcx>,
     ) -> FormulaOrTerm<rty::FunctionParamIdx> {
         let outer = std::mem::take(&mut *self.pre_receivers.borrow_mut());
-        self.conjunctive.set(true);
-        let translated = self.to_formula_or_term(hir);
+        let translated = self.to_formula_or_term_in(hir, true);
         let inner = std::mem::replace(&mut *self.pre_receivers.borrow_mut(), outer);
         self.merge_conjunct_receivers(inner);
         translated
@@ -2375,8 +2373,10 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             }
             ExprKind::Block(block, _) => {
                 if block.stmts.is_empty() {
-                    self.conjunctive.set(conjunctive);
-                    self.to_formula_or_term(block.expr.expect("expected an expression in block"))
+                    self.to_formula_or_term_in(
+                        block.expr.expect("expected an expression in block"),
+                        conjunctive,
+                    )
                 } else {
                     unimplemented!("unsupported block in formula: {:?}", block);
                 }
