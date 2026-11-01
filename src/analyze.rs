@@ -519,7 +519,9 @@ impl<'tcx> AnalysisKey<'tcx> {
 
 #[derive(Debug, Clone)]
 enum DefTy<'tcx> {
-    Concrete(rty::RefinedType),
+    /// The type of a function, and the def that carries its written contract: the function itself
+    /// or its extern spec. `None` for the lang item `panic`, which has none.
+    Concrete(rty::RefinedType, Option<LocalDefId>),
     Generic(GenericDefTy<'tcx>),
     // Several extern specs can share one target, each covering the instantiations its tail call
     // and bounds cover (see `bind_spec_args`); a call takes the first one that covers it.
@@ -1097,9 +1099,9 @@ impl<'tcx> Analyzer<'tcx> {
         }
     }
 
-    pub fn register_def(&mut self, def_id: DefId, rty: rty::RefinedType) {
+    pub fn register_def(&mut self, def_id: DefId, rty: rty::RefinedType, spec: Option<LocalDefId>) {
         tracing::info!(def_id = ?def_id, rty = %rty.display(), "register_def");
-        self.defs.insert(def_id, DefTy::Concrete(rty));
+        self.defs.insert(def_id, DefTy::Concrete(rty, spec));
     }
 
     pub fn register_impl_method_with_own_contract(&mut self, def_id: DefId) {
@@ -1624,7 +1626,7 @@ impl<'tcx> Analyzer<'tcx> {
 
     pub fn concrete_def_ty(&self, def_id: DefId) -> Option<&rty::RefinedType> {
         self.defs.get(&def_id).and_then(|def_ty| match def_ty {
-            DefTy::Concrete(rty) => Some(rty),
+            DefTy::Concrete(rty, _) => Some(rty),
             DefTy::Generic(GenericDefTy { rty, .. }) => rty.as_ref(),
             DefTy::Deferred(_) => None,
         })
@@ -1646,7 +1648,7 @@ impl<'tcx> Analyzer<'tcx> {
             caller_def_id,
         };
         let mut def_ty = match self.defs.get(&def_id)? {
-            DefTy::Concrete(rty) => rty.clone(),
+            DefTy::Concrete(rty, _) => rty.clone(),
             DefTy::Generic(generic) => generic.cache.borrow().get(&key)?.clone(),
             DefTy::Deferred(specs) => specs
                 .iter()
@@ -2098,7 +2100,7 @@ impl<'tcx> Analyzer<'tcx> {
         let is_generic = matches!(self.defs.get(&def_id)?, DefTy::Generic(_));
         let (local_def_id, instantiated_ty_cache, deferred_ty_mode, generic_args) =
             match self.defs.get(&def_id)? {
-                DefTy::Concrete(rty) => {
+                DefTy::Concrete(rty, _) => {
                     let mut def_ty = rty.clone();
                     Self::instantiate_generic_args(&mut def_ty, generic_args, &type_builder);
                     return Some(def_ty);
@@ -2416,7 +2418,11 @@ impl<'tcx> Analyzer<'tcx> {
         let panic_def_id = self
             .tcx
             .require_lang_item(LangItem::Panic, rustc_span::DUMMY_SP);
-        self.register_def(panic_def_id, rty::RefinedType::unrefined(panic_ty.into()));
+        self.register_def(
+            panic_def_id,
+            rty::RefinedType::unrefined(panic_ty.into()),
+            None,
+        );
     }
 
     pub fn new_env(&self) -> Env {
@@ -2643,7 +2649,7 @@ impl<'tcx> Analyzer<'tcx> {
             .iter()
             .filter_map(|(def_id, def_ty)| {
                 let rty = match def_ty {
-                    DefTy::Concrete(rty) => rty,
+                    DefTy::Concrete(rty, _) => rty,
                     DefTy::Generic(generic) => generic.rty.as_ref()?,
                     DefTy::Deferred(_) => return None,
                 };
@@ -2830,7 +2836,9 @@ impl<'tcx> Analyzer<'tcx> {
                     self.spec_args(spec, generic_args, caller_def_id)?,
                 ))
             }),
-            Some(DefTy::Concrete(_)) | None => def_id.as_local().map(|local| (local, generic_args)),
+            Some(DefTy::Concrete(..)) | None => {
+                def_id.as_local().map(|local| (local, generic_args))
+            }
         };
         let Some((spec, args)) = spec else {
             return false;
@@ -2846,7 +2854,7 @@ impl<'tcx> Analyzer<'tcx> {
         match self.defs.get(&def_id) {
             Some(DefTy::Generic(generic)) => vec![generic.local_def_id],
             Some(DefTy::Deferred(specs)) => specs.iter().map(|spec| spec.local_def_id).collect(),
-            Some(DefTy::Concrete(_)) | None => Vec::new(),
+            Some(DefTy::Concrete(..)) | None => Vec::new(),
         }
     }
 
