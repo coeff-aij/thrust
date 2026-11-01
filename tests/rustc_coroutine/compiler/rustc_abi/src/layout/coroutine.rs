@@ -782,9 +782,89 @@ pub fn layout<
     // Rewrite (rewrites.md R8): `Map::new(it, f)` for `it.map(f)` and `Filter::new(it, p)` for
     // `it.filter(p)` here and below, and `collect_index_vec_result` for the `collect` at the end
     // of this expression.
+    // The per-variant closure's contract: its `requires` states, of the variant it is given, what
+    // its body reads of the captures. These are stage 5's properties 1, 2b, 2c and 3 at the
+    // variant's entries, the lengths of the captures, and the conjuncts of `layout()`'s
+    // `requires` that the variant's `univariant` call needs of `calc` and `local_layouts`. Its
+    // `ensures` is `true`: `layout()` states nothing of the variants it returns. The closure is
+    // `FnMut` (it updates `size` and `align`), so a clause reads each capture through the
+    // receiver, as `&mut` of the type it is captured by.
     let variants = collect_index_vec_result::<VariantIdx, _, _, _>(Map::new(
         variant_fields.iter_enumerated(),
-        |(index, variant_fields)| {
+        thrust_macros::closure!(
+        captures(
+            calc: &mut &LayoutCalculator<C>,
+            local_layouts: &mut &IndexSlice<LocalIdx, F>,
+            assignments: &mut &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
+            promoted_offsets: &mut &IndexVec<FieldIdx, Size>,
+            promoted_memory_index: &mut &IndexVec<FieldIdx, u32>,
+        ),
+        requires(
+            (**assignments).len() == (**local_layouts).len()
+                && forall(|k: USize| !(0 <= k && k <= (*variant_fields).len()) || <FieldIdx as Idx>::can_new(k))
+                && forall(|f: usize|
+                    !(0 <= f && f < (*variant_fields).len())
+                    || forall(|i: USize|
+                        !<LocalIdx as Idx>::index_is((*variant_fields)[f], i) || i < (**local_layouts).len()))
+                // Property 1 at the variant's entries.
+                && forall(|l: usize, f: usize|
+                    !(0 <= l && l < (**assignments).len()
+                        && 0 <= f && f < (*variant_fields).len()
+                        && exists(|i: USize| i == l && <LocalIdx as Idx>::index_is((*variant_fields)[f], i)))
+                    || (**assignments)[l] != SavedLocalEligibility::Unassigned)
+                // Property 2b: a local the variant lists is Assigned to the variant, if at all.
+                && forall(|l: usize, f: usize, vi: <VariantIdx as thrust_models::Model>::Ty, w: USize|
+                    !(0 <= l && l < (**assignments).len()
+                        && 0 <= f && f < (*variant_fields).len()
+                        && exists(|i: USize| i == l && <LocalIdx as Idx>::index_is((*variant_fields)[f], i))
+                        && (**assignments)[l] == SavedLocalEligibility::Assigned(vi)
+                        && <VariantIdx as Idx>::index_is(index, w))
+                    || forall(|vn: USize| !<VariantIdx as Idx>::index_is(vi, vn) || vn == w))
+                // Property 2c: an Assigned local appears once in the variant's entries.
+                && forall(|l: usize, f: usize, g: usize, vi: <VariantIdx as thrust_models::Model>::Ty|
+                    !(0 <= l && l < (**assignments).len()
+                        && 0 <= f && f < (*variant_fields).len()
+                        && 0 <= g && g < (*variant_fields).len()
+                        && exists(|i: USize| i == l && <LocalIdx as Idx>::index_is((*variant_fields)[f], i))
+                        && exists(|i: USize| i == l && <LocalIdx as Idx>::index_is((*variant_fields)[g], i))
+                        && (**assignments)[l] == SavedLocalEligibility::Assigned(vi))
+                    || f == g)
+                // Property 3, with the set's count c read as the promoted fields' count: an
+                // ineligible local's field index is below it.
+                && forall(|l: usize, x: Option<<FieldIdx as thrust_models::Model>::Ty>|
+                    !(0 <= l && l < (**assignments).len()
+                        && (**assignments)[l] == SavedLocalEligibility::Ineligible(x))
+                    || exists(|k: <FieldIdx as thrust_models::Model>::Ty|
+                        x == Some(k)
+                            && forall(|i: USize|
+                                !<FieldIdx as Idx>::index_is(k, i)
+                                    || (i < (**promoted_offsets).len() && i < (**promoted_memory_index).len()))))
+                // `univariant`'s `layout_pre` and `deref_functional` at the variant's fields,
+                // which are entries of `local_layouts`.
+                && LayoutCalculator::<C>::deref_functional::<FieldIdx, VariantIdx, F>()
+                && forall(|z: USize| !(z == 0usize) || <VariantIdx as Idx>::can_new(z))
+                && forall(|dl: TargetDataLayout| !C::dl_of(**calc, dl)
+                    || dl.default_address_space_pointer_spec.pointer_size.raw == 2
+                    || dl.default_address_space_pointer_spec.pointer_size.raw == 4
+                    || dl.default_address_space_pointer_spec.pointer_size.raw == 8)
+                && forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche, z: Size|
+                    !(C::dl_of(**calc, dl)
+                        && 0 <= i
+                        && i < (**local_layouts).len()
+                        && thrust_macros::post!(<F as core::ops::Deref>::deref(&(**local_layouts)[i]), d) && **d == l
+                        && l.largest_niche == Some(n))
+                        || (Niche::wf_in(n, dl) && (!Primitive::size_in(n.value, dl, z) || n.offset.raw + z.raw <= l.size.raw)))
+                && forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, c: Scalar|
+                    !(C::dl_of(**calc, dl)
+                        && 0 <= i
+                        && i < (**local_layouts).len()
+                        && thrust_macros::post!(<F as core::ops::Deref>::deref(&(**local_layouts)[i]), d) && **d == l
+                        && l.backend_repr == BackendRepr::Scalar(c))
+                        || Scalar::wf_in(c, dl))
+        ),
+        ensures(true),
+        |(index, variant_fields): (VariantIdx, &IndexVec<FieldIdx, LocalIdx>)|
+            -> Result<VariantLayout<FieldIdx>, crate::rustc_abi::layout::LayoutCalculatorError<F>> {
             let variant_only_tys = Map::new(
                 Filter::new(variant_fields.iter(), |local| match assignments[**local] {
                     // Unreachable by eligibility.rs's stage-5 property 1 (an `Unassigned` local
@@ -886,6 +966,7 @@ pub fn layout<
             // reassigned to them above.
             Ok(VariantLayout::from_layout(variant))
         },
+        ),
     ))?;
 
     size = size.align_to(align.abi);
