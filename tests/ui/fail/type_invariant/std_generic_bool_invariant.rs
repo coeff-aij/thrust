@@ -1,10 +1,9 @@
-//@error-in-other-file: would promise the invariant
 //@compile-flags: -Adead_code -C debug-assertions=off -Aunused
 
-// std's `Option::<i64>::is_some`, whose extern spec in std.rs is generic over `T`, returns a
-// `bool`, whose invariant std never keeps.
+// `Invariant` is implemented only for a type of the crate: std's `Option::<i64>::is_some` returns
+// a `bool`, whose invariant std never keeps.
 #[thrust_macros::context]
-impl Invariant for bool {
+impl Invariant for bool { //~ ERROR: `Invariant` can be implemented only for a type defined in this crate
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
         self
