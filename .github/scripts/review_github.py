@@ -6,6 +6,8 @@ import subprocess
 
 REVIEW_HEADING = "**Claude review** (automated)"
 REVIEW_AUTHOR = "github-actions[bot]"
+# Starts each finding the review body carries because its file is not part of the pull request.
+OUTSIDE_PREFIX = "- (file outside this pull request) "
 
 
 def gh(*args: str) -> str:

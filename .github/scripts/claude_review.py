@@ -30,7 +30,7 @@ import anthropic
 from anthropic import beta_tool
 from pydantic import BaseModel
 
-from review_github import REVIEW_HEADING, automated_reviews, gh, gh_api_items
+from review_github import OUTSIDE_PREFIX, REVIEW_AUTHOR, REVIEW_HEADING, automated_reviews, gh, gh_api_items
 
 GUIDELINE_FILES = ["AGENTS.md", "CLAUDE.md", "README.md"]
 # On a first review, a changed file is sent whole when it is short or the change adds at least
@@ -550,11 +550,12 @@ def review_payload(
     on_file = [c for c in review.comments if c not in inline and c.path in pr_paths]
     outside = [c for c in review.comments if c not in inline and c not in on_file]
     body = [f"{REVIEW_HEADING}\n\n{review.summary}"]
-    body += [f"- `{c.path}:{c.line}`: {comment_text(c)}" for c in outside]
+    # review_freshness.py reads these items back (OUTSIDE_ITEM): keep the format.
+    body += [f"{OUTSIDE_PREFIX}`{c.path}:{c.line}`: {comment_text(c)}" for c in outside]
     if omitted:
         body.append("Not reviewed (not text): " + ", ".join(f"`{p}`" for p in omitted))
     # Kept with the review, where the API can read it back after the run's log has expired.
-    body.append(f"<!-- usage: {record} -->")
+    body.append(f"<!-- usage: {record.replace('--', '- -')} -->")
     payload = {
         "commit_id": head_sha,
         "body": "\n\n".join(body),
@@ -576,21 +577,42 @@ mutation($review: ID!, $path: String!, $body: String!) {
 """
 
 
-def post_review(repo: str, pr: str, payload: dict, file_comments: list[dict]) -> None:
-    """Posts the review as one: created pending with its line comments, given its file comments
-    through the GraphQL API (the REST API takes none in a review), then submitted, also when a file
-    comment fails, so that no pending review blocks the next run."""
+def delete_pending_reviews(repo: str, pr: str) -> None:
+    """Deletes the bot's pending reviews of the pull request: GitHub allows one per user, and a run
+    cut off between creating and submitting a review would otherwise block every later run."""
+    for r in gh_api_items(f"repos/{repo}/pulls/{pr}/reviews"):
+        if r["user"]["login"] == REVIEW_AUTHOR and r["state"] == "PENDING":
+            gh("api", f"repos/{repo}/pulls/{pr}/reviews/{r['id']}", "--method", "DELETE")
+
+
+def create_review(repo: str, pr: str, payload: dict) -> dict:
     created = subprocess.run(
         ["gh", "api", f"repos/{repo}/pulls/{pr}/reviews", "--method", "POST", "--input", "-"],
         input=json.dumps(payload), check=True, capture_output=True, text=True,
     )
-    review = json.loads(created.stdout)
-    events = f"repos/{repo}/pulls/{pr}/reviews/{review['id']}/events"
+    return json.loads(created.stdout)
+
+
+def post_review(repo: str, pr: str, payload: dict, file_comments: list[dict]) -> None:
+    """Posts the review. Without file comments it is created and submitted in one call. With them
+    it is created pending with its line comments, given its file comments through the GraphQL API
+    (the REST API takes none in a review), then submitted, also when a file comment fails. If the
+    submission fails, the pending review is deleted before the error is raised."""
+    delete_pending_reviews(repo, pr)
+    if not file_comments:
+        print(create_review(repo, pr, {**payload, "event": "COMMENT"})["html_url"])
+        return
+    review = create_review(repo, pr, payload)
     try:
-        for c in file_comments:
-            gh("api", "graphql", "-f", f"query={ADD_FILE_THREAD}", "-f", f"review={review['node_id']}", "-f", f"path={c['path']}", "-f", f"body={c['body']}")
-    finally:
-        print(gh("api", events, "--method", "POST", "-f", "event=COMMENT", "-f", f"body={payload['body']}", "--jq", ".html_url"))
+        try:
+            for c in file_comments:
+                gh("api", "graphql", "-f", f"query={ADD_FILE_THREAD}", "-f", f"review={review['node_id']}", "-f", f"path={c['path']}", "-f", f"body={c['body']}")
+        finally:
+            events = f"repos/{repo}/pulls/{pr}/reviews/{review['id']}/events"
+            print(gh("api", events, "--method", "POST", "-f", "event=COMMENT", "-f", f"body={payload['body']}", "--jq", ".html_url"))
+    except BaseException:
+        delete_pending_reviews(repo, pr)
+        raise
 
 
 def sent_record(sent: Sent, prompt: str, system: list[dict], views: dict[str, str], whole: set[str], chunks: dict[str, str]) -> str:
