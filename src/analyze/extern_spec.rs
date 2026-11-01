@@ -12,6 +12,7 @@ use rustc_span::def_id::{DefId, LocalDefId};
 use crate::analyze::model_eq::{is_model_eq_clause, model_eq_bound, SpecBound};
 use crate::analyze::{derive, Analyzer, DefTy, DeferredDefTy};
 use crate::chc;
+use crate::pretty::PrettyDisplayExt as _;
 use crate::rty;
 
 /// What generic analyses assumed at their type parameters, checked at each instance once every
@@ -364,7 +365,121 @@ pub fn trait_bounds<'tcx>(
         .collect()
 }
 
+/// The generic arguments of the trait method that the impl method `def_id` implements, at the
+/// impl method's `generic_args`: the trait's arguments of the impl at those arguments, followed by
+/// the method's own. `None` when `def_id` is not a method of a trait impl.
+pub fn trait_item_args<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    def_id: DefId,
+    generic_args: mir_ty::GenericArgsRef<'tcx>,
+) -> Option<mir_ty::GenericArgsRef<'tcx>> {
+    let impl_did = tcx.parent(def_id);
+    if tcx.def_kind(impl_did) != (rustc_hir::def::DefKind::Impl { of_trait: true }) {
+        return None;
+    }
+    let trait_ref = tcx.impl_trait_ref(impl_did)?.instantiate(tcx, generic_args);
+    let own_args = generic_args
+        .iter()
+        .skip(tcx.generics_of(def_id).parent_count);
+    Some(tcx.mk_args_from_iter(trait_ref.args.iter().chain(own_args)))
+}
+
 impl<'tcx> Analyzer<'tcx> {
+    /// The index of the spec of `def_id`, a std trait's method, that covers a call at
+    /// `generic_args` made in `caller_def_id`, as [`Analyzer::def_ty_with_args`] picks it, without
+    /// recording the spec bounds the call would assume.
+    fn covering_spec(
+        &self,
+        def_id: DefId,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
+        caller_def_id: DefId,
+    ) -> Option<usize> {
+        let Some(DefTy::Deferred(specs)) = self.defs.get(&def_id) else {
+            return None;
+        };
+        specs.iter().position(|spec| {
+            self.covered_spec_args(spec, generic_args, caller_def_id)
+                .is_some()
+        })
+    }
+
+    /// Whether `def_id`, a crate impl's method that overrides a trait method with an extern spec,
+    /// takes at `generic_args` a spec that does not cover its own type parameters:
+    /// `Iterator::collect`'s covers only `B = Vec<T>`. A method without a contract of its own has
+    /// the trait's contract at the arguments it is analyzed at
+    /// (`local_def::Analyzer::expected_ty`), so its body, verified once over its type parameters
+    /// against another contract, was not checked against the one a call at `generic_args` takes.
+    /// Creusot checks once, at the impl, that an impl's method refines its trait's contract,
+    /// since a spec there is generic; a spec that exists only at an instance is checked there.
+    pub(super) fn takes_narrower_trait_spec(
+        &self,
+        def_id: DefId,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
+        caller_def_id: DefId,
+    ) -> bool {
+        let Some(trait_item) = self
+            .tcx
+            .opt_associated_item(def_id)
+            .and_then(|item| item.trait_item_def_id)
+        else {
+            return false;
+        };
+        if !matches!(self.defs.get(&trait_item), Some(DefTy::Deferred(_))) {
+            return false;
+        }
+        let identity = mir_ty::GenericArgs::identity_for_item(self.tcx, def_id);
+        let covering = |args, owner| {
+            let trait_args = trait_item_args(self.tcx, def_id, args)?;
+            self.covering_spec(trait_item, trait_args, owner)
+        };
+        let at_instance = covering(generic_args, caller_def_id);
+        at_instance.is_some() && at_instance != covering(identity, def_id)
+    }
+
+    /// Checks the crate's override `instance` of the trait method `method`, which a reused
+    /// generic body called at a type parameter taking the trait's spec, when at the instance's
+    /// arguments that spec does not cover the override's own type parameters
+    /// ([`Self::takes_narrower_trait_spec`]): the override is typed at the instance
+    /// ([`Analyzer::def_ty_with_args`]), which analyzes its body there against its contract (the
+    /// trait's spec, or a spec of its own such as an extern spec at that instance), and that
+    /// contract must refine the spec the call took, as the check at the impl
+    /// (`check_impl_refinements`) does for a spec that covers it.
+    fn check_override_at_instance(
+        &mut self,
+        (method, method_args): MethodCall<'tcx>,
+        (override_def_id, override_args): MethodCall<'tcx>,
+        caller_def_id: DefId,
+    ) {
+        let Some(override_ty) =
+            self.def_ty_with_args(override_def_id, override_args, caller_def_id)
+        else {
+            self.tcx.dcx().fatal(format!(
+                "thrust: no specification of `{}`, which `{}` runs through a call of `{}` at a \
+                 type parameter",
+                self.tcx
+                    .def_path_str_with_args(override_def_id, override_args),
+                self.tcx.def_path_str(caller_def_id),
+                self.tcx.def_path_str(method),
+            ));
+        };
+        let spec_ty = self
+            .def_ty_with_args(method, method_args, caller_def_id)
+            .expect("the spec the dispatched call took");
+        tracing::info!(
+            ?override_def_id,
+            ?override_args,
+            override_ty = %override_ty.display(),
+            spec_ty = %spec_ty.display(),
+            "override at a narrower spec's instance"
+        );
+        let clauses = rty::relate_refining_function_type(
+            override_ty.ty.as_function().unwrap(),
+            spec_ty.ty.as_function().unwrap(),
+            Some(&self.enum_defs),
+        );
+        self.extend_clauses(clauses);
+    }
+
     /// The generic arguments of `spec` at a call of its target at `generic_args`, or `None` when
     /// the spec does not cover the call.
     ///
@@ -379,12 +494,24 @@ impl<'tcx> Analyzer<'tcx> {
         generic_args: mir_ty::GenericArgsRef<'tcx>,
         caller_def_id: DefId,
     ) -> Option<mir_ty::GenericArgsRef<'tcx>> {
+        let (bound, assumed) = self.covered_spec_args(spec, generic_args, caller_def_id)?;
+        self.record_assumed_spec_bounds(caller_def_id, assumed);
+        Some(bound)
+    }
+
+    /// [`Self::spec_args`] with the spec bounds the call assumes, unrecorded.
+    fn covered_spec_args(
+        &self,
+        spec: &DeferredDefTy<'tcx>,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
+        caller_def_id: DefId,
+    ) -> Option<(mir_ty::GenericArgsRef<'tcx>, Vec<mir_ty::Clause<'tcx>>)> {
         let Some(target_args) = spec.target_args else {
-            return Some(generic_args);
+            return Some((generic_args, Vec::new()));
         };
         let bound = bind_spec_args(self.tcx, spec.local_def_id, target_args, generic_args)?;
         let Some(model_ty) = self.def_ids().model_ty() else {
-            return Some(bound);
+            return Some((bound, Vec::new()));
         };
         let model_trait = self.tcx.parent(model_ty);
         let type_builder = self.type_builder(self.def_ids(), caller_def_id);
@@ -404,8 +531,7 @@ impl<'tcx> Analyzer<'tcx> {
                 )
             });
         let assumed = classify_spec_bounds(self.tcx, clauses, caller_def_id, model_ty).ok()?;
-        self.record_assumed_spec_bounds(caller_def_id, assumed);
-        Some(bound)
+        Some((bound, assumed))
     }
 
     /// Records spec bounds assumed while analysing a body owned by `owner_fn_id`, under its typeck
@@ -493,7 +619,9 @@ impl<'tcx> Analyzer<'tcx> {
     /// the instance's arguments, to a fixpoint. A generic impl method verified once may assume
     /// spec bounds or total methods at its own type parameters, and an instance reached only
     /// through such a call would otherwise never check them. A call still at a type parameter of
-    /// the instance's caller is recorded for that caller in turn.
+    /// the instance's caller is recorded for that caller in turn. An override taking there a spec
+    /// that does not cover its own type parameters is checked at the instance instead
+    /// ([`Self::check_override_at_instance`]).
     fn expand_dispatched_instances(&mut self, seen: &mut HashSet<(MethodCall<'tcx>, DefId)>) {
         use mir_ty::TypeVisitableExt as _;
 
@@ -512,9 +640,18 @@ impl<'tcx> Analyzer<'tcx> {
                 else {
                     return false;
                 };
-                if !instance.def_id().is_local()
-                    || !matches!(this.defs.get(&instance.def_id()), Some(DefTy::Generic(_)))
-                {
+                if !instance.def_id().is_local() {
+                    return false;
+                }
+                if this.takes_narrower_trait_spec(instance.def_id(), instance.args, caller_def_id) {
+                    this.check_override_at_instance(
+                        (method, method_args),
+                        (instance.def_id(), instance.args),
+                        caller_def_id,
+                    );
+                    return true;
+                }
+                if !matches!(this.defs.get(&instance.def_id()), Some(DefTy::Generic(_))) {
                     return false;
                 }
                 let reached = (instance.def_id(), instance.args, caller_def_id);
