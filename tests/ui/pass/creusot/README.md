@@ -61,9 +61,10 @@ within 300 s at fptprove `b9f9c9c05` and is ignored on the host.
 breaks with the first item the predicate accepts, so `try_fold` holds the only loop. As in std,
 `check` takes `try_fold`'s accumulator `()`, the predicate takes `&I::Item`, and the result is
 `break_value()`; the file header lists what still differs. `find` states std.rs's specification of
-`Iterator::find`: on `None`, `iter` produced some items and completed; on `Some(v)`, it produced
-some items and then `v`, which the predicate accepted in a state reachable from its first (that it
-rejected the items before `v` is not stated). `try_fold` states the same of a `Break`. Both
+`Iterator::find` with the accepting state reachable from the first: on `None`, `iter` produced some
+items and completed; on `Some(v)`, it produced some items and then `v`, which the predicate
+accepted in a state reachable from its first (that it rejected the items before `v` is not
+stated). `try_fold` states the same of a `Break`. Both
 specifications relate closure states by `hist_inv!`, and `check`, which owns the predicate, states
 its own relation through the predicate's in a `hist_inv` clause; it verifies from fptprove
 `7d11252b2` on; its fail twin weakens `find`'s `ensures` to a predicate result of `false`.

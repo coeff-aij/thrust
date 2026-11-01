@@ -153,20 +153,17 @@ where
         let gx = thrust_macros::ghost!(|x: <I as Iterator>::Item| -> <I as Iterator>::Item { x });
         match g(init, x) {
             ControlFlow::Continue(()) => {}
-            ControlFlow::Break(b) => {
-                // Keeps the ghosts live up to the return, whose postcondition reads them.
-                let _live = (&gs, &gx);
-                return ControlFlow::Break(b);
-            }
+            ControlFlow::Break(b) => return ControlFlow::Break(b),
         }
         gs = thrust_macros::ghost!(|gs: thrust_models::Ghost<Seq<<<I as Iterator>::Item as Model>::Ty>>, gx: thrust_models::Ghost<<I as Iterator>::Item>| -> Seq<<<I as Iterator>::Item as Model>::Ty> { gs.push(gx) });
     }
     ControlFlow::Continue(())
 }
 
-// std's `find`, with std.rs's specification of `Iterator::find`: `None` means `iter` produced some
-// items and then completed; `Some(v)` means it produced some items and then `v`, which the predicate
-// accepted in a state reachable from `predicate`. That it rejected the items before `v` is not stated.
+// std's `find`, with std.rs's specification of `Iterator::find` and the accepting state reachable
+// from `predicate`: `None` means `iter` produced some items and then completed; `Some(v)` means it
+// produced some items and then `v`, which the predicate accepted in a state reachable from
+// `predicate`. That it rejected the items before `v` is not stated.
 #[thrust_macros::context]
 #[thrust_macros::requires(I::invariant(*iter))]
 #[thrust_macros::requires(forall(|c: Closure<P>, x: <<I as Iterator>::Item as Model>::Ty| thrust_macros::pre!(c(x))))]

@@ -172,8 +172,6 @@ where
         gbs = thrust_macros::ghost!(|gbs: Ghost<Seq<bool>>, b: bool| -> Seq<bool> { gbs.push(b) });
         gfs = thrust_macros::ghost!(|gfs: Ghost<Seq<Closure<P>>>, q: P| -> Seq<Closure<P>> { gfs.push(q) });
     }
-    // Keeps the ghosts live up to the return, whose postcondition reads them.
-    let _live = (&gs, &gbs, &gfs, &gidx);
     out
 }
 
