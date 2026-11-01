@@ -1010,6 +1010,30 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         let mir_ty::TyKind::FnDef(def_id, generic_args) = *self.expr_ty(receiver).kind() else {
             return None;
         };
+        Some(self.fn_def_contract(receiver.span, def_id, generic_args, names_precondition))
+    }
+
+    /// The function item a closure-typed receiver is: `G` instantiated with a function item,
+    /// which is a closure without captures (`Closure<fn item>`), possibly behind shared
+    /// references. Its `pre!` and `post!` are the contract of the function.
+    fn receiver_fn_item(
+        &self,
+        receiver_ty: mir_ty::Ty<'tcx>,
+    ) -> Option<(DefId, mir_ty::GenericArgsRef<'tcx>)> {
+        let (inner, _) = self.receiver_closure_behind_refs(receiver_ty)?;
+        match *inner.kind() {
+            mir_ty::TyKind::FnDef(def_id, args) => Some((def_id, args)),
+            _ => None,
+        }
+    }
+
+    fn fn_def_contract(
+        &self,
+        span: rustc_span::Span,
+        def_id: DefId,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
+        names_precondition: bool,
+    ) -> rty::FunctionType {
         let owner_fn_id = self.type_builder.owner_fn_id();
         let typing_env =
             analyze::predicate_typing_env(self.tcx, owner_fn_id, self.def_ids.model_ty());
@@ -1025,29 +1049,27 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 })
                 .flatten();
             if let Some(fn_ty) = known {
-                return Some(fn_ty);
+                return fn_ty;
             }
             if names_precondition {
                 self.analyzer
                     .record_assumed_total_method(owner_fn_id, def_id, generic_args);
             }
-            return Some(
-                self.type_builder
-                    .build_unspecified_method_type(def_id, generic_args),
-            );
+            return self
+                .type_builder
+                .build_unspecified_method_type(def_id, generic_args);
         };
         let fn_ty = self.analyzer.known_function_ty_with_args(
             instance.def_id(),
             instance.args,
             owner_fn_id,
         );
-        if fn_ty.is_none() {
+        fn_ty.unwrap_or_else(|| {
             self.tcx.dcx().span_fatal(
-                receiver.span,
+                span,
                 format!("`pre!`/`post!` names `{instance}`, which has no contract here"),
-            );
-        }
-        fn_ty
+            )
+        })
     }
 
     fn fn_item_spec_args(
@@ -1089,6 +1111,11 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         let receiver_ty = self.expr_ty(receiver);
         if let Some(closure_ty) = self.receiver_closure_ty(receiver_ty) {
             self.record_pre_receiver(closure_ty);
+        }
+        if let Some((def_id, generic_args)) = self.receiver_fn_item(receiver_ty) {
+            let fn_ty = self.fn_def_contract(receiver.span, def_id, generic_args, true);
+            let args = self.fn_item_spec_args(args, &fn_ty);
+            return FormulaOrTerm::Formula(fn_ty.precondition_formula(&args));
         }
         let fn_ty = self
             .receiver_closure_fn_type(receiver_ty)
@@ -1169,6 +1196,12 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             return FormulaOrTerm::Formula(fn_ty.postcondition_formula(&args, result));
         }
         let receiver_ty = self.expr_ty(receiver);
+        if let Some((def_id, generic_args)) = self.receiver_fn_item(receiver_ty) {
+            let fn_ty = self.fn_def_contract(receiver.span, def_id, generic_args, false);
+            let args = self.fn_item_spec_args(args, &fn_ty);
+            let result = self.to_term(result);
+            return FormulaOrTerm::Formula(fn_ty.postcondition_formula(&args, result));
+        }
         let fn_ty = self
             .receiver_closure_fn_type(receiver_ty)
             .unwrap_or_else(|| {
@@ -1213,6 +1246,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 from
             ),
         };
+        let from_span = from.span;
         let from = self.to_term(from);
         let to = self.to_term(to);
         let formula = match closure_ty.kind() {
@@ -1225,7 +1259,13 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 let pred = self.closure_hist_inv_pred(*param_ty, model_ty);
                 chc::Atom::new(pred.into(), vec![from, to]).into()
             }
-            _ => panic!("hist_inv! at a type that is not a closure: {closure_ty:?}"),
+            _ => self.tcx.dcx().span_fatal(
+                from_span,
+                format!(
+                    "thrust: `hist_inv!` is not supported at `{closure_ty}`: it takes a closure \
+                     or a closure type parameter"
+                ),
+            ),
         };
         FormulaOrTerm::Formula(formula)
     }

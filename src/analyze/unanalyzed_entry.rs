@@ -249,6 +249,11 @@ impl<'tcx> analyze::Analyzer<'tcx> {
                 let analyzed = match callee.def {
                     mir_ty::InstanceKind::ClosureOnceShim { .. }
                     | mir_ty::InstanceKind::FnPtrShim(..) => node.analyzed,
+                    // A call through `&F` is typed through the contract of `F` (`impl Fn for
+                    // &F` forwards to it), as a closure call shim is.
+                    mir_ty::InstanceKind::Item(def_id) if self.is_shared_ref_fn_impl(def_id) => {
+                        node.analyzed
+                    }
                     _ => item_analyzed(callee),
                 };
                 let covered = match (node.analyzed, analyzed) {
@@ -286,6 +291,24 @@ impl<'tcx> analyze::Analyzer<'tcx> {
             }
         }
         entries
+    }
+
+    /// Whether `def_id` is a method of std's `impl Fn*<A> for &F`, which forwards a call to `F`.
+    fn is_shared_ref_fn_impl(&self, def_id: DefId) -> bool {
+        let Some(impl_def_id) = self.tcx.impl_of_assoc(def_id) else {
+            return false;
+        };
+        let Some(trait_ref) = self.tcx.impl_trait_ref(impl_def_id) else {
+            return false;
+        };
+        let trait_ref = trait_ref.instantiate_identity();
+        self.tcx
+            .fn_trait_kind_from_def_id(trait_ref.def_id)
+            .is_some()
+            && matches!(
+                trait_ref.self_ty().kind(),
+                mir_ty::TyKind::Ref(_, _, mir_ty::Mutability::Not)
+            )
     }
 
     /// The closure and function pointer types in what `instance` returns and in the types

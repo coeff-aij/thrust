@@ -311,6 +311,14 @@ fn is_move(context: PlaceContext) -> bool {
     context == PlaceContext::NonMutatingUse(NonMutatingUseContext::Move)
 }
 
+/// The type behind any shared references around `ty`.
+pub(super) fn peel_shared_refs(mut ty: mir_ty::Ty<'_>) -> mir_ty::Ty<'_> {
+    while let mir_ty::TyKind::Ref(_, inner, mir_ty::Mutability::Not) = ty.kind() {
+        ty = *inner;
+    }
+    ty
+}
+
 enum ResolvedCallable<'tcx> {
     Concrete(DefId, mir_ty::GenericArgsRef<'tcx>),
     Generic(TypeParam),
@@ -705,6 +713,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             mir_ty::TyKind::Closure(_, args) if args.as_closure().upvar_tys().is_empty() => {
                 PlaceType::with_ty_and_term(rty::Type::unit(), chc::Term::tuple(vec![]))
             }
+            // A function item is a closure without captures.
+            mir_ty::TyKind::FnDef(..) => {
+                PlaceType::with_ty_and_term(rty::Type::unit(), chc::Term::tuple(vec![]))
+            }
             mir_ty::TyKind::Array(elem, len) => {
                 let len = len
                     .try_to_target_usize(self.tcx)
@@ -805,6 +817,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 PlaceType::with_ty_and_term(rty::Type::unit(), chc::Term::tuple(vec![]))
             }
             (mir_ty::TyKind::Closure(_, args), _) if args.as_closure().upvar_tys().is_empty() => {
+                PlaceType::with_ty_and_term(rty::Type::unit(), chc::Term::tuple(vec![]))
+            }
+            (mir_ty::TyKind::FnDef(..), _) => {
                 PlaceType::with_ty_and_term(rty::Type::unit(), chc::Term::tuple(vec![]))
             }
             (mir_ty::TyKind::Tuple(tys), ConstValue::ZeroSized) => {
@@ -1684,7 +1699,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             // we simply replace the def_id with the closure's function def_id.
             // This skips shims, and makes self arguments mismatch. visitor::RustCallVisitor
             // adjusts the arguments accordingly.
-            match args.type_at(0).kind() {
+            // `&F: Fn*` for `F: Fn` calls `F` (`impl Fn for &F`), so a call through shared
+            // references calls what they point to; `RustCallVisitor` passes the callee the
+            // `&F` it takes.
+            let callee_ty = peel_shared_refs(args.type_at(0));
+            match callee_ty.kind() {
                 mir_ty::TyKind::Closure(closure_def_id, closure_args) => {
                     tracing::debug!(?closure_def_id, "closure instance");
                     // closure_args contains [parent_generics..., upvars, return_ty, fn_sig_binder, ...].
@@ -1700,9 +1719,34 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     param_def_id: self.type_builder.param_def_id(ty),
                     local_idx: self.type_builder.param_local_idx(ty),
                 }),
-                kind => {
-                    panic!("expected closure arg for fn trait, got: {kind:?}");
+                // A function item is a closure without captures: the call runs the function
+                // under its own contract. `RustCallVisitor` passes it the call's arguments
+                // untupled.
+                mir_ty::TyKind::FnDef(fn_def_id, fn_args) => {
+                    let typing_env = self.typing_env;
+                    match mir_ty::Instance::try_resolve(self.tcx, typing_env, *fn_def_id, fn_args) {
+                        Ok(Some(instance)) => {
+                            ResolvedCallable::Concrete(instance.def_id(), instance.args)
+                        }
+                        _ => self.tcx.dcx().span_fatal(
+                            self.call_span(def_id),
+                            format!(
+                                "thrust: a call of the function item `{callee_ty}` through an \
+                                 `Fn` bound is not supported: it names a trait method whose \
+                                 impl depends on the caller's type parameters"
+                            ),
+                        ),
+                    }
                 }
+                kind => self.tcx.dcx().span_fatal(
+                    self.call_span(def_id),
+                    format!(
+                        "thrust: a call through an `Fn` bound at `{}` is not supported: only a \
+                         closure, a function item or a shared reference to one can be called \
+                         ({kind:?})",
+                        args.type_at(0)
+                    ),
+                ),
             }
         } else {
             let typing_env = self.typing_env;
