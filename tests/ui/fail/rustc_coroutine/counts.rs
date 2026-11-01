@@ -3,7 +3,7 @@
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@no-rustfix
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300 THRUST_TRY_SPECS=1
-//@rustc-env: THRUST_VERIFY_ONLY=case_study::counts,map_bound_unordered
+//@rustc-env: THRUST_VERIFY_ONLY=case_study::counts,map_bound_unordered,map_wbound_unordered
 // The count of a variant's fields of thrust/counts.rs, which `layout()`'s per-variant closure
 // (stage 7) uses and the `layout.rs` root assumes. The code is the module tree under
 // tests/rustc_coroutine/; this file selects the lemmas.
@@ -22,7 +22,7 @@ fn main() {}
 
 use case_study::counts;
 use rustc_index::IndexVec;
-use thrust_models::model::{Array, Int};
+use thrust_models::model::{Array, Int, Seq};
 use thrust_models::forall;
 
 // The fail twin: `map_bound` of thrust/counts.rs with its induction on `k` and its statement, but
@@ -38,5 +38,20 @@ use thrust_models::forall;
 fn map_bound_unordered(fields: &IndexVec<u32, u32>, a: &IndexVec<u32, u32>, e: &u32, k: usize) {
     if k > 0 {
         map_bound_unordered(fields, a, e, k - 1);
+    }
+}
+
+// The fail twin of `map_wbound`, the weighted form, without the same premise.
+#[thrust_macros::lemma]
+#[thrust_macros::variant(k)]
+#[thrust_macros::requires(forall(|x: Int| 0 <= (*ts)[x]))]
+#[thrust_macros::ensures(forall(|m: Int, f: Array<Int, Int>|
+    !(0 <= m
+        && forall(|j: Int| !(0 <= j && j < m)
+            || (0 <= f[j] && f[j] < k && (*a)[<u32 as rustc_index::Idx>::index_logic((*fields)[f[j]])] == *e)))
+    || counts::map_wsum::<u32, u32>(*fields, *ts, f, m) <= counts::acc_wsum::<u32, u32, u32, u32>(*fields, *a, *e, *ts, k)))]
+fn map_wbound_unordered(fields: &IndexVec<u32, u32>, a: &IndexVec<u32, u32>, e: &u32, ts: &Seq<Int>, k: usize) {
+    if k > 0 {
+        map_wbound_unordered(fields, a, e, ts, k - 1);
     }
 }

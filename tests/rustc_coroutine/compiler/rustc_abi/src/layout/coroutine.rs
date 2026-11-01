@@ -906,7 +906,10 @@ pub fn layout<
             // Rewrite (rewrites.md R8): `collect_index_vec` for `collect`.
             // TODO(proof): `fits_in_any_order` by the size bound needs the variant's Assigned locals
             // and the promoted ones to weigh at most `local_layouts`, a sum over distinct locals
-            // (properties 2c and 4), as the count below.
+            // (properties 2c and 4). thrust/counts.rs bounds the weight the index map selects by
+            // that of the locals Assigned to the variant (`map_wbound`, `acc_wbound`); not used
+            // here, as `weight` of the collected fields is an existential over a `Seq<Int>` whose
+            // witness, the locals' weights through the index map, no term builds.
             let mut variant = calc.univariant(
                 &collect_index_vec(variant_only_tys),
                 &ReprOptions::default(),

@@ -4,7 +4,8 @@
 //! through `Idx::index_logic` as in `lemmas`, and the lemmas prove them by induction: the
 //! pigeonhole bound L5 over the field list's entries of the class (`acc_bound`), and the bound of
 //! Creusot's index map of `Filter` by those entries (`map_bound`). `filter_count` joins them at
-//! the witnesses of `Map::produces`.
+//! the witnesses of `Map::produces`. The weighted forms bound the weight of the selected
+//! locals (site 4) in the same way.
 
 use crate::thrust_models;
 use thrust_models::model::{Array, Int, Seq};
@@ -284,4 +285,193 @@ pub fn filter_count<'a, J, L, K, T, P, M, B>(
 {
     map_bound(fields, a, e, k);
     acc_bound(fields, a, e, k, n);
+}
+
+// The weight of a variant's fields (stage 7, sites 4 and 5): the sum of the weights `ts` of the
+// locals an injective selection names is at most the sum over the locals of the class, the
+// weighted form of `acc_bound` and `map_bound` above. `layout()` does not use them yet.
+
+/// The sum of `ts` over the locals below `k` whose class in `a` is `e`.
+#[thrust_macros::logic]
+#[thrust_macros::variant(k)]
+pub fn class_wsum<K: Idx + thrust_models::Model, T: thrust_models::Model>(a: IndexVec<K, T>, e: T, ts: Seq<Int>, k: USize) -> Int {
+    if k <= 0 {
+        0
+    } else {
+        if a[k - 1] == e {
+            class_wsum::<K, T>(a, e, ts, k - 1) + ts[k - 1]
+        } else {
+            class_wsum::<K, T>(a, e, ts, k - 1)
+        }
+    }
+}
+
+/// The sum of `ts` over the locals of the entries among the first `k` of `fields` of class `e`.
+#[thrust_macros::logic]
+#[thrust_macros::variant(k)]
+pub fn acc_wsum<J: Idx + thrust_models::Model, L: Idx + thrust_models::Model, K: Idx + thrust_models::Model, T: thrust_models::Model>(
+    fields: IndexVec<J, L>, a: IndexVec<K, T>, e: T, ts: Seq<Int>, k: USize,
+) -> Int {
+    if k <= 0 {
+        0
+    } else {
+        if a[L::index_logic(fields[k - 1])] == e {
+            acc_wsum::<J, L, K, T>(fields, a, e, ts, k - 1) + ts[L::index_logic(fields[k - 1])]
+        } else {
+            acc_wsum::<J, L, K, T>(fields, a, e, ts, k - 1)
+        }
+    }
+}
+
+/// As `acc_wsum`, over the entries whose local is below `b`.
+#[thrust_macros::logic]
+#[thrust_macros::variant(k)]
+pub fn acc_wlt<J: Idx + thrust_models::Model, L: Idx + thrust_models::Model, K: Idx + thrust_models::Model, T: thrust_models::Model>(
+    fields: IndexVec<J, L>, a: IndexVec<K, T>, e: T, ts: Seq<Int>, k: USize, b: USize,
+) -> Int {
+    if k <= 0 {
+        0
+    } else {
+        if a[L::index_logic(fields[k - 1])] == e && L::index_logic(fields[k - 1]) < b {
+            acc_wlt::<J, L, K, T>(fields, a, e, ts, k - 1, b) + ts[L::index_logic(fields[k - 1])]
+        } else {
+            acc_wlt::<J, L, K, T>(fields, a, e, ts, k - 1, b)
+        }
+    }
+}
+
+/// As `acc_wsum`, over the entries whose local is `x`.
+#[thrust_macros::logic]
+#[thrust_macros::variant(k)]
+pub fn acc_wocc<J: Idx + thrust_models::Model, L: Idx + thrust_models::Model, K: Idx + thrust_models::Model, T: thrust_models::Model>(
+    x: USize, fields: IndexVec<J, L>, a: IndexVec<K, T>, e: T, ts: Seq<Int>, k: USize,
+) -> Int {
+    if k <= 0 {
+        0
+    } else {
+        if a[L::index_logic(fields[k - 1])] == e && L::index_logic(fields[k - 1]) == x {
+            acc_wocc::<J, L, K, T>(x, fields, a, e, ts, k - 1) + ts[x]
+        } else {
+            acc_wocc::<J, L, K, T>(x, fields, a, e, ts, k - 1)
+        }
+    }
+}
+
+/// The weighted L3: one more local below the bound adds its entries' weights.
+#[thrust_macros::lemma]
+#[thrust_macros::variant(k)]
+#[thrust_macros::ensures(acc_wlt::<J, L, K, T>(*fields, *a, *e, *ts, k, b + 1)
+    == acc_wlt::<J, L, K, T>(*fields, *a, *e, *ts, k, b) + acc_wocc::<J, L, K, T>(b, *fields, *a, *e, *ts, k))]
+pub fn acc_wl3<J: Idx + thrust_models::Model, L: Idx + thrust_models::Model, K: Idx + thrust_models::Model, T: thrust_models::Model>(
+    fields: &IndexVec<J, L>, a: &IndexVec<K, T>, e: &T, ts: &Seq<Int>, k: usize, b: usize,
+) {
+    if k > 0 {
+        acc_wl3(fields, a, e, ts, k - 1, b);
+    }
+}
+
+/// The weight of a local's entries is none when it has no entry and its own weight when it has
+/// one.
+#[thrust_macros::lemma]
+#[thrust_macros::variant(k)]
+#[thrust_macros::requires(0 <= (*ts)[x])]
+#[thrust_macros::ensures(
+    (acc_occ::<J, L, K, T>(x, *fields, *a, *e, k) != 0 || acc_wocc::<J, L, K, T>(x, *fields, *a, *e, *ts, k) == 0)
+        && (acc_occ::<J, L, K, T>(x, *fields, *a, *e, k) > 1 || acc_wocc::<J, L, K, T>(x, *fields, *a, *e, *ts, k) <= (*ts)[x]))]
+pub fn acc_wocc_le<J: Idx + thrust_models::Model, L: Idx + thrust_models::Model, K: Idx + thrust_models::Model, T: thrust_models::Model>(
+    x: usize, fields: &IndexVec<J, L>, a: &IndexVec<K, T>, e: &T, ts: &Seq<Int>, k: usize,
+) {
+    if k > 0 {
+        acc_wocc_le(x, fields, a, e, ts, k - 1);
+    }
+}
+
+/// No weight is below 0.
+#[thrust_macros::lemma]
+#[thrust_macros::variant(k)]
+#[thrust_macros::requires(b == 0)]
+#[thrust_macros::ensures(acc_wlt::<J, L, K, T>(*fields, *a, *e, *ts, k, b) == 0)]
+pub fn acc_wl0<J: Idx + thrust_models::Model, L: Idx + thrust_models::Model, K: Idx + thrust_models::Model, T: thrust_models::Model>(
+    fields: &IndexVec<J, L>, a: &IndexVec<K, T>, e: &T, ts: &Seq<Int>, k: usize, b: usize,
+) {
+    if k > 0 {
+        acc_wl0(fields, a, e, ts, k - 1, b);
+    }
+}
+
+/// The weighted L5: when each local below `b` occurs at most once among the entries of class
+/// `e`, their weight is at most that of the locals of class `e` below `b`.
+#[thrust_macros::lemma]
+#[thrust_macros::variant(b)]
+#[thrust_macros::requires(forall(|x: USize| !(x < b) || acc_occ::<J, L, K, T>(x, *fields, *a, *e, k) <= 1))]
+#[thrust_macros::requires(forall(|x: Int| !(0 <= x && x < b) || 0 <= (*ts)[x]))]
+#[thrust_macros::ensures(acc_wlt::<J, L, K, T>(*fields, *a, *e, *ts, k, b) <= class_wsum::<K, T>(*a, *e, *ts, b))]
+pub fn acc_wl5<J: Idx + thrust_models::Model, L: Idx + thrust_models::Model, K: Idx + thrust_models::Model, T: thrust_models::Model>(
+    fields: &IndexVec<J, L>, a: &IndexVec<K, T>, e: &T, ts: &Seq<Int>, k: usize, b: usize,
+) {
+    if b > 0 {
+        acc_wl5(fields, a, e, ts, k, b - 1);
+        acc_wl3(fields, a, e, ts, k, b - 1);
+        acc_zero(fields, a, e, k);
+        acc_wocc_le(b - 1, fields, a, e, ts, k);
+    } else {
+        acc_wl0(fields, a, e, ts, k, b);
+    }
+}
+
+/// When every entry's local is below `n`, the weight below `n` is the whole weight.
+#[thrust_macros::lemma]
+#[thrust_macros::variant(k)]
+#[thrust_macros::requires(forall(|p: Int| !(0 <= p && p < k) || L::index_logic((*fields)[p]) < n))]
+#[thrust_macros::ensures(acc_wlt::<J, L, K, T>(*fields, *a, *e, *ts, k, n) == acc_wsum::<J, L, K, T>(*fields, *a, *e, *ts, k))]
+pub fn acc_wall<J: Idx + thrust_models::Model, L: Idx + thrust_models::Model, K: Idx + thrust_models::Model, T: thrust_models::Model>(
+    fields: &IndexVec<J, L>, a: &IndexVec<K, T>, e: &T, ts: &Seq<Int>, k: usize, n: usize,
+) {
+    if k > 0 {
+        acc_wall(fields, a, e, ts, k - 1, n);
+    }
+}
+
+/// The weight of the entries of class `e` is at most that of the locals of class `e`.
+#[thrust_macros::lemma]
+#[thrust_macros::requires(acc_distinct::<J, L, K, T>(*fields, *a, *e, k))]
+#[thrust_macros::requires(forall(|p: Int| !(0 <= p && p < k) || L::index_logic((*fields)[p]) < n))]
+#[thrust_macros::requires(forall(|x: Int| !(0 <= x && x < n) || 0 <= (*ts)[x]))]
+#[thrust_macros::ensures(acc_wsum::<J, L, K, T>(*fields, *a, *e, *ts, k) <= class_wsum::<K, T>(*a, *e, *ts, n))]
+pub fn acc_wbound<J: Idx + thrust_models::Model, L: Idx + thrust_models::Model, K: Idx + thrust_models::Model, T: thrust_models::Model>(
+    fields: &IndexVec<J, L>, a: &IndexVec<K, T>, e: &T, ts: &Seq<Int>, k: usize, n: usize,
+) {
+    acc_l4_all(fields, a, e, k);
+    acc_wl5(fields, a, e, ts, k, n);
+    acc_wall(fields, a, e, ts, k, n);
+}
+
+/// The sum of `ts` over the locals of the entries of `fields` at the first `m` positions of `f`.
+#[thrust_macros::logic]
+#[thrust_macros::variant(m)]
+pub fn map_wsum<J: Idx + thrust_models::Model, L: Idx + thrust_models::Model>(
+    fields: IndexVec<J, L>, ts: Seq<Int>, f: Array<Int, Int>, m: Int,
+) -> Int {
+    if m <= 0 {
+        0
+    } else {
+        map_wsum::<J, L>(fields, ts, f, m - 1) + ts[L::index_logic(fields[f[m - 1]])]
+    }
+}
+
+/// The weighted `map_bound`: a selection below `k` selects no more weight than the entries of
+/// class `e` below `k`.
+#[thrust_macros::lemma]
+#[thrust_macros::variant(k)]
+#[thrust_macros::requires(forall(|x: Int| 0 <= (*ts)[x]))]
+#[thrust_macros::ensures(forall(|m: Int, f: Array<Int, Int>|
+    !selects::<J, L, K, T>(*fields, *a, *e, f, m, k)
+        || map_wsum::<J, L>(*fields, *ts, f, m) <= acc_wsum::<J, L, K, T>(*fields, *a, *e, *ts, k)))]
+pub fn map_wbound<J: Idx + thrust_models::Model, L: Idx + thrust_models::Model, K: Idx + thrust_models::Model, T: thrust_models::Model>(
+    fields: &IndexVec<J, L>, a: &IndexVec<K, T>, e: &T, ts: &Seq<Int>, k: usize,
+) {
+    if k > 0 {
+        map_wbound(fields, a, e, ts, k - 1);
+        selects_step(fields, a, e, k - 1);
+    }
 }
