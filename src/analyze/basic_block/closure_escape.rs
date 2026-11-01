@@ -379,8 +379,8 @@ fn pointee(ty: mir_ty::Ty<'_>) -> Option<mir_ty::Ty<'_>> {
 
 /// The number of values of type `ty` a value of `held` holds, itself, behind references and
 /// boxes, or in the fields of structs and tuples; `None` when it may hold one some other way (in
-/// a collection, an enum, a closure's captures, a raw pointer, or a field whose type is an
-/// alias, which may stand for `ty`).
+/// a collection, an enum, a closure's captures, a raw pointer, a `PhantomData`, or a field whose
+/// type is an alias, which may stand for `ty`).
 fn count_held<'tcx>(
     tcx: mir_ty::TyCtxt<'tcx>,
     held: mir_ty::Ty<'tcx>,
@@ -400,6 +400,9 @@ fn count_held<'tcx>(
     }
     match *held.kind() {
         mir_ty::TyKind::Tuple(elems) => elems.iter().map(|elem| count_held(tcx, elem, ty)).sum(),
+        // A `PhantomData` names `ty` without holding it, as a collection marks the elements it
+        // holds behind a raw allocation (`Vec<T>` holds a `PhantomData<T>`).
+        mir_ty::TyKind::Adt(adt, _) if adt.is_phantom_data() => None,
         mir_ty::TyKind::Adt(adt, args) if adt.is_struct() => adt
             .all_fields()
             .map(|field| count_held(tcx, tcx.erase_regions(field.ty(tcx, args)), ty))
