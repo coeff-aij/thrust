@@ -177,7 +177,7 @@ impl Iterator for Range {
     }
 }
 
-// `FromIterator<A>` reduced to `from_iter` over `&mut I`; the step form of `traits/collect_visited_seq_i64.rs`.
+// `FromIterator<A>` reduced to `from_iter` over `&mut I`; the step form of `creusot/collect.rs`.
 #[thrust_macros::context]
 trait FromIterator<A: Model>: Sized
 where
