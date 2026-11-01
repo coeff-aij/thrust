@@ -1564,9 +1564,42 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 }
             }
         }
+        marked.extend(self.assigned_params().iter());
         for local in marked {
             self.body.local_decls[local].mutability = mir::Mutability::Mut;
         }
+    }
+
+    /// The parameters that the body assigns as a whole. A parameter is initialized on entry, so
+    /// an assignment to it while it is uninitialized follows a move out of it, which the check
+    /// for initialized locals above does not see. From there on the local no longer holds the
+    /// argument, while a non-flow parameter is taken to hold it at every block (`bind_locals`
+    /// in `analyze::basic_block`); a mutable one is not.
+    fn assigned_params(&self) -> DenseBitSet<Local> {
+        struct Visitor {
+            arg_count: usize,
+            params: DenseBitSet<Local>,
+        }
+        impl<'tcx> mir::visit::Visitor<'tcx> for Visitor {
+            fn visit_local(
+                &mut self,
+                local: Local,
+                ctxt: mir::visit::PlaceContext,
+                _location: mir::Location,
+            ) {
+                let is_param = (1..=self.arg_count).contains(&local.index());
+                if is_param && ctxt.is_place_assignment() {
+                    self.params.insert(local);
+                }
+            }
+        }
+        let mut visitor = Visitor {
+            arg_count: self.body.arg_count,
+            params: DenseBitSet::new_empty(self.body.local_decls.len()),
+        };
+        use mir::visit::Visitor as _;
+        visitor.visit_body(&self.body);
+        visitor.params
     }
 
     /// Scans the body for loop-invariant marker calls and groups them by
