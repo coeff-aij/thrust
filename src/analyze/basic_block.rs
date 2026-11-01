@@ -710,11 +710,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 )
         };
         match ty.kind() {
-            mir_ty::TyKind::Closure(_, args) if args.as_closure().upvar_tys().is_empty() => {
-                PlaceType::with_ty_and_term(rty::Type::unit(), chc::Term::tuple(vec![]))
-            }
             // A function item is a closure without captures.
             mir_ty::TyKind::FnDef(..) => {
+                PlaceType::with_ty_and_term(rty::Type::unit(), chc::Term::tuple(vec![]))
+            }
+            mir_ty::TyKind::Closure(_, args) if args.as_closure().upvar_tys().is_empty() => {
                 PlaceType::with_ty_and_term(rty::Type::unit(), chc::Term::tuple(vec![]))
             }
             mir_ty::TyKind::Array(elem, len) => {

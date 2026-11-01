@@ -69,7 +69,7 @@ impl<'tcx> RustCallVisitor<'_, 'tcx, '_> {
             mir_ty::TyKind::Ref(_, inner, mir::Mutability::Not) if *inner == callee_ty
         ) {
             let Some(inner) = ty.builtin_deref(true) else {
-                return;
+                unreachable!("`{ty}` does not lead to the callee `{callee_ty}` through references");
             };
             place = self.tcx.mk_place_deref(place);
             ty = inner;
@@ -105,7 +105,16 @@ impl<'tcx> RustCallVisitor<'_, 'tcx, '_> {
                 {
                     mir::Operand::Copy(field)
                 } else {
-                    mir::Operand::Move(field)
+                    // Moved into a local of its own, which the reborrow of a `&mut` argument
+                    // (`ReborrowVisitor`) reads, as it does the argument of any other call.
+                    let decl = mir::LocalDecl::new(ty, Default::default()).immutable();
+                    let new_local = self.analyzer.local_decls.push(decl);
+                    let new_local_ty = self.analyzer.place_type(&field);
+                    self.analyzer.bind_local(new_local, new_local_ty.into());
+                    // The callee takes what is left of it by the call, a reborrow, so it is
+                    // dropped after the call, resolving the prophecy of a `&mut` it holds.
+                    self.analyzer.drop_after_terminator(new_local);
+                    mir::Operand::Move(new_local.into())
                 };
                 untupled.push(rustc_span::source_map::Spanned {
                     node: operand,

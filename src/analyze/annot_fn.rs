@@ -1095,14 +1095,18 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         args: &'tcx rustc_hir::Expr<'tcx>,
         fn_ty: &rty::FunctionType,
     ) -> Vec<chc::Term<rty::FunctionParamIdx>> {
-        let args = self.closure_spec_args(args);
-        assert_eq!(
-            args.len(),
-            fn_ty.params.len(),
-            "`pre!`/`post!` arity mismatch: the function takes {} argument(s)",
-            fn_ty.params.len()
-        );
-        args
+        let spec_args = self.closure_spec_args(args);
+        if spec_args.len() != fn_ty.params.len() {
+            self.tcx.dcx().span_fatal(
+                args.span,
+                format!(
+                    "`pre!`/`post!` arity mismatch: the function takes {} argument(s), given {}",
+                    fn_ty.params.len(),
+                    spec_args.len()
+                ),
+            );
+        }
+        spec_args
     }
 
     /// Records that the formula reads the precondition of `ty` ([`FormulaFn::pre_receivers`]).

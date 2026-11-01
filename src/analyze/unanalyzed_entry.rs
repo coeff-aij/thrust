@@ -18,6 +18,9 @@
 //!   stated at the analyzed call that hands it over (`basic_block::closure_escape`), which records
 //!   the hand-over; an entry the walk finds into a closure on a path where the analyzed call
 //!   that led into unanalyzed code did not hand it over stops, whatever other calls hand over.
+//! - std's `impl Fn* for &F` forwards a call to `F`, so the walk takes the analyzed-ness of the
+//!   instance it is reached from, as a closure call shim does: the call is typed through the
+//!   contract of `F`, and the instance a function item or closure runs from it is not an entry.
 
 use std::collections::{HashSet, VecDeque};
 
@@ -215,7 +218,8 @@ impl<'tcx> analyze::Analyzer<'tcx> {
     /// unanalyzed code on its path does not cover ([`HandedOver::Function`]). A non-local
     /// instance is not analyzed; a closure call shim takes the analyzed-ness of the instance it
     /// is reached from, since a call Thrust types through the closure's contract goes through
-    /// it; other shims are not analyzed. The entry function is left out: its precondition is
+    /// it, and so does std's `impl Fn for &F`, which forwards the call to `F`; other shims are
+    /// not analyzed. The entry function is left out: its precondition is
     /// required of every argument already (`crate_::Analyzer::assert_callable_entry`).
     pub fn unanalyzed_entries(
         &self,
@@ -293,11 +297,16 @@ impl<'tcx> analyze::Analyzer<'tcx> {
         entries
     }
 
-    /// Whether `def_id` is a method of std's `impl Fn*<A> for &F`, which forwards a call to `F`.
+    /// Whether `def_id` is a method of std's `impl Fn*<A> for &F`, which forwards a call to `F`:
+    /// a non-local impl for a shared reference to one of its own type parameters. A crate's own
+    /// `impl Fn<A> for &S` runs its own body.
     fn is_shared_ref_fn_impl(&self, def_id: DefId) -> bool {
         let Some(impl_def_id) = self.tcx.impl_of_assoc(def_id) else {
             return false;
         };
+        if impl_def_id.is_local() {
+            return false;
+        }
         let Some(trait_ref) = self.tcx.impl_trait_ref(impl_def_id) else {
             return false;
         };
@@ -307,7 +316,8 @@ impl<'tcx> analyze::Analyzer<'tcx> {
             .is_some()
             && matches!(
                 trait_ref.self_ty().kind(),
-                mir_ty::TyKind::Ref(_, _, mir_ty::Mutability::Not)
+                mir_ty::TyKind::Ref(_, inner, mir_ty::Mutability::Not)
+                    if matches!(inner.kind(), mir_ty::TyKind::Param(_))
             )
     }
 
