@@ -19,11 +19,12 @@ def gh_api_items(path: str) -> list[dict]:
 
 
 def automated_reviews(repo: str, pr: str) -> list[dict]:
-    """The pull request's automated reviews, oldest first."""
+    """The pull request's submitted automated reviews, oldest first. A review claude_review.py has
+    created but not yet submitted is pending, and visible to the workflow token that created it."""
     return [
         r
         for r in gh_api_items(f"repos/{repo}/pulls/{pr}/reviews")
-        if r["user"]["login"] == REVIEW_AUTHOR and r["body"].startswith(REVIEW_HEADING)
+        if r["user"]["login"] == REVIEW_AUTHOR and r["body"].startswith(REVIEW_HEADING) and r["state"] != "PENDING"
     ]
 
 

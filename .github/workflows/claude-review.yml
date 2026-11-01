@@ -82,4 +82,6 @@ jobs:
             echo "no freshness check has run on $head"
             exit 0
           fi
+          # A run in progress may have read the reviews before this one; it cannot be re-run until it ends.
+          gh run watch "$run" -R "$GITHUB_REPOSITORY" > /dev/null
           gh run rerun "$run" -R "$GITHUB_REPOSITORY"
