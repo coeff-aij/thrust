@@ -41,36 +41,44 @@ pub fn move_to_activation<'tcx>(tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
 fn reservations<'tcx>(tcx: TyCtxt<'tcx>, body: &Body<'tcx>) -> Vec<Reservation<'tcx>> {
     let mut reservations = Vec::new();
     for (block, data) in body.basic_blocks.iter_enumerated() {
-        for (statement_index, stmt) in data.statements.iter().enumerate() {
-            let Some((lhs, rvalue)) = stmt.kind.as_assign() else {
-                continue;
-            };
-            let (place, copied) = match rvalue {
-                mir::Rvalue::Ref(_, kind, place) if kind.allows_two_phase_borrow() => {
-                    (*place, false)
-                }
-                mir::Rvalue::Use(mir::Operand::Copy(p)) if is_mut_ref(tcx, body, p) => {
-                    (tcx.mk_place_deref(*p), true)
-                }
-                _ => continue,
-            };
-            let Some(temp) = lhs.as_local() else {
-                assert!(copied, "two-phase borrow must assign to a local");
-                continue;
-            };
+        for statement_index in 0..data.statements.len() {
             let location = Location {
                 block,
                 statement_index,
             };
-            reservations.push(Reservation {
-                location,
-                temp,
-                place,
-                copied,
-            });
+            reservations.extend(reservation_at(tcx, body, location));
         }
     }
     reservations
+}
+
+/// The reservation the statement at `location` makes, if it is one.
+fn reservation_at<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    body: &Body<'tcx>,
+    location: Location,
+) -> Option<Reservation<'tcx>> {
+    let stmt = body.basic_blocks[location.block]
+        .statements
+        .get(location.statement_index)?;
+    let (lhs, rvalue) = stmt.kind.as_assign()?;
+    let (place, copied) = match rvalue {
+        mir::Rvalue::Ref(_, kind, place) if kind.allows_two_phase_borrow() => (*place, false),
+        mir::Rvalue::Use(mir::Operand::Copy(p)) if is_mut_ref(tcx, body, p) => {
+            (tcx.mk_place_deref(*p), true)
+        }
+        _ => return None,
+    };
+    let Some(temp) = lhs.as_local() else {
+        assert!(copied, "two-phase borrow must assign to a local");
+        return None;
+    };
+    Some(Reservation {
+        location,
+        temp,
+        place,
+        copied,
+    })
 }
 
 fn is_mut_ref<'tcx>(tcx: TyCtxt<'tcx>, body: &Body<'tcx>, place: &Place<'tcx>) -> bool {
@@ -87,9 +95,7 @@ pub fn moved_creation_point<'tcx>(
     body: &Body<'tcx>,
     location: Location,
 ) -> Option<Location> {
-    let reservation = reservations(tcx, body)
-        .into_iter()
-        .find(|reservation| reservation.location == location && !reservation.copied)?;
+    let reservation = reservation_at(tcx, body, location).filter(|r| !r.copied)?;
     let temp_uses = temp_uses(body, std::slice::from_ref(&reservation));
     planned_move(body, &reservation, &temp_uses)?.to
 }

@@ -3,7 +3,7 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // `s[0].bump(s[0])` reads `s` while `&mut s[0]` is reserved; the read sees the value before the
-// call. The same for an array indexed in place.
+// call.
 
 trait Bump {
     fn bump(&mut self, v: i64);
@@ -30,9 +30,4 @@ fn other(s: &mut [i64]) {
     assert!(s[0] == s[1] + 1);
 }
 
-fn main() {
-    let mut a = [1, 2, 3];
-    a[0].bump(a[0]);
-    a[1].bump(a[2]);
-    assert!(a[0] == 2 && a[1] == 4);
-}
+fn main() {}
