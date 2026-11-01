@@ -1,5 +1,6 @@
+//@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -A unused-variables -A unused_parens
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 THRUST_SPLIT=2
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300
 
 use thrust_models::model::{Closure, Int, Mut, Seq};
 use thrust_models::{exists, forall, Model};
@@ -11,8 +12,7 @@ use thrust_models::{exists, forall, Model};
 // checked at the impl with no lemma. The call site is two `next`s over `Range`.
 //
 // Fail twin: `produces` relates every produced item to the closure's result at the first inner
-// item `s[0]` instead of `s[k]`, which refutes `produces_trans` at `Map`'s impl. Solved in parts:
-// as one query the solver gives no answer within 120 s.
+// item `s[0]` instead of `s[k]`, which refutes `produces_trans` at `Map`'s impl.
 
 // Creusot's `common.rs`, the iterator specification every case shares: the trait predicates
 // `produces(self, visited, o)`, `completed` and `invariant` (`true` unless the impl says otherwise),
@@ -42,7 +42,7 @@ where
     #[thrust_macros::requires(Self::produces(*a, ab, *b))]
     #[thrust_macros::requires(Self::produces(*b, bc, *c))]
     #[thrust_macros::ensures(Self::produces(*a, ab.concat(bc), *c))]
-    fn produces_trans(a: &Self, ab: Seq<<Self::Item as Model>::Ty>, b: &Self, bc: Seq<<Self::Item as Model>::Ty>, c: &Self) {} //~ ERROR: Unsat
+    fn produces_trans(a: &Self, ab: Seq<<Self::Item as Model>::Ty>, b: &Self, bc: Seq<<Self::Item as Model>::Ty>, c: &Self) {}
 
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {

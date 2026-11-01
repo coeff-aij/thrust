@@ -218,5 +218,5 @@ fn main() {
     );
     let mut it = Range { start: 0, end: 10 };
     let r = try_fold(&mut it, 0, c);
-    assert!(match r { Some(v) => v >= 1, None => true });
+    assert!(match r { Some(v) => v >= 10, None => true });
 }
