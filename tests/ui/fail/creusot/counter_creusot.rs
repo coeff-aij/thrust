@@ -11,8 +11,8 @@ type U32 = thrust_models::model::UInt;
 type U32 = thrust_models::model::UIntN<32>;
 
 // Creusot's `examples/counter` with its own property: `v.iter().map_inv(|x, _prod| { cnt += 1; *x })
-// .collect()`, then `x == v` and `cnt == x.len()`. The source is a `Range` instead of `v.iter()`,
-// so `x == v` reads `x` is the range's sequence. `Map` is Creusot's `MapInv`
+// .collect()`, then `x == v` and `cnt == x.len()`. The source is std's `slice::Iter<u32>`, an
+// iterator of the local spec through its std.rs model `(sequence, cursor)`. `Map` is Creusot's `MapInv`
 // (`iterators/map_ext.rs`) with an `FnMut` closure: `produces` carries the chain `fs` of closure
 // states, `preservation_inv` and `reinitialize` quantify over every closure state, as Creusot's
 // do. As in creusot-std's `std/iter/map_inv.rs`, which `examples/counter` uses, `produces` relates
@@ -210,44 +210,33 @@ where
     }
 }
 
-#[derive(PartialEq)]
-struct Range {
-    start: u32,
-    end: u32,
-}
-
-impl Model for Range {
-    type Ty = Range;
-}
-
+// `slice::Iter<u32>` as an iterator of the local spec; `next` is std's, through its extern spec,
+// and the predicates are std.rs's `IteratorSpec` ones for it.
 #[thrust_macros::context]
-impl Iterator for Range {
-    type Item = u32;
+impl<'a> Iterator for core::slice::Iter<'a, u32> {
+    type Item = &'a u32;
 
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.start < self.end {
-            let item = self.start;
-            self.start += 1;
-            Some(item)
-        } else {
-            None
-        }
+    fn next(&mut self) -> Option<&'a u32> {
+        std::iter::Iterator::next(self)
     }
 
-
+    #[thrust_macros::predicate]
+    fn invariant(self) -> bool {
+        self.1 <= self.0.len()
+    }
 
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
-        *self == !self && (*self).start >= (*self).end
+        (*self).1 >= (*self).0.len() && *self == !self
     }
 
     #[thrust_macros::predicate]
     fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool {
-        self.end == o.end
-            && self.start <= o.start
-            && (!(visited.len() > 0) || o.start <= o.end)
-            && visited.len() == o.start - self.start
-            && forall(|i: Int| !(0 <= i && i < visited.len()) || visited[i] == self.start + i)
+        self.0 == o.0
+            && self.1 <= o.1
+            && o.1 <= self.0.len()
+            && visited.len() == o.1 - self.1
+            && forall(|i: Int| !(0 <= i && i < visited.len()) || visited[i] == &self.0[self.1 + i])
     }
 }
 
@@ -283,27 +272,27 @@ impl FromIterator<u32> for Vec<u32> {
     }
 }
 
-// Creusot: `proof_assert! { (@x).ext_eq(@v) }; proof_assert! { @cnt == (@x).len() }`, with the
-// range `start..end` for `v`. Unsat: `cnt` is `x.len()`, not one more.
-#[thrust_macros::requires(start <= end)]
-#[thrust_macros::ensures(result.0.len() == end - start
-    && forall(|k: Int| 0 <= k && k < result.0.len() ==> result.0[k] == start + k)
+// Creusot: `proof_assert! { x@.len() == v@.len() }; proof_assert! { x@.ext_eq(v@) };
+// proof_assert! { cnt@ == x@.len() }`, with `x` and `cnt` returned. Unsat: `cnt` is `x.len()`, not
+// one more.
+#[thrust_macros::ensures(result.0.len() == v.len()
+    && forall(|k: Int| 0 <= k && k < result.0.len() ==> result.0[k] == v[k])
     && result.1 == result.0.len() + 1)]
-fn counter(start: u32, end: u32) -> (Vec<u32>, usize) {
+fn counter(v: Vec<u32>) -> (Vec<u32>, usize) {
     let mut cnt: usize = 0;
     let f = thrust_macros::closure!(
         captures(cnt: &mut &mut usize),
         requires(*(*cnt) == produced.len()),
-        ensures(*(!cnt) == *(*cnt) + 1 && result == x),
+        ensures(*(!cnt) == *(*cnt) + 1 && result == *x),
         // The precondition restated, as in the postcondition Creusot infers for the closure
         // body, which reads `cnt == produced.len()` before the increment.
         ensures(*(*cnt) == produced.len()),
-        |x: u32, produced: Ghost<Seq<U32>>| -> u32 { cnt += 1; x },
+        |x: &u32, produced: Ghost<Seq<&U32>>| -> u32 { cnt += 1; *x },
     );
     let mut m = Map {
-        iter: Range { start, end },
+        iter: v.iter(),
         func: f,
-        produced: thrust_macros::ghost!(|| -> Seq<U32> { Seq::empty() }),
+        produced: thrust_macros::ghost!(|| -> Seq<&U32> { Seq::empty() }),
     };
     let x = m.collect::<Vec<u32>>();
     (x, cnt)

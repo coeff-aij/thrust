@@ -33,8 +33,8 @@ with empty bodies, as Creusot does). The step-form files repeat theirs in the sa
 | `decuple_range.rs` | `examples/decuple_range.rs` | `produces`, positional property, fully checked |
 | `skip_take.rs` | `examples/skip_take.rs` | `produces`, concatenated `Skip`, generic in `I` |
 | `counter.rs` | `examples/counter.rs` | `step` + a unary `next_item` guard, `MapInv`'s ghost history |
-| `counter_creusot.rs` | `examples/counter.rs` | ignored on the host (PCSat times out at 300 s); `produces` with Creusot's property (`x == v`, `cnt == x.len()`), `MapInv` over an `FnMut` closure whose states are related by `hist_inv!` (Creusot's `hist_inv`), as in creusot-std's `std/iter/map_inv.rs` |
-| `counter_creusot_lemma.rs` | `examples/counter.rs` | `counter_creusot.rs` with the witnesses of `produces_trans` written as source-level lemmas (Creusot's session gives them by hand), which the solver verifies today |
+| `counter_creusot.rs` | `examples/counter.rs` | `produces` with Creusot's property over `v.iter()` of a `Vec<u32>` (`x == v`, `cnt == x.len()`), std's `slice::Iter` through its std.rs model, `MapInv` over an `FnMut` closure whose states are related by `hist_inv!` (Creusot's `hist_inv`), as in creusot-std's `std/iter/map_inv.rs` |
+| `counter_creusot_lemma.rs` | `examples/counter.rs` | `counter_creusot.rs` with the witnesses of `produces_trans` written as source-level lemmas (Creusot's session gives them by hand) |
 | `map_ext.rs` | `iterators/map_ext.rs` | `produces` with an existential input sequence, `MapInv`'s ghost history, over an `FnMut` closure with the chain `fs` and `hist_inv!` as `counter_creusot.rs` (the ninth adapter) |
 | `extend.rs` | `examples/extend.rs` | `produces` |
 | `take_count.rs` | no counterpart | `produces`; an extra call site of `take.rs`'s `Take` |
