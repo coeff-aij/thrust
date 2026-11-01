@@ -7,11 +7,14 @@
 // `filled` is the caller the trusted `IndexVec` contracts are checked against (rewrites.md S5).
 // The code is the module tree under tests/rustc_coroutine/; this file selects the stage and
 // drives it.
+// The fail twin: same selection as the pass root, but `rustc_index` comes from the mutant tree under
+// tests/rustc_coroutine/fail/mutants/indexvec/, which has `IndexVec::next_index` without its `requires`;
+// `I::new` has its `can_new` precondition unmet.
 #![feature(new_range_api)]
 
 #[path = "../../../rustc_coroutine/compiler/rustc_hashes/src/lib.rs"]
 pub mod rustc_hashes;
-#[path = "../../../rustc_coroutine/compiler/rustc_index/src/lib.rs"]
+#[path = "../../../rustc_coroutine/fail/mutants/indexvec/rustc_index/src/lib.rs"]
 pub mod rustc_index;
 #[path = "../../../rustc_coroutine/compiler/rustc_abi/src/lib.rs"]
 pub mod rustc_abi;
@@ -62,9 +65,7 @@ fn filled(n: usize, elem: i64) -> IndexVec<usize, i64> {
                     && i <= n.at_entry()
                     && forall(|k: USize| 0 <= k && k < i ==> v[k] == elem.at_entry())
         );
-        // Every entry is one more than the element asked for, so `filled` no
-        // longer returns `n` copies of `elem`.
-        v.push(elem + 1);
+        v.push(elem);
         i += 1;
     }
     v

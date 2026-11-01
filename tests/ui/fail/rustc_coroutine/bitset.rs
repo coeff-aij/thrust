@@ -2,16 +2,18 @@
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@no-rustfix
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 THRUST_TRY_SPECS=1
-//@rustc-env: THRUST_VERIFY_ONLY=column_bound
+//@rustc-env: THRUST_VERIFY_ONLY=rustc_index::bit_set,two_members,column_bound
 // Stage 3 of the rustc-coroutine verification target: rustc_index's bit sets.
 // The code is the module tree under tests/rustc_coroutine/; this file selects the stage and
-// drives it. This twin verifies only `column_bound`, against the contracts of the bit sets, which
-// the pass twin verifies.
+// drives it.
+// The fail twin: same selection as the pass root, but `rustc_index` comes from the mutant tree under
+// tests/rustc_coroutine/fail/mutants/bitset/, which has `DenseBitSet::contains` without its domain-size `requires`;
+// the `assert!` on the element fails.
 #![feature(new_range_api)]
 
 #[path = "../../../rustc_coroutine/compiler/rustc_hashes/src/lib.rs"]
 pub mod rustc_hashes;
-#[path = "../../../rustc_coroutine/compiler/rustc_index/src/lib.rs"]
+#[path = "../../../rustc_coroutine/fail/mutants/bitset/rustc_index/src/lib.rs"]
 pub mod rustc_index;
 #[path = "../../../rustc_coroutine/compiler/rustc_abi/src/lib.rs"]
 pub mod rustc_abi;
@@ -33,6 +35,16 @@ fn _extern_spec_vec_from_elem_word(elem: u64, n: usize) -> Vec<u64> {
 }
 
 
+// The count of members, through `insert`'s contract: inserting 1 twice counts once.
+#[thrust_macros::ensures(DenseBitSet::<usize>::card(result) == 2)]
+fn two_members() -> DenseBitSet<usize> {
+    let mut set: DenseBitSet<usize> = DenseBitSet::new_empty(5);
+    set.insert(1);
+    set.insert(1);
+    set.insert(2);
+    set
+}
+
 // Every column a row of a matrix yields is below its column bound, given that no bit is set at
 // or past it.
 #[thrust_macros::requires(BitMatrix::<usize, usize>::wf(*m) && 0 < (*m).num_rows && *(*m).col_bound == 5
@@ -41,8 +53,7 @@ fn _extern_spec_vec_from_elem_word(elem: u64, n: usize) -> Vec<u64> {
 fn column_bound(m: &BitMatrix<usize, usize>) {
     let mut it = m.iter(0);
     match it.next() {
-        // Broken narrowly: the column bound is 5, and column 4 may be set.
-        Some(e) => assert!(e < 4),
+        Some(e) => assert!(e < 5),
         None => {}
     }
 }

@@ -11,8 +11,13 @@ Each file below is a crate root that includes the whole tree and selects one sta
 `//@rustc-env: THRUST_VERIFY_ONLY=..` header; functions outside the selection that have a contract
 are trusted.
 The root also holds the stage's driver (`main` and the stubs of rewrites.md S5).
-`tests/ui/fail/rustc_coroutine/<file>.rs` is its fail twin where one exists; it is the pass root
-with the driver broken, regenerated and checked by `tests/rustc_coroutine/fail/check.sh`.
+`tests/ui/fail/rustc_coroutine/<file>.rs` is its fail twin where one exists; it has the pass
+root's selection and breaks the stage's own code, regenerated and checked by
+`tests/rustc_coroutine/fail/check.sh`. The twins of `values.rs`, `idx.rs`, `indexvec.rs` and
+`bitset.rs` take their crate from a mutant copy under `tests/rustc_coroutine/fail/mutants/<file>/`
+in which one panic-guarding `requires` is dropped (`pointer_size_in`, `IdxRange::next`,
+`IndexVec::next_index`, `DenseBitSet::contains`), so each is refuted at that
+function's body. `lemmas.rs`'s twin and `indexvec_int_range.rs`'s break the root instead.
 
 | file | selection | state |
 | --- | --- | --- |
@@ -20,7 +25,7 @@ with the driver broken, regenerated and checked by `tests/rustc_coroutine/fail/c
 | `idx.rs` | `rustc_index::idx`, the own iterators `WordIter`, `SliceIter`, `IterEnumerated` | verified |
 | `indexvec.rs` | `rustc_index::vec`, `rustc_index::slice`, the client `filled` | verified |
 | `indexvec_int_range.rs` | as `indexvec.rs`, under `THRUST_INT_RANGE=conversions` | verified; checks that the tree type-checks with the option |
-| `bitset.rs` | `rustc_index::bit_set` | verified |
+| `bitset.rs` | `rustc_index::bit_set` | timeout at 120 s in the ui harness run alone with fptprove develop dbd352e782 (3 of 3 runs), its twin answers Unsat at 120 s |
 | `simple.rs` | `rustc_abi::layout::simple` | draft, `ignore-on-host` |
 | `univariant.rs` | `LayoutCalculator::univariant`, `univariant_biased` trusted on its contract | draft, `ignore-on-host`: no answer at 300 s, also for its panic obligations alone (query 17.8 MB) |
 | `univariant_biased.rs` | `LayoutCalculator::univariant_biased` | draft, `ignore-on-host`: query about 323 MB |

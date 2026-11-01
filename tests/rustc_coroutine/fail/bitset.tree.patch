@@ -1,0 +1,12 @@
+--- rustc_index/src/bit_set.rs
++++ rustc_index/src/bit_set.rs
+@@ -94,7 +94,8 @@
+     }
+ 
+     #[inline]
+-    #[thrust_macros::requires(forall(|i: USize| <T as Idx>::index_is(elem, i) ==> i < (*self).0))]
++    // The fail twin drops the `requires` of the pass tree, that the element is below the domain
++    // size: the `assert!` below then fails for an element at or past it.
+     #[thrust_macros::requires(Self::words_cover_domain(*self))]
+     #[thrust_macros::ensures(forall(|i: USize| <T as Idx>::index_is(elem, i) && (result == true) ==> Self::mem(*self, i)))]
+     #[thrust_macros::ensures(forall(|i: USize| <T as Idx>::index_is(elem, i) && Self::mem(*self, i) ==> (result == true)))]
