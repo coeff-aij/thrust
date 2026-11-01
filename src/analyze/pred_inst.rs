@@ -278,7 +278,8 @@ impl<'tcx> analyze::Analyzer<'tcx> {
             Some(_) => self.tcx().dcx().span_fatal(
                 self.tcx().def_span(owner_fn_id),
                 format!(
-                    "the derived predicate `{}` is read at the type parameters of another                      context than its item's, which `THRUST_GENERIC_UNKNOWN_PREDS` does not                      support",
+                    "the derived predicate `{}` is read at the type parameters of another context than \
+                     its item's, which `THRUST_GENERIC_UNKNOWN_PREDS` does not support",
                     self.tcx().def_path_str_with_args(pred_def_id, generic_args)
                 ),
             ),
@@ -401,6 +402,26 @@ impl<'tcx> analyze::Analyzer<'tcx> {
             self.emit_pred_instance(dependency, seen, in_progress);
         }
         in_progress.pop();
+        for (_, definition) in &definitions {
+            // A definition that is itself an unknown (an inner impl's derived predicate) would
+            // put an unknown under a `lambda`, the higher-order case the solver's class leaves
+            // out.
+            let unknown = self
+                .system
+                .borrow()
+                .user_defined_pred_defs
+                .iter()
+                .any(|d| d.is_derived() && d.symbol().to_string() == *definition);
+            if unknown {
+                self.tcx().dcx().span_fatal(
+                    self.tcx().def_span(owner_fn_id),
+                    format!(
+                        "{symbol} reads {definition}, which is itself inferred; the \
+                         definitions an instance passes must be written"
+                    ),
+                );
+            }
+        }
         let mut system = self.system.borrow_mut();
         system.push_derived_pred(symbol.clone(), sig);
         system.push_instance_tie(chc::InstanceTie {

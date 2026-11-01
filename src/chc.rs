@@ -2867,6 +2867,10 @@ impl UserDefinedPredDef {
         }
     }
 
+    pub fn symbol(&self) -> &UserDefinedPred {
+        &self.symbol
+    }
+
     /// Whether this is a derived predicate, an unknown with no body.
     pub fn is_derived(&self) -> bool {
         matches!(self.body, UserDefinedPredBody::Derived)
