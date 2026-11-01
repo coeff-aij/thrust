@@ -1,4 +1,4 @@
-//@ignore-on-host: not yet verifiable, the solver gives no answer within 300 s (fptprove develop b9f9c9c05)
+//@ignore-on-host: not yet verifiable, the solver runs out of memory or gives no answer within 300 s (fptprove develop b9f9c9c05)
 //@check-pass
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300
