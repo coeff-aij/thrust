@@ -23,6 +23,9 @@
 //!   a type parameter may stand for a type holding more, so the walk counts the values again
 //!   on the argument types of each instance of the caller ([`HandoverCount`]), and an instance
 //!   holding more, or holding them some way the count does not see through, stops.
+//! - std's `impl Fn* for &F` forwards a call to `F`, so the walk takes the analyzed-ness of the
+//!   instance it is reached from, as a closure call shim does: the call is typed through the
+//!   contract of `F`, and the instance a function item or closure runs from it is not an entry.
 
 use std::collections::{HashSet, VecDeque};
 
@@ -275,7 +278,8 @@ impl<'tcx> analyze::Analyzer<'tcx> {
     /// unanalyzed code on its path does not cover ([`HandedOver::Function`]). A non-local
     /// instance is not analyzed; a closure call shim takes the analyzed-ness of the instance it
     /// is reached from, since a call Thrust types through the closure's contract goes through
-    /// it; other shims are not analyzed. The entry function is left out: its precondition is
+    /// it, and so does std's `impl Fn for &F`, which forwards the call to `F`; other shims are
+    /// not analyzed. The entry function is left out: its precondition is
     /// required of every argument already (`crate_::Analyzer::assert_callable_entry`).
     pub fn unanalyzed_entries(
         &self,
@@ -309,6 +313,11 @@ impl<'tcx> analyze::Analyzer<'tcx> {
                 let analyzed = match callee.def {
                     mir_ty::InstanceKind::ClosureOnceShim { .. }
                     | mir_ty::InstanceKind::FnPtrShim(..) => node.analyzed,
+                    // A call through `&F` is typed through the contract of `F` (`impl Fn for
+                    // &F` forwards to it), as a closure call shim is.
+                    mir_ty::InstanceKind::Item(def_id) if self.is_shared_ref_fn_impl(def_id) => {
+                        node.analyzed
+                    }
                     _ => item_analyzed(callee),
                 };
                 let covered = match (node.analyzed, analyzed) {
@@ -351,6 +360,30 @@ impl<'tcx> analyze::Analyzer<'tcx> {
             }
         }
         entries
+    }
+
+    /// Whether `def_id` is a method of std's `impl Fn*<A> for &F`, which forwards a call to `F`:
+    /// a non-local impl for a shared reference to one of its own type parameters. A crate's own
+    /// `impl Fn<A> for &S` runs its own body.
+    fn is_shared_ref_fn_impl(&self, def_id: DefId) -> bool {
+        let Some(impl_def_id) = self.tcx.impl_of_assoc(def_id) else {
+            return false;
+        };
+        if impl_def_id.is_local() {
+            return false;
+        }
+        let Some(trait_ref) = self.tcx.impl_trait_ref(impl_def_id) else {
+            return false;
+        };
+        let trait_ref = trait_ref.instantiate_identity();
+        self.tcx
+            .fn_trait_kind_from_def_id(trait_ref.def_id)
+            .is_some()
+            && matches!(
+                trait_ref.self_ty().kind(),
+                mir_ty::TyKind::Ref(_, inner, mir_ty::Mutability::Not)
+                    if matches!(inner.kind(), mir_ty::TyKind::Param(_))
+            )
     }
 
     /// The closure and function pointer types in what `instance` returns and in the types
