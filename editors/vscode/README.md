@@ -86,7 +86,7 @@ workspace (`cargo metadata --no-deps`), a run is `cargo check --workspace --keep
 --message-format=json`, and a function's run `cargo check -p <package> --lib` (or `--bin
 <name>`) with `THRUST_VERIFY_ONLY` for that target's crate. `RUSTC` is
 `bin/thrust-rustc-cargo`, which runs `thrust.command` with cargo's arguments and then
-`thrust.extraArgs`, as the fork's `README.md` and `tests/cargo.rs` set `RUSTC` to
+`thrust.extraArgs`, as the `README.md` and `tests/cargo.rs` of this repository set `RUSTC` to
 `thrust-rustc`, and in addition, for each crate:
 
 - writes the JSON report Thrust prints on standard output (it is run without
