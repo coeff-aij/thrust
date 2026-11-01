@@ -221,6 +221,29 @@ impl<T> FormulaOrTerm<T> {
     }
 }
 
+impl<T: Clone> FormulaOrTerm<T> {
+    /// `lhs == rhs` (`eq`) or `lhs != rhs` of two Booleans as formulas: the biconditional or its
+    /// negation, for operands without a term form.
+    fn formula_equality(lhs: Self, eq: bool, rhs: Self) -> chc::Formula<T> {
+        let lhs = lhs.into_formula().expect("a Boolean has a formula form");
+        let rhs = rhs.into_formula().expect("a Boolean has a formula form");
+        let iff = lhs.clone().implies(rhs.clone()).and(rhs.implies(lhs));
+        if eq {
+            iff
+        } else {
+            iff.not()
+        }
+    }
+
+    /// `if cond { then } else { els }` of Boolean branches as a formula, for parts without a term
+    /// form: `(cond ∧ then) ∨ (¬cond ∧ els)`.
+    fn formula_ite(cond: Self, then: Self, els: Self) -> chc::Formula<T> {
+        let [cond, then, els] = [cond, then, els]
+            .map(|part| part.into_formula().expect("a Boolean has a formula form"));
+        cond.clone().and(then).or(cond.not().and(els))
+    }
+}
+
 /// The quantified variables of an `exists` / `forall` closure, the range they range over, and
 /// the body.
 type QuantifiedBody = (
@@ -736,21 +759,21 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         (Some(def_id) == self.def_ids.log_eq_args()).then_some((lhs, rhs))
     }
 
-    /// The type and term of the value an argument of `log_eq_args` refers to: `a` of the `&a`
-    /// that `==` is rewritten to, or the referent of any other reference.
+    /// The type and translation of the value an argument of `log_eq_args` refers to: `a` of the
+    /// `&a` that `==` is rewritten to, or the referent of any other reference.
     fn log_eq_operand(
         &self,
         arg: &'tcx rustc_hir::Expr<'tcx>,
-    ) -> (mir_ty::Ty<'tcx>, chc::Term<rty::FunctionParamIdx>) {
+    ) -> (mir_ty::Ty<'tcx>, FormulaOrTerm<rty::FunctionParamIdx>) {
         match arg.kind {
             rustc_hir::ExprKind::AddrOf(
                 rustc_hir::BorrowKind::Ref,
                 rustc_hir::Mutability::Not,
                 operand,
-            ) => (self.expr_ty(operand), self.to_term(operand)),
+            ) => (self.expr_ty(operand), self.to_formula_or_term(operand)),
             _ => (
                 self.expr_ty(arg).peel_refs(),
-                self.to_term(arg).box_current(),
+                FormulaOrTerm::Term(self.to_term(arg).box_current()),
             ),
         }
     }
@@ -795,9 +818,17 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
     }
 
     fn to_term(&self, hir: &'tcx rustc_hir::Expr<'tcx>) -> chc::Term<rty::FunctionParamIdx> {
-        self.to_formula_or_term(hir)
-            .into_term()
-            .expect("expected a term")
+        let Some(term) = self.to_formula_or_term(hir).into_term() else {
+            self.tcx.dcx().span_fatal(
+                hir.span,
+                "thrust: a predicate call, `pre!`, `post!`, quantifier or `match` in a \
+                 specification is a formula, not a value: in a `requires`, `ensures`, predicate or \
+                 quantifier body it can be an operand of `&&`, `||`, `!`, `==` or `!=`, or the \
+                 condition of an `if` whose branches are Boolean; it cannot be the value of a \
+                 `#[logic]` function or an argument of a call",
+            );
+        };
+        term
     }
 
     fn receiver_closure_ty(&self, ty: mir_ty::Ty<'tcx>) -> Option<mir_ty::Ty<'tcx>> {
@@ -816,6 +847,22 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         }
     }
 
+    /// The closure a receiver of type `ty` calls, and the number of shared references around it
+    /// in the instantiation of the receiver's closure type parameter: `&F` calls `F`
+    /// (`impl Fn for &F`), so its `pre!` and `post!` are those of `F` at `*self`, as in Creusot.
+    fn receiver_closure_behind_refs(
+        &self,
+        ty: mir_ty::Ty<'tcx>,
+    ) -> Option<(mir_ty::Ty<'tcx>, usize)> {
+        let mut closure_ty = self.receiver_closure_ty(ty)?;
+        let mut refs = 0;
+        while let mir_ty::TyKind::Ref(_, inner_ty, mir_ty::Mutability::Not) = closure_ty.kind() {
+            closure_ty = *inner_ty;
+            refs += 1;
+        }
+        Some((closure_ty, refs))
+    }
+
     /// The receiver term as the closure's own body takes it.
     ///
     /// That body takes the upvars by `&`, by `&mut`, or by value, following the kind inferred
@@ -827,7 +874,8 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         receiver: &'tcx rustc_hir::Expr<'tcx>,
         fn_ty: &rty::FunctionType,
     ) -> chc::Term<rty::FunctionParamIdx> {
-        let held_as = match self.expr_ty(receiver).kind() {
+        let receiver_ty = self.expr_ty(receiver);
+        let mut held_as = match receiver_ty.kind() {
             mir_ty::TyKind::Adt(adt, _) if Some(adt.did()) == self.def_ids.mut_model() => {
                 Some(rty::RefKind::Mut)
             }
@@ -840,7 +888,21 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             _ => None,
         };
 
-        let term = self.to_term(receiver);
+        let mut term = self.to_term(receiver);
+        let refs = self
+            .receiver_closure_behind_refs(receiver_ty)
+            .map_or(0, |(_, refs)| refs);
+        if refs > 0 {
+            term = match held_as {
+                Some(rty::RefKind::Mut) => term.mut_current(),
+                Some(rty::RefKind::Immut) => term.box_current(),
+                None => term,
+            };
+            for _ in 1..refs {
+                term = term.box_current();
+            }
+            held_as = Some(rty::RefKind::Immut);
+        }
         match (held_as, received_as) {
             (None, Some(rty::RefKind::Immut)) => chc::Term::box_(term),
             (None, Some(rty::RefKind::Mut)) => chc::Term::mut_(term.clone(), term),
@@ -856,15 +918,20 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
     /// The receiver type is instantiated to the actual closure type in the formula function; its
     /// `DefId` is used to look up the contract collected by the analyzer.
     fn receiver_closure_fn_type(&self, receiver_ty: mir_ty::Ty<'tcx>) -> Option<rty::FunctionType> {
-        let closure_ty = self.receiver_closure_ty(receiver_ty)?;
+        let (closure_ty, refs) = self.receiver_closure_behind_refs(receiver_ty)?;
         let mir_ty::TyKind::Closure(def_id, args) = closure_ty.kind() else {
             if let mir_ty::TyKind::Param(ty) = closure_ty.kind() {
                 tracing::debug!("ParamTy is found: {ty:?}");
-                let closure_fun_ty = self.type_builder.build_closure_type_for_param(
-                    *ty,
-                    self.local_def_id,
-                    self.generic_args,
-                );
+                // Behind a reference, `ty` is a parameter of the function being analyzed
+                // (`G = &H`): its `Fn` bound is among that function's predicates, not among the
+                // instantiated predicates of the annotated one, which state `&H: Fn(..)`.
+                let (bound_owner, bound_args) = match self.type_builder.owner_fn_id().as_local() {
+                    Some(owner) if refs > 0 => (owner, mir_ty::GenericArgs::empty()),
+                    _ => (self.local_def_id, self.generic_args),
+                };
+                let closure_fun_ty =
+                    self.type_builder
+                        .build_closure_type_for_param(*ty, bound_owner, bound_args);
                 tracing::debug!(
                     "the obtained FunctionType for the closure {ty:?}: {closure_fun_ty:#?}"
                 );
@@ -1044,9 +1111,14 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         let fn_ty = self
             .receiver_closure_fn_type(receiver_ty)
             .unwrap_or_else(|| {
-                panic!(
-                    "precondition used on a non-closure parameter: {:?}",
-                    receiver
+                self.tcx.dcx().span_fatal(
+                    receiver.span,
+                    format!(
+                        "thrust: `pre!` of a value of `{}` is not supported: it \
+                         takes a closure, a closure type parameter, or a shared reference to \
+                         one",
+                        self.receiver_closure_ty(receiver_ty).unwrap_or(receiver_ty)
+                    ),
                 )
             });
         let logical_args = self.closure_spec_args(args);
@@ -1118,9 +1190,14 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         let fn_ty = self
             .receiver_closure_fn_type(receiver_ty)
             .unwrap_or_else(|| {
-                panic!(
-                    "postcondition used on a non-closure parameter: {:?}",
-                    receiver
+                self.tcx.dcx().span_fatal(
+                    receiver.span,
+                    format!(
+                        "thrust: `post!` of a value of `{}` is not supported: it \
+                         takes a closure, a closure type parameter, or a shared reference to \
+                         one",
+                        self.receiver_closure_ty(receiver_ty).unwrap_or(receiver_ty)
+                    ),
                 )
             });
         let logical_args = self.closure_spec_args(args);
@@ -1574,23 +1651,33 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                     rustc_hir::BinOpKind::Lt => AmbiguousBinOp::Lt,
                     _ => unimplemented!("unsupported binary operator in formula: {:?}", op),
                 };
-                let lhs = self.to_formula_or_term(lhs);
-                let rhs = self.to_formula_or_term(rhs);
-                FormulaOrTerm::BinOp(lhs.into_term().unwrap(), binop, rhs.into_term().unwrap())
+                FormulaOrTerm::BinOp(self.to_term(lhs), binop, self.to_term(rhs))
             }
             ExprKind::If(cond, then_expr, Some(else_expr)) => {
-                // A conditional whose branches are terms: `ite` of the condition as a Boolean term.
+                // `ite` of the condition as a Boolean term; a Boolean conditional with a formula
+                // among its parts is a formula instead.
                 let cond = match cond.kind {
                     ExprKind::DropTemps(inner) => inner,
                     _ => cond,
                 };
-                let cond_term = self
-                    .to_formula_or_term(cond)
-                    .into_term()
-                    .expect("the condition of an `if` in a term must be a Boolean term");
-                let then_term = self.to_term(then_expr);
-                let else_term = self.to_term(else_expr);
-                FormulaOrTerm::Term(chc::Term::ite(cond_term, then_term, else_term))
+                if !self.expr_ty(hir).is_bool() {
+                    let cond_term = self.to_term(cond);
+                    let then_term = self.to_term(then_expr);
+                    let else_term = self.to_term(else_expr);
+                    return FormulaOrTerm::Term(chc::Term::ite(cond_term, then_term, else_term));
+                }
+                let [cond, then, els] =
+                    [cond, then_expr, else_expr].map(|part| self.to_formula_or_term(part));
+                match (
+                    cond.clone().into_term(),
+                    then.clone().into_term(),
+                    els.clone().into_term(),
+                ) {
+                    (Some(cond), Some(then), Some(els)) => {
+                        FormulaOrTerm::Term(chc::Term::ite(cond, then, els))
+                    }
+                    _ => FormulaOrTerm::Formula(FormulaOrTerm::formula_ite(cond, then, els)),
+                }
             }
             ExprKind::Unary(op, operand) => match op {
                 rustc_hir::UnOp::Neg => {
@@ -1745,12 +1832,17 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                         "log_ne" => AmbiguousBinOp::Ne,
                         name => panic!("unknown method of log_eq_args: {name}"),
                     };
-                    return self.equality(
-                        hir.span,
-                        self.log_eq_operand(lhs),
-                        binop,
-                        self.log_eq_operand(rhs),
-                    );
+                    let (lhs_ty, lhs) = self.log_eq_operand(lhs);
+                    let (rhs_ty, rhs) = self.log_eq_operand(rhs);
+                    let (Some(lhs_term), Some(rhs_term)) =
+                        (lhs.clone().into_term(), rhs.clone().into_term())
+                    else {
+                        let eq = matches!(binop, AmbiguousBinOp::Eq);
+                        return FormulaOrTerm::Formula(FormulaOrTerm::formula_equality(
+                            lhs, eq, rhs,
+                        ));
+                    };
+                    return self.equality(hir.span, (lhs_ty, lhs_term), binop, (rhs_ty, rhs_term));
                 }
                 if let Some(def_id) = self.typeck.type_dependent_def_id(hir.hir_id) {
                     if Some(def_id) == self.def_ids.array_model_store() {

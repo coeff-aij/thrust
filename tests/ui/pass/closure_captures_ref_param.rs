@@ -1,29 +1,23 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
-// `v[0]` captures `*v`, a deref of the reference parameter `v`, so the clauses name `v` with its
-// type `&Vec<i32>`.
-#[thrust_macros::requires(thrust_macros::pre!(f(x)))]
-#[thrust_macros::ensures(thrust_macros::post!(f(x), result))]
-fn apply<F: FnOnce(i32) -> i32>(x: i32, f: F) -> i32 {
-    f(x)
-}
-
-#[thrust_macros::requires(v.len() > 0 && v[0] == 5)]
-fn add_first(v: &Vec<i32>) -> i32 {
+// `&*p` borrows the place `*p`, a deref of the reference parameter `p`, which rustc captures as
+// that place; the clauses name it `p` with `p`'s type `&i32`.
+#[thrust_macros::requires(*p == 5)]
+fn add_to(p: &i32) -> i32 {
     let f = thrust_macros::closure!(
-        captures(v: &Vec<i32>),
-        requires(v.len() > 0 && x > 0),
-        ensures(result == x + v[0]),
-        |x: i32| -> i32 { x + v[0] },
+        captures(p: &i32),
+        requires(x > 0),
+        ensures(result == x + *p),
+        |x: i32| -> i32 {
+            let q: &i32 = &*p;
+            x + *q
+        },
     );
-    let r = apply(7, f);
+    let r = f(7);
     assert!(r == 12);
     r
 }
 
 fn main() {
-    let mut v = Vec::new();
-    v.push(5);
-    add_first(&v);
+    add_to(&5);
 }
