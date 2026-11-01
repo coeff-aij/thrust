@@ -2450,26 +2450,60 @@ fn _extern_spec_iterator_nth<I>(it: &mut I, n: usize) -> Option<I::Item>
     <I as std::iter::Iterator>::nth(it, n)
 }
 
-// The predicate accepted the item found in some state of it; which state, and that it rejected
-// the items before, is not stated: that needs the sequence of its states across the calls, on
-// which PCSat fails. Each step is `next`, which keeps `inv`.
+// `find` calls the predicate on the items in order until it accepts one. The predicate's states
+// `fs` along the items `s` it rejected form a chain in which each step is a call's postcondition,
+// as `fold`'s below (Creusot's `Map`, creusot-std src/std/iter/map.rs). The result is the next
+// item, accepted from the last state, or `None` where the iterator completes after `s`. The
+// predicate is called only from the states of the chain, so its `pre!` is required there. Each
+// step is `next`, which keeps `inv`. Creusot specifies no `find`. A predicate whose contract is
+// inferred has its postcondition under the `forall` over the rejected items, as in
+// tests/ui/pass/closure_find_first_unannotated.rs.
+#[thrust_macros::predicate]
+fn _iter_spec_find_chain<I, P>(
+    iter: I,
+    p: P,
+    s: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
+    it: I,
+    fs: thrust_models::model::Seq<P>,
+) -> bool
+where
+    I: IteratorSpec,
+    I::Item: thrust_models::Model,
+    P: FnMut(&I::Item) -> bool,
+{
+    I::produces(iter, s, it)
+        && fs.len() == s.len() + 1
+        && fs[0] == p
+        && thrust_macros::hist_inv!(p, fs[s.len()])
+        && thrust_models::forall(|k: thrust_models::model::Int| !(0 <= k && k < s.len())
+            || (thrust_macros::hist_inv!(p, fs[k])
+                && thrust_macros::post!(thrust_models::model::Mut::new(fs[k], fs[k + 1])(&s[k]), false)))
+}
+
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(
     I::inv(*it)
-        && thrust_models::forall(|c: thrust_models::model::Closure<P>|
-            thrust_models::forall(|x: <I::Item as thrust_models::Model>::Ty| thrust_macros::pre!(c(&x))))
+        && thrust_models::forall(|s: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
+                                  it1: <I as thrust_models::Model>::Ty,
+                                  fs: thrust_models::model::Seq<thrust_models::model::Closure<P>>,
+                                  x: <I::Item as thrust_models::Model>::Ty,
+                                  it2: <I as thrust_models::Model>::Ty|
+            !(_iter_spec_find_chain::<I, P>(*it, predicate, s, it1, fs)
+                && I::produces(it1, thrust_models::model::Seq::singleton(x), it2))
+                || thrust_macros::pre!(fs[s.len()](&x)))
 )]
 #[thrust_macros::ensures(
     I::inv(!it)
-        && ((result == None
-            && thrust_models::exists(|visited: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>, mid: I::Ty|
-                I::produces(*it, visited, mid) && I::completed(thrust_models::model::Mut::new(mid, !it))))
-        || thrust_models::exists(|visited: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
-                                  x: <I::Item as thrust_models::Model>::Ty|
-            result == Some(x)
-                && I::produces(*it, visited.push(x), !it)
-                && thrust_models::exists(|c: thrust_models::model::Closure<P>, d: thrust_models::model::Closure<P>|
-                    thrust_macros::post!(thrust_models::model::Mut::new(c, d)(&x), true))))
+        && thrust_models::exists(|s: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
+                                  it1: <I as thrust_models::Model>::Ty,
+                                  fs: thrust_models::model::Seq<thrust_models::model::Closure<P>>|
+            _iter_spec_find_chain::<I, P>(*it, predicate, s, it1, fs)
+                && ((result == None && I::completed(thrust_models::model::Mut::new(it1, !it)))
+                    || thrust_models::exists(|x: <I::Item as thrust_models::Model>::Ty,
+                                              g: thrust_models::model::Closure<P>|
+                        result == Some(x)
+                            && I::produces(it1, thrust_models::model::Seq::singleton(x), !it)
+                            && thrust_macros::post!(thrust_models::model::Mut::new(fs[s.len()], g)(&x), true))))
 )]
 fn _extern_spec_iterator_find<I, P>(it: &mut I, predicate: P) -> Option<I::Item>
     where I: IteratorSpec,
@@ -2517,8 +2551,7 @@ fn _extern_spec_iterator_sum_usize<I>(it: I) -> usize
 // `Iterator::max_by_key`: core maps each item to its key and keeps the later of two items whose
 // keys are equal (core/src/iter/traits/iterator.rs, `max_by_key`, and `cmp::max_by`), so the
 // result is the last item of greatest key, `None` for no item. `f` is called once per item, in
-// order; the key of an item is one `f` may return for it in some state, as `find` above states its
-// closure's answers.
+// order; the key of an item is one `f` may return for it in some state.
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(
     I::inv(it)
