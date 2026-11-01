@@ -32,9 +32,9 @@ impl<'a, T: thrust_models::Model> SliceIter<'a, T>
             && x == &(*self).0[(!self).1 - 1]
             && thrust_macros::post!(predicate(&x), true)))]
     #[thrust_macros::ensures(result == None ==> forall(|k: Int|
-        !((*self).1 <= k && k < (!self).1) || thrust_macros::post!(predicate(&&(*self).0[k]), false)))]
+        (*self).1 <= k && k < (!self).1 ==> thrust_macros::post!(predicate(&&(*self).0[k]), false)))]
     #[thrust_macros::ensures(result == None || forall(|k: Int|
-        !((*self).1 <= k && k + 1 < (!self).1) || thrust_macros::post!(predicate(&&(*self).0[k]), false)))]
+        (*self).1 <= k && k + 1 < (!self).1 ==> thrust_macros::post!(predicate(&&(*self).0[k]), false)))]
     pub fn find<P: Fn(&&'a T) -> bool>(&mut self, predicate: P) -> Option<&'a T> {
         let this = self;
         while let Some(x) = this.next() {
@@ -45,8 +45,7 @@ impl<'a, T: thrust_models::Model> SliceIter<'a, T>
                         && (*self.at_entry()).1 <= (*this).1
                         && (*this).1 <= (*this).0.len()
                         && forall(|x: <&'a T as thrust_models::Model>::Ty| thrust_macros::pre!(predicate(&x)))
-                        && forall(|k: Int| !((*self.at_entry()).1 <= k && k < (*this).1)
-                            || thrust_macros::post!(predicate(&&(*this).0[k]), false))
+                        && forall(|k: Int| (*self.at_entry()).1 <= k && k < (*this).1 ==> thrust_macros::post!(predicate(&&(*this).0[k]), false))
             );
             if predicate(&x) {
                 return Some(x);
@@ -137,8 +136,7 @@ where
     // joined at their shared state.
     #[thrust_macros::ensures(forall(|sab: Seq<<I::Item as thrust_models::Model>::Ty>| forall(|sbc: Seq<<I::Item as thrust_models::Model>::Ty>|
         forall(|fab: Seq<Closure<F>>| forall(|fbc: Seq<Closure<F>>|
-        !(Self::produces_at(a, ab, b, sab, fab) && Self::produces_at(b, bc, c, sbc, fbc))
-            || Self::produces_at(a, ab.concat(bc), c, sab.concat(sbc), fab.subsequence(0, ab.len()).concat(fbc)))))))]
+        Self::produces_at(a, ab, b, sab, fab) && Self::produces_at(b, bc, c, sbc, fbc) ==> Self::produces_at(a, ab.concat(bc), c, sab.concat(sbc), fab.subsequence(0, ab.len()).concat(fbc)))))))]
     #[thrust_macros::lemma]
     fn produces_trans_at(
         a: Ghost<Self>,
@@ -304,8 +302,7 @@ where
 
     // `produces_at` of the joined witnesses.
     #[thrust_macros::ensures(forall(|sab: Seq<<I::Item as thrust_models::Model>::Ty>| forall(|sbc: Seq<<I::Item as thrust_models::Model>::Ty>|
-        !(Self::produces_at(a, ab, b, sab) && Self::produces_at(b, bc, c, sbc))
-            || Self::produces_at(a, ab.concat(bc), c, sab.concat(sbc)))))]
+        Self::produces_at(a, ab, b, sab) && Self::produces_at(b, bc, c, sbc) ==> Self::produces_at(a, ab.concat(bc), c, sab.concat(sbc)))))]
     #[thrust_macros::lemma]
     fn produces_trans_at(
         a: Ghost<Self>,
@@ -454,11 +451,11 @@ where
         I::produces(iter, visited, mid)
             && (result == true ==>
                 exists(|fin: <I as thrust_models::Model>::Ty| I::completed(Mut::new(mid, fin)))
-                    && forall(|k: USize| !(0 <= k && k < visited.len()) || thrust_macros::post!(f(visited[k]), true)))
+                    && forall(|k: USize| 0 <= k && k < visited.len() ==> thrust_macros::post!(f(visited[k]), true)))
             && (result == false ==>
                 0 < visited.len()
                     && thrust_macros::post!(f(visited[visited.len() - 1]), false)
-                    && forall(|k: USize| !(0 <= k && k < visited.len() - 1) || thrust_macros::post!(f(visited[k]), true))))
+                    && forall(|k: USize| 0 <= k && k < visited.len() - 1 ==> thrust_macros::post!(f(visited[k]), true))))
 )]
 pub fn iter_all<I, F>(iter: I, f: F) -> bool
 where
@@ -573,7 +570,7 @@ where
             J::produces(it, visited, mid)
                 && J::completed(Mut::new(mid, fin))
                 && visited.len() == v.len()
-                && forall(|k: USize| !(0 <= k && k < v.len()) || visited[k] == Ok(v[k]))))
+                && forall(|k: USize| 0 <= k && k < v.len() ==> visited[k] == Ok(v[k]))))
 )]
 pub fn collect_index_vec_result<I, T, E, J>(it: J) -> Result<IndexVec<I, T>, E>
 where
@@ -588,7 +585,7 @@ where
             |iter: J, iter_old: Ghost<J>, it: thrust_models::FnParam<J>, produced: Ghost<Seq<<Result<T, E> as thrust_models::Model>::Ty>>, v: Vec<T>|
                 iter_old == it.at_entry()
                     && produced.len() == v.len()
-                    && forall(|k: USize| !(0 <= k && k < v.len()) || produced[k] == Ok(v[k]))
+                    && forall(|k: USize| 0 <= k && k < v.len() ==> produced[k] == Ok(v[k]))
         );
         match x {
             Ok(y) => v.push(y),

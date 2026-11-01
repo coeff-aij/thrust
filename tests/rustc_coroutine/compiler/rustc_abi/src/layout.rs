@@ -281,11 +281,10 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
     #[thrust_macros::ensures(forall(|l: LayoutData<FieldIdx, VariantIdx>|
         result != Ok(l) || FieldsShape::<FieldIdx>::arbitrary_of(l.fields, (*fields).len())))]
     #[thrust_macros::ensures(forall(|l: LayoutData<FieldIdx, VariantIdx>, dl: TargetDataLayout, s: USize, q: USize|
-        !(result == Ok(l)
+        result == Ok(l)
             && Cx::dl_of(*self, dl)
             && Self::weighs::<FieldIdx, VariantIdx, F>(fields, repr, kind, dl, s)
-            && q == l.align.abi.pow2)
-            || (l.size.raw < s && pow2(q) <= s)))]
+            && q == l.align.abi.pow2 ==> (l.size.raw < s && pow2(q) <= s)))]
     pub fn univariant<
         'a,
         FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
@@ -356,11 +355,10 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
     #[thrust_macros::ensures(forall(|l: LayoutData<FieldIdx, VariantIdx>|
         result != Ok(l) || FieldsShape::<FieldIdx>::arbitrary_of(l.fields, (*fields).len())))]
     #[thrust_macros::ensures(forall(|l: LayoutData<FieldIdx, VariantIdx>, dl: TargetDataLayout, s: USize, q: USize|
-        !(result == Ok(l)
+        result == Ok(l)
             && Cx::dl_of(*self, dl)
             && Self::weighs::<FieldIdx, VariantIdx, F>(fields, repr, kind, dl, s)
-            && q == l.align.abi.pow2)
-            || (l.size.raw < s && pow2(q) <= s)))]
+            && q == l.align.abi.pow2 ==> (l.size.raw < s && pow2(q) <= s)))]
     #[thrust_macros::ensures(forall(|e: LayoutCalculatorError<<F as thrust_models::Model>::Ty>|
         result != Err(e)
             || e == LayoutCalculatorError::SizeOverflow
@@ -377,8 +375,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         || ((matches!(niche_bias, NicheBias::Start) && l.largest_niche != None) ==> Self::some_field_niche::<FieldIdx, VariantIdx, F>(fields))
             && ((matches!(niche_bias, NicheBias::End) && Self::some_field_niche::<FieldIdx, VariantIdx, F>(fields)) ==> l.largest_niche != None)))]
     #[thrust_macros::ensures(forall(|l: LayoutData<FieldIdx, VariantIdx>, n: Niche, dl: TargetDataLayout, s: Size|
-        !(result == Ok(l) && l.largest_niche == Some(n) && Cx::dl_of(*self, dl))
-            || (Niche::wf_in(n, dl) && (!Primitive::size_in(n.value, dl, s) || n.offset.raw + s.raw <= l.size.raw))))]
+        result == Ok(l) && l.largest_niche == Some(n) && Cx::dl_of(*self, dl) ==> (Niche::wf_in(n, dl) && (Primitive::size_in(n.value, dl, s) ==> n.offset.raw + s.raw <= l.size.raw))))]
     fn univariant_biased<
         'a,
         FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
