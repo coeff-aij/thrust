@@ -556,10 +556,24 @@ impl<'tcx> analyze::Analyzer<'tcx> {
                     .collect();
                 let post = fn_ty.postcondition_formula(&call_args, result.clone());
                 // A call of an `FnMut` closure taken as a value ends in some state its
-                // postcondition allows, as Creusot's `postcondition_once` of an `FnMut` closure
-                // is `exists s. postcondition_mut(self, args, s, res)`.
+                // postcondition allows, which the call then drops, as Creusot's
+                // `postcondition_once` of an `FnMut` closure is
+                // `exists s. postcondition_mut(self, args, s, res) && resolve(s)`.
                 match final_state {
-                    Some(var) => chc::Formula::exists(vec![var], post),
+                    Some((final_, sort)) => {
+                        let state_ty = &fn_ty.params[rty::FunctionParamIdx::from_usize(0)]
+                            .ty
+                            .as_pointer()
+                            .unwrap()
+                            .elem
+                            .ty;
+                        let dropped = state_ty
+                            .resolutions(chc::Term::UserQuantifiedVar(sort.clone(), final_));
+                        let post = dropped
+                            .into_iter()
+                            .fold(post, |post, atom| post.and(atom.into()));
+                        chc::Formula::exists(vec![(final_, sort)], post)
+                    }
                     None => post,
                 }
             }

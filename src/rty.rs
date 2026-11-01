@@ -1846,6 +1846,28 @@ impl<T> Type<T> {
         }
     }
 
+    /// The resolution of the mutable references a value of this type holds, directly or in
+    /// boxes and tuples: each one's final value is its current one, as dropping the value makes
+    /// it. Those inside other values (a shared reference, an enum) are left unresolved.
+    pub fn resolutions<V: Clone>(&self, term: chc::Term<V>) -> Vec<chc::Atom<V>> {
+        if self.is_mut() {
+            return vec![term.clone().mut_final().equal_to(term.mut_current())];
+        }
+        if self.is_own() {
+            let inner = &self.as_pointer().unwrap().elem.ty;
+            return inner.resolutions(term.box_current());
+        }
+        let Some(tuple) = self.as_tuple() else {
+            return vec![];
+        };
+        tuple
+            .elems
+            .iter()
+            .enumerate()
+            .flat_map(|(i, elem)| elem.ty.resolutions(term.clone().tuple_proj(i)))
+            .collect()
+    }
+
     pub fn to_sort(&self) -> chc::Sort {
         match self {
             Type::Int(_) | Type::UInt(_) => chc::Sort::int(),
