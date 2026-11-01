@@ -78,12 +78,21 @@ impl<'tcx> Analyzer<'tcx, '_> {
                 }
             }
         }
-        for (param, calls) in self.fn_bounded_params(contract_def_id) {
-            let ty = mir_ty::EarlyBinder::bind(param.to_ty(self.tcx))
-                .instantiate(self.tcx, contract_args);
-            let ty = self.tcx.erase_regions(ty);
+        let params: Vec<_> = self
+            .fn_bounded_params(contract_def_id)
+            .into_iter()
+            .map(|(param, calls)| {
+                let ty = mir_ty::EarlyBinder::bind(param.to_ty(self.tcx))
+                    .instantiate(self.tcx, contract_args);
+                (self.tcx.erase_regions(ty), calls)
+            })
+            .collect();
+        for &(ty, calls) in &params {
             self.record_handover(ty, def_id, resolved_def_id);
-            if stated.names(ty) {
+            // `stated` holds types, not parameters: a `pre!` of one parameter's value does not
+            // state that of another parameter instantiated with the same closure type.
+            let shared = params.iter().filter(|(other, _)| *other == ty).count() > 1;
+            if !shared && stated.names(ty) {
                 continue;
             }
             for (idx, operand) in operands.iter().enumerate() {
