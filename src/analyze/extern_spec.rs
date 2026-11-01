@@ -439,18 +439,29 @@ impl<'tcx> Analyzer<'tcx> {
     /// Checks the crate's override `instance` of the trait method `method`, which a reused
     /// generic body called at a type parameter taking the trait's spec, when at the instance's
     /// arguments that spec does not cover the override's own type parameters
-    /// ([`Self::takes_narrower_trait_spec`]): the override's body is analyzed at the instance
-    /// ([`Analyzer::def_ty_with_args`]), and its contract there must refine the spec the call
-    /// took, as the check at the impl (`check_impl_refinements`) does for a spec that covers it.
+    /// ([`Self::takes_narrower_trait_spec`]): the override is typed at the instance
+    /// ([`Analyzer::def_ty_with_args`]), which analyzes its body there against its contract (the
+    /// trait's spec, or a spec of its own such as an extern spec at that instance), and that
+    /// contract must refine the spec the call took, as the check at the impl
+    /// (`check_impl_refinements`) does for a spec that covers it.
     fn check_override_at_instance(
         &mut self,
         (method, method_args): MethodCall<'tcx>,
         (override_def_id, override_args): MethodCall<'tcx>,
         caller_def_id: DefId,
     ) {
-        let override_ty = self
-            .def_ty_with_args(override_def_id, override_args, caller_def_id)
-            .expect("a crate impl method has a type at an instance");
+        let Some(override_ty) =
+            self.def_ty_with_args(override_def_id, override_args, caller_def_id)
+        else {
+            self.tcx.dcx().fatal(format!(
+                "thrust: no specification of `{}`, which `{}` runs through a call of `{}` at a \
+                 type parameter",
+                self.tcx
+                    .def_path_str_with_args(override_def_id, override_args),
+                self.tcx.def_path_str(caller_def_id),
+                self.tcx.def_path_str(method),
+            ));
+        };
         let spec_ty = self
             .def_ty_with_args(method, method_args, caller_def_id)
             .expect("the spec the dispatched call took");
@@ -629,9 +640,7 @@ impl<'tcx> Analyzer<'tcx> {
                 else {
                     return false;
                 };
-                if !instance.def_id().is_local()
-                    || !matches!(this.defs.get(&instance.def_id()), Some(DefTy::Generic(_)))
-                {
+                if !instance.def_id().is_local() {
                     return false;
                 }
                 if this.takes_narrower_trait_spec(instance.def_id(), instance.args, caller_def_id) {
@@ -641,6 +650,9 @@ impl<'tcx> Analyzer<'tcx> {
                         caller_def_id,
                     );
                     return true;
+                }
+                if !matches!(this.defs.get(&instance.def_id()), Some(DefTy::Generic(_))) {
+                    return false;
                 }
                 let reached = (instance.def_id(), instance.args, caller_def_id);
                 let mut reused = this.reused_generic_instances.borrow_mut();
