@@ -3554,8 +3554,10 @@ where
 
     fn produces_refl(a: &Self) {}
 
-    // Trusted: PCSat gives no answer on this law. It follows from the laws of
-    // `A` and `B` by cases on whether each of the two steps leaves the first iterator in place.
+    // Trusted: PCSat gives no answer on this law; its proof needs witnesses for the existential
+    // split points, which Thrust cannot give. It follows from the laws of `A` and `B` by cases on
+    // whether each of the two steps leaves the first iterator in place, with the steps that stay
+    // in `b` composed by `_iter_spec_chain_second` (B's law and the associativity of `concat`).
     #[thrust::trusted]
     fn produces_trans(
         a: &Self,
