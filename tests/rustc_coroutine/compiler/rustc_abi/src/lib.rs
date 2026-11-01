@@ -384,8 +384,7 @@ impl Size {
 
     #[inline]
     // The `requires` is that of `obj_size_bound` for the layout `cx` names.
-    #[thrust_macros::requires(forall(|dl: TargetDataLayout| !C::dl_of(*cx, dl)
-        || dl.default_address_space_pointer_spec.pointer_size.raw == 2
+    #[thrust_macros::requires(forall(|dl: TargetDataLayout| C::dl_of(*cx, dl) ==> dl.default_address_space_pointer_spec.pointer_size.raw == 2
         || dl.default_address_space_pointer_spec.pointer_size.raw == 4
         || dl.default_address_space_pointer_spec.pointer_size.raw == 8))]
     #[thrust_macros::ensures(true)]
@@ -527,7 +526,7 @@ impl Integer {
     }
 
     #[inline]
-    #[thrust_macros::ensures(forall(|n: USize| !(n == result.raw) || Self::bytes_are(self, n)))]
+    #[thrust_macros::ensures(forall(|n: USize| n == result.raw ==> Self::bytes_are(self, n)))]
     pub fn size(self) -> Size {
         use Integer::*;
         match self {
@@ -586,7 +585,7 @@ impl Float {
             || (self == Float::F128 && n == 16)
     }
 
-    #[thrust_macros::ensures(forall(|n: USize| !(n == result.raw) || Self::bytes_are(self, n)))]
+    #[thrust_macros::ensures(forall(|n: USize| n == result.raw ==> Self::bytes_are(self, n)))]
     pub fn size(self) -> Size {
         use Float::*;
 
@@ -633,7 +632,7 @@ impl Primitive {
     // A pointer's size and alignment are looked up in the layout `cx` names: the `requires` of
     // `pointer_size_in` / `pointer_align_in` must hold for every layout `dl` with `dl_of(*cx, dl)`.
     #[thrust_macros::requires(forall(|dl: TargetDataLayout, a: AddressSpace|
-        !(C::dl_of(*cx, dl) && self == Primitive::Pointer(a)) || TargetDataLayout::pointer_space_ok(dl, a)))]
+        C::dl_of(*cx, dl) && self == Primitive::Pointer(a) ==> TargetDataLayout::pointer_space_ok(dl, a)))]
     // An integer or a float has at most 16 bytes; a pointer has the size the layout `cx` names.
     #[thrust_macros::ensures(result.raw <= 16
         || exists(|dl: TargetDataLayout, a: AddressSpace| C::dl_of(*cx, dl)
@@ -651,7 +650,7 @@ impl Primitive {
     }
 
     #[thrust_macros::requires(forall(|dl: TargetDataLayout, a: AddressSpace|
-        !(C::dl_of(*cx, dl) && self == Primitive::Pointer(a)) || TargetDataLayout::pointer_space_ok(dl, a)))]
+        C::dl_of(*cx, dl) && self == Primitive::Pointer(a) ==> TargetDataLayout::pointer_space_ok(dl, a)))]
     #[thrust::callable]
     pub fn align<C: HasDataLayout>(self, cx: &C) -> AbiAlign {
         use Primitive::*;
@@ -722,10 +721,9 @@ impl Scalar {
 
     #[thrust_macros::impl_trait_names(C)]
     #[thrust_macros::requires(forall(|dl: TargetDataLayout, p: Primitive, r: WrappingRange, a: AddressSpace|
-        !(C::dl_of(*cx, dl)
+        C::dl_of(*cx, dl)
             && (self == Scalar::Initialized { value: p, valid_range: r } || self == Scalar::Union { value: p })
-            && p == Primitive::Pointer(a))
-            || TargetDataLayout::pointer_space_ok(dl, a)))]
+            && p == Primitive::Pointer(a) ==> TargetDataLayout::pointer_space_ok(dl, a)))]
     #[thrust::callable]
     pub fn align(self, cx: &impl HasDataLayout) -> AbiAlign {
         self.primitive().align(cx)
@@ -733,10 +731,9 @@ impl Scalar {
 
     #[thrust_macros::impl_trait_names(C)]
     #[thrust_macros::requires(forall(|dl: TargetDataLayout, p: Primitive, r: WrappingRange, a: AddressSpace|
-        !(C::dl_of(*cx, dl)
+        C::dl_of(*cx, dl)
             && (self == Scalar::Initialized { value: p, valid_range: r } || self == Scalar::Union { value: p })
-            && p == Primitive::Pointer(a))
-            || TargetDataLayout::pointer_space_ok(dl, a)))]
+            && p == Primitive::Pointer(a) ==> TargetDataLayout::pointer_space_ok(dl, a)))]
     #[thrust::callable]
     pub fn size(self, cx: &impl HasDataLayout) -> Size {
         self.primitive().size(cx)
@@ -873,9 +870,8 @@ impl Niche {
     }
 
     #[thrust_macros::requires(forall(|dl: TargetDataLayout, r: WrappingRange, a: AddressSpace|
-        !(C::dl_of(*cx, dl) && scalar == Scalar::Initialized { value: Primitive::Pointer(a), valid_range: r })
-            || (TargetDataLayout::pointer_space_ok(dl, a)
-                && forall(|n: Size| !TargetDataLayout::pointer_size_is(dl, a, n) || n.raw * 8 <= 128))))]
+        C::dl_of(*cx, dl) && scalar == Scalar::Initialized { value: Primitive::Pointer(a), valid_range: r } ==> (TargetDataLayout::pointer_space_ok(dl, a)
+                && forall(|n: Size| TargetDataLayout::pointer_size_is(dl, a, n) ==> n.raw * 8 <= 128))))]
     pub fn from_scalar<C: HasDataLayout>(cx: &C, offset: Size, scalar: Scalar) -> Option<Self> {
         let Scalar::Initialized { value, valid_range } = scalar else {
             return None;
@@ -894,9 +890,8 @@ impl Niche {
 
     // The `requires` is that of `value.size(cx)` and the `assert!`'s bound on a pointer's size.
     #[thrust_macros::requires(forall(|dl: TargetDataLayout, a: AddressSpace|
-        !(C::dl_of(*cx, dl) && (*self).value == Primitive::Pointer(a))
-            || (TargetDataLayout::pointer_space_ok(dl, a)
-                && forall(|n: Size| !TargetDataLayout::pointer_size_is(dl, a, n) || n.raw * 8 <= 128))))]
+        C::dl_of(*cx, dl) && (*self).value == Primitive::Pointer(a) ==> (TargetDataLayout::pointer_space_ok(dl, a)
+                && forall(|n: Size| TargetDataLayout::pointer_size_is(dl, a, n) ==> n.raw * 8 <= 128))))]
     #[thrust_macros::ensures(true)]
     pub fn available<C: HasDataLayout>(&self, cx: &C) -> u128 {
         let Self {
