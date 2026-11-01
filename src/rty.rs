@@ -359,6 +359,37 @@ impl FunctionType {
         let param_terms = self.param_terms(args);
         refinement_to_chc_formula(&self.ret.refinement, result, &param_terms)
     }
+
+    /// The postcondition of a closure call at `args`. `final_state` is the variable `f` of the
+    /// receiver `Mut::new(state, f)` when the closure is `FnMut` and its state is held as a value:
+    /// such a call ends in some final state and drops it, as Creusot's `postcondition_once` of an
+    /// `FnMut` closure is `exists s. postcondition_mut(self, args, s, res) && resolve(s)` (the
+    /// `fn_mut_once` law).
+    pub fn once_postcondition_formula<W>(
+        &self,
+        args: &[chc::Term<W>],
+        result: chc::Term<W>,
+        final_state: Option<(chc::UserQuantifiedVarId, chc::Sort)>,
+    ) -> chc::Formula<W>
+    where
+        W: chc::Var,
+    {
+        let post = self.postcondition_formula(args, result);
+        let Some((final_, sort)) = final_state else {
+            return post;
+        };
+        let state_ty = &self.params[FunctionParamIdx::from_usize(0)]
+            .ty
+            .as_pointer()
+            .unwrap()
+            .elem
+            .ty;
+        let dropped = state_ty.resolutions(chc::Term::UserQuantifiedVar(sort.clone(), final_));
+        let post = dropped
+            .into_iter()
+            .fold(post, |post, atom| post.and(atom.into()));
+        chc::Formula::exists(vec![(final_, sort)], post)
+    }
 }
 
 /// Lowers a [`Refinement`] (over [`FunctionParamIdx`]) into a [`chc::Formula`] in the caller's

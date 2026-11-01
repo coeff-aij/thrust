@@ -1321,28 +1321,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         let (receiver_term, final_state) = self.closure_receiver_term(receiver, &fn_ty, "post!");
         let param_args: Vec<_> = std::iter::once(receiver_term).chain(logical_args).collect();
         let result = self.to_term(result);
-        let post = fn_ty.postcondition_formula(&param_args, result);
-        // A call of an `FnMut` closure held as a value ends in some state the closure's
-        // postcondition allows, which the call then drops, as Creusot's `postcondition_once` of
-        // an `FnMut` closure is `exists s. postcondition_mut(self, args, s, res) && resolve(s)`
-        // (the `fn_mut_once` law).
-        FormulaOrTerm::Formula(match final_state {
-            Some((final_, sort)) => {
-                let state_ty = &fn_ty.params[rty::FunctionParamIdx::from(0usize)]
-                    .ty
-                    .as_pointer()
-                    .unwrap()
-                    .elem
-                    .ty;
-                let dropped =
-                    state_ty.resolutions(chc::Term::UserQuantifiedVar(sort.clone(), final_));
-                let post = dropped
-                    .into_iter()
-                    .fold(post, |post, atom| post.and(atom.into()));
-                chc::Formula::exists(vec![(final_, sort)], post)
-            }
-            None => post,
-        })
+        FormulaOrTerm::Formula(fn_ty.once_postcondition_formula(&param_args, result, final_state))
     }
 
     fn translate_closure_hist_inv(
