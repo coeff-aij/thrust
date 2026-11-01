@@ -386,7 +386,8 @@ pub fn trait_item_args<'tcx>(
 
 impl<'tcx> Analyzer<'tcx> {
     /// The index of the spec of `def_id`, a std trait's method, that covers a call at
-    /// `generic_args` made in `caller_def_id`, as [`Analyzer::def_ty_with_args`] picks it.
+    /// `generic_args` made in `caller_def_id`, as [`Analyzer::def_ty_with_args`] picks it, without
+    /// recording the spec bounds the call would assume.
     fn covering_spec(
         &self,
         def_id: DefId,
@@ -396,9 +397,10 @@ impl<'tcx> Analyzer<'tcx> {
         let Some(DefTy::Deferred(specs)) = self.defs.get(&def_id) else {
             return None;
         };
-        specs
-            .iter()
-            .position(|spec| self.spec_args(spec, generic_args, caller_def_id).is_some())
+        specs.iter().position(|spec| {
+            self.covered_spec_args(spec, generic_args, caller_def_id)
+                .is_some()
+        })
     }
 
     /// Whether `def_id`, a crate impl's method that overrides a trait method with an extern spec,
@@ -481,12 +483,24 @@ impl<'tcx> Analyzer<'tcx> {
         generic_args: mir_ty::GenericArgsRef<'tcx>,
         caller_def_id: DefId,
     ) -> Option<mir_ty::GenericArgsRef<'tcx>> {
+        let (bound, assumed) = self.covered_spec_args(spec, generic_args, caller_def_id)?;
+        self.record_assumed_spec_bounds(caller_def_id, assumed);
+        Some(bound)
+    }
+
+    /// [`Self::spec_args`] with the spec bounds the call assumes, unrecorded.
+    fn covered_spec_args(
+        &self,
+        spec: &DeferredDefTy<'tcx>,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
+        caller_def_id: DefId,
+    ) -> Option<(mir_ty::GenericArgsRef<'tcx>, Vec<mir_ty::Clause<'tcx>>)> {
         let Some(target_args) = spec.target_args else {
-            return Some(generic_args);
+            return Some((generic_args, Vec::new()));
         };
         let bound = bind_spec_args(self.tcx, spec.local_def_id, target_args, generic_args)?;
         let Some(model_ty) = self.def_ids().model_ty() else {
-            return Some(bound);
+            return Some((bound, Vec::new()));
         };
         let model_trait = self.tcx.parent(model_ty);
         let type_builder = self.type_builder(self.def_ids(), caller_def_id);
@@ -506,8 +520,7 @@ impl<'tcx> Analyzer<'tcx> {
                 )
             });
         let assumed = classify_spec_bounds(self.tcx, clauses, caller_def_id, model_ty).ok()?;
-        self.record_assumed_spec_bounds(caller_def_id, assumed);
-        Some(bound)
+        Some((bound, assumed))
     }
 
     /// Records spec bounds assumed while analysing a body owned by `owner_fn_id`, under its typeck

@@ -2164,14 +2164,27 @@ impl<'tcx> Analyzer<'tcx> {
         // to the current one; and when the contract at the instance is a trait method's spec that
         // does not cover the def's own type parameters, which the generic check did not use
         // (`Iterator::collect`'s at `B = Vec<T>`). Otherwise the contract is used as instantiated.
-        let analyze_body = may_analyze
-            && deferred_ty_mode.is_some_and(|mode| mode.should_analyze())
+        let narrower_spec = may_analyze
+            && is_generic
+            && self.takes_narrower_trait_spec(def_id, generic_args, caller_def_id);
+        let may_analyze_body =
+            may_analyze && deferred_ty_mode.is_some_and(|mode| mode.should_analyze());
+        if narrower_spec && !may_analyze_body {
+            self.tcx.dcx().fatal(format!(
+                "`{}` calls `{}`, which takes there a spec of the trait method that does not \
+                 cover its own type parameters; its body cannot be checked against that spec \
+                 inside its own analysis, which is not supported",
+                self.tcx.def_path_str(caller_def_id),
+                self.tcx.def_path_str_with_args(def_id, generic_args),
+            ));
+        }
+        let analyze_body = may_analyze_body
             && (!is_generic
                 || self.per_instance_too.contains(&def_id)
                 || (has_fn_mut_closure(generic_args)
                     && !self.reuse_fn_mut_generic(def_id, &expected, generic_args, caller_def_id))
                 || self.may_have_pred_var(&expected, generic_args, caller_def_id)
-                || self.takes_narrower_trait_spec(def_id, generic_args, caller_def_id));
+                || narrower_spec);
         if is_generic && !analyze_body {
             self.reused_generic_instances
                 .borrow_mut()
