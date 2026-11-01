@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{quote, ToTokens as _};
+use syn::spanned::Spanned as _;
 use syn::visit::Visit as _;
 
 use crate::fn_outer_item::FnOuterItem;
@@ -254,12 +255,14 @@ impl<'a> FormulaFnTypeLowering<'a> {
 
 /// `ty` with each trait object (`dyn Tr`) replaced by `thrust_models::model::Dyn`, the opaque
 /// model all trait objects share, so that a contract over `&dyn Tr` needs no `Model` impl for it.
+/// The replacement has the span of the `dyn Tr` it replaces, so that a diagnostic can print the
+/// type as written.
 fn lower_trait_objects(ty: &syn::Type) -> syn::Type {
     struct Lower;
     impl syn::visit_mut::VisitMut for Lower {
         fn visit_type_mut(&mut self, ty: &mut syn::Type) {
             if matches!(ty, syn::Type::TraitObject(_)) {
-                *ty = syn::parse_quote!(crate::thrust_models::model::Dyn);
+                *ty = syn::parse_quote_spanned!(ty.span()=> crate::thrust_models::model::Dyn);
                 return;
             }
             syn::visit_mut::visit_type_mut(self, ty);

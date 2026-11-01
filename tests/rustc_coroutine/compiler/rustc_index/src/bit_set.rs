@@ -161,8 +161,8 @@ impl<T: Idx> DenseBitSet<T> {
     #[thrust_macros::ensures(result.4 == (*self).0 && result.5 == 0)]
     #[thrust_macros::ensures(0 <= result.6 && result.6 <= (*self).0)]
     #[thrust_macros::ensures(result.6 == Self::card(*self))]
-    #[thrust_macros::ensures(forall(|k: USize| !(result.7[k] != 0) || (0 <= k && k < (*self).0 && Self::mem(*self, k))))]
-    #[thrust_macros::ensures(forall(|k: USize| !(0 <= k && k < (*self).0 && Self::mem(*self, k)) || result.7[k] != 0))]
+    #[thrust_macros::ensures(forall(|k: USize| result.7[k] != 0 ==> (0 <= k && k < (*self).0 && Self::mem(*self, k))))]
+    #[thrust_macros::ensures(forall(|k: USize| 0 <= k && k < (*self).0 && Self::mem(*self, k) ==> result.7[k] != 0))]
     pub fn iter(&self) -> BitIter<'_, T> {
         BitIter::new(&self.words)
     }
@@ -559,7 +559,7 @@ pub(crate) fn ones(words: Seq<USize>, m: USize) -> Int {
 #[thrust_macros::lemma]
 #[thrust_macros::variant(m)]
 #[thrust_macros::ensures(forall(|s: Seq<USize>|
-    !forall(|k: USize| !(k * 64 < m) || s[k] == 0) || ones(s, m) == 0))]
+    forall(|k: USize| k * 64 < m ==> s[k] == 0) ==> ones(s, m) == 0))]
 fn zero_bits_ones(m: usize) {
     if m > 0 {
         zero_bits_ones(m - 1);

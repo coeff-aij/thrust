@@ -30,8 +30,8 @@ impl<I: Idx, T> IndexVec<I, T> {
     #[inline]
     // Trusted: the body's `Vec<T>` at a type parameter is typed as the (array, length) pair, not the sequence the contract reads.
     #[thrust::trusted]
-    #[thrust_macros::requires(forall(|i: USize| !<I as Idx>::index_is(index, i) || (0 <= i && i < (*self).len())))]
-    #[thrust_macros::ensures(forall(|i: USize| !<I as Idx>::index_is(index, i) || *result == (*self)[i]))]
+    #[thrust_macros::requires(forall(|i: USize| <I as Idx>::index_is(index, i) ==> (0 <= i && i < (*self).len())))]
+    #[thrust_macros::ensures(forall(|i: USize| <I as Idx>::index_is(index, i) ==> *result == (*self)[i]))]
     fn at(&self, index: I) -> &T {
         &self.raw[index.index()]
     }
@@ -46,7 +46,7 @@ impl<I: Idx, T> IndexVec<I, T> {
 
 #[thrust_macros::requires(n >= 0)]
 #[thrust_macros::ensures(result.len() == n)]
-#[thrust_macros::ensures(forall(|k: USize| !(0 <= k && k < n) || result[k] == elem))]
+#[thrust_macros::ensures(forall(|k: USize| 0 <= k && k < n ==> result[k] == elem))]
 #[thrust_macros::context]
 fn filled(n: usize, elem: i64) -> IndexVec<usize, i64> {
     let mut v: IndexVec<usize, i64> = IndexVec::new();
@@ -59,7 +59,7 @@ fn filled(n: usize, elem: i64) -> IndexVec<usize, i64> {
              elem: thrust_models::FnParam<i64>|
                 v.len() == i
                     && i <= n.at_entry()
-                    && forall(|k: USize| !(0 <= k && k < i) || v[k] == elem.at_entry())
+                    && forall(|k: USize| 0 <= k && k < i ==> v[k] == elem.at_entry())
         );
         v.push(elem);
         i += 1;

@@ -384,8 +384,7 @@ impl Size {
 
     #[inline]
     // The `requires` is that of `obj_size_bound` for the layout `cx` names.
-    #[thrust_macros::requires(forall(|dl: TargetDataLayout| !C::dl_of(*cx, dl)
-        || dl.default_address_space_pointer_spec.pointer_size.raw == 2
+    #[thrust_macros::requires(forall(|dl: TargetDataLayout| C::dl_of(*cx, dl) ==> dl.default_address_space_pointer_spec.pointer_size.raw == 2
         || dl.default_address_space_pointer_spec.pointer_size.raw == 4
         || dl.default_address_space_pointer_spec.pointer_size.raw == 8))]
     #[thrust_macros::ensures(true)]
@@ -408,12 +407,12 @@ impl Size {
     }
 }
 
-// Thrust cannot put a contract on an impl of an external trait (`#[thrust_macros::ensures]` on
-// `add` expands to `_thrust_ensures_add`, which is "not a member of trait `Add`"), so the
-// contracts of `add` and `add_assign` are on the `extern_spec_fn` wrappers below.
+#[thrust_macros::context]
 impl Add for Size {
     type Output = Size;
     #[inline]
+    #[thrust_macros::requires(self.raw + other.raw <= u64::MAX)]
+    #[thrust_macros::ensures(result.raw == self.raw + other.raw)]
     fn add(self, other: Size) -> Size {
         Size::from_bytes(self.bytes().checked_add(other.bytes()).unwrap_or_else(|| {
             panic!("Size::add: {} + {} doesn't fit in u64", self.bytes(), other.bytes())
@@ -421,22 +420,11 @@ impl Add for Size {
     }
 }
 
-#[thrust::extern_spec_fn]
-#[thrust_macros::requires(a.raw + b.raw <= u64::MAX)]
-#[thrust_macros::ensures(result.raw == a.raw + b.raw)]
-fn _extern_spec_size_add(a: Size, b: Size) -> Size {
-    <Size as Add>::add(a, b)
-}
-
-#[thrust::extern_spec_fn]
-#[thrust_macros::requires((*a).raw + b.raw <= u64::MAX)]
-#[thrust_macros::ensures((!a).raw == (*a).raw + b.raw)]
-fn _extern_spec_size_add_assign(a: &mut Size, b: Size) {
-    <Size as AddAssign>::add_assign(a, b)
-}
-
+#[thrust_macros::context]
 impl AddAssign for Size {
     #[inline]
+    #[thrust_macros::requires((*self).raw + other.raw <= u64::MAX)]
+    #[thrust_macros::ensures((!self).raw == (*self).raw + other.raw)]
     fn add_assign(&mut self, other: Size) {
         *self = *self + other;
     }
@@ -516,18 +504,18 @@ pub enum Integer {
 
 #[thrust_macros::context]
 impl Integer {
-    /// `n` is the number of bytes of `self`.
+    /// `n` is the size of `self`, in bytes.
     #[thrust_macros::predicate]
-    pub(crate) fn bytes_are(self, n: USize) -> bool {
-        (self == Integer::I8 && n == 1)
-            || (self == Integer::I16 && n == 2)
-            || (self == Integer::I32 && n == 4)
-            || (self == Integer::I64 && n == 8)
-            || (self == Integer::I128 && n == 16)
+    pub(crate) fn bytes_are(self, n: Size) -> bool {
+        (self == Integer::I8 && n.raw == 1)
+            || (self == Integer::I16 && n.raw == 2)
+            || (self == Integer::I32 && n.raw == 4)
+            || (self == Integer::I64 && n.raw == 8)
+            || (self == Integer::I128 && n.raw == 16)
     }
 
     #[inline]
-    #[thrust_macros::ensures(forall(|n: USize| !(n == result.raw) || Self::bytes_are(self, n)))]
+    #[thrust_macros::ensures(Self::bytes_are(self, result))]
     pub fn size(self) -> Size {
         use Integer::*;
         match self {
@@ -577,16 +565,16 @@ pub enum Float {
 
 #[thrust_macros::context]
 impl Float {
-    /// `n` is the number of bytes of `self`.
+    /// `n` is the size of `self`, in bytes.
     #[thrust_macros::predicate]
-    pub(crate) fn bytes_are(self, n: USize) -> bool {
-        (self == Float::F16 && n == 2)
-            || (self == Float::F32 && n == 4)
-            || (self == Float::F64 && n == 8)
-            || (self == Float::F128 && n == 16)
+    pub(crate) fn bytes_are(self, n: Size) -> bool {
+        (self == Float::F16 && n.raw == 2)
+            || (self == Float::F32 && n.raw == 4)
+            || (self == Float::F64 && n.raw == 8)
+            || (self == Float::F128 && n.raw == 16)
     }
 
-    #[thrust_macros::ensures(forall(|n: USize| !(n == result.raw) || Self::bytes_are(self, n)))]
+    #[thrust_macros::ensures(Self::bytes_are(self, result))]
     pub fn size(self) -> Size {
         use Float::*;
 
@@ -624,8 +612,8 @@ impl Primitive {
     /// `s` is the size of `self` under the data layout `dl`.
     #[thrust_macros::predicate]
     pub(crate) fn size_in(self, dl: TargetDataLayout, s: Size) -> bool {
-        exists(|i: Integer, b: bool, n: USize| self == Primitive::Int(i, b) && n == s.raw && Integer::bytes_are(i, n))
-            || exists(|f: Float, n: USize| self == Primitive::Float(f) && n == s.raw && Float::bytes_are(f, n))
+        exists(|i: Integer, b: bool| self == Primitive::Int(i, b) && Integer::bytes_are(i, s))
+            || exists(|f: Float| self == Primitive::Float(f) && Float::bytes_are(f, s))
             || exists(|a: AddressSpace| self == Primitive::Pointer(a)
                 && TargetDataLayout::pointer_size_is(dl, a, s))
     }
@@ -633,7 +621,7 @@ impl Primitive {
     // A pointer's size and alignment are looked up in the layout `cx` names: the `requires` of
     // `pointer_size_in` / `pointer_align_in` must hold for every layout `dl` with `dl_of(*cx, dl)`.
     #[thrust_macros::requires(forall(|dl: TargetDataLayout, a: AddressSpace|
-        !(C::dl_of(*cx, dl) && self == Primitive::Pointer(a)) || TargetDataLayout::pointer_space_ok(dl, a)))]
+        C::dl_of(*cx, dl) && self == Primitive::Pointer(a) ==> TargetDataLayout::pointer_space_ok(dl, a)))]
     // An integer or a float has at most 16 bytes; a pointer has the size the layout `cx` names.
     #[thrust_macros::ensures(result.raw <= 16
         || exists(|dl: TargetDataLayout, a: AddressSpace| C::dl_of(*cx, dl)
@@ -651,7 +639,7 @@ impl Primitive {
     }
 
     #[thrust_macros::requires(forall(|dl: TargetDataLayout, a: AddressSpace|
-        !(C::dl_of(*cx, dl) && self == Primitive::Pointer(a)) || TargetDataLayout::pointer_space_ok(dl, a)))]
+        C::dl_of(*cx, dl) && self == Primitive::Pointer(a) ==> TargetDataLayout::pointer_space_ok(dl, a)))]
     #[thrust::callable]
     pub fn align<C: HasDataLayout>(self, cx: &C) -> AbiAlign {
         use Primitive::*;
@@ -722,10 +710,9 @@ impl Scalar {
 
     #[thrust_macros::impl_trait_names(C)]
     #[thrust_macros::requires(forall(|dl: TargetDataLayout, p: Primitive, r: WrappingRange, a: AddressSpace|
-        !(C::dl_of(*cx, dl)
+        C::dl_of(*cx, dl)
             && (self == Scalar::Initialized { value: p, valid_range: r } || self == Scalar::Union { value: p })
-            && p == Primitive::Pointer(a))
-            || TargetDataLayout::pointer_space_ok(dl, a)))]
+            && p == Primitive::Pointer(a) ==> TargetDataLayout::pointer_space_ok(dl, a)))]
     #[thrust::callable]
     pub fn align(self, cx: &impl HasDataLayout) -> AbiAlign {
         self.primitive().align(cx)
@@ -733,10 +720,9 @@ impl Scalar {
 
     #[thrust_macros::impl_trait_names(C)]
     #[thrust_macros::requires(forall(|dl: TargetDataLayout, p: Primitive, r: WrappingRange, a: AddressSpace|
-        !(C::dl_of(*cx, dl)
+        C::dl_of(*cx, dl)
             && (self == Scalar::Initialized { value: p, valid_range: r } || self == Scalar::Union { value: p })
-            && p == Primitive::Pointer(a))
-            || TargetDataLayout::pointer_space_ok(dl, a)))]
+            && p == Primitive::Pointer(a) ==> TargetDataLayout::pointer_space_ok(dl, a)))]
     #[thrust::callable]
     pub fn size(self, cx: &impl HasDataLayout) -> Size {
         self.primitive().size(cx)
@@ -873,9 +859,8 @@ impl Niche {
     }
 
     #[thrust_macros::requires(forall(|dl: TargetDataLayout, r: WrappingRange, a: AddressSpace|
-        !(C::dl_of(*cx, dl) && scalar == Scalar::Initialized { value: Primitive::Pointer(a), valid_range: r })
-            || (TargetDataLayout::pointer_space_ok(dl, a)
-                && forall(|n: Size| !TargetDataLayout::pointer_size_is(dl, a, n) || n.raw * 8 <= 128))))]
+        C::dl_of(*cx, dl) && scalar == Scalar::Initialized { value: Primitive::Pointer(a), valid_range: r } ==> (TargetDataLayout::pointer_space_ok(dl, a)
+                && forall(|n: Size| TargetDataLayout::pointer_size_is(dl, a, n) ==> n.raw * 8 <= 128))))]
     pub fn from_scalar<C: HasDataLayout>(cx: &C, offset: Size, scalar: Scalar) -> Option<Self> {
         let Scalar::Initialized { value, valid_range } = scalar else {
             return None;
@@ -894,9 +879,8 @@ impl Niche {
 
     // The `requires` is that of `value.size(cx)` and the `assert!`'s bound on a pointer's size.
     #[thrust_macros::requires(forall(|dl: TargetDataLayout, a: AddressSpace|
-        !(C::dl_of(*cx, dl) && (*self).value == Primitive::Pointer(a))
-            || (TargetDataLayout::pointer_space_ok(dl, a)
-                && forall(|n: Size| !TargetDataLayout::pointer_size_is(dl, a, n) || n.raw * 8 <= 128))))]
+        C::dl_of(*cx, dl) && (*self).value == Primitive::Pointer(a) ==> (TargetDataLayout::pointer_space_ok(dl, a)
+                && forall(|n: Size| TargetDataLayout::pointer_size_is(dl, a, n) ==> n.raw * 8 <= 128))))]
     #[thrust_macros::ensures(true)]
     pub fn available<C: HasDataLayout>(&self, cx: &C) -> u128 {
         let Self {

@@ -55,20 +55,18 @@ impl<VariantIdx: thrust_models::Model, FieldIdx: thrust_models::Model> thrust_mo
 // loops tie the two `variant_fields` together through `variants.0`.
 #[thrust_macros::requires(
     forall(|v: usize, f: usize|
-        !(0 <= v && v < (*variant_fields).len()
-            && 0 <= f && f < (*variant_fields)[v].len())
-        || forall(|i: USize|
-            !<LocalIdx as Idx>::index_is((*variant_fields)[v][f], i)
-                || i < nb_locals))
+        0 <= v && v < (*variant_fields).len()
+            && 0 <= f && f < (*variant_fields)[v].len() ==> forall(|i: USize|
+            <LocalIdx as Idx>::index_is((*variant_fields)[v][f], i) ==> i < nb_locals))
     // `count(local_b)` takes a column index as a row, so every set bit's column must be below
     // the number of rows: the panic condition, through the matrix's ghost column bound.
     && (*storage_conflicts).num_rows <= nb_locals
     && *(*storage_conflicts).col_bound <= (*storage_conflicts).num_rows
     && BitMatrix::<LocalIdx, LocalIdx>::cols_below(*storage_conflicts, *(*storage_conflicts).col_bound)
     && BitMatrix::<LocalIdx, LocalIdx>::wf(*storage_conflicts)
-    && forall(|k: USize| !(0 <= k && k < nb_locals) || LocalIdx::can_new(k))
-    && forall(|n: USize| !(0 <= n && n <= nb_locals) || FieldIdx::can_new(n))
-    && forall(|v: USize| !(0 <= v && v <= (*variant_fields).len()) || VariantIdx::can_new(v))
+    && forall(|k: USize| 0 <= k && k < nb_locals ==> LocalIdx::can_new(k))
+    && forall(|n: USize| 0 <= n && n <= nb_locals ==> FieldIdx::can_new(n))
+    && forall(|v: USize| 0 <= v && v <= (*variant_fields).len() ==> VariantIdx::can_new(v))
 )]
 #[thrust_macros::ensures(
     // `assignments` has one entry per local, and `inel` is a set over the locals, so its
@@ -76,20 +74,17 @@ impl<VariantIdx: thrust_models::Model, FieldIdx: thrust_models::Model> thrust_mo
     result.1.len() == nb_locals
     && result.0.0 == nb_locals
     // 1. Unassigned locals never appear in any variant's field list.
-    && forall(|l: usize| !(0 <= l && l < nb_locals && result.1[l] == SavedLocalEligibility::Unassigned)
-        || forall(|v: usize, f: usize|
-            !(0 <= v && v < (*variant_fields).len()
-                && 0 <= f && f < (*variant_fields)[v].len())
-            || !thrust_models::exists(|i: USize|
+    && forall(|l: usize| 0 <= l && l < nb_locals && result.1[l] == SavedLocalEligibility::Unassigned ==> forall(|v: usize, f: usize|
+            0 <= v && v < (*variant_fields).len()
+                && 0 <= f && f < (*variant_fields)[v].len() ==> !thrust_models::exists(|i: USize|
                 i == l
                     && <LocalIdx as Idx>::index_is((*variant_fields)[v][f], i))))
     // 2. An Assigned(v) local appears in variant v's field list.
     && forall(|l: usize, v: usize|
-        !(0 <= l && l < nb_locals
+        0 <= l && l < nb_locals
             && thrust_models::exists(|vi: <VariantIdx as thrust_models::Model>::Ty|
                 thrust_models::exists(|vn: USize| vn == v && <VariantIdx as Idx>::index_is(vi, vn))
-                    && result.1[l] == SavedLocalEligibility::Assigned(vi)))
-        || (v < (*variant_fields).len()
+                    && result.1[l] == SavedLocalEligibility::Assigned(vi)) ==> (v < (*variant_fields).len()
             && thrust_models::exists(|f: usize|
                 0 <= f && f < (*variant_fields)[v].len()
                     && thrust_models::exists(|i: USize|
@@ -98,41 +93,34 @@ impl<VariantIdx: thrust_models::Model, FieldIdx: thrust_models::Model> thrust_mo
     // 2b. A local a variant lists is Assigned to that variant if it is Assigned at all, which
     // `layout()`'s `Assigned(_) => unreachable!()` needs.
     && forall(|l: usize, w: usize, f: usize, vi: <VariantIdx as thrust_models::Model>::Ty|
-        !(0 <= l && l < nb_locals
+        0 <= l && l < nb_locals
             && 0 <= w && w < (*variant_fields).len()
             && 0 <= f && f < (*variant_fields)[w].len()
             && thrust_models::exists(|i: USize| i == l && <LocalIdx as Idx>::index_is((*variant_fields)[w][f], i))
-            && result.1[l] == SavedLocalEligibility::Assigned(vi))
-        || forall(|vn: USize| !<VariantIdx as Idx>::index_is(vi, vn) || vn == w))
+            && result.1[l] == SavedLocalEligibility::Assigned(vi) ==> forall(|vn: USize| <VariantIdx as Idx>::index_is(vi, vn) ==> vn == w))
     // 2c. An Assigned local appears at most once in a variant's field list: rustc's pass makes a
     // local it sees a second time ineligible. `layout()` counts a variant's Assigned locals by it.
     && forall(|l: usize, w: usize, f: usize, g: usize, vi: <VariantIdx as thrust_models::Model>::Ty|
-        !(0 <= l && l < nb_locals
+        0 <= l && l < nb_locals
             && 0 <= w && w < (*variant_fields).len()
             && 0 <= f && f < (*variant_fields)[w].len()
             && 0 <= g && g < (*variant_fields)[w].len()
             && thrust_models::exists(|i: USize| i == l && <LocalIdx as Idx>::index_is((*variant_fields)[w][f], i))
             && thrust_models::exists(|i: USize| i == l && <LocalIdx as Idx>::index_is((*variant_fields)[w][g], i))
-            && result.1[l] == SavedLocalEligibility::Assigned(vi))
-        || f == g)
+            && result.1[l] == SavedLocalEligibility::Assigned(vi) ==> f == g)
     // 3. An ineligible local has its promoted field index, below the number of members of
     // `inel` (`DenseBitSet::card`, the position in `inel.iter()`'s enumeration).
     && forall(|l: usize, x: Option<<FieldIdx as thrust_models::Model>::Ty>|
-        !(0 <= l && l < nb_locals && result.1[l] == SavedLocalEligibility::Ineligible(x))
-        || thrust_models::exists(|k: <FieldIdx as thrust_models::Model>::Ty|
-            x == Some(k) && forall(|i: USize| !<FieldIdx as Idx>::index_is(k, i) || i < DenseBitSet::<LocalIdx>::card(result.0))))
+        0 <= l && l < nb_locals && result.1[l] == SavedLocalEligibility::Ineligible(x) ==> thrust_models::exists(|k: <FieldIdx as thrust_models::Model>::Ty|
+            x == Some(k) && forall(|i: USize| <FieldIdx as Idx>::index_is(k, i) ==> i < DenseBitSet::<LocalIdx>::card(result.0))))
     // 4. Membership in `inel` matches being `Ineligible(_)`, written as an `<==>` via two `==>`.
     // `mem` takes an `Int` (its declared `usize` parameter is lowered to
     // `Int` by `#[thrust_macros::predicate]`, see the note above the
     // `requires`), but real `Vec` indexing needs a literal `usize`; the
     // `exists(|li: Int| li == l && ..)` below is a `usize -> Int` bridge
     // (`Int: PartialEq<T> where T: Model<Ty = Int>`, and `usize` is one).
-    && forall(|l: usize| !(0 <= l && l < nb_locals) ||
-        (!thrust_models::exists(|li: USize| li == l && DenseBitSet::<LocalIdx>::mem(result.0, li))
-            || thrust_models::exists(|x: Option<<FieldIdx as thrust_models::Model>::Ty>| result.1[l] == SavedLocalEligibility::Ineligible(x))))
-    && forall(|l: usize| !(0 <= l && l < nb_locals) ||
-        (!thrust_models::exists(|x: Option<<FieldIdx as thrust_models::Model>::Ty>| result.1[l] == SavedLocalEligibility::Ineligible(x))
-            || thrust_models::exists(|li: USize| li == l && DenseBitSet::<LocalIdx>::mem(result.0, li))))
+    && forall(|l: usize| 0 <= l && l < nb_locals ==> (thrust_models::exists(|li: USize| li == l && DenseBitSet::<LocalIdx>::mem(result.0, li)) ==> thrust_models::exists(|x: Option<<FieldIdx as thrust_models::Model>::Ty>| result.1[l] == SavedLocalEligibility::Ineligible(x))))
+    && forall(|l: usize| 0 <= l && l < nb_locals ==> (thrust_models::exists(|x: Option<<FieldIdx as thrust_models::Model>::Ty>| result.1[l] == SavedLocalEligibility::Ineligible(x)) ==> thrust_models::exists(|li: USize| li == l && DenseBitSet::<LocalIdx>::mem(result.0, li))))
 )]
 #[thrust_macros::context]
 fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: Idx>(
@@ -162,45 +150,37 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
             && 0 <= DenseBitSet::<LocalIdx>::card(ineligible_locals)
             && DenseBitSet::<LocalIdx>::card(ineligible_locals) <= ineligible_locals.0
             && variants.1 >= 0 && variants.1 <= variants.0.len() && *variants.0 == *variant_fields
-            && forall(|v: USize| !(0 <= v && v <= (*variant_fields).len()) || <VariantIdx as Idx>::can_new(v))
+            && forall(|v: USize| 0 <= v && v <= (*variant_fields).len() ==> <VariantIdx as Idx>::can_new(v))
             && forall(|k: USize, v: <VariantIdx as thrust_models::Model>::Ty, i: USize|
-                !(0 <= k && k < assignments.len() && assignments[k] == SavedLocalEligibility::Assigned(v) && <VariantIdx as Idx>::index_is(v, i))
-                || i < (*variant_fields).len())
+                0 <= k && k < assignments.len() && assignments[k] == SavedLocalEligibility::Assigned(v) && <VariantIdx as Idx>::index_is(v, i) ==> i < (*variant_fields).len())
             && (*storage_conflicts).num_rows <= nb_locals.at_entry()
             && *(*storage_conflicts).col_bound <= (*storage_conflicts).num_rows
             && BitMatrix::<LocalIdx, LocalIdx>::cols_below(*storage_conflicts, *(*storage_conflicts).col_bound)
             && BitMatrix::<LocalIdx, LocalIdx>::wf(*storage_conflicts)
-            && forall(|k: USize| !(0 <= k && k < nb_locals.at_entry()) || <LocalIdx as Idx>::can_new(k))
-            && forall(|n: USize| !(0 <= n && n <= nb_locals.at_entry()) || <FieldIdx as Idx>::can_new(n))
+            && forall(|k: USize| 0 <= k && k < nb_locals.at_entry() ==> <LocalIdx as Idx>::can_new(k))
+            && forall(|n: USize| 0 <= n && n <= nb_locals.at_entry() ==> <FieldIdx as Idx>::can_new(n))
             && forall(|l: USize, x: Option<<FieldIdx as thrust_models::Model>::Ty>|
-                !(0 <= l && l < nb_locals.at_entry() && assignments[l] == SavedLocalEligibility::Ineligible(x))
-                || (DenseBitSet::<LocalIdx>::mem(ineligible_locals, l) && x == None))
-            && forall(|l: USize| !(0 <= l && l < nb_locals.at_entry() && DenseBitSet::<LocalIdx>::mem(ineligible_locals, l))
-                || assignments[l] == SavedLocalEligibility::Ineligible(None))
+                0 <= l && l < nb_locals.at_entry() && assignments[l] == SavedLocalEligibility::Ineligible(x) ==> (DenseBitSet::<LocalIdx>::mem(ineligible_locals, l) && x == None))
+            && forall(|l: USize| 0 <= l && l < nb_locals.at_entry() && DenseBitSet::<LocalIdx>::mem(ineligible_locals, l) ==> assignments[l] == SavedLocalEligibility::Ineligible(None))
         );
         thrust_macros::invariant!(
             |assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, variants: IterEnumerated<VariantIdx, IndexVec<FieldIdx, LocalIdx>>, variant_fields: thrust_models::FnParam<&IndexSlice<VariantIdx, IndexVec<FieldIdx, LocalIdx>>>, nb_locals: thrust_models::FnParam<usize>|
             *variants.0 == *variant_fields.at_entry()
-            && forall(|v: USize, f: USize| !(0 <= v && v < (*variant_fields.at_entry()).len() && 0 <= f && f < (*variant_fields.at_entry())[v].len())
-                || forall(|i: USize| !<LocalIdx as Idx>::index_is((*variant_fields.at_entry())[v][f], i) || i < nb_locals.at_entry()))
+            && forall(|v: USize, f: USize| 0 <= v && v < (*variant_fields.at_entry()).len() && 0 <= f && f < (*variant_fields.at_entry())[v].len() ==> forall(|i: USize| <LocalIdx as Idx>::index_is((*variant_fields.at_entry())[v][f], i) ==> i < nb_locals.at_entry()))
             && forall(|l: USize, v: USize, f: USize|
-                !(0 <= l && l < nb_locals.at_entry() && assignments[l] == SavedLocalEligibility::Unassigned
-                    && 0 <= v && v < variants.1 && 0 <= f && f < (*variant_fields.at_entry())[v].len())
-                || !<LocalIdx as Idx>::index_is((*variant_fields.at_entry())[v][f], l))
+                0 <= l && l < nb_locals.at_entry() && assignments[l] == SavedLocalEligibility::Unassigned
+                    && 0 <= v && v < variants.1 && 0 <= f && f < (*variant_fields.at_entry())[v].len() ==> !<LocalIdx as Idx>::index_is((*variant_fields.at_entry())[v][f], l))
             && forall(|k: USize, v: <VariantIdx as thrust_models::Model>::Ty, i: USize|
-                !(0 <= k && k < assignments.len() && assignments[k] == SavedLocalEligibility::Assigned(v) && <VariantIdx as Idx>::index_is(v, i))
-                || (i < (*variant_fields.at_entry()).len()
+                0 <= k && k < assignments.len() && assignments[k] == SavedLocalEligibility::Assigned(v) && <VariantIdx as Idx>::index_is(v, i) ==> (i < (*variant_fields.at_entry()).len()
                     && exists(|f: USize| 0 <= f && f < (*variant_fields.at_entry())[i].len() && <LocalIdx as Idx>::index_is((*variant_fields.at_entry())[i][f], k))))
             && forall(|l: USize, w: USize, f: USize, vi: <VariantIdx as thrust_models::Model>::Ty, vn: USize|
-                !(0 <= l && l < nb_locals.at_entry() && 0 <= w && w < variants.1 && 0 <= f && f < (*variant_fields.at_entry())[w].len()
+                0 <= l && l < nb_locals.at_entry() && 0 <= w && w < variants.1 && 0 <= f && f < (*variant_fields.at_entry())[w].len()
                     && <LocalIdx as Idx>::index_is((*variant_fields.at_entry())[w][f], l)
-                    && assignments[l] == SavedLocalEligibility::Assigned(vi) && <VariantIdx as Idx>::index_is(vi, vn))
-                || vn == w)
+                    && assignments[l] == SavedLocalEligibility::Assigned(vi) && <VariantIdx as Idx>::index_is(vi, vn) ==> vn == w)
             && forall(|l: USize, w: USize, f: USize, g: USize, vi: <VariantIdx as thrust_models::Model>::Ty|
-                !(0 <= l && l < nb_locals.at_entry() && 0 <= w && w < variants.1 && 0 <= f && f < (*variant_fields.at_entry())[w].len() && 0 <= g && g < (*variant_fields.at_entry())[w].len()
+                0 <= l && l < nb_locals.at_entry() && 0 <= w && w < variants.1 && 0 <= f && f < (*variant_fields.at_entry())[w].len() && 0 <= g && g < (*variant_fields.at_entry())[w].len()
                     && <LocalIdx as Idx>::index_is((*variant_fields.at_entry())[w][f], l) && <LocalIdx as Idx>::index_is((*variant_fields.at_entry())[w][g], l)
-                    && assignments[l] == SavedLocalEligibility::Assigned(vi))
-                || f == g)
+                    && assignments[l] == SavedLocalEligibility::Assigned(vi) ==> f == g)
         );
         for local in fields {
             // `variant_index` is the variant at `variants.1 - 1`, whose fields `iter` walks;
@@ -213,63 +193,51 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
                 && 0 <= DenseBitSet::<LocalIdx>::card(ineligible_locals)
                 && DenseBitSet::<LocalIdx>::card(ineligible_locals) <= ineligible_locals.0
                 && variants.1 >= 0 && variants.1 <= variants.0.len() && *variants.0 == *variant_fields
-                && forall(|v: USize| !(0 <= v && v <= (*variant_fields).len()) || <VariantIdx as Idx>::can_new(v))
+                && forall(|v: USize| 0 <= v && v <= (*variant_fields).len() ==> <VariantIdx as Idx>::can_new(v))
                 && forall(|k: USize, v: <VariantIdx as thrust_models::Model>::Ty, i: USize|
-                    !(0 <= k && k < assignments.len() && assignments[k] == SavedLocalEligibility::Assigned(v) && <VariantIdx as Idx>::index_is(v, i))
-                    || i < (*variant_fields).len())
+                    0 <= k && k < assignments.len() && assignments[k] == SavedLocalEligibility::Assigned(v) && <VariantIdx as Idx>::index_is(v, i) ==> i < (*variant_fields).len())
                 && (*storage_conflicts).num_rows <= nb_locals.at_entry()
                 && *(*storage_conflicts).col_bound <= (*storage_conflicts).num_rows
                 && BitMatrix::<LocalIdx, LocalIdx>::cols_below(*storage_conflicts, *(*storage_conflicts).col_bound)
                 && BitMatrix::<LocalIdx, LocalIdx>::wf(*storage_conflicts)
-                && forall(|k: USize| !(0 <= k && k < nb_locals.at_entry()) || <LocalIdx as Idx>::can_new(k))
-                && forall(|n: USize| !(0 <= n && n <= nb_locals.at_entry()) || <FieldIdx as Idx>::can_new(n))
+                && forall(|k: USize| 0 <= k && k < nb_locals.at_entry() ==> <LocalIdx as Idx>::can_new(k))
+                && forall(|n: USize| 0 <= n && n <= nb_locals.at_entry() ==> <FieldIdx as Idx>::can_new(n))
                 && forall(|l: USize, x: Option<<FieldIdx as thrust_models::Model>::Ty>|
-                    !(0 <= l && l < nb_locals.at_entry() && assignments[l] == SavedLocalEligibility::Ineligible(x))
-                    || (DenseBitSet::<LocalIdx>::mem(ineligible_locals, l) && x == None))
-                && forall(|l: USize| !(0 <= l && l < nb_locals.at_entry() && DenseBitSet::<LocalIdx>::mem(ineligible_locals, l))
-                    || assignments[l] == SavedLocalEligibility::Ineligible(None))
+                    0 <= l && l < nb_locals.at_entry() && assignments[l] == SavedLocalEligibility::Ineligible(x) ==> (DenseBitSet::<LocalIdx>::mem(ineligible_locals, l) && x == None))
+                && forall(|l: USize| 0 <= l && l < nb_locals.at_entry() && DenseBitSet::<LocalIdx>::mem(ineligible_locals, l) ==> assignments[l] == SavedLocalEligibility::Ineligible(None))
                 && iter.1 >= 0 && iter.1 <= iter.0.len()
-                && forall(|k: USize| !(0 <= k && k < iter.0.len())
-                    || forall(|i: USize| !<LocalIdx as Idx>::index_is(iter.0[k], i) || i < nb_locals.at_entry()))
-                && forall(|i: USize| !<VariantIdx as Idx>::index_is(variant_index, i) || i < (*variant_fields).len())
-                && forall(|p: USize| !<VariantIdx as Idx>::index_is(variant_index, p) || p + 1 == variants.1)
+                && forall(|k: USize| 0 <= k && k < iter.0.len() ==> forall(|i: USize| <LocalIdx as Idx>::index_is(iter.0[k], i) ==> i < nb_locals.at_entry()))
+                && forall(|i: USize| <VariantIdx as Idx>::index_is(variant_index, i) ==> i < (*variant_fields).len())
+                && forall(|p: USize| <VariantIdx as Idx>::index_is(variant_index, p) ==> p + 1 == variants.1)
             );
             thrust_macros::invariant!(
                 |assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, variants: IterEnumerated<VariantIdx, IndexVec<FieldIdx, LocalIdx>>, iter: SliceIter<LocalIdx>, variant_index: VariantIdx, variant_fields: thrust_models::FnParam<&IndexSlice<VariantIdx, IndexVec<FieldIdx, LocalIdx>>>, nb_locals: thrust_models::FnParam<usize>|
                 *variants.0 == *variant_fields.at_entry()
-                && forall(|v: USize, f: USize| !(0 <= v && v < (*variant_fields.at_entry()).len() && 0 <= f && f < (*variant_fields.at_entry())[v].len())
-                    || forall(|i: USize| !<LocalIdx as Idx>::index_is((*variant_fields.at_entry())[v][f], i) || i < nb_locals.at_entry()))
-                && forall(|p: USize| !<VariantIdx as Idx>::index_is(variant_index, p) || *iter.0 == (*variant_fields.at_entry())[p])
+                && forall(|v: USize, f: USize| 0 <= v && v < (*variant_fields.at_entry()).len() && 0 <= f && f < (*variant_fields.at_entry())[v].len() ==> forall(|i: USize| <LocalIdx as Idx>::index_is((*variant_fields.at_entry())[v][f], i) ==> i < nb_locals.at_entry()))
+                && forall(|p: USize| <VariantIdx as Idx>::index_is(variant_index, p) ==> *iter.0 == (*variant_fields.at_entry())[p])
                 && forall(|l: USize, v: USize, f: USize|
-                    !(0 <= l && l < nb_locals.at_entry() && assignments[l] == SavedLocalEligibility::Unassigned
-                        && 0 <= v && v + 1 < variants.1 && 0 <= f && f < (*variant_fields.at_entry())[v].len())
-                    || !<LocalIdx as Idx>::index_is((*variant_fields.at_entry())[v][f], l))
+                    0 <= l && l < nb_locals.at_entry() && assignments[l] == SavedLocalEligibility::Unassigned
+                        && 0 <= v && v + 1 < variants.1 && 0 <= f && f < (*variant_fields.at_entry())[v].len() ==> !<LocalIdx as Idx>::index_is((*variant_fields.at_entry())[v][f], l))
                 && forall(|l: USize, k: USize|
-                    !(0 <= l && l < nb_locals.at_entry() && assignments[l] == SavedLocalEligibility::Unassigned && 0 <= k && k < iter.1)
-                    || !<LocalIdx as Idx>::index_is(iter.0[k], l))
+                    0 <= l && l < nb_locals.at_entry() && assignments[l] == SavedLocalEligibility::Unassigned && 0 <= k && k < iter.1 ==> !<LocalIdx as Idx>::index_is(iter.0[k], l))
                 && forall(|k: USize, v: <VariantIdx as thrust_models::Model>::Ty, i: USize|
-                    !(0 <= k && k < assignments.len() && assignments[k] == SavedLocalEligibility::Assigned(v) && <VariantIdx as Idx>::index_is(v, i))
-                    || (i < (*variant_fields.at_entry()).len()
+                    0 <= k && k < assignments.len() && assignments[k] == SavedLocalEligibility::Assigned(v) && <VariantIdx as Idx>::index_is(v, i) ==> (i < (*variant_fields.at_entry()).len()
                         && exists(|f: USize| 0 <= f && f < (*variant_fields.at_entry())[i].len() && <LocalIdx as Idx>::index_is((*variant_fields.at_entry())[i][f], k))))
                 && forall(|l: USize, w: USize, f: USize, vi: <VariantIdx as thrust_models::Model>::Ty, vn: USize|
-                    !(0 <= l && l < nb_locals.at_entry() && 0 <= w && w + 1 < variants.1 && 0 <= f && f < (*variant_fields.at_entry())[w].len()
+                    0 <= l && l < nb_locals.at_entry() && 0 <= w && w + 1 < variants.1 && 0 <= f && f < (*variant_fields.at_entry())[w].len()
                         && <LocalIdx as Idx>::index_is((*variant_fields.at_entry())[w][f], l)
-                        && assignments[l] == SavedLocalEligibility::Assigned(vi) && <VariantIdx as Idx>::index_is(vi, vn))
-                    || vn == w)
+                        && assignments[l] == SavedLocalEligibility::Assigned(vi) && <VariantIdx as Idx>::index_is(vi, vn) ==> vn == w)
                 && forall(|l: USize, w: USize, f: USize, g: USize, vi: <VariantIdx as thrust_models::Model>::Ty|
-                    !(0 <= l && l < nb_locals.at_entry() && 0 <= w && w + 1 < variants.1 && 0 <= f && f < (*variant_fields.at_entry())[w].len() && 0 <= g && g < (*variant_fields.at_entry())[w].len()
+                    0 <= l && l < nb_locals.at_entry() && 0 <= w && w + 1 < variants.1 && 0 <= f && f < (*variant_fields.at_entry())[w].len() && 0 <= g && g < (*variant_fields.at_entry())[w].len()
                         && <LocalIdx as Idx>::index_is((*variant_fields.at_entry())[w][f], l) && <LocalIdx as Idx>::index_is((*variant_fields.at_entry())[w][g], l)
-                        && assignments[l] == SavedLocalEligibility::Assigned(vi))
-                    || f == g)
+                        && assignments[l] == SavedLocalEligibility::Assigned(vi) ==> f == g)
                 && forall(|l: USize, k: USize, vi: <VariantIdx as thrust_models::Model>::Ty, vn: USize|
-                    !(0 <= l && l < nb_locals.at_entry() && 0 <= k && k < iter.1 && <LocalIdx as Idx>::index_is(iter.0[k], l)
-                        && assignments[l] == SavedLocalEligibility::Assigned(vi) && <VariantIdx as Idx>::index_is(vi, vn))
-                    || vn + 1 == variants.1)
+                    0 <= l && l < nb_locals.at_entry() && 0 <= k && k < iter.1 && <LocalIdx as Idx>::index_is(iter.0[k], l)
+                        && assignments[l] == SavedLocalEligibility::Assigned(vi) && <VariantIdx as Idx>::index_is(vi, vn) ==> vn + 1 == variants.1)
                 && forall(|l: USize, j: USize, k: USize, vi: <VariantIdx as thrust_models::Model>::Ty|
-                    !(0 <= l && l < nb_locals.at_entry() && 0 <= j && j < iter.1 && 0 <= k && k < iter.1
+                    0 <= l && l < nb_locals.at_entry() && 0 <= j && j < iter.1 && 0 <= k && k < iter.1
                         && <LocalIdx as Idx>::index_is(iter.0[j], l) && <LocalIdx as Idx>::index_is(iter.0[k], l)
-                        && assignments[l] == SavedLocalEligibility::Assigned(vi))
-                    || j == k)
+                        && assignments[l] == SavedLocalEligibility::Assigned(vi) ==> j == k)
             );
             match assignments[*local] {
                 Unassigned => {
@@ -298,41 +266,34 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
             && 0 <= DenseBitSet::<LocalIdx>::card(ineligible_locals)
             && DenseBitSet::<LocalIdx>::card(ineligible_locals) <= ineligible_locals.0
             && forall(|k: USize, v: <VariantIdx as thrust_models::Model>::Ty, i: USize|
-                !(0 <= k && k < assignments.len() && assignments[k] == SavedLocalEligibility::Assigned(v) && <VariantIdx as Idx>::index_is(v, i))
-                || i < (*variant_fields).len())
+                0 <= k && k < assignments.len() && assignments[k] == SavedLocalEligibility::Assigned(v) && <VariantIdx as Idx>::index_is(v, i) ==> i < (*variant_fields).len())
             && (*storage_conflicts).num_rows <= nb_locals.at_entry()
             && *(*storage_conflicts).col_bound <= (*storage_conflicts).num_rows
             && BitMatrix::<LocalIdx, LocalIdx>::cols_below(*storage_conflicts, *(*storage_conflicts).col_bound)
             && BitMatrix::<LocalIdx, LocalIdx>::wf(*storage_conflicts)
-            && forall(|k: USize| !(0 <= k && k < nb_locals.at_entry()) || <LocalIdx as Idx>::can_new(k))
-            && forall(|n: USize| !(0 <= n && n <= nb_locals.at_entry()) || <FieldIdx as Idx>::can_new(n))
+            && forall(|k: USize| 0 <= k && k < nb_locals.at_entry() ==> <LocalIdx as Idx>::can_new(k))
+            && forall(|n: USize| 0 <= n && n <= nb_locals.at_entry() ==> <FieldIdx as Idx>::can_new(n))
             && forall(|l: USize, x: Option<<FieldIdx as thrust_models::Model>::Ty>|
-                !(0 <= l && l < nb_locals.at_entry() && assignments[l] == SavedLocalEligibility::Ineligible(x))
-                || (DenseBitSet::<LocalIdx>::mem(ineligible_locals, l) && x == None))
-            && forall(|l: USize| !(0 <= l && l < nb_locals.at_entry() && DenseBitSet::<LocalIdx>::mem(ineligible_locals, l))
-                || assignments[l] == SavedLocalEligibility::Ineligible(None))
+                0 <= l && l < nb_locals.at_entry() && assignments[l] == SavedLocalEligibility::Ineligible(x) ==> (DenseBitSet::<LocalIdx>::mem(ineligible_locals, l) && x == None))
+            && forall(|l: USize| 0 <= l && l < nb_locals.at_entry() && DenseBitSet::<LocalIdx>::mem(ineligible_locals, l) ==> assignments[l] == SavedLocalEligibility::Ineligible(None))
             && rows.start >= 0 && rows.end == (*storage_conflicts).num_rows
         );
         thrust_macros::invariant!(
             |assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, variant_fields: thrust_models::FnParam<&IndexSlice<VariantIdx, IndexVec<FieldIdx, LocalIdx>>>, nb_locals: thrust_models::FnParam<usize>|
             forall(|l: USize, v: USize, f: USize|
-                !(0 <= l && l < nb_locals.at_entry() && assignments[l] == SavedLocalEligibility::Unassigned
-                    && 0 <= v && v < (*variant_fields.at_entry()).len() && 0 <= f && f < (*variant_fields.at_entry())[v].len())
-                || !<LocalIdx as Idx>::index_is((*variant_fields.at_entry())[v][f], l))
+                0 <= l && l < nb_locals.at_entry() && assignments[l] == SavedLocalEligibility::Unassigned
+                    && 0 <= v && v < (*variant_fields.at_entry()).len() && 0 <= f && f < (*variant_fields.at_entry())[v].len() ==> !<LocalIdx as Idx>::index_is((*variant_fields.at_entry())[v][f], l))
             && forall(|k: USize, v: <VariantIdx as thrust_models::Model>::Ty, i: USize|
-                !(0 <= k && k < assignments.len() && assignments[k] == SavedLocalEligibility::Assigned(v) && <VariantIdx as Idx>::index_is(v, i))
-                || (i < (*variant_fields.at_entry()).len()
+                0 <= k && k < assignments.len() && assignments[k] == SavedLocalEligibility::Assigned(v) && <VariantIdx as Idx>::index_is(v, i) ==> (i < (*variant_fields.at_entry()).len()
                     && exists(|f: USize| 0 <= f && f < (*variant_fields.at_entry())[i].len() && <LocalIdx as Idx>::index_is((*variant_fields.at_entry())[i][f], k))))
             && forall(|l: USize, w: USize, f: USize, vi: <VariantIdx as thrust_models::Model>::Ty, vn: USize|
-                !(0 <= l && l < nb_locals.at_entry() && 0 <= w && w < (*variant_fields.at_entry()).len() && 0 <= f && f < (*variant_fields.at_entry())[w].len()
+                0 <= l && l < nb_locals.at_entry() && 0 <= w && w < (*variant_fields.at_entry()).len() && 0 <= f && f < (*variant_fields.at_entry())[w].len()
                     && <LocalIdx as Idx>::index_is((*variant_fields.at_entry())[w][f], l)
-                    && assignments[l] == SavedLocalEligibility::Assigned(vi) && <VariantIdx as Idx>::index_is(vi, vn))
-                || vn == w)
+                    && assignments[l] == SavedLocalEligibility::Assigned(vi) && <VariantIdx as Idx>::index_is(vi, vn) ==> vn == w)
             && forall(|l: USize, w: USize, f: USize, g: USize, vi: <VariantIdx as thrust_models::Model>::Ty|
-                !(0 <= l && l < nb_locals.at_entry() && 0 <= w && w < (*variant_fields.at_entry()).len() && 0 <= f && f < (*variant_fields.at_entry())[w].len() && 0 <= g && g < (*variant_fields.at_entry())[w].len()
+                0 <= l && l < nb_locals.at_entry() && 0 <= w && w < (*variant_fields.at_entry()).len() && 0 <= f && f < (*variant_fields.at_entry())[w].len() && 0 <= g && g < (*variant_fields.at_entry())[w].len()
                     && <LocalIdx as Idx>::index_is((*variant_fields.at_entry())[w][f], l) && <LocalIdx as Idx>::index_is((*variant_fields.at_entry())[w][g], l)
-                    && assignments[l] == SavedLocalEligibility::Assigned(vi))
-                || f == g)
+                    && assignments[l] == SavedLocalEligibility::Assigned(vi) ==> f == g)
         );
         let conflicts_a = storage_conflicts.count(local_a);
         if ineligible_locals.contains(local_a) {
@@ -348,44 +309,37 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
                 && 0 <= DenseBitSet::<LocalIdx>::card(ineligible_locals)
                 && DenseBitSet::<LocalIdx>::card(ineligible_locals) <= ineligible_locals.0
                 && forall(|k: USize, v: <VariantIdx as thrust_models::Model>::Ty, i: USize|
-                    !(0 <= k && k < assignments.len() && assignments[k] == SavedLocalEligibility::Assigned(v) && <VariantIdx as Idx>::index_is(v, i))
-                    || i < (*variant_fields).len())
+                    0 <= k && k < assignments.len() && assignments[k] == SavedLocalEligibility::Assigned(v) && <VariantIdx as Idx>::index_is(v, i) ==> i < (*variant_fields).len())
                 && (*storage_conflicts).num_rows <= nb_locals.at_entry()
                 && *(*storage_conflicts).col_bound <= (*storage_conflicts).num_rows
                 && BitMatrix::<LocalIdx, LocalIdx>::cols_below(*storage_conflicts, *(*storage_conflicts).col_bound)
                 && BitMatrix::<LocalIdx, LocalIdx>::wf(*storage_conflicts)
-                && forall(|k: USize| !(0 <= k && k < nb_locals.at_entry()) || <LocalIdx as Idx>::can_new(k))
-                && forall(|n: USize| !(0 <= n && n <= nb_locals.at_entry()) || <FieldIdx as Idx>::can_new(n))
+                && forall(|k: USize| 0 <= k && k < nb_locals.at_entry() ==> <LocalIdx as Idx>::can_new(k))
+                && forall(|n: USize| 0 <= n && n <= nb_locals.at_entry() ==> <FieldIdx as Idx>::can_new(n))
                 && forall(|l: USize, x: Option<<FieldIdx as thrust_models::Model>::Ty>|
-                    !(0 <= l && l < nb_locals.at_entry() && assignments[l] == SavedLocalEligibility::Ineligible(x))
-                    || (DenseBitSet::<LocalIdx>::mem(ineligible_locals, l) && x == None))
-                && forall(|l: USize| !(0 <= l && l < nb_locals.at_entry() && DenseBitSet::<LocalIdx>::mem(ineligible_locals, l))
-                    || assignments[l] == SavedLocalEligibility::Ineligible(None))
+                    0 <= l && l < nb_locals.at_entry() && assignments[l] == SavedLocalEligibility::Ineligible(x) ==> (DenseBitSet::<LocalIdx>::mem(ineligible_locals, l) && x == None))
+                && forall(|l: USize| 0 <= l && l < nb_locals.at_entry() && DenseBitSet::<LocalIdx>::mem(ineligible_locals, l) ==> assignments[l] == SavedLocalEligibility::Ineligible(None))
                 && rows.start >= 0 && rows.end == (*storage_conflicts).num_rows
-                && forall(|i: USize| !<LocalIdx as Idx>::index_is(local_a, i) || i < nb_locals.at_entry())
+                && forall(|i: USize| <LocalIdx as Idx>::index_is(local_a, i) ==> i < nb_locals.at_entry())
                 && iter.4 == *(*storage_conflicts).col_bound
                 && 0 <= iter.5 && 0 <= iter.6 && iter.5 + iter.6 <= iter.4
             );
             thrust_macros::invariant!(
                 |assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, variant_fields: thrust_models::FnParam<&IndexSlice<VariantIdx, IndexVec<FieldIdx, LocalIdx>>>, nb_locals: thrust_models::FnParam<usize>|
                 forall(|l: USize, v: USize, f: USize|
-                    !(0 <= l && l < nb_locals.at_entry() && assignments[l] == SavedLocalEligibility::Unassigned
-                        && 0 <= v && v < (*variant_fields.at_entry()).len() && 0 <= f && f < (*variant_fields.at_entry())[v].len())
-                    || !<LocalIdx as Idx>::index_is((*variant_fields.at_entry())[v][f], l))
+                    0 <= l && l < nb_locals.at_entry() && assignments[l] == SavedLocalEligibility::Unassigned
+                        && 0 <= v && v < (*variant_fields.at_entry()).len() && 0 <= f && f < (*variant_fields.at_entry())[v].len() ==> !<LocalIdx as Idx>::index_is((*variant_fields.at_entry())[v][f], l))
                 && forall(|k: USize, v: <VariantIdx as thrust_models::Model>::Ty, i: USize|
-                    !(0 <= k && k < assignments.len() && assignments[k] == SavedLocalEligibility::Assigned(v) && <VariantIdx as Idx>::index_is(v, i))
-                    || (i < (*variant_fields.at_entry()).len()
+                    0 <= k && k < assignments.len() && assignments[k] == SavedLocalEligibility::Assigned(v) && <VariantIdx as Idx>::index_is(v, i) ==> (i < (*variant_fields.at_entry()).len()
                         && exists(|f: USize| 0 <= f && f < (*variant_fields.at_entry())[i].len() && <LocalIdx as Idx>::index_is((*variant_fields.at_entry())[i][f], k))))
                 && forall(|l: USize, w: USize, f: USize, vi: <VariantIdx as thrust_models::Model>::Ty, vn: USize|
-                    !(0 <= l && l < nb_locals.at_entry() && 0 <= w && w < (*variant_fields.at_entry()).len() && 0 <= f && f < (*variant_fields.at_entry())[w].len()
+                    0 <= l && l < nb_locals.at_entry() && 0 <= w && w < (*variant_fields.at_entry()).len() && 0 <= f && f < (*variant_fields.at_entry())[w].len()
                         && <LocalIdx as Idx>::index_is((*variant_fields.at_entry())[w][f], l)
-                        && assignments[l] == SavedLocalEligibility::Assigned(vi) && <VariantIdx as Idx>::index_is(vi, vn))
-                    || vn == w)
+                        && assignments[l] == SavedLocalEligibility::Assigned(vi) && <VariantIdx as Idx>::index_is(vi, vn) ==> vn == w)
                 && forall(|l: USize, w: USize, f: USize, g: USize, vi: <VariantIdx as thrust_models::Model>::Ty|
-                    !(0 <= l && l < nb_locals.at_entry() && 0 <= w && w < (*variant_fields.at_entry()).len() && 0 <= f && f < (*variant_fields.at_entry())[w].len() && 0 <= g && g < (*variant_fields.at_entry())[w].len()
+                    0 <= l && l < nb_locals.at_entry() && 0 <= w && w < (*variant_fields.at_entry()).len() && 0 <= f && f < (*variant_fields.at_entry())[w].len() && 0 <= g && g < (*variant_fields.at_entry())[w].len()
                         && <LocalIdx as Idx>::index_is((*variant_fields.at_entry())[w][f], l) && <LocalIdx as Idx>::index_is((*variant_fields.at_entry())[w][g], l)
-                        && assignments[l] == SavedLocalEligibility::Assigned(vi))
-                    || f == g)
+                        && assignments[l] == SavedLocalEligibility::Assigned(vi) ==> f == g)
             );
             if ineligible_locals.contains(local_b) || assignments[local_a] == assignments[local_b] {
                 continue;
@@ -411,38 +365,31 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
                 iter.1 >= 0 && iter.1 <= iter.0.len()
                 && *iter.0 == assignments
                 && forall(|k: USize, v: <VariantIdx as thrust_models::Model>::Ty, i: USize|
-                    !(0 <= k && k < assignments.len() && assignments[k] == SavedLocalEligibility::Assigned(v) && <VariantIdx as Idx>::index_is(v, i))
-                    || i < used_variants.0)
+                    0 <= k && k < assignments.len() && assignments[k] == SavedLocalEligibility::Assigned(v) && <VariantIdx as Idx>::index_is(v, i) ==> i < used_variants.0)
                 && assignments.len() == nb_locals.at_entry()
                 && ineligible_locals.0 == nb_locals.at_entry()
                 && DenseBitSet::<LocalIdx>::words_cover_domain(ineligible_locals)
                 && 0 <= DenseBitSet::<LocalIdx>::card(ineligible_locals)
                 && DenseBitSet::<LocalIdx>::card(ineligible_locals) <= ineligible_locals.0
-                && forall(|k: USize| !(0 <= k && k < nb_locals.at_entry()) || <LocalIdx as Idx>::can_new(k))
-                && forall(|n: USize| !(0 <= n && n <= nb_locals.at_entry()) || <FieldIdx as Idx>::can_new(n))
+                && forall(|k: USize| 0 <= k && k < nb_locals.at_entry() ==> <LocalIdx as Idx>::can_new(k))
+                && forall(|n: USize| 0 <= n && n <= nb_locals.at_entry() ==> <FieldIdx as Idx>::can_new(n))
                 && forall(|l: USize, v: USize, f: USize|
-                    !(0 <= l && l < nb_locals.at_entry() && assignments[l] == SavedLocalEligibility::Unassigned
-                        && 0 <= v && v < (*variant_fields.at_entry()).len() && 0 <= f && f < (*variant_fields.at_entry())[v].len())
-                    || !<LocalIdx as Idx>::index_is((*variant_fields.at_entry())[v][f], l))
+                    0 <= l && l < nb_locals.at_entry() && assignments[l] == SavedLocalEligibility::Unassigned
+                        && 0 <= v && v < (*variant_fields.at_entry()).len() && 0 <= f && f < (*variant_fields.at_entry())[v].len() ==> !<LocalIdx as Idx>::index_is((*variant_fields.at_entry())[v][f], l))
                 && forall(|k: USize, v: <VariantIdx as thrust_models::Model>::Ty, i: USize|
-                    !(0 <= k && k < assignments.len() && assignments[k] == SavedLocalEligibility::Assigned(v) && <VariantIdx as Idx>::index_is(v, i))
-                    || (i < (*variant_fields.at_entry()).len()
+                    0 <= k && k < assignments.len() && assignments[k] == SavedLocalEligibility::Assigned(v) && <VariantIdx as Idx>::index_is(v, i) ==> (i < (*variant_fields.at_entry()).len()
                         && exists(|f: USize| 0 <= f && f < (*variant_fields.at_entry())[i].len() && <LocalIdx as Idx>::index_is((*variant_fields.at_entry())[i][f], k))))
                 && forall(|l: USize, w: USize, f: USize, vi: <VariantIdx as thrust_models::Model>::Ty, vn: USize|
-                    !(0 <= l && l < nb_locals.at_entry() && 0 <= w && w < (*variant_fields.at_entry()).len() && 0 <= f && f < (*variant_fields.at_entry())[w].len()
+                    0 <= l && l < nb_locals.at_entry() && 0 <= w && w < (*variant_fields.at_entry()).len() && 0 <= f && f < (*variant_fields.at_entry())[w].len()
                         && <LocalIdx as Idx>::index_is((*variant_fields.at_entry())[w][f], l)
-                        && assignments[l] == SavedLocalEligibility::Assigned(vi) && <VariantIdx as Idx>::index_is(vi, vn))
-                    || vn == w)
+                        && assignments[l] == SavedLocalEligibility::Assigned(vi) && <VariantIdx as Idx>::index_is(vi, vn) ==> vn == w)
                 && forall(|l: USize, w: USize, f: USize, g: USize, vi: <VariantIdx as thrust_models::Model>::Ty|
-                    !(0 <= l && l < nb_locals.at_entry() && 0 <= w && w < (*variant_fields.at_entry()).len() && 0 <= f && f < (*variant_fields.at_entry())[w].len() && 0 <= g && g < (*variant_fields.at_entry())[w].len()
+                    0 <= l && l < nb_locals.at_entry() && 0 <= w && w < (*variant_fields.at_entry()).len() && 0 <= f && f < (*variant_fields.at_entry())[w].len() && 0 <= g && g < (*variant_fields.at_entry())[w].len()
                         && <LocalIdx as Idx>::index_is((*variant_fields.at_entry())[w][f], l) && <LocalIdx as Idx>::index_is((*variant_fields.at_entry())[w][g], l)
-                        && assignments[l] == SavedLocalEligibility::Assigned(vi))
-                    || f == g)
+                        && assignments[l] == SavedLocalEligibility::Assigned(vi) ==> f == g)
                 && forall(|l: USize, x: Option<<FieldIdx as thrust_models::Model>::Ty>|
-                    !(0 <= l && l < nb_locals.at_entry() && assignments[l] == SavedLocalEligibility::Ineligible(x))
-                    || (DenseBitSet::<LocalIdx>::mem(ineligible_locals, l) && x == None))
-                && forall(|l: USize| !(0 <= l && l < nb_locals.at_entry() && DenseBitSet::<LocalIdx>::mem(ineligible_locals, l))
-                    || assignments[l] == SavedLocalEligibility::Ineligible(None))
+                    0 <= l && l < nb_locals.at_entry() && assignments[l] == SavedLocalEligibility::Ineligible(x) ==> (DenseBitSet::<LocalIdx>::mem(ineligible_locals, l) && x == None))
+                && forall(|l: USize| 0 <= l && l < nb_locals.at_entry() && DenseBitSet::<LocalIdx>::mem(ineligible_locals, l) ==> assignments[l] == SavedLocalEligibility::Ineligible(None))
             );
             if let Assigned(idx) = assignment {
                 used_variants.insert(*idx);
@@ -456,13 +403,13 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
                     iter.0.len() == nb_locals.at_entry() && iter.1.len() == nb_locals.at_entry()
                     && 0 <= iter.2 && iter.2 <= iter.0.len()
                     && assignments == iter.1
-                    && forall(|k: USize| !(0 <= k && k < iter.2) || iter.1[k] == SavedLocalEligibility::Ineligible(None))
+                    && forall(|k: USize| 0 <= k && k < iter.2 ==> iter.1[k] == SavedLocalEligibility::Ineligible(None))
                     && ineligible_locals.0 == nb_locals.at_entry()
                     && DenseBitSet::<LocalIdx>::words_cover_domain(ineligible_locals)
                     && 0 <= DenseBitSet::<LocalIdx>::card(ineligible_locals)
                     && DenseBitSet::<LocalIdx>::card(ineligible_locals) <= ineligible_locals.0
-                    && forall(|k: USize| !(0 <= k && k < nb_locals.at_entry()) || <LocalIdx as Idx>::can_new(k))
-                    && forall(|n: USize| !(0 <= n && n <= nb_locals.at_entry()) || <FieldIdx as Idx>::can_new(n))
+                    && forall(|k: USize| 0 <= k && k < nb_locals.at_entry() ==> <LocalIdx as Idx>::can_new(k))
+                    && forall(|n: USize| 0 <= n && n <= nb_locals.at_entry() ==> <FieldIdx as Idx>::can_new(n))
                 );
                 *assignment = Ineligible(None);
             }
@@ -485,34 +432,28 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
                 && iter.0.4 == ineligible_locals.0 && iter.1 == iter.0.5
                 && 0 <= iter.1 && iter.1 <= iter.0.4
                 && 0 <= iter.0.6 && iter.0.5 + iter.0.6 == DenseBitSet::<LocalIdx>::card(ineligible_locals)
-                && forall(|k: USize| !(0 <= k && k < nb_locals.at_entry()) || <LocalIdx as Idx>::can_new(k))
-                && forall(|n: USize| !(0 <= n && n <= nb_locals.at_entry()) || <FieldIdx as Idx>::can_new(n))
+                && forall(|k: USize| 0 <= k && k < nb_locals.at_entry() ==> <LocalIdx as Idx>::can_new(k))
+                && forall(|n: USize| 0 <= n && n <= nb_locals.at_entry() ==> <FieldIdx as Idx>::can_new(n))
                 && forall(|l: USize, v: USize, f: USize|
-                    !(0 <= l && l < nb_locals.at_entry() && assignments[l] == SavedLocalEligibility::Unassigned
-                        && 0 <= v && v < (*variant_fields.at_entry()).len() && 0 <= f && f < (*variant_fields.at_entry())[v].len())
-                    || !<LocalIdx as Idx>::index_is((*variant_fields.at_entry())[v][f], l))
+                    0 <= l && l < nb_locals.at_entry() && assignments[l] == SavedLocalEligibility::Unassigned
+                        && 0 <= v && v < (*variant_fields.at_entry()).len() && 0 <= f && f < (*variant_fields.at_entry())[v].len() ==> !<LocalIdx as Idx>::index_is((*variant_fields.at_entry())[v][f], l))
                 && forall(|k: USize, v: <VariantIdx as thrust_models::Model>::Ty, i: USize|
-                    !(0 <= k && k < assignments.len() && assignments[k] == SavedLocalEligibility::Assigned(v) && <VariantIdx as Idx>::index_is(v, i))
-                    || (i < (*variant_fields.at_entry()).len()
+                    0 <= k && k < assignments.len() && assignments[k] == SavedLocalEligibility::Assigned(v) && <VariantIdx as Idx>::index_is(v, i) ==> (i < (*variant_fields.at_entry()).len()
                         && exists(|f: USize| 0 <= f && f < (*variant_fields.at_entry())[i].len() && <LocalIdx as Idx>::index_is((*variant_fields.at_entry())[i][f], k))))
                 && forall(|l: USize, w: USize, f: USize, vi: <VariantIdx as thrust_models::Model>::Ty, vn: USize|
-                    !(0 <= l && l < nb_locals.at_entry() && 0 <= w && w < (*variant_fields.at_entry()).len() && 0 <= f && f < (*variant_fields.at_entry())[w].len()
+                    0 <= l && l < nb_locals.at_entry() && 0 <= w && w < (*variant_fields.at_entry()).len() && 0 <= f && f < (*variant_fields.at_entry())[w].len()
                         && <LocalIdx as Idx>::index_is((*variant_fields.at_entry())[w][f], l)
-                        && assignments[l] == SavedLocalEligibility::Assigned(vi) && <VariantIdx as Idx>::index_is(vi, vn))
-                    || vn == w)
+                        && assignments[l] == SavedLocalEligibility::Assigned(vi) && <VariantIdx as Idx>::index_is(vi, vn) ==> vn == w)
                 && forall(|l: USize, w: USize, f: USize, g: USize, vi: <VariantIdx as thrust_models::Model>::Ty|
-                    !(0 <= l && l < nb_locals.at_entry() && 0 <= w && w < (*variant_fields.at_entry()).len() && 0 <= f && f < (*variant_fields.at_entry())[w].len() && 0 <= g && g < (*variant_fields.at_entry())[w].len()
+                    0 <= l && l < nb_locals.at_entry() && 0 <= w && w < (*variant_fields.at_entry()).len() && 0 <= f && f < (*variant_fields.at_entry())[w].len() && 0 <= g && g < (*variant_fields.at_entry())[w].len()
                         && <LocalIdx as Idx>::index_is((*variant_fields.at_entry())[w][f], l) && <LocalIdx as Idx>::index_is((*variant_fields.at_entry())[w][g], l)
-                        && assignments[l] == SavedLocalEligibility::Assigned(vi))
-                    || f == g)
+                        && assignments[l] == SavedLocalEligibility::Assigned(vi) ==> f == g)
                 && forall(|l: USize, x: Option<<FieldIdx as thrust_models::Model>::Ty>|
-                    !(0 <= l && l < nb_locals.at_entry() && assignments[l] == SavedLocalEligibility::Ineligible(x))
-                    || DenseBitSet::<LocalIdx>::mem(ineligible_locals, l))
-                && forall(|l: USize| !(iter.0.7[l] != 0) || DenseBitSet::<LocalIdx>::mem(ineligible_locals, l))
-                && forall(|l: USize| !(0 <= l && l < nb_locals.at_entry() && DenseBitSet::<LocalIdx>::mem(ineligible_locals, l))
-                    || (iter.0.7[l] != 0 && assignments[l] == SavedLocalEligibility::Ineligible(None))
+                    0 <= l && l < nb_locals.at_entry() && assignments[l] == SavedLocalEligibility::Ineligible(x) ==> DenseBitSet::<LocalIdx>::mem(ineligible_locals, l))
+                && forall(|l: USize| iter.0.7[l] != 0 ==> DenseBitSet::<LocalIdx>::mem(ineligible_locals, l))
+                && forall(|l: USize| 0 <= l && l < nb_locals.at_entry() && DenseBitSet::<LocalIdx>::mem(ineligible_locals, l) ==> (iter.0.7[l] != 0 && assignments[l] == SavedLocalEligibility::Ineligible(None))
                     || exists(|k: <FieldIdx as thrust_models::Model>::Ty| assignments[l] == SavedLocalEligibility::Ineligible(Some(k))
-                        && forall(|i: USize| !<FieldIdx as Idx>::index_is(k, i) || i < DenseBitSet::<LocalIdx>::card(ineligible_locals))))
+                        && forall(|i: USize| <FieldIdx as Idx>::index_is(k, i) ==> i < DenseBitSet::<LocalIdx>::card(ineligible_locals))))
             );
             assignments[local] = Ineligible(Some(FieldIdx::new(idx)));
         }
@@ -577,72 +518,60 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
         && BitMatrix::<LocalIdx, LocalIdx>::cols_below(*storage_conflicts, *(*storage_conflicts).col_bound)
         && BitMatrix::<LocalIdx, LocalIdx>::wf(*storage_conflicts)
         && forall(|v: usize, f: usize|
-            !(0 <= v && v < (*variant_fields).len()
-                && 0 <= f && f < (*variant_fields)[v].len())
-            || forall(|i: USize|
-                !<LocalIdx as Idx>::index_is((*variant_fields)[v][f], i)
-                    || i < (*local_layouts).len()))
-        && forall(|k: USize| !(0 <= k && k < (*local_layouts).len()) || <LocalIdx as Idx>::can_new(k))
-        && forall(|k: USize| !(0 <= k && k <= (*variant_fields).len()) || <VariantIdx as Idx>::can_new(k))
+            0 <= v && v < (*variant_fields).len()
+                && 0 <= f && f < (*variant_fields)[v].len() ==> forall(|i: USize|
+                <LocalIdx as Idx>::index_is((*variant_fields)[v][f], i) ==> i < (*local_layouts).len()))
+        && forall(|k: USize| 0 <= k && k < (*local_layouts).len() ==> <LocalIdx as Idx>::can_new(k))
+        && forall(|k: USize| 0 <= k && k <= (*variant_fields).len() ==> <VariantIdx as Idx>::can_new(k))
         && forall(|k: USize|
-            !(0 <= k && k <= prefix_layouts.len() + 1 + (*local_layouts).len())
-                || <FieldIdx as Idx>::can_new(k))
+            0 <= k && k <= prefix_layouts.len() + 1 + (*local_layouts).len() ==> <FieldIdx as Idx>::can_new(k))
         && forall(|v: usize, k: USize|
-            !(0 <= v && v < (*variant_fields).len() && 0 <= k && k <= (*variant_fields)[v].len())
-                || <FieldIdx as Idx>::can_new(k))
+            0 <= v && v < (*variant_fields).len() && 0 <= k && k <= (*variant_fields)[v].len() ==> <FieldIdx as Idx>::can_new(k))
         && prefix_layouts.len() + 1 + (*local_layouts).len() <= 4294967295usize
-        && forall(|dl: TargetDataLayout| !C::dl_of(*calc, dl)
-            || dl.default_address_space_pointer_spec.pointer_size.raw == 2
+        && forall(|dl: TargetDataLayout| C::dl_of(*calc, dl) ==> dl.default_address_space_pointer_spec.pointer_size.raw == 2
             || dl.default_address_space_pointer_spec.pointer_size.raw == 4
             || dl.default_address_space_pointer_spec.pointer_size.raw == 8)
         && forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche, z: Size|
-            !(C::dl_of(*calc, dl)
+            C::dl_of(*calc, dl)
                 && 0 <= i
                 && i < (*local_layouts).len()
                 && thrust_macros::post!(<F as core::ops::Deref>::deref(&(*local_layouts)[i]), d) && **d == l
-                && l.largest_niche == Some(n))
-                || (Niche::wf_in(n, dl) && (!Primitive::size_in(n.value, dl, z) || n.offset.raw + z.raw <= l.size.raw)))
+                && l.largest_niche == Some(n) ==> (Niche::wf_in(n, dl) && (Primitive::size_in(n.value, dl, z) ==> n.offset.raw + z.raw <= l.size.raw)))
         && forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche, z: Size|
-            !(C::dl_of(*calc, dl)
+            C::dl_of(*calc, dl)
                 && 0 <= i
                 && i < prefix_layouts.len()
                 && thrust_macros::post!(<F as core::ops::Deref>::deref(&prefix_layouts[i]), d) && **d == l
-                && l.largest_niche == Some(n))
-                || (Niche::wf_in(n, dl) && (!Primitive::size_in(n.value, dl, z) || n.offset.raw + z.raw <= l.size.raw)))
+                && l.largest_niche == Some(n) ==> (Niche::wf_in(n, dl) && (Primitive::size_in(n.value, dl, z) ==> n.offset.raw + z.raw <= l.size.raw)))
         && forall(|dl: TargetDataLayout, ti: Integer, tg: WrappingRange, s: Scalar, r: <F as thrust_models::Model>::Ty,
                 l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche, z: Size|
-            !(C::dl_of(*calc, dl)
+            C::dl_of(*calc, dl)
                 && s == Scalar::Initialized { value: Primitive::Int(ti, false), valid_range: tg }
                 && thrust_macros::post!(tag_to_layout(s), r)
                 && thrust_macros::post!(<F as core::ops::Deref>::deref(&r), d) && **d == l
-                && l.largest_niche == Some(n))
-                || (Niche::wf_in(n, dl) && (!Primitive::size_in(n.value, dl, z) || n.offset.raw + z.raw <= l.size.raw)))
+                && l.largest_niche == Some(n) ==> (Niche::wf_in(n, dl) && (Primitive::size_in(n.value, dl, z) ==> n.offset.raw + z.raw <= l.size.raw)))
         && forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, c: Scalar|
-            !(C::dl_of(*calc, dl)
+            C::dl_of(*calc, dl)
                 && 0 <= i
                 && i < (*local_layouts).len()
                 && thrust_macros::post!(<F as core::ops::Deref>::deref(&(*local_layouts)[i]), d) && **d == l
-                && l.backend_repr == BackendRepr::Scalar(c))
-                || Scalar::wf_in(c, dl))
+                && l.backend_repr == BackendRepr::Scalar(c) ==> Scalar::wf_in(c, dl))
         && forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, c: Scalar|
-            !(C::dl_of(*calc, dl)
+            C::dl_of(*calc, dl)
                 && 0 <= i
                 && i < prefix_layouts.len()
                 && thrust_macros::post!(<F as core::ops::Deref>::deref(&prefix_layouts[i]), d) && **d == l
-                && l.backend_repr == BackendRepr::Scalar(c))
-                || Scalar::wf_in(c, dl))
+                && l.backend_repr == BackendRepr::Scalar(c) ==> Scalar::wf_in(c, dl))
         && forall(|dl: TargetDataLayout, ti: Integer, tg: WrappingRange, s: Scalar, r: <F as thrust_models::Model>::Ty,
                 l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, c: Scalar|
-            !(C::dl_of(*calc, dl)
+            C::dl_of(*calc, dl)
                 && s == Scalar::Initialized { value: Primitive::Int(ti, false), valid_range: tg }
                 && thrust_macros::post!(tag_to_layout(s), r)
                 && thrust_macros::post!(<F as core::ops::Deref>::deref(&r), d) && **d == l
-                && l.backend_repr == BackendRepr::Scalar(c))
-                || Scalar::wf_in(c, dl))
+                && l.backend_repr == BackendRepr::Scalar(c) ==> Scalar::wf_in(c, dl))
         && forall(|ti: Integer, tg: WrappingRange| thrust_macros::pre!(tag_to_layout(Scalar::Initialized { value: Primitive::Int(ti, false), valid_range: tg })))
         && forall(|dl: TargetDataLayout, ti: Integer, tg: WrappingRange, s: Scalar, r: <F as thrust_models::Model>::Ty, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>|
-            !(C::dl_of(*calc, dl) && s == Scalar::Initialized { value: Primitive::Int(ti, false), valid_range: tg } && thrust_macros::post!(tag_to_layout(s), r) && thrust_macros::post!(<F as core::ops::Deref>::deref(&r), d) && **d == l)
-                || exists(|wp: USize, wl: USize, q: USize, qa: USize, qi: USize, b: USize|
+            C::dl_of(*calc, dl) && s == Scalar::Initialized { value: Primitive::Int(ti, false), valid_range: tg } && thrust_macros::post!(tag_to_layout(s), r) && thrust_macros::post!(<F as core::ops::Deref>::deref(&r), d) && **d == l ==> exists(|wp: USize, wl: USize, q: USize, qa: USize, qi: USize, b: USize|
                     LayoutCalculator::<C>::weight::<FieldIdx, FieldIdx, VariantIdx, F>(&prefix_layouts, wp)
                         && LayoutCalculator::<C>::weight::<LocalIdx, FieldIdx, VariantIdx, F>(local_layouts, wl)
                         && q == l.align.abi.pow2
@@ -747,8 +676,7 @@ pub fn layout<
                             && in_memory_order_b.len()
                                 == lemmas::cnt_ge::<FieldIdx>(order, produced.len(), <FieldIdx as Idx>::index_logic(b_start))
                             && forall(|k: USize|
-                                !(0 <= k && k < in_memory_order_b.len())
-                                    || <FieldIdx as Idx>::index_logic(in_memory_order_b[k])
+                                0 <= k && k < in_memory_order_b.len() ==> <FieldIdx as Idx>::index_logic(in_memory_order_b[k])
                                         < prefix_layouts.len() - <FieldIdx as Idx>::index_logic(b_start))
                     }
                 );
