@@ -182,6 +182,26 @@ impl<'tcx> analyze::Analyzer<'tcx> {
         self.contract_of(def_id, args)
     }
 
+    /// The contract a call of `def_id` at `args` is checked against when it resolves to the local
+    /// impl method `resolved_def_id`, if that is the trait method's: the impl method has no
+    /// contract of its own and the trait writes one, as `basic_block::Analyzer::callable_ty`
+    /// types the call. `None` when the call takes the impl method's own.
+    pub fn inherited_contract(
+        &self,
+        def_id: DefId,
+        args: mir_ty::GenericArgsRef<'tcx>,
+        resolved_def_id: DefId,
+    ) -> Option<(DefId, mir_ty::GenericArgsRef<'tcx>)> {
+        let inherits = resolved_def_id != def_id
+            && resolved_def_id.is_local()
+            && !self.has_own_impl_contract(resolved_def_id)
+            && self.trait_method_contract_written(def_id);
+        if !inherits {
+            return None;
+        }
+        self.contract_of(def_id, args)
+    }
+
     /// The def whose annotations give `def_id` its contract at `args`, with its generic
     /// arguments: `def_id` itself, or the extern-spec wrapper that carries the contract of a std
     /// function or of a trusted generic one.

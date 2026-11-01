@@ -56,11 +56,16 @@ impl<'tcx> Analyzer<'tcx, '_> {
         let Some((contract_def_id, contract_args)) = contract else {
             return;
         };
-        let stated = self.ctx.stated_pres(
-            contract_def_id,
-            contract_args,
-            self.type_builder.owner_fn_id(),
-        );
+        // The `pre!` stated are those of the contract the call is checked against, which is the
+        // trait method's for a local impl method without its own; the bounds that let the
+        // function call a closure are those of the function that runs.
+        let (stated_def_id, stated_args) = self
+            .ctx
+            .inherited_contract(def_id, args, resolved_def_id)
+            .unwrap_or((contract_def_id, contract_args));
+        let stated =
+            self.ctx
+                .stated_pres(stated_def_id, stated_args, self.type_builder.owner_fn_id());
         for (function, function_args) in stated.functions() {
             let function = HandedOver::Function(function, function_args);
             self.record_covered(function, def_id, args);
@@ -86,9 +91,12 @@ impl<'tcx> Analyzer<'tcx, '_> {
             self.record_handover(ty, def_id, args);
             let holders = self.holders(ty, operands);
             // `stated` records types, not values, so a `pre!` stated of a value of `ty` counts
-            // only when exactly one argument holds one, itself or behind references: not for a
-            // second value of `ty`, nor for one inside a collection.
-            if stated.names(ty) && matches!(holders[..], [(_, _, Some(_))]) {
+            // only when exactly one argument holds exactly one: itself, behind references and
+            // boxes, or in a field of a struct or tuple (the function of an iterator adapter),
+            // not a second value of `ty`, nor one inside a collection.
+            if stated.names(ty)
+                && matches!(holders[..], [(_, held, _)] if count_held(self.tcx, held, ty) == Some(1))
+            {
                 continue;
             }
             for (idx, held, derefs) in holders {
@@ -365,6 +373,37 @@ fn pointee(ty: mir_ty::Ty<'_>) -> Option<mir_ty::Ty<'_>> {
     match ty.kind() {
         mir_ty::TyKind::Ref(_, inner, _) => Some(*inner),
         mir_ty::TyKind::Adt(adt, args) if adt.is_box() => Some(args.type_at(0)),
+        _ => None,
+    }
+}
+
+/// The number of values of type `ty` a value of `held` holds, itself, behind references and
+/// boxes, or in the fields of structs and tuples; `None` when it may hold one some other way (in
+/// a collection, an enum, a closure's captures, a raw pointer, or a field whose type is an
+/// alias, which may stand for `ty`).
+fn count_held<'tcx>(
+    tcx: mir_ty::TyCtxt<'tcx>,
+    held: mir_ty::Ty<'tcx>,
+    ty: mir_ty::Ty<'tcx>,
+) -> Option<usize> {
+    if held == ty {
+        return Some(1);
+    }
+    if let mir_ty::TyKind::Alias(..) = held.kind() {
+        return None;
+    }
+    if !held.walk().any(|arg| arg.as_type() == Some(ty)) {
+        return Some(0);
+    }
+    if let Some(inner) = pointee(held) {
+        return count_held(tcx, inner, ty);
+    }
+    match *held.kind() {
+        mir_ty::TyKind::Tuple(elems) => elems.iter().map(|elem| count_held(tcx, elem, ty)).sum(),
+        mir_ty::TyKind::Adt(adt, args) if adt.is_struct() => adt
+            .all_fields()
+            .map(|field| count_held(tcx, tcx.erase_regions(field.ty(tcx, args)), ty))
+            .sum(),
         _ => None,
     }
 }
