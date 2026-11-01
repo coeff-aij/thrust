@@ -47,10 +47,10 @@ pub mod unanalyzed_entry;
 // TODO: organize structure and remove cross dependency between refine
 pub use did_cache::DefIdCache;
 
-// Also the paths siblings use: analyze::{predicate_typing_env, trait_bounds,
+// Also the paths siblings use: analyze::{predicate_typing_env, trait_bounds, trait_item_args,
 // fn_mut_bounded_params}.
 use closure_hist_inv::HistInvRelations;
-use extern_spec::{predicate_typing_env, trait_bounds, SpecAssumptions};
+use extern_spec::{predicate_typing_env, trait_bounds, trait_item_args, SpecAssumptions};
 use fn_mut_reuse::{fn_mut_bounded_params, has_fn_mut_closure, FnMutReuse};
 
 fn scalar_const_term<T>(
@@ -2161,14 +2161,17 @@ impl<'tcx> Analyzer<'tcx> {
         // unknown contract, possibly reached through a predicate's definition), and when the
         // instance is not faithful to the generic check: an `FnMut` closure among the type
         // arguments, whose by-value receiver the instantiated `pre!` reads at a final state equal
-        // to the current one. Otherwise the contract is used as instantiated.
+        // to the current one; and when the contract at the instance is a trait method's spec that
+        // does not cover the def's own type parameters, which the generic check did not use
+        // (`Iterator::collect`'s at `B = Vec<T>`). Otherwise the contract is used as instantiated.
         let analyze_body = may_analyze
             && deferred_ty_mode.is_some_and(|mode| mode.should_analyze())
             && (!is_generic
                 || self.per_instance_too.contains(&def_id)
                 || (has_fn_mut_closure(generic_args)
                     && !self.reuse_fn_mut_generic(def_id, &expected, generic_args, caller_def_id))
-                || self.may_have_pred_var(&expected, generic_args, caller_def_id));
+                || self.may_have_pred_var(&expected, generic_args, caller_def_id)
+                || self.takes_narrower_trait_spec(def_id, generic_args, caller_def_id));
         if is_generic && !analyze_body {
             self.reused_generic_instances
                 .borrow_mut()

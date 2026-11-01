@@ -384,26 +384,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// The generic arguments the implemented trait method takes for the instantiation
     /// being analyzed.
     pub fn trait_item_args(&self) -> Option<mir_ty::GenericArgsRef<'tcx>> {
-        let impl_did = self.tcx.parent(self.local_def_id.to_def_id());
-
-        if self.tcx.def_kind(impl_did) != (rustc_hir::def::DefKind::Impl { of_trait: true }) {
-            return None;
-        }
-
-        // an associated method's generic arguments start with those of its impl
-        let trait_ref = self
-            .tcx
-            .impl_trait_ref(impl_did)?
-            .instantiate(self.tcx, self.generic_args);
-        // ... and end with the method's own, which the trait method is generic over as well
-        let own_args = self
-            .generic_args
-            .iter()
-            .skip(self.tcx.generics_of(self.local_def_id).parent_count);
-        Some(
-            self.tcx
-                .mk_args_from_iter(trait_ref.args.iter().chain(own_args)),
-        )
+        analyze::trait_item_args(self.tcx, self.local_def_id.to_def_id(), self.generic_args)
     }
 
     pub fn trait_item_ty(&mut self) -> Option<rty::RefinedType> {
