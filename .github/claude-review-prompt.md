@@ -78,6 +78,13 @@ speculative code, modes nothing uses, scaffolding from development, comments and
 the change made stale? Do names and APIs follow the codebase and Rust conventions? You see the
 large changed files only around their changes; when you suspect duplication with code not shown, say where to look.
 
+Look for side effects and coupling the change could avoid: state shared or mutated across passes
+where a value could be passed in and returned, a function that both computes a result and records
+it in a cache or a global, a component that reads another's internals or depends on the order in
+which others run, a behaviour switched by an environment variable read deep inside. Prefer the form
+in which each part takes its inputs explicitly, returns its result, and can be tested and replaced
+on its own.
+
 ### What users write, see and rely on
 
 Annotations, diagnostics, configuration and the emitted SMT. Defaults stay as they were unless
