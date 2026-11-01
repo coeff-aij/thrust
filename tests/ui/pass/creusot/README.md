@@ -46,19 +46,24 @@ with empty bodies, as Creusot does). The step-form files repeat theirs in the sa
 Generic forms (`generic/`): `fold`, `try_fold`, `find` and `filter` generic in the iterator and an
 `FnMut` closure, called at `Range`, each closure's contract stated for every closure state. `<name>.rs`
 writes the loop invariant; `<name>_noinv.rs` is the same with every `invariant!` removed, left to
-inference. Every `_noinv` pair verifies from fptprove `082cd295c` on.
+inference. Every `_noinv` pair but `filter_noinv.rs` verifies from fptprove `082cd295c` on;
+`filter_noinv.rs`, whose loop has to carry the ghost chain of the `produces` form, gets no answer
+within 300 s at fptprove `b9f9c9c05` and is ignored on the host.
 
 | file | what |
 | --- | --- |
 | `fold.rs`, `fold_noinv.rs` | `fold` generic in `I: Iterator` and `F: FnMut` |
 | `try_fold.rs`, `try_fold_noinv.rs` | `try_fold` generic in `I` and `F: FnMut` with `Option` as the `Try` type |
 | `find.rs`, `find_noinv.rs` | `find` generic in `I` and a `P: FnMut` predicate taking the item by value |
-| `filter.rs`, `filter_noinv.rs` | `filter` into a `Vec`, generic in `I` and `P: FnMut` |
+| `filter.rs`, `filter_noinv.rs` | `filter` into a `Vec`, generic in `I` and `P: FnMut`, in the `produces` form: `iter` produced `s` and completed, and the result is the items of `s` the predicate's calls along `s` accepted, in order (Creusot's `Filter::produces`, with its index map) |
 
 `generic/std/find.rs` writes `find` as std does: a call of `try_fold` with a closure `check` that
 breaks with the first item the predicate accepts, so `try_fold` holds the only loop. As in std,
 `check` takes `try_fold`'s accumulator `()`, the predicate takes `&I::Item`, and the result is
-`break_value()`; the file header lists what still differs. Both
+`break_value()`; the file header lists what still differs. `find` states std.rs's specification of
+`Iterator::find`: on `None`, `iter` produced some items and completed; on `Some(v)`, it produced
+some items and then `v`, which the predicate accepted in a state reachable from its first (that it
+rejected the items before `v` is not stated). `try_fold` states the same of a `Break`. Both
 specifications relate closure states by `hist_inv!`, and `check`, which owns the predicate, states
 its own relation through the predicate's in a `hist_inv` clause; it verifies from fptprove
 `7d11252b2` on; its fail twin weakens `find`'s `ensures` to a predicate result of `false`.

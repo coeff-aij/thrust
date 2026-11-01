@@ -2,7 +2,7 @@
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300
 use thrust_models::model::{Int, Mut, Seq};
-use thrust_models::{exists, forall, Model};
+use thrust_models::{exists, forall, Ghost, Model};
 
 // Creusot's `examples/extend`: `v1.extend(v2.into_iter())` appends `v2` to `v1`. The iterator is
 // std's `vec::IntoIter<u32>` under its std.rs model `(sequence, cursor)`, and `Extend` is a local
@@ -112,11 +112,12 @@ impl Extend<u32> for Vec<u32> {
         let it = iter;
         let v = self;
         I::produces_refl(it);
-        // `pushed` records what `it` produced, so the invariant needs no existential sequence.
-        let mut pushed: Vec<u32> = Vec::new();
+        // The ghost `pushed` records what `it` produced, so the invariant needs no existential
+        // sequence.
+        let mut pushed = thrust_macros::ghost!(|| -> Seq<<u32 as Model>::Ty> { Seq::empty() });
         while let Some(x) = it.next() {
             thrust_macros::invariant!(
-                |it: &mut I, v: &mut Vec<u32>, pushed: Vec<u32>, iter: thrust_models::FnParam<&mut I>, self: thrust_models::FnParam<&mut Vec<u32>>|
+                |it: &mut I, v: &mut Vec<u32>, pushed: Ghost<Seq<<u32 as Model>::Ty>>, iter: thrust_models::FnParam<&mut I>, self: thrust_models::FnParam<&mut Vec<u32>>|
                 !it == !iter.at_entry()
                     && !v == !self.at_entry()
                     && I::invariant(*it)
@@ -125,8 +126,9 @@ impl Extend<u32> for Vec<u32> {
                     && forall(|k: Int| 0 <= k && k < (*self.at_entry()).len() ==> (*v)[k] == (*self.at_entry())[k])
                     && forall(|k: Int| 0 <= k && k < pushed.len() ==> (*v)[(*self.at_entry()).len() + k] == pushed[k])
             );
+            let next = thrust_macros::ghost!(|pushed: Ghost<Seq<<u32 as Model>::Ty>>, x: u32| -> Seq<<u32 as Model>::Ty> { pushed.push(x) });
             v.push(x);
-            pushed.push(x);
+            pushed = next;
         }
     }
 }
