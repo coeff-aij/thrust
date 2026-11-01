@@ -13,7 +13,7 @@
 //!   argument ([`Analyzer::accepts_every_argument`]), unless the analyzed call that led into the
 //!   unanalyzed code on its path discharged a `requires` stating its `pre!` at the callee's
 //!   generic arguments, and no crate function with its own contract lies between that call and
-//!   the entry.
+//!   the entry, nor a closure written outside the callee whose `requires` states it.
 //! - A closure is handed over as a value, with captures the walk does not see. Its obligation is
 //!   stated at the analyzed call that hands it over (`basic_block::closure_escape`), which records
 //!   the hand-over; an entry the walk finds into a closure on a path where the analyzed call
@@ -99,8 +99,12 @@ struct Node<'tcx> {
 struct Covered<'tcx> {
     /// The closures handed over, sorted by [`def_order`], without repeats.
     closures: Vec<DefId>,
-    /// The function instances whose `pre!` the callee's `requires` states, without repeats.
+    /// The function instances whose `pre!` the callee's `requires` states, sorted by
+    /// [`fn_order`], without repeats.
     functions: Vec<mir_ty::Instance<'tcx>>,
+    /// The crate function whose contract states `functions`: the closures written in its body
+    /// are its code and stay covered, other closures are not. `None` when `functions` is empty.
+    stated_in: Option<DefId>,
 }
 
 impl<'tcx> analyze::Analyzer<'tcx> {
@@ -419,23 +423,28 @@ impl<'tcx> analyze::Analyzer<'tcx> {
     }
 
     /// What an unanalyzed instance that `covered` covers covers in `callee`, unanalyzed too: the
-    /// same, except in a crate function, which has its own contract. That contract states its
-    /// own function `pre!`s, which no analyzed call discharges, so only the closures go on,
-    /// whose obligation was stated where they were handed over. A std function's spec in
-    /// `std.rs` describes what the function does, the std code it runs included, so the
-    /// functions go on through std code.
+    /// same in std code and in a closure written in the function whose contract states the
+    /// covered functions. Elsewhere in the crate only the closures go on, whose obligation was
+    /// stated where they were handed over: a crate function has its own contract, whose function
+    /// `pre!`s no analyzed call discharges, and a closure written in another function (a trusted
+    /// callee's, which is not analyzed either) is that function's code, not the stating
+    /// function's. `std.rs` states `pre!` only of closure parameters, so the functions reach std
+    /// code only from a trusted crate function's own `requires`; that function is trusted for
+    /// the std calls its body makes, as for the arguments it passes them.
     fn carried_into(
         &self,
         covered: &Covered<'tcx>,
         callee: mir_ty::Instance<'tcx>,
     ) -> Covered<'tcx> {
         let callee_def_id = callee.def_id();
-        if !callee_def_id.is_local() || self.tcx.is_closure_like(callee_def_id) {
+        let written_in_stating_fn = self.tcx.is_closure_like(callee_def_id)
+            && Some(self.tcx.typeck_root_def_id(callee_def_id)) == covered.stated_in;
+        if !callee_def_id.is_local() || written_in_stating_fn {
             return covered.clone();
         }
         Covered {
             closures: covered.closures.clone(),
-            functions: Vec::new(),
+            ..Covered::default()
         }
     }
 
@@ -481,10 +490,9 @@ impl<'tcx> analyze::Analyzer<'tcx> {
             match *handed_over {
                 HandedOver::Closure(def_id) => covered.closures.push(def_id),
                 HandedOver::Function(def_id, args) => {
-                    let function = self.resolve_recorded(owner, def_id, args);
-                    let new =
-                        function.filter(|f| !covered.functions.iter().any(|g| same_fn(*f, *g)));
-                    covered.functions.extend(new);
+                    covered
+                        .functions
+                        .extend(self.resolve_recorded(owner, def_id, args));
                 }
                 HandedOver::Param(param_def_id) => {
                     let generics = self.tcx.generics_of(owner_def_id);
@@ -505,14 +513,29 @@ impl<'tcx> analyze::Analyzer<'tcx> {
         }
         covered.closures.sort_by_key(|def_id| def_order(*def_id));
         covered.closures.dedup();
+        covered.functions.sort_by_key(|f| fn_order(*f));
+        covered.functions.dedup_by(|f, g| same_fn(*f, *g));
+        if !covered.functions.is_empty() {
+            covered.stated_in = Some(callee.def_id());
+        }
         covered
     }
 }
 
-/// Whether two instances run the same function at the same generic arguments, whatever shim
-/// reaches it.
+/// Whether two instances have the same def id and generic arguments: the same function, reified
+/// or not. A `FnPtrShim` or `ClosureOnceShim` has the def id of the trait method it implements,
+/// so it is not the same as the function or closure it calls.
 fn same_fn<'tcx>(a: mir_ty::Instance<'tcx>, b: mir_ty::Instance<'tcx>) -> bool {
     a.def_id() == b.def_id() && a.args == b.args
+}
+
+/// An order of instances within one compilation that puts those [`same_fn`] identifies next
+/// to each other. Generic arguments are interned, so their address identifies them.
+fn fn_order(instance: mir_ty::Instance<'_>) -> ((u32, u32), usize) {
+    (
+        def_order(instance.def_id()),
+        instance.args.as_ptr() as usize,
+    )
 }
 
 /// An order of def ids within one compilation.
