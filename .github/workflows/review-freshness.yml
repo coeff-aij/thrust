@@ -13,9 +13,8 @@ on:
 
 permissions: {}
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+# No concurrency group: a run it cancelled would stay on the head as a failed check. Each run takes
+# seconds and reads the pull request's state when it starts.
 
 jobs:
   freshness:
