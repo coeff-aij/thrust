@@ -1319,6 +1319,14 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             fn_ty.params.len() - 1
         );
         let (receiver_term, final_state) = self.closure_receiver_term(receiver, &fn_ty, "post!");
+        if final_state.is_some() {
+            if let Some((closure_ty, _)) = self.receiver_closure_behind_refs(receiver_ty) {
+                if let mir_ty::TyKind::Param(param) = closure_ty.kind() {
+                    self.analyzer
+                        .record_once_post_param(self.type_builder.param_def_id(param));
+                }
+            }
+        }
         let param_args: Vec<_> = std::iter::once(receiver_term).chain(logical_args).collect();
         let result = self.to_term(result);
         FormulaOrTerm::Formula(fn_ty.once_postcondition_formula(&param_args, result, final_state))
