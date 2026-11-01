@@ -1,0 +1,12 @@
+--- rustc_abi/src/lib.rs
++++ rustc_abi/src/lib.rs
+@@ -202,7 +202,8 @@
+     }
+ 
+     #[inline]
+-    #[thrust_macros::requires(Self::pointer_space_ok(*self, c))]
++    // The fail twin drops the `requires(Self::pointer_space_ok(*self, c))` of the pass tree: an
++    // address space that is neither the default one nor listed reaches the `panic!` below.
+     #[thrust_macros::ensures(Self::pointer_size_is(*self, c, result))]
+     pub fn pointer_size_in(&self, c: AddressSpace) -> Size {
+         if c == self.default_address_space {

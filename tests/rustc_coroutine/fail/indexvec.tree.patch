@@ -1,0 +1,12 @@
+--- rustc_index/src/vec.rs
++++ rustc_index/src/vec.rs
+@@ -96,7 +96,8 @@
+     }
+ 
+     #[inline]
+-    #[thrust_macros::requires(<I as Idx>::can_new((*self).len()))]
++    // The fail twin drops the `requires(<I as Idx>::can_new((*self).len()))` of the pass tree:
++    // `I::new` below then has its `can_new` precondition unmet.
+     #[thrust_macros::ensures(<I as Idx>::index_is(result, (*self).len()))]
+     pub fn next_index(&self) -> I {
+         I::new(self.raw.len())

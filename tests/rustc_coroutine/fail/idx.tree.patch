@@ -1,0 +1,14 @@
+--- rustc_index/src/idx.rs
++++ rustc_index/src/idx.rs
+@@ -179,9 +179,8 @@
+ {
+     type Item = I;
+ 
+-    #[thrust_macros::requires(
+-        forall(|s: USize| s == (*self).start && s < (*self).end ==> <I as Idx>::can_new(s))
+-    )]
++    // The fail twin drops the `requires` of the pass tree, that every position left can be built:
++    // `I::new(n)` below then has its `can_new(n)` precondition unmet.
+     #[thrust_macros::ensures(
+         forall(|s: USize| s == (*self).start && s < (*self).end
+             ==> exists(|x: <I as thrust_models::Model>::Ty|

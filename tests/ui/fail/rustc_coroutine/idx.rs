@@ -7,11 +7,14 @@
 // iterators of rewrites.md R2 to R4 (`IdxRange`, `WordIter`, `SliceIter`, `IterEnumerated`).
 // The code is the module tree under tests/rustc_coroutine/; this file selects the stage and
 // drives it.
+// The fail twin: same selection as the pass root, but `rustc_index` comes from the mutant tree under
+// tests/rustc_coroutine/fail/mutants/idx/, which has `IdxRange::next` without its `requires`;
+// `I::new(n)` has its `can_new(n)` precondition unmet.
 #![feature(new_range_api)]
 
 #[path = "../../../rustc_coroutine/compiler/rustc_hashes/src/lib.rs"]
 pub mod rustc_hashes;
-#[path = "../../../rustc_coroutine/compiler/rustc_index/src/lib.rs"]
+#[path = "../../../rustc_coroutine/fail/mutants/idx/rustc_index/src/lib.rs"]
 pub mod rustc_index;
 #[path = "../../../rustc_coroutine/compiler/rustc_abi/src/lib.rs"]
 pub mod rustc_abi;
@@ -28,8 +31,7 @@ fn main() {
     // Verified via the `next` contract above: `Idx for usize` reads
     // `index_is(self, i)` as `self == i`, so the k-th call yields `Some(k)`.
     let a = range.next();
-    // Broken narrowly: `IdxRange::next`'s contract pins this to `Some(0)`.
-    assert!(a.unwrap() == 1);
+    assert!(a.unwrap() == 0);
     assert!(range.start == 1);
     let b = range.next();
     assert!(b.unwrap() == 1);

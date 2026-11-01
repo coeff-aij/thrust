@@ -7,13 +7,16 @@
 // (Size/Align/Integer/Float/Primitive/Scalar/Niche/TargetDataLayout) and rustc_hashes.
 // The code is the module tree under tests/rustc_coroutine/; this file selects the stage and
 // drives it.
+// The fail twin: same selection as the pass root, but `rustc_abi` comes from the mutant tree under
+// tests/rustc_coroutine/fail/mutants/values/, which has `pointer_size_in` without its address-space `requires`;
+// the lookup falls through to its `panic!` for an address space that is neither the default one nor listed.
 #![feature(new_range_api)]
 
 #[path = "../../../rustc_coroutine/compiler/rustc_hashes/src/lib.rs"]
 pub mod rustc_hashes;
 #[path = "../../../rustc_coroutine/compiler/rustc_index/src/lib.rs"]
 pub mod rustc_index;
-#[path = "../../../rustc_coroutine/compiler/rustc_abi/src/lib.rs"]
+#[path = "../../../rustc_coroutine/fail/mutants/values/rustc_abi/src/lib.rs"]
 pub mod rustc_abi;
 #[path = "../../../rustc_coroutine/thrust/mod.rs"]
 pub mod case_study;
@@ -55,9 +58,7 @@ fn main() {
     // checks the address-space requires, and `Align::bytes` / `Size::bits`
     // check their `ensures`.
     assert!(dl.obj_size_bound() >= 1);
-    // The fail twin: `AddressSpace(1)` is neither `dl.default_address_space` nor listed in
-    // `dl.address_space_info`, so the lookup of `pointer_size_in` falls through to its `panic!`.
-    let ptr = dl.pointer_size_in(AddressSpace(1));
+    let ptr = dl.pointer_size_in(AddressSpace(0));
     assert!(ptr.bits() == ptr.bytes() * 8);
     assert!(dl.i64_align.bytes() >= 1);
     let _ = Integer::I32.size();
