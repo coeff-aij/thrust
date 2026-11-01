@@ -5,10 +5,13 @@ use thrust_models::forall;
 use thrust_models::model::{Int, Mut, Seq};
 use thrust_models::Model;
 
-// Creusot's `iter_mut.rs`: the iterator specification implemented for `core::slice::IterMut`,
-// whose model is the slice's entry and final sequences and a cursor. `next` is std's; its
-// contract is the extern spec. The associated `Item` is `&'a mut T`, so `visited` is a sequence
-// of `Mut` pairs.
+// Creusot's `iter_mut.rs`: an iterator over a mutable slice, `IterMut { inner: &mut [T] }`, whose
+// `next` hands out the first element by `split_off_first_mut` and keeps the rest. Its model is the
+// model of `inner`, the slice's current and final sequences. The associated `Item` is `&'a mut T`,
+// so `visited` is a sequence of `Mut` pairs.
+// Creusot's constructor `iter_mut(v)` and its `all_zero` client are left out: std.rs does not state
+// that `&mut v[..]` keeps the length, which the constructor's contract needs. `all_zero.rs` runs on
+// std's `slice::IterMut`.
 
 // Creusot's `common.rs`, the iterator specification every case shares: the trait predicates
 // `produces(self, visited, o)`, `completed` and `invariant` (`true` unless the impl says otherwise),
@@ -52,38 +55,50 @@ where
     fn next(&mut self) -> Option<Self::Item>;
 }
 
-// The model is (Seq<T>, Seq<T>, Int): the entry and final sequences of the slice, and the cursor.
+struct IterMut<'a, T> {
+    inner: &'a mut [T],
+}
+
+impl<'a, T: Model> Model for IterMut<'a, T> {
+    type Ty = (Mut<Seq<<T as Model>::Ty>>,);
+}
+
 #[thrust_macros::context]
-impl<'a, T> Iterator for core::slice::IterMut<'a, T>
+impl<'a, T> Iterator for IterMut<'a, T>
 where
     T: Model + 'a,
 {
     type Item = &'a mut T;
 
     fn next(&mut self) -> Option<&'a mut T> {
-        <core::slice::IterMut<'a, T> as std::iter::Iterator>::next(self)
+        self.inner.split_off_first_mut()
     }
 
-
-
+    // Creusot's type invariant of `IterMut`: the borrowed slice keeps its length.
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
-        0 <= self.2 && self.2 <= self.0.len()
+        (!self.0).len() == (*self.0).len()
     }
 
+    // The 2022 artifact's `self.resolve()` and the current Creusot's `resolve(self.inner)`, and the
+    // slice is empty.
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
-        (*self).2 >= (*self).0.len() && *self == !self
+        *self == !self && !((*self).0) == *((*self).0) && *((*self).0) == Seq::empty()
     }
 
+    // Creusot's `self.inner.to_mut_seq() == visited.concat(o.inner.to_mut_seq())`, index by index:
+    // the visited pairs, then the rest of the slice.
     #[thrust_macros::predicate]
     fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool {
-        o.0 == self.0
-            && o.1 == self.1
-            && o.2 == self.2 + visited.len()
+        (*self.0).len() == visited.len() + (*o.0).len()
             && forall(|k: Int|
                 !(0 <= k && k < visited.len())
-                    || visited[k] == Mut::new(self.0[self.2 + k], self.1[self.2 + k]))
+                    || visited[k] == Mut::new((*self.0)[k], (!self.0)[k]))
+            && forall(|k: Int|
+                !(0 <= k && k < (*o.0).len())
+                    || ((*o.0)[k] == (*self.0)[visited.len() + k]
+                        && (!o.0)[k] == (!self.0)[visited.len() + k]))
     }
 }
 
