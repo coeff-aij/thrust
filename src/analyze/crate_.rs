@@ -1193,7 +1193,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             let clauses = analyze::Analyzer::accepts_every_argument(&fn_ty);
             self.ctx.extend_clauses(clauses);
         }
-        for (closure, from) in self.unanalyzed_entries().unhanded_closures {
+        let entries = self.unanalyzed_entries();
+        if let Some(miscounted) = entries.miscounted.first() {
+            self.stop_miscounted_handover(miscounted);
+        }
+        for (closure, from) in entries.unhanded_closures {
             let def_id = closure.def_id();
             if self.ctx.has_written_requires(def_id) {
                 continue;
@@ -1208,6 +1212,28 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 ),
             );
         }
+    }
+
+    /// Stops at a call that hands values of a closure type to code Thrust does not analyze, at
+    /// an instance of its caller where its analysis does not state the obligation of each.
+    fn stop_miscounted_handover(&self, miscounted: &analyze::unanalyzed_entry::Miscounted<'tcx>) {
+        let held = match miscounted.held {
+            Some(1) => "1 value".to_string(),
+            Some(held) => format!("{held} values"),
+            None => "values, held some way Thrust cannot count,".to_string(),
+        };
+        self.tcx.dcx().span_fatal(
+            miscounted.count.span,
+            format!(
+                "at `{}`, this call hands `{}`, which Thrust does not analyze, {held} of the \
+                 closure type `{}`, and states the obligation of {}: a `pre!` stated of one \
+                 value does not cover another value of its type",
+                miscounted.owner,
+                self.tcx.def_path_str(miscounted.count.callee),
+                miscounted.closure,
+                miscounted.count.accounted,
+            ),
+        );
     }
 
     /// Stops at a closure of the crate with an inferred precondition, or a function pointer,

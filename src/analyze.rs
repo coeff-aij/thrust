@@ -709,6 +709,9 @@ pub struct Analyzer<'tcx> {
         mir_ty::GenericArgsRef<'tcx>,
         unanalyzed_entry::HandedOver<'tcx>,
     )>,
+    /// How many values of a closure type each analyzed call into code Thrust does not analyze
+    /// states the obligation of.
+    handover_counts: Vec<unanalyzed_entry::HandoverCount<'tcx>>,
     /// What the analysis did with the body of each function, for the report.
     body_checks: BodyChecks,
 }
@@ -963,6 +966,7 @@ impl<'tcx> Analyzer<'tcx> {
             invariant_annotations: Default::default(),
             trusted_bodies: Default::default(),
             handovers: Default::default(),
+            handover_counts: Default::default(),
             body_checks: Default::default(),
         }
     }
@@ -1109,6 +1113,16 @@ impl<'tcx> Analyzer<'tcx> {
     /// [`crate_`]); one without its own contract takes the trait's.
     pub fn has_own_impl_contract(&self, def_id: DefId) -> bool {
         self.impl_methods_with_own_contract.contains(&def_id)
+    }
+
+    /// Whether a call of the trait method `def_id` that resolves to `resolved_def_id` is typed
+    /// with the trait method's contract: `resolved_def_id` is a local impl method without a
+    /// contract of its own, and the trait writes one.
+    pub fn takes_trait_contract(&self, def_id: DefId, resolved_def_id: DefId) -> bool {
+        resolved_def_id != def_id
+            && resolved_def_id.is_local()
+            && !self.has_own_impl_contract(resolved_def_id)
+            && self.trait_method_contract_written(def_id)
     }
 
     /// Stops if a function Thrust verifies can run an ignored function of the crate, as Verus's
