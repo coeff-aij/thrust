@@ -791,7 +791,9 @@ pub fn layout<
     // and property 4) and the classes to be disjoint, which no lemma states yet. Its
     // `ensures` is `true`: `layout()` states nothing of the variants it returns. The closure is
     // `FnMut` (it updates `size` and `align`), so a clause reads each capture through the
-    // receiver, as `&mut` of the type it is captured by.
+    // receiver, as `&mut` of the type it is captured by. No `hist_inv` bounds `size` and `align`:
+    // nothing after the `collect` needs a bound, as `Size::align_to` requires nothing
+    // (`#[thrust::callable]`, its body checked by the `values.rs` root) and `max` neither.
     let variants = collect_index_vec_result::<VariantIdx, _, _, _>(Map::new(
         variant_fields.iter_enumerated(),
         thrust_macros::closure!(
