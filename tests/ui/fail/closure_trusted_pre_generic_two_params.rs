@@ -1,9 +1,8 @@
-//@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_VERIFY_ONLY=main,g
-// `h`'s `requires` states the `pre!` of `f` at `0`, and `g` hands `h` a `P` and a `Q`. The analysis
-// of `g` serves its instances, and `main` runs it at `Q = Wr<P>`, a second value of the closure
-// type, so the stated `pre!` does not cover `f`, which must accept every argument.
+// `h`'s `requires` states the `pre!` of `f` at `0`, and `g` hands `h` a `P` and a `Q`. `main` runs
+// `g` at `Q = Wr<P>`, which holds a second value of the closure type; the walk over unanalyzed code
+// counts the closures at that instance, so the call stops.
 
 pub trait Call {
     fn call(&self, x: i64);
@@ -30,7 +29,7 @@ fn h<P: Fn(i64), Q: Call>(f: P, q: Q) {
 #[thrust_macros::requires(thrust_macros::pre!(f(0)))]
 #[thrust_macros::ensures(true)]
 fn g<P: Fn(i64), Q: Call>(f: P, q: Q) {
-    h(f, q)
+    h(f, q) //~ ERROR: a `pre!` stated of one value does not cover another
 }
 
 fn main() {

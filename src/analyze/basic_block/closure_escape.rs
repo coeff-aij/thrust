@@ -16,7 +16,7 @@ use rustc_middle::ty::{self as mir_ty};
 use rustc_span::def_id::DefId;
 
 use super::{singleton_params, subst_singleton_params, Analyzer, ResolvedCallable};
-use crate::analyze::unanalyzed_entry::HandedOver;
+use crate::analyze::unanalyzed_entry::{count_held, peel_refs, pointee, HandedOver, HandoverCount};
 use crate::analyze::TypeParam;
 use crate::chc;
 use crate::refine::Var;
@@ -96,29 +96,49 @@ impl<'tcx> Analyzer<'tcx, '_> {
             // `stated` records types, not values, so a `pre!` stated of a value of `ty` counts
             // only when the arguments hold exactly one: itself, behind references and boxes, or
             // in a field of a struct or tuple (the function of an iterator adapter), not a second
-            // value of `ty`, nor one inside a collection. A generic caller's analysis serves its
-            // instances, so an argument or field of another type parameter may hold one too.
-            if stated.names(ty) && self.count_held_by(ty, operands) == Some(1) {
-                continue;
-            }
-            for (idx, held, derefs) in self.holders(ty, operands) {
-                let handed = (contract_def_id, requires_of);
-                self.hand_over(ty, calls, &operand_tys[idx], held, derefs, handed);
-            }
+            // value of `ty`, nor one inside a collection. Otherwise each value is handed over with
+            // its obligation. A type parameter here may stand for a type holding more values, so
+            // the walk over unanalyzed code counts them again at each instance of the caller
+            // ([`HandoverCount`]).
+            let operand_types = self.operand_types(operands);
+            let count = operand_types
+                .iter()
+                .map(|held| count_held(self.tcx, *held, ty))
+                .sum::<Option<usize>>();
+            let accounted = if stated.names(ty) && count == Some(1) {
+                1
+            } else {
+                let holders = self.holders(ty, operands);
+                for (idx, held, derefs) in &holders {
+                    let handed = (contract_def_id, requires_of);
+                    self.hand_over(ty, calls, &operand_tys[*idx], *held, *derefs, handed);
+                }
+                holders.len()
+            };
+            self.ctx.record_handover_count(HandoverCount {
+                owner: self.local_def_id.to_def_id(),
+                callee: def_id,
+                callee_args: args,
+                ty,
+                operand_types,
+                accounted,
+                span: self.body.basic_blocks[self.basic_block]
+                    .terminator()
+                    .source_info
+                    .span,
+            });
         }
     }
 
-    /// [`count_held`] summed over the arguments `operands`.
-    fn count_held_by(&self, ty: mir_ty::Ty<'tcx>, operands: &[Operand<'tcx>]) -> Option<usize> {
+    /// The types of the arguments `operands`, without regions.
+    fn operand_types(&self, operands: &[Operand<'tcx>]) -> Vec<mir_ty::Ty<'tcx>> {
         operands
             .iter()
             .map(|operand| {
-                let held = self
-                    .tcx
-                    .erase_regions(operand.ty(&self.local_decls, self.tcx));
-                count_held(self.tcx, held, ty, &mut Vec::new())
+                self.tcx
+                    .erase_regions(operand.ty(&self.local_decls, self.tcx))
             })
-            .sum()
+            .collect()
     }
 
     /// The arguments among `operands` that hold a value of `ty`, each with its type and the
@@ -366,15 +386,6 @@ impl<'tcx> Analyzer<'tcx, '_> {
     }
 }
 
-/// `ty` without the references and boxes around it.
-fn peel_refs(ty: mir_ty::Ty<'_>) -> mir_ty::Ty<'_> {
-    let mut ty = ty;
-    while let Some(inner) = pointee(ty) {
-        ty = inner;
-    }
-    ty
-}
-
 /// The number of references and boxes around `ty`.
 fn count_refs(ty: mir_ty::Ty<'_>) -> usize {
     let mut ty = ty;
@@ -384,72 +395,6 @@ fn count_refs(ty: mir_ty::Ty<'_>) -> usize {
         count += 1;
     }
     count
-}
-
-/// What `ty` points to, if it is a reference or a box.
-fn pointee(ty: mir_ty::Ty<'_>) -> Option<mir_ty::Ty<'_>> {
-    match ty.kind() {
-        mir_ty::TyKind::Ref(_, inner, _) => Some(*inner),
-        mir_ty::TyKind::Adt(adt, args) if adt.is_box() => Some(args.type_at(0)),
-        _ => None,
-    }
-}
-
-/// The number of values of type `ty` a value of `held` holds, itself, behind references and
-/// boxes, or in the fields of structs and tuples; `None` when it may hold one some other way: in
-/// a collection, an enum, a closure's captures, a raw pointer or a `PhantomData`, through a type
-/// parameter or an alias other than `ty`, which an instance may replace with a type holding
-/// `ty`, or through a type that holds itself. `visiting` are the types the count is inside.
-fn count_held<'tcx>(
-    tcx: mir_ty::TyCtxt<'tcx>,
-    held: mir_ty::Ty<'tcx>,
-    ty: mir_ty::Ty<'tcx>,
-    visiting: &mut Vec<mir_ty::Ty<'tcx>>,
-) -> Option<usize> {
-    use mir_ty::TypeVisitableExt as _;
-    if held == ty {
-        return Some(1);
-    }
-    if let mir_ty::TyKind::Param(..) | mir_ty::TyKind::Alias(..) = held.kind() {
-        return None;
-    }
-    let mentions = held.walk().any(|arg| arg.as_type() == Some(ty));
-    if !mentions && !held.has_param() && !held.has_aliases() {
-        return Some(0);
-    }
-    if visiting.contains(&held) {
-        return None;
-    }
-    visiting.push(held);
-    let count = count_held_inside(tcx, held, ty, visiting);
-    visiting.pop();
-    count
-}
-
-/// [`count_held`] of `held` through its pointee or its fields.
-fn count_held_inside<'tcx>(
-    tcx: mir_ty::TyCtxt<'tcx>,
-    held: mir_ty::Ty<'tcx>,
-    ty: mir_ty::Ty<'tcx>,
-    visiting: &mut Vec<mir_ty::Ty<'tcx>>,
-) -> Option<usize> {
-    if let Some(inner) = pointee(held) {
-        return count_held(tcx, inner, ty, visiting);
-    }
-    match *held.kind() {
-        mir_ty::TyKind::Tuple(elems) => elems
-            .iter()
-            .map(|elem| count_held(tcx, elem, ty, visiting))
-            .sum(),
-        // A `PhantomData` names a type without holding it, as a collection marks the elements it
-        // holds behind a raw allocation (`Vec<T>` holds a `PhantomData<T>`).
-        mir_ty::TyKind::Adt(adt, _) if adt.is_phantom_data() => None,
-        mir_ty::TyKind::Adt(adt, args) if adt.is_struct() => adt
-            .all_fields()
-            .map(|field| count_held(tcx, tcx.erase_regions(field.ty(tcx, args)), ty, visiting))
-            .sum(),
-        _ => None,
-    }
 }
 
 /// The number of references and boxes a value of `held` is behind which is of type `ty`, or

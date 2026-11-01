@@ -707,6 +707,9 @@ pub struct Analyzer<'tcx> {
         mir_ty::GenericArgsRef<'tcx>,
         unanalyzed_entry::HandedOver<'tcx>,
     )>,
+    /// How many values of a closure type each analyzed call into code Thrust does not analyze
+    /// states the obligation of.
+    handover_counts: Vec<unanalyzed_entry::HandoverCount<'tcx>>,
     /// What the analysis did with the body of each function, for the report.
     body_checks: BodyChecks,
 }
@@ -961,6 +964,7 @@ impl<'tcx> Analyzer<'tcx> {
             invariant_annotations: Default::default(),
             trusted_bodies: Default::default(),
             handovers: Default::default(),
+            handover_counts: Default::default(),
             body_checks: Default::default(),
         }
     }

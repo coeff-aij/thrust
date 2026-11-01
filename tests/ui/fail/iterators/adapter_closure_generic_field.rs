@@ -2,8 +2,8 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_VERIFY_ONLY=main,g
 // As `pass/iterators/adapter_closure_in_inv.rs`, in a generic caller: `Keep2<P, Q>` holds one `P`
 // in a field, but `main` runs `g` at `Q = Wr<P>`, whose closure `inv` states no `pre!` of. The
-// analysis of `g` serves its instances, so the field of type `Q` may hold a second `P` and the
-// call stops.
+// walk over unanalyzed code counts the closures at that instance, where the field of type `Q`
+// holds a second one, so the call stops.
 
 use thrust_models::model::Int;
 
@@ -83,7 +83,7 @@ impl<P: Fn(&i64) -> bool, Q: Call + thrust_models::Model> IteratorSpec for Keep2
 #[thrust_macros::ensures(true)]
 fn g<P: Fn(&i64) -> bool, Q: Call + thrust_models::Model>(k: Keep2<P, Q>) {
     let mut k = k;
-    let _ = k.next(); //~ ERROR: where Thrust cannot follow it
+    let _ = k.next(); //~ ERROR: a `pre!` stated of one value does not cover another
 }
 
 fn main() {
