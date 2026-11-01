@@ -26,7 +26,7 @@ use thrust_models::Ghost;
 // Of `n` distinct indices, at least `n - b` are at least `b`.
 #[thrust_macros::lemma]
 #[thrust_macros::requires(b <= n && lemmas::distinct::<u32>(s, n))]
-// The fail twin: one more than the lemmas give, false at `b == n`.
+// The fail twin: one more than the lemmas give, false at `b == n` for a permutation of `0..n`.
 #[thrust_macros::ensures(lemmas::cnt_ge::<u32>(s, n, b) >= n - b + 1)]
 fn split(s: Ghost<IndexVec<u32, u32>>, n: usize, b: usize) {
     lemmas::permutation_split(s, n, b);

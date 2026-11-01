@@ -26,10 +26,10 @@ with the driver broken, regenerated and checked by `tests/rustc_coroutine/fail/c
 | `univariant_biased.rs` | `LayoutCalculator::univariant_biased` | draft, `ignore-on-host`: query about 323 MB |
 | `eligibility.rs` | `coroutine_saved_local_eligibility` | draft, `ignore-on-host` |
 | `layout.rs` | `layout()` and the adapters of `thrust/iter.rs`; the lemmas of `thrust/lemmas.rs` assumed | draft, `ignore-on-host` |
-| `lemmas.rs` | the counting lemmas of `thrust/lemmas.rs` that `layout()` uses | verified as stage file |
+| `lemmas.rs` | the counting lemmas of `thrust/lemmas.rs` that `layout()` uses | verified |
 
-The states are those of the single-file stage files; the module tree has not been run against
-the solver yet.
+The roots that are not drafts answer over the module tree in the ui suite; the states of the
+drafts are those of the single-file stage files.
 
 The case study's iterators (`IdxRange`, `WordIter`, `BitIter`, `SliceIter`, `IterEnumerated`) and
 the adapters of `thrust/iter.rs` implement std's `Iterator` and std.rs's `IteratorSpec`; `next` of
