@@ -829,6 +829,22 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         }
     }
 
+    /// The closure a receiver of type `ty` calls, and the number of shared references around it
+    /// in the instantiation of the receiver's closure type parameter: `&F` calls `F`
+    /// (`impl Fn for &F`), so its `pre!` and `post!` are those of `F` at `*self`, as in Creusot.
+    fn receiver_closure_behind_refs(
+        &self,
+        ty: mir_ty::Ty<'tcx>,
+    ) -> Option<(mir_ty::Ty<'tcx>, usize)> {
+        let mut closure_ty = self.receiver_closure_ty(ty)?;
+        let mut refs = 0;
+        while let mir_ty::TyKind::Ref(_, inner_ty, mir_ty::Mutability::Not) = closure_ty.kind() {
+            closure_ty = *inner_ty;
+            refs += 1;
+        }
+        Some((closure_ty, refs))
+    }
+
     /// The receiver term as the closure's own body takes it.
     ///
     /// That body takes the upvars by `&`, by `&mut`, or by value, following the kind inferred
@@ -840,7 +856,8 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         receiver: &'tcx rustc_hir::Expr<'tcx>,
         fn_ty: &rty::FunctionType,
     ) -> chc::Term<rty::FunctionParamIdx> {
-        let held_as = match self.expr_ty(receiver).kind() {
+        let receiver_ty = self.expr_ty(receiver);
+        let mut held_as = match receiver_ty.kind() {
             mir_ty::TyKind::Adt(adt, _) if Some(adt.did()) == self.def_ids.mut_model() => {
                 Some(rty::RefKind::Mut)
             }
@@ -853,7 +870,21 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             _ => None,
         };
 
-        let term = self.to_term(receiver);
+        let mut term = self.to_term(receiver);
+        let refs = self
+            .receiver_closure_behind_refs(receiver_ty)
+            .map_or(0, |(_, refs)| refs);
+        if refs > 0 {
+            term = match held_as {
+                Some(rty::RefKind::Mut) => term.mut_current(),
+                Some(rty::RefKind::Immut) => term.box_current(),
+                None => term,
+            };
+            for _ in 1..refs {
+                term = term.box_current();
+            }
+            held_as = Some(rty::RefKind::Immut);
+        }
         match (held_as, received_as) {
             (None, Some(rty::RefKind::Immut)) => chc::Term::box_(term),
             (None, Some(rty::RefKind::Mut)) => chc::Term::mut_(term.clone(), term),
@@ -869,15 +900,20 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
     /// The receiver type is instantiated to the actual closure type in the formula function; its
     /// `DefId` is used to look up the contract collected by the analyzer.
     fn receiver_closure_fn_type(&self, receiver_ty: mir_ty::Ty<'tcx>) -> Option<rty::FunctionType> {
-        let closure_ty = self.receiver_closure_ty(receiver_ty)?;
+        let (closure_ty, refs) = self.receiver_closure_behind_refs(receiver_ty)?;
         let mir_ty::TyKind::Closure(def_id, args) = closure_ty.kind() else {
             if let mir_ty::TyKind::Param(ty) = closure_ty.kind() {
                 tracing::debug!("ParamTy is found: {ty:?}");
-                let closure_fun_ty = self.type_builder.build_closure_type_for_param(
-                    *ty,
-                    self.local_def_id,
-                    self.generic_args,
-                );
+                // Behind a reference, `ty` is a parameter of the function being analyzed
+                // (`G = &H`): its `Fn` bound is among that function's predicates, not among the
+                // instantiated predicates of the annotated one, which state `&H: Fn(..)`.
+                let (bound_owner, bound_args) = match self.type_builder.owner_fn_id().as_local() {
+                    Some(owner) if refs > 0 => (owner, mir_ty::GenericArgs::empty()),
+                    _ => (self.local_def_id, self.generic_args),
+                };
+                let closure_fun_ty =
+                    self.type_builder
+                        .build_closure_type_for_param(*ty, bound_owner, bound_args);
                 tracing::debug!(
                     "the obtained FunctionType for the closure {ty:?}: {closure_fun_ty:#?}"
                 );
@@ -1057,9 +1093,14 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         let fn_ty = self
             .receiver_closure_fn_type(receiver_ty)
             .unwrap_or_else(|| {
-                panic!(
-                    "precondition used on a non-closure parameter: {:?}",
-                    receiver
+                self.tcx.dcx().span_fatal(
+                    receiver.span,
+                    format!(
+                        "thrust: `pre!` of a value of `{}` is not supported: it \
+                         takes a closure, a closure type parameter, or a shared reference to \
+                         one",
+                        self.receiver_closure_ty(receiver_ty).unwrap_or(receiver_ty)
+                    ),
                 )
             });
         let logical_args = self.closure_spec_args(args);
@@ -1131,9 +1172,14 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         let fn_ty = self
             .receiver_closure_fn_type(receiver_ty)
             .unwrap_or_else(|| {
-                panic!(
-                    "postcondition used on a non-closure parameter: {:?}",
-                    receiver
+                self.tcx.dcx().span_fatal(
+                    receiver.span,
+                    format!(
+                        "thrust: `post!` of a value of `{}` is not supported: it \
+                         takes a closure, a closure type parameter, or a shared reference to \
+                         one",
+                        self.receiver_closure_ty(receiver_ty).unwrap_or(receiver_ty)
+                    ),
                 )
             });
         let logical_args = self.closure_spec_args(args);
