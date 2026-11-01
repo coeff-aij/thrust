@@ -72,9 +72,8 @@ fixed to `Option<B>`, needing `THRUST_TRY_SPECS=1`), specified in the forms of C
 before the current one): the closure states and accumulators along the produced items form a chain
 of call postconditions, held in ghost variables across the loop, and the closure may be called at
 every state the chain reaches. Each client derives its bound from the chain. The fail twins of
-`fold_map.rs`, `fold_mapinv.rs` and `try_fold_map.rs` assert a bound the result does not reach (the
-running maximum over `0..10` is 9); that of `try_fold_mapinv.rs` claims a bound the closure's
-contract does not give. The pass side of `try_fold_mapinv.rs` is ignored while the solver gives no
+`fold_map.rs`, `fold_mapinv.rs`, `try_fold_map.rs` and `try_fold_mapinv.rs` assert a bound the
+result does not reach (the running maximum over `0..10` is 9). The pass side of `try_fold_mapinv.rs` is ignored while the solver gives no
 answer at 300 s.
 
 Weaker variants (`weaker/`, still verify):
