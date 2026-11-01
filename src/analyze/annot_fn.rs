@@ -360,7 +360,9 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 panic!("closure capture is expected to be a binding: {:?}", subpat);
             };
             let Some(idx) = captures.iter().position(|capture| {
-                capture.var_ident.name == ident.name && capture.place.projections.is_empty()
+                capture.var_ident.name == ident.name
+                    && (capture.place.projections.is_empty()
+                        || Self::is_shared_ref_reborrow(capture))
             }) else {
                 self.tcx.dcx().span_fatal(
                     subpat.span,
@@ -369,6 +371,22 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             };
             self.env.insert(hir_id, upvar_terms[idx].clone());
         }
+    }
+
+    /// Whether the capture is `*x` borrowed immutably, `x` a shared reference: rustc captures a
+    /// use of `x[i]` or `x.f()` that way, through a deref of `x`. The capture `&*x` is then `x`
+    /// itself, so a clause names it as `x`, of `x`'s type.
+    fn is_shared_ref_reborrow(capture: &mir_ty::CapturedPlace<'tcx>) -> bool {
+        matches!(
+            capture.place.projections.as_slice(),
+            [proj] if proj.kind == rustc_middle::hir::place::ProjectionKind::Deref
+        ) && matches!(
+            capture.place.base_ty.kind(),
+            mir_ty::TyKind::Ref(_, _, rustc_hir::Mutability::Not)
+        ) && matches!(
+            capture.info.capture_kind,
+            mir_ty::UpvarCapture::ByRef(mir_ty::BorrowKind::Immutable)
+        )
     }
 
     fn singleton_term_for_ty(
