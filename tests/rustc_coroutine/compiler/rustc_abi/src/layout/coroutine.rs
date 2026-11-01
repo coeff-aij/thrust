@@ -539,12 +539,14 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
 //   - the index types can be built for every local (`LocalIdx` below n), up to V (`VariantIdx`;
 //     `iter_enumerated` builds `new(V)`), and up to each variant's length (`FieldIdx`; a variant
 //     may list a local twice);
-//   - `tag_to_layout` accepts every scalar (`pre!`), as rustc's closure does.
+//   - `tag_to_layout` accepts every integer scalar `Initialized { value: Int(_, false), .. }`
+//     (`pre!`), the only scalars `layout()` passes; rustc's closure builds `LayoutData::scalar`,
+//     which panics on a pointer scalar of an unknown address space.
 // - Invariants of rustc's layouts: `dl_wf` of the data layout `calc.cx` names, which `univariant`
 //   requires; `niche_wf` of the largest niche of every layout `univariant` may receive, and the
 //   niche within that layout; `Scalar::wf_in` of every such layout whose `backend_repr` is a
 //   scalar (`scalar_pair`). These layouts are each of `local_layouts` and `prefix_layouts`, and
-//   `tag_to_layout`'s result for any scalar (through its postcondition), each named by `post!` of
+//   `tag_to_layout`'s result for any such integer scalar (through its postcondition), each named by `post!` of
 //   `Deref::deref`. `F`'s `deref` is a function (`deref_functional`), which `univariant`
 //   requires; rustc's `Layout` dereferences to the interned pointer it holds.
 // - Not guaranteed by the caller:
@@ -607,9 +609,10 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
                 && thrust_macros::post!(<F as core::ops::Deref>::deref(&prefix_layouts[i]), d) && **d == l
                 && l.largest_niche == Some(n))
                 || (Niche::wf_in(n, dl) && (!Primitive::size_in(n.value, dl, z) || n.offset.raw + z.raw <= l.size.raw)))
-        && forall(|dl: TargetDataLayout, s: Scalar, r: <F as thrust_models::Model>::Ty,
+        && forall(|dl: TargetDataLayout, ti: Integer, tg: WrappingRange, s: Scalar, r: <F as thrust_models::Model>::Ty,
                 l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche, z: Size|
             !(C::dl_of(*calc, dl)
+                && s == Scalar::Initialized { value: Primitive::Int(ti, false), valid_range: tg }
                 && thrust_macros::post!(tag_to_layout(s), r)
                 && thrust_macros::post!(<F as core::ops::Deref>::deref(&r), d) && **d == l
                 && l.largest_niche == Some(n))
@@ -628,16 +631,17 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
                 && thrust_macros::post!(<F as core::ops::Deref>::deref(&prefix_layouts[i]), d) && **d == l
                 && l.backend_repr == BackendRepr::Scalar(c))
                 || Scalar::wf_in(c, dl))
-        && forall(|dl: TargetDataLayout, s: Scalar, r: <F as thrust_models::Model>::Ty,
+        && forall(|dl: TargetDataLayout, ti: Integer, tg: WrappingRange, s: Scalar, r: <F as thrust_models::Model>::Ty,
                 l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, c: Scalar|
             !(C::dl_of(*calc, dl)
+                && s == Scalar::Initialized { value: Primitive::Int(ti, false), valid_range: tg }
                 && thrust_macros::post!(tag_to_layout(s), r)
                 && thrust_macros::post!(<F as core::ops::Deref>::deref(&r), d) && **d == l
                 && l.backend_repr == BackendRepr::Scalar(c))
                 || Scalar::wf_in(c, dl))
-        && forall(|s: Scalar| thrust_macros::pre!(tag_to_layout(s)))
-        && forall(|dl: TargetDataLayout, s: Scalar, r: <F as thrust_models::Model>::Ty, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>|
-            !(C::dl_of(*calc, dl) && thrust_macros::post!(tag_to_layout(s), r) && thrust_macros::post!(<F as core::ops::Deref>::deref(&r), d) && **d == l)
+        && forall(|ti: Integer, tg: WrappingRange| thrust_macros::pre!(tag_to_layout(Scalar::Initialized { value: Primitive::Int(ti, false), valid_range: tg })))
+        && forall(|dl: TargetDataLayout, ti: Integer, tg: WrappingRange, s: Scalar, r: <F as thrust_models::Model>::Ty, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>|
+            !(C::dl_of(*calc, dl) && s == Scalar::Initialized { value: Primitive::Int(ti, false), valid_range: tg } && thrust_macros::post!(tag_to_layout(s), r) && thrust_macros::post!(<F as core::ops::Deref>::deref(&r), d) && **d == l)
                 || exists(|wp: USize, wl: USize, q: USize, qa: USize, qi: USize, b: USize|
                     LayoutCalculator::<C>::weight::<FieldIdx, FieldIdx, VariantIdx, F>(&prefix_layouts, wp)
                         && LayoutCalculator::<C>::weight::<LocalIdx, FieldIdx, VariantIdx, F>(local_layouts, wl)

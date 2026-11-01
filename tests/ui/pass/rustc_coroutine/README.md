@@ -16,11 +16,11 @@ with the driver broken, regenerated and checked by `tests/rustc_coroutine/fail/c
 
 | file | selection | state |
 | --- | --- | --- |
-| `values.rs` | `rustc_hashes`, `rustc_abi` (lib.rs), `SliceIter` and its `find` | verified as stage file |
-| `idx.rs` | `rustc_index::idx`, the own iterators `WordIter`, `SliceIter`, `IterEnumerated` | verified as stage file |
-| `indexvec.rs` | `rustc_index::vec`, `rustc_index::slice`, the client `filled` | verified as stage file |
-| `indexvec_int_range.rs` | as `indexvec.rs`, under `THRUST_INT_RANGE=conversions` | verified as stage file; checks that the tree type-checks with the option |
-| `bitset.rs` | `rustc_index::bit_set` | verified as stage file |
+| `values.rs` | `rustc_hashes`, `rustc_abi` (lib.rs), `SliceIter` and its `find` | verified |
+| `idx.rs` | `rustc_index::idx`, the own iterators `WordIter`, `SliceIter`, `IterEnumerated` | verified |
+| `indexvec.rs` | `rustc_index::vec`, `rustc_index::slice`, the client `filled` | verified |
+| `indexvec_int_range.rs` | as `indexvec.rs`, under `THRUST_INT_RANGE=conversions` | verified; checks that the tree type-checks with the option |
+| `bitset.rs` | `rustc_index::bit_set` | verified |
 | `simple.rs` | `rustc_abi::layout::simple` | draft, `ignore-on-host` |
 | `univariant.rs` | `LayoutCalculator::univariant`, `univariant_biased` trusted on its contract | draft, `ignore-on-host`: no answer at 300 s, also for its panic obligations alone (query 17.8 MB) |
 | `univariant_biased.rs` | `LayoutCalculator::univariant_biased` | draft, `ignore-on-host`: query about 323 MB |
