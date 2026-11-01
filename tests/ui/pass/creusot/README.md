@@ -27,7 +27,7 @@ with empty bodies, as Creusot does). The step-form files repeat theirs in the sa
 | `fuse_produces.rs` | the current Creusot's `examples/iterators/07_fuse.rs` (3620de437) | `produces` + `FusedIterator::is_fused` with its state `Option<I>` and its `completed` and `produces` |
 | `fuse_produces_result.rs` | `iterators/fuse.rs` | `produces` + `FusedIterator::is_fused` with Creusot's state `Result<I, Ghost<I>>`; `next` keeps `iter` live past the ghost of the exhausted iterator, as Creusot's `ghost! { *iter }` reads it |
 | `map.rs` | `iterators/map.rs` | `produces` over an `FnMut` closure with the chain `fs` of closure states and `hist_inv!`, both laws inherited with no lemma, fully checked |
-| `iter_mut.rs` | `iterators/iter_mut.rs` | `produces` |
+| `iter_mut.rs` | `iterators/iter_mut.rs` | `produces` over Creusot's `IterMut { inner: &mut [T] }`, whose `next` (`split_off_first_mut`) is checked |
 | `collect.rs` | `common.rs` (`collect` / `FromIterator`) | `produces` |
 | `all_zero.rs` | `examples/all_zero.rs` | `produces`, via `iter_mut` |
 | `decuple_range.rs` | `examples/decuple_range.rs` | `produces`, positional property, fully checked |
