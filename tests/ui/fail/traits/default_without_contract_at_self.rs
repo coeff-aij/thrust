@@ -24,7 +24,7 @@ impl thrust_models::Model for Sq {
 
 impl Shape for Sq {
     fn raw(&self) -> u32 {
-        4
+        2
     }
 }
 
