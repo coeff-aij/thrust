@@ -1,8 +1,8 @@
 name: Review freshness
 
 # Fails while the automated review (claude-review.yml) has not seen the pull request's latest
-# changes to what Thrust does, or while one of its blocking or check comments has no reply; the
-# failure says what to do. It holds no secret: its token only reads the pull request, and it runs
+# changes to what Thrust does and to the review scripts, or while one of its blocking or check
+# comments has no reply; the failure says what to do. It holds no secret: its token only reads the pull request, and it runs
 # the pull request's own copy of the script, as CI runs its code. A posted review triggers no
 # workflow, so claude-review.yml runs this check again after each review.
 on:
