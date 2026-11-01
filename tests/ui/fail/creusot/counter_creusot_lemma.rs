@@ -346,21 +346,17 @@ impl<'a> Iterator for core::slice::Iter<'a, u32> {
 
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
-        self.1 <= self.0.len()
+        <Self as IteratorSpec>::inv(self)
     }
 
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
-        (*self).1 >= (*self).0.len() && *self == !self
+        <Self as IteratorSpec>::completed(self)
     }
 
     #[thrust_macros::predicate]
     fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool {
-        self.0 == o.0
-            && self.1 <= o.1
-            && o.1 <= self.0.len()
-            && visited.len() == o.1 - self.1
-            && forall(|i: Int| !(0 <= i && i < visited.len()) || visited[i] == &self.0[self.1 + i])
+        <Self as IteratorSpec>::produces(self, visited, o)
     }
 }
 
