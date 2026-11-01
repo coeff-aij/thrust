@@ -1,6 +1,6 @@
-//@error-in-other-file: Unknown
+//@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
-// The program panics, and the solver must not accept it; the query is not Horn, so PCSat answers unknown rather than unsat.
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 // A predicate that reads `g`'s precondition in both positions states nothing of it, called under a disjunction as well.
 
 fn g(x: i32) {

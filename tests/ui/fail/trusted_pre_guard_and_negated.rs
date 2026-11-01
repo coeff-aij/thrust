@@ -1,6 +1,6 @@
-//@error-in-other-file: Unknown
+//@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
-// The program panics, and the solver must not accept it; the query is not Horn, so PCSat answers unknown rather than unsat.
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 // The `requires` reads `g`'s precondition positively in a guarded disjunct and negatively in another conjunct, so it states nothing of it: the solver may choose the precondition smaller than the real one. `g` must accept the argument `t1` passes.
 
 fn g(x: i32) {
