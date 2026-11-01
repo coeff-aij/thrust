@@ -11,7 +11,9 @@
 //! - A function or method run by name or through a bound has only its parameters as state; its
 //!   entry is an edge of the walk below, answered by a clause that its precondition holds of every
 //!   argument ([`Analyzer::accepts_every_argument`]), unless the analyzed call that led into the
-//!   unanalyzed code on its path discharged a `requires` stating its `pre!`.
+//!   unanalyzed code on its path discharged a `requires` stating its `pre!` at the callee's
+//!   generic arguments, and no crate function with its own contract lies between that call and
+//!   the entry.
 //! - A closure is handed over as a value, with captures the walk does not see. Its obligation is
 //!   stated at the analyzed call that hands it over (`basic_block::closure_escape`), which records
 //!   the hand-over; an entry the walk finds into a closure on a path where the analyzed call
@@ -82,8 +84,8 @@ pub struct Entries<'tcx> {
     )>,
 }
 
-/// An instance on the walk: whether its body is analyzed, and, for one that is not, the
-/// closures the analyzed call that led into unanalyzed code on its path handed over.
+/// An instance on the walk: whether its body is analyzed, and, for one that is not, what the
+/// analyzed call that led into unanalyzed code on its path covers there ([`HandedOver`]).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct Node<'tcx> {
     instance: mir_ty::Instance<'tcx>,
@@ -113,9 +115,17 @@ impl<'tcx> analyze::Analyzer<'tcx> {
         })
     }
 
-    /// Records that the analyzed body `owner` hands `handed_over` to `callee` at a call.
-    pub fn record_handover(&mut self, owner: DefId, callee: DefId, handed_over: HandedOver) {
-        self.handovers.push((owner, callee, handed_over));
+    /// Records that the analyzed body `owner` hands `handed_over` to `callee` at `callee_args`
+    /// at a call.
+    pub fn record_handover(
+        &mut self,
+        owner: DefId,
+        callee: DefId,
+        callee_args: mir_ty::GenericArgsRef<'tcx>,
+        handed_over: HandedOver,
+    ) {
+        self.handovers
+            .push((owner, callee, callee_args, handed_over));
     }
 
     /// What the `requires` of `contract_def_id` at `contract_args` reads the precondition of,
@@ -198,11 +208,11 @@ impl<'tcx> analyze::Analyzer<'tcx> {
     /// [`analyze::Analyzer::stop_ignored_reached`] does from the same roots, and returns the
     /// edges from an instance whose body Thrust does not analyze into a crate function it
     /// analyzes: a closure, or a function or method that the analyzed call leading into the
-    /// unanalyzed code on its path does not cover ([`HandedOver::Function`]). A non-local instance is not analyzed; a closure call shim takes
-    /// the analyzed-ness of the instance it is reached from, since a call Thrust types through the
-    /// closure's contract goes through it; other shims are not analyzed. The entry function is
-    /// left out: its precondition is required of every argument already
-    /// (`crate_::Analyzer::assert_callable_entry`).
+    /// unanalyzed code on its path does not cover ([`HandedOver::Function`]). A non-local
+    /// instance is not analyzed; a closure call shim takes the analyzed-ness of the instance it
+    /// is reached from, since a call Thrust types through the closure's contract goes through
+    /// it; other shims are not analyzed. The entry function is left out: its precondition is
+    /// required of every argument already (`crate_::Analyzer::assert_callable_entry`).
     pub fn unanalyzed_entries(
         &self,
         roots: Vec<mir_ty::Instance<'tcx>>,
@@ -239,8 +249,8 @@ impl<'tcx> analyze::Analyzer<'tcx> {
                 };
                 let handed_over = match (node.analyzed, analyzed) {
                     (_, true) => Vec::new(),
-                    (true, false) => self.handed_over_at(instance, callee.def_id()),
-                    (false, false) => node.handed_over.clone(),
+                    (true, false) => self.handed_over_at(instance, callee),
+                    (false, false) => self.carried_into(&node.handed_over, callee),
                 };
                 let child = Node {
                     instance: callee,
@@ -408,16 +418,58 @@ impl<'tcx> analyze::Analyzer<'tcx> {
         )
     }
 
-    /// The closures, by def id, that the analyzed instance `owner` hands over at its calls of
-    /// `callee`.
-    fn handed_over_at(&self, owner: mir_ty::Instance<'tcx>, callee: DefId) -> Vec<DefId> {
+    /// What an unanalyzed instance that `handed_over` covers covers in `callee`, unanalyzed too:
+    /// the same, except in a crate function, which has its own contract. That contract states
+    /// its own function `pre!`s, which no analyzed call discharges, so only the closures go on,
+    /// whose obligation was stated where they were handed over.
+    fn carried_into(&self, handed_over: &[DefId], callee: mir_ty::Instance<'tcx>) -> Vec<DefId> {
+        let callee_def_id = callee.def_id();
+        if !callee_def_id.is_local() || self.tcx.is_closure_like(callee_def_id) {
+            return handed_over.to_vec();
+        }
+        handed_over
+            .iter()
+            .copied()
+            .filter(|def_id| self.tcx.is_closure_like(*def_id))
+            .collect()
+    }
+
+    /// Whether the call of `def_id` at `args` recorded in the analyzed body of `owner` runs
+    /// `callee` at the instance `owner`.
+    fn recorded_call_runs(
+        &self,
+        owner: mir_ty::Instance<'tcx>,
+        def_id: DefId,
+        args: mir_ty::GenericArgsRef<'tcx>,
+        callee: mir_ty::Instance<'tcx>,
+    ) -> bool {
+        let typing_env = mir_ty::TypingEnv::fully_monomorphized();
+        let Ok(args) = self.tcx.try_instantiate_and_normalize_erasing_regions(
+            owner.args,
+            typing_env,
+            mir_ty::EarlyBinder::bind(args),
+        ) else {
+            return false;
+        };
+        mir_ty::Instance::try_resolve(self.tcx, typing_env, def_id, args)
+            .ok()
+            .flatten()
+            .is_some_and(|runs| runs.def_id() == callee.def_id() && runs.args == callee.args)
+    }
+
+    /// The closures, by def id, that the analyzed instance `owner` hands over at its calls that
+    /// run the instance `callee`, and the functions whose `pre!` those calls discharge.
+    fn handed_over_at(
+        &self,
+        owner: mir_ty::Instance<'tcx>,
+        callee: mir_ty::Instance<'tcx>,
+    ) -> Vec<DefId> {
         let owner_def_id = owner.def_id();
         let mut handed_over = Vec::new();
-        let recorded = self
-            .handovers
-            .iter()
-            .filter(|(o, c, _)| *o == owner_def_id && *c == callee);
-        for (_, _, closure) in recorded {
+        let recorded = self.handovers.iter().filter(|(o, c, args, _)| {
+            *o == owner_def_id && self.recorded_call_runs(owner, *c, args, callee)
+        });
+        for (_, _, _, closure) in recorded {
             match *closure {
                 HandedOver::Closure(def_id) | HandedOver::Function(def_id) => {
                     handed_over.push(def_id);

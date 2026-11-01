@@ -62,7 +62,7 @@ impl<'tcx> Analyzer<'tcx, '_> {
             self.type_builder.owner_fn_id(),
         );
         for function in stated.functions() {
-            self.record_covered(HandedOver::Function(function), def_id, resolved_def_id);
+            self.record_covered(HandedOver::Function(function), def_id, args);
         }
         for param in self.iterator_spec_params(contract_def_id) {
             let ty = mir_ty::EarlyBinder::bind(param.to_ty(self.tcx))
@@ -74,7 +74,7 @@ impl<'tcx> Analyzer<'tcx, '_> {
                 .filter_map(|arg| arg.as_type())
             {
                 if matches!(closure.kind(), mir_ty::TyKind::Closure(..)) {
-                    self.record_handover(closure, def_id, resolved_def_id);
+                    self.record_handover(closure, def_id, args);
                 }
             }
         }
@@ -82,30 +82,39 @@ impl<'tcx> Analyzer<'tcx, '_> {
             let ty = mir_ty::EarlyBinder::bind(param.to_ty(self.tcx))
                 .instantiate(self.tcx, contract_args);
             let ty = self.tcx.erase_regions(ty);
-            self.record_handover(ty, def_id, resolved_def_id);
-            if stated.names(ty) && self.one_operand_holds(ty, operands) {
+            self.record_handover(ty, def_id, args);
+            let holders = self.holders(ty, operands);
+            // `stated` records types, not values, so a `pre!` stated of a value of `ty` counts
+            // only when exactly one argument holds one, itself or behind references: not for a
+            // second value of `ty`, nor for one inside a collection.
+            if stated.names(ty) && matches!(holders[..], [(_, _, Some(_))]) {
                 continue;
             }
-            for (idx, operand) in operands.iter().enumerate() {
-                let idx = rty::FunctionParamIdx::from_usize(idx);
-                self.hand_over(ty, calls, operand, &operand_tys[idx], contract_def_id);
+            for (idx, held, derefs) in holders {
+                self.hand_over(ty, calls, &operand_tys[idx], held, derefs, contract_def_id);
             }
         }
     }
 
-    /// Whether exactly one of `operands` holds a value of `ty`, itself or behind references.
-    /// `stated` records types, not values, so a `pre!` stated of a value of `ty` counts only
-    /// then: not for a second value of `ty`, nor for one inside a collection.
-    fn one_operand_holds(&self, ty: mir_ty::Ty<'tcx>, operands: &[Operand<'tcx>]) -> bool {
-        let holders: Vec<_> = operands
-            .iter()
-            .map(|operand| {
-                self.tcx
-                    .erase_regions(operand.ty(&self.local_decls, self.tcx))
-            })
-            .filter(|held| held.walk().any(|arg| arg.as_type() == Some(ty)))
-            .collect();
-        matches!(holders[..], [held] if derefs_to(held, ty).is_some())
+    /// The arguments among `operands` that hold a value of `ty`, each with its type and the
+    /// number of references and boxes that value is behind, or `None` when the argument holds it
+    /// some other way (in a tuple, a struct or a collection).
+    fn holders(
+        &self,
+        ty: mir_ty::Ty<'tcx>,
+        operands: &[Operand<'tcx>],
+    ) -> Vec<(rty::FunctionParamIdx, mir_ty::Ty<'tcx>, Option<usize>)> {
+        let mut holders = Vec::new();
+        for (idx, operand) in operands.iter().enumerate() {
+            let held = self
+                .tcx
+                .erase_regions(operand.ty(&self.local_decls, self.tcx));
+            if held.walk().any(|arg| arg.as_type() == Some(ty)) {
+                let idx = rty::FunctionParamIdx::from_usize(idx);
+                holders.push((idx, held, derefs_to(held, ty)));
+            }
+        }
+        holders
     }
 
     /// The bounds of `contract_def_id` on its type parameters: each parameter with the trait it
@@ -192,9 +201,13 @@ impl<'tcx> Analyzer<'tcx, '_> {
         kinds
     }
 
-    /// Records that the closure `ty` stands for is handed over at a call of `def_id`, which
-    /// resolves to `resolved_def_id`.
-    fn record_handover(&mut self, ty: mir_ty::Ty<'tcx>, def_id: DefId, resolved_def_id: DefId) {
+    /// Records that the closure `ty` stands for is handed over at a call of `def_id` at `args`.
+    fn record_handover(
+        &mut self,
+        ty: mir_ty::Ty<'tcx>,
+        def_id: DefId,
+        args: mir_ty::GenericArgsRef<'tcx>,
+    ) {
         let handed_over = match *peel_refs(ty).kind() {
             mir_ty::TyKind::Closure(def_id, _) => HandedOver::Closure(def_id),
             mir_ty::TyKind::Param(param) => {
@@ -202,34 +215,34 @@ impl<'tcx> Analyzer<'tcx, '_> {
             }
             _ => return,
         };
-        self.record_covered(handed_over, def_id, resolved_def_id);
+        self.record_covered(handed_over, def_id, args);
     }
 
-    /// Records that the call of `def_id`, which resolves to `resolved_def_id`, covers `covered`.
-    fn record_covered(&mut self, covered: HandedOver, def_id: DefId, resolved_def_id: DefId) {
+    /// Records that the call of `def_id` at `args` covers `covered`. The walk over unanalyzed
+    /// code resolves the call at each instance of the caller.
+    fn record_covered(
+        &mut self,
+        covered: HandedOver,
+        def_id: DefId,
+        args: mir_ty::GenericArgsRef<'tcx>,
+    ) {
         let owner = self.local_def_id.to_def_id();
-        self.ctx.record_handover(owner, def_id, covered);
-        if resolved_def_id != def_id {
-            self.ctx.record_handover(owner, resolved_def_id, covered);
-        }
+        self.ctx.record_handover(owner, def_id, args, covered);
     }
 
-    /// States the obligation of the value of type `ty` that `operand` holds, if it holds one.
+    /// States the obligation of the value of type `ty` that an argument of type `held`, typed
+    /// `operand_ty`, holds behind `derefs` references and boxes; `None` stops, as the value is
+    /// held some way Thrust cannot follow.
     fn hand_over(
         &mut self,
         ty: mir_ty::Ty<'tcx>,
         calls: Calls,
-        operand: &Operand<'tcx>,
         operand_ty: &rty::RefinedType<Var>,
+        held: mir_ty::Ty<'tcx>,
+        derefs: Option<usize>,
         contract_def_id: DefId,
     ) {
-        let held = self
-            .tcx
-            .erase_regions(operand.ty(&self.local_decls, self.tcx));
-        if !held.walk().any(|arg| arg.as_type() == Some(ty)) {
-            return;
-        }
-        let Some(derefs) = derefs_to(held, ty) else {
+        let Some(derefs) = derefs else {
             self.tcx.dcx().span_fatal(
                 self.body.basic_blocks[self.basic_block]
                     .terminator()

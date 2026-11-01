@@ -577,7 +577,8 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             .unwrap_or(instantiated)
     }
 
-    pub fn to_formula_fn(&self) -> FormulaFn<'tcx> {
+    /// The translation, with the `pre!` receivers it recorded, its quantifier bodies' included.
+    pub fn into_formula_fn(self) -> FormulaFn<'tcx> {
         let body = if self.is_logic(self.local_def_id.to_def_id()) {
             FormulaFnBody::Term(self.to_term(self.logic_body_expr().0))
         } else {
@@ -602,7 +603,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             param_idents,
             ret,
             body,
-            pre_receivers: self.pre_receivers.take(),
+            pre_receivers: self.pre_receivers.borrow().clone(),
         }
     }
 
@@ -2058,7 +2059,9 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                                         instance.args,
                                         owner_fn_id,
                                     );
-                                    // Its body was translated for the definition just made.
+                                    // The `pre!`s its body reads are read here too.
+                                    // `formula_fn_with_args` returns the translation the
+                                    // definition just made, or makes one for this owner.
                                     let body = instance.def_id().as_local().and_then(|local| {
                                         self.analyzer.formula_fn_with_args(
                                             local,
