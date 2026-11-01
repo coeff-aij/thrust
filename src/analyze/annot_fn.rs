@@ -221,6 +221,29 @@ impl<T> FormulaOrTerm<T> {
     }
 }
 
+impl<T: Clone> FormulaOrTerm<T> {
+    /// `lhs == rhs` (`eq`) or `lhs != rhs` of two Booleans as formulas: the biconditional or its
+    /// negation, for operands without a term form.
+    fn formula_equality(lhs: Self, eq: bool, rhs: Self) -> chc::Formula<T> {
+        let lhs = lhs.into_formula().expect("a Boolean has a formula form");
+        let rhs = rhs.into_formula().expect("a Boolean has a formula form");
+        let iff = lhs.clone().implies(rhs.clone()).and(rhs.implies(lhs));
+        if eq {
+            iff
+        } else {
+            iff.not()
+        }
+    }
+
+    /// `if cond { then } else { els }` of Boolean branches as a formula, for parts without a term
+    /// form: `(cond ∧ then) ∨ (¬cond ∧ els)`.
+    fn formula_ite(cond: Self, then: Self, els: Self) -> chc::Formula<T> {
+        let [cond, then, els] = [cond, then, els]
+            .map(|part| part.into_formula().expect("a Boolean has a formula form"));
+        cond.clone().and(then).or(cond.not().and(els))
+    }
+}
+
 /// The quantified variables of an `exists` / `forall` closure, the range they range over, and
 /// the body.
 type QuantifiedBody = (
@@ -718,21 +741,21 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         (Some(def_id) == self.def_ids.log_eq_args()).then_some((lhs, rhs))
     }
 
-    /// The type and term of the value an argument of `log_eq_args` refers to: `a` of the `&a`
-    /// that `==` is rewritten to, or the referent of any other reference.
+    /// The type and translation of the value an argument of `log_eq_args` refers to: `a` of the
+    /// `&a` that `==` is rewritten to, or the referent of any other reference.
     fn log_eq_operand(
         &self,
         arg: &'tcx rustc_hir::Expr<'tcx>,
-    ) -> (mir_ty::Ty<'tcx>, chc::Term<rty::FunctionParamIdx>) {
+    ) -> (mir_ty::Ty<'tcx>, FormulaOrTerm<rty::FunctionParamIdx>) {
         match arg.kind {
             rustc_hir::ExprKind::AddrOf(
                 rustc_hir::BorrowKind::Ref,
                 rustc_hir::Mutability::Not,
                 operand,
-            ) => (self.expr_ty(operand), self.to_term(operand)),
+            ) => (self.expr_ty(operand), self.to_formula_or_term(operand)),
             _ => (
                 self.expr_ty(arg).peel_refs(),
-                self.to_term(arg).box_current(),
+                FormulaOrTerm::Term(self.to_term(arg).box_current()),
             ),
         }
     }
@@ -777,9 +800,17 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
     }
 
     fn to_term(&self, hir: &'tcx rustc_hir::Expr<'tcx>) -> chc::Term<rty::FunctionParamIdx> {
-        self.to_formula_or_term(hir)
-            .into_term()
-            .expect("expected a term")
+        let Some(term) = self.to_formula_or_term(hir).into_term() else {
+            self.tcx.dcx().span_fatal(
+                hir.span,
+                "thrust: a predicate call, `pre!`, `post!`, quantifier or `match` in a \
+                 specification is a formula, not a value: in a `requires`, `ensures`, predicate or \
+                 quantifier body it can be an operand of `&&`, `||`, `!`, `==` or `!=`, or the \
+                 condition of an `if` whose branches are Boolean; it cannot be the value of a \
+                 `#[logic]` function or an argument of a call",
+            );
+        };
+        term
     }
 
     fn receiver_closure_ty(&self, ty: mir_ty::Ty<'tcx>) -> Option<mir_ty::Ty<'tcx>> {
@@ -1556,23 +1587,33 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                     rustc_hir::BinOpKind::Lt => AmbiguousBinOp::Lt,
                     _ => unimplemented!("unsupported binary operator in formula: {:?}", op),
                 };
-                let lhs = self.to_formula_or_term(lhs);
-                let rhs = self.to_formula_or_term(rhs);
-                FormulaOrTerm::BinOp(lhs.into_term().unwrap(), binop, rhs.into_term().unwrap())
+                FormulaOrTerm::BinOp(self.to_term(lhs), binop, self.to_term(rhs))
             }
             ExprKind::If(cond, then_expr, Some(else_expr)) => {
-                // A conditional whose branches are terms: `ite` of the condition as a Boolean term.
+                // `ite` of the condition as a Boolean term; a Boolean conditional with a formula
+                // among its parts is a formula instead.
                 let cond = match cond.kind {
                     ExprKind::DropTemps(inner) => inner,
                     _ => cond,
                 };
-                let cond_term = self
-                    .to_formula_or_term(cond)
-                    .into_term()
-                    .expect("the condition of an `if` in a term must be a Boolean term");
-                let then_term = self.to_term(then_expr);
-                let else_term = self.to_term(else_expr);
-                FormulaOrTerm::Term(chc::Term::ite(cond_term, then_term, else_term))
+                if !self.expr_ty(hir).is_bool() {
+                    let cond_term = self.to_term(cond);
+                    let then_term = self.to_term(then_expr);
+                    let else_term = self.to_term(else_expr);
+                    return FormulaOrTerm::Term(chc::Term::ite(cond_term, then_term, else_term));
+                }
+                let [cond, then, els] =
+                    [cond, then_expr, else_expr].map(|part| self.to_formula_or_term(part));
+                match (
+                    cond.clone().into_term(),
+                    then.clone().into_term(),
+                    els.clone().into_term(),
+                ) {
+                    (Some(cond), Some(then), Some(els)) => {
+                        FormulaOrTerm::Term(chc::Term::ite(cond, then, els))
+                    }
+                    _ => FormulaOrTerm::Formula(FormulaOrTerm::formula_ite(cond, then, els)),
+                }
             }
             ExprKind::Unary(op, operand) => match op {
                 rustc_hir::UnOp::Neg => {
@@ -1727,12 +1768,17 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                         "log_ne" => AmbiguousBinOp::Ne,
                         name => panic!("unknown method of log_eq_args: {name}"),
                     };
-                    return self.equality(
-                        hir.span,
-                        self.log_eq_operand(lhs),
-                        binop,
-                        self.log_eq_operand(rhs),
-                    );
+                    let (lhs_ty, lhs) = self.log_eq_operand(lhs);
+                    let (rhs_ty, rhs) = self.log_eq_operand(rhs);
+                    let (Some(lhs_term), Some(rhs_term)) =
+                        (lhs.clone().into_term(), rhs.clone().into_term())
+                    else {
+                        let eq = matches!(binop, AmbiguousBinOp::Eq);
+                        return FormulaOrTerm::Formula(FormulaOrTerm::formula_equality(
+                            lhs, eq, rhs,
+                        ));
+                    };
+                    return self.equality(hir.span, (lhs_ty, lhs_term), binop, (rhs_ty, rhs_term));
                 }
                 if let Some(def_id) = self.typeck.type_dependent_def_id(hir.hir_id) {
                     if Some(def_id) == self.def_ids.array_model_store() {
