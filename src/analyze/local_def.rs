@@ -1757,8 +1757,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// The source text of the type an invariant writes for its parameter `ident`, the `idx`-th:
     /// the self type of the formula function's `<T as Model>::Ty`. `None` for `&str`, whose
     /// parameter is `NoModel`, and where `T` ends or starts with tokens `thrust_macros` made
-    /// (`Closure<F>` for a closure type parameter, `Dyn` for a trait object), whose span is
-    /// the macro's.
+    /// (`Closure<F>` for a closure type parameter, `Dyn` for a trait object other than behind a
+    /// reference), whose span is the macro's.
     fn invariant_param_source_text(
         &self,
         formula_def_id: LocalDefId,
@@ -1772,10 +1772,54 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             return None;
         };
         let span = qself.span;
-        if span.ctxt() != ident.span.ctxt() || span.lo() <= ident.span.hi() {
+        if span.ctxt() == ident.span.ctxt() && span.lo() > ident.span.hi() {
+            return self.tcx.sess.source_map().span_to_snippet(span).ok();
+        }
+        self.reference_to_dyn_source_text(qself, ident)
+    }
+
+    /// The text of a parameter's type written as a reference to a trait object, whose lowered
+    /// type has the macro's span from its start: the source between `ident` and the next `,` or
+    /// `|` outside brackets.
+    fn reference_to_dyn_source_text(
+        &self,
+        qself: &rustc_hir::Ty<'tcx>,
+        ident: rustc_span::symbol::Ident,
+    ) -> Option<String> {
+        let rustc_hir::TyKind::Ref(_, pointee) = qself.kind else {
+            return None;
+        };
+        let rustc_hir::TyKind::Path(rustc_hir::QPath::Resolved(None, path)) = pointee.ty.kind
+        else {
+            return None;
+        };
+        let rustc_hir::def::Res::Def(_, did) = path.res else {
+            return None;
+        };
+        if Some(did) != self.ctx.def_ids().dyn_model() {
             return None;
         }
-        self.tcx.sess.source_map().span_to_snippet(span).ok()
+        let rest = self
+            .tcx
+            .sess
+            .source_map()
+            .span_to_snippet(ident.span.shrink_to_hi().with_hi(qself.span.hi()))
+            .ok()?;
+        let rest = rest.trim_start().strip_prefix(':')?;
+        let mut depth = 0_usize;
+        let mut prev = ' ';
+        let end = rest.char_indices().find_map(|(i, c)| {
+            match c {
+                '(' | '[' | '<' => depth += 1,
+                ')' | ']' => depth = depth.checked_sub(1)?,
+                '>' if prev != '-' => depth = depth.checked_sub(1)?,
+                ',' | '|' if depth == 0 => return Some(i),
+                _ => {}
+            }
+            prev = c;
+            None
+        })?;
+        Some(rest[..end].trim().to_string())
     }
 
     /// Stops unless `written_ty`, the type an invariant gives its parameter `name`, is the type
