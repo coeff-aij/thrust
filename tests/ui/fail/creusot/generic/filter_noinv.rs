@@ -1,4 +1,4 @@
-//@ignore-on-host: not yet verifiable, the solver runs out of memory before refuting it (fptprove develop b9f9c9c05)
+//@ignore-on-host: not yet verifiable, the solver runs out of memory before refuting it (fptprove develop b9f9c9c05; query in fptprove thrust-benchmarks unsolved/filter_noinv_2026-11-01/)
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300
