@@ -210,7 +210,7 @@ impl<'tcx> analyze::Analyzer<'tcx> {
     }
 
     /// Walks the instances the verified functions can run, as
-    /// [`analyze::Analyzer::stop_ignored_reached`] does from the same roots, and returns the
+    /// [`analyze::Analyzer::stop_ignored_reached`] does from `roots`, and returns the
     /// edges from an instance whose body Thrust does not analyze into a crate function it
     /// analyzes: a closure, or a function or method that the analyzed call leading into the
     /// unanalyzed code on its path does not cover ([`HandedOver::Function`]). A non-local
@@ -218,6 +218,10 @@ impl<'tcx> analyze::Analyzer<'tcx> {
     /// is reached from, since a call Thrust types through the closure's contract goes through
     /// it; other shims are not analyzed. The entry function is left out: its precondition is
     /// required of every argument already (`crate_::Analyzer::assert_callable_entry`).
+    ///
+    /// `fallback_roots` are the trusted functions of the crate: each is entered from the analyzed
+    /// calls that lead into it, and is walked as a root, with nothing covered, only when the walk
+    /// from `roots` reached none of its instances.
     pub fn unanalyzed_entries(
         &self,
         roots: Vec<mir_ty::Instance<'tcx>>,

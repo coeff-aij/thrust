@@ -615,7 +615,8 @@ pub struct Analyzer<'tcx> {
     defs: HashMap<DefId, DefTy<'tcx>>,
 
     /// The def that carries the written contract of a function whose type is `DefTy::Concrete`:
-    /// the function itself or its extern spec. Absent for a function with no written contract.
+    /// the function itself or its extern spec. A function whose contract is inferred is also
+    /// recorded, but is never read, as its body is analyzed.
     concrete_spec_defs: HashMap<DefId, LocalDefId>,
 
     /// Collection of functions with `#[thrust::formula_fn]` attribute.
