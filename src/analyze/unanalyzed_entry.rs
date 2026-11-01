@@ -190,9 +190,13 @@ impl<'tcx> analyze::Analyzer<'tcx> {
         def_id: DefId,
         args: mir_ty::GenericArgsRef<'tcx>,
     ) -> Option<(DefId, mir_ty::GenericArgsRef<'tcx>)> {
-        let analyze::DefTy::Deferred(specs) = self.defs.get(&def_id)? else {
-            let spec = self.concrete_spec_defs.get(&def_id);
-            return Some((spec.map_or(def_id, |spec| spec.to_def_id()), args));
+        let specs = match self.defs.get(&def_id)? {
+            analyze::DefTy::Concrete(_, spec) => {
+                let spec = spec.map_or(def_id, |spec| spec.to_def_id());
+                return Some((spec, args));
+            }
+            analyze::DefTy::Deferred(specs) => specs,
+            analyze::DefTy::Generic(_) => return Some((def_id, args)),
         };
         specs.iter().find_map(|spec| {
             let spec_def_id = spec.local_def_id.to_def_id();
@@ -238,9 +242,10 @@ impl<'tcx> analyze::Analyzer<'tcx> {
         self.walk_entries(roots, &item_analyzed, entry_fn, &mut seen, &mut entries);
         // A fallback root that no walk reached is reached by no analyzed call, so nothing is
         // covered there. One reached has been walked with what its callers cover.
+        let reached: HashSet<_> = seen.iter().map(|node| node.instance).collect();
         let unreached = fallback_roots
             .into_iter()
-            .filter(|root| !seen.iter().any(|node| node.instance == *root))
+            .filter(|root| !reached.contains(root))
             .collect();
         self.walk_entries(unreached, &item_analyzed, entry_fn, &mut seen, &mut entries);
         entries
