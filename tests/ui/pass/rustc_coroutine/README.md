@@ -25,7 +25,7 @@ function's body. `lemmas.rs`'s twin and `indexvec_int_range.rs`'s break the root
 | `idx.rs` | `rustc_index::idx`, the own iterators `WordIter`, `SliceIter`, `IterEnumerated` | verified |
 | `indexvec.rs` | `rustc_index::vec`, `rustc_index::slice`, the client `filled` | verified |
 | `indexvec_int_range.rs` | as `indexvec.rs`, under `THRUST_INT_RANGE=conversions` | verified; checks that the tree type-checks with the option |
-| `bitset.rs` | `rustc_index::bit_set` | no answer at 120 s or 300 s with fptprove develop dbd352e782; its twin answers Unsat at 120 s |
+| `bitset.rs` | `rustc_index::bit_set` | verified; timeout at 120 s in the ui harness run alone with fptprove develop dbd352e782 (3 of 3 runs), its twin answers Unsat at 120 s |
 | `simple.rs` | `rustc_abi::layout::simple` | draft, `ignore-on-host` |
 | `univariant.rs` | `LayoutCalculator::univariant`, `univariant_biased` trusted on its contract | draft, `ignore-on-host`: no answer at 300 s, also for its panic obligations alone (query 17.8 MB) |
 | `univariant_biased.rs` | `LayoutCalculator::univariant_biased` | draft, `ignore-on-host`: query about 323 MB |
