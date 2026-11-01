@@ -30,7 +30,7 @@ import anthropic
 from anthropic import beta_tool
 from pydantic import BaseModel
 
-from review_github import OUTSIDE_PREFIX, REVIEW_AUTHOR, REVIEW_HEADING, automated_reviews, gh, gh_api_items
+from review_github import REVIEW_AUTHOR, REVIEW_HEADING, automated_reviews, gh, gh_api_items
 
 GUIDELINE_FILES = ["AGENTS.md", "CLAUDE.md", "README.md"]
 # On a first review, a changed file is sent whole when it is short or the change adds at least
@@ -545,13 +545,19 @@ def review_payload(
 ) -> tuple[dict, list[dict]]:
     """The review as the API creates it, with its comments on changed lines, and its comments on
     changed files whose line is not part of the diff. A comment on a file the pull request does not
-    change goes into the body."""
+    change goes onto the first changed file with a diff, or into the body when there is none."""
     inline = [c for c in review.comments if c.line in lines.get(c.path, set())]
     on_file = [c for c in review.comments if c not in inline and c.path in pr_paths]
     outside = [c for c in review.comments if c not in inline and c not in on_file]
+    anchor = min(lines, default=None)
+    moved: list[dict] = []
     body = [f"{REVIEW_HEADING}\n\n{review.summary}"]
-    # review_freshness.py reads these items back (OUTSIDE_ITEM): keep the format.
-    body += [f"{OUTSIDE_PREFIX}`{c.path}:{c.line}`: {comment_text(c)}" for c in outside]
+    if anchor:
+        # A file the pull request does not change takes no comment: the finding becomes a comment
+        # on a changed file, so that it has a thread to reply in and the freshness check sees it.
+        moved = [{"path": anchor, "body": comment_text(c, f"(about `{c.path}:{c.line}`, which this pull request does not change) ")} for c in outside]
+        outside = []
+    body += [f"- `{c.path}:{c.line}`: {comment_text(c)}" for c in outside]
     if omitted:
         body.append("Not reviewed (not text): " + ", ".join(f"`{p}`" for p in omitted))
     # Kept with the review, where the API can read it back after the run's log has expired.
@@ -561,7 +567,7 @@ def review_payload(
         "body": "\n\n".join(body),
         "comments": [{"path": c.path, "line": c.line, "side": "RIGHT", "body": comment_text(c)} for c in inline],
     }
-    return payload, [{"path": c.path, "body": comment_text(c, f"(line {c.line}) ")} for c in on_file]
+    return payload, [{"path": c.path, "body": comment_text(c, f"(line {c.line}) ")} for c in on_file] + moved
 
 
 def comment_text(comment: Comment, line_note: str = "") -> str:

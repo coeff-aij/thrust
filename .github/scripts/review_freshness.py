@@ -2,9 +2,7 @@
 
 The check fails when the pull request changes a watched file whose content at the head differs from
 the commit the latest automated review saw (or when no review saw it), and when a `blocking` or
-`check` comment of the automated review has no reply. A finding on a file the pull request does
-not change is in the review body, not a comment; it needs a comment in the pull request
-conversation after that review. Contents are compared, not commits, so a
+`check` comment of the automated review has no reply. Contents are compared, not commits, so a
 rebase or a force-push counts as a change.
 
 Usage: review_freshness.py --repo OWNER/NAME --pr NUMBER --head SHA --watch PATH [PATH...]
@@ -18,7 +16,7 @@ import json
 import subprocess
 import sys
 
-from review_github import OUTSIDE_PREFIX, REVIEW_AUTHOR, automated_reviews, gh, gh_api_items, is_finding
+from review_github import automated_reviews, gh, gh_api_items, is_finding
 
 OPEN_SEVERITIES = ("[blocking", "[check")
 
@@ -81,26 +79,6 @@ def unanswered(repo: str, pr: str) -> list[str]:
     ]
 
 
-def unanswered_outside(repo: str, pr: str) -> list[str]:
-    """The `blocking` and `check` findings in the latest automated review's body, on files the pull
-    request does not change, when no one commented in the pull request conversation after it."""
-    reviews = automated_reviews(repo, pr)
-    if not reviews:
-        return []
-    latest = reviews[-1]
-    items = [
-        line[len(OUTSIDE_PREFIX):].split(": ", 1)[0]
-        for line in latest["body"].splitlines()
-        if line.startswith(OUTSIDE_PREFIX) and any(f": {sev}" in line for sev in OPEN_SEVERITIES)
-    ]
-    if not items:
-        return []
-    conversation = gh_api_items(f"repos/{repo}/issues/{pr}/comments")
-    if any(c["user"]["login"] != REVIEW_AUTHOR and c["created_at"] > latest["submitted_at"] for c in conversation):
-        return []
-    return [f"  {latest['html_url']} ({i})" for i in items]
-
-
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo", required=True)
@@ -117,11 +95,11 @@ def main() -> None:
             f" `gh workflow run claude-review.yml -R {args.repo} -f pr={args.pr}`; this check runs"
             " again when it is posted."
         )
-    open_comments = unanswered(args.repo, args.pr) + unanswered_outside(args.repo, args.pr)
+    open_comments = unanswered(args.repo, args.pr)
     if open_comments:
         problems.append(
             "Comments marked blocking or check without a reply:\n" + "\n".join(open_comments) + "\nReply to each"
-            " (a finding on a file outside the pull request: one comment in the conversation) with `Fixed in <pushed sha>: <what changed, path:line>`, `Declined: <reason>` or"
+            " with `Fixed in <pushed sha>: <what changed, path:line>`, `Declined: <reason>` or"
             " `Refuted: <evidence>`; a reply runs this check again."
         )
     if not problems:
