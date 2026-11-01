@@ -19,6 +19,7 @@ mod dedup;
 mod flatten;
 pub(crate) mod format_context;
 mod hoice;
+mod instance_tie;
 mod prune;
 pub mod sexp;
 mod smtlib2;
@@ -1754,6 +1755,16 @@ impl UserDefinedPred {
         }
     }
 
+    /// Whether this predicate and the forall predicate `p` stand for the same trait item: a trait
+    /// item is `p_<name>_<hash>` as a user-defined predicate and `q_<name>_<hash>` as a forall
+    /// predicate (`refine::stable_def_id_symbol`).
+    pub fn is_instance_of_forall_pred(&self, p: &ForallPred) -> bool {
+        match (self.inner.strip_prefix("p_"), p.inner().strip_prefix("q_")) {
+            (Some(this), Some(that)) => this == that,
+            _ => false,
+        }
+    }
+
     /// This predicate, printed as `name`, the path of the item it was read from.
     pub fn named(self, name: String) -> Self {
         Self {
@@ -2960,6 +2971,25 @@ pub struct System {
     /// The source name of each quantified variable issued with one, named in a comment of the
     /// SMT-LIB2 output when logging is on.
     user_quantified_var_names: BTreeMap<usize, String>,
+    /// The derived predicates that are one unknown over a generic item's forall sorts, taking the
+    /// universals it may read as explicit arguments ([`System::generic_unknown_universals`]),
+    /// under `THRUST_GENERIC_UNKNOWN_PREDS=1`.
+    generic_unknown_preds: HashSet<UserDefinedPred>,
+    /// The instances of those unknowns; see [`InstanceTie`].
+    instance_ties: Vec<InstanceTie>,
+}
+
+/// A generic unknown read at a concrete instance. `instance` is an unknown of its own, equal to
+/// `generic` applied to the instance's definitions of its explicit universals and read through a
+/// projection of each forall sort into the sort it has in `instance`'s signature. The two clauses
+/// that say so are printed with the system (`instance_tie`).
+#[derive(Debug, Clone)]
+pub struct InstanceTie {
+    pub instance: UserDefinedPred,
+    pub generic: UserDefinedPred,
+    /// Each explicit universal of `generic`, in order, with the symbol of its definition at the
+    /// instance.
+    pub definitions: Vec<(ForallPred, String)>,
 }
 
 impl System {
@@ -3110,6 +3140,79 @@ impl System {
             dependencies: HashSet::new(),
             decreases,
         })
+    }
+
+    /// Declares `symbol` as an unknown over a generic item's forall sorts that takes its
+    /// universals as explicit arguments; see [`System::generic_unknown_universals`].
+    pub fn push_generic_unknown_pred(&mut self, symbol: UserDefinedPred, sig: UserDefinedPredSig) {
+        self.generic_unknown_preds.insert(symbol.clone());
+        self.push_derived_pred(symbol, sig);
+    }
+
+    pub fn is_generic_unknown_pred(&self, symbol: &UserDefinedPred) -> bool {
+        self.generic_unknown_preds.contains(symbol)
+    }
+
+    pub fn push_instance_tie(&mut self, tie: InstanceTie) {
+        self.instance_ties.push(tie);
+    }
+
+    pub fn instance_ties(&self) -> &[InstanceTie] {
+        &self.instance_ties
+    }
+
+    /// The universals a generic unknown takes as explicit arguments, in a fixed order: the `Bool`
+    /// forall predicates whose parameters' forall sorts all occur in the unknown's signature (the
+    /// trait predicates and closure contracts of the item's type parameters), so that an
+    /// instance's signature gives each of them a sort; of those, only the ones of the same trait
+    /// predicate when there are any (`Take<I>::produces` reads `I::produces`). A universal left
+    /// out is one the solution cannot read, which only removes solutions; each one taken costs
+    /// the solver, since it enters the dependency set of every unknown whose clause applies the
+    /// generic unknown.
+    pub fn generic_unknown_universals(&self, symbol: &UserDefinedPred) -> Vec<ForallPred> {
+        let at_sorts = self.universals_at_sorts_of(symbol);
+        let same: Vec<_> = at_sorts
+            .iter()
+            .filter(|p| symbol.is_instance_of_forall_pred(p))
+            .cloned()
+            .collect();
+        if same.is_empty() {
+            at_sorts
+        } else {
+            same
+        }
+    }
+
+    fn universals_at_sorts_of(&self, symbol: &UserDefinedPred) -> Vec<ForallPred> {
+        let def = self
+            .user_defined_pred_defs
+            .iter()
+            .find(|d| &d.symbol == symbol)
+            .expect("generic unknown declared");
+        let mut sorts = HashSet::new();
+        for (_, sort) in &def.sig {
+            sort.walk(|s| {
+                if let Sort::Forall(idx) = s {
+                    sorts.insert(*idx);
+                }
+            });
+        }
+        let at_sorts = |p: &ForallPred| {
+            let mut all = !p.type_parameters().is_empty();
+            for param in p.params() {
+                param.walk(|s| {
+                    if let Sort::Forall(idx) = s {
+                        all &= sorts.contains(idx);
+                    }
+                });
+            }
+            all
+        };
+        self.forall_pred_vars
+            .iter()
+            .filter(|p| *p.result() == Sort::bool() && !p.params().is_empty() && at_sorts(p))
+            .cloned()
+            .collect()
     }
 
     /// Declares `symbol` as an unknown of the system ([`UserDefinedPredBody::Derived`]).
@@ -3270,8 +3373,19 @@ impl System {
             .map(|pred| (pred.clone(), format_forall_pred_name(pred)))
             .collect();
 
+        // A generic unknown is read with the universals it takes as explicit arguments, so an
+        // unknown whose clause applies it may need them.
+        let generic_universals: HashMap<UserDefinedPred, Vec<ForallPred>> = self
+            .generic_unknown_preds
+            .iter()
+            .map(|symbol| (symbol.clone(), self.generic_unknown_universals(symbol)))
+            .collect();
         let mut user_defined_pred_defs = std::mem::take(&mut self.user_defined_pred_defs);
         for udpd in &mut user_defined_pred_defs {
+            if let Some(universals) = generic_universals.get(&udpd.symbol) {
+                udpd.dependencies.extend(universals.iter().cloned());
+                continue;
+            }
             match &udpd.body {
                 UserDefinedPredBody::Raw(body) => {
                     for (pred, name) in &forall_names {

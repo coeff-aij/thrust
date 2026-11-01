@@ -677,6 +677,9 @@ pub struct Analyzer<'tcx> {
     impl_methods_with_own_contract: rustc_data_structures::fx::FxIndexSet<DefId>,
     /// Each derived predicate declared at an impl, by symbol; see [`derived_pred`].
     derived_preds: Rc<RefCell<HashMap<chc::UserDefinedPred, derived_pred::DerivedAt>>>,
+    /// The generic unknowns read at type parameters (`THRUST_GENERIC_UNKNOWN_PREDS=1`); see
+    /// [`pred_inst::GenericUnknown`].
+    generic_unknowns: Rc<RefCell<Vec<pred_inst::GenericUnknown<'tcx>>>>,
     /// Each trait law checked for an impl that inherits it, as (impl, law).
     inherited_laws_checked: Rc<RefCell<HashSet<(DefId, DefId)>>>,
     /// The local generic impls whose laws are checked at each instance; see
@@ -950,6 +953,7 @@ impl<'tcx> Analyzer<'tcx> {
             called_fn_tys: Default::default(),
             impl_methods_with_own_contract: Default::default(),
             derived_preds: Default::default(),
+            generic_unknowns: Default::default(),
             inherited_laws_checked: Default::default(),
             per_instance_law_impls: Default::default(),
             instance_laws_checked: Default::default(),
@@ -1344,7 +1348,10 @@ impl<'tcx> Analyzer<'tcx> {
             .get_attrs_by_path(def_id, &analyze::annot::derived_path())
             .next()
             .is_some();
-        if derived && self.tcx.trait_of_assoc(def_id).is_none() {
+        if derived
+            && self.tcx.trait_of_assoc(def_id).is_none()
+            && !pred_inst::generic_unknowns_requested()
+        {
             self.tcx.dcx().span_fatal(
                 self.tcx.def_span(def_id),
                 format!(

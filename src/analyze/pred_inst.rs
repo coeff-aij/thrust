@@ -46,6 +46,44 @@ pub struct PendingLaw<'tcx> {
     owner_fn_id: DefId,
 }
 
+/// Whether a derived predicate left out by a generic item is one unknown over the item's forall
+/// sorts, read at each concrete instance through `chc::InstanceTie`s, instead of one unknown per
+/// instance. It covers a trait's derived predicate at a generic impl and, only under this
+/// switch, a derived free predicate a generic contract names.
+pub(crate) fn generic_unknowns_requested() -> bool {
+    matches!(
+        std::env::var("THRUST_GENERIC_UNKNOWN_PREDS").as_deref(),
+        Ok("1")
+    )
+}
+
+/// A derived predicate read at type parameters: one unknown, `symbol`, over the forall sorts of
+/// the first `generic_args` it was read at. `key` names the item that leaves it out: the trait
+/// item and the `Self` type's ADT, or a free predicate alone.
+#[derive(Debug, Clone)]
+pub struct GenericUnknown<'tcx> {
+    key: (DefId, Option<DefId>),
+    symbol: chc::UserDefinedPred,
+    generic_args: mir_ty::GenericArgsRef<'tcx>,
+    owner_fn_id: DefId,
+    declared: bool,
+}
+
+fn generic_unknown_key<'tcx>(
+    tcx: mir_ty::TyCtxt<'tcx>,
+    pred_def_id: DefId,
+    generic_args: mir_ty::GenericArgsRef<'tcx>,
+) -> (DefId, Option<DefId>) {
+    if tcx.trait_of_assoc(pred_def_id).is_none() {
+        return (pred_def_id, None);
+    }
+    let adt = match generic_args.type_at(0).kind() {
+        mir_ty::TyKind::Adt(adt, _) => Some(adt.did()),
+        _ => None,
+    };
+    (pred_def_id, adt)
+}
+
 /// One predicate definition waiting to be emitted at an instantiation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PendingPredInstance<'tcx> {
@@ -189,6 +227,13 @@ impl<'tcx> analyze::Analyzer<'tcx> {
     ) -> chc::UserDefinedPred {
         let Some(instance) = self.pred_instance_sorts(pred_def_id, generic_args, owner_fn_id)
         else {
+            use mir_ty::TypeVisitableExt as _;
+            if self.is_derived_predicate(pred_def_id)
+                && generic_unknowns_requested()
+                && generic_args.has_param()
+            {
+                return self.generic_unknown_pred(pred_def_id, generic_args, owner_fn_id);
+            }
             if self.is_derived_predicate(pred_def_id) {
                 // Its rules at a generic impl would have to be instantiated with the impl.
                 self.tcx().dcx().span_fatal(
@@ -207,6 +252,162 @@ impl<'tcx> analyze::Analyzer<'tcx> {
                 owner_fn_id,
             });
         refine::user_defined_pred_at_instance(self.tcx(), pred_def_id, instance)
+    }
+
+    /// The generic unknown a derived predicate left out by a generic item is at `generic_args`,
+    /// which have type parameters. Its declaration waits for
+    /// [`Self::emit_pending_pred_instances`], which can analyze the signature. One unknown per
+    /// item: read at the type parameters of another context it would have no clause of the
+    /// item's body, so that stops.
+    fn generic_unknown_pred(
+        &self,
+        pred_def_id: DefId,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
+        owner_fn_id: DefId,
+    ) -> chc::UserDefinedPred {
+        let type_builder = self.type_builder(self.def_ids(), owner_fn_id);
+        let sorts: Vec<_> = generic_args
+            .types()
+            .map(|ty| type_builder.build(ty).to_sort())
+            .collect();
+        let symbol = refine::user_defined_pred_at_instance(self.tcx(), pred_def_id, sorts);
+        let key = generic_unknown_key(self.tcx(), pred_def_id, generic_args);
+        let mut unknowns = self.generic_unknowns.borrow_mut();
+        match unknowns.iter().find(|u| u.key == key) {
+            Some(known) if known.symbol == symbol => {}
+            Some(_) => self.tcx().dcx().span_fatal(
+                self.tcx().def_span(owner_fn_id),
+                format!(
+                    "the derived predicate `{}` is read at the type parameters of another                      context than its item's, which `THRUST_GENERIC_UNKNOWN_PREDS` does not                      support",
+                    self.tcx().def_path_str_with_args(pred_def_id, generic_args)
+                ),
+            ),
+            None => unknowns.push(GenericUnknown {
+                key,
+                symbol: symbol.clone(),
+                generic_args,
+                owner_fn_id,
+                declared: false,
+            }),
+        }
+        symbol
+    }
+
+    /// Declares the generic unknowns read so far.
+    fn declare_generic_unknowns(&mut self) {
+        let pending: Vec<_> = self
+            .generic_unknowns
+            .borrow()
+            .iter()
+            .filter(|u| !u.declared)
+            .cloned()
+            .collect();
+        for unknown in pending {
+            let pred_def_id = unknown.key.0;
+            let mut analyzer = self.local_def_analyzer(pred_def_id.expect_local());
+            analyzer
+                .owner_fn_id(unknown.owner_fn_id)
+                .generic_args(unknown.generic_args);
+            let sig = analyzer.predicate_signature();
+            drop(analyzer);
+            self.system
+                .borrow_mut()
+                .push_generic_unknown_pred(unknown.symbol.clone(), sig);
+            for u in self.generic_unknowns.borrow_mut().iter_mut() {
+                if u.key == unknown.key {
+                    u.declared = true;
+                }
+            }
+        }
+    }
+
+    /// The generic unknown a concrete instance of a derived predicate reads, if the item that
+    /// leaves the predicate out is generic and was read at its type parameters.
+    fn generic_unknown_at(
+        &self,
+        pred_def_id: DefId,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
+    ) -> Option<GenericUnknown<'tcx>> {
+        if !generic_unknowns_requested() {
+            return None;
+        }
+        let tcx = self.tcx();
+        if tcx.trait_of_assoc(pred_def_id).is_some() {
+            // A concrete impl leaves it out as one unknown of its own (`derived_pred`).
+            analyze::derived_pred::generic_impl_instance(tcx, pred_def_id, generic_args)?;
+        }
+        let key = generic_unknown_key(tcx, pred_def_id, generic_args);
+        self.generic_unknowns
+            .borrow()
+            .iter()
+            .find(|u| u.key == key)
+            .cloned()
+    }
+
+    /// Declares `symbol`, a concrete instance of the generic unknown `generic`, as an unknown of
+    /// its own tied to `generic` read at the instance (`chc::InstanceTie`). Each universal
+    /// `generic` takes is given the definition the instance gives it, resolved as
+    /// [`Self::substitute_forall_preds`] resolves a written body's.
+    fn tie_instance(
+        &mut self,
+        symbol: chc::UserDefinedPred,
+        sig: chc::UserDefinedPredSig,
+        generic: GenericUnknown<'tcx>,
+        request: PendingPredInstance<'tcx>,
+        seen: &mut HashSet<PendingPredInstance<'tcx>>,
+        in_progress: &mut Vec<chc::UserDefinedPred>,
+    ) {
+        let PendingPredInstance {
+            pred_def_id,
+            generic_args,
+            owner_fn_id,
+        } = request;
+        // The universals were read in `generic`'s context: a generic impl's, whose arguments at
+        // the instance trait selection gives, or the context that reads a free predicate at its
+        // own type parameters, which the instance's arguments give at the same positions.
+        let universals = self
+            .system
+            .borrow()
+            .generic_unknown_universals(&generic.symbol);
+        let tcx = self.tcx();
+        let (context_def_id, context_args) = match tcx.trait_of_assoc(pred_def_id) {
+            Some(trait_def_id) => {
+                let (_, trait_args) =
+                    analyze::derived_pred::generic_impl_instance(tcx, pred_def_id, generic_args)
+                        .expect("an instance of a generic impl");
+                analyze::derived_pred::select_generic_impl(tcx, trait_def_id, trait_args)
+                    .expect("an instance of a generic impl")
+            }
+            None => (pred_def_id, generic_args),
+        };
+        let sort_subst = self.forall_sort_substitution(context_def_id, context_args, owner_fn_id);
+        let generic_args = context_args;
+        let mut definitions = Vec::new();
+        for pred in universals {
+            let definition = self
+                .resolve_forall_pred(&pred, &sort_subst, generic_args, owner_fn_id)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{} reads {}, which the instance {symbol} gives no definition",
+                        generic.symbol,
+                        chc::format_context::format_forall_pred_name(&pred),
+                    )
+                });
+            definitions.push((pred, definition));
+        }
+        in_progress.push(symbol.clone());
+        let referenced: Vec<_> = std::mem::take(&mut *self.pending_pred_instances.borrow_mut());
+        for dependency in referenced {
+            self.emit_pred_instance(dependency, seen, in_progress);
+        }
+        in_progress.pop();
+        let mut system = self.system.borrow_mut();
+        system.push_derived_pred(symbol.clone(), sig);
+        system.push_instance_tie(chc::InstanceTie {
+            instance: symbol,
+            generic: generic.symbol,
+            definitions,
+        });
     }
 
     /// The sorts that identify this instantiation, or `None` when there is
@@ -255,6 +456,7 @@ impl<'tcx> analyze::Analyzer<'tcx> {
     pub fn emit_pending_pred_instances(&mut self) {
         let mut seen = HashSet::new();
         let mut in_progress = Vec::new();
+        self.declare_generic_unknowns();
         let pending: Vec<_> = std::mem::take(&mut *self.pending_pred_instances.borrow_mut());
         for request in pending {
             self.emit_pred_instance(request, &mut seen, &mut in_progress);
@@ -297,6 +499,10 @@ impl<'tcx> analyze::Analyzer<'tcx> {
         if derived {
             let sig = analyzer.predicate_signature();
             drop(analyzer);
+            if let Some(generic) = self.generic_unknown_at(pred_def_id, generic_args) {
+                self.tie_instance(symbol, sig, generic, request, seen, in_progress);
+                return;
+            }
             self.declare_derived_pred(symbol, sig, pred_def_id, generic_args, owner_fn_id);
             return;
         }

@@ -10,7 +10,9 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use rustc_index::IndexVec;
 
-use crate::chc::{self, candidate_atoms::forall_preds_of, format_context::FormatContext};
+use crate::chc::{
+    self, candidate_atoms::forall_preds_of, format_context::FormatContext, instance_tie,
+};
 
 /// An integer constant. SMT-LIB2 has no negative numerals.
 struct IntConst<'a>(&'a num_bigint::BigInt);
@@ -326,6 +328,10 @@ impl<'ctx, 'a> std::fmt::Display for Atom<'ctx, 'a> {
                     .unwrap();
                 format!("(_ is {})", self.ctx.datatype_ctor(&sort, ctor))
             }
+            chc::Pred::UserDefined(p) => match self.ctx.explicit_args(p) {
+                Some(universals) => format!("{} {}", p, universals.join(" ")),
+                None => p.to_string(),
+            },
             p => p.name().into_owned(),
         };
         if self.inner.args.is_empty() {
@@ -1088,6 +1094,10 @@ impl<'a> std::fmt::Display for System<'a> {
         // before it, so it comes before them.
         let derived = |def: &&chc::UserDefinedPredDef| def.is_derived();
         for def in self.inner.user_defined_pred_defs.iter().filter(derived) {
+            if self.inner.is_generic_unknown_pred(&def.symbol) {
+                self.fmt_generic_unknown_decl(f, def)?;
+                continue;
+            }
             writeln!(f, "{}\n", UserDefinedPredDef::new(&self.ctx, def))?;
         }
 
@@ -1097,6 +1107,12 @@ impl<'a> std::fmt::Display for System<'a> {
                 "{}\n",
                 ForallPredDef::new(&self.ctx, pred, self.inner.laws_of(pred))
             )?;
+        }
+
+        let mut projections = instance_tie::Projections::default();
+        let ties = self.instance_tie_clauses(&mut projections);
+        for decl in projections.declarations(&self.ctx) {
+            writeln!(f, "{decl}\n")?;
         }
 
         // insert command from #![thrust::raw_command()] here
@@ -1145,6 +1161,9 @@ impl<'a> std::fmt::Display for System<'a> {
             }
             writeln!(f, "(assert {})\n", Clause::new(&self.ctx, clause))?;
         }
+        for tie in ties {
+            writeln!(f, "{tie}\n")?;
+        }
         for candidates in &self.inner.candidate_atoms {
             if !emitted_pred_vars.contains(&candidates.pred) {
                 continue;
@@ -1156,6 +1175,79 @@ impl<'a> std::fmt::Display for System<'a> {
 }
 
 impl<'a> System<'a> {
+    /// A generic unknown: its explicit universals as curried arrays, then its own parameters,
+    /// with an empty dependency set (`instance_tie`).
+    fn fmt_generic_unknown_decl(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+        def: &chc::UserDefinedPredDef,
+    ) -> std::fmt::Result {
+        let universals = self.inner.generic_unknown_universals(&def.symbol);
+        let sorts = universals
+            .iter()
+            .map(|p| instance_tie::curried_array_sort(&self.ctx, p))
+            .chain(
+                def.sig
+                    .iter()
+                    .map(|(_, s)| self.ctx.fmt_sort(s).to_string()),
+            );
+        writeln!(
+            f,
+            "(declare-dep-exists-fun {} () {} Bool)\n",
+            def.symbol,
+            List::closed(sorts)
+        )
+    }
+
+    /// The clauses of every instance tie, recording the projections they use.
+    fn instance_tie_clauses(&self, projections: &mut instance_tie::Projections) -> Vec<String> {
+        let sig_of = |symbol: &chc::UserDefinedPred| -> Vec<chc::Sort> {
+            let def = self
+                .inner
+                .user_defined_pred_defs
+                .iter()
+                .find(|d| &d.symbol == symbol)
+                .expect("tied predicate declared");
+            def.sig.iter().map(|(_, s)| s.clone()).collect()
+        };
+        let mut clauses = Vec::new();
+        for tie in self.inner.instance_ties() {
+            let generic_sig = sig_of(&tie.generic);
+            let instance_sig = sig_of(&tie.instance);
+            let mut text =
+                instance_tie::TieText::new(&self.ctx, &generic_sig, &instance_sig, projections);
+            clauses.extend(text.clauses(tie, &generic_sig, &instance_sig, &|name| {
+                self.inlinable_definition(name)
+            }));
+        }
+        clauses
+    }
+
+    /// The parameters and body of the non-recursive definition printed as `name`.
+    fn inlinable_definition(&self, name: &str) -> Option<instance_tie::Inline> {
+        let def = self
+            .inner
+            .user_defined_pred_defs
+            .iter()
+            .find(|d| d.symbol.to_string() == name && !d.is_derived() && !d.is_recursive())?;
+        let text = UserDefinedPredDef::new(&self.ctx, def).to_string();
+        let sexp = super::sexp::parse_all(&text).into_iter().next()?;
+        let super::sexp::Sexp::List(items) = sexp else {
+            return None;
+        };
+        let [_, _, super::sexp::Sexp::List(params), _, body] = items.as_slice() else {
+            return None;
+        };
+        let names = params
+            .iter()
+            .map(|p| match p {
+                super::sexp::Sexp::List(p) => p.first().and_then(|n| n.atom()).map(str::to_string),
+                _ => None,
+            })
+            .collect::<Option<Vec<_>>>()?;
+        Some((names, body.clone()))
+    }
+
     fn fmt_pred_var_decl(
         &self,
         f: &mut std::fmt::Formatter<'_>,
