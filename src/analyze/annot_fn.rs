@@ -317,6 +317,9 @@ pub struct AnnotFnTranslator<'a, 'tcx> {
     /// The [`Polarity`] of the subformula being translated, shared with the translators of
     /// quantifier bodies.
     polarity: Rc<Cell<Polarity>>,
+    /// Whether the expression being translated is required of the whole formula: the formula, or
+    /// an operand of a required conjunction.
+    conjunctive: Rc<Cell<bool>>,
 }
 
 impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
@@ -351,6 +354,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             env: HashMap::default(),
             pre_receivers: Rc::default(),
             polarity: Rc::new(Cell::new(Polarity::Positive)),
+            conjunctive: Rc::new(Cell::new(true)),
         };
         translator.build_env_from_params();
         translator
@@ -1709,6 +1713,46 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         &self,
         hir: &'tcx rustc_hir::Expr<'tcx>,
     ) -> FormulaOrTerm<rty::FunctionParamIdx> {
+        let conjunctive = self.conjunctive.replace(false);
+        let translated = self.to_formula_or_term_in(hir, conjunctive);
+        self.conjunctive.set(conjunctive);
+        translated
+    }
+
+    /// Translates one operand of a conjunction that is itself required: the `pre!` receivers it
+    /// reads are those of a conjunct of its own ([`Self::merge_conjunct_receivers`]).
+    fn to_conjunct(
+        &self,
+        hir: &'tcx rustc_hir::Expr<'tcx>,
+    ) -> FormulaOrTerm<rty::FunctionParamIdx> {
+        let outer = std::mem::take(&mut *self.pre_receivers.borrow_mut());
+        self.conjunctive.set(true);
+        let translated = self.to_formula_or_term(hir);
+        let inner = std::mem::replace(&mut *self.pre_receivers.borrow_mut(), outer);
+        self.merge_conjunct_receivers(inner);
+        translated
+    }
+
+    /// Adds the receivers of a conjunct to those of the others. The formula implies each
+    /// conjunct, so a receiver read only positively in one of them is stated whatever the others
+    /// read of it; otherwise the polarities combine as within one conjunct.
+    fn merge_conjunct_receivers(&self, conjunct: Vec<(mir_ty::Ty<'tcx>, Polarity)>) {
+        let mut receivers = self.pre_receivers.borrow_mut();
+        for (ty, polarity) in conjunct {
+            match receivers.iter_mut().find(|(known, _)| *known == ty) {
+                Some((_, known)) if *known == Polarity::Positive => {}
+                Some((_, known)) if polarity == Polarity::Positive => *known = polarity,
+                Some((_, known)) => *known = known.combine(polarity),
+                None => receivers.push((ty, polarity)),
+            }
+        }
+    }
+
+    fn to_formula_or_term_in(
+        &self,
+        hir: &'tcx rustc_hir::Expr<'tcx>,
+        conjunctive: bool,
+    ) -> FormulaOrTerm<rty::FunctionParamIdx> {
         use rustc_hir::ExprKind;
 
         match hir.kind {
@@ -1723,6 +1767,11 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                         return FormulaOrTerm::Or(lhs.into(), rhs.into());
                     }
                     rustc_hir::BinOpKind::And => {
+                        if conjunctive && self.polarity.get() == Polarity::Positive {
+                            let lhs = self.to_conjunct(lhs);
+                            let rhs = self.to_conjunct(rhs);
+                            return FormulaOrTerm::And(lhs.into(), rhs.into());
+                        }
                         let lhs = self.to_formula_or_term(lhs);
                         let rhs = self.to_formula_or_term(rhs);
                         return FormulaOrTerm::And(lhs.into(), rhs.into());
@@ -2326,6 +2375,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             }
             ExprKind::Block(block, _) => {
                 if block.stmts.is_empty() {
+                    self.conjunctive.set(conjunctive);
                     self.to_formula_or_term(block.expr.expect("expected an expression in block"))
                 } else {
                     unimplemented!("unsupported block in formula: {:?}", block);
