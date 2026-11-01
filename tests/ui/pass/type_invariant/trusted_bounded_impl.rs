@@ -1,8 +1,9 @@
 //@check-pass
 //@compile-flags: -Adead_code -C debug-assertions=off -Aunused
 
-// A trusted method of a bounded impl whose signature does not mention the impl's type
-// parameter: its contract promises `Even`'s invariant at every instance, as it does outside the impl.
+// A trusted method of a bounded impl returns `Even`: its contract promises `Even`'s invariant at
+// every instance, as it does outside the impl, whether or not the signature mentions the impl's
+// type parameter elsewhere.
 struct Even(i64);
 impl thrust_models::Model for Even {
     type Ty = Self;
@@ -26,8 +27,16 @@ impl<T: K> W<T> {
     fn mk() -> Even {
         Even(0)
     }
+    #[thrust::trusted]
+    #[thrust_macros::requires(true)]
+    #[thrust_macros::ensures(result.0 >= 0)]
+    fn mk_from(_t: &T) -> Even {
+        Even(0)
+    }
 }
 fn main() {
     let e = W::<Z>::mk();
+    assert!(e.0 % 2 == 0);
+    let e = W::<Z>::mk_from(&Z);
     assert!(e.0 % 2 == 0);
 }

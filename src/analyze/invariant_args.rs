@@ -118,7 +118,6 @@ impl<'tcx> analyze::Analyzer<'tcx> {
     ) {
         if self.crate_type_invariant().is_none()
             || generic_args.types().next().is_none()
-            || !self.signature_mentions_type_parameter(def_id)
             || self.is_derived_clone(def_id)
         {
             return;
@@ -128,7 +127,7 @@ impl<'tcx> analyze::Analyzer<'tcx> {
             analyzer
                 .owner_fn_id(caller_def_id)
                 .generic_args(generic_args);
-            analyzer.invariant_in_contract(false)
+            analyzer.invariant_promised_over_parameters()
         };
         let Some(ty) = promised else {
             return;
@@ -140,23 +139,6 @@ impl<'tcx> analyze::Analyzer<'tcx> {
             self.tcx.def_path_str_with_args(def_id, generic_args),
             self.tcx.def_path_str(caller_def_id),
         ))
-    }
-
-    /// Whether the signature of `def_id` mentions a type parameter in scope (its own, its impl's
-    /// or `Self`), directly or through an associated type or an opaque type. A contract over a
-    /// signature without one holds the invariant of its types as it does at any instance. A
-    /// closure is taken to mention one.
-    fn signature_mentions_type_parameter(&self, def_id: DefId) -> bool {
-        use mir_ty::TypeVisitableExt as _;
-        let ty = self.tcx.type_of(def_id).instantiate_identity();
-        if !ty.is_fn() {
-            return true;
-        }
-        ty.fn_sig(self.tcx)
-            .skip_binder()
-            .inputs_and_output
-            .iter()
-            .any(|ty| ty.has_param())
     }
 
     /// Whether `def_id` is the `clone` of a derived `Clone`, which keeps the invariant: its
