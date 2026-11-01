@@ -1037,10 +1037,10 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
     fn receiver_fn_item(
         &self,
         receiver_ty: mir_ty::Ty<'tcx>,
-    ) -> Option<(DefId, mir_ty::GenericArgsRef<'tcx>)> {
+    ) -> Option<(mir_ty::Ty<'tcx>, DefId, mir_ty::GenericArgsRef<'tcx>)> {
         let (inner, _) = self.receiver_closure_behind_refs(receiver_ty)?;
         match *inner.kind() {
-            mir_ty::TyKind::FnDef(def_id, args) => Some((def_id, args)),
+            mir_ty::TyKind::FnDef(def_id, args) => Some((inner, def_id, args)),
             _ => None,
         }
     }
@@ -1130,7 +1130,10 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         if let Some(closure_ty) = self.receiver_closure_ty(receiver_ty) {
             self.record_pre_receiver(closure_ty);
         }
-        if let Some((def_id, generic_args)) = self.receiver_fn_item(receiver_ty) {
+        if let Some((fn_item_ty, def_id, generic_args)) = self.receiver_fn_item(receiver_ty) {
+            // The function item itself, behind the references `G` is instantiated with, is what
+            // the `pre!` names: a hand-over states its precondition as it does a path's.
+            self.record_pre_receiver(fn_item_ty);
             let fn_ty = self.fn_def_contract(receiver.span, def_id, generic_args, true);
             let args = self.fn_item_spec_args(args, &fn_ty);
             return FormulaOrTerm::Formula(fn_ty.precondition_formula(&args));
@@ -1214,7 +1217,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             return FormulaOrTerm::Formula(fn_ty.postcondition_formula(&args, result));
         }
         let receiver_ty = self.expr_ty(receiver);
-        if let Some((def_id, generic_args)) = self.receiver_fn_item(receiver_ty) {
+        if let Some((_, def_id, generic_args)) = self.receiver_fn_item(receiver_ty) {
             let fn_ty = self.fn_def_contract(receiver.span, def_id, generic_args, false);
             let args = self.fn_item_spec_args(args, &fn_ty);
             let result = self.to_term(result);
