@@ -78,21 +78,12 @@ impl<'tcx> Analyzer<'tcx, '_> {
                 }
             }
         }
-        let params: Vec<_> = self
-            .fn_bounded_params(contract_def_id)
-            .into_iter()
-            .map(|(param, calls)| {
-                let ty = mir_ty::EarlyBinder::bind(param.to_ty(self.tcx))
-                    .instantiate(self.tcx, contract_args);
-                (self.tcx.erase_regions(ty), calls)
-            })
-            .collect();
-        for &(ty, calls) in &params {
+        for (param, calls) in self.fn_bounded_params(contract_def_id) {
+            let ty = mir_ty::EarlyBinder::bind(param.to_ty(self.tcx))
+                .instantiate(self.tcx, contract_args);
+            let ty = self.tcx.erase_regions(ty);
             self.record_handover(ty, def_id, resolved_def_id);
-            // `stated` holds types, not parameters: a `pre!` of one parameter's value does not
-            // state that of another parameter instantiated with the same closure type.
-            let shared = params.iter().filter(|(other, _)| *other == ty).count() > 1;
-            if !shared && stated.names(ty) {
+            if stated.names(ty) && self.one_operand_holds(ty, operands) {
                 continue;
             }
             for (idx, operand) in operands.iter().enumerate() {
@@ -100,6 +91,21 @@ impl<'tcx> Analyzer<'tcx, '_> {
                 self.hand_over(ty, calls, operand, &operand_tys[idx], contract_def_id);
             }
         }
+    }
+
+    /// Whether exactly one of `operands` holds a value of `ty`, itself or behind references.
+    /// `stated` records types, not values, so a `pre!` stated of a value of `ty` counts only
+    /// then: not for a second value of `ty`, nor for one inside a collection.
+    fn one_operand_holds(&self, ty: mir_ty::Ty<'tcx>, operands: &[Operand<'tcx>]) -> bool {
+        let holders: Vec<_> = operands
+            .iter()
+            .map(|operand| {
+                self.tcx
+                    .erase_regions(operand.ty(&self.local_decls, self.tcx))
+            })
+            .filter(|held| held.walk().any(|arg| arg.as_type() == Some(ty)))
+            .collect();
+        matches!(holders[..], [held] if derefs_to(held, ty).is_some())
     }
 
     /// The bounds of `contract_def_id` on its type parameters: each parameter with the trait it
