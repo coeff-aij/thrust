@@ -1201,6 +1201,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// an instance of its caller where its analysis does not state the obligation of each.
     fn stop_miscounted_handover(&self, miscounted: &analyze::unanalyzed_entry::Miscounted<'tcx>) {
         let held = match miscounted.held {
+            Some(1) => "1 value".to_string(),
             Some(held) => format!("{held} values"),
             None => "values, held some way Thrust cannot count,".to_string(),
         };

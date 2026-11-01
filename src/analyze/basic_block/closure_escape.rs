@@ -78,17 +78,14 @@ impl<'tcx> Analyzer<'tcx, '_> {
             let ty = mir_ty::EarlyBinder::bind(param.to_ty(self.tcx))
                 .instantiate(self.tcx, contract_args);
             let ty = self.tcx.erase_regions(ty);
+            // The iterator's `inv` states the obligation of the closures held by the arguments
+            // at the parameters of the bounded type, not of a value of their type another
+            // argument holds, whatever its type.
+            let others = self.operands_not_at(contract_def_id, param, operands);
             for closure in ty.walk().filter_map(|arg| arg.as_type()) {
                 if matches!(closure.kind(), mir_ty::TyKind::Closure(..)) {
                     self.record_handover(closure, def_id, args);
-                    // The iterator's `inv` states the obligation of the closures it holds, not
-                    // of a value of their type another argument holds.
-                    let others = self
-                        .operand_types(operands)
-                        .into_iter()
-                        .filter(|held| peel_refs(*held) != ty)
-                        .collect();
-                    self.record_handover_count(closure, def_id, args, others, 0);
+                    self.record_handover_count(closure, def_id, args, others.clone(), 0);
                 }
             }
         }
@@ -147,6 +144,33 @@ impl<'tcx> Analyzer<'tcx, '_> {
             accounted,
             span,
         });
+    }
+
+    /// The types of the arguments `operands` other than those at the parameters of
+    /// `contract_def_id` whose declared type is `param`, itself or behind references and boxes;
+    /// all of them for a closure or when the arguments do not match the parameters one to one.
+    fn operands_not_at(
+        &self,
+        contract_def_id: DefId,
+        param: mir_ty::ParamTy,
+        operands: &[Operand<'tcx>],
+    ) -> Vec<mir_ty::Ty<'tcx>> {
+        let operand_types = self.operand_types(operands);
+        if self.tcx.is_closure_like(contract_def_id) {
+            return operand_types;
+        }
+        let sig = self.tcx.fn_sig(contract_def_id).instantiate_identity();
+        let inputs = sig.skip_binder().inputs();
+        if inputs.len() != operand_types.len() {
+            return operand_types;
+        }
+        let param_ty = param.to_ty(self.tcx);
+        operand_types
+            .into_iter()
+            .zip(inputs)
+            .filter(|(_, declared)| peel_refs(**declared) != param_ty)
+            .map(|(held, _)| held)
+            .collect()
     }
 
     /// The types of the arguments `operands`, without regions.
