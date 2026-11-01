@@ -32,13 +32,13 @@ use crate::rty;
 /// its obligation or with the `pre!` the callee's `requires` states of it, which the call
 /// discharges, or a function whose `pre!` that `requires` states.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum HandedOver {
+pub enum HandedOver<'tcx> {
     /// The closure itself.
     Closure(DefId),
     /// Whatever closure the body's type parameter (by its def id) is instantiated with.
     Param(DefId),
-    /// A function or trait method.
-    Function(DefId),
+    /// A function or trait method at generic arguments, as the `requires` names it.
+    Function(DefId, mir_ty::GenericArgsRef<'tcx>),
 }
 
 /// What a `requires` reads the precondition of with `pre!`, as its translation records it
@@ -55,12 +55,12 @@ impl<'tcx> StatedPres<'tcx> {
         self.receivers.contains(&ty)
     }
 
-    /// The functions whose precondition the `requires` reads.
-    pub fn functions(&self) -> Vec<DefId> {
+    /// The functions whose precondition the `requires` reads, with their generic arguments.
+    pub fn functions(&self) -> Vec<(DefId, mir_ty::GenericArgsRef<'tcx>)> {
         self.receivers
             .iter()
             .filter_map(|ty| match *ty.kind() {
-                mir_ty::TyKind::FnDef(def_id, _) => Some(def_id),
+                mir_ty::TyKind::FnDef(def_id, args) => Some((def_id, args)),
                 _ => None,
             })
             .collect()
@@ -85,13 +85,22 @@ pub struct Entries<'tcx> {
 }
 
 /// An instance on the walk: whether its body is analyzed, and, for one that is not, what the
-/// analyzed call that led into unanalyzed code on its path covers there ([`HandedOver`]).
+/// analyzed call that led into unanalyzed code on its path covers there.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct Node<'tcx> {
     instance: mir_ty::Instance<'tcx>,
     analyzed: bool,
-    /// Sorted by [`def_order`], without repeats.
-    handed_over: Vec<DefId>,
+    covered: Covered<'tcx>,
+}
+
+/// What an analyzed call into unanalyzed code covers ([`HandedOver`]), resolved at the instance
+/// of the caller.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+struct Covered<'tcx> {
+    /// The closures handed over, sorted by [`def_order`], without repeats.
+    closures: Vec<DefId>,
+    /// The function instances whose `pre!` the callee's `requires` states, without repeats.
+    functions: Vec<mir_ty::Instance<'tcx>>,
 }
 
 impl<'tcx> analyze::Analyzer<'tcx> {
@@ -122,7 +131,7 @@ impl<'tcx> analyze::Analyzer<'tcx> {
         owner: DefId,
         callee: DefId,
         callee_args: mir_ty::GenericArgsRef<'tcx>,
-        handed_over: HandedOver,
+        handed_over: HandedOver<'tcx>,
     ) {
         self.handovers
             .push((owner, callee, callee_args, handed_over));
@@ -150,15 +159,6 @@ impl<'tcx> analyze::Analyzer<'tcx> {
                 .map(|formula_fn| formula_fn.pre_receivers().to_vec())
                 .unwrap_or_default(),
         }
-    }
-
-    /// Whether `covered` holds `callee`, or the trait method it implements.
-    fn covers_function(&self, covered: &[DefId], callee: DefId) -> bool {
-        let trait_item = self
-            .tcx
-            .opt_associated_item(callee)
-            .and_then(|item| item.trait_item_def_id);
-        covered.contains(&callee) || trait_item.is_some_and(|item| covered.contains(&item))
     }
 
     /// The contract a call of `def_id` at `args` from an analyzed body is checked against when
@@ -229,7 +229,7 @@ impl<'tcx> analyze::Analyzer<'tcx> {
             let node = Node {
                 instance: root,
                 analyzed: item_analyzed(root),
-                handed_over: Vec::new(),
+                covered: Covered::default(),
             };
             if seen.insert(node.clone()) {
                 pending.push_back(node);
@@ -247,15 +247,15 @@ impl<'tcx> analyze::Analyzer<'tcx> {
                     | mir_ty::InstanceKind::FnPtrShim(..) => node.analyzed,
                     _ => item_analyzed(callee),
                 };
-                let handed_over = match (node.analyzed, analyzed) {
-                    (_, true) => Vec::new(),
-                    (true, false) => self.handed_over_at(instance, callee),
-                    (false, false) => self.carried_into(&node.handed_over, callee),
+                let covered = match (node.analyzed, analyzed) {
+                    (_, true) => Covered::default(),
+                    (true, false) => self.covered_at(instance, callee),
+                    (false, false) => self.carried_into(&node.covered, callee),
                 };
                 let child = Node {
                     instance: callee,
                     analyzed,
-                    handed_over,
+                    covered,
                 };
                 if seen.insert(child.clone()) {
                     pending.push_back(child);
@@ -273,10 +273,10 @@ impl<'tcx> analyze::Analyzer<'tcx> {
                         .map(|ty| (callee, instance, ty)),
                 );
                 if self.tcx.is_closure_like(callee_def_id) {
-                    if !node.handed_over.contains(&callee_def_id) {
+                    if !node.covered.closures.contains(&callee_def_id) {
                         entries.unhanded_closures.push((callee, instance));
                     }
-                } else if !self.covers_function(&node.handed_over, callee_def_id) {
+                } else if !node.covered.functions.iter().any(|f| same_fn(*f, callee)) {
                     entries.items.push((callee, instance));
                 }
             }
@@ -418,61 +418,73 @@ impl<'tcx> analyze::Analyzer<'tcx> {
         )
     }
 
-    /// What an unanalyzed instance that `handed_over` covers covers in `callee`, unanalyzed too:
-    /// the same, except in a crate function, which has its own contract. That contract states
-    /// its own function `pre!`s, which no analyzed call discharges, so only the closures go on,
-    /// whose obligation was stated where they were handed over.
-    fn carried_into(&self, handed_over: &[DefId], callee: mir_ty::Instance<'tcx>) -> Vec<DefId> {
+    /// What an unanalyzed instance that `covered` covers covers in `callee`, unanalyzed too: the
+    /// same, except in a crate function, which has its own contract. That contract states its
+    /// own function `pre!`s, which no analyzed call discharges, so only the closures go on,
+    /// whose obligation was stated where they were handed over. A std function's spec in
+    /// `std.rs` describes what the function does, the std code it runs included, so the
+    /// functions go on through std code.
+    fn carried_into(
+        &self,
+        covered: &Covered<'tcx>,
+        callee: mir_ty::Instance<'tcx>,
+    ) -> Covered<'tcx> {
         let callee_def_id = callee.def_id();
         if !callee_def_id.is_local() || self.tcx.is_closure_like(callee_def_id) {
-            return handed_over.to_vec();
+            return covered.clone();
         }
-        handed_over
-            .iter()
-            .copied()
-            .filter(|def_id| self.tcx.is_closure_like(*def_id))
-            .collect()
+        Covered {
+            closures: covered.closures.clone(),
+            functions: Vec::new(),
+        }
     }
 
-    /// Whether the call of `def_id` at `args` recorded in the analyzed body of `owner` runs
-    /// `callee` at the instance `owner`.
-    fn recorded_call_runs(
+    /// The instance `def_id` at `args`, recorded in the analyzed body of `owner`, resolves to at
+    /// the instance `owner`.
+    fn resolve_recorded(
         &self,
         owner: mir_ty::Instance<'tcx>,
         def_id: DefId,
         args: mir_ty::GenericArgsRef<'tcx>,
-        callee: mir_ty::Instance<'tcx>,
-    ) -> bool {
+    ) -> Option<mir_ty::Instance<'tcx>> {
         let typing_env = mir_ty::TypingEnv::fully_monomorphized();
-        let Ok(args) = self.tcx.try_instantiate_and_normalize_erasing_regions(
-            owner.args,
-            typing_env,
-            mir_ty::EarlyBinder::bind(args),
-        ) else {
-            return false;
-        };
+        let args = self
+            .tcx
+            .try_instantiate_and_normalize_erasing_regions(
+                owner.args,
+                typing_env,
+                mir_ty::EarlyBinder::bind(args),
+            )
+            .ok()?;
         mir_ty::Instance::try_resolve(self.tcx, typing_env, def_id, args)
             .ok()
             .flatten()
-            .is_some_and(|runs| runs.def_id() == callee.def_id() && runs.args == callee.args)
     }
 
-    /// The closures, by def id, that the analyzed instance `owner` hands over at its calls that
-    /// run the instance `callee`, and the functions whose `pre!` those calls discharge.
-    fn handed_over_at(
+    /// What the analyzed instance `owner` covers at its calls that run the instance `callee`:
+    /// the closures, by def id, it hands over, and the function instances whose `pre!` those
+    /// calls discharge.
+    fn covered_at(
         &self,
         owner: mir_ty::Instance<'tcx>,
         callee: mir_ty::Instance<'tcx>,
-    ) -> Vec<DefId> {
+    ) -> Covered<'tcx> {
         let owner_def_id = owner.def_id();
-        let mut handed_over = Vec::new();
+        let mut covered = Covered::default();
         let recorded = self.handovers.iter().filter(|(o, c, args, _)| {
-            *o == owner_def_id && self.recorded_call_runs(owner, *c, args, callee)
+            *o == owner_def_id
+                && self
+                    .resolve_recorded(owner, *c, args)
+                    .is_some_and(|runs| same_fn(runs, callee))
         });
-        for (_, _, _, closure) in recorded {
-            match *closure {
-                HandedOver::Closure(def_id) | HandedOver::Function(def_id) => {
-                    handed_over.push(def_id);
+        for (_, _, _, handed_over) in recorded {
+            match *handed_over {
+                HandedOver::Closure(def_id) => covered.closures.push(def_id),
+                HandedOver::Function(def_id, args) => {
+                    let function = self.resolve_recorded(owner, def_id, args);
+                    let new =
+                        function.filter(|f| !covered.functions.iter().any(|g| same_fn(*f, *g)));
+                    covered.functions.extend(new);
                 }
                 HandedOver::Param(param_def_id) => {
                     let generics = self.tcx.generics_of(owner_def_id);
@@ -482,7 +494,7 @@ impl<'tcx> analyze::Analyzer<'tcx> {
                     let Some(ty) = owner.args.get(index as usize).and_then(|a| a.as_type()) else {
                         continue;
                     };
-                    handed_over.extend(ty.walk().filter_map(|arg| {
+                    covered.closures.extend(ty.walk().filter_map(|arg| {
                         match arg.as_type().map(|ty| *ty.kind()) {
                             Some(mir_ty::TyKind::Closure(def_id, _)) => Some(def_id),
                             _ => None,
@@ -491,10 +503,16 @@ impl<'tcx> analyze::Analyzer<'tcx> {
                 }
             }
         }
-        handed_over.sort_by_key(|def_id| def_order(*def_id));
-        handed_over.dedup();
-        handed_over
+        covered.closures.sort_by_key(|def_id| def_order(*def_id));
+        covered.closures.dedup();
+        covered
     }
+}
+
+/// Whether two instances run the same function at the same generic arguments, whatever shim
+/// reaches it.
+fn same_fn<'tcx>(a: mir_ty::Instance<'tcx>, b: mir_ty::Instance<'tcx>) -> bool {
+    a.def_id() == b.def_id() && a.args == b.args
 }
 
 /// An order of def ids within one compilation.

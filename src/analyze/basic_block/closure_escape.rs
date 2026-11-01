@@ -61,8 +61,9 @@ impl<'tcx> Analyzer<'tcx, '_> {
             contract_args,
             self.type_builder.owner_fn_id(),
         );
-        for function in stated.functions() {
-            self.record_covered(HandedOver::Function(function), def_id, args);
+        for (function, function_args) in stated.functions() {
+            let function = HandedOver::Function(function, function_args);
+            self.record_covered(function, def_id, args);
         }
         for param in self.iterator_spec_params(contract_def_id) {
             let ty = mir_ty::EarlyBinder::bind(param.to_ty(self.tcx))
@@ -222,7 +223,7 @@ impl<'tcx> Analyzer<'tcx, '_> {
     /// code resolves the call at each instance of the caller.
     fn record_covered(
         &mut self,
-        covered: HandedOver,
+        covered: HandedOver<'tcx>,
         def_id: DefId,
         args: mir_ty::GenericArgsRef<'tcx>,
     ) {

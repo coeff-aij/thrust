@@ -705,7 +705,7 @@ pub struct Analyzer<'tcx> {
         DefId,
         DefId,
         mir_ty::GenericArgsRef<'tcx>,
-        unanalyzed_entry::HandedOver,
+        unanalyzed_entry::HandedOver<'tcx>,
     )>,
     /// What the analysis did with the body of each function, for the report.
     body_checks: BodyChecks,
