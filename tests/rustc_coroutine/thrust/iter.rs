@@ -297,7 +297,7 @@ where
 
     // The closure answers `r` on the `k`-th item of `s`.
     #[thrust_macros::predicate]
-    fn answers(func: Closure<P>, s: Seq<<I::Item as thrust_models::Model>::Ty>, k: Int, r: bool) -> bool {
+    pub(crate) fn answers(func: Closure<P>, s: Seq<<I::Item as thrust_models::Model>::Ty>, k: Int, r: bool) -> bool {
         thrust_macros::post!(func(&s[k]), r)
     }
 
@@ -305,7 +305,7 @@ where
     // yielded are those of `s` at the increasing positions `f`, and the closure answered `true` on
     // the items at those positions and `false` on the others.
     #[thrust_macros::predicate]
-    fn produces_at(s0: Self, visited: Vec<I::Item>, o: Self, s: Seq<<I::Item as thrust_models::Model>::Ty>, f: Array<Int, Int>) -> bool {
+    pub(crate) fn produces_at(s0: Self, visited: Vec<I::Item>, o: Self, s: Seq<<I::Item as thrust_models::Model>::Ty>, f: Array<Int, Int>) -> bool {
         s0.1 == o.1
             && I::produces(s0.0, s, o.0)
             && forall(|i: Int| !(0 <= i && i < visited.len())
