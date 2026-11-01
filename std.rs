@@ -3554,7 +3554,7 @@ where
 
     fn produces_refl(a: &Self) {}
 
-    // Trusted: PCSat (fptprove 8746111b4) gives no answer on this law. It follows from the laws of
+    // Trusted: PCSat gives no answer on this law. It follows from the laws of
     // `A` and `B` by cases on whether each of the two steps leaves the first iterator in place.
     #[thrust::trusted]
     fn produces_trans(

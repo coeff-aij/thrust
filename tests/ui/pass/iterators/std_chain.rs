@@ -1,4 +1,3 @@
-//@ignore-on-host: not yet verifiable: PCSat gives no answer within 120 s on fptprove develop c471e831b
 //@check-pass
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
