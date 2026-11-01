@@ -42,11 +42,31 @@ pub struct Projections {
 }
 
 impl Projections {
-    /// Every projection function as a `declare-forall-fun`.
-    pub fn declarations(&self, ctx: &FormatContext) -> Vec<String> {
+    /// Every projection function `clauses` apply, with those their laws apply, as a
+    /// `declare-forall-fun`. A function made for a definition that was then inlined is not
+    /// declared.
+    pub fn declarations(&self, ctx: &FormatContext, clauses: &[String]) -> Vec<String> {
+        let applies = |text: &str, name: &str| text.contains(&format!("({name} "));
+        let mut used: Vec<&String> = self
+            .funs
+            .values()
+            .filter(|name| clauses.iter().any(|c| applies(c, name)))
+            .collect();
+        let mut i = 0;
+        while i < used.len() {
+            if let Some(law) = self.laws.get(used[i]) {
+                for name in self.funs.values() {
+                    if applies(law, name) && !used.contains(&name) {
+                        used.push(name);
+                    }
+                }
+            }
+            i += 1;
+        }
         let mut decls: Vec<_> = self
             .funs
             .iter()
+            .filter(|(_, name)| used.contains(name))
             .map(|((generic, instance), name)| {
                 let law = match self.laws.get(name) {
                     Some(law) => format!(" :law {law}"),

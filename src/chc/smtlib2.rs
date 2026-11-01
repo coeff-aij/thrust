@@ -1111,7 +1111,7 @@ impl<'a> std::fmt::Display for System<'a> {
 
         let mut projections = instance_tie::Projections::default();
         let ties = self.instance_tie_clauses(&mut projections);
-        for decl in projections.declarations(&self.ctx) {
+        for decl in projections.declarations(&self.ctx, &ties) {
             writeln!(f, "{decl}\n")?;
         }
 
