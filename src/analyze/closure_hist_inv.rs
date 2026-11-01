@@ -15,7 +15,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use rustc_middle::ty as mir_ty;
-use rustc_span::def_id::LocalDefId;
+use rustc_span::def_id::DefId;
 
 use crate::analyze::{self, Analyzer};
 use crate::chc;
@@ -472,10 +472,10 @@ impl<'tcx> Analyzer<'tcx> {
             return None;
         };
         let local_def_id = def_id.as_local()?;
-        let formula_def_id = self
-            .extract_path_with_attr(local_def_id, &analyze::annot::hist_inv_path_path())?
-            .expect_local();
-        let generic_args = self.closure_spec_args(formula_def_id, closure_args);
+        let (formula_def_id, path_args) = self
+            .extract_path_and_args_with_attr(local_def_id, &analyze::annot::hist_inv_path_path())?;
+        let formula_def_id = formula_def_id.expect_local();
+        let generic_args = self.closure_spec_args(path_args, *def_id, closure_args);
         let owner_fn_id = self.tcx.typeck_root_def_id(*def_id);
         let formula_fn = self
             .formula_fn_with_args(formula_def_id, generic_args, owner_fn_id)
@@ -503,16 +503,18 @@ impl<'tcx> Analyzer<'tcx> {
     }
 
     /// The generic arguments of a `closure!` specification's formula function at the closure
-    /// arguments `closure_args`: none when it is lifted without the enclosing generics, and the
-    /// closure's parent arguments when `#[thrust_macros::context]` re-declared them on it.
+    /// arguments `closure_args`: `path_args`, the arguments its marker path is written with, over
+    /// the parameters of the closure's parent and in the formula function's own order, at the
+    /// closure's parent arguments. `closure_args` may be the closure's own arguments or its
+    /// parent's alone, the key a deferred closure is analyzed under; `body_args` widens the latter.
     pub(super) fn closure_spec_args(
         &self,
-        formula_def_id: LocalDefId,
+        path_args: mir_ty::GenericArgsRef<'tcx>,
+        closure_def_id: DefId,
         closure_args: mir_ty::GenericArgsRef<'tcx>,
     ) -> mir_ty::GenericArgsRef<'tcx> {
-        if self.tcx.generics_of(formula_def_id).count() == 0 {
-            return self.tcx.mk_args(&[]);
-        }
-        self.tcx.mk_args(closure_args.as_closure().parent_args())
+        let closure_args = analyze::body_args(self.tcx, closure_def_id, closure_args);
+        mir_ty::EarlyBinder::bind(path_args)
+            .instantiate(self.tcx, closure_args.as_closure().parent_args())
     }
 }

@@ -17,6 +17,7 @@ posting anything. --print calls the API and prints the review instead of posting
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -45,6 +46,9 @@ MAX_TOOL_OUTPUT_CHARS = 20_000
 # The compare API lists at most this many changed files.
 COMPARE_MAX_FILES = 300
 REPO_ROOT = Path()
+# The source of the Rust standard library of the toolchain the default branch pins, which the
+# workflow fetches; without it the std tools say so.
+STD_ROOT = Path(os.environ["RUST_SRC"]).resolve() if os.environ.get("RUST_SRC") else None
 
 tool_calls = 0
 run_tokens = 0
@@ -88,50 +92,83 @@ def commentable_lines(diff: str) -> dict[str, set[int]]:
     return lines
 
 
-def excerpt(text: str, changed: set[int]) -> str:
-    """The numbered lines of text within EXCERPT_CONTEXT lines of a changed line, the gaps marked."""
+def file_diffs(diff: str) -> dict[str, str]:
+    """Each file's part of a unified diff, by its path after the change (before it, for a deleted
+    file)."""
+    parts: dict[str, str] = {}
+    for chunk in re.split(r"^(?=diff --git )", diff, flags=re.M):
+        new = re.search(r"^\+\+\+ b/(.*)$", chunk, re.M)
+        old = re.search(r"^--- a/(.*)$", chunk, re.M)
+        # A binary file, a rename or a mode change has no `+++`/`---` line, only the header.
+        header = re.match(r"diff --git a/.* b/(.*)$", chunk, re.M)
+        path = new.group(1) if new else old.group(1) if old else header.group(1) if header else None
+        if path:
+            parts[path] = chunk
+    return parts
+
+
+def file_changes(chunk: str) -> tuple[set[int], dict[int, list[str]]]:
+    """The lines a file's diff adds, by their number after the change, and the lines it removes,
+    by the number of the line after the change that follows them."""
+    added: set[int] = set()
+    removed: dict[int, list[str]] = {}
+    new_line = None
+    for row in chunk.splitlines():
+        hunk = re.match(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@", row)
+        if hunk:
+            new_line = int(hunk.group(1))
+        elif new_line is None or row.startswith("\\"):
+            continue
+        elif row.startswith("+"):
+            added.add(new_line)
+            new_line += 1
+        elif row.startswith("-"):
+            removed.setdefault(new_line, []).append(row[1:])
+        else:
+            new_line += 1
+    return added, removed
+
+
+def annotated(text: str, added: set[int], removed: dict[int, list[str]], whole: bool) -> str:
+    """The file after the change, numbered, `+` after the number of a line the change adds and the
+    lines it removes as `-` lines where they stood: whole, or the regions within EXCERPT_CONTEXT
+    lines of a change, the gaps marked."""
     lines = text.splitlines()
-    keep = sorted(
-        {n for line in changed for n in range(line - EXCERPT_CONTEXT, line + EXCERPT_CONTEXT + 1) if 1 <= n <= len(lines)}
-    )
+    changed = added | set(removed)
+    near = {n for c in changed for n in range(c - EXCERPT_CONTEXT, c + EXCERPT_CONTEXT + 1)}
+    keep = [n for n in range(1, len(lines) + 1) if whole or n in near]
     out, previous = [], 0
     for n in keep:
         if n != previous + 1:
             out.append(f"[lines {previous + 1}-{n - 1} not shown; read them with read_file]")
-        out.append(f"{n}: {lines[n - 1]}")
+        out += [f"     - {r}" for r in removed.get(n, [])]
+        out.append(f"{n}{'+' if n in added else ':'} {lines[n - 1]}")
         previous = n
     if previous < len(lines):
         out.append(f"[lines {previous + 1}-{len(lines)} not shown; read them with read_file]")
+    out += [f"     - {r}" for r in removed.get(len(lines) + 1, [])]
     return "\n".join(out)
 
 
-def added_files(diff: str) -> set[str]:
-    """The files the diff adds, whose every line it already holds."""
-    rows = diff.splitlines()
-    return {new[6:] for old, new in zip(rows, rows[1:]) if old == "--- /dev/null" and new.startswith("+++ b/")}
-
-
-def read_changed_files(
-    paths: list[str], changed: dict[str, set[int]], added: set[str]
-) -> tuple[dict[str, str], list[str]]:
-    """Each changed file after the change that the diff does not add: whole when small, otherwise
-    the regions around its changed lines in `changed`. Files that are not text are listed apart."""
-    contents: dict[str, str] = {}
+def changed_file_views(chunks: dict[str, str]) -> tuple[dict[str, str], list[str]]:
+    """A view of each changed text file after the change, whole when small; files that are not
+    text are listed apart. The guideline files, which the system prompt holds, lockfiles and
+    deleted files get none: their diff is sent instead."""
+    views: dict[str, str] = {}
     omitted: list[str] = []
-    for path in paths:
-        lines = changed.get(path)
+    for path, chunk in chunks.items():
         file = repo_file(path)
-        if file is None:
+        if path in GUIDELINE_FILES or path.endswith(".lock") or file is None:
             continue
         try:
             text = file.read_text()
         except UnicodeDecodeError:
             omitted.append(path)
             continue
-        if lines is None or path in added:
-            continue
-        contents[path] = text if len(text) <= WHOLE_FILE_CHARS else excerpt(text, lines)
-    return contents, omitted
+        added, removed = file_changes(chunk)
+        if added or removed:
+            views[path] = annotated(text, added, removed, len(text) <= WHOLE_FILE_CHARS)
+    return views, omitted
 
 
 def use_tool(run) -> str:
@@ -181,7 +218,50 @@ def read_file(path: str, start_line: int = 1, end_line: int = 400) -> str:
         start_line: The first line to read, from 1.
         end_line: The last line to read.
     """
-    return use_tool(lambda: numbered_lines(path, start_line, end_line))
+    return use_tool(lambda: numbered_lines(repo_file(path), path, start_line, end_line))
+
+
+@beta_tool
+def grep_std(pattern: str, path: str = ".") -> str:
+    """Search the source of the Rust standard library of the repository's pinned toolchain and
+    return the matching lines as path:line:text.
+
+    Args:
+        pattern: An extended regular expression.
+        path: A file or directory relative to the library, such as `core/src/iter/adapters`.
+    """
+    return use_tool(lambda: std_grep(pattern, path))
+
+
+@beta_tool
+def read_std(path: str, start_line: int = 1, end_line: int = 400) -> str:
+    """Read lines of a file of the Rust standard library of the repository's pinned toolchain,
+    numbered.
+
+    Args:
+        path: A file relative to the library, such as `core/src/iter/adapters/zip.rs`.
+        start_line: The first line to read, from 1.
+        end_line: The last line to read.
+    """
+    return use_tool(lambda: numbered_lines(std_path(path), path, start_line, end_line))
+
+
+def std_path(path: str) -> Path | None:
+    """The file or directory at path in the standard library's source, or None when there is none."""
+    if STD_ROOT is None:
+        return None
+    target = (STD_ROOT / path).resolve()
+    if not target.is_relative_to(STD_ROOT) or not target.exists():
+        return None
+    return target
+
+
+def std_grep(pattern: str, path: str) -> str:
+    target = std_path(path)
+    if target is None:
+        return f"no {path} in the standard library source" if STD_ROOT else "the standard library source is not available"
+    result = subprocess.run(["grep", "-rnE", "--include=*.rs", "-e", pattern, str(target)], capture_output=True, text=True)
+    return result.stdout.replace(f"{STD_ROOT}/", "") or "no matches"
 
 
 def repo_file(path: str) -> Path | None:
@@ -192,10 +272,9 @@ def repo_file(path: str) -> Path | None:
     return file
 
 
-def numbered_lines(path: str, start_line: int, end_line: int) -> str:
-    file = repo_file(path)
-    if file is None:
-        return f"no file {path} in the repository"
+def numbered_lines(file: Path | None, path: str, start_line: int, end_line: int) -> str:
+    if file is None or not file.is_file():
+        return f"no file {path}"
     lines = file.read_text(errors="replace").splitlines()[start_line - 1 : end_line]
     return "\n".join(f"{n}: {line}" for n, line in enumerate(lines, start_line))
 
@@ -264,8 +343,9 @@ def diff_since(repo: str, base: str, head: str, pr_files: set[str]) -> tuple[str
             continue
         if "patch" not in f:
             return None
-        parts.append(f"--- a/{f.get('previous_filename', f['filename'])}\n+++ b/{f['filename']}\n{f['patch']}")
-    return "\n".join(parts), merged
+        old = f.get("previous_filename", f["filename"])
+        parts.append(f"diff --git a/{old} b/{f['filename']}\n--- a/{old}\n+++ b/{f['filename']}\n{f['patch']}\n")
+    return "".join(parts), merged
 
 
 def system_blocks(prompt_file: Path) -> list[dict]:
@@ -296,18 +376,16 @@ def line_ranges(lines: set[int]) -> str:
 
 def build_prompt(
     pr: dict,
-    diff: str,
+    chunks: dict[str, str],
+    views: dict[str, str],
     since: str | None,
     merged: bool,
     lines: dict[str, set[int]],
-    contents: dict[str, str],
     omitted: list[str],
     earlier: str,
 ) -> str:
     parts = [f"# Pull request: {pr['title']}\n\n{pr['body'] or '(no description)'}"]
-    if since is None:
-        parts.append(f"# Diff\n\n```diff\n{diff}\n```")
-    else:
+    if since is not None:
         files = "\n".join(f"{path}: {line_ranges(lines.get(path, set()))}" for path in (f["path"] for f in pr["files"]))
         parts.append(f"# Files the pull request changes, with the lines it changes or keeps as context\n\n{files}")
         note = (
@@ -316,9 +394,12 @@ def build_prompt(
             if merged
             else ""
         )
-        parts.append(f"# Diff since the commit the latest review saw ({since}){note}\n\n```diff\n{diff}\n```")
-    for path, text in contents.items():
-        parts.append(f"# File after the change: {path}\n\n```\n{text}\n```")
+        parts.append(f"# The changes below are those since the commit the latest review saw ({since}){note}")
+    for path, view in views.items():
+        parts.append(f"# File: {path}\n\n```\n{view}\n```")
+    rest = "".join(chunk for path, chunk in chunks.items() if path not in views)
+    if rest:
+        parts.append(f"# The rest of the diff\n\n```diff\n{rest}\n```")
     if omitted:
         parts.append("# Changed files not included (not text)\n\n" + "\n".join(omitted))
     if earlier:
@@ -336,7 +417,7 @@ def request_review(client: anthropic.Anthropic, model: str, system: list[dict], 
         stream=True,
         system=system,
         messages=[{"role": "user", "content": prompt}],
-        tools=[grep, list_files, read_file],
+        tools=[grep, list_files, read_file, grep_std, read_std],
         max_iterations=MAX_TOOL_CALLS + 5,
         cache_control={"type": "ephemeral"},
         output_config={"effort": "high"},
@@ -420,8 +501,9 @@ def main() -> None:
     since_diff = diff_since(args.repo, reviewed, pr["headRefOid"], set(paths)) if reviewed else None
     since = reviewed if since_diff is not None else None
     sent, merged = since_diff if since_diff is not None else (diff, False)
-    contents, omitted = read_changed_files(paths, commentable_lines(sent), added_files(sent))
-    prompt = build_prompt(pr, sent, since, merged, lines, contents, omitted, earlier)
+    chunks = file_diffs(sent)
+    views, omitted = changed_file_views(chunks)
+    prompt = build_prompt(pr, chunks, views, since, merged, lines, omitted, earlier)
 
     if args.dry_run:
         system = sum(len(block["text"]) for block in system_blocks(args.prompt))
@@ -429,7 +511,8 @@ def main() -> None:
         print(f"earlier reviews: {len(earlier)} chars")
         merge_note = " (across a merge of the base branch)" if merged else ""
         print(f"diff: {'since ' + since + merge_note if since else 'whole pull request'}, {len(sent)} chars")
-        print("included:", *contents, sep="\n  ")
+        print("shown as files:", *views, sep="\n  ")
+        print("as diff:", *(p for p in chunks if p not in views), sep="\n  ")
         print("omitted:", *omitted, sep="\n  ")
         print("commentable lines:", *(f"{p}: {len(n)}" for p, n in lines.items()), sep="\n  ")
         return

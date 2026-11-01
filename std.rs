@@ -2079,6 +2079,28 @@ fn _extern_spec_slice_split_last_mut<T>(slice: &mut [T]) -> Option<(&mut T, &mut
     <[T]>::split_last_mut(slice)
 }
 
+// `*slice` is the borrowed slice; std leaves its tail there, or the empty slice when it is empty,
+// whose borrow then ends. Creusot's specification (creusot-std src/std/slice.rs).
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(
+    ((*(*slice)).len() > 0
+        && (!(*slice)).len() > 0
+        && result == Some(thrust_models::model::Mut::new((*(*slice))[0], (!(*slice))[0]))
+        && *(!slice) == (*(*slice)).subsequence(1, (*(*slice)).len())
+        && !(!slice) == (!(*slice)).subsequence(1, (!(*slice)).len()))
+    || (result == None
+        && *(*slice) == thrust_models::model::Seq::empty()
+        && !(*slice) == thrust_models::model::Seq::empty()
+        && *(!slice) == thrust_models::model::Seq::empty()
+        && !(!slice) == thrust_models::model::Seq::empty())
+)]
+fn _extern_spec_slice_split_off_first_mut<'a, T>(slice: &mut &'a mut [T]) -> Option<&'a mut T>
+    where T: thrust_models::Model
+{
+    <[T]>::split_off_first_mut(slice)
+}
+
 #[thrust_macros::context]
 trait SliceIndexSpec<T>: std::slice::SliceIndex<[T]> + thrust_models::Model
 where

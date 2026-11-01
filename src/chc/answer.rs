@@ -159,9 +159,14 @@ impl<'a, V: Clone> Reader<'a, V> {
         if let Some((var, sort)) = self.bound.get(a) {
             return Term::UserQuantifiedVar(sort.clone(), *var);
         }
-        // The constructor of the empty tuple is a constant.
-        if let Some(DeclaredSymbol::TupleCtor) = self.symbols.declared.get(a) {
-            return Term::Tuple(Vec::new());
+        // The constructors of the empty tuple and of an enum's variant without fields are
+        // constants.
+        match self.symbols.declared.get(a) {
+            Some(DeclaredSymbol::TupleCtor) => return Term::Tuple(Vec::new()),
+            Some(DeclaredSymbol::Ctor(sort, ctor)) => {
+                return Term::DatatypeCtor(sort.clone(), ctor.clone(), Vec::new())
+            }
+            _ => {}
         }
         match a {
             "true" => Term::Bool(true),
@@ -195,8 +200,16 @@ impl<'a, V: Clone> Reader<'a, V> {
         }
     }
 
-    /// `head` applied to `args`: a constructor or a selector of a `Box`, a `Mut` or a tuple, a
-    /// function Thrust knows, or else a function by its name.
+    /// The constructor the query writes as `ctor`.
+    fn ctor(&self, ctor: &str) -> DatatypeSymbol {
+        match self.symbols.declared.get(ctor) {
+            Some(DeclaredSymbol::Ctor(_, symbol)) => symbol.clone(),
+            _ => DatatypeSymbol::new(ctor.to_owned()),
+        }
+    }
+
+    /// `head` applied to `args`: a constructor of an enum's datatype, a constructor or a selector
+    /// of a `Box`, a `Mut` or a tuple, a function Thrust knows, or else a function by its name.
     fn applied(&self, head: &str, mut args: Vec<Term<V>>) -> Term<V> {
         let arg = |args: &mut Vec<Term<V>>| Box::new(args.remove(0));
         match (self.symbols.declared.get(head), args.len()) {
@@ -206,6 +219,9 @@ impl<'a, V: Clone> Reader<'a, V> {
                 return Term::Mut(current, arg(&mut args));
             }
             (Some(DeclaredSymbol::TupleCtor), _) => return Term::Tuple(args),
+            (Some(DeclaredSymbol::Ctor(sort, ctor)), _) => {
+                return Term::DatatypeCtor(sort.clone(), ctor.clone(), args)
+            }
             (Some(DeclaredSymbol::Current), 1) => return Term::MutCurrent(arg(&mut args)),
             (Some(DeclaredSymbol::Final), 1) => return Term::MutFinal(arg(&mut args)),
             (Some(DeclaredSymbol::Field(i)), 1) => return Term::TupleProj(arg(&mut args), *i),
@@ -240,7 +256,7 @@ impl<'a, V: Clone> Reader<'a, V> {
             [Sexp::Atom(head), args @ ..] => (head.as_str(), args),
             [Sexp::List(head), x] => match head.as_slice() {
                 [Sexp::Atom(u), Sexp::Atom(is), Sexp::Atom(ctor)] if u == "_" && is == "is" => {
-                    let tester = Pred::Tester(DatatypeSymbol::new(ctor.clone()));
+                    let tester = Pred::Tester(self.ctor(ctor));
                     return Atom::new(tester, vec![self.term(x)]).into();
                 }
                 _ => return holds(self.term(s)),

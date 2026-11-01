@@ -4,7 +4,7 @@
 //! `permutation_split` gives that of `n` distinct indices at least `n - b` are at least `b`.
 
 use crate::thrust_models;
-use thrust_models::model::{Int, UInt};
+use thrust_models::model::Int;
 use thrust_models::{forall, Ghost};
 
 use crate::case_study::USize;
@@ -77,7 +77,7 @@ pub fn absent<I: Idx + thrust_models::Model>(s: Ghost<IndexVec<u32, I>>, k: usiz
 #[thrust_macros::lemma]
 #[thrust_macros::variant(k)]
 #[thrust_macros::requires(distinct::<I>(s, k))]
-#[thrust_macros::ensures(forall(|x: UInt| occ::<I>(x, s, k) <= 1))]
+#[thrust_macros::ensures(forall(|x: USize| occ::<I>(x, s, k) <= 1))]
 pub fn l4_all<I: Idx + thrust_models::Model>(s: Ghost<IndexVec<u32, I>>, k: usize) {
     if k > 0 {
         l4_all(s, k - 1);
@@ -108,7 +108,7 @@ pub fn l0<I: Idx + thrust_models::Model>(s: Ghost<IndexVec<u32, I>>, k: usize, b
 /// entries are below `b`.
 #[thrust_macros::lemma]
 #[thrust_macros::variant(b)]
-#[thrust_macros::requires(forall(|x: UInt| !(x < b) || occ::<I>(x, s, n) <= 1))]
+#[thrust_macros::requires(forall(|x: USize| !(x < b) || occ::<I>(x, s, n) <= 1))]
 #[thrust_macros::ensures(cnt_lt::<I>(s, n, b) <= b)]
 pub fn l5<I: Idx + thrust_models::Model>(s: Ghost<IndexVec<u32, I>>, n: usize, b: usize) {
     if b > 0 {

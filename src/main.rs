@@ -22,6 +22,12 @@ fn int_range_enabled() -> bool {
     std::env::var_os("THRUST_INT_RANGE").is_some()
 }
 
+/// Whether `THRUST_OPTIMIZED_MIR` is set to `1`: Thrust then analyzes the MIR of the optimization
+/// level the command line asks for instead of the MIR of `-C opt-level=0`.
+fn optimized_mir_enabled() -> bool {
+    matches!(std::env::var("THRUST_OPTIMIZED_MIR").as_deref(), Ok("1"))
+}
+
 struct CompilerCalls {}
 
 impl Callbacks for CompilerCalls {
@@ -44,6 +50,15 @@ impl Callbacks for CompilerCalls {
             .push("cfg(thrust_std_conformance)".to_owned());
         if int_range_enabled() {
             config.crate_cfg.push("thrust_int_range".to_owned());
+        }
+
+        // The MIR optimizations preserve the meaning of a program without undefined behaviour
+        // and only reshape its MIR. `debug_assertions`, the default of the overflow and UB
+        // checks, is settled from the command line before this callback runs.
+        if !optimized_mir_enabled() {
+            config.opts.optimize = rustc_session::config::OptLevel::No;
+            config.opts.unstable_opts.mir_opt_level = None;
+            config.opts.unstable_opts.mir_enable_passes.clear();
         }
 
         // Refinements live on MIR locals, and `RemoveZsts` rewrites reads of zero-sized
@@ -234,6 +249,35 @@ fn thrust_macros_path() -> Option<std::path::PathBuf> {
         .map(|entry| entry.path())
 }
 
+/// Writes log events to stderr with the continuation lines of an event indented. An event spans
+/// several lines when a field's pretty-printed value does, and under `--error-format=json` a line
+/// that starts with `{` is read as one of rustc's JSON diagnostics.
+struct LogWriter;
+
+impl std::io::Write for LogWriter {
+    /// Takes `buf` as whole events, as the `fmt` layer writes each event with one `write_all`.
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let (body, end) = match buf.strip_suffix(b"\n") {
+            Some(body) => (body, &b"\n"[..]),
+            None => (buf, &b""[..]),
+        };
+        let mut out = Vec::with_capacity(buf.len());
+        for (i, line) in body.split(|&b| b == b'\n').enumerate() {
+            if i > 0 {
+                out.extend_from_slice(b"\n    ");
+            }
+            out.extend_from_slice(line);
+        }
+        out.extend_from_slice(end);
+        std::io::stderr().write_all(&out)?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        std::io::stderr().flush()
+    }
+}
+
 pub fn main() {
     let mut args = std::env::args().collect::<Vec<_>>();
 
@@ -241,7 +285,7 @@ pub fn main() {
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::fmt::layer()
-                .with_writer(std::io::stderr)
+                .with_writer(|| LogWriter)
                 .compact()
                 .without_time()
                 .with_filter(EnvFilter::from_default_env()),

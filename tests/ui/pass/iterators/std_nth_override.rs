@@ -1,4 +1,4 @@
-//@ignore-on-host: not yet verifiable: PCSat gives no answer within 150 s on fptprove develop c471e831b since Skip's `completed` allows the TrustedRandomAccess case
+//@ignore-on-host: not yet verifiable: PCSat gives no answer within 150 s on fptprove develop c471e831b; ruling out `None` from `next` needs a sequence of 3 items `Up` produces, as a witness against the universal in the TrustedRandomAccess disjunct of `Skip`'s `completed`
 //@check-pass
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper

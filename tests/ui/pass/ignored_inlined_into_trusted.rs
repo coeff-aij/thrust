@@ -1,5 +1,6 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off -C opt-level=3
+//@rustc-env: THRUST_OPTIMIZED_MIR=1
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // The twin of `fail/ignored_inlined_into_trusted.rs`: `S`'s `m` is analyzed.

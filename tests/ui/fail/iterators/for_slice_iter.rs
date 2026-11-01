@@ -13,7 +13,7 @@ use thrust_models::Ghost;
 fn count_pos(v: &Vec<i64>) -> usize {
     let mut c = 0;
     for x in v.iter() {
-        thrust_macros::invariant!(|iter: core::slice::Iter<'_, i64>, iter_old: Ghost<core::slice::Iter<'_, i64>>, produced: Ghost<Seq<Int>>, c: usize, v: thrust_models::FnParam<&Vec<i64>>|
+        thrust_macros::invariant!(|iter: core::slice::Iter<'_, i64>, iter_old: Ghost<core::slice::Iter<'_, i64>>, produced: Ghost<Seq<&Int>>, c: usize, v: thrust_models::FnParam<&Vec<i64>>|
             iter_old.0 == *v.at_entry() && iter_old.1 == 0 && c <= produced.len());
         if *x > 0 {
             c += 2;
