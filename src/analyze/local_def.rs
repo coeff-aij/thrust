@@ -322,33 +322,15 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         if self.ctx.is_derived_clone(def_id) {
             return;
         }
-        let sig = self.ctx.fn_sig(def_id);
-        let promised = sig
-            .inputs()
-            .iter()
-            .filter_map(|ty| match ty.kind() {
-                mir_ty::TyKind::Ref(_, inner, mir_ty::Mutability::Mut) => Some(*inner),
-                _ => None,
-            })
-            .chain(std::iter::once(match sig.output().kind() {
-                mir_ty::TyKind::Ref(_, inner, _) => *inner,
-                _ => sig.output(),
-            }));
-        for ty in promised {
-            if self
-                .ctx
-                .type_invariant_instance(ty, self.owner_fn_id)
-                .is_some()
-            {
-                self.tcx.dcx().span_fatal(
-                    self.tcx.def_span(def_id),
-                    format!(
-                        "the derived `{}` would promise the invariant of `{ty}`, which the derive \
-                         does not keep; write the impl",
-                        self.tcx.def_path_str(def_id),
-                    ),
-                );
-            }
+        if let Some(ty) = self.invariant_in_contract(false) {
+            self.tcx.dcx().span_fatal(
+                self.tcx.def_span(def_id),
+                format!(
+                    "the derived `{}` would promise the invariant of `{ty}`, which the derive \
+                     does not keep; write the impl",
+                    self.tcx.def_path_str(def_id),
+                ),
+            );
         }
     }
 
