@@ -10,7 +10,10 @@
 //!
 //! - A function or method run by name or through a bound has only its parameters as state; its
 //!   entry is an edge of the walk below, answered by a clause that its precondition holds of every
-//!   argument ([`Analyzer::accepts_every_argument`]).
+//!   argument ([`Analyzer::accepts_every_argument`]), unless the analyzed call that led into the
+//!   unanalyzed code on its path discharged a `requires` stating its `pre!` at the callee's
+//!   generic arguments, and no crate function with its own contract lies between that call and
+//!   the entry, nor a closure written outside the callee whose `requires` states it.
 //! - A closure is handed over as a value, with captures the walk does not see. Its obligation is
 //!   stated at the analyzed call that hands it over (`basic_block::closure_escape`), which records
 //!   the hand-over; an entry the walk finds into a closure on a path where the analyzed call
@@ -20,33 +23,47 @@ use std::collections::{HashSet, VecDeque};
 
 use rustc_middle::ty::{self as mir_ty};
 use rustc_span::def_id::{DefId, LocalDefId};
-use rustc_span::Symbol;
 
 use crate::analyze;
 use crate::chc;
 use crate::rty;
 
-/// A closure an analyzed body hands over to code Thrust does not analyze.
+/// What an analyzed call into code Thrust does not analyze covers: a closure it hands over, with
+/// its obligation or with the `pre!` the callee's `requires` states of it, which the call
+/// discharges, or a function whose `pre!` that `requires` states.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum HandedOver {
+pub enum HandedOver<'tcx> {
     /// The closure itself.
     Closure(DefId),
     /// Whatever closure the body's type parameter (by its def id) is instantiated with.
     Param(DefId),
+    /// A function or trait method at generic arguments, as the `requires` names it.
+    Function(DefId, mir_ty::GenericArgsRef<'tcx>),
 }
 
-/// What a `requires` names the precondition of with `pre!`.
+/// What a `requires` reads the precondition of with `pre!`, as its translation records it
+/// ([`analyze::annot_fn::FormulaFn::pre_receivers`]): directly or in the body of a predicate it
+/// calls, at the contract's generic arguments.
 #[derive(Debug, Clone, Default)]
-pub struct StatedPres {
-    /// The type parameters a `pre!` receiver's type mentions, by name.
-    params: HashSet<Symbol>,
-    /// The functions named as a `pre!` receiver.
-    fn_items: HashSet<DefId>,
+pub struct StatedPres<'tcx> {
+    receivers: Vec<mir_ty::Ty<'tcx>>,
 }
 
-impl StatedPres {
-    pub fn names_param(&self, name: Symbol) -> bool {
-        self.params.contains(&name)
+impl<'tcx> StatedPres<'tcx> {
+    /// Whether the `requires` reads the precondition of the closure or type parameter `ty`.
+    pub fn names(&self, ty: mir_ty::Ty<'tcx>) -> bool {
+        self.receivers.contains(&ty)
+    }
+
+    /// The functions whose precondition the `requires` reads, with their generic arguments.
+    pub fn functions(&self) -> Vec<(DefId, mir_ty::GenericArgsRef<'tcx>)> {
+        self.receivers
+            .iter()
+            .filter_map(|ty| match *ty.kind() {
+                mir_ty::TyKind::FnDef(def_id, args) => Some((def_id, args)),
+                _ => None,
+            })
+            .collect()
     }
 }
 
@@ -67,14 +84,27 @@ pub struct Entries<'tcx> {
     )>,
 }
 
-/// An instance on the walk: whether its body is analyzed, and, for one that is not, the
-/// closures the analyzed call that led into unanalyzed code on its path handed over.
+/// An instance on the walk: whether its body is analyzed, and, for one that is not, what the
+/// analyzed call that led into unanalyzed code on its path covers there.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct Node<'tcx> {
     instance: mir_ty::Instance<'tcx>,
     analyzed: bool,
-    /// Sorted by [`def_order`], without repeats.
-    handed_over: Vec<DefId>,
+    covered: Covered<'tcx>,
+}
+
+/// What an analyzed call into unanalyzed code covers ([`HandedOver`]), resolved at the instance
+/// of the caller.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+struct Covered<'tcx> {
+    /// The closures handed over, sorted by [`def_order`], without repeats.
+    closures: Vec<DefId>,
+    /// The function instances whose `pre!` the callee's `requires` states, sorted by
+    /// [`fn_order`], without repeats.
+    functions: Vec<mir_ty::Instance<'tcx>>,
+    /// The crate function whose contract states `functions`: the closures written in its body
+    /// are its code and stay covered, other closures are not. `None` when `functions` is empty.
+    stated_in: Option<DefId>,
 }
 
 impl<'tcx> analyze::Analyzer<'tcx> {
@@ -98,62 +128,41 @@ impl<'tcx> analyze::Analyzer<'tcx> {
         })
     }
 
-    /// Records that the analyzed body `owner` hands `handed_over` to `callee` at a call.
-    pub fn record_handover(&mut self, owner: DefId, callee: DefId, handed_over: HandedOver) {
-        self.handovers.push((owner, callee, handed_over));
+    /// Records that the analyzed body `owner` hands `handed_over` to `callee` at `callee_args`
+    /// at a call.
+    pub fn record_handover(
+        &mut self,
+        owner: DefId,
+        callee: DefId,
+        callee_args: mir_ty::GenericArgsRef<'tcx>,
+        handed_over: HandedOver<'tcx>,
+    ) {
+        self.handovers
+            .push((owner, callee, callee_args, handed_over));
     }
 
-    /// What the `requires` of `contract_def_id` names the precondition of: the type parameters
-    /// and functions of each `pre!` receiver (`f`, `&f`, a `Closure<F>` or `Mut<Closure<F>>`
-    /// state, a function item).
-    pub fn stated_pres(&self, contract_def_id: DefId) -> StatedPres {
-        let mut stated = StatedPres::default();
-        let Some(local) = contract_def_id.as_local() else {
-            return stated;
-        };
-        let Some(formula_def_id) = self
-            .extract_path_with_attr(local, &analyze::annot::requires_path_path())
+    /// What the `requires` of `contract_def_id` at `contract_args` reads the precondition of,
+    /// translated for `owner_fn_id`.
+    pub fn stated_pres(
+        &self,
+        contract_def_id: DefId,
+        contract_args: mir_ty::GenericArgsRef<'tcx>,
+        owner_fn_id: DefId,
+    ) -> StatedPres<'tcx> {
+        let formula_fn = contract_def_id
+            .as_local()
+            .and_then(|local| {
+                self.extract_path_with_attr(local, &analyze::annot::requires_path_path())
+            })
             .and_then(DefId::as_local)
-        else {
-            return stated;
-        };
-        let Some(closure_precondition) = self.def_ids().closure_precondition() else {
-            return stated;
-        };
-        let typeck = self.tcx.typeck(formula_def_id);
-        let mut receivers = Vec::new();
-        let body = self.tcx.hir_body_owned_by(formula_def_id);
-        collect_pre_receivers(
-            self.tcx,
-            typeck,
-            closure_precondition,
-            body.value,
-            &mut receivers,
-        );
-        for ty in receivers {
-            for arg in ty.walk() {
-                match arg.as_type().map(|ty| *ty.kind()) {
-                    Some(mir_ty::TyKind::Param(param)) => {
-                        stated.params.insert(param.name);
-                    }
-                    Some(mir_ty::TyKind::FnDef(def_id, _)) => {
-                        stated.fn_items.insert(def_id);
-                    }
-                    _ => {}
-                }
-            }
+            .and_then(|formula_def_id| {
+                self.formula_fn_with_args(formula_def_id, contract_args, owner_fn_id)
+            });
+        StatedPres {
+            receivers: formula_fn
+                .map(|formula_fn| formula_fn.pre_receivers().to_vec())
+                .unwrap_or_default(),
         }
-        stated
-    }
-
-    /// Whether `stated` names the precondition of `callee`, or of the trait method it implements.
-    fn names_fn_item(&self, stated: &StatedPres, callee: DefId) -> bool {
-        let trait_item = self
-            .tcx
-            .opt_associated_item(callee)
-            .and_then(|item| item.trait_item_def_id);
-        stated.fn_items.contains(&callee)
-            || trait_item.is_some_and(|item| stated.fn_items.contains(&item))
     }
 
     /// The contract a call of `def_id` at `args` from an analyzed body is checked against when
@@ -202,12 +211,12 @@ impl<'tcx> analyze::Analyzer<'tcx> {
     /// Walks the instances the verified functions can run, as
     /// [`analyze::Analyzer::stop_ignored_reached`] does from the same roots, and returns the
     /// edges from an instance whose body Thrust does not analyze into a crate function it
-    /// analyzes: a closure, or a function or method whose precondition the entering contract
-    /// does not name with `pre!`. A non-local instance is not analyzed; a closure call shim takes
-    /// the analyzed-ness of the instance it is reached from, since a call Thrust types through the
-    /// closure's contract goes through it; other shims are not analyzed. The entry function is
-    /// left out: its precondition is required of every argument already
-    /// (`crate_::Analyzer::assert_callable_entry`).
+    /// analyzes: a closure, or a function or method that the analyzed call leading into the
+    /// unanalyzed code on its path does not cover ([`HandedOver::Function`]). A non-local
+    /// instance is not analyzed; a closure call shim takes the analyzed-ness of the instance it
+    /// is reached from, since a call Thrust types through the closure's contract goes through
+    /// it; other shims are not analyzed. The entry function is left out: its precondition is
+    /// required of every argument already (`crate_::Analyzer::assert_callable_entry`).
     pub fn unanalyzed_entries(
         &self,
         roots: Vec<mir_ty::Instance<'tcx>>,
@@ -224,7 +233,7 @@ impl<'tcx> analyze::Analyzer<'tcx> {
             let node = Node {
                 instance: root,
                 analyzed: item_analyzed(root),
-                handed_over: Vec::new(),
+                covered: Covered::default(),
             };
             if seen.insert(node.clone()) {
                 pending.push_back(node);
@@ -236,33 +245,28 @@ impl<'tcx> analyze::Analyzer<'tcx> {
             if !self.runs_body(instance) || self.nests_past_recursion_limit(instance) {
                 continue;
             }
-            let stated = (!node.analyzed).then(|| {
-                self.contract_of(instance.def_id(), instance.args)
-                    .map(|(contract_def_id, _)| self.stated_pres(contract_def_id))
-                    .unwrap_or_default()
-            });
             for callee in self.callees(instance) {
                 let analyzed = match callee.def {
                     mir_ty::InstanceKind::ClosureOnceShim { .. }
                     | mir_ty::InstanceKind::FnPtrShim(..) => node.analyzed,
                     _ => item_analyzed(callee),
                 };
-                let handed_over = match (node.analyzed, analyzed) {
-                    (_, true) => Vec::new(),
-                    (true, false) => self.handed_over_at(instance, callee.def_id()),
-                    (false, false) => node.handed_over.clone(),
+                let covered = match (node.analyzed, analyzed) {
+                    (_, true) => Covered::default(),
+                    (true, false) => self.covered_at(instance, callee),
+                    (false, false) => self.carried_into(&node.covered, callee),
                 };
                 let child = Node {
                     instance: callee,
                     analyzed,
-                    handed_over,
+                    covered,
                 };
                 if seen.insert(child.clone()) {
                     pending.push_back(child);
                 }
-                let Some(stated) = stated.as_ref().filter(|_| analyzed) else {
+                if node.analyzed || !analyzed {
                     continue;
-                };
+                }
                 let callee_def_id = callee.def_id();
                 if Some(callee_def_id) == entry_fn {
                     continue;
@@ -273,10 +277,10 @@ impl<'tcx> analyze::Analyzer<'tcx> {
                         .map(|ty| (callee, instance, ty)),
                 );
                 if self.tcx.is_closure_like(callee_def_id) {
-                    if !node.handed_over.contains(&callee_def_id) {
+                    if !node.covered.closures.contains(&callee_def_id) {
                         entries.unhanded_closures.push((callee, instance));
                     }
-                } else if !self.names_fn_item(stated, callee_def_id) {
+                } else if !node.covered.functions.iter().any(|f| same_fn(*f, callee)) {
                     entries.items.push((callee, instance));
                 }
             }
@@ -418,19 +422,77 @@ impl<'tcx> analyze::Analyzer<'tcx> {
         )
     }
 
-    /// The closures, by def id, that the analyzed instance `owner` hands over at its calls of
-    /// `callee`.
-    fn handed_over_at(&self, owner: mir_ty::Instance<'tcx>, callee: DefId) -> Vec<DefId> {
+    /// What an unanalyzed instance that `covered` covers covers in `callee`, unanalyzed too: the
+    /// same in std code and in a closure written in the function whose contract states the
+    /// covered functions. Elsewhere in the crate only the closures go on, whose obligation was
+    /// stated where they were handed over: a crate function has its own contract, whose function
+    /// `pre!`s no analyzed call discharges, and a closure written in another function (a trusted
+    /// callee's, which is not analyzed either) is that function's code, not the stating
+    /// function's. `std.rs` states `pre!` only of closure parameters, so the functions reach std
+    /// code only from a trusted crate function's own `requires`; that function is trusted for
+    /// the std calls its body makes, as for the arguments it passes them.
+    fn carried_into(
+        &self,
+        covered: &Covered<'tcx>,
+        callee: mir_ty::Instance<'tcx>,
+    ) -> Covered<'tcx> {
+        let callee_def_id = callee.def_id();
+        let written_in_stating_fn = self.tcx.is_closure_like(callee_def_id)
+            && Some(self.tcx.typeck_root_def_id(callee_def_id)) == covered.stated_in;
+        if !callee_def_id.is_local() || written_in_stating_fn {
+            return covered.clone();
+        }
+        Covered {
+            closures: covered.closures.clone(),
+            ..Covered::default()
+        }
+    }
+
+    /// The instance `def_id` at `args`, recorded in the analyzed body of `owner`, resolves to at
+    /// the instance `owner`.
+    fn resolve_recorded(
+        &self,
+        owner: mir_ty::Instance<'tcx>,
+        def_id: DefId,
+        args: mir_ty::GenericArgsRef<'tcx>,
+    ) -> Option<mir_ty::Instance<'tcx>> {
+        let typing_env = mir_ty::TypingEnv::fully_monomorphized();
+        let args = self
+            .tcx
+            .try_instantiate_and_normalize_erasing_regions(
+                owner.args,
+                typing_env,
+                mir_ty::EarlyBinder::bind(args),
+            )
+            .ok()?;
+        mir_ty::Instance::try_resolve(self.tcx, typing_env, def_id, args)
+            .ok()
+            .flatten()
+    }
+
+    /// What the analyzed instance `owner` covers at its calls that run the instance `callee`:
+    /// the closures, by def id, it hands over, and the function instances whose `pre!` those
+    /// calls discharge.
+    fn covered_at(
+        &self,
+        owner: mir_ty::Instance<'tcx>,
+        callee: mir_ty::Instance<'tcx>,
+    ) -> Covered<'tcx> {
         let owner_def_id = owner.def_id();
-        let mut handed_over = Vec::new();
-        let recorded = self
-            .handovers
-            .iter()
-            .filter(|(o, c, _)| *o == owner_def_id && *c == callee);
-        for (_, _, closure) in recorded {
-            match *closure {
-                HandedOver::Closure(def_id) => {
-                    handed_over.push(def_id);
+        let mut covered = Covered::default();
+        let recorded = self.handovers.iter().filter(|(o, c, args, _)| {
+            *o == owner_def_id
+                && self
+                    .resolve_recorded(owner, *c, args)
+                    .is_some_and(|runs| same_fn(runs, callee))
+        });
+        for (_, _, _, handed_over) in recorded {
+            match *handed_over {
+                HandedOver::Closure(def_id) => covered.closures.push(def_id),
+                HandedOver::Function(def_id, args) => {
+                    covered
+                        .functions
+                        .extend(self.resolve_recorded(owner, def_id, args));
                 }
                 HandedOver::Param(param_def_id) => {
                     let generics = self.tcx.generics_of(owner_def_id);
@@ -440,7 +502,7 @@ impl<'tcx> analyze::Analyzer<'tcx> {
                     let Some(ty) = owner.args.get(index as usize).and_then(|a| a.as_type()) else {
                         continue;
                     };
-                    handed_over.extend(ty.walk().filter_map(|arg| {
+                    covered.closures.extend(ty.walk().filter_map(|arg| {
                         match arg.as_type().map(|ty| *ty.kind()) {
                             Some(mir_ty::TyKind::Closure(def_id, _)) => Some(def_id),
                             _ => None,
@@ -449,56 +511,34 @@ impl<'tcx> analyze::Analyzer<'tcx> {
                 }
             }
         }
-        handed_over.sort_by_key(|def_id| def_order(*def_id));
-        handed_over.dedup();
-        handed_over
+        covered.closures.sort_by_key(|def_id| def_order(*def_id));
+        covered.closures.dedup();
+        covered.functions.sort_by_key(|f| fn_order(*f));
+        covered.functions.dedup_by(|f, g| same_fn(*f, *g));
+        if !covered.functions.is_empty() {
+            covered.stated_in = Some(callee.def_id());
+        }
+        covered
     }
+}
+
+/// Whether two instances have the same def id and generic arguments: the same function, reified
+/// or not. A `FnPtrShim` or `ClosureOnceShim` has the def id of the trait method it implements,
+/// so it is not the same as the function or closure it calls.
+fn same_fn<'tcx>(a: mir_ty::Instance<'tcx>, b: mir_ty::Instance<'tcx>) -> bool {
+    a.def_id() == b.def_id() && a.args == b.args
+}
+
+/// An order of instances within one compilation that puts those [`same_fn`] identifies next
+/// to each other. Generic arguments are interned, so their address identifies them.
+fn fn_order(instance: mir_ty::Instance<'_>) -> ((u32, u32), usize) {
+    (
+        def_order(instance.def_id()),
+        instance.args.as_ptr() as usize,
+    )
 }
 
 /// An order of def ids within one compilation.
 fn def_order(def_id: DefId) -> (u32, u32) {
     (def_id.krate.as_u32(), def_id.index.as_u32())
-}
-
-/// The type of the receiver of each `pre!` (a call of `closure_precondition`) in `expr`, closures
-/// in it included.
-fn collect_pre_receivers<'tcx>(
-    tcx: mir_ty::TyCtxt<'tcx>,
-    typeck: &'tcx mir_ty::TypeckResults<'tcx>,
-    closure_precondition: DefId,
-    expr: &'tcx rustc_hir::Expr<'tcx>,
-    receivers: &mut Vec<mir_ty::Ty<'tcx>>,
-) {
-    struct Collector<'a, 'tcx> {
-        tcx: mir_ty::TyCtxt<'tcx>,
-        typeck: &'tcx mir_ty::TypeckResults<'tcx>,
-        closure_precondition: DefId,
-        receivers: &'a mut Vec<mir_ty::Ty<'tcx>>,
-    }
-    impl<'tcx> rustc_hir::intravisit::Visitor<'tcx> for Collector<'_, 'tcx> {
-        fn visit_expr(&mut self, expr: &'tcx rustc_hir::Expr<'tcx>) {
-            match expr.kind {
-                rustc_hir::ExprKind::Call(func, [receiver, ..]) => {
-                    if let rustc_hir::ExprKind::Path(qpath) = &func.kind {
-                        let res = self.typeck.qpath_res(qpath, func.hir_id);
-                        if res.opt_def_id() == Some(self.closure_precondition) {
-                            self.receivers.push(self.typeck.expr_ty(receiver));
-                        }
-                    }
-                }
-                rustc_hir::ExprKind::Closure(closure) => {
-                    self.visit_expr(self.tcx.hir_body(closure.body).value);
-                }
-                _ => {}
-            }
-            rustc_hir::intravisit::walk_expr(self, expr);
-        }
-    }
-    let mut collector = Collector {
-        tcx,
-        typeck,
-        closure_precondition,
-        receivers,
-    };
-    rustc_hir::intravisit::Visitor::visit_expr(&mut collector, expr);
 }

@@ -699,9 +699,14 @@ pub struct Analyzer<'tcx> {
     invariant_annotations: HashMap<(LocalDefId, BasicBlock), Vec<rustc_span::Span>>,
     /// The fn-like defs whose bodies are trusted rather than analyzed.
     trusted_bodies: HashSet<LocalDefId>,
-    /// The closures each analyzed body hands over to code Thrust does not analyze, by the body
-    /// and the function called.
-    handovers: Vec<(DefId, DefId, unanalyzed_entry::HandedOver)>,
+    /// What each analyzed body's calls into code Thrust does not analyze cover, by the body and
+    /// the function called with its generic arguments.
+    handovers: Vec<(
+        DefId,
+        DefId,
+        mir_ty::GenericArgsRef<'tcx>,
+        unanalyzed_entry::HandedOver<'tcx>,
+    )>,
     /// What the analysis did with the body of each function, for the report.
     body_checks: BodyChecks,
 }
@@ -2008,7 +2013,7 @@ impl<'tcx> Analyzer<'tcx> {
         let translator =
             annot_fn::AnnotFnTranslator::new(self, local_def_id, generic_args, owner_fn_id)
                 .with_def_id_cache(self.def_ids());
-        let formula_fn = translator.to_formula_fn();
+        let formula_fn = translator.into_formula_fn();
         deferred_formula_fn_cache
             .borrow_mut()
             .insert(key, formula_fn.clone());
