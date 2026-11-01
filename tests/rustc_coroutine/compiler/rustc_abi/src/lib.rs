@@ -505,18 +505,18 @@ pub enum Integer {
 
 #[thrust_macros::context]
 impl Integer {
-    /// `n` is the number of bytes of `self`.
+    /// `n` is the size of `self`, in bytes.
     #[thrust_macros::predicate]
-    pub(crate) fn bytes_are(self, n: USize) -> bool {
-        (self == Integer::I8 && n == 1)
-            || (self == Integer::I16 && n == 2)
-            || (self == Integer::I32 && n == 4)
-            || (self == Integer::I64 && n == 8)
-            || (self == Integer::I128 && n == 16)
+    pub(crate) fn bytes_are(self, n: Size) -> bool {
+        (self == Integer::I8 && n.raw == 1)
+            || (self == Integer::I16 && n.raw == 2)
+            || (self == Integer::I32 && n.raw == 4)
+            || (self == Integer::I64 && n.raw == 8)
+            || (self == Integer::I128 && n.raw == 16)
     }
 
     #[inline]
-    #[thrust_macros::ensures(forall(|n: USize| !(n == result.raw) || Self::bytes_are(self, n)))]
+    #[thrust_macros::ensures(Self::bytes_are(self, result))]
     pub fn size(self) -> Size {
         use Integer::*;
         match self {
@@ -566,16 +566,16 @@ pub enum Float {
 
 #[thrust_macros::context]
 impl Float {
-    /// `n` is the number of bytes of `self`.
+    /// `n` is the size of `self`, in bytes.
     #[thrust_macros::predicate]
-    pub(crate) fn bytes_are(self, n: USize) -> bool {
-        (self == Float::F16 && n == 2)
-            || (self == Float::F32 && n == 4)
-            || (self == Float::F64 && n == 8)
-            || (self == Float::F128 && n == 16)
+    pub(crate) fn bytes_are(self, n: Size) -> bool {
+        (self == Float::F16 && n.raw == 2)
+            || (self == Float::F32 && n.raw == 4)
+            || (self == Float::F64 && n.raw == 8)
+            || (self == Float::F128 && n.raw == 16)
     }
 
-    #[thrust_macros::ensures(forall(|n: USize| !(n == result.raw) || Self::bytes_are(self, n)))]
+    #[thrust_macros::ensures(Self::bytes_are(self, result))]
     pub fn size(self) -> Size {
         use Float::*;
 
@@ -613,8 +613,8 @@ impl Primitive {
     /// `s` is the size of `self` under the data layout `dl`.
     #[thrust_macros::predicate]
     pub(crate) fn size_in(self, dl: TargetDataLayout, s: Size) -> bool {
-        exists(|i: Integer, b: bool, n: USize| self == Primitive::Int(i, b) && n == s.raw && Integer::bytes_are(i, n))
-            || exists(|f: Float, n: USize| self == Primitive::Float(f) && n == s.raw && Float::bytes_are(f, n))
+        exists(|i: Integer, b: bool| self == Primitive::Int(i, b) && Integer::bytes_are(i, s))
+            || exists(|f: Float| self == Primitive::Float(f) && Float::bytes_are(f, s))
             || exists(|a: AddressSpace| self == Primitive::Pointer(a)
                 && TargetDataLayout::pointer_size_is(dl, a, s))
     }
