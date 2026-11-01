@@ -1047,7 +1047,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.assert_callable_entry();
     }
 
-    /// Stops at an `Invariant` impl whose self type is not an ADT of the crate, as Creusot allows
+    /// Stops at an `Invariant` impl whose self type is not an ADT defined in the crate (not in the injected
+    /// `std.rs`), as Creusot allows
     /// type invariants only on a crate's own types. The functions of a foreign type, std's
     /// among them, are not written over its invariant, so they could return values that break it.
     fn check_invariant_impls(&self) {
@@ -1056,7 +1057,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         };
         for &impl_did in self.tcx.local_trait_impls(trait_did) {
             let self_ty = self.tcx.type_of(impl_did).instantiate_identity();
-            if self_ty.ty_adt_def().is_some_and(|adt| adt.did().is_local()) {
+            let own_adt = self_ty.ty_adt_def().is_some_and(|adt| {
+                adt.did()
+                    .as_local()
+                    .is_some_and(|local| !analyze::is_injected_std(self.tcx, local))
+            });
+            if own_adt {
                 continue;
             }
             self.tcx.dcx().span_fatal(
