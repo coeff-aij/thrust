@@ -66,6 +66,10 @@ stays with the developer and is not delegated to the review:
 Without Docker (claude.ai/code), the CoAR runs go to the person who merges; say in the pull
 request which of them did not run.
 
+The Review freshness check fails while the latest review has not seen the pull request's
+current `src/`, `thrust-macros/` or `std.rs` (a rebase counts), or while a `blocking` or `check`
+comment has no reply; its message says which, and a new review or a reply runs it again.
+
 When developing with an agent, use the review as a loop at the points where a coherent set of
 commits is pushed, not after every commit; a run with no new commit and no new reply stops
 before calling the API. An audit runs alongside the loop or after it, and its fixes go through

@@ -47,7 +47,7 @@ jobs:
       # The standard library's source of the toolchain the default branch pins, which the
       # review reads with its grep_std and read_std tools.
       - name: Fetch the standard library source
-        # Without it the review runs, and its std tools say the source is not available.
+        # Without it the review runs without the std tools.
         continue-on-error: true
         run: |
           channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
@@ -62,3 +62,24 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python .github/scripts/claude_review.py --repo "$GITHUB_REPOSITORY" --pr "$PR" --prompt .github/claude-review-prompt.md --head pr-head --dry-run
+  # A review posted with the workflow's token triggers no workflow, so the freshness check
+  # (review-freshness.yml) of the pull request's head is run again here, apart from the API key.
+  freshness:
+    needs: review
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      pull-requests: read
+    timeout-minutes: 5
+    env:
+      PR: ${{ inputs.pr }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - run: |
+          head=$(gh pr view "$PR" -R "$GITHUB_REPOSITORY" --json headRefOid --jq .headRefOid)
+          run=$(gh run list -R "$GITHUB_REPOSITORY" -w review-freshness.yml -c "$head" -L 1 --json databaseId --jq '.[0].databaseId // empty')
+          if [ -z "$run" ]; then
+            echo "no freshness check has run on $head"
+            exit 0
+          fi
+          gh run rerun "$run" -R "$GITHUB_REPOSITORY"
