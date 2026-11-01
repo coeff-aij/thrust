@@ -162,17 +162,14 @@ pub fn reconstruct<'tcx>(tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
             tracing::trace!(?block, "bounds check is not followed by slice indexing");
             continue;
         };
-        // The rewritten blocks use a result local defined by this block's new call. Entering one
-        // from another predecessor would leave that local undefined.
-        for &user in &access.use_blocks {
-            let predecessors = body.basic_blocks.predecessors()[user]
-                .iter()
-                .all(|&pred| pred == bounds_check.block || region.contains(&pred));
-            assert!(
-                predecessors,
-                "slice indexing block must be entered only through its bounds check",
-            );
-        }
+        // The rewritten blocks use a result local defined by this block's new call. Entering the
+        // target from another predecessor would leave that local undefined; the region holds
+        // only blocks the target dominates.
+        assert_eq!(
+            body.basic_blocks.predecessors()[bounds_check.target].as_slice(),
+            [block],
+            "slice indexing target must have exactly one predecessor",
+        );
 
         tracing::debug!(
             assert_block = ?block,
@@ -222,8 +219,8 @@ fn find_bounds_check<'tcx>(body: &Body<'tcx>, block: BasicBlock) -> Option<Bound
     })
 }
 
-/// The blocks that the bounds check's target reaches up to the next bounds check of the same
-/// index, in depth-first order. The block that ends in that check belongs to the region, for
+/// The blocks that the bounds check's target dominates and reaches up to the next bounds check of
+/// the same index, in depth-first order. The block that ends in that check belongs to the region, for
 /// the statements before the check, but the blocks after it are reached through the call that
 /// the check is reconstructed into.
 fn access_region(body: &Body<'_>, bounds_check: &BoundsCheck<'_>) -> Vec<BasicBlock> {
@@ -239,10 +236,14 @@ fn access_region(body: &Body<'_>, bounds_check: &BoundsCheck<'_>) -> Vec<BasicBl
             place.projection.is_empty() && place.local == bounds_check.index_local
         })
     };
+    let dominators = body.basic_blocks.dominators();
     let mut region = Vec::new();
     let mut stack = vec![bounds_check.target];
     while let Some(block) = stack.pop() {
-        if block == bounds_check.block || region.contains(&block) {
+        if block == bounds_check.block
+            || region.contains(&block)
+            || !dominators.dominates(bounds_check.target, block)
+        {
             continue;
         }
         region.push(block);
