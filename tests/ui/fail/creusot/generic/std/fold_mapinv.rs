@@ -209,5 +209,6 @@ fn main() {
         |a: isize, x: isize, produced: Ghost<Seq<Int>>| -> isize { if x > a { x } else { a } },
     );
     let r = fold(Range { start: 0, end: 10 }, 0, c);
-    assert!(r >= 1);
+    // Unsat: the running maximum over 0..10 is 9.
+    assert!(r >= 10);
 }
