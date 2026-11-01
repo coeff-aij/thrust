@@ -146,11 +146,13 @@ impl<'tcx> analyze::Analyzer<'tcx> {
         ))
     }
 
-    /// Whether `def_id` is a function of the crate marked `#[thrust::trusted]`, whose contract the
+    /// Whether `def_id` is a function of the crate (not of the injected `std.rs`) marked `#[thrust::trusted]`, whose contract the
     /// crate states itself: unlike a std function's extern spec or a derived method, it names the
     /// positions that carry a type parameter.
     fn is_own_trusted_fn(&self, def_id: DefId) -> bool {
-        def_id.is_local()
+        def_id
+            .as_local()
+            .is_some_and(|local| !analyze::is_injected_std(self.tcx, local))
             && self
                 .tcx
                 .get_attrs_by_path(def_id, &analyze::annot::trusted_path())
