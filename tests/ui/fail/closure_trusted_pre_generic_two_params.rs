@@ -1,8 +1,8 @@
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_VERIFY_ONLY=main,g
 // `h`'s `requires` states the `pre!` of `f` at `0`, and `g` hands `h` a `P` and a `Q`. `main` runs
-// `g` at `Q = Wr<P>`, which holds a second value of the closure type; the walk over unanalyzed code
-// counts the closures at that instance, so the call stops.
+// `g` at `Q = Wr<P>`, which holds a second value of the closure type. The closure's precondition
+// is inferred, so `g` is analyzed at that instance, where the call stops.
 
 pub trait Call {
     fn call(&self, x: i64);
@@ -29,17 +29,10 @@ fn h<P: Fn(i64), Q: Call>(f: P, q: Q) {
 #[thrust_macros::requires(thrust_macros::pre!(f(0)))]
 #[thrust_macros::ensures(true)]
 fn g<P: Fn(i64), Q: Call>(f: P, q: Q) {
-    h(f, q) //~ ERROR: a `pre!` stated of one value does not cover another
+    h(f, q) //~ ERROR: where Thrust cannot follow it
 }
 
 fn main() {
-    let mk = |c: i64| {
-        thrust_macros::closure!(
-            captures(c: i64),
-            requires(x < c),
-            ensures(true),
-            move |x: i64| -> () { assert!(x < c); },
-        )
-    };
+    let mk = |c: i64| move |x: i64| { assert!(x < c); };
     g(mk(10), Wr(mk(0)));
 }

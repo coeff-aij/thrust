@@ -101,14 +101,7 @@ fn g<P: Fn(&i64) -> bool, Q: Call + thrust_models::Model>(k: Keep2<P, Q>) {
 }
 
 fn main() {
-    let mk = |c: i64| {
-        thrust_macros::closure!(
-            captures(c: i64),
-            requires(*x < c),
-            ensures(true),
-            move |x: &i64| -> bool { assert!(*x < c); true },
-        )
-    };
+    let mk = |c: i64| move |x: &i64| -> bool { assert!(*x < c); true };
     let k = Keep2 { cur: 0, end: 3, pred: mk(10), other: Noop };
     g(k);
 }

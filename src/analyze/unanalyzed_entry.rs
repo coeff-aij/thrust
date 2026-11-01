@@ -87,7 +87,8 @@ pub struct HandoverCount<'tcx> {
     /// The types of the call's arguments.
     pub operand_types: Vec<mir_ty::Ty<'tcx>>,
     /// The values of `ty` the call states the obligation of, one by one or by the `pre!` the
-    /// callee's `requires` states.
+    /// callee's `requires` states; for a closure held by an `IteratorSpec` argument, whose
+    /// `inv` states it, `0`, and `operand_types` are the other arguments.
     pub accounted: usize,
     pub span: rustc_span::Span,
 }
@@ -590,7 +591,9 @@ impl<'tcx> analyze::Analyzer<'tcx> {
     /// The calls of the analyzed instance `owner` that run the instance `callee` and hand it
     /// values of a closure type other than those their analysis states the obligation of,
     /// counted on the argument types at `owner` ([`HandoverCount`]). A value behind references
-    /// and boxes counts as one of the closure type, as the coverage records it.
+    /// and boxes counts as one of the closure type, as the coverage records it. Only closures
+    /// whose precondition is inferred count: one with a written `requires` is trusted to be
+    /// called as it says.
     fn miscounted_at(
         &self,
         owner: mir_ty::Instance<'tcx>,
@@ -607,10 +610,22 @@ impl<'tcx> analyze::Analyzer<'tcx> {
                 continue;
             }
             let Some(ty) = self.instantiate_at(owner, count.ty) else {
+                miscounted.push(Miscounted {
+                    count: count.clone(),
+                    owner,
+                    closure: count.ty,
+                    held: None,
+                });
                 continue;
             };
             let closure = peel_refs(ty);
-            if !matches!(closure.kind(), mir_ty::TyKind::Closure(..)) {
+            // Code Thrust does not analyze is trusted to call a closure with a written
+            // `requires` as it says, as it is trusted to call one it is not handed.
+            let inferred = match *closure.kind() {
+                mir_ty::TyKind::Closure(def_id, _) => !self.has_written_requires(def_id),
+                _ => false,
+            };
+            if !inferred {
                 continue;
             }
             let held = count

@@ -33,13 +33,6 @@ fn h<P: Fn(i64), Q: Call>(f: P, q: Q) {
 }
 
 fn main() {
-    let mk = |c: i64| {
-        thrust_macros::closure!(
-            captures(c: i64),
-            requires(x < c || c == 100),
-            ensures(true),
-            move |x: i64| -> () { assert!(x < c || c == 100); },
-        )
-    };
+    let mk = |c: i64| move |x: i64| { assert!(x < c || c == 100); };
     h(&mk(100), Noop);
 }

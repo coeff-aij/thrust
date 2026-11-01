@@ -40,13 +40,6 @@ fn g<P: Fn(i64), Q: Call>(f: P, q: Q) {
 }
 
 fn main() {
-    let mk = |c: i64| {
-        thrust_macros::closure!(
-            captures(c: i64),
-            requires(x < c),
-            ensures(true),
-            move |x: i64| -> () { assert!(x < c); },
-        )
-    };
+    let mk = |c: i64| move |x: i64| { assert!(x < c); };
     g(mk(10), Noop);
 }

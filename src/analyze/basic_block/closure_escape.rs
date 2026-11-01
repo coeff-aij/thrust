@@ -77,14 +77,18 @@ impl<'tcx> Analyzer<'tcx, '_> {
         for param in self.iterator_spec_params(contract_def_id) {
             let ty = mir_ty::EarlyBinder::bind(param.to_ty(self.tcx))
                 .instantiate(self.tcx, contract_args);
-            for closure in self
-                .tcx
-                .erase_regions(ty)
-                .walk()
-                .filter_map(|arg| arg.as_type())
-            {
+            let ty = self.tcx.erase_regions(ty);
+            for closure in ty.walk().filter_map(|arg| arg.as_type()) {
                 if matches!(closure.kind(), mir_ty::TyKind::Closure(..)) {
                     self.record_handover(closure, def_id, args);
+                    // The iterator's `inv` states the obligation of the closures it holds, not
+                    // of a value of their type another argument holds.
+                    let others = self
+                        .operand_types(operands)
+                        .into_iter()
+                        .filter(|held| peel_refs(*held) != ty)
+                        .collect();
+                    self.record_handover_count(closure, def_id, args, others, 0);
                 }
             }
         }
@@ -115,19 +119,34 @@ impl<'tcx> Analyzer<'tcx, '_> {
                 }
                 holders.len()
             };
-            self.ctx.record_handover_count(HandoverCount {
-                owner: self.local_def_id.to_def_id(),
-                callee: def_id,
-                callee_args: args,
-                ty,
-                operand_types,
-                accounted,
-                span: self.body.basic_blocks[self.basic_block]
-                    .terminator()
-                    .source_info
-                    .span,
-            });
+            self.record_handover_count(ty, def_id, args, operand_types, accounted);
         }
+    }
+
+    /// Records that the call of `def_id` at `args` states the obligation of `accounted` values
+    /// of the closure type `ty` held by arguments of the types `operand_types`
+    /// ([`HandoverCount`]).
+    fn record_handover_count(
+        &mut self,
+        ty: mir_ty::Ty<'tcx>,
+        def_id: DefId,
+        args: mir_ty::GenericArgsRef<'tcx>,
+        operand_types: Vec<mir_ty::Ty<'tcx>>,
+        accounted: usize,
+    ) {
+        let span = self.body.basic_blocks[self.basic_block]
+            .terminator()
+            .source_info
+            .span;
+        self.ctx.record_handover_count(HandoverCount {
+            owner: self.local_def_id.to_def_id(),
+            callee: def_id,
+            callee_args: args,
+            ty,
+            operand_types,
+            accounted,
+            span,
+        });
     }
 
     /// The types of the arguments `operands`, without regions.
