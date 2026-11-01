@@ -1,5 +1,5 @@
 //! The case study's iterator adapters and consumers for those std.rs does not specify
-//! (rewrites.md R8), over std's `Iterator` and std.rs's `IteratorSpec`, and `SliceIter`'s `find`.
+//! (rewrites.md R8), over std's `Iterator` and std.rs's `IteratorSpec`.
 
 use crate::thrust_models;
 use std::marker::PhantomData;
@@ -8,52 +8,8 @@ use thrust_models::model::{Closure, Int, Mut, Seq};
 use thrust_models::{Ghost, exists, forall};
 
 use crate::IteratorSpec;
-use crate::rustc_index::{Idx, IndexVec, SliceIter};
+use crate::rustc_index::{Idx, IndexVec};
 use crate::case_study::USize;
-
-#[thrust_macros::context]
-impl<'a, T: thrust_models::Model> SliceIter<'a, T>
-{
-    #[thrust_macros::ensures(result.0 == raw && result.1 == 0)]
-    pub fn new(raw: &'a [T]) -> SliceIter<'a, T> {
-        SliceIter { raw, pos: 0 }
-    }
-
-    // `Iterator::find` over this iterator: the items in order until the closure accepts one. `P:
-    // Fn` in place of std's `FnMut` (the closures at the call sites capture by shared reference),
-    // so the postcondition names the closure's answers: it rejected every item before the one
-    // found, or every item. The iterator ends right after the item found, or at the end.
-    #[thrust_macros::requires(<Self as IteratorSpec>::inv(*self))]
-    #[thrust_macros::requires(forall(|x: <&'a T as thrust_models::Model>::Ty| thrust_macros::pre!(predicate(&x))))]
-    #[thrust_macros::ensures((!self).0 == (*self).0 && (*self).1 <= (!self).1 && (!self).1 <= (*self).0.len())]
-    #[thrust_macros::ensures(result == None ==> (!self).1 == (*self).0.len())]
-    #[thrust_macros::ensures(forall(|x: <&'a T as thrust_models::Model>::Ty| result == Some(x)
-        ==> (*self).1 < (!self).1
-            && x == &(*self).0[(!self).1 - 1]
-            && thrust_macros::post!(predicate(&x), true)))]
-    #[thrust_macros::ensures(result == None ==> forall(|k: Int|
-        (*self).1 <= k && k < (!self).1 ==> thrust_macros::post!(predicate(&&(*self).0[k]), false)))]
-    #[thrust_macros::ensures(result == None || forall(|k: Int|
-        (*self).1 <= k && k + 1 < (!self).1 ==> thrust_macros::post!(predicate(&&(*self).0[k]), false)))]
-    pub fn find<P: Fn(&&'a T) -> bool>(&mut self, predicate: P) -> Option<&'a T> {
-        let this = self;
-        while let Some(x) = this.next() {
-            thrust_macros::invariant!(
-                |this: &mut SliceIter<'a, T>, self: thrust_models::FnParam<&mut SliceIter<'a, T>>, predicate: P|
-                    !this == !self.at_entry()
-                        && (*this).0 == (*self.at_entry()).0
-                        && (*self.at_entry()).1 <= (*this).1
-                        && (*this).1 <= (*this).0.len()
-                        && forall(|x: <&'a T as thrust_models::Model>::Ty| thrust_macros::pre!(predicate(&x)))
-                        && forall(|k: Int| (*self.at_entry()).1 <= k && k < (*this).1 ==> thrust_macros::post!(predicate(&&(*this).0[k]), false))
-            );
-            if predicate(&x) {
-                return Some(x);
-            }
-        }
-        None
-    }
-}
 
 // Rewrite (rewrites.md R8): a local `Map` in place of `iter::Map`, evaluation 1's adapter
 // (tests/ui/pass/creusot/map.rs), implementing std's `Iterator` and std.rs's `IteratorSpec`. The model is the inner iterator and

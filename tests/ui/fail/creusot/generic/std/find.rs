@@ -166,10 +166,10 @@ where
     ControlFlow::Continue(())
 }
 
-// std's `find`, with std.rs's specification of `Iterator::find` and the accepting state reachable
-// from `predicate`: `None` means `iter` produced some items and then completed; `Some(v)` means it
-// produced some items and then `v`, which the predicate accepted in a state reachable from
-// `predicate`. That it rejected the items before `v` is not stated.
+// std's `find`, with a weaker specification than std.rs's `Iterator::find`: `None` means `iter`
+// produced some items and then completed; `Some(v)` means it produced some items and then `v`,
+// which the predicate accepted in a state reachable from `predicate`. That it rejected the items
+// before `v`, which std.rs states, is not stated here.
 #[thrust_macros::context]
 #[thrust_macros::requires(I::invariant(*iter))]
 #[thrust_macros::requires(forall(|c: Closure<P>, x: <<I as Iterator>::Item as Model>::Ty| thrust_macros::pre!(c(x))))]

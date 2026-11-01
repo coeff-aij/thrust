@@ -12,7 +12,7 @@ use thrust_models::model::{Int, Seq};
 use thrust_models::{exists, forall};
 
 use crate::rustc_hashes::Hash64;
-use crate::rustc_index::{Idx, IndexVec, SliceIter};
+use crate::rustc_index::{Idx, IndexVec};
 use crate::case_study::USize;
 use crate::{PartialOrdSpec, TryIntoSpec};
 
@@ -209,14 +209,12 @@ impl TargetDataLayout {
             return self.default_address_space_pointer_spec.pointer_size;
         }
 
-        // Rewrite (rewrites.md R9): a local slice iterator and `find` for `iter().find(..)`: std.rs's
-        // `find` does not say that the closure rejected the items before the one found, which the
-        // `panic!` below needs. The closure's contract is written: inferred, its postcondition sits under the `forall` of
-        // `find`'s contract over the rejected items, where no term names the witness.
-        if let Some(e) = SliceIter::new(&self.address_space_info).find(thrust_macros::closure!(
-            captures(c: AddressSpace),
+        // The closure's contract is written: inferred, its postcondition sits under the `forall` of
+        // `find`'s contract over the rejected items (tests/ui/pass/closure_find_first_unannotated.rs).
+        if let Some(e) = self.address_space_info.iter().find(thrust_macros::closure!(
+            captures(c: &mut &AddressSpace),
             requires(true),
-            ensures(result == ((**p).0 == c)),
+            ensures(result == ((**p).0 == **c)),
             |p: &&(AddressSpace, PointerSpec)| -> bool { p.0 == c },
         )) {
             e.1.pointer_size
@@ -229,13 +227,12 @@ impl TargetDataLayout {
     #[thrust_macros::requires(Self::pointer_space_ok(*self, c))]
     #[thrust_macros::ensures(true)]
     pub fn pointer_align_in(&self, c: AddressSpace) -> AbiAlign {
-        // Rewrite (rewrites.md R9): as in `pointer_size_in`.
         AbiAlign::new(if c == self.default_address_space {
             self.default_address_space_pointer_spec.pointer_align
-        } else if let Some(e) = SliceIter::new(&self.address_space_info).find(thrust_macros::closure!(
-            captures(c: AddressSpace),
+        } else if let Some(e) = self.address_space_info.iter().find(thrust_macros::closure!(
+            captures(c: &mut &AddressSpace),
             requires(true),
-            ensures(result == ((**p).0 == c)),
+            ensures(result == ((**p).0 == **c)),
             |p: &&(AddressSpace, PointerSpec)| -> bool { p.0 == c },
         )) {
             e.1.pointer_align

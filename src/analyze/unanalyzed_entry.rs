@@ -18,6 +18,11 @@
 //!   stated at the analyzed call that hands it over (`basic_block::closure_escape`), which records
 //!   the hand-over; an entry the walk finds into a closure on a path where the analyzed call
 //!   that led into unanalyzed code did not hand it over stops, whatever other calls hand over.
+//!   That call states the obligation of the values of the closure's type it finds in its
+//!   arguments, or takes the `pre!` its callee's `requires` states of one; at a generic caller
+//!   a type parameter may stand for a type holding more, so the walk counts the values again
+//!   on the argument types of each instance of the caller ([`HandoverCount`]), and an instance
+//!   holding more, or holding them some way the count does not see through, stops.
 //! - std's `impl Fn* for &F` forwards a call to `F`, so the walk takes the analyzed-ness of the
 //!   instance it is reached from, as a closure call shim does: the call is typed through the
 //!   contract of `F`, and the instance a function item or closure runs from it is not an entry.
@@ -70,6 +75,38 @@ impl<'tcx> StatedPres<'tcx> {
     }
 }
 
+/// How many values of the closure type a closure parameter of an unanalyzed callee is
+/// instantiated with an analyzed call states the obligation of, as the analysis of its caller
+/// found them at the caller's generic types.
+#[derive(Debug, Clone)]
+pub struct HandoverCount<'tcx> {
+    /// The analyzed body that makes the call.
+    pub owner: DefId,
+    /// The function called, with its generic arguments.
+    pub callee: DefId,
+    pub callee_args: mir_ty::GenericArgsRef<'tcx>,
+    /// The type the callee's closure parameter is instantiated with.
+    pub ty: mir_ty::Ty<'tcx>,
+    /// The types of the call's arguments.
+    pub operand_types: Vec<mir_ty::Ty<'tcx>>,
+    /// The values of `ty` the call states the obligation of, one by one or by the `pre!` the
+    /// callee's `requires` states; for a closure held by an `IteratorSpec` argument, whose
+    /// `inv` states it, `0`, and `operand_types` are the other arguments.
+    pub accounted: usize,
+    pub span: rustc_span::Span,
+}
+
+/// An instance at which a call hands over values of a closure type its analysis does not
+/// account for: the instance of the caller, the closure type, and how many values its
+/// arguments hold, `None` when some are held a way the count does not see through.
+#[derive(Debug, Clone)]
+pub struct Miscounted<'tcx> {
+    pub count: HandoverCount<'tcx>,
+    pub owner: mir_ty::Instance<'tcx>,
+    pub closure: mir_ty::Ty<'tcx>,
+    pub held: Option<usize>,
+}
+
 /// The entries of the walk from code Thrust does not analyze into crate items it analyzes.
 #[derive(Debug, Default)]
 pub struct Entries<'tcx> {
@@ -85,6 +122,9 @@ pub struct Entries<'tcx> {
         mir_ty::Instance<'tcx>,
         mir_ty::Ty<'tcx>,
     )>,
+    /// The calls that hand over, at an instance of their caller, values of a closure type they
+    /// do not state the obligation of ([`Analyzer::miscounted_at`]).
+    pub miscounted: Vec<Miscounted<'tcx>>,
 }
 
 /// An instance on the walk: whether its body is analyzed, and, for one that is not, what the
@@ -144,6 +184,11 @@ impl<'tcx> analyze::Analyzer<'tcx> {
             .push((owner, callee, callee_args, handed_over));
     }
 
+    /// Records how many values of a closure type an analyzed call states the obligation of.
+    pub fn record_handover_count(&mut self, count: HandoverCount<'tcx>) {
+        self.handover_counts.push(count);
+    }
+
     /// What the `requires` of `contract_def_id` at `contract_args` reads the precondition of,
     /// translated for `owner_fn_id`.
     pub fn stated_pres(
@@ -196,6 +241,21 @@ impl<'tcx> analyze::Analyzer<'tcx> {
         let analyzed = def_id.is_local()
             && (!self.is_trusted_body(def_id) || self.tcx.is_closure_like(def_id));
         if analyzed {
+            return None;
+        }
+        self.contract_of(def_id, args)
+    }
+
+    /// The contract a call of `def_id` at `args` is checked against when it resolves to
+    /// `resolved_def_id`, if that is the trait method's ([`analyze::Analyzer::takes_trait_contract`]).
+    /// `None` when the call takes the impl method's own.
+    pub fn inherited_contract(
+        &self,
+        def_id: DefId,
+        args: mir_ty::GenericArgsRef<'tcx>,
+        resolved_def_id: DefId,
+    ) -> Option<(DefId, mir_ty::GenericArgsRef<'tcx>)> {
+        if !self.takes_trait_contract(def_id, resolved_def_id) {
             return None;
         }
         self.contract_of(def_id, args)
@@ -310,7 +370,12 @@ impl<'tcx> analyze::Analyzer<'tcx> {
                 };
                 let covered = match (node.analyzed, analyzed) {
                     (_, true) => Covered::default(),
-                    (true, false) => self.covered_at(instance, callee),
+                    (true, false) => {
+                        entries
+                            .miscounted
+                            .extend(self.miscounted_at(instance, callee));
+                        self.covered_at(instance, callee)
+                    }
                     (false, false) => self.carried_into(&node.covered, callee),
                 };
                 let child = Node {
@@ -599,6 +664,180 @@ impl<'tcx> analyze::Analyzer<'tcx> {
             covered.stated_in = Some(callee.def_id());
         }
         covered
+    }
+}
+
+impl<'tcx> analyze::Analyzer<'tcx> {
+    /// The calls of the analyzed instance `owner` that run the instance `callee` and hand it
+    /// values of a closure type other than those their analysis states the obligation of,
+    /// counted on the argument types at `owner` ([`HandoverCount`]). A value behind references
+    /// and boxes counts as one of the closure type, as the coverage records it. Only closures
+    /// whose precondition is inferred count: one with a written `requires` is trusted to be
+    /// called as it says.
+    fn miscounted_at(
+        &self,
+        owner: mir_ty::Instance<'tcx>,
+        callee: mir_ty::Instance<'tcx>,
+    ) -> Vec<Miscounted<'tcx>> {
+        let owner_def_id = owner.def_id();
+        let mut miscounted = Vec::new();
+        for count in &self.handover_counts {
+            if count.owner != owner_def_id
+                || !self
+                    .resolve_recorded(owner, count.callee, count.callee_args)
+                    .is_some_and(|runs| same_fn(runs, callee))
+            {
+                continue;
+            }
+            let Some(ty) = self.instantiate_at(owner, count.ty) else {
+                miscounted.push(Miscounted {
+                    count: count.clone(),
+                    owner,
+                    closure: count.ty,
+                    held: None,
+                });
+                continue;
+            };
+            let closure = peel_refs(ty);
+            // Code Thrust does not analyze is trusted to call a closure with a written
+            // `requires` as it says, as it is trusted to call one it is not handed.
+            let inferred = match *closure.kind() {
+                mir_ty::TyKind::Closure(def_id, _) => !self.has_written_requires(def_id),
+                _ => false,
+            };
+            if !inferred {
+                continue;
+            }
+            let held = count
+                .operand_types
+                .iter()
+                .map(|held| {
+                    self.instantiate_at(owner, *held)
+                        .and_then(|held| count_held(self.tcx, held, closure))
+                })
+                .sum::<Option<usize>>();
+            if held != Some(count.accounted) {
+                miscounted.push(Miscounted {
+                    count: count.clone(),
+                    owner,
+                    closure,
+                    held,
+                });
+            }
+        }
+        miscounted
+    }
+
+    /// `ty`, recorded in the analyzed body of `owner`, at the instance `owner`.
+    fn instantiate_at(
+        &self,
+        owner: mir_ty::Instance<'tcx>,
+        ty: mir_ty::Ty<'tcx>,
+    ) -> Option<mir_ty::Ty<'tcx>> {
+        self.tcx
+            .try_instantiate_and_normalize_erasing_regions(
+                owner.args,
+                mir_ty::TypingEnv::fully_monomorphized(),
+                mir_ty::EarlyBinder::bind(ty),
+            )
+            .ok()
+    }
+}
+
+/// `ty` without the references and boxes around it.
+pub fn peel_refs(ty: mir_ty::Ty<'_>) -> mir_ty::Ty<'_> {
+    let mut ty = ty;
+    while let Some(inner) = pointee(ty) {
+        ty = inner;
+    }
+    ty
+}
+
+/// What `ty` points to, if it is a reference or a box.
+pub fn pointee(ty: mir_ty::Ty<'_>) -> Option<mir_ty::Ty<'_>> {
+    match ty.kind() {
+        mir_ty::TyKind::Ref(_, inner, _) => Some(*inner),
+        mir_ty::TyKind::Adt(adt, args) if adt.is_box() => Some(args.type_at(0)),
+        _ => None,
+    }
+}
+
+/// The number of values of type `ty` a value of `held` holds, itself, behind references and
+/// boxes, or in the fields of structs and tuples; `None` when it may hold one some other way: in
+/// a collection, an enum, a closure's captures, a raw pointer or a `PhantomData`, through an
+/// alias, or through a type that holds itself. A value of a closure counts as one of `ty` when
+/// `ty` is the same closure at other generic arguments, as the coverage is by the closure's def
+/// ([`HandedOver::Closure`]). A type that does not mention `ty` holds none of it; at a generic
+/// caller that is a count for the generic types only, which a type parameter may replace with a
+/// type holding more ([`HandoverCount`]).
+pub fn count_held<'tcx>(
+    tcx: mir_ty::TyCtxt<'tcx>,
+    held: mir_ty::Ty<'tcx>,
+    ty: mir_ty::Ty<'tcx>,
+) -> Option<usize> {
+    count_held_within(tcx, held, ty, &mut Vec::new())
+}
+
+/// [`count_held`] inside the types `visiting`.
+fn count_held_within<'tcx>(
+    tcx: mir_ty::TyCtxt<'tcx>,
+    held: mir_ty::Ty<'tcx>,
+    ty: mir_ty::Ty<'tcx>,
+    visiting: &mut Vec<mir_ty::Ty<'tcx>>,
+) -> Option<usize> {
+    if same_value_type(held, ty) {
+        return Some(1);
+    }
+    let mentions = held
+        .walk()
+        .any(|arg| arg.as_type().is_some_and(|arg| same_value_type(arg, ty)));
+    if !mentions {
+        return Some(0);
+    }
+    if visiting.contains(&held) {
+        return None;
+    }
+    visiting.push(held);
+    let count = count_held_inside(tcx, held, ty, visiting);
+    visiting.pop();
+    count
+}
+
+/// Whether a value of type `a` counts as one of type `b`: the same type, or the same closure at
+/// other generic arguments.
+fn same_value_type<'tcx>(a: mir_ty::Ty<'tcx>, b: mir_ty::Ty<'tcx>) -> bool {
+    match (a.kind(), b.kind()) {
+        (mir_ty::TyKind::Closure(a, _), mir_ty::TyKind::Closure(b, _)) => a == b,
+        _ => a == b,
+    }
+}
+
+/// [`count_held`] of `held`, which mentions `ty`, through its pointee or its fields.
+fn count_held_inside<'tcx>(
+    tcx: mir_ty::TyCtxt<'tcx>,
+    held: mir_ty::Ty<'tcx>,
+    ty: mir_ty::Ty<'tcx>,
+    visiting: &mut Vec<mir_ty::Ty<'tcx>>,
+) -> Option<usize> {
+    if let Some(inner) = pointee(held) {
+        return count_held_within(tcx, inner, ty, visiting);
+    }
+    match *held.kind() {
+        mir_ty::TyKind::Tuple(elems) => elems
+            .iter()
+            .map(|elem| count_held_within(tcx, elem, ty, visiting))
+            .sum(),
+        // A `PhantomData` names a type without holding it, as a collection marks the elements it
+        // holds behind a raw allocation (`Vec<T>` holds a `PhantomData<T>`).
+        mir_ty::TyKind::Adt(adt, _) if adt.is_phantom_data() => None,
+        mir_ty::TyKind::Adt(adt, args) if adt.is_struct() => adt
+            .all_fields()
+            .map(|field| {
+                let field_ty = tcx.erase_regions(field.ty(tcx, args));
+                count_held_within(tcx, field_ty, ty, visiting)
+            })
+            .sum(),
+        _ => None,
     }
 }
 

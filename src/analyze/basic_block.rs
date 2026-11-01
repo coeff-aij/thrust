@@ -1850,9 +1850,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 // trait writes one; a contract the trait leaves to inference from its default body
                 // is not the impl's, which is inferred from the impl's own body.
                 if resolved_def_id != def_id
-                    && (!resolved_def_id.is_local()
-                        || self.ctx.has_own_impl_contract(resolved_def_id)
-                        || !self.ctx.trait_method_contract_written(def_id))
+                    && !self.ctx.takes_trait_contract(def_id, resolved_def_id)
                 {
                     if let Some(def_ty) =
                         self.ctx
