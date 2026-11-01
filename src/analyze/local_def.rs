@@ -867,6 +867,31 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .map(|site| site.ty)
     }
 
+    /// A type whose invariant the contract at its generic arguments ensures at a position whose
+    /// type in the def's own signature mentions a type parameter. At a position with a concrete
+    /// type the contract carries the invariant over type parameters as well.
+    pub fn invariant_promised_over_parameters(&self) -> Option<mir_ty::Ty<'tcx>> {
+        use mir_ty::TypeVisitableExt as _;
+        let def_id = self.local_def_id.to_def_id();
+        let sig = self.ctx.fn_sig_with_body(def_id, &self.body);
+        let own_sig = self.ctx.fn_sig(def_id);
+        self.type_invariant_sites(sig)
+            .into_iter()
+            .filter(|site| !site.is_required())
+            .find(|site| {
+                let own_ty = match site.position {
+                    InvariantPosition::Param(idx) => own_sig.inputs()[idx],
+                    InvariantPosition::Result => own_sig.output(),
+                };
+                let own_ty = match own_ty.kind() {
+                    mir_ty::TyKind::Ref(_, inner, _) => *inner,
+                    _ => own_ty,
+                };
+                own_ty.has_param()
+            })
+            .map(|site| site.ty)
+    }
+
     /// The predicate `T::invariant` of std.rs's `Invariant` at `ty`, when its impl resolves in the
     /// owner's environment.
     fn type_invariant_pred(&self, ty: mir_ty::Ty<'tcx>) -> Option<chc::Pred> {
@@ -1564,9 +1589,42 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 }
             }
         }
+        marked.extend(self.assigned_params().iter());
         for local in marked {
             self.body.local_decls[local].mutability = mir::Mutability::Mut;
         }
+    }
+
+    /// The parameters that the body assigns as a whole. A parameter is initialized on entry, so
+    /// an assignment to it while it is uninitialized follows a move out of it, which the check
+    /// for initialized locals above does not see. From there on the local no longer holds the
+    /// argument, while a non-flow parameter is taken to hold it at every block (`bind_locals`
+    /// in `analyze::basic_block`); a mutable one is not.
+    fn assigned_params(&self) -> DenseBitSet<Local> {
+        struct Visitor {
+            arg_count: usize,
+            params: DenseBitSet<Local>,
+        }
+        impl<'tcx> mir::visit::Visitor<'tcx> for Visitor {
+            fn visit_local(
+                &mut self,
+                local: Local,
+                ctxt: mir::visit::PlaceContext,
+                _location: mir::Location,
+            ) {
+                let is_param = (1..=self.arg_count).contains(&local.index());
+                if is_param && ctxt.is_place_assignment() {
+                    self.params.insert(local);
+                }
+            }
+        }
+        let mut visitor = Visitor {
+            arg_count: self.body.arg_count,
+            params: DenseBitSet::new_empty(self.body.local_decls.len()),
+        };
+        use mir::visit::Visitor as _;
+        visitor.visit_body(&self.body);
+        visitor.params
     }
 
     /// Scans the body for loop-invariant marker calls and groups them by
