@@ -221,5 +221,6 @@ fn main() {
     );
     let mut it = Range { start: 0, end: 10 };
     let r = try_fold(&mut it, 0, c);
-    assert!(match r { Some(v) => v >= 1, None => true });
+    // Unsat: the running maximum over 0..10 is 9.
+    assert!(match r { Some(v) => v >= 10, None => true });
 }

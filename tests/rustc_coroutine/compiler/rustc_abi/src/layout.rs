@@ -7,7 +7,7 @@ use thrust_models::{exists, forall};
 
 use crate::rustc_abi::{
     AbiAlign, Align, BackendRepr, FieldsShape, HasDataLayout, LayoutData, Niche, Primitive,
-    ReprOptions, Size, StructKind, TargetDataLayout, Variants,
+    ReprOptions, Scalar, Size, StructKind, TargetDataLayout, Variants,
 };
 use crate::rustc_hashes::Hash64;
 use crate::rustc_index::{Idx, IndexSlice, IndexVec};
@@ -75,15 +75,20 @@ fn sum_first(ts: Seq<Int>, k: USize) -> Int {
 // bytes, which `Size::checked_add` needs), named by `Cx::dl_of(*self, dl)` since the calculator's
 // model is `self.cx`'s; `niche_wf` of every field's largest niche under that layout
 // (`Niche::wf_in`, which `Niche::available` and `Primitive::size` need), the field's layout named
-// by `post!` of `Deref::deref` (probes/layout_ref_niche.rs); and every field's niche within the
+// by `post!` of `Deref::deref` (probes/layout_ref_niche.rs); every field's niche within the
 // field, which rustc's layouts satisfy and the sort key's subtractions and the niche of the
-// result rely on.
+// result rely on; and `Scalar::wf_in` of every field whose `backend_repr` is a scalar, which
+// `scalar_pair` requires of the two scalars it pairs. Like `niche_wf`, the last is an invariant of
+// the layouts rustc computes, not a check of the caller's.
 //
-// `univariant_biased` ensures, besides `arbitrary_of`: it fails only with `UnexpectedUnsized`,
-// exactly when an unsized field is not the tail of a `MaybeUnsized` struct, which does not depend
-// on the order, or with `SizeOverflow`, never when the fields fit in any order
-// (`fits_in_any_order`); with `Start` a niche comes from some field's, and with `End` any field's
-// niche gives one; the niche is well formed and lies within the size. Both methods also require
+// `univariant_biased` ensures, besides `arbitrary_of`: it fails only with `UnexpectedUnsized` or
+// `SizeOverflow`; `UnexpectedUnsized` only when an unsized field is not the tail of a
+// `MaybeUnsized` struct, which does not depend on the order, and then with one of the two, as
+// the loop returns `SizeOverflow` at a field before the unsized one when the offset overflows
+// there; `SizeOverflow` never when the fields fit in any order (`fits_in_any_order`), so that
+// under it a misplaced unsized field gives `UnexpectedUnsized`; with `Start` a niche comes from
+// some field's, and with `End` any field's niche gives one; the niche is well formed and lies
+// within the size. Both methods also require
 // that `F`'s `deref` is a function (`deref_functional`): the code reads each field's layout once,
 // so the directions that conclude from some layout `post!` allows (an unsized field gives
 // `UnexpectedUnsized`, a field's niche gives `End` one) hold only for the layout `deref` returns. `univariant` needs these
@@ -92,6 +97,10 @@ fn sum_first(ts: Seq<Int>, k: USize) -> Int {
 // (`expect("alt layout should always work")`), but the two orders pad differently, so one of them
 // can overflow `checked_add` or `obj_size_bound` alone; summing every field's size and twice its
 // alignment, with the prefix, the aggregate and `repr` alignments, bounds the size of every order.
+// rustc's callers do not guarantee this bound: they pass any fields and handle `SizeOverflow`. It
+// is a scope restriction, to fields whose sum is below the object size bound, under which no
+// `SizeOverflow` path is taken. What the `expect` needs is only that `End` succeeds when `Start`
+// does, which no contract states without a model of the padding of the two orders.
 //
 // Both methods also ensure that an `Ok` layout's size is below that sum S (`weighs`) and its
 // alignment at most S, which `layout()` needs to bound the prefix its variants start with. The
@@ -137,6 +146,13 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                     && l.largest_niche == Some(n)
                     && Primitive::size_in(n.value, dl, s))
                     || n.offset.raw + s.raw <= l.size.raw)
+            && forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, c: Scalar|
+                !(Cx::dl_of(self, dl)
+                    && 0 <= i
+                    && i < (*fields).len()
+                    && thrust_macros::post!(<F as core::ops::Deref>::deref(&(*fields)[i]), d) && **d == l
+                    && l.backend_repr == BackendRepr::Scalar(c))
+                    || Scalar::wf_in(c, dl))
     }
 
     /// `w` is the weight of `fields`: the sum of each field's size and twice its alignment.
@@ -353,7 +369,8 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         (exists(|f: <F as thrust_models::Model>::Ty| result == Err(LayoutCalculatorError::UnexpectedUnsized(f)))
             ==> Self::unsized_misplaced::<FieldIdx, VariantIdx, F>(fields, kind))
         && (Self::unsized_misplaced::<FieldIdx, VariantIdx, F>(fields, kind)
-            ==> exists(|f: <F as thrust_models::Model>::Ty| result == Err(LayoutCalculatorError::UnexpectedUnsized(f)))))]
+            ==> (exists(|f: <F as thrust_models::Model>::Ty| result == Err(LayoutCalculatorError::UnexpectedUnsized(f)))
+                || result == Err(LayoutCalculatorError::SizeOverflow))))]
     #[thrust_macros::ensures(
         Self::fits_in_any_order::<FieldIdx, VariantIdx, F>(*self, fields, repr, kind) ==> result != Err(LayoutCalculatorError::SizeOverflow))]
     #[thrust_macros::ensures(forall(|l: LayoutData<FieldIdx, VariantIdx>| result != Ok(l)

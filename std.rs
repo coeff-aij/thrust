@@ -1757,7 +1757,8 @@ fn _extern_spec_vec_index<T, I>(vec: &Vec<T>, index: I) -> &<I as std::slice::Sl
 #[thrust_macros::requires(I::in_bounds(index, *vec))]
 #[thrust_macros::ensures(
     I::has_value(index, *vec, *result) &&
-    I::store_value(index, *vec, !result, !vec)
+    I::store_value(index, *vec, !result, !vec) &&
+    (!vec).len() == (*vec).len()
 )]
 fn _extern_spec_vec_index_mut<T, I>(vec: &mut Vec<T>, index: I) -> &mut <I as std::slice::SliceIndex<[T]>>::Output
     where T: thrust_models::Model,
@@ -1868,7 +1869,7 @@ fn _extern_spec_vec_deref<T>(vec: &Vec<T>) -> &[T]
 
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
-#[thrust_macros::ensures(*result == *vec && !result == !vec)]
+#[thrust_macros::ensures(*result == *vec && !result == !vec && (!vec).len() == (*vec).len())]
 fn _extern_spec_vec_deref_mut<T>(vec: &mut Vec<T>) -> &mut [T]
     where T: thrust_models::Model
 {
@@ -2074,6 +2075,28 @@ fn _extern_spec_slice_split_last_mut<T>(slice: &mut [T]) -> Option<(&mut T, &mut
     <[T]>::split_last_mut(slice)
 }
 
+// `*slice` is the borrowed slice; std leaves its tail there, or the empty slice when it is empty,
+// whose borrow then ends. Creusot's specification (creusot-std src/std/slice.rs).
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(
+    ((*(*slice)).len() > 0
+        && (!(*slice)).len() > 0
+        && result == Some(thrust_models::model::Mut::new((*(*slice))[0], (!(*slice))[0]))
+        && *(!slice) == (*(*slice)).subsequence(1, (*(*slice)).len())
+        && !(!slice) == (!(*slice)).subsequence(1, (!(*slice)).len()))
+    || (result == None
+        && *(*slice) == thrust_models::model::Seq::empty()
+        && !(*slice) == thrust_models::model::Seq::empty()
+        && *(!slice) == thrust_models::model::Seq::empty()
+        && !(!slice) == thrust_models::model::Seq::empty())
+)]
+fn _extern_spec_slice_split_off_first_mut<'a, T>(slice: &mut &'a mut [T]) -> Option<&'a mut T>
+    where T: thrust_models::Model
+{
+    <[T]>::split_off_first_mut(slice)
+}
+
 #[thrust_macros::context]
 trait SliceIndexSpec<T>: std::slice::SliceIndex<[T]> + thrust_models::Model
 where
@@ -2246,7 +2269,8 @@ fn _extern_spec_slice_index<T, I>(slice: &[T], index: I) -> &<I as std::slice::S
 #[thrust_macros::requires(I::in_bounds(index, *slice))]
 #[thrust_macros::ensures(
     I::has_value(index, *slice, *result) &&
-    I::store_value(index, *slice, !result, !slice)
+    I::store_value(index, *slice, !result, !slice) &&
+    (!slice).len() == (*slice).len()
 )]
 fn _extern_spec_slice_index_mut<T, I>(slice: &mut [T], index: I) -> &mut <I as std::slice::SliceIndex<[T]>>::Output
     where T: thrust_models::Model,

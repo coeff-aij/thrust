@@ -525,36 +525,50 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
 //
 // Precondition (experiments/2026-10-01-layout-precondition-review.md), with n the number of
 // saved locals (`local_layouts.len()`), V the number of variants and P the number of prefix
-// layouts:
-// - V > 0, which rustc's caller has by construction (V = 3 + the number of yields);
-// - `storage_conflicts` is well formed, has at most n rows, and every set bit's column is below
-//   the number of rows (eligibility's `count(local_b)` reads a column index as a row);
-// - every local a variant lists is below n;
-// - the index types can be built wherever `new` is called: `LocalIdx` below n, `VariantIdx` up
-//   to V (`iter_enumerated` builds `new(V)`), `FieldIdx` up to P + 1 + n (the prefix, the tag
-//   and at most n promoted locals) and up to each variant's length (a variant may list a local
-//   twice);
-// - P + 1 + n <= u32::MAX, for the `u32` memory order.
-//   Both P + 1 + n bounds are stronger than the panic condition, which is P + 1 + c with c the
-//   number of ineligible locals (`DenseBitSet::card` of `ineligible_locals`): c is computed inside,
-//   from eligibility's result, so a condition on the inputs can only bound it by n. rustc's
-//   caller guarantees neither form.
-// - `dl_wf` of the data layout `calc.cx` names, which `univariant` requires.
-// - `niche_wf` of the largest niche of every layout `univariant` may receive, and the niche
-//   within that layout: each of `local_layouts` and `prefix_layouts`, and `tag_to_layout`'s
-//   result for any scalar (through its postcondition), each named by `post!` of `Deref::deref`.
-// - `F`'s `deref` is a function (`deref_functional`), which `univariant` requires; rustc's
-//   `Layout` dereferences to the interned pointer it holds.
-// - The size bound: with T the weight (`weight`: each layout's size and twice its alignment) of
-//   `prefix_layouts`, the tag's layout and all of `local_layouts`, plus the aggregate and `i8`
-//   alignments 2^qa and 2^qi, 3T + 2^qa + 2^qi is below the object size bound. It gives
-//   `univariant`'s `fits_in_any_order` at both calls. The prefix's fields are `prefix_layouts`,
-//   the tag and the promoted locals, a subset of `local_layouts`, so their sum S_p (`weighs`, no
-//   prefix and no `repr` alignment) is at most T. A variant's kind is `Prefixed` by the prefix's
-//   size, below S_p, and alignment, at most S_p (univariant's ensures), so its sum is below its
-//   Assigned locals' weight plus 3 S_p + 2^qa + 2^qi; its Assigned locals appear once each
-//   (eligibility's property 2c) and are not promoted (property 4), so with the promoted ones they
-//   weigh at most `local_layouts`' weight, and the sum is below 3T + 2^qa + 2^qi.
+// layouts. rustc's caller (`rustc_ty_utils::layout`, from the `CoroutineLayout` that
+// `rustc_mir_transform` builds) guarantees the first group; the second states invariants of
+// rustc's data layouts and computed layouts; the third is stronger than what the caller
+// guarantees and restricts the scope of the proof.
+// - Guaranteed by the caller:
+//   - V > 0 (V = 3 + the number of yields). Not a panic condition: `V - 1` wraps without overflow
+//     checks, and Thrust checks that an unsigned subtraction stays non-negative;
+//   - `storage_conflicts` is well formed with at most n rows, and every set bit's column is below
+//     the ghost column bound, itself at most the number of rows (eligibility's `count(local_b)`
+//     reads a column index as a row): an n by n matrix;
+//   - every local a variant lists is below n;
+//   - the index types can be built for every local (`LocalIdx` below n), up to V (`VariantIdx`;
+//     `iter_enumerated` builds `new(V)`), and up to each variant's length (`FieldIdx`; a variant
+//     may list a local twice);
+//   - `tag_to_layout` accepts every integer scalar `Initialized { value: Int(_, false), .. }`
+//     (`pre!`), the only scalars `layout()` passes; rustc's closure builds `LayoutData::scalar`,
+//     which panics on a pointer scalar of an unknown address space.
+// - Invariants of rustc's layouts: `dl_wf` of the data layout `calc.cx` names, which `univariant`
+//   requires; `niche_wf` of the largest niche of every layout `univariant` may receive, and the
+//   niche within that layout; `Scalar::wf_in` of every such layout whose `backend_repr` is a
+//   scalar (`scalar_pair`). These layouts are each of `local_layouts` and `prefix_layouts`, and
+//   `tag_to_layout`'s result for any such integer scalar (through its postcondition), each named by `post!` of
+//   `Deref::deref`. `F`'s `deref` is a function (`deref_functional`), which `univariant`
+//   requires; rustc's `Layout` dereferences to the interned pointer it holds.
+// - Not guaranteed by the caller:
+//   - `FieldIdx` can be built up to P + 1 + n (the prefix, the tag and at most n promoted
+//     locals), and P + 1 + n <= u32::MAX, for the `u32` memory order. The panic condition is
+//     P + 1 + c with c the number of ineligible locals (`DenseBitSet::card` of
+//     `ineligible_locals`): c is computed inside, from eligibility's result, so a condition on
+//     the inputs can only bound it by n. rustc's index types are bounded by 0xFFFF_FF00, so a
+//     coroutine with P + 1 + n above that is excluded, also when P + 1 + c is not.
+//   - The size bound: with T the weight (`weight`: each layout's size and twice its alignment)
+//     of `prefix_layouts`, the tag's layout and all of `local_layouts`, plus the aggregate and
+//     `i8` alignments 2^qa and 2^qi, 3T + 2^qa + 2^qi is below the object size bound b. It gives
+//     `univariant`'s `fits_in_any_order` at both calls, the scope restriction of `univariant`
+//     (layout.rs): rustc's caller passes any coroutine and handles `SizeOverflow`, which the
+//     bound makes unreachable. It excludes coroutines whose layouts weigh about a third of b or
+//     more (b = 2^15 on 16-bit targets). The prefix's fields are `prefix_layouts`, the tag and the
+//     promoted locals, a subset of `local_layouts`, so their sum S_p (`weighs`, no prefix and no
+//     `repr` alignment) is at most T. A variant's kind is `Prefixed` by the prefix's size, below
+//     S_p, and alignment, at most S_p (univariant's ensures), so its sum is below its Assigned
+//     locals' weight plus 3 S_p + 2^qa + 2^qi; its Assigned locals appear once each
+//     (eligibility's property 2c) and are not promoted (property 4), so with the promoted ones
+//     they weigh at most `local_layouts`' weight, and the sum is below 3T + 2^qa + 2^qi.
 #[thrust_macros::requires(
     (*variant_fields).len() > 0
         && LayoutCalculator::<C>::deref_functional::<FieldIdx, VariantIdx, F>()
@@ -595,15 +609,39 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
                 && thrust_macros::post!(<F as core::ops::Deref>::deref(&prefix_layouts[i]), d) && **d == l
                 && l.largest_niche == Some(n))
                 || (Niche::wf_in(n, dl) && (!Primitive::size_in(n.value, dl, z) || n.offset.raw + z.raw <= l.size.raw)))
-        && forall(|dl: TargetDataLayout, s: Scalar, r: <F as thrust_models::Model>::Ty,
+        && forall(|dl: TargetDataLayout, ti: Integer, tg: WrappingRange, s: Scalar, r: <F as thrust_models::Model>::Ty,
                 l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche, z: Size|
             !(C::dl_of(*calc, dl)
+                && s == Scalar::Initialized { value: Primitive::Int(ti, false), valid_range: tg }
                 && thrust_macros::post!(tag_to_layout(s), r)
                 && thrust_macros::post!(<F as core::ops::Deref>::deref(&r), d) && **d == l
                 && l.largest_niche == Some(n))
                 || (Niche::wf_in(n, dl) && (!Primitive::size_in(n.value, dl, z) || n.offset.raw + z.raw <= l.size.raw)))
-        && forall(|dl: TargetDataLayout, s: Scalar, r: <F as thrust_models::Model>::Ty, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>|
-            !(C::dl_of(*calc, dl) && thrust_macros::post!(tag_to_layout(s), r) && thrust_macros::post!(<F as core::ops::Deref>::deref(&r), d) && **d == l)
+        && forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, c: Scalar|
+            !(C::dl_of(*calc, dl)
+                && 0 <= i
+                && i < (*local_layouts).len()
+                && thrust_macros::post!(<F as core::ops::Deref>::deref(&(*local_layouts)[i]), d) && **d == l
+                && l.backend_repr == BackendRepr::Scalar(c))
+                || Scalar::wf_in(c, dl))
+        && forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, c: Scalar|
+            !(C::dl_of(*calc, dl)
+                && 0 <= i
+                && i < prefix_layouts.len()
+                && thrust_macros::post!(<F as core::ops::Deref>::deref(&prefix_layouts[i]), d) && **d == l
+                && l.backend_repr == BackendRepr::Scalar(c))
+                || Scalar::wf_in(c, dl))
+        && forall(|dl: TargetDataLayout, ti: Integer, tg: WrappingRange, s: Scalar, r: <F as thrust_models::Model>::Ty,
+                l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, c: Scalar|
+            !(C::dl_of(*calc, dl)
+                && s == Scalar::Initialized { value: Primitive::Int(ti, false), valid_range: tg }
+                && thrust_macros::post!(tag_to_layout(s), r)
+                && thrust_macros::post!(<F as core::ops::Deref>::deref(&r), d) && **d == l
+                && l.backend_repr == BackendRepr::Scalar(c))
+                || Scalar::wf_in(c, dl))
+        && forall(|ti: Integer, tg: WrappingRange| thrust_macros::pre!(tag_to_layout(Scalar::Initialized { value: Primitive::Int(ti, false), valid_range: tg })))
+        && forall(|dl: TargetDataLayout, ti: Integer, tg: WrappingRange, s: Scalar, r: <F as thrust_models::Model>::Ty, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>|
+            !(C::dl_of(*calc, dl) && s == Scalar::Initialized { value: Primitive::Int(ti, false), valid_range: tg } && thrust_macros::post!(tag_to_layout(s), r) && thrust_macros::post!(<F as core::ops::Deref>::deref(&r), d) && **d == l)
                 || exists(|wp: USize, wl: USize, q: USize, qa: USize, qi: USize, b: USize|
                     LayoutCalculator::<C>::weight::<FieldIdx, FieldIdx, VariantIdx, F>(&prefix_layouts, wp)
                         && LayoutCalculator::<C>::weight::<LocalIdx, FieldIdx, VariantIdx, F>(local_layouts, wl)
@@ -844,8 +882,8 @@ pub fn layout<
 
             size = size.max(variant.size);
             align = align.max(variant.align);
-            // `VariantLayout::from_layout`'s own panic is unreachable: `variant.fields` was just
-            // reassigned to `Arbitrary` above.
+            // `VariantLayout::from_layout` requires `Arbitrary` fields: `variant.fields` was just
+            // reassigned to them above.
             Ok(VariantLayout::from_layout(variant))
         },
     ))?;

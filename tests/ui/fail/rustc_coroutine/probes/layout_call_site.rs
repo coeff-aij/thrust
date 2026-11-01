@@ -2,9 +2,9 @@
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
-// rustc's caller (rustc_ty_utils::layout, `ty::Coroutine`) establishes the dimension,
-// well-formedness and index conjuncts of `layout()`'s panic-safety precondition from a
-// `CoroutineLayout` built as
+// One instance of rustc's caller (rustc_ty_utils::layout, `ty::Coroutine`): the dimension,
+// well-formedness and index conjuncts of `layout()`'s panic-safety precondition hold of a
+// `CoroutineLayout` of two saved locals built as
 // rustc_mir_transform's `compute_layout` builds it: one layout per saved local, `storage_conflicts`
 // sized by the number of saved locals, each variant listing saved locals below that number.
 // `layout` keeps only the arguments the conjuncts name; indices are `usize`, and `Idx::can_new` of

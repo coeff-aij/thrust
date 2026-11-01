@@ -705,6 +705,21 @@ impl Scalar {
         }
     }
 
+    // `scalar_wf`: what `size`, `align` and `Niche::from_scalar` require of the scalar under the
+    // data layout `dl`, as `Niche::wf_in` of a niche. `from_scalar` asserts the 128-bit bound for
+    // an `Initialized` scalar only; for a `Union` (the pointer scalars of `MaybeUninit` locals) it
+    // is the invariant that rustc makes pointer scalars only in the default and the instruction
+    // address space, which the data layout parser always lists and whose sizes are those of real
+    // targets. The bound keeps `scalar_pair`'s `b_offset + b.size(dl)` from overflowing.
+    #[thrust_macros::predicate]
+    pub(crate) fn wf_in(self, dl: TargetDataLayout) -> bool {
+        forall(|p: Primitive, r: WrappingRange, a: AddressSpace|
+            !((self == Scalar::Initialized { value: p, valid_range: r } || self == Scalar::Union { value: p })
+                && p == Primitive::Pointer(a))
+                || (TargetDataLayout::pointer_space_ok(dl, a)
+                    && forall(|n: Size| !TargetDataLayout::pointer_size_is(dl, a, n) || n.raw * 8 <= 128)))
+    }
+
     #[thrust_macros::impl_trait_names(C)]
     #[thrust_macros::requires(forall(|dl: TargetDataLayout, p: Primitive, r: WrappingRange, a: AddressSpace|
         !(C::dl_of(*cx, dl)
@@ -963,7 +978,9 @@ pub struct VariantLayout<FieldIdx: Idx> {
     uninhabited: bool,
 }
 
+#[thrust_macros::context]
 impl<FieldIdx: Idx> VariantLayout<FieldIdx> {
+    #[thrust_macros::requires(matches!(layout.fields, FieldsShape::Arbitrary { .. }))]
     pub fn from_layout(layout: LayoutData<FieldIdx, impl Idx>) -> Self {
         let FieldsShape::Arbitrary {
             offsets,
