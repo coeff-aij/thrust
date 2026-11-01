@@ -318,6 +318,30 @@ where
                         || Self::answers(s0.1, s, k, false))))
     }
 
+    // `next`'s step, with the witnesses of `produces` named: the inner items are those the closure
+    // rejected followed by `x`, which it accepted, and the index map sends the one item yielded
+    // to `x`'s position.
+    #[thrust_macros::requires(
+        a.1 == b.1
+            && I::produces(a.0, skipped, mid.0)
+            && I::produces(mid.0, Seq::singleton(x), b.0)
+            && forall(|k: Int| !(0 <= k && k < skipped.len()) || Self::answers(a.1, skipped, k, false))
+            && forall(|p: Int| !(p == skipped.len())
+                || Self::answers(a.1, skipped.concat(Seq::singleton(x)), p, true))
+    )]
+    #[thrust_macros::ensures(forall(|p: Int| !(p == skipped.len())
+        || Self::produces_at(a, Seq::singleton(x), b, skipped.concat(Seq::singleton(x)),
+            Array::<Int, Int>::from_fn(|i: Int| p))))]
+    #[thrust_macros::lemma]
+    fn next_at(
+        a: Ghost<Self>,
+        skipped: Ghost<Seq<<I::Item as thrust_models::Model>::Ty>>,
+        mid: Ghost<Self>,
+        x: Ghost<I::Item>,
+        b: Ghost<Self>,
+    ) {
+    }
+
     // `produces_at` of the joined witnesses: the inner items concatenated and the index maps
     // joined, the second shifted past the first's inner items (Creusot's `Mapping`, here
     // `Array::from_fn`).
@@ -350,11 +374,13 @@ where
         // `skipped` records the items the closure rejected, for the loop invariant: the inner
         // iterator yielded them, and the closure answered `false` on each.
         let this = self;
+        let entry = thrust_macros::ghost!(|this: &mut Filter<I, P>| -> Filter<I, P> { *this });
         let mut skipped: Vec<I::Item> = Vec::new();
         loop {
             thrust_macros::invariant!(
-                |this: &mut Filter<I, P>, skipped: Vec<I::Item>, self: thrust_models::FnParam<&mut Filter<I, P>>|
+                |this: &mut Filter<I, P>, skipped: Vec<I::Item>, entry: Ghost<Filter<I, P>>, self: thrust_models::FnParam<&mut Filter<I, P>>|
                     !this == !self.at_entry()
+                        && entry == *self.at_entry()
                         && Filter::<I, P>::reinitialize()
                         && Filter::<I, P>::pre_all((*this).0, (*this).1)
                         && I::inv((*this).0)
@@ -371,6 +397,8 @@ where
             let after = thrust_macros::ghost!(|this: &mut Filter<I, P>| -> Filter<I, P> { *this });
             Filter::<I, P>::pre_all_step(before, yielded, after);
             if (this.predicate)(&x) {
+                let rejected = thrust_macros::ghost!(|skipped: Vec<I::Item>| -> Seq<<I::Item as thrust_models::Model>::Ty> { skipped });
+                Filter::<I, P>::next_at(entry, rejected, before, yielded, after);
                 return Some(x);
             }
             skipped.push(x);
