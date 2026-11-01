@@ -1,3 +1,4 @@
+//@ignore-on-host: not accepted since the `requires` of `Iterator::map` reads the closure's precondition in both positions: the closure is a type parameter here, whose contract is not written at the generic analysis (see README.md, hand-over rule); the written-contract form is `std_map_closure_pre.rs`
 //@check-pass
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
