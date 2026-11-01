@@ -1757,8 +1757,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// The source text of the type an invariant writes for its parameter `ident`, the `idx`-th:
     /// the self type of the formula function's `<T as Model>::Ty`. `None` for `&str`, whose
     /// parameter is `NoModel`, and where `T` ends or starts with tokens `thrust_macros` made
-    /// (`Closure<F>` for a closure type parameter, `Dyn` for a trait object), whose span is
-    /// the macro's.
+    /// (`Closure<F>` for a closure type parameter), whose span is the macro's.
     fn invariant_param_source_text(
         &self,
         formula_def_id: LocalDefId,
