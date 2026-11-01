@@ -83,7 +83,7 @@ the next round:
 4. Reply to every comment, so the next review knows how it was settled:
    `gh api repos/{owner}/{repo}/pulls/<n>/comments/<id>/replies -f body='Fixed in <pushed sha>: <what changed, path:line>'`
    (written after the push), `Fixed in the description`, `Declined: <reason>`, or
-   `Refuted: <evidence>`. A `Fixed in` reply that cites no commit or no file and line leaves the comment open. Evidence the
+   `Refuted: <evidence>`. A `Fixed in <sha>` reply that names no file and line leaves the comment open. Evidence the
    reviewer can read is a file and line: of this repository, or of the standard library's source
    (`core/src/iter/adapters/zip.rs:305`) for a claim about std; a run's result is evidence it can
    only take as reported.
