@@ -62,8 +62,7 @@ breaks with the first item the predicate accepts, so `try_fold` holds the only l
 specifications relate closure states by `hist_inv!`, and `check`, which owns the predicate, states
 its own relation through the predicate's in a `hist_inv` clause; it verifies from fptprove
 `7d11252b2` on; its fail twin weakens `find`'s `ensures` to a predicate result of `false`.
-`generic/std/find_noinv.rs` drops `try_fold`'s loop invariant; its pass side is ignored while the
-solver gives no answer at 300 s. `generic/std/find_pre.rs` is the same without `find`'s `ensures`;
+`generic/std/find_noinv.rs` drops `try_fold`'s loop invariant. `generic/std/find_pre.rs` is the same without `find`'s `ensures`;
 its fail twin drops `find`'s precondition on the predicate.
 
 `generic/std/fold_map.rs`, `fold_mapinv.rs`, `try_fold_map.rs` and `try_fold_mapinv.rs` are std's
@@ -72,9 +71,11 @@ fixed to `Option<B>`, needing `THRUST_TRY_SPECS=1`), specified in the forms of C
 (`map.rs`) and `MapInv` (`map_ext.rs`, the closure also receiving the ghost history of the items
 before the current one): the closure states and accumulators along the produced items form a chain
 of call postconditions, held in ghost variables across the loop, and the closure may be called at
-every state the chain reaches. Each client derives its bound from the chain; each fail twin claims
-a bound the closure's contract does not give. The pass side of `try_fold_mapinv.rs` is ignored
-while the solver gives no answer at 300 s.
+every state the chain reaches. Each client derives its bound from the chain. The fail twins of
+`fold_map.rs`, `fold_mapinv.rs` and `try_fold_map.rs` assert a bound the result does not reach (the
+running maximum over `0..10` is 9); that of `try_fold_mapinv.rs` claims a bound the closure's
+contract does not give. The pass side of `try_fold_mapinv.rs` is ignored while the solver gives no
+answer at 300 s.
 
 Weaker variants (`weaker/`, still verify):
 

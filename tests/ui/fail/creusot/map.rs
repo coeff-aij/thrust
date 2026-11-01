@@ -1,21 +1,18 @@
-//@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -A unused-variables -A unused_parens
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 THRUST_SPLIT=2
+
 use thrust_models::model::{Closure, Int, Mut, Seq};
 use thrust_models::{exists, forall, Model};
 
-// Fail twin of `decuple_range_lemmas.rs`, for `Map::produces` rather than for `Range::produces`
-// (`fail/decuple_range_lemmas.rs`): `Map::produces` relates every `visited[k]` to the first inner
-// item `s[0]` instead of `s[k]`. `fail/map_creusot_lemmas.rs` makes the same change but its call
-// site (`map_creusot.rs`'s two direct `next()`s) only ever checks a singleton `produces`, where
-// `s[0] == s[k]` trivially (k = 0), so the change refutes nothing there within 120 s (triaged in
-// experiments/2026-09-27-map-fail-twin-triage.md). `decuple_range()`'s `collect` loop invariant
-// and its `ensures(result[k] == k * 10)` force `Map::produces` concretely, at a length-10 sequence
-// of distinct values, so the same change is refutable here.
+// Creusot's `Map` (`iterators/map.rs`) in its `produces` form over an `FnMut` closure, fully
+// checked: `produces` carries the chain `fs` of closure states and relates them by `hist_inv!`
+// (Creusot's `hist_inv`, `unnest` in earlier versions), and `preservation_inv` and `reinitialize`
+// quantify over every closure state, as in `counter_creusot.rs`. Both laws are inherited and
+// checked at the impl with no lemma. The call site is two `next`s over `Range`.
 //
-// Creusot's `examples/decuple_range` with its positional property `v[i] == 10 * i`, fully checked,
-// with `Map` in its `produces` form over an `FnMut` closure, as `../../pass/creusot/map.rs`. The
-// rest is `collect` and `FromIterator for Vec<isize>`, as in `weaker/collect_mutref.rs`.
+// Fail twin: `produces` relates every produced item to the closure's result at the first inner
+// item `s[0]` instead of `s[k]`, which refutes `produces_trans` at `Map`'s impl. Solved in parts:
+// as one query the solver gives no answer within 120 s.
 
 // Creusot's `common.rs`, the iterator specification every case shares: the trait predicates
 // `produces(self, visited, o)`, `completed` and `invariant` (`true` unless the impl says otherwise),
@@ -45,7 +42,7 @@ where
     #[thrust_macros::requires(Self::produces(*a, ab, *b))]
     #[thrust_macros::requires(Self::produces(*b, bc, *c))]
     #[thrust_macros::ensures(Self::produces(*a, ab.concat(bc), *c))]
-    fn produces_trans(a: &Self, ab: Seq<<Self::Item as Model>::Ty>, b: &Self, bc: Seq<<Self::Item as Model>::Ty>, c: &Self) {}
+    fn produces_trans(a: &Self, ab: Seq<<Self::Item as Model>::Ty>, b: &Self, bc: Seq<<Self::Item as Model>::Ty>, c: &Self) {} //~ ERROR: Unsat
 
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
@@ -57,22 +54,6 @@ where
     #[thrust_macros::ensures(result == None ==> Self::completed(self))]
     #[thrust_macros::ensures(forall(|i| result == Some(i) ==> Self::produces(*self, Seq::singleton(i), !self)))]
     fn next(&mut self) -> Option<Self::Item>;
-
-    // Creusot's `collect` (iter.rs): `exists done prod. resolve(^done) && done.completed()
-    // && self.produces(prod, *done) && B::from_iter_post(prod, result)`, with `from_iter_post`
-    // for `Vec` (vec.rs) `prod == res@` folded in: `result` is the produced sequence. `&mut self`
-    // as in `creusot/weaker/collect_mutref.rs`.
-    #[thrust_macros::requires(Self::invariant(*self))]
-    #[thrust_macros::ensures(exists(|pre: <Self as Model>::Ty|
-        Self::produces(*self, result, pre) && Self::completed(Mut::new(pre, !self))))]
-    fn collect<B: FromIterator<Self::Item>>(&mut self) -> B
-    where
-        Self: Sized,
-        <Self as Model>::Ty: PartialEq,
-        <Self::Item as Model>::Ty: Model<Ty = <Self::Item as Model>::Ty>,
-    {
-        B::from_iter(self)
-    }
 }
 
 struct Map<I, F> {
@@ -136,12 +117,12 @@ where
 impl<I, A, B, F> Iterator for Map<I, F>
 where
     I: Iterator + Model,
-    A: Model<Ty = A> + PartialEq,
+    A: Model<Ty = A>,
     B: Model,
     F: FnMut(I::Item) -> B,
     <I as Iterator>::Item: Model<Ty = A>,
-    <I as Model>::Ty: Model<Ty = <I as Model>::Ty> + PartialEq,
-    <B as Model>::Ty: Model<Ty = <B as Model>::Ty> + PartialEq,
+    <I as Model>::Ty: Model<Ty = <I as Model>::Ty>,
+    <B as Model>::Ty: Model<Ty = <B as Model>::Ty>,
 {
     type Item = B;
 
@@ -230,41 +211,7 @@ impl Iterator for Range {
     }
 }
 
-// `FromIterator<A>` reduced to `from_iter`; `Self: Model<Ty = Seq<..>>` lets `result` feed `produces`.
-#[thrust_macros::context]
-trait FromIterator<A: Model>: Sized
-where
-    Self: Model<Ty = Seq<<A as Model>::Ty>>,
-    <A as Model>::Ty: Model<Ty = <A as Model>::Ty>,
-{
-    #[thrust_macros::requires(I::invariant(*iter))]
-    #[thrust_macros::ensures(exists(|pre: <I as Model>::Ty|
-        I::produces(*iter, result, pre) && I::completed(Mut::new(pre, !iter))))]
-    fn from_iter<I: Iterator<Item = A> + Model>(iter: &mut I) -> Self
-    where
-        <I as Model>::Ty: PartialEq;
-}
-
-#[thrust_macros::context]
-impl FromIterator<isize> for Vec<isize> {
-    fn from_iter<I: Iterator<Item = isize> + Model>(iter: &mut I) -> Vec<isize>
-    {
-        let it = iter;
-        let mut v: Vec<isize> = Vec::new();
-        while let Some(x) = it.next() {
-            thrust_macros::invariant!(
-                |it: &mut I, v: Vec<isize>, iter: thrust_models::FnParam<&mut I>|
-                !it == !iter.at_entry() && I::invariant(*it) && I::produces(*iter.at_entry(), v, *it)
-            );
-            v.push(x);
-        }
-        v
-    }
-}
-
-// Creusot: `proof_assert! { forall<i : Int> 0 <= i && i < (@v).len() ==> @(@v)[i] == i * 10 }`.
-#[thrust_macros::ensures(forall(|k: Int| 0 <= k && k < result.len() ==> result[k] == k * 10))]
-fn decuple_range() -> Vec<isize> {
+fn main() {
     let f = thrust_macros::closure!(
         requires(0 <= x && x < 100),
         ensures(result == x * 10),
@@ -274,7 +221,8 @@ fn decuple_range() -> Vec<isize> {
         iter: Range { start: 0, end: 10 },
         func: f,
     };
-    m.collect::<Vec<isize>>()
+    let first = m.next();
+    let second = m.next();
+    assert!(matches!(first, Some(0)));
+    assert!(matches!(second, Some(10)));
 }
-
-fn main() {}
