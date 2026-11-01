@@ -51,7 +51,8 @@ where
     fn next(&mut self) -> Option<Self::Item>;
 }
 
-// `vec::IntoIter<u32>` as an iterator of the local spec; `next` is std's, through its extern spec.
+// `vec::IntoIter<u32>` as an iterator of the local spec; `next` is std's, through its extern spec,
+// and the predicates are std.rs's `IteratorSpec` ones for it.
 #[thrust_macros::context]
 impl Iterator for std::vec::IntoIter<u32> {
     type Item = u32;
@@ -60,26 +61,19 @@ impl Iterator for std::vec::IntoIter<u32> {
         std::iter::Iterator::next(self)
     }
 
-
-
-    // std.rs's `inv`, which std's `next` requires, and the position's lower bound.
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
-        0 <= self.1 && self.1 <= self.0.len()
+        <Self as IteratorSpec>::inv(self)
     }
 
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
-        *self == !self && (*self).1 >= (*self).0.len()
+        <Self as IteratorSpec>::completed(self)
     }
 
     #[thrust_macros::predicate]
     fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool {
-        self.0 == o.0
-            && self.1 <= o.1
-            && (!(visited.len() > 0) || o.1 <= o.0.len())
-            && visited.len() == o.1 - self.1
-            && forall(|k: Int| !(0 <= k && k < visited.len()) || visited[k] == self.0[self.1 + k])
+        <Self as IteratorSpec>::produces(self, visited, o)
     }
 }
 

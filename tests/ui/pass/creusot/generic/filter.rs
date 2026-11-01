@@ -112,10 +112,9 @@ where
 // `out` is the subsequence of `s` at the positions where `bs` is `true`, in order: Creusot's
 // `Filter::produces`, with the index map `idx`.
 #[thrust_macros::predicate]
-fn filter_kept<I, P>(s: Seq<<<I as Iterator>::Item as Model>::Ty>, bs: Seq<bool>, idx: Seq<UInt>, out: Seq<<<I as Iterator>::Item as Model>::Ty>) -> bool
+fn filter_kept<I>(s: Seq<<<I as Iterator>::Item as Model>::Ty>, bs: Seq<bool>, idx: Seq<UInt>, out: Seq<<<I as Iterator>::Item as Model>::Ty>) -> bool
 where
     I: Iterator + Model,
-    P: FnMut(I::Item) -> bool,
 {
     out.len() == idx.len()
         && forall(|j: Int| !(0 <= j && j < idx.len())
@@ -135,7 +134,7 @@ where
     I::produces(iter, s, done)
         && I::completed(Mut::new(done, fin))
         && filter_chain::<I, P>(p, s, bs, fs)
-        && filter_kept::<I, P>(s, bs, idx, result)))]
+        && filter_kept::<I>(s, bs, idx, result)))]
 fn filter<I, P>(iter: I, p: P) -> Vec<I::Item>
 where
     I: Iterator + Model,
@@ -161,7 +160,7 @@ where
                 && forall(|c: Closure<P>, x: <<I as Iterator>::Item as Model>::Ty| thrust_macros::pre!(c(x)))
                 && filter_chain::<I, P>(p.at_entry(), gs, gbs, gfs)
                 && gfs[gs.len()] == q
-                && filter_kept::<I, P>(gs, gbs, gidx, out)
+                && filter_kept::<I>(gs, gbs, gidx, out)
         );
         let b = q(x);
         if b {
