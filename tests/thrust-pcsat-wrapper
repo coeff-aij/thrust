@@ -39,13 +39,16 @@ docker start --attach "$container" > "$solver_out" &
 wait $!
 exit_code=$?
 
-# THRUST_PCSAT_OUTPUT, if set, is a file the solver's whole output is copied to.
+# THRUST_PCSAT_OUTPUT, if set, is a file the solver's whole output is copied to (overwritten by each
+# query, so for running one query at a time), and Thrust is given the first line only: the caller
+# reads the lines after the verdict (such as the result of `check_solution`) from the file. Unset,
+# Thrust is given the whole output, so that it refuses a `sat` that comes with other lines.
 if [[ -n ${THRUST_PCSAT_OUTPUT:-} ]]; then
     cp "$solver_out" "$THRUST_PCSAT_OUTPUT"
+    read -r out < "$solver_out"
+else
+    out=$(< "$solver_out")
 fi
-# The verdict is the first line, without the marker CoAR may append after a comma; lines after it
-# (such as the result of `check_solution`) are not passed on.
-read -r out < "$solver_out"
 echo "${out%,*}"
 # 137 is a kill, such as by the container's memory limit
 if [[ $exit_code -ne 0 ]]; then
