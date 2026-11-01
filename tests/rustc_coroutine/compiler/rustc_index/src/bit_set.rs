@@ -62,9 +62,7 @@ impl<T: Idx> DenseBitSet<T> {
     /// The number of members: the set bits below `domain_size`. The trusted `iter` relies on the
     /// bits past `domain_size` being clear, which rustc's `clear_excess_bits` keeps: it yields every
     /// set bit of the words. Stated as a validity predicate in the contracts, or as a type
-    /// invariant (9a4b1dab), the invariant leaves the `bitset` root without an answer at 300 s
-    /// (thrust-research experiments/2026-10-24-eval3-trusted-reduction-2.md and
-    /// experiments/2026-10-24-rq4-gaps-16-17.md).
+    /// invariant (9a4b1dab), the invariant leaves the `bitset` root without an answer at 300 s.
     #[thrust_macros::logic]
     pub(crate) fn card(self) -> Int {
         ones(self.1, self.0)
@@ -141,7 +139,7 @@ impl<T: Idx> DenseBitSet<T> {
     }
 
     // Trusted: analyzed with a lemma that a prefix of set bits counts fully, it gets no answer at
-    // 300 s (thrust-research experiments/2026-10-24-eval3-trusted-reduction-2.md).
+    // 300 s.
     #[thrust::trusted]
     #[thrust_macros::requires(Self::words_cover_domain(*self))]
     #[thrust_macros::ensures((!self).0 == (*self).0)]
