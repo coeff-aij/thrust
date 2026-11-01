@@ -867,6 +867,31 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .map(|site| site.ty)
     }
 
+    /// A type whose invariant the contract at its generic arguments ensures at a position whose
+    /// type in the def's own signature mentions a type parameter. At a position with a concrete
+    /// type the contract carries the invariant over type parameters as well.
+    pub fn invariant_promised_over_parameters(&self) -> Option<mir_ty::Ty<'tcx>> {
+        use mir_ty::TypeVisitableExt as _;
+        let def_id = self.local_def_id.to_def_id();
+        let sig = self.ctx.fn_sig_with_body(def_id, &self.body);
+        let own_sig = self.ctx.fn_sig(def_id);
+        self.type_invariant_sites(sig)
+            .into_iter()
+            .filter(|site| !site.is_required())
+            .find(|site| {
+                let own_ty = match site.position {
+                    InvariantPosition::Param(idx) => own_sig.inputs()[idx],
+                    InvariantPosition::Result => own_sig.output(),
+                };
+                let own_ty = match own_ty.kind() {
+                    mir_ty::TyKind::Ref(_, inner, _) => *inner,
+                    _ => own_ty,
+                };
+                own_ty.has_param()
+            })
+            .map(|site| site.ty)
+    }
+
     /// The predicate `T::invariant` of std.rs's `Invariant` at `ty`, when its impl resolves in the
     /// owner's environment.
     fn type_invariant_pred(&self, ty: mir_ty::Ty<'tcx>) -> Option<chc::Pred> {

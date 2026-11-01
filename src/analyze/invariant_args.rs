@@ -122,12 +122,17 @@ impl<'tcx> analyze::Analyzer<'tcx> {
         {
             return;
         }
+        let own_trusted = self.is_own_trusted_fn(def_id);
         let promised = {
             let mut analyzer = self.local_def_analyzer(local_def_id);
             analyzer
                 .owner_fn_id(caller_def_id)
                 .generic_args(generic_args);
-            analyzer.invariant_in_contract(false)
+            if own_trusted {
+                analyzer.invariant_promised_over_parameters()
+            } else {
+                analyzer.invariant_in_contract(false)
+            }
         };
         let Some(ty) = promised else {
             return;
@@ -139,6 +144,20 @@ impl<'tcx> analyze::Analyzer<'tcx> {
             self.tcx.def_path_str_with_args(def_id, generic_args),
             self.tcx.def_path_str(caller_def_id),
         ))
+    }
+
+    /// Whether `def_id` is a function of the crate (not of the injected `std.rs`) marked `#[thrust::trusted]`, whose contract the
+    /// crate states itself: unlike a std function's extern spec or a derived method, it names the
+    /// positions that carry a type parameter.
+    fn is_own_trusted_fn(&self, def_id: DefId) -> bool {
+        def_id
+            .as_local()
+            .is_some_and(|local| !analyze::is_injected_std(self.tcx, local))
+            && self
+                .tcx
+                .get_attrs_by_path(def_id, &analyze::annot::trusted_path())
+                .next()
+                .is_some()
     }
 
     /// Whether `def_id` is the `clone` of a derived `Clone`, which keeps the invariant: its
