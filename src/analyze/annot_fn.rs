@@ -927,17 +927,25 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         Some((closure_ty, refs))
     }
 
-    /// The receiver term as the closure's own body takes it.
+    /// The receiver term as the closure's own body takes it, and the final state it leaves free.
     ///
     /// That body takes the upvars by `&`, by `&mut`, or by value, following the kind inferred
     /// for the closure, while `pre!`/`post!` reach the closure through the parameter the
     /// annotated function declares. A call bridges the two by borrowing the closure into the
     /// receiver the body takes; the same borrow is taken here on the term.
+    ///
+    /// An `FnMut` closure held as a value is called through a `&mut` to it whose final state
+    /// the call does not fix, so the pair's final half is a fresh variable, returned with its
+    /// sort for the caller to quantify.
     fn closure_receiver_term(
         &self,
         receiver: &'tcx rustc_hir::Expr<'tcx>,
         fn_ty: &rty::FunctionType,
-    ) -> chc::Term<rty::FunctionParamIdx> {
+        in_spec: &str,
+    ) -> (
+        chc::Term<rty::FunctionParamIdx>,
+        Option<(chc::UserQuantifiedVarId, chc::Sort)>,
+    ) {
         let receiver_ty = self.expr_ty(receiver);
         let mut held_as = match receiver_ty.kind() {
             mir_ty::TyKind::Adt(adt, _) if Some(adt.did()) == self.def_ids.mut_model() => {
@@ -968,12 +976,19 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             held_as = Some(rty::RefKind::Immut);
         }
         match (held_as, received_as) {
-            (None, Some(rty::RefKind::Immut)) => chc::Term::box_(term),
-            (None, Some(rty::RefKind::Mut)) => chc::Term::mut_(term.clone(), term),
-            (Some(rty::RefKind::Mut), Some(rty::RefKind::Immut)) => {
-                chc::Term::box_(term.mut_current())
+            (None, Some(rty::RefKind::Immut)) => (chc::Term::box_(term), None),
+            (None, Some(rty::RefKind::Mut)) => {
+                let sort = upvars_ty.to_sort().deref();
+                let final_ = self
+                    .analyzer
+                    .generate_user_quantified_var(format!("final state of a closure in {in_spec}"));
+                let final_term = chc::Term::UserQuantifiedVar(sort.clone(), final_);
+                (chc::Term::mut_(term, final_term), Some((final_, sort)))
             }
-            _ => term,
+            (Some(rty::RefKind::Mut), Some(rty::RefKind::Immut)) => {
+                (chc::Term::box_(term.mut_current()), None)
+            }
+            _ => (term, None),
         }
     }
 
@@ -1251,49 +1266,16 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             "closure precondition arity mismatch: closure takes {} argument(s)",
             fn_ty.params.len() - 1
         );
-        // An `FnMut` closure held as a value is called through a `&mut` to it, whose final state
-        // the call does not fix: its precondition is a property of the current state, as
-        // Creusot's `FnMut` precondition takes `self` by value, so it must hold whatever the
-        // final state is.
-        if let Some(sort) = self.free_final_state_sort(receiver, &fn_ty) {
-            let final_ = self
-                .analyzer
-                .generate_user_quantified_var("final state of a closure in pre!".to_owned());
-            let current = self.to_term(receiver);
-            let receiver_term =
-                chc::Term::mut_(current, chc::Term::UserQuantifiedVar(sort.clone(), final_));
-            let param_args: Vec<_> = std::iter::once(receiver_term).chain(logical_args).collect();
-            return FormulaOrTerm::Formula(chc::Formula::forall(
-                vec![(final_, sort)],
-                fn_ty.precondition_formula(&param_args),
-            ));
-        }
-        let param_args: Vec<_> = std::iter::once(self.closure_receiver_term(receiver, &fn_ty))
-            .chain(logical_args)
-            .collect();
-        FormulaOrTerm::Formula(fn_ty.precondition_formula(&param_args))
-    }
-
-    /// The sort of the closure state, when `receiver` holds the state as a value and the closure
-    /// takes it through a `&mut`: the final state is then not the receiver's.
-    fn free_final_state_sort(
-        &self,
-        receiver: &'tcx rustc_hir::Expr<'tcx>,
-        fn_ty: &rty::FunctionType,
-    ) -> Option<chc::Sort> {
-        let held_as_value = !matches!(
-            self.expr_ty(receiver).kind(),
-            mir_ty::TyKind::Ref(_, _, mir_ty::Mutability::Not)
-        ) && !matches!(
-            self.expr_ty(receiver).kind(),
-            mir_ty::TyKind::Adt(adt, _) if Some(adt.did()) == self.def_ids.mut_model()
-        );
-        let upvars_ty = &fn_ty.params[rty::FunctionParamIdx::from(0usize)].ty;
-        let received_as_mut = matches!(
-            upvars_ty.as_pointer().map(|ty| ty.kind),
-            Some(rty::PointerKind::Ref(rty::RefKind::Mut))
-        );
-        (held_as_value && received_as_mut).then(|| upvars_ty.to_sort().deref())
+        let (receiver_term, final_state) = self.closure_receiver_term(receiver, &fn_ty, "pre!");
+        let param_args: Vec<_> = std::iter::once(receiver_term).chain(logical_args).collect();
+        let pre = fn_ty.precondition_formula(&param_args);
+        // The precondition of an `FnMut` closure held as a value is a property of its current
+        // state, as Creusot's `FnMut` precondition takes `self` by value, so it must hold
+        // whatever the final state is.
+        FormulaOrTerm::Formula(match final_state {
+            Some(var) => chc::Formula::forall(vec![var], pre),
+            None => pre,
+        })
     }
 
     fn translate_closure_postcondition(
@@ -1336,11 +1318,17 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             "closure postcondition arity mismatch: closure takes {} argument(s)",
             fn_ty.params.len() - 1
         );
-        let param_args: Vec<_> = std::iter::once(self.closure_receiver_term(receiver, &fn_ty))
-            .chain(logical_args)
-            .collect();
+        let (receiver_term, final_state) = self.closure_receiver_term(receiver, &fn_ty, "post!");
+        let param_args: Vec<_> = std::iter::once(receiver_term).chain(logical_args).collect();
         let result = self.to_term(result);
-        FormulaOrTerm::Formula(fn_ty.postcondition_formula(&param_args, result))
+        let post = fn_ty.postcondition_formula(&param_args, result);
+        // A call of an `FnMut` closure held as a value ends in some state the closure's
+        // postcondition allows, as Creusot's `postcondition_once` of an `FnMut` closure is
+        // `exists s. postcondition_mut(self, args, s, res)` (the `fn_mut_once` law).
+        FormulaOrTerm::Formula(match final_state {
+            Some(var) => chc::Formula::exists(vec![var], post),
+            None => post,
+        })
     }
 
     fn translate_closure_hist_inv(
