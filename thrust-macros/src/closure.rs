@@ -21,7 +21,8 @@
 //! they are captured by the closure. Only the ones a clause names need restating, and
 //! in any order: the plugin matches them against the closure's real captures by name.
 //! A shared reference `x` that the body uses through a deref (`x[i]`, `x.f()`), which rustc
-//! captures as `*x`, is named `x`, with `x`'s type.
+//! captures as `*x`, is named `x`; its type is `x`'s, behind the closure's state as for any
+//! other capture (`&mut` of it in an `FnMut` closure).
 //!
 //! `hist_inv` gives the relation `hist_inv!` holds between two states of an `FnMut` closure, in
 //! place of the one derived from its captures, which says nothing of a capture taken by value.
