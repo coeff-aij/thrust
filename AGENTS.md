@@ -66,6 +66,11 @@ stays with the developer and is not delegated to the review:
 Without Docker (claude.ai/code), the CoAR runs go to the person who merges; say in the pull
 request which of them did not run.
 
+The Review freshness check fails while the latest review has not seen the pull request's
+current `src/`, `thrust-macros/`, `std.rs` or `.github/` (a rebase counts), or while a `blocking`
+or `check` comment has no reply (a finding on a file the PR does not change is posted as a
+comment on a changed file); its message says which, and a new review or a reply runs it again.
+
 When developing with an agent, use the review as a loop at the points where a coherent set of
 commits is pushed, not after every commit; a run with no new commit and no new reply stops
 before calling the API. An audit runs alongside the loop or after it, and its fixes go through
@@ -91,6 +96,8 @@ the next round:
    after three rounds, and leave what remains, the CoAR runs that could not run, and the merge,
    to a person. When the third round still finds the same mechanism broken, take the design to an
    audit or a person instead of patching again. Do not request reviews on duplicate PRs. When a PR
-   is abandoned or superseded, copy its open `blocking` findings into its issue or record. After a round with nothing open, request another only when later commits change
-   what Thrust does (`src/`, `thrust-macros/`, the meaning of a `std.rs` specification), not for
+   is abandoned or superseded, copy its open `blocking` findings into its issue or record. After a
+   round with nothing open, request another only when later commits change what Thrust does
+   (`src/`, `thrust-macros/`, the meaning of a `std.rs` specification) or the review scripts
+   (`.github/`), not for
    tests, documentation or ignore reasons.

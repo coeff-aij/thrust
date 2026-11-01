@@ -9,9 +9,9 @@ use thrust_models::Model;
 // `next` hands out the first element by `split_off_first_mut` and keeps the rest. Its model is the
 // model of `inner`, the slice's current and final sequences. The associated `Item` is `&'a mut T`,
 // so `visited` is a sequence of `Mut` pairs.
-// Creusot's constructor `iter_mut(v)` and its `all_zero` client are left out: std.rs does not state
-// that `&mut v[..]` keeps the length, which the constructor's contract needs. `all_zero.rs` runs on
-// std's `slice::IterMut`.
+// Creusot's constructor `iter_mut(v)`, `IterMut { inner: &mut v[..] }`, and its `all_zero` client
+// follow the impl. The constructor's `invariant` needs that `&mut v[..]` keeps the length, which
+// std.rs states for `IndexMut`.
 
 // Creusot's `common.rs`, the iterator specification every case shares: the trait predicates
 // `produces(self, visited, o)`, `completed` and `invariant` (`true` unless the impl says otherwise),
@@ -99,6 +99,42 @@ where
                 !(0 <= k && k < (*o.0).len())
                     || ((*o.0)[k] == (*self.0)[visited.len() + k]
                         && (!o.0)[k] == (!self.0)[visited.len() + k]))
+    }
+}
+
+// Creusot's constructor: the iterator's entry and final sequences are the vector's, and its type
+// invariant holds.
+#[thrust_macros::ensures(
+    <IterMut<'a, T> as Iterator>::invariant(result)
+        && *result.0 == *v
+        && !result.0 == !v
+)]
+fn iter_mut<'a, T: Model>(v: &'a mut Vec<T>) -> IterMut<'a, T> {
+    IterMut { inner: &mut v[..] }
+}
+
+// Creusot's `all_zero` over that iterator: `iter_mut(v)`, then `next` until `None`. The positions
+// passed, the vector's length minus what the iterator has left, are zero in the final sequence.
+#[thrust_macros::context]
+#[thrust_macros::ensures(
+    (!v).len() == (*v).len()
+        && forall(|i: Int| (0 <= i && i < (!v).len()) ==> ((!v)[i] == 0))
+)]
+fn all_zero(v: &mut Vec<usize>) {
+    let mut it = iter_mut(v);
+    while let Some(x) = it.next() {
+        thrust_macros::invariant!(
+            |it: IterMut<'_, usize>, v: thrust_models::FnParam<&mut Vec<usize>>|
+                (!v.at_entry()).len() == (*v.at_entry()).len()
+                    && (*it.0).len() <= (*v.at_entry()).len()
+                    && (!it.0).len() == (*it.0).len()
+                    && forall(|j: Int| !(0 <= j && j < (*it.0).len())
+                        || ((*it.0)[j] == (*v.at_entry())[(*v.at_entry()).len() - (*it.0).len() + j]
+                            && (!it.0)[j] == (!v.at_entry())[(*v.at_entry()).len() - (*it.0).len() + j]))
+                    && forall(|j: Int| (0 <= j && j < (*v.at_entry()).len() - (*it.0).len())
+                        ==> ((!v.at_entry())[j] == 0))
+        );
+        *x = 0;
     }
 }
 

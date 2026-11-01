@@ -114,12 +114,22 @@ impl<B> ControlFlow<B> {
 }
 
 // std's default `try_fold` with the `Try` type fixed to `ControlFlow<I::Item>`: the closure may be
-// called on every item in every state, and a `Break` result is one some call of it returned from a
-// state reachable from `f`.
+// called on every item in every state. `Continue` means `iter` produced some items and then
+// completed; `Break(v)` means it produced some items and then `x`, on which a call of the closure
+// from a state reachable from `f` returned `Break(v)`.
 #[thrust_macros::context]
 #[thrust_macros::requires(I::invariant(*iter))]
 #[thrust_macros::requires(forall(|c: Closure<F>, x: <<I as Iterator>::Item as Model>::Ty| thrust_macros::pre!(c((), x))))]
-#[thrust_macros::ensures(forall(|v: <<I as Iterator>::Item as Model>::Ty| result == ControlFlow::Break(v) ==> exists(|c: Closure<F>, d: Closure<F>, x: <<I as Iterator>::Item as Model>::Ty| thrust_macros::hist_inv!(f, c) && thrust_macros::post!(Mut::new(c, d)((), x), ControlFlow::Break(v)))))]
+#[thrust_macros::ensures(I::invariant(!iter))]
+#[thrust_macros::ensures(
+    (result == ControlFlow::Continue(())
+        && exists(|s: Seq<<<I as Iterator>::Item as Model>::Ty>, mid: <I as Model>::Ty|
+            I::produces(*iter, s, mid) && I::completed(Mut::new(mid, !iter))))
+    || exists(|s: Seq<<<I as Iterator>::Item as Model>::Ty>, x: <<I as Iterator>::Item as Model>::Ty, v: <<I as Iterator>::Item as Model>::Ty|
+        result == ControlFlow::Break(v)
+            && I::produces(*iter, s.push(x), !iter)
+            && exists(|c: Closure<F>, d: Closure<F>|
+                thrust_macros::hist_inv!(f, c) && thrust_macros::post!(Mut::new(c, d)((), x), ControlFlow::Break(v)))))]
 fn try_fold<I, F>(iter: &mut I, init: (), f: F) -> ControlFlow<I::Item>
 where
     I: Iterator + Model,
@@ -130,22 +140,29 @@ where
 {
     let it = iter;
     let mut g = f;
+    I::produces_refl(it);
+    // The items `it` produced so far.
+    let mut gs = thrust_macros::ghost!(|| -> Seq<<<I as Iterator>::Item as Model>::Ty> { Seq::empty() });
     while let Some(x) = it.next() {
         thrust_macros::invariant!(
-            |it: &mut I, g: F, f: thrust_models::FnParam<F>|
-            I::invariant(*it)
+            |it: &mut I, g: F, gs: thrust_models::Ghost<Seq<<<I as Iterator>::Item as Model>::Ty>>, f: thrust_models::FnParam<F>, iter: thrust_models::FnParam<&mut I>|
+            !it == !iter.at_entry()
+                && I::invariant(*it)
+                && I::produces(*iter.at_entry(), gs, *it)
                 && thrust_macros::hist_inv!(f.at_entry(), g)
                 && forall(|c: Closure<F>, x: <<I as Iterator>::Item as Model>::Ty| thrust_macros::pre!(c((), x)))
         );
+        let gx = thrust_macros::ghost!(|x: <I as Iterator>::Item| -> <I as Iterator>::Item { x });
         match g(init, x) {
             ControlFlow::Continue(()) => {}
             ControlFlow::Break(b) => return ControlFlow::Break(b),
         }
+        gs = thrust_macros::ghost!(|gs: thrust_models::Ghost<Seq<<<I as Iterator>::Item as Model>::Ty>>, gx: thrust_models::Ghost<<I as Iterator>::Item>| -> Seq<<<I as Iterator>::Item as Model>::Ty> { gs.push(gx) });
     }
     ControlFlow::Continue(())
 }
 
-// std's `find`: `check` breaks with an item exactly when the predicate accepts it.
+// std's `find`, without its postcondition.
 #[thrust_macros::context]
 #[thrust_macros::requires(I::invariant(*iter))]
 #[thrust_macros::requires(forall(|c: Closure<P>, x: <<I as Iterator>::Item as Model>::Ty| thrust_macros::pre!(c(x))))]

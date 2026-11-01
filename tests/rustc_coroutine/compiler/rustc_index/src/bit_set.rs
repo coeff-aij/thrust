@@ -154,7 +154,10 @@ impl<T: Idx> DenseBitSet<T> {
     }
 
     // Trusted: the iterator's ghost state is the set's members, which `BitIter::new` does not
-    // state.
+    // state. `result.6 == card(*self)` also needs the bits past `domain_size` clear (see `card`),
+    // which no contract states: it holds of every set, as the fields are private to this module
+    // and each function here that writes `words` keeps those bits clear (`new_empty` zeroes the
+    // words, `insert` asserts the bound, `insert_all` calls `clear_excess_bits`).
     #[inline]
     #[thrust::trusted]
     #[thrust_macros::ensures(result.4 == (*self).0 && result.5 == 0)]
@@ -337,7 +340,11 @@ impl<'a, T: Idx + thrust_models::Model> Iterator for BitIter<'a, T>
 {
     type Item = T;
 
-    // rustc's bit arithmetic, which Thrust does not model, under `IteratorSpec`'s contract.
+    // rustc's bit arithmetic, which Thrust does not model, under `IteratorSpec`'s contract. `inv`
+    // does not relate the ghost fields to the words, so the contract holds of the iterators the
+    // two trusted `iter`s build, whose ghost fields are the bits still to come, and of no other:
+    // `new` leaves them empty over any words. It is private to this module, and the `iter`s are
+    // its only callers.
     #[thrust::trusted]
     #[thrust_macros::requires(<Self as IteratorSpec>::inv(*self))]
     #[thrust_macros::ensures(
