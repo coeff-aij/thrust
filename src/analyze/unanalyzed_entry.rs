@@ -765,9 +765,11 @@ pub fn pointee(ty: mir_ty::Ty<'_>) -> Option<mir_ty::Ty<'_>> {
 /// The number of values of type `ty` a value of `held` holds, itself, behind references and
 /// boxes, or in the fields of structs and tuples; `None` when it may hold one some other way: in
 /// a collection, an enum, a closure's captures, a raw pointer or a `PhantomData`, through an
-/// alias, or through a type that holds itself. A type that does not mention `ty` holds none of
-/// it; at a generic caller that is a count for the generic types only, which a type parameter
-/// may replace with a type holding more ([`HandoverCount`]).
+/// alias, or through a type that holds itself. A value of a closure counts as one of `ty` when
+/// `ty` is the same closure at other generic arguments, as the coverage is by the closure's def
+/// ([`HandedOver::Closure`]). A type that does not mention `ty` holds none of it; at a generic
+/// caller that is a count for the generic types only, which a type parameter may replace with a
+/// type holding more ([`HandoverCount`]).
 pub fn count_held<'tcx>(
     tcx: mir_ty::TyCtxt<'tcx>,
     held: mir_ty::Ty<'tcx>,
@@ -783,10 +785,13 @@ fn count_held_within<'tcx>(
     ty: mir_ty::Ty<'tcx>,
     visiting: &mut Vec<mir_ty::Ty<'tcx>>,
 ) -> Option<usize> {
-    if held == ty {
+    if same_value_type(held, ty) {
         return Some(1);
     }
-    if !held.walk().any(|arg| arg.as_type() == Some(ty)) {
+    let mentions = held
+        .walk()
+        .any(|arg| arg.as_type().is_some_and(|arg| same_value_type(arg, ty)));
+    if !mentions {
         return Some(0);
     }
     if visiting.contains(&held) {
@@ -796,6 +801,15 @@ fn count_held_within<'tcx>(
     let count = count_held_inside(tcx, held, ty, visiting);
     visiting.pop();
     count
+}
+
+/// Whether a value of type `a` counts as one of type `b`: the same type, or the same closure at
+/// other generic arguments.
+fn same_value_type<'tcx>(a: mir_ty::Ty<'tcx>, b: mir_ty::Ty<'tcx>) -> bool {
+    match (a.kind(), b.kind()) {
+        (mir_ty::TyKind::Closure(a, _), mir_ty::TyKind::Closure(b, _)) => a == b,
+        _ => a == b,
+    }
 }
 
 /// [`count_held`] of `held`, which mentions `ty`, through its pointee or its fields.

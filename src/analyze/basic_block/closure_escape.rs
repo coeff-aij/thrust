@@ -254,11 +254,14 @@ impl<'tcx> Analyzer<'tcx, '_> {
 
     /// The type parameters of `contract_def_id` bounded by std.rs's `IteratorSpec`. A closure
     /// inside the iterator one is instantiated with (the function of a `Map`) is run by the
-    /// iterator's `next`, so the call hands it over. Its obligation is met where the iterator
-    /// holding it was made: `map` requires `Map`'s `inv`, which states the closure's `pre!` of
+    /// iterator's `next`, so the call hands it over. For std's `Map` its obligation is met where
+    /// the iterator was made: `map` requires `Map`'s `inv`, which states the closure's `pre!` of
     /// every item it can be called on and is kept by every `next`, the only way std.rs lets the
     /// state of a `Map` change. So it holds of every `Map` a callee receives, whether or not the
-    /// callee's contract requires `inv` (a trusted consumer's need not).
+    /// callee's contract requires `inv` (a trusted consumer's need not). A user adapter's `inv`
+    /// is established only where a call discharges it, such as a direct call of its `next`
+    /// through the trait's contract; nothing here checks that it holds, nor that it states the
+    /// `pre!` of the closures the adapter holds.
     fn iterator_spec_params(&self, contract_def_id: DefId) -> Vec<mir_ty::ParamTy> {
         let Some(iterator_spec) = self.ctx.def_ids.iterator_spec() else {
             return Vec::new();
