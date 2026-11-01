@@ -825,7 +825,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                  specification is a formula, not a value: in a `requires`, `ensures`, predicate or \
                  quantifier body it can be an operand of `&&`, `||`, `!`, `==` or `!=`, or the \
                  condition of an `if` whose branches are Boolean; it cannot be the value of a \
-                 `#[logic]` function or an argument of a call",
+                 `#[logic]` function, an argument of a call or the operand of a cast",
             );
         };
         term
@@ -2204,7 +2204,19 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                     unimplemented!("unsupported block in formula: {:?}", block);
                 }
             }
-            _ => unimplemented!("unsupported expression in formula: {:?}", hir),
+            ExprKind::Cast(operand, _) => {
+                // A cast has no translation; its operand is checked first so that a formula
+                // (`(p(x) == q(x)) as i32`) gets the error that says it is not a value.
+                self.to_term(operand);
+                self.tcx.dcx().span_fatal(
+                    hir.span,
+                    "thrust: an `as` cast is not supported in a specification",
+                );
+            }
+            _ => self.tcx.dcx().span_fatal(
+                hir.span,
+                "thrust: this expression is not supported in a specification",
+            ),
         }
     }
 }
