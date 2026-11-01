@@ -81,13 +81,16 @@ the next round:
    only when it is small and inside the change. Do not edit code outside the change only to
    satisfy a comment. With many comments, give each to its own subagent.
 4. Reply to every comment, so the next review knows how it was settled:
-   `gh api repos/{owner}/{repo}/pulls/<n>/comments/<id>/replies -f body='Fixed in <commit>'`,
-   `Fixed in the description`, `Declined: <reason>`, or `Refuted: <evidence>`. Evidence the
+   `gh api repos/{owner}/{repo}/pulls/<n>/comments/<id>/replies -f body='Fixed in <pushed sha>: <what changed, path:line>'`
+   (written after the push), `Fixed in the description`, `Declined: <reason>`, or
+   `Refuted: <evidence>`. A `Fixed in <sha>` reply that names no file and line leaves the comment open. Evidence the
    reviewer can read is a file and line: of this repository, or of the standard library's source
    (`core/src/iter/adapters/zip.rs:305`) for a claim about std; a run's result is evidence it can
    only take as reported.
 5. Push and request again. Stop when a review raises no open `blocking` or `check` comment, or
    after three rounds, and leave what remains, the CoAR runs that could not run, and the merge,
-   to a person. After a round with nothing open, request another only when later commits change
+   to a person. When the third round still finds the same mechanism broken, take the design to an
+   audit or a person instead of patching again. Do not request reviews on duplicate PRs. When a PR
+   is abandoned or superseded, copy its open `blocking` findings into its issue or record. After a round with nothing open, request another only when later commits change
    what Thrust does (`src/`, `thrust-macros/`, the meaning of a `std.rs` specification), not for
    tests, documentation or ignore reasons.

@@ -78,6 +78,13 @@ speculative code, modes nothing uses, scaffolding from development, comments and
 the change made stale? Do names and APIs follow the codebase and Rust conventions? You see the
 large changed files only around their changes; when you suspect duplication with code not shown, say where to look.
 
+Look for side effects and coupling the change could avoid: state shared or mutated across passes
+where a value could be passed in and returned, a function that both computes a result and records
+it in a cache or a global, a component that reads another's internals or depends on the order in
+which others run, a behaviour switched by an environment variable read deep inside. Prefer the form
+in which each part takes its inputs explicitly, returns its result, and can be tested and replaced
+on its own.
+
 ### What users write, see and rely on
 
 Annotations, diagnostics, configuration and the emitted SMT. Defaults stay as they were unless
@@ -93,10 +100,10 @@ the property as narrowly as possible. The description's claims match what the co
 ## Re-reviews
 
 When earlier automated reviews are given, decide for each of their comments whether it is
-settled. Developers and their agents reply to each comment with `Fixed in <commit>`, `Fixed in the description`,
+settled. Developers and their agents reply to each comment with `Fixed in <pushed sha>: <what changed, path:line>`, `Fixed in the description`,
 `Declined: <reason>` or `Refuted: <evidence>`: check that a fix does fix it, and whether a
 reason or evidence holds by reading the code it cites; a refutation you could not check stays
-open, as a `check`. Do not repeat a settled comment. Repeat one that is not, on the line
+open, as a `check`; so does a `Fixed in <sha>` reply that names no file and line. Do not repeat a settled comment. Repeat one that is not, on the line
 where the issue now is, in words close to the earlier comment, and say why the fix or the reply
 does not settle it. A re-review is sent only the diff since the commit the latest review saw;
 the list of files gives, for each, the lines of the whole pull request's diff, which `read_file`
@@ -104,10 +111,17 @@ reads in the head version, and a comment must still be on one of those lines. Wh
 since include a merge of the base branch, the diff says so: a change that the pull request's own
 diff does not contain came from the base branch and is not reviewed. Review the rest as usual.
 
+After the count of open comments (see Output), the summary lists each earlier comment you are
+sent as `settled by <sha> at <path:line>`, `settled by the description`, `settled, declined: <why accepted>`, `settled, taken as reported: <what>` (for what you
+could not read, such as a run's result) or `open: <why>`; older comments the context only counts
+are not listed.
+
 ## What not to report
 
 - Pre-existing issues and broader support the pull request does not claim. Mention at most one
-  in the summary.
+  in the summary. A soundness hole in code the pull request rewrites, moves or relies on for its
+  own claim is in scope even if it predates the pull request: a `check` unless the claim depends
+  on that code, and the developers fix it in the change or record it in an issue.
 - Formatting, and anything rustfmt, clippy or the compiler reports.
 - Requests for doc comments or explanatory comments; fewer comments are preferred.
 - Requests for more tests than one representative pass/fail pair, or for tests of panicking or

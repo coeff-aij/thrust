@@ -1,4 +1,3 @@
-//@ignore-on-host: not yet verifiable, the solver gives no answer within 300 s (fptprove thrust-benchmarks unsolved/std_find_noinv_2026-10-03/)
 //@check-pass
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300

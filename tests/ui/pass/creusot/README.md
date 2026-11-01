@@ -27,9 +27,9 @@ with empty bodies, as Creusot does). The step-form files repeat theirs in the sa
 | `fuse_produces.rs` | the current Creusot's `examples/iterators/07_fuse.rs` (3620de437) | `produces` + `FusedIterator::is_fused` with its state `Option<I>` and its `completed` and `produces` |
 | `fuse_produces_result.rs` | `iterators/fuse.rs` | `produces` + `FusedIterator::is_fused` with Creusot's state `Result<I, Ghost<I>>`; `next` keeps `iter` live past the ghost of the exhausted iterator, as Creusot's `ghost! { *iter }` reads it |
 | `map.rs` | `iterators/map.rs` | `produces` over an `FnMut` closure with the chain `fs` of closure states and `hist_inv!`, both laws inherited with no lemma, fully checked |
-| `iter_mut.rs` | `iterators/iter_mut.rs` | `produces` |
+| `iter_mut.rs` | `iterators/iter_mut.rs` | `produces` over Creusot's `IterMut { inner: &mut [T] }`, whose `next` (`split_off_first_mut`) is checked; Creusot's constructor `iter_mut(v)` and its `all_zero` client are left out, because std.rs does not state that `&mut v[..]` keeps the length |
 | `collect.rs` | `common.rs` (`collect` / `FromIterator`) | `produces` |
-| `all_zero.rs` | `examples/all_zero.rs` | `produces`, via `iter_mut` |
+| `all_zero.rs` | `examples/all_zero.rs` | `produces`, via std's `slice::IterMut` and its `next` through std.rs (not Creusot's `IterMut`) |
 | `decuple_range.rs` | `examples/decuple_range.rs` | `produces`, positional property, fully checked |
 | `skip_take.rs` | `examples/skip_take.rs` | `produces`, concatenated `Skip`, generic in `I` |
 | `counter.rs` | `examples/counter.rs` | `step` + a unary `next_item` guard, `MapInv`'s ghost history |
@@ -62,8 +62,7 @@ breaks with the first item the predicate accepts, so `try_fold` holds the only l
 specifications relate closure states by `hist_inv!`, and `check`, which owns the predicate, states
 its own relation through the predicate's in a `hist_inv` clause; it verifies from fptprove
 `7d11252b2` on; its fail twin weakens `find`'s `ensures` to a predicate result of `false`.
-`generic/std/find_noinv.rs` drops `try_fold`'s loop invariant; its pass side is ignored while the
-solver gives no answer at 300 s. `generic/std/find_pre.rs` is the same without `find`'s `ensures`;
+`generic/std/find_noinv.rs` drops `try_fold`'s loop invariant. `generic/std/find_pre.rs` is the same without `find`'s `ensures`;
 its fail twin drops `find`'s precondition on the predicate.
 
 `generic/std/fold_map.rs`, `fold_mapinv.rs`, `try_fold_map.rs` and `try_fold_mapinv.rs` are std's
@@ -72,9 +71,10 @@ fixed to `Option<B>`, needing `THRUST_TRY_SPECS=1`), specified in the forms of C
 (`map.rs`) and `MapInv` (`map_ext.rs`, the closure also receiving the ghost history of the items
 before the current one): the closure states and accumulators along the produced items form a chain
 of call postconditions, held in ghost variables across the loop, and the closure may be called at
-every state the chain reaches. Each client derives its bound from the chain; each fail twin claims
-a bound the closure's contract does not give. The pass side of `try_fold_mapinv.rs` is ignored
-while the solver gives no answer at 300 s.
+every state the chain reaches. Each client derives its bound from the chain. The fail twins of
+`fold_map.rs`, `fold_mapinv.rs`, `try_fold_map.rs` and `try_fold_mapinv.rs` assert a bound the
+result does not reach (the running maximum over `0..10` is 9). The pass side of `try_fold_mapinv.rs` is ignored while the solver gives no
+answer at 300 s.
 
 Weaker variants (`weaker/`, still verify):
 

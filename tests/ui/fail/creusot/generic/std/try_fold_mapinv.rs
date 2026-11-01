@@ -1,4 +1,4 @@
-//@ignore-on-host: draft with its pass twin; PCSat answers `unsat` in 21 s on fptprove develop 3f9ee2482 before `pre!` holds over every final state of the closure (thrust-research issues/2026-10-25-fnmut-pre-final-equals-current.md) and before the generic helpers are instantiated at each instance (thrust-research experiments/2026-10-25-trait-logic-no-self.md), and `timeout` after 123 s and 76 s with each change alone
+//@ignore-on-host: draft with its pass twin, which PCSat does not answer within 300 s
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_TRY_SPECS=1 THRUST_SOLVER_TIMEOUT_SECS=300
@@ -218,5 +218,5 @@ fn main() {
     );
     let mut it = Range { start: 0, end: 10 };
     let r = try_fold(&mut it, 0, c);
-    assert!(match r { Some(v) => v >= 1, None => true });
+    assert!(match r { Some(v) => v >= 10, None => true });
 }
