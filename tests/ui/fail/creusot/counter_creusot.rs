@@ -163,8 +163,6 @@ where
                 let b = (self.func)(v, self.produced);
                 self.produced =
                     thrust_macros::ghost!(|self: &mut Self, e: Ghost<<I as Iterator>::Item>| -> Seq<A> { (*self).2.push(e) });
-                // Keeps `e` live up to the ghost term above, which reads it.
-                let _keep = &e;
                 Some(b)
             }
             None => {
@@ -269,11 +267,11 @@ impl FromIterator<u32> for Vec<u32> {
 }
 
 // Creusot: `proof_assert! { x@.len() == v@.len() }; proof_assert! { x@.ext_eq(v@) };
-// proof_assert! { cnt@ == x@.len() }`, with `x` and `cnt` returned. Unsat: `cnt` is `x.len()`, not
+// proof_assert! { cnt@ == x@.len() }`, with `x` and `cnt` returned. Unsat: element `k` of `x` is `v[k]`, not
 // one more.
 #[thrust_macros::ensures(result.0.len() == v.len()
-    && forall(|k: Int| 0 <= k && k < result.0.len() ==> result.0[k] == v[k])
-    && result.1 == result.0.len() + 1)]
+    && forall(|k: Int| 0 <= k && k < result.0.len() ==> result.0[k] == v[k] + 1)
+    && result.1 == result.0.len())]
 fn counter(v: Vec<u32>) -> (Vec<u32>, usize) {
     let mut cnt: usize = 0;
     let f = thrust_macros::closure!(

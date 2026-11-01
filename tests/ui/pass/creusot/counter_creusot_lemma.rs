@@ -300,8 +300,6 @@ where
         let gab = thrust_macros::ghost!(|ab: Seq<<B as Model>::Ty>| -> Seq<<B as Model>::Ty> { ab });
         let gbc = thrust_macros::ghost!(|bc: Seq<<B as Model>::Ty>| -> Seq<<B as Model>::Ty> { bc });
         Self::produces_trans_split(ga, gab, gb, gbc, gc);
-        // Keeps the parameters live at the snapshots above.
-        let _live = (a, &ab, b, &bc, c);
     }
 
     #[thrust_macros::predicate]

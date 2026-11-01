@@ -295,8 +295,6 @@ where
         let gab = thrust_macros::ghost!(|ab: Seq<<B as Model>::Ty>| -> Seq<<B as Model>::Ty> { ab });
         let gbc = thrust_macros::ghost!(|bc: Seq<<B as Model>::Ty>| -> Seq<<B as Model>::Ty> { bc });
         Self::produces_trans_split(ga, gab, gb, gbc, gc);
-        // Keeps the parameters live at the snapshots above.
-        let _live = (a, &ab, b, &bc, c);
     }
 
     #[thrust_macros::predicate]
@@ -393,11 +391,11 @@ impl FromIterator<u32> for Vec<u32> {
 }
 
 // Creusot: `proof_assert! { x@.len() == v@.len() }; proof_assert! { x@.ext_eq(v@) };
-// proof_assert! { cnt@ == x@.len() }`, with `x` and `cnt` returned. Unsat: `cnt` is `x.len()`, not
+// proof_assert! { cnt@ == x@.len() }`, with `x` and `cnt` returned. Unsat: element `k` of `x` is `v[k]`, not
 // one more.
 #[thrust_macros::ensures(result.0.len() == v.len()
-    && forall(|k: Int| 0 <= k && k < result.0.len() ==> result.0[k] == v[k])
-    && result.1 == result.0.len() + 1)]
+    && forall(|k: Int| 0 <= k && k < result.0.len() ==> result.0[k] == v[k] + 1)
+    && result.1 == result.0.len())]
 fn counter(v: Vec<u32>) -> (Vec<u32>, usize) {
     let mut cnt: usize = 0;
     let f = thrust_macros::closure!(
