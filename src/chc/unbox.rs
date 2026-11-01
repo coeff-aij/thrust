@@ -258,7 +258,20 @@ pub fn unbox(system: System) -> System {
         user_quantified_var_count,
         self_defined_pred_vars,
         user_quantified_var_names,
+        generic_unknown_preds,
+        instance_ties,
     } = system;
+    let instance_ties = instance_ties
+        .into_iter()
+        .map(|tie| InstanceTie {
+            definitions: tie
+                .definitions
+                .into_iter()
+                .map(|(pred, definition)| (unbox_forall_pred_var_def(pred), definition))
+                .collect(),
+            ..tie
+        })
+        .collect();
     let datatypes = datatypes.into_iter().map(unbox_datatype).collect();
     let clauses = clauses.into_iter().map(unbox_clause).collect();
     let pred_vars = pred_vars.into_iter().map(unbox_pred_var_def).collect();
@@ -299,5 +312,7 @@ pub fn unbox(system: System) -> System {
         user_quantified_var_count,
         self_defined_pred_vars,
         user_quantified_var_names,
+        generic_unknown_preds,
+        instance_ties,
     }
 }

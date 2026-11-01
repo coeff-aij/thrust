@@ -48,6 +48,9 @@ pub struct FormatContext {
     builtin_sorts: HashMap<chc::DatatypeSymbol, chc::Sort>,
     /// Sizes of the consecutive groups in `datatypes`; see [`group_by_dependency`].
     datatype_group_sizes: Vec<usize>,
+    /// The universals each generic unknown takes before its own arguments; see
+    /// [`chc::System::generic_unknown_universals`].
+    explicit_args: HashMap<chc::UserDefinedPred, Vec<String>>,
 }
 
 // FIXME: this is obviously ineffective and should be replaced
@@ -584,7 +587,22 @@ impl FormatContext {
             datatypes,
             builtin_sorts,
             datatype_group_sizes,
+            explicit_args: system
+                .user_defined_pred_defs
+                .iter()
+                .filter(|d| system.is_generic_unknown_pred(&d.symbol))
+                .map(|d| {
+                    let universals = system.generic_unknown_universals(&d.symbol);
+                    let names = universals.iter().map(format_forall_pred_name).collect();
+                    (d.symbol.clone(), names)
+                })
+                .collect(),
         }
+    }
+
+    /// The universals `pred` takes before its own arguments, if it is a generic unknown.
+    pub fn explicit_args(&self, pred: &chc::UserDefinedPred) -> Option<&[String]> {
+        self.explicit_args.get(pred).map(Vec::as_slice)
     }
 
     /// Each symbol the query declares for a datatype, as the query writes it, with what it stands
