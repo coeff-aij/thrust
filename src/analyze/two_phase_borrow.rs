@@ -8,6 +8,8 @@
 //! `copy p`, which Thrust reborrows as well; such a copy into a local used once is moved the same
 //! way. When a pointer `place` goes through is overwritten before the activation
 //! (`p.0.set({ p = &mut b; 5 })`), the borrow is created before the first such write instead.
+//! The borrow of a slice element (`s[0].bump(s[1])`) is created at the same point by the
+//! reconstruction of its `IndexMut::index_mut` call, which runs first.
 
 use std::collections::{HashMap, HashSet};
 
@@ -78,54 +80,75 @@ fn is_mut_ref<'tcx>(tcx: TyCtxt<'tcx>, body: &Body<'tcx>, place: &Place<'tcx>) -
     )
 }
 
+/// Where [`move_to_activation`] creates the two-phase borrow `_t = &mut place` at `location`, when
+/// it moves the borrow there.
+pub fn moved_creation_point<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    body: &Body<'tcx>,
+    location: Location,
+) -> Option<Location> {
+    let reservation = reservations(tcx, body)
+        .into_iter()
+        .find(|reservation| reservation.location == location && !reservation.copied)?;
+    let temp_uses = temp_uses(body, std::slice::from_ref(&reservation));
+    planned_move(body, &reservation, &temp_uses)?.to
+}
+
 fn plan<'tcx>(body: &Body<'tcx>, reservations: Vec<Reservation<'tcx>>) -> Vec<Move> {
     let temp_uses = temp_uses(body, &reservations);
-    let mut moves = Vec::new();
-    for reservation in reservations {
-        let uses: Vec<Location> = temp_uses[&reservation.temp]
-            .iter()
-            .copied()
-            .filter(|location| *location != reservation.location)
-            .collect();
-        if reservation.copied && uses.len() != 1 {
-            continue;
-        }
-        let Some(activation) = activation(body, &reservation, &uses) else {
-            moves.push(Move {
-                from: reservation.location,
-                to: None,
-            });
-            continue;
-        };
-        if reservation.copied && repeats_without(body, reservation.location, activation) {
-            continue;
-        }
-        let between = Between::visit(body, &reservation, activation);
-        if !between.reads_lender {
-            continue;
-        }
-        let to = creation_point(body, &between.address_writes, activation).unwrap_or_else(|| {
-            unimplemented!(
-                "two-phase borrow of {:?}: the pointers it goes through are overwritten on several paths",
-                reservation.place
-            )
-        });
-        assert!(
-            !repeats_without(body, reservation.location, to),
-            "two-phase borrow of {:?}: it would be created again in a loop",
-            reservation.place
-        );
-        assert!(
-            !reads_overlapping_at(body, reservation.place, to),
-            "two-phase borrow of {:?}: the borrowed place is read where the borrow is created",
-            reservation.place
-        );
-        moves.push(Move {
-            from: reservation.location,
-            to: Some(to),
-        });
+    reservations
+        .iter()
+        .filter_map(|reservation| planned_move(body, reservation, &temp_uses))
+        .collect()
+}
+
+/// The move of the reservation's borrow, or `None` when it stays where it is.
+fn planned_move<'tcx>(
+    body: &Body<'tcx>,
+    reservation: &Reservation<'tcx>,
+    temp_uses: &HashMap<Local, Vec<Location>>,
+) -> Option<Move> {
+    let uses: Vec<Location> = temp_uses[&reservation.temp]
+        .iter()
+        .copied()
+        .filter(|location| *location != reservation.location)
+        .collect();
+    if reservation.copied && uses.len() != 1 {
+        return None;
     }
-    moves
+    let Some(activation) = activation(body, reservation, &uses) else {
+        return Some(Move {
+            from: reservation.location,
+            to: None,
+        });
+    };
+    if reservation.copied && repeats_without(body, reservation.location, activation) {
+        return None;
+    }
+    let between = Between::visit(body, reservation, activation);
+    if !between.reads_lender {
+        return None;
+    }
+    let to = creation_point(body, &between.address_writes, activation).unwrap_or_else(|| {
+        unimplemented!(
+            "two-phase borrow of {:?}: the pointers it goes through are overwritten on several paths",
+            reservation.place
+        )
+    });
+    assert!(
+        !repeats_without(body, reservation.location, to),
+        "two-phase borrow of {:?}: it would be created again in a loop",
+        reservation.place
+    );
+    assert!(
+        !reads_overlapping_at(body, reservation.place, to),
+        "two-phase borrow of {:?}: the borrowed place is read where the borrow is created",
+        reservation.place
+    );
+    Some(Move {
+        from: reservation.location,
+        to: Some(to),
+    })
 }
 
 /// Whether `to` can run again after itself without `from` running in between, as in a loop

@@ -11,6 +11,7 @@ use rustc_span::source_map::Spanned;
 use rustc_span::{sym, Symbol};
 
 use crate::analyze;
+use crate::analyze::two_phase_borrow;
 
 /// The bounds-check block emitted for an indexing expression.
 struct BoundsCheck<'tcx> {
@@ -26,6 +27,7 @@ struct BoundsCheck<'tcx> {
 
 /// The slice access in the target of a [`BoundsCheck`].
 struct SliceAccess<'tcx> {
+    location: mir::Location,
     indexed_place: mir::Place<'tcx>,
     receiver: mir::Place<'tcx>,
     receiver_mutability: mir_ty::Mutability,
@@ -38,7 +40,7 @@ struct IndexedPlaceFinder<'a, 'tcx> {
     body: &'a Body<'tcx>,
     tcx: TyCtxt<'tcx>,
     index: Local,
-    found: Option<(mir::Place<'tcx>, bool)>,
+    found: Option<(mir::Location, mir::Place<'tcx>, bool)>,
 }
 
 impl<'tcx> mir::visit::Visitor<'tcx> for IndexedPlaceFinder<'_, 'tcx> {
@@ -46,7 +48,7 @@ impl<'tcx> mir::visit::Visitor<'tcx> for IndexedPlaceFinder<'_, 'tcx> {
         &mut self,
         place: &mir::Place<'tcx>,
         context: mir::visit::PlaceContext,
-        _location: mir::Location,
+        location: mir::Location,
     ) {
         if self.found.is_some() {
             return;
@@ -74,7 +76,7 @@ impl<'tcx> mir::visit::Visitor<'tcx> for IndexedPlaceFinder<'_, 'tcx> {
             base.ty(&self.body.local_decls, self.tcx).ty.kind(),
             mir_ty::TyKind::Slice(_)
         ) {
-            self.found = Some((indexed, context.is_mutating_use()));
+            self.found = Some((location, indexed, context.is_mutating_use()));
         }
     }
 }
@@ -140,7 +142,11 @@ impl<'tcx> mir::visit::Visitor<'tcx> for ReadFinder {
 /// The analyzer therefore applies the registered trait-method type and remains independent of
 /// the model selected for slices.
 pub fn reconstruct<'tcx>(tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
-    for block in body.basic_blocks.indices().collect::<Vec<_>>() {
+    // A block split off by `reconstruct_at_activation` may end in a bounds check.
+    let mut next = 0;
+    while next < body.basic_blocks.len() {
+        let block = BasicBlock::from_usize(next);
+        next += 1;
         let Some(bounds_check) = find_bounds_check(body, block) else {
             continue;
         };
@@ -164,7 +170,10 @@ pub fn reconstruct<'tcx>(tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
             mutable = access.mutable,
             "reconstructing a trait method call from slice indexing"
         );
-        reconstruct_access(tcx, body, bounds_check, access);
+        match two_phase_borrow::moved_creation_point(tcx, body, access.location) {
+            Some(creation) => reconstruct_at_activation(tcx, body, bounds_check, access, creation),
+            None => reconstruct_access(tcx, body, bounds_check, access),
+        }
     }
 }
 
@@ -219,7 +228,7 @@ fn find_slice_access<'tcx>(
         found: None,
     };
     finder.visit_basic_block_data(bounds_check.target, &body.basic_blocks[bounds_check.target]);
-    let (indexed_place, mutable) = finder.found?;
+    let (location, indexed_place, mutable) = finder.found?;
 
     // The indexed place has the shape `receiver.*[index]`; strip the dereference and index to
     // recover the reference passed to `Index::index` or `IndexMut::index_mut`.
@@ -246,6 +255,7 @@ fn find_slice_access<'tcx>(
     }
 
     Some(SliceAccess {
+        location,
         indexed_place,
         receiver,
         receiver_mutability: *receiver_mutability,
@@ -261,12 +271,101 @@ fn reconstruct_access<'tcx>(
     bounds_check: BoundsCheck<'tcx>,
     access: SliceAccess<'tcx>,
 ) {
+    let result_local = insert_index_call(
+        tcx,
+        body,
+        &bounds_check,
+        &access,
+        access.mutable,
+        bounds_check.block,
+        bounds_check.target,
+    );
+    replace_indexed_place(
+        body,
+        tcx,
+        bounds_check.target,
+        access.indexed_place,
+        result_local,
+    );
+    remove_bounds_check_setup(body, &bounds_check);
+}
+
+/// Reconstructs an access that is a two-phase `&mut` borrow `_t = &mut (*r)[i]` (an autoref'd
+/// receiver) whose arguments read the sequence, as in `s[0].bump(s[1])`.
+///
+/// As rustc's borrow checker does, the reservation acts as a shared borrow and the mutable borrow
+/// starts at the activation: the bounds check becomes an `Index::index` call, and the
+/// `IndexMut::index_mut` call and the borrow of its result are placed where
+/// `two_phase_borrow` would create the borrow, so that the reads in between see the sequence's
+/// current value rather than the prophecy of the mutable borrow.
+fn reconstruct_at_activation<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    body: &mut Body<'tcx>,
+    bounds_check: BoundsCheck<'tcx>,
+    access: SliceAccess<'tcx>,
+    creation: mir::Location,
+) {
+    insert_index_call(
+        tcx,
+        body,
+        &bounds_check,
+        &access,
+        false,
+        bounds_check.block,
+        bounds_check.target,
+    );
+    let reservation = std::mem::replace(
+        &mut body.basic_blocks.as_mut()[access.location.block].statements
+            [access.location.statement_index],
+        mir::Statement::new(bounds_check.source_info, StatementKind::Nop),
+    );
+    let rest = split_before(body, creation);
+    let result_local = insert_index_call(
+        tcx,
+        body,
+        &bounds_check,
+        &access,
+        true,
+        creation.block,
+        rest,
+    );
+    body.basic_blocks.as_mut()[rest]
+        .statements
+        .insert(0, reservation);
+    replace_indexed_place(body, tcx, rest, access.indexed_place, result_local);
+    remove_bounds_check_setup(body, &bounds_check);
+}
+
+/// Moves the statements of `location`'s block from `location` on, and its terminator, to a new
+/// block, which is returned; the caller ends the old block with a jump to it.
+fn split_before(body: &mut Body<'_>, location: mir::Location) -> BasicBlock {
+    let blocks = body.basic_blocks.as_mut();
+    let data = &mut blocks[location.block];
+    let statements = data.statements.split_off(location.statement_index);
+    let terminator = data.terminator.take();
+    let is_cleanup = data.is_cleanup;
+    blocks.push(mir::BasicBlockData::new_stmts(
+        statements, terminator, is_cleanup,
+    ))
+}
+
+/// Ends `block` with the `Index::index` or `IndexMut::index_mut` call for the access, returning
+/// to `target`, and returns the local that holds the call's result.
+fn insert_index_call<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    body: &mut Body<'tcx>,
+    bounds_check: &BoundsCheck<'tcx>,
+    access: &SliceAccess<'tcx>,
+    mutable: bool,
+    block: BasicBlock,
+    target: BasicBlock,
+) -> Local {
     let region = mir_ty::Region::new_from_kind(tcx, mir_ty::RegionKind::ReErased);
     let result_ty = mir_ty::Ty::new_ref(
         tcx,
         region,
         access.elem_ty,
-        if access.mutable {
+        if mutable {
             mir_ty::Mutability::Mut
         } else {
             mir_ty::Mutability::Not
@@ -275,17 +374,9 @@ fn reconstruct_access<'tcx>(
     let result_local = body
         .local_decls
         .push(mir::LocalDecl::new(result_ty, bounds_check.source_info.span).immutable());
+    let receiver = receiver_operand(tcx, body, bounds_check, access, mutable, block, region);
 
-    replace_indexed_place(
-        body,
-        tcx,
-        bounds_check.target,
-        access.indexed_place,
-        result_local,
-    );
-    let receiver = receiver_operand(tcx, body, &bounds_check, &access, region);
-
-    let (lang_item, method_name) = if access.mutable {
+    let (lang_item, method_name) = if mutable {
         (LangItem::IndexMut, sym::index_mut)
     } else {
         (LangItem::Index, sym::index)
@@ -302,20 +393,20 @@ fn reconstruct_access<'tcx>(
         .collect::<Vec<_>>()
         .into_boxed_slice();
 
-    body.basic_blocks.as_mut()[bounds_check.block].terminator = Some(mir::Terminator {
+    body.basic_blocks.as_mut()[block].terminator = Some(mir::Terminator {
         source_info: bounds_check.source_info,
         kind: TerminatorKind::Call {
             func,
             args: call_args,
             destination: result_local.into(),
-            target: Some(bounds_check.target),
+            target: Some(target),
             unwind: bounds_check.unwind,
             call_source: mir::CallSource::Normal,
             fn_span: bounds_check.source_info.span,
         },
     });
     tracing::trace!(?result_local, ?method, "slice indexing call inserted");
-    remove_bounds_check_setup(body, &bounds_check);
+    result_local
 }
 
 /// Replaces every use of the indexed place in the target block with `*result_local`.
@@ -338,20 +429,23 @@ fn replace_indexed_place<'tcx>(
     }
 }
 
-/// Builds the receiver operand, inserting a shared reborrow when indexing through `&mut [T]`.
+/// Builds the receiver operand, inserting a shared reborrow at the end of `block` when indexing
+/// through `&mut [T]`.
 fn receiver_operand<'tcx>(
     tcx: TyCtxt<'tcx>,
     body: &mut Body<'tcx>,
     bounds_check: &BoundsCheck<'tcx>,
     access: &SliceAccess<'tcx>,
+    mutable: bool,
+    block: BasicBlock,
     region: mir_ty::Region<'tcx>,
 ) -> Operand<'tcx> {
-    if !access.mutable && access.receiver_mutability.is_mut() {
+    if !mutable && access.receiver_mutability.is_mut() {
         let ty = mir_ty::Ty::new_ref(tcx, region, access.slice_ty, mir_ty::Mutability::Not);
         let local = body
             .local_decls
             .push(mir::LocalDecl::new(ty, bounds_check.source_info.span).immutable());
-        body.basic_blocks.as_mut()[bounds_check.block]
+        body.basic_blocks.as_mut()[block]
             .statements
             .push(mir::Statement::new(
                 bounds_check.source_info,
@@ -365,7 +459,7 @@ fn receiver_operand<'tcx>(
                 ))),
             ));
         Operand::Copy(local.into())
-    } else if access.mutable {
+    } else if mutable {
         Operand::Move(access.receiver)
     } else {
         Operand::Copy(access.receiver)
