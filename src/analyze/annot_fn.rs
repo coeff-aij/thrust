@@ -25,7 +25,7 @@ pub struct FormulaFn<'tcx> {
     param_idents: IndexVec<rty::FunctionParamIdx, Option<rustc_span::symbol::Ident>>,
     ret: mir_ty::Ty<'tcx>,
     body: FormulaFnBody,
-    pre_receivers: Vec<mir_ty::Ty<'tcx>>,
+    pre_receivers: Vec<(mir_ty::Ty<'tcx>, Polarity)>,
 }
 
 /// The translated body: a formula, or a term for a `#[thrust_macros::logic]` function.
@@ -93,8 +93,16 @@ impl<'tcx> FormulaFn<'tcx> {
     /// The types whose precondition the formula reads with `pre!`, at its generic arguments,
     /// directly or in the body of a predicate it calls: a closure or a type parameter for a
     /// closure receiver, a function item's type for a function.
-    pub fn pre_receivers(&self) -> &[mir_ty::Ty<'tcx>] {
-        &self.pre_receivers
+    ///
+    /// A receiver is listed only when every occurrence is positive ([`Polarity`]): a formula that
+    /// also reads its precondition elsewhere in another position is not monotone in it, so it
+    /// states nothing of it.
+    pub fn pre_receivers(&self) -> Vec<mir_ty::Ty<'tcx>> {
+        self.pre_receivers
+            .iter()
+            .filter(|(_, polarity)| *polarity == Polarity::Positive)
+            .map(|(ty, _)| *ty)
+            .collect()
     }
 
     pub fn params(&self) -> &IndexVec<rty::FunctionParamIdx, mir_ty::Ty<'tcx>> {
@@ -256,7 +264,7 @@ type QuantifiedBody = (
 /// `pre!` is read as a precondition the function states only where it is `Positive`: under a
 /// negation or on the left of an implication it constrains the function the other way, and where
 /// it is both (an operand of `==` or `!=`, a condition, an argument) it constrains it neither way.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Polarity {
     Positive,
     Negative,
@@ -264,6 +272,24 @@ enum Polarity {
 }
 
 impl Polarity {
+    /// The polarity of a position read in both of two positions of the same formula.
+    fn combine(self, other: Self) -> Self {
+        if self == other {
+            self
+        } else {
+            Polarity::Both
+        }
+    }
+
+    /// The polarity of a position of polarity `inner` inside one of polarity `self`.
+    fn compose(self, inner: Self) -> Self {
+        match (self, inner) {
+            (Polarity::Both, _) | (_, Polarity::Both) => Polarity::Both,
+            (outer, Polarity::Positive) => outer,
+            (outer, Polarity::Negative) => outer.flipped(),
+        }
+    }
+
     fn flipped(self) -> Self {
         match self {
             Polarity::Positive => Polarity::Negative,
@@ -287,7 +313,7 @@ pub struct AnnotFnTranslator<'a, 'tcx> {
     type_builder: TypeBuilder<'tcx>,
     env: HashMap<HirId, chc::Term<rty::FunctionParamIdx>>,
     /// [`FormulaFn::pre_receivers`], shared with the translators of quantifier bodies.
-    pre_receivers: Rc<RefCell<Vec<mir_ty::Ty<'tcx>>>>,
+    pre_receivers: Rc<RefCell<Vec<(mir_ty::Ty<'tcx>, Polarity)>>>,
     /// The [`Polarity`] of the subformula being translated, shared with the translators of
     /// quantifier bodies.
     polarity: Rc<Cell<Polarity>>,
@@ -1155,14 +1181,17 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
     }
 
     /// Records that the formula reads the precondition of `ty` ([`FormulaFn::pre_receivers`]).
+    /// A receiver read in several positions has their combination ([`Polarity::combine`]).
     fn record_pre_receiver(&self, ty: mir_ty::Ty<'tcx>) {
-        if self.polarity.get() != Polarity::Positive {
-            return;
-        }
+        self.record_pre_receiver_at(ty, self.polarity.get());
+    }
+
+    fn record_pre_receiver_at(&self, ty: mir_ty::Ty<'tcx>, polarity: Polarity) {
         let ty = self.tcx.erase_regions(ty);
         let mut receivers = self.pre_receivers.borrow_mut();
-        if !receivers.contains(&ty) {
-            receivers.push(ty);
+        match receivers.iter_mut().find(|(known, _)| *known == ty) {
+            Some((_, known)) => *known = known.combine(polarity),
+            None => receivers.push((ty, polarity)),
         }
     }
 
@@ -2274,8 +2303,11 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                                             owner_fn_id,
                                         )
                                     });
-                                    for ty in body.iter().flat_map(|body| body.pre_receivers()) {
-                                        self.record_pre_receiver(*ty);
+                                    for (ty, polarity) in
+                                        body.iter().flat_map(|body| &body.pre_receivers)
+                                    {
+                                        let at_call = self.polarity.get().compose(*polarity);
+                                        self.record_pre_receiver_at(*ty, at_call);
                                     }
                                     pred.into()
                                 }

@@ -163,7 +163,7 @@ impl<'tcx> analyze::Analyzer<'tcx> {
             });
         StatedPres {
             receivers: formula_fn
-                .map(|formula_fn| formula_fn.pre_receivers().to_vec())
+                .map(|formula_fn| formula_fn.pre_receivers())
                 .unwrap_or_default(),
         }
     }
