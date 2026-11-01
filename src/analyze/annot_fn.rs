@@ -219,19 +219,6 @@ impl<T> FormulaOrTerm<T> {
         };
         Some(t)
     }
-
-    /// Whether [`FormulaOrTerm::into_term`] succeeds: false when a part is a formula, such as a
-    /// predicate call, which has no term form.
-    fn has_term_form(&self) -> bool {
-        match self {
-            FormulaOrTerm::Formula(_) => false,
-            FormulaOrTerm::Term(_) | FormulaOrTerm::BinOp(..) | FormulaOrTerm::Literal(_) => true,
-            FormulaOrTerm::And(lhs, rhs)
-            | FormulaOrTerm::Or(lhs, rhs)
-            | FormulaOrTerm::Implies(lhs, rhs) => lhs.has_term_form() && rhs.has_term_form(),
-            FormulaOrTerm::Not(operand) => operand.has_term_form(),
-        }
-    }
 }
 
 impl<T: Clone> FormulaOrTerm<T> {
@@ -817,8 +804,10 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             self.tcx.dcx().span_fatal(
                 hir.span,
                 "thrust: a predicate call, `pre!`, `post!`, quantifier or `match` in a \
-                 specification is a formula, not a value: it can be an operand of `&&`, `||`, `!`, \
-                 `==` or `!=`, or the condition of an `if` whose branches are Boolean",
+                 specification is a formula, not a value: in a `requires`, `ensures`, predicate or \
+                 quantifier body it can be an operand of `&&`, `||`, `!`, `==` or `!=`, or the \
+                 condition of an `if` whose branches are Boolean; it cannot be the value of a \
+                 `#[logic]` function or an argument of a call",
             );
         };
         term
@@ -1615,14 +1604,16 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 }
                 let [cond, then, els] =
                     [cond, then_expr, else_expr].map(|part| self.to_formula_or_term(part));
-                if !(cond.has_term_form() && then.has_term_form() && els.has_term_form()) {
-                    return FormulaOrTerm::Formula(FormulaOrTerm::formula_ite(cond, then, els));
+                match (
+                    cond.clone().into_term(),
+                    then.clone().into_term(),
+                    els.clone().into_term(),
+                ) {
+                    (Some(cond), Some(then), Some(els)) => {
+                        FormulaOrTerm::Term(chc::Term::ite(cond, then, els))
+                    }
+                    _ => FormulaOrTerm::Formula(FormulaOrTerm::formula_ite(cond, then, els)),
                 }
-                FormulaOrTerm::Term(chc::Term::ite(
-                    cond.into_term().unwrap(),
-                    then.into_term().unwrap(),
-                    els.into_term().unwrap(),
-                ))
             }
             ExprKind::Unary(op, operand) => match op {
                 rustc_hir::UnOp::Neg => {
@@ -1779,18 +1770,15 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                     };
                     let (lhs_ty, lhs) = self.log_eq_operand(lhs);
                     let (rhs_ty, rhs) = self.log_eq_operand(rhs);
-                    if !(lhs.has_term_form() && rhs.has_term_form()) {
+                    let (Some(lhs_term), Some(rhs_term)) =
+                        (lhs.clone().into_term(), rhs.clone().into_term())
+                    else {
                         let eq = matches!(binop, AmbiguousBinOp::Eq);
                         return FormulaOrTerm::Formula(FormulaOrTerm::formula_equality(
                             lhs, eq, rhs,
                         ));
-                    }
-                    return self.equality(
-                        hir.span,
-                        (lhs_ty, lhs.into_term().unwrap()),
-                        binop,
-                        (rhs_ty, rhs.into_term().unwrap()),
-                    );
+                    };
+                    return self.equality(hir.span, (lhs_ty, lhs_term), binop, (rhs_ty, rhs_term));
                 }
                 if let Some(def_id) = self.typeck.type_dependent_def_id(hir.hir_id) {
                     if Some(def_id) == self.def_ids.array_model_store() {
