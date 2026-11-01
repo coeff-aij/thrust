@@ -56,7 +56,14 @@ impl<'tcx> Analyzer<'tcx, '_> {
         let Some((contract_def_id, contract_args)) = contract else {
             return;
         };
-        let stated = self.ctx.stated_pres(contract_def_id);
+        let stated = self.ctx.stated_pres(
+            contract_def_id,
+            contract_args,
+            self.type_builder.owner_fn_id(),
+        );
+        for function in stated.functions() {
+            self.record_covered(HandedOver::Function(function), def_id, resolved_def_id);
+        }
         for param in self.iterator_spec_params(contract_def_id) {
             let ty = mir_ty::EarlyBinder::bind(param.to_ty(self.tcx))
                 .instantiate(self.tcx, contract_args);
@@ -76,7 +83,7 @@ impl<'tcx> Analyzer<'tcx, '_> {
                 .instantiate(self.tcx, contract_args);
             let ty = self.tcx.erase_regions(ty);
             self.record_handover(ty, def_id, resolved_def_id);
-            if stated.names_param(param.name) {
+            if stated.names(ty) {
                 continue;
             }
             for (idx, operand) in operands.iter().enumerate() {
@@ -173,7 +180,6 @@ impl<'tcx> Analyzer<'tcx, '_> {
     /// Records that the closure `ty` stands for is handed over at a call of `def_id`, which
     /// resolves to `resolved_def_id`.
     fn record_handover(&mut self, ty: mir_ty::Ty<'tcx>, def_id: DefId, resolved_def_id: DefId) {
-        let owner = self.local_def_id.to_def_id();
         let handed_over = match *peel_refs(ty).kind() {
             mir_ty::TyKind::Closure(def_id, _) => HandedOver::Closure(def_id),
             mir_ty::TyKind::Param(param) => {
@@ -181,10 +187,15 @@ impl<'tcx> Analyzer<'tcx, '_> {
             }
             _ => return,
         };
-        self.ctx.record_handover(owner, def_id, handed_over);
+        self.record_covered(handed_over, def_id, resolved_def_id);
+    }
+
+    /// Records that the call of `def_id`, which resolves to `resolved_def_id`, covers `covered`.
+    fn record_covered(&mut self, covered: HandedOver, def_id: DefId, resolved_def_id: DefId) {
+        let owner = self.local_def_id.to_def_id();
+        self.ctx.record_handover(owner, def_id, covered);
         if resolved_def_id != def_id {
-            self.ctx
-                .record_handover(owner, resolved_def_id, handed_over);
+            self.ctx.record_handover(owner, resolved_def_id, covered);
         }
     }
 

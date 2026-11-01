@@ -1,4 +1,6 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use pretty::{termcolor, Pretty};
 use rustc_hir::pat_util::EnumerateAndAdjustIterator as _;
@@ -23,6 +25,7 @@ pub struct FormulaFn<'tcx> {
     param_idents: IndexVec<rty::FunctionParamIdx, Option<rustc_span::symbol::Ident>>,
     ret: mir_ty::Ty<'tcx>,
     body: FormulaFnBody,
+    pre_receivers: Vec<mir_ty::Ty<'tcx>>,
 }
 
 /// The translated body: a formula, or a term for a `#[thrust_macros::logic]` function.
@@ -85,6 +88,13 @@ impl<'tcx> FormulaFn<'tcx> {
 
     pub fn ret(&self) -> mir_ty::Ty<'tcx> {
         self.ret
+    }
+
+    /// The types whose precondition the formula reads with `pre!`, at its generic arguments,
+    /// directly or in the body of a predicate it calls: a closure or a type parameter for a
+    /// closure receiver, a function item's type for a function.
+    pub fn pre_receivers(&self) -> &[mir_ty::Ty<'tcx>] {
+        &self.pre_receivers
     }
 
     pub fn params(&self) -> &IndexVec<rty::FunctionParamIdx, mir_ty::Ty<'tcx>> {
@@ -232,6 +242,8 @@ pub struct AnnotFnTranslator<'a, 'tcx> {
     def_ids: DefIdCache<'tcx>,
     type_builder: TypeBuilder<'tcx>,
     env: HashMap<HirId, chc::Term<rty::FunctionParamIdx>>,
+    /// [`FormulaFn::pre_receivers`], shared with the translators of quantifier bodies.
+    pre_receivers: Rc<RefCell<Vec<mir_ty::Ty<'tcx>>>>,
 }
 
 impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
@@ -264,6 +276,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             def_ids,
             type_builder,
             env: HashMap::default(),
+            pre_receivers: Rc::default(),
         };
         translator.build_env_from_params();
         translator
@@ -589,6 +602,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             param_idents,
             ret,
             body,
+            pre_receivers: self.pre_receivers.take(),
         }
     }
 
@@ -983,6 +997,15 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         args
     }
 
+    /// Records that the formula reads the precondition of `ty` ([`FormulaFn::pre_receivers`]).
+    fn record_pre_receiver(&self, ty: mir_ty::Ty<'tcx>) {
+        let ty = self.tcx.erase_regions(ty);
+        let mut receivers = self.pre_receivers.borrow_mut();
+        if !receivers.contains(&ty) {
+            receivers.push(ty);
+        }
+    }
+
     /// The values of a closure's parameters: the closure's first (RustCall) parameter is its
     /// upvars, which are the closure value itself, followed by the logical arguments.
     fn translate_closure_precondition(
@@ -991,10 +1014,14 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         args: &'tcx rustc_hir::Expr<'tcx>,
     ) -> FormulaOrTerm<rty::FunctionParamIdx> {
         if let Some(fn_ty) = self.fn_item_contract(receiver, true) {
+            self.record_pre_receiver(self.expr_ty(receiver));
             let args = self.fn_item_spec_args(args, &fn_ty);
             return FormulaOrTerm::Formula(fn_ty.precondition_formula(&args));
         }
         let receiver_ty = self.expr_ty(receiver);
+        if let Some(closure_ty) = self.receiver_closure_ty(receiver_ty) {
+            self.record_pre_receiver(closure_ty);
+        }
         let fn_ty = self
             .receiver_closure_fn_type(receiver_ty)
             .unwrap_or_else(|| {
@@ -2025,13 +2052,24 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                                             "a predicate cannot call itself; a recursive one is a #[thrust_macros::logic] function with #[thrust_macros::variant(..)]",
                                         );
                                     }
-                                    self.analyzer
-                                        .predicate_with_args(
-                                            instance.def_id(),
+                                    let owner_fn_id = self.type_builder.owner_fn_id();
+                                    let pred = self.analyzer.predicate_with_args(
+                                        instance.def_id(),
+                                        instance.args,
+                                        owner_fn_id,
+                                    );
+                                    // Its body was translated for the definition just made.
+                                    let body = instance.def_id().as_local().and_then(|local| {
+                                        self.analyzer.formula_fn_with_args(
+                                            local,
                                             instance.args,
-                                            self.type_builder.owner_fn_id(),
+                                            owner_fn_id,
                                         )
-                                        .into()
+                                    });
+                                    for ty in body.iter().flat_map(|body| body.pre_receivers()) {
+                                        self.record_pre_receiver(*ty);
+                                    }
+                                    pred.into()
                                 }
                             };
                             tracing::debug!("resolved predicate call in formula: {:?}", pred);
