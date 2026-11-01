@@ -66,7 +66,7 @@ impl IteratorSpec for Up {
 }
 
 #[thrust::extern_spec_fn]
-#[thrust_macros::requires(it.n == 7)]
+#[thrust_macros::requires(it.n == 0)]
 #[thrust_macros::ensures(
     thrust_models::exists(|done: Up, fin: Up|
         <Up as IteratorSpec>::produces(it, result, done)
