@@ -408,12 +408,12 @@ impl Size {
     }
 }
 
-// Thrust cannot put a contract on an impl of an external trait (`#[thrust_macros::ensures]` on
-// `add` expands to `_thrust_ensures_add`, which is "not a member of trait `Add`"), so the
-// contracts of `add` and `add_assign` are on the `extern_spec_fn` wrappers below.
+#[thrust_macros::context]
 impl Add for Size {
     type Output = Size;
     #[inline]
+    #[thrust_macros::requires(self.raw + other.raw <= u64::MAX)]
+    #[thrust_macros::ensures(result.raw == self.raw + other.raw)]
     fn add(self, other: Size) -> Size {
         Size::from_bytes(self.bytes().checked_add(other.bytes()).unwrap_or_else(|| {
             panic!("Size::add: {} + {} doesn't fit in u64", self.bytes(), other.bytes())
@@ -421,22 +421,11 @@ impl Add for Size {
     }
 }
 
-#[thrust::extern_spec_fn]
-#[thrust_macros::requires(a.raw + b.raw <= u64::MAX)]
-#[thrust_macros::ensures(result.raw == a.raw + b.raw)]
-fn _extern_spec_size_add(a: Size, b: Size) -> Size {
-    <Size as Add>::add(a, b)
-}
-
-#[thrust::extern_spec_fn]
-#[thrust_macros::requires((*a).raw + b.raw <= u64::MAX)]
-#[thrust_macros::ensures((!a).raw == (*a).raw + b.raw)]
-fn _extern_spec_size_add_assign(a: &mut Size, b: Size) {
-    <Size as AddAssign>::add_assign(a, b)
-}
-
+#[thrust_macros::context]
 impl AddAssign for Size {
     #[inline]
+    #[thrust_macros::requires((*self).raw + other.raw <= u64::MAX)]
+    #[thrust_macros::ensures((!self).raw == (*self).raw + other.raw)]
     fn add_assign(&mut self, other: Size) {
         *self = *self + other;
     }
