@@ -1109,6 +1109,16 @@ impl<'tcx> Analyzer<'tcx> {
         self.impl_methods_with_own_contract.contains(&def_id)
     }
 
+    /// Whether a call of the trait method `def_id` that resolves to `resolved_def_id` is typed
+    /// with the trait method's contract: `resolved_def_id` is a local impl method without a
+    /// contract of its own, and the trait writes one.
+    pub fn takes_trait_contract(&self, def_id: DefId, resolved_def_id: DefId) -> bool {
+        resolved_def_id != def_id
+            && resolved_def_id.is_local()
+            && !self.has_own_impl_contract(resolved_def_id)
+            && self.trait_method_contract_written(def_id)
+    }
+
     /// Stops if a function Thrust verifies can run an ignored function of the crate, as Verus's
     /// verified code may not use an `#[verifier::external]` item. An ignored function is
     /// invisible to the analysis, so a contract the verified code relies on it to meet (the

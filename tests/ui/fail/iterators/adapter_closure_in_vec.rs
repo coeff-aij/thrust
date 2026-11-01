@@ -67,5 +67,5 @@ fn main() {
     let mut others = Vec::new();
     others.push(f);
     let mut k = Keep { cur: 0, end: 3, pred: f, others };
-    let _ = k.next(); //~ ERROR: where Thrust cannot follow it
+    let _ = k.next(); //~ ERROR: in the `requires` of `std::iter::Iterator::next`
 }
