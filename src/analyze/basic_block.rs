@@ -2950,7 +2950,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     .formula_fn_with_args(
                         formula_def_id,
                         generic_args,
-                        self.local_def_id.to_def_id(),
+                        self.type_builder.owner_fn_id(),
                     )
                     .expect("ghost formula function is not registered");
                 self.type_ghost_value(formula_fn, &rty);
