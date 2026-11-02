@@ -17,5 +17,5 @@ fn main() {
             List::Nil => 0,
         }
     });
-    assert!(r.is_some());
+    assert!(r == Some(1));
 }

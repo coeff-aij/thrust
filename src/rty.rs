@@ -460,9 +460,10 @@ impl PartVars<'_> {
 /// in its payload. One met again in its own payload (`enclosing`), or nested past
 /// [`ENUM_NESTING_LIMIT`], is one no finite formula follows through its payloads: the
 /// refinements of each of its type arguments are stated of every value of the argument's type
-/// instead ([`every_value_formula`]), as subtyping against an argument without refinement
-/// requires, which recurses over the arguments' types and so ends. The index and the elements of
-/// an array are stated so too.
+/// instead ([`every_value_formula`]), which recurses over the arguments' types and so ends. That
+/// requires more than the body assumes of the payloads: it is sound, and an unknown can still be
+/// taken `true`, but a written refinement there makes the precondition false. The index and the
+/// elements of an array are stated so too.
 ///
 /// A function type inside `ty` (a function pointer) is not stated: a value of a function type
 /// has no term to state its template's contract of, which only a direct call's subtyping relates
