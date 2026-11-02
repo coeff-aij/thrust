@@ -31,21 +31,6 @@ enum Calls {
     Repeatedly,
 }
 
-/// An analyzed call that hands closures over to code Thrust does not analyze.
-struct HandOver<'a, 'tcx> {
-    /// The function called, with its generic arguments.
-    def_id: DefId,
-    args: mir_ty::GenericArgsRef<'tcx>,
-    /// The call's arguments and their types.
-    operands: &'a [Operand<'tcx>],
-    operand_tys: &'a IndexVec<rty::FunctionParamIdx, rty::RefinedType<Var>>,
-    /// What the `requires` the call is checked against reads the precondition of.
-    stated: &'a StatedPres<'tcx>,
-    /// The function the contract is of, and the one in whose `requires` a stop asks to state a
-    /// `pre!`.
-    handed: (DefId, DefId),
-}
-
 /// Whether a struct or enum of the crate in `ty` holds the closure type `closure` among its
 /// type arguments: a user adapter, whose `inv` holds only where a call discharges it.
 fn crate_adapter_holds<'tcx>(ty: mir_ty::Ty<'tcx>, closure: mir_ty::Ty<'tcx>) -> bool {
@@ -123,14 +108,6 @@ impl<'tcx> Analyzer<'tcx, '_> {
             let function = HandedOver::Function(function, function_args);
             self.record_covered(function, def_id, args);
         }
-        let call = HandOver {
-            def_id,
-            args,
-            operands,
-            operand_tys,
-            stated: &stated,
-            handed: (contract_def_id, requires_of),
-        };
         for param in self.iterator_spec_params(contract_def_id) {
             let ty = mir_ty::EarlyBinder::bind(param.to_ty(self.tcx))
                 .instantiate(self.tcx, contract_args);
@@ -140,11 +117,19 @@ impl<'tcx> Analyzer<'tcx, '_> {
             // another argument holds, whatever its type.
             let others = self.operands_not_at(contract_def_id, param, operands);
             for closure in closures_in(ty) {
-                if crate_adapter_holds(ty, closure) {
-                    self.hand_over_values(closure, Calls::Repeatedly, &call);
-                } else {
+                if !crate_adapter_holds(ty, closure) {
                     self.record_handover(closure, def_id, args);
                     self.record_handover_count(closure, def_id, args, others.clone(), 0);
+                    continue;
+                }
+                // A user adapter's closure is covered only by a `pre!` the `requires` states, as
+                // a `requires` of the adapter's `inv` does when `inv` states it. Otherwise it is
+                // left to the walk over unanalyzed code, which stops where that code runs it: a
+                // callee that only wraps the iterator (`skip`) does not.
+                let operand_types = self.operand_types(operands);
+                if self.states_pre_of_one(closure, &operand_types, &stated) {
+                    self.record_handover(closure, def_id, args);
+                    self.record_handover_count(closure, def_id, args, operand_types, 1);
                 }
             }
         }
@@ -152,38 +137,42 @@ impl<'tcx> Analyzer<'tcx, '_> {
             let ty = mir_ty::EarlyBinder::bind(param.to_ty(self.tcx))
                 .instantiate(self.tcx, contract_args);
             let ty = self.tcx.erase_regions(ty);
-            self.hand_over_values(ty, calls, &call);
+            self.record_handover(ty, def_id, args);
+            // `stated` records types, not values, so a `pre!` stated of a value of `ty` counts
+            // only when the arguments hold exactly one: itself, behind references and boxes, or
+            // in a field of a struct or tuple (the function of an iterator adapter), not a second
+            // value of `ty`, nor one inside a collection. Otherwise each value is handed over with
+            // its obligation. A type parameter here may stand for a type holding more values, so
+            // the walk over unanalyzed code counts them again at each instance of the caller
+            // ([`HandoverCount`]).
+            let operand_types = self.operand_types(operands);
+            let accounted = if self.states_pre_of_one(ty, &operand_types, &stated) {
+                1
+            } else {
+                let holders = self.holders(ty, operands);
+                for (idx, held, derefs) in &holders {
+                    let handed = (contract_def_id, requires_of);
+                    self.hand_over(ty, calls, &operand_tys[*idx], *held, *derefs, handed);
+                }
+                holders.len()
+            };
+            self.record_handover_count(ty, def_id, args, operand_types, accounted);
         }
     }
 
-    /// Hands over the values of the closure type `ty` that the arguments of `call` hold, which
-    /// its callee may call as `calls` says. The call records that it hands over `ty`.
-    ///
-    /// `stated` records types, not values, so a `pre!` the callee's `requires` states of a value
-    /// of `ty` counts only when the arguments hold exactly one: itself, behind references and
-    /// boxes, or in a field of a struct or tuple (the function of an iterator adapter), not a
-    /// second value of `ty`, nor one inside a collection. Otherwise each value is handed over with
-    /// its obligation. A type parameter here may stand for a type holding more values, so the
-    /// walk over unanalyzed code counts them again at each instance of the caller
-    /// ([`HandoverCount`]).
-    fn hand_over_values(&mut self, ty: mir_ty::Ty<'tcx>, calls: Calls, call: &HandOver<'_, 'tcx>) {
-        self.record_handover(ty, call.def_id, call.args);
-        let operand_types = self.operand_types(call.operands);
+    /// Whether `stated` reads the `pre!` of the closure type `ty` and arguments of the types
+    /// `operand_types` hold exactly one value of it, which the `pre!` is then stated of.
+    fn states_pre_of_one(
+        &self,
+        ty: mir_ty::Ty<'tcx>,
+        operand_types: &[mir_ty::Ty<'tcx>],
+        stated: &StatedPres<'tcx>,
+    ) -> bool {
         let count = operand_types
             .iter()
             .map(|held| count_held(self.tcx, *held, ty))
             .sum::<Option<usize>>();
-        let accounted = if call.stated.names(ty) && count == Some(1) {
-            1
-        } else {
-            let holders = self.holders(ty, call.operands);
-            for (idx, held, derefs) in &holders {
-                let operand_ty = &call.operand_tys[*idx];
-                self.hand_over(ty, calls, operand_ty, *held, *derefs, call.handed);
-            }
-            holders.len()
-        };
-        self.record_handover_count(ty, call.def_id, call.args, operand_types, accounted);
+        stated.names(ty) && count == Some(1)
     }
 
     /// Records that the call of `def_id` at `args` states the obligation of `accounted` values
@@ -326,9 +315,9 @@ impl<'tcx> Analyzer<'tcx, '_> {
     /// state of a `Map` change. So it holds of every `Map` a callee receives, whether or not the
     /// callee's contract requires `inv` (a trusted consumer's need not). A user adapter's `inv`
     /// holds only where a call discharges it, so a closure a struct or enum of the crate holds is
-    /// handed over as a closure at an `Fn`-bounded parameter is ([`Self::hand_over_values`]):
-    /// covered when the callee's `requires` states its `pre!`, which a `requires` of the
-    /// adapter's `inv` does when `inv` states it positively, and otherwise with its obligation.
+    /// covered only when the callee's `requires` states its `pre!` of the one value of its type
+    /// the arguments hold, which a `requires` of the adapter's `inv` does when `inv` states it
+    /// positively; otherwise the walk over unanalyzed code stops where that code runs it.
     fn iterator_spec_params(&self, contract_def_id: DefId) -> Vec<mir_ty::ParamTy> {
         let Some(iterator_spec) = self.ctx.def_ids.iterator_spec() else {
             return Vec::new();

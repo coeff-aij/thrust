@@ -77,5 +77,5 @@ fn main() {
         *x > 0
     };
     let k = Keep { cur: 0, end: 20, pred: f };
-    consume(k);
+    consume(k.skip(1));
 }

@@ -1,8 +1,8 @@
 //@compile-flags: -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_VERIFY_ONLY=main
+//@rustc-env: THRUST_VERIFY_ONLY=main
 // As `pass/iterators/adapter_closure_to_trusted.rs`, with an `inv` that states no `pre!` of the
-// closure: the consumer's `requires` of `inv` states nothing of it, so the closure is handed over
-// with its obligation, which Thrust cannot state of a value in a field.
+// closure: the consumer's `requires` of `inv` states nothing of it, so the call does not
+// cover the closure, which `next` runs.
 
 pub struct Keep<P> {
     cur: i64,
@@ -69,10 +69,10 @@ where
 }
 
 fn main() {
-    let f = |x: &i64| {
+    let f = |x: &i64| { //~ ERROR: without an analyzed call handing it over
         assert!(*x < 10);
         *x > 0
     };
     let k = Keep { cur: 0, end: 3, pred: f };
-    consume(k); //~ ERROR: where Thrust cannot follow it
+    consume(k);
 }

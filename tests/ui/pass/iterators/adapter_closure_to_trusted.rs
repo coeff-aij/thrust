@@ -2,8 +2,9 @@
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_VERIFY_ONLY=main
 // An adapter holds a closure in a field, and a trusted consumer runs its `next`, outside
-// `THRUST_VERIFY_ONLY`, which calls the closure. The consumer requires the adapter's `inv`, which
-// states the closure's `pre!` of every item left, so the call discharges the closure's obligation.
+// `THRUST_VERIFY_ONLY`, which calls the closure, through std's `Skip`. The consumer requires
+// `Skip`'s `inv`, which is the adapter's, which states the closure's `pre!` of every item left, so
+// the call discharges the closure's obligation. `skip` only wraps the adapter and runs nothing.
 
 use thrust_models::model::Int;
 
@@ -78,5 +79,5 @@ fn main() {
         *x > 0
     };
     let k = Keep { cur: 0, end: 3, pred: f };
-    consume(k);
+    consume(k.skip(1));
 }
