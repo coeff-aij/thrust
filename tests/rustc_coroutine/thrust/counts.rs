@@ -287,6 +287,26 @@ pub fn filter_count<'a, J, L, K, T, P, M, B>(
     acc_bound(fields, a, e, k, n);
 }
 
+/// The items a `Filter` over a slice iterator yields are entries of the slice at or after the
+/// iterator's position, so a bound on the indices of those entries holds of them: `Map::new`'s
+/// `next_precondition` and `preservation_inv` for a map closure that requires the bound.
+#[thrust_macros::context]
+#[thrust_macros::requires(forall(|p: USize, i: USize|
+    !((*it).0.1 <= p && p < (*(*it).0.0).len() && L::index_is((*(*it).0.0)[p], i)) || i < n))]
+#[thrust_macros::ensures(forall(|v: Seq<&<L as thrust_models::Model>::Ty>, o: <Filter<SliceIter<'a, L>, P> as thrust_models::Model>::Ty, j: Int|
+    !(<Filter<SliceIter<'a, L>, P> as IteratorSpec>::produces(*it, v, o) && 0 <= j && j < v.len())
+        || L::index_logic(*v[j]) < n))]
+// The last of two items after others, in the form `preservation_inv` reads.
+#[thrust_macros::ensures(forall(|s: Seq<&<L as thrust_models::Model>::Ty>, e1: &<L as thrust_models::Model>::Ty, e2: &<L as thrust_models::Model>::Ty, o: <Filter<SliceIter<'a, L>, P> as thrust_models::Model>::Ty|
+    !<Filter<SliceIter<'a, L>, P> as IteratorSpec>::produces(*it, s.push(e1).push(e2), o) || L::index_logic(*e2) < n))]
+#[thrust_macros::lemma]
+pub fn filter_yields_below<'a, L, P>(it: &Filter<SliceIter<'a, L>, P>, n: usize)
+where
+    L: Idx + thrust_models::Model,
+    P: Fn(&&'a L) -> bool,
+{
+}
+
 // The weight of a variant's fields (stage 7, sites 4 and 5): the sum of the weights `ts` of the
 // locals an injective selection names is at most the sum over the locals of the class, the
 // weighted form of `acc_bound` and `map_bound` above. `layout()` does not use them yet.

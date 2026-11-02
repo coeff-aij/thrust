@@ -27,6 +27,36 @@ impl<VariantIdx: thrust_models::Model, FieldIdx: thrust_models::Model> thrust_mo
     type Ty = SavedLocalEligibility<<VariantIdx as thrust_models::Model>::Ty, <FieldIdx as thrust_models::Model>::Ty>;
 }
 
+/// The members of the ineligible set below `k` are `Ineligible` (stage 5's property 4), so they
+/// and the locals Assigned to any one variant are at most `k`: the count of `layout()`'s
+/// per-variant closure (stage 7), at every variant. The `counts.rs` root checks it.
+#[thrust_macros::lemma]
+#[thrust_macros::variant(k)]
+#[thrust_macros::requires(forall(|l: usize| 0 <= l && l < k
+    ==> (thrust_models::exists(|li: USize| li == l && DenseBitSet::<LocalIdx>::mem(*s, li))
+        ==> thrust_models::exists(|x: Option<<FieldIdx as thrust_models::Model>::Ty>| (*a)[l] == SavedLocalEligibility::Ineligible(x)))))]
+#[thrust_macros::ensures(forall(|v: <VariantIdx as thrust_models::Model>::Ty|
+    crate::rustc_index::bit_set::ones((*s).1, k)
+        + counts::class_cnt::<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>(*a, k, SavedLocalEligibility::Assigned(v))
+        <= k))]
+fn ones_assigned_disjoint<LocalIdx: Idx + thrust_models::Model, VariantIdx: thrust_models::Model, FieldIdx: thrust_models::Model>(
+    s: &DenseBitSet<LocalIdx>,
+    a: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
+    k: usize,
+) {
+    if k > 0 {
+        ones_assigned_disjoint(s, a, k - 1);
+        ones_step(s, k - 1);
+    }
+}
+
+/// One more bit adds the bit at `k`: `mem` and the step of `ones` read the same bit.
+#[thrust_macros::lemma]
+#[thrust_macros::ensures(
+    (DenseBitSet::<LocalIdx>::mem(*s, k) && crate::rustc_index::bit_set::ones((*s).1, k + 1) == crate::rustc_index::bit_set::ones((*s).1, k) + 1)
+        || (!DenseBitSet::<LocalIdx>::mem(*s, k) && crate::rustc_index::bit_set::ones((*s).1, k + 1) == crate::rustc_index::bit_set::ones((*s).1, k)))]
+fn ones_step<LocalIdx: Idx + thrust_models::Model>(s: &DenseBitSet<LocalIdx>, k: usize) {}
+
 // The specification of stage 5 (README.md of the stage files).
 //
 // Notation below follows the README: `a = result.1` (the `assignments`
@@ -604,6 +634,9 @@ pub fn layout<
 
     let (ineligible_locals, assignments) =
         coroutine_saved_local_eligibility(local_layouts.len(), variant_fields, storage_conflicts);
+    // The set's members are Ineligible (property 4), so with the locals Assigned to any one variant
+    // they are at most n: the per-variant closure's `requires` at `Map::new`.
+    thrust_macros::proof!(ones_assigned_disjoint(&ineligible_locals, &assignments, local_layouts.len()));
 
     let tag_index = prefix_layouts.next_index();
 
@@ -625,8 +658,13 @@ pub fn layout<
     // `push` and `extend_from` give `prefix_layouts.len() == P + 1 + c`, c the items
     // `ineligible_locals.iter()` yields (`Map` keeps the length), which is the set's count `card`:
     // `iter` starts `BitIter`'s `left` at it, and the iterator completes with nothing left.
-    // TODO(proof): `fits_in_any_order` by the size bound needs the promoted locals to weigh at most
-    // `local_layouts`, a sum over a subset, which no lemma states.
+    // TODO(proof): `univariant`'s `fits_in_any_order` here. The missing fact: `weight` of the new
+    // `prefix_layouts` is at most wp + t + wl, wp and wl the weights `layout()`'s `requires`
+    // gives of the entry `prefix_layouts` and of `local_layouts`, t the tag's: the promoted
+    // layouts are those of distinct locals (the set's members, increasing), so their weight is a
+    // sum over a subset of `local_layouts`. `weight` is an existential over a `Seq<Int>` of the
+    // fields' weights, and no term builds the witness of a selection of `local_layouts`' (a
+    // field's weight is read through `deref`'s postcondition, a relation).
     let prefix = calc.univariant(
         &prefix_layouts,
         &ReprOptions::default(),
@@ -687,6 +725,8 @@ pub fn layout<
                 }
             }
             thrust_macros::proof!(lemmas::permutation_split(order, prefix_layouts.len(), b_start.index()));
+            // And at most n - (P + 1) = c entries, which the variants' count needs.
+            thrust_macros::proof!(lemmas::permutation_split_le(order, prefix_layouts.len(), b_start.index()));
 
             let outer_fields = FieldsShape::Arbitrary {
                 offsets: offsets_a,
@@ -714,9 +754,10 @@ pub fn layout<
     // its body reads of the captures. These are stage 5's properties 1, 2b, 2c and 3 at the
     // variant's entries, the lengths of the captures, the count c + (locals Assigned to the
     // variant) <= n that sites 1 and 3 need, and the conjuncts of `layout()`'s `requires` that the
-    // variant's `univariant` call needs of `calc` and `local_layouts`. For the count at
-    // `Map::new`, `layout()` needs c to be the number of Ineligible locals (`DenseBitSet::card`
-    // and property 4) and the classes to be disjoint, which no lemma states yet. Its
+    // variant's `univariant` call needs of `calc` and `local_layouts`. At `Map::new` the count
+    // follows from c <= `card` of the ineligible set (the permutation split) and
+    // `ones_assigned_disjoint`. The requires names no bit-set predicate: their bit arithmetic in
+    // every cone of the closure leaves even `Filter::new`'s precondition without an answer. Its
     // `ensures` is `true`: `layout()` states nothing of the variants it returns. The closure is
     // `FnMut` (it updates `size` and `align`), so a clause reads each capture through the
     // receiver, as `&mut` of the type it is captured by. No `hist_inv` bounds `size` and `align`:
@@ -773,8 +814,8 @@ pub fn layout<
                                 !<FieldIdx as Idx>::index_is(k, i)
                                     || (i < (**promoted_offsets).len() && i < (**promoted_memory_index).len()))))
                 // Sites 1 and 3: the promoted fields' count c and the locals Assigned to the
-                // variant are no more than the n locals (the classes are disjoint and c is the
-                // number of Ineligible ones, property 4), and `FieldIdx` and `u32` reach n.
+                // variant are no more than the n locals (`ones_assigned_disjoint` and the
+                // permutation split), and `FieldIdx` and `u32` reach n.
                 && (**promoted_memory_index).len()
                     + counts::class_cnt::<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>(
                         **assignments, (**assignments).len(), SavedLocalEligibility::Assigned(index))
@@ -807,11 +848,11 @@ pub fn layout<
         ensures(true),
         |(index, variant_fields): (VariantIdx, &IndexVec<FieldIdx, LocalIdx>)|
             -> Result<VariantLayout<FieldIdx>, crate::rustc_abi::layout::LayoutCalculatorError<F>> {
-            let variant_only_tys = Map::new(
-                // `Filter` takes a `Fn` closure, whose clauses read a capture as the reference it
-                // is (`*assignments`); `Map` takes an `FnMut` one, whose clauses read it through
-                // the closure's state (`**local_layouts`). The other form panics (#152).
-                Filter::new(variant_fields.iter(), thrust_macros::closure!(
+            // Rewrite (rewrites.md R8): the `Filter` is bound to a name, for the lemma below.
+            // `Filter` takes a `Fn` closure, whose clauses read a capture as the reference it is
+            // (`*assignments`); `Map` takes an `FnMut` one, whose clauses read it through the
+            // closure's state (`**local_layouts`). The other form panics (#152).
+            let accepted = Filter::new(variant_fields.iter(), thrust_macros::closure!(
                     captures(
                         assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
                         index: &VariantIdx,
@@ -837,7 +878,12 @@ pub fn layout<
                             Ineligible(_) => false,
                         }
                     },
-                )),
+                ));
+            // The map closure's `requires` at every item the filter yields (`Map::new`'s
+            // `next_precondition`): the items are entries of the variant's field list.
+            thrust_macros::proof!(counts::filter_yields_below(&accepted, local_layouts.len()));
+            let variant_only_tys = Map::new(
+                accepted,
                 thrust_macros::closure!(
                     captures(local_layouts: &mut &IndexSlice<LocalIdx, F>),
                     requires(<LocalIdx as Idx>::index_logic(*local) < (**local_layouts).len()),
@@ -859,10 +905,13 @@ pub fn layout<
             ));
 
             // Rewrite (rewrites.md R8): `collect_index_vec` for `collect`.
-            // TODO(proof): `fits_in_any_order` by the size bound needs the variant's Assigned locals
-            // and the promoted ones to weigh at most `local_layouts`, a sum over distinct locals
-            // (properties 2c and 4). thrust/counts.rs bounds the weight the index map selects by
-            // that of the locals Assigned to the variant (`map_wbound`, `acc_wbound`); not used
+            // TODO(proof): `univariant`'s `fits_in_any_order` here. The missing fact: `weight` of the
+            // collected fields plus the prefix's size and twice its alignment is below the bound
+            // `layout()`'s `requires` states, which follows when the collected fields weigh at most
+            // `local_layouts` (they are distinct locals Assigned to the variant, properties 2c and
+            // 2b) and the prefix's size and alignment are below the prefix's weighs sum
+            // (`univariant`'s `ensures`). thrust/counts.rs bounds the weight the index map selects
+            // by that of the locals Assigned to the variant (`map_wbound`, `acc_wbound`); not used
             // here, as `weight` of the collected fields is an existential over a `Seq<Int>` whose
             // witness, the locals' weights through the index map, no term builds.
             let mut variant = calc.univariant(
@@ -897,11 +946,16 @@ pub fn layout<
                         // Unreachable, as above.
                         Unassigned => unreachable!(),
                         Assigned(_) => {
-                            // TODO(proof): `.unwrap()` needs
-                            // `offsets_and_memory_index` to have as many
-                            // entries left as there are `Assigned` locals
-                            // still to visit -- README stage 7, "the number of Assigned
-                            // equals the length of variant_only_tys".
+                            // TODO(proof): `.unwrap()`. The missing fact: at entry `i`,
+                            // `offsets_and_memory_index` has as many pairs left as entries
+                            // at positions `i..` whose local is Assigned to the variant. It
+                            // needs m to equal the count of Assigned entries (`filter_count`
+                            // gives only m <= it: the other half is that `Filter`'s index map
+                            // enumerates every accepted position), `univariant`'s
+                            // `arbitrary_of` (m offsets and m entries of `in_memory_order`),
+                            // and a contract for this closure whose `hist_inv` ties the pairs
+                            // left to the position, with `Map::new`'s `preservation_inv`
+                            // over `iter_enumerated`.
                             let (offset, memory_index) = offsets_and_memory_index.next().unwrap();
                             (offset, promoted_memory_index.len() as u32 + memory_index)
                         }
@@ -919,13 +973,15 @@ pub fn layout<
                             )
                         }
                     };
-                    // TODO(proof): `combined_in_memory_order[memory_index]`
-                    // needs `promoted_memory_index.len() + memory_index <
-                    // invalid_field_idx`, and the `u32` sum above c + m <= n (`filter_count`):
-                    // `memory_index` of an Assigned local is an entry of `memory_index`, below m
-                    // by `invert_bijective_mapping`, which needs the state of
-                    // `offsets_and_memory_index` (site 2), and an Ineligible local's
-                    // `promoted_memory_index` entry is below its length by the permutation split.
+                    // TODO(proof): `combined_in_memory_order[memory_index]` and the `u32` sum
+                    // above. The missing fact: every pair `offsets_and_memory_index` has left
+                    // carries an entry of the inverted `memory_index`, below m by
+                    // `invert_bijective_mapping`'s `ensures`, which this closure's contract
+                    // would state of its state (a `hist_inv` that the pairs left are a suffix of
+                    // the zip of `offsets` and `memory_index`). With it, an Assigned local's
+                    // index is c + (entry) < c + m = `invalid_field_idx` and c + m <= n bounds
+                    // the `u32` sum (`filter_count` and the closure's `requires`); an Ineligible
+                    // local's `promoted_memory_index` entry is below c (`invert_bijective_mapping`).
                     combined_in_memory_order[memory_index] = i;
                     offset
                 },
