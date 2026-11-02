@@ -62,9 +62,7 @@ impl<T: Idx> DenseBitSet<T> {
     /// The number of members: the set bits below `domain_size`. The trusted `iter` relies on the
     /// bits past `domain_size` being clear, which rustc's `clear_excess_bits` keeps: it yields every
     /// set bit of the words. Stated as a validity predicate in the contracts, or as a type
-    /// invariant (9a4b1dab), the invariant leaves the `bitset` root without an answer at 300 s
-    /// (thrust-research experiments/2026-10-24-eval3-trusted-reduction-2.md and
-    /// experiments/2026-10-24-rq4-gaps-16-17.md).
+    /// invariant (9a4b1dab), the invariant leaves the `bitset` root without an answer at 300 s.
     #[thrust_macros::logic]
     pub(crate) fn card(self) -> Int {
         ones(self.1, self.0)
@@ -143,7 +141,7 @@ impl<T: Idx> DenseBitSet<T> {
     }
 
     // Trusted: analyzed with a lemma that a prefix of set bits counts fully, it gets no answer at
-    // 300 s (thrust-research experiments/2026-10-24-eval3-trusted-reduction-2.md).
+    // 300 s.
     #[thrust::trusted]
     #[thrust_macros::requires(Self::words_cover_domain(*self))]
     #[thrust_macros::ensures((!self).0 == (*self).0)]
@@ -165,8 +163,8 @@ impl<T: Idx> DenseBitSet<T> {
     #[thrust_macros::ensures(result.4 == (*self).0 && result.5 == 0)]
     #[thrust_macros::ensures(0 <= result.6 && result.6 <= (*self).0)]
     #[thrust_macros::ensures(result.6 == Self::card(*self))]
-    #[thrust_macros::ensures(forall(|k: USize| !(result.7[k] != 0) || (0 <= k && k < (*self).0 && Self::mem(*self, k))))]
-    #[thrust_macros::ensures(forall(|k: USize| !(0 <= k && k < (*self).0 && Self::mem(*self, k)) || result.7[k] != 0))]
+    #[thrust_macros::ensures(forall(|k: USize| result.7[k] != 0 ==> (0 <= k && k < (*self).0 && Self::mem(*self, k))))]
+    #[thrust_macros::ensures(forall(|k: USize| 0 <= k && k < (*self).0 && Self::mem(*self, k) ==> result.7[k] != 0))]
     pub fn iter(&self) -> BitIter<'_, T> {
         BitIter::new(&self.words)
     }
@@ -563,7 +561,7 @@ pub(crate) fn ones(words: Seq<USize>, m: USize) -> Int {
 /// so a call states the fact at its words, not for every sequence.
 #[thrust_macros::lemma]
 #[thrust_macros::variant(m)]
-#[thrust_macros::ensures(!forall(|k: USize| !(k * 64 < m) || s[k] == 0) || ones(s, m) == 0)]
+#[thrust_macros::ensures(forall(|k: USize| k * 64 < m ==> s[k] == 0) ==> ones(s, m) == 0)]
 fn zero_bits_ones(s: Ghost<Seq<USize>>, m: usize) {
     if m > 0 {
         zero_bits_ones(s, m - 1);

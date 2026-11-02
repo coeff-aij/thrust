@@ -1,7 +1,7 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300
-use thrust_models::model::Seq;
+use thrust_models::model::{Mut, Seq};
 use thrust_models::{exists, forall, Ghost, Model};
 
 // The generic `Fuse` in Creusot's form with Creusot's state: `Result<I, Ghost<I>>`, where `Err`
@@ -57,10 +57,10 @@ where
     Self::Item: Model,
 {
     #[thrust_macros::law]
-    #[thrust_macros::requires(Self::completed(s))]
-    #[thrust_macros::requires(Self::produces(!s, steps, *next))]
-    #[thrust_macros::ensures(steps == Seq::empty() && !s == *next)]
-    fn is_fused(s: &mut Self, steps: Seq<<Self::Item as Model>::Ty>, next: &Self);
+    #[thrust_macros::requires(Self::completed(Mut::new(*s, *t)))]
+    #[thrust_macros::requires(Self::produces(*t, steps, *next))]
+    #[thrust_macros::ensures(steps == Seq::empty() && *t == *next)]
+    fn is_fused(s: &Self, t: &Self, steps: Seq<<Self::Item as Model>::Ty>, next: &Self);
 }
 
 pub struct Fuse<I> {
@@ -137,7 +137,7 @@ where
     <<I as Iterator>::Item as Model>::Ty: Model<Ty = <<I as Iterator>::Item as Model>::Ty>,
     <Fuse<I> as Model>::Ty: Model<Ty = <Fuse<I> as Model>::Ty>,
 {
-    fn is_fused(s: &mut Fuse<I>, steps: Seq<<Self::Item as Model>::Ty>, next: &Fuse<I>) {}
+    fn is_fused(s: &Fuse<I>, t: &Fuse<I>, steps: Seq<<Self::Item as Model>::Ty>, next: &Fuse<I>) {}
 }
 
 fn main() {}

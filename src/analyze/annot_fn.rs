@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -25,7 +25,7 @@ pub struct FormulaFn<'tcx> {
     param_idents: IndexVec<rty::FunctionParamIdx, Option<rustc_span::symbol::Ident>>,
     ret: mir_ty::Ty<'tcx>,
     body: FormulaFnBody,
-    pre_receivers: Vec<mir_ty::Ty<'tcx>>,
+    pre_receivers: Vec<(mir_ty::Ty<'tcx>, Polarity)>,
 }
 
 /// The translated body: a formula, or a term for a `#[thrust_macros::logic]` function.
@@ -93,8 +93,26 @@ impl<'tcx> FormulaFn<'tcx> {
     /// The types whose precondition the formula reads with `pre!`, at its generic arguments,
     /// directly or in the body of a predicate it calls: a closure or a type parameter for a
     /// closure receiver, a function item's type for a function.
-    pub fn pre_receivers(&self) -> &[mir_ty::Ty<'tcx>] {
-        &self.pre_receivers
+    ///
+    /// A receiver is listed only when every read of it in the formula is positive ([`Polarity`]).
+    /// A formula that also reads it in another position lets the solver choose the precondition
+    /// smaller than the real one, and states nothing of it.
+    pub fn pre_receivers(&self) -> Vec<mir_ty::Ty<'tcx>> {
+        self.pre_receivers
+            .iter()
+            .filter(|(_, polarity)| *polarity == Polarity::Positive)
+            .map(|(ty, _)| *ty)
+            .collect()
+    }
+
+    /// The types whose precondition the formula reads with `pre!` in a position other than only
+    /// positive ones, which [`Self::pre_receivers`] leaves out.
+    pub fn mixed_pre_receivers(&self) -> Vec<mir_ty::Ty<'tcx>> {
+        self.pre_receivers
+            .iter()
+            .filter(|(_, polarity)| *polarity != Polarity::Positive)
+            .map(|(ty, _)| *ty)
+            .collect()
     }
 
     pub fn params(&self) -> &IndexVec<rty::FunctionParamIdx, mir_ty::Ty<'tcx>> {
@@ -252,6 +270,45 @@ type QuantifiedBody = (
     chc::Formula<rty::FunctionParamIdx>,
 );
 
+/// Whether the formula being translated is monotone in the subformula under translation. A
+/// `pre!` is read as a precondition the function states only where it is `Positive`: under a
+/// negation or on the left of an implication it constrains the function the other way, and where
+/// it is both (an operand of `==` or `!=`, a condition, an argument) it constrains it neither way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Polarity {
+    Positive,
+    Negative,
+    Both,
+}
+
+impl Polarity {
+    /// The polarity of a position read in both of two positions of the same formula.
+    fn combine(self, other: Self) -> Self {
+        if self == other {
+            self
+        } else {
+            Polarity::Both
+        }
+    }
+
+    /// The polarity of a position of polarity `inner` inside one of polarity `self`.
+    fn compose(self, inner: Self) -> Self {
+        match (self, inner) {
+            (Polarity::Both, _) | (_, Polarity::Both) => Polarity::Both,
+            (outer, Polarity::Positive) => outer,
+            (outer, Polarity::Negative) => outer.flipped(),
+        }
+    }
+
+    fn flipped(self) -> Self {
+        match self {
+            Polarity::Positive => Polarity::Negative,
+            Polarity::Negative => Polarity::Positive,
+            Polarity::Both => Polarity::Both,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct AnnotFnTranslator<'a, 'tcx> {
     tcx: TyCtxt<'tcx>,
@@ -266,7 +323,10 @@ pub struct AnnotFnTranslator<'a, 'tcx> {
     type_builder: TypeBuilder<'tcx>,
     env: HashMap<HirId, chc::Term<rty::FunctionParamIdx>>,
     /// [`FormulaFn::pre_receivers`], shared with the translators of quantifier bodies.
-    pre_receivers: Rc<RefCell<Vec<mir_ty::Ty<'tcx>>>>,
+    pre_receivers: Rc<RefCell<Vec<(mir_ty::Ty<'tcx>, Polarity)>>>,
+    /// The [`Polarity`] of the subformula being translated, shared with the translators of
+    /// quantifier bodies.
+    polarity: Rc<Cell<Polarity>>,
 }
 
 impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
@@ -300,6 +360,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             type_builder,
             env: HashMap::default(),
             pre_receivers: Rc::default(),
+            polarity: Rc::new(Cell::new(Polarity::Positive)),
         };
         translator.build_env_from_params();
         translator
@@ -770,7 +831,10 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 rustc_hir::BorrowKind::Ref,
                 rustc_hir::Mutability::Not,
                 operand,
-            ) => (self.expr_ty(operand), self.to_formula_or_term(operand)),
+            ) => (
+                self.expr_ty(operand),
+                self.under_both(|| self.to_formula_or_term(operand)),
+            ),
             _ => (
                 self.expr_ty(arg).peel_refs(),
                 FormulaOrTerm::Term(self.to_term(arg).box_current()),
@@ -818,7 +882,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
     }
 
     fn to_term(&self, hir: &'tcx rustc_hir::Expr<'tcx>) -> chc::Term<rty::FunctionParamIdx> {
-        let Some(term) = self.to_formula_or_term(hir).into_term() else {
+        let Some(term) = self.under_both(|| self.to_formula_or_term(hir)).into_term() else {
             self.tcx.dcx().span_fatal(
                 hir.span,
                 "thrust: a predicate call, `pre!`, `post!`, quantifier or `match` in a \
@@ -863,17 +927,25 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         Some((closure_ty, refs))
     }
 
-    /// The receiver term as the closure's own body takes it.
+    /// The receiver term as the closure's own body takes it, and the final state it leaves free.
     ///
     /// That body takes the upvars by `&`, by `&mut`, or by value, following the kind inferred
     /// for the closure, while `pre!`/`post!` reach the closure through the parameter the
     /// annotated function declares. A call bridges the two by borrowing the closure into the
     /// receiver the body takes; the same borrow is taken here on the term.
+    ///
+    /// An `FnMut` closure held as a value is called through a `&mut` to it whose final state
+    /// the call does not fix, so the pair's final half is a fresh variable, returned with its
+    /// sort for the caller to quantify.
     fn closure_receiver_term(
         &self,
         receiver: &'tcx rustc_hir::Expr<'tcx>,
         fn_ty: &rty::FunctionType,
-    ) -> chc::Term<rty::FunctionParamIdx> {
+        in_spec: &str,
+    ) -> (
+        chc::Term<rty::FunctionParamIdx>,
+        Option<(chc::UserQuantifiedVarId, chc::Sort)>,
+    ) {
         let receiver_ty = self.expr_ty(receiver);
         let mut held_as = match receiver_ty.kind() {
             mir_ty::TyKind::Adt(adt, _) if Some(adt.did()) == self.def_ids.mut_model() => {
@@ -904,12 +976,19 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             held_as = Some(rty::RefKind::Immut);
         }
         match (held_as, received_as) {
-            (None, Some(rty::RefKind::Immut)) => chc::Term::box_(term),
-            (None, Some(rty::RefKind::Mut)) => chc::Term::mut_(term.clone(), term),
-            (Some(rty::RefKind::Mut), Some(rty::RefKind::Immut)) => {
-                chc::Term::box_(term.mut_current())
+            (None, Some(rty::RefKind::Immut)) => (chc::Term::box_(term), None),
+            (None, Some(rty::RefKind::Mut)) => {
+                let sort = upvars_ty.to_sort().deref();
+                let final_ = self
+                    .analyzer
+                    .generate_user_quantified_var(format!("final state of a closure in {in_spec}"));
+                let final_term = chc::Term::UserQuantifiedVar(sort.clone(), final_);
+                (chc::Term::mut_(term, final_term), Some((final_, sort)))
             }
-            _ => term,
+            (Some(rty::RefKind::Mut), Some(rty::RefKind::Immut)) => {
+                (chc::Term::box_(term.mut_current()), None)
+            }
+            _ => (term, None),
         }
     }
 
@@ -1028,6 +1107,30 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         let mir_ty::TyKind::FnDef(def_id, generic_args) = *self.expr_ty(receiver).kind() else {
             return None;
         };
+        Some(self.fn_def_contract(receiver.span, def_id, generic_args, names_precondition))
+    }
+
+    /// The function item a closure-typed receiver is: `G` instantiated with a function item,
+    /// which is a closure without captures (`Closure<fn item>`), possibly behind shared
+    /// references. Its `pre!` and `post!` are the contract of the function.
+    fn receiver_fn_item(
+        &self,
+        receiver_ty: mir_ty::Ty<'tcx>,
+    ) -> Option<(mir_ty::Ty<'tcx>, DefId, mir_ty::GenericArgsRef<'tcx>)> {
+        let (inner, _) = self.receiver_closure_behind_refs(receiver_ty)?;
+        match *inner.kind() {
+            mir_ty::TyKind::FnDef(def_id, args) => Some((inner, def_id, args)),
+            _ => None,
+        }
+    }
+
+    fn fn_def_contract(
+        &self,
+        span: rustc_span::Span,
+        def_id: DefId,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
+        names_precondition: bool,
+    ) -> rty::FunctionType {
         let owner_fn_id = self.type_builder.owner_fn_id();
         let typing_env =
             analyze::predicate_typing_env(self.tcx, owner_fn_id, self.def_ids.model_ty());
@@ -1043,29 +1146,27 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 })
                 .flatten();
             if let Some(fn_ty) = known {
-                return Some(fn_ty);
+                return fn_ty;
             }
             if names_precondition {
                 self.analyzer
                     .record_assumed_total_method(owner_fn_id, def_id, generic_args);
             }
-            return Some(
-                self.type_builder
-                    .build_unspecified_method_type(def_id, generic_args),
-            );
+            return self
+                .type_builder
+                .build_unspecified_method_type(def_id, generic_args);
         };
         let fn_ty = self.analyzer.known_function_ty_with_args(
             instance.def_id(),
             instance.args,
             owner_fn_id,
         );
-        if fn_ty.is_none() {
+        fn_ty.unwrap_or_else(|| {
             self.tcx.dcx().span_fatal(
-                receiver.span,
+                span,
                 format!("`pre!`/`post!` names `{instance}`, which has no contract here"),
-            );
-        }
-        fn_ty
+            )
+        })
     }
 
     fn fn_item_spec_args(
@@ -1073,22 +1174,49 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         args: &'tcx rustc_hir::Expr<'tcx>,
         fn_ty: &rty::FunctionType,
     ) -> Vec<chc::Term<rty::FunctionParamIdx>> {
-        let args = self.closure_spec_args(args);
-        assert_eq!(
-            args.len(),
-            fn_ty.params.len(),
-            "`pre!`/`post!` arity mismatch: the function takes {} argument(s)",
-            fn_ty.params.len()
-        );
-        args
+        let spec_args = self.closure_spec_args(args);
+        if spec_args.len() != fn_ty.params.len() {
+            self.tcx.dcx().span_fatal(
+                args.span,
+                format!(
+                    "`pre!`/`post!` arity mismatch: the function takes {} argument(s), given {}",
+                    fn_ty.params.len(),
+                    spec_args.len()
+                ),
+            );
+        }
+        spec_args
+    }
+
+    /// Translates with the polarity `polarity` of the current one, and restores it.
+    fn under<R>(&self, polarity: fn(Polarity) -> Polarity, translate: impl FnOnce() -> R) -> R {
+        let saved = self.polarity.get();
+        self.polarity.set(polarity(saved));
+        let result = translate();
+        self.polarity.set(saved);
+        result
+    }
+
+    fn under_flipped<R>(&self, translate: impl FnOnce() -> R) -> R {
+        self.under(Polarity::flipped, translate)
+    }
+
+    fn under_both<R>(&self, translate: impl FnOnce() -> R) -> R {
+        self.under(|_| Polarity::Both, translate)
     }
 
     /// Records that the formula reads the precondition of `ty` ([`FormulaFn::pre_receivers`]).
+    /// A receiver read in several positions has their combination ([`Polarity::combine`]).
     fn record_pre_receiver(&self, ty: mir_ty::Ty<'tcx>) {
+        self.record_pre_receiver_at(ty, self.polarity.get());
+    }
+
+    fn record_pre_receiver_at(&self, ty: mir_ty::Ty<'tcx>, polarity: Polarity) {
         let ty = self.tcx.erase_regions(ty);
         let mut receivers = self.pre_receivers.borrow_mut();
-        if !receivers.contains(&ty) {
-            receivers.push(ty);
+        match receivers.iter_mut().find(|(known, _)| *known == ty) {
+            Some((_, known)) => *known = known.combine(polarity),
+            None => receivers.push((ty, polarity)),
         }
     }
 
@@ -1107,6 +1235,14 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         let receiver_ty = self.expr_ty(receiver);
         if let Some(closure_ty) = self.receiver_closure_ty(receiver_ty) {
             self.record_pre_receiver(closure_ty);
+        }
+        if let Some((fn_item_ty, def_id, generic_args)) = self.receiver_fn_item(receiver_ty) {
+            // The function item itself, behind the references `G` is instantiated with, is what
+            // the `pre!` names: a hand-over states its precondition as it does a path's.
+            self.record_pre_receiver(fn_item_ty);
+            let fn_ty = self.fn_def_contract(receiver.span, def_id, generic_args, true);
+            let args = self.fn_item_spec_args(args, &fn_ty);
+            return FormulaOrTerm::Formula(fn_ty.precondition_formula(&args));
         }
         let fn_ty = self
             .receiver_closure_fn_type(receiver_ty)
@@ -1130,49 +1266,16 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             "closure precondition arity mismatch: closure takes {} argument(s)",
             fn_ty.params.len() - 1
         );
-        // An `FnMut` closure held as a value is called through a `&mut` to it, whose final state
-        // the call does not fix: its precondition is a property of the current state, as
-        // Creusot's `FnMut` precondition takes `self` by value, so it must hold whatever the
-        // final state is.
-        if let Some(sort) = self.free_final_state_sort(receiver, &fn_ty) {
-            let final_ = self
-                .analyzer
-                .generate_user_quantified_var("final state of a closure in pre!".to_owned());
-            let current = self.to_term(receiver);
-            let receiver_term =
-                chc::Term::mut_(current, chc::Term::UserQuantifiedVar(sort.clone(), final_));
-            let param_args: Vec<_> = std::iter::once(receiver_term).chain(logical_args).collect();
-            return FormulaOrTerm::Formula(chc::Formula::forall(
-                vec![(final_, sort)],
-                fn_ty.precondition_formula(&param_args),
-            ));
-        }
-        let param_args: Vec<_> = std::iter::once(self.closure_receiver_term(receiver, &fn_ty))
-            .chain(logical_args)
-            .collect();
-        FormulaOrTerm::Formula(fn_ty.precondition_formula(&param_args))
-    }
-
-    /// The sort of the closure state, when `receiver` holds the state as a value and the closure
-    /// takes it through a `&mut`: the final state is then not the receiver's.
-    fn free_final_state_sort(
-        &self,
-        receiver: &'tcx rustc_hir::Expr<'tcx>,
-        fn_ty: &rty::FunctionType,
-    ) -> Option<chc::Sort> {
-        let held_as_value = !matches!(
-            self.expr_ty(receiver).kind(),
-            mir_ty::TyKind::Ref(_, _, mir_ty::Mutability::Not)
-        ) && !matches!(
-            self.expr_ty(receiver).kind(),
-            mir_ty::TyKind::Adt(adt, _) if Some(adt.did()) == self.def_ids.mut_model()
-        );
-        let upvars_ty = &fn_ty.params[rty::FunctionParamIdx::from(0usize)].ty;
-        let received_as_mut = matches!(
-            upvars_ty.as_pointer().map(|ty| ty.kind),
-            Some(rty::PointerKind::Ref(rty::RefKind::Mut))
-        );
-        (held_as_value && received_as_mut).then(|| upvars_ty.to_sort().deref())
+        let (receiver_term, final_state) = self.closure_receiver_term(receiver, &fn_ty, "pre!");
+        let param_args: Vec<_> = std::iter::once(receiver_term).chain(logical_args).collect();
+        let pre = fn_ty.precondition_formula(&param_args);
+        // The precondition of an `FnMut` closure held as a value is a property of its current
+        // state, as Creusot's `FnMut` precondition takes `self` by value, so it must hold
+        // whatever the final state is.
+        FormulaOrTerm::Formula(match final_state {
+            Some(var) => chc::Formula::forall(vec![var], pre),
+            None => pre,
+        })
     }
 
     fn translate_closure_postcondition(
@@ -1187,6 +1290,12 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             return FormulaOrTerm::Formula(fn_ty.postcondition_formula(&args, result));
         }
         let receiver_ty = self.expr_ty(receiver);
+        if let Some((_, def_id, generic_args)) = self.receiver_fn_item(receiver_ty) {
+            let fn_ty = self.fn_def_contract(receiver.span, def_id, generic_args, false);
+            let args = self.fn_item_spec_args(args, &fn_ty);
+            let result = self.to_term(result);
+            return FormulaOrTerm::Formula(fn_ty.postcondition_formula(&args, result));
+        }
         let fn_ty = self
             .receiver_closure_fn_type(receiver_ty)
             .unwrap_or_else(|| {
@@ -1209,11 +1318,18 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             "closure postcondition arity mismatch: closure takes {} argument(s)",
             fn_ty.params.len() - 1
         );
-        let param_args: Vec<_> = std::iter::once(self.closure_receiver_term(receiver, &fn_ty))
-            .chain(logical_args)
-            .collect();
+        let (receiver_term, final_state) = self.closure_receiver_term(receiver, &fn_ty, "post!");
+        if final_state.is_some() {
+            if let Some((closure_ty, _)) = self.receiver_closure_behind_refs(receiver_ty) {
+                if let mir_ty::TyKind::Param(param) = closure_ty.kind() {
+                    self.analyzer
+                        .record_once_post_param(self.type_builder.param_def_id(param));
+                }
+            }
+        }
+        let param_args: Vec<_> = std::iter::once(receiver_term).chain(logical_args).collect();
         let result = self.to_term(result);
-        FormulaOrTerm::Formula(fn_ty.postcondition_formula(&param_args, result))
+        FormulaOrTerm::Formula(fn_ty.once_postcondition_formula(&param_args, result, final_state))
     }
 
     fn translate_closure_hist_inv(
@@ -1231,6 +1347,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 from
             ),
         };
+        let from_span = from.span;
         let from = self.to_term(from);
         let to = self.to_term(to);
         let formula = match closure_ty.kind() {
@@ -1243,7 +1360,13 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 let pred = self.closure_hist_inv_pred(*param_ty, model_ty);
                 chc::Atom::new(pred.into(), vec![from, to]).into()
             }
-            _ => panic!("hist_inv! at a type that is not a closure: {closure_ty:?}"),
+            _ => self.tcx.dcx().span_fatal(
+                from_span,
+                format!(
+                    "thrust: `hist_inv!` is not supported at `{closure_ty}`: it takes a closure \
+                     or a closure type parameter"
+                ),
+            ),
         };
         FormulaOrTerm::Formula(formula)
     }
@@ -1420,7 +1543,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         for arm in arms {
             let mut hit = self.pat_test(scrutinee.clone(), arm.pat);
             if let Some(guard) = arm.guard {
-                hit = hit.and(self.to_formula(guard));
+                hit = hit.and(self.under_both(|| self.to_formula(guard)));
             }
             let body = self.to_formula(arm.body);
             if !body.is_bottom() {
@@ -1666,8 +1789,8 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                     let else_term = self.to_term(else_expr);
                     return FormulaOrTerm::Term(chc::Term::ite(cond_term, then_term, else_term));
                 }
-                let [cond, then, els] =
-                    [cond, then_expr, else_expr].map(|part| self.to_formula_or_term(part));
+                let cond = self.under_both(|| self.to_formula_or_term(cond));
+                let [then, els] = [then_expr, else_expr].map(|part| self.to_formula_or_term(part));
                 match (
                     cond.clone().into_term(),
                     then.clone().into_term(),
@@ -1701,7 +1824,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                             FormulaOrTerm::Term(chc::Term::App(chc::Function::BVNOT, vec![operand]))
                         }
                         _ => {
-                            let operand = self.to_formula_or_term(operand);
+                            let operand = self.under_flipped(|| self.to_formula_or_term(operand));
                             FormulaOrTerm::Not(Box::new(operand))
                         }
                     }
@@ -2018,7 +2141,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                             let [lhs, rhs] = args else {
                                 panic!("implies takes exactly 2 arguments");
                             };
-                            let lhs = self.to_formula_or_term(lhs);
+                            let lhs = self.under_flipped(|| self.to_formula_or_term(lhs));
                             let rhs = self.to_formula_or_term(rhs);
                             return FormulaOrTerm::Implies(lhs.into(), rhs.into());
                         }
@@ -2179,8 +2302,11 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                                             owner_fn_id,
                                         )
                                     });
-                                    for ty in body.iter().flat_map(|body| body.pre_receivers()) {
-                                        self.record_pre_receiver(*ty);
+                                    for (ty, polarity) in
+                                        body.iter().flat_map(|body| &body.pre_receivers)
+                                    {
+                                        let at_call = self.polarity.get().compose(*polarity);
+                                        self.record_pre_receiver_at(*ty, at_call);
                                     }
                                     pred.into()
                                 }

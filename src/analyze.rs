@@ -47,10 +47,10 @@ pub mod unanalyzed_entry;
 // TODO: organize structure and remove cross dependency between refine
 pub use did_cache::DefIdCache;
 
-// Also the paths siblings use: analyze::{predicate_typing_env, trait_bounds,
+// Also the paths siblings use: analyze::{predicate_typing_env, trait_bounds, trait_item_args,
 // fn_mut_bounded_params}.
 use closure_hist_inv::HistInvRelations;
-use extern_spec::{predicate_typing_env, trait_bounds, SpecAssumptions};
+use extern_spec::{predicate_typing_env, trait_bounds, trait_item_args, SpecAssumptions};
 use fn_mut_reuse::{fn_mut_bounded_params, has_fn_mut_closure, FnMutReuse};
 
 fn scalar_const_term<T>(
@@ -519,7 +519,9 @@ impl<'tcx> AnalysisKey<'tcx> {
 
 #[derive(Debug, Clone)]
 enum DefTy<'tcx> {
-    Concrete(rty::RefinedType),
+    /// The type of a function, and the def that carries its written contract: the function itself
+    /// or its extern spec. `None` for the lang item `panic`, which has none.
+    Concrete(rty::RefinedType, Option<LocalDefId>),
     Generic(GenericDefTy<'tcx>),
     // Several extern specs can share one target, each covering the instantiations its tail call
     // and bounds cover (see `bind_spec_args`); a call takes the first one that covers it.
@@ -707,6 +709,9 @@ pub struct Analyzer<'tcx> {
         mir_ty::GenericArgsRef<'tcx>,
         unanalyzed_entry::HandedOver<'tcx>,
     )>,
+    /// How many values of a closure type each analyzed call into code Thrust does not analyze
+    /// states the obligation of.
+    handover_counts: Vec<unanalyzed_entry::HandoverCount<'tcx>>,
     /// What the analysis did with the body of each function, for the report.
     body_checks: BodyChecks,
 }
@@ -961,6 +966,7 @@ impl<'tcx> Analyzer<'tcx> {
             invariant_annotations: Default::default(),
             trusted_bodies: Default::default(),
             handovers: Default::default(),
+            handover_counts: Default::default(),
             body_checks: Default::default(),
         }
     }
@@ -1093,9 +1099,9 @@ impl<'tcx> Analyzer<'tcx> {
         }
     }
 
-    pub fn register_def(&mut self, def_id: DefId, rty: rty::RefinedType) {
+    pub fn register_def(&mut self, def_id: DefId, rty: rty::RefinedType, spec: Option<LocalDefId>) {
         tracing::info!(def_id = ?def_id, rty = %rty.display(), "register_def");
-        self.defs.insert(def_id, DefTy::Concrete(rty));
+        self.defs.insert(def_id, DefTy::Concrete(rty, spec));
     }
 
     pub fn register_impl_method_with_own_contract(&mut self, def_id: DefId) {
@@ -1107,6 +1113,16 @@ impl<'tcx> Analyzer<'tcx> {
     /// [`crate_`]); one without its own contract takes the trait's.
     pub fn has_own_impl_contract(&self, def_id: DefId) -> bool {
         self.impl_methods_with_own_contract.contains(&def_id)
+    }
+
+    /// Whether a call of the trait method `def_id` that resolves to `resolved_def_id` is typed
+    /// with the trait method's contract: `resolved_def_id` is a local impl method without a
+    /// contract of its own, and the trait writes one.
+    pub fn takes_trait_contract(&self, def_id: DefId, resolved_def_id: DefId) -> bool {
+        resolved_def_id != def_id
+            && resolved_def_id.is_local()
+            && !self.has_own_impl_contract(resolved_def_id)
+            && self.trait_method_contract_written(def_id)
     }
 
     /// Stops if a function Thrust verifies can run an ignored function of the crate, as Verus's
@@ -1610,7 +1626,7 @@ impl<'tcx> Analyzer<'tcx> {
 
     pub fn concrete_def_ty(&self, def_id: DefId) -> Option<&rty::RefinedType> {
         self.defs.get(&def_id).and_then(|def_ty| match def_ty {
-            DefTy::Concrete(rty) => Some(rty),
+            DefTy::Concrete(rty, _) => Some(rty),
             DefTy::Generic(GenericDefTy { rty, .. }) => rty.as_ref(),
             DefTy::Deferred(_) => None,
         })
@@ -1632,7 +1648,7 @@ impl<'tcx> Analyzer<'tcx> {
             caller_def_id,
         };
         let mut def_ty = match self.defs.get(&def_id)? {
-            DefTy::Concrete(rty) => rty.clone(),
+            DefTy::Concrete(rty, _) => rty.clone(),
             DefTy::Generic(generic) => generic.cache.borrow().get(&key)?.clone(),
             DefTy::Deferred(specs) => specs
                 .iter()
@@ -2084,7 +2100,7 @@ impl<'tcx> Analyzer<'tcx> {
         let is_generic = matches!(self.defs.get(&def_id)?, DefTy::Generic(_));
         let (local_def_id, instantiated_ty_cache, deferred_ty_mode, generic_args) =
             match self.defs.get(&def_id)? {
-                DefTy::Concrete(rty) => {
+                DefTy::Concrete(rty, _) => {
                     let mut def_ty = rty.clone();
                     Self::instantiate_generic_args(&mut def_ty, generic_args, &type_builder);
                     return Some(def_ty);
@@ -2159,14 +2175,30 @@ impl<'tcx> Analyzer<'tcx> {
         // unknown contract, possibly reached through a predicate's definition), and when the
         // instance is not faithful to the generic check: an `FnMut` closure among the type
         // arguments, whose by-value receiver the instantiated `pre!` reads at a final state equal
-        // to the current one. Otherwise the contract is used as instantiated.
-        let analyze_body = may_analyze
-            && deferred_ty_mode.is_some_and(|mode| mode.should_analyze())
+        // to the current one; and when the contract at the instance is a trait method's spec that
+        // does not cover the def's own type parameters, which the generic check did not use
+        // (`Iterator::collect`'s at `B = Vec<T>`). Otherwise the contract is used as instantiated.
+        let narrower_spec = may_analyze
+            && is_generic
+            && self.takes_narrower_trait_spec(def_id, generic_args, caller_def_id);
+        let may_analyze_body =
+            may_analyze && deferred_ty_mode.is_some_and(|mode| mode.should_analyze());
+        if narrower_spec && !may_analyze_body {
+            self.tcx.dcx().fatal(format!(
+                "`{}` calls `{}`, which takes there a spec of the trait method that does not \
+                 cover its own type parameters; its body cannot be checked against that spec \
+                 inside its own analysis, which is not supported",
+                self.tcx.def_path_str(caller_def_id),
+                self.tcx.def_path_str_with_args(def_id, generic_args),
+            ));
+        }
+        let analyze_body = may_analyze_body
             && (!is_generic
                 || self.per_instance_too.contains(&def_id)
                 || (has_fn_mut_closure(generic_args)
                     && !self.reuse_fn_mut_generic(def_id, &expected, generic_args, caller_def_id))
-                || self.may_have_pred_var(&expected, generic_args, caller_def_id));
+                || self.may_have_pred_var(&expected, generic_args, caller_def_id)
+                || narrower_spec);
         if is_generic && !analyze_body {
             self.reused_generic_instances
                 .borrow_mut()
@@ -2402,7 +2434,11 @@ impl<'tcx> Analyzer<'tcx> {
         let panic_def_id = self
             .tcx
             .require_lang_item(LangItem::Panic, rustc_span::DUMMY_SP);
-        self.register_def(panic_def_id, rty::RefinedType::unrefined(panic_ty.into()));
+        self.register_def(
+            panic_def_id,
+            rty::RefinedType::unrefined(panic_ty.into()),
+            None,
+        );
     }
 
     pub fn new_env(&self) -> Env {
@@ -2629,7 +2665,7 @@ impl<'tcx> Analyzer<'tcx> {
             .iter()
             .filter_map(|(def_id, def_ty)| {
                 let rty = match def_ty {
-                    DefTy::Concrete(rty) => rty,
+                    DefTy::Concrete(rty, _) => rty,
                     DefTy::Generic(generic) => generic.rty.as_ref()?,
                     DefTy::Deferred(_) => return None,
                 };
@@ -2816,7 +2852,9 @@ impl<'tcx> Analyzer<'tcx> {
                     self.spec_args(spec, generic_args, caller_def_id)?,
                 ))
             }),
-            Some(DefTy::Concrete(_)) | None => def_id.as_local().map(|local| (local, generic_args)),
+            Some(DefTy::Concrete(..)) | None => {
+                def_id.as_local().map(|local| (local, generic_args))
+            }
         };
         let Some((spec, args)) = spec else {
             return false;
@@ -2832,7 +2870,7 @@ impl<'tcx> Analyzer<'tcx> {
         match self.defs.get(&def_id) {
             Some(DefTy::Generic(generic)) => vec![generic.local_def_id],
             Some(DefTy::Deferred(specs)) => specs.iter().map(|spec| spec.local_def_id).collect(),
-            Some(DefTy::Concrete(_)) | None => Vec::new(),
+            Some(DefTy::Concrete(..)) | None => Vec::new(),
         }
     }
 

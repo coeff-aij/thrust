@@ -50,7 +50,7 @@ impl<I: Idx, T> IndexVec<I, T> {
     #[inline]
     #[thrust_macros::requires(true)]
     #[thrust_macros::ensures(result.len() == (*universe).len()
-        && forall(|k: USize| !(0 <= k && k < result.len()) || result[k] == elem))]
+        && forall(|k: USize| 0 <= k && k < result.len() ==> result[k] == elem))]
     pub fn from_elem<S>(elem: T, universe: &IndexSlice<I, S>) -> Self
     where
         T: Clone,
@@ -61,7 +61,7 @@ impl<I: Idx, T> IndexVec<I, T> {
     #[inline]
     #[thrust_macros::requires(true)]
     #[thrust_macros::ensures(result.len() == n)]
-    #[thrust_macros::ensures(forall(|k: USize| !(0 <= k && k < n) || result[k] == elem))]
+    #[thrust_macros::ensures(forall(|k: USize| 0 <= k && k < n ==> result[k] == elem))]
     pub fn from_elem_n(elem: T, n: usize) -> Self
     where
         T: Clone,

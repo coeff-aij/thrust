@@ -108,7 +108,7 @@ pub fn l0<I: Idx + thrust_models::Model>(s: Ghost<IndexVec<u32, I>>, k: usize, b
 /// entries are below `b`.
 #[thrust_macros::lemma]
 #[thrust_macros::variant(b)]
-#[thrust_macros::requires(forall(|x: USize| !(x < b) || occ::<I>(x, s, n) <= 1))]
+#[thrust_macros::requires(forall(|x: USize| x < b ==> occ::<I>(x, s, n) <= 1))]
 #[thrust_macros::ensures(cnt_lt::<I>(s, n, b) <= b)]
 pub fn l5<I: Idx + thrust_models::Model>(s: Ghost<IndexVec<u32, I>>, n: usize, b: usize) {
     if b > 0 {
@@ -143,8 +143,7 @@ pub fn permutation_split<I: Idx + thrust_models::Model>(s: Ghost<IndexVec<u32, I
 #[thrust_macros::lemma]
 #[thrust_macros::requires(
     forall(|k: USize, k2: USize, i: USize|
-        !(0 <= k && k < n && 0 <= k2 && k2 < n && !(k == k2) && <I as Idx>::index_is(s[k], i))
-            || !<I as Idx>::index_is(s[k2], i))
+        0 <= k && k < n && 0 <= k2 && k2 < n && !(k == k2) && <I as Idx>::index_is(s[k], i) ==> !<I as Idx>::index_is(s[k2], i))
 )]
 #[thrust_macros::ensures(distinct::<I>(s, n))]
 pub fn distinct_of_injective<I: Idx + thrust_models::Model>(s: Ghost<IndexVec<u32, I>>, n: usize) {

@@ -1,3 +1,5 @@
+use crate::analyze::basic_block::peel_shared_refs;
+use rustc_abi::FieldIdx;
 use rustc_middle::mir::{self, Local};
 use rustc_middle::ty::{self as mir_ty, TyCtxt};
 
@@ -50,6 +52,81 @@ impl<'tcx> RustCallVisitor<'_, 'tcx, '_> {
     }
 }
 
+impl<'tcx> RustCallVisitor<'_, 'tcx, '_> {
+    /// Passes the callee of a call through shared references (`&F: Fn` calls `F`) the `&F` it
+    /// takes: the receiver is dereferenced down to the `&F` it holds, which is reborrowed.
+    fn pass_shared_receiver(
+        &mut self,
+        args: &mut [rustc_span::source_map::Spanned<mir::Operand<'tcx>>],
+        callee_ty: mir_ty::Ty<'tcx>,
+    ) {
+        let receiver = args.first().unwrap();
+        let mut ty = receiver.node.ty(&self.analyzer.local_decls, self.tcx);
+        let mut place = receiver.node.place().unwrap();
+        let mut derefs = 0;
+        while !matches!(
+            ty.kind(),
+            mir_ty::TyKind::Ref(_, inner, mir::Mutability::Not) if *inner == callee_ty
+        ) {
+            let Some(inner) = ty.builtin_deref(true) else {
+                unreachable!("`{ty}` does not lead to the callee `{callee_ty}` through references");
+            };
+            place = self.tcx.mk_place_deref(place);
+            ty = inner;
+            derefs += 1;
+        }
+        if derefs == 0 {
+            return;
+        }
+        let reborrowed = self.insert_immut_reborrow(self.tcx.mk_place_deref(place), callee_ty);
+        args[0].node = mir::Operand::Copy(reborrowed.into());
+    }
+
+    /// Passes a function item the call's arguments one by one, in place of the receiver and the
+    /// tuple of arguments that `Fn::call` takes.
+    fn untuple_args(
+        &mut self,
+        args: &mut Box<[rustc_span::source_map::Spanned<mir::Operand<'tcx>>]>,
+    ) {
+        let tuple = args.get(1).unwrap();
+        let mir_ty::TyKind::Tuple(tys) = tuple.node.ty(&self.analyzer.local_decls, self.tcx).kind()
+        else {
+            unreachable!("the arguments of an `Fn` call form a tuple");
+        };
+        let span = tuple.span;
+        let mut untupled = Vec::new();
+        if !tys.is_empty() {
+            let place = tuple.node.place().expect("a tuple of arguments is a place");
+            for (i, ty) in tys.iter().enumerate() {
+                let field = self.tcx.mk_place_field(place, FieldIdx::from_usize(i), ty);
+                let operand = if self
+                    .tcx
+                    .type_is_copy_modulo_regions(self.analyzer.typing_env, ty)
+                {
+                    mir::Operand::Copy(field)
+                } else if ty.is_mutable_ptr() {
+                    // A `&mut` argument is reborrowed by `ReborrowVisitor`, which reads a local
+                    // as it does the argument of any other call. The local is dropped after the
+                    // call, resolving the prophecy of what is left of the reference.
+                    let decl = mir::LocalDecl::new(ty, Default::default()).immutable();
+                    let new_local = self.analyzer.local_decls.push(decl);
+                    let new_local_ty = self.analyzer.place_type(&field);
+                    self.analyzer.bind_local(new_local, new_local_ty.into());
+                    self.analyzer.drop_after_terminator(new_local);
+                    mir::Operand::Move(new_local.into())
+                } else {
+                    mir::Operand::Move(field)
+                };
+                untupled.push(rustc_span::source_map::Spanned {
+                    node: operand,
+                    span,
+                });
+            }
+        }
+        *args = untupled.into_boxed_slice();
+    }
+}
+
 impl<'a, 'tcx, 'ctx> mir::visit::MutVisitor<'tcx> for RustCallVisitor<'a, 'tcx, 'ctx> {
     fn tcx(&self) -> TyCtxt<'tcx> {
         self.tcx
@@ -68,8 +145,16 @@ impl<'a, 'tcx, 'ctx> mir::visit::MutVisitor<'tcx> for RustCallVisitor<'a, 'tcx, 
                 }
 
                 // RustCallVisitor expects all generic args to be already instantiated
-                let mir_ty::TyKind::Closure(resolved_def_id, _) = generic_args.type_at(0).kind()
-                else {
+                let self_ty = generic_args.type_at(0);
+                let callee_ty = peel_shared_refs(self_ty);
+                if self_ty != callee_ty {
+                    self.pass_shared_receiver(args, callee_ty);
+                }
+                if let mir_ty::TyKind::FnDef(..) = callee_ty.kind() {
+                    self.untuple_args(args);
+                    return;
+                }
+                let mir_ty::TyKind::Closure(resolved_def_id, _) = callee_ty.kind() else {
                     return;
                 };
                 let fn_sig = self.analyzer.ctx().fn_sig(*resolved_def_id);

@@ -499,6 +499,12 @@ impl<'tcx> TypeBuilder<'tcx> {
                     let adt_def = self.tcx.adt_def(self.closure_model_id);
                     return mir_ty::Ty::new_adt(self.tcx, adt_def, args);
                 }
+                // A function item is a closure without captures: its model is the unit.
+                if let mir_ty::TyKind::FnDef(..) = ty.kind() {
+                    let args = self.tcx.mk_args(&[self.tcx.types.unit.into()]);
+                    let adt_def = self.tcx.adt_def(self.closure_model_id);
+                    return mir_ty::Ty::new_adt(self.tcx, adt_def, args);
+                }
                 ty.super_fold_with(self)
             }
         }

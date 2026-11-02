@@ -64,6 +64,10 @@ impl IteratorSpec for Counter {
 
 fn main() {
     let mut c = Counter { cur: 0, end: 3 };
-    let _ = c.find(|x| *x == 1);
+    let _ = c.find(thrust_macros::closure!(
+        requires(true),
+        ensures(result == (*x == 5)),
+        |x: &i64| -> bool { *x == 5 },
+    ));
     assert!(c.cur <= c.end);
 }

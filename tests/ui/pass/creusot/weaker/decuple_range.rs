@@ -51,7 +51,7 @@ trait Iterator {
     fn next(&mut self) -> Option<Self::Item>;
 
     // `collect` delegates to `from_iter`; `&mut self` for the reason given in
-    // `traits/collect_visited_seq_i64.rs`.
+    // `creusot/collect.rs`.
     #[thrust_macros::requires(Self::invariant(*self))]
     #[thrust_macros::ensures(forall(|k: Int| 0 <= k && k < result.len() ==> Self::produces(*self, result[k])))]
     fn collect<B: FromIterator<Self::Item>>(&mut self) -> B
@@ -168,7 +168,7 @@ impl Iterator for Range {
     }
 }
 
-// `FromIterator<A>` reduced to `from_iter` over `&mut I`, as in `traits/collect_visited_seq_i64.rs`.
+// `FromIterator<A>` reduced to `from_iter` over `&mut I`, as in `creusot/collect.rs`.
 #[thrust_macros::context]
 trait FromIterator<A: Model>: Sized
 where
