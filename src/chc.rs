@@ -1812,11 +1812,16 @@ impl UserDefinedPred {
         &self.instance
     }
 
-    /// The symbol of the defined copy of an opaque predicate ([`System::reveal_in`]), shown as
-    /// `<name> (revealed)` so that a report tells it from the universal symbol.
-    pub fn defined_copy(&self) -> Self {
+    /// The symbol of a defined copy ([`System::reveal_in`]): `<symbol>_def` for an opaque
+    /// predicate, `<symbol>_def_<anchor>` for a definition that reaches the opaque `anchor`. It is
+    /// shown as `<name> (revealed)` so that a report tells it from the universal symbol.
+    pub fn defined_copy(&self, anchor: Option<&UserDefinedPred>) -> Self {
+        let inner = match anchor {
+            None => format!("{}_def", self.inner),
+            Some(anchor) => format!("{}_def_{}", self.inner, anchor.inner),
+        };
         Self {
-            inner: format!("{}_def", self.inner),
+            inner,
             name: self.name.as_ref().map(|name| format!("{name} (revealed)")),
             ..self.clone()
         }
@@ -3095,22 +3100,48 @@ impl System {
         self.opaque_preds.contains(pred)
     }
 
-    /// Lets the clauses `ids` read the definitions of the opaque `preds`: each is replaced there
-    /// by a defined copy (`<symbol>_def`), the same definition under another name whose body reads
-    /// the copies in turn, and every other clause keeps the universal symbol. Instantiating the universal symbol with the
-    /// definition gives the system with every definition in place, so the reveal adds only true
+    /// Lets the clauses `ids` read the definitions of the opaque `preds`. Each is replaced there by
+    /// a defined copy (`<symbol>_def`), and so is every definition that applies one of them,
+    /// directly or through other definitions (`<symbol>_def_<first opaque symbol>`, since a
+    /// definition may reach the opaque functions of several modules). A copy is the same
+    /// definition under another name, reading the copies in turn, so that the revealed definition
+    /// is the whole one, as through a transparent function under Dafny's and Verus's `reveal`.
+    /// Every other clause keeps the universal symbol. Instantiating the universal symbols with
+    /// their definitions makes every copy equal to its original, so the reveal adds only true
     /// definitions. This is the scope of Dafny's and Verus's `reveal`: the proof it is written in.
     pub fn reveal_in(&mut self, ids: &[ClauseId], preds: &[UserDefinedPred]) {
-        let renaming: UserDefinedRenaming = preds
+        let mut revealed: Vec<&UserDefinedPred> = preds
             .iter()
             .filter(|p| self.opaque_preds.contains(p) && self.is_pred_defined(p))
-            .map(|p| (p.clone(), p.defined_copy()))
             .collect();
-        if renaming.is_empty() {
+        revealed.sort_by(|a, b| a.inner.cmp(&b.inner));
+        let Some(&anchor) = revealed.first() else {
             return;
+        };
+        let mut renaming: UserDefinedRenaming = revealed
+            .iter()
+            .map(|&p| (p.clone(), p.defined_copy(None)))
+            .collect();
+        // The transparent definitions that reach a revealed one; an opaque one of another module
+        // stays universal.
+        loop {
+            let reaching: Vec<UserDefinedPred> = self
+                .user_defined_pred_defs
+                .iter()
+                .filter(|d| {
+                    !renaming.contains_key(&d.symbol) && !self.opaque_preds.contains(&d.symbol)
+                })
+                .filter(|d| d.callees().into_iter().any(|c| renaming.contains_key(c)))
+                .map(|d| d.symbol.clone())
+                .collect();
+            if reaching.is_empty() {
+                break;
+            }
+            for symbol in reaching {
+                let copy = symbol.defined_copy(Some(anchor));
+                renaming.insert(symbol, copy);
+            }
         }
-        // A copy reads the copies of the others, and of itself when recursive, so that the
-        // revealed definition is the whole one rather than one unfolding over the universal symbol.
         let copies: Vec<UserDefinedPredDef> = self
             .user_defined_pred_defs
             .iter()

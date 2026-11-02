@@ -629,8 +629,9 @@ pub struct Analyzer<'tcx> {
     /// see [`Analyzer::mark_opaque_predicates`].
     opaque_predicates: Rc<RefCell<Vec<(chc::UserDefinedPred, LocalDefId)>>>,
     /// The bodies being analyzed, innermost last, each with the number of clauses when its
-    /// current stretch began; see [`Analyzer::enter_body`].
-    body_stack: Rc<RefCell<Vec<(LocalDefId, usize)>>>,
+    /// current stretch began; `None` for clauses that belong to no body
+    /// ([`Analyzer::outside_bodies`]). See [`Analyzer::enter_body`].
+    body_stack: Rc<RefCell<Vec<BodyStretch>>>,
     /// The clauses each analyzed body pushed, as stretches of clause indices.
     body_clauses: Rc<RefCell<Vec<BodyClauses>>>,
     /// The result type of each logic function defined so far, by its symbol: what a call of it in
@@ -764,6 +765,10 @@ impl BodyChecks {
 
 /// A stretch of the clauses one analyzed body pushed, by clause index.
 type BodyClauses = (LocalDefId, std::ops::Range<usize>);
+
+/// The body of the clauses pushed now (`None` for no body), and the clause count when its
+/// stretch began.
+type BodyStretch = (Option<LocalDefId>, usize);
 
 /// What the analysis did with the body of a function, recorded where it decides it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1803,10 +1808,13 @@ impl<'tcx> Analyzer<'tcx> {
                     .insert(pred.clone(), ret.clone());
                 let (checks, definition) =
                     self.checked_logic_fn_body(local_def_id, &params, &ret, body);
+                self.outside_bodies(|| {
+                    let mut system = self.system.borrow_mut();
+                    for clause in termination.into_iter().chain(checks) {
+                        system.push_clause(clause);
+                    }
+                });
                 let mut system = self.system.borrow_mut();
-                for clause in termination.into_iter().chain(checks) {
-                    system.push_clause(clause);
-                }
                 system.push_fn_define_term(
                     pred.clone(),
                     arg_sorts,
@@ -2612,19 +2620,38 @@ impl<'tcx> Analyzer<'tcx> {
     /// [`Analyzer::exit_body`]; a body analyzed meanwhile (a callee at an instance) takes the
     /// clauses it pushes.
     pub fn enter_body(&self, def: LocalDefId) {
+        self.push_stretch(Some(def));
+    }
+
+    pub fn exit_body(&self) {
+        self.pop_stretch();
+    }
+
+    /// Pushes the clauses `push` pushes as clauses of no body, which read no defined copy: the
+    /// checks of a logic function, pushed when its first instance is made, then do not depend on
+    /// which body made it.
+    fn outside_bodies(&self, push: impl FnOnce()) {
+        self.push_stretch(None);
+        push();
+        self.pop_stretch();
+    }
+
+    fn push_stretch(&self, def: Option<LocalDefId>) {
         let now = self.system.borrow().clauses.len();
         let mut stack = self.body_stack.borrow_mut();
-        if let Some(&(outer, start)) = stack.last() {
+        if let Some(&(Some(outer), start)) = stack.last() {
             self.body_clauses.borrow_mut().push((outer, start..now));
         }
         stack.push((def, now));
     }
 
-    pub fn exit_body(&self) {
+    fn pop_stretch(&self) {
         let now = self.system.borrow().clauses.len();
         let mut stack = self.body_stack.borrow_mut();
-        let (def, start) = stack.pop().expect("exit_body without enter_body");
-        self.body_clauses.borrow_mut().push((def, start..now));
+        let (def, start) = stack.pop().expect("a stretch to end");
+        if let Some(def) = def {
+            self.body_clauses.borrow_mut().push((def, start..now));
+        }
         if let Some(outer) = stack.last_mut() {
             outer.1 = now;
         }
