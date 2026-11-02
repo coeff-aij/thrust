@@ -1,7 +1,7 @@
 //! The solver's model applied to the templates: the interpretation of each predicate variable,
 //! and each template with its predicate variables replaced by theirs.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::chc;
 
@@ -22,6 +22,10 @@ pub(super) struct Solution {
     /// Why the unknowns of a part solved but not solved again for its model have none.
     unanswered: HashMap<chc::PredVarId, String>,
 }
+
+/// Why an unknown that only parts lacking a clause deriving it interpret has no solution.
+const PART_LACKS_DERIVATION: &str =
+    "no solution shown: each part solved that interprets it lacks a constraint deriving it";
 
 /// Why a site of a refuted part has no solution.
 const REFUTED_PART: &str = "no solution: the part of the constraints over it is refuted";
@@ -67,15 +71,37 @@ impl Solution {
         names: &Names,
     ) -> Result<Self, String> {
         let config = chc::Config::from_env();
-        let mut solutions = answers.iter().zip(symbols).filter_map(|(answer, symbols)| {
-            let (None, Some(model)) = (solution_unavailable(answer), &answer.model) else {
-                return None;
-            };
-            let query = answer.query.as_deref().unwrap_or_default();
-            Some(Solution::new(model, query, symbols, names, |script| {
-                config.run_script(script)
-            }))
-        });
+        let deriving = system.deriving_clauses();
+        let mut left_out = Vec::new();
+        let solutions: Vec<Solution> = answers
+            .iter()
+            .zip(symbols)
+            .enumerate()
+            .filter_map(|(i, (answer, symbols))| {
+                let (None, Some(model)) = (solution_unavailable(answer), &answer.model) else {
+                    return None;
+                };
+                let query = answer.query.as_deref().unwrap_or_default();
+                let mut solution = Solution::new(model, query, symbols, names, |script| {
+                    config.run_script(script)
+                });
+                // A part that lacks a clause deriving an unknown (a cone of
+                // `THRUST_SPLIT_GOALS` with the unknown only in a head position) need not
+                // interpret it as a model of the system does.
+                if let Some(asked) = asked.get(i) {
+                    let held: HashSet<chc::ClauseId> = asked.clauses.iter().copied().collect();
+                    solution.by_pred.retain(|p, _| {
+                        let whole = deriving.get(p).is_none_or(|cs| cs.is_subset(&held));
+                        if !whole {
+                            left_out.push(*p);
+                        }
+                        whole
+                    });
+                }
+                Some(solution)
+            })
+            .collect();
+        let mut solutions = solutions.into_iter();
         let first = solutions.next();
         if first.is_none() && asked.is_empty() {
             let why = solution_unavailable(&answers[0]);
@@ -86,10 +112,33 @@ impl Solution {
             partial: true,
             unanswered: HashMap::new(),
         });
+        // A predicate variable in several parts (the cones of `THRUST_SPLIT_GOALS`) is
+        // interpreted by the conjunction of theirs, a model of the system (see `chc::cones`).
         for other in solutions {
-            solution.by_pred.extend(other.by_pred);
+            for (pred, interpretation) in other.by_pred {
+                match solution.by_pred.entry(pred) {
+                    std::collections::hash_map::Entry::Vacant(entry) => {
+                        entry.insert(interpretation);
+                    }
+                    std::collections::hash_map::Entry::Occupied(mut entry) => {
+                        let both = entry.get_mut();
+                        let args: Vec<Term> = both.params.iter().cloned().map(Term::Var).collect();
+                        let other = interpretation.apply(&args);
+                        if other != both.body {
+                            both.body = formula::and(vec![both.body.clone(), other]);
+                        }
+                    }
+                }
+            }
         }
         solution.partial = !asked.is_empty();
+        for p in left_out {
+            if !solution.by_pred.contains_key(&p) {
+                solution
+                    .unanswered
+                    .insert(p, PART_LACKS_DERIVATION.to_owned());
+            }
+        }
         for (answer, asked) in answers.iter().zip(asked) {
             if asked.refuted || answer.result.is_ok() {
                 continue;

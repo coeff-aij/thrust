@@ -63,7 +63,10 @@ fn scalar_const_term<T>(
             rty::Type::int_of_width(v.size().bits() as u32),
             chc::Term::int(v.to_int(v.size())),
         )),
-        (mir_ty::TyKind::Uint(_), mir::ConstValue::Scalar(Scalar::Int(v))) => Some((
+        (
+            mir_ty::TyKind::Uint(_) | mir_ty::TyKind::Char,
+            mir::ConstValue::Scalar(Scalar::Int(v)),
+        ) => Some((
             rty::Type::uint_of_width(v.size().bits() as u32),
             chc::Term::int(v.to_uint(v.size())),
         )),
@@ -890,6 +893,12 @@ fn split_jobs() -> Result<Option<usize>, String> {
     }
 }
 
+/// `THRUST_SPLIT_GOALS=1`: the parts are the cones of the goals rather than the classes of clauses
+/// that share an unknown.
+fn split_goals() -> bool {
+    std::env::var("THRUST_SPLIT_GOALS").is_ok_and(|value| value.trim() == "1")
+}
+
 /// Where the analysis makes a template, and so its predicate variables: a function's contract,
 /// a block's type, or the code of a block (the result of a call it makes).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1172,11 +1181,13 @@ impl<'tcx> Analyzer<'tcx> {
     /// body is, and a shim passes the mode to the instance inside it. A
     /// non-generic trusted body is trusted throughout. A function pointer, trait object or
     /// closure that a trusted body hands out carries the trusted mode: calling it is the trusted
-    /// author's responsibility. Static initializers are not followed: verified code cannot read a
-    /// static (the analysis stops), and a static has no type parameters, so what a trusted body
-    /// reaches through one is its author's fixed choice. An instance is followed once per mode it
-    /// is reached in. This over-approximates what the verified functions can run: an instance
-    /// reached only on a path to a panic counts.
+    /// author's responsibility. Static initializers are not followed: verified code reads only an
+    /// immutable static without interior mutability, whose value cannot hand it code (a static's
+    /// type cannot name a closure or a function item, and the analysis stops on a function pointer
+    /// or a trait object in a constant's value), and a static has no type parameters, so what a
+    /// trusted body reaches through one is its author's fixed choice. An instance is followed once
+    /// per mode it is reached in. This over-approximates what the verified functions can run: an
+    /// instance reached only on a path to a panic counts.
     pub fn stop_ignored_reached(
         &self,
         roots: Vec<mir_ty::Instance<'tcx>>,
@@ -2709,7 +2720,8 @@ impl<'tcx> Analyzer<'tcx> {
     /// `report`, reports the parts as without `THRUST_SPLIT`.
     fn solve_parts(&self, jobs: usize, report: Option<&crate::report::Config>) {
         let system = self.system.borrow();
-        let parts = system.solve_parts(jobs);
+        let (clauses, by_goals) = self.parts_to_solve(&system);
+        let parts = system.solve_parts(jobs, clauses);
         let summaries: Vec<crate::report::Part> = parts
             .iter()
             .enumerate()
@@ -2741,7 +2753,23 @@ impl<'tcx> Analyzer<'tcx> {
             diag.with_note(summary.error_note(self.tcx, &summaries))
                 .emit();
         }
-        crate::report::emit_part_notes(self.tcx, &summaries);
+        crate::report::emit_part_notes(self.tcx, &summaries, by_goals);
+    }
+
+    /// The parts of `system` to solve on their own: with `THRUST_SPLIT_GOALS=1`, the cone of each
+    /// goal when every clause is a definite Horn clause, and otherwise, with a note saying why, the
+    /// classes of clauses that share an unknown. Returns whether they are the cones.
+    fn parts_to_solve(&self, system: &chc::System) -> (Vec<Vec<chc::ClauseId>>, bool) {
+        if !split_goals() {
+            return (system.components(), false);
+        }
+        match system.goal_cones() {
+            Ok(cones) => (cones, true),
+            Err(why) => {
+                crate::report::emit_not_horn_note(self.tcx, system, why);
+                (system.components(), false)
+            }
+        }
     }
 
     /// Reports the parts refuted, as without `THRUST_SPLIT`: each is solved once more on its own,
