@@ -212,16 +212,24 @@ enum DefUse {
     Run,
 }
 
-/// Whether a lookup of a def's type is for one call site, which takes its own instance of an
-/// inferred contract.
+/// A call in a body: the body whose analysis reaches it and the block the call ends.
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+pub struct CallSite {
+    pub body: LocalDefId,
+    pub bb: BasicBlock,
+}
+
+/// Whether a lookup of a def's type is for a call site, which takes the instance of an inferred
+/// contract kept for that site.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Site {
-    /// A call: a def whose contract is inferred from its body gets a contract of its own at this
-    /// call, defined by an analysis of the body at it, unless the def is being analyzed already
-    /// under the same key (recursion), which takes the shared one.
-    Call,
+    /// A call: a generic or deferred def whose contract is inferred from its body has one
+    /// instance of that contract per call site (1-call-site sensitivity), defined by an analysis
+    /// of the body. Every analysis of the body that holds the site, under one owner, takes the
+    /// same instance, so a recursive call reaches the instance its own site has.
+    Call(CallSite),
     /// Any other use (a function value, a contract read by `pre!`/`post!`, a forced analysis):
-    /// the instance shared by the caller's uses.
+    /// the instance shared by the owner's uses.
     Shared,
 }
 
@@ -415,6 +423,9 @@ struct GenericDefTy<'tcx> {
 struct InstantiationKey<'tcx> {
     generic_args: mir_ty::GenericArgsRef<'tcx>,
     caller_def_id: DefId,
+    /// The call site of an instance kept per site (see [`Site::Call`]); `None` for the instance
+    /// the owner's other uses share.
+    site: Option<CallSite>,
 }
 
 /// Identifies one instance of a predicate with a Rust body: the predicate, its generic
@@ -500,6 +511,8 @@ pub struct AnalysisKey<'tcx> {
     local_def_id: LocalDefId,
     generic_args: mir_ty::GenericArgsRef<'tcx>,
     owner_fn_id: DefId,
+    /// The call site whose instance this analysis defines (see [`Site::Call`]).
+    call_site: Option<CallSite>,
 }
 
 impl<'tcx> AnalysisKey<'tcx> {
@@ -507,12 +520,18 @@ impl<'tcx> AnalysisKey<'tcx> {
         local_def_id: LocalDefId,
         generic_args: mir_ty::GenericArgsRef<'tcx>,
         owner_fn_id: DefId,
+        call_site: Option<CallSite>,
     ) -> Self {
         Self {
             local_def_id,
             generic_args,
             owner_fn_id,
+            call_site,
         }
+    }
+
+    pub fn local_def_id(&self) -> LocalDefId {
+        self.local_def_id
     }
 
     /// The typing environment for resolving associated types, layouts and instances in the
@@ -679,9 +698,6 @@ pub struct Analyzer<'tcx> {
     /// The instances `(def, generic args, caller)` that use a generic def's contract as
     /// instantiated; see [`Analyzer::check_reused_spec_bounds`].
     reused_generic_instances: RefCell<Vec<(DefId, mir_ty::GenericArgsRef<'tcx>, DefId)>>,
-    /// The instances whose body analysis is running, so that a call reached inside one takes the
-    /// shared contract rather than a fresh one per call.
-    analyzing_instances: RefCell<HashSet<(DefId, InstantiationKey<'tcx>)>>,
     /// See [`Analyzer::contract_written`].
     contract_written: RefCell<HashMap<LocalDefId, bool>>,
     /// The generic defs of a crate with an `Invariant` impl that are verified once over their
@@ -966,7 +982,6 @@ impl<'tcx> Analyzer<'tcx> {
             fn_mut_reuse: Default::default(),
             spec_assumptions: Default::default(),
             reused_generic_instances: Default::default(),
-            analyzing_instances: Default::default(),
             contract_written: Default::default(),
             per_instance_too: Default::default(),
             called_fn_tys: Default::default(),
@@ -1609,10 +1624,6 @@ impl<'tcx> Analyzer<'tcx> {
         has_spec || self.contract_written(local_def_id)
     }
 
-    /// Whether the contract written on `local_def_id` leaves nothing to inference: `requires` and
-    /// `ensures` (the macros write both when either is written), `#[thrust::callable]`, or
-    /// refinements of both a parameter and the result. A refinement of only the parameters or
-    /// only the result leaves the other side to inference, so it counts as not written.
     /// Whether `def_id`'s contract is inferred from its own body, wholly or in part: a function
     /// or method of the crate, not a closure (whose contract is that of one value, shared by
     /// every use of it), whose contract is not written in full (see
@@ -1623,6 +1634,10 @@ impl<'tcx> Analyzer<'tcx> {
             && !self.contract_written(spec_local_def_id)
     }
 
+    /// Whether the contract written on `local_def_id` leaves nothing to inference: `requires` and
+    /// `ensures` (the macros write both when either is written), `#[thrust::callable]`, or
+    /// refinements of both a parameter and the result. A refinement of only the parameters or
+    /// only the result leaves the other side to inference, so it counts as not written.
     pub fn contract_written(&self, local_def_id: LocalDefId) -> bool {
         if let Some(written) = self.contract_written.borrow().get(&local_def_id) {
             return *written;
@@ -1673,6 +1688,7 @@ impl<'tcx> Analyzer<'tcx> {
         let key = InstantiationKey {
             generic_args,
             caller_def_id,
+            site: None,
         };
         let mut def_ty = match self.defs.get(&def_id)? {
             DefTy::Concrete(rty, _) => rty.clone(),
@@ -2047,6 +2063,7 @@ impl<'tcx> Analyzer<'tcx> {
         let key = InstantiationKey {
             generic_args,
             caller_def_id: owner_fn_id,
+            site: None,
         };
         let deferred_formula_fn_cache = Rc::clone(&deferred_formula_fn.cache);
         if let Some(formula_fn) = deferred_formula_fn_cache.borrow().get(&key) {
@@ -2093,21 +2110,28 @@ impl<'tcx> Analyzer<'tcx> {
         )
     }
 
-    /// [`Analyzer::def_ty_with_args`] or [`Analyzer::running_def_ty_with_args`] for one call
-    /// site (see [`Site::Call`]).
+    /// [`Analyzer::def_ty_with_args`] or [`Analyzer::running_def_ty_with_args`] for the call at
+    /// `site` (see [`Site::Call`]).
     pub fn call_site_def_ty(
         &mut self,
         def_id: DefId,
         generic_args: mir_ty::GenericArgsRef<'tcx>,
         caller_def_id: DefId,
         runs_own_body: bool,
+        site: CallSite,
     ) -> Option<rty::RefinedType> {
         let def_use = if runs_own_body {
             DefUse::Run
         } else {
             DefUse::Call
         };
-        self.def_ty_at(def_id, generic_args, caller_def_id, def_use, Site::Call)
+        self.def_ty_at(
+            def_id,
+            generic_args,
+            caller_def_id,
+            def_use,
+            Site::Call(site),
+        )
     }
 
     /// The type of `def_id` at `generic_args`, as [`Analyzer::def_ty_with_args`] gives it, for a
@@ -2207,24 +2231,28 @@ impl<'tcx> Analyzer<'tcx> {
                 }
             };
 
+        let site = match site {
+            Site::Call(call_site)
+                if may_analyze
+                    && deferred_ty_mode.is_some_and(|mode| mode.should_analyze())
+                    && self.contract_inferred(def_id, local_def_id) =>
+            {
+                Some(call_site)
+            }
+            _ => None,
+        };
         let key = InstantiationKey {
             generic_args,
             caller_def_id,
+            site,
         };
         let body_unanalyzed = !deferred_ty_mode.is_some_and(|mode| mode.should_analyze())
             || (is_generic && !self.per_instance_too.contains(&def_id));
         if def_use.runs_body(self.tcx, def_id) && body_unanalyzed {
             self.stop_promised_invariant(def_id, local_def_id, generic_args, caller_def_id);
         }
-        let own_instance = site == Site::Call
-            && may_analyze
-            && deferred_ty_mode.is_some_and(|mode| mode.should_analyze())
-            && self.contract_inferred(def_id, local_def_id)
-            && !self.analyzing_instances.borrow().contains(&(def_id, key));
-        if !own_instance {
-            if let Some(rty) = instantiated_ty_cache.borrow().get(&key) {
-                return Some(rty.clone());
-            }
+        if let Some(rty) = instantiated_ty_cache.borrow().get(&key) {
+            return Some(rty.clone());
         }
 
         let expected = {
@@ -2234,9 +2262,7 @@ impl<'tcx> Analyzer<'tcx> {
                 .generic_args(generic_args);
             analyzer.expected_ty()
         };
-        // An own instance stands in the cache only while its body is analyzed, so that a
-        // recursive call inside reaches it; the shared instance is put back afterwards.
-        let shared = instantiated_ty_cache
+        instantiated_ty_cache
             .borrow_mut()
             .insert(key, expected.clone());
         tracing::info!(?def_id, rty = %expected.display(), ?generic_args, "deferred def");
@@ -2303,13 +2329,12 @@ impl<'tcx> Analyzer<'tcx> {
                     .as_local()
                     .expect("Analyze mode is only set for deferred defs keyed on a local def")
             };
-            self.analyzing_instances.borrow_mut().insert((def_id, key));
             let mut body_analyzer = self.local_def_analyzer(body_local_def_id);
             body_analyzer
                 .owner_fn_id(caller_def_id)
-                .generic_args(body_args);
+                .generic_args(body_args)
+                .call_site(site);
             body_analyzer.run(&expected);
-            self.analyzing_instances.borrow_mut().remove(&(def_id, key));
             use mir_ty::TypeVisitableExt as _;
             if !body_args.has_param() {
                 self.concrete_instances
@@ -2319,13 +2344,6 @@ impl<'tcx> Analyzer<'tcx> {
                     .borrow_mut()
                     .push((body_local_def_id.to_def_id(), body_args));
             }
-        }
-        if own_instance {
-            let mut cache = instantiated_ty_cache.borrow_mut();
-            match shared {
-                Some(shared) => cache.insert(key, shared),
-                None => cache.remove(&key),
-            };
         }
         Some(expected)
     }
@@ -2746,13 +2764,32 @@ impl<'tcx> Analyzer<'tcx> {
                 Some((def_id.as_local()?, rty.ty.as_function()?))
             })
             .collect();
+        // Rank each body's per-call-site instances by site, the instance without one first.
+        let mut sites: HashMap<LocalDefId, Vec<Option<(u32, BasicBlock)>>> = HashMap::new();
+        for key in self.basic_blocks.keys() {
+            let site = key
+                .call_site
+                .map(|site| (site.body.local_def_index.as_u32(), site.bb));
+            sites.entry(key.local_def_id).or_default().push(site);
+        }
+        for ranked in sites.values_mut() {
+            ranked.sort();
+            ranked.dedup();
+        }
         let blocks = self
             .basic_blocks
             .iter()
             .flat_map(|(key, blocks)| {
+                let site = key
+                    .call_site
+                    .map(|site| (site.body.local_def_index.as_u32(), site.bb));
+                let rank = sites[&key.local_def_id]
+                    .iter()
+                    .position(|s| *s == site)
+                    .unwrap();
                 blocks
                     .iter()
-                    .map(move |(bb, def)| (key.local_def_id, *bb, &def.ty))
+                    .map(move |(bb, def)| (key.local_def_id, rank, *bb, &def.ty))
             })
             .collect();
         let body_checks = self.body_checks.snapshot();

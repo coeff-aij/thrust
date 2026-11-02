@@ -1800,18 +1800,16 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         runs_own_body: bool,
     ) -> Option<rty::RefinedType> {
         let caller_def_id = self.type_builder.owner_fn_id();
-        match (site, runs_own_body) {
-            (analyze::Site::Call, _) => {
+        match site {
+            analyze::Site::Call(call_site) => {
                 self.ctx
-                    .call_site_def_ty(def_id, args, caller_def_id, runs_own_body)
+                    .call_site_def_ty(def_id, args, caller_def_id, runs_own_body, call_site)
             }
-            (analyze::Site::Shared, true) => {
+            analyze::Site::Shared if runs_own_body => {
                 self.ctx
                     .running_def_ty_with_args(def_id, args, caller_def_id)
             }
-            (analyze::Site::Shared, false) => {
-                self.ctx.def_ty_with_args(def_id, args, caller_def_id)
-            }
+            analyze::Site::Shared => self.ctx.def_ty_with_args(def_id, args, caller_def_id),
         }
     }
 
@@ -2148,7 +2146,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
         // TODO: handle const_fn_def on Env side
         let func_ty = if let Some((def_id, args)) = func.const_fn_def() {
-            let ty = self.callable_ty(def_id, args, analyze::Site::Call);
+            let site = analyze::CallSite {
+                body: self.analysis_key.local_def_id(),
+                bb: self.basic_block,
+            };
+            let ty = self.callable_ty(def_id, args, analyze::Site::Call(site));
             if analyze::candidate_atoms_enabled() {
                 self.record_called_fn_ty(&ty);
             }

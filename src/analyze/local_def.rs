@@ -142,6 +142,8 @@ pub struct Analyzer<'tcx, 'ctx> {
     generic_args: mir_ty::GenericArgsRef<'tcx>,
     drop_points: HashMap<BasicBlock, analyze::basic_block::DropPoints>,
     type_builder: TypeBuilder<'tcx>,
+    /// The call site whose instance this analysis defines (see [`analyze::Site::Call`]).
+    call_site: Option<analyze::CallSite>,
 }
 
 /// The locals that the move paths `paths` are parts of.
@@ -2393,6 +2395,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             generic_args,
             drop_points,
             type_builder,
+            call_site: None,
         }
     }
 
@@ -2401,7 +2404,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     }
 
     pub fn analysis_key(&self) -> analyze::AnalysisKey<'tcx> {
-        analyze::AnalysisKey::new(self.local_def_id, self.generic_args, self.owner_fn_id)
+        analyze::AnalysisKey::new(
+            self.local_def_id,
+            self.generic_args,
+            self.owner_fn_id,
+            self.call_site,
+        )
     }
 
     pub fn owner_fn_id(&mut self, owner_fn_id: DefId) -> &mut Self {
@@ -2412,6 +2420,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         );
         self.owner_fn_id = owner_fn_id;
         self.type_builder = self.ctx.type_builder(self.ctx.def_ids(), owner_fn_id);
+        self
+    }
+
+    pub fn call_site(&mut self, call_site: Option<analyze::CallSite>) -> &mut Self {
+        self.call_site = call_site;
         self
     }
 

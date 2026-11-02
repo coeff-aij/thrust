@@ -168,7 +168,10 @@ pub struct Input<'a> {
     pub system: &'a chc::System,
     /// The contract of each function, written or a template.
     pub contracts: Vec<(LocalDefId, &'a rty::FunctionType)>,
-    pub blocks: Vec<(LocalDefId, BasicBlock, &'a BasicBlockType)>,
+    /// The type of each block of each analysis of a body, with the analysis' rank among the
+    /// body's per-call-site instances: 0 for the first, whose blocks are named `f.bbK`; a later
+    /// one's are named `f#n.bbK`, with n the rank plus one.
+    pub blocks: Vec<(LocalDefId, usize, BasicBlock, &'a BasicBlockType)>,
     /// The solver's answers: one for the whole system, or with `THRUST_SPLIT` one for each part
     /// `asked` names. A solution is read from those with a model, a failure from each.
     pub answers: &'a [chc::Answer],
@@ -352,7 +355,7 @@ fn entries<'tcx>(
 ) -> (Vec<Entry<'tcx>>, Names) {
     let selected = |def: LocalDefId| config.reports(tcx, def);
     let mut entries: HashMap<LocalDefId, Entry<'tcx>> = HashMap::new();
-    for (def, _, _) in &input.blocks {
+    for (def, _, _, _) in &input.blocks {
         if entries.contains_key(def) || !selected(*def) {
             continue;
         }
@@ -386,13 +389,16 @@ fn entries<'tcx>(
         }
     }
     let mut blocks = input.blocks.clone();
-    blocks.sort_by_key(|(def, bb, _)| (def.local_def_index, *bb));
-    for (def, bb, ty) in &blocks {
+    blocks.sort_by_key(|(def, rank, bb, _)| (def.local_def_index, *rank, *bb));
+    for (def, rank, bb, ty) in &blocks {
         let Some(entry) = entries.get_mut(def) else {
             continue;
         };
-        let Some(site) = sites::block_site(&mut names, &entry.name, *def, &entry.body, *bb, ty)
-        else {
+        let fn_name = match rank {
+            0 => entry.name.clone(),
+            n => format!("{}#{}", entry.name, n + 1),
+        };
+        let Some(site) = sites::block_site(&mut names, &fn_name, *def, &entry.body, *bb, ty) else {
             continue;
         };
         match site.kind {
