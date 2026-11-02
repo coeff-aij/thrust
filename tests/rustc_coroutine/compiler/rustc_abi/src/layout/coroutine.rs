@@ -678,7 +678,8 @@ fn combine_offsets<VariantIdx: Idx + thrust_models::Model, FieldIdx: Idx + thrus
     // Rewrite (rewrites.md R8): `Map::new` and `collect_index_vec` for `map` and `collect`.
     // The closure's contract: its `requires` states what its body reads, of the entry it is given
     // (a local below n that is not `Unassigned`) and of its captures (property 3, the promoted
-    // memory index below c, and `combined_in_memory_order`'s length c + m). Its `hist_inv` keeps
+    // memory index below c, `combined_in_memory_order`'s length c + m, and the zip's `inv`, which
+    // `next` requires). Its `hist_inv` keeps
     // what the `requires` reads of the captures across calls: the shared captures are unchanged
     // and the writes to `combined_in_memory_order` keep its length. `Map::new`'s
     // `next_precondition` follows from `combine_offsets`' `requires` on the variant's entries.
@@ -687,6 +688,7 @@ fn combine_offsets<VariantIdx: Idx + thrust_models::Model, FieldIdx: Idx + thrus
         thrust_macros::closure!(
         captures(
             assignments: &mut &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
+            offsets_and_memory_index: &mut &mut std::iter::Zip<std::vec::IntoIter<Size>, std::vec::IntoIter<u32>>,
             promoted_memory_index: &mut &IndexVec<FieldIdx, u32>,
             invalid_field_idx: &mut &usize,
             promoted_offsets: &mut &IndexVec<FieldIdx, Size>,
@@ -708,6 +710,7 @@ fn combine_offsets<VariantIdx: Idx + thrust_models::Model, FieldIdx: Idx + thrus
                 && (**promoted_memory_index).len() <= **invalid_field_idx
                 && **invalid_field_idx <= 4294967295usize
                 && (**combined_in_memory_order).len() == **invalid_field_idx
+                && <std::iter::Zip<std::vec::IntoIter<Size>, std::vec::IntoIter<u32>> as crate::IteratorSpec>::inv(**offsets_and_memory_index)
         ),
         ensures(true),
         hist_inv(
@@ -716,6 +719,8 @@ fn combine_offsets<VariantIdx: Idx + thrust_models::Model, FieldIdx: Idx + thrus
                 && *promoted_offsets == !promoted_offsets
                 && *invalid_field_idx == !invalid_field_idx
                 && (**combined_in_memory_order).len() == (*!combined_in_memory_order).len()
+                && (!<std::iter::Zip<std::vec::IntoIter<Size>, std::vec::IntoIter<u32>> as crate::IteratorSpec>::inv(**offsets_and_memory_index)
+                    || <std::iter::Zip<std::vec::IntoIter<Size>, std::vec::IntoIter<u32>> as crate::IteratorSpec>::inv(*!offsets_and_memory_index))
         ),
         |(i, local): (FieldIdx, &LocalIdx)| -> Size {
             let (offset, memory_index) = match assignments[*local] {
