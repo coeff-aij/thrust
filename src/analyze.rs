@@ -2591,20 +2591,19 @@ impl<'tcx> Analyzer<'tcx> {
             opaque.push((pred.clone(), module_of(*def)));
         }
         for (def, range) in self.body_clauses.borrow().iter() {
-            if !self.has_attr(*def, &analyze::annot::reveal_path()) {
+            // A closure's body is its own, but the reveal written on the function it is in covers
+            // it, as Dafny's `reveal` covers the lambdas in its scope.
+            let root = self.tcx.typeck_root_def_id(def.to_def_id()).expect_local();
+            if !self.has_attr(root, &analyze::annot::reveal_path()) {
                 continue;
             }
-            let module = module_of(*def);
+            let module = module_of(root);
             let preds: Vec<chc::UserDefinedPred> = opaque
                 .iter()
                 .filter(|(_, m)| *m == module)
                 .map(|(pred, _)| pred.clone())
                 .collect();
-            let ids: Vec<chc::ClauseId> = system
-                .clauses
-                .indices()
-                .filter(|id| range.contains(&id.index()))
-                .collect();
+            let ids: Vec<chc::ClauseId> = range.clone().map(chc::ClauseId::from_usize).collect();
             system.reveal_in(&ids, &preds);
         }
     }
