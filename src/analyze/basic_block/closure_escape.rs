@@ -16,7 +16,9 @@ use rustc_middle::ty::{self as mir_ty};
 use rustc_span::def_id::DefId;
 
 use super::{singleton_params, subst_singleton_params, Analyzer, ResolvedCallable};
-use crate::analyze::unanalyzed_entry::{count_held, peel_refs, pointee, HandedOver, HandoverCount};
+use crate::analyze::unanalyzed_entry::{
+    count_held, peel_refs, pointee, HandedOver, HandoverCount, StatedPres,
+};
 use crate::analyze::TypeParam;
 use crate::chc;
 use crate::refine::Var;
@@ -27,6 +29,38 @@ use crate::rty::{self, ClauseBuilderExt as _, ClauseScope as _, Subtyping as _};
 enum Calls {
     Once,
     Repeatedly,
+}
+
+/// Whether a struct or enum of the crate in `ty` holds the closure type `closure` among its
+/// type arguments: a user adapter, whose `inv` holds only where a call discharges it.
+fn crate_adapter_holds<'tcx>(ty: mir_ty::Ty<'tcx>, closure: mir_ty::Ty<'tcx>) -> bool {
+    ty.walk()
+        .filter_map(|arg| arg.as_type())
+        .any(|ty| match ty.kind() {
+            mir_ty::TyKind::Adt(adt, args) => {
+                adt.did().is_local() && args.types().any(|arg| closures_in(arg).contains(&closure))
+            }
+            _ => false,
+        })
+}
+
+/// The closure types in `ty`, without repeats. A closure's own arguments (its signature, its
+/// captures) are its own and not looked into: a closure it captures is called by its body.
+fn closures_in(ty: mir_ty::Ty<'_>) -> Vec<mir_ty::Ty<'_>> {
+    let mut closures = Vec::new();
+    let mut walker = ty.walk();
+    while let Some(arg) = walker.next() {
+        let Some(ty) = arg.as_type() else {
+            continue;
+        };
+        if matches!(ty.kind(), mir_ty::TyKind::Closure(..)) {
+            walker.skip_current_subtree();
+            if !closures.contains(&ty) {
+                closures.push(ty);
+            }
+        }
+    }
+    closures
 }
 
 impl<'tcx> Analyzer<'tcx, '_> {
@@ -78,14 +112,24 @@ impl<'tcx> Analyzer<'tcx, '_> {
             let ty = mir_ty::EarlyBinder::bind(param.to_ty(self.tcx))
                 .instantiate(self.tcx, contract_args);
             let ty = self.tcx.erase_regions(ty);
-            // The iterator's `inv` states the obligation of the closures held by the arguments
-            // at the parameters of the bounded type, not of a value of their type another
-            // argument holds, whatever its type.
+            // The iterator's `inv` states the obligation of the closures a std adapter holds in
+            // the arguments at the parameters of the bounded type, not of a value of their type
+            // another argument holds, whatever its type.
             let others = self.operands_not_at(contract_def_id, param, operands);
-            for closure in ty.walk().filter_map(|arg| arg.as_type()) {
-                if matches!(closure.kind(), mir_ty::TyKind::Closure(..)) {
+            for closure in closures_in(ty) {
+                if !crate_adapter_holds(ty, closure) {
                     self.record_handover(closure, def_id, args);
                     self.record_handover_count(closure, def_id, args, others.clone(), 0);
+                    continue;
+                }
+                // A user adapter's closure is covered only by a `pre!` the `requires` states, as
+                // a `requires` of the adapter's `inv` does when `inv` states it. Otherwise it is
+                // left to the walk over unanalyzed code, which stops where that code runs it: a
+                // callee that only wraps the iterator (`skip`) does not.
+                let operand_types = self.operand_types(operands);
+                if self.states_pre_of_one(closure, &operand_types, &stated) {
+                    self.record_handover(closure, def_id, args);
+                    self.record_handover_count(closure, def_id, args, operand_types, 1);
                 }
             }
         }
@@ -102,11 +146,7 @@ impl<'tcx> Analyzer<'tcx, '_> {
             // the walk over unanalyzed code counts them again at each instance of the caller
             // ([`HandoverCount`]).
             let operand_types = self.operand_types(operands);
-            let count = operand_types
-                .iter()
-                .map(|held| count_held(self.tcx, *held, ty))
-                .sum::<Option<usize>>();
-            let accounted = if stated.names(ty) && count == Some(1) {
+            let accounted = if self.states_pre_of_one(ty, &operand_types, &stated) {
                 1
             } else {
                 let holders = self.holders(ty, operands);
@@ -118,6 +158,21 @@ impl<'tcx> Analyzer<'tcx, '_> {
             };
             self.record_handover_count(ty, def_id, args, operand_types, accounted);
         }
+    }
+
+    /// Whether `stated` reads the `pre!` of the closure type `ty` and arguments of the types
+    /// `operand_types` hold exactly one value of it, which the `pre!` is then stated of.
+    fn states_pre_of_one(
+        &self,
+        ty: mir_ty::Ty<'tcx>,
+        operand_types: &[mir_ty::Ty<'tcx>],
+        stated: &StatedPres<'tcx>,
+    ) -> bool {
+        let count = operand_types
+            .iter()
+            .map(|held| count_held(self.tcx, *held, ty))
+            .sum::<Option<usize>>();
+        stated.names(ty) && count == Some(1)
     }
 
     /// Records that the call of `def_id` at `args` states the obligation of `accounted` values
@@ -259,9 +314,10 @@ impl<'tcx> Analyzer<'tcx, '_> {
     /// every item it can be called on and is kept by every `next`, the only way std.rs lets the
     /// state of a `Map` change. So it holds of every `Map` a callee receives, whether or not the
     /// callee's contract requires `inv` (a trusted consumer's need not). A user adapter's `inv`
-    /// is established only where a call discharges it, such as a direct call of its `next`
-    /// through the trait's contract; nothing here checks that it holds, nor that it states the
-    /// `pre!` of the closures the adapter holds.
+    /// holds only where a call discharges it, so a closure a struct or enum of the crate holds is
+    /// covered only when the callee's `requires` states its `pre!` of the one value of its type
+    /// the arguments hold, which a `requires` of the adapter's `inv` does when `inv` states it
+    /// positively; otherwise the walk over unanalyzed code stops where that code runs it.
     fn iterator_spec_params(&self, contract_def_id: DefId) -> Vec<mir_ty::ParamTy> {
         let Some(iterator_spec) = self.ctx.def_ids.iterator_spec() else {
             return Vec::new();

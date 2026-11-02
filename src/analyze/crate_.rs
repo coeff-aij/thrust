@@ -1211,15 +1211,30 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         }
         let mut fixed = HashSet::new();
         for (callee, from) in &entries.items {
-            if !fixed.insert(*callee) {
+            // A method entered through a vtable runs on the value the trait object packs, whose
+            // invariant the packing required.
+            let through_vtable = matches!(from.def, mir_ty::InstanceKind::Virtual(..));
+            if !fixed.insert((*callee, through_vtable)) {
                 continue;
             }
             self.stop_unanalyzed_closure_arg(*callee, *from);
-            let Some(fn_ty) = self.ctx.entered_inferred_fn_ty(*callee) else {
+            // A call through the trait object takes the trait's contract, which states nothing
+            // when the trait writes none (`requires(true)`, as Creusot and Prusti take an omitted
+            // one). The method refines it, so a `requires` of its own must hold of every
+            // argument as well.
+            let fn_ty = if through_vtable {
+                self.ctx.entered_fn_ty(*callee)
+            } else {
+                self.ctx.entered_inferred_fn_ty(*callee)
+            };
+            let Some(fn_ty) = fn_ty else {
                 continue;
             };
-            tracing::debug!(%callee, "entered from code Thrust does not analyze");
-            let clauses = analyze::Analyzer::accepts_every_argument(&fn_ty);
+            tracing::debug!(%callee, %from, "entered from code Thrust does not analyze");
+            let receiver = through_vtable
+                .then(|| self.ctx.receiver_invariant(*callee))
+                .flatten();
+            let clauses = analyze::Analyzer::accepts_every_argument(&fn_ty, receiver);
             self.ctx.extend_clauses(clauses);
         }
         let entries = self.unanalyzed_entries();
@@ -1237,7 +1252,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     "`{from}`, which Thrust does not analyze, can run the closure `{closure}`, \
                      whose precondition is inferred, without an analyzed call handing it over \
                      to it with its obligation: give the closure a `requires` with \
-                     `thrust_macros::closure!`"
+                     `thrust_macros::closure!`, or state its `pre!` in the `requires` of the call \
+                     that hands it over (for a closure an iterator adapter holds, in the \
+                     adapter's `inv`, which that `requires` requires)"
                 ),
             );
         }
