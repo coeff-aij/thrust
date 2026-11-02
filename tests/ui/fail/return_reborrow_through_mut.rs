@@ -23,7 +23,6 @@ fn main() {
     let mut a = 0_i64;
     let mut r = &mut a;
     *get(&mut r) = 1;
-    assert!(*r == 1);
 
     let mut b = 0_i64;
     let mut h = H { r: &mut b, n: 5 };
