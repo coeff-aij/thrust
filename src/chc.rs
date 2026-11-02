@@ -2883,6 +2883,18 @@ pub enum UserDefinedPredBody {
     Derived,
 }
 
+impl UserDefinedPredBody {
+    /// Replaces the user-defined predicates and functions `renaming` maps. A raw SMT-LIB2 body
+    /// is left as written.
+    fn rename_user_defined(&mut self, renaming: &UserDefinedRenaming) {
+        match self {
+            UserDefinedPredBody::Formula(formula) => formula.rename_user_defined(renaming),
+            UserDefinedPredBody::Term(_, term) => term.rename_user_defined(renaming),
+            UserDefinedPredBody::Raw(_) | UserDefinedPredBody::Derived => {}
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct UserDefinedPredDef {
     symbol: UserDefinedPred,
@@ -3080,30 +3092,35 @@ impl System {
     }
 
     /// Lets the clauses `ids` read the definitions of the opaque `preds`: each is replaced there
-    /// by a defined copy (`<symbol>_def`), the same definition under another name, and every
-    /// other clause keeps the universal symbol. Instantiating the universal symbol with the
+    /// by a defined copy (`<symbol>_def`), the same definition under another name whose body reads
+    /// the copies in turn, and every other clause keeps the universal symbol. Instantiating the universal symbol with the
     /// definition gives the system with every definition in place, so the reveal adds only true
     /// definitions. This is the scope of Dafny's and Verus's `reveal`: the proof it is written in.
     pub fn reveal_in(&mut self, ids: &[ClauseId], preds: &[UserDefinedPred]) {
-        let mut renaming = UserDefinedRenaming::new();
-        for pred in preds.iter().filter(|p| self.opaque_preds.contains(p)) {
-            let Some(def) = self
-                .user_defined_pred_defs
-                .iter()
-                .find(|d| &d.symbol == pred)
-            else {
-                continue;
-            };
-            let mut copy = def.clone();
-            copy.symbol = pred.defined_copy();
-            renaming.insert(pred.clone(), copy.symbol.clone());
-            if !self.is_pred_defined(&copy.symbol) {
-                self.user_defined_pred_defs.push(copy);
-            }
-        }
+        let renaming: UserDefinedRenaming = preds
+            .iter()
+            .filter(|p| self.opaque_preds.contains(p) && self.is_pred_defined(p))
+            .map(|p| (p.clone(), p.defined_copy()))
+            .collect();
         if renaming.is_empty() {
             return;
         }
+        // A copy reads the copies of the others, and of itself when recursive, so that the
+        // revealed definition is the whole one rather than one unfolding over the universal symbol.
+        let copies: Vec<UserDefinedPredDef> = self
+            .user_defined_pred_defs
+            .iter()
+            .filter(|d| {
+                renaming.contains_key(&d.symbol) && !self.is_pred_defined(&renaming[&d.symbol])
+            })
+            .map(|d| {
+                let mut copy = d.clone();
+                copy.symbol = renaming[&d.symbol].clone();
+                copy.body.rename_user_defined(&renaming);
+                copy
+            })
+            .collect();
+        self.user_defined_pred_defs.extend(copies);
         for &id in ids {
             self.clauses[id].rename_user_defined(&renaming);
         }
