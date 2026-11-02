@@ -7,7 +7,7 @@ struct S {
     b: i64,
 }
 
-impl thrust_models::Model for S { //~ ERROR: has not its shape
+impl thrust_models::Model for S { //~ ERROR: is not a tuple of the models
     type Ty = (thrust_models::model::Int,);
 }
 

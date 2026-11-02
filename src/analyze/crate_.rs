@@ -1009,10 +1009,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         }
     }
 
-    /// Stops at a `Model` impl of a struct of the crate whose model has not the struct's shape:
-    /// the struct itself, a tuple with a component per field, or the model of its one live field
-    /// ([`TypeBuilder::transparent_field`]). A value of the struct is built from its fields and
-    /// read through projections of its model, so a model with fewer components (`type Ty = ()`
+    /// Stops at a `Model` impl of a struct of the crate whose model is a tuple that is not the
+    /// struct's fields' models in order (and not the model of its one live field,
+    /// [`TypeBuilder::transparent_field`]). A value of the struct is built from its fields and
+    /// read through projections of its model, so a tuple with fewer components (`type Ty = ()`
     /// for a struct with a field) has nothing to project.
     fn check_model_shape(
         &self,
@@ -1027,31 +1027,37 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .did()
             .as_local()
             .is_some_and(|local| !analyze::is_injected_std(self.tcx, local));
-        if !adt.is_struct() || !own || model.ty_adt_def() == Some(*adt) {
+        // An abstract model (`UInt` for a struct over a `Vec`) is allowed: only reading a field of
+        // such a struct is unsupported. A tuple model is read by position, so it must match.
+        let mir_ty::TyKind::Tuple(components) = model.kind() else {
+            return;
+        };
+        if !adt.is_struct() || !own {
             return;
         }
-        let fields = adt.all_fields().count();
-        let tuple_of_fields =
-            matches!(model.kind(), mir_ty::TyKind::Tuple(tys) if tys.len() == fields);
         let type_builder = self.ctx.type_builder(self.ctx.def_ids(), impl_did);
-        if tuple_of_fields || type_builder.transparent_field(self_ty).is_some() {
+        let sort = |ty| type_builder.build(ty).to_sort();
+        let fields = adt.all_fields().count();
+        let matches = components.len() == fields
+            && components
+                .iter()
+                .zip(adt.all_fields())
+                .all(|(component, field)| sort(component) == sort(field.ty(self.tcx, args)));
+        if matches || type_builder.transparent_field(self_ty).is_some() {
             return;
         }
-        let all_inert = adt.all_fields().all(|field| {
-            type_builder
-                .build(field.ty(self.tcx, args))
-                .to_sort()
-                .is_singleton()
-        });
-        if all_inert && type_builder.build(self_ty).to_sort().is_singleton() {
+        let all_inert = adt
+            .all_fields()
+            .all(|field| sort(field.ty(self.tcx, args)).is_singleton());
+        if all_inert && sort(self_ty).is_singleton() {
             return;
         }
         self.tcx.dcx().span_fatal(
             self.tcx.def_span(impl_did),
             format!(
-                "thrust: the model `{model}` of `{self_ty}` has not its shape ({fields} fields): \
+                "thrust: the model `{model}` of `{self_ty}` is not a tuple of the models of its {fields} fields: \
                  its fields cannot be read from the model; use `type Ty = {self_ty};`, a tuple \
-                 with a component per field, or the model of the single field"
+                 of the fields' models, or the model of the single field"
             ),
         );
     }

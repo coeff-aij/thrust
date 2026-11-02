@@ -1,6 +1,5 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60
 
 // A `Model` that is a tuple with a component per field has the shape of the struct, and the
 // fields are read from its components.
