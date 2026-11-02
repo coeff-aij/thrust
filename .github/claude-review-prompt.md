@@ -87,6 +87,14 @@ which others run, a behaviour switched by an environment variable read deep insi
 in which each part takes its inputs explicitly, returns its result, and can be tested and replaced
 on its own.
 
+Specifications are held to the same standard as code. In the contracts, predicates, logic
+functions, invariants and `closure!` clauses the change adds or edits, flag redundant forms:
+`!(A) || B` where `==>` parses; full `thrust_macros::` and `thrust_models::` paths where a `use`
+would do (not in `std.rs`, which is injected at the crate root); the same sub-formula or long type
+repeated where a predicate, a logic function or a type alias could name it once; quantifiers that
+only bridge types; and workarounds for Thrust limits that no longer exist, with their stale
+comments.
+
 ### What users write, see and rely on
 
 Annotations, diagnostics, configuration and the emitted SMT. Defaults stay as they were unless
