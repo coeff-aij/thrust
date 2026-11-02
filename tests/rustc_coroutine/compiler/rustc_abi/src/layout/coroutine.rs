@@ -1,3 +1,5 @@
+// `thrust_eligibility_fail` is set only by the fail twin of the eligibility root (`set_assignment`).
+#![allow(unexpected_cfgs)]
 use crate::thrust_models;
 use thrust_models::{exists, forall};
 
@@ -244,7 +246,8 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
                     assignments[*local] = Assigned(variant_index);
                 }
                 Assigned(idx) => {
-                    make_ineligible(&mut ineligible_locals, &mut assignments, *local);
+                    ineligible_locals.insert(*local);
+                    assignments[*local] = Ineligible(None);
                 }
                 Ineligible(_) => {}
             }
@@ -462,10 +465,10 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
     (ineligible_locals, assignments)
 }
 
-// Rewrite (rewrites.md R10): the two writes that make a local ineligible, in the variants loop and
-// in the storage-conflict loop, as a function whose contract states what they do. Each loop's back
-// edge then reads one call result instead of the results of `insert`, `deref_mut` and
-// `index_mut`, each a template over every live variable.
+// Rewrite (rewrites.md R10): the two writes that make `remove` ineligible in the storage-conflict
+// loop, as a function whose contract states what they do. The loop's back edge then reads one
+// call result instead of the results of `insert`, `deref_mut` and `index_mut`, each a template
+// over every live variable.
 #[thrust_macros::requires(
     forall(|i: USize| <LocalIdx as Idx>::index_is(remove, i) ==> i < (*ineligible_locals).0)
     && DenseBitSet::<LocalIdx>::words_cover_domain(*ineligible_locals)
