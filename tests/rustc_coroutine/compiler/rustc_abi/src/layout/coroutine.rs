@@ -532,6 +532,21 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
     (ineligible_locals, assignments)
 }
 
+/// `m` is the number of the variant's entries Assigned to it: what `variant_field_layouts` gives of
+/// its result and `combine_offsets` requires of its m. Opaque: no proof reads the count, only the
+/// `assume!` of the zip's pair rests on it.
+#[thrust_macros::predicate]
+#[thrust::opaque]
+fn assigned_count<FieldIdx: Idx + thrust_models::Model, LocalIdx: Idx + thrust_models::Model, VariantIdx: Idx + thrust_models::Model>(
+    variant_fields: &IndexVec<FieldIdx, LocalIdx>,
+    assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
+    index: VariantIdx,
+    m: USize,
+) -> bool {
+    m == counts::acc_cnt::<FieldIdx, LocalIdx, LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>(
+        *variant_fields, *assignments, SavedLocalEligibility::Assigned(index), (*variant_fields).len())
+}
+
 // Rewrite (rewrites.md R14): the part of `layout()`'s per-variant closure that collects the
 // layouts of the variant's fields, as a function whose contract states what the closure reads of
 // them: no more than the locals Assigned to the variant (`class_cnt`), each a layout of
@@ -569,9 +584,7 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
     result.len()
         <= counts::class_cnt::<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>(
             *assignments, (*assignments).len(), SavedLocalEligibility::Assigned(index))
-        && result.len()
-            == counts::acc_cnt::<FieldIdx, LocalIdx, LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>(
-                *variant_fields, *assignments, SavedLocalEligibility::Assigned(index), (*variant_fields).len())
+        && assigned_count::<FieldIdx, LocalIdx, VariantIdx>(variant_fields, assignments, index, result.len())
         && forall(|k: USize|
             !(0 <= k && k < result.len())
             || exists(|i: USize| 0 <= i && i < (*local_layouts).len() && result[k] == (*local_layouts)[i]))
@@ -662,8 +675,7 @@ fn variant_field_layouts<
     thrust_macros::assume!(
         |fields: IndexVec<FieldIdx, F>, variant_fields: &IndexVec<FieldIdx, LocalIdx>,
             assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, index: VariantIdx|
-            fields.len() == counts::acc_cnt::<FieldIdx, LocalIdx, LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>(
-                *variant_fields, *assignments, SavedLocalEligibility::Assigned(index), (*variant_fields).len())
+            assigned_count::<FieldIdx, LocalIdx, VariantIdx>(variant_fields, assignments, index, fields.len())
     );
     // Reachability twin of the `assume!` (fail root layout_reach_count.rs): the path after it is
     // reachable, so the `assume!` makes no proof here vacuous.
@@ -682,8 +694,7 @@ fn variant_field_layouts<
 // states nothing of the variants it returns.
 #[thrust_macros::requires(
     FieldsShape::<FieldIdx>::arbitrary_of(fields, m)
-        && m == counts::acc_cnt::<FieldIdx, LocalIdx, LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>(
-            *variant_fields, *assignments, SavedLocalEligibility::Assigned(index), (*variant_fields).len())
+        && assigned_count::<FieldIdx, LocalIdx, VariantIdx>(variant_fields, assignments, index, m)
         && forall(|k: USize| 0 <= k && k <= (*variant_fields).len() ==> <FieldIdx as Idx>::can_new(k))
         && forall(|k: USize| 0 <= k && k <= m ==> <u32 as Idx>::can_new(k))
         && forall(|k: USize| 0 <= k && k <= (*promoted_memory_index).len() + m ==> <FieldIdx as Idx>::can_new(k))
