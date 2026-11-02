@@ -6,7 +6,7 @@ use crate::rustc_abi::{
     BackendRepr, FieldsShape, HasDataLayout, Integer, LayoutData, Niche, Primitive, ReprOptions,
     Scalar, Size, StructKind, TagEncoding, TargetDataLayout, VariantLayout, Variants, WrappingRange,
 };
-use crate::rustc_index::bit_set::{BitIter, BitMatrix, DenseBitSet};
+use crate::rustc_index::bit_set::{ones, BitIter, BitMatrix, DenseBitSet};
 use crate::rustc_index::{Idx, IdxRange, IndexSlice, IndexVec, IterEnumerated, SliceIter};
 use crate::case_study::USize;
 use crate::case_study::{counts, lemmas};
@@ -33,10 +33,10 @@ impl<VariantIdx: thrust_models::Model, FieldIdx: thrust_models::Model> thrust_mo
 #[thrust_macros::lemma]
 #[thrust_macros::variant(k)]
 #[thrust_macros::requires(forall(|l: usize| 0 <= l && l < k
-    ==> (thrust_models::exists(|li: USize| li == l && DenseBitSet::<LocalIdx>::mem(*s, li))
-        ==> thrust_models::exists(|x: Option<<FieldIdx as thrust_models::Model>::Ty>| (*a)[l] == SavedLocalEligibility::Ineligible(x)))))]
+    ==> (exists(|li: USize| li == l && DenseBitSet::<LocalIdx>::mem(*s, li))
+        ==> exists(|x: Option<<FieldIdx as thrust_models::Model>::Ty>| (*a)[l] == SavedLocalEligibility::Ineligible(x)))))]
 #[thrust_macros::ensures(forall(|v: <VariantIdx as thrust_models::Model>::Ty|
-    crate::rustc_index::bit_set::ones((*s).1, k)
+    ones((*s).1, k)
         + counts::class_cnt::<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>(*a, k, SavedLocalEligibility::Assigned(v))
         <= k))]
 fn ones_assigned_disjoint<LocalIdx: Idx + thrust_models::Model, VariantIdx: thrust_models::Model, FieldIdx: thrust_models::Model>(
@@ -55,10 +55,10 @@ fn ones_assigned_disjoint<LocalIdx: Idx + thrust_models::Model, VariantIdx: thru
 /// One more bit adds the bit at `k`: `mem` and the step of `ones` read the same bit. With the
 /// base case, all `ones_assigned_disjoint` reads of the bit arithmetic.
 #[thrust_macros::lemma]
-#[thrust_macros::ensures(forall(|z: USize| z == 0 ==> crate::rustc_index::bit_set::ones((*s).1, z) == 0))]
+#[thrust_macros::ensures(forall(|z: USize| z == 0 ==> ones((*s).1, z) == 0))]
 #[thrust_macros::ensures(
-    (DenseBitSet::<LocalIdx>::mem(*s, k) && crate::rustc_index::bit_set::ones((*s).1, k + 1) == crate::rustc_index::bit_set::ones((*s).1, k) + 1)
-        || (!DenseBitSet::<LocalIdx>::mem(*s, k) && crate::rustc_index::bit_set::ones((*s).1, k + 1) == crate::rustc_index::bit_set::ones((*s).1, k)))]
+    (DenseBitSet::<LocalIdx>::mem(*s, k) && ones((*s).1, k + 1) == ones((*s).1, k) + 1)
+        || (!DenseBitSet::<LocalIdx>::mem(*s, k) && ones((*s).1, k + 1) == ones((*s).1, k)))]
 fn ones_step<LocalIdx: Idx + thrust_models::Model>(s: &DenseBitSet<LocalIdx>, k: usize) {}
 
 // The specification of stage 5 (README.md of the stage files).
