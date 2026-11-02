@@ -49,17 +49,28 @@ impl UnionFind {
     }
 }
 
+/// The unknowns `atoms` apply, in their guards too.
+pub(super) fn pred_vars_in<'a>(atoms: impl Iterator<Item = &'a Atom>) -> Vec<PredVarId> {
+    atoms
+        .flat_map(|atom| {
+            let applied = match atom.pred {
+                Pred::Var(p) => Some(p),
+                _ => None,
+            };
+            let in_guard = atom
+                .guard
+                .iter()
+                .flat_map(|guard| pred_vars_in(guard.iter_atoms()));
+            applied.into_iter().chain(in_guard).collect::<Vec<_>>()
+        })
+        .collect()
+}
+
 /// The unknowns the body of each user-defined predicate applies, directly or through the
 /// predicates it calls.
 pub(super) fn reached_pred_vars(system: &System) -> HashMap<&UserDefinedPred, HashSet<PredVarId>> {
     let applied = |def: &UserDefinedPredDef| match &def.body {
-        UserDefinedPredBody::Formula(formula) => formula
-            .iter_atoms()
-            .filter_map(|atom| match atom.pred {
-                Pred::Var(p) => Some(p),
-                _ => None,
-            })
-            .collect(),
+        UserDefinedPredBody::Formula(formula) => pred_vars_in(formula.iter_atoms()),
         UserDefinedPredBody::Raw(_)
         | UserDefinedPredBody::Term(..)
         | UserDefinedPredBody::Derived => Vec::new(),

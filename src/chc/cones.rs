@@ -50,11 +50,12 @@
 //! puts an unknown under `∃` or in a disjunction with another is refused where it lands in a
 //! head position. The query keeps the definitions, which the parts carry along with the clauses
 //! that reach them. A definition that applies an unknown and itself, directly or through
-//! others, would not unfold to a finite clause, and an unknown applied in a law or in raw
-//! SMT-LIB text, directly or through a definition, or a derived predicate is in positions this
-//! does not follow, so such a system is not split into cones. A
+//! others, would not unfold to a finite clause, and an unknown applied in a law, directly or
+//! through a definition, in raw SMT-LIB text through a definition it names, or a derived
+//! predicate is in positions this does not follow, so such a system is not split into cones. A
 //! cone repeats the clauses it shares with other cones.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
 use super::prune::Position;
@@ -63,7 +64,8 @@ use super::*;
 /// Why a system is not split into the cones of its goals.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotHorn {
-    /// An unknown is applied in a law or in raw SMT-LIB text, directly or through a definition.
+    /// An unknown is applied in a law, directly or through a definition, or raw SMT-LIB text
+    /// names a definition that applies one.
     InLaw,
     /// A derived predicate is an unknown of the system.
     Derived,
@@ -74,10 +76,16 @@ pub enum NotHorn {
     Clause(ClauseId),
 }
 
+/// The heads of a body read at a polarity (see [`Heads`]).
+type BodyHeads = Result<Heads, ()>;
+
 /// The definitions with a formula body that applies an unknown, directly or through the
 /// definitions it applies. A clause applying one is read with the definition unfolded.
 struct Definitions<'a> {
     bodies: HashMap<&'a UserDefinedPred, &'a Formula>,
+    /// The heads of each body read at each polarity, which depend neither on the arguments nor
+    /// on the clause, so that a body applied several times is read once.
+    heads: RefCell<HashMap<(&'a UserDefinedPred, bool), BodyHeads>>,
 }
 
 impl<'a> Definitions<'a> {
@@ -95,7 +103,10 @@ impl<'a> Definitions<'a> {
                 _ => None,
             })
             .collect();
-        Definitions { bodies }
+        Definitions {
+            bodies,
+            heads: RefCell::default(),
+        }
     }
 
     /// Whether a law or raw SMT-LIB text (a command or a definition's raw body) applies an
@@ -104,7 +115,7 @@ impl<'a> Definitions<'a> {
     fn applied_outside_clauses(&self, system: &System) -> bool {
         let law_atoms = || system.laws.values().flatten().flat_map(Formula::iter_atoms);
         let in_laws = user_defined_in(law_atoms());
-        if law_atoms().any(|atom| matches!(atom.pred, Pred::Var(_)))
+        if !components::pred_vars_in(law_atoms()).is_empty()
             || in_laws
                 .iter()
                 .any(|symbol| self.bodies.contains_key(symbol))
@@ -127,10 +138,13 @@ impl<'a> Definitions<'a> {
         texts.any(|text| names.iter().any(|name| text.contains(name.as_str())))
     }
 
-    /// The body of the definition `atom` applies, when it is unfolded.
-    fn unfolded(&self, atom: &Atom) -> Option<&'a Formula> {
+    /// The definition `atom` applies and its body, when it is unfolded.
+    fn unfolded(&self, atom: &Atom) -> Option<(&'a UserDefinedPred, &'a Formula)> {
         match &atom.pred {
-            Pred::UserDefined(symbol) => self.bodies.get(symbol).copied(),
+            Pred::UserDefined(symbol) => self
+                .bodies
+                .get_key_value(symbol)
+                .map(|(symbol, body)| (*symbol, *body)),
             _ => None,
         }
     }
@@ -184,8 +198,7 @@ impl<'a> Occurrences<'a, '_> {
         if let Pred::Var(p) = atom.pred {
             self.found.push((p, position));
         }
-        let (Pred::UserDefined(symbol), Some(body)) = (&atom.pred, self.definitions.unfolded(atom))
-        else {
+        let Some((symbol, body)) = self.definitions.unfolded(atom) else {
             return;
         };
         if self.entered.insert((symbol, position)) {
@@ -207,9 +220,9 @@ impl<'a> Occurrences<'a, '_> {
     }
 }
 
-/// The unknowns a formula read in a head position derives, and whether it states a constraint
+/// The distinct unknowns a formula read in a head position derives, and whether it states a constraint
 /// besides them; an unknown under `∃` or in a disjunction with another is `Err`.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct Heads {
     unknowns: Vec<PredVarId>,
     constraint: bool,
@@ -219,7 +232,11 @@ fn all_of(heads: impl IntoIterator<Item = Result<Heads, ()>>) -> Result<Heads, (
     let mut all = Heads::default();
     for h in heads {
         let h = h?;
-        all.unknowns.extend(h.unknowns);
+        for p in h.unknowns {
+            if !all.unknowns.contains(&p) {
+                all.unknowns.push(p);
+            }
+        }
         all.constraint |= h.constraint;
     }
     Ok(all)
@@ -241,12 +258,30 @@ fn any_of(heads: impl IntoIterator<Item = Result<Heads, ()>>) -> Result<Heads, (
     Ok(any)
 }
 
-impl Definitions<'_> {
+impl<'a> Definitions<'a> {
+    /// The heads of the body of `symbol` in a head position (`in_head`) or of its negation in a
+    /// body position.
+    fn body_heads(
+        &self,
+        symbol: &'a UserDefinedPred,
+        body: &'a Formula,
+        in_head: bool,
+    ) -> Result<Heads, ()> {
+        if let Some(heads) = self.heads.borrow().get(&(symbol, in_head)) {
+            return heads.clone();
+        }
+        let heads = self.formula_heads(body, in_head);
+        self.heads
+            .borrow_mut()
+            .insert((symbol, in_head), heads.clone());
+        heads
+    }
+
     /// The heads of `atom` in a head position (`in_head`) or of its negation in a body position;
     /// a definition that is unfolded is read as its body, which [`Self::recursive`] makes finite.
     fn atom_heads(&self, atom: &Atom, in_head: bool) -> Result<Heads, ()> {
         let applied = match (atom.pred.clone(), self.unfolded(atom)) {
-            (_, Some(body)) => self.formula_heads(body, in_head)?,
+            (_, Some((symbol, body))) => self.body_heads(symbol, body, in_head)?,
             (Pred::Var(p), None) if in_head => Heads {
                 unknowns: vec![p],
                 constraint: false,
@@ -592,6 +627,94 @@ mod tests {
         let q = ForallPred::new("q".into(), String::new(), vec![], vec![]);
         system.add_law(q, applies);
         assert_eq!(system.goal_cones(), Err(NotHorn::InLaw));
+    }
+
+    /// `holds := (p ⇒ ⊥)`, an unknown only in the guard of an atom, applied in `⊥ ⇐ holds`,
+    /// derives `p`; a law with `p` in a guard is not followed.
+    #[test]
+    fn an_unknown_in_a_guard_is_followed() {
+        let mut system = System::default();
+        let p = system.new_pred_var(vec![], DebugInfo::default());
+        let symbol = UserDefinedPred::new("holds".into());
+        let guarded = || {
+            Atom::with_guard(
+                Formula::Atom(atom(p)),
+                Atom::<TermVarIdx>::bottom().pred,
+                vec![],
+            )
+        };
+        system.push_pred_define_formula(symbol.clone(), IndexVec::new(), Formula::Atom(guarded()));
+        let applies = Atom::new(Pred::UserDefined(symbol), vec![]);
+        let c0 = system
+            .push_clause(clause(Atom::bottom(), vec![applies], Formula::top()))
+            .unwrap();
+        let c1 = system
+            .push_clause(clause(Atom::bottom(), vec![atom(p)], Formula::top()))
+            .unwrap();
+        assert_eq!(system.goal_cones().unwrap(), vec![vec![c0], vec![c0, c1]]);
+        let q = ForallPred::new("q".into(), String::new(), vec![], vec![]);
+        system.add_law(q, Formula::Atom(guarded()));
+        assert_eq!(system.goal_cones(), Err(NotHorn::InLaw));
+    }
+
+    /// `inner := p`, `outer := ¬inner`: `⊥ ⇐ outer` derives `p`.
+    #[test]
+    fn a_definition_negated_in_another_derives_its_unknown() {
+        let mut system = System::default();
+        let p = system.new_pred_var(vec![], DebugInfo::default());
+        let inner = UserDefinedPred::new("inner".into());
+        let outer = UserDefinedPred::new("outer".into());
+        system.push_pred_define_formula(inner.clone(), IndexVec::new(), Formula::Atom(atom(p)));
+        let applies_inner = Formula::Atom(Atom::new(Pred::UserDefined(inner), vec![]));
+        system.push_pred_define_formula(outer.clone(), IndexVec::new(), applies_inner.not());
+        let applies_outer = Atom::new(Pred::UserDefined(outer), vec![]);
+        let c0 = system
+            .push_clause(clause(Atom::bottom(), vec![applies_outer], Formula::top()))
+            .unwrap();
+        let c1 = system
+            .push_clause(clause(Atom::bottom(), vec![atom(p)], Formula::top()))
+            .unwrap();
+        assert_eq!(system.goal_cones().unwrap(), vec![vec![c0, c1]]);
+        assert_eq!(system.deriving_clauses()[&p], HashSet::from([c0]));
+    }
+
+    /// `d0 := p`, `d(i+1) := d(i) ∧ d(i)`: each body is read once at each polarity, so 64
+    /// levels end at once.
+    #[test]
+    fn nested_definitions_are_read_once() {
+        let mut system = System::default();
+        let p = system.new_pred_var(vec![], DebugInfo::default());
+        let mut applied = Formula::Atom(atom(p));
+        for i in 0..64 {
+            let symbol = UserDefinedPred::new(format!("d{i}"));
+            system.push_pred_define_formula(symbol.clone(), IndexVec::new(), applied);
+            let once = Formula::Atom(Atom::new(Pred::UserDefined(symbol), vec![]));
+            applied = Formula::And(vec![once.clone(), once]);
+        }
+        let c0 = system
+            .push_clause(clause(Atom::bottom(), vec![], applied.not()))
+            .unwrap();
+        let c1 = system
+            .push_clause(clause(Atom::bottom(), vec![atom(p)], Formula::top()))
+            .unwrap();
+        assert_eq!(system.goal_cones().unwrap(), vec![vec![c0, c1]]);
+    }
+
+    /// `a := p ∧ b`, `b := a`: unfolding does not end.
+    #[test]
+    fn a_cycle_of_two_definitions_is_not_unfolded() {
+        let mut system = System::default();
+        let p = system.new_pred_var(vec![], DebugInfo::default());
+        let [a, b] = ["a", "b"].map(|name| UserDefinedPred::new(name.into()));
+        let applies =
+            |symbol: &UserDefinedPred| Atom::new(Pred::UserDefined(symbol.clone()), vec![]);
+        let body = Formula::And(vec![Formula::Atom(atom(p)), Formula::Atom(applies(&b))]);
+        system.push_pred_define_formula(a.clone(), IndexVec::new(), body);
+        system.push_pred_define_formula(b, IndexVec::new(), Formula::Atom(applies(&a)));
+        system
+            .push_clause(clause(Atom::bottom(), vec![applies(&a)], Formula::top()))
+            .unwrap();
+        assert_eq!(system.goal_cones(), Err(NotHorn::RecursiveDefinition));
     }
 
     #[test]

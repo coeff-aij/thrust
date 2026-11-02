@@ -241,8 +241,9 @@ pub fn emit_not_horn_note(tcx: TyCtxt<'_>, system: &chc::System, why: chc::NotHo
     let clause = match why {
         chc::NotHorn::InLaw => {
             tcx.dcx().note(format!(
-                "thrust: `THRUST_SPLIT_GOALS`: an unknown is applied in a law or in raw SMT-LIB \
-                 text, directly or through a predicate's definition; {instead}"
+                "thrust: `THRUST_SPLIT_GOALS`: an unknown is applied in a law, directly or through \
+                 a predicate's definition, or raw SMT-LIB text names a definition that applies \
+                 one; {instead}"
             ));
             return;
         }
