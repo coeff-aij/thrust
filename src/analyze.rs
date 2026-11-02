@@ -766,12 +766,26 @@ impl BodyChecks {
     }
 }
 
-/// What a `#[thrust::reveal]` reveals: the opaque functions of a module (the bare attribute, and
-/// a logic function's checks), or those it names.
-#[derive(Debug, Clone)]
-enum RevealScope {
-    Module(LocalDefId),
-    Named(HashSet<LocalDefId>),
+/// What a reveal reveals: the opaque functions of `module` (a bare `#[thrust::reveal]`, and a
+/// logic function's checks) and those `named` (`#[thrust::reveal(path, ..)]`); a function may carry
+/// both forms.
+#[derive(Debug, Clone, Default)]
+struct RevealScope {
+    module: Option<LocalDefId>,
+    named: HashSet<LocalDefId>,
+}
+
+impl RevealScope {
+    fn of_module(module: LocalDefId) -> Self {
+        RevealScope {
+            module: Some(module),
+            named: HashSet::new(),
+        }
+    }
+
+    fn contains(&self, def: LocalDefId, module_of_def: LocalDefId) -> bool {
+        self.module == Some(module_of_def) || self.named.contains(&def)
+    }
 }
 
 /// A stretch of the clauses one analyzed body pushed, by clause index.
@@ -2629,15 +2643,12 @@ impl<'tcx> Analyzer<'tcx> {
             .logic_fn_check_clauses
             .borrow()
             .iter()
-            .map(|(def, range)| (RevealScope::Module(module_of(*def)), range.clone()))
+            .map(|(def, range)| (RevealScope::of_module(module_of(*def)), range.clone()))
             .collect::<Vec<_>>();
         for (scope, range) in revealing_bodies.into_iter().chain(logic_fn_checks) {
             let preds: Vec<chc::UserDefinedPred> = opaque
                 .iter()
-                .filter(|(_, def)| match &scope {
-                    RevealScope::Module(module) => module_of(*def) == *module,
-                    RevealScope::Named(named) => named.contains(def),
-                })
+                .filter(|(_, def)| scope.contains(*def, module_of(*def)))
                 .map(|(pred, _)| pred.clone())
                 .collect();
             let ids: Vec<chc::ClauseId> = range.map(chc::ClauseId::from_usize).collect();
@@ -2768,10 +2779,9 @@ impl<'tcx> Analyzer<'tcx> {
                     "`#[thrust::reveal]` reveals the opaque functions of its module, and this module has none; name the functions to reveal as `#[thrust::reveal(path::to::f)]`",
                 );
             }
-            let scope = if bare {
-                RevealScope::Module(module)
-            } else {
-                RevealScope::Named(named)
+            let scope = RevealScope {
+                module: bare.then_some(module),
+                named,
             };
             scopes.insert(def, scope);
         }

@@ -3,7 +3,8 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 // `#[thrust::reveal(path, ..)]` names the opaque functions it reveals, from any module that sees
 // them: `user::make` reveals `bounds::big` and the associated `Shape::wide` of another module,
-// and `shapes::inner::make` the private `Shape::narrow` of its parent module.
+// `shapes::inner::make` the private `Shape::narrow` of its parent module, and `shapes::both`
+// combines the bare and the named form.
 
 mod bounds {
     #[thrust_macros::predicate]
@@ -31,6 +32,15 @@ mod shapes {
         }
     }
 
+    // Both forms combine: the module's opaque functions and the named ones.
+    #[thrust::reveal]
+    #[thrust::reveal(crate::bounds::big)]
+    #[thrust_macros::requires(true)]
+    #[thrust_macros::ensures(Shape::wide(result) && crate::bounds::big(result))]
+    pub fn both() -> i64 {
+        11
+    }
+
     // A private function of a module is visible in its child modules, so they may reveal it.
     pub mod inner {
         #[thrust::reveal(super::Shape::narrow)]
@@ -54,4 +64,5 @@ mod user {
 fn main() {
     let _ = user::make();
     let _ = shapes::inner::make();
+    let _ = shapes::both();
 }
