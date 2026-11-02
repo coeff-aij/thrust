@@ -59,6 +59,7 @@ fn ones_assigned_disjoint<LocalIdx: Idx + thrust_models::Model, VariantIdx: thru
 #[thrust_macros::ensures(
     (DenseBitSet::<LocalIdx>::mem(*s, k) && ones((*s).1, k + 1) == ones((*s).1, k) + 1)
         || (!DenseBitSet::<LocalIdx>::mem(*s, k) && ones((*s).1, k + 1) == ones((*s).1, k)))]
+#[thrust::reveal(crate::rustc_index::bit_set::ones, crate::rustc_index::bit_set::DenseBitSet::mem)]
 fn ones_step<LocalIdx: Idx + thrust_models::Model>(s: &DenseBitSet<LocalIdx>, k: usize) {}
 
 // The specification of stage 5 (README.md of the stage files).
