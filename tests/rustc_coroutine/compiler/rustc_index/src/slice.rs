@@ -262,19 +262,21 @@ impl<I: Idx, T: thrust_models::Model, R: IntoSliceIdx<I, [T]>> std::ops::IndexMu
 
 // `Index`/`IndexMut` are foreign traits, so the contract is an extern spec. It covers the
 // instances whose `R::Output` is `usize`, and the bodies are checked against it at each instance
-// a call reaches. `IntoSliceIdx` has one impl, `I: Idx` into `usize`, through `Idx::index_is`.
+// a call reaches. `IntoSliceIdx` has one impl, `I: Idx` into `usize`, through `Idx::index_logic`;
+// the contracts name the position by `into_logic`, so no quantifier over positions needs an
+// instance of `Idx`'s totality law.
 #[thrust::extern_spec_fn]
-#[thrust_macros::requires(forall(|i: USize| <R as IntoSliceIdx<I, [T]>>::into_is(index, i) ==> i < (*slf).len()))]
-#[thrust_macros::ensures(forall(|i: USize| <R as IntoSliceIdx<I, [T]>>::into_is(index, i) ==> *result == (*slf)[i]))]
+#[thrust_macros::requires(<R as IntoSliceIdx<I, [T]>>::into_logic(index) < (*slf).len())]
+#[thrust_macros::ensures(*result == (*slf)[<R as IntoSliceIdx<I, [T]>>::into_logic(index)])]
 fn _extern_spec_index_slice_index<I: Idx + thrust_models::Model, T: thrust_models::Model, R: IntoSliceIdx<I, [T], Output = usize> + thrust_models::Model>(slf: &IndexSlice<I, T>, index: R) -> &T
 {
     <IndexSlice<I, T> as std::ops::Index<R>>::index(slf, index)
 }
 
 #[thrust::extern_spec_fn]
-#[thrust_macros::requires(forall(|i: USize| <R as IntoSliceIdx<I, [T]>>::into_is(index, i) ==> i < (*slf).len()))]
-#[thrust_macros::ensures(forall(|i: USize| <R as IntoSliceIdx<I, [T]>>::into_is(index, i)
-    ==> (*result == (*slf)[i] && !slf == (*slf).store(i, !result))))]
+#[thrust_macros::requires(<R as IntoSliceIdx<I, [T]>>::into_logic(index) < (*slf).len())]
+#[thrust_macros::ensures(*result == (*slf)[<R as IntoSliceIdx<I, [T]>>::into_logic(index)]
+    && !slf == (*slf).store(<R as IntoSliceIdx<I, [T]>>::into_logic(index), !result))]
 fn _extern_spec_index_slice_index_mut<I: Idx + thrust_models::Model, T: thrust_models::Model, R: IntoSliceIdx<I, [T], Output = usize> + thrust_models::Model>(slf: &mut IndexSlice<I, T>, index: R) -> &mut T
 {
     <IndexSlice<I, T> as std::ops::IndexMut<R>>::index_mut(slf, index)
