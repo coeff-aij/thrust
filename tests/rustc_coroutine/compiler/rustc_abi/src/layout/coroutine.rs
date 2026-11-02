@@ -505,7 +505,123 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
     (ineligible_locals, assignments)
 }
 
-// Rewrite (rewrites.md R13): the part of `layout()`'s per-variant closure that combines the
+// Rewrite (rewrites.md R14): the part of `layout()`'s per-variant closure that collects the
+// layouts of the variant's fields, as a function whose contract states what the closure reads of
+// them: no more than the locals Assigned to the variant (`class_cnt`), each a layout of
+// `local_layouts`. Its `requires` is the closure's at the variant's entries: each is a local
+// below n that is not `Unassigned` (property 1), Assigned to this variant if at all (property 2b),
+// and an Assigned local appears once (property 2c).
+#[thrust_macros::requires(
+    (*assignments).len() == (*local_layouts).len()
+        && forall(|k: USize| 0 <= k && k <= (*variant_fields).len() ==> <FieldIdx as Idx>::can_new(k))
+        && forall(|f: usize, i: USize|
+            0 <= f && f < (*variant_fields).len() && <LocalIdx as Idx>::index_is((*variant_fields)[f], i)
+                ==> i < (*local_layouts).len())
+        && forall(|l: usize, f: usize|
+            !(0 <= l && l < (*assignments).len()
+                && 0 <= f && f < (*variant_fields).len()
+                && exists(|i: USize| i == l && <LocalIdx as Idx>::index_is((*variant_fields)[f], i)))
+            || (*assignments)[l] != SavedLocalEligibility::Unassigned)
+        && forall(|l: usize, f: usize, vi: <VariantIdx as thrust_models::Model>::Ty, w: USize|
+            !(0 <= l && l < (*assignments).len()
+                && 0 <= f && f < (*variant_fields).len()
+                && exists(|i: USize| i == l && <LocalIdx as Idx>::index_is((*variant_fields)[f], i))
+                && (*assignments)[l] == SavedLocalEligibility::Assigned(vi)
+                && <VariantIdx as Idx>::index_is(index, w))
+            || forall(|vn: USize| !<VariantIdx as Idx>::index_is(vi, vn) || vn == w))
+        && forall(|l: usize, f: usize, g: usize, vi: <VariantIdx as thrust_models::Model>::Ty|
+            !(0 <= l && l < (*assignments).len()
+                && 0 <= f && f < (*variant_fields).len()
+                && 0 <= g && g < (*variant_fields).len()
+                && exists(|i: USize| i == l && <LocalIdx as Idx>::index_is((*variant_fields)[f], i))
+                && exists(|i: USize| i == l && <LocalIdx as Idx>::index_is((*variant_fields)[g], i))
+                && (*assignments)[l] == SavedLocalEligibility::Assigned(vi))
+            || f == g)
+)]
+#[thrust_macros::ensures(
+    result.len()
+        <= counts::class_cnt::<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>(
+            *assignments, (*assignments).len(), SavedLocalEligibility::Assigned(index))
+        && forall(|k: USize|
+            !(0 <= k && k < result.len())
+            || exists(|i: USize| 0 <= i && i < (*local_layouts).len() && result[k] == (*local_layouts)[i]))
+)]
+#[thrust_macros::context]
+fn variant_field_layouts<
+    'a,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model,
+    VariantIdx: Idx + thrust_models::Model,
+    FieldIdx: Idx + thrust_models::Model,
+    LocalIdx: Idx + thrust_models::Model,
+>(
+    variant_fields: &IndexVec<FieldIdx, LocalIdx>,
+    assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
+    index: VariantIdx,
+    local_layouts: &IndexSlice<LocalIdx, F>,
+) -> IndexVec<FieldIdx, F> {
+    use SavedLocalEligibility::*;
+
+    // Rewrite (rewrites.md R8): the `Filter` is bound to a name, for the lemma below.
+    // `Filter` takes a `Fn` closure, whose clauses read a capture as the reference it is
+    // (`*assignments`); `Map` takes an `FnMut` one, whose clauses read it through the
+    // closure's state (`**local_layouts`). The other form panics (#152).
+    let accepted = Filter::new(variant_fields.iter(), thrust_macros::closure!(
+            captures(
+                assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
+                index: &VariantIdx,
+            ),
+            requires(
+                <LocalIdx as Idx>::index_logic(**local) < (*assignments).len()
+                    && (*assignments)[<LocalIdx as Idx>::index_logic(**local)] != SavedLocalEligibility::Unassigned
+                    && forall(|vi: <VariantIdx as thrust_models::Model>::Ty, w: USize|
+                        !((*assignments)[<LocalIdx as Idx>::index_logic(**local)] == SavedLocalEligibility::Assigned(vi)
+                            && <VariantIdx as Idx>::index_is(*index, w))
+                        || forall(|vn: USize| !<VariantIdx as Idx>::index_is(vi, vn) || vn == w))
+            ),
+            ensures(result == ((*assignments)[<LocalIdx as Idx>::index_logic(**local)] == SavedLocalEligibility::Assigned(*index))),
+            |local: &&LocalIdx| -> bool {
+                match assignments[**local] {
+                    // Unreachable by eligibility.rs's stage-5 property 1 (an `Unassigned`
+                    // local never appears in any variant's field list).
+                    Unassigned => unreachable!(),
+                    Assigned(v) if v == index => true,
+                    // Unreachable by property 2b (a listed local is Assigned to its own
+                    // variant) and `Idx::index_is_injective` (`v == index`).
+                    Assigned(_) => unreachable!("assignment does not match variant"),
+                    Ineligible(_) => false,
+                }
+            },
+        ));
+    // The map closure's `requires` at every item the filter yields (`Map::new`'s
+    // `next_precondition`): the items are entries of the variant's field list.
+    thrust_macros::proof!(counts::filter_yields_below(&accepted, local_layouts.len()));
+    let variant_only_tys = Map::new(
+        accepted,
+        thrust_macros::closure!(
+            captures(local_layouts: &mut &IndexSlice<LocalIdx, F>),
+            requires(<LocalIdx as Idx>::index_logic(*local) < (**local_layouts).len()),
+            ensures(result == (**local_layouts)[<LocalIdx as Idx>::index_logic(*local)]),
+            |local: &LocalIdx| -> F { local_layouts[*local] },
+        ),
+    );
+
+    // The fields collected below are no more than the locals Assigned to the variant: the
+    // filter accepts the entries Assigned to it, which name distinct locals (property
+    // 2c). With the `requires` on c, the count sites 1 and 3 need.
+    thrust_macros::proof!(counts::filter_count(
+        &variant_only_tys,
+        variant_fields,
+        &assignments,
+        &Assigned(index),
+        variant_fields.len(),
+        assignments.len(),
+    ));
+
+    // Rewrite (rewrites.md R8): `collect_index_vec` for `collect`.
+    collect_index_vec(variant_only_tys)
+}
+
+// Rewrite (rewrites.md R12): the part of `layout()`'s per-variant closure that combines the
 // variant's offsets and memory order with the promoted ones, as a function whose `requires`
 // states what the code reads: the memory order is a permutation of `0..m` with m offsets
 // (univariant's `arbitrary_of`), `FieldIdx` and `u32` reach c + m (c the promoted fields), every
@@ -607,7 +723,7 @@ fn combine_offsets<VariantIdx: Idx + thrust_models::Model, FieldIdx: Idx + thrus
                 // Unreachable, as above.
                 Unassigned => unreachable!(),
                 Assigned(_) => {
-                    // Rewrite (rewrites.md R13): the pair, c and c + m are bound to names, for the
+                    // Rewrite (rewrites.md R12): the pair, c and c + m are bound to names, for the
                     // `assume!`, which names local variables only (not a closure's captures).
                     let pair = offsets_and_memory_index.next();
                     let promoted_count = promoted_memory_index.len();
@@ -920,7 +1036,7 @@ pub fn layout<
     // `push` and `extend_from` give `prefix_layouts.len() == P + 1 + c`, c the items
     // `ineligible_locals.iter()` yields (`Map` keeps the length), which is the set's count `card`:
     // `iter` starts `BitIter`'s `left` at it, and the iterator completes with nothing left.
-    // Rewrite (rewrites.md R14): the `repr` argument is bound to a name, for the `assume!`.
+    // Rewrite (rewrites.md R13): the `repr` argument is bound to a name, for the `assume!`.
     let repr = ReprOptions::default();
     // Assumed (not proved): `univariant`'s `fits_in_any_order` for the prefix. rustc's code makes
     // it true under `layout()`'s size bound: the prefix's fields are the entry `prefix_layouts`,
@@ -1087,67 +1203,16 @@ pub fn layout<
         ensures(true),
         |(index, variant_fields): (VariantIdx, &IndexVec<FieldIdx, LocalIdx>)|
             -> Result<VariantLayout<FieldIdx>, crate::rustc_abi::layout::LayoutCalculatorError<F>> {
-            // Rewrite (rewrites.md R8): the `Filter` is bound to a name, for the lemma below.
-            // `Filter` takes a `Fn` closure, whose clauses read a capture as the reference it is
-            // (`*assignments`); `Map` takes an `FnMut` one, whose clauses read it through the
-            // closure's state (`**local_layouts`). The other form panics (#152).
-            let accepted = Filter::new(variant_fields.iter(), thrust_macros::closure!(
-                    captures(
-                        assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
-                        index: &VariantIdx,
-                    ),
-                    requires(
-                        <LocalIdx as Idx>::index_logic(**local) < (*assignments).len()
-                            && (*assignments)[<LocalIdx as Idx>::index_logic(**local)] != SavedLocalEligibility::Unassigned
-                            && forall(|vi: <VariantIdx as thrust_models::Model>::Ty, w: USize|
-                                !((*assignments)[<LocalIdx as Idx>::index_logic(**local)] == SavedLocalEligibility::Assigned(vi)
-                                    && <VariantIdx as Idx>::index_is(*index, w))
-                                || forall(|vn: USize| !<VariantIdx as Idx>::index_is(vi, vn) || vn == w))
-                    ),
-                    ensures(result == ((*assignments)[<LocalIdx as Idx>::index_logic(**local)] == SavedLocalEligibility::Assigned(*index))),
-                    |local: &&LocalIdx| -> bool {
-                        match assignments[**local] {
-                            // Unreachable by eligibility.rs's stage-5 property 1 (an `Unassigned`
-                            // local never appears in any variant's field list).
-                            Unassigned => unreachable!(),
-                            Assigned(v) if v == index => true,
-                            // Unreachable by property 2b (a listed local is Assigned to its own
-                            // variant) and `Idx::index_is_injective` (`v == index`).
-                            Assigned(_) => unreachable!("assignment does not match variant"),
-                            Ineligible(_) => false,
-                        }
-                    },
-                ));
-            // The map closure's `requires` at every item the filter yields (`Map::new`'s
-            // `next_precondition`): the items are entries of the variant's field list.
-            thrust_macros::proof!(counts::filter_yields_below(&accepted, local_layouts.len()));
-            let variant_only_tys = Map::new(
-                accepted,
-                thrust_macros::closure!(
-                    captures(local_layouts: &mut &IndexSlice<LocalIdx, F>),
-                    requires(<LocalIdx as Idx>::index_logic(*local) < (**local_layouts).len()),
-                    ensures(result == (**local_layouts)[<LocalIdx as Idx>::index_logic(*local)]),
-                    |local: &LocalIdx| -> F { local_layouts[*local] },
-                ),
-            );
+            // Rewrite (rewrites.md R14): the variant's fields, the layouts of the entries whose local
+            // is Assigned to the variant, are collected by `variant_field_layouts`. Its `requires`
+            // holds by the closure's `requires`; its `ensures` gives the count sites 1 and 3 need
+            // (with the closure's `requires` on c) and that each field is a layout of
+            // `local_layouts`, which `univariant`'s `layout_pre` reads.
+            let fields = variant_field_layouts(variant_fields, &assignments, index, local_layouts);
 
-            // The fields collected below are no more than the locals Assigned to the variant: the
-            // filter accepts the entries Assigned to it, which name distinct locals (property
-            // 2c). With the `requires` on c, the count sites 1 and 3 need.
-            thrust_macros::proof!(counts::filter_count(
-                &variant_only_tys,
-                variant_fields,
-                &assignments,
-                &Assigned(index),
-                variant_fields.len(),
-                assignments.len(),
-            ));
-
-            // Rewrite (rewrites.md R8): `collect_index_vec` for `collect`. Rewrite (rewrites.md
-            // R14): `calc` and the arguments are bound to names, for the `assume!`, which names
-            // local variables only (not a closure's captures).
+            // Rewrite (rewrites.md R13): `calc` and the arguments are bound to names, for the
+            // `assume!`, which names local variables only (not a closure's captures).
             let calc_ref = calc;
-            let fields = collect_index_vec(variant_only_tys);
             let repr = ReprOptions::default();
             let kind = StructKind::Prefixed(prefix_size, prefix_align.abi);
             // Assumed (not proved): `univariant`'s `fits_in_any_order` for the variant. rustc's
@@ -1180,7 +1245,7 @@ pub fn layout<
                 unreachable!();
             };
 
-            // Rewrite (rewrites.md R13): the combination of the variant's offsets and memory order
+            // Rewrite (rewrites.md R12): the combination of the variant's offsets and memory order
             // with the promoted ones is `combine_offsets`. Its `requires` holds by univariant's
             // `arbitrary_of` (m offsets, and the memory order a permutation of `0..m`), by
             // `filter_count` above with the closure's `requires` on c (c + m <= n, so `FieldIdx`
