@@ -17,8 +17,7 @@ type U32 = thrust_models::model::UIntN<32>;
 // states, `preservation_inv` and `reinitialize` quantify over every closure state, as Creusot's
 // do. As in creusot-std's `std/iter/map_inv.rs`, which `examples/counter` uses, `produces` relates
 // the first state to the last and to every state of the chain by `hist_inv!` (Creusot's
-// `hist_inv`), and `preservation_inv` is guarded by it. The closure precondition drops Creusot's
-// `cnt < usize::MAX` (integers are unbounded).
+// `hist_inv`), and `preservation_inv` is guarded by it.
 //
 // The pass side is `tests/ui/pass/creusot/counter_creusot.rs`, which says how it verifies.
 
@@ -276,7 +275,8 @@ fn counter(v: Vec<u32>) -> (Vec<u32>, usize) {
     let mut cnt: usize = 0;
     let f = thrust_macros::closure!(
         captures(cnt: &mut &mut usize),
-        requires(*(*cnt) == produced.len()),
+        // Creusot's `examples/counter` closure: `#[requires(@cnt == (*_prod).len() && cnt < usize::MAX)]`.
+        requires(*(*cnt) == produced.len() && *(*cnt) < usize::MAX),
         ensures(*(!cnt) == *(*cnt) + 1 && result == *x),
         // The precondition restated, as in the postcondition Creusot infers for the closure
         // body, which reads `cnt == produced.len()` before the increment.

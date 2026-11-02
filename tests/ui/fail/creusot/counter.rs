@@ -219,7 +219,8 @@ fn counter(start: u32, end: u32) -> Vec<u32> {
     let mut cnt: usize = 0;
     let f = thrust_macros::closure!(
         captures(cnt: &mut &mut usize),
-        requires(*(*cnt) == produced.len()),
+        // Creusot's `examples/counter` closure: `#[requires(@cnt == (*_prod).len() && cnt < usize::MAX)]`.
+        requires(*(*cnt) == produced.len() && *(*cnt) < usize::MAX),
         ensures(*(!cnt) == *(*cnt) + 1 && result == x),
         |x: u32, produced: Ghost<Seq<U32>>| -> u32 { cnt += 1; x },
     );
