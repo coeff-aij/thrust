@@ -811,9 +811,10 @@ pub fn layout<
                 // The filter's contract is written: inferred, its postcondition is an unknown
                 // that `Filter::produces` applies, which `filter_count`'s `ensures` below negates.
                 // Its `requires` is properties 1 and 2b and the bound at the entry it is given,
-                // as the per-variant closure's `requires` states them at every entry. Its clauses
-                // read the captures as the references they are (`*assignments`), and the map's
-                // below through the closure's state (`**local_layouts`): the other form panics
+                // as the per-variant closure's `requires` states them at every entry. `Filter`
+                // takes a `Fn` closure, whose clauses read a capture as the reference it is
+                // (`*assignments`); `Map` takes an `FnMut` one, whose clauses read it through the
+                // closure's state (`**local_layouts`, the current value). The other form panics
                 // (#152).
                 Filter::new(variant_fields.iter(), thrust_macros::closure!(
                     captures(
