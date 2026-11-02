@@ -128,7 +128,7 @@ impl<T: Idx> DenseBitSet<T> {
     #[thrust_macros::ensures(forall(|i: USize| <T as Idx>::index_is(elem, i)
         ==> Self::inserted(*self, i, !self)))]
     #[thrust_macros::ensures(forall(|i: USize| <T as Idx>::index_is(elem, i) ==> Self::mem(!self, i)))]
-    #[thrust_macros::ensures(forall(|i: USize, j: USize| <T as Idx>::index_is(elem, i) && 0 <= j && j != i
+    #[thrust_macros::ensures(forall(|i: USize, j: USize| <T as Idx>::index_is(elem, i) && 0 <= j && j < (*self).0 && j != i
         ==> (Self::mem(!self, j) == Self::mem(*self, j))))]
     #[thrust_macros::ensures(forall(|i: USize| <T as Idx>::index_is(elem, i) && (result == true) ==> !Self::mem(*self, i)))]
     #[thrust_macros::ensures(forall(|i: USize| <T as Idx>::index_is(elem, i) && Self::mem(*self, i) ==> (result == false)))]
