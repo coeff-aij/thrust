@@ -2,7 +2,7 @@ use crate::thrust_models;
 use std::marker::PhantomData;
 
 use thrust_models::model::{BitVec, Int, Seq};
-use thrust_models::{exists, forall};
+use thrust_models::{exists, forall, Ghost};
 
 use crate::rustc_index::{Idx, IdxRange};
 use crate::IteratorSpec;
@@ -83,10 +83,12 @@ impl<T: Idx> DenseBitSet<T> {
     #[thrust_macros::ensures(Self::card(result) == 0)]
     pub fn new_empty(domain_size: usize) -> DenseBitSet<T> {
         let num_words = num_words(domain_size);
-        thrust_macros::proof!(zero_bits_ones(domain_size));
+        let words = vec![0; num_words];
+        let s = thrust_macros::ghost!(|words: Vec<Word>| -> Seq<USize> { words });
+        thrust_macros::proof!(zero_bits_ones(s, domain_size));
         DenseBitSet {
             domain_size,
-            words: vec![0; num_words],
+            words,
             marker: PhantomData,
         }
     }
@@ -573,14 +575,14 @@ pub(crate) fn ones(words: Seq<USize>, m: USize) -> Int {
     }
 }
 
-/// The first `m` bits are clear when the words they lie in are zero.
+/// The first `m` bits of `s` are clear when the words they lie in are zero. `s` is a parameter,
+/// so a call states the fact at its words, not for every sequence.
 #[thrust_macros::lemma]
 #[thrust_macros::variant(m)]
-#[thrust_macros::ensures(forall(|s: Seq<USize>|
-    forall(|k: USize| k * 64 < m ==> s[k] == 0) ==> ones(s, m) == 0))]
-fn zero_bits_ones(m: usize) {
+#[thrust_macros::ensures(forall(|k: USize| k * 64 < m ==> s[k] == 0) ==> ones(s, m) == 0)]
+fn zero_bits_ones(s: Ghost<Seq<USize>>, m: usize) {
     if m > 0 {
-        zero_bits_ones(m - 1);
+        zero_bits_ones(s, m - 1);
     }
 }
 
