@@ -1,11 +1,13 @@
 //! Expansion of `thrust_macros::invariant!`, its partial counterpart
-//! `thrust_macros::partial_invariant!`, and their context-carrying siblings
-//! `thrust_macros::_invariant_with_context!` and `_partial_invariant_with_context!`.
+//! `thrust_macros::partial_invariant!`, the statement forms `thrust_macros::proof_assert!` and
+//! `thrust_macros::assume!`, and their context-carrying siblings
+//! (`thrust_macros::_invariant_with_context!` and so on).
 //!
-//! The two forms differ only in the marker they call: an `invariant!` is the loop
-//! head's whole invariant, a `partial_invariant!` is conjoined with the inferred one.
+//! The forms differ only in the marker they call: an `invariant!` is the loop head's whole
+//! invariant, a `partial_invariant!` is conjoined with the inferred one, a `proof_assert!` is
+//! checked where it is written and assumed after it, and an `assume!` is assumed there unchecked.
 //!
-//! Both expand a predicate closure with explicit parameter types into a
+//! All expand a predicate closure with explicit parameter types into a
 //! `#[thrust::formula_fn]` over `Model::Ty` parameters plus a marker call
 //! referencing it; they share [`expand_invariant`] and differ only in input:
 //!
@@ -36,11 +38,13 @@ use crate::formula_fn_lifting::{self, ClosureWithContext, EnclosingContext, Lift
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
-/// The marker function an invariant form calls.
+/// The marker function a form calls.
 #[derive(Clone, Copy)]
 pub enum Marker {
     Full,
     Partial,
+    Assert,
+    Assume,
 }
 
 impl Marker {
@@ -53,6 +57,15 @@ impl Marker {
         }
     }
 
+    /// The statement form a macro named `name` is, or `None` for any other macro.
+    pub fn statement_of_macro(name: &str) -> Option<Self> {
+        match name {
+            "proof_assert" => Some(Marker::Assert),
+            "assume" => Some(Marker::Assume),
+            _ => None,
+        }
+    }
+
     /// The context-carrying counterpart `#[thrust_macros::context]` rewrites the form into.
     pub fn with_context_path(self) -> syn::Path {
         match self {
@@ -60,6 +73,8 @@ impl Marker {
             Marker::Partial => {
                 syn::parse_quote!(::thrust_macros::_partial_invariant_with_context)
             }
+            Marker::Assert => syn::parse_quote!(::thrust_macros::_proof_assert_with_context),
+            Marker::Assume => syn::parse_quote!(::thrust_macros::_assume_with_context),
         }
     }
 
@@ -67,11 +82,22 @@ impl Marker {
         match self {
             Marker::Full => format_ident!("__invariant_marker"),
             Marker::Partial => format_ident!("__partial_invariant_marker"),
+            Marker::Assert => format_ident!("__assert_marker"),
+            Marker::Assume => format_ident!("__assume_marker"),
+        }
+    }
+
+    /// The prefix of the name of the formula function the form expands into.
+    fn item_prefix(self) -> &'static str {
+        match self {
+            Marker::Full | Marker::Partial => "_thrust_invariant",
+            Marker::Assert => "_thrust_assert",
+            Marker::Assume => "_thrust_assume",
         }
     }
 }
 
-/// Expands `invariant!(CLOSURE)`: a bare predicate closure with no threaded
+/// Expands `invariant!(CLOSURE)` (or another form): a bare predicate closure with no threaded
 /// context.
 pub fn expand(input: TokenStream, marker: Marker) -> TokenStream {
     let input = crate::formula::wrap_closure_body(input.into());
@@ -110,7 +136,7 @@ fn expand_invariant(
         let syn::Pat::Type(pt) = param else {
             return Err(syn::Error::new_spanned(
                 param,
-                "invariant closure parameters must have explicit types, e.g. `|x: i64| ...`",
+                "closure parameters must have explicit types, e.g. `|x: i64| ...`",
             ));
         };
         let pat = &pt.pat;
@@ -119,7 +145,7 @@ fn expand_invariant(
     }
 
     let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let name = format_ident!("_thrust_invariant_{}", id);
+    let name = format_ident!("{}_{}", marker.item_prefix(), id);
     let LiftedFormulaFn { item, reference } =
         formula_fn_lifting::lift(&name, &params, &closure.body, context)?;
     let marker = marker.ident();

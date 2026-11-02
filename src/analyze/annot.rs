@@ -442,6 +442,22 @@ pub fn partial_invariant_marker_path() -> [Symbol; 3] {
     ]
 }
 
+pub fn assert_marker_path() -> [Symbol; 3] {
+    [
+        Symbol::intern("thrust"),
+        Symbol::intern("def"),
+        Symbol::intern("assert_marker"),
+    ]
+}
+
+pub fn assume_marker_path() -> [Symbol; 3] {
+    [
+        Symbol::intern("thrust"),
+        Symbol::intern("def"),
+        Symbol::intern("assume_marker"),
+    ]
+}
+
 pub fn ghost_marker_path() -> [Symbol; 3] {
     [
         Symbol::intern("thrust"),
