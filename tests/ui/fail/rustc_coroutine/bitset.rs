@@ -1,4 +1,3 @@
-//@error-in-other-file: Unsat
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@no-rustfix
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 THRUST_TRY_SPECS=1
@@ -47,7 +46,7 @@ fn _extern_spec_slice_fill_word(slice: &mut [u64], value: u64) {
 #[thrust_macros::requires(BitMatrix::<usize, usize>::wf(*m) && 0 < (*m).num_rows && *(*m).col_bound == 5
     && BitMatrix::<usize, usize>::cols_below(*m, *(*m).col_bound))]
 #[thrust_macros::ensures(true)]
-fn column_bound(m: &BitMatrix<usize, usize>) {
+fn column_bound(m: &BitMatrix<usize, usize>) { //~ ERROR: Unsat
     let mut it = m.iter(0);
     match it.next() {
         // Broken narrowly: the column bound is 5, and column 4 may be set.
