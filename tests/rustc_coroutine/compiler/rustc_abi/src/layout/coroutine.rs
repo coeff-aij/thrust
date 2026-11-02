@@ -505,6 +505,182 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
     (ineligible_locals, assignments)
 }
 
+// Rewrite (rewrites.md R13): the part of `layout()`'s per-variant closure that combines the
+// variant's offsets and memory order with the promoted ones, as a function whose `requires`
+// states what the code reads: the memory order is a permutation of `0..m` with m offsets
+// (univariant's `arbitrary_of`), `FieldIdx` and `u32` reach c + m (c the promoted fields), every
+// entry of the variant is a local below n that is not `Unassigned` (property 1), and an
+// `Ineligible` local's field index is below c (property 3). Its `ensures` is `true`: `layout()`
+// states nothing of the variants it returns.
+#[thrust_macros::requires(
+    offsets.len() == in_memory_order.len()
+        && forall(|k: USize| 0 <= k && k <= (*variant_fields).len() ==> <FieldIdx as Idx>::can_new(k))
+        && forall(|k: USize| 0 <= k && k <= in_memory_order.len() ==> <u32 as Idx>::can_new(k))
+        && forall(|k: USize, i: USize|
+            0 <= k && k < in_memory_order.len() && <FieldIdx as Idx>::index_is(in_memory_order[k], i) ==> i < in_memory_order.len())
+        && forall(|k: USize| 0 <= k && k <= (*promoted_memory_index).len() + in_memory_order.len() ==> <FieldIdx as Idx>::can_new(k))
+        && (*promoted_memory_index).len() + in_memory_order.len() <= 4294967295usize
+        && forall(|k: USize, i: USize|
+            0 <= k && k < (*promoted_memory_index).len() && <u32 as Idx>::index_is((*promoted_memory_index)[k], i)
+                ==> i < (*promoted_memory_index).len())
+        && forall(|f: usize, i: USize|
+            0 <= f && f < (*variant_fields).len() && <LocalIdx as Idx>::index_is((*variant_fields)[f], i)
+                ==> (i < (*assignments).len() && (*assignments)[i] != SavedLocalEligibility::Unassigned))
+        && forall(|l: usize, x: Option<<FieldIdx as thrust_models::Model>::Ty>|
+            0 <= l && l < (*assignments).len() && (*assignments)[l] == SavedLocalEligibility::Ineligible(x)
+                ==> exists(|k: <FieldIdx as thrust_models::Model>::Ty|
+                    x == Some(k)
+                        && forall(|i: USize|
+                            <FieldIdx as Idx>::index_is(k, i)
+                                ==> (i < (*promoted_offsets).len() && i < (*promoted_memory_index).len()))))
+)]
+#[thrust_macros::ensures(true)]
+#[thrust_macros::context]
+fn combine_offsets<VariantIdx: Idx + thrust_models::Model, FieldIdx: Idx + thrust_models::Model, LocalIdx: Idx + thrust_models::Model>(
+    variant_fields: &IndexVec<FieldIdx, LocalIdx>,
+    assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
+    promoted_offsets: &IndexVec<FieldIdx, Size>,
+    promoted_memory_index: &IndexVec<FieldIdx, u32>,
+    offsets: IndexVec<FieldIdx, Size>,
+    in_memory_order: IndexVec<u32, FieldIdx>,
+) -> (IndexVec<FieldIdx, Size>, IndexVec<u32, FieldIdx>) {
+    use SavedLocalEligibility::*;
+
+    // `invert_bijective_mapping` needs `u32::can_new` up to the number of fields m, and
+    // `FieldIdx::new(invalid_field_idx)` needs `FieldIdx::can_new(c + m)`: c + m <= n by
+    // `filter_count` above and the closure's `requires` on c.
+    let memory_index = in_memory_order.invert_bijective_mapping();
+    let invalid_field_idx = promoted_memory_index.len() + memory_index.len();
+    let mut combined_in_memory_order =
+        IndexVec::from_elem_n(FieldIdx::new(invalid_field_idx), invalid_field_idx);
+
+    let mut offsets_and_memory_index = iter::zip(offsets, memory_index);
+    // Rewrite (rewrites.md R8): `Map::new` and `collect_index_vec` for `map` and `collect`.
+    let combined_offsets = collect_index_vec(Map::new(
+        variant_fields.iter_enumerated(),
+        |(i, local)| {
+            let (offset, memory_index) = match assignments[*local] {
+                // Unreachable, as above.
+                Unassigned => unreachable!(),
+                Assigned(_) => {
+                    // Rewrite (rewrites.md R13): the pair, c and c + m are bound to names, for the
+                    // `assume!`, which names local variables only (not a closure's captures).
+                    let pair = offsets_and_memory_index.next();
+                    let promoted_count = promoted_memory_index.len();
+                    let bound = invalid_field_idx;
+                    // Assumed (not proved): `next` returns a pair, and its memory index j has
+                    // c + j < c + m = `invalid_field_idx`. rustc's code makes it true: the zip has
+                    // m pairs (univariant's `arbitrary_of`: m offsets, and the inverted order has
+                    // m entries); the m fields are the entries the filter accepted, those whose
+                    // local is Assigned to this variant, in order; this closure runs once per
+                    // entry, in order (`iter_enumerated`), and takes a pair only at those
+                    // entries, so it never takes more than m; and every entry of the inverted
+                    // order is below m (`invert_bijective_mapping`). With it, the `u32` sum stays
+                    // below c + m <= u32::MAX and indexes `combined_in_memory_order`. Not proved:
+                    // the proof needs m equal to the count of Assigned entries (`filter_count`
+                    // gives m <= it) and a `hist_inv` of this closure tying the pairs left to
+                    // the position.
+                    thrust_macros::assume!(
+                        |pair: Option<(Size, u32)>, promoted_count: usize, bound: usize|
+                            exists(|o: Size, j: <u32 as thrust_models::Model>::Ty| pair == Some((o, j)) && promoted_count + j < bound)
+                    );
+                    let (offset, memory_index) = pair.unwrap();
+                    (offset, promoted_memory_index.len() as u32 + memory_index)
+                }
+                Ineligible(field_idx) => {
+                    // `.unwrap()`: `field_idx == Some(_)` by eligibility.rs's stage-5
+                    // property 3.
+                    let field_idx = field_idx.unwrap();
+                    (
+                        // `field_idx` is below the set's count c (property 3),
+                        // which is `offsets_b.len()` (the prefix length and `split_off`),
+                        // and `promoted_memory_index` has at least c entries
+                        // (the permutation split).
+                        promoted_offsets[field_idx],
+                        promoted_memory_index[field_idx],
+                    )
+                }
+            };
+            // `combined_in_memory_order[memory_index]`: an Assigned local's index is below
+            // `invalid_field_idx` by the `assume!` above, an Ineligible local's is an entry of
+            // `promoted_memory_index`, below c (`invert_bijective_mapping`).
+            combined_in_memory_order[memory_index] = i;
+            offset
+        },
+    ));
+
+    combined_in_memory_order
+        .raw
+        .retain(|&i| i.index() != invalid_field_idx);
+
+    (combined_offsets, combined_in_memory_order)
+}
+
+// Rewrite (rewrites.md R11): the loop of `layout()` that splits `in_memory_order` at `b_start`,
+// as a function whose contract states what `layout()` reads of the two parts. The order is a
+// permutation of `0..n` (univariant's `arbitrary_of`, stated as there), so the counting lemmas
+// give the second part exactly n - b entries, each below n - b.
+#[thrust_macros::requires(
+    in_memory_order.len() == n
+        && <FieldIdx as Idx>::index_logic(b_start) <= n
+        && forall(|k: USize| 0 <= k && k <= n ==> <FieldIdx as Idx>::can_new(k))
+        && forall(|k: USize, i: USize|
+            0 <= k && k < n && <FieldIdx as Idx>::index_is(in_memory_order[k], i) ==> i < n)
+        && forall(|k: USize, k2: USize, i: USize|
+            0 <= k && k < n && 0 <= k2 && k2 < n && !(k == k2) && <FieldIdx as Idx>::index_is(in_memory_order[k], i)
+                ==> !<FieldIdx as Idx>::index_is(in_memory_order[k2], i))
+)]
+#[thrust_macros::ensures(
+    result.1.len() == n - <FieldIdx as Idx>::index_logic(b_start)
+        && forall(|k: USize, i: USize|
+            0 <= k && k < result.1.len() && <FieldIdx as Idx>::index_is(result.1[k], i) ==> i < result.1.len())
+)]
+#[thrust_macros::context]
+fn split_in_memory_order<FieldIdx: Idx + thrust_models::Model>(
+    in_memory_order: IndexVec<u32, FieldIdx>,
+    b_start: FieldIdx,
+    n: usize,
+) -> (IndexVec<u32, FieldIdx>, IndexVec<u32, FieldIdx>) {
+    // The loop is rustc's; `partial_invariant!` adds the count of the split to what inference
+    // finds at the loop.
+    let order = thrust_macros::ghost!(|in_memory_order: IndexVec<u32, FieldIdx>| -> IndexVec<u32, FieldIdx> {
+        in_memory_order
+    });
+    thrust_macros::proof!(lemmas::distinct_of_injective(order, n));
+    let mut in_memory_order_a = IndexVec::<u32, FieldIdx>::new();
+    let mut in_memory_order_b = IndexVec::<u32, FieldIdx>::new();
+    for i in in_memory_order {
+        thrust_macros::partial_invariant!(
+            |iter: std::vec::IntoIter<FieldIdx>,
+             iter_old: thrust_models::Ghost<std::vec::IntoIter<FieldIdx>>,
+             produced: thrust_models::Ghost<thrust_models::model::Seq<<FieldIdx as thrust_models::Model>::Ty>>,
+             order: thrust_models::Ghost<IndexVec<u32, FieldIdx>>,
+             in_memory_order_a: IndexVec<u32, FieldIdx>,
+             in_memory_order_b: IndexVec<u32, FieldIdx>,
+             n: usize,
+             b_start: FieldIdx| {
+                iter_old.0 == order
+                    && iter_old.1 == 0
+                    && lemmas::distinct::<FieldIdx>(order, n)
+                    && in_memory_order_a.len() + in_memory_order_b.len() == produced.len()
+                    && in_memory_order_b.len()
+                        == lemmas::cnt_ge::<FieldIdx>(order, produced.len(), <FieldIdx as Idx>::index_logic(b_start))
+                    && forall(|k: USize|
+                        0 <= k && k < in_memory_order_b.len() ==> <FieldIdx as Idx>::index_logic(in_memory_order_b[k])
+                                < n - <FieldIdx as Idx>::index_logic(b_start))
+            }
+        );
+        if let Some(j) = i.index().checked_sub(b_start.index()) {
+            in_memory_order_b.push(FieldIdx::new(j));
+        } else {
+            in_memory_order_a.push(i);
+        }
+    }
+    thrust_macros::proof!(lemmas::permutation_split(order, n, b_start.index()));
+    thrust_macros::proof!(lemmas::permutation_split_le(order, n, b_start.index()));
+    (in_memory_order_a, in_memory_order_b)
+}
+
 // The specification of stage 7 (README.md of the stage files).
 //
 // Precondition (experiments/2026-10-01-layout-precondition-review.md), with n the number of
@@ -635,7 +811,8 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
 )]
 pub fn layout<
     'a,
-    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + thrust_models::Model,
+    // `Ty: PartialEq`, as `fits_in_any_order` bounds it, for the two `assume!`s of it.
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + thrust_models::Model<Ty: PartialEq>,
     VariantIdx: Idx + thrust_models::Model,
     FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
     LocalIdx: Idx + thrust_models::Model,
@@ -678,16 +855,23 @@ pub fn layout<
     // `push` and `extend_from` give `prefix_layouts.len() == P + 1 + c`, c the items
     // `ineligible_locals.iter()` yields (`Map` keeps the length), which is the set's count `card`:
     // `iter` starts `BitIter`'s `left` at it, and the iterator completes with nothing left.
-    // TODO(proof): `univariant`'s `fits_in_any_order` here. The missing fact: `weight` of the new
-    // `prefix_layouts` is at most wp + t + wl, wp and wl the weights `layout()`'s `requires`
-    // gives of the entry `prefix_layouts` and of `local_layouts`, t the tag's: the promoted
-    // layouts are those of distinct locals (the set's members, increasing), so their weight is a
-    // sum over a subset of `local_layouts`. `weight` is an existential over a `Seq<Int>` of the
-    // fields' weights, and no term builds the witness of a selection of `local_layouts`' (a
-    // field's weight is read through `deref`'s postcondition, a relation).
+    // Rewrite (rewrites.md R14): the `repr` argument is bound to a name, for the `assume!`.
+    let repr = ReprOptions::default();
+    // Assumed (not proved): `univariant`'s `fits_in_any_order` for the prefix. rustc's code makes
+    // it true under `layout()`'s size bound: the prefix's fields are the entry `prefix_layouts`,
+    // the tag's layout and the promoted locals, which are distinct locals (the set's members,
+    // each yielded once, increasing), so their weight is at most that of `prefix_layouts`, the tag
+    // and all of `local_layouts`, T in the size bound, and 3T + 2^qa + 2^qi < b gives the prefix's
+    // weighs sum below b. Not proved: `weight` is an existential over a `Seq<Int>` of the fields'
+    // weights, and no term builds the witness for a selection of `local_layouts` (a field's
+    // weight is read through `deref`'s postcondition, a relation).
+    thrust_macros::assume!(
+        |calc: &LayoutCalculator<C>, prefix_layouts: IndexVec<FieldIdx, F>, repr: ReprOptions|
+            LayoutCalculator::<C>::fits_in_any_order::<FieldIdx, VariantIdx, F>(*calc, &prefix_layouts, &repr, StructKind::AlwaysSized)
+    );
     let prefix = calc.univariant(
         &prefix_layouts,
-        &ReprOptions::default(),
+        &repr,
         StructKind::AlwaysSized,
     )?;
 
@@ -705,48 +889,14 @@ pub fn layout<
             let offsets_b = IndexVec::from_raw(offsets.raw.split_off(b_start.index()));
             let offsets_a = offsets;
 
-            // The loop is rustc's; `partial_invariant!` adds the count of the split to what inference
-            // finds at the loop. The order is a permutation of `0..n`, n = P + 1 + c, by
-            // univariant's `arbitrary_of`, and the counting lemmas give that the second part has
-            // at least `n - b_start` entries, each below `n - b_start`: `invert_bijective_mapping`
-            // needs its entries below its length, and the variants need `promoted_memory_index`
-            // to have c entries.
-            let order = thrust_macros::ghost!(|in_memory_order: IndexVec<u32, FieldIdx>| -> IndexVec<u32, FieldIdx> {
-                in_memory_order
-            });
-            thrust_macros::proof!(lemmas::distinct_of_injective(order, prefix_layouts.len()));
-            let mut in_memory_order_a = IndexVec::<u32, FieldIdx>::new();
-            let mut in_memory_order_b = IndexVec::<u32, FieldIdx>::new();
-            for i in in_memory_order {
-                thrust_macros::partial_invariant!(
-                    |iter: std::vec::IntoIter<FieldIdx>,
-                     iter_old: thrust_models::Ghost<std::vec::IntoIter<FieldIdx>>,
-                     produced: thrust_models::Ghost<thrust_models::model::Seq<<FieldIdx as thrust_models::Model>::Ty>>,
-                     order: thrust_models::Ghost<IndexVec<u32, FieldIdx>>,
-                     in_memory_order_a: IndexVec<u32, FieldIdx>,
-                     in_memory_order_b: IndexVec<u32, FieldIdx>,
-                     prefix_layouts: IndexVec<FieldIdx, F>,
-                     b_start: FieldIdx| {
-                        iter_old.0 == order
-                            && iter_old.1 == 0
-                            && lemmas::distinct::<FieldIdx>(order, prefix_layouts.len())
-                            && in_memory_order_a.len() + in_memory_order_b.len() == produced.len()
-                            && in_memory_order_b.len()
-                                == lemmas::cnt_ge::<FieldIdx>(order, produced.len(), <FieldIdx as Idx>::index_logic(b_start))
-                            && forall(|k: USize|
-                                0 <= k && k < in_memory_order_b.len() ==> <FieldIdx as Idx>::index_logic(in_memory_order_b[k])
-                                        < prefix_layouts.len() - <FieldIdx as Idx>::index_logic(b_start))
-                    }
-                );
-                if let Some(j) = i.index().checked_sub(b_start.index()) {
-                    in_memory_order_b.push(FieldIdx::new(j));
-                } else {
-                    in_memory_order_a.push(i);
-                }
-            }
-            thrust_macros::proof!(lemmas::permutation_split(order, prefix_layouts.len(), b_start.index()));
-            // And at most n - (P + 1) = c entries, which the variants' count needs.
-            thrust_macros::proof!(lemmas::permutation_split_le(order, prefix_layouts.len(), b_start.index()));
+            // Rewrite (rewrites.md R11): the loop that splits the memory order at `b_start` is
+            // `split_in_memory_order`. Its `requires` holds by univariant's `arbitrary_of` (the
+            // order is a permutation of `0..n`, n = P + 1 + c) and `layout()`'s `requires`
+            // (`FieldIdx` reaches n); its `ensures` gives the second part n - (P + 1) = c entries,
+            // each below c: `invert_bijective_mapping` needs its entries below its length, and the
+            // variants need `promoted_memory_index` to have c entries.
+            let (in_memory_order_a, in_memory_order_b) =
+                split_in_memory_order(in_memory_order, b_start, prefix_layouts.len());
 
             let outer_fields = FieldsShape::Arbitrary {
                 offsets: offsets_a,
@@ -924,21 +1074,29 @@ pub fn layout<
                 assignments.len(),
             ));
 
-            // Rewrite (rewrites.md R8): `collect_index_vec` for `collect`.
-            // TODO(proof): `univariant`'s `fits_in_any_order` here. The missing fact: `weight` of the
-            // collected fields plus the prefix's size and twice its alignment is below the bound
-            // `layout()`'s `requires` states, which follows when the collected fields weigh at most
-            // `local_layouts` (they are distinct locals Assigned to the variant, properties 2c and
-            // 2b) and the prefix's size and alignment are below the prefix's weighs sum
-            // (`univariant`'s `ensures`). thrust/counts.rs bounds the weight the index map selects
-            // by that of the locals Assigned to the variant (`map_wbound`, `acc_wbound`); not used
-            // here, as `weight` of the collected fields is an existential over a `Seq<Int>` whose
-            // witness, the locals' weights through the index map, no term builds.
-            let mut variant = calc.univariant(
-                &collect_index_vec(variant_only_tys),
-                &ReprOptions::default(),
-                StructKind::Prefixed(prefix_size, prefix_align.abi),
-            )?;
+            // Rewrite (rewrites.md R8): `collect_index_vec` for `collect`. Rewrite (rewrites.md
+            // R14): `calc` and the arguments are bound to names, for the `assume!`, which names
+            // local variables only (not a closure's captures).
+            let calc_ref = calc;
+            let fields = collect_index_vec(variant_only_tys);
+            let repr = ReprOptions::default();
+            let kind = StructKind::Prefixed(prefix_size, prefix_align.abi);
+            // Assumed (not proved): `univariant`'s `fits_in_any_order` for the variant. rustc's
+            // code makes it true under `layout()`'s size bound (its header comment): the variant's
+            // weighs sum is the weight of its fields plus the prefix's size and twice its
+            // alignment, each below the prefix's weighs sum S_p (univariant's `ensures`), so it is
+            // below (Assigned) + 3 S_p + 2^qa + 2^qi, with (Assigned) the weight of the variant's
+            // fields. Those are the locals Assigned to the variant, each once (properties 2b and
+            // 2c). S_p is at most the weight of the entry `prefix_layouts`, the tag and the promoted
+            // locals, and the promoted locals are Ineligible (property 4), so disjoint from the
+            // Assigned ones: (Assigned) + 3 (promoted) <= 3 (weight of `local_layouts`), and the sum
+            // is below 3T + 2^qa + 2^qi < b. Not proved: as at the prefix, no term builds the
+            // witness of `weight` for the fields the filter selects.
+            thrust_macros::assume!(
+                |calc_ref: &LayoutCalculator<C>, fields: IndexVec<FieldIdx, F>, repr: ReprOptions, kind: StructKind|
+                    LayoutCalculator::<C>::fits_in_any_order::<FieldIdx, VariantIdx, F>(*calc_ref, &fields, &repr, kind)
+            );
+            let mut variant = calc_ref.univariant(&fields, &repr, kind)?;
 
             let FieldsShape::Arbitrary {
                 offsets,
@@ -949,67 +1107,20 @@ pub fn layout<
                 unreachable!();
             };
 
-            // `invert_bijective_mapping` needs `u32::can_new` up to the number of fields m, and
-            // `FieldIdx::new(invalid_field_idx)` needs `FieldIdx::can_new(c + m)`: c + m <= n by
-            // `filter_count` above and the closure's `requires` on c.
-            let memory_index = in_memory_order.invert_bijective_mapping();
-            let invalid_field_idx = promoted_memory_index.len() + memory_index.len();
-            let mut combined_in_memory_order =
-                IndexVec::from_elem_n(FieldIdx::new(invalid_field_idx), invalid_field_idx);
-
-            let mut offsets_and_memory_index = iter::zip(offsets, memory_index);
-            // Rewrite (rewrites.md R8): `Map::new` and `collect_index_vec` for `map` and `collect`.
-            let combined_offsets = collect_index_vec(Map::new(
-                variant_fields.iter_enumerated(),
-                |(i, local)| {
-                    let (offset, memory_index) = match assignments[*local] {
-                        // Unreachable, as above.
-                        Unassigned => unreachable!(),
-                        Assigned(_) => {
-                            // TODO(proof): `.unwrap()`. The missing fact: at entry `i`,
-                            // `offsets_and_memory_index` has as many pairs left as entries
-                            // at positions `i..` whose local is Assigned to the variant. It
-                            // needs m to equal the count of Assigned entries (`filter_count`
-                            // gives only m <= it: the other half is that `Filter`'s index map
-                            // enumerates every accepted position), `univariant`'s
-                            // `arbitrary_of` (m offsets and m entries of `in_memory_order`),
-                            // and a contract for this closure whose `hist_inv` ties the pairs
-                            // left to the position, with `Map::new`'s `preservation_inv`
-                            // over `iter_enumerated`.
-                            let (offset, memory_index) = offsets_and_memory_index.next().unwrap();
-                            (offset, promoted_memory_index.len() as u32 + memory_index)
-                        }
-                        Ineligible(field_idx) => {
-                            // `.unwrap()`: `field_idx == Some(_)` by eligibility.rs's stage-5
-                            // property 3.
-                            let field_idx = field_idx.unwrap();
-                            (
-                                // `field_idx` is below the set's count c (property 3),
-                                // which is `offsets_b.len()` (the prefix length and `split_off`),
-                                // and `promoted_memory_index` has at least c entries
-                                // (the permutation split).
-                                promoted_offsets[field_idx],
-                                promoted_memory_index[field_idx],
-                            )
-                        }
-                    };
-                    // TODO(proof): `combined_in_memory_order[memory_index]` and the `u32` sum
-                    // above. The missing fact: every pair `offsets_and_memory_index` has left
-                    // carries an entry of the inverted `memory_index`, below m by
-                    // `invert_bijective_mapping`'s `ensures`, which this closure's contract
-                    // would state of its state (a `hist_inv` that the pairs left are a suffix of
-                    // the zip of `offsets` and `memory_index`). With it, an Assigned local's
-                    // index is c + (entry) < c + m = `invalid_field_idx` and c + m <= n bounds
-                    // the `u32` sum (`filter_count` and the closure's `requires`); an Ineligible
-                    // local's `promoted_memory_index` entry is below c (`invert_bijective_mapping`).
-                    combined_in_memory_order[memory_index] = i;
-                    offset
-                },
-            ));
-
-            combined_in_memory_order
-                .raw
-                .retain(|&i| i.index() != invalid_field_idx);
+            // Rewrite (rewrites.md R13): the combination of the variant's offsets and memory order
+            // with the promoted ones is `combine_offsets`. Its `requires` holds by univariant's
+            // `arbitrary_of` (m offsets, and the memory order a permutation of `0..m`), by
+            // `filter_count` above with the closure's `requires` on c (c + m <= n, so `FieldIdx`
+            // and `u32` reach c + m), and by the closure's `requires` (properties 1 and 3 and the
+            // bounds of the variant's entries).
+            let (combined_offsets, combined_in_memory_order) = combine_offsets(
+                variant_fields,
+                &assignments,
+                &promoted_offsets,
+                &promoted_memory_index,
+                offsets,
+                in_memory_order,
+            );
 
             variant.fields = FieldsShape::Arbitrary {
                 offsets: combined_offsets,
