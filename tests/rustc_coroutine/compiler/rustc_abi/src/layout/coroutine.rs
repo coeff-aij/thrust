@@ -47,11 +47,15 @@ fn ones_assigned_disjoint<LocalIdx: Idx + thrust_models::Model, VariantIdx: thru
     if k > 0 {
         ones_assigned_disjoint(s, a, k - 1);
         ones_step(s, k - 1);
+    } else {
+        ones_step(s, k);
     }
 }
 
-/// One more bit adds the bit at `k`: `mem` and the step of `ones` read the same bit.
+/// One more bit adds the bit at `k`: `mem` and the step of `ones` read the same bit. With the
+/// base case, all `ones_assigned_disjoint` reads of the bit arithmetic.
 #[thrust_macros::lemma]
+#[thrust_macros::ensures(forall(|z: USize| z == 0 ==> crate::rustc_index::bit_set::ones((*s).1, z) == 0))]
 #[thrust_macros::ensures(
     (DenseBitSet::<LocalIdx>::mem(*s, k) && crate::rustc_index::bit_set::ones((*s).1, k + 1) == crate::rustc_index::bit_set::ones((*s).1, k) + 1)
         || (!DenseBitSet::<LocalIdx>::mem(*s, k) && crate::rustc_index::bit_set::ones((*s).1, k + 1) == crate::rustc_index::bit_set::ones((*s).1, k)))]
