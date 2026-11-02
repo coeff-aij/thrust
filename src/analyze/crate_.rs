@@ -1382,6 +1382,18 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 .opt_associated_item(def_id)
                 .and_then(|item| item.trait_container(self.tcx))
                 .expect("a trait item has a trait");
+            let output = self.tcx.fn_sig(def_id).skip_binder().skip_binder().output();
+            if !output.is_unit() {
+                self.tcx.dcx().span_fatal(
+                    self.tcx.def_span(def_id),
+                    format!(
+                        "the trait law `{}` returns `{output}`: a law states a property of its \
+                         arguments and returns `()`; an implementation proves it with its body, \
+                         whose result is not named in the law",
+                        self.tcx.def_path_str(def_id)
+                    ),
+                );
+            }
             self.ctx.register_trait_law(trait_def_id, def_id);
         }
     }

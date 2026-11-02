@@ -454,7 +454,17 @@ impl PlaceType {
         let mut builder = PlaceTypeBuilder::default();
         let (inner_ty, inner_term) = builder.subsume(self);
         let inner_ty = inner_ty.into_tuple().unwrap();
-        let (ty, value_var_ex) = builder.subsume_rty(inner_ty.elems[idx].clone());
+        let Some(elem) = inner_ty.elems.get(idx) else {
+            rustc_middle::ty::tls::with(|tcx| {
+                tcx.dcx().fatal(format!(
+                    "thrust: component {idx} of the tuple `{}` is read, but it has {}: a struct \
+                     read through a `Model` with fewer components than its fields is not supported",
+                    inner_ty.display(),
+                    inner_ty.elems.len()
+                ))
+            })
+        };
+        let (ty, value_var_ex) = builder.subsume_rty(elem.clone());
 
         let term = chc::Term::var(value_var_ex.into());
         builder.push_formula(term.clone().equal_to(inner_term.tuple_proj(idx)));
