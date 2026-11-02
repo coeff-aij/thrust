@@ -10,6 +10,14 @@ pub fn trusted_path() -> [Symbol; 2] {
     [Symbol::intern("thrust"), Symbol::intern("trusted")]
 }
 
+pub fn opaque_path() -> [Symbol; 2] {
+    [Symbol::intern("thrust"), Symbol::intern("opaque")]
+}
+
+pub fn reveal_path() -> [Symbol; 2] {
+    [Symbol::intern("thrust"), Symbol::intern("reveal")]
+}
+
 pub fn callable_path() -> [Symbol; 2] {
     [Symbol::intern("thrust"), Symbol::intern("callable")]
 }
