@@ -12,12 +12,15 @@
 //! muZ (Hoder, Bjørner and de Moura, CAV 2011) and Eldarica (Hojjat and Rümmer, FMCAD 2018),
 //! surveyed by De Angelis et al. (TPLP 2022), at each interpretation of the forall predicates:
 //!
-//! - `sat` when every cone is: the models of definite clauses are closed under intersection, so
-//!   the conjunction of the interpretations the cones give an unknown is a model of every cone (a
-//!   cone that applies an unknown holds every clause deriving it, and a body position takes the
-//!   conjunction as a stronger premise), and an unknown in no cone, which no goal reads, is
-//!   interpreted as `true`. A cone's dependency set of an unknown (`declare-dep-exists-fun`) is a
-//!   subset of the whole system's, so the conjunction respects the latter.
+//! - `sat` when every cone is: the models of definite clauses are closed under intersection, and
+//!   a cone that applies an unknown in a body position holds every clause deriving it, so the
+//!   conjunction of the interpretations those cones give each unknown, `true` where none applies
+//!   it, is a model of the system (a body position takes the conjunction as a stronger premise).
+//!   A cone that has an unknown only in a head position (a goal that also derives it) may lack
+//!   other clauses deriving it, so its interpretation is left out of the conjunction
+//!   ([`System::deriving_clauses`]). A cone's dependency set of an unknown
+//!   (`declare-dep-exists-fun`) is a subset of the whole system's, so the conjunction respects
+//!   the latter.
 //! - `unsat` when a cone is: the definite clauses have a least model, the intersection of all
 //!   their models, whose interpretation of an unknown in a cone is the least model of the cone's
 //!   definite clauses, and depends only on the forall predicates of the clauses deriving it,
@@ -207,6 +210,24 @@ impl System {
     }
 }
 
+impl System {
+    /// The clauses in which each unknown occurs in a head position (see [`super::prune`]): those
+    /// that derive it. A model of a part that holds all of them interprets the unknown as some
+    /// model of the system does.
+    pub fn deriving_clauses(&self) -> HashMap<PredVarId, HashSet<ClauseId>> {
+        let mut deriving: HashMap<PredVarId, HashSet<ClauseId>> = HashMap::new();
+        for (id, clause) in self.clauses.iter_enumerated() {
+            let heads = clause_occurrences(clause)
+                .into_iter()
+                .filter(|o| o.position == Position::Head);
+            for o in heads {
+                deriving.entry(o.pred).or_default().insert(id);
+            }
+        }
+        deriving
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -353,5 +374,27 @@ mod tests {
             .push_clause(clause(Atom::bottom(), vec![atom(p)], Formula::top()))
             .unwrap();
         assert_eq!(system.goal_cones().unwrap(), vec![vec![c0], vec![c0, c1]]);
+    }
+
+    /// `p(0) ∧ c ⇐ ⊤`, `p(1) ⇐ ⊤`, `⊥ ⇐ p`: the first is a goal whose cone lacks `p(1) ⇐ ⊤`.
+    #[test]
+    fn a_cone_with_an_unknown_only_in_a_head_lacks_its_other_derivations() {
+        let mut system = System::default();
+        let p = system.new_pred_var(vec![], DebugInfo::default());
+        let both = Formula::And(vec![Formula::Atom(atom(p)), Formula::Atom(Atom::bottom())]);
+        let c0 = system
+            .push_clause(clause(Atom::bottom(), vec![], both.not()))
+            .unwrap();
+        let c1 = system
+            .push_clause(clause(atom(p), vec![], Formula::top()))
+            .unwrap();
+        let c2 = system
+            .push_clause(clause(Atom::bottom(), vec![atom(p)], Formula::top()))
+            .unwrap();
+        assert_eq!(
+            system.goal_cones().unwrap(),
+            vec![vec![c0], vec![c0, c1, c2]]
+        );
+        assert_eq!(system.deriving_clauses()[&p], HashSet::from([c0, c1]));
     }
 }
