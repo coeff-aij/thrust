@@ -3122,6 +3122,8 @@ pub struct System {
     /// The defined predicates and logic functions emitted without their definition, as universal
     /// functions (`#[thrust::opaque]`, see [`System::make_opaque`]).
     opaque_preds: HashSet<UserDefinedPred>,
+    /// The defined copies [`System::reveal_in`] made, which are not copied again.
+    defined_copies: HashSet<UserDefinedPred>,
 }
 
 impl System {
@@ -3176,7 +3178,9 @@ impl System {
                 .user_defined_pred_defs
                 .iter()
                 .filter(|d| {
-                    !renaming.contains_key(&d.symbol) && !self.opaque_preds.contains(&d.symbol)
+                    !renaming.contains_key(&d.symbol)
+                        && !self.opaque_preds.contains(&d.symbol)
+                        && !self.defined_copies.contains(&d.symbol)
                 })
                 .filter(|d| d.callees().into_iter().any(|c| renaming.contains_key(c)))
                 .map(|d| d.symbol.clone())
@@ -3202,6 +3206,8 @@ impl System {
                 copy
             })
             .collect();
+        self.defined_copies
+            .extend(copies.iter().map(|c| c.symbol.clone()));
         self.user_defined_pred_defs.extend(copies);
         for &id in ids {
             self.clauses[id].rename_user_defined(&renaming);

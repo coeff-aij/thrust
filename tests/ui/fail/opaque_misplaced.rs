@@ -48,6 +48,21 @@ mod other {
     pub fn reveals_private(x: i64) -> i64 {
         x
     }
+
+    #[thrust::reveal = "crate::with_opaque::small"] //~ ERROR: takes paths in parentheses
+    pub fn reveals_by_value(x: i64) -> i64 {
+        x
+    }
+
+    #[thrust::reveal[crate::with_opaque::small]] //~ ERROR: takes paths in parentheses
+    pub fn reveals_in_brackets(x: i64) -> i64 {
+        x
+    }
+
+    #[thrust::reveal(::crate::with_opaque::small)] //~ ERROR: takes paths in parentheses
+    pub fn reveals_leading_separator(x: i64) -> i64 {
+        x
+    }
 }
 
 mod hidden {
