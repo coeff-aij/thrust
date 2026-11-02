@@ -2198,12 +2198,24 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         );
         self.ctx.extend_clauses(clauses);
         let mut arguments = HashMap::new();
-        ret.subst_var(|idx| {
+        let mut ret = ret.subst_var(|idx| {
             let var = arguments
                 .entry(idx)
                 .or_insert_with(|| self.env.immut_bind_tmp(expected_args[idx].clone()));
             chc::Term::var(*var)
-        })
+        });
+        // The facts of the result's type, as the template has them from the subtyping: a block
+        // that inherits this one's state takes the refinements of its bindings without them.
+        ret.refinement = ret.formula_with(Some(&self.ctx.enum_defs));
+        // A value of a singleton sort has no clause variable: the refinement, which may still say
+        // what the call does to `&mut` arguments, refers to the sort's only value instead.
+        let sort = ret.ty.to_sort();
+        if sort.is_singleton() {
+            ret.refinement = ret
+                .refinement
+                .subst_value_var(|| chc::Term::default_for(&sort));
+        }
+        ret
     }
 
     fn builtin_call(&self, func: &Operand<'tcx>) -> Option<BuiltinCall> {

@@ -28,10 +28,17 @@ fn first(p: &mut (i64, i64)) -> &mut i64 {
     &mut p.0
 }
 
+#[thrust_macros::requires(0 <= *x && *x < 100)]
+#[thrust_macros::ensures(!x == *x + 1)]
+fn bump(x: &mut i64) {
+    *x += 1;
+}
+
 fn main() {
     let mut p = (0_i64, 5_i64);
     let mut i = 0_i64;
     let mut s = 0_i64;
+    let mut q = 0_i64;
     let twice = |x: i64| double(x);
     while i < 10 {
         let a = inc(i);
@@ -40,6 +47,7 @@ fn main() {
         i = a;
         let r = first(&mut p);
         *r = s;
+        bump(&mut q);
     }
-    assert!(s == i + 1 && p.0 == i && p.1 == 5);
+    assert!(s == i + 1 && p.0 == i && p.1 == 5 && q == i);
 }
