@@ -244,14 +244,29 @@ impl<I: Idx + thrust_models::Model> IteratorSpec for IdxRange<I>
 
 #[thrust_macros::context]
 pub trait IntoSliceIdx<I, T: ?Sized + thrust_models::Model> {
-    type Output: SliceIndex<T>;
+    // `Model` lets a contract quantify over positions (`into_logic_is`); `usize`, the one output
+    // here, has it.
+    type Output: SliceIndex<T> + thrust_models::Model;
 
     /// `out` is the slice position `self` selects.
     #[thrust_macros::predicate]
     fn into_is(self, out: Self::Output) -> bool;
 
+    /// The slice position `self` selects, as a function, so that a contract names it directly
+    /// rather than under a quantifier over the positions `into_is` allows, as Creusot states an
+    /// index through a logic function. `into_logic_is` ties it to `into_is`.
+    #[thrust_macros::logic]
+    fn into_logic(self) -> Self::Output;
+
     #[thrust_macros::ensures(Self::into_is(self, result))]
     fn into_slice_idx(self) -> Self::Output;
+
+    #[thrust_macros::law]
+    #[thrust_macros::ensures(
+        Self::into_is(*a, Self::into_logic(*a))
+            && forall(|o: <Self::Output as thrust_models::Model>::Ty| Self::into_is(*a, o) ==> o == Self::into_logic(*a))
+    )]
+    fn into_logic_is(a: &Self) {}
 }
 
 #[thrust_macros::context]
@@ -261,6 +276,11 @@ impl<I: Idx, T: thrust_models::Model> IntoSliceIdx<I, [T]> for I {
     #[thrust_macros::predicate]
     fn into_is(self, out: usize) -> bool {
         <I as Idx>::index_is(self, out)
+    }
+
+    #[thrust_macros::logic]
+    fn into_logic(self) -> usize {
+        <I as Idx>::index_logic(self)
     }
 
     #[inline]
