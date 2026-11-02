@@ -22,8 +22,8 @@ with the driver broken, regenerated and checked by `tests/rustc_coroutine/fail/c
 | `indexvec_int_range.rs` | as `indexvec.rs`, under `THRUST_INT_RANGE=conversions` | verified; checks that the tree type-checks with the option |
 | `bitset.rs` | `rustc_index::bit_set` | verified |
 | `simple.rs` | `rustc_abi::layout::simple` | draft, `ignore-on-host` |
-| `univariant.rs` | `LayoutCalculator::univariant`, `univariant_biased` trusted on its contract | draft, `ignore-on-host`: no answer at 300 s, also for its panic obligations alone (query 17.8 MB) |
-| `univariant_biased.rs` | `LayoutCalculator::univariant_biased` | draft, `ignore-on-host`: query about 323 MB |
+| `univariant.rs` | `LayoutCalculator::univariant`, `univariant_biased` trusted on its contract | verified, one part per goal (`THRUST_SPLIT_GOALS`), with the predicates its contracts pass on unchanged `#[thrust::opaque]`: `fits_in_any_order`, `weighs`, `unsized_misplaced`, `some_field_niche` (layout.rs), `Primitive::size_in`, `FieldsShape::arbitrary_of` (lib.rs); `univariant_biased`, `Primitive::size` and `layout()` reveal those they read (#132) |
+| `univariant_biased.rs` | `LayoutCalculator::univariant_biased` | draft, `ignore-on-host`: its query (58.7 MB) is killed for memory with 16 GB (#133) |
 | `eligibility.rs` | `coroutine_saved_local_eligibility` | draft, `ignore-on-host` |
 | `layout.rs` | `layout()`, the adapters of `thrust/iter.rs`, `counts::filter_count` and `counts::filter_yields_below`; the lemmas of `thrust/lemmas.rs`, `thrust/counts.rs` and the count lemmas of `coroutine.rs` assumed | draft, `ignore-on-host` |
 | `lemmas.rs` | the counting lemmas of `thrust/lemmas.rs` that `layout()` uses | verified |
