@@ -217,6 +217,11 @@ fn reached_definitions(system: &System, ids: &[ClauseId]) -> HashSet<UserDefined
 }
 
 impl System {
+    /// The classes of the clauses that share an unknown (see [`components`]).
+    pub fn components(&self) -> Vec<Vec<ClauseId>> {
+        components(self)
+    }
+
     /// The unknowns the clauses `ids` apply.
     pub fn pred_vars_of(&self, ids: &[ClauseId]) -> HashSet<PredVarId> {
         prune::pred_vars_of(ids.iter().map(|&id| &self.clauses[id]))
