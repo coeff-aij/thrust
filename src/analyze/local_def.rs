@@ -144,7 +144,6 @@ pub struct Analyzer<'tcx, 'ctx> {
     type_builder: TypeBuilder<'tcx>,
 }
 
-/// The locals that the move paths `paths` are parts of.
 /// The local that the statement at `statement_index` of `data` assigns as a whole.
 fn assigned_local(data: &mir::BasicBlockData<'_>, statement_index: usize) -> Option<Local> {
     match &data.statements.get(statement_index)?.kind {
@@ -153,6 +152,7 @@ fn assigned_local(data: &mir::BasicBlockData<'_>, statement_index: usize) -> Opt
     }
 }
 
+/// The locals that the move paths `paths` are parts of.
 fn locals_of<'tcx>(
     paths: impl Iterator<Item = MovePathIndex>,
     move_data: &MoveData<'tcx>,
