@@ -50,8 +50,9 @@
 //! puts an unknown under `∃` or in a disjunction with another is refused where it lands in a
 //! head position. The query keeps the definitions, which the parts carry along with the clauses
 //! that reach them. A definition that applies an unknown and itself, directly or through
-//! others, would not unfold to a finite clause, and an unknown applied in a law or a derived
-//! predicate is in positions this does not follow, so such a system is not split into cones. A
+//! others, would not unfold to a finite clause, and an unknown applied in a law or in raw
+//! SMT-LIB text, directly or through a definition, or a derived predicate is in positions this
+//! does not follow, so such a system is not split into cones. A
 //! cone repeats the clauses it shares with other cones.
 
 use std::collections::{HashMap, HashSet};
@@ -62,7 +63,7 @@ use super::*;
 /// Why a system is not split into the cones of its goals.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotHorn {
-    /// An unknown is applied in a law.
+    /// An unknown is applied in a law or in raw SMT-LIB text, directly or through a definition.
     InLaw,
     /// A derived predicate is an unknown of the system.
     Derived,
@@ -95,6 +96,35 @@ impl<'a> Definitions<'a> {
             })
             .collect();
         Definitions { bodies }
+    }
+
+    /// Whether a law or raw SMT-LIB text (a command or a definition's raw body) applies an
+    /// unknown, directly or through a definition that is unfolded: it constrains the unknown
+    /// outside every clause, where the cones do not follow it.
+    fn applied_outside_clauses(&self, system: &System) -> bool {
+        let law_atoms = || system.laws.values().flatten().flat_map(Formula::iter_atoms);
+        let in_laws = user_defined_in(law_atoms());
+        if law_atoms().any(|atom| matches!(atom.pred, Pred::Var(_)))
+            || in_laws
+                .iter()
+                .any(|symbol| self.bodies.contains_key(symbol))
+        {
+            return true;
+        }
+        let raw_bodies = system
+            .user_defined_pred_defs
+            .iter()
+            .filter_map(|def| match &def.body {
+                UserDefinedPredBody::Raw(text) => Some(text.as_str()),
+                _ => None,
+            });
+        let mut texts = system
+            .raw_commands
+            .iter()
+            .map(|c| c.command.as_str())
+            .chain(raw_bodies);
+        let names: Vec<String> = self.bodies.keys().map(|s| s.to_string()).collect();
+        texts.any(|text| names.iter().any(|name| text.contains(name.as_str())))
     }
 
     /// The body of the definition `atom` applies, when it is unfolded.
@@ -286,13 +316,6 @@ impl Definitions<'_> {
 impl System {
     /// The cone of each goal, in the order of the goals, each in the order of its clauses.
     pub fn goal_cones(&self) -> Result<Vec<Vec<ClauseId>>, NotHorn> {
-        let in_laws = self.laws.values().flatten().flat_map(Formula::iter_atoms);
-        if in_laws
-            .into_iter()
-            .any(|atom| matches!(atom.pred, Pred::Var(_)))
-        {
-            return Err(NotHorn::InLaw);
-        }
         if self
             .user_defined_pred_defs
             .iter()
@@ -301,6 +324,9 @@ impl System {
             return Err(NotHorn::Derived);
         }
         let definitions = Definitions::new(self);
+        if definitions.applied_outside_clauses(self) {
+            return Err(NotHorn::InLaw);
+        }
         if definitions.recursive() {
             return Err(NotHorn::RecursiveDefinition);
         }
@@ -554,6 +580,18 @@ mod tests {
             .push_clause(clause(applies, vec![], Formula::top()))
             .unwrap();
         assert_eq!(system.goal_cones(), Err(NotHorn::Clause(c3)));
+    }
+
+    #[test]
+    fn a_law_applying_an_unknown_through_a_definition_is_not_followed() {
+        let (mut system, _) = two_goals();
+        let p = system.new_pred_var(vec![], DebugInfo::default());
+        let symbol = UserDefinedPred::new("holds".into());
+        system.push_pred_define_formula(symbol.clone(), IndexVec::new(), Formula::Atom(atom(p)));
+        let applies = Formula::Atom(Atom::new(Pred::UserDefined(symbol), vec![]));
+        let q = ForallPred::new("q".into(), String::new(), vec![], vec![]);
+        system.add_law(q, applies);
+        assert_eq!(system.goal_cones(), Err(NotHorn::InLaw));
     }
 
     #[test]
