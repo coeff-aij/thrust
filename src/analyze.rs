@@ -872,6 +872,12 @@ fn split_jobs() -> Result<Option<usize>, String> {
     }
 }
 
+/// `THRUST_SPLIT_GOALS=1`: the parts are the cones of the goals rather than the classes of clauses
+/// that share an unknown.
+fn split_goals() -> bool {
+    std::env::var("THRUST_SPLIT_GOALS").is_ok_and(|value| value.trim() == "1")
+}
+
 /// Where the analysis makes a template, and so its predicate variables: a function's contract,
 /// a block's type, or the code of a block (the result of a call it makes).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2558,7 +2564,8 @@ impl<'tcx> Analyzer<'tcx> {
     /// `report`, reports the parts as without `THRUST_SPLIT`.
     fn solve_parts(&self, jobs: usize, report: Option<&crate::report::Config>) {
         let system = self.system.borrow();
-        let parts = system.solve_parts(jobs);
+        let (clauses, by_goals) = self.parts_to_solve(&system);
+        let parts = system.solve_parts(jobs, clauses);
         let summaries: Vec<crate::report::Part> = parts
             .iter()
             .enumerate()
@@ -2590,7 +2597,23 @@ impl<'tcx> Analyzer<'tcx> {
             diag.with_note(summary.error_note(self.tcx, &summaries))
                 .emit();
         }
-        crate::report::emit_part_notes(self.tcx, &summaries);
+        crate::report::emit_part_notes(self.tcx, &summaries, by_goals);
+    }
+
+    /// The parts of `system` to solve on their own: with `THRUST_SPLIT_GOALS=1`, the cone of each
+    /// goal when every clause is a definite Horn clause, and otherwise, with a note saying why, the
+    /// classes of clauses that share an unknown. Returns whether they are the cones.
+    fn parts_to_solve(&self, system: &chc::System) -> (Vec<Vec<chc::ClauseId>>, bool) {
+        if !split_goals() {
+            return (system.components(), false);
+        }
+        match system.goal_cones() {
+            Ok(cones) => (cones, true),
+            Err(why) => {
+                crate::report::emit_not_horn_note(self.tcx, system, why);
+                (system.components(), false)
+            }
+        }
     }
 
     /// Reports the parts refuted, as without `THRUST_SPLIT`: each is solved once more on its own,

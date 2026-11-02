@@ -14,6 +14,7 @@ mod cache;
 mod candidate_atoms;
 mod clause_builder;
 mod components;
+mod cones;
 pub mod debug;
 mod dedup;
 mod flatten;
@@ -27,6 +28,7 @@ mod unbox;
 
 pub use candidate_atoms::{conjuncts, instances, CandidateAtoms, CandidateAtomsMode, HeadTerms};
 pub use clause_builder::{ClauseBuilder, Var};
+pub use cones::NotHorn;
 pub use debug::DebugInfo;
 pub use dedup::dedup_pred_args;
 pub use flatten::flatten_recursive_pred_args;
@@ -2824,6 +2826,23 @@ fn forall_in<'a, V: 'a>(atoms: impl Iterator<Item = &'a Atom<V>>) -> Vec<&'a For
         .collect()
 }
 
+/// The unknowns `atoms` apply, in their guards too.
+fn pred_vars_in<'a, V: 'a>(atoms: impl Iterator<Item = &'a Atom<V>>) -> Vec<PredVarId> {
+    atoms
+        .flat_map(|atom| {
+            let applied = match atom.pred {
+                Pred::Var(p) => Some(p),
+                _ => None,
+            };
+            let in_guard = atom
+                .guard
+                .iter()
+                .flat_map(|guard| pred_vars_in(guard.iter_atoms()));
+            applied.into_iter().chain(in_guard).collect::<Vec<_>>()
+        })
+        .collect()
+}
+
 /// The user-defined predicates and functions `atoms` apply, as predicates or in their arguments.
 fn user_defined_in<'a, V: 'a>(
     atoms: impl Iterator<Item = &'a Atom<V>>,
@@ -3234,11 +3253,7 @@ impl System {
                 | UserDefinedPredBody::Term(..)
                 | UserDefinedPredBody::Derived => None,
             })
-            .flat_map(Formula::iter_atoms)
-            .filter_map(|atom| match atom.pred {
-                Pred::Var(id) => Some(id),
-                _ => None,
-            })
+            .flat_map(|formula| pred_vars_in(formula.iter_atoms()))
             .collect();
         ids.sort_by_key(|id| id.index());
         ids.dedup();
@@ -3895,14 +3910,14 @@ impl System {
         vars.chain(sigs).chain(definitions).any(unread)
     }
 
-    /// Solves each class of clauses that share an unknown on its own (see [`components`]),
-    /// `jobs` at a time, reusing the verdicts `THRUST_CACHE_DIR` keeps. The system is satisfiable
-    /// exactly when every part is. `THRUST_OUTPUT_DIR` gets each part's query as
-    /// `thrust_output_part<i>.smt2`, numbered from 1 as the parts are named.
-    pub fn solve_parts(&self, jobs: usize) -> Vec<Part> {
+    /// Solves each of `parts` on its own: the classes of clauses that share an unknown
+    /// ([`System::components`]) or the cones of the goals ([`System::goal_cones`]), `jobs` at a
+    /// time, reusing the verdicts `THRUST_CACHE_DIR` keeps. The system is satisfiable exactly when
+    /// every part is. `THRUST_OUTPUT_DIR` gets each part's query as `thrust_output_part<i>.smt2`,
+    /// numbered from 1 as the parts are named.
+    pub fn solve_parts(&self, jobs: usize, parts: Vec<Vec<ClauseId>>) -> Vec<Part> {
         let config = Config::from_env();
         let cache = cache::Cache::from_env();
-        let parts = components::components(self);
         let solve = |i: usize| {
             let query = self.part(&parts[i]).prepared().query(&config).to_string();
             let file = format!("thrust_output_part{}.smt2", i + 1);
@@ -4056,7 +4071,7 @@ pub fn in_parallel<T: Send + Sync>(jobs: usize, n: usize, f: impl Fn(usize) -> T
         .collect()
 }
 
-/// One class of clauses sharing an unknown, solved on its own.
+/// A part of the system solved on its own.
 #[derive(Debug)]
 pub struct Part {
     pub clauses: Vec<ClauseId>,

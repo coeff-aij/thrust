@@ -44,7 +44,7 @@ use json::Json;
 use sites::{Names, Site, SiteKind};
 use solution::Solution;
 
-pub use parts::{emit_notes as emit_part_notes, Part};
+pub use parts::{emit_not_horn_note, emit_notes as emit_part_notes, Part};
 
 #[derive(Debug, Clone, Copy, Default)]
 struct Items {
