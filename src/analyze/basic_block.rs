@@ -363,6 +363,13 @@ enum ResolvedCallable<'tcx> {
     Unresolved,
 }
 
+/// A call typed by a rule of its own rather than by the callee's type.
+enum BuiltinCall {
+    BoxNew,
+    Forget,
+    ManuallyDropNew,
+}
+
 pub struct Analyzer<'tcx, 'ctx> {
     ctx: &'ctx mut analyze::Analyzer<'tcx>,
     tcx: TyCtxt<'tcx>,
@@ -510,62 +517,16 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     fn relate_fn_param_sub_types_with_builder(
         &mut self,
         got_args: IndexVec<rty::FunctionParamIdx, rty::RefinedType<rty::FunctionParamIdx>>,
-        mut expected_args: IndexVec<rty::FunctionParamIdx, rty::RefinedType<Var>>,
+        expected_args: IndexVec<rty::FunctionParamIdx, rty::RefinedType<Var>>,
         builder: &mut chc::ClauseBuilder,
         abi: rty::FunctionAbi,
     ) -> Vec<chc::Clause> {
-        let mut clauses = Vec::new();
-
-        match abi {
-            rty::FunctionAbi::Rust => {
-                if expected_args.is_empty() {
-                    // elaboration: we need at least one predicate variable in parameter (see mir_function_ty_impl)
-                    expected_args.push(rty::RefinedType::unrefined(rty::Type::unit()).vacuous());
-                }
-            }
-            rty::FunctionAbi::RustCall => {
-                // &Closure, { v: (own i32, own bool) | v = (<0>, <false>) }
-                // =>
-                // &Closure, { v: i32 | (<v>, _) = (<0>, <false>) }, { v: bool | (_, <v>) = (<0>, <false>) }
-
-                let rty::RefinedType { ty, mut refinement } =
-                    expected_args.pop().expect("rust-call last arg");
-                let ty = ty.into_tuple().expect("rust-call last arg is tuple");
-                let mut replacement_tuple = Vec::new(); // will be (<v>, _) or (_, <v>)
-                for elem in &ty.elems {
-                    let existential = refinement.existentials.push(elem.ty.to_sort());
-                    replacement_tuple.push(chc::Term::var(rty::RefinedTypeVar::Existential(
-                        existential,
-                    )));
-                }
-
-                for (i, elem) in ty.elems.into_iter().enumerate() {
-                    // all tuple elements are boxed during the translation to rty::Type
-                    let mut param_ty = elem.deref();
-                    param_ty
-                        .refinement
-                        .push_conj(refinement.clone().subst_value_var(|| {
-                            let mut value_elems = replacement_tuple.clone();
-                            value_elems[i] = chc::Term::var(rty::RefinedTypeVar::Value).boxed();
-                            chc::Term::tuple(value_elems)
-                        }));
-                    expected_args.push(param_ty);
-                }
-
-                tracing::info!(
-                    expected = %crate::pretty::FunctionParams::new(&expected_args).display(),
-                    "rust-call expanded",
-                );
-            }
-        }
-
-        clauses.extend(relate_param_sub_types(
+        relate_param_sub_types(
             got_args,
-            &expected_args,
+            &call_args(expected_args, abi),
             builder,
             Some(&self.ctx.enum_defs),
-        ));
-        clauses
+        )
     }
 
     fn const_enum_ty(
@@ -2187,25 +2148,93 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         I: IntoIterator<Item = Operand<'tcx>>,
     {
         let mut args = args.into_iter();
-        if let Some((def_id, _)) = func.const_fn_def() {
-            if Some(def_id) == self.ctx.def_ids().box_new() {
+        match self.builtin_call(&func) {
+            Some(BuiltinCall::BoxNew) => {
                 self.type_box(args.next().expect("Box::new argument"), &expected_ret);
                 return expected_ret;
             }
-            if self
-                .tcx
-                .is_diagnostic_item(rustc_span::sym::mem_forget, def_id)
-            {
+            Some(BuiltinCall::Forget) => {
                 self.type_forget(&expected_ret);
                 return expected_ret;
             }
-            if self.is_manually_drop_new(def_id) {
+            Some(BuiltinCall::ManuallyDropNew) => {
                 let value = args.next().expect("ManuallyDrop::new argument");
                 self.type_manually_drop_new(value, &expected_ret);
                 return expected_ret;
             }
+            None => {}
         }
 
+        let (func_ty, expected_args) = self.callee_type(func, args);
+        let mut arguments = HashMap::new();
+        expected_ret
+            .ty
+            .inherit_pointer_types(func_ty.ret.ty.clone(), &mut |idx| {
+                let var = arguments
+                    .entry(idx)
+                    .or_insert_with(|| self.env.immut_bind_tmp(expected_args[idx].clone()));
+                chc::Term::var(*var)
+            });
+        let clauses = self.relate_fn_sub_type(func_ty, expected_args, expected_ret.clone());
+        self.ctx.extend_clauses(clauses);
+        expected_ret
+    }
+
+    /// The result of a call under `THRUST_CALL_RESULT_DIRECT=1`: the callee's return type with
+    /// each parameter it names bound to a temporary holding the argument, after the check of the
+    /// precondition.
+    fn type_call_direct<I>(&mut self, func: Operand<'tcx>, args: I) -> rty::RefinedType<Var>
+    where
+        I: IntoIterator<Item = Operand<'tcx>>,
+    {
+        let (func_ty, expected_args) = self.callee_type(func, args);
+        let expected_args = call_args(expected_args, func_ty.abi);
+        let ret = subst_singleton_params(*func_ty.ret, &singleton_params(&func_ty.params));
+        let clauses = relate_param_sub_types(
+            func_ty.params,
+            &expected_args,
+            &mut self.env.build_clause(),
+            Some(&self.ctx.enum_defs),
+        );
+        self.ctx.extend_clauses(clauses);
+        let mut arguments = HashMap::new();
+        ret.subst_var(|idx| {
+            let var = arguments
+                .entry(idx)
+                .or_insert_with(|| self.env.immut_bind_tmp(expected_args[idx].clone()));
+            chc::Term::var(*var)
+        })
+    }
+
+    fn builtin_call(&self, func: &Operand<'tcx>) -> Option<BuiltinCall> {
+        let (def_id, _) = func.const_fn_def()?;
+        if Some(def_id) == self.ctx.def_ids().box_new() {
+            Some(BuiltinCall::BoxNew)
+        } else if self
+            .tcx
+            .is_diagnostic_item(rustc_span::sym::mem_forget, def_id)
+        {
+            Some(BuiltinCall::Forget)
+        } else if self.is_manually_drop_new(def_id) {
+            Some(BuiltinCall::ManuallyDropNew)
+        } else {
+            None
+        }
+    }
+
+    /// The type of the callee of a call that is not a [`BuiltinCall`], and the types of its
+    /// arguments.
+    fn callee_type<I>(
+        &mut self,
+        func: Operand<'tcx>,
+        args: I,
+    ) -> (
+        rty::FunctionType,
+        IndexVec<rty::FunctionParamIdx, rty::RefinedType<Var>>,
+    )
+    where
+        I: IntoIterator<Item = Operand<'tcx>>,
+    {
         // TODO: handle const_fn_def on Env side
         let func_ty = if let Some((def_id, args)) = func.const_fn_def() {
             let ty = self.callable_ty(def_id, args);
@@ -2216,7 +2245,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         } else {
             self.operand_type(func.clone()).ty
         };
-        let operands: Vec<_> = args.collect();
+        let operands: Vec<_> = args.into_iter().collect();
         let expected_args: IndexVec<_, _> = operands
             .iter()
             .map(|op| self.operand_refined_type(op.clone()))
@@ -2224,22 +2253,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         if let Some((def_id, generic_args)) = func.const_fn_def() {
             self.hand_over_closures(def_id, generic_args, &operands, &expected_args);
         }
-        if let rty::Type::Function(func_ty) = func_ty {
-            let mut arguments = HashMap::new();
-            expected_ret
-                .ty
-                .inherit_pointer_types(func_ty.ret.ty.clone(), &mut |idx| {
-                    let var = arguments
-                        .entry(idx)
-                        .or_insert_with(|| self.env.immut_bind_tmp(expected_args[idx].clone()));
-                    chc::Term::var(*var)
-                });
-            let clauses = self.relate_fn_sub_type(func_ty, expected_args, expected_ret.clone());
-            self.ctx.extend_clauses(clauses);
-            expected_ret
-        } else {
+        let rty::Type::Function(func_ty) = func_ty else {
             panic!("unexpected def type: {:?}", func_ty);
-        }
+        };
+        (func_ty, expected_args)
     }
 
     fn type_box(&mut self, value: Operand<'tcx>, expected: &rty::RefinedType<Var>) {
@@ -3074,6 +3091,16 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 return;
             }
 
+            if call_result_direct()
+                && destination != mir::RETURN_PLACE
+                && formula_marker_call(self.ctx, &self.local_decls, func, args).is_none()
+                && self.builtin_call(func).is_none()
+            {
+                let rty = self.type_call_direct(func.clone(), args.iter().map(|a| a.node.clone()));
+                self.bind_local(destination, rty);
+                return;
+            }
+
             let decl = self.local_decls[destination].clone();
             let mut rty = self
                 .type_builder
@@ -3403,6 +3430,55 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     }
 }
 
+/// The types of the arguments of a call, one for each parameter of a callee of the ABI `abi`.
+fn call_args(
+    mut args: IndexVec<rty::FunctionParamIdx, rty::RefinedType<Var>>,
+    abi: rty::FunctionAbi,
+) -> IndexVec<rty::FunctionParamIdx, rty::RefinedType<Var>> {
+    match abi {
+        rty::FunctionAbi::Rust => {
+            if args.is_empty() {
+                // elaboration: we need at least one predicate variable in parameter (see mir_function_ty_impl)
+                args.push(rty::RefinedType::unrefined(rty::Type::unit()).vacuous());
+            }
+        }
+        rty::FunctionAbi::RustCall => {
+            // &Closure, { v: (own i32, own bool) | v = (<0>, <false>) }
+            // =>
+            // &Closure, { v: i32 | (<v>, _) = (<0>, <false>) }, { v: bool | (_, <v>) = (<0>, <false>) }
+
+            let rty::RefinedType { ty, mut refinement } = args.pop().expect("rust-call last arg");
+            let ty = ty.into_tuple().expect("rust-call last arg is tuple");
+            let mut replacement_tuple = Vec::new(); // will be (<v>, _) or (_, <v>)
+            for elem in &ty.elems {
+                let existential = refinement.existentials.push(elem.ty.to_sort());
+                replacement_tuple.push(chc::Term::var(rty::RefinedTypeVar::Existential(
+                    existential,
+                )));
+            }
+
+            for (i, elem) in ty.elems.into_iter().enumerate() {
+                // all tuple elements are boxed during the translation to rty::Type
+                let mut param_ty = elem.deref();
+                param_ty
+                    .refinement
+                    .push_conj(refinement.clone().subst_value_var(|| {
+                        let mut value_elems = replacement_tuple.clone();
+                        value_elems[i] = chc::Term::var(rty::RefinedTypeVar::Value).boxed();
+                        chc::Term::tuple(value_elems)
+                    }));
+                args.push(param_ty);
+            }
+
+            tracing::info!(
+                expected = %crate::pretty::FunctionParams::new(&args).display(),
+                "rust-call expanded",
+            );
+        }
+    }
+    args
+}
+
 /// The clauses that make arguments of `expected_args` acceptable to parameters of `got_args`,
 /// one for one, each parameter's refinement under the earlier arguments' refinements, in the
 /// environment `builder` holds.
@@ -3469,6 +3545,15 @@ fn subst_singleton_params(
         Some(sort) => chc::Term::default_for(sort),
         None => chc::Term::var(v),
     })
+}
+
+/// Whether `THRUST_CALL_RESULT_DIRECT=1` asks for a call's result to be typed by the callee's
+/// return type ([`Analyzer::type_call_direct`]) rather than by a template over the environment.
+fn call_result_direct() -> bool {
+    matches!(
+        std::env::var("THRUST_CALL_RESULT_DIRECT").as_deref(),
+        Ok("1")
+    )
 }
 
 /// Whether a call of an external function without a specification that is not on a panicking path
