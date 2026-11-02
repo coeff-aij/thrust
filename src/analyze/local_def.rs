@@ -144,6 +144,14 @@ pub struct Analyzer<'tcx, 'ctx> {
     type_builder: TypeBuilder<'tcx>,
 }
 
+/// The local that the statement at `statement_index` of `data` assigns as a whole.
+fn assigned_local(data: &mir::BasicBlockData<'_>, statement_index: usize) -> Option<Local> {
+    match &data.statements.get(statement_index)?.kind {
+        mir::StatementKind::Assign(assign) => assign.0.as_local(),
+        _ => None,
+    }
+}
+
 /// The locals that the move paths `paths` are parts of.
 fn locals_of<'tcx>(
     paths: impl Iterator<Item = MovePathIndex>,
@@ -1094,7 +1102,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 let Some((dest_local, place)) = self.extract_elaborated_deref(&stmt) else {
                     continue;
                 };
-                let kind = if kept.contains(&dest_local) {
+                // `return` reads the return place without naming it, so no use is left to
+                // carry the place it would be replaced with.
+                let kind = if kept.contains(&dest_local) || dest_local == mir::RETURN_PLACE {
                     kept_deref_temp(&stmt, dest_local, place)
                 } else {
                     v.add_replacement(dest_local.into(), place);
@@ -1543,6 +1553,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .iterate_to_fixpoint(self.tcx, &self.body, None)
             .into_results_cursor(&self.body);
         for (block, data) in mir::traversal::preorder(&self.body) {
+            // The analysis of a block keeps the binding of a local it moved out of, so an
+            // assignment after the move writes to a defined local, as one to an initialized
+            // local does.
+            let mut init_in_block = HashSet::new();
             for statement_index in 0..=data.statements.len() {
                 let loc = mir::Location {
                     statement_index,
@@ -1553,6 +1567,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     continue;
                 };
                 let init_locals = locals_of(init_places.iter(), move_data);
+                init_in_block.extend(init_locals.iter().copied());
+                let reassigned = assigned_local(data, statement_index)
+                    .filter(|local| init_in_block.contains(local));
                 let mut_locals = self.mut_locals(data, statement_index);
                 tracing::info!(
                     ?init_locals,
@@ -1563,7 +1580,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     stmt = ?data.statements.get(statement_index),
                 );
                 for mut_local in mut_locals.iter() {
-                    if init_locals.contains(&mut_local) || zst_locals.contains(mut_local) {
+                    if init_locals.contains(&mut_local)
+                        || reassigned == Some(mut_local)
+                        || zst_locals.contains(mut_local)
+                    {
                         marked.push(mut_local);
                         tracing::info!(?mut_local, ?statement_index, ?block, "marking mut");
                     }
@@ -2577,6 +2597,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.ctx
             .body_checks()
             .record(self.local_def_id, analyze::BodyCheck::Checked);
+        self.ctx.enter_body(self.local_def_id);
         self.unelaborate_derefs();
         analyze::reconstruct_slice_indexing::reconstruct(self.tcx, &mut self.body);
         analyze::two_phase_borrow::move_to_activation(self.tcx, &mut self.body);
@@ -2589,6 +2610,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         if analyze::candidate_atoms_enabled() {
             self.declare_candidate_atoms(expected);
         }
+        self.ctx.exit_body();
     }
 }
 
