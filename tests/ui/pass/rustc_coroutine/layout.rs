@@ -6,9 +6,11 @@
 // Stage 7 of the rustc-coroutine verification target: `layout()` of rustc_abi's
 // layout/coroutine.rs, with the local iterator adapters it calls (rewrites.md R8). The counting
 // lemmas it uses are assumed here: those of thrust/lemmas.rs are verified by the `lemmas.rs`
-// root, those of thrust/counts.rs are checked by the `counts.rs` root. `counts::filter_count` and
-// `counts::filter_yields_below` are checked here too: they take the per-variant closure's `Map` and
-// `Filter`, and a closure held inside a struct cannot be handed to a callee Thrust does not analyze.
+// root, those of thrust/counts.rs are checked by the `counts.rs` root. `counts::filter_count` is
+// checked here too: it takes the per-variant closure's `Map` and `Filter`, and a closure held
+// inside a struct cannot be handed to a callee Thrust does not analyze. `counts::filter_yields_below`
+// is generic in `P` and takes no closure; it is listed here only to be checked with this root's
+// settings.
 // The code is the module tree under tests/rustc_coroutine/; this file selects the stage and
 // drives it.
 #![feature(new_range_api)]

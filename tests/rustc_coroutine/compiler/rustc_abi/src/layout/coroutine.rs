@@ -29,7 +29,10 @@ impl<VariantIdx: thrust_models::Model, FieldIdx: thrust_models::Model> thrust_mo
 
 /// The members of the ineligible set below `k` are `Ineligible` (stage 5's property 4), so they
 /// and the locals Assigned to any one variant are at most `k`: the count of `layout()`'s
-/// per-variant closure (stage 7), at every variant. The `counts.rs` root checks it.
+/// per-variant closure (stage 7), at every variant. It is checked in the `counts.rs` root, where its
+/// induction step gets no answer on this tree; the step is `sat` with `ones` and `mem` opaque, on a
+/// measurement branch (0da095c9, which merges PR 142). It has no fail twin: `SavedLocalEligibility`
+/// is private to this file.
 #[thrust_macros::lemma]
 #[thrust_macros::variant(k)]
 #[thrust_macros::requires(forall(|l: usize| 0 <= l && l < k
@@ -911,10 +914,12 @@ pub fn layout<
             // Rewrite (rewrites.md R8): `collect_index_vec` for `collect`.
             // TODO(proof): `univariant`'s `fits_in_any_order` here. The missing fact: `weight` of the
             // collected fields plus the prefix's size and twice its alignment is below the bound
-            // `layout()`'s `requires` states, which follows when the collected fields weigh at most
-            // `local_layouts` (they are distinct locals Assigned to the variant, properties 2c and
-            // 2b) and the prefix's size and alignment are below the prefix's weighs sum
-            // (`univariant`'s `ensures`). thrust/counts.rs bounds the weight the index map selects
+            // `layout()`'s `requires` states (`layout()`'s header comment, "size bound"). It follows
+            // when the collected fields weigh at most the locals Assigned to the variant (distinct
+            // locals, properties 2c and 2b), the prefix's size and alignment are below the prefix's
+            // weighs sum (`univariant`'s `ensures`), and property 4 holds: the Assigned and the
+            // promoted locals are disjoint, so Assigned + 3 * promoted is at most 3 * wl. Assigned
+            // at most wl alone gives 3wp + 3t + 4wl, over the bound. thrust/counts.rs bounds the weight the index map selects
             // by that of the locals Assigned to the variant (`map_wbound`, `acc_wbound`); not used
             // here, as `weight` of the collected fields is an existential over a `Seq<Int>` whose
             // witness, the locals' weights through the index map, no term builds.
