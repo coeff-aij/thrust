@@ -16,9 +16,11 @@
 //!
 //! So the verdict of each cone is that of its goals in the whole system: the system is `sat`
 //! exactly when every cone is, and `unsat` when one is. The argument holds at each
-//! interpretation of the forall predicates; the dependency set an unknown is declared with
-//! (`declare-dep-exists-fun`) holds the forall predicates of the clauses that derive it, which a
-//! cone holds whole, so the least model respects it. Since the intersection of models is a
+//! interpretation of the forall predicates. There the least model's interpretation of an unknown
+//! depends only on the forall predicates of the clauses that derive it, transitively, and the
+//! dependency set it is declared with (`declare-dep-exists-fun`) holds those in a cone as in the
+//! whole system (it also holds those of the conclusions that read it, which differ), so the least
+//! model respects both declarations. Since the intersection of models is a
 //! model, so is the conjunction of the interpretations the cones give an unknown they share.
 //! A cone repeats the clauses it shares with other cones. An unknown applied in a definition or
 //! a law, or a derived predicate, is in positions this does not follow, so such a system is not
