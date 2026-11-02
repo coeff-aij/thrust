@@ -808,16 +808,37 @@ pub fn layout<
         |(index, variant_fields): (VariantIdx, &IndexVec<FieldIdx, LocalIdx>)|
             -> Result<VariantLayout<FieldIdx>, crate::rustc_abi::layout::LayoutCalculatorError<F>> {
             let variant_only_tys = Map::new(
-                Filter::new(variant_fields.iter(), |local| match assignments[**local] {
-                    // Unreachable by eligibility.rs's stage-5 property 1 (an `Unassigned` local
-                    // never appears in any variant's field list).
-                    Unassigned => unreachable!(),
-                    Assigned(v) if v == index => true,
-                    // Unreachable by property 2b (a listed local is Assigned to its own variant)
-                    // and `Idx::index_is_injective` (`v == index`).
-                    Assigned(_) => unreachable!("assignment does not match variant"),
-                    Ineligible(_) => false,
-                }),
+                // The filter's contract is written: inferred, its postcondition is an unknown
+                // that `Filter::produces` applies, which `filter_count`'s `ensures` below negates.
+                // Its `requires` is properties 1 and 2b and the bound at the entry it is given,
+                // as the per-variant closure's `requires` states them at every entry.
+                Filter::new(variant_fields.iter(), thrust_macros::closure!(
+                    captures(
+                        assignments: &mut &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
+                        index: &mut &VariantIdx,
+                    ),
+                    requires(
+                        <LocalIdx as Idx>::index_logic(**local) < (**assignments).len()
+                            && (**assignments)[<LocalIdx as Idx>::index_logic(**local)] != SavedLocalEligibility::Unassigned
+                            && forall(|vi: <VariantIdx as thrust_models::Model>::Ty, w: USize|
+                                !((**assignments)[<LocalIdx as Idx>::index_logic(**local)] == SavedLocalEligibility::Assigned(vi)
+                                    && <VariantIdx as Idx>::index_is(**index, w))
+                                || forall(|vn: USize| !<VariantIdx as Idx>::index_is(vi, vn) || vn == w))
+                    ),
+                    ensures(result == ((**assignments)[<LocalIdx as Idx>::index_logic(**local)] == SavedLocalEligibility::Assigned(**index))),
+                    |local: &&LocalIdx| -> bool {
+                        match assignments[**local] {
+                            // Unreachable by eligibility.rs's stage-5 property 1 (an `Unassigned`
+                            // local never appears in any variant's field list).
+                            Unassigned => unreachable!(),
+                            Assigned(v) if v == index => true,
+                            // Unreachable by property 2b (a listed local is Assigned to its own
+                            // variant) and `Idx::index_is_injective` (`v == index`).
+                            Assigned(_) => unreachable!("assignment does not match variant"),
+                            Ineligible(_) => false,
+                        }
+                    },
+                )),
                 |local| local_layouts[*local],
             );
 
