@@ -94,8 +94,8 @@ pub struct HandoverCount<'tcx> {
     /// The types of the call's arguments.
     pub operand_types: Vec<mir_ty::Ty<'tcx>>,
     /// The values of `ty` the call states the obligation of, one by one or by the `pre!` the
-    /// callee's `requires` states; for a closure held by an `IteratorSpec` argument, whose
-    /// `inv` states it, `0`, and `operand_types` are the other arguments.
+    /// callee's `requires` states; for a closure a std adapter holds in an `IteratorSpec`
+    /// argument, whose `inv` states it, `0`, and `operand_types` are the other arguments.
     pub accounted: usize,
     pub span: rustc_span::Span,
 }
