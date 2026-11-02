@@ -927,6 +927,23 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         Some((closure_ty, refs))
     }
 
+    /// The precondition of `fn_ty` at `args`, as a `pre!` names it.
+    fn precondition_at(
+        &self,
+        fn_ty: &rty::FunctionType,
+        args: &[chc::Term<rty::FunctionParamIdx>],
+    ) -> chc::Formula<rty::FunctionParamIdx> {
+        let mut fresh = || {
+            self.analyzer
+                .generate_user_quantified_var("a part of an argument in pre!".to_owned())
+        };
+        let mut parts = rty::PartVars {
+            defs: &self.analyzer.enum_defs,
+            fresh: &mut fresh,
+        };
+        fn_ty.precondition_formula(args, &mut parts)
+    }
+
     /// The receiver term as the closure's own body takes it, and the final state it leaves free.
     ///
     /// That body takes the upvars by `&`, by `&mut`, or by value, following the kind inferred
@@ -1230,7 +1247,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         if let Some(fn_ty) = self.fn_item_contract(receiver, true) {
             self.record_pre_receiver(self.expr_ty(receiver));
             let args = self.fn_item_spec_args(args, &fn_ty);
-            return FormulaOrTerm::Formula(fn_ty.precondition_formula(&args));
+            return FormulaOrTerm::Formula(self.precondition_at(&fn_ty, &args));
         }
         let receiver_ty = self.expr_ty(receiver);
         if let Some(closure_ty) = self.receiver_closure_ty(receiver_ty) {
@@ -1242,7 +1259,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             self.record_pre_receiver(fn_item_ty);
             let fn_ty = self.fn_def_contract(receiver.span, def_id, generic_args, true);
             let args = self.fn_item_spec_args(args, &fn_ty);
-            return FormulaOrTerm::Formula(fn_ty.precondition_formula(&args));
+            return FormulaOrTerm::Formula(self.precondition_at(&fn_ty, &args));
         }
         let fn_ty = self
             .receiver_closure_fn_type(receiver_ty)
@@ -1268,7 +1285,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         );
         let (receiver_term, final_state) = self.closure_receiver_term(receiver, &fn_ty, "pre!");
         let param_args: Vec<_> = std::iter::once(receiver_term).chain(logical_args).collect();
-        let pre = fn_ty.precondition_formula(&param_args);
+        let pre = self.precondition_at(&fn_ty, &param_args);
         // The precondition of an `FnMut` closure held as a value is a property of its current
         // state, as Creusot's `FnMut` precondition takes `self` by value, so it must hold
         // whatever the final state is.
@@ -1329,7 +1346,17 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         }
         let param_args: Vec<_> = std::iter::once(receiver_term).chain(logical_args).collect();
         let result = self.to_term(result);
-        FormulaOrTerm::Formula(fn_ty.once_postcondition_formula(&param_args, result, final_state))
+        let mut fresh = || {
+            self.analyzer.generate_user_quantified_var(
+                "a part of a closure's final state in post!".to_owned(),
+            )
+        };
+        let mut parts = rty::PartVars {
+            defs: &self.analyzer.enum_defs,
+            fresh: &mut fresh,
+        };
+        let post = fn_ty.once_postcondition_formula(&param_args, result, final_state, &mut parts);
+        FormulaOrTerm::Formula(post)
     }
 
     fn translate_closure_hist_inv(
