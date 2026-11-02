@@ -19,8 +19,8 @@
 -// `Filter`, and a closure held inside a struct cannot be handed to a callee Thrust does not analyze.
 -// The code is the module tree under tests/rustc_coroutine/; this file selects the stage and
 -// drives it.
-+// The fail twin of the stage 7 root: `combine_offsets` without its `requires` of property 3, so
-+// that the `unwrap` of an `Ineligible` local's field index is refuted. The code is the module tree
++// The fail twin of the stage 7 root: property 3 at the promoted fields (`ineligible_promoted`) is
++// `true`, so that the `unwrap` of an `Ineligible` local's field index is refuted. The code is the module tree
 +// under tests/rustc_coroutine/; the cfg is read in layout/coroutine.rs.
  #![feature(new_range_api)]
  

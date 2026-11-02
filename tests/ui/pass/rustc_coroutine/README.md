@@ -13,7 +13,7 @@ are trusted.
 The root also holds the stage's driver (`main` and the stubs of rewrites.md S5).
 `tests/ui/fail/rustc_coroutine/<file>.rs` is its fail twin where one exists; it is the pass root
 with the driver broken, regenerated and checked by `tests/rustc_coroutine/fail/check.sh`.
-`layout.rs`'s fail twin leaves out a `requires` of `combine_offsets` (`--cfg thrust_layout_fail`),
+`layout.rs`'s fail twin defines property 3 at the promoted fields, `ineligible_promoted`, as `true` (`--cfg thrust_layout_fail`),
 and each of its `assume!`s has a reachability root, `layout_reach_<name>.rs`
 (`--cfg thrust_layout_reach_<name>`), whose `proof_assert!(false)` right after the `assume!` is
 refuted, so the assumption leaves the path after it reachable.
