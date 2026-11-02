@@ -68,6 +68,13 @@ fn ones_step<LocalIdx: Idx + thrust_models::Model>(s: &DenseBitSet<LocalIdx>, k:
 #[thrust::reveal(crate::rustc_index::bit_set::DenseBitSet::card)]
 fn card_ones<LocalIdx: Idx + thrust_models::Model>(s: &DenseBitSet<LocalIdx>) {}
 
+/// An index has one value (`Idx`'s law `index_is_unique`), as a fact of `a` that
+/// `split_prefix_fields`' `requires` reads at `layout()`'s tag index.
+#[thrust_macros::lemma]
+#[thrust_macros::requires(<I as Idx>::index_is(*a, n))]
+#[thrust_macros::ensures(forall(|t: USize| <I as Idx>::index_is(*a, t) ==> t == n))]
+fn index_is_only<I: Idx + thrust_models::Model>(a: &I, n: usize) {}
+
 /// A bit iterator yields indices below its domain size, and a completed one yields nothing, in the
 /// forms `Map::new` reads: the item of `next_precondition`, the second of two items of
 /// `preservation_inv`, and the iterator `reinitialize` names. With a map closure that requires
@@ -562,6 +569,9 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
     result.len()
         <= counts::class_cnt::<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>(
             *assignments, (*assignments).len(), SavedLocalEligibility::Assigned(index))
+        && result.len()
+            == counts::acc_cnt::<FieldIdx, LocalIdx, LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>(
+                *variant_fields, *assignments, SavedLocalEligibility::Assigned(index), (*variant_fields).len())
         && forall(|k: USize|
             !(0 <= k && k < result.len())
             || exists(|i: USize| 0 <= i && i < (*local_layouts).len() && result[k] == (*local_layouts)[i]))
@@ -641,8 +651,25 @@ fn variant_field_layouts<
 
     // Each field collected is an entry of `local_layouts`: the map closure's `ensures`.
     thrust_macros::proof!(Map::yields_entries_of(&variant_only_tys, local_layouts));
-    // Rewrite (rewrites.md R8): `collect_index_vec` for `collect`.
-    collect_index_vec(variant_only_tys)
+    // Rewrite (rewrites.md R8): `collect_index_vec` for `collect`; the result is bound to a name,
+    // for the `assume!`.
+    let fields = collect_index_vec(variant_only_tys);
+    // Assumed (not proved): the fields are as many as the variant's entries Assigned to it, which
+    // `combine_offsets` requires. The code makes it true: the filter accepts exactly the entries
+    // Assigned to the variant (its closure's `ensures`), the map keeps each, and `collect` runs the
+    // iterator to its end. Not proved: `filter_count` gives only no more than that number; the
+    // converse needs the completed filter to have accepted every such entry.
+    thrust_macros::assume!(
+        |fields: IndexVec<FieldIdx, F>, variant_fields: &IndexVec<FieldIdx, LocalIdx>,
+            assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, index: VariantIdx|
+            fields.len() == counts::acc_cnt::<FieldIdx, LocalIdx, LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>(
+                *variant_fields, *assignments, SavedLocalEligibility::Assigned(index), (*variant_fields).len())
+    );
+    // Reachability twin of the `assume!` (fail root layout_reach_count.rs): the path after it is
+    // reachable, so the `assume!` makes no proof here vacuous.
+    #[cfg(thrust_layout_reach_count)]
+    thrust_macros::proof_assert!(|| false);
+    fields
 }
 
 // Rewrite (rewrites.md R12): the part of `layout()`'s per-variant closure that destructures the
@@ -650,10 +677,13 @@ fn variant_field_layouts<
 // whose `requires` states what the code reads: the fields are `Arbitrary` with m offsets and a
 // memory order that is a permutation of `0..m` (univariant's `arbitrary_of`), `FieldIdx` and `u32` reach c + m (c the promoted fields), every
 // entry of the variant is a local below n that is not `Unassigned` (property 1), and an
-// `Ineligible` local's field index is below c (property 3). Its `ensures` is `true`: `layout()`
+// `Ineligible` local's field index is below c (property 3), and m is the number of the variant's
+// entries Assigned to it, which the zip's pairs are taken at. Its `ensures` is `true`: `layout()`
 // states nothing of the variants it returns.
 #[thrust_macros::requires(
     FieldsShape::<FieldIdx>::arbitrary_of(fields, m)
+        && m == counts::acc_cnt::<FieldIdx, LocalIdx, LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>(
+            *variant_fields, *assignments, SavedLocalEligibility::Assigned(index), (*variant_fields).len())
         && forall(|k: USize| 0 <= k && k <= (*variant_fields).len() ==> <FieldIdx as Idx>::can_new(k))
         && forall(|k: USize| 0 <= k && k <= m ==> <u32 as Idx>::can_new(k))
         && forall(|k: USize| 0 <= k && k <= (*promoted_memory_index).len() + m ==> <FieldIdx as Idx>::can_new(k))
@@ -682,6 +712,7 @@ fn variant_field_layouts<
 fn combine_offsets<VariantIdx: Idx + thrust_models::Model, FieldIdx: Idx + thrust_models::Model, LocalIdx: Idx + thrust_models::Model>(
     variant_fields: &IndexVec<FieldIdx, LocalIdx>,
     assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
+    index: VariantIdx,
     promoted_offsets: &IndexVec<FieldIdx, Size>,
     promoted_memory_index: &IndexVec<FieldIdx, u32>,
     fields: FieldsShape<FieldIdx>,
@@ -765,22 +796,20 @@ fn combine_offsets<VariantIdx: Idx + thrust_models::Model, FieldIdx: Idx + thrus
                     let promoted_count = promoted_memory_index.len();
                     let bound = invalid_field_idx;
                     // Assumed (not proved): `next` returns a pair, and its memory index j has
-                    // c + j < c + m = `invalid_field_idx`. rustc's code makes it true: the zip has
-                    // m pairs (univariant's `arbitrary_of`: m offsets, and the inverted order has
-                    // m entries); the m fields are the entries the filter accepted, those whose
-                    // local is Assigned to this variant, in order; this closure runs once per
-                    // entry, in order (`iter_enumerated`), and takes a pair only at those
-                    // entries, so it never takes more than m; and every entry of the inverted
-                    // order is below m (`invert_bijective_mapping`). With it, the `u32` sum stays
-                    // below c + m <= u32::MAX and indexes `combined_in_memory_order`. Not proved:
-                    // the proof needs m equal to the count of Assigned entries (`filter_count`
-                    // gives m <= it) and a `hist_inv` of this closure tying the pairs left to
-                    // the position.
+                    // c + j < c + m = `invalid_field_idx`. It holds under `combine_offsets`'
+                    // `requires`: the zip has m pairs (`arbitrary_of`: m offsets, and the inverted
+                    // order has m entries); m is the number of the variant's entries Assigned to
+                    // it; this closure runs once per entry, in order (`iter_enumerated`), and
+                    // takes a pair only at those entries, so it never takes more than m; and every
+                    // entry of the inverted order is below m (`invert_bijective_mapping`). With it,
+                    // the `u32` sum stays below c + m <= u32::MAX and indexes
+                    // `combined_in_memory_order`. Not proved: the proof needs a `hist_inv` of this
+                    // closure tying the pairs left to the Assigned entries after the position.
                     thrust_macros::assume!(
                         |pair: Option<(Size, u32)>, promoted_count: usize, bound: usize|
                             exists(|o: Size, j: <u32 as thrust_models::Model>::Ty| pair == Some((o, j)) && promoted_count + j < bound)
                     );
-                    // Reachability twin of the `assume!` (fail root layout_reach.rs): the path after it is
+                    // Reachability twin of the `assume!` (fail root layout_reach_pair.rs): the path after it is
                     // reachable, so the `assume!` makes no proof here vacuous.
                     #[cfg(thrust_layout_reach_pair)]
                     thrust_macros::proof_assert!(|| false);
@@ -891,7 +920,7 @@ fn split_in_memory_order<FieldIdx: Idx + thrust_models::Model>(
 // Rewrite (rewrites.md R15): the steps of `layout()` that append the tag's layout and the promoted
 // locals' layouts to the prefix's fields (`push`, and `extend` by the map of the ineligible set),
 // as a function whose contract states what `layout()` reads of them: P + 1 + c fields, c the set's
-// count, the entry fields kept, the tag's layout at P, the fields after it layouts of
+// count (at least 0, which the tag's index below the length needs), the entry fields kept, the tag's layout at P, the fields after it layouts of
 // `local_layouts`, `FieldIdx` reaching the new length, and `layout_wf` of every field.
 #[thrust_macros::requires(
     forall(|k: USize|
@@ -903,6 +932,7 @@ fn split_in_memory_order<FieldIdx: Idx + thrust_models::Model>(
 )]
 #[thrust_macros::ensures(
     (!prefix_layouts).len() == (*prefix_layouts).len() + 1 + DenseBitSet::<LocalIdx>::card(*ineligible_locals)
+        && 0 <= DenseBitSet::<LocalIdx>::card(*ineligible_locals)
         && DenseBitSet::<LocalIdx>::card(*ineligible_locals) <= (*local_layouts).len()
         && forall(|k: USize| !(0 <= k && k < (*prefix_layouts).len()) || (!prefix_layouts)[k] == (*prefix_layouts)[k])
         && (!prefix_layouts)[(*prefix_layouts).len()] == tag_layout
@@ -1267,6 +1297,7 @@ pub fn layout<
     thrust_macros::proof!(card_ones(&ineligible_locals));
 
     let tag_index = prefix_layouts.next_index();
+    thrust_macros::proof!(index_is_only(&tag_index, prefix_layouts.len()));
 
     // `variant_fields.len() > 0` (the precondition) keeps the subtraction from wrapping.
     let max_discr = (variant_fields.len() - 1) as u128;
@@ -1303,7 +1334,7 @@ pub fn layout<
         |calc: &LayoutCalculator<C>, prefix_layouts: IndexVec<FieldIdx, F>, repr: ReprOptions|
             LayoutCalculator::<C>::fits_in_any_order::<FieldIdx, VariantIdx, F>(*calc, &prefix_layouts, &repr, StructKind::AlwaysSized)
     );
-    // Reachability twin of the `assume!` (fail root layout_reach.rs): the path after it is
+    // Reachability twin of the `assume!` (fail root layout_reach_prefix.rs): the path after it is
     // reachable, so the `assume!` makes no proof here vacuous.
     #[cfg(thrust_layout_reach_prefix)]
     thrust_macros::proof_assert!(|| false);
@@ -1451,7 +1482,7 @@ pub fn layout<
                 |calc_ref: &LayoutCalculator<C>, fields: IndexVec<FieldIdx, F>, repr: ReprOptions, kind: StructKind|
                     LayoutCalculator::<C>::fits_in_any_order::<FieldIdx, VariantIdx, F>(*calc_ref, &fields, &repr, kind)
             );
-            // Reachability twin of the `assume!` (fail root layout_reach.rs): the path after it is
+            // Reachability twin of the `assume!` (fail root layout_reach_variant.rs): the path after it is
             // reachable, so the `assume!` makes no proof here vacuous.
             #[cfg(thrust_layout_reach_variant)]
             thrust_macros::proof_assert!(|| false);
@@ -1463,11 +1494,13 @@ pub fn layout<
             // combination of its offsets and memory order with the promoted ones are
             // `combine_offsets`, which takes the number m of the variant's fields. Its `requires`
             // holds by univariant's `arbitrary_of`, by `variant_field_layouts`' count with the
-            // closure's `requires` on c (c + m <= n, so `FieldIdx` and `u32` reach c + m), and by
-            // the closure's `requires` (properties 1 and 3 and the bounds of the variant's entries).
+            // closure's `requires` on c (c + m <= n, so `FieldIdx` and `u32` reach c + m), by
+            // the closure's `requires` (properties 1 and 3 and the bounds of the variant's entries)
+            // and by `variant_field_layouts`' count of m.
             let (combined_offsets, combined_in_memory_order) = combine_offsets(
                 variant_fields,
                 &assignments,
+                index,
                 &promoted_offsets,
                 &promoted_memory_index,
                 variant.fields,

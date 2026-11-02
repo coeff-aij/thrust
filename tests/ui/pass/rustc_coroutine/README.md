@@ -13,6 +13,10 @@ are trusted.
 The root also holds the stage's driver (`main` and the stubs of rewrites.md S5).
 `tests/ui/fail/rustc_coroutine/<file>.rs` is its fail twin where one exists; it is the pass root
 with the driver broken, regenerated and checked by `tests/rustc_coroutine/fail/check.sh`.
+`layout.rs`'s fail twin leaves out a `requires` of `combine_offsets` (`--cfg thrust_layout_fail`),
+and each of its `assume!`s has a reachability root, `layout_reach_<name>.rs`
+(`--cfg thrust_layout_reach_<name>`), whose `proof_assert!(false)` right after the `assume!` is
+refuted, so the assumption leaves the path after it reachable.
 
 | file | selection | state |
 | --- | --- | --- |
@@ -25,9 +29,9 @@ with the driver broken, regenerated and checked by `tests/rustc_coroutine/fail/c
 | `univariant.rs` | `LayoutCalculator::univariant`, `univariant_biased` trusted on its contract | verified, one part per goal (`THRUST_SPLIT_GOALS`), with the predicates its contracts pass on unchanged `#[thrust::opaque]`: `layout_pre`, `fits_in_any_order`, `weighs`, `unsized_misplaced`, `some_field_niche` (layout.rs), `Primitive::size_in`, `FieldsShape::arbitrary_of` (lib.rs); `univariant_biased`, `univariant`, `Primitive::size`, `layout()` and its `layout_pre` lemmas reveal those they read (#132) |
 | `univariant_biased.rs` | `LayoutCalculator::univariant_biased` | draft, `ignore-on-host`: its query (58.7 MB) is killed for memory with 16 GB (#133) |
 | `eligibility.rs` | `coroutine_saved_local_eligibility` | draft, `ignore-on-host` |
-| `layout.rs` | `layout()`, the adapters of `thrust/iter.rs`, `counts::filter_count` and `counts::filter_yields_below`; the lemmas of `thrust/lemmas.rs`, `thrust/counts.rs` and the count lemmas of `coroutine.rs` assumed | draft, `ignore-on-host` |
+| `layout.rs` | `layout()`, the adapters of `thrust/iter.rs`, `counts::filter_count` and `counts::filter_yields_below`; the lemmas of `thrust/lemmas.rs`, `thrust/counts.rs` and the count lemmas of `coroutine.rs` assumed | draft, `ignore-on-host`; four `assume!`s |
 | `lemmas.rs` | the counting lemmas of `thrust/lemmas.rs` that `layout()` uses | verified |
-| `counts.rs` | the count and the weight of a variant's fields, `thrust/counts.rs`, which `layout()`'s per-variant closure uses (the count), and `coroutine.rs`'s `ones_assigned_disjoint` and `ones_step` (the ineligible set and the locals Assigned to one variant are at most the locals) | draft, `ignore-on-host`: the lemmas over the field list, the weighted ones and `filter_yields_below` verify; the step of `map_bound` (the bound of `Filter`'s index map by a count), `filter_count` and the step of `ones_assigned_disjoint` (through the bit arithmetic of `ones`, which `ones_step` alone answers) get no answer |
+| `counts.rs` | the count and the weight of a variant's fields, `thrust/counts.rs`, which `layout()`'s per-variant closure uses (the count), and `coroutine.rs`'s `ones_assigned_disjoint`, `ones_step` and `card_ones` (the ineligible set and the locals Assigned to one variant are at most the locals) | draft, `ignore-on-host`: the lemmas over the field list, the weighted ones and `filter_yields_below` verify; the step of `map_bound` (the bound of `Filter`'s index map by a count), `filter_count` and the step of `ones_assigned_disjoint` (through the bit arithmetic of `ones`, which `ones_step` alone answers) get no answer |
 
 The roots that are not drafts answer over the module tree in the ui suite; the states of the
 drafts are those of the single-file stage files.
