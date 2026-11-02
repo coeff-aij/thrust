@@ -2577,6 +2577,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.ctx
             .body_checks()
             .record(self.local_def_id, analyze::BodyCheck::Checked);
+        self.ctx.enter_body(self.local_def_id);
         self.unelaborate_derefs();
         analyze::reconstruct_slice_indexing::reconstruct(self.tcx, &mut self.body);
         analyze::two_phase_borrow::move_to_activation(self.tcx, &mut self.body);
@@ -2589,6 +2590,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         if analyze::candidate_atoms_enabled() {
             self.declare_candidate_atoms(expected);
         }
+        self.ctx.exit_body();
     }
 }
 

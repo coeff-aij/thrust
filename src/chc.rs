@@ -884,7 +884,51 @@ where
     }
 }
 
+/// The user-defined predicates and functions a rewrite replaces, by the symbol replacing each.
+pub type UserDefinedRenaming = HashMap<UserDefinedPred, UserDefinedPred>;
+
 impl<V> Term<V> {
+    /// Replaces the user-defined functions `renaming` maps, in this term and its subterms.
+    pub fn rename_user_defined(&mut self, renaming: &UserDefinedRenaming) {
+        match self {
+            Term::UserDefinedFn(symbol, _, args) => {
+                if let Some(to) = renaming.get(symbol) {
+                    *symbol = to.clone();
+                }
+                args.iter_mut()
+                    .for_each(|t| t.rename_user_defined(renaming));
+            }
+            Term::Box(t)
+            | Term::BoxCurrent(t)
+            | Term::MutCurrent(t)
+            | Term::MutFinal(t)
+            | Term::TupleProj(t, _)
+            | Term::DatatypeDiscr(_, t)
+            | Term::ArrayLambda(_, _, t)
+            | Term::IntToBitVec { term: t, .. } => t.rename_user_defined(renaming),
+            Term::Mut(t1, t2) => {
+                t1.rename_user_defined(renaming);
+                t2.rename_user_defined(renaming);
+            }
+            Term::App(_, args)
+            | Term::Tuple(args)
+            | Term::DatatypeCtor(_, _, args)
+            | Term::ForallFn(_, args) => {
+                args.iter_mut()
+                    .for_each(|t| t.rename_user_defined(renaming));
+            }
+            Term::Null
+            | Term::ForallDefault(_)
+            | Term::Var(_)
+            | Term::Bool(_)
+            | Term::Int(_)
+            | Term::String(_)
+            | Term::ArrayEmpty(..)
+            | Term::SeqEmpty(_)
+            | Term::UserQuantifiedVar(..) => {}
+        }
+    }
+
     fn pretty_atom<'b, 'a, D>(
         &'b self,
         allocator: &'a D,
@@ -1765,6 +1809,14 @@ impl UserDefinedPred {
     pub fn instance(&self) -> &[Sort] {
         &self.instance
     }
+
+    /// The symbol of the defined copy of an opaque predicate ([`System::reveal_in`]).
+    pub fn defined_copy(&self) -> Self {
+        Self {
+            inner: format!("{}_def", self.inner),
+            ..self.clone()
+        }
+    }
 }
 
 // `Ord` orders by `inner` (a def-path-derived stable name, see
@@ -2058,6 +2110,21 @@ where
 }
 
 impl<V> Atom<V> {
+    /// Replaces the user-defined predicates and functions `renaming` maps.
+    pub fn rename_user_defined(&mut self, renaming: &UserDefinedRenaming) {
+        if let Pred::UserDefined(symbol) = &mut self.pred {
+            if let Some(to) = renaming.get(symbol) {
+                *symbol = to.clone();
+            }
+        }
+        if let Some(guard) = &mut self.guard {
+            guard.rename_user_defined(renaming);
+        }
+        self.args
+            .iter_mut()
+            .for_each(|t| t.rename_user_defined(renaming));
+    }
+
     pub fn new(pred: Pred, args: Vec<Term<V>>) -> Self {
         Atom {
             guard: None,
@@ -2261,6 +2328,23 @@ where
 }
 
 impl<V> Formula<V> {
+    /// Replaces the user-defined predicates and functions `renaming` maps.
+    pub fn rename_user_defined(&mut self, renaming: &UserDefinedRenaming) {
+        match self {
+            Formula::Atom(atom) => atom.rename_user_defined(renaming),
+            Formula::Not(f) | Formula::Exists(_, f) | Formula::Forall(_, f) => {
+                f.rename_user_defined(renaming)
+            }
+            Formula::And(fs) | Formula::Or(fs) => {
+                fs.iter_mut().for_each(|f| f.rename_user_defined(renaming))
+            }
+            Formula::Implies(lhs, rhs) => {
+                lhs.rename_user_defined(renaming);
+                rhs.rename_user_defined(renaming);
+            }
+        }
+    }
+
     fn pretty_atom<'a, 'b, D>(
         &'b self,
         allocator: &'a D,
@@ -2527,6 +2611,14 @@ impl<V> From<Formula<V>> for Body<V> {
 }
 
 impl<V> Body<V> {
+    /// Replaces the user-defined predicates and functions `renaming` maps.
+    pub fn rename_user_defined(&mut self, renaming: &UserDefinedRenaming) {
+        self.atoms
+            .iter_mut()
+            .for_each(|a| a.rename_user_defined(renaming));
+        self.formula.rename_user_defined(renaming);
+    }
+
     pub fn new(atoms: Vec<Atom<V>>, formula: Formula<V>) -> Self {
         Body { atoms, formula }
     }
@@ -2702,6 +2794,12 @@ where
 }
 
 impl Clause {
+    /// Replaces the user-defined predicates and functions `renaming` maps.
+    pub fn rename_user_defined(&mut self, renaming: &UserDefinedRenaming) {
+        self.head.rename_user_defined(renaming);
+        self.body.rename_user_defined(renaming);
+    }
+
     pub fn is_nop(&self) -> bool {
         self.head.is_top() || self.body.is_bottom()
     }
@@ -2971,7 +3069,8 @@ impl System {
     /// (`Capabilities::dependency_aware_declarations`). The clauses then have to hold for every
     /// interpretation of it, so a solution is also one for its definition: a strengthening, as
     /// any opaque function of Dafny, Verus or Creusot is. Every unknown may depend on it, as it
-    /// may on the definition.
+    /// may on the definition. Only a closed definition may be hidden so
+    /// ([`System::definition_applies_unknown`]).
     pub fn make_opaque(&mut self, pred: UserDefinedPred) {
         self.opaque_preds.insert(pred);
     }
@@ -2980,15 +3079,14 @@ impl System {
         self.opaque_preds.contains(pred)
     }
 
-    /// Whether the definition of `pred` applies an unknown, directly or through the definitions
-    /// it applies.
-    pub fn definition_applies_unknown(&self, pred: &UserDefinedPred) -> bool {
-        let mut seen = HashSet::new();
-        let mut todo = vec![pred];
-        while let Some(pred) = todo.pop() {
-            if !seen.insert(pred) {
-                continue;
-            }
+    /// Lets the clauses `ids` read the definitions of the opaque `preds`: each is replaced there
+    /// by a defined copy (`<symbol>_def`), the same definition under another name, and every
+    /// other clause keeps the universal symbol. Instantiating the universal symbol with the
+    /// definition gives the system with every definition in place, so the reveal adds only true
+    /// definitions. This is the scope of Dafny's and Verus's `reveal`: the proof it is written in.
+    pub fn reveal_in(&mut self, ids: &[ClauseId], preds: &[UserDefinedPred]) {
+        let mut renaming = UserDefinedRenaming::new();
+        for pred in preds.iter().filter(|p| self.opaque_preds.contains(p)) {
             let Some(def) = self
                 .user_defined_pred_defs
                 .iter()
@@ -2996,18 +3094,75 @@ impl System {
             else {
                 continue;
             };
-            let UserDefinedPredBody::Formula(formula) = &def.body else {
+            let mut copy = def.clone();
+            copy.symbol = pred.defined_copy();
+            renaming.insert(pred.clone(), copy.symbol.clone());
+            if !self.is_pred_defined(&copy.symbol) {
+                self.user_defined_pred_defs.push(copy);
+            }
+        }
+        if renaming.is_empty() {
+            return;
+        }
+        for &id in ids {
+            self.clauses[id].rename_user_defined(&renaming);
+        }
+    }
+
+    /// Visits the atoms of the formula definitions of `symbol` and of the user-defined
+    /// predicates they apply, each once; `None` for a symbol without a definition. A raw
+    /// SMT-LIB2 body names no predicate variable, since those are numbered by the analysis, and a
+    /// term body applies none, since a predicate call is an atom and only a logic function becomes
+    /// a term (`analyze::annot_fn`).
+    fn walk_definitions<'a>(
+        &'a self,
+        symbol: &'a UserDefinedPred,
+        mut visit: impl FnMut(Option<&'a Atom<TermVarIdx>>),
+    ) {
+        let mut pending = vec![symbol];
+        let mut seen: HashSet<&UserDefinedPred> = HashSet::new();
+        while let Some(symbol) = pending.pop() {
+            if !seen.insert(symbol) {
                 continue;
-            };
-            for atom in formula.iter_atoms() {
-                match &atom.pred {
-                    Pred::Var(_) => return true,
-                    Pred::UserDefined(other) => todo.push(other),
-                    _ => {}
+            }
+            let mut defs = self
+                .user_defined_pred_defs
+                .iter()
+                .filter(|d| &d.symbol == symbol)
+                .peekable();
+            if defs.peek().is_none() {
+                visit(None);
+            }
+            for def in defs {
+                let UserDefinedPredBody::Formula(formula) = &def.body else {
+                    continue;
+                };
+                for atom in formula.iter_atoms() {
+                    if let Pred::UserDefined(p) = &atom.pred {
+                        pending.push(p);
+                    }
+                    visit(Some(atom));
                 }
             }
         }
-        false
+    }
+
+    /// Whether the definition of `pred` applies an unknown, directly or through the definitions
+    /// it applies. A derived predicate (`UserDefinedPredBody::Derived`) is declared before the
+    /// opaque functions (`smtlib2::System`), so it cannot depend on them, and a definition that
+    /// applies one is closed for this purpose.
+    pub fn definition_applies_unknown(&self, pred: &UserDefinedPred) -> bool {
+        let mut found = false;
+        self.walk_definitions(pred, |atom| {
+            found |= matches!(
+                atom,
+                Some(Atom {
+                    pred: Pred::Var(_),
+                    ..
+                })
+            );
+        });
+        found
     }
 
     fn user_defined_preds_in_dependency_order(&self) -> Vec<&UserDefinedPredDef> {
@@ -3239,33 +3394,14 @@ impl System {
     /// variables are numbered by the analysis.
     pub fn pred_var_reach_of(&self, symbol: &UserDefinedPred) -> PredVarReach {
         let mut reach = PredVarReach::default();
-        let mut pending = vec![symbol];
-        let mut seen: HashSet<&UserDefinedPred> = HashSet::new();
-        while let Some(symbol) = pending.pop() {
-            if !seen.insert(symbol) {
-                continue;
-            }
-            let mut defs = self
-                .user_defined_pred_defs
-                .iter()
-                .filter(|d| &d.symbol == symbol)
-                .peekable();
-            if defs.peek().is_none() {
-                reach.undefined = true;
-            }
-            for def in defs {
-                let UserDefinedPredBody::Formula(formula) = &def.body else {
-                    continue;
-                };
-                for atom in formula.iter_atoms() {
-                    match &atom.pred {
-                        Pred::Var(id) if !self.is_self_defined(*id) => reach.found = true,
-                        Pred::UserDefined(p) => pending.push(p),
-                        _ => {}
-                    }
-                }
-            }
-        }
+        self.walk_definitions(symbol, |atom| match atom {
+            None => reach.undefined = true,
+            Some(Atom {
+                pred: Pred::Var(id),
+                ..
+            }) if !self.is_self_defined(*id) => reach.found = true,
+            Some(_) => {}
+        });
         reach
     }
 
@@ -3943,9 +4079,14 @@ impl System {
     }
 
     /// Whether z3 reads the query a dependency-aware solver gets: it can read it, and the system
-    /// has no opaque function, whose definition z3's query keeps.
+    /// (a part keeps the definitions its clauses reach) defines no opaque function, whose
+    /// definition z3's query keeps.
     pub fn z3_reads_same_query(&self) -> bool {
-        !self.needs_pcsat() && self.opaque_preds.is_empty()
+        !self.needs_pcsat()
+            && !self
+                .user_defined_pred_defs
+                .iter()
+                .any(|def| self.opaque_preds.contains(&def.symbol))
     }
 
     /// Solves each class of clauses that share an unknown on its own (see [`components`]),

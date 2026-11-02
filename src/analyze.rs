@@ -625,6 +625,11 @@ pub struct Analyzer<'tcx> {
     /// The instances of `#[thrust::opaque]` predicates and logic functions, each with its item;
     /// see [`Analyzer::mark_opaque_predicates`].
     opaque_predicates: Rc<RefCell<Vec<(chc::UserDefinedPred, LocalDefId)>>>,
+    /// The bodies being analyzed, innermost last, each with the number of clauses when its
+    /// current stretch began; see [`Analyzer::enter_body`].
+    body_stack: Rc<RefCell<Vec<(LocalDefId, usize)>>>,
+    /// The clauses each analyzed body pushed, as stretches of clause indices.
+    body_clauses: Rc<RefCell<Vec<BodyClauses>>>,
     /// The result type of each logic function defined so far, by its symbol: what a call of it in
     /// another definition's body is known to have (`checked_logic_fn_body`).
     logic_fn_results: Rc<RefCell<HashMap<chc::UserDefinedPred, rty::Type<rty::Closed>>>>,
@@ -753,6 +758,9 @@ impl BodyChecks {
             .collect()
     }
 }
+
+/// A stretch of the clauses one analyzed body pushed, by clause index.
+type BodyClauses = (LocalDefId, std::ops::Range<usize>);
 
 /// What the analysis did with the body of a function, recorded where it decides it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -947,6 +955,8 @@ impl<'tcx> Analyzer<'tcx> {
             predicate_instances: Default::default(),
             defining_predicates: Default::default(),
             opaque_predicates: Default::default(),
+            body_stack: Default::default(),
+            body_clauses: Default::default(),
             logic_fn_results: Default::default(),
             system,
             basic_blocks,
@@ -2546,27 +2556,17 @@ impl<'tcx> Analyzer<'tcx> {
     }
 
     /// Makes each `#[thrust::opaque]` predicate or logic function opaque in the system
-    /// (`chc::System::make_opaque`) unless a function of the module it is written in that is
-    /// marked `#[thrust::reveal]` has its body analyzed here. Code that does not reveal it reads
-    /// it through the contracts and lemmas stated of it, which are checked where the code that
-    /// reveals it is analyzed. A system has one emission of each predicate, so a reveal applies
-    /// to the whole system, unlike Dafny's and Verus's `reveal`, which applies to the proof it is
-    /// written in: a strengthening dropped, never one added.
+    /// (`chc::System::make_opaque`), and lets the clauses from the body of a function marked
+    /// `#[thrust::reveal]` read the definitions of the opaque functions of its module
+    /// (`chc::System::reveal_in`), as Dafny's and Verus's `reveal` does in the proof it is
+    /// written in. Code that does not reveal one reads it through the contracts and lemmas
+    /// stated of it, which are checked where code that reveals it is analyzed.
     fn mark_opaque_predicates(&self) {
         self.check_opacity_attributes();
         let module_of = |def: LocalDefId| self.tcx.parent_module_from_def_id(def).to_local_def_id();
-        let revealing_modules: HashSet<LocalDefId> = self
-            .body_checks
-            .checked()
-            .into_iter()
-            .filter(|&def| self.has_attr(def, &analyze::annot::reveal_path()))
-            .map(module_of)
-            .collect();
         let mut system = self.system.borrow_mut();
+        let mut opaque: Vec<(chc::UserDefinedPred, LocalDefId)> = Vec::new();
         for (pred, def) in self.opaque_predicates.borrow().iter() {
-            if revealing_modules.contains(&module_of(*def)) {
-                continue;
-            }
             // Universally quantifying a definition strengthens the clauses only when it is closed:
             // one that applies an unknown (a closure's inferred contract) keeps its definition.
             if system.definition_applies_unknown(pred) {
@@ -2577,6 +2577,46 @@ impl<'tcx> Analyzer<'tcx> {
                 continue;
             }
             system.make_opaque(pred.clone());
+            opaque.push((pred.clone(), module_of(*def)));
+        }
+        for (def, range) in self.body_clauses.borrow().iter() {
+            if !self.has_attr(*def, &analyze::annot::reveal_path()) {
+                continue;
+            }
+            let module = module_of(*def);
+            let preds: Vec<chc::UserDefinedPred> = opaque
+                .iter()
+                .filter(|(_, m)| *m == module)
+                .map(|(pred, _)| pred.clone())
+                .collect();
+            let ids: Vec<chc::ClauseId> = system
+                .clauses
+                .indices()
+                .filter(|id| range.contains(&id.index()))
+                .collect();
+            system.reveal_in(&ids, &preds);
+        }
+    }
+
+    /// Starts attributing the clauses pushed from now on to the body of `def`, until
+    /// [`Analyzer::exit_body`]; a body analyzed meanwhile (a callee at an instance) takes the
+    /// clauses it pushes.
+    pub fn enter_body(&self, def: LocalDefId) {
+        let now = self.system.borrow().clauses.len();
+        let mut stack = self.body_stack.borrow_mut();
+        if let Some(&(outer, start)) = stack.last() {
+            self.body_clauses.borrow_mut().push((outer, start..now));
+        }
+        stack.push((def, now));
+    }
+
+    pub fn exit_body(&self) {
+        let now = self.system.borrow().clauses.len();
+        let mut stack = self.body_stack.borrow_mut();
+        let (def, start) = stack.pop().expect("exit_body without enter_body");
+        self.body_clauses.borrow_mut().push((def, start..now));
+        if let Some(outer) = stack.last_mut() {
+            outer.1 = now;
         }
     }
 
@@ -2588,8 +2628,9 @@ impl<'tcx> Analyzer<'tcx> {
     }
 
     /// Stops at a `#[thrust::opaque]` on anything but a predicate or logic function with a Rust
-    /// body, and at a `#[thrust::reveal]` in a module without an opaque function: rustc does not
-    /// check `thrust::` attributes, and either would otherwise change nothing.
+    /// body, and at a `#[thrust::reveal]` that would reveal nothing: in a module without an opaque
+    /// function, or on an item whose body Thrust does not analyze. rustc does not check `thrust::`
+    /// attributes, and either would otherwise change nothing.
     fn check_opacity_attributes(&self) {
         let opaque_path = analyze::annot::opaque_path();
         let defs: Vec<LocalDefId> = self.tcx.hir_crate_items(()).definitions().collect();
@@ -2609,13 +2650,27 @@ impl<'tcx> Analyzer<'tcx> {
             opaque_modules.insert(self.tcx.parent_module_from_def_id(def).to_local_def_id());
         }
         for &def in &defs {
+            if !self.has_attr(def, &analyze::annot::reveal_path()) {
+                continue;
+            }
             let module = self.tcx.parent_module_from_def_id(def).to_local_def_id();
-            if self.has_attr(def, &analyze::annot::reveal_path())
-                && !opaque_modules.contains(&module)
-            {
+            if !opaque_modules.contains(&module) {
                 self.tcx.dcx().span_err(
                     self.tcx.def_span(def),
                     "`#[thrust::reveal]` reveals the opaque functions of its module, and this module has none",
+                );
+            }
+            let analyzed = matches!(
+                self.tcx.def_kind(def),
+                rustc_hir::def::DefKind::Fn | rustc_hir::def::DefKind::AssocFn
+            ) && !self.has_attr(def, &analyze::annot::trusted_path())
+                && !self.has_attr(def, &analyze::annot::ignored_path())
+                && !self.has_attr(def, &analyze::annot::predicate_path())
+                && !self.has_attr(def, &analyze::annot::logic_path());
+            if !analyzed {
+                self.tcx.dcx().span_err(
+                    self.tcx.def_span(def),
+                    "`#[thrust::reveal]` applies only to a function whose body Thrust analyzes",
                 );
             }
         }
