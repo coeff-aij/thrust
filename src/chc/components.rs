@@ -51,15 +51,9 @@ impl UnionFind {
 
 /// The unknowns the body of each user-defined predicate applies, directly or through the
 /// predicates it calls.
-fn reached_pred_vars(system: &System) -> HashMap<&UserDefinedPred, HashSet<PredVarId>> {
+pub(super) fn reached_pred_vars(system: &System) -> HashMap<&UserDefinedPred, HashSet<PredVarId>> {
     let applied = |def: &UserDefinedPredDef| match &def.body {
-        UserDefinedPredBody::Formula(formula) => formula
-            .iter_atoms()
-            .filter_map(|atom| match atom.pred {
-                Pred::Var(p) => Some(p),
-                _ => None,
-            })
-            .collect(),
+        UserDefinedPredBody::Formula(formula) => pred_vars_in(formula.iter_atoms()),
         UserDefinedPredBody::Raw(_)
         | UserDefinedPredBody::Term(..)
         | UserDefinedPredBody::Derived => Vec::new(),

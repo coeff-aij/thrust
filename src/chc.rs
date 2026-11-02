@@ -2943,6 +2943,23 @@ fn forall_in<'a, V: 'a>(atoms: impl Iterator<Item = &'a Atom<V>>) -> Vec<&'a For
         .collect()
 }
 
+/// The unknowns `atoms` apply, in their guards too.
+fn pred_vars_in<'a, V: 'a>(atoms: impl Iterator<Item = &'a Atom<V>>) -> Vec<PredVarId> {
+    atoms
+        .flat_map(|atom| {
+            let applied = match atom.pred {
+                Pred::Var(p) => Some(p),
+                _ => None,
+            };
+            let in_guard = atom
+                .guard
+                .iter()
+                .flat_map(|guard| pred_vars_in(guard.iter_atoms()));
+            applied.into_iter().chain(in_guard).collect::<Vec<_>>()
+        })
+        .collect()
+}
+
 /// The user-defined predicates and functions `atoms` apply, as predicates or in their arguments.
 fn user_defined_in<'a, V: 'a>(
     atoms: impl Iterator<Item = &'a Atom<V>>,
@@ -3469,11 +3486,7 @@ impl System {
                 | UserDefinedPredBody::Term(..)
                 | UserDefinedPredBody::Derived => None,
             })
-            .flat_map(Formula::iter_atoms)
-            .filter_map(|atom| match atom.pred {
-                Pred::Var(id) => Some(id),
-                _ => None,
-            })
+            .flat_map(|formula| pred_vars_in(formula.iter_atoms()))
             .collect();
         ids.sort_by_key(|id| id.index());
         ids.dedup();

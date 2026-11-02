@@ -78,7 +78,7 @@ impl<I: Idx, T> IndexVec<I, T> {
 
     #[inline]
     #[thrust_macros::requires(true)]
-    #[thrust_macros::ensures(*result == *self && !result == !self)]
+    #[thrust_macros::ensures(*result == *self && !result == !self && (!self).len() == (*self).len())]
     pub fn as_mut_slice(&mut self) -> &mut IndexSlice<I, T> {
         IndexSlice::from_raw_mut(&mut self.raw)
     }
@@ -131,6 +131,25 @@ impl<I: Idx, T> DerefMut for IndexVec<I, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.as_mut_slice()
     }
+}
+
+// `Deref`/`DerefMut` are foreign traits, so their contracts are extern specs; they state what
+// `as_slice`'s and `as_mut_slice`'s contracts state. Written, they are not inferred from the
+// bodies, and calls of `deref` in one body do not share an inferred contract.
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(*result == *slf)]
+fn _extern_spec_index_vec_deref<I: Idx + thrust_models::Model, T: thrust_models::Model>(slf: &IndexVec<I, T>) -> &IndexSlice<I, T>
+{
+    <IndexVec<I, T> as Deref>::deref(slf)
+}
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(*result == *slf && !result == !slf && (!slf).len() == (*slf).len())]
+fn _extern_spec_index_vec_deref_mut<I: Idx + thrust_models::Model, T: thrust_models::Model>(slf: &mut IndexVec<I, T>) -> &mut IndexSlice<I, T>
+{
+    <IndexVec<I, T> as DerefMut>::deref_mut(slf)
 }
 
 impl<I: Idx, T> Borrow<IndexSlice<I, T>> for IndexVec<I, T> {
