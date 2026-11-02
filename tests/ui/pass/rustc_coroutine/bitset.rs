@@ -1,7 +1,7 @@
 //@check-pass
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 THRUST_TRY_SPECS=1
-//@rustc-env: THRUST_VERIFY_ONLY=rustc_index::bit_set,two_members,column_bound
+//@rustc-env: THRUST_VERIFY_ONLY=rustc_index::bit_set::**,two_members,column_bound
 // Stage 3 of the rustc-coroutine verification target: rustc_index's bit sets.
 // The code is the module tree under tests/rustc_coroutine/; this file selects the stage and
 // drives it.
@@ -28,6 +28,14 @@ use rustc_index::bit_set::{BitMatrix, DenseBitSet};
 #[thrust_macros::ensures(forall(|k: USize| k < n ==> result[k] == elem))]
 fn _extern_spec_vec_from_elem_word(elem: u64, n: usize) -> Vec<u64> {
     std::vec::from_elem(elem, n)
+}
+
+// `<[T]>::fill`, at the word type, for `insert_all`.
+#[thrust::extern_spec_fn]
+#[thrust_macros::ensures((!slice).len() == (*slice).len())]
+#[thrust_macros::ensures(forall(|k: USize| 0 <= k && k < (*slice).len() ==> (!slice)[k] == value))]
+fn _extern_spec_slice_fill_word(slice: &mut [u64], value: u64) {
+    <[u64]>::fill(slice, value)
 }
 
 
