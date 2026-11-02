@@ -222,7 +222,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
     /// Requests each method of `hidden_ty`'s impl of `dyn_ty`'s trait and its supertraits that a
     /// call through the vtable may reach, a method with a written trait contract, so that its body
-    /// is checked against that contract. Auto traits and `Sized`, which have no methods, are
+    /// is checked against that contract. A method without one is entered from code Thrust does
+    /// not analyze (`unanalyzed_entry`). Auto traits and `Sized`, which have no methods, are
     /// skipped.
     fn check_vtable_methods(
         &mut self,

@@ -1211,15 +1211,21 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         }
         let mut fixed = HashSet::new();
         for (callee, from) in &entries.items {
-            if !fixed.insert(*callee) {
+            // A method entered through a vtable runs on the value the trait object packs, whose
+            // invariant the packing required.
+            let through_vtable = matches!(from.def, mir_ty::InstanceKind::Virtual(..));
+            if !fixed.insert((*callee, through_vtable)) {
                 continue;
             }
             self.stop_unanalyzed_closure_arg(*callee, *from);
             let Some(fn_ty) = self.ctx.entered_inferred_fn_ty(*callee) else {
                 continue;
             };
-            tracing::debug!(%callee, "entered from code Thrust does not analyze");
-            let clauses = analyze::Analyzer::accepts_every_argument(&fn_ty);
+            tracing::debug!(%callee, %from, "entered from code Thrust does not analyze");
+            let receiver = through_vtable
+                .then(|| self.ctx.receiver_invariant(*callee))
+                .flatten();
+            let clauses = analyze::Analyzer::accepts_every_argument(&fn_ty, receiver);
             self.ctx.extend_clauses(clauses);
         }
         let entries = self.unanalyzed_entries();
