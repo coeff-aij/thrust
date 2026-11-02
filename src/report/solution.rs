@@ -86,8 +86,25 @@ impl Solution {
             partial: true,
             unanswered: HashMap::new(),
         });
+        // A predicate variable in several parts (the cones of `THRUST_SPLIT_GOALS`) is
+        // interpreted by the conjunction of theirs, a model of every part it is in (see
+        // `chc::cones`).
         for other in solutions {
-            solution.by_pred.extend(other.by_pred);
+            for (pred, interpretation) in other.by_pred {
+                match solution.by_pred.entry(pred) {
+                    std::collections::hash_map::Entry::Vacant(entry) => {
+                        entry.insert(interpretation);
+                    }
+                    std::collections::hash_map::Entry::Occupied(mut entry) => {
+                        let both = entry.get_mut();
+                        let args: Vec<Term> = both.params.iter().cloned().map(Term::Var).collect();
+                        let other = interpretation.apply(&args);
+                        if other != both.body {
+                            both.body = formula::and(vec![both.body.clone(), other]);
+                        }
+                    }
+                }
+            }
         }
         solution.partial = !asked.is_empty();
         for (answer, asked) in answers.iter().zip(asked) {

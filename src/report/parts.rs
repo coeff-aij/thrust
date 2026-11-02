@@ -174,7 +174,7 @@ const SOLVED_SHOWN: usize = 5;
 
 /// The notes after the errors of the parts: how many were solved and which of them now, and the
 /// functions of a failing part whose clauses fall into more than one part, with why.
-pub fn emit_notes(tcx: TyCtxt<'_>, parts: &[Part]) {
+pub fn emit_notes(tcx: TyCtxt<'_>, parts: &[Part], by_goals: bool) {
     let cached = parts.iter().filter(|p| p.cached).count();
     let solved: Vec<String> = parts
         .iter()
@@ -186,6 +186,9 @@ pub fn emit_notes(tcx: TyCtxt<'_>, parts: &[Part]) {
         1 => "thrust: 1 part solved on its own".to_owned(),
         n => format!("thrust: {n} parts solved on their own, {cached} of them from earlier runs"),
     };
+    if by_goals {
+        note.push_str(", one per goal with the clauses it depends on");
+    }
     if !solved.is_empty() && cached > 0 {
         let more = solved.len().saturating_sub(SOLVED_SHOWN);
         let shown = &solved[..solved.len() - more];
@@ -214,12 +217,52 @@ pub fn emit_notes(tcx: TyCtxt<'_>, parts: &[Part]) {
     if split.is_empty() {
         return;
     }
+    if by_goals {
+        tcx.dcx().note(format!(
+            "thrust: a function can be in several parts: {}. Each goal is a part with every clause \
+             deriving an unknown it depends on, so goals that depend on one unknown share its \
+             clauses",
+            split.join(", ")
+        ));
+        return;
+    }
     tcx.dcx().note(format!(
         "thrust: a function can be in several parts: {}. Its clauses fall apart where they share \
          no unknown, as on the two sides of a written annotation (a contract, an `invariant!`, a \
          refined type), and a clause with no unknown is a part of its own",
         split.join(", ")
     ));
+}
+
+/// Why `THRUST_SPLIT_GOALS` does not split `system` into the cones of its goals, at the clause
+/// that is no definite Horn clause when it is one.
+pub fn emit_not_horn_note(tcx: TyCtxt<'_>, system: &chc::System, why: chc::NotHorn) {
+    let instead = "the parts are the classes of clauses that share an unknown instead";
+    let clause = match why {
+        chc::NotHorn::InDefinition => {
+            tcx.dcx().note(format!(
+                "thrust: `THRUST_SPLIT_GOALS`: an unknown is applied in a predicate's definition \
+                 or a law; {instead}"
+            ));
+            return;
+        }
+        chc::NotHorn::Derived => {
+            tcx.dcx().note(format!(
+                "thrust: `THRUST_SPLIT_GOALS`: a derived predicate is an unknown; {instead}"
+            ));
+            return;
+        }
+        chc::NotHorn::Clause(id) => id,
+    };
+    let message = format!(
+        "thrust: `THRUST_SPLIT_GOALS`: a constraint has two unknowns in head positions, or one \
+         under a guard or a quantifier; {instead}"
+    );
+    let provenance = Provenance::of(&system.clauses[clause].debug_info);
+    match provenance.span(tcx) {
+        Some(span) => tcx.dcx().span_note(span, message),
+        None => tcx.dcx().note(message),
+    }
 }
 
 #[cfg(test)]
