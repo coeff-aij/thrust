@@ -24,6 +24,7 @@ pub struct DenseBitSet<T> {
 impl<T: Idx> DenseBitSet<T> {
     /// `i` is a member of the set: bit `i % 64` of word `i / 64`, rustc's layout.
     #[thrust_macros::predicate]
+    #[thrust::opaque]
     pub(crate) fn mem(self, i: usize) -> bool {
         (BitVec::<64, false>::from_int(self.1[i / 64]) >> BitVec::from_int(i % 64))
             & BitVec::from_int(1)
@@ -32,6 +33,7 @@ impl<T: Idx> DenseBitSet<T> {
 
     /// `dist` is `self` with `i` inserted: same domain, and bit `i % 64` of word `i / 64` set.
     #[thrust_macros::predicate]
+    #[thrust::opaque]
     fn inserted(self, i: usize, dist: Self) -> bool {
         dist.0 == self.0
             && forall(|w: USize| {
@@ -48,6 +50,7 @@ impl<T: Idx> DenseBitSet<T> {
     /// in the postcondition of a trusted function becomes a universally
     /// quantified *assumption*.
     #[thrust_macros::predicate]
+    #[thrust::opaque]
     fn no_mem(self) -> bool {
         forall(|k: USize| !(0 <= k && k < self.1.len()) || self.1[k] == 0)
     }
@@ -55,6 +58,7 @@ impl<T: Idx> DenseBitSet<T> {
     /// The word sequence holds `num_words(domain_size)` words, so every word `mem` and
     /// `inserted` read exists.
     #[thrust_macros::predicate]
+    #[thrust::opaque]
     pub(crate) fn words_cover_domain(self) -> bool {
         self.1.len() == (self.0 + 63) / 64
     }
@@ -64,13 +68,17 @@ impl<T: Idx> DenseBitSet<T> {
     /// set bit of the words. Stated as a validity predicate in the contracts, or as a type
     /// invariant (9a4b1dab), the invariant leaves the `bitset` root without an answer at 300 s.
     #[thrust_macros::logic]
+    #[thrust::opaque]
     pub(crate) fn card(self) -> Int {
         ones(self.1, self.0)
     }
 
+    #[thrust::reveal]
     #[inline]
     #[thrust_macros::ensures(result.0 == domain_size)]
     #[thrust_macros::ensures(Self::no_mem(result))]
+    // What `no_mem` gives of the members, for the code that does not reveal `mem`.
+    #[thrust_macros::ensures(forall(|i: USize| 0 <= i && i < domain_size ==> !Self::mem(result, i)))]
     #[thrust_macros::ensures(Self::words_cover_domain(result))]
     #[thrust_macros::ensures(Self::card(result) == 0)]
     pub fn new_empty(domain_size: usize) -> DenseBitSet<T> {
@@ -83,6 +91,7 @@ impl<T: Idx> DenseBitSet<T> {
         }
     }
 
+    #[thrust::reveal]
     #[thrust_macros::requires(Self::words_cover_domain(*self))]
     fn clear_excess_bits(&mut self) {
         clear_excess_bits_in_final_word(self.domain_size, &mut self.words);
@@ -93,6 +102,7 @@ impl<T: Idx> DenseBitSet<T> {
         count_ones(&self.words)
     }
 
+    #[thrust::reveal]
     #[inline]
     #[thrust_macros::requires(forall(|i: USize| <T as Idx>::index_is(elem, i) ==> i < (*self).0))]
     #[thrust_macros::requires(Self::words_cover_domain(*self))]
@@ -112,11 +122,14 @@ impl<T: Idx> DenseBitSet<T> {
     #[thrust_macros::requires(Self::words_cover_domain(*self))]
     #[thrust_macros::ensures((!self).0 == (*self).0)]
     #[thrust_macros::ensures(Self::words_cover_domain(!self))]
-    // `Self::inserted` gives, for `i` the index of `elem`:
-    //   `Self::mem(!self, i)`, and
-    //   `forall j != i: Self::mem(!self, j) <==> Self::mem(*self, j)`.
+    // `Self::inserted` gives, for `i` the index of `elem`, `Self::mem(!self, i)` and
+    // `forall j != i: Self::mem(!self, j) <==> Self::mem(*self, j)`, stated below for the code
+    // that does not reveal `mem`.
     #[thrust_macros::ensures(forall(|i: USize| <T as Idx>::index_is(elem, i)
         ==> Self::inserted(*self, i, !self)))]
+    #[thrust_macros::ensures(forall(|i: USize| <T as Idx>::index_is(elem, i) ==> Self::mem(!self, i)))]
+    #[thrust_macros::ensures(forall(|i: USize, j: USize| <T as Idx>::index_is(elem, i) && 0 <= j && j != i
+        ==> (Self::mem(!self, j) == Self::mem(*self, j))))]
     #[thrust_macros::ensures(forall(|i: USize| <T as Idx>::index_is(elem, i) && (result == true) ==> !Self::mem(*self, i)))]
     #[thrust_macros::ensures(forall(|i: USize| <T as Idx>::index_is(elem, i) && Self::mem(*self, i) ==> (result == false)))]
     #[thrust_macros::ensures(forall(|i: USize| <T as Idx>::index_is(elem, i) && !Self::mem(*self, i) ==> (result == true)))]
@@ -443,6 +456,7 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
     /// `ceil(num_columns / 64)`, spelled as the word count `rw` with
     /// `64 * rw >= num_columns` and `64 * rw < num_columns + 64`.
     #[thrust_macros::predicate]
+    #[thrust::opaque]
     pub(crate) fn wf(self) -> bool {
         exists(|rw: USize| {
             self.words.len() == self.num_rows * rw
@@ -455,6 +469,7 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
     /// (rewrites.md S11). rustc's matrices have it at `b = num_columns`: `insert` asserts
     /// `column < num_columns` and `insert_all_into_row` clears the bits past it.
     #[thrust_macros::predicate]
+    #[thrust::opaque]
     pub(crate) fn cols_below(self, b: usize) -> bool {
         forall(|rw: usize, r: usize, c: usize|
             !(self.words.len() == self.num_rows * rw
@@ -473,6 +488,7 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
         IdxRange::new(0, self.num_rows)
     }
 
+    #[thrust::reveal]
     #[thrust::callable]
     #[thrust_macros::requires(Self::wf(*self))]
     #[thrust_macros::requires(forall(|i: USize| <R as Idx>::index_is(row, i) ==> i < (*self).num_rows))]
@@ -498,6 +514,7 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
         BitIter::new(&self.words[start..end])
     }
 
+    #[thrust::reveal]
     #[thrust::callable]
     #[thrust_macros::requires(Self::wf(*self))]
     #[thrust_macros::requires(forall(|i: USize| <R as Idx>::index_is(row, i) ==> i < (*self).num_rows))]

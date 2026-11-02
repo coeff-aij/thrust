@@ -70,11 +70,15 @@ impl<I: Idx, T> IndexVec<I, T> {
     }
 
     #[inline]
+    #[thrust_macros::requires(true)]
+    #[thrust_macros::ensures(*result == *self)]
     pub fn as_slice(&self) -> &IndexSlice<I, T> {
         IndexSlice::from_raw(&self.raw)
     }
 
     #[inline]
+    #[thrust_macros::requires(true)]
+    #[thrust_macros::ensures(*result == *self && !result == !self)]
     pub fn as_mut_slice(&mut self) -> &mut IndexSlice<I, T> {
         IndexSlice::from_raw_mut(&mut self.raw)
     }
