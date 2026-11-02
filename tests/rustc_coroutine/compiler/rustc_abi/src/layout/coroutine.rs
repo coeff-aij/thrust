@@ -811,21 +811,24 @@ pub fn layout<
                 // The filter's contract is written: inferred, its postcondition is an unknown
                 // that `Filter::produces` applies, which `filter_count`'s `ensures` below negates.
                 // Its `requires` is properties 1 and 2b and the bound at the entry it is given,
-                // as the per-variant closure's `requires` states them at every entry.
+                // as the per-variant closure's `requires` states them at every entry. Its clauses
+                // read the captures as the references they are (`*assignments`), and the map's
+                // below through the closure's state (`**local_layouts`): the other form panics
+                // (#152).
                 Filter::new(variant_fields.iter(), thrust_macros::closure!(
                     captures(
-                        assignments: &mut &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
-                        index: &mut &VariantIdx,
+                        assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
+                        index: &VariantIdx,
                     ),
                     requires(
-                        <LocalIdx as Idx>::index_logic(**local) < (**assignments).len()
-                            && (**assignments)[<LocalIdx as Idx>::index_logic(**local)] != SavedLocalEligibility::Unassigned
+                        <LocalIdx as Idx>::index_logic(**local) < (*assignments).len()
+                            && (*assignments)[<LocalIdx as Idx>::index_logic(**local)] != SavedLocalEligibility::Unassigned
                             && forall(|vi: <VariantIdx as thrust_models::Model>::Ty, w: USize|
-                                !((**assignments)[<LocalIdx as Idx>::index_logic(**local)] == SavedLocalEligibility::Assigned(vi)
-                                    && <VariantIdx as Idx>::index_is(**index, w))
+                                !((*assignments)[<LocalIdx as Idx>::index_logic(**local)] == SavedLocalEligibility::Assigned(vi)
+                                    && <VariantIdx as Idx>::index_is(*index, w))
                                 || forall(|vn: USize| !<VariantIdx as Idx>::index_is(vi, vn) || vn == w))
                     ),
-                    ensures(result == ((**assignments)[<LocalIdx as Idx>::index_logic(**local)] == SavedLocalEligibility::Assigned(**index))),
+                    ensures(result == ((*assignments)[<LocalIdx as Idx>::index_logic(**local)] == SavedLocalEligibility::Assigned(*index))),
                     |local: &&LocalIdx| -> bool {
                         match assignments[**local] {
                             // Unreachable by eligibility.rs's stage-5 property 1 (an `Unassigned`
@@ -839,7 +842,14 @@ pub fn layout<
                         }
                     },
                 )),
-                |local| local_layouts[*local],
+                // Written for the same reason: `Map::produces` applies the map's postcondition,
+                // under the `∃` of `Filter::produces`.
+                thrust_macros::closure!(
+                    captures(local_layouts: &mut &IndexSlice<LocalIdx, F>),
+                    requires(<LocalIdx as Idx>::index_logic(*local) < (**local_layouts).len()),
+                    ensures(result == (**local_layouts)[<LocalIdx as Idx>::index_logic(*local)]),
+                    |local: &LocalIdx| -> F { local_layouts[*local] },
+                ),
             );
 
             // The fields collected below are no more than the locals Assigned to the variant: the
