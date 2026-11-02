@@ -880,6 +880,274 @@ fn split_in_memory_order<FieldIdx: Idx + thrust_models::Model>(
     (in_memory_order_a, in_memory_order_b)
 }
 
+/// `univariant`'s `layout_pre` of fields that are entries of `local_layouts`, from what
+/// `layout()`'s `requires` states of `local_layouts`, in the per-variant closure's forms: the
+/// variant's `univariant` call. `layout_pre` is opaque in `layout()`, so the call reads it as this
+/// lemma's `ensures`.
+#[thrust_macros::lemma]
+#[thrust_macros::requires(
+    (*fields).len() <= (*local_layouts).len()
+        && forall(|k: USize| !(0 <= k && k <= (*local_layouts).len()) || <FieldIdx as Idx>::can_new(k))
+        && forall(|k: USize|
+            !(0 <= k && k < (*fields).len())
+            || exists(|i: USize| 0 <= i && i < (*local_layouts).len() && (*fields)[k] == (*local_layouts)[i]))
+        && !matches!(kind, StructKind::MaybeUnsized)
+        && forall(|z: USize| !(z == 0usize) || <VariantIdx as Idx>::can_new(z))
+        && forall(|dl: TargetDataLayout| !C::dl_of(*calc, dl)
+            || dl.default_address_space_pointer_spec.pointer_size.raw == 2
+            || dl.default_address_space_pointer_spec.pointer_size.raw == 4
+            || dl.default_address_space_pointer_spec.pointer_size.raw == 8)
+        && forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche|
+            !(C::dl_of(*calc, dl)
+                && 0 <= i
+                && i < (*local_layouts).len()
+                && thrust_macros::post!(<F as core::ops::Deref>::deref(&(*local_layouts)[i]), d) && **d == l
+                && l.largest_niche == Some(n))
+                || Niche::wf_in(n, dl))
+        && forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche, z: Size|
+            !(C::dl_of(*calc, dl)
+                && 0 <= i
+                && i < (*local_layouts).len()
+                && thrust_macros::post!(<F as core::ops::Deref>::deref(&(*local_layouts)[i]), d) && **d == l
+                && l.largest_niche == Some(n)
+                && Primitive::size_in(n.value, dl, z))
+                || n.offset.raw + z.raw <= l.size.raw)
+        && forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, c: Scalar|
+            !(C::dl_of(*calc, dl)
+                && 0 <= i
+                && i < (*local_layouts).len()
+                && thrust_macros::post!(<F as core::ops::Deref>::deref(&(*local_layouts)[i]), d) && **d == l
+                && l.backend_repr == BackendRepr::Scalar(c))
+                || Scalar::wf_in(c, dl))
+)]
+#[thrust_macros::ensures(LayoutCalculator::<C>::layout_pre::<FieldIdx, VariantIdx, F>(*calc, fields, kind))]
+#[thrust_macros::context]
+#[thrust::reveal(super::LayoutCalculator::layout_pre)]
+fn layout_pre_of_entries<
+    'a,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model,
+    VariantIdx: Idx + thrust_models::Model,
+    FieldIdx: Idx + thrust_models::Model,
+    LocalIdx: Idx + thrust_models::Model,
+    C: HasDataLayout,
+>(
+    calc: &LayoutCalculator<C>,
+    local_layouts: &IndexSlice<LocalIdx, F>,
+    fields: &IndexVec<FieldIdx, F>,
+    kind: StructKind,
+) {
+    // `layout_pre`'s conjuncts over `fields`, one step each.
+    thrust_macros::proof_assert!(|fields: &IndexVec<FieldIdx, F>|
+        forall(|k: USize| !(0 <= k && k <= (*fields).len()) || <FieldIdx as Idx>::can_new(k)));
+    thrust_macros::proof_assert!(|calc: &LayoutCalculator<C>, fields: &IndexVec<FieldIdx, F>|
+        forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche|
+            !(C::dl_of(*calc, dl)
+                && 0 <= i
+                && i < (*fields).len()
+                && thrust_macros::post!(<F as core::ops::Deref>::deref(&(*fields)[i]), d) && **d == l
+                && l.largest_niche == Some(n))
+                || Niche::wf_in(n, dl)));
+    thrust_macros::proof_assert!(|calc: &LayoutCalculator<C>, fields: &IndexVec<FieldIdx, F>|
+        forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche, s: Size|
+            !(C::dl_of(*calc, dl)
+                && 0 <= i
+                && i < (*fields).len()
+                && thrust_macros::post!(<F as core::ops::Deref>::deref(&(*fields)[i]), d) && **d == l
+                && l.largest_niche == Some(n)
+                && Primitive::size_in(n.value, dl, s))
+                || n.offset.raw + s.raw <= l.size.raw));
+    thrust_macros::proof_assert!(|calc: &LayoutCalculator<C>, fields: &IndexVec<FieldIdx, F>|
+        forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, c: Scalar|
+            !(C::dl_of(*calc, dl)
+                && 0 <= i
+                && i < (*fields).len()
+                && thrust_macros::post!(<F as core::ops::Deref>::deref(&(*fields)[i]), d) && **d == l
+                && l.backend_repr == BackendRepr::Scalar(c))
+                || Scalar::wf_in(c, dl)));
+}
+
+/// `univariant`'s `layout_pre` of the prefix's fields: the entry `prefix_layouts` (`entry`), the
+/// tag's layout and entries of `local_layouts`, from what `layout()`'s `requires` states of each,
+/// in its forms. `layout_pre` is opaque in `layout()`, so the prefix's `univariant` call reads it
+/// as this lemma's `ensures`.
+#[thrust_macros::lemma]
+#[thrust_macros::requires(
+    (*fields).len() <= (*entry).len() + 1 + (*local_layouts).len()
+        && forall(|k: USize|
+            0 <= k && k <= (*entry).len() + 1 + (*local_layouts).len() ==> <FieldIdx as Idx>::can_new(k))
+        && (*entry).len() < (*fields).len()
+        && forall(|k: USize| !(0 <= k && k < (*entry).len()) || (*fields)[k] == (*entry)[k])
+        && (*fields)[(*entry).len()] == *tag_layout
+        && forall(|k: USize|
+            !((*entry).len() < k && k < (*fields).len())
+                || exists(|i: USize| 0 <= i && i < (*local_layouts).len() && (*fields)[k] == (*local_layouts)[i]))
+        && forall(|z: USize| !(z == 0usize) || <VariantIdx as Idx>::can_new(z))
+        && forall(|dl: TargetDataLayout| C::dl_of(*calc, dl) ==> dl.default_address_space_pointer_spec.pointer_size.raw == 2
+            || dl.default_address_space_pointer_spec.pointer_size.raw == 4
+            || dl.default_address_space_pointer_spec.pointer_size.raw == 8)
+        && forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche|
+            C::dl_of(*calc, dl)
+                && 0 <= i
+                && i < (*local_layouts).len()
+                && thrust_macros::post!(<F as core::ops::Deref>::deref(&(*local_layouts)[i]), d) && **d == l
+                && l.largest_niche == Some(n) ==> Niche::wf_in(n, dl))
+        && forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche, z: Size|
+            C::dl_of(*calc, dl)
+                && 0 <= i
+                && i < (*local_layouts).len()
+                && thrust_macros::post!(<F as core::ops::Deref>::deref(&(*local_layouts)[i]), d) && **d == l
+                && l.largest_niche == Some(n)
+                && Primitive::size_in(n.value, dl, z) ==> n.offset.raw + z.raw <= l.size.raw)
+        && forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche|
+            C::dl_of(*calc, dl)
+                && 0 <= i
+                && i < (*entry).len()
+                && thrust_macros::post!(<F as core::ops::Deref>::deref(&(*entry)[i]), d) && **d == l
+                && l.largest_niche == Some(n) ==> Niche::wf_in(n, dl))
+        && forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche, z: Size|
+            C::dl_of(*calc, dl)
+                && 0 <= i
+                && i < (*entry).len()
+                && thrust_macros::post!(<F as core::ops::Deref>::deref(&(*entry)[i]), d) && **d == l
+                && l.largest_niche == Some(n)
+                && Primitive::size_in(n.value, dl, z) ==> n.offset.raw + z.raw <= l.size.raw)
+        && forall(|dl: TargetDataLayout, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche|
+            C::dl_of(*calc, dl)
+                && thrust_macros::post!(<F as core::ops::Deref>::deref(tag_layout), d) && **d == l
+                && l.largest_niche == Some(n) ==> Niche::wf_in(n, dl))
+        && forall(|dl: TargetDataLayout, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche, z: Size|
+            C::dl_of(*calc, dl)
+                && thrust_macros::post!(<F as core::ops::Deref>::deref(tag_layout), d) && **d == l
+                && l.largest_niche == Some(n)
+                && Primitive::size_in(n.value, dl, z) ==> n.offset.raw + z.raw <= l.size.raw)
+        && forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, c: Scalar|
+            C::dl_of(*calc, dl)
+                && 0 <= i
+                && i < (*local_layouts).len()
+                && thrust_macros::post!(<F as core::ops::Deref>::deref(&(*local_layouts)[i]), d) && **d == l
+                && l.backend_repr == BackendRepr::Scalar(c) ==> Scalar::wf_in(c, dl))
+        && forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, c: Scalar|
+            C::dl_of(*calc, dl)
+                && 0 <= i
+                && i < (*entry).len()
+                && thrust_macros::post!(<F as core::ops::Deref>::deref(&(*entry)[i]), d) && **d == l
+                && l.backend_repr == BackendRepr::Scalar(c) ==> Scalar::wf_in(c, dl))
+        && forall(|dl: TargetDataLayout, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, c: Scalar|
+            C::dl_of(*calc, dl)
+                && thrust_macros::post!(<F as core::ops::Deref>::deref(tag_layout), d) && **d == l
+                && l.backend_repr == BackendRepr::Scalar(c) ==> Scalar::wf_in(c, dl))
+)]
+#[thrust_macros::ensures(LayoutCalculator::<C>::layout_pre::<FieldIdx, VariantIdx, F>(*calc, fields, StructKind::AlwaysSized))]
+#[thrust_macros::context]
+#[thrust::reveal(super::LayoutCalculator::layout_pre)]
+fn layout_pre_of_prefix<
+    'a,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model,
+    VariantIdx: Idx + thrust_models::Model,
+    FieldIdx: Idx + thrust_models::Model,
+    LocalIdx: Idx + thrust_models::Model,
+    C: HasDataLayout,
+>(
+    calc: &LayoutCalculator<C>,
+    entry: &thrust_models::Ghost<IndexVec<FieldIdx, F>>,
+    tag_layout: &F,
+    local_layouts: &IndexSlice<LocalIdx, F>,
+    fields: &IndexVec<FieldIdx, F>,
+) {
+    // `layout_pre`'s conjuncts over `fields`, each first over the entry fields, the tag and the
+    // promoted locals.
+    thrust_macros::proof_assert!(|fields: &IndexVec<FieldIdx, F>|
+        forall(|k: USize| !(0 <= k && k <= (*fields).len()) || <FieldIdx as Idx>::can_new(k)));
+    thrust_macros::proof_assert!(|calc: &LayoutCalculator<C>, entry: &thrust_models::Ghost<IndexVec<FieldIdx, F>>, fields: &IndexVec<FieldIdx, F>|
+        forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche|
+            !(C::dl_of(*calc, dl)
+                && 0 <= i && i < (*entry).len()
+                && thrust_macros::post!(<F as core::ops::Deref>::deref(&(*fields)[i]), d) && **d == l
+                && l.largest_niche == Some(n))
+                || Niche::wf_in(n, dl)));
+    thrust_macros::proof_assert!(|calc: &LayoutCalculator<C>, entry: &thrust_models::Ghost<IndexVec<FieldIdx, F>>, fields: &IndexVec<FieldIdx, F>|
+        forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche|
+            !(C::dl_of(*calc, dl)
+                && i == (*entry).len()
+                && thrust_macros::post!(<F as core::ops::Deref>::deref(&(*fields)[i]), d) && **d == l
+                && l.largest_niche == Some(n))
+                || Niche::wf_in(n, dl)));
+    thrust_macros::proof_assert!(|calc: &LayoutCalculator<C>, entry: &thrust_models::Ghost<IndexVec<FieldIdx, F>>, fields: &IndexVec<FieldIdx, F>|
+        forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche|
+            !(C::dl_of(*calc, dl)
+                && (*entry).len() < i && i < (*fields).len()
+                && thrust_macros::post!(<F as core::ops::Deref>::deref(&(*fields)[i]), d) && **d == l
+                && l.largest_niche == Some(n))
+                || Niche::wf_in(n, dl)));
+    thrust_macros::proof_assert!(|calc: &LayoutCalculator<C>, entry: &thrust_models::Ghost<IndexVec<FieldIdx, F>>, fields: &IndexVec<FieldIdx, F>|
+        forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche|
+            !(C::dl_of(*calc, dl)
+                && 0 <= i && i < (*fields).len()
+                && thrust_macros::post!(<F as core::ops::Deref>::deref(&(*fields)[i]), d) && **d == l
+                && l.largest_niche == Some(n))
+                || Niche::wf_in(n, dl)));
+    thrust_macros::proof_assert!(|calc: &LayoutCalculator<C>, entry: &thrust_models::Ghost<IndexVec<FieldIdx, F>>, fields: &IndexVec<FieldIdx, F>|
+        forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche, s: Size|
+            !(C::dl_of(*calc, dl)
+                && 0 <= i && i < (*entry).len()
+                && thrust_macros::post!(<F as core::ops::Deref>::deref(&(*fields)[i]), d) && **d == l
+                && l.largest_niche == Some(n)
+                && Primitive::size_in(n.value, dl, s))
+                || n.offset.raw + s.raw <= l.size.raw));
+    thrust_macros::proof_assert!(|calc: &LayoutCalculator<C>, entry: &thrust_models::Ghost<IndexVec<FieldIdx, F>>, fields: &IndexVec<FieldIdx, F>|
+        forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche, s: Size|
+            !(C::dl_of(*calc, dl)
+                && i == (*entry).len()
+                && thrust_macros::post!(<F as core::ops::Deref>::deref(&(*fields)[i]), d) && **d == l
+                && l.largest_niche == Some(n)
+                && Primitive::size_in(n.value, dl, s))
+                || n.offset.raw + s.raw <= l.size.raw));
+    thrust_macros::proof_assert!(|calc: &LayoutCalculator<C>, entry: &thrust_models::Ghost<IndexVec<FieldIdx, F>>, fields: &IndexVec<FieldIdx, F>|
+        forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche, s: Size|
+            !(C::dl_of(*calc, dl)
+                && (*entry).len() < i && i < (*fields).len()
+                && thrust_macros::post!(<F as core::ops::Deref>::deref(&(*fields)[i]), d) && **d == l
+                && l.largest_niche == Some(n)
+                && Primitive::size_in(n.value, dl, s))
+                || n.offset.raw + s.raw <= l.size.raw));
+    thrust_macros::proof_assert!(|calc: &LayoutCalculator<C>, entry: &thrust_models::Ghost<IndexVec<FieldIdx, F>>, fields: &IndexVec<FieldIdx, F>|
+        forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche, s: Size|
+            !(C::dl_of(*calc, dl)
+                && 0 <= i && i < (*fields).len()
+                && thrust_macros::post!(<F as core::ops::Deref>::deref(&(*fields)[i]), d) && **d == l
+                && l.largest_niche == Some(n)
+                && Primitive::size_in(n.value, dl, s))
+                || n.offset.raw + s.raw <= l.size.raw));
+    thrust_macros::proof_assert!(|calc: &LayoutCalculator<C>, entry: &thrust_models::Ghost<IndexVec<FieldIdx, F>>, fields: &IndexVec<FieldIdx, F>|
+        forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, c: Scalar|
+            !(C::dl_of(*calc, dl)
+                && 0 <= i && i < (*entry).len()
+                && thrust_macros::post!(<F as core::ops::Deref>::deref(&(*fields)[i]), d) && **d == l
+                && l.backend_repr == BackendRepr::Scalar(c))
+                || Scalar::wf_in(c, dl)));
+    thrust_macros::proof_assert!(|calc: &LayoutCalculator<C>, entry: &thrust_models::Ghost<IndexVec<FieldIdx, F>>, fields: &IndexVec<FieldIdx, F>|
+        forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, c: Scalar|
+            !(C::dl_of(*calc, dl)
+                && i == (*entry).len()
+                && thrust_macros::post!(<F as core::ops::Deref>::deref(&(*fields)[i]), d) && **d == l
+                && l.backend_repr == BackendRepr::Scalar(c))
+                || Scalar::wf_in(c, dl)));
+    thrust_macros::proof_assert!(|calc: &LayoutCalculator<C>, entry: &thrust_models::Ghost<IndexVec<FieldIdx, F>>, fields: &IndexVec<FieldIdx, F>|
+        forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, c: Scalar|
+            !(C::dl_of(*calc, dl)
+                && (*entry).len() < i && i < (*fields).len()
+                && thrust_macros::post!(<F as core::ops::Deref>::deref(&(*fields)[i]), d) && **d == l
+                && l.backend_repr == BackendRepr::Scalar(c))
+                || Scalar::wf_in(c, dl)));
+    thrust_macros::proof_assert!(|calc: &LayoutCalculator<C>, entry: &thrust_models::Ghost<IndexVec<FieldIdx, F>>, fields: &IndexVec<FieldIdx, F>|
+        forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, c: Scalar|
+            !(C::dl_of(*calc, dl)
+                && 0 <= i && i < (*fields).len()
+                && thrust_macros::post!(<F as core::ops::Deref>::deref(&(*fields)[i]), d) && **d == l
+                && l.backend_repr == BackendRepr::Scalar(c))
+                || Scalar::wf_in(c, dl)));
+}
+
 // The specification of stage 7 (README.md of the stage files).
 //
 // Precondition (experiments/2026-10-01-layout-precondition-review.md), with n the number of
@@ -949,25 +1217,47 @@ fn split_in_memory_order<FieldIdx: Idx + thrust_models::Model>(
         && forall(|dl: TargetDataLayout| C::dl_of(*calc, dl) ==> dl.default_address_space_pointer_spec.pointer_size.raw == 2
             || dl.default_address_space_pointer_spec.pointer_size.raw == 4
             || dl.default_address_space_pointer_spec.pointer_size.raw == 8)
+        && forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche|
+            C::dl_of(*calc, dl)
+                && 0 <= i
+                && i < (*local_layouts).len()
+                && thrust_macros::post!(<F as core::ops::Deref>::deref(&(*local_layouts)[i]), d) && **d == l
+                && l.largest_niche == Some(n) ==> Niche::wf_in(n, dl))
         && forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche, z: Size|
             C::dl_of(*calc, dl)
                 && 0 <= i
                 && i < (*local_layouts).len()
                 && thrust_macros::post!(<F as core::ops::Deref>::deref(&(*local_layouts)[i]), d) && **d == l
-                && l.largest_niche == Some(n) ==> (Niche::wf_in(n, dl) && (Primitive::size_in(n.value, dl, z) ==> n.offset.raw + z.raw <= l.size.raw)))
+                && l.largest_niche == Some(n)
+                && Primitive::size_in(n.value, dl, z) ==> n.offset.raw + z.raw <= l.size.raw)
+        && forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche|
+            C::dl_of(*calc, dl)
+                && 0 <= i
+                && i < prefix_layouts.len()
+                && thrust_macros::post!(<F as core::ops::Deref>::deref(&prefix_layouts[i]), d) && **d == l
+                && l.largest_niche == Some(n) ==> Niche::wf_in(n, dl))
         && forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche, z: Size|
             C::dl_of(*calc, dl)
                 && 0 <= i
                 && i < prefix_layouts.len()
                 && thrust_macros::post!(<F as core::ops::Deref>::deref(&prefix_layouts[i]), d) && **d == l
-                && l.largest_niche == Some(n) ==> (Niche::wf_in(n, dl) && (Primitive::size_in(n.value, dl, z) ==> n.offset.raw + z.raw <= l.size.raw)))
+                && l.largest_niche == Some(n)
+                && Primitive::size_in(n.value, dl, z) ==> n.offset.raw + z.raw <= l.size.raw)
+        && forall(|dl: TargetDataLayout, ti: Integer, tg: WrappingRange, s: Scalar, r: <F as thrust_models::Model>::Ty,
+                l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche|
+            C::dl_of(*calc, dl)
+                && s == Scalar::Initialized { value: Primitive::Int(ti, false), valid_range: tg }
+                && thrust_macros::post!(tag_to_layout(s), r)
+                && thrust_macros::post!(<F as core::ops::Deref>::deref(&r), d) && **d == l
+                && l.largest_niche == Some(n) ==> Niche::wf_in(n, dl))
         && forall(|dl: TargetDataLayout, ti: Integer, tg: WrappingRange, s: Scalar, r: <F as thrust_models::Model>::Ty,
                 l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche, z: Size|
             C::dl_of(*calc, dl)
                 && s == Scalar::Initialized { value: Primitive::Int(ti, false), valid_range: tg }
                 && thrust_macros::post!(tag_to_layout(s), r)
                 && thrust_macros::post!(<F as core::ops::Deref>::deref(&r), d) && **d == l
-                && l.largest_niche == Some(n) ==> (Niche::wf_in(n, dl) && (Primitive::size_in(n.value, dl, z) ==> n.offset.raw + z.raw <= l.size.raw)))
+                && l.largest_niche == Some(n)
+                && Primitive::size_in(n.value, dl, z) ==> n.offset.raw + z.raw <= l.size.raw)
         && forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, c: Scalar|
             C::dl_of(*calc, dl)
                 && 0 <= i
@@ -1002,8 +1292,9 @@ fn split_in_memory_order<FieldIdx: Idx + thrust_models::Model>(
 )]
 #[thrust_macros::ensures(true)]
 #[thrust_macros::context]
-// `fits_in_any_order` and `weighs` are not revealed: `layout()` only assumes the first (the two
-// `assume!`s), so the `univariant` preconditions read it as the atom the `assume!` states.
+// `layout_pre`, `fits_in_any_order` and `weighs` are not revealed: `layout()` establishes the first
+// with `layout_pre_of_prefix` and `layout_pre_of_entries` and only assumes the second (the two
+// `assume!`s), so the `univariant` preconditions read them as the atoms these state.
 #[thrust::reveal(
     super::super::Primitive::size_in,
     super::super::FieldsShape::arbitrary_of
@@ -1068,7 +1359,9 @@ pub fn layout<
     });
     // The promoted layouts are entries of `local_layouts`, for the second step below.
     thrust_macros::proof!(Map::yields_entries_of(&promoted_layouts, local_layouts));
-    prefix_layouts.push(tag_to_layout(tag));
+    // Rewrite (rewrites.md R13): the tag's layout is bound to a name, for `layout_pre_of_prefix`.
+    let tag_layout = tag_to_layout(tag);
+    prefix_layouts.push(tag_layout);
     prefix_layouts.extend_from(promoted_layouts);
     // `push` and `extend_from` give `prefix_layouts.len() == P + 1 + c`, c the items
     // `ineligible_locals.iter()` yields (`Map` keeps the length), which is the set's count `card`:
@@ -1076,9 +1369,10 @@ pub fn layout<
     // entries after the tag are layouts of `local_layouts` (the closure's `ensures`). Stated as
     // checked steps, so that what follows reads them rather than `extend_from`'s `ensures`.
     thrust_macros::proof_assert!(
-        |prefix_layouts: IndexVec<FieldIdx, F>, prefix_entry: thrust_models::Ghost<IndexVec<FieldIdx, F>>, ineligible_locals: DenseBitSet<LocalIdx>|
+        |prefix_layouts: IndexVec<FieldIdx, F>, prefix_entry: thrust_models::Ghost<IndexVec<FieldIdx, F>>, ineligible_locals: DenseBitSet<LocalIdx>, tag_layout: F|
             prefix_layouts.len() == prefix_entry.len() + 1 + DenseBitSet::<LocalIdx>::card(ineligible_locals)
                 && forall(|k: USize| !(0 <= k && k < prefix_entry.len()) || prefix_layouts[k] == prefix_entry[k])
+                && prefix_layouts[prefix_entry.len()] == tag_layout
     );
     thrust_macros::proof_assert!(
         |prefix_layouts: IndexVec<FieldIdx, F>, prefix_entry: thrust_models::Ghost<IndexVec<FieldIdx, F>>, local_layouts: &IndexSlice<LocalIdx, F>|
@@ -1104,6 +1398,7 @@ pub fn layout<
     // reachable, so the `assume!` makes no proof here vacuous.
     #[cfg(thrust_layout_reach_prefix)]
     thrust_macros::proof_assert!(|| false);
+    thrust_macros::proof!(layout_pre_of_prefix(calc, &prefix_entry, &tag_layout, local_layouts, &prefix_layouts));
     let prefix = calc.univariant(
         &prefix_layouts,
         &repr,
@@ -1235,13 +1530,21 @@ pub fn layout<
                     || dl.default_address_space_pointer_spec.pointer_size.raw == 2
                     || dl.default_address_space_pointer_spec.pointer_size.raw == 4
                     || dl.default_address_space_pointer_spec.pointer_size.raw == 8)
-                && forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche, z: Size|
+                && forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche|
                     !(C::dl_of(**calc, dl)
                         && 0 <= i
                         && i < (**local_layouts).len()
                         && thrust_macros::post!(<F as core::ops::Deref>::deref(&(**local_layouts)[i]), d) && **d == l
                         && l.largest_niche == Some(n))
-                        || (Niche::wf_in(n, dl) && (!Primitive::size_in(n.value, dl, z) || n.offset.raw + z.raw <= l.size.raw)))
+                        || Niche::wf_in(n, dl))
+                && forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche, z: Size|
+                    !(C::dl_of(**calc, dl)
+                        && 0 <= i
+                        && i < (**local_layouts).len()
+                        && thrust_macros::post!(<F as core::ops::Deref>::deref(&(**local_layouts)[i]), d) && **d == l
+                        && l.largest_niche == Some(n)
+                        && Primitive::size_in(n.value, dl, z))
+                        || n.offset.raw + z.raw <= l.size.raw)
                 && forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, c: Scalar|
                     !(C::dl_of(**calc, dl)
                         && 0 <= i
@@ -1284,6 +1587,7 @@ pub fn layout<
             // reachable, so the `assume!` makes no proof here vacuous.
             #[cfg(thrust_layout_reach_variant)]
             thrust_macros::proof_assert!(|| false);
+            thrust_macros::proof!(layout_pre_of_entries(calc_ref, local_layouts, &fields, kind));
             let mut variant = calc_ref.univariant(&fields, &repr, kind)?;
 
             let FieldsShape::Arbitrary {
