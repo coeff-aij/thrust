@@ -953,9 +953,10 @@ pub fn layout<
                             // TODO(proof): `.unwrap()`. The missing fact: at entry `i`,
                             // `offsets_and_memory_index` has as many pairs left as entries
                             // at positions `i..` whose local is Assigned to the variant. It
-                            // needs m to equal the count of Assigned entries (`filter_count`
-                            // gives only m <= it: the other half is that `Filter`'s index map
-                            // enumerates every accepted position), `univariant`'s
+                            // needs m to equal the number of positions the filter accepts,
+                            // that is, `Filter`'s index map enumerates every accepted position
+                            // (`filter_count` only bounds m by the locals Assigned to the
+                            // variant, `class_cnt`), `univariant`'s
                             // `arbitrary_of` (m offsets and m entries of `in_memory_order`),
                             // and a contract for this closure whose `hist_inv` ties the pairs
                             // left to the position, with `Map::new`'s `preservation_inv`
