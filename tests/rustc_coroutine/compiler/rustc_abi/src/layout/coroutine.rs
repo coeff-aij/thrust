@@ -957,7 +957,9 @@ fn promote_locals<
 // Rewrite (rewrites.md R16): the `match` of `layout()` on the prefix's fields, which splits the
 // offsets and the memory order at the promoted fields (b_start = P + 1, P the tag's index), as a
 // function whose contract states what `layout()` reads of the parts: the promoted offsets and
-// memory index have n - (P + 1) = c entries. `u32` reaches n, for `invert_bijective_mapping`.
+// memory index have n - (P + 1) = c entries, and each entry of the memory index is below c
+// (`invert_bijective_mapping`), which `combine_offsets` requires. `u32` reaches n, for
+// `invert_bijective_mapping`.
 #[thrust_macros::requires(
     FieldsShape::<FieldIdx>::arbitrary_of(fields, n)
         && forall(|t: USize| <FieldIdx as Idx>::index_is(tag_index, t) ==> t + 1 <= n)
@@ -966,6 +968,8 @@ fn promote_locals<
 )]
 #[thrust_macros::ensures(forall(|t: USize|
     !<FieldIdx as Idx>::index_is(tag_index, t) || (result.1.len() + t + 1 == n && result.2.len() + t + 1 == n)))]
+#[thrust_macros::ensures(forall(|k: USize, i: USize|
+    !(0 <= k && k < result.2.len() && <u32 as Idx>::index_is(result.2[k], i)) || i < result.2.len()))]
 #[thrust_macros::context]
 #[thrust::reveal(super::super::FieldsShape::arbitrary_of)]
 fn split_prefix_fields<FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>>(
@@ -1165,11 +1169,11 @@ fn layout_pre_of_wf<
 //     (`pre!`), the only scalars `layout()` passes; rustc's closure builds `LayoutData::scalar`,
 //     which panics on a pointer scalar of an unknown address space.
 // - Invariants of rustc's layouts: `dl_wf` of the data layout `calc.cx` names, which `univariant`
-//   requires; `niche_wf` of the largest niche of every layout `univariant` may receive, and the
-//   niche within that layout; `Scalar::wf_in` of every such layout whose `backend_repr` is a
-//   scalar (`scalar_pair`). These layouts are each of `local_layouts` and `prefix_layouts`, and
-//   `tag_to_layout`'s result for any such integer scalar (through its postcondition), each named by `post!` of
-//   `Deref::deref`. `F`'s `deref` is a function (`deref_functional`), which `univariant`
+//   requires; `layout_wf` of every layout `univariant` may receive: `niche_wf` of its largest
+//   niche, and the niche within that layout; `Scalar::wf_in` of the layout if its `backend_repr`
+//   is a scalar (`scalar_pair`). These layouts are each of `local_layouts` and `prefix_layouts`
+//   (`layouts_wf`), and `tag_to_layout`'s result for any such integer scalar (through its
+//   postcondition), each named by `post!` of `Deref::deref`. `F`'s `deref` is a function (`deref_functional`), which `univariant`
 //   requires; rustc's `Layout` dereferences to the interned pointer it holds.
 // - Not guaranteed by the caller:
 //   - `FieldIdx` can be built up to P + 1 + n (the prefix, the tag and at most n promoted
@@ -1319,8 +1323,9 @@ pub fn layout<
     thrust_macros::proof_assert!(|prefix: LayoutData<FieldIdx, VariantIdx>, prefix_layouts: IndexVec<FieldIdx, F>|
         FieldsShape::<FieldIdx>::arbitrary_of(prefix.fields, prefix_layouts.len()));
     thrust_macros::proof_assert!(|tag_index: FieldIdx, prefix_layouts: IndexVec<FieldIdx, F>|
-        forall(|t: USize| <FieldIdx as Idx>::index_is(tag_index, t) ==> t + 1 <= prefix_layouts.len())
-            && prefix_layouts.len() <= 4294967295usize);
+        forall(|t: USize| <FieldIdx as Idx>::index_is(tag_index, t) ==> t + 1 <= prefix_layouts.len()));
+    thrust_macros::proof_assert!(|prefix_layouts: IndexVec<FieldIdx, F>|
+        prefix_layouts.len() <= 4294967295usize);
     let (outer_fields, promoted_offsets, promoted_memory_index) =
         split_prefix_fields(prefix.fields, tag_index, prefix_layouts.len());
 
@@ -1392,6 +1397,11 @@ pub fn layout<
                             && forall(|i: USize|
                                 !<FieldIdx as Idx>::index_is(k, i)
                                     || (i < (**promoted_offsets).len() && i < (**promoted_memory_index).len()))))
+                // The promoted memory index's entries are below c (`split_prefix_fields`), which
+                // `combine_offsets` requires.
+                && forall(|k: USize, i: USize|
+                    !(0 <= k && k < (**promoted_memory_index).len() && <u32 as Idx>::index_is((**promoted_memory_index)[k], i))
+                        || i < (**promoted_memory_index).len())
                 // Sites 1 and 3: the promoted fields' count c and the locals Assigned to the
                 // variant are no more than the n locals (`ones_assigned_disjoint` and the
                 // permutation split), and `FieldIdx` and `u32` reach n.
