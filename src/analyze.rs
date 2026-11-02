@@ -2234,7 +2234,9 @@ impl<'tcx> Analyzer<'tcx> {
                 .generic_args(generic_args);
             analyzer.expected_ty()
         };
-        instantiated_ty_cache
+        // An own instance stands in the cache only while its body is analyzed, so that a
+        // recursive call inside reaches it; the shared instance is put back afterwards.
+        let shared = instantiated_ty_cache
             .borrow_mut()
             .insert(key, expected.clone());
         tracing::info!(?def_id, rty = %expected.display(), ?generic_args, "deferred def");
@@ -2317,6 +2319,13 @@ impl<'tcx> Analyzer<'tcx> {
                     .borrow_mut()
                     .push((body_local_def_id.to_def_id(), body_args));
             }
+        }
+        if own_instance {
+            let mut cache = instantiated_ty_cache.borrow_mut();
+            match shared {
+                Some(shared) => cache.insert(key, shared),
+                None => cache.remove(&key),
+            };
         }
         Some(expected)
     }
