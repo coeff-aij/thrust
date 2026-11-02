@@ -442,6 +442,22 @@ pub fn partial_invariant_marker_path() -> [Symbol; 3] {
     ]
 }
 
+pub fn assert_marker_path() -> [Symbol; 3] {
+    [
+        Symbol::intern("thrust"),
+        Symbol::intern("def"),
+        Symbol::intern("assert_marker"),
+    ]
+}
+
+pub fn assume_marker_path() -> [Symbol; 3] {
+    [
+        Symbol::intern("thrust"),
+        Symbol::intern("def"),
+        Symbol::intern("assume_marker"),
+    ]
+}
+
 pub fn ghost_marker_path() -> [Symbol; 3] {
     [
         Symbol::intern("thrust"),
@@ -554,28 +570,43 @@ pub fn parse_type_position(ts: &TokenStream) -> rty::TypePosition {
 }
 
 /// The paths a `#[thrust::reveal(a::b::f, ..)]` names, each as its segments; `None` for the bare
-/// `#[thrust::reveal]`, and `Err` with a message for tokens that are not comma-separated paths.
+/// `#[thrust::reveal]`, and `Err` with a message for any other form (`= ..`, brackets or braces) or
+/// for tokens that are not comma-separated paths (a leading or trailing `::` included).
 pub fn reveal_paths(attr: &Attribute) -> Result<Option<Vec<Vec<Symbol>>>, String> {
-    use rustc_ast::token::TokenKind;
+    use rustc_ast::token::{Delimiter, TokenKind};
     use rustc_ast::tokenstream::TokenTree;
 
+    let form = "`#[thrust::reveal]` is bare or takes paths in parentheses, separated by commas: `#[thrust::reveal(path::to::f, ..)]`";
     let Attribute::Unparsed(item) = attr else {
         return Ok(None);
     };
-    let rustc_hir::AttrArgs::Delimited(d) = &item.args else {
-        return Ok(None);
+    let d = match &item.args {
+        rustc_hir::AttrArgs::Empty => return Ok(None),
+        rustc_hir::AttrArgs::Delimited(d) if d.delim == Delimiter::Parenthesis => d,
+        _ => return Err(form.to_owned()),
     };
-    let mut paths = vec![Vec::new()];
+    let mut paths: Vec<Vec<Symbol>> = vec![Vec::new()];
+    // Whether the next token must be a segment: at the start of a path and after `::`.
+    let mut want_segment = true;
     for tree in d.tokens.iter() {
         let TokenTree::Token(token, _) = tree else {
-            return Err("`#[thrust::reveal(..)]` takes paths separated by commas".to_owned());
+            return Err(form.to_owned());
         };
-        match token.kind {
-            TokenKind::Ident(name, _) => paths.last_mut().unwrap().push(name),
-            TokenKind::PathSep => {}
-            TokenKind::Comma => paths.push(Vec::new()),
-            _ => return Err("`#[thrust::reveal(..)]` takes paths separated by commas".to_owned()),
+        match (token.kind, want_segment) {
+            (TokenKind::Ident(name, _), true) => {
+                paths.last_mut().unwrap().push(name);
+                want_segment = false;
+            }
+            (TokenKind::PathSep, false) => want_segment = true,
+            (TokenKind::Comma, false) => {
+                paths.push(Vec::new());
+                want_segment = true;
+            }
+            _ => return Err(form.to_owned()),
         }
+    }
+    if want_segment && !paths.last().unwrap().is_empty() {
+        return Err(form.to_owned());
     }
     paths.retain(|p| !p.is_empty());
     if paths.is_empty() {

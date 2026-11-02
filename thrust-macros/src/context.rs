@@ -3,6 +3,7 @@
 //! Makes the enclosing context available to the specifications written inside an item.
 //!
 //! On a function, every `thrust_macros::invariant!(...)`, `thrust_macros::partial_invariant!(...)`,
+//! `thrust_macros::proof_assert!(...)`, `thrust_macros::assume!(...)`,
 //! `thrust_macros::ghost!(...)` and `thrust_macros::closure!(...)` in the body is rewritten into
 //! its context-carrying counterpart, carrying the host signature and, for a method, the enclosing
 //! `impl`/`trait` header, so a formula may refer to generic- and `Self`-typed variables that the
@@ -402,7 +403,9 @@ impl VisitMut for ContextInjector<'_> {
 fn context_carrying_form(path: &syn::Path) -> Option<syn::Path> {
     // TODO: identify the macro precisely
     let name = path.segments.last()?.ident.to_string();
-    if let Some(marker) = crate::invariant::Marker::of_macro(&name) {
+    let marker = crate::invariant::Marker::of_macro(&name)
+        .or_else(|| crate::invariant::Marker::statement_of_macro(&name));
+    if let Some(marker) = marker {
         return Some(marker.with_context_path());
     }
     match name.as_str() {
