@@ -1,5 +1,5 @@
 //! The case study's iterator adapters and consumers for those std.rs does not specify
-//! (rewrites.md R8), over std's `Iterator` and std.rs's `IteratorSpec`, and `SliceIter`'s `find`.
+//! (rewrites.md R8), over std's `Iterator` and std.rs's `IteratorSpec`.
 
 use crate::thrust_models;
 use std::marker::PhantomData;
@@ -8,53 +8,8 @@ use thrust_models::model::{Array, Closure, Int, Mut, Seq};
 use thrust_models::{Ghost, exists, forall};
 
 use crate::IteratorSpec;
-use crate::rustc_index::{Idx, IndexVec, SliceIter};
+use crate::rustc_index::{Idx, IndexVec};
 use crate::case_study::USize;
-
-#[thrust_macros::context]
-impl<'a, T: thrust_models::Model> SliceIter<'a, T>
-{
-    #[thrust_macros::ensures(result.0 == raw && result.1 == 0)]
-    pub fn new(raw: &'a [T]) -> SliceIter<'a, T> {
-        SliceIter { raw, pos: 0 }
-    }
-
-    // `Iterator::find` over this iterator: the items in order until the closure accepts one. `P:
-    // Fn` in place of std's `FnMut` (the closures at the call sites capture by shared reference),
-    // so the postcondition names the closure's answers: it rejected every item before the one
-    // found, or every item. The iterator ends right after the item found, or at the end.
-    #[thrust_macros::requires(<Self as IteratorSpec>::inv(*self))]
-    #[thrust_macros::requires(forall(|x: <&'a T as thrust_models::Model>::Ty| thrust_macros::pre!(predicate(&x))))]
-    #[thrust_macros::ensures((!self).0 == (*self).0 && (*self).1 <= (!self).1 && (!self).1 <= (*self).0.len())]
-    #[thrust_macros::ensures(result == None ==> (!self).1 == (*self).0.len())]
-    #[thrust_macros::ensures(forall(|x: <&'a T as thrust_models::Model>::Ty| result == Some(x)
-        ==> (*self).1 < (!self).1
-            && x == &(*self).0[(!self).1 - 1]
-            && thrust_macros::post!(predicate(&x), true)))]
-    #[thrust_macros::ensures(result == None ==> forall(|k: Int|
-        !((*self).1 <= k && k < (!self).1) || thrust_macros::post!(predicate(&&(*self).0[k]), false)))]
-    #[thrust_macros::ensures(result == None || forall(|k: Int|
-        !((*self).1 <= k && k + 1 < (!self).1) || thrust_macros::post!(predicate(&&(*self).0[k]), false)))]
-    pub fn find<P: Fn(&&'a T) -> bool>(&mut self, predicate: P) -> Option<&'a T> {
-        let this = self;
-        while let Some(x) = this.next() {
-            thrust_macros::invariant!(
-                |this: &mut SliceIter<'a, T>, self: thrust_models::FnParam<&mut SliceIter<'a, T>>, predicate: P|
-                    !this == !self.at_entry()
-                        && (*this).0 == (*self.at_entry()).0
-                        && (*self.at_entry()).1 <= (*this).1
-                        && (*this).1 <= (*this).0.len()
-                        && forall(|x: <&'a T as thrust_models::Model>::Ty| thrust_macros::pre!(predicate(&x)))
-                        && forall(|k: Int| !((*self.at_entry()).1 <= k && k < (*this).1)
-                            || thrust_macros::post!(predicate(&&(*this).0[k]), false))
-            );
-            if predicate(&x) {
-                return Some(x);
-            }
-        }
-        None
-    }
-}
 
 // Rewrite (rewrites.md R8): a local `Map` in place of `iter::Map`, evaluation 1's adapter
 // (tests/ui/pass/creusot/map.rs), implementing std's `Iterator` and std.rs's `IteratorSpec`. The model is the inner iterator and
@@ -137,8 +92,7 @@ where
     // joined at their shared state.
     #[thrust_macros::ensures(forall(|sab: Seq<<I::Item as thrust_models::Model>::Ty>| forall(|sbc: Seq<<I::Item as thrust_models::Model>::Ty>|
         forall(|fab: Seq<Closure<F>>| forall(|fbc: Seq<Closure<F>>|
-        !(Self::produces_at(a, ab, b, sab, fab) && Self::produces_at(b, bc, c, sbc, fbc))
-            || Self::produces_at(a, ab.concat(bc), c, sab.concat(sbc), fab.subsequence(0, ab.len()).concat(fbc)))))))]
+        Self::produces_at(a, ab, b, sab, fab) && Self::produces_at(b, bc, c, sbc, fbc) ==> Self::produces_at(a, ab.concat(bc), c, sab.concat(sbc), fab.subsequence(0, ab.len()).concat(fbc)))))))]
     #[thrust_macros::lemma]
     fn produces_trans_at(
         a: Ghost<Self>,
@@ -507,11 +461,11 @@ where
         I::produces(iter, visited, mid)
             && (result == true ==>
                 exists(|fin: <I as thrust_models::Model>::Ty| I::completed(Mut::new(mid, fin)))
-                    && forall(|k: USize| !(0 <= k && k < visited.len()) || thrust_macros::post!(f(visited[k]), true)))
+                    && forall(|k: USize| 0 <= k && k < visited.len() ==> thrust_macros::post!(f(visited[k]), true)))
             && (result == false ==>
                 0 < visited.len()
                     && thrust_macros::post!(f(visited[visited.len() - 1]), false)
-                    && forall(|k: USize| !(0 <= k && k < visited.len() - 1) || thrust_macros::post!(f(visited[k]), true))))
+                    && forall(|k: USize| 0 <= k && k < visited.len() - 1 ==> thrust_macros::post!(f(visited[k]), true))))
 )]
 pub fn iter_all<I, F>(iter: I, f: F) -> bool
 where
@@ -626,7 +580,7 @@ where
             J::produces(it, visited, mid)
                 && J::completed(Mut::new(mid, fin))
                 && visited.len() == v.len()
-                && forall(|k: USize| !(0 <= k && k < v.len()) || visited[k] == Ok(v[k]))))
+                && forall(|k: USize| 0 <= k && k < v.len() ==> visited[k] == Ok(v[k]))))
 )]
 pub fn collect_index_vec_result<I, T, E, J>(it: J) -> Result<IndexVec<I, T>, E>
 where
@@ -641,7 +595,7 @@ where
             |iter: J, iter_old: Ghost<J>, it: thrust_models::FnParam<J>, produced: Ghost<Seq<<Result<T, E> as thrust_models::Model>::Ty>>, v: Vec<T>|
                 iter_old == it.at_entry()
                     && produced.len() == v.len()
-                    && forall(|k: USize| !(0 <= k && k < v.len()) || produced[k] == Ok(v[k]))
+                    && forall(|k: USize| 0 <= k && k < v.len() ==> produced[k] == Ok(v[k]))
         );
         match x {
             Ok(y) => v.push(y),

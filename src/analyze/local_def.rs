@@ -144,6 +144,14 @@ pub struct Analyzer<'tcx, 'ctx> {
     type_builder: TypeBuilder<'tcx>,
 }
 
+/// The local that the statement at `statement_index` of `data` assigns as a whole.
+fn assigned_local(data: &mir::BasicBlockData<'_>, statement_index: usize) -> Option<Local> {
+    match &data.statements.get(statement_index)?.kind {
+        mir::StatementKind::Assign(assign) => assign.0.as_local(),
+        _ => None,
+    }
+}
+
 /// The locals that the move paths `paths` are parts of.
 fn locals_of<'tcx>(
     paths: impl Iterator<Item = MovePathIndex>,
@@ -322,33 +330,15 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         if self.ctx.is_derived_clone(def_id) {
             return;
         }
-        let sig = self.ctx.fn_sig(def_id);
-        let promised = sig
-            .inputs()
-            .iter()
-            .filter_map(|ty| match ty.kind() {
-                mir_ty::TyKind::Ref(_, inner, mir_ty::Mutability::Mut) => Some(*inner),
-                _ => None,
-            })
-            .chain(std::iter::once(match sig.output().kind() {
-                mir_ty::TyKind::Ref(_, inner, _) => *inner,
-                _ => sig.output(),
-            }));
-        for ty in promised {
-            if self
-                .ctx
-                .type_invariant_instance(ty, self.owner_fn_id)
-                .is_some()
-            {
-                self.tcx.dcx().span_fatal(
-                    self.tcx.def_span(def_id),
-                    format!(
-                        "the derived `{}` would promise the invariant of `{ty}`, which the derive \
-                         does not keep; write the impl",
-                        self.tcx.def_path_str(def_id),
-                    ),
-                );
-            }
+        if let Some(ty) = self.invariant_in_contract(false) {
+            self.tcx.dcx().span_fatal(
+                self.tcx.def_span(def_id),
+                format!(
+                    "the derived `{}` would promise the invariant of `{ty}`, which the derive \
+                     does not keep; write the impl",
+                    self.tcx.def_path_str(def_id),
+                ),
+            );
         }
     }
 
@@ -384,26 +374,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// The generic arguments the implemented trait method takes for the instantiation
     /// being analyzed.
     pub fn trait_item_args(&self) -> Option<mir_ty::GenericArgsRef<'tcx>> {
-        let impl_did = self.tcx.parent(self.local_def_id.to_def_id());
-
-        if self.tcx.def_kind(impl_did) != (rustc_hir::def::DefKind::Impl { of_trait: true }) {
-            return None;
-        }
-
-        // an associated method's generic arguments start with those of its impl
-        let trait_ref = self
-            .tcx
-            .impl_trait_ref(impl_did)?
-            .instantiate(self.tcx, self.generic_args);
-        // ... and end with the method's own, which the trait method is generic over as well
-        let own_args = self
-            .generic_args
-            .iter()
-            .skip(self.tcx.generics_of(self.local_def_id).parent_count);
-        Some(
-            self.tcx
-                .mk_args_from_iter(trait_ref.args.iter().chain(own_args)),
-        )
+        analyze::trait_item_args(self.tcx, self.local_def_id.to_def_id(), self.generic_args)
     }
 
     pub fn trait_item_ty(&mut self) -> Option<rty::RefinedType> {
@@ -885,6 +856,31 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .map(|site| site.ty)
     }
 
+    /// A type whose invariant the contract at its generic arguments ensures at a position whose
+    /// type in the def's own signature mentions a type parameter. At a position with a concrete
+    /// type the contract carries the invariant over type parameters as well.
+    pub fn invariant_promised_over_parameters(&self) -> Option<mir_ty::Ty<'tcx>> {
+        use mir_ty::TypeVisitableExt as _;
+        let def_id = self.local_def_id.to_def_id();
+        let sig = self.ctx.fn_sig_with_body(def_id, &self.body);
+        let own_sig = self.ctx.fn_sig(def_id);
+        self.type_invariant_sites(sig)
+            .into_iter()
+            .filter(|site| !site.is_required())
+            .find(|site| {
+                let own_ty = match site.position {
+                    InvariantPosition::Param(idx) => own_sig.inputs()[idx],
+                    InvariantPosition::Result => own_sig.output(),
+                };
+                let own_ty = match own_ty.kind() {
+                    mir_ty::TyKind::Ref(_, inner, _) => *inner,
+                    _ => own_ty,
+                };
+                own_ty.has_param()
+            })
+            .map(|site| site.ty)
+    }
+
     /// The predicate `T::invariant` of std.rs's `Invariant` at `ty`, when its impl resolves in the
     /// owner's environment.
     fn type_invariant_pred(&self, ty: mir_ty::Ty<'tcx>) -> Option<chc::Pred> {
@@ -1106,7 +1102,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 let Some((dest_local, place)) = self.extract_elaborated_deref(&stmt) else {
                     continue;
                 };
-                let kind = if kept.contains(&dest_local) {
+                // `return` reads the return place without naming it, so no use is left to
+                // carry the place it would be replaced with.
+                let kind = if kept.contains(&dest_local) || dest_local == mir::RETURN_PLACE {
                     kept_deref_temp(&stmt, dest_local, place)
                 } else {
                     v.add_replacement(dest_local.into(), place);
@@ -1555,6 +1553,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .iterate_to_fixpoint(self.tcx, &self.body, None)
             .into_results_cursor(&self.body);
         for (block, data) in mir::traversal::preorder(&self.body) {
+            // The analysis of a block keeps the binding of a local it moved out of, so an
+            // assignment after the move writes to a defined local, as one to an initialized
+            // local does.
+            let mut init_in_block = HashSet::new();
             for statement_index in 0..=data.statements.len() {
                 let loc = mir::Location {
                     statement_index,
@@ -1565,6 +1567,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     continue;
                 };
                 let init_locals = locals_of(init_places.iter(), move_data);
+                init_in_block.extend(init_locals.iter().copied());
+                let reassigned = assigned_local(data, statement_index)
+                    .filter(|local| init_in_block.contains(local));
                 let mut_locals = self.mut_locals(data, statement_index);
                 tracing::info!(
                     ?init_locals,
@@ -1575,16 +1580,52 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     stmt = ?data.statements.get(statement_index),
                 );
                 for mut_local in mut_locals.iter() {
-                    if init_locals.contains(&mut_local) || zst_locals.contains(mut_local) {
+                    if init_locals.contains(&mut_local)
+                        || reassigned == Some(mut_local)
+                        || zst_locals.contains(mut_local)
+                    {
                         marked.push(mut_local);
                         tracing::info!(?mut_local, ?statement_index, ?block, "marking mut");
                     }
                 }
             }
         }
+        marked.extend(self.assigned_params().iter());
         for local in marked {
             self.body.local_decls[local].mutability = mir::Mutability::Mut;
         }
+    }
+
+    /// The parameters that the body assigns as a whole. A parameter is initialized on entry, so
+    /// an assignment to it while it is uninitialized follows a move out of it, which the check
+    /// for initialized locals above does not see. From there on the local no longer holds the
+    /// argument, while a non-flow parameter is taken to hold it at every block (`bind_locals`
+    /// in `analyze::basic_block`); a mutable one is not.
+    fn assigned_params(&self) -> DenseBitSet<Local> {
+        struct Visitor {
+            arg_count: usize,
+            params: DenseBitSet<Local>,
+        }
+        impl<'tcx> mir::visit::Visitor<'tcx> for Visitor {
+            fn visit_local(
+                &mut self,
+                local: Local,
+                ctxt: mir::visit::PlaceContext,
+                _location: mir::Location,
+            ) {
+                let is_param = (1..=self.arg_count).contains(&local.index());
+                if is_param && ctxt.is_place_assignment() {
+                    self.params.insert(local);
+                }
+            }
+        }
+        let mut visitor = Visitor {
+            arg_count: self.body.arg_count,
+            params: DenseBitSet::new_empty(self.body.local_decls.len()),
+        };
+        use mir::visit::Visitor as _;
+        visitor.visit_body(&self.body);
+        visitor.params
     }
 
     /// Scans the body for loop-invariant marker calls and groups them by
@@ -1757,8 +1798,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// The source text of the type an invariant writes for its parameter `ident`, the `idx`-th:
     /// the self type of the formula function's `<T as Model>::Ty`. `None` for `&str`, whose
     /// parameter is `NoModel`, and where `T` ends or starts with tokens `thrust_macros` made
-    /// (`Closure<F>` for a closure type parameter, `Dyn` for a trait object), whose span is
-    /// the macro's.
+    /// (`Closure<F>` for a closure type parameter), whose span is the macro's.
     fn invariant_param_source_text(
         &self,
         formula_def_id: LocalDefId,
@@ -2013,7 +2053,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         )?;
         let formula_fn = self
             .ctx
-            .formula_fn_with_args(formula_def_id, generic_args, self.local_def_id.to_def_id())
+            .formula_fn_with_args(formula_def_id, generic_args, self.owner_fn_id)
             .expect("ghost formula function is not registered");
         let names = formula_fn
             .param_idents()

@@ -78,7 +78,7 @@ impl Iterator for std::vec::IntoIter<u32> {
 }
 
 // `Extend<A>` reduced to `extend` over `&mut I` (the same shape as `from_iter` in
-// `traits/collect_visited_seq_i64.rs`): `self` ends as its entry value followed by what `iter`
+// `creusot/collect.rs`): `self` ends as its entry value followed by what `iter`
 // produced before it was completed.
 #[thrust_macros::context]
 trait Extend<A: Model>: Sized

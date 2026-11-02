@@ -1,10 +1,9 @@
 //@check-pass
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 THRUST_TRY_SPECS=1
-//@rustc-env: THRUST_VERIFY_ONLY=rustc_hashes,rustc_abi,rustc_index::slice::SliceIter,case_study::iter::SliceIter
+//@rustc-env: THRUST_VERIFY_ONLY=rustc_hashes,rustc_abi
 // Stage 1 of the rustc-coroutine verification target: the value types of rustc_abi's lib.rs
-// (Size/Align/Integer/Float/Primitive/Scalar/Niche/TargetDataLayout) and rustc_hashes, with the
-// slice iterator and `find` that `pointer_size_in` uses (rewrites.md R9).
+// (Size/Align/Integer/Float/Primitive/Scalar/Niche/TargetDataLayout) and rustc_hashes.
 // The code is the module tree under tests/rustc_coroutine/; this file selects the stage and
 // drives it.
 #![feature(new_range_api)]

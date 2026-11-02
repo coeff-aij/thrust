@@ -443,7 +443,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             );
         } else {
             let expected = expected.unwrap_or_else(|| analyzer.expected_ty());
-            self.ctx.register_def(owner_fn_id, expected);
+            self.ctx
+                .register_def(owner_fn_id, expected, Some(local_def_id));
         }
     }
 
@@ -1014,6 +1015,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let proof_branch = self.ctx.def_ids().proof_branch();
         analyze::lemma::check_lemmas(self.tcx, proof_branch);
         self.check_model_impls();
+        self.check_invariant_impls();
         self.analyze_raw_command_annot();
         self.register_trait_laws();
         self.check_restated_laws();
@@ -1043,6 +1045,34 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.check_ignored_not_run();
         self.check_invariants_not_assumed_unanalyzed();
         self.assert_callable_entry();
+    }
+
+    /// Stops at an `Invariant` impl whose self type is not an ADT defined in the crate (not in the injected
+    /// `std.rs`), as Creusot allows
+    /// type invariants only on a crate's own types. The functions of a foreign type, std's
+    /// among them, are not written over its invariant, so they could return values that break it.
+    fn check_invariant_impls(&self) {
+        let Some(trait_did) = self.ctx.def_ids().type_invariant() else {
+            return;
+        };
+        for &impl_did in self.tcx.local_trait_impls(trait_did) {
+            let self_ty = self.tcx.type_of(impl_did).instantiate_identity();
+            let own_adt = self_ty.ty_adt_def().is_some_and(|adt| {
+                adt.did()
+                    .as_local()
+                    .is_some_and(|local| !analyze::is_injected_std(self.tcx, local))
+            });
+            if own_adt {
+                continue;
+            }
+            self.tcx.dcx().span_fatal(
+                self.tcx.def_span(impl_did),
+                format!(
+                    "`Invariant` can be implemented only for a type defined in this crate, \
+                     not `{self_ty}`"
+                ),
+            );
+        }
     }
 
     /// Checks that each `#[thrust::law]` restated on an impl item (as Creusot writes it)
@@ -1092,6 +1122,21 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// analyzed, monomorphic ones as instances and generic ones by def, the monomorphic trusted
     /// functions and the entry function.
     fn walk_roots(&self) -> (Vec<mir_ty::Instance<'tcx>>, Vec<rustc_span::def_id::DefId>) {
+        let (mut roots, trusted, generic) = self.walk_roots_with_trusted_apart();
+        roots.extend(trusted);
+        (roots, generic)
+    }
+
+    /// [`Self::walk_roots`] with the monomorphic trusted functions returned apart from the other
+    /// roots.
+    #[allow(clippy::type_complexity)]
+    fn walk_roots_with_trusted_apart(
+        &self,
+    ) -> (
+        Vec<mir_ty::Instance<'tcx>>,
+        Vec<mir_ty::Instance<'tcx>>,
+        Vec<rustc_span::def_id::DefId>,
+    ) {
         let analyzed = self.tcx.mir_keys(()).iter().copied().filter(|def_id| {
             let id = def_id.to_def_id();
             !self.skip_analysis.contains(def_id)
@@ -1118,13 +1163,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         .requires_monomorphization(self.tcx)
             });
         let entry = self.tcx.entry_fn(()).map(|(def_id, _)| def_id);
-        let roots = monomorphic
-            .into_iter()
-            .chain(trusted)
-            .chain(entry)
-            .map(|def_id| mir_ty::Instance::mono(self.tcx, def_id))
-            .collect();
-        (roots, generic)
+        let instances = |def_ids: Vec<_>| -> Vec<_> {
+            def_ids
+                .into_iter()
+                .map(|def_id| mir_ty::Instance::mono(self.tcx, def_id))
+                .collect()
+        };
+        let roots = instances(monomorphic.into_iter().chain(entry).collect());
+        (roots, instances(trusted.collect()), generic)
     }
 
     /// The mode of a crate function on the ignored walk ([`analyze::Mode`]).
@@ -1165,18 +1211,37 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         }
         let mut fixed = HashSet::new();
         for (callee, from) in &entries.items {
-            if !fixed.insert(*callee) {
+            // A method entered through a vtable runs on the value the trait object packs, whose
+            // invariant the packing required.
+            let through_vtable = matches!(from.def, mir_ty::InstanceKind::Virtual(..));
+            if !fixed.insert((*callee, through_vtable)) {
                 continue;
             }
             self.stop_unanalyzed_closure_arg(*callee, *from);
-            let Some(fn_ty) = self.ctx.entered_inferred_fn_ty(*callee) else {
+            // A call through the trait object takes the trait's contract, which states nothing
+            // when the trait writes none (`requires(true)`, as Creusot and Prusti take an omitted
+            // one). The method refines it, so a `requires` of its own must hold of every
+            // argument as well.
+            let fn_ty = if through_vtable {
+                self.ctx.entered_fn_ty(*callee)
+            } else {
+                self.ctx.entered_inferred_fn_ty(*callee)
+            };
+            let Some(fn_ty) = fn_ty else {
                 continue;
             };
-            tracing::debug!(%callee, "entered from code Thrust does not analyze");
-            let clauses = analyze::Analyzer::accepts_every_argument(&fn_ty);
+            tracing::debug!(%callee, %from, "entered from code Thrust does not analyze");
+            let receiver = through_vtable
+                .then(|| self.ctx.receiver_invariant(*callee))
+                .flatten();
+            let clauses = analyze::Analyzer::accepts_every_argument(&fn_ty, receiver);
             self.ctx.extend_clauses(clauses);
         }
-        for (closure, from) in self.unanalyzed_entries().unhanded_closures {
+        let entries = self.unanalyzed_entries();
+        if let Some(miscounted) = entries.miscounted.first() {
+            self.stop_miscounted_handover(miscounted);
+        }
+        for (closure, from) in entries.unhanded_closures {
             let def_id = closure.def_id();
             if self.ctx.has_written_requires(def_id) {
                 continue;
@@ -1187,10 +1252,34 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     "`{from}`, which Thrust does not analyze, can run the closure `{closure}`, \
                      whose precondition is inferred, without an analyzed call handing it over \
                      to it with its obligation: give the closure a `requires` with \
-                     `thrust_macros::closure!`"
+                     `thrust_macros::closure!`, or state its `pre!` in the `requires` of the call \
+                     that hands it over (for a closure an iterator adapter holds, in the \
+                     adapter's `inv`, which that `requires` requires)"
                 ),
             );
         }
+    }
+
+    /// Stops at a call that hands values of a closure type to code Thrust does not analyze, at
+    /// an instance of its caller where its analysis does not state the obligation of each.
+    fn stop_miscounted_handover(&self, miscounted: &analyze::unanalyzed_entry::Miscounted<'tcx>) {
+        let held = match miscounted.held {
+            Some(1) => "1 value".to_string(),
+            Some(held) => format!("{held} values"),
+            None => "values, held some way Thrust cannot count,".to_string(),
+        };
+        self.tcx.dcx().span_fatal(
+            miscounted.count.span,
+            format!(
+                "at `{}`, this call hands `{}`, which Thrust does not analyze, {held} of the \
+                 closure type `{}`, and states the obligation of {}: a `pre!` stated of one \
+                 value does not cover another value of its type",
+                miscounted.owner,
+                self.tcx.def_path_str(miscounted.count.callee),
+                miscounted.closure,
+                miscounted.count.accounted,
+            ),
+        );
     }
 
     /// Stops at a closure of the crate with an inferred precondition, or a function pointer,
@@ -1265,12 +1354,15 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     }
 
     fn unanalyzed_entries(&self) -> analyze::unanalyzed_entry::Entries<'tcx> {
-        let (roots, generic) = self.walk_roots();
+        // A monomorphic trusted function is entered from its analyzed callers, with what their
+        // calls cover, as a generic one is; it is a root only for the paths no analyzed call
+        // leads into.
+        let (roots, trusted_roots, generic) = self.walk_roots_with_trusted_apart();
         let roots = self.ctx.walk_roots(roots, generic, |def_id| {
             self.crate_mode(def_id) == Some(analyze::Mode::Verified)
         });
         self.ctx
-            .unanalyzed_entries(roots, |def_id| self.is_analyzed(def_id))
+            .unanalyzed_entries(roots, trusted_roots, |def_id| self.is_analyzed(def_id))
     }
 
     /// Records every `#[thrust::law]` function declared in a local trait.
@@ -1290,6 +1382,18 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 .opt_associated_item(def_id)
                 .and_then(|item| item.trait_container(self.tcx))
                 .expect("a trait item has a trait");
+            let output = self.tcx.fn_sig(def_id).skip_binder().skip_binder().output();
+            if !output.is_unit() {
+                self.tcx.dcx().span_fatal(
+                    self.tcx.def_span(def_id),
+                    format!(
+                        "the trait law `{}` returns `{output}`: a law states a property of its \
+                         arguments and returns `()`; an implementation proves it with its body, \
+                         whose result is not named in the law",
+                        self.tcx.def_path_str(def_id)
+                    ),
+                );
+            }
             self.ctx.register_trait_law(trait_def_id, def_id);
         }
     }

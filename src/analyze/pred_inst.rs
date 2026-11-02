@@ -516,7 +516,31 @@ impl<'tcx> analyze::Analyzer<'tcx> {
         let vars: rustc_index::IndexVec<chc::TermVarIdx, chc::Sort> =
             params.iter().cloned().collect();
         let terms: Vec<chc::Term<chc::TermVarIdx>> = vars.indices().map(chc::Term::var).collect();
-        let upvars = || closure_upvars_term(terms[0].clone(), &params[0], &fn_ty);
+        let receiver = |contract: &str| match final_state_sort(&params[0], &fn_ty) {
+            Some(sort) => {
+                let final_ = self
+                    .system
+                    .borrow_mut()
+                    .new_named_user_quantified_var(format!(
+                        "final state of a closure in its {contract}"
+                    ));
+                let final_term = chc::Term::UserQuantifiedVar(sort.clone(), final_);
+                (
+                    chc::Term::mut_(terms[0].clone(), final_term),
+                    Some((final_, sort)),
+                )
+            }
+            None => {
+                let contract_sort = fn_ty.params[rty::FunctionParamIdx::from_usize(0)]
+                    .ty
+                    .to_sort();
+                assert_eq!(
+                    params[0], contract_sort,
+                    "closure contract reads its upvars in an unexpected shape"
+                );
+                (terms[0].clone(), None)
+            }
+        };
         let formula = match part {
             ClosureContractPart::HistInv => {
                 let [from, to] = terms.as_slice() else {
@@ -526,35 +550,24 @@ impl<'tcx> analyze::Analyzer<'tcx> {
             }
             ClosureContractPart::Post => {
                 let (result, args) = terms.get(1..)?.split_last()?;
-                let call_args: Vec<_> = std::iter::once(upvars())
+                let (receiver, final_state) = receiver("postcondition");
+                let call_args: Vec<_> = std::iter::once(receiver)
                     .chain(args.iter().cloned())
                     .collect();
-                fn_ty.postcondition_formula(&call_args, result.clone())
+                fn_ty.once_postcondition_formula(&call_args, result.clone(), final_state)
             }
             ClosureContractPart::Pre => {
-                let args = terms.get(1..)?.iter().cloned();
-                match final_state_sort(&params[0], &fn_ty) {
-                    // The precondition of an `FnMut` closure is a property of its current state
-                    // (Creusot's `FnMut` precondition takes `self` by value), so it must hold
-                    // whatever final state the call through the `&mut` ends in.
-                    Some(sort) => {
-                        let final_ = self.system.borrow_mut().new_named_user_quantified_var(
-                            "final state of a closure in its precondition".to_owned(),
-                        );
-                        let receiver = chc::Term::mut_(
-                            terms[0].clone(),
-                            chc::Term::UserQuantifiedVar(sort.clone(), final_),
-                        );
-                        let call_args: Vec<_> = std::iter::once(receiver).chain(args).collect();
-                        chc::Formula::forall(
-                            vec![(final_, sort)],
-                            fn_ty.precondition_formula(&call_args),
-                        )
-                    }
-                    None => {
-                        let call_args: Vec<_> = std::iter::once(upvars()).chain(args).collect();
-                        fn_ty.precondition_formula(&call_args)
-                    }
+                let (receiver, final_state) = receiver("precondition");
+                let call_args: Vec<_> = std::iter::once(receiver)
+                    .chain(terms.get(1..)?.iter().cloned())
+                    .collect();
+                let pre = fn_ty.precondition_formula(&call_args);
+                // The precondition of an `FnMut` closure is a property of its current state
+                // (Creusot's `FnMut` precondition takes `self` by value), so it must hold
+                // whatever final state the call through the `&mut` ends in.
+                match final_state {
+                    Some(var) => chc::Formula::forall(vec![var], pre),
+                    None => pre,
                 }
             }
         };
@@ -587,40 +600,12 @@ enum ClosureContractPart {
 }
 
 /// The sort of the closure state when the predicate declares the current state alone and the
-/// contract takes it through a `&mut`.
+/// contract takes it through a `&mut`: an `FnMut` precondition is declared over the current
+/// state alone (see `pre_upvars_sort` in `refine::template`), and so is a contract at an
+/// `FnOnce` bound given an `FnMut` closure.
 fn final_state_sort(declared: &chc::Sort, fn_ty: &rty::FunctionType) -> Option<chc::Sort> {
     let contract_sort = fn_ty.params[rty::FunctionParamIdx::from_usize(0)]
         .ty
         .to_sort();
     (contract_sort == chc::Sort::mut_(declared.clone())).then(|| declared.clone())
-}
-
-/// The upvars argument a closure contract takes, given the sort the predicate
-/// declares for it.
-///
-/// An `FnMut` precondition is declared over the current upvars alone (see
-/// `pre_upvars_sort` in `refine::template`), while the contract's formula reads
-/// each capture through the `&mut` receiver pair, as `build_env_from_captures`
-/// laid it out. The pair is rebuilt around the current value here. The predicate
-/// does not receive the final half, which is unconstrained where a precondition
-/// is discharged, so the current value stands in for it: a precondition naming
-/// a capture's prophecy reads the capture's current value instead.
-fn closure_upvars_term(
-    term: chc::Term<chc::TermVarIdx>,
-    declared: &chc::Sort,
-    fn_ty: &rty::FunctionType,
-) -> chc::Term<chc::TermVarIdx> {
-    let contract_sort = fn_ty.params[rty::FunctionParamIdx::from_usize(0)]
-        .ty
-        .to_sort();
-    if declared == &contract_sort {
-        term
-    } else {
-        assert_eq!(
-            contract_sort,
-            chc::Sort::mut_(declared.clone()),
-            "closure contract reads its upvars in an unexpected shape"
-        );
-        chc::Term::mut_(term.clone(), term)
-    }
 }

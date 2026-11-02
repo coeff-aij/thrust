@@ -17,9 +17,9 @@ impl<FieldIdx: Idx, VariantIdx: Idx> LayoutData<FieldIdx, VariantIdx> {
     // bytes, `b_offset` is at most 2^63 and `b_offset + b.size(dl)` does not overflow. `new` builds
     // the indices 0 of `VariantIdx` and 0 and 1 of `FieldIdx`.
     #[thrust::trusted]
-    #[thrust_macros::requires(forall(|dl: TargetDataLayout| !C::dl_of(*cx, dl) || (Scalar::wf_in(a, dl) && Scalar::wf_in(b, dl))))]
-    #[thrust_macros::requires(forall(|z: USize| !(z == 0usize) || <VariantIdx as Idx>::can_new(z)))]
-    #[thrust_macros::requires(forall(|k: USize| !(k == 0usize || k == 1usize) || <FieldIdx as Idx>::can_new(k)))]
+    #[thrust_macros::requires(forall(|dl: TargetDataLayout| C::dl_of(*cx, dl) ==> (Scalar::wf_in(a, dl) && Scalar::wf_in(b, dl))))]
+    #[thrust_macros::requires(forall(|z: USize| z == 0usize ==> <VariantIdx as Idx>::can_new(z)))]
+    #[thrust_macros::requires(forall(|k: USize| k == 0usize || k == 1usize ==> <FieldIdx as Idx>::can_new(k)))]
     #[thrust_macros::ensures(true)]
     pub fn scalar_pair<C: HasDataLayout>(cx: &C, a: Scalar, b: Scalar) -> Self {
         let dl = cx.data_layout();

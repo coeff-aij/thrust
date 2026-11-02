@@ -24,6 +24,8 @@ pub(super) struct FnMutReuse {
     /// The local fn-like defs with an `FnMut`-bounded type parameter, recorded with
     /// [`FnMutReuse::hist_inv_specified_params`].
     fn_mut_bounded_defs: Rc<RefCell<Vec<DefId>>>,
+    /// See [`Analyzer::record_once_post_param`].
+    once_post_params: Rc<RefCell<HashSet<DefId>>>,
 }
 
 /// See [`Analyzer::reuse_fn_mut_generic`].
@@ -95,6 +97,18 @@ impl<'tcx> Analyzer<'tcx> {
         if !callee_bounded.is_empty() && !self.is_hist_inv_specified(def_id) {
             return false;
         }
+        let once_post_params = self.fn_mut_reuse.once_post_params.borrow();
+        if let Some(param) = callee_bounded
+            .iter()
+            .find(|param| once_post_params.contains(param))
+        {
+            tracing::info!(
+                ?param,
+                "FnMut instance analyzed again: a specification states post! of a state held as a value"
+            );
+            return false;
+        }
+        drop(once_post_params);
         let generics = self.tcx.generics_of(def_id);
         let mut reached = Vec::new();
         for (idx, arg) in generic_args.iter().enumerate() {
@@ -330,6 +344,18 @@ impl<'tcx> Analyzer<'tcx> {
         let params = fn_mut_bounded_params(self.tcx, def_id);
         let specified = self.fn_mut_reuse.hist_inv_specified_params.borrow();
         !params.is_empty() && params.iter().all(|param| specified.contains(param))
+    }
+
+    /// Records that a specification states `post!` of a state of the `FnMut`-bounded type
+    /// parameter `param` held as a value. That call ends in a final state the call drops, whose
+    /// resolution is known at a concrete closure only: the generic analysis does not establish
+    /// it, so an instance at a closure is analyzed again rather than using the contract as
+    /// instantiated, which states it.
+    pub fn record_once_post_param(&self, param: DefId) {
+        self.fn_mut_reuse
+            .once_post_params
+            .borrow_mut()
+            .insert(param);
     }
 
     /// Whether an instance has used the contract of `local_def_id` as instantiated, so its

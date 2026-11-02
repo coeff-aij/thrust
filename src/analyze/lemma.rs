@@ -7,7 +7,8 @@
 //! logic functions and predicates, and the model operations of the injected `thrust_models`.
 //! The operations MIR has as statements (arithmetic, comparisons, field and index access) need
 //! no call. A lemma has no loop and no unsafe code, and takes no `&mut`, so that what it
-//! assigns stays its own.
+//! assigns stays its own. A law is stated for every value of its parameters, so it takes no
+//! `&mut` it could write through either (see [`Checker::check_law_signatures`]).
 
 use std::collections::HashMap;
 
@@ -34,10 +35,10 @@ pub fn check_lemmas(tcx: TyCtxt<'_>, proof_branch: Option<DefId>) {
         })
         .collect();
     checker.check_impl_lemmas();
+    checker.check_law_signatures();
     let mut calls = HashMap::new();
     for &lemma in &lemmas {
-        // A law is run where it is called, and a call analyzed as any other, so it may take a
-        // `&mut`.
+        // A law's signature is checked at each impl by `check_law_signatures`.
         if checker.is_lemma(lemma.to_def_id()) {
             checker.check_signature(lemma);
         }
@@ -173,6 +174,108 @@ impl<'tcx> Checker<'tcx> {
             self.tcx.dcx().span_err(
                 self.tcx.def_span(lemma),
                 "a lemma cannot take a `&mut`, or a value holding one",
+            );
+        }
+    }
+
+    /// Whether a value of `ty` holds a `&mut` the holder could write through. A `&mut` behind a
+    /// shared reference is read only, so its final value is no more than a value the body
+    /// cannot change.
+    fn holds_writable_mut(&self, ty: mir_ty::Ty<'tcx>, seen: &mut Vec<mir_ty::Ty<'tcx>>) -> bool {
+        if seen.contains(&ty) {
+            return false;
+        }
+        seen.push(ty);
+        match ty.kind() {
+            mir_ty::Ref(_, _, mir_ty::Mutability::Mut) => true,
+            // The generic arguments too: `Box<&mut T>` keeps its `T` behind a raw pointer.
+            mir_ty::Adt(adt, args) => {
+                args.types().any(|ty| self.holds_writable_mut(ty, seen))
+                    || adt
+                        .all_fields()
+                        .any(|field| self.holds_writable_mut(field.ty(self.tcx, args), seen))
+            }
+            mir_ty::Tuple(tys) => tys.iter().any(|ty| self.holds_writable_mut(ty, seen)),
+            mir_ty::Array(elem, _) | mir_ty::Slice(elem) => self.holds_writable_mut(*elem, seen),
+            mir_ty::Closure(_, args) => args
+                .as_closure()
+                .upvar_tys()
+                .iter()
+                .any(|ty| self.holds_writable_mut(ty, seen)),
+            _ => false,
+        }
+    }
+
+    /// A law is assumed for every value of its parameters, both components of a `&mut`
+    /// included, while its proof is checked for the final value its body leaves, so a law whose
+    /// parameters or result hold a `&mut` it could write through would be assumed for final
+    /// values it never proved (as Creusot's `#[law]` functions are logic and Verus's
+    /// broadcast lemmas are proof functions, a law has no mutable reference). A `&mut` can come
+    /// through `Self` or a trait argument, so each law is read at every impl of its trait.
+    fn check_law_signatures(&self) {
+        let tcx = self.tcx;
+        for impls in tcx.all_local_trait_impls(()).values() {
+            for &impl_def_id in impls {
+                let Some(trait_ref) = tcx.impl_trait_ref(impl_def_id) else {
+                    continue;
+                };
+                let trait_ref = trait_ref.instantiate_identity();
+                for item in tcx.associated_items(trait_ref.def_id).in_definition_order() {
+                    if self.is_law(item.def_id) {
+                        // The law's definition in the impl, when it has one, else the impl.
+                        let span = tcx
+                            .associated_items(impl_def_id)
+                            .in_definition_order()
+                            .find(|own| own.trait_item_def_id == Some(item.def_id))
+                            .map_or_else(
+                                || tcx.def_span(impl_def_id),
+                                |own| tcx.def_span(own.def_id),
+                            );
+                        self.check_law_at_impl(impl_def_id, trait_ref.args, item.def_id, span);
+                    }
+                }
+            }
+        }
+        for item_id in tcx.hir_crate_items(()).trait_items() {
+            let def_id = item_id.owner_id.def_id;
+            if self.is_law(def_id.to_def_id()) {
+                let args = mir_ty::GenericArgs::identity_for_item(tcx, def_id);
+                let owner = tcx.local_parent(def_id);
+                self.check_law_at_impl(owner, args, def_id.to_def_id(), tcx.def_span(def_id));
+            }
+        }
+    }
+
+    /// Checks `law` read at `trait_args`, as `owner` (an impl, or the trait) has them, and
+    /// reports at `span`.
+    fn check_law_at_impl(
+        &self,
+        owner: LocalDefId,
+        trait_args: mir_ty::GenericArgsRef<'tcx>,
+        law: DefId,
+        span: rustc_span::Span,
+    ) {
+        let tcx = self.tcx;
+        let args = mir_ty::GenericArgs::for_item(tcx, law, |param, _| {
+            trait_args
+                .get(param.index as usize)
+                .copied()
+                .unwrap_or_else(|| tcx.mk_param_from_def(param))
+        });
+        let sig = tcx.fn_sig(law).instantiate(tcx, args).skip_binder();
+        let typing_env = mir_ty::TypingEnv::post_analysis(tcx, owner);
+        let holds_mut = sig.inputs_and_output.iter().any(|ty| {
+            let ty = tcx.erase_regions(ty);
+            let ty = tcx
+                .try_normalize_erasing_regions(typing_env, ty)
+                .unwrap_or(ty);
+            self.holds_writable_mut(ty, &mut Vec::new())
+        });
+        if holds_mut {
+            tcx.dcx().span_err(
+                span,
+                "a law cannot take or return a `&mut`, or a value holding one, that it could \
+                 write through, as `Self` or a type argument included",
             );
         }
     }
