@@ -622,8 +622,8 @@ pub struct Analyzer<'tcx> {
     predicate_instances: Rc<RefCell<HashMap<PredicateInstanceKey<'tcx>, chc::UserDefinedPred>>>,
     /// The predicate instances whose bodies are being translated, innermost last.
     defining_predicates: Rc<RefCell<Vec<PredicateInstanceKey<'tcx>>>>,
-    /// The instances of `#[thrust::opaque]` predicates and logic functions, each with the module
-    /// it is written in; see [`Analyzer::mark_opaque_predicates`].
+    /// The instances of `#[thrust::opaque]` predicates and logic functions, each with its item;
+    /// see [`Analyzer::mark_opaque_predicates`].
     opaque_predicates: Rc<RefCell<Vec<(chc::UserDefinedPred, LocalDefId)>>>,
     /// The result type of each logic function defined so far, by its symbol: what a call of it in
     /// another definition's body is known to have (`checked_logic_fn_body`).
@@ -1726,10 +1726,9 @@ impl<'tcx> Analyzer<'tcx> {
             .next()
             .is_some()
         {
-            let module = self.tcx.parent_module_from_def_id(local_def_id);
             self.opaque_predicates
                 .borrow_mut()
-                .push((pred.clone(), module.to_local_def_id()));
+                .push((pred.clone(), local_def_id));
         }
 
         self.defining_predicates.borrow_mut().push(key);
@@ -2548,28 +2547,76 @@ impl<'tcx> Analyzer<'tcx> {
 
     /// Makes each `#[thrust::opaque]` predicate or logic function opaque in the system
     /// (`chc::System::make_opaque`) unless a function of the module it is written in that is
-    /// marked `#[thrust::reveal]` has its body analyzed here, as Dafny's and Verus's `reveal`
-    /// make an opaque definition visible where a proof asks for it. Code that does not reveal it
-    /// reads it through the contracts and lemmas stated of it, which are checked where the code
-    /// that reveals it is analyzed. A system has one emission of each predicate, so a reveal
-    /// applies to the whole system: a strengthening dropped, never one added.
+    /// marked `#[thrust::reveal]` has its body analyzed here. Code that does not reveal it reads
+    /// it through the contracts and lemmas stated of it, which are checked where the code that
+    /// reveals it is analyzed. A system has one emission of each predicate, so a reveal applies
+    /// to the whole system, unlike Dafny's and Verus's `reveal`, which applies to the proof it is
+    /// written in: a strengthening dropped, never one added.
     fn mark_opaque_predicates(&self) {
+        self.check_opacity_attributes();
+        let module_of = |def: LocalDefId| self.tcx.parent_module_from_def_id(def).to_local_def_id();
         let revealing_modules: HashSet<LocalDefId> = self
             .body_checks
             .checked()
             .into_iter()
-            .filter(|def| {
-                self.tcx
-                    .get_attrs_by_path(def.to_def_id(), &analyze::annot::reveal_path())
-                    .next()
-                    .is_some()
-            })
-            .map(|def| self.tcx.parent_module_from_def_id(def).to_local_def_id())
+            .filter(|&def| self.has_attr(def, &analyze::annot::reveal_path()))
+            .map(module_of)
             .collect();
         let mut system = self.system.borrow_mut();
-        for (pred, module) in self.opaque_predicates.borrow().iter() {
-            if !revealing_modules.contains(module) {
-                system.make_opaque(pred.clone());
+        for (pred, def) in self.opaque_predicates.borrow().iter() {
+            if revealing_modules.contains(&module_of(*def)) {
+                continue;
+            }
+            // Universally quantifying a definition strengthens the clauses only when it is closed:
+            // one that applies an unknown (a closure's inferred contract) keeps its definition.
+            if system.definition_applies_unknown(pred) {
+                self.tcx.dcx().span_warn(
+                    self.tcx.def_span(*def),
+                    "this `#[thrust::opaque]` function keeps its definition here: at this instance it applies a contract left to inference",
+                );
+                continue;
+            }
+            system.make_opaque(pred.clone());
+        }
+    }
+
+    fn has_attr(&self, def: LocalDefId, path: &[rustc_span::Symbol]) -> bool {
+        self.tcx
+            .get_attrs_by_path(def.to_def_id(), path)
+            .next()
+            .is_some()
+    }
+
+    /// Stops at a `#[thrust::opaque]` on anything but a predicate or logic function with a Rust
+    /// body, and at a `#[thrust::reveal]` in a module without an opaque function: rustc does not
+    /// check `thrust::` attributes, and either would otherwise change nothing.
+    fn check_opacity_attributes(&self) {
+        let opaque_path = analyze::annot::opaque_path();
+        let defs: Vec<LocalDefId> = self.tcx.hir_crate_items(()).definitions().collect();
+        let mut opaque_modules = HashSet::new();
+        for &def in &defs {
+            if !self.has_attr(def, &opaque_path) {
+                continue;
+            }
+            let spec_fn = self.has_attr(def, &analyze::annot::predicate_path())
+                || self.has_attr(def, &analyze::annot::logic_path());
+            if !spec_fn || !self.formula_fns.contains_key(&def) {
+                self.tcx.dcx().span_err(
+                    self.tcx.def_span(def),
+                    "`#[thrust::opaque]` applies only to a predicate or logic function with a Rust body",
+                );
+            }
+            opaque_modules.insert(self.tcx.parent_module_from_def_id(def).to_local_def_id());
+        }
+        for &def in &defs {
+            let module = self.tcx.parent_module_from_def_id(def).to_local_def_id();
+            if self.has_attr(def, &analyze::annot::reveal_path())
+                && !opaque_modules.contains(&module)
+            {
+                self.tcx.dcx().span_err(
+                    self.tcx.def_span(def),
+                    "`#[thrust::reveal]` reveals the opaque functions of its module, and this module has none",
+                );
             }
         }
     }

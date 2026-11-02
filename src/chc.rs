@@ -2980,6 +2980,36 @@ impl System {
         self.opaque_preds.contains(pred)
     }
 
+    /// Whether the definition of `pred` applies an unknown, directly or through the definitions
+    /// it applies.
+    pub fn definition_applies_unknown(&self, pred: &UserDefinedPred) -> bool {
+        let mut seen = HashSet::new();
+        let mut todo = vec![pred];
+        while let Some(pred) = todo.pop() {
+            if !seen.insert(pred) {
+                continue;
+            }
+            let Some(def) = self
+                .user_defined_pred_defs
+                .iter()
+                .find(|d| &d.symbol == pred)
+            else {
+                continue;
+            };
+            let UserDefinedPredBody::Formula(formula) = &def.body else {
+                continue;
+            };
+            for atom in formula.iter_atoms() {
+                match &atom.pred {
+                    Pred::Var(_) => return true,
+                    Pred::UserDefined(other) => todo.push(other),
+                    _ => {}
+                }
+            }
+        }
+        false
+    }
+
     fn user_defined_preds_in_dependency_order(&self) -> Vec<&UserDefinedPredDef> {
         let mut remaining: Vec<_> = self.user_defined_pred_defs.iter().collect();
         let mut ordered = Vec::with_capacity(remaining.len());
@@ -3909,7 +3939,8 @@ impl System {
             .user_defined_pred_defs
             .iter()
             .flat_map(|def| def.sig.iter().map(|(_, sort)| sort));
-        vars.chain(sigs).chain(definitions).any(unread)
+        // z3 keeps the definition of an opaque function, so its query is another one.
+        !self.opaque_preds.is_empty() || vars.chain(sigs).chain(definitions).any(unread)
     }
 
     /// Solves each class of clauses that share an unknown on its own (see [`components`]),
