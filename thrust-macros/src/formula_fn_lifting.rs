@@ -35,6 +35,11 @@ impl Parse for EnclosingContext {
 }
 
 impl EnclosingContext {
+    /// Gives this context to the spec macros nested in `expr` (`context::inject_into_expr`).
+    pub fn inject_into(&self, expr: &mut syn::Expr) {
+        crate::context::inject_into_expr(&self.sig, self.outer.as_ref(), expr);
+    }
+
     /// The generic params in scope: the host signature's own, plus the outer
     /// `impl`/`trait`'s for a method.
     fn generic_params(&self) -> impl Iterator<Item = &GenericParam> {
