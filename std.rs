@@ -1099,6 +1099,18 @@ mod thrust_models {
         unimplemented!()
     }
 
+    #[doc(hidden)]
+    #[thrust::def::assert_marker]
+    #[thrust::ignored]
+    #[inline(never)]
+    pub fn __assert_marker<F>(_f: F) {}
+
+    #[doc(hidden)]
+    #[thrust::def::assume_marker]
+    #[thrust::ignored]
+    #[inline(never)]
+    pub fn __assume_marker<F>(_f: F) {}
+
     /// Proof-only data, introduced by `thrust_macros::ghost!`. In the logic it is its
     /// content, so a specification refers to a `Ghost<T>` as if it were a `T`.
     #[allow(dead_code)]

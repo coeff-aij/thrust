@@ -71,26 +71,54 @@ fn int_ty_includes<'tcx>(
     }
 }
 
-/// The formula function a ghost marker call carries, or `None` for any other call.
-pub fn ghost_marker_formula_fn<'tcx>(
+/// A marker call carrying a formula function over the live variables it names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormulaMarker {
+    /// `ghost!`: a value related to the term, which is parameter `0`.
+    Ghost,
+    /// `proof_assert!`: the formula, checked and then assumed.
+    Assert,
+    /// `assume!`: the formula, assumed unchecked.
+    Assume,
+}
+
+impl FormulaMarker {
+    /// The first parameter of the formula function that names a live variable: the one after
+    /// the value of a ghost term, the first otherwise.
+    pub fn first_named_param(self) -> usize {
+        match self {
+            FormulaMarker::Ghost => 1,
+            FormulaMarker::Assert | FormulaMarker::Assume => 0,
+        }
+    }
+}
+
+/// The marker and the formula function a marker call carries, or `None` for any other call.
+pub fn formula_marker_call<'tcx>(
     ctx: &analyze::Analyzer<'tcx>,
     local_decls: &mir::LocalDecls<'tcx>,
     func: &Operand<'tcx>,
     args: &[rustc_span::source_map::Spanned<Operand<'tcx>>],
-) -> Option<(LocalDefId, mir_ty::GenericArgsRef<'tcx>)> {
+) -> Option<(FormulaMarker, LocalDefId, mir_ty::GenericArgsRef<'tcx>)> {
     let (def_id, _) = func.const_fn_def()?;
-    if Some(def_id) != ctx.def_ids().ghost_marker() {
+    let marker = if Some(def_id) == ctx.def_ids().ghost_marker() {
+        FormulaMarker::Ghost
+    } else if Some(def_id) == ctx.def_ids().assert_marker() {
+        FormulaMarker::Assert
+    } else if Some(def_id) == ctx.def_ids().assume_marker() {
+        FormulaMarker::Assume
+    } else {
         return None;
-    }
+    };
 
     let arg_ty = args[0].node.ty(local_decls, ctx.tcx());
     let mir_ty::TyKind::FnDef(formula_def_id, generic_args) = arg_ty.kind() else {
-        panic!("ghost marker argument must be a formula function item");
+        panic!("marker argument must be a formula function item");
     };
     let formula_def_id = formula_def_id
         .as_local()
-        .expect("ghost formula function must be local");
-    Some((formula_def_id, generic_args))
+        .expect("marker formula function must be local");
+    Some((marker, formula_def_id, generic_args))
 }
 
 /// The debug entries of the variables the name `name` can stand for in `scope`: those of the
@@ -335,6 +363,13 @@ enum ResolvedCallable<'tcx> {
     Unresolved,
 }
 
+/// A call typed by a rule of its own rather than by the callee's type.
+enum BuiltinCall {
+    BoxNew,
+    Forget,
+    ManuallyDropNew,
+}
+
 pub struct Analyzer<'tcx, 'ctx> {
     ctx: &'ctx mut analyze::Analyzer<'tcx>,
     tcx: TyCtxt<'tcx>,
@@ -482,62 +517,16 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     fn relate_fn_param_sub_types_with_builder(
         &mut self,
         got_args: IndexVec<rty::FunctionParamIdx, rty::RefinedType<rty::FunctionParamIdx>>,
-        mut expected_args: IndexVec<rty::FunctionParamIdx, rty::RefinedType<Var>>,
+        expected_args: IndexVec<rty::FunctionParamIdx, rty::RefinedType<Var>>,
         builder: &mut chc::ClauseBuilder,
         abi: rty::FunctionAbi,
     ) -> Vec<chc::Clause> {
-        let mut clauses = Vec::new();
-
-        match abi {
-            rty::FunctionAbi::Rust => {
-                if expected_args.is_empty() {
-                    // elaboration: we need at least one predicate variable in parameter (see mir_function_ty_impl)
-                    expected_args.push(rty::RefinedType::unrefined(rty::Type::unit()).vacuous());
-                }
-            }
-            rty::FunctionAbi::RustCall => {
-                // &Closure, { v: (own i32, own bool) | v = (<0>, <false>) }
-                // =>
-                // &Closure, { v: i32 | (<v>, _) = (<0>, <false>) }, { v: bool | (_, <v>) = (<0>, <false>) }
-
-                let rty::RefinedType { ty, mut refinement } =
-                    expected_args.pop().expect("rust-call last arg");
-                let ty = ty.into_tuple().expect("rust-call last arg is tuple");
-                let mut replacement_tuple = Vec::new(); // will be (<v>, _) or (_, <v>)
-                for elem in &ty.elems {
-                    let existential = refinement.existentials.push(elem.ty.to_sort());
-                    replacement_tuple.push(chc::Term::var(rty::RefinedTypeVar::Existential(
-                        existential,
-                    )));
-                }
-
-                for (i, elem) in ty.elems.into_iter().enumerate() {
-                    // all tuple elements are boxed during the translation to rty::Type
-                    let mut param_ty = elem.deref();
-                    param_ty
-                        .refinement
-                        .push_conj(refinement.clone().subst_value_var(|| {
-                            let mut value_elems = replacement_tuple.clone();
-                            value_elems[i] = chc::Term::var(rty::RefinedTypeVar::Value).boxed();
-                            chc::Term::tuple(value_elems)
-                        }));
-                    expected_args.push(param_ty);
-                }
-
-                tracing::info!(
-                    expected = %crate::pretty::FunctionParams::new(&expected_args).display(),
-                    "rust-call expanded",
-                );
-            }
-        }
-
-        clauses.extend(relate_param_sub_types(
+        relate_param_sub_types(
             got_args,
-            &expected_args,
+            &call_args(expected_args, abi),
             builder,
             Some(&self.ctx.enum_defs),
-        ));
-        clauses
+        )
     }
 
     fn const_enum_ty(
@@ -2159,25 +2148,105 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         I: IntoIterator<Item = Operand<'tcx>>,
     {
         let mut args = args.into_iter();
-        if let Some((def_id, _)) = func.const_fn_def() {
-            if Some(def_id) == self.ctx.def_ids().box_new() {
+        match self.builtin_call(&func) {
+            Some(BuiltinCall::BoxNew) => {
                 self.type_box(args.next().expect("Box::new argument"), &expected_ret);
                 return expected_ret;
             }
-            if self
-                .tcx
-                .is_diagnostic_item(rustc_span::sym::mem_forget, def_id)
-            {
+            Some(BuiltinCall::Forget) => {
                 self.type_forget(&expected_ret);
                 return expected_ret;
             }
-            if self.is_manually_drop_new(def_id) {
+            Some(BuiltinCall::ManuallyDropNew) => {
                 let value = args.next().expect("ManuallyDrop::new argument");
                 self.type_manually_drop_new(value, &expected_ret);
                 return expected_ret;
             }
+            None => {}
         }
 
+        let (func_ty, expected_args) = self.callee_type(func, args);
+        let mut arguments = HashMap::new();
+        expected_ret
+            .ty
+            .inherit_pointer_types(func_ty.ret.ty.clone(), &mut |idx| {
+                let var = arguments
+                    .entry(idx)
+                    .or_insert_with(|| self.env.immut_bind_tmp(expected_args[idx].clone()));
+                chc::Term::var(*var)
+            });
+        let clauses = self.relate_fn_sub_type(func_ty, expected_args, expected_ret.clone());
+        self.ctx.extend_clauses(clauses);
+        expected_ret
+    }
+
+    /// The result of a call under `THRUST_CALL_RESULT_DIRECT=1`: the callee's return type with
+    /// each parameter it names bound to a temporary holding the argument, after the check of the
+    /// precondition.
+    fn type_call_direct<I>(&mut self, func: Operand<'tcx>, args: I) -> rty::RefinedType<Var>
+    where
+        I: IntoIterator<Item = Operand<'tcx>>,
+    {
+        let (func_ty, expected_args) = self.callee_type(func, args);
+        let expected_args = call_args(expected_args, func_ty.abi);
+        let ret = subst_singleton_params(*func_ty.ret, &singleton_params(&func_ty.params));
+        let clauses = relate_param_sub_types(
+            func_ty.params,
+            &expected_args,
+            &mut self.env.build_clause(),
+            Some(&self.ctx.enum_defs),
+        );
+        self.ctx.extend_clauses(clauses);
+        let mut arguments = HashMap::new();
+        let mut ret = ret.subst_var(|idx| {
+            let var = arguments
+                .entry(idx)
+                .or_insert_with(|| self.env.immut_bind_tmp(expected_args[idx].clone()));
+            chc::Term::var(*var)
+        });
+        // The facts of the result's type, as the template has them from the subtyping: a block
+        // that inherits this one's state takes the refinements of its bindings without them.
+        ret.refinement = ret.formula_with(Some(&self.ctx.enum_defs));
+        // A value of a singleton sort has no clause variable: the refinement, which may still say
+        // what the call does to `&mut` arguments, refers to the sort's only value instead.
+        let sort = ret.ty.to_sort();
+        if sort.is_singleton() {
+            ret.refinement = ret
+                .refinement
+                .subst_value_var(|| chc::Term::default_for(&sort));
+        }
+        ret
+    }
+
+    fn builtin_call(&self, func: &Operand<'tcx>) -> Option<BuiltinCall> {
+        let (def_id, _) = func.const_fn_def()?;
+        if Some(def_id) == self.ctx.def_ids().box_new() {
+            Some(BuiltinCall::BoxNew)
+        } else if self
+            .tcx
+            .is_diagnostic_item(rustc_span::sym::mem_forget, def_id)
+        {
+            Some(BuiltinCall::Forget)
+        } else if self.is_manually_drop_new(def_id) {
+            Some(BuiltinCall::ManuallyDropNew)
+        } else {
+            None
+        }
+    }
+
+    /// The type of the callee of a call that is not a [`BuiltinCall`], and the types of its
+    /// arguments.
+    fn callee_type<I>(
+        &mut self,
+        func: Operand<'tcx>,
+        args: I,
+    ) -> (
+        rty::FunctionType,
+        IndexVec<rty::FunctionParamIdx, rty::RefinedType<Var>>,
+    )
+    where
+        I: IntoIterator<Item = Operand<'tcx>>,
+    {
         // TODO: handle const_fn_def on Env side
         let func_ty = if let Some((def_id, args)) = func.const_fn_def() {
             let ty = self.callable_ty(def_id, args);
@@ -2188,7 +2257,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         } else {
             self.operand_type(func.clone()).ty
         };
-        let operands: Vec<_> = args.collect();
+        let operands: Vec<_> = args.into_iter().collect();
         let expected_args: IndexVec<_, _> = operands
             .iter()
             .map(|op| self.operand_refined_type(op.clone()))
@@ -2196,22 +2265,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         if let Some((def_id, generic_args)) = func.const_fn_def() {
             self.hand_over_closures(def_id, generic_args, &operands, &expected_args);
         }
-        if let rty::Type::Function(func_ty) = func_ty {
-            let mut arguments = HashMap::new();
-            expected_ret
-                .ty
-                .inherit_pointer_types(func_ty.ret.ty.clone(), &mut |idx| {
-                    let var = arguments
-                        .entry(idx)
-                        .or_insert_with(|| self.env.immut_bind_tmp(expected_args[idx].clone()));
-                    chc::Term::var(*var)
-                });
-            let clauses = self.relate_fn_sub_type(func_ty, expected_args, expected_ret.clone());
-            self.ctx.extend_clauses(clauses);
-            expected_ret
-        } else {
+        let rty::Type::Function(func_ty) = func_ty else {
             panic!("unexpected def type: {:?}", func_ty);
-        }
+        };
+        (func_ty, expected_args)
     }
 
     fn type_box(&mut self, value: Operand<'tcx>, expected: &rty::RefinedType<Var>) {
@@ -2299,6 +2356,89 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         }
 
         found
+    }
+
+    /// `proof_assert!` and `assume!`: the formula over the live variables it names holds from
+    /// here on, checked here for `proof_assert!` and assumed unchecked for `assume!`, as Creusot's
+    /// `proof_assert!` and Verus's `assert` and `assume` are. The variables are those a ghost
+    /// term reads ([`Self::operand_of_name`]).
+    fn type_formula_statement(
+        &mut self,
+        marker: FormulaMarker,
+        formula_fn_def_id: DefId,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
+        formula_fn: FormulaFn<'tcx>,
+        span: rustc_span::Span,
+    ) {
+        let what = match marker {
+            FormulaMarker::Assert => "proof_assert!",
+            FormulaMarker::Assume => "assume!",
+            FormulaMarker::Ghost => unreachable!("a ghost marker is not a statement"),
+        };
+        let sig = self
+            .tcx
+            .fn_sig(formula_fn_def_id)
+            .instantiate(self.tcx, generic_args);
+        let written_sig = self.tcx.instantiate_bound_regions_with_erased(sig);
+        let vars: IndexVec<rty::FunctionParamIdx, Var> = formula_fn
+            .params()
+            .indices()
+            .zip(written_sig.inputs())
+            .map(|(idx, written_input_ty)| {
+                let ident =
+                    formula_fn.param_idents()[idx].expect("formula parameters must be named");
+                let name = analyze::annot_fn::lifted_param_source_name(ident);
+                let operand = self.operand_of_name(name).unwrap_or_else(|| {
+                    self.tcx.dcx().span_fatal(
+                        span,
+                        format!("{what} refers to `{name}`, which is not a live variable here"),
+                    )
+                });
+                let written_ty =
+                    analyze::local_def::spec_param_written_ty(self.ctx, *written_input_ty);
+                let written = analyze::local_def::spec_param_compared_ty(
+                    self.ctx,
+                    self.local_def_id,
+                    written_ty,
+                );
+                let actual_ty = operand.ty(&self.local_decls, self.tcx);
+                let actual = analyze::local_def::spec_param_compared_ty(
+                    self.ctx,
+                    self.local_def_id,
+                    actual_ty,
+                );
+                if written != actual {
+                    self.tcx.dcx().span_fatal(
+                        span,
+                        format!(
+                            "{what} gives `{name}` the type `{written}`, but it has the type \
+                             `{actual}` here"
+                        ),
+                    );
+                }
+                let arg = self.operand_refined_type(operand);
+                self.env.immut_bind_tmp(arg)
+            })
+            .collect();
+        let formula = formula_fn.formula().clone().map_var(|idx| vars[idx]);
+        if marker == FormulaMarker::Assert {
+            self.check_formula(formula.clone());
+        } else {
+            self.ctx.record_assumption(analyze::AssumeSite {
+                span: span.source_callsite(),
+                owner: self.local_def_id,
+                formula: formula_fn_def_id,
+            });
+        }
+        self.env.assume(formula.map_var(PlaceTypeVar::Var));
+    }
+
+    /// The goal that `formula` holds in the current environment.
+    fn check_formula(&mut self, formula: chc::Formula<Var>) {
+        let mut builder = self.env.build_clause();
+        let goal = rty::Refinement::from(formula.map_var(rty::RefinedTypeVar::Free));
+        let clauses = builder.with_value_var(&rty::Type::<Var>::unit()).head(goal);
+        self.ctx.extend_clauses(clauses);
     }
 
     /// Types the introduction of a ghost value as a call to the function the ghost term
@@ -2945,6 +3085,42 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 unimplemented!()
             }
 
+            if let Some((marker @ (FormulaMarker::Assert | FormulaMarker::Assume), def_id, args)) =
+                formula_marker_call(self.ctx, &self.local_decls, func, args)
+            {
+                let formula_fn = self
+                    .ctx
+                    .formula_fn_with_args(def_id, args, self.type_builder.owner_fn_id())
+                    .expect("marker formula function is not registered");
+                self.type_formula_statement(
+                    marker,
+                    def_id.to_def_id(),
+                    args,
+                    formula_fn,
+                    term.source_info.span,
+                );
+                self.bind_local(destination, rty::RefinedType::unrefined(rty::Type::unit()));
+                return;
+            }
+
+            if call_result_direct()
+                && destination != mir::RETURN_PLACE
+                && formula_marker_call(self.ctx, &self.local_decls, func, args).is_none()
+                && self.builtin_call(func).is_none()
+            {
+                let rty = self.type_call_direct(func.clone(), args.iter().map(|a| a.node.clone()));
+                debug_assert_eq!(
+                    rty.ty.to_sort(),
+                    self.type_builder
+                        .build(self.local_decls[destination].ty)
+                        .ty
+                        .to_sort(),
+                    "the callee's return type has the shape of the destination",
+                );
+                self.bind_local(destination, rty);
+                return;
+            }
+
             let decl = self.local_decls[destination].clone();
             let mut rty = self
                 .type_builder
@@ -2958,8 +3134,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     .clone()
                     .subst_var(|idx| chc::Term::var(outer_fn_param_vars[&idx]));
             }
-            if let Some((formula_def_id, generic_args)) =
-                ghost_marker_formula_fn(self.ctx, &self.local_decls, func, args)
+            if let Some((FormulaMarker::Ghost, formula_def_id, generic_args)) =
+                formula_marker_call(self.ctx, &self.local_decls, func, args)
             {
                 let formula_fn = self
                     .ctx
@@ -3274,6 +3450,55 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     }
 }
 
+/// The types of the arguments of a call, one for each parameter of a callee of the ABI `abi`.
+fn call_args(
+    mut args: IndexVec<rty::FunctionParamIdx, rty::RefinedType<Var>>,
+    abi: rty::FunctionAbi,
+) -> IndexVec<rty::FunctionParamIdx, rty::RefinedType<Var>> {
+    match abi {
+        rty::FunctionAbi::Rust => {
+            if args.is_empty() {
+                // elaboration: we need at least one predicate variable in parameter (see mir_function_ty_impl)
+                args.push(rty::RefinedType::unrefined(rty::Type::unit()).vacuous());
+            }
+        }
+        rty::FunctionAbi::RustCall => {
+            // &Closure, { v: (own i32, own bool) | v = (<0>, <false>) }
+            // =>
+            // &Closure, { v: i32 | (<v>, _) = (<0>, <false>) }, { v: bool | (_, <v>) = (<0>, <false>) }
+
+            let rty::RefinedType { ty, mut refinement } = args.pop().expect("rust-call last arg");
+            let ty = ty.into_tuple().expect("rust-call last arg is tuple");
+            let mut replacement_tuple = Vec::new(); // will be (<v>, _) or (_, <v>)
+            for elem in &ty.elems {
+                let existential = refinement.existentials.push(elem.ty.to_sort());
+                replacement_tuple.push(chc::Term::var(rty::RefinedTypeVar::Existential(
+                    existential,
+                )));
+            }
+
+            for (i, elem) in ty.elems.into_iter().enumerate() {
+                // all tuple elements are boxed during the translation to rty::Type
+                let mut param_ty = elem.deref();
+                param_ty
+                    .refinement
+                    .push_conj(refinement.clone().subst_value_var(|| {
+                        let mut value_elems = replacement_tuple.clone();
+                        value_elems[i] = chc::Term::var(rty::RefinedTypeVar::Value).boxed();
+                        chc::Term::tuple(value_elems)
+                    }));
+                args.push(param_ty);
+            }
+
+            tracing::info!(
+                expected = %crate::pretty::FunctionParams::new(&args).display(),
+                "rust-call expanded",
+            );
+        }
+    }
+    args
+}
+
 /// The clauses that make arguments of `expected_args` acceptable to parameters of `got_args`,
 /// one for one, each parameter's refinement under the earlier arguments' refinements, in the
 /// environment `builder` holds.
@@ -3340,6 +3565,15 @@ fn subst_singleton_params(
         Some(sort) => chc::Term::default_for(sort),
         None => chc::Term::var(v),
     })
+}
+
+/// Whether `THRUST_CALL_RESULT_DIRECT=1` asks for a call's result to be typed by the callee's
+/// return type ([`Analyzer::type_call_direct`]) rather than by a template over the environment.
+fn call_result_direct() -> bool {
+    matches!(
+        std::env::var("THRUST_CALL_RESULT_DIRECT").as_deref(),
+        Ok("1")
+    )
 }
 
 /// Whether a call of an external function without a specification that is not on a panicking path

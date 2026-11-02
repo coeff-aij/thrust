@@ -2940,6 +2940,19 @@ fn forall_in<'a, V: 'a>(atoms: impl Iterator<Item = &'a Atom<V>>) -> Vec<&'a For
         .collect()
 }
 
+/// `atoms` and the atoms of their guards, recursively.
+fn atoms_with_guards<'a, V: 'a>(atoms: impl Iterator<Item = &'a Atom<V>>) -> Vec<&'a Atom<V>> {
+    atoms
+        .flat_map(|atom| {
+            let in_guard = atom
+                .guard
+                .iter()
+                .flat_map(|guard| atoms_with_guards(guard.iter_atoms()));
+            std::iter::once(atom).chain(in_guard).collect::<Vec<_>>()
+        })
+        .collect()
+}
+
 /// The unknowns `atoms` apply, in their guards too.
 fn pred_vars_in<'a, V: 'a>(atoms: impl Iterator<Item = &'a Atom<V>>) -> Vec<PredVarId> {
     atoms
@@ -3109,6 +3122,8 @@ pub struct System {
     /// The defined predicates and logic functions emitted without their definition, as universal
     /// functions (`#[thrust::opaque]`, see [`System::make_opaque`]).
     opaque_preds: HashSet<UserDefinedPred>,
+    /// The defined copies [`System::reveal_in`] made, which are not copied again.
+    defined_copies: HashSet<UserDefinedPred>,
 }
 
 impl System {
@@ -3163,7 +3178,9 @@ impl System {
                 .user_defined_pred_defs
                 .iter()
                 .filter(|d| {
-                    !renaming.contains_key(&d.symbol) && !self.opaque_preds.contains(&d.symbol)
+                    !renaming.contains_key(&d.symbol)
+                        && !self.opaque_preds.contains(&d.symbol)
+                        && !self.defined_copies.contains(&d.symbol)
                 })
                 .filter(|d| d.callees().into_iter().any(|c| renaming.contains_key(c)))
                 .map(|d| d.symbol.clone())
@@ -3189,17 +3206,20 @@ impl System {
                 copy
             })
             .collect();
+        self.defined_copies
+            .extend(copies.iter().map(|c| c.symbol.clone()));
         self.user_defined_pred_defs.extend(copies);
         for &id in ids {
             self.clauses[id].rename_user_defined(&renaming);
         }
     }
 
-    /// Visits the atoms of the formula definitions of `symbol` and of the user-defined
-    /// predicates they apply, each once; `None` for a symbol without a definition. A raw
-    /// SMT-LIB2 body names no predicate variable, since those are numbered by the analysis, and a
-    /// term body applies none, since a predicate call is an atom and only a logic function becomes
-    /// a term (`analyze::annot_fn`).
+    /// Visits the atoms of the formula definitions of `symbol`, their guards' included, and of the
+    /// user-defined predicates and functions they apply (as atoms, in guards or in term
+    /// arguments, `UserDefinedPredDef::callees`), each once; `None` for a symbol without a
+    /// definition. A raw SMT-LIB2 body names no predicate variable, since those are numbered by
+    /// the analysis, and a term body applies none, since a predicate call is an atom and only a
+    /// logic function becomes a term (`analyze::annot_fn`); its callees are still followed.
     fn walk_definitions<'a>(
         &'a self,
         symbol: &'a UserDefinedPred,
@@ -3220,13 +3240,11 @@ impl System {
                 visit(None);
             }
             for def in defs {
+                pending.extend(def.callees());
                 let UserDefinedPredBody::Formula(formula) = &def.body else {
                     continue;
                 };
-                for atom in formula.iter_atoms() {
-                    if let Pred::UserDefined(p) = &atom.pred {
-                        pending.push(p);
-                    }
+                for atom in atoms_with_guards(formula.iter_atoms()) {
                     visit(Some(atom));
                 }
             }

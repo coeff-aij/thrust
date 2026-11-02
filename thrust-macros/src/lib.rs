@@ -140,6 +140,39 @@ pub fn _partial_invariant_with_context(input: TokenStream) -> TokenStream {
     invariant::expand_with_context(input, invariant::Marker::Partial)
 }
 
+/// Checks a formula where it is written and assumes it for the rest of the path, as a cut:
+///
+/// ```ignore
+/// thrust_macros::proof_assert!(|x: i64, y: i64| x <= y);
+/// ```
+///
+/// The argument is a closure as for [`invariant`], whose parameters name the live variables
+/// the formula refers to. It runs nothing.
+#[proc_macro]
+pub fn proof_assert(input: TokenStream) -> TokenStream {
+    invariant::expand(input, invariant::Marker::Assert)
+}
+
+/// Assumes a formula where it is written, without checking it: the rest of the path is verified
+/// under it. Each use is trusted, warned about and listed by `THRUST_REPORT`'s `functions`.
+/// The argument is a closure as for [`proof_assert`]. It runs nothing.
+#[proc_macro]
+pub fn assume(input: TokenStream) -> TokenStream {
+    invariant::expand(input, invariant::Marker::Assume)
+}
+
+/// Context-carrying counterpart of `proof_assert!` (see [`_invariant_with_context`]).
+#[proc_macro]
+pub fn _proof_assert_with_context(input: TokenStream) -> TokenStream {
+    invariant::expand_with_context(input, invariant::Marker::Assert)
+}
+
+/// Context-carrying counterpart of `assume!` (see [`_invariant_with_context`]).
+#[proc_macro]
+pub fn _assume_with_context(input: TokenStream) -> TokenStream {
+    invariant::expand_with_context(input, invariant::Marker::Assume)
+}
+
 /// Declares a predicate of the specification language. Its body is a Rust expression or a raw
 /// SMT-LIB2 string. In a trait, `#[thrust_macros::predicate(derived)]` without a body declares a
 /// predicate an impl may leave undefined: its meaning there is the least fixpoint of what the
