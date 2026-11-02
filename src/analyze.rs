@@ -1151,11 +1151,13 @@ impl<'tcx> Analyzer<'tcx> {
     /// body is, and a shim passes the mode to the instance inside it. A
     /// non-generic trusted body is trusted throughout. A function pointer, trait object or
     /// closure that a trusted body hands out carries the trusted mode: calling it is the trusted
-    /// author's responsibility. Static initializers are not followed: verified code cannot read a
-    /// static (the analysis stops), and a static has no type parameters, so what a trusted body
-    /// reaches through one is its author's fixed choice. An instance is followed once per mode it
-    /// is reached in. This over-approximates what the verified functions can run: an instance
-    /// reached only on a path to a panic counts.
+    /// author's responsibility. Static initializers are not followed: verified code reads only an
+    /// immutable static without interior mutability, whose value cannot hand it code (a static's
+    /// type cannot name a closure or a function item, and the analysis stops on a function pointer
+    /// or a trait object in a constant's value), and a static has no type parameters, so what a
+    /// trusted body reaches through one is its author's fixed choice. An instance is followed once
+    /// per mode it is reached in. This over-approximates what the verified functions can run: an
+    /// instance reached only on a path to a panic counts.
     pub fn stop_ignored_reached(
         &self,
         roots: Vec<mir_ty::Instance<'tcx>>,
