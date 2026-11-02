@@ -115,6 +115,15 @@ pub fn bindings_in_scope<'a, 'tcx>(
     Vec::new()
 }
 
+/// Whether `elem` takes an element or a subslice out of a slice or an array by its position, as a
+/// slice pattern does.
+fn is_slice_pattern_elem(elem: mir::PlaceElem<'_>) -> bool {
+    matches!(
+        elem,
+        mir::PlaceElem::ConstantIndex { .. } | mir::PlaceElem::Subslice { .. }
+    )
+}
+
 /// Wraps the integer `term` around into the range of the integer type `ty`, as an `as` cast does.
 fn wrap_int_term<'tcx, V>(
     tcx: TyCtxt<'tcx>,
@@ -628,13 +637,13 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             mir_ty::TyKind::Bool => {
                 PlaceType::with_ty_and_term(rty::Type::bool(), chc::Term::bool(bytes[0] != 0))
             }
-            mir_ty::TyKind::Int(_) | mir_ty::TyKind::Uint(_) => {
+            mir_ty::TyKind::Int(_) | mir_ty::TyKind::Uint(_) | mir_ty::TyKind::Char => {
                 let mut int_bytes = [0u8; 16];
                 int_bytes[..bytes.len()].copy_from_slice(bytes);
                 // TODO: see target endianness
                 let bits = u128::from_ne_bytes(int_bytes);
-                let (size, signed) = ty.int_size_and_signed(self.tcx);
-                if signed {
+                let size = ty.primitive_size(self.tcx);
+                if ty.is_signed() {
                     PlaceType::with_ty_and_term(
                         rty::Type::int_of_width(size.bits() as u32),
                         chc::Term::int(size.sign_extend(bits)),
@@ -796,14 +805,44 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     panic!("reference in a constant without provenance");
                 };
                 let (prov, target_offset) = ptr.prov_and_relative_offset();
-                let mir::interpret::GlobalAlloc::Memory(target) =
-                    self.tcx.global_alloc(prov.alloc_id())
-                else {
-                    unimplemented!("const ref alloc in a constant");
-                };
+                let target = self.const_pointee_alloc(prov.alloc_id());
                 self.const_alloc_ty(target, target_offset, *pointee).immut()
             }
             _ => self.const_bytes_ty(ty, bytes_at(offset, layout.size)),
+        }
+    }
+
+    /// The allocation that a shared reference in a constant points to. A reference to a `static`
+    /// reads its initializer's value, which it keeps when it is immutable and has no interior
+    /// mutability.
+    fn const_pointee_alloc(
+        &self,
+        alloc_id: mir::interpret::AllocId,
+    ) -> mir::interpret::ConstAllocation<'tcx> {
+        match self.tcx.global_alloc(alloc_id) {
+            mir::interpret::GlobalAlloc::Memory(alloc) => alloc,
+            mir::interpret::GlobalAlloc::Static(def_id) => {
+                let ty = self.tcx.type_of(def_id).instantiate_identity();
+                let typing_env = mir_ty::TypingEnv::fully_monomorphized();
+                let keeps_initializer = !self.tcx.is_mutable_static(def_id)
+                    && !self.tcx.is_foreign_item(def_id)
+                    && !self.tcx.is_thread_local_static(def_id)
+                    && ty.is_freeze(self.tcx, typing_env);
+                if !keeps_initializer {
+                    self.tcx.dcx().span_fatal(
+                        self.tcx.def_span(def_id),
+                        format!(
+                            "thrust: reading the static `{}` is not supported: it is mutable, \
+                             external, thread-local or has interior mutability",
+                            self.tcx.def_path_str(def_id)
+                        ),
+                    );
+                }
+                self.tcx
+                    .eval_static_initializer(def_id)
+                    .expect("initializer of a static")
+            }
+            global_alloc => unimplemented!("const ptr alloc: {global_alloc:?}"),
         }
     }
 
@@ -866,13 +905,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 ConstValue::Scalar(Scalar::Ptr(ptr, _)),
             ) => {
                 let (prov, offset) = ptr.prov_and_relative_offset();
-                let global_alloc = self.tcx.global_alloc(prov.alloc_id());
-                match global_alloc {
-                    mir::interpret::GlobalAlloc::Memory(alloc) => {
-                        self.const_alloc_ty(alloc, offset, *elem).immut()
-                    }
-                    _ => unimplemented!("const ptr alloc: {:?}", global_alloc),
-                }
+                let alloc = self.const_pointee_alloc(prov.alloc_id());
+                self.const_alloc_ty(alloc, offset, *elem).immut()
             }
             (
                 mir_ty::TyKind::Ref(_, elem, Mutability::Not),
@@ -1301,13 +1335,21 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             }
             Rvalue::Cast(mir::CastKind::IntToInt, operand, ty) => {
                 let op_ty = operand.ty(&self.body.local_decls, self.tcx);
-                if !op_ty.is_integral() || !ty.is_integral() {
+                let target_ty = self.type_builder.build(ty).vacuous().ty;
+                if op_ty.is_bool() && ty.is_integral() {
+                    let mut builder = PlaceTypeBuilder::default();
+                    let (_, op_term) = builder.subsume(self.operand_type(operand));
+                    let term = chc::Term::ite(op_term, chc::Term::int(1), chc::Term::int(0));
+                    return builder.build(target_ty, term);
+                }
+                let is_int = |ty: mir_ty::Ty<'tcx>| ty.is_integral() || ty.is_char();
+                if !is_int(op_ty) || !is_int(ty) {
                     unimplemented!("int cast: {:?} -> {:?}", op_ty, ty);
                 }
                 // The result has the target's type, so that the operations on it are typed and
                 // checked at the target's width: a widening keeps the operand's term, which is in
-                // the target's range, and a narrowing wraps it into that range.
-                let target_ty = self.type_builder.build(ty).vacuous().ty;
+                // the target's range, and a narrowing wraps it into that range. A `char` is the
+                // `u32` of its code point.
                 let mut op_pty = self.operand_type(operand);
                 if int_ty_includes(self.tcx, ty, op_ty) {
                     op_pty.ty = target_ty;
@@ -1343,6 +1385,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 let mut builder = PlaceTypeBuilder::default();
                 let (_, term) = builder.subsume(ty);
                 builder.build(discr_ty, chc::Term::datatype_discr(sym, term))
+            }
+            Rvalue::Len(place) => {
+                // The length of a slice or an array is that of the sequence that models it, as
+                // the specification of `<[T]>::len` says; it is in the range of `usize`.
+                let usize_ty = self.type_builder.build(self.tcx.types.usize).vacuous().ty;
+                let mut builder = PlaceTypeBuilder::default();
+                let (_, term) = builder.subsume(self.place_type(&place));
+                builder.build(usize_ty, term.seq_len())
             }
             _ => unimplemented!(
                 "rvalue={:?} ({:?})",
@@ -1655,8 +1705,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 (0, rty::Type::Bool) => chc::Term::bool(false),
                 (1, rty::Type::Bool) => chc::Term::bool(true),
                 (_, rty::Type::Int(_) | rty::Type::UInt(_)) => {
-                    let (size, signed) = discr_mir_ty.int_size_and_signed(self.tcx);
-                    if signed {
+                    let size = discr_mir_ty.primitive_size(self.tcx);
+                    if discr_mir_ty.is_signed() {
                         chc::Term::int(size.sign_extend(bits))
                     } else {
                         chc::Term::int(bits)
@@ -2345,6 +2395,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// The type of `place`, which is the one value of its sort if it lies in a field that the
     /// model lowering leaves out of a transparent struct.
     fn place_type(&self, place: &mir::Place<'tcx>) -> PlaceType {
+        if let Some((base, elem)) = place.as_ref().last_projection() {
+            if is_slice_pattern_elem(elem) {
+                return self.sequence_part_type(&base.to_place(self.tcx), elem);
+            }
+        }
         let mut base = mir::PlaceTy::from_ty(self.local_decls[place.local].ty);
         for elem in place.projection {
             let is_omitted_field = matches!(elem, mir::PlaceElem::Field(idx, _)
@@ -2364,6 +2419,46 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             base = base.projection_ty(self.tcx, elem);
         }
         self.env.place_type(self.elaborate_place(place))
+    }
+
+    /// The type of the element or the subslice that a slice pattern takes out of the slice or
+    /// the array at `base`, read off the sequence that models it. The pattern's length test
+    /// guards the access.
+    fn sequence_part_type(&self, base: &mir::Place<'tcx>, elem: mir::PlaceElem<'tcx>) -> PlaceType {
+        let mut builder = PlaceTypeBuilder::default();
+        let (seq_ty, seq) = builder.subsume(self.place_type(base));
+        match elem {
+            mir::PlaceElem::ConstantIndex {
+                offset, from_end, ..
+            } => {
+                let rty::Type::Seq(elem_rty) = seq_ty else {
+                    panic!("slice pattern on a value that is not a sequence: {seq_ty:?}")
+                };
+                let offset = chc::Term::int(offset);
+                let index = if from_end {
+                    seq.clone().seq_len().sub(offset)
+                } else {
+                    offset
+                };
+                let (ty, value_var) = builder.subsume_rty(*elem_rty);
+                let value = chc::Term::var(value_var.into());
+                builder.push_formula(value.clone().equal_to(seq.seq_nth(index)));
+                builder.build(ty, value)
+            }
+            mir::PlaceElem::Subslice { from, to, from_end } => {
+                let start = chc::Term::int(from);
+                let length = if from_end {
+                    seq.clone()
+                        .seq_len()
+                        .sub(start.clone())
+                        .sub(chc::Term::int(to))
+                } else {
+                    chc::Term::int(to - from)
+                };
+                builder.build(seq_ty, seq.seq_extract(start, length))
+            }
+            _ => unreachable!("not a slice pattern projection: {elem:?}"),
+        }
     }
 
     /// Stops at a statement that would read the value of a raw pointer or a trait object, whose
@@ -2711,6 +2806,16 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
         if let Rvalue::Ref(_, mir::BorrowKind::Mut { .. }, referent) = rvalue {
             // mutable borrow
+            if referent.projection.iter().any(is_slice_pattern_elem) {
+                let span = self.body.basic_blocks[self.basic_block].statements[stmt_idx]
+                    .source_info
+                    .span;
+                self.tcx.dcx().span_fatal(
+                    span,
+                    "thrust: a mutable borrow into a slice or an array by a slice pattern is not \
+                     supported",
+                );
+            }
             let rty = self.mutable_borrow(stmt_idx, *referent);
             self.bind_local(lhs.local, rty);
             return;
