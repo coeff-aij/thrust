@@ -133,9 +133,9 @@ impl<I: Idx, T> DerefMut for IndexVec<I, T> {
     }
 }
 
-// `Deref`/`DerefMut` are foreign traits, so their contracts are extern specs, the same as
-// `as_slice`'s and `as_mut_slice`'s. Written, they are not inferred from the bodies, and calls of
-// `deref` in one body do not share an inferred contract.
+// `Deref`/`DerefMut` are foreign traits, so their contracts are extern specs; they state what
+// `as_slice`'s and `as_mut_slice`'s contracts state. Written, they are not inferred from the
+// bodies, and calls of `deref` in one body do not share an inferred contract.
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(*result == *slf)]
