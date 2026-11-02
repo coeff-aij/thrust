@@ -59,7 +59,14 @@ fn ones_assigned_disjoint<LocalIdx: Idx + thrust_models::Model, VariantIdx: thru
 #[thrust_macros::ensures(
     (DenseBitSet::<LocalIdx>::mem(*s, k) && ones((*s).1, k + 1) == ones((*s).1, k) + 1)
         || (!DenseBitSet::<LocalIdx>::mem(*s, k) && ones((*s).1, k + 1) == ones((*s).1, k)))]
+#[thrust::reveal(crate::rustc_index::bit_set::ones, crate::rustc_index::bit_set::DenseBitSet::mem)]
 fn ones_step<LocalIdx: Idx + thrust_models::Model>(s: &DenseBitSet<LocalIdx>, k: usize) {}
+
+/// The set's count is the number of its bits below its domain size.
+#[thrust_macros::lemma]
+#[thrust_macros::ensures(DenseBitSet::<LocalIdx>::card(*s) == ones((*s).1, (*s).0))]
+#[thrust::reveal(crate::rustc_index::bit_set::DenseBitSet::card)]
+fn card_ones<LocalIdx: Idx + thrust_models::Model>(s: &DenseBitSet<LocalIdx>) {}
 
 // The specification of stage 5 (README.md of the stage files).
 //
@@ -649,6 +656,7 @@ pub fn layout<
     // The set's members are Ineligible (property 4), so with the locals Assigned to any one variant
     // they are at most n: the per-variant closure's `requires` at `Map::new`.
     thrust_macros::proof!(ones_assigned_disjoint(&ineligible_locals, &assignments, local_layouts.len()));
+    thrust_macros::proof!(card_ones(&ineligible_locals));
 
     let tag_index = prefix_layouts.next_index();
 

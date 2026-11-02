@@ -1,8 +1,9 @@
 //@ignore-on-host: draft, passes the frontend and gets no answer from the solver (README.md)
 //@edition: 2024
 //@compile-flags: -Adead_code -C debug-assertions=off -A unused-variables -A unused_parens
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_TRY_SPECS=1
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 THRUST_TRY_SPECS=1
 //@rustc-env: THRUST_VERIFY_ONLY=rustc_abi::layout::coroutine::layout,case_study::iter,case_study::counts::filter_count,case_study::counts::filter_yields_below
+//@rustc-env: THRUST_SPLIT=1 THRUST_SPLIT_GOALS=1
 // Stage 7 of the rustc-coroutine verification target: `layout()` of rustc_abi's
 // layout/coroutine.rs, with the local iterator adapters it calls (rewrites.md R8). The counting
 // lemmas it uses are assumed here: those of thrust/lemmas.rs are verified by the `lemmas.rs`

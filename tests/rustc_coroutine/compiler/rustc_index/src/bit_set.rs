@@ -554,6 +554,7 @@ fn clear_excess_bits_in_final_word(domain_size: usize, words: &mut [Word]) {
 /// The set bits among the first `m` bits of `words`, bit `i` being bit `i % 64` of word `i / 64`
 /// as in `DenseBitSet::mem`. A count, it returns `Int`, as `card` does: at `USize`, its definition
 /// would have to show it below `2^64` under `THRUST_INT_RANGE`.
+#[thrust::opaque]
 #[thrust_macros::logic]
 #[thrust_macros::variant(m)]
 pub(crate) fn ones(words: Seq<USize>, m: USize) -> Int {
