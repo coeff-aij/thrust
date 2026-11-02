@@ -766,6 +766,28 @@ impl BodyChecks {
     }
 }
 
+/// What a reveal reveals: the opaque functions of `module` (a bare `#[thrust::reveal]`, and a
+/// logic function's checks) and those `named` (`#[thrust::reveal(path, ..)]`); a function may carry
+/// both forms.
+#[derive(Debug, Clone, Default)]
+struct RevealScope {
+    module: Option<LocalDefId>,
+    named: HashSet<LocalDefId>,
+}
+
+impl RevealScope {
+    fn of_module(module: LocalDefId) -> Self {
+        RevealScope {
+            module: Some(module),
+            named: HashSet::new(),
+        }
+    }
+
+    fn contains(&self, def: LocalDefId, module_of_def: LocalDefId) -> bool {
+        self.module == Some(module_of_def) || self.named.contains(&def)
+    }
+}
+
 /// A stretch of the clauses one analyzed body pushed, by clause index.
 type BodyClauses = (LocalDefId, std::ops::Range<usize>);
 
@@ -2585,9 +2607,10 @@ impl<'tcx> Analyzer<'tcx> {
     /// written in. Code that does not reveal one reads it through the contracts and lemmas
     /// stated of it, which are checked where code that reveals it is analyzed.
     fn mark_opaque_predicates(&self) {
-        self.check_opacity_attributes();
+        let reveal_scopes = self.check_opacity_attributes();
         let module_of = |def: LocalDefId| self.tcx.parent_module_from_def_id(def).to_local_def_id();
         let mut system = self.system.borrow_mut();
+        // Each opaque instance with its item.
         let mut opaque: Vec<(chc::UserDefinedPred, LocalDefId)> = Vec::new();
         for (pred, def) in self.opaque_predicates.borrow().iter() {
             // Universally quantifying a definition strengthens the clauses only when it is closed:
@@ -2600,33 +2623,32 @@ impl<'tcx> Analyzer<'tcx> {
                 continue;
             }
             system.make_opaque(pred.clone());
-            opaque.push((pred.clone(), module_of(*def)));
+            opaque.push((pred.clone(), *def));
         }
-        // The clauses of a revealing body read the definitions of its module's opaque functions; a
-        // closure's body is its own, but the reveal written on the function it is in covers it, as
-        // Dafny's `reveal` covers the lambdas in its scope. The checks of a logic function read
-        // those of its own module, as Creusot's `#[open]` and Verus's `closed spec fn` show a
-        // definition to the spec functions of their module.
+        // The clauses of a revealing body read the definitions of the opaque functions its reveal
+        // names, or of its module's; a closure's body is its own, but the reveal written on the
+        // function it is in covers it, as Dafny's `reveal` covers the lambdas in its scope. The
+        // checks of a logic function read those of its own module, as Creusot's `#[open]` and
+        // Verus's `closed spec fn` show a definition to the spec functions of their module.
         let revealing_bodies = self
             .body_clauses
             .borrow()
             .iter()
             .filter_map(|(def, range)| {
                 let root = self.tcx.typeck_root_def_id(def.to_def_id()).expect_local();
-                self.has_attr(root, &analyze::annot::reveal_path())
-                    .then(|| (module_of(root), range.clone()))
+                Some((reveal_scopes.get(&root)?.clone(), range.clone()))
             })
             .collect::<Vec<_>>();
         let logic_fn_checks = self
             .logic_fn_check_clauses
             .borrow()
             .iter()
-            .map(|(def, range)| (module_of(*def), range.clone()))
+            .map(|(def, range)| (RevealScope::of_module(module_of(*def)), range.clone()))
             .collect::<Vec<_>>();
-        for (module, range) in revealing_bodies.into_iter().chain(logic_fn_checks) {
+        for (scope, range) in revealing_bodies.into_iter().chain(logic_fn_checks) {
             let preds: Vec<chc::UserDefinedPred> = opaque
                 .iter()
-                .filter(|(_, m)| *m == module)
+                .filter(|(_, def)| scope.contains(*def, module_of(*def)))
                 .map(|(pred, _)| pred.clone())
                 .collect();
             let ids: Vec<chc::ClauseId> = range.map(chc::ClauseId::from_usize).collect();
@@ -2691,7 +2713,7 @@ impl<'tcx> Analyzer<'tcx> {
     /// body, and at a `#[thrust::reveal]` that would reveal nothing: in a module without an opaque
     /// function, or on an item whose body Thrust does not analyze. rustc does not check `thrust::`
     /// attributes, and either would otherwise change nothing.
-    fn check_opacity_attributes(&self) {
+    fn check_opacity_attributes(&self) -> HashMap<LocalDefId, RevealScope> {
         let opaque_path = analyze::annot::opaque_path();
         let defs: Vec<LocalDefId> = self.tcx.hir_crate_items(()).definitions().collect();
         let mut opaque_modules = HashSet::new();
@@ -2709,16 +2731,14 @@ impl<'tcx> Analyzer<'tcx> {
             }
             opaque_modules.insert(self.tcx.parent_module_from_def_id(def).to_local_def_id());
         }
+        let mut scopes = HashMap::new();
         for &def in &defs {
-            if !self.has_attr(def, &analyze::annot::reveal_path()) {
+            let attrs: Vec<_> = self
+                .tcx
+                .get_attrs_by_path(def.to_def_id(), &analyze::annot::reveal_path())
+                .collect();
+            if attrs.is_empty() {
                 continue;
-            }
-            let module = self.tcx.parent_module_from_def_id(def).to_local_def_id();
-            if !opaque_modules.contains(&module) {
-                self.tcx.dcx().span_err(
-                    self.tcx.def_span(def),
-                    "`#[thrust::reveal]` reveals the opaque functions of its module, and this module has none",
-                );
             }
             let analyzed = matches!(
                 self.tcx.def_kind(def),
@@ -2733,7 +2753,144 @@ impl<'tcx> Analyzer<'tcx> {
                     "`#[thrust::reveal]` applies only to a function whose body Thrust analyzes",
                 );
             }
+            let module = self.tcx.parent_module_from_def_id(def).to_local_def_id();
+            let mut named = HashSet::new();
+            let mut bare = false;
+            for attr in attrs {
+                match analyze::annot::reveal_paths(attr) {
+                    Err(message) => {
+                        self.tcx.dcx().span_err(attr.span(), message);
+                    }
+                    Ok(None) => bare = true,
+                    Ok(Some(paths)) => {
+                        for path in paths {
+                            if let Some(target) =
+                                self.reveal_target(def, module, &path, attr.span())
+                            {
+                                named.insert(target);
+                            }
+                        }
+                    }
+                }
+            }
+            if bare && !opaque_modules.contains(&module) {
+                self.tcx.dcx().span_err(
+                    self.tcx.def_span(def),
+                    "`#[thrust::reveal]` reveals the opaque functions of its module, and this module has none; name the functions to reveal as `#[thrust::reveal(path::to::f)]`",
+                );
+            }
+            let scope = RevealScope {
+                module: bare.then_some(module),
+                named,
+            };
+            scopes.insert(def, scope);
         }
+        scopes
+    }
+
+    /// The opaque function `path` names, resolved from `module` (relative to it, or from `crate`,
+    /// `self` or `super`, a function of a module or an associated function of a type's inherent
+    /// impl), with an error at `span` if it names none, names a function that is not
+    /// `#[thrust::opaque]`, or one not visible from `def`.
+    fn reveal_target(
+        &self,
+        def: LocalDefId,
+        module: LocalDefId,
+        path: &[Symbol],
+        span: rustc_span::Span,
+    ) -> Option<LocalDefId> {
+        let shown = path
+            .iter()
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>()
+            .join("::");
+        let Some(target) = self.resolve_path(module, path) else {
+            self.tcx
+                .dcx()
+                .span_err(span, format!("`#[thrust::reveal]`: cannot find `{shown}`"));
+            return None;
+        };
+        let opaque = target
+            .as_local()
+            .filter(|t| self.has_attr(*t, &analyze::annot::opaque_path()));
+        let Some(target) = opaque else {
+            self.tcx.dcx().span_err(
+                span,
+                format!("`#[thrust::reveal]`: `{shown}` is not a `#[thrust::opaque]` function"),
+            );
+            return None;
+        };
+        if !self
+            .tcx
+            .visibility(target.to_def_id())
+            .is_accessible_from(def.to_def_id(), self.tcx)
+        {
+            self.tcx.dcx().span_err(
+                span,
+                format!("`#[thrust::reveal]`: `{shown}` is not visible here"),
+            );
+            return None;
+        }
+        Some(target)
+    }
+
+    /// The item `path` names from `module`: its segments walk modules, then at most one type whose
+    /// inherent impls hold the last segment.
+    fn resolve_path(&self, module: LocalDefId, path: &[Symbol]) -> Option<DefId> {
+        use rustc_hir::def::DefKind;
+        use rustc_span::symbol::kw;
+        let (mut current, mut rest) = (module.to_def_id(), path);
+        match rest.first() {
+            Some(&kw::Crate) => {
+                current = rustc_span::def_id::CRATE_DEF_ID.to_def_id();
+                rest = &rest[1..];
+            }
+            Some(&kw::SelfLower) => rest = &rest[1..],
+            _ => {}
+        }
+        while rest.first() == Some(&kw::Super) {
+            current = self.tcx.opt_parent(current)?;
+            rest = &rest[1..];
+        }
+        for (i, name) in rest.iter().enumerate() {
+            let last = i + 1 == rest.len();
+            current = match self.tcx.def_kind(current) {
+                DefKind::Mod => self.module_child(current, *name, last)?,
+                DefKind::Struct | DefKind::Enum | DefKind::Union if last => self
+                    .tcx
+                    .inherent_impls(current)
+                    .iter()
+                    .flat_map(|imp| self.tcx.associated_item_def_ids(*imp))
+                    .copied()
+                    .find(|item| self.tcx.item_name(*item) == *name)?,
+                _ => return None,
+            };
+        }
+        Some(current)
+    }
+
+    /// The child of `module` named `name`: a function when `last`, a module or a type otherwise.
+    fn module_child(&self, module: DefId, name: Symbol, last: bool) -> Option<DefId> {
+        use rustc_hir::def::DefKind;
+        let children = match module.as_local() {
+            Some(local) => self.tcx.module_children_local(local),
+            None => self.tcx.module_children(module),
+        };
+        children
+            .iter()
+            .filter(|child| child.ident.name == name)
+            .filter_map(|child| child.res.opt_def_id())
+            .find(|id| {
+                let kind = self.tcx.def_kind(*id);
+                if last {
+                    matches!(kind, DefKind::Fn | DefKind::AssocFn)
+                } else {
+                    matches!(
+                        kind,
+                        DefKind::Mod | DefKind::Struct | DefKind::Enum | DefKind::Union
+                    )
+                }
+            })
     }
 
     /// The error of a failed verification of `system` (the whole or a part), at the obligation

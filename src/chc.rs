@@ -1812,14 +1812,11 @@ impl UserDefinedPred {
         &self.instance
     }
 
-    /// The symbol of a defined copy ([`System::reveal_in`]): `<symbol>_def` for an opaque
-    /// predicate, `<symbol>_def_<anchor>` for a definition that reaches the opaque `anchor`. It is
-    /// shown as `<name> (revealed)` so that a report tells it from the universal symbol.
-    pub fn defined_copy(&self, anchor: Option<&UserDefinedPred>) -> Self {
-        let inner = match anchor {
-            None => format!("{}_def", self.inner),
-            Some(anchor) => format!("{}_def_{}", self.inner, anchor.inner),
-        };
+    /// The symbol of a defined copy ([`System::reveal_in`]) for the revealed set `tag` names:
+    /// `<symbol>_def_<tag>`, shown as `<name> (revealed)` so that a report tells it from the
+    /// universal symbol.
+    pub fn defined_copy(&self, tag: &str) -> Self {
+        let inner = format!("{}_def_{}", self.inner, tag);
         Self {
             inner,
             name: self.name.as_ref().map(|name| format!("{name} (revealed)")),
@@ -2943,6 +2940,19 @@ fn forall_in<'a, V: 'a>(atoms: impl Iterator<Item = &'a Atom<V>>) -> Vec<&'a For
         .collect()
 }
 
+/// `atoms` and the atoms of their guards, recursively.
+fn atoms_with_guards<'a, V: 'a>(atoms: impl Iterator<Item = &'a Atom<V>>) -> Vec<&'a Atom<V>> {
+    atoms
+        .flat_map(|atom| {
+            let in_guard = atom
+                .guard
+                .iter()
+                .flat_map(|guard| atoms_with_guards(guard.iter_atoms()));
+            std::iter::once(atom).chain(in_guard).collect::<Vec<_>>()
+        })
+        .collect()
+}
+
 /// The unknowns `atoms` apply, in their guards too.
 fn pred_vars_in<'a, V: 'a>(atoms: impl Iterator<Item = &'a Atom<V>>) -> Vec<PredVarId> {
     atoms
@@ -3001,6 +3011,19 @@ impl UserDefinedPredDef {
     pub fn is_recursive(&self) -> bool {
         self.callees().contains(&&self.symbol)
     }
+}
+
+/// A short name of a set of revealed predicates, sorted: an FNV-1a hash of their symbols and
+/// instances, stable across runs.
+fn revealed_set_tag(revealed: &[&UserDefinedPred]) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for pred in revealed {
+        for byte in format!("{};{:?}|", pred.inner, pred.instance).bytes() {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+    format!("{hash:016x}")
 }
 
 pub fn compute_transitive_closure<T>(direct_deps: &HashMap<T, HashSet<T>>) -> HashMap<T, HashSet<T>>
@@ -3118,29 +3141,36 @@ impl System {
     }
 
     /// Lets the clauses `ids` read the definitions of the opaque `preds`. Each is replaced there by
-    /// a defined copy (`<symbol>_def`), and so is every definition that applies one of them,
-    /// directly or through other definitions (`<symbol>_def_<first opaque symbol>`, since a
-    /// definition may reach the opaque functions of several modules). A copy is the same
-    /// definition under another name, reading the copies in turn, so that the revealed definition
-    /// is the whole one, as through a transparent function under Dafny's and Verus's `reveal`.
-    /// Every other clause keeps the universal symbol. Instantiating the universal symbols with
-    /// their definitions makes every copy equal to its original, so the reveal adds only true
-    /// definitions. This is the scope of Dafny's and Verus's `reveal`: the proof it is written in.
+    /// a defined copy, and so is every definition that applies one of them, directly or through
+    /// other definitions. A copy is the same definition under another name, reading the copies in
+    /// turn, so that the revealed definition is the whole one, as through a transparent function
+    /// under Dafny's and Verus's `reveal`. The copies are named after the revealed set
+    /// (`<symbol>_def_<tag>`), so that two reveals of different sets never share a copy whose body
+    /// reads the other's. Every other clause keeps the universal symbol. Instantiating the
+    /// universal symbols with their definitions makes every copy equal to its original, so the
+    /// reveal adds only true definitions. This is the scope of Dafny's and Verus's `reveal`: the
+    /// proof it is written in.
     pub fn reveal_in(&mut self, ids: &[ClauseId], preds: &[UserDefinedPred]) {
         let mut revealed: Vec<&UserDefinedPred> = preds
             .iter()
             .filter(|p| self.opaque_preds.contains(p) && self.is_pred_defined(p))
             .collect();
-        revealed.sort_by(|a, b| a.inner.cmp(&b.inner));
-        let Some(&anchor) = revealed.first() else {
+        if revealed.is_empty() {
             return;
-        };
+        }
+        revealed.sort_by(|a, b| {
+            a.inner
+                .cmp(&b.inner)
+                .then_with(|| a.instance.cmp(&b.instance))
+        });
+        revealed.dedup();
+        let tag = revealed_set_tag(&revealed);
         let mut renaming: UserDefinedRenaming = revealed
             .iter()
-            .map(|&p| (p.clone(), p.defined_copy(None)))
+            .map(|&p| (p.clone(), p.defined_copy(&tag)))
             .collect();
-        // The transparent definitions that reach a revealed one; an opaque one of another module
-        // stays universal.
+        // The transparent definitions that reach a revealed one; an opaque one that is not
+        // revealed stays universal.
         loop {
             let reaching: Vec<UserDefinedPred> = self
                 .user_defined_pred_defs
@@ -3155,7 +3185,7 @@ impl System {
                 break;
             }
             for symbol in reaching {
-                let copy = symbol.defined_copy(Some(anchor));
+                let copy = symbol.defined_copy(&tag);
                 renaming.insert(symbol, copy);
             }
         }
@@ -3178,11 +3208,12 @@ impl System {
         }
     }
 
-    /// Visits the atoms of the formula definitions of `symbol` and of the user-defined
-    /// predicates they apply, each once; `None` for a symbol without a definition. A raw
-    /// SMT-LIB2 body names no predicate variable, since those are numbered by the analysis, and a
-    /// term body applies none, since a predicate call is an atom and only a logic function becomes
-    /// a term (`analyze::annot_fn`).
+    /// Visits the atoms of the formula definitions of `symbol`, their guards' included, and of the
+    /// user-defined predicates and functions they apply (as atoms, in guards or in term
+    /// arguments, `UserDefinedPredDef::callees`), each once; `None` for a symbol without a
+    /// definition. A raw SMT-LIB2 body names no predicate variable, since those are numbered by
+    /// the analysis, and a term body applies none, since a predicate call is an atom and only a
+    /// logic function becomes a term (`analyze::annot_fn`); its callees are still followed.
     fn walk_definitions<'a>(
         &'a self,
         symbol: &'a UserDefinedPred,
@@ -3203,13 +3234,11 @@ impl System {
                 visit(None);
             }
             for def in defs {
+                pending.extend(def.callees());
                 let UserDefinedPredBody::Formula(formula) = &def.body else {
                     continue;
                 };
-                for atom in formula.iter_atoms() {
-                    if let Pred::UserDefined(p) = &atom.pred {
-                        pending.push(p);
-                    }
+                for atom in atoms_with_guards(formula.iter_atoms()) {
                     visit(Some(atom));
                 }
             }
