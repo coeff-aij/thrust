@@ -1455,10 +1455,21 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             .instantiate(self.tcx, self.generic_args);
         let typing_env = mir_ty::TypingEnv::fully_monomorphized();
         let unevaluated = mir::UnevaluatedConst::new(const_did, generic_args);
-        let val = self
-            .tcx
-            .const_eval_resolve(typing_env, unevaluated, hir.span)
-            .unwrap_or_else(|e| panic!("failed to evaluate constant in formula: {:?}", e));
+        let val =
+            self.tcx
+                .const_eval_resolve(typing_env, unevaluated, hir.span)
+                .unwrap_or_else(|e| {
+                    self.tcx.dcx().span_fatal(
+                        hir.span,
+                        format!(
+                        "the constant `{}` cannot be evaluated in a formula at `{}`: its value \
+                         is not known there ({e:?}); an associated const of a type parameter \
+                         is not supported in a contract",
+                        self.tcx.def_path_str(const_did),
+                        generic_args.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(", ")
+                    ),
+                    )
+                });
         let (_, term) = analyze::scalar_const_term(ty, &val)
             .unwrap_or_else(|| unimplemented!("unsupported constant type in formula: {:?}", ty));
         term
