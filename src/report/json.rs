@@ -379,7 +379,11 @@ impl Json<'_, '_> {
                 reason: f.check.reason(),
                 parts: f.parts.as_deref(),
                 verdict: f.verdict,
-                assumes: f.assumptions.iter().map(|a| range(self.tcx, *a)).collect(),
+                assumes: f
+                    .assumptions
+                    .iter()
+                    .map(|a| range(self.tcx, a.span))
+                    .collect(),
             })?;
         }
         for (part, failure) in &self.failures {

@@ -6,7 +6,7 @@ use rustc_middle::ty::TyCtxt;
 use rustc_span::def_id::LocalDefId;
 use rustc_span::Span;
 
-use crate::analyze::BodyCheck;
+use crate::analyze::{AssumeSite, BodyCheck};
 
 use super::{parts, Config, Input};
 
@@ -22,8 +22,8 @@ pub struct Function {
     pub parts: Option<Vec<usize>>,
     /// Of a checked body, the verdict of the query or of the parts its clauses are in.
     pub verdict: Option<&'static str>,
-    /// Of a checked body, where the `assume!`s in it, and in the closures it holds, are written.
-    pub assumptions: Vec<Span>,
+    /// Of a checked body, the `assume!`s in it and in the closures it holds.
+    pub assumptions: Vec<AssumeSite>,
 }
 
 /// Each function of the crate the report shows, but the specification functions, in the order
@@ -81,15 +81,15 @@ fn function(
     // Those of the body and of its closures, not those of a nested `fn` item, a body of its own.
     let root = tcx.typeck_root_def_id(def.to_def_id());
     let assumptions = if checked {
-        let mut assumptions: Vec<Span> = input
+        let mut assumptions: Vec<AssumeSite> = input
             .assumptions
             .iter()
             .filter(|a| {
                 span.contains(a.span) && tcx.typeck_root_def_id(a.owner.to_def_id()) == root
             })
-            .map(|a| a.span)
+            .copied()
             .collect();
-        assumptions.sort_by_key(|a| a.lo());
+        assumptions.sort_by_key(|a| a.span.lo());
         assumptions
     } else {
         Vec::new()
@@ -154,12 +154,10 @@ pub fn summary(functions: &[Function]) -> String {
     } else {
         "functions"
     };
-    let mut assumptions: Vec<Span> = functions
+    let assumptions: std::collections::HashSet<_> = functions
         .iter()
-        .flat_map(|f| f.assumptions.iter().copied())
+        .flat_map(|f| f.assumptions.iter().map(|a| a.formula))
         .collect();
-    assumptions.sort_by_key(|a| a.lo());
-    assumptions.dedup();
     let assumed = match assumptions.len() {
         0 => String::new(),
         1 => "; 1 `assume!`".to_owned(),

@@ -39,9 +39,17 @@ impl Iter for Range {
     }
 }
 
+// The second `assume!` of one macro's expansion is checked too, though both have its span.
+macro_rules! assume_two {
+    () => {
+        thrust_macros::assume!(|k: isize| k == 7);
+        thrust_macros::assume!(|r: Range, k: isize| !Range::produces(r, k));
+    };
+}
+
 fn main() {
     let r = Range { start: 0, end: 5 };
     let k: isize = 7;
-    thrust_macros::assume!(|r: Range, k: isize| !Range::produces(r, k)); //~ ERROR: an `assume!` mentions a derived predicate
+    assume_two!(); //~ ERROR: an `assume!` mentions a derived predicate
     assert!(false);
 }

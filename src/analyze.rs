@@ -3053,9 +3053,10 @@ impl<'tcx> Analyzer<'tcx> {
         }
     }
 
-    /// Keeps the `assume!` of `site` for the report and warns at it, once for each use.
+    /// Keeps the `assume!` of `site` for the report and warns at it, once for each use, which its
+    /// formula function identifies also where several share a span (one macro's expansion).
     pub fn record_assumption(&mut self, site: AssumeSite) {
-        if self.assumptions.iter().any(|a| a.span == site.span) {
+        if self.assumptions.iter().any(|a| a.formula == site.formula) {
             return;
         }
         self.assumptions.push(site);

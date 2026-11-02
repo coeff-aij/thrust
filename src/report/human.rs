@@ -337,11 +337,16 @@ impl Human<'_, '_> {
             // An `assume!` in a closure is shown with the closure, which is listed after.
             let own = f.assumptions.iter().filter(|a| {
                 !functions.iter().any(|g| {
-                    g.span != f.span && f.span.contains(g.span) && g.assumptions.contains(a)
+                    g.span != f.span
+                        && f.span.contains(g.span)
+                        && g.assumptions.iter().any(|b| b.formula == a.formula)
                 })
             });
             for assumption in own {
-                diag.span_note(*assumption, format!("`{}` assumes this unchecked", f.name));
+                diag.span_note(
+                    assumption.span,
+                    format!("`{}` assumes this unchecked", f.name),
+                );
             }
         }
         diag.emit();
