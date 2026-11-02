@@ -2960,9 +2960,26 @@ pub struct System {
     /// The source name of each quantified variable issued with one, named in a comment of the
     /// SMT-LIB2 output when logging is on.
     user_quantified_var_names: BTreeMap<usize, String>,
+    /// The defined predicates and logic functions emitted without their definition, as universal
+    /// functions (`#[thrust::opaque]`, see [`System::make_opaque`]).
+    opaque_preds: HashSet<UserDefinedPred>,
 }
 
 impl System {
+    /// Emits `pred`, a defined predicate or logic function, as a universal function of its
+    /// parameters, without its definition, to a solver that reads universal functions
+    /// (`Capabilities::dependency_aware_declarations`). The clauses then have to hold for every
+    /// interpretation of it, so a solution is also one for its definition: a strengthening, as
+    /// any opaque function of Dafny, Verus or Creusot is. Every unknown may depend on it, as it
+    /// may on the definition.
+    pub fn make_opaque(&mut self, pred: UserDefinedPred) {
+        self.opaque_preds.insert(pred);
+    }
+
+    pub fn is_opaque(&self, pred: &UserDefinedPred) -> bool {
+        self.opaque_preds.contains(pred)
+    }
+
     fn user_defined_preds_in_dependency_order(&self) -> Vec<&UserDefinedPredDef> {
         let mut remaining: Vec<_> = self.user_defined_pred_defs.iter().collect();
         let mut ordered = Vec::with_capacity(remaining.len());

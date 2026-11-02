@@ -622,6 +622,9 @@ pub struct Analyzer<'tcx> {
     predicate_instances: Rc<RefCell<HashMap<PredicateInstanceKey<'tcx>, chc::UserDefinedPred>>>,
     /// The predicate instances whose bodies are being translated, innermost last.
     defining_predicates: Rc<RefCell<Vec<PredicateInstanceKey<'tcx>>>>,
+    /// The instances of `#[thrust::opaque]` predicates and logic functions, each with the module
+    /// it is written in; see [`Analyzer::mark_opaque_predicates`].
+    opaque_predicates: Rc<RefCell<Vec<(chc::UserDefinedPred, LocalDefId)>>>,
     /// The result type of each logic function defined so far, by its symbol: what a call of it in
     /// another definition's body is known to have (`checked_logic_fn_body`).
     logic_fn_results: Rc<RefCell<HashMap<chc::UserDefinedPred, rty::Type<rty::Closed>>>>,
@@ -738,6 +741,16 @@ impl BodyChecks {
 
     pub fn snapshot(&self) -> HashMap<LocalDefId, BodyCheck> {
         self.0.borrow().clone()
+    }
+
+    /// The functions whose bodies were analyzed.
+    pub fn checked(&self) -> Vec<LocalDefId> {
+        self.0
+            .borrow()
+            .iter()
+            .filter(|(_, check)| **check == BodyCheck::Checked)
+            .map(|(def, _)| *def)
+            .collect()
     }
 }
 
@@ -933,6 +946,7 @@ impl<'tcx> Analyzer<'tcx> {
             formula_fns,
             predicate_instances: Default::default(),
             defining_predicates: Default::default(),
+            opaque_predicates: Default::default(),
             logic_fn_results: Default::default(),
             system,
             basic_blocks,
@@ -1706,6 +1720,17 @@ impl<'tcx> Analyzer<'tcx> {
         self.predicate_instances
             .borrow_mut()
             .insert(key, pred.clone());
+        if self
+            .tcx
+            .get_attrs_by_path(def_id, &analyze::annot::opaque_path())
+            .next()
+            .is_some()
+        {
+            let module = self.tcx.parent_module_from_def_id(local_def_id);
+            self.opaque_predicates
+                .borrow_mut()
+                .push((pred.clone(), module.to_local_def_id()));
+        }
 
         self.defining_predicates.borrow_mut().push(key);
         let formula_fn = self
@@ -2484,6 +2509,7 @@ impl<'tcx> Analyzer<'tcx> {
             }
         }
         self.system.borrow_mut().type_params_reverse = reverse;
+        self.mark_opaque_predicates();
         let config = crate::report::Config::from_env(self.tcx);
         match split_jobs() {
             Ok(None) => {}
@@ -2518,6 +2544,34 @@ impl<'tcx> Analyzer<'tcx> {
         };
         self.verification_error(&self.system.borrow(), &err, at)
             .emit();
+    }
+
+    /// Makes each `#[thrust::opaque]` predicate or logic function opaque in the system
+    /// (`chc::System::make_opaque`) unless a function of the module it is written in that is
+    /// marked `#[thrust::reveal]` has its body analyzed here, as Dafny's and Verus's `reveal`
+    /// make an opaque definition visible where a proof asks for it. Code that does not reveal it
+    /// reads it through the contracts and lemmas stated of it, which are checked where the code
+    /// that reveals it is analyzed. A system has one emission of each predicate, so a reveal
+    /// applies to the whole system: a strengthening dropped, never one added.
+    fn mark_opaque_predicates(&self) {
+        let revealing_modules: HashSet<LocalDefId> = self
+            .body_checks
+            .checked()
+            .into_iter()
+            .filter(|def| {
+                self.tcx
+                    .get_attrs_by_path(def.to_def_id(), &analyze::annot::reveal_path())
+                    .next()
+                    .is_some()
+            })
+            .map(|def| self.tcx.parent_module_from_def_id(def).to_local_def_id())
+            .collect();
+        let mut system = self.system.borrow_mut();
+        for (pred, module) in self.opaque_predicates.borrow().iter() {
+            if !revealing_modules.contains(module) {
+                system.make_opaque(pred.clone());
+            }
+        }
     }
 
     /// The error of a failed verification of `system` (the whole or a part), at the obligation
