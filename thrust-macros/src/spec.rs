@@ -86,6 +86,17 @@ pub(crate) fn take_variant(attrs: &mut Vec<syn::Attribute>) -> syn::Result<Optio
     Ok(variant)
 }
 
+/// Whether `attr` is `#[thrust::opaque]`.
+fn is_thrust_opaque(attr: &syn::Attribute) -> bool {
+    let segments: Vec<String> = attr
+        .path()
+        .segments
+        .iter()
+        .map(|s| s.ident.to_string())
+        .collect();
+    segments == ["thrust", "opaque"]
+}
+
 /// `derived` marks a trait predicate declared without a body as `#[thrust::derived]`.
 fn expand_spec_fn(item: TokenStream, kind: SpecFnKind, derived: bool) -> TokenStream {
     let mut func = parse_macro_input!(item as FnItemWithSignature);
@@ -118,6 +129,13 @@ fn expand_spec_fn(item: TokenStream, kind: SpecFnKind, derived: bool) -> TokenSt
         }
     };
     let impl_trait_names = apit::take_names(func.attrs_mut());
+    // `#[thrust::opaque]` is read by Thrust on the item this expands to.
+    let opaque: Vec<syn::Attribute> = func
+        .attrs_mut()
+        .iter()
+        .filter(|a| is_thrust_opaque(a))
+        .cloned()
+        .collect();
     let outer_context = match extract_outer_context(&func) {
         Ok(ctx) => ctx,
         Err(e) => {
@@ -157,6 +175,7 @@ fn expand_spec_fn(item: TokenStream, kind: SpecFnKind, derived: bool) -> TokenSt
         #[allow(dead_code)]
         #formula_fn_attr
         #marker
+        #(#opaque)*
         #vis fn #name #def_generics(#model_ty_params) -> #model_ret #extended_where
     };
     let mut block = match func.block() {

@@ -625,6 +625,18 @@ pub struct Analyzer<'tcx> {
     predicate_instances: Rc<RefCell<HashMap<PredicateInstanceKey<'tcx>, chc::UserDefinedPred>>>,
     /// The predicate instances whose bodies are being translated, innermost last.
     defining_predicates: Rc<RefCell<Vec<PredicateInstanceKey<'tcx>>>>,
+    /// The instances of `#[thrust::opaque]` predicates and logic functions, each with its item;
+    /// see [`Analyzer::mark_opaque_predicates`].
+    opaque_predicates: Rc<RefCell<Vec<(chc::UserDefinedPred, LocalDefId)>>>,
+    /// The bodies being analyzed, innermost last, each with the number of clauses when its
+    /// current stretch began; `None` for clauses that belong to no body
+    /// ([`Analyzer::logic_fn_checks`]). See [`Analyzer::enter_body`].
+    body_stack: Rc<RefCell<Vec<BodyStretch>>>,
+    /// The clauses each analyzed body pushed, as stretches of clause indices.
+    body_clauses: Rc<RefCell<Vec<BodyClauses>>>,
+    /// The termination and body checks of each logic function, by the function; see
+    /// [`Analyzer::logic_fn_checks`].
+    logic_fn_check_clauses: Rc<RefCell<Vec<BodyClauses>>>,
     /// The result type of each logic function defined so far, by its symbol: what a call of it in
     /// another definition's body is known to have (`checked_logic_fn_body`).
     logic_fn_results: Rc<RefCell<HashMap<chc::UserDefinedPred, rty::Type<rty::Closed>>>>,
@@ -742,7 +754,46 @@ impl BodyChecks {
     pub fn snapshot(&self) -> HashMap<LocalDefId, BodyCheck> {
         self.0.borrow().clone()
     }
+
+    /// The functions whose bodies were analyzed.
+    pub fn checked(&self) -> Vec<LocalDefId> {
+        self.0
+            .borrow()
+            .iter()
+            .filter(|(_, check)| **check == BodyCheck::Checked)
+            .map(|(def, _)| *def)
+            .collect()
+    }
 }
+
+/// What a reveal reveals: the opaque functions of `module` (a bare `#[thrust::reveal]`, and a
+/// logic function's checks) and those `named` (`#[thrust::reveal(path, ..)]`); a function may carry
+/// both forms.
+#[derive(Debug, Clone, Default)]
+struct RevealScope {
+    module: Option<LocalDefId>,
+    named: HashSet<LocalDefId>,
+}
+
+impl RevealScope {
+    fn of_module(module: LocalDefId) -> Self {
+        RevealScope {
+            module: Some(module),
+            named: HashSet::new(),
+        }
+    }
+
+    fn contains(&self, def: LocalDefId, module_of_def: LocalDefId) -> bool {
+        self.module == Some(module_of_def) || self.named.contains(&def)
+    }
+}
+
+/// A stretch of the clauses one analyzed body pushed, by clause index.
+type BodyClauses = (LocalDefId, std::ops::Range<usize>);
+
+/// The body of the clauses pushed now (`None` for no body), and the clause count when its
+/// stretch began.
+type BodyStretch = (Option<LocalDefId>, usize);
 
 /// What the analysis did with the body of a function, recorded where it decides it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -942,6 +993,10 @@ impl<'tcx> Analyzer<'tcx> {
             formula_fns,
             predicate_instances: Default::default(),
             defining_predicates: Default::default(),
+            opaque_predicates: Default::default(),
+            body_stack: Default::default(),
+            body_clauses: Default::default(),
+            logic_fn_check_clauses: Default::default(),
             logic_fn_results: Default::default(),
             system,
             basic_blocks,
@@ -1717,6 +1772,16 @@ impl<'tcx> Analyzer<'tcx> {
         self.predicate_instances
             .borrow_mut()
             .insert(key, pred.clone());
+        if self
+            .tcx
+            .get_attrs_by_path(def_id, &analyze::annot::opaque_path())
+            .next()
+            .is_some()
+        {
+            self.opaque_predicates
+                .borrow_mut()
+                .push((pred.clone(), local_def_id));
+        }
 
         self.defining_predicates.borrow_mut().push(key);
         let formula_fn = self
@@ -1769,10 +1834,13 @@ impl<'tcx> Analyzer<'tcx> {
                     .insert(pred.clone(), ret.clone());
                 let (checks, definition) =
                     self.checked_logic_fn_body(local_def_id, &params, &ret, body);
+                self.logic_fn_checks(local_def_id, || {
+                    let mut system = self.system.borrow_mut();
+                    for clause in termination.into_iter().chain(checks) {
+                        system.push_clause(clause);
+                    }
+                });
                 let mut system = self.system.borrow_mut();
-                for clause in termination.into_iter().chain(checks) {
-                    system.push_clause(clause);
-                }
                 system.push_fn_define_term(
                     pred.clone(),
                     arg_sorts,
@@ -2495,6 +2563,7 @@ impl<'tcx> Analyzer<'tcx> {
             }
         }
         self.system.borrow_mut().type_params_reverse = reverse;
+        self.mark_opaque_predicates();
         let config = crate::report::Config::from_env(self.tcx);
         match split_jobs() {
             Ok(None) => {}
@@ -2529,6 +2598,299 @@ impl<'tcx> Analyzer<'tcx> {
         };
         self.verification_error(&self.system.borrow(), &err, at)
             .emit();
+    }
+
+    /// Makes each `#[thrust::opaque]` predicate or logic function opaque in the system
+    /// (`chc::System::make_opaque`), and lets the clauses from the body of a function marked
+    /// `#[thrust::reveal]` read the definitions of the opaque functions of its module
+    /// (`chc::System::reveal_in`), as Dafny's and Verus's `reveal` does in the proof it is
+    /// written in. Code that does not reveal one reads it through the contracts and lemmas
+    /// stated of it, which are checked where code that reveals it is analyzed.
+    fn mark_opaque_predicates(&self) {
+        let reveal_scopes = self.check_opacity_attributes();
+        let module_of = |def: LocalDefId| self.tcx.parent_module_from_def_id(def).to_local_def_id();
+        let mut system = self.system.borrow_mut();
+        // Each opaque instance with its item.
+        let mut opaque: Vec<(chc::UserDefinedPred, LocalDefId)> = Vec::new();
+        for (pred, def) in self.opaque_predicates.borrow().iter() {
+            // Universally quantifying a definition strengthens the clauses only when it is closed:
+            // one that applies an unknown (a closure's inferred contract) keeps its definition.
+            if system.definition_applies_unknown(pred) {
+                self.tcx.dcx().span_warn(
+                    self.tcx.def_span(*def),
+                    "this `#[thrust::opaque]` function keeps its definition here: at this instance it applies a contract left to inference",
+                );
+                continue;
+            }
+            system.make_opaque(pred.clone());
+            opaque.push((pred.clone(), *def));
+        }
+        // The clauses of a revealing body read the definitions of the opaque functions its reveal
+        // names, or of its module's; a closure's body is its own, but the reveal written on the
+        // function it is in covers it, as Dafny's `reveal` covers the lambdas in its scope. The
+        // checks of a logic function read those of its own module, as Creusot's `#[open]` and
+        // Verus's `closed spec fn` show a definition to the spec functions of their module.
+        let revealing_bodies = self
+            .body_clauses
+            .borrow()
+            .iter()
+            .filter_map(|(def, range)| {
+                let root = self.tcx.typeck_root_def_id(def.to_def_id()).expect_local();
+                Some((reveal_scopes.get(&root)?.clone(), range.clone()))
+            })
+            .collect::<Vec<_>>();
+        let logic_fn_checks = self
+            .logic_fn_check_clauses
+            .borrow()
+            .iter()
+            .map(|(def, range)| (RevealScope::of_module(module_of(*def)), range.clone()))
+            .collect::<Vec<_>>();
+        for (scope, range) in revealing_bodies.into_iter().chain(logic_fn_checks) {
+            let preds: Vec<chc::UserDefinedPred> = opaque
+                .iter()
+                .filter(|(_, def)| scope.contains(*def, module_of(*def)))
+                .map(|(pred, _)| pred.clone())
+                .collect();
+            let ids: Vec<chc::ClauseId> = range.map(chc::ClauseId::from_usize).collect();
+            system.reveal_in(&ids, &preds);
+        }
+    }
+
+    /// Starts attributing the clauses pushed from now on to the body of `def`, until
+    /// [`Analyzer::exit_body`]; a body analyzed meanwhile (a callee at an instance) takes the
+    /// clauses it pushes.
+    pub fn enter_body(&self, def: LocalDefId) {
+        self.push_stretch(Some(def));
+    }
+
+    pub fn exit_body(&self) {
+        self.pop_stretch();
+    }
+
+    /// Pushes the clauses `push` pushes as the checks of the logic function `def`, outside every
+    /// body: they read the definitions of `def`'s module's opaque functions
+    /// ([`Analyzer::mark_opaque_predicates`]), whichever body first made an instance of it.
+    fn logic_fn_checks(&self, def: LocalDefId, push: impl FnOnce()) {
+        self.push_stretch(None);
+        let start = self.system.borrow().clauses.len();
+        push();
+        let end = self.system.borrow().clauses.len();
+        self.logic_fn_check_clauses
+            .borrow_mut()
+            .push((def, start..end));
+        self.pop_stretch();
+    }
+
+    fn push_stretch(&self, def: Option<LocalDefId>) {
+        let now = self.system.borrow().clauses.len();
+        let mut stack = self.body_stack.borrow_mut();
+        if let Some(&(Some(outer), start)) = stack.last() {
+            self.body_clauses.borrow_mut().push((outer, start..now));
+        }
+        stack.push((def, now));
+    }
+
+    fn pop_stretch(&self) {
+        let now = self.system.borrow().clauses.len();
+        let mut stack = self.body_stack.borrow_mut();
+        let (def, start) = stack.pop().expect("a stretch to end");
+        if let Some(def) = def {
+            self.body_clauses.borrow_mut().push((def, start..now));
+        }
+        if let Some(outer) = stack.last_mut() {
+            outer.1 = now;
+        }
+    }
+
+    fn has_attr(&self, def: LocalDefId, path: &[rustc_span::Symbol]) -> bool {
+        self.tcx
+            .get_attrs_by_path(def.to_def_id(), path)
+            .next()
+            .is_some()
+    }
+
+    /// Stops at a `#[thrust::opaque]` on anything but a predicate or logic function with a Rust
+    /// body, and at a `#[thrust::reveal]` that would reveal nothing: in a module without an opaque
+    /// function, or on an item whose body Thrust does not analyze. rustc does not check `thrust::`
+    /// attributes, and either would otherwise change nothing.
+    fn check_opacity_attributes(&self) -> HashMap<LocalDefId, RevealScope> {
+        let opaque_path = analyze::annot::opaque_path();
+        let defs: Vec<LocalDefId> = self.tcx.hir_crate_items(()).definitions().collect();
+        let mut opaque_modules = HashSet::new();
+        for &def in &defs {
+            if !self.has_attr(def, &opaque_path) {
+                continue;
+            }
+            let spec_fn = self.has_attr(def, &analyze::annot::predicate_path())
+                || self.has_attr(def, &analyze::annot::logic_path());
+            if !spec_fn || !self.formula_fns.contains_key(&def) {
+                self.tcx.dcx().span_err(
+                    self.tcx.def_span(def),
+                    "`#[thrust::opaque]` applies only to a predicate or logic function with a Rust body",
+                );
+            }
+            opaque_modules.insert(self.tcx.parent_module_from_def_id(def).to_local_def_id());
+        }
+        let mut scopes = HashMap::new();
+        for &def in &defs {
+            let attrs: Vec<_> = self
+                .tcx
+                .get_attrs_by_path(def.to_def_id(), &analyze::annot::reveal_path())
+                .collect();
+            if attrs.is_empty() {
+                continue;
+            }
+            let analyzed = matches!(
+                self.tcx.def_kind(def),
+                rustc_hir::def::DefKind::Fn | rustc_hir::def::DefKind::AssocFn
+            ) && !self.has_attr(def, &analyze::annot::trusted_path())
+                && !self.has_attr(def, &analyze::annot::ignored_path())
+                && !self.has_attr(def, &analyze::annot::predicate_path())
+                && !self.has_attr(def, &analyze::annot::logic_path());
+            if !analyzed {
+                self.tcx.dcx().span_err(
+                    self.tcx.def_span(def),
+                    "`#[thrust::reveal]` applies only to a function whose body Thrust analyzes",
+                );
+            }
+            let module = self.tcx.parent_module_from_def_id(def).to_local_def_id();
+            let mut named = HashSet::new();
+            let mut bare = false;
+            for attr in attrs {
+                match analyze::annot::reveal_paths(attr) {
+                    Err(message) => {
+                        self.tcx.dcx().span_err(attr.span(), message);
+                    }
+                    Ok(None) => bare = true,
+                    Ok(Some(paths)) => {
+                        for path in paths {
+                            if let Some(target) =
+                                self.reveal_target(def, module, &path, attr.span())
+                            {
+                                named.insert(target);
+                            }
+                        }
+                    }
+                }
+            }
+            if bare && !opaque_modules.contains(&module) {
+                self.tcx.dcx().span_err(
+                    self.tcx.def_span(def),
+                    "`#[thrust::reveal]` reveals the opaque functions of its module, and this module has none; name the functions to reveal as `#[thrust::reveal(path::to::f)]`",
+                );
+            }
+            let scope = RevealScope {
+                module: bare.then_some(module),
+                named,
+            };
+            scopes.insert(def, scope);
+        }
+        scopes
+    }
+
+    /// The opaque function `path` names, resolved from `module` (relative to it, or from `crate`,
+    /// `self` or `super`, a function of a module or an associated function of a type's inherent
+    /// impl), with an error at `span` if it names none, names a function that is not
+    /// `#[thrust::opaque]`, or one not visible from `def`.
+    fn reveal_target(
+        &self,
+        def: LocalDefId,
+        module: LocalDefId,
+        path: &[Symbol],
+        span: rustc_span::Span,
+    ) -> Option<LocalDefId> {
+        let shown = path
+            .iter()
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>()
+            .join("::");
+        let Some(target) = self.resolve_path(module, path) else {
+            self.tcx
+                .dcx()
+                .span_err(span, format!("`#[thrust::reveal]`: cannot find `{shown}`"));
+            return None;
+        };
+        let opaque = target
+            .as_local()
+            .filter(|t| self.has_attr(*t, &analyze::annot::opaque_path()));
+        let Some(target) = opaque else {
+            self.tcx.dcx().span_err(
+                span,
+                format!("`#[thrust::reveal]`: `{shown}` is not a `#[thrust::opaque]` function"),
+            );
+            return None;
+        };
+        if !self
+            .tcx
+            .visibility(target.to_def_id())
+            .is_accessible_from(def.to_def_id(), self.tcx)
+        {
+            self.tcx.dcx().span_err(
+                span,
+                format!("`#[thrust::reveal]`: `{shown}` is not visible here"),
+            );
+            return None;
+        }
+        Some(target)
+    }
+
+    /// The item `path` names from `module`: its segments walk modules, then at most one type whose
+    /// inherent impls hold the last segment.
+    fn resolve_path(&self, module: LocalDefId, path: &[Symbol]) -> Option<DefId> {
+        use rustc_hir::def::DefKind;
+        use rustc_span::symbol::kw;
+        let (mut current, mut rest) = (module.to_def_id(), path);
+        match rest.first() {
+            Some(&kw::Crate) => {
+                current = rustc_span::def_id::CRATE_DEF_ID.to_def_id();
+                rest = &rest[1..];
+            }
+            Some(&kw::SelfLower) => rest = &rest[1..],
+            _ => {}
+        }
+        while rest.first() == Some(&kw::Super) {
+            current = self.tcx.opt_parent(current)?;
+            rest = &rest[1..];
+        }
+        for (i, name) in rest.iter().enumerate() {
+            let last = i + 1 == rest.len();
+            current = match self.tcx.def_kind(current) {
+                DefKind::Mod => self.module_child(current, *name, last)?,
+                DefKind::Struct | DefKind::Enum | DefKind::Union if last => self
+                    .tcx
+                    .inherent_impls(current)
+                    .iter()
+                    .flat_map(|imp| self.tcx.associated_item_def_ids(*imp))
+                    .copied()
+                    .find(|item| self.tcx.item_name(*item) == *name)?,
+                _ => return None,
+            };
+        }
+        Some(current)
+    }
+
+    /// The child of `module` named `name`: a function when `last`, a module or a type otherwise.
+    fn module_child(&self, module: DefId, name: Symbol, last: bool) -> Option<DefId> {
+        use rustc_hir::def::DefKind;
+        let children = match module.as_local() {
+            Some(local) => self.tcx.module_children_local(local),
+            None => self.tcx.module_children(module),
+        };
+        children
+            .iter()
+            .filter(|child| child.ident.name == name)
+            .filter_map(|child| child.res.opt_def_id())
+            .find(|id| {
+                let kind = self.tcx.def_kind(*id);
+                if last {
+                    matches!(kind, DefKind::Fn | DefKind::AssocFn)
+                } else {
+                    matches!(
+                        kind,
+                        DefKind::Mod | DefKind::Struct | DefKind::Enum | DefKind::Union
+                    )
+                }
+            })
     }
 
     /// The error of a failed verification of `system` (the whole or a part), at the obligation
