@@ -220,11 +220,14 @@ where
             if got.forall_sort_idx == expected.forall_sort_idx => {}
         (Type::Alias(got), Type::Alias(expected))
             if got.forall_sort_index() == expected.forall_sort_index() => {}
-        _ => panic!(
-            "inconsistent types: got={}, expected={}",
-            got.display(),
-            expected.display()
-        ),
+        _ => rustc_middle::ty::tls::with(|tcx| {
+            tcx.dcx().fatal(format!(
+                "thrust: inconsistent types: got={}, expected={} (a struct built through a \
+                 `Model` of another shape than its fields is not supported)",
+                got.display(),
+                expected.display()
+            ))
+        }),
     }
     clauses
 }
