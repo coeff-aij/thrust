@@ -808,14 +808,9 @@ pub fn layout<
         |(index, variant_fields): (VariantIdx, &IndexVec<FieldIdx, LocalIdx>)|
             -> Result<VariantLayout<FieldIdx>, crate::rustc_abi::layout::LayoutCalculatorError<F>> {
             let variant_only_tys = Map::new(
-                // The filter's contract is written: inferred, its postcondition is an unknown
-                // that `Filter::produces` applies, which `filter_count`'s `ensures` below negates.
-                // Its `requires` is properties 1 and 2b and the bound at the entry it is given,
-                // as the per-variant closure's `requires` states them at every entry. `Filter`
-                // takes a `Fn` closure, whose clauses read a capture as the reference it is
-                // (`*assignments`); `Map` takes an `FnMut` one, whose clauses read it through the
-                // closure's state (`**local_layouts`, the current value). The other form panics
-                // (#152).
+                // `Filter` takes a `Fn` closure, whose clauses read a capture as the reference it
+                // is (`*assignments`); `Map` takes an `FnMut` one, whose clauses read it through
+                // the closure's state (`**local_layouts`). The other form panics (#152).
                 Filter::new(variant_fields.iter(), thrust_macros::closure!(
                     captures(
                         assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
@@ -843,8 +838,6 @@ pub fn layout<
                         }
                     },
                 )),
-                // Written for the same reason: `Map::produces` applies the map's postcondition,
-                // under the `∃` of `Filter::produces`.
                 thrust_macros::closure!(
                     captures(local_layouts: &mut &IndexSlice<LocalIdx, F>),
                     requires(<LocalIdx as Idx>::index_logic(*local) < (**local_layouts).len()),
