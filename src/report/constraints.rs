@@ -219,6 +219,14 @@ fn kind(
             if is_panic(tcx, callee) {
                 return plain("assertion".to_owned());
             }
+            let assert_marker = crate::analyze::annot::assert_marker_path();
+            if tcx
+                .get_attrs_by_path(callee, &assert_marker)
+                .next()
+                .is_some()
+            {
+                return plain("proof_assert!".to_owned());
+            }
             let callee_name = tcx.def_path_str(callee);
             match head_owner {
                 // The callee's contract, or that of the method a call to a trait method resolves
