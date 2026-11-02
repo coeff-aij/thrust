@@ -2,15 +2,26 @@
 //! bodies of the cone apply (`THRUST_SPLIT_GOALS`).
 //!
 //! The cones are solved on their own only when every clause is definite: read as `¬body ∨ head`,
-//! with the guard of an atom as a premise of it, it is a conjunction of clauses each with at most
-//! one unknown in its head and the others in body positions (see [`super::prune`]). A `∀` in a
-//! head position distributes over that conjunction and its variables become the clause's
-//! (`body ⇒ ∀x. p(x)`); a disjunction in a head position holds at most one unknown
-//! (`body ⇒ p(x) ∨ c` is `body ∧ ¬c ⇒ p(x)`); an unknown under an `∃` in a head position is not
-//! definite. A clause that also states a constraint (`body ⇒ p(x) ∧ c`) derives `p` and is a goal
-//! too. Solving each cone on its own then gives the verdict of the system, as the slicing of Z3's
-//! muZ (Hoder, Bjørner and de Moura, CAV 2011) and Eldarica (Hojjat and Rümmer, FMCAD 2018),
-//! surveyed by De Angelis et al. (TPLP 2022), at each interpretation of the forall predicates:
+//! it is equivalent to a conjunction of clauses each with at most one unknown in its head and the
+//! others in body positions (see [`super::prune`]), which the arguments below need. Each shape
+//! accepted rewrites to that form by an equivalence of first-order logic:
+//!
+//! - `body ⇒ p(x)`, and `body ∧ ¬p(x) ⇒ ⊥`, a negated premise, which is the same clause;
+//! - `body ⇒ (g ⇒ p(x))`, a guarded atom, which is `body ∧ g ⇒ p(x)`;
+//! - `body ⇒ ∀y. p(x, y)`, which is `body ⇒ p(x, y)` with `y` a variable of the clause (`y` does
+//!   not occur in `body`);
+//! - `body ⇒ p(x) ∨ c` with no unknown in `c` in a head position, which is `body ∧ ¬c ⇒ p(x)`;
+//! - `body ⇒ p(x) ∧ q(x) ∧ c`, which is `body ⇒ p(x)`, `body ⇒ q(x)` and the goal `body ⇒ c`:
+//!   the clause derives `p` and `q` and is a goal too;
+//! - a premise in which an unknown occurs only positively, under `∧`, `∨`, `∃` or `∀`, which keeps
+//!   the body monotone in it.
+//!
+//! Refused: two unknowns in one head disjunction (`body ⇒ p(x) ∨ q(x)`, no least model) and an
+//! unknown under an `∃` in a head position (`body ⇒ ∃y. p(x, y)`, whose models are not closed
+//! under intersection). For a system of definite clauses, solving each cone on its own gives the
+//! verdict of the system, as the slicing of Z3's muZ (Hoder, Bjørner and de Moura, CAV 2011) and
+//! Eldarica (Hojjat and Rümmer, FMCAD 2018), surveyed by De Angelis et al. (TPLP 2022), at each
+//! interpretation of the forall predicates:
 //!
 //! - `sat` when every cone is: the models of definite clauses are closed under intersection, and
 //!   a cone that applies an unknown in a body position holds every clause deriving it, so the
@@ -169,20 +180,17 @@ impl System {
             .filter(|(_, clause)| !clause.is_nop())
             .map(|(id, clause)| (id, clause_occurrences(clause)))
             .collect();
-        let mut defining: HashMap<PredVarId, Vec<ClauseId>> = HashMap::new();
         let mut goals = Vec::new();
         for (id, clause) in self.clauses.iter_enumerated() {
             if !occurrences.contains_key(&id) {
                 continue;
             }
-            let heads = clause_heads(id, clause)?;
-            for p in heads.unknowns {
-                defining.entry(p).or_default().push(id);
-            }
-            if heads.constraint {
+            if clause_heads(id, clause)?.constraint {
                 goals.push(id);
             }
         }
+        // Once every clause is definite, its unknowns in head positions are those it derives.
+        let defining = self.deriving_clauses();
         let cone = |goal: ClauseId| {
             let mut clauses = HashSet::from([goal]);
             let mut applied = HashSet::new();
@@ -211,12 +219,16 @@ impl System {
 }
 
 impl System {
-    /// The clauses in which each unknown occurs in a head position (see [`super::prune`]): those
-    /// that derive it. A model of a part that holds all of them interprets the unknown as some
-    /// model of the system does.
+    /// The clauses other than `true ⇐ …` and `… ⇐ false` in which each unknown occurs in a head
+    /// position (see [`super::prune`]): those that derive it, from which the cones are built. A
+    /// model of a part that holds all of them interprets the unknown as some model of the system
+    /// does.
     pub fn deriving_clauses(&self) -> HashMap<PredVarId, HashSet<ClauseId>> {
         let mut deriving: HashMap<PredVarId, HashSet<ClauseId>> = HashMap::new();
         for (id, clause) in self.clauses.iter_enumerated() {
+            if clause.is_nop() {
+                continue;
+            }
             let heads = clause_occurrences(clause)
                 .into_iter()
                 .filter(|o| o.position == Position::Head);
