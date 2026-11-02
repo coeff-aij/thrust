@@ -26,12 +26,12 @@ pub mod case_study;
 use rustc_abi::{HasDataLayout, LayoutCalculator, LayoutData, ReprOptions, StructKind};
 use rustc_index::{Idx, IndexSlice};
 
-// The fail twin: the caller of `univariant` does not establish its size bound
-// (`fits_in_any_order`), which `univariant`'s `requires` demands.
+// The fail twin: the caller of `univariant` does not establish that `F`'s `deref` is a function
+// (`deref_functional`), which `univariant`'s `requires` demands.
 #[thrust_macros::context]
 #[thrust_macros::requires(
     LayoutCalculator::<Cx>::layout_pre::<FieldIdx, VariantIdx, F>(*calc, fields, kind)
-        && LayoutCalculator::<Cx>::deref_functional::<FieldIdx, VariantIdx, F>()
+        && LayoutCalculator::<Cx>::fits_in_any_order::<FieldIdx, VariantIdx, F>(*calc, fields, repr, kind)
 )]
 #[thrust_macros::ensures(true)]
 fn drive< //~ ERROR: Unsat
