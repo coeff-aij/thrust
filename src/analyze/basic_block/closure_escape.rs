@@ -16,7 +16,9 @@ use rustc_middle::ty::{self as mir_ty};
 use rustc_span::def_id::DefId;
 
 use super::{singleton_params, subst_singleton_params, Analyzer, ResolvedCallable};
-use crate::analyze::unanalyzed_entry::{count_held, peel_refs, pointee, HandedOver, HandoverCount};
+use crate::analyze::unanalyzed_entry::{
+    count_held, peel_refs, pointee, HandedOver, HandoverCount, StatedPres,
+};
 use crate::analyze::TypeParam;
 use crate::chc;
 use crate::refine::Var;
@@ -27,6 +29,53 @@ use crate::rty::{self, ClauseBuilderExt as _, ClauseScope as _, Subtyping as _};
 enum Calls {
     Once,
     Repeatedly,
+}
+
+/// An analyzed call that hands closures over to code Thrust does not analyze.
+struct HandOver<'a, 'tcx> {
+    /// The function called, with its generic arguments.
+    def_id: DefId,
+    args: mir_ty::GenericArgsRef<'tcx>,
+    /// The call's arguments and their types.
+    operands: &'a [Operand<'tcx>],
+    operand_tys: &'a IndexVec<rty::FunctionParamIdx, rty::RefinedType<Var>>,
+    /// What the `requires` the call is checked against reads the precondition of.
+    stated: &'a StatedPres<'tcx>,
+    /// The function the contract is of, and the one in whose `requires` a stop asks to state a
+    /// `pre!`.
+    handed: (DefId, DefId),
+}
+
+/// Whether a struct or enum of the crate in `ty` holds the closure type `closure` among its
+/// type arguments: a user adapter, whose `inv` holds only where a call discharges it.
+fn crate_adapter_holds<'tcx>(ty: mir_ty::Ty<'tcx>, closure: mir_ty::Ty<'tcx>) -> bool {
+    ty.walk()
+        .filter_map(|arg| arg.as_type())
+        .any(|ty| match ty.kind() {
+            mir_ty::TyKind::Adt(adt, args) => {
+                adt.did().is_local() && args.types().any(|arg| closures_in(arg).contains(&closure))
+            }
+            _ => false,
+        })
+}
+
+/// The closure types in `ty`, without repeats. A closure's own arguments (its signature, its
+/// captures) are its own and not looked into: a closure it captures is called by its body.
+fn closures_in(ty: mir_ty::Ty<'_>) -> Vec<mir_ty::Ty<'_>> {
+    let mut closures = Vec::new();
+    let mut walker = ty.walk();
+    while let Some(arg) = walker.next() {
+        let Some(ty) = arg.as_type() else {
+            continue;
+        };
+        if matches!(ty.kind(), mir_ty::TyKind::Closure(..)) {
+            walker.skip_current_subtree();
+            if !closures.contains(&ty) {
+                closures.push(ty);
+            }
+        }
+    }
+    closures
 }
 
 impl<'tcx> Analyzer<'tcx, '_> {
@@ -74,16 +123,26 @@ impl<'tcx> Analyzer<'tcx, '_> {
             let function = HandedOver::Function(function, function_args);
             self.record_covered(function, def_id, args);
         }
+        let call = HandOver {
+            def_id,
+            args,
+            operands,
+            operand_tys,
+            stated: &stated,
+            handed: (contract_def_id, requires_of),
+        };
         for param in self.iterator_spec_params(contract_def_id) {
             let ty = mir_ty::EarlyBinder::bind(param.to_ty(self.tcx))
                 .instantiate(self.tcx, contract_args);
             let ty = self.tcx.erase_regions(ty);
-            // The iterator's `inv` states the obligation of the closures held by the arguments
-            // at the parameters of the bounded type, not of a value of their type another
-            // argument holds, whatever its type.
+            // The iterator's `inv` states the obligation of the closures a std adapter holds in
+            // the arguments at the parameters of the bounded type, not of a value of their type
+            // another argument holds, whatever its type.
             let others = self.operands_not_at(contract_def_id, param, operands);
-            for closure in ty.walk().filter_map(|arg| arg.as_type()) {
-                if matches!(closure.kind(), mir_ty::TyKind::Closure(..)) {
+            for closure in closures_in(ty) {
+                if crate_adapter_holds(ty, closure) {
+                    self.hand_over_values(closure, Calls::Repeatedly, &call);
+                } else {
                     self.record_handover(closure, def_id, args);
                     self.record_handover_count(closure, def_id, args, others.clone(), 0);
                 }
@@ -93,31 +152,38 @@ impl<'tcx> Analyzer<'tcx, '_> {
             let ty = mir_ty::EarlyBinder::bind(param.to_ty(self.tcx))
                 .instantiate(self.tcx, contract_args);
             let ty = self.tcx.erase_regions(ty);
-            self.record_handover(ty, def_id, args);
-            // `stated` records types, not values, so a `pre!` stated of a value of `ty` counts
-            // only when the arguments hold exactly one: itself, behind references and boxes, or
-            // in a field of a struct or tuple (the function of an iterator adapter), not a second
-            // value of `ty`, nor one inside a collection. Otherwise each value is handed over with
-            // its obligation. A type parameter here may stand for a type holding more values, so
-            // the walk over unanalyzed code counts them again at each instance of the caller
-            // ([`HandoverCount`]).
-            let operand_types = self.operand_types(operands);
-            let count = operand_types
-                .iter()
-                .map(|held| count_held(self.tcx, *held, ty))
-                .sum::<Option<usize>>();
-            let accounted = if stated.names(ty) && count == Some(1) {
-                1
-            } else {
-                let holders = self.holders(ty, operands);
-                for (idx, held, derefs) in &holders {
-                    let handed = (contract_def_id, requires_of);
-                    self.hand_over(ty, calls, &operand_tys[*idx], *held, *derefs, handed);
-                }
-                holders.len()
-            };
-            self.record_handover_count(ty, def_id, args, operand_types, accounted);
+            self.hand_over_values(ty, calls, &call);
         }
+    }
+
+    /// Hands over the values of the closure type `ty` that the arguments of `call` hold, which
+    /// its callee may call as `calls` says. The call records that it hands over `ty`.
+    ///
+    /// `stated` records types, not values, so a `pre!` the callee's `requires` states of a value
+    /// of `ty` counts only when the arguments hold exactly one: itself, behind references and
+    /// boxes, or in a field of a struct or tuple (the function of an iterator adapter), not a
+    /// second value of `ty`, nor one inside a collection. Otherwise each value is handed over with
+    /// its obligation. A type parameter here may stand for a type holding more values, so the
+    /// walk over unanalyzed code counts them again at each instance of the caller
+    /// ([`HandoverCount`]).
+    fn hand_over_values(&mut self, ty: mir_ty::Ty<'tcx>, calls: Calls, call: &HandOver<'_, 'tcx>) {
+        self.record_handover(ty, call.def_id, call.args);
+        let operand_types = self.operand_types(call.operands);
+        let count = operand_types
+            .iter()
+            .map(|held| count_held(self.tcx, *held, ty))
+            .sum::<Option<usize>>();
+        let accounted = if call.stated.names(ty) && count == Some(1) {
+            1
+        } else {
+            let holders = self.holders(ty, call.operands);
+            for (idx, held, derefs) in &holders {
+                let operand_ty = &call.operand_tys[*idx];
+                self.hand_over(ty, calls, operand_ty, *held, *derefs, call.handed);
+            }
+            holders.len()
+        };
+        self.record_handover_count(ty, call.def_id, call.args, operand_types, accounted);
     }
 
     /// Records that the call of `def_id` at `args` states the obligation of `accounted` values
@@ -259,9 +325,10 @@ impl<'tcx> Analyzer<'tcx, '_> {
     /// every item it can be called on and is kept by every `next`, the only way std.rs lets the
     /// state of a `Map` change. So it holds of every `Map` a callee receives, whether or not the
     /// callee's contract requires `inv` (a trusted consumer's need not). A user adapter's `inv`
-    /// is established only where a call discharges it, such as a direct call of its `next`
-    /// through the trait's contract; nothing here checks that it holds, nor that it states the
-    /// `pre!` of the closures the adapter holds.
+    /// holds only where a call discharges it, so a closure a struct or enum of the crate holds is
+    /// handed over as a closure at an `Fn`-bounded parameter is ([`Self::hand_over_values`]):
+    /// covered when the callee's `requires` states its `pre!`, which a `requires` of the
+    /// adapter's `inv` does when `inv` states it positively, and otherwise with its obligation.
     fn iterator_spec_params(&self, contract_def_id: DefId) -> Vec<mir_ty::ParamTy> {
         let Some(iterator_spec) = self.ctx.def_ids.iterator_spec() else {
             return Vec::new();
