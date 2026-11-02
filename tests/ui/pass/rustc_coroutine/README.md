@@ -22,7 +22,7 @@ with the driver broken, regenerated and checked by `tests/rustc_coroutine/fail/c
 | `indexvec_int_range.rs` | as `indexvec.rs`, under `THRUST_INT_RANGE=conversions` | verified; checks that the tree type-checks with the option |
 | `bitset.rs` | `rustc_index::bit_set` | verified |
 | `simple.rs` | `rustc_abi::layout::simple` | draft, `ignore-on-host` |
-| `univariant.rs` | `LayoutCalculator::univariant`, `univariant_biased` trusted on its contract | draft, `ignore-on-host`: no answer; the obligations that pass the contract's predicates on unchanged hold but are not decided once the solver inlines the predicates (#132) |
+| `univariant.rs` | `LayoutCalculator::univariant`, `univariant_biased` trusted on its contract | verified, one part per goal (`THRUST_SPLIT_GOALS`), with the predicates its contracts pass on unchanged `#[thrust::opaque]`: `fits_in_any_order`, `weighs` (layout.rs), `Primitive::size_in`, `FieldsShape::arbitrary_of` (lib.rs); `univariant_biased`, `Primitive::size` and `layout()` reveal those they read (#132) |
 | `univariant_biased.rs` | `LayoutCalculator::univariant_biased` | draft, `ignore-on-host`: query about 61 MB (#133) |
 | `eligibility.rs` | `coroutine_saved_local_eligibility` | draft, `ignore-on-host` |
 | `layout.rs` | `layout()` and the adapters of `thrust/iter.rs`; the lemmas of `thrust/lemmas.rs` assumed | draft, `ignore-on-host` |

@@ -584,6 +584,14 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
 )]
 #[thrust_macros::ensures(true)]
 #[thrust_macros::context]
+// The predicates layout.rs and lib.rs keep opaque for `univariant`'s proof are revealed here: this
+// proof reads their definitions.
+#[thrust::reveal(
+    super::LayoutCalculator::fits_in_any_order,
+    super::LayoutCalculator::weighs,
+    super::super::Primitive::size_in,
+    super::super::FieldsShape::arbitrary_of
+)]
 pub fn layout<
     'a,
     F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + thrust_models::Model,

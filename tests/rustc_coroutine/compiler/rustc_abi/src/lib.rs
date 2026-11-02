@@ -609,6 +609,7 @@ pub enum Primitive {
 impl Primitive {
     /// `s` is the size of `self` under the data layout `dl`.
     #[thrust_macros::predicate]
+    #[thrust::opaque]
     pub(crate) fn size_in(self, dl: TargetDataLayout, s: Size) -> bool {
         exists(|i: Integer, b: bool| self == Primitive::Int(i, b) && Integer::bytes_are(i, s))
             || exists(|f: Float| self == Primitive::Float(f) && Float::bytes_are(f, s))
@@ -625,6 +626,7 @@ impl Primitive {
         || exists(|dl: TargetDataLayout, a: AddressSpace| C::dl_of(*cx, dl)
             && self == Primitive::Pointer(a) && TargetDataLayout::pointer_size_is(dl, a, result)))]
     #[thrust_macros::ensures(exists(|dl: TargetDataLayout| C::dl_of(*cx, dl) && Self::size_in(self, dl, result)))]
+    #[thrust::reveal(Primitive::size_in)]
     pub fn size<C: HasDataLayout>(self, cx: &C) -> Size {
         use Primitive::*;
         let dl = cx.data_layout();
@@ -753,6 +755,7 @@ impl<FieldIdx: Idx + thrust_models::Model> FieldsShape<FieldIdx> {
     /// `self` is `Arbitrary` over `n` fields: `n` offsets, and a memory order listing each
     /// field below `n` exactly once.
     #[thrust_macros::predicate]
+    #[thrust::opaque]
     fn arbitrary_of(self, n: USize) -> bool {
         exists(|o: IndexVec<FieldIdx, Size>, m: IndexVec<u32, FieldIdx>,
                 os: Seq<Size>, ms: Seq<<FieldIdx as thrust_models::Model>::Ty>|
