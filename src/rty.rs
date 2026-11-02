@@ -457,8 +457,12 @@ impl PartVars<'_> {
 /// The variant of an enum is stated as `bind_enum` assumes it, for the variant the value is:
 /// `discr(v) = d => exists f. v = C(f) && refinements(f)` of each variant whose fields have
 /// refinements, `f` variables `parts` makes. An enum whose arguments have no refinement has none
-/// in its payload; one with refinements met again in its own payload (`enclosing`), or nested
-/// past [`ENUM_NESTING_LIMIT`], is one no finite formula follows, which is not supported.
+/// in its payload. One met again in its own payload (`enclosing`), or nested past
+/// [`ENUM_NESTING_LIMIT`], is one no finite formula follows through its payloads: the
+/// refinements of each of its type arguments are stated of every value of the argument's type
+/// instead ([`every_value_formula`]), as subtyping against an argument without refinement
+/// requires, which recurses over the arguments' types and so ends. The index and the elements of
+/// an array are stated so too.
 ///
 /// A function type inside `ty` (a function pointer) is not stated: a value of a function type
 /// has no term to state its template's contract of, which only a direct call's subtyping relates
@@ -495,11 +499,9 @@ where
         }
         Type::Seq(elem) => seq_refinements_formula(elem, value, param_terms, parts, enclosing),
         Type::Array(array) => {
-            assert!(
-                !array.index.has_refinement() && !array.elem.has_refinement(),
-                "refinements inside an array parameter are not supported"
-            );
-            chc::Formula::top()
+            let index = every_value_formula(&array.index, param_terms, parts, enclosing);
+            let elem = every_value_formula(&array.elem, param_terms, parts, enclosing);
+            conj(index, elem)
         }
         Type::Enum(ety) => enum_refinements_formula(ety, value, param_terms, parts, enclosing),
         _ => chc::Formula::top(),
@@ -570,10 +572,11 @@ where
     if !ety.args.iter().any(RefinedType::has_refinement) {
         return chc::Formula::top();
     }
-    assert!(
-        !enclosing.contains(ety) && enclosing.len() < ENUM_NESTING_LIMIT,
-        "refinements inside the payload of a recursive enum parameter are not supported"
-    );
+    if enclosing.contains(ety) || enclosing.len() >= ENUM_NESTING_LIMIT {
+        return ety.args.iter().fold(chc::Formula::top(), |acc, arg| {
+            conj(acc, every_value_formula(arg, param_terms, parts, enclosing))
+        });
+    }
     enclosing.push(ety.clone());
     let mut acc = chc::Formula::top();
     for variant in parts.defs.enum_def(&ety.symbol).variants {
@@ -611,6 +614,26 @@ where
     acc
 }
 
+/// `forall x. refinements(x)` of the refinement of `rty` and those inside it
+/// ([`refined_formula`]); top when it has none.
+fn every_value_formula<W>(
+    rty: &RefinedType<FunctionParamIdx>,
+    param_terms: &IndexVec<FunctionParamIdx, chc::Term<W>>,
+    parts: &mut PartVars<'_>,
+    enclosing: &mut Vec<EnumType<FunctionParamIdx>>,
+) -> chc::Formula<W>
+where
+    W: chc::Var,
+{
+    if !rty.has_refinement() {
+        return chc::Formula::top();
+    }
+    let mut vars = Vec::new();
+    let x = parts.fresh_term(rty.ty.to_sort(), &mut vars);
+    let formula = refined_formula(rty, x, param_terms, parts, enclosing);
+    chc::Formula::forall(vars, formula)
+}
+
 /// The conjunction of `a` and `b`, either of them left out when it is top.
 fn conj<W>(a: chc::Formula<W>, b: chc::Formula<W>) -> chc::Formula<W> {
     if a.is_top() {
@@ -638,14 +661,7 @@ where
         .existentials()
         .map(|(_, sort)| parts.fresh_term(sort.clone(), &mut vars))
         .collect();
-    let body = refinement.body.clone().subst_var(|v| match v {
-        RefinedTypeVar::Value => value.clone(),
-        RefinedTypeVar::Free(j) => param_terms[j].clone(),
-        RefinedTypeVar::Existential(ev) => existentials[ev.index()].clone(),
-    });
-    let formula = body.atoms.into_iter().fold(body.formula, |formula, atom| {
-        formula.and(chc::Formula::Atom(atom))
-    });
+    let formula = refinement_formula_at(refinement, value, param_terms, &existentials);
     if vars.is_empty() || formula.is_top() {
         formula
     } else {
@@ -671,13 +687,25 @@ where
         refinement.existentials.is_empty(),
         "closure refinements with existentials are not supported"
     );
+    refinement_formula_at(refinement, value, param_terms, &[])
+}
 
+/// The body of `refinement` as a formula, its value variable `value`, its free variables the
+/// entries of `param_terms` and its existentials the terms `existentials`.
+fn refinement_formula_at<W>(
+    refinement: &Refinement<FunctionParamIdx>,
+    value: chc::Term<W>,
+    param_terms: &IndexVec<FunctionParamIdx, chc::Term<W>>,
+    existentials: &[chc::Term<W>],
+) -> chc::Formula<W>
+where
+    W: chc::Var,
+{
     let body = refinement.body.clone().subst_var(|v| match v {
         RefinedTypeVar::Value => value.clone(),
         RefinedTypeVar::Free(j) => param_terms[j].clone(),
-        RefinedTypeVar::Existential(_) => unreachable!("closure refinement has no existentials"),
+        RefinedTypeVar::Existential(ev) => existentials[ev.index()].clone(),
     });
-
     let mut formula = body.formula;
     for atom in body.atoms {
         formula = formula.and(chc::Formula::Atom(atom));
