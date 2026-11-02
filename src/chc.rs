@@ -1812,10 +1812,12 @@ impl UserDefinedPred {
         &self.instance
     }
 
-    /// The symbol of the defined copy of an opaque predicate ([`System::reveal_in`]).
+    /// The symbol of the defined copy of an opaque predicate ([`System::reveal_in`]), shown as
+    /// `<name> (revealed)` so that a report tells it from the universal symbol.
     pub fn defined_copy(&self) -> Self {
         Self {
             inner: format!("{}_def", self.inner),
+            name: self.name.as_ref().map(|name| format!("{name} (revealed)")),
             ..self.clone()
         }
     }
