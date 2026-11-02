@@ -737,9 +737,8 @@ impl<'tcx> analyze::Analyzer<'tcx> {
         &mut self,
         instance: mir_ty::Instance<'tcx>,
     ) -> Option<rty::FunctionType> {
-        let def_id = instance.def_id();
         let template = self
-            .concrete_def_ty(def_id)
+            .concrete_def_ty(instance.def_id())
             .and_then(|def_ty| def_ty.ty.as_function().cloned());
         if template
             .as_ref()
@@ -747,19 +746,25 @@ impl<'tcx> analyze::Analyzer<'tcx> {
         {
             return None;
         }
+        self.entered_fn_ty(instance)
+            .filter(|fn_ty| self.infers_precondition(fn_ty))
+    }
+
+    /// The contract of the function `instance` runs, at its generic arguments, written or
+    /// inferred.
+    pub fn entered_fn_ty(&mut self, instance: mir_ty::Instance<'tcx>) -> Option<rty::FunctionType> {
+        let def_id = instance.def_id();
         let generic = self
             .tcx
             .generics_of(def_id)
             .requires_monomorphization(self.tcx);
-        let fn_ty = if generic {
-            self.def_ty_with_args(def_id, instance.args, def_id)?
-                .ty
-                .as_function()
-                .cloned()?
+        if generic {
+            let def_ty = self.def_ty_with_args(def_id, instance.args, def_id)?;
+            def_ty.ty.as_function().cloned()
         } else {
-            template?
-        };
-        self.infers_precondition(&fn_ty).then_some(fn_ty)
+            let def_ty = self.concrete_def_ty(def_id)?;
+            def_ty.ty.as_function().cloned()
+        }
     }
 
     /// Whether the precondition of `fn_ty` is inferred: a parameter's refinement names an

@@ -1218,7 +1218,16 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 continue;
             }
             self.stop_unanalyzed_closure_arg(*callee, *from);
-            let Some(fn_ty) = self.ctx.entered_inferred_fn_ty(*callee) else {
+            // A call through the trait object takes the trait's contract, which states nothing
+            // when the trait writes none (`requires(true)`, as Creusot and Prusti take an omitted
+            // one). The method refines it, so a `requires` of its own must hold of every
+            // argument as well.
+            let fn_ty = if through_vtable {
+                self.ctx.entered_fn_ty(*callee)
+            } else {
+                self.ctx.entered_inferred_fn_ty(*callee)
+            };
+            let Some(fn_ty) = fn_ty else {
                 continue;
             };
             tracing::debug!(%callee, %from, "entered from code Thrust does not analyze");
