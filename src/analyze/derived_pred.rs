@@ -13,9 +13,10 @@
 //!   `P` chosen after it;
 //! - no contract Thrust assumes without checking it against a body (a trusted, ignored or
 //!   unselected function, a trusted impl method or default method, an extern specification of a
-//!   foreign function, `std.rs`, an inherited law not checked for its impl) mentions `P` or a
-//!   predicate whose definition may depend on it, in any polarity: such a contract is the user's
-//!   statement of a relation that `σ(P)` need not be. [`check`] rejects one.
+//!   foreign function, `std.rs`, an inherited law not checked for its impl), and no `assume!`,
+//!   mentions `P` or a predicate whose definition may depend on it, in any polarity: such a
+//!   contract or `assume!` is the user's statement of a relation that `σ(P)` need not be.
+//!   [`check`] rejects such a contract and [`check_assumptions`] such an `assume!`.
 //!
 //! An analyzed function whose own precondition mentions `P` and which code Thrust does not analyze
 //! may enter is handled as one whose precondition is inferred, by the entry rule of
@@ -290,18 +291,13 @@ fn is_formula_fn(tcx: TyCtxt<'_>, def_id: DefId) -> bool {
         .is_some()
 }
 
-/// Reports each contract Thrust assumes without checking it against a body that mentions a
-/// derived predicate of `derived`, or a predicate whose definition may depend on one, and stops
-/// if there is one.
-pub fn check<'tcx>(
-    tcx: TyCtxt<'tcx>,
+/// The items that mention a derived predicate of `derived`, or a predicate whose definition may
+/// depend on one.
+fn dependent_on_derived(
+    tcx: TyCtxt<'_>,
     derived: &HashMap<chc::UserDefinedPred, DerivedAt>,
-    body_checks: &BodyChecks,
-    trait_laws: &rustc_data_structures::fx::FxIndexMap<DefId, Vec<DefId>>,
-    inherited_laws_checked: &HashSet<(DefId, DefId)>,
-    per_instance: &HashSet<DefId>,
     closure_contract_fns: [Option<DefId>; 3],
-) {
+) -> HashSet<DefId> {
     let mut seeds: HashSet<DefId> = derived.values().map(|at| at.pred_def_id).collect();
     // A raw SMT-LIB2 body may name a derived predicate's symbol, and the closure cannot read it,
     // so every raw-body predicate is taken to depend on one.
@@ -325,6 +321,43 @@ pub fn check<'tcx>(
         seeds.extend(closure_contract_fns.iter().flatten());
         dependent = dependency::dependent_items(tcx, &seeds);
     }
+    dependent
+}
+
+/// Reports each `assume!` that mentions a derived predicate of `derived`, or a predicate whose
+/// definition may depend on one: an unchecked statement of a relation the inferred one need not
+/// be, as a trusted contract is ([`check`]).
+pub fn check_assumptions(
+    tcx: TyCtxt<'_>,
+    derived: &HashMap<chc::UserDefinedPred, DerivedAt>,
+    assumptions: &[analyze::AssumeSite],
+    closure_contract_fns: [Option<DefId>; 3],
+) {
+    let dependent = dependent_on_derived(tcx, derived, closure_contract_fns);
+    for assumption in assumptions {
+        if dependent.contains(&assumption.formula) {
+            tcx.dcx().span_err(
+                assumption.span,
+                "an `assume!` mentions a derived predicate or one whose definition depends on it, \
+                 whose inferred relation it need not hold of; define the predicate in the impl",
+            );
+        }
+    }
+}
+
+/// Reports each contract Thrust assumes without checking it against a body that mentions a
+/// derived predicate of `derived`, or a predicate whose definition may depend on one, and stops
+/// if there is one.
+pub fn check<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    derived: &HashMap<chc::UserDefinedPred, DerivedAt>,
+    body_checks: &BodyChecks,
+    trait_laws: &rustc_data_structures::fx::FxIndexMap<DefId, Vec<DefId>>,
+    inherited_laws_checked: &HashSet<(DefId, DefId)>,
+    per_instance: &HashSet<DefId>,
+    closure_contract_fns: [Option<DefId>; 3],
+) {
+    let dependent = dependent_on_derived(tcx, derived, closure_contract_fns);
     let contracts = Contracts::new(tcx);
     let mentions = |fns: &[DefId]| fns.iter().any(|f| dependent.contains(f));
     let report = |def_id: DefId, what: &str| {

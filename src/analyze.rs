@@ -24,7 +24,7 @@ use crate::pretty::PrettyDisplayExt as _;
 use crate::refine::{self, BasicBlockType, TypeBuilder};
 use crate::rty;
 
-mod annot;
+pub(crate) mod annot;
 mod annot_fn;
 mod basic_block;
 mod closure_hist_inv;
@@ -714,6 +714,8 @@ pub struct Analyzer<'tcx> {
     contract_annotations: HashMap<DefId, ContractAnnotations>,
     /// Where the written invariant of each loop, by its header, is annotated, for the report.
     invariant_annotations: HashMap<(LocalDefId, BasicBlock), Vec<rustc_span::Span>>,
+    /// Each `assume!` the analysis took, in the order it took them.
+    assumptions: Vec<AssumeSite>,
     /// The fn-like defs whose bodies are trusted rather than analyzed.
     trusted_bodies: HashSet<LocalDefId>,
     /// What each analyzed body's calls into code Thrust does not analyze cover, by the body and
@@ -729,6 +731,15 @@ pub struct Analyzer<'tcx> {
     handover_counts: Vec<unanalyzed_entry::HandoverCount<'tcx>>,
     /// What the analysis did with the body of each function, for the report.
     body_checks: BodyChecks,
+}
+
+/// An `assume!` the analysis took: where it is written, the body it is in, and its formula
+/// function.
+#[derive(Debug, Clone, Copy)]
+pub struct AssumeSite {
+    pub span: rustc_span::Span,
+    pub owner: LocalDefId,
+    pub formula: DefId,
 }
 
 /// What the analysis did with the body of each function, shared by the analyzers that decide it.
@@ -1028,6 +1039,7 @@ impl<'tcx> Analyzer<'tcx> {
             template_sites: Default::default(),
             contract_annotations: Default::default(),
             invariant_annotations: Default::default(),
+            assumptions: Default::default(),
             trusted_bodies: Default::default(),
             handovers: Default::default(),
             handover_counts: Default::default(),
@@ -1524,6 +1536,17 @@ impl<'tcx> Analyzer<'tcx> {
         if derived.is_empty() {
             return;
         }
+        let closure_contract_fns = [
+            self.def_ids.closure_precondition(),
+            self.def_ids.closure_postcondition(),
+            self.def_ids.closure_hist_inv(),
+        ];
+        derived_pred::check_assumptions(
+            self.tcx,
+            &derived,
+            &self.assumptions,
+            closure_contract_fns,
+        );
         derived_pred::check(
             self.tcx,
             &derived,
@@ -1531,11 +1554,7 @@ impl<'tcx> Analyzer<'tcx> {
             &self.trait_laws.borrow(),
             &self.inherited_laws_checked.borrow(),
             &self.per_instance_law_impls,
-            [
-                self.def_ids.closure_precondition(),
-                self.def_ids.closure_postcondition(),
-                self.def_ids.closure_hist_inv(),
-            ],
+            closure_contract_fns,
         );
     }
 
@@ -3082,6 +3101,7 @@ impl<'tcx> Analyzer<'tcx> {
             template_vars: &self.template_vars,
             contract_annotations: &self.contract_annotations,
             invariant_annotations: &self.invariant_annotations,
+            assumptions: &self.assumptions,
             body_checks: &body_checks,
             parts,
         };
@@ -3393,6 +3413,20 @@ impl<'tcx> Analyzer<'tcx> {
             Some(tail) => written_clauses(tail),
             None => vec![self.tcx.def_span(def_id)],
         }
+    }
+
+    /// Keeps the `assume!` of `site` for the report and warns at it, once for each use, which its
+    /// formula function identifies also where several share a span (one macro's expansion).
+    pub fn record_assumption(&mut self, site: AssumeSite) {
+        if self.assumptions.iter().any(|a| a.formula == site.formula) {
+            return;
+        }
+        self.assumptions.push(site);
+        self.tcx
+            .dcx()
+            .struct_span_warn(site.span, "`assume!` is assumed without proof")
+            .with_note("what is verified after it holds only if it does")
+            .emit();
     }
 
     /// See [`BodyChecks`].
