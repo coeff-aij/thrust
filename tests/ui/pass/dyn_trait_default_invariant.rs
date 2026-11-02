@@ -4,11 +4,12 @@
 
 // A default body in the vtable of a type with an invariant is analyzed at that type, so its
 // contract there ensures the invariant of `&mut self`'s final value, which later calls through
-// the trait object assume.
+// the trait object assume. `get`, which the trait gives no contract, can be called through the
+// trait object only by code Thrust does not analyze, under the invariant, and changes nothing.
 
 #[thrust_macros::context]
 trait Counter {
-    fn get(&mut self) -> &mut u32;
+    fn get(&self) -> u32;
 
     #[thrust_macros::ensures(true)]
     fn reset(&mut self) {}
@@ -34,8 +35,8 @@ impl Invariant for C {
 }
 
 impl Counter for C {
-    fn get(&mut self) -> &mut u32 {
-        &mut self.n
+    fn get(&self) -> u32 {
+        self.n
     }
 
     fn bump(&mut self) -> u32 {
