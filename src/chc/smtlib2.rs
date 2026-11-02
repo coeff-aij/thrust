@@ -976,10 +976,46 @@ impl<'ctx, 'a> ForallPredDef<'ctx, 'a> {
     }
 }
 
+/// An opaque predicate or logic function ([`chc::System::make_opaque`]): a universal function of
+/// its parameters, without its definition.
+pub struct OpaquePredDecl<'ctx, 'a> {
+    ctx: &'ctx FormatContext,
+    inner: &'a chc::UserDefinedPredDef,
+}
+
+impl<'ctx, 'a> std::fmt::Display for OpaquePredDecl<'ctx, 'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let params = self
+            .inner
+            .sig
+            .iter()
+            .map(|(_, sort)| self.ctx.fmt_sort(sort));
+        let result = match &self.inner.body {
+            chc::UserDefinedPredBody::Term(sort, _) => self.ctx.fmt_sort(sort).to_string(),
+            _ => "Bool".to_string(),
+        };
+        write!(
+            f,
+            "(declare-forall-fun {} {} {result})",
+            self.inner.symbol,
+            List::closed(params)
+        )
+    }
+}
+
+impl<'ctx, 'a> OpaquePredDecl<'ctx, 'a> {
+    pub fn new(ctx: &'ctx FormatContext, inner: &'a chc::UserDefinedPredDef) -> Self {
+        Self { ctx, inner }
+    }
+}
+
 pub struct DepExistsPredVarDef<'ctx, 'a> {
     ctx: &'ctx FormatContext,
     id: &'a chc::PredVarId,
     def: &'a chc::PredVarDef,
+    /// The opaque predicates (`chc::System::make_opaque`), listed after `dependencies`: every
+    /// unknown may depend on them, as it may on their definitions.
+    opaque: &'a [&'a chc::UserDefinedPred],
     // A `BTreeSet`, not a `HashSet`: `fmt` below iterates this directly to
     // list a `declare-dep-exists-fun`'s dependencies, so whatever order it
     // arrives in is the order emitted. It is ordered where it is built, in
@@ -993,7 +1029,12 @@ impl<'ctx, 'a> std::fmt::Display for DepExistsPredVarDef<'ctx, 'a> {
             f,
             "(declare-dep-exists-fun {} {} {} Bool)",
             self.id,
-            List::closed(self.dependencies.iter().map(|p| self.ctx.forall_pred(p))),
+            List::closed(
+                self.dependencies
+                    .iter()
+                    .map(|p| self.ctx.forall_pred(p).to_string())
+                    .chain(self.opaque.iter().map(|p| p.to_string()))
+            ),
             List::closed(self.def.sig.iter().map(|s| self.ctx.fmt_sort(s))),
         )
     }
@@ -1005,11 +1046,13 @@ impl<'ctx, 'a> DepExistsPredVarDef<'ctx, 'a> {
         id: &'a chc::PredVarId,
         def: &'a chc::PredVarDef,
         dependencies: &'a BTreeSet<chc::ForallPred>,
+        opaque: &'a [&'a chc::UserDefinedPred],
     ) -> Self {
         Self {
             ctx,
             id,
             def,
+            opaque,
             dependencies,
         }
     }
@@ -1099,6 +1142,15 @@ impl<'a> std::fmt::Display for System<'a> {
             )?;
         }
 
+        // An opaque predicate is a universal function, declared with the forall predicates so
+        // that every unknown and definition after it may read it.
+        let opaque = self.opaque_preds();
+        for def in self.inner.user_defined_pred_defs.iter() {
+            if opaque.contains(&&def.symbol) {
+                writeln!(f, "{}\n", OpaquePredDecl::new(&self.ctx, def))?;
+            }
+        }
+
         // insert command from #![thrust::raw_command()] here
         for raw_command in &self.inner.raw_commands {
             writeln!(f, "{}\n", RawCommand::new(raw_command))?;
@@ -1112,11 +1164,12 @@ impl<'a> std::fmt::Display for System<'a> {
             super::prune::pred_vars_of(emitted.iter().map(|&id| &self.inner.clauses[id]));
         let declared_early = self.inner.pred_vars_in_definitions();
         for &p in &declared_early {
-            self.fmt_pred_var_decl(f, p, &dependencies, comments)?;
+            self.fmt_pred_var_decl(f, p, &dependencies, &opaque, comments)?;
         }
 
         for user_defined_pred_def in self.inner.user_defined_preds_in_dependency_order() {
-            if user_defined_pred_def.is_derived() {
+            if user_defined_pred_def.is_derived() || opaque.contains(&&user_defined_pred_def.symbol)
+            {
                 continue;
             }
             writeln!(
@@ -1129,7 +1182,7 @@ impl<'a> std::fmt::Display for System<'a> {
         writeln!(f)?;
         for p in self.inner.pred_vars.indices() {
             if !declared_early.contains(&p) && emitted_pred_vars.contains(&p) {
-                self.fmt_pred_var_decl(f, p, &dependencies, comments)?;
+                self.fmt_pred_var_decl(f, p, &dependencies, &opaque, comments)?;
             }
         }
         for id in emitted {
@@ -1156,11 +1209,26 @@ impl<'a> std::fmt::Display for System<'a> {
 }
 
 impl<'a> System<'a> {
+    /// The opaque predicates in the order of their definitions, for a solver that reads
+    /// universal functions; to any other solver every predicate is emitted with its definition.
+    fn opaque_preds(&self) -> Vec<&'a chc::UserDefinedPred> {
+        if !self.ctx.capabilities().dependency_aware_declarations {
+            return Vec::new();
+        }
+        self.inner
+            .user_defined_pred_defs
+            .iter()
+            .map(|def| &def.symbol)
+            .filter(|symbol| self.inner.is_opaque(symbol))
+            .collect()
+    }
+
     fn fmt_pred_var_decl(
         &self,
         f: &mut std::fmt::Formatter<'_>,
         p: chc::PredVarId,
         dependencies: &HashMap<chc::PredVarId, BTreeSet<chc::ForallPred>>,
+        opaque: &[&chc::UserDefinedPred],
         comments: Comments,
     ) -> std::fmt::Result {
         let def = &self.inner.pred_vars[p];
@@ -1176,7 +1244,7 @@ impl<'a> System<'a> {
             return writeln!(
                 f,
                 "{}\n",
-                DepExistsPredVarDef::new(&self.ctx, &p, def, &dependencies[&p])
+                DepExistsPredVarDef::new(&self.ctx, &p, def, &dependencies[&p], opaque)
             );
         }
         writeln!(

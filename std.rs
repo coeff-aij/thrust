@@ -1099,6 +1099,18 @@ mod thrust_models {
         unimplemented!()
     }
 
+    #[doc(hidden)]
+    #[thrust::def::assert_marker]
+    #[thrust::ignored]
+    #[inline(never)]
+    pub fn __assert_marker<F>(_f: F) {}
+
+    #[doc(hidden)]
+    #[thrust::def::assume_marker]
+    #[thrust::ignored]
+    #[inline(never)]
+    pub fn __assume_marker<F>(_f: F) {}
+
     /// Proof-only data, introduced by `thrust_macros::ghost!`. In the logic it is its
     /// content, so a specification refers to a `Ghost<T>` as if it were a `T`.
     #[allow(dead_code)]
@@ -1815,20 +1827,20 @@ fn _extern_spec_vec_is_empty<T>(vec: &Vec<T>) -> bool where T: thrust_models::Mo
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(
     thrust_models::forall(|c: thrust_models::model::Closure<F>, i: thrust_models::model::Int|
-        !(0 <= i && i < (*vec).len()) || thrust_macros::pre!(c((*vec)[i])))
+        (0 <= i && i < (*vec).len()) ==> thrust_macros::pre!(c((*vec)[i])))
 )]
 #[thrust_macros::ensures(
     (!vec).len() <= (*vec).len()
-        && thrust_models::forall(|k: thrust_models::model::Int| !(0 <= k && k < (!vec).len())
-            || thrust_models::exists(|c: thrust_models::model::Closure<F>, d: thrust_models::model::Closure<F>|
+        && thrust_models::forall(|k: thrust_models::model::Int| (0 <= k && k < (!vec).len())
+            ==> thrust_models::exists(|c: thrust_models::model::Closure<F>, d: thrust_models::model::Closure<F>|
                 thrust_macros::post!(thrust_models::model::Mut::new(c, d)((!vec)[k]), true)))
         && thrust_models::exists(|kept: thrust_models::model::Seq<thrust_models::model::Int>|
             kept.len() == (!vec).len()
-                && thrust_models::forall(|k: thrust_models::model::Int| !(0 <= k && k < kept.len())
-                    || (0 <= kept[k] && kept[k] < (*vec).len() && (!vec)[k] == (*vec)[kept[k]]
+                && thrust_models::forall(|k: thrust_models::model::Int| (0 <= k && k < kept.len())
+                    ==> (0 <= kept[k] && kept[k] < (*vec).len() && (!vec)[k] == (*vec)[kept[k]]
                         && (k + 1 >= kept.len() || kept[k] < kept[k + 1])))
-            && thrust_models::forall(|i: thrust_models::model::Int| !(0 <= i && i < (*vec).len())
-                || thrust_models::exists(|k: thrust_models::model::Int| 0 <= k && k < kept.len() && kept[k] == i)
+            && thrust_models::forall(|i: thrust_models::model::Int| (0 <= i && i < (*vec).len())
+                ==> thrust_models::exists(|k: thrust_models::model::Int| 0 <= k && k < kept.len() && kept[k] == i)
                 || thrust_models::exists(|c: thrust_models::model::Closure<F>, d: thrust_models::model::Closure<F>|
                     thrust_macros::post!(thrust_models::model::Mut::new(c, d)((*vec)[i]), false))))
 )]
@@ -2291,21 +2303,21 @@ fn _extern_spec_slice_index_mut<T, I>(slice: &mut [T], index: I) -> &mut <I as s
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(
     thrust_models::forall(|c: thrust_models::model::Closure<F>, i: thrust_models::model::Int|
-        !(0 <= i && i < (*slice).len()) || thrust_macros::pre!(c(&(*slice)[i])))
+        (0 <= i && i < (*slice).len()) ==> thrust_macros::pre!(c(&(*slice)[i])))
 )]
 #[thrust_macros::ensures(
     (!slice).len() == (*slice).len()
         && thrust_models::exists(|p: thrust_models::model::Seq<thrust_models::model::Int>|
             p.len() == (*slice).len()
                 && thrust_models::forall(|i: thrust_models::model::Int|
-                    !(0 <= i && i < (*slice).len())
-                        || (0 <= p[i] && p[i] < (*slice).len() && (!slice)[i] == (*slice)[p[i]]))
+                    (0 <= i && i < (*slice).len())
+                        ==> (0 <= p[i] && p[i] < (*slice).len() && (!slice)[i] == (*slice)[p[i]]))
                 && thrust_models::forall(|i: thrust_models::model::Int, j: thrust_models::model::Int|
-                    !(0 <= i && i < (*slice).len() && 0 <= j && j < (*slice).len() && i != j)
-                        || p[i] != p[j])
+                    (0 <= i && i < (*slice).len() && 0 <= j && j < (*slice).len() && i != j)
+                        ==> p[i] != p[j])
                 && thrust_models::forall(|j: thrust_models::model::Int|
-                    !(0 <= j && j < (*slice).len())
-                        || thrust_models::exists(|i: thrust_models::model::Int|
+                    (0 <= j && j < (*slice).len())
+                        ==> thrust_models::exists(|i: thrust_models::model::Int|
                             0 <= i && i < (*slice).len() && p[i] == j)))
 )]
 fn _extern_spec_slice_sort_by_key<T, K, F>(slice: &mut [T], f: F)
@@ -2488,9 +2500,9 @@ where
                                   fs: thrust_models::model::Seq<thrust_models::model::Closure<P>>,
                                   x: <I::Item as thrust_models::Model>::Ty,
                                   it2: <I as thrust_models::Model>::Ty|
-            !(_iter_spec_find_chain::<I, P>(*it, predicate, s, it1, fs)
+            (_iter_spec_find_chain::<I, P>(*it, predicate, s, it1, fs)
                 && I::produces(it1, thrust_models::model::Seq::singleton(x), it2))
-                || thrust_macros::pre!(fs[s.len()](&x)))
+                ==> thrust_macros::pre!(fs[s.len()](&x)))
 )]
 #[thrust_macros::ensures(
     I::inv(!it)
@@ -2566,18 +2578,18 @@ fn _extern_spec_iterator_sum_usize<I>(it: I) -> usize
         I::produces(it, prod, done)
             && I::completed(thrust_models::model::Mut::new(done, fin))
             && keys.len() == prod.len()
-            && thrust_models::forall(|k: thrust_models::model::Int| !(0 <= k && k < prod.len())
-                || thrust_models::exists(|c: thrust_models::model::Closure<F>, d: thrust_models::model::Closure<F>|
+            && thrust_models::forall(|k: thrust_models::model::Int| (0 <= k && k < prod.len())
+                ==> thrust_models::exists(|c: thrust_models::model::Closure<F>, d: thrust_models::model::Closure<F>|
                     thrust_macros::post!(thrust_models::model::Mut::new(c, d)(&prod[k]), keys[k])))
             && (result == None) == (prod.len() == 0)
-            && thrust_models::forall(|x: <I::Item as thrust_models::Model>::Ty| !(result == Some(x))
-                || thrust_models::exists(|j: thrust_models::model::Int|
+            && thrust_models::forall(|x: <I::Item as thrust_models::Model>::Ty| (result == Some(x))
+                ==> thrust_models::exists(|j: thrust_models::model::Int|
                     0 <= j && j < prod.len() && x == prod[j]
-                        && thrust_models::forall(|k: thrust_models::model::Int| !(0 <= k && k < prod.len())
-                            || B::compares(keys[k], keys[j], Some(std::cmp::Ordering::Less))
+                        && thrust_models::forall(|k: thrust_models::model::Int| (0 <= k && k < prod.len())
+                            ==> B::compares(keys[k], keys[j], Some(std::cmp::Ordering::Less))
                             || B::compares(keys[k], keys[j], Some(std::cmp::Ordering::Equal)))
-                        && thrust_models::forall(|k: thrust_models::model::Int| !(j < k && k < prod.len())
-                            || B::compares(keys[k], keys[j], Some(std::cmp::Ordering::Less)))))
+                        && thrust_models::forall(|k: thrust_models::model::Int| (j < k && k < prod.len())
+                            ==> B::compares(keys[k], keys[j], Some(std::cmp::Ordering::Less)))))
     )
 )]
 fn _extern_spec_iterator_max_by_key<I, B, F>(it: I, f: F) -> Option<I::Item>
@@ -2738,7 +2750,7 @@ fn _extern_spec_iterator_enumerate<I>(it: I) -> core::iter::Enumerate<I>
     I::inv(it)
         && thrust_models::forall(|s: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
                                   i: <I as thrust_models::Model>::Ty|
-            !I::produces(it, s, i) || s.len() <= <usize>::MAX)
+            I::produces(it, s, i) ==> s.len() <= <usize>::MAX)
 )]
 #[thrust_macros::ensures(result.0 == it && result.1 == 0)]
 fn _extern_spec_iterator_enumerate<I>(it: I) -> core::iter::Enumerate<I>
@@ -3172,7 +3184,7 @@ where
         && map_reinitialize::<I, B, F>(f)
         && map_preservation_inv::<I, B, F>(it, f)
         && thrust_models::forall(|e: <I::Item as thrust_models::Model>::Ty, i: <I as thrust_models::Model>::Ty|
-            !I::produces(it, thrust_models::model::Seq::singleton(e), i) || thrust_macros::pre!(f(e)))
+            I::produces(it, thrust_models::model::Seq::singleton(e), i) ==> thrust_macros::pre!(f(e)))
 )]
 #[thrust_macros::ensures(result.0 == it && result.1 == f)]
 fn _extern_spec_iterator_map<I, B, F>(it: I, f: F) -> core::iter::Map<I, F>
@@ -3675,7 +3687,7 @@ fn _extern_spec_iterator_by_ref<'a, I>(it: &'a mut I) -> &'a mut I
     I::inv(it)
         && thrust_models::forall(|s: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
                                   i: <I as thrust_models::Model>::Ty|
-            !I::produces(it, s, i) || s.len() <= <usize>::MAX)
+            I::produces(it, s, i) ==> s.len() <= <usize>::MAX)
 )]
 #[thrust_macros::ensures(
     thrust_models::exists(|s: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
@@ -3733,9 +3745,9 @@ where
                                   fs: thrust_models::model::Seq<thrust_models::model::Closure<F>>,
                                   x: <I::Item as thrust_models::Model>::Ty,
                                   it2: <I as thrust_models::Model>::Ty|
-            !(_iter_spec_fold_chain::<I, B, F>(it, init, f, s, it1, accs, fs)
+            (_iter_spec_fold_chain::<I, B, F>(it, init, f, s, it1, accs, fs)
                 && I::produces(it1, thrust_models::model::Seq::singleton(x), it2))
-                || thrust_macros::pre!(fs[s.len()](accs[s.len()], x)))
+                ==> thrust_macros::pre!(fs[s.len()](accs[s.len()], x)))
 )]
 #[thrust_macros::ensures(
     thrust_models::exists(|s: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,

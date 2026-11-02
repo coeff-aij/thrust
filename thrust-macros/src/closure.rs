@@ -179,6 +179,8 @@ fn expand_closure(
     }
 
     if let Some(context) = context {
+        // A spec macro in the body (a closure in this closure) gets the same context.
+        context.inject_into(&mut closure.body);
         let prelude = context_companions(
             context,
             &upvars,
