@@ -3918,7 +3918,7 @@ impl System {
     /// Asks `z3` for the refutation of the system, which another solver refuted (PCSat, which
     /// gives none), when `z3` reads its query.
     pub fn refute_by_z3(&self, answer: &mut Answer) {
-        if self.needs_pcsat() {
+        if !self.z3_reads_same_query() {
             return;
         }
         self.refute(&Config::z3_in_place_of_solver(), answer);
@@ -3939,8 +3939,13 @@ impl System {
             .user_defined_pred_defs
             .iter()
             .flat_map(|def| def.sig.iter().map(|(_, sort)| sort));
-        // z3 keeps the definition of an opaque function, so its query is another one.
-        !self.opaque_preds.is_empty() || vars.chain(sigs).chain(definitions).any(unread)
+        vars.chain(sigs).chain(definitions).any(unread)
+    }
+
+    /// Whether z3 reads the query a dependency-aware solver gets: it can read it, and the system
+    /// has no opaque function, whose definition z3's query keeps.
+    pub fn z3_reads_same_query(&self) -> bool {
+        !self.needs_pcsat() && self.opaque_preds.is_empty()
     }
 
     /// Solves each class of clauses that share an unknown on its own (see [`components`]),
