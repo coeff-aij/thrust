@@ -880,6 +880,116 @@ fn split_in_memory_order<FieldIdx: Idx + thrust_models::Model>(
     (in_memory_order_a, in_memory_order_b)
 }
 
+// Rewrite (rewrites.md R15): the steps of `layout()` that append the tag's layout and the promoted
+// locals' layouts to the prefix's fields (`push`, and `extend` by the map of the ineligible set),
+// as a function whose contract states what `layout()` reads of them: P + 1 + c fields, c the set's
+// count, the entry fields kept, the tag's layout at P, and the fields after it layouts of
+// `local_layouts`.
+#[thrust_macros::requires(
+    <FieldIdx as Idx>::can_new((*prefix_layouts).len())
+        && (*ineligible_locals).0 == (*local_layouts).len()
+)]
+#[thrust_macros::ensures(
+    (!prefix_layouts).len() == (*prefix_layouts).len() + 1 + DenseBitSet::<LocalIdx>::card(*ineligible_locals)
+        && DenseBitSet::<LocalIdx>::card(*ineligible_locals) <= (*local_layouts).len()
+        && forall(|k: USize| !(0 <= k && k < (*prefix_layouts).len()) || (!prefix_layouts)[k] == (*prefix_layouts)[k])
+        && (!prefix_layouts)[(*prefix_layouts).len()] == tag_layout
+        && forall(|k: USize|
+            !((*prefix_layouts).len() < k && k < (!prefix_layouts).len())
+                || exists(|i: USize| 0 <= i && i < (*local_layouts).len() && (!prefix_layouts)[k] == (*local_layouts)[i]))
+)]
+#[thrust_macros::context]
+fn promote_locals<
+    F: Copy + thrust_models::Model,
+    FieldIdx: Idx + thrust_models::Model,
+    LocalIdx: Idx + thrust_models::Model,
+>(
+    prefix_layouts: &mut IndexVec<FieldIdx, F>,
+    tag_layout: F,
+    ineligible_locals: &DenseBitSet<LocalIdx>,
+    local_layouts: &IndexSlice<LocalIdx, F>,
+) {
+    // Rewrite (rewrites.md R8): `Map::new(it, f)` for `it.map(f)`, `extend_from` for `extend`.
+    // The closure's contract, as that of the per-variant closure's map closure in `layout()`: a
+    // member of the set is a local below n, and the closure returns its layout. `Map::new`'s
+    // precondition reads the members through `bit_iter_yields_below`.
+    thrust_macros::proof!(bit_iter_yields_below(ineligible_locals));
+    let promoted_layouts = Map::new(
+        ineligible_locals.iter(),
+        thrust_macros::closure!(
+            captures(local_layouts: &mut &IndexSlice<LocalIdx, F>),
+            requires(<LocalIdx as Idx>::index_logic(local) < (**local_layouts).len()),
+            // The bound is the `requires`', restated for `Map::yields_entries_of`.
+            ensures(<LocalIdx as Idx>::index_logic(local) < (**local_layouts).len()
+                && result == (**local_layouts)[<LocalIdx as Idx>::index_logic(local)]),
+            |local: LocalIdx| -> F { local_layouts[local] },
+        ),
+    );
+    // The promoted layouts are entries of `local_layouts`.
+    thrust_macros::proof!(Map::yields_entries_of(&promoted_layouts, local_layouts));
+    // `push` and `extend_from` give P + 1 + c fields, c the items `ineligible_locals.iter()` yields
+    // (`Map` keeps the length), which is the set's count `card`: `iter` starts `BitIter`'s `left`
+    // at it, and the iterator completes with nothing left. The fields after the tag are layouts of
+    // `local_layouts` (the closure's `ensures`).
+    prefix_layouts.push(tag_layout);
+    prefix_layouts.extend_from(promoted_layouts);
+}
+
+// Rewrite (rewrites.md R16): the `match` of `layout()` on the prefix's fields, which splits the
+// offsets and the memory order at the promoted fields (b_start = P + 1, P the tag's index), as a
+// function whose contract states what `layout()` reads of the parts: the promoted offsets and
+// memory index have n - (P + 1) = c entries.
+#[thrust_macros::requires(
+    FieldsShape::<FieldIdx>::arbitrary_of(fields, n)
+        && forall(|t: USize| <FieldIdx as Idx>::index_is(tag_index, t) ==> t + 1 <= n)
+        && forall(|k: USize| 0 <= k && k <= n ==> <FieldIdx as Idx>::can_new(k))
+)]
+#[thrust_macros::ensures(forall(|t: USize|
+    !<FieldIdx as Idx>::index_is(tag_index, t) || (result.1.len() + t + 1 == n && result.2.len() + t + 1 == n)))]
+#[thrust_macros::context]
+#[thrust::reveal(super::super::FieldsShape::arbitrary_of)]
+fn split_prefix_fields<FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>>(
+    fields: FieldsShape<FieldIdx>,
+    tag_index: FieldIdx,
+    n: usize,
+) -> (FieldsShape<FieldIdx>, IndexVec<FieldIdx, Size>, IndexVec<FieldIdx, u32>) {
+    match fields {
+        FieldsShape::Arbitrary {
+            mut offsets,
+            in_memory_order,
+        } => {
+            let b_start = tag_index.plus(1);
+            // `split_off(b_start.index())` needs `b_start.index() <= offsets.raw.len()`: `b_start`
+            // is P + 1 (`plus`), and `offsets` has n entries (`arbitrary_of`).
+            let offsets_b = IndexVec::from_raw(offsets.raw.split_off(b_start.index()));
+            let offsets_a = offsets;
+
+            // Rewrite (rewrites.md R11): the loop that splits the memory order at `b_start` is
+            // `split_in_memory_order`. Its `requires` holds by `arbitrary_of` (the order is a
+            // permutation of `0..n`) and the `requires` (`FieldIdx` reaches n); its `ensures`
+            // gives the second part n - (P + 1) = c entries, each below c:
+            // `invert_bijective_mapping` needs its entries below its length, and the variants need
+            // `promoted_memory_index` to have c entries.
+            let (in_memory_order_a, in_memory_order_b) =
+                split_in_memory_order(in_memory_order, b_start, n);
+
+            let outer_fields = FieldsShape::Arbitrary {
+                offsets: offsets_a,
+                in_memory_order: in_memory_order_a,
+            };
+            (
+                outer_fields,
+                offsets_b,
+                // `invert_bijective_mapping` requires every element of `in_memory_order_b` below
+                // its length, and keeps the length.
+                in_memory_order_b.invert_bijective_mapping(),
+            )
+        }
+        // Unreachable by `arbitrary_of`.
+        _ => unreachable!(),
+    }
+}
+
 /// `univariant`'s `layout_pre` of fields that are entries of `local_layouts`, from what
 /// `layout()`'s `requires` states of `local_layouts`, in the per-variant closure's forms: the
 /// variant's `univariant` call. `layout_pre` is opaque in `layout()`, so the call reads it as this
@@ -1338,48 +1448,15 @@ pub fn layout<
         },
     };
 
-    // Rewrite (rewrites.md R8): `Map::new(it, f)` for `it.map(f)`, `extend_from` for `extend`.
-    // The closure's contract, as that of the per-variant closure's map closure below: a member
-    // of the set is a local below n, and the closure returns its layout. `Map::new`'s
-    // precondition reads the members through `bit_iter_yields_below`.
-    thrust_macros::proof!(bit_iter_yields_below(&ineligible_locals));
-    let promoted_layouts = Map::new(
-        ineligible_locals.iter(),
-        thrust_macros::closure!(
-            captures(local_layouts: &mut &IndexSlice<LocalIdx, F>),
-            requires(<LocalIdx as Idx>::index_logic(local) < (**local_layouts).len()),
-            // The bound is the `requires`', restated for `Map::yields_entries_of`.
-            ensures(<LocalIdx as Idx>::index_logic(local) < (**local_layouts).len()
-                && result == (**local_layouts)[<LocalIdx as Idx>::index_logic(local)]),
-            |local: LocalIdx| -> F { local_layouts[local] },
-        ),
-    );
     let prefix_entry = thrust_macros::ghost!(|prefix_layouts: IndexVec<FieldIdx, F>| -> IndexVec<FieldIdx, F> {
         prefix_layouts
     });
-    // The promoted layouts are entries of `local_layouts`, for the second step below.
-    thrust_macros::proof!(Map::yields_entries_of(&promoted_layouts, local_layouts));
     // Rewrite (rewrites.md R13): the tag's layout is bound to a name, for `layout_pre_of_prefix`.
     let tag_layout = tag_to_layout(tag);
-    prefix_layouts.push(tag_layout);
-    prefix_layouts.extend_from(promoted_layouts);
-    // `push` and `extend_from` give `prefix_layouts.len() == P + 1 + c`, c the items
-    // `ineligible_locals.iter()` yields (`Map` keeps the length), which is the set's count `card`:
-    // `iter` starts `BitIter`'s `left` at it, and the iterator completes with nothing left. The
-    // entries after the tag are layouts of `local_layouts` (the closure's `ensures`). Stated as
-    // checked steps, so that what follows reads them rather than `extend_from`'s `ensures`.
-    thrust_macros::proof_assert!(
-        |prefix_layouts: IndexVec<FieldIdx, F>, prefix_entry: thrust_models::Ghost<IndexVec<FieldIdx, F>>, ineligible_locals: DenseBitSet<LocalIdx>, tag_layout: F|
-            prefix_layouts.len() == prefix_entry.len() + 1 + DenseBitSet::<LocalIdx>::card(ineligible_locals)
-                && forall(|k: USize| !(0 <= k && k < prefix_entry.len()) || prefix_layouts[k] == prefix_entry[k])
-                && prefix_layouts[prefix_entry.len()] == tag_layout
-    );
-    thrust_macros::proof_assert!(
-        |prefix_layouts: IndexVec<FieldIdx, F>, prefix_entry: thrust_models::Ghost<IndexVec<FieldIdx, F>>, local_layouts: &IndexSlice<LocalIdx, F>|
-            forall(|k: USize|
-                !(prefix_entry.len() < k && k < prefix_layouts.len())
-                    || exists(|i: USize| 0 <= i && i < (*local_layouts).len() && prefix_layouts[k] == (*local_layouts)[i]))
-    );
+    // Rewrite (rewrites.md R15): the `push` of the tag's layout and the `extend` by the promoted
+    // locals' layouts are `promote_locals`. Its `requires` holds by `layout()`'s `requires` (`FieldIdx`
+    // reaches P) and eligibility's `ensures` (the set is over the n locals).
+    promote_locals(&mut prefix_layouts, tag_layout, &ineligible_locals, local_layouts);
     // Rewrite (rewrites.md R13): the `repr` argument is bound to a name, for the `assume!`.
     let repr = ReprOptions::default();
     // Assumed (not proved): `univariant`'s `fits_in_any_order` for the prefix. rustc's code makes
@@ -1407,43 +1484,12 @@ pub fn layout<
 
     let (prefix_size, prefix_align) = (prefix.size, prefix.align);
 
-    let (outer_fields, promoted_offsets, promoted_memory_index) = match prefix.fields {
-        FieldsShape::Arbitrary {
-            mut offsets,
-            in_memory_order,
-        } => {
-            let b_start = tag_index.plus(1);
-            // `split_off(b_start.index())` needs `b_start.index() <= offsets.raw.len()`:
-            // `b_start` is P + 1 (`next_index`, `plus`), and `offsets` has `prefix_layouts.len()`
-            // entries (univariant's `arbitrary_of`), P + 1 + c by the prefix-length fact above.
-            let offsets_b = IndexVec::from_raw(offsets.raw.split_off(b_start.index()));
-            let offsets_a = offsets;
-
-            // Rewrite (rewrites.md R11): the loop that splits the memory order at `b_start` is
-            // `split_in_memory_order`. Its `requires` holds by univariant's `arbitrary_of` (the
-            // order is a permutation of `0..n`, n = P + 1 + c) and `layout()`'s `requires`
-            // (`FieldIdx` reaches n); its `ensures` gives the second part n - (P + 1) = c entries,
-            // each below c: `invert_bijective_mapping` needs its entries below its length, and the
-            // variants need `promoted_memory_index` to have c entries.
-            let (in_memory_order_a, in_memory_order_b) =
-                split_in_memory_order(in_memory_order, b_start, prefix_layouts.len());
-
-            let outer_fields = FieldsShape::Arbitrary {
-                offsets: offsets_a,
-                in_memory_order: in_memory_order_a,
-            };
-            (
-                outer_fields,
-                offsets_b,
-                // `invert_bijective_mapping` requires every element of `in_memory_order_b` below
-                // its length, and `promoted_memory_index` gets at least n - (P + 1) = c entries:
-                // the permutation split above.
-                in_memory_order_b.invert_bijective_mapping(),
-            )
-        }
-        // Unreachable by univariant's ensures (`arbitrary_of`).
-        _ => unreachable!(),
-    };
+    // Rewrite (rewrites.md R16): the `match` that splits the prefix's offsets and memory order at
+    // the promoted fields is `split_prefix_fields`. Its `requires` holds by univariant's
+    // `arbitrary_of` with n = P + 1 + c entries (`promote_locals`), `next_index` and `layout()`'s
+    // `requires` (`FieldIdx` reaches n, as c is at most the n locals).
+    let (outer_fields, promoted_offsets, promoted_memory_index) =
+        split_prefix_fields(prefix.fields, tag_index, prefix_layouts.len());
 
     let mut size = prefix.size;
     let mut align = prefix.align;
