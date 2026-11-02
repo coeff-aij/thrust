@@ -2033,7 +2033,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         )?;
         let formula_fn = self
             .ctx
-            .formula_fn_with_args(formula_def_id, generic_args, self.local_def_id.to_def_id())
+            .formula_fn_with_args(formula_def_id, generic_args, self.owner_fn_id)
             .expect("ghost formula function is not registered");
         let names = formula_fn
             .param_idents()
