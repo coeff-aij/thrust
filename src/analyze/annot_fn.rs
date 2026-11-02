@@ -1485,7 +1485,21 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         let val = self
             .tcx
             .const_eval_resolve(typing_env, unevaluated, hir.span)
-            .unwrap_or_else(|e| panic!("failed to evaluate constant in formula: {:?}", e));
+            .unwrap_or_else(|e| {
+                let hint = if matches!(e, rustc_middle::mir::interpret::ErrorHandled::TooGeneric(_))
+                {
+                    "its value depends on a type parameter, which is not supported in a contract"
+                } else {
+                    "its evaluation failed"
+                };
+                self.tcx.dcx().span_fatal(
+                    hir.span,
+                    format!(
+                        "the constant `{}` cannot be evaluated in a formula: {hint}",
+                        self.tcx.def_path_str(const_did)
+                    ),
+                )
+            });
         let (_, term) = analyze::scalar_const_term(ty, &val)
             .unwrap_or_else(|| unimplemented!("unsupported constant type in formula: {:?}", ty));
         term
