@@ -687,11 +687,10 @@ fn combine_offsets<VariantIdx: Idx + thrust_models::Model, FieldIdx: Idx + thrus
         thrust_macros::closure!(
         captures(
             assignments: &mut &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
-            offsets_and_memory_index: &mut std::iter::Zip<std::vec::IntoIter<Size>, std::vec::IntoIter<u32>>,
             promoted_memory_index: &mut &IndexVec<FieldIdx, u32>,
-            invalid_field_idx: &mut usize,
+            invalid_field_idx: &mut &usize,
             promoted_offsets: &mut &IndexVec<FieldIdx, Size>,
-            combined_in_memory_order: &mut IndexVec<u32, FieldIdx>,
+            combined_in_memory_order: &mut &mut IndexVec<u32, FieldIdx>,
         ),
         requires(
             <LocalIdx as Idx>::index_logic(*local) < (**assignments).len()
@@ -706,9 +705,9 @@ fn combine_offsets<VariantIdx: Idx + thrust_models::Model, FieldIdx: Idx + thrus
                 && forall(|k: USize, i: USize|
                     !(0 <= k && k < (**promoted_memory_index).len() && <u32 as Idx>::index_is((**promoted_memory_index)[k], i))
                     || i < (**promoted_memory_index).len())
-                && (**promoted_memory_index).len() <= *invalid_field_idx
-                && *invalid_field_idx <= 4294967295usize
-                && (*combined_in_memory_order).len() == *invalid_field_idx
+                && (**promoted_memory_index).len() <= **invalid_field_idx
+                && **invalid_field_idx <= 4294967295usize
+                && (**combined_in_memory_order).len() == **invalid_field_idx
         ),
         ensures(true),
         hist_inv(
@@ -716,7 +715,7 @@ fn combine_offsets<VariantIdx: Idx + thrust_models::Model, FieldIdx: Idx + thrus
                 && *promoted_memory_index == !promoted_memory_index
                 && *promoted_offsets == !promoted_offsets
                 && *invalid_field_idx == !invalid_field_idx
-                && (*combined_in_memory_order).len() == (!combined_in_memory_order).len()
+                && (**combined_in_memory_order).len() == (*!combined_in_memory_order).len()
         ),
         |(i, local): (FieldIdx, &LocalIdx)| -> Size {
             let (offset, memory_index) = match assignments[*local] {
