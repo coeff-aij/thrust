@@ -259,6 +259,7 @@ pub fn unbox(system: System) -> System {
         self_defined_pred_vars,
         user_quantified_var_names,
         opaque_preds,
+        defined_copies,
     } = system;
     let datatypes = datatypes.into_iter().map(unbox_datatype).collect();
     let clauses = clauses.into_iter().map(unbox_clause).collect();
@@ -301,5 +302,6 @@ pub fn unbox(system: System) -> System {
         self_defined_pred_vars,
         user_quantified_var_names,
         opaque_preds,
+        defined_copies,
     }
 }
