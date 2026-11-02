@@ -1772,29 +1772,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         ty
     }
 
-    /// The type an invariant's parameter is written with, from the type of the formula function's
-    /// parameter: `thrust_macros` gives a parameter written `x: T` the type `<T as Model>::Ty`, and
-    /// one written `x: &str` the type `NoModel` (`thrust-macros/src/formula_fn_type_lowering.rs`).
-    fn invariant_param_written_ty(&self, input_ty: mir_ty::Ty<'tcx>) -> mir_ty::Ty<'tcx> {
-        match input_ty.kind() {
-            mir_ty::Alias(mir_ty::AliasTyKind::Projection, alias)
-                if Some(alias.def_id) == self.ctx.def_ids().model_ty() =>
-            {
-                alias.args.type_at(0)
-            }
-            mir_ty::TyKind::Adt(adt, _)
-                if self
-                    .tcx
-                    .get_attrs_by_path(adt.did(), &analyze::annot::no_model_path())
-                    .next()
-                    .is_some() =>
-            {
-                mir_ty::Ty::new_imm_ref(self.tcx, self.tcx.lifetimes.re_erased, self.tcx.types.str_)
-            }
-            _ => panic!("invariant parameter of unexpected type {input_ty:?}"),
-        }
-    }
-
     /// The source text of the type an invariant writes for its parameter `ident`, the `idx`-th:
     /// the self type of the formula function's `<T as Model>::Ty`. `None` for `&str`, whose
     /// parameter is `NoModel`, and where `T` ends or starts with tokens `thrust_macros` made
@@ -1830,8 +1807,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         local_desc: String,
     ) {
         let local_ty = self.body.local_decls[local].ty;
-        let written = self.invariant_param_compared_ty(written_ty);
-        let actual = self.invariant_param_compared_ty(local_ty);
+        let written = spec_param_compared_ty(self.ctx, self.local_def_id, written_ty);
+        let actual = spec_param_compared_ty(self.ctx, self.local_def_id, local_ty);
         if written != actual {
             self.tcx.dcx().span_fatal(
                 span,
@@ -1841,55 +1818,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 ),
             );
         }
-    }
-
-    /// `ty` as it is compared with the type written in an invariant, where `thrust_macros` has
-    /// replaced each trait object with `Dyn` and wrapped each closure type parameter `F` in
-    /// `Closure<F>`: normalized, without lifetimes, with trait objects as `Dyn` and `Closure<F>`
-    /// as `F`.
-    fn invariant_param_compared_ty(&self, ty: mir_ty::Ty<'tcx>) -> mir_ty::Ty<'tcx> {
-        use mir_ty::TypeFoldable as _;
-
-        struct SpecParamView<'tcx> {
-            tcx: TyCtxt<'tcx>,
-            closure_model: Option<DefId>,
-            dyn_model: Option<DefId>,
-        }
-
-        impl<'tcx> mir_ty::TypeFolder<TyCtxt<'tcx>> for SpecParamView<'tcx> {
-            fn cx(&self) -> TyCtxt<'tcx> {
-                self.tcx
-            }
-
-            fn fold_ty(&mut self, ty: mir_ty::Ty<'tcx>) -> mir_ty::Ty<'tcx> {
-                use mir_ty::TypeSuperFoldable as _;
-                match ty.kind() {
-                    mir_ty::TyKind::Adt(adt, args) if Some(adt.did()) == self.closure_model => {
-                        args.type_at(0).fold_with(self)
-                    }
-                    mir_ty::TyKind::Dynamic(..) => {
-                        let dyn_model = self.dyn_model.expect("trait object without `Dyn`");
-                        mir_ty::Ty::new_adt(
-                            self.tcx,
-                            self.tcx.adt_def(dyn_model),
-                            mir_ty::List::empty(),
-                        )
-                    }
-                    _ => ty.super_fold_with(self),
-                }
-            }
-        }
-
-        let typing_env = mir_ty::TypingEnv::post_analysis(self.tcx, self.local_def_id);
-        let ty = self
-            .tcx
-            .try_normalize_erasing_regions(typing_env, ty)
-            .unwrap_or_else(|_| self.tcx.erase_regions(ty));
-        ty.fold_with(&mut SpecParamView {
-            tcx: self.tcx,
-            closure_model: self.ctx.def_ids().closure_model(),
-            dyn_model: self.ctx.def_ids().dyn_model(),
-        })
     }
 
     /// Translates a user-provided loop invariant (a formula function over named
@@ -1929,10 +1857,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .enumerate()
         {
             let ident = ident.expect("invariant parameters must be named");
-            let written_ty = self.invariant_param_written_ty(*written_input_ty);
+            let written_ty = spec_param_written_ty(self.ctx, *written_input_ty);
             let written_text = self
                 .invariant_param_source_text(formula_def_id, idx, ident)
-                .unwrap_or_else(|| self.invariant_param_compared_ty(written_ty).to_string());
+                .unwrap_or_else(|| {
+                    spec_param_compared_ty(self.ctx, self.local_def_id, written_ty).to_string()
+                });
             let input_ty = {
                 let typing_env =
                     mir_ty::TypingEnv::post_analysis(self.tcx, formula_def_id.to_def_id());
@@ -2877,4 +2807,88 @@ fn borrow_may_escape<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId, idx: usize) -> bool
             .iter()
             .enumerate()
             .any(|(other, ty)| other != idx && names_region(*ty))
+}
+
+/// The type a parameter of a spec closure (`invariant!`, `proof_assert!`, `assume!`) is written
+/// with, from the type of the formula function's
+/// parameter: `thrust_macros` gives a parameter written `x: T` the type `<T as Model>::Ty`, and
+/// one written `x: &str` the type `NoModel` (`thrust-macros/src/formula_fn_type_lowering.rs`).
+pub(crate) fn spec_param_written_ty<'tcx>(
+    ctx: &analyze::Analyzer<'tcx>,
+    input_ty: mir_ty::Ty<'tcx>,
+) -> mir_ty::Ty<'tcx> {
+    match input_ty.kind() {
+        mir_ty::Alias(mir_ty::AliasTyKind::Projection, alias)
+            if Some(alias.def_id) == ctx.def_ids().model_ty() =>
+        {
+            alias.args.type_at(0)
+        }
+        mir_ty::TyKind::Adt(adt, _)
+            if ctx
+                .tcx()
+                .get_attrs_by_path(adt.did(), &analyze::annot::no_model_path())
+                .next()
+                .is_some() =>
+        {
+            mir_ty::Ty::new_imm_ref(
+                ctx.tcx(),
+                ctx.tcx().lifetimes.re_erased,
+                ctx.tcx().types.str_,
+            )
+        }
+        _ => panic!("spec closure parameter of unexpected type {input_ty:?}"),
+    }
+}
+
+/// `ty` in `owner` as it is compared with the type written in a spec closure, where `thrust_macros` has
+/// replaced each trait object with `Dyn` and wrapped each closure type parameter `F` in
+/// `Closure<F>`: normalized, without lifetimes, with trait objects as `Dyn` and `Closure<F>`
+/// as `F`.
+pub(crate) fn spec_param_compared_ty<'tcx>(
+    ctx: &analyze::Analyzer<'tcx>,
+    owner: LocalDefId,
+    ty: mir_ty::Ty<'tcx>,
+) -> mir_ty::Ty<'tcx> {
+    use mir_ty::TypeFoldable as _;
+
+    struct SpecParamView<'tcx> {
+        tcx: TyCtxt<'tcx>,
+        closure_model: Option<DefId>,
+        dyn_model: Option<DefId>,
+    }
+
+    impl<'tcx> mir_ty::TypeFolder<TyCtxt<'tcx>> for SpecParamView<'tcx> {
+        fn cx(&self) -> TyCtxt<'tcx> {
+            self.tcx
+        }
+
+        fn fold_ty(&mut self, ty: mir_ty::Ty<'tcx>) -> mir_ty::Ty<'tcx> {
+            use mir_ty::TypeSuperFoldable as _;
+            match ty.kind() {
+                mir_ty::TyKind::Adt(adt, args) if Some(adt.did()) == self.closure_model => {
+                    args.type_at(0).fold_with(self)
+                }
+                mir_ty::TyKind::Dynamic(..) => {
+                    let dyn_model = self.dyn_model.expect("trait object without `Dyn`");
+                    mir_ty::Ty::new_adt(
+                        self.tcx,
+                        self.tcx.adt_def(dyn_model),
+                        mir_ty::List::empty(),
+                    )
+                }
+                _ => ty.super_fold_with(self),
+            }
+        }
+    }
+
+    let typing_env = mir_ty::TypingEnv::post_analysis(ctx.tcx(), owner);
+    let ty = ctx
+        .tcx()
+        .try_normalize_erasing_regions(typing_env, ty)
+        .unwrap_or_else(|_| ctx.tcx().erase_regions(ty));
+    ty.fold_with(&mut SpecParamView {
+        tcx: ctx.tcx(),
+        closure_model: ctx.def_ids().closure_model(),
+        dyn_model: ctx.def_ids().dyn_model(),
+    })
 }

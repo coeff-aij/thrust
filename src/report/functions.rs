@@ -78,12 +78,16 @@ fn function(
     let span = tcx
         .hir_span_with_body(tcx.local_def_id_to_hir_id(def))
         .source_callsite();
+    // Those of the body and of its closures, not those of a nested `fn` item, a body of its own.
+    let root = tcx.typeck_root_def_id(def.to_def_id());
     let assumptions = if checked {
         let mut assumptions: Vec<Span> = input
             .assumptions
             .iter()
-            .copied()
-            .filter(|a| span.contains(*a))
+            .filter(|a| {
+                span.contains(a.span) && tcx.typeck_root_def_id(a.owner.to_def_id()) == root
+            })
+            .map(|a| a.span)
             .collect();
         assumptions.sort_by_key(|a| a.lo());
         assumptions

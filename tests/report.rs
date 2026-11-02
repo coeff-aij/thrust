@@ -761,7 +761,8 @@ fn enums_read_by_their_paths() {
 }
 
 /// A checked function whose body, or a closure in it, has an `assume!` says how many it is
-/// checked under, and JSON gives their spans; the summary counts them.
+/// checked under, and JSON gives their spans; the summary counts them. One in a nested `fn` item
+/// is that item's alone.
 #[test]
 fn the_functions_report_lists_the_assumptions() {
     let lines = function_lines("assume.rs", &[]);
@@ -784,15 +785,22 @@ fn the_functions_report_lists_the_assumptions() {
         function_line(&lines, "with_closure::{closure#0}").ends_with(&closure),
         "{lines:?}"
     );
+    for name in ["outer", "main"] {
+        assert!(
+            function_line(&lines, name).ends_with(r#""verdict":"sat"}"#),
+            "{lines:?}"
+        );
+    }
+    let inner = format!(r#""verdict":"sat","assumes":[{}]}}"#, at(19, 9, 48));
     assert!(
-        function_line(&lines, "main").ends_with(r#""verdict":"sat"}"#),
+        function_line(&lines, "outer::inner").ends_with(&inner),
         "{lines:?}"
     );
 
     let output = report("assume.rs", "functions");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("note: thrust: 4 functions: 4 checked; 2 `assume!`s"),
+        stderr.contains("note: thrust: 6 functions: 6 checked; 3 `assume!`s"),
         "{stderr}"
     );
     assert!(

@@ -2336,6 +2336,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     fn type_formula_statement(
         &mut self,
         marker: FormulaMarker,
+        formula_fn_def_id: DefId,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
         formula_fn: FormulaFn<'tcx>,
         span: rustc_span::Span,
     ) {
@@ -2343,10 +2345,16 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             FormulaMarker::Assert => "proof_assert!",
             _ => "assume!",
         };
+        let sig = self
+            .tcx
+            .fn_sig(formula_fn_def_id)
+            .instantiate(self.tcx, generic_args);
+        let written_sig = self.tcx.instantiate_bound_regions_with_erased(sig);
         let vars: IndexVec<rty::FunctionParamIdx, Var> = formula_fn
             .params()
-            .iter_enumerated()
-            .map(|(idx, ty)| {
+            .indices()
+            .zip(written_sig.inputs())
+            .map(|(idx, written_input_ty)| {
                 let ident =
                     formula_fn.param_idents()[idx].expect("formula parameters must be named");
                 let name = analyze::annot_fn::lifted_param_source_name(ident);
@@ -2356,15 +2364,29 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         format!("{what} refers to `{name}`, which is not a live variable here"),
                     )
                 });
-                let arg = self.operand_refined_type(operand);
-                if self.type_builder.build(*ty).to_sort() != arg.ty.to_sort() {
+                let written_ty =
+                    analyze::local_def::spec_param_written_ty(self.ctx, *written_input_ty);
+                let written = analyze::local_def::spec_param_compared_ty(
+                    self.ctx,
+                    self.local_def_id,
+                    written_ty,
+                );
+                let actual_ty = operand.ty(&self.local_decls, self.tcx);
+                let actual = analyze::local_def::spec_param_compared_ty(
+                    self.ctx,
+                    self.local_def_id,
+                    actual_ty,
+                );
+                if written != actual {
                     self.tcx.dcx().span_fatal(
                         span,
                         format!(
-                            "{what} names `{name}` at the type `{ty}`, which is not its type here"
+                            "{what} gives `{name}` the type `{written}`, but it has the type \
+                             `{actual}` here"
                         ),
                     );
                 }
+                let arg = self.operand_refined_type(operand);
                 self.env.immut_bind_tmp(arg)
             })
             .collect();
@@ -2375,7 +2397,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             let clauses = builder.with_value_var(&rty::Type::<Var>::unit()).head(goal);
             self.ctx.extend_clauses(clauses);
         } else {
-            self.ctx.record_assumption(span.source_callsite());
+            self.ctx.record_assumption(analyze::AssumeSite {
+                span: span.source_callsite(),
+                owner: self.local_def_id,
+                formula: formula_fn_def_id,
+            });
         }
         self.env.assume(formula.map_var(PlaceTypeVar::Var));
     }
@@ -3031,7 +3057,13 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     .ctx
                     .formula_fn_with_args(def_id, args, self.type_builder.owner_fn_id())
                     .expect("marker formula function is not registered");
-                self.type_formula_statement(marker, formula_fn, term.source_info.span);
+                self.type_formula_statement(
+                    marker,
+                    def_id.to_def_id(),
+                    args,
+                    formula_fn,
+                    term.source_info.span,
+                );
                 self.bind_local(destination, rty::RefinedType::unrefined(rty::Type::unit()));
                 return;
             }

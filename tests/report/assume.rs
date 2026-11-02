@@ -13,7 +13,17 @@ fn with_closure(y: i64) -> i64 {
     f(y)
 }
 
+fn outer() -> i64 {
+    fn inner() -> i64 {
+        let v = 1;
+        thrust_macros::assume!(|v: i64| v == 1);
+        v
+    }
+    inner()
+}
+
 fn main() {
     assert!(fixed() == 2);
     assert!(with_closure(3) > 0);
+    assert!(outer() == 1);
 }

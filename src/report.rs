@@ -181,8 +181,8 @@ pub struct Input<'a> {
     pub contract_annotations: &'a HashMap<DefId, ContractAnnotations>,
     /// Where the written invariant of each loop, by its function and header, is annotated.
     pub invariant_annotations: &'a HashMap<(LocalDefId, BasicBlock), Vec<Span>>,
-    /// Where each `assume!` the analysis took is written.
-    pub assumptions: &'a [Span],
+    /// Each `assume!` the analysis took.
+    pub assumptions: &'a [crate::analyze::AssumeSite],
     /// What the analysis did with the body of each function.
     pub body_checks: &'a HashMap<LocalDefId, crate::analyze::BodyCheck>,
     /// The parts of the system solved on their own (`THRUST_SPLIT`); the system is then that of
