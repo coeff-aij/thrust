@@ -147,6 +147,8 @@ pub struct TypeBuilder<'tcx> {
     closure_type_params: Rc<RefCell<HashMap<TypeParam, rty::FunctionType>>>,
     system: Rc<RefCell<chc::System>>,
     enum_defs: Rc<RefCell<EnumDefs>>,
+    /// The structs whose fields are being built, outermost first.
+    structs_in_progress: Rc<RefCell<Vec<mir_ty::Ty<'tcx>>>>,
 }
 
 // TODO: Fold `TypeBuilder::closure_trait_ret` into `closure_trait_call` so that one function
@@ -268,6 +270,7 @@ impl<'tcx> TypeBuilder<'tcx> {
             closure_type_params,
             system,
             enum_defs,
+            structs_in_progress: Default::default(),
         }
     }
 
@@ -881,8 +884,9 @@ impl<'tcx> TypeBuilder<'tcx> {
 
     /// Builds `ty`, taking from `m` the parts where an unrefined type and a template differ.
     fn build_ty_in<M: TyMode<'tcx>>(&self, m: &mut M, ty: mir_ty::Ty<'tcx>) -> rty::Type<M::Var> {
-        // An integer keeps its width, which its model `Int` or `UInt` does not have.
-        if ty.is_integral() {
+        // An integer keeps its width, which its model `Int` or `UInt` does not have. A `char` is
+        // the `u32` of its code point.
+        if ty.is_integral() || ty.is_char() {
             let width = ty.primitive_size(self.tcx).bits() as u32;
             return if ty.is_signed() {
                 rty::Type::int_of_width(width)
@@ -955,6 +959,18 @@ impl<'tcx> TypeBuilder<'tcx> {
                         params.types().map(|ty| m.enum_arg(self, ty)).collect();
                     rty::EnumType::new(sym, args).into()
                 } else if def.is_struct() {
+                    // A struct is the tuple of its fields, which has no finite form when the
+                    // struct reaches itself through them. An enum is a datatype and may.
+                    if self.structs_in_progress.borrow().contains(&ty) {
+                        self.tcx.dcx().span_fatal(
+                            self.tcx.def_span(def.did()),
+                            format!(
+                                "thrust: the struct `{ty}` contains itself through its fields, \
+                                 which is not supported"
+                            ),
+                        );
+                    }
+                    self.structs_in_progress.borrow_mut().push(ty);
                     let elem_tys = def
                         .all_fields()
                         .map(|field| {
@@ -963,6 +979,7 @@ impl<'tcx> TypeBuilder<'tcx> {
                             self.field_type(m, ty).into()
                         })
                         .collect();
+                    self.structs_in_progress.borrow_mut().pop();
                     rty::TupleType::new(elem_tys).into()
                 } else {
                     unimplemented!("unsupported ADT: {:?}", ty);

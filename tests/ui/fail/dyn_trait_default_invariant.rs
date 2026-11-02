@@ -1,19 +1,18 @@
-//@error-in-other-file: has no contract on the trait
+//@error-in-other-file: its invariant is not ensured after
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
-// A default body that breaks `C`'s invariant through `get`, whose `&mut self` borrow outlives the
-// call, would leave the invariant broken for `bump`; `get` has no contract, and the default body
-// analyzed at the trait object calls it through it, which is rejected.
+// The twin of `pass/dyn_trait_default_invariant.rs`: `get` hands out `&mut self.n`, so its
+// `&mut self` borrow outlives the call and its contract does not ensure `C`'s invariant. Code
+// Thrust does not analyze may call it through the trait object and leave the invariant broken for
+// `bump`, so the packing stops.
 
 #[thrust_macros::context]
 trait Counter {
     fn get(&mut self) -> &mut u32;
 
     #[thrust_macros::ensures(true)]
-    fn reset(&mut self) {
-        *self.get() = 1;
-    }
+    fn reset(&mut self) {}
 
     #[thrust_macros::ensures(result <= 100)]
     fn bump(&mut self) -> u32;

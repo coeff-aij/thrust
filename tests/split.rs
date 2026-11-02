@@ -19,7 +19,8 @@ fn run_with(fixture: &str, split: Option<&str>, env: &[(&str, &str)]) -> Output 
         .env_remove("THRUST_REPORT")
         .env_remove("THRUST_REPORT_FORMAT")
         .env_remove("THRUST_REPORT_FILE")
-        .env_remove("THRUST_REPORT_ONLY");
+        .env_remove("THRUST_REPORT_ONLY")
+        .env_remove("THRUST_SPLIT_GOALS");
     match split {
         Some(jobs) => command.env("THRUST_SPLIT", jobs),
         None => command.env_remove("THRUST_SPLIT"),
@@ -575,4 +576,54 @@ fn the_variables_of_an_invariant_keep_their_names_after_the_loop() {
         ),
         "{stderr}"
     );
+}
+
+/// `double`, left to inference, is shared by the two assertions of `main`, so the whole crate is
+/// one class of clauses; `THRUST_SPLIT_GOALS` solves each assertion with the clauses deriving what
+/// it reads, and the refuted one fails alone, with the clauses of `double` in both parts.
+#[test]
+fn each_goal_is_solved_with_its_cone() {
+    let classes = run("goal_cones.rs", Some("2"));
+    let stderr = String::from_utf8_lossy(&classes.stderr);
+    assert!(stderr.contains("in part 1 of 1, "), "{stderr}");
+
+    let cones = run_with(
+        "goal_cones.rs",
+        Some("2"),
+        &[
+            ("THRUST_SPLIT_GOALS", "1"),
+            ("THRUST_REPORT", "functions,failure"),
+        ],
+    );
+    let stderr = String::from_utf8_lossy(&cones.stderr);
+    assert!(!cones.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("error: verification error: Unsat (thrust: refuted: assertion in `main`)"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("goal_cones.rs:9:5"), "{stderr}");
+    assert_eq!(stderr.matches("verification error").count(), 1, "{stderr}");
+    assert!(
+        stderr.contains("2 parts solved on their own, 0 of them from earlier runs, one per goal"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("`double`: checked, in parts 1, 2"),
+        "{stderr}"
+    );
+}
+
+/// The inferred contract of a function two cones share is the conjunction of their models, a
+/// model of both; with both assertions holding, every cone and so the crate is `sat`.
+#[test]
+fn goal_cones_that_all_hold_verify_the_crate() {
+    let output = run_with(
+        "goal_cones_hold.rs",
+        Some("2"),
+        &[("THRUST_SPLIT_GOALS", "1"), ("THRUST_REPORT", "inferred")],
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(stderr.contains("2 parts solved on their own"), "{stderr}");
+    assert!(stderr.contains("inferred: fn double("), "{stderr}");
 }

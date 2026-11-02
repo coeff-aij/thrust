@@ -338,6 +338,20 @@ fn expand_fn(mut func: FnItemWithSignature) -> TokenStream {
     func.into_token_stream().into()
 }
 
+/// Gives the context of `sig` (and `outer`) to the spec macros written in `expr`, as
+/// `#[thrust_macros::context]` does for the function body: a `closure!` expanded with the
+/// context runs this over its own body, so a `closure!`, `ghost!` or loop invariant nested in
+/// it is rewritten too, at any depth.
+pub(crate) fn inject_into_expr(sig: &Signature, outer: Option<&FnOuterItem>, expr: &mut syn::Expr) {
+    let mut injector = ContextInjector {
+        sig,
+        outer,
+        injected: false,
+        self_used: false,
+    };
+    injector.visit_expr_mut(expr);
+}
+
 struct ContextInjector<'a> {
     sig: &'a Signature,
     outer: Option<&'a FnOuterItem>,
