@@ -1,4 +1,4 @@
-//@ignore-on-host: no answer at 300 s, also with the postcondition replaced by `true`: PCSat stalls in preprocessing, eliminating loop-head unknowns (see README.md)
+//@ignore-on-host: no answer: obligations that pass the contract's predicates on are not decided once the solver inlines them (see README.md)
 //@edition: 2024
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300 THRUST_TRY_SPECS=1

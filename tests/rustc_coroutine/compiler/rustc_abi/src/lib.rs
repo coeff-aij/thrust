@@ -352,6 +352,7 @@ impl Size {
     }
 
     #[inline]
+    #[thrust_macros::ensures(result == self.raw)]
     pub fn bytes(self) -> u64 {
         self.raw
     }
