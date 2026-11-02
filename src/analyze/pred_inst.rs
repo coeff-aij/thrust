@@ -157,7 +157,15 @@ impl<'tcx> analyze::Analyzer<'tcx> {
                 .map(|(v, sort)| chc::Term::UserQuantifiedVar(sort.clone(), *v))
                 .collect();
             // A law variable ranges over the values its proof assumes of the parameter.
-            let mut pre = fn_ty.precondition_formula(&args);
+            let mut fresh = || {
+                let name = format!("a part of a law parameter of {:?}", law_def_id);
+                self.system.borrow_mut().new_named_user_quantified_var(name)
+            };
+            let mut parts = rty::PartVars {
+                defs: &self.enum_defs,
+                fresh: &mut fresh,
+            };
+            let mut pre = fn_ty.precondition_formula(&args, &mut parts);
             for (param, arg) in fn_ty.params.iter().zip(&args) {
                 let payload = || {
                     let name = format!("law payload of {:?}", law_def_id);
@@ -541,6 +549,15 @@ impl<'tcx> analyze::Analyzer<'tcx> {
                 (terms[0].clone(), None)
             }
         };
+        let mut fresh = || {
+            self.system
+                .borrow_mut()
+                .new_named_user_quantified_var(format!("a part of a value in {name}"))
+        };
+        let mut parts = rty::PartVars {
+            defs: &self.enum_defs,
+            fresh: &mut fresh,
+        };
         let formula = match part {
             ClosureContractPart::HistInv => {
                 let [from, to] = terms.as_slice() else {
@@ -554,14 +571,19 @@ impl<'tcx> analyze::Analyzer<'tcx> {
                 let call_args: Vec<_> = std::iter::once(receiver)
                     .chain(args.iter().cloned())
                     .collect();
-                fn_ty.once_postcondition_formula(&call_args, result.clone(), final_state)
+                fn_ty.once_postcondition_formula(
+                    &call_args,
+                    result.clone(),
+                    final_state,
+                    &mut parts,
+                )
             }
             ClosureContractPart::Pre => {
                 let (receiver, final_state) = receiver("precondition");
                 let call_args: Vec<_> = std::iter::once(receiver)
                     .chain(terms.get(1..)?.iter().cloned())
                     .collect();
-                let pre = fn_ty.precondition_formula(&call_args);
+                let pre = fn_ty.precondition_formula(&call_args, &mut parts);
                 // The precondition of an `FnMut` closure is a property of its current state
                 // (Creusot's `FnMut` precondition takes `self` by value), so it must hold
                 // whatever final state the call through the `&mut` ends in.

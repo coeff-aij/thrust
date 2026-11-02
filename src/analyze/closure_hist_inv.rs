@@ -366,7 +366,9 @@ pub fn instance_obligations(
         let (_, params) = v.split_last().unwrap();
         let mut args = params.to_vec();
         args[0] = chc::Term::mut_(params[0].clone().mut_current(), final_);
-        contract.precondition_formula(&args)
+        // The refinements inside the parameters' types are stated of the receiver's current
+        // state alone, so they cannot read its final half.
+        contract.param_refinements_formula(&args)
     };
     let probe_vars: Vec<_> = (0..pre_sorts.len())
         .map(|idx| chc::Term::var(chc::TermVarIdx::from_usize(idx)))
