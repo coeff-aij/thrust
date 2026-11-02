@@ -552,3 +552,34 @@ pub fn parse_type_position(ts: &TokenStream) -> rty::TypePosition {
 
     rty::TypePosition::new(steps)
 }
+
+/// The paths a `#[thrust::reveal(a::b::f, ..)]` names, each as its segments; `None` for the bare
+/// `#[thrust::reveal]`, and `Err` with a message for tokens that are not comma-separated paths.
+pub fn reveal_paths(attr: &Attribute) -> Result<Option<Vec<Vec<Symbol>>>, String> {
+    use rustc_ast::token::TokenKind;
+    use rustc_ast::tokenstream::TokenTree;
+
+    let Attribute::Unparsed(item) = attr else {
+        return Ok(None);
+    };
+    let rustc_hir::AttrArgs::Delimited(d) = &item.args else {
+        return Ok(None);
+    };
+    let mut paths = vec![Vec::new()];
+    for tree in d.tokens.iter() {
+        let TokenTree::Token(token, _) = tree else {
+            return Err("`#[thrust::reveal(..)]` takes paths separated by commas".to_owned());
+        };
+        match token.kind {
+            TokenKind::Ident(name, _) => paths.last_mut().unwrap().push(name),
+            TokenKind::PathSep => {}
+            TokenKind::Comma => paths.push(Vec::new()),
+            _ => return Err("`#[thrust::reveal(..)]` takes paths separated by commas".to_owned()),
+        }
+    }
+    paths.retain(|p| !p.is_empty());
+    if paths.is_empty() {
+        return Err("`#[thrust::reveal(..)]` names no function; write `#[thrust::reveal]` for the opaque functions of the module".to_owned());
+    }
+    Ok(Some(paths))
+}
