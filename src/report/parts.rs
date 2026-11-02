@@ -239,10 +239,18 @@ pub fn emit_notes(tcx: TyCtxt<'_>, parts: &[Part], by_goals: bool) {
 pub fn emit_not_horn_note(tcx: TyCtxt<'_>, system: &chc::System, why: chc::NotHorn) {
     let instead = "the parts are the classes of clauses that share an unknown instead";
     let clause = match why {
-        chc::NotHorn::InDefinition => {
+        chc::NotHorn::InLaw => {
             tcx.dcx().note(format!(
-                "thrust: `THRUST_SPLIT_GOALS`: an unknown is applied in a predicate's definition \
-                 or a law; {instead}"
+                "thrust: `THRUST_SPLIT_GOALS`: an unknown is applied in a law, directly or through \
+                 a predicate's definition, or raw SMT-LIB text names a definition that applies \
+                 one; {instead}"
+            ));
+            return;
+        }
+        chc::NotHorn::RecursiveDefinition => {
+            tcx.dcx().note(format!(
+                "thrust: `THRUST_SPLIT_GOALS`: a predicate's definition that applies an unknown \
+                 applies itself; {instead}"
             ));
             return;
         }
@@ -255,8 +263,9 @@ pub fn emit_not_horn_note(tcx: TyCtxt<'_>, system: &chc::System, why: chc::NotHo
         chc::NotHorn::Clause(id) => id,
     };
     let message = format!(
-        "thrust: `THRUST_SPLIT_GOALS`: a constraint has a disjunction of unknowns in head \
-         positions, or one under an existential quantifier there; {instead}"
+        "thrust: `THRUST_SPLIT_GOALS`: a constraint, with the predicates it applies read as \
+         their definitions, has a disjunction of unknowns in head positions, or one under an \
+         existential quantifier there; {instead}"
     );
     let provenance = Provenance::of(&system.clauses[clause].debug_info);
     match provenance.span(tcx) {

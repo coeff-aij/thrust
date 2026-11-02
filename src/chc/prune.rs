@@ -31,7 +31,7 @@ use std::collections::HashSet;
 use super::*;
 
 /// The position of an occurrence of a predicate variable in a clause.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) enum Position {
     /// A body position: a solution of the clause stays one when the variable is lowered.
     Body,
@@ -40,7 +40,7 @@ pub(super) enum Position {
 }
 
 impl Position {
-    fn flip(self) -> Self {
+    pub(super) fn flip(self) -> Self {
         match self {
             Position::Body => Position::Head,
             Position::Head => Position::Body,
@@ -109,15 +109,7 @@ pub(super) fn clause_occurrences(clause: &Clause) -> Vec<Occurrence> {
 /// The predicate variables whose positions are not followed: those applied in the formula body
 /// of a user-defined predicate or in a law.
 fn kept_pred_vars(system: &System) -> HashSet<PredVarId> {
-    let in_laws = system
-        .laws
-        .values()
-        .flatten()
-        .flat_map(Formula::iter_atoms)
-        .filter_map(|atom| match atom.pred {
-            Pred::Var(id) => Some(id),
-            _ => None,
-        });
+    let in_laws = pred_vars_in(system.laws.values().flatten().flat_map(Formula::iter_atoms));
     system
         .pred_vars_in_definitions()
         .into_iter()
