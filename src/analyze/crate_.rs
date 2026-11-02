@@ -1243,7 +1243,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     "`{from}`, which Thrust does not analyze, can run the closure `{closure}`, \
                      whose precondition is inferred, without an analyzed call handing it over \
                      to it with its obligation: give the closure a `requires` with \
-                     `thrust_macros::closure!`"
+                     `thrust_macros::closure!`, or state its `pre!` in the `requires` of the call \
+                     that hands it over (for a closure an iterator adapter holds, in the \
+                     adapter's `inv`, which that `requires` requires)"
                 ),
             );
         }
