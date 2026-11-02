@@ -52,14 +52,14 @@ fn ones_assigned_disjoint<LocalIdx: Idx + thrust_models::Model, VariantIdx: thru
     }
 }
 
-/// One more bit adds the bit at `k`: `mem` and the step of `ones` read the same bit. With the
-/// base case, all `ones_assigned_disjoint` reads of the bit arithmetic.
+/// One more bit adds the bit at `k`: `mem` and the step of `ones` read the same bit, which is 1
+/// or 0. With the base case, all `ones_assigned_disjoint` reads of the bit arithmetic.
 #[thrust_macros::lemma]
 #[thrust_macros::ensures(forall(|z: USize| z == 0 ==> ones((*s).1, z) == 0))]
 #[thrust_macros::ensures(
     (DenseBitSet::<LocalIdx>::mem(*s, k) && ones((*s).1, k + 1) == ones((*s).1, k) + 1)
         || (!DenseBitSet::<LocalIdx>::mem(*s, k) && ones((*s).1, k + 1) == ones((*s).1, k)))]
-#[thrust::reveal(crate::rustc_index::bit_set::ones, crate::rustc_index::bit_set::DenseBitSet::mem)]
+#[thrust::reveal(crate::rustc_index::bit_set::ones, crate::rustc_index::bit_set::bit, crate::rustc_index::bit_set::DenseBitSet::mem)]
 fn ones_step<LocalIdx: Idx + thrust_models::Model>(s: &DenseBitSet<LocalIdx>, k: usize) {}
 
 /// The set's count is the number of its bits below its domain size.
@@ -427,7 +427,7 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
     {
         let mut used_variants = DenseBitSet::new_empty(variant_fields.len());
         for assignment in &assignments {
-            // `used_variants` is the domain of the variants assigned so far; the rest is unchanged.
+            // Every variant assigned so far is below `used_variants`'s domain, whose words cover it.
             thrust_macros::invariant!(
                 |used_variants: DenseBitSet<VariantIdx>, iter: SliceIter<SavedLocalEligibility<VariantIdx, FieldIdx>>, assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, ineligible_locals: DenseBitSet<LocalIdx>, variant_fields: thrust_models::FnParam<&IndexSlice<VariantIdx, IndexVec<FieldIdx, LocalIdx>>>, nb_locals: thrust_models::FnParam<usize>|
                 iter.1 >= 0 && iter.1 <= iter.0.len()
