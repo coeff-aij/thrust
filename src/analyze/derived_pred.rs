@@ -14,9 +14,9 @@
 //! - no contract Thrust assumes without checking it against a body (a trusted, ignored or
 //!   unselected function, a trusted impl method or default method, an extern specification of a
 //!   foreign function, `std.rs`, an inherited law not checked for its impl), and no `assume!`,
-//!   mentions `P` or a
-//!   predicate whose definition may depend on it, in any polarity: such a contract is the user's
-//!   statement of a relation that `σ(P)` need not be. [`check`] rejects one.
+//!   mentions `P` or a predicate whose definition may depend on it, in any polarity: such a
+//!   contract or `assume!` is the user's statement of a relation that `σ(P)` need not be.
+//!   [`check`] rejects such a contract and [`check_assumptions`] such an `assume!`.
 //!
 //! An analyzed function whose own precondition mentions `P` and which code Thrust does not analyze
 //! may enter is handled as one whose precondition is inferred, by the entry rule of

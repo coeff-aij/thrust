@@ -2343,7 +2343,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     ) {
         let what = match marker {
             FormulaMarker::Assert => "proof_assert!",
-            _ => "assume!",
+            FormulaMarker::Assume => "assume!",
+            FormulaMarker::Ghost => unreachable!("a ghost marker is not a statement"),
         };
         let sig = self
             .tcx
@@ -2392,10 +2393,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .collect();
         let formula = formula_fn.formula().clone().map_var(|idx| vars[idx]);
         if marker == FormulaMarker::Assert {
-            let mut builder = self.env.build_clause();
-            let goal = rty::Refinement::from(formula.clone().map_var(rty::RefinedTypeVar::Free));
-            let clauses = builder.with_value_var(&rty::Type::<Var>::unit()).head(goal);
-            self.ctx.extend_clauses(clauses);
+            self.check_formula(formula.clone());
         } else {
             self.ctx.record_assumption(analyze::AssumeSite {
                 span: span.source_callsite(),
@@ -2404,6 +2402,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             });
         }
         self.env.assume(formula.map_var(PlaceTypeVar::Var));
+    }
+
+    /// The goal that `formula` holds in the current environment.
+    fn check_formula(&mut self, formula: chc::Formula<Var>) {
+        let mut builder = self.env.build_clause();
+        let goal = rty::Refinement::from(formula.map_var(rty::RefinedTypeVar::Free));
+        let clauses = builder.with_value_var(&rty::Type::<Var>::unit()).head(goal);
+        self.ctx.extend_clauses(clauses);
     }
 
     /// Types the introduction of a ghost value as a call to the function the ghost term
