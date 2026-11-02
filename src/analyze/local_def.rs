@@ -1094,7 +1094,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 let Some((dest_local, place)) = self.extract_elaborated_deref(&stmt) else {
                     continue;
                 };
-                let kind = if kept.contains(&dest_local) {
+                // `return` reads the return place without naming it, so no use is left to
+                // carry the place it would be replaced with.
+                let kind = if kept.contains(&dest_local) || dest_local == mir::RETURN_PLACE {
                     kept_deref_temp(&stmt, dest_local, place)
                 } else {
                     v.add_replacement(dest_local.into(), place);
