@@ -2661,6 +2661,20 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             return;
         }
 
+        if !lhs.projection.is_empty() {
+            // A store into a part of a local that is no parameter of this block: liveness takes
+            // such a store for neither a use nor a definition, so nothing reads the local again
+            // and the stored value dies here.
+            let ty = lhs.ty(&self.local_decls, self.tcx).ty;
+            let local = self
+                .local_decls
+                .push(mir::LocalDecl::new(ty, rustc_span::DUMMY_SP).immutable());
+            let rty = self.rvalue_refined_type(rvalue.clone());
+            self.bind_local(local, rty);
+            self.drop_local(local, MovedOut::new());
+            return;
+        }
+
         // definition
         assert!(lhs.projection.is_empty());
 
