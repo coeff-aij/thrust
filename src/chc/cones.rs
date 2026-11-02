@@ -1,27 +1,29 @@
 //! The cone of each goal: the goal and, transitively, every clause whose head is an unknown the
 //! bodies of the cone apply (`THRUST_SPLIT_GOALS`).
 //!
-//! The cones are solved on their own only when every clause is a definite Horn clause: a goal,
-//! whose unknowns all occur in body positions (see [`super::prune`]), or a clause with exactly
-//! one unknown in a head position, its head atom or a negated top-level body atom, and its other
-//! unknowns in body positions. A system of such clauses is satisfiable exactly when each cone is,
-//! the slicing of Z3's muZ (Hoder, Bjørner and de Moura, CAV 2011) and Eldarica (Hojjat and
-//! Rümmer, FMCAD 2018), surveyed by De Angelis et al. (TPLP 2022):
+//! The cones are solved on their own only when every clause is definite: read as `¬body ∨ head`,
+//! with the guard of an atom as a premise of it, it is a conjunction of clauses each with at most
+//! one unknown in its head and the others in body positions (see [`super::prune`]). A `∀` in a
+//! head position distributes over that conjunction and its variables become the clause's
+//! (`body ⇒ ∀x. p(x)`); a disjunction in a head position holds at most one unknown
+//! (`body ⇒ p(x) ∨ c` is `body ∧ ¬c ⇒ p(x)`); an unknown under an `∃` in a head position is not
+//! definite. A clause that also states a constraint (`body ⇒ p(x) ∧ c`) derives `p` and is a goal
+//! too. Solving each cone on its own then gives the verdict of the system, as the slicing of Z3's
+//! muZ (Hoder, Bjørner and de Moura, CAV 2011) and Eldarica (Hojjat and Rümmer, FMCAD 2018),
+//! surveyed by De Angelis et al. (TPLP 2022), at each interpretation of the forall predicates:
 //!
-//! - its definite clauses have a least model, the intersection of all their models, and a goal,
-//!   whose body is monotone in the unknowns, holds in some model exactly when it holds in the
-//!   least one;
-//! - the least model of a cone's definite clauses is that of the whole system restricted to the
-//!   cone's unknowns, since the cone holds every clause whose head is one of them.
+//! - `sat` when every cone is: the models of definite clauses are closed under intersection, so
+//!   the conjunction of the interpretations the cones give an unknown is a model of every cone (a
+//!   cone that applies an unknown holds every clause deriving it, and a body position takes the
+//!   conjunction as a stronger premise), and an unknown in no cone, which no goal reads, is
+//!   interpreted as `true`. A cone's dependency set of an unknown (`declare-dep-exists-fun`) is a
+//!   subset of the whole system's, so the conjunction respects the latter.
+//! - `unsat` when a cone is: the definite clauses have a least model, the intersection of all
+//!   their models, whose interpretation of an unknown in a cone is the least model of the cone's
+//!   definite clauses, and depends only on the forall predicates of the clauses deriving it,
+//!   which its dependency set holds in a cone as in the whole system; a goal, monotone in the
+//!   unknowns, holds in some model exactly when it holds in the least one.
 //!
-//! So the verdict of each cone is that of its goals in the whole system: the system is `sat`
-//! exactly when every cone is, and `unsat` when one is. The argument holds at each
-//! interpretation of the forall predicates. There the least model's interpretation of an unknown
-//! depends only on the forall predicates of the clauses that derive it, transitively, and the
-//! dependency set it is declared with (`declare-dep-exists-fun`) holds those in a cone as in the
-//! whole system (it also holds those of the conclusions that read it, which differ), so the least
-//! model respects both declarations. Since the intersection of models is a
-//! model, so is the conjunction of the interpretations the cones give an unknown they share.
 //! A cone repeats the clauses it shares with other cones. An unknown applied in a definition or
 //! a law, or a derived predicate, is in positions this does not follow, so such a system is not
 //! split into cones.
@@ -38,22 +40,106 @@ pub enum NotHorn {
     InDefinition,
     /// A derived predicate is an unknown of the system.
     Derived,
-    /// The clause has several unknowns in head positions, or one under a guard or a quantifier.
+    /// The clause has a disjunction of unknowns in a head position, or an unknown under an `∃` in
+    /// a head position.
     Clause(ClauseId),
 }
 
-/// The unknown in the head position of a definite clause, `None` for a goal.
-fn head(
-    id: ClauseId,
-    clause: &Clause,
-    occurrences: &[Occurrence],
-) -> Result<Option<PredVarId>, NotHorn> {
-    let mut heads = occurrences.iter().filter(|o| o.position == Position::Head);
-    match (heads.next(), heads.next()) {
-        (None, _) => Ok(None),
-        (Some(o), None) if o.top_level || clause.head.pred == Pred::Var(o.pred) => Ok(Some(o.pred)),
-        _ => Err(NotHorn::Clause(id)),
+/// The unknowns a formula read in a head position derives, and whether it states a constraint
+/// besides them; an unknown under `∃` or in a disjunction with another is `Err`.
+#[derive(Debug, Default)]
+struct Heads {
+    unknowns: Vec<PredVarId>,
+    constraint: bool,
+}
+
+fn all_of(heads: impl IntoIterator<Item = Result<Heads, ()>>) -> Result<Heads, ()> {
+    let mut all = Heads::default();
+    for h in heads {
+        let h = h?;
+        all.unknowns.extend(h.unknowns);
+        all.constraint |= h.constraint;
     }
+    Ok(all)
+}
+
+fn any_of(heads: impl IntoIterator<Item = Result<Heads, ()>>) -> Result<Heads, ()> {
+    let mut any = Heads {
+        unknowns: Vec::new(),
+        constraint: true,
+    };
+    for h in heads {
+        let h = h?;
+        if !h.unknowns.is_empty() && !any.unknowns.is_empty() {
+            return Err(());
+        }
+        any.unknowns.extend(h.unknowns);
+        any.constraint &= h.constraint;
+    }
+    Ok(any)
+}
+
+/// The heads of `atom` in a head position (`in_head`) or of its negation in a body position.
+fn atom_heads(atom: &Atom, in_head: bool) -> Result<Heads, ()> {
+    let applied = match atom.pred {
+        Pred::Var(p) if in_head => Heads {
+            unknowns: vec![p],
+            constraint: false,
+        },
+        _ => Heads {
+            unknowns: Vec::new(),
+            constraint: true,
+        },
+    };
+    let Some(guard) = &atom.guard else {
+        return Ok(applied);
+    };
+    // `guard ⇒ atom` is `¬guard ∨ atom`, and its negation `guard ∧ ¬atom`.
+    if in_head {
+        any_of([formula_heads(guard, false), Ok(applied)])
+    } else {
+        all_of([formula_heads(guard, true), Ok(applied)])
+    }
+}
+
+/// The heads of `formula` in a head position (`in_head`) or of its negation in a body position.
+fn formula_heads(formula: &Formula, in_head: bool) -> Result<Heads, ()> {
+    let each = |fs: &[Formula]| -> Vec<Result<Heads, ()>> {
+        fs.iter().map(|f| formula_heads(f, in_head)).collect()
+    };
+    match (formula, in_head) {
+        (Formula::Atom(atom), _) => atom_heads(atom, in_head),
+        (Formula::Not(f), _) => formula_heads(f, !in_head),
+        (Formula::And(fs), true) | (Formula::Or(fs), false) => all_of(each(fs)),
+        (Formula::Or(fs), true) | (Formula::And(fs), false) => any_of(each(fs)),
+        (Formula::Implies(lhs, rhs), true) => {
+            any_of([formula_heads(lhs, false), formula_heads(rhs, true)])
+        }
+        (Formula::Implies(lhs, rhs), false) => {
+            all_of([formula_heads(lhs, true), formula_heads(rhs, false)])
+        }
+        (Formula::Forall(_, f), true) | (Formula::Exists(_, f), false) => formula_heads(f, in_head),
+        (Formula::Exists(_, f), true) | (Formula::Forall(_, f), false) => {
+            let heads = formula_heads(f, in_head)?;
+            if heads.unknowns.is_empty() {
+                Ok(heads)
+            } else {
+                Err(())
+            }
+        }
+    }
+}
+
+/// The unknowns `clause`, read as `¬body ∨ head`, derives, and whether it is a goal.
+fn clause_heads(id: ClauseId, clause: &Clause) -> Result<Heads, NotHorn> {
+    let premises = clause
+        .body
+        .atoms
+        .iter()
+        .map(|atom| atom_heads(atom, false))
+        .chain([formula_heads(&clause.body.formula, false)]);
+    let head = atom_heads(&clause.head, true);
+    any_of(premises.chain([head])).map_err(|()| NotHorn::Clause(id))
 }
 
 impl System {
@@ -83,12 +169,15 @@ impl System {
         let mut defining: HashMap<PredVarId, Vec<ClauseId>> = HashMap::new();
         let mut goals = Vec::new();
         for (id, clause) in self.clauses.iter_enumerated() {
-            let Some(occurrences) = occurrences.get(&id) else {
+            if !occurrences.contains_key(&id) {
                 continue;
-            };
-            match head(id, clause, occurrences)? {
-                Some(p) => defining.entry(p).or_default().push(id),
-                None => goals.push(id),
+            }
+            let heads = clause_heads(id, clause)?;
+            for p in heads.unknowns {
+                defining.entry(p).or_default().push(id);
+            }
+            if heads.constraint {
+                goals.push(id);
             }
         }
         let cone = |goal: ClauseId| {
@@ -182,7 +271,7 @@ mod tests {
     }
 
     #[test]
-    fn two_unknowns_in_head_positions_are_no_horn_clause() {
+    fn a_disjunction_of_unknowns_in_head_positions_is_no_horn_clause() {
         let mut system = System::default();
         let [p, q] = [(); 2].map(|()| system.new_pred_var(vec![], DebugInfo::default()));
         let negated = Formula::Atom(atom(q)).not();
@@ -210,5 +299,59 @@ mod tests {
         let symbol = UserDefinedPred::new("holds".into());
         system.push_pred_define_formula(symbol, IndexVec::new(), Formula::Atom(atom(p)));
         assert_eq!(system.goal_cones(), Err(NotHorn::InDefinition));
+    }
+
+    #[test]
+    fn a_derived_predicate_is_not_followed() {
+        let (mut system, _) = two_goals();
+        system.push_derived_pred(UserDefinedPred::new("derived".into()), Vec::new());
+        assert_eq!(system.goal_cones(), Err(NotHorn::Derived));
+    }
+
+    #[test]
+    fn the_guard_of_a_head_atom_is_a_premise() {
+        let mut system = System::default();
+        let [p, q] = [(); 2].map(|()| system.new_pred_var(vec![], DebugInfo::default()));
+        let guarded = Atom::with_guard(Formula::Atom(atom(q)), p.into(), vec![]);
+        let c0 = system
+            .push_clause(clause(atom(q), vec![], Formula::top()))
+            .unwrap();
+        let c1 = system
+            .push_clause(clause(guarded, vec![], Formula::top()))
+            .unwrap();
+        let c2 = system
+            .push_clause(clause(Atom::bottom(), vec![atom(p)], Formula::top()))
+            .unwrap();
+        assert_eq!(system.goal_cones().unwrap(), vec![vec![c0, c1, c2]]);
+    }
+
+    /// `⊥ ⇐ ¬∀. p` is `p ⇐ ⊤` with the quantified variables as the clause's.
+    #[test]
+    fn a_universal_head_derives_its_unknown() {
+        let mut system = System::default();
+        let p = system.new_pred_var(vec![], DebugInfo::default());
+        let forall = Formula::Forall(vec![], Box::new(Formula::Atom(atom(p))));
+        let c0 = system
+            .push_clause(clause(Atom::bottom(), vec![], forall.not()))
+            .unwrap();
+        let c1 = system
+            .push_clause(clause(Atom::bottom(), vec![atom(p)], Formula::top()))
+            .unwrap();
+        assert_eq!(system.goal_cones().unwrap(), vec![vec![c0, c1]]);
+    }
+
+    /// `⊥ ⇐ ¬(p ∧ c)` is `p ⇐ ⊤` and the goal `c ⇐ ⊤`: it derives `p` and is a goal.
+    #[test]
+    fn a_head_with_a_constraint_derives_and_is_a_goal() {
+        let mut system = System::default();
+        let p = system.new_pred_var(vec![], DebugInfo::default());
+        let both = Formula::And(vec![Formula::Atom(atom(p)), Formula::Atom(Atom::bottom())]);
+        let c0 = system
+            .push_clause(clause(Atom::bottom(), vec![], both.not()))
+            .unwrap();
+        let c1 = system
+            .push_clause(clause(Atom::bottom(), vec![atom(p)], Formula::top()))
+            .unwrap();
+        assert_eq!(system.goal_cones().unwrap(), vec![vec![c0], vec![c0, c1]]);
     }
 }

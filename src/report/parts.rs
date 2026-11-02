@@ -255,8 +255,8 @@ pub fn emit_not_horn_note(tcx: TyCtxt<'_>, system: &chc::System, why: chc::NotHo
         chc::NotHorn::Clause(id) => id,
     };
     let message = format!(
-        "thrust: `THRUST_SPLIT_GOALS`: a constraint has two unknowns in head positions, or one \
-         under a guard or a quantifier; {instead}"
+        "thrust: `THRUST_SPLIT_GOALS`: a constraint has a disjunction of unknowns in head \
+         positions, or one under an existential quantifier there; {instead}"
     );
     let provenance = Provenance::of(&system.clauses[clause].debug_info);
     match provenance.span(tcx) {
