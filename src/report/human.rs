@@ -334,6 +334,15 @@ impl Human<'_, '_> {
         let mut diag = self.tcx.dcx().struct_note(format!("thrust: {summary}"));
         for f in functions {
             diag.span_note(f.head, format!("`{}`: {}", f.name, f.describe()));
+            // An `assume!` in a closure is shown with the closure, which is listed after.
+            let own = f.assumptions.iter().filter(|a| {
+                !functions.iter().any(|g| {
+                    g.span != f.span && f.span.contains(g.span) && g.assumptions.contains(a)
+                })
+            });
+            for assumption in own {
+                diag.span_note(*assumption, format!("`{}` assumes this unchecked", f.name));
+            }
         }
         diag.emit();
     }

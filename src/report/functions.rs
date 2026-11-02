@@ -22,6 +22,8 @@ pub struct Function {
     pub parts: Option<Vec<usize>>,
     /// Of a checked body, the verdict of the query or of the parts its clauses are in.
     pub verdict: Option<&'static str>,
+    /// Of a checked body, where the `assume!`s in it, and in the closures it holds, are written.
+    pub assumptions: Vec<Span>,
 }
 
 /// Each function of the crate the report shows, but the specification functions, in the order
@@ -73,26 +75,46 @@ fn function(
     } else {
         verdict
     };
+    let span = tcx
+        .hir_span_with_body(tcx.local_def_id_to_hir_id(def))
+        .source_callsite();
+    let assumptions = if checked {
+        let mut assumptions: Vec<Span> = input
+            .assumptions
+            .iter()
+            .copied()
+            .filter(|a| span.contains(*a))
+            .collect();
+        assumptions.sort_by_key(|a| a.lo());
+        assumptions
+    } else {
+        Vec::new()
+    };
     Function {
         name: tcx.def_path_str(def.to_def_id()),
-        span: tcx
-            .hir_span_with_body(tcx.local_def_id_to_hir_id(def))
-            .source_callsite(),
+        span,
         head: tcx.def_span(def.to_def_id()).source_callsite(),
         check,
         parts: (checked && split).then(|| in_parts.iter().map(|p| p.id).collect()),
         verdict: checked.then_some(verdict),
+        assumptions,
     }
 }
 
 impl Function {
-    /// `checked, in part 2 (sat)`, `trusted: #[thrust::trusted]`.
+    /// `checked, in part 2 (sat)`, `checked under 1 assumption (sat)`,
+    /// `trusted: #[thrust::trusted]`.
     pub fn describe(&self) -> String {
         let status = self.check.status().replace('_', " ");
         if let Some(reason) = self.check.reason() {
             return format!("{status}: {reason}");
         }
         let verdict = self.verdict.unwrap_or_default();
+        let status = match self.assumptions.len() {
+            0 => status,
+            1 => format!("{status} under 1 assumption"),
+            n => format!("{status} under {n} assumptions"),
+        };
         match self.parts.as_deref() {
             None => format!("{status} ({verdict})"),
             Some([]) => format!("{status}, with no clause ({verdict})"),
@@ -105,7 +127,8 @@ impl Function {
     }
 }
 
-/// `4 functions: 2 checked, 1 trusted, 1 ignored`.
+/// `4 functions: 2 checked, 1 trusted, 1 ignored`, and `; 1 \`assume!\`` when the checked ones
+/// assume something.
 pub fn summary(functions: &[Function]) -> String {
     let mut counts: Vec<(&'static str, usize)> = Vec::new();
     for f in functions {
@@ -127,7 +150,18 @@ pub fn summary(functions: &[Function]) -> String {
     } else {
         "functions"
     };
-    format!("{} {noun}: {}", functions.len(), counts.join(", "))
+    let mut assumptions: Vec<Span> = functions
+        .iter()
+        .flat_map(|f| f.assumptions.iter().copied())
+        .collect();
+    assumptions.sort_by_key(|a| a.lo());
+    assumptions.dedup();
+    let assumed = match assumptions.len() {
+        0 => String::new(),
+        1 => "; 1 `assume!`".to_owned(),
+        n => format!("; {n} `assume!`s"),
+    };
+    format!("{} {noun}: {}{assumed}", functions.len(), counts.join(", "))
 }
 
 const STATUSES: [&str; 5] = [

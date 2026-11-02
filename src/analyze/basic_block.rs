@@ -71,26 +71,54 @@ fn int_ty_includes<'tcx>(
     }
 }
 
-/// The formula function a ghost marker call carries, or `None` for any other call.
-pub fn ghost_marker_formula_fn<'tcx>(
+/// A marker call carrying a formula function over the live variables it names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormulaMarker {
+    /// `ghost!`: a value related to the term, which is parameter `0`.
+    Ghost,
+    /// `proof_assert!`: the formula, checked and then assumed.
+    Assert,
+    /// `assume!`: the formula, assumed unchecked.
+    Assume,
+}
+
+impl FormulaMarker {
+    /// The first parameter of the formula function that names a live variable: the one after
+    /// the value of a ghost term, the first otherwise.
+    pub fn first_named_param(self) -> usize {
+        match self {
+            FormulaMarker::Ghost => 1,
+            FormulaMarker::Assert | FormulaMarker::Assume => 0,
+        }
+    }
+}
+
+/// The marker and the formula function a marker call carries, or `None` for any other call.
+pub fn formula_marker_call<'tcx>(
     ctx: &analyze::Analyzer<'tcx>,
     local_decls: &mir::LocalDecls<'tcx>,
     func: &Operand<'tcx>,
     args: &[rustc_span::source_map::Spanned<Operand<'tcx>>],
-) -> Option<(LocalDefId, mir_ty::GenericArgsRef<'tcx>)> {
+) -> Option<(FormulaMarker, LocalDefId, mir_ty::GenericArgsRef<'tcx>)> {
     let (def_id, _) = func.const_fn_def()?;
-    if Some(def_id) != ctx.def_ids().ghost_marker() {
+    let marker = if Some(def_id) == ctx.def_ids().ghost_marker() {
+        FormulaMarker::Ghost
+    } else if Some(def_id) == ctx.def_ids().assert_marker() {
+        FormulaMarker::Assert
+    } else if Some(def_id) == ctx.def_ids().assume_marker() {
+        FormulaMarker::Assume
+    } else {
         return None;
-    }
+    };
 
     let arg_ty = args[0].node.ty(local_decls, ctx.tcx());
     let mir_ty::TyKind::FnDef(formula_def_id, generic_args) = arg_ty.kind() else {
-        panic!("ghost marker argument must be a formula function item");
+        panic!("marker argument must be a formula function item");
     };
     let formula_def_id = formula_def_id
         .as_local()
-        .expect("ghost formula function must be local");
-    Some((formula_def_id, generic_args))
+        .expect("marker formula function must be local");
+    Some((marker, formula_def_id, generic_args))
 }
 
 /// The debug entries of the variables the name `name` can stand for in `scope`: those of the
@@ -2301,6 +2329,57 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         found
     }
 
+    /// `proof_assert!` and `assume!`: the formula over the live variables it names holds from
+    /// here on, checked here for `proof_assert!` and assumed unchecked for `assume!`, as Creusot's
+    /// `proof_assert!` and Verus's `assert` and `assume` are. The variables are those a ghost
+    /// term reads ([`Self::operand_of_name`]).
+    fn type_formula_statement(
+        &mut self,
+        marker: FormulaMarker,
+        formula_fn: FormulaFn<'tcx>,
+        span: rustc_span::Span,
+    ) {
+        let what = match marker {
+            FormulaMarker::Assert => "proof_assert!",
+            _ => "assume!",
+        };
+        let vars: IndexVec<rty::FunctionParamIdx, Var> = formula_fn
+            .params()
+            .iter_enumerated()
+            .map(|(idx, ty)| {
+                let ident =
+                    formula_fn.param_idents()[idx].expect("formula parameters must be named");
+                let name = analyze::annot_fn::lifted_param_source_name(ident);
+                let operand = self.operand_of_name(name).unwrap_or_else(|| {
+                    self.tcx.dcx().span_fatal(
+                        span,
+                        format!("{what} refers to `{name}`, which is not a live variable here"),
+                    )
+                });
+                let arg = self.operand_refined_type(operand);
+                if self.type_builder.build(*ty).to_sort() != arg.ty.to_sort() {
+                    self.tcx.dcx().span_fatal(
+                        span,
+                        format!(
+                            "{what} names `{name}` at the type `{ty}`, which is not its type here"
+                        ),
+                    );
+                }
+                self.env.immut_bind_tmp(arg)
+            })
+            .collect();
+        let formula = formula_fn.formula().clone().map_var(|idx| vars[idx]);
+        if marker == FormulaMarker::Assert {
+            let mut builder = self.env.build_clause();
+            let goal = rty::Refinement::from(formula.clone().map_var(rty::RefinedTypeVar::Free));
+            let clauses = builder.with_value_var(&rty::Type::<Var>::unit()).head(goal);
+            self.ctx.extend_clauses(clauses);
+        } else {
+            self.ctx.record_assumption(span.source_callsite());
+        }
+        self.env.assume(formula.map_var(PlaceTypeVar::Var));
+    }
+
     /// Types the introduction of a ghost value as a call to the function the ghost term
     /// denotes: one from the live variables it names to a value refined by the term.
     fn type_ghost_value(&mut self, formula_fn: FormulaFn<'tcx>, expected: &rty::RefinedType<Var>) {
@@ -2945,6 +3024,18 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 unimplemented!()
             }
 
+            if let Some((marker @ (FormulaMarker::Assert | FormulaMarker::Assume), def_id, args)) =
+                formula_marker_call(self.ctx, &self.local_decls, func, args)
+            {
+                let formula_fn = self
+                    .ctx
+                    .formula_fn_with_args(def_id, args, self.type_builder.owner_fn_id())
+                    .expect("marker formula function is not registered");
+                self.type_formula_statement(marker, formula_fn, term.source_info.span);
+                self.bind_local(destination, rty::RefinedType::unrefined(rty::Type::unit()));
+                return;
+            }
+
             let decl = self.local_decls[destination].clone();
             let mut rty = self
                 .type_builder
@@ -2958,8 +3049,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     .clone()
                     .subst_var(|idx| chc::Term::var(outer_fn_param_vars[&idx]));
             }
-            if let Some((formula_def_id, generic_args)) =
-                ghost_marker_formula_fn(self.ctx, &self.local_decls, func, args)
+            if let Some((FormulaMarker::Ghost, formula_def_id, generic_args)) =
+                formula_marker_call(self.ctx, &self.local_decls, func, args)
             {
                 let formula_fn = self
                     .ctx

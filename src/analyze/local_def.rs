@@ -1995,13 +1995,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .into()
     }
 
-    /// The body with each ghost marker call also using, as an operand, the locals its ghost term
-    /// reads, so that its liveness is the runtime liveness extended to the ghost reads; `None`
-    /// when the body has no ghost term.
+    /// The body with each marker call of a formula over live variables (`ghost!`,
+    /// `proof_assert!`, `assume!`) also using, as an operand, the locals its formula reads, so
+    /// that its liveness is the runtime liveness extended to the ghost reads; `None` when the
+    /// body has no such call.
     fn body_with_ghost_reads(&self) -> Option<Body<'tcx>> {
         let has_ghost_term = self.body.basic_blocks.iter().any(|data| {
             matches!(&data.terminator().kind, mir::TerminatorKind::Call { func, args, .. }
-                if analyze::basic_block::ghost_marker_formula_fn(
+                if analyze::basic_block::formula_marker_call(
                     self.ctx, &self.body.local_decls, func, args,
                 ).is_some())
         });
@@ -2038,14 +2039,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         Some(body)
     }
 
-    /// The names of the variables the ghost term of a ghost marker call reads; `None` for any
-    /// other call.
+    /// The names of the variables the formula of a marker call reads; `None` for any other
+    /// call.
     fn ghost_term_reads(
         &self,
         func: &mir::Operand<'tcx>,
         args: &[rustc_span::source_map::Spanned<mir::Operand<'tcx>>],
     ) -> Option<Vec<rustc_span::Symbol>> {
-        let (formula_def_id, generic_args) = analyze::basic_block::ghost_marker_formula_fn(
+        let (marker, formula_def_id, generic_args) = analyze::basic_block::formula_marker_call(
             self.ctx,
             &self.body.local_decls,
             func,
@@ -2054,13 +2055,13 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let formula_fn = self
             .ctx
             .formula_fn_with_args(formula_def_id, generic_args, self.owner_fn_id)
-            .expect("ghost formula function is not registered");
+            .expect("marker formula function is not registered");
         let names = formula_fn
             .param_idents()
             .iter()
-            .skip(1)
+            .skip(marker.first_named_param())
             .map(|ident| {
-                let ident = ident.expect("ghost term parameters must be named");
+                let ident = ident.expect("formula parameters must be named");
                 analyze::annot_fn::lifted_param_source_name(ident)
             })
             .collect();

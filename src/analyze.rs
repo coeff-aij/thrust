@@ -24,7 +24,7 @@ use crate::pretty::PrettyDisplayExt as _;
 use crate::refine::{self, BasicBlockType, TypeBuilder};
 use crate::rty;
 
-mod annot;
+pub(crate) mod annot;
 mod annot_fn;
 mod basic_block;
 mod closure_hist_inv;
@@ -702,6 +702,8 @@ pub struct Analyzer<'tcx> {
     contract_annotations: HashMap<DefId, ContractAnnotations>,
     /// Where the written invariant of each loop, by its header, is annotated, for the report.
     invariant_annotations: HashMap<(LocalDefId, BasicBlock), Vec<rustc_span::Span>>,
+    /// Where each `assume!` the analysis took is written, in the order it took them.
+    assumptions: Vec<rustc_span::Span>,
     /// The fn-like defs whose bodies are trusted rather than analyzed.
     trusted_bodies: HashSet<LocalDefId>,
     /// What each analyzed body's calls into code Thrust does not analyze cover, by the body and
@@ -973,6 +975,7 @@ impl<'tcx> Analyzer<'tcx> {
             template_sites: Default::default(),
             contract_annotations: Default::default(),
             invariant_annotations: Default::default(),
+            assumptions: Default::default(),
             trusted_bodies: Default::default(),
             handovers: Default::default(),
             handover_counts: Default::default(),
@@ -2720,6 +2723,7 @@ impl<'tcx> Analyzer<'tcx> {
             template_vars: &self.template_vars,
             contract_annotations: &self.contract_annotations,
             invariant_annotations: &self.invariant_annotations,
+            assumptions: &self.assumptions,
             body_checks: &body_checks,
             parts,
         };
@@ -3031,6 +3035,19 @@ impl<'tcx> Analyzer<'tcx> {
             Some(tail) => written_clauses(tail),
             None => vec![self.tcx.def_span(def_id)],
         }
+    }
+
+    /// Keeps the `assume!` at `span` for the report and warns there, once for each use.
+    pub fn record_assumption(&mut self, span: rustc_span::Span) {
+        if self.assumptions.contains(&span) {
+            return;
+        }
+        self.assumptions.push(span);
+        self.tcx
+            .dcx()
+            .struct_span_warn(span, "`assume!` is assumed without proof")
+            .with_note("what is verified after it holds only if it does")
+            .emit();
     }
 
     /// See [`BodyChecks`].

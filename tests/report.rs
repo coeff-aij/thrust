@@ -759,3 +759,49 @@ fn enums_read_by_their_paths() {
     assert!(stderr.contains("std::option::Option::Some(6)"), "{stderr}");
     assert!(!stderr.contains("d_Shape_"), "{stderr}");
 }
+
+/// A checked function whose body, or a closure in it, has an `assume!` says how many it is
+/// checked under, and JSON gives their spans; the summary counts them.
+#[test]
+fn the_functions_report_lists_the_assumptions() {
+    let lines = function_lines("assume.rs", &[]);
+    let at = |line, column, end_column| {
+        format!(
+            r#"{{"file":"tests/report/assume.rs","line":{line},"column":{column},"end_line":{line},"end_column":{end_column}}}"#
+        )
+    };
+    let fixed = format!(r#""verdict":"sat","assumes":[{}]}}"#, at(3, 5, 44));
+    assert!(
+        function_line(&lines, "fixed").ends_with(&fixed),
+        "{lines:?}"
+    );
+    let closure = format!(r#""verdict":"sat","assumes":[{}]}}"#, at(9, 9, 47));
+    assert!(
+        function_line(&lines, "with_closure").ends_with(&closure),
+        "{lines:?}"
+    );
+    assert!(
+        function_line(&lines, "with_closure::{closure#0}").ends_with(&closure),
+        "{lines:?}"
+    );
+    assert!(
+        function_line(&lines, "main").ends_with(r#""verdict":"sat"}"#),
+        "{lines:?}"
+    );
+
+    let output = report("assume.rs", "functions");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("note: thrust: 4 functions: 4 checked; 2 `assume!`s"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("`fixed`: checked under 1 assumption (sat)"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("`with_closure::{closure#0}` assumes this unchecked"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("`with_closure` assumes"), "{stderr}");
+}

@@ -59,6 +59,10 @@ enum Line<'a> {
         parts: Option<&'a [usize]>,
         /// Of a checked body, the verdict of the query or of the parts its clauses are in.
         verdict: Option<&'static str>,
+        /// Of a checked body, where the `assume!`s in it and in its closures are written; left
+        /// out when there is none.
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        assumes: Vec<Range>,
     },
     Site {
         r#fn: &'a str,
@@ -375,6 +379,7 @@ impl Json<'_, '_> {
                 reason: f.check.reason(),
                 parts: f.parts.as_deref(),
                 verdict: f.verdict,
+                assumes: f.assumptions.iter().map(|a| range(self.tcx, *a)).collect(),
             })?;
         }
         for (part, failure) in &self.failures {
