@@ -88,6 +88,18 @@ where
                         && thrust_macros::post!(Mut::new(fs[k], fs[k + 1])(s[k]), visited[k])))
     }
 
+    // What the map yields is what its closure returned from a state its `hist_inv!` reaches, so a
+    // property of every such result holds of every item yielded; here, being an entry of `l`.
+    // The caller shows the `requires` from the closure's `ensures`.
+    #[thrust_macros::requires(forall(|f1: Closure<F>, f2: Closure<F>, e: <I::Item as thrust_models::Model>::Ty, b: <B as thrust_models::Model>::Ty|
+        !(thrust_macros::hist_inv!((*it).1, f1) && thrust_macros::post!(Mut::new(f1, f2)(e), b))
+            || exists(|i: USize| 0 <= i && i < (*l).len() && b == (*l)[i])))]
+    #[thrust_macros::ensures(forall(|v: Seq<<B as thrust_models::Model>::Ty>, o: <Self as thrust_models::Model>::Ty, k: USize|
+        !(<Self as IteratorSpec>::produces(*it, v, o) && 0 <= k && k < v.len())
+            || exists(|i: USize| 0 <= i && i < (*l).len() && v[k] == (*l)[i])))]
+    #[thrust_macros::lemma]
+    pub fn yields_entries_of<L: Idx + thrust_models::Model>(it: &Self, l: &crate::rustc_index::IndexSlice<L, B>) {}
+
     // `produces_at` of the joined witnesses: the input items concatenated and the closure states
     // joined at their shared state.
     #[thrust_macros::ensures(forall(|sab: Seq<<I::Item as thrust_models::Model>::Ty>| forall(|sbc: Seq<<I::Item as thrust_models::Model>::Ty>|

@@ -68,6 +68,26 @@ fn ones_step<LocalIdx: Idx + thrust_models::Model>(s: &DenseBitSet<LocalIdx>, k:
 #[thrust::reveal(crate::rustc_index::bit_set::DenseBitSet::card)]
 fn card_ones<LocalIdx: Idx + thrust_models::Model>(s: &DenseBitSet<LocalIdx>) {}
 
+/// A bit iterator yields indices below its domain size, and a completed one yields nothing, in the
+/// forms `Map::new` reads: the item of `next_precondition`, the second of two items of
+/// `preservation_inv`, and the iterator `reinitialize` names. With a map closure that requires
+/// the bound, `Map::new`'s precondition over `DenseBitSet::iter` (stage 7's promoted layouts).
+/// `s` only fixes the type parameters; the facts hold of every bit iterator.
+#[thrust_macros::lemma]
+#[thrust_macros::ensures(forall(|it: <BitIter<'a, T> as thrust_models::Model>::Ty, e: <T as thrust_models::Model>::Ty, o: <BitIter<'a, T> as thrust_models::Model>::Ty|
+    !<BitIter<'a, T> as crate::IteratorSpec>::produces(it, thrust_models::model::Seq::singleton(e), o)
+        || <T as Idx>::index_logic(e) < it.4))]
+#[thrust_macros::ensures(forall(|it: <BitIter<'a, T> as thrust_models::Model>::Ty, v: thrust_models::model::Seq<<T as thrust_models::Model>::Ty>,
+        e1: <T as thrust_models::Model>::Ty, e2: <T as thrust_models::Model>::Ty, o: <BitIter<'a, T> as thrust_models::Model>::Ty|
+    !<BitIter<'a, T> as crate::IteratorSpec>::produces(it, v.push(e1).push(e2), o)
+        || <T as Idx>::index_logic(e2) < it.4))]
+#[thrust_macros::ensures(forall(|cur: <BitIter<'a, T> as thrust_models::Model>::Ty, fin: <BitIter<'a, T> as thrust_models::Model>::Ty,
+        v: thrust_models::model::Seq<<T as thrust_models::Model>::Ty>, o: <BitIter<'a, T> as thrust_models::Model>::Ty|
+    !(<BitIter<'a, T> as crate::IteratorSpec>::completed(thrust_models::model::Mut::new(cur, fin))
+        && <BitIter<'a, T> as crate::IteratorSpec>::produces(fin, v, o))
+        || v.len() == 0))]
+fn bit_iter_yields_below<'a, T: Idx + thrust_models::Model>(s: &'a DenseBitSet<T>) {}
+
 // The specification of stage 5 (README.md of the stage files).
 //
 // Notation below follows the README: `a = result.1` (the `assignments`
@@ -600,7 +620,9 @@ fn variant_field_layouts<
         thrust_macros::closure!(
             captures(local_layouts: &mut &IndexSlice<LocalIdx, F>),
             requires(<LocalIdx as Idx>::index_logic(*local) < (**local_layouts).len()),
-            ensures(result == (**local_layouts)[<LocalIdx as Idx>::index_logic(*local)]),
+            // The bound is the `requires`', restated for `Map::yields_entries_of`.
+            ensures(<LocalIdx as Idx>::index_logic(*local) < (**local_layouts).len()
+                && result == (**local_layouts)[<LocalIdx as Idx>::index_logic(*local)]),
             |local: &LocalIdx| -> F { local_layouts[*local] },
         ),
     );
@@ -617,6 +639,8 @@ fn variant_field_layouts<
         assignments.len(),
     ));
 
+    // Each field collected is an entry of `local_layouts`: the map closure's `ensures`.
+    thrust_macros::proof!(Map::yields_entries_of(&variant_only_tys, local_layouts));
     // Rewrite (rewrites.md R8): `collect_index_vec` for `collect`.
     collect_index_vec(variant_only_tys)
 }
@@ -978,9 +1002,9 @@ fn split_in_memory_order<FieldIdx: Idx + thrust_models::Model>(
 )]
 #[thrust_macros::ensures(true)]
 #[thrust_macros::context]
+// `fits_in_any_order` and `weighs` are not revealed: `layout()` only assumes the first (the two
+// `assume!`s), so the `univariant` preconditions read it as the atom the `assume!` states.
 #[thrust::reveal(
-    super::LayoutCalculator::fits_in_any_order,
-    super::LayoutCalculator::weighs,
     super::super::Primitive::size_in,
     super::super::FieldsShape::arbitrary_of
 )]
@@ -1025,21 +1049,43 @@ pub fn layout<
 
     // Rewrite (rewrites.md R8): `Map::new(it, f)` for `it.map(f)`, `extend_from` for `extend`.
     // The closure's contract, as that of the per-variant closure's map closure below: a member
-    // of the set is a local below n, and the closure returns its layout.
+    // of the set is a local below n, and the closure returns its layout. `Map::new`'s
+    // precondition reads the members through `bit_iter_yields_below`.
+    thrust_macros::proof!(bit_iter_yields_below(&ineligible_locals));
     let promoted_layouts = Map::new(
         ineligible_locals.iter(),
         thrust_macros::closure!(
             captures(local_layouts: &mut &IndexSlice<LocalIdx, F>),
             requires(<LocalIdx as Idx>::index_logic(local) < (**local_layouts).len()),
-            ensures(result == (**local_layouts)[<LocalIdx as Idx>::index_logic(local)]),
+            // The bound is the `requires`', restated for `Map::yields_entries_of`.
+            ensures(<LocalIdx as Idx>::index_logic(local) < (**local_layouts).len()
+                && result == (**local_layouts)[<LocalIdx as Idx>::index_logic(local)]),
             |local: LocalIdx| -> F { local_layouts[local] },
         ),
     );
+    let prefix_entry = thrust_macros::ghost!(|prefix_layouts: IndexVec<FieldIdx, F>| -> IndexVec<FieldIdx, F> {
+        prefix_layouts
+    });
+    // The promoted layouts are entries of `local_layouts`, for the second step below.
+    thrust_macros::proof!(Map::yields_entries_of(&promoted_layouts, local_layouts));
     prefix_layouts.push(tag_to_layout(tag));
     prefix_layouts.extend_from(promoted_layouts);
     // `push` and `extend_from` give `prefix_layouts.len() == P + 1 + c`, c the items
     // `ineligible_locals.iter()` yields (`Map` keeps the length), which is the set's count `card`:
-    // `iter` starts `BitIter`'s `left` at it, and the iterator completes with nothing left.
+    // `iter` starts `BitIter`'s `left` at it, and the iterator completes with nothing left. The
+    // entries after the tag are layouts of `local_layouts` (the closure's `ensures`). Stated as
+    // checked steps, so that what follows reads them rather than `extend_from`'s `ensures`.
+    thrust_macros::proof_assert!(
+        |prefix_layouts: IndexVec<FieldIdx, F>, prefix_entry: thrust_models::Ghost<IndexVec<FieldIdx, F>>, ineligible_locals: DenseBitSet<LocalIdx>|
+            prefix_layouts.len() == prefix_entry.len() + 1 + DenseBitSet::<LocalIdx>::card(ineligible_locals)
+                && forall(|k: USize| !(0 <= k && k < prefix_entry.len()) || prefix_layouts[k] == prefix_entry[k])
+    );
+    thrust_macros::proof_assert!(
+        |prefix_layouts: IndexVec<FieldIdx, F>, prefix_entry: thrust_models::Ghost<IndexVec<FieldIdx, F>>, local_layouts: &IndexSlice<LocalIdx, F>|
+            forall(|k: USize|
+                !(prefix_entry.len() < k && k < prefix_layouts.len())
+                    || exists(|i: USize| 0 <= i && i < (*local_layouts).len() && prefix_layouts[k] == (*local_layouts)[i]))
+    );
     // Rewrite (rewrites.md R13): the `repr` argument is bound to a name, for the `assume!`.
     let repr = ReprOptions::default();
     // Assumed (not proved): `univariant`'s `fits_in_any_order` for the prefix. rustc's code makes
@@ -1281,7 +1327,13 @@ pub fn layout<
     size = size.align_to(align.abi);
 
     // Rewrite (rewrites.md R8): `iter_all(it, f)` for `it.all(f)`.
-    let uninhabited = prefix.uninhabited || iter_all(variants.iter(), |v| v.is_uninhabited());
+    // The closure's contract is written, so `iter_all`'s `pre_all` reads `true` rather than an
+    // inferred precondition.
+    let uninhabited = prefix.uninhabited
+        || iter_all(
+            variants.iter(),
+            thrust_macros::closure!(requires(true), ensures(true), |v: &VariantLayout<FieldIdx>| -> bool { v.is_uninhabited() }),
+        );
     let abi = BackendRepr::Memory { sized: true };
 
     Ok(LayoutData {
