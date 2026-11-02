@@ -1,4 +1,3 @@
-//@error-in-other-file: Unsat
 //@edition: 2024
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@no-rustfix
@@ -35,7 +34,7 @@ use rustc_index::{Idx, IndexSlice};
         && LayoutCalculator::<Cx>::deref_functional::<FieldIdx, VariantIdx, F>()
 )]
 #[thrust_macros::ensures(true)]
-fn drive<
+fn drive< //~ ERROR: Unsat
     'a,
     Cx: HasDataLayout,
     FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,

@@ -247,6 +247,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
 
     /// An unsized field is not the tail of a `MaybeUnsized` struct.
     #[thrust_macros::predicate]
+    #[thrust::opaque]
     fn unsized_misplaced<
         'a,
         FieldIdx: Idx + thrust_models::Model,
@@ -265,6 +266,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
 
     /// Some field has a largest niche.
     #[thrust_macros::predicate]
+    #[thrust::opaque]
     fn some_field_niche<
         'a,
         FieldIdx: Idx + thrust_models::Model,
@@ -381,6 +383,8 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
     #[thrust::reveal(
         LayoutCalculator::fits_in_any_order,
         LayoutCalculator::weighs,
+        LayoutCalculator::unsized_misplaced,
+        LayoutCalculator::some_field_niche,
         super::Primitive::size_in,
         super::FieldsShape::arbitrary_of
     )]
