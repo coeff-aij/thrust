@@ -45,6 +45,7 @@ pub const INJECTED_STD_FILE_NAME: &str = "thrust std injected";
 pub const ENV_VARS: &[&str] = &[
     "THRUST_CACHE_DIR",
     "THRUST_CACHE_SALT",
+    "THRUST_CALL_RESULT_DIRECT",
     "THRUST_CANDIDATE_ATOMS",
     "THRUST_CHECK_UINT_FACTS",
     "THRUST_DEDUP_PRED_ARGS",
