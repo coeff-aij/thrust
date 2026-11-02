@@ -1276,7 +1276,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 _ty,
             ) => {
                 let func_ty = match operand.const_fn_def() {
-                    Some((def_id, args)) => self.callable_ty(def_id, args),
+                    Some((def_id, args)) => self.callable_ty(def_id, args, analyze::Site::Shared),
                     _ => unimplemented!(),
                 };
                 PlaceType::with_ty_and_term(func_ty.vacuous(), chc::Term::null())
@@ -1790,10 +1790,36 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 .any(|ty| analyze::model_eq::compares_ghost(self.tcx, ty))
     }
 
+    /// The type of `def_id` at `args` in this body, for one call site or shared
+    /// ([`analyze::Site`]); `runs_own_body` as for [`analyze::Analyzer::running_def_ty_with_args`].
+    fn site_def_ty(
+        &mut self,
+        site: analyze::Site,
+        def_id: DefId,
+        args: mir_ty::GenericArgsRef<'tcx>,
+        runs_own_body: bool,
+    ) -> Option<rty::RefinedType> {
+        let caller_def_id = self.type_builder.owner_fn_id();
+        match (site, runs_own_body) {
+            (analyze::Site::Call, _) => {
+                self.ctx
+                    .call_site_def_ty(def_id, args, caller_def_id, runs_own_body)
+            }
+            (analyze::Site::Shared, true) => {
+                self.ctx
+                    .running_def_ty_with_args(def_id, args, caller_def_id)
+            }
+            (analyze::Site::Shared, false) => {
+                self.ctx.def_ty_with_args(def_id, args, caller_def_id)
+            }
+        }
+    }
+
     fn callable_ty(
         &mut self,
         def_id: DefId,
         args: mir_ty::GenericArgsRef<'tcx>,
+        site: analyze::Site,
     ) -> rty::Type<rty::Closed> {
         let caller_def_id = self.type_builder.owner_fn_id();
         let resolved = self.resolve_callable(def_id, args);
@@ -1853,8 +1879,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     && !self.ctx.takes_trait_contract(def_id, resolved_def_id)
                 {
                     if let Some(def_ty) =
-                        self.ctx
-                            .def_ty_with_args(resolved_def_id, resolved_args, caller_def_id)
+                        self.site_def_ty(site, resolved_def_id, resolved_args, false)
                     {
                         return def_ty.ty;
                     }
@@ -1875,12 +1900,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 if analyze::is_ignored_crate_fn(self.tcx, resolved_def_id) {
                     analyze::fatal_ignored_call(self.tcx, resolved_def_id, resolved_args);
                 }
-                let def_ty = if resolved_def_id == def_id {
-                    self.ctx
-                        .running_def_ty_with_args(def_id, args, caller_def_id)
-                } else {
-                    self.ctx.def_ty_with_args(def_id, args, caller_def_id)
-                };
+                let def_ty = self.site_def_ty(site, def_id, args, resolved_def_id == def_id);
                 if let Some(def_ty) = def_ty {
                     // otherwise nothing asks for a deferred impl method's type and its body goes unchecked
                     if resolved_def_id != def_id {
@@ -1899,9 +1919,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     self.fatal_uncovered_instance(def_id, args, caller_def_id);
                 }
                 tracing::info!(?def_id, ?resolved_def_id, ?resolved_args, "resolved");
-                let Some(def_ty) =
-                    self.ctx
-                        .def_ty_with_args(resolved_def_id, resolved_args, caller_def_id)
+                let Some(def_ty) = self.site_def_ty(site, resolved_def_id, resolved_args, false)
                 else {
                     if self.compares_ghost(def_id, args) {
                         self.tcx.dcx().fatal(format!(
@@ -2130,7 +2148,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
         // TODO: handle const_fn_def on Env side
         let func_ty = if let Some((def_id, args)) = func.const_fn_def() {
-            let ty = self.callable_ty(def_id, args);
+            let ty = self.callable_ty(def_id, args, analyze::Site::Call);
             if analyze::candidate_atoms_enabled() {
                 self.record_called_fn_ty(&ty);
             }
