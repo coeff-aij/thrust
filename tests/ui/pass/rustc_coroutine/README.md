@@ -23,7 +23,7 @@ with the driver broken, regenerated and checked by `tests/rustc_coroutine/fail/c
 | `bitset.rs` | `rustc_index::bit_set` | verified |
 | `simple.rs` | `rustc_abi::layout::simple` | draft, `ignore-on-host` |
 | `univariant.rs` | `LayoutCalculator::univariant`, `univariant_biased` trusted on its contract | verified, one part per goal (`THRUST_SPLIT_GOALS`), with the predicates its contracts pass on unchanged `#[thrust::opaque]`: `fits_in_any_order`, `weighs`, `unsized_misplaced`, `some_field_niche` (layout.rs), `Primitive::size_in`, `FieldsShape::arbitrary_of` (lib.rs); `univariant_biased`, `Primitive::size` and `layout()` reveal those they read (#132) |
-| `univariant_biased.rs` | `LayoutCalculator::univariant_biased` | draft, `ignore-on-host`: query about 61 MB (#133) |
+| `univariant_biased.rs` | `LayoutCalculator::univariant_biased` | draft, `ignore-on-host`: its query (58.7 MB) is killed for memory with 16 GB (#133) |
 | `eligibility.rs` | `coroutine_saved_local_eligibility` | draft, `ignore-on-host` |
 | `layout.rs` | `layout()` and the adapters of `thrust/iter.rs`; the lemmas of `thrust/lemmas.rs` assumed | draft, `ignore-on-host` |
 | `lemmas.rs` | the counting lemmas of `thrust/lemmas.rs` that `layout()` uses | verified |
