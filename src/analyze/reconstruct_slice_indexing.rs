@@ -1,7 +1,5 @@
 //! Reconstructs slice indexing calls erased by MIR lowering.
 
-use std::collections::BTreeSet;
-
 use rustc_hir::def::Namespace;
 use rustc_hir::lang_items::LangItem;
 use rustc_middle::mir::{
@@ -29,11 +27,6 @@ struct BoundsCheck<'tcx> {
 
 /// The slice access in the target of a [`BoundsCheck`].
 struct SliceAccess<'tcx> {
-    /// The statements and terminators that use `indexed_place`, all reached only through the
-    /// bounds check.
-    use_locations: Vec<mir::Location>,
-    /// Those of `use_locations` that may change `indexed_place` (a write or a `&mut` borrow).
-    mutating_locations: Vec<mir::Location>,
     indexed_place: mir::Place<'tcx>,
     /// The reference to the slice, or the array place that is borrowed and unsized to one.
     receiver: mir::Place<'tcx>,
@@ -42,6 +35,14 @@ struct SliceAccess<'tcx> {
     slice_ty: Ty<'tcx>,
     elem_ty: Ty<'tcx>,
     mutable: bool,
+}
+
+/// The statements and terminators that use the indexed place of a [`SliceAccess`], all reached
+/// only through the bounds check.
+struct AccessUses {
+    locations: Vec<mir::Location>,
+    /// Those of `locations` that may change the place (a write or a `&mut` borrow).
+    mutating: Vec<mir::Location>,
 }
 
 /// Finds the first `(*slice)[index]` place in the blocks it visits and every use of that place.
@@ -170,7 +171,7 @@ pub fn reconstruct<'tcx>(tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
             continue;
         };
         let region = access_region(body, &bounds_check);
-        let Some(access) = find_slice_access(tcx, body, &bounds_check, &region) else {
+        let Some((access, uses)) = find_slice_access(tcx, body, &bounds_check, &region) else {
             tracing::trace!(?block, "bounds check is not followed by slice indexing");
             continue;
         };
@@ -191,34 +192,41 @@ pub fn reconstruct<'tcx>(tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
             mutable = access.mutable,
             "reconstructing a trait method call from slice indexing"
         );
-        match moved_borrow(tcx, body, &access) {
-            Some((reservation, creation)) => {
-                reconstruct_at_activation(tcx, body, bounds_check, access, reservation, creation)
-            }
-            None => reconstruct_access(tcx, body, bounds_check, access),
+        match moved_borrow(tcx, body, &access, &uses) {
+            Some((reservation, creation)) => reconstruct_at_activation(
+                tcx,
+                body,
+                bounds_check,
+                access,
+                &uses,
+                reservation,
+                creation,
+            ),
+            None => reconstruct_access(tcx, body, bounds_check, access, &uses),
         }
     }
 }
 
 /// The use of the access that is a two-phase `&mut` borrow which `two_phase_borrow` moves, with
-/// the point where it creates the borrow. Its other uses can only be reads before it, the length
-/// that the bounds check of an element it indexes further reads (`s[i][j]` of `&mut [&mut [T]]`).
+/// the point where it creates the borrow. Its other uses must be reads that dominate it, such as
+/// the length that the bounds check of an element it indexes further reads (`s[i][j]` of
+/// `&mut [&mut [T]]`).
 fn moved_borrow<'tcx>(
     tcx: TyCtxt<'tcx>,
     body: &Body<'tcx>,
     access: &SliceAccess<'tcx>,
+    uses: &AccessUses,
 ) -> Option<(mir::Location, mir::Location)> {
-    let (reservation, creation) = access.use_locations.iter().find_map(|&location| {
+    let (reservation, creation) = uses.locations.iter().find_map(|&location| {
         two_phase_borrow::moved_creation_point(tcx, body, location)
             .map(|creation| (location, creation))
     })?;
     let dominators = body.basic_blocks.dominators();
     let is_read_before = |location: &mir::Location| {
-        location.dominates(reservation, dominators) && !access.mutating_locations.contains(location)
+        location.dominates(reservation, dominators) && !uses.mutating.contains(location)
     };
     assert!(
-        access
-            .use_locations
+        uses.locations
             .iter()
             .all(|location| *location == reservation || is_read_before(location)),
         "two-phase borrow of {:?}: the indexed place has other uses",
@@ -305,7 +313,7 @@ fn find_slice_access<'tcx>(
     body: &Body<'tcx>,
     bounds_check: &BoundsCheck<'tcx>,
     region: &[BasicBlock],
-) -> Option<SliceAccess<'tcx>> {
+) -> Option<(SliceAccess<'tcx>, AccessUses)> {
     use mir::visit::Visitor as _;
 
     let mut finder = IndexedPlaceFinder {
@@ -320,13 +328,15 @@ fn find_slice_access<'tcx>(
         finder.visit_basic_block_data(block, &body.basic_blocks[block]);
     }
     let mutable = !finder.mutating_locations.is_empty();
-    let mut access = slice_access(tcx, body, finder.found?, mutable)?;
-    access.use_locations = finder.use_locations;
-    access.mutating_locations = finder.mutating_locations;
-    Some(access)
+    let access = slice_access(tcx, body, finder.found?, mutable)?;
+    let uses = AccessUses {
+        locations: finder.use_locations,
+        mutating: finder.mutating_locations,
+    };
+    Some((access, uses))
 }
 
-/// The access to `indexed_place`, which ends in an index, without its uses.
+/// The access to `indexed_place`, which ends in an index.
 fn slice_access<'tcx>(
     tcx: TyCtxt<'tcx>,
     body: &Body<'tcx>,
@@ -346,8 +356,6 @@ fn slice_access<'tcx>(
     };
     if let mir_ty::TyKind::Array(elem_ty, _) = base.ty(&body.local_decls, tcx).ty.kind() {
         return Some(SliceAccess {
-            use_locations: Vec::new(),
-            mutating_locations: Vec::new(),
             indexed_place,
             receiver: base,
             receiver_is_array: true,
@@ -377,8 +385,6 @@ fn slice_access<'tcx>(
     }
 
     Some(SliceAccess {
-        use_locations: Vec::new(),
-        mutating_locations: Vec::new(),
         indexed_place,
         receiver,
         receiver_is_array: false,
@@ -402,6 +408,7 @@ fn reconstruct_access<'tcx>(
     body: &mut Body<'tcx>,
     bounds_check: BoundsCheck<'tcx>,
     access: SliceAccess<'tcx>,
+    uses: &AccessUses,
 ) {
     let result_local = insert_index_call(
         tcx,
@@ -412,7 +419,13 @@ fn reconstruct_access<'tcx>(
         bounds_check.block,
         bounds_check.target,
     );
-    replace_indexed_place(body, tcx, &access, result_local);
+    replace_place_at(
+        body,
+        tcx,
+        &uses.locations,
+        access.indexed_place,
+        result_local,
+    );
     remove_bounds_check_setup(body, &bounds_check);
 }
 
@@ -431,6 +444,7 @@ fn reconstruct_at_activation<'tcx>(
     body: &mut Body<'tcx>,
     bounds_check: BoundsCheck<'tcx>,
     access: SliceAccess<'tcx>,
+    uses: &AccessUses,
     reservation: mir::Location,
     creation: mir::Location,
 ) {
@@ -442,8 +456,8 @@ fn reconstruct_at_activation<'tcx>(
         unreachable!("two-phase borrow is not a borrow: {borrow:?}");
     };
     let borrowed = *borrowed;
-    let reads: Vec<_> = access
-        .use_locations
+    let reads: Vec<_> = uses
+        .locations
         .iter()
         .copied()
         .filter(|location| *location != reservation)
@@ -670,32 +684,6 @@ fn insert_index_call<'tcx>(
     });
     tracing::trace!(?result_local, ?method, "slice indexing call inserted");
     result_local
-}
-
-/// Replaces every use of the indexed place with `*result_local`.
-fn replace_indexed_place<'tcx>(
-    body: &mut Body<'tcx>,
-    tcx: TyCtxt<'tcx>,
-    access: &SliceAccess<'tcx>,
-    result_local: Local,
-) {
-    let replacement = tcx.mk_place_deref(result_local.into());
-    let mut replacer =
-        analyze::ReplacePlacesVisitor::with_replacement(tcx, access.indexed_place, replacement);
-    let use_blocks: BTreeSet<BasicBlock> = access
-        .use_locations
-        .iter()
-        .map(|location| location.block)
-        .collect();
-    for block in use_blocks {
-        let data = &mut body.basic_blocks.as_mut()[block];
-        for statement in &mut data.statements {
-            replacer.visit_statement(statement);
-        }
-        if let Some(terminator) = &mut data.terminator {
-            replacer.visit_terminator(terminator);
-        }
-    }
 }
 
 /// Builds the receiver operand, inserting at the end of `block` a shared reborrow when indexing
