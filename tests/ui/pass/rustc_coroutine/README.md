@@ -13,6 +13,9 @@ are trusted.
 The root also holds the stage's driver (`main` and the stubs of rewrites.md S5).
 `tests/ui/fail/rustc_coroutine/<file>.rs` is its fail twin where one exists; it is the pass root
 with the driver broken, regenerated and checked by `tests/rustc_coroutine/fail/check.sh`.
+`eligibility.rs` has no driver, and its function is private to its module. Its twin checks only
+`set_assignment`, under `--cfg thrust_eligibility_fail`, which adds a contract the helper's
+write refutes. It does not check the stage's own function, whose parts take about seven minutes.
 
 | file | selection | state |
 | --- | --- | --- |
