@@ -38,25 +38,143 @@
 //!   which its dependency set holds in a cone as in the whole system; a goal, monotone in the
 //!   unknowns, holds in some model exactly when it holds in the least one.
 //!
-//! A cone repeats the clauses it shares with other cones. An unknown applied in a definition or
-//! a law, or a derived predicate, is in positions this does not follow, so such a system is not
-//! split into cones.
+//! A clause that applies a definition whose body applies an unknown (a call's quantified
+//! precondition, `pre_all(c) := ∀x. pre(c, x)`) is read with the definition unfolded: a
+//! non-recursive definition is a macro, so the system with every such definition replaced by its
+//! body is equivalent, and the shapes above, the positions of the unknowns and so the cones are
+//! those of that system. Substitution keeps polarity: an unknown positive in the body of a
+//! definition applied in a head position is in a head position, a negative one in a body
+//! position, and the reverse where the definition is applied in a body position. The shape is
+//! checked on each application, read as its body at the polarity of that application, so a
+//! definition applied in both positions is accepted where each unfolding is, and a body that
+//! puts an unknown under `∃` or in a disjunction with another is refused where it lands in a
+//! head position. The query keeps the definitions, which the parts carry along with the clauses
+//! that reach them. A definition that applies an unknown and itself, directly or through
+//! others, would not unfold to a finite clause, and an unknown applied in a law or a derived
+//! predicate is in positions this does not follow, so such a system is not split into cones. A
+//! cone repeats the clauses it shares with other cones.
 
 use std::collections::{HashMap, HashSet};
 
-use super::prune::{clause_occurrences, Occurrence, Position};
+use super::prune::Position;
 use super::*;
 
 /// Why a system is not split into the cones of its goals.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotHorn {
-    /// An unknown is applied in the body of a user-defined predicate or in a law.
-    InDefinition,
+    /// An unknown is applied in a law.
+    InLaw,
     /// A derived predicate is an unknown of the system.
     Derived,
+    /// A definition that applies an unknown applies itself, directly or through others.
+    RecursiveDefinition,
     /// The clause has a disjunction of unknowns in a head position, or an unknown under an `∃` in
     /// a head position.
     Clause(ClauseId),
+}
+
+/// The definitions with a formula body that applies an unknown, directly or through the
+/// definitions it applies. A clause applying one is read with the definition unfolded.
+struct Definitions<'a> {
+    bodies: HashMap<&'a UserDefinedPred, &'a Formula>,
+}
+
+impl<'a> Definitions<'a> {
+    fn new(system: &'a System) -> Self {
+        let reached = components::reached_pred_vars(system);
+        let bodies = system
+            .user_defined_pred_defs
+            .iter()
+            .filter_map(|def| match &def.body {
+                UserDefinedPredBody::Formula(body)
+                    if reached.get(&def.symbol).is_some_and(|ps| !ps.is_empty()) =>
+                {
+                    Some((&def.symbol, body))
+                }
+                _ => None,
+            })
+            .collect();
+        Definitions { bodies }
+    }
+
+    /// The body of the definition `atom` applies, when it is unfolded.
+    fn unfolded(&self, atom: &Atom) -> Option<&'a Formula> {
+        match &atom.pred {
+            Pred::UserDefined(symbol) => self.bodies.get(symbol).copied(),
+            _ => None,
+        }
+    }
+
+    /// Whether a definition that is unfolded applies itself, so that unfolding does not end.
+    fn recursive(&self) -> bool {
+        let calls: HashMap<&UserDefinedPred, HashSet<&UserDefinedPred>> = self
+            .bodies
+            .iter()
+            .map(|(symbol, body)| {
+                let unfolded = user_defined_in(body.iter_atoms())
+                    .into_iter()
+                    .filter(|callee| self.bodies.contains_key(callee));
+                (*symbol, unfolded.collect())
+            })
+            .collect();
+        let called = compute_transitive_closure(&calls);
+        called
+            .iter()
+            .any(|(symbol, callees)| callees.contains(symbol))
+    }
+
+    /// Each unknown `clause` applies with its position (see [`super::prune`]), the definitions
+    /// unfolded; a definition entered again at the same position is not followed again.
+    fn occurrences(&self, clause: &'a Clause) -> Vec<(PredVarId, Position)> {
+        let mut walk = Occurrences {
+            definitions: self,
+            entered: HashSet::new(),
+            found: Vec::new(),
+        };
+        walk.atom(&clause.head, Position::Head);
+        for atom in &clause.body.atoms {
+            walk.atom(atom, Position::Body);
+        }
+        walk.formula(&clause.body.formula, Position::Body);
+        walk.found
+    }
+}
+
+struct Occurrences<'a, 'd> {
+    definitions: &'d Definitions<'a>,
+    entered: HashSet<(&'a UserDefinedPred, Position)>,
+    found: Vec<(PredVarId, Position)>,
+}
+
+impl<'a> Occurrences<'a, '_> {
+    fn atom(&mut self, atom: &'a Atom, position: Position) {
+        if let Some(guard) = &atom.guard {
+            self.formula(guard, position.flip());
+        }
+        if let Pred::Var(p) = atom.pred {
+            self.found.push((p, position));
+        }
+        let (Pred::UserDefined(symbol), Some(body)) = (&atom.pred, self.definitions.unfolded(atom))
+        else {
+            return;
+        };
+        if self.entered.insert((symbol, position)) {
+            self.formula(body, position);
+        }
+    }
+
+    fn formula(&mut self, formula: &'a Formula, position: Position) {
+        match formula {
+            Formula::Atom(atom) => self.atom(atom, position),
+            Formula::Not(f) => self.formula(f, position.flip()),
+            Formula::And(fs) | Formula::Or(fs) => fs.iter().for_each(|f| self.formula(f, position)),
+            Formula::Implies(lhs, rhs) => {
+                self.formula(lhs, position.flip());
+                self.formula(rhs, position);
+            }
+            Formula::Exists(_, f) | Formula::Forall(_, f) => self.formula(f, position),
+        }
+    }
 }
 
 /// The unknowns a formula read in a head position derives, and whether it states a constraint
@@ -93,79 +211,87 @@ fn any_of(heads: impl IntoIterator<Item = Result<Heads, ()>>) -> Result<Heads, (
     Ok(any)
 }
 
-/// The heads of `atom` in a head position (`in_head`) or of its negation in a body position.
-fn atom_heads(atom: &Atom, in_head: bool) -> Result<Heads, ()> {
-    let applied = match atom.pred {
-        Pred::Var(p) if in_head => Heads {
-            unknowns: vec![p],
-            constraint: false,
-        },
-        _ => Heads {
-            unknowns: Vec::new(),
-            constraint: true,
-        },
-    };
-    let Some(guard) = &atom.guard else {
-        return Ok(applied);
-    };
-    // `guard ⇒ atom` is `¬guard ∨ atom`, and its negation `guard ∧ ¬atom`.
-    if in_head {
-        any_of([formula_heads(guard, false), Ok(applied)])
-    } else {
-        all_of([formula_heads(guard, true), Ok(applied)])
+impl Definitions<'_> {
+    /// The heads of `atom` in a head position (`in_head`) or of its negation in a body position;
+    /// a definition that is unfolded is read as its body, which [`Self::recursive`] makes finite.
+    fn atom_heads(&self, atom: &Atom, in_head: bool) -> Result<Heads, ()> {
+        let applied = match (atom.pred.clone(), self.unfolded(atom)) {
+            (_, Some(body)) => self.formula_heads(body, in_head)?,
+            (Pred::Var(p), None) if in_head => Heads {
+                unknowns: vec![p],
+                constraint: false,
+            },
+            _ => Heads {
+                unknowns: Vec::new(),
+                constraint: true,
+            },
+        };
+        let Some(guard) = &atom.guard else {
+            return Ok(applied);
+        };
+        // `guard ⇒ atom` is `¬guard ∨ atom`, and its negation `guard ∧ ¬atom`.
+        if in_head {
+            any_of([self.formula_heads(guard, false), Ok(applied)])
+        } else {
+            all_of([self.formula_heads(guard, true), Ok(applied)])
+        }
     }
-}
 
-/// The heads of `formula` in a head position (`in_head`) or of its negation in a body position.
-fn formula_heads(formula: &Formula, in_head: bool) -> Result<Heads, ()> {
-    let each = |fs: &[Formula]| -> Vec<Result<Heads, ()>> {
-        fs.iter().map(|f| formula_heads(f, in_head)).collect()
-    };
-    match (formula, in_head) {
-        (Formula::Atom(atom), _) => atom_heads(atom, in_head),
-        (Formula::Not(f), _) => formula_heads(f, !in_head),
-        (Formula::And(fs), true) | (Formula::Or(fs), false) => all_of(each(fs)),
-        (Formula::Or(fs), true) | (Formula::And(fs), false) => any_of(each(fs)),
-        (Formula::Implies(lhs, rhs), true) => {
-            any_of([formula_heads(lhs, false), formula_heads(rhs, true)])
-        }
-        (Formula::Implies(lhs, rhs), false) => {
-            all_of([formula_heads(lhs, true), formula_heads(rhs, false)])
-        }
-        (Formula::Forall(_, f), true) | (Formula::Exists(_, f), false) => formula_heads(f, in_head),
-        (Formula::Exists(_, f), true) | (Formula::Forall(_, f), false) => {
-            let heads = formula_heads(f, in_head)?;
-            if heads.unknowns.is_empty() {
-                Ok(heads)
-            } else {
-                Err(())
+    /// The heads of `formula` in a head position (`in_head`) or of its negation in a body
+    /// position.
+    fn formula_heads(&self, formula: &Formula, in_head: bool) -> Result<Heads, ()> {
+        let each = |fs: &[Formula]| -> Vec<Result<Heads, ()>> {
+            fs.iter().map(|f| self.formula_heads(f, in_head)).collect()
+        };
+        match (formula, in_head) {
+            (Formula::Atom(atom), _) => self.atom_heads(atom, in_head),
+            (Formula::Not(f), _) => self.formula_heads(f, !in_head),
+            (Formula::And(fs), true) | (Formula::Or(fs), false) => all_of(each(fs)),
+            (Formula::Or(fs), true) | (Formula::And(fs), false) => any_of(each(fs)),
+            (Formula::Implies(lhs, rhs), true) => any_of([
+                self.formula_heads(lhs, false),
+                self.formula_heads(rhs, true),
+            ]),
+            (Formula::Implies(lhs, rhs), false) => all_of([
+                self.formula_heads(lhs, true),
+                self.formula_heads(rhs, false),
+            ]),
+            (Formula::Forall(_, f), true) | (Formula::Exists(_, f), false) => {
+                self.formula_heads(f, in_head)
+            }
+            (Formula::Exists(_, f), true) | (Formula::Forall(_, f), false) => {
+                let heads = self.formula_heads(f, in_head)?;
+                if heads.unknowns.is_empty() {
+                    Ok(heads)
+                } else {
+                    Err(())
+                }
             }
         }
     }
-}
 
-/// The unknowns `clause`, read as `¬body ∨ head`, derives, and whether it is a goal.
-fn clause_heads(id: ClauseId, clause: &Clause) -> Result<Heads, NotHorn> {
-    let premises = clause
-        .body
-        .atoms
-        .iter()
-        .map(|atom| atom_heads(atom, false))
-        .chain([formula_heads(&clause.body.formula, false)]);
-    let head = atom_heads(&clause.head, true);
-    any_of(premises.chain([head])).map_err(|()| NotHorn::Clause(id))
+    /// The unknowns `clause`, read as `¬body ∨ head`, derives, and whether it is a goal.
+    fn clause_heads(&self, id: ClauseId, clause: &Clause) -> Result<Heads, NotHorn> {
+        let premises = clause
+            .body
+            .atoms
+            .iter()
+            .map(|atom| self.atom_heads(atom, false))
+            .chain([self.formula_heads(&clause.body.formula, false)]);
+        let head = self.atom_heads(&clause.head, true);
+        any_of(premises.chain([head])).map_err(|()| NotHorn::Clause(id))
+    }
 }
 
 impl System {
     /// The cone of each goal, in the order of the goals, each in the order of its clauses.
     pub fn goal_cones(&self) -> Result<Vec<Vec<ClauseId>>, NotHorn> {
         let in_laws = self.laws.values().flatten().flat_map(Formula::iter_atoms);
-        if !self.pred_vars_in_definitions().is_empty()
-            || in_laws
-                .into_iter()
-                .any(|atom| matches!(atom.pred, Pred::Var(_)))
+        if in_laws
+            .into_iter()
+            .any(|atom| matches!(atom.pred, Pred::Var(_)))
         {
-            return Err(NotHorn::InDefinition);
+            return Err(NotHorn::InLaw);
         }
         if self
             .user_defined_pred_defs
@@ -174,23 +300,22 @@ impl System {
         {
             return Err(NotHorn::Derived);
         }
-        let occurrences: HashMap<ClauseId, Vec<Occurrence>> = self
-            .clauses
-            .iter_enumerated()
-            .filter(|(_, clause)| !clause.is_nop())
-            .map(|(id, clause)| (id, clause_occurrences(clause)))
-            .collect();
+        let definitions = Definitions::new(self);
+        if definitions.recursive() {
+            return Err(NotHorn::RecursiveDefinition);
+        }
+        let occurrences = self.occurrences(&definitions);
         let mut goals = Vec::new();
         for (id, clause) in self.clauses.iter_enumerated() {
             if !occurrences.contains_key(&id) {
                 continue;
             }
-            if clause_heads(id, clause)?.constraint {
+            if definitions.clause_heads(id, clause)?.constraint {
                 goals.push(id);
             }
         }
         // Once every clause is definite, its unknowns in head positions are those it derives.
-        let defining = self.deriving_clauses();
+        let defining = deriving(&occurrences);
         let cone = |goal: ClauseId| {
             let mut clauses = HashSet::from([goal]);
             let mut applied = HashSet::new();
@@ -198,12 +323,12 @@ impl System {
             while let Some(id) = pending.pop() {
                 let in_body = occurrences[&id]
                     .iter()
-                    .filter(|o| o.position == Position::Body);
-                for o in in_body {
-                    if !applied.insert(o.pred) {
+                    .filter(|(_, position)| *position == Position::Body);
+                for &(p, _) in in_body {
+                    if !applied.insert(p) {
                         continue;
                     }
-                    for &c in defining.get(&o.pred).into_iter().flatten() {
+                    for &c in defining.get(&p).into_iter().flatten() {
                         if clauses.insert(c) {
                             pending.push(c);
                         }
@@ -216,28 +341,41 @@ impl System {
         };
         Ok(goals.into_iter().map(cone).collect())
     }
+
+    /// The clauses other than `true ⇐ …` and `… ⇐ false` in which each unknown occurs in a head
+    /// position (see [`super::prune`]), the definitions they apply unfolded: those that derive
+    /// it, from which the cones are built. A model of a part that holds all of them interprets
+    /// the unknown as some model of the system does.
+    pub fn deriving_clauses(&self) -> HashMap<PredVarId, HashSet<ClauseId>> {
+        deriving(&self.occurrences(&Definitions::new(self)))
+    }
+
+    /// The unknowns each clause other than `true ⇐ …` and `… ⇐ false` applies, with their
+    /// positions.
+    fn occurrences<'a>(
+        &'a self,
+        definitions: &Definitions<'a>,
+    ) -> HashMap<ClauseId, Vec<(PredVarId, Position)>> {
+        self.clauses
+            .iter_enumerated()
+            .filter(|(_, clause)| !clause.is_nop())
+            .map(|(id, clause)| (id, definitions.occurrences(clause)))
+            .collect()
+    }
 }
 
-impl System {
-    /// The clauses other than `true ⇐ …` and `… ⇐ false` in which each unknown occurs in a head
-    /// position (see [`super::prune`]): those that derive it, from which the cones are built. A
-    /// model of a part that holds all of them interprets the unknown as some model of the system
-    /// does.
-    pub fn deriving_clauses(&self) -> HashMap<PredVarId, HashSet<ClauseId>> {
-        let mut deriving: HashMap<PredVarId, HashSet<ClauseId>> = HashMap::new();
-        for (id, clause) in self.clauses.iter_enumerated() {
-            if clause.is_nop() {
-                continue;
-            }
-            let heads = clause_occurrences(clause)
-                .into_iter()
-                .filter(|o| o.position == Position::Head);
-            for o in heads {
-                deriving.entry(o.pred).or_default().insert(id);
+fn deriving(
+    occurrences: &HashMap<ClauseId, Vec<(PredVarId, Position)>>,
+) -> HashMap<PredVarId, HashSet<ClauseId>> {
+    let mut deriving: HashMap<PredVarId, HashSet<ClauseId>> = HashMap::new();
+    for (&id, found) in occurrences {
+        for &(p, position) in found {
+            if position == Position::Head {
+                deriving.entry(p).or_default().insert(id);
             }
         }
-        deriving
     }
+    deriving
 }
 
 #[cfg(test)]
@@ -326,12 +464,110 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_in_a_definition_is_not_followed() {
-        let (mut system, _) = two_goals();
-        let p = system.new_pred_var(vec![], DebugInfo::default());
+    fn an_unknown_in_an_applied_definition_joins_its_cone() {
+        let (mut system, [c0, c1, c2, c3, c4, _]) = two_goals();
+        let t = system.new_pred_var(vec![], DebugInfo::default());
         let symbol = UserDefinedPred::new("holds".into());
-        system.push_pred_define_formula(symbol, IndexVec::new(), Formula::Atom(atom(p)));
-        assert_eq!(system.goal_cones(), Err(NotHorn::InDefinition));
+        system.push_pred_define_formula(symbol.clone(), IndexVec::new(), Formula::Atom(atom(t)));
+        let applies = Atom::new(Pred::UserDefined(symbol), vec![]);
+        let c6 = system
+            .push_clause(clause(atom(t), vec![], Formula::top()))
+            .unwrap();
+        let c7 = system
+            .push_clause(clause(Atom::bottom(), vec![applies], Formula::top()))
+            .unwrap();
+        let cones = system.goal_cones().unwrap();
+        assert_eq!(
+            cones,
+            vec![vec![c0, c1, c3], vec![c0, c1, c2, c4], vec![c6, c7]]
+        );
+    }
+
+    /// `pre_all := ∀. p` applied negated in a body (`⊥ ⇐ ¬pre_all`) derives `p`.
+    #[test]
+    fn a_definition_applied_negated_derives_its_unknown() {
+        let mut system = System::default();
+        let p = system.new_pred_var(vec![], DebugInfo::default());
+        let symbol = UserDefinedPred::new("pre_all".into());
+        let forall = Formula::Forall(vec![], Box::new(Formula::Atom(atom(p))));
+        system.push_pred_define_formula(symbol.clone(), IndexVec::new(), forall);
+        let applies = Formula::Atom(Atom::new(Pred::UserDefined(symbol), vec![]));
+        let c0 = system
+            .push_clause(clause(Atom::bottom(), vec![], applies.not()))
+            .unwrap();
+        let c1 = system
+            .push_clause(clause(Atom::bottom(), vec![atom(p)], Formula::top()))
+            .unwrap();
+        assert_eq!(system.goal_cones().unwrap(), vec![vec![c0, c1]]);
+        assert_eq!(system.deriving_clauses()[&p], HashSet::from([c0]));
+    }
+
+    /// `either := p ∨ q` in a head position is a disjunction of unknowns once unfolded.
+    #[test]
+    fn a_definition_unfolds_to_the_shape_of_its_body() {
+        let mut system = System::default();
+        let [p, q] = [(); 2].map(|()| system.new_pred_var(vec![], DebugInfo::default()));
+        let symbol = UserDefinedPred::new("either".into());
+        let either = Formula::Or(vec![Formula::Atom(atom(p)), Formula::Atom(atom(q))]);
+        system.push_pred_define_formula(symbol.clone(), IndexVec::new(), either);
+        let applies = Atom::new(Pred::UserDefined(symbol), vec![]);
+        let c0 = system
+            .push_clause(clause(applies, vec![], Formula::top()))
+            .unwrap();
+        assert_eq!(system.goal_cones(), Err(NotHorn::Clause(c0)));
+    }
+
+    /// `once := p` applied in a head position derives `p` and in a body position applies it;
+    /// `some := ∃. p` applied in a head position is an existential head once unfolded.
+    #[test]
+    fn a_definition_applied_in_both_positions_has_the_shape_of_each_unfolding() {
+        let mut system = System::default();
+        let p = system.new_pred_var(vec![], DebugInfo::default());
+        let once = UserDefinedPred::new("once".into());
+        system.push_pred_define_formula(once.clone(), IndexVec::new(), Formula::Atom(atom(p)));
+        let applies = Atom::new(Pred::UserDefined(once), vec![]);
+        let c0 = system
+            .push_clause(clause(
+                Atom::bottom(),
+                vec![],
+                Formula::Atom(applies.clone()).not(),
+            ))
+            .unwrap();
+        let c1 = system
+            .push_clause(clause(Atom::bottom(), vec![applies], Formula::top()))
+            .unwrap();
+        assert_eq!(system.goal_cones().unwrap(), vec![vec![c0, c1]]);
+
+        let some = UserDefinedPred::new("some".into());
+        let exists = Formula::Exists(vec![], Box::new(Formula::Atom(atom(p))));
+        system.push_pred_define_formula(some.clone(), IndexVec::new(), exists);
+        let applies = Atom::new(Pred::UserDefined(some), vec![]);
+        system
+            .push_clause(clause(
+                Atom::bottom(),
+                vec![applies.clone()],
+                Formula::top(),
+            ))
+            .unwrap();
+        assert_eq!(system.goal_cones().unwrap().len(), 2);
+        let c3 = system
+            .push_clause(clause(applies, vec![], Formula::top()))
+            .unwrap();
+        assert_eq!(system.goal_cones(), Err(NotHorn::Clause(c3)));
+    }
+
+    #[test]
+    fn a_recursive_definition_applying_an_unknown_is_not_unfolded() {
+        let mut system = System::default();
+        let p = system.new_pred_var(vec![], DebugInfo::default());
+        let symbol = UserDefinedPred::new("again".into());
+        let applies = Atom::new(Pred::UserDefined(symbol.clone()), vec![]);
+        let body = Formula::And(vec![Formula::Atom(atom(p)), Formula::Atom(applies.clone())]);
+        system.push_pred_define_formula(symbol, IndexVec::new(), body);
+        system
+            .push_clause(clause(Atom::bottom(), vec![applies], Formula::top()))
+            .unwrap();
+        assert_eq!(system.goal_cones(), Err(NotHorn::RecursiveDefinition));
     }
 
     #[test]

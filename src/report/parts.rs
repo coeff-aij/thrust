@@ -239,10 +239,16 @@ pub fn emit_notes(tcx: TyCtxt<'_>, parts: &[Part], by_goals: bool) {
 pub fn emit_not_horn_note(tcx: TyCtxt<'_>, system: &chc::System, why: chc::NotHorn) {
     let instead = "the parts are the classes of clauses that share an unknown instead";
     let clause = match why {
-        chc::NotHorn::InDefinition => {
+        chc::NotHorn::InLaw => {
             tcx.dcx().note(format!(
-                "thrust: `THRUST_SPLIT_GOALS`: an unknown is applied in a predicate's definition \
-                 or a law; {instead}"
+                "thrust: `THRUST_SPLIT_GOALS`: an unknown is applied in a law; {instead}"
+            ));
+            return;
+        }
+        chc::NotHorn::RecursiveDefinition => {
+            tcx.dcx().note(format!(
+                "thrust: `THRUST_SPLIT_GOALS`: a predicate's definition that applies an unknown \
+                 applies itself; {instead}"
             ));
             return;
         }
