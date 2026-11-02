@@ -2602,33 +2602,34 @@ impl<'tcx> Analyzer<'tcx> {
             system.make_opaque(pred.clone());
             opaque.push((pred.clone(), module_of(*def)));
         }
-        for (def, range) in self.body_clauses.borrow().iter() {
-            // A closure's body is its own, but the reveal written on the function it is in covers
-            // it, as Dafny's `reveal` covers the lambdas in its scope.
-            let root = self.tcx.typeck_root_def_id(def.to_def_id()).expect_local();
-            if !self.has_attr(root, &analyze::annot::reveal_path()) {
-                continue;
-            }
-            let module = module_of(root);
+        // The clauses of a revealing body read the definitions of its module's opaque functions; a
+        // closure's body is its own, but the reveal written on the function it is in covers it, as
+        // Dafny's `reveal` covers the lambdas in its scope. The checks of a logic function read
+        // those of its own module, as Creusot's `#[open]` and Verus's `closed spec fn` show a
+        // definition to the spec functions of their module.
+        let revealing_bodies = self
+            .body_clauses
+            .borrow()
+            .iter()
+            .filter_map(|(def, range)| {
+                let root = self.tcx.typeck_root_def_id(def.to_def_id()).expect_local();
+                self.has_attr(root, &analyze::annot::reveal_path())
+                    .then(|| (module_of(root), range.clone()))
+            })
+            .collect::<Vec<_>>();
+        let logic_fn_checks = self
+            .logic_fn_check_clauses
+            .borrow()
+            .iter()
+            .map(|(def, range)| (module_of(*def), range.clone()))
+            .collect::<Vec<_>>();
+        for (module, range) in revealing_bodies.into_iter().chain(logic_fn_checks) {
             let preds: Vec<chc::UserDefinedPred> = opaque
                 .iter()
                 .filter(|(_, m)| *m == module)
                 .map(|(pred, _)| pred.clone())
                 .collect();
-            let ids: Vec<chc::ClauseId> = range.clone().map(chc::ClauseId::from_usize).collect();
-            system.reveal_in(&ids, &preds);
-        }
-        // The checks of a logic function read the definitions of its own module's opaque
-        // functions, as Creusot's `#[open]` and Verus's `closed spec fn` show a definition to the
-        // spec functions of their module.
-        for (def, range) in self.logic_fn_check_clauses.borrow().iter() {
-            let module = module_of(*def);
-            let preds: Vec<chc::UserDefinedPred> = opaque
-                .iter()
-                .filter(|(_, m)| *m == module)
-                .map(|(pred, _)| pred.clone())
-                .collect();
-            let ids: Vec<chc::ClauseId> = range.clone().map(chc::ClauseId::from_usize).collect();
+            let ids: Vec<chc::ClauseId> = range.map(chc::ClauseId::from_usize).collect();
             system.reveal_in(&ids, &preds);
         }
     }
