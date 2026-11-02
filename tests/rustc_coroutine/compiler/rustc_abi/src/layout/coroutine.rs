@@ -532,6 +532,36 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
     (ineligible_locals, assignments)
 }
 
+/// Property 3 at the promoted fields: an `Ineligible` local's field index is below the lengths of
+/// the promoted offsets and memory index. `combine_offsets` and its offsets closure require it. The
+/// fail root layout.rs (`thrust_layout_fail`) defines it as `true`, so that the closure's `unwrap`
+/// of an `Ineligible` local's field index is refuted.
+#[cfg(not(thrust_layout_fail))]
+#[thrust_macros::predicate]
+fn ineligible_promoted<VariantIdx: Idx + thrust_models::Model, FieldIdx: Idx + thrust_models::Model, LocalIdx: Idx + thrust_models::Model>(
+    assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
+    promoted_offsets: &IndexVec<FieldIdx, Size>,
+    promoted_memory_index: &IndexVec<FieldIdx, u32>,
+) -> bool {
+    forall(|l: usize, x: Option<<FieldIdx as thrust_models::Model>::Ty>|
+        !(0 <= l && l < (*assignments).len() && (*assignments)[l] == SavedLocalEligibility::Ineligible(x))
+        || exists(|k: <FieldIdx as thrust_models::Model>::Ty|
+            x == Some(k)
+                && forall(|i: USize|
+                    !<FieldIdx as Idx>::index_is(k, i)
+                        || (i < (*promoted_offsets).len() && i < (*promoted_memory_index).len()))))
+}
+
+#[cfg(thrust_layout_fail)]
+#[thrust_macros::predicate]
+fn ineligible_promoted<VariantIdx: Idx + thrust_models::Model, FieldIdx: Idx + thrust_models::Model, LocalIdx: Idx + thrust_models::Model>(
+    assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
+    promoted_offsets: &IndexVec<FieldIdx, Size>,
+    promoted_memory_index: &IndexVec<FieldIdx, u32>,
+) -> bool {
+    true
+}
+
 /// `m` is the number of the variant's entries Assigned to it: what `variant_field_layouts` gives of
 /// its result and `combine_offsets` requires of its m. Opaque: no proof reads the count, only the
 /// `assume!` of the zip's pair rests on it.
@@ -681,6 +711,18 @@ fn variant_field_layouts<
     // reachable, so the `assume!` makes no proof here vacuous.
     #[cfg(thrust_layout_reach_count)]
     thrust_macros::proof_assert!(|| false);
+    // The `ensures`' count and entries, one `proof_assert!` each, before the return.
+    thrust_macros::proof_assert!(
+        |fields: IndexVec<FieldIdx, F>, assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, index: VariantIdx|
+            fields.len()
+                <= counts::class_cnt::<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>(
+                    *assignments, (*assignments).len(), SavedLocalEligibility::Assigned(index))
+    );
+    thrust_macros::proof_assert!(|fields: IndexVec<FieldIdx, F>, local_layouts: &IndexSlice<LocalIdx, F>|
+        forall(|k: USize|
+            !(0 <= k && k < fields.len())
+            || exists(|i: USize| 0 <= i && i < (*local_layouts).len() && fields[k] == (*local_layouts)[i]))
+    );
     fields
 }
 
@@ -706,17 +748,10 @@ fn variant_field_layouts<
             0 <= f && f < (*variant_fields).len() && <LocalIdx as Idx>::index_is((*variant_fields)[f], i)
                 ==> (i < (*assignments).len() && (*assignments)[i] != SavedLocalEligibility::Unassigned))
 )]
-// Property 3. The fail root layout.rs leaves it out, and the `unwrap` of an `Ineligible` local's
-// field index is refuted.
-#[cfg_attr(not(thrust_layout_fail), thrust_macros::requires(
-    forall(|l: usize, x: Option<<FieldIdx as thrust_models::Model>::Ty>|
-            0 <= l && l < (*assignments).len() && (*assignments)[l] == SavedLocalEligibility::Ineligible(x)
-                ==> exists(|k: <FieldIdx as thrust_models::Model>::Ty|
-                    x == Some(k)
-                        && forall(|i: USize|
-                            <FieldIdx as Idx>::index_is(k, i)
-                                ==> (i < (*promoted_offsets).len() && i < (*promoted_memory_index).len()))))
-))]
+// Property 3 (`ineligible_promoted`).
+#[thrust_macros::requires(
+    ineligible_promoted::<VariantIdx, FieldIdx, LocalIdx>(assignments, promoted_offsets, promoted_memory_index)
+)]
 #[thrust_macros::ensures(true)]
 #[thrust_macros::context]
 #[thrust::reveal(super::super::FieldsShape::arbitrary_of)]
@@ -771,13 +806,7 @@ fn combine_offsets<VariantIdx: Idx + thrust_models::Model, FieldIdx: Idx + thrus
         requires(
             <LocalIdx as Idx>::index_logic(*local) < (**assignments).len()
                 && (**assignments)[<LocalIdx as Idx>::index_logic(*local)] != SavedLocalEligibility::Unassigned
-                && forall(|l: usize, x: Option<<FieldIdx as thrust_models::Model>::Ty>|
-                    !(0 <= l && l < (**assignments).len() && (**assignments)[l] == SavedLocalEligibility::Ineligible(x))
-                    || exists(|k: <FieldIdx as thrust_models::Model>::Ty|
-                        x == Some(k)
-                            && forall(|i: USize|
-                                !<FieldIdx as Idx>::index_is(k, i)
-                                    || (i < (**promoted_offsets).len() && i < (**promoted_memory_index).len()))))
+                && ineligible_promoted::<VariantIdx, FieldIdx, LocalIdx>(*assignments, *promoted_offsets, *promoted_memory_index)
                 && forall(|k: USize, i: USize|
                     !(0 <= k && k < (**promoted_memory_index).len() && <u32 as Idx>::index_is((**promoted_memory_index)[k], i))
                     || i < (**promoted_memory_index).len())
@@ -863,6 +892,7 @@ fn combine_offsets<VariantIdx: Idx + thrust_models::Model, FieldIdx: Idx + thrus
 // give the second part exactly n - b entries, each below n - b.
 #[thrust_macros::requires(
     in_memory_order.len() == n
+        && n <= 4294967295usize
         && <FieldIdx as Idx>::index_logic(b_start) <= n
         && forall(|k: USize| 0 <= k && k <= n ==> <FieldIdx as Idx>::can_new(k))
         && forall(|k: USize, i: USize|
@@ -884,7 +914,8 @@ fn split_in_memory_order<FieldIdx: Idx + thrust_models::Model>(
 ) -> (IndexVec<u32, FieldIdx>, IndexVec<u32, FieldIdx>) {
     // The loop is rustc's. Its invariant is that of probes/permutation_split.rs, which verifies
     // the same loop over a `Vec`: the bounds of the `requires`, carried for `FieldIdx::new`, and
-    // the count of the split.
+    // the count of the split; and the items taken are at most n <= u32::MAX, so the two lengths
+    // stay within `u32`'s bound, which `IndexVec::push` requires (the parts are indexed by `u32`).
     let order = thrust_macros::ghost!(|in_memory_order: IndexVec<u32, FieldIdx>| -> IndexVec<u32, FieldIdx> {
         in_memory_order
     });
@@ -910,6 +941,8 @@ fn split_in_memory_order<FieldIdx: Idx + thrust_models::Model>(
                         0 <= k && k < n && <FieldIdx as Idx>::index_is(order[k], i) ==> i < n)
                     && lemmas::distinct::<FieldIdx>(order, n)
                     && in_memory_order_a.len() + in_memory_order_b.len() == produced.len()
+                    && produced.len() <= n
+                    && n <= 4294967295usize
                     && in_memory_order_b.len()
                         == lemmas::cnt_ge::<FieldIdx>(order, produced.len(), <FieldIdx as Idx>::index_logic(b_start))
                     && forall(|k: USize|
@@ -927,6 +960,7 @@ fn split_in_memory_order<FieldIdx: Idx + thrust_models::Model>(
     thrust_macros::proof!(lemmas::permutation_split_le(order, n, b_start.index()));
     (in_memory_order_a, in_memory_order_b)
 }
+
 
 // Rewrite (rewrites.md R15): the steps of `layout()` that append the tag's layout and the promoted
 // locals' layouts to the prefix's fields (`push`, and `extend` by the map of the ineligible set),
@@ -1500,6 +1534,10 @@ pub fn layout<
             thrust_macros::proof!(layouts_wf_of_entries(calc_ref, local_layouts, &fields));
             thrust_macros::proof!(layout_pre_of_wf(calc_ref, &fields, kind));
             let mut variant = calc_ref.univariant(&fields, &repr, kind)?;
+
+            // `combine_offsets` requires `u32` to reach the variant's m fields.
+            thrust_macros::proof_assert!(|fields: IndexVec<FieldIdx, F>|
+                forall(|k: USize| 0 <= k && k <= fields.len() ==> <u32 as Idx>::can_new(k)));
 
             // Rewrite (rewrites.md R12): the destructuring of the variant's fields and the
             // combination of its offsets and memory order with the promoted ones are
