@@ -459,6 +459,10 @@ impl PartVars<'_> {
 /// refinements, `f` variables `parts` makes. An enum whose arguments have no refinement has none
 /// in its payload; one with refinements met again in its own payload (`enclosing`), or nested
 /// past [`ENUM_NESTING_LIMIT`], is one no finite formula follows, which is not supported.
+///
+/// A function type inside `ty` (a function pointer) is not stated: a value of a function type
+/// has no term to state its template's contract of, which only a direct call's subtyping relates
+/// to the function the value is.
 fn inner_refinements_formula<W>(
     ty: &Type<FunctionParamIdx>,
     value: chc::Term<W>,
