@@ -23,8 +23,8 @@
 //! (see [`extern_spec_impl`]), since their expansion cannot live in a trait impl.
 
 use proc_macro::TokenStream;
-use proc_macro2::TokenStream as TokenStream2;
-use quote::{format_ident, quote, ToTokens as _};
+use proc_macro2::{TokenStream as TokenStream2, TokenTree as TokenTree2};
+use quote::{format_ident, quote, ToTokens};
 use syn::{
     parse::{Parse, ParseStream},
     visit_mut::VisitMut,
@@ -378,9 +378,90 @@ impl VisitMut for ContextInjector<'_> {
         if crate::tokens_contain_ident(&mac.tokens, "Self") {
             self.self_used = true;
         }
-        mac.tokens = self.inject_context(&mac.tokens);
+        let nested = self.inject_nested(mac.tokens.clone());
+        mac.tokens = self.inject_context(&nested);
         mac.path = with_context;
     }
+}
+
+impl ContextInjector<'_> {
+    /// Gives the context also to the `closure!` and `ghost!` written inside a spec macro's
+    /// tokens (a closure in another closure's body), which `visit_macro_mut` does not reach as
+    /// expressions. A call is found by its tokens: a path ending in the macro's name, `!`, and
+    /// its delimited arguments.
+    fn inject_nested(&self, tokens: TokenStream2) -> TokenStream2 {
+        let mut out: Vec<TokenTree2> = Vec::new();
+        let mut iter = tokens.into_iter().peekable();
+        while let Some(tt) = iter.next() {
+            let TokenTree2::Group(group) = tt else {
+                let nested_form = match &tt {
+                    TokenTree2::Ident(ident) => nested_context_form(ident),
+                    _ => None,
+                };
+                let is_call =
+                    matches!(iter.peek(), Some(TokenTree2::Punct(p)) if p.as_char() == '!');
+                match nested_form {
+                    Some(with_context) if is_call => {
+                        let bang = iter.next().unwrap();
+                        let Some(TokenTree2::Group(args)) = iter.next() else {
+                            out.push(tt);
+                            out.push(bang);
+                            continue;
+                        };
+                        drop_path_prefix(&mut out);
+                        out.extend(with_context.into_token_stream());
+                        out.push(bang);
+                        let inner = self.inject_context(&self.inject_nested(args.stream()));
+                        let mut group = proc_macro2::Group::new(args.delimiter(), inner);
+                        group.set_span(args.span());
+                        out.push(TokenTree2::Group(group));
+                    }
+                    _ => out.push(tt),
+                }
+                continue;
+            };
+            let mut inner =
+                proc_macro2::Group::new(group.delimiter(), self.inject_nested(group.stream()));
+            inner.set_span(group.span());
+            out.push(TokenTree2::Group(inner));
+        }
+        out.into_iter().collect()
+    }
+}
+
+/// The context-carrying form of `closure` and `ghost` when named by `ident`, for a call nested
+/// in another spec macro's tokens. Loop invariants are left out: a loop inside such tokens is
+/// not desugared.
+fn nested_context_form(ident: &proc_macro2::Ident) -> Option<syn::Path> {
+    match ident.to_string().as_str() {
+        "closure" | "ghost" => context_carrying_form(&syn::Path::from(ident.clone())),
+        _ => None,
+    }
+}
+
+/// Removes the path segments (`a::b::`, a leading `::`) that `out` ends with, before the last
+/// segment of a macro path is replaced. A keyword before a leading `::` (`return ::m::closure!`)
+/// is not a segment and stays.
+fn drop_path_prefix(out: &mut Vec<TokenTree2>) {
+    loop {
+        let n = out.len();
+        let ends_with_sep = n >= 2
+            && matches!(&out[n - 1], TokenTree2::Punct(p) if p.as_char() == ':')
+            && matches!(&out[n - 2], TokenTree2::Punct(p) if p.as_char() == ':');
+        if !ends_with_sep {
+            return;
+        }
+        out.truncate(n - 2);
+        if matches!(out.last(), Some(TokenTree2::Ident(ident)) if is_path_segment(ident)) {
+            out.pop();
+        }
+    }
+}
+
+fn is_path_segment(ident: &proc_macro2::Ident) -> bool {
+    let name = ident.to_string();
+    matches!(name.as_str(), "crate" | "self" | "super")
+        || syn::parse_str::<syn::Ident>(&name).is_ok()
 }
 
 /// The context-carrying counterpart of a spec macro that takes a formula over live
