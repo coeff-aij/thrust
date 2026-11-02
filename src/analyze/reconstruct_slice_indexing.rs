@@ -462,7 +462,7 @@ fn reconstruct_at_activation<'tcx>(
         .copied()
         .filter(|location| *location != reservation)
         .collect();
-    let levels = index_levels(body, bounds_check, &access, borrowed, reservation);
+    let levels = index_levels(tcx, body, bounds_check, &access, borrowed, reservation);
 
     let mut shared = None;
     for level in &levels {
@@ -542,7 +542,11 @@ impl<'tcx> IndexLevel<'tcx> {
 
 /// The access's index and each further index of `borrowed` (`s[i][j]`), with its bounds check:
 /// the checks of the further indices lie between the access's check and the reservation, in order.
+/// A check there may also be another sequence's at the same index (`a[i][{ c[j]; j }]`), so the
+/// check of a further index is the one that also compares with the length of the sequence it
+/// indexes; the analysis stops when that does not single one out.
 fn index_levels<'tcx>(
+    tcx: TyCtxt<'tcx>,
     body: &Body<'tcx>,
     bounds_check: BoundsCheck<'tcx>,
     access: &SliceAccess<'tcx>,
@@ -559,28 +563,89 @@ fn index_levels<'tcx>(
         between.push(dominator);
         block = dominator;
     }
-    let mut checks = between
+    let mut checks: Vec<_> = between
         .into_iter()
         .rev()
-        .filter_map(|block| find_bounds_check(body, block));
+        .filter_map(|block| find_bounds_check(body, block))
+        .map(Some)
+        .collect();
 
     let position = access.indexed_place.projection.len() - 1;
     let mut levels = vec![IndexLevel {
         check: bounds_check,
         position,
     }];
+    let mut next = 0;
     for (position, elem) in borrowed.projection.iter().enumerate().skip(position + 1) {
         let mir::PlaceElem::Index(index) = elem else {
             continue;
         };
-        let check = checks
-            .find(|check| check.index_local == index)
-            .unwrap_or_else(|| {
-                panic!("two-phase borrow of {borrowed:?}: no bounds check of its index {index:?}")
-            });
+        let sequence = mir::Place {
+            local: borrowed.local,
+            projection: tcx.mk_place_elems(&borrowed.projection.as_slice()[..position]),
+        };
+        let matching: Vec<usize> = (next..checks.len())
+            .filter(|&k| {
+                checks[k].as_ref().is_some_and(|check| {
+                    check.index_local == index && checks_length_of(tcx, body, check, sequence)
+                })
+            })
+            .collect();
+        let [k] = matching[..] else {
+            tcx.dcx().span_fatal(
+                levels[0].check.source_info.span,
+                format!(
+                    "two-phase borrow of a nested element: {} bounds checks with the length and \
+                     the index of an inner index precede it, so the one of the borrow is not \
+                     known",
+                    matching.len()
+                ),
+            );
+        };
+        next = k + 1;
+        let check = checks[k].take().unwrap();
         levels.push(IndexLevel { check, position });
     }
     levels
+}
+
+/// Whether `check` compares its index with the length of `sequence`: the constant length of an
+/// array, or the `PtrMetadata` of a pointer to the slice, taken in the check's block.
+fn checks_length_of<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    body: &Body<'tcx>,
+    check: &BoundsCheck<'tcx>,
+    sequence: mir::Place<'tcx>,
+) -> bool {
+    if let mir_ty::TyKind::Array(_, len) = sequence.ty(&body.local_decls, tcx).ty.kind() {
+        let check_len = check
+            .len
+            .constant()
+            .and_then(|c| c.const_.try_to_scalar_int())
+            .map(|len| len.to_target_usize(tcx));
+        return check_len.is_some() && check_len == len.try_to_target_usize(tcx);
+    }
+    let Some(len) = check.len.place().and_then(|place| place.as_local()) else {
+        return false;
+    };
+    let statements = &body.basic_blocks[check.block].statements;
+    let assigned = |local: Local| {
+        statements.iter().find_map(|statement| {
+            let (lhs, rvalue) = statement.kind.as_assign()?;
+            (lhs.as_local() == Some(local)).then_some(rvalue)
+        })
+    };
+    let Some(Rvalue::UnaryOp(mir::UnOp::PtrMetadata, pointer)) = assigned(len) else {
+        return false;
+    };
+    let Some(pointer) = pointer.place() else {
+        return false;
+    };
+    let pointee = match pointer.as_local().and_then(assigned) {
+        Some(Rvalue::RawPtr(_, place)) => *place,
+        _ => tcx.mk_place_deref(pointer),
+    };
+    pointee == sequence
 }
 
 /// Ends `block` with the `Index::index` or `IndexMut::index_mut` call for `place`, the indexed
