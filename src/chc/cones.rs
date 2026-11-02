@@ -115,7 +115,7 @@ impl<'a> Definitions<'a> {
     fn applied_outside_clauses(&self, system: &System) -> bool {
         let law_atoms = || system.laws.values().flatten().flat_map(Formula::iter_atoms);
         let in_laws = user_defined_in(law_atoms());
-        if !components::pred_vars_in(law_atoms()).is_empty()
+        if !pred_vars_in(law_atoms()).is_empty()
             || in_laws
                 .iter()
                 .any(|symbol| self.bodies.contains_key(symbol))
@@ -630,7 +630,8 @@ mod tests {
     }
 
     /// `holds := (p ⇒ ⊥)`, an unknown only in the guard of an atom, applied in `⊥ ⇐ holds`,
-    /// derives `p`; a law with `p` in a guard is not followed.
+    /// derives `p`, and the part of the cone keeps `⊥ ⇐ p`; a law with `p` in a guard is not
+    /// followed.
     #[test]
     fn an_unknown_in_a_guard_is_followed() {
         let mut system = System::default();
@@ -652,6 +653,8 @@ mod tests {
             .push_clause(clause(Atom::bottom(), vec![atom(p)], Formula::top()))
             .unwrap();
         assert_eq!(system.goal_cones().unwrap(), vec![vec![c0], vec![c0, c1]]);
+        let part = system.part(&[c0, c1]);
+        assert_eq!(super::super::prune::emitted_clauses(&part), vec![c0, c1]);
         let q = ForallPred::new("q".into(), String::new(), vec![], vec![]);
         system.add_law(q, Formula::Atom(guarded()));
         assert_eq!(system.goal_cones(), Err(NotHorn::InLaw));

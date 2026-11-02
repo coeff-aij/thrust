@@ -109,15 +109,7 @@ pub(super) fn clause_occurrences(clause: &Clause) -> Vec<Occurrence> {
 /// The predicate variables whose positions are not followed: those applied in the formula body
 /// of a user-defined predicate or in a law.
 fn kept_pred_vars(system: &System) -> HashSet<PredVarId> {
-    let in_laws = system
-        .laws
-        .values()
-        .flatten()
-        .flat_map(Formula::iter_atoms)
-        .filter_map(|atom| match atom.pred {
-            Pred::Var(id) => Some(id),
-            _ => None,
-        });
+    let in_laws = pred_vars_in(system.laws.values().flatten().flat_map(Formula::iter_atoms));
     system
         .pred_vars_in_definitions()
         .into_iter()
