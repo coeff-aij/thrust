@@ -1,4 +1,4 @@
-//@ignore-on-host: draft, passes the frontend; its query is about 323 MB (also with `THRUST_DEDUP_PRED_ARGS` or `THRUST_FLAT_PRED_ARGS`), beyond what the solver answers (see README.md)
+//@ignore-on-host: draft, passes the frontend; its query is about 61 MB, beyond what the solver answers (see README.md)
 //@edition: 2024
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300 THRUST_TRY_SPECS=1

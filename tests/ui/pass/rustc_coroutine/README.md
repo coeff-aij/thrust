@@ -25,8 +25,8 @@ write refutes. It does not check the stage's own function, whose parts take abou
 | `indexvec_int_range.rs` | as `indexvec.rs`, under `THRUST_INT_RANGE=conversions` | verified; checks that the tree type-checks with the option |
 | `bitset.rs` | `rustc_index::bit_set` | verified |
 | `simple.rs` | `rustc_abi::layout::simple` | draft, `ignore-on-host` |
-| `univariant.rs` | `LayoutCalculator::univariant`, `univariant_biased` trusted on its contract | draft, `ignore-on-host`: no answer at 300 s, also for its panic obligations alone (query 17.8 MB) |
-| `univariant_biased.rs` | `LayoutCalculator::univariant_biased` | draft, `ignore-on-host`: query about 323 MB |
+| `univariant.rs` | `LayoutCalculator::univariant`, `univariant_biased` trusted on its contract | draft, `ignore-on-host`: no answer; the obligations that pass the contract's predicates on unchanged hold but are not decided once the solver inlines the predicates (#132) |
+| `univariant_biased.rs` | `LayoutCalculator::univariant_biased` | draft, `ignore-on-host`: query about 61 MB (#133) |
 | `eligibility.rs` | `coroutine_saved_local_eligibility` and the helpers `make_ineligible` and `set_assignment`, which hold its writes to `assignments` | verified, each goal on its own (`THRUST_SPLIT_GOALS`) |
 | `layout.rs` | `layout()` and the adapters of `thrust/iter.rs`; the lemmas of `thrust/lemmas.rs` assumed | draft, `ignore-on-host` |
 | `lemmas.rs` | the counting lemmas of `thrust/lemmas.rs` that `layout()` uses | verified |
