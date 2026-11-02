@@ -1,13 +1,13 @@
 --- pass/bitset.rs
 +++ fail/bitset.rs
-@@ -1,10 +1,12 @@
+@@ -1,11 +1,12 @@
 -//@check-pass
-+//@error-in-other-file: Unsat
  //@compile-flags: -Adead_code -C debug-assertions=off
 +//@no-rustfix
  //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 THRUST_TRY_SPECS=1
--//@rustc-env: THRUST_VERIFY_ONLY=rustc_index::bit_set,two_members,column_bound
+-//@rustc-env: THRUST_VERIFY_ONLY=rustc_index::bit_set::**,two_members,column_bound
 +//@rustc-env: THRUST_VERIFY_ONLY=column_bound
+ //@rustc-env: THRUST_SPLIT=1 THRUST_SPLIT_GOALS=1
  // Stage 3 of the rustc-coroutine verification target: rustc_index's bit sets.
  // The code is the module tree under tests/rustc_coroutine/; this file selects the stage and
 -// drives it.
@@ -16,7 +16,7 @@
  #![feature(new_range_api)]
  
  #[path = "../../../rustc_coroutine/compiler/rustc_hashes/src/lib.rs"]
-@@ -31,16 +33,6 @@
+@@ -40,25 +41,16 @@
  }
  
  
@@ -33,8 +33,10 @@
  // Every column a row of a matrix yields is below its column bound, given that no bit is set at
  // or past it.
  #[thrust_macros::requires(BitMatrix::<usize, usize>::wf(*m) && 0 < (*m).num_rows && *(*m).col_bound == 5
-@@ -49,7 +41,8 @@
- fn column_bound(m: &BitMatrix<usize, usize>) {
+     && BitMatrix::<usize, usize>::cols_below(*m, *(*m).col_bound))]
+ #[thrust_macros::ensures(true)]
+-fn column_bound(m: &BitMatrix<usize, usize>) {
++fn column_bound(m: &BitMatrix<usize, usize>) { //~ ERROR: Unsat
      let mut it = m.iter(0);
      match it.next() {
 -        Some(e) => assert!(e < 5),

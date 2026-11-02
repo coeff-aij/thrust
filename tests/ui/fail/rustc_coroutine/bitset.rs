@@ -1,8 +1,8 @@
-//@error-in-other-file: Unsat
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@no-rustfix
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 THRUST_TRY_SPECS=1
 //@rustc-env: THRUST_VERIFY_ONLY=column_bound
+//@rustc-env: THRUST_SPLIT=1 THRUST_SPLIT_GOALS=1
 // Stage 3 of the rustc-coroutine verification target: rustc_index's bit sets.
 // The code is the module tree under tests/rustc_coroutine/; this file selects the stage and
 // drives it. This twin verifies only `column_bound`, against the contracts of the bit sets, which
@@ -32,13 +32,21 @@ fn _extern_spec_vec_from_elem_word(elem: u64, n: usize) -> Vec<u64> {
     std::vec::from_elem(elem, n)
 }
 
+// `<[T]>::fill`, at the word type, for `insert_all`.
+#[thrust::extern_spec_fn]
+#[thrust_macros::ensures((!slice).len() == (*slice).len())]
+#[thrust_macros::ensures(forall(|k: USize| 0 <= k && k < (*slice).len() ==> (!slice)[k] == value))]
+fn _extern_spec_slice_fill_word(slice: &mut [u64], value: u64) {
+    <[u64]>::fill(slice, value)
+}
+
 
 // Every column a row of a matrix yields is below its column bound, given that no bit is set at
 // or past it.
 #[thrust_macros::requires(BitMatrix::<usize, usize>::wf(*m) && 0 < (*m).num_rows && *(*m).col_bound == 5
     && BitMatrix::<usize, usize>::cols_below(*m, *(*m).col_bound))]
 #[thrust_macros::ensures(true)]
-fn column_bound(m: &BitMatrix<usize, usize>) {
+fn column_bound(m: &BitMatrix<usize, usize>) { //~ ERROR: Unsat
     let mut it = m.iter(0);
     match it.next() {
         // Broken narrowly: the column bound is 5, and column 4 may be set.
