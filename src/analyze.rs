@@ -630,10 +630,13 @@ pub struct Analyzer<'tcx> {
     opaque_predicates: Rc<RefCell<Vec<(chc::UserDefinedPred, LocalDefId)>>>,
     /// The bodies being analyzed, innermost last, each with the number of clauses when its
     /// current stretch began; `None` for clauses that belong to no body
-    /// ([`Analyzer::outside_bodies`]). See [`Analyzer::enter_body`].
+    /// ([`Analyzer::logic_fn_checks`]). See [`Analyzer::enter_body`].
     body_stack: Rc<RefCell<Vec<BodyStretch>>>,
     /// The clauses each analyzed body pushed, as stretches of clause indices.
     body_clauses: Rc<RefCell<Vec<BodyClauses>>>,
+    /// The termination and body checks of each logic function, by the function; see
+    /// [`Analyzer::logic_fn_checks`].
+    logic_fn_check_clauses: Rc<RefCell<Vec<BodyClauses>>>,
     /// The result type of each logic function defined so far, by its symbol: what a call of it in
     /// another definition's body is known to have (`checked_logic_fn_body`).
     logic_fn_results: Rc<RefCell<HashMap<chc::UserDefinedPred, rty::Type<rty::Closed>>>>,
@@ -971,6 +974,7 @@ impl<'tcx> Analyzer<'tcx> {
             opaque_predicates: Default::default(),
             body_stack: Default::default(),
             body_clauses: Default::default(),
+            logic_fn_check_clauses: Default::default(),
             logic_fn_results: Default::default(),
             system,
             basic_blocks,
@@ -1808,7 +1812,7 @@ impl<'tcx> Analyzer<'tcx> {
                     .insert(pred.clone(), ret.clone());
                 let (checks, definition) =
                     self.checked_logic_fn_body(local_def_id, &params, &ret, body);
-                self.outside_bodies(|| {
+                self.logic_fn_checks(local_def_id, || {
                     let mut system = self.system.borrow_mut();
                     for clause in termination.into_iter().chain(checks) {
                         system.push_clause(clause);
@@ -2614,6 +2618,19 @@ impl<'tcx> Analyzer<'tcx> {
             let ids: Vec<chc::ClauseId> = range.clone().map(chc::ClauseId::from_usize).collect();
             system.reveal_in(&ids, &preds);
         }
+        // The checks of a logic function read the definitions of its own module's opaque
+        // functions, as Creusot's `#[open]` and Verus's `closed spec fn` show a definition to the
+        // spec functions of their module.
+        for (def, range) in self.logic_fn_check_clauses.borrow().iter() {
+            let module = module_of(*def);
+            let preds: Vec<chc::UserDefinedPred> = opaque
+                .iter()
+                .filter(|(_, m)| *m == module)
+                .map(|(pred, _)| pred.clone())
+                .collect();
+            let ids: Vec<chc::ClauseId> = range.clone().map(chc::ClauseId::from_usize).collect();
+            system.reveal_in(&ids, &preds);
+        }
     }
 
     /// Starts attributing the clauses pushed from now on to the body of `def`, until
@@ -2627,12 +2644,17 @@ impl<'tcx> Analyzer<'tcx> {
         self.pop_stretch();
     }
 
-    /// Pushes the clauses `push` pushes as clauses of no body, which read no defined copy: the
-    /// checks of a logic function, pushed when its first instance is made, then do not depend on
-    /// which body made it.
-    fn outside_bodies(&self, push: impl FnOnce()) {
+    /// Pushes the clauses `push` pushes as the checks of the logic function `def`, outside every
+    /// body: they read the definitions of `def`'s module's opaque functions
+    /// ([`Analyzer::mark_opaque_predicates`]), whichever body first made an instance of it.
+    fn logic_fn_checks(&self, def: LocalDefId, push: impl FnOnce()) {
         self.push_stretch(None);
+        let start = self.system.borrow().clauses.len();
         push();
+        let end = self.system.borrow().clauses.len();
+        self.logic_fn_check_clauses
+            .borrow_mut()
+            .push((def, start..end));
         self.pop_stretch();
     }
 
