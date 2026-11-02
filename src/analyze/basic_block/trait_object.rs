@@ -14,6 +14,7 @@ use rustc_span::def_id::{DefId, LocalDefId};
 
 use super::{Analyzer, ResolvedCallable};
 use crate::analyze;
+use crate::analyze::unanalyzed_entry::vtable_traits;
 use crate::chc;
 use crate::refine::{PlaceType, PlaceTypeBuilder, Var};
 use crate::rty::{self, Subtyping as _};
@@ -223,63 +224,41 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// Requests each method of `hidden_ty`'s impl of `dyn_ty`'s trait and its supertraits that a
     /// call through the vtable may reach, a method with a written trait contract, so that its body
     /// is checked against that contract. A method without one is entered from code Thrust does
-    /// not analyze (`unanalyzed_entry`). Auto traits and `Sized`, which have no methods, are
-    /// skipped.
+    /// not analyze (`unanalyzed_entry`), under the invariant of the packed value when it has one,
+    /// so it is checked to keep that invariant as well.
     fn check_vtable_methods(
         &mut self,
         hidden_ty: mir_ty::Ty<'tcx>,
         dyn_ty: mir_ty::Ty<'tcx>,
         has_invariant: bool,
     ) {
-        let Some(principal) = principal(dyn_ty) else {
-            return;
-        };
-        let principal = principal.with_self_ty(self.tcx, hidden_ty);
-        for trait_ref in rustc_trait_selection::traits::supertraits(self.tcx, principal) {
-            let trait_ref = self.tcx.instantiate_bound_regions_with_erased(trait_ref);
-            if self.tcx.trait_is_auto(trait_ref.def_id)
-                || self
-                    .tcx
-                    .is_lang_item(trait_ref.def_id, rustc_hir::LangItem::Sized)
-            {
-                continue;
-            }
-            self.check_dyn_trait(trait_ref.def_id, dyn_ty);
-            for method in self
-                .tcx
-                .associated_items(trait_ref.def_id)
-                .in_definition_order()
-            {
-                if !method.is_fn()
-                    || !rustc_trait_selection::traits::is_vtable_safe_method(
-                        self.tcx,
-                        trait_ref.def_id,
-                        *method,
-                    )
-                    || !self.ctx.trait_method_contract_written(method.def_id)
-                {
-                    continue;
+        for vtable_trait in vtable_traits(self.tcx, hidden_ty, dyn_ty) {
+            self.check_dyn_trait(vtable_trait.trait_ref.def_id, dyn_ty);
+            for (def_id, args) in vtable_trait.methods {
+                let contract_written = self.ctx.trait_method_contract_written(def_id);
+                if contract_written || has_invariant {
+                    self.request_vtable_method(
+                        def_id,
+                        args,
+                        dyn_ty,
+                        has_invariant,
+                        contract_written,
+                    );
                 }
-                let args = mir_ty::GenericArgs::for_item(self.tcx, method.def_id, |param, _| {
-                    trait_ref
-                        .args
-                        .get(param.index as usize)
-                        .copied()
-                        .unwrap_or_else(|| self.tcx.lifetimes.re_erased.into())
-                });
-                self.request_vtable_method(method.def_id, args, dyn_ty, has_invariant);
             }
         }
     }
 
     /// Requests the type of the body the vtable holds for the trait method `def_id` at `args`
-    /// (`Self` the packed type), so that it is checked against the trait's contract.
+    /// (`Self` the packed type), so that it is checked against the trait's contract when it has
+    /// one, and checks, when the packed type has an invariant, that the body keeps it.
     fn request_vtable_method(
         &mut self,
         def_id: DefId,
         args: mir_ty::GenericArgsRef<'tcx>,
         dyn_ty: mir_ty::Ty<'tcx>,
         has_invariant: bool,
+        contract_written: bool,
     ) {
         // At a type parameter (a body verified once over it) the impl is not known here. It is
         // requested where the body is analyzed at an instance, which a crate with an invariant
@@ -298,8 +277,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         if has_invariant {
             self.check_invariant_kept(def_id, args, resolved, instance.args, dyn_ty);
         }
-        let owner = self.type_builder.owner_fn_id();
-        let _ = self.ctx.def_ty_with_args(resolved, instance.args, owner);
+        if contract_written {
+            let owner = self.type_builder.owner_fn_id();
+            let _ = self.ctx.def_ty_with_args(resolved, instance.args, owner);
+        }
     }
 
     /// Stops unless the body `resolved` the vtable holds for the trait method `def_id`, if it
@@ -323,7 +304,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         if !receiver.is_mutable_ptr() {
             return;
         }
-        let (contract_def, contract_args) = if self.ctx.has_own_impl_contract(resolved) {
+        let own_contract = self.ctx.has_own_impl_contract(resolved)
+            || !self.ctx.trait_method_contract_written(def_id);
+        let (contract_def, contract_args) = if own_contract {
             (resolved, resolved_args)
         } else {
             (def_id, args)

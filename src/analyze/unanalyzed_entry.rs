@@ -597,68 +597,33 @@ impl<'tcx> analyze::Analyzer<'tcx> {
     }
 
     /// The methods of the vtable of `hidden_ty`'s impl of the trait object `dyn_ty`'s trait and
-    /// its supertraits, as `basic_block::trait_object` checks them at the packing.
+    /// its supertraits ([`vtable_traits`]).
     fn vtable_methods(
         &self,
         hidden_ty: mir_ty::Ty<'tcx>,
         dyn_ty: mir_ty::Ty<'tcx>,
     ) -> Vec<VtableMethod<'tcx>> {
         let typing_env = mir_ty::TypingEnv::fully_monomorphized();
-        let mir_ty::TyKind::Dynamic(preds, ..) = dyn_ty.kind() else {
-            return Vec::new();
+        let resolve = |def_id, args| {
+            mir_ty::Instance::try_resolve(self.tcx, typing_env, def_id, args)
+                .ok()
+                .flatten()
         };
-        let Some(principal) = preds.principal() else {
-            return Vec::new();
-        };
-        let principal = principal.with_self_ty(self.tcx, hidden_ty);
         let mut methods = Vec::new();
-        for trait_ref in rustc_trait_selection::traits::supertraits(self.tcx, principal) {
-            let trait_ref = self.tcx.instantiate_bound_regions_with_erased(trait_ref);
-            for method in self
-                .tcx
-                .associated_items(trait_ref.def_id)
-                .in_definition_order()
-            {
-                if !method.is_fn()
-                    || !rustc_trait_selection::traits::is_vtable_safe_method(
-                        self.tcx,
-                        trait_ref.def_id,
-                        *method,
-                    )
-                {
-                    continue;
-                }
-                let args_at = |self_ty: mir_ty::Ty<'tcx>| {
-                    mir_ty::GenericArgs::for_item(self.tcx, method.def_id, |param, _| {
-                        match param.index {
-                            0 => self_ty.into(),
-                            index => trait_ref
-                                .args
-                                .get(index as usize)
-                                .copied()
-                                .unwrap_or_else(|| self.tcx.lifetimes.re_erased.into()),
-                        }
-                    })
-                };
-                let resolve = |self_ty| {
-                    mir_ty::Instance::try_resolve(
-                        self.tcx,
-                        typing_env,
-                        method.def_id,
-                        args_at(self_ty),
-                    )
-                    .ok()
-                    .flatten()
-                };
-                let (Some(virtual_call), Some(method_instance)) =
-                    (resolve(dyn_ty), resolve(hidden_ty))
+        for vtable_trait in vtable_traits(self.tcx, hidden_ty, dyn_ty) {
+            for (def_id, args) in vtable_trait.methods {
+                let dyn_args = self
+                    .tcx
+                    .mk_args_from_iter(std::iter::once(dyn_ty.into()).chain(args.iter().skip(1)));
+                let (Some(virtual_call), Some(method)) =
+                    (resolve(def_id, dyn_args), resolve(def_id, args))
                 else {
                     continue;
                 };
                 methods.push(VtableMethod {
                     virtual_call,
-                    method: method_instance,
-                    contract_written: self.trait_method_contract_written(method.def_id),
+                    method,
+                    contract_written: self.trait_method_contract_written(def_id),
                 });
             }
         }
@@ -1035,6 +1000,63 @@ impl<'tcx> analyze::Analyzer<'tcx> {
             )
             .ok()
     }
+}
+
+/// A trait whose methods a trait object's vtable holds, at the packed type, with those methods,
+/// each at its generic arguments.
+pub struct VtableTrait<'tcx> {
+    pub trait_ref: mir_ty::TraitRef<'tcx>,
+    pub methods: Vec<(DefId, mir_ty::GenericArgsRef<'tcx>)>,
+}
+
+/// The traits of the vtable of `hidden_ty`'s impl of the trait object `dyn_ty`'s trait: that
+/// trait and its supertraits, but auto traits and `Sized`, which have no methods. Each comes with
+/// the methods a call through the trait object may reach.
+pub fn vtable_traits<'tcx>(
+    tcx: mir_ty::TyCtxt<'tcx>,
+    hidden_ty: mir_ty::Ty<'tcx>,
+    dyn_ty: mir_ty::Ty<'tcx>,
+) -> Vec<VtableTrait<'tcx>> {
+    let mir_ty::TyKind::Dynamic(preds, ..) = dyn_ty.kind() else {
+        return Vec::new();
+    };
+    let Some(principal) = preds.principal() else {
+        return Vec::new();
+    };
+    let principal = principal.with_self_ty(tcx, hidden_ty);
+    let mut traits = Vec::new();
+    for trait_ref in rustc_trait_selection::traits::supertraits(tcx, principal) {
+        let trait_ref = tcx.instantiate_bound_regions_with_erased(trait_ref);
+        if tcx.trait_is_auto(trait_ref.def_id)
+            || tcx.is_lang_item(trait_ref.def_id, rustc_hir::LangItem::Sized)
+        {
+            continue;
+        }
+        let methods = tcx
+            .associated_items(trait_ref.def_id)
+            .in_definition_order()
+            .filter(|method| {
+                method.is_fn()
+                    && rustc_trait_selection::traits::is_vtable_safe_method(
+                        tcx,
+                        trait_ref.def_id,
+                        **method,
+                    )
+            })
+            .map(|method| {
+                let args = mir_ty::GenericArgs::for_item(tcx, method.def_id, |param, _| {
+                    trait_ref
+                        .args
+                        .get(param.index as usize)
+                        .copied()
+                        .unwrap_or_else(|| tcx.lifetimes.re_erased.into())
+                });
+                (method.def_id, args)
+            })
+            .collect();
+        traits.push(VtableTrait { trait_ref, methods });
+    }
+    traits
 }
 
 /// `ty` without the references and boxes around it.
