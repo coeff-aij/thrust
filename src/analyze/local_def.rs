@@ -1687,12 +1687,13 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// loop head's type holds only its invariant, so without it a written invariant of an inner
     /// loop, which cannot name the outer loop's ghosts, would leave them arbitrary when the inner
     /// loop exits. The inner loops do not change them, so the history holds at their heads as it
-    /// does at the outer head.
+    /// does at the outer head. An inner head gets the histories in the order of the outer heads,
+    /// so that the query does not depend on the order of the map.
     fn extend_histories_to_inner_loops(
         &self,
         loop_invariants: &mut HashMap<BasicBlock, Vec<LoopInvariant<'tcx>>>,
     ) {
-        let histories: Vec<_> = loop_invariants
+        let mut histories: Vec<_> = loop_invariants
             .iter()
             .flat_map(|(&header, invariants)| {
                 invariants
@@ -1701,6 +1702,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     .map(move |invariant| (header, *invariant))
             })
             .collect();
+        histories.sort_by_key(|&(header, _)| header);
         for (outer, history) in histories {
             let blocks = self
                 .natural_loop(outer)
@@ -1780,7 +1782,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     }
 
     /// Whether every variable the formula of `invariant` names is a parameter of `bty`.
-    fn names_params_of(&self, invariant: &LoopInvariant<'tcx>, bty: &BasicBlockType) -> bool {
+    fn binds_all_names_at(&self, invariant: &LoopInvariant<'tcx>, bty: &BasicBlockType) -> bool {
         let formula_fn = self
             .ctx
             .formula_fn_with_args(
@@ -2219,7 +2221,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 };
                 let mut inv = rty::Refinement::top();
                 for invariant in invariants {
-                    if invariant.from_enclosing_loop && !self.names_params_of(invariant, &bty) {
+                    if invariant.from_enclosing_loop && !self.binds_all_names_at(invariant, &bty) {
                         continue;
                     }
                     let one = self.build_invariant_precondition(invariant, &bty);
