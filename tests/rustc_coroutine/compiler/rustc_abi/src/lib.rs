@@ -992,10 +992,6 @@ impl<FieldIdx: Idx> VariantLayout<FieldIdx> {
     pub fn is_uninhabited(&self) -> bool {
         self.uninhabited
     }
-
-    pub fn has_fields(&self) -> bool {
-        self.field_offsets.len() > 0
-    }
 }
 
 // The derived `PartialOrd` and `Ord` of `Size` and `Align` compare the single field, so `max` and
