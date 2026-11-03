@@ -8,7 +8,7 @@
 //! locals (site 4) in the same way.
 
 use crate::thrust_models;
-use thrust_models::model::{Array, Int, Mut, Seq};
+use thrust_models::model::{Array, Closure, Int, Mut, Seq};
 use thrust_models::{exists, forall};
 
 use crate::case_study::iter::{Filter, Map};
@@ -293,6 +293,44 @@ pub fn filter_selects<'a, J, L, K, T, P, M, B>(
     M: FnMut(&'a L) -> B,
     B: thrust_models::Model,
 {
+}
+
+/// The items a `Map` over a `Filter` of `fields` yields are, in order, the entries of `l` at the
+/// locals of a selection of the entries of class `e` (`selects`), when the filter accepts the
+/// entries whose local is of class `e` and the closure returns the entry of `l` at the local it is
+/// given: `layout()`'s variant's fields are the layouts of the locals Assigned to it, in the order
+/// of its entries.
+#[thrust_macros::context]
+#[thrust_macros::requires(*(*it).0.0.0 == *fields && (*it).0.0.1 == 0)]
+#[thrust_macros::requires(forall(|s: Seq<&<L as thrust_models::Model>::Ty>, k: Int, r: bool|
+    !(0 <= k && k < s.len() && Filter::<SliceIter<'a, L>, P>::answers((*it).0.1, s, k, r))
+        || r == ((*a)[L::index_logic(*s[k])] == *e)))]
+#[thrust_macros::requires(forall(|f1: Closure<M>, f2: Closure<M>, x: &<L as thrust_models::Model>::Ty, b: <B as thrust_models::Model>::Ty|
+    !(thrust_macros::hist_inv!((*it).1, f1) && thrust_macros::post!(Mut::new(f1, f2)(x), b))
+        || b == (*l)[L::index_logic(*x)]))]
+#[thrust_macros::ensures(forall(|v: Seq<<B as thrust_models::Model>::Ty>, o: <Map<Filter<SliceIter<'a, L>, P>, M> as thrust_models::Model>::Ty|
+    !<Map<Filter<SliceIter<'a, L>, P>, M> as IteratorSpec>::produces(*it, v, o)
+        || exists(|f: Array<Int, Int>, m: Int|
+            m == v.len()
+                && selects::<J, L, K, T>(*fields, *a, *e, f, m, (*fields).len())
+                && forall(|k: Int| !(0 <= k && k < v.len()) || v[k] == (*l)[L::index_logic((*fields)[f[k]])]))))]
+#[thrust_macros::lemma]
+pub fn map_selected_entries<'a, J, L, K, T, P, M, B>(
+    it: &Map<Filter<SliceIter<'a, L>, P>, M>,
+    fields: &'a IndexVec<J, L>,
+    a: &IndexVec<K, T>,
+    e: &T,
+    l: &crate::rustc_index::IndexSlice<L, B>,
+) where
+    J: Idx + thrust_models::Model,
+    L: Idx + thrust_models::Model,
+    K: Idx + thrust_models::Model,
+    T: thrust_models::Model,
+    P: Fn(&&'a L) -> bool,
+    M: FnMut(&'a L) -> B,
+    B: thrust_models::Model,
+{
+    filter_selects(it, fields, a, e);
 }
 
 /// A selection of the entries of class `e` below `k` has no more positions than the locals of
