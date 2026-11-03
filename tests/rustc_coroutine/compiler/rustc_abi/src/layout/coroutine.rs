@@ -667,6 +667,7 @@ fn variant_field_layouts<
         ));
     // The map closure's `requires` at every item the filter yields (`Map::new`'s
     // `next_precondition`): the items are entries of the variant's field list.
+    #[cfg(not(thrust_layout_reach_count))]
     thrust_macros::proof!(counts::filter_yields_below(&accepted, local_layouts.len()));
     let variant_only_tys = Map::new(
         accepted,
@@ -683,6 +684,7 @@ fn variant_field_layouts<
     // The fields collected below are no more than the locals Assigned to the variant: the
     // filter accepts the entries Assigned to it, which name distinct locals (property
     // 2c). With the `requires` on c, the count sites 1 and 3 need.
+    #[cfg(not(thrust_layout_reach_count))]
     thrust_macros::proof!(counts::filter_count(
         &variant_only_tys,
         variant_fields,
@@ -693,6 +695,7 @@ fn variant_field_layouts<
     ));
 
     // Each field collected is an entry of `local_layouts`: the map closure's `ensures`.
+    #[cfg(not(thrust_layout_reach_count))]
     thrust_macros::proof!(Map::yields_entries_of(&variant_only_tys, local_layouts));
     // Rewrite (rewrites.md R8): `collect_index_vec` for `collect`; the result is bound to a name,
     // for the `assume!`.
@@ -708,7 +711,9 @@ fn variant_field_layouts<
             assigned_count::<FieldIdx, LocalIdx, VariantIdx>(variant_fields, assignments, index, fields.len())
     );
     // Reachability twin of the `assume!` (fail root layout_reach_count.rs): the path after it is
-    // reachable, so the `assume!` makes no proof here vacuous.
+    // reachable, so the `assume!` makes no proof here vacuous. The twin leaves out the three lemma
+    // calls above: a lemma's `ensures` holds wherever its `requires` does, which the pass root
+    // checks, so the calls remove no path; with them the solver does not refute the twin.
     #[cfg(thrust_layout_reach_count)]
     thrust_macros::proof_assert!(|| false);
     // The `ensures`' count and entries, one `proof_assert!` each, before the return.

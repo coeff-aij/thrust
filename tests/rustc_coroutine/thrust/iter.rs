@@ -39,8 +39,7 @@ where
             && Self::preservation_inv(iter, func)
             && Self::next_precondition(iter, func)
     )]
-    // The `requires` is the map's `inv`, as Creusot's type invariant holds of a constructed value.
-    #[thrust_macros::ensures(result.0 == iter && result.1 == func && <Map<I, F> as IteratorSpec>::inv(result))]
+    #[thrust_macros::ensures(result.0 == iter && result.1 == func)]
     pub fn new(iter: I, func: F) -> Map<I, F> {
         Map { iter, func }
     }
