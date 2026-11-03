@@ -1,4 +1,3 @@
-use std::fmt;
 use crate::thrust_models;
 use std::marker::PhantomData;
 use std::slice::SliceIndex;
@@ -15,13 +14,6 @@ use crate::IteratorSpec;
 pub struct IndexSlice<I: Idx, T> {
     _marker: PhantomData<fn(&I)>,
     pub raw: [T],
-}
-
-impl<I: Idx, T: fmt::Debug> fmt::Debug for IndexSlice<I, T> {
-    #[thrust::ignored]
-    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Debug::fmt(&self.raw, fmt)
-    }
 }
 
 /// Own iterator standing in for `slice::Iter<'a, T>` (whose raw pointer
