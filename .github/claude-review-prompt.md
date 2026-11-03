@@ -80,6 +80,15 @@ speculative code, modes nothing uses, scaffolding from development, comments and
 the change made stale? Do names and APIs follow the codebase and Rust conventions? You see the
 large changed files only around their changes; when you suspect duplication with code not shown, say where to look.
 
+Names say what a thing is for. An option or environment variable, an attribute, a module, a type,
+a function or a variable the change adds or renames should tell a reader who has not read its
+implementation what it is for, in terms of what it does for the user or the caller: a module
+`cones` and a function `goal_cones` name the technique (the cone of influence of each goal), not
+the purpose (solving each goal's clauses on their own). Raise a name that names only a technique,
+an internal analogy or an abbreviation the codebase does not already use as a `suggestion` with a
+name that states the purpose, and say which related names in the change should follow it. Names
+the change neither adds nor renames stay as they are; aligning them is a change of its own.
+
 Look for side effects and coupling the change could avoid: state shared or mutated across passes
 where a value could be passed in and returned, a function that both computes a result and records
 it in a cache or a global, a component that reads another's internals or depends on the order in
