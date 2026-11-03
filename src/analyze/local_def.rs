@@ -1702,7 +1702,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             })
             .collect();
         for (outer, history) in histories {
-            for inner in natural_loop(&self.body, outer) {
+            let blocks = self
+                .natural_loop(outer)
+                .expect("a `for` loop history is at a loop head");
+            for inner in blocks {
                 if inner == outer || Self::loop_header_of(&self.body, inner) != Some(inner) {
                     continue;
                 }
@@ -3006,23 +3009,4 @@ pub(crate) fn spec_param_compared_ty<'tcx>(
         closure_model: ctx.def_ids().closure_model(),
         dyn_model: ctx.def_ids().dyn_model(),
     })
-}
-
-/// The blocks of the loop at `header`: those that reach one of its back edges without passing
-/// through it, and the header.
-fn natural_loop(body: &Body<'_>, header: BasicBlock) -> HashSet<BasicBlock> {
-    let doms = body.basic_blocks.dominators();
-    let preds = body.basic_blocks.predecessors();
-    let mut blocks = HashSet::from([header]);
-    let mut stack: Vec<_> = preds[header]
-        .iter()
-        .copied()
-        .filter(|&pred| doms.dominates(header, pred))
-        .collect();
-    while let Some(bb) = stack.pop() {
-        if blocks.insert(bb) {
-            stack.extend(preds[bb].iter().copied());
-        }
-    }
-    blocks
 }
