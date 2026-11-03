@@ -13,12 +13,20 @@
 //! - `body ⇒ p(x) ∨ c` with no unknown in `c` in a head position, which is `body ∧ ¬c ⇒ p(x)`;
 //! - `body ⇒ p(x) ∧ q(x) ∧ c`, which is `body ⇒ p(x)`, `body ⇒ q(x)` and the goal `body ⇒ c`:
 //!   the clause derives `p` and `q` and is a goal too;
+//! - `body ⇒ ∃y. t = C(y) ∧ p(x, y)`, with `C` a constructor applied to exactly the variables
+//!   `y`, each once, and `t` free of them (an enum's payload, as Thrust states the refinements
+//!   inside an enum and as a contract writes `exists(|i| opt == Some(i) && ..)`). The clause is
+//!   not Horn as written. The equality determines every variable of `y` as a selector of `t`
+//!   (`y_i = sel_C_i(t)`), so the `∃` is that witness: the clause is `body ⇒ is_C(t)` and
+//!   `body ⇒ p(x, sel_C(t))`, which is `body ∧ t = C(y) ⇒ p(x, y)` with `y` variables of the
+//!   clause (dually a premise `∀y. t = C(y) ⇒ p(x, y)`). An equality that leaves a variable of
+//!   `y` undetermined (`C` applied to fewer, to one twice, or `t` naming one) is refused;
 //! - a premise in which an unknown occurs only positively, under `∧`, `∨`, `∃` or `∀`, which keeps
 //!   the body monotone in it.
 //!
-//! Refused: two unknowns in one head disjunction (`body ⇒ p(x) ∨ q(x)`, no least model) and an
-//! unknown under an `∃` in a head position (`body ⇒ ∃y. p(x, y)`, whose models are not closed
-//! under intersection). For a system of definite clauses, solving each cone on its own gives the
+//! Refused: two unknowns in one head disjunction (`body ⇒ p(x) ∨ q(x)`, no least model) and any
+//! other unknown under an `∃` in a head position (`body ⇒ ∃y. p(x, y)`, whose models are not
+//! closed under intersection). For a system of definite clauses, solving each cone on its own gives the
 //! verdict of the system, as the slicing of Z3's muZ (Hoder, Bjørner and de Moura, CAV 2011) and
 //! Eldarica (Hojjat and Rümmer, FMCAD 2018), surveyed by De Angelis et al. (TPLP 2022), at each
 //! interpretation of the forall predicates:
@@ -324,9 +332,9 @@ impl<'a> Definitions<'a> {
             (Formula::Forall(_, f), true) | (Formula::Exists(_, f), false) => {
                 self.formula_heads(f, in_head)
             }
-            (Formula::Exists(_, f), true) | (Formula::Forall(_, f), false) => {
+            (Formula::Exists(vars, f), true) | (Formula::Forall(vars, f), false) => {
                 let heads = self.formula_heads(f, in_head)?;
-                if heads.unknowns.is_empty() {
+                if heads.unknowns.is_empty() || binds_constructor_fields(vars, f, in_head) {
                     Ok(heads)
                 } else {
                     Err(())
@@ -346,6 +354,61 @@ impl<'a> Definitions<'a> {
         let head = self.atom_heads(&clause.head, true);
         any_of(premises.chain([head])).map_err(|()| NotHorn::Clause(id))
     }
+}
+
+/// Whether `∃vars. f` read in a head position (`in_head`), or `∀vars. f` read in a body
+/// position, binds `vars` as the fields of a constructor: `f` is `t = C(vars) ∧ ..` in a head
+/// position or `t = C(vars) ⇒ ..` in a body position, `C` applied to exactly the variables
+/// `vars`, each once, and `t` free of them. The equality then determines each variable as a
+/// selector of `t` (`y_i = sel_C_i(t)`), and `∃vars. t = C(vars) ∧ r` is `is_C(t)` and
+/// `r[sel_C(t)/vars]`, a definite head.
+fn binds_constructor_fields(
+    vars: &[(UserQuantifiedVarId, Sort)],
+    f: &Formula,
+    in_head: bool,
+) -> bool {
+    let conjuncts: Vec<&Formula> = match (f, in_head) {
+        (Formula::And(fs), true) => fs.iter().collect(),
+        (Formula::Implies(lhs, _), false) => match &**lhs {
+            Formula::And(fs) => fs.iter().collect(),
+            lhs => vec![lhs],
+        },
+        _ => return false,
+    };
+    conjuncts.into_iter().any(|g| match g {
+        Formula::Atom(atom) => is_constructor_of(atom, vars),
+        _ => false,
+    })
+}
+
+/// Whether `atom` is `t = C(vars)` (or `C(vars) = t`) with `vars` the arguments of `C`, each
+/// once, and `t` free of them.
+fn is_constructor_of(atom: &Atom, vars: &[(UserQuantifiedVarId, Sort)]) -> bool {
+    if atom.guard.is_some() || atom.pred != Pred::Known(KnownPred::EQUAL) || atom.args.len() != 2 {
+        return false;
+    }
+    let bound: HashSet<UserQuantifiedVarId> = vars.iter().map(|(v, _)| *v).collect();
+    let mentions_bound = |t: &Term| {
+        t.preorder()
+            .into_iter()
+            .any(|s| matches!(s, Term::UserQuantifiedVar(_, v) if bound.contains(v)))
+    };
+    let fields_are_vars = |t: &Term| match t {
+        Term::DatatypeCtor(_, _, args) => {
+            let fields: Vec<UserQuantifiedVarId> = args
+                .iter()
+                .filter_map(|a| match a {
+                    Term::UserQuantifiedVar(_, v) => Some(*v),
+                    _ => None,
+                })
+                .collect();
+            let distinct: HashSet<UserQuantifiedVarId> = fields.iter().copied().collect();
+            fields.len() == args.len() && fields.len() == vars.len() && distinct == bound
+        }
+        _ => false,
+    };
+    let (a, b) = (&atom.args[0], &atom.args[1]);
+    (fields_are_vars(b) && !mentions_bound(a)) || (fields_are_vars(a) && !mentions_bound(b))
 }
 
 impl System {
@@ -521,6 +584,67 @@ mod tests {
         let c0 = system
             .push_clause(clause(Atom::bottom(), vec![], exists.not()))
             .unwrap();
+        assert_eq!(system.goal_cones(), Err(NotHorn::Clause(c0)));
+    }
+
+    /// `⊥ ⇐ ¬∃y. t = Some(ys) ∧ p(y)`, with `ys` the payload `args` gives `Some` and `t` the
+    /// value `t` gives, and the goal `⊥ ⇐ p(0)`.
+    fn payload_head(
+        args: impl Fn(&Term) -> Vec<Term>,
+        t: impl Fn(&Term) -> Term,
+    ) -> (System, PredVarId, [ClauseId; 2]) {
+        let mut system = System::default();
+        let p = system.new_pred_var(vec![Sort::int()], DebugInfo::default());
+        let y = system.new_user_quantified_var();
+        let y_term = Term::UserQuantifiedVar(Sort::int(), y);
+        let option = DatatypeSymbol::new("Option".into());
+        let some = Term::datatype_ctor(
+            option.clone(),
+            vec![],
+            DatatypeSymbol::new("Option.Some".into()),
+            args(&y_term),
+        );
+        let payload = Formula::Atom(t(&y_term).equal_to(some))
+            .and(Formula::Atom(Atom::new(p.into(), vec![y_term.clone()])));
+        let exists = Formula::Exists(vec![(y, Sort::int())], Box::new(payload));
+        let c0 = system
+            .push_clause(clause(Atom::bottom(), vec![], exists.not()))
+            .unwrap();
+        let c1 = system
+            .push_clause(clause(
+                Atom::bottom(),
+                vec![Atom::new(p.into(), vec![Term::int(0)])],
+                Formula::top(),
+            ))
+            .unwrap();
+        (system, p, [c0, c1])
+    }
+
+    fn free_value(_: &Term) -> Term {
+        Term::datatype_ctor(
+            DatatypeSymbol::new("Option".into()),
+            vec![],
+            DatatypeSymbol::new("Option.Some".into()),
+            vec![Term::int(1)],
+        )
+    }
+
+    #[test]
+    fn an_existential_over_a_payload_is_a_definite_head() {
+        let (system, p, [c0, c1]) = payload_head(|y| vec![y.clone()], free_value);
+        assert_eq!(system.goal_cones().unwrap(), vec![vec![c0], vec![c0, c1]]);
+        assert_eq!(system.deriving_clauses()[&p], HashSet::from([c0]));
+    }
+
+    #[test]
+    fn an_existential_over_part_of_a_payload_is_no_horn_clause() {
+        let (system, _, [c0, _]) = payload_head(|y| vec![y.clone(), Term::int(1)], free_value);
+        assert_eq!(system.goal_cones(), Err(NotHorn::Clause(c0)));
+    }
+
+    #[test]
+    fn an_existential_over_a_payload_the_value_names_is_no_horn_clause() {
+        let (system, _, [c0, _]) = payload_head(|y| vec![y.clone()], |y| y.clone());
         assert_eq!(system.goal_cones(), Err(NotHorn::Clause(c0)));
     }
 
