@@ -706,7 +706,9 @@ fn variant_field_layouts<
     ));
 
     // The fields collected below are exactly the entries Assigned to the variant: the filter
-    // accepts those, and `collect` runs the map to its end.
+    // accepts those, and `collect` runs the map to its end. The lemma's proof is open: its
+    // `ensures`, the body of `filter_selects_all` and the count at `collect`'s witness below get
+    // no answer from the solver.
     thrust_macros::proof!(counts::map_count_exact(
         &variant_only_tys,
         variant_fields,
@@ -1580,7 +1582,10 @@ fn variant_layout<
     // locals, and the promoted locals are Ineligible (property 4), so disjoint from the
     // Assigned ones: (Assigned) + 3 (promoted) <= 3 (weight of `local_layouts`), and the sum
     // is below 3T + 2^qa + 2^qi < b. Not proved: as at the prefix, no term builds the
-    // witness of `weight` for the fields the filter selects.
+    // witness of `weight` for the fields the filter selects. The facts this rests on are not in
+    // `variant_layout`'s `requires`: `layout()`'s size bound and the prefix's size and alignment
+    // below S_p hold at its one call, `layout()`'s per-variant closure, under `layout()`'s
+    // `requires` and after the prefix's `univariant` call, and the assumption holds only there.
     thrust_macros::assume!(
         |calc: &LayoutCalculator<C>, fields: IndexVec<FieldIdx, F>, repr: ReprOptions, kind: StructKind|
             LayoutCalculator::<C>::fits_in_any_order::<FieldIdx, VariantIdx, F>(*calc, &fields, &repr, kind)
