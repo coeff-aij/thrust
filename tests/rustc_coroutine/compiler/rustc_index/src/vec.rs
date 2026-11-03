@@ -151,15 +151,6 @@ fn _extern_spec_index_vec_deref_mut<I: Idx + thrust_models::Model, T: thrust_mod
     <IndexVec<I, T> as DerefMut>::deref_mut(slf)
 }
 
-impl<I: Idx, T> Extend<T> for IndexVec<I, T> {
-    #[inline]
-    // Not analysed and not callable: `layout()` calls `extend_from` (rewrites.md R8) instead.
-    #[thrust::ignored]
-    fn extend<J: IntoIterator<Item = T>>(&mut self, iter: J) {
-        self.raw.extend(iter);
-    }
-}
-
 impl<I: Idx, T> FromIterator<T> for IndexVec<I, T> {
     #[inline]
     // Not analysed and not callable: its only caller, the `collect` in `univariant_biased`, is
