@@ -3282,8 +3282,14 @@ fn subst_ty_params_in_term<T, V>(term: &mut chc::Term<V>, subst: &TypeParamSubst
         | chc::Term::MutFinal(t)
         | chc::Term::TupleProj(t, _)
         | chc::Term::DatatypeDiscr(_, t)
-        | chc::Term::DatatypeSelector(.., t)
         | chc::Term::IntToBitVec { term: t, .. } => {
+            subst_ty_params_in_term(t, subst);
+        }
+        chc::Term::DatatypeSelector(sel, t) => {
+            for arg in sel.sort.args_mut() {
+                subst_ty_params_in_sort(arg, subst);
+            }
+            subst_ty_params_in_sort(&mut sel.field, subst);
             subst_ty_params_in_term(t, subst);
         }
         chc::Term::Mut(t1, t2) => {

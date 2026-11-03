@@ -19,6 +19,8 @@ pub enum DeclaredSymbol {
     Sort(chc::Sort),
     /// A constructor of an enum's datatype, of the sort it is in.
     Ctor(chc::DatatypeSort, chc::DatatypeSymbol),
+    /// A selector of a constructor of an enum's datatype.
+    Selector(Box<chc::Selector>),
     /// The constructor of a `Box`, a `Mut` or a tuple.
     BoxCtor,
     MutCtor,
@@ -603,10 +605,20 @@ impl FormatContext {
             ));
             let Some(sort) = sort else {
                 let sort = chc::DatatypeSort::new(d.symbol.clone(), Vec::new());
-                symbols.extend(d.ctors.iter().map(|c| {
+                for c in &d.ctors {
                     let meaning = DeclaredSymbol::Ctor(sort.clone(), c.symbol.clone());
-                    (c.symbol.to_string(), meaning)
-                }));
+                    symbols.push((c.symbol.to_string(), meaning));
+                    for (index, selector) in c.selectors.iter().enumerate() {
+                        let sel = chc::Selector {
+                            sort: sort.clone(),
+                            ctor: c.symbol.clone(),
+                            index,
+                            field: selector.sort.clone(),
+                        };
+                        let meaning = DeclaredSymbol::Selector(Box::new(sel));
+                        symbols.push((selector.symbol.to_string(), meaning));
+                    }
+                }
                 continue;
             };
             let Some(ctor) = d.ctors.first() else {

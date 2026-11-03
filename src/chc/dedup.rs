@@ -99,6 +99,7 @@ fn projected_component(proj: &Op, ctor: &Op) -> Option<usize> {
         (Op::TupleProj(i), Op::Tuple) => Some(*i),
         (Op::MutCurrent, Op::Mut) | (Op::BoxCurrent, Op::Box) => Some(0),
         (Op::MutFinal, Op::Mut) => Some(1),
+        (Op::Selector(sel), Op::Ctor(_, ctor)) if sel.ctor == *ctor => Some(sel.index),
         _ => None,
     }
 }
