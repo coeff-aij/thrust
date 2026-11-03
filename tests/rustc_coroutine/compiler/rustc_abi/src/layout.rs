@@ -179,6 +179,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
     /// alignment and the aggregate and `i8` alignments of `dl`. It bounds the size and the
     /// alignment of every order of the fields.
     #[thrust_macros::predicate]
+    #[thrust::opaque]
     pub(crate) fn weighs<
         'a,
         FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
@@ -205,6 +206,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
 
     /// Every order of the fields stays below the object size bound of the data layout.
     #[thrust_macros::predicate]
+    #[thrust::opaque]
     pub(crate) fn fits_in_any_order<
         'a,
         FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
@@ -245,6 +247,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
 
     /// An unsized field is not the tail of a `MaybeUnsized` struct.
     #[thrust_macros::predicate]
+    #[thrust::opaque]
     fn unsized_misplaced<
         'a,
         FieldIdx: Idx + thrust_models::Model,
@@ -263,6 +266,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
 
     /// Some field has a largest niche.
     #[thrust_macros::predicate]
+    #[thrust::opaque]
     fn some_field_niche<
         'a,
         FieldIdx: Idx + thrust_models::Model,
@@ -376,6 +380,14 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
             && ((matches!(niche_bias, NicheBias::End) && Self::some_field_niche::<FieldIdx, VariantIdx, F>(fields)) ==> l.largest_niche != None)))]
     #[thrust_macros::ensures(forall(|l: LayoutData<FieldIdx, VariantIdx>, n: Niche, dl: TargetDataLayout, s: Size|
         result == Ok(l) && l.largest_niche == Some(n) && Cx::dl_of(*self, dl) ==> (Niche::wf_in(n, dl) && (Primitive::size_in(n.value, dl, s) ==> n.offset.raw + s.raw <= l.size.raw))))]
+    #[thrust::reveal(
+        LayoutCalculator::fits_in_any_order,
+        LayoutCalculator::weighs,
+        LayoutCalculator::unsized_misplaced,
+        LayoutCalculator::some_field_niche,
+        super::Primitive::size_in,
+        super::FieldsShape::arbitrary_of
+    )]
     fn univariant_biased<
         'a,
         FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
