@@ -593,23 +593,23 @@ where
         if !field_rtys.iter().any(RefinedType::has_refinement) {
             continue;
         }
-        let mut vars = Vec::new();
-        let mut fields = Vec::new();
+        // `is_C(v) ⇒ refinements(sel_C(v))`: the tester guards the selectors.
+        let sort = chc::DatatypeSort::new(ety.symbol.clone(), ety.arg_sorts());
         let mut payload = chc::Formula::top();
-        for field_rty in &field_rtys {
-            let field = parts.fresh_term(field_rty.ty.to_sort(), &mut vars);
-            fields.push(field.clone());
+        for (index, field_rty) in field_rtys.iter().enumerate() {
+            let field = chc::Term::datatype_selector(
+                sort.clone(),
+                variant.name.clone(),
+                index,
+                field_rty.ty.to_sort(),
+                value.clone(),
+            );
             let field = refined_formula(field_rty, field, param_terms, parts, enclosing);
             payload = conj(payload, field);
         }
-        let ctor =
-            chc::Term::datatype_ctor(ety.symbol.clone(), ety.arg_sorts(), variant.name, fields);
-        let is_variant = chc::Term::datatype_discr(ety.symbol.clone(), value.clone())
-            .equal_to(chc::Term::int(variant.discr));
-        let has_payload = chc::Formula::Atom(value.clone().equal_to(ctor)).and(payload);
-        let stated =
-            chc::Formula::Atom(is_variant).implies(chc::Formula::exists(vars, has_payload));
-        acc = conj(acc, stated);
+        let is_variant =
+            chc::Atom::new(chc::Pred::Tester(variant.name.clone()), vec![value.clone()]);
+        acc = conj(acc, chc::Formula::Atom(is_variant).implies(payload));
     }
     enclosing.pop();
     acc
@@ -3283,6 +3283,13 @@ fn subst_ty_params_in_term<T, V>(term: &mut chc::Term<V>, subst: &TypeParamSubst
         | chc::Term::TupleProj(t, _)
         | chc::Term::DatatypeDiscr(_, t)
         | chc::Term::IntToBitVec { term: t, .. } => {
+            subst_ty_params_in_term(t, subst);
+        }
+        chc::Term::DatatypeSelector(sel, t) => {
+            for arg in sel.sort.args_mut() {
+                subst_ty_params_in_sort(arg, subst);
+            }
+            subst_ty_params_in_sort(&mut sel.field, subst);
             subst_ty_params_in_term(t, subst);
         }
         chc::Term::Mut(t1, t2) => {

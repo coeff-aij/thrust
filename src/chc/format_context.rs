@@ -19,6 +19,8 @@ pub enum DeclaredSymbol {
     Sort(chc::Sort),
     /// A constructor of an enum's datatype, of the sort it is in.
     Ctor(chc::DatatypeSort, chc::DatatypeSymbol),
+    /// A selector of a constructor of an enum's datatype.
+    Selector(Box<chc::Selector>),
     /// The constructor of a `Box`, a `Mut` or a tuple.
     BoxCtor,
     MutCtor,
@@ -99,9 +101,9 @@ fn term_sorts(
                 term_sorts(var_sorts, arg, sorts);
             }
         }
-        chc::Term::DatatypeDiscr(_, t) | chc::Term::IntToBitVec { term: t, .. } => {
-            term_sorts(var_sorts, t, sorts)
-        }
+        chc::Term::DatatypeDiscr(_, t)
+        | chc::Term::DatatypeSelector(.., t)
+        | chc::Term::IntToBitVec { term: t, .. } => term_sorts(var_sorts, t, sorts),
         chc::Term::UserQuantifiedVar(_, _) => {}
         chc::Term::ArrayLambda(_, s, t) => {
             sorts.insert(s.clone());
@@ -603,10 +605,20 @@ impl FormatContext {
             ));
             let Some(sort) = sort else {
                 let sort = chc::DatatypeSort::new(d.symbol.clone(), Vec::new());
-                symbols.extend(d.ctors.iter().map(|c| {
+                for c in &d.ctors {
                     let meaning = DeclaredSymbol::Ctor(sort.clone(), c.symbol.clone());
-                    (c.symbol.to_string(), meaning)
-                }));
+                    symbols.push((c.symbol.to_string(), meaning));
+                    for (index, selector) in c.selectors.iter().enumerate() {
+                        let sel = chc::Selector {
+                            sort: sort.clone(),
+                            ctor: c.symbol.clone(),
+                            index,
+                            field: selector.sort.clone(),
+                        };
+                        let meaning = DeclaredSymbol::Selector(Box::new(sel));
+                        symbols.push((selector.symbol.to_string(), meaning));
+                    }
+                }
                 continue;
             };
             let Some(ctor) = d.ctors.first() else {
@@ -689,6 +701,18 @@ impl FormatContext {
     ) -> impl std::fmt::Display {
         let ss = SortSymbols::new(&sort.args);
         format!("{}{}", ctor_sym, ss)
+    }
+
+    /// The selector of the `index`-th field of the constructor `ctor_sym`, as the datatype's
+    /// declaration names it.
+    pub fn datatype_selector(
+        &self,
+        sort: &chc::DatatypeSort,
+        ctor_sym: &chc::DatatypeSymbol,
+        index: usize,
+    ) -> impl std::fmt::Display {
+        let ss = SortSymbols::new(&sort.args);
+        format!("_get{}.{}{}", ctor_sym, index, ss)
     }
 
     pub fn datatype_discr(&self, sort: &chc::DatatypeSort) -> impl std::fmt::Display {

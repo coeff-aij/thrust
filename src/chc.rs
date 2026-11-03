@@ -763,6 +763,9 @@ pub enum Term<V = TermVarIdx> {
     TupleProj(Box<Term<V>>, usize),
     DatatypeCtor(DatatypeSort, DatatypeSymbol, Vec<Term<V>>),
     DatatypeDiscr(DatatypeSymbol, Box<Term<V>>),
+    /// The `index`-th field (of sort `Sort`) of a value of the datatype built by the constructor
+    /// (SMT-LIB's selector); a formula reads it under the constructor's tester.
+    DatatypeSelector(Box<Selector>, Box<Term<V>>),
     /// A call to a function defined by a [`UserDefinedPredDef`] with a term body, and its result
     /// sort.
     UserDefinedFn(UserDefinedPred, Sort, Vec<Term<V>>),
@@ -864,6 +867,12 @@ where
             Term::DatatypeDiscr(_, t) => allocator
                 .text("discriminant")
                 .append(t.pretty(allocator).parens()),
+            Term::DatatypeSelector(sel, t) => sel
+                .ctor
+                .pretty(allocator)
+                .append(allocator.text(format!(".{}", sel.index)))
+                .append(t.pretty(allocator).parens()),
+
             Term::UserDefinedFn(symbol, _, args) => {
                 let separator = allocator.text(",").append(allocator.line());
                 let args = allocator
@@ -886,6 +895,56 @@ where
     }
 }
 
+/// The `index`-th field, of sort `field`, of the constructor `ctor` of the datatype `sort`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Selector {
+    pub sort: DatatypeSort,
+    pub ctor: DatatypeSymbol,
+    pub index: usize,
+    pub field: Sort,
+}
+
+/// The value `t`, the datatype and the constructor `C` of a conjunct `t = C(vars)` (or
+/// `C(vars) = t`) with `C` applied to exactly the variables `vars` in their order, and `t` free
+/// of them; `vars` are then the fields of `t` (see [`Formula::exists_over_payload`]).
+fn payload_equality<V: Clone>(
+    formula: &Formula<V>,
+    vars: &[(UserQuantifiedVarId, Sort)],
+) -> Option<(Term<V>, DatatypeSort, DatatypeSymbol)> {
+    let Formula::Atom(atom) = formula else {
+        return None;
+    };
+    if atom.guard.is_some() || atom.pred != Pred::Known(KnownPred::EQUAL) || atom.args.len() != 2 {
+        return None;
+    }
+    let bound: HashSet<UserQuantifiedVarId> = vars.iter().map(|(v, _)| *v).collect();
+    let names_bound = |t: &Term<V>| {
+        t.preorder()
+            .into_iter()
+            .any(|s| matches!(s, Term::UserQuantifiedVar(_, v) if bound.contains(v)))
+    };
+    let fields_are_vars = |t: &Term<V>| match t {
+        Term::DatatypeCtor(sort, ctor, args)
+            if args.len() == vars.len()
+                && args
+                    .iter()
+                    .zip(vars)
+                    .all(|(a, (v, _))| matches!(a, Term::UserQuantifiedVar(_, w) if w == v)) =>
+        {
+            Some((sort.clone(), ctor.clone()))
+        }
+        _ => None,
+    };
+    let (a, b) = (&atom.args[0], &atom.args[1]);
+    if let Some((sort, ctor)) = fields_are_vars(b).filter(|_| !names_bound(a)) {
+        return Some((a.clone(), sort, ctor));
+    }
+    if let Some((sort, ctor)) = fields_are_vars(a).filter(|_| !names_bound(b)) {
+        return Some((b.clone(), sort, ctor));
+    }
+    None
+}
+
 /// The user-defined predicates and functions a rewrite replaces, by the symbol replacing each.
 pub type UserDefinedRenaming = HashMap<UserDefinedPred, UserDefinedPred>;
 
@@ -906,6 +965,7 @@ impl<V> Term<V> {
             | Term::MutFinal(t)
             | Term::TupleProj(t, _)
             | Term::DatatypeDiscr(_, t)
+            | Term::DatatypeSelector(.., t)
             | Term::ArrayLambda(_, _, t)
             | Term::IntToBitVec { term: t, .. } => t.rename_user_defined(renaming),
             Term::Mut(t1, t2) => {
@@ -1003,6 +1063,8 @@ impl<V> Term<V> {
                 args.into_iter().map(|t| t.subst_var(&mut f)).collect(),
             ),
             Term::DatatypeDiscr(d_sym, t) => Term::DatatypeDiscr(d_sym, Box::new(t.subst_var(f))),
+            Term::DatatypeSelector(sel, t) => Term::DatatypeSelector(sel, Box::new(t.subst_var(f))),
+
             Term::UserDefinedFn(symbol, sort, args) => Term::UserDefinedFn(
                 symbol,
                 sort,
@@ -1066,6 +1128,8 @@ impl<V> Term<V> {
             Term::TupleProj(t, i) => t.sort(var_sort).tuple_elem(*i),
             Term::DatatypeCtor(sort, _, _) => sort.clone().into(),
             Term::DatatypeDiscr(_, _) => Sort::int(),
+            Term::DatatypeSelector(sel, _) => sel.field.clone(),
+
             Term::UserDefinedFn(_, sort, _) => sort.clone(),
             Term::ForallFn(pred, _) => pred.result.clone(),
             Term::IntToBitVec { width, .. } => Sort::bit_vec(*width),
@@ -1094,7 +1158,9 @@ impl<V> Term<V> {
             Term::Tuple(ts) => Box::new(ts.iter().flat_map(|t| t.fv_impl())),
             Term::TupleProj(t, _) => t.fv_impl(),
             Term::DatatypeCtor(_, _, args) => Box::new(args.iter().flat_map(|t| t.fv_impl())),
-            Term::DatatypeDiscr(_, t) | Term::IntToBitVec { term: t, .. } => t.fv_impl(),
+            Term::DatatypeDiscr(_, t)
+            | Term::DatatypeSelector(.., t)
+            | Term::IntToBitVec { term: t, .. } => t.fv_impl(),
             Term::UserDefinedFn(_, _, args) | Term::ForallFn(_, args) => {
                 Box::new(args.iter().flat_map(|t| t.fv_impl()))
             }
@@ -1110,6 +1176,7 @@ impl<V> Term<V> {
             | Term::MutFinal(t)
             | Term::TupleProj(t, _)
             | Term::DatatypeDiscr(_, t)
+            | Term::DatatypeSelector(.., t)
             | Term::ArrayLambda(_, _, t)
             | Term::IntToBitVec { term: t, .. } => vec![&**t],
             Term::Mut(t1, t2) => vec![&**t1, &**t2],
@@ -1503,6 +1570,23 @@ impl<V> Term<V> {
             width,
             term: Box::new(self),
         }
+    }
+
+    /// The `index`-th field, of sort `field`, of `t` built by the constructor `ctor` of `sort`.
+    pub fn datatype_selector(
+        sort: DatatypeSort,
+        ctor: DatatypeSymbol,
+        index: usize,
+        field: Sort,
+        t: Term<V>,
+    ) -> Self {
+        let sel = Selector {
+            sort,
+            ctor,
+            index,
+            field,
+        };
+        Term::DatatypeSelector(Box::new(sel), Box::new(t))
     }
 
     pub fn datatype_discr(d_sym: DatatypeSymbol, t: Term<V>) -> Self {
@@ -2435,6 +2519,62 @@ impl<V> Formula<V> {
 
     pub fn exists(vars: Vec<(UserQuantifiedVarId, Sort)>, body: Self) -> Self {
         Formula::Exists(vars, Box::new(body))
+    }
+
+    /// `∃vars. body`, written without the quantifier when a conjunct of `body` is `t = C(vars)`
+    /// with `C` applied to exactly the variables `vars`, in order, and `t` free of them: the
+    /// equality determines each variable as a selector of `t`, so the formula is
+    /// `is_C(t) ∧ body'`, `body'` the other conjuncts with each variable replaced by its
+    /// selector. Otherwise the existential as written.
+    pub fn exists_over_payload(vars: Vec<(UserQuantifiedVarId, Sort)>, body: Self) -> Self
+    where
+        V: Clone,
+    {
+        fn flatten<V>(f: Formula<V>, out: &mut Vec<Formula<V>>) {
+            match f {
+                Formula::And(fs) => fs.into_iter().for_each(|f| flatten(f, out)),
+                f => out.push(f),
+            }
+        }
+        let mut conjuncts = Vec::new();
+        flatten(body, &mut conjuncts);
+        let Some(pos) = conjuncts
+            .iter()
+            .position(|f| payload_equality(f, &vars).is_some())
+        else {
+            return Formula::exists(vars, Formula::And(conjuncts));
+        };
+        let (value, sort, ctor) = payload_equality(&conjuncts[pos], &vars).unwrap();
+        let selectors: HashMap<UserQuantifiedVarId, Term<V>> = vars
+            .iter()
+            .enumerate()
+            .map(|(index, (var, field))| {
+                let selector = Term::datatype_selector(
+                    sort.clone(),
+                    ctor.clone(),
+                    index,
+                    field.clone(),
+                    value.clone(),
+                );
+                (*var, selector)
+            })
+            .collect();
+        let tester = Atom::new(Pred::Tester(ctor), vec![value]);
+        let rest = conjuncts
+            .into_iter()
+            .enumerate()
+            .filter(|(i, _)| *i != pos)
+            .map(|(_, f)| {
+                candidate_atoms::map_formula_terms(f, &mut |t| match t {
+                    Term::UserQuantifiedVar(_, var) if selectors.contains_key(&var) => {
+                        selectors[&var].clone()
+                    }
+                    t => t,
+                })
+            });
+        std::iter::once(Formula::Atom(tester))
+            .chain(rest)
+            .fold(Formula::top(), Formula::and)
     }
 
     pub fn forall(vars: Vec<(UserQuantifiedVarId, Sort)>, body: Self) -> Self {
@@ -4398,9 +4538,9 @@ fn collect_forall_defaults(term: &Term<TermVarIdx>, used: &mut HashSet<ForallSor
                 collect_forall_defaults(t, used);
             }
         }
-        Term::DatatypeDiscr(_, t) | Term::IntToBitVec { term: t, .. } => {
-            collect_forall_defaults(t, used)
-        }
+        Term::DatatypeDiscr(_, t)
+        | Term::DatatypeSelector(.., t)
+        | Term::IntToBitVec { term: t, .. } => collect_forall_defaults(t, used),
         Term::UserDefinedFn(_, _, args) | Term::ForallFn(_, args) => {
             for t in args {
                 collect_forall_defaults(t, used);
