@@ -161,7 +161,8 @@ impl TargetDataLayout {
     // What `pointer_size_in` and `pointer_align_in` require of the address space `c`: it is the
     // default one or has an entry in `address_space_info`.
     #[thrust_macros::predicate]
-    fn pointer_space_ok(self, c: AddressSpace) -> bool {
+    #[thrust::opaque]
+    pub(crate) fn pointer_space_ok(self, c: AddressSpace) -> bool {
         c == self.default_address_space
             || exists(|s: Seq<(AddressSpace, PointerSpec)>, i: Int|
                 s == self.address_space_info && 0 <= i && i < s.len() && s[i].0 == c)
@@ -170,7 +171,8 @@ impl TargetDataLayout {
     // `n` is the pointer size of the address space `c`: the default one's, or that of the first
     // entry of `address_space_info` for `c`.
     #[thrust_macros::predicate]
-    fn pointer_size_is(self, c: AddressSpace, n: Size) -> bool {
+    #[thrust::opaque]
+    pub(crate) fn pointer_size_is(self, c: AddressSpace, n: Size) -> bool {
         (c == self.default_address_space && n == self.default_address_space_pointer_spec.pointer_size)
             || (!(c == self.default_address_space)
                 && exists(|s: Seq<(AddressSpace, PointerSpec)>, i: Int|
@@ -204,6 +206,7 @@ impl TargetDataLayout {
     #[inline]
     #[thrust_macros::requires(Self::pointer_space_ok(*self, c))]
     #[thrust_macros::ensures(Self::pointer_size_is(*self, c, result))]
+    #[thrust::reveal(TargetDataLayout::pointer_space_ok, TargetDataLayout::pointer_size_is)]
     pub fn pointer_size_in(&self, c: AddressSpace) -> Size {
         if c == self.default_address_space {
             return self.default_address_space_pointer_spec.pointer_size;
@@ -226,6 +229,7 @@ impl TargetDataLayout {
     #[inline]
     #[thrust_macros::requires(Self::pointer_space_ok(*self, c))]
     #[thrust_macros::ensures(true)]
+    #[thrust::reveal(TargetDataLayout::pointer_space_ok)]
     pub fn pointer_align_in(&self, c: AddressSpace) -> AbiAlign {
         AbiAlign::new(if c == self.default_address_space {
             self.default_address_space_pointer_spec.pointer_align
