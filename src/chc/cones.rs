@@ -15,9 +15,12 @@
 //!   the clause derives `p` and `q` and is a goal too;
 //! - `body ⇒ ∃y. t = C(y) ∧ p(x, y)`, with `C` a constructor applied to exactly the variables
 //!   `y`, each once, and `t` free of them (an enum's payload, as Thrust states the refinements
-//!   inside an enum and as a contract writes `exists(|i| opt == Some(i) && ..)`), which is the
-//!   goal `body ⇒ ∃y. t = C(y)` and `body ∧ t = C(y) ⇒ p(x, y)`: a constructor is injective, so
-//!   `y` is the one payload of `t` (and dually a premise `∀y. t = C(y) ⇒ p(x, y)`);
+//!   inside an enum and as a contract writes `exists(|i| opt == Some(i) && ..)`). The clause is
+//!   not Horn as written. The equality determines every variable of `y` as a selector of `t`
+//!   (`y_i = sel_C_i(t)`), so the `∃` is that witness: the clause is `body ⇒ is_C(t)` and
+//!   `body ⇒ p(x, sel_C(t))`, which is `body ∧ t = C(y) ⇒ p(x, y)` with `y` variables of the
+//!   clause (dually a premise `∀y. t = C(y) ⇒ p(x, y)`). An equality that leaves a variable of
+//!   `y` undetermined (`C` applied to fewer, to one twice, or `t` naming one) is refused;
 //! - a premise in which an unknown occurs only positively, under `∧`, `∨`, `∃` or `∀`, which keeps
 //!   the body monotone in it.
 //!
@@ -356,8 +359,9 @@ impl<'a> Definitions<'a> {
 /// Whether `∃vars. f` read in a head position (`in_head`), or `∀vars. f` read in a body
 /// position, binds `vars` as the fields of a constructor: `f` is `t = C(vars) ∧ ..` in a head
 /// position or `t = C(vars) ⇒ ..` in a body position, `C` applied to exactly the variables
-/// `vars`, each once, and `t` free of them. Then `∃vars. t = C(vars) ∧ r` is `t` is a `C` and
-/// `∀vars. t = C(vars) ⇒ r`: a constructor is injective, so `vars` are the one payload of `t`.
+/// `vars`, each once, and `t` free of them. The equality then determines each variable as a
+/// selector of `t` (`y_i = sel_C_i(t)`), and `∃vars. t = C(vars) ∧ r` is `is_C(t)` and
+/// `r[sel_C(t)/vars]`, a definite head.
 fn binds_constructor_fields(
     vars: &[(UserQuantifiedVarId, Sort)],
     f: &Formula,
@@ -584,11 +588,11 @@ mod tests {
     }
 
     /// `⊥ ⇐ ¬∃y. t = Some(ys) ∧ p(y)`, with `ys` the payload `args` gives `Some` and `t` the
-    /// value `t` gives, and `p(0) ⇐ ⊤`.
+    /// value `t` gives, and the goal `⊥ ⇐ p(0)`.
     fn payload_head(
         args: impl Fn(&Term) -> Vec<Term>,
         t: impl Fn(&Term) -> Term,
-    ) -> (System, [ClauseId; 2]) {
+    ) -> (System, PredVarId, [ClauseId; 2]) {
         let mut system = System::default();
         let p = system.new_pred_var(vec![Sort::int()], DebugInfo::default());
         let y = system.new_user_quantified_var();
@@ -608,12 +612,12 @@ mod tests {
             .unwrap();
         let c1 = system
             .push_clause(clause(
-                Atom::new(p.into(), vec![Term::int(0)]),
-                vec![],
+                Atom::bottom(),
+                vec![Atom::new(p.into(), vec![Term::int(0)])],
                 Formula::top(),
             ))
             .unwrap();
-        (system, [c0, c1])
+        (system, p, [c0, c1])
     }
 
     fn free_value(_: &Term) -> Term {
@@ -627,19 +631,20 @@ mod tests {
 
     #[test]
     fn an_existential_over_a_payload_is_a_definite_head() {
-        let (system, [c0, _]) = payload_head(|y| vec![y.clone()], free_value);
-        assert_eq!(system.goal_cones().unwrap(), vec![vec![c0]]);
+        let (system, p, [c0, c1]) = payload_head(|y| vec![y.clone()], free_value);
+        assert_eq!(system.goal_cones().unwrap(), vec![vec![c0], vec![c0, c1]]);
+        assert_eq!(system.deriving_clauses()[&p], HashSet::from([c0]));
     }
 
     #[test]
     fn an_existential_over_part_of_a_payload_is_no_horn_clause() {
-        let (system, [c0, _]) = payload_head(|y| vec![y.clone(), Term::int(1)], free_value);
+        let (system, _, [c0, _]) = payload_head(|y| vec![y.clone(), Term::int(1)], free_value);
         assert_eq!(system.goal_cones(), Err(NotHorn::Clause(c0)));
     }
 
     #[test]
     fn an_existential_over_a_payload_the_value_names_is_no_horn_clause() {
-        let (system, [c0, _]) = payload_head(|y| vec![y.clone()], |y| y.clone());
+        let (system, _, [c0, _]) = payload_head(|y| vec![y.clone()], |y| y.clone());
         assert_eq!(system.goal_cones(), Err(NotHorn::Clause(c0)));
     }
 
