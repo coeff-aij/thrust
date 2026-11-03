@@ -2,7 +2,7 @@ use crate::thrust_models;
 use std::cmp;
 use std::ops::Deref;
 
-use thrust_models::model::{Int, Seq};
+use thrust_models::model::{BitVec, Int, Seq};
 use thrust_models::{exists, forall};
 
 use crate::rustc_abi::{
@@ -51,7 +51,26 @@ pub struct LayoutCalculator<Cx> {
     pub cx: Cx,
 }
 
-pub(crate) use crate::rustc_abi::pow2;
+/// `2^q`, the bytes of `Align { pow2: q }`, below 64; 0 from 64 on, where the alignment has no
+/// 64-bit size (`Align::MAX` is `2^29`). An `Int`, as `sum_first` is: at `u64` its result would
+/// be checked below `2^64` for every `q`.
+#[thrust_macros::logic]
+#[thrust_macros::variant(q)]
+pub(crate) fn pow2(q: u64) -> Int {
+    if q <= 0 { 1 } else if q >= 64 { 0 } else { pow2(q - 1) * 2 }
+}
+
+/// `1 << q` on 64-bit words, which `Align::bytes` and `Size::align_to` state, is `2^q` below 64,
+/// by induction over `q`.
+#[thrust_macros::lemma]
+#[thrust_macros::variant(q)]
+#[thrust_macros::ensures(q < 64 ==> pow2(q)
+    == (BitVec::<64, false>::from_int(1) << (BitVec::from_int(q) & BitVec::from_int(63))).to_int())]
+pub(crate) fn shl_is_pow2(q: u64) {
+    if q > 0 {
+        shl_is_pow2(q - 1);
+    }
+}
 
 /// The sum of the first `k` entries of `ts`. A sum, it is an `Int` over `Int`s, as `ones` is: at
 /// `u64` its result would be checked `>= 0` without the facts of the sequence's elements, which
