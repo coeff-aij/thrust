@@ -1,12 +1,14 @@
-//@error-in-other-file: Unsat
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@no-rustfix
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 THRUST_TRY_SPECS=1
-//@rustc-env: THRUST_VERIFY_ONLY=rustc_hashes,rustc_abi
+//@rustc-env: THRUST_VERIFY_ONLY=rustc_abi
+//@rustc-env: THRUST_SPLIT=1 THRUST_SPLIT_GOALS=1
 // Stage 1 of the rustc-coroutine verification target: the value types of rustc_abi's lib.rs
-// (Size/Align/Integer/Float/Primitive/Scalar/Niche/TargetDataLayout) and rustc_hashes.
+// (Size/Align/Integer/Float/Primitive/Scalar/Niche/TargetDataLayout); rustc_hashes is the
+// `hashes.rs` root's.
 // The code is the module tree under tests/rustc_coroutine/; this file selects the stage and
 // drives it.
+// Each goal is solved with the clauses it depends on (`THRUST_SPLIT_GOALS`).
 #![feature(new_range_api)]
 
 #[path = "../../../rustc_coroutine/compiler/rustc_hashes/src/lib.rs"]
@@ -21,7 +23,7 @@ pub mod case_study;
 use rustc_abi::*;
 
 #[thrust::reveal(rustc_abi::TargetDataLayout::pointer_space_ok, rustc_abi::TargetDataLayout::pointer_size_is)]
-fn main() {
+fn main() { //~ ERROR: Unsat
     // `Align::ONE` / `Align::EIGHT` / `Size::ZERO` are spelled out as struct
     // literals: reading an associated constant of a newtype ADT makes Thrust
     // panic with "not implemented: const: Scalar(0x03), ty: Align"

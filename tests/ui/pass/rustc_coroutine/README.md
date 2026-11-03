@@ -7,13 +7,20 @@ crate of three modules), with the case study's own code (the iterator adapters o
 `Model` declarations, std specifications, lemmas) under
 `tests/rustc_coroutine/thrust/`. The goal is a proof that `layout()` does not panic.
 
-Each file below is a crate root that includes the whole tree and selects one stage with a
-`//@rustc-env: THRUST_VERIFY_ONLY=..` header; functions outside the selection that have a contract
-are trusted.
-The root also holds the stage's driver (`main` and the stubs of rewrites.md S5).
+Each file below is a crate root that includes the whole tree and selects one part of rustc's code
+with a `//@rustc-env: THRUST_VERIFY_ONLY=..` header: a module (`rustc_hashes`, the functions of
+`rustc_abi`'s lib.rs, all of `rustc_index`), or one large function with the helpers a rewrite added
+for it. Each rustc function is selected by one root; functions outside the selection that have a
+contract are trusted. A function without a contract is checked only where a caller the analysis
+reaches calls it; the roots that select a part of rustc's code and are not drafts split by goal
+(`indexvec_int_range.rs`, a check of an option, does not), so
+`THRUST_REPORT=functions` lists one that no such caller reaches as checked in no part.
+The root also holds its driver (`main` and the stubs of rewrites.md S5); the root's own test
+functions with a contract are selected with `crate`.
 `tests/ui/fail/rustc_coroutine/<file>.rs` is its fail twin where one exists; it is the pass root
 with the driver broken, regenerated and checked by `tests/rustc_coroutine/fail/check.sh`.
-`eligibility.rs` has no driver, and its function is private to its module. Its twin checks only
+`hashes.rs` and `eligibility.rs` have no driver, and `eligibility.rs`'s function is private to
+its module; `hashes.rs` has no fail twin. Its twin checks only
 `set_assignment`, under `--cfg thrust_eligibility_fail`, which adds a contract the helper's
 write refutes. It does not check the stage's own function, whose parts take about seven minutes.
 `LocalIdx: Model<Ty: PartialEq>` on the stage function and on `make_ineligible` is a verification
@@ -21,11 +28,10 @@ bound on a type parameter, not a change to rustc's code: the proved `DenseBitSet
 
 | file | selection | state |
 | --- | --- | --- |
-| `values.rs` | `rustc_hashes`, `rustc_abi` (lib.rs) | verified; `main` reveals `TargetDataLayout::pointer_space_ok` and `pointer_size_is`, which it reads (#132) |
-| `idx.rs` | `rustc_index::idx`, the own iterators `WordIter`, `SliceIter`, `IterEnumerated` | verified |
-| `indexvec.rs` | `rustc_index::vec`, `rustc_index::slice`, the client `filled` | verified |
-| `indexvec_int_range.rs` | as `indexvec.rs`, under `THRUST_INT_RANGE=conversions` | verified; checks that the tree type-checks with the option |
-| `bitset.rs` | `rustc_index::bit_set` | verified |
+| `hashes.rs` | `rustc_hashes` | verified, each goal on its own (`THRUST_SPLIT_GOALS`); no analyzed code calls `Hash64::new` and `as_u64`, so their bodies are checked in no part |
+| `values.rs` | `rustc_abi` (lib.rs) | verified, each goal on its own; `main` reveals `TargetDataLayout::pointer_space_ok` and `pointer_size_is`, which it reads (#132) |
+| `index.rs` | `rustc_index::**` (`Idx`, `IndexVec`, `IndexSlice`, the bit sets, the own iterators `IdxRange`, `WordIter`, `SliceIter`, `IterEnumerated`), and `crate`: the clients `filled`, `two_members` and `column_bound` | verified, each goal on its own |
+| `indexvec_int_range.rs` | `rustc_index::vec`, `rustc_index::slice`, `filled`, under `THRUST_INT_RANGE=conversions` | verified; a check of the option, not a run of the case study: with it `count_ones` of bit_set.rs has no specification of `sum` |
 | `simple.rs` | `rustc_abi::layout::simple` | draft, `ignore-on-host` |
 | `univariant.rs` | `LayoutCalculator::univariant`, `univariant_biased` trusted on its contract | verified, one part per goal (`THRUST_SPLIT_GOALS`), with the predicates its contracts pass on unchanged `#[thrust::opaque]`: `fits_in_any_order`, `weighs`, `unsized_misplaced`, `some_field_niche` (layout.rs), `Primitive::size_in`, `FieldsShape::arbitrary_of`, `TargetDataLayout::pointer_space_ok`, `TargetDataLayout::pointer_size_is` (lib.rs); `univariant_biased`, `Primitive::size`, `layout()`, `pointer_size_in` and `pointer_align_in` reveal those they read (#132) |
 | `univariant_biased.rs` | `LayoutCalculator::univariant_biased` | draft, `ignore-on-host`: its query (58.7 MB) is killed for memory with 16 GB (#133) |
