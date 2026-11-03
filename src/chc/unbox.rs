@@ -26,6 +26,14 @@ fn unbox_term<V>(term: Term<V>) -> Term<V> {
             args.into_iter().map(unbox_term).collect(),
         ),
         Term::DatatypeDiscr(sym, arg) => Term::DatatypeDiscr(sym, Box::new(unbox_term(*arg))),
+        Term::DatatypeSelector(sel, arg) => {
+            let sel = Selector {
+                sort: unbox_datatype_sort(sel.sort),
+                field: unbox_sort(sel.field),
+                ..*sel
+            };
+            Term::DatatypeSelector(Box::new(sel), Box::new(unbox_term(*arg)))
+        }
         Term::UserDefinedFn(symbol, sort, args) => Term::UserDefinedFn(
             symbol,
             unbox_sort(sort),

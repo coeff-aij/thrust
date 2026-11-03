@@ -99,9 +99,9 @@ fn term_sorts(
                 term_sorts(var_sorts, arg, sorts);
             }
         }
-        chc::Term::DatatypeDiscr(_, t) | chc::Term::IntToBitVec { term: t, .. } => {
-            term_sorts(var_sorts, t, sorts)
-        }
+        chc::Term::DatatypeDiscr(_, t)
+        | chc::Term::DatatypeSelector(.., t)
+        | chc::Term::IntToBitVec { term: t, .. } => term_sorts(var_sorts, t, sorts),
         chc::Term::UserQuantifiedVar(_, _) => {}
         chc::Term::ArrayLambda(_, s, t) => {
             sorts.insert(s.clone());
@@ -689,6 +689,18 @@ impl FormatContext {
     ) -> impl std::fmt::Display {
         let ss = SortSymbols::new(&sort.args);
         format!("{}{}", ctor_sym, ss)
+    }
+
+    /// The selector of the `index`-th field of the constructor `ctor_sym`, as the datatype's
+    /// declaration names it.
+    pub fn datatype_selector(
+        &self,
+        sort: &chc::DatatypeSort,
+        ctor_sym: &chc::DatatypeSymbol,
+        index: usize,
+    ) -> impl std::fmt::Display {
+        let ss = SortSymbols::new(&sort.args);
+        format!("_get{}.{}{}", ctor_sym, index, ss)
     }
 
     pub fn datatype_discr(&self, sort: &chc::DatatypeSort) -> impl std::fmt::Display {
