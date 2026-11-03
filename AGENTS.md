@@ -25,6 +25,14 @@ general: it states the function's behaviour faithfully and serves every call sit
 A weaker contract that only one proof needs goes in that test's own file, as an extern-spec
 wrapper or a local trusted helper, not in `std.rs`.
 
+## Names
+
+A name a change adds or renames (an option or environment variable, an attribute, a module, a
+type, a function, a variable) says what the thing is for to its user or caller, so that a reader
+can tell without reading the implementation; the technique it uses belongs in its doc comment.
+Names nearby that the change adds follow the same choice. Existing names are renamed only in a
+change of their own.
+
 ## Comments
 
 Fewer comments are better. A code comment means the code itself isn't self-explanatory
