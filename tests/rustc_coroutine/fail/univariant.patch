@@ -19,8 +19,8 @@
  // Each goal is solved with the clauses it depends on (`THRUST_SPLIT_GOALS`). The predicates the
  // contracts pass on unchanged are `#[thrust::opaque]`, so the solver reads them through the
  // contracts instead of unfolding them; `layout_pre` and `dl_of` keep their definitions.
-@@ -26,15 +27,15 @@
- use rustc_abi::{HasDataLayout, LayoutCalculator, LayoutData, ReprOptions, StructKind};
+@@ -26,16 +27,16 @@
+ use rustc_abi::{Align, HasDataLayout, LayoutCalculator, LayoutData, ReprOptions, StructKind};
  use rustc_index::{Idx, IndexSlice};
  
 -// A caller of `univariant` that establishes its precondition, the size bound included.
@@ -30,6 +30,7 @@
  #[thrust_macros::requires(
      LayoutCalculator::<Cx>::layout_pre::<FieldIdx, VariantIdx, F>(*calc, fields, kind)
          && LayoutCalculator::<Cx>::fits_in_any_order::<FieldIdx, VariantIdx, F>(*calc, fields, repr, kind)
+         && thrust_models::forall(|ra: Align| (*repr).align == Some(ra) ==> ra.pow2 <= 29)
 -        && LayoutCalculator::<Cx>::deref_functional::<FieldIdx, VariantIdx, F>()
  )]
  #[thrust_macros::ensures(true)]

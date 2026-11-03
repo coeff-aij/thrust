@@ -51,12 +51,7 @@ pub struct LayoutCalculator<Cx> {
     pub cx: Cx,
 }
 
-/// `2^q`, the bytes of `Align { pow2: q }`.
-#[thrust_macros::logic]
-#[thrust_macros::variant(q)]
-fn pow2(q: u64) -> u64 {
-    if q <= 0 { 1 } else { pow2(q - 1) * 2 }
-}
+pub(crate) use crate::rustc_abi::pow2;
 
 /// The sum of the first `k` entries of `ts`. A sum, it is an `Int` over `Int`s, as `ones` is: at
 /// `u64` its result would be checked `>= 0` without the facts of the sequence's elements, which
@@ -79,7 +74,14 @@ fn sum_first(ts: Seq<Int>, k: USize) -> Int {
 // field, which rustc's layouts satisfy and the sort key's subtractions and the niche of the
 // result rely on; and `Scalar::wf_in` of every field whose `backend_repr` is a scalar, which
 // `scalar_pair` requires of the two scalars it pairs. Like `niche_wf`, the last is an invariant of
-// the layouts rustc computes, not a check of the caller's.
+// the layouts rustc computes, not a check of the caller's. So are the bounds the offset
+// arithmetic needs: every alignment at most `Align::MAX` (the data layout's aggregate and `i8`
+// alignments, the prefix's and each field's, and, as a `requires` of its own, the `repr`
+// alignment), under which `align_to` bounds its result, and the prefix's and each field's size
+// below the object size bound. With them the
+// offsets stay below the bound plus one alignment, and `niche.offset += offset` does not overflow,
+// the niche's offset being within its field (`Primitive::size_in` gives every primitive a size,
+// `size_in_total`).
 //
 // `univariant_biased` ensures, besides `arbitrary_of`: it fails only with `UnexpectedUnsized` or
 // `SizeOverflow`; `UnexpectedUnsized` only when an unsized field is not the tail of a
@@ -131,6 +133,17 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                 || dl.default_address_space_pointer_spec.pointer_size.raw == 2
                 || dl.default_address_space_pointer_spec.pointer_size.raw == 4
                 || dl.default_address_space_pointer_spec.pointer_size.raw == 8)
+            && forall(|dl: TargetDataLayout| !Cx::dl_of(self, dl)
+                || (dl.aggregate_align.pow2 <= 29 && dl.i8_align.pow2 <= 29))
+            && forall(|dl: TargetDataLayout, ps: Size, pa: Align|
+                !(Cx::dl_of(self, dl) && kind == StructKind::Prefixed(ps, pa))
+                    || (pa.pow2 <= 29 && ps.raw < super::obj_bound(dl)))
+            && forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>|
+                !(Cx::dl_of(self, dl)
+                    && 0 <= i
+                    && i < (*fields).len()
+                    && thrust_macros::post!(<F as core::ops::Deref>::deref(&(*fields)[i]), d) && **d == l)
+                    || (l.align.abi.pow2 <= 29 && l.size.raw < super::obj_bound(dl)))
             && forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche|
                 !(Cx::dl_of(self, dl)
                     && 0 <= i
@@ -281,6 +294,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
 
     #[thrust_macros::requires(Self::layout_pre::<FieldIdx, VariantIdx, F>(*self, fields, kind))]
     #[thrust_macros::requires(Self::deref_functional::<FieldIdx, VariantIdx, F>())]
+    #[thrust_macros::requires(forall(|ra: Align| (*repr).align == Some(ra) ==> ra.pow2 <= 29))]
     #[thrust_macros::requires(Self::fits_in_any_order::<FieldIdx, VariantIdx, F>(*self, fields, repr, kind))]
     #[thrust_macros::ensures(forall(|l: LayoutData<FieldIdx, VariantIdx>|
         result != Ok(l) || FieldsShape::<FieldIdx>::arbitrary_of(l.fields, (*fields).len())))]
@@ -356,6 +370,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
 
     #[thrust_macros::requires(Self::layout_pre::<FieldIdx, VariantIdx, F>(*self, fields, kind))]
     #[thrust_macros::requires(Self::deref_functional::<FieldIdx, VariantIdx, F>())]
+    #[thrust_macros::requires(forall(|ra: Align| (*repr).align == Some(ra) ==> ra.pow2 <= 29))]
     #[thrust_macros::ensures(forall(|l: LayoutData<FieldIdx, VariantIdx>|
         result != Ok(l) || FieldsShape::<FieldIdx>::arbitrary_of(l.fields, (*fields).len())))]
     #[thrust_macros::ensures(forall(|l: LayoutData<FieldIdx, VariantIdx>, dl: TargetDataLayout, s: USize, q: USize|
