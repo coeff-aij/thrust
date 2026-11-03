@@ -645,6 +645,12 @@ fn set_assignment<VariantIdx: Idx + thrust_models::Model, FieldIdx: Idx + thrust
 )]
 #[thrust_macros::ensures(true)]
 #[thrust_macros::context]
+#[thrust::reveal(
+    super::LayoutCalculator::fits_in_any_order,
+    super::LayoutCalculator::weighs,
+    super::super::Primitive::size_in,
+    super::super::FieldsShape::arbitrary_of
+)]
 pub fn layout<
     'a,
     F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + thrust_models::Model,
