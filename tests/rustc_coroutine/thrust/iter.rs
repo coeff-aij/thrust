@@ -100,7 +100,6 @@ where
     #[thrust_macros::lemma]
     pub fn yields_entries_of<L: Idx + thrust_models::Model>(it: &Self, l: &crate::rustc_index::IndexSlice<L, B>) {}
 
-
     // `produces_at` of the joined witnesses: the input items concatenated and the closure states
     // joined at their shared state.
     #[thrust_macros::ensures(forall(|sab: Seq<<I::Item as thrust_models::Model>::Ty>| forall(|sbc: Seq<<I::Item as thrust_models::Model>::Ty>|
