@@ -162,7 +162,7 @@ impl TargetDataLayout {
     // default one or has an entry in `address_space_info`.
     #[thrust_macros::predicate]
     #[thrust::opaque]
-    fn pointer_space_ok(self, c: AddressSpace) -> bool {
+    pub(crate) fn pointer_space_ok(self, c: AddressSpace) -> bool {
         c == self.default_address_space
             || exists(|s: Seq<(AddressSpace, PointerSpec)>, i: Int|
                 s == self.address_space_info && 0 <= i && i < s.len() && s[i].0 == c)
@@ -172,7 +172,7 @@ impl TargetDataLayout {
     // entry of `address_space_info` for `c`.
     #[thrust_macros::predicate]
     #[thrust::opaque]
-    fn pointer_size_is(self, c: AddressSpace, n: Size) -> bool {
+    pub(crate) fn pointer_size_is(self, c: AddressSpace, n: Size) -> bool {
         (c == self.default_address_space && n == self.default_address_space_pointer_spec.pointer_size)
             || (!(c == self.default_address_space)
                 && exists(|s: Seq<(AddressSpace, PointerSpec)>, i: Int|

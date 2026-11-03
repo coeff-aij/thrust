@@ -19,6 +19,7 @@ pub mod case_study;
 
 use rustc_abi::*;
 
+#[thrust::reveal(rustc_abi::TargetDataLayout::pointer_space_ok, rustc_abi::TargetDataLayout::pointer_size_is)]
 fn main() {
     // `Align::ONE` / `Align::EIGHT` / `Size::ZERO` are spelled out as struct
     // literals: reading an associated constant of a newtype ADT makes Thrust
