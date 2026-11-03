@@ -2299,11 +2299,13 @@ fn _extern_spec_slice_index_mut<T, I>(slice: &mut [T], index: I) -> &mut <I as s
 
 // `sort_by_key` permutes the slice: `p` maps each final position to the current position of the
 // element it now holds, one to one and onto (Creusot's `permutation_of`, by a witness). That the
-// result is sorted by the key is not stated. The key closure is called on the elements.
+// result is sorted by the key is not stated. The key closure is called on the elements, in a state
+// it reaches from `f` (`hist_inv!`), so a precondition on what it captures by `&` holds there.
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(
     thrust_models::forall(|c: thrust_models::model::Closure<F>, i: thrust_models::model::Int|
-        (0 <= i && i < (*slice).len()) ==> thrust_macros::pre!(c(&(*slice)[i])))
+        (thrust_macros::hist_inv!(f, c) && 0 <= i && i < (*slice).len())
+            ==> thrust_macros::pre!(c(&(*slice)[i])))
 )]
 #[thrust_macros::ensures(
     (!slice).len() == (*slice).len()
