@@ -1676,9 +1676,50 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     generic_args,
                     marker,
                     scope: term.source_info.scope,
+                    from_enclosing_loop: false,
                 });
         }
+        self.extend_histories_to_inner_loops(&mut loop_invariants);
         loop_invariants
+    }
+
+    /// Conjoins the history of each `for` loop at the heads of the loops nested in it too. A
+    /// loop head's type holds only its invariant, so without it a written invariant of an inner
+    /// loop, which cannot name the outer loop's ghosts, would leave them arbitrary when the inner
+    /// loop exits. The inner loops do not change them, so the history holds at their heads as it
+    /// does at the outer head.
+    fn extend_histories_to_inner_loops(
+        &self,
+        loop_invariants: &mut HashMap<BasicBlock, Vec<LoopInvariant<'tcx>>>,
+    ) {
+        let histories: Vec<_> = loop_invariants
+            .iter()
+            .flat_map(|(&header, invariants)| {
+                invariants
+                    .iter()
+                    .filter(|invariant| invariant.marker == InvariantMarker::ForLoopHistory)
+                    .map(move |invariant| (header, *invariant))
+            })
+            .collect();
+        let doms = self.body.basic_blocks.dominators();
+        for (outer, history) in histories {
+            for inner in self.body.basic_blocks.indices() {
+                if inner == outer
+                    || !doms.dominates(outer, inner)
+                    || Self::loop_header_of(&self.body, inner) != Some(inner)
+                    || !reaches(&self.body, inner, outer)
+                {
+                    continue;
+                }
+                loop_invariants
+                    .entry(inner)
+                    .or_default()
+                    .push(LoopInvariant {
+                        from_enclosing_loop: true,
+                        ..history
+                    });
+            }
+        }
     }
 
     /// Walks up the dominator tree from the marker block to the innermost
@@ -1738,6 +1779,23 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             }
         }
         found
+    }
+
+    /// Whether every variable the formula of `invariant` names is a parameter of `bty`.
+    fn names_params_of(&self, invariant: &LoopInvariant<'tcx>, bty: &BasicBlockType) -> bool {
+        let formula_fn = self
+            .ctx
+            .formula_fn_with_args(
+                invariant.formula_def_id,
+                invariant.generic_args,
+                self.owner_fn_id,
+            )
+            .expect("invariant formula function is not registered");
+        formula_fn.param_idents().iter().all(|ident| {
+            let name = ident.expect("invariant parameters must be named").name;
+            self.local_in_scope(name, invariant.scope)
+                .is_some_and(|local| bty.param_of_local(local).is_some())
+        })
     }
 
     /// The local the name `name` stands for in `scope`, as Rust's shadowing resolves it.
@@ -2147,12 +2205,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 // instead keeps the template's predicate variable and the
                 // invariants are conjoined to it, so inference fills in what the
                 // annotations leave out.
-                let partial = invariants.iter().any(|invariant| {
-                    matches!(
-                        invariant.marker,
-                        InvariantMarker::Partial | InvariantMarker::ForLoopHistory
-                    )
-                });
+                let mut own = invariants
+                    .iter()
+                    .filter(|invariant| !invariant.from_enclosing_loop)
+                    .peekable();
+                let partial = own.peek().is_none()
+                    || own.any(|invariant| invariant.marker != InvariantMarker::Full);
                 let mut bty = if partial {
                     self.type_builder
                         .for_template(&mut self.ctx)
@@ -2163,6 +2221,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 };
                 let mut inv = rty::Refinement::top();
                 for invariant in invariants {
+                    if invariant.from_enclosing_loop && !self.names_params_of(invariant, &bty) {
+                        continue;
+                    }
                     let one = self.build_invariant_precondition(invariant, &bty);
                     inv.push_conj(one);
                 }
@@ -2777,6 +2838,8 @@ struct LoopInvariant<'tcx> {
     generic_args: mir_ty::GenericArgsRef<'tcx>,
     marker: InvariantMarker,
     scope: mir::SourceScope,
+    /// Conjoined at the head of a loop nested in the one whose marker it is.
+    from_enclosing_loop: bool,
 }
 
 /// A place of a signature where a contract has a type's invariant.
@@ -2948,4 +3011,22 @@ pub(crate) fn spec_param_compared_ty<'tcx>(
         closure_model: ctx.def_ids().closure_model(),
         dyn_model: ctx.def_ids().dyn_model(),
     })
+}
+
+/// Whether a path of `body` leads from block `from` to block `to`.
+fn reaches(body: &Body<'_>, from: BasicBlock, to: BasicBlock) -> bool {
+    let mut stack = vec![from];
+    let mut seen = HashSet::new();
+    while let Some(bb) = stack.pop() {
+        if !seen.insert(bb) {
+            continue;
+        }
+        for succ in body.basic_blocks[bb].terminator().successors() {
+            if succ == to {
+                return true;
+            }
+            stack.push(succ);
+        }
+    }
+    false
 }

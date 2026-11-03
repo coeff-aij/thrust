@@ -1,10 +1,13 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_FOR_LOOP_HISTORY=1
+//@rustc-env: THRUST_PER_INSTANCE_GENERICS=1 THRUST_SOLVER_TIMEOUT_SECS=120
 
 // A `for` loop without a written invariant over a generic iterator: the postcondition names the
 // sequence the iterator produces, so the inferred invariant relates the count to the loop's
-// `produced`, which `#[thrust_macros::context]` keeps as for an annotated loop.
+// `produced`, which `#[thrust_macros::context]` keeps as for an annotated loop with
+// `THRUST_FOR_LOOP_HISTORY=1`. Per instance, since PCSat refutes the fail twin at `0..10` but
+// gives no answer over the abstract `produces` of the generic setting.
 
 use thrust_models::model::{Mut, Seq};
 use thrust_models::Model;

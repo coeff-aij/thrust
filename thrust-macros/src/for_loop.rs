@@ -8,9 +8,10 @@
 //! `produced` the sequence of the items `next` has returned so far, and the invariant is conjoined
 //! with the structural `inv(iter)` and `produces(iter_old, produced, iter)` of `IteratorSpec`.
 //!
-//! A loop with no invariant gets the same ghosts, and `inv(iter)` and
-//! `produces(iter_old, produced, iter)` are conjoined to the invariant Thrust infers, so that the
-//! inferred part can relate the loop's state to `produced`, as Creusot does for every loop.
+//! With `THRUST_FOR_LOOP_HISTORY=1`, a loop with no invariant gets the same ghosts, and
+//! `inv(iter)` and `produces(iter_old, produced, iter)` are conjoined to the invariant Thrust
+//! infers, so that the inferred part can relate the loop's state to `produced`, as Creusot does
+//! for every loop.
 //!
 //! The variables of an annotated loop get names of their own for each loop, and the invariant's
 //! `iter`, `iter_old` and `produced` are renamed to them, so the loop body sees its own variables
@@ -25,13 +26,14 @@ use syn::spanned::Spanned as _;
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 /// The desugaring of `for_loop`, or `None` when its body starts with `invariant!` or
-/// `partial_invariant!` calls none of which has a parameter `iter`, whose type is the iterator's.
-/// Every invariant of that leading run names the loop's ghosts.
+/// `partial_invariant!` calls none of which has a parameter `iter`, whose type is the iterator's,
+/// or with no invariant and `THRUST_FOR_LOOP_HISTORY` is not `1`. Every invariant of that leading
+/// run names the loop's ghosts.
 pub fn desugar(for_loop: &syn::ExprForLoop) -> Option<syn::Expr> {
     let stmts = &for_loop.body.stmts;
     let leading: Vec<_> = stmts.iter().map_while(invariant_params).collect();
     if leading.is_empty() {
-        return Some(desugar_with_inferred_invariant(for_loop));
+        return history_requested().then(|| desugar_with_inferred_invariant(for_loop));
     }
     let (invariants, rest) = stmts.split_at(leading.len());
     let params: Vec<_> = leading.into_iter().flatten().collect();
@@ -172,6 +174,11 @@ fn desugar_with_inferred_invariant(for_loop: &syn::ExprForLoop) -> syn::Expr {
             }
         }
     )
+}
+
+/// Whether a loop with no invariant is to get the ghost history (`THRUST_FOR_LOOP_HISTORY=1`).
+fn history_requested() -> bool {
+    std::env::var("THRUST_FOR_LOOP_HISTORY").is_ok_and(|v| v == "1")
 }
 
 /// The iterator expression of a `for` head. A struct literal is parenthesized there, but not in
