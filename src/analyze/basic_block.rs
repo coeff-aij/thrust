@@ -3380,7 +3380,69 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     }
 }
 
+/// The places of a body, and the places whose discriminant it reads.
+#[derive(Default)]
+struct PlaceCollector<'tcx> {
+    places: Vec<mir::Place<'tcx>>,
+}
+
+impl<'tcx> Visitor<'tcx> for PlaceCollector<'tcx> {
+    fn visit_place(&mut self, place: &mir::Place<'tcx>, _: PlaceContext, _: mir::Location) {
+        self.places.push(*place);
+    }
+}
+
 impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
+    /// The enum places of the body's locals that a place of the body projects into (a field of a
+    /// variant, read, written or borrowed) or reads the discriminant of, as the elaborated places
+    /// reach them (`THRUST_ENUM_EXPAND_ON_DEMAND`): only those are expanded into their
+    /// discriminant and fields.
+    fn enum_expansion_demand(&self) -> crate::refine::EnumExpansionDemand {
+        use crate::refine::ProjStep;
+        let mut collector = PlaceCollector::default();
+        collector.visit_body(&self.body);
+        let mut discriminants = Vec::new();
+        for data in self.body.basic_blocks.iter() {
+            for stmt in &data.statements {
+                if let StatementKind::Assign(assign) = &stmt.kind {
+                    if let Rvalue::Discriminant(place) = &assign.1 {
+                        discriminants.push(*place);
+                    }
+                }
+            }
+        }
+        let steps = |place: &mir::Place<'tcx>| -> Vec<Option<ProjStep>> {
+            self.elaborate_place(place)
+                .projection
+                .iter()
+                .map(|elem| match elem {
+                    mir::PlaceElem::Deref => Some(ProjStep::Deref),
+                    mir::PlaceElem::Field(idx, _) => Some(ProjStep::Field(idx.as_usize())),
+                    mir::PlaceElem::Downcast(_, v) => Some(ProjStep::Downcast(v.as_usize())),
+                    _ => None,
+                })
+                .collect()
+        };
+        let mut demand = crate::refine::EnumExpansionDemand::new();
+        for place in &collector.places {
+            let mut prefix = Vec::new();
+            for step in steps(place) {
+                let Some(step) = step else { break };
+                if matches!(step, ProjStep::Downcast(_)) {
+                    demand.insert((place.local, prefix.clone()));
+                }
+                prefix.push(step);
+            }
+        }
+        for place in &discriminants {
+            let prefix: Option<Vec<ProjStep>> = steps(place).into_iter().collect();
+            if let Some(prefix) = prefix {
+                demand.insert((place.local, prefix));
+            }
+        }
+        demand
+    }
+
     pub fn new(
         ctx: &'ctx mut analyze::Analyzer<'tcx>,
         analysis_key: analyze::AnalysisKey<'tcx>,
@@ -3438,6 +3500,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let site = analyze::TemplateSite::Code(self.local_def_id, self.basic_block);
         let previous = self.ctx.enter_template_site(site);
         self.register_enum_defs();
+        if analyze::Env::expands_enums_on_demand() {
+            let demand = self.enum_expansion_demand();
+            self.env.set_enum_expansion_demand(demand);
+        }
 
         let outer_fn_param_vars = self.bind_locals(&expected.as_ref().params);
         self.alloc_prophecies();
