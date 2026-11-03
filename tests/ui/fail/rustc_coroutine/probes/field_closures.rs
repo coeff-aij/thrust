@@ -617,8 +617,9 @@ fn field_closures<'a, F: Deref<Target = &'a LayoutData> + Copy + thrust_models::
 // The same with the closures' contracts inferred, under `--cfg inferred_closures`.
 #[thrust_macros::requires(!maybe_unsized || (*fields).len() > 0)]
 #[thrust_macros::requires((*offsets).len() == (*fields).len())]
+// Broken as above.
 #[thrust_macros::requires(forall(|i: usize, d: &&LayoutData, n: Niche|
-    !(i < (*fields).len()
+    !(i + 1 < (*fields).len()
         && thrust_macros::post!(<F as Deref>::deref(&(*fields)[i]), d)
         && (**d).largest_niche == Some(n))
         || Primitive::wf_in(n.value, *dl)))]
