@@ -80,6 +80,12 @@ speculative code, modes nothing uses, scaffolding from development, comments and
 the change made stale? Do names and APIs follow the codebase and Rust conventions? You see the
 large changed files only around their changes; when you suspect duplication with code not shown, say where to look.
 
+Names the change adds or renames follow `AGENTS.md` (Names). Raise one as a `suggestion`, with a
+name that states the purpose, when a reader cannot tell from it what the thing is for: it names
+only a technique, an internal analogy, or an abbreviation the codebase does not already use. This
+goes before following the codebase's existing terms; a name that is clear but could be better is a
+matter of taste. Do not raise names the change neither adds nor renames.
+
 Look for side effects and coupling the change could avoid: state shared or mutated across passes
 where a value could be passed in and returned, a function that both computes a result and records
 it in a cache or a global, a component that reads another's internals or depends on the order in
