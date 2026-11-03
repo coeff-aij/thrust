@@ -100,18 +100,6 @@ where
     #[thrust_macros::lemma]
     pub fn yields_entries_of<L: Idx + thrust_models::Model>(it: &Self, l: &crate::rustc_index::IndexSlice<L, B>) {}
 
-    // `inv` of a map from what `Map::new` requires of its iterator and closure, which the call
-    // checked: `collect` requires it of the map `Map::new` built, and the call states only the
-    // fields of its result.
-    #[thrust_macros::requires(
-        I::inv((*it).0)
-            && Self::reinitialize()
-            && Self::preservation_inv((*it).0, (*it).1)
-            && Self::next_precondition((*it).0, (*it).1)
-    )]
-    #[thrust_macros::ensures(<Self as IteratorSpec>::inv(*it))]
-    #[thrust_macros::lemma]
-    pub fn inv_of_new(it: &Self) {}
 
     // `produces_at` of the joined witnesses: the input items concatenated and the closure states
     // joined at their shared state.

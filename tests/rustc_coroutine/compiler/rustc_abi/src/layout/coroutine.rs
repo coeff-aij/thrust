@@ -731,8 +731,6 @@ fn variant_field_layouts<
     ));
     // Each field collected is an entry of `local_layouts`: the map closure's `ensures`.
     thrust_macros::proof!(Map::yields_entries_of(&variant_only_tys, local_layouts));
-    // `collect`'s `requires`, the map's `inv`, from what `Map::new` required above.
-    thrust_macros::proof!(Map::inv_of_new(&variant_only_tys));
     // Rewrite (rewrites.md R8): `collect_index_vec` for `collect`; the result is bound to a name,
     // for the `assume!`.
     let fields = collect_index_vec(variant_only_tys);
