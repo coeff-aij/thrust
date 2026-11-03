@@ -151,19 +151,6 @@ fn _extern_spec_index_vec_deref_mut<I: Idx + thrust_models::Model, T: thrust_mod
     <IndexVec<I, T> as DerefMut>::deref_mut(slf)
 }
 
-impl<I: Idx, T> FromIterator<T> for IndexVec<I, T> {
-    #[inline]
-    // Not analysed and not callable: its only caller, the `collect` in `univariant_biased`, is
-    // trusted.
-    #[thrust::ignored]
-    fn from_iter<J>(iter: J) -> Self
-    where
-        J: IntoIterator<Item = T>,
-    {
-        IndexVec::from_raw(Vec::from_iter(iter))
-    }
-}
-
 impl<I: Idx, T> IntoIterator for IndexVec<I, T> {
     type Item = T;
     type IntoIter = vec::IntoIter<T>;
