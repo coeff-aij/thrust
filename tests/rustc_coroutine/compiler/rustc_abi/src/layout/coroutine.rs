@@ -359,13 +359,15 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
     {
         let mut used_variants = DenseBitSet::new_empty(variant_fields.len());
         for assignment in &assignments {
-            // `used_variants` is the domain of the variants assigned so far; the rest is unchanged.
+            // Every variant assigned so far is below `used_variants`'s domain, whose words cover it.
             thrust_macros::invariant!(
                 |used_variants: DenseBitSet<VariantIdx>, iter: SliceIter<SavedLocalEligibility<VariantIdx, FieldIdx>>, assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, ineligible_locals: DenseBitSet<LocalIdx>, variant_fields: thrust_models::FnParam<&IndexSlice<VariantIdx, IndexVec<FieldIdx, LocalIdx>>>, nb_locals: thrust_models::FnParam<usize>|
                 iter.1 >= 0 && iter.1 <= iter.0.len()
                 && *iter.0 == assignments
                 && forall(|k: USize, v: <VariantIdx as thrust_models::Model>::Ty, i: USize|
                     0 <= k && k < assignments.len() && assignments[k] == SavedLocalEligibility::Assigned(v) && <VariantIdx as Idx>::index_is(v, i) ==> i < used_variants.0)
+                // `insert` requires it of `used_variants`.
+                && DenseBitSet::<VariantIdx>::words_cover_domain(used_variants)
                 && assignments.len() == nb_locals.at_entry()
                 && ineligible_locals.0 == nb_locals.at_entry()
                 && DenseBitSet::<LocalIdx>::words_cover_domain(ineligible_locals)

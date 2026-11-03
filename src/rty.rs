@@ -328,8 +328,34 @@ impl FunctionType {
     /// a [`chc::Formula`] in the caller's variable space `W`.
     ///
     /// The precondition is the conjunction of the refinements of all parameters, with each
-    /// parameter's value variable replaced by the corresponding argument term.
-    pub fn precondition_formula<W>(&self, args: &[chc::Term<W>]) -> chc::Formula<W>
+    /// parameter's value variable replaced by the corresponding argument term, and of the
+    /// refinements inside their types ([`inner_refinements_formula`]): the body assumes those of
+    /// the values it is given as it assumes the parameters' own, so a call through the
+    /// precondition (a `pre!`) must establish them as a direct call's subtyping does.
+    pub fn precondition_formula<W>(
+        &self,
+        args: &[chc::Term<W>],
+        parts: &mut PartVars<'_>,
+    ) -> chc::Formula<W>
+    where
+        W: chc::Var,
+    {
+        let mut acc = self.param_refinements_formula(args);
+        let param_terms = self.param_terms(args);
+        for (idx, param) in self.params.iter_enumerated() {
+            let value = param_terms[idx].clone();
+            let inner =
+                inner_refinements_formula(&param.ty, value, &param_terms, parts, &mut Vec::new());
+            if !inner.is_top() {
+                acc = acc.and(inner);
+            }
+        }
+        acc
+    }
+
+    /// The part of [`Self::precondition_formula`] that the parameters' own refinements state,
+    /// without the refinements inside their types.
+    pub fn param_refinements_formula<W>(&self, args: &[chc::Term<W>]) -> chc::Formula<W>
     where
         W: chc::Var,
     {
@@ -364,12 +390,14 @@ impl FunctionType {
     /// receiver `Mut::new(state, f)` when the closure is `FnMut` and its state is held as a value:
     /// such a call ends in some final state and drops it, as Creusot's `postcondition_once` of an
     /// `FnMut` closure is `exists s. postcondition_mut(self, args, s, res) && resolve(s)` (the
-    /// `fn_mut_once` law).
+    /// `fn_mut_once` law). The dropped state is resolved ([`Type::resolution`]), the payloads of
+    /// its enums through variables `parts` makes, bound with the final state.
     pub fn once_postcondition_formula<W>(
         &self,
         args: &[chc::Term<W>],
         result: chc::Term<W>,
         final_state: Option<(chc::UserQuantifiedVarId, chc::Sort)>,
+        parts: &mut PartVars<'_>,
     ) -> chc::Formula<W>
     where
         W: chc::Var,
@@ -384,11 +412,261 @@ impl FunctionType {
             .unwrap()
             .elem
             .ty;
-        let dropped = state_ty.resolutions(chc::Term::UserQuantifiedVar(sort.clone(), final_));
+        let state = chc::Term::UserQuantifiedVar(sort.clone(), final_);
+        let mut vars = vec![(final_, sort)];
+        let dropped = state_ty.resolution(state, parts.defs, &mut |sort| {
+            parts.fresh_term(sort, &mut vars)
+        });
         let post = dropped
+            .atoms
             .into_iter()
             .fold(post, |post, atom| post.and(atom.into()));
-        chc::Formula::exists(vec![(final_, sort)], post)
+        let post = if dropped.formula.is_top() {
+            post
+        } else {
+            post.and(dropped.formula)
+        };
+        chc::Formula::exists(vars, post)
+    }
+}
+
+/// What a formula about a value needs to talk of its parts: the definitions of the enums it
+/// holds, and a fresh variable for each part the formula binds (a field of an enum's variant, an
+/// index of a sequence).
+pub struct PartVars<'a> {
+    pub defs: &'a dyn EnumDefProvider,
+    pub fresh: &'a mut dyn FnMut() -> chc::UserQuantifiedVarId,
+}
+
+impl PartVars<'_> {
+    /// A fresh variable of `sort`, pushed onto `vars` for the caller to bind.
+    fn fresh_term<W>(&mut self, sort: chc::Sort, vars: &mut QuantifiedVars) -> chc::Term<W> {
+        let var = (self.fresh)();
+        vars.push((var, sort.clone()));
+        chc::Term::UserQuantifiedVar(sort, var)
+    }
+}
+
+/// The refinements inside the type `ty` of a parameter, stated of its value `value` in the
+/// caller's variable space, `param_terms` giving the parameters they may name: those of the
+/// elements of a tuple, of the content of a box or a shared reference, of the current content of
+/// a mutable reference (its final one is the callee's to give), of the elements of a sequence,
+/// and of the fields of an enum's variant at the enum's type arguments. A template gives an
+/// enum's type arguments unknown predicates, which the body assumes of the payloads it is given.
+///
+/// The variant of an enum is stated as `bind_enum` assumes it, for the variant the value is:
+/// `discr(v) = d => exists f. v = C(f) && refinements(f)` of each variant whose fields have
+/// refinements, `f` variables `parts` makes. An enum whose arguments have no refinement has none
+/// in its payload. One met again in its own payload (`enclosing`), or nested past
+/// [`ENUM_NESTING_LIMIT`], is one no finite formula follows through its payloads: the
+/// refinements of each of its type arguments are stated of every value of the argument's type
+/// instead ([`every_value_formula`]), which recurses over the arguments' types and so ends. That
+/// requires more than the body assumes of the payloads: it is sound, and an unknown can still be
+/// taken `true`, but a written refinement there makes the precondition false. The index and the
+/// elements of an array are stated so too.
+///
+/// A function type inside `ty` (a function pointer) is not stated: a value of a function type
+/// has no term to state its template's contract of, which only a direct call's subtyping relates
+/// to the function the value is.
+fn inner_refinements_formula<W>(
+    ty: &Type<FunctionParamIdx>,
+    value: chc::Term<W>,
+    param_terms: &IndexVec<FunctionParamIdx, chc::Term<W>>,
+    parts: &mut PartVars<'_>,
+    enclosing: &mut Vec<EnumType<FunctionParamIdx>>,
+) -> chc::Formula<W>
+where
+    W: chc::Var,
+{
+    match ty {
+        Type::Pointer(ty) if ty.is_mut() => {
+            refined_formula(&ty.elem, value.mut_current(), param_terms, parts, enclosing)
+        }
+        Type::Pointer(ty) => refined_formula(
+            &ty.elem,
+            ty.kind.deref_term(value),
+            param_terms,
+            parts,
+            enclosing,
+        ),
+        Type::Tuple(ty) => {
+            let mut acc = chc::Formula::top();
+            for (index, elem) in ty.elems.iter().enumerate() {
+                let elem_value = value.clone().tuple_proj(index);
+                let elem = refined_formula(elem, elem_value, param_terms, parts, enclosing);
+                acc = conj(acc, elem);
+            }
+            acc
+        }
+        Type::Seq(elem) => seq_refinements_formula(elem, value, param_terms, parts, enclosing),
+        Type::Array(array) => {
+            let index = every_value_formula(&array.index, param_terms, parts, enclosing);
+            let elem = every_value_formula(&array.elem, param_terms, parts, enclosing);
+            conj(index, elem)
+        }
+        Type::Enum(ety) => enum_refinements_formula(ety, value, param_terms, parts, enclosing),
+        _ => chc::Formula::top(),
+    }
+}
+
+/// The refinement of `rty` and those inside it ([`inner_refinements_formula`]) of `value`.
+fn refined_formula<W>(
+    rty: &RefinedType<FunctionParamIdx>,
+    value: chc::Term<W>,
+    param_terms: &IndexVec<FunctionParamIdx, chc::Term<W>>,
+    parts: &mut PartVars<'_>,
+    enclosing: &mut Vec<EnumType<FunctionParamIdx>>,
+) -> chc::Formula<W>
+where
+    W: chc::Var,
+{
+    let own = inner_refinement_to_chc_formula(&rty.refinement, value.clone(), param_terms, parts);
+    let inner = inner_refinements_formula(&rty.ty, value, param_terms, parts, enclosing);
+    conj(own, inner)
+}
+
+/// `forall i. 0 <= i < len(seq) => refinements(seq[i])` of a sequence `seq` whose elements are
+/// of `elem`; top when they have none.
+fn seq_refinements_formula<W>(
+    elem: &RefinedType<FunctionParamIdx>,
+    seq: chc::Term<W>,
+    param_terms: &IndexVec<FunctionParamIdx, chc::Term<W>>,
+    parts: &mut PartVars<'_>,
+    enclosing: &mut Vec<EnumType<FunctionParamIdx>>,
+) -> chc::Formula<W>
+where
+    W: chc::Var,
+{
+    if !elem.has_refinement() {
+        return chc::Formula::top();
+    }
+    let mut vars = Vec::new();
+    let i = parts.fresh_term(chc::Sort::int(), &mut vars);
+    let elem = refined_formula(
+        elem,
+        seq.clone().seq_nth(i.clone()),
+        param_terms,
+        parts,
+        enclosing,
+    );
+    let lower = chc::Atom::new(
+        chc::KnownPred::GREATER_THAN_OR_EQUAL.into(),
+        vec![i.clone(), chc::Term::int(0)],
+    );
+    let upper = chc::Atom::new(chc::KnownPred::LESS_THAN.into(), vec![i, seq.seq_len()]);
+    let in_bounds = chc::Formula::Atom(lower).and(chc::Formula::Atom(upper));
+    chc::Formula::forall(vars, in_bounds.implies(elem))
+}
+
+/// The refinements of the payload of `value`, of the enum type `ety`, for the variant it is
+/// ([`inner_refinements_formula`]).
+fn enum_refinements_formula<W>(
+    ety: &EnumType<FunctionParamIdx>,
+    value: chc::Term<W>,
+    param_terms: &IndexVec<FunctionParamIdx, chc::Term<W>>,
+    parts: &mut PartVars<'_>,
+    enclosing: &mut Vec<EnumType<FunctionParamIdx>>,
+) -> chc::Formula<W>
+where
+    W: chc::Var,
+{
+    if !ety.args.iter().any(RefinedType::has_refinement) {
+        return chc::Formula::top();
+    }
+    if enclosing.contains(ety) || enclosing.len() >= ENUM_NESTING_LIMIT {
+        return ety.args.iter().fold(chc::Formula::top(), |acc, arg| {
+            conj(acc, every_value_formula(arg, param_terms, parts, enclosing))
+        });
+    }
+    enclosing.push(ety.clone());
+    let mut acc = chc::Formula::top();
+    for variant in parts.defs.enum_def(&ety.symbol).variants {
+        let field_rtys: Vec<_> = variant
+            .field_tys
+            .into_iter()
+            .map(|field_ty| {
+                let mut field_rty = field_ty.vacuous();
+                field_rty.instantiate_ty_params(ety.args.clone());
+                field_rty
+            })
+            .collect();
+        if !field_rtys.iter().any(RefinedType::has_refinement) {
+            continue;
+        }
+        let mut vars = Vec::new();
+        let mut fields = Vec::new();
+        let mut payload = chc::Formula::top();
+        for field_rty in &field_rtys {
+            let field = parts.fresh_term(field_rty.ty.to_sort(), &mut vars);
+            fields.push(field.clone());
+            let field = refined_formula(field_rty, field, param_terms, parts, enclosing);
+            payload = conj(payload, field);
+        }
+        let ctor =
+            chc::Term::datatype_ctor(ety.symbol.clone(), ety.arg_sorts(), variant.name, fields);
+        let is_variant = chc::Term::datatype_discr(ety.symbol.clone(), value.clone())
+            .equal_to(chc::Term::int(variant.discr));
+        let has_payload = chc::Formula::Atom(value.clone().equal_to(ctor)).and(payload);
+        let stated =
+            chc::Formula::Atom(is_variant).implies(chc::Formula::exists(vars, has_payload));
+        acc = conj(acc, stated);
+    }
+    enclosing.pop();
+    acc
+}
+
+/// `forall x. refinements(x)` of the refinement of `rty` and those inside it
+/// ([`refined_formula`]); top when it has none.
+fn every_value_formula<W>(
+    rty: &RefinedType<FunctionParamIdx>,
+    param_terms: &IndexVec<FunctionParamIdx, chc::Term<W>>,
+    parts: &mut PartVars<'_>,
+    enclosing: &mut Vec<EnumType<FunctionParamIdx>>,
+) -> chc::Formula<W>
+where
+    W: chc::Var,
+{
+    if !rty.has_refinement() {
+        return chc::Formula::top();
+    }
+    let mut vars = Vec::new();
+    let x = parts.fresh_term(rty.ty.to_sort(), &mut vars);
+    let formula = refined_formula(rty, x, param_terms, parts, enclosing);
+    chc::Formula::forall(vars, formula)
+}
+
+/// The conjunction of `a` and `b`, either of them left out when it is top.
+fn conj<W>(a: chc::Formula<W>, b: chc::Formula<W>) -> chc::Formula<W> {
+    if a.is_top() {
+        b
+    } else if b.is_top() {
+        a
+    } else {
+        a.and(b)
+    }
+}
+
+/// [`refinement_to_chc_formula`] of a refinement inside a parameter's type, whose existentials
+/// are variables `parts` makes, bound around it.
+fn inner_refinement_to_chc_formula<W>(
+    refinement: &Refinement<FunctionParamIdx>,
+    value: chc::Term<W>,
+    param_terms: &IndexVec<FunctionParamIdx, chc::Term<W>>,
+    parts: &mut PartVars<'_>,
+) -> chc::Formula<W>
+where
+    W: chc::Var,
+{
+    let mut vars = Vec::new();
+    let existentials: Vec<_> = refinement
+        .existentials()
+        .map(|(_, sort)| parts.fresh_term(sort.clone(), &mut vars))
+        .collect();
+    let formula = refinement_formula_at(refinement, value, param_terms, &existentials);
+    if vars.is_empty() || formula.is_top() {
+        formula
+    } else {
+        chc::Formula::exists(vars, formula)
     }
 }
 
@@ -410,13 +688,25 @@ where
         refinement.existentials.is_empty(),
         "closure refinements with existentials are not supported"
     );
+    refinement_formula_at(refinement, value, param_terms, &[])
+}
 
+/// The body of `refinement` as a formula, its value variable `value`, its free variables the
+/// entries of `param_terms` and its existentials the terms `existentials`.
+fn refinement_formula_at<W>(
+    refinement: &Refinement<FunctionParamIdx>,
+    value: chc::Term<W>,
+    param_terms: &IndexVec<FunctionParamIdx, chc::Term<W>>,
+    existentials: &[chc::Term<W>],
+) -> chc::Formula<W>
+where
+    W: chc::Var,
+{
     let body = refinement.body.clone().subst_var(|v| match v {
         RefinedTypeVar::Value => value.clone(),
         RefinedTypeVar::Free(j) => param_terms[j].clone(),
-        RefinedTypeVar::Existential(_) => unreachable!("closure refinement has no existentials"),
+        RefinedTypeVar::Existential(ev) => existentials[ev.index()].clone(),
     });
-
     let mut formula = body.formula;
     for atom in body.atoms {
         formula = formula.and(chc::Formula::Atom(atom));
@@ -1877,26 +2167,66 @@ impl<T> Type<T> {
         }
     }
 
-    /// The resolution of the mutable references a value of this type holds, directly or in
-    /// boxes and tuples: each one's final value is its current one, as dropping the value makes
-    /// it. Those inside other values (a shared reference, an enum) are left unresolved.
-    pub fn resolutions<V: Clone>(&self, term: chc::Term<V>) -> Vec<chc::Atom<V>> {
+    /// The resolution of the mutable references a value `term` of this type holds, directly or in
+    /// boxes, tuples and the payloads of enums: each one's final value is its current one, as
+    /// dropping the value makes it. Those behind a shared reference are left unresolved.
+    ///
+    /// An enum is resolved as Creusot resolves one, by resolving the fields of its variant:
+    /// `fresh` gives a variable of each field of each variant, which the caller binds
+    /// existentially, `matcher_pred` makes those of the value's variant its payload, and each
+    /// field is resolved; the fields of the other variants are free, so their resolution says
+    /// nothing. A field that is a pointer to the enum itself is not resolved.
+    pub fn resolution<V>(
+        &self,
+        term: chc::Term<V>,
+        defs: &dyn EnumDefProvider,
+        fresh: &mut impl FnMut(chc::Sort) -> chc::Term<V>,
+    ) -> chc::Body<V>
+    where
+        T: chc::Var,
+        V: Clone,
+    {
         if self.is_mut() {
-            return vec![term.clone().mut_final().equal_to(term.mut_current())];
+            return term.clone().mut_final().equal_to(term.mut_current()).into();
         }
         if self.is_own() {
             let inner = &self.as_pointer().unwrap().elem.ty;
-            return inner.resolutions(term.box_current());
+            return inner.resolution(term.box_current(), defs, fresh);
         }
-        let Some(tuple) = self.as_tuple() else {
-            return vec![];
+        if let Some(tuple) = self.as_tuple() {
+            let mut body = chc::Body::default();
+            for (i, elem) in tuple.elems.iter().enumerate() {
+                body.push_conj(elem.ty.resolution(term.clone().tuple_proj(i), defs, fresh));
+            }
+            return body;
+        }
+        let Some(ety) = self.as_enum() else {
+            return chc::Body::default();
         };
-        tuple
-            .elems
-            .iter()
-            .enumerate()
-            .flat_map(|(i, elem)| elem.ty.resolutions(term.clone().tuple_proj(i)))
-            .collect()
+        let mut body = chc::Body::default();
+        let mut pred_args = vec![];
+        for field_ty in defs.enum_def(&ety.symbol).field_tys() {
+            let mut field_rty = field_ty.clone().vacuous();
+            field_rty.instantiate_ty_params(ety.args.clone());
+            let field_type = field_rty.ty;
+
+            let field_term = fresh(field_type.to_sort());
+            pred_args.push(field_term.clone());
+
+            if let Some(p) = field_type.as_pointer() {
+                if matches!(&p.elem.ty, Type::Enum(e) if e.symbol == ety.symbol) {
+                    // TODO: we need recursively defined drop_pred for the recursive ADTs!
+                    tracing::warn!("skipping recursive variant");
+                    continue;
+                }
+            }
+
+            body.push_conj(field_type.resolution(field_term, defs, fresh));
+        }
+        pred_args.push(term);
+        let matcher_pred = chc::MatcherPred::new(ety.symbol.clone(), ety.arg_sorts());
+        body.push_conj(chc::Atom::new(matcher_pred.into(), pred_args));
+        body
     }
 
     pub fn to_sort(&self) -> chc::Sort {
@@ -2810,6 +3140,19 @@ impl<FV> RefinedType<FV> {
 }
 
 impl<FV> RefinedType<FV> {
+    /// Whether this type or a type inside it, the type of a value it holds, has a refinement.
+    pub fn has_refinement(&self) -> bool {
+        !self.refinement.is_top()
+            || match &self.ty {
+                Type::Pointer(ty) => ty.elem.has_refinement(),
+                Type::Tuple(ty) => ty.elems.iter().any(RefinedType::has_refinement),
+                Type::Array(ty) => ty.index.has_refinement() || ty.elem.has_refinement(),
+                Type::Seq(elem) => elem.has_refinement(),
+                Type::Enum(ty) => ty.args.iter().any(RefinedType::has_refinement),
+                _ => false,
+            }
+    }
+
     /// Whether `f` holds of the predicate of some atom in a refinement anywhere in this type,
     /// nested formulas included.
     pub fn any_pred(&self, f: &mut impl FnMut(&chc::Pred) -> bool) -> bool {
