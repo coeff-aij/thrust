@@ -3384,11 +3384,19 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 #[derive(Default)]
 struct PlaceCollector<'tcx> {
     places: Vec<mir::Place<'tcx>>,
+    discriminants: Vec<mir::Place<'tcx>>,
 }
 
 impl<'tcx> Visitor<'tcx> for PlaceCollector<'tcx> {
     fn visit_place(&mut self, place: &mir::Place<'tcx>, _: PlaceContext, _: mir::Location) {
         self.places.push(*place);
+    }
+
+    fn visit_rvalue(&mut self, rvalue: &Rvalue<'tcx>, location: mir::Location) {
+        if let Rvalue::Discriminant(place) = rvalue {
+            self.discriminants.push(*place);
+        }
+        self.super_rvalue(rvalue, location);
     }
 }
 
@@ -3400,16 +3408,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         use crate::refine::ProjStep;
         let mut collector = PlaceCollector::default();
         collector.visit_body(&self.body);
-        let mut discriminants = Vec::new();
-        for data in self.body.basic_blocks.iter() {
-            for stmt in &data.statements {
-                if let StatementKind::Assign(assign) = &stmt.kind {
-                    if let Rvalue::Discriminant(place) = &assign.1 {
-                        discriminants.push(*place);
-                    }
-                }
-            }
-        }
         let steps = |place: &mir::Place<'tcx>| -> Vec<Option<ProjStep>> {
             self.elaborate_place(place)
                 .projection
@@ -3433,7 +3431,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 prefix.push(step);
             }
         }
-        for place in &discriminants {
+        for place in &collector.discriminants {
             let prefix: Option<Vec<ProjStep>> = steps(place).into_iter().collect();
             if let Some(prefix) = prefix {
                 places.insert((place.local, prefix));
