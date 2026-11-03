@@ -265,17 +265,18 @@ pub fn selects_base<J: Idx + thrust_models::Model, L: Idx + thrust_models::Model
 ) {
 }
 
-/// The items the `Filter` inside a `Map` yields from the start of `fields` are a selection of the
-/// entries of class `e` (`selects`, with the index map of `Filter::produces`), when the filter
-/// accepts the entries whose local is of class `e`. `filter_count`'s first step.
+/// The index map `f` of the `Filter` inside a `Map`, run from the start of `fields`, is a selection
+/// of the entries of class `e` (`selects`), when the filter accepts the entries whose local is of
+/// class `e`. The witnesses of `Filter::produces` are named, so the conclusion is quantifier-free
+/// in them. `filter_count`'s first step.
 #[thrust_macros::context]
 #[thrust_macros::requires(*(*it).0.0.0 == *fields && (*it).0.0.1 == 0)]
 #[thrust_macros::requires(forall(|s: Seq<&<L as thrust_models::Model>::Ty>, k: Int, r: bool|
     !(0 <= k && k < s.len() && Filter::<SliceIter<'a, L>, P>::answers((*it).0.1, s, k, r))
         || r == ((*a)[L::index_logic(*s[k])] == *e)))]
-#[thrust_macros::ensures(forall(|w: Seq<&<L as thrust_models::Model>::Ty>, o: <Filter<SliceIter<'a, L>, P> as thrust_models::Model>::Ty|
-    !<Filter<SliceIter<'a, L>, P> as IteratorSpec>::produces((*it).0, w, o)
-        || exists(|f: Array<Int, Int>, m: Int| m == w.len() && selects::<J, L, K, T>(*fields, *a, *e, f, m, (*fields).len()))))]
+#[thrust_macros::ensures(forall(|w: Seq<&<L as thrust_models::Model>::Ty>, o: <Filter<SliceIter<'a, L>, P> as thrust_models::Model>::Ty, s: Seq<&<L as thrust_models::Model>::Ty>, f: Array<Int, Int>, m: Int|
+    !(Filter::<SliceIter<'a, L>, P>::produces_at((*it).0, w, o, s, f) && m == w.len())
+        || selects::<J, L, K, T>(*fields, *a, *e, f, m, (*fields).len())))]
 #[thrust_macros::lemma]
 #[thrust::reveal(selects)]
 pub fn filter_selects<'a, J, L, K, T, P, M, B>(
@@ -294,54 +295,9 @@ pub fn filter_selects<'a, J, L, K, T, P, M, B>(
 {
 }
 
-/// A `Map` yields as many items as its inner iterator: `filter_count`'s second step.
-#[thrust_macros::context]
-#[thrust_macros::ensures(forall(|v: Seq<<B as thrust_models::Model>::Ty>, mid: <Map<Filter<SliceIter<'a, L>, P>, M> as thrust_models::Model>::Ty|
-    !<Map<Filter<SliceIter<'a, L>, P>, M> as IteratorSpec>::produces(*it, v, mid)
-        || exists(|w: Seq<&<L as thrust_models::Model>::Ty>, o: <Filter<SliceIter<'a, L>, P> as thrust_models::Model>::Ty|
-            <Filter<SliceIter<'a, L>, P> as IteratorSpec>::produces((*it).0, w, o) && w.len() == v.len())))]
-#[thrust_macros::lemma]
-pub fn map_inner_len<'a, L, P, M, B>(it: &Map<Filter<SliceIter<'a, L>, P>, M>)
-where
-    L: Idx + thrust_models::Model,
-    P: Fn(&&'a L) -> bool,
-    M: FnMut(&'a L) -> B,
-    B: thrust_models::Model,
-{
-}
-
-/// The items a `Map` over a `Filter` of `fields` yields are as many as a selection of the entries
-/// of class `e`: `map_inner_len` and `filter_selects` joined, `filter_count`'s first half.
-#[thrust_macros::context]
-#[thrust_macros::requires(*(*it).0.0.0 == *fields && (*it).0.0.1 == 0)]
-#[thrust_macros::requires(forall(|s: Seq<&<L as thrust_models::Model>::Ty>, k: Int, r: bool|
-    !(0 <= k && k < s.len() && Filter::<SliceIter<'a, L>, P>::answers((*it).0.1, s, k, r))
-        || r == ((*a)[L::index_logic(*s[k])] == *e)))]
-#[thrust_macros::ensures(forall(|v: Seq<<B as thrust_models::Model>::Ty>, mid: <Map<Filter<SliceIter<'a, L>, P>, M> as thrust_models::Model>::Ty|
-    !<Map<Filter<SliceIter<'a, L>, P>, M> as IteratorSpec>::produces(*it, v, mid)
-        || exists(|f: Array<Int, Int>, m: Int| m == v.len() && selects::<J, L, K, T>(*fields, *a, *e, f, m, (*fields).len()))))]
-#[thrust_macros::lemma]
-pub fn map_selects<'a, J, L, K, T, P, M, B>(
-    it: &Map<Filter<SliceIter<'a, L>, P>, M>,
-    fields: &'a IndexVec<J, L>,
-    a: &IndexVec<K, T>,
-    e: &T,
-) where
-    J: Idx + thrust_models::Model,
-    L: Idx + thrust_models::Model,
-    K: Idx + thrust_models::Model,
-    T: thrust_models::Model,
-    P: Fn(&&'a L) -> bool,
-    M: FnMut(&'a L) -> B,
-    B: thrust_models::Model,
-{
-    map_inner_len(it);
-    filter_selects(it, fields, a, e);
-}
-
 /// A selection of the entries of class `e` below `k` has no more positions than the locals of
 /// class `e`, when those entries name distinct locals below `n`: `map_bound` and `acc_bound`
-/// joined, `filter_count`'s second half.
+/// joined, `filter_count`'s second step.
 #[thrust_macros::lemma]
 #[thrust_macros::requires(acc_distinct::<J, L, K, T>(*fields, *a, *e, k))]
 #[thrust_macros::requires(forall(|p: Int| !(0 <= p && p < k) || L::index_logic((*fields)[p]) < n))]
@@ -403,21 +359,20 @@ pub fn map_exact<J: Idx + thrust_models::Model, L: Idx + thrust_models::Model, K
     }
 }
 
-/// The items the `Filter` inside a `Map` yields from the start of `fields` until it completes are a
-/// whole selection of the entries of class `e`: the entries it did not yield, before the last one
-/// it yielded or after it, are those it rejected.
+/// An entry of class `e` among the inner items the `Filter` inside a `Map` passed over, from the
+/// start of `fields`, is at a position of its index map `f`: the filter rejected the others, which
+/// it does only for entries not of class `e`.
 #[thrust_macros::context]
 #[thrust_macros::requires(*(*it).0.0.0 == *fields && (*it).0.0.1 == 0)]
 #[thrust_macros::requires(forall(|s: Seq<&<L as thrust_models::Model>::Ty>, k: Int, r: bool|
     !(0 <= k && k < s.len() && Filter::<SliceIter<'a, L>, P>::answers((*it).0.1, s, k, r))
         || r == ((*a)[L::index_logic(*s[k])] == *e)))]
-#[thrust_macros::ensures(forall(|w: Seq<&<L as thrust_models::Model>::Ty>, o: <Filter<SliceIter<'a, L>, P> as thrust_models::Model>::Ty, fin: <Filter<SliceIter<'a, L>, P> as thrust_models::Model>::Ty|
-    !(<Filter<SliceIter<'a, L>, P> as IteratorSpec>::produces((*it).0, w, o)
-        && <Filter<SliceIter<'a, L>, P> as IteratorSpec>::completed(Mut::new(o, fin)))
-        || exists(|f: Array<Int, Int>, m: Int| m == w.len() && selects_all::<J, L, K, T>(*fields, *a, *e, f, m, (*fields).len()))))]
+#[thrust_macros::ensures(forall(|w: Seq<&<L as thrust_models::Model>::Ty>, o: <Filter<SliceIter<'a, L>, P> as thrust_models::Model>::Ty, s: Seq<&<L as thrust_models::Model>::Ty>, f: Array<Int, Int>, p: Int|
+    !(Filter::<SliceIter<'a, L>, P>::produces_at((*it).0, w, o, s, f)
+        && 0 <= p && p < s.len() && (*a)[L::index_logic((*fields)[p])] == *e)
+        || exists(|j: Int| 0 <= j && j < w.len() && f[j] == p)))]
 #[thrust_macros::lemma]
-#[thrust::reveal(selects, selects_all)]
-pub fn filter_selects_all<'a, J, L, K, T, P, M, B>(
+pub fn filter_covers_passed<'a, J, L, K, T, P, M, B>(
     it: &Map<Filter<SliceIter<'a, L>, P>, M>,
     fields: &'a IndexVec<J, L>,
     a: &IndexVec<K, T>,
@@ -433,23 +388,66 @@ pub fn filter_selects_all<'a, J, L, K, T, P, M, B>(
 {
 }
 
-/// A completed `Map` yielded as many items as its completed inner iterator.
+/// The entries of `fields` after the inner items the `Filter` inside a `Map` passed over are not
+/// of class `e` when the filter then completed: it rejected each of them.
 #[thrust_macros::context]
-#[thrust_macros::ensures(forall(|v: Seq<<B as thrust_models::Model>::Ty>, mid: <Map<Filter<SliceIter<'a, L>, P>, M> as thrust_models::Model>::Ty, fin: <Map<Filter<SliceIter<'a, L>, P>, M> as thrust_models::Model>::Ty|
-    !(<Map<Filter<SliceIter<'a, L>, P>, M> as IteratorSpec>::produces(*it, v, mid)
-        && <Map<Filter<SliceIter<'a, L>, P>, M> as IteratorSpec>::completed(Mut::new(mid, fin)))
-        || exists(|w: Seq<&<L as thrust_models::Model>::Ty>|
-            <Filter<SliceIter<'a, L>, P> as IteratorSpec>::produces((*it).0, w, mid.0)
-                && <Filter<SliceIter<'a, L>, P> as IteratorSpec>::completed(Mut::new(mid.0, fin.0))
-                && w.len() == v.len())))]
+#[thrust_macros::requires(*(*it).0.0.0 == *fields && (*it).0.0.1 == 0)]
+#[thrust_macros::requires(forall(|s: Seq<&<L as thrust_models::Model>::Ty>, k: Int, r: bool|
+    !(0 <= k && k < s.len() && Filter::<SliceIter<'a, L>, P>::answers((*it).0.1, s, k, r))
+        || r == ((*a)[L::index_logic(*s[k])] == *e)))]
+#[thrust_macros::ensures(forall(|w: Seq<&<L as thrust_models::Model>::Ty>, o: <Filter<SliceIter<'a, L>, P> as thrust_models::Model>::Ty, fin: <Filter<SliceIter<'a, L>, P> as thrust_models::Model>::Ty, s: Seq<&<L as thrust_models::Model>::Ty>, f: Array<Int, Int>, p: Int|
+    !(Filter::<SliceIter<'a, L>, P>::produces_at((*it).0, w, o, s, f)
+        && <Filter<SliceIter<'a, L>, P> as IteratorSpec>::completed(Mut::new(o, fin))
+        && s.len() <= p && p < (*fields).len())
+        || !((*a)[L::index_logic((*fields)[p])] == *e)))]
 #[thrust_macros::lemma]
-pub fn map_inner_completed<'a, L, P, M, B>(it: &Map<Filter<SliceIter<'a, L>, P>, M>)
-where
+pub fn filter_rejects_rest<'a, J, L, K, T, P, M, B>(
+    it: &Map<Filter<SliceIter<'a, L>, P>, M>,
+    fields: &'a IndexVec<J, L>,
+    a: &IndexVec<K, T>,
+    e: &T,
+) where
+    J: Idx + thrust_models::Model,
     L: Idx + thrust_models::Model,
+    K: Idx + thrust_models::Model,
+    T: thrust_models::Model,
     P: Fn(&&'a L) -> bool,
     M: FnMut(&'a L) -> B,
     B: thrust_models::Model,
 {
+}
+
+/// The index map `f` of the `Filter` inside a `Map`, run from the start of `fields` until it
+/// completes, is a whole selection of the entries of class `e`: `filter_selects`,
+/// `filter_covers_passed` and `filter_rejects_rest` joined.
+#[thrust_macros::context]
+#[thrust_macros::requires(*(*it).0.0.0 == *fields && (*it).0.0.1 == 0)]
+#[thrust_macros::requires(forall(|s: Seq<&<L as thrust_models::Model>::Ty>, k: Int, r: bool|
+    !(0 <= k && k < s.len() && Filter::<SliceIter<'a, L>, P>::answers((*it).0.1, s, k, r))
+        || r == ((*a)[L::index_logic(*s[k])] == *e)))]
+#[thrust_macros::ensures(forall(|w: Seq<&<L as thrust_models::Model>::Ty>, o: <Filter<SliceIter<'a, L>, P> as thrust_models::Model>::Ty, fin: <Filter<SliceIter<'a, L>, P> as thrust_models::Model>::Ty, s: Seq<&<L as thrust_models::Model>::Ty>, f: Array<Int, Int>, m: Int|
+    !(Filter::<SliceIter<'a, L>, P>::produces_at((*it).0, w, o, s, f)
+        && <Filter<SliceIter<'a, L>, P> as IteratorSpec>::completed(Mut::new(o, fin)) && m == w.len())
+        || selects_all::<J, L, K, T>(*fields, *a, *e, f, m, (*fields).len())))]
+#[thrust_macros::lemma]
+#[thrust::reveal(selects_all)]
+pub fn filter_selects_all<'a, J, L, K, T, P, M, B>(
+    it: &Map<Filter<SliceIter<'a, L>, P>, M>,
+    fields: &'a IndexVec<J, L>,
+    a: &IndexVec<K, T>,
+    e: &T,
+) where
+    J: Idx + thrust_models::Model,
+    L: Idx + thrust_models::Model,
+    K: Idx + thrust_models::Model,
+    T: thrust_models::Model,
+    P: Fn(&&'a L) -> bool,
+    M: FnMut(&'a L) -> B,
+    B: thrust_models::Model,
+{
+    filter_selects(it, fields, a, e);
+    filter_covers_passed(it, fields, a, e);
+    filter_rejects_rest(it, fields, a, e);
 }
 
 /// A completed `Map` over a `Filter` of `fields` yields exactly the entries of class `e`, when the
@@ -481,7 +479,6 @@ pub fn map_count_exact<'a, J, L, K, T, P, M, B>(
     M: FnMut(&'a L) -> B,
     B: thrust_models::Model,
 {
-    map_inner_completed(it);
     filter_selects_all(it, fields, a, e);
     map_exact(fields, a, e, k);
 }
@@ -521,7 +518,7 @@ pub fn filter_count<'a, J, L, K, T, P, M, B>(
     M: FnMut(&'a L) -> B,
     B: thrust_models::Model,
 {
-    map_selects(it, fields, a, e);
+    filter_selects(it, fields, a, e);
     selects_count(fields, a, e, k, n);
 }
 
