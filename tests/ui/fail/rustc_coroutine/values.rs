@@ -1,4 +1,3 @@
-//@error-in-other-file: Unsat
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@no-rustfix
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 THRUST_TRY_SPECS=1
@@ -24,7 +23,7 @@ pub mod case_study;
 use rustc_abi::*;
 
 #[thrust::reveal(rustc_abi::TargetDataLayout::pointer_space_ok, rustc_abi::TargetDataLayout::pointer_size_is)]
-fn main() {
+fn main() { //~ ERROR: Unsat
     // `Align::ONE` / `Align::EIGHT` / `Size::ZERO` are spelled out as struct
     // literals: reading an associated constant of a newtype ADT makes Thrust
     // panic with "not implemented: const: Scalar(0x03), ty: Align"

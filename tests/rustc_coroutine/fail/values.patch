@@ -1,14 +1,22 @@
 --- pass/values.rs
 +++ fail/values.rs
-@@ -1,5 +1,6 @@
+@@ -1,5 +1,5 @@
 -//@check-pass
-+//@error-in-other-file: Unsat
  //@compile-flags: -Adead_code -C debug-assertions=off
 +//@no-rustfix
  //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 THRUST_TRY_SPECS=1
  //@rustc-env: THRUST_VERIFY_ONLY=rustc_abi
  //@rustc-env: THRUST_SPLIT=1 THRUST_SPLIT_GOALS=1
-@@ -58,7 +59,9 @@
+@@ -23,7 +23,7 @@
+ use rustc_abi::*;
+ 
+ #[thrust::reveal(rustc_abi::TargetDataLayout::pointer_space_ok, rustc_abi::TargetDataLayout::pointer_size_is)]
+-fn main() {
++fn main() { //~ ERROR: Unsat
+     // `Align::ONE` / `Align::EIGHT` / `Size::ZERO` are spelled out as struct
+     // literals: reading an associated constant of a newtype ADT makes Thrust
+     // panic with "not implemented: const: Scalar(0x03), ty: Align"
+@@ -58,7 +58,9 @@
      // checks the address-space requires, and `Align::bytes` / `Size::bits`
      // check their `ensures`.
      assert!(dl.obj_size_bound() >= 1);

@@ -7,15 +7,16 @@
  //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 THRUST_TRY_SPECS=1
  //@rustc-env: THRUST_VERIFY_ONLY=rustc_index::**,crate
  //@rustc-env: THRUST_SPLIT=1 THRUST_SPLIT_GOALS=1
-@@ -109,14 +109,15 @@
-     drive_bit_sets();
+@@ -103,7 +103,7 @@
+     }
  }
  
--fn drive_iterators() {
-+fn drive_iterators() { //~ ERROR: Unsat
-     let mut range: IdxRange<usize> = IdxRange::new(0, 3);
-     // Verified via `IdxRange::new`'s own ensures.
-     assert!(range.start == 0 && range.end == 3);
+-fn main() {
++fn main() { //~ ERROR: Unsat
+     drive_iterators();
+     drive_index_vec();
+     drive_bit_sets();
+@@ -116,7 +116,8 @@
      // Verified via the `next` contract above: `Idx for usize` reads
      // `index_is(self, i)` as `self == i`, so the k-th call yields `Some(k)`.
      let a = range.next();

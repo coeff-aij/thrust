@@ -103,13 +103,13 @@ fn column_bound(m: &BitMatrix<usize, usize>) {
     }
 }
 
-fn main() {
+fn main() { //~ ERROR: Unsat
     drive_iterators();
     drive_index_vec();
     drive_bit_sets();
 }
 
-fn drive_iterators() { //~ ERROR: Unsat
+fn drive_iterators() {
     let mut range: IdxRange<usize> = IdxRange::new(0, 3);
     // Verified via `IdxRange::new`'s own ensures.
     assert!(range.start == 0 && range.end == 3);
