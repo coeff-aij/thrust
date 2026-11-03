@@ -523,6 +523,32 @@ impl PlaceType {
         let def = enum_defs.enum_def(&inner_ty.symbol);
         let variant = &def.variants[variant_idx];
 
+        if chc::enum_selectors_enabled() {
+            // The field is `sel_C(inner)` under `is_C(inner)`, the variant the place is read at.
+            let mut rty = variant.field_tys[field_idx.index()].clone().vacuous();
+            rty.instantiate_ty_params(inner_ty.args.clone());
+            if let Some(facts) = rty::int_range_type_facts(&rty.ty, &enum_defs) {
+                rty.refinement.push_conj(facts);
+            }
+            let sort = chc::DatatypeSort::new(def.name.clone(), inner_ty.arg_sorts());
+            let rty = rty.boxed();
+            let field = chc::Term::datatype_selector(
+                sort.clone(),
+                variant.name.clone(),
+                field_idx.index(),
+                rty.ty.to_sort(),
+                inner_term.clone(),
+            );
+            let (ty, field_ex_var) = builder.subsume_rty(rty);
+            let term = chc::Term::var(field_ex_var.into());
+            builder.push_formula(term.clone().equal_to(field));
+            builder.push_formula(chc::Atom::new(
+                chc::Pred::Tester(variant.name.clone()),
+                vec![inner_term],
+            ));
+            return builder.build(ty, term);
+        }
+
         let mut field_terms = Vec::new();
         let mut field_tys = Vec::new();
         for field_ty in variant.field_tys.clone() {

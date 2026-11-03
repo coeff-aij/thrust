@@ -593,6 +593,26 @@ where
         if !field_rtys.iter().any(RefinedType::has_refinement) {
             continue;
         }
+        if chc::enum_selectors_enabled() {
+            // `is_C(v) ⇒ refinements(sel_C(v))`: the tester guards the selectors.
+            let sort = chc::DatatypeSort::new(ety.symbol.clone(), ety.arg_sorts());
+            let mut payload = chc::Formula::top();
+            for (index, field_rty) in field_rtys.iter().enumerate() {
+                let field = chc::Term::datatype_selector(
+                    sort.clone(),
+                    variant.name.clone(),
+                    index,
+                    field_rty.ty.to_sort(),
+                    value.clone(),
+                );
+                let field = refined_formula(field_rty, field, param_terms, parts, enclosing);
+                payload = conj(payload, field);
+            }
+            let is_variant =
+                chc::Atom::new(chc::Pred::Tester(variant.name.clone()), vec![value.clone()]);
+            acc = conj(acc, chc::Formula::Atom(is_variant).implies(payload));
+            continue;
+        }
         let mut vars = Vec::new();
         let mut fields = Vec::new();
         let mut payload = chc::Formula::top();
@@ -3282,6 +3302,7 @@ fn subst_ty_params_in_term<T, V>(term: &mut chc::Term<V>, subst: &TypeParamSubst
         | chc::Term::MutFinal(t)
         | chc::Term::TupleProj(t, _)
         | chc::Term::DatatypeDiscr(_, t)
+        | chc::Term::DatatypeSelector(.., t)
         | chc::Term::IntToBitVec { term: t, .. } => {
             subst_ty_params_in_term(t, subst);
         }
