@@ -51,9 +51,11 @@ pub struct LayoutCalculator<Cx> {
     pub cx: Cx,
 }
 
-/// `2^q`, the bytes of `Align { pow2: q }`, below 64; 0 from 64 on, where the alignment has no
-/// 64-bit size (`Align::MAX` is `2^29`). An `Int`, as `sum_first` is: at `u64` its result would
-/// be checked below `2^64` for every `q`.
+/// `2^q`, the bytes of `Align { pow2: q }`, below 64; 0 from 64 on, where `Align::bytes` gives
+/// `1 << (q & 63)` instead. The contracts read it only at alignments at most `Align::MAX`
+/// (`layout_pre`), where the two agree. An `Int`, as `sum_first` is: at `u64` its result would be
+/// checked below `2^64` for every `q`. Without the cap, or as `2^(q mod 64)`, PCSat gives no answer
+/// on `univariant.rs`'s goal at the `End` call.
 #[thrust_macros::logic]
 #[thrust_macros::variant(q)]
 pub(crate) fn pow2(q: u64) -> Int {

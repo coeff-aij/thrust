@@ -649,10 +649,10 @@ pub enum Primitive {
 /// Among the first `k` entries of `address_space_info`, `c` has none or a first one.
 #[thrust_macros::lemma]
 #[thrust_macros::variant(k)]
-#[thrust_macros::ensures(forall(|s: Seq<(AddressSpace, PointerSpec)>| !(s == (*dl).address_space_info && k <= s.len())
-    || forall(|i: Int| !(0 <= i && i < k) || !(s[i].0 == c))
-    || exists(|i: Int| 0 <= i && i < k && s[i].0 == c
-        && forall(|j: Int| !(0 <= j && j < i) || !(s[j].0 == c)))))]
+#[thrust_macros::ensures(forall(|s: Seq<(AddressSpace, PointerSpec)>| (s == (*dl).address_space_info && k <= s.len())
+    ==> (forall(|i: Int| (0 <= i && i < k) ==> !(s[i].0 == c))
+        || exists(|i: Int| 0 <= i && i < k && s[i].0 == c
+            && forall(|j: Int| (0 <= j && j < i) ==> !(s[j].0 == c))))))]
 fn first_entry(dl: &TargetDataLayout, c: AddressSpace, k: usize) {
     if k > 0 {
         first_entry(dl, c, k - 1);
