@@ -1,3 +1,5 @@
+// `thrust_eligibility_fail` is set only by the fail twin of the eligibility root (`set_assignment`).
+#![allow(unexpected_cfgs)]
 use crate::thrust_models;
 use thrust_models::{exists, forall};
 
@@ -123,7 +125,7 @@ impl<VariantIdx: thrust_models::Model, FieldIdx: thrust_models::Model> thrust_mo
     && forall(|l: usize| 0 <= l && l < nb_locals ==> (thrust_models::exists(|x: Option<<FieldIdx as thrust_models::Model>::Ty>| result.1[l] == SavedLocalEligibility::Ineligible(x)) ==> thrust_models::exists(|li: USize| li == l && DenseBitSet::<LocalIdx>::mem(result.0, li))))
 )]
 #[thrust_macros::context]
-fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: Idx>(
+fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: Idx + thrust_models::Model<Ty: PartialEq>>(
     nb_locals: usize,
     variant_fields: &IndexSlice<VariantIdx, IndexVec<FieldIdx, LocalIdx>>,
     storage_conflicts: &BitMatrix<LocalIdx, LocalIdx>,
@@ -351,8 +353,7 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
             } else {
                 (local_b, local_a)
             };
-            ineligible_locals.insert(remove);
-            assignments[remove] = Ineligible(None);
+            make_ineligible(&mut ineligible_locals, &mut assignments, remove);
         }
     }
 
@@ -457,11 +458,69 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
                     || exists(|k: <FieldIdx as thrust_models::Model>::Ty| assignments[l] == SavedLocalEligibility::Ineligible(Some(k))
                         && forall(|i: USize| <FieldIdx as Idx>::index_is(k, i) ==> i < DenseBitSet::<LocalIdx>::card(ineligible_locals))))
             );
-            assignments[local] = Ineligible(Some(FieldIdx::new(idx)));
+            set_assignment(&mut assignments, local, Ineligible(Some(FieldIdx::new(idx))));
         }
     }
 
     (ineligible_locals, assignments)
+}
+
+// Rewrite (rewrites.md R10): the two writes that make `remove` ineligible in the storage-conflict
+// loop, as a function whose contract states what they do. The loop's back edge then reads one
+// call result instead of the results of `insert`, `deref_mut` and `index_mut`, each a template
+// over every live variable.
+#[thrust_macros::requires(
+    forall(|i: USize| <LocalIdx as Idx>::index_is(remove, i) ==> i < (*ineligible_locals).0)
+    && DenseBitSet::<LocalIdx>::words_cover_domain(*ineligible_locals)
+    && 0 <= DenseBitSet::<LocalIdx>::card(*ineligible_locals)
+    && (*assignments).len() == (*ineligible_locals).0
+)]
+#[thrust_macros::ensures(
+    (!ineligible_locals).0 == (*ineligible_locals).0
+    && DenseBitSet::<LocalIdx>::words_cover_domain(!ineligible_locals)
+    && 0 <= DenseBitSet::<LocalIdx>::card(!ineligible_locals)
+    && DenseBitSet::<LocalIdx>::card(!ineligible_locals) <= (!ineligible_locals).0
+    && (!assignments).len() == (*assignments).len()
+    && forall(|l: USize| 0 <= l && l < (*ineligible_locals).0 ==> (DenseBitSet::<LocalIdx>::mem(!ineligible_locals, l)
+        == (DenseBitSet::<LocalIdx>::mem(*ineligible_locals, l) || <LocalIdx as Idx>::index_is(remove, l))))
+    && forall(|l: USize| 0 <= l && l < (*assignments).len() && <LocalIdx as Idx>::index_is(remove, l)
+        ==> (!assignments)[l] == SavedLocalEligibility::Ineligible(None))
+    && forall(|l: USize| 0 <= l && l < (*assignments).len() && !<LocalIdx as Idx>::index_is(remove, l)
+        ==> (!assignments)[l] == (*assignments)[l])
+)]
+#[thrust_macros::context]
+fn make_ineligible<VariantIdx: Idx + thrust_models::Model, FieldIdx: Idx + thrust_models::Model, LocalIdx: Idx + thrust_models::Model<Ty: PartialEq>>(
+    ineligible_locals: &mut DenseBitSet<LocalIdx>,
+    assignments: &mut IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
+    remove: LocalIdx,
+) {
+    ineligible_locals.insert(remove);
+    assignments[remove] = SavedLocalEligibility::Ineligible(None);
+}
+
+// Rewrite (rewrites.md R10): the write of the last loop, as a function whose contract states
+// what it does, so that the loop's back edge reads one call result instead of the results of
+// `deref_mut` and `index_mut`.
+#[thrust_macros::requires(forall(|i: USize| <LocalIdx as Idx>::index_is(local, i) ==> i < (*assignments).len()))]
+#[thrust_macros::ensures(
+    (!assignments).len() == (*assignments).len()
+    && forall(|l: USize| 0 <= l && l < (*assignments).len() && <LocalIdx as Idx>::index_is(local, l)
+        ==> (!assignments)[l] == value)
+    && forall(|l: USize| 0 <= l && l < (*assignments).len() && !<LocalIdx as Idx>::index_is(local, l)
+        ==> (!assignments)[l] == (*assignments)[l])
+)]
+// The fail twin of the eligibility root sets this cfg: the write leaves the other locals as they
+// are, so a contract that every local gets `value` is refuted.
+#[cfg_attr(thrust_eligibility_fail, thrust_macros::ensures(
+    forall(|l: USize| 0 <= l && l < (*assignments).len() ==> (!assignments)[l] == value)
+))]
+#[thrust_macros::context]
+fn set_assignment<VariantIdx: Idx + thrust_models::Model, FieldIdx: Idx + thrust_models::Model, LocalIdx: Idx>(
+    assignments: &mut IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
+    local: LocalIdx,
+    value: SavedLocalEligibility<VariantIdx, FieldIdx>,
+) {
+    assignments[local] = value;
 }
 
 // The specification of stage 7 (README.md of the stage files).

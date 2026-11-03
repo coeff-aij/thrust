@@ -13,6 +13,11 @@ are trusted.
 The root also holds the stage's driver (`main` and the stubs of rewrites.md S5).
 `tests/ui/fail/rustc_coroutine/<file>.rs` is its fail twin where one exists; it is the pass root
 with the driver broken, regenerated and checked by `tests/rustc_coroutine/fail/check.sh`.
+`eligibility.rs` has no driver, and its function is private to its module. Its twin checks only
+`set_assignment`, under `--cfg thrust_eligibility_fail`, which adds a contract the helper's
+write refutes. It does not check the stage's own function, whose parts take about seven minutes.
+`LocalIdx: Model<Ty: PartialEq>` on the stage function and on `make_ineligible` is a verification
+bound on a type parameter, not a change to rustc's code: the proved `DenseBitSet::insert` requires it.
 
 | file | selection | state |
 | --- | --- | --- |
@@ -24,7 +29,7 @@ with the driver broken, regenerated and checked by `tests/rustc_coroutine/fail/c
 | `simple.rs` | `rustc_abi::layout::simple` | draft, `ignore-on-host` |
 | `univariant.rs` | `LayoutCalculator::univariant`, `univariant_biased` trusted on its contract | verified, one part per goal (`THRUST_SPLIT_GOALS`), call results typed by the callee's contract (`THRUST_CALL_RESULT_DIRECT`, opt-in; the root needs it, since one goal does not answer reliably without it), with the predicates its contracts pass on unchanged `#[thrust::opaque]`: `fits_in_any_order`, `weighs`, `unsized_misplaced`, `some_field_niche` (layout.rs), `Primitive::size_in`, `FieldsShape::arbitrary_of` (lib.rs); `univariant_biased`, `Primitive::size` and `layout()` reveal those they read (#132) |
 | `univariant_biased.rs` | `LayoutCalculator::univariant_biased` | draft, `ignore-on-host`: its query (58.7 MB) is killed for memory with 16 GB (#133) |
-| `eligibility.rs` | `coroutine_saved_local_eligibility` | draft, `ignore-on-host` |
+| `eligibility.rs` | `coroutine_saved_local_eligibility` and the helpers `make_ineligible` and `set_assignment`, which hold its writes to `assignments` | verified, each goal on its own (`THRUST_SPLIT_GOALS`) |
 | `layout.rs` | `layout()` and the adapters of `thrust/iter.rs`; the lemmas of `thrust/lemmas.rs` assumed | draft, `ignore-on-host` |
 | `lemmas.rs` | the counting lemmas of `thrust/lemmas.rs` that `layout()` uses | verified |
 
