@@ -1,7 +1,7 @@
 --- pass/counts.rs
 +++ fail/counts.rs
 @@ -1,7 +1,9 @@
--//@ignore-on-host: draft, the step of `map_bound` and `filter_count` get no answer from the solver (README.md)
+-//@ignore-on-host: draft, the step of `ones_assigned_disjoint` and the lemmas over the per-variant `Map` and `Filter` get no answer from the solver (README.md)
 +//@ignore-on-host: draft, as the pass root (README.md)
 +//@error-in-other-file: Unsat
  //@compile-flags: -Adead_code -C debug-assertions=off
