@@ -9,7 +9,7 @@
 
 use crate::thrust_models;
 use thrust_models::model::{Array, Int, Seq};
-use thrust_models::forall;
+use thrust_models::{exists, forall};
 
 use crate::case_study::iter::{Filter, Map};
 use crate::case_study::USize;
@@ -248,6 +248,50 @@ pub fn map_bound<J: Idx + thrust_models::Model, L: Idx + thrust_models::Model, K
     }
 }
 
+/// The items the `Filter` inside a `Map` yields from the start of `fields` are a selection of the
+/// entries of class `e` (`selects`, with the index map of `Filter::produces`), when the filter
+/// accepts the entries whose local is of class `e`. `filter_count`'s first step.
+#[thrust_macros::context]
+#[thrust_macros::requires(*(*it).0.0.0 == *fields && (*it).0.0.1 == 0)]
+#[thrust_macros::requires(forall(|s: Seq<&<L as thrust_models::Model>::Ty>, k: Int, r: bool|
+    !(0 <= k && k < s.len() && Filter::<SliceIter<'a, L>, P>::answers((*it).0.1, s, k, r))
+        || r == ((*a)[L::index_logic(*s[k])] == *e)))]
+#[thrust_macros::ensures(forall(|w: Seq<&<L as thrust_models::Model>::Ty>, o: <Filter<SliceIter<'a, L>, P> as thrust_models::Model>::Ty|
+    !<Filter<SliceIter<'a, L>, P> as IteratorSpec>::produces((*it).0, w, o)
+        || exists(|f: Array<Int, Int>, m: Int| m == w.len() && selects::<J, L, K, T>(*fields, *a, *e, f, m, (*fields).len()))))]
+#[thrust_macros::lemma]
+pub fn filter_selects<'a, J, L, K, T, P, M, B>(
+    it: &Map<Filter<SliceIter<'a, L>, P>, M>,
+    fields: &'a IndexVec<J, L>,
+    a: &IndexVec<K, T>,
+    e: &T,
+) where
+    J: Idx + thrust_models::Model,
+    L: Idx + thrust_models::Model,
+    K: Idx + thrust_models::Model,
+    T: thrust_models::Model,
+    P: Fn(&&'a L) -> bool,
+    M: FnMut(&'a L) -> B,
+    B: thrust_models::Model,
+{
+}
+
+/// A `Map` yields as many items as its inner iterator: `filter_count`'s second step.
+#[thrust_macros::context]
+#[thrust_macros::ensures(forall(|v: Seq<<B as thrust_models::Model>::Ty>, mid: <Map<Filter<SliceIter<'a, L>, P>, M> as thrust_models::Model>::Ty|
+    !<Map<Filter<SliceIter<'a, L>, P>, M> as IteratorSpec>::produces(*it, v, mid)
+        || exists(|w: Seq<&<L as thrust_models::Model>::Ty>, o: <Filter<SliceIter<'a, L>, P> as thrust_models::Model>::Ty|
+            <Filter<SliceIter<'a, L>, P> as IteratorSpec>::produces((*it).0, w, o) && w.len() == v.len())))]
+#[thrust_macros::lemma]
+pub fn map_inner_len<'a, L, P, M, B>(it: &Map<Filter<SliceIter<'a, L>, P>, M>)
+where
+    L: Idx + thrust_models::Model,
+    P: Fn(&&'a L) -> bool,
+    M: FnMut(&'a L) -> B,
+    B: thrust_models::Model,
+{
+}
+
 /// The items a `Map` over a `Filter` of `fields` yields are no more than the locals of class
 /// `e` in `a`, when the filter accepts the entries whose local is of class `e`, the entries of
 /// class `e` name distinct locals, and every entry names a local of `a`; `k` and `n` are the two
@@ -283,6 +327,8 @@ pub fn filter_count<'a, J, L, K, T, P, M, B>(
     M: FnMut(&'a L) -> B,
     B: thrust_models::Model,
 {
+    map_inner_len(it);
+    filter_selects(it, fields, a, e);
     map_bound(fields, a, e, k);
     acc_bound(fields, a, e, k, n);
 }
