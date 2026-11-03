@@ -262,25 +262,6 @@ impl TargetDataLayout {
 //
 // Relating a *generic* `cx: &C` to the layout `dl_of` names needs quantifying over it, as the
 // `requires` of `Primitive::size` / `align` does; that verifies.
-/// `2^q`, the bytes of `Align { pow2: q }`. An `Int`, as `sum_first` is: at `u64` its result
-/// would be checked below `2^64` for every `q`, which it is not.
-#[thrust_macros::logic]
-#[thrust_macros::variant(q)]
-pub(crate) fn pow2(q: u64) -> Int {
-    if q <= 0 { 1 } else { pow2(q - 1) * 2 }
-}
-
-/// `1 << q` on 64-bit words is `2^q` below 64, by induction over `q`.
-#[thrust_macros::lemma]
-#[thrust_macros::variant(q)]
-#[thrust_macros::ensures(q < 64 ==> pow2(q)
-    == (BitVec::<64, false>::from_int(1) << (BitVec::from_int(q) & BitVec::from_int(63))).to_int())]
-fn shl_is_pow2(q: u64) {
-    if q > 0 {
-        shl_is_pow2(q - 1);
-    }
-}
-
 /// Rounding `x` up with the mask `m` of a power of two: unless `x + m` wraps, `(x + m) & !m`
 /// lies in `[x, x + m]`.
 #[thrust_macros::lemma]
@@ -420,12 +401,14 @@ impl Size {
     }
 
     /// The least multiple of the alignment at or above `self`, when the alignment is below `2^64`
-    /// and `self` plus its mask does not wrap.
+    /// and `self` plus its mask does not wrap: `b` is the alignment's bytes as `Align::bytes`
+    /// gives them.
     #[inline]
-    #[thrust_macros::ensures(forall(|q: USize| q == align.pow2 && q < 64 && self.raw + pow2(q) - 1 <= u64::MAX
-        ==> (self.raw <= result.raw && result.raw < self.raw + pow2(q))))]
+    #[thrust_macros::ensures(forall(|b: USize| align.pow2 < 64
+        && b == (BitVec::<64, false>::from_int(1) << (BitVec::from_int(align.pow2) & BitVec::from_int(63))).to_int()
+        && self.raw + b - 1 <= u64::MAX
+        ==> (self.raw <= result.raw && result.raw < self.raw + b)))]
     pub fn align_to(self, align: Align) -> Size {
-        thrust_macros::proof!(shl_is_pow2(align.pow2 as u64));
         let mask = align.bytes() - 1;
         thrust_macros::proof!(round_up(self.bytes(), mask, align.pow2 as u64));
         Size::from_bytes((self.bytes() + mask) & !mask)
@@ -505,8 +488,8 @@ impl Align {
 
     pub const MAX: Align = Align { pow2: 29 };
 
-    // `1 << pow2`, the shift amount masked to the width; `shl_is_pow2` makes it `2^pow2` below
-    // 64 (a `const fn` takes no `proof!`).
+    // `1 << pow2`, the shift amount masked to the width; layout.rs's `shl_is_pow2` makes it
+    // `2^pow2` below 64.
     #[inline]
     #[thrust_macros::ensures(result >= 1)]
     #[thrust_macros::ensures(result
