@@ -7,8 +7,7 @@ crate of three modules), with the case study's own code (the iterator adapters o
 `Model` declarations, std specifications, lemmas) under
 `tests/rustc_coroutine/thrust/`. The goal is a proof that `layout()` does not panic. The module
 tree keeps the smallest part of rustc's code that compiles with `layout()`: an item nothing
-needs in order to compile is dropped, so the tree has no `Hash64::as_u64`,
-`VariantLayout::has_fields`, or `Borrow` and `BorrowMut` impls of `IndexVec`.
+needs in order to compile is dropped, also where `target.rs` still has it.
 
 Each file below is a crate root that includes the whole tree and selects one part of rustc's code
 with a `//@rustc-env: THRUST_VERIFY_ONLY=..` header: a module (`rustc_hashes`, the functions of
