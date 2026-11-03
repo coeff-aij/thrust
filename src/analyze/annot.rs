@@ -442,6 +442,22 @@ pub fn partial_invariant_marker_path() -> [Symbol; 3] {
     ]
 }
 
+pub fn for_loop_history_marker_path() -> [Symbol; 3] {
+    [
+        Symbol::intern("thrust"),
+        Symbol::intern("def"),
+        Symbol::intern("for_loop_history_marker"),
+    ]
+}
+
+pub fn for_loop_history_path() -> [Symbol; 3] {
+    [
+        Symbol::intern("thrust"),
+        Symbol::intern("def"),
+        Symbol::intern("for_loop_history"),
+    ]
+}
+
 pub fn assert_marker_path() -> [Symbol; 3] {
     [
         Symbol::intern("thrust"),

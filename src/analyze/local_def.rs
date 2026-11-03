@@ -1631,10 +1631,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// Scans the body for loop-invariant marker calls and groups them by
     /// enclosing loop header. Multiple invariants for the same header are kept
     /// in source order; the caller is responsible for AND'ing them. Each carries
-    /// the marker it was written with.
-    fn collect_loop_invariant_annotations(
-        &self,
-    ) -> HashMap<BasicBlock, Vec<(LocalDefId, mir_ty::GenericArgsRef<'tcx>, InvariantMarker)>> {
+    /// the marker it was written with and the scope of the marker call.
+    fn collect_loop_invariant_annotations(&self) -> HashMap<BasicBlock, Vec<LoopInvariant<'tcx>>> {
         let mut loop_invariants: HashMap<_, Vec<_>> = HashMap::new();
         for (bb, data) in self.body.basic_blocks.iter_enumerated() {
             let Some(term) = &data.terminator else {
@@ -1643,16 +1641,26 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             let mir::TerminatorKind::Call { func, args, .. } = &term.kind else {
                 continue;
             };
-            let Some((def_id, _)) = func.const_fn_def() else {
+            let Some((def_id, marker_args)) = func.const_fn_def() else {
                 continue;
             };
             let Some(marker) = self.ctx.def_ids().invariant_marker_kind(def_id) else {
                 continue;
             };
 
-            let arg_ty = args[0].node.ty(&self.body.local_decls, self.tcx);
-            let mir_ty::TyKind::FnDef(formula_def_id, generic_args) = arg_ty.kind() else {
-                panic!("invariant marker argument must be a formula function item");
+            let (formula_def_id, generic_args) = if marker == InvariantMarker::ForLoopHistory {
+                let formula_def_id = self
+                    .ctx
+                    .def_ids()
+                    .for_loop_history()
+                    .expect("`for` loop history formula is not defined");
+                (formula_def_id, marker_args)
+            } else {
+                let arg_ty = args[0].node.ty(&self.body.local_decls, self.tcx);
+                let mir_ty::TyKind::FnDef(formula_def_id, generic_args) = arg_ty.kind() else {
+                    panic!("invariant marker argument must be a formula function item");
+                };
+                (*formula_def_id, *generic_args)
             };
             let formula_def_id = formula_def_id
                 .as_local()
@@ -1660,13 +1668,58 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             let header = Self::loop_header_of(&self.body, bb).unwrap_or_else(|| {
                 panic!("no enclosing loop header for invariant marker at {bb:?}")
             });
-            loop_invariants.entry(header).or_default().push((
-                formula_def_id,
-                *generic_args,
-                marker,
-            ));
+            loop_invariants
+                .entry(header)
+                .or_default()
+                .push(LoopInvariant {
+                    formula_def_id,
+                    generic_args,
+                    marker,
+                    scope: term.source_info.scope,
+                    from_enclosing_loop: false,
+                });
         }
+        self.extend_histories_to_inner_loops(&mut loop_invariants);
         loop_invariants
+    }
+
+    /// Conjoins the history of each `for` loop at the heads of the loops nested in it too. A
+    /// loop head's type holds only its invariant, so without it a written invariant of an inner
+    /// loop, which cannot name the outer loop's ghosts, would leave them arbitrary when the inner
+    /// loop exits. The inner loops do not change them, so the history holds at their heads as it
+    /// does at the outer head. An inner head gets the histories in the order of the outer heads,
+    /// so that the query does not depend on the order of the map.
+    fn extend_histories_to_inner_loops(
+        &self,
+        loop_invariants: &mut HashMap<BasicBlock, Vec<LoopInvariant<'tcx>>>,
+    ) {
+        let mut histories: Vec<_> = loop_invariants
+            .iter()
+            .flat_map(|(&header, invariants)| {
+                invariants
+                    .iter()
+                    .filter(|invariant| invariant.marker == InvariantMarker::ForLoopHistory)
+                    .map(move |invariant| (header, *invariant))
+            })
+            .collect();
+        histories.sort_by_key(|&(header, _)| header);
+        for (outer, history) in histories {
+            let blocks = self
+                .natural_loop(outer)
+                .expect("a `for` loop history is at a loop head");
+            for inner in blocks {
+                if inner == outer || Self::loop_header_of(&self.body, inner) != Some(inner) {
+                    continue;
+                }
+                loop_invariants
+                    .entry(inner)
+                    .or_default()
+                    .push(LoopInvariant {
+                        from_enclosing_loop: true,
+                        ..history
+                    });
+            }
+        }
     }
 
     /// Walks up the dominator tree from the marker block to the innermost
@@ -1726,6 +1779,35 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             }
         }
         found
+    }
+
+    /// Whether every variable the formula of `invariant` names is a parameter of `bty`.
+    fn binds_all_names_at(&self, invariant: &LoopInvariant<'tcx>, bty: &BasicBlockType) -> bool {
+        let formula_fn = self
+            .ctx
+            .formula_fn_with_args(
+                invariant.formula_def_id,
+                invariant.generic_args,
+                self.owner_fn_id,
+            )
+            .expect("invariant formula function is not registered");
+        formula_fn.param_idents().iter().all(|ident| {
+            let name = ident.expect("invariant parameters must be named").name;
+            self.local_in_scope(name, invariant.scope)
+                .is_some_and(|local| bty.param_of_local(local).is_some())
+        })
+    }
+
+    /// The local the name `name` stands for in `scope`, as Rust's shadowing resolves it.
+    fn local_in_scope(&self, name: rustc_span::Symbol, scope: mir::SourceScope) -> Option<Local> {
+        analyze::basic_block::bindings_in_scope(&self.body, name, scope)
+            .into_iter()
+            .find_map(|vdi| match &vdi.value {
+                mir::VarDebugInfoContents::Place(place) if place.projection.is_empty() => {
+                    Some(place.local)
+                }
+                _ => None,
+            })
     }
 
     fn function_param_local_of_name(&self, name: rustc_span::Symbol) -> Option<Local> {
@@ -1831,12 +1913,20 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// its debug info carries; the lifted formula function spells it
     /// `__thrust_self`, which [`analyze::annot_fn::lifted_param_source_name`] maps
     /// back before the lookup.
+    ///
+    /// The history of a `for` loop (`InvariantMarker::ForLoopHistory`) names the loop's ghosts,
+    /// which have the same names in every loop; they are resolved in the scope of the marker
+    /// call, where those of the innermost loop shadow the others.
     fn build_invariant_precondition(
         &self,
-        formula_def_id: LocalDefId,
-        generic_args: mir_ty::GenericArgsRef<'tcx>,
+        invariant: &LoopInvariant<'tcx>,
         bty: &BasicBlockType,
     ) -> rty::Refinement<rty::FunctionParamIdx> {
+        let LoopInvariant {
+            formula_def_id,
+            generic_args,
+            ..
+        } = *invariant;
         let formula_fn = self
             .ctx
             .formula_fn_with_args(formula_def_id, generic_args, self.owner_fn_id)
@@ -1901,7 +1991,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 mapping.push(bty.param_of_outer_fn_param(param_idx).unwrap());
             } else {
                 tracing::debug!("local: {input_ty:?}");
-                let local = self.local_of_name_in_bb(name, bty).unwrap_or_else(|| {
+                let local = match invariant.marker {
+                    InvariantMarker::ForLoopHistory => self.local_in_scope(name, invariant.scope),
+                    InvariantMarker::Full | InvariantMarker::Partial => {
+                        self.local_of_name_in_bb(name, bty)
+                    }
+                }
+                .filter(|&local| bty.param_of_local(local).is_some())
+                .unwrap_or_else(|| {
                     self.tcx.dcx().fatal(format!(
                         "loop invariant refers to `{name}`, which is not a live variable at the loop header"
                     ))
@@ -2001,7 +2098,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     fn refine_basic_blocks(&mut self, move_data: &MoveData<'tcx>) {
         let loop_invariants = self.collect_loop_invariant_annotations();
         for (header, invariants) in &loop_invariants {
-            let formulas = invariants.iter().map(|(formula, _, _)| *formula);
+            let formulas = invariants
+                .iter()
+                .filter(|invariant| invariant.marker != InvariantMarker::ForLoopHistory)
+                .map(|invariant| invariant.formula_def_id);
             self.ctx
                 .record_invariant_annotations(self.local_def_id, *header, formulas);
         }
@@ -2105,9 +2205,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 // instead keeps the template's predicate variable and the
                 // invariants are conjoined to it, so inference fills in what the
                 // annotations leave out.
-                let partial = invariants
+                let mut own = invariants
                     .iter()
-                    .any(|&(_, _, marker)| marker == InvariantMarker::Partial);
+                    .filter(|invariant| !invariant.from_enclosing_loop)
+                    .peekable();
+                let partial = own.peek().is_none()
+                    || own.any(|invariant| invariant.marker != InvariantMarker::Full);
                 let mut bty = if partial {
                     self.type_builder
                         .for_template(&mut self.ctx)
@@ -2117,8 +2220,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         .build_basic_block(&self.body, live_locals, ret_ty)
                 };
                 let mut inv = rty::Refinement::top();
-                for &(formula_def_id, generic_args, _) in invariants {
-                    let one = self.build_invariant_precondition(formula_def_id, generic_args, &bty);
+                for invariant in invariants {
+                    if invariant.from_enclosing_loop && !self.binds_all_names_at(invariant, &bty) {
+                        continue;
+                    }
+                    let one = self.build_invariant_precondition(invariant, &bty);
                     inv.push_conj(one);
                 }
                 // For a full invariant the block's precondition holds only what the types of its
@@ -2722,6 +2828,18 @@ fn refinement_instances(
         ));
     }
     out
+}
+
+/// A loop-invariant marker call: the formula it conjoins at its loop head, how, and the scope it
+/// is called in.
+#[derive(Debug, Clone, Copy)]
+struct LoopInvariant<'tcx> {
+    formula_def_id: LocalDefId,
+    generic_args: mir_ty::GenericArgsRef<'tcx>,
+    marker: InvariantMarker,
+    scope: mir::SourceScope,
+    /// Conjoined at the head of a loop nested in the one whose marker it is.
+    from_enclosing_loop: bool,
 }
 
 /// A place of a signature where a contract has a type's invariant.
