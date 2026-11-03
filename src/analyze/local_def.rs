@@ -1701,14 +1701,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     .map(move |invariant| (header, *invariant))
             })
             .collect();
-        let doms = self.body.basic_blocks.dominators();
         for (outer, history) in histories {
-            for inner in self.body.basic_blocks.indices() {
-                if inner == outer
-                    || !doms.dominates(outer, inner)
-                    || Self::loop_header_of(&self.body, inner) != Some(inner)
-                    || !reaches(&self.body, inner, outer)
-                {
+            for inner in natural_loop(&self.body, outer) {
+                if inner == outer || Self::loop_header_of(&self.body, inner) != Some(inner) {
                     continue;
                 }
                 loop_invariants
@@ -3013,20 +3008,21 @@ pub(crate) fn spec_param_compared_ty<'tcx>(
     })
 }
 
-/// Whether a path of `body` leads from block `from` to block `to`.
-fn reaches(body: &Body<'_>, from: BasicBlock, to: BasicBlock) -> bool {
-    let mut stack = vec![from];
-    let mut seen = HashSet::new();
+/// The blocks of the loop at `header`: those that reach one of its back edges without passing
+/// through it, and the header.
+fn natural_loop(body: &Body<'_>, header: BasicBlock) -> HashSet<BasicBlock> {
+    let doms = body.basic_blocks.dominators();
+    let preds = body.basic_blocks.predecessors();
+    let mut blocks = HashSet::from([header]);
+    let mut stack: Vec<_> = preds[header]
+        .iter()
+        .copied()
+        .filter(|&pred| doms.dominates(header, pred))
+        .collect();
     while let Some(bb) = stack.pop() {
-        if !seen.insert(bb) {
-            continue;
-        }
-        for succ in body.basic_blocks[bb].terminator().successors() {
-            if succ == to {
-                return true;
-            }
-            stack.push(succ);
+        if blocks.insert(bb) {
+            stack.extend(preds[bb].iter().copied());
         }
     }
-    false
+    blocks
 }
