@@ -1,4 +1,3 @@
-//@error-in-other-file: Unsat
 //@compile-flags: -Adead_code -C debug-assertions=off -A unused-variables -A unused_parens -A unused_imports -A unexpected_cfgs
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300 THRUST_TRY_SPECS=1
 //@rustc-env: THRUST_SPLIT=1 THRUST_SPLIT_GOALS=1
@@ -549,7 +548,8 @@ where
         && (**d).backend_repr == BackendRepr::Scalar(p))
         || Primitive::wf_in(p, *dl)))]
 #[thrust_macros::ensures(true)]
-#[thrust_macros::context]
+#[thrust_macros::context] //~ ERROR: Unsat
+//~^ ERROR: Unsat
 #[cfg(not(inferred_closures))]
 fn field_closures<'a, F: Deref<Target = &'a LayoutData> + Copy + thrust_models::Model>(
     fields: &[F],
