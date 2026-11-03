@@ -3,9 +3,10 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300
 //@rustc-env: THRUST_VERIFY_ONLY=rustc_index::vec,rustc_index::slice,filled
 //@rustc-env: THRUST_INT_RANGE=conversions
-// `indexvec.rs` under `THRUST_INT_RANGE=conversions`, where the model of each integer type carries
-// its width: the module tree type-checks with the option, which bounds unsigned values above.
-// Stage 2 of the rustc-coroutine verification target: rustc_index's `IndexVec` and `IndexSlice`.
+// rustc_index's `IndexVec` and `IndexSlice` under `THRUST_INT_RANGE=conversions`, where the model
+// of each integer type carries its width: the module tree type-checks with the option, which
+// bounds unsigned values above. A check of the option, not a run of the case study: `index.rs`
+// verifies these modules; with the option `count_ones` of bit_set.rs has no specification of `sum`.
 // `filled` is the caller the trusted `IndexVec` contracts are checked against (rewrites.md S5).
 // The code is the module tree under tests/rustc_coroutine/; this file selects the stage and
 // drives it.

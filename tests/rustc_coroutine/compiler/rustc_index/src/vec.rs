@@ -45,8 +45,8 @@ impl<I: Idx, T> IndexVec<I, T> {
     }
 
     // A written contract, so that the roots that do not select this module trust it rather than
-    // analyse it: the bit-set root's specification of `vec![elem; n]` at the word type would be
-    // applied to it at `T` (src/rty/subtyping.rs panics with "inconsistent types").
+    // analyse it; where it is selected, its call of `vec![elem; n]` takes std.rs's specification,
+    // which bit_set.rs's `new_empty` takes too.
     #[inline]
     #[thrust_macros::requires(true)]
     #[thrust_macros::ensures(result.len() == (*universe).len()

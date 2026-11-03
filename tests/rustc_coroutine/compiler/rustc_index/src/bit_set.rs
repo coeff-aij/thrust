@@ -758,7 +758,7 @@ mod count {
     #[thrust::reveal]
     #[thrust_macros::lemma]
     #[thrust_macros::variant(m)]
-    #[thrust_macros::ensures(forall(|k: USize| k * 64 < m ==> s[k] == 0) ==> ones(s, m) == 0)]
+    #[thrust_macros::ensures(forall(|k: USize| 0 <= k && k * 64 < m ==> s[k] == 0) ==> ones(s, m) == 0)]
     pub(crate) fn zero_bits_ones(s: Ghost<Seq<USize>>, m: usize) {
         if m > 0 {
             zero_bits_ones(s, m - 1);
