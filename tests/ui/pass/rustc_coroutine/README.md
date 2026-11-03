@@ -16,6 +16,8 @@ with the driver broken, regenerated and checked by `tests/rustc_coroutine/fail/c
 `eligibility.rs` has no driver, and its function is private to its module. Its twin checks only
 `set_assignment`, under `--cfg thrust_eligibility_fail`, which adds a contract the helper's
 write refutes. It does not check the stage's own function, whose parts take about seven minutes.
+`LocalIdx: Model<Ty: PartialEq>` on the stage function and on `make_ineligible` is a verification
+bound on a type parameter, not a change to rustc's code: the proved `DenseBitSet::insert` requires it.
 
 | file | selection | state |
 | --- | --- | --- |

@@ -125,7 +125,7 @@ impl<VariantIdx: thrust_models::Model, FieldIdx: thrust_models::Model> thrust_mo
     && forall(|l: usize| 0 <= l && l < nb_locals ==> (thrust_models::exists(|x: Option<<FieldIdx as thrust_models::Model>::Ty>| result.1[l] == SavedLocalEligibility::Ineligible(x)) ==> thrust_models::exists(|li: USize| li == l && DenseBitSet::<LocalIdx>::mem(result.0, li))))
 )]
 #[thrust_macros::context]
-fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: Idx>(
+fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: Idx + thrust_models::Model<Ty: PartialEq>>(
     nb_locals: usize,
     variant_fields: &IndexSlice<VariantIdx, IndexVec<FieldIdx, LocalIdx>>,
     storage_conflicts: &BitMatrix<LocalIdx, LocalIdx>,
@@ -489,7 +489,7 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
         ==> (!assignments)[l] == (*assignments)[l])
 )]
 #[thrust_macros::context]
-fn make_ineligible<VariantIdx: Idx + thrust_models::Model, FieldIdx: Idx + thrust_models::Model, LocalIdx: Idx>(
+fn make_ineligible<VariantIdx: Idx + thrust_models::Model, FieldIdx: Idx + thrust_models::Model, LocalIdx: Idx + thrust_models::Model<Ty: PartialEq>>(
     ineligible_locals: &mut DenseBitSet<LocalIdx>,
     assignments: &mut IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
     remove: LocalIdx,
