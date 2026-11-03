@@ -4,7 +4,8 @@
 //@rustc-env: THRUST_VERIFY_ONLY=rustc_hashes
 //@rustc-env: THRUST_SPLIT=1 THRUST_SPLIT_GOALS=1
 // Stage 1 of the rustc-coroutine verification target: rustc_hashes; rustc_abi's lib.rs is the
-// `values.rs` root's. No code of the case study calls rustc_hashes, so this file has no driver.
+// `values.rs` root's. No analyzed code calls `Hash64::new` and `as_u64`, and `wrapping_add` is
+// checked on its own contract, so this file has no driver.
 // The code is the module tree under tests/rustc_coroutine/; this file selects the module.
 // Each goal is solved with the clauses it depends on (`THRUST_SPLIT_GOALS`).
 #![feature(new_range_api)]

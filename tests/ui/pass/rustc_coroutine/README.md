@@ -12,7 +12,8 @@ with a `//@rustc-env: THRUST_VERIFY_ONLY=..` header: a module (`rustc_hashes`, t
 `rustc_abi`'s lib.rs, all of `rustc_index`), or one large function with the helpers a rewrite added
 for it. Each rustc function is selected by one root; functions outside the selection that have a
 contract are trusted. A function without a contract is checked only where a caller the analysis
-reaches calls it; the roots of rustc's code that are not drafts split by goal, so
+reaches calls it; the roots that select a part of rustc's code and are not drafts split by goal
+(`indexvec_int_range.rs`, a check of an option, does not), so
 `THRUST_REPORT=functions` lists one that no such caller reaches as checked in no part.
 The root also holds its driver (`main` and the stubs of rewrites.md S5); the root's own test
 functions with a contract are selected with `crate`.
@@ -27,7 +28,7 @@ bound on a type parameter, not a change to rustc's code: the proved `DenseBitSet
 
 | file | selection | state |
 | --- | --- | --- |
-| `hashes.rs` | `rustc_hashes` | verified, each goal on its own (`THRUST_SPLIT_GOALS`); no code calls `Hash64::new` and `as_u64`, so their bodies are checked in no part |
+| `hashes.rs` | `rustc_hashes` | verified, each goal on its own (`THRUST_SPLIT_GOALS`); no analyzed code calls `Hash64::new` and `as_u64`, so their bodies are checked in no part |
 | `values.rs` | `rustc_abi` (lib.rs) | verified, each goal on its own; `main` reveals `TargetDataLayout::pointer_space_ok` and `pointer_size_is`, which it reads (#132) |
 | `index.rs` | `rustc_index::**` (`Idx`, `IndexVec`, `IndexSlice`, the bit sets, the own iterators `IdxRange`, `WordIter`, `SliceIter`, `IterEnumerated`), and `crate`: the clients `filled`, `two_members` and `column_bound` | verified, each goal on its own |
 | `indexvec_int_range.rs` | `rustc_index::vec`, `rustc_index::slice`, `filled`, under `THRUST_INT_RANGE=conversions` | verified; a check of the option, not a run of the case study: with it `count_ones` of bit_set.rs has no specification of `sum` |

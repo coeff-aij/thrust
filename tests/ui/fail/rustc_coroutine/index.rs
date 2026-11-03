@@ -53,7 +53,7 @@ impl<I: Idx, T> IndexVec<I, T> {
 #[thrust_macros::ensures(result.len() == n)]
 #[thrust_macros::ensures(forall(|k: USize| 0 <= k && k < n ==> result[k] == elem))]
 #[thrust_macros::context]
-fn filled(n: usize, elem: i64) -> IndexVec<usize, i64> {
+fn filled(n: usize, elem: i64) -> IndexVec<usize, i64> { //~ ERROR: Unsat
     let mut v: IndexVec<usize, i64> = IndexVec::new();
     let mut i = 0;
     while i < n {
@@ -66,7 +66,9 @@ fn filled(n: usize, elem: i64) -> IndexVec<usize, i64> {
                     && i <= n.at_entry()
                     && forall(|k: USize| 0 <= k && k < i ==> v[k] == elem.at_entry())
         );
-        v.push(elem);
+        // Every entry is one more than the element asked for, so `filled` no
+        // longer returns `n` copies of `elem`.
+        v.push(elem + 1);
         i += 1;
     }
     v
@@ -95,10 +97,11 @@ fn two_members() -> DenseBitSet<usize> {
 #[thrust_macros::requires(BitMatrix::<usize, usize>::wf(*m) && 0 < (*m).num_rows && *(*m).col_bound == 5
     && BitMatrix::<usize, usize>::cols_below(*m, *(*m).col_bound))]
 #[thrust_macros::ensures(true)]
-fn column_bound(m: &BitMatrix<usize, usize>) {
+fn column_bound(m: &BitMatrix<usize, usize>) { //~ ERROR: Unsat
     let mut it = m.iter(0);
     match it.next() {
-        Some(e) => assert!(e < 5),
+        // Broken narrowly: the column bound is 5, and column 4 may be set.
+        Some(e) => assert!(e < 4),
         None => {}
     }
 }
