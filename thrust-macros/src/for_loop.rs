@@ -1,5 +1,5 @@
 //! Rewriting of a `for` loop whose body starts with `invariant!` or `partial_invariant!` calls
-//! naming the iterator.
+//! naming the iterator, or with no invariant.
 //!
 //! The loop is desugared as Creusot does (`creusot-std-proc/src/creusot/invariant.rs`,
 //! `desugar_for`): the iterator is a variable, stepped by `Iterator::next` at the loop head, where
@@ -8,9 +8,13 @@
 //! `produced` the sequence of the items `next` has returned so far, and the invariant is conjoined
 //! with the structural `inv(iter)` and `produces(iter_old, produced, iter)` of `IteratorSpec`.
 //!
-//! The variables get names of their own for each loop, and the invariant's `iter`, `iter_old` and
-//! `produced` are renamed to them, so the loop body sees its own variables of those names, and an
-//! annotated loop nested in another `for` finds its own iterator.
+//! A loop with no invariant gets the same ghosts, and `inv(iter)` and
+//! `produces(iter_old, produced, iter)` are conjoined to the invariant Thrust infers, so that the
+//! inferred part can relate the loop's state to `produced`, as Creusot does for every loop.
+//!
+//! The variables of an annotated loop get names of their own for each loop, and the invariant's
+//! `iter`, `iter_old` and `produced` are renamed to them, so the loop body sees its own variables
+//! of those names, and an annotated loop nested in another `for` finds its own iterator.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -20,12 +24,15 @@ use syn::spanned::Spanned as _;
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
-/// The desugaring of `for_loop`, or `None` when its body does not start with `invariant!` or
-/// `partial_invariant!` calls one of which has a parameter `iter`, whose type is the iterator's.
+/// The desugaring of `for_loop`, or `None` when its body starts with `invariant!` or
+/// `partial_invariant!` calls none of which has a parameter `iter`, whose type is the iterator's.
 /// Every invariant of that leading run names the loop's ghosts.
 pub fn desugar(for_loop: &syn::ExprForLoop) -> Option<syn::Expr> {
     let stmts = &for_loop.body.stmts;
     let leading: Vec<_> = stmts.iter().map_while(invariant_params).collect();
+    if leading.is_empty() {
+        return Some(desugar_with_inferred_invariant(for_loop));
+    }
     let (invariants, rest) = stmts.split_at(leading.len());
     let params: Vec<_> = leading.into_iter().flatten().collect();
     let iter_ty = params
@@ -55,11 +62,7 @@ pub fn desugar(for_loop: &syn::ExprForLoop) -> Option<syn::Expr> {
     let syn::ExprForLoop {
         label, pat, expr, ..
     } = for_loop;
-    // A struct literal is parenthesized in a `for` head, but not in the argument it becomes.
-    let expr = match &**expr {
-        syn::Expr::Paren(paren) => &paren.expr,
-        expr => expr,
-    };
+    let expr = head_expr(expr);
     // As in rustc's lowering, the iterator is bound by a `match`, so that the temporaries of the
     // `for` head live as long as the loop.
     if !names_history {
@@ -128,6 +131,56 @@ pub fn desugar(for_loop: &syn::ExprForLoop) -> Option<syn::Expr> {
             }
         }
     ))
+}
+
+/// The desugaring of `for_loop`, whose body starts with no invariant, for Thrust to infer its
+/// invariant: as with a written one, except that the iterator's type cannot be written, so the
+/// ghosts are made by functions generic in it, and `inv(iter)` and
+/// `produces(iter_old, produced, iter)` are conjoined to the inferred invariant by a marker call
+/// that names them in its scope (`thrust_models::__for_loop_history_marker`). The names are the
+/// same for each loop: the innermost loop's shadow those of the loops around it.
+fn desugar_with_inferred_invariant(for_loop: &syn::ExprForLoop) -> syn::Expr {
+    let syn::ExprForLoop {
+        label,
+        pat,
+        expr,
+        body,
+        ..
+    } = for_loop;
+    let expr = head_expr(expr);
+    let stmts = &body.stmts;
+    let iter = format_ident!("__thrust_for_iter");
+    let iter_old = format_ident!("__thrust_for_iter_old");
+    let produced = format_ident!("__thrust_for_produced");
+    let item = format_ident!("__thrust_for_item");
+    syn::parse_quote!(
+        match ::core::iter::IntoIterator::into_iter(#expr) {
+            mut #iter => {
+                let #iter_old = crate::thrust_models::__for_loop_iter_old(&#iter);
+                let mut #produced = crate::thrust_models::__for_loop_produced(&#iter);
+                #label loop {
+                    crate::thrust_models::__for_loop_history_marker(#iter_old, #produced);
+                    match ::core::iter::Iterator::next(&mut #iter) {
+                        ::core::option::Option::Some(#item) => {
+                            #produced = crate::thrust_models::__for_loop_produced_push(#produced, &#item);
+                            let #pat = #item;
+                            #(#stmts)*
+                        }
+                        ::core::option::Option::None => break,
+                    }
+                }
+            }
+        }
+    )
+}
+
+/// The iterator expression of a `for` head. A struct literal is parenthesized there, but not in
+/// the argument it becomes.
+fn head_expr(expr: &syn::Expr) -> &syn::Expr {
+    match expr {
+        syn::Expr::Paren(paren) => &paren.expr,
+        expr => expr,
+    }
 }
 
 /// Statements checking that each type the invariants give the parameter `name` is the type of

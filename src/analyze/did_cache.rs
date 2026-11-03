@@ -15,6 +15,9 @@ pub enum InvariantMarker {
     Full,
     /// `partial_invariant!`: conjoined with the predicate inferred at its loop head.
     Partial,
+    /// The history of a `for` loop that has no written invariant (`thrust-macros/src/for_loop.rs`):
+    /// conjoined as `Partial` is, with the names its formula reads resolved in the marker's scope.
+    ForLoopHistory,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -69,6 +72,8 @@ struct DefIds {
     log_eq_args: OnceCell<Option<DefId>>,
     invariant_marker: OnceCell<Option<DefId>>,
     partial_invariant_marker: OnceCell<Option<DefId>>,
+    for_loop_history_marker: OnceCell<Option<DefId>>,
+    for_loop_history: OnceCell<Option<DefId>>,
     ghost_marker: OnceCell<Option<DefId>>,
     assert_marker: OnceCell<Option<DefId>>,
     assume_marker: OnceCell<Option<DefId>>,
@@ -498,12 +503,28 @@ impl<'tcx> DefIdCache<'tcx> {
         })
     }
 
+    pub fn for_loop_history_marker(&self) -> Option<DefId> {
+        *self.def_ids.for_loop_history_marker.get_or_init(|| {
+            self.annotated_def(&crate::analyze::annot::for_loop_history_marker_path())
+        })
+    }
+
+    /// The formula `for_loop_history_marker` conjoins.
+    pub fn for_loop_history(&self) -> Option<DefId> {
+        *self
+            .def_ids
+            .for_loop_history
+            .get_or_init(|| self.annotated_def(&crate::analyze::annot::for_loop_history_path()))
+    }
+
     /// The loop-invariant marker `def_id` is, if it is one.
     pub fn invariant_marker_kind(&self, def_id: DefId) -> Option<InvariantMarker> {
         if Some(def_id) == self.invariant_marker() {
             Some(InvariantMarker::Full)
         } else if Some(def_id) == self.partial_invariant_marker() {
             Some(InvariantMarker::Partial)
+        } else if Some(def_id) == self.for_loop_history_marker() {
+            Some(InvariantMarker::ForLoopHistory)
         } else {
             None
         }
