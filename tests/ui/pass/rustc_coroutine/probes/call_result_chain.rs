@@ -59,8 +59,8 @@ fn place_field(
     Ok((offset, align, max_repr_align))
 }
 
-#[thrust_macros::requires(forall(|dl: TargetDataLayout| !C::dl_of(*calc, dl)
-    || dl.default_address_space_pointer_spec.pointer_size.raw == 2
+#[thrust_macros::requires(forall(|dl: TargetDataLayout| C::dl_of(*calc, dl)
+    ==> dl.default_address_space_pointer_spec.pointer_size.raw == 2
     || dl.default_address_space_pointer_spec.pointer_size.raw == 4
     || dl.default_address_space_pointer_spec.pointer_size.raw == 8))]
 #[thrust_macros::ensures(true)]
