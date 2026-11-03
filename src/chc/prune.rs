@@ -117,15 +117,20 @@ fn kept_pred_vars(system: &System) -> HashSet<PredVarId> {
         .collect()
 }
 
-/// The clauses left after removing the underivable and then the unused ones, in order.
+/// The clauses left after removing the underivable and then the unused ones, in order; with
+/// `THRUST_EMIT_ALL_CLAUSES=1`, every clause.
 pub fn emitted_clauses(system: &System) -> Vec<ClauseId> {
-    let kept = kept_pred_vars(system);
     // A clause whose head is `true` or whose body is `false` says nothing, as `push_clause` knows;
     // `System::part` leaves the clauses out of a part as such.
-    let occurrences: Vec<(ClauseId, Vec<Occurrence>)> = system
+    let clauses = system
         .clauses
         .iter_enumerated()
-        .filter(|(_, clause)| !clause.is_nop())
+        .filter(|(_, clause)| !clause.is_nop());
+    if all_clauses_emitted() {
+        return clauses.map(|(id, _)| id).collect();
+    }
+    let kept = kept_pred_vars(system);
+    let occurrences: Vec<(ClauseId, Vec<Occurrence>)> = clauses
         .map(|(id, clause)| (id, clause_occurrences(clause)))
         .collect();
     let derivable = derivable_clauses(&occurrences, &kept);
@@ -133,6 +138,14 @@ pub fn emitted_clauses(system: &System) -> Vec<ClauseId> {
         .into_iter()
         .map(|(id, _)| *id)
         .collect()
+}
+
+/// Whether `THRUST_EMIT_ALL_CLAUSES=1` asks for the query to hold every clause, for a solver that
+/// answers the whole system but not the clauses left after removing the others. The whole system
+/// is the one the analysis built, which the module comment shows equisatisfiable with the
+/// remaining clauses, so the verdict is the same and the option is sound.
+fn all_clauses_emitted() -> bool {
+    matches!(std::env::var("THRUST_EMIT_ALL_CLAUSES").as_deref(), Ok("1"))
 }
 
 fn derivable_clauses<'a>(
