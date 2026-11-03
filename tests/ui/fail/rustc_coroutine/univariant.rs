@@ -11,7 +11,8 @@
 // drives it. This twin verifies only `drive`, against `univariant`'s contract, which the pass twin
 // verifies.
 // Each goal is solved with the clauses it depends on (`THRUST_SPLIT_GOALS`), and a call's result is
-// typed by the callee's contract at its arguments (`THRUST_CALL_RESULT_DIRECT`). The predicates the
+// typed by the callee's contract at its arguments (`THRUST_CALL_RESULT_DIRECT`, opt-in; without
+// it the goal of `Primitive::size`'s requires for the alternative niche does not answer reliably). The predicates the
 // contracts pass on unchanged are `#[thrust::opaque]`, so the solver reads them through the
 // contracts instead of unfolding them; `layout_pre` and `dl_of` keep their definitions.
 #![feature(new_range_api)]
