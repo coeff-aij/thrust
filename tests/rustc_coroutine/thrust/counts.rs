@@ -295,11 +295,44 @@ pub fn filter_selects<'a, J, L, K, T, P, M, B>(
 {
 }
 
-/// The items a `Map` over a `Filter` of `fields` yields are, in order, the entries of `l` at the
-/// locals of a selection of the entries of class `e` (`selects`), when the filter accepts the
-/// entries whose local is of class `e` and the closure returns the entry of `l` at the local it is
-/// given: `layout()`'s variant's fields are the layouts of the locals Assigned to it, in the order
-/// of its entries.
+/// `vs` holds, in order, the entries of `l` at the locals of a selection of the entries of class `e`
+/// of `fields` (`selects`). Opaque: `selection_of_intro` builds it from a selection, the code that
+/// reads it reveals it.
+#[thrust_macros::predicate]
+#[thrust::opaque]
+pub fn selection_of<J: Idx + thrust_models::Model, L: Idx + thrust_models::Model, K: Idx + thrust_models::Model, T: thrust_models::Model, B: thrust_models::Model>(
+    vs: &crate::rustc_index::IndexSlice<J, B>,
+    fields: IndexVec<J, L>,
+    a: IndexVec<K, T>,
+    e: T,
+    l: &crate::rustc_index::IndexSlice<L, B>,
+) -> bool {
+    exists(|f: Array<Int, Int>, m: Int|
+        m == (*vs).len()
+            && selects::<J, L, K, T>(fields, a, e, f, m, fields.len())
+            && forall(|k: Int| !(0 <= k && k < (*vs).len()) || (*vs)[k] == (*l)[L::index_logic(fields[f[k]])]))
+}
+
+/// `selection_of` from a selection `f` that holds the entries of `vs`, for every `vs` and `f`.
+#[thrust_macros::lemma]
+#[thrust_macros::ensures(forall(|vs: Seq<<B as thrust_models::Model>::Ty>, f: Array<Int, Int>, m: Int|
+    !(m == vs.len()
+        && selects::<J, L, K, T>(*fields, *a, *e, f, m, (*fields).len())
+        && forall(|k: Int| !(0 <= k && k < vs.len()) || vs[k] == (*l)[L::index_logic((*fields)[f[k]])]))
+        || selection_of::<J, L, K, T, B>(&vs, *fields, *a, *e, l)))]
+#[thrust::reveal(selection_of)]
+pub fn selection_of_intro<J: Idx + thrust_models::Model, L: Idx + thrust_models::Model, K: Idx + thrust_models::Model, T: thrust_models::Model, B: thrust_models::Model>(
+    fields: &IndexVec<J, L>,
+    a: &IndexVec<K, T>,
+    e: &T,
+    l: &crate::rustc_index::IndexSlice<L, B>,
+) {
+}
+
+/// The items a `Map` over a `Filter` of `fields` yields are a `selection_of` the entries of class
+/// `e`, when the filter accepts the entries whose local is of class `e` and the closure returns the
+/// entry of `l` at the local it is given: `layout()`'s variant's fields are the layouts of the
+/// locals Assigned to it, in the order of its entries.
 #[thrust_macros::context]
 #[thrust_macros::requires(*(*it).0.0.0 == *fields && (*it).0.0.1 == 0)]
 #[thrust_macros::requires(forall(|s: Seq<&<L as thrust_models::Model>::Ty>, k: Int, r: bool|
@@ -310,10 +343,7 @@ pub fn filter_selects<'a, J, L, K, T, P, M, B>(
         || b == (*l)[L::index_logic(*x)]))]
 #[thrust_macros::ensures(forall(|v: Seq<<B as thrust_models::Model>::Ty>, o: <Map<Filter<SliceIter<'a, L>, P>, M> as thrust_models::Model>::Ty|
     !<Map<Filter<SliceIter<'a, L>, P>, M> as IteratorSpec>::produces(*it, v, o)
-        || exists(|f: Array<Int, Int>, m: Int|
-            m == v.len()
-                && selects::<J, L, K, T>(*fields, *a, *e, f, m, (*fields).len())
-                && forall(|k: Int| !(0 <= k && k < v.len()) || v[k] == (*l)[L::index_logic((*fields)[f[k]])]))))]
+        || selection_of::<J, L, K, T, B>(&v, *fields, *a, *e, l)))]
 #[thrust_macros::lemma]
 pub fn map_selected_entries<'a, J, L, K, T, P, M, B>(
     it: &Map<Filter<SliceIter<'a, L>, P>, M>,
@@ -331,6 +361,7 @@ pub fn map_selected_entries<'a, J, L, K, T, P, M, B>(
     B: thrust_models::Model,
 {
     filter_selects(it, fields, a, e);
+    selection_of_intro(fields, a, e, l);
 }
 
 /// A selection of the entries of class `e` below `k` has no more positions than the locals of

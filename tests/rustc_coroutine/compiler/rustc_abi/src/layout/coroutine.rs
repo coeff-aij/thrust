@@ -628,12 +628,8 @@ fn assigned_count_of<FieldIdx: Idx + thrust_models::Model, LocalIdx: Idx + thrus
         <= counts::class_cnt::<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>(
             *assignments, (*assignments).len(), SavedLocalEligibility::Assigned(index))
         && assigned_count::<FieldIdx, LocalIdx, VariantIdx>(variant_fields, assignments, index, result.len())
-        && exists(|f: thrust_models::model::Array<thrust_models::model::Int, thrust_models::model::Int>, m: thrust_models::model::Int|
-            counts::selects::<FieldIdx, LocalIdx, LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>(
-                *variant_fields, *assignments, SavedLocalEligibility::Assigned(index), f, m, (*variant_fields).len())
-            && m == result.len()
-            && forall(|k: thrust_models::model::Int|
-                !(0 <= k && k < result.len()) || result[k] == (*local_layouts)[<LocalIdx as Idx>::index_logic((*variant_fields)[f[k]])]))
+        && counts::selection_of::<FieldIdx, LocalIdx, LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>, F>(
+            &result, *variant_fields, *assignments, SavedLocalEligibility::Assigned(index), local_layouts)
         && forall(|k: USize|
             !(0 <= k && k < result.len())
             || exists(|i: USize| 0 <= i && i < (*local_layouts).len() && result[k] == (*local_layouts)[i]))
@@ -735,6 +731,8 @@ fn variant_field_layouts<
     ));
     // Each field collected is an entry of `local_layouts`: the map closure's `ensures`.
     thrust_macros::proof!(Map::yields_entries_of(&variant_only_tys, local_layouts));
+    // `collect`'s `requires`, the map's `inv`, from what `Map::new` required above.
+    thrust_macros::proof!(Map::inv_of_new(&variant_only_tys));
     // Rewrite (rewrites.md R8): `collect_index_vec` for `collect`; the result is bound to a name,
     // for the `assume!`.
     let fields = collect_index_vec(variant_only_tys);
@@ -751,12 +749,8 @@ fn variant_field_layouts<
     thrust_macros::proof_assert!(
         |fields: IndexVec<FieldIdx, F>, variant_fields: &IndexVec<FieldIdx, LocalIdx>, local_layouts: &IndexSlice<LocalIdx, F>,
             assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, index: VariantIdx|
-            exists(|f: thrust_models::model::Array<thrust_models::model::Int, thrust_models::model::Int>, m: thrust_models::model::Int|
-                counts::selects::<FieldIdx, LocalIdx, LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>(
-                    *variant_fields, *assignments, SavedLocalEligibility::Assigned(index), f, m, (*variant_fields).len())
-                && m == fields.len()
-                && forall(|k: thrust_models::model::Int|
-                    !(0 <= k && k < fields.len()) || fields[k] == (*local_layouts)[<LocalIdx as Idx>::index_logic((*variant_fields)[f[k]])]))
+            counts::selection_of::<FieldIdx, LocalIdx, LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>, F>(
+                &fields, *variant_fields, *assignments, SavedLocalEligibility::Assigned(index), local_layouts)
     );
     // The `ensures`' count and entries, one `proof_assert!` each, before the return.
     thrust_macros::proof_assert!(
@@ -1539,7 +1533,7 @@ fn variant_promoted_of<VariantIdx: Idx + thrust_models::Model, FieldIdx: Idx + t
 
 /// The variant's fields fit in any order after the prefix: `univariant`'s `fits_in_any_order` for
 /// every field list that holds, in order, the layouts of a selection of the variant's entries
-/// Assigned to it (`counts::selects`), with a `repr` without alignment (that of
+/// Assigned to it (`counts::selection_of`), with a `repr` without alignment (that of
 /// `ReprOptions::default()`) and the prefix's size and alignment. Opaque, as the other atoms of the
 /// per-variant closure's `requires`: `layout()` assumes it, where rustc's code makes it true, and
 /// `variant_layout` reveals it at its fields.
@@ -1561,13 +1555,10 @@ fn variant_fits_wf<
     prefix_size: Size,
     prefix_align: AbiAlign,
 ) -> bool {
-    forall(|fs: thrust_models::model::Seq<<F as thrust_models::Model>::Ty>, f: thrust_models::model::Array<thrust_models::model::Int, thrust_models::model::Int>, m: thrust_models::model::Int, rp: ReprOptions|
+    forall(|fs: thrust_models::model::Seq<<F as thrust_models::Model>::Ty>, rp: ReprOptions|
         !(rp.align == None
-            && m == fs.len()
-            && counts::selects::<FieldIdx, LocalIdx, LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>(
-                *variant_fields, *assignments, SavedLocalEligibility::Assigned(index), f, m, (*variant_fields).len())
-            && forall(|k: thrust_models::model::Int|
-                !(0 <= k && k < fs.len()) || fs[k] == (*local_layouts)[<LocalIdx as Idx>::index_logic((*variant_fields)[f[k]])]))
+            && counts::selection_of::<FieldIdx, LocalIdx, LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>, F>(
+                &fs, *variant_fields, *assignments, SavedLocalEligibility::Assigned(index), local_layouts))
         || LayoutCalculator::<C>::fits_in_any_order::<FieldIdx, VariantIdx, F>(
             calc, &fs, &rp, StructKind::Prefixed(prefix_size, prefix_align.abi)))
 }
