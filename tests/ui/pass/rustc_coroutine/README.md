@@ -5,7 +5,9 @@ whole extraction in one file (`//@ignore-on-host`). The verified code lives in r
 layout under `tests/rustc_coroutine/compiler/` (`rustc_hashes`, `rustc_index`, `rustc_abi`, one
 crate of three modules), with the case study's own code (the iterator adapters of rewrites.md R8,
 `Model` declarations, std specifications, lemmas) under
-`tests/rustc_coroutine/thrust/`. The goal is a proof that `layout()` does not panic.
+`tests/rustc_coroutine/thrust/`. The goal is a proof that `layout()` does not panic. The module
+tree is meant to keep the smallest part of rustc's code that compiles with `layout()`: an item nothing
+needs in order to compile is dropped, also where `target.rs` still has it.
 
 Each file below is a crate root that includes the whole tree and selects one part of rustc's code
 with a `//@rustc-env: THRUST_VERIFY_ONLY=..` header: a module (`rustc_hashes`, the functions of
@@ -28,7 +30,7 @@ bound on a type parameter, not a change to rustc's code: the proved `DenseBitSet
 
 | file | selection | state |
 | --- | --- | --- |
-| `hashes.rs` | `rustc_hashes` | verified, each goal on its own (`THRUST_SPLIT_GOALS`); no analyzed code calls `Hash64::new` and `as_u64`, so their bodies are checked in no part |
+| `hashes.rs` | `rustc_hashes` | verified, each goal on its own (`THRUST_SPLIT_GOALS`); no analyzed code calls `Hash64::new`, so its body is checked in no part |
 | `values.rs` | `rustc_abi` (lib.rs) | verified, each goal on its own; `main` reveals `TargetDataLayout::pointer_space_ok` and `pointer_size_is`, which it reads (#132) |
 | `index.rs` | `rustc_index::**` (`Idx`, `IndexVec`, `IndexSlice`, the bit sets, the own iterators `IdxRange`, `WordIter`, `SliceIter`, `IterEnumerated`), and `crate`: the clients `filled`, `two_members` and `column_bound` | verified, each goal on its own |
 | `indexvec_int_range.rs` | `rustc_index::vec`, `rustc_index::slice`, `filled`, under `THRUST_INT_RANGE=conversions` | verified; a check of the option, not a run of the case study: with it `count_ones` of bit_set.rs has no specification of `sum` |
@@ -45,11 +47,12 @@ drafts are those of the single-file stage files.
 The case study's iterators (`IdxRange`, `WordIter`, `BitIter`, `SliceIter`, `IterEnumerated`) and
 the adapters of `thrust/iter.rs` implement std's `Iterator` and std.rs's `IteratorSpec`; `next` of
 `IdxRange`, `WordIter` and `BitIter` carries a contract of its own, which refines the trait's.
-The probes keep their own copy of Creusot's iterator trait.
+The probes keep their own copy of Creusot's iterator trait, except `probes/field_closures.rs`,
+which uses std.rs's `IteratorSpec` and copies of the adapters of `thrust/iter.rs`.
 
 `probes/` holds one small pass/fail pair per language feature the stages rely on (a `forall` over a
 `Vec`, nested `Vec`s, an enum payload equality, an `Option` existential, a generic predicate in a
 free function, the layout a generic `Deref` gives through `post!` and the requirement that its
 `deref` is a function (`deref_functional`), the local `u64::wrapping_add` spec on a wrapping and
-a small sum, a nested field, a `forall` in an invariant, the enumerate position over a bit-set iterator staying below the domain size, the length that the local `extend_from` and `collect_wrapped` give from the items the iterator produced, through the local `Map` and `Filter` adapters of layout.rs (rewrites.md R8), the closure precondition `Map` requires on every yielded item, the local `iter_all` requiring it too, and `max` through a `PartialOrdSpec` that states a struct's derived order), `probes/layout_call_site.rs`, one instance of rustc's call site (two saved locals) satisfying the dimension, matrix well-formedness and index conjuncts of `layout()`'s precondition, and `probes/permutation_split.rs`, `layout()`'s split of univariant's memory order over a generic `FieldIdx` with a copy of the counting lemmas of `thrust/lemmas.rs` over `Vec`, which the `lemmas.rs` root verifies in place, and `probes/sort_permutation.rs`, `univariant_biased`'s two `sort_by_key` calls on the first `end` entries of the identity memory order, whose result is a permutation of the fields (`arbitrary_of`) that `invert_bijective_mapping` takes, with written contracts (`closure!`) on the key closures and `alignment_group_key`. `probes/nested_vec.rs`'s fail twin is
+a small sum, a nested field, a `forall` in an invariant, the enumerate position over a bit-set iterator staying below the domain size, the length that the local `extend_from` and `collect_wrapped` give from the items the iterator produced, through the local `Map` and `Filter` adapters of layout.rs (rewrites.md R8), the closure precondition `Map` requires on every yielded item, the local `iter_all` requiring it too, and `max` through a `PartialOrdSpec` that states a struct's derived order), `probes/field_closures.rs`, `univariant_biased`'s closures over the fields (the two `Map`s over the fields without the tail and the `Filter` of the non-ZST fields over `iter_enumerated`, whose items index the offsets and give the scalars paired), with `Filter::next` stating that the item it returns is the inner iterator's, which `thrust/iter.rs`'s `Filter` does not, `probes/layout_call_site.rs`, one instance of rustc's call site (two saved locals) satisfying the dimension, matrix well-formedness and index conjuncts of `layout()`'s precondition, and `probes/permutation_split.rs`, `layout()`'s split of univariant's memory order over a generic `FieldIdx` with a copy of the counting lemmas of `thrust/lemmas.rs` over `Vec`, which the `lemmas.rs` root verifies in place, and `probes/sort_permutation.rs`, `univariant_biased`'s two `sort_by_key` calls on the first `end` entries of the identity memory order, whose result is a permutation of the fields (`arbitrary_of`) that `invert_bijective_mapping` takes, with written contracts (`closure!`) on the key closures and `alignment_group_key`. `probes/nested_vec.rs`'s fail twin is
 not refuted under native sequences.
