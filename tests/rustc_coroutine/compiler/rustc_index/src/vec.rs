@@ -1,6 +1,5 @@
 use std::fmt;
 use crate::thrust_models;
-use std::borrow::{Borrow, BorrowMut};
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::vec;
@@ -150,18 +149,6 @@ fn _extern_spec_index_vec_deref<I: Idx + thrust_models::Model, T: thrust_models:
 fn _extern_spec_index_vec_deref_mut<I: Idx + thrust_models::Model, T: thrust_models::Model>(slf: &mut IndexVec<I, T>) -> &mut IndexSlice<I, T>
 {
     <IndexVec<I, T> as DerefMut>::deref_mut(slf)
-}
-
-impl<I: Idx, T> Borrow<IndexSlice<I, T>> for IndexVec<I, T> {
-    fn borrow(&self) -> &IndexSlice<I, T> {
-        self
-    }
-}
-
-impl<I: Idx, T> BorrowMut<IndexSlice<I, T>> for IndexVec<I, T> {
-    fn borrow_mut(&mut self) -> &mut IndexSlice<I, T> {
-        self
-    }
 }
 
 impl<I: Idx, T> Extend<T> for IndexVec<I, T> {
