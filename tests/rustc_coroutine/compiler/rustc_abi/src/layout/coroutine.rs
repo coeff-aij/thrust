@@ -744,6 +744,50 @@ fn variant_field_layouts<
     fields
 }
 
+/// What `combine_offsets` reads of the variant's entries and the promoted fields, which do not
+/// depend on its m: `FieldIdx` reaching the entries' number, the promoted memory index's entries
+/// below its length, every entry a local below n that is not `Unassigned` (property 1), and
+/// property 3 (`ineligible_promoted`). Opaque: `variant_layout` states it at its start, where its
+/// `requires` gives it, and passes it to the call as one atom.
+#[thrust_macros::predicate]
+#[thrust::opaque]
+fn combine_wf<VariantIdx: Idx + thrust_models::Model, FieldIdx: Idx + thrust_models::Model, LocalIdx: Idx + thrust_models::Model>(
+    variant_fields: &IndexVec<FieldIdx, LocalIdx>,
+    assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
+    promoted_offsets: &IndexVec<FieldIdx, Size>,
+    promoted_memory_index: &IndexVec<FieldIdx, u32>,
+) -> bool {
+    forall(|k: USize| !(0 <= k && k <= (*variant_fields).len()) || <FieldIdx as Idx>::can_new(k))
+        && forall(|k: USize, i: USize|
+            !(0 <= k && k < (*promoted_memory_index).len() && <u32 as Idx>::index_is((*promoted_memory_index)[k], i))
+                || i < (*promoted_memory_index).len())
+        && forall(|f: usize, i: USize|
+            !(0 <= f && f < (*variant_fields).len() && <LocalIdx as Idx>::index_is((*variant_fields)[f], i))
+                || (i < (*assignments).len() && (*assignments)[i] != SavedLocalEligibility::Unassigned))
+        && ineligible_promoted::<VariantIdx, FieldIdx, LocalIdx>(assignments, promoted_offsets, promoted_memory_index)
+}
+
+/// `combine_wf` from its facts in the forms `variant_layout`'s `requires` gives.
+#[thrust_macros::lemma]
+#[thrust_macros::requires(
+    forall(|k: USize| 0 <= k && k <= (*variant_fields).len() ==> <FieldIdx as Idx>::can_new(k))
+        && forall(|k: USize, i: USize|
+            0 <= k && k < (*promoted_memory_index).len() && <u32 as Idx>::index_is((*promoted_memory_index)[k], i)
+                ==> i < (*promoted_memory_index).len())
+        && forall(|f: usize, i: USize|
+            0 <= f && f < (*variant_fields).len() && <LocalIdx as Idx>::index_is((*variant_fields)[f], i)
+                ==> (i < (*assignments).len() && (*assignments)[i] != SavedLocalEligibility::Unassigned))
+        && ineligible_promoted::<VariantIdx, FieldIdx, LocalIdx>(assignments, promoted_offsets, promoted_memory_index)
+)]
+#[thrust_macros::ensures(combine_wf::<VariantIdx, FieldIdx, LocalIdx>(variant_fields, assignments, promoted_offsets, promoted_memory_index))]
+#[thrust::reveal(combine_wf)]
+fn combine_wf_of<VariantIdx: Idx + thrust_models::Model, FieldIdx: Idx + thrust_models::Model, LocalIdx: Idx + thrust_models::Model>(
+    variant_fields: &IndexVec<FieldIdx, LocalIdx>,
+    assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
+    promoted_offsets: &IndexVec<FieldIdx, Size>,
+    promoted_memory_index: &IndexVec<FieldIdx, u32>,
+) {}
+
 // Rewrite (rewrites.md R12): the part of `layout()`'s per-variant closure that destructures the
 // variant's fields and combines its offsets and memory order with the promoted ones, as a function
 // whose `requires` states what the code reads: the fields are `Arbitrary` with m offsets and a
@@ -755,24 +799,14 @@ fn variant_field_layouts<
 #[thrust_macros::requires(
     FieldsShape::<FieldIdx>::arbitrary_of(fields, m)
         && assigned_count::<FieldIdx, LocalIdx, VariantIdx>(variant_fields, assignments, index, m)
-        && forall(|k: USize| 0 <= k && k <= (*variant_fields).len() ==> <FieldIdx as Idx>::can_new(k))
         && forall(|k: USize| 0 <= k && k <= m ==> <u32 as Idx>::can_new(k))
         && forall(|k: USize| 0 <= k && k <= (*promoted_memory_index).len() + m ==> <FieldIdx as Idx>::can_new(k))
         && (*promoted_memory_index).len() + m <= 4294967295usize
-        && forall(|k: USize, i: USize|
-            0 <= k && k < (*promoted_memory_index).len() && <u32 as Idx>::index_is((*promoted_memory_index)[k], i)
-                ==> i < (*promoted_memory_index).len())
-        && forall(|f: usize, i: USize|
-            0 <= f && f < (*variant_fields).len() && <LocalIdx as Idx>::index_is((*variant_fields)[f], i)
-                ==> (i < (*assignments).len() && (*assignments)[i] != SavedLocalEligibility::Unassigned))
-)]
-// Property 3 (`ineligible_promoted`).
-#[thrust_macros::requires(
-    ineligible_promoted::<VariantIdx, FieldIdx, LocalIdx>(assignments, promoted_offsets, promoted_memory_index)
+        && combine_wf::<VariantIdx, FieldIdx, LocalIdx>(variant_fields, assignments, promoted_offsets, promoted_memory_index)
 )]
 #[thrust_macros::ensures(true)]
 #[thrust_macros::context]
-#[thrust::reveal(super::super::FieldsShape::arbitrary_of)]
+#[thrust::reveal(super::super::FieldsShape::arbitrary_of, combine_wf)]
 fn combine_offsets<VariantIdx: Idx + thrust_models::Model, FieldIdx: Idx + thrust_models::Model, LocalIdx: Idx + thrust_models::Model>(
     variant_fields: &IndexVec<FieldIdx, LocalIdx>,
     assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
@@ -1505,6 +1539,21 @@ fn variant_layout<
     index: VariantIdx,
     variant_fields: &IndexVec<FieldIdx, LocalIdx>,
 ) -> Result<LayoutData<FieldIdx, VariantIdx>, crate::rustc_abi::layout::LayoutCalculatorError<F>> {
+    // What `combine_offsets` requires of the variant's entries and the promoted fields, in its
+    // forms, from the `requires`, at the start, and as the atom `combine_wf`, which reaches the
+    // call unchanged.
+    thrust_macros::proof_assert!(|variant_fields: &IndexVec<FieldIdx, LocalIdx>|
+        forall(|k: USize| 0 <= k && k <= (*variant_fields).len() ==> <FieldIdx as Idx>::can_new(k)));
+    thrust_macros::proof_assert!(|variant_fields: &IndexVec<FieldIdx, LocalIdx>, assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>|
+        forall(|f: usize, i: USize|
+            0 <= f && f < (*variant_fields).len() && <LocalIdx as Idx>::index_is((*variant_fields)[f], i)
+                ==> (i < (*assignments).len() && (*assignments)[i] != SavedLocalEligibility::Unassigned)));
+    thrust_macros::proof_assert!(|assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, promoted_offsets: &IndexVec<FieldIdx, Size>, promoted_memory_index: &IndexVec<FieldIdx, u32>|
+        ineligible_promoted::<VariantIdx, FieldIdx, LocalIdx>(assignments, promoted_offsets, promoted_memory_index)
+            && forall(|k: USize, i: USize|
+                0 <= k && k < (*promoted_memory_index).len() && <u32 as Idx>::index_is((*promoted_memory_index)[k], i)
+                    ==> i < (*promoted_memory_index).len()));
+    thrust_macros::proof!(combine_wf_of(variant_fields, assignments, promoted_offsets, promoted_memory_index));
     // Rewrite (rewrites.md R14): the variant's fields, the layouts of the entries whose local
     // is Assigned to the variant, are collected by `variant_field_layouts`. Its `requires`
     // holds by the `requires`; its `ensures` gives the count sites 1 and 3 need (with the
@@ -1557,19 +1606,6 @@ fn variant_layout<
     thrust_macros::proof_assert!(|variant_fields: &IndexVec<FieldIdx, LocalIdx>, assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, index: VariantIdx, m: usize|
         assigned_count::<FieldIdx, LocalIdx, VariantIdx>(variant_fields, assignments, index, m));
 
-    // What `combine_offsets` requires of the variant's entries and the promoted fields, in its
-    // forms, from the `requires`, right before the call, where the cuts above are premises too.
-    thrust_macros::proof_assert!(|variant_fields: &IndexVec<FieldIdx, LocalIdx>|
-        forall(|k: USize| 0 <= k && k <= (*variant_fields).len() ==> <FieldIdx as Idx>::can_new(k)));
-    thrust_macros::proof_assert!(|variant_fields: &IndexVec<FieldIdx, LocalIdx>, assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>|
-        forall(|f: usize, i: USize|
-            0 <= f && f < (*variant_fields).len() && <LocalIdx as Idx>::index_is((*variant_fields)[f], i)
-                ==> (i < (*assignments).len() && (*assignments)[i] != SavedLocalEligibility::Unassigned)));
-    thrust_macros::proof_assert!(|assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, promoted_offsets: &IndexVec<FieldIdx, Size>, promoted_memory_index: &IndexVec<FieldIdx, u32>|
-        ineligible_promoted::<VariantIdx, FieldIdx, LocalIdx>(assignments, promoted_offsets, promoted_memory_index)
-            && forall(|k: USize, i: USize|
-                0 <= k && k < (*promoted_memory_index).len() && <u32 as Idx>::index_is((*promoted_memory_index)[k], i)
-                    ==> i < (*promoted_memory_index).len()));
     // Rewrite (rewrites.md R12): the destructuring of the variant's fields and the
     // combination of its offsets and memory order with the promoted ones are
     // `combine_offsets`, which takes the number m of the variant's fields. Its `requires`
@@ -1805,6 +1841,8 @@ pub fn layout<
     // Rewrite (rewrites.md R13): the variants' iterator is bound to a name, so that the atoms of
     // the closure's `requires` are premises of `Map::new`'s precondition, stated right before it.
     let variant_iter = variant_fields.iter_enumerated();
+    thrust_macros::proof_assert!(|variant_fields: &IndexSlice<VariantIdx, IndexVec<FieldIdx, LocalIdx>>|
+        forall(|k: USize| 0 <= k && k <= (*variant_fields).len() ==> <VariantIdx as Idx>::can_new(k)));
     thrust_macros::proof_assert!(|calc: &LayoutCalculator<C>, local_layouts: &IndexSlice<LocalIdx, F>, assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>|
         variant_env_wf::<F, VariantIdx, FieldIdx, LocalIdx, C>(*calc, local_layouts, &assignments));
     thrust_macros::proof_assert!(|local_layouts: &IndexSlice<LocalIdx, F>, assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, variant_fields: &IndexSlice<VariantIdx, IndexVec<FieldIdx, LocalIdx>>|
