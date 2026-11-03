@@ -229,7 +229,7 @@ impl TargetDataLayout {
     #[inline]
     #[thrust_macros::requires(Self::pointer_space_ok(*self, c))]
     #[thrust_macros::ensures(true)]
-    #[thrust::reveal(TargetDataLayout::pointer_space_ok, TargetDataLayout::pointer_size_is)]
+    #[thrust::reveal(TargetDataLayout::pointer_space_ok)]
     pub fn pointer_align_in(&self, c: AddressSpace) -> AbiAlign {
         AbiAlign::new(if c == self.default_address_space {
             self.default_address_space_pointer_spec.pointer_align
