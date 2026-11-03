@@ -5,7 +5,10 @@ whole extraction in one file (`//@ignore-on-host`). The verified code lives in r
 layout under `tests/rustc_coroutine/compiler/` (`rustc_hashes`, `rustc_index`, `rustc_abi`, one
 crate of three modules), with the case study's own code (the iterator adapters of rewrites.md R8,
 `Model` declarations, std specifications, lemmas) under
-`tests/rustc_coroutine/thrust/`. The goal is a proof that `layout()` does not panic.
+`tests/rustc_coroutine/thrust/`. The goal is a proof that `layout()` does not panic. The module
+tree keeps the smallest part of rustc's code that compiles with `layout()`: an item nothing
+needs in order to compile is dropped, so the tree has no `Hash64::as_u64`,
+`VariantLayout::has_fields`, or `Borrow` and `BorrowMut` impls of `IndexVec`.
 
 Each file below is a crate root that includes the whole tree and selects one part of rustc's code
 with a `//@rustc-env: THRUST_VERIFY_ONLY=..` header: a module (`rustc_hashes`, the functions of
@@ -28,7 +31,7 @@ bound on a type parameter, not a change to rustc's code: the proved `DenseBitSet
 
 | file | selection | state |
 | --- | --- | --- |
-| `hashes.rs` | `rustc_hashes` | verified, each goal on its own (`THRUST_SPLIT_GOALS`); no analyzed code calls `Hash64::new` and `as_u64`, so their bodies are checked in no part |
+| `hashes.rs` | `rustc_hashes` | verified, each goal on its own (`THRUST_SPLIT_GOALS`); no analyzed code calls `Hash64::new`, so its body is checked in no part |
 | `values.rs` | `rustc_abi` (lib.rs) | verified, each goal on its own; `main` reveals `TargetDataLayout::pointer_space_ok` and `pointer_size_is`, which it reads (#132) |
 | `index.rs` | `rustc_index::**` (`Idx`, `IndexVec`, `IndexSlice`, the bit sets, the own iterators `IdxRange`, `WordIter`, `SliceIter`, `IterEnumerated`), and `crate`: the clients `filled`, `two_members` and `column_bound` | verified, each goal on its own |
 | `indexvec_int_range.rs` | `rustc_index::vec`, `rustc_index::slice`, `filled`, under `THRUST_INT_RANGE=conversions` | verified; a check of the option, not a run of the case study: with it `count_ones` of bit_set.rs has no specification of `sum` |

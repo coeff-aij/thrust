@@ -21,11 +21,6 @@ impl Hash64 {
     }
 
     #[inline]
-    pub fn as_u64(self) -> u64 {
-        self.inner
-    }
-
-    #[inline]
     #[thrust::callable]
     pub fn wrapping_add(self, other: Self) -> Self {
         Self {
