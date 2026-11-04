@@ -5,7 +5,7 @@
 // A second fail twin of extend_for.rs, on `extend` itself: its postcondition appends what the
 // iterator produced twice, which is false as soon as one item is produced. The file has no client,
 // whose assertion could be refuted through this postcondition whatever the loop does.
-// Creusot's `extend` and `extend_index` (`examples/iterators/08_collect_extend.rs`): a `for` loop
+// Creusot's `extend` (`examples/iterators/08_collect_extend.rs`): a `for` loop
 // over an iterator implementing std.rs's `IteratorSpec`, whose invariant states that the vector is
 // its entry value followed by `produced`. The parameter is `it`, since the invariant's `iter` names
 // the loop's iterator; `I::inv(it)` is required where Creusot's type invariant holds by typing. The
