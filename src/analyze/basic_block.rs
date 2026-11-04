@@ -2280,6 +2280,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// the closure states the body's contract as a formula of the closure value, which says nothing
     /// of a function pointer the closure holds: such a value has no term, so without this check
     /// the body's assumption of what the pointer returns holds of no closure the program builds.
+    /// Outside its body the closure's pointers are then opaque (`Unrefined::closure` in
+    /// `refine::template`).
     fn check_closure_captures(
         &mut self,
         def_id: DefId,
@@ -2293,9 +2295,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .ctx
             .def_ty_with_args(def_id, parent_args, caller_def_id)
         else {
-            // A closure without a type, one in a body Thrust skips, has no capture types recorded
-            // either (`register_def` is never reached for it), so its type is built unrefined
-            // wherever it is used and nothing assumes its body's types of its captures.
+            // A closure without a type is one in a body Thrust skips: no body is analyzed under
+            // its capture types, and it has no contract a `pre!`, `post!` or call could read.
             return;
         };
         let expected = def_ty
