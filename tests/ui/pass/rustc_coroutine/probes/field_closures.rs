@@ -532,8 +532,7 @@ where
 // `univariant_biased`'s closures over the fields. `end` and `fields_excluding_tail` are its own;
 // `offsets` stands for the offsets it computed, one per field. The closures' contracts are
 // written: the niche closure requires what `available` needs of the niche of its field's layout,
-// and the others require nothing. The filter closure takes its argument as `p` rather than by the
-// pattern `&(_, f)`, which a `closure!` clause does not accept.
+// and the others require nothing.
 #[thrust_macros::requires(!maybe_unsized || (*fields).len() > 0)]
 #[thrust_macros::requires((*offsets).len() == (*fields).len())]
 #[thrust_macros::requires(forall(|i: usize, d: &&LayoutData, n: Niche|
@@ -587,7 +586,7 @@ fn field_closures<'a, F: Deref<Target = &'a LayoutData> + Copy + thrust_models::
     let mut non_zst_fields = Filter::new(iter_enumerated(fields), thrust_macros::closure!(
         requires(true),
         ensures(true),
-        |p: &(usize, &F)| -> bool { !p.1.is_zst() },
+        |&(_, f): &(usize, &F)| -> bool { !f.is_zst() },
     ));
     match (
         non_zst_fields.next(),
