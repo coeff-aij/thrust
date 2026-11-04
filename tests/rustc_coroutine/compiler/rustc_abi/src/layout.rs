@@ -103,6 +103,30 @@ fn pow2_max(q: u64) {
     }
 }
 
+/// `Size::align_to`'s result `r` in `pow2` terms, for an alignment up to `Align::MAX` and an
+/// offset up to `2^62`.
+#[thrust_macros::lemma]
+#[thrust_macros::requires(a.pow2 <= 29 && x.raw <= 4611686018427387904u64)]
+#[thrust_macros::requires(forall(|b: USize| a.pow2 < 64
+    && b == (BitVec::<64, false>::from_int(1) << (BitVec::from_int(a.pow2) & BitVec::from_int(63))).to_int()
+    && x.raw + b - 1 <= u64::MAX
+    ==> (x.raw <= r.raw && r.raw < x.raw + b)))]
+#[thrust_macros::ensures(forall(|q: USize| q == a.pow2 ==> (x.raw <= r.raw && r.raw < x.raw + pow2(q) && pow2(q) <= 536870912)))]
+fn aligned_within(x: Size, a: Align, r: Size) {
+    shl_is_pow2(a.pow2 as u64);
+    pow2_max(a.pow2 as u64);
+}
+
+/// `pow2` is positive.
+#[thrust_macros::lemma]
+#[thrust_macros::variant(q)]
+#[thrust_macros::ensures(pow2(q) >= 1)]
+fn pow2_pos(q: u64) {
+    if q > 0 {
+        pow2_pos(q - 1);
+    }
+}
+
 /// `niche`, if any, is well formed under `dl` and ends at or before `end`.
 #[thrust_macros::predicate]
 #[thrust::opaque]
@@ -816,6 +840,37 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         })
     }
 
+    /// Pads the offset to the field's alignment and raises the struct's alignment to it: the
+    /// offset grows by less than the alignment's bytes, and the struct's alignment's bytes by at
+    /// most them.
+    #[thrust_macros::requires(field_align.abi.pow2 <= 29 && (*align).pow2 <= 29 && (*offset).raw <= 4611686018427387904u64)]
+    #[thrust_macros::ensures((*offset).raw <= (!offset).raw && (!align).pow2 <= 29)]
+    #[thrust_macros::ensures(forall(|q: USize, q2: USize, qa: USize|
+        !(q == (*align).pow2 && q2 == (!align).pow2 && qa == field_align.abi.pow2)
+        || ((!offset).raw < (*offset).raw + pow2(qa) && pow2(q2) <= pow2(q) + pow2(qa) && pow2(qa) <= 536870912)))]
+    fn align_step(offset: &mut Size, align: &mut Align, field_align: AbiAlign) {
+        let aligned = (*offset).align_to(field_align.abi);
+        thrust_macros::proof!(aligned_within(*offset, field_align.abi, aligned));
+        thrust_macros::proof!(pow2_pos((*align).pow2 as u64));
+        thrust_macros::proof!(pow2_pos(field_align.abi.pow2 as u64));
+        *offset = aligned;
+        *align = (*align).max(field_align.abi);
+    }
+
+    /// The write of a field's offset in `univariant_biased`'s field loop.
+    #[thrust_macros::requires(forall(|j: USize| !<FieldIdx as Idx>::index_is(i, j) || j < (*offsets).len()))]
+    #[thrust_macros::ensures((!offsets).len() == (*offsets).len())]
+    #[thrust_macros::ensures(forall(|j: USize| !<FieldIdx as Idx>::index_is(i, j) || (!offsets)[j] == value))]
+    #[thrust_macros::ensures(forall(|j: USize|
+        !(0 <= j && j < (*offsets).len() && !<FieldIdx as Idx>::index_is(i, j)) || (!offsets)[j] == (*offsets)[j]))]
+    fn set_offset<FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>>(
+        offsets: &mut IndexVec<FieldIdx, Size>,
+        i: FieldIdx,
+        value: Size,
+    ) {
+        offsets[i] = value;
+    }
+
     /// The niche choice of `univariant_biased`'s field loop for `field` placed at `offset`: the
     /// chosen niche ends by the field's end.
     #[thrust_macros::requires(Self::deref_functional::<FieldIdx, VariantIdx, F>())]
@@ -917,22 +972,21 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         } else {
             field.align
         };
-        thrust_macros::proof!(pow2_max(field_align.abi.pow2 as u64));
-        thrust_macros::proof!(shl_is_pow2(field_align.abi.pow2 as u64));
-        let aligned = (*offset).align_to(field_align.abi);
-        thrust_macros::proof!(niche_ends_later(&*largest_niche, dl, *offset, aligned));
-        *offset = aligned;
-        *align = (*align).max(field_align.abi);
+        let before = *offset;
+        Self::align_step(offset, align, field_align);
+        thrust_macros::proof!(niche_ends_later(&*largest_niche, dl, before, *offset));
         *max_repr_align = (*max_repr_align).max(field.max_repr_align);
 
         // debug!("univariant offset: {:?} field: {:#?}", offset, field);
-        offsets[i] = *offset;
+        Self::set_offset::<FieldIdx>(offsets, i, *offset);
 
         Self::offer_niche::<FieldIdx, VariantIdx, F>(largest_niche, largest_niche_available, field, *offset, niche_bias, dl);
 
         *offset = (*offset)
             .checked_add(field.size, dl)
             .ok_or(LayoutCalculatorError::SizeOverflow)?;
+        thrust_macros::proof_assert!(|largest_niche: &mut Option<Niche>, dl: &TargetDataLayout, offset: &mut Size|
+            niche_ends_by(*largest_niche, *dl, *offset));
         Ok(())
     }
 }

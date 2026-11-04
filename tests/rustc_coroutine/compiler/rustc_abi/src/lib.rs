@@ -505,13 +505,16 @@ pub struct AbiAlign {
     pub abi: Align,
 }
 
+#[thrust_macros::context]
 impl AbiAlign {
     #[inline]
+    #[thrust_macros::ensures(result.abi == align)]
     pub fn new(align: Align) -> AbiAlign {
         AbiAlign { abi: align }
     }
 
     #[inline]
+    #[thrust_macros::ensures(result.abi.pow2 <= self.abi.pow2 && result.abi.pow2 <= other.abi.pow2)]
     pub fn min(self, other: AbiAlign) -> AbiAlign {
         AbiAlign {
             abi: self.abi.min(other.abi),
