@@ -1,4 +1,3 @@
-//@ignore-on-host: the refutation gets no answer at 300 s in some runs (see README.md)
 //@error-in-other-file: Unsat
 //@edition: 2024
 //@compile-flags: -Adead_code -C debug-assertions=off --cfg thrust_scalar_pair_fail

@@ -39,6 +39,10 @@ impl<FieldIdx: Idx, VariantIdx: Idx> LayoutData<FieldIdx, VariantIdx> {
         let b_align = b.align(dl).abi;
         let align = a.align(dl).abi.max(b_align).max(dl.aggregate_align);
         let b_offset = a.size(dl).align_to(b_align);
+        // The fail twin of the scalar_pair root sets this cfg: the second scalar is placed after
+        // the first, so an assertion that it is placed at 0 is refuted.
+        #[cfg(thrust_scalar_pair_fail)]
+        thrust_macros::proof_assert!(|b_offset: Size| b_offset.raw == 0);
         let size = (b_offset + b.size(dl)).align_to(align);
 
         // Rewrite (rewrites.md R21): `max_by_key(it, f)` for `it.max_by_key(f)`.
@@ -53,10 +57,6 @@ impl<FieldIdx: Idx, VariantIdx: Idx> LayoutData<FieldIdx, VariantIdx> {
                 |niche: &Niche| -> u128 { niche.available(dl) },
             ),
         );
-        // The fail twin of the scalar_pair root sets this cfg: the second scalar is placed after
-        // the first, so an assertion that it is placed at 0 is refuted.
-        #[cfg(thrust_scalar_pair_fail)]
-        thrust_macros::proof_assert!(|b_offset: Size| b_offset.raw == 0);
 
         let combined_seed = a.size(dl).bytes().wrapping_add(b.size(dl).bytes());
 
