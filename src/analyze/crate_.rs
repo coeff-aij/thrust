@@ -1034,7 +1034,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.report_unmatched_selection();
         self.refine_local_defs();
         self.check_impl_refinements();
-        self.ctx.check_fixed_specs_refine();
+        self.ctx.check_narrower_specs_refine();
         analyze::lemma::check_proof_branches(self.tcx, proof_branch, |def_id| {
             !self.skip_analysis.contains(&def_id)
         });

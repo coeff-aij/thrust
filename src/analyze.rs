@@ -243,14 +243,20 @@ struct DeferredDefTy<'tcx> {
     target_args: Option<mir_ty::GenericArgsRef<'tcx>>,
 }
 
-impl DeferredDefTy<'_> {
-    /// Whether this is an extern spec whose own call fixes every type and const argument of the
-    /// target, so that it covers one instance of it.
-    fn is_at_fixed_args(&self) -> bool {
-        use mir_ty::TypeVisitableExt as _;
-        self.target_args.is_some_and(|args| {
-            !args.has_type_flags(mir_ty::TypeFlags::HAS_TY_PARAM | mir_ty::TypeFlags::HAS_CT_PARAM)
-        })
+impl<'tcx> DeferredDefTy<'tcx> {
+    /// Whether this spec covers every instance `other` covers, by the type arguments their own
+    /// calls of the target give it (`extern_spec::bind_spec_args`), bounds aside.
+    fn covers_instances_of(&self, tcx: TyCtxt<'tcx>, other: &DeferredDefTy<'tcx>) -> bool {
+        let (Some(args), Some(other_args)) = (self.target_args, other.target_args) else {
+            return false;
+        };
+        extern_spec::bind_spec_args(tcx, self.local_def_id, args, other_args).is_some()
+    }
+
+    /// Whether this spec covers only some of the instances `other` covers: it fixes an argument
+    /// `other` leaves to a type parameter (`cmp::max::<u64>` against `cmp::max::<T>`).
+    fn is_narrower_than(&self, tcx: TyCtxt<'tcx>, other: &DeferredDefTy<'tcx>) -> bool {
+        other.covers_instances_of(tcx, self) && !self.covers_instances_of(tcx, other)
     }
 }
 
@@ -1629,16 +1635,12 @@ impl<'tcx> Analyzer<'tcx> {
             .entry(target_def_id)
             .or_insert_with(|| DefTy::Deferred(Vec::new()))
         {
-            // A call takes the first spec that covers it, so a spec at the target's instance
-            // goes before the generic specs, which cover that instance too.
-            let position = if spec.is_at_fixed_args() {
-                specs
-                    .iter()
-                    .position(|other| !other.is_at_fixed_args())
-                    .unwrap_or(specs.len())
-            } else {
-                specs.len()
-            };
+            // A call takes the first spec that covers it, so a spec goes before the specs whose
+            // instances strictly include its own, as a specialization takes precedence.
+            let position = specs
+                .iter()
+                .position(|other| spec.is_narrower_than(self.tcx, other))
+                .unwrap_or(specs.len());
             specs.insert(position, spec);
         }
     }
