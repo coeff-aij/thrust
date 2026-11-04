@@ -462,7 +462,7 @@ where
 // Like core's (`Iterator::max_by_key` through `cmp::max_by`) it keeps the last item of greatest
 // key. The closure's precondition need hold only on the items the iterator can yield, where
 // std.rs's `max_by_key` requires it of every value; `F: Fn` as in `iter_all`, and the items are
-// `Copy`, so the loop can record them. Creusot and Verus specify no `max_by_key`; the contract
+// `Copy`, so the loop can record them with the candidate's position. Creusot and Verus specify no `max_by_key`; the contract
 // states that the result is one of the items produced up to completion, `None` exactly when there
 // is none, and not which of them has the greatest key.
 pub struct MaxByKeySpec<I, B, F>(PhantomData<(I, B, F)>);
@@ -516,23 +516,29 @@ where
 {
     let mut it = iter;
     I::produces_refl(&it);
-    // `seen` records the items passed to the closure, for the loop invariant.
+    // `seen` records the items passed to the closure and `best_pos` the position of the candidate
+    // among them, for the loop invariant.
     let mut seen: Vec<I::Item> = Vec::new();
     let mut best: Option<(B, I::Item)> = None;
+    let mut best_pos: usize = 0;
     loop {
         thrust_macros::invariant!(
-            |it: I, seen: Vec<I::Item>, best: Option<(B, I::Item)>, iter: thrust_models::FnParam<I>, f: F|
+            |it: I, seen: Vec<I::Item>, best: Option<(B, I::Item)>, best_pos: usize, iter: thrust_models::FnParam<I>, f: F|
                 I::inv(it)
                     && I::produces(iter.at_entry(), seen, it)
                     && MaxByKeySpec::<I, B, F>::pre_all(it, f)
                     && (best == None) == (seen.len() == 0)
                     && forall(|k: <B as thrust_models::Model>::Ty, x: <I::Item as thrust_models::Model>::Ty|
-                        best != Some((k, x)) || exists(|j: Int| 0 <= j && j < seen.len() && x == seen[j]))
+                        best != Some((k, x)) || (best_pos < seen.len() && x == seen[best_pos]))
         );
         let before = thrust_macros::ghost!(|it: I| -> I { it });
         let Some(x) = it.next() else {
             return match best {
-                Some((_, x)) => Some(x),
+                Some((_, x)) => {
+                    thrust_macros::proof_assert!(|x: I::Item, seen: Vec<I::Item>, best_pos: usize|
+                        best_pos < seen.len() && x == seen[best_pos]);
+                    Some(x)
+                }
                 None => None,
             };
         };
@@ -543,7 +549,10 @@ where
         let k = f(&x);
         best = match best {
             Some((bk, bx)) if k < bk => Some((bk, bx)),
-            _ => Some((k, x)),
+            _ => {
+                best_pos = seen.len();
+                Some((k, x))
+            }
         };
         seen.push(x);
     }

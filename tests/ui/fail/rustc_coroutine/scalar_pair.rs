@@ -3,7 +3,7 @@
 //@compile-flags: -Adead_code -C debug-assertions=off --cfg thrust_scalar_pair_fail
 //@no-rustfix
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300 THRUST_TRY_SPECS=1
-//@rustc-env: THRUST_VERIFY_ONLY=rustc_abi::layout::simple::LayoutData::scalar_pair,rustc_abi::Niche::from_scalar,case_study::iter::max_by_key,case_study::iter::MaxByKeySpec
+//@rustc-env: THRUST_VERIFY_ONLY=rustc_abi::layout::simple::LayoutData::scalar_pair,rustc_abi::Niche::from_scalar,rustc_abi::Scalar::size,case_study::iter::max_by_key,case_study::iter::MaxByKeySpec
 //@rustc-env: THRUST_SPLIT=1 THRUST_SPLIT_GOALS=1
 // `LayoutData::scalar_pair` of rustc_abi's layout/simple.rs, which `univariant_biased` calls on
 // two scalar fields, against the contract the `simple.rs` and `univariant_biased.rs` roots read
