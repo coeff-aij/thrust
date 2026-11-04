@@ -3,8 +3,8 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300 THRUST_TRY_SPECS=1
 //@rustc-env: THRUST_VERIFY_ONLY=case_study::lemmas,split
 // The counting lemmas of thrust/lemmas.rs, which `layout()` (stage 7) and `univariant_biased` use
-// and the `layout.rs` root assumes. The code is the module tree under tests/rustc_coroutine/; this file selects the
-// lemmas and uses the permutation split as `layout()` does.
+// and the `layout.rs` root assumes. The code is the module tree under tests/rustc_coroutine/; this
+// file selects the lemmas and uses the permutation split as `layout()` does.
 #![feature(new_range_api)]
 
 #[path = "../../../rustc_coroutine/compiler/rustc_hashes/src/lib.rs"]
