@@ -23,7 +23,7 @@ pub mod rustc_abi;
 #[path = "../../../rustc_coroutine/thrust/mod.rs"]
 pub mod case_study;
 
-use rustc_abi::{Align, HasDataLayout, LayoutCalculator, LayoutData, ReprOptions, StructKind};
+use rustc_abi::{HasDataLayout, LayoutCalculator, LayoutData, ReprOptions, StructKind};
 use rustc_index::{Idx, IndexSlice};
 
 // A caller of `univariant` that establishes its precondition, the size bound included.
@@ -31,7 +31,6 @@ use rustc_index::{Idx, IndexSlice};
 #[thrust_macros::requires(
     LayoutCalculator::<Cx>::layout_pre::<FieldIdx, VariantIdx, F>(*calc, fields, kind)
         && LayoutCalculator::<Cx>::fits_in_any_order::<FieldIdx, VariantIdx, F>(*calc, fields, repr, kind)
-        && thrust_models::forall(|ra: Align| (*repr).align == Some(ra) ==> ra.pow2 <= 29)
         && LayoutCalculator::<Cx>::deref_functional::<FieldIdx, VariantIdx, F>()
 )]
 #[thrust_macros::ensures(true)]
