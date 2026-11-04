@@ -8,7 +8,7 @@ fn inc(x: i32) -> i32 {
 }
 
 #[thrust::trusted]
-#[thrust_macros::requires(thrust_macros::pre!(g(x, x)))] //~ ERROR: `pre!`/`post!` arity mismatch
+#[thrust_macros::requires(thrust_macros::pre!(g(x, x)))] //~ ERROR: `pre!` arity mismatch: the callee takes 1 argument(s), given 2
 #[thrust_macros::ensures(true)]
 fn apply<G: Fn(i32) -> i32>(g: G, x: i32) -> i32 {
     g(x)

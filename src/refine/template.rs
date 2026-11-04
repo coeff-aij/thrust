@@ -731,7 +731,9 @@ impl<'tcx> TypeBuilder<'tcx> {
         }
 
         // TODO: keep this in step with `impl<T: Model> Model for Ghost<T>` in std.rs, which
-        // resolves a `Ghost<T>` to its content as well.
+        // resolves a `Ghost<T>` to its content as well, and with `spec_value_view` in
+        // `analyze::annot_fn`, which compares a `pre!`/`post!` argument's type the same way (it
+        // also follows the `Box` and `Closure<F>` cases above).
         //
         // Which of the two applies is not evident from the source: a concrete `Ghost<i64>`
         // normalizes and never reaches here, while a generic one does, because
@@ -1178,6 +1180,53 @@ impl<'tcx> TypeBuilder<'tcx> {
         }
     }
 
+    /// The `Fn`, `FnMut` or `FnOnce` bound of the closure type parameter `param_ty` among the
+    /// predicates of `local_def_id` at `generic_args`, and the `FnOnce::Output` projection it
+    /// states.
+    pub fn closure_param_bound(
+        &self,
+        param_ty: mir_ty::ParamTy,
+        local_def_id: rustc_hir::def_id::LocalDefId,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
+    ) -> Option<(
+        mir_ty::PolyTraitPredicate<'tcx>,
+        mir_ty::PolyProjectionPredicate<'tcx>,
+    )> {
+        // `predicates_of(..).predicates` holds only the predicates written on the
+        // function itself; a bound such as `F: FnMut(..)` on the enclosing impl or
+        // trait lives in the parent's predicates. `instantiate` and
+        // `instantiate_identity` walk the parent chain, so go through them.
+        let generic_predicates = self.tcx.predicates_of(local_def_id.to_def_id());
+        let predicates = if !generic_args.is_empty() {
+            generic_predicates.instantiate(self.tcx, generic_args)
+        } else {
+            generic_predicates.instantiate_identity(self.tcx)
+        };
+        let param = param_ty.to_ty(self.tcx);
+        let call = predicates
+            .predicates
+            .iter()
+            .filter_map(|clause| clause.as_trait_clause())
+            .find(|pred| {
+                let trait_ref = pred.skip_binder().trait_ref;
+                trait_ref.self_ty() == param
+                    && self
+                        .tcx
+                        .fn_trait_kind_from_def_id(trait_ref.def_id)
+                        .is_some()
+            })?;
+        let output = predicates
+            .predicates
+            .iter()
+            .filter_map(|clause| clause.as_projection_clause())
+            .find(|pred| {
+                let projection = pred.skip_binder().projection_term;
+                Some(projection.def_id) == self.tcx.lang_items().fn_once_output()
+                    && projection.args.type_at(0) == param
+            })?;
+        Some((call, output))
+    }
+
     /// Builds the contract of a closure-typed parameter from its `Fn` bound.
     ///
     /// `param_ty` must already be resolved for the current analysis
@@ -1189,27 +1238,12 @@ impl<'tcx> TypeBuilder<'tcx> {
         local_def_id: rustc_hir::def_id::LocalDefId,
         generic_args: mir_ty::GenericArgsRef<'tcx>,
     ) -> Option<rty::FunctionType> {
-        // `predicates_of(..).predicates` holds only the predicates written on the
-        // function itself; a bound such as `F: FnMut(..)` on the enclosing impl or
-        // trait lives in the parent's predicates. `instantiate` and
-        // `instantiate_identity` walk the parent chain, so go through them.
-        let generic_predicates = self.tcx.predicates_of(local_def_id.to_def_id());
-        let predicates = if !generic_args.is_empty() {
-            generic_predicates.instantiate(self.tcx, generic_args)
-        } else {
-            generic_predicates.instantiate_identity(self.tcx)
-        };
-        let mut predicates = predicates.predicates.into_iter();
-
+        let (call, output) = self.closure_param_bound(param_ty, local_def_id, generic_args)?;
         let ClosureTraitCall {
             mut params,
             kind: closure_kind,
-        } = predicates.clone().find_map(|clause| {
-            self.closure_trait_call(param_ty, clause.as_trait_clause()?.skip_binder())
-        })?;
-        let mut ret = predicates.find_map(|clause| {
-            self.closure_trait_ret(param_ty, clause.as_projection_clause()?.skip_binder())
-        })?;
+        } = self.closure_trait_call(param_ty, call.skip_binder())?;
+        let mut ret = self.closure_trait_ret(param_ty, output.skip_binder())?;
 
         let free = |idx| chc::Term::var(rty::RefinedTypeVar::Free(idx));
         let value = chc::Term::var(rty::RefinedTypeVar::Value);
