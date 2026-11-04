@@ -17,6 +17,11 @@
 //! `spec.rs`). Each clause is optional (an omitted one leaves that side inferred)
 //! and may be repeated, in which case its predicates are conjoined.
 //!
+//! Each parameter is typed; its pattern may destructure tuples, tuple structs and shared
+//! references, and skip a part with `_` (`|&(_, x): &(i64, i64)|`), and a clause names what it
+//! binds. Where match ergonomics sees through a reference (`|(_, y): &(i64, i64)|`), the name is
+//! bound to a reference, as in the body (`*y`).
+//!
 //! `captures` restates the captured variables a clause wants to name, with the types
 //! they are captured by the closure. Only the ones a clause names need restating, and
 //! in any order: the plugin matches them against the closure's real captures by name.
