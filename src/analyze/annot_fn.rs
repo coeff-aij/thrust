@@ -1134,7 +1134,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         exprs.into_iter().map(|e| self.to_term(e)).collect()
     }
 
-    /// The result term of a `post!`, which stops unless it has the sort of what `fn_ty` returns.
+    /// The result term of a `post!`, which stops unless it agrees with the type `fn_ty` returns.
     fn post_result(
         &self,
         result: &'tcx rustc_hir::Expr<'tcx>,
