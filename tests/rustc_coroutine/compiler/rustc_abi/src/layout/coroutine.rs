@@ -1226,7 +1226,7 @@ fn split_prefix_fields<FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>>(
 
 /// What `layout()` requires of a layout it passes to `univariant`: its largest niche is well formed
 /// in the data layout `calc` names and lies within the layout, a scalar `backend_repr` is well
-/// formed, its alignment is at most `Align::MAX` and its size below the object size bound
+/// formed and its size below the object size bound
 /// (`univariant`'s `layout_pre`, of one field).
 #[thrust_macros::predicate]
 #[thrust::opaque]
@@ -1259,7 +1259,7 @@ fn layout_wf<
         && forall(|dl: TargetDataLayout, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>|
             !(C::dl_of(calc, dl)
                 && thrust_macros::post!(<F as core::ops::Deref>::deref(&x), d) && **d == l)
-                || (l.align.abi.pow2 <= 29 && l.size.raw < obj_bound(dl)))
+                || l.size.raw < obj_bound(dl))
 }
 
 /// `layout_wf` of every layout of `layouts`.
@@ -1319,11 +1319,9 @@ fn layouts_wf_of_entries<
             || dl.default_address_space_pointer_spec.pointer_size.raw == 2
             || dl.default_address_space_pointer_spec.pointer_size.raw == 4
             || dl.default_address_space_pointer_spec.pointer_size.raw == 8)
-        && forall(|dl: TargetDataLayout| !C::dl_of(*calc, dl)
-            || (dl.aggregate_align.pow2 <= 29 && dl.i8_align.pow2 <= 29))
         && forall(|dl: TargetDataLayout, ps: Size, pa: Align|
             !(C::dl_of(*calc, dl) && kind == StructKind::Prefixed(ps, pa))
-                || (pa.pow2 <= 29 && ps.raw < obj_bound(dl)))
+                || ps.raw < obj_bound(dl))
 )]
 #[thrust_macros::ensures(LayoutCalculator::<C>::layout_pre::<FieldIdx, VariantIdx, F>(*calc, fields, kind))]
 #[thrust_macros::context]
@@ -1371,7 +1369,7 @@ fn layout_pre_of_wf<
                 && 0 <= i
                 && i < (*fields).len()
                 && thrust_macros::post!(<F as core::ops::Deref>::deref(&(*fields)[i]), d) && **d == l)
-                || (l.align.abi.pow2 <= 29 && l.size.raw < obj_bound(dl))));
+                || l.size.raw < obj_bound(dl)));
 }
 
 /// What `variant_layout` reads of `calc`, `local_layouts` and `assignments`: their lengths,
@@ -1402,8 +1400,6 @@ fn variant_env_wf<
             || dl.default_address_space_pointer_spec.pointer_size.raw == 2
             || dl.default_address_space_pointer_spec.pointer_size.raw == 4
             || dl.default_address_space_pointer_spec.pointer_size.raw == 8)
-        && forall(|dl: TargetDataLayout| !C::dl_of(calc, dl)
-            || (dl.aggregate_align.pow2 <= 29 && dl.i8_align.pow2 <= 29))
         && layouts_wf::<LocalIdx, F, FieldIdx, VariantIdx, C>(calc, local_layouts)
 }
 
@@ -1486,8 +1482,6 @@ fn variant_promoted_wf<VariantIdx: Idx + thrust_models::Model, FieldIdx: Idx + t
             || dl.default_address_space_pointer_spec.pointer_size.raw == 2
             || dl.default_address_space_pointer_spec.pointer_size.raw == 4
             || dl.default_address_space_pointer_spec.pointer_size.raw == 8)
-        && forall(|dl: TargetDataLayout| !C::dl_of(*calc, dl)
-            || (dl.aggregate_align.pow2 <= 29 && dl.i8_align.pow2 <= 29))
         && layouts_wf::<LocalIdx, F, FieldIdx, VariantIdx, C>(*calc, local_layouts)
 )]
 #[thrust_macros::ensures(variant_env_wf::<F, VariantIdx, FieldIdx, LocalIdx, C>(*calc, local_layouts, assignments))]
@@ -1610,20 +1604,20 @@ fn variant_promoted_of<VariantIdx: Idx + thrust_models::Model, FieldIdx: Idx + t
 ) {}
 
 /// The prefix a variant starts with is one `univariant`'s `layout_pre` accepts in its kind: its
-/// alignment at most `Align::MAX` and its size below the object size bound. Opaque, as the other
+/// size below the object size bound. Opaque, as the other
 /// atoms of the per-variant closure's `requires`: `prefix_wf_of` establishes it in `layout()` from
 /// the prefix's `univariant` call, and `variant_layout` reveals it.
 #[thrust_macros::predicate]
 #[thrust::opaque]
 fn prefix_wf<C: HasDataLayout>(calc: LayoutCalculator<C>, prefix_size: Size, prefix_align: AbiAlign) -> bool {
     forall(|dl: TargetDataLayout| !C::dl_of(calc, dl)
-        || (prefix_align.abi.pow2 <= 29 && prefix_size.raw < obj_bound(dl)))
+        || prefix_size.raw < obj_bound(dl))
 }
 
 /// `prefix_wf` from the bounds it names.
 #[thrust_macros::lemma]
 #[thrust_macros::requires(forall(|dl: TargetDataLayout| !C::dl_of(*calc, dl)
-    || (prefix_align.abi.pow2 <= 29 && prefix_size.raw < obj_bound(dl))))]
+    || prefix_size.raw < obj_bound(dl)))]
 #[thrust_macros::ensures(prefix_wf::<C>(*calc, prefix_size, prefix_align))]
 #[thrust::reveal(prefix_wf)]
 fn prefix_wf_of<C: HasDataLayout>(calc: &LayoutCalculator<C>, prefix_size: Size, prefix_align: AbiAlign) {}
@@ -1733,7 +1727,7 @@ fn variant_layout<
     );
     thrust_macros::proof!(layouts_wf_of_entries(calc, local_layouts, &fields));
     thrust_macros::proof!(layout_pre_of_wf(calc, &fields, kind));
-    // `univariant` requires the `repr` alignment to be at most `Align::MAX`: `repr` has none.
+    // `variant_fits_wf` holds for a `repr` without alignment: `repr` has none.
     thrust_macros::proof_assert!(|repr: ReprOptions| repr.align == None);
     let mut variant = calc.univariant(&fields, &repr, kind)?;
 
@@ -1796,14 +1790,9 @@ fn variant_layout<
 //     (`pre!`), the only scalars `layout()` passes; rustc's closure builds `LayoutData::scalar`,
 //     which panics on a pointer scalar of an unknown address space.
 // - Invariants of rustc's layouts: `dl_wf` of the data layout `calc.cx` names, which `univariant`
-//   requires, and its aggregate and `i8` alignments at most `Align::MAX`: the data layout's
-//   alignments are parsed by `Align::from_bits`, which, through `from_bytes`, rejects a power of
-//   two above `Align::MAX`; `layout_wf` of every layout `univariant` may receive: `niche_wf` of its
+//   requires; `layout_wf` of every layout `univariant` may receive: `niche_wf` of its
 //   largest niche, and the niche within that layout; `Scalar::wf_in` of the layout if its
-//   `backend_repr` is a scalar (`scalar_pair`); its alignment at most `Align::MAX`, as each layout's
-//   alignment is the largest of alignments built by `from_bytes` (the data layout's, a `repr`
-//   alignment) or, for a packed SIMD vector of a non-power-of-two length, the largest power of two
-//   dividing its size, at most 2^18 (16-byte elements, fewer than 2^15 lanes); and its size below
+//   `backend_repr` is a scalar (`scalar_pair`); and its size below
 //   the object size bound, which every layout `rustc_abi` computes is checked against
 //   (`univariant_biased`, `layout_of_enum`, `checked_add`, `checked_mul`). These layouts are each of `local_layouts` and `prefix_layouts`
 //   (`layouts_wf`), and `tag_to_layout`'s result for any such integer scalar (through its
@@ -1850,7 +1839,6 @@ fn variant_layout<
         && forall(|dl: TargetDataLayout| C::dl_of(*calc, dl) ==> dl.default_address_space_pointer_spec.pointer_size.raw == 2
             || dl.default_address_space_pointer_spec.pointer_size.raw == 4
             || dl.default_address_space_pointer_spec.pointer_size.raw == 8)
-        && forall(|dl: TargetDataLayout| C::dl_of(*calc, dl) ==> dl.aggregate_align.pow2 <= 29 && dl.i8_align.pow2 <= 29)
         && layouts_wf::<LocalIdx, F, FieldIdx, VariantIdx, C>(*calc, local_layouts)
         && layouts_wf::<FieldIdx, F, FieldIdx, VariantIdx, C>(*calc, &prefix_layouts)
         && forall(|ti: Integer, tg: WrappingRange, s: Scalar, r: <F as thrust_models::Model>::Ty|
@@ -1950,8 +1938,6 @@ pub fn layout<
     #[cfg(thrust_layout_reach_prefix)]
     thrust_macros::proof_assert!(|| false);
     thrust_macros::proof!(layout_pre_of_wf(calc, &prefix_layouts, StructKind::AlwaysSized));
-    // `univariant` requires the `repr` alignment to be at most `Align::MAX`: `repr` has none.
-    thrust_macros::proof_assert!(|repr: ReprOptions| repr.align == None);
     let prefix = calc.univariant(
         &prefix_layouts,
         &repr,

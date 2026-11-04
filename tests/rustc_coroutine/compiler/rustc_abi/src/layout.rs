@@ -133,10 +133,8 @@ fn sum_first(ts: Seq<Int>, k: USize) -> Int {
 // prefix's alignment twice. `univariant` proves it from its two calls; `univariant_biased` is
 // verified against it in its own root, and the other roots take it as part of its contract.
 // They ensure too that an `Ok` layout is one `layout_pre` accepts as a field or a prefix, which
-// `layout()` passes the prefix's layout on as: its alignment at most `Align::MAX`, the largest of
-// alignments `layout_pre` and the `repr` bound by it (`pack` only lowers them), and its size below
-// the object size bound, for which the final check `size.bytes() >= dl.obj_size_bound()` returns
-// `SizeOverflow`.
+// `layout()` passes the prefix's layout on as: its size below the object size bound, for which
+// the final check `size.bytes() >= dl.obj_size_bound()` returns `SizeOverflow`.
 #[thrust_macros::context]
 impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
     /// The panic condition of `univariant` and `univariant_biased` apart from the size.
@@ -327,7 +325,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
             && Self::weighs::<FieldIdx, VariantIdx, F>(fields, repr, kind, dl, s)
             && q == l.align.abi.pow2 ==> (l.size.raw < s && pow2(q) <= s)))]
     #[thrust_macros::ensures(forall(|l: LayoutData<FieldIdx, VariantIdx>, dl: TargetDataLayout|
-        result == Ok(l) && Cx::dl_of(*self, dl) ==> (l.align.abi.pow2 <= 29 && l.size.raw < super::obj_bound(dl))))]
+        result == Ok(l) && Cx::dl_of(*self, dl) ==> l.size.raw < super::obj_bound(dl)))]
     #[thrust::reveal(LayoutCalculator::layout_pre)]
     pub fn univariant<
         'a,
@@ -404,7 +402,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
             && Self::weighs::<FieldIdx, VariantIdx, F>(fields, repr, kind, dl, s)
             && q == l.align.abi.pow2 ==> (l.size.raw < s && pow2(q) <= s)))]
     #[thrust_macros::ensures(forall(|l: LayoutData<FieldIdx, VariantIdx>, dl: TargetDataLayout|
-        result == Ok(l) && Cx::dl_of(*self, dl) ==> (l.align.abi.pow2 <= 29 && l.size.raw < super::obj_bound(dl))))]
+        result == Ok(l) && Cx::dl_of(*self, dl) ==> l.size.raw < super::obj_bound(dl)))]
     #[thrust_macros::ensures(forall(|e: LayoutCalculatorError<<F as thrust_models::Model>::Ty>|
         result != Err(e)
             || e == LayoutCalculatorError::SizeOverflow
