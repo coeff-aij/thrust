@@ -480,6 +480,61 @@ impl<'tcx> Analyzer<'tcx> {
         self.extend_clauses(clauses);
     }
 
+    /// Requires each extern spec at fixed arguments to refine, at its instance, the spec it takes
+    /// the place of there: the next spec of the same target that covers the instance, as an impl's
+    /// method refines its trait's (`check_impl_refinements`). A body verified once over its type
+    /// parameters with that spec is reused at the instance, where an analysis at the instance
+    /// takes the fixed spec, so its verdict does not depend on which of the two runs.
+    pub fn check_fixed_specs_refine(&mut self) {
+        let mut refinements = Vec::new();
+        for def_ty in self.defs.values() {
+            let DefTy::Deferred(specs) = def_ty else {
+                continue;
+            };
+            for (index, fixed) in specs.iter().enumerate() {
+                let Some(target_args) = fixed.target_args.filter(|_| fixed.is_at_fixed_args())
+                else {
+                    continue;
+                };
+                let owner = fixed.local_def_id.to_def_id();
+                let refined = specs[index + 1..].iter().find_map(|other| {
+                    let (args, _) = self.covered_spec_args(other, target_args, owner)?;
+                    Some((other.local_def_id, args))
+                });
+                if let Some(refined) = refined {
+                    refinements.push((fixed.local_def_id, refined));
+                }
+            }
+        }
+        refinements.sort_by_key(|(fixed, _)| fixed.local_def_index);
+        for (fixed, (refined, refined_args)) in refinements {
+            let owner = fixed.to_def_id();
+            let fixed_ty = {
+                let mut analyzer = self.local_def_analyzer(fixed);
+                analyzer.owner_fn_id(owner);
+                analyzer.expected_ty()
+            };
+            let refined_ty = {
+                let mut analyzer = self.local_def_analyzer(refined);
+                analyzer.owner_fn_id(owner).generic_args(refined_args);
+                analyzer.expected_ty()
+            };
+            tracing::info!(
+                ?fixed,
+                ?refined,
+                fixed_ty = %fixed_ty.display(),
+                refined_ty = %refined_ty.display(),
+                "spec at fixed arguments refines"
+            );
+            let clauses = rty::relate_refining_function_type(
+                fixed_ty.ty.as_function().unwrap(),
+                refined_ty.ty.as_function().unwrap(),
+                Some(&self.enum_defs),
+            );
+            self.extend_clauses(clauses);
+        }
+    }
+
     /// The generic arguments of `spec` at a call of its target at `generic_args`, or `None` when
     /// the spec does not cover the call.
     ///

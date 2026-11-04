@@ -1,17 +1,24 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
 
-// An extern spec of `Option::unwrap_or` at `u64` says nothing of a call at `i64`, whose type has
-// the same sort: that call takes std.rs's generic spec.
+// An extern spec of `cmp::max` at `u64` says nothing of a call at `i64`, whose type has the
+// same sort: that call takes the generic spec, and its precondition.
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(v1 != v2)]
+#[thrust_macros::ensures(result == v1 || result == v2)]
+fn _extern_spec_max<T: Ord + thrust_models::Model>(v1: T, v2: T) -> T {
+    std::cmp::max(v1, v2)
+}
 
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
-#[thrust_macros::ensures(result >= 0)]
-fn _extern_spec_option_unwrap_or_word(opt: Option<u64>, default: u64) -> u64 {
-    Option::unwrap_or(opt, default)
+#[thrust_macros::ensures(result == v1 || result == v2)]
+fn _extern_spec_max_word(v1: u64, v2: u64) -> u64 {
+    std::cmp::max(v1, v2)
 }
 
 fn main() {
-    let x = Some(-1i64).unwrap_or(0);
-    assert!(x >= 0);
+    let m = std::cmp::max(3i64, 3);
+    assert!(m == 3 || m == 4);
 }
