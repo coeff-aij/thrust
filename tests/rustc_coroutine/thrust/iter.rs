@@ -187,7 +187,9 @@ where
 // and, in place of a closure without a precondition, the precondition holds on every item the
 // inner iterator can yield (`pre_all`; rustc's closure in `layout()` can panic). The closure's
 // postcondition need not be precise: `produces` states the count only, the items yielded are at
-// most the input items the inner iterator produced, and not which of them.
+// most the input items the inner iterator produced, and not which of them; `next` states that the
+// item it returns is the last the inner iterator produced, as Creusot's `produces` maps each item
+// yielded to one the inner iterator produced.
 pub struct Filter<I, P> {
     iter: I,
     predicate: P,
@@ -279,6 +281,16 @@ where
 {
     type Item = I::Item;
 
+    // The trait's contract, and the item returned is the last the inner iterator produced.
+    #[thrust_macros::requires(<Self as IteratorSpec>::inv(*self))]
+    #[thrust_macros::ensures(
+        <Self as IteratorSpec>::inv(!self)
+            && (result == None ==> <Self as IteratorSpec>::completed(self))
+            && forall(|x: <I::Item as thrust_models::Model>::Ty| result == Some(x)
+                ==> (<Self as IteratorSpec>::produces(*self, Seq::singleton(x), !self)
+                    && exists(|s: Seq<<I::Item as thrust_models::Model>::Ty>|
+                        I::produces((*self).0, s.push(x), (!self).0))))
+    )]
     fn next(&mut self) -> Option<I::Item> {
         // `skipped` records the items the closure rejected, for the loop invariant.
         let this = self;
