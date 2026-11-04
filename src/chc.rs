@@ -321,6 +321,28 @@ impl Sort {
         self.walk_impl(Box::new(f))
     }
 
+    /// Whether a value of this sort can stand where one of `other` is expected in a query, whose
+    /// boxes are removed ([`unbox_sort`]): the same sort up to boxes, where the sort of a type
+    /// parameter or of a projection the context leaves open (`Forall`, `Param`) agrees with any.
+    pub fn agrees_with(&self, other: &Sort) -> bool {
+        match (unbox_sort(self.clone()), unbox_sort(other.clone())) {
+            (Sort::Forall(_) | Sort::Param(_), _) | (_, Sort::Forall(_) | Sort::Param(_)) => true,
+            (Sort::Mut(a), Sort::Mut(b)) | (Sort::Seq(a), Sort::Seq(b)) => a.agrees_with(&b),
+            (Sort::Array(ai, ae), Sort::Array(bi, be)) => {
+                ai.agrees_with(&bi) && ae.agrees_with(&be)
+            }
+            (Sort::Tuple(a), Sort::Tuple(b)) => Sort::all_agree(&a, &b),
+            (Sort::Datatype(a), Sort::Datatype(b)) => {
+                a.symbol == b.symbol && Sort::all_agree(&a.args, &b.args)
+            }
+            (a, b) => a == b,
+        }
+    }
+
+    fn all_agree(a: &[Sort], b: &[Sort]) -> bool {
+        a.len() == b.len() && a.iter().zip(b).all(|(a, b)| a.agrees_with(b))
+    }
+
     /// This sort with every forall sort `f` gives a value to replaced by it.
     pub fn subst_forall(&self, f: &impl Fn(ForallSortIdx) -> Option<Sort>) -> Sort {
         match self {

@@ -14,6 +14,7 @@ use rustc_middle::ty::{self as mir_ty, TyCtxt, TypeFoldable};
 
 use crate::analyze::{self, did_cache::DefIdCache};
 use crate::chc;
+use crate::pretty::PrettyDisplayExt as _;
 use crate::refine::{self, TypeBuilder};
 use crate::rty;
 
@@ -1097,16 +1098,70 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             .register_forall_pred(forall_pred.clone());
     }
 
-    /// Extracts the logical argument terms passed to `closure_precondition`/
-    /// `closure_postcondition`. The arguments are supplied as a single tuple (e.g. `(x,)` or
-    /// `()`), whose elements are the logical arguments of the closure.
-    fn closure_spec_args(
+    /// The logical argument terms passed to `closure_precondition`/`closure_postcondition` as a
+    /// single tuple (e.g. `(x,)` or `()`), for a callee that takes them as `params`.
+    ///
+    /// `closure_precondition` takes the tuple at any type, so this stops unless there is one
+    /// argument per parameter and each has the sort of its parameter, as a call is checked against
+    /// the callee's argument types and as Creusot's `precondition` and Verus's `requires` take
+    /// the tuple at the closure's `Args`. Integers of any type share a sort, so an integer
+    /// literal, which rustc types `i32` here, passes for any integer parameter, and a shared
+    /// reference or a box has the sort of what it points to, so `x` passes for a `&T` parameter.
+    fn spec_args(
         &self,
-        arg: &'tcx rustc_hir::Expr<'tcx>,
+        spec: &str,
+        args: &'tcx rustc_hir::Expr<'tcx>,
+        params: &[rty::RefinedType<rty::FunctionParamIdx>],
     ) -> Vec<chc::Term<rty::FunctionParamIdx>> {
-        match arg.kind {
-            rustc_hir::ExprKind::Tup(elems) => elems.iter().map(|e| self.to_term(e)).collect(),
-            _ => vec![self.to_term(arg)],
+        let exprs = match args.kind {
+            rustc_hir::ExprKind::Tup(elems) => elems.iter().collect(),
+            _ => vec![args],
+        };
+        if exprs.len() != params.len() {
+            self.tcx.dcx().span_fatal(
+                args.span,
+                format!(
+                    "`{spec}` arity mismatch: the callee takes {} argument(s), given {}",
+                    params.len(),
+                    exprs.len()
+                ),
+            );
+        }
+        for (expr, param) in exprs.iter().zip(params) {
+            self.check_spec_value_sort(spec, expr, &param.ty, "the callee takes");
+        }
+        exprs.into_iter().map(|e| self.to_term(e)).collect()
+    }
+
+    /// The result term of a `post!`, which stops unless it has the sort of what `fn_ty` returns.
+    fn post_result(
+        &self,
+        result: &'tcx rustc_hir::Expr<'tcx>,
+        fn_ty: &rty::FunctionType,
+    ) -> chc::Term<rty::FunctionParamIdx> {
+        self.check_spec_value_sort("post!", result, &fn_ty.ret.ty, "the callee returns");
+        self.to_term(result)
+    }
+
+    /// Stops unless `expr`, a value a `pre!`/`post!` passes, has the sort of `expected`
+    /// ([`chc::Sort::agrees_with`]).
+    fn check_spec_value_sort(
+        &self,
+        spec: &str,
+        expr: &'tcx rustc_hir::Expr<'tcx>,
+        expected: &rty::Type<rty::FunctionParamIdx>,
+        expected_as: &str,
+    ) {
+        let ty = self.expr_ty(expr);
+        let sort = self.type_builder.build(ty).to_sort();
+        if !sort.agrees_with(&expected.to_sort()) {
+            self.tcx.dcx().span_fatal(
+                expr.span,
+                format!(
+                    "`{spec}` passes a value of type `{ty}` where {expected_as} `{}`",
+                    expected.display()
+                ),
+            );
         }
     }
 
@@ -1186,25 +1241,6 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         })
     }
 
-    fn fn_item_spec_args(
-        &self,
-        args: &'tcx rustc_hir::Expr<'tcx>,
-        fn_ty: &rty::FunctionType,
-    ) -> Vec<chc::Term<rty::FunctionParamIdx>> {
-        let spec_args = self.closure_spec_args(args);
-        if spec_args.len() != fn_ty.params.len() {
-            self.tcx.dcx().span_fatal(
-                args.span,
-                format!(
-                    "`pre!`/`post!` arity mismatch: the function takes {} argument(s), given {}",
-                    fn_ty.params.len(),
-                    spec_args.len()
-                ),
-            );
-        }
-        spec_args
-    }
-
     /// Translates with the polarity `polarity` of the current one, and restores it.
     fn under<R>(&self, polarity: fn(Polarity) -> Polarity, translate: impl FnOnce() -> R) -> R {
         let saved = self.polarity.get();
@@ -1246,7 +1282,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
     ) -> FormulaOrTerm<rty::FunctionParamIdx> {
         if let Some(fn_ty) = self.fn_item_contract(receiver, true) {
             self.record_pre_receiver(self.expr_ty(receiver));
-            let args = self.fn_item_spec_args(args, &fn_ty);
+            let args = self.spec_args("pre!", args, &fn_ty.params.raw);
             return FormulaOrTerm::Formula(self.precondition_at(&fn_ty, &args));
         }
         let receiver_ty = self.expr_ty(receiver);
@@ -1258,7 +1294,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             // the `pre!` names: a hand-over states its precondition as it does a path's.
             self.record_pre_receiver(fn_item_ty);
             let fn_ty = self.fn_def_contract(receiver.span, def_id, generic_args, true);
-            let args = self.fn_item_spec_args(args, &fn_ty);
+            let args = self.spec_args("pre!", args, &fn_ty.params.raw);
             return FormulaOrTerm::Formula(self.precondition_at(&fn_ty, &args));
         }
         let fn_ty = self
@@ -1274,15 +1310,9 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                     ),
                 )
             });
-        let logical_args = self.closure_spec_args(args);
         // `fn_ty` is a closure (RustCall ABI), so its parameters are `[upvars, args..]`, where
         // the upvars are the closure value itself.
-        assert_eq!(
-            logical_args.len(),
-            fn_ty.params.len() - 1,
-            "closure precondition arity mismatch: closure takes {} argument(s)",
-            fn_ty.params.len() - 1
-        );
+        let logical_args = self.spec_args("pre!", args, &fn_ty.params.raw[1..]);
         let (receiver_term, final_state) = self.closure_receiver_term(receiver, &fn_ty, "pre!");
         let param_args: Vec<_> = std::iter::once(receiver_term).chain(logical_args).collect();
         let pre = self.precondition_at(&fn_ty, &param_args);
@@ -1302,15 +1332,15 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         result: &'tcx rustc_hir::Expr<'tcx>,
     ) -> FormulaOrTerm<rty::FunctionParamIdx> {
         if let Some(fn_ty) = self.fn_item_contract(receiver, false) {
-            let args = self.fn_item_spec_args(args, &fn_ty);
-            let result = self.to_term(result);
+            let args = self.spec_args("post!", args, &fn_ty.params.raw);
+            let result = self.post_result(result, &fn_ty);
             return FormulaOrTerm::Formula(fn_ty.postcondition_formula(&args, result));
         }
         let receiver_ty = self.expr_ty(receiver);
         if let Some((_, def_id, generic_args)) = self.receiver_fn_item(receiver_ty) {
             let fn_ty = self.fn_def_contract(receiver.span, def_id, generic_args, false);
-            let args = self.fn_item_spec_args(args, &fn_ty);
-            let result = self.to_term(result);
+            let args = self.spec_args("post!", args, &fn_ty.params.raw);
+            let result = self.post_result(result, &fn_ty);
             return FormulaOrTerm::Formula(fn_ty.postcondition_formula(&args, result));
         }
         let fn_ty = self
@@ -1326,15 +1356,9 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                     ),
                 )
             });
-        let logical_args = self.closure_spec_args(args);
         // `fn_ty` is a closure (RustCall ABI), so its parameters are `[upvars, args..]`, where
         // the upvars are the closure value itself.
-        assert_eq!(
-            logical_args.len(),
-            fn_ty.params.len() - 1,
-            "closure postcondition arity mismatch: closure takes {} argument(s)",
-            fn_ty.params.len() - 1
-        );
+        let logical_args = self.spec_args("post!", args, &fn_ty.params.raw[1..]);
         let (receiver_term, final_state) = self.closure_receiver_term(receiver, &fn_ty, "post!");
         if final_state.is_some() {
             if let Some((closure_ty, _)) = self.receiver_closure_behind_refs(receiver_ty) {
@@ -1345,7 +1369,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             }
         }
         let param_args: Vec<_> = std::iter::once(receiver_term).chain(logical_args).collect();
-        let result = self.to_term(result);
+        let result = self.post_result(result, &fn_ty);
         let mut fresh = || {
             self.analyzer.generate_user_quantified_var(
                 "a part of a closure's final state in post!".to_owned(),
