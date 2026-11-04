@@ -218,6 +218,9 @@ where
         }
         (Type::Param(got), Type::Param(expected))
             if got.forall_sort_idx == expected.forall_sort_idx => {}
+        // An opaque function pointer, as a closure seen from outside its body holds one, relates
+        // to no function type (`OpaqueFnPtrs` in `refine::template`).
+        (Type::Function(_), Type::Opaque) | (Type::Opaque, Type::Function(_)) => {}
         (Type::Alias(got), Type::Alias(expected))
             if got.forall_sort_index() == expected.forall_sort_index() => {}
         _ => rustc_middle::ty::tls::with(|tcx| {
