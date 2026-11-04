@@ -1105,7 +1105,11 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             .collect();
         let params = args
             .iter()
-            .map(|expr| self.type_builder.build(self.expr_ty(expr)).to_sort())
+            .map(|expr| {
+                self.type_builder
+                    .build(self.adjusted_expr_ty(expr))
+                    .to_sort()
+            })
             .collect();
         let result = self.type_builder.build(self.expr_ty(hir)).to_sort();
         let type_args = self.type_builder.generic_args_symbol(generic_args);
@@ -2325,7 +2329,9 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                                     let params = args
                                         .iter()
                                         .map(|expr| {
-                                            self.type_builder.build(self.expr_ty(expr)).to_sort()
+                                            self.type_builder
+                                                .build(self.adjusted_expr_ty(expr))
+                                                .to_sort()
                                         })
                                         .collect();
 
