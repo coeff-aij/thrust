@@ -21,9 +21,6 @@ use crate::rty;
 struct CalleeSig<'tcx> {
     inputs: Vec<mir_ty::Ty<'tcx>>,
     output: mir_ty::Ty<'tcx>,
-    /// Whether the signature is stated in the specification's generics, so that a type parameter
-    /// in it is the specification's own.
-    same_scope: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1050,6 +1047,16 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         }
     }
 
+    /// Where the `Fn` bound of a receiver's closure type parameter is stated, `refs` shared
+    /// references in: behind a reference, the parameter is the analyzed function's (`G = &H`),
+    /// whose own predicates state `H: Fn(..)`; otherwise it is the annotated function's.
+    fn closure_bound_owner(&self, refs: usize) -> (LocalDefId, mir_ty::GenericArgsRef<'tcx>) {
+        match self.type_builder.owner_fn_id().as_local() {
+            Some(owner) if refs > 0 => (owner, mir_ty::GenericArgs::empty()),
+            _ => (self.local_def_id, self.generic_args),
+        }
+    }
+
     /// Resolves the [`rty::FunctionType`] of the closure contract referred to by the receiver.
     ///
     /// The receiver type is instantiated to the actual closure type in the formula function; its
@@ -1059,13 +1066,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         let mir_ty::TyKind::Closure(def_id, args) = closure_ty.kind() else {
             if let mir_ty::TyKind::Param(ty) = closure_ty.kind() {
                 tracing::debug!("ParamTy is found: {ty:?}");
-                // Behind a reference, `ty` is a parameter of the function being analyzed
-                // (`G = &H`): its `Fn` bound is among that function's predicates, not among the
-                // instantiated predicates of the annotated one, which state `&H: Fn(..)`.
-                let (bound_owner, bound_args) = match self.type_builder.owner_fn_id().as_local() {
-                    Some(owner) if refs > 0 => (owner, mir_ty::GenericArgs::empty()),
-                    _ => (self.local_def_id, self.generic_args),
-                };
+                let (bound_owner, bound_args) = self.closure_bound_owner(refs);
                 let closure_fun_ty =
                     self.type_builder
                         .build_closure_type_for_param(*ty, bound_owner, bound_args);
@@ -1166,7 +1167,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             );
         }
         for (expr, input) in exprs.iter().zip(&sig.inputs) {
-            self.check_spec_value_type(spec, expr, *input, sig.same_scope, "the callee takes");
+            self.check_spec_value_type(spec, expr, *input, "the callee takes");
         }
         exprs.into_iter().map(|e| self.to_term(e)).collect()
     }
@@ -1178,13 +1179,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         result: &'tcx rustc_hir::Expr<'tcx>,
         sig: &CalleeSig<'tcx>,
     ) -> chc::Term<rty::FunctionParamIdx> {
-        self.check_spec_value_type(
-            "post!",
-            result,
-            sig.output,
-            sig.same_scope,
-            "the callee returns",
-        );
+        self.check_spec_value_type("post!", result, sig.output, "the callee returns");
         self.to_term(result)
     }
 
@@ -1195,12 +1190,11 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         spec: &str,
         expr: &'tcx rustc_hir::Expr<'tcx>,
         expected: mir_ty::Ty<'tcx>,
-        same_scope: bool,
         expected_as: &str,
     ) {
         let ty = self.expr_ty(expr);
         let expected_model = self.type_builder.resolve_model_ty(expected);
-        if !self.spec_value_agrees(ty, expected_model, same_scope) {
+        if !self.spec_value_agrees(ty, expected_model) {
             self.tcx.dcx().span_fatal(
                 expr.span,
                 format!("`{spec}` passes a value of type `{ty}` where {expected_as} `{expected}`"),
@@ -1212,24 +1206,16 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
     /// `expected`: the same type, where a shared reference or a box is its referent (the query
     /// removes them), the integer models and the Rust integers are one type (a formula's integers
     /// are unbounded, and a literal is typed `i32`), and a projection the context leaves
-    /// unnormalized agrees with any type. A type parameter is itself when `same_scope`, the
-    /// callee's signature being stated in the specification's own generics; otherwise the
-    /// parameters of the two types are numbered in different scopes and agree with any type.
-    fn spec_value_agrees(
-        &self,
-        value: mir_ty::Ty<'tcx>,
-        expected: mir_ty::Ty<'tcx>,
-        same_scope: bool,
-    ) -> bool {
+    /// unnormalized agrees with any type. Both types are stated in the specification's generics
+    /// at the arguments it is translated at, the callee's signature through the receiver's type,
+    /// so a type parameter is itself.
+    fn spec_value_agrees(&self, value: mir_ty::Ty<'tcx>, expected: mir_ty::Ty<'tcx>) -> bool {
         use mir_ty::TyKind;
         let value = self.spec_value_view(value);
         let expected = self.spec_value_view(expected);
-        let agree =
-            |a: mir_ty::Ty<'tcx>, b: mir_ty::Ty<'tcx>| self.spec_value_agrees(a, b, same_scope);
+        let agree = |a: mir_ty::Ty<'tcx>, b: mir_ty::Ty<'tcx>| self.spec_value_agrees(a, b);
         match (value.kind(), expected.kind()) {
             (TyKind::Alias(..), _) | (_, TyKind::Alias(..)) => true,
-            (TyKind::Param(a), TyKind::Param(b)) => !same_scope || a == b,
-            (TyKind::Param(_), _) | (_, TyKind::Param(_)) => !same_scope,
             _ if self.is_integer_model(value) && self.is_integer_model(expected) => true,
             (TyKind::Adt(a, a_args), TyKind::Adt(b, b_args)) => {
                 a.did() == b.did()
@@ -1246,9 +1232,9 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         }
     }
 
-    /// `ty` as [`Self::spec_value_agrees`] compares it: without lifetimes, shared references and
-    /// boxes, with `Closure<F>` as `F` and the model `<T as Model>::Ty` of a type parameter as `T`,
-    /// as [`TypeBuilder`] builds them.
+    /// `ty` as [`Self::spec_value_agrees`] compares it: without lifetimes, shared references,
+    /// boxes and `Ghost`, with `Closure<F>` as `F` and the model `<T as Model>::Ty` of a type
+    /// parameter as `T`, as [`TypeBuilder`] builds them.
     fn spec_value_view(&self, ty: mir_ty::Ty<'tcx>) -> mir_ty::Ty<'tcx> {
         use mir_ty::TyKind;
         let mut ty = self.tcx.erase_regions(ty);
@@ -1261,6 +1247,9 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                         || Some(adt.did()) == self.def_ids.closure_model() =>
                 {
                     args.type_at(0)
+                }
+                TyKind::Adt(adt, args) if Some(adt.did()) == self.def_ids.ghost_model() => {
+                    self.type_builder.resolve_model_ty(args.type_at(0))
                 }
                 TyKind::Alias(mir_ty::AliasTyKind::Projection, alias)
                     if Some(alias.def_id) == self.def_ids.model_ty()
@@ -1307,7 +1296,6 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         CalleeSig {
             inputs: sig.inputs().to_vec(),
             output: sig.output(),
-            same_scope: true,
         }
     }
 
@@ -1326,72 +1314,22 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 CalleeSig {
                     inputs: sig.inputs()[0].tuple_fields().to_vec(),
                     output: sig.output(),
-                    same_scope: true,
                 }
             }
             mir_ty::TyKind::Param(param) => {
-                let (bound_owner, bound_args, same_scope) =
-                    match self.type_builder.owner_fn_id().as_local() {
-                        Some(owner) if refs > 0 => (owner, mir_ty::GenericArgs::empty(), false),
-                        _ => (self.local_def_id, self.generic_args, true),
-                    };
-                self.closure_bound_sig(param, bound_owner, bound_args, same_scope)
+                let (bound_owner, bound_args) = self.closure_bound_owner(refs);
+                let (call, output) = self
+                    .type_builder
+                    .closure_param_bound(param, bound_owner, bound_args)
+                    .expect("a closure type parameter has an `Fn` bound");
+                let call = self.tcx.instantiate_bound_regions_with_erased(call);
+                let output = self.tcx.instantiate_bound_regions_with_erased(output);
+                CalleeSig {
+                    inputs: call.trait_ref.args.type_at(1).tuple_fields().to_vec(),
+                    output: output.term.expect_type(),
+                }
             }
             _ => panic!("the receiver of a closure contract is a closure: {closure_ty:?}"),
-        }
-    }
-
-    fn closure_bound_sig(
-        &self,
-        param: mir_ty::ParamTy,
-        owner: LocalDefId,
-        generic_args: mir_ty::GenericArgsRef<'tcx>,
-        same_scope: bool,
-    ) -> CalleeSig<'tcx> {
-        let predicates = self.tcx.predicates_of(owner.to_def_id());
-        let predicates = if generic_args.is_empty() {
-            predicates.instantiate_identity(self.tcx)
-        } else {
-            predicates.instantiate(self.tcx, generic_args)
-        };
-        let param_ty = param.to_ty(self.tcx);
-        let inputs = predicates
-            .predicates
-            .iter()
-            .filter_map(|clause| clause.as_trait_clause())
-            .map(|clause| {
-                self.tcx
-                    .instantiate_bound_regions_with_erased(clause)
-                    .trait_ref
-            })
-            .find(|trait_ref| {
-                trait_ref.self_ty() == param_ty
-                    && self
-                        .tcx
-                        .fn_trait_kind_from_def_id(trait_ref.def_id)
-                        .is_some()
-            })
-            .expect("a closure type parameter has an `Fn` bound")
-            .args
-            .type_at(1)
-            .tuple_fields()
-            .to_vec();
-        let output = predicates
-            .predicates
-            .iter()
-            .filter_map(|clause| clause.as_projection_clause())
-            .map(|clause| self.tcx.instantiate_bound_regions_with_erased(clause))
-            .find(|projection| {
-                Some(projection.projection_term.def_id) == self.tcx.lang_items().fn_once_output()
-                    && projection.projection_term.args.type_at(0) == param_ty
-            })
-            .map_or(self.tcx.types.unit, |projection| {
-                projection.term.expect_type()
-            });
-        CalleeSig {
-            inputs,
-            output,
-            same_scope,
         }
     }
 
