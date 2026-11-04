@@ -9,7 +9,7 @@
 // loop's iterator; `I::inv(it)` is required where Creusot's type invariant holds by typing.
 // Creusot's ensures also has `resolve(^done)`, which is not stated here; the client does not use it.
 use thrust_models::model::{Int, Mut, Seq};
-use thrust_models::{exists, forall, Ghost, Model};
+use thrust_models::{exists, forall, FnParam, Ghost, Model};
 
 #[thrust_macros::context]
 #[thrust_macros::requires(I::inv(it))]
@@ -21,7 +21,7 @@ where
 {
     let mut res = Vec::new();
     for x in it {
-        thrust_macros::invariant!(|iter: I, iter_old: Ghost<I>, produced: Ghost<Seq<<I::Item as Model>::Ty>>, res: Vec<I::Item>, it: thrust_models::FnParam<I>|
+        thrust_macros::invariant!(|iter: I, iter_old: Ghost<I>, produced: Ghost<Seq<<I::Item as Model>::Ty>>, res: Vec<I::Item>, it: FnParam<I>|
             iter_old == it.at_entry() && res == produced);
         res.push(x);
     }

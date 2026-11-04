@@ -8,9 +8,10 @@
 // its entry value followed by `produced`. The parameter is `it`, since the invariant's `iter` names
 // the loop's iterator; `I::inv(it)` is required where Creusot's type invariant holds by typing. The
 // vector reference is moved into `v` so that the invariant can name both its current value and the
-// parameter's entry value, which Creusot keeps in `snapshot! { vec }`.
-use thrust_models::model::{Int, Mut, Seq};
-use thrust_models::{exists, forall, Ghost, Model};
+// parameter's entry value, which Creusot keeps in `snapshot! { vec }`. Creusot's ensures also has
+// `resolve(^done)`, which is not stated here; `extend_index` does not use it.
+use thrust_models::model::{Mut, Seq};
+use thrust_models::{exists, FnParam, Ghost, Model};
 
 #[thrust_macros::context]
 #[thrust_macros::requires(I::inv(it))]
@@ -19,7 +20,7 @@ use thrust_models::{exists, forall, Ghost, Model};
 fn extend<T: Model, I: IteratorSpec<Item = T>>(vec: &mut Vec<T>, it: I) {
     let v = vec;
     for x in it {
-        thrust_macros::invariant!(|iter: I, iter_old: Ghost<I>, produced: Ghost<Seq<<T as Model>::Ty>>, v: &mut Vec<T>, it: thrust_models::FnParam<I>, vec: thrust_models::FnParam<&mut Vec<T>>|
+        thrust_macros::invariant!(|iter: I, iter_old: Ghost<I>, produced: Ghost<Seq<<T as Model>::Ty>>, v: &mut Vec<T>, it: FnParam<I>, vec: FnParam<&mut Vec<T>>|
             iter_old == it.at_entry() && !v == !vec.at_entry() && *v == (*vec.at_entry()).concat(produced));
         v.push(x);
     }
