@@ -7,8 +7,7 @@
 //@rustc-env: THRUST_SPLIT=1 THRUST_SPLIT_GOALS=1
 // The permutation sum of layout.rs, which bounds the weight of the fields `univariant_biased`'s
 // field loop has placed, in memory order, by the weight of all the fields: `sum_at_le` and the
-// lemmas its induction uses, over the counting functions of thrust/lemmas.rs, and `pow2_pos_upto`,
-// which makes the weights positive.
+// lemmas its induction uses, over the counting functions of thrust/lemmas.rs.
 // The code is the module tree under tests/rustc_coroutine/; this file selects the lemmas. This twin
 // verifies only `sum_at_le_repeated`, which `cfg(thrust_permutation_sum_fail)` adds: `sum_at_le`
 // without its requirement of distinct indices.
