@@ -402,6 +402,7 @@ impl Size {
     }
 
     #[inline]
+    #[thrust_macros::requires((*self).raw * 8 <= 128)]
     pub fn unsigned_int_max(&self) -> u128 {
         u128::MAX >> (128 - self.bits())
     }
