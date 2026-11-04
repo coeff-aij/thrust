@@ -1199,6 +1199,8 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         } else {
             field.align
         };
+        // `pack` only lowers the alignment, so its bytes stay within the field's.
+        thrust_macros::proof!(pow2_mono(field_align.abi.pow2 as u64, field.align.abi.pow2 as u64));
         let before = *offset;
         Self::align_step(offset, align, field_align);
         thrust_macros::proof!(niche_ends_later(&*largest_niche, dl, before, *offset));
