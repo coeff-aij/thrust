@@ -378,7 +378,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 self.build_env_from_captures(chc::Term::var(param_idx), param.pat);
                 continue;
             }
-            let mir_ty = self.pat_ty(param.pat);
+            let mir_ty = self.scrutinee_ty(param.pat);
             // `at_entry()` yields the `Inner` of a `FnParam<Inner>`; classify by it so
             // a singleton wrapped argument collapses like any other singleton below.
             let repr_ty = self.fn_param_wrapper_inner_ty(mir_ty).unwrap_or(mir_ty);
@@ -537,9 +537,24 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
     ) {
         use rustc_hir::PatKind;
 
+        let param = self.apply_pat_adjustments(param, pat);
         match pat.kind {
             PatKind::Binding(_, hir_id, _, None) => {
-                self.env.insert(hir_id, param);
+                let term = match self.binding_mode(hir_id, pat.span).0 {
+                    rustc_hir::ByRef::No => param,
+                    rustc_hir::ByRef::Yes(rustc_hir::Mutability::Not) => chc::Term::box_(param),
+                    rustc_hir::ByRef::Yes(rustc_hir::Mutability::Mut) => self.tcx.dcx().span_fatal(
+                        pat.span,
+                        "a pattern in a formula cannot bind by mutable reference",
+                    ),
+                };
+                self.env.insert(hir_id, term);
+            }
+            PatKind::Wild => {}
+            // `&T` models as `&<T as Model>::Ty`, a box in the logic, as a deref in a formula
+            // reads it; `&mut T` models as `model::Mut`, which no `&mut` pattern matches.
+            PatKind::Ref(subpat, rustc_hir::Mutability::Not) => {
+                self.build_env_from_pat(param.box_current(), subpat);
             }
             PatKind::TupleStruct(_, subpats, dotdot_pos) | PatKind::Tuple(subpats, dotdot_pos) => {
                 let pat_ty = self.pat_ty(pat);
@@ -669,7 +684,30 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
     }
 
     fn pat_ty(&self, pat: &'tcx rustc_hir::Pat<'tcx>) -> mir_ty::Ty<'tcx> {
-        let ty = self.typeck.pat_ty(pat);
+        self.normalized_ty(self.typeck.pat_ty(pat))
+    }
+
+    /// The type of the value `pat` matches, before match ergonomics sees through its references:
+    /// `pat_ty` is the type after.
+    fn scrutinee_ty(&self, pat: &'tcx rustc_hir::Pat<'tcx>) -> mir_ty::Ty<'tcx> {
+        match self.typeck.pat_adjustments().get(pat.hir_id) {
+            Some(adjustments) => self.normalized_ty(adjustments[0].source),
+            None => self.pat_ty(pat),
+        }
+    }
+
+    /// The binding mode rustc chose for a binding, `ref` where match ergonomics sees through a
+    /// reference to it.
+    fn binding_mode(
+        &self,
+        hir_id: rustc_hir::HirId,
+        span: rustc_span::Span,
+    ) -> rustc_hir::BindingMode {
+        self.typeck
+            .extract_binding_mode(self.tcx.sess, hir_id, span)
+    }
+
+    fn normalized_ty(&self, ty: mir_ty::Ty<'tcx>) -> mir_ty::Ty<'tcx> {
         let instantiated = self
             .instantiate_generics(ty, self.generic_args)
             .unwrap_or(ty);

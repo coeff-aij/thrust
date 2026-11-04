@@ -1,5 +1,6 @@
 //! The case study's iterator adapters and consumers for those std.rs does not specify
 //! (rewrites.md R8), over std's `Iterator` and std.rs's `IteratorSpec`.
+#![allow(unexpected_cfgs)]
 
 use crate::thrust_models;
 use std::marker::PhantomData;
@@ -201,6 +202,9 @@ where
 // a precise closure, is not required: `produces` states the closure's answer on each input item,
 // `true` on the items yielded and `false` on the others, the statement Creusot's comment on
 // `precise` gives as the alternative; with a precise closure it is Creusot's equivalence.
+// `next` also states that the item it returns is the last the inner iterator produced: `produces`
+// places it in the inner items at its index map's position, and later items there may be
+// rejected ones, so it does not give the last; `univariant_biased`'s `next` calls read that form.
 pub struct Filter<I, P> {
     iter: I,
     predicate: P,
@@ -336,6 +340,16 @@ where
 {
     type Item = I::Item;
 
+    // The trait's contract, and the item returned is the last the inner iterator produced.
+    #[thrust_macros::requires(<Self as IteratorSpec>::inv(*self))]
+    #[thrust_macros::ensures(
+        <Self as IteratorSpec>::inv(!self)
+            && (result == None ==> <Self as IteratorSpec>::completed(self))
+            && forall(|x: <I::Item as thrust_models::Model>::Ty| result == Some(x)
+                ==> (<Self as IteratorSpec>::produces(*self, Seq::singleton(x), !self)
+                    && exists(|s: Seq<<I::Item as thrust_models::Model>::Ty>|
+                        I::produces((*self).0, s.push(x), (!self).0))))
+    )]
     fn next(&mut self) -> Option<I::Item> {
         // `skipped` records the items the closure rejected, for the loop invariant: the inner
         // iterator yielded them, and the closure answered `false` on each.
@@ -363,6 +377,10 @@ where
             let after = thrust_macros::ghost!(|this: &mut Filter<I, P>| -> Filter<I, P> { *this });
             Filter::<I, P>::pre_all_step(before, yielded, after);
             if (this.predicate)(&x) {
+                // The fail twin of the filter root sets this cfg: the closure may have rejected
+                // items before this one, so an assertion that it rejected none is refuted.
+                #[cfg(thrust_filter_fail)]
+                thrust_macros::proof_assert!(|skipped: Vec<I::Item>| skipped.len() == 0);
                 let rejected = thrust_macros::ghost!(|skipped: Vec<I::Item>| -> Seq<<I::Item as thrust_models::Model>::Ty> { skipped });
                 Filter::<I, P>::next_at(entry, rejected, before, yielded, after);
                 return Some(x);

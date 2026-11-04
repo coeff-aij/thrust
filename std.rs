@@ -1165,6 +1165,78 @@ mod thrust_models {
         Ghost(std::marker::PhantomData)
     }
 
+    // The ghost history `thrust_macros::context` gives a `for` loop whose body starts with no
+    // invariant (`thrust-macros/src/for_loop.rs`), as Creusot's `desugar_for` gives every loop:
+    // `iter_old`, the iterator before the loop, and `produced`, the items `next` has returned so far.
+    // The desugaring cannot write the iterator's type, so these are generic in it and Thrust takes the
+    // type from the call.
+
+    #[thrust::trusted]
+    #[thrust_macros::requires(true)]
+    #[thrust_macros::ensures(result == *iter)]
+    #[inline(never)]
+    pub fn __for_loop_iter_old<I: Model>(iter: &I) -> Ghost<I> {
+        Ghost(std::marker::PhantomData)
+    }
+
+    #[thrust::trusted]
+    #[thrust_macros::requires(true)]
+    #[thrust_macros::ensures(result == model::Seq::empty())]
+    #[inline(never)]
+    pub fn __for_loop_produced<I>(
+        _iter: &I,
+    ) -> Ghost<model::Seq<<I::Item as Model>::Ty>>
+    where
+        I: std::iter::Iterator,
+        I::Item: Model,
+    {
+        Ghost(std::marker::PhantomData)
+    }
+
+    #[thrust::trusted]
+    #[thrust_macros::requires(true)]
+    #[thrust_macros::ensures(result == produced.push(*item))]
+    #[inline(never)]
+    pub fn __for_loop_produced_push<T: Model>(
+        produced: Ghost<model::Seq<<T as Model>::Ty>>,
+        item: &T,
+    ) -> Ghost<model::Seq<<T as Model>::Ty>> {
+        Ghost(std::marker::PhantomData)
+    }
+
+    /// At the head of the loop, conjoins `for_loop_history` over the loop's ghosts, which are
+    /// named `__thrust_for_iter`, `__thrust_for_iter_old` and `__thrust_for_produced` in the scope
+    /// of the call, to the invariant Thrust infers there.
+    #[thrust::def::for_loop_history_marker]
+    #[thrust::ignored]
+    #[inline(never)]
+    pub fn __for_loop_history_marker<I>(
+        _iter_old: Ghost<I>,
+        _produced: Ghost<model::Seq<<I::Item as Model>::Ty>>,
+    ) where
+        I: crate::IteratorSpec,
+        I::Item: Model,
+    {
+    }
+
+    #[allow(unused_variables)]
+    #[thrust::formula_fn]
+    #[thrust::def::for_loop_history]
+    pub fn for_loop_history<I>(
+        __thrust_for_iter: <I as Model>::Ty,
+        __thrust_for_iter_old: <Ghost<I> as Model>::Ty,
+        __thrust_for_produced: <Ghost<
+            model::Seq<<I::Item as Model>::Ty>,
+        > as Model>::Ty,
+    ) -> bool
+    where
+        I: crate::IteratorSpec,
+        I::Item: Model,
+    {
+        <I as crate::IteratorSpec>::inv(__thrust_for_iter)
+            && <I as crate::IteratorSpec>::produces(__thrust_for_iter_old, __thrust_for_produced, __thrust_for_iter)
+    }
+
     /// Taken in the analysis and not at run time: the branch in which `proof!` calls a lemma.
     #[doc(hidden)]
     #[thrust::def::proof_branch]
