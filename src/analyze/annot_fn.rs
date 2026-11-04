@@ -1263,7 +1263,8 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
     /// `expected`: the same type, const arguments included, where a shared reference or a box is
     /// its referent (the query removes them), the integer models and the Rust integers are one
     /// type (a formula's integers are unbounded, and a literal is typed `i32`), and a projection
-    /// that neither side's model resolves agrees only with the same projection, as in rustc.
+    /// that neither side's model resolves agrees only with the same projection at the same Rust
+    /// arguments, as in rustc and as the type builder gives each its own sort.
     /// Both types are stated in the specification's
     /// generics at the arguments it is translated at, the callee's signature through the
     /// receiver's type, so a type parameter is itself.
@@ -1286,7 +1287,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         };
         match (value.kind(), expected.kind()) {
             (TyKind::Alias(a_kind, a), TyKind::Alias(b_kind, b)) => {
-                a_kind == b_kind && a.def_id == b.def_id && args_agree(a.args, b.args)
+                a_kind == b_kind && a.def_id == b.def_id && a.args == b.args
             }
             _ if self.is_integer_model(value) && self.is_integer_model(expected) => true,
             (TyKind::Adt(a, a_args), TyKind::Adt(b, b_args)) => {
