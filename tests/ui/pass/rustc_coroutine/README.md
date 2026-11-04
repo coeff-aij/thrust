@@ -39,7 +39,7 @@ bound on a type parameter, not a change to rustc's code: the proved `DenseBitSet
 | `univariant_biased.rs` | `LayoutCalculator::univariant_biased` | draft, `ignore-on-host`: its query (58.7 MB) is killed for memory with 16 GB (#133); its contract, which the other roots trust, does not exclude an overflow at `niche.offset += offset`, and its size `ensures` need contracts on `align_to`, `checked_add`, `Align::bytes` and `obj_size_bound` that bound offsets and sizes, which the tree does not write (#180, `probes/size_arithmetic.rs`) |
 | `eligibility.rs` | `coroutine_saved_local_eligibility` and the helpers `make_ineligible` and `set_assignment`, which hold its writes to `assignments` | verified, each goal on its own (`THRUST_SPLIT_GOALS`) |
 | `layout.rs` | `layout()` and the adapters of `thrust/iter.rs`; the lemmas of `thrust/lemmas.rs` assumed | draft, `ignore-on-host` |
-| `lemmas.rs` | the counting lemmas of `thrust/lemmas.rs` that `layout()` uses | verified |
+| `lemmas.rs` | the counting lemmas of `thrust/lemmas.rs`: the permutation split that `layout()` uses and the pigeonhole principle (`every_index_occurs`) that `univariant_biased` uses | verified |
 
 The roots that are not drafts answer over the module tree in the ui suite; the states of the
 drafts are those of the single-file stage files.
