@@ -11,9 +11,9 @@
 // `univariant_biased`'s contract: an `Ok` layout's size is below the weight `s` of layout.rs's
 // `weighs` and its alignment at most `s`, `SizeOverflow` never when `s` is below the object size
 // bound, and the niche lies within the size. The copies of `Align::bytes`, `align_to`,
-// `obj_size_bound` and `checked_add` carry the contracts the case study's do not (there they are
-// `#[thrust::callable]` or ensure only `true` or `result >= 1`); the loop's body, the prefix and the
-// final padding are helpers with written contracts (`place_field`, `place_prefix`, `finish`). The
+// `obj_size_bound` and `checked_add` carry the contracts the case study's do not (there
+// `Align::bytes` and `obj_size_bound` have none, `align_to` is `#[thrust::callable]` and
+// `checked_add` ensures only `true`); the loop's body, the prefix and the final padding are helpers with written contracts (`place_field`, `place_prefix`, `finish`). The
 // requires add to layout.rs's `layout_pre` what the arithmetic needs (`field_wf`, `prefix_weighs`,
 // `repr_weighs`, `dl_wf`): sizes below the object size bound, alignments at most `Align::MAX`, and
 // a niche offset within the field.

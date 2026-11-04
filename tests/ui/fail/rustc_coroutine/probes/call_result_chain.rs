@@ -10,14 +10,15 @@
 // `pack`, then per field (in memory order, here the slice's) the `pack` clamp, `align_to`, the
 // two maxima and `checked_add(.., dl)` with its `ok_or(..)?`, then `repr.align`'s maximum,
 // `align_to` and the bound. A field is its size, alignment and `max_repr_align`.
-// `checked_add` and `obj_size_bound` require the default pointer size of `dl` to be 2, 4 or 8
-// bytes, which follows from the caller's `requires` and `data_layout`'s `ensures`. Each call's
-// result gets an unknown over every variable in scope, so the fact has to pass through the
-// unknowns of every call before the requirement. The loop's invariant states it, and the loop
+// `checked_add` requires the default pointer size of `dl` to be 2, 4 or 8 bytes, and
+// `obj_size_bound` panics for any other (its precondition is inferred); the size follows from
+// the caller's `requires` and `data_layout`'s `ensures`. Each call's result gets an unknown over
+// every variable in scope, so the fact has to pass through the unknowns of every call before the
+// requirement. The loop's invariant states it, and the loop
 // body is `place_field`, a function with a checked contract, so that the loop's back edge applies
 // one call's unknown.
 // The fail twin: the caller's `requires` also admits 16-byte pointers, for which `checked_add`'s
-// and `obj_size_bound`'s requirements, and so the loop's invariant on entry, do not hold.
+// requirement and the loop's invariant on entry do not hold and `obj_size_bound` panics.
 #![feature(new_range_api)]
 
 #[path = "../../../../rustc_coroutine/compiler/rustc_hashes/src/lib.rs"]

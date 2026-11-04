@@ -55,8 +55,8 @@ fn main() { //~ ERROR: Unsat
     };
 
     // The calls check that `dl` meets what `obj_size_bound` and `pointer_size_in`
-    // require; the asserts, what those functions, `Align::bytes` and `Size::bits`
-    // return.
+    // require; the asserts, what those functions, `Align::bytes`, `Size::bits` and
+    // `Size::bytes` return.
     assert!(dl.obj_size_bound() >= 1);
     // The fail twin: `AddressSpace(1)` is neither `dl.default_address_space` nor listed in
     // `dl.address_space_info`, so the lookup of `pointer_size_in` falls through to its `panic!`.

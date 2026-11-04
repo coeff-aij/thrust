@@ -48,9 +48,10 @@ impl<VariantIdx: thrust_models::Model, FieldIdx: thrust_models::Model> thrust_mo
 // anyway): the `Idx::index_is` predicate carries the same fact, with an
 // `exists(|i: Int| i == l && ..)` bridge where the position is a `usize`.
 //
-// The loop invariants replace inference, so each restates what the code after
-// it needs: the lengths, the requirements on the arguments, and properties 1,
-// 2 and 4 in the form that holds at that loop (`nb_locals` and, once dead,
+// The written loop invariants (the outer loop over the variants has none;
+// Thrust infers it) restate what the code after each loop needs: the lengths,
+// the requirements on the arguments, and properties 1, 2 and 4 in the form
+// that holds at that loop (`nb_locals` and, once dead,
 // `variant_fields` are read at entry through `FnParam`). Where the live
 // `variant_fields` and `storage_conflicts` are needed too, a second
 // `invariant!` at the same header states the facts about them; the variants
