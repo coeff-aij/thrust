@@ -541,6 +541,12 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             PatKind::Binding(_, hir_id, _, None) => {
                 self.env.insert(hir_id, param);
             }
+            PatKind::Wild => {}
+            // `&T` models as `&<T as Model>::Ty`, a box in the logic, as a deref in a formula
+            // reads it; `&mut T` models as `model::Mut`, which no `&mut` pattern matches.
+            PatKind::Ref(subpat, rustc_hir::Mutability::Not) => {
+                self.build_env_from_pat(param.box_current(), subpat);
+            }
             PatKind::TupleStruct(_, subpats, dotdot_pos) | PatKind::Tuple(subpats, dotdot_pos) => {
                 let pat_ty = self.pat_ty(pat);
                 let field_count = match pat_ty.ty_adt_def() {
