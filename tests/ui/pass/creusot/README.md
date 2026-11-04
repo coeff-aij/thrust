@@ -4,8 +4,11 @@ Fourteen cases from the Creusot artifact's iterator benchmark, each verified wit
 equivalent to Creusot's, plus nine additions with no Creusot counterpart (`take_count.rs`,
 `fold.rs`, `try_fold.rs`, `find.rs`, `filter.rs`, and the forms of the last four generic in the
 iterator and the closure, in `generic/`). `<file>.rs` is the pass side;
-`tests/ui/fail/creusot/<file>.rs` is its fail twin (one extra fail-only file,
-`skip_take_take_count.rs`, twins `skip_take.rs` on a different property). `weaker/` holds
+`tests/ui/fail/creusot/<file>.rs` is its fail twin (three extra fail-only files:
+`skip_take_take_count.rs` twins `skip_take.rs` on a different property, and
+`collect_for_contract.rs` and `extend_for_contract.rs` break the postcondition of `collect` and
+`extend` themselves, where the twins of `collect_for.rs` and `extend_for.rs` break the client's
+assertion). `weaker/` holds
 variants of a case whose property is weaker than Creusot's but still verifies.
 
 Every file in the `produces` form repeats one trait block, Creusot's `common.rs` in Thrust syntax:
