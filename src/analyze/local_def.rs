@@ -2927,10 +2927,10 @@ fn borrow_may_escape<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId, idx: usize) -> bool
             .any(|(other, ty)| other != idx && names_region(*ty))
 }
 
-/// The type a parameter of a spec closure (`invariant!`, `proof_assert!`, `assume!`, `ghost!`) is written
-/// with, from the type of the formula function's
-/// parameter: `thrust_macros` gives a parameter written `x: T` the type `<T as Model>::Ty`, and
-/// one written `x: &str` the type `NoModel` (`thrust-macros/src/formula_fn_type_lowering.rs`).
+/// The type a parameter of a spec closure (`invariant!`, `proof_assert!`, `assume!`, `ghost!`) is
+/// written with, from the type of the formula function's parameter: `thrust_macros` gives a
+/// parameter written `x: T` the type `<T as Model>::Ty`, and one written `x: &str` the type
+/// `NoModel` (`thrust-macros/src/formula_fn_type_lowering.rs`).
 pub(crate) fn spec_param_written_ty<'tcx>(
     ctx: &analyze::Analyzer<'tcx>,
     input_ty: mir_ty::Ty<'tcx>,

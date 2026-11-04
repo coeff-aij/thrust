@@ -1090,24 +1090,43 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             .is_some()
     }
 
+    /// The sorts of the parameters and of the result of the function `def_id` at `generic_args`,
+    /// read from its signature, so that every call of a universally quantified function declares
+    /// it with the same sorts whatever coercions its arguments went through.
+    fn signature_sorts(
+        &self,
+        def_id: DefId,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
+    ) -> (Vec<chc::Sort>, chc::Sort) {
+        let sig = self.tcx.fn_sig(def_id).instantiate(self.tcx, generic_args);
+        let sig = self.tcx.instantiate_bound_regions_with_erased(sig);
+        let typing_env = mir_ty::TypingEnv::fully_monomorphized();
+        let sort = |ty: mir_ty::Ty<'tcx>| {
+            let ty = self
+                .tcx
+                .try_normalize_erasing_regions(typing_env, ty)
+                .unwrap_or(ty);
+            self.type_builder.build(ty).to_sort()
+        };
+        (
+            sig.inputs().iter().map(|ty| sort(*ty)).collect(),
+            sort(sig.output()),
+        )
+    }
+
     /// A trait's logic function called at a type parameter, which stands for every
     /// implementation: a universally quantified function, as a trait predicate is.
     fn trait_logic_fn_term(
         &self,
         def_id: DefId,
         generic_args: mir_ty::GenericArgsRef<'tcx>,
-        hir: &'tcx rustc_hir::Expr<'tcx>,
         args: &'tcx [rustc_hir::Expr<'tcx>],
     ) -> chc::Term<rty::FunctionParamIdx> {
         let type_params = generic_args
             .types()
             .map(|ty| self.type_builder.build(ty).to_sort())
             .collect();
-        let params = args
-            .iter()
-            .map(|expr| self.type_builder.build(self.expr_ty(expr)).to_sort())
-            .collect();
-        let result = self.type_builder.build(self.expr_ty(hir)).to_sort();
+        let (params, result) = self.signature_sorts(def_id, generic_args);
         let type_args = self.type_builder.generic_args_symbol(generic_args);
         let pred =
             refine::trait_forall_fn(self.tcx, def_id, type_args, type_params, params, result);
@@ -2267,7 +2286,6 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                                 return FormulaOrTerm::Term(self.trait_logic_fn_term(
                                     def_id,
                                     generic_args,
-                                    hir,
                                     args,
                                 ));
                             };
@@ -2322,12 +2340,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                                         .map(|ty| self.type_builder.build(ty).to_sort())
                                         .collect();
 
-                                    let params = args
-                                        .iter()
-                                        .map(|expr| {
-                                            self.type_builder.build(self.expr_ty(expr)).to_sort()
-                                        })
-                                        .collect();
+                                    let (params, _) = self.signature_sorts(def_id, generic_args);
 
                                     let pred = refine::trait_forall_pred(
                                         self.tcx,
