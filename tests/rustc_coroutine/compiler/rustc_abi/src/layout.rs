@@ -1,3 +1,5 @@
+// `thrust_place_field_fail` is set only by the fail twin of the place_field root.
+#![allow(unexpected_cfgs)]
 use crate::thrust_models;
 use std::cmp;
 use std::ops::Deref;
@@ -80,6 +82,41 @@ pub(crate) fn shl_is_pow2(q: u64) {
 fn sum_first(ts: Seq<Int>, k: USize) -> Int {
     if k <= 0 { 0 } else { sum_first(ts, k - 1) + ts[k - 1] }
 }
+
+/// `pow2` is monotone.
+#[thrust_macros::lemma]
+#[thrust_macros::variant(b)]
+#[thrust_macros::requires(a <= b)]
+#[thrust_macros::ensures(pow2(a) <= pow2(b))]
+fn pow2_mono(a: u64, b: u64) {
+    if a < b {
+        pow2_mono(a, b - 1);
+    }
+}
+
+/// An alignment up to `Align::MAX` has at most its bytes.
+#[thrust_macros::lemma]
+#[thrust_macros::ensures(q <= 29 ==> pow2(q) <= 536870912)]
+fn pow2_max(q: u64) {
+    if q <= 29 {
+        pow2_mono(q, 29);
+    }
+}
+
+/// `niche`, if any, is well formed under `dl` and ends at or before `end`.
+#[thrust_macros::predicate]
+#[thrust::opaque]
+fn niche_ends_by(niche: Option<Niche>, dl: TargetDataLayout, end: Size) -> bool {
+    forall(|n: Niche, s: Size| !(niche == Some(n))
+        || (Niche::wf_in(n, dl) && (!Primitive::size_in(n.value, dl, s) || n.offset.raw + s.raw <= end.raw)))
+}
+
+/// A niche that ends by `end` ends by any later end.
+#[thrust_macros::lemma]
+#[thrust_macros::requires(end.raw <= later.raw && niche_ends_by(*niche, *dl, end))]
+#[thrust_macros::ensures(niche_ends_by(*niche, *dl, later))]
+#[thrust::reveal(niche_ends_by)]
+fn niche_ends_later(niche: &Option<Niche>, dl: &TargetDataLayout, end: Size, later: Size) {}
 
 // Stage 6 spec (README.md, "stage 6"). The `requires` of both methods is the panic condition of
 // `univariant_biased` apart from the size: `fields.indices()` builds every field index up to
@@ -274,6 +311,23 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
             !(thrust_macros::post!(<F as core::ops::Deref>::deref(&x), d1)
                 && thrust_macros::post!(<F as core::ops::Deref>::deref(&x), d2))
                 || **d1 == **d2)
+    }
+
+    /// An invariant of the layouts rustc computes that `place_field` relies on: the alignment is
+    /// at most `Align::MAX`, the size below the object size bound, and the niche well formed,
+    /// starting within the field and ending by its end where its primitive has a size.
+    #[thrust_macros::predicate]
+    #[thrust::opaque]
+    fn field_wf<FieldIdx: Idx + thrust_models::Model, VariantIdx: Idx>(
+        l: LayoutData<FieldIdx, VariantIdx>,
+        dl: TargetDataLayout,
+    ) -> bool {
+        l.align.abi.pow2 <= 29
+            && l.size.raw < super::obj_bound(dl)
+            && forall(|n: Niche, s: Size| !(l.largest_niche == Some(n))
+                || (Niche::wf_in(n, dl)
+                    && n.offset.raw <= l.size.raw
+                    && (!Primitive::size_in(n.value, dl, s) || n.offset.raw + s.raw <= l.size.raw)))
     }
 
     /// An unsized field is not the tail of a `MaybeUnsized` struct.
@@ -622,36 +676,20 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                 }
             }
 
-            let field_align = if let Some(pack) = pack {
-                field.align.min(AbiAlign::new(pack))
-            } else {
-                field.align
-            };
-            offset = offset.align_to(field_align.abi);
-            align = align.max(field_align.abi);
-            max_repr_align = max_repr_align.max(field.max_repr_align);
-
-            // debug!("univariant offset: {:?} field: {:#?}", offset, field);
-            offsets[i] = offset;
-
-            if let Some(mut niche) = field.largest_niche {
-                let available = niche.available(dl);
-
-                let prefer_new_niche = match niche_bias {
-                    NicheBias::Start => available > largest_niche_available,
-
-                    NicheBias::End => available >= largest_niche_available,
-                };
-                if prefer_new_niche {
-                    largest_niche_available = available;
-                    niche.offset += offset;
-                    largest_niche = Some(niche);
-                }
-            }
-
-            offset = offset
-                .checked_add(field.size, dl)
-                .ok_or(LayoutCalculatorError::SizeOverflow)?;
+            // Rewrite (rewrites.md R18): the rest of the body as `place_field`.
+            Self::place_field::<FieldIdx, VariantIdx, F>(
+                &mut offset,
+                &mut align,
+                &mut max_repr_align,
+                &mut offsets,
+                i,
+                &mut largest_niche,
+                &mut largest_niche_available,
+                field,
+                pack,
+                &niche_bias,
+                dl,
+            )?;
         }
 
         let unadjusted_abi_align = align;
@@ -776,5 +814,125 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
             unadjusted_abi_align,
             randomization_seed: seed,
         })
+    }
+
+    /// The niche choice of `univariant_biased`'s field loop for `field` placed at `offset`: the
+    /// chosen niche ends by the field's end.
+    #[thrust_macros::requires(Self::deref_functional::<FieldIdx, VariantIdx, F>())]
+    #[thrust_macros::requires(forall(|d: &&LayoutData<FieldIdx, VariantIdx>|
+        !thrust_macros::post!(<F as core::ops::Deref>::deref(field), d) || Self::field_wf::<FieldIdx, VariantIdx>(**d, *dl)))]
+    #[thrust_macros::requires(offset.raw <= 4611686018964258816u64)]
+    #[thrust_macros::requires(niche_ends_by(*largest_niche, *dl, offset))]
+    #[thrust_macros::ensures(forall(|d: &&LayoutData<FieldIdx, VariantIdx>|
+        !thrust_macros::post!(<F as core::ops::Deref>::deref(field), d)
+            || niche_ends_by(!largest_niche, *dl, Size { raw: offset.raw + (**d).size.raw })))]
+    #[thrust::reveal(niche_ends_by, LayoutCalculator::field_wf)]
+    fn offer_niche<
+        'a,
+        FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
+        VariantIdx: Idx + thrust_models::Model<Ty: PartialEq>,
+        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model<Ty: PartialEq>,
+    >(
+        largest_niche: &mut Option<Niche>,
+        largest_niche_available: &mut u128,
+        field: &F,
+        offset: Size,
+        niche_bias: &NicheBias,
+        dl: &TargetDataLayout,
+    ) {
+        if let Some(mut niche) = field.largest_niche {
+            let available = niche.available(dl);
+
+            let prefer_new_niche = match niche_bias {
+                NicheBias::Start => available > *largest_niche_available,
+
+                NicheBias::End => available >= *largest_niche_available,
+            };
+            if prefer_new_niche {
+                *largest_niche_available = available;
+                niche.offset += offset;
+                *largest_niche = Some(niche);
+            }
+        }
+    }
+
+    /// One pass of `univariant_biased`'s field loop over `field` at index `i`, after the unsized
+    /// checks: its padding, the alignments, its offset, the niche it may offer and its size. The
+    /// offset and the alignment's bytes grow by less than the field's weight, and the step fails
+    /// only with `SizeOverflow`, when the padded field reaches the object size bound.
+    #[thrust_macros::requires(Self::deref_functional::<FieldIdx, VariantIdx, F>())]
+    #[thrust_macros::requires(forall(|d: &&LayoutData<FieldIdx, VariantIdx>|
+        !thrust_macros::post!(<F as core::ops::Deref>::deref(field), d) || Self::field_wf::<FieldIdx, VariantIdx>(**d, *dl)))]
+    #[thrust_macros::requires((*dl).default_address_space_pointer_spec.pointer_size.raw == 2
+        || (*dl).default_address_space_pointer_spec.pointer_size.raw == 4
+        || (*dl).default_address_space_pointer_spec.pointer_size.raw == 8)]
+    #[thrust_macros::requires((*align).pow2 <= 29 && (*offset).raw <= 4611686018427387904u64)]
+    #[thrust_macros::requires(forall(|j: USize| !<FieldIdx as Idx>::index_is(i, j) || j < (*offsets).len()))]
+    #[thrust_macros::requires(niche_ends_by(*largest_niche, *dl, *offset))]
+    #[thrust_macros::ensures(result == Ok(()) || result == Err(LayoutCalculatorError::SizeOverflow))]
+    #[thrust_macros::ensures((!align).pow2 <= 29)]
+    #[thrust_macros::ensures(result == Ok(()) ==> ((!offset).raw < super::obj_bound(*dl) && niche_ends_by(!largest_niche, *dl, !offset)))]
+    #[thrust_macros::ensures(forall(|d: &&LayoutData<FieldIdx, VariantIdx>, q: USize, q2: USize, qf: USize|
+        !(result == Ok(())
+            && thrust_macros::post!(<F as core::ops::Deref>::deref(field), d)
+            && q == (*align).pow2 && q2 == (!align).pow2 && qf == (**d).align.abi.pow2)
+        || (!offset).raw + pow2(q2) < (*offset).raw + pow2(q) + pow2(qf) * 2 + (**d).size.raw))]
+    #[thrust_macros::ensures(forall(|d: &&LayoutData<FieldIdx, VariantIdx>, qf: USize|
+        !(result == Err(LayoutCalculatorError::SizeOverflow)
+            && thrust_macros::post!(<F as core::ops::Deref>::deref(field), d)
+            && qf == (**d).align.abi.pow2)
+        || (*offset).raw + pow2(qf) + (**d).size.raw > super::obj_bound(*dl)))]
+    #[thrust_macros::ensures((!offsets).len() == (*offsets).len())]
+    #[thrust_macros::ensures(forall(|j: USize|
+        !(0 <= j && j < (*offsets).len() && !<FieldIdx as Idx>::index_is(i, j)) || (!offsets)[j] == (*offsets)[j]))]
+    #[thrust_macros::ensures(forall(|j: USize, d: &&LayoutData<FieldIdx, VariantIdx>|
+        !(result == Ok(())
+            && <FieldIdx as Idx>::index_is(i, j)
+            && thrust_macros::post!(<F as core::ops::Deref>::deref(field), d))
+        || ((*offset).raw <= (!offsets)[j].raw && (!offsets)[j].raw + (**d).size.raw == (!offset).raw)))]
+    // The fail twin of the place_field root sets this cfg: the field's size moves the offset, so a
+    // contract that a successful step leaves it where it was is refuted.
+    #[cfg_attr(thrust_place_field_fail, thrust_macros::ensures(result == Ok(()) ==> (!offset).raw == (*offset).raw))]
+    #[thrust::reveal(LayoutCalculator::field_wf)]
+    fn place_field<
+        'a,
+        FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
+        VariantIdx: Idx + thrust_models::Model<Ty: PartialEq>,
+        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model<Ty: PartialEq>,
+    >(
+        offset: &mut Size,
+        align: &mut Align,
+        max_repr_align: &mut Option<Align>,
+        offsets: &mut IndexVec<FieldIdx, Size>,
+        i: FieldIdx,
+        largest_niche: &mut Option<Niche>,
+        largest_niche_available: &mut u128,
+        field: &F,
+        pack: Option<Align>,
+        niche_bias: &NicheBias,
+        dl: &TargetDataLayout,
+    ) -> Result<(), LayoutCalculatorError<F>> {
+        let field_align = if let Some(pack) = pack {
+            field.align.min(AbiAlign::new(pack))
+        } else {
+            field.align
+        };
+        thrust_macros::proof!(pow2_max(field_align.abi.pow2 as u64));
+        thrust_macros::proof!(shl_is_pow2(field_align.abi.pow2 as u64));
+        let aligned = (*offset).align_to(field_align.abi);
+        thrust_macros::proof!(niche_ends_later(&*largest_niche, dl, *offset, aligned));
+        *offset = aligned;
+        *align = (*align).max(field_align.abi);
+        *max_repr_align = (*max_repr_align).max(field.max_repr_align);
+
+        // debug!("univariant offset: {:?} field: {:#?}", offset, field);
+        offsets[i] = *offset;
+
+        Self::offer_niche::<FieldIdx, VariantIdx, F>(largest_niche, largest_niche_available, field, *offset, niche_bias, dl);
+
+        *offset = (*offset)
+            .checked_add(field.size, dl)
+            .ok_or(LayoutCalculatorError::SizeOverflow)?;
+        Ok(())
     }
 }
