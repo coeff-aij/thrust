@@ -2229,6 +2229,60 @@ impl<T> Type<T> {
         body
     }
 
+    /// Whether a value of this type can stand where one of `other` is expected, as a call relates
+    /// them ([`subtyping`]), up to what a specification needs: a shared reference or an owned
+    /// pointer agrees with its referent, as the query removes them ([`chc::unbox_sort`]), and a
+    /// type parameter or a projection the context leaves unnormalized agrees with any type. The
+    /// type parameters of the two types are numbered in the scopes they were built in, a
+    /// specification's and its callee's, so they are not compared with each other.
+    pub fn agrees_with<U>(&self, other: &Type<U>) -> bool {
+        match (self.referent(), other.referent()) {
+            (Type::Param(_) | Type::Alias(_), _) | (_, Type::Param(_) | Type::Alias(_)) => true,
+            (Type::Int(_) | Type::UInt(_), Type::Int(_) | Type::UInt(_))
+            | (Type::Bool, Type::Bool)
+            | (Type::String, Type::String)
+            | (Type::Opaque, Type::Opaque)
+            | (Type::Never, Type::Never)
+            | (Type::Function(_), Type::Function(_)) => true,
+            (Type::BitVec(a), Type::BitVec(b)) => a == b,
+            (Type::Pointer(a), Type::Pointer(b)) => {
+                a.kind == b.kind && a.elem.ty.agrees_with(&b.elem.ty)
+            }
+            (Type::Tuple(a), Type::Tuple(b)) => {
+                a.elems.len() == b.elems.len()
+                    && a.elems
+                        .iter()
+                        .zip(&b.elems)
+                        .all(|(a, b)| a.ty.agrees_with(&b.ty))
+            }
+            (Type::Seq(a), Type::Seq(b)) => a.ty.agrees_with(&b.ty),
+            (Type::Array(a), Type::Array(b)) => {
+                a.index.ty.agrees_with(&b.index.ty) && a.elem.ty.agrees_with(&b.elem.ty)
+            }
+            (Type::Enum(a), Type::Enum(b)) => {
+                a.symbol() == b.symbol()
+                    && a.args.len() == b.args.len()
+                    && a.args
+                        .iter()
+                        .zip(&b.args)
+                        .all(|(a, b)| a.ty.agrees_with(&b.ty))
+            }
+            _ => false,
+        }
+    }
+
+    /// This type without the shared references and owned pointers around it.
+    fn referent(&self) -> &Type<T> {
+        match self {
+            Type::Pointer(ty)
+                if matches!(ty.kind, PointerKind::Ref(RefKind::Immut) | PointerKind::Own) =>
+            {
+                ty.elem.ty.referent()
+            }
+            _ => self,
+        }
+    }
+
     pub fn to_sort(&self) -> chc::Sort {
         match self {
             Type::Int(_) | Type::UInt(_) => chc::Sort::int(),

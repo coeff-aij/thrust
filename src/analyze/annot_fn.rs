@@ -1102,11 +1102,12 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
     /// single tuple (e.g. `(x,)` or `()`), for a callee that takes them as `params`.
     ///
     /// `closure_precondition` takes the tuple at any type, so this stops unless there is one
-    /// argument per parameter and each has the sort of its parameter, as a call is checked against
-    /// the callee's argument types and as Creusot's `precondition` and Verus's `requires` take
-    /// the tuple at the closure's `Args`. Integers of any type share a sort, so an integer
-    /// literal, which rustc types `i32` here, passes for any integer parameter, and a shared
-    /// reference or a box has the sort of what it points to, so `x` passes for a `&T` parameter.
+    /// argument per parameter and each agrees with its parameter's type
+    /// ([`rty::Type::agrees_with`]), as a call is checked against the callee's argument types and
+    /// as Creusot's `precondition` and Verus's `requires` take the tuple at the closure's `Args`.
+    /// Integers of any type agree, so an integer literal, which rustc types `i32` here, passes for
+    /// any integer parameter, and a shared reference or a box agrees with what it points to, so
+    /// `x` passes for a `&T` parameter.
     fn spec_args(
         &self,
         spec: &str,
@@ -1128,7 +1129,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             );
         }
         for (expr, param) in exprs.iter().zip(params) {
-            self.check_spec_value_sort(spec, expr, &param.ty, "the callee takes");
+            self.check_spec_value_type(spec, expr, &param.ty, "the callee takes");
         }
         exprs.into_iter().map(|e| self.to_term(e)).collect()
     }
@@ -1139,13 +1140,13 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         result: &'tcx rustc_hir::Expr<'tcx>,
         fn_ty: &rty::FunctionType,
     ) -> chc::Term<rty::FunctionParamIdx> {
-        self.check_spec_value_sort("post!", result, &fn_ty.ret.ty, "the callee returns");
+        self.check_spec_value_type("post!", result, &fn_ty.ret.ty, "the callee returns");
         self.to_term(result)
     }
 
-    /// Stops unless `expr`, a value a `pre!`/`post!` passes, has the sort of `expected`
-    /// ([`chc::Sort::agrees_with`]).
-    fn check_spec_value_sort(
+    /// Stops unless `expr`, a value a `pre!`/`post!` passes, has the type `expected`
+    /// ([`rty::Type::agrees_with`]).
+    fn check_spec_value_type(
         &self,
         spec: &str,
         expr: &'tcx rustc_hir::Expr<'tcx>,
@@ -1153,8 +1154,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         expected_as: &str,
     ) {
         let ty = self.expr_ty(expr);
-        let sort = self.type_builder.build(ty).to_sort();
-        if !sort.agrees_with(&expected.to_sort()) {
+        if !self.type_builder.build(ty).ty.agrees_with(expected) {
             self.tcx.dcx().span_fatal(
                 expr.span,
                 format!(
