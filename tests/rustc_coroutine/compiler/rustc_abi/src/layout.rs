@@ -996,7 +996,8 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
     }
 
     /// The niche choice of `univariant_biased`'s field loop for `field` placed at `offset`: the
-    /// chosen niche ends by the field's end.
+    /// chosen niche ends by the field's end; it stays when the field has none and is never
+    /// dropped, and with `End` the field's niche is taken while none has been.
     #[thrust_macros::requires(Self::deref_functional::<FieldIdx, VariantIdx, F>())]
     #[thrust_macros::requires(forall(|d: &&LayoutData<FieldIdx, VariantIdx>|
         !thrust_macros::post!(<F as core::ops::Deref>::deref(field), d) || Self::field_wf::<FieldIdx, VariantIdx>(**d, *dl)))]
@@ -1005,6 +1006,17 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
     #[thrust_macros::ensures(forall(|d: &&LayoutData<FieldIdx, VariantIdx>|
         !thrust_macros::post!(<F as core::ops::Deref>::deref(field), d)
             || niche_ends_by(!largest_niche, *dl, Size { raw: offset.raw + (**d).size.raw })))]
+    #[thrust_macros::ensures((!largest_niche) == None
+        ==> ((*largest_niche) == None && (!largest_niche_available) == (*largest_niche_available)))]
+    #[thrust_macros::ensures((!largest_niche) == (*largest_niche)
+        || exists(|d: &&LayoutData<FieldIdx, VariantIdx>, nn: Niche|
+            thrust_macros::post!(<F as core::ops::Deref>::deref(field), d) && (**d).largest_niche == Some(nn)))]
+    #[thrust_macros::ensures(forall(|d: &&LayoutData<FieldIdx, VariantIdx>, nn: Niche|
+        !(thrust_macros::post!(<F as core::ops::Deref>::deref(field), d)
+            && (**d).largest_niche == Some(nn)
+            && matches!(*niche_bias, NicheBias::End)
+            && *largest_niche_available == 0)
+        || (!largest_niche) != None))]
     #[thrust::reveal(niche_ends_by, LayoutCalculator::field_wf)]
     fn offer_niche<
         'a,
@@ -1038,7 +1050,8 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
     /// One pass of `univariant_biased`'s field loop over `field` at index `i`, after the unsized
     /// checks: its padding, the alignments, its offset, the niche it may offer and its size. The
     /// offset and the alignment's bytes grow by less than the field's weight, and the step fails
-    /// only with `SizeOverflow`, when the padded field reaches the object size bound.
+    /// only with `SizeOverflow`, when the padded field reaches the object size bound. The niche
+    /// changes as `offer_niche` changes it.
     #[thrust_macros::requires(Self::deref_functional::<FieldIdx, VariantIdx, F>())]
     #[thrust_macros::requires(forall(|d: &&LayoutData<FieldIdx, VariantIdx>|
         !thrust_macros::post!(<F as core::ops::Deref>::deref(field), d) || Self::field_wf::<FieldIdx, VariantIdx>(**d, *dl)))]
@@ -1069,6 +1082,17 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
             && <FieldIdx as Idx>::index_is(i, j)
             && thrust_macros::post!(<F as core::ops::Deref>::deref(field), d))
         || ((*offset).raw <= (!offsets)[j].raw && (!offsets)[j].raw + (**d).size.raw == (!offset).raw)))]
+    #[thrust_macros::ensures((!largest_niche) == None
+        ==> ((*largest_niche) == None && (!largest_niche_available) == (*largest_niche_available)))]
+    #[thrust_macros::ensures((!largest_niche) == (*largest_niche)
+        || exists(|d: &&LayoutData<FieldIdx, VariantIdx>, nn: Niche|
+            thrust_macros::post!(<F as core::ops::Deref>::deref(field), d) && (**d).largest_niche == Some(nn)))]
+    #[thrust_macros::ensures(forall(|d: &&LayoutData<FieldIdx, VariantIdx>, nn: Niche|
+        !(thrust_macros::post!(<F as core::ops::Deref>::deref(field), d)
+            && (**d).largest_niche == Some(nn)
+            && matches!(*niche_bias, NicheBias::End)
+            && *largest_niche_available == 0)
+        || (!largest_niche) != None))]
     #[thrust::reveal(LayoutCalculator::field_wf)]
     fn place_field<
         'a,
