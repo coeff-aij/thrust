@@ -185,6 +185,10 @@ impl TargetDataLayout {
     }
 
     #[inline]
+    #[thrust_macros::requires(((*self).default_address_space_pointer_spec.pointer_size.raw == 2
+        || (*self).default_address_space_pointer_spec.pointer_size.raw == 4
+        || (*self).default_address_space_pointer_spec.pointer_size.raw == 8))]
+    #[thrust_macros::ensures(result >= 1)]
     pub fn obj_size_bound(&self) -> u64 {
         match self.pointer_size().bits() {
             16 => 1 << 15,
@@ -373,13 +377,14 @@ impl Size {
     }
 
     #[inline]
+    #[thrust::callable]
     pub fn align_to(self, align: Align) -> Size {
         let mask = align.bytes() - 1;
         Size::from_bytes((self.bytes() + mask) & !mask)
     }
 
     #[inline]
-    // The `requires` excludes the panic of `obj_size_bound` for the layout `cx` names.
+    // The `requires` is that of `obj_size_bound` for the layout `cx` names.
     #[thrust_macros::requires(forall(|dl: TargetDataLayout| C::dl_of(*cx, dl) ==> dl.default_address_space_pointer_spec.pointer_size.raw == 2
         || dl.default_address_space_pointer_spec.pointer_size.raw == 4
         || dl.default_address_space_pointer_spec.pointer_size.raw == 8))]
@@ -418,6 +423,8 @@ impl Add for Size {
 #[thrust_macros::context]
 impl AddAssign for Size {
     #[inline]
+    #[thrust_macros::requires((*self).raw + other.raw <= u64::MAX)]
+    #[thrust_macros::ensures((!self).raw == (*self).raw + other.raw)]
     fn add_assign(&mut self, other: Size) {
         *self = *self + other;
     }
