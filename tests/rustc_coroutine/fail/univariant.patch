@@ -36,5 +36,5 @@
 -fn drive<
 +fn drive< //~ ERROR: Unsat
      'a,
-     Cx: HasDataLayout,
+     Cx: HasDataLayout + thrust_models::Model<Ty: PartialEq>,
      FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,

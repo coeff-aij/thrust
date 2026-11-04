@@ -323,14 +323,17 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
     pub fn univariant<
         'a,
         FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
-        VariantIdx: Idx,
+        VariantIdx: Idx + thrust_models::Model<Ty: PartialEq>,
         F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + thrust_models::Model<Ty: PartialEq>,
     >(
         &self,
         fields: &IndexSlice<FieldIdx, F>,
         repr: &ReprOptions,
         kind: StructKind,
-    ) -> LayoutCalculatorResult<FieldIdx, VariantIdx, F> {
+    ) -> LayoutCalculatorResult<FieldIdx, VariantIdx, F>
+    where
+        Cx: thrust_models::Model<Ty: PartialEq>,
+    {
         let dl = self.cx.data_layout();
         let layout = self.univariant_biased(fields, repr, kind, NicheBias::Start);
 
@@ -469,78 +472,123 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                 }
             } else {
                 // Rewrite (rewrites.md R8): `Map::new(it, f)` for `it.map(f)`.
-                let max_field_align =
-                    Map::new(fields_excluding_tail.iter(), |f: &F| f.align.bytes())
-                        .max()
-                        .unwrap_or(1);
+                let max_field_align = Map::new(fields_excluding_tail.iter(), thrust_macros::closure!(
+                    requires(true),
+                    ensures(true),
+                    |f: &F| -> u64 { f.align.bytes() },
+                ))
+                .max()
+                .unwrap_or(1);
                 // Rewrite (rewrites.md R8): `Map::new` of the niche's `available`, 0 without one,
                 // for `filter_map` of the niche and `map` of `available`: the two maxima agree,
                 // as `available` is never negative.
-                let largest_niche_size = Map::new(fields_excluding_tail.iter(), |f: &F| {
-                    f.largest_niche.map_or(0, |n| n.available(dl))
-                })
+                let largest_niche_size = Map::new(fields_excluding_tail.iter(), thrust_macros::closure!(
+                    captures(dl: &mut &&TargetDataLayout),
+                    requires(forall(|d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche|
+                        !(thrust_macros::post!(<F as core::ops::Deref>::deref(f), d) && (**d).largest_niche == Some(n))
+                            || Niche::wf_in(n, ***dl))),
+                    ensures(true),
+                    |f: &F| -> u128 {
+                        f.largest_niche.map_or(0, thrust_macros::closure!(
+                            captures(dl: &&&TargetDataLayout),
+                            requires(Niche::wf_in(n, ***dl)),
+                            ensures(true),
+                            |n: Niche| -> u128 { n.available(dl) },
+                        ))
+                    },
+                ))
                 .max()
                 .unwrap_or(0);
 
-                let alignment_group_key = |layout: &F| {
-                    if let Some(pack) = pack {
-                        layout.align.abi.min(pack).bytes()
-                    } else {
-                        let align = layout.align.bytes();
-                        let size = layout.size.bytes();
-                        let niche_size = layout.largest_niche.map(|n| n.available(dl)).unwrap_or(0);
-
-                        let size_as_align = align.max(size).trailing_zeros();
-                        let size_as_align = if largest_niche_size > 0 {
-                            match niche_bias {
-                                NicheBias::Start => {
-                                    max_field_align.trailing_zeros().min(size_as_align)
-                                }
-
-                                NicheBias::End if niche_size == largest_niche_size => {
-                                    align.trailing_zeros()
-                                }
-                                NicheBias::End => size_as_align,
-                            }
+                let alignment_group_key = thrust_macros::closure!(
+                    captures(dl: &&TargetDataLayout),
+                    requires(forall(|d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche|
+                        !(thrust_macros::post!(<F as core::ops::Deref>::deref(layout), d) && (**d).largest_niche == Some(n))
+                            || Niche::wf_in(n, **dl))),
+                    |layout: &F| {
+                        if let Some(pack) = pack {
+                            layout.align.abi.min(pack).bytes()
                         } else {
-                            size_as_align
-                        };
-                        size_as_align as u64
-                    }
-                };
+                            let align = layout.align.bytes();
+                            let size = layout.size.bytes();
+                            let niche_size = layout.largest_niche.map(|n| n.available(dl)).unwrap_or(0);
+
+                            let size_as_align = align.max(size).trailing_zeros();
+                            let size_as_align = if largest_niche_size > 0 {
+                                match niche_bias {
+                                    NicheBias::Start => {
+                                        max_field_align.trailing_zeros().min(size_as_align)
+                                    }
+
+                                    NicheBias::End if niche_size == largest_niche_size => {
+                                        align.trailing_zeros()
+                                    }
+                                    NicheBias::End => size_as_align,
+                                }
+                            } else {
+                                size_as_align
+                            };
+                            size_as_align as u64
+                        }
+                    },
+                );
 
                 match kind {
                     StructKind::AlwaysSized | StructKind::MaybeUnsized => {
-                        optimizing.sort_by_key(|&x| {
-                            let f = &fields[x];
-                            let field_size = f.size.bytes();
-                            let niche_size = f.largest_niche.map_or(0, |n| n.available(dl));
-                            let niche_size_key = match niche_bias {
-                                NicheBias::Start => !niche_size,
+                        optimizing.sort_by_key(thrust_macros::closure!(
+                            captures(fields: &mut &IndexSlice<FieldIdx, F>, dl: &mut &&TargetDataLayout),
+                            requires(forall(|i: USize| !<FieldIdx as Idx>::index_is(x, i) || i < (**fields).len())),
+                            requires(forall(|i: USize, d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche|
+                                !(<FieldIdx as Idx>::index_is(x, i)
+                                    && thrust_macros::post!(<F as core::ops::Deref>::deref(&(**fields)[i]), d)
+                                    && (**d).largest_niche == Some(n))
+                                    || Niche::wf_in(n, ***dl))),
+                            requires(forall(|i: USize, d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche, s: Size|
+                                !(<FieldIdx as Idx>::index_is(x, i)
+                                    && thrust_macros::post!(<F as core::ops::Deref>::deref(&(**fields)[i]), d)
+                                    && (**d).largest_niche == Some(n)
+                                    && Primitive::size_in(n.value, ***dl, s))
+                                    || n.offset.raw + s.raw <= (**d).size.raw)),
+                            |&x: &FieldIdx| {
+                                let f = &fields[x];
+                                let field_size = f.size.bytes();
+                                let niche_size = f.largest_niche.map_or(0, |n| n.available(dl));
+                                let niche_size_key = match niche_bias {
+                                    NicheBias::Start => !niche_size,
 
-                                NicheBias::End => niche_size,
-                            };
-                            let inner_niche_offset_key = match niche_bias {
-                                NicheBias::Start => f.largest_niche.map_or(0, |n| n.offset.bytes()),
-                                NicheBias::End => f.largest_niche.map_or(0, |n| {
-                                    !(field_size - n.value.size(dl).bytes() - n.offset.bytes())
-                                }),
-                            };
+                                    NicheBias::End => niche_size,
+                                };
+                                let inner_niche_offset_key = match niche_bias {
+                                    NicheBias::Start => f.largest_niche.map_or(0, |n| n.offset.bytes()),
+                                    NicheBias::End => f.largest_niche.map_or(0, |n| {
+                                        !(field_size - n.value.size(dl).bytes() - n.offset.bytes())
+                                    }),
+                                };
 
-                            (
-                                cmp::Reverse(alignment_group_key(f)),
-                                niche_size_key,
-                                inner_niche_offset_key,
-                            )
-                        });
+                                (
+                                    cmp::Reverse(alignment_group_key(f)),
+                                    niche_size_key,
+                                    inner_niche_offset_key,
+                                )
+                            },
+                        ));
                     }
 
                     StructKind::Prefixed(..) => {
-                        optimizing.sort_by_key(|&x| {
-                            let f = &fields[x];
-                            let niche_size = f.largest_niche.map_or(0, |n| n.available(dl));
-                            (alignment_group_key(f), niche_size)
-                        });
+                        optimizing.sort_by_key(thrust_macros::closure!(
+                            captures(fields: &mut &IndexSlice<FieldIdx, F>, dl: &mut &&TargetDataLayout),
+                            requires(forall(|i: USize| !<FieldIdx as Idx>::index_is(x, i) || i < (**fields).len())),
+                            requires(forall(|i: USize, d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche|
+                                !(<FieldIdx as Idx>::index_is(x, i)
+                                    && thrust_macros::post!(<F as core::ops::Deref>::deref(&(**fields)[i]), d)
+                                    && (**d).largest_niche == Some(n))
+                                    || Niche::wf_in(n, ***dl))),
+                            |&x: &FieldIdx| {
+                                let f = &fields[x];
+                                let niche_size = f.largest_niche.map_or(0, |n| n.available(dl));
+                                (alignment_group_key(f), niche_size)
+                            },
+                        ));
                     }
                 }
             }
@@ -628,7 +676,11 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
 
         if sized && size.bytes() > 0 {
             // Rewrite (rewrites.md R8): `Filter::new(it, p)` for `it.filter(p)`.
-            let mut non_zst_fields = Filter::new(fields.iter_enumerated(), |&(_, f)| !f.is_zst());
+            let mut non_zst_fields = Filter::new(fields.iter_enumerated(), thrust_macros::closure!(
+                requires(true),
+                ensures(true),
+                |&(_, f): &(FieldIdx, &F)| -> bool { !f.is_zst() },
+            ));
 
             match (
                 non_zst_fields.next(),
