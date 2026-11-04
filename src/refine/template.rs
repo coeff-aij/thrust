@@ -145,6 +145,9 @@ pub struct TypeBuilder<'tcx> {
     param_idx_mapping: HashMap<u32, rty::TypeParamIdx>,
     type_params: Rc<RefCell<TypeParamMap<'tcx>>>,
     closure_type_params: Rc<RefCell<HashMap<TypeParam, rty::FunctionType>>>,
+    /// The types the bodies of the crate's closures take their captures at, by closure
+    /// ([`TypeBuilder::with_closure_captures`]).
+    closure_captures: Rc<RefCell<HashMap<DefId, rty::Type<rty::Closed>>>>,
     system: Rc<RefCell<chc::System>>,
     enum_defs: Rc<RefCell<EnumDefs>>,
     /// The structs whose fields are being built, outermost first.
@@ -194,6 +197,8 @@ trait TyMode<'tcx> {
     type Var: chc::Var;
     /// The type of a function pointer with the signature `sig`.
     fn fn_ptr(&mut self, b: &TypeBuilder<'tcx>, sig: mir_ty::FnSig<'tcx>) -> rty::Type<Self::Var>;
+    /// The type of a closure `def_id` of the crate, when it is not built from its captures.
+    fn closure(&mut self, b: &TypeBuilder<'tcx>, def_id: DefId) -> Option<rty::Type<Self::Var>>;
     /// The type of a type argument `ty` of an enum.
     fn enum_arg(
         &mut self,
@@ -224,6 +229,10 @@ impl<'tcx> TyMode<'tcx> for Unrefined {
         }
         let ret = b.build(sig.output());
         rty::FunctionType::new(params, ret.vacuous()).into()
+    }
+
+    fn closure(&mut self, b: &TypeBuilder<'tcx>, def_id: DefId) -> Option<rty::Type<rty::Closed>> {
+        b.closure_captures.borrow().get(&def_id).cloned()
     }
 
     fn enum_arg(
@@ -268,10 +277,25 @@ impl<'tcx> TypeBuilder<'tcx> {
             param_idx_mapping,
             type_params,
             closure_type_params,
+            closure_captures: Default::default(),
             system,
             enum_defs,
             structs_in_progress: Default::default(),
         }
+    }
+
+    /// Builds the unrefined type of a closure of the crate as the type its body takes its
+    /// captures at, which `closure_captures` gives, rather than as its captures unrefined. Every
+    /// closure value is checked against that type where it is built, and a generic contract
+    /// states the closure's `pre!` and `post!` of the value over it: a function pointer among the
+    /// captures has nothing but its type to say what it returns, which unrefined says nothing,
+    /// and a box holding it relates it by equality.
+    pub fn with_closure_captures(
+        mut self,
+        closure_captures: Rc<RefCell<HashMap<DefId, rty::Type<rty::Closed>>>>,
+    ) -> Self {
+        self.closure_captures = closure_captures;
+        self
     }
 
     pub fn owner_fn_id(&self) -> DefId {
@@ -898,6 +922,13 @@ impl<'tcx> TypeBuilder<'tcx> {
         if ty.is_trait() {
             return rty::Type::opaque();
         }
+        // Only a closure type at the top of `ty` reaches here: `resolve_model_ty` below folds every
+        // closure inside a type into `Closure<upvars>` before the arms recurse.
+        if let mir_ty::TyKind::Closure(def_id, _) = ty.kind() {
+            if let Some(ty) = m.closure(self, *def_id) {
+                return ty;
+            }
+        }
         let ty = self.resolve_model_ty(ty);
         match ty.kind() {
             mir_ty::TyKind::Bool => rty::Type::bool(),
@@ -1379,6 +1410,10 @@ where
     fn fn_ptr(&mut self, b: &TypeBuilder<'tcx>, sig: mir_ty::FnSig<'tcx>) -> rty::Type<S::Var> {
         let ty = b.for_function_template(self.registry, sig).build();
         rty::Type::function(ty)
+    }
+
+    fn closure(&mut self, _b: &TypeBuilder<'tcx>, _def_id: DefId) -> Option<rty::Type<S::Var>> {
+        None
     }
 
     fn enum_arg(
