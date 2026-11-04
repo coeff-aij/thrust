@@ -42,7 +42,7 @@ fn reference_of(name: &Ident, parenthesized: bool, args: TokenStream) -> Option<
 }
 
 /// The reference `tokens` starts with: a ghost's name, `!`, and a parenthesized label.
-fn reference_at(tokens: &[TokenTree]) -> Option<Reference> {
+pub fn reference_at(tokens: &[TokenTree]) -> Option<Reference> {
     let [TokenTree::Ident(name), TokenTree::Punct(bang), TokenTree::Group(group), ..] = tokens
     else {
         return None;
@@ -58,7 +58,7 @@ fn reference_at(tokens: &[TokenTree]) -> Option<Reference> {
 }
 
 /// The reference `mac` is, written in a pattern.
-pub fn reference_of_macro(mac: &syn::Macro) -> Option<Reference> {
+fn reference_of_macro(mac: &syn::Macro) -> Option<Reference> {
     let parenthesized = matches!(mac.delimiter, syn::MacroDelimiter::Paren(_));
     reference_of(mac.path.get_ident()?, parenthesized, mac.tokens.clone())
 }
@@ -139,8 +139,23 @@ fn split_params(tokens: &TokenStream) -> Option<(TokenStream, TokenStream)> {
     Some((params, rest))
 }
 
-/// The parameters of `mac`, a formula macro, that are references to `label`, as the plain name
-/// of the ghost each names and the type written for it.
+/// The parameter `pat_type` as the plain name of the ghost it names and its written type, when
+/// it is a reference to `label`.
+pub fn typed_reference(pat_type: &syn::PatType, label: &str) -> Option<(Ident, syn::Type)> {
+    let syn::Pat::Macro(pat_macro) = &*pat_type.pat else {
+        return None;
+    };
+    let reference = reference_of_macro(&pat_macro.mac)?;
+    (reference.label == label).then(|| {
+        (
+            Ident::new(&reference.ghost, reference.span),
+            (*pat_type.ty).clone(),
+        )
+    })
+}
+
+/// The parameters of `mac`, a formula macro, that are references to `label` (see
+/// [`typed_reference`]).
 fn typed_references(mac: &syn::Macro, label: &str) -> Vec<(Ident, syn::Type)> {
     let wrapped = crate::formula::wrap_closure_body(mac.tokens.clone());
     let Ok(closure) = syn::parse2::<syn::ExprClosure>(wrapped) else {
@@ -149,20 +164,9 @@ fn typed_references(mac: &syn::Macro, label: &str) -> Vec<(Ident, syn::Type)> {
     closure
         .inputs
         .iter()
-        .filter_map(|input| {
-            let syn::Pat::Type(pat_type) = input else {
-                return None;
-            };
-            let syn::Pat::Macro(pat_macro) = &*pat_type.pat else {
-                return None;
-            };
-            let reference = reference_of_macro(&pat_macro.mac)?;
-            (reference.label == label).then(|| {
-                (
-                    Ident::new(&reference.ghost, reference.span),
-                    (*pat_type.ty).clone(),
-                )
-            })
+        .filter_map(|input| match input {
+            syn::Pat::Type(pat_type) => typed_reference(pat_type, label),
+            _ => None,
         })
         .collect()
 }

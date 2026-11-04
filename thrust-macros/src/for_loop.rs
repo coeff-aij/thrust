@@ -234,9 +234,9 @@ fn type_checks(params: &[(Ident, syn::Type)], name: &str, var: &Ident) -> TokenS
         .collect()
 }
 
-/// `stmt`, an invariant macro, with each identifier `from` that is not a field, method, path
-/// segment or macro name replaced by `to`, and each reference to the loop's label `label`
-/// replaced as `from` is.
+/// `stmt`, an invariant macro, with each identifier `from` that is not a field, method or path
+/// segment, nor the name in a reference `from!('l)` to a loop label, replaced by `to`, and each
+/// reference to the loop's label `label` replaced as `from` is.
 fn rename_in_stmt(stmt: &syn::Stmt, label: Option<&str>, renames: &[(&str, &Ident)]) -> syn::Stmt {
     let mut stmt = stmt.clone();
     let mac = match &mut stmt {
@@ -256,8 +256,7 @@ fn rename_tokens(tokens: TokenStream, renames: &[(&str, &Ident)]) -> TokenStream
     let mut after_access = false;
     let mut renamed = Vec::with_capacity(tokens.len());
     for (i, token) in tokens.iter().enumerate() {
-        let before_bang =
-            matches!(tokens.get(i + 1), Some(TokenTree::Punct(p)) if p.as_char() == '!');
+        let in_reference = crate::loop_label::reference_at(&tokens[i..]).is_some();
         let token = match token {
             TokenTree::Group(group) => {
                 let mut renamed = proc_macro2::Group::new(
@@ -267,7 +266,7 @@ fn rename_tokens(tokens: TokenStream, renames: &[(&str, &Ident)]) -> TokenStream
                 renamed.set_span(group.span());
                 TokenTree::Group(renamed)
             }
-            TokenTree::Ident(ident) if !after_access && !before_bang => renames
+            TokenTree::Ident(ident) if !after_access && !in_reference => renames
                 .iter()
                 .find(|(from, _)| ident == from)
                 .map(|(_, to)| TokenTree::Ident(Ident::new(&to.to_string(), ident.span())))
@@ -300,15 +299,11 @@ fn invariant_params(stmt: &syn::Stmt, label: Option<&str>) -> Option<Vec<(syn::I
                 let syn::Pat::Type(pat_type) = input else {
                     return None;
                 };
-                let ty = (*pat_type.ty).clone();
                 match &*pat_type.pat {
-                    syn::Pat::Ident(pat_ident) => Some((pat_ident.ident.clone(), ty)),
-                    syn::Pat::Macro(pat_macro) => {
-                        let reference = crate::loop_label::reference_of_macro(&pat_macro.mac)?;
-                        (Some(reference.label.as_str()) == label)
-                            .then(|| (Ident::new(&reference.ghost, reference.span), ty))
+                    syn::Pat::Ident(pat_ident) => {
+                        Some((pat_ident.ident.clone(), (*pat_type.ty).clone()))
                     }
-                    _ => None,
+                    _ => crate::loop_label::typed_reference(pat_type, label?),
                 }
             })
             .collect(),
