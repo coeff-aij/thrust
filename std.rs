@@ -4112,6 +4112,16 @@ fn _extern_spec_default<T>() -> T
     T::default()
 }
 
+// `Option`'s default is `None`.
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(result == None)]
+fn _extern_spec_option_default<T>() -> Option<T>
+  where T: thrust_models::Model
+{
+    <Option<T> as Default>::default()
+}
+
 // Values are modeled purely, so a clone is the same value in the model.
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
