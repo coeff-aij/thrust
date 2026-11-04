@@ -2394,28 +2394,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         format!("{what} refers to `{name}`, which is not a live variable here"),
                     )
                 });
-                let written_ty =
-                    analyze::local_def::spec_param_written_ty(self.ctx, *written_input_ty);
-                let written = analyze::local_def::spec_param_compared_ty(
-                    self.ctx,
-                    self.local_def_id,
-                    written_ty,
-                );
-                let actual_ty = operand.ty(&self.local_decls, self.tcx);
-                let actual = analyze::local_def::spec_param_compared_ty(
-                    self.ctx,
-                    self.local_def_id,
-                    actual_ty,
-                );
-                if written != actual {
-                    self.tcx.dcx().span_fatal(
-                        span,
-                        format!(
-                            "{what} gives `{name}` the type `{written}`, but it has the type \
-                             `{actual}` here"
-                        ),
-                    );
-                }
+                self.check_spec_param_ty(what, span, name, *written_input_ty, &operand);
                 let arg = self.operand_refined_type(operand);
                 self.env.immut_bind_tmp(arg)
             })
@@ -2433,6 +2412,33 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.env.assume(formula.map_var(PlaceTypeVar::Var));
     }
 
+    /// Stops unless `written_input_ty`, the type of the formula function's parameter that names
+    /// the live variable `name`, is the type of `operand`, the variable's value here.
+    fn check_spec_param_ty(
+        &self,
+        what: &str,
+        span: rustc_span::Span,
+        name: rustc_span::Symbol,
+        written_input_ty: mir_ty::Ty<'tcx>,
+        operand: &Operand<'tcx>,
+    ) {
+        let written_ty = analyze::local_def::spec_param_written_ty(self.ctx, written_input_ty);
+        let written =
+            analyze::local_def::spec_param_compared_ty(self.ctx, self.local_def_id, written_ty);
+        let actual_ty = operand.ty(&self.local_decls, self.tcx);
+        let actual =
+            analyze::local_def::spec_param_compared_ty(self.ctx, self.local_def_id, actual_ty);
+        if written != actual {
+            self.tcx.dcx().span_fatal(
+                span,
+                format!(
+                    "{what} gives `{name}` the type `{written}`, but it has the type `{actual}` \
+                     here"
+                ),
+            );
+        }
+    }
+
     /// The goal that `formula` holds in the current environment.
     fn check_formula(&mut self, formula: chc::Formula<Var>) {
         let mut builder = self.env.build_clause();
@@ -2443,7 +2449,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
     /// Types the introduction of a ghost value as a call to the function the ghost term
     /// denotes: one from the live variables it names to a value refined by the term.
-    fn type_ghost_value(&mut self, formula_fn: FormulaFn<'tcx>, expected: &rty::RefinedType<Var>) {
+    fn type_ghost_value(
+        &mut self,
+        formula_fn_def_id: DefId,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
+        formula_fn: FormulaFn<'tcx>,
+        expected: &rty::RefinedType<Var>,
+        span: rustc_span::Span,
+    ) {
         let (value_ty, param_tys) = formula_fn
             .params()
             .raw
@@ -2480,11 +2493,17 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let term_check = (!checks.is_top()).then(|| (params.clone(), formula_fn.to_refinement()));
         let func_ty = rty::FunctionType::new(params, value_rty);
 
+        let sig = self
+            .tcx
+            .fn_sig(formula_fn_def_id)
+            .instantiate(self.tcx, generic_args);
+        let written_sig = self.tcx.instantiate_bound_regions_with_erased(sig);
         let args: IndexVec<_, _> = formula_fn
             .param_idents()
             .iter()
+            .zip(written_sig.inputs())
             .skip(1)
-            .map(|ident| {
+            .map(|(ident, written_input_ty)| {
                 let ident = ident.expect("ghost term parameters must be named");
                 let name = analyze::annot_fn::lifted_param_source_name(ident);
                 let operand = self.operand_of_name(name).unwrap_or_else(|| {
@@ -2492,6 +2511,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         "ghost term refers to `{name}`, which is not a live variable here"
                     ))
                 });
+                self.check_spec_param_ty("ghost!", span, name, *written_input_ty, &operand);
                 self.operand_refined_type(operand)
             })
             .collect();
@@ -3145,7 +3165,13 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         self.type_builder.owner_fn_id(),
                     )
                     .expect("ghost formula function is not registered");
-                self.type_ghost_value(formula_fn, &rty);
+                self.type_ghost_value(
+                    formula_def_id.to_def_id(),
+                    generic_args,
+                    formula_fn,
+                    &rty,
+                    term.source_info.span,
+                );
             } else {
                 rty = self.type_call(
                     func.clone(),
