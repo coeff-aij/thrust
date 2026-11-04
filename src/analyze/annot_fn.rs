@@ -1224,9 +1224,9 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
     /// Whether a specification value of type `value` can stand for one of the model type
     /// `expected`: the same type, const arguments included, where a shared reference or a box is
     /// its referent (the query removes them), the integer models and the Rust integers are one
-    /// type (a formula's integers are unbounded, and a literal is typed `i32`), and two
-    /// projections that neither side's model resolves agree, as rustc lets an unnormalizable
-    /// projection stand only for a projection. Both types are stated in the specification's
+    /// type (a formula's integers are unbounded, and a literal is typed `i32`), and a projection
+    /// that neither side's model resolves agrees only with the same projection, as in rustc.
+    /// Both types are stated in the specification's
     /// generics at the arguments it is translated at, the callee's signature through the
     /// receiver's type, so a type parameter is itself.
     fn spec_value_agrees(&self, value: mir_ty::Ty<'tcx>, expected: mir_ty::Ty<'tcx>) -> bool {
@@ -1234,21 +1234,25 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         let value = self.spec_value_view(value);
         let expected = self.spec_value_view(expected);
         let agree = |a: mir_ty::Ty<'tcx>, b: mir_ty::Ty<'tcx>| self.spec_value_agrees(a, b);
+        let args_agree = |a: mir_ty::GenericArgsRef<'tcx>, b: mir_ty::GenericArgsRef<'tcx>| {
+            a.len() == b.len()
+                && a.iter()
+                    .zip(b.iter())
+                    .all(|(a, b)| match (a.kind(), b.kind()) {
+                        (mir_ty::GenericArgKind::Type(a), mir_ty::GenericArgKind::Type(b)) => {
+                            agree(a, b)
+                        }
+                        (mir_ty::GenericArgKind::Lifetime(_), _) => true,
+                        _ => a == b,
+                    })
+        };
         match (value.kind(), expected.kind()) {
-            (TyKind::Alias(..), TyKind::Alias(..)) => true,
+            (TyKind::Alias(a_kind, a), TyKind::Alias(b_kind, b)) => {
+                a_kind == b_kind && a.def_id == b.def_id && args_agree(a.args, b.args)
+            }
             _ if self.is_integer_model(value) && self.is_integer_model(expected) => true,
             (TyKind::Adt(a, a_args), TyKind::Adt(b, b_args)) => {
-                a.did() == b.did()
-                    && a_args
-                        .iter()
-                        .zip(b_args.iter())
-                        .all(|(a, b)| match (a.kind(), b.kind()) {
-                            (mir_ty::GenericArgKind::Type(a), mir_ty::GenericArgKind::Type(b)) => {
-                                agree(a, b)
-                            }
-                            (mir_ty::GenericArgKind::Lifetime(_), _) => true,
-                            _ => a == b,
-                        })
+                a.did() == b.did() && args_agree(a_args, b_args)
             }
             (TyKind::Tuple(a), TyKind::Tuple(b)) => {
                 a.len() == b.len() && a.iter().zip(b.iter()).all(|(a, b)| agree(a, b))
