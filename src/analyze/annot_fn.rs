@@ -599,8 +599,39 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         ty
     }
 
+    /// The dereferences of a `Mut<T>` that rustc's adjustments of `expr` insert where it
+    /// autoderefs a field's base, an index's base or a method's receiver, and the type of `expr`
+    /// after them: `s[i]`, `s.f` and `s.len()` of an `s: &mut T` read the current value `*s`, as
+    /// in Creusot. The other dereferences rustc inserts, of a shared reference or a `Box`, are
+    /// the identity in a query, which removes boxes.
+    fn mut_derefs(&self, expr: &'tcx rustc_hir::Expr<'tcx>) -> (usize, mir_ty::Ty<'tcx>) {
+        let mut count = 0;
+        let mut ty = self.expr_ty(expr);
+        for adjustment in self.typeck.expr_adjustments(expr) {
+            let mir_ty::adjustment::Adjust::Deref(_) = adjustment.kind else {
+                break;
+            };
+            if let mir_ty::TyKind::Adt(adt, _) = ty.kind() {
+                if Some(adt.did()) == self.def_ids.mut_model() {
+                    count += 1;
+                }
+            }
+            ty = self.instantiated(adjustment.target);
+        }
+        (count, ty)
+    }
+
+    /// The type of `expr` where rustc autoderefs it, after its dereferences ([`Self::mut_derefs`]).
+    fn adjusted_expr_ty(&self, expr: &'tcx rustc_hir::Expr<'tcx>) -> mir_ty::Ty<'tcx> {
+        self.mut_derefs(expr).1
+    }
+
     fn expr_ty(&self, expr: &'tcx rustc_hir::Expr<'tcx>) -> mir_ty::Ty<'tcx> {
-        let ty = self.typeck.expr_ty(expr);
+        self.instantiated(self.typeck.expr_ty(expr))
+    }
+
+    /// `ty`, a type of the formula function's typeck results, at its generic arguments.
+    fn instantiated(&self, ty: mir_ty::Ty<'tcx>) -> mir_ty::Ty<'tcx> {
         let instantiated = self
             .instantiate_generics(ty, self.generic_args)
             .unwrap_or(ty);
@@ -892,7 +923,8 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                  `#[logic]` function, an argument of a call or the operand of a cast",
             );
         };
-        term
+        let (mut_derefs, _) = self.mut_derefs(hir);
+        (0..mut_derefs).fold(term, |term, _| term.mut_current())
     }
 
     fn receiver_closure_ty(&self, ty: mir_ty::Ty<'tcx>) -> Option<mir_ty::Ty<'tcx>> {
@@ -1058,24 +1090,43 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             .is_some()
     }
 
+    /// The sorts of the parameters and of the result of the function `def_id` at `generic_args`,
+    /// read from its signature, so that every call of a universally quantified function declares
+    /// it with the same sorts whatever coercions its arguments went through.
+    fn signature_sorts(
+        &self,
+        def_id: DefId,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
+    ) -> (Vec<chc::Sort>, chc::Sort) {
+        let sig = self.tcx.fn_sig(def_id).instantiate(self.tcx, generic_args);
+        let sig = self.tcx.instantiate_bound_regions_with_erased(sig);
+        let typing_env = mir_ty::TypingEnv::fully_monomorphized();
+        let sort = |ty: mir_ty::Ty<'tcx>| {
+            let ty = self
+                .tcx
+                .try_normalize_erasing_regions(typing_env, ty)
+                .unwrap_or(ty);
+            self.type_builder.build(ty).to_sort()
+        };
+        (
+            sig.inputs().iter().map(|ty| sort(*ty)).collect(),
+            sort(sig.output()),
+        )
+    }
+
     /// A trait's logic function called at a type parameter, which stands for every
     /// implementation: a universally quantified function, as a trait predicate is.
     fn trait_logic_fn_term(
         &self,
         def_id: DefId,
         generic_args: mir_ty::GenericArgsRef<'tcx>,
-        hir: &'tcx rustc_hir::Expr<'tcx>,
         args: &'tcx [rustc_hir::Expr<'tcx>],
     ) -> chc::Term<rty::FunctionParamIdx> {
         let type_params = generic_args
             .types()
             .map(|ty| self.type_builder.build(ty).to_sort())
             .collect();
-        let params = args
-            .iter()
-            .map(|expr| self.type_builder.build(self.expr_ty(expr)).to_sort())
-            .collect();
-        let result = self.type_builder.build(self.expr_ty(hir)).to_sort();
+        let (params, result) = self.signature_sorts(def_id, generic_args);
         let type_args = self.type_builder.generic_args_symbol(generic_args);
         let pred =
             refine::trait_forall_fn(self.tcx, def_id, type_args, type_params, params, result);
@@ -1965,7 +2016,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                     Ok(index) => index,
                     Err(_) => {
                         let adt = self
-                            .ghost_deref_target_ty(self.expr_ty(expr))
+                            .ghost_deref_target_ty(self.adjusted_expr_ty(expr))
                             .ty_adt_def()
                             .expect("named field access on a non-ADT type");
                         adt.non_enum_variant()
@@ -1980,12 +2031,12 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             }
             ExprKind::Index(array, index, _) => {
                 let index_term = self.to_term(index);
-                let array_ty = self.expr_ty(array);
-                let is_seq = self.is_seq_modeled(self.seq_target_ty(array_ty));
+                let array_term = self.to_term(array);
+                let is_seq = self.is_seq_modeled(self.seq_target_ty(self.adjusted_expr_ty(array)));
                 let term = if is_seq {
-                    self.to_term(array).seq_nth(index_term)
+                    array_term.seq_nth(index_term)
                 } else {
-                    self.to_term(array).select(index_term)
+                    array_term.select(index_term)
                 };
                 FormulaOrTerm::Term(term)
             }
@@ -2086,7 +2137,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 }
                 if method.ident.name == rustc_span::sym::len
                     && args.is_empty()
-                    && self.is_seq_modeled(self.expr_ty(receiver))
+                    && self.is_seq_modeled(self.adjusted_expr_ty(receiver))
                 {
                     let t = self.to_term(receiver);
                     return FormulaOrTerm::Term(t.seq_len());
@@ -2235,7 +2286,6 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                                 return FormulaOrTerm::Term(self.trait_logic_fn_term(
                                     def_id,
                                     generic_args,
-                                    hir,
                                     args,
                                 ));
                             };
@@ -2290,12 +2340,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                                         .map(|ty| self.type_builder.build(ty).to_sort())
                                         .collect();
 
-                                    let params = args
-                                        .iter()
-                                        .map(|expr| {
-                                            self.type_builder.build(self.expr_ty(expr)).to_sort()
-                                        })
-                                        .collect();
+                                    let (params, _) = self.signature_sorts(def_id, generic_args);
 
                                     let pred = refine::trait_forall_pred(
                                         self.tcx,
