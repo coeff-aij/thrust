@@ -42,7 +42,6 @@ bound on a type parameter, not a change to rustc's code: the proved `DenseBitSet
 | `place_fields.rs` | `LayoutCalculator::place_fields`, `univariant_biased`'s field loop (rewrites.md R19), with its invariant over the loop's history, and the lemma `niche_sized`; `place_field` and the lemmas of `permutation_sum.rs` trusted on their contracts | draft, `ignore-on-host`: 13 of its 19 goals are `sat`; the invariant at the loop's entry and the five goals of the loop body's paths (its back edge and its returns) get no answer at 300 s |
 | `eligibility.rs` | `coroutine_saved_local_eligibility` and the helpers `make_ineligible` and `set_assignment`, which hold its writes to `assignments` | verified, each goal on its own (`THRUST_SPLIT_GOALS`) |
 | `layout.rs` | `layout()` and the adapters of `thrust/iter.rs`; the lemmas of `thrust/lemmas.rs` assumed | draft, `ignore-on-host` |
-| `filter.rs` | the case study's `Filter` of `thrust/iter.rs`: `next` against the contract that the item it returns is the last the inner iterator produced, and its `IteratorSpec` laws, split by goal; its fail twin asserts in `next` that no item was rejected before the one returned | draft, `ignore-on-host`: not run on this branch |
 | `lemmas.rs` | the counting lemmas of `thrust/lemmas.rs`: the permutation split that `layout()` uses and the pigeonhole principle (`every_index_occurs`) that `univariant_biased` uses | verified |
 
 The roots that are not drafts answer over the module tree in the ui suite; the states of the
