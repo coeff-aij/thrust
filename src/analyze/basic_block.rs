@@ -2293,6 +2293,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .ctx
             .def_ty_with_args(def_id, parent_args, caller_def_id)
         else {
+            // A closure without a type, one in a body Thrust skips, has no capture types recorded
+            // either (`register_def` is never reached for it), so its type is built unrefined
+            // wherever it is used and nothing assumes its body's types of its captures.
             return;
         };
         let expected = def_ty
