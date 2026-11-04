@@ -5,7 +5,8 @@ use thrust_models::{exists, forall, model::{Closure, Mut}};
 
 // `check`'s `hist_inv` clause relates its states through `P`'s, which carries `check`'s history
 // to `wrap`'s postcondition. The argument owns its counter and its contract is left to inference,
-// so `wrap` is analyzed again at it, with the relation of `P` there: the counter never decreases.
+// so `wrap` is analyzed again at it, with the relation inferred for `P` there: the counter never
+// decreases.
 #[thrust_macros::context]
 #[thrust_macros::requires(forall(|c: Closure<P>| thrust_macros::pre!(c())))]
 #[thrust_macros::ensures(exists(|c: Closure<P>, d: Closure<P>|

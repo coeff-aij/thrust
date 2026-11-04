@@ -6,8 +6,8 @@ use thrust_models::{exists, forall, model::{Closure, Mut}};
 // `check`'s `hist_inv` clause relates its states through `P`'s, which carries `check`'s history
 // to `wrap`'s postcondition. The argument borrows its counter by `&mut`, its `hist_inv` clause
 // states that the counter never decreases, and its contract is left to inference, so `wrap` is
-// analyzed again at it, with the relation of `P` there. The counter decreases, which its
-// `hist_inv` clause does not allow.
+// analyzed again at it, with the relation of `P` there. Two calls leave the counter at 2, so
+// `wrap`'s result is 2 and the assertion that it is at least 3 is refuted.
 #[thrust_macros::context]
 #[thrust_macros::requires(forall(|c: Closure<P>| thrust_macros::pre!(c())))]
 #[thrust_macros::ensures(exists(|c: Closure<P>, d: Closure<P>|
@@ -28,9 +28,9 @@ fn main() {
         captures(n: &mut &mut i64),
         hist_inv(**n <= *!n),
         || -> i64 {
-            n -= 1;
+            n += 1;
             n
         },
     ));
-    assert!(r >= 1);
+    assert!(r >= 3);
 }
