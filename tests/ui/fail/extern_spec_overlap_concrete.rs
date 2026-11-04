@@ -14,7 +14,7 @@ fn _extern_spec_is_power_of_two(x: u64) -> bool {
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(x == 1 ==> result)]
-fn _extern_spec_is_power_of_two_one(x: u64) -> bool { //~ ERROR: both cover some of its instances
+fn _extern_spec_is_power_of_two_one(x: u64) -> bool { //~ ERROR: already has a contract
     u64::is_power_of_two(x)
 }
 

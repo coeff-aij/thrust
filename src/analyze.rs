@@ -1220,17 +1220,29 @@ impl<'tcx> Analyzer<'tcx> {
             .tcx
             .def_ident_span(second)
             .unwrap_or_else(|| self.tcx.def_span(second));
-        self.tcx.dcx().span_fatal(
-            span,
+        let (first, second, target) = (
+            self.tcx.def_path_str(first),
+            self.tcx.def_path_str(second),
+            self.tcx.def_path_str(target_def_id),
+        );
+        let message = if self
+            .tcx
+            .generics_of(target_def_id)
+            .requires_monomorphization(self.tcx)
+        {
             format!(
-                "the extern specs `{}` and `{}` of `{}` both cover some of its instances; an \
-                 instance takes at most one extern spec, so write one spec, over a spec trait \
-                 where the contracts differ by type",
-                self.tcx.def_path_str(first),
-                self.tcx.def_path_str(second),
-                self.tcx.def_path_str(target_def_id),
-            ),
-        )
+                "the extern specs `{first}` and `{second}` of `{target}` both cover some of its \
+                 instances; an instance takes at most one extern spec, so write one spec, over a \
+                 spec trait where the contracts differ by type"
+            )
+        } else {
+            format!(
+                "`{target}` already has a contract, from `{first}`, and `{second}` would be a \
+                 second one; a function takes one contract, so state a contract that only one \
+                 proof needs on a local wrapper of it"
+            )
+        };
+        self.tcx.dcx().span_fatal(span, message)
     }
 
     pub fn register_impl_method_with_own_contract(&mut self, def_id: DefId) {
