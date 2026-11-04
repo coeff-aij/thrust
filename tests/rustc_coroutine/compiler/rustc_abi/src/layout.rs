@@ -1,5 +1,5 @@
-// `thrust_place_field_fail` and `thrust_permutation_sum_fail` are set only by the fail twins of
-// the place_field and permutation_sum roots.
+// `thrust_place_field_fail`, `thrust_place_fields_fail` and `thrust_permutation_sum_fail` are set
+// only by the fail twins of the place_field, place_fields and permutation_sum roots.
 #![allow(unexpected_cfgs)]
 use crate::thrust_models;
 use std::cmp;
@@ -224,6 +224,12 @@ fn niche_ends_by(niche: Option<Niche>, dl: TargetDataLayout, end: Size) -> bool 
     forall(|n: Niche, s: Size| !(niche == Some(n))
         || (Niche::wf_in(n, dl) && (!Primitive::size_in(n.value, dl, s) || n.offset.raw + s.raw <= end.raw)))
 }
+
+/// No niche ends by any end.
+#[thrust_macros::lemma]
+#[thrust_macros::ensures(niche_ends_by(None, *dl, end))]
+#[thrust::reveal(niche_ends_by)]
+fn no_niche_ends_by(dl: &TargetDataLayout, end: Size) {}
 
 /// A niche that ends by `end` ends by any later end.
 #[thrust_macros::lemma]
@@ -1258,9 +1264,13 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
             *in_memory_order
         });
         thrust_macros::proof!(sum_at_le(order, fields.len()));
+        thrust_macros::proof!(no_niche_ends_by(dl, *offset));
+        // The fail twin of the place_fields root sets this cfg: the invariant lets the loop move
+        // the offset, so an assertion that it ends where it started is refuted.
+        #[cfg(thrust_place_fields_fail)]
+        let offset_before = thrust_macros::ghost!(|offset: &mut Size| -> Size { *offset });
         // The loop's invariant names the entry values of `offset` and `align` by the parameters.
         let (next_offset, struct_align) = (offset, align);
-        thrust_macros::proof!(pow2_pos_upto(29));
         let mut unsized_field = None::<&F>;
         for &i in in_memory_order {
             thrust_macros::invariant!(
@@ -1350,6 +1360,9 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                 dl,
             )?;
         }
+        #[cfg(thrust_place_fields_fail)]
+        thrust_macros::proof_assert!(|next_offset: &mut Size, offset_before: thrust_models::Ghost<Size>|
+            (*next_offset).raw == offset_before.raw);
         Ok(unsized_field)
     }
 }
