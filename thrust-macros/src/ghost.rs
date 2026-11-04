@@ -24,6 +24,9 @@ static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 /// Expands `ghost!(CLOSURE)`: a bare ghost term with no threaded context.
 pub fn expand(input: TokenStream) -> TokenStream {
+    if let Some(e) = crate::loop_label::outside_context_error(&input.clone().into()) {
+        return e.to_compile_error().into();
+    }
     let input = crate::formula::wrap_closure_body(input.into());
     let closure = match syn::parse2::<syn::ExprClosure>(input) {
         Ok(closure) => closure,

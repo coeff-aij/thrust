@@ -15,7 +15,9 @@
 //!
 //! The variables of an annotated loop get names of their own for each loop, and the invariant's
 //! `iter`, `iter_old` and `produced` are renamed to them, so the loop body sees its own variables
-//! of those names, and an annotated loop nested in another `for` finds its own iterator.
+//! of those names, and an annotated loop nested in another `for` finds its own iterator. A
+//! labelled loop also renames the references `iter!('l)`, `iter_old!('l)` and `produced!('l)` to
+//! its label in the specifications of its body (see [`mod@crate::loop_label`]).
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -30,27 +32,28 @@ static COUNTER: AtomicUsize = AtomicUsize::new(0);
 /// or with no invariant and `THRUST_FOR_LOOP_HISTORY` is not `1`. Every invariant of that leading
 /// run names the loop's ghosts.
 pub fn desugar(for_loop: &syn::ExprForLoop) -> Option<syn::Expr> {
+    let label_name = for_loop.label.as_ref().map(|label| label.name.to_string());
+    let label_name = label_name.as_deref();
     let stmts = &for_loop.body.stmts;
-    let leading: Vec<_> = stmts.iter().map_while(invariant_params).collect();
+    let leading: Vec<_> = stmts
+        .iter()
+        .map_while(|stmt| invariant_params(stmt, label_name))
+        .collect();
     if leading.is_empty() {
         return history_requested().then(|| desugar_with_inferred_invariant(for_loop));
     }
     let (invariants, rest) = stmts.split_at(leading.len());
-    let params: Vec<_> = leading.into_iter().flatten().collect();
+    let mut params: Vec<_> = leading.into_iter().flatten().collect();
     let iter_ty = params
         .iter()
         .find(|(name, _)| name == "iter")
         .map(|(_, ty)| ty.clone())?;
-    let names_history = params
-        .iter()
-        .any(|(name, _)| name == "iter_old" || name == "produced");
 
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     let iter = format_ident!("__thrust_for_iter_{}", n);
     let iter_old = format_ident!("__thrust_for_iter_old_{}", n);
     let produced = format_ident!("__thrust_for_produced_{}", n);
     let item = format_ident!("__thrust_for_item_{}", n);
-    let iter_checks = type_checks(&params, "iter", &iter);
     let renames = [
         ("iter", &iter),
         ("iter_old", &iter_old),
@@ -58,12 +61,23 @@ pub fn desugar(for_loop: &syn::ExprForLoop) -> Option<syn::Expr> {
     ];
     let invariants: Vec<_> = invariants
         .iter()
-        .map(|invariant| rename_in_stmt(invariant, &renames))
+        .map(|invariant| rename_in_stmt(invariant, label_name, &renames))
         .collect();
+    let mut rest = rest.to_vec();
+    if let Some(label_name) = label_name {
+        params.extend(crate::loop_label::rename_in_body(
+            &mut rest, label_name, &renames,
+        ));
+    }
+    let names_history = params
+        .iter()
+        .any(|(name, _)| name == "iter_old" || name == "produced");
+    let iter_checks = type_checks(&params, "iter", &iter);
 
     let syn::ExprForLoop {
         label, pat, expr, ..
     } = for_loop;
+    let break_label = label.as_ref().map(|label| &label.name);
     let expr = head_expr(expr);
     // As in rustc's lowering, the iterator is bound by a `match`, so that the temporaries of the
     // `for` head live as long as the loop.
@@ -78,7 +92,7 @@ pub fn desugar(for_loop: &syn::ExprForLoop) -> Option<syn::Expr> {
                             let #pat = #item;
                             #(#rest)*
                         }
-                        ::core::option::Option::None => break,
+                        ::core::option::Option::None => break #break_label,
                     }
                 }
             }
@@ -126,7 +140,7 @@ pub fn desugar(for_loop: &syn::ExprForLoop) -> Option<syn::Expr> {
                         // The ghosts are named only by formulas, so a use keeps them live at the loop head.
                         ::core::option::Option::None => {
                             let #live = (&#iter_old, &#produced);
-                            break;
+                            break #break_label;
                         }
                     }
                 }
@@ -176,6 +190,19 @@ fn desugar_with_inferred_invariant(for_loop: &syn::ExprForLoop) -> syn::Expr {
     )
 }
 
+/// Whether `for_loop` is desugared with ghosts of its own, which a reference to its label
+/// can name: its body starts with an `invariant!` or `partial_invariant!` naming `iter`.
+pub fn has_ghosts(for_loop: &syn::ExprForLoop) -> bool {
+    let label = for_loop.label.as_ref().map(|label| label.name.to_string());
+    for_loop
+        .body
+        .stmts
+        .iter()
+        .map_while(|stmt| invariant_params(stmt, label.as_deref()))
+        .flatten()
+        .any(|(name, _)| name == "iter")
+}
+
 /// Whether a loop with no invariant is to get the ghost history (`THRUST_FOR_LOOP_HISTORY=1`).
 fn history_requested() -> bool {
     std::env::var("THRUST_FOR_LOOP_HISTORY").is_ok_and(|v| v == "1")
@@ -208,48 +235,54 @@ fn type_checks(params: &[(Ident, syn::Type)], name: &str, var: &Ident) -> TokenS
 }
 
 /// `stmt`, an invariant macro, with each identifier `from` that is not a field, method or path
-/// segment replaced by `to`.
-fn rename_in_stmt(stmt: &syn::Stmt, renames: &[(&str, &Ident)]) -> syn::Stmt {
+/// segment, nor the name in a reference `from!('l)` to a loop label, replaced by `to`, and each
+/// reference to the loop's label `label` replaced as `from` is.
+fn rename_in_stmt(stmt: &syn::Stmt, label: Option<&str>, renames: &[(&str, &Ident)]) -> syn::Stmt {
     let mut stmt = stmt.clone();
     let mac = match &mut stmt {
         syn::Stmt::Macro(stmt) => &mut stmt.mac,
         syn::Stmt::Expr(syn::Expr::Macro(expr), _) => &mut expr.mac,
         _ => return stmt,
     };
+    if let Some(label) = label {
+        crate::loop_label::rename_macro(mac, label, renames);
+    }
     mac.tokens = rename_tokens(mac.tokens.clone(), renames);
     stmt
 }
 
 fn rename_tokens(tokens: TokenStream, renames: &[(&str, &Ident)]) -> TokenStream {
+    let tokens: Vec<TokenTree> = tokens.into_iter().collect();
     let mut after_access = false;
-    tokens
-        .into_iter()
-        .map(|token| {
-            let renamed = match token {
-                TokenTree::Group(group) => {
-                    let mut renamed = proc_macro2::Group::new(
-                        group.delimiter(),
-                        rename_tokens(group.stream(), renames),
-                    );
-                    renamed.set_span(group.span());
-                    TokenTree::Group(renamed)
-                }
-                TokenTree::Ident(ident) if !after_access => renames
-                    .iter()
-                    .find(|(from, _)| ident == from)
-                    .map(|(_, to)| TokenTree::Ident(Ident::new(&to.to_string(), ident.span())))
-                    .unwrap_or(TokenTree::Ident(ident)),
-                token => token,
-            };
-            after_access =
-                matches!(&renamed, TokenTree::Punct(p) if p.as_char() == '.' || p.as_char() == ':');
-            renamed
-        })
-        .collect()
+    let mut renamed = Vec::with_capacity(tokens.len());
+    for (i, token) in tokens.iter().enumerate() {
+        let in_reference = crate::loop_label::reference_at(&tokens[i..]).is_some();
+        let token = match token {
+            TokenTree::Group(group) => {
+                let mut renamed = proc_macro2::Group::new(
+                    group.delimiter(),
+                    rename_tokens(group.stream(), renames),
+                );
+                renamed.set_span(group.span());
+                TokenTree::Group(renamed)
+            }
+            TokenTree::Ident(ident) if !after_access && !in_reference => renames
+                .iter()
+                .find(|(from, _)| ident == from)
+                .map(|(_, to)| TokenTree::Ident(Ident::new(&to.to_string(), ident.span())))
+                .unwrap_or_else(|| token.clone()),
+            token => token.clone(),
+        };
+        after_access =
+            matches!(&token, TokenTree::Punct(p) if p.as_char() == '.' || p.as_char() == ':');
+        renamed.push(token);
+    }
+    renamed.into_iter().collect()
 }
 
 /// The typed parameters of `stmt` when it is an `invariant!(|..| ..)` or a `partial_invariant!`.
-fn invariant_params(stmt: &syn::Stmt) -> Option<Vec<(syn::Ident, syn::Type)>> {
+/// A parameter that is a reference to `label`, the loop's own, counts as the ghost it names.
+fn invariant_params(stmt: &syn::Stmt, label: Option<&str>) -> Option<Vec<(syn::Ident, syn::Type)>> {
     let mac = match stmt {
         syn::Stmt::Macro(stmt) => &stmt.mac,
         syn::Stmt::Expr(syn::Expr::Macro(expr), _) => &expr.mac,
@@ -266,10 +299,12 @@ fn invariant_params(stmt: &syn::Stmt) -> Option<Vec<(syn::Ident, syn::Type)>> {
                 let syn::Pat::Type(pat_type) = input else {
                     return None;
                 };
-                let syn::Pat::Ident(pat_ident) = &*pat_type.pat else {
-                    return None;
-                };
-                Some((pat_ident.ident.clone(), (*pat_type.ty).clone()))
+                match &*pat_type.pat {
+                    syn::Pat::Ident(pat_ident) => {
+                        Some((pat_ident.ident.clone(), (*pat_type.ty).clone()))
+                    }
+                    _ => crate::loop_label::typed_reference(pat_type, label?),
+                }
             })
             .collect(),
     )
