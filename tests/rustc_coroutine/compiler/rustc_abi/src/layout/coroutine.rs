@@ -54,8 +54,8 @@ impl<VariantIdx: thrust_models::Model, FieldIdx: thrust_models::Model> thrust_mo
 // that holds at that loop (`nb_locals` and, once dead,
 // `variant_fields` are read at entry through `FnParam`). Where the live
 // `variant_fields` and `storage_conflicts` are needed too, a second
-// `invariant!` at the same header states the facts about them; the variants
-// loops tie the two `variant_fields` together through `variants.0`.
+// `invariant!` at the same header states the facts about them; the inner
+// loop's invariants tie the two `variant_fields` together through `variants.0`.
 #[thrust_macros::requires(
     forall(|v: usize, f: usize|
         0 <= v && v < (*variant_fields).len()

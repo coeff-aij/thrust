@@ -17,8 +17,8 @@
      // literals: reading an associated constant of a newtype ADT makes Thrust
      // panic with "not implemented: const: Scalar(0x03), ty: Align"
 @@ -58,7 +58,9 @@
-     // require; the asserts, what those functions, `Align::bytes` and `Size::bits`
-     // return.
+     // require; the asserts, what those functions, `Align::bytes`, `Size::bits` and
+     // `Size::bytes` return.
      assert!(dl.obj_size_bound() >= 1);
 -    let ptr = dl.pointer_size_in(AddressSpace(0));
 +    // The fail twin: `AddressSpace(1)` is neither `dl.default_address_space` nor listed in
