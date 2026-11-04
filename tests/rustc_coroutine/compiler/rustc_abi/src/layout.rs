@@ -51,15 +51,13 @@ pub struct LayoutCalculator<Cx> {
     pub cx: Cx,
 }
 
-/// `2^q`, the bytes of `Align { pow2: q }`, below 64; 0 from 64 on, where `Align::bytes` gives
-/// `1 << (q & 63)` instead. The contracts read it only at alignments at most `Align::MAX`
-/// (`layout_pre`), where the two agree. An `Int`, as `sum_first` is: at `u64` its result would be
-/// checked below `2^64` for every `q`. Without the cap, or as `2^(q mod 64)`, PCSat gives no answer
-/// on `univariant.rs`'s goal at the `End` call.
+/// `2^q`, the bytes of `Align { pow2: q }` below 64, where `Align::bytes` gives `1 << (q & 63)`;
+/// above, `2^q` overcounts it, so a weight stays an upper bound. An `Int`, as `sum_first` is: at
+/// `u64` its result would be checked below `2^64` for every `q`.
 #[thrust_macros::logic]
 #[thrust_macros::variant(q)]
 pub(crate) fn pow2(q: u64) -> Int {
-    if q <= 0 { 1 } else if q >= 64 { 0 } else { pow2(q - 1) * 2 }
+    if q <= 0 { 1 } else { pow2(q - 1) * 2 }
 }
 
 /// `1 << q` on 64-bit words, which `Align::bytes` and `Size::align_to` state, is `2^q` below 64,
@@ -95,14 +93,15 @@ fn sum_first(ts: Seq<Int>, k: USize) -> Int {
 // field, which rustc's layouts satisfy and the sort key's subtractions and the niche of the
 // result rely on; and `Scalar::wf_in` of every field whose `backend_repr` is a scalar, which
 // `scalar_pair` requires of the two scalars it pairs. Like `niche_wf`, the last is an invariant of
-// the layouts rustc computes, not a check of the caller's. So are the bounds the offset
-// arithmetic needs: every alignment at most `Align::MAX` (the data layout's aggregate and `i8`
-// alignments, the prefix's and each field's, and, as a `requires` of its own, the `repr`
-// alignment), under which `align_to` bounds its result, and the prefix's and each field's size
-// below the object size bound. With them the
-// offsets stay below the bound plus one alignment, and `niche.offset += offset` does not overflow,
-// the niche's offset being within its field (`Primitive::size_in` gives every primitive a size,
-// `size_in_total`).
+// the layouts rustc computes, not a check of the caller's. The one panic of the offset arithmetic
+// is `niche.offset += offset` (`Size::add` on an overflow); `align_to` and `Align::bytes` wrap
+// without overflow checks and `checked_add` returns `None`. It needs the prefix's and each field's
+// size below the object size bound: then the offset a field is placed at is below the bound plus
+// the field's alignment mask (`2^63 - 1` at most, so no rounding wraps), and the niche's offset is
+// within its field (`Primitive::size_in` gives every primitive a size, `size_in_total`), so the sum
+// stays below `2^64`. A field's size is that of a layout rustc computed, and so is the prefix's
+// (the tag's, or the prefix layout's in `layout()`); every layout constructor checks it against
+// the bound. No alignment needs a bound.
 //
 // `univariant_biased` ensures, besides `arbitrary_of`: it fails only with `UnexpectedUnsized` or
 // `SizeOverflow`; `UnexpectedUnsized` only when an unsized field is not the tail of a
@@ -160,17 +159,15 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                 || dl.default_address_space_pointer_spec.pointer_size.raw == 2
                 || dl.default_address_space_pointer_spec.pointer_size.raw == 4
                 || dl.default_address_space_pointer_spec.pointer_size.raw == 8)
-            && forall(|dl: TargetDataLayout| !Cx::dl_of(self, dl)
-                || (dl.aggregate_align.pow2 <= 29 && dl.i8_align.pow2 <= 29))
             && forall(|dl: TargetDataLayout, ps: Size, pa: Align|
                 !(Cx::dl_of(self, dl) && kind == StructKind::Prefixed(ps, pa))
-                    || (pa.pow2 <= 29 && ps.raw < super::obj_bound(dl)))
+                    || ps.raw < super::obj_bound(dl))
             && forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>|
                 !(Cx::dl_of(self, dl)
                     && 0 <= i
                     && i < (*fields).len()
                     && thrust_macros::post!(<F as core::ops::Deref>::deref(&(*fields)[i]), d) && **d == l)
-                    || (l.align.abi.pow2 <= 29 && l.size.raw < super::obj_bound(dl)))
+                    || l.size.raw < super::obj_bound(dl))
             && forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche|
                 !(Cx::dl_of(self, dl)
                     && 0 <= i
@@ -321,7 +318,6 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
 
     #[thrust_macros::requires(Self::layout_pre::<FieldIdx, VariantIdx, F>(*self, fields, kind))]
     #[thrust_macros::requires(Self::deref_functional::<FieldIdx, VariantIdx, F>())]
-    #[thrust_macros::requires(forall(|ra: Align| (*repr).align == Some(ra) ==> ra.pow2 <= 29))]
     #[thrust_macros::requires(Self::fits_in_any_order::<FieldIdx, VariantIdx, F>(*self, fields, repr, kind))]
     #[thrust_macros::ensures(forall(|l: LayoutData<FieldIdx, VariantIdx>|
         result != Ok(l) || FieldsShape::<FieldIdx>::arbitrary_of(l.fields, (*fields).len())))]
@@ -400,7 +396,6 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
 
     #[thrust_macros::requires(Self::layout_pre::<FieldIdx, VariantIdx, F>(*self, fields, kind))]
     #[thrust_macros::requires(Self::deref_functional::<FieldIdx, VariantIdx, F>())]
-    #[thrust_macros::requires(forall(|ra: Align| (*repr).align == Some(ra) ==> ra.pow2 <= 29))]
     #[thrust_macros::ensures(forall(|l: LayoutData<FieldIdx, VariantIdx>|
         result != Ok(l) || FieldsShape::<FieldIdx>::arbitrary_of(l.fields, (*fields).len())))]
     #[thrust_macros::ensures(forall(|l: LayoutData<FieldIdx, VariantIdx>, dl: TargetDataLayout, s: USize, q: USize|
