@@ -589,7 +589,12 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                         } else {
                             let align = layout.align.bytes();
                             let size = layout.size.bytes();
-                            let niche_size = layout.largest_niche.map(|n| n.available(dl)).unwrap_or(0);
+                            let niche_size = layout.largest_niche.map(thrust_macros::closure!(
+                                captures(dl: &&TargetDataLayout),
+                                requires(Niche::wf_in(n, **dl)),
+                                ensures(true),
+                                |n: Niche| -> u128 { n.available(dl) },
+                            )).unwrap_or(0);
 
                             let size_as_align = align.max(size).trailing_zeros();
                             let size_as_align = if largest_niche_size > 0 {
@@ -630,17 +635,30 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                             |&x: &FieldIdx| {
                                 let f = &fields[x];
                                 let field_size = f.size.bytes();
-                                let niche_size = f.largest_niche.map_or(0, |n| n.available(dl));
+                                let niche_size = f.largest_niche.map_or(0, thrust_macros::closure!(
+                                    captures(dl: &&&TargetDataLayout),
+                                    requires(Niche::wf_in(n, ***dl)),
+                                    ensures(true),
+                                    |n: Niche| -> u128 { n.available(dl) },
+                                ));
                                 let niche_size_key = match niche_bias {
                                     NicheBias::Start => !niche_size,
 
                                     NicheBias::End => niche_size,
                                 };
                                 let inner_niche_offset_key = match niche_bias {
-                                    NicheBias::Start => f.largest_niche.map_or(0, |n| n.offset.bytes()),
-                                    NicheBias::End => f.largest_niche.map_or(0, |n| {
-                                        !(field_size - n.value.size(dl).bytes() - n.offset.bytes())
-                                    }),
+                                    NicheBias::Start => f.largest_niche.map_or(0, thrust_macros::closure!(
+                                        requires(true),
+                                        ensures(true),
+                                        |n: Niche| -> u64 { n.offset.bytes() },
+                                    )),
+                                    NicheBias::End => f.largest_niche.map_or(0, thrust_macros::closure!(
+                                        captures(field_size: &u64, dl: &&&TargetDataLayout),
+                                        requires(Niche::wf_in(n, ***dl)),
+                                        requires(forall(|s: Size| !Primitive::size_in(n.value, ***dl, s) || n.offset.raw + s.raw <= *field_size)),
+                                        ensures(true),
+                                        |n: Niche| -> u64 { !(field_size - n.value.size(dl).bytes() - n.offset.bytes()) },
+                                    )),
                                 };
 
                                 (
@@ -663,7 +681,12 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                                     || Niche::wf_in(n, ***dl))),
                             |&x: &FieldIdx| {
                                 let f = &fields[x];
-                                let niche_size = f.largest_niche.map_or(0, |n| n.available(dl));
+                                let niche_size = f.largest_niche.map_or(0, thrust_macros::closure!(
+                                    captures(dl: &&&TargetDataLayout),
+                                    requires(Niche::wf_in(n, ***dl)),
+                                    ensures(true),
+                                    |n: Niche| -> u128 { n.available(dl) },
+                                ));
                                 (alignment_group_key(f), niche_size)
                             },
                         ));
