@@ -969,6 +969,10 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
 
                 (Some((i, a)), Some((j, b)), None) => match (a.backend_repr, b.backend_repr) {
                     (BackendRepr::Scalar(a), BackendRepr::Scalar(b)) => {
+                        // A step of `scalar_pair`'s `requires`, before the order of the pair is
+                        // chosen.
+                        thrust_macros::proof_assert!(|a: Scalar, b: Scalar, self: &LayoutCalculator<Cx>|
+                            forall(|d: TargetDataLayout| !Cx::dl_of(*self, d) || (Scalar::wf_in(a, d) && Scalar::wf_in(b, d))));
                         let ((i, a), (j, b)) = if offsets[i] < offsets[j] {
                             ((i, a), (j, b))
                         } else {
