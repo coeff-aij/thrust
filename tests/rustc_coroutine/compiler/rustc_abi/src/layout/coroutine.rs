@@ -1806,7 +1806,8 @@ fn variant_layout<
 //     the inputs can only bound it by n. rustc's index types are bounded by 0xFFFF_FF00, so a
 //     coroutine with P + 1 + n above that is excluded, also when P + 1 + c is not.
 //   - The size bound: with T the weight (`weight`: each layout's size and twice its alignment)
-//     of `prefix_layouts`, the tag's layout and all of `local_layouts`, plus the aggregate and
+//     of `prefix_layouts`, the layout `tag_to_layout` gives for the tag `layout()` builds (an
+//     integer of valid range 0 to V - 1) and all of `local_layouts`, plus the aggregate and
 //     `i8` alignments 2^qa and 2^qi, 3T + 2^qa + 2^qi is below the object size bound b. It gives
 //     `univariant`'s `fits_in_any_order` at both calls, the scope restriction of `univariant`
 //     (layout.rs): rustc's caller passes any coroutine and handles `SizeOverflow`, which the
@@ -1846,7 +1847,8 @@ fn variant_layout<
                 && thrust_macros::post!(tag_to_layout(s), r) ==> layout_wf::<F, FieldIdx, VariantIdx, C>(*calc, r))
         && forall(|ti: Integer, tg: WrappingRange| thrust_macros::pre!(tag_to_layout(Scalar::Initialized { value: Primitive::Int(ti, false), valid_range: tg })))
         && forall(|dl: TargetDataLayout, ti: Integer, tg: WrappingRange, s: Scalar, r: <F as thrust_models::Model>::Ty, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>|
-            C::dl_of(*calc, dl) && s == Scalar::Initialized { value: Primitive::Int(ti, false), valid_range: tg } && thrust_macros::post!(tag_to_layout(s), r) && thrust_macros::post!(<F as core::ops::Deref>::deref(&r), d) && **d == l ==> exists(|wp: USize, wl: USize, q: USize, qa: USize, qi: USize, b: USize|
+            C::dl_of(*calc, dl) && tg.start == 0 && tg.end + 1 == (*variant_fields).len()
+                && s == Scalar::Initialized { value: Primitive::Int(ti, false), valid_range: tg } && thrust_macros::post!(tag_to_layout(s), r) && thrust_macros::post!(<F as core::ops::Deref>::deref(&r), d) && **d == l ==> exists(|wp: USize, wl: USize, q: USize, qa: USize, qi: USize, b: USize|
                     LayoutCalculator::<C>::weight::<FieldIdx, FieldIdx, VariantIdx, F>(&prefix_layouts, wp)
                         && LayoutCalculator::<C>::weight::<LocalIdx, FieldIdx, VariantIdx, F>(local_layouts, wl)
                         && q == l.align.abi.pow2
