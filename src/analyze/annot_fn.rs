@@ -1222,24 +1222,33 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
     }
 
     /// Whether a specification value of type `value` can stand for one of the model type
-    /// `expected`: the same type, where a shared reference or a box is its referent (the query
-    /// removes them), the integer models and the Rust integers are one type (a formula's integers
-    /// are unbounded, and a literal is typed `i32`), and a projection the context leaves
-    /// unnormalized agrees with any type. Both types are stated in the specification's generics
-    /// at the arguments it is translated at, the callee's signature through the receiver's type,
-    /// so a type parameter is itself.
+    /// `expected`: the same type, const arguments included, where a shared reference or a box is
+    /// its referent (the query removes them), the integer models and the Rust integers are one
+    /// type (a formula's integers are unbounded, and a literal is typed `i32`), and two
+    /// projections that neither side's model resolves agree, as rustc lets an unnormalizable
+    /// projection stand only for a projection. Both types are stated in the specification's
+    /// generics at the arguments it is translated at, the callee's signature through the
+    /// receiver's type, so a type parameter is itself.
     fn spec_value_agrees(&self, value: mir_ty::Ty<'tcx>, expected: mir_ty::Ty<'tcx>) -> bool {
         use mir_ty::TyKind;
         let value = self.spec_value_view(value);
         let expected = self.spec_value_view(expected);
         let agree = |a: mir_ty::Ty<'tcx>, b: mir_ty::Ty<'tcx>| self.spec_value_agrees(a, b);
         match (value.kind(), expected.kind()) {
-            (TyKind::Alias(..), _) | (_, TyKind::Alias(..)) => true,
+            (TyKind::Alias(..), TyKind::Alias(..)) => true,
             _ if self.is_integer_model(value) && self.is_integer_model(expected) => true,
             (TyKind::Adt(a, a_args), TyKind::Adt(b, b_args)) => {
                 a.did() == b.did()
-                    && a_args.types().count() == b_args.types().count()
-                    && a_args.types().zip(b_args.types()).all(|(a, b)| agree(a, b))
+                    && a_args
+                        .iter()
+                        .zip(b_args.iter())
+                        .all(|(a, b)| match (a.kind(), b.kind()) {
+                            (mir_ty::GenericArgKind::Type(a), mir_ty::GenericArgKind::Type(b)) => {
+                                agree(a, b)
+                            }
+                            (mir_ty::GenericArgKind::Lifetime(_), _) => true,
+                            _ => a == b,
+                        })
             }
             (TyKind::Tuple(a), TyKind::Tuple(b)) => {
                 a.len() == b.len() && a.iter().zip(b.iter()).all(|(a, b)| agree(a, b))
@@ -1252,8 +1261,9 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
     }
 
     /// `ty` as [`Self::spec_value_agrees`] compares it: without lifetimes, shared references,
-    /// boxes and `Ghost`, with `Closure<F>` as `F` and the model `<T as Model>::Ty` of a type
-    /// parameter as `T`, as [`TypeBuilder`] builds them.
+    /// boxes and `Ghost`, with `Closure<F>` as `F` and a model `<X as Model>::Ty` that `expr_ty`
+    /// left as a projection resolved as the expected side is (`resolve_model_ty`), as
+    /// [`TypeBuilder`] builds them.
     fn spec_value_view(&self, ty: mir_ty::Ty<'tcx>) -> mir_ty::Ty<'tcx> {
         use mir_ty::TyKind;
         let mut ty = self.tcx.erase_regions(ty);
@@ -1271,16 +1281,23 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                     self.type_builder.resolve_model_ty(args.type_at(0))
                 }
                 TyKind::Alias(mir_ty::AliasTyKind::Projection, alias)
-                    if Some(alias.def_id) == self.def_ids.model_ty()
-                        && matches!(alias.args.type_at(0).kind(), TyKind::Param(_)) =>
+                    if Some(alias.def_id) == self.def_ids.model_ty() =>
                 {
-                    alias.args.type_at(0)
+                    let resolved = self
+                        .tcx
+                        .erase_regions(self.type_builder.resolve_model_ty(alias.args.type_at(0)));
+                    if resolved == ty {
+                        return ty;
+                    }
+                    resolved
                 }
                 _ => return ty,
             };
         }
     }
 
+    /// Whether `ty` is a Rust integer type or an integer model (`Int`, `UInt`, `IntN`, `UIntN`),
+    /// all of which a query reads as one integer sort.
     fn is_integer_model(&self, ty: mir_ty::Ty<'tcx>) -> bool {
         match ty.kind() {
             mir_ty::TyKind::Int(_) | mir_ty::TyKind::Uint(_) => true,
@@ -1320,7 +1337,8 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
 
     /// The Rust signature of the closure a closure-typed receiver of type `receiver_ty` calls: a
     /// closure's own, or the `Fn` bound of a closure type parameter, found where
-    /// [`Self::receiver_closure_fn_type`] finds it.
+    /// [`Self::receiver_closure_fn_type`] finds it. It is read after that function has found the
+    /// closure's contract, so the receiver is a closure and a type parameter has its bound.
     fn closure_sig(&self, receiver_ty: mir_ty::Ty<'tcx>) -> CalleeSig<'tcx> {
         let (closure_ty, refs) = self
             .receiver_closure_behind_refs(receiver_ty)

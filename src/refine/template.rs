@@ -731,7 +731,9 @@ impl<'tcx> TypeBuilder<'tcx> {
         }
 
         // TODO: keep this in step with `impl<T: Model> Model for Ghost<T>` in std.rs, which
-        // resolves a `Ghost<T>` to its content as well.
+        // resolves a `Ghost<T>` to its content as well, and with `spec_value_view` in
+        // `analyze::annot_fn`, which compares a `pre!`/`post!` argument's type the same way (it
+        // also follows the `Box` and `Closure<F>` cases above).
         //
         // Which of the two applies is not evident from the source: a concrete `Ghost<i64>`
         // normalizes and never reaches here, while a generic one does, because
