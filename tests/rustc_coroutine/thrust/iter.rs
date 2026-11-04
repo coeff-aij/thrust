@@ -4,7 +4,7 @@
 use crate::thrust_models;
 use std::marker::PhantomData;
 
-use thrust_models::model::{Closure, Int, Mut, Seq};
+use thrust_models::model::{Array, Closure, Int, Mut, Seq};
 use thrust_models::{Ghost, exists, forall};
 
 use crate::IteratorSpec;
@@ -87,6 +87,18 @@ where
                     || (thrust_macros::hist_inv!(s0.1, fs[k])
                         && thrust_macros::post!(Mut::new(fs[k], fs[k + 1])(s[k]), visited[k])))
     }
+
+    // What the map yields is what its closure returned from a state its `hist_inv!` reaches, so a
+    // property of every such result holds of every item yielded; here, being an entry of `l`.
+    // The caller shows the `requires` from the closure's `ensures`.
+    #[thrust_macros::requires(forall(|f1: Closure<F>, f2: Closure<F>, e: <I::Item as thrust_models::Model>::Ty, b: <B as thrust_models::Model>::Ty|
+        !(thrust_macros::hist_inv!((*it).1, f1) && thrust_macros::post!(Mut::new(f1, f2)(e), b))
+            || exists(|i: USize| 0 <= i && i < (*l).len() && b == (*l)[i])))]
+    #[thrust_macros::ensures(forall(|v: Seq<<B as thrust_models::Model>::Ty>, o: <Self as thrust_models::Model>::Ty, k: USize|
+        !(<Self as IteratorSpec>::produces(*it, v, o) && 0 <= k && k < v.len())
+            || exists(|i: USize| 0 <= i && i < (*l).len() && v[k] == (*l)[i])))]
+    #[thrust_macros::lemma]
+    pub fn yields_entries_of<L: Idx + thrust_models::Model>(it: &Self, l: &crate::rustc_index::IndexSlice<L, B>) {}
 
     // `produces_at` of the joined witnesses: the input items concatenated and the closure states
     // joined at their shared state.
@@ -185,9 +197,10 @@ where
 // above, with two of the three restrictions of Creusot's `Filter` (creusot-std/src/std/iter/
 // filter.rs): the closure's captures are used immutably (`P: Fn`, so its state never changes),
 // and, in place of a closure without a precondition, the precondition holds on every item the
-// inner iterator can yield (`pre_all`; rustc's closure in `layout()` can panic). The closure's
-// postcondition need not be precise: `produces` states the count only, the items yielded are at
-// most the input items the inner iterator produced, and not which of them.
+// inner iterator can yield (`pre_all`; rustc's closure in `layout()` can panic). Creusot's third,
+// a precise closure, is not required: `produces` states the closure's answer on each input item,
+// `true` on the items yielded and `false` on the others, the statement Creusot's comment on
+// `precise` gives as the alternative; with a precise closure it is Creusot's equivalence.
 pub struct Filter<I, P> {
     iter: I,
     predicate: P,
@@ -248,17 +261,61 @@ where
     #[thrust_macros::ensures(Self::pre_ok(b))]
     fn pre_all_step(a: Ghost<Self>, x: Ghost<I::Item>, b: Ghost<Self>) {}
 
-    // `produces` with its input items `s` given.
+    // The closure answers `r` on the `k`-th item of `s`.
     #[thrust_macros::predicate]
-    fn produces_at(s0: Self, visited: Vec<I::Item>, o: Self, s: Seq<<I::Item as thrust_models::Model>::Ty>) -> bool {
-        s0.1 == o.1
-            && I::produces(s0.0, s, o.0)
-            && visited.len() <= s.len()
+    pub(crate) fn answers(func: Closure<P>, s: Seq<<I::Item as thrust_models::Model>::Ty>, k: Int, r: bool) -> bool {
+        thrust_macros::post!(func(&s[k]), r)
     }
 
-    // `produces_at` of the joined witnesses.
+    // `produces` with the inner iterator's items `s` and Creusot's index map `f` given: the items
+    // yielded are those of `s` at the increasing positions `f`, and the closure answered `true` on
+    // the items at those positions and `false` on the others.
+    #[thrust_macros::predicate]
+    pub(crate) fn produces_at(s0: Self, visited: Vec<I::Item>, o: Self, s: Seq<<I::Item as thrust_models::Model>::Ty>, f: Array<Int, Int>) -> bool {
+        s0.1 == o.1
+            && I::produces(s0.0, s, o.0)
+            && forall(|i: Int| !(0 <= i && i < visited.len())
+                || (0 <= f[i] && f[i] < s.len() && visited[i] == s[f[i]]))
+            && forall(|i: Int, j: Int| !(0 <= i && i < j && j < visited.len()) || f[i] < f[j])
+            && forall(|k: Int| !(0 <= k && k < s.len())
+                || ((!exists(|j: Int| 0 <= j && j < visited.len() && f[j] == k)
+                        || Self::answers(s0.1, s, k, true))
+                    && (exists(|j: Int| 0 <= j && j < visited.len() && f[j] == k)
+                        || Self::answers(s0.1, s, k, false))))
+    }
+
+    // `next`'s step, with the witnesses of `produces` named: the inner items are those the closure
+    // rejected followed by `x`, which it accepted, and the index map sends the one item yielded
+    // to `x`'s position.
+    #[thrust_macros::requires(
+        a.1 == b.1
+            && I::produces(a.0, skipped, mid.0)
+            && I::produces(mid.0, Seq::singleton(x), b.0)
+            && forall(|k: Int| !(0 <= k && k < skipped.len()) || Self::answers(a.1, skipped, k, false))
+            && forall(|p: Int| !(p == skipped.len())
+                || Self::answers(a.1, skipped.concat(Seq::singleton(x)), p, true))
+    )]
+    #[thrust_macros::ensures(forall(|p: Int| !(p == skipped.len())
+        || Self::produces_at(a, Seq::singleton(x), b, skipped.concat(Seq::singleton(x)),
+            Array::<Int, Int>::from_fn(|i: Int| p))))]
+    #[thrust_macros::lemma]
+    fn next_at(
+        a: Ghost<Self>,
+        skipped: Ghost<Seq<<I::Item as thrust_models::Model>::Ty>>,
+        mid: Ghost<Self>,
+        x: Ghost<I::Item>,
+        b: Ghost<Self>,
+    ) {
+    }
+
+    // `produces_at` of the joined witnesses: the inner items concatenated and the index maps
+    // joined, the second shifted past the first's inner items (Creusot's `Mapping`, here
+    // `Array::from_fn`).
     #[thrust_macros::ensures(forall(|sab: Seq<<I::Item as thrust_models::Model>::Ty>| forall(|sbc: Seq<<I::Item as thrust_models::Model>::Ty>|
-        Self::produces_at(a, ab, b, sab) && Self::produces_at(b, bc, c, sbc) ==> Self::produces_at(a, ab.concat(bc), c, sab.concat(sbc)))))]
+        forall(|fab: Array<Int, Int>| forall(|fbc: Array<Int, Int>|
+            !(Self::produces_at(a, ab, b, sab, fab) && Self::produces_at(b, bc, c, sbc, fbc))
+                || Self::produces_at(a, ab.concat(bc), c, sab.concat(sbc),
+                    Array::<Int, Int>::from_fn(|i: Int| if i < ab.len() { fab[i] } else { fbc[i - ab.len()] + sab.len() })))))))]
     #[thrust_macros::lemma]
     fn produces_trans_at(
         a: Ghost<Self>,
@@ -280,18 +337,23 @@ where
     type Item = I::Item;
 
     fn next(&mut self) -> Option<I::Item> {
-        // `skipped` records the items the closure rejected, for the loop invariant.
+        // `skipped` records the items the closure rejected, for the loop invariant: the inner
+        // iterator yielded them, and the closure answered `false` on each.
         let this = self;
+        let entry = thrust_macros::ghost!(|this: &mut Filter<I, P>| -> Filter<I, P> { *this });
         let mut skipped: Vec<I::Item> = Vec::new();
         loop {
             thrust_macros::invariant!(
-                |this: &mut Filter<I, P>, skipped: Vec<I::Item>, self: thrust_models::FnParam<&mut Filter<I, P>>|
+                |this: &mut Filter<I, P>, skipped: Vec<I::Item>, entry: Ghost<Filter<I, P>>, self: thrust_models::FnParam<&mut Filter<I, P>>|
                     !this == !self.at_entry()
+                        && entry == *self.at_entry()
                         && Filter::<I, P>::reinitialize()
                         && Filter::<I, P>::pre_all((*this).0, (*this).1)
                         && I::inv((*this).0)
                         && (*this).1 == (*self.at_entry()).1
                         && I::produces((*self.at_entry()).0, skipped, (*this).0)
+                        && forall(|k: Int| !(0 <= k && k < skipped.len())
+                            || Filter::<I, P>::answers((*this).1, skipped, k, false))
             );
             let before = thrust_macros::ghost!(|this: &mut Filter<I, P>| -> Filter<I, P> { *this });
             let Some(x) = this.iter.next() else {
@@ -301,6 +363,8 @@ where
             let after = thrust_macros::ghost!(|this: &mut Filter<I, P>| -> Filter<I, P> { *this });
             Filter::<I, P>::pre_all_step(before, yielded, after);
             if (this.predicate)(&x) {
+                let rejected = thrust_macros::ghost!(|skipped: Vec<I::Item>| -> Seq<<I::Item as thrust_models::Model>::Ty> { skipped });
+                Filter::<I, P>::next_at(entry, rejected, before, yielded, after);
                 return Some(x);
             }
             skipped.push(x);
@@ -328,17 +392,19 @@ where
 
     #[thrust_macros::predicate]
     fn produces(self, visited: Vec<Self::Item>, o: Self) -> bool {
-        exists(|s: Seq<<I::Item as thrust_models::Model>::Ty>|
-            Self::produces_at(self, visited, o, s))
+        exists(|s: Seq<<I::Item as thrust_models::Model>::Ty>| exists(|f: Array<Int, Int>|
+            Self::produces_at(self, visited, o, s, f)))
     }
 
-    // The inner iterator produced the rest, then completed.
+    // Creusot's `completed`: the inner iterator produced the rest, all of which the closure
+    // rejected, then completed.
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
         (*self).1 == (!self).1
             && exists(|s: Seq<<I::Item as thrust_models::Model>::Ty>| exists(|mid: <I as thrust_models::Model>::Ty|
                 I::produces((*self).0, s, mid)
-                    && I::completed(Mut::new(mid, (!self).0))))
+                    && I::completed(Mut::new(mid, (!self).0))
+                    && forall(|k: Int| !(0 <= k && k < s.len()) || Self::answers((*self).1, s, k, false))))
     }
 
     fn produces_trans(

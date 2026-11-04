@@ -27,6 +27,10 @@ its module; `hashes.rs` has no fail twin. Its twin checks only
 write refutes. It does not check the stage's own function, whose parts take about seven minutes.
 `LocalIdx: Model<Ty: PartialEq>` on the stage function and on `make_ineligible` is a verification
 bound on a type parameter, not a change to rustc's code: the proved `DenseBitSet::insert` requires it.
+`layout.rs`'s fail twin defines property 3 at the promoted fields, `ineligible_promoted`, as `true` (`--cfg thrust_layout_fail`),
+and each of its `assume!`s has a reachability root, `layout_reach_<name>.rs`
+(`--cfg thrust_layout_reach_<name>`), whose `proof_assert!(false)` right after the `assume!` is
+refuted, so the assumption leaves the path after it reachable.
 
 | file | selection | state |
 | --- | --- | --- |
@@ -38,8 +42,9 @@ bound on a type parameter, not a change to rustc's code: the proved `DenseBitSet
 | `univariant.rs` | `LayoutCalculator::univariant`, `univariant_biased` trusted on its contract | verified, one part per goal (`THRUST_SPLIT_GOALS`), with the predicates its contracts pass on unchanged `#[thrust::opaque]`: `fits_in_any_order`, `weighs`, `unsized_misplaced`, `some_field_niche` (layout.rs), `Primitive::size_in`, `FieldsShape::arbitrary_of`, `TargetDataLayout::pointer_space_ok`, `TargetDataLayout::pointer_size_is` (lib.rs); `univariant_biased`, `Primitive::size`, `layout()`, `pointer_size_in` and `pointer_align_in` reveal those they read (#132) |
 | `univariant_biased.rs` | `LayoutCalculator::univariant_biased` | draft, `ignore-on-host`: its query (58.7 MB) is killed for memory with 16 GB (#133); its contract, which the other roots trust, does not exclude an overflow at `niche.offset += offset`, and its size `ensures` do not follow from the contracts of `align_to`, `checked_add`, `Align::bytes` and `obj_size_bound` (#180, `probes/size_arithmetic.rs`) |
 | `eligibility.rs` | `coroutine_saved_local_eligibility` and the helpers `make_ineligible` and `set_assignment`, which hold its writes to `assignments` | verified, each goal on its own (`THRUST_SPLIT_GOALS`) |
-| `layout.rs` | `layout()` and the adapters of `thrust/iter.rs`; the lemmas of `thrust/lemmas.rs` assumed | draft, `ignore-on-host` |
+| `layout.rs` | `layout()`, its helpers and lemmas in `coroutine.rs`, the adapters of `thrust/iter.rs`, and the lemmas of `thrust/counts.rs` that take the per-variant `Map` and `Filter` (`filter_count`, `filter_yields_below`, `filter_selects`, `filter_selects_all`, `filter_covers_passed`, `filter_rejects_rest`, `map_count_exact`, `map_selected_entries`) and `IterEnumerated::yields_last`; the lemmas of `thrust/lemmas.rs`, the other lemmas of `thrust/counts.rs` and the count lemmas of `coroutine.rs` assumed | draft, `ignore-on-host`; three `assume!`s; `map_count_exact`, which gives the variant's field count, is not proved (its `ensures`, `filter_selects_all`'s body and the count at `collect`'s witness get no answer) |
 | `lemmas.rs` | the counting lemmas of `thrust/lemmas.rs` that `layout()` uses | verified |
+| `counts.rs` | the count and the weight of a variant's fields, `thrust/counts.rs`, which `layout()`'s per-variant closure uses (the count), and `coroutine.rs`'s `ones_assigned_disjoint`, `ones_step` and `card_ones` (the ineligible set and the locals Assigned to one variant are at most the locals) | draft, `ignore-on-host`: the lemmas over the field list (with `map_bound`, the bound of `Filter`'s index map by a count, and `map_exact`, its equality for a whole selection), the weighted ones and `filter_yields_below` verify; the step of `ones_assigned_disjoint` (through the bit arithmetic of `ones`, which `ones_step` alone answers) and the lemmas over the per-variant `Map` and `Filter`, which `layout.rs` checks, get no answer |
 
 The roots that are not drafts answer over the module tree in the ui suite; the states of the
 drafts are those of the single-file stage files.

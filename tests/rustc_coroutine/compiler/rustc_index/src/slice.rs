@@ -135,6 +135,20 @@ impl<'a, I: Idx + thrust_models::Model, T: thrust_models::Model> IteratorSpec fo
     }
 }
 
+// The last item of a sequence the iterator produces is the entry right after the items before it,
+// with its index: a `Map` over the iterator reads its closure's `requires` at that item in
+// `preservation_inv`, where the sequence is `s.push(e1).push(e2)`.
+#[thrust_macros::context]
+impl<'a, I: Idx + thrust_models::Model, T: thrust_models::Model> IterEnumerated<'a, I, T> {
+    #[thrust_macros::ensures(forall(|s: Seq<<(I, &'a T) as thrust_models::Model>::Ty>, e: <(I, &'a T) as thrust_models::Model>::Ty, o: <Self as thrust_models::Model>::Ty|
+        !<Self as IteratorSpec>::produces(*it, s.push(e), o)
+            || ((*it).1 + s.len() < (*it).0.len()
+                && <I as Idx>::index_is(e.0, (*it).1 + s.len())
+                && e.1 == &(*it).0[(*it).1 + s.len()])))]
+    #[thrust_macros::lemma]
+    pub fn yields_last(it: &Self) {}
+}
+
 #[thrust_macros::context]
 impl<I: Idx, T> IndexSlice<I, T> {
     // The reinterpretation through a raw pointer has no model; it is the
