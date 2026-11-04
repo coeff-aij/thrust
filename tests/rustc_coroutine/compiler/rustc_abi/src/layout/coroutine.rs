@@ -1,6 +1,7 @@
 // `thrust_eligibility_fail` is set only by the fail twin of the eligibility root (`set_assignment`).
 #![allow(unexpected_cfgs)]
 use crate::thrust_models;
+use thrust_models::model::BitVec;
 use thrust_models::{exists, forall};
 
 use crate::rustc_abi::layout::{LayoutCalculator, LayoutCalculatorResult, pow2};
@@ -1603,24 +1604,69 @@ fn variant_promoted_of<VariantIdx: Idx + thrust_models::Model, FieldIdx: Idx + t
     ineligible_locals: &DenseBitSet<LocalIdx>,
 ) {}
 
-/// The prefix a variant starts with is one `univariant`'s `layout_pre` accepts in its kind: its
-/// size below the object size bound. Opaque, as the other
-/// atoms of the per-variant closure's `requires`: `prefix_wf_of` establishes it in `layout()` from
-/// the prefix's `univariant` call, and `variant_layout` reveals it.
+/// The prefix a variant starts with is one `univariant` accepts in its kind: its size below the
+/// object size bound (`layout_pre`), and its size plus its alignment's bytes at most `2^62`
+/// (`prefix_fits`, the `repr` having no `pack`). Each is stated under the data layout `calc`
+/// names, which `variant_layout` reads to drop it from the second. Opaque, as the other atoms of
+/// the per-variant closure's `requires`: `prefix_wf_of` establishes it in `layout()` from the
+/// prefix's `univariant` call, and `variant_layout` reveals it.
 #[thrust_macros::predicate]
 #[thrust::opaque]
 fn prefix_wf<C: HasDataLayout>(calc: LayoutCalculator<C>, prefix_size: Size, prefix_align: AbiAlign) -> bool {
     forall(|dl: TargetDataLayout| !C::dl_of(calc, dl)
         || prefix_size.raw < obj_bound(dl))
+        && forall(|dl: TargetDataLayout, q: USize, b: USize|
+            !(C::dl_of(calc, dl)
+                && q == prefix_align.abi.pow2
+                && b == (BitVec::<64, false>::from_int(1) << (BitVec::from_int(q) & BitVec::from_int(63))).to_int())
+            || prefix_size.raw + b <= 4611686018427387904u64)
 }
 
 /// `prefix_wf` from the bounds it names.
 #[thrust_macros::lemma]
 #[thrust_macros::requires(forall(|dl: TargetDataLayout| !C::dl_of(*calc, dl)
-    || prefix_size.raw < obj_bound(dl)))]
+        || prefix_size.raw < obj_bound(dl))
+        && forall(|dl: TargetDataLayout, q: USize, b: USize|
+            !(C::dl_of(*calc, dl)
+                && q == prefix_align.abi.pow2
+                && b == (BitVec::<64, false>::from_int(1) << (BitVec::from_int(q) & BitVec::from_int(63))).to_int())
+            || prefix_size.raw + b <= 4611686018427387904u64))]
 #[thrust_macros::ensures(prefix_wf::<C>(*calc, prefix_size, prefix_align))]
 #[thrust::reveal(prefix_wf)]
 fn prefix_wf_of<C: HasDataLayout>(calc: &LayoutCalculator<C>, prefix_size: Size, prefix_align: AbiAlign) {}
+
+/// A layout `univariant` returns for fields that fit in any order has its size plus its
+/// alignment's bytes at most `2^62`: its size and `2^q`, which bound the bytes `1 << (q & 63)`
+/// (`bytes_within`), are each below the fields' weighs sum (univariant's `ensures`), which
+/// `fits_in_any_order` puts below the object size bound, at most `2^61`.
+#[thrust_macros::lemma]
+#[thrust_macros::requires(LayoutCalculator::<C>::fits_in_any_order::<FieldIdx, VariantIdx, F>(*calc, fields, repr, kind))]
+#[thrust_macros::requires(forall(|dl: TargetDataLayout, s: USize, q: USize|
+    C::dl_of(*calc, dl)
+        && LayoutCalculator::<C>::weighs::<FieldIdx, VariantIdx, F>(fields, repr, kind, dl, s)
+        && q == align.abi.pow2 ==> (size.raw < s && pow2(q) <= s)))]
+#[thrust_macros::ensures(forall(|dl: TargetDataLayout, q: USize, b: USize|
+    !(C::dl_of(*calc, dl)
+        && q == align.abi.pow2
+        && b == (BitVec::<64, false>::from_int(1) << (BitVec::from_int(q) & BitVec::from_int(63))).to_int())
+    || size.raw + b <= 4611686018427387904u64))]
+#[thrust::reveal(super::LayoutCalculator::fits_in_any_order)]
+fn prefix_fits_bound<
+    'a,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model<Ty: PartialEq>,
+    VariantIdx: Idx,
+    FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
+    C: HasDataLayout,
+>(
+    calc: &LayoutCalculator<C>,
+    fields: &IndexVec<FieldIdx, F>,
+    repr: &ReprOptions,
+    kind: StructKind,
+    size: Size,
+    align: AbiAlign,
+) {
+    super::bytes_within(align.abi.pow2 as u64);
+}
 
 /// The variant's fields fit in any order after the prefix: `univariant`'s `fits_in_any_order` for
 /// every field list that holds, in order, the layouts of a selection of the variant's entries
@@ -1729,6 +1775,12 @@ fn variant_layout<
     thrust_macros::proof!(layout_pre_of_wf(calc, &fields, kind));
     // `variant_fits_wf` holds for a `repr` without alignment: `repr` has none.
     thrust_macros::proof_assert!(|repr: ReprOptions| repr.align == None);
+    // Rewrite (rewrites.md R17): the data layout is read, so that `prefix_wf`'s bound of the
+    // prefix's size and alignment, stated under it, gives `univariant`'s `prefix_fits`, which names
+    // no data layout; `repr` has no `pack`.
+    let dl = calc.cx.data_layout();
+    thrust_macros::proof_assert!(|repr: ReprOptions, kind: StructKind, dl: &TargetDataLayout|
+        repr.pack == None && LayoutCalculator::<C>::prefix_fits(&repr, kind));
     let mut variant = calc.univariant(&fields, &repr, kind)?;
 
     // `combine_offsets` requires `u32` to reach the variant's m fields.
@@ -1947,8 +1999,11 @@ pub fn layout<
     )?;
 
     let (prefix_size, prefix_align) = (prefix.size, prefix.align);
-    // The prefix's alignment and size are bounded as `layout_pre` reads the variants' kind
-    // (univariant's `ensures`): the fifth atom of the per-variant closure's `requires`.
+    // The prefix's size is bounded as `layout_pre` reads the variants' kind (univariant's
+    // `ensures`), and its size plus its alignment's bytes as `prefix_fits` does (univariant's
+    // `ensures` under the `fits_in_any_order` assumed above): the fifth atom of the per-variant
+    // closure's `requires`.
+    thrust_macros::proof!(prefix_fits_bound(calc, &prefix_layouts, &repr, StructKind::AlwaysSized, prefix_size, prefix_align));
     thrust_macros::proof!(prefix_wf_of(calc, prefix_size, prefix_align));
     // Assumed (not proved): each variant's fields fit in any order after the prefix
     // (`variant_fits_wf`, `univariant`'s `fits_in_any_order` for the variant's `univariant` call).
