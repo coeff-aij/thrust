@@ -949,12 +949,17 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// related by `hist_inv!` (each `&mut` capture keeps its prophecy, each `&` capture its value),
     /// as Creusot's `postcondition_mut` of a closure includes `hist_inv(self, ^self)`. The body
     /// is checked against it, and it makes the law that each call's postcondition implies
-    /// `hist_inv!` hold of every such closure's contract.
+    /// `hist_inv!` hold of every such closure's contract. The closure is taken at the arguments
+    /// the body is analyzed at, so that at an instance the relation is the one of the closure
+    /// there, over the sorts of its receiver there.
     fn conjoin_fn_mut_hist_inv(&self, fn_ty: &mut rty::FunctionType) {
         if !self.tcx.is_closure_like(self.local_def_id.to_def_id()) {
             return;
         }
-        let closure_ty = self.tcx.type_of(self.local_def_id).instantiate_identity();
+        let closure_ty = self
+            .tcx
+            .type_of(self.local_def_id)
+            .instantiate(self.tcx, self.generic_args);
         let mir_ty::TyKind::Closure(_, args) = closure_ty.kind() else {
             return;
         };
@@ -966,10 +971,17 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         {
             return;
         }
-        let upvars_sort = receiver.to_sort().deref();
-        let receiver = chc::Term::var(rty::RefinedTypeVar::Free(
-            rty::FunctionParamIdx::from_usize(0),
-        ));
+        let receiver_sort = receiver.to_sort();
+        let upvars_sort = receiver_sort.clone().deref();
+        // A parameter of a singleton sort, such as the receiver of a closure whose captures hold
+        // only closures without captures, is not a clause variable; its one value stands for it.
+        let receiver = if receiver_sort.is_singleton() {
+            chc::Term::default_for(&receiver_sort)
+        } else {
+            chc::Term::var(rty::RefinedTypeVar::Free(
+                rty::FunctionParamIdx::from_usize(0),
+            ))
+        };
         let formula = self.ctx.closure_hist_inv_definition(
             closure_ty,
             &upvars_sort,

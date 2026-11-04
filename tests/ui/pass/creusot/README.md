@@ -29,7 +29,7 @@ with empty bodies, as Creusot does). The step-form files repeat theirs in the sa
 | `map.rs` | `iterators/map.rs` | `produces` over an `FnMut` closure with the chain `fs` of closure states and `hist_inv!`, both laws inherited with no lemma, fully checked |
 | `iter_mut.rs` | `iterators/iter_mut.rs` | `produces` over Creusot's `IterMut { inner: &mut [T] }`, whose `next` (`split_off_first_mut`) is checked, Creusot's constructor `iter_mut(v)` (`IterMut { inner: &mut v[..] }`, with its type invariant, which needs std.rs's length-keeping `IndexMut`) and its `all_zero` client over that iterator |
 | `collect.rs` | `common.rs` (`collect` / `FromIterator`) | `produces` |
-| `all_zero.rs` | `examples/all_zero.rs` | `produces`, via std's `slice::IterMut` and its `next` through std.rs (Creusot's own `IterMut` and constructor are in `iter_mut.rs`) |
+| `all_zero.rs` | `examples/all_zero.rs` | a `for` loop over std's `slice::IterMut` with its `next` through std.rs, the invariant over the loop's `iter` (`slice::IterMut` has no `IteratorSpec`, so no `produced`; Creusot's own `IterMut` and constructor are in `iter_mut.rs`) |
 | `decuple_range.rs` | `examples/decuple_range.rs` | `produces`, positional property, fully checked |
 | `skip_take.rs` | `examples/skip_take.rs` | `produces`, concatenated `Skip`, generic in `I` |
 | `counter.rs` | `examples/counter.rs` | `step` + a unary `next_item` guard, `MapInv`'s ghost history |
@@ -37,6 +37,8 @@ with empty bodies, as Creusot does). The step-form files repeat theirs in the sa
 | `counter_creusot_lemma.rs` | `examples/counter.rs` | `counter_creusot.rs` with the witnesses of `produces_trans` written as source-level lemmas (Creusot's session gives them by hand) |
 | `map_ext.rs` | `iterators/map_ext.rs` | `produces` with an existential input sequence, `MapInv`'s ghost history, over an `FnMut` closure with the chain `fs` and `hist_inv!` as `counter_creusot.rs` (the ninth adapter) |
 | `extend.rs` | `examples/extend.rs` | `produces` |
+| `collect_for.rs` | the current Creusot's `examples/iterators/08_collect_extend.rs` (3620de437), `collect` and `collect_example` | std.rs's `IteratorSpec`, a `for` loop whose invariant states the vector is `produced` |
+| `extend_for.rs` | the current Creusot's `examples/iterators/08_collect_extend.rs` (3620de437), `extend` and `extend_index` | std.rs's `IteratorSpec`, a `for` loop whose invariant states the vector is its entry value followed by `produced` |
 | `take_count.rs` | no counterpart | `produces`; an extra call site of `take.rs`'s `Take` |
 | `fold.rs` | no counterpart | `produces`; a hand-written `fold` with a closure contract over the accumulator |
 | `try_fold.rs` | no counterpart | `produces`; a hand-written `try_fold` that returns `None` on an early bound crossing |
