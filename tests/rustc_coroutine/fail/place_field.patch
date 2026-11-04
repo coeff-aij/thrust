@@ -17,7 +17,7 @@
  // The code is the module tree under tests/rustc_coroutine/; this file selects the stage and
 -// drives it.
 +// drives it. This twin verifies only `place_field`, under `cfg(thrust_place_field_fail)`, which
-+// adds to its contract that a successful step leaves the offset where it was.
++// adds an assertion at its start that the offset is not 0.
  // Each goal is solved with the clauses it depends on (`THRUST_SPLIT_GOALS`).
  #![feature(new_range_api)]
  

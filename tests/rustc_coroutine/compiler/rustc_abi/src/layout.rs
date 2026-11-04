@@ -945,9 +945,6 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
             && <FieldIdx as Idx>::index_is(i, j)
             && thrust_macros::post!(<F as core::ops::Deref>::deref(field), d))
         || ((*offset).raw <= (!offsets)[j].raw && (!offsets)[j].raw + (**d).size.raw == (!offset).raw)))]
-    // The fail twin of the place_field root sets this cfg: the field's size moves the offset, so a
-    // contract that a successful step leaves it where it was is refuted.
-    #[cfg_attr(thrust_place_field_fail, thrust_macros::ensures(result == Ok(()) ==> (!offset).raw == (*offset).raw))]
     #[thrust::reveal(LayoutCalculator::field_wf)]
     fn place_field<
         'a,
@@ -967,6 +964,10 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         niche_bias: &NicheBias,
         dl: &TargetDataLayout,
     ) -> Result<(), LayoutCalculatorError<F>> {
+        // The fail twin of the place_field root sets this cfg: the contract allows a field placed
+        // at offset 0, so an assertion that the offset is not 0 is refuted.
+        #[cfg(thrust_place_field_fail)]
+        thrust_macros::proof_assert!(|offset: &mut Size| !((*offset).raw == 0));
         let field_align = if let Some(pack) = pack {
             field.align.min(AbiAlign::new(pack))
         } else {
