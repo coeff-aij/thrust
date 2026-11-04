@@ -517,44 +517,49 @@ where
     let mut it = iter;
     I::produces_refl(&it);
     // `seen` records the items passed to the closure and `best_pos` the position of the candidate
-    // among them, for the loop invariant.
+    // among them, for the loop invariant; the candidate's key and item are kept apart, so that
+    // the invariant states the item without a quantifier.
     let mut seen: Vec<I::Item> = Vec::new();
-    let mut best: Option<(B, I::Item)> = None;
+    let mut best_key: Option<B> = None;
+    let mut best_item: Option<I::Item> = None;
     let mut best_pos: usize = 0;
     loop {
         thrust_macros::invariant!(
-            |it: I, seen: Vec<I::Item>, best: Option<(B, I::Item)>, best_pos: usize, iter: thrust_models::FnParam<I>, f: F|
+            |it: I, seen: Vec<I::Item>, best_key: Option<B>, best_item: Option<I::Item>, best_pos: usize, iter: thrust_models::FnParam<I>, f: F|
                 I::inv(it)
                     && I::produces(iter.at_entry(), seen, it)
                     && MaxByKeySpec::<I, B, F>::pre_all(it, f)
-                    && (best == None) == (seen.len() == 0)
-                    && forall(|k: <B as thrust_models::Model>::Ty, x: <I::Item as thrust_models::Model>::Ty|
-                        best != Some((k, x)) || (best_pos < seen.len() && x == seen[best_pos]))
+                    && (best_key == None) == (best_item == None)
+                    && (best_item == None) == (seen.len() == 0)
+                    && (best_item == None || (best_pos < seen.len() && best_item == Some(seen[best_pos])))
         );
         let before = thrust_macros::ghost!(|it: I| -> I { it });
         let Some(x) = it.next() else {
-            return match best {
-                Some((_, x)) => {
-                    thrust_macros::proof_assert!(|x: I::Item, seen: Vec<I::Item>, best_pos: usize|
-                        best_pos < seen.len() && x == seen[best_pos]);
-                    Some(x)
-                }
-                None => None,
-            };
+            thrust_macros::proof_assert!(|best_item: Option<I::Item>, seen: Vec<I::Item>, best_pos: usize|
+                best_item == None || (best_pos < seen.len() && best_item == Some(seen[best_pos])));
+            return best_item;
         };
         let yielded = thrust_macros::ghost!(|x: I::Item| -> I::Item { x });
         let after = thrust_macros::ghost!(|it: I| -> I { it });
         let fs = thrust_macros::ghost!(|f: F| -> F { f });
         MaxByKeySpec::<I, B, F>::pre_all_step(before, yielded, after, fs);
         let k = f(&x);
-        best = match best {
-            Some((bk, bx)) if k < bk => Some((bk, bx)),
+        // Each arm goes back to the loop head itself, so that no join after the `match` needs an
+        // invariant of its own.
+        match best_key {
+            Some(bk) if k < bk => {
+                best_key = Some(bk);
+                seen.push(x);
+                continue;
+            }
             _ => {
                 best_pos = seen.len();
-                Some((k, x))
+                best_key = Some(k);
+                best_item = Some(x);
+                seen.push(x);
+                continue;
             }
-        };
-        seen.push(x);
+        }
     }
 }
 
