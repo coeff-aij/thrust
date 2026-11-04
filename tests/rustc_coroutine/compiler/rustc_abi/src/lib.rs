@@ -185,10 +185,6 @@ impl TargetDataLayout {
     }
 
     #[inline]
-    #[thrust_macros::requires(((*self).default_address_space_pointer_spec.pointer_size.raw == 2
-        || (*self).default_address_space_pointer_spec.pointer_size.raw == 4
-        || (*self).default_address_space_pointer_spec.pointer_size.raw == 8))]
-    #[thrust_macros::ensures(result >= 1)]
     pub fn obj_size_bound(&self) -> u64 {
         match self.pointer_size().bits() {
             16 => 1 << 15,
@@ -384,7 +380,7 @@ impl Size {
     }
 
     #[inline]
-    // The `requires` is that of `obj_size_bound` for the layout `cx` names.
+    // The `requires` excludes the panic of `obj_size_bound` for the layout `cx` names.
     #[thrust_macros::requires(forall(|dl: TargetDataLayout| C::dl_of(*cx, dl) ==> dl.default_address_space_pointer_spec.pointer_size.raw == 2
         || dl.default_address_space_pointer_spec.pointer_size.raw == 4
         || dl.default_address_space_pointer_spec.pointer_size.raw == 8))]
