@@ -599,33 +599,39 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         ty
     }
 
-    /// The term and the type of `expr` as rustc indexes it or passes it as a method's receiver:
-    /// after the dereferences of a `Mut<T>` its adjustments insert, so that `s[i]` and `s.len()`
-    /// of a `&mut [T]` read the current value `*s`, as in Creusot.
-    fn through_mut_derefs(
-        &self,
-        expr: &'tcx rustc_hir::Expr<'tcx>,
-    ) -> (chc::Term<rty::FunctionParamIdx>, mir_ty::Ty<'tcx>) {
-        let mut term = self.to_term(expr);
+    /// The dereferences of a `Mut<T>` that rustc's adjustments of `expr` insert where it
+    /// autoderefs a field's base, an index's base or a method's receiver, and the type of `expr`
+    /// after them: `s[i]`, `s.f` and `s.len()` of an `s: &mut T` read the current value `*s`, as
+    /// in Creusot. The other dereferences rustc inserts, of a shared reference or a `Box`, are
+    /// the identity in a query, which removes boxes.
+    fn mut_derefs(&self, expr: &'tcx rustc_hir::Expr<'tcx>) -> (usize, mir_ty::Ty<'tcx>) {
+        let mut count = 0;
         let mut ty = self.expr_ty(expr);
         for adjustment in self.typeck.expr_adjustments(expr) {
-            let mir_ty::adjustment::Adjust::Deref(Some(_)) = adjustment.kind else {
-                continue;
-            };
-            let mir_ty::TyKind::Adt(adt, args) = ty.kind() else {
+            let mir_ty::adjustment::Adjust::Deref(_) = adjustment.kind else {
                 break;
             };
-            if Some(adt.did()) != self.def_ids.mut_model() {
-                break;
+            if let mir_ty::TyKind::Adt(adt, _) = ty.kind() {
+                if Some(adt.did()) == self.def_ids.mut_model() {
+                    count += 1;
+                }
             }
-            term = term.mut_current();
-            ty = args.type_at(0);
+            ty = self.instantiated(adjustment.target);
         }
-        (term, ty)
+        (count, ty)
+    }
+
+    /// The type of `expr` where rustc autoderefs it, after its dereferences ([`Self::mut_derefs`]).
+    fn adjusted_expr_ty(&self, expr: &'tcx rustc_hir::Expr<'tcx>) -> mir_ty::Ty<'tcx> {
+        self.mut_derefs(expr).1
     }
 
     fn expr_ty(&self, expr: &'tcx rustc_hir::Expr<'tcx>) -> mir_ty::Ty<'tcx> {
-        let ty = self.typeck.expr_ty(expr);
+        self.instantiated(self.typeck.expr_ty(expr))
+    }
+
+    /// `ty`, a type of the formula function's typeck results, at its generic arguments.
+    fn instantiated(&self, ty: mir_ty::Ty<'tcx>) -> mir_ty::Ty<'tcx> {
         let instantiated = self
             .instantiate_generics(ty, self.generic_args)
             .unwrap_or(ty);
@@ -917,7 +923,8 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                  `#[logic]` function, an argument of a call or the operand of a cast",
             );
         };
-        term
+        let (mut_derefs, _) = self.mut_derefs(hir);
+        (0..mut_derefs).fold(term, |term, _| term.mut_current())
     }
 
     fn receiver_closure_ty(&self, ty: mir_ty::Ty<'tcx>) -> Option<mir_ty::Ty<'tcx>> {
@@ -1990,7 +1997,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                     Ok(index) => index,
                     Err(_) => {
                         let adt = self
-                            .ghost_deref_target_ty(self.expr_ty(expr))
+                            .ghost_deref_target_ty(self.adjusted_expr_ty(expr))
                             .ty_adt_def()
                             .expect("named field access on a non-ADT type");
                         adt.non_enum_variant()
@@ -2005,8 +2012,8 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             }
             ExprKind::Index(array, index, _) => {
                 let index_term = self.to_term(index);
-                let (array_term, array_ty) = self.through_mut_derefs(array);
-                let is_seq = self.is_seq_modeled(self.seq_target_ty(array_ty));
+                let array_term = self.to_term(array);
+                let is_seq = self.is_seq_modeled(self.seq_target_ty(self.adjusted_expr_ty(array)));
                 let term = if is_seq {
                     array_term.seq_nth(index_term)
                 } else {
@@ -2078,25 +2085,25 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                     }
                     if Some(def_id) == self.def_ids.seq_len() {
                         assert!(args.is_empty(), "Seq::len does not take any arguments");
-                        let (t, _) = self.through_mut_derefs(receiver);
+                        let t = self.to_term(receiver);
                         return FormulaOrTerm::Term(t.seq_len());
                     }
                     if Some(def_id) == self.def_ids.seq_push() {
                         assert_eq!(args.len(), 1, "Seq::push takes exactly 1 argument");
-                        let (t, _) = self.through_mut_derefs(receiver);
+                        let t = self.to_term(receiver);
                         let v = self.to_term(&args[0]);
                         return FormulaOrTerm::Term(t.seq_concat(v.seq_unit()));
                     }
                     if Some(def_id) == self.def_ids.seq_store() {
                         assert_eq!(args.len(), 2, "Seq::store takes exactly 2 arguments");
-                        let (seq, _) = self.through_mut_derefs(receiver);
+                        let seq = self.to_term(receiver);
                         let index = self.to_term(&args[0]);
                         let value = self.to_term(&args[1]);
                         return FormulaOrTerm::Term(seq.seq_store(index, value));
                     }
                     if Some(def_id) == self.def_ids.seq_subsequence() {
                         assert_eq!(args.len(), 2, "Seq::subsequence takes exactly 2 arguments");
-                        let (seq, _) = self.through_mut_derefs(receiver);
+                        let seq = self.to_term(receiver);
                         let start = self.to_term(&args[0]);
                         let end = self.to_term(&args[1]);
                         let length = end.sub(start.clone());
@@ -2104,16 +2111,16 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                     }
                     if Some(def_id) == self.def_ids.seq_concat() {
                         assert_eq!(args.len(), 1, "Seq::concat takes exactly 1 argument");
-                        let (seq, _) = self.through_mut_derefs(receiver);
+                        let seq = self.to_term(receiver);
                         let other = self.to_term(&args[0]);
                         return FormulaOrTerm::Term(seq.seq_concat(other));
                     }
                 }
                 if method.ident.name == rustc_span::sym::len
                     && args.is_empty()
-                    && self.is_seq_modeled(self.expr_ty(receiver))
+                    && self.is_seq_modeled(self.adjusted_expr_ty(receiver))
                 {
-                    let (t, _) = self.through_mut_derefs(receiver);
+                    let t = self.to_term(receiver);
                     return FormulaOrTerm::Term(t.seq_len());
                 }
                 unimplemented!("unsupported method call in formula: {:?}", method)
