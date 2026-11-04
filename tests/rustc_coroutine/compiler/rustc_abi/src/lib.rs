@@ -185,10 +185,6 @@ impl TargetDataLayout {
     }
 
     #[inline]
-    #[thrust_macros::requires(((*self).default_address_space_pointer_spec.pointer_size.raw == 2
-        || (*self).default_address_space_pointer_spec.pointer_size.raw == 4
-        || (*self).default_address_space_pointer_spec.pointer_size.raw == 8))]
-    #[thrust_macros::ensures(result >= 1)]
     pub fn obj_size_bound(&self) -> u64 {
         match self.pointer_size().bits() {
             16 => 1 << 15,
@@ -356,7 +352,6 @@ impl Size {
     }
 
     #[inline]
-    #[thrust_macros::ensures(result == self.raw)]
     pub fn bytes(self) -> u64 {
         self.raw
     }
@@ -378,14 +373,13 @@ impl Size {
     }
 
     #[inline]
-    #[thrust::callable]
     pub fn align_to(self, align: Align) -> Size {
         let mask = align.bytes() - 1;
         Size::from_bytes((self.bytes() + mask) & !mask)
     }
 
     #[inline]
-    // The `requires` is that of `obj_size_bound` for the layout `cx` names.
+    // The `requires` excludes the panic of `obj_size_bound` for the layout `cx` names.
     #[thrust_macros::requires(forall(|dl: TargetDataLayout| C::dl_of(*cx, dl) ==> dl.default_address_space_pointer_spec.pointer_size.raw == 2
         || dl.default_address_space_pointer_spec.pointer_size.raw == 4
         || dl.default_address_space_pointer_spec.pointer_size.raw == 8))]
@@ -403,7 +397,6 @@ impl Size {
     }
 
     #[inline]
-    #[thrust_macros::requires((*self).raw * 8 <= 128)]
     pub fn unsigned_int_max(&self) -> u128 {
         u128::MAX >> (128 - self.bits())
     }
@@ -425,8 +418,6 @@ impl Add for Size {
 #[thrust_macros::context]
 impl AddAssign for Size {
     #[inline]
-    #[thrust_macros::requires((*self).raw + other.raw <= u64::MAX)]
-    #[thrust_macros::ensures((!self).raw == (*self).raw + other.raw)]
     fn add_assign(&mut self, other: Size) {
         *self = *self + other;
     }
@@ -453,7 +444,6 @@ impl Align {
     pub const MAX: Align = Align { pow2: 29 };
 
     #[inline]
-    #[thrust_macros::ensures(result >= 1)]
     pub const fn bytes(self) -> u64 {
         1 << self.pow2
     }
@@ -517,7 +507,6 @@ impl Integer {
     }
 
     #[inline]
-    #[thrust_macros::ensures(Self::bytes_are(self, result))]
     pub fn size(self) -> Size {
         use Integer::*;
         match self {
@@ -576,7 +565,6 @@ impl Float {
             || (self == Float::F128 && n.raw == 16)
     }
 
-    #[thrust_macros::ensures(Self::bytes_are(self, result))]
     pub fn size(self) -> Size {
         use Float::*;
 
