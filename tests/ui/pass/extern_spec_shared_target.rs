@@ -1,9 +1,9 @@
 //@check-pass
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
-// Two extern specs share the target `<Seq<i64> as Index<R>>::index`, one per index
-// trait. A call at `u8` is covered only by the second spec, which a target used to drop in favour
-// of the first.
+// One extern spec covers the target `<Seq<i64> as Index<R>>::index` at every key type, with the
+// contract each key type gives through the spec trait `KeyValue`. Two specs of one target that
+// could cover one instance are rejected (`fail/extern_spec_overlap_*.rs`).
 
 use std::ops::Index;
 use std::slice::SliceIndex;
@@ -30,10 +30,27 @@ impl<T> Key<T> for u8 {
     }
 }
 
-trait Small {}
-trait Big {}
-impl Small for u8 {}
-impl Big for usize {}
+#[thrust_macros::context]
+trait KeyValue: thrust_models::Model {
+    #[thrust_macros::predicate]
+    fn has_value(self, out: i64) -> bool;
+}
+
+#[thrust_macros::context]
+impl KeyValue for usize {
+    #[thrust_macros::predicate]
+    fn has_value(self, out: i64) -> bool {
+        out == 5
+    }
+}
+
+#[thrust_macros::context]
+impl KeyValue for u8 {
+    #[thrust_macros::predicate]
+    fn has_value(self, out: i64) -> bool {
+        out == 7
+    }
+}
 
 struct Seq<T> {
     raw: Vec<T>,
@@ -54,22 +71,8 @@ impl<T, R: Key<T>> Index<R> for Seq<T> {
 
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
-#[thrust_macros::ensures(*result == 5)]
-fn _extern_spec_seq_index_big<
-    R: Key<i64, Output = usize> + Big + thrust_models::Model,
->(
-    s: &Seq<i64>,
-    index: R,
-) -> &i64 {
-    <Seq<i64> as Index<R>>::index(s, index)
-}
-
-#[thrust::extern_spec_fn]
-#[thrust_macros::requires(true)]
-#[thrust_macros::ensures(*result == 7)]
-fn _extern_spec_seq_index_small<
-    R: Key<i64, Output = usize> + Small + thrust_models::Model,
->(
+#[thrust_macros::ensures(R::has_value(index, *result))]
+fn _extern_spec_seq_index<R: Key<i64, Output = usize> + KeyValue>(
     s: &Seq<i64>,
     index: R,
 ) -> &i64 {
@@ -78,5 +81,6 @@ fn _extern_spec_seq_index_small<
 
 fn main() {
     let s: Seq<i64> = Seq { raw: Vec::new() };
+    assert!(s[0_usize] == 5);
     assert!(s[0_u8] == 7);
 }

@@ -243,23 +243,6 @@ struct DeferredDefTy<'tcx> {
     target_args: Option<mir_ty::GenericArgsRef<'tcx>>,
 }
 
-impl<'tcx> DeferredDefTy<'tcx> {
-    /// Whether this spec covers every instance `other` covers, by the type arguments their own
-    /// calls of the target give it (`extern_spec::bind_spec_args`), bounds aside.
-    fn covers_instances_of(&self, tcx: TyCtxt<'tcx>, other: &DeferredDefTy<'tcx>) -> bool {
-        let (Some(args), Some(other_args)) = (self.target_args, other.target_args) else {
-            return false;
-        };
-        extern_spec::bind_spec_args(tcx, self.local_def_id, args, other_args).is_some()
-    }
-
-    /// Whether this spec covers only some of the instances `other` covers: it fixes an argument
-    /// `other` leaves to a type parameter (`cmp::max::<u64>` against `cmp::max::<T>`).
-    fn is_narrower_than(&self, tcx: TyCtxt<'tcx>, other: &DeferredDefTy<'tcx>) -> bool {
-        other.covers_instances_of(tcx, self) && !self.covers_instances_of(tcx, other)
-    }
-}
-
 /// The `drop` method of `ty`'s `Drop` impl, when `ty` is an ADT whose impl is in the crate.
 pub fn local_destructor(tcx: TyCtxt<'_>, ty: mir_ty::Ty<'_>) -> Option<DefId> {
     let adt = ty.ty_adt_def()?;
@@ -544,7 +527,8 @@ enum DefTy<'tcx> {
     Concrete(rty::RefinedType, Option<LocalDefId>),
     Generic(GenericDefTy<'tcx>),
     // Several extern specs can share one target, each covering the instantiations its tail call
-    // and bounds cover (see `bind_spec_args`); a call takes the first one that covers it.
+    // and bounds cover (see `bind_spec_args`), when no two of them can cover one instance
+    // (`extern_spec::specs_overlap`); a call takes the one that covers it.
     Deferred(Vec<DeferredDefTy<'tcx>>),
 }
 
@@ -1635,13 +1619,23 @@ impl<'tcx> Analyzer<'tcx> {
             .entry(target_def_id)
             .or_insert_with(|| DefTy::Deferred(Vec::new()))
         {
-            // A call takes the first spec that covers it, so a spec goes before the specs whose
-            // instances strictly include its own, as a specialization takes precedence.
-            let position = specs
+            if let Some(other) = specs
                 .iter()
-                .position(|other| spec.is_narrower_than(self.tcx, other))
-                .unwrap_or(specs.len());
-            specs.insert(position, spec);
+                .find(|other| extern_spec::specs_overlap(self.tcx, other, &spec))
+            {
+                self.tcx.dcx().span_fatal(
+                    self.tcx.def_span(local_def_id),
+                    format!(
+                        "the extern specs `{}` and `{}` of `{}` both cover some of its instances; \
+                         an instance takes at most one extern spec, so write one spec, over a \
+                         spec trait where the contracts differ by type",
+                        self.tcx.def_path_str(other.local_def_id),
+                        self.tcx.def_path_str(local_def_id),
+                        self.tcx.def_path_str(target_def_id),
+                    ),
+                );
+            }
+            specs.push(spec);
         }
     }
 
@@ -1758,9 +1752,14 @@ impl<'tcx> Analyzer<'tcx> {
         let mut def_ty = match self.defs.get(&def_id)? {
             DefTy::Concrete(rty, _) => rty.clone(),
             DefTy::Generic(generic) => generic.cache.borrow().get(&key)?.clone(),
-            DefTy::Deferred(specs) => specs
-                .iter()
-                .find_map(|spec| spec.cache.borrow().get(&key).cloned())?,
+            DefTy::Deferred(specs) => specs.iter().find_map(|spec| {
+                let (spec_args, _) = self.covered_spec_args(spec, generic_args, caller_def_id)?;
+                let key = InstantiationKey {
+                    generic_args: spec_args,
+                    caller_def_id,
+                };
+                spec.cache.borrow().get(&key).cloned()
+            })?,
         };
         def_ty.instantiate_ty_params(
             generic_args

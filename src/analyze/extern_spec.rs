@@ -67,6 +67,36 @@ pub(super) fn bind_spec_args<'tcx>(
     ))
 }
 
+/// Whether some instance of a target is covered by both extern specs: the arguments their own
+/// calls give the target unify, with the specs' type parameters free and their bounds
+/// disregarded, as Rust's coherence check finds two impls overlapping.
+pub(super) fn specs_overlap<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    spec: &DeferredDefTy<'tcx>,
+    other: &DeferredDefTy<'tcx>,
+) -> bool {
+    use rustc_infer::infer::TyCtxtInferExt as _;
+
+    let (Some(spec_args), Some(other_args)) = (spec.target_args, other.target_args) else {
+        return false;
+    };
+    let infcx = tcx.infer_ctxt().build(mir_ty::TypingMode::Coherence);
+    let fresh = |local_def_id: LocalDefId, args: mir_ty::GenericArgsRef<'tcx>| {
+        let fresh = infcx.fresh_args_for_item(rustc_span::DUMMY_SP, local_def_id.to_def_id());
+        mir_ty::EarlyBinder::bind(args).instantiate(tcx, fresh)
+    };
+    let spec_args = fresh(spec.local_def_id, spec_args);
+    let other_args = fresh(other.local_def_id, other_args);
+    let cause = rustc_infer::traits::ObligationCause::dummy();
+    let at = infcx.at(&cause, mir_ty::ParamEnv::empty());
+    spec_args.iter().zip(other_args.iter()).all(|(a, b)| {
+        a.as_region().is_some()
+            || at
+                .eq(rustc_infer::infer::DefineOpaqueTypes::No, a, b)
+                .is_ok()
+    })
+}
+
 /// The bounds an extern spec puts on its type parameters by traits of its own, and the associated
 /// types those fix. `Model` is left out: it is assumed of every type parameter.
 fn is_spec_bound(clause: mir_ty::Clause<'_>, model_trait: DefId) -> bool {
@@ -480,62 +510,6 @@ impl<'tcx> Analyzer<'tcx> {
         self.extend_clauses(clauses);
     }
 
-    /// Requires each extern spec to refine, over its own type parameters, the specs it takes the
-    /// place of: every spec of the same target whose instances strictly include its own
-    /// ([`DeferredDefTy::is_narrower_than`]) and whose bounds hold there, as an impl's method
-    /// refines its trait's (`check_impl_refinements`). A body verified once over its type
-    /// parameters with a broader spec is reused at the narrower spec's instances, where an
-    /// analysis at the instance takes the narrower spec; with the refinement both are sound.
-    pub fn check_narrower_specs_refine(&mut self) {
-        let mut refinements = Vec::new();
-        for def_ty in self.defs.values() {
-            let DefTy::Deferred(specs) = def_ty else {
-                continue;
-            };
-            for (index, narrower) in specs.iter().enumerate() {
-                let Some(target_args) = narrower.target_args else {
-                    continue;
-                };
-                let owner = narrower.local_def_id.to_def_id();
-                for other in &specs[index + 1..] {
-                    if !narrower.is_narrower_than(self.tcx, other) {
-                        continue;
-                    }
-                    if let Some((args, _)) = self.covered_spec_args(other, target_args, owner) {
-                        refinements.push((narrower.local_def_id, (other.local_def_id, args)));
-                    }
-                }
-            }
-        }
-        refinements.sort_by_key(|(narrower, _)| narrower.local_def_index);
-        for (narrower, (refined, refined_args)) in refinements {
-            let owner = narrower.to_def_id();
-            let narrower_ty = {
-                let mut analyzer = self.local_def_analyzer(narrower);
-                analyzer.owner_fn_id(owner);
-                analyzer.expected_ty()
-            };
-            let refined_ty = {
-                let mut analyzer = self.local_def_analyzer(refined);
-                analyzer.owner_fn_id(owner).generic_args(refined_args);
-                analyzer.expected_ty()
-            };
-            tracing::info!(
-                ?narrower,
-                ?refined,
-                narrower_ty = %narrower_ty.display(),
-                refined_ty = %refined_ty.display(),
-                "narrower spec refines"
-            );
-            let clauses = rty::relate_refining_function_type(
-                narrower_ty.ty.as_function().unwrap(),
-                refined_ty.ty.as_function().unwrap(),
-                Some(&self.enum_defs),
-            );
-            self.extend_clauses(clauses);
-        }
-    }
-
     /// The generic arguments of `spec` at a call of its target at `generic_args`, or `None` when
     /// the spec does not cover the call.
     ///
@@ -556,7 +530,7 @@ impl<'tcx> Analyzer<'tcx> {
     }
 
     /// [`Self::spec_args`] with the spec bounds the call assumes, unrecorded.
-    fn covered_spec_args(
+    pub(super) fn covered_spec_args(
         &self,
         spec: &DeferredDefTy<'tcx>,
         generic_args: mir_ty::GenericArgsRef<'tcx>,

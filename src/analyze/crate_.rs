@@ -437,7 +437,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             && owner_fn_id_args.is_some_and(has_type_or_const_args)
         {
             // An extern spec without type parameters of a generic function of another crate
-            // states the contract at the instance its own call fixes (`cmp::max::<u64>`)
+            // states the contract at the instance its own call fixes (`Option::<u64>::unwrap_or`)
             // and covers only the calls at that instance; another call takes another spec of the
             // target, or none.
             self.ctx.register_deferred_def_without_analysis(
@@ -1034,7 +1034,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.report_unmatched_selection();
         self.refine_local_defs();
         self.check_impl_refinements();
-        self.ctx.check_narrower_specs_refine();
         analyze::lemma::check_proof_branches(self.tcx, proof_branch, |def_id| {
             !self.skip_analysis.contains(&def_id)
         });
