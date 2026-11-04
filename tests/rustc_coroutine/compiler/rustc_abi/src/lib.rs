@@ -91,6 +91,17 @@ pub struct ReprOptions {
     pub field_shuffle_seed: Hash64,
 }
 
+// `derive(Default)` gives `ReprOptions` no `repr` alignment, which `univariant` requires to be at
+// most `Align::MAX` and `layout()`'s `variant_fits_wf` reads. A derived body is analyzed only for
+// its panics, so its value is stated here; the body is checked against it where it is selected,
+// through std.rs's `Option::default`.
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(result.align == None)]
+fn _extern_spec_repr_options_default() -> ReprOptions {
+    <ReprOptions as Default>::default()
+}
+
 impl ReprOptions {
     #[inline]
     #[thrust::callable]

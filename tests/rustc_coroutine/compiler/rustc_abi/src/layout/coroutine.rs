@@ -1733,6 +1733,8 @@ fn variant_layout<
     );
     thrust_macros::proof!(layouts_wf_of_entries(calc, local_layouts, &fields));
     thrust_macros::proof!(layout_pre_of_wf(calc, &fields, kind));
+    // `univariant` requires the `repr` alignment to be at most `Align::MAX`: `repr` has none.
+    thrust_macros::proof_assert!(|repr: ReprOptions| repr.align == None);
     let mut variant = calc.univariant(&fields, &repr, kind)?;
 
     // `combine_offsets` requires `u32` to reach the variant's m fields.
@@ -1948,6 +1950,8 @@ pub fn layout<
     #[cfg(thrust_layout_reach_prefix)]
     thrust_macros::proof_assert!(|| false);
     thrust_macros::proof!(layout_pre_of_wf(calc, &prefix_layouts, StructKind::AlwaysSized));
+    // `univariant` requires the `repr` alignment to be at most `Align::MAX`: `repr` has none.
+    thrust_macros::proof_assert!(|repr: ReprOptions| repr.align == None);
     let prefix = calc.univariant(
         &prefix_layouts,
         &repr,
