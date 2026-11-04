@@ -17,8 +17,7 @@ type U32 = thrust_models::model::UIntN<32>;
 // states, `preservation_inv` and `reinitialize` quantify over every closure state, as Creusot's
 // do. As in creusot-std's `std/iter/map_inv.rs`, which `examples/counter` uses, `produces` relates
 // the first state to the last and to every state of the chain by `hist_inv!` (Creusot's
-// `hist_inv`), and `preservation_inv` is guarded by it. The closure precondition drops Creusot's
-// `cnt < usize::MAX` (integers are unbounded).
+// `hist_inv`), and `preservation_inv` is guarded by it.
 //
 // `Map`'s specification uses `hist_inv!`, so its methods are verified once over `F`, and `collect`
 // at `Map<slice::Iter<u32>, closure>` uses its generic analysis with the closure's `hist_inv!` laws checked.
@@ -278,6 +277,21 @@ impl FromIterator<u32> for Vec<u32> {
     && result.1 == result.0.len())]
 fn counter(v: Vec<u32>) -> (Vec<u32>, usize) {
     let mut cnt: usize = 0;
+    // Creusot's `examples/counter` closure states `cnt < usize::MAX`
+    // (`#[requires(@cnt == (*_prod).len() && cnt < usize::MAX)]`), which `cnt += 1` needs under
+    // `THRUST_INT_RANGE=all`. Without the option a length has no upper bound, so the bound could
+    // not be shown at the call, and the closure states the history only.
+    #[cfg(thrust_int_range)]
+    let f = thrust_macros::closure!(
+        captures(cnt: &mut &mut usize),
+        requires(*(*cnt) == produced.len() && *(*cnt) < usize::MAX),
+        ensures(*(!cnt) == *(*cnt) + 1 && result == *x),
+        // The precondition restated, as in the postcondition Creusot infers for the closure
+        // body, which reads `cnt == produced.len()` before the increment.
+        ensures(*(*cnt) == produced.len()),
+        |x: &u32, produced: Ghost<Seq<&U32>>| -> u32 { cnt += 1; *x },
+    );
+    #[cfg(not(thrust_int_range))]
     let f = thrust_macros::closure!(
         captures(cnt: &mut &mut usize),
         requires(*(*cnt) == produced.len()),

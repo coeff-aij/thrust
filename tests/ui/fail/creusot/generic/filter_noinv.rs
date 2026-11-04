@@ -5,8 +5,15 @@
 // `filter.rs` with every `invariant!` removed: the loop invariant is left to inference.
 use thrust_models::{exists, forall};
 use thrust_models::model::{Closure, Mut};
-use thrust_models::model::{Int, Seq, UInt};
+use thrust_models::model::{Int, Seq};
 use thrust_models::{Ghost, Model};
+
+/// The model of `usize`, which carries its width while `THRUST_INT_RANGE` is set: `Seq::len`
+/// returns it, and the ghost `idx` holds lengths.
+#[cfg(not(thrust_int_range))]
+type USize = thrust_models::model::UInt;
+#[cfg(thrust_int_range)]
+type USize = thrust_models::model::UIntN<64>;
 
 // `filter` collected into a `Vec`, generic in the iterator `I` and an `FnMut` predicate `P`, as
 // std's `iter.filter(p).collect::<Vec<_>>()` is (with the predicate taking the item by value,
@@ -114,7 +121,7 @@ where
 // `out` is the subsequence of `s` at the positions where `bs` is `true`, in order: Creusot's
 // `Filter::produces`, with the index map `idx`.
 #[thrust_macros::predicate]
-fn filter_kept<I>(s: Seq<<<I as Iterator>::Item as Model>::Ty>, bs: Seq<bool>, idx: Seq<UInt>, out: Seq<<<I as Iterator>::Item as Model>::Ty>) -> bool
+fn filter_kept<I>(s: Seq<<<I as Iterator>::Item as Model>::Ty>, bs: Seq<bool>, idx: Seq<USize>, out: Seq<<<I as Iterator>::Item as Model>::Ty>) -> bool
 where
     I: Iterator + Model,
 {
@@ -132,7 +139,7 @@ where
 #[thrust_macros::context]
 #[thrust_macros::requires(I::invariant(iter))]
 #[thrust_macros::requires(forall(|c: Closure<P>, x: <<I as Iterator>::Item as Model>::Ty| thrust_macros::pre!(c(x))))]
-#[thrust_macros::ensures(exists(|s: Seq<<<I as Iterator>::Item as Model>::Ty>, done: <I as Model>::Ty, fin: <I as Model>::Ty, bs: Seq<bool>, fs: Seq<Closure<P>>, idx: Seq<UInt>|
+#[thrust_macros::ensures(exists(|s: Seq<<<I as Iterator>::Item as Model>::Ty>, done: <I as Model>::Ty, fin: <I as Model>::Ty, bs: Seq<bool>, fs: Seq<Closure<P>>, idx: Seq<USize>|
     I::produces(iter, s, done)
         && I::completed(Mut::new(done, fin))
         && filter_chain::<I, P>(p, s, bs, fs)
@@ -153,12 +160,12 @@ where
     let mut gs = thrust_macros::ghost!(|| -> Seq<<<I as Iterator>::Item as Model>::Ty> { Seq::empty() });
     let mut gbs = thrust_macros::ghost!(|| -> Seq<bool> { Seq::empty() });
     let mut gfs = thrust_macros::ghost!(|q: P| -> Seq<Closure<P>> { Seq::singleton(q) });
-    let mut gidx = thrust_macros::ghost!(|| -> Seq<UInt> { Seq::empty() });
+    let mut gidx = thrust_macros::ghost!(|| -> Seq<USize> { Seq::empty() });
     while let Some(x) = it.next() {
         let b = q(x);
         if b {
             out.push(x);
-            gidx = thrust_macros::ghost!(|gidx: Ghost<Seq<UInt>>, gs: Ghost<Seq<<<I as Iterator>::Item as Model>::Ty>>| -> Seq<UInt> { gidx.push(gs.len()) });
+            gidx = thrust_macros::ghost!(|gidx: Ghost<Seq<USize>>, gs: Ghost<Seq<<<I as Iterator>::Item as Model>::Ty>>| -> Seq<USize> { gidx.push(gs.len()) });
         }
         gs = thrust_macros::ghost!(|gs: Ghost<Seq<<<I as Iterator>::Item as Model>::Ty>>, x: I::Item| -> Seq<<<I as Iterator>::Item as Model>::Ty> { gs.push(x) });
         gbs = thrust_macros::ghost!(|gbs: Ghost<Seq<bool>>, b: bool| -> Seq<bool> { gbs.push(b) });
