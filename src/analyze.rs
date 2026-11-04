@@ -1623,8 +1623,12 @@ impl<'tcx> Analyzer<'tcx> {
                 .iter()
                 .find(|other| extern_spec::specs_overlap(self.tcx, other, &spec))
             {
+                let span = self
+                    .tcx
+                    .def_ident_span(local_def_id)
+                    .unwrap_or_else(|| self.tcx.def_span(local_def_id));
                 self.tcx.dcx().span_fatal(
-                    self.tcx.def_span(local_def_id),
+                    span,
                     format!(
                         "the extern specs `{}` and `{}` of `{}` both cover some of its instances; \
                          an instance takes at most one extern spec, so write one spec, over a \

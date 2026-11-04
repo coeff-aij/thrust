@@ -1,4 +1,3 @@
-//@error-in-other-file: no specification
 //@compile-flags: -C debug-assertions=off
 
 // An extern spec of `cmp::max` at `u64` is the contract of the calls at `u64` and says
@@ -12,6 +11,6 @@ fn _extern_spec_max_word(v1: u64, v2: u64) -> u64 {
 }
 
 fn main() {
-    let m = std::cmp::max(3i64, 4);
+    let m = std::cmp::max(3i64, 4); //~ ERROR: no specification
     assert!(m == 3 || m == 4);
 }

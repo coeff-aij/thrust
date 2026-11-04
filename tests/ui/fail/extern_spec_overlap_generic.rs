@@ -1,4 +1,3 @@
-//@error-in-other-file: both cover some of its instances
 //@compile-flags: -C debug-assertions=off
 
 // A generic extern spec of `cmp::max` is the contract of its calls. A second spec of
@@ -15,7 +14,7 @@ fn _extern_spec_max<T: Ord + thrust_models::Model>(v1: T, v2: T) -> T {
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(result == v1 || result == v2)]
-fn _extern_spec_max_word(v1: u64, v2: u64) -> u64 {
+fn _extern_spec_max_word(v1: u64, v2: u64) -> u64 { //~ ERROR: both cover some of its instances
     std::cmp::max(v1, v2)
 }
 

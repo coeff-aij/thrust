@@ -1,4 +1,3 @@
-//@error-in-other-file: no specification
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
@@ -15,7 +14,7 @@ fn _extern_spec_max_word(v1: u64, v2: u64) -> u64 {
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(result == a || result == b)]
 fn larger<T: Ord + thrust_models::Model>(a: u64, b: u64, c: T, d: T) -> u64 {
-    let _ = std::cmp::max(c, d);
+    let _ = std::cmp::max(c, d); //~ ERROR: no specification
     std::cmp::max(a, b)
 }
 

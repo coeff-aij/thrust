@@ -1,4 +1,3 @@
-//@error-in-other-file: both cover some of its instances
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
@@ -19,7 +18,7 @@ fn _extern_spec_zip_byte<T: thrust_models::Model>(
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(true)]
-fn _extern_spec_zip_word<U: thrust_models::Model>(
+fn _extern_spec_zip_word<U: thrust_models::Model>( //~ ERROR: both cover some of its instances
     a: Option<u64>,
     b: Option<U>,
 ) -> Option<(u64, U)> {
