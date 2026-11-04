@@ -181,7 +181,7 @@ fn f(s: &[i64]) {
 
 ### Mutable references
 
-Within an annotation, a mutable reference `ma: &mut T` is modeled by its value at the time the function is called and its value when the function returns (the *prophecy* value). Use the deref operator `*ma` to denote the current value and the unary `!ma` to denote the final value. You can also construct a mutable-reference model directly with `thrust_models::model::Mut::new(current, final)`.
+Within an annotation, a mutable reference `ma: &mut T` is modeled by its value at the time the function is called and its value when the function returns (the *prophecy* value). Use the deref operator `*ma` to denote the current value and the unary `!ma` to denote the final value. An index or a sequence method that rustc reaches through a dereference of `ma` reads the current value, as in Creusot: `s[i]` and `s.len()` of `s: &mut [T]` are `(*s)[i]` and `(*s).len()`. You can also construct a mutable-reference model directly with `thrust_models::model::Mut::new(current, final)`.
 
 ```rust
 use thrust_models::model::Mut;

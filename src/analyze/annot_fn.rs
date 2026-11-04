@@ -599,6 +599,31 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         ty
     }
 
+    /// The term and the type of `expr` as rustc indexes it or passes it as a method's receiver:
+    /// after the dereferences of a `Mut<T>` its adjustments insert, so that `s[i]` and `s.len()`
+    /// of a `&mut [T]` read the current value `*s`, as in Creusot.
+    fn through_mut_derefs(
+        &self,
+        expr: &'tcx rustc_hir::Expr<'tcx>,
+    ) -> (chc::Term<rty::FunctionParamIdx>, mir_ty::Ty<'tcx>) {
+        let mut term = self.to_term(expr);
+        let mut ty = self.expr_ty(expr);
+        for adjustment in self.typeck.expr_adjustments(expr) {
+            let mir_ty::adjustment::Adjust::Deref(Some(_)) = adjustment.kind else {
+                continue;
+            };
+            let mir_ty::TyKind::Adt(adt, args) = ty.kind() else {
+                break;
+            };
+            if Some(adt.did()) != self.def_ids.mut_model() {
+                break;
+            }
+            term = term.mut_current();
+            ty = args.type_at(0);
+        }
+        (term, ty)
+    }
+
     fn expr_ty(&self, expr: &'tcx rustc_hir::Expr<'tcx>) -> mir_ty::Ty<'tcx> {
         let ty = self.typeck.expr_ty(expr);
         let instantiated = self
@@ -1980,12 +2005,12 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             }
             ExprKind::Index(array, index, _) => {
                 let index_term = self.to_term(index);
-                let array_ty = self.expr_ty(array);
+                let (array_term, array_ty) = self.through_mut_derefs(array);
                 let is_seq = self.is_seq_modeled(self.seq_target_ty(array_ty));
                 let term = if is_seq {
-                    self.to_term(array).seq_nth(index_term)
+                    array_term.seq_nth(index_term)
                 } else {
-                    self.to_term(array).select(index_term)
+                    array_term.select(index_term)
                 };
                 FormulaOrTerm::Term(term)
             }
@@ -2053,25 +2078,25 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                     }
                     if Some(def_id) == self.def_ids.seq_len() {
                         assert!(args.is_empty(), "Seq::len does not take any arguments");
-                        let t = self.to_term(receiver);
+                        let (t, _) = self.through_mut_derefs(receiver);
                         return FormulaOrTerm::Term(t.seq_len());
                     }
                     if Some(def_id) == self.def_ids.seq_push() {
                         assert_eq!(args.len(), 1, "Seq::push takes exactly 1 argument");
-                        let t = self.to_term(receiver);
+                        let (t, _) = self.through_mut_derefs(receiver);
                         let v = self.to_term(&args[0]);
                         return FormulaOrTerm::Term(t.seq_concat(v.seq_unit()));
                     }
                     if Some(def_id) == self.def_ids.seq_store() {
                         assert_eq!(args.len(), 2, "Seq::store takes exactly 2 arguments");
-                        let seq = self.to_term(receiver);
+                        let (seq, _) = self.through_mut_derefs(receiver);
                         let index = self.to_term(&args[0]);
                         let value = self.to_term(&args[1]);
                         return FormulaOrTerm::Term(seq.seq_store(index, value));
                     }
                     if Some(def_id) == self.def_ids.seq_subsequence() {
                         assert_eq!(args.len(), 2, "Seq::subsequence takes exactly 2 arguments");
-                        let seq = self.to_term(receiver);
+                        let (seq, _) = self.through_mut_derefs(receiver);
                         let start = self.to_term(&args[0]);
                         let end = self.to_term(&args[1]);
                         let length = end.sub(start.clone());
@@ -2079,7 +2104,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                     }
                     if Some(def_id) == self.def_ids.seq_concat() {
                         assert_eq!(args.len(), 1, "Seq::concat takes exactly 1 argument");
-                        let seq = self.to_term(receiver);
+                        let (seq, _) = self.through_mut_derefs(receiver);
                         let other = self.to_term(&args[0]);
                         return FormulaOrTerm::Term(seq.seq_concat(other));
                     }
@@ -2088,7 +2113,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                     && args.is_empty()
                     && self.is_seq_modeled(self.expr_ty(receiver))
                 {
-                    let t = self.to_term(receiver);
+                    let (t, _) = self.through_mut_derefs(receiver);
                     return FormulaOrTerm::Term(t.seq_len());
                 }
                 unimplemented!("unsupported method call in formula: {:?}", method)
