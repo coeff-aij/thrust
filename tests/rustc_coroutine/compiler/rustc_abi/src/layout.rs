@@ -693,6 +693,9 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         let mut max_repr_align = repr.align;
         // Rewrite (rewrites.md R8): `collect_index_vec` for `collect`.
         let mut in_memory_order: IndexVec<u32, FieldIdx> = collect_index_vec(fields.indices());
+        thrust_macros::proof_assert!(|in_memory_order: IndexVec<u32, FieldIdx>, fields: &IndexSlice<FieldIdx, F>|
+            in_memory_order.len() == (*fields).len()
+                && forall(|j: USize| !(0 <= j && j < (*fields).len()) || <FieldIdx as Idx>::index_logic(in_memory_order[j]) == j));
         let optimize_field_order = !repr.inhibit_struct_field_reordering();
         let end = if let StructKind::MaybeUnsized = kind {
             fields.len() - 1
@@ -866,6 +869,22 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                 }
             }
         }
+
+        // The memory order is a permutation of the fields that keeps a `MaybeUnsized` tail last:
+        // the sort permutes the first `end` entries of the identity order and keeps the rest, so
+        // the indices stay distinct and below `n`, and every field occurs by the pigeonhole
+        // principle (`lemmas::every_index_occurs`).
+        thrust_macros::proof_assert!(|in_memory_order: IndexVec<u32, FieldIdx>, fields: &IndexSlice<FieldIdx, F>, kind: StructKind|
+            in_memory_order.len() == (*fields).len()
+                && forall(|j: USize| !(0 <= j && j < (*fields).len()) || <FieldIdx as Idx>::index_logic(in_memory_order[j]) < (*fields).len())
+                && (!matches!(kind, StructKind::MaybeUnsized)
+                    || <FieldIdx as Idx>::index_logic(in_memory_order[(*fields).len() - 1]) == (*fields).len() - 1));
+        thrust_macros::proof_assert!(|in_memory_order: IndexVec<u32, FieldIdx>, fields: &IndexSlice<FieldIdx, F>|
+            lemmas::distinct::<FieldIdx>(in_memory_order, (*fields).len()));
+        let order = thrust_macros::ghost!(|in_memory_order: IndexVec<u32, FieldIdx>| -> IndexVec<u32, FieldIdx> {
+            in_memory_order
+        });
+        thrust_macros::proof!(lemmas::every_index_occurs(order, fields.len(), fields.len()));
 
         let mut offsets = IndexVec::from_elem(Size::ZERO, fields);
         let mut offset = Size::ZERO;
