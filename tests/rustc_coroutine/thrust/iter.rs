@@ -1,5 +1,6 @@
 //! The case study's iterator adapters and consumers for those std.rs does not specify
 //! (rewrites.md R8), over std's `Iterator` and std.rs's `IteratorSpec`.
+#![allow(unexpected_cfgs)]
 
 use crate::thrust_models;
 use std::marker::PhantomData;
@@ -313,6 +314,10 @@ where
             let after = thrust_macros::ghost!(|this: &mut Filter<I, P>| -> Filter<I, P> { *this });
             Filter::<I, P>::pre_all_step(before, yielded, after);
             if (this.predicate)(&x) {
+                // The fail twin of the filter root sets this cfg: the closure may have rejected
+                // items before this one, so an assertion that it rejected none is refuted.
+                #[cfg(thrust_filter_fail)]
+                thrust_macros::proof_assert!(|skipped: Vec<I::Item>| skipped.len() == 0);
                 return Some(x);
             }
             skipped.push(x);
