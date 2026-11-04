@@ -1546,6 +1546,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let mut capture = PrecondCapture::default();
         for (param_idx, param_rty) in bty.as_ref().params.clone().iter_enumerated() {
             if param_rty.ty.to_sort().is_singleton() {
+                self.inherit_singleton_function_types(&mut bty, param_idx, outer_fn_param_vars);
                 continue;
             }
             let pty = match bty.param_kind(param_idx) {
@@ -1558,6 +1559,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             };
             let mut ty = param_rty.ty.clone().assert_closed().vacuous();
             ty.inherit_pointer_types(pty.ty.clone(), &mut chc::Term::var);
+            ty.inherit_function_types(&pty.ty);
             let clauses = self.env.relate_sub_refined_type(
                 &pty.clone().into(),
                 &rty::RefinedType::unrefined(ty.clone()),
@@ -1588,6 +1590,30 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         bty.describe_precondition(names);
         self.ctx
             .register_basic_block_ty_with_precondition(self.analysis_key, bb, bty);
+    }
+
+    /// Gives parameter `param_idx` of a block that inherits this block's state, a value of a
+    /// singleton sort, the function types the environment holds it at. Such a value is not
+    /// related to the environment, and the function pointers it holds would otherwise keep the
+    /// block's unrefined type, under which a call assumes the precondition `true`.
+    fn inherit_singleton_function_types(
+        &self,
+        bty: &mut BasicBlockType,
+        param_idx: rty::FunctionParamIdx,
+        outer_fn_param_vars: &BTreeMap<rty::FunctionParamIdx, Var>,
+    ) {
+        let pty = match bty.param_kind(param_idx) {
+            BasicBlockTypeParamKind::Local(local, _) if self.env.contains_local(local) => {
+                self.env.local_type(local)
+            }
+            BasicBlockTypeParamKind::OuterFnParam(outer_idx) => {
+                self.env.var_type(outer_fn_param_vars[&outer_idx])
+            }
+            _ => return,
+        };
+        let mut ty = bty.as_ref().params[param_idx].ty.clone();
+        ty.inherit_function_types(&pty.ty);
+        bty.set_param_type(param_idx, ty);
     }
 
     /// Whether the program names `local`, as its debug info says.
