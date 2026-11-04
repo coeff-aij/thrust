@@ -100,6 +100,9 @@ impl Marker {
 /// Expands `invariant!(CLOSURE)` (or another form): a bare predicate closure with no threaded
 /// context.
 pub fn expand(input: TokenStream, marker: Marker) -> TokenStream {
+    if let Some(e) = crate::loop_label::outside_context_error(&input.clone().into()) {
+        return e.to_compile_error().into();
+    }
     let input = crate::formula::wrap_closure_body(input.into());
     let closure = match syn::parse2::<syn::ExprClosure>(input) {
         Ok(closure) => closure,
