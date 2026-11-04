@@ -8,8 +8,7 @@
 // its entry value followed by `produced`. The parameter is `it`, since the invariant's `iter` names
 // the loop's iterator; `I::inv(it)` is required where Creusot's type invariant holds by typing. The
 // vector reference is moved into `v` so that the invariant can name both its current value and the
-// parameter's entry value, which Creusot keeps in `snapshot! { vec }`. Creusot's ensures also has
-// `resolve(^done)`, which is not stated here; `extend_index` does not use it.
+// parameter's entry value, which Creusot keeps in `snapshot! { vec }`.
 use thrust_models::model::{Mut, Seq};
 use thrust_models::{exists, FnParam, Ghost, Model};
 

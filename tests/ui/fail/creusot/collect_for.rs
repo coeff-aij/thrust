@@ -7,7 +7,8 @@
 // loop over an iterator implementing std.rs's `IteratorSpec`, whose invariant states that the
 // vector is the sequence `produced`. The parameter is `it`, since the invariant's `iter` names the
 // loop's iterator; `I::inv(it)` is required where Creusot's type invariant holds by typing.
-// Creusot's ensures also has `resolve(^done)`, which is not stated here; the client does not use it.
+// Creusot's ensures also has `resolve(^done)`, which is not stated here: Thrust's specifications
+// have no `resolve` predicate, and the client does not use it.
 use thrust_models::model::{Int, Mut, Seq};
 use thrust_models::{exists, forall, FnParam, Ghost, Model};
 
