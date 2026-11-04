@@ -56,11 +56,11 @@ pub struct LayoutCalculator<Cx> {
 }
 
 /// `2^q`, the bytes of `Align { pow2: q }` below 64, where `Align::bytes` gives `1 << (q & 63)`;
-/// above, `2^q` overcounts it, so a weight stays an upper bound. An `Int`, as `sum_first` is: at
-/// `u64` its result would be checked below `2^64` for every `q`.
+/// above, `2^q` overcounts it, so a weight stays an upper bound. Unsigned and unbounded: every
+/// value is `>= 0`, which a weight needs, and none is checked below `2^64`.
 #[thrust_macros::logic]
 #[thrust_macros::variant(q)]
-pub(crate) fn pow2(q: u64) -> Int {
+pub(crate) fn pow2(q: u64) -> USize {
     if q <= 0 { 1 } else { pow2(q - 1) * 2 }
 }
 
@@ -174,16 +174,6 @@ fn sum_at_le_repeated<I: Idx + thrust_models::Model>(s: Ghost<IndexVec<u32, I>>,
     sum_occurring_le(s, n);
 }
 
-/// `pow2` is positive up to `b`.
-#[thrust_macros::lemma]
-#[thrust_macros::variant(b)]
-#[thrust_macros::ensures(forall(|q: USize| q <= b ==> pow2(q) >= 1))]
-fn pow2_pos_upto(b: u64) {
-    if b > 0 {
-        pow2_pos_upto(b - 1);
-    }
-}
-
 /// `pow2` is monotone.
 #[thrust_macros::lemma]
 #[thrust_macros::variant(b)]
@@ -195,27 +185,26 @@ fn pow2_mono(a: u64, b: u64) {
     }
 }
 
-/// An alignment up to `Align::MAX` has at most its bytes.
+/// The bytes of any alignment, `1 << (q & 63)`, are at most `2^q` and at most `2^63`.
 #[thrust_macros::lemma]
-#[thrust_macros::ensures(q <= 29 ==> pow2(q) <= 536870912)]
-fn pow2_max(q: u64) {
-    if q <= 29 {
-        pow2_mono(q, 29);
-    }
+#[thrust_macros::ensures(forall(|b: USize| b == (BitVec::<64, false>::from_int(1) << (BitVec::from_int(q) & BitVec::from_int(63))).to_int()
+    ==> (b <= pow2(q) && b <= 9223372036854775808u64)))]
+fn bytes_within(q: u64) {
+    shl_is_pow2(q & 63);
+    pow2_mono(q & 63, q);
 }
 
-/// `Size::align_to`'s result `r` in `pow2` terms, for an alignment up to `Align::MAX` and an
-/// offset up to `2^62`.
+/// `Size::align_to`'s result `r` in `pow2` terms, for any alignment and an offset up to `2^62`.
 #[thrust_macros::lemma]
-#[thrust_macros::requires(a.pow2 <= 29 && x.raw <= 4611686018427387904u64)]
-#[thrust_macros::requires(forall(|b: USize| a.pow2 < 64
-    && b == (BitVec::<64, false>::from_int(1) << (BitVec::from_int(a.pow2) & BitVec::from_int(63))).to_int()
+#[thrust_macros::requires(x.raw <= 4611686018427387904u64)]
+#[thrust_macros::requires(forall(|b: USize|
+    b == (BitVec::<64, false>::from_int(1) << (BitVec::from_int(a.pow2) & BitVec::from_int(63))).to_int()
     && x.raw + b - 1 <= u64::MAX
     ==> (x.raw <= r.raw && r.raw < x.raw + b)))]
-#[thrust_macros::ensures(forall(|q: USize| q == a.pow2 ==> (x.raw <= r.raw && r.raw < x.raw + pow2(q) && pow2(q) <= 536870912)))]
+#[thrust_macros::ensures(forall(|q: USize| q == a.pow2
+    ==> (x.raw <= r.raw && r.raw < x.raw + pow2(q) && r.raw < x.raw + 9223372036854775808u64)))]
 fn aligned_within(x: Size, a: Align, r: Size) {
-    shl_is_pow2(a.pow2 as u64);
-    pow2_max(a.pow2 as u64);
+    bytes_within(a.pow2 as u64);
 }
 
 /// `pow2` is positive.
@@ -275,10 +264,9 @@ fn niche_sized(niche: Option<Niche>, dl: &TargetDataLayout, k: usize) {
 // within its field (`Primitive::size_in` gives every primitive a size, `size_in_total`), so the sum
 // stays below `2^64`. A field's size is that of a layout rustc computed, and so is the prefix's
 // (the tag's, or the prefix layout's in `layout()`); every layout constructor checks it against
-// the bound. The panic needs no bound on an alignment, but `place_field`'s proof reads the
-// alignments as `2^q` below `Align::MAX`, so `layout_pre` also requires every alignment the field
-// loop reads (each field's, the prefix's, and the data layout's aggregate and `i8` ones) to be at
-// most `Align::MAX`, as rustc's `Align` guarantees.
+// the bound. No alignment needs a bound, but the first field is placed after the prefix rounded
+// to its alignment, which both methods require to end by `2^62` (`prefix_fits`): the offset a
+// field is placed at then stays below `2^62 + 2^63`, as the alignment's bytes are at most `2^63`.
 //
 // `univariant_biased` ensures, besides `arbitrary_of`: it fails only with `UnexpectedUnsized` or
 // `SizeOverflow`; `UnexpectedUnsized` only when an unsized field is not the tail of a
@@ -361,14 +349,17 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                     && thrust_macros::post!(<F as core::ops::Deref>::deref(&(*fields)[i]), d) && **d == l
                     && l.backend_repr == BackendRepr::Scalar(c))
                     || Scalar::wf_in(c, dl))
-            && forall(|dl: TargetDataLayout| !Cx::dl_of(self, dl)
-                || (dl.aggregate_align.pow2 <= 29 && dl.i8_align.pow2 <= 29))
-            && forall(|ps: Size, pa: Align| kind != StructKind::Prefixed(ps, pa) || pa.pow2 <= 29)
-            && forall(|i: usize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>|
-                !(0 <= i
-                    && i < (*fields).len()
-                    && thrust_macros::post!(<F as core::ops::Deref>::deref(&(*fields)[i]), d) && **d == l)
-                    || l.align.abi.pow2 <= 29)
+    }
+
+    /// The no-overflow condition of placing the first field after a prefix: the prefix's size plus
+    /// the bytes `b` of its alignment after `pack` is at most `2^62`.
+    #[thrust_macros::predicate]
+    pub(crate) fn prefix_fits(repr: &ReprOptions, kind: StructKind) -> bool {
+        forall(|ps: Size, pa: Align, q: USize, b: USize|
+            !(kind == StructKind::Prefixed(ps, pa)
+                && (q == pa.pow2 || exists(|p: Align| (*repr).pack == Some(p) && p.pow2 < pa.pow2 && q == p.pow2))
+                && b == (BitVec::<64, false>::from_int(1) << (BitVec::from_int(q) & BitVec::from_int(63))).to_int())
+                || ps.raw + b <= 4611686018427387904u64)
     }
 
     /// `w` is the weight of `fields`: the sum of each field's size and twice its alignment.
@@ -461,26 +452,25 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                 || **d1 == **d2)
     }
 
-    /// An invariant of the layouts rustc computes that `place_field` relies on: the alignment is
-    /// at most `Align::MAX`, the size below the object size bound, and the niche well formed,
-    /// starting within the field and ending by its end where its primitive has a size.
+    /// An invariant of the layouts rustc computes that `place_field` relies on: the size below the
+    /// object size bound, and the niche well formed, starting within the field and ending by its
+    /// end where its primitive has a size.
     #[thrust_macros::predicate]
     #[thrust::opaque]
     fn field_wf<FieldIdx: Idx + thrust_models::Model, VariantIdx: Idx>(
         l: LayoutData<FieldIdx, VariantIdx>,
         dl: TargetDataLayout,
     ) -> bool {
-        l.align.abi.pow2 <= 29
-            && l.size.raw < super::obj_bound(dl)
+        l.size.raw < super::obj_bound(dl)
             && forall(|n: Niche, s: Size| !(l.largest_niche == Some(n))
                 || (Niche::wf_in(n, dl)
                     && n.offset.raw <= l.size.raw
                     && (!Primitive::size_in(n.value, dl, s) || n.offset.raw + s.raw <= l.size.raw)))
     }
 
-    /// What `place_fields` needs of every field's layout, which `layout_pre` states: the alignment
-    /// at most `Align::MAX`, the size below the object size bound, and the niche well formed and
-    /// ending by the field's end where its primitive has a size.
+    /// What `place_fields` needs of every field's layout, which `layout_pre` states: the size below
+    /// the object size bound, and the niche well formed and ending by the field's end where its
+    /// primitive has a size.
     #[thrust_macros::predicate]
     fn fields_ok<
         'a,
@@ -493,8 +483,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
     ) -> bool {
         forall(|i: USize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche, s: Size|
             !(0 <= i && i < (*fields).len() && thrust_macros::post!(<F as core::ops::Deref>::deref(&(*fields)[i]), d) && **d == l)
-                || (l.align.abi.pow2 <= 29
-                    && l.size.raw < super::obj_bound(dl)
+                || (l.size.raw < super::obj_bound(dl)
                     && (!(l.largest_niche == Some(n))
                         || (Niche::wf_in(n, dl) && (!Primitive::size_in(n.value, dl, s) || n.offset.raw + s.raw <= l.size.raw)))))
     }
@@ -563,6 +552,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
     }
 
     #[thrust_macros::requires(Self::layout_pre::<FieldIdx, VariantIdx, F>(*self, fields, kind))]
+    #[thrust_macros::requires(Self::prefix_fits(repr, kind))]
     #[thrust_macros::requires(Self::deref_functional::<FieldIdx, VariantIdx, F>())]
     #[thrust_macros::requires(Self::fits_in_any_order::<FieldIdx, VariantIdx, F>(*self, fields, repr, kind))]
     #[thrust_macros::ensures(forall(|l: LayoutData<FieldIdx, VariantIdx>|
@@ -641,6 +631,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
     }
 
     #[thrust_macros::requires(Self::layout_pre::<FieldIdx, VariantIdx, F>(*self, fields, kind))]
+    #[thrust_macros::requires(Self::prefix_fits(repr, kind))]
     #[thrust_macros::requires(Self::deref_functional::<FieldIdx, VariantIdx, F>())]
     #[thrust_macros::ensures(forall(|l: LayoutData<FieldIdx, VariantIdx>|
         result != Ok(l) || FieldsShape::<FieldIdx>::arbitrary_of(l.fields, (*fields).len())))]
@@ -1025,11 +1016,11 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
     /// Pads the offset to the field's alignment and raises the struct's alignment to it: the
     /// offset grows by less than the alignment's bytes, and the struct's alignment's bytes by at
     /// most them.
-    #[thrust_macros::requires(field_align.abi.pow2 <= 29 && (*align).pow2 <= 29 && (*offset).raw <= 4611686018427387904u64)]
-    #[thrust_macros::ensures((*offset).raw <= (!offset).raw && (!align).pow2 <= 29)]
+    #[thrust_macros::requires((*offset).raw <= 4611686018427387904u64)]
+    #[thrust_macros::ensures((*offset).raw <= (!offset).raw && (!offset).raw < (*offset).raw + 9223372036854775808u64)]
     #[thrust_macros::ensures(forall(|q: USize, q2: USize, qa: USize|
         !(q == (*align).pow2 && q2 == (!align).pow2 && qa == field_align.abi.pow2)
-        || ((!offset).raw < (*offset).raw + pow2(qa) && pow2(q2) <= pow2(q) + pow2(qa) && pow2(qa) <= 536870912)))]
+        || ((!offset).raw < (*offset).raw + pow2(qa) && pow2(q2) <= pow2(q) + pow2(qa))))]
     fn align_step(offset: &mut Size, align: &mut Align, field_align: AbiAlign) {
         let aligned = (*offset).align_to(field_align.abi);
         thrust_macros::proof!(aligned_within(*offset, field_align.abi, aligned));
@@ -1059,7 +1050,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
     #[thrust_macros::requires(Self::deref_functional::<FieldIdx, VariantIdx, F>())]
     #[thrust_macros::requires(forall(|d: &&LayoutData<FieldIdx, VariantIdx>|
         !thrust_macros::post!(<F as core::ops::Deref>::deref(field), d) || Self::field_wf::<FieldIdx, VariantIdx>(**d, *dl)))]
-    #[thrust_macros::requires(offset.raw <= 4611686018964258816u64)]
+    #[thrust_macros::requires(offset.raw < 13835058055282163712u64)]
     #[thrust_macros::requires(niche_ends_by(*largest_niche, *dl, offset))]
     #[thrust_macros::ensures(forall(|d: &&LayoutData<FieldIdx, VariantIdx>|
         !thrust_macros::post!(<F as core::ops::Deref>::deref(field), d)
@@ -1116,11 +1107,10 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
     #[thrust_macros::requires((*dl).default_address_space_pointer_spec.pointer_size.raw == 2
         || (*dl).default_address_space_pointer_spec.pointer_size.raw == 4
         || (*dl).default_address_space_pointer_spec.pointer_size.raw == 8)]
-    #[thrust_macros::requires((*align).pow2 <= 29 && (*offset).raw <= 4611686018427387904u64)]
+    #[thrust_macros::requires((*offset).raw <= 4611686018427387904u64)]
     #[thrust_macros::requires(forall(|j: USize| !<FieldIdx as Idx>::index_is(i, j) || j < (*offsets).len()))]
     #[thrust_macros::requires(niche_ends_by(*largest_niche, *dl, *offset))]
     #[thrust_macros::ensures(result == Ok(()) || result == Err(LayoutCalculatorError::SizeOverflow))]
-    #[thrust_macros::ensures((!align).pow2 <= 29)]
     #[thrust_macros::ensures(result == Ok(()) ==> ((!offset).raw < super::obj_bound(*dl) && niche_ends_by(!largest_niche, *dl, !offset)))]
     #[thrust_macros::ensures(forall(|d: &&LayoutData<FieldIdx, VariantIdx>, q: USize, q2: USize, qf: USize|
         !(result == Ok(())
@@ -1211,7 +1201,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
     #[thrust_macros::requires(Self::fields_ok::<FieldIdx, VariantIdx, F>(fields, *dl))]
     #[thrust_macros::requires(Self::order_ok::<FieldIdx>(*in_memory_order, (*fields).len(), kind))]
     #[thrust_macros::requires((*offsets).len() == (*fields).len())]
-    #[thrust_macros::requires((*align).pow2 <= 29 && (*offset).raw <= 4611686018427387904u64)]
+    #[thrust_macros::requires((*offset).raw <= 4611686018427387904u64)]
     #[thrust_macros::requires(*largest_niche == None && *largest_niche_available == 0)]
     #[thrust_macros::ensures(forall(|e: LayoutCalculatorError<<F as thrust_models::Model>::Ty>|
         result != Err(e)
@@ -1225,9 +1215,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
             ==> (exists(|f: <F as thrust_models::Model>::Ty| result == Err(LayoutCalculatorError::UnexpectedUnsized(f)))
                 || result == Err(LayoutCalculatorError::SizeOverflow))))]
     #[thrust_macros::ensures(forall(|u: Option<&<F as thrust_models::Model>::Ty>| result == Ok(u)
-        ==> ((!align).pow2 <= 29
-            && (!offset).raw <= 4611686018427387904u64
-            && niche_ends_by(!largest_niche, *dl, !offset))))]
+        ==> ((!offset).raw <= 4611686018427387904u64 && niche_ends_by(!largest_niche, *dl, !offset))))]
     #[thrust_macros::ensures(forall(|u: Option<&<F as thrust_models::Model>::Ty>, ts: Seq<Int>, q: USize, q0: USize|
         !(result == Ok(u) && Self::weights_are::<FieldIdx, VariantIdx, F>(fields, ts) && q == (!align).pow2 && q0 == (*align).pow2)
         || (!offset).raw + pow2(q) <= (*offset).raw + pow2(q0) + sum_first(ts, (*fields).len())))]
@@ -1304,9 +1292,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                         && forall(|ts: Seq<Int>, k: USize|
                             !(0 <= k && k <= (*fields).len() && forall(|i: USize| !(0 <= i && i < (*fields).len()) || ts[i] >= 0))
                                 || sum_at::<FieldIdx>(ts, *in_memory_order.at_entry(), k) <= sum_first(ts, (*fields).len()))
-                        && forall(|q: USize| !(q <= 29) || pow2(q) >= 1)
                         && (*offsets).len() == (*fields).len()
-                        && (*struct_align).pow2 <= 29
                         && (*next_offset).raw <= 4611686018427387904u64
                         && niche_ends_by(*largest_niche, *dl, *next_offset)
                         && forall(|ts: Seq<Int>, q: USize, q0: USize|

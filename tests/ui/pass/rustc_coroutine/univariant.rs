@@ -32,6 +32,7 @@ use rustc_index::{Idx, IndexSlice};
     LayoutCalculator::<Cx>::layout_pre::<FieldIdx, VariantIdx, F>(*calc, fields, kind)
         && LayoutCalculator::<Cx>::fits_in_any_order::<FieldIdx, VariantIdx, F>(*calc, fields, repr, kind)
         && LayoutCalculator::<Cx>::deref_functional::<FieldIdx, VariantIdx, F>()
+        && LayoutCalculator::<Cx>::prefix_fits(repr, kind)
 )]
 #[thrust_macros::ensures(true)]
 fn drive<

@@ -265,8 +265,7 @@ impl TargetDataLayout {
 /// Rounding `x` up with the mask `m` of a power of two: unless `x + m` wraps, `(x + m) & !m`
 /// lies in `[x, x + m]`.
 #[thrust_macros::lemma]
-#[thrust_macros::ensures((q < 64
-        && m + 1 == (BitVec::<64, false>::from_int(1) << (BitVec::from_int(q) & BitVec::from_int(63))).to_int()
+#[thrust_macros::ensures((m + 1 == (BitVec::<64, false>::from_int(1) << (BitVec::from_int(q) & BitVec::from_int(63))).to_int()
         && x + m <= u64::MAX)
     ==> (x <= (BitVec::<64, false>::from_int(x + m) & !BitVec::<64, false>::from_int(m)).to_int()
         && (BitVec::<64, false>::from_int(x + m) & !BitVec::<64, false>::from_int(m)).to_int() <= x + m))]
@@ -399,12 +398,10 @@ impl Size {
             .unwrap_or_else(|| overflow(self.bytes()))
     }
 
-    /// The least multiple of the alignment at or above `self`, when the alignment is below `2^64`
-    /// and `self` plus its mask does not wrap: `b` is the alignment's bytes as `Align::bytes`
-    /// gives them.
+    /// The least multiple of the alignment at or above `self`, when `self` plus its mask does not
+    /// wrap: `b` is the alignment's bytes as `Align::bytes` gives them.
     #[inline]
-    #[thrust_macros::ensures(forall(|b: USize| align.pow2 < 64
-        && b == (BitVec::<64, false>::from_int(1) << (BitVec::from_int(align.pow2) & BitVec::from_int(63))).to_int()
+    #[thrust_macros::ensures(forall(|b: USize| b == (BitVec::<64, false>::from_int(1) << (BitVec::from_int(align.pow2) & BitVec::from_int(63))).to_int()
         && self.raw + b - 1 <= u64::MAX
         ==> (self.raw <= result.raw && result.raw < self.raw + b)))]
     pub fn align_to(self, align: Align) -> Size {
