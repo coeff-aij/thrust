@@ -960,6 +960,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .tcx
             .type_of(self.local_def_id)
             .instantiate(self.tcx, self.generic_args);
+        let closure_ty = self
+            .tcx
+            .try_normalize_erasing_regions(mir_ty::TypingEnv::fully_monomorphized(), closure_ty)
+            .unwrap_or(closure_ty);
         let mir_ty::TyKind::Closure(_, args) = closure_ty.kind() else {
             return;
         };
