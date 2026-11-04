@@ -480,13 +480,12 @@ impl<'tcx> Analyzer<'tcx> {
         self.extend_clauses(clauses);
     }
 
-    /// Requires each extern spec to refine, over its own type parameters, the spec it takes the
-    /// place of: the next spec of the same target whose instances strictly include its own
+    /// Requires each extern spec to refine, over its own type parameters, the specs it takes the
+    /// place of: every spec of the same target whose instances strictly include its own
     /// ([`DeferredDefTy::is_narrower_than`]) and whose bounds hold there, as an impl's method
     /// refines its trait's (`check_impl_refinements`). A body verified once over its type
-    /// parameters with the broader spec is reused at the narrower spec's instances, where an
-    /// analysis at the instance takes the narrower spec, so its verdict does not depend on which
-    /// of the two runs.
+    /// parameters with a broader spec is reused at the narrower spec's instances, where an
+    /// analysis at the instance takes the narrower spec; with the refinement both are sound.
     pub fn check_narrower_specs_refine(&mut self) {
         let mut refinements = Vec::new();
         for def_ty in self.defs.values() {
@@ -498,15 +497,13 @@ impl<'tcx> Analyzer<'tcx> {
                     continue;
                 };
                 let owner = narrower.local_def_id.to_def_id();
-                let refined = specs[index + 1..]
-                    .iter()
-                    .filter(|other| narrower.is_narrower_than(self.tcx, other))
-                    .find_map(|other| {
-                        let (args, _) = self.covered_spec_args(other, target_args, owner)?;
-                        Some((other.local_def_id, args))
-                    });
-                if let Some(refined) = refined {
-                    refinements.push((narrower.local_def_id, refined));
+                for other in &specs[index + 1..] {
+                    if !narrower.is_narrower_than(self.tcx, other) {
+                        continue;
+                    }
+                    if let Some((args, _)) = self.covered_spec_args(other, target_args, owner) {
+                        refinements.push((narrower.local_def_id, (other.local_def_id, args)));
+                    }
                 }
             }
         }
