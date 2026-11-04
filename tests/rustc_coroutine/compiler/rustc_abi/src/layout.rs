@@ -1,11 +1,12 @@
-// `thrust_place_field_fail` is set only by the fail twin of the place_field root.
+// `thrust_place_field_fail` and `thrust_permutation_sum_fail` are set only by the fail twins of
+// the place_field and permutation_sum roots.
 #![allow(unexpected_cfgs)]
 use crate::thrust_models;
 use std::cmp;
 use std::ops::Deref;
 
 use thrust_models::model::{BitVec, Int, Seq};
-use thrust_models::{exists, forall};
+use thrust_models::{exists, forall, Ghost};
 
 use crate::rustc_abi::{
     AbiAlign, Align, BackendRepr, FieldsShape, HasDataLayout, LayoutData, Niche, Primitive,
@@ -14,6 +15,7 @@ use crate::rustc_abi::{
 use crate::rustc_hashes::Hash64;
 use crate::rustc_index::{Idx, IndexSlice, IndexVec};
 use crate::case_study::USize;
+use crate::case_study::lemmas;
 use crate::case_study::iter::{Filter, Map, collect_index_vec, iter_all};
 
 mod coroutine;
@@ -81,6 +83,105 @@ pub(crate) fn shl_is_pow2(q: u64) {
 #[thrust_macros::variant(k)]
 fn sum_first(ts: Seq<Int>, k: USize) -> Int {
     if k <= 0 { 0 } else { sum_first(ts, k - 1) + ts[k - 1] }
+}
+
+/// The sum of the entries of `ts` at the indices the first `k` entries of `s` hold: the weight of
+/// the fields placed first, with `ts` the fields' weights and `s` the memory order.
+#[thrust_macros::logic]
+#[thrust_macros::variant(k)]
+fn sum_at<I: Idx + thrust_models::Model>(ts: Seq<Int>, s: IndexVec<u32, I>, k: USize) -> Int {
+    if k <= 0 { 0 } else { sum_at::<I>(ts, s, k - 1) + ts[I::index_logic(s[k - 1])] }
+}
+
+/// The sum of the first `m` entries of `ts` whose index occurs among the first `k` entries of `s`.
+#[thrust_macros::logic]
+#[thrust_macros::variant(m)]
+fn sum_occurring<I: Idx + thrust_models::Model>(ts: Seq<Int>, s: IndexVec<u32, I>, k: USize, m: USize) -> Int {
+    if m <= 0 {
+        0
+    } else if lemmas::occ::<I>(m - 1, s, k) > 0 {
+        sum_occurring::<I>(ts, s, k, m - 1) + ts[m - 1]
+    } else {
+        sum_occurring::<I>(ts, s, k, m - 1)
+    }
+}
+
+/// Entry `k - 1` of `s`, whose index does not occur before it, adds the entry of `ts` at its index.
+#[thrust_macros::lemma]
+#[thrust_macros::variant(m)]
+#[thrust_macros::requires(k > 0 && lemmas::occ::<I>(I::index_logic(s[k - 1]), s, k - 1) == 0)]
+#[thrust_macros::ensures(forall(|ts: Seq<Int>, x: USize| x == I::index_logic(s[k - 1]) && x < m
+    ==> sum_occurring::<I>(ts, s, k, m) == sum_occurring::<I>(ts, s, k - 1, m) + ts[x]))]
+#[thrust_macros::ensures(forall(|ts: Seq<Int>, x: USize| x == I::index_logic(s[k - 1]) && x >= m
+    ==> sum_occurring::<I>(ts, s, k, m) == sum_occurring::<I>(ts, s, k - 1, m)))]
+fn sum_occurring_step<I: Idx + thrust_models::Model>(s: Ghost<IndexVec<u32, I>>, k: usize, m: usize) {
+    if m > 0 {
+        sum_occurring_step(s, k, m - 1);
+    }
+}
+
+/// Up to the first `k` entries of `s`, distinct and below `n`, sum `ts` as the indices that occur.
+#[thrust_macros::lemma]
+#[thrust_macros::variant(k)]
+#[thrust_macros::requires(lemmas::distinct::<I>(s, k))]
+#[thrust_macros::requires(forall(|j: USize| 0 <= j && j < k ==> I::index_logic(s[j]) < n))]
+#[thrust_macros::ensures(forall(|ts: Seq<Int>, j: USize| 0 <= j && j <= k
+    ==> sum_at::<I>(ts, s, j) == sum_occurring::<I>(ts, s, j, n)))]
+fn sum_at_occurring<I: Idx + thrust_models::Model>(s: Ghost<IndexVec<u32, I>>, k: usize, n: usize) {
+    if k > 0 {
+        sum_at_occurring(s, k - 1, n);
+        lemmas::absent(s, k - 1, k - 1);
+        sum_occurring_step(s, k, n);
+    }
+}
+
+/// The first `m` entries of `ts` whose index occurs sum to at most all of them, none being
+/// negative.
+#[thrust_macros::lemma]
+#[thrust_macros::variant(m)]
+#[thrust_macros::ensures(forall(|ts: Seq<Int>, k: USize| forall(|i: USize| 0 <= i && i < m ==> ts[i] >= 0)
+    ==> sum_occurring::<I>(ts, s, k, m) <= sum_first(ts, m)))]
+fn sum_occurring_le<I: Idx + thrust_models::Model>(s: Ghost<IndexVec<u32, I>>, m: usize) {
+    if m > 0 {
+        sum_occurring_le(s, m - 1);
+    }
+}
+
+/// The permutation sum: the entries of `ts` at the indices the first `k <= n` entries of `s` hold,
+/// which are distinct and below `n`, sum to at most the first `n`, none of which is negative. The
+/// fields placed first in memory order weigh at most all the fields.
+#[thrust_macros::lemma]
+#[thrust_macros::requires(lemmas::distinct::<I>(s, n))]
+#[thrust_macros::requires(forall(|j: USize| 0 <= j && j < n ==> I::index_logic(s[j]) < n))]
+#[thrust_macros::ensures(forall(|ts: Seq<Int>, k: USize|
+    0 <= k && k <= n && forall(|i: USize| 0 <= i && i < n ==> ts[i] >= 0)
+        ==> sum_at::<I>(ts, s, k) <= sum_first(ts, n)))]
+fn sum_at_le<I: Idx + thrust_models::Model>(s: Ghost<IndexVec<u32, I>>, n: usize) {
+    sum_at_occurring(s, n, n);
+    sum_occurring_le(s, n);
+}
+
+// The fail twin of the permutation_sum root sets this cfg: `sum_at_le` with its proof unchanged
+// and without the distinct indices it needs, under which an index counted twice can exceed the sum.
+#[cfg(thrust_permutation_sum_fail)]
+#[thrust_macros::lemma]
+#[thrust_macros::requires(forall(|j: USize| 0 <= j && j < n ==> I::index_logic(s[j]) < n))]
+#[thrust_macros::ensures(forall(|ts: Seq<Int>, k: USize|
+    0 <= k && k <= n && forall(|i: USize| 0 <= i && i < n ==> ts[i] >= 0)
+        ==> sum_at::<I>(ts, s, k) <= sum_first(ts, n)))]
+fn sum_at_le_repeated<I: Idx + thrust_models::Model>(s: Ghost<IndexVec<u32, I>>, n: usize) {
+    sum_at_occurring(s, n, n);
+    sum_occurring_le(s, n);
+}
+
+/// `pow2` is positive up to `b`.
+#[thrust_macros::lemma]
+#[thrust_macros::variant(b)]
+#[thrust_macros::ensures(forall(|q: USize| q <= b ==> pow2(q) >= 1))]
+fn pow2_pos_upto(b: u64) {
+    if b > 0 {
+        pow2_pos_upto(b - 1);
+    }
 }
 
 /// `pow2` is monotone.
