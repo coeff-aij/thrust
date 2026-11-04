@@ -2423,12 +2423,13 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         operand: &Operand<'tcx>,
     ) {
         let written_ty = analyze::local_def::spec_param_written_ty(self.ctx, written_input_ty);
-        let written =
-            analyze::local_def::spec_param_compared_ty(self.ctx, self.local_def_id, written_ty);
         let actual_ty = operand.ty(&self.local_decls, self.tcx);
-        let actual =
-            analyze::local_def::spec_param_compared_ty(self.ctx, self.local_def_id, actual_ty);
-        if written != actual {
+        if let Some((written, actual)) = analyze::local_def::spec_param_mismatch(
+            self.ctx,
+            self.local_def_id,
+            written_ty,
+            actual_ty,
+        ) {
             self.tcx.dcx().span_fatal(
                 span,
                 format!(
