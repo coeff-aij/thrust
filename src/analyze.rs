@@ -243,6 +243,17 @@ struct DeferredDefTy<'tcx> {
     target_args: Option<mir_ty::GenericArgsRef<'tcx>>,
 }
 
+impl DeferredDefTy<'_> {
+    /// Whether this is an extern spec whose own call fixes every type and const argument of the
+    /// target, so that it covers one instance of it.
+    fn is_at_fixed_args(&self) -> bool {
+        use mir_ty::TypeVisitableExt as _;
+        self.target_args.is_some_and(|args| {
+            !args.has_type_flags(mir_ty::TypeFlags::HAS_TY_PARAM | mir_ty::TypeFlags::HAS_CT_PARAM)
+        })
+    }
+}
+
 /// The `drop` method of `ty`'s `Drop` impl, when `ty` is an ADT whose impl is in the crate.
 pub fn local_destructor(tcx: TyCtxt<'_>, ty: mir_ty::Ty<'_>) -> Option<DefId> {
     let adt = ty.ty_adt_def()?;
@@ -1618,7 +1629,17 @@ impl<'tcx> Analyzer<'tcx> {
             .entry(target_def_id)
             .or_insert_with(|| DefTy::Deferred(Vec::new()))
         {
-            specs.push(spec);
+            // A call takes the first spec that covers it, so a spec at the target's instance
+            // goes before the generic specs, which cover that instance too.
+            let position = if spec.is_at_fixed_args() {
+                specs
+                    .iter()
+                    .position(|other| !other.is_at_fixed_args())
+                    .unwrap_or(specs.len())
+            } else {
+                specs.len()
+            };
+            specs.insert(position, spec);
         }
     }
 
