@@ -651,6 +651,9 @@ pub struct Analyzer<'tcx> {
 
     type_params: Rc<RefCell<TypeParamMap<'tcx>>>,
     closure_type_params: Rc<RefCell<HashMap<TypeParam, rty::FunctionType>>>,
+    /// The types the bodies of the crate's closures registered by [`Analyzer::register_def`]
+    /// take their captures at ([`TypeBuilder::with_closure_captures`]).
+    closure_captures: Rc<RefCell<HashMap<DefId, rty::Type<rty::Closed>>>>,
 
     /// Where each [`chc::ForallPred`] standing for a trait predicate came from,
     /// so that an instantiation of the item that quantified over it can say
@@ -1015,6 +1018,7 @@ impl<'tcx> Analyzer<'tcx> {
             enum_defs,
             type_params,
             closure_type_params,
+            closure_captures: Default::default(),
             forall_pred_origins,
             pending_pred_instances,
             trait_laws,
@@ -1177,7 +1181,40 @@ impl<'tcx> Analyzer<'tcx> {
 
     pub fn register_def(&mut self, def_id: DefId, rty: rty::RefinedType, spec: Option<LocalDefId>) {
         tracing::info!(def_id = ?def_id, rty = %rty.display(), "register_def");
+        self.register_closure_captures(def_id, &rty);
         self.defs.insert(def_id, DefTy::Concrete(rty, spec));
+    }
+
+    /// Records the type the body of the closure `def_id`, of the type `rty`, takes its captures at,
+    /// when every value of the closure has its captures at that type: each is checked against it
+    /// where it is built, and an `Fn` or `FnOnce` body cannot change them in a value that outlives
+    /// the call. An `FnMut` body may store into its captures what it does not check against it.
+    /// A closure inside generic code is left out: its type is that of its body at each instance.
+    fn register_closure_captures(&self, def_id: DefId, rty: &rty::RefinedType) {
+        if !self.tcx.is_closure_like(def_id) {
+            return;
+        }
+        let mir_ty::TyKind::Closure(_, args) =
+            self.tcx.type_of(def_id).instantiate_identity().kind()
+        else {
+            return;
+        };
+        let closure = args.as_closure();
+        if closure.kind() == mir_ty::ClosureKind::FnMut {
+            return;
+        }
+        let in_generic_code = closure
+            .parent_args()
+            .iter()
+            .any(|arg| arg.as_type().is_some() || arg.as_const().is_some());
+        if in_generic_code {
+            return;
+        }
+        let Some(fn_ty) = rty.ty.as_function() else {
+            return;
+        };
+        let captures = fn_ty.closure_captures().ty;
+        self.closure_captures.borrow_mut().insert(def_id, captures);
     }
 
     pub fn register_impl_method_with_own_contract(&mut self, def_id: DefId) {
@@ -2572,6 +2609,7 @@ impl<'tcx> Analyzer<'tcx> {
             self.system.clone(),
             self.enum_defs.clone(),
         )
+        .with_closure_captures(self.closure_captures.clone())
     }
 
     pub fn solve(&mut self) {
