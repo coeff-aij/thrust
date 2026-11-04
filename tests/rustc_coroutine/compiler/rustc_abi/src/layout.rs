@@ -743,12 +743,12 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                 .max()
                 .unwrap_or(0);
 
+                // Rewrite (rewrites.md R20): the data layout as a parameter instead of a capture.
                 let alignment_group_key = thrust_macros::closure!(
-                    captures(dl: &&TargetDataLayout),
                     requires(forall(|d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche|
                         !(thrust_macros::post!(<F as core::ops::Deref>::deref(layout), d) && (**d).largest_niche == Some(n))
-                            || Niche::wf_in(n, **dl))),
-                    |layout: &F| {
+                            || Niche::wf_in(n, *dl))),
+                    |layout: &F, dl: &TargetDataLayout| {
                         if let Some(pack) = pack {
                             layout.align.abi.min(pack).bytes()
                         } else {
@@ -785,6 +785,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                     StructKind::AlwaysSized | StructKind::MaybeUnsized => {
                         optimizing.sort_by_key(thrust_macros::closure!(
                             captures(fields: &mut &IndexSlice<FieldIdx, F>, dl: &mut &&TargetDataLayout),
+                            requires(LayoutCalculator::<Cx>::deref_functional::<FieldIdx, VariantIdx, F>()),
                             requires(forall(|i: USize| !<FieldIdx as Idx>::index_is(x, i) || i < (**fields).len())),
                             requires(forall(|i: USize, d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche|
                                 !(<FieldIdx as Idx>::index_is(x, i)
@@ -827,7 +828,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                                 };
 
                                 (
-                                    cmp::Reverse(alignment_group_key(f)),
+                                    cmp::Reverse(alignment_group_key(f, dl)),
                                     niche_size_key,
                                     inner_niche_offset_key,
                                 )
@@ -852,7 +853,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                                     ensures(true),
                                     |n: Niche| -> u128 { n.available(dl) },
                                 ));
-                                (alignment_group_key(f), niche_size)
+                                (alignment_group_key(f, dl), niche_size)
                             },
                         ));
                     }
