@@ -2,7 +2,7 @@ use crate::thrust_models;
 use std::cmp;
 use std::ops::Deref;
 
-use thrust_models::model::{BitVec, Int, Seq};
+use thrust_models::model::{Int, Seq};
 use thrust_models::{exists, forall};
 
 use crate::rustc_abi::{
@@ -60,18 +60,6 @@ pub(crate) fn pow2(q: u64) -> Int {
     if q <= 0 { 1 } else { pow2(q - 1) * 2 }
 }
 
-/// `1 << q` on 64-bit words, which `Align::bytes` and `Size::align_to` state, is `2^q` below 64,
-/// by induction over `q`.
-#[thrust_macros::lemma]
-#[thrust_macros::variant(q)]
-#[thrust_macros::ensures(q < 64 ==> pow2(q)
-    == (BitVec::<64, false>::from_int(1) << (BitVec::from_int(q) & BitVec::from_int(63))).to_int())]
-pub(crate) fn shl_is_pow2(q: u64) {
-    if q > 0 {
-        shl_is_pow2(q - 1);
-    }
-}
-
 /// The sum of the first `k` entries of `ts`. A sum, it is an `Int` over `Int`s, as `ones` is: at
 /// `u64` its result would be checked `>= 0` without the facts of the sequence's elements, which
 /// the README says such a sum cannot be shown.
@@ -98,7 +86,7 @@ fn sum_first(ts: Seq<Int>, k: USize) -> Int {
 // without overflow checks and `checked_add` returns `None`. It needs the prefix's and each field's
 // size below the object size bound: then the offset a field is placed at is below the bound plus
 // the field's alignment mask (`2^63 - 1` at most, so no rounding wraps), and the niche's offset is
-// within its field (`Primitive::size_in` gives every primitive a size, `size_in_total`), so the sum
+// within its field (`Primitive::size_in` gives every primitive a size), so the sum
 // stays below `2^64`. A field's size is that of a layout rustc computed, and so is the prefix's
 // (the tag's, or the prefix layout's in `layout()`); every layout constructor checks it against
 // the bound. No alignment needs a bound.
