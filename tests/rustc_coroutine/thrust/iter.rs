@@ -1,4 +1,5 @@
-//! The case study's iterator adapters and consumers for those std.rs does not specify
+//! The case study's iterator adapters and consumers for those std.rs does not specify, or
+//! specifies with a precondition the case study's closures do not meet (`max_by_key`)
 //! (rewrites.md R8), over std's `Iterator` and std.rs's `IteratorSpec`.
 #![allow(unexpected_cfgs)]
 
