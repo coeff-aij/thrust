@@ -280,7 +280,8 @@ fn counter(v: Vec<u32>) -> (Vec<u32>, usize) {
     let mut cnt: usize = 0;
     // Creusot's closure (line 46) has no written contract: Creusot takes it from the body
     // (`[@coma:extspec]` in `03_std_iterators.coma`). Thrust infers the closure's precondition;
-    // the postconditions state the step and the history before the increment.
+    // the history fact `cnt == produced.len()` is still written, as a postcondition on the
+    // entry state, so the inferred precondition must imply it.
     let f = thrust_macros::closure!(
         captures(cnt: &mut &mut usize),
         ensures(*(!cnt) == *(*cnt) + 1 && result == *x),
