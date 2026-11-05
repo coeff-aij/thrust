@@ -80,11 +80,11 @@ where
         (!self.0).len() == (*self.0).len()
     }
 
-    // The 2022 artifact's `self.resolve()` and the current Creusot's `resolve(self.inner)`, and the
-    // slice is empty.
+    // Creusot's `resolve(self.inner) && self.inner@.ext_eq(Seq::empty())` (line 24): the borrowed
+    // slice is resolved and empty.
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
-        *self == !self && !((*self).0) == *((*self).0) && *((*self).0) == Seq::empty()
+        !((*self).0) == *((*self).0) && *((*self).0) == Seq::empty()
     }
 
     // Creusot's `self.inner.to_mut_seq() == visited.concat(o.inner.to_mut_seq())`, index by index:
