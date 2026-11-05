@@ -6,10 +6,13 @@
 //! has a label, it renames the references to that label in the specifications of its body to
 //! those names. A reference is resolved as Rust resolves the label of a `break`: by the innermost
 //! enclosing loop or block with that label, within the same function or closure body. A
-//! reference that no `for` loop with ghosts resolves is replaced by a compile error.
+//! reference that no `for` loop with that ghost resolves is replaced by a compile error. A `for`
+//! loop whose body starts with no invariant has its iterator as its only ghost.
 
 use proc_macro2::{Delimiter, Ident, Span, TokenStream, TokenTree};
 use syn::visit_mut::VisitMut;
+
+use crate::for_loop::LabelledGhosts;
 
 /// The ghosts of a `for` loop a reference can name.
 const GHOSTS: [&str; 3] = ["iter", "iter_old", "produced"];
@@ -269,26 +272,50 @@ pub fn rename_in_body(
     typed
 }
 
-/// Replaces the references to the label of `expr` in its body by compile errors, when `expr` is
-/// a labelled loop or block whose label names no ghosts: a `while` or `loop`, a block, or a
-/// `for` loop for which `has_ghosts` is false.
-pub fn reject_in_labelled(expr: &mut syn::Expr, has_ghosts: impl Fn(&syn::ExprForLoop) -> bool) {
+/// Whether a formula macro of `stmts`, the body of the loop labelled `label`, references `label`.
+pub fn is_referenced_in_body(stmts: &[syn::Stmt], label: &str) -> bool {
+    let mut stmts = stmts.to_vec();
+    let mut referenced = false;
+    let mut reach = LabelReach {
+        label,
+        on_macro: |mac: &mut syn::Macro| {
+            referenced |= references(&mac.tokens)
+                .iter()
+                .any(|reference| reference.label == label);
+        },
+    };
+    for stmt in &mut stmts {
+        reach.visit_stmt_mut(stmt);
+    }
+    referenced
+}
+
+/// Replaces the references to the label of `expr` in its body by compile errors, when they name
+/// a ghost the labelled loop or block does not have: any ghost of a `while` or `loop` or a block,
+/// and of a `for` loop those `labelled_ghosts` does not give.
+pub fn reject_in_labelled(
+    expr: &mut syn::Expr,
+    labelled_ghosts: impl Fn(&syn::ExprForLoop) -> LabelledGhosts,
+) {
     let Some(label) = label_of(expr).map(|label| label.name.to_string()) else {
         return;
     };
-    let what = match &*expr {
-        syn::Expr::ForLoop(for_loop) if has_ghosts(for_loop) => return,
-        syn::Expr::ForLoop(_) => "a `for` loop whose body does not start with an `invariant!` or `partial_invariant!` naming `iter`, so its iterator has no ghost",
-        syn::Expr::While(_) => "a `while` loop",
-        syn::Expr::Loop(_) => "a `loop`",
-        _ => "a block",
+    let (what, named): (&str, &[&str]) = match &*expr {
+        syn::Expr::ForLoop(for_loop) => match labelled_ghosts(for_loop) {
+            LabelledGhosts::All => return,
+            LabelledGhosts::Iter => ("a `for` loop with no invariant, which keeps no history: only its iterator has a ghost", &["iter"]),
+            LabelledGhosts::None => ("a `for` loop whose leading invariants do not name `iter`, so its iterator has no ghost", &[]),
+        },
+        syn::Expr::While(_) => ("a `while` loop", &[]),
+        syn::Expr::Loop(_) => ("a `loop`", &[]),
+        _ => ("a block", &[]),
     };
     let mut reach = LabelReach {
         label: &label,
         on_macro: |mac: &mut syn::Macro| {
-            let reference = references(&mac.tokens)
-                .into_iter()
-                .find(|reference| reference.label == label);
+            let reference = references(&mac.tokens).into_iter().find(|reference| {
+                reference.label == label && !named.contains(&reference.ghost.as_str())
+            });
             if let Some(reference) = reference {
                 let message = format!(
                     "`{}` names a ghost of a `for` loop, but `{}` labels {what}",

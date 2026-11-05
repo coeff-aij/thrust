@@ -17,7 +17,11 @@
 //! `iter`, `iter_old` and `produced` are renamed to them, so the loop body sees its own variables
 //! of those names, and an annotated loop nested in another `for` finds its own iterator. A
 //! labelled loop also renames the references `iter!('l)`, `iter_old!('l)` and `produced!('l)` to
-//! its label in the specifications of its body (see [`mod@crate::loop_label`]).
+//! its label in the specifications of its body (see [`mod@crate::loop_label`]). A labelled loop
+//! with no invariant whose label a specification of its body references is desugared as an
+//! annotated one with no written invariant, so that `iter!('l)` names its iterator while Thrust
+//! infers its invariant; it has no `iter_old` or `produced` to name, and
+//! `THRUST_FOR_LOOP_HISTORY` gives it none.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -29,8 +33,8 @@ static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 /// The desugaring of `for_loop`, or `None` when its body starts with `invariant!` or
 /// `partial_invariant!` calls none of which has a parameter `iter`, whose type is the iterator's,
-/// or with no invariant and `THRUST_FOR_LOOP_HISTORY` is not `1`. Every invariant of that leading
-/// run names the loop's ghosts.
+/// or with no invariant, no reference to the loop's label in the specifications of its body and
+/// `THRUST_FOR_LOOP_HISTORY` not `1`. Every invariant of that leading run names the loop's ghosts.
 pub fn desugar(for_loop: &syn::ExprForLoop) -> Option<syn::Expr> {
     let label_name = for_loop.label.as_ref().map(|label| label.name.to_string());
     let label_name = label_name.as_deref();
@@ -39,15 +43,16 @@ pub fn desugar(for_loop: &syn::ExprForLoop) -> Option<syn::Expr> {
         .iter()
         .map_while(|stmt| invariant_params(stmt, label_name))
         .collect();
-    if leading.is_empty() {
+    let named_by_label =
+        label_name.is_some_and(|label| crate::loop_label::is_referenced_in_body(stmts, label));
+    if leading.is_empty() && !named_by_label {
         return history_requested().then(|| desugar_with_inferred_invariant(for_loop));
     }
     let (invariants, rest) = stmts.split_at(leading.len());
     let mut params: Vec<_> = leading.into_iter().flatten().collect();
-    let iter_ty = params
-        .iter()
-        .find(|(name, _)| name == "iter")
-        .map(|(_, ty)| ty.clone())?;
+    if !invariants.is_empty() && !params.iter().any(|(name, _)| name == "iter") {
+        return None;
+    }
 
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     let iter = format_ident!("__thrust_for_iter_{}", n);
@@ -99,6 +104,10 @@ pub fn desugar(for_loop: &syn::ExprForLoop) -> Option<syn::Expr> {
         ));
     }
 
+    let iter_ty = params
+        .iter()
+        .find(|(name, _)| name == "iter")
+        .map(|(_, ty)| ty.clone())?;
     let seq: syn::Type = syn::parse_quote!(
         crate::thrust_models::model::Seq<
             <<#iter_ty as ::core::iter::Iterator>::Item as crate::thrust_models::Model>::Ty
@@ -190,17 +199,40 @@ fn desugar_with_inferred_invariant(for_loop: &syn::ExprForLoop) -> syn::Expr {
     )
 }
 
-/// Whether `for_loop` is desugared with ghosts of its own, which a reference to its label
-/// can name: its body starts with an `invariant!` or `partial_invariant!` naming `iter`.
-pub fn has_ghosts(for_loop: &syn::ExprForLoop) -> bool {
+/// The ghosts of a `for` loop that a reference to its label can name.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum LabelledGhosts {
+    /// `iter`, `iter_old` and `produced`: the body starts with an `invariant!` or
+    /// `partial_invariant!` naming `iter`.
+    All,
+    /// `iter` only: the body starts with no invariant, so Thrust infers it, and the loop keeps no
+    /// history for a reference to name.
+    Iter,
+    /// None: the body starts with invariants none of which names `iter`.
+    None,
+}
+
+/// The ghosts of `for_loop` that a reference to its label can name.
+pub fn labelled_ghosts(for_loop: &syn::ExprForLoop) -> LabelledGhosts {
     let label = for_loop.label.as_ref().map(|label| label.name.to_string());
-    for_loop
+    let leading: Vec<_> = for_loop
         .body
         .stmts
         .iter()
         .map_while(|stmt| invariant_params(stmt, label.as_deref()))
+        .collect();
+    if leading.is_empty() {
+        return LabelledGhosts::Iter;
+    }
+    if leading
+        .into_iter()
         .flatten()
         .any(|(name, _)| name == "iter")
+    {
+        LabelledGhosts::All
+    } else {
+        LabelledGhosts::None
+    }
 }
 
 /// Whether a loop with no invariant is to get the ghost history (`THRUST_FOR_LOOP_HISTORY=1`).

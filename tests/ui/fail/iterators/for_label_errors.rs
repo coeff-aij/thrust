@@ -57,10 +57,20 @@ fn block_label(n: i64) {
 }
 
 #[thrust_macros::context]
-fn for_without_ghosts(n: i64) {
+fn for_without_iter_in_invariant(n: i64) {
+    'rows: for _ in 0..n {
+        thrust_macros::invariant!(|n: i64| n >= 0);
+        for _ in 0..n {
+            thrust_macros::invariant!(|iter: Range<i64>, iter!('rows): Range<i64>| iter.start >= 0); //~ ERROR: `'rows` labels a `for` loop whose leading invariants do not name `iter`
+        }
+    }
+}
+
+#[thrust_macros::context]
+fn history_of_for_without_invariant(n: i64) {
     'rows: for _ in 0..n {
         for _ in 0..n {
-            thrust_macros::invariant!(|iter: Range<i64>, iter!('rows): Range<i64>| iter.start >= 0); //~ ERROR: `'rows` labels a `for` loop whose body does not start
+            thrust_macros::invariant!(|iter: Range<i64>, produced!('rows): thrust_models::Ghost<thrust_models::model::Seq<i64>>| iter.start >= 0); //~ ERROR: `'rows` labels a `for` loop with no invariant, which keeps no history
         }
     }
 }

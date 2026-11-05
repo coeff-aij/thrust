@@ -378,7 +378,7 @@ impl ContextInjector<'_> {
 
 impl VisitMut for ContextInjector<'_> {
     fn visit_expr_mut(&mut self, expr: &mut syn::Expr) {
-        crate::loop_label::reject_in_labelled(expr, crate::for_loop::has_ghosts);
+        crate::loop_label::reject_in_labelled(expr, crate::for_loop::labelled_ghosts);
         if let syn::Expr::ForLoop(for_loop) = expr {
             if let Some(desugared) = crate::for_loop::desugar(for_loop) {
                 *expr = desugared;
