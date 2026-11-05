@@ -739,6 +739,7 @@ where
 // helper, and call the adapter again, once the solver answers its part.
 
 // `Map::new` with its precondition assumed (`univariant_biased`'s open part 14).
+#[thrust_macros::context]
 #[thrust::trusted]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(result.0 == iter && result.1 == func)]
@@ -754,6 +755,7 @@ where
 
 // `Iterator::max` with its precondition, the iterator's invariant, assumed (`univariant_biased`'s
 // open part 15); the `ensures` is `max`'s (std_specs.rs), which states nothing of the result.
+#[thrust_macros::context]
 #[thrust::trusted]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(true)]
@@ -766,6 +768,7 @@ where
 }
 
 // `Filter::new` with its precondition assumed (`univariant_biased`'s open part 36).
+#[thrust_macros::context]
 #[thrust::trusted]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(result.0 == iter && result.1 == predicate)]
@@ -780,6 +783,7 @@ where
 
 // `Filter::next` with its precondition, the filter's invariant, assumed (`univariant_biased`'s open
 // parts 37 to 39); the `ensures` is `next`'s.
+#[thrust_macros::context]
 #[thrust::trusted]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(
@@ -801,6 +805,7 @@ where
 
 // `iter_all` with its precondition assumed (`univariant_biased`'s open part 57); the `ensures` is
 // `iter_all`'s.
+#[thrust_macros::context]
 #[thrust::trusted]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(

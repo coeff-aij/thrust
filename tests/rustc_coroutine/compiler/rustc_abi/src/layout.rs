@@ -1012,14 +1012,14 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                             } => {
                                 // Assumed (fallback; open parts 48 and 49, with fptprove): delete once the solver answers them.
                                 // `FieldIdx::new(0)` and `FieldIdx::new(1)`'s requires.
-                                thrust_macros::assume!(|kind: StructKind| <FieldIdx as Idx>::can_new(0usize));
-                                thrust_macros::assume!(|kind: StructKind| <FieldIdx as Idx>::can_new(1usize));
+                                thrust_macros::assume!(|kind: StructKind| forall(|z: USize| z == 0usize ==> <FieldIdx as Idx>::can_new(z)));
+                                thrust_macros::assume!(|kind: StructKind| forall(|z: USize| z == 1usize ==> <FieldIdx as Idx>::can_new(z)));
                                 // Fallback: the expected order is bound to `expected` so that an
                                 // `assume!` can state the comparison.
                                 let expected = [FieldIdx::new(0), FieldIdx::new(1)];
                                 // Assumed (fallback; open part 50, with fptprove): delete once the solver answers it.
                                 // `assert_eq!`'s panic is unreachable.
-                                thrust_macros::assume!(|in_memory_order: &IndexVec<u32, FieldIdx>, expected: [FieldIdx; 2]| (*in_memory_order).raw == expected);
+                                thrust_macros::assume!(|in_memory_order: &IndexVec<u32, FieldIdx>, expected: [FieldIdx; 2]| *in_memory_order == expected);
                                 assert_eq!(in_memory_order.raw, expected);
                                 offsets
                             }
@@ -1034,9 +1034,9 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                         // which binds the two indices to `k0` and `k1` so that an `assume!` can state them.
                         thrust_macros::assume!(|i: FieldIdx, offsets: IndexVec<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(i) < offsets.len());
                         thrust_macros::assume!(|j: FieldIdx, offsets: IndexVec<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(j) < offsets.len());
-                        thrust_macros::assume!(|kind: StructKind| <FieldIdx as Idx>::can_new(0usize));
+                        thrust_macros::assume!(|kind: StructKind| forall(|z: USize| z == 0usize ==> <FieldIdx as Idx>::can_new(z)));
                         let k0 = FieldIdx::new(0);
-                        thrust_macros::assume!(|kind: StructKind| <FieldIdx as Idx>::can_new(1usize));
+                        thrust_macros::assume!(|kind: StructKind| forall(|z: USize| z == 1usize ==> <FieldIdx as Idx>::can_new(z)));
                         let k1 = FieldIdx::new(1);
                         thrust_macros::assume!(|k0: FieldIdx, pair_offsets: &IndexVec<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(k0) < (*pair_offsets).len());
                         thrust_macros::assume!(|k1: FieldIdx, pair_offsets: &IndexVec<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(k1) < (*pair_offsets).len());
@@ -1070,7 +1070,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
 
         // Assumed (fallback; open part 58, with fptprove): delete once the solver answers it.
         // `VariantIdx::new(0)`'s requires.
-        thrust_macros::assume!(|kind: StructKind| <VariantIdx as Idx>::can_new(0usize));
+        thrust_macros::assume!(|kind: StructKind| forall(|z: USize| z == 0usize ==> <VariantIdx as Idx>::can_new(z)));
         Ok(LayoutData {
             variants: Variants::Single {
                 index: VariantIdx::new(0),
