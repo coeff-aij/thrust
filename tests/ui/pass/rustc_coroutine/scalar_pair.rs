@@ -1,4 +1,3 @@
-//@ignore-on-host: draft, the back edge of `max_by_key`'s loop gets no answer (see README.md)
 //@check-pass
 //@edition: 2024
 //@compile-flags: -Adead_code -C debug-assertions=off
@@ -7,7 +6,7 @@
 //@rustc-env: THRUST_SPLIT=1 THRUST_SPLIT_GOALS=1
 // `LayoutData::scalar_pair` of rustc_abi's layout/simple.rs, which `univariant_biased` calls on
 // two scalar fields, against the contract the `simple.rs` and `univariant_biased.rs` roots read
-// it by, with `Niche::from_scalar` and the local `max_by_key` it calls (rewrites.md R8).
+// it by, with `Niche::from_scalar` and the local `max_by_key` it calls (rewrites.md R21).
 // The code is the module tree under tests/rustc_coroutine/; this file selects the stage.
 // Each goal is solved with the clauses it depends on (`THRUST_SPLIT_GOALS`).
 #![feature(new_range_api)]

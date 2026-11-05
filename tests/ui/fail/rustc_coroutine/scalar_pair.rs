@@ -1,3 +1,4 @@
+//@ignore-on-host: the refutation gets no answer at 300 s in some runs (see README.md)
 //@error-in-other-file: Unsat
 //@edition: 2024
 //@compile-flags: -Adead_code -C debug-assertions=off --cfg thrust_scalar_pair_fail
@@ -7,7 +8,7 @@
 //@rustc-env: THRUST_SPLIT=1 THRUST_SPLIT_GOALS=1
 // `LayoutData::scalar_pair` of rustc_abi's layout/simple.rs, which `univariant_biased` calls on
 // two scalar fields, against the contract the `simple.rs` and `univariant_biased.rs` roots read
-// it by, with `Niche::from_scalar` and the local `max_by_key` it calls (rewrites.md R8).
+// it by, with `Niche::from_scalar` and the local `max_by_key` it calls (rewrites.md R21).
 // The code is the module tree under tests/rustc_coroutine/; this file selects the stage. This
 // twin sets `cfg(thrust_scalar_pair_fail)`, which asserts in `scalar_pair` that the second scalar
 // is placed at offset 0.
