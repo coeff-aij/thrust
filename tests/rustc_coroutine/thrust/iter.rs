@@ -608,22 +608,17 @@ where
         let fs = thrust_macros::ghost!(|f: F| -> F { f });
         MaxByKeySpec::<I, B, F>::pre_all_step(before, yielded, after, fs);
         let k = f(&x);
-        // Each arm goes back to the loop head itself, so that no join after the `match` needs an
-        // invariant of its own.
-        match best_key {
-            Some(bk) if k < bk => {
-                best_key = Some(bk);
-                seen.push(x);
-                continue;
-            }
-            _ => {
-                best_pos = seen.len();
-                best_key = Some(k);
-                best_item = Some(x);
-                seen.push(x);
-                continue;
-            }
+        // The candidate's key is compared by reference, so that it stays in place when kept.
+        let keep = match &best_key {
+            Some(bk) => k < *bk,
+            None => false,
+        };
+        if !keep {
+            best_pos = seen.len();
+            best_key = Some(k);
+            best_item = Some(x);
         }
+        seen.push(x);
     }
 }
 
