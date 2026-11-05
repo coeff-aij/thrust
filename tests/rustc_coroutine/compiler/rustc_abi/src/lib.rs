@@ -484,7 +484,8 @@ impl Align {
 
     pub const MAX: Align = Align { pow2: 29 };
 
-    // `1 << pow2`, the shift amount masked to the width.
+    // `1 << pow2`, the shift amount masked to the width; layout.rs's `shl_is_pow2` makes it
+    // `2^pow2` below 64.
     #[inline]
     #[thrust_macros::ensures(result >= 1)]
     #[thrust_macros::ensures(result
@@ -509,6 +510,7 @@ impl AbiAlign {
     }
 
     #[inline]
+    #[thrust_macros::ensures(result.abi.pow2 <= self.abi.pow2 && result.abi.pow2 <= other.abi.pow2)]
     pub fn min(self, other: AbiAlign) -> AbiAlign {
         AbiAlign {
             abi: self.abi.min(other.abi),
@@ -642,6 +644,38 @@ pub enum Primitive {
     Int(Integer, bool),
     Float(Float),
     Pointer(AddressSpace),
+}
+
+/// Among the first `k` entries of `address_space_info`, `c` has none or a first one.
+#[thrust_macros::lemma]
+#[thrust_macros::variant(k)]
+#[thrust_macros::ensures(forall(|s: Seq<(AddressSpace, PointerSpec)>| (s == (*dl).address_space_info && k <= s.len())
+    ==> (forall(|i: Int| (0 <= i && i < k) ==> !(s[i].0 == c))
+        || exists(|i: Int| 0 <= i && i < k && s[i].0 == c
+            && forall(|j: Int| (0 <= j && j < i) ==> !(s[j].0 == c))))))]
+fn first_entry(dl: &TargetDataLayout, c: AddressSpace, k: usize) {
+    if k > 0 {
+        first_entry(dl, c, k - 1);
+    }
+}
+
+/// Every primitive has a size under a layout that has an entry for its address space: an
+/// integer and a float by their kind, a pointer by the first entry for its address space. `n` is
+/// the number of entries of `address_space_info`.
+#[thrust_macros::lemma]
+#[thrust_macros::requires(forall(|a: AddressSpace| p == Primitive::Pointer(a)
+    ==> TargetDataLayout::pointer_space_ok(*dl, a)))]
+#[thrust_macros::requires(forall(|s: Seq<(AddressSpace, PointerSpec)>| s == (*dl).address_space_info ==> s.len() == n))]
+#[thrust_macros::ensures(exists(|s: Size| Primitive::size_in(p, *dl, s)))]
+#[thrust::reveal(
+    Primitive::size_in,
+    TargetDataLayout::pointer_space_ok,
+    TargetDataLayout::pointer_size_is
+)]
+pub(crate) fn size_in_total(p: Primitive, dl: &TargetDataLayout, n: usize) {
+    if let Primitive::Pointer(a) = p {
+        first_entry(dl, a, n);
+    }
 }
 
 #[thrust_macros::context]
@@ -844,8 +878,11 @@ pub enum BackendRepr {
     },
 }
 
+#[thrust_macros::context]
 impl BackendRepr {
+    // The contract states the body, so that a caller reads it rather than inferring it.
     #[inline]
+    #[thrust_macros::ensures(result == (*self == BackendRepr::Memory { sized: false }))]
     pub fn is_unsized(&self) -> bool {
         match *self {
             BackendRepr::Scalar(_)
@@ -973,8 +1010,11 @@ impl<FieldIdx: Idx, VariantIdx: Idx> LayoutData<FieldIdx, VariantIdx> {
     }
 }
 
+#[thrust_macros::context]
 impl<FieldIdx: Idx, VariantIdx: Idx> LayoutData<FieldIdx, VariantIdx> {
+    // The contract states the body, as `BackendRepr::is_unsized`'s does.
     #[inline]
+    #[thrust_macros::ensures(result == ((*self).backend_repr == BackendRepr::Memory { sized: false }))]
     pub fn is_unsized(&self) -> bool {
         self.backend_repr.is_unsized()
     }

@@ -19,7 +19,7 @@
  // Each goal is solved with the clauses it depends on (`THRUST_SPLIT_GOALS`). The predicates the
  // contracts pass on unchanged are `#[thrust::opaque]`, so the solver reads them through the
  // contracts instead of unfolding them; `layout_pre` and `dl_of` keep their definitions.
-@@ -26,15 +27,15 @@
+@@ -26,16 +27,16 @@
  use rustc_abi::{HasDataLayout, LayoutCalculator, LayoutData, ReprOptions, StructKind};
  use rustc_index::{Idx, IndexSlice};
  
@@ -31,10 +31,11 @@
      LayoutCalculator::<Cx>::layout_pre::<FieldIdx, VariantIdx, F>(*calc, fields, kind)
          && LayoutCalculator::<Cx>::fits_in_any_order::<FieldIdx, VariantIdx, F>(*calc, fields, repr, kind)
 -        && LayoutCalculator::<Cx>::deref_functional::<FieldIdx, VariantIdx, F>()
+         && LayoutCalculator::<Cx>::prefix_fits(repr, kind)
  )]
  #[thrust_macros::ensures(true)]
 -fn drive<
 +fn drive< //~ ERROR: Unsat
      'a,
-     Cx: HasDataLayout,
+     Cx: HasDataLayout + thrust_models::Model<Ty: PartialEq>,
      FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
