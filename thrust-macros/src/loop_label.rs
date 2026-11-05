@@ -292,16 +292,13 @@ pub fn is_referenced_in_body(stmts: &[syn::Stmt], label: &str) -> bool {
 
 /// Replaces the references to the label of `expr` in its body by compile errors, when they name
 /// a ghost the labelled loop or block does not have: any ghost of a `while` or `loop` or a block,
-/// and those of a `for` loop that `labelled_ghosts` does not give.
-pub fn reject_in_labelled(
-    expr: &mut syn::Expr,
-    labelled_ghosts: impl Fn(&syn::ExprForLoop) -> LabelledGhosts,
-) {
+/// and those of a `for` loop that [`crate::for_loop::labelled_ghosts`] does not give.
+pub fn reject_in_labelled(expr: &mut syn::Expr) {
     let Some(label) = label_of(expr).map(|label| label.name.to_string()) else {
         return;
     };
     let (what, named): (&str, &[&str]) = match &*expr {
-        syn::Expr::ForLoop(for_loop) => match labelled_ghosts(for_loop) {
+        syn::Expr::ForLoop(for_loop) => match crate::for_loop::labelled_ghosts(for_loop) {
             LabelledGhosts::All => return,
             LabelledGhosts::Iter => ("a `for` loop with no invariant, which keeps no history: only its iterator has a ghost", &["iter"]),
             LabelledGhosts::None => ("a `for` loop whose leading invariants do not name `iter`, so its iterator has no ghost", &[]),
