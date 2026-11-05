@@ -209,10 +209,3 @@ impl<'a, I: Idx + thrust_models::Model, T: thrust_models::Model + 'a> IntoIterat
         it.0 == *self && it.1 == !self && it.2 == 0 && (!self).len() == (*self).len()
     }
 }
-
-impl<I: Idx, T, const N: usize> From<[T; N]> for IndexVec<I, T> {
-    #[inline]
-    fn from(array: [T; N]) -> Self {
-        IndexVec::from_raw(array.into())
-    }
-}
