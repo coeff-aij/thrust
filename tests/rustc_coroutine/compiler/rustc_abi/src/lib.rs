@@ -500,8 +500,10 @@ pub struct AbiAlign {
     pub abi: Align,
 }
 
+#[thrust_macros::context]
 impl AbiAlign {
     #[inline]
+    #[thrust_macros::ensures(result.abi == align)]
     pub fn new(align: Align) -> AbiAlign {
         AbiAlign { abi: align }
     }
