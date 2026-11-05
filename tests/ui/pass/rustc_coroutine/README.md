@@ -27,14 +27,17 @@ its module; `hashes.rs` has no fail twin. Its twin checks only
 write refutes. It does not check the stage's own function, whose parts take about seven minutes.
 `LocalIdx: Model<Ty: PartialEq>` on the stage function and on `make_ineligible` is a verification
 bound on a type parameter, not a change to rustc's code: the proved `DenseBitSet::insert` requires it.
+So are `VariantIdx: Model<Ty: PartialEq>` and `Cx: Model<Ty: PartialEq>` on `univariant` and
+`univariant_biased`, which `scalar_pair`'s contract needs.
 
 | file | selection | state |
 | --- | --- | --- |
-| `hashes.rs` | `rustc_hashes` | verified, each goal on its own (`THRUST_SPLIT_GOALS`); no analyzed code calls `Hash64::new`, so its body is checked in no part |
+| `hashes.rs` | `rustc_hashes` | verified, each goal on its own (`THRUST_SPLIT_GOALS`); `Hash64::new` is checked where `scalar_pair` calls it, in the `scalar_pair.rs` root |
 | `values.rs` | `rustc_abi` (lib.rs) | verified, each goal on its own; `main` reveals `TargetDataLayout::pointer_space_ok` and `pointer_size_is`, which it reads (#132) |
 | `index.rs` | `rustc_index::**` (`Idx`, `IndexVec`, `IndexSlice`, the bit sets, the own iterators `IdxRange`, `WordIter`, `SliceIter`, `IterEnumerated`), and `crate`: the clients `filled`, `two_members` and `column_bound` | verified, each goal on its own |
 | `indexvec_int_range.rs` | `rustc_index::vec`, `rustc_index::slice`, `filled`, under `THRUST_INT_RANGE=conversions` | verified; a check of the option, not a run of the case study: with it `count_ones` of bit_set.rs has no specification of `sum` |
-| `simple.rs` | `rustc_abi::layout::simple` | draft, `ignore-on-host` |
+| `simple.rs` | `crate`: `drive`, which reads `LayoutData::scalar_pair`'s fields as `univariant_biased` does; `scalar_pair` assumed on its contract, which the `scalar_pair.rs` root checks | verified |
+| `scalar_pair.rs` | `LayoutData::scalar_pair` (layout/simple.rs), with the local `max_by_key` of `thrust/iter.rs` (rewrites.md R21); `Niche::from_scalar` and `Scalar::size` assumed on their contracts, which `values.rs` checks | verified, each goal on its own (`THRUST_SPLIT_GOALS`); the fail twin asserts, before the niches are computed, that the second scalar is placed at 0, and false after a call of `max_by_key` on a chain of two concrete options (`drive_max_by_key`), which shows the code after such a call reachable under its contract for `u32` items; that it is reachable for `scalar_pair`'s `Niche` items is inferred from this, not run |
 | `univariant.rs` | `LayoutCalculator::univariant`, `univariant_biased` trusted on its contract | verified, one part per goal (`THRUST_SPLIT_GOALS`), with the predicates its contracts pass on unchanged `#[thrust::opaque]`: `fits_in_any_order`, `weighs`, `unsized_misplaced`, `some_field_niche` (layout.rs), `Primitive::size_in`, `FieldsShape::arbitrary_of`, `TargetDataLayout::pointer_space_ok`, `TargetDataLayout::pointer_size_is` (lib.rs); `univariant_biased`, `Primitive::size`, `layout()`, `pointer_size_in` and `pointer_align_in` reveal those they read (#132) |
 | `univariant_biased.rs` | `LayoutCalculator::univariant_biased` | draft, `ignore-on-host`: its query (58.7 MB) is killed for memory with 16 GB (#133); its contract, which the other roots trust, requires the prefix's and each field's size below the object size bound, which excludes an overflow at `niche.offset += offset`; `align_to`, `checked_add`, `Align::bytes` and `obj_size_bound` state the offsets and sizes they compute (lib.rs, checked by `values.rs`) |
 | `eligibility.rs` | `coroutine_saved_local_eligibility` and the helpers `make_ineligible` and `set_assignment`, which hold its writes to `assignments` | verified, each goal on its own (`THRUST_SPLIT_GOALS`) |
