@@ -39,20 +39,21 @@ pub fn desugar(for_loop: &syn::ExprForLoop) -> Option<syn::Expr> {
     let label_name = for_loop.label.as_ref().map(|label| label.name.to_string());
     let label_name = label_name.as_deref();
     let stmts = &for_loop.body.stmts;
+    let named_by_label =
+        label_name.is_some_and(|label| crate::loop_label::is_referenced_in_body(stmts, label));
+    match labelled_ghosts(for_loop) {
+        LabelledGhosts::None => return None,
+        LabelledGhosts::Iter if !named_by_label => {
+            return history_requested().then(|| desugar_with_inferred_invariant(for_loop));
+        }
+        LabelledGhosts::Iter | LabelledGhosts::All => {}
+    }
     let leading: Vec<_> = stmts
         .iter()
         .map_while(|stmt| invariant_params(stmt, label_name))
         .collect();
-    let named_by_label =
-        label_name.is_some_and(|label| crate::loop_label::is_referenced_in_body(stmts, label));
-    if leading.is_empty() && !named_by_label {
-        return history_requested().then(|| desugar_with_inferred_invariant(for_loop));
-    }
     let (invariants, rest) = stmts.split_at(leading.len());
     let mut params: Vec<_> = leading.into_iter().flatten().collect();
-    if !invariants.is_empty() && !params.iter().any(|(name, _)| name == "iter") {
-        return None;
-    }
 
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     let iter = format_ident!("__thrust_for_iter_{}", n);
