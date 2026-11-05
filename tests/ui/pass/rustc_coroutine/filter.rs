@@ -1,4 +1,3 @@
-//@ignore-on-host: draft, not run on this branch (see README.md)
 //@check-pass
 //@edition: 2024
 //@compile-flags: -Adead_code -C debug-assertions=off
