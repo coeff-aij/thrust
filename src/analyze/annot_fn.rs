@@ -2020,7 +2020,18 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         })
     }
 
+    /// The translation of a specification expression. It recurses with the expression's depth
+    /// and, through the predicates it defines on the way (`Take<I>::inv` calls `I::inv`), with
+    /// the nesting of the types they are instantiated at, so it grows the stack on demand as
+    /// rustc's own expression lowering does.
     fn to_formula_or_term(
+        &self,
+        hir: &'tcx rustc_hir::Expr<'tcx>,
+    ) -> FormulaOrTerm<rty::FunctionParamIdx> {
+        rustc_data_structures::stack::ensure_sufficient_stack(|| self.to_formula_or_term_inner(hir))
+    }
+
+    fn to_formula_or_term_inner(
         &self,
         hir: &'tcx rustc_hir::Expr<'tcx>,
     ) -> FormulaOrTerm<rty::FunctionParamIdx> {
