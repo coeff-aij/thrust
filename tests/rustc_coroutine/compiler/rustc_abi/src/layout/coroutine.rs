@@ -610,6 +610,16 @@ fn assigned_count_of<FieldIdx: Idx + thrust_models::Model, LocalIdx: Idx + thrus
     m: usize,
 ) {}
 
+// Fallback (rewrites.md R22), not verified: assumes the iterator's `inv`, the precondition of a
+// `collect` call that the solver does not answer, where an `assume!` cannot state it because the
+// iterator's type names closures, which have no type a closure parameter can be written with.
+// Delete it and its calls once the solver answers that precondition.
+#[thrust::trusted]
+#[thrust_macros::context]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(J::inv(*it))]
+fn assumed_inv<J: crate::IteratorSpec>(it: &J) {}
+
 // Rewrite (rewrites.md R14): the part of `layout()`'s per-variant closure that collects the
 // layouts of the variant's fields, as a function whose contract states what the closure reads of
 // them: no more than the locals Assigned to the variant (`class_cnt`), each a layout of
@@ -751,17 +761,24 @@ fn variant_field_layouts<
     ));
     // Each field collected is an entry of `local_layouts`: the map closure's `ensures`.
     thrust_macros::proof!(Map::yields_entries_of(&variant_only_tys, local_layouts));
+    // Assumed (fallback): `collect`'s precondition, the map's `inv`.
+    assumed_inv(&variant_only_tys);
     // Rewrite (rewrites.md R8): `collect_index_vec` for `collect`; the result is bound to a name,
     // for the `assume!`.
     let fields = collect_index_vec(variant_only_tys);
     // The fields are as many as the variant's entries Assigned to it, which `combine_offsets`
-    // requires: `map_count_exact` at `collect`'s witness.
-    thrust_macros::proof_assert!(
+    // requires: `map_count_exact` at `collect`'s witness. Assumed (fallback): the solver does not
+    // answer this cut; delete the `assume!` for the `proof_assert!` once it does.
+    thrust_macros::assume!(
         |fields: IndexVec<FieldIdx, F>, variant_fields: &IndexVec<FieldIdx, LocalIdx>,
             assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, index: VariantIdx|
             fields.len() == counts::acc_cnt::<FieldIdx, LocalIdx, LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>(
                 *variant_fields, *assignments, SavedLocalEligibility::Assigned(index), (*variant_fields).len())
     );
+    // Reachability twin of the fallback's assumptions in this function (fail root
+    // layout_reach_fallback.rs).
+    #[cfg(thrust_layout_reach_fallback)]
+    thrust_macros::proof_assert!(|| false);
     thrust_macros::proof!(assigned_count_of(variant_fields, &assignments, index, fields.len()));
     // The `ensures`' selection, at `collect`'s witness.
     thrust_macros::proof_assert!(
@@ -1741,6 +1758,18 @@ fn variant_layout<
     let dl = calc.cx.data_layout();
     thrust_macros::proof_assert!(|repr: ReprOptions, kind: StructKind, dl: &TargetDataLayout|
         repr.pack == None && LayoutCalculator::<C>::prefix_fits(&repr, kind));
+    // Assumed (fallback): `univariant`'s precondition at this call, which the solver does not
+    // answer although each conjunct is a cut or a lemma's `ensures` above.
+    thrust_macros::assume!(
+        |calc: &LayoutCalculator<C>, fields: IndexVec<FieldIdx, F>, repr: ReprOptions, kind: StructKind|
+            LayoutCalculator::<C>::layout_pre::<FieldIdx, VariantIdx, F>(*calc, &fields, kind)
+                && LayoutCalculator::<C>::prefix_fits(&repr, kind)
+                && LayoutCalculator::<C>::deref_functional::<FieldIdx, VariantIdx, F>()
+                && LayoutCalculator::<C>::fits_in_any_order::<FieldIdx, VariantIdx, F>(*calc, &fields, &repr, kind)
+    );
+    // Reachability twin of the assumption above (fail root layout_reach_fallback.rs).
+    #[cfg(thrust_layout_reach_fallback)]
+    thrust_macros::proof_assert!(|| false);
     let mut variant = calc.univariant(&fields, &repr, kind)?;
 
     // `combine_offsets` requires `u32` to reach the variant's m fields.
@@ -1964,6 +1993,17 @@ pub fn layout<
     // `ensures` under the `fits_in_any_order` assumed above): the fifth atom of the per-variant
     // closure's `requires`.
     thrust_macros::proof!(prefix_fits_bound(calc, &prefix_layouts, &repr, StructKind::AlwaysSized, prefix_size, prefix_align));
+    // Assumed (fallback): `prefix_wf_of`'s precondition, which the solver does not answer.
+    thrust_macros::assume!(
+        |calc: &LayoutCalculator<C>, prefix_size: Size, prefix_align: AbiAlign|
+            forall(|dl: TargetDataLayout| !C::dl_of(*calc, dl)
+                || prefix_size.raw < obj_bound(dl))
+                && forall(|dl: TargetDataLayout, q: USize, b: USize|
+                    !(C::dl_of(*calc, dl)
+                        && q == prefix_align.abi.pow2
+                        && b == (BitVec::<64, false>::from_int(1) << (BitVec::from_int(q) & BitVec::from_int(63))).to_int())
+                    || prefix_size.raw + b <= 4611686018427387904u64)
+    );
     thrust_macros::proof!(prefix_wf_of(calc, prefix_size, prefix_align));
     // Assumed (not proved): each variant's fields fit in any order after the prefix
     // (`variant_fits_wf`, `univariant`'s `fits_in_any_order` for the variant's `univariant` call).
@@ -2058,7 +2098,9 @@ pub fn layout<
     // `hist_inv` bounds `size` and `align`: nothing after the `collect` needs a bound, as
     // `Size::align_to` requires nothing (its body checked by the `values.rs` root) and `max`
     // neither.
-    let variants = collect_index_vec_result::<VariantIdx, _, _, _>(Map::new(
+    // Rewrite (rewrites.md R13): the map is bound to a name, for the fallback's assumption of
+    // `collect`'s precondition below.
+    let variant_map = Map::new(
         variant_iter,
         thrust_macros::closure!(
         captures(
@@ -2102,7 +2144,14 @@ pub fn layout<
             Ok(VariantLayout::from_layout(variant))
         },
         ),
-    ))?;
+    );
+    // Assumed (fallback): `collect`'s precondition, the map's `inv`.
+    assumed_inv(&variant_map);
+    // Reachability twin of the fallback's assumptions in this function (fail root
+    // layout_reach_fallback.rs).
+    #[cfg(thrust_layout_reach_fallback)]
+    thrust_macros::proof_assert!(|| false);
+    let variants = collect_index_vec_result::<VariantIdx, _, _, _>(variant_map)?;
 
     size = size.align_to(align.abi);
 
