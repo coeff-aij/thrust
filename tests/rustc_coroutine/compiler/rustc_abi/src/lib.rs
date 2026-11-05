@@ -796,7 +796,13 @@ impl Scalar {
         C::dl_of(*cx, dl)
             && (self == Scalar::Initialized { value: p, valid_range: r } || self == Scalar::Union { value: p })
             && p == Primitive::Pointer(a) ==> TargetDataLayout::pointer_space_ok(dl, a)))]
-    #[thrust::callable]
+    // `Primitive::size`'s bound: an integer or a float has at most 16 bytes, a pointer the size the
+    // layout `cx` names.
+    #[thrust_macros::ensures(result.raw <= 16
+        || exists(|dl: TargetDataLayout, p: Primitive, r: WrappingRange, a: AddressSpace| C::dl_of(*cx, dl)
+            && (self == Scalar::Initialized { value: p, valid_range: r } || self == Scalar::Union { value: p })
+            && p == Primitive::Pointer(a)
+            && TargetDataLayout::pointer_size_is(dl, a, result)))]
     pub fn size(self, cx: &impl HasDataLayout) -> Size {
         self.primitive().size(cx)
     }
