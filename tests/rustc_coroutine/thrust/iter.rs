@@ -785,7 +785,10 @@ where
 // parts 37 to 39); the `ensures` is `next`'s.
 #[thrust_macros::context]
 #[thrust::trusted]
-#[thrust_macros::requires(true)]
+// Thrust does not follow the predicate into `&mut Filter`, so the `requires` states the
+// predicate's precondition on every item; the predicate at the call site requires nothing.
+#[thrust_macros::requires(forall(|f: Closure<P>| !(f == (*it).1)
+    || forall(|e: <I::Item as thrust_models::Model>::Ty| thrust_macros::pre!(f(&e)))))]
 #[thrust_macros::ensures(
     <Filter<I, P> as IteratorSpec>::inv(!it)
         && (result == None ==> <Filter<I, P> as IteratorSpec>::completed(it))
