@@ -31,7 +31,7 @@ use thrust_models::forall;
 #[thrust_macros::requires(forall(|k: USize| k == 0usize || k == 1usize ==> <FieldIdx as Idx>::can_new(k)))]
 #[thrust_macros::ensures(true)]
 fn drive<
-    Cx: HasDataLayout,
+    Cx: HasDataLayout + thrust_models::Model<Ty: PartialEq>,
     FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
     VariantIdx: Idx + thrust_models::Model<Ty: PartialEq>,
 >(

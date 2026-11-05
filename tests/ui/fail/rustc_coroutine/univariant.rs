@@ -37,9 +37,9 @@ use rustc_index::{Idx, IndexSlice};
 #[thrust_macros::ensures(true)]
 fn drive< //~ ERROR: Unsat
     'a,
-    Cx: HasDataLayout,
+    Cx: HasDataLayout + thrust_models::Model<Ty: PartialEq>,
     FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
-    VariantIdx: Idx,
+    VariantIdx: Idx + thrust_models::Model<Ty: PartialEq>,
     F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + thrust_models::Model<Ty: PartialEq>,
 >(
     calc: &LayoutCalculator<Cx>,
