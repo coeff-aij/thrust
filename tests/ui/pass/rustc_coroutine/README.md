@@ -40,6 +40,7 @@ bound on a type parameter, not a change to rustc's code: the proved `DenseBitSet
 | `eligibility.rs` | `coroutine_saved_local_eligibility` and the helpers `make_ineligible` and `set_assignment`, which hold its writes to `assignments` | verified, each goal on its own (`THRUST_SPLIT_GOALS`) |
 | `layout.rs` | `layout()` and the adapters of `thrust/iter.rs`; the lemmas of `thrust/lemmas.rs` assumed | draft, `ignore-on-host` |
 | `lemmas.rs` | the counting lemmas of `thrust/lemmas.rs` that `layout()` uses | verified |
+| `filter.rs` | `thrust/iter.rs`'s `Filter`, which `layout()` calls: its `next` against the contract that the item it returns is the last the inner iterator produced, and its `IteratorSpec` laws | verified, each goal on its own (`THRUST_SPLIT_GOALS`) |
 
 The roots that are not drafts answer over the module tree in the ui suite; the states of the
 drafts are those of the single-file stage files.
