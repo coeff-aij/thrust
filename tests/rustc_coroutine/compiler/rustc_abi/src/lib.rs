@@ -8,7 +8,7 @@ use std::num::NonZeroUsize;
 use std::ops::{Add, AddAssign, Deref};
 use std::range::RangeInclusive;
 
-use thrust_models::model::{Int, Seq};
+use thrust_models::model::{BitVec, Int, Seq};
 use thrust_models::{exists, forall};
 
 use crate::rustc_hashes::Hash64;
@@ -189,6 +189,7 @@ impl TargetDataLayout {
         || (*self).default_address_space_pointer_spec.pointer_size.raw == 4
         || (*self).default_address_space_pointer_spec.pointer_size.raw == 8))]
     #[thrust_macros::ensures(result >= 1)]
+    #[thrust_macros::ensures(result == obj_bound(*self))]
     pub fn obj_size_bound(&self) -> u64 {
         match self.pointer_size().bits() {
             16 => 1 << 15,
@@ -261,6 +262,28 @@ impl TargetDataLayout {
 //
 // Relating a *generic* `cx: &C` to the layout `dl_of` names needs quantifying over it, as the
 // `requires` of `Primitive::size` / `align` does; that verifies.
+/// Rounding `x` up with the mask `m` of a power of two: unless `x + m` wraps, `(x + m) & !m`
+/// lies in `[x, x + m]`.
+#[thrust_macros::lemma]
+#[thrust_macros::ensures((q < 64
+        && m + 1 == (BitVec::<64, false>::from_int(1) << (BitVec::from_int(q) & BitVec::from_int(63))).to_int()
+        && x + m <= u64::MAX)
+    ==> (x <= (BitVec::<64, false>::from_int(x + m) & !BitVec::<64, false>::from_int(m)).to_int()
+        && (BitVec::<64, false>::from_int(x + m) & !BitVec::<64, false>::from_int(m)).to_int() <= x + m))]
+fn round_up(x: u64, m: u64, q: u64) {}
+
+/// `obj_size_bound` of a layout whose default pointer has 2, 4 or 8 bytes.
+#[thrust_macros::logic]
+pub(crate) fn obj_bound(dl: TargetDataLayout) -> u64 {
+    if dl.default_address_space_pointer_spec.pointer_size.raw == 2 {
+        32768
+    } else if dl.default_address_space_pointer_spec.pointer_size.raw == 4 {
+        2147483648
+    } else {
+        2305843009213693952
+    }
+}
+
 #[thrust_macros::context]
 pub trait HasDataLayout {
     #[thrust_macros::predicate]
@@ -376,10 +399,17 @@ impl Size {
             .unwrap_or_else(|| overflow(self.bytes()))
     }
 
+    /// The least multiple of the alignment at or above `self`, when the alignment is below `2^64`
+    /// and `self` plus its mask does not wrap: `b` is the alignment's bytes as `Align::bytes`
+    /// gives them.
     #[inline]
-    #[thrust::callable]
+    #[thrust_macros::ensures(forall(|b: USize| align.pow2 < 64
+        && b == (BitVec::<64, false>::from_int(1) << (BitVec::from_int(align.pow2) & BitVec::from_int(63))).to_int()
+        && self.raw + b - 1 <= u64::MAX
+        ==> (self.raw <= result.raw && result.raw < self.raw + b)))]
     pub fn align_to(self, align: Align) -> Size {
         let mask = align.bytes() - 1;
+        thrust_macros::proof!(round_up(self.bytes(), mask, align.pow2 as u64));
         Size::from_bytes((self.bytes() + mask) & !mask)
     }
 
@@ -388,7 +418,13 @@ impl Size {
     #[thrust_macros::requires(forall(|dl: TargetDataLayout| C::dl_of(*cx, dl) ==> dl.default_address_space_pointer_spec.pointer_size.raw == 2
         || dl.default_address_space_pointer_spec.pointer_size.raw == 4
         || dl.default_address_space_pointer_spec.pointer_size.raw == 8))]
-    #[thrust_macros::ensures(true)]
+    // The sum when it is below the object size bound of the layout `cx` names. A generic `C` may
+    // name several layouts, so the bound is stated of one of them: the one `data_layout` returns.
+    #[thrust_macros::ensures(forall(|z: Size| result == Some(z)
+        ==> (z.raw == self.raw + offset.raw
+            && exists(|dl: TargetDataLayout| C::dl_of(*cx, dl) && z.raw < obj_bound(dl)))))]
+    #[thrust_macros::ensures(result == None
+        ==> exists(|dl: TargetDataLayout| C::dl_of(*cx, dl) && self.raw + offset.raw >= obj_bound(dl)))]
     pub fn checked_add<C: HasDataLayout>(self, offset: Size, cx: &C) -> Option<Size> {
         let dl = cx.data_layout();
 
@@ -451,7 +487,12 @@ impl Align {
 
     pub const MAX: Align = Align { pow2: 29 };
 
+    // `1 << pow2`, the shift amount masked to the width; layout.rs's `shl_is_pow2` makes it
+    // `2^pow2` below 64.
     #[inline]
+    #[thrust_macros::ensures(result >= 1)]
+    #[thrust_macros::ensures(result
+        == (BitVec::<64, false>::from_int(1) << (BitVec::from_int(self.pow2) & BitVec::from_int(63))).to_int())]
     pub const fn bytes(self) -> u64 {
         1 << self.pow2
     }
@@ -603,6 +644,38 @@ pub enum Primitive {
     Int(Integer, bool),
     Float(Float),
     Pointer(AddressSpace),
+}
+
+/// Among the first `k` entries of `address_space_info`, `c` has none or a first one.
+#[thrust_macros::lemma]
+#[thrust_macros::variant(k)]
+#[thrust_macros::ensures(forall(|s: Seq<(AddressSpace, PointerSpec)>| (s == (*dl).address_space_info && k <= s.len())
+    ==> (forall(|i: Int| (0 <= i && i < k) ==> !(s[i].0 == c))
+        || exists(|i: Int| 0 <= i && i < k && s[i].0 == c
+            && forall(|j: Int| (0 <= j && j < i) ==> !(s[j].0 == c))))))]
+fn first_entry(dl: &TargetDataLayout, c: AddressSpace, k: usize) {
+    if k > 0 {
+        first_entry(dl, c, k - 1);
+    }
+}
+
+/// Every primitive has a size under a layout that has an entry for its address space: an
+/// integer and a float by their kind, a pointer by the first entry for its address space. `n` is
+/// the number of entries of `address_space_info`.
+#[thrust_macros::lemma]
+#[thrust_macros::requires(forall(|a: AddressSpace| p == Primitive::Pointer(a)
+    ==> TargetDataLayout::pointer_space_ok(*dl, a)))]
+#[thrust_macros::requires(forall(|s: Seq<(AddressSpace, PointerSpec)>| s == (*dl).address_space_info ==> s.len() == n))]
+#[thrust_macros::ensures(exists(|s: Size| Primitive::size_in(p, *dl, s)))]
+#[thrust::reveal(
+    Primitive::size_in,
+    TargetDataLayout::pointer_space_ok,
+    TargetDataLayout::pointer_size_is
+)]
+pub(crate) fn size_in_total(p: Primitive, dl: &TargetDataLayout, n: usize) {
+    if let Primitive::Pointer(a) = p {
+        first_entry(dl, a, n);
+    }
 }
 
 #[thrust_macros::context]

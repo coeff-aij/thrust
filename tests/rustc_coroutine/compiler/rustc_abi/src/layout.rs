@@ -2,7 +2,7 @@ use crate::thrust_models;
 use std::cmp;
 use std::ops::Deref;
 
-use thrust_models::model::{Int, Seq};
+use thrust_models::model::{BitVec, Int, Seq};
 use thrust_models::{exists, forall};
 
 use crate::rustc_abi::{
@@ -51,11 +51,25 @@ pub struct LayoutCalculator<Cx> {
     pub cx: Cx,
 }
 
-/// `2^q`, the bytes of `Align { pow2: q }`.
+/// `2^q`, the bytes of `Align { pow2: q }` below 64, where `Align::bytes` gives `1 << (q & 63)`;
+/// above, `2^q` overcounts it, so a weight stays an upper bound. An `Int`, as `sum_first` is: at
+/// `u64` its result would be checked below `2^64` for every `q`.
 #[thrust_macros::logic]
 #[thrust_macros::variant(q)]
-fn pow2(q: u64) -> u64 {
+pub(crate) fn pow2(q: u64) -> Int {
     if q <= 0 { 1 } else { pow2(q - 1) * 2 }
+}
+
+/// `1 << q` on 64-bit words, which `Align::bytes` and `Size::align_to` state, is `2^q` below 64,
+/// by induction over `q`.
+#[thrust_macros::lemma]
+#[thrust_macros::variant(q)]
+#[thrust_macros::ensures(q < 64 ==> pow2(q)
+    == (BitVec::<64, false>::from_int(1) << (BitVec::from_int(q) & BitVec::from_int(63))).to_int())]
+pub(crate) fn shl_is_pow2(q: u64) {
+    if q > 0 {
+        shl_is_pow2(q - 1);
+    }
 }
 
 /// The sum of the first `k` entries of `ts`. A sum, it is an `Int` over `Int`s, as `ones` is: at
@@ -79,7 +93,15 @@ fn sum_first(ts: Seq<Int>, k: USize) -> Int {
 // field, which rustc's layouts satisfy and the sort key's subtractions and the niche of the
 // result rely on; and `Scalar::wf_in` of every field whose `backend_repr` is a scalar, which
 // `scalar_pair` requires of the two scalars it pairs. Like `niche_wf`, the last is an invariant of
-// the layouts rustc computes, not a check of the caller's.
+// the layouts rustc computes, not a check of the caller's. The one panic of the offset arithmetic
+// is `niche.offset += offset` (`Size::add` on an overflow); `align_to` and `Align::bytes` wrap
+// without overflow checks and `checked_add` returns `None`. It needs the prefix's and each field's
+// size below the object size bound: then the offset a field is placed at is below the bound plus
+// the field's alignment mask (`2^63 - 1` at most, so no rounding wraps), and the niche's offset is
+// within its field (`Primitive::size_in` gives every primitive a size, `size_in_total`), so the sum
+// stays below `2^64`. A field's size is that of a layout rustc computed, and so is the prefix's
+// (the tag's, or the prefix layout's in `layout()`); every layout constructor checks it against
+// the bound. No alignment needs a bound.
 //
 // `univariant_biased` ensures, besides `arbitrary_of`: it fails only with `UnexpectedUnsized` or
 // `SizeOverflow`; `UnexpectedUnsized` only when an unsized field is not the tail of a
@@ -131,6 +153,15 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                 || dl.default_address_space_pointer_spec.pointer_size.raw == 2
                 || dl.default_address_space_pointer_spec.pointer_size.raw == 4
                 || dl.default_address_space_pointer_spec.pointer_size.raw == 8)
+            && forall(|dl: TargetDataLayout, ps: Size, pa: Align|
+                !(Cx::dl_of(self, dl) && kind == StructKind::Prefixed(ps, pa))
+                    || ps.raw < super::obj_bound(dl))
+            && forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>|
+                !(Cx::dl_of(self, dl)
+                    && 0 <= i
+                    && i < (*fields).len()
+                    && thrust_macros::post!(<F as core::ops::Deref>::deref(&(*fields)[i]), d) && **d == l)
+                    || l.size.raw < super::obj_bound(dl))
             && forall(|dl: TargetDataLayout, i: usize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche|
                 !(Cx::dl_of(self, dl)
                     && 0 <= i
