@@ -733,14 +733,15 @@ where
     })
 }
 
-// Fallback for `univariant_biased`'s parts the solver does not answer: each helper calls the
-// adapter with its precondition assumed, at the one call site that uses it (rewrites.md). A
-// closure's type cannot be written, so an `assume!` cannot state these preconditions. Delete each
-// helper, and call the adapter again, once the solver answers its part.
+// Fallback for `univariant_biased`'s parts the solver does not answer: each wrapper calls the
+// adapter after an `assume!` of exactly the adapter's `requires`, the open goal of its call site in
+// `univariant_biased`. The wrappers are checked like any other function; only the `assume!` is not.
+// A closure's type cannot be written in `univariant_biased`, so its `assume!` cannot state these
+// goals there; here the closure is the type parameter. Delete each wrapper, and call the adapter
+// again, once the solver answers its part.
 
-// `Map::new` with its precondition assumed (`univariant_biased`'s open part 14).
+// `Map::new`, its `requires` assumed (`univariant_biased`'s open part 14).
 #[thrust_macros::context]
-#[thrust::trusted]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(result.0 == iter && result.1 == func)]
 pub fn map_new_assumed<I, B, F>(iter: I, func: F) -> Map<I, F>
@@ -750,13 +751,16 @@ where
     F: FnMut(I::Item) -> B,
     I::Item: thrust_models::Model,
 {
+    thrust_macros::assume!(|iter: I, func: F| I::inv(iter)
+        && Map::<I, F>::reinitialize()
+        && Map::<I, F>::preservation_inv(iter, func)
+        && Map::<I, F>::next_precondition(iter, func));
     Map::new(iter, func)
 }
 
-// `Iterator::max` with its precondition, the iterator's invariant, assumed (`univariant_biased`'s
-// open part 15); the `ensures` is `max`'s (std_specs.rs), which states nothing of the result.
+// `Iterator::max`, its `requires` (the iterator's invariant, std_specs.rs) assumed
+// (`univariant_biased`'s open part 15); `max`'s `ensures` states nothing of the result.
 #[thrust_macros::context]
-#[thrust::trusted]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(true)]
 pub fn max_assumed<I>(it: I) -> Option<I::Item>
@@ -764,12 +768,12 @@ where
     I: IteratorSpec,
     I::Item: thrust_models::Model + Ord,
 {
+    thrust_macros::assume!(|it: I| I::inv(it));
     it.max()
 }
 
-// `Filter::new` with its precondition assumed (`univariant_biased`'s open part 36).
+// `Filter::new`, its `requires` assumed (`univariant_biased`'s open part 36).
 #[thrust_macros::context]
-#[thrust::trusted]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(result.0 == iter && result.1 == predicate)]
 pub fn filter_new_assumed<I, P>(iter: I, predicate: P) -> Filter<I, P>
@@ -778,17 +782,16 @@ where
     P: Fn(&I::Item) -> bool,
     I::Item: thrust_models::Model,
 {
+    thrust_macros::assume!(|iter: I, predicate: P| I::inv(iter)
+        && Filter::<I, P>::reinitialize()
+        && Filter::<I, P>::pre_all(iter, predicate));
     Filter::new(iter, predicate)
 }
 
-// `Filter::next` with its precondition, the filter's invariant, assumed (`univariant_biased`'s open
-// parts 37 to 39); the `ensures` is `next`'s.
+// `Filter::next`, its `requires` (the filter's invariant) assumed (`univariant_biased`'s open parts
+// 37 to 39); the `ensures` is `next`'s.
 #[thrust_macros::context]
-#[thrust::trusted]
-// Thrust does not follow the predicate into `&mut Filter`, so the `requires` states the
-// predicate's precondition on every item; the predicate at the call site requires nothing.
-#[thrust_macros::requires(forall(|f: Closure<P>| !(f == (*it).1)
-    || forall(|e: <I::Item as thrust_models::Model>::Ty| thrust_macros::pre!(f(&e)))))]
+#[thrust_macros::requires(true)]
 #[thrust_macros::ensures(
     <Filter<I, P> as IteratorSpec>::inv(!it)
         && (result == None ==> <Filter<I, P> as IteratorSpec>::completed(it))
@@ -803,13 +806,13 @@ where
     P: Fn(&I::Item) -> bool,
     I::Item: thrust_models::Model,
 {
+    thrust_macros::assume!(|it: &mut Filter<I, P>| <Filter<I, P> as IteratorSpec>::inv(*it));
     it.next()
 }
 
-// `iter_all` with its precondition assumed (`univariant_biased`'s open part 57); the `ensures` is
+// `iter_all`, its `requires` assumed (`univariant_biased`'s open part 57); the `ensures` is
 // `iter_all`'s.
 #[thrust_macros::context]
-#[thrust::trusted]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(
     exists(|visited: Seq<<I::Item as thrust_models::Model>::Ty>,
@@ -831,5 +834,6 @@ where
     // A bound `iter_all` has through its `#[context]`.
     <I as thrust_models::Model>::Ty: PartialEq,
 {
+    thrust_macros::assume!(|iter: I, f: F| I::inv(iter) && IterAllSpec::<I, F>::pre_all(iter, f));
     iter_all(iter, f)
 }
