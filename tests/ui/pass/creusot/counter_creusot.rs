@@ -279,28 +279,11 @@ impl FromIterator<u32> for Vec<u32> {
 fn counter(v: Vec<u32>) -> (Vec<u32>, usize) {
     let mut cnt: usize = 0;
     // Creusot's closure (line 46) has no written contract: Creusot takes it from the body
-    // (`[@coma:extspec]` in `03_std_iterators.coma`), whose `proof_assert!(cnt@ == _prod.len())`
-    // (line 47) and `cnt += 1` (line 48) need `cnt == _prod.len()` and `cnt < usize::MAX` at the
-    // call. The bound is stated whenever `THRUST_INT_RANGE` is set, which `cnt += 1` needs under
-    // `all`. Without the option a length has no upper bound, so the bound could not be shown at the
-    // call, and the closure states the history only. No test header sets the option for this pair.
-    #[cfg(thrust_int_range)]
+    // (`[@coma:extspec]` in `03_std_iterators.coma`). Thrust infers the closure's precondition;
+    // the postconditions state the step and the history before the increment.
     let f = thrust_macros::closure!(
         captures(cnt: &mut &mut usize),
-        requires(*(*cnt) == produced.len() && *(*cnt) < usize::MAX),
         ensures(*(!cnt) == *(*cnt) + 1 && result == *x),
-        // The precondition restated, as in the postcondition Creusot infers for the closure
-        // body, which reads `cnt == produced.len()` before the increment.
-        ensures(*(*cnt) == produced.len()),
-        |x: &u32, produced: Ghost<Seq<&U32>>| -> u32 { cnt += 1; *x },
-    );
-    #[cfg(not(thrust_int_range))]
-    let f = thrust_macros::closure!(
-        captures(cnt: &mut &mut usize),
-        requires(*(*cnt) == produced.len()),
-        ensures(*(!cnt) == *(*cnt) + 1 && result == *x),
-        // The precondition restated, as in the postcondition Creusot infers for the closure
-        // body, which reads `cnt == produced.len()` before the increment.
         ensures(*(*cnt) == produced.len()),
         |x: &u32, produced: Ghost<Seq<&U32>>| -> u32 { cnt += 1; *x },
     );
