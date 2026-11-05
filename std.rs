@@ -2473,7 +2473,7 @@ where
     #[thrust_macros::predicate]
     fn inv(self) -> bool;
 
-    #[thrust_macros::predicate]
+    #[thrust_macros::predicate(derived)]
     fn produces(self, visited: Vec<Self::Item>, o: Self) -> bool;
 
     #[thrust_macros::predicate]
