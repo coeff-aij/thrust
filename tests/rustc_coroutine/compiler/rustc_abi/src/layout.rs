@@ -979,6 +979,10 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
 
                 (Some((i, a)), Some((j, b)), None) => match (a.backend_repr, b.backend_repr) {
                     (BackendRepr::Scalar(a), BackendRepr::Scalar(b)) => {
+                        // A step of `scalar_pair`'s `requires`, before the order of the pair is
+                        // chosen.
+                        thrust_macros::proof_assert!(|a: Scalar, b: Scalar, self: &LayoutCalculator<Cx>|
+                            forall(|d: TargetDataLayout| !Cx::dl_of(*self, d) || (Scalar::wf_in(a, d) && Scalar::wf_in(b, d))));
                         let ((i, a), (j, b)) = if offsets[i] < offsets[j] {
                             ((i, a), (j, b))
                         } else {
@@ -1205,6 +1209,8 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         } else {
             field.align
         };
+        // `pack` only lowers the alignment, so its bytes stay within the field's.
+        thrust_macros::proof!(pow2_mono(field_align.abi.pow2 as u64, field.align.abi.pow2 as u64));
         let before = *offset;
         Self::align_step(offset, align, field_align);
         thrust_macros::proof!(niche_ends_later(&*largest_niche, dl, before, *offset));

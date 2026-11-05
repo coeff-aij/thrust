@@ -24,6 +24,39 @@ fn while_label(n: i64) {
 }
 
 #[thrust_macros::context]
+fn shadowed_by_while(n: i64) {
+    'rows: for _ in 0..n {
+        thrust_macros::invariant!(|iter: Range<i64>| iter.start >= 0);
+        let mut i = 0;
+        'rows: while i < n {
+            for _ in 0..n {
+                thrust_macros::invariant!(|iter: Range<i64>, iter!('rows): Range<i64>| iter.start >= 0); //~ ERROR: `'rows` labels a `while` loop
+            }
+            i += 1;
+        }
+    }
+}
+
+#[thrust_macros::context]
+fn loop_label(n: i64) {
+    'rows: loop {
+        for _ in 0..n {
+            thrust_macros::invariant!(|iter: Range<i64>, iter!('rows): Range<i64>| iter.start >= 0); //~ ERROR: `'rows` labels a `loop`
+        }
+        break 'rows;
+    }
+}
+
+#[thrust_macros::context]
+fn block_label(n: i64) {
+    'rows: {
+        for _ in 0..n {
+            thrust_macros::invariant!(|iter: Range<i64>, iter!('rows): Range<i64>| iter.start >= 0); //~ ERROR: `'rows` labels a block
+        }
+    }
+}
+
+#[thrust_macros::context]
 fn for_without_ghosts(n: i64) {
     'rows: for _ in 0..n {
         for _ in 0..n {

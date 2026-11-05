@@ -807,7 +807,13 @@ impl Scalar {
         C::dl_of(*cx, dl)
             && (self == Scalar::Initialized { value: p, valid_range: r } || self == Scalar::Union { value: p })
             && p == Primitive::Pointer(a) ==> TargetDataLayout::pointer_space_ok(dl, a)))]
-    #[thrust::callable]
+    // `Primitive::size`'s bound: an integer or a float has at most 16 bytes, a pointer the size the
+    // layout `cx` names.
+    #[thrust_macros::ensures(result.raw <= 16
+        || exists(|dl: TargetDataLayout, p: Primitive, r: WrappingRange, a: AddressSpace| C::dl_of(*cx, dl)
+            && (self == Scalar::Initialized { value: p, valid_range: r } || self == Scalar::Union { value: p })
+            && p == Primitive::Pointer(a)
+            && TargetDataLayout::pointer_size_is(dl, a, result)))]
     pub fn size(self, cx: &impl HasDataLayout) -> Size {
         self.primitive().size(cx)
     }
@@ -883,8 +889,11 @@ pub enum BackendRepr {
     },
 }
 
+#[thrust_macros::context]
 impl BackendRepr {
+    // The contract states the body, so that a caller reads it rather than inferring it.
     #[inline]
+    #[thrust_macros::ensures(result == (*self == BackendRepr::Memory { sized: false }))]
     pub fn is_unsized(&self) -> bool {
         match *self {
             BackendRepr::Scalar(_)
@@ -946,6 +955,8 @@ impl Niche {
     #[thrust_macros::requires(forall(|dl: TargetDataLayout, r: WrappingRange, a: AddressSpace|
         C::dl_of(*cx, dl) && scalar == Scalar::Initialized { value: Primitive::Pointer(a), valid_range: r } ==> (TargetDataLayout::pointer_space_ok(dl, a)
                 && forall(|n: Size| TargetDataLayout::pointer_size_is(dl, a, n) ==> n.raw * 8 <= 128))))]
+    #[thrust_macros::ensures(forall(|n: Niche| result != Some(n)
+        || (scalar == Scalar::Initialized { value: n.value, valid_range: n.valid_range } && n.offset == offset)))]
     pub fn from_scalar<C: HasDataLayout>(cx: &C, offset: Size, scalar: Scalar) -> Option<Self> {
         let Scalar::Initialized { value, valid_range } = scalar else {
             return None;
@@ -1010,8 +1021,11 @@ impl<FieldIdx: Idx, VariantIdx: Idx> LayoutData<FieldIdx, VariantIdx> {
     }
 }
 
+#[thrust_macros::context]
 impl<FieldIdx: Idx, VariantIdx: Idx> LayoutData<FieldIdx, VariantIdx> {
+    // The contract states the body, as `BackendRepr::is_unsized`'s does.
     #[inline]
+    #[thrust_macros::ensures(result == ((*self).backend_repr == BackendRepr::Memory { sized: false }))]
     pub fn is_unsized(&self) -> bool {
         self.backend_repr.is_unsized()
     }

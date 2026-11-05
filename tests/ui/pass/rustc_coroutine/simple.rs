@@ -3,8 +3,9 @@
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300 THRUST_TRY_SPECS=1
 //@rustc-env: THRUST_VERIFY_ONLY=crate
-// `LayoutData::scalar_pair` of rustc_abi's layout/simple.rs, trusted per the stage plan, read as
-// `univariant_biased` reads it: `drive` is that code, which the `ensures` keeps from panicking.
+// `LayoutData::scalar_pair` of rustc_abi's layout/simple.rs, assumed on its contract (the
+// `scalar_pair` root checks its body), read as `univariant_biased` reads it: `drive` is that code,
+// which the `ensures` keeps from panicking.
 // The code is the module tree under tests/rustc_coroutine/; this file selects the stage and
 // drives it.
 #![feature(new_range_api)]

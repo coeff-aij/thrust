@@ -9,8 +9,8 @@
 -//@rustc-env: THRUST_VERIFY_ONLY=case_study::lemmas,split
 +//@rustc-env: THRUST_VERIFY_ONLY=case_study::lemmas,split,l6_off_by_one,split_le_strict,occurs_one_more
  // The counting lemmas of thrust/lemmas.rs, which `layout()` (stage 7) and `univariant_biased` use
- // and the `layout.rs` root assumes. The code is the module tree under tests/rustc_coroutine/; this file selects the
- // lemmas and uses the permutation split as `layout()` does.
+ // and the `layout.rs` root assumes. The code is the module tree under tests/rustc_coroutine/; this
+ // file selects the lemmas and uses the permutation split as `layout()` does.
 @@ -19,8 +20,10 @@
  fn main() {}
  

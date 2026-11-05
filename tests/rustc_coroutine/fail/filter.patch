@@ -1,7 +1,6 @@
 --- pass/filter.rs
 +++ fail/filter.rs
-@@ -1,14 +1,16 @@
--//@ignore-on-host: draft, not run on this branch (see README.md)
+@@ -1,13 +1,16 @@
 -//@check-pass
 +//@error-in-other-file: Unsat
  //@edition: 2024
