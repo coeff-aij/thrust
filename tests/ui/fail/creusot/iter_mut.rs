@@ -5,13 +5,14 @@ use thrust_models::forall;
 use thrust_models::model::{Int, Mut, Seq};
 use thrust_models::Model;
 
-// Creusot's `iter_mut.rs`: an iterator over a mutable slice, `IterMut { inner: &mut [T] }`, whose
-// `next` hands out the first element by `split_off_first_mut` and keeps the rest. Its model is the
-// model of `inner`, the slice's current and final sequences. The associated `Item` is `&'a mut T`,
-// so `visited` is a sequence of `Mut` pairs.
-// Creusot's constructor `iter_mut(v)`, `IterMut { inner: &mut v[..] }`, and its `all_zero` client
-// follow the impl. The constructor's `invariant` needs that `&mut v[..]` keeps the length, which
-// std.rs states for `IndexMut`.
+// Creusot's `examples/iterators/02_iter_mut.rs` (creusot-rs/creusot 3620de437): an iterator over a
+// mutable slice, `IterMut { inner: &mut [T] }` (lines 7-9), whose `next` hands out the first element
+// by `split_off_first_mut` and keeps the rest (lines 48-54). Its model is the model of `inner`, the
+// slice's current and final sequences. The associated `Item` is `&'a mut T`, so `visited` is a
+// sequence of `Mut` pairs.
+// Creusot's constructor `iter_mut(v)`, `IterMut { inner: &mut v[..] }` (lines 64-69), and its
+// `all_zero` client (lines 71-88) follow the impl. The constructor's `invariant` needs that
+// `&mut v[..]` keeps the length, which std.rs states for `IndexMut`.
 
 // Creusot's `common.rs`, the iterator specification every case shares: the trait predicates
 // `produces(self, visited, o)`, `completed` and `invariant` (`true` unless the impl says otherwise),
@@ -88,7 +89,8 @@ where
     }
 
     // Creusot's `self.inner.to_mut_seq() == visited.concat(o.inner.to_mut_seq())`, index by index:
-    // the visited pairs, then the rest of the slice.
+    // the visited pairs, then the rest of the slice. Unsat: the rest's current entry `k` is read at
+    // `k` instead of `visited.len() + k`, which `next`'s body and `produces_trans` do not keep.
     #[thrust_macros::predicate]
     fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool {
         (*self.0).len() == visited.len() + (*o.0).len()
