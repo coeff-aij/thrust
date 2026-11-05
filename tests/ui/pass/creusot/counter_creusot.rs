@@ -10,12 +10,13 @@ type U32 = thrust_models::model::UInt;
 #[cfg(thrust_int_range)]
 type U32 = thrust_models::model::UIntN<32>;
 
-// Creusot's `examples/counter` with its own property: `v.iter().map_inv(|x, _prod| { cnt += 1; *x })
-// .collect()`, then `x == v` and `cnt == x.len()`. The source is std's `slice::Iter<u32>`, an
+// Creusot's `counter` (creusot-rs/creusot 3620de437, `examples/iterators/03_std_iterators.rs`
+// lines 41-56) with its own property: `v.iter().map_inv(|x, _prod| { cnt += 1; *x }).collect()`,
+// then `x == v` and `cnt == x.len()` (lines 53-55). The source is std's `slice::Iter<u32>`, an
 // iterator of the local spec through its std.rs model `(sequence, cursor)`. `Map` is Creusot's `MapInv`
 // (`iterators/map_ext.rs`) with an `FnMut` closure: `produces` carries the chain `fs` of closure
 // states, `preservation_inv` and `reinitialize` quantify over every closure state, as Creusot's
-// do. As in creusot-std's `std/iter/map_inv.rs`, which `examples/counter` uses, `produces` relates
+// do. As in creusot-std's `std/iter/map_inv.rs`, which Creusot's `counter` uses, `produces` relates
 // the first state to the last and to every state of the chain by `hist_inv!` (Creusot's
 // `hist_inv`), and `preservation_inv` is guarded by it.
 //
@@ -277,10 +278,12 @@ impl FromIterator<u32> for Vec<u32> {
     && result.1 == result.0.len())]
 fn counter(v: Vec<u32>) -> (Vec<u32>, usize) {
     let mut cnt: usize = 0;
-    // Creusot's `examples/counter` closure states `cnt < usize::MAX`
-    // (`#[requires(@cnt == (*_prod).len() && cnt < usize::MAX)]`), which `cnt += 1` needs under
-    // `THRUST_INT_RANGE=all`. Without the option a length has no upper bound, so the bound could
-    // not be shown at the call, and the closure states the history only.
+    // Creusot's closure (line 46) has no written contract: Creusot takes it from the body
+    // (`[@coma:extspec]` in `03_std_iterators.coma`), whose `proof_assert!(cnt@ == _prod.len())`
+    // (line 47) and `cnt += 1` (line 48) need `cnt == _prod.len()` and `cnt < usize::MAX` at the
+    // call. The bound is stated whenever `THRUST_INT_RANGE` is set, which `cnt += 1` needs under
+    // `all`. Without the option a length has no upper bound, so the bound could not be shown at the
+    // call, and the closure states the history only. No test header sets the option for this pair.
     #[cfg(thrust_int_range)]
     let f = thrust_macros::closure!(
         captures(cnt: &mut &mut usize),
