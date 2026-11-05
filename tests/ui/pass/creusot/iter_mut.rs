@@ -80,8 +80,9 @@ where
         (!self.0).len() == (*self.0).len()
     }
 
-    // Creusot's `resolve(self.inner) && self.inner@.ext_eq(Seq::empty())` (line 24): the borrowed
-    // slice is resolved and empty.
+    // Creusot's `resolve(self.inner) && self.inner@.ext_eq(Seq::empty())` (creusot-rs/creusot
+    // 3620de437, `examples/iterators/02_iter_mut.rs` line 24): the borrowed slice is resolved and
+    // empty.
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
         !((*self).0) == *((*self).0) && *((*self).0) == Seq::empty()
