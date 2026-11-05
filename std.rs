@@ -4173,8 +4173,8 @@ extern_spec_hasher_write_int! {
     _extern_spec_hasher_write_isize write_isize isize,
 }
 
-// Default values of foreign types are not modeled; the spec only records that
-// constructing one does not panic, which lets derived Default impls be analyzed.
+// The default of a type with no default spec of its own is not modeled; the spec only records
+// that constructing one does not panic, which lets derived Default impls be analyzed.
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(true)]
@@ -4184,7 +4184,6 @@ fn _extern_spec_default<T>() -> T
     T::default()
 }
 
-// `Option`'s default is `None`.
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(result == None)]

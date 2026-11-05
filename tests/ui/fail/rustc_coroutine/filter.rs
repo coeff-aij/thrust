@@ -9,8 +9,8 @@
 // `layout()` call: its `next` against the contract that the item it returns is the last the inner
 // iterator produced, and its `IteratorSpec` laws.
 // The code is the module tree under tests/rustc_coroutine/; this file selects the adapter. This
-// twin sets `cfg(thrust_filter_fail)`, which asserts in `next` that the closure rejected no item
-// before the one returned.
+// twin sets `cfg(thrust_filter_fail)`, with which `next` returns an item whether or not the
+// closure accepted it.
 // Each goal is solved with the clauses it depends on (`THRUST_SPLIT_GOALS`).
 #![feature(new_range_api)]
 

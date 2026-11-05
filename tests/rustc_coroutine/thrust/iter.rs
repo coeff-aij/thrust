@@ -376,11 +376,13 @@ where
             let yielded = thrust_macros::ghost!(|x: I::Item| -> I::Item { x });
             let after = thrust_macros::ghost!(|this: &mut Filter<I, P>| -> Filter<I, P> { *this });
             Filter::<I, P>::pre_all_step(before, yielded, after);
-            if (this.predicate)(&x) {
-                // The fail twin of the filter root sets this cfg: the closure may have rejected
-                // items before this one, so an assertion that it rejected none is refuted.
-                #[cfg(thrust_filter_fail)]
-                thrust_macros::proof_assert!(|skipped: Vec<I::Item>| skipped.len() == 0);
+            let accepted = (this.predicate)(&x);
+            // The fail twin of the filter root sets this cfg: `next` then returns the item whether
+            // or not the closure accepted it, against the `ensures` that the closure answered
+            // `true` on the item returned.
+            #[cfg(thrust_filter_fail)]
+            let accepted = true;
+            if accepted {
                 let rejected = thrust_macros::ghost!(|skipped: Vec<I::Item>| -> Seq<<I::Item as thrust_models::Model>::Ty> { skipped });
                 Filter::<I, P>::next_at(entry, rejected, before, yielded, after);
                 return Some(x);
