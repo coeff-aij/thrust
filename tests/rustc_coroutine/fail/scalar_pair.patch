@@ -1,7 +1,7 @@
 --- pass/scalar_pair.rs
 +++ fail/scalar_pair.rs
 @@ -1,14 +1,16 @@
--//@ignore-on-host: draft, not run yet (see README.md)
+-//@ignore-on-host: draft, the back edge of `max_by_key`'s loop gets no answer (see README.md)
 -//@check-pass
 +//@error-in-other-file: Unsat
  //@edition: 2024

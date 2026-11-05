@@ -1,4 +1,4 @@
-//@ignore-on-host: draft, not run yet (see README.md)
+//@ignore-on-host: draft, the back edge of `max_by_key`'s loop gets no answer (see README.md)
 //@check-pass
 //@edition: 2024
 //@compile-flags: -Adead_code -C debug-assertions=off
