@@ -5,7 +5,7 @@ use crate::thrust_models;
 use std::cmp;
 use std::ops::Deref;
 
-use thrust_models::model::{BitVec, Int, Seq};
+use thrust_models::model::{BitVec, Int, Seq, UInt};
 use thrust_models::{exists, forall, Ghost};
 
 use crate::rustc_abi::{
@@ -57,10 +57,11 @@ pub struct LayoutCalculator<Cx> {
 
 /// `2^q`, the bytes of `Align { pow2: q }` below 64, where `Align::bytes` gives `1 << (q & 63)`;
 /// above, `2^q` overcounts it, so a weight stays an upper bound. Unsigned and unbounded: every
-/// value is `>= 0`, which a weight needs, and none is checked below `2^64`.
+/// value is `>= 0`, which a weight needs, and none is checked below `2^64`, also where
+/// `THRUST_INT_RANGE` gives `USize` its width.
 #[thrust_macros::logic]
 #[thrust_macros::variant(q)]
-pub(crate) fn pow2(q: u64) -> USize {
+pub(crate) fn pow2(q: u64) -> UInt {
     if q <= 0 { 1 } else { pow2(q - 1) * 2 }
 }
 
