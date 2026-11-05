@@ -39,7 +39,7 @@ bound on a type parameter, not a change to rustc's code: the proved `DenseBitSet
 | `univariant_biased.rs` | `LayoutCalculator::univariant_biased` | draft, `ignore-on-host`: its query (58.7 MB) is killed for memory with 16 GB (#133); its contract, which the other roots trust, requires the prefix's and each field's size below the object size bound, which excludes an overflow at `niche.offset += offset`; `align_to`, `checked_add`, `Align::bytes` and `obj_size_bound` state the offsets and sizes they compute (lib.rs, checked by `values.rs`) |
 | `eligibility.rs` | `coroutine_saved_local_eligibility` and the helpers `make_ineligible` and `set_assignment`, which hold its writes to `assignments` | verified, each goal on its own (`THRUST_SPLIT_GOALS`) |
 | `layout.rs` | `layout()` and the adapters of `thrust/iter.rs`; the lemmas of `thrust/lemmas.rs` assumed | draft, `ignore-on-host` |
-| `lemmas.rs` | the counting lemmas of `thrust/lemmas.rs` that `layout()` uses | verified |
+| `lemmas.rs` | the counting lemmas of `thrust/lemmas.rs`: the permutation split that `layout()` uses and the pigeonhole principle (`every_index_occurs`) that `univariant_biased` uses | verified |
 | `filter.rs` | `thrust/iter.rs`'s `Filter`, which `layout()` calls: its `next` against the contract that the item it returns is the last the inner iterator produced, and its `IteratorSpec` laws | verified, each goal on its own (`THRUST_SPLIT_GOALS`) |
 
 The roots that are not drafts answer over the module tree in the ui suite; the states of the
