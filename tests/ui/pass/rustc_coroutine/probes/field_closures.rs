@@ -107,7 +107,8 @@ impl LayoutData {
     }
 }
 
-// Trusted, as simple.rs's `scalar_pair` is; the `requires` is its panic condition.
+// Trusted in this probe (the `scalar_pair.rs` root checks the case study's `scalar_pair`); the
+// `requires` is its panic condition.
 #[thrust::trusted]
 #[thrust_macros::requires(Primitive::wf_in(a, *dl) && Primitive::wf_in(b, *dl))]
 #[thrust_macros::ensures(true)]
