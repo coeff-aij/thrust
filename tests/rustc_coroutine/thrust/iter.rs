@@ -732,3 +732,94 @@ where
         _marker: PhantomData,
     })
 }
+
+// Fallback for `univariant_biased`'s parts the solver does not answer: each helper calls the
+// adapter with its precondition assumed, at the one call site that uses it (rewrites.md). A
+// closure's type cannot be written, so an `assume!` cannot state these preconditions. Delete each
+// helper, and call the adapter again, once the solver answers its part.
+
+// `Map::new` with its precondition assumed (`univariant_biased`'s open part 14).
+#[thrust::trusted]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(result.0 == iter && result.1 == func)]
+pub fn map_new_assumed<I, B, F>(iter: I, func: F) -> Map<I, F>
+where
+    I: IteratorSpec,
+    B: thrust_models::Model,
+    F: FnMut(I::Item) -> B,
+    I::Item: thrust_models::Model,
+{
+    Map::new(iter, func)
+}
+
+// `Iterator::max` with its precondition, the iterator's invariant, assumed (`univariant_biased`'s
+// open part 15); the `ensures` is `max`'s (std_specs.rs), which states nothing of the result.
+#[thrust::trusted]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(true)]
+pub fn max_assumed<I>(it: I) -> Option<I::Item>
+where
+    I: IteratorSpec,
+    I::Item: thrust_models::Model + Ord,
+{
+    it.max()
+}
+
+// `Filter::new` with its precondition assumed (`univariant_biased`'s open part 36).
+#[thrust::trusted]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(result.0 == iter && result.1 == predicate)]
+pub fn filter_new_assumed<I, P>(iter: I, predicate: P) -> Filter<I, P>
+where
+    I: IteratorSpec,
+    P: Fn(&I::Item) -> bool,
+    I::Item: thrust_models::Model,
+{
+    Filter::new(iter, predicate)
+}
+
+// `Filter::next` with its precondition, the filter's invariant, assumed (`univariant_biased`'s open
+// parts 37 to 39); the `ensures` is `next`'s.
+#[thrust::trusted]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(
+    <Filter<I, P> as IteratorSpec>::inv(!it)
+        && (result == None ==> <Filter<I, P> as IteratorSpec>::completed(it))
+        && forall(|x: <I::Item as thrust_models::Model>::Ty| result == Some(x)
+            ==> (<Filter<I, P> as IteratorSpec>::produces(*it, Seq::singleton(x), !it)
+                && exists(|s: Seq<<I::Item as thrust_models::Model>::Ty>|
+                    I::produces((*it).0, s.push(x), (!it).0))))
+)]
+pub fn filter_next_assumed<I, P>(it: &mut Filter<I, P>) -> Option<I::Item>
+where
+    I: IteratorSpec,
+    P: Fn(&I::Item) -> bool,
+    I::Item: thrust_models::Model,
+{
+    it.next()
+}
+
+// `iter_all` with its precondition assumed (`univariant_biased`'s open part 57); the `ensures` is
+// `iter_all`'s.
+#[thrust::trusted]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(
+    exists(|visited: Seq<<I::Item as thrust_models::Model>::Ty>,
+           mid: <I as thrust_models::Model>::Ty|
+        I::produces(iter, visited, mid)
+            && (result == true ==>
+                exists(|fin: <I as thrust_models::Model>::Ty| I::completed(Mut::new(mid, fin)))
+                    && forall(|k: USize| 0 <= k && k < visited.len() ==> thrust_macros::post!(f(visited[k]), true)))
+            && (result == false ==>
+                0 < visited.len()
+                    && thrust_macros::post!(f(visited[visited.len() - 1]), false)
+                    && forall(|k: USize| 0 <= k && k < visited.len() - 1 ==> thrust_macros::post!(f(visited[k]), true))))
+)]
+pub fn iter_all_assumed<I, F>(iter: I, f: F) -> bool
+where
+    I: IteratorSpec,
+    F: Fn(I::Item) -> bool,
+    I::Item: thrust_models::Model + Copy,
+{
+    iter_all(iter, f)
+}

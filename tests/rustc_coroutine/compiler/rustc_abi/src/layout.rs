@@ -738,7 +738,9 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                 // Rewrite (rewrites.md R8): `Map::new` of the niche's `available`, 0 without one,
                 // for `filter_map` of the niche and `map` of `available`: the two maxima agree,
                 // as `available` is never negative.
-                let largest_niche_size = Map::new(fields_excluding_tail.iter(), thrust_macros::closure!(
+                // Fallback (open parts 14 and 15): `Map::new` and `max` with their preconditions
+                // assumed; restore `Map::new(..).max()` once the solver answers them.
+                let largest_niche_size = crate::case_study::iter::max_assumed(crate::case_study::iter::map_new_assumed(fields_excluding_tail.iter(), thrust_macros::closure!(
                     captures(dl: &mut &&TargetDataLayout),
                     requires(forall(|d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche|
                         !(thrust_macros::post!(<F as core::ops::Deref>::deref(f), d) && (**d).largest_niche == Some(n))
@@ -753,7 +755,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                         ))
                     },
                 ))
-                .max()
+                )
                 .unwrap_or(0);
 
                 // Rewrite (rewrites.md R20): the data layout as a parameter instead of a capture.
@@ -930,6 +932,11 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         let min_size = offset;
         let size = min_size.align_to(align);
 
+        // Assumed (fallback; open part 34, with fptprove): delete once the solver answers it.
+        // `obj_size_bound`'s requires.
+        thrust_macros::assume!(|dl: &TargetDataLayout| (*dl).default_address_space_pointer_spec.pointer_size.raw == 2
+            || (*dl).default_address_space_pointer_spec.pointer_size.raw == 4
+            || (*dl).default_address_space_pointer_spec.pointer_size.raw == 8);
         if size.bytes() >= dl.obj_size_bound() {
             return Err(LayoutCalculatorError::SizeOverflow);
         }
@@ -940,6 +947,9 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         let optimize_abi = !repr.inhibit_newtype_abi_optimization();
 
         if sized && size.bytes() > 0 {
+            // Assumed (fallback; open part 35, with fptprove): delete once the solver answers it.
+            // `iter_enumerated`'s requires.
+            thrust_macros::assume!(|fields: &IndexSlice<FieldIdx, F>| <FieldIdx as Idx>::can_new((*fields).len()));
             // Rewrite (rewrites.md R8): `Filter::new(it, p)` for `it.filter(p)`.
             let mut non_zst_fields = Filter::new(fields.iter_enumerated(), thrust_macros::closure!(
                 requires(true),
@@ -955,6 +965,9 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                 (Some((i, field)), None, None) => {
                     layout_of_single_non_zst_field = Some(field);
 
+                    // Assumed (fallback; open part 41, with fptprove): delete once the solver answers it.
+                    // The index `offsets[i]`'s requires.
+                    thrust_macros::assume!(|i: FieldIdx, offsets: IndexVec<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(i) < offsets.len());
                     if offsets[i].bytes() == 0 && align == field.align.abi && size == field.size {
                         match field.backend_repr {
                             BackendRepr::Scalar(_) | BackendRepr::SimdVector { .. }
@@ -975,23 +988,39 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                     (BackendRepr::Scalar(a), BackendRepr::Scalar(b)) => {
                         // A step of `scalar_pair`'s `requires`, before the order of the pair is
                         // chosen.
-                        thrust_macros::proof_assert!(|a: Scalar, b: Scalar, self: &LayoutCalculator<Cx>|
+                        // Assumed (fallback; open part 42, the step's own goal, with fptprove): restore
+                        // `proof_assert!` once the solver answers it.
+                        thrust_macros::assume!(|a: Scalar, b: Scalar, self: &LayoutCalculator<Cx>|
                             forall(|d: TargetDataLayout| !Cx::dl_of(*self, d) || (Scalar::wf_in(a, d) && Scalar::wf_in(b, d))));
+                        // Assumed (fallback; open parts 43 and 44, with fptprove): delete once the solver answers them.
+                        // The indexes `offsets[i]` and `offsets[j]`'s requires.
+                        thrust_macros::assume!(|i: FieldIdx, offsets: IndexVec<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(i) < offsets.len());
+                        thrust_macros::assume!(|j: FieldIdx, offsets: IndexVec<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(j) < offsets.len());
                         let ((i, a), (j, b)) = if offsets[i] < offsets[j] {
                             ((i, a), (j, b))
                         } else {
                             ((j, b), (i, a))
                         };
                         let pair = LayoutData::<FieldIdx, VariantIdx>::scalar_pair(&self.cx, a, b);
+                        // Assumed (fallback; open parts 46 and 47, with fptprove): delete once the solver answers them.
+                        // The match's panicking arm is unreachable: `scalar_pair`'s `ensures` makes the fields `Arbitrary`.
+                        thrust_macros::assume!(|pair: LayoutData<FieldIdx, VariantIdx>| matches!(pair.fields, FieldsShape::Arbitrary { .. }));
                         let pair_offsets = match pair.fields {
                             FieldsShape::Arbitrary {
                                 ref offsets,
                                 ref in_memory_order,
                             } => {
-                                assert_eq!(
-                                    in_memory_order.raw,
-                                    [FieldIdx::new(0), FieldIdx::new(1)]
-                                );
+                                // Assumed (fallback; open parts 48 and 49, with fptprove): delete once the solver answers them.
+                                // `FieldIdx::new(0)` and `FieldIdx::new(1)`'s requires.
+                                thrust_macros::assume!(|kind: StructKind| <FieldIdx as Idx>::can_new(0usize));
+                                thrust_macros::assume!(|kind: StructKind| <FieldIdx as Idx>::can_new(1usize));
+                                // Fallback: the expected order is bound to `expected` so that an
+                                // `assume!` can state the comparison.
+                                let expected = [FieldIdx::new(0), FieldIdx::new(1)];
+                                // Assumed (fallback; open part 50, with fptprove): delete once the solver answers it.
+                                // `assert_eq!`'s panic is unreachable.
+                                thrust_macros::assume!(|in_memory_order: &IndexVec<u32, FieldIdx>, expected: [FieldIdx; 2]| (*in_memory_order).raw == expected);
+                                assert_eq!(in_memory_order.raw, expected);
                                 offsets
                             }
                             FieldsShape::Primitive
@@ -1000,8 +1029,19 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                                 panic!("encountered a non-arbitrary layout during enum layout")
                             }
                         };
-                        if offsets[i] == pair_offsets[FieldIdx::new(0)]
-                            && offsets[j] == pair_offsets[FieldIdx::new(1)]
+                        // Assumed (fallback; open parts 51 to 56, with fptprove): delete once the solver answers them.
+                        // The requires of the indexes and of `FieldIdx::new` in the condition below,
+                        // which binds the two indices to `k0` and `k1` so that an `assume!` can state them.
+                        thrust_macros::assume!(|i: FieldIdx, offsets: IndexVec<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(i) < offsets.len());
+                        thrust_macros::assume!(|j: FieldIdx, offsets: IndexVec<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(j) < offsets.len());
+                        thrust_macros::assume!(|kind: StructKind| <FieldIdx as Idx>::can_new(0usize));
+                        let k0 = FieldIdx::new(0);
+                        thrust_macros::assume!(|kind: StructKind| <FieldIdx as Idx>::can_new(1usize));
+                        let k1 = FieldIdx::new(1);
+                        thrust_macros::assume!(|k0: FieldIdx, pair_offsets: &IndexVec<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(k0) < (*pair_offsets).len());
+                        thrust_macros::assume!(|k1: FieldIdx, pair_offsets: &IndexVec<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(k1) < (*pair_offsets).len());
+                        if offsets[i] == pair_offsets[k0]
+                            && offsets[j] == pair_offsets[k1]
                             && align == pair.align.abi
                             && size == pair.size
                         {
@@ -1028,6 +1068,9 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
 
         let seed = field_seed.wrapping_add(repr.field_shuffle_seed);
 
+        // Assumed (fallback; open part 58, with fptprove): delete once the solver answers it.
+        // `VariantIdx::new(0)`'s requires.
+        thrust_macros::assume!(|kind: StructKind| <VariantIdx as Idx>::can_new(0usize));
         Ok(LayoutData {
             variants: Variants::Single {
                 index: VariantIdx::new(0),
