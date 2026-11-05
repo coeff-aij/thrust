@@ -292,7 +292,7 @@ pub fn is_referenced_in_body(stmts: &[syn::Stmt], label: &str) -> bool {
 
 /// Replaces the references to the label of `expr` in its body by compile errors, when they name
 /// a ghost the labelled loop or block does not have: any ghost of a `while` or `loop` or a block,
-/// and of a `for` loop those `labelled_ghosts` does not give.
+/// and those of a `for` loop that `labelled_ghosts` does not give.
 pub fn reject_in_labelled(
     expr: &mut syn::Expr,
     labelled_ghosts: impl Fn(&syn::ExprForLoop) -> LabelledGhosts,
