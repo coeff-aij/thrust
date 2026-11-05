@@ -758,6 +758,9 @@ pub fn layout<
             // TODO(proof): `fits_in_any_order` by the size bound needs the variant's Assigned locals
             // and the promoted ones to weigh at most `local_layouts`, a sum over distinct locals
             // (properties 2c and 4), as the count below.
+            // TODO(proof): `prefix_fits` needs the prefix's size plus its alignment's bytes at most
+            // `2^62`, which follows from `univariant`'s size and alignment `ensures` for the prefix
+            // once its `fits_in_any_order` above is shown.
             let mut variant = calc.univariant(
                 &collect_index_vec(variant_only_tys),
                 &ReprOptions::default(),
