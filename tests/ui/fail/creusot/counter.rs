@@ -217,6 +217,18 @@ impl FromIterator<u32> for Vec<u32> {
 #[thrust_macros::ensures(forall(|k: Int| 0 <= k && k < result.len() ==> start < result[k] && result[k] < end))]
 fn counter(start: u32, end: u32) -> Vec<u32> {
     let mut cnt: usize = 0;
+    // Creusot's `examples/counter` closure states `cnt < usize::MAX`
+    // (`#[requires(@cnt == (*_prod).len() && cnt < usize::MAX)]`), which `cnt += 1` needs under
+    // `THRUST_INT_RANGE=all`. Without the option a length has no upper bound, so the bound could
+    // not be shown at the call, and the closure states the history only.
+    #[cfg(thrust_int_range)]
+    let f = thrust_macros::closure!(
+        captures(cnt: &mut &mut usize),
+        requires(*(*cnt) == produced.len() && *(*cnt) < usize::MAX),
+        ensures(*(!cnt) == *(*cnt) + 1 && result == x),
+        |x: u32, produced: Ghost<Seq<U32>>| -> u32 { cnt += 1; x },
+    );
+    #[cfg(not(thrust_int_range))]
     let f = thrust_macros::closure!(
         captures(cnt: &mut &mut usize),
         requires(*(*cnt) == produced.len()),

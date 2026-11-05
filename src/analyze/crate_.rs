@@ -433,6 +433,18 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     self.ctx.analyze_per_instance_too(owner_fn_id);
                 }
             }
+        } else if analyzer.is_annotated_as_extern_spec_fn()
+            && owner_fn_id_args.is_some_and(has_type_or_const_args)
+        {
+            // An extern spec without type parameters of a generic function of another crate
+            // states the contract at the instance its own call fixes (`Option::<u64>::unwrap_or`)
+            // and covers only the calls at that instance; another call takes another spec of the
+            // target, or none.
+            self.ctx.register_deferred_def_without_analysis(
+                owner_fn_id,
+                local_def_id,
+                owner_fn_id_args,
+            );
         } else if is_injected_std && is_law_impl {
             // The contract of an injected impl's law instantiates the trait's predicates at the
             // impl; it is built where a proof step calls the law, not in every crate.
@@ -1431,6 +1443,10 @@ pub(super) fn per_instance_generics_requested() -> bool {
         std::env::var("THRUST_PER_INSTANCE_GENERICS").as_deref(),
         Ok("1")
     )
+}
+
+fn has_type_or_const_args(args: mir_ty::GenericArgsRef<'_>) -> bool {
+    args.types().next().is_some() || args.consts().next().is_some()
 }
 
 /// Whether `local_def_id` is an extern spec of a function of this crate, `target`, that covers

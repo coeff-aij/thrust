@@ -527,7 +527,8 @@ enum DefTy<'tcx> {
     Concrete(rty::RefinedType, Option<LocalDefId>),
     Generic(GenericDefTy<'tcx>),
     // Several extern specs can share one target, each covering the instantiations its tail call
-    // and bounds cover (see `bind_spec_args`); a call takes the first one that covers it.
+    // and bounds cover (see `bind_spec_args`), when no two of them can cover one instance
+    // (`extern_spec::specs_overlap`); a call takes the one that covers it.
     Deferred(Vec<DeferredDefTy<'tcx>>),
 }
 
@@ -1177,7 +1178,71 @@ impl<'tcx> Analyzer<'tcx> {
 
     pub fn register_def(&mut self, def_id: DefId, rty: rty::RefinedType, spec: Option<LocalDefId>) {
         tracing::info!(def_id = ?def_id, rty = %rty.display(), "register_def");
+        if let Some(spec) = spec {
+            self.reject_second_contract(def_id, spec);
+        }
         self.defs.insert(def_id, DefTy::Concrete(rty, spec));
+    }
+
+    /// The defs that carry the contracts registered for `def_id`: the def itself, or its extern
+    /// specs.
+    fn contract_carriers(&self, def_id: DefId) -> Vec<LocalDefId> {
+        match self.defs.get(&def_id) {
+            None => Vec::new(),
+            Some(DefTy::Concrete(_, spec)) => spec.iter().copied().collect(),
+            Some(DefTy::Generic(generic)) => vec![generic.local_def_id],
+            Some(DefTy::Deferred(specs)) => specs.iter().map(|spec| spec.local_def_id).collect(),
+        }
+    }
+
+    /// Stops when `target_def_id` already has a contract that covers every instance the one
+    /// `carrier` gives it would, and one of the two is an extern spec: an instance takes at most
+    /// one contract. Deferred specs, which cover only the instances their calls match, are
+    /// checked against one another by [`extern_spec::specs_overlap`] instead.
+    fn reject_second_contract(&self, target_def_id: DefId, carrier: LocalDefId) {
+        let is_spec = |def: LocalDefId| def.to_def_id() != target_def_id;
+        let first = self
+            .contract_carriers(target_def_id)
+            .into_iter()
+            .find(|first| *first != carrier && (is_spec(*first) || is_spec(carrier)));
+        if let Some(first) = first {
+            self.report_overlapping_specs(target_def_id, first, carrier);
+        }
+    }
+
+    fn report_overlapping_specs(
+        &self,
+        target_def_id: DefId,
+        first: LocalDefId,
+        second: LocalDefId,
+    ) -> ! {
+        let span = self
+            .tcx
+            .def_ident_span(second)
+            .unwrap_or_else(|| self.tcx.def_span(second));
+        let (first, second, target) = (
+            self.tcx.def_path_str(first),
+            self.tcx.def_path_str(second),
+            self.tcx.def_path_str(target_def_id),
+        );
+        let message = if self
+            .tcx
+            .generics_of(target_def_id)
+            .requires_monomorphization(self.tcx)
+        {
+            format!(
+                "the extern specs `{first}` and `{second}` of `{target}` both cover some of its \
+                 instances; an instance takes at most one extern spec, so write one spec, over a \
+                 spec trait where the contracts differ by type"
+            )
+        } else {
+            format!(
+                "`{target}` already has a contract, from `{first}`, and `{second}` would be a \
+                 second one; a function takes one contract, so state a contract that only one \
+                 proof needs on a local wrapper of it"
+            )
+        };
+        self.tcx.dcx().span_fatal(span, message)
     }
 
     pub fn register_impl_method_with_own_contract(&mut self, def_id: DefId) {
@@ -1613,6 +1678,20 @@ impl<'tcx> Analyzer<'tcx> {
             mode,
             target_args,
         };
+        if !matches!(
+            self.defs.get(&target_def_id),
+            None | Some(DefTy::Deferred(_))
+        ) {
+            self.reject_second_contract(target_def_id, local_def_id);
+        }
+        if let Some(DefTy::Deferred(specs)) = self.defs.get(&target_def_id) {
+            if let Some(other) = specs
+                .iter()
+                .find(|other| extern_spec::specs_overlap(self.tcx, other, &spec))
+            {
+                self.report_overlapping_specs(target_def_id, other.local_def_id, local_def_id);
+            }
+        }
         if let DefTy::Deferred(specs) = self
             .defs
             .entry(target_def_id)
@@ -1629,6 +1708,7 @@ impl<'tcx> Analyzer<'tcx> {
         rty: Option<rty::RefinedType>,
     ) {
         tracing::info!(?target_def_id, ?local_def_id, ?rty, "register_generic_def");
+        self.reject_second_contract(target_def_id, local_def_id);
         self.defs.insert(
             target_def_id,
             DefTy::Generic(GenericDefTy {
@@ -1735,9 +1815,14 @@ impl<'tcx> Analyzer<'tcx> {
         let mut def_ty = match self.defs.get(&def_id)? {
             DefTy::Concrete(rty, _) => rty.clone(),
             DefTy::Generic(generic) => generic.cache.borrow().get(&key)?.clone(),
-            DefTy::Deferred(specs) => specs
-                .iter()
-                .find_map(|spec| spec.cache.borrow().get(&key).cloned())?,
+            DefTy::Deferred(specs) => specs.iter().find_map(|spec| {
+                let (spec_args, _) = self.covered_spec_args(spec, generic_args, caller_def_id)?;
+                let key = InstantiationKey {
+                    generic_args: spec_args,
+                    caller_def_id,
+                };
+                spec.cache.borrow().get(&key).cloned()
+            })?,
         };
         def_ty.instantiate_ty_params(
             generic_args

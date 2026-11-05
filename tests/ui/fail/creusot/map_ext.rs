@@ -242,9 +242,10 @@ impl Iterator for Range {
 }
 
 fn main() {
-    // The precondition depends on the history: the k-th item is k + 1.
+    // The precondition depends on the history: the k-th item is k + 1. `x < 100` is the bound
+    // Creusot's `decuple_range` closure states for `x * 10` (`#[requires(@x < 100)]`).
     let f = thrust_macros::closure!(
-        requires(x == produced.len() + 1),
+        requires(x == produced.len() + 1 && x < 100),
         ensures(result == x * 10),
         |x: isize, produced: Ghost<Seq<ISize>>| -> isize { x * 10 }
     );

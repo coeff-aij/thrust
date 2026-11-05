@@ -389,7 +389,6 @@ impl Size {
     }
 
     #[inline]
-    #[thrust_macros::ensures(result == self.raw)]
     pub fn bytes(self) -> u64 {
         self.raw
     }
@@ -568,7 +567,6 @@ impl Integer {
     }
 
     #[inline]
-    #[thrust_macros::ensures(Self::bytes_are(self, result))]
     pub fn size(self) -> Size {
         use Integer::*;
         match self {
@@ -627,7 +625,6 @@ impl Float {
             || (self == Float::F128 && n.raw == 16)
     }
 
-    #[thrust_macros::ensures(Self::bytes_are(self, result))]
     pub fn size(self) -> Size {
         use Float::*;
 

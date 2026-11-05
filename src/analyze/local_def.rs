@@ -949,12 +949,17 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// related by `hist_inv!` (each `&mut` capture keeps its prophecy, each `&` capture its value),
     /// as Creusot's `postcondition_mut` of a closure includes `hist_inv(self, ^self)`. The body
     /// is checked against it, and it makes the law that each call's postcondition implies
-    /// `hist_inv!` hold of every such closure's contract.
+    /// `hist_inv!` hold of every such closure's contract. The closure is taken at the arguments
+    /// the body is analyzed at, so that at an instance the relation is the one of the closure
+    /// there, over the sorts of its receiver there.
     fn conjoin_fn_mut_hist_inv(&self, fn_ty: &mut rty::FunctionType) {
         if !self.tcx.is_closure_like(self.local_def_id.to_def_id()) {
             return;
         }
-        let closure_ty = self.tcx.type_of(self.local_def_id).instantiate_identity();
+        let closure_ty = self
+            .tcx
+            .type_of(self.local_def_id)
+            .instantiate(self.tcx, self.generic_args);
         let mir_ty::TyKind::Closure(_, args) = closure_ty.kind() else {
             return;
         };
@@ -966,10 +971,17 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         {
             return;
         }
-        let upvars_sort = receiver.to_sort().deref();
-        let receiver = chc::Term::var(rty::RefinedTypeVar::Free(
-            rty::FunctionParamIdx::from_usize(0),
-        ));
+        let receiver_sort = receiver.to_sort();
+        let upvars_sort = receiver_sort.clone().deref();
+        // A parameter of a singleton sort, such as the receiver of a closure whose captures hold
+        // only closures without captures, is not a clause variable; its one value stands for it.
+        let receiver = if receiver_sort.is_singleton() {
+            chc::Term::default_for(&receiver_sort)
+        } else {
+            chc::Term::var(rty::RefinedTypeVar::Free(
+                rty::FunctionParamIdx::from_usize(0),
+            ))
+        };
         let formula = self.ctx.closure_hist_inv_definition(
             closure_ty,
             &upvars_sort,
@@ -1889,9 +1901,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         local_desc: String,
     ) {
         let local_ty = self.body.local_decls[local].ty;
-        let written = spec_param_compared_ty(self.ctx, self.local_def_id, written_ty);
-        let actual = spec_param_compared_ty(self.ctx, self.local_def_id, local_ty);
-        if written != actual {
+        if spec_param_mismatch(self.ctx, self.local_def_id, written_ty, local_ty).is_some() {
             self.tcx.dcx().span_fatal(
                 span,
                 format!(
@@ -2929,10 +2939,10 @@ fn borrow_may_escape<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId, idx: usize) -> bool
             .any(|(other, ty)| other != idx && names_region(*ty))
 }
 
-/// The type a parameter of a spec closure (`invariant!`, `proof_assert!`, `assume!`) is written
-/// with, from the type of the formula function's
-/// parameter: `thrust_macros` gives a parameter written `x: T` the type `<T as Model>::Ty`, and
-/// one written `x: &str` the type `NoModel` (`thrust-macros/src/formula_fn_type_lowering.rs`).
+/// The type a parameter of a spec closure (`invariant!`, `proof_assert!`, `assume!`, `ghost!`) is
+/// written with, from the type of the formula function's parameter: `thrust_macros` gives a
+/// parameter written `x: T` the type `<T as Model>::Ty`, and one written `x: &str` the type
+/// `NoModel` (`thrust-macros/src/formula_fn_type_lowering.rs`).
 pub(crate) fn spec_param_written_ty<'tcx>(
     ctx: &analyze::Analyzer<'tcx>,
     input_ty: mir_ty::Ty<'tcx>,
@@ -2958,6 +2968,19 @@ pub(crate) fn spec_param_written_ty<'tcx>(
         }
         _ => panic!("spec closure parameter of unexpected type {input_ty:?}"),
     }
+}
+
+/// `written`, the type a spec closure's parameter is written with, and `actual`, the type of the
+/// variable it names, as they are compared ([`spec_param_compared_ty`]), when they differ.
+pub(crate) fn spec_param_mismatch<'tcx>(
+    ctx: &analyze::Analyzer<'tcx>,
+    owner: LocalDefId,
+    written: mir_ty::Ty<'tcx>,
+    actual: mir_ty::Ty<'tcx>,
+) -> Option<(mir_ty::Ty<'tcx>, mir_ty::Ty<'tcx>)> {
+    let written = spec_param_compared_ty(ctx, owner, written);
+    let actual = spec_param_compared_ty(ctx, owner, actual);
+    (written != actual).then_some((written, actual))
 }
 
 /// `ty` in `owner` as it is compared with the type written in a spec closure, where `thrust_macros` has
