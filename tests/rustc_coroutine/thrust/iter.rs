@@ -527,9 +527,11 @@ where
 // Like core's (`Iterator::max_by_key` through `cmp::max_by`) it keeps the last item of greatest
 // key. The closure's precondition need hold only on the items the iterator can yield, where
 // std.rs's `max_by_key` requires it of every value; `F: Fn` as in `iter_all`, and the items are
-// `Copy`, so the loop can record them with the candidate's position. Creusot and Verus specify no `max_by_key`; the contract
-// states that the result is one of the items produced up to completion, `None` exactly when there
-// is none, and not which of them has the greatest key.
+// `Copy`, so the loop can record them with the candidate's position. Creusot (3620de437) specifies
+// no `max_by_key`, and Verus (d804d56) only `cmp::max_by_key` of two values
+// (vstd/std_specs/cmp.rs:313), not the iterator's. The contract states that the result is one of
+// the items produced up to completion, `None` exactly when there is none, and not which of them
+// has the greatest key.
 pub struct MaxByKeySpec<I, B, F>(PhantomData<(I, B, F)>);
 
 #[thrust_macros::context]
