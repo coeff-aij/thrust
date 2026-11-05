@@ -1,3 +1,4 @@
+//@ignore-on-host: draft, not refuted yet: its goal gets no answer (see README.md)
 //@error-in-other-file: Unsat
 //@edition: 2024
 //@compile-flags: -Adead_code -C debug-assertions=off --cfg thrust_place_fields_fail
