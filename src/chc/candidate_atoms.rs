@@ -305,7 +305,7 @@ pub(super) fn rewrite_atoms(
     rewritten
 }
 
-fn simplify_term(term: Term) -> Term {
+pub(super) fn simplify_term(term: Term) -> Term {
     match term {
         Term::MutCurrent(t) => match *t {
             Term::Mut(current, _) => *current,
@@ -328,7 +328,7 @@ fn simplify_term(term: Term) -> Term {
 }
 
 /// Rewrites every term of `formula` bottom-up with `f`.
-fn map_formula_terms(formula: Formula, f: &mut dyn FnMut(Term) -> Term) -> Formula {
+pub(super) fn map_formula_terms(formula: Formula, f: &mut dyn FnMut(Term) -> Term) -> Formula {
     match formula {
         Formula::Atom(atom) => Formula::Atom(map_atom_terms(atom, f)),
         Formula::Not(fo) => Formula::Not(Box::new(map_formula_terms(*fo, f))),
