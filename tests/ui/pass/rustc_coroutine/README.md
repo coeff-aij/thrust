@@ -15,7 +15,8 @@ with a `//@rustc-env: THRUST_VERIFY_ONLY=..` header: a module (`rustc_hashes`, t
 for it. Each rustc function is selected by one root; functions outside the selection that have a
 contract are trusted. A function without a contract is checked only where a caller the analysis
 reaches calls it; the roots that select a part of rustc's code and are not drafts split by goal
-(`indexvec_int_range.rs`, a check of an option, does not), so
+(`indexvec_int_range.rs`, a check of an option, splits only into the classes of clauses that
+share no unknown, `THRUST_SPLIT`), so
 `THRUST_REPORT=functions` lists one that no such caller reaches as checked in no part.
 The root also holds its driver (`main` and the stubs of rewrites.md S5); the root's own test
 functions with a contract are selected with `crate`.
@@ -35,7 +36,7 @@ So are `VariantIdx: Model<Ty: PartialEq>` and `Cx: Model<Ty: PartialEq>` on `uni
 | `hashes.rs` | `rustc_hashes` | verified, each goal on its own (`THRUST_SPLIT_GOALS`); `Hash64::new` is checked where `scalar_pair` calls it, in the `scalar_pair.rs` root |
 | `values.rs` | `rustc_abi` (lib.rs) | verified, each goal on its own; `main` reveals `TargetDataLayout::pointer_space_ok` and `pointer_size_is`, which it reads (#132) |
 | `index.rs` | `rustc_index::**` (`Idx`, `IndexVec`, `IndexSlice`, the bit sets, the own iterators `IdxRange`, `WordIter`, `SliceIter`, `IterEnumerated`), and `crate`: the clients `filled`, `two_members` and `column_bound` | verified, each goal on its own |
-| `indexvec_int_range.rs` | `rustc_index::vec`, `rustc_index::slice`, `filled`, under `THRUST_INT_RANGE=conversions` | verified; a check of the option, not a run of the case study: with it `count_ones` of bit_set.rs has no specification of `sum` |
+| `indexvec_int_range.rs` | `rustc_index::vec`, `rustc_index::slice`, `filled`, under `THRUST_INT_RANGE=conversions` | verified, each class of clauses on its own (`THRUST_SPLIT`); a check of the option, not a run of the case study: with it `count_ones` of bit_set.rs has no specification of `sum` |
 | `simple.rs` | `crate`: `drive`, which reads `LayoutData::scalar_pair`'s fields as `univariant_biased` does; `scalar_pair` assumed on its contract, which the `scalar_pair.rs` root checks | verified |
 | `scalar_pair.rs` | `LayoutData::scalar_pair` (layout/simple.rs), with the local `max_by_key` of `thrust/iter.rs` (rewrites.md R21); `Niche::from_scalar` and `Scalar::size` assumed on their contracts, which `values.rs` checks | verified, each goal on its own (`THRUST_SPLIT_GOALS`); the fail twin asserts, before the niches are computed, that the second scalar is placed at 0, and false after a call of `max_by_key` on a chain of two concrete options (`drive_max_by_key`), which shows the code after such a call reachable under its contract for `u32` items; that it is reachable for `scalar_pair`'s `Niche` items is inferred from this, not run |
 | `univariant.rs` | `LayoutCalculator::univariant`, `univariant_biased` trusted on its contract | verified, one part per goal (`THRUST_SPLIT_GOALS`), with the predicates its contracts pass on unchanged `#[thrust::opaque]`: `fits_in_any_order`, `weighs`, `unsized_misplaced`, `some_field_niche` (layout.rs), `Primitive::size_in`, `FieldsShape::arbitrary_of`, `TargetDataLayout::pointer_space_ok`, `TargetDataLayout::pointer_size_is` (lib.rs); `univariant_biased`, `Primitive::size`, `layout()`, `pointer_size_in` and `pointer_align_in` reveal those they read (#132) |
