@@ -825,7 +825,7 @@ where
     I: IteratorSpec,
     F: Fn(I::Item) -> bool,
     I::Item: thrust_models::Model + Copy,
-    // `iter_all`'s `#[context]` adds this bound from its own `requires`.
+    // A bound `iter_all` has through its `#[context]`.
     <I as thrust_models::Model>::Ty: PartialEq,
 {
     iter_all(iter, f)
