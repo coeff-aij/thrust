@@ -272,12 +272,14 @@ where
     }
 
     // `produces` with the inner iterator's items `s` and Creusot's index map `f` given: the items
-    // yielded are those of `s` at the increasing positions `f`, and the closure answered `true` on
-    // the items at those positions and `false` on the others.
+    // yielded are those of `s` at the increasing positions `f`, so no more than `s` (stated, as an
+    // increasing map gives it only by induction), and the closure answered `true` on the items at
+    // those positions and `false` on the others.
     #[thrust_macros::predicate]
     pub(crate) fn produces_at(s0: Self, visited: Vec<I::Item>, o: Self, s: Seq<<I::Item as thrust_models::Model>::Ty>, f: Array<Int, Int>) -> bool {
         s0.1 == o.1
             && I::produces(s0.0, s, o.0)
+            && visited.len() <= s.len()
             && forall(|i: Int| !(0 <= i && i < visited.len())
                 || (0 <= f[i] && f[i] < s.len() && visited[i] == s[f[i]]))
             && forall(|i: Int, j: Int| !(0 <= i && i < j && j < visited.len()) || f[i] < f[j])
