@@ -2,7 +2,7 @@
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@no-rustfix
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300
-//@rustc-env: THRUST_VERIFY_ONLY=rustc_index::vec,rustc_index::slice,filled,rustc_abi::Size::add_assign,rustc_abi::Size::bits,rustc_abi::Size::align_to
+//@rustc-env: THRUST_VERIFY_ONLY=rustc_index::vec,rustc_index::slice,filled,rustc_abi::Size::add_assign,rustc_abi::Size::bits
 //@rustc-env: THRUST_INT_RANGE=conversions
 //@rustc-env: THRUST_SPLIT=1
 // rustc_index's `IndexVec` and `IndexSlice` under `THRUST_INT_RANGE=conversions`, where the model

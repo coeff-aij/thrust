@@ -14,9 +14,8 @@ with a `//@rustc-env: THRUST_VERIFY_ONLY=..` header: a module (`rustc_hashes`, t
 `rustc_abi`'s lib.rs, all of `rustc_index`), or one large function with the helpers a rewrite added
 for it. Each rustc function is in the part one root selects; functions outside the selection that have a
 contract are trusted. A root also selects the functions through which code outside its selection
-enters a function whose contract is inferred (`Size::unsigned_int_max`, `Size::from_bytes`,
-`<Size as Add>::add`, and `Size::bits`' inner `overflow`), such as `Size::add_assign`,
-`Size::align_to` and `Size::bits`: at such an entry Thrust would fix the precondition to `true`,
+enters a function whose contract is inferred (`Size::unsigned_int_max`, `<Size as Add>::add`,
+and `Size::bits`' inner `overflow`), such as `Size::add_assign` and `Size::bits`: at such an entry Thrust would fix the precondition to `true`,
 and these functions panic on overflow. Such a function is checked again in each root that
 selects it. A function without a contract is checked only where a caller the analysis
 reaches calls it; the roots that select a part of rustc's code and are not drafts split by goal

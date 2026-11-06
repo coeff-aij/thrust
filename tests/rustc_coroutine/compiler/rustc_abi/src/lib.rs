@@ -370,6 +370,8 @@ impl Size {
     }
 
     #[inline]
+    #[thrust_macros::requires(T::fits(bytes))]
+    #[thrust_macros::ensures(thrust_models::exists(|b| T::converts_to(bytes, b) && result.raw == b))]
     pub fn from_bytes<T: TryIntoSpec<u64>>(bytes: T) -> Size {
         let bytes: u64 = bytes.try_into().ok().unwrap();
         Size { raw: bytes }

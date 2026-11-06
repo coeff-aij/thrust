@@ -4,7 +4,7 @@
 //@compile-flags: -Adead_code -C debug-assertions=off --cfg thrust_place_fields_fail
 //@no-rustfix
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300 THRUST_TRY_SPECS=1
-//@rustc-env: THRUST_VERIFY_ONLY=rustc_abi::layout::LayoutCalculator::place_fields,rustc_abi::Size::add_assign,rustc_abi::Size::bits,rustc_abi::Size::align_to
+//@rustc-env: THRUST_VERIFY_ONLY=rustc_abi::layout::LayoutCalculator::place_fields,rustc_abi::Size::add_assign,rustc_abi::Size::bits
 //@rustc-env: THRUST_SPLIT=1 THRUST_SPLIT_GOALS=1
 // `univariant_biased`'s field loop, `place_fields` (rewrites.md R19), with its invariant over the
 // loop's history, against the contract `univariant_biased` reads it by; `place_field` and the
