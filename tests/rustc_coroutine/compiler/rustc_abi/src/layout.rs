@@ -973,12 +973,16 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                 (Some((i, field)), None, None) => {
                     layout_of_single_non_zst_field = Some(field);
 
+                    // Fallback: the slice `offsets[i]` indexes, bound so that the `assume!` below
+                    // names the term the index's requires is on; index `offsets` again once the
+                    // assumption is deleted.
+                    let offsets_slice: &IndexSlice<FieldIdx, Size> = &offsets;
                     // Assumed (fallback; open part 41, with fptprove): delete once the solver answers it.
                     // The index `offsets[i]`'s requires.
-                    thrust_macros::assume!(|i: FieldIdx, offsets: IndexVec<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(i) < offsets.len());
+                    thrust_macros::assume!(|i: FieldIdx, offsets_slice: &IndexSlice<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(i) < (*offsets_slice).len());
                     #[cfg(thrust_ub_reach = "single_field")]
                     thrust_macros::proof_assert!(|kind: StructKind| false);
-                    if offsets[i].bytes() == 0 && align == field.align.abi && size == field.size {
+                    if offsets_slice[i].bytes() == 0 && align == field.align.abi && size == field.size {
                         match field.backend_repr {
                             BackendRepr::Scalar(_) | BackendRepr::SimdVector { .. }
                                 if optimize_abi =>
@@ -1003,16 +1007,24 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                         thrust_macros::assume!(|a: Scalar, b: Scalar, self: &LayoutCalculator<Cx>|
                             forall(|d: TargetDataLayout| !Cx::dl_of(*self, d) || (Scalar::wf_in(a, d) && Scalar::wf_in(b, d))));
                         // Assumed (fallback; open parts 43 and 44, with fptprove): delete once the solver answers them.
-                        // The indexes `offsets[i]` and `offsets[j]`'s requires.
-                        thrust_macros::assume!(|i: FieldIdx, offsets: IndexVec<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(i) < offsets.len());
-                        thrust_macros::assume!(|j: FieldIdx, offsets: IndexVec<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(j) < offsets.len());
+                        // The indexes `offsets[i]` and `offsets[j]`'s requires, on the slice they
+                        // index, bound first (fallback; index `offsets` again once they are deleted).
+                        let offsets_slice: &IndexSlice<FieldIdx, Size> = &offsets;
+                        thrust_macros::assume!(|i: FieldIdx, offsets_slice: &IndexSlice<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(i) < (*offsets_slice).len());
+                        thrust_macros::assume!(|j: FieldIdx, offsets_slice: &IndexSlice<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(j) < (*offsets_slice).len());
                         #[cfg(thrust_ub_reach = "pair")]
                         thrust_macros::proof_assert!(|kind: StructKind| false);
-                        let ((i, a), (j, b)) = if offsets[i] < offsets[j] {
+                        let ((i, a), (j, b)) = if offsets_slice[i] < offsets_slice[j] {
                             ((i, a), (j, b))
                         } else {
                             ((j, b), (i, a))
                         };
+                        // Assumed (fallback; open once the step above is assumed): delete once the
+                        // solver answers it. `scalar_pair`'s requires, on the pair as ordered.
+                        thrust_macros::assume!(|a: Scalar, b: Scalar, self: &LayoutCalculator<Cx>|
+                            forall(|d: TargetDataLayout| !Cx::dl_of(*self, d) || (Scalar::wf_in(a, d) && Scalar::wf_in(b, d)))
+                                && forall(|z: USize| z == 0usize ==> <VariantIdx as Idx>::can_new(z))
+                                && forall(|k: USize| k == 0usize || k == 1usize ==> <FieldIdx as Idx>::can_new(k)));
                         let pair = LayoutData::<FieldIdx, VariantIdx>::scalar_pair(&self.cx, a, b);
                         // Assumed (fallback; open parts 46 and 47, with fptprove): delete once the solver answers them.
                         // The match's panicking arm is unreachable: `scalar_pair`'s `ensures` makes the fields `Arbitrary`.
@@ -1048,18 +1060,23 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                         // Assumed (fallback; open parts 51 to 56, with fptprove): delete once the solver answers them.
                         // The requires of the indexes and of `FieldIdx::new` in the condition below,
                         // which binds the two indices to `k0` and `k1` so that an `assume!` can state them.
-                        thrust_macros::assume!(|i: FieldIdx, offsets: IndexVec<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(i) < offsets.len());
-                        thrust_macros::assume!(|j: FieldIdx, offsets: IndexVec<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(j) < offsets.len());
+                        // The two slices are bound first, so that the assumptions name the terms
+                        // the indexes' requires are on (fallback; index `offsets` and
+                        // `pair_offsets` again once the assumptions are deleted).
+                        let offsets_slice: &IndexSlice<FieldIdx, Size> = &offsets;
+                        let pair_offsets_slice: &IndexSlice<FieldIdx, Size> = pair_offsets;
+                        thrust_macros::assume!(|i: FieldIdx, offsets_slice: &IndexSlice<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(i) < (*offsets_slice).len());
+                        thrust_macros::assume!(|j: FieldIdx, offsets_slice: &IndexSlice<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(j) < (*offsets_slice).len());
                         thrust_macros::assume!(|kind: StructKind| forall(|z: USize| z == 0usize ==> <FieldIdx as Idx>::can_new(z)));
                         let k0 = FieldIdx::new(0);
                         thrust_macros::assume!(|kind: StructKind| forall(|z: USize| z == 1usize ==> <FieldIdx as Idx>::can_new(z)));
                         let k1 = FieldIdx::new(1);
-                        thrust_macros::assume!(|k0: FieldIdx, pair_offsets: &IndexVec<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(k0) < (*pair_offsets).len());
-                        thrust_macros::assume!(|k1: FieldIdx, pair_offsets: &IndexVec<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(k1) < (*pair_offsets).len());
+                        thrust_macros::assume!(|k0: FieldIdx, pair_offsets_slice: &IndexSlice<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(k0) < (*pair_offsets_slice).len());
+                        thrust_macros::assume!(|k1: FieldIdx, pair_offsets_slice: &IndexSlice<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(k1) < (*pair_offsets_slice).len());
                         #[cfg(thrust_ub_reach = "pair_condition")]
                         thrust_macros::proof_assert!(|kind: StructKind| false);
-                        if offsets[i] == pair_offsets[k0]
-                            && offsets[j] == pair_offsets[k1]
+                        if offsets_slice[i] == pair_offsets_slice[k0]
+                            && offsets_slice[j] == pair_offsets_slice[k1]
                             && align == pair.align.abi
                             && size == pair.size
                         {
