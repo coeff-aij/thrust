@@ -92,9 +92,9 @@ pub struct ReprOptions {
 }
 
 // `derive(Default)` gives `ReprOptions` no `repr` alignment and no `pack`, which `layout()`'s
-// `variant_fits_wf` and `univariant`'s `prefix_fits` read. A derived body is analyzed only for
-// its panics, so its value is stated here; the body is checked against it where it is selected,
-// through std.rs's `Option::default`.
+// `variant_fits_wf` and `univariant`'s `prefix_fits` read. Without a spec, a derived `default`
+// is trusted on std.rs's `ensures(true)`; with this one, its body is analyzed against it where it
+// is selected, and reads std.rs's `Option::default`.
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(result.align == None && result.pack == None)]
