@@ -779,6 +779,8 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                                 ensures(true),
                                 |n: Niche| -> u128 { n.available(dl) },
                             )).unwrap_or(0);
+                            #[cfg(thrust_ub_reach = "map")]
+                            thrust_macros::proof_assert!(|layout: &F| false);
 
                             let size_as_align = align.max(size).trailing_zeros();
                             let size_as_align = if largest_niche_size > 0 {
@@ -848,6 +850,8 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                                         |n: Niche| -> u64 { !(field_size - n.value.size(dl).bytes() - n.offset.bytes()) },
                                     )),
                                 };
+                                #[cfg(thrust_ub_reach = "map_or")]
+                                thrust_macros::proof_assert!(|x: FieldIdx| false);
 
                                 (
                                     cmp::Reverse(alignment_group_key(f, dl)),
