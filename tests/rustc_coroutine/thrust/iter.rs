@@ -741,3 +741,53 @@ where
         _marker: PhantomData,
     })
 }
+
+// Fallback, not merged: `collect_index_vec` with its `requires` (the iterator's `inv`) assumed,
+// for a `collect` of `layout()`'s whose precondition the solver does not answer. The iterator's
+// type names closures, so an `assume!` at the call cannot state it; here it is the type
+// parameter. The `ensures` is `collect_index_vec`'s.
+#[thrust_macros::context]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(
+    exists(|visited: Seq<<T as thrust_models::Model>::Ty>,
+           mid: <J as thrust_models::Model>::Ty,
+           fin: <J as thrust_models::Model>::Ty|
+        J::produces(it, visited, mid)
+            && J::completed(Mut::new(mid, fin))
+            && result == visited)
+)]
+pub fn collect_index_vec_assumed<I, T, J>(it: J) -> IndexVec<I, T>
+where
+    I: Idx + thrust_models::Model,
+    T: thrust_models::Model,
+    J: IteratorSpec + Iterator<Item = T>,
+{
+    thrust_macros::assume!(|it: J| J::inv(it));
+    collect_index_vec(it)
+}
+
+// Fallback, not merged: `collect_index_vec_result` with its `requires` assumed, as
+// `collect_index_vec_assumed` is for `collect_index_vec`. The `ensures` is
+// `collect_index_vec_result`'s.
+#[thrust_macros::context]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(
+    forall(|v: <IndexVec<I, T> as thrust_models::Model>::Ty| result != Ok(v)
+        || exists(|visited: Seq<<Result<T, E> as thrust_models::Model>::Ty>,
+                   mid: <J as thrust_models::Model>::Ty,
+                   fin: <J as thrust_models::Model>::Ty|
+            J::produces(it, visited, mid)
+                && J::completed(Mut::new(mid, fin))
+                && visited.len() == v.len()
+                && forall(|k: USize| 0 <= k && k < v.len() ==> visited[k] == Ok(v[k]))))
+)]
+pub fn collect_index_vec_result_assumed<I, T, E, J>(it: J) -> Result<IndexVec<I, T>, E>
+where
+    I: Idx + thrust_models::Model,
+    T: thrust_models::Model,
+    E: thrust_models::Model,
+    J: IteratorSpec + Iterator<Item = Result<T, E>>,
+{
+    thrust_macros::assume!(|it: J| J::inv(it));
+    collect_index_vec_result(it)
+}

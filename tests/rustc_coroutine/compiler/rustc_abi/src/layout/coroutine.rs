@@ -13,7 +13,7 @@ use crate::rustc_index::bit_set::{ones, BitIter, BitMatrix, DenseBitSet};
 use crate::rustc_index::{Idx, IdxRange, IndexSlice, IndexVec, IterEnumerated, SliceIter};
 use crate::case_study::USize;
 use crate::case_study::{counts, lemmas};
-use crate::case_study::iter::{Filter, Map, collect_index_vec, collect_index_vec_result, iter_all};
+use crate::case_study::iter::{Filter, Map, collect_index_vec, collect_index_vec_assumed, collect_index_vec_result_assumed, iter_all};
 use std::iter::{self, Enumerate};
 use std::slice::IterMut;
 
@@ -610,16 +610,6 @@ fn assigned_count_of<FieldIdx: Idx + thrust_models::Model, LocalIdx: Idx + thrus
     m: usize,
 ) {}
 
-// Fallback (rewrites.md R22), not verified: assumes the iterator's `inv`, the precondition of a
-// `collect` call that the solver does not answer, where an `assume!` cannot state it because the
-// iterator's type names closures, which have no type a closure parameter can be written with.
-// Delete it and its calls once the solver answers that precondition.
-#[thrust::trusted]
-#[thrust_macros::context]
-#[thrust_macros::requires(true)]
-#[thrust_macros::ensures(J::inv(*it))]
-fn assumed_inv<J: crate::IteratorSpec>(it: &J) {}
-
 // Rewrite (rewrites.md R14): the part of `layout()`'s per-variant closure that collects the
 // layouts of the variant's fields, as a function whose contract states what the closure reads of
 // them: no more than the locals Assigned to the variant (`class_cnt`), each a layout of
@@ -761,11 +751,11 @@ fn variant_field_layouts<
     ));
     // Each field collected is an entry of `local_layouts`: the map closure's `ensures`.
     thrust_macros::proof!(Map::yields_entries_of(&variant_only_tys, local_layouts));
-    // Assumed (fallback): `collect`'s precondition, the map's `inv`.
-    assumed_inv(&variant_only_tys);
     // Rewrite (rewrites.md R8): `collect_index_vec` for `collect`; the result is bound to a name,
-    // for the `assume!`.
-    let fields = collect_index_vec(variant_only_tys);
+    // for the `assume!`. Fallback: through `collect_index_vec_assumed`, which assumes `collect`'s
+    // precondition (the map's `inv`), as the solver does not answer it; call `collect_index_vec`
+    // again once it does.
+    let fields = collect_index_vec_assumed(variant_only_tys);
     // The fields are as many as the variant's entries Assigned to it, which `combine_offsets`
     // requires: `map_count_exact` at `collect`'s witness. Assumed (fallback): the solver does not
     // answer this cut; delete the `assume!` for the `proof_assert!` once it does.
@@ -2098,9 +2088,10 @@ pub fn layout<
     // `hist_inv` bounds `size` and `align`: nothing after the `collect` needs a bound, as
     // `Size::align_to` requires nothing (its body checked by the `values.rs` root) and `max`
     // neither.
-    // Rewrite (rewrites.md R13): the map is bound to a name, for the fallback's assumption of
-    // `collect`'s precondition below.
-    let variant_map = Map::new(
+    // Fallback: through `collect_index_vec_result_assumed`, which assumes `collect`'s precondition
+    // (the map's `inv`), as the solver does not answer it; call `collect_index_vec_result` again
+    // once it does.
+    let variants = collect_index_vec_result_assumed::<VariantIdx, _, _, _>(Map::new(
         variant_iter,
         thrust_macros::closure!(
         captures(
@@ -2144,14 +2135,11 @@ pub fn layout<
             Ok(VariantLayout::from_layout(variant))
         },
         ),
-    );
-    // Assumed (fallback): `collect`'s precondition, the map's `inv`.
-    assumed_inv(&variant_map);
+    ))?;
     // Reachability twin of the fallback's assumptions in this function (fail root
     // layout_reach_fallback.rs).
     #[cfg(thrust_layout_reach_fallback)]
     thrust_macros::proof_assert!(|| false);
-    let variants = collect_index_vec_result::<VariantIdx, _, _, _>(variant_map)?;
 
     size = size.align_to(align.abi);
 
