@@ -2,7 +2,7 @@
 //@edition: 2024
 //@compile-flags: -Adead_code -C debug-assertions=off -A unused-variables -A unused_parens
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_TRY_SPECS=1
-//@rustc-env: THRUST_VERIFY_ONLY=rustc_abi::layout::coroutine::layout,case_study::iter
+//@rustc-env: THRUST_VERIFY_ONLY=rustc_abi::layout::coroutine::layout,case_study::iter,rustc_abi::Size::add_assign,rustc_abi::TargetDataLayout::obj_size_bound,rustc_abi::Size::align_to
 // Stage 7 of the rustc-coroutine verification target: `layout()` of rustc_abi's
 // layout/coroutine.rs, with the local iterator adapters it calls (rewrites.md R8). The counting
 // lemmas it uses (thrust/lemmas.rs) are assumed here and verified by the `lemmas.rs` root.

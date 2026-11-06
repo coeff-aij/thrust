@@ -3,7 +3,7 @@
 //@compile-flags: -Adead_code -C debug-assertions=off --cfg thrust_place_field_fail
 //@no-rustfix
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300 THRUST_TRY_SPECS=1
-//@rustc-env: THRUST_VERIFY_ONLY=rustc_abi::layout::LayoutCalculator::place_field
+//@rustc-env: THRUST_VERIFY_ONLY=rustc_abi::layout::LayoutCalculator::place_field,rustc_abi::Size::add_assign,rustc_abi::TargetDataLayout::obj_size_bound,rustc_abi::Size::checked_add,rustc_abi::Size::align_to
 //@rustc-env: THRUST_SPLIT=1 THRUST_SPLIT_GOALS=1
 // The body of `univariant_biased`'s field loop after the unsized checks, `place_field`, and its
 // niche choice, `offer_niche` (rewrites.md R18), with the lemmas they use, against the contracts

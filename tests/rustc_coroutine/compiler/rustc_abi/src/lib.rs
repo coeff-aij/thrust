@@ -185,10 +185,6 @@ impl TargetDataLayout {
     }
 
     #[inline]
-    #[thrust_macros::requires(((*self).default_address_space_pointer_spec.pointer_size.raw == 2
-        || (*self).default_address_space_pointer_spec.pointer_size.raw == 4
-        || (*self).default_address_space_pointer_spec.pointer_size.raw == 8))]
-    #[thrust_macros::ensures(result >= 1)]
     #[thrust_macros::ensures(result == obj_bound(*self))]
     pub fn obj_size_bound(&self) -> u64 {
         match self.pointer_size().bits() {
@@ -370,8 +366,6 @@ impl Size {
     }
 
     #[inline]
-    #[thrust_macros::requires(T::fits(bytes))]
-    #[thrust_macros::ensures(thrust_models::exists(|b| T::converts_to(bytes, b) && result.raw == b))]
     pub fn from_bytes<T: TryIntoSpec<u64>>(bytes: T) -> Size {
         let bytes: u64 = bytes.try_into().ok().unwrap();
         Size { raw: bytes }
@@ -382,13 +376,9 @@ impl Size {
         self.raw
     }
 
-    // The body panics exactly when `raw * 8` overflows `u64`, which the `requires` excludes.
     #[inline]
-    #[thrust_macros::requires(self.raw * 8 <= u64::MAX)]
-    #[thrust_macros::ensures(result == self.raw * 8)]
     pub fn bits(self) -> u64 {
         #[cold]
-        #[thrust_macros::requires(false)]
         fn overflow(bytes: u64) -> ! {
             panic!("Size::bits: {bytes} bytes in bits doesn't fit in u64")
         }
@@ -411,7 +401,8 @@ impl Size {
     }
 
     #[inline]
-    // The `requires` is that of `obj_size_bound` for the layout `cx` names.
+    // The `requires` is the pointer size for which `obj_size_bound` does not panic, of the layout
+    // `cx` names.
     #[thrust_macros::requires(forall(|dl: TargetDataLayout| C::dl_of(*cx, dl) ==> dl.default_address_space_pointer_spec.pointer_size.raw == 2
         || dl.default_address_space_pointer_spec.pointer_size.raw == 4
         || dl.default_address_space_pointer_spec.pointer_size.raw == 8))]
@@ -435,7 +426,6 @@ impl Size {
     }
 
     #[inline]
-    #[thrust_macros::requires((*self).raw * 8 <= 128)]
     pub fn unsigned_int_max(&self) -> u128 {
         u128::MAX >> (128 - self.bits())
     }
@@ -445,8 +435,6 @@ impl Size {
 impl Add for Size {
     type Output = Size;
     #[inline]
-    #[thrust_macros::requires(self.raw + other.raw <= u64::MAX)]
-    #[thrust_macros::ensures(result.raw == self.raw + other.raw)]
     fn add(self, other: Size) -> Size {
         Size::from_bytes(self.bytes().checked_add(other.bytes()).unwrap_or_else(|| {
             panic!("Size::add: {} + {} doesn't fit in u64", self.bytes(), other.bytes())
