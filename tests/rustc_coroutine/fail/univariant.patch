@@ -18,8 +18,8 @@
 +// verifies.
  // Each goal is solved with the clauses it depends on (`THRUST_SPLIT_GOALS`). The predicates the
  // contracts pass on unchanged are `#[thrust::opaque]`, so the solver reads them through the
- // contracts instead of unfolding them; `layout_pre` and `dl_of` keep their definitions.
-@@ -26,16 +27,16 @@
+ // contracts instead of unfolding them; so is `layout_pre`, which `univariant`'s body reveals, and
+@@ -27,16 +28,16 @@
  use rustc_abi::{HasDataLayout, LayoutCalculator, LayoutData, ReprOptions, StructKind};
  use rustc_index::{Idx, IndexSlice};
  
