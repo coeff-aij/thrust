@@ -1013,6 +1013,12 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                         } else {
                             ((j, b), (i, a))
                         };
+                        // Assumed (fallback; open once the step above is assumed): delete once the
+                        // solver answers it. `scalar_pair`'s requires, on the pair as ordered.
+                        thrust_macros::assume!(|a: Scalar, b: Scalar, self: &LayoutCalculator<Cx>|
+                            forall(|d: TargetDataLayout| !Cx::dl_of(*self, d) || (Scalar::wf_in(a, d) && Scalar::wf_in(b, d)))
+                                && forall(|z: USize| z == 0usize ==> <VariantIdx as Idx>::can_new(z))
+                                && forall(|k: USize| k == 0usize || k == 1usize ==> <FieldIdx as Idx>::can_new(k)));
                         let pair = LayoutData::<FieldIdx, VariantIdx>::scalar_pair(&self.cx, a, b);
                         // Assumed (fallback; open parts 46 and 47, with fptprove): delete once the solver answers them.
                         // The match's panicking arm is unreachable: `scalar_pair`'s `ensures` makes the fields `Arbitrary`.
