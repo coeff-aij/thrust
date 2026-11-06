@@ -424,11 +424,13 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             // No resolution here: `sig` comes from the body, which `Self::generic_args`
             // has already instantiated, so `param_ty` is a parameter of the caller
             // already -- applying the arguments a second time would be out of range.
+            // The bound is read from this def's predicates at those same arguments, so
+            // that it is stated over the caller's parameters as `param_ty` is.
             if let Some(param_ty) = param_ty {
                 if let Some(fun_ty) = self.type_builder.build_closure_type_for_param(
                     param_ty,
                     self.local_def_id,
-                    self.tcx.mk_args(&[]),
+                    self.generic_args,
                 ) {
                     self.type_builder.register_closure_type_param(
                         analyze::TypeParam::GenericType {

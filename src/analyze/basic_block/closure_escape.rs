@@ -477,7 +477,7 @@ impl<'tcx> Analyzer<'tcx, '_> {
                 let contract = self.type_builder.build_closure_type_for_param(
                     param,
                     self.local_def_id,
-                    self.tcx.mk_args(&[]),
+                    self.analysis_key.generic_args,
                 )?;
                 self.type_builder
                     .register_closure_type_param(type_param, contract.clone());
