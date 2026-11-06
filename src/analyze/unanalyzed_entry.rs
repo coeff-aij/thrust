@@ -237,27 +237,11 @@ impl<'tcx> analyze::Analyzer<'tcx> {
             .and_then(|formula_def_id| {
                 self.formula_fn_with_args(formula_def_id, contract_args, owner_fn_id)
             });
-        // A precondition the `requires` reads in a position other than only positive ones is
-        // not fixed by it: the solver may choose it smaller than the real one. A closure with a
-        // written contract has no such unknown, and its precondition is the written one.
-        let receivers = formula_fn
-            .map(|formula_fn| {
-                let written =
-                    formula_fn
-                        .mixed_pre_receivers()
-                        .into_iter()
-                        .filter(|ty| match *ty.kind() {
-                            mir_ty::TyKind::Closure(def_id, _) => self.has_written_requires(def_id),
-                            _ => false,
-                        });
-                formula_fn
-                    .pre_receivers()
-                    .into_iter()
-                    .chain(written)
-                    .collect()
-            })
-            .unwrap_or_default();
-        StatedPres { receivers }
+        StatedPres {
+            receivers: formula_fn
+                .map(|formula_fn| formula_fn.pre_receivers().to_vec())
+                .unwrap_or_default(),
+        }
     }
 
     /// The contract a call of `def_id` at `args` from an analyzed body is checked against when

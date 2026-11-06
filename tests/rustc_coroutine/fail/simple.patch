@@ -1,0 +1,37 @@
+--- pass/simple.rs
++++ fail/simple.rs
+@@ -1,6 +1,6 @@
+-//@check-pass
+ //@edition: 2024
+ //@compile-flags: -Adead_code -C debug-assertions=off
++//@no-rustfix
+ //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300 THRUST_TRY_SPECS=1
+ //@rustc-env: THRUST_VERIFY_ONLY=crate
+ //@rustc-env: THRUST_SPLIT=1 THRUST_SPLIT_GOALS=1
+@@ -8,7 +8,7 @@
+ // `scalar_pair` root checks its body), read as `univariant_biased` reads it: `drive` is that code,
+ // which the `ensures` keeps from panicking.
+ // The code is the module tree under tests/rustc_coroutine/; this file selects the stage and
+-// drives it.
++// drives it. This twin asserts what the `ensures` does not give: that the second offset is 0.
+ #![feature(new_range_api)]
+ 
+ #[path = "../../../rustc_coroutine/compiler/rustc_hashes/src/lib.rs"]
+@@ -30,7 +30,7 @@
+ #[thrust_macros::requires(forall(|z: USize| z == 0usize ==> <VariantIdx as Idx>::can_new(z)))]
+ #[thrust_macros::requires(forall(|k: USize| k == 0usize || k == 1usize ==> <FieldIdx as Idx>::can_new(k)))]
+ #[thrust_macros::ensures(true)]
+-fn drive<
++fn drive< //~ ERROR: Unsat
+     Cx: HasDataLayout + thrust_models::Model<Ty: PartialEq>,
+     FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
+     VariantIdx: Idx + thrust_models::Model<Ty: PartialEq>,
+@@ -58,7 +58,7 @@
+         }
+     };
+     assert!(pair_offsets[FieldIdx::new(0)].bytes() == 0);
+-    let _ = pair_offsets[FieldIdx::new(1)];
++    assert!(pair_offsets[FieldIdx::new(1)].bytes() == 0);
+ }
+ 
+ fn main() {}
