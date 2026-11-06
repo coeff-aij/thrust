@@ -19,7 +19,6 @@ use super::{singleton_params, subst_singleton_params, Analyzer, ResolvedCallable
 use crate::analyze::unanalyzed_entry::{
     count_held, peel_refs, pointee, HandedOver, HandoverCount, StatedPres,
 };
-use crate::analyze::TypeParam;
 use crate::chc;
 use crate::refine::Var;
 use crate::rty::{self, ClauseBuilderExt as _, ClauseScope as _, Subtyping as _};
@@ -466,23 +465,11 @@ impl<'tcx> Analyzer<'tcx, '_> {
                     .def_ty_with_args(closure_def_id, parent_args, caller)?;
                 def_ty.ty.as_function().cloned()
             }
-            mir_ty::TyKind::Param(param) => {
-                let type_param = TypeParam::GenericType {
-                    param_def_id: self.type_builder.param_def_id(&param),
-                    local_idx: self.type_builder.param_local_idx(&param),
-                };
-                if let Some(contract) = self.ctx.get_closure_type(type_param.clone()) {
-                    return Some(contract);
-                }
-                let contract = self.type_builder.build_closure_type_for_param(
-                    param,
-                    self.local_def_id,
-                    self.analysis_key.generic_args,
-                )?;
-                self.type_builder
-                    .register_closure_type_param(type_param, contract.clone());
-                Some(contract)
-            }
+            mir_ty::TyKind::Param(param) => self.type_builder.closure_param_contract(
+                param,
+                self.local_def_id,
+                self.analysis_key.generic_args,
+            ),
             _ => None,
         }
     }
