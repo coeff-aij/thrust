@@ -428,6 +428,25 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
 // loop, as a function whose contract states what they do. The loop's back edge then reads one
 // call result instead of the results of `insert`, `deref_mut` and `index_mut`, each a template
 // over every live variable.
+#[thrust_macros::requires(
+    forall(|i: USize| <LocalIdx as Idx>::index_is(remove, i) ==> i < (*ineligible_locals).0)
+    && DenseBitSet::<LocalIdx>::words_cover_domain(*ineligible_locals)
+    && 0 <= DenseBitSet::<LocalIdx>::card(*ineligible_locals)
+    && (*assignments).len() == (*ineligible_locals).0
+)]
+#[thrust_macros::ensures(
+    (!ineligible_locals).0 == (*ineligible_locals).0
+    && DenseBitSet::<LocalIdx>::words_cover_domain(!ineligible_locals)
+    && 0 <= DenseBitSet::<LocalIdx>::card(!ineligible_locals)
+    && DenseBitSet::<LocalIdx>::card(!ineligible_locals) <= (!ineligible_locals).0
+    && (!assignments).len() == (*assignments).len()
+    && forall(|l: USize| 0 <= l && l < (*ineligible_locals).0 ==> (DenseBitSet::<LocalIdx>::mem(!ineligible_locals, l)
+        == (DenseBitSet::<LocalIdx>::mem(*ineligible_locals, l) || <LocalIdx as Idx>::index_is(remove, l))))
+    && forall(|l: USize| 0 <= l && l < (*assignments).len() && <LocalIdx as Idx>::index_is(remove, l)
+        ==> (!assignments)[l] == SavedLocalEligibility::Ineligible(None))
+    && forall(|l: USize| 0 <= l && l < (*assignments).len() && !<LocalIdx as Idx>::index_is(remove, l)
+        ==> (!assignments)[l] == (*assignments)[l])
+)]
 #[thrust_macros::context]
 fn make_ineligible<VariantIdx: Idx + thrust_models::Model, FieldIdx: Idx + thrust_models::Model, LocalIdx: Idx + thrust_models::Model<Ty: PartialEq>>(
     ineligible_locals: &mut DenseBitSet<LocalIdx>,

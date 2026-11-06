@@ -160,16 +160,21 @@ impl<I: Idx, T> IndexSlice<I, T> {
     }
 
     #[inline]
+    #[thrust_macros::requires(true)]
+    #[thrust_macros::ensures(result == (*self).len())]
     pub const fn len(&self) -> usize {
         self.raw.len()
     }
 
     #[inline]
+    #[thrust_macros::requires(<I as Idx>::can_new((*self).len()))]
+    #[thrust_macros::ensures(<I as Idx>::index_is(result, (*self).len()))]
     pub fn next_index(&self) -> I {
         I::new(self.len())
     }
 
     #[inline]
+    #[thrust_macros::ensures(*result.0 == *self && result.1 == 0)]
     pub fn iter(&self) -> SliceIter<'_, T> {
         SliceIter {
             raw: &self.raw,
@@ -178,6 +183,8 @@ impl<I: Idx, T> IndexSlice<I, T> {
     }
 
     #[inline]
+    #[thrust_macros::requires(<I as Idx>::can_new((*self).len()))]
+    #[thrust_macros::ensures(*result.0 == *self && result.1 == 0)]
     pub fn iter_enumerated(&self) -> IterEnumerated<'_, I, T> {
         let _ = I::new(self.len());
         IterEnumerated {
@@ -188,6 +195,8 @@ impl<I: Idx, T> IndexSlice<I, T> {
     }
 
     #[inline]
+    #[thrust_macros::requires(<I as Idx>::can_new((*self).len()))]
+    #[thrust_macros::ensures(result.start == 0 && result.end == (*self).len())]
     pub fn indices(&self) -> IdxRange<I> {
         let _ = I::new(self.len());
         IdxRange::new(0, self.len())
@@ -198,6 +207,8 @@ impl<I: Idx, T> IndexSlice<I, T> {
 impl<I: Idx, T: thrust_models::Model> IndexSlice<I, T>
 {
     #[inline]
+    #[thrust_macros::requires(true)]
+    #[thrust_macros::ensures(result.0 == *self && result.1 == !self && result.2 == 0 && (!self).len() == (*self).len())]
     pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, T> {
         self.raw.iter_mut()
     }
@@ -208,8 +219,14 @@ impl<I: Idx + thrust_models::Model, J: Idx + thrust_models::Model> IndexSlice<I,
     // `debug_assert_eq!` calls dropped (debug assertions are off; rewrites.md S6). The body
     // panics when an element is not below the length (`inverse[i2]`) or an index up to the length
     // cannot be built (`iter_enumerated`).
+    #[thrust_macros::requires(forall(|k: USize| 0 <= k && k <= (*self).len() ==> <I as Idx>::can_new(k)))]
+    #[thrust_macros::requires(forall(|k: USize, i: USize|
+        0 <= k && k < (*self).len() && <J as Idx>::index_is((*self)[k], i) ==> i < (*self).len()))]
     // The inverse has the same length, and each entry is a position of `self` (or the `new(0)` it
     // starts from), so below the length.
+    #[thrust_macros::ensures(result.len() == (*self).len())]
+    #[thrust_macros::ensures(forall(|k: USize, i: USize|
+        0 <= k && k < result.len() && <I as Idx>::index_is(result[k], i) ==> i < result.len()))]
     pub fn invert_bijective_mapping(&self) -> IndexVec<J, I> {
         let mut inverse = IndexVec::from_elem_n(Idx::new(0), self.len());
         for (i1, &i2) in self.iter_enumerated() {
