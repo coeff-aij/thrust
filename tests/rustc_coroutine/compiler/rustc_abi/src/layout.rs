@@ -685,7 +685,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
     fn univariant_biased<
         'a,
         FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
-        VariantIdx: Idx,
+        VariantIdx: Idx + thrust_models::Model<Ty: PartialEq>,
         F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + thrust_models::Model<Ty: PartialEq>,
     >(
         &self,
@@ -693,7 +693,10 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         repr: &ReprOptions,
         kind: StructKind,
         niche_bias: NicheBias,
-    ) -> LayoutCalculatorResult<FieldIdx, VariantIdx, F> {
+    ) -> LayoutCalculatorResult<FieldIdx, VariantIdx, F>
+    where
+        Cx: thrust_models::Model<Ty: PartialEq>,
+    {
         let dl = self.cx.data_layout();
         let pack = repr.pack;
         let mut align = if pack.is_some() {

@@ -3,6 +3,7 @@
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300 THRUST_TRY_SPECS=1
 //@rustc-env: THRUST_VERIFY_ONLY=crate
+//@rustc-env: THRUST_SPLIT=1 THRUST_SPLIT_GOALS=1
 // `LayoutData::scalar_pair` of rustc_abi's layout/simple.rs, assumed on its contract (the
 // `scalar_pair` root checks its body), read as `univariant_biased` reads it: `drive` is that code,
 // which the `ensures` keeps from panicking.
@@ -30,7 +31,7 @@ use thrust_models::forall;
 #[thrust_macros::requires(forall(|k: USize| k == 0usize || k == 1usize ==> <FieldIdx as Idx>::can_new(k)))]
 #[thrust_macros::ensures(true)]
 fn drive<
-    Cx: HasDataLayout,
+    Cx: HasDataLayout + thrust_models::Model<Ty: PartialEq>,
     FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
     VariantIdx: Idx + thrust_models::Model<Ty: PartialEq>,
 >(

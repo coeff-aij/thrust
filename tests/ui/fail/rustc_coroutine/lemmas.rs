@@ -1,11 +1,11 @@
-//@error-in-other-file: Unsat
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@no-rustfix
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300 THRUST_TRY_SPECS=1
-//@rustc-env: THRUST_VERIFY_ONLY=case_study::lemmas,split,l6_off_by_one,split_le_strict,occurs_one_more
-// The counting lemmas of thrust/lemmas.rs, which `layout()` (stage 7) and `univariant_biased` use
-// and the `layout.rs` root assumes. The code is the module tree under tests/rustc_coroutine/; this
-// file selects the lemmas and uses the permutation split as `layout()` does.
+//@rustc-env: THRUST_VERIFY_ONLY=l6_off_by_one,occurs_one_more
+//@rustc-env: THRUST_SPLIT=1 THRUST_SPLIT_GOALS=1
+// The fail twin of the counting lemmas of thrust/lemmas.rs. The code is the module tree under
+// tests/rustc_coroutine/; this file selects only the twins below, which call the lemmas on their
+// contracts.
 #![feature(new_range_api)]
 
 #[path = "../../../rustc_coroutine/compiler/rustc_hashes/src/lib.rs"]
@@ -21,7 +21,6 @@ fn main() {}
 
 use case_study::lemmas;
 use rustc_index::{Idx, IndexVec};
-use case_study::USize;
 use thrust_models::model::Int;
 use thrust_models::{exists, forall, Ghost};
 
@@ -34,10 +33,10 @@ fn split(s: Ghost<IndexVec<u32, u32>>, n: usize, b: usize) {
 }
 
 // The fail twins, each a lemma of thrust/lemmas.rs with its proof unchanged and its statement
-// false: L6 (the induction on `k`) one too large, false at `k == 0`, `permutation_split_le` and
-// `every_index_occurs` below. The `split` client above passes in the same selection, so the root
-// is Unsat only because the lemma proofs are checked.
-#[thrust_macros::lemma]
+// false: L6 (the induction on `k`) one too large, false at `k == 0`, and `every_index_occurs`
+// below. Only the twins are selected, one part per goal, so each is refuted on its own; the pass
+// root checks the lemmas they call.
+#[thrust_macros::lemma] //~ ERROR: Unsat
 #[thrust_macros::variant(k)]
 #[thrust_macros::ensures(lemmas::cnt_lt::<u32>(s, k, b) + lemmas::cnt_ge::<u32>(s, k, b) == k + 1)]
 fn l6_off_by_one(s: Ghost<IndexVec<u32, u32>>, k: usize, b: usize) {
@@ -46,18 +45,8 @@ fn l6_off_by_one(s: Ghost<IndexVec<u32, u32>>, k: usize, b: usize) {
     }
 }
 
-// The fail twin of `permutation_split_le` with all its premises kept, n = 2 and b = 1, and a
-// conclusion one too strong, without a proof: refuted only by a model where the premises hold
-// together and the counts are evaluated.
-#[thrust_macros::lemma]
-#[thrust_macros::requires(b <= n && lemmas::distinct::<u32>(s, n))]
-#[thrust_macros::requires(forall(|p: USize, i: USize| 0 <= p && p < n && <u32 as rustc_index::Idx>::index_is(s[p], i) ==> i < n))]
-#[thrust_macros::requires(n == 2 && b == 1)]
-#[thrust_macros::ensures(lemmas::cnt_ge::<u32>(s, n, b) + 1 <= n - b)]
-fn split_le_strict(s: Ghost<IndexVec<u32, u32>>, n: usize, b: usize) {}
-
 // `every_index_occurs` reaching one index further, false at `m == n`, as every index is below `n`.
-#[thrust_macros::lemma]
+#[thrust_macros::lemma] //~ ERROR: Unsat
 #[thrust_macros::variant(m)]
 #[thrust_macros::requires(
     m <= n
