@@ -1,4 +1,4 @@
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -31,7 +31,7 @@ pub struct FormulaFn<'tcx> {
     param_idents: IndexVec<rty::FunctionParamIdx, Option<rustc_span::symbol::Ident>>,
     ret: mir_ty::Ty<'tcx>,
     body: FormulaFnBody,
-    pre_receivers: Vec<(mir_ty::Ty<'tcx>, Polarity)>,
+    pre_receivers: Vec<mir_ty::Ty<'tcx>>,
 }
 
 /// The translated body: a formula, or a term for a `#[thrust_macros::logic]` function.
@@ -99,26 +99,8 @@ impl<'tcx> FormulaFn<'tcx> {
     /// The types whose precondition the formula reads with `pre!`, at its generic arguments,
     /// directly or in the body of a predicate it calls: a closure or a type parameter for a
     /// closure receiver, a function item's type for a function.
-    ///
-    /// A receiver is listed only when every read of it in the formula is positive ([`Polarity`]).
-    /// A formula that also reads it in another position lets the solver choose the precondition
-    /// smaller than the real one, and states nothing of it.
-    pub fn pre_receivers(&self) -> Vec<mir_ty::Ty<'tcx>> {
-        self.pre_receivers
-            .iter()
-            .filter(|(_, polarity)| *polarity == Polarity::Positive)
-            .map(|(ty, _)| *ty)
-            .collect()
-    }
-
-    /// The types whose precondition the formula reads with `pre!` in a position other than only
-    /// positive ones, which [`Self::pre_receivers`] leaves out.
-    pub fn mixed_pre_receivers(&self) -> Vec<mir_ty::Ty<'tcx>> {
-        self.pre_receivers
-            .iter()
-            .filter(|(_, polarity)| *polarity != Polarity::Positive)
-            .map(|(ty, _)| *ty)
-            .collect()
+    pub fn pre_receivers(&self) -> &[mir_ty::Ty<'tcx>] {
+        &self.pre_receivers
     }
 
     pub fn params(&self) -> &IndexVec<rty::FunctionParamIdx, mir_ty::Ty<'tcx>> {
@@ -276,45 +258,6 @@ type QuantifiedBody = (
     chc::Formula<rty::FunctionParamIdx>,
 );
 
-/// Whether the formula being translated is monotone in the subformula under translation. A
-/// `pre!` is read as a precondition the function states only where it is `Positive`: under a
-/// negation or on the left of an implication it constrains the function the other way, and where
-/// it is both (an operand of `==` or `!=`, a condition, an argument) it constrains it neither way.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Polarity {
-    Positive,
-    Negative,
-    Both,
-}
-
-impl Polarity {
-    /// The polarity of a position read in both of two positions of the same formula.
-    fn combine(self, other: Self) -> Self {
-        if self == other {
-            self
-        } else {
-            Polarity::Both
-        }
-    }
-
-    /// The polarity of a position of polarity `inner` inside one of polarity `self`.
-    fn compose(self, inner: Self) -> Self {
-        match (self, inner) {
-            (Polarity::Both, _) | (_, Polarity::Both) => Polarity::Both,
-            (outer, Polarity::Positive) => outer,
-            (outer, Polarity::Negative) => outer.flipped(),
-        }
-    }
-
-    fn flipped(self) -> Self {
-        match self {
-            Polarity::Positive => Polarity::Negative,
-            Polarity::Negative => Polarity::Positive,
-            Polarity::Both => Polarity::Both,
-        }
-    }
-}
-
 #[derive(Clone)]
 pub struct AnnotFnTranslator<'a, 'tcx> {
     tcx: TyCtxt<'tcx>,
@@ -329,10 +272,7 @@ pub struct AnnotFnTranslator<'a, 'tcx> {
     type_builder: TypeBuilder<'tcx>,
     env: HashMap<HirId, chc::Term<rty::FunctionParamIdx>>,
     /// [`FormulaFn::pre_receivers`], shared with the translators of quantifier bodies.
-    pre_receivers: Rc<RefCell<Vec<(mir_ty::Ty<'tcx>, Polarity)>>>,
-    /// The [`Polarity`] of the subformula being translated, shared with the translators of
-    /// quantifier bodies.
-    polarity: Rc<Cell<Polarity>>,
+    pre_receivers: Rc<RefCell<Vec<mir_ty::Ty<'tcx>>>>,
 }
 
 impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
@@ -366,7 +306,6 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             type_builder,
             env: HashMap::default(),
             pre_receivers: Rc::default(),
-            polarity: Rc::new(Cell::new(Polarity::Positive)),
         };
         translator.build_env_from_params();
         translator
@@ -906,10 +845,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 rustc_hir::BorrowKind::Ref,
                 rustc_hir::Mutability::Not,
                 operand,
-            ) => (
-                self.expr_ty(operand),
-                self.under_both(|| self.to_formula_or_term(operand)),
-            ),
+            ) => (self.expr_ty(operand), self.to_formula_or_term(operand)),
             _ => (
                 self.expr_ty(arg).peel_refs(),
                 FormulaOrTerm::Term(self.to_term(arg).box_current()),
@@ -957,7 +893,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
     }
 
     fn to_term(&self, hir: &'tcx rustc_hir::Expr<'tcx>) -> chc::Term<rty::FunctionParamIdx> {
-        let Some(term) = self.under_both(|| self.to_formula_or_term(hir)).into_term() else {
+        let Some(term) = self.to_formula_or_term(hir).into_term() else {
             self.tcx.dcx().span_fatal(
                 hir.span,
                 "thrust: a predicate call, `pre!`, `post!`, quantifier or `match` in a \
@@ -1489,35 +1425,12 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         })
     }
 
-    /// Translates with the polarity `polarity` of the current one, and restores it.
-    fn under<R>(&self, polarity: fn(Polarity) -> Polarity, translate: impl FnOnce() -> R) -> R {
-        let saved = self.polarity.get();
-        self.polarity.set(polarity(saved));
-        let result = translate();
-        self.polarity.set(saved);
-        result
-    }
-
-    fn under_flipped<R>(&self, translate: impl FnOnce() -> R) -> R {
-        self.under(Polarity::flipped, translate)
-    }
-
-    fn under_both<R>(&self, translate: impl FnOnce() -> R) -> R {
-        self.under(|_| Polarity::Both, translate)
-    }
-
     /// Records that the formula reads the precondition of `ty` ([`FormulaFn::pre_receivers`]).
-    /// A receiver read in several positions has their combination ([`Polarity::combine`]).
     fn record_pre_receiver(&self, ty: mir_ty::Ty<'tcx>) {
-        self.record_pre_receiver_at(ty, self.polarity.get());
-    }
-
-    fn record_pre_receiver_at(&self, ty: mir_ty::Ty<'tcx>, polarity: Polarity) {
         let ty = self.tcx.erase_regions(ty);
         let mut receivers = self.pre_receivers.borrow_mut();
-        match receivers.iter_mut().find(|(known, _)| *known == ty) {
-            Some((_, known)) => *known = known.combine(polarity),
-            None => receivers.push((ty, polarity)),
+        if !receivers.contains(&ty) {
+            receivers.push(ty);
         }
     }
 
@@ -1859,7 +1772,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         for arm in arms {
             let mut hit = self.pat_test(scrutinee.clone(), arm.pat);
             if let Some(guard) = arm.guard {
-                hit = hit.and(self.under_both(|| self.to_formula(guard)));
+                hit = hit.and(self.to_formula(guard));
             }
             let body = self.to_formula(arm.body);
             if !body.is_bottom() {
@@ -2116,8 +2029,8 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                     let else_term = self.to_term(else_expr);
                     return FormulaOrTerm::Term(chc::Term::ite(cond_term, then_term, else_term));
                 }
-                let cond = self.under_both(|| self.to_formula_or_term(cond));
-                let [then, els] = [then_expr, else_expr].map(|part| self.to_formula_or_term(part));
+                let [cond, then, els] =
+                    [cond, then_expr, else_expr].map(|part| self.to_formula_or_term(part));
                 match (
                     cond.clone().into_term(),
                     then.clone().into_term(),
@@ -2151,7 +2064,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                             FormulaOrTerm::Term(chc::Term::App(chc::Function::BVNOT, vec![operand]))
                         }
                         _ => {
-                            let operand = self.under_flipped(|| self.to_formula_or_term(operand));
+                            let operand = self.to_formula_or_term(operand);
                             FormulaOrTerm::Not(Box::new(operand))
                         }
                     }
@@ -2468,7 +2381,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                             let [lhs, rhs] = args else {
                                 panic!("implies takes exactly 2 arguments");
                             };
-                            let lhs = self.under_flipped(|| self.to_formula_or_term(lhs));
+                            let lhs = self.to_formula_or_term(lhs);
                             let rhs = self.to_formula_or_term(rhs);
                             return FormulaOrTerm::Implies(lhs.into(), rhs.into());
                         }
@@ -2623,11 +2536,8 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                                             owner_fn_id,
                                         )
                                     });
-                                    for (ty, polarity) in
-                                        body.iter().flat_map(|body| &body.pre_receivers)
-                                    {
-                                        let at_call = self.polarity.get().compose(*polarity);
-                                        self.record_pre_receiver_at(*ty, at_call);
+                                    for ty in body.iter().flat_map(|body| body.pre_receivers()) {
+                                        self.record_pre_receiver(*ty);
                                     }
                                     pred.into()
                                 }
