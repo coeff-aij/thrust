@@ -2,7 +2,7 @@
 //@edition: 2024
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_TRY_SPECS=1
-//@rustc-env: THRUST_VERIFY_ONLY=crate,rustc_abi::Size::add_assign,rustc_abi::TargetDataLayout::obj_size_bound,rustc_abi::Size::align_to
+//@rustc-env: THRUST_VERIFY_ONLY=crate,rustc_abi::Size::add_assign,rustc_abi::Size::bits,rustc_abi::Size::align_to
 
 // The case study's `u64::wrapping_add` spec (thrust/std_specs.rs), which `Hash64::wrapping_add`
 // calls: a sum past `u64::MAX` wraps, a small one does not. `Hash64::wrapping_add` itself is

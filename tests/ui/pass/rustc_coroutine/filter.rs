@@ -2,7 +2,7 @@
 //@edition: 2024
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300 THRUST_TRY_SPECS=1
-//@rustc-env: THRUST_VERIFY_ONLY=case_study::iter::Filter,rustc_abi::Size::add_assign,rustc_abi::TargetDataLayout::obj_size_bound,rustc_abi::Size::align_to
+//@rustc-env: THRUST_VERIFY_ONLY=case_study::iter::Filter,rustc_abi::Size::add_assign,rustc_abi::Size::bits,rustc_abi::Size::align_to
 //@rustc-env: THRUST_SPLIT=1 THRUST_SPLIT_GOALS=1
 // The case study's `Filter` (thrust/iter.rs, rewrites.md R8), which `univariant_biased` and
 // `layout()` call: its `next` against the contract that the item it returns is the last the inner

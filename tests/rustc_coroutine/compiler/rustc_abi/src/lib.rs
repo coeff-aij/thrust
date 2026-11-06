@@ -380,7 +380,10 @@ impl Size {
         self.raw
     }
 
+    // The body panics exactly when `raw * 8` overflows `u64`, which the `requires` excludes.
     #[inline]
+    #[thrust_macros::requires(self.raw * 8 <= u64::MAX)]
+    #[thrust_macros::ensures(result == self.raw * 8)]
     pub fn bits(self) -> u64 {
         #[cold]
         fn overflow(bytes: u64) -> ! {

@@ -1,7 +1,7 @@
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@no-rustfix
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 THRUST_TRY_SPECS=1
-//@rustc-env: THRUST_VERIFY_ONLY=rustc_index::**,crate,rustc_abi::Size::add_assign,rustc_abi::Size::unsigned_int_max,rustc_abi::TargetDataLayout::obj_size_bound,rustc_abi::Size::bits,rustc_abi::Size::add,rustc_abi::Size::align_to
+//@rustc-env: THRUST_VERIFY_ONLY=rustc_index::**,crate,rustc_abi::Size::add_assign,rustc_abi::Size::bits,rustc_abi::Size::align_to
 //@rustc-env: THRUST_SPLIT=1 THRUST_SPLIT_GOALS=1
 // Stages 2 to 4 of the rustc-coroutine verification target: rustc_index (`Idx`, `IndexVec` and
 // `IndexSlice`, the bit sets, and the own iterators of rewrites.md R2 to R4), and the test code of

@@ -2,7 +2,7 @@
 //@edition: 2024
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60 THRUST_TRY_SPECS=1
-//@rustc-env: THRUST_VERIFY_ONLY=field_niche_placed,rustc_abi::Niche::available,rustc_abi::Size::add_assign,rustc_abi::TargetDataLayout::obj_size_bound,rustc_abi::Size::align_to,obj_size_bound,align_to,checked_add THRUST_SPLIT=1 THRUST_SPLIT_GOALS=1
+//@rustc-env: THRUST_VERIFY_ONLY=field_niche_placed,rustc_abi::Size::add_assign,rustc_abi::Size::bits,rustc_abi::Size::align_to,align_to,checked_add,rustc_abi::Niche::available THRUST_SPLIT=1 THRUST_SPLIT_GOALS=1
 
 // The size arithmetic of layout.rs's `univariant_biased` over the case study's `Size`, `Align`,
 // `Niche` and `TargetDataLayout`: `Size::align_to` (the prefix, each field, the final padding),
