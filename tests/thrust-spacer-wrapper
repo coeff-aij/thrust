@@ -4,7 +4,7 @@ COAR_IMAGE=${COAR_IMAGE:-coar:latest}
 
 # The query copy goes into a directory of its own outside the caller's working directory (the
 # Thrust tree under the ui harness), so that a call killed before its cleanup leaves nothing there.
-work=$(mktemp -d)
+work=$(mktemp -d) || exit 1
 solver_out=$work/solver.out
 trap 'rm -rf "$work"' EXIT
 cp "$1" "$work/query.smt2"
