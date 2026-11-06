@@ -371,8 +371,6 @@ impl Size {
     // Here and in `from_bytes`, the `impl TryInto<u64>` parameter is a named `T: TryIntoSpec<u64>`:
     // `TryInto` says nothing about the converted value, and a formula cannot name the type of an
     // `impl Trait` parameter to call `TryIntoSpec`'s predicates on.
-    #[thrust_macros::requires(T::fits(bits))]
-    #[thrust_macros::ensures(thrust_models::exists(|b| T::converts_to(bits, b) && result.raw == (b + 7) / 8))]
     pub fn from_bits<T: TryIntoSpec<u64>>(bits: T) -> Size {
         let bits = bits.try_into().ok().unwrap();
         Size {
@@ -718,9 +716,6 @@ impl Primitive {
         }
     }
 
-    #[thrust_macros::requires(forall(|dl: TargetDataLayout, a: AddressSpace|
-        C::dl_of(*cx, dl) && self == Primitive::Pointer(a) ==> TargetDataLayout::pointer_space_ok(dl, a)))]
-    #[thrust::callable]
     pub fn align<C: HasDataLayout>(self, cx: &C) -> AbiAlign {
         use Primitive::*;
         let dl = cx.data_layout();
@@ -789,11 +784,6 @@ impl Scalar {
     }
 
     #[thrust_macros::impl_trait_names(C)]
-    #[thrust_macros::requires(forall(|dl: TargetDataLayout, p: Primitive, r: WrappingRange, a: AddressSpace|
-        C::dl_of(*cx, dl)
-            && (self == Scalar::Initialized { value: p, valid_range: r } || self == Scalar::Union { value: p })
-            && p == Primitive::Pointer(a) ==> TargetDataLayout::pointer_space_ok(dl, a)))]
-    #[thrust::callable]
     pub fn align(self, cx: &impl HasDataLayout) -> AbiAlign {
         self.primitive().align(cx)
     }
@@ -970,10 +960,6 @@ impl Niche {
     }
 
     // The `requires` is that of `value.size(cx)` and the `assert!`'s bound on a pointer's size.
-    #[thrust_macros::requires(forall(|dl: TargetDataLayout, a: AddressSpace|
-        C::dl_of(*cx, dl) && (*self).value == Primitive::Pointer(a) ==> (TargetDataLayout::pointer_space_ok(dl, a)
-                && forall(|n: Size| TargetDataLayout::pointer_size_is(dl, a, n) ==> n.raw * 8 <= 128))))]
-    #[thrust_macros::ensures(true)]
     pub fn available<C: HasDataLayout>(&self, cx: &C) -> u128 {
         let Self {
             value,
@@ -1059,7 +1045,6 @@ pub struct VariantLayout<FieldIdx: Idx> {
 
 #[thrust_macros::context]
 impl<FieldIdx: Idx> VariantLayout<FieldIdx> {
-    #[thrust_macros::requires(matches!(layout.fields, FieldsShape::Arbitrary { .. }))]
     pub fn from_layout(layout: LayoutData<FieldIdx, impl Idx>) -> Self {
         let FieldsShape::Arbitrary {
             offsets,

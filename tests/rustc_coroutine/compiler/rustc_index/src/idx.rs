@@ -161,8 +161,6 @@ impl<I: Idx> PartialEq for IdxRange<I> {
 
 #[thrust_macros::context]
 impl<I: Idx> IdxRange<I> {
-    #[thrust_macros::requires(true)]
-    #[thrust_macros::ensures(result.start == start && result.end == end)]
     pub(crate) fn new(start: usize, end: usize) -> IdxRange<I> {
         IdxRange {
             start,

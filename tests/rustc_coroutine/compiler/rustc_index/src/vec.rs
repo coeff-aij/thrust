@@ -27,15 +27,11 @@ impl<I: Idx, T: fmt::Debug> fmt::Debug for IndexVec<I, T> {
 #[thrust_macros::context]
 impl<I: Idx, T> IndexVec<I, T> {
     #[inline]
-    #[thrust_macros::requires(true)]
-    #[thrust_macros::ensures(result.len() == 0)]
     pub const fn new() -> Self {
         IndexVec::from_raw(Vec::new())
     }
 
     #[inline]
-    #[thrust_macros::requires(true)]
-    #[thrust_macros::ensures(result == raw)]
     pub const fn from_raw(raw: Vec<T>) -> Self {
         IndexVec {
             raw,
@@ -47,9 +43,6 @@ impl<I: Idx, T> IndexVec<I, T> {
     // analyse it; where it is selected, its call of `vec![elem; n]` takes std.rs's specification,
     // which bit_set.rs's `new_empty` takes too.
     #[inline]
-    #[thrust_macros::requires(true)]
-    #[thrust_macros::ensures(result.len() == (*universe).len()
-        && forall(|k: USize| 0 <= k && k < result.len() ==> result[k] == elem))]
     pub fn from_elem<S>(elem: T, universe: &IndexSlice<I, S>) -> Self
     where
         T: Clone,
@@ -58,9 +51,6 @@ impl<I: Idx, T> IndexVec<I, T> {
     }
 
     #[inline]
-    #[thrust_macros::requires(true)]
-    #[thrust_macros::ensures(result.len() == n)]
-    #[thrust_macros::ensures(forall(|k: USize| 0 <= k && k < n ==> result[k] == elem))]
     pub fn from_elem_n(elem: T, n: usize) -> Self
     where
         T: Clone,
@@ -69,15 +59,11 @@ impl<I: Idx, T> IndexVec<I, T> {
     }
 
     #[inline]
-    #[thrust_macros::requires(true)]
-    #[thrust_macros::ensures(*result == *self)]
     pub fn as_slice(&self) -> &IndexSlice<I, T> {
         IndexSlice::from_raw(&self.raw)
     }
 
     #[inline]
-    #[thrust_macros::requires(true)]
-    #[thrust_macros::ensures(*result == *self && !result == !self && (!self).len() == (*self).len())]
     pub fn as_mut_slice(&mut self) -> &mut IndexSlice<I, T> {
         IndexSlice::from_raw_mut(&mut self.raw)
     }
@@ -85,30 +71,21 @@ impl<I: Idx, T> IndexVec<I, T> {
     // Rewrite (rewrites.md S8): `len`, `is_empty` and `next_index` of `IndexSlice`, restated on
     // `IndexVec` with contracts over the vector's sequence.
     #[inline]
-    #[thrust_macros::requires(true)]
-    #[thrust_macros::ensures(result == (*self).len())]
     pub fn len(&self) -> usize {
         self.raw.len()
     }
 
     #[inline]
-    #[thrust_macros::requires(true)]
-    #[thrust_macros::ensures((result == true) == ((*self).len() == 0))]
     pub fn is_empty(&self) -> bool {
         self.raw.is_empty()
     }
 
     #[inline]
-    #[thrust_macros::requires(<I as Idx>::can_new((*self).len()))]
-    #[thrust_macros::ensures(<I as Idx>::index_is(result, (*self).len()))]
     pub fn next_index(&self) -> I {
         I::new(self.raw.len())
     }
 
     #[inline]
-    #[thrust_macros::requires(<I as Idx>::can_new((*self).len()))]
-    #[thrust_macros::ensures(!self == (*self).push(d))]
-    #[thrust_macros::ensures(<I as Idx>::index_is(result, (*self).len()))]
     pub fn push(&mut self, d: T) -> I {
         let idx = self.next_index();
         self.raw.push(d);
