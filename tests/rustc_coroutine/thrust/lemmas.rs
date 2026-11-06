@@ -141,6 +141,17 @@ pub fn permutation_split<I: Idx + thrust_models::Model>(s: Ghost<IndexVec<u32, I
     l6(s, n, b);
 }
 
+/// The other half of the permutation split: of `n` distinct indices below `n`, at most `n - b`
+/// are at least `b`.
+#[thrust_macros::lemma]
+#[thrust_macros::requires(b <= n && distinct::<I>(s, n))]
+#[thrust_macros::requires(forall(|p: USize, i: USize| 0 <= p && p < n && <I as Idx>::index_is(s[p], i) ==> i < n))]
+#[thrust_macros::ensures(cnt_ge::<I>(s, n, b) <= n - b)]
+pub fn permutation_split_le<I: Idx + thrust_models::Model>(s: Ghost<IndexVec<u32, I>>, n: usize, b: usize) {
+    below_at_least(s, n, b);
+    l6(s, n, b);
+}
+
 /// `distinct` from injectivity stated by `index_is`, as univariant's `arbitrary_of` states it.
 #[thrust_macros::lemma]
 #[thrust_macros::requires(

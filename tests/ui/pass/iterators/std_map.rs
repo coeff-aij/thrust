@@ -1,7 +1,6 @@
-//@ignore-on-host: not accepted since the `requires` of `Iterator::map` reads the closure's precondition in both positions: the closure is a type parameter here, whose contract is not written at the generic analysis (see README.md, hand-over rule); the written-contract form is `std_map_closure_pre.rs`
 //@check-pass
 //@compile-flags: -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60
 
 // `for` over std's `Map`, generic in the closure so that the invariant can name the iterator's
 // type: the closure's contract is a precondition, and the invariant carries its postcondition and

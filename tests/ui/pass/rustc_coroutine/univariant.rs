@@ -11,7 +11,8 @@
 // drives it.
 // Each goal is solved with the clauses it depends on (`THRUST_SPLIT_GOALS`). The predicates the
 // contracts pass on unchanged are `#[thrust::opaque]`, so the solver reads them through the
-// contracts instead of unfolding them; `layout_pre` and `dl_of` keep their definitions.
+// contracts instead of unfolding them; so is `layout_pre`, which `univariant`'s body reveals, and
+// `dl_of` keeps its definition.
 #![feature(new_range_api)]
 
 #[path = "../../../rustc_coroutine/compiler/rustc_hashes/src/lib.rs"]
