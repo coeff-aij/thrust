@@ -91,6 +91,17 @@ pub struct ReprOptions {
     pub field_shuffle_seed: Hash64,
 }
 
+// `derive(Default)` gives `ReprOptions` no `repr` alignment and no `pack`, which `layout()`'s
+// `variant_fits_wf` and `univariant`'s `prefix_fits` read. Without a spec, a derived `default`
+// is trusted on std.rs's `ensures(true)`; with this one, its body is analyzed against it where it
+// is selected, and reads std.rs's `Option::default`.
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(result.align == None && result.pack == None)]
+fn _extern_spec_repr_options_default() -> ReprOptions {
+    <ReprOptions as Default>::default()
+}
+
 impl ReprOptions {
     #[inline]
     #[thrust::callable]
