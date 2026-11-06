@@ -141,6 +141,43 @@ pub fn permutation_split<I: Idx + thrust_models::Model>(s: Ghost<IndexVec<u32, I
     l6(s, n, b);
 }
 
+/// Every one of the first `k` entries is below `n`, so all of them are counted below `n`.
+#[thrust_macros::lemma]
+#[thrust_macros::variant(k)]
+#[thrust_macros::requires(forall(|p: USize, i: USize| 0 <= p && p < k && <I as Idx>::index_is(s[p], i) ==> i < n))]
+#[thrust_macros::ensures(cnt_lt::<I>(s, k, n) == k)]
+pub fn lt_all<I: Idx + thrust_models::Model>(s: Ghost<IndexVec<u32, I>>, k: usize, n: usize) {
+    if k > 0 {
+        lt_all(s, k - 1, n);
+    }
+}
+
+/// L5 over an interval: when every index in `b..x` occurs at most once, at most `x - b` entries
+/// are in it.
+#[thrust_macros::lemma]
+#[thrust_macros::variant(x)]
+#[thrust_macros::requires(b <= x && forall(|y: USize| b <= y && y < x ==> occ::<I>(y, s, n) <= 1))]
+#[thrust_macros::ensures(cnt_lt::<I>(s, n, x) <= cnt_lt::<I>(s, n, b) + (x - b))]
+pub fn l5_from<I: Idx + thrust_models::Model>(s: Ghost<IndexVec<u32, I>>, n: usize, b: usize, x: usize) {
+    if x > b {
+        l5_from(s, n, b, x - 1);
+        l3(s, n, x - 1);
+    }
+}
+
+/// The other half of the permutation split: of `n` distinct indices below `n`, at most `n - b`
+/// are at least `b`.
+#[thrust_macros::lemma]
+#[thrust_macros::requires(b <= n && distinct::<I>(s, n))]
+#[thrust_macros::requires(forall(|p: USize, i: USize| 0 <= p && p < n && <I as Idx>::index_is(s[p], i) ==> i < n))]
+#[thrust_macros::ensures(cnt_ge::<I>(s, n, b) <= n - b)]
+pub fn permutation_split_le<I: Idx + thrust_models::Model>(s: Ghost<IndexVec<u32, I>>, n: usize, b: usize) {
+    l4_all(s, n);
+    l5_from(s, n, b, n);
+    lt_all(s, n, n);
+    l6(s, n, b);
+}
+
 /// `distinct` from injectivity stated by `index_is`, as univariant's `arbitrary_of` states it.
 #[thrust_macros::lemma]
 #[thrust_macros::requires(
