@@ -9,6 +9,7 @@ use rustc_index::IndexVec;
 use rustc_middle::ty::{self as mir_ty, TyCtxt};
 use rustc_span::def_id::{DefId, LocalDefId};
 
+use crate::analyze::fn_mut_reuse::fn_mut_bounded_params;
 use crate::analyze::model_eq::{is_model_eq_clause, model_eq_bound, SpecBound};
 use crate::analyze::{derive, Analyzer, DefTy, DeferredDefTy};
 use crate::chc;
@@ -683,6 +684,15 @@ impl<'tcx> Analyzer<'tcx> {
                 }
                 if !matches!(this.defs.get(&instance.def_id()), Some(DefTy::Generic(_))) {
                     return false;
+                }
+                // An `FnMut`-bounded impl method, by its own or its impl's parameters, is verified
+                // at the concrete closures calls reach (D34), and its analysis over its type
+                // parameters may not be emitted; this instance is found only now, so it is
+                // analyzed here, as `check_total_method` analyzes an impl on the abstract path.
+                if !fn_mut_bounded_params(this.tcx, instance.def_id()).is_empty() {
+                    this.analyze_per_instance_too(instance.def_id());
+                    this.def_ty_with_args(instance.def_id(), instance.args, caller_def_id);
+                    return true;
                 }
                 let reached = (instance.def_id(), instance.args, caller_def_id);
                 let mut reused = this.reused_generic_instances.borrow_mut();
