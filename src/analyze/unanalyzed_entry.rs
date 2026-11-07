@@ -187,11 +187,17 @@ impl<'tcx> analyze::Analyzer<'tcx> {
         self.trusted_bodies = trusted;
     }
 
+    /// Records the bodies outside `THRUST_VERIFY_ONLY` that the analysis reached at no instance,
+    /// which are trusted for their contract from then on.
+    pub fn trust_unreached_bodies(&mut self, unreached: HashSet<LocalDefId>) {
+        self.unreached_trusted_bodies = unreached;
+    }
+
     /// Whether `def_id` is a crate function whose body is trusted rather than analyzed.
     pub fn is_trusted_body(&self, def_id: DefId) -> bool {
-        def_id
-            .as_local()
-            .is_some_and(|local| self.trusted_bodies.contains(&local))
+        def_id.as_local().is_some_and(|local| {
+            self.trusted_bodies.contains(&local) || self.unreached_trusted_bodies.contains(&local)
+        })
     }
 
     /// Whether `def_id` is a crate function with a written `requires`.
