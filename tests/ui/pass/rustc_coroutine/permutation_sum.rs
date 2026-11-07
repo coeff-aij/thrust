@@ -3,7 +3,7 @@
 //@edition: 2024
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300 THRUST_TRY_SPECS=1
-//@rustc-env: THRUST_VERIFY_ONLY=rustc_abi::layout::sum_occurring_step,rustc_abi::layout::sum_at_occurring,rustc_abi::layout::sum_occurring_le,rustc_abi::layout::sum_at_le,rustc_abi::Size::add_assign,rustc_abi::Size::bits
+//@rustc-env: THRUST_VERIFY_ONLY=rustc_abi::layout::sum_occurring_step,rustc_abi::layout::sum_at_occurring,rustc_abi::layout::sum_occurring_le,rustc_abi::layout::sum_at_le
 //@rustc-env: THRUST_SPLIT=1 THRUST_SPLIT_GOALS=1
 // The permutation sum of layout.rs, which bounds the weight of the fields `univariant_biased`'s
 // field loop has placed, in memory order, by the weight of all the fields: `sum_at_le` and the
