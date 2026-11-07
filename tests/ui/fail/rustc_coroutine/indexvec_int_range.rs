@@ -1,4 +1,3 @@
-//@error-in-other-file: Unsat
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@no-rustfix
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300
@@ -54,7 +53,7 @@ impl<I: Idx, T> IndexVec<I, T> {
 #[thrust_macros::ensures(result.len() == n)]
 #[thrust_macros::ensures(forall(|k: USize| 0 <= k && k < n ==> result[k] == elem))]
 #[thrust_macros::context]
-fn filled(n: usize, elem: i64) -> IndexVec<usize, i64> {
+fn filled(n: usize, elem: i64) -> IndexVec<usize, i64> { //~ ERROR: Unsat
     let mut v: IndexVec<usize, i64> = IndexVec::new();
     let mut i = 0;
     while i < n {
