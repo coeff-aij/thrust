@@ -40,6 +40,9 @@ pub struct Analyzer<'tcx, 'ctx> {
     /// closures in them: trusted for their contract, as a function outside the selection is.
     /// Kept apart from `trusted`, which the analysis has read before they are known.
     unreached_unselected: HashSet<LocalDefId>,
+    /// How many reused instances were recorded when the defs of `unselected_generics` were
+    /// analyzed at theirs; those recorded later are checked by `stop_late_unselected_instances`.
+    reused_seen_by_unselected: usize,
     selection: Option<analyze::selection::Selection>,
     body_checks: analyze::BodyChecks,
 }
@@ -587,6 +590,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         loop {
             let instances = self.ctx.reused_instances_from(done);
             if instances.is_empty() {
+                self.reused_seen_by_unselected = done;
                 return;
             }
             done += instances.len();
@@ -642,6 +646,32 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         }
         self.ctx
             .trust_unreached_bodies(self.unreached_unselected.clone());
+    }
+
+    /// Stops at an instance of a def of `unselected_generics` that the checks of reused instances
+    /// recorded after the analysis (a dispatched call resolved to an impl method, a bound impl):
+    /// its body is not analyzed there, and its contract alone does not stand for it.
+    fn stop_late_unselected_instances(&self) {
+        let late = self
+            .ctx
+            .reused_instances_from(self.reused_seen_by_unselected)
+            .into_iter()
+            .find(|(def_id, _, _)| {
+                def_id
+                    .as_local()
+                    .is_some_and(|local| self.unselected_generics.contains(&local))
+            });
+        let Some((def_id, generic_args, caller_def_id)) = late else {
+            return;
+        };
+        self.tcx.dcx().fatal(format!(
+            "`{}` reaches `{}` through a dispatched call, outside `THRUST_VERIFY_ONLY`; its body \
+             is checked only at the instances calls reach, and this one is found too late to \
+             analyze it: select `{}` too",
+            self.tcx.def_path_str(caller_def_id),
+            self.tcx.def_path_str_with_args(def_id, generic_args),
+            self.tcx.def_path_str(def_id),
+        ));
     }
 
     /// Whether the body of `local_def_id` is not analyzed in this run.
@@ -1106,6 +1136,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             trusted: HashSet::new(),
             unselected_generics: HashSet::new(),
             unreached_unselected: HashSet::new(),
+            reused_seen_by_unselected: 0,
             selection,
             body_checks,
         }
@@ -1180,6 +1211,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.ctx.emit_pending_laws();
         self.ctx.emit_fn_mut_instance_obligations();
         self.ctx.check_reused_instances();
+        self.stop_late_unselected_instances();
         self.ctx.check_derived_predicates();
         self.check_ignored_not_run();
         self.check_invariants_not_assumed_unanalyzed();
