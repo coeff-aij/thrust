@@ -454,6 +454,8 @@ impl Size {
 impl Add for Size {
     type Output = Size;
     #[inline]
+    #[thrust_macros::requires(self.raw + other.raw <= u64::MAX)]
+    #[thrust_macros::ensures(result.raw == self.raw + other.raw)]
     fn add(self, other: Size) -> Size {
         Size::from_bytes(self.bytes().checked_add(other.bytes()).unwrap_or_else(|| {
             panic!("Size::add: {} + {} doesn't fit in u64", self.bytes(), other.bytes())
