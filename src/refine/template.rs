@@ -460,6 +460,30 @@ impl<'tcx> TypeBuilder<'tcx> {
         rty::AliasType::new(*index, args).into()
     }
 
+    /// The contract of the closure-typed parameter `param_ty` of the function being analyzed,
+    /// registering it on first use from the bound `local_def_id` states at `generic_args`.
+    ///
+    /// A contract already registered for `param_ty` is kept: it was built from the bound of the
+    /// function declaring `param_ty`, while `local_def_id` may be a callee analyzed at that
+    /// function's arguments, whose bound can be of another closure kind.
+    pub(crate) fn closure_param_contract(
+        &self,
+        param_ty: mir_ty::ParamTy,
+        local_def_id: rustc_hir::def_id::LocalDefId,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
+    ) -> Option<rty::FunctionType> {
+        let type_param = TypeParam::GenericType {
+            param_def_id: self.param_def_id(&param_ty),
+            local_idx: self.param_local_idx(&param_ty),
+        };
+        if let Some(contract) = self.closure_type_params.borrow().get(&type_param) {
+            return Some(contract.clone());
+        }
+        let contract = self.build_closure_type_for_param(param_ty, local_def_id, generic_args)?;
+        self.register_closure_type_param(type_param, contract.clone());
+        Some(contract)
+    }
+
     pub(crate) fn register_closure_type_param(
         &self,
         type_param: TypeParam,

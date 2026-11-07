@@ -304,10 +304,14 @@ fn niche_sized(niche: Option<Niche>, dl: &TargetDataLayout, k: usize) {
 // (`pack` only lowers them): each is a summand of S not yet spent, as S counts a field's and the
 // prefix's alignment twice. `univariant` proves it from its two calls; `univariant_biased` is
 // verified against it in its own root, and the other roots take it as part of its contract.
+// They ensure too that an `Ok` layout is one `layout_pre` accepts as a field or a prefix, which
+// `layout()` passes the prefix's layout on as: its size below the object size bound, for which
+// the final check `size.bytes() >= dl.obj_size_bound()` returns `SizeOverflow`.
 #[thrust_macros::context]
 impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
     /// The panic condition of `univariant` and `univariant_biased` apart from the size.
     #[thrust_macros::predicate]
+    #[thrust::opaque]
     pub(crate) fn layout_pre<
         'a,
         FieldIdx: Idx + thrust_models::Model,
@@ -569,6 +573,9 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
             && Cx::dl_of(*self, dl)
             && Self::weighs::<FieldIdx, VariantIdx, F>(fields, repr, kind, dl, s)
             && q == l.align.abi.pow2 ==> (l.size.raw < s && pow2(q) <= s)))]
+    #[thrust_macros::ensures(forall(|l: LayoutData<FieldIdx, VariantIdx>, dl: TargetDataLayout|
+        result == Ok(l) && Cx::dl_of(*self, dl) ==> l.size.raw < super::obj_bound(dl)))]
+    #[thrust::reveal(LayoutCalculator::layout_pre)]
     pub fn univariant<
         'a,
         FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
@@ -647,6 +654,8 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
             && Cx::dl_of(*self, dl)
             && Self::weighs::<FieldIdx, VariantIdx, F>(fields, repr, kind, dl, s)
             && q == l.align.abi.pow2 ==> (l.size.raw < s && pow2(q) <= s)))]
+    #[thrust_macros::ensures(forall(|l: LayoutData<FieldIdx, VariantIdx>, dl: TargetDataLayout|
+        result == Ok(l) && Cx::dl_of(*self, dl) ==> l.size.raw < super::obj_bound(dl)))]
     #[thrust_macros::ensures(forall(|e: LayoutCalculatorError<<F as thrust_models::Model>::Ty>|
         result != Err(e)
             || e == LayoutCalculatorError::SizeOverflow
@@ -665,6 +674,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
     #[thrust_macros::ensures(forall(|l: LayoutData<FieldIdx, VariantIdx>, n: Niche, dl: TargetDataLayout, s: Size|
         result == Ok(l) && l.largest_niche == Some(n) && Cx::dl_of(*self, dl) ==> (Niche::wf_in(n, dl) && (Primitive::size_in(n.value, dl, s) ==> n.offset.raw + s.raw <= l.size.raw))))]
     #[thrust::reveal(
+        LayoutCalculator::layout_pre,
         LayoutCalculator::fits_in_any_order,
         LayoutCalculator::weighs,
         LayoutCalculator::unsized_misplaced,

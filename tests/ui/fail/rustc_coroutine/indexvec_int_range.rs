@@ -4,6 +4,7 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300
 //@rustc-env: THRUST_VERIFY_ONLY=rustc_index::vec,rustc_index::slice,filled
 //@rustc-env: THRUST_INT_RANGE=conversions
+//@rustc-env: THRUST_SPLIT=1
 // rustc_index's `IndexVec` and `IndexSlice` under `THRUST_INT_RANGE=conversions`, where the model
 // of each integer type carries its width: the module tree type-checks with the option, which
 // bounds unsigned values above. A check of the option, not a run of the case study: `index.rs`
