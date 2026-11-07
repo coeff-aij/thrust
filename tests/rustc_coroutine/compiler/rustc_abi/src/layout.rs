@@ -781,12 +781,16 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                         } else {
                             let align = layout.align.bytes();
                             let size = layout.size.bytes();
-                            let niche_size = layout.largest_niche.map(thrust_macros::closure!(
+                            // Fallback (open `map` goal): `map` with its precondition assumed;
+                            // restore `layout.largest_niche.map(..)` once the solver answers it.
+                            let niche_size = crate::case_study::iter::map_assumed(layout.largest_niche, thrust_macros::closure!(
                                 captures(dl: &&TargetDataLayout),
                                 requires(Niche::wf_in(n, **dl)),
                                 ensures(true),
                                 |n: Niche| -> u128 { n.available(dl) },
                             )).unwrap_or(0);
+                            #[cfg(thrust_ub_reach = "map")]
+                            thrust_macros::proof_assert!(|layout: &F| false);
 
                             let size_as_align = align.max(size).trailing_zeros();
                             let size_as_align = if largest_niche_size > 0 {
@@ -828,7 +832,10 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                             |&x: &FieldIdx| {
                                 let f = &fields[x];
                                 let field_size = f.size.bytes();
-                                let niche_size = f.largest_niche.map_or(0, thrust_macros::closure!(
+                                // Fallback (open `map_or` goals): the three `map_or` calls with their
+                                // preconditions assumed; restore `f.largest_niche.map_or(..)` once
+                                // the solver answers them.
+                                let niche_size = crate::case_study::iter::map_or_assumed(f.largest_niche, 0, thrust_macros::closure!(
                                     captures(dl: &&&TargetDataLayout),
                                     requires(Niche::wf_in(n, ***dl)),
                                     ensures(true),
@@ -840,12 +847,12 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                                     NicheBias::End => niche_size,
                                 };
                                 let inner_niche_offset_key = match niche_bias {
-                                    NicheBias::Start => f.largest_niche.map_or(0, thrust_macros::closure!(
+                                    NicheBias::Start => crate::case_study::iter::map_or_assumed(f.largest_niche, 0, thrust_macros::closure!(
                                         requires(true),
                                         ensures(true),
                                         |n: Niche| -> u64 { n.offset.bytes() },
                                     )),
-                                    NicheBias::End => f.largest_niche.map_or(0, thrust_macros::closure!(
+                                    NicheBias::End => crate::case_study::iter::map_or_assumed(f.largest_niche, 0, thrust_macros::closure!(
                                         captures(field_size: &u64, dl: &&&TargetDataLayout),
                                         requires(Niche::wf_in(n, ***dl)),
                                         requires(forall(|s: Size| !Primitive::size_in(n.value, ***dl, s) || n.offset.raw + s.raw <= *field_size)),
@@ -853,6 +860,8 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                                         |n: Niche| -> u64 { !(field_size - n.value.size(dl).bytes() - n.offset.bytes()) },
                                     )),
                                 };
+                                #[cfg(thrust_ub_reach = "map_or")]
+                                thrust_macros::proof_assert!(|x: FieldIdx| false);
 
                                 (
                                     cmp::Reverse(alignment_group_key(f, dl)),

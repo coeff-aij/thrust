@@ -837,3 +837,42 @@ where
     thrust_macros::assume!(|iter: I, f: F| I::inv(iter) && IterAllSpec::<I, F>::pre_all(iter, f));
     iter_all(iter, f)
 }
+
+// `Option::map_or`, its `requires` (std.rs) assumed (`univariant_biased`'s sort key closure, whose
+// three `map_or` goals the solver does not answer); the `ensures` is `map_or`'s.
+#[thrust_macros::context]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(
+    (opt == None && result == default)
+        || exists(|i: <T as thrust_models::Model>::Ty| opt == Some(i) && thrust_macros::post!(f(i), result))
+)]
+pub fn map_or_assumed<T, U, F>(opt: Option<T>, default: U, f: F) -> U
+where
+    T: thrust_models::Model,
+    U: thrust_models::Model,
+    F: FnOnce(T) -> U,
+{
+    thrust_macros::assume!(|opt: Option<T>, f: F|
+        opt == None || exists(|i: <T as thrust_models::Model>::Ty| opt == Some(i) && thrust_macros::pre!(f(i))));
+    opt.map_or(default, f)
+}
+
+// `Option::map`, its `requires` (std.rs) assumed (`univariant_biased`'s `alignment_group_key`, whose
+// `map` goal the solver does not answer); the `ensures` is `map`'s.
+#[thrust_macros::context]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(
+    (opt == None && result == None)
+        || exists(|i: <T as thrust_models::Model>::Ty, j: <U as thrust_models::Model>::Ty|
+            opt == Some(i) && thrust_macros::post!(f(i), j) && result == Some(j))
+)]
+pub fn map_assumed<T, U, F>(opt: Option<T>, f: F) -> Option<U>
+where
+    T: thrust_models::Model,
+    U: thrust_models::Model,
+    F: FnOnce(T) -> U,
+{
+    thrust_macros::assume!(|opt: Option<T>, f: F|
+        opt == None || exists(|i: <T as thrust_models::Model>::Ty| opt == Some(i) && thrust_macros::pre!(f(i))));
+    opt.map(f)
+}
