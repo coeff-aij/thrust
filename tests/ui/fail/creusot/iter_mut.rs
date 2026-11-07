@@ -10,6 +10,7 @@ use thrust_models::Model;
 // by `split_off_first_mut` and keeps the rest (lines 48-54). Its model is the model of `inner`, the
 // slice's current and final sequences. The associated `Item` is `&'a mut T`, so `visited` is a
 // sequence of `Mut` pairs.
+
 // Creusot's constructor `iter_mut(v)`, `IterMut { inner: &mut v[..] }` (lines 64-69), and its
 // `all_zero` client (lines 71-88) follow the impl. The constructor's `invariant` needs that
 // `&mut v[..]` keeps the length, which std.rs states for `IndexMut`.
@@ -57,7 +58,7 @@ where
 }
 
 struct IterMut<'a, T> {
-    inner: &'a mut [T],
+    pub inner: &'a mut [T],
 }
 
 impl<'a, T: Model> Model for IterMut<'a, T> {
@@ -71,8 +72,8 @@ where
 {
     type Item = &'a mut T;
 
-    fn next(&mut self) -> Option<&'a mut T> {
-        self.inner.split_off_first_mut()
+    fn next(&mut self) -> Option<Self::Item> {
+        (self.inner).split_off_first_mut()
     }
 
     // Creusot's type invariant of `IterMut`: the borrowed slice keeps its length.
@@ -105,6 +106,17 @@ where
     }
 }
 
+#[thrust_macros::context]
+impl<'a, T> IterMut<'a, T>
+where
+    T: Model,
+{
+    #[thrust_macros::ensures(result == self)]
+    fn into_iter(self) -> Self {
+        self
+    }
+}
+
 // Creusot's constructor: the iterator's entry and final sequences are the vector's, and its type
 // invariant holds.
 #[thrust_macros::ensures(
@@ -112,11 +124,14 @@ where
         && *result.0 == *v
         && !result.0 == !v
 )]
-fn iter_mut<'a, T: Model>(v: &'a mut Vec<T>) -> IterMut<'a, T> {
+fn iter_mut<'a, T>(v: &'a mut Vec<T>) -> IterMut<'a, T>
+where
+    T: Model,
+{
     IterMut { inner: &mut v[..] }
 }
 
-// Creusot's `all_zero` over that iterator: `iter_mut(v)`, then `next` until `None`. The positions
+// Creusot's `all_zero` over that iterator: `iter_mut(v).into_iter()`, then `next` until `None`. The positions
 // passed, the vector's length minus what the iterator has left, are zero in the final sequence.
 #[thrust_macros::context]
 #[thrust_macros::ensures(
@@ -124,8 +139,8 @@ fn iter_mut<'a, T: Model>(v: &'a mut Vec<T>) -> IterMut<'a, T> {
         && forall(|i: Int| (0 <= i && i < (!v).len()) ==> ((!v)[i] == 0))
 )]
 fn all_zero(v: &mut Vec<usize>) {
-    let mut it = iter_mut(v);
-    while let Some(x) = it.next() {
+    let mut it = iter_mut(v).into_iter();
+    loop {
         thrust_macros::invariant!(
             |it: IterMut<'_, usize>, v: thrust_models::FnParam<&mut Vec<usize>>|
                 (!v.at_entry()).len() == (*v.at_entry()).len()
@@ -137,7 +152,12 @@ fn all_zero(v: &mut Vec<usize>) {
                     && forall(|j: Int| (0 <= j && j < (*v.at_entry()).len() - (*it.0).len())
                         ==> ((!v.at_entry())[j] == 0))
         );
-        *x = 0;
+        match it.next() {
+            Some(x) => {
+                *x = 0;
+            }
+            None => break,
+        }
     }
 }
 
