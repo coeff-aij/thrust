@@ -1601,6 +1601,27 @@ fn prefix_wf<C: HasDataLayout>(calc: LayoutCalculator<C>, prefix_size: Size, pre
 #[thrust::reveal(prefix_wf)]
 fn prefix_wf_of<C: HasDataLayout>(calc: &LayoutCalculator<C>, prefix_size: Size, prefix_align: AbiAlign) {}
 
+// Fallback: `prefix_wf_of` with its `requires` assumed, for its call in `layout()`, where the
+// solver does not answer that `requires` even right after an `assume!` of it. A checked wrapper,
+// as `collect_index_vec_assumed` of thrust/iter.rs; call `prefix_wf_of` again once the solver
+// answers it there.
+#[thrust_macros::lemma]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(prefix_wf::<C>(*calc, prefix_size, prefix_align))]
+fn prefix_wf_of_assumed<C: HasDataLayout>(calc: &LayoutCalculator<C>, prefix_size: Size, prefix_align: AbiAlign) {
+    thrust_macros::assume!(
+        |calc: &LayoutCalculator<C>, prefix_size: Size, prefix_align: AbiAlign|
+            forall(|dl: TargetDataLayout| !C::dl_of(*calc, dl)
+                || prefix_size.raw < obj_bound(dl))
+                && forall(|dl: TargetDataLayout, q: USize, b: USize|
+                    !(C::dl_of(*calc, dl)
+                        && q == prefix_align.abi.pow2
+                        && b == (BitVec::<64, false>::from_int(1) << (BitVec::from_int(q) & BitVec::from_int(63))).to_int())
+                    || prefix_size.raw + b <= 4611686018427387904u64)
+    );
+    prefix_wf_of(calc, prefix_size, prefix_align);
+}
+
 /// A layout `univariant` returns for fields that fit in any order has its size plus its
 /// alignment's bytes at most `2^62`: its size and `2^q`, which bound the bytes `1 << (q & 63)`
 /// (`bytes_within`), are each below the fields' weighs sum (univariant's `ensures`), which
@@ -1982,18 +2003,8 @@ pub fn layout<
     // `ensures` under the `fits_in_any_order` assumed above): the fifth atom of the per-variant
     // closure's `requires`.
     thrust_macros::proof!(prefix_fits_bound(calc, &prefix_layouts, &repr, StructKind::AlwaysSized, prefix_size, prefix_align));
-    // Assumed (fallback): `prefix_wf_of`'s precondition, which the solver does not answer.
-    thrust_macros::assume!(
-        |calc: &LayoutCalculator<C>, prefix_size: Size, prefix_align: AbiAlign|
-            forall(|dl: TargetDataLayout| !C::dl_of(*calc, dl)
-                || prefix_size.raw < obj_bound(dl))
-                && forall(|dl: TargetDataLayout, q: USize, b: USize|
-                    !(C::dl_of(*calc, dl)
-                        && q == prefix_align.abi.pow2
-                        && b == (BitVec::<64, false>::from_int(1) << (BitVec::from_int(q) & BitVec::from_int(63))).to_int())
-                    || prefix_size.raw + b <= 4611686018427387904u64)
-    );
-    thrust_macros::proof!(prefix_wf_of(calc, prefix_size, prefix_align));
+    // Fallback: through `prefix_wf_of_assumed`, which assumes `prefix_wf_of`'s precondition.
+    thrust_macros::proof!(prefix_wf_of_assumed(calc, prefix_size, prefix_align));
     // Assumed (not proved): each variant's fields fit in any order after the prefix
     // (`variant_fits_wf`, `univariant`'s `fits_in_any_order` for the variant's `univariant` call).
     // rustc's code makes it true under `layout()`'s size bound (its header comment): a variant's
