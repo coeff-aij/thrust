@@ -627,3 +627,34 @@ fn goal_cones_that_all_hold_verify_the_crate() {
     assert!(stderr.contains("2 parts solved on their own"), "{stderr}");
     assert!(stderr.contains("inferred: fn double("), "{stderr}");
 }
+
+/// `THRUST_SPLIT_GOALS` makes each conjunct of a checked postcondition a goal of its own: the
+/// two `ensures` of `succ` are two parts, and the refuted one states only the false conjunct.
+#[test]
+fn each_conjunct_of_a_postcondition_is_a_goal() {
+    let classes = run("conjunct_goals.rs", Some("2"));
+    let stderr = String::from_utf8_lossy(&classes.stderr);
+    assert!(stderr.contains("of 2 clauses from `succ`"), "{stderr}");
+
+    let cones = run_with(
+        "conjunct_goals.rs",
+        Some("2"),
+        &[
+            ("THRUST_SPLIT_GOALS", "1"),
+            ("THRUST_REPORT", "functions,failure"),
+        ],
+    );
+    let stderr = String::from_utf8_lossy(&cones.stderr);
+    assert!(!cones.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("2 parts solved on their own, 0 of them from earlier runs, one per goal"),
+        "{stderr}"
+    );
+    assert_eq!(stderr.matches("verification error").count(), 1, "{stderr}");
+    assert!(stderr.contains(") ==> result > 2\n"), "{stderr}");
+    assert!(!stderr.contains("result > x ∧"), "{stderr}");
+    assert!(
+        stderr.contains("`succ`: checked, in parts 1, 2 (unsat)"),
+        "{stderr}"
+    );
+}
