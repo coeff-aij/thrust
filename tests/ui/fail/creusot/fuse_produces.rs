@@ -20,10 +20,10 @@ where
     Self::Item: Model,
 {
     #[thrust_macros::law]
-    #[thrust_macros::requires(Self::completed(Mut::new(*s, *t)))]
-    #[thrust_macros::requires(Self::produces(*t, steps, *next))]
-    #[thrust_macros::ensures(steps == Seq::empty() && *t == *next)]
-    fn is_fused(s: &Self, t: &Self, steps: Seq<<Self::Item as Model>::Ty>, next: &Self) {}
+    #[thrust_macros::requires(Self::completed(*s))]
+    #[thrust_macros::requires(Self::produces(!*s, steps, *next))]
+    #[thrust_macros::ensures(steps == Seq::empty())]
+    fn is_fused(s: &&mut Self, steps: Seq<<Self::Item as Model>::Ty>, next: &Self) {}
 }
 
 pub struct Fuse<I: Iterator>
@@ -73,7 +73,7 @@ where
     }
 
     // Creusot's `match self.iter`: from `None` nothing is produced, and from `Some(i)` only to a
-    // `Some(k)` that `i` produces.
+    // `Some(k)` that `i` produces. A pattern in a formula cannot bind, so `Some(i)` is an `exists`.
     #[thrust_macros::predicate]
     fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool {
         (self.0 == None && visited == Seq::empty() && o.0 == self.0)
