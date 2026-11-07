@@ -177,7 +177,16 @@ enum FormulaOrTerm<T> {
 }
 
 impl<T> FormulaOrTerm<T> {
+    /// The formula form. It recurses once per `&&`, `||`, `==>` and `!`, and `a && b && c`
+    /// nests to the left, so a chain of n operands is n - 1 frames deep, and each frame is
+    /// large in a debug build. It grows the stack on demand, as `to_formula_or_term` and
+    /// `Analyzer::predicate_with_args` do, so that a long chain in a specification does not
+    /// overflow the space those checks leave.
     fn into_formula(self) -> Option<chc::Formula<T>> {
+        rustc_data_structures::stack::ensure_sufficient_stack(|| self.into_formula_inner())
+    }
+
+    fn into_formula_inner(self) -> Option<chc::Formula<T>> {
         let fo = match self {
             FormulaOrTerm::Formula(fo) => fo,
             FormulaOrTerm::Term(t) => chc::Formula::Atom(t.equal_to(chc::Term::bool(true))),
@@ -207,7 +216,12 @@ impl<T> FormulaOrTerm<T> {
         Some(fo)
     }
 
+    /// The term form, which recurses as `into_formula` does.
     fn into_term(self) -> Option<chc::Term<T>> {
+        rustc_data_structures::stack::ensure_sufficient_stack(|| self.into_term_inner())
+    }
+
+    fn into_term_inner(self) -> Option<chc::Term<T>> {
         let t = match self {
             FormulaOrTerm::Formula { .. } => return None,
             FormulaOrTerm::Term(t) => t,

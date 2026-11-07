@@ -1839,7 +1839,24 @@ impl<'tcx> Analyzer<'tcx> {
     /// A predicate with a Rust body is defined once per instantiation. When the arguments still
     /// mention type parameters, those belong to `owner_fn_id` and translate to its forall sorts,
     /// so the instance is keyed by the owner as well.
+    ///
+    /// Defining an instance first defines the instances its body calls (`Take<I>::completed`
+    /// calls `I::completed`), so this recurses with the nesting of the type. It grows the stack
+    /// on demand, as the translation of each expression does, because the definition's own
+    /// recursion over the body's formula (converting it, then substituting its variables) runs
+    /// on top of the expression translation that reached this call.
     pub fn predicate_with_args(
+        &self,
+        def_id: DefId,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
+        owner_fn_id: DefId,
+    ) -> chc::UserDefinedPred {
+        rustc_data_structures::stack::ensure_sufficient_stack(|| {
+            self.predicate_with_args_inner(def_id, generic_args, owner_fn_id)
+        })
+    }
+
+    fn predicate_with_args_inner(
         &self,
         def_id: DefId,
         generic_args: mir_ty::GenericArgsRef<'tcx>,
