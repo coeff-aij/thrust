@@ -39,9 +39,11 @@ and each of its `assume!`s has a reachability root, `layout_reach_<name>.rs`
 (`--cfg thrust_layout_reach_<name>`), with a `proof_assert!(false)` right after the `assume!`: a
 refutation shows that the assumption leaves the path after it reachable. The fallback's
 assumptions (below) share one, `layout_reach_fallback.rs`, with a `proof_assert!(false)` after the
-last assumption in each function. Of these roots only `layout_reach_pair.rs` is refuted (at
-a7276b1c); `layout_reach_prefix.rs`, `layout_reach_variant.rs` (at a7276b1c) and
-`layout_reach_fallback.rs` (at 1451a5fc) get no answer at their targets, so the goals after those
+last assumption in each function. At a771078b, with fptprove develop 3535ddfa98 and cvc5 1.4.2,
+`layout_reach_pair.rs` is refuted, and `layout_reach_fallback.rs` is refuted at its target in
+`variant_layout`. `layout_reach_prefix.rs`, `layout_reach_variant.rs` and `layout_reach_fallback.rs`'s
+targets in `variant_field_layouts` and `layout()` get no answer: in each of those roots the only
+part without `sat` in the target's function times out at 120 s. So the goals after those
 assumptions are not shown to hold non-vacuously.
 
 | file | selection | state |
