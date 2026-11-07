@@ -5,7 +5,7 @@ equivalent to Creusot's, plus nine additions with no Creusot counterpart (`take_
 `fold.rs`, `try_fold.rs`, `find.rs`, `filter.rs`, and the forms of the last four generic in the
 iterator and the closure, in `generic/`). `<file>.rs` is the pass side;
 `tests/ui/fail/creusot/<file>.rs` is its fail twin (three extra fail-only files:
-`skip_take_take_count.rs` twins `skip_take.rs` on a different property, and
+`skip_take_take_count.rs` breaks `Take`'s `produces` under `Skip<Take<I>>` stacked from local copies of the adapters, and
 `collect_for_contract.rs` and `extend_for_contract.rs` break the postcondition of `collect` and
 `extend` themselves, where the twins of `collect_for.rs` and `extend_for.rs` break the client's
 assertion). `weaker/` holds
@@ -39,7 +39,7 @@ with empty bodies, as Creusot does). The step-form files repeat theirs in the sa
 | `collect.rs` | `common.rs` (`collect` / `FromIterator`) | `produces` |
 | `all_zero.rs` | `examples/all_zero.rs` | a `for` loop over std's `slice::IterMut` with its `next` through std.rs, the invariant over the loop's `iter` (`slice::IterMut` has no `IteratorSpec`, so no `produced`; Creusot's own `IterMut` and constructor are in `iter_mut.rs`) |
 | `decuple_range.rs` | `examples/decuple_range.rs` | `produces`, positional property, fully checked |
-| `skip_take.rs` | `examples/skip_take.rs` | `produces`, concatenated `Skip`, generic in `I` |
+| `skip_take.rs` | the current Creusot's `skip_take` in `examples/iterators/03_std_iterators.rs` (3620de437) | std's `take` and `skip` through their std.rs `IteratorSpec`, generic in `I` |
 | `counter.rs` | `examples/counter.rs` | `step` + a unary `next_item` guard, `MapInv`'s ghost history |
 | `counter_creusot.rs` | the current Creusot's `counter` in `examples/iterators/03_std_iterators.rs` (3620de437) | `produces` with Creusot's property over `v.iter()` of a `Vec<u32>` (`x == v`, `cnt == x.len()`), the closure's postconditions (the step and the history fact) written where Creusot takes its contract from the body, its precondition inferred, std's `slice::Iter` through its std.rs model, `MapInv` over an `FnMut` closure whose states are related by `hist_inv!` (Creusot's `hist_inv`), as in creusot-std's `std/iter/map_inv.rs` |
 | `counter_creusot_lemma.rs` | `examples/counter.rs` | `counter_creusot.rs` with the witnesses of `produces_trans` written as source-level lemmas (Creusot's session gives them by hand) |
