@@ -528,7 +528,8 @@ where
 // key. The closure's precondition need hold only on the items the iterator can yield, as
 // std.rs's `max_by_key` requires too; it is kept because `scalar_pair`'s key closure, which
 // captures `&&TargetDataLayout` and passes it to `Niche::available`, gives ill-sorted queries
-// through std's `F: FnMut` bound. `F: Fn` as in `iter_all`, and the items are `Copy`, so the loop
+// through std's `F: FnMut` bound (fork issue #244, also with std.rs's earlier precondition).
+// `F: Fn` as in `iter_all`, and the items are `Copy`, so the loop
 // can record them with the candidate's position. Creusot (3620de437) specifies
 // no `max_by_key`, and Verus (d804d56) only `cmp::max_by_key` of two values
 // (vstd/std_specs/cmp.rs:313), not the iterator's. The contract states that the result is one of
