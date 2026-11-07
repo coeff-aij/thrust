@@ -425,9 +425,9 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
 }
 
 // Rewrite (rewrites.md R10): the two writes that make `remove` ineligible in the storage-conflict
-// loop, as a function whose contract states what they do. The loop's back edge then reads one
-// call result instead of the results of `insert`, `deref_mut` and `index_mut`, each a template
-// over every live variable.
+// loop, as a function. Its inferred contract relates only its parameters, so the loop's back edge
+// reads one call result instead of the results of `insert`, `deref_mut` and `index_mut`, each a
+// template over every live variable.
 #[thrust_macros::context]
 fn make_ineligible<VariantIdx: Idx + thrust_models::Model, FieldIdx: Idx + thrust_models::Model, LocalIdx: Idx + thrust_models::Model<Ty: PartialEq>>(
     ineligible_locals: &mut DenseBitSet<LocalIdx>,

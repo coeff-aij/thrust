@@ -210,8 +210,8 @@ impl<I: Idx + thrust_models::Model, J: Idx + thrust_models::Model> IndexSlice<I,
     // `debug_assert_eq!` calls dropped (debug assertions are off; rewrites.md S6). The body
     // panics when an element is not below the length (`inverse[i2]`) or an index up to the length
     // cannot be built (`iter_enumerated`).
-    // The inverse has the same length, and each entry is a position of `self` (or the `new(0)` it
-    // starts from), so below the length.
+    // It does not panic: the inverse has the same length, and each entry is a position of `self`
+    // (or the `new(0)` it starts from), so below the length.
     pub fn invert_bijective_mapping(&self) -> IndexVec<J, I> {
         let mut inverse = IndexVec::from_elem_n(Idx::new(0), self.len());
         for (i1, &i2) in self.iter_enumerated() {

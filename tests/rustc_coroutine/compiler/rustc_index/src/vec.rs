@@ -39,9 +39,9 @@ impl<I: Idx, T> IndexVec<I, T> {
         }
     }
 
-    // A written contract, so that the roots that do not select this module trust it rather than
-    // analyse it; where it is selected, its call of `vec![elem; n]` takes std.rs's specification,
-    // which bit_set.rs's `new_empty` takes too.
+    // Its contract is inferred where it is checked; its call of `vec![elem; n]` takes std.rs's
+    // specification, which bit_set.rs's `new_empty` takes too. A root that does not select this
+    // module and enters it from unselected code checks it under the precondition `true`.
     #[inline]
     pub fn from_elem<S>(elem: T, universe: &IndexSlice<I, S>) -> Self
     where
@@ -69,7 +69,7 @@ impl<I: Idx, T> IndexVec<I, T> {
     }
 
     // Rewrite (rewrites.md S8): `len`, `is_empty` and `next_index` of `IndexSlice`, restated on
-    // `IndexVec` with contracts over the vector's sequence.
+    // `IndexVec`; their contracts are inferred at the calls the analysis reaches.
     #[inline]
     pub fn len(&self) -> usize {
         self.raw.len()

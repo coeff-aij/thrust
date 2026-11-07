@@ -111,7 +111,7 @@ fn main() {
 
 fn drive_iterators() {
     let mut range: IdxRange<usize> = IdxRange::new(0, 3);
-    // Verified via `IdxRange::new`'s own ensures.
+    // Verified through `IdxRange::new`'s inferred postcondition.
     assert!(range.start == 0 && range.end == 3);
     // Verified via the `next` contract above: `Idx for usize` reads
     // `index_is(self, i)` as `self == i`, so the k-th call yields `Some(k)`.
@@ -127,7 +127,7 @@ fn drive_iterators() {
     assert!(d.is_none());
 
     let mut wi: WordIter<'static> = WordIter::new(words());
-    // Verified via `WordIter::new`'s own ensures.
+    // Verified through `WordIter::new`'s inferred postcondition.
     assert!(wi.pos == 0);
     // Verified via the `next` contract above.
     let w0 = wi.next();
