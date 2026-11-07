@@ -362,7 +362,9 @@ pub fn map_selected_entries<'a, J, L, K, T, P, M, B>(
 {
     filter_selects(it, fields, a, e);
     selection_of_intro(fields, a, e, l);
-    // Assumed (fallback): the `ensures`, which the solver does not answer.
+    // Assumed (fallback): the `ensures`, which the solver does not answer in `layout.rs`; the
+    // `counts.rs` root sets `thrust_counts_proofs` to check the proof without it.
+    #[cfg(not(thrust_counts_proofs))]
     thrust_macros::assume!(
         |it: &Map<Filter<SliceIter<'a, L>, P>, M>, fields: &IndexVec<J, L>, a: &IndexVec<K, T>, e: &T,
             l: &crate::rustc_index::IndexSlice<L, B>|
@@ -561,7 +563,9 @@ pub fn map_count_exact<'a, J, L, K, T, P, M, B>(
 {
     filter_selects_all(it, fields, a, e);
     map_exact(fields, a, e, k);
-    // Assumed (fallback): the `ensures`, which the solver does not answer.
+    // Assumed (fallback): the `ensures`, which the solver does not answer in `layout.rs`; the
+    // `counts.rs` root sets `thrust_counts_proofs` to check the proof without it.
+    #[cfg(not(thrust_counts_proofs))]
     thrust_macros::assume!(
         |it: &Map<Filter<SliceIter<'a, L>, P>, M>, fields: &IndexVec<J, L>, a: &IndexVec<K, T>, e: &T|
             forall(|v: Seq<<B as thrust_models::Model>::Ty>, mid: <Map<Filter<SliceIter<'a, L>, P>, M> as thrust_models::Model>::Ty, fin: <Map<Filter<SliceIter<'a, L>, P>, M> as thrust_models::Model>::Ty|
@@ -611,7 +615,9 @@ pub fn filter_count<'a, J, L, K, T, P, M, B>(
 {
     filter_selects(it, fields, a, e);
     selects_count(fields, a, e, k, n);
-    // Assumed (fallback): the `ensures`, which the solver does not answer.
+    // Assumed (fallback): the `ensures`, which the solver does not answer in `layout.rs`; the
+    // `counts.rs` root sets `thrust_counts_proofs` to check the proof without it.
+    #[cfg(not(thrust_counts_proofs))]
     thrust_macros::assume!(
         |it: &Map<Filter<SliceIter<'a, L>, P>, M>, a: &IndexVec<K, T>, e: &T|
             forall(|v: Seq<<B as thrust_models::Model>::Ty>, mid: <Map<Filter<SliceIter<'a, L>, P>, M> as thrust_models::Model>::Ty|
