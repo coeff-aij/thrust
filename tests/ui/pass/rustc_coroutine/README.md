@@ -43,7 +43,9 @@ last assumption in each function. At a771078b, with fptprove develop 3535ddfa98 
 `layout_reach_pair.rs` is refuted, and `layout_reach_fallback.rs` is refuted at its target in
 `variant_layout`. `layout_reach_prefix.rs`, `layout_reach_variant.rs` and `layout_reach_fallback.rs`'s
 targets in `variant_field_layouts` and `layout()` get no answer: in each of those roots the only
-part without `sat` in the target's function times out at 120 s. So the goals after those
+part without `sat` in the target's function times out at 120 s. Its targets in the lemmas of
+`thrust/counts.rs` whose `ensures` the fallback assumes get no answer either (`filter_count` and
+`map_selected_entries` time out, `map_count_exact` gives `unknown`). So the goals after those
 assumptions are not shown to hold non-vacuously.
 
 | file | selection | state |
