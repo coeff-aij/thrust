@@ -1605,6 +1605,7 @@ fn prefix_wf_of<C: HasDataLayout>(calc: &LayoutCalculator<C>, prefix_size: Size,
 // solver does not answer that `requires` even right after an `assume!` of it. A checked wrapper,
 // as `collect_index_vec_assumed` of thrust/iter.rs; call `prefix_wf_of` again once the solver
 // answers it there.
+#[thrust_macros::context]
 #[thrust_macros::lemma]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(prefix_wf::<C>(*calc, prefix_size, prefix_align))]
