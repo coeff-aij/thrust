@@ -73,8 +73,8 @@ pub(super) fn has_fn_mut_closure(generic_args: mir_ty::GenericArgsRef<'_>) -> bo
 
 impl<'tcx> Analyzer<'tcx> {
     /// Whether an instance of the generic def `def_id` at `generic_args`, which has an `FnMut`
-    /// closure among them, can use its contract as instantiated rather than analyzing the body
-    /// again. The generic analysis stands for the instance once the closures obey what it
+    /// closure among them or is an instance of an `FnMut`-bounded def, can use its contract as
+    /// instantiated rather than analyzing the body again. The generic analysis stands for the instance once the closures obey what it
     /// assumed of their type parameters; those obligations are recorded here. It requires:
     ///
     /// - the def, if `FnMut`-bounded, to be hist_inv-specified ([`Analyzer::is_hist_inv_specified`]);
@@ -213,32 +213,37 @@ impl<'tcx> Analyzer<'tcx> {
     }
 
     /// Records that an instance of the `FnMut`-bounded def `def_id` uses its analysis over its type
-    /// parameters, which is then emitted ([`Analyzer::has_reused_instance`]). A trait method's
-    /// instance at a type parameter may run any impl of it, so each local impl's method is
-    /// recorded too when an `FnMut` bound is on its own type parameters, which the call fixes.
-    /// Only `FnMut`-bounded defs consult the record, so recording another is harmless.
-    pub fn record_fn_mut_generic_reused(&self, def_id: DefId) {
-        let mut implementors = Vec::new();
-        if let Some(trait_def_id) = self.tcx.trait_of_assoc(def_id) {
-            for &impl_def_id in self.tcx.local_trait_impls(trait_def_id) {
-                let ids = self.tcx.impl_item_implementor_ids(impl_def_id.to_def_id());
-                let Some(&method) = ids.get(&def_id) else {
-                    continue;
-                };
-                // A bound of the impl's own type parameters (`F` of `Map<I, F>`) is fixed by the
-                // `Self` type, whose instance the caller's analysis covers; the method's own
-                // parameters are fixed by the call here.
-                let own_fn_mut = fn_mut_bounded_params(self.tcx, method)
-                    .iter()
-                    .any(|param| self.tcx.parent(*param) == method);
-                if own_fn_mut {
-                    implementors.push(method);
-                }
+    /// parameters, which is then emitted ([`Analyzer::has_reused_instance`]).
+    pub(super) fn record_fn_mut_generic_reused(&self, def_id: DefId) {
+        self.fn_mut_reuse
+            .fn_mut_instance_obligations
+            .borrow_mut()
+            .reused
+            .insert(def_id);
+    }
+
+    /// Records as reused, for a call of the trait method `def_id` at a type parameter, each local
+    /// impl's method of it whose own type parameters carry an `FnMut` bound: the call fixes them
+    /// at an instance that the analysis of a reused caller does not reach, the closure among them
+    /// being a type of that caller (`t.apply(|x| ..)` in `gen<T: Ap>`). A bound of the impl's
+    /// own parameters is fixed by `Self`; the instance a dispatched call resolves to is analyzed
+    /// where the reused caller's instance is checked (`Analyzer::expand_dispatched_instances`).
+    pub fn record_dispatched_fn_mut_impls(&self, def_id: DefId) {
+        let Some(trait_def_id) = self.tcx.trait_of_assoc(def_id) else {
+            return;
+        };
+        for &impl_def_id in self.tcx.local_trait_impls(trait_def_id) {
+            let ids = self.tcx.impl_item_implementor_ids(impl_def_id.to_def_id());
+            let Some(&method) = ids.get(&def_id) else {
+                continue;
+            };
+            let own_fn_mut = fn_mut_bounded_params(self.tcx, method)
+                .iter()
+                .any(|param| self.tcx.parent(*param) == method);
+            if own_fn_mut {
+                self.record_fn_mut_generic_reused(method);
             }
         }
-        let mut pending = self.fn_mut_reuse.fn_mut_instance_obligations.borrow_mut();
-        pending.reused.insert(def_id);
-        pending.reused.extend(implementors);
     }
 
     /// The local `FnMut`-bounded defs an `FnMut` closure nested in `ty` can reach as the value of

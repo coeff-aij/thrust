@@ -682,6 +682,8 @@ pub struct Analyzer<'tcx> {
     /// The instances `(def, generic args, caller)` that use a generic def's contract as
     /// instantiated; see [`Analyzer::check_reused_spec_bounds`].
     reused_generic_instances: RefCell<Vec<(DefId, mir_ty::GenericArgsRef<'tcx>, DefId)>>,
+    /// The instances of `FnMut`-bounded defs whose bodies are being analyzed, innermost last.
+    fn_mut_instances_in_analysis: RefCell<Vec<(DefId, mir_ty::GenericArgsRef<'tcx>)>>,
     /// See [`Analyzer::contract_written`].
     contract_written: RefCell<HashMap<LocalDefId, bool>>,
     /// The generic defs of a crate with an `Invariant` impl that are verified once over their
@@ -1026,6 +1028,7 @@ impl<'tcx> Analyzer<'tcx> {
             fn_mut_reuse: Default::default(),
             spec_assumptions: Default::default(),
             reused_generic_instances: Default::default(),
+            fn_mut_instances_in_analysis: Default::default(),
             contract_written: Default::default(),
             per_instance_too: Default::default(),
             called_fn_tys: Default::default(),
@@ -2383,6 +2386,7 @@ impl<'tcx> Analyzer<'tcx> {
         // generic analysis is emitted only while no concrete instance has analyzed its body
         // (D34), so an instance that used its contract as instantiated would rely on an analysis
         // that may never be emitted. Otherwise the contract is used as instantiated.
+        let fn_mut_bounded = !fn_mut_bounded_params(self.tcx, def_id).is_empty();
         let narrower_spec = may_analyze
             && is_generic
             && self.takes_narrower_trait_spec(def_id, generic_args, caller_def_id);
@@ -2400,8 +2404,7 @@ impl<'tcx> Analyzer<'tcx> {
         let analyze_body = may_analyze_body
             && (!is_generic
                 || self.per_instance_too.contains(&def_id)
-                || ((has_fn_mut_closure(generic_args)
-                    || !fn_mut_bounded_params(self.tcx, def_id).is_empty())
+                || ((has_fn_mut_closure(generic_args) || fn_mut_bounded)
                     && !self.reuse_fn_mut_generic(def_id, &expected, generic_args, caller_def_id))
                 || self.may_have_pred_var(&expected, generic_args, caller_def_id)
                 || narrower_spec);
@@ -2412,7 +2415,7 @@ impl<'tcx> Analyzer<'tcx> {
             // An instance of an `FnMut`-bounded def that is not analyzed here stands on the def's
             // analysis over its type parameters, so that analysis is emitted whatever concrete
             // instances analyze its body (D34).
-            if !fn_mut_bounded_params(self.tcx, def_id).is_empty() {
+            if fn_mut_bounded {
                 self.record_fn_mut_generic_reused(def_id);
             }
         }
@@ -2424,7 +2427,29 @@ impl<'tcx> Analyzer<'tcx> {
                 "generic def at an instance"
             );
         }
+        if analyze_body && fn_mut_bounded {
+            // An `FnMut`-bounded def analyzed at an instance whose body calls it at another closure
+            // type (`g(&mut f, ..)` in `g`) would be analyzed at ever larger types, as rustc would
+            // instantiate it.
+            let recursive = self
+                .fn_mut_instances_in_analysis
+                .borrow()
+                .iter()
+                .any(|(analyzed, args)| *analyzed == def_id && *args != generic_args);
+            if recursive {
+                self.tcx.dcx().fatal(format!(
+                    "`{}` is analyzed at an instance whose body calls it at other type arguments, \
+                     as a polymorphically recursive function does, which is not supported",
+                    self.tcx.def_path_str(def_id),
+                ));
+            }
+        }
         if analyze_body {
+            if fn_mut_bounded {
+                self.fn_mut_instances_in_analysis
+                    .borrow_mut()
+                    .push((def_id, generic_args));
+            }
             // The arguments the body is instantiated at: the spec's own body at the bound
             // arguments, a target's body at the call's.
             let body_args = if local_def_id.to_def_id() == def_id {
@@ -2455,6 +2480,9 @@ impl<'tcx> Analyzer<'tcx> {
             };
             let body_local_def_id = body_analyzer.local_def_id();
             body_analyzer.run(&expected);
+            if fn_mut_bounded {
+                self.fn_mut_instances_in_analysis.borrow_mut().pop();
+            }
             use mir_ty::TypeVisitableExt as _;
             if !body_args.has_param() {
                 self.concrete_instances
