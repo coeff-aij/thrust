@@ -90,6 +90,18 @@ where
                         && thrust_macros::post!(Mut::new(fs[k], fs[k + 1])(s[k]), visited[k])))
     }
 
+    // What the map yields is what its closure returned from a state its `hist_inv!` reaches, so a
+    // property of every such result holds of every item yielded; here, being an entry of `l`.
+    // The caller shows the `requires` from the closure's `ensures`.
+    #[thrust_macros::requires(forall(|f1: Closure<F>, f2: Closure<F>, e: <I::Item as thrust_models::Model>::Ty, b: <B as thrust_models::Model>::Ty|
+        !(thrust_macros::hist_inv!((*it).1, f1) && thrust_macros::post!(Mut::new(f1, f2)(e), b))
+            || exists(|i: USize| 0 <= i && i < (*l).len() && b == (*l)[i])))]
+    #[thrust_macros::ensures(forall(|v: Seq<<B as thrust_models::Model>::Ty>, o: <Self as thrust_models::Model>::Ty, k: USize|
+        !(<Self as IteratorSpec>::produces(*it, v, o) && 0 <= k && k < v.len())
+            || exists(|i: USize| 0 <= i && i < (*l).len() && v[k] == (*l)[i])))]
+    #[thrust_macros::lemma]
+    pub fn yields_entries_of<L: Idx + thrust_models::Model>(it: &Self, l: &crate::rustc_index::IndexSlice<L, B>) {}
+
     // `produces_at` of the joined witnesses: the input items concatenated and the closure states
     // joined at their shared state.
     #[thrust_macros::ensures(forall(|sab: Seq<<I::Item as thrust_models::Model>::Ty>| forall(|sbc: Seq<<I::Item as thrust_models::Model>::Ty>|
@@ -734,4 +746,82 @@ where
         raw: v,
         _marker: PhantomData,
     })
+}
+
+// Fallback: `Map::new` with its `requires` assumed, for its one caller, the map over the variants
+// in `layout()` of rustc_abi's layout/coroutine.rs, where the solver does not answer that
+// precondition. The closure's type cannot be written at the call, so an `assume!` there cannot
+// state it; here it is the type parameter. A new caller must establish the precondition itself.
+// For the variants' map this and `collect_index_vec_result_assumed` assume the same fact, the
+// `Map`'s `inv`, and nothing establishes it. Call `Map::new` again once the solver answers it.
+#[thrust_macros::context]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(result.0 == iter && result.1 == func)]
+pub(crate) fn map_new_assumed<I, B, F>(iter: I, func: F) -> Map<I, F>
+where
+    I: IteratorSpec,
+    B: thrust_models::Model,
+    F: FnMut(I::Item) -> B,
+    I::Item: thrust_models::Model,
+{
+    thrust_macros::assume!(|iter: I, func: F|
+        I::inv(iter)
+            && Map::<I, F>::reinitialize()
+            && Map::<I, F>::preservation_inv(iter, func)
+            && Map::<I, F>::next_precondition(iter, func)
+    );
+    Map::new(iter, func)
+}
+
+// Fallback: `collect_index_vec` with its `requires` (the iterator's `inv`) assumed, for its one
+// caller, `variant_field_layouts` in rustc_abi's layout/coroutine.rs, where the solver does not
+// answer that precondition. The iterator's type names closures, so an `assume!` at the call
+// cannot state it; here it is the type parameter. The assumption is sound only for a `Map` built
+// by a checked `Map::new`, whose `requires` is that `Map`'s `inv`: a new caller must establish
+// `inv` itself. The `ensures` is `collect_index_vec`'s.
+#[thrust_macros::context]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(
+    exists(|visited: Seq<<T as thrust_models::Model>::Ty>,
+           mid: <J as thrust_models::Model>::Ty,
+           fin: <J as thrust_models::Model>::Ty|
+        J::produces(it, visited, mid)
+            && J::completed(Mut::new(mid, fin))
+            && result == visited)
+)]
+pub(crate) fn collect_index_vec_assumed<I, T, J>(it: J) -> IndexVec<I, T>
+where
+    I: Idx + thrust_models::Model,
+    T: thrust_models::Model,
+    J: IteratorSpec + Iterator<Item = T>,
+{
+    thrust_macros::assume!(|it: J| J::inv(it));
+    collect_index_vec(it)
+}
+
+// Fallback: `collect_index_vec_result` with its `requires` (the iterator's `inv`) assumed, for its
+// one caller, the map over the variants in `layout()`. That map is built by `map_new_assumed`,
+// not a checked `Map::new`, so its `inv` is assumed twice and established nowhere. The `ensures`
+// is `collect_index_vec_result`'s.
+#[thrust_macros::context]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(
+    forall(|v: <IndexVec<I, T> as thrust_models::Model>::Ty| result != Ok(v)
+        || exists(|visited: Seq<<Result<T, E> as thrust_models::Model>::Ty>,
+                   mid: <J as thrust_models::Model>::Ty,
+                   fin: <J as thrust_models::Model>::Ty|
+            J::produces(it, visited, mid)
+                && J::completed(Mut::new(mid, fin))
+                && visited.len() == v.len()
+                && forall(|k: USize| 0 <= k && k < v.len() ==> visited[k] == Ok(v[k]))))
+)]
+pub(crate) fn collect_index_vec_result_assumed<I, T, E, J>(it: J) -> Result<IndexVec<I, T>, E>
+where
+    I: Idx + thrust_models::Model,
+    T: thrust_models::Model,
+    E: thrust_models::Model,
+    J: IteratorSpec + Iterator<Item = Result<T, E>>,
+{
+    thrust_macros::assume!(|it: J| J::inv(it));
+    collect_index_vec_result(it)
 }

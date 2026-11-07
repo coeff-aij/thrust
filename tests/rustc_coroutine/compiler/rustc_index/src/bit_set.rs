@@ -9,7 +9,9 @@ use bits::{
     bit, excess_cleared, full_word_bits, low_mask_bits, masked, masked_def, masked_range, set_bit,
     test_bit, zero_word_bits,
 };
-use count::{ones, ones_full, ones_le, ones_set_bit, zero_bits_ones};
+use count::{ones_full, ones_le, ones_set_bit, zero_bits_ones};
+// `ones` for stage 7's counting lemmas in rustc_abi's layout/coroutine.rs.
+pub(crate) use count::ones;
 use crate::IteratorSpec;
 use crate::case_study::USize;
 
