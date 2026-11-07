@@ -1060,6 +1060,7 @@ pub struct VariantLayout<FieldIdx: Idx> {
 
 #[thrust_macros::context]
 impl<FieldIdx: Idx> VariantLayout<FieldIdx> {
+    #[thrust_macros::requires(matches!(layout.fields, FieldsShape::Arbitrary { .. }))]
     pub fn from_layout(layout: LayoutData<FieldIdx, impl Idx>) -> Self {
         let FieldsShape::Arbitrary {
             offsets,

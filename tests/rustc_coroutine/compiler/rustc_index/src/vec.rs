@@ -39,9 +39,8 @@ impl<I: Idx, T> IndexVec<I, T> {
         }
     }
 
-    // Its contract is inferred where it is checked; its call of `vec![elem; n]` takes std.rs's
-    // specification, which bit_set.rs's `new_empty` takes too. A root that does not select this
-    // module and enters it from unselected code checks it under the precondition `true`.
+    // Its contract is inferred at the calls the analysis reaches; its call of `vec![elem; n]`
+    // takes std.rs's specification, which bit_set.rs's `new_empty` takes too.
     #[inline]
     pub fn from_elem<S>(elem: T, universe: &IndexSlice<I, S>) -> Self
     where
@@ -69,13 +68,16 @@ impl<I: Idx, T> IndexVec<I, T> {
     }
 
     // Rewrite (rewrites.md S8): `len`, `is_empty` and `next_index` of `IndexSlice`, restated on
-    // `IndexVec`; their contracts are inferred at the calls the analysis reaches.
+    // `IndexVec`; `len`'s and `next_index`'s contracts are inferred at the calls the analysis
+    // reaches, and `is_empty`, which no root that runs calls, keeps its written contract.
     #[inline]
     pub fn len(&self) -> usize {
         self.raw.len()
     }
 
     #[inline]
+    #[thrust_macros::requires(true)]
+    #[thrust_macros::ensures((result == true) == ((*self).len() == 0))]
     pub fn is_empty(&self) -> bool {
         self.raw.is_empty()
     }
