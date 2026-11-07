@@ -5,12 +5,12 @@
 // `S::apply` is `FnMut`-bounded and verified at each concrete closure (D34). `conc`'s closure is
 // such an instance; `gen3` reaches `apply` only through `Ap` at `T`, and `caller` runs `gen3` at
 // `S`, an instance analyzed nowhere but through `S::apply`'s analysis over `F`, which is therefore
-// emitted: it fails for
-// `gen3`'s closure, which returns 0 at 1.
+// emitted: there the assertion fails, as an
+// arbitrary closure may return 0 at 1.
 
 #[thrust_macros::context]
 trait Ap {
-    #[thrust_macros::requires(true)]
+    #[thrust_macros::requires(thrust_macros::pre!(f(1)))]
     #[thrust_macros::ensures(true)]
     fn apply<F: FnMut(i32) -> i32>(&self, f: F) -> i32;
 }
