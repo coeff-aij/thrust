@@ -2409,6 +2409,12 @@ impl<'tcx> Analyzer<'tcx> {
             self.reused_generic_instances
                 .borrow_mut()
                 .push((def_id, generic_args, caller_def_id));
+            // An instance of an `FnMut`-bounded def that is not analyzed here stands on the def's
+            // analysis over its type parameters, so that analysis is emitted whatever concrete
+            // instances analyze its body (D34).
+            if !fn_mut_bounded_params(self.tcx, def_id).is_empty() {
+                self.record_fn_mut_generic_reused(def_id);
+            }
         }
         if is_generic && deferred_ty_mode.is_some() {
             tracing::info!(
