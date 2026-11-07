@@ -16,9 +16,9 @@ for it. Each rustc function is in the part one root selects; functions outside t
 have a contract are trusted. A root also selects the functions through which code outside its
 selection enters a function whose contract is inferred (`Size::unsigned_int_max`, entered through
 `Niche::available`): at such an entry Thrust would fix the precondition to `true`, and the function
-panics on overflow. Such a function is checked again in each root that selects it. A function
-without a contract is checked only where a caller the analysis
-reaches calls it; the roots that select a part of rustc's code and are not drafts split by goal
+panics on overflow. Such a function is checked again in each root that selects it; `available` is
+selected so in `scalar_pair.rs`, `place_field.rs` and `probes/size_arithmetic.rs`. A function
+without a contract is checked only where a caller the analysis reaches calls it; the roots that select a part of rustc's code and are not drafts split by goal
 (`indexvec_int_range.rs`, a check of an option, splits only into the classes of clauses that
 share no unknown, `THRUST_SPLIT`), so
 `THRUST_REPORT=functions` lists one that no such caller reaches as checked in no part.
