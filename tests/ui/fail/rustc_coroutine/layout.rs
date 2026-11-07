@@ -1,4 +1,3 @@
-//@ignore-on-host: draft, as the pass root (README.md)
 //@error-in-other-file: Unsat
 //@edition: 2024
 //@compile-flags: -Adead_code -C debug-assertions=off -A unused-variables -A unused_parens --cfg thrust_layout_fail

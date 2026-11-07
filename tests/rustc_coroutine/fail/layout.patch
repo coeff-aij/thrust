@@ -1,8 +1,7 @@
 --- pass/layout.rs
 +++ fail/layout.rs
-@@ -1,17 +1,14 @@
--//@ignore-on-host: draft, one goal gets no answer from the solver (README.md)
-+//@ignore-on-host: draft, as the pass root (README.md)
+@@ -1,17 +1,13 @@
+-//@check-pass
 +//@error-in-other-file: Unsat
  //@edition: 2024
 -//@compile-flags: -Adead_code -C debug-assertions=off -A unused-variables -A unused_parens
