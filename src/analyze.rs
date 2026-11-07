@@ -2384,7 +2384,12 @@ impl<'tcx> Analyzer<'tcx> {
         // arguments, whose by-value receiver the instantiated `pre!` reads at a final state equal
         // to the current one; and when the contract at the instance is a trait method's spec that
         // does not cover the def's own type parameters, which the generic check did not use
-        // (`Iterator::collect`'s at `B = Vec<T>`). Otherwise the contract is used as instantiated.
+        // (`Iterator::collect`'s at `B = Vec<T>`). An `FnMut`-bounded def whose contract does not
+        // relate the closure's states by `hist_inv!` is analyzed at every instance, whatever its
+        // type arguments (a function item, an `Fn` closure, a type parameter of the caller): its
+        // generic analysis is emitted only while no concrete instance has analyzed its body
+        // (D34), so an instance that used its contract as instantiated would rely on an analysis
+        // that may never be emitted. Otherwise the contract is used as instantiated.
         let narrower_spec = may_analyze
             && is_generic
             && self.takes_narrower_trait_spec(def_id, generic_args, caller_def_id);
@@ -2402,7 +2407,8 @@ impl<'tcx> Analyzer<'tcx> {
         let analyze_body = may_analyze_body
             && (!is_generic
                 || self.per_instance_too.contains(&def_id)
-                || (has_fn_mut_closure(generic_args)
+                || ((has_fn_mut_closure(generic_args)
+                    || !fn_mut_bounded_params(self.tcx, def_id).is_empty())
                     && !self.reuse_fn_mut_generic(def_id, &expected, generic_args, caller_def_id))
                 || self.may_have_pred_var(&expected, generic_args, caller_def_id)
                 || narrower_spec);
@@ -2410,6 +2416,12 @@ impl<'tcx> Analyzer<'tcx> {
             self.reused_generic_instances
                 .borrow_mut()
                 .push((def_id, generic_args, caller_def_id));
+            // An instance of an `FnMut`-bounded def that is not analyzed here stands on the def's
+            // analysis over its type parameters, so that analysis is emitted whatever concrete
+            // instances analyze its body (D34).
+            if !fn_mut_bounded_params(self.tcx, def_id).is_empty() {
+                self.record_fn_mut_generic_reused(def_id);
+            }
         }
         if is_generic && deferred_ty_mode.is_some() {
             tracing::info!(
