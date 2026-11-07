@@ -49,19 +49,25 @@ where
     fn next(&mut self) -> Option<Self::Item>;
 }
 
-pub struct Take<I> {
-    iter: I,
-    n: usize,
+pub struct Take<I: Iterator>
+where
+    <I as Iterator>::Item: Model,
+{
+    pub iter: I,
+    pub n: usize,
 }
 
-impl<I: Model> Model for Take<I> {
-    type Ty = Take<<I as Model>::Ty>;
+impl<I: Iterator> Model for Take<I>
+where
+    <I as Iterator>::Item: Model,
+{
+    type Ty = (<I as Model>::Ty, <usize as Model>::Ty);
 }
 
 #[thrust_macros::context]
 impl<I> Iterator for Take<I>
 where
-    I: Iterator + Model,
+    I: Iterator,
     <I as Iterator>::Item: Model,
     <I as Model>::Ty: Model<Ty = <I as Model>::Ty>,
     <<I as Iterator>::Item as Model>::Ty: Model<Ty = <<I as Iterator>::Item as Model>::Ty>,
@@ -78,24 +84,22 @@ where
         }
     }
 
-
-
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
-        I::invariant(self.iter)
+        I::invariant(self.0)
     }
 
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
-        ((*self).n == 0 && (*self).iter == (!self).iter && (*self).n == (!self).n)
-            || ((*self).n > 0
-                && (*self).n == (!self).n + 1
-                && I::completed(Mut::new((*self).iter, (!self).iter)))
+        ((*self).1 == 0 && (*self).0 == (!self).0 && (*self).1 == (!self).1)
+            || ((*self).1 > 0
+                && (*self).1 == (!self).1 + 1
+                && I::completed(Mut::new((*self).0, (!self).0)))
     }
 
     #[thrust_macros::predicate]
     fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool {
-        self.n == o.n + visited.len() && I::produces(self.iter, visited, o.iter)
+        self.1 == o.1 + visited.len() && I::produces(self.0, visited, o.0)
     }
 }
 
