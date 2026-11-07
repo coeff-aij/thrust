@@ -213,13 +213,22 @@ impl<'tcx> Analyzer<'tcx> {
     }
 
     /// Records that an instance of the `FnMut`-bounded def `def_id` uses its analysis over its type
-    /// parameters, which is then emitted ([`Analyzer::has_reused_instance`]).
-    pub(super) fn record_fn_mut_generic_reused(&self, def_id: DefId) {
-        self.fn_mut_reuse
-            .fn_mut_instance_obligations
-            .borrow_mut()
-            .reused
-            .insert(def_id);
+    /// parameters, which is then emitted ([`Analyzer::has_reused_instance`]). A trait method's
+    /// instance at a type parameter may run any impl of it, so each local impl's method is
+    /// recorded too.
+    pub fn record_fn_mut_generic_reused(&self, def_id: DefId) {
+        let mut implementors = Vec::new();
+        if let Some(trait_def_id) = self.tcx.trait_of_assoc(def_id) {
+            for &impl_def_id in self.tcx.local_trait_impls(trait_def_id) {
+                let ids = self.tcx.impl_item_implementor_ids(impl_def_id.to_def_id());
+                if let Some(&method) = ids.get(&def_id) {
+                    implementors.push(method);
+                }
+            }
+        }
+        let mut pending = self.fn_mut_reuse.fn_mut_instance_obligations.borrow_mut();
+        pending.reused.insert(def_id);
+        pending.reused.extend(implementors);
     }
 
     /// The local `FnMut`-bounded defs an `FnMut` closure nested in `ty` can reach as the value of
