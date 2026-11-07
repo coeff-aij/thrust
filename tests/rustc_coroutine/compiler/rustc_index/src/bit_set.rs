@@ -126,12 +126,9 @@ impl<T: Idx> DenseBitSet<T> {
     }
 
     #[inline]
-    // Trusted: with `#[thrust::reveal]` in its place, the body below proves each group of these
-    // `ensures` alone (the domain, `inserted`, the members, the result, each count), but the solver
-    // gives no answer at 300 s on their conjunction, which is one goal: its unknowns are all
-    // eliminated and the validity check of what remains does not end (#161). Trusted, it also
-    // promises unchecked that every word stays in `[0, 2^64)` (`words_cover_domain`).
-    #[thrust::trusted]
+    // The solver proves each of these `ensures` alone but gives no answer on their conjunction:
+    // the roots that check this body split goals (`THRUST_SPLIT_GOALS`), one per `ensures`.
+    #[thrust::reveal]
     #[thrust_macros::requires(forall(|i: USize| <T as Idx>::index_is(elem, i) ==> i < (*self).0))]
     #[thrust_macros::requires(Self::words_cover_domain(*self))]
     #[thrust_macros::ensures((!self).0 == (*self).0)]
