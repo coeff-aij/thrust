@@ -82,29 +82,6 @@ impl<I: Idx, T> IndexVec<I, T> {
         IndexSlice::from_raw_mut(&mut self.raw)
     }
 
-    // Rewrite (rewrites.md S8): `len`, `is_empty` and `next_index` of `IndexSlice`, restated on
-    // `IndexVec` with contracts over the vector's sequence.
-    #[inline]
-    #[thrust_macros::requires(true)]
-    #[thrust_macros::ensures(result == (*self).len())]
-    pub fn len(&self) -> usize {
-        self.raw.len()
-    }
-
-    #[inline]
-    #[thrust_macros::requires(true)]
-    #[thrust_macros::ensures((result == true) == ((*self).len() == 0))]
-    pub fn is_empty(&self) -> bool {
-        self.raw.is_empty()
-    }
-
-    #[inline]
-    #[thrust_macros::requires(<I as Idx>::can_new((*self).len()))]
-    #[thrust_macros::ensures(<I as Idx>::index_is(result, (*self).len()))]
-    pub fn next_index(&self) -> I {
-        I::new(self.raw.len())
-    }
-
     #[inline]
     #[thrust_macros::requires(<I as Idx>::can_new((*self).len()))]
     #[thrust_macros::ensures(!self == (*self).push(d))]
