@@ -28,13 +28,13 @@ with empty bodies, as Creusot does). The step-form files repeat theirs in the sa
 
 | file | Creusot benchmark file | form |
 | --- | --- | --- |
-| `range.rs` | `iterators/range.rs` | `produces` |
-| `take.rs` | `iterators/take.rs` | `produces` |
-| `skip.rs` | `iterators/skip.rs` | `produces`, concatenated |
+| `range.rs` | the current Creusot's `examples/iterators/01_range.rs` (3620de437) | `produces` |
+| `take.rs` | the current Creusot's `examples/iterators/16_take.rs` (3620de437) | `produces` |
+| `skip.rs` | the current Creusot's `examples/iterators/04_skip.rs` (3620de437) | `produces`, concatenated |
 | `fuse.rs` | `iterators/fuse.rs` | `step` |
 | `fuse_produces.rs` | the current Creusot's `examples/iterators/07_fuse.rs` (3620de437) | `produces` + `FusedIterator::is_fused` with its state `Option<I>` and its `completed` and `produces` |
 | `fuse_produces_result.rs` | `iterators/fuse.rs` | `produces` + `FusedIterator::is_fused` with Creusot's state `Result<I, Ghost<I>>`; `next` keeps `iter` live past the ghost of the exhausted iterator, as Creusot's `ghost! { *iter }` reads it |
-| `map.rs` | `iterators/map.rs` | `produces` over an `FnMut` closure with the chain `fs` of closure states and `hist_inv!`, both laws inherited with no lemma, fully checked |
+| `map.rs` | the current Creusot's `examples/iterators/05_map.rs` (3620de437) | `produces` over an `FnMut` closure with the chain `fs` of closure states and `hist_inv!`, both laws inherited with no lemma, fully checked, and Creusot's constructor `map` |
 | `iter_mut.rs` | the current Creusot's `examples/iterators/02_iter_mut.rs` (3620de437) | `produces` over Creusot's `IterMut { inner: &mut [T] }`, whose `next` (`split_off_first_mut`) is checked, Creusot's constructor `iter_mut(v)` (`IterMut { inner: &mut v[..] }`, with its type invariant, which needs std.rs's length-keeping `IndexMut`) and its `all_zero` client over that iterator |
 | `collect.rs` | `common.rs` (`collect` / `FromIterator`) | `produces` |
 | `all_zero.rs` | `examples/all_zero.rs` | a `for` loop over std's `slice::IterMut` with its `next` through std.rs, the invariant over the loop's `iter` (`slice::IterMut` has no `IteratorSpec`, so no `produced`; Creusot's own `IterMut` and constructor are in `iter_mut.rs`) |
