@@ -2868,6 +2868,24 @@ fn _extern_spec_iterator_enumerate<I>(it: I) -> core::iter::Enumerate<I>
     <I as std::iter::Iterator>::enumerate(it)
 }
 
+// The iterator hands out no item from state `it`. std's consumers that read the size of a
+// `TrustedRandomAccess` iterator (`Zip::next`, `Take::fold` and in-place `collect`: core/src/iter/
+// adapters/zip.rs and take.rs, alloc/src/vec/in_place_collect.rs) take nothing from one whose size
+// is 0 and do not call its `next`. A `Skip` over such an iterator has size 0 when the inner one
+// has no more than `n` items, and a `Map` inside then does not run its closure on them, so the
+// `Skip`'s `completed`, which steps through them, can be out of reach. Those consumers' contracts
+// therefore also allow an iterator that hands out no item. A std iterator's size is the number of
+// items `produces` lets it hand out, so this holds whenever its size is 0.
+#[thrust_macros::predicate]
+fn _iter_spec_yields_no_item<I>(it: I) -> bool
+where
+    I: IteratorSpec,
+    I::Item: thrust_models::Model,
+{
+    thrust_models::forall(|x: <I::Item as thrust_models::Model>::Ty, j: <I as thrust_models::Model>::Ty|
+        !I::produces(it, thrust_models::model::Seq::singleton(x), j))
+}
+
 // When both iterators are `TrustedRandomAccess` (slice iterators, ranges and the adapters over
 // them, `Map` included), std's `Zip::next` steps neither of them and answers `None` once it has
 // handed out as many items as the shorter one has (core/src/iter/adapters/zip.rs), so `completed`
@@ -2908,7 +2926,9 @@ where
                 && (thrust_models::exists(|a: <A as thrust_models::Model>::Ty|
                         A::completed(thrust_models::model::Mut::new((*self).0, a)))
                     || thrust_models::exists(|b: <B as thrust_models::Model>::Ty|
-                        B::completed(thrust_models::model::Mut::new((*self).1, b)))))
+                        B::completed(thrust_models::model::Mut::new((*self).1, b)))
+                    || _iter_spec_yields_no_item::<A>((*self).0)
+                    || _iter_spec_yields_no_item::<B>((*self).1)))
     }
 
     fn produces_refl(a: &Self) {}
@@ -2929,10 +2949,8 @@ where
 // The first `next` drops the `n` items ahead of the first item it hands out (std calls `nth`).
 // `completed` leaves the inner iterator's state after the call open: where `nth` gives up, it can
 // leave the inner iterator elsewhere than `next` would (an inverted `Range` is set to `end..end`).
-// Over a `TrustedRandomAccess` inner, std's `Zip::next`, `Take::fold` and in-place `collect` read
-// the `Skip`'s size, the inner's less `n`, and take nothing from it when that is 0 (core/src/iter/
-// adapters/skip.rs), so `completed` also allows the `Skip` unchanged when the inner cannot produce
-// more than `n` items: a `Map` inside does not run its closure on them.
+// `completed` is Creusot's, without `resolve`. A `Skip` that std's size-reading consumers leave
+// unstepped is stated by those consumers (`_iter_spec_yields_no_item`).
 #[thrust_macros::context]
 impl<I> IteratorSpec for core::iter::Skip<I>
 where
@@ -2962,10 +2980,6 @@ where
                 s.len() <= (*self).1
                     && I::produces((*self).0, s, j)
                     && I::completed(thrust_models::model::Mut::new(j, j2)))
-            || (*self == !self
-                && thrust_models::forall(|s: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
-                                          j: I::Ty|
-                    !I::produces((*self).0, s, j) || s.len() <= (*self).1))
     }
 
     fn produces_refl(a: &Self) {}
@@ -2991,7 +3005,9 @@ fn _extern_spec_iterator_skip<I>(it: I, n: usize) -> core::iter::Skip<I>
 }
 
 // `next` counts down before it asks the inner iterator, but `try_fold` and `advance_by` do not
-// count the call on which the inner iterator runs out, so `completed` allows either count.
+// count the call on which the inner iterator runs out, so `completed` allows either count. Over a
+// `TrustedRandomAccess` inner, `fold` takes nothing from one of size 0
+// (`_iter_spec_yields_no_item`).
 #[thrust_macros::context]
 impl<I> IteratorSpec for core::iter::Take<I>
 where
@@ -3014,6 +3030,7 @@ where
             || ((*self).1 > 0
                 && ((*self).1 == (!self).1 + 1 || (*self).1 == (!self).1)
                 && I::completed(thrust_models::model::Mut::new((*self).0, (!self).0)))
+            || ((*self).1 > 0 && *self == !self && _iter_spec_yields_no_item::<I>((*self).0))
     }
 
     fn produces_refl(a: &Self) {}
@@ -4068,12 +4085,13 @@ fn _extern_spec_vec_extend<T, I>(vec: &mut Vec<T>, iter: I)
         I::into_iter_is(iter, it) ==> <I::IntoIter as IteratorSpec>::inv(it))
 )]
 #[thrust_macros::ensures(
-    thrust_models::exists(|it: <I::IntoIter as thrust_models::Model>::Ty,
-                           done: <I::IntoIter as thrust_models::Model>::Ty,
-                           fin: <I::IntoIter as thrust_models::Model>::Ty|
+    thrust_models::exists(|it: <I::IntoIter as thrust_models::Model>::Ty|
         I::into_iter_is(iter, it)
-            && <I::IntoIter as IteratorSpec>::produces(it, result, done)
-            && <I::IntoIter as IteratorSpec>::completed(thrust_models::model::Mut::new(done, fin)))
+            && (thrust_models::exists(|done: <I::IntoIter as thrust_models::Model>::Ty,
+                                       fin: <I::IntoIter as thrust_models::Model>::Ty|
+                    <I::IntoIter as IteratorSpec>::produces(it, result, done)
+                        && <I::IntoIter as IteratorSpec>::completed(thrust_models::model::Mut::new(done, fin)))
+                || (result.len() == 0 && _iter_spec_yields_no_item::<I::IntoIter>(it))))
 )]
 fn _extern_spec_vec_from_iter<T, I>(iter: I) -> Vec<T>
     where T: thrust_models::Model,
@@ -4087,6 +4105,7 @@ fn _extern_spec_vec_from_iter<T, I>(iter: I) -> Vec<T>
 #[thrust_macros::ensures(
     thrust_models::exists(|done: <I as thrust_models::Model>::Ty, fin: <I as thrust_models::Model>::Ty|
         I::produces(it, result, done) && I::completed(thrust_models::model::Mut::new(done, fin)))
+        || (result.len() == 0 && _iter_spec_yields_no_item::<I>(it))
 )]
 fn _extern_spec_iterator_collect_vec<I, T>(it: I) -> Vec<T>
     where I: IteratorSpec<Item = T>,

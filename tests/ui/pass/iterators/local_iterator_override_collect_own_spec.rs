@@ -81,6 +81,7 @@ fn _extern_spec_up_collect(it: Up) -> Vec<i64> {
 #[thrust_macros::ensures(
     thrust_models::exists(|done: <I as thrust_models::Model>::Ty, fin: <I as thrust_models::Model>::Ty|
         I::produces(it, result, done) && I::completed(thrust_models::model::Mut::new(done, fin)))
+        || (result.len() == 0 && _iter_spec_yields_no_item::<I>(it))
 )]
 fn collect_all<I: IteratorSpec<Item = i64>>(it: I) -> Vec<i64> {
     it.collect()
