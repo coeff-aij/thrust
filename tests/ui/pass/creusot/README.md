@@ -11,7 +11,12 @@ iterator and the closure, in `generic/`). `<file>.rs` is the pass side;
 assertion). `weaker/` holds
 variants of a case whose property is weaker than Creusot's but still verifies.
 
-Every file in the `produces` form repeats one trait block, Creusot's `common.rs` in Thrust syntax:
+The cases of the current Creusot (3620de437, `examples/iterators/`) carry its code verbatim: the
+same items, signatures, types, statements and expressions, with Thrust's annotations in place of
+Creusot's. Like Creusot's files they are libraries with no `main` (`--crate-type=lib`), and they
+share one trait as Creusot's `common.rs` does: `common.rs` here, which the ui harness skips, and
+which the pass sides load with `mod common;` and the fail twins with `#[path]`. The other files in
+the `produces` form repeat the same trait block. It is Creusot's `common.rs` in Thrust syntax:
 the predicates, the laws `produces_refl` and `produces_trans` in concatenation form (the latter
 without Creusot's invariant premises, which a Thrust loop head cannot supply for its entry state),
 `invariant` defaulting to `true`, and `next` with Creusot's contract. Each law has a default empty
