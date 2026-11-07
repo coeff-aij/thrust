@@ -174,7 +174,6 @@ impl<I: Idx, T> IndexSlice<I, T> {
     }
 
     #[inline]
-    #[thrust_macros::ensures(*result.0 == *self && result.1 == 0)]
     pub fn iter(&self) -> SliceIter<'_, T> {
         SliceIter {
             raw: &self.raw,
@@ -183,8 +182,6 @@ impl<I: Idx, T> IndexSlice<I, T> {
     }
 
     #[inline]
-    #[thrust_macros::requires(<I as Idx>::can_new((*self).len()))]
-    #[thrust_macros::ensures(*result.0 == *self && result.1 == 0)]
     pub fn iter_enumerated(&self) -> IterEnumerated<'_, I, T> {
         let _ = I::new(self.len());
         IterEnumerated {

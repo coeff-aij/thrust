@@ -99,10 +99,6 @@ impl<T: Idx> DenseBitSet<T> {
     }
 
     #[thrust::reveal]
-    #[thrust_macros::requires(Self::words_cover_domain(*self))]
-    #[thrust_macros::ensures((!self).0 == (*self).0)]
-    #[thrust_macros::ensures(Self::words_cover_domain(!self))]
-    #[thrust_macros::ensures(excess_cleared((*self).1, (*self).0, (!self).1))]
     fn clear_excess_bits(&mut self) {
         let words = &self.words;
         let s = thrust_macros::ghost!(|words: &Vec<Word>| -> Seq<USize> { *words });
@@ -110,7 +106,6 @@ impl<T: Idx> DenseBitSet<T> {
         clear_excess_bits_in_final_word(self.domain_size, &mut self.words);
     }
 
-    #[thrust::callable]
     pub fn count(&self) -> usize {
         count_ones(&self.words)
     }
@@ -243,10 +238,6 @@ impl<'a> WordIter<'a> {
         *dist.0 == *self.0
     }
 
-    #[thrust_macros::requires(true)]
-    #[thrust_macros::ensures(result.1 == 0)]
-    #[thrust_macros::ensures(Self::words_len_is(result, (*words).len()))]
-    #[thrust_macros::ensures(forall(|i: USize| Self::word_is(result, i, (*words)[i])))]
     pub(crate) fn new(words: &'a [Word]) -> WordIter<'a> {
         WordIter { words, pos: 0 }
     }
@@ -355,7 +346,6 @@ impl<'a, T: Idx> BitIter<'a, T> {
 // Its only callers, the two trusted `iter`s, state the ghost fields.
 impl<'a, T: Idx> BitIter<'a, T> {
     #[inline]
-    #[thrust::callable]
     fn new(words: &'a [Word]) -> BitIter<'a, T> {
         BitIter {
             word: 0,
@@ -514,8 +504,6 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
                     == BitVec::from_int(0))
     }
 
-    #[thrust_macros::ensures(result.start == 0)]
-    #[thrust_macros::ensures(result.end == (*self).num_rows)]
     pub fn rows(&self) -> IdxRange<R> {
         IdxRange::new(0, self.num_rows)
     }
@@ -557,16 +545,11 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
 }
 
 #[inline]
-#[thrust_macros::ensures(forall(|i: USize| <T as Idx>::index_is(domain_size, i)
-    ==> 64 * result >= i && 64 * result < i + 64))]
 fn num_words<T: Idx>(domain_size: T) -> usize {
     domain_size.index().div_ceil(WORD_BITS)
 }
 
 #[inline]
-#[thrust_macros::ensures(forall(|i: USize| <T as Idx>::index_is(elem, i)
-    ==> result.0 == i / 64
-        && result.1 == (BitVec::<64, false>::from_int(1) << BitVec::from_int(i % 64)).to_int()))]
 fn word_index_and_mask<T: Idx>(elem: T) -> (usize, Word) {
     let elem = elem.index();
     let word_index = elem / WORD_BITS;

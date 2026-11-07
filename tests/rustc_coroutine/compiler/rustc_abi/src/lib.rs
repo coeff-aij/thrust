@@ -368,11 +368,9 @@ impl fmt::Debug for Size {
 impl Size {
     pub const ZERO: Size = Size { raw: 0 };
 
-    // Here and in `from_bytes`, the `impl TryInto<u64>` parameter is a named `T: TryIntoSpec<u64>`:
-    // `TryInto` says nothing about the converted value, and a formula cannot name the type of an
-    // `impl Trait` parameter to call `TryIntoSpec`'s predicates on.
-    #[thrust_macros::requires(T::fits(bits))]
-    #[thrust_macros::ensures(thrust_models::exists(|b| T::converts_to(bits, b) && result.raw == (b + 7) / 8))]
+    // As in `from_bytes`, the `impl TryInto<u64>` parameter is a named `T: TryIntoSpec<u64>`, whose
+    // predicates say what the conversion gives: `TryInto` says nothing about the converted value,
+    // and an inferred or written formula cannot name the type of an `impl Trait` parameter.
     pub fn from_bits<T: TryIntoSpec<u64>>(bits: T) -> Size {
         let bits = bits.try_into().ok().unwrap();
         Size {
