@@ -15,6 +15,7 @@ mod candidate_atoms;
 mod clause_builder;
 mod components;
 mod cones;
+mod constructor_calls;
 pub mod debug;
 mod dedup;
 mod flatten;
@@ -4223,7 +4224,7 @@ impl System {
     /// The system as the query states it.
     fn prepared(mut self) -> System {
         self.populate_user_defined_pred_dependencies();
-        let mut system = unbox(self);
+        let mut system = constructor_calls::pass_constructor_parts(unbox(self));
         // With `THRUST_FLAT_PRED_ARGS` set, the tuple, `Box` and `Mut` arguments of the loop
         // heads are split into their components (see `flatten`); with `THRUST_DEDUP_PRED_ARGS`
         // set, the loop heads' arguments inductively equal to another are removed (see `dedup`).
