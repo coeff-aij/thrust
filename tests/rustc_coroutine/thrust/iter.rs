@@ -745,10 +745,12 @@ where
     })
 }
 
-// Fallback: `collect_index_vec` with its `requires` (the iterator's `inv`) assumed,
-// for a `collect` of `layout()`'s whose precondition the solver does not answer. The iterator's
-// type names closures, so an `assume!` at the call cannot state it; here it is the type
-// parameter. The `ensures` is `collect_index_vec`'s.
+// Fallback: `collect_index_vec` with its `requires` (the iterator's `inv`) assumed, for its one
+// caller, `variant_field_layouts` in rustc_abi's layout/coroutine.rs, where the solver does not
+// answer that precondition. The iterator's type names closures, so an `assume!` at the call
+// cannot state it; here it is the type parameter. The assumption is sound only for a `Map` built
+// by a checked `Map::new`, whose `requires` is that `Map`'s `inv`: a new caller must establish
+// `inv` itself. The `ensures` is `collect_index_vec`'s.
 #[thrust_macros::context]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(
@@ -759,7 +761,7 @@ where
             && J::completed(Mut::new(mid, fin))
             && result == visited)
 )]
-pub fn collect_index_vec_assumed<I, T, J>(it: J) -> IndexVec<I, T>
+pub(crate) fn collect_index_vec_assumed<I, T, J>(it: J) -> IndexVec<I, T>
 where
     I: Idx + thrust_models::Model,
     T: thrust_models::Model,
@@ -770,8 +772,8 @@ where
 }
 
 // Fallback: `collect_index_vec_result` with its `requires` assumed, as
-// `collect_index_vec_assumed` is for `collect_index_vec`. The `ensures` is
-// `collect_index_vec_result`'s.
+// `collect_index_vec_assumed` is for `collect_index_vec`, for its one caller, the map over the
+// variants in `layout()`. The `ensures` is `collect_index_vec_result`'s.
 #[thrust_macros::context]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(
@@ -784,7 +786,7 @@ where
                 && visited.len() == v.len()
                 && forall(|k: USize| 0 <= k && k < v.len() ==> visited[k] == Ok(v[k]))))
 )]
-pub fn collect_index_vec_result_assumed<I, T, E, J>(it: J) -> Result<IndexVec<I, T>, E>
+pub(crate) fn collect_index_vec_result_assumed<I, T, E, J>(it: J) -> Result<IndexVec<I, T>, E>
 where
     I: Idx + thrust_models::Model,
     T: thrust_models::Model,
