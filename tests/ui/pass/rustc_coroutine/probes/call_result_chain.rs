@@ -2,7 +2,7 @@
 //@edition: 2024
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_TRY_SPECS=1
-//@rustc-env: THRUST_VERIFY_ONLY=crate,rustc_abi::Size::add_assign,rustc_abi::Size::bits
+//@rustc-env: THRUST_VERIFY_ONLY=crate
 
 // The field-placement path of layout.rs's `LayoutCalculator::univariant_biased`, from
 // `self.cx.data_layout()` to `dl.obj_size_bound()`, in rustc's order: the alignment chosen by

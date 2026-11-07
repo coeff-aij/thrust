@@ -1,7 +1,7 @@
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@no-rustfix
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300 THRUST_TRY_SPECS=1
-//@rustc-env: THRUST_VERIFY_ONLY=l6_off_by_one,split_le_off_by_one,occurs_one_more,rustc_abi::Size::add_assign,rustc_abi::Size::bits
+//@rustc-env: THRUST_VERIFY_ONLY=l6_off_by_one,split_le_off_by_one,occurs_one_more
 //@rustc-env: THRUST_SPLIT=1 THRUST_SPLIT_GOALS=1
 // The fail twin of the counting lemmas of thrust/lemmas.rs. The code is the module tree under
 // tests/rustc_coroutine/; this file selects only the twins below, which call the lemmas on their

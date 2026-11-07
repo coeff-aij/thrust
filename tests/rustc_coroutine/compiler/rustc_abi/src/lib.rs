@@ -399,6 +399,7 @@ impl Size {
     #[thrust_macros::ensures(result == self.raw * 8)]
     pub fn bits(self) -> u64 {
         #[cold]
+        #[thrust_macros::requires(false)]
         fn overflow(bytes: u64) -> ! {
             panic!("Size::bits: {bytes} bytes in bits doesn't fit in u64")
         }
