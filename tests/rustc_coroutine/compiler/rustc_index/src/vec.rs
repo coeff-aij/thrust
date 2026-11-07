@@ -39,9 +39,13 @@ impl<I: Idx, T> IndexVec<I, T> {
         }
     }
 
-    // Its contract is inferred at the calls the analysis reaches; its call of `vec![elem; n]`
-    // takes std.rs's specification, which bit_set.rs's `new_empty` takes too.
+    // A written contract, so that the roots that do not select this module trust it rather than
+    // analyse it; where it is selected, its call of `vec![elem; n]` takes std.rs's specification,
+    // which bit_set.rs's `new_empty` takes too.
     #[inline]
+    #[thrust_macros::requires(true)]
+    #[thrust_macros::ensures(result.len() == (*universe).len()
+        && forall(|k: USize| 0 <= k && k < result.len() ==> result[k] == elem))]
     pub fn from_elem<S>(elem: T, universe: &IndexSlice<I, S>) -> Self
     where
         T: Clone,
