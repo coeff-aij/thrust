@@ -935,12 +935,6 @@ fn split_jobs() -> Result<Option<usize>, String> {
     }
 }
 
-/// `THRUST_SPLIT_GOALS=1`: the parts are the cones of the goals rather than the classes of clauses
-/// that share an unknown.
-fn split_goals() -> bool {
-    std::env::var("THRUST_SPLIT_GOALS").is_ok_and(|value| value.trim() == "1")
-}
-
 /// Where the analysis makes a template, and so its predicate variables: a function's contract,
 /// a block's type, or the code of a block (the result of a call it makes).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3087,7 +3081,7 @@ impl<'tcx> Analyzer<'tcx> {
     /// goal when every clause is a definite Horn clause, and otherwise, with a note saying why, the
     /// classes of clauses that share an unknown. Returns whether they are the cones.
     fn parts_to_solve(&self, system: &chc::System) -> (Vec<Vec<chc::ClauseId>>, bool) {
-        if !split_goals() {
+        if !chc::split_goals() {
             return (system.components(), false);
         }
         match system.goal_cones() {
