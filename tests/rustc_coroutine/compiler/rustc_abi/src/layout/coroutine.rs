@@ -2099,10 +2099,10 @@ pub fn layout<
     // `hist_inv` bounds `size` and `align`: nothing after the `collect` needs a bound, as
     // `Size::align_to` requires nothing (its body checked by the `values.rs` root) and `max`
     // neither.
-    // Fallback: through `collect_index_vec_result_assumed`, which assumes `collect`'s precondition
-    // (the map's `inv`), as the solver does not answer it; call `collect_index_vec_result` again
-    // once it does.
-    let variants = collect_index_vec_result_assumed::<VariantIdx, _, _, _>(Map::new(
+    // Fallback: through `Map::new_assumed` and `collect_index_vec_result_assumed`, which assume
+    // `Map::new`'s and `collect`'s preconditions (each the map's `inv`), as the solver does not
+    // answer them; call `Map::new` and `collect_index_vec_result` again once it does.
+    let variants = collect_index_vec_result_assumed::<VariantIdx, _, _, _>(Map::new_assumed(
         variant_iter,
         thrust_macros::closure!(
         captures(
