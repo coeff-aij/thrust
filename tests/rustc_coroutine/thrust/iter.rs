@@ -745,7 +745,7 @@ where
     })
 }
 
-// Fallback, not merged: `collect_index_vec` with its `requires` (the iterator's `inv`) assumed,
+// Fallback: `collect_index_vec` with its `requires` (the iterator's `inv`) assumed,
 // for a `collect` of `layout()`'s whose precondition the solver does not answer. The iterator's
 // type names closures, so an `assume!` at the call cannot state it; here it is the type
 // parameter. The `ensures` is `collect_index_vec`'s.
@@ -769,7 +769,7 @@ where
     collect_index_vec(it)
 }
 
-// Fallback, not merged: `collect_index_vec_result` with its `requires` assumed, as
+// Fallback: `collect_index_vec_result` with its `requires` assumed, as
 // `collect_index_vec_assumed` is for `collect_index_vec`. The `ensures` is
 // `collect_index_vec_result`'s.
 #[thrust_macros::context]
