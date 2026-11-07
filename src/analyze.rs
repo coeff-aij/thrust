@@ -2435,14 +2435,18 @@ impl<'tcx> Analyzer<'tcx> {
             );
         }
         if analyze_body && fn_mut_bounded {
-            // An `FnMut`-bounded def analyzed at an instance whose body calls it at another closure
-            // type (`g(&mut f, ..)` in `g`) would be analyzed at ever larger types, as rustc would
-            // instantiate it.
+            // An `FnMut`-bounded def analyzed at an instance whose body calls it at a type nesting
+            // the current one (`g(&mut f, ..)` in `g`) would be analyzed at ever larger types, as
+            // rustc would instantiate it. A call at a fixed other type (`g(inc, ..)`) terminates
+            // at that instance, whose own recursive call hits the cache.
+            let depth = |args: mir_ty::GenericArgsRef<'tcx>| {
+                args.iter().map(extern_spec::type_depth).max().unwrap_or(0)
+            };
             let recursive = self
                 .fn_mut_instances_in_analysis
                 .borrow()
                 .iter()
-                .any(|(analyzed, args)| *analyzed == def_id && *args != generic_args);
+                .any(|(analyzed, args)| *analyzed == def_id && depth(generic_args) > depth(args));
             if recursive {
                 self.tcx.dcx().fatal(format!(
                     "`{}` is analyzed at an instance whose body calls it at other type arguments, \
