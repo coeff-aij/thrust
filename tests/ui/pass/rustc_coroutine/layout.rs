@@ -1,4 +1,4 @@
-//@ignore-on-host: draft, passes the frontend and gets no answer from the solver (README.md)
+//@ignore-on-host: draft, one goal gets no answer from the solver (README.md)
 //@edition: 2024
 //@compile-flags: -Adead_code -C debug-assertions=off -A unused-variables -A unused_parens
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 THRUST_TRY_SPECS=1
