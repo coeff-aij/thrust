@@ -523,7 +523,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 fn_mut_generic_defs.push(*local_def_id);
                 continue;
             }
-            if self.unselected_generics.contains(local_def_id) {
+            if self.in_unselected_generic(*local_def_id) {
                 continue;
             }
             self.analyze_placeholder(*local_def_id);
@@ -554,8 +554,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             pending = skipped
                 .into_iter()
                 .filter(|local_def_id| {
-                    let reused = self.ctx.has_reused_instance(*local_def_id)
-                        && !self.unselected_generics.contains(local_def_id);
+                    let reused = self.ctx.has_reused_instance(*local_def_id);
                     if !reused {
                         tracing::debug!(?local_def_id, "verified per concrete instantiation");
                     }
@@ -567,20 +566,30 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     }
 
     /// Whether the placeholder analysis of the `FnMut`-bounded def `local_def_id` is left out:
-    /// when concrete instantiations have analyzed its body and no instance has reused its generic
-    /// analysis, or when it is outside `THRUST_VERIFY_ONLY`, where only its instances are analyzed.
+    /// when no instance has reused its generic analysis and concrete instantiations have analyzed
+    /// its body, or, in `unselected_generics` (with the closures in one), whatever they did, since
+    /// only the instances this run reaches are its to check. A `hist_inv!`-specified def whose
+    /// generic analysis an instance of this run reuses gets that analysis here, as the run that
+    /// selects it emits it only for its own instances.
     fn skips_fn_mut_generic(&self, local_def_id: LocalDefId) -> bool {
-        if self.unselected_generics.contains(&local_def_id) {
-            return true;
+        if self.ctx.has_reused_instance(local_def_id) {
+            return false;
         }
-        self.ctx.has_concrete_instance(local_def_id) && !self.ctx.has_reused_instance(local_def_id)
+        self.in_unselected_generic(local_def_id) || self.ctx.has_concrete_instance(local_def_id)
+    }
+
+    /// Whether `local_def_id` is a def of `unselected_generics` or a closure in one.
+    fn in_unselected_generic(&self, local_def_id: LocalDefId) -> bool {
+        let root = self.tcx.typeck_root_def_id(local_def_id.to_def_id());
+        root.as_local()
+            .is_some_and(|root| self.unselected_generics.contains(&root))
     }
 
     /// Trusts for its contract each generic def of `unselected_generics` whose body the analysis
-    /// reached at no instance, as a function outside the selection is: it is then a root of the
-    /// walk of code Thrust does not analyze.
+    /// reached at no instance, with the closures in it, as a function outside the selection is:
+    /// it is then a root of the walk of code Thrust does not analyze.
     fn trust_unreached_unselected_generics(&mut self) {
-        let unreached: Vec<_> = self
+        let unreached: HashSet<_> = self
             .unselected_generics
             .iter()
             .copied()
@@ -589,9 +598,15 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         if unreached.is_empty() {
             return;
         }
-        for def_id in unreached {
-            self.skip_analysis.insert(def_id);
-            self.trusted.insert(def_id);
+        for def_id in self.tcx.mir_keys(()) {
+            let root = self.tcx.typeck_root_def_id(def_id.to_def_id());
+            if root
+                .as_local()
+                .is_some_and(|root| unreached.contains(&root))
+            {
+                self.skip_analysis.insert(*def_id);
+                self.trusted.insert(*def_id);
+            }
         }
         self.ctx.set_trusted_bodies(self.trusted.clone());
     }
