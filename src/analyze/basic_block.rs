@@ -1892,6 +1892,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                             def_id,
                             args,
                         );
+                        // Any impl may run here at its own instance, analyzed nowhere, so an
+                        // `FnMut`-bounded impl method's analysis over its type parameters is
+                        // emitted (D34).
+                        if !analyze::fn_mut_bounded_params(self.tcx, def_id).is_empty() {
+                            self.ctx.record_fn_mut_generic_reused(def_id);
+                        }
                         def_ty.ty
                     }
                     None => {
