@@ -550,6 +550,31 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         // with the impls of a trait method reached at a type parameter). Analyzing a def may add
         // one for a def skipped before, which is then analyzed too.
         let mut pending = fn_mut_generic_defs;
+        let mut verified_per_instance = Vec::new();
+        loop {
+            self.decide_fn_mut_generics(pending, &mut verified_per_instance);
+            // A body analyzed at an instance of an unselected generic may reuse a def skipped
+            // above, which then gets its analysis over its type parameters too.
+            if !self.analyze_unselected_generics_at_reused_instances() {
+                break;
+            }
+            let (reused, rest): (Vec<_>, Vec<_>) = verified_per_instance
+                .into_iter()
+                .partition(|local_def_id| self.ctx.has_reused_instance(*local_def_id));
+            pending = reused;
+            verified_per_instance = rest;
+        }
+        self.trust_unreached_unselected_generics();
+    }
+
+    /// Analyzes the `FnMut`-bounded defs of `pending` over their type parameters, but those that
+    /// `skips_fn_mut_generic` leaves to their instances, until no analysis adds a reused instance
+    /// of one left out; those left are added to `verified_per_instance`.
+    fn decide_fn_mut_generics(
+        &mut self,
+        mut pending: Vec<LocalDefId>,
+        verified_per_instance: &mut Vec<LocalDefId>,
+    ) {
         while !pending.is_empty() {
             let mut skipped = Vec::new();
             for local_def_id in pending {
@@ -567,34 +592,33 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 }
                 self.analyze_placeholder(local_def_id);
             }
-            pending = skipped
-                .into_iter()
-                .filter(|local_def_id| {
-                    let reused = self.ctx.has_reused_instance(*local_def_id);
-                    if !reused {
-                        tracing::debug!(?local_def_id, "verified per concrete instantiation");
-                    }
-                    reused
-                })
-                .collect();
+            pending = Vec::new();
+            for local_def_id in skipped {
+                if self.ctx.has_reused_instance(local_def_id) {
+                    pending.push(local_def_id);
+                } else {
+                    tracing::debug!(?local_def_id, "verified per concrete instantiation");
+                    verified_per_instance.push(local_def_id);
+                }
+            }
         }
-        self.analyze_unselected_generics_at_reused_instances();
-        self.trust_unreached_unselected_generics();
     }
 
-    /// Analyzes each def of `unselected_generics` at the instances recorded as using its contract
-    /// without a call that analyzed its body there: the methods of an impl whose value this run
-    /// hands to code that may call them (`Analyzer::reuse_impl_methods`) and the impls a dispatched
-    /// call resolves to. Each analysis may record more, which are analyzed in turn.
-    fn analyze_unselected_generics_at_reused_instances(&mut self) {
-        let mut done = 0;
+    /// Analyzes each def of `unselected_generics` at the instances recorded since the last call
+    /// as using its contract without a call that analyzed its body there: the methods of an impl
+    /// whose value this run hands to code that may call them (`Analyzer::reuse_impl_methods`,
+    /// through the bounds of a std call). Each analysis may record more, which are analyzed in
+    /// turn. Returns whether it analyzed any.
+    fn analyze_unselected_generics_at_reused_instances(&mut self) -> bool {
+        let mut analyzed = false;
         loop {
-            let instances = self.ctx.reused_instances_from(done);
+            let instances = self
+                .ctx
+                .reused_instances_from(self.reused_seen_by_unselected);
             if instances.is_empty() {
-                self.reused_seen_by_unselected = done;
-                return;
+                return analyzed;
             }
-            done += instances.len();
+            self.reused_seen_by_unselected += instances.len();
             for (def_id, generic_args, caller_def_id) in instances {
                 let unselected = def_id
                     .as_local()
@@ -602,6 +626,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 if unselected {
                     self.ctx
                         .def_ty_with_args(def_id, generic_args, caller_def_id);
+                    analyzed = true;
                 }
             }
         }
@@ -650,24 +675,26 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     }
 
     /// Stops at an instance of a def of `unselected_generics` that the checks of reused instances
-    /// recorded after the analysis (a dispatched call resolved to an impl method, a bound impl):
-    /// its body is not analyzed there, and its contract alone does not stand for it.
+    /// recorded after the analysis (a dispatched call resolved to an impl method, a bound impl)
+    /// and that no analysis covered: its contract alone does not stand for it.
     fn stop_late_unselected_instances(&self) {
         let late = self
             .ctx
             .reused_instances_from(self.reused_seen_by_unselected)
             .into_iter()
-            .find(|(def_id, _, _)| {
+            .find(|(def_id, generic_args, _)| {
                 def_id
                     .as_local()
                     .is_some_and(|local| self.unselected_generics.contains(&local))
+                    && !self.ctx.analyzed_at(*def_id, generic_args)
             });
         let Some((def_id, generic_args, caller_def_id)) = late else {
             return;
         };
         self.tcx.dcx().fatal(format!(
-            "`{}` reaches `{}` through a dispatched call, outside `THRUST_VERIFY_ONLY`; its body \
-             is checked only at the instances calls reach, and this one is found too late to \
+            "`{}` reaches `{}`, outside `THRUST_VERIFY_ONLY`, through a call found only after the \
+             analysis (a dispatched trait method, or an impl a bound of a std call selects); its \
+             body is checked only at the instances calls reach, and this one is found too late to \
              analyze it: select `{}` too",
             self.tcx.def_path_str(caller_def_id),
             self.tcx.def_path_str_with_args(def_id, generic_args),

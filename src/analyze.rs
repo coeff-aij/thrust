@@ -2497,6 +2497,14 @@ impl<'tcx> Analyzer<'tcx> {
             .contains(&local_def_id)
     }
 
+    /// Whether the body of `def_id` has been analyzed at the concrete `generic_args`.
+    pub fn analyzed_at(&self, def_id: DefId, generic_args: mir_ty::GenericArgsRef<'tcx>) -> bool {
+        self.analyzed_instances
+            .borrow()
+            .iter()
+            .any(|(analyzed, args)| *analyzed == def_id && *args == generic_args)
+    }
+
     /// The instances recorded as using a generic def's contract without analyzing its body there,
     /// from the `from`-th on, in the order they were recorded: the def, its generic arguments and
     /// the caller.
