@@ -160,6 +160,8 @@ impl<I: Idx, T> IndexSlice<I, T> {
     }
 
     #[inline]
+    #[thrust_macros::requires(true)]
+    #[thrust_macros::ensures(result == (*self).len())]
     pub const fn len(&self) -> usize {
         self.raw.len()
     }
