@@ -748,7 +748,9 @@ where
 // Fallback: `Map::new` with its `requires` assumed, for its one caller, the map over the variants
 // in `layout()` of rustc_abi's layout/coroutine.rs, where the solver does not answer that
 // precondition. The closure's type cannot be written at the call, so an `assume!` there cannot
-// state it; here it is the type parameter. Call `Map::new` again once the solver answers it.
+// state it; here it is the type parameter. A new caller must establish the precondition itself.
+// For the variants' map this and `collect_index_vec_result_assumed` assume the same fact, the
+// `Map`'s `inv`, and nothing establishes it. Call `Map::new` again once the solver answers it.
 #[thrust_macros::context]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(result.0 == iter && result.1 == func)]
@@ -794,9 +796,10 @@ where
     collect_index_vec(it)
 }
 
-// Fallback: `collect_index_vec_result` with its `requires` assumed, as
-// `collect_index_vec_assumed` is for `collect_index_vec`, for its one caller, the map over the
-// variants in `layout()`. The `ensures` is `collect_index_vec_result`'s.
+// Fallback: `collect_index_vec_result` with its `requires` (the iterator's `inv`) assumed, for its
+// one caller, the map over the variants in `layout()`. That map is built by `map_new_assumed`,
+// not a checked `Map::new`, so its `inv` is assumed twice and established nowhere. The `ensures`
+// is `collect_index_vec_result`'s.
 #[thrust_macros::context]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(
