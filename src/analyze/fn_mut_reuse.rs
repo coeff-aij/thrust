@@ -215,13 +215,23 @@ impl<'tcx> Analyzer<'tcx> {
     /// Records that an instance of the `FnMut`-bounded def `def_id` uses its analysis over its type
     /// parameters, which is then emitted ([`Analyzer::has_reused_instance`]). A trait method's
     /// instance at a type parameter may run any impl of it, so each local impl's method is
-    /// recorded too.
+    /// recorded too when an `FnMut` bound is on its own type parameters, which the call fixes.
+    /// Only `FnMut`-bounded defs consult the record, so recording another is harmless.
     pub fn record_fn_mut_generic_reused(&self, def_id: DefId) {
         let mut implementors = Vec::new();
         if let Some(trait_def_id) = self.tcx.trait_of_assoc(def_id) {
             for &impl_def_id in self.tcx.local_trait_impls(trait_def_id) {
                 let ids = self.tcx.impl_item_implementor_ids(impl_def_id.to_def_id());
-                if let Some(&method) = ids.get(&def_id) {
+                let Some(&method) = ids.get(&def_id) else {
+                    continue;
+                };
+                // A bound of the impl's own type parameters (`F` of `Map<I, F>`) is fixed by the
+                // `Self` type, whose instance the caller's analysis covers; the method's own
+                // parameters are fixed by the call here.
+                let own_fn_mut = fn_mut_bounded_params(self.tcx, method)
+                    .iter()
+                    .any(|param| self.tcx.parent(*param) == method);
+                if own_fn_mut {
                     implementors.push(method);
                 }
             }
