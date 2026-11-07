@@ -47,10 +47,9 @@ where
     fn next(&mut self) -> Option<Self::Item>;
 }
 
-#[derive(PartialEq)]
 struct Range {
-    start: isize,
-    end: isize,
+    pub start: isize,
+    pub end: isize,
 }
 
 impl Model for Range {
@@ -61,17 +60,15 @@ impl Model for Range {
 impl Iterator for Range {
     type Item = isize;
 
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.start < self.end {
-            let item = self.start;
-            self.start += 1;
-            Some(item)
-        } else {
+    fn next(&mut self) -> Option<isize> {
+        if self.start >= self.end {
             None
+        } else {
+            let r = self.start;
+            self.start += 1;
+            Some(r)
         }
     }
-
-
 
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
@@ -86,6 +83,14 @@ impl Iterator for Range {
             && (!(visited.len() > 0) || o.start <= o.end)
             && visited.len() == o.start - self.start
             && forall(|i: Int| !(0 <= i && i < visited.len()) || visited[i] == self.start + i)
+    }
+}
+
+#[thrust_macros::context]
+impl Range {
+    #[thrust_macros::ensures(result == self)]
+    pub fn into_iter(self) -> Self {
+        self
     }
 }
 
