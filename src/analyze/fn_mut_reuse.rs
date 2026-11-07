@@ -212,6 +212,16 @@ impl<'tcx> Analyzer<'tcx> {
         true
     }
 
+    /// Records that an instance of the `FnMut`-bounded def `def_id` uses its analysis over its type
+    /// parameters, which is then emitted ([`Analyzer::has_reused_instance`]).
+    pub(super) fn record_fn_mut_generic_reused(&self, def_id: DefId) {
+        self.fn_mut_reuse
+            .fn_mut_instance_obligations
+            .borrow_mut()
+            .reused
+            .insert(def_id);
+    }
+
     /// The local `FnMut`-bounded defs an `FnMut` closure nested in `ty` can reach as the value of
     /// one of their type parameters: the items (and the closures in them) of the local impls
     /// that name an ADT on the path from `ty` to the closure ([`Analyzer::enclosing_impl`]).
