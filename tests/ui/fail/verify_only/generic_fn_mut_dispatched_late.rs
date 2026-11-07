@@ -1,12 +1,13 @@
-//@error-in-other-file: Unsat
+//@error-in-other-file: found only after
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 //@rustc-env: THRUST_VERIFY_ONLY=caller,h
 
-// `W`'s `m`, outside the selection, is `FnMut`-bounded through its impl's parameter and verified at each concrete
-// closure (D34); `other`'s closure is such an instance. The selected generic `h` reaches `m` only
-// through `Tr`, and `caller` runs `h` at `W` holding a contracted closure that returns 0 at 1: that dispatched
-// instance is analyzed when `h`'s instance is checked.
+// `W`'s `m`, outside the selection, is `FnMut`-bounded through its impl's parameter and analyzed at
+// the instances this run reaches. The selected generic `h` reaches it only through `Tr`, at the
+// instance `caller` makes, which is found only when `h`'s reused instance is checked, after `m`
+// was taken as unreached: Thrust stops and names `m` to select
+// (`verify_only/generic_fn_mut_dispatched_late_selected.rs` selects it).
 
 #[thrust_macros::context]
 trait Tr {

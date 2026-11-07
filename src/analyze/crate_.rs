@@ -676,8 +676,23 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
     /// Stops at an instance of a def of `unselected_generics` that the checks of reused instances
     /// recorded after the analysis (a dispatched call resolved to an impl method, a bound impl)
-    /// and that no analysis covered: its contract alone does not stand for it.
+    /// and that no analysis covered: its contract alone does not stand for it. Stops as well at a
+    /// def taken as unreached and trusted that such an instance analyzed afterwards.
     fn stop_late_unselected_instances(&self) {
+        // A def trusted as unreached may have been analyzed since, at a dispatched instance
+        // (`Analyzer::expand_dispatched_instances`): the walks already took it as trusted.
+        let analyzed_late = self.unselected_generics.iter().find(|def_id| {
+            self.unreached_unselected.contains(def_id) && self.ctx.analyzed_at_an_instance(**def_id)
+        });
+        if let Some(def_id) = analyzed_late {
+            self.tcx.dcx().fatal(format!(
+                "`{}`, outside `THRUST_VERIFY_ONLY`, is reached through a call found only after \
+                 the analysis (a dispatched trait method), after it was taken as unreached and \
+                 trusted: select `{}` too",
+                self.tcx.def_path_str(*def_id),
+                self.tcx.def_path_str(*def_id),
+            ));
+        }
         let late = self
             .ctx
             .reused_instances_from(self.reused_seen_by_unselected)
