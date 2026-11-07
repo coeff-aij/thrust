@@ -13,7 +13,7 @@ use crate::rustc_index::bit_set::{ones, BitIter, BitMatrix, DenseBitSet};
 use crate::rustc_index::{Idx, IdxRange, IndexSlice, IndexVec, IterEnumerated, SliceIter};
 use crate::case_study::USize;
 use crate::case_study::{counts, lemmas};
-use crate::case_study::iter::{Filter, Map, collect_index_vec, collect_index_vec_assumed, collect_index_vec_result_assumed, iter_all};
+use crate::case_study::iter::{Filter, Map, collect_index_vec, collect_index_vec_assumed, collect_index_vec_result_assumed, iter_all, map_new_assumed};
 use std::iter::{self, Enumerate};
 use std::slice::IterMut;
 
@@ -2099,10 +2099,10 @@ pub fn layout<
     // `hist_inv` bounds `size` and `align`: nothing after the `collect` needs a bound, as
     // `Size::align_to` requires nothing (its body checked by the `values.rs` root) and `max`
     // neither.
-    // Fallback: through `Map::new_assumed` and `collect_index_vec_result_assumed`, which assume
+    // Fallback: through `map_new_assumed` and `collect_index_vec_result_assumed`, which assume
     // `Map::new`'s and `collect`'s preconditions (each the map's `inv`), as the solver does not
     // answer them; call `Map::new` and `collect_index_vec_result` again once it does.
-    let variants = collect_index_vec_result_assumed::<VariantIdx, _, _, _>(Map::new_assumed(
+    let variants = collect_index_vec_result_assumed::<VariantIdx, _, _, _>(map_new_assumed(
         variant_iter,
         thrust_macros::closure!(
         captures(

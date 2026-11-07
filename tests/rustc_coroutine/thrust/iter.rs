@@ -46,22 +46,6 @@ where
         Map { iter, func }
     }
 
-    // Fallback: `new` with its `requires` assumed, for its one caller, the map over the variants
-    // in `layout()` of rustc_abi's layout/coroutine.rs, where the solver does not answer that
-    // precondition. The closure's type cannot be written at the call, so an `assume!` there
-    // cannot state it; here it is the type parameter. Call `new` again once the solver answers it.
-    #[thrust_macros::requires(true)]
-    #[thrust_macros::ensures(result.0 == iter && result.1 == func)]
-    pub(crate) fn new_assumed(iter: I, func: F) -> Map<I, F> {
-        thrust_macros::assume!(|iter: I, func: F|
-            I::inv(iter)
-                && Self::reinitialize()
-                && Self::preservation_inv(iter, func)
-                && Self::next_precondition(iter, func)
-        );
-        Self::new(iter, func)
-    }
-
     #[thrust_macros::predicate]
     fn next_precondition(iter: I, func: F) -> bool {
         forall(|e: <I::Item as thrust_models::Model>::Ty| forall(|i: <I as thrust_models::Model>::Ty|
@@ -759,6 +743,29 @@ where
         raw: v,
         _marker: PhantomData,
     })
+}
+
+// Fallback: `Map::new` with its `requires` assumed, for its one caller, the map over the variants
+// in `layout()` of rustc_abi's layout/coroutine.rs, where the solver does not answer that
+// precondition. The closure's type cannot be written at the call, so an `assume!` there cannot
+// state it; here it is the type parameter. Call `Map::new` again once the solver answers it.
+#[thrust_macros::context]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(result.0 == iter && result.1 == func)]
+pub(crate) fn map_new_assumed<I, B, F>(iter: I, func: F) -> Map<I, F>
+where
+    I: IteratorSpec,
+    B: thrust_models::Model,
+    F: FnMut(I::Item) -> B,
+    I::Item: thrust_models::Model,
+{
+    thrust_macros::assume!(|iter: I, func: F|
+        I::inv(iter)
+            && Map::<I, F>::reinitialize()
+            && Map::<I, F>::preservation_inv(iter, func)
+            && Map::<I, F>::next_precondition(iter, func)
+    );
+    Map::new(iter, func)
 }
 
 // Fallback: `collect_index_vec` with its `requires` (the iterator's `inv`) assumed, for its one
