@@ -49,8 +49,10 @@ with empty bodies, as Creusot does). The step-form files repeat theirs in the sa
 | `filter.rs` | no counterpart | `produces`; collects a `Range`'s items above a bound |
 
 Generic forms (`generic/`): `fold`, `try_fold`, `find` and `filter` generic in the iterator and an
-`FnMut` closure, called at `Range`, each closure's contract stated for every closure state. `<name>.rs`
-writes the loop invariant; `<name>_noinv.rs` is the same with every `invariant!` removed, left to
+`FnMut` closure, called at `Range`, each closure's contract stated for every closure state. `fold`
+and `try_fold` relate no closure states by `hist_inv!`, so each is verified at the instance its
+client makes (`Range` and a `closure!` of kind `Fn`), not over its type parameters (D34); `find`
+and `filter` are verified over theirs. `<name>.rs` writes the loop invariant; `<name>_noinv.rs` is the same with every `invariant!` removed, left to
 inference. Every `_noinv` pair but `filter_noinv.rs` verifies from fptprove `082cd295c` on;
 `filter_noinv.rs`, whose loop has to carry the ghost chain of the `produces` form, gets no answer
 within 300 s at fptprove `b9f9c9c05` and is ignored on the host.

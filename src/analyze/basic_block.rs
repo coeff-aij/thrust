@@ -1892,6 +1892,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                             def_id,
                             args,
                         );
+                        self.ctx.record_dispatched_fn_mut_impls(def_id);
                         def_ty.ty
                     }
                     None => {
