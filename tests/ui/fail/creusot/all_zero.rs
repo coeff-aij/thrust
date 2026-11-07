@@ -1,5 +1,5 @@
 //@error-in-other-file: Unsat
-//@compile-flags: -C debug-assertions=off
+//@compile-flags: --crate-type=lib -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // The loop writes `1`, so the claim that every element ends up zero is false of every
@@ -12,7 +12,7 @@ use thrust_models::model::Int;
     (!v).len() == (*v).len()
         && forall(|i: Int| (0 <= i && i < (!v).len()) ==> ((!v)[i] == 0))
 )]
-fn all_zero(v: &mut Vec<usize>) {
+pub fn all_zero(v: &mut Vec<usize>) {
     for x in v.iter_mut() {
         thrust_macros::invariant!(
             |iter: core::slice::IterMut<'_, usize>, v: thrust_models::FnParam<&mut Vec<usize>>|
@@ -25,5 +25,3 @@ fn all_zero(v: &mut Vec<usize>) {
         *x = 1;
     }
 }
-
-fn main() {}
