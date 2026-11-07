@@ -1,5 +1,5 @@
 //@error-in-other-file: Unsat
-//@compile-flags: -C debug-assertions=off -A unused-variables -A unused_parens
+//@compile-flags: --crate-type=lib -C debug-assertions=off -A unused-variables -A unused_parens
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300
 use thrust_models::model::{Closure, Int, Mut, Seq};
 use thrust_models::{exists, forall, Ghost, Model};
@@ -14,13 +14,20 @@ type U32 = thrust_models::model::UIntN<32>;
 // lines 41-56) with its own property: `v.iter().map_inv(|x, _prod| { cnt += 1; *x }).collect()`,
 // then `x == v` and `cnt == x.len()` (lines 53-55). The source is std's `slice::Iter<u32>`, an
 // iterator of the local spec through its std.rs model `(sequence, cursor)`. `Map` is Creusot's `MapInv`
-// (`iterators/map_ext.rs`) with an `FnMut` closure: `produces` carries the chain `fs` of closure
+// (creusot-std's `std/iter/map_inv.rs`) with an `FnMut` closure: `produces` carries the chain `fs` of closure
 // states, `preservation_inv` and `reinitialize` quantify over every closure state, as Creusot's
 // do. As in creusot-std's `std/iter/map_inv.rs`, which Creusot's `counter` uses, `produces` relates
 // the first state to the last and to every state of the chain by `hist_inv!` (Creusot's
 // `hist_inv`), and `preservation_inv` is guarded by it.
 //
-// The pass side is `tests/ui/pass/creusot/counter_creusot.rs`, which says how it verifies.
+// `Map`'s specification uses `hist_inv!`, so its methods are verified once over `F`, and `collect`
+// at `Map<slice::Iter<u32>, closure>` uses its generic analysis with the closure's `hist_inv!` laws checked.
+// `hist_inv!` gives the final state the prophecy of the borrow of `cnt`, the last call's
+// postcondition its value. Both laws are inherited and checked at the impl with no lemma, where
+// Creusot's session gives the witnesses of `produces_trans` by hand (`exists (s1 ++ s)` and
+// `exists (fs1 ++ fs)`).
+//
+// Fail twin: the second assertion reads element `k` of `x` as `v[k] + 1`.
 
 // Creusot's `common.rs`, the iterator specification every case shares: the trait predicates
 // `produces(self, visited, o)`, `completed` and `invariant` (`true` unless the impl says otherwise),
@@ -123,7 +130,6 @@ where
         forall(|b: <B as Model>::Ty|
             !(thrust_macros::hist_inv!(func, f1)
                 && I::produces(iter, s.push(e1).push(e2), i)
-                && thrust_macros::pre!(f1(e1, produced.concat(s)))
                 && thrust_macros::post!(Mut::new(f1, f2)(e1, produced.concat(s)), b))
                 || thrust_macros::pre!(f2(e2, produced.concat(s).push(e1))))))))))
     }
@@ -156,14 +162,12 @@ where
     // Creusot's `next`: the closure is called with the history before `v`, then `v` is pushed;
     // on `None` the history is reset.
     fn next(&mut self) -> Option<B> {
-        let r = self.iter.next();
-        match r {
+        match self.iter.next() {
             Some(v) => {
-                let e = thrust_macros::ghost!(|v: <I as Iterator>::Item| -> <I as Iterator>::Item { v });
-                let b = (self.func)(v, self.produced);
-                self.produced =
-                    thrust_macros::ghost!(|self: &mut Self, e: Ghost<<I as Iterator>::Item>| -> Seq<A> { (*self).2.push(e) });
-                Some(b)
+                let produced = thrust_macros::ghost!(|self: &mut Self, v: <I as Iterator>::Item| -> Seq<A> { (*self).2.push(v) });
+                let r = (self.func)(v, self.produced);
+                self.produced = produced;
+                Some(r)
             }
             None => {
                 self.produced = thrust_macros::ghost!(|| -> Seq<A> { Seq::empty() });
@@ -266,30 +270,28 @@ impl FromIterator<u32> for Vec<u32> {
     }
 }
 
-// Creusot: `proof_assert! { x@.len() == v@.len() }; proof_assert! { x@.ext_eq(v@) };
-// proof_assert! { cnt@ == x@.len() }`, with `x` and `cnt` returned. Unsat: element `k` of `x` is `v[k]`, not
-// one more.
-#[thrust_macros::ensures(result.0.len() == v.len()
-    && forall(|k: Int| 0 <= k && k < result.0.len() ==> result.0[k] == v[k] + 1)
-    && result.1 == result.0.len())]
-fn counter(v: Vec<u32>) -> (Vec<u32>, usize) {
+// Creusot's `counter`, with `v.iter().map_inv(..)` built as the `Map` above: std.rs gives std's
+// iterators no `map_inv`. Creusot's closure has no written contract (it takes it from the body,
+// `[@coma:extspec]` in `03_std_iterators.coma`); Thrust infers the closure's precondition, and the
+// history fact `cnt == produced.len()` is written as a postcondition on the entry state.
+#[thrust_macros::context]
+#[thrust::callable]
+pub fn counter(v: Vec<u32>) {
     let mut cnt: usize = 0;
-    // Creusot's closure (line 46) has no written contract: Creusot takes it from the body
-    // (`[@coma:extspec]` in `03_std_iterators.coma`). Thrust infers the closure's precondition;
-    // the postconditions state the step and the history before the increment.
-    let f = thrust_macros::closure!(
-        captures(cnt: &mut &mut usize),
-        ensures(*(!cnt) == *(*cnt) + 1 && result == *x),
-        ensures(*(*cnt) == produced.len()),
-        |x: &u32, produced: Ghost<Seq<&U32>>| -> u32 { cnt += 1; *x },
-    );
-    let mut m = Map {
-        iter: v.iter(),
-        func: f,
-        produced: thrust_macros::ghost!(|| -> Seq<&U32> { Seq::empty() }),
-    };
-    let x = m.collect::<Vec<u32>>();
-    (x, cnt)
-}
 
-fn main() {}
+    let x: Vec<u32> = Map {
+        iter: v.iter(),
+        func: thrust_macros::closure!(
+            captures(cnt: &mut &mut usize),
+            ensures(*(!cnt) == *(*cnt) + 1 && result == *x),
+            ensures(*(*cnt) == produced.len()),
+            |x: &u32, produced: Ghost<Seq<&U32>>| -> u32 { cnt += 1; *x },
+        ),
+        produced: thrust_macros::ghost!(|| -> Seq<&U32> { Seq::empty() }),
+    }
+    .collect();
+
+    thrust_macros::proof_assert!(|x: Vec<u32>, v: Vec<u32>| x.len() == v.len());
+    thrust_macros::proof_assert!(|x: Vec<u32>, v: Vec<u32>| forall(|k: Int| 0 <= k && k < x.len() ==> x[k] == v[k] + 1));
+    thrust_macros::proof_assert!(|cnt: usize, x: Vec<u32>| cnt == x.len());
+}

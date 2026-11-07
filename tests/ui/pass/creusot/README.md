@@ -5,13 +5,21 @@ equivalent to Creusot's, plus nine additions with no Creusot counterpart (`take_
 `fold.rs`, `try_fold.rs`, `find.rs`, `filter.rs`, and the forms of the last four generic in the
 iterator and the closure, in `generic/`). `<file>.rs` is the pass side;
 `tests/ui/fail/creusot/<file>.rs` is its fail twin (three extra fail-only files:
-`skip_take_take_count.rs` twins `skip_take.rs` on a different property, and
+`skip_take_take_count.rs` breaks `Take`'s `produces` under `Skip<Take<I>>` stacked from local copies of the adapters, and
 `collect_for_contract.rs` and `extend_for_contract.rs` break the postcondition of `collect` and
 `extend` themselves, where the twins of `collect_for.rs` and `extend_for.rs` break the client's
 assertion). `weaker/` holds
 variants of a case whose property is weaker than Creusot's but still verifies.
 
-Every file in the `produces` form repeats one trait block, Creusot's `common.rs` in Thrust syntax:
+`range.rs`, `take.rs`, `skip.rs`, `fuse_produces.rs`, `iter_mut.rs`, `map.rs`, `map_ext.rs`,
+`all_zero.rs`, `skip_take.rs`, `counter_creusot.rs` and `extend_for.rs` carry the code of the
+current Creusot (3620de437, `examples/iterators/`) verbatim: the same items, signatures, types,
+statements and expressions, with Thrust's annotations in place of Creusot's, except where their
+comments say otherwise. Like Creusot's files they are libraries with no `main`
+(`--crate-type=lib`), and the adapters share one trait as Creusot's `common.rs` does: `common.rs`
+here, which the ui harness skips, and which the pass sides load with `mod common;` and the fail
+twins with `#[path]`. The other files in the `produces` form repeat the same trait block. It is
+Creusot's `common.rs` in Thrust syntax:
 the predicates, the laws `produces_refl` and `produces_trans` in concatenation form (the latter
 without Creusot's invariant premises, which a Thrust loop head cannot supply for its entry state),
 `invariant` defaulting to `true`, and `next` with Creusot's contract. Each law has a default empty
@@ -23,22 +31,22 @@ with empty bodies, as Creusot does). The step-form files repeat theirs in the sa
 
 | file | Creusot benchmark file | form |
 | --- | --- | --- |
-| `range.rs` | `iterators/range.rs` | `produces` |
-| `take.rs` | `iterators/take.rs` | `produces` |
-| `skip.rs` | `iterators/skip.rs` | `produces`, concatenated |
+| `range.rs` | the current Creusot's `examples/iterators/01_range.rs` (3620de437) | `produces` |
+| `take.rs` | the current Creusot's `examples/iterators/16_take.rs` (3620de437) | `produces` |
+| `skip.rs` | the current Creusot's `examples/iterators/04_skip.rs` (3620de437) | `produces`, concatenated |
 | `fuse.rs` | `iterators/fuse.rs` | `step` |
 | `fuse_produces.rs` | the current Creusot's `examples/iterators/07_fuse.rs` (3620de437) | `produces` + `FusedIterator::is_fused` with its state `Option<I>` and its `completed` and `produces` |
 | `fuse_produces_result.rs` | `iterators/fuse.rs` | `produces` + `FusedIterator::is_fused` with Creusot's state `Result<I, Ghost<I>>`; `next` keeps `iter` live past the ghost of the exhausted iterator, as Creusot's `ghost! { *iter }` reads it |
-| `map.rs` | `iterators/map.rs` | `produces` over an `FnMut` closure with the chain `fs` of closure states and `hist_inv!`, both laws inherited with no lemma, fully checked |
+| `map.rs` | the current Creusot's `examples/iterators/05_map.rs` (3620de437) | `produces` over an `FnMut` closure with the chain `fs` of closure states and `hist_inv!`, both laws inherited with no lemma, fully checked, and Creusot's constructor `map` |
 | `iter_mut.rs` | the current Creusot's `examples/iterators/02_iter_mut.rs` (3620de437) | `produces` over Creusot's `IterMut { inner: &mut [T] }`, whose `next` (`split_off_first_mut`) is checked, Creusot's constructor `iter_mut(v)` (`IterMut { inner: &mut v[..] }`, with its type invariant, which needs std.rs's length-keeping `IndexMut`) and its `all_zero` client over that iterator |
 | `collect.rs` | `common.rs` (`collect` / `FromIterator`) | `produces` |
 | `all_zero.rs` | `examples/all_zero.rs` | a `for` loop over std's `slice::IterMut` with its `next` through std.rs, the invariant over the loop's `iter` (`slice::IterMut` has no `IteratorSpec`, so no `produced`; Creusot's own `IterMut` and constructor are in `iter_mut.rs`) |
 | `decuple_range.rs` | `examples/decuple_range.rs` | `produces`, positional property, fully checked |
-| `skip_take.rs` | `examples/skip_take.rs` | `produces`, concatenated `Skip`, generic in `I` |
+| `skip_take.rs` | the current Creusot's `skip_take` in `examples/iterators/03_std_iterators.rs` (3620de437) | std's `take` and `skip` through their std.rs `IteratorSpec`, generic in `I` |
 | `counter.rs` | `examples/counter.rs` | `step` + a unary `next_item` guard, `MapInv`'s ghost history |
-| `counter_creusot.rs` | the current Creusot's `counter` in `examples/iterators/03_std_iterators.rs` (3620de437) | `produces` with Creusot's property over `v.iter()` of a `Vec<u32>` (`x == v`, `cnt == x.len()`), the closure's postconditions (the step and the history fact) written where Creusot takes its contract from the body, its precondition inferred, std's `slice::Iter` through its std.rs model, `MapInv` over an `FnMut` closure whose states are related by `hist_inv!` (Creusot's `hist_inv`), as in creusot-std's `std/iter/map_inv.rs` |
+| `counter_creusot.rs` | the current Creusot's `counter` in `examples/iterators/03_std_iterators.rs` (3620de437) | `produces` with Creusot's property over `v.iter()` of a `Vec<u32>` (`x == v`, `cnt == x.len()`, Creusot's three `proof_assert!`s), `map_inv` written as the struct `Map` since std.rs gives std's iterators no `map_inv`, the closure's postconditions (the step and the history fact) written where Creusot takes its contract from the body, its precondition inferred, std's `slice::Iter` through its std.rs model, `MapInv` over an `FnMut` closure whose states are related by `hist_inv!` (Creusot's `hist_inv`), as in creusot-std's `std/iter/map_inv.rs` |
 | `counter_creusot_lemma.rs` | `examples/counter.rs` | `counter_creusot.rs` with the witnesses of `produces_trans` written as source-level lemmas (Creusot's session gives them by hand) |
-| `map_ext.rs` | `iterators/map_ext.rs` | `produces` with an existential input sequence, `MapInv`'s ghost history, over an `FnMut` closure with the chain `fs` and `hist_inv!` as `counter_creusot.rs` (the ninth adapter) |
+| `map_ext.rs` | the current Creusot's `examples/iterators/06_map_precond.rs` (3620de437) | `produces` with an existential input sequence, `MapInv`'s ghost history, over an `FnMut` closure with the chain `fs` and `hist_inv!` as `counter_creusot.rs` (the ninth adapter), and Creusot's constructor `map` |
 | `extend.rs` | `examples/extend.rs` | `produces` |
 | `collect_for.rs` | the current Creusot's `examples/iterators/08_collect_extend.rs` (3620de437), `collect` and `collect_example` | std.rs's `IteratorSpec`, a `for` loop whose invariant states the vector is `produced` |
 | `extend_for.rs` | the current Creusot's `examples/iterators/08_collect_extend.rs` (3620de437), `extend` and `extend_index` | std.rs's `IteratorSpec`, a `for` loop whose invariant states the vector is its entry value followed by `produced` |
