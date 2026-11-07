@@ -232,18 +232,27 @@ impl<'tcx> Analyzer<'tcx> {
         let Some(trait_def_id) = self.tcx.trait_of_assoc(def_id) else {
             return;
         };
+        // The trait's default body runs for an impl that does not override the method.
+        if self.has_own_fn_mut_bound(def_id) {
+            self.record_fn_mut_generic_reused(def_id);
+        }
         for &impl_def_id in self.tcx.local_trait_impls(trait_def_id) {
             let ids = self.tcx.impl_item_implementor_ids(impl_def_id.to_def_id());
             let Some(&method) = ids.get(&def_id) else {
                 continue;
             };
-            let own_fn_mut = fn_mut_bounded_params(self.tcx, method)
-                .iter()
-                .any(|param| self.tcx.parent(*param) == method);
-            if own_fn_mut {
+            if self.has_own_fn_mut_bound(method) {
                 self.record_fn_mut_generic_reused(method);
             }
         }
+    }
+
+    /// Whether one of `def_id`'s own type parameters, not its impl's or trait's, is
+    /// `FnMut`-bounded.
+    fn has_own_fn_mut_bound(&self, def_id: DefId) -> bool {
+        fn_mut_bounded_params(self.tcx, def_id)
+            .iter()
+            .any(|param| self.tcx.parent(*param) == def_id)
     }
 
     /// The local `FnMut`-bounded defs an `FnMut` closure nested in `ty` can reach as the value of
