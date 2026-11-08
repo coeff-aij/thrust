@@ -1,7 +1,10 @@
 --- pass/layout.rs
 +++ fail/layout.rs
-@@ -1,17 +1,13 @@
+@@ -1,17 +1,16 @@
 -//@check-pass
++//@error-in-other-file: Unsat
++//@error-in-other-file: Unsat
++//@error-in-other-file: Unsat
 +//@error-in-other-file: Unsat
  //@edition: 2024
 -//@compile-flags: -Adead_code -C debug-assertions=off -A unused-variables -A unused_parens
