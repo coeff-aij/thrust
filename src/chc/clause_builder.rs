@@ -133,15 +133,24 @@ impl ClauseBuilder {
         self.body_origin.push(origin);
     }
 
+    /// The clauses deriving each atom of `head`, and the goal that its formula holds. With
+    /// `THRUST_SPLIT_GOALS=1`, a formula that is a conjunction is one goal per conjunct, as Why3's
+    /// `split_goal` splits a goal: `body ⇒ e1 ∧ e2` holds exactly when `body ⇒ e1` and
+    /// `body ⇒ e2` do, and each conjunct then has its own cone.
     pub fn head(&self, head: Body<TermVarIdx>, origin: debug::origin::Entry) -> Vec<Clause> {
         let Body { atoms, formula } = head;
         let mut clauses = atoms
             .into_iter()
             .map(|atom| self.clause(atom, &origin))
             .collect::<Vec<_>>();
-        if !formula.is_top() {
+        let goals = if super::split_goals() {
+            super::conjuncts(&formula)
+        } else {
+            vec![formula]
+        };
+        for goal in goals.into_iter().filter(|goal| !goal.is_top()) {
             let mut builder = self.clone();
-            builder.body.push_conj(formula.not());
+            builder.body.push_conj(goal.not());
             clauses.push(builder.clause(Atom::bottom(), &origin));
         }
         clauses
