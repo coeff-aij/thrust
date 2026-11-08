@@ -838,7 +838,9 @@ impl<'ctx, 'a> std::fmt::Display for UserDefinedPredDef<'ctx, 'a> {
             .collect();
         match &self.inner.body {
             chc::UserDefinedPredBody::Raw(body) => write!(f, "{}", self.raw_body(body))?,
-            chc::UserDefinedPredBody::Formula(formula) if compact_inlining_enabled() => {
+            chc::UserDefinedPredBody::Formula(formula)
+                if compact_inlining_enabled() && applies_definition(formula) =>
+            {
                 self.fmt_with_reads_bound(f, &var_sorts, formula)?;
             }
             chc::UserDefinedPredBody::Formula(formula) => {
@@ -861,14 +863,29 @@ impl<'ctx, 'a> std::fmt::Display for UserDefinedPredDef<'ctx, 'a> {
     }
 }
 
-/// Whether a definition's body binds each read of a parameter it repeats once, with `let`
-/// (`THRUST_COMPACT_INLINING`), so that a reader that inlines definitions by substitution, without
-/// sharing, builds a body linear in the depth of nested definitions: a definition that passes
-/// `(mut (proj (mut_current x)) (proj (mut_final x)))` to the next level would otherwise copy the
-/// argument into each of the next level's reads of its parameter, doubling per level. `let` has
-/// the meaning of substitution, so the definition is the same.
+/// Whether the body of a definition that applies another binds each read of a parameter it
+/// repeats once, with `let` (`THRUST_COMPACT_INLINING`), so that a reader that inlines definitions
+/// by substitution, without sharing, builds a body linear in the depth of nested definitions: a
+/// definition that passes `(mut (proj (mut_current x)) (proj (mut_final x)))` to the next level
+/// would otherwise copy the argument into each of the next level's reads of its parameter,
+/// doubling per level. `let` has the meaning of substitution, so the definition is the same. A
+/// definition that applies none is left as it is: nothing nests in it, and PCSat solved a query
+/// whose one such definition was bound this way ten times slower.
 fn compact_inlining_enabled() -> bool {
     std::env::var_os("THRUST_COMPACT_INLINING").is_some()
+}
+
+/// Whether the formula applies a user-defined predicate or function.
+fn applies_definition(formula: &chc::Formula) -> bool {
+    let mut applies = false;
+    formula.clone().replace_terms(&mut |t| {
+        applies |= matches!(t, chc::Term::UserDefinedFn(..));
+        None
+    });
+    applies
+        || formula
+            .iter_atoms()
+            .any(|atom| matches!(atom.pred, chc::Pred::UserDefined(_)))
 }
 
 /// A read of a parameter: a selector applied to the parameter itself.
