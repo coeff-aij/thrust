@@ -9,7 +9,9 @@ use bits::{
     bit, excess_cleared, full_word_bits, low_mask_bits, masked, masked_def, masked_range, set_bit,
     test_bit, zero_word_bits,
 };
-use count::{ones, ones_full, ones_le, ones_set_bit, zero_bits_ones};
+use count::{ones_full, ones_le, ones_set_bit, zero_bits_ones};
+// `ones` for stage 7's counting lemmas in rustc_abi's layout/coroutine.rs.
+pub(crate) use count::ones;
 use crate::IteratorSpec;
 use crate::case_study::USize;
 
@@ -17,7 +19,7 @@ type Word = u64;
 const WORD_BYTES: usize = size_of::<Word>();
 const WORD_BITS: usize = WORD_BYTES * 8;
 
-// #[cfg_attr(feature = "nightly", derive(Decodable_NoContext, Encodable_NoContext))]
+#[cfg_attr(feature = "nightly", derive(Decodable_NoContext, Encodable_NoContext))]
 #[derive(Eq, PartialEq, Hash)]
 pub struct DenseBitSet<T> {
     domain_size: usize,
@@ -99,10 +101,6 @@ impl<T: Idx> DenseBitSet<T> {
     }
 
     #[thrust::reveal]
-    #[thrust_macros::requires(Self::words_cover_domain(*self))]
-    #[thrust_macros::ensures((!self).0 == (*self).0)]
-    #[thrust_macros::ensures(Self::words_cover_domain(!self))]
-    #[thrust_macros::ensures(excess_cleared((*self).1, (*self).0, (!self).1))]
     fn clear_excess_bits(&mut self) {
         let words = &self.words;
         let s = thrust_macros::ghost!(|words: &Vec<Word>| -> Seq<USize> { *words });
@@ -110,7 +108,6 @@ impl<T: Idx> DenseBitSet<T> {
         clear_excess_bits_in_final_word(self.domain_size, &mut self.words);
     }
 
-    #[thrust::callable]
     pub fn count(&self) -> usize {
         count_ones(&self.words)
     }
@@ -131,12 +128,9 @@ impl<T: Idx> DenseBitSet<T> {
     }
 
     #[inline]
-    // Trusted: with `#[thrust::reveal]` in its place, the body below proves each group of these
-    // `ensures` alone (the domain, `inserted`, the members, the result, each count), but the solver
-    // gives no answer at 300 s on their conjunction, which is one goal: its unknowns are all
-    // eliminated and the validity check of what remains does not end (#161). Trusted, it also
-    // promises unchecked that every word stays in `[0, 2^64)` (`words_cover_domain`).
-    #[thrust::trusted]
+    // The solver proves each of these `ensures` alone but gives no answer on their conjunction:
+    // the roots that check this body split goals (`THRUST_SPLIT_GOALS`), one per `ensures`.
+    #[thrust::reveal]
     #[thrust_macros::requires(forall(|i: USize| <T as Idx>::index_is(elem, i) ==> i < (*self).0))]
     #[thrust_macros::requires(Self::words_cover_domain(*self))]
     #[thrust_macros::ensures((!self).0 == (*self).0)]
@@ -243,10 +237,6 @@ impl<'a> WordIter<'a> {
         *dist.0 == *self.0
     }
 
-    #[thrust_macros::requires(true)]
-    #[thrust_macros::ensures(result.1 == 0)]
-    #[thrust_macros::ensures(Self::words_len_is(result, (*words).len()))]
-    #[thrust_macros::ensures(forall(|i: USize| Self::word_is(result, i, (*words)[i])))]
     pub(crate) fn new(words: &'a [Word]) -> WordIter<'a> {
         WordIter { words, pos: 0 }
     }
@@ -355,7 +345,6 @@ impl<'a, T: Idx> BitIter<'a, T> {
 // Its only callers, the two trusted `iter`s, state the ghost fields.
 impl<'a, T: Idx> BitIter<'a, T> {
     #[inline]
-    #[thrust::callable]
     fn new(words: &'a [Word]) -> BitIter<'a, T> {
         BitIter {
             word: 0,
@@ -467,7 +456,7 @@ impl<'a, T: Idx + thrust_models::Model> IteratorSpec for BitIter<'a, T>
     }
 }
 
-// #[cfg_attr(feature = "nightly", derive(Decodable_NoContext, Encodable_NoContext))]
+#[cfg_attr(feature = "nightly", derive(Decodable_NoContext, Encodable_NoContext))]
 // `Clone, Eq, PartialEq` commented out: the ghost field `col_bound` (rewrites.md S11) has no
 // executable `clone` or `eq`.
 #[derive(/* Clone, Eq, PartialEq, */ Hash)]
@@ -514,8 +503,6 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
                     == BitVec::from_int(0))
     }
 
-    #[thrust_macros::ensures(result.start == 0)]
-    #[thrust_macros::ensures(result.end == (*self).num_rows)]
     pub fn rows(&self) -> IdxRange<R> {
         IdxRange::new(0, self.num_rows)
     }
@@ -557,16 +544,11 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
 }
 
 #[inline]
-#[thrust_macros::ensures(forall(|i: USize| <T as Idx>::index_is(domain_size, i)
-    ==> 64 * result >= i && 64 * result < i + 64))]
 fn num_words<T: Idx>(domain_size: T) -> usize {
     domain_size.index().div_ceil(WORD_BITS)
 }
 
 #[inline]
-#[thrust_macros::ensures(forall(|i: USize| <T as Idx>::index_is(elem, i)
-    ==> result.0 == i / 64
-        && result.1 == (BitVec::<64, false>::from_int(1) << BitVec::from_int(i % 64)).to_int()))]
 fn word_index_and_mask<T: Idx>(elem: T) -> (usize, Word) {
     let elem = elem.index();
     let word_index = elem / WORD_BITS;

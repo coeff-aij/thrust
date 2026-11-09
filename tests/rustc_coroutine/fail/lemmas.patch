@@ -49,11 +49,11 @@
 +}
 +
 +// `permutation_split_le` one too strong, false at `b == n`.
-+#[thrust_macros::lemma] //~ ERROR: Unsat
++#[thrust_macros::lemma]
 +#[thrust_macros::requires(b <= n && lemmas::distinct::<u32>(s, n))]
 +#[thrust_macros::requires(forall(|p: USize, i: USize| 0 <= p && p < n && <u32 as Idx>::index_is(s[p], i) ==> i < n))]
 +#[thrust_macros::ensures(lemmas::cnt_ge::<u32>(s, n, b) + 1 <= n - b)]
-+fn split_le_off_by_one(s: Ghost<IndexVec<u32, u32>>, n: usize, b: usize) {
++fn split_le_off_by_one(s: Ghost<IndexVec<u32, u32>>, n: usize, b: usize) { //~ ERROR: Unsat
 +    lemmas::below_at_least(s, n, b);
 +    lemmas::l6(s, n, b);
 +}

@@ -550,6 +550,7 @@ where
 #[thrust_macros::ensures(true)]
 #[thrust_macros::context] //~ ERROR: Unsat
 //~^ ERROR: Unsat
+//~^^ ERROR: Unsat
 #[cfg(not(inferred_closures))]
 fn field_closures<'a, F: Deref<Target = &'a LayoutData> + Copy + thrust_models::Model>(
     fields: &[F],

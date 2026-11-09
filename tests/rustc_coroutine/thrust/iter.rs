@@ -1,6 +1,6 @@
-//! The case study's iterator adapters and consumers for those std.rs does not specify, or
-//! specifies with a precondition the case study's closures do not meet (`max_by_key`)
-//! (rewrites.md R8), over std's `Iterator` and std.rs's `IteratorSpec`.
+//! The case study's iterator adapters and consumers for those std.rs does not specify
+//! (rewrites.md R8), and a local `max_by_key` (rewrites.md R21), over std's `Iterator` and
+//! std.rs's `IteratorSpec`.
 #![allow(unexpected_cfgs)]
 
 use crate::thrust_models;
@@ -89,6 +89,18 @@ where
                     || (thrust_macros::hist_inv!(s0.1, fs[k])
                         && thrust_macros::post!(Mut::new(fs[k], fs[k + 1])(s[k]), visited[k])))
     }
+
+    // What the map yields is what its closure returned from a state its `hist_inv!` reaches, so a
+    // property of every such result holds of every item yielded; here, being an entry of `l`.
+    // The caller shows the `requires` from the closure's `ensures`.
+    #[thrust_macros::requires(forall(|f1: Closure<F>, f2: Closure<F>, e: <I::Item as thrust_models::Model>::Ty, b: <B as thrust_models::Model>::Ty|
+        !(thrust_macros::hist_inv!((*it).1, f1) && thrust_macros::post!(Mut::new(f1, f2)(e), b))
+            || exists(|i: USize| 0 <= i && i < (*l).len() && b == (*l)[i])))]
+    #[thrust_macros::ensures(forall(|v: Seq<<B as thrust_models::Model>::Ty>, o: <Self as thrust_models::Model>::Ty, k: USize|
+        !(<Self as IteratorSpec>::produces(*it, v, o) && 0 <= k && k < v.len())
+            || exists(|i: USize| 0 <= i && i < (*l).len() && v[k] == (*l)[i])))]
+    #[thrust_macros::lemma]
+    pub fn yields_entries_of<L: Idx + thrust_models::Model>(it: &Self, l: &crate::rustc_index::IndexSlice<L, B>) {}
 
     // `produces_at` of the joined witnesses: the input items concatenated and the closure states
     // joined at their shared state.
@@ -525,9 +537,12 @@ where
 
 // Rewrite (rewrites.md R21): `max_by_key(it, f)` for `it.max_by_key(f)`, with a verified body.
 // Like core's (`Iterator::max_by_key` through `cmp::max_by`) it keeps the last item of greatest
-// key. The closure's precondition need hold only on the items the iterator can yield, where
-// std.rs's `max_by_key` requires it of every value; `F: Fn` as in `iter_all`, and the items are
-// `Copy`, so the loop can record them with the candidate's position. Creusot (3620de437) specifies
+// key. The closure's precondition need hold only on the items the iterator can yield, as
+// std.rs's `max_by_key` requires too; it is kept because `scalar_pair`'s key closure, which
+// captures `&&TargetDataLayout` and passes it to `Niche::available`, gives ill-sorted queries
+// through std's `F: FnMut` bound (fork issue #244, also with std.rs's earlier precondition).
+// `F: Fn` as in `iter_all`, and the items are `Copy`, so the loop
+// can record them with the candidate's position. Creusot (3620de437) specifies
 // no `max_by_key`, and Verus (d804d56) only `cmp::max_by_key` of two values
 // (vstd/std_specs/cmp.rs:313), not the iterator's. The contract states that the result is one of
 // the items produced up to completion, `None` exactly when there is none, and not which of them
@@ -733,18 +748,16 @@ where
     })
 }
 
-// Fallback for `univariant_biased`'s parts the solver does not answer: each wrapper calls the
-// adapter after an `assume!` of exactly the adapter's `requires`, the open goal of its call site in
-// `univariant_biased`. The wrappers are checked like any other function; only the `assume!` is not.
-// A closure's type cannot be written in `univariant_biased`, so its `assume!` cannot state these
-// goals there; here the closure is the type parameter. Delete each wrapper, and call the adapter
-// again, once the solver answers its part.
-
-// `Map::new`, its `requires` assumed (`univariant_biased`'s open part 14).
+// Fallback: `Map::new` with its `requires` assumed, for the map over the variants in `layout()`
+// of rustc_abi's layout/coroutine.rs and the `largest_niche_size` map of `univariant_biased`,
+// where the solver does not answer that precondition. The closure's type cannot be written at
+// the call, so an `assume!` there cannot state it; here it is the type parameter. A new caller must establish the precondition itself.
+// For the variants' map this and `collect_index_vec_result_assumed` assume the same fact, the
+// `Map`'s `inv`, and nothing establishes it. Call `Map::new` again once the solver answers it.
 #[thrust_macros::context]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(result.0 == iter && result.1 == func)]
-pub fn map_new_assumed<I, B, F>(iter: I, func: F) -> Map<I, F>
+pub(crate) fn map_new_assumed<I, B, F>(iter: I, func: F) -> Map<I, F>
 where
     I: IteratorSpec,
     B: thrust_models::Model,
@@ -875,4 +888,57 @@ where
     thrust_macros::assume!(|opt: Option<T>, f: F|
         opt == None || exists(|i: <T as thrust_models::Model>::Ty| opt == Some(i) && thrust_macros::pre!(f(i))));
     opt.map(f)
+}
+
+// Fallback: `collect_index_vec` with its `requires` (the iterator's `inv`) assumed, for its one
+// caller, `variant_field_layouts` in rustc_abi's layout/coroutine.rs, where the solver does not
+// answer that precondition. The iterator's type names closures, so an `assume!` at the call
+// cannot state it; here it is the type parameter. The assumption is sound only for a `Map` built
+// by a checked `Map::new`, whose `requires` is that `Map`'s `inv`: a new caller must establish
+// `inv` itself. The `ensures` is `collect_index_vec`'s.
+#[thrust_macros::context]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(
+    exists(|visited: Seq<<T as thrust_models::Model>::Ty>,
+           mid: <J as thrust_models::Model>::Ty,
+           fin: <J as thrust_models::Model>::Ty|
+        J::produces(it, visited, mid)
+            && J::completed(Mut::new(mid, fin))
+            && result == visited)
+)]
+pub(crate) fn collect_index_vec_assumed<I, T, J>(it: J) -> IndexVec<I, T>
+where
+    I: Idx + thrust_models::Model,
+    T: thrust_models::Model,
+    J: IteratorSpec + Iterator<Item = T>,
+{
+    thrust_macros::assume!(|it: J| J::inv(it));
+    collect_index_vec(it)
+}
+
+// Fallback: `collect_index_vec_result` with its `requires` (the iterator's `inv`) assumed, for its
+// one caller, the map over the variants in `layout()`. That map is built by `map_new_assumed`,
+// not a checked `Map::new`, so its `inv` is assumed twice and established nowhere. The `ensures`
+// is `collect_index_vec_result`'s.
+#[thrust_macros::context]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(
+    forall(|v: <IndexVec<I, T> as thrust_models::Model>::Ty| result != Ok(v)
+        || exists(|visited: Seq<<Result<T, E> as thrust_models::Model>::Ty>,
+                   mid: <J as thrust_models::Model>::Ty,
+                   fin: <J as thrust_models::Model>::Ty|
+            J::produces(it, visited, mid)
+                && J::completed(Mut::new(mid, fin))
+                && visited.len() == v.len()
+                && forall(|k: USize| 0 <= k && k < v.len() ==> visited[k] == Ok(v[k]))))
+)]
+pub(crate) fn collect_index_vec_result_assumed<I, T, E, J>(it: J) -> Result<IndexVec<I, T>, E>
+where
+    I: Idx + thrust_models::Model,
+    T: thrust_models::Model,
+    E: thrust_models::Model,
+    J: IteratorSpec + Iterator<Item = Result<T, E>>,
+{
+    thrust_macros::assume!(|it: J| J::inv(it));
+    collect_index_vec_result(it)
 }

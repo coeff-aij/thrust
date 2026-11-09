@@ -1316,6 +1316,36 @@ fn _extern_spec_std_mem_replace<T>(dest: &mut T, src: T) -> T where T: thrust_mo
     std::mem::replace(dest, src)
 }
 
+// `mem::take` of an integer returns its value and leaves the integer's default, 0; the integer
+// types are the ones this spec covers.
+macro_rules! extern_spec_mem_take_int {
+    ($($spec:ident $ty:ty,)*) => {
+        $(
+            #[thrust::extern_spec_fn]
+            #[thrust_macros::requires(true)]
+            #[thrust_macros::ensures(result == *dest && !dest == 0)]
+            fn $spec(dest: &mut $ty) -> $ty {
+                std::mem::take(dest)
+            }
+        )*
+    };
+}
+
+extern_spec_mem_take_int! {
+    _extern_spec_std_mem_take_u8 u8,
+    _extern_spec_std_mem_take_u16 u16,
+    _extern_spec_std_mem_take_u32 u32,
+    _extern_spec_std_mem_take_u64 u64,
+    _extern_spec_std_mem_take_u128 u128,
+    _extern_spec_std_mem_take_usize usize,
+    _extern_spec_std_mem_take_i8 i8,
+    _extern_spec_std_mem_take_i16 i16,
+    _extern_spec_std_mem_take_i32 i32,
+    _extern_spec_std_mem_take_i64 i64,
+    _extern_spec_std_mem_take_i128 i128,
+    _extern_spec_std_mem_take_isize isize,
+}
+
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(result == (x == y))]
@@ -2637,12 +2667,16 @@ fn _extern_spec_iterator_sum_usize<I>(it: I) -> usize
 // `Iterator::max_by_key`: core maps each item to its key and keeps the later of two items whose
 // keys are equal (core/src/iter/traits/iterator.rs, `max_by_key`, and `cmp::max_by`), so the
 // result is the last item of greatest key, `None` for no item. `f` is called once per item, in
-// order; the key of an item is one `f` may return for it in some state.
+// order; the key of an item is one `f` may return for it in some state. `f` is called only on the
+// items `it` yields, so its precondition is required of those, in every state.
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(
     I::inv(it)
-        && thrust_models::forall(|c: thrust_models::model::Closure<F>|
-            thrust_models::forall(|x: <I::Item as thrust_models::Model>::Ty| thrust_macros::pre!(c(&x))))
+        && thrust_models::forall(|c: thrust_models::model::Closure<F>,
+                                  s: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
+                                  x: <I::Item as thrust_models::Model>::Ty,
+                                  i: <I as thrust_models::Model>::Ty|
+            I::produces(it, s.push(x), i) ==> thrust_macros::pre!(c(&x)))
 )]
 #[thrust_macros::ensures(
     thrust_models::exists(|prod: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,

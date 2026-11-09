@@ -28,7 +28,7 @@ mod unbox;
 
 pub use candidate_atoms::{conjuncts, instances, CandidateAtoms, CandidateAtomsMode, HeadTerms};
 pub use clause_builder::{ClauseBuilder, Var};
-pub use cones::NotHorn;
+pub use cones::{split_goals, NotHorn};
 pub use debug::DebugInfo;
 pub use dedup::dedup_pred_args;
 pub use flatten::flatten_recursive_pred_args;

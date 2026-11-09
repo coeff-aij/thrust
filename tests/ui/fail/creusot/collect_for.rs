@@ -37,5 +37,3 @@ fn collect_example<I: IteratorSpec<Item = u32>>(it: I) {
     let v: Vec<u32> = collect(it);
     thrust_macros::proof_assert!(|v: Vec<u32>| forall(|i: Int| 0 <= i && i < v.len() ==> v[i] == i + 1));
 }
-
-fn main() {}

@@ -33,8 +33,6 @@ impl<I: Idx, T> IndexVec<I, T> {
     // `IndexSlice`; that path is the part of stage 2 that waits on generic
     // slices, so the element read is spelled out on `IndexVec` here.
     #[inline]
-    // Trusted: the body's `Vec<T>` at a type parameter is typed as the (array, length) pair, not the sequence the contract reads.
-    #[thrust::trusted]
     #[thrust_macros::requires(forall(|i: USize| <I as Idx>::index_is(index, i) ==> (0 <= i && i < (*self).len())))]
     #[thrust_macros::ensures(forall(|i: USize| <I as Idx>::index_is(index, i) ==> *result == (*self)[i]))]
     fn at(&self, index: I) -> &T {
@@ -111,7 +109,7 @@ fn main() {
 
 fn drive_iterators() {
     let mut range: IdxRange<usize> = IdxRange::new(0, 3);
-    // Verified via `IdxRange::new`'s own ensures.
+    // Verified through `IdxRange::new`'s inferred postcondition.
     assert!(range.start == 0 && range.end == 3);
     // Verified via the `next` contract above: `Idx for usize` reads
     // `index_is(self, i)` as `self == i`, so the k-th call yields `Some(k)`.
@@ -127,7 +125,7 @@ fn drive_iterators() {
     assert!(d.is_none());
 
     let mut wi: WordIter<'static> = WordIter::new(words());
-    // Verified via `WordIter::new`'s own ensures.
+    // Verified through `WordIter::new`'s inferred postcondition.
     assert!(wi.pos == 0);
     // Verified via the `next` contract above.
     let w0 = wi.next();

@@ -1,7 +1,7 @@
 //@check-pass
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300
-//@rustc-env: THRUST_VERIFY_ONLY=rustc_index::vec,rustc_index::slice,filled
+//@rustc-env: THRUST_VERIFY_ONLY=rustc_index::vec,rustc_index::slice::IndexSlice,rustc_index::slice::SliceIter,rustc_index::slice::IterEnumerated::next,rustc_index::slice::IterEnumerated::produces_refl,rustc_index::slice::IterEnumerated::produces_trans,filled
 //@rustc-env: THRUST_INT_RANGE=conversions
 //@rustc-env: THRUST_SPLIT=1
 // rustc_index's `IndexVec` and `IndexSlice` under `THRUST_INT_RANGE=conversions`, where the model
@@ -33,8 +33,6 @@ impl<I: Idx, T> IndexVec<I, T> {
     // `IndexSlice`; that path is the part of stage 2 that waits on generic
     // slices, so the element read is spelled out on `IndexVec` here.
     #[inline]
-    // Trusted: the body's `Vec<T>` at a type parameter is typed as the (array, length) pair, not the sequence the contract reads.
-    #[thrust::trusted]
     #[thrust_macros::requires(forall(|i: USize| <I as Idx>::index_is(index, i) ==> (0 <= i && i < (*self).len())))]
     #[thrust_macros::ensures(forall(|i: USize| <I as Idx>::index_is(index, i) ==> *result == (*self)[i]))]
     fn at(&self, index: I) -> &T {
