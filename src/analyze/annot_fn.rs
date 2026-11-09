@@ -421,10 +421,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
     /// capture at: the capture's own type in an `Fn` or `FnOnce` closure, a `&mut` of it in an
     /// `FnMut` closure. rustc takes the kind from the bound the closure is passed to when there
     /// is one, so the same closure can need either. Shared references and boxes are erased from
-    /// the emitted sorts, so only the `&mut`s the capture is reached through have to match.
-    ///
-    /// The held type is in the generics of the function around the closure and the written one
-    /// in those of the clause, so the two are compared by their layers, not instantiated.
+    /// the emitted sorts, so they need not match.
     fn check_capture_type(
         &self,
         subpat: &'tcx rustc_hir::Pat<'tcx>,
@@ -438,7 +435,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             }
             mir_ty::ClosureKind::Fn | mir_ty::ClosureKind::FnOnce => capture_ty,
         };
-        if self.mut_layers(held_ty) == self.mut_layers(self.pat_ty(subpat)) {
+        if self.same_emitted_shape(held_ty, self.pat_ty(subpat)) {
             return;
         }
         self.tcx.dcx().span_fatal(
@@ -452,29 +449,66 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         );
     }
 
-    /// How many `&mut`s (or `Mut` models) a value of `ty` is reached through, past the shared
-    /// references and boxes around and between them.
-    fn mut_layers(&self, mut ty: mir_ty::Ty<'tcx>) -> usize {
-        let mut layers = 0;
+    /// Whether a value held at `held` can be read at `written` in a clause: their sorts agree
+    /// with `Box` erased, as the query is emitted. `held` is in the generics of the function
+    /// around the closure and `written` in those of the clause, so where either names a type
+    /// parameter the two are walked side by side instead, a parameter or projection matching
+    /// anything, and only the `&mut`s, tuples and arguments of one ADT are compared.
+    fn same_emitted_shape(&self, held: mir_ty::Ty<'tcx>, written: mir_ty::Ty<'tcx>) -> bool {
+        use rustc_middle::ty::TypeVisitableExt as _;
+        if !held.has_param() && !written.has_param() {
+            let emitted_sort = |ty| chc::unbox_sort(self.type_builder.build(ty).ty.to_sort());
+            return emitted_sort(self.normalized_ty(held)) == emitted_sort(written);
+        }
+        let (held, written) = (self.skip_shared(held), self.skip_shared(written));
+        match (self.mut_pointee(held), self.mut_pointee(written)) {
+            (Some(held), Some(written)) => return self.same_emitted_shape(held, written),
+            (None, None) => {}
+            _ => return false,
+        }
+        match (held.kind(), written.kind()) {
+            (mir_ty::TyKind::Param(_) | mir_ty::TyKind::Alias(..), _)
+            | (_, mir_ty::TyKind::Param(_) | mir_ty::TyKind::Alias(..)) => true,
+            (mir_ty::TyKind::Tuple(hs), mir_ty::TyKind::Tuple(ws)) => {
+                hs.len() == ws.len()
+                    && hs
+                        .iter()
+                        .zip(ws.iter())
+                        .all(|(h, w)| self.same_emitted_shape(h, w))
+            }
+            (mir_ty::TyKind::Adt(ha, hargs), mir_ty::TyKind::Adt(wa, wargs)) if ha == wa => hargs
+                .types()
+                .zip(wargs.types())
+                .all(|(h, w)| self.same_emitted_shape(h, w)),
+            // A Rust type and the model type it lowers to (`Vec<T>` and `Seq<T>`) differ in
+            // kind; the type parameters inside leave nothing more to compare here.
+            _ => true,
+        }
+    }
+
+    /// `ty` past the shared references and boxes around it, which the query erases.
+    fn skip_shared(&self, mut ty: mir_ty::Ty<'tcx>) -> mir_ty::Ty<'tcx> {
         loop {
             ty = match ty.kind() {
-                mir_ty::TyKind::Ref(_, inner, mutbl) => {
-                    if mutbl.is_mut() {
-                        layers += 1;
-                    }
-                    *inner
-                }
+                mir_ty::TyKind::Ref(_, inner, rustc_hir::Mutability::Not) => *inner,
                 mir_ty::TyKind::Adt(adt, args)
                     if ty.is_box() || Some(adt.did()) == self.def_ids.box_model() =>
                 {
                     args.type_at(0)
                 }
-                mir_ty::TyKind::Adt(adt, args) if Some(adt.did()) == self.def_ids.mut_model() => {
-                    layers += 1;
-                    args.type_at(0)
-                }
-                _ => return layers,
+                _ => return ty,
             };
+        }
+    }
+
+    /// The pointee of a `&mut` or of its model `Mut`.
+    fn mut_pointee(&self, ty: mir_ty::Ty<'tcx>) -> Option<mir_ty::Ty<'tcx>> {
+        match ty.kind() {
+            mir_ty::TyKind::Ref(_, inner, rustc_hir::Mutability::Mut) => Some(*inner),
+            mir_ty::TyKind::Adt(adt, args) if Some(adt.did()) == self.def_ids.mut_model() => {
+                Some(args.type_at(0))
+            }
+            _ => None,
         }
     }
 
