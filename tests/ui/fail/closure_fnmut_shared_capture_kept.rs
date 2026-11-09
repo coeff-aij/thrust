@@ -3,8 +3,10 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60
 
 // The closure reads `layout`, captured by `&`, and counts its calls in `calls`, captured by
-// `&mut`. Its body assumes that `layout` keeps its value, which its postcondition still states,
-// so `count_twice` proves `hist_inv!`; what the body does to `calls` is still checked.
+// `&mut`. Callers assume that `layout` keeps its value, so `count_twice` proves `hist_inv!`.
+// The false claim `calls == 0` is still refuted, by the closure's inferred postcondition for
+// `calls`: the test checks that dropping the `&` capture's obligation from the body accepts
+// nothing new.
 struct Align {
     abi: u64,
     pref: u64,

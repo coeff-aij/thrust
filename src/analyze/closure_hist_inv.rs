@@ -148,23 +148,54 @@ pub fn concrete_definition<'tcx, V: chc::Var>(
     let chc::Sort::Tuple(upvar_sorts) = upvars_sort else {
         panic!("closure upvars in an unexpected shape: {upvars_sort:?}");
     };
+    let conjuncts = capture_conjuncts(tcx, *def_id, upvar_sorts, &from, &to);
+    conjuncts
+        .into_iter()
+        .fold(chc::Formula::top(), |formula, conjunct| {
+            formula.and(conjunct.formula)
+        })
+}
+
+/// A conjunct of [`concrete_definition`] for one capture of an `FnMut` closure.
+struct CaptureConjunct<V> {
+    /// Whether the capture is borrowed by `&`, so that Rust keeps it from the body.
+    borrowed_shared: bool,
+    formula: chc::Formula<V>,
+}
+
+/// The conjunct of [`concrete_definition`] for each capture of the `FnMut` closure `def_id`
+/// that has one, between the states `from` and `to` of its upvars.
+fn capture_conjuncts<V: chc::Var>(
+    tcx: mir_ty::TyCtxt<'_>,
+    def_id: DefId,
+    upvar_sorts: &[chc::Sort],
+    from: &chc::Term<V>,
+    to: &chc::Term<V>,
+) -> Vec<CaptureConjunct<V>> {
     let captures = tcx.closure_captures(def_id.expect_local());
     assert_eq!(captures.len(), upvar_sorts.len());
-    let mut formula = chc::Formula::top();
+    let mut conjuncts = Vec::new();
     for (idx, (capture, sort)) in captures.iter().zip(upvar_sorts).enumerate() {
         if sort.is_singleton() {
             continue;
         }
         let from = from.clone().tuple_proj(idx);
         let to = to.clone().tuple_proj(idx);
-        let kept = match capture.info.capture_kind {
+        let (borrowed_shared, formula) = match capture.info.capture_kind {
             mir_ty::UpvarCapture::ByValue | mir_ty::UpvarCapture::ByUse => continue,
-            mir_ty::UpvarCapture::ByRef(mir_ty::BorrowKind::Immutable) => to.equal_to(from),
-            mir_ty::UpvarCapture::ByRef(_) => to.mut_final().equal_to(from.mut_final()),
+            mir_ty::UpvarCapture::ByRef(mir_ty::BorrowKind::Immutable) => {
+                (true, to.equal_to(from).into())
+            }
+            mir_ty::UpvarCapture::ByRef(_) => {
+                (false, to.mut_final().equal_to(from.mut_final()).into())
+            }
         };
-        formula = formula.and(kept.into());
+        conjuncts.push(CaptureConjunct {
+            borrowed_shared,
+            formula,
+        });
     }
-    formula
+    conjuncts
 }
 
 /// The conjuncts of [`concrete_definition`] that the body of the `FnMut` closure `closure_ty`
@@ -189,22 +220,10 @@ pub fn shared_captures_kept<'tcx, V: chc::Var>(
     let chc::Sort::Tuple(upvar_sorts) = upvars_sort else {
         return Vec::new();
     };
-    let captures = tcx.closure_captures(def_id.expect_local());
-    captures
-        .iter()
-        .zip(upvar_sorts)
-        .enumerate()
-        .filter(|(_, (capture, sort))| {
-            !sort.is_singleton()
-                && matches!(
-                    capture.info.capture_kind,
-                    mir_ty::UpvarCapture::ByRef(mir_ty::BorrowKind::Immutable)
-                )
-        })
-        .map(|(idx, _)| {
-            let to = to.clone().tuple_proj(idx);
-            to.equal_to(from.clone().tuple_proj(idx)).into()
-        })
+    capture_conjuncts(tcx, *def_id, upvar_sorts, &from, &to)
+        .into_iter()
+        .filter(|conjunct| conjunct.borrowed_shared)
+        .map(|conjunct| conjunct.formula)
         .collect()
 }
 
