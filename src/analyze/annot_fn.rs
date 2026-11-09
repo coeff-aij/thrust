@@ -496,16 +496,45 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         }
     }
 
-    /// `<ty as Model>::Ty`, normalized as [`Self::written_ty`] normalizes a clause's types, so
-    /// that the closure's type and the restated one are compared as model types.
+    /// The model type of the closure's type `ty`: `&mut` as `Mut`, `Box` as the model `Box`,
+    /// shared references and tuples part by part, a type parameter `T` as `<T as Model>::Ty`,
+    /// and any other type by its `Model` impl, normalized where the closure is defined.
     fn model_of(&self, ty: mir_ty::Ty<'tcx>) -> mir_ty::Ty<'tcx> {
-        let Some(model_ty) = self.def_ids.model_ty() else {
-            return ty;
+        let tcx = self.tcx;
+        let model_adt = |did: Option<DefId>, inner: mir_ty::Ty<'tcx>| {
+            let did = did.expect("thrust_models defines the model type");
+            mir_ty::Ty::new_adt(tcx, tcx.adt_def(did), tcx.mk_args(&[inner.into()]))
         };
-        let projection = mir_ty::Ty::new_projection(self.tcx, model_ty, [ty]);
-        self.tcx
-            .try_normalize_erasing_regions(mir_ty::TypingEnv::fully_monomorphized(), projection)
-            .unwrap_or(projection)
+        match ty.kind() {
+            mir_ty::TyKind::Ref(region, inner, rustc_hir::Mutability::Not) => {
+                mir_ty::Ty::new_imm_ref(tcx, *region, self.model_of(*inner))
+            }
+            mir_ty::TyKind::Ref(_, inner, rustc_hir::Mutability::Mut) => {
+                model_adt(self.def_ids.mut_model(), self.model_of(*inner))
+            }
+            mir_ty::TyKind::Adt(_, args) if ty.is_box() => {
+                model_adt(self.def_ids.box_model(), self.model_of(args.type_at(0)))
+            }
+            mir_ty::TyKind::Tuple(tys) => {
+                mir_ty::Ty::new_tup_from_iter(tcx, tys.iter().map(|ty| self.model_of(ty)))
+            }
+            _ => {
+                let Some(model_ty) = self.def_ids.model_ty() else {
+                    return ty;
+                };
+                let projection = mir_ty::Ty::new_projection(tcx, model_ty, [ty]);
+                if matches!(ty.kind(), mir_ty::TyKind::Param(_)) {
+                    return projection;
+                }
+                let closure_def_id = tcx.local_parent(self.local_def_id);
+                let typing_env = mir_ty::TypingEnv::post_analysis(
+                    tcx,
+                    tcx.typeck_root_def_id(closure_def_id.to_def_id()),
+                );
+                tcx.try_normalize_erasing_regions(typing_env, projection)
+                    .unwrap_or(projection)
+            }
+        }
     }
 
     /// The type a clause's pattern is written at, in the clause's own generics: normalized but
