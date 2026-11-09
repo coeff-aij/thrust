@@ -421,7 +421,10 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
     /// capture at: the capture's own type in an `Fn` or `FnOnce` closure, a `&mut` of it in an
     /// `FnMut` closure. rustc takes the kind from the bound the closure is passed to when there
     /// is one, so the same closure can need either. Shared references and boxes are erased from
-    /// the emitted sorts, so only the `&mut`s have to match.
+    /// the emitted sorts, so only the `&mut`s the capture is reached through have to match.
+    ///
+    /// The held type is in the generics of the function around the closure and the written one
+    /// in those of the clause, so the two are compared by their layers, not instantiated.
     fn check_capture_type(
         &self,
         subpat: &'tcx rustc_hir::Pat<'tcx>,
@@ -435,9 +438,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             }
             mir_ty::ClosureKind::Fn | mir_ty::ClosureKind::FnOnce => capture_ty,
         };
-        let held_ty = self.normalized_ty(held_ty);
-        let emitted_sort = |ty| chc::unbox_sort(self.type_builder.build(ty).ty.to_sort());
-        if emitted_sort(held_ty) == emitted_sort(self.pat_ty(subpat)) {
+        if self.mut_layers(held_ty) == self.mut_layers(self.pat_ty(subpat)) {
             return;
         }
         self.tcx.dcx().span_fatal(
@@ -446,9 +447,35 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 "this `{}` closure holds `{}` at type `{}`; `captures` must give it a type with the same `&mut`s",
                 closure_args.kind().as_str(),
                 subpat.simple_ident().expect("closure capture is a binding"),
-                held_ty,
+                self.tcx.erase_regions(held_ty),
             ),
         );
+    }
+
+    /// How many `&mut`s (or `Mut` models) a value of `ty` is reached through, past the shared
+    /// references and boxes around and between them.
+    fn mut_layers(&self, mut ty: mir_ty::Ty<'tcx>) -> usize {
+        let mut layers = 0;
+        loop {
+            ty = match ty.kind() {
+                mir_ty::TyKind::Ref(_, inner, mutbl) => {
+                    if mutbl.is_mut() {
+                        layers += 1;
+                    }
+                    *inner
+                }
+                mir_ty::TyKind::Adt(adt, args)
+                    if ty.is_box() || Some(adt.did()) == self.def_ids.box_model() =>
+                {
+                    args.type_at(0)
+                }
+                mir_ty::TyKind::Adt(adt, args) if Some(adt.did()) == self.def_ids.mut_model() => {
+                    layers += 1;
+                    args.type_at(0)
+                }
+                _ => return layers,
+            };
+        }
     }
 
     /// Whether the capture is `*x` borrowed immutably, `x` a shared reference: rustc captures a
