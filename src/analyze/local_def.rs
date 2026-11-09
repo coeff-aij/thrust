@@ -2100,6 +2100,24 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         Some((formula_def_id, generic_args, 0))
     }
 
+    /// Whether a formula parameter's type is `FnParam<_>`: the lifted type is the projection
+    /// `<FnParam<_> as Model>::Ty`, normalized and expanded as the invariant's translation does.
+    fn is_fn_param_wrapper(
+        &self,
+        formula_def_id: LocalDefId,
+        ty: mir_ty::Ty<'tcx>,
+        fn_param_wrapper: Option<DefId>,
+    ) -> bool {
+        let typing_env = mir_ty::TypingEnv::post_analysis(self.tcx, formula_def_id.to_def_id());
+        let ty = self
+            .tcx
+            .try_normalize_erasing_regions(typing_env, ty)
+            .unwrap_or(ty);
+        self.expand_model_projection(ty)
+            .ty_adt_def()
+            .is_some_and(|def| Some(def.did()) == fn_param_wrapper)
+    }
+
     /// The names of the variables the formula of a call of `formula_read_call` reads, leaving
     /// out the function parameters a loop invariant names through `FnParam`, which are read at
     /// the function's entry; `None` for any other call.
@@ -2126,10 +2144,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .iter()
             .zip(inputs)
             .skip(first_named_param)
-            .filter(|(_, ty)| {
-                !ty.ty_adt_def()
-                    .is_some_and(|def| Some(def.did()) == fn_param_wrapper)
-            })
+            .filter(|(_, ty)| !self.is_fn_param_wrapper(formula_def_id, **ty, fn_param_wrapper))
             .map(|(ident, _)| {
                 let ident = ident.expect("formula parameters must be named");
                 analyze::annot_fn::lifted_param_source_name(ident)
