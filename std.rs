@@ -1316,8 +1316,8 @@ fn _extern_spec_std_mem_replace<T>(dest: &mut T, src: T) -> T where T: thrust_mo
     std::mem::replace(dest, src)
 }
 
-// `mem::take` of an integer returns its value and leaves the integer's default, 0. Other types
-// have no spec: their defaults are not modeled.
+// `mem::take` of an integer returns its value and leaves the integer's default, 0; the integer
+// types are the ones this spec covers.
 macro_rules! extern_spec_mem_take_int {
     ($($spec:ident $ty:ty,)*) => {
         $(
