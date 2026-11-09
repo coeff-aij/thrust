@@ -454,7 +454,8 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
     /// around the closure and `written` in those of the clause, which copies them, so where
     /// either names a type parameter the two are walked side by side instead: the `&mut`s must
     /// pair up, tuples and the arguments of one ADT are compared part by part, and a parameter
-    /// or projection matches only a parameter or projection. Two different shapes where either
+    /// or projection matches only a parameter, a projection or the model `Closure<F>` of a
+    /// closure-typed parameter. Two different shapes where either
     /// side names a parameter (an ADT against a tuple, `Vec<T>` against its model `Seq`) are not
     /// compared further.
     fn same_emitted_shape(&self, held: mir_ty::Ty<'tcx>, written: mir_ty::Ty<'tcx>) -> bool {
@@ -471,7 +472,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         }
         match (
             Self::is_param_or_alias(held),
-            Self::is_param_or_alias(written),
+            Self::is_param_or_alias(self.skip_closure_model(written)),
         ) {
             (true, true) => return true,
             (true, false) | (false, true) => return false,
@@ -498,10 +499,20 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
     /// the clause is translated over its type parameters or at an instance.
     fn written_ty(&self, pat: &'tcx rustc_hir::Pat<'tcx>) -> mir_ty::Ty<'tcx> {
         let ty = self.typeck.pat_ty(pat);
-        let typing_env = mir_ty::TypingEnv::post_analysis(self.tcx, self.local_def_id);
+        let typing_env = mir_ty::TypingEnv::fully_monomorphized();
         self.tcx
             .try_normalize_erasing_regions(typing_env, ty)
             .unwrap_or(ty)
+    }
+
+    /// A clause names a closure-typed parameter `F` by its model `Closure<F>`.
+    fn skip_closure_model(&self, ty: mir_ty::Ty<'tcx>) -> mir_ty::Ty<'tcx> {
+        match ty.kind() {
+            mir_ty::TyKind::Adt(adt, args) if Some(adt.did()) == self.def_ids.closure_model() => {
+                args.type_at(0)
+            }
+            _ => ty,
+        }
     }
 
     fn is_param_or_alias(ty: mir_ty::Ty<'tcx>) -> bool {
