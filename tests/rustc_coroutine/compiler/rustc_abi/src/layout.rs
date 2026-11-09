@@ -926,6 +926,13 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
             align = align.max(prefix_align);
             offset = prefix_size.align_to(prefix_align);
         }
+        // Fallback: the two conjuncts of `place_fields`' `requires` the solver does not answer at
+        // the call (`fields_ok`, from `layout_pre`; `order_ok`, from the facts asserted after the
+        // sort), assumed exactly.
+        thrust_macros::assume!(|fields: &IndexSlice<FieldIdx, F>, dl: &TargetDataLayout|
+            LayoutCalculator::<Cx>::fields_ok::<FieldIdx, VariantIdx, F>(fields, *dl));
+        thrust_macros::assume!(|in_memory_order: IndexVec<u32, FieldIdx>, fields: &IndexSlice<FieldIdx, F>, kind: StructKind|
+            LayoutCalculator::<Cx>::order_ok::<FieldIdx>(in_memory_order, (*fields).len(), kind));
         // Rewrite (rewrites.md R19): the field loop as `place_fields`.
         let unsized_field = Self::place_fields::<FieldIdx, VariantIdx, F>(
             fields,
