@@ -4,7 +4,7 @@
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300 THRUST_TRY_SPECS=1
 //@rustc-env: THRUST_VERIFY_ONLY=rustc_abi::layout::LayoutCalculator::place_fields,rustc_abi::layout::niche_sized,rustc_abi::layout::no_niche_ends_by
-//@rustc-env: THRUST_SPLIT=1 THRUST_SPLIT_GOALS=1
+//@rustc-env: THRUST_SPLIT=1 THRUST_SPLIT_GOALS=1 THRUST_CALL_RESULT_DIRECT=1
 // `univariant_biased`'s field loop, `place_fields` (rewrites.md R19), with its invariant over the
 // loop's history, against the contract `univariant_biased` reads it by; `place_field` and the
 // lemmas it uses are trusted on their contracts, which the place_field and permutation_sum roots
