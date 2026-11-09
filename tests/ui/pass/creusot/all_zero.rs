@@ -27,5 +27,3 @@ fn all_zero(v: &mut Vec<usize>) {
         *x = 0;
     }
 }
-
-fn main() {}
