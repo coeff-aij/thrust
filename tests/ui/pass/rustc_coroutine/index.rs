@@ -25,7 +25,7 @@ use thrust_models::forall;
 
 use case_study::USize;
 use rustc_index::bit_set::{BitMatrix, DenseBitSet, WordIter};
-use rustc_index::{Idx, IdxRange, IndexVec};
+use rustc_index::{Idx, IdxRange, IndexSlice, IndexVec};
 
 #[thrust_macros::context]
 impl<I: Idx, T> IndexVec<I, T> {
@@ -38,6 +38,15 @@ impl<I: Idx, T> IndexVec<I, T> {
     fn at(&self, index: I) -> &T {
         &self.raw[index.index()]
     }
+}
+
+// A read through `Index` on `IndexSlice`, as rustc's code reads `variant_fields[v]`: the call
+// that checks `IndexSlice::index`'s body against its extern specification.
+#[thrust_macros::context]
+#[thrust_macros::requires(<I as Idx>::index_logic(index) < (*slice).len())]
+#[thrust_macros::ensures(*result == (*slice)[<I as Idx>::index_logic(index)])]
+fn read_entry<I: Idx + thrust_models::Model, T: thrust_models::Model>(slice: &IndexSlice<I, T>, index: I) -> &T {
+    &slice[index]
 }
 
 // //== stage 2 property
@@ -155,6 +164,7 @@ fn drive_index_vec() {
     assert!(v.len() == 2);
     assert!(*v.at(a) == 10);
     assert!(*v.at(b) == 20);
+    assert!(*read_entry(&v, b) == 20);
 
     let w = filled(3, 7);
     assert!(w.len() == 3);

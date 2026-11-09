@@ -151,8 +151,9 @@ impl<'a, I: Idx + thrust_models::Model, T: thrust_models::Model> IterEnumerated<
 
 #[thrust_macros::context]
 impl<I: Idx, T> IndexSlice<I, T> {
-    // The reinterpretation through a raw pointer has no model; it is the
-    // identity on the sequence, which is what the contract says.
+    // Trusted: the body is an unsafe cast through a raw pointer, which Thrust does not model.
+    // `IndexSlice` is `repr(transparent)` over `[T]`, so the cast is the identity on the
+    // sequence, which is what the contract says.
     #[inline]
     #[thrust::trusted]
     #[thrust_macros::requires(true)]
@@ -163,6 +164,8 @@ impl<I: Idx, T> IndexSlice<I, T> {
         unsafe { &*(ptr as *const Self) }
     }
 
+    // Trusted, as `from_raw`: an unsafe cast of the `&mut` through a raw pointer, the identity
+    // on the sequence before and after the borrow.
     #[inline]
     #[thrust::trusted]
     #[thrust_macros::requires(true)]
