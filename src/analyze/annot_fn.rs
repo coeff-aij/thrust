@@ -456,7 +456,8 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
     /// anything, and only the `&mut`s, tuples and arguments of one ADT are compared. The clause
     /// may be translated at an instance, where `written` is instantiated and `held` is not, so a
     /// parameter is not told apart from the type it stands for: a generic capture restated at
-    /// another concrete type, or two different ADTs around a parameter, are not reported.
+    /// another concrete type is not reported, nor are two different shapes where either side
+    /// names a parameter (an ADT against a tuple, `Vec<T>` against `[T]`).
     fn same_emitted_shape(&self, held: mir_ty::Ty<'tcx>, written: mir_ty::Ty<'tcx>) -> bool {
         use rustc_middle::ty::TypeVisitableExt as _;
         if !held.has_param() && !written.has_param() {
@@ -464,14 +465,16 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             return emitted_sort(self.normalized_ty(held)) == emitted_sort(written);
         }
         let (held, written) = (self.skip_shared(held), self.skip_shared(written));
+        // A parameter may stand for a `&mut` on the side that is instantiated.
+        if Self::is_param_or_alias(held) || Self::is_param_or_alias(written) {
+            return true;
+        }
         match (self.mut_pointee(held), self.mut_pointee(written)) {
             (Some(held), Some(written)) => return self.same_emitted_shape(held, written),
             (None, None) => {}
             _ => return false,
         }
         match (held.kind(), written.kind()) {
-            (mir_ty::TyKind::Param(_) | mir_ty::TyKind::Alias(..), _)
-            | (_, mir_ty::TyKind::Param(_) | mir_ty::TyKind::Alias(..)) => true,
             (mir_ty::TyKind::Tuple(hs), mir_ty::TyKind::Tuple(ws)) => {
                 hs.len() == ws.len()
                     && hs
@@ -487,6 +490,13 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             // kind; the type parameters inside leave nothing more to compare here.
             _ => true,
         }
+    }
+
+    fn is_param_or_alias(ty: mir_ty::Ty<'tcx>) -> bool {
+        matches!(
+            ty.kind(),
+            mir_ty::TyKind::Param(_) | mir_ty::TyKind::Alias(..)
+        )
     }
 
     /// `ty` past the shared references and boxes around it, which the query erases.
