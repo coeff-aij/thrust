@@ -27,7 +27,10 @@
 //! in any order: the plugin matches them against the closure's real captures by name.
 //! A shared reference `x` that the body uses through a deref (`x[i]`, `x.f()`), which rustc
 //! captures as `*x`, is named `x`; its type is `x`'s, behind the closure's state as for any
-//! other capture (`&mut` of it in an `FnMut` closure).
+//! other capture (`&mut` of it in an `FnMut` closure). The kind is the one rustc gives the
+//! closure, which it takes from the bound of the parameter the closure is passed to, when there
+//! is one: a closure passed straight to `F: FnMut` is `FnMut` even if its body only reads its
+//! captures. The plugin rejects a restated type whose `&mut`s differ from the closure's.
 //!
 //! `hist_inv` gives the relation `hist_inv!` holds between two states of an `FnMut` closure, in
 //! place of the one derived from its captures, which says nothing of a capture taken by value.

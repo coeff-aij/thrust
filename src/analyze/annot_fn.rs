@@ -412,8 +412,43 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                     format!("`{}` is not captured by this closure", ident),
                 );
             };
+            self.check_capture_type(subpat, closure_args.as_closure(), idx);
             self.env.insert(hir_id, upvar_terms[idx].clone());
         }
+    }
+
+    /// Rejects a `captures` entry whose type does not match the one the closure holds the
+    /// capture at: the capture's own type in an `Fn` or `FnOnce` closure, a `&mut` of it in an
+    /// `FnMut` closure. rustc takes the kind from the bound the closure is passed to when there
+    /// is one, so the same closure can need either. Shared references and boxes are erased from
+    /// the emitted sorts, so only the `&mut`s have to match.
+    fn check_capture_type(
+        &self,
+        subpat: &'tcx rustc_hir::Pat<'tcx>,
+        closure_args: mir_ty::ClosureArgs<TyCtxt<'tcx>>,
+        idx: usize,
+    ) {
+        let capture_ty = closure_args.upvar_tys()[idx];
+        let held_ty = match closure_args.kind() {
+            mir_ty::ClosureKind::FnMut => {
+                mir_ty::Ty::new_mut_ref(self.tcx, self.tcx.lifetimes.re_erased, capture_ty)
+            }
+            mir_ty::ClosureKind::Fn | mir_ty::ClosureKind::FnOnce => capture_ty,
+        };
+        let held_ty = self.normalized_ty(held_ty);
+        let emitted_sort = |ty| chc::unbox_sort(self.type_builder.build(ty).ty.to_sort());
+        if emitted_sort(held_ty) == emitted_sort(self.pat_ty(subpat)) {
+            return;
+        }
+        self.tcx.dcx().span_fatal(
+            subpat.span,
+            format!(
+                "this `{}` closure holds `{}` at type `{}`, which `captures` must give it",
+                closure_args.kind().as_str(),
+                subpat.simple_ident().expect("closure capture is a binding"),
+                held_ty,
+            ),
+        );
     }
 
     /// Whether the capture is `*x` borrowed immutably, `x` a shared reference: rustc captures a
