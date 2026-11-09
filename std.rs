@@ -3006,7 +3006,7 @@ fn _extern_spec_iterator_skip<I>(it: I, n: usize) -> core::iter::Skip<I>
 
 // `next` counts down before it asks the inner iterator, but `try_fold` and `advance_by` do not
 // count the call on which the inner iterator runs out, so `completed` allows either count. Over a
-// `TrustedRandomAccess` inner, `fold` takes nothing from one of size 0
+// `TrustedRandomAccess` inner, `fold` and `for_each` take nothing from one of size 0
 // (`_iter_spec_yields_no_item`).
 #[thrust_macros::context]
 impl<I> IteratorSpec for core::iter::Take<I>
