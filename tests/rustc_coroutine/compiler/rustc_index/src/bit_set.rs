@@ -454,6 +454,9 @@ impl<'a, T: Idx + thrust_models::Model> Iterator for BitIter<'a, T>
                 this.rest = thrust_macros::ghost!(|this: &mut BitIter<'a, T>, bit_pos: usize| -> Array<USize, Int> {
                     without_flag((*this).7, bit_pos + (*this).1)
                 });
+                #[cfg(thrust_bititer_body_fail)]
+                return Some(T::new(bit_pos + this.offset + 1));
+                #[cfg(not(thrust_bititer_body_fail))]
                 return Some(T::new(bit_pos + this.offset));
             }
 
