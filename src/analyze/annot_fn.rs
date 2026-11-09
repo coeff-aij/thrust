@@ -453,7 +453,10 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
     /// with `Box` erased, as the query is emitted. `held` is in the generics of the function
     /// around the closure and `written` in those of the clause, so where either names a type
     /// parameter the two are walked side by side instead, a parameter or projection matching
-    /// anything, and only the `&mut`s, tuples and arguments of one ADT are compared.
+    /// anything, and only the `&mut`s, tuples and arguments of one ADT are compared. The clause
+    /// may be translated at an instance, where `written` is instantiated and `held` is not, so a
+    /// parameter is not told apart from the type it stands for: a generic capture restated at
+    /// another concrete type, or two different ADTs around a parameter, are not reported.
     fn same_emitted_shape(&self, held: mir_ty::Ty<'tcx>, written: mir_ty::Ty<'tcx>) -> bool {
         use rustc_middle::ty::TypeVisitableExt as _;
         if !held.has_param() && !written.has_param() {
