@@ -251,7 +251,19 @@ fn names_history_without_iter(stmts: &[syn::Stmt], label: Option<&str>) -> bool 
         .iter()
         .map_while(|stmt| invariant_params(stmt, label))
         .flatten()
-        .any(|(name, _)| name == "iter_old" || name == "produced")
+        .any(|(name, ty)| (name == "iter_old" || name == "produced") && is_ghost_type(&ty))
+}
+
+/// Whether a parameter is typed `Ghost<..>`, as the loop's ghost history is; a user's own
+/// variable named `iter_old` or `produced` has its own type and is not the history.
+fn is_ghost_type(ty: &syn::Type) -> bool {
+    let syn::Type::Path(path) = ty else {
+        return false;
+    };
+    path.path
+        .segments
+        .last()
+        .is_some_and(|segment| segment.ident == "Ghost")
 }
 
 /// Whether a loop with no invariant is to get the ghost history (`THRUST_FOR_LOOP_HISTORY=1`).
