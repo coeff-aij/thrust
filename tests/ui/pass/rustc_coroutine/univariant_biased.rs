@@ -3,7 +3,7 @@
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300 THRUST_TRY_SPECS=1
 //@rustc-env: THRUST_VERIFY_ONLY=rustc_abi::layout::LayoutCalculator::univariant_biased,case_study::iter::map_new_assumed,case_study::iter::max_assumed,case_study::iter::filter_new_assumed,case_study::iter::filter_next_assumed,case_study::iter::iter_all_assumed,case_study::iter::map_or_assumed,case_study::iter::map_assumed
-//@rustc-env: THRUST_SPLIT=1 THRUST_SPLIT_GOALS=1
+//@rustc-env: THRUST_SPLIT=1 THRUST_SPLIT_GOALS=1 THRUST_CALL_RESULT_DIRECT=1
 // Stage 6 of the rustc-coroutine verification target: `LayoutCalculator::univariant_biased` of
 // rustc_abi's layout.rs, against the contract `univariant` relies on.
 // The code is the module tree under tests/rustc_coroutine/; this file selects the stage.
