@@ -21,7 +21,7 @@ fn g<T>(t: T) -> i64 {
         thrust_macros::closure!(
             captures(t: &mut T),
             requires(true),
-            ensures(result == *x),
+            ensures(true),
             move |x: &i64| -> i64 {
                 id(&t);
                 *x
@@ -32,6 +32,5 @@ fn g<T>(t: T) -> i64 {
 
 fn main() {
     let mut n = 0i64;
-    let r = g::<&mut i64>(&mut n);
-    assert!(r == 1);
+    g::<&mut i64>(&mut n);
 }

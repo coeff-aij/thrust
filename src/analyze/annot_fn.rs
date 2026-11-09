@@ -453,9 +453,9 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
     /// with `Box` erased, as the query is emitted. `held` is in the generics of the function
     /// around the closure and `written` in those of the clause, which copies them, so where
     /// either names a type parameter the two are walked side by side instead: the `&mut`s must
-    /// pair up, tuples and the arguments of one ADT are compared part by part, and a parameter
-    /// or projection matches only a parameter, a projection or the model `Closure<F>` of a
-    /// closure-typed parameter. Two different shapes where either
+    /// pair up, tuples and the arguments of one ADT are compared part by part, a parameter
+    /// matches only a parameter (or the model `Closure<F>` of a closure-typed one), and a
+    /// projection the clause could not normalize matches anything. Two different shapes where either
     /// side names a parameter (an ADT against a tuple, `Vec<T>` against its model `Seq`) are not
     /// compared further.
     fn same_emitted_shape(&self, held: mir_ty::Ty<'tcx>, written: mir_ty::Ty<'tcx>) -> bool {
@@ -470,13 +470,17 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             (None, None) => {}
             _ => return false,
         }
-        match (
-            Self::is_param_or_alias(held),
-            Self::is_param_or_alias(self.skip_closure_model(written)),
-        ) {
-            (true, true) => return true,
-            (true, false) | (false, true) => return false,
-            (false, false) => {}
+        let written = self.skip_closure_model(written);
+        // A projection the clause could not normalize hides its shape.
+        if matches!(held.kind(), mir_ty::TyKind::Alias(..))
+            || matches!(written.kind(), mir_ty::TyKind::Alias(..))
+        {
+            return true;
+        }
+        match (held.kind(), written.kind()) {
+            (mir_ty::TyKind::Param(_), mir_ty::TyKind::Param(_)) => return true,
+            (mir_ty::TyKind::Param(_), _) | (_, mir_ty::TyKind::Param(_)) => return false,
+            _ => {}
         }
         match (held.kind(), written.kind()) {
             (mir_ty::TyKind::Tuple(hs), mir_ty::TyKind::Tuple(ws)) => {
@@ -513,13 +517,6 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             }
             _ => ty,
         }
-    }
-
-    fn is_param_or_alias(ty: mir_ty::Ty<'tcx>) -> bool {
-        matches!(
-            ty.kind(),
-            mir_ty::TyKind::Param(_) | mir_ty::TyKind::Alias(..)
-        )
     }
 
     /// `ty` past the shared references and boxes around it, which the query erases.
