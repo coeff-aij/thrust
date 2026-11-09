@@ -773,29 +773,3 @@ where
     );
     Map::new(iter, func)
 }
-
-// Fallback: `collect_index_vec` with its `requires` (the iterator's `inv`) assumed, for its one
-// caller, `variant_field_layouts` in rustc_abi's layout/coroutine.rs, where the solver does not
-// answer that precondition. The iterator's type names closures, so an `assume!` at the call
-// cannot state it; here it is the type parameter. The assumption is sound only for a `Map` built
-// by a checked `Map::new`, whose `requires` is that `Map`'s `inv`: a new caller must establish
-// `inv` itself. The `ensures` is `collect_index_vec`'s.
-#[thrust_macros::context]
-#[thrust_macros::requires(true)]
-#[thrust_macros::ensures(
-    exists(|visited: Seq<<T as thrust_models::Model>::Ty>,
-           mid: <J as thrust_models::Model>::Ty,
-           fin: <J as thrust_models::Model>::Ty|
-        J::produces(it, visited, mid)
-            && J::completed(Mut::new(mid, fin))
-            && result == visited)
-)]
-pub(crate) fn collect_index_vec_assumed<I, T, J>(it: J) -> IndexVec<I, T>
-where
-    I: Idx + thrust_models::Model,
-    T: thrust_models::Model,
-    J: IteratorSpec + Iterator<Item = T>,
-{
-    thrust_macros::assume!(|it: J| J::inv(it));
-    collect_index_vec(it)
-}
