@@ -1,15 +1,19 @@
 //@check-pass
-//@compile-flags: -C debug-assertions=off
+//@compile-flags: -C debug-assertions=off -A unused
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60
 
-// A user's own variable named `produced` in a `for` loop's invariant is that variable, not the
-// loop's ghost history: an invariant without `iter` that names it is accepted as before.
+// Under `#[context]`, a user's own variable named `produced` in a `for` loop's invariant that
+// does not name `iter` is that variable: the loop is not desugared and the invariant reads it.
 
-fn main() {
-    let mut produced: i64 = 0;
-    for _i in 0..3i64 {
-        thrust_macros::invariant!(|produced: i64| produced >= 0);
-        produced += 1;
+#[thrust_macros::context]
+#[thrust::callable]
+fn count(produced: i64, n: i64) -> i64 {
+    let mut s = produced;
+    for _i in 0..n {
+        thrust_macros::invariant!(|produced: i64, s: i64| produced <= s);
+        s += 1;
     }
-    assert!(produced >= 0);
+    s - produced
 }
+
+fn main() {}

@@ -42,14 +42,6 @@ pub fn desugar(for_loop: &syn::ExprForLoop) -> Option<syn::Expr> {
     let named_by_label =
         label_name.is_some_and(|label| crate::loop_label::is_referenced_in_body(stmts, label));
     match labelled_ghosts(for_loop) {
-        LabelledGhosts::None if names_history_without_iter(stmts, label_name) => {
-            // The ghosts take their types from the iterator's, which the invariant gives `iter`.
-            return Some(
-                syn::parse_quote_spanned!(for_loop.span()=> ::core::compile_error!(
-                    "a loop invariant that names `iter_old` or `produced` also names `iter` with the loop's iterator type"
-                )),
-            );
-        }
         LabelledGhosts::None => return None,
         LabelledGhosts::Iter if !named_by_label => {
             return history_requested().then(|| desugar_with_inferred_invariant(for_loop));
@@ -242,28 +234,6 @@ pub fn labelled_ghosts(for_loop: &syn::ExprForLoop) -> LabelledGhosts {
     } else {
         LabelledGhosts::None
     }
-}
-
-/// Whether the leading invariants of a loop body name `iter_old` or `produced`; called where none
-/// names `iter`.
-fn names_history_without_iter(stmts: &[syn::Stmt], label: Option<&str>) -> bool {
-    stmts
-        .iter()
-        .map_while(|stmt| invariant_params(stmt, label))
-        .flatten()
-        .any(|(name, ty)| (name == "iter_old" || name == "produced") && is_ghost_type(&ty))
-}
-
-/// Whether a parameter is typed `Ghost<..>`, as the loop's ghost history is; a user's own
-/// variable named `iter_old` or `produced` has its own type and is not the history.
-fn is_ghost_type(ty: &syn::Type) -> bool {
-    let syn::Type::Path(path) = ty else {
-        return false;
-    };
-    path.path
-        .segments
-        .last()
-        .is_some_and(|segment| segment.ident == "Ghost")
 }
 
 /// Whether a loop with no invariant is to get the ghost history (`THRUST_FOR_LOOP_HISTORY=1`).
