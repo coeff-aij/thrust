@@ -1750,18 +1750,6 @@ fn variant_layout<
     let dl = calc.cx.data_layout();
     thrust_macros::proof_assert!(|repr: ReprOptions, kind: StructKind, dl: &TargetDataLayout|
         repr.pack == None && LayoutCalculator::<C>::prefix_fits(&repr, kind));
-    // Assumed (fallback): `univariant`'s precondition at this call, which the solver does not
-    // answer although each conjunct is a cut or a lemma's `ensures` above.
-    thrust_macros::assume!(
-        |calc: &LayoutCalculator<C>, fields: IndexVec<FieldIdx, F>, repr: ReprOptions, kind: StructKind|
-            LayoutCalculator::<C>::layout_pre::<FieldIdx, VariantIdx, F>(*calc, &fields, kind)
-                && LayoutCalculator::<C>::prefix_fits(&repr, kind)
-                && LayoutCalculator::<C>::deref_functional::<FieldIdx, VariantIdx, F>()
-                && LayoutCalculator::<C>::fits_in_any_order::<FieldIdx, VariantIdx, F>(*calc, &fields, &repr, kind)
-    );
-    // Reachability twin of the assumption above (fail root layout_reach_fallback.rs).
-    #[cfg(thrust_layout_reach_fallback)]
-    thrust_macros::proof_assert!(|| false);
     let mut variant = calc.univariant(&fields, &repr, kind)?;
 
     // `combine_offsets` requires `u32` to reach the variant's m fields.
