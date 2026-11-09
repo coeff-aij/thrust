@@ -13,7 +13,7 @@ use crate::rustc_index::bit_set::{ones, BitIter, BitMatrix, DenseBitSet};
 use crate::rustc_index::{Idx, IdxRange, IndexSlice, IndexVec, IterEnumerated, SliceIter};
 use crate::case_study::USize;
 use crate::case_study::{counts, lemmas};
-use crate::case_study::iter::{Filter, Map, collect_index_vec, collect_index_vec_assumed, collect_index_vec_result_assumed, iter_all, map_new_assumed};
+use crate::case_study::iter::{Filter, Map, collect_index_vec, collect_index_vec_result, iter_all, map_new_assumed};
 use std::iter::{self, Enumerate};
 use std::slice::IterMut;
 
@@ -732,10 +732,8 @@ fn variant_field_layouts<
     // Each field collected is an entry of `local_layouts`: the map closure's `ensures`.
     thrust_macros::proof!(Map::yields_entries_of(&variant_only_tys, local_layouts));
     // Rewrite (rewrites.md R8): `collect_index_vec` for `collect`; the result is bound to a name,
-    // for the `assume!`. Fallback: through `collect_index_vec_assumed`, which assumes `collect`'s
-    // precondition (the map's `inv`), as the solver does not answer it; call `collect_index_vec`
-    // again once it does.
-    let fields = collect_index_vec_assumed(variant_only_tys);
+    // for the `assume!`. Its precondition, the map's `inv`, is `Map::new`'s `ensures`.
+    let fields = collect_index_vec(variant_only_tys);
     // The fields are as many as the variant's entries Assigned to it, which `combine_offsets`
     // requires: `map_count_exact` at `collect`'s witness. Assumed (fallback): the solver does not
     // answer this cut; delete the `assume!` for the `proof_assert!` once it does.
@@ -1584,7 +1582,7 @@ fn prefix_wf_of<C: HasDataLayout>(calc: &LayoutCalculator<C>, prefix_size: Size,
 
 // Fallback: `prefix_wf_of` with its `requires` assumed, for its call in `layout()`, where the
 // solver does not answer that `requires` even right after an `assume!` of it. A checked wrapper,
-// as `collect_index_vec_assumed` of thrust/iter.rs; call `prefix_wf_of` again once the solver
+// as `map_new_assumed` of thrust/iter.rs; call `prefix_wf_of` again once the solver
 // answers it there.
 #[thrust_macros::context]
 #[thrust_macros::lemma]
@@ -2068,10 +2066,10 @@ pub fn layout<
     // `hist_inv` bounds `size` and `align`: nothing after the `collect` needs a bound, as
     // `Size::align_to` requires nothing (its body checked by the `values.rs` root) and `max`
     // neither.
-    // Fallback: through `map_new_assumed` and `collect_index_vec_result_assumed`, which assume
-    // `Map::new`'s and `collect`'s preconditions (each the map's `inv`), as the solver does not
-    // answer them; call `Map::new` and `collect_index_vec_result` again once it does.
-    let variants = collect_index_vec_result_assumed::<VariantIdx, _, _, _>(map_new_assumed(
+    // Fallback: through `map_new_assumed`, which assumes `Map::new`'s precondition (the map's
+    // `inv`), as the solver does not answer it; call `Map::new` again once it does. `collect`'s
+    // precondition, the same `inv`, is `map_new_assumed`'s `ensures`.
+    let variants = collect_index_vec_result::<VariantIdx, _, _, _>(map_new_assumed(
         variant_iter,
         thrust_macros::closure!(
         captures(

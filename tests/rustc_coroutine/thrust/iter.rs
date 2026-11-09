@@ -42,6 +42,7 @@ where
             && Self::next_precondition(iter, func)
     )]
     #[thrust_macros::ensures(result.0 == iter && result.1 == func)]
+    #[thrust_macros::ensures(<Self as IteratorSpec>::inv(result))]
     pub fn new(iter: I, func: F) -> Map<I, F> {
         Map { iter, func }
     }
@@ -757,6 +758,7 @@ where
 #[thrust_macros::context]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(result.0 == iter && result.1 == func)]
+#[thrust_macros::ensures(<Map<I, F> as IteratorSpec>::inv(result))]
 pub(crate) fn map_new_assumed<I, B, F>(iter: I, func: F) -> Map<I, F>
 where
     I: IteratorSpec,
