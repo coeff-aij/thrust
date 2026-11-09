@@ -454,7 +454,8 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
     /// around the closure and `written` in those of the clause, which copies them, so where
     /// either names a type parameter the two are walked side by side instead: the `&mut`s must
     /// pair up, tuples and the arguments of one ADT are compared part by part, a parameter
-    /// matches only a parameter (or the model `Closure<F>` of a closure-typed one), and a
+    /// matches only the parameter of its name (or the model `Closure<F>` of a closure-typed
+    /// one; the clause numbers the parameters it copies apart from the closure), and a
     /// projection the clause could not normalize matches anything. Two different shapes where either
     /// side names a parameter (an ADT against a tuple, `Vec<T>` against its model `Seq`) are not
     /// compared further.
@@ -478,7 +479,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             return true;
         }
         match (held.kind(), written.kind()) {
-            (mir_ty::TyKind::Param(_), mir_ty::TyKind::Param(_)) => return true,
+            (mir_ty::TyKind::Param(h), mir_ty::TyKind::Param(w)) => return h.name == w.name,
             (mir_ty::TyKind::Param(_), _) | (_, mir_ty::TyKind::Param(_)) => return false,
             _ => {}
         }
