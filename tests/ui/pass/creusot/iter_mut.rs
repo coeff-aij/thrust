@@ -5,7 +5,8 @@
 // constructor `iter_mut`, with Creusot's code and Thrust's annotations. `invariant` is Creusot's
 // `Invariant` impl; `iter_mut` states it of its result, which Creusot checks as the result's type
 // invariant. `produces` states Creusot's `to_mut_seq` equation entry by entry. Creusot's
-// `into_iter` is not ported; its client `all_zero` is `all_zero.rs`.
+// `into_iter` and its client `all_zero` over this `IterMut` are not ported; `all_zero.rs` states
+// that client's property over std's `slice::IterMut`.
 use thrust_models::forall;
 use thrust_models::model::{Int, Mut, Seq};
 use thrust_models::Model;
