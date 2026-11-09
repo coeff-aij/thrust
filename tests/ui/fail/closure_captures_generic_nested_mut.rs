@@ -14,7 +14,7 @@ fn g<T>(t: T, a: &mut i64) -> i64 {
     call(
         1,
         thrust_macros::closure!(
-            captures(p: (T, i64)), //~ ERROR: `captures` must give it a type with the same `&mut`s
+            captures(p: (T, i64)), //~ ERROR: which `captures` must restate up to shared references and boxes
             requires(true),
             ensures(true),
             move |x: i64| -> i64 {
