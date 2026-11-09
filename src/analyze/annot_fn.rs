@@ -456,8 +456,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
     /// walked side by side instead: the `&mut`s must pair up, tuples and the arguments of one
     /// ADT are compared part by part, a parameter (or its model `<T as Model>::Ty`, or
     /// `Closure<F>`) matches only the same parameter, and any other projection left
-    /// unnormalized matches anything. Two different shapes where either side names a parameter
-    /// (an ADT against a tuple) are not compared further.
+    /// unnormalized matches anything. Any other two different shapes do not match.
     fn same_emitted_shape(&self, held: mir_ty::Ty<'tcx>, written: mir_ty::Ty<'tcx>) -> bool {
         use rustc_middle::ty::TypeVisitableExt as _;
         if !held.has_param() && !written.has_param() {
@@ -492,7 +491,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 .types()
                 .zip(wargs.types())
                 .all(|(h, w)| self.same_emitted_shape(h, w)),
-            _ => true,
+            _ => false,
         }
     }
 
