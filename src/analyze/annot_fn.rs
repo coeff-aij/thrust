@@ -443,7 +443,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         self.tcx.dcx().span_fatal(
             subpat.span,
             format!(
-                "this `{}` closure holds `{}` at type `{}`, which `captures` must give it",
+                "this `{}` closure holds `{}` at type `{}`; `captures` must give it a type with the same `&mut`s",
                 closure_args.kind().as_str(),
                 subpat.simple_ident().expect("closure capture is a binding"),
                 held_ty,
