@@ -255,6 +255,9 @@ impl<I: Idx, T: thrust_models::Model, R: IntoSliceIdx<I, [T]>> std::ops::Index<R
 
     #[inline]
     fn index(&self, index: R) -> &Self::Output {
+        #[cfg(thrust_index_body_fail)]
+        panic!();
+        #[cfg(not(thrust_index_body_fail))]
         &self.raw[index.into_slice_idx()]
     }
 }
