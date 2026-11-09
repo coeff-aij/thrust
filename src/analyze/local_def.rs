@@ -1953,8 +1953,15 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 }
                 .filter(|&local| bty.param_of_local(local).is_some())
                 .unwrap_or_else(|| {
+                    let hint = if matches!(name.as_str(), "iter_old" | "produced") {
+                        "; in a function under `#[thrust_macros::context]`, a `for` loop's ghost \
+                         history is introduced only when the invariant also names the loop's \
+                         iterator as `iter` with its type"
+                    } else {
+                        ""
+                    };
                     self.tcx.dcx().fatal(format!(
-                        "loop invariant refers to `{name}`, which is not a live variable at the loop header"
+                        "loop invariant refers to `{name}`, which is not a live variable at the loop header{hint}"
                     ))
                 });
                 self.check_invariant_param_ty(
