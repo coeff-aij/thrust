@@ -19,7 +19,7 @@ impl<C> S<C> {
         call(
             1,
             thrust_macros::closure!(
-                captures(t: &T), //~ ERROR: this `FnMut` closure holds `t` at type `&mut &T`, and `captures` restates its part `&mut &T` at another type (only shared references and boxes may differ)
+                captures(t: &T), //~ ERROR: this `FnMut` closure holds `t` at type `&mut &T`, which `captures` restates at another type (only shared references and boxes may differ)
                 requires(true),
                 ensures(result == *x),
                 |x: &i64| -> i64 {

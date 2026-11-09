@@ -435,81 +435,77 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             }
             mir_ty::ClosureKind::Fn | mir_ty::ClosureKind::FnOnce => capture_ty,
         };
-        let Some(part) = self.mismatched_part(held_ty, self.written_ty(subpat)) else {
+        if self.same_emitted_shape(self.model_of(held_ty), self.written_ty(subpat)) {
             return;
-        };
+        }
         self.tcx.dcx().span_fatal(
             subpat.span,
             format!(
-                "this `{}` closure holds `{}` at type `{}`, and `captures` restates its part `{}` at another type (only shared references and boxes may differ)",
+                "this `{}` closure holds `{}` at type `{}`, which `captures` restates at another type (only shared references and boxes may differ)",
                 closure_args.kind().as_str(),
                 subpat.simple_ident().expect("closure capture is a binding"),
                 self.tcx.erase_regions(held_ty),
-                self.tcx.erase_regions(part),
             ),
         );
     }
 
-    /// The part of `held` that a value held at `held` cannot be read at in `written`, if any:
-    /// their sorts must agree with `Box` erased, as the query is emitted. `held` is in the
+    /// Whether a value of model type `held` can be read at the model type `written` in a
+    /// clause: their sorts agree with `Box` erased, as the query is emitted. `held` is in the
     /// generics of the function around the closure and `written` in those of the clause, which
-    /// copies them, so where either names a type parameter the two are walked side by side
-    /// instead: the `&mut`s must pair up, tuples and the arguments of one ADT are compared part
-    /// by part, a parameter matches only the parameter of its name (or the model `Closure<F>` of
-    /// a closure-typed one; the clause numbers the parameters it copies apart from the
-    /// closure, and `<T as Model>::Ty` stands for `T`), and any other projection the clause could
-    /// not normalize matches anything. Two different
-    /// shapes where either side names a parameter (an ADT against a tuple, `Vec<T>` against its
-    /// model `Seq`) are not compared further.
-    fn mismatched_part(
-        &self,
-        held: mir_ty::Ty<'tcx>,
-        written: mir_ty::Ty<'tcx>,
-    ) -> Option<mir_ty::Ty<'tcx>> {
+    /// copies them under the same names, so where either names a type parameter the two are
+    /// walked side by side instead: the `&mut`s must pair up, tuples and the arguments of one
+    /// ADT are compared part by part, a parameter (or its model `<T as Model>::Ty`, or
+    /// `Closure<F>`) matches only the same parameter, and any other projection left
+    /// unnormalized matches anything. Two different shapes where either side names a parameter
+    /// (an ADT against a tuple) are not compared further.
+    fn same_emitted_shape(&self, held: mir_ty::Ty<'tcx>, written: mir_ty::Ty<'tcx>) -> bool {
         use rustc_middle::ty::TypeVisitableExt as _;
         if !held.has_param() && !written.has_param() {
             let emitted_sort = |ty| chc::unbox_sort(self.type_builder.build(ty).ty.to_sort());
-            let same = emitted_sort(self.normalized_ty(held)) == emitted_sort(written);
-            return (!same).then_some(held);
+            return emitted_sort(self.normalized_ty(held)) == emitted_sort(written);
         }
         let (held, written) = (self.skip_shared(held), self.skip_shared(written));
         match (self.mut_pointee(held), self.mut_pointee(written)) {
-            (Some(held), Some(written)) => return self.mismatched_part(held, written),
+            (Some(held), Some(written)) => return self.same_emitted_shape(held, written),
             (None, None) => {}
-            _ => return Some(held),
+            _ => return false,
         }
-        let unwrapped = self.skip_closure_model(written);
-        if unwrapped != written {
-            return self.mismatched_part(held, unwrapped);
+        let is_alias = |ty: mir_ty::Ty<'tcx>| matches!(ty.kind(), mir_ty::TyKind::Alias(..));
+        match (self.model_param(held), self.model_param(written)) {
+            (Some(h), Some(w)) => return h.name == w.name,
+            (Some(_), None) => return is_alias(written),
+            (None, Some(_)) => return is_alias(held),
+            (None, None) => {}
         }
-        // Any other projection the clause could not normalize hides its shape.
-        if matches!(held.kind(), mir_ty::TyKind::Alias(..))
-            || matches!(written.kind(), mir_ty::TyKind::Alias(..))
-        {
-            return None;
-        }
-        match (held.kind(), written.kind()) {
-            (mir_ty::TyKind::Param(h), mir_ty::TyKind::Param(w)) => {
-                return (h.name != w.name).then_some(held);
-            }
-            (mir_ty::TyKind::Param(_), _) | (_, mir_ty::TyKind::Param(_)) => return Some(held),
-            _ => {}
+        if is_alias(held) || is_alias(written) {
+            return true;
         }
         match (held.kind(), written.kind()) {
             (mir_ty::TyKind::Tuple(hs), mir_ty::TyKind::Tuple(ws)) => {
-                if hs.len() != ws.len() {
-                    return Some(held);
-                }
-                hs.iter()
-                    .zip(ws.iter())
-                    .find_map(|(h, w)| self.mismatched_part(h, w))
+                hs.len() == ws.len()
+                    && hs
+                        .iter()
+                        .zip(ws.iter())
+                        .all(|(h, w)| self.same_emitted_shape(h, w))
             }
             (mir_ty::TyKind::Adt(ha, hargs), mir_ty::TyKind::Adt(wa, wargs)) if ha == wa => hargs
                 .types()
                 .zip(wargs.types())
-                .find_map(|(h, w)| self.mismatched_part(h, w)),
-            _ => None,
+                .all(|(h, w)| self.same_emitted_shape(h, w)),
+            _ => true,
         }
+    }
+
+    /// `<ty as Model>::Ty`, normalized as [`Self::written_ty`] normalizes a clause's types, so
+    /// that the closure's type and the restated one are compared as model types.
+    fn model_of(&self, ty: mir_ty::Ty<'tcx>) -> mir_ty::Ty<'tcx> {
+        let Some(model_ty) = self.def_ids.model_ty() else {
+            return ty;
+        };
+        let projection = mir_ty::Ty::new_projection(self.tcx, model_ty, [ty]);
+        self.tcx
+            .try_normalize_erasing_regions(mir_ty::TypingEnv::fully_monomorphized(), projection)
+            .unwrap_or(projection)
     }
 
     /// The type a clause's pattern is written at, in the clause's own generics: normalized but
@@ -517,16 +513,15 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
     /// the clause is translated over its type parameters or at an instance.
     fn written_ty(&self, pat: &'tcx rustc_hir::Pat<'tcx>) -> mir_ty::Ty<'tcx> {
         let ty = self.typeck.pat_ty(pat);
-        let typing_env = mir_ty::TypingEnv::fully_monomorphized();
         self.tcx
-            .try_normalize_erasing_regions(typing_env, ty)
+            .try_normalize_erasing_regions(mir_ty::TypingEnv::fully_monomorphized(), ty)
             .unwrap_or(ty)
     }
 
-    /// The type a clause's model type stands for where the model is not normalized: a
-    /// closure-typed parameter `F` for its model `Closure<F>`, and `T` for `<T as Model>::Ty`.
-    fn skip_closure_model(&self, ty: mir_ty::Ty<'tcx>) -> mir_ty::Ty<'tcx> {
-        match ty.kind() {
+    /// The type parameter a model type stands for: the parameter itself, `<T as Model>::Ty`,
+    /// or the model `Closure<F>` of a closure-typed parameter.
+    fn model_param(&self, ty: mir_ty::Ty<'tcx>) -> Option<mir_ty::ParamTy> {
+        let inner = match ty.kind() {
             mir_ty::TyKind::Adt(adt, args) if Some(adt.did()) == self.def_ids.closure_model() => {
                 args.type_at(0)
             }
@@ -536,6 +531,10 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 alias.args.type_at(0)
             }
             _ => ty,
+        };
+        match inner.kind() {
+            mir_ty::TyKind::Param(param) => Some(*param),
+            _ => None,
         }
     }
 
