@@ -435,7 +435,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             }
             mir_ty::ClosureKind::Fn | mir_ty::ClosureKind::FnOnce => capture_ty,
         };
-        if self.same_emitted_shape(held_ty, self.pat_ty(subpat)) {
+        if self.same_emitted_shape(held_ty, self.written_ty(subpat)) {
             return;
         }
         self.tcx.dcx().span_fatal(
@@ -451,13 +451,13 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
 
     /// Whether a value held at `held` can be read at `written` in a clause: their sorts agree
     /// with `Box` erased, as the query is emitted. `held` is in the generics of the function
-    /// around the closure and `written` in those of the clause, so where either names a type
-    /// parameter the two are walked side by side instead, a parameter or projection matching
-    /// anything, and only the `&mut`s, tuples and arguments of one ADT are compared. The clause
-    /// may be translated at an instance, where `written` is instantiated and `held` is not, so a
-    /// parameter is not told apart from the type it stands for: a generic capture restated at
-    /// another concrete type is not reported, nor are two different shapes where either side
-    /// names a parameter (an ADT against a tuple, `Vec<T>` against `[T]`).
+    /// around the closure and `written` in those of the clause, which copies them, so where
+    /// either names a type parameter the two are walked side by side instead: the `&mut`s must
+    /// pair up, tuples and the arguments of one ADT are compared part by part, and a parameter
+    /// or projection matches only a parameter, a projection or the model `Closure<F>` of a
+    /// closure-typed parameter. Two different shapes where either
+    /// side names a parameter (an ADT against a tuple, `Vec<T>` against its model `Seq`) are not
+    /// compared further.
     fn same_emitted_shape(&self, held: mir_ty::Ty<'tcx>, written: mir_ty::Ty<'tcx>) -> bool {
         use rustc_middle::ty::TypeVisitableExt as _;
         if !held.has_param() && !written.has_param() {
@@ -465,14 +465,18 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             return emitted_sort(self.normalized_ty(held)) == emitted_sort(written);
         }
         let (held, written) = (self.skip_shared(held), self.skip_shared(written));
-        // A parameter may stand for a `&mut` on the side that is instantiated.
-        if Self::is_param_or_alias(held) || Self::is_param_or_alias(written) {
-            return true;
-        }
         match (self.mut_pointee(held), self.mut_pointee(written)) {
             (Some(held), Some(written)) => return self.same_emitted_shape(held, written),
             (None, None) => {}
             _ => return false,
+        }
+        match (
+            Self::is_param_or_alias(held),
+            Self::is_param_or_alias(self.skip_closure_model(written)),
+        ) {
+            (true, true) => return true,
+            (true, false) | (false, true) => return false,
+            (false, false) => {}
         }
         match (held.kind(), written.kind()) {
             (mir_ty::TyKind::Tuple(hs), mir_ty::TyKind::Tuple(ws)) => {
@@ -486,9 +490,28 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 .types()
                 .zip(wargs.types())
                 .all(|(h, w)| self.same_emitted_shape(h, w)),
-            // A Rust type and the model type it lowers to (`Vec<T>` and `Seq<T>`) differ in
-            // kind; the type parameters inside leave nothing more to compare here.
             _ => true,
+        }
+    }
+
+    /// The type a clause's pattern is written at, in the clause's own generics: normalized but
+    /// not instantiated, so that it is compared with the closure's types the same way whether
+    /// the clause is translated over its type parameters or at an instance.
+    fn written_ty(&self, pat: &'tcx rustc_hir::Pat<'tcx>) -> mir_ty::Ty<'tcx> {
+        let ty = self.typeck.pat_ty(pat);
+        let typing_env = mir_ty::TypingEnv::fully_monomorphized();
+        self.tcx
+            .try_normalize_erasing_regions(typing_env, ty)
+            .unwrap_or(ty)
+    }
+
+    /// A clause names a closure-typed parameter `F` by its model `Closure<F>`.
+    fn skip_closure_model(&self, ty: mir_ty::Ty<'tcx>) -> mir_ty::Ty<'tcx> {
+        match ty.kind() {
+            mir_ty::TyKind::Adt(adt, args) if Some(adt.did()) == self.def_ids.closure_model() => {
+                args.type_at(0)
+            }
+            _ => ty,
         }
     }
 
