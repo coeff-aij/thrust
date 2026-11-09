@@ -1316,6 +1316,36 @@ fn _extern_spec_std_mem_replace<T>(dest: &mut T, src: T) -> T where T: thrust_mo
     std::mem::replace(dest, src)
 }
 
+// `mem::take` of an integer returns its value and leaves the integer's default, 0. Other types
+// have no spec: their defaults are not modeled.
+macro_rules! extern_spec_mem_take_int {
+    ($($spec:ident $ty:ty,)*) => {
+        $(
+            #[thrust::extern_spec_fn]
+            #[thrust_macros::requires(true)]
+            #[thrust_macros::ensures(result == *dest && !dest == 0)]
+            fn $spec(dest: &mut $ty) -> $ty {
+                std::mem::take(dest)
+            }
+        )*
+    };
+}
+
+extern_spec_mem_take_int! {
+    _extern_spec_std_mem_take_u8 u8,
+    _extern_spec_std_mem_take_u16 u16,
+    _extern_spec_std_mem_take_u32 u32,
+    _extern_spec_std_mem_take_u64 u64,
+    _extern_spec_std_mem_take_u128 u128,
+    _extern_spec_std_mem_take_usize usize,
+    _extern_spec_std_mem_take_i8 i8,
+    _extern_spec_std_mem_take_i16 i16,
+    _extern_spec_std_mem_take_i32 i32,
+    _extern_spec_std_mem_take_i64 i64,
+    _extern_spec_std_mem_take_i128 i128,
+    _extern_spec_std_mem_take_isize isize,
+}
+
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(result == (x == y))]
