@@ -8,6 +8,10 @@
 // none. `produces` relates the closure states as a sequence `fs` of `visited.len() + 1` states,
 // equivalent to Creusot's `fs: Seq<&mut F>`; Creusot's form gives no answer within 300 s here
 // (fork issue #156).
+// Creusot's `inv(..)` premises of `next_precondition` (`inv(e)`), `preservation`
+// (`inv(s) && inv(e1) && inv(e2) && inv(f)`) and `map`'s `requires` are left out: Thrust has no invariant of a
+// type parameter (the README's Type invariants), so they are vacuous at item types without an
+// invariant, and these predicates are stronger than Creusot's where the item type has one.
 use thrust_models::model::{Closure, Int, Mut, Seq};
 use thrust_models::{exists, forall, Model};
 

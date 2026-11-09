@@ -4,7 +4,8 @@
 // Creusot's `examples/iterators/02_iter_mut.rs` (3620de437): `IterMut`, its `Iterator` impl and the
 // constructor `iter_mut`, with Creusot's code and Thrust's annotations. `invariant` is Creusot's
 // `Invariant` impl; `iter_mut` states it of its result, which Creusot checks as the result's type
-// invariant. `produces` states Creusot's `to_mut_seq` equation entry by entry.
+// invariant. `produces` states Creusot's `to_mut_seq` equation entry by entry. Creusot's
+// `into_iter` is not ported; its client `all_zero` is `all_zero.rs`.
 use thrust_models::forall;
 use thrust_models::model::{Int, Mut, Seq};
 use thrust_models::Model;

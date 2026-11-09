@@ -28,22 +28,22 @@ with empty bodies, as Creusot does). The step-form files repeat theirs in the sa
 
 | file | Creusot benchmark file | form |
 | --- | --- | --- |
-| `range.rs` | `iterators/range.rs` | `produces` |
-| `take.rs` | `iterators/take.rs` | `produces` |
-| `skip.rs` | `iterators/skip.rs` | `produces`, concatenated |
+| `range.rs` | `examples/iterators/01_range.rs` (3620de437) | `produces` |
+| `take.rs` | `examples/iterators/16_take.rs` (3620de437) | `produces` |
+| `skip.rs` | `examples/iterators/04_skip.rs` (3620de437) | `produces`, concatenated |
 | `fuse.rs` | `iterators/fuse.rs` | `step` |
 | `fuse_produces.rs` | the current Creusot's `examples/iterators/07_fuse.rs` (3620de437) | `produces` + `FusedIterator::is_fused` with its state `Option<I>` and its `completed` and `produces` |
 | `fuse_produces_result.rs` | `iterators/fuse.rs` | `produces` + `FusedIterator::is_fused` with Creusot's state `Result<I, Ghost<I>>`; `next` keeps `iter` live past the ghost of the exhausted iterator, as Creusot's `ghost! { *iter }` reads it |
-| `map.rs` | `iterators/map.rs` | `produces` over an `FnMut` closure with the chain `fs` of closure states and `hist_inv!`, both laws inherited with no lemma, fully checked |
-| `iter_mut.rs` | the current Creusot's `examples/iterators/02_iter_mut.rs` (3620de437) | `produces` over Creusot's `IterMut { inner: &mut [T] }`, whose `next` (`split_off_first_mut`) is checked, Creusot's constructor `iter_mut(v)` (`IterMut { inner: &mut v[..] }`, with its type invariant, which needs std.rs's length-keeping `IndexMut`) and its `all_zero` client over that iterator |
+| `map.rs` | `examples/iterators/05_map.rs` (3620de437) | `produces` over an `FnMut` closure with the chain `fs` of closure states and `hist_inv!`, both laws inherited with no lemma, fully checked |
+| `iter_mut.rs` | the current Creusot's `examples/iterators/02_iter_mut.rs` (3620de437) | `produces` over Creusot's `IterMut { inner: &mut [T] }`, whose `next` (`split_off_first_mut`) is checked, Creusot's constructor `iter_mut(v)` (`IterMut { inner: &mut v[..] }`, with its type invariant, which needs std.rs's length-keeping `IndexMut`); 02's `all_zero` client is in `all_zero.rs` |
 | `collect.rs` | `common.rs` (`collect` / `FromIterator`) | `produces` |
 | `all_zero.rs` | `examples/all_zero.rs` | a `for` loop over std's `slice::IterMut` with its `next` through std.rs, the invariant over the loop's `iter` (`slice::IterMut` has no `IteratorSpec`, so no `produced`; Creusot's own `IterMut` and constructor are in `iter_mut.rs`) |
 | `decuple_range.rs` | `examples/decuple_range.rs` | `produces`, positional property, fully checked |
-| `skip_take.rs` | `examples/skip_take.rs` | Creusot's client over std's `take` and `skip` through std.rs's `IteratorSpec`, generic in `I`, with Creusot's `proof_assert!` |
+| `skip_take.rs` | `skip_take` of `examples/iterators/03_std_iterators.rs` (3620de437) | Creusot's client over std's `take` and `skip` through std.rs's `IteratorSpec`, generic in `I`, with Creusot's `proof_assert!` |
 | `counter.rs` | `examples/counter.rs` | `step` + a unary `next_item` guard, `MapInv`'s ghost history |
 | `counter_creusot.rs` | the current Creusot's `counter` in `examples/iterators/03_std_iterators.rs` (3620de437) | `produces` with Creusot's property over `v.iter()` of a `Vec<u32>` (`x == v`, `cnt == x.len()`), the closure's postconditions (the step and the history fact) written where Creusot takes its contract from the body, its precondition inferred, std's `slice::Iter` through its std.rs model, `MapInv` over an `FnMut` closure whose states are related by `hist_inv!` (Creusot's `hist_inv`), as in creusot-std's `std/iter/map_inv.rs` |
 | `counter_creusot_lemma.rs` | `examples/counter.rs` | `counter_creusot.rs` with the witnesses of `produces_trans` written as source-level lemmas (Creusot's session gives them by hand) |
-| `map_ext.rs` | `iterators/map_ext.rs` | `produces` with an existential input sequence, `MapInv`'s ghost history, over an `FnMut` closure with the chain `fs` and `hist_inv!` as `counter_creusot.rs` (the ninth adapter) |
+| `map_ext.rs` | `examples/iterators/06_map_precond.rs` (3620de437) | `produces` with an existential input sequence, `MapInv`'s ghost history, over an `FnMut` closure with the chain `fs` and `hist_inv!` as `counter_creusot.rs` |
 | `extend.rs` | `examples/extend.rs` of the 2022 artifact | `produces` with a local `Extend` trait; a debugging example, the benchmark's form is `extend_for.rs` |
 | `collect_for.rs` | the current Creusot's `examples/iterators/08_collect_extend.rs` (3620de437), `collect` and `collect_example` | std.rs's `IteratorSpec`, a `for` loop whose invariant states the vector is `produced` |
 | `extend_for.rs` | the current Creusot's `examples/iterators/08_collect_extend.rs` (3620de437), `extend` and `extend_index` | std.rs's `IteratorSpec`, a `for` loop whose invariant states the vector is its entry value followed by `produced` |

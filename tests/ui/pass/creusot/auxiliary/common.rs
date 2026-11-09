@@ -1,6 +1,8 @@
 // Creusot's `examples/iterators/common.rs` (3620de437) in Thrust syntax: the iterator
 // specification every case of the benchmark shares, used as Creusot's cases use it
 // (`mod common; use common::Iterator;`). The ui harness does not run files under `auxiliary/`.
+// `invariant`, and `next`'s `requires`/`ensures` of it, stand for Creusot's implicit type
+// invariants of the iterator.
 use crate::thrust_models::forall;
 use crate::thrust_models::model::Seq;
 use crate::thrust_models::Model;

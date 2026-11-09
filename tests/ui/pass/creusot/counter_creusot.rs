@@ -24,7 +24,8 @@ type U32 = thrust_models::model::UIntN<32>;
 // `produces(self, visited, o)`, `completed` and `invariant` (`true` unless the impl says otherwise),
 // the laws `produces_refl` and `produces_trans` in Creusot's concatenation form, which every impl
 // inherits and Thrust checks at each impl (Creusot restates them per impl with empty bodies), and
-// `next` with Creusot's contract.
+// `next` with Creusot's contract. `produces_refl` keeps `requires(Self::invariant(*a))`, as
+// std.rs's `IteratorSpec` does, where the shared `auxiliary/common.rs` has no premise.
 #[thrust_macros::context]
 trait Iterator
 where

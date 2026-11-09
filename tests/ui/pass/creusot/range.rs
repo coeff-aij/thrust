@@ -3,6 +3,7 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120
 // Creusot's `examples/iterators/01_range.rs` (3620de437): `Range` and its `Iterator` impl, with
 // Creusot's code and Thrust's annotations. `resolve(self)` in `completed` is `*self == !self`.
+// Creusot's `into_iter` and the client `sum_range` are not ported.
 use thrust_models::forall;
 use thrust_models::model::{Int, Seq};
 use thrust_models::Model;

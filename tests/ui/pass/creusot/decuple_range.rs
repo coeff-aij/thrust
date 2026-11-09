@@ -252,5 +252,3 @@ fn decuple_range() -> Vec<isize> {
     };
     m.collect::<Vec<isize>>()
 }
-
-fn main() {}
