@@ -134,7 +134,7 @@ fn drive_iterators() {
     assert!(d.is_none());
 
     let mut wi: WordIter<'static> = WordIter::new(words());
-    // Verified through `WordIter::new`'s inferred postcondition.
+    // Verified through `WordIter::new`'s postcondition.
     assert!(wi.pos == 0);
     // Verified via the `next` contract above.
     let w0 = wi.next();
