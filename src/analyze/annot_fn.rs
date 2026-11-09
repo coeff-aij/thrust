@@ -435,66 +435,76 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             }
             mir_ty::ClosureKind::Fn | mir_ty::ClosureKind::FnOnce => capture_ty,
         };
-        if self.same_emitted_shape(held_ty, self.written_ty(subpat)) {
+        let Some(part) = self.mismatched_part(held_ty, self.written_ty(subpat)) else {
             return;
-        }
+        };
         self.tcx.dcx().span_fatal(
             subpat.span,
             format!(
-                "this `{}` closure holds `{}` at type `{}`; `captures` must give it a type with the same `&mut`s",
+                "this `{}` closure holds `{}` at type `{}`, and `captures` restates its part `{}` at another type (only shared references and boxes may differ)",
                 closure_args.kind().as_str(),
                 subpat.simple_ident().expect("closure capture is a binding"),
                 self.tcx.erase_regions(held_ty),
+                self.tcx.erase_regions(part),
             ),
         );
     }
 
-    /// Whether a value held at `held` can be read at `written` in a clause: their sorts agree
-    /// with `Box` erased, as the query is emitted. `held` is in the generics of the function
-    /// around the closure and `written` in those of the clause, which copies them, so where
-    /// either names a type parameter the two are walked side by side instead: the `&mut`s must
-    /// pair up, tuples and the arguments of one ADT are compared part by part, a parameter
-    /// matches only a parameter (or the model `Closure<F>` of a closure-typed one), and a
-    /// projection the clause could not normalize matches anything. Two different shapes where either
-    /// side names a parameter (an ADT against a tuple, `Vec<T>` against its model `Seq`) are not
-    /// compared further.
-    fn same_emitted_shape(&self, held: mir_ty::Ty<'tcx>, written: mir_ty::Ty<'tcx>) -> bool {
+    /// The part of `held` that a value held at `held` cannot be read at in `written`, if any:
+    /// their sorts must agree with `Box` erased, as the query is emitted. `held` is in the
+    /// generics of the function around the closure and `written` in those of the clause, which
+    /// copies them, so where either names a type parameter the two are walked side by side
+    /// instead: the `&mut`s must pair up, tuples and the arguments of one ADT are compared part
+    /// by part, a parameter matches only the parameter of its name (or the model `Closure<F>` of
+    /// a closure-typed one; the clause numbers the parameters it copies apart from the
+    /// closure), and a projection the clause could not normalize matches anything. Two different
+    /// shapes where either side names a parameter (an ADT against a tuple, `Vec<T>` against its
+    /// model `Seq`) are not compared further.
+    fn mismatched_part(
+        &self,
+        held: mir_ty::Ty<'tcx>,
+        written: mir_ty::Ty<'tcx>,
+    ) -> Option<mir_ty::Ty<'tcx>> {
         use rustc_middle::ty::TypeVisitableExt as _;
         if !held.has_param() && !written.has_param() {
             let emitted_sort = |ty| chc::unbox_sort(self.type_builder.build(ty).ty.to_sort());
-            return emitted_sort(self.normalized_ty(held)) == emitted_sort(written);
+            let same = emitted_sort(self.normalized_ty(held)) == emitted_sort(written);
+            return (!same).then_some(held);
         }
         let (held, written) = (self.skip_shared(held), self.skip_shared(written));
         match (self.mut_pointee(held), self.mut_pointee(written)) {
-            (Some(held), Some(written)) => return self.same_emitted_shape(held, written),
+            (Some(held), Some(written)) => return self.mismatched_part(held, written),
             (None, None) => {}
-            _ => return false,
+            _ => return Some(held),
         }
         let written = self.skip_closure_model(written);
         // A projection the clause could not normalize hides its shape.
         if matches!(held.kind(), mir_ty::TyKind::Alias(..))
             || matches!(written.kind(), mir_ty::TyKind::Alias(..))
         {
-            return true;
+            return None;
         }
         match (held.kind(), written.kind()) {
-            (mir_ty::TyKind::Param(_), mir_ty::TyKind::Param(_)) => return true,
-            (mir_ty::TyKind::Param(_), _) | (_, mir_ty::TyKind::Param(_)) => return false,
+            (mir_ty::TyKind::Param(h), mir_ty::TyKind::Param(w)) => {
+                return (h.name != w.name).then_some(held);
+            }
+            (mir_ty::TyKind::Param(_), _) | (_, mir_ty::TyKind::Param(_)) => return Some(held),
             _ => {}
         }
         match (held.kind(), written.kind()) {
             (mir_ty::TyKind::Tuple(hs), mir_ty::TyKind::Tuple(ws)) => {
-                hs.len() == ws.len()
-                    && hs
-                        .iter()
-                        .zip(ws.iter())
-                        .all(|(h, w)| self.same_emitted_shape(h, w))
+                if hs.len() != ws.len() {
+                    return Some(held);
+                }
+                hs.iter()
+                    .zip(ws.iter())
+                    .find_map(|(h, w)| self.mismatched_part(h, w))
             }
             (mir_ty::TyKind::Adt(ha, hargs), mir_ty::TyKind::Adt(wa, wargs)) if ha == wa => hargs
                 .types()
                 .zip(wargs.types())
-                .all(|(h, w)| self.same_emitted_shape(h, w)),
-            _ => true,
+                .find_map(|(h, w)| self.mismatched_part(h, w)),
+            _ => None,
         }
     }
 

@@ -22,7 +22,7 @@ fn main() {
     call(
         3,
         thrust_macros::closure!(
-            captures(dl: &&D), //~ ERROR: this `FnMut` closure holds `dl` at type `&mut &D`; `captures` must give it a type with the same `&mut`s
+            captures(dl: &&D), //~ ERROR: this `FnMut` closure holds `dl` at type `&mut &D`, and `captures` restates its part `&mut &D` at another type (only shared references and boxes may differ)
             requires((**dl).b >= 0),
             ensures(true),
             |x: &i64| -> i64 { *x + dl.a },
