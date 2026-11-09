@@ -457,7 +457,8 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
     /// instead: the `&mut`s must pair up, tuples and the arguments of one ADT are compared part
     /// by part, a parameter matches only the parameter of its name (or the model `Closure<F>` of
     /// a closure-typed one; the clause numbers the parameters it copies apart from the
-    /// closure), and a projection the clause could not normalize matches anything. Two different
+    /// closure, and `<T as Model>::Ty` stands for `T`), and any other projection the clause could
+    /// not normalize matches anything. Two different
     /// shapes where either side names a parameter (an ADT against a tuple, `Vec<T>` against its
     /// model `Seq`) are not compared further.
     fn mismatched_part(
@@ -477,8 +478,11 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             (None, None) => {}
             _ => return Some(held),
         }
-        let written = self.skip_closure_model(written);
-        // A projection the clause could not normalize hides its shape.
+        let unwrapped = self.skip_closure_model(written);
+        if unwrapped != written {
+            return self.mismatched_part(held, unwrapped);
+        }
+        // Any other projection the clause could not normalize hides its shape.
         if matches!(held.kind(), mir_ty::TyKind::Alias(..))
             || matches!(written.kind(), mir_ty::TyKind::Alias(..))
         {
@@ -519,11 +523,17 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             .unwrap_or(ty)
     }
 
-    /// A clause names a closure-typed parameter `F` by its model `Closure<F>`.
+    /// The type a clause's model type stands for where the model is not normalized: a
+    /// closure-typed parameter `F` for its model `Closure<F>`, and `T` for `<T as Model>::Ty`.
     fn skip_closure_model(&self, ty: mir_ty::Ty<'tcx>) -> mir_ty::Ty<'tcx> {
         match ty.kind() {
             mir_ty::TyKind::Adt(adt, args) if Some(adt.did()) == self.def_ids.closure_model() => {
                 args.type_at(0)
+            }
+            mir_ty::TyKind::Alias(mir_ty::AliasTyKind::Projection, alias)
+                if Some(alias.def_id) == self.def_ids.model_ty() =>
+            {
+                alias.args.type_at(0)
             }
             _ => ty,
         }
