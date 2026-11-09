@@ -1746,47 +1746,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         None
     }
 
-    /// Resolves the live local matching a source variable name at the given
-    /// basic block, among the locals that are parameters of `bty`.
-    ///
-    /// When several distinct live locals share the name (e.g. two shadowed
-    /// variables that are both loop-carried), the mapping is ambiguous; rather
-    /// than silently pick one, this raises a fatal error. Disambiguating which
-    /// shadow an invariant refers to is left as future work.
-    fn local_of_name_in_bb(&self, name: rustc_span::Symbol, bty: &BasicBlockType) -> Option<Local> {
-        let mut found: Option<Local> = None;
-        for vdi in &self.body.var_debug_info {
-            tracing::debug!("comparing {name:?} with {vdi:?}...");
-            if vdi.name != name {
-                tracing::debug!("different name, skip.");
-                continue;
-            }
-            let mir::VarDebugInfoContents::Place(place) = vdi.value else {
-                tracing::debug!("place, skip.");
-                continue;
-            };
-            if !place.projection.is_empty() {
-                tracing::debug!("empty projection, skip.");
-                continue;
-            }
-            if bty.param_of_local(place.local).is_none() {
-                tracing::debug!("not param of local, skip.");
-                continue;
-            }
-            tracing::debug!("found.");
-            match found {
-                None => found = Some(place.local),
-                Some(prev) if prev == place.local => {}
-                Some(_) => self.tcx.dcx().fatal(format!(
-                    "loop invariant refers to `{name}`, which is ambiguous at the loop header: \
-                     multiple live variables share this name (e.g. through shadowing). \
-                     Rename the variables to disambiguate."
-                )),
-            }
-        }
-        found
-    }
-
     /// Whether every variable the formula of `invariant` names is a parameter of `bty`.
     fn binds_all_names_at(&self, invariant: &LoopInvariant<'tcx>, bty: &BasicBlockType) -> bool {
         let formula_fn = self
@@ -1957,23 +1916,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 .unwrap_or_else(|| {
                     spec_param_compared_ty(self.ctx, self.local_def_id, written_ty).to_string()
                 });
-            let input_ty = {
-                let typing_env =
-                    mir_ty::TypingEnv::post_analysis(self.tcx, formula_def_id.to_def_id());
-                self.tcx
-                    .try_normalize_erasing_regions(typing_env, *input_ty)
-                    .unwrap_or(*input_ty)
-            };
-
-            let input_ty = self.expand_model_projection(input_ty);
+            let input_ty = self.lifted_param_ty(formula_def_id, *input_ty);
             tracing::debug!(?ident, ?input_ty, "resolving");
 
             let name = analyze::annot_fn::lifted_param_source_name(ident);
 
-            if input_ty
-                .ty_adt_def()
-                .is_some_and(|def| Some(def.did()) == self.ctx.def_ids().fn_param_wrapper())
-            {
+            if self.is_fn_param_wrapper(input_ty) {
                 tracing::debug!("fn_param_local: {input_ty:?}");
                 let local = self.function_param_local_of_name(name).unwrap_or_else(|| {
                     self.tcx.dcx().fatal(format!(
@@ -1997,8 +1945,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 tracing::debug!("local: {input_ty:?}");
                 let local = match invariant.marker {
                     InvariantMarker::ForLoopHistory => self.local_in_scope(name, invariant.scope),
+                    // The binding in scope at the marker, as the liveness of the names the
+                    // invariant reads takes it: a shadowed outer binding is not the one read.
                     InvariantMarker::Full | InvariantMarker::Partial => {
-                        self.local_of_name_in_bb(name, bty)
+                        self.local_in_scope(name, invariant.scope)
                     }
                 }
                 .filter(|&local| bty.param_of_local(local).is_some())
@@ -2100,22 +2050,25 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         Some((formula_def_id, generic_args, 0))
     }
 
-    /// Whether a formula parameter's type is `FnParam<_>`: the lifted type is the projection
-    /// `<FnParam<_> as Model>::Ty`, normalized and expanded as the invariant's translation does.
-    fn is_fn_param_wrapper(
+    /// A formula parameter's type as the invariant reads it: the lifted projection
+    /// `<T as Model>::Ty`, normalized and expanded (so `FnParam<_>` shows as itself).
+    fn lifted_param_ty(
         &self,
         formula_def_id: LocalDefId,
         ty: mir_ty::Ty<'tcx>,
-        fn_param_wrapper: Option<DefId>,
-    ) -> bool {
+    ) -> mir_ty::Ty<'tcx> {
         let typing_env = mir_ty::TypingEnv::post_analysis(self.tcx, formula_def_id.to_def_id());
         let ty = self
             .tcx
             .try_normalize_erasing_regions(typing_env, ty)
             .unwrap_or(ty);
         self.expand_model_projection(ty)
-            .ty_adt_def()
-            .is_some_and(|def| Some(def.did()) == fn_param_wrapper)
+    }
+
+    /// Whether a formula parameter's type, as `lifted_param_ty` gives it, is `FnParam<_>`.
+    fn is_fn_param_wrapper(&self, ty: mir_ty::Ty<'tcx>) -> bool {
+        ty.ty_adt_def()
+            .is_some_and(|def| Some(def.did()) == self.ctx.def_ids().fn_param_wrapper())
     }
 
     /// The names of the variables the formula of a call of `formula_read_call` reads, leaving
@@ -2138,13 +2091,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .instantiate(self.tcx, generic_args)
             .skip_binder()
             .inputs();
-        let fn_param_wrapper = self.ctx.def_ids().fn_param_wrapper();
         let names = formula_fn
             .param_idents()
             .iter()
             .zip(inputs)
             .skip(first_named_param)
-            .filter(|(_, ty)| !self.is_fn_param_wrapper(formula_def_id, **ty, fn_param_wrapper))
+            .filter(|(_, ty)| !self.is_fn_param_wrapper(self.lifted_param_ty(formula_def_id, **ty)))
             .map(|(ident, _)| {
                 let ident = ident.expect("formula parameters must be named");
                 analyze::annot_fn::lifted_param_source_name(ident)
