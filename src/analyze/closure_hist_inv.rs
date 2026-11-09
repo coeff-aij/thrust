@@ -167,6 +167,47 @@ pub fn concrete_definition<'tcx, V: chc::Var>(
     formula
 }
 
+/// The conjuncts of [`concrete_definition`] that the body of the `FnMut` closure `closure_ty`
+/// cannot break: that each capture borrowed by `&` has the same value in the states `from` and
+/// `to`. Rust lets the body neither assign such a capture nor borrow it mutably, so when the body
+/// resolves its `&mut` receiver, the final value of the capture is its value at entry, as RustHorn
+/// resolves a place that is not written. They are facts of every call, which the body is not
+/// checked against. Empty for a closure of another kind.
+pub fn shared_captures_kept<'tcx, V: chc::Var>(
+    tcx: mir_ty::TyCtxt<'tcx>,
+    closure_ty: mir_ty::Ty<'tcx>,
+    upvars_sort: &chc::Sort,
+    from: chc::Term<V>,
+    to: chc::Term<V>,
+) -> Vec<chc::Formula<V>> {
+    let mir_ty::TyKind::Closure(def_id, args) = closure_ty.kind() else {
+        return Vec::new();
+    };
+    if args.as_closure().kind() != mir_ty::ClosureKind::FnMut {
+        return Vec::new();
+    }
+    let chc::Sort::Tuple(upvar_sorts) = upvars_sort else {
+        return Vec::new();
+    };
+    let captures = tcx.closure_captures(def_id.expect_local());
+    captures
+        .iter()
+        .zip(upvar_sorts)
+        .enumerate()
+        .filter(|(_, (capture, sort))| {
+            !sort.is_singleton()
+                && matches!(
+                    capture.info.capture_kind,
+                    mir_ty::UpvarCapture::ByRef(mir_ty::BorrowKind::Immutable)
+                )
+        })
+        .map(|(idx, _)| {
+            let to = to.clone().tuple_proj(idx);
+            to.equal_to(from.clone().tuple_proj(idx)).into()
+        })
+        .collect()
+}
+
 /// The clauses checking that `related`, the relation an `hist_inv` clause of `closure_ty`'s
 /// specification gives over its upvars of sort `upvars_sort`, is reflexive and transitive.
 /// That each call's postcondition implies it is checked against the closure's body, since the
