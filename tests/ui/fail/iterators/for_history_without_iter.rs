@@ -1,4 +1,4 @@
-//@error-in-other-file: a `for` loop's ghost history is introduced only when the invariant also names the loop's iterator as `iter` with its type
+//@error-in-other-file: in a function under `#[thrust_macros::context]`, a `for` loop's ghost history is introduced only when the invariant also names the loop's iterator as `iter` with its type
 //@compile-flags: -C debug-assertions=off -A unused
 
 // An invariant of a `for` loop that names the history `produced` without the loop's iterator

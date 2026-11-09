@@ -2004,8 +2004,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 .filter(|&local| bty.param_of_local(local).is_some())
                 .unwrap_or_else(|| {
                     let hint = if matches!(name.as_str(), "iter_old" | "produced") {
-                        "; a `for` loop's ghost history is introduced only when the invariant also \
-                         names the loop's iterator as `iter` with its type"
+                        "; in a function under `#[thrust_macros::context]`, a `for` loop's ghost \
+                         history is introduced only when the invariant also names the loop's \
+                         iterator as `iter` with its type"
                     } else {
                         ""
                     };
