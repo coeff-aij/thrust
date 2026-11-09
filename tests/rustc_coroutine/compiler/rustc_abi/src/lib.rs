@@ -1,6 +1,6 @@
-// #![cfg_attr(feature = "nightly", allow(internal_features))]
-// #![cfg_attr(feature = "nightly", feature(rustc_attrs))]
-// #![cfg_attr(feature = "nightly", feature(step_trait))]
+#![cfg_attr(feature = "nightly", allow(internal_features))]
+#![cfg_attr(feature = "nightly", feature(rustc_attrs))]
+#![cfg_attr(feature = "nightly", feature(step_trait))]
 
 use crate::thrust_models;
 use std::fmt;
@@ -21,7 +21,7 @@ mod layout;
 pub use layout::{LayoutCalculator, LayoutCalculatorError};
 
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
-// #[cfg_attr(feature = "nightly", derive(Encodable_NoContext, Decodable_NoContext, StableHash))]
+#[cfg_attr(feature = "nightly", derive(Encodable_NoContext, Decodable_NoContext, StableHash))]
 pub struct ReprFlags(u8);
 
 // Hand-written replacement for the `bitflags!` invocation in rustc_abi, since
@@ -63,7 +63,7 @@ impl ReprFlags {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-// #[cfg_attr(feature = "nightly", derive(Encodable_NoContext, Decodable_NoContext, StableHash))]
+#[cfg_attr(feature = "nightly", derive(Encodable_NoContext, Decodable_NoContext, StableHash))]
 pub enum IntegerType {
     Pointer(bool),
 
@@ -71,7 +71,7 @@ pub enum IntegerType {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-// #[cfg_attr(feature = "nightly", derive(Encodable_NoContext, Decodable_NoContext, StableHash))]
+#[cfg_attr(feature = "nightly", derive(Encodable_NoContext, Decodable_NoContext, StableHash))]
 pub enum ScalableElt {
     ElementCount(u16),
 
@@ -79,7 +79,7 @@ pub enum ScalableElt {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Default)]
-// #[cfg_attr(feature = "nightly", derive(Encodable_NoContext, Decodable_NoContext, StableHash))]
+#[cfg_attr(feature = "nightly", derive(Encodable_NoContext, Decodable_NoContext, StableHash))]
 pub struct ReprOptions {
     pub int: Option<IntegerType>,
     pub align: Option<Align>,
@@ -352,7 +352,7 @@ impl fmt::Debug for Endian {
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-// #[cfg_attr(feature = "nightly", derive(Encodable_NoContext, Decodable_NoContext, StableHash))]
+#[cfg_attr(feature = "nightly", derive(Encodable_NoContext, Decodable_NoContext, StableHash))]
 pub struct Size {
     pub(crate) raw: u64,
 }
@@ -473,7 +473,7 @@ impl AddAssign for Size {
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-// #[cfg_attr(feature = "nightly", derive(Encodable_NoContext, Decodable_NoContext, StableHash))]
+#[cfg_attr(feature = "nightly", derive(Encodable_NoContext, Decodable_NoContext, StableHash))]
 pub struct Align {
     pub(crate) pow2: u8,
 }
@@ -504,7 +504,7 @@ impl Align {
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-// #[cfg_attr(feature = "nightly", derive(StableHash))]
+#[cfg_attr(feature = "nightly", derive(StableHash))]
 pub struct AbiAlign {
     pub abi: Align,
 }
@@ -542,7 +542,7 @@ impl Deref for AbiAlign {
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-// #[cfg_attr(feature = "nightly", derive(Encodable_NoContext, Decodable_NoContext, StableHash))]
+#[cfg_attr(feature = "nightly", derive(Encodable_NoContext, Decodable_NoContext, StableHash))]
 pub enum Integer {
     I8,
     I16,
@@ -603,7 +603,7 @@ impl Integer {
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-// #[cfg_attr(feature = "nightly", derive(StableHash))]
+#[cfg_attr(feature = "nightly", derive(StableHash))]
 pub enum Float {
     F16,
     F32,
@@ -647,7 +647,7 @@ impl Float {
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-// #[cfg_attr(feature = "nightly", derive(StableHash))]
+#[cfg_attr(feature = "nightly", derive(StableHash))]
 pub enum Primitive {
     Int(Integer, bool),
     Float(Float),
@@ -735,7 +735,7 @@ impl Primitive {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-// #[cfg_attr(feature = "nightly", derive(StableHash))]
+#[cfg_attr(feature = "nightly", derive(StableHash))]
 pub struct WrappingRange {
     pub start: u128,
     pub end: u128,
@@ -754,7 +754,7 @@ impl fmt::Debug for WrappingRange {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-// #[cfg_attr(feature = "nightly", derive(StableHash))]
+#[cfg_attr(feature = "nightly", derive(StableHash))]
 pub enum Scalar {
     Initialized {
         value: Primitive,
@@ -817,6 +817,7 @@ impl Scalar {
 }
 
 #[derive(PartialEq, Eq, Hash, Clone, Debug)]
+#[cfg_attr(feature = "nightly", derive(StableHash))]
 pub enum FieldsShape<FieldIdx: Idx> {
     Primitive,
 
@@ -861,13 +862,15 @@ impl<FieldIdx: Idx + thrust_models::Model> FieldsShape<FieldIdx> {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-// #[cfg_attr(feature = "nightly", derive(StableHash))]
+#[cfg_attr(feature = "nightly", derive(StableHash))]
 pub struct AddressSpace(pub u32);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[cfg_attr(feature = "nightly", derive(StableHash))]
 pub struct NumScalableVectors(pub u8);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[cfg_attr(feature = "nightly", derive(StableHash))]
 pub enum BackendRepr {
     Scalar(Scalar),
     ScalarPair(Scalar, Scalar),
@@ -903,6 +906,7 @@ impl BackendRepr {
 }
 
 #[derive(PartialEq, Eq, Hash, Clone, Debug)]
+#[cfg_attr(feature = "nightly", derive(StableHash))]
 pub enum Variants<FieldIdx: Idx, VariantIdx: Idx> {
     Empty,
 
@@ -919,6 +923,7 @@ pub enum Variants<FieldIdx: Idx, VariantIdx: Idx> {
 }
 
 #[derive(PartialEq, Eq, Hash, Copy, Clone, Debug)]
+#[cfg_attr(feature = "nightly", derive(StableHash))]
 pub enum TagEncoding<VariantIdx: Idx> {
     Direct,
 
@@ -932,7 +937,7 @@ pub enum TagEncoding<VariantIdx: Idx> {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-// #[cfg_attr(feature = "nightly", derive(StableHash))]
+#[cfg_attr(feature = "nightly", derive(StableHash))]
 pub struct Niche {
     pub offset: Size,
     pub value: Primitive,
@@ -991,6 +996,7 @@ impl Niche {
 }
 
 #[derive(PartialEq, Eq, Hash, Clone)]
+#[cfg_attr(feature = "nightly", derive(StableHash))]
 pub struct LayoutData<FieldIdx: Idx, VariantIdx: Idx> {
     pub fields: FieldsShape<FieldIdx>,
 
@@ -1049,6 +1055,7 @@ pub enum StructKind {
 }
 
 #[derive(PartialEq, Eq, Hash, Clone, Debug)]
+#[cfg_attr(feature = "nightly", derive(StableHash))]
 pub struct VariantLayout<FieldIdx: Idx> {
     pub size: Size,
     pub backend_repr: BackendRepr,

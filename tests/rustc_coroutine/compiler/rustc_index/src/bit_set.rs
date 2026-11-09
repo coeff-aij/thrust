@@ -19,7 +19,7 @@ type Word = u64;
 const WORD_BYTES: usize = size_of::<Word>();
 const WORD_BITS: usize = WORD_BYTES * 8;
 
-// #[cfg_attr(feature = "nightly", derive(Decodable_NoContext, Encodable_NoContext))]
+#[cfg_attr(feature = "nightly", derive(Decodable_NoContext, Encodable_NoContext))]
 #[derive(Eq, PartialEq, Hash)]
 pub struct DenseBitSet<T> {
     domain_size: usize,
@@ -456,7 +456,7 @@ impl<'a, T: Idx + thrust_models::Model> IteratorSpec for BitIter<'a, T>
     }
 }
 
-// #[cfg_attr(feature = "nightly", derive(Decodable_NoContext, Encodable_NoContext))]
+#[cfg_attr(feature = "nightly", derive(Decodable_NoContext, Encodable_NoContext))]
 // `Clone, Eq, PartialEq` commented out: the ghost field `col_bound` (rewrites.md S11) has no
 // executable `clone` or `eq`.
 #[derive(/* Clone, Eq, PartialEq, */ Hash)]

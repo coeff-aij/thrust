@@ -17,7 +17,7 @@ use crate::case_study::iter::{Filter, Map, collect_index_vec, collect_index_vec_
 use std::iter::{self, Enumerate};
 use std::slice::IterMut;
 
-#[derive(Clone, /*Debug,*/ PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 enum SavedLocalEligibility<VariantIdx, FieldIdx> {
     Unassigned,
     Assigned(VariantIdx),
