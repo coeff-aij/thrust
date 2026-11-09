@@ -933,6 +933,8 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
             LayoutCalculator::<Cx>::fields_ok::<FieldIdx, VariantIdx, F>(fields, *dl));
         thrust_macros::assume!(|in_memory_order: IndexVec<u32, FieldIdx>, fields: &IndexSlice<FieldIdx, F>, kind: StructKind|
             LayoutCalculator::<Cx>::order_ok::<FieldIdx>(in_memory_order, (*fields).len(), kind));
+        #[cfg(thrust_ub_reach = "place_fields_pre")]
+        thrust_macros::proof_assert!(|kind: StructKind| false);
         // Rewrite (rewrites.md R19): the field loop as `place_fields`.
         let unsized_field = Self::place_fields::<FieldIdx, VariantIdx, F>(
             fields,
