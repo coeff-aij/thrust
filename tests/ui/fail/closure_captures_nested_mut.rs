@@ -13,7 +13,7 @@ fn main() {
     call(
         1,
         thrust_macros::closure!(
-            captures(p: (i64, i64)), //~ ERROR: this `FnOnce` closure holds `p` at type `(&mut i64, i64)`, and `captures` restates its part `(&mut i64, i64)` at another type (only shared references and boxes may differ)
+            captures(p: (i64, i64)), //~ ERROR: this `FnOnce` closure holds `p` at type `(&mut i64, i64)`, which `captures` restates at another type (only shared references and boxes may differ)
             requires(p.1 > 0),
             ensures(true),
             move |x: i64| -> i64 {

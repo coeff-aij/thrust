@@ -18,7 +18,7 @@ fn g<T, U>(t: T, u: U) -> i64 {
     call(
         1,
         thrust_macros::closure!(
-            captures(u: T), //~ ERROR: this `FnOnce` closure holds `u` at type `U`, and `captures` restates its part `U` at another type (only shared references and boxes may differ)
+            captures(u: T), //~ ERROR: this `FnOnce` closure holds `u` at type `U`, which `captures` restates at another type (only shared references and boxes may differ)
             requires(true),
             ensures(true),
             move |x: i64| -> i64 {
