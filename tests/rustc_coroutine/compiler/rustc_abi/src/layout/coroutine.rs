@@ -945,6 +945,72 @@ fn assigned_before_skip<FieldIdx: Idx + thrust_models::Model, LocalIdx: Idx + th
     i: FieldIdx,
 ) {}
 
+#[thrust_macros::lemma]
+#[thrust_macros::requires((*z).0.1 == assigned_before::<FieldIdx, LocalIdx, VariantIdx>(vf, asg, ix, <FieldIdx as Idx>::index_logic(i)))]
+#[thrust_macros::ensures((*z).0.1 == assigned_before::<FieldIdx, LocalIdx, VariantIdx>(vf, asg, ix, <FieldIdx as Idx>::index_logic(i)))]
+fn diag_pos<FieldIdx: Idx + thrust_models::Model, LocalIdx: Idx + thrust_models::Model, VariantIdx: Idx + thrust_models::Model>(
+    z: &std::iter::Zip<std::vec::IntoIter<Size>, std::vec::IntoIter<u32>>,
+    vf: &IndexVec<FieldIdx, LocalIdx>,
+    asg: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
+    ix: VariantIdx,
+    i: FieldIdx,
+) {}
+
+#[thrust_macros::lemma]
+#[thrust_macros::requires((*z).0.0.len() == assigned_before::<FieldIdx, LocalIdx, VariantIdx>(vf, asg, ix, (*vf).len()))]
+#[thrust_macros::ensures((*z).0.0.len() == assigned_before::<FieldIdx, LocalIdx, VariantIdx>(vf, asg, ix, (*vf).len()))]
+fn diag_len<FieldIdx: Idx + thrust_models::Model, LocalIdx: Idx + thrust_models::Model, VariantIdx: Idx + thrust_models::Model>(
+    z: &std::iter::Zip<std::vec::IntoIter<Size>, std::vec::IntoIter<u32>>,
+    vf: &IndexVec<FieldIdx, LocalIdx>,
+    asg: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
+    ix: VariantIdx,
+    i: FieldIdx,
+) {}
+
+#[thrust_macros::lemma]
+#[thrust_macros::requires(assigned_before::<FieldIdx, LocalIdx, VariantIdx>(vf, asg, ix, <FieldIdx as Idx>::index_logic(i) + 1) == assigned_before::<FieldIdx, LocalIdx, VariantIdx>(vf, asg, ix, <FieldIdx as Idx>::index_logic(i)) + 1)]
+#[thrust_macros::ensures(assigned_before::<FieldIdx, LocalIdx, VariantIdx>(vf, asg, ix, <FieldIdx as Idx>::index_logic(i) + 1) == assigned_before::<FieldIdx, LocalIdx, VariantIdx>(vf, asg, ix, <FieldIdx as Idx>::index_logic(i)) + 1)]
+fn diag_step<FieldIdx: Idx + thrust_models::Model, LocalIdx: Idx + thrust_models::Model, VariantIdx: Idx + thrust_models::Model>(
+    z: &std::iter::Zip<std::vec::IntoIter<Size>, std::vec::IntoIter<u32>>,
+    vf: &IndexVec<FieldIdx, LocalIdx>,
+    asg: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
+    ix: VariantIdx,
+    i: FieldIdx,
+) {}
+
+#[thrust_macros::lemma]
+#[thrust_macros::requires(assigned_before::<FieldIdx, LocalIdx, VariantIdx>(vf, asg, ix, <FieldIdx as Idx>::index_logic(i) + 1) <= assigned_before::<FieldIdx, LocalIdx, VariantIdx>(vf, asg, ix, (*vf).len()))]
+#[thrust_macros::ensures(assigned_before::<FieldIdx, LocalIdx, VariantIdx>(vf, asg, ix, <FieldIdx as Idx>::index_logic(i) + 1) <= assigned_before::<FieldIdx, LocalIdx, VariantIdx>(vf, asg, ix, (*vf).len()))]
+fn diag_le<FieldIdx: Idx + thrust_models::Model, LocalIdx: Idx + thrust_models::Model, VariantIdx: Idx + thrust_models::Model>(
+    z: &std::iter::Zip<std::vec::IntoIter<Size>, std::vec::IntoIter<u32>>,
+    vf: &IndexVec<FieldIdx, LocalIdx>,
+    asg: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
+    ix: VariantIdx,
+    i: FieldIdx,
+) {}
+
+#[thrust_macros::lemma]
+#[thrust_macros::requires((*z).0.1 < (*z).0.0.len())]
+#[thrust_macros::ensures((*z).0.1 < (*z).0.0.len())]
+fn diag_below<FieldIdx: Idx + thrust_models::Model, LocalIdx: Idx + thrust_models::Model, VariantIdx: Idx + thrust_models::Model>(
+    z: &std::iter::Zip<std::vec::IntoIter<Size>, std::vec::IntoIter<u32>>,
+    vf: &IndexVec<FieldIdx, LocalIdx>,
+    asg: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
+    ix: VariantIdx,
+    i: FieldIdx,
+) {}
+
+#[thrust_macros::lemma]
+#[thrust_macros::requires((*z).0.1 == (*z).1.1 && (*z).0.0.len() == (*z).1.0.len())]
+#[thrust_macros::ensures((*z).0.1 == (*z).1.1 && (*z).0.0.len() == (*z).1.0.len())]
+fn diag_sides<FieldIdx: Idx + thrust_models::Model, LocalIdx: Idx + thrust_models::Model, VariantIdx: Idx + thrust_models::Model>(
+    z: &std::iter::Zip<std::vec::IntoIter<Size>, std::vec::IntoIter<u32>>,
+    vf: &IndexVec<FieldIdx, LocalIdx>,
+    asg: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
+    ix: VariantIdx,
+    i: FieldIdx,
+) {}
+
 // Rewrite (rewrites.md R12): the part of `layout()`'s per-variant closure that destructures the
 // variant's fields and combines its offsets and memory order with the promoted ones, as a function
 // whose `requires` states what the code reads: the fields are `Arbitrary` with m offsets and a
@@ -964,7 +1030,7 @@ fn assigned_before_skip<FieldIdx: Idx + thrust_models::Model, LocalIdx: Idx + th
 )]
 #[thrust_macros::ensures(true)]
 #[thrust_macros::context]
-#[thrust::reveal(super::super::FieldsShape::arbitrary_of, combine_wf)]
+#[thrust::reveal(super::super::FieldsShape::arbitrary_of, combine_wf, assigned_before)]
 fn combine_offsets<VariantIdx: Idx + thrust_models::Model, FieldIdx: Idx + thrust_models::Model, LocalIdx: Idx + thrust_models::Model>(
     variant_fields: &IndexVec<FieldIdx, LocalIdx>,
     assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
@@ -1100,9 +1166,18 @@ fn combine_offsets<VariantIdx: Idx + thrust_models::Model, FieldIdx: Idx + thrus
                     thrust_macros::proof!(assigned_before_take(variant_fields, assignments, index, i, variant_fields.len()));
                     // Rewrite (rewrites.md R12): the pair, c and c + m are bound to names, for the
                     // `proof_assert!`, which names local variables only (not a closure's captures).
+                    thrust_macros::proof!(diag_pos(&offsets_and_memory_index, variant_fields, assignments, index, i));
+                    thrust_macros::proof!(diag_len(&offsets_and_memory_index, variant_fields, assignments, index, i));
+                    thrust_macros::proof!(diag_step(&offsets_and_memory_index, variant_fields, assignments, index, i));
+                    thrust_macros::proof!(diag_le(&offsets_and_memory_index, variant_fields, assignments, index, i));
+                    thrust_macros::proof!(diag_below(&offsets_and_memory_index, variant_fields, assignments, index, i));
+                    thrust_macros::proof!(diag_sides(&offsets_and_memory_index, variant_fields, assignments, index, i));
                     let pair = offsets_and_memory_index.next();
                     let promoted_count = promoted_memory_index.len();
                     let bound = invalid_field_idx;
+                    thrust_macros::proof_assert!(|pair: Option<(Size, u32)>| pair != None);
+                    thrust_macros::proof_assert!(|pair: Option<(Size, u32)>, promoted_count: usize, bound: usize|
+                        forall(|o: Size, j: <u32 as thrust_models::Model>::Ty| pair == Some((o, j)) ==> promoted_count + j < bound));
                     // `next` returns a pair, as the zip's position is below m, and its memory
                     // index j has c + j < c + m = `invalid_field_idx` (the `requires`). With it,
                     // the `u32` sum stays below c + m <= u32::MAX and indexes
