@@ -1,15 +1,20 @@
 use crate::thrust_models;
 use std::marker::PhantomData;
 
-use thrust_models::model::{BitVec, Int, Seq};
+use thrust_models::model::{Array, BitVec, Int, Seq};
 use thrust_models::{exists, forall, Ghost};
 
 use crate::rustc_index::{Idx, IdxRange};
 use bits::{
-    bit, excess_cleared, full_word_bits, low_mask_bits, masked, masked_def, masked_range, set_bit,
-    test_bit, zero_word_bits,
+    bit, bit_to_come, bits_clear_of, bits_to_come_at_start, bits_to_come_clear,
+    bits_to_come_exhausted, bits_to_come_next_word, excess_cleared, full_word_bits, high_mask_bits,
+    low_mask_bits, masked, masked_def, masked_range, set_bit, test_bit, zero_word_bits,
 };
-use count::{ones_full, ones_le, ones_set_bit, zero_bits_ones};
+use count::{
+    ones_full, ones_le, ones_le_upto, ones_past, ones_set_bit, ones_to_come, ones_to_come_at_start,
+    ones_to_come_clear, ones_to_come_exhausted, ones_to_come_le, ones_to_come_next_word,
+    zero_bits_ones,
+};
 // `ones` for stage 7's counting lemmas in rustc_abi's layout/coroutine.rs.
 pub(crate) use count::ones;
 use crate::IteratorSpec;
@@ -61,18 +66,19 @@ impl<T: Idx> DenseBitSet<T> {
     }
 
     /// The word sequence holds `num_words(domain_size)` words, so every word `mem` and
-    /// `inserted` read exists, and each word is a 64-bit value, which the model of `u64` does not
-    /// bound above by default: `insert` compares the word before and after setting a bit.
+    /// `inserted` read exists; each word is a 64-bit value, which the model of `u64` does not
+    /// bound above by default: `insert` compares the word before and after setting a bit; and no
+    /// bit at or past `domain_size` is set, as rustc's `clear_excess_bits` keeps the words, so the
+    /// bits `iter` yields are the members.
     #[thrust_macros::predicate]
     #[thrust::opaque]
     pub(crate) fn words_cover_domain(self) -> bool {
         self.1.len() == (self.0 + 63) / 64
             && forall(|k: USize| !(0 <= k && k < self.1.len()) || (0 <= self.1[k] && self.1[k] <= 18446744073709551615u64))
+            && forall(|p: USize| !(self.0 <= p && p < 64 * self.1.len()) || bit(self.1, p) == 0)
     }
 
-    /// The number of members: the set bits below `domain_size`. The trusted `iter` relies on the
-    /// bits past `domain_size` being clear, which rustc's `clear_excess_bits` keeps: it yields every
-    /// set bit of the words. No contract states that invariant yet.
+    /// The number of members: the set bits below `domain_size`.
     #[thrust_macros::logic]
     #[thrust::opaque]
     pub(crate) fn card(self) -> Int {
@@ -188,22 +194,36 @@ impl<T: Idx> DenseBitSet<T> {
         thrust_macros::proof!(low_mask_bits(t, u64::MAX, self.domain_size));
         thrust_macros::proof!(filled_bits(s, self.domain_size, t));
         thrust_macros::proof!(ones_full(t, self.domain_size));
+        thrust_macros::proof!(high_mask_bits(t, u64::MAX, self.domain_size));
+        thrust_macros::proof!(excess_bits_clear(s, u64::MAX, self.domain_size, t));
     }
 
-    // Trusted: the iterator's ghost state is the set's members, which `BitIter::new` does not
-    // state. `result.6 == card(*self)` also needs the bits past `domain_size` clear (see `card`),
-    // which no contract states: it holds of every set, as the fields are private to this module
-    // and each function here that writes `words` keeps those bits clear (`new_empty` zeroes the
-    // words, `insert` asserts the bound, `insert_all` calls `clear_excess_bits`).
+    // The ghost state (rewrites.md S11) is the set's members: `left` their count `card`, `rest`
+    // their flags. They are the set bits of the words, which `next` yields, as no bit is set at or
+    // past `domain_size` (`words_cover_domain`), a `usize`.
     #[inline]
-    #[thrust::trusted]
+    #[thrust::reveal]
+    #[thrust_macros::requires(Self::words_cover_domain(*self) && (*self).0 <= 18446744073709551615usize)]
+    #[thrust_macros::ensures(BitIter::<T>::tracks_words(result))]
     #[thrust_macros::ensures(result.4 == (*self).0 && result.5 == 0)]
     #[thrust_macros::ensures(0 <= result.6 && result.6 <= (*self).0)]
     #[thrust_macros::ensures(result.6 == Self::card(*self))]
     #[thrust_macros::ensures(forall(|k: USize| result.7[k] != 0 ==> (0 <= k && k < (*self).0 && Self::mem(*self, k))))]
     #[thrust_macros::ensures(forall(|k: USize| 0 <= k && k < (*self).0 && Self::mem(*self, k) ==> result.7[k] != 0))]
     pub fn iter(&self) -> BitIter<'_, T> {
-        BitIter::new(&self.words)
+        let words = &self.words;
+        let mut it = BitIter::new(words);
+        let domain_size = self.domain_size;
+        let s = thrust_macros::ghost!(|words: &Vec<Word>| -> Seq<USize> { *words });
+        thrust_macros::proof!(ones_le(s, domain_size));
+        let n = thrust_macros::ghost!(|domain_size: usize| -> USize { domain_size });
+        thrust_macros::proof!(ones_past(s, n, WORD_BITS * words.len()));
+        thrust_macros::proof!(ones_to_come_at_start(s, WORD_BITS * words.len()));
+        thrust_macros::proof!(bits_to_come_at_start(s));
+        it.bound = thrust_macros::ghost!(|domain_size: usize| -> USize { domain_size });
+        it.left = thrust_macros::ghost!(|words: &Vec<Word>, domain_size: usize| -> USize { ones(*words, domain_size) });
+        it.rest = thrust_macros::ghost!(|words: &Vec<Word>, domain_size: usize| -> Array<USize, Int> { member_flags(*words, domain_size) });
+        it
     }
 }
 
@@ -237,6 +257,7 @@ impl<'a> WordIter<'a> {
         *dist.0 == *self.0
     }
 
+    #[thrust_macros::ensures(result.1 == 0 && *result.0 == *words)]
     pub(crate) fn new(words: &'a [Word]) -> WordIter<'a> {
         WordIter { words, pos: 0 }
     }
@@ -310,12 +331,12 @@ pub struct BitIter<'a, T: Idx> {
 
     // Rewrite (rewrites.md S11): proof-only. A bound on the elements, the number yielded so far,
     // the number still to come, and the members still to come as flags (non-zero at a member).
-    // The trusted `iter` of `DenseBitSet` and of `BitMatrix`, the only callers of `new`, state
-    // them; `new` leaves them empty.
+    // The `iter` of `DenseBitSet` and of `BitMatrix`, the only callers of `new`, set them to the
+    // members (`member_flags`); `new` leaves them empty, and `next` takes out the member it yields.
     bound: thrust_models::Ghost<USize>,
     count: thrust_models::Ghost<USize>,
     left: thrust_models::Ghost<USize>,
-    rest: thrust_models::Ghost<Seq<USize>>,
+    rest: thrust_models::Ghost<Array<USize, Int>>,
 }
 
 // `BitIter`'s model is the tuple of its fields' models,
@@ -326,8 +347,7 @@ impl<'a, T: Idx> BitIter<'a, T> {
     /// `n == self.iter.words.len() * WORD_BITS`: the number of bits the
     /// underlying word array holds. Every index this iterator yields is
     /// `bit_pos + offset` for some bit of some word of that array, so this is
-    /// a bound on it -- an abstraction, since `next`'s body is trusted and
-    /// the wrapping `offset` arithmetic is not modelled.
+    /// a bound on it.
     #[thrust_macros::predicate]
     fn bit_bound(self, n: usize) -> bool {
         n == 64 * self.2.0.len()
@@ -339,13 +359,39 @@ impl<'a, T: Idx> BitIter<'a, T> {
     fn same_words(self, dist: Self) -> bool {
         *dist.2.0 == *self.2.0
     }
+
+    /// The ghost state is what the words have still to yield (`bit_to_come`): with the cursor at
+    /// `pos`, `word` holds the bits of word `pos - 1` not yet yielded and `offset` is its first
+    /// index, `64 * (pos - 1)` while that is below the bound (it wraps from `usize::MAX - 63` to 0
+    /// at the first word); `rest` flags the bits to come below the bound, a `usize`, `left` counts
+    /// them, and none lies at or past it. The words not yet read are 64-bit values.
+    #[thrust_macros::predicate]
+    #[thrust::opaque]
+    pub(crate) fn tracks_words(self) -> bool {
+        0 <= self.2.1
+            && self.2.1 <= self.2.0.len()
+            && self.4 <= 64 * self.2.0.len()
+            && self.4 <= 18446744073709551615usize
+            && 0 <= self.0
+            && self.0 <= 18446744073709551615u64
+            && forall(|i: USize| !(self.2.1 <= i && i < self.2.0.len())
+                || (0 <= self.2.0[i] && self.2.0[i] <= 18446744073709551615u64))
+            && (!(self.2.1 == 0) || (self.0 == 0 && self.1 == 18446744073709551552usize))
+            && (!(0 < self.2.1) || self.1 == 64 * (self.2.1 - 1) || self.4 <= 64 * (self.2.1 - 1))
+            && self.6 == ones_to_come(*self.2.0, self.2.1, self.0, 64 * self.2.0.len())
+            && forall(|k: USize| (self.7[k] != 0)
+                == (0 <= k && k < self.4 && bit_to_come(*self.2.0, self.2.1, self.0, k) == 1))
+            && forall(|p: USize| !(self.4 <= p && p < 64 * self.2.0.len())
+                || bit_to_come(*self.2.0, self.2.1, self.0, p) == 0)
+    }
 }
 
 // Outside the `#[thrust_macros::context]` block, so that `ghost!` adds no `Model` bound on `T`.
-// Its only callers, the two trusted `iter`s, state the ghost fields.
+// Its only callers, the two `iter`s, set the ghost fields.
 impl<'a, T: Idx> BitIter<'a, T> {
     #[inline]
     fn new(words: &'a [Word]) -> BitIter<'a, T> {
+        let rest = thrust_macros::ghost!(|| -> Array<USize, Int> { no_flags() });
         BitIter {
             word: 0,
             offset: usize::MAX - (WORD_BITS - 1),
@@ -354,7 +400,7 @@ impl<'a, T: Idx> BitIter<'a, T> {
             bound: thrust_macros::ghost!(|| -> USize { 0 }),
             count: thrust_macros::ghost!(|| -> USize { 0 }),
             left: thrust_macros::ghost!(|| -> USize { 0 }),
-            rest: thrust_macros::ghost!(|| -> Seq<USize> { Seq::empty() }),
+            rest,
         }
     }
 }
@@ -372,12 +418,7 @@ impl<'a, T: Idx + thrust_models::Model> Iterator for BitIter<'a, T>
 {
     type Item = T;
 
-    // rustc's bit arithmetic, which Thrust does not model, under `IteratorSpec`'s contract. `inv`
-    // does not relate the ghost fields to the words, so the contract holds of the iterators the
-    // two trusted `iter`s build, whose ghost fields are the bits still to come, and of no other:
-    // `new` leaves them empty over any words. It is private to this module, and the `iter`s are
-    // its only callers.
-    #[thrust::trusted]
+    #[thrust::reveal]
     #[thrust_macros::requires(<Self as IteratorSpec>::inv(*self))]
     #[thrust_macros::ensures(
         <Self as IteratorSpec>::inv(!self)
@@ -386,15 +427,45 @@ impl<'a, T: Idx + thrust_models::Model> Iterator for BitIter<'a, T>
                 ==> <Self as IteratorSpec>::produces(*self, Seq::singleton(x), !self))
     )]
     fn next(&mut self) -> Option<T> {
+        // Rewrite (rewrites.md S11): `self` is named `this`, which the loop invariant reads, and
+        // the ghost state drops the member yielded.
+        let this = self;
         loop {
-            if self.word != 0 {
-                let bit_pos = self.word.trailing_zeros() as usize;
-                self.word ^= 1 << bit_pos;
-                return Some(T::new(bit_pos + self.offset));
+            thrust_macros::invariant!(
+                |this: &mut BitIter<'a, T>, self: thrust_models::FnParam<&mut BitIter<'a, T>>|
+                    !this == !self.at_entry()
+                        && <BitIter<'a, T> as IteratorSpec>::inv(*this)
+                        && *(*this).2.0 == *(*self.at_entry()).2.0
+                        && (*this).4 == (*self.at_entry()).4
+                        && (*this).5 == (*self.at_entry()).5
+                        && (*this).6 == (*self.at_entry()).6
+                        && (*this).7 == (*self.at_entry()).7
+            );
+            let s = thrust_macros::ghost!(|this: &mut BitIter<'a, T>| -> Seq<USize> { *(*this).2.0 });
+            if this.word != 0 {
+                let bit_pos = this.word.trailing_zeros() as usize;
+                let word = thrust_macros::ghost!(|this: &mut BitIter<'a, T>| -> USize { (*this).0 });
+                this.word ^= 1 << bit_pos;
+                thrust_macros::proof!(bits_to_come_clear(s, this.iter.pos, word, bit_pos, this.word));
+                thrust_macros::proof!(ones_to_come_clear(s, this.iter.pos, word, bit_pos, this.word, WORD_BITS * this.iter.words.len()));
+                thrust_macros::proof!(ones_to_come_le(s, this.iter.pos, this.word, WORD_BITS * this.iter.words.len()));
+                this.count = thrust_macros::ghost!(|this: &mut BitIter<'a, T>| -> USize { (*this).5 + 1 });
+                this.left = thrust_macros::ghost!(|this: &mut BitIter<'a, T>| -> USize { (*this).6 - 1 });
+                this.rest = thrust_macros::ghost!(|this: &mut BitIter<'a, T>, bit_pos: usize| -> Array<USize, Int> {
+                    without_flag((*this).7, bit_pos + (*this).1)
+                });
+                #[cfg(thrust_bititer_body_fail)]
+                return Some(T::new(bit_pos + this.offset + 1));
+                #[cfg(not(thrust_bititer_body_fail))]
+                return Some(T::new(bit_pos + this.offset));
             }
 
-            self.word = *self.iter.next()?;
-            self.offset = self.offset.wrapping_add(WORD_BITS);
+            thrust_macros::proof!(bits_to_come_exhausted(s, this.iter.pos));
+            thrust_macros::proof!(ones_to_come_exhausted(s, this.iter.pos, WORD_BITS * this.iter.words.len()));
+            this.word = *this.iter.next()?;
+            this.offset = this.offset.wrapping_add(WORD_BITS);
+            thrust_macros::proof!(bits_to_come_next_word(s, this.iter.pos));
+            thrust_macros::proof!(ones_to_come_next_word(s, this.iter.pos, WORD_BITS * this.iter.words.len()));
         }
     }
 }
@@ -408,6 +479,7 @@ impl<'a, T: Idx + thrust_models::Model> IteratorSpec for BitIter<'a, T>
             && 0 <= self.6
             && self.5 + self.6 <= self.4
             && forall(|k: USize| !(0 <= k && k < self.4) || <T as Idx>::can_new(k))
+            && Self::tracks_words(self)
     }
 
     #[thrust_macros::predicate]
@@ -475,7 +547,8 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
     /// Well-formedness: `words` holds `num_words(num_columns)` words per row
     /// (the invariant `BitMatrix::new` establishes). `num_words` is
     /// `ceil(num_columns / 64)`, spelled as the word count `rw` with
-    /// `64 * rw >= num_columns` and `64 * rw < num_columns + 64`.
+    /// `64 * rw >= num_columns` and `64 * rw < num_columns + 64`; the column count is a `usize`
+    /// and each word a 64-bit value, which the model of `u64` does not bound above by default.
     #[thrust_macros::predicate]
     #[thrust::opaque]
     pub(crate) fn wf(self) -> bool {
@@ -484,21 +557,22 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
                 && 64 * rw >= self.num_columns
                 && 64 * rw < self.num_columns + 64
         }) && 0 <= *self.col_bound && *self.col_bound <= self.num_columns
+            && self.num_columns <= 18446744073709551615usize
+            && forall(|k: usize| !(0 <= k && k < self.words.len())
+                || (0 <= self.words[k] && self.words[k] <= 18446744073709551615u64))
     }
 
     /// Every set bit is at a column below `b`: the fact the ghost `col_bound` stands for
     /// (rewrites.md S11). rustc's matrices have it at `b = num_columns`: `insert` asserts
-    /// `column < num_columns` and `insert_all_into_row` clears the bits past it.
+    /// `column < num_columns` and `insert_all_into_row` clears the bits past it. A row holds
+    /// `num_words(num_columns)` words (`wf`).
     #[thrust_macros::predicate]
     #[thrust::opaque]
     pub(crate) fn cols_below(self, b: usize) -> bool {
-        forall(|rw: usize, r: usize, c: usize|
-            !(self.words.len() == self.num_rows * rw
-                && 64 * rw >= self.num_columns
-                && 64 * rw < self.num_columns + 64
-                && 0 <= r && r < self.num_rows
-                && b <= c && c < 64 * rw)
-                || (BitVec::<64, false>::from_int(self.words[r * rw + c / 64]) >> BitVec::from_int(c % 64))
+        forall(|r: usize, c: usize|
+            !(0 <= r && r < self.num_rows && b <= c && c < 64 * ((self.num_columns + 63) / 64))
+                || (BitVec::<64, false>::from_int(self.words[r * ((self.num_columns + 63) / 64) + c / 64])
+                    >> BitVec::from_int(c % 64))
                     & BitVec::from_int(1)
                     == BitVec::from_int(0))
     }
@@ -513,24 +587,46 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
     #[thrust_macros::requires(forall(|i: USize| <R as Idx>::index_is(row, i) ==> i < (*self).num_rows))]
     #[thrust_macros::ensures(result.0 <= result.1)]
     #[thrust_macros::ensures(result.1 <= (*self).words.len())]
+    #[thrust_macros::ensures(result.1 == result.0 + ((*self).num_columns + 63) / 64)]
+    #[thrust_macros::ensures(forall(|i: USize| <R as Idx>::index_is(row, i)
+        ==> result.0 == i * (((*self).num_columns + 63) / 64)))]
     fn range(&self, row: R) -> (usize, usize) {
         let words_per_row = num_words(self.num_columns);
         let start = row.index() * words_per_row;
         (start, start + words_per_row)
     }
 
-    // Trusted, as `DenseBitSet::iter`: the iterator's ghost state is the row's members, below the
-    // ghost column bound, which `cols_below` ties to the bits.
-    #[thrust::trusted]
+    // The ghost state is the row's members, below the ghost column bound, which `cols_below`
+    // ties to the bits.
+    #[thrust::reveal]
     #[thrust_macros::requires(Self::wf(*self))]
     #[thrust_macros::requires(Self::cols_below(*self, *(*self).col_bound))]
     #[thrust_macros::requires(forall(|i: USize| <R as Idx>::index_is(row, i) ==> i < (*self).num_rows))]
+    #[thrust_macros::ensures(BitIter::<C>::tracks_words(result))]
     #[thrust_macros::ensures(result.4 == *(*self).col_bound && result.5 == 0)]
     #[thrust_macros::ensures(0 <= result.6 && result.6 <= *(*self).col_bound)]
     pub fn iter(&self, row: R) -> BitIter<'_, C> {
         assert!(row.index() < self.num_rows);
         let (start, end) = self.range(row);
-        BitIter::new(&self.words[start..end])
+        let words = &self.words[start..end];
+        let mut it = BitIter::new(words);
+        // The ghost column bound is at most `num_columns` (`wf`).
+        let s = thrust_macros::ghost!(|words: &[Word]| -> Seq<USize> { *words });
+        thrust_macros::proof!(ones_le_upto(s, self.num_columns));
+        let col_bound = &self.col_bound;
+        let n = thrust_macros::ghost!(|col_bound: &Ghost<USize>| -> USize { *col_bound });
+        let all_words = &self.words;
+        let all = thrust_macros::ghost!(|all_words: &Vec<Word>| -> Seq<USize> { *all_words });
+        thrust_macros::proof!(row_cols_below(self, all, n, row.index(), start, end - start));
+        thrust_macros::proof!(row_words(all, s, start, end - start));
+        thrust_macros::proof!(row_bits_clear(all, s, start, end - start, n));
+        thrust_macros::proof!(ones_past(s, n, WORD_BITS * words.len()));
+        thrust_macros::proof!(ones_to_come_at_start(s, WORD_BITS * words.len()));
+        thrust_macros::proof!(bits_to_come_at_start(s));
+        it.bound = thrust_macros::ghost!(|col_bound: &Ghost<USize>| -> USize { *col_bound });
+        it.left = thrust_macros::ghost!(|words: &[Word], col_bound: &Ghost<USize>| -> USize { ones(*words, *col_bound) });
+        it.rest = thrust_macros::ghost!(|words: &[Word], col_bound: &Ghost<USize>| -> Array<USize, Int> { member_flags(*words, *col_bound) });
+        it
     }
 
     #[thrust::reveal]
@@ -541,6 +637,77 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
         let (start, end) = self.range(row);
         count_ones(&self.words[start..end])
     }
+}
+
+/// `cols_below` at row `i` of a matrix whose words are `all`: the row's `r` words start at `a`,
+/// and their bits at and past column `b` are clear. The words are 64-bit values (`wf`).
+#[thrust::reveal]
+#[thrust_macros::lemma]
+#[thrust_macros::requires(BitMatrix::<R, C>::wf(*m) && BitMatrix::<R, C>::cols_below(*m, b))]
+#[thrust_macros::requires(0 <= i && i < (*m).num_rows && all == (*m).words)]
+#[thrust_macros::requires(r == (((*m).num_columns + 63) / 64) && a == i * r)]
+#[thrust_macros::ensures(forall(|c: USize| !(b <= c && c < 64 * r)
+    || (BitVec::<64, false>::from_int(all[a + c / 64]) >> BitVec::from_int(c % 64)) & BitVec::from_int(1)
+        == BitVec::from_int(0)))]
+#[thrust_macros::ensures(forall(|k: USize| !(0 <= k && k < all.len()) || (0 <= all[k] && all[k] <= 18446744073709551615u64)))]
+fn row_cols_below<R: Idx, C: Idx>(
+    m: &BitMatrix<R, C>,
+    all: Ghost<Seq<USize>>,
+    b: Ghost<USize>,
+    i: usize,
+    a: usize,
+    r: usize,
+) {}
+
+/// The `r` words of `all` from `a`, `s`, are those words, 64-bit values when `all`'s are.
+#[thrust_macros::lemma]
+#[thrust_macros::requires(0 <= a && 0 <= r && a + r <= all.len() && s == all.subsequence(a, a + r))]
+#[thrust_macros::requires(forall(|k: USize| !(0 <= k && k < all.len()) || (0 <= all[k] && all[k] <= 18446744073709551615u64)))]
+#[thrust_macros::ensures(s.len() == r)]
+#[thrust_macros::ensures(forall(|k: USize| !(0 <= k && k < r) || s[k] == all[a + k]))]
+#[thrust_macros::ensures(forall(|k: USize| !(0 <= k && k < s.len()) || (0 <= s[k] && s[k] <= 18446744073709551615u64)))]
+fn row_words(all: Ghost<Seq<USize>>, s: Ghost<Seq<USize>>, a: usize, r: usize) {}
+
+/// The `r` words `s` of `all` from `a` have no bit set at or past `b` when `all`'s bits there
+/// are clear.
+#[thrust_macros::lemma]
+#[thrust_macros::requires(0 <= a && 0 <= r && s.len() == r)]
+#[thrust_macros::requires(forall(|k: USize| !(0 <= k && k < r) || s[k] == all[a + k]))]
+#[thrust_macros::requires(forall(|c: USize| !(b <= c && c < 64 * r)
+    || (BitVec::<64, false>::from_int(all[a + c / 64]) >> BitVec::from_int(c % 64)) & BitVec::from_int(1)
+        == BitVec::from_int(0)))]
+#[thrust_macros::ensures(forall(|p: USize| !(b <= p && p < 64 * s.len()) || bit(s, p) == 0))]
+fn row_bits_clear(all: Ghost<Seq<USize>>, s: Ghost<Seq<USize>>, a: usize, r: usize, b: Ghost<USize>) {
+    bits_clear_of(s);
+}
+
+/// The flags of an iterator with no member to come.
+#[thrust_macros::logic]
+fn no_flags() -> Array<USize, Int> {
+    Array::<USize, Int>::from_fn(|k: USize| no_flag(k))
+}
+
+#[thrust_macros::logic]
+fn no_flag(_k: USize) -> Int {
+    0
+}
+
+/// `flags` with the member `k` taken out: the ghost `rest` after `next` yields `k`.
+#[thrust_macros::logic]
+fn without_flag(flags: Array<USize, Int>, k: USize) -> Array<USize, Int> {
+    flags.store(k, no_flag(k))
+}
+
+/// The members among the first `n` bits of `words` as flags, 1 at a member and 0 elsewhere: the
+/// ghost `rest` of a `BitIter` over `words` that yields the bits below `n`.
+#[thrust_macros::logic]
+fn member_flags(words: Seq<USize>, n: USize) -> Array<USize, Int> {
+    Array::<USize, Int>::from_fn(|k: USize| member_flag(words, n, k))
+}
+
+#[thrust_macros::logic]
+fn member_flag(words: Seq<USize>, n: USize, k: USize) -> Int {
+    if 0 <= k && k < n && bit(words, k) == 1 { 1 } else { 0 }
 }
 
 #[inline]
@@ -572,7 +739,7 @@ fn clear_excess_bits_in_final_word(domain_size: usize, words: &mut [Word]) {
 /// bit-vector arithmetic stays in the lemmas below, as Verus keeps `bit_vector` proofs apart.
 mod bits {
     use crate::thrust_models;
-    use thrust_models::model::{BitVec, Int, Seq};
+    use thrust_models::model::{int_lit, BitVec, Int, Seq};
     use thrust_models::{forall, Ghost};
 
     use crate::case_study::USize;
@@ -708,6 +875,188 @@ mod bits {
             .to_int()
             != 0))]
     pub(crate) fn test_bit(s: Ghost<Seq<USize>>, i: usize) {}
+
+    /// Bit `k` of what a `BitIter` over `words` has still to yield, its cursor at word `pos` and
+    /// `word` the bits of word `pos - 1` it has not yielded: none in the words before word
+    /// `pos - 1`, `word`'s in it, and the words' after it.
+    #[thrust_macros::logic]
+    #[thrust::opaque]
+    pub(crate) fn bit_to_come(words: Seq<USize>, pos: USize, word: USize, k: USize) -> Int {
+        if pos <= 0 {
+            bit(words, k)
+        } else if k / 64 < pos - 1 {
+            0
+        } else {
+            bit(words.store(pos - 1, word), k)
+        }
+    }
+
+    /// A bit to come is 1 or 0.
+    #[thrust::reveal]
+    #[thrust_macros::lemma]
+    #[thrust_macros::ensures(bit_to_come(s, pos, w, p) == 0 || bit_to_come(s, pos, w, p) == 1)]
+    pub(crate) fn bit_to_come_range(s: Ghost<Seq<USize>>, pos: usize, w: u64, p: usize) {}
+
+    /// Before the first word is read, the bits to come are the words' bits.
+    #[thrust::reveal]
+    #[thrust_macros::lemma]
+    #[thrust_macros::ensures(bit_to_come(s, int_lit(0), int_lit(0), p) == bit(s, p))]
+    pub(crate) fn bit_to_come_at_start(s: Ghost<Seq<USize>>, p: usize) {}
+
+    /// `bit_to_come_at_start` at every bit.
+    #[thrust::reveal]
+    #[thrust_macros::lemma]
+    #[thrust_macros::ensures(forall(|p: USize| bit_to_come(s, int_lit(0), int_lit(0), p) == bit(s, p)))]
+    pub(crate) fn bits_to_come_at_start(s: Ghost<Seq<USize>>) {}
+
+    /// Reading word `pos - 1` into the emptied word leaves the bits to come as they were.
+    #[thrust::reveal]
+    #[thrust_macros::lemma]
+    #[thrust_macros::requires(0 < pos && pos <= s.len() && 0 <= p && p < 64 * s.len())]
+    #[thrust_macros::ensures(bit_to_come(s, pos, s[pos - 1], p) == bit_to_come(s, pos - 1, int_lit(0), p))]
+    pub(crate) fn bit_to_come_next_word(s: Ghost<Seq<USize>>, pos: usize, p: usize) {}
+
+    /// `bit_to_come_next_word` at every bit of the words.
+    #[thrust::reveal]
+    #[thrust_macros::lemma]
+    #[thrust_macros::requires(0 < pos && pos <= s.len())]
+    #[thrust_macros::ensures(forall(|p: USize| !(0 <= p && p < 64 * s.len())
+        || bit_to_come(s, pos, s[pos - 1], p) == bit_to_come(s, pos - 1, int_lit(0), p)))]
+    pub(crate) fn bits_to_come_next_word(s: Ghost<Seq<USize>>, pos: usize) {}
+
+    /// The bit `b` that `u64::trailing_zeros` names in a nonzero 64-bit word `w` is set.
+    #[thrust_macros::lemma]
+    #[thrust_macros::requires(0 <= w && w <= 18446744073709551615u64 && w != 0 && 0 <= b && b <= 64)]
+    #[thrust_macros::requires((b == 64) == (BitVec::<64, false>::from_int(w) == BitVec::from_int(0)))]
+    #[thrust_macros::requires((b != 64)
+        == ((BitVec::<64, false>::from_int(w) << BitVec::from_int(63 - b))
+            == (BitVec::<64, false>::from_int(1) << BitVec::from_int(63))))]
+    #[thrust_macros::ensures(b < 64)]
+    #[thrust_macros::ensures((BitVec::<64, false>::from_int(w) >> BitVec::from_int(b)) & BitVec::from_int(1) == BitVec::from_int(1))]
+    pub(crate) fn lowest_bit_set(w: Ghost<USize>, b: usize) {}
+
+    /// `1 << b`, computed on a `u64`, as a bit-vector.
+    #[thrust_macros::lemma]
+    #[thrust_macros::requires(0 <= b && b < 64)]
+    #[thrust_macros::requires(u == (BitVec::<64, false>::from_int(1) << (BitVec::from_int(b) & BitVec::from_int(63))).to_int())]
+    #[thrust_macros::ensures(BitVec::<64, false>::from_int(u) == (BitVec::<64, false>::from_int(1) << BitVec::from_int(b)))]
+    fn shifted_one(b: usize, u: u64) {}
+
+    /// `w ^ u`, computed on a `u64`, as a bit-vector.
+    #[thrust_macros::lemma]
+    #[thrust_macros::requires(v == (BitVec::<64, false>::from_int(w) ^ BitVec::from_int(u)).to_int())]
+    #[thrust_macros::ensures(BitVec::<64, false>::from_int(v) == (BitVec::<64, false>::from_int(w) ^ BitVec::from_int(u)))]
+    #[thrust_macros::ensures(0 <= v && v <= 18446744073709551615u64)]
+    fn xored(w: Ghost<USize>, u: u64, v: u64) {}
+
+    /// `v`, computed as `w ^ (1 << b)` on a `u64`, is `w` with bit `b` flipped.
+    #[thrust_macros::lemma]
+    #[thrust_macros::requires(0 <= b && b < 64)]
+    #[thrust_macros::requires(v == (BitVec::<64, false>::from_int(w)
+        ^ BitVec::from_int((BitVec::<64, false>::from_int(1) << (BitVec::from_int(b) & BitVec::from_int(63))).to_int()))
+        .to_int())]
+    #[thrust_macros::ensures(BitVec::<64, false>::from_int(v) == (BitVec::<64, false>::from_int(w) ^ (BitVec::<64, false>::from_int(1) << BitVec::from_int(b))))]
+    #[thrust_macros::ensures(0 <= v && v <= 18446744073709551615u64)]
+    pub(crate) fn flipped_word(w: Ghost<USize>, b: usize, v: u64) {
+        shifted_one(b, 1 << b);
+        xored(w, 1 << b, v);
+    }
+
+    /// Flipping the set bit `b` of `w` clears it and keeps the others: bit `j` of the result.
+    #[thrust_macros::lemma]
+    #[thrust_macros::requires(0 <= b && b < 64 && 0 <= j && j < 64)]
+    #[thrust_macros::requires((BitVec::<64, false>::from_int(w) >> BitVec::from_int(b)) & BitVec::from_int(1) == BitVec::from_int(1))]
+    #[thrust_macros::requires(BitVec::<64, false>::from_int(v) == (BitVec::<64, false>::from_int(w) ^ (BitVec::<64, false>::from_int(1) << BitVec::from_int(b))))]
+    #[thrust_macros::ensures(((BitVec::<64, false>::from_int(v) >> BitVec::from_int(j)) & BitVec::from_int(1) == BitVec::from_int(1))
+        == (j != b && (BitVec::<64, false>::from_int(w) >> BitVec::from_int(j)) & BitVec::from_int(1) == BitVec::from_int(1)))]
+    pub(crate) fn flipped_bit(w: Ghost<USize>, b: usize, v: u64, j: usize) {}
+
+    /// `flipped_bit` at every bit.
+    #[thrust_macros::lemma]
+    #[thrust_macros::requires(0 <= b && b < 64)]
+    #[thrust_macros::requires((BitVec::<64, false>::from_int(w) >> BitVec::from_int(b)) & BitVec::from_int(1) == BitVec::from_int(1))]
+    #[thrust_macros::requires(BitVec::<64, false>::from_int(v) == (BitVec::<64, false>::from_int(w) ^ (BitVec::<64, false>::from_int(1) << BitVec::from_int(b))))]
+    #[thrust_macros::ensures(forall(|j: USize| !(0 <= j && j < 64)
+        || ((BitVec::<64, false>::from_int(v) >> BitVec::from_int(j)) & BitVec::from_int(1) == BitVec::from_int(1))
+            == (j != b && (BitVec::<64, false>::from_int(w) >> BitVec::from_int(j)) & BitVec::from_int(1) == BitVec::from_int(1))))]
+    pub(crate) fn flipped_bits(w: Ghost<USize>, b: usize, v: u64) {}
+
+    /// Clearing in `w` the bit `b` that `u64::trailing_zeros` names, to get `v`, takes bit
+    /// `64 * (pos - 1) + b` out of the bits to come and leaves the others.
+    #[thrust::reveal]
+    #[thrust_macros::lemma]
+    #[thrust_macros::requires(0 < pos && pos <= s.len() && 0 <= p && p < 64 * s.len())]
+    #[thrust_macros::requires(0 <= w && w <= 18446744073709551615u64 && w != 0 && 0 <= b && b <= 64)]
+    #[thrust_macros::requires((b == 64) == (BitVec::<64, false>::from_int(w) == BitVec::from_int(0)))]
+    #[thrust_macros::requires((b != 64)
+        == ((BitVec::<64, false>::from_int(w) << BitVec::from_int(63 - b))
+            == (BitVec::<64, false>::from_int(1) << BitVec::from_int(63))))]
+    #[thrust_macros::requires(v == (BitVec::<64, false>::from_int(w)
+        ^ BitVec::from_int((BitVec::<64, false>::from_int(1) << (BitVec::from_int(b) & BitVec::from_int(63))).to_int()))
+        .to_int())]
+    #[thrust_macros::ensures(b < 64 && 0 <= v && v <= 18446744073709551615u64)]
+    #[thrust_macros::ensures(p == 64 * (pos - 1) + b
+        ==> (bit_to_come(s, pos, w, p) == 1 && bit_to_come(s, pos, v, p) == 0))]
+    #[thrust_macros::ensures(p != 64 * (pos - 1) + b ==> bit_to_come(s, pos, v, p) == bit_to_come(s, pos, w, p))]
+    pub(crate) fn bit_to_come_clear(s: Ghost<Seq<USize>>, pos: usize, w: Ghost<USize>, b: usize, v: u64, p: usize) {
+        lowest_bit_set(w, b);
+        flipped_word(w, b, v);
+        flipped_bit(w, b, v, p % 64);
+    }
+
+    /// `bit_to_come_clear` at every bit of the words.
+    #[thrust::reveal]
+    #[thrust_macros::lemma]
+    #[thrust_macros::requires(0 < pos && pos <= s.len())]
+    #[thrust_macros::requires(0 <= w && w <= 18446744073709551615u64 && w != 0 && 0 <= b && b <= 64)]
+    #[thrust_macros::requires((b == 64) == (BitVec::<64, false>::from_int(w) == BitVec::from_int(0)))]
+    #[thrust_macros::requires((b != 64)
+        == ((BitVec::<64, false>::from_int(w) << BitVec::from_int(63 - b))
+            == (BitVec::<64, false>::from_int(1) << BitVec::from_int(63))))]
+    #[thrust_macros::requires(v == (BitVec::<64, false>::from_int(w)
+        ^ BitVec::from_int((BitVec::<64, false>::from_int(1) << (BitVec::from_int(b) & BitVec::from_int(63))).to_int()))
+        .to_int())]
+    #[thrust_macros::ensures(b < 64 && 0 <= v && v <= 18446744073709551615u64)]
+    #[thrust_macros::ensures(bit_to_come(s, pos, w, 64 * (pos - 1) + b) == 1
+        && bit_to_come(s, pos, v, 64 * (pos - 1) + b) == 0)]
+    #[thrust_macros::ensures(forall(|p: USize| !(0 <= p && p < 64 * s.len() && p != 64 * (pos - 1) + b)
+        || bit_to_come(s, pos, v, p) == bit_to_come(s, pos, w, p)))]
+    pub(crate) fn bits_to_come_clear(s: Ghost<Seq<USize>>, pos: usize, w: Ghost<USize>, b: usize, v: u64) {
+        lowest_bit_set(w, b);
+        flipped_word(w, b, v);
+        flipped_bits(w, b, v);
+    }
+
+    /// Past the last word, with the word emptied, no bit is to come.
+    #[thrust::reveal]
+    #[thrust_macros::lemma]
+    #[thrust_macros::requires(0 <= p && p < 64 * s.len())]
+    #[thrust_macros::ensures(s.len() <= pos ==> bit_to_come(s, pos, int_lit(0), p) == 0)]
+    pub(crate) fn bit_to_come_exhausted(s: Ghost<Seq<USize>>, pos: usize, p: usize) {}
+
+    /// `bit_to_come_exhausted` at every bit of the words.
+    #[thrust::reveal]
+    #[thrust_macros::lemma]
+    #[thrust_macros::ensures(forall(|p: USize| !(0 <= p && p < 64 * s.len() && s.len() <= pos)
+        || bit_to_come(s, pos, int_lit(0), p) == 0))]
+    pub(crate) fn bits_to_come_exhausted(s: Ghost<Seq<USize>>, pos: usize) {}
+
+    /// A word masked as `clear_excess_bits_in_final_word` masks the last word of a domain of `n`
+    /// bits has no bit set at or past `n % 64`.
+    #[thrust::reveal]
+    #[thrust_macros::lemma]
+    #[thrust_macros::ensures(forall(|p: USize| 0 <= p && n % 64 <= p % 64 && s[p / 64] == masked(x, n)
+        ==> bit(s, p) == 0))]
+    pub(crate) fn high_mask_bits(s: Ghost<Seq<USize>>, x: u64, n: usize) {}
+
+    /// A bit whose test in the words is 0, the form `BitMatrix::cols_below` states, is clear.
+    #[thrust::reveal]
+    #[thrust_macros::lemma]
+    #[thrust_macros::ensures(forall(|p: USize| 0 <= p
+        && (BitVec::<64, false>::from_int(s[p / 64]) >> BitVec::from_int(p % 64)) & BitVec::from_int(1)
+            == BitVec::from_int(0)
+        ==> bit(s, p) == 0))]
+    pub(crate) fn bits_clear_of(s: Ghost<Seq<USize>>) {}
 }
 
 /// The count of set bits, `ones`, and its lemmas, by induction over the bits counted. `ones` is
@@ -715,10 +1064,13 @@ mod bits {
 /// so each step is linear arithmetic over the function symbol `bit`.
 mod count {
     use crate::thrust_models;
-    use thrust_models::model::{BitVec, Int, Seq};
+    use thrust_models::model::{int_lit, BitVec, Int, Seq};
     use thrust_models::{forall, Ghost};
 
-    use super::bits::{bit, bit_range, set_bit_at, zero_word_bit};
+    use super::bits::{
+        bit, bit_range, bit_to_come, bit_to_come_at_start, bit_to_come_clear, bit_to_come_exhausted,
+        bit_to_come_next_word, bit_to_come_range, set_bit_at, zero_word_bit,
+    };
     use crate::case_study::USize;
 
     /// The set bits among the first `m` bits of `words`, bit `i` being bit `i % 64` of word
@@ -760,6 +1112,18 @@ mod count {
         }
     }
 
+    /// `ones_le` at every bound up to `m`.
+    #[thrust::reveal]
+    #[thrust_macros::lemma]
+    #[thrust_macros::variant(m)]
+    #[thrust_macros::ensures(forall(|j: USize| 0 <= j && j <= m ==> 0 <= ones(s, j) && ones(s, j) <= j))]
+    pub(crate) fn ones_le_upto(s: Ghost<Seq<USize>>, m: usize) {
+        if m > 0 {
+            ones_le_upto(s, m - 1);
+            ones_le(s, m);
+        }
+    }
+
     /// When the first `m` bits of `s` are set, `ones` counts each of them.
     #[thrust::reveal]
     #[thrust_macros::lemma]
@@ -788,6 +1152,104 @@ mod count {
             set_bit_at(s, w, i, m - 1);
         }
     }
+
+    /// The bits to come (`bit_to_come`) among the first `m` bits, as `ones` counts the set bits.
+    #[thrust_macros::logic]
+    #[thrust::opaque]
+    #[thrust_macros::variant(m)]
+    pub(crate) fn ones_to_come(words: Seq<USize>, pos: USize, word: USize, m: USize) -> Int {
+        if m <= 0 {
+            0
+        } else {
+            ones_to_come(words, pos, word, m - 1) + bit_to_come(words, pos, word, m - 1)
+        }
+    }
+
+    /// Before the first word is read, the bits to come are counted as `ones` counts the words'.
+    #[thrust::reveal]
+    #[thrust_macros::lemma]
+    #[thrust_macros::variant(m)]
+    #[thrust_macros::ensures(ones_to_come(s, int_lit(0), int_lit(0), m) == ones(s, m))]
+    pub(crate) fn ones_to_come_at_start(s: Ghost<Seq<USize>>, m: usize) {
+        if m > 0 {
+            ones_to_come_at_start(s, m - 1);
+            bit_to_come_at_start(s, m - 1);
+        }
+    }
+
+    /// `ones_to_come` counts at most the bits it reads.
+    #[thrust::reveal]
+    #[thrust_macros::lemma]
+    #[thrust_macros::variant(m)]
+    #[thrust_macros::ensures(0 <= ones_to_come(s, pos, w, m) && ones_to_come(s, pos, w, m) <= m)]
+    pub(crate) fn ones_to_come_le(s: Ghost<Seq<USize>>, pos: usize, w: u64, m: usize) {
+        if m > 0 {
+            ones_to_come_le(s, pos, w, m - 1);
+            bit_to_come_range(s, pos, w, m - 1);
+        }
+    }
+
+    /// `bit_to_come_next_word` over the first `m` bits.
+    #[thrust::reveal]
+    #[thrust_macros::lemma]
+    #[thrust_macros::variant(m)]
+    #[thrust_macros::requires(0 < pos && pos <= s.len() && m <= 64 * s.len())]
+    #[thrust_macros::ensures(ones_to_come(s, pos, s[pos - 1], m) == ones_to_come(s, pos - 1, int_lit(0), m))]
+    pub(crate) fn ones_to_come_next_word(s: Ghost<Seq<USize>>, pos: usize, m: usize) {
+        if m > 0 {
+            ones_to_come_next_word(s, pos, m - 1);
+            bit_to_come_next_word(s, pos, m - 1);
+        }
+    }
+
+    /// `bit_to_come_clear` over the first `m` bits: one fewer to come when they hold the bit
+    /// cleared.
+    #[thrust::reveal]
+    #[thrust_macros::lemma]
+    #[thrust_macros::variant(m)]
+    #[thrust_macros::requires(0 < pos && pos <= s.len() && m <= 64 * s.len())]
+    #[thrust_macros::requires(0 <= w && w <= 18446744073709551615u64 && w != 0 && 0 <= b && b <= 64)]
+    #[thrust_macros::requires((b == 64) == (BitVec::<64, false>::from_int(w) == BitVec::from_int(0)))]
+    #[thrust_macros::requires((b != 64)
+        == ((BitVec::<64, false>::from_int(w) << BitVec::from_int(63 - b))
+            == (BitVec::<64, false>::from_int(1) << BitVec::from_int(63))))]
+    #[thrust_macros::requires(v == (BitVec::<64, false>::from_int(w)
+        ^ BitVec::from_int((BitVec::<64, false>::from_int(1) << (BitVec::from_int(b) & BitVec::from_int(63))).to_int()))
+        .to_int())]
+    #[thrust_macros::ensures(64 * (pos - 1) + b < m ==> ones_to_come(s, pos, v, m) + 1 == ones_to_come(s, pos, w, m))]
+    #[thrust_macros::ensures(m <= 64 * (pos - 1) + b ==> ones_to_come(s, pos, v, m) == ones_to_come(s, pos, w, m))]
+    pub(crate) fn ones_to_come_clear(s: Ghost<Seq<USize>>, pos: usize, w: Ghost<USize>, b: usize, v: u64, m: usize) {
+        if m > 0 {
+            ones_to_come_clear(s, pos, w, b, v, m - 1);
+            bit_to_come_clear(s, pos, w, b, v, m - 1);
+        }
+    }
+
+    /// `bit_to_come_exhausted` over the first `m` bits.
+    #[thrust::reveal]
+    #[thrust_macros::lemma]
+    #[thrust_macros::variant(m)]
+    #[thrust_macros::requires(m <= 64 * s.len())]
+    #[thrust_macros::ensures(s.len() <= pos ==> ones_to_come(s, pos, int_lit(0), m) == 0)]
+    pub(crate) fn ones_to_come_exhausted(s: Ghost<Seq<USize>>, pos: usize, m: usize) {
+        if m > 0 {
+            ones_to_come_exhausted(s, pos, m - 1);
+            bit_to_come_exhausted(s, pos, m - 1);
+        }
+    }
+
+    /// With the bits from `n` up to `m` clear, `ones` counts as many among the first `m` bits as
+    /// among the first `n`.
+    #[thrust::reveal]
+    #[thrust_macros::lemma]
+    #[thrust_macros::variant(m)]
+    #[thrust_macros::requires(forall(|p: USize| !(n <= p && p < m) || bit(s, p) == 0))]
+    #[thrust_macros::ensures(0 <= n && n <= m ==> ones(s, m) == ones(s, n))]
+    pub(crate) fn ones_past(s: Ghost<Seq<USize>>, n: Ghost<USize>, m: usize) {
+        if m > 0 {
+            ones_past(s, n, m - 1);
+        }
+    }
 }
 
 /// Words of all ones, the excess bits past `n` then cleared, have every bit below `n` set, by
@@ -802,6 +1264,18 @@ mod count {
     ==> bit(t, p) == 1))]
 #[thrust_macros::ensures(forall(|p: USize| 0 <= p && p < n ==> bit(t, p) == 1))]
 fn filled_bits(s: Ghost<Seq<USize>>, n: usize, t: Ghost<Seq<USize>>) {}
+
+/// Words of all ones, the excess bits past `n` then cleared, have no bit set at or past `n`, by
+/// `high_mask_bits` at `t` and `x`, the word of all ones, which the caller states.
+#[thrust_macros::lemma]
+#[thrust_macros::requires(x == 18446744073709551615u64)]
+#[thrust_macros::requires(s.len() == (n + 63) / 64)]
+#[thrust_macros::requires(forall(|k: USize| 0 <= k && k < s.len() ==> s[k] == 18446744073709551615u64))]
+#[thrust_macros::requires(excess_cleared(s, n, t))]
+#[thrust_macros::requires(forall(|p: USize| 0 <= p && n % 64 <= p % 64 && t[p / 64] == masked(x, n)
+    ==> bit(t, p) == 0))]
+#[thrust_macros::ensures(forall(|p: USize| !(n <= p && p < 64 * t.len()) || bit(t, p) == 0))]
+fn excess_bits_clear(s: Ghost<Seq<USize>>, x: u64, n: usize, t: Ghost<Seq<USize>>) {}
 
 #[inline]
 #[thrust::callable]
