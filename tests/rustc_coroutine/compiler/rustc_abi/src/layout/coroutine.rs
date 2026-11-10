@@ -735,18 +735,13 @@ fn variant_field_layouts<
     // for the `assume!`. Its precondition, the map's `inv`, is `Map::new`'s `ensures`.
     let fields = collect_index_vec(variant_only_tys);
     // The fields are as many as the variant's entries Assigned to it, which `combine_offsets`
-    // requires: `map_count_exact` at `collect`'s witness. Assumed (fallback): the solver does not
-    // answer this cut; delete the `assume!` for the `proof_assert!` once it does.
-    thrust_macros::assume!(
+    // requires: `map_count_exact` at `collect`'s witness.
+    thrust_macros::proof_assert!(
         |fields: IndexVec<FieldIdx, F>, variant_fields: &IndexVec<FieldIdx, LocalIdx>,
             assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, index: VariantIdx|
             fields.len() == counts::acc_cnt::<FieldIdx, LocalIdx, LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>(
                 *variant_fields, *assignments, SavedLocalEligibility::Assigned(index), (*variant_fields).len())
     );
-    // Reachability twin of the fallback's assumptions in this function (fail root
-    // layout_reach_fallback.rs).
-    #[cfg(thrust_layout_reach_fallback)]
-    thrust_macros::proof_assert!(|| false);
     thrust_macros::proof!(assigned_count_of(variant_fields, &assignments, index, fields.len()));
     // The `ensures`' selection, at `collect`'s witness.
     thrust_macros::proof_assert!(
