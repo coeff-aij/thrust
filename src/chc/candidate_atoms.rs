@@ -675,6 +675,9 @@ impl Definitions {
             Term::DatatypeDiscr(sym, a) => {
                 Term::DatatypeDiscr(sym.clone(), Box::new(children(a, budget)))
             }
+            Term::DatatypeSelector(sel, a) => {
+                Term::DatatypeSelector(sel.clone(), Box::new(children(a, budget)))
+            }
             Term::IntToBitVec { width, term } => Term::IntToBitVec {
                 width: *width,
                 term: Box::new(children(term, budget)),
