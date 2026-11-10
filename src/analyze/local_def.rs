@@ -242,6 +242,18 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .is_some()
     }
 
+    /// The span of the function's head, if it has `#[thrust::assumed_ensures]`: the report lists the
+    /// assumption under the function whose body holds the span.
+    fn assumed_ensures_site(&self) -> Option<rustc_span::Span> {
+        self.tcx
+            .get_attrs_by_path(
+                self.local_def_id.to_def_id(),
+                &analyze::annot::assumed_ensures_path(),
+            )
+            .next()
+            .map(|_| self.tcx.def_span(self.local_def_id.to_def_id()))
+    }
+
     pub fn is_annotated_as_callable(&self) -> bool {
         self.tcx
             .get_attrs_by_path(
@@ -965,8 +977,24 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// the conjuncts of its postcondition that the closure's `&` captures keep their values
     /// ([`analyze::closure_hist_inv::shared_captures_kept`]), which hold of every state the body
     /// returns in. Callers still assume them.
-    fn contract_checked_by_body(&self, expected: &rty::RefinedType) -> rty::RefinedType {
+    ///
+    /// Under `#[thrust::assumed_ensures]` the result type keeps its shape and loses its
+    /// refinements, so no return checks the postcondition, which callers still assume: the
+    /// `assume` of the postcondition before each return that Dafny and Verus write. The
+    /// precondition, the preconditions of the calls and the assertions of the body are checked
+    /// as without it.
+    fn contract_checked_by_body(&mut self, expected: &rty::RefinedType) -> rty::RefinedType {
         let mut fn_ty = expected.ty.as_function().unwrap().clone();
+        if let Some(span) = self.assumed_ensures_site() {
+            self.ctx.record_assumed_ensures(analyze::AssumeSite {
+                span,
+                owner: self.local_def_id,
+                formula: self.local_def_id.to_def_id(),
+            });
+            let shape = fn_ty.ret.strip_refinement();
+            fn_ty.ret = Box::new(rty::RefinedType::unrefined(shape.vacuous()));
+            return rty::RefinedType::new(fn_ty.into(), expected.refinement.clone());
+        }
         let Some((closure_ty, upvars_sort, receiver)) = self.fn_mut_receiver(&fn_ty) else {
             return expected.clone();
         };

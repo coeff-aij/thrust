@@ -1,6 +1,5 @@
 //! The case study's iterator adapters and consumers for those std.rs does not specify
-//! (rewrites.md R8), and a local `max_by_key` (rewrites.md R21), over std's `Iterator` and
-//! std.rs's `IteratorSpec`.
+//! (rewrites.md R8), over std's `Iterator` and std.rs's `IteratorSpec`.
 #![allow(unexpected_cfgs)]
 
 use crate::thrust_models;
@@ -531,111 +530,6 @@ where
         IterAllSpec::<I, F>::pre_all_step(before, yielded, after, fs);
         if !f(x) {
             return false;
-        }
-        seen.push(x);
-    }
-}
-
-// Rewrite (rewrites.md R21): `max_by_key(it, f)` for `it.max_by_key(f)`, with a verified body.
-// Like core's (`Iterator::max_by_key` through `cmp::max_by`) it keeps the last item of greatest
-// key. The closure's precondition need hold only on the items the iterator can yield, as
-// std.rs's `max_by_key` requires too; it is kept because `scalar_pair`'s key closure, which
-// captures `&&TargetDataLayout` and passes it to `Niche::available`, gives ill-sorted queries
-// through std's `F: FnMut` bound (fork issue #244, also with std.rs's earlier precondition).
-// `F: Fn` as in `iter_all`, and the items are `Copy`, so the loop
-// can record them with the candidate's position. Creusot (3620de437) specifies
-// no `max_by_key`, and Verus (d804d56) only `cmp::max_by_key` of two values
-// (vstd/std_specs/cmp.rs:313), not the iterator's. The contract states that the result is one of
-// the items produced up to completion, `None` exactly when there is none, and not which of them
-// has the greatest key.
-pub struct MaxByKeySpec<I, B, F>(PhantomData<(I, B, F)>);
-
-#[thrust_macros::context]
-impl<I, B, F> MaxByKeySpec<I, B, F>
-where
-    I: IteratorSpec,
-    F: Fn(&I::Item) -> B,
-    B: thrust_models::Model,
-    I::Item: thrust_models::Model + Copy,
-{
-    #[thrust_macros::predicate]
-    fn pre_all(iter: I, func: F) -> bool {
-        forall(|s: Seq<<I::Item as thrust_models::Model>::Ty>|
-        forall(|e: <I::Item as thrust_models::Model>::Ty|
-        forall(|i: <I as thrust_models::Model>::Ty|
-            !I::produces(iter, s.push(e), i) || thrust_macros::pre!(func(&e)))))
-    }
-
-    // `b` follows `a` by yielding `x`.
-    #[thrust_macros::predicate]
-    fn stepped(a: I, x: I::Item, b: I, func: F) -> bool {
-        Self::pre_all(a, func) && I::produces(a, Seq::singleton(x), b)
-    }
-
-    // `pre_all` moves along one yielded item; the lemma is proved apart from the loop.
-    #[thrust_macros::requires(Self::stepped(a, x, b, func))]
-    #[thrust_macros::ensures(Self::pre_all(b, func))]
-    fn pre_all_step(a: Ghost<I>, x: Ghost<I::Item>, b: Ghost<I>, func: Ghost<F>) {}
-}
-
-#[thrust_macros::context]
-#[thrust_macros::requires(I::inv(iter) && MaxByKeySpec::<I, B, F>::pre_all(iter, f))]
-#[thrust_macros::ensures(
-    exists(|visited: Seq<<I::Item as thrust_models::Model>::Ty>,
-           mid: <I as thrust_models::Model>::Ty,
-           fin: <I as thrust_models::Model>::Ty|
-        I::produces(iter, visited, mid)
-            && I::completed(Mut::new(mid, fin))
-            && (result == None) == (visited.len() == 0)
-            && forall(|x: <I::Item as thrust_models::Model>::Ty| result == Some(x)
-                ==> exists(|j: Int| 0 <= j && j < visited.len() && x == visited[j])))
-)]
-pub fn max_by_key<I, B, F>(iter: I, f: F) -> Option<I::Item>
-where
-    I: IteratorSpec,
-    F: Fn(&I::Item) -> B,
-    B: Ord + crate::PartialOrdSpec,
-    I::Item: thrust_models::Model + Copy,
-{
-    let mut it = iter;
-    I::produces_refl(&it);
-    // `seen` records the items passed to the closure and `best_pos` the position of the candidate
-    // among them, for the loop invariant; the candidate's key and item are kept apart, so that
-    // the invariant states the item without a quantifier.
-    let mut seen: Vec<I::Item> = Vec::new();
-    let mut best_key: Option<B> = None;
-    let mut best_item: Option<I::Item> = None;
-    let mut best_pos: usize = 0;
-    loop {
-        thrust_macros::invariant!(
-            |it: I, seen: Vec<I::Item>, best_key: Option<B>, best_item: Option<I::Item>, best_pos: usize, iter: thrust_models::FnParam<I>, f: F|
-                I::inv(it)
-                    && I::produces(iter.at_entry(), seen, it)
-                    && MaxByKeySpec::<I, B, F>::pre_all(it, f)
-                    && (best_key == None) == (best_item == None)
-                    && (best_item == None) == (seen.len() == 0)
-                    && (best_item == None || (best_pos < seen.len() && best_item == Some(seen[best_pos])))
-        );
-        let before = thrust_macros::ghost!(|it: I| -> I { it });
-        let Some(x) = it.next() else {
-            thrust_macros::proof_assert!(|best_item: Option<I::Item>, seen: Vec<I::Item>, best_pos: usize|
-                best_item == None || (best_pos < seen.len() && best_item == Some(seen[best_pos])));
-            return best_item;
-        };
-        let yielded = thrust_macros::ghost!(|x: I::Item| -> I::Item { x });
-        let after = thrust_macros::ghost!(|it: I| -> I { it });
-        let fs = thrust_macros::ghost!(|f: F| -> F { f });
-        MaxByKeySpec::<I, B, F>::pre_all_step(before, yielded, after, fs);
-        let k = f(&x);
-        // The candidate's key is compared by reference, so that it stays in place when kept.
-        let keep = match &best_key {
-            Some(bk) => k < *bk,
-            None => false,
-        };
-        if !keep {
-            best_pos = seen.len();
-            best_key = Some(k);
-            best_item = Some(x);
         }
         seen.push(x);
     }

@@ -10,6 +10,10 @@ pub fn trusted_path() -> [Symbol; 2] {
     [Symbol::intern("thrust"), Symbol::intern("trusted")]
 }
 
+pub fn assumed_ensures_path() -> [Symbol; 2] {
+    [Symbol::intern("thrust"), Symbol::intern("assumed_ensures")]
+}
+
 pub fn opaque_path() -> [Symbol; 2] {
     [Symbol::intern("thrust"), Symbol::intern("opaque")]
 }

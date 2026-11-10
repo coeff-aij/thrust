@@ -391,11 +391,21 @@ pub fn check<'tcx>(
             continue;
         }
         let check = body_checks.get(def);
-        if matches!(check, Some(BodyCheck::Checked | BodyCheck::Specification)) {
+        // A checked body under `#[thrust::assumed_ensures]` does not check its postcondition.
+        let ensures_assumed = tcx
+            .get_attrs_by_path(def_id, &analyze::annot::assumed_ensures_path())
+            .next()
+            .is_some();
+        if matches!(check, Some(BodyCheck::Checked | BodyCheck::Specification)) && !ensures_assumed
+        {
             continue;
         }
         if mentions(&contracts.assumed_for(def_id)) {
-            let status = check.map_or("not analyzed", BodyCheck::status);
+            let status = if ensures_assumed {
+                "its postcondition assumed"
+            } else {
+                check.map_or("not analyzed", BodyCheck::status)
+            };
             report(
                 def_id,
                 &format!("the contract of `{}` ({status})", tcx.item_name(def_id)),
