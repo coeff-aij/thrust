@@ -2537,7 +2537,7 @@ where
 
 // std's `TrustedRandomAccessNoCoerce` with its `size`, and `TrustedRandomAccess`
 // (core/src/iter/adapters/zip.rs), as spec traits, so that a spec impl specializes on them where
-// std's impl does. They are implemented for the std iterators std implements them
+// std's impl does (`Zip`'s below). They are implemented for the std iterators std implements them
 // for, with std's bounds. `size` is the number of items left, which std reads instead of calling
 // `next`; the laws tie it to `produces`.
 #[thrust_macros::context]
@@ -2979,11 +2979,13 @@ fn _extern_spec_iterator_enumerate<I>(it: I) -> core::iter::Enumerate<I>
     <I as std::iter::Iterator>::enumerate(it)
 }
 
-// When both iterators are `TrustedRandomAccess` (slice iterators, ranges and the adapters over
-// them, `Map` included), std's `Zip::next` steps neither of them and answers `None` once it has
-// handed out as many items as the shorter one has (core/src/iter/adapters/zip.rs), so `completed`
-// also allows the zip unchanged at a point where one of the two could complete: a `Map` on the
-// longer side does not run its closure on the item the general `Zip::next` takes from it.
+// std's `Zip` selects its `next` and `fold` by specialization (`ZipImpl` and `SpecFold` in
+// core/src/iter/adapters/zip.rs). `completed` here is the general `next`'s, Creusot's, and also
+// allows the zip unchanged where one of the two could complete: std's `fold` over two
+// `TrustedRandomAccessNoCoerce` iterators, or two `TrustedLen` ones, takes no item from the longer
+// one once the shorter one is out, which `count`, `sum`, `for_each` and `extend` run and whose
+// contracts read `completed`. Over two `TrustedRandomAccess` iterators, `next` itself does so, and
+// the spec impl below, specialized as `ZipImpl` is, states it alone.
 #[thrust_macros::context]
 impl<A, B> IteratorSpec for core::iter::Zip<A, B>
 where
@@ -3009,7 +3011,7 @@ where
     }
 
     #[thrust_macros::predicate]
-    fn completed(&mut self) -> bool {
+    default fn completed(&mut self) -> bool {
         (A::completed(thrust_models::model::Mut::new((*self).0, (!self).0))
             && (*self).1 == (!self).1)
             || thrust_models::exists(|x: <A::Item as thrust_models::Model>::Ty|
@@ -3031,6 +3033,24 @@ where
         bc: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
         c: &Self,
     ) {
+    }
+}
+
+// std's `ZipImpl` for two `TrustedRandomAccess` iterators: `next` hands out the items by index and
+// answers `None` once it has handed out as many as the smaller size, stepping neither iterator
+// (core/src/iter/adapters/zip.rs). A `Map` on the longer side does not run its closure on the item
+// the general `next` takes from it, and a `Skip` of size 0 does not drop its `n` items.
+#[thrust_macros::context]
+impl<A, B> IteratorSpec for core::iter::Zip<A, B>
+where
+    A: TrustedRandomAccessSpec,
+    B: TrustedRandomAccessSpec,
+    A::Item: thrust_models::Model,
+    B::Item: thrust_models::Model,
+{
+    #[thrust_macros::predicate]
+    fn completed(&mut self) -> bool {
+        *self == !self && (A::size((*self).0) == 0 || B::size((*self).1) == 0)
     }
 }
 
