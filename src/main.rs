@@ -35,7 +35,7 @@ impl Callbacks for CompilerCalls {
         let attrs = &mut config.opts.unstable_opts.crate_attr;
         attrs.push("feature(register_tool)".to_owned());
         attrs.push("feature(marker_trait_attr)".to_owned());
-        attrs.push("allow(internal_features)".to_owned());
+        attrs.push("allow(incomplete_features)".to_owned());
         if try_specs_enabled() {
             attrs.push("feature(try_trait_v2)".to_owned());
         }
@@ -181,13 +181,13 @@ fn track_inputs(psess: &mut rustc_session::parse::ParseSess) {
     }
 }
 
-/// `#[allow(warnings)]` at `span`, with the tokens an attribute needs before expansion (a derive
-/// or a `cfg` on the item it is put on reads them).
-/// Enables the features std.rs specializes its spec impls with, as std specializes its impls on
-/// traits marked `#[rustc_specialization_trait]` (`TrustedRandomAccess`): `min_specialization`
-/// and `rustc_attrs`, each unless the crate enables it itself, which rustc rejects twice.
+/// Enables `specialization`, with which std.rs specializes its spec impls on spec traits as std
+/// specializes its impls on marker traits, unless the crate enables it itself, which rustc rejects
+/// twice. std uses `min_specialization`, whose marker traits may not have items or impls with
+/// bounds on other traits; the spec traits carry `size` and its laws, and their impls the
+/// `thrust_models::Model` bounds.
 fn enable_spec_specialization(compiler: &Compiler, krate: &mut rustc_ast::Crate) {
-    for feature in ["min_specialization", "rustc_attrs"] {
+    for feature in ["specialization"] {
         let enabled = krate.attrs.iter().any(|attr| {
             attr.has_name(rustc_span::sym::feature)
                 && attr.meta_item_list().is_some_and(|items| {
@@ -210,6 +210,8 @@ fn enable_spec_specialization(compiler: &Compiler, krate: &mut rustc_ast::Crate)
     }
 }
 
+/// `#[allow(warnings)]` at `span`, with the tokens an attribute needs before expansion (a derive
+/// or a `cfg` on the item it is put on reads them).
 fn allow_warnings(
     g: &rustc_ast::attr::AttrIdGenerator,
     span: rustc_span::Span,

@@ -2,15 +2,13 @@
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60
 
-// The crate enables `min_specialization` itself too, which Thrust then does not enable again.
-// A spec impl specialized as std specializes its impls (`min_specialization`, which Thrust
-// enables): `lim` is `default` in the impl for every `W<T>` and overridden where `T: Fast`, a
-// trait marked `#[rustc_specialization_trait]` as std marks `TrustedRandomAccess`. A concrete type
+// A spec impl specialized as std specializes its impls (`specialization`, which Thrust enables):
+// `lim` is `default` in the impl for every `W<T>` and overridden where `T: Fast`. A concrete type
 // takes the most specialized impl's body; at a type parameter `lim` stays opaque, since an impl
 // may override it there, while `base`, which no impl can override, keeps its body.
-#![feature(min_specialization)]
+// The crate enables `specialization` itself too, which Thrust then does not enable again.
+#![feature(specialization)]
 
-#[rustc_specialization_trait]
 trait Fast: thrust_models::Model {}
 
 impl Fast for u8 {}
