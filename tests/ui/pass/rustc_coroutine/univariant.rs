@@ -11,7 +11,8 @@
 // drives it.
 // Each goal is solved with the clauses it depends on (`THRUST_SPLIT_GOALS`). The predicates the
 // contracts pass on unchanged are `#[thrust::opaque]`, so the solver reads them through the
-// contracts instead of unfolding them; `layout_pre` and `dl_of` keep their definitions.
+// contracts instead of unfolding them; so is `layout_pre`, which `univariant`'s body reveals, and
+// `dl_of` keeps its definition.
 #![feature(new_range_api)]
 
 #[path = "../../../rustc_coroutine/compiler/rustc_hashes/src/lib.rs"]
@@ -32,13 +33,14 @@ use rustc_index::{Idx, IndexSlice};
     LayoutCalculator::<Cx>::layout_pre::<FieldIdx, VariantIdx, F>(*calc, fields, kind)
         && LayoutCalculator::<Cx>::fits_in_any_order::<FieldIdx, VariantIdx, F>(*calc, fields, repr, kind)
         && LayoutCalculator::<Cx>::deref_functional::<FieldIdx, VariantIdx, F>()
+        && LayoutCalculator::<Cx>::prefix_fits(repr, kind)
 )]
 #[thrust_macros::ensures(true)]
 fn drive<
     'a,
-    Cx: HasDataLayout,
+    Cx: HasDataLayout + thrust_models::Model<Ty: PartialEq>,
     FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
-    VariantIdx: Idx,
+    VariantIdx: Idx + thrust_models::Model<Ty: PartialEq>,
     F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + thrust_models::Model<Ty: PartialEq>,
 >(
     calc: &LayoutCalculator<Cx>,

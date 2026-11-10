@@ -1,0 +1,126 @@
+//@compile-flags: -C debug-assertions=off
+
+// A reference `iter!('l)` to a loop's ghost is resolved as `break 'l` is, and only to a `for`
+// loop that has ghosts.
+
+use core::ops::Range;
+
+#[thrust_macros::context]
+fn unknown_label(n: i64) {
+    for _ in 0..n {
+        thrust_macros::invariant!(|iter: Range<i64>, iter!('rows): Range<i64>| iter!('rows).start >= 0); //~ ERROR: no loop labelled `'rows`
+    }
+}
+
+#[thrust_macros::context]
+fn while_label(n: i64) {
+    let mut i = 0;
+    'rows: while i < n {
+        for _ in 0..n {
+            thrust_macros::invariant!(|iter: Range<i64>, iter!('rows): Range<i64>| iter.start >= 0); //~ ERROR: `'rows` labels a `while` loop
+        }
+        i += 1;
+    }
+}
+
+#[thrust_macros::context]
+fn shadowed_by_while(n: i64) {
+    'rows: for _ in 0..n {
+        thrust_macros::invariant!(|iter: Range<i64>| iter.start >= 0);
+        let mut i = 0;
+        'rows: while i < n {
+            for _ in 0..n {
+                thrust_macros::invariant!(|iter: Range<i64>, iter!('rows): Range<i64>| iter.start >= 0); //~ ERROR: `'rows` labels a `while` loop
+            }
+            i += 1;
+        }
+    }
+}
+
+#[thrust_macros::context]
+fn loop_label(n: i64) {
+    'rows: loop {
+        for _ in 0..n {
+            thrust_macros::invariant!(|iter: Range<i64>, iter!('rows): Range<i64>| iter.start >= 0); //~ ERROR: `'rows` labels a `loop`
+        }
+        break 'rows;
+    }
+}
+
+#[thrust_macros::context]
+fn block_label(n: i64) {
+    'rows: {
+        for _ in 0..n {
+            thrust_macros::invariant!(|iter: Range<i64>, iter!('rows): Range<i64>| iter.start >= 0); //~ ERROR: `'rows` labels a block
+        }
+    }
+}
+
+#[thrust_macros::context]
+fn for_without_iter_in_invariant(n: i64) {
+    'rows: for _ in 0..n {
+        thrust_macros::invariant!(|n: i64| n >= 0);
+        for _ in 0..n {
+            thrust_macros::invariant!(|iter: Range<i64>, iter!('rows): Range<i64>| iter.start >= 0); //~ ERROR: `'rows` labels a `for` loop whose leading invariants do not name `iter`
+        }
+    }
+}
+
+#[thrust_macros::context]
+fn iter_old_of_for_without_invariant(n: i64) {
+    'rows: for _ in 0..n {
+        for _ in 0..n {
+            thrust_macros::invariant!(|iter: Range<i64>, iter_old!('rows): thrust_models::Ghost<Range<i64>>| iter.start >= 0); //~ ERROR: `'rows` labels a `for` loop with no invariant, which keeps no history
+        }
+    }
+}
+
+#[thrust_macros::context]
+fn history_of_for_without_invariant(n: i64) {
+    'rows: for _ in 0..n {
+        for _ in 0..n {
+            thrust_macros::invariant!(|iter: Range<i64>, produced!('rows): thrust_models::Ghost<thrust_models::model::Seq<i64>>| iter.start >= 0); //~ ERROR: `'rows` labels a `for` loop with no invariant, which keeps no history
+        }
+    }
+}
+
+#[thrust_macros::context]
+fn from_closure(n: i64) {
+    'rows: for _ in 0..n {
+        thrust_macros::invariant!(|iter: Range<i64>| iter.start >= 0);
+        let g = || {
+            for _ in 0..n {
+                thrust_macros::invariant!(|iter: Range<i64>, iter!('rows): Range<i64>| iter.start >= 0); //~ ERROR: no loop labelled `'rows`
+            }
+        };
+        g();
+    }
+}
+
+#[thrust_macros::context]
+fn not_a_parameter(n: i64) {
+    'rows: for _ in 0..n {
+        thrust_macros::invariant!(|iter: Range<i64>| iter.start >= 0);
+        for _ in 0..n {
+            thrust_macros::invariant!(|iter: Range<i64>| iter!('rows).start >= 0); //~ ERROR: is used in the formula but is not one of its parameters
+        }
+    }
+}
+
+#[thrust_macros::context]
+fn mistyped(n: i64) {
+    'rows: for _ in 0..n {
+        thrust_macros::invariant!(|iter: Range<i64>| iter.start >= 0);
+        for _ in 0..n {
+            thrust_macros::invariant!(|iter: Range<i64>, iter!('rows): Range<i32>| iter.start >= 0); //~ ERROR: mismatched types
+        }
+    }
+}
+
+fn outside_context(n: i64) {
+    'rows: for _ in 0..n {
+        thrust_macros::invariant!(|iter!('rows): Range<i64>| iter!('rows).start >= 0); //~ ERROR: is resolved by `#[thrust_macros::context]`
+    }
+}
+
+fn main() {}

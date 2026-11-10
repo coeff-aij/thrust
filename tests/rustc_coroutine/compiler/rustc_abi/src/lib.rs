@@ -1,6 +1,6 @@
-// #![cfg_attr(feature = "nightly", allow(internal_features))]
-// #![cfg_attr(feature = "nightly", feature(rustc_attrs))]
-// #![cfg_attr(feature = "nightly", feature(step_trait))]
+#![cfg_attr(feature = "nightly", allow(internal_features))]
+#![cfg_attr(feature = "nightly", feature(rustc_attrs))]
+#![cfg_attr(feature = "nightly", feature(step_trait))]
 
 use crate::thrust_models;
 use std::fmt;
@@ -8,7 +8,7 @@ use std::num::NonZeroUsize;
 use std::ops::{Add, AddAssign, Deref};
 use std::range::RangeInclusive;
 
-use thrust_models::model::{Int, Seq};
+use thrust_models::model::{BitVec, Int, Seq};
 use thrust_models::{exists, forall};
 
 use crate::rustc_hashes::Hash64;
@@ -21,7 +21,7 @@ mod layout;
 pub use layout::{LayoutCalculator, LayoutCalculatorError};
 
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
-// #[cfg_attr(feature = "nightly", derive(Encodable_NoContext, Decodable_NoContext, StableHash))]
+#[cfg_attr(feature = "nightly", derive(Encodable_NoContext, Decodable_NoContext, StableHash))]
 pub struct ReprFlags(u8);
 
 // Hand-written replacement for the `bitflags!` invocation in rustc_abi, since
@@ -63,7 +63,7 @@ impl ReprFlags {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-// #[cfg_attr(feature = "nightly", derive(Encodable_NoContext, Decodable_NoContext, StableHash))]
+#[cfg_attr(feature = "nightly", derive(Encodable_NoContext, Decodable_NoContext, StableHash))]
 pub enum IntegerType {
     Pointer(bool),
 
@@ -71,7 +71,7 @@ pub enum IntegerType {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-// #[cfg_attr(feature = "nightly", derive(Encodable_NoContext, Decodable_NoContext, StableHash))]
+#[cfg_attr(feature = "nightly", derive(Encodable_NoContext, Decodable_NoContext, StableHash))]
 pub enum ScalableElt {
     ElementCount(u16),
 
@@ -79,7 +79,7 @@ pub enum ScalableElt {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Default)]
-// #[cfg_attr(feature = "nightly", derive(Encodable_NoContext, Decodable_NoContext, StableHash))]
+#[cfg_attr(feature = "nightly", derive(Encodable_NoContext, Decodable_NoContext, StableHash))]
 pub struct ReprOptions {
     pub int: Option<IntegerType>,
     pub align: Option<Align>,
@@ -89,6 +89,17 @@ pub struct ReprOptions {
     pub scalable: Option<ScalableElt>,
 
     pub field_shuffle_seed: Hash64,
+}
+
+// `derive(Default)` gives `ReprOptions` no `repr` alignment and no `pack`, which `layout()`'s
+// `variant_fits_wf` and `univariant`'s `prefix_fits` read. Without a spec, a derived `default`
+// is trusted on std.rs's `ensures(true)`; with this one, its body is analyzed against it where it
+// is selected, and reads std.rs's `Option::default`.
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(result.align == None && result.pack == None)]
+fn _extern_spec_repr_options_default() -> ReprOptions {
+    <ReprOptions as Default>::default()
 }
 
 impl ReprOptions {
@@ -189,6 +200,7 @@ impl TargetDataLayout {
         || (*self).default_address_space_pointer_spec.pointer_size.raw == 4
         || (*self).default_address_space_pointer_spec.pointer_size.raw == 8))]
     #[thrust_macros::ensures(result >= 1)]
+    #[thrust_macros::ensures(result == obj_bound(*self))]
     pub fn obj_size_bound(&self) -> u64 {
         match self.pointer_size().bits() {
             16 => 1 << 15,
@@ -261,6 +273,27 @@ impl TargetDataLayout {
 //
 // Relating a *generic* `cx: &C` to the layout `dl_of` names needs quantifying over it, as the
 // `requires` of `Primitive::size` / `align` does; that verifies.
+/// Rounding `x` up with the mask `m` of a power of two: unless `x + m` wraps, `(x + m) & !m`
+/// lies in `[x, x + m]`.
+#[thrust_macros::lemma]
+#[thrust_macros::ensures((m + 1 == (BitVec::<64, false>::from_int(1) << (BitVec::from_int(q) & BitVec::from_int(63))).to_int()
+        && x + m <= u64::MAX)
+    ==> (x <= (BitVec::<64, false>::from_int(x + m) & !BitVec::<64, false>::from_int(m)).to_int()
+        && (BitVec::<64, false>::from_int(x + m) & !BitVec::<64, false>::from_int(m)).to_int() <= x + m))]
+fn round_up(x: u64, m: u64, q: u64) {}
+
+/// `obj_size_bound` of a layout whose default pointer has 2, 4 or 8 bytes.
+#[thrust_macros::logic]
+pub(crate) fn obj_bound(dl: TargetDataLayout) -> u64 {
+    if dl.default_address_space_pointer_spec.pointer_size.raw == 2 {
+        32768
+    } else if dl.default_address_space_pointer_spec.pointer_size.raw == 4 {
+        2147483648
+    } else {
+        2305843009213693952
+    }
+}
+
 #[thrust_macros::context]
 pub trait HasDataLayout {
     #[thrust_macros::predicate]
@@ -319,7 +352,7 @@ impl fmt::Debug for Endian {
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-// #[cfg_attr(feature = "nightly", derive(Encodable_NoContext, Decodable_NoContext, StableHash))]
+#[cfg_attr(feature = "nightly", derive(Encodable_NoContext, Decodable_NoContext, StableHash))]
 pub struct Size {
     pub(crate) raw: u64,
 }
@@ -335,11 +368,9 @@ impl fmt::Debug for Size {
 impl Size {
     pub const ZERO: Size = Size { raw: 0 };
 
-    // Here and in `from_bytes`, the `impl TryInto<u64>` parameter is a named `T: TryIntoSpec<u64>`:
-    // `TryInto` says nothing about the converted value, and a formula cannot name the type of an
-    // `impl Trait` parameter to call `TryIntoSpec`'s predicates on.
-    #[thrust_macros::requires(T::fits(bits))]
-    #[thrust_macros::ensures(thrust_models::exists(|b| T::converts_to(bits, b) && result.raw == (b + 7) / 8))]
+    // As in `from_bytes`, the `impl TryInto<u64>` parameter is a named `T: TryIntoSpec<u64>`, whose
+    // predicates say what the conversion gives: `TryInto` says nothing about the converted value,
+    // and an inferred or written formula cannot name the type of an `impl Trait` parameter.
     pub fn from_bits<T: TryIntoSpec<u64>>(bits: T) -> Size {
         let bits = bits.try_into().ok().unwrap();
         Size {
@@ -356,7 +387,6 @@ impl Size {
     }
 
     #[inline]
-    #[thrust_macros::ensures(result == self.raw)]
     pub fn bytes(self) -> u64 {
         self.raw
     }
@@ -377,10 +407,15 @@ impl Size {
             .unwrap_or_else(|| overflow(self.bytes()))
     }
 
+    /// The least multiple of the alignment at or above `self`, when `self` plus its mask does not
+    /// wrap: `b` is the alignment's bytes as `Align::bytes` gives them.
     #[inline]
-    #[thrust::callable]
+    #[thrust_macros::ensures(forall(|b: USize| b == (BitVec::<64, false>::from_int(1) << (BitVec::from_int(align.pow2) & BitVec::from_int(63))).to_int()
+        && self.raw + b - 1 <= u64::MAX
+        ==> (self.raw <= result.raw && result.raw < self.raw + b)))]
     pub fn align_to(self, align: Align) -> Size {
         let mask = align.bytes() - 1;
+        thrust_macros::proof!(round_up(self.bytes(), mask, align.pow2 as u64));
         Size::from_bytes((self.bytes() + mask) & !mask)
     }
 
@@ -389,7 +424,13 @@ impl Size {
     #[thrust_macros::requires(forall(|dl: TargetDataLayout| C::dl_of(*cx, dl) ==> dl.default_address_space_pointer_spec.pointer_size.raw == 2
         || dl.default_address_space_pointer_spec.pointer_size.raw == 4
         || dl.default_address_space_pointer_spec.pointer_size.raw == 8))]
-    #[thrust_macros::ensures(true)]
+    // The sum when it is below the object size bound of the layout `cx` names. A generic `C` may
+    // name several layouts, so the bound is stated of one of them: the one `data_layout` returns.
+    #[thrust_macros::ensures(forall(|z: Size| result == Some(z)
+        ==> (z.raw == self.raw + offset.raw
+            && exists(|dl: TargetDataLayout| C::dl_of(*cx, dl) && z.raw < obj_bound(dl)))))]
+    #[thrust_macros::ensures(result == None
+        ==> exists(|dl: TargetDataLayout| C::dl_of(*cx, dl) && self.raw + offset.raw >= obj_bound(dl)))]
     pub fn checked_add<C: HasDataLayout>(self, offset: Size, cx: &C) -> Option<Size> {
         let dl = cx.data_layout();
 
@@ -403,7 +444,6 @@ impl Size {
     }
 
     #[inline]
-    #[thrust_macros::requires((*self).raw * 8 <= 128)]
     pub fn unsigned_int_max(&self) -> u128 {
         u128::MAX >> (128 - self.bits())
     }
@@ -433,7 +473,7 @@ impl AddAssign for Size {
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-// #[cfg_attr(feature = "nightly", derive(Encodable_NoContext, Decodable_NoContext, StableHash))]
+#[cfg_attr(feature = "nightly", derive(Encodable_NoContext, Decodable_NoContext, StableHash))]
 pub struct Align {
     pub(crate) pow2: u8,
 }
@@ -452,26 +492,33 @@ impl Align {
 
     pub const MAX: Align = Align { pow2: 29 };
 
+    // `1 << pow2`, the shift amount masked to the width; layout.rs's `shl_is_pow2` makes it
+    // `2^pow2` below 64.
     #[inline]
     #[thrust_macros::ensures(result >= 1)]
+    #[thrust_macros::ensures(result
+        == (BitVec::<64, false>::from_int(1) << (BitVec::from_int(self.pow2) & BitVec::from_int(63))).to_int())]
     pub const fn bytes(self) -> u64 {
         1 << self.pow2
     }
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-// #[cfg_attr(feature = "nightly", derive(StableHash))]
+#[cfg_attr(feature = "nightly", derive(StableHash))]
 pub struct AbiAlign {
     pub abi: Align,
 }
 
+#[thrust_macros::context]
 impl AbiAlign {
     #[inline]
+    #[thrust_macros::ensures(result.abi == align)]
     pub fn new(align: Align) -> AbiAlign {
         AbiAlign { abi: align }
     }
 
     #[inline]
+    #[thrust_macros::ensures(result.abi.pow2 <= self.abi.pow2 && result.abi.pow2 <= other.abi.pow2)]
     pub fn min(self, other: AbiAlign) -> AbiAlign {
         AbiAlign {
             abi: self.abi.min(other.abi),
@@ -495,7 +542,7 @@ impl Deref for AbiAlign {
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-// #[cfg_attr(feature = "nightly", derive(Encodable_NoContext, Decodable_NoContext, StableHash))]
+#[cfg_attr(feature = "nightly", derive(Encodable_NoContext, Decodable_NoContext, StableHash))]
 pub enum Integer {
     I8,
     I16,
@@ -517,7 +564,6 @@ impl Integer {
     }
 
     #[inline]
-    #[thrust_macros::ensures(Self::bytes_are(self, result))]
     pub fn size(self) -> Size {
         use Integer::*;
         match self {
@@ -557,7 +603,7 @@ impl Integer {
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-// #[cfg_attr(feature = "nightly", derive(StableHash))]
+#[cfg_attr(feature = "nightly", derive(StableHash))]
 pub enum Float {
     F16,
     F32,
@@ -576,7 +622,6 @@ impl Float {
             || (self == Float::F128 && n.raw == 16)
     }
 
-    #[thrust_macros::ensures(Self::bytes_are(self, result))]
     pub fn size(self) -> Size {
         use Float::*;
 
@@ -602,11 +647,43 @@ impl Float {
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-// #[cfg_attr(feature = "nightly", derive(StableHash))]
+#[cfg_attr(feature = "nightly", derive(StableHash))]
 pub enum Primitive {
     Int(Integer, bool),
     Float(Float),
     Pointer(AddressSpace),
+}
+
+/// Among the first `k` entries of `address_space_info`, `c` has none or a first one.
+#[thrust_macros::lemma]
+#[thrust_macros::variant(k)]
+#[thrust_macros::ensures(forall(|s: Seq<(AddressSpace, PointerSpec)>| (s == (*dl).address_space_info && k <= s.len())
+    ==> (forall(|i: Int| (0 <= i && i < k) ==> !(s[i].0 == c))
+        || exists(|i: Int| 0 <= i && i < k && s[i].0 == c
+            && forall(|j: Int| (0 <= j && j < i) ==> !(s[j].0 == c))))))]
+fn first_entry(dl: &TargetDataLayout, c: AddressSpace, k: usize) {
+    if k > 0 {
+        first_entry(dl, c, k - 1);
+    }
+}
+
+/// Every primitive has a size under a layout that has an entry for its address space: an
+/// integer and a float by their kind, a pointer by the first entry for its address space. `n` is
+/// the number of entries of `address_space_info`.
+#[thrust_macros::lemma]
+#[thrust_macros::requires(forall(|a: AddressSpace| p == Primitive::Pointer(a)
+    ==> TargetDataLayout::pointer_space_ok(*dl, a)))]
+#[thrust_macros::requires(forall(|s: Seq<(AddressSpace, PointerSpec)>| s == (*dl).address_space_info ==> s.len() == n))]
+#[thrust_macros::ensures(exists(|s: Size| Primitive::size_in(p, *dl, s)))]
+#[thrust::reveal(
+    Primitive::size_in,
+    TargetDataLayout::pointer_space_ok,
+    TargetDataLayout::pointer_size_is
+)]
+pub(crate) fn size_in_total(p: Primitive, dl: &TargetDataLayout, n: usize) {
+    if let Primitive::Pointer(a) = p {
+        first_entry(dl, a, n);
+    }
 }
 
 #[thrust_macros::context]
@@ -658,7 +735,7 @@ impl Primitive {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-// #[cfg_attr(feature = "nightly", derive(StableHash))]
+#[cfg_attr(feature = "nightly", derive(StableHash))]
 pub struct WrappingRange {
     pub start: u128,
     pub end: u128,
@@ -677,7 +754,7 @@ impl fmt::Debug for WrappingRange {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-// #[cfg_attr(feature = "nightly", derive(StableHash))]
+#[cfg_attr(feature = "nightly", derive(StableHash))]
 pub enum Scalar {
     Initialized {
         value: Primitive,
@@ -727,13 +804,20 @@ impl Scalar {
         C::dl_of(*cx, dl)
             && (self == Scalar::Initialized { value: p, valid_range: r } || self == Scalar::Union { value: p })
             && p == Primitive::Pointer(a) ==> TargetDataLayout::pointer_space_ok(dl, a)))]
-    #[thrust::callable]
+    // `Primitive::size`'s bound: an integer or a float has at most 16 bytes, a pointer the size the
+    // layout `cx` names.
+    #[thrust_macros::ensures(result.raw <= 16
+        || exists(|dl: TargetDataLayout, p: Primitive, r: WrappingRange, a: AddressSpace| C::dl_of(*cx, dl)
+            && (self == Scalar::Initialized { value: p, valid_range: r } || self == Scalar::Union { value: p })
+            && p == Primitive::Pointer(a)
+            && TargetDataLayout::pointer_size_is(dl, a, result)))]
     pub fn size(self, cx: &impl HasDataLayout) -> Size {
         self.primitive().size(cx)
     }
 }
 
 #[derive(PartialEq, Eq, Hash, Clone, Debug)]
+#[cfg_attr(feature = "nightly", derive(StableHash))]
 pub enum FieldsShape<FieldIdx: Idx> {
     Primitive,
 
@@ -778,13 +862,15 @@ impl<FieldIdx: Idx + thrust_models::Model> FieldsShape<FieldIdx> {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-// #[cfg_attr(feature = "nightly", derive(StableHash))]
+#[cfg_attr(feature = "nightly", derive(StableHash))]
 pub struct AddressSpace(pub u32);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[cfg_attr(feature = "nightly", derive(StableHash))]
 pub struct NumScalableVectors(pub u8);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[cfg_attr(feature = "nightly", derive(StableHash))]
 pub enum BackendRepr {
     Scalar(Scalar),
     ScalarPair(Scalar, Scalar),
@@ -803,8 +889,11 @@ pub enum BackendRepr {
     },
 }
 
+#[thrust_macros::context]
 impl BackendRepr {
+    // The contract states the body, so that a caller reads it rather than inferring it.
     #[inline]
+    #[thrust_macros::ensures(result == (*self == BackendRepr::Memory { sized: false }))]
     pub fn is_unsized(&self) -> bool {
         match *self {
             BackendRepr::Scalar(_)
@@ -817,6 +906,7 @@ impl BackendRepr {
 }
 
 #[derive(PartialEq, Eq, Hash, Clone, Debug)]
+#[cfg_attr(feature = "nightly", derive(StableHash))]
 pub enum Variants<FieldIdx: Idx, VariantIdx: Idx> {
     Empty,
 
@@ -833,6 +923,7 @@ pub enum Variants<FieldIdx: Idx, VariantIdx: Idx> {
 }
 
 #[derive(PartialEq, Eq, Hash, Copy, Clone, Debug)]
+#[cfg_attr(feature = "nightly", derive(StableHash))]
 pub enum TagEncoding<VariantIdx: Idx> {
     Direct,
 
@@ -846,7 +937,7 @@ pub enum TagEncoding<VariantIdx: Idx> {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-// #[cfg_attr(feature = "nightly", derive(StableHash))]
+#[cfg_attr(feature = "nightly", derive(StableHash))]
 pub struct Niche {
     pub offset: Size,
     pub value: Primitive,
@@ -866,6 +957,8 @@ impl Niche {
     #[thrust_macros::requires(forall(|dl: TargetDataLayout, r: WrappingRange, a: AddressSpace|
         C::dl_of(*cx, dl) && scalar == Scalar::Initialized { value: Primitive::Pointer(a), valid_range: r } ==> (TargetDataLayout::pointer_space_ok(dl, a)
                 && forall(|n: Size| TargetDataLayout::pointer_size_is(dl, a, n) ==> n.raw * 8 <= 128))))]
+    #[thrust_macros::ensures(forall(|n: Niche| result != Some(n)
+        || (scalar == Scalar::Initialized { value: n.value, valid_range: n.valid_range } && n.offset == offset)))]
     pub fn from_scalar<C: HasDataLayout>(cx: &C, offset: Size, scalar: Scalar) -> Option<Self> {
         let Scalar::Initialized { value, valid_range } = scalar else {
             return None;
@@ -903,6 +996,7 @@ impl Niche {
 }
 
 #[derive(PartialEq, Eq, Hash, Clone)]
+#[cfg_attr(feature = "nightly", derive(StableHash))]
 pub struct LayoutData<FieldIdx: Idx, VariantIdx: Idx> {
     pub fields: FieldsShape<FieldIdx>,
 
@@ -930,8 +1024,11 @@ impl<FieldIdx: Idx, VariantIdx: Idx> LayoutData<FieldIdx, VariantIdx> {
     }
 }
 
+#[thrust_macros::context]
 impl<FieldIdx: Idx, VariantIdx: Idx> LayoutData<FieldIdx, VariantIdx> {
+    // The contract states the body, as `BackendRepr::is_unsized`'s does.
     #[inline]
+    #[thrust_macros::ensures(result == ((*self).backend_repr == BackendRepr::Memory { sized: false }))]
     pub fn is_unsized(&self) -> bool {
         self.backend_repr.is_unsized()
     }
@@ -958,6 +1055,7 @@ pub enum StructKind {
 }
 
 #[derive(PartialEq, Eq, Hash, Clone, Debug)]
+#[cfg_attr(feature = "nightly", derive(StableHash))]
 pub struct VariantLayout<FieldIdx: Idx> {
     pub size: Size,
     pub backend_repr: BackendRepr,

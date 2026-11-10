@@ -54,9 +54,9 @@ fn main() { //~ ERROR: Unsat
         c_enum_min_size: Integer::I32,
     };
 
-    // `obj_size_bound` checks the inlined `dl_wf` requires, `pointer_size_in`
-    // checks the address-space requires, and `Align::bytes` / `Size::bits`
-    // check their `ensures`.
+    // The calls check that `dl` meets what `obj_size_bound` and `pointer_size_in`
+    // require; the asserts, what those functions, `Align::bytes`, `Size::bits` and
+    // `Size::bytes` return.
     assert!(dl.obj_size_bound() >= 1);
     // The fail twin: `AddressSpace(1)` is neither `dl.default_address_space` nor listed in
     // `dl.address_space_info`, so the lookup of `pointer_size_in` falls through to its `panic!`.

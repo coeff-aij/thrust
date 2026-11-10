@@ -1,6 +1,7 @@
 //@error-in-other-file: Unsat
-//@compile-flags: -C debug-assertions=off -A unused-variables -A unused_parens
+//@compile-flags: -C debug-assertions=off -A unused-variables -A unused_parens -A dead_code
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300
+// slow: RQ1 input, 232 s; the counter by default: pass/creusot/counter.rs, fail/creusot/counter.rs
 use thrust_models::model::{Closure, Int, Mut, Seq};
 use thrust_models::{exists, forall, Ghost, Model};
 
@@ -10,17 +11,15 @@ type U32 = thrust_models::model::UInt;
 #[cfg(thrust_int_range)]
 type U32 = thrust_models::model::UIntN<32>;
 
-// Creusot's `examples/counter` with its own property: `v.iter().map_inv(|x, _prod| { cnt += 1; *x })
-// .collect()`, then `x == v` and `cnt == x.len()`. The source is std's `slice::Iter<u32>`, an
-// iterator of the local spec through its std.rs model `(sequence, cursor)`. `Map` is Creusot's `MapInv`
-// (`iterators/map_ext.rs`) with an `FnMut` closure: `produces` carries the chain `fs` of closure
-// states, `preservation_inv` and `reinitialize` quantify over every closure state, as Creusot's
-// do. As in creusot-std's `std/iter/map_inv.rs`, which `examples/counter` uses, `produces` relates
-// the first state to the last and to every state of the chain by `hist_inv!` (Creusot's
-// `hist_inv`), and `preservation_inv` is guarded by it. The closure precondition drops Creusot's
-// `cnt < usize::MAX` (integers are unbounded).
-//
-// The pass side is `tests/ui/pass/creusot/counter_creusot.rs`, which says how it verifies.
+// Creusot's `counter` (`examples/iterators/03_std_iterators.rs`, 3620de437), with Creusot's
+// client and its three assertions: `v.iter().map_inv(|x, _prod| { cnt += 1; *x }).collect()`, then
+// `x == v` and `cnt == x.len()`. `Map` is creusot-std's `MapInv` (`std/iter/map_inv.rs`), built
+// by its fields, over an `FnMut` closure: `produces` relates the closure states as a sequence `fs`
+// of `visited.len() + 1` states, equivalent to Creusot's `fs: Seq<&mut F>`, each related to the
+// first by `hist_inv!` (Creusot's `hist_inv`). The source is std's `slice::Iter<u32>`, an iterator
+// of the local spec through its std.rs model. `collect` takes `&mut self` and ensures the final
+// state completed, where Creusot's by-value `collect` ensures `resolve(^done)`: Thrust has no
+// `resolve` (fork issue #156), and the final state carries the prophecy of the borrow of `cnt`.
 
 // Creusot's `common.rs`, the iterator specification every case shares: the trait predicates
 // `produces(self, visited, o)`, `completed` and `invariant` (`true` unless the impl says otherwise),
@@ -74,7 +73,6 @@ where
     fn collect<B: FromIterator<Self::Item>>(&mut self) -> B
     where
         Self: Sized,
-        <Self as Model>::Ty: PartialEq,
         <Self::Item as Model>::Ty: Model<Ty = <Self::Item as Model>::Ty>,
     {
         B::from_iter(self)
@@ -96,12 +94,12 @@ impl<I: Model, A, F> Model for Map<I, A, F> {
 impl<I, A, B, F> Map<I, A, F>
 where
     I: Iterator + Model,
-    A: Model<Ty = A> + PartialEq,
+    A: Model<Ty = A>,
     B: Model,
     F: FnMut(I::Item, Ghost<Seq<A>>) -> B,
     <I as Iterator>::Item: Model<Ty = A>,
-    <I as Model>::Ty: Model<Ty = <I as Model>::Ty> + PartialEq,
-    <B as Model>::Ty: Model<Ty = <B as Model>::Ty> + PartialEq,
+    <I as Model>::Ty: Model<Ty = <I as Model>::Ty>,
+    <B as Model>::Ty: Model<Ty = <B as Model>::Ty>,
 {
     #[thrust_macros::predicate]
     fn next_precondition(iter: I, func: F, produced: Seq<A>) -> bool {
@@ -123,7 +121,6 @@ where
         forall(|b: <B as Model>::Ty|
             !(thrust_macros::hist_inv!(func, f1)
                 && I::produces(iter, s.push(e1).push(e2), i)
-                && thrust_macros::pre!(f1(e1, produced.concat(s)))
                 && thrust_macros::post!(Mut::new(f1, f2)(e1, produced.concat(s)), b))
                 || thrust_macros::pre!(f2(e2, produced.concat(s).push(e1))))))))))
     }
@@ -144,26 +141,25 @@ where
 impl<I, A, B, F> Iterator for Map<I, A, F>
 where
     I: Iterator + Model,
-    A: Model<Ty = A> + PartialEq,
+    A: Model<Ty = A>,
     B: Model,
     F: FnMut(I::Item, Ghost<Seq<A>>) -> B,
     <I as Iterator>::Item: Model<Ty = A>,
-    <I as Model>::Ty: Model<Ty = <I as Model>::Ty> + PartialEq,
-    <B as Model>::Ty: Model<Ty = <B as Model>::Ty> + PartialEq,
+    <I as Model>::Ty: Model<Ty = <I as Model>::Ty>,
+    <B as Model>::Ty: Model<Ty = <B as Model>::Ty>,
 {
     type Item = B;
 
     // Creusot's `next`: the closure is called with the history before `v`, then `v` is pushed;
     // on `None` the history is reset.
     fn next(&mut self) -> Option<B> {
-        let r = self.iter.next();
-        match r {
+        match self.iter.next() {
             Some(v) => {
-                let e = thrust_macros::ghost!(|v: <I as Iterator>::Item| -> <I as Iterator>::Item { v });
-                let b = (self.func)(v, self.produced);
-                self.produced =
-                    thrust_macros::ghost!(|self: &mut Self, e: Ghost<<I as Iterator>::Item>| -> Seq<A> { (*self).2.push(e) });
-                Some(b)
+                let produced = thrust_macros::ghost!(
+                    |self: &mut Self, v: <I as Iterator>::Item| -> Seq<A> { (*self).2.push(v) });
+                let r = (self.func)(v, self.produced);
+                self.produced = produced;
+                Some(r)
             }
             None => {
                 self.produced = thrust_macros::ghost!(|| -> Seq<A> { Seq::empty() });
@@ -244,9 +240,7 @@ where
     #[thrust_macros::requires(I::invariant(*iter))]
     #[thrust_macros::ensures(exists(|pre: <I as Model>::Ty|
         I::produces(*iter, result, pre) && I::completed(Mut::new(pre, !iter))))]
-    fn from_iter<I: Iterator<Item = A> + Model>(iter: &mut I) -> Self
-    where
-        <I as Model>::Ty: PartialEq;
+    fn from_iter<I: Iterator<Item = A> + Model>(iter: &mut I) -> Self;
 }
 
 #[thrust_macros::context]
@@ -266,20 +260,17 @@ impl FromIterator<u32> for Vec<u32> {
     }
 }
 
-// Creusot: `proof_assert! { x@.len() == v@.len() }; proof_assert! { x@.ext_eq(v@) };
-// proof_assert! { cnt@ == x@.len() }`, with `x` and `cnt` returned. Unsat: element `k` of `x` is `v[k]`, not
-// one more.
-#[thrust_macros::ensures(result.0.len() == v.len()
-    && forall(|k: Int| 0 <= k && k < result.0.len() ==> result.0[k] == v[k] + 1)
-    && result.1 == result.0.len())]
-fn counter(v: Vec<u32>) -> (Vec<u32>, usize) {
+#[thrust_macros::context]
+#[thrust::callable]
+pub fn counter(v: Vec<u32>) {
     let mut cnt: usize = 0;
+    // Creusot's closure (line 46) has no written contract: Creusot takes it from the body
+    // (`[@coma:extspec]` in `03_std_iterators.coma`). Thrust infers the closure's precondition;
+    // the history fact `cnt == produced.len()`, Creusot's `proof_assert!` in the body, is written
+    // as a postcondition on the entry state, so the inferred precondition must imply it.
     let f = thrust_macros::closure!(
         captures(cnt: &mut &mut usize),
-        requires(*(*cnt) == produced.len()),
         ensures(*(!cnt) == *(*cnt) + 1 && result == *x),
-        // The precondition restated, as in the postcondition Creusot infers for the closure
-        // body, which reads `cnt == produced.len()` before the increment.
         ensures(*(*cnt) == produced.len()),
         |x: &u32, produced: Ghost<Seq<&U32>>| -> u32 { cnt += 1; *x },
     );
@@ -289,7 +280,9 @@ fn counter(v: Vec<u32>) -> (Vec<u32>, usize) {
         produced: thrust_macros::ghost!(|| -> Seq<&U32> { Seq::empty() }),
     };
     let x = m.collect::<Vec<u32>>();
-    (x, cnt)
-}
 
-fn main() {}
+    thrust_macros::proof_assert!(|x: Vec<u32>, v: Vec<u32>| x.len() == v.len());
+    thrust_macros::proof_assert!(|x: Vec<u32>, v: Vec<u32>| x == v);
+    // Unsat: the closure ran once per item.
+    thrust_macros::proof_assert!(|cnt: usize, x: Vec<u32>| cnt == x.len() + 1);
+}

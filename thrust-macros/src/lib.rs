@@ -12,6 +12,7 @@ mod formula_fn_type_lowering;
 mod ghost;
 mod invariant;
 mod lemma;
+mod loop_label;
 mod pre_post;
 mod rty;
 mod spec;

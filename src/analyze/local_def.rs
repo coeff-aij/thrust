@@ -424,20 +424,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             // No resolution here: `sig` comes from the body, which `Self::generic_args`
             // has already instantiated, so `param_ty` is a parameter of the caller
             // already -- applying the arguments a second time would be out of range.
+            // The bound is read from this def's predicates at those same arguments, so
+            // that it is stated over the caller's parameters as `param_ty` is.
             if let Some(param_ty) = param_ty {
-                if let Some(fun_ty) = self.type_builder.build_closure_type_for_param(
+                self.type_builder.closure_param_contract(
                     param_ty,
                     self.local_def_id,
-                    self.tcx.mk_args(&[]),
-                ) {
-                    self.type_builder.register_closure_type_param(
-                        analyze::TypeParam::GenericType {
-                            param_def_id: self.type_builder.param_def_id(&param_ty),
-                            local_idx: self.type_builder.param_local_idx(&param_ty),
-                        },
-                        fun_ty,
-                    );
-                }
+                    self.generic_args,
+                );
             }
 
             // A callable passed by reference (`g: &mut G` at a closure) is looked up the same way.
@@ -948,28 +942,13 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// Conjoins to an `FnMut` closure's postcondition that the call keeps the closure's state
     /// related by `hist_inv!` (each `&mut` capture keeps its prophecy, each `&` capture its value),
     /// as Creusot's `postcondition_mut` of a closure includes `hist_inv(self, ^self)`. The body
-    /// is checked against it, and it makes the law that each call's postcondition implies
-    /// `hist_inv!` hold of every such closure's contract.
+    /// is checked against it but for the conjuncts of the `&` captures
+    /// ([`Self::contract_checked_by_body`]), and it makes the law that each call's postcondition
+    /// implies `hist_inv!` hold of every such closure's contract.
     fn conjoin_fn_mut_hist_inv(&self, fn_ty: &mut rty::FunctionType) {
-        if !self.tcx.is_closure_like(self.local_def_id.to_def_id()) {
-            return;
-        }
-        let closure_ty = self.tcx.type_of(self.local_def_id).instantiate_identity();
-        let mir_ty::TyKind::Closure(_, args) = closure_ty.kind() else {
+        let Some((closure_ty, upvars_sort, receiver)) = self.fn_mut_receiver(fn_ty) else {
             return;
         };
-        if args.as_closure().kind() != mir_ty::ClosureKind::FnMut {
-            return;
-        }
-        let receiver = &fn_ty.params[rty::FunctionParamIdx::from_usize(0)].ty;
-        if receiver.as_pointer().map(|ty| ty.kind) != Some(rty::PointerKind::Ref(rty::RefKind::Mut))
-        {
-            return;
-        }
-        let upvars_sort = receiver.to_sort().deref();
-        let receiver = chc::Term::var(rty::RefinedTypeVar::Free(
-            rty::FunctionParamIdx::from_usize(0),
-        ));
         let formula = self.ctx.closure_hist_inv_definition(
             closure_ty,
             &upvars_sort,
@@ -980,6 +959,71 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             return;
         }
         fn_ty.ret.extend_refinement(formula.into());
+    }
+
+    /// The contract the body is checked against: `expected`, but at an `FnMut` closure without
+    /// the conjuncts of its postcondition that the closure's `&` captures keep their values
+    /// ([`analyze::closure_hist_inv::shared_captures_kept`]), which hold of every state the body
+    /// returns in. Callers still assume them.
+    fn contract_checked_by_body(&self, expected: &rty::RefinedType) -> rty::RefinedType {
+        let mut fn_ty = expected.ty.as_function().unwrap().clone();
+        let Some((closure_ty, upvars_sort, receiver)) = self.fn_mut_receiver(&fn_ty) else {
+            return expected.clone();
+        };
+        let kept = analyze::closure_hist_inv::shared_captures_kept(
+            self.tcx,
+            closure_ty,
+            &upvars_sort,
+            receiver.clone().mut_current(),
+            receiver.mut_final(),
+        );
+        fn_ty.ret.refinement.body.formula.remove_conjuncts(&kept);
+        rty::RefinedType::new(fn_ty.into(), expected.refinement.clone())
+    }
+
+    /// The closure type of this def, at the arguments the body is analyzed at, the sort of its
+    /// upvars and the receiver of `fn_ty`, when the def is an `FnMut` closure whose receiver in
+    /// `fn_ty` is a `&mut`. The closure is taken at those arguments so that at an instance the
+    /// relation `hist_inv!` stands for is the one of the closure there, over the sorts of its
+    /// receiver there.
+    fn fn_mut_receiver(
+        &self,
+        fn_ty: &rty::FunctionType,
+    ) -> Option<(
+        mir_ty::Ty<'tcx>,
+        chc::Sort,
+        chc::Term<rty::RefinedTypeVar<rty::FunctionParamIdx>>,
+    )> {
+        if !self.tcx.is_closure_like(self.local_def_id.to_def_id()) {
+            return None;
+        }
+        let closure_ty = self
+            .tcx
+            .type_of(self.local_def_id)
+            .instantiate(self.tcx, self.generic_args);
+        let mir_ty::TyKind::Closure(_, args) = closure_ty.kind() else {
+            return None;
+        };
+        if args.as_closure().kind() != mir_ty::ClosureKind::FnMut {
+            return None;
+        }
+        let receiver = &fn_ty.params[rty::FunctionParamIdx::from_usize(0)].ty;
+        if receiver.as_pointer().map(|ty| ty.kind) != Some(rty::PointerKind::Ref(rty::RefKind::Mut))
+        {
+            return None;
+        }
+        let receiver_sort = receiver.to_sort();
+        let upvars_sort = receiver_sort.clone().deref();
+        // A parameter of a singleton sort, such as the receiver of a closure whose captures hold
+        // only closures without captures, is not a clause variable; its one value stands for it.
+        let receiver = if receiver_sort.is_singleton() {
+            chc::Term::default_for(&receiver_sort)
+        } else {
+            chc::Term::var(rty::RefinedTypeVar::Free(
+                rty::FunctionParamIdx::from_usize(0),
+            ))
+        };
+        Some((closure_ty, upvars_sort, receiver))
     }
 
     /// Extract the target DefId from `#[thrust::extern_spec_fn]` function.
@@ -1631,10 +1675,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// Scans the body for loop-invariant marker calls and groups them by
     /// enclosing loop header. Multiple invariants for the same header are kept
     /// in source order; the caller is responsible for AND'ing them. Each carries
-    /// the marker it was written with.
-    fn collect_loop_invariant_annotations(
-        &self,
-    ) -> HashMap<BasicBlock, Vec<(LocalDefId, mir_ty::GenericArgsRef<'tcx>, InvariantMarker)>> {
+    /// the marker it was written with and the scope of the marker call.
+    fn collect_loop_invariant_annotations(&self) -> HashMap<BasicBlock, Vec<LoopInvariant<'tcx>>> {
         let mut loop_invariants: HashMap<_, Vec<_>> = HashMap::new();
         for (bb, data) in self.body.basic_blocks.iter_enumerated() {
             let Some(term) = &data.terminator else {
@@ -1643,16 +1685,26 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             let mir::TerminatorKind::Call { func, args, .. } = &term.kind else {
                 continue;
             };
-            let Some((def_id, _)) = func.const_fn_def() else {
+            let Some((def_id, marker_args)) = func.const_fn_def() else {
                 continue;
             };
             let Some(marker) = self.ctx.def_ids().invariant_marker_kind(def_id) else {
                 continue;
             };
 
-            let arg_ty = args[0].node.ty(&self.body.local_decls, self.tcx);
-            let mir_ty::TyKind::FnDef(formula_def_id, generic_args) = arg_ty.kind() else {
-                panic!("invariant marker argument must be a formula function item");
+            let (formula_def_id, generic_args) = if marker == InvariantMarker::ForLoopHistory {
+                let formula_def_id = self
+                    .ctx
+                    .def_ids()
+                    .for_loop_history()
+                    .expect("`for` loop history formula is not defined");
+                (formula_def_id, marker_args)
+            } else {
+                let arg_ty = args[0].node.ty(&self.body.local_decls, self.tcx);
+                let mir_ty::TyKind::FnDef(formula_def_id, generic_args) = arg_ty.kind() else {
+                    panic!("invariant marker argument must be a formula function item");
+                };
+                (*formula_def_id, *generic_args)
             };
             let formula_def_id = formula_def_id
                 .as_local()
@@ -1660,13 +1712,58 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             let header = Self::loop_header_of(&self.body, bb).unwrap_or_else(|| {
                 panic!("no enclosing loop header for invariant marker at {bb:?}")
             });
-            loop_invariants.entry(header).or_default().push((
-                formula_def_id,
-                *generic_args,
-                marker,
-            ));
+            loop_invariants
+                .entry(header)
+                .or_default()
+                .push(LoopInvariant {
+                    formula_def_id,
+                    generic_args,
+                    marker,
+                    scope: term.source_info.scope,
+                    from_enclosing_loop: false,
+                });
         }
+        self.extend_histories_to_inner_loops(&mut loop_invariants);
         loop_invariants
+    }
+
+    /// Conjoins the history of each `for` loop at the heads of the loops nested in it too. A
+    /// loop head's type holds only its invariant, so without it a written invariant of an inner
+    /// loop, which cannot name the outer loop's ghosts, would leave them arbitrary when the inner
+    /// loop exits. The inner loops do not change them, so the history holds at their heads as it
+    /// does at the outer head. An inner head gets the histories in the order of the outer heads,
+    /// so that the query does not depend on the order of the map.
+    fn extend_histories_to_inner_loops(
+        &self,
+        loop_invariants: &mut HashMap<BasicBlock, Vec<LoopInvariant<'tcx>>>,
+    ) {
+        let mut histories: Vec<_> = loop_invariants
+            .iter()
+            .flat_map(|(&header, invariants)| {
+                invariants
+                    .iter()
+                    .filter(|invariant| invariant.marker == InvariantMarker::ForLoopHistory)
+                    .map(move |invariant| (header, *invariant))
+            })
+            .collect();
+        histories.sort_by_key(|&(header, _)| header);
+        for (outer, history) in histories {
+            let blocks = self
+                .natural_loop(outer)
+                .expect("a `for` loop history is at a loop head");
+            for inner in blocks {
+                if inner == outer || Self::loop_header_of(&self.body, inner) != Some(inner) {
+                    continue;
+                }
+                loop_invariants
+                    .entry(inner)
+                    .or_default()
+                    .push(LoopInvariant {
+                        from_enclosing_loop: true,
+                        ..history
+                    });
+            }
+        }
     }
 
     /// Walks up the dominator tree from the marker block to the innermost
@@ -1687,45 +1784,33 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         None
     }
 
-    /// Resolves the live local matching a source variable name at the given
-    /// basic block, among the locals that are parameters of `bty`.
-    ///
-    /// When several distinct live locals share the name (e.g. two shadowed
-    /// variables that are both loop-carried), the mapping is ambiguous; rather
-    /// than silently pick one, this raises a fatal error. Disambiguating which
-    /// shadow an invariant refers to is left as future work.
-    fn local_of_name_in_bb(&self, name: rustc_span::Symbol, bty: &BasicBlockType) -> Option<Local> {
-        let mut found: Option<Local> = None;
-        for vdi in &self.body.var_debug_info {
-            tracing::debug!("comparing {name:?} with {vdi:?}...");
-            if vdi.name != name {
-                tracing::debug!("different name, skip.");
-                continue;
-            }
-            let mir::VarDebugInfoContents::Place(place) = vdi.value else {
-                tracing::debug!("place, skip.");
-                continue;
-            };
-            if !place.projection.is_empty() {
-                tracing::debug!("empty projection, skip.");
-                continue;
-            }
-            if bty.param_of_local(place.local).is_none() {
-                tracing::debug!("not param of local, skip.");
-                continue;
-            }
-            tracing::debug!("found.");
-            match found {
-                None => found = Some(place.local),
-                Some(prev) if prev == place.local => {}
-                Some(_) => self.tcx.dcx().fatal(format!(
-                    "loop invariant refers to `{name}`, which is ambiguous at the loop header: \
-                     multiple live variables share this name (e.g. through shadowing). \
-                     Rename the variables to disambiguate."
-                )),
-            }
-        }
-        found
+    /// Whether every variable the formula of `invariant` names is a parameter of `bty`.
+    fn binds_all_names_at(&self, invariant: &LoopInvariant<'tcx>, bty: &BasicBlockType) -> bool {
+        let formula_fn = self
+            .ctx
+            .formula_fn_with_args(
+                invariant.formula_def_id,
+                invariant.generic_args,
+                self.owner_fn_id,
+            )
+            .expect("invariant formula function is not registered");
+        formula_fn.param_idents().iter().all(|ident| {
+            let name = ident.expect("invariant parameters must be named").name;
+            self.local_in_scope(name, invariant.scope)
+                .is_some_and(|local| bty.param_of_local(local).is_some())
+        })
+    }
+
+    /// The local the name `name` stands for in `scope`, as Rust's shadowing resolves it.
+    fn local_in_scope(&self, name: rustc_span::Symbol, scope: mir::SourceScope) -> Option<Local> {
+        analyze::basic_block::bindings_in_scope(&self.body, name, scope)
+            .into_iter()
+            .find_map(|vdi| match &vdi.value {
+                mir::VarDebugInfoContents::Place(place) if place.projection.is_empty() => {
+                    Some(place.local)
+                }
+                _ => None,
+            })
     }
 
     fn function_param_local_of_name(&self, name: rustc_span::Symbol) -> Option<Local> {
@@ -1807,9 +1892,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         local_desc: String,
     ) {
         let local_ty = self.body.local_decls[local].ty;
-        let written = spec_param_compared_ty(self.ctx, self.local_def_id, written_ty);
-        let actual = spec_param_compared_ty(self.ctx, self.local_def_id, local_ty);
-        if written != actual {
+        if spec_param_mismatch(self.ctx, self.local_def_id, written_ty, local_ty).is_some() {
             self.tcx.dcx().span_fatal(
                 span,
                 format!(
@@ -1831,12 +1914,20 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// its debug info carries; the lifted formula function spells it
     /// `__thrust_self`, which [`analyze::annot_fn::lifted_param_source_name`] maps
     /// back before the lookup.
+    ///
+    /// The history of a `for` loop (`InvariantMarker::ForLoopHistory`) names the loop's ghosts,
+    /// which have the same names in every loop; they are resolved in the scope of the marker
+    /// call, where those of the innermost loop shadow the others.
     fn build_invariant_precondition(
         &self,
-        formula_def_id: LocalDefId,
-        generic_args: mir_ty::GenericArgsRef<'tcx>,
+        invariant: &LoopInvariant<'tcx>,
         bty: &BasicBlockType,
     ) -> rty::Refinement<rty::FunctionParamIdx> {
+        let LoopInvariant {
+            formula_def_id,
+            generic_args,
+            ..
+        } = *invariant;
         let formula_fn = self
             .ctx
             .formula_fn_with_args(formula_def_id, generic_args, self.owner_fn_id)
@@ -1863,23 +1954,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 .unwrap_or_else(|| {
                     spec_param_compared_ty(self.ctx, self.local_def_id, written_ty).to_string()
                 });
-            let input_ty = {
-                let typing_env =
-                    mir_ty::TypingEnv::post_analysis(self.tcx, formula_def_id.to_def_id());
-                self.tcx
-                    .try_normalize_erasing_regions(typing_env, *input_ty)
-                    .unwrap_or(*input_ty)
-            };
-
-            let input_ty = self.expand_model_projection(input_ty);
+            let input_ty = self.lifted_param_ty(formula_def_id, *input_ty);
             tracing::debug!(?ident, ?input_ty, "resolving");
 
             let name = analyze::annot_fn::lifted_param_source_name(ident);
 
-            if input_ty
-                .ty_adt_def()
-                .is_some_and(|def| Some(def.did()) == self.ctx.def_ids().fn_param_wrapper())
-            {
+            if self.is_fn_param_wrapper(input_ty) {
                 tracing::debug!("fn_param_local: {input_ty:?}");
                 let local = self.function_param_local_of_name(name).unwrap_or_else(|| {
                     self.tcx.dcx().fatal(format!(
@@ -1901,9 +1981,25 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 mapping.push(bty.param_of_outer_fn_param(param_idx).unwrap());
             } else {
                 tracing::debug!("local: {input_ty:?}");
-                let local = self.local_of_name_in_bb(name, bty).unwrap_or_else(|| {
+                let local = match invariant.marker {
+                    InvariantMarker::ForLoopHistory => self.local_in_scope(name, invariant.scope),
+                    // The binding in scope at the marker, as the liveness of the names the
+                    // invariant reads takes it: a shadowed outer binding is not the one read.
+                    InvariantMarker::Full | InvariantMarker::Partial => {
+                        self.local_in_scope(name, invariant.scope)
+                    }
+                }
+                .filter(|&local| bty.param_of_local(local).is_some())
+                .unwrap_or_else(|| {
+                    let hint = if matches!(name.as_str(), "iter_old" | "produced") {
+                        "; in a function under `#[thrust_macros::context]`, a `for` loop's ghost \
+                         history is introduced only when the invariant also names the loop's \
+                         iterator as `iter` with its type"
+                    } else {
+                        ""
+                    };
                     self.tcx.dcx().fatal(format!(
-                        "loop invariant refers to `{name}`, which is not a live variable at the loop header"
+                        "loop invariant refers to `{name}`, which is not a live variable at the loop header{hint}"
                     ))
                 });
                 self.check_invariant_param_ty(
@@ -1926,15 +2022,15 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     }
 
     /// The body with each marker call of a formula over live variables (`ghost!`,
-    /// `proof_assert!`, `assume!`) also using, as an operand, the locals its formula reads, so
-    /// that its liveness is the runtime liveness extended to the ghost reads; `None` when the
-    /// body has no such call.
+    /// `proof_assert!`, `assume!`, and a written loop invariant) also using, as an operand, the
+    /// locals its formula reads, so that its liveness is the runtime liveness extended to the
+    /// ghost reads; `None` when the body has no such call. A loop invariant's marker sits at the
+    /// start of the loop body, so a local only the invariant reads is live at the loop header,
+    /// as a ghost local Creusot's invariants read is.
     fn body_with_ghost_reads(&self) -> Option<Body<'tcx>> {
         let has_ghost_term = self.body.basic_blocks.iter().any(|data| {
             matches!(&data.terminator().kind, mir::TerminatorKind::Call { func, args, .. }
-                if analyze::basic_block::formula_marker_call(
-                    self.ctx, &self.body.local_decls, func, args,
-                ).is_some())
+                if self.formula_read_call(func, args).is_some())
         });
         if !has_ghost_term {
             return None;
@@ -1969,28 +2065,84 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         Some(body)
     }
 
-    /// The names of the variables the formula of a marker call reads; `None` for any other
-    /// call.
+    /// The formula function of a call whose formula reads live variables by name, with its
+    /// generic arguments and the first parameter that names one: a formula marker (`ghost!`,
+    /// `proof_assert!`, `assume!`) or a written loop invariant (`invariant!`,
+    /// `partial_invariant!`); `None` for any other call, the history of a `for` loop included,
+    /// whose ghosts its desugaring keeps live.
+    fn formula_read_call(
+        &self,
+        func: &mir::Operand<'tcx>,
+        args: &[rustc_span::source_map::Spanned<mir::Operand<'tcx>>],
+    ) -> Option<(LocalDefId, mir_ty::GenericArgsRef<'tcx>, usize)> {
+        if let Some((marker, formula_def_id, generic_args)) =
+            analyze::basic_block::formula_marker_call(self.ctx, &self.body.local_decls, func, args)
+        {
+            return Some((formula_def_id, generic_args, marker.first_named_param()));
+        }
+        let (def_id, _) = func.const_fn_def()?;
+        let marker = self.ctx.def_ids().invariant_marker_kind(def_id)?;
+        if marker == InvariantMarker::ForLoopHistory {
+            return None;
+        }
+        let arg_ty = args[0].node.ty(&self.body.local_decls, self.tcx);
+        let mir_ty::TyKind::FnDef(formula_def_id, generic_args) = arg_ty.kind() else {
+            panic!("invariant marker argument must be a formula function item");
+        };
+        let formula_def_id = formula_def_id
+            .as_local()
+            .expect("invariant formula function must be local");
+        Some((formula_def_id, generic_args, 0))
+    }
+
+    /// A formula parameter's type as the invariant reads it: the lifted projection
+    /// `<T as Model>::Ty`, normalized and expanded (so `FnParam<_>` shows as itself).
+    fn lifted_param_ty(
+        &self,
+        formula_def_id: LocalDefId,
+        ty: mir_ty::Ty<'tcx>,
+    ) -> mir_ty::Ty<'tcx> {
+        let typing_env = mir_ty::TypingEnv::post_analysis(self.tcx, formula_def_id.to_def_id());
+        let ty = self
+            .tcx
+            .try_normalize_erasing_regions(typing_env, ty)
+            .unwrap_or(ty);
+        self.expand_model_projection(ty)
+    }
+
+    /// Whether a formula parameter's type, as `lifted_param_ty` gives it, is `FnParam<_>`.
+    fn is_fn_param_wrapper(&self, ty: mir_ty::Ty<'tcx>) -> bool {
+        ty.ty_adt_def()
+            .is_some_and(|def| Some(def.did()) == self.ctx.def_ids().fn_param_wrapper())
+    }
+
+    /// The names of the variables the formula of a call of `formula_read_call` reads, leaving
+    /// out the function parameters a loop invariant names through `FnParam`, which are read at
+    /// the function's entry; `None` for any other call.
     fn ghost_term_reads(
         &self,
         func: &mir::Operand<'tcx>,
         args: &[rustc_span::source_map::Spanned<mir::Operand<'tcx>>],
     ) -> Option<Vec<rustc_span::Symbol>> {
-        let (marker, formula_def_id, generic_args) = analyze::basic_block::formula_marker_call(
-            self.ctx,
-            &self.body.local_decls,
-            func,
-            args,
-        )?;
+        let (formula_def_id, generic_args, first_named_param) =
+            self.formula_read_call(func, args)?;
         let formula_fn = self
             .ctx
             .formula_fn_with_args(formula_def_id, generic_args, self.owner_fn_id)
             .expect("marker formula function is not registered");
+        let inputs = self
+            .tcx
+            .fn_sig(formula_def_id.to_def_id())
+            .instantiate(self.tcx, generic_args)
+            .skip_binder()
+            .inputs();
         let names = formula_fn
             .param_idents()
             .iter()
-            .skip(marker.first_named_param())
-            .map(|ident| {
+            .zip(inputs)
+            .skip(first_named_param)
+            .filter(|(_, ty)| !self.is_fn_param_wrapper(self.lifted_param_ty(formula_def_id, **ty)))
+            .map(|(ident, _)| {
                 let ident = ident.expect("formula parameters must be named");
                 analyze::annot_fn::lifted_param_source_name(ident)
             })
@@ -2001,7 +2153,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     fn refine_basic_blocks(&mut self, move_data: &MoveData<'tcx>) {
         let loop_invariants = self.collect_loop_invariant_annotations();
         for (header, invariants) in &loop_invariants {
-            let formulas = invariants.iter().map(|(formula, _, _)| *formula);
+            let formulas = invariants
+                .iter()
+                .filter(|invariant| invariant.marker != InvariantMarker::ForLoopHistory)
+                .map(|invariant| invariant.formula_def_id);
             self.ctx
                 .record_invariant_annotations(self.local_def_id, *header, formulas);
         }
@@ -2105,9 +2260,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 // instead keeps the template's predicate variable and the
                 // invariants are conjoined to it, so inference fills in what the
                 // annotations leave out.
-                let partial = invariants
+                let mut own = invariants
                     .iter()
-                    .any(|&(_, _, marker)| marker == InvariantMarker::Partial);
+                    .filter(|invariant| !invariant.from_enclosing_loop)
+                    .peekable();
+                let partial = own.peek().is_none()
+                    || own.any(|invariant| invariant.marker != InvariantMarker::Full);
                 let mut bty = if partial {
                     self.type_builder
                         .for_template(&mut self.ctx)
@@ -2117,8 +2275,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         .build_basic_block(&self.body, live_locals, ret_ty)
                 };
                 let mut inv = rty::Refinement::top();
-                for &(formula_def_id, generic_args, _) in invariants {
-                    let one = self.build_invariant_precondition(formula_def_id, generic_args, &bty);
+                for invariant in invariants {
+                    if invariant.from_enclosing_loop && !self.binds_all_names_at(invariant, &bty) {
+                        continue;
+                    }
+                    let one = self.build_invariant_precondition(invariant, &bty);
                     inv.push_conj(one);
                 }
                 // For a full invariant the block's precondition holds only what the types of its
@@ -2536,7 +2697,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let move_data = self.move_data();
         self.reassign_local_mutabilities(&move_data);
         self.refine_basic_blocks(&move_data);
-        self.analyze_basic_blocks(expected);
+        let checked = self.contract_checked_by_body(expected);
+        self.analyze_basic_blocks(&checked);
         self.assert_entry(expected);
         if analyze::candidate_atoms_enabled() {
             self.declare_candidate_atoms(expected);
@@ -2724,6 +2886,18 @@ fn refinement_instances(
     out
 }
 
+/// A loop-invariant marker call: the formula it conjoins at its loop head, how, and the scope it
+/// is called in.
+#[derive(Debug, Clone, Copy)]
+struct LoopInvariant<'tcx> {
+    formula_def_id: LocalDefId,
+    generic_args: mir_ty::GenericArgsRef<'tcx>,
+    marker: InvariantMarker,
+    scope: mir::SourceScope,
+    /// Conjoined at the head of a loop nested in the one whose marker it is.
+    from_enclosing_loop: bool,
+}
+
 /// A place of a signature where a contract has a type's invariant.
 #[derive(Debug, Clone, Copy)]
 struct InvariantSite<'tcx> {
@@ -2811,10 +2985,10 @@ fn borrow_may_escape<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId, idx: usize) -> bool
             .any(|(other, ty)| other != idx && names_region(*ty))
 }
 
-/// The type a parameter of a spec closure (`invariant!`, `proof_assert!`, `assume!`) is written
-/// with, from the type of the formula function's
-/// parameter: `thrust_macros` gives a parameter written `x: T` the type `<T as Model>::Ty`, and
-/// one written `x: &str` the type `NoModel` (`thrust-macros/src/formula_fn_type_lowering.rs`).
+/// The type a parameter of a spec closure (`invariant!`, `proof_assert!`, `assume!`, `ghost!`) is
+/// written with, from the type of the formula function's parameter: `thrust_macros` gives a
+/// parameter written `x: T` the type `<T as Model>::Ty`, and one written `x: &str` the type
+/// `NoModel` (`thrust-macros/src/formula_fn_type_lowering.rs`).
 pub(crate) fn spec_param_written_ty<'tcx>(
     ctx: &analyze::Analyzer<'tcx>,
     input_ty: mir_ty::Ty<'tcx>,
@@ -2840,6 +3014,19 @@ pub(crate) fn spec_param_written_ty<'tcx>(
         }
         _ => panic!("spec closure parameter of unexpected type {input_ty:?}"),
     }
+}
+
+/// `written`, the type a spec closure's parameter is written with, and `actual`, the type of the
+/// variable it names, as they are compared ([`spec_param_compared_ty`]), when they differ.
+pub(crate) fn spec_param_mismatch<'tcx>(
+    ctx: &analyze::Analyzer<'tcx>,
+    owner: LocalDefId,
+    written: mir_ty::Ty<'tcx>,
+    actual: mir_ty::Ty<'tcx>,
+) -> Option<(mir_ty::Ty<'tcx>, mir_ty::Ty<'tcx>)> {
+    let written = spec_param_compared_ty(ctx, owner, written);
+    let actual = spec_param_compared_ty(ctx, owner, actual);
+    (written != actual).then_some((written, actual))
 }
 
 /// `ty` in `owner` as it is compared with the type written in a spec closure, where `thrust_macros` has

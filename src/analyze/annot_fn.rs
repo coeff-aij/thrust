@@ -1,4 +1,4 @@
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -17,6 +17,12 @@ use crate::chc;
 use crate::refine::{self, TypeBuilder};
 use crate::rty;
 
+/// The Rust signature of the callee of a `pre!`/`post!`: its argument types and its result type.
+struct CalleeSig<'tcx> {
+    inputs: Vec<mir_ty::Ty<'tcx>>,
+    output: mir_ty::Ty<'tcx>,
+}
+
 #[derive(Debug, Clone)]
 pub struct FormulaFn<'tcx> {
     params: IndexVec<rty::FunctionParamIdx, mir_ty::Ty<'tcx>>,
@@ -25,7 +31,7 @@ pub struct FormulaFn<'tcx> {
     param_idents: IndexVec<rty::FunctionParamIdx, Option<rustc_span::symbol::Ident>>,
     ret: mir_ty::Ty<'tcx>,
     body: FormulaFnBody,
-    pre_receivers: Vec<(mir_ty::Ty<'tcx>, Polarity)>,
+    pre_receivers: Vec<mir_ty::Ty<'tcx>>,
 }
 
 /// The translated body: a formula, or a term for a `#[thrust_macros::logic]` function.
@@ -93,26 +99,8 @@ impl<'tcx> FormulaFn<'tcx> {
     /// The types whose precondition the formula reads with `pre!`, at its generic arguments,
     /// directly or in the body of a predicate it calls: a closure or a type parameter for a
     /// closure receiver, a function item's type for a function.
-    ///
-    /// A receiver is listed only when every read of it in the formula is positive ([`Polarity`]).
-    /// A formula that also reads it in another position lets the solver choose the precondition
-    /// smaller than the real one, and states nothing of it.
-    pub fn pre_receivers(&self) -> Vec<mir_ty::Ty<'tcx>> {
-        self.pre_receivers
-            .iter()
-            .filter(|(_, polarity)| *polarity == Polarity::Positive)
-            .map(|(ty, _)| *ty)
-            .collect()
-    }
-
-    /// The types whose precondition the formula reads with `pre!` in a position other than only
-    /// positive ones, which [`Self::pre_receivers`] leaves out.
-    pub fn mixed_pre_receivers(&self) -> Vec<mir_ty::Ty<'tcx>> {
-        self.pre_receivers
-            .iter()
-            .filter(|(_, polarity)| *polarity != Polarity::Positive)
-            .map(|(ty, _)| *ty)
-            .collect()
+    pub fn pre_receivers(&self) -> &[mir_ty::Ty<'tcx>] {
+        &self.pre_receivers
     }
 
     pub fn params(&self) -> &IndexVec<rty::FunctionParamIdx, mir_ty::Ty<'tcx>> {
@@ -189,7 +177,16 @@ enum FormulaOrTerm<T> {
 }
 
 impl<T> FormulaOrTerm<T> {
+    /// The formula form. It recurses once per `&&`, `||`, `==>` and `!`, and `a && b && c`
+    /// nests to the left, so a chain of n operands is n - 1 frames deep, and each frame is
+    /// large in a debug build. It grows the stack on demand, as `to_formula_or_term` and
+    /// `Analyzer::predicate_with_args` do, so that a long chain in a specification does not
+    /// overflow the space those checks leave.
     fn into_formula(self) -> Option<chc::Formula<T>> {
+        rustc_data_structures::stack::ensure_sufficient_stack(|| self.into_formula_inner())
+    }
+
+    fn into_formula_inner(self) -> Option<chc::Formula<T>> {
         let fo = match self {
             FormulaOrTerm::Formula(fo) => fo,
             FormulaOrTerm::Term(t) => chc::Formula::Atom(t.equal_to(chc::Term::bool(true))),
@@ -219,7 +216,12 @@ impl<T> FormulaOrTerm<T> {
         Some(fo)
     }
 
+    /// The term form, which recurses as `into_formula` does.
     fn into_term(self) -> Option<chc::Term<T>> {
+        rustc_data_structures::stack::ensure_sufficient_stack(|| self.into_term_inner())
+    }
+
+    fn into_term_inner(self) -> Option<chc::Term<T>> {
         let t = match self {
             FormulaOrTerm::Formula { .. } => return None,
             FormulaOrTerm::Term(t) => t,
@@ -270,45 +272,6 @@ type QuantifiedBody = (
     chc::Formula<rty::FunctionParamIdx>,
 );
 
-/// Whether the formula being translated is monotone in the subformula under translation. A
-/// `pre!` is read as a precondition the function states only where it is `Positive`: under a
-/// negation or on the left of an implication it constrains the function the other way, and where
-/// it is both (an operand of `==` or `!=`, a condition, an argument) it constrains it neither way.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Polarity {
-    Positive,
-    Negative,
-    Both,
-}
-
-impl Polarity {
-    /// The polarity of a position read in both of two positions of the same formula.
-    fn combine(self, other: Self) -> Self {
-        if self == other {
-            self
-        } else {
-            Polarity::Both
-        }
-    }
-
-    /// The polarity of a position of polarity `inner` inside one of polarity `self`.
-    fn compose(self, inner: Self) -> Self {
-        match (self, inner) {
-            (Polarity::Both, _) | (_, Polarity::Both) => Polarity::Both,
-            (outer, Polarity::Positive) => outer,
-            (outer, Polarity::Negative) => outer.flipped(),
-        }
-    }
-
-    fn flipped(self) -> Self {
-        match self {
-            Polarity::Positive => Polarity::Negative,
-            Polarity::Negative => Polarity::Positive,
-            Polarity::Both => Polarity::Both,
-        }
-    }
-}
-
 #[derive(Clone)]
 pub struct AnnotFnTranslator<'a, 'tcx> {
     tcx: TyCtxt<'tcx>,
@@ -323,10 +286,7 @@ pub struct AnnotFnTranslator<'a, 'tcx> {
     type_builder: TypeBuilder<'tcx>,
     env: HashMap<HirId, chc::Term<rty::FunctionParamIdx>>,
     /// [`FormulaFn::pre_receivers`], shared with the translators of quantifier bodies.
-    pre_receivers: Rc<RefCell<Vec<(mir_ty::Ty<'tcx>, Polarity)>>>,
-    /// The [`Polarity`] of the subformula being translated, shared with the translators of
-    /// quantifier bodies.
-    polarity: Rc<Cell<Polarity>>,
+    pre_receivers: Rc<RefCell<Vec<mir_ty::Ty<'tcx>>>>,
 }
 
 impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
@@ -360,7 +320,6 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             type_builder,
             env: HashMap::default(),
             pre_receivers: Rc::default(),
-            polarity: Rc::new(Cell::new(Polarity::Positive)),
         };
         translator.build_env_from_params();
         translator
@@ -378,7 +337,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 self.build_env_from_captures(chc::Term::var(param_idx), param.pat);
                 continue;
             }
-            let mir_ty = self.pat_ty(param.pat);
+            let mir_ty = self.scrutinee_ty(param.pat);
             // `at_entry()` yields the `Inner` of a `FnParam<Inner>`; classify by it so
             // a singleton wrapped argument collapses like any other singleton below.
             let repr_ty = self.fn_param_wrapper_inner_ty(mir_ty).unwrap_or(mir_ty);
@@ -453,7 +412,193 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                     format!("`{}` is not captured by this closure", ident),
                 );
             };
+            self.check_capture_type(subpat, ident, closure_args.as_closure(), idx);
             self.env.insert(hir_id, upvar_terms[idx].clone());
+        }
+    }
+
+    /// Rejects a `captures` entry whose type does not match the one the closure holds the
+    /// capture at: the capture's own type in an `Fn` or `FnOnce` closure, a `&mut` of it in an
+    /// `FnMut` closure. rustc takes the kind from the bound the closure is passed to when there
+    /// is one, so the same closure can need either. Shared references and boxes are erased from
+    /// the emitted sorts, so they need not match.
+    fn check_capture_type(
+        &self,
+        subpat: &'tcx rustc_hir::Pat<'tcx>,
+        ident: rustc_span::Ident,
+        closure_args: mir_ty::ClosureArgs<TyCtxt<'tcx>>,
+        idx: usize,
+    ) {
+        let capture_ty = closure_args.upvar_tys()[idx];
+        let held_ty = match closure_args.kind() {
+            mir_ty::ClosureKind::FnMut => {
+                mir_ty::Ty::new_mut_ref(self.tcx, self.tcx.lifetimes.re_erased, capture_ty)
+            }
+            mir_ty::ClosureKind::Fn | mir_ty::ClosureKind::FnOnce => capture_ty,
+        };
+        if self.same_emitted_shape(self.model_of(held_ty), self.written_ty(subpat)) {
+            return;
+        }
+        self.tcx.dcx().span_fatal(
+            subpat.span,
+            format!(
+                "this `{}` closure holds `{}` at type `{}`, which `captures` restates at another type (only shared references and boxes may differ)",
+                closure_args.kind().as_str(),
+                ident,
+                self.tcx.erase_regions(held_ty),
+            ),
+        );
+    }
+
+    /// Whether a value of model type `held` can be read at the model type `written` in a
+    /// clause: their sorts agree with `Box` erased, as the query is emitted. `held` is in the
+    /// generics of the function around the closure and `written` in those of the clause, which
+    /// copies them under the same names, so where either names a type parameter the two are
+    /// walked side by side instead: the `&mut`s must pair up, tuples and the arguments of one
+    /// ADT are compared part by part, a parameter (or its model `<T as Model>::Ty`, or
+    /// `Closure<F>`) matches only the same parameter, and any other projection left
+    /// unnormalized matches anything. Any other two different shapes do not match.
+    fn same_emitted_shape(&self, held: mir_ty::Ty<'tcx>, written: mir_ty::Ty<'tcx>) -> bool {
+        use rustc_middle::ty::TypeVisitableExt as _;
+        if !held.has_param() && !written.has_param() {
+            let emitted_sort = |ty| chc::unbox_sort(self.type_builder.build(ty).ty.to_sort());
+            return emitted_sort(self.normalized_ty(held)) == emitted_sort(written);
+        }
+        let (held, written) = (self.skip_shared(held), self.skip_shared(written));
+        match (self.mut_pointee(held), self.mut_pointee(written)) {
+            (Some(held), Some(written)) => return self.same_emitted_shape(held, written),
+            (None, None) => {}
+            _ => return false,
+        }
+        let is_alias = |ty: mir_ty::Ty<'tcx>| matches!(ty.kind(), mir_ty::TyKind::Alias(..));
+        match (self.model_param(held), self.model_param(written)) {
+            (Some(h), Some(w)) => return Self::param_name(h) == Self::param_name(w),
+            (Some(_), None) => return is_alias(written),
+            (None, Some(_)) => return is_alias(held),
+            (None, None) => {}
+        }
+        if is_alias(held) || is_alias(written) {
+            return true;
+        }
+        match (held.kind(), written.kind()) {
+            (mir_ty::TyKind::Tuple(hs), mir_ty::TyKind::Tuple(ws)) => {
+                hs.len() == ws.len()
+                    && hs
+                        .iter()
+                        .zip(ws.iter())
+                        .all(|(h, w)| self.same_emitted_shape(h, w))
+            }
+            (mir_ty::TyKind::Adt(ha, hargs), mir_ty::TyKind::Adt(wa, wargs)) if ha == wa => hargs
+                .types()
+                .zip(wargs.types())
+                .all(|(h, w)| self.same_emitted_shape(h, w)),
+            _ => false,
+        }
+    }
+
+    /// The model type of the closure's type `ty`: `&mut` as `Mut`, `Box` as the model `Box`,
+    /// shared references and tuples part by part, a type parameter `T` as `<T as Model>::Ty`,
+    /// and any other type by its `Model` impl, normalized where the closure is defined.
+    fn model_of(&self, ty: mir_ty::Ty<'tcx>) -> mir_ty::Ty<'tcx> {
+        let tcx = self.tcx;
+        let model_adt = |did: Option<DefId>, inner: mir_ty::Ty<'tcx>| {
+            let did = did.expect("thrust_models defines the model type");
+            mir_ty::Ty::new_adt(tcx, tcx.adt_def(did), tcx.mk_args(&[inner.into()]))
+        };
+        match ty.kind() {
+            mir_ty::TyKind::Ref(region, inner, rustc_hir::Mutability::Not) => {
+                mir_ty::Ty::new_imm_ref(tcx, *region, self.model_of(*inner))
+            }
+            mir_ty::TyKind::Ref(_, inner, rustc_hir::Mutability::Mut) => {
+                model_adt(self.def_ids.mut_model(), self.model_of(*inner))
+            }
+            mir_ty::TyKind::Adt(_, args) if ty.is_box() => {
+                model_adt(self.def_ids.box_model(), self.model_of(args.type_at(0)))
+            }
+            mir_ty::TyKind::Tuple(tys) => {
+                mir_ty::Ty::new_tup_from_iter(tcx, tys.iter().map(|ty| self.model_of(ty)))
+            }
+            _ => {
+                let Some(model_ty) = self.def_ids.model_ty() else {
+                    return ty;
+                };
+                let projection = mir_ty::Ty::new_projection(tcx, model_ty, [ty]);
+                if matches!(ty.kind(), mir_ty::TyKind::Param(_)) {
+                    return projection;
+                }
+                let closure_def_id = tcx.local_parent(self.local_def_id);
+                let typing_env = mir_ty::TypingEnv::post_analysis(
+                    tcx,
+                    tcx.typeck_root_def_id(closure_def_id.to_def_id()),
+                );
+                tcx.try_normalize_erasing_regions(typing_env, projection)
+                    .unwrap_or(projection)
+            }
+        }
+    }
+
+    /// The type a clause's pattern is written at, in the clause's own generics: normalized but
+    /// not instantiated, so that it is compared with the closure's types the same way whether
+    /// the clause is translated over its type parameters or at an instance.
+    fn written_ty(&self, pat: &'tcx rustc_hir::Pat<'tcx>) -> mir_ty::Ty<'tcx> {
+        let ty = self.typeck.pat_ty(pat);
+        self.tcx
+            .try_normalize_erasing_regions(mir_ty::TypingEnv::fully_monomorphized(), ty)
+            .unwrap_or(ty)
+    }
+
+    /// The name a clause's type parameter has in the function around it: the macro renames
+    /// `Self` to `__ThrustSelf` where it lifts a clause out of a trait.
+    fn param_name(param: mir_ty::ParamTy) -> rustc_span::Symbol {
+        if param.name.as_str() == "__ThrustSelf" {
+            return rustc_span::Symbol::intern("Self");
+        }
+        param.name
+    }
+
+    /// The type parameter a model type stands for: the parameter itself, `<T as Model>::Ty`,
+    /// or the model `Closure<F>` of a closure-typed parameter.
+    fn model_param(&self, ty: mir_ty::Ty<'tcx>) -> Option<mir_ty::ParamTy> {
+        let inner = match ty.kind() {
+            mir_ty::TyKind::Adt(adt, args) if Some(adt.did()) == self.def_ids.closure_model() => {
+                args.type_at(0)
+            }
+            mir_ty::TyKind::Alias(mir_ty::AliasTyKind::Projection, alias)
+                if Some(alias.def_id) == self.def_ids.model_ty() =>
+            {
+                alias.args.type_at(0)
+            }
+            _ => ty,
+        };
+        match inner.kind() {
+            mir_ty::TyKind::Param(param) => Some(*param),
+            _ => None,
+        }
+    }
+
+    /// `ty` past the shared references and boxes around it, which the query erases.
+    fn skip_shared(&self, mut ty: mir_ty::Ty<'tcx>) -> mir_ty::Ty<'tcx> {
+        loop {
+            ty = match ty.kind() {
+                mir_ty::TyKind::Ref(_, inner, rustc_hir::Mutability::Not) => *inner,
+                mir_ty::TyKind::Adt(adt, args)
+                    if ty.is_box() || Some(adt.did()) == self.def_ids.box_model() =>
+                {
+                    args.type_at(0)
+                }
+                _ => return ty,
+            };
+        }
+    }
+
+    /// The pointee of a `&mut` or of its model `Mut`.
+    fn mut_pointee(&self, ty: mir_ty::Ty<'tcx>) -> Option<mir_ty::Ty<'tcx>> {
+        match ty.kind() {
+            mir_ty::TyKind::Ref(_, inner, rustc_hir::Mutability::Mut) => Some(*inner),
+            mir_ty::TyKind::Adt(adt, args) if Some(adt.did()) == self.def_ids.mut_model() => {
+                Some(args.type_at(0))
+            }
+            _ => None,
         }
     }
 
@@ -537,9 +682,24 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
     ) {
         use rustc_hir::PatKind;
 
+        let param = self.apply_pat_adjustments(param, pat);
         match pat.kind {
             PatKind::Binding(_, hir_id, _, None) => {
-                self.env.insert(hir_id, param);
+                let term = match self.binding_mode(hir_id, pat.span).0 {
+                    rustc_hir::ByRef::No => param,
+                    rustc_hir::ByRef::Yes(rustc_hir::Mutability::Not) => chc::Term::box_(param),
+                    rustc_hir::ByRef::Yes(rustc_hir::Mutability::Mut) => self.tcx.dcx().span_fatal(
+                        pat.span,
+                        "a pattern in a formula cannot bind by mutable reference",
+                    ),
+                };
+                self.env.insert(hir_id, term);
+            }
+            PatKind::Wild => {}
+            // `&T` models as `&<T as Model>::Ty`, a box in the logic, as a deref in a formula
+            // reads it; `&mut T` models as `model::Mut`, which no `&mut` pattern matches.
+            PatKind::Ref(subpat, rustc_hir::Mutability::Not) => {
+                self.build_env_from_pat(param.box_current(), subpat);
             }
             PatKind::TupleStruct(_, subpats, dotdot_pos) | PatKind::Tuple(subpats, dotdot_pos) => {
                 let pat_ty = self.pat_ty(pat);
@@ -599,8 +759,39 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         ty
     }
 
+    /// The dereferences of a `Mut<T>` that rustc's adjustments of `expr` insert where it
+    /// autoderefs a field's base, an index's base or a method's receiver, and the type of `expr`
+    /// after them: `s[i]`, `s.f` and `s.len()` of an `s: &mut T` read the current value `*s`, as
+    /// in Creusot. The other dereferences rustc inserts, of a shared reference or a `Box`, are
+    /// the identity in a query, which removes boxes.
+    fn mut_derefs(&self, expr: &'tcx rustc_hir::Expr<'tcx>) -> (usize, mir_ty::Ty<'tcx>) {
+        let mut count = 0;
+        let mut ty = self.expr_ty(expr);
+        for adjustment in self.typeck.expr_adjustments(expr) {
+            let mir_ty::adjustment::Adjust::Deref(_) = adjustment.kind else {
+                break;
+            };
+            if let mir_ty::TyKind::Adt(adt, _) = ty.kind() {
+                if Some(adt.did()) == self.def_ids.mut_model() {
+                    count += 1;
+                }
+            }
+            ty = self.instantiated(adjustment.target);
+        }
+        (count, ty)
+    }
+
+    /// The type of `expr` where rustc autoderefs it, after its dereferences ([`Self::mut_derefs`]).
+    fn adjusted_expr_ty(&self, expr: &'tcx rustc_hir::Expr<'tcx>) -> mir_ty::Ty<'tcx> {
+        self.mut_derefs(expr).1
+    }
+
     fn expr_ty(&self, expr: &'tcx rustc_hir::Expr<'tcx>) -> mir_ty::Ty<'tcx> {
-        let ty = self.typeck.expr_ty(expr);
+        self.instantiated(self.typeck.expr_ty(expr))
+    }
+
+    /// `ty`, a type of the formula function's typeck results, at its generic arguments.
+    fn instantiated(&self, ty: mir_ty::Ty<'tcx>) -> mir_ty::Ty<'tcx> {
         let instantiated = self
             .instantiate_generics(ty, self.generic_args)
             .unwrap_or(ty);
@@ -669,7 +860,30 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
     }
 
     fn pat_ty(&self, pat: &'tcx rustc_hir::Pat<'tcx>) -> mir_ty::Ty<'tcx> {
-        let ty = self.typeck.pat_ty(pat);
+        self.normalized_ty(self.typeck.pat_ty(pat))
+    }
+
+    /// The type of the value `pat` matches, before match ergonomics sees through its references:
+    /// `pat_ty` is the type after.
+    fn scrutinee_ty(&self, pat: &'tcx rustc_hir::Pat<'tcx>) -> mir_ty::Ty<'tcx> {
+        match self.typeck.pat_adjustments().get(pat.hir_id) {
+            Some(adjustments) => self.normalized_ty(adjustments[0].source),
+            None => self.pat_ty(pat),
+        }
+    }
+
+    /// The binding mode rustc chose for a binding, `ref` where match ergonomics sees through a
+    /// reference to it.
+    fn binding_mode(
+        &self,
+        hir_id: rustc_hir::HirId,
+        span: rustc_span::Span,
+    ) -> rustc_hir::BindingMode {
+        self.typeck
+            .extract_binding_mode(self.tcx.sess, hir_id, span)
+    }
+
+    fn normalized_ty(&self, ty: mir_ty::Ty<'tcx>) -> mir_ty::Ty<'tcx> {
         let instantiated = self
             .instantiate_generics(ty, self.generic_args)
             .unwrap_or(ty);
@@ -831,10 +1045,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 rustc_hir::BorrowKind::Ref,
                 rustc_hir::Mutability::Not,
                 operand,
-            ) => (
-                self.expr_ty(operand),
-                self.under_both(|| self.to_formula_or_term(operand)),
-            ),
+            ) => (self.expr_ty(operand), self.to_formula_or_term(operand)),
             _ => (
                 self.expr_ty(arg).peel_refs(),
                 FormulaOrTerm::Term(self.to_term(arg).box_current()),
@@ -882,7 +1093,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
     }
 
     fn to_term(&self, hir: &'tcx rustc_hir::Expr<'tcx>) -> chc::Term<rty::FunctionParamIdx> {
-        let Some(term) = self.under_both(|| self.to_formula_or_term(hir)).into_term() else {
+        let Some(term) = self.to_formula_or_term(hir).into_term() else {
             self.tcx.dcx().span_fatal(
                 hir.span,
                 "thrust: a predicate call, `pre!`, `post!`, quantifier or `match` in a \
@@ -892,7 +1103,8 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                  `#[logic]` function, an argument of a call or the operand of a cast",
             );
         };
-        term
+        let (mut_derefs, _) = self.mut_derefs(hir);
+        (0..mut_derefs).fold(term, |term, _| term.mut_current())
     }
 
     fn receiver_closure_ty(&self, ty: mir_ty::Ty<'tcx>) -> Option<mir_ty::Ty<'tcx>> {
@@ -1009,6 +1221,16 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         }
     }
 
+    /// Where the `Fn` bound of a receiver's closure type parameter is stated, `refs` shared
+    /// references in: behind a reference, the parameter is the analyzed function's (`G = &H`),
+    /// whose own predicates state `H: Fn(..)`; otherwise it is the annotated function's.
+    fn closure_bound_owner(&self, refs: usize) -> (LocalDefId, mir_ty::GenericArgsRef<'tcx>) {
+        match self.type_builder.owner_fn_id().as_local() {
+            Some(owner) if refs > 0 => (owner, mir_ty::GenericArgs::empty()),
+            _ => (self.local_def_id, self.generic_args),
+        }
+    }
+
     /// Resolves the [`rty::FunctionType`] of the closure contract referred to by the receiver.
     ///
     /// The receiver type is instantiated to the actual closure type in the formula function; its
@@ -1018,13 +1240,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         let mir_ty::TyKind::Closure(def_id, args) = closure_ty.kind() else {
             if let mir_ty::TyKind::Param(ty) = closure_ty.kind() {
                 tracing::debug!("ParamTy is found: {ty:?}");
-                // Behind a reference, `ty` is a parameter of the function being analyzed
-                // (`G = &H`): its `Fn` bound is among that function's predicates, not among the
-                // instantiated predicates of the annotated one, which state `&H: Fn(..)`.
-                let (bound_owner, bound_args) = match self.type_builder.owner_fn_id().as_local() {
-                    Some(owner) if refs > 0 => (owner, mir_ty::GenericArgs::empty()),
-                    _ => (self.local_def_id, self.generic_args),
-                };
+                let (bound_owner, bound_args) = self.closure_bound_owner(refs);
                 let closure_fun_ty =
                     self.type_builder
                         .build_closure_type_for_param(*ty, bound_owner, bound_args);
@@ -1058,24 +1274,43 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             .is_some()
     }
 
+    /// The sorts of the parameters and of the result of the function `def_id` at `generic_args`,
+    /// read from its signature, so that every call of a universally quantified function declares
+    /// it with the same sorts whatever coercions its arguments went through.
+    fn signature_sorts(
+        &self,
+        def_id: DefId,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
+    ) -> (Vec<chc::Sort>, chc::Sort) {
+        let sig = self.tcx.fn_sig(def_id).instantiate(self.tcx, generic_args);
+        let sig = self.tcx.instantiate_bound_regions_with_erased(sig);
+        let typing_env = mir_ty::TypingEnv::fully_monomorphized();
+        let sort = |ty: mir_ty::Ty<'tcx>| {
+            let ty = self
+                .tcx
+                .try_normalize_erasing_regions(typing_env, ty)
+                .unwrap_or(ty);
+            self.type_builder.build(ty).to_sort()
+        };
+        (
+            sig.inputs().iter().map(|ty| sort(*ty)).collect(),
+            sort(sig.output()),
+        )
+    }
+
     /// A trait's logic function called at a type parameter, which stands for every
     /// implementation: a universally quantified function, as a trait predicate is.
     fn trait_logic_fn_term(
         &self,
         def_id: DefId,
         generic_args: mir_ty::GenericArgsRef<'tcx>,
-        hir: &'tcx rustc_hir::Expr<'tcx>,
         args: &'tcx [rustc_hir::Expr<'tcx>],
     ) -> chc::Term<rty::FunctionParamIdx> {
         let type_params = generic_args
             .types()
             .map(|ty| self.type_builder.build(ty).to_sort())
             .collect();
-        let params = args
-            .iter()
-            .map(|expr| self.type_builder.build(self.expr_ty(expr)).to_sort())
-            .collect();
-        let result = self.type_builder.build(self.expr_ty(hir)).to_sort();
+        let (params, result) = self.signature_sorts(def_id, generic_args);
         let type_args = self.type_builder.generic_args_symbol(generic_args);
         let pred =
             refine::trait_forall_fn(self.tcx, def_id, type_args, type_params, params, result);
@@ -1097,16 +1332,220 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             .register_forall_pred(forall_pred.clone());
     }
 
-    /// Extracts the logical argument terms passed to `closure_precondition`/
-    /// `closure_postcondition`. The arguments are supplied as a single tuple (e.g. `(x,)` or
-    /// `()`), whose elements are the logical arguments of the closure.
-    fn closure_spec_args(
+    /// The logical argument terms passed to `closure_precondition`/`closure_postcondition` as a
+    /// single tuple (e.g. `(x,)` or `()`), for a callee of the signature `sig`.
+    ///
+    /// `closure_precondition` takes the tuple at any type, so this stops unless there is one
+    /// argument per parameter and each has its parameter's model type ([`Self::spec_value_agrees`]),
+    /// the comparison rustc makes of Creusot's `precondition` and Verus's `requires`, whose tuple is
+    /// the closure's `Args`, made here on the models a specification computes with.
+    fn spec_args(
         &self,
-        arg: &'tcx rustc_hir::Expr<'tcx>,
+        spec: &str,
+        args: &'tcx rustc_hir::Expr<'tcx>,
+        sig: &CalleeSig<'tcx>,
     ) -> Vec<chc::Term<rty::FunctionParamIdx>> {
-        match arg.kind {
-            rustc_hir::ExprKind::Tup(elems) => elems.iter().map(|e| self.to_term(e)).collect(),
-            _ => vec![self.to_term(arg)],
+        let exprs = match args.kind {
+            rustc_hir::ExprKind::Tup(elems) => elems.iter().collect(),
+            _ => vec![args],
+        };
+        if exprs.len() != sig.inputs.len() {
+            self.tcx.dcx().span_fatal(
+                args.span,
+                format!(
+                    "`{spec}` arity mismatch: the callee takes {} argument(s), given {}",
+                    sig.inputs.len(),
+                    exprs.len()
+                ),
+            );
+        }
+        for (expr, input) in exprs.iter().zip(&sig.inputs) {
+            self.check_spec_value_type(spec, expr, *input, "the callee takes");
+        }
+        exprs.into_iter().map(|e| self.to_term(e)).collect()
+    }
+
+    /// The result term of a `post!`, which stops unless it has the model type of what the callee of
+    /// the signature `sig` returns.
+    fn post_result(
+        &self,
+        result: &'tcx rustc_hir::Expr<'tcx>,
+        sig: &CalleeSig<'tcx>,
+    ) -> chc::Term<rty::FunctionParamIdx> {
+        self.check_spec_value_type("post!", result, sig.output, "the callee returns");
+        self.to_term(result)
+    }
+
+    /// Stops unless `expr`, a value a `pre!`/`post!` passes, has the model type of `expected`, a
+    /// type of the callee's Rust signature.
+    fn check_spec_value_type(
+        &self,
+        spec: &str,
+        expr: &'tcx rustc_hir::Expr<'tcx>,
+        expected: mir_ty::Ty<'tcx>,
+        expected_as: &str,
+    ) {
+        let ty = self.expr_ty(expr);
+        let expected_model = self.type_builder.resolve_model_ty(expected);
+        if !self.spec_value_agrees(ty, expected_model) {
+            self.tcx.dcx().span_fatal(
+                expr.span,
+                format!("`{spec}` passes a value of type `{ty}` where {expected_as} `{expected}`"),
+            );
+        }
+    }
+
+    /// Whether a specification value of type `value` can stand for one of the model type
+    /// `expected`: the same type, const arguments included, where a shared reference or a box is
+    /// its referent (the query removes them), the integer models and the Rust integers are one
+    /// type (a formula's integers are unbounded, and a literal is typed `i32`), and a projection
+    /// that neither side's model resolves agrees only with the same projection at the same Rust
+    /// arguments, as in rustc and as the type builder gives each its own sort.
+    /// Both types are stated in the specification's
+    /// generics at the arguments it is translated at, the callee's signature through the
+    /// receiver's type, so a type parameter is itself.
+    fn spec_value_agrees(&self, value: mir_ty::Ty<'tcx>, expected: mir_ty::Ty<'tcx>) -> bool {
+        use mir_ty::TyKind;
+        let value = self.spec_value_view(value);
+        let expected = self.spec_value_view(expected);
+        let agree = |a: mir_ty::Ty<'tcx>, b: mir_ty::Ty<'tcx>| self.spec_value_agrees(a, b);
+        let args_agree = |a: mir_ty::GenericArgsRef<'tcx>, b: mir_ty::GenericArgsRef<'tcx>| {
+            a.len() == b.len()
+                && a.iter()
+                    .zip(b.iter())
+                    .all(|(a, b)| match (a.kind(), b.kind()) {
+                        (mir_ty::GenericArgKind::Type(a), mir_ty::GenericArgKind::Type(b)) => {
+                            agree(a, b)
+                        }
+                        (mir_ty::GenericArgKind::Lifetime(_), _) => true,
+                        _ => a == b,
+                    })
+        };
+        match (value.kind(), expected.kind()) {
+            (TyKind::Alias(a_kind, a), TyKind::Alias(b_kind, b)) => {
+                a_kind == b_kind && a.def_id == b.def_id && a.args == b.args
+            }
+            _ if self.is_integer_model(value) && self.is_integer_model(expected) => true,
+            (TyKind::Adt(a, a_args), TyKind::Adt(b, b_args)) => {
+                a.did() == b.did() && args_agree(a_args, b_args)
+            }
+            (TyKind::Tuple(a), TyKind::Tuple(b)) => {
+                a.len() == b.len() && a.iter().zip(b.iter()).all(|(a, b)| agree(a, b))
+            }
+            (TyKind::Array(a, a_len), TyKind::Array(b, b_len)) => a_len == b_len && agree(*a, *b),
+            (TyKind::Slice(a), TyKind::Slice(b)) => agree(*a, *b),
+            (TyKind::Ref(_, a, a_mut), TyKind::Ref(_, b, b_mut)) => a_mut == b_mut && agree(*a, *b),
+            _ => value == expected,
+        }
+    }
+
+    /// `ty` as [`Self::spec_value_agrees`] compares it: without lifetimes, shared references,
+    /// boxes and `Ghost`, with `Closure<F>` as `F` and a model `<X as Model>::Ty` that `expr_ty`
+    /// left as a projection resolved as the expected side is (`resolve_model_ty`), as
+    /// [`TypeBuilder`] builds them.
+    fn spec_value_view(&self, ty: mir_ty::Ty<'tcx>) -> mir_ty::Ty<'tcx> {
+        use mir_ty::TyKind;
+        let mut ty = self.tcx.erase_regions(ty);
+        loop {
+            ty = match ty.kind() {
+                TyKind::Ref(_, inner, mir_ty::Mutability::Not) => *inner,
+                _ if ty.is_box() => ty.expect_boxed_ty(),
+                TyKind::Adt(adt, args)
+                    if Some(adt.did()) == self.def_ids.box_model()
+                        || Some(adt.did()) == self.def_ids.closure_model() =>
+                {
+                    args.type_at(0)
+                }
+                TyKind::Adt(adt, args) if Some(adt.did()) == self.def_ids.ghost_model() => {
+                    self.type_builder.resolve_model_ty(args.type_at(0))
+                }
+                TyKind::Alias(mir_ty::AliasTyKind::Projection, alias)
+                    if Some(alias.def_id) == self.def_ids.model_ty() =>
+                {
+                    let resolved = self
+                        .tcx
+                        .erase_regions(self.type_builder.resolve_model_ty(alias.args.type_at(0)));
+                    if resolved == ty {
+                        return ty;
+                    }
+                    resolved
+                }
+                _ => return ty,
+            };
+        }
+    }
+
+    /// Whether `ty` is a Rust integer type or an integer model (`Int`, `UInt`, `IntN`, `UIntN`),
+    /// all of which a query reads as one integer sort.
+    fn is_integer_model(&self, ty: mir_ty::Ty<'tcx>) -> bool {
+        match ty.kind() {
+            mir_ty::TyKind::Int(_) | mir_ty::TyKind::Uint(_) => true,
+            mir_ty::TyKind::Adt(adt, _) => [
+                self.def_ids.int_model(),
+                self.def_ids.uint_model(),
+                self.def_ids.int_n_model(),
+                self.def_ids.uint_n_model(),
+            ]
+            .contains(&Some(adt.did())),
+            _ => false,
+        }
+    }
+
+    /// The Rust signature of the function a receiver names by its path.
+    fn receiver_fn_def_sig(&self, receiver: &'tcx rustc_hir::Expr<'tcx>) -> CalleeSig<'tcx> {
+        let mir_ty::TyKind::FnDef(def_id, generic_args) = *self.expr_ty(receiver).kind() else {
+            panic!("a receiver named by its path is a function item");
+        };
+        self.fn_def_sig(def_id, generic_args)
+    }
+
+    /// The Rust signature of the function item `def_id` at `generic_args`, which are stated in the
+    /// specification's generics.
+    fn fn_def_sig(
+        &self,
+        def_id: DefId,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
+    ) -> CalleeSig<'tcx> {
+        let sig = self.tcx.fn_sig(def_id).instantiate(self.tcx, generic_args);
+        let sig = self.tcx.instantiate_bound_regions_with_erased(sig);
+        CalleeSig {
+            inputs: sig.inputs().to_vec(),
+            output: sig.output(),
+        }
+    }
+
+    /// The Rust signature of the closure a closure-typed receiver of type `receiver_ty` calls: a
+    /// closure's own, or the `Fn` bound of a closure type parameter, found where
+    /// [`Self::receiver_closure_fn_type`] finds it. It is read after that function has found the
+    /// closure's contract, so the receiver is a closure and a type parameter has its bound.
+    fn closure_sig(&self, receiver_ty: mir_ty::Ty<'tcx>) -> CalleeSig<'tcx> {
+        let (closure_ty, refs) = self
+            .receiver_closure_behind_refs(receiver_ty)
+            .expect("the receiver of a closure contract is a closure");
+        match *closure_ty.kind() {
+            mir_ty::TyKind::Closure(_, args) => {
+                let sig = self
+                    .tcx
+                    .instantiate_bound_regions_with_erased(args.as_closure().sig());
+                CalleeSig {
+                    inputs: sig.inputs()[0].tuple_fields().to_vec(),
+                    output: sig.output(),
+                }
+            }
+            mir_ty::TyKind::Param(param) => {
+                let (bound_owner, bound_args) = self.closure_bound_owner(refs);
+                let (call, output) = self
+                    .type_builder
+                    .closure_param_bound(param, bound_owner, bound_args)
+                    .expect("a closure type parameter has an `Fn` bound");
+                let call = self.tcx.instantiate_bound_regions_with_erased(call);
+                let output = self.tcx.instantiate_bound_regions_with_erased(output);
+                CalleeSig {
+                    inputs: call.trait_ref.args.type_at(1).tuple_fields().to_vec(),
+                    output: output.term.expect_type(),
+                }
+            }
+            _ => panic!("the receiver of a closure contract is a closure: {closure_ty:?}"),
         }
     }
 
@@ -1186,54 +1625,12 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         })
     }
 
-    fn fn_item_spec_args(
-        &self,
-        args: &'tcx rustc_hir::Expr<'tcx>,
-        fn_ty: &rty::FunctionType,
-    ) -> Vec<chc::Term<rty::FunctionParamIdx>> {
-        let spec_args = self.closure_spec_args(args);
-        if spec_args.len() != fn_ty.params.len() {
-            self.tcx.dcx().span_fatal(
-                args.span,
-                format!(
-                    "`pre!`/`post!` arity mismatch: the function takes {} argument(s), given {}",
-                    fn_ty.params.len(),
-                    spec_args.len()
-                ),
-            );
-        }
-        spec_args
-    }
-
-    /// Translates with the polarity `polarity` of the current one, and restores it.
-    fn under<R>(&self, polarity: fn(Polarity) -> Polarity, translate: impl FnOnce() -> R) -> R {
-        let saved = self.polarity.get();
-        self.polarity.set(polarity(saved));
-        let result = translate();
-        self.polarity.set(saved);
-        result
-    }
-
-    fn under_flipped<R>(&self, translate: impl FnOnce() -> R) -> R {
-        self.under(Polarity::flipped, translate)
-    }
-
-    fn under_both<R>(&self, translate: impl FnOnce() -> R) -> R {
-        self.under(|_| Polarity::Both, translate)
-    }
-
     /// Records that the formula reads the precondition of `ty` ([`FormulaFn::pre_receivers`]).
-    /// A receiver read in several positions has their combination ([`Polarity::combine`]).
     fn record_pre_receiver(&self, ty: mir_ty::Ty<'tcx>) {
-        self.record_pre_receiver_at(ty, self.polarity.get());
-    }
-
-    fn record_pre_receiver_at(&self, ty: mir_ty::Ty<'tcx>, polarity: Polarity) {
         let ty = self.tcx.erase_regions(ty);
         let mut receivers = self.pre_receivers.borrow_mut();
-        match receivers.iter_mut().find(|(known, _)| *known == ty) {
-            Some((_, known)) => *known = known.combine(polarity),
-            None => receivers.push((ty, polarity)),
+        if !receivers.contains(&ty) {
+            receivers.push(ty);
         }
     }
 
@@ -1246,7 +1643,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
     ) -> FormulaOrTerm<rty::FunctionParamIdx> {
         if let Some(fn_ty) = self.fn_item_contract(receiver, true) {
             self.record_pre_receiver(self.expr_ty(receiver));
-            let args = self.fn_item_spec_args(args, &fn_ty);
+            let args = self.spec_args("pre!", args, &self.receiver_fn_def_sig(receiver));
             return FormulaOrTerm::Formula(self.precondition_at(&fn_ty, &args));
         }
         let receiver_ty = self.expr_ty(receiver);
@@ -1258,7 +1655,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             // the `pre!` names: a hand-over states its precondition as it does a path's.
             self.record_pre_receiver(fn_item_ty);
             let fn_ty = self.fn_def_contract(receiver.span, def_id, generic_args, true);
-            let args = self.fn_item_spec_args(args, &fn_ty);
+            let args = self.spec_args("pre!", args, &self.fn_def_sig(def_id, generic_args));
             return FormulaOrTerm::Formula(self.precondition_at(&fn_ty, &args));
         }
         let fn_ty = self
@@ -1274,15 +1671,9 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                     ),
                 )
             });
-        let logical_args = self.closure_spec_args(args);
         // `fn_ty` is a closure (RustCall ABI), so its parameters are `[upvars, args..]`, where
         // the upvars are the closure value itself.
-        assert_eq!(
-            logical_args.len(),
-            fn_ty.params.len() - 1,
-            "closure precondition arity mismatch: closure takes {} argument(s)",
-            fn_ty.params.len() - 1
-        );
+        let logical_args = self.spec_args("pre!", args, &self.closure_sig(receiver_ty));
         let (receiver_term, final_state) = self.closure_receiver_term(receiver, &fn_ty, "pre!");
         let param_args: Vec<_> = std::iter::once(receiver_term).chain(logical_args).collect();
         let pre = self.precondition_at(&fn_ty, &param_args);
@@ -1302,15 +1693,17 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         result: &'tcx rustc_hir::Expr<'tcx>,
     ) -> FormulaOrTerm<rty::FunctionParamIdx> {
         if let Some(fn_ty) = self.fn_item_contract(receiver, false) {
-            let args = self.fn_item_spec_args(args, &fn_ty);
-            let result = self.to_term(result);
+            let sig = self.receiver_fn_def_sig(receiver);
+            let args = self.spec_args("post!", args, &sig);
+            let result = self.post_result(result, &sig);
             return FormulaOrTerm::Formula(fn_ty.postcondition_formula(&args, result));
         }
         let receiver_ty = self.expr_ty(receiver);
         if let Some((_, def_id, generic_args)) = self.receiver_fn_item(receiver_ty) {
             let fn_ty = self.fn_def_contract(receiver.span, def_id, generic_args, false);
-            let args = self.fn_item_spec_args(args, &fn_ty);
-            let result = self.to_term(result);
+            let sig = self.fn_def_sig(def_id, generic_args);
+            let args = self.spec_args("post!", args, &sig);
+            let result = self.post_result(result, &sig);
             return FormulaOrTerm::Formula(fn_ty.postcondition_formula(&args, result));
         }
         let fn_ty = self
@@ -1326,15 +1719,10 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                     ),
                 )
             });
-        let logical_args = self.closure_spec_args(args);
         // `fn_ty` is a closure (RustCall ABI), so its parameters are `[upvars, args..]`, where
         // the upvars are the closure value itself.
-        assert_eq!(
-            logical_args.len(),
-            fn_ty.params.len() - 1,
-            "closure postcondition arity mismatch: closure takes {} argument(s)",
-            fn_ty.params.len() - 1
-        );
+        let sig = self.closure_sig(receiver_ty);
+        let logical_args = self.spec_args("post!", args, &sig);
         let (receiver_term, final_state) = self.closure_receiver_term(receiver, &fn_ty, "post!");
         if final_state.is_some() {
             if let Some((closure_ty, _)) = self.receiver_closure_behind_refs(receiver_ty) {
@@ -1345,7 +1733,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             }
         }
         let param_args: Vec<_> = std::iter::once(receiver_term).chain(logical_args).collect();
-        let result = self.to_term(result);
+        let result = self.post_result(result, &sig);
         let mut fresh = || {
             self.analyzer.generate_user_quantified_var(
                 "a part of a closure's final state in post!".to_owned(),
@@ -1584,7 +1972,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         for arm in arms {
             let mut hit = self.pat_test(scrutinee.clone(), arm.pat);
             if let Some(guard) = arm.guard {
-                hit = hit.and(self.under_both(|| self.to_formula(guard)));
+                hit = hit.and(self.to_formula(guard));
             }
             let body = self.to_formula(arm.body);
             if !body.is_bottom() {
@@ -1745,7 +2133,18 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         })
     }
 
+    /// The translation of a specification expression. It recurses with the expression's depth
+    /// and, through the predicates it defines on the way (`Take<I>::inv` calls `I::inv`), with
+    /// the nesting of the types they are instantiated at, so it grows the stack on demand as
+    /// rustc's own expression lowering does.
     fn to_formula_or_term(
+        &self,
+        hir: &'tcx rustc_hir::Expr<'tcx>,
+    ) -> FormulaOrTerm<rty::FunctionParamIdx> {
+        rustc_data_structures::stack::ensure_sufficient_stack(|| self.to_formula_or_term_inner(hir))
+    }
+
+    fn to_formula_or_term_inner(
         &self,
         hir: &'tcx rustc_hir::Expr<'tcx>,
     ) -> FormulaOrTerm<rty::FunctionParamIdx> {
@@ -1830,8 +2229,8 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                     let else_term = self.to_term(else_expr);
                     return FormulaOrTerm::Term(chc::Term::ite(cond_term, then_term, else_term));
                 }
-                let cond = self.under_both(|| self.to_formula_or_term(cond));
-                let [then, els] = [then_expr, else_expr].map(|part| self.to_formula_or_term(part));
+                let [cond, then, els] =
+                    [cond, then_expr, else_expr].map(|part| self.to_formula_or_term(part));
                 match (
                     cond.clone().into_term(),
                     then.clone().into_term(),
@@ -1865,7 +2264,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                             FormulaOrTerm::Term(chc::Term::App(chc::Function::BVNOT, vec![operand]))
                         }
                         _ => {
-                            let operand = self.under_flipped(|| self.to_formula_or_term(operand));
+                            let operand = self.to_formula_or_term(operand);
                             FormulaOrTerm::Not(Box::new(operand))
                         }
                     }
@@ -1965,7 +2364,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                     Ok(index) => index,
                     Err(_) => {
                         let adt = self
-                            .ghost_deref_target_ty(self.expr_ty(expr))
+                            .ghost_deref_target_ty(self.adjusted_expr_ty(expr))
                             .ty_adt_def()
                             .expect("named field access on a non-ADT type");
                         adt.non_enum_variant()
@@ -1980,12 +2379,12 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             }
             ExprKind::Index(array, index, _) => {
                 let index_term = self.to_term(index);
-                let array_ty = self.expr_ty(array);
-                let is_seq = self.is_seq_modeled(self.seq_target_ty(array_ty));
+                let array_term = self.to_term(array);
+                let is_seq = self.is_seq_modeled(self.seq_target_ty(self.adjusted_expr_ty(array)));
                 let term = if is_seq {
-                    self.to_term(array).seq_nth(index_term)
+                    array_term.seq_nth(index_term)
                 } else {
-                    self.to_term(array).select(index_term)
+                    array_term.select(index_term)
                 };
                 FormulaOrTerm::Term(term)
             }
@@ -2086,7 +2485,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 }
                 if method.ident.name == rustc_span::sym::len
                     && args.is_empty()
-                    && self.is_seq_modeled(self.expr_ty(receiver))
+                    && self.is_seq_modeled(self.adjusted_expr_ty(receiver))
                 {
                     let t = self.to_term(receiver);
                     return FormulaOrTerm::Term(t.seq_len());
@@ -2182,7 +2581,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                             let [lhs, rhs] = args else {
                                 panic!("implies takes exactly 2 arguments");
                             };
-                            let lhs = self.under_flipped(|| self.to_formula_or_term(lhs));
+                            let lhs = self.to_formula_or_term(lhs);
                             let rhs = self.to_formula_or_term(rhs);
                             return FormulaOrTerm::Implies(lhs.into(), rhs.into());
                         }
@@ -2235,7 +2634,6 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                                 return FormulaOrTerm::Term(self.trait_logic_fn_term(
                                     def_id,
                                     generic_args,
-                                    hir,
                                     args,
                                 ));
                             };
@@ -2290,12 +2688,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                                         .map(|ty| self.type_builder.build(ty).to_sort())
                                         .collect();
 
-                                    let params = args
-                                        .iter()
-                                        .map(|expr| {
-                                            self.type_builder.build(self.expr_ty(expr)).to_sort()
-                                        })
-                                        .collect();
+                                    let (params, _) = self.signature_sorts(def_id, generic_args);
 
                                     let pred = refine::trait_forall_pred(
                                         self.tcx,
@@ -2343,11 +2736,8 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                                             owner_fn_id,
                                         )
                                     });
-                                    for (ty, polarity) in
-                                        body.iter().flat_map(|body| &body.pre_receivers)
-                                    {
-                                        let at_call = self.polarity.get().compose(*polarity);
-                                        self.record_pre_receiver_at(*ty, at_call);
+                                    for ty in body.iter().flat_map(|body| body.pre_receivers()) {
+                                        self.record_pre_receiver(*ty);
                                     }
                                     pred.into()
                                 }

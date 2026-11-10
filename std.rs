@@ -1165,6 +1165,78 @@ mod thrust_models {
         Ghost(std::marker::PhantomData)
     }
 
+    // The ghost history `thrust_macros::context` gives a `for` loop whose body starts with no
+    // invariant (`thrust-macros/src/for_loop.rs`), as Creusot's `desugar_for` gives every loop:
+    // `iter_old`, the iterator before the loop, and `produced`, the items `next` has returned so far.
+    // The desugaring cannot write the iterator's type, so these are generic in it and Thrust takes the
+    // type from the call.
+
+    #[thrust::trusted]
+    #[thrust_macros::requires(true)]
+    #[thrust_macros::ensures(result == *iter)]
+    #[inline(never)]
+    pub fn __for_loop_iter_old<I: Model>(iter: &I) -> Ghost<I> {
+        Ghost(std::marker::PhantomData)
+    }
+
+    #[thrust::trusted]
+    #[thrust_macros::requires(true)]
+    #[thrust_macros::ensures(result == model::Seq::empty())]
+    #[inline(never)]
+    pub fn __for_loop_produced<I>(
+        _iter: &I,
+    ) -> Ghost<model::Seq<<I::Item as Model>::Ty>>
+    where
+        I: std::iter::Iterator,
+        I::Item: Model,
+    {
+        Ghost(std::marker::PhantomData)
+    }
+
+    #[thrust::trusted]
+    #[thrust_macros::requires(true)]
+    #[thrust_macros::ensures(result == produced.push(*item))]
+    #[inline(never)]
+    pub fn __for_loop_produced_push<T: Model>(
+        produced: Ghost<model::Seq<<T as Model>::Ty>>,
+        item: &T,
+    ) -> Ghost<model::Seq<<T as Model>::Ty>> {
+        Ghost(std::marker::PhantomData)
+    }
+
+    /// At the head of the loop, conjoins `for_loop_history` over the loop's ghosts, which are
+    /// named `__thrust_for_iter`, `__thrust_for_iter_old` and `__thrust_for_produced` in the scope
+    /// of the call, to the invariant Thrust infers there.
+    #[thrust::def::for_loop_history_marker]
+    #[thrust::ignored]
+    #[inline(never)]
+    pub fn __for_loop_history_marker<I>(
+        _iter_old: Ghost<I>,
+        _produced: Ghost<model::Seq<<I::Item as Model>::Ty>>,
+    ) where
+        I: crate::IteratorSpec,
+        I::Item: Model,
+    {
+    }
+
+    #[allow(unused_variables)]
+    #[thrust::formula_fn]
+    #[thrust::def::for_loop_history]
+    pub fn for_loop_history<I>(
+        __thrust_for_iter: <I as Model>::Ty,
+        __thrust_for_iter_old: <Ghost<I> as Model>::Ty,
+        __thrust_for_produced: <Ghost<
+            model::Seq<<I::Item as Model>::Ty>,
+        > as Model>::Ty,
+    ) -> bool
+    where
+        I: crate::IteratorSpec,
+        I::Item: Model,
+    {
+        <I as crate::IteratorSpec>::inv(__thrust_for_iter)
+            && <I as crate::IteratorSpec>::produces(__thrust_for_iter_old, __thrust_for_produced, __thrust_for_iter)
+    }
+
     /// Taken in the analysis and not at run time: the branch in which `proof!` calls a lemma.
     #[doc(hidden)]
     #[thrust::def::proof_branch]
@@ -1242,6 +1314,36 @@ fn _extern_spec_std_mem_swap<T>(x: &mut T, y: &mut T) where T: thrust_models::Mo
 #[thrust_macros::ensures(!dest == src && result == *dest)]
 fn _extern_spec_std_mem_replace<T>(dest: &mut T, src: T) -> T where T: thrust_models::Model {
     std::mem::replace(dest, src)
+}
+
+// `mem::take` of an integer returns its value and leaves the integer's default, 0; the integer
+// types are the ones this spec covers.
+macro_rules! extern_spec_mem_take_int {
+    ($($spec:ident $ty:ty,)*) => {
+        $(
+            #[thrust::extern_spec_fn]
+            #[thrust_macros::requires(true)]
+            #[thrust_macros::ensures(result == *dest && !dest == 0)]
+            fn $spec(dest: &mut $ty) -> $ty {
+                std::mem::take(dest)
+            }
+        )*
+    };
+}
+
+extern_spec_mem_take_int! {
+    _extern_spec_std_mem_take_u8 u8,
+    _extern_spec_std_mem_take_u16 u16,
+    _extern_spec_std_mem_take_u32 u32,
+    _extern_spec_std_mem_take_u64 u64,
+    _extern_spec_std_mem_take_u128 u128,
+    _extern_spec_std_mem_take_usize usize,
+    _extern_spec_std_mem_take_i8 i8,
+    _extern_spec_std_mem_take_i16 i16,
+    _extern_spec_std_mem_take_i32 i32,
+    _extern_spec_std_mem_take_i64 i64,
+    _extern_spec_std_mem_take_i128 i128,
+    _extern_spec_std_mem_take_isize isize,
 }
 
 #[thrust::extern_spec_fn]
@@ -1549,16 +1651,25 @@ fn _extern_spec_i32_is_negative(x: i32) -> bool {
     i32::is_negative(x)
 }
 
-// Bit-counting intrinsics have no bitvector model (integers are plain `Int`, not bitvectors), so
-// the only sound fact stated is the one every caller relies on: the count of a 64-bit value's
-// bits cannot exceed 64.
+// The position of the lowest set bit, 64 for 0, in Creusot's form (creusot-std `src/std/num.rs`,
+// `trailing_zeros_logic`): shifted left by `63 - result`, the value has bit 63 alone set, so bit
+// `result` is set and the bits below it are clear. The value is read as a 64-bit vector.
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(result <= 64)]
+#[thrust_macros::ensures(
+    (result == 64) == (thrust_models::model::BitVec::<64, false>::from_int(x) == thrust_models::model::BitVec::from_int(0))
+)]
+#[thrust_macros::ensures(
+    (result != 64)
+        == ((thrust_models::model::BitVec::<64, false>::from_int(x) << thrust_models::model::BitVec::from_int(63 - result))
+            == (thrust_models::model::BitVec::<64, false>::from_int(1) << thrust_models::model::BitVec::from_int(63)))
+)]
 fn _extern_spec_u64_trailing_zeros(x: u64) -> u32 {
     u64::trailing_zeros(x)
 }
 
+// Only the bound: no proof yet needs which bits are counted.
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(result <= 64)]
@@ -2527,6 +2638,98 @@ fn _extern_spec_iterator_find<I, P>(it: &mut I, predicate: P) -> Option<I::Item>
     <I as std::iter::Iterator>::find(it, predicate)
 }
 
+// `all` and `any` call the predicate on the items in order until it returns `stop` (`false` for
+// `all`, `true` for `any`), as core's default and `slice::Iter`'s override do. `fs` is the chain
+// of its states along the items `s` before, as in `find`, with the predicate taking `Item`.
+#[thrust_macros::predicate]
+fn _iter_spec_short_circuit_chain<I, F>(
+    iter: I,
+    f: F,
+    s: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
+    it: I,
+    fs: thrust_models::model::Seq<F>,
+    stop: bool,
+) -> bool
+where
+    I: IteratorSpec,
+    I::Item: thrust_models::Model,
+    F: FnMut(I::Item) -> bool,
+{
+    I::produces(iter, s, it)
+        && fs.len() == s.len() + 1
+        && fs[0] == f
+        && thrust_macros::hist_inv!(f, fs[s.len()])
+        && thrust_models::forall(|k: thrust_models::model::Int| !(0 <= k && k < s.len())
+            || (thrust_macros::hist_inv!(f, fs[k])
+                && thrust_macros::post!(thrust_models::model::Mut::new(fs[k], fs[k + 1])(s[k]), !stop)))
+}
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(
+    I::inv(*it)
+        && thrust_models::forall(|s: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
+                                  it1: <I as thrust_models::Model>::Ty,
+                                  fs: thrust_models::model::Seq<thrust_models::model::Closure<F>>,
+                                  x: <I::Item as thrust_models::Model>::Ty,
+                                  it2: <I as thrust_models::Model>::Ty|
+            (_iter_spec_short_circuit_chain::<I, F>(*it, f, s, it1, fs, false)
+                && I::produces(it1, thrust_models::model::Seq::singleton(x), it2))
+                ==> thrust_macros::pre!(fs[s.len()](x)))
+)]
+#[thrust_macros::ensures(
+    I::inv(!it)
+        && thrust_models::exists(|s: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
+                                  it1: <I as thrust_models::Model>::Ty,
+                                  fs: thrust_models::model::Seq<thrust_models::model::Closure<F>>|
+            _iter_spec_short_circuit_chain::<I, F>(*it, f, s, it1, fs, false)
+                && ((result == true && I::completed(thrust_models::model::Mut::new(it1, !it)))
+                    || thrust_models::exists(|x: <I::Item as thrust_models::Model>::Ty,
+                                              g: thrust_models::model::Closure<F>|
+                        result == false
+                            && I::produces(it1, thrust_models::model::Seq::singleton(x), !it)
+                            && thrust_macros::post!(thrust_models::model::Mut::new(fs[s.len()], g)(x), false))))
+)]
+fn _extern_spec_iterator_all<I, F>(it: &mut I, f: F) -> bool
+    where I: IteratorSpec,
+          I::Item: thrust_models::Model,
+          F: FnMut(I::Item) -> bool
+{
+    <I as std::iter::Iterator>::all(it, f)
+}
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(
+    I::inv(*it)
+        && thrust_models::forall(|s: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
+                                  it1: <I as thrust_models::Model>::Ty,
+                                  fs: thrust_models::model::Seq<thrust_models::model::Closure<F>>,
+                                  x: <I::Item as thrust_models::Model>::Ty,
+                                  it2: <I as thrust_models::Model>::Ty|
+            (_iter_spec_short_circuit_chain::<I, F>(*it, f, s, it1, fs, true)
+                && I::produces(it1, thrust_models::model::Seq::singleton(x), it2))
+                ==> thrust_macros::pre!(fs[s.len()](x)))
+)]
+#[thrust_macros::ensures(
+    I::inv(!it)
+        && thrust_models::exists(|s: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
+                                  it1: <I as thrust_models::Model>::Ty,
+                                  fs: thrust_models::model::Seq<thrust_models::model::Closure<F>>|
+            _iter_spec_short_circuit_chain::<I, F>(*it, f, s, it1, fs, true)
+                && ((result == false && I::completed(thrust_models::model::Mut::new(it1, !it)))
+                    || thrust_models::exists(|x: <I::Item as thrust_models::Model>::Ty,
+                                              g: thrust_models::model::Closure<F>|
+                        result == true
+                            && I::produces(it1, thrust_models::model::Seq::singleton(x), !it)
+                            && thrust_macros::post!(thrust_models::model::Mut::new(fs[s.len()], g)(x), true))))
+)]
+fn _extern_spec_iterator_any<I, F>(it: &mut I, f: F) -> bool
+    where I: IteratorSpec,
+          I::Item: thrust_models::Model,
+          F: FnMut(I::Item) -> bool
+{
+    <I as std::iter::Iterator>::any(it, f)
+}
+
 // The sum of the first `n` items of `s`. It returns `Int`: the definition of a logic function
 // is checked against the facts of its result type without those of a sequence's elements.
 #[thrust_macros::logic]
@@ -2565,12 +2768,18 @@ fn _extern_spec_iterator_sum_usize<I>(it: I) -> usize
 // `Iterator::max_by_key`: core maps each item to its key and keeps the later of two items whose
 // keys are equal (core/src/iter/traits/iterator.rs, `max_by_key`, and `cmp::max_by`), so the
 // result is the last item of greatest key, `None` for no item. `f` is called once per item, in
-// order; the key of an item is one `f` may return for it in some state.
+// order; the key of an item is one `f` may return for it in some state. `f` is called only on the
+// items `it` yields, in states it reaches from `f` (`hist_inv!`), so its precondition is required
+// of those items in those states, as `sort_by_key`'s is.
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(
     I::inv(it)
-        && thrust_models::forall(|c: thrust_models::model::Closure<F>|
-            thrust_models::forall(|x: <I::Item as thrust_models::Model>::Ty| thrust_macros::pre!(c(&x))))
+        && thrust_models::forall(|c: thrust_models::model::Closure<F>,
+                                  s: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
+                                  x: <I::Item as thrust_models::Model>::Ty,
+                                  i: <I as thrust_models::Model>::Ty|
+            (thrust_macros::hist_inv!(f, c) && I::produces(it, s.push(x), i))
+                ==> thrust_macros::pre!(c(&x)))
 )]
 #[thrust_macros::ensures(
     thrust_models::exists(|prod: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
@@ -4101,8 +4310,8 @@ extern_spec_hasher_write_int! {
     _extern_spec_hasher_write_isize write_isize isize,
 }
 
-// Default values of foreign types are not modeled; the spec only records that
-// constructing one does not panic, which lets derived Default impls be analyzed.
+// The default of a type with no default spec of its own is not modeled; the spec only records
+// that constructing one does not panic, which lets derived Default impls be analyzed.
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(true)]
@@ -4110,6 +4319,15 @@ fn _extern_spec_default<T>() -> T
   where T: Default + thrust_models::Model
 {
     T::default()
+}
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(result == None)]
+fn _extern_spec_option_default<T>() -> Option<T>
+  where T: thrust_models::Model
+{
+    <Option<T> as Default>::default()
 }
 
 // Values are modeled purely, so a clone is the same value in the model.

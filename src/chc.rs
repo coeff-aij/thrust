@@ -28,7 +28,7 @@ mod unbox;
 
 pub use candidate_atoms::{conjuncts, instances, CandidateAtoms, CandidateAtomsMode, HeadTerms};
 pub use clause_builder::{ClauseBuilder, Var};
-pub use cones::NotHorn;
+pub use cones::{split_goals, NotHorn};
 pub use debug::DebugInfo;
 pub use dedup::dedup_pred_args;
 pub use flatten::flatten_recursive_pred_args;
@@ -2662,6 +2662,24 @@ impl<V> Formula<V> {
                 let orig = std::mem::take(self);
                 *self = Formula::And(vec![orig, other]);
             }
+        }
+    }
+
+    /// Removes each conjunct of `self`, at any depth of its conjunctions, that is one of
+    /// `conjuncts`.
+    pub fn remove_conjuncts(&mut self, conjuncts: &[Formula<V>])
+    where
+        V: PartialEq,
+    {
+        if conjuncts.contains(self) {
+            *self = Formula::top();
+            return;
+        }
+        if let Formula::And(fs) = self {
+            for f in &mut *fs {
+                f.remove_conjuncts(conjuncts);
+            }
+            fs.retain(|f| !f.is_top());
         }
     }
 

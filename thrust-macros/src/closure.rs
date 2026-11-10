@@ -17,12 +17,21 @@
 //! `spec.rs`). Each clause is optional (an omitted one leaves that side inferred)
 //! and may be repeated, in which case its predicates are conjoined.
 //!
+//! Each parameter is typed; its pattern may destructure tuples, tuple structs and shared
+//! references, and skip a part with `_` (`|&(_, x): &(i64, i64)|`), and a clause names what it
+//! binds. Where match ergonomics sees through a reference (`|(_, y): &(i64, i64)|`), the name is
+//! bound to a reference, as in the body (`*y`).
+//!
 //! `captures` restates the captured variables a clause wants to name, with the types
 //! they are captured by the closure. Only the ones a clause names need restating, and
 //! in any order: the plugin matches them against the closure's real captures by name.
 //! A shared reference `x` that the body uses through a deref (`x[i]`, `x.f()`), which rustc
 //! captures as `*x`, is named `x`; its type is `x`'s, behind the closure's state as for any
-//! other capture (`&mut` of it in an `FnMut` closure).
+//! other capture (`&mut` of it in an `FnMut` closure). The kind is the one rustc gives the
+//! closure, which it takes from the bound of the parameter the closure is passed to, when there
+//! is one: a closure passed straight to `F: FnMut` is `FnMut` even if its body only reads its
+//! captures. The plugin rejects a restated type that differs from the closure's other than in
+//! shared references and boxes, which the query erases.
 //!
 //! `hist_inv` gives the relation `hist_inv!` holds between two states of an `FnMut` closure, in
 //! place of the one derived from its captures, which says nothing of a capture taken by value.

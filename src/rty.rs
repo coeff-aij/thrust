@@ -2033,6 +2033,38 @@ impl<T> Type<T> {
         }
     }
 
+    /// Replaces each function type in `self` with the one at the same position in `source`.
+    ///
+    /// A function pointer's contract is in its type and in no term, so a type built from the
+    /// Rust type alone holds the unrefined function type, whose precondition is `true`.
+    pub fn inherit_function_types<U>(&mut self, source: &Type<U>) {
+        match (self, source) {
+            (Type::Function(target), Type::Function(source)) => {
+                *target = source.clone();
+            }
+            (Type::Pointer(target), Type::Pointer(source)) => {
+                target.elem.ty.inherit_function_types(&source.elem.ty);
+            }
+            (Type::Tuple(target), Type::Tuple(source)) => {
+                for (target, source) in target.elems.iter_mut().zip(&source.elems) {
+                    target.ty.inherit_function_types(&source.ty);
+                }
+            }
+            (Type::Enum(target), Type::Enum(source)) => {
+                for (target, source) in target.args.iter_mut().zip(&source.args) {
+                    target.ty.inherit_function_types(&source.ty);
+                }
+            }
+            (Type::Seq(target), Type::Seq(source)) => {
+                target.ty.inherit_function_types(&source.ty);
+            }
+            (Type::Array(target), Type::Array(source)) => {
+                target.elem.ty.inherit_function_types(&source.elem.ty);
+            }
+            _ => {}
+        }
+    }
+
     fn pretty_atom<'a, 'b, D>(
         &'b self,
         allocator: &'a D,

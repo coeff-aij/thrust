@@ -61,6 +61,13 @@ use std::collections::{HashMap, HashSet};
 use super::prune::Position;
 use super::*;
 
+/// `THRUST_SPLIT_GOALS=1`: the parts are the cones of the goals rather than the classes of clauses
+/// that share an unknown, and a goal that is a conjunction is one goal per conjunct (see
+/// [`ClauseBuilder::head`]).
+pub fn split_goals() -> bool {
+    std::env::var("THRUST_SPLIT_GOALS").is_ok_and(|value| value.trim() == "1")
+}
+
 /// Why a system is not split into the cones of its goals.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotHorn {

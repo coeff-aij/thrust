@@ -2,10 +2,12 @@
 //! `layout()`'s memory order. The counts are recursive logic functions over the model of an
 //! `IndexVec<u32, I>`, read through `Idx::index_logic`; the lemmas prove them by induction, and
 //! `permutation_split` gives that of `n` distinct indices at least `n - b` are at least `b`.
+//! `every_index_occurs`, the pigeonhole principle over the same counts, gives that `n` distinct
+//! indices below `n` hold every index below `n`, which `univariant_biased`'s memory order needs.
 
 use crate::thrust_models;
 use thrust_models::model::Int;
-use thrust_models::{forall, Ghost};
+use thrust_models::{exists, forall, Ghost};
 
 use crate::case_study::USize;
 use crate::rustc_index::{Idx, IndexVec};
@@ -139,6 +141,17 @@ pub fn permutation_split<I: Idx + thrust_models::Model>(s: Ghost<IndexVec<u32, I
     l6(s, n, b);
 }
 
+/// The other half of the permutation split: of `n` distinct indices below `n`, at most `n - b`
+/// are at least `b`.
+#[thrust_macros::lemma]
+#[thrust_macros::requires(b <= n && distinct::<I>(s, n))]
+#[thrust_macros::requires(forall(|p: USize, i: USize| 0 <= p && p < n && <I as Idx>::index_is(s[p], i) ==> i < n))]
+#[thrust_macros::ensures(cnt_ge::<I>(s, n, b) <= n - b)]
+pub fn permutation_split_le<I: Idx + thrust_models::Model>(s: Ghost<IndexVec<u32, I>>, n: usize, b: usize) {
+    below_at_least(s, n, b);
+    l6(s, n, b);
+}
+
 /// `distinct` from injectivity stated by `index_is`, as univariant's `arbitrary_of` states it.
 #[thrust_macros::lemma]
 #[thrust_macros::requires(
@@ -147,4 +160,82 @@ pub fn permutation_split<I: Idx + thrust_models::Model>(s: Ghost<IndexVec<u32, I
 )]
 #[thrust_macros::ensures(distinct::<I>(s, n))]
 pub fn distinct_of_injective<I: Idx + thrust_models::Model>(s: Ghost<IndexVec<u32, I>>, n: usize) {
+}
+
+/// Entries all below `b` are all counted below `b`.
+#[thrust_macros::lemma]
+#[thrust_macros::variant(k)]
+#[thrust_macros::requires(forall(|j: Int| !(0 <= j && j < k) || I::index_logic(s[j]) < b))]
+#[thrust_macros::ensures(cnt_lt::<I>(s, k, b) == k)]
+pub fn all_below<I: Idx + thrust_models::Model>(s: Ghost<IndexVec<u32, I>>, k: usize, b: usize) {
+    if k > 0 {
+        all_below(s, k - 1, b);
+    }
+}
+
+/// Of `n` distinct indices below `n`, at least `b <= n` are below `b`: going down from `b = n`,
+/// each index the bound drops holds at most one entry.
+#[thrust_macros::lemma]
+#[thrust_macros::variant(n - b)]
+#[thrust_macros::requires(
+    b <= n
+        && distinct::<I>(s, n)
+        && forall(|j: Int| !(0 <= j && j < n) || I::index_logic(s[j]) < n)
+)]
+#[thrust_macros::ensures(cnt_lt::<I>(s, n, b) >= b)]
+pub fn below_at_least<I: Idx + thrust_models::Model>(s: Ghost<IndexVec<u32, I>>, n: usize, b: usize) {
+    if b < n {
+        below_at_least(s, n, b + 1);
+        l3(s, n, b);
+        l4(b, s, n);
+    } else {
+        all_below(s, n, b);
+    }
+}
+
+/// An index that the first `k` entries count is the index of one of them.
+#[thrust_macros::lemma]
+#[thrust_macros::variant(k)]
+#[thrust_macros::ensures(
+    occ::<I>(x, s, k) >= 1 ==> exists(|j: Int| 0 <= j && j < k && I::index_logic(s[j]) == x)
+)]
+pub fn occurs<I: Idx + thrust_models::Model>(x: usize, s: Ghost<IndexVec<u32, I>>, k: usize) {
+    if k > 0 {
+        occurs(x, s, k - 1);
+    }
+}
+
+/// The pigeonhole principle for one index: `n` distinct indices below `n` hold `i < n`, as at
+/// least `i + 1` of them are below `i + 1` and at most `i` below `i`.
+#[thrust_macros::lemma]
+#[thrust_macros::requires(
+    i < n
+        && distinct::<I>(s, n)
+        && forall(|j: Int| !(0 <= j && j < n) || I::index_logic(s[j]) < n)
+)]
+#[thrust_macros::ensures(exists(|j: Int| 0 <= j && j < n && I::index_logic(s[j]) == i))]
+pub fn index_occurs<I: Idx + thrust_models::Model>(s: Ghost<IndexVec<u32, I>>, n: usize, i: usize) {
+    below_at_least(s, n, i + 1);
+    l4_all(s, n);
+    l5(s, n, i);
+    l3(s, n, i);
+    occurs(i, s, n);
+}
+
+/// The pigeonhole principle: `n` distinct indices below `n` hold every index below `m <= n`.
+#[thrust_macros::lemma]
+#[thrust_macros::variant(m)]
+#[thrust_macros::requires(
+    m <= n
+        && distinct::<I>(s, n)
+        && forall(|j: Int| !(0 <= j && j < n) || I::index_logic(s[j]) < n)
+)]
+#[thrust_macros::ensures(
+    forall(|i: Int| !(0 <= i && i < m) || exists(|j: Int| 0 <= j && j < n && I::index_logic(s[j]) == i))
+)]
+pub fn every_index_occurs<I: Idx + thrust_models::Model>(s: Ghost<IndexVec<u32, I>>, n: usize, m: usize) {
+    if m > 0 {
+        every_index_occurs(s, n, m - 1);
+        index_occurs(s, n, m - 1);
+    }
 }

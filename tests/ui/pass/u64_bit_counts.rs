@@ -2,9 +2,8 @@
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
-// `trailing_zeros`/`count_ones` have no bitvector model (integers are plain `Int`), so the only
-// fact each carries is its own `<= 64` bound; the two are otherwise independent as far as the
-// solver knows, so only their additive bound (128), not the tighter real one (64), follows.
+// `count_ones` states only its `<= 64` bound and `trailing_zeros` does not count the bits above
+// the one it names, so only their additive bound (128), not the tighter real one (64), follows.
 
 #[thrust_macros::context]
 #[thrust_macros::ensures(result <= 128)]

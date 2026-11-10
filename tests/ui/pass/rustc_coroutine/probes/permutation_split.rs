@@ -1,6 +1,9 @@
 //@check-pass
 //@compile-flags: -Adead_code -C debug-assertions=off -A unused-variables -A unused_parens
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300 THRUST_TRY_SPECS=1
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300 THRUST_TRY_SPECS=1 THRUST_EMIT_ALL_CLAUSES=1
+
+// THRUST_EMIT_ALL_CLAUSES: PCSat exceeds the wrapper's memory on the query without the clauses
+// pruning leaves out and answers the whole one; remove it once the solver answers the pruned query.
 
 use thrust_models::model::{Int, Seq, UInt};
 use thrust_models::{forall, Ghost, Model};

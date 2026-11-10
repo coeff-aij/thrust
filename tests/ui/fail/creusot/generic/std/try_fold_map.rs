@@ -1,6 +1,7 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_TRY_SPECS=1 THRUST_SOLVER_TIMEOUT_SECS=300
+// slow: RQ1 input, 120 s; try_fold over a closure by default: pass/creusot/try_fold.rs, fail/creusot/generic/std/try_fold_mapinv.rs
 use thrust_models::{exists, forall};
 use thrust_models::model::{Closure, Mut};
 use thrust_models::model::{Int, Seq};

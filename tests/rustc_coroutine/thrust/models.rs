@@ -2,7 +2,7 @@
 //! read field by field; the others name the model a contract reads.
 
 use crate::thrust_models;
-use thrust_models::model::Seq;
+use thrust_models::model::{Array, Int, Seq};
 
 use crate::rustc_abi::*;
 use crate::rustc_hashes::Hash64;
@@ -24,7 +24,7 @@ impl<'a> thrust_models::Model for WordIter<'a> {
 }
 // `(word, offset, iter, marker, bound, count, left, rest)`.
 impl<'a, T: Idx> thrust_models::Model for BitIter<'a, T> {
-    type Ty = (USize, USize, <WordIter<'a> as thrust_models::Model>::Ty, (), USize, USize, USize, Seq<USize>);
+    type Ty = (USize, USize, <WordIter<'a> as thrust_models::Model>::Ty, (), USize, USize, USize, Array<USize, Int>);
 }
 impl<R: Idx, C: Idx> thrust_models::Model for BitMatrix<R, C> {
     type Ty = Self;

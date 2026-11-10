@@ -148,23 +148,83 @@ pub fn concrete_definition<'tcx, V: chc::Var>(
     let chc::Sort::Tuple(upvar_sorts) = upvars_sort else {
         panic!("closure upvars in an unexpected shape: {upvars_sort:?}");
     };
+    let conjuncts = capture_conjuncts(tcx, *def_id, upvar_sorts, &from, &to);
+    conjuncts
+        .into_iter()
+        .fold(chc::Formula::top(), |formula, conjunct| {
+            formula.and(conjunct.formula)
+        })
+}
+
+/// A conjunct of [`concrete_definition`] for one capture of an `FnMut` closure.
+struct CaptureConjunct<V> {
+    /// Whether the capture is borrowed by `&`, so that Rust keeps it from the body.
+    borrowed_shared: bool,
+    formula: chc::Formula<V>,
+}
+
+/// The conjunct of [`concrete_definition`] for each capture of the `FnMut` closure `def_id`
+/// that has one, between the states `from` and `to` of its upvars.
+fn capture_conjuncts<V: chc::Var>(
+    tcx: mir_ty::TyCtxt<'_>,
+    def_id: DefId,
+    upvar_sorts: &[chc::Sort],
+    from: &chc::Term<V>,
+    to: &chc::Term<V>,
+) -> Vec<CaptureConjunct<V>> {
     let captures = tcx.closure_captures(def_id.expect_local());
     assert_eq!(captures.len(), upvar_sorts.len());
-    let mut formula = chc::Formula::top();
+    let mut conjuncts = Vec::new();
     for (idx, (capture, sort)) in captures.iter().zip(upvar_sorts).enumerate() {
         if sort.is_singleton() {
             continue;
         }
         let from = from.clone().tuple_proj(idx);
         let to = to.clone().tuple_proj(idx);
-        let kept = match capture.info.capture_kind {
+        let (borrowed_shared, formula) = match capture.info.capture_kind {
             mir_ty::UpvarCapture::ByValue | mir_ty::UpvarCapture::ByUse => continue,
-            mir_ty::UpvarCapture::ByRef(mir_ty::BorrowKind::Immutable) => to.equal_to(from),
-            mir_ty::UpvarCapture::ByRef(_) => to.mut_final().equal_to(from.mut_final()),
+            mir_ty::UpvarCapture::ByRef(mir_ty::BorrowKind::Immutable) => {
+                (true, to.equal_to(from).into())
+            }
+            mir_ty::UpvarCapture::ByRef(_) => {
+                (false, to.mut_final().equal_to(from.mut_final()).into())
+            }
         };
-        formula = formula.and(kept.into());
+        conjuncts.push(CaptureConjunct {
+            borrowed_shared,
+            formula,
+        });
     }
-    formula
+    conjuncts
+}
+
+/// The conjuncts of [`concrete_definition`] that the body of the `FnMut` closure `closure_ty`
+/// cannot break: that each capture borrowed by `&` has the same value in the states `from` and
+/// `to`. Rust lets the body neither assign such a capture nor borrow it mutably, so when the body
+/// resolves its `&mut` receiver, the final value of the capture is its value at entry, as RustHorn
+/// resolves a place that is not written. They are facts of every call, which the body is not
+/// checked against. Empty for a closure of another kind.
+pub fn shared_captures_kept<'tcx, V: chc::Var>(
+    tcx: mir_ty::TyCtxt<'tcx>,
+    closure_ty: mir_ty::Ty<'tcx>,
+    upvars_sort: &chc::Sort,
+    from: chc::Term<V>,
+    to: chc::Term<V>,
+) -> Vec<chc::Formula<V>> {
+    let mir_ty::TyKind::Closure(def_id, args) = closure_ty.kind() else {
+        return Vec::new();
+    };
+    if args.as_closure().kind() != mir_ty::ClosureKind::FnMut {
+        return Vec::new();
+    }
+    let chc::Sort::Tuple(upvar_sorts) = upvars_sort else {
+        return Vec::new();
+    };
+    capture_conjuncts(tcx, *def_id, upvar_sorts, &from, &to)
+        .into_iter()
+        .filter(|conjunct| conjunct.borrowed_shared)
+        .map(|conjunct| conjunct.formula)
+        .collect()
 }
 
 /// The clauses checking that `related`, the relation an `hist_inv` clause of `closure_ty`'s

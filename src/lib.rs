@@ -49,8 +49,10 @@ pub const ENV_VARS: &[&str] = &[
     "THRUST_CANDIDATE_ATOMS",
     "THRUST_CHECK_UINT_FACTS",
     "THRUST_DEDUP_PRED_ARGS",
+    "THRUST_EMIT_ALL_CLAUSES",
     "THRUST_ENUM_EXPANSION_DEPTH_LIMIT",
     "THRUST_FLAT_PRED_ARGS",
+    "THRUST_FOR_LOOP_HISTORY",
     "THRUST_INT_RANGE",
     "THRUST_NO_INJECT_STD",
     "THRUST_OPTIMIZED_MIR",
@@ -76,12 +78,13 @@ pub const ENV_VARS: &[&str] = &[
 
 #[cfg(test)]
 mod tests {
-    /// [`super::ENV_VARS`] lists the `THRUST_` variables the sources other than this file name.
+    /// [`super::ENV_VARS`] lists the `THRUST_` variables the sources other than this file name,
+    /// those of `thrust-macros`, which runs in the same process, included.
     #[test]
     fn env_vars_lists_every_variable_read() {
-        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let mut named = std::collections::BTreeSet::new();
-        let mut dirs = vec![src];
+        let mut dirs = vec![root.join("src"), root.join("thrust-macros/src")];
         while let Some(dir) = dirs.pop() {
             for entry in std::fs::read_dir(dir).unwrap() {
                 let path = entry.unwrap().path();

@@ -67,6 +67,36 @@ pub(super) fn bind_spec_args<'tcx>(
     ))
 }
 
+/// Whether some instance of a target is covered by both extern specs: the arguments their own
+/// calls give the target unify, with the specs' type parameters free and their bounds
+/// disregarded, as Rust's coherence check finds two impls overlapping.
+pub(super) fn specs_overlap<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    spec: &DeferredDefTy<'tcx>,
+    other: &DeferredDefTy<'tcx>,
+) -> bool {
+    use rustc_infer::infer::TyCtxtInferExt as _;
+
+    let (Some(spec_args), Some(other_args)) = (spec.target_args, other.target_args) else {
+        return false;
+    };
+    let infcx = tcx.infer_ctxt().build(mir_ty::TypingMode::Coherence);
+    let fresh = |local_def_id: LocalDefId, args: mir_ty::GenericArgsRef<'tcx>| {
+        let fresh = infcx.fresh_args_for_item(rustc_span::DUMMY_SP, local_def_id.to_def_id());
+        mir_ty::EarlyBinder::bind(args).instantiate(tcx, fresh)
+    };
+    let spec_args = fresh(spec.local_def_id, spec_args);
+    let other_args = fresh(other.local_def_id, other_args);
+    let cause = rustc_infer::traits::ObligationCause::dummy();
+    let at = infcx.at(&cause, mir_ty::ParamEnv::empty());
+    spec_args.iter().zip(other_args.iter()).all(|(a, b)| {
+        a.as_region().is_some()
+            || at
+                .eq(rustc_infer::infer::DefineOpaqueTypes::No, a, b)
+                .is_ok()
+    })
+}
+
 /// The bounds an extern spec puts on its type parameters by traits of its own, and the associated
 /// types those fix. `Model` is left out: it is assumed of every type parameter.
 fn is_spec_bound(clause: mir_ty::Clause<'_>, model_trait: DefId) -> bool {
@@ -500,7 +530,7 @@ impl<'tcx> Analyzer<'tcx> {
     }
 
     /// [`Self::spec_args`] with the spec bounds the call assumes, unrecorded.
-    fn covered_spec_args(
+    pub(super) fn covered_spec_args(
         &self,
         spec: &DeferredDefTy<'tcx>,
         generic_args: mir_ty::GenericArgsRef<'tcx>,

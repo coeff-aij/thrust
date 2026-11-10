@@ -10,7 +10,8 @@
 //! standalone macros cannot see. A `for` loop whose body starts with `invariant!` or
 //! `partial_invariant!` calls naming `iter` is desugared first, so that `iter`, and `iter_old` and
 //! `produced` when named, exist (see
-//! [`mod@crate::for_loop`]).
+//! [`mod@crate::for_loop`]), and the references to a labelled loop's ghosts are resolved
+//! (see [`mod@crate::loop_label`]).
 //! That also extends the function's where clause with the `Model` predicates for every
 //! in-scope type parameter (and for `Self` when used), since each injected marker call
 //! instantiates a `Model`-bounded formula function with the host's own generics.
@@ -377,6 +378,7 @@ impl ContextInjector<'_> {
 
 impl VisitMut for ContextInjector<'_> {
     fn visit_expr_mut(&mut self, expr: &mut syn::Expr) {
+        crate::loop_label::reject_in_labelled(expr);
         if let syn::Expr::ForLoop(for_loop) = expr {
             if let Some(desugared) = crate::for_loop::desugar(for_loop) {
                 *expr = desugared;
@@ -389,6 +391,11 @@ impl VisitMut for ContextInjector<'_> {
         let Some(with_context) = context_carrying_form(&mac.path) else {
             return;
         };
+        if let Some(reference) = unresolved_reference(mac) {
+            let message = crate::loop_label::unresolved_message(&reference);
+            crate::loop_label::replace_with_error(mac, reference.span, &message);
+            return;
+        }
         self.injected = true;
         if crate::tokens_contain_ident(&mac.tokens, "Self") {
             self.self_used = true;
@@ -396,6 +403,17 @@ impl VisitMut for ContextInjector<'_> {
         mac.tokens = self.inject_context(&mac.tokens);
         mac.path = with_context;
     }
+}
+
+/// A reference to a labelled loop's ghost left in `mac`, a formula macro, once the loops around
+/// it are desugared: no loop of this function or closure body has its label.
+fn unresolved_reference(mac: &syn::Macro) -> Option<crate::loop_label::Reference> {
+    if !crate::loop_label::is_formula_macro(&mac.path) {
+        return None;
+    }
+    crate::loop_label::references(&mac.tokens)
+        .into_iter()
+        .next()
 }
 
 /// The context-carrying counterpart of a spec macro that takes a formula over live

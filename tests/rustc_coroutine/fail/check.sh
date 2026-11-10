@@ -1,6 +1,7 @@
 #!/bin/sh
 # Regenerates each fail root under tests/ui/fail/rustc_coroutine/ from its pass root under
-# tests/ui/pass/rustc_coroutine/ and the patch next to this script, and reports every fail root
+# tests/ui/pass/rustc_coroutine/, named by the patch's first line (`--- pass/<root>.rs`), and the
+# patch next to this script, which names the fail root, and reports every fail root
 # that differs from what the patch gives. `--write` replaces the fail roots with the regenerated
 # files. Run from the repository root or anywhere; paths are resolved from this script.
 set -eu
@@ -20,7 +21,8 @@ fi
 status=0
 for patch in "$here"/*.patch; do
     name=$(basename "$patch" .patch)
-    if ! patch --quiet -o "$tmp/$name.rs" "$pass/$name.rs" "$patch" > "$tmp/$name.log" 2>&1; then
+    root=$(sed -n '1s|^--- pass/||p' "$patch")
+    if ! patch --quiet -o "$tmp/$name.rs" "$pass/$root" "$patch" > "$tmp/$name.log" 2>&1; then
         echo "$name: the patch no longer applies to the pass root"
         cat "$tmp/$name.log"
         status=1

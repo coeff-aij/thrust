@@ -1,6 +1,7 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off -A unused-variables -A unused_parens
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120
+// slow: RQ1 input, 30 s; Range by default: pass/creusot/range.rs, fail/creusot/decuple_range.rs
 
 use thrust_models::model::{Closure, Int, Mut, Seq};
 use thrust_models::{exists, forall, Model};
@@ -252,5 +253,3 @@ fn decuple_range() -> Vec<isize> {
     };
     m.collect::<Vec<isize>>()
 }
-
-fn main() {}

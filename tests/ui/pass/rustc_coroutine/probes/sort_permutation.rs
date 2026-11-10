@@ -15,9 +15,8 @@ type USize = UInt;
 // `FieldsShape::arbitrary_of` states it, whose inverse `layout()` takes (`memory_index`). The key
 // closures read the field an entry names through the `fields` they capture; their written
 // contracts (`closure!`) require that field in bounds and, for the `End` key's subtractions, its
-// niche within it, and `alignment_group_key` requires nothing. The parameters are typed
-// (`|x: &FieldIdx|` for rustc's `|&x|`): `closure!` takes typed parameters, and a contract cannot
-// bind a reference pattern. `Idx` is the case study's, without `index_logic`.
+// niche within it, and `alignment_group_key` requires nothing. The keys keep rustc's pattern
+// `|&x|`, with the type `closure!` asks for. `Idx` is the case study's, without `index_logic`.
 #[thrust_macros::context]
 trait Idx: Copy + Model
 where
@@ -177,11 +176,11 @@ where
             StructKind::AlwaysSized | StructKind::MaybeUnsized => {
                 optimizing.sort_by_key(thrust_macros::closure!(
                     captures(fields: &mut &Vec<FieldLayout>),
-                    requires(forall(|i: USize| !FieldIdx::index_is(*x, i) || i < (**fields).len())),
+                    requires(forall(|i: USize| !FieldIdx::index_is(x, i) || i < (**fields).len())),
                     requires(forall(|i: USize, n: Niche|
-                        !(FieldIdx::index_is(*x, i) && (**fields)[i].largest_niche == Some(n))
+                        !(FieldIdx::index_is(x, i) && (**fields)[i].largest_niche == Some(n))
                             || n.offset + n.size <= (**fields)[i].size)),
-                    |x: &FieldIdx| {
+                    |&x: &FieldIdx| {
                         let f = &fields[x.index()];
                         let field_size = f.size;
                         let niche_size = f.largest_niche.map_or(0, |n| n.available);
@@ -207,8 +206,8 @@ where
             StructKind::Prefixed(..) => {
                 optimizing.sort_by_key(thrust_macros::closure!(
                     captures(fields: &mut &Vec<FieldLayout>),
-                    requires(forall(|i: USize| !FieldIdx::index_is(*x, i) || i < (**fields).len())),
-                    |x: &FieldIdx| {
+                    requires(forall(|i: USize| !FieldIdx::index_is(x, i) || i < (**fields).len())),
+                    |&x: &FieldIdx| {
                         let f = &fields[x.index()];
                         let niche_size = f.largest_niche.map_or(0, |n| n.available);
                         (alignment_group_key(f), niche_size)

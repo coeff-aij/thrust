@@ -1,4 +1,3 @@
-use std::fmt;
 use crate::thrust_models;
 use std::marker::PhantomData;
 use std::slice::SliceIndex;
@@ -15,13 +14,6 @@ use crate::IteratorSpec;
 pub struct IndexSlice<I: Idx, T> {
     _marker: PhantomData<fn(&I)>,
     pub raw: [T],
-}
-
-impl<I: Idx, T: fmt::Debug> fmt::Debug for IndexSlice<I, T> {
-    #[thrust::ignored]
-    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Debug::fmt(&self.raw, fmt)
-    }
 }
 
 /// Own iterator standing in for `slice::Iter<'a, T>` (whose raw pointer
@@ -143,10 +135,25 @@ impl<'a, I: Idx + thrust_models::Model, T: thrust_models::Model> IteratorSpec fo
     }
 }
 
+// The last item of a sequence the iterator produces is the entry right after the items before it,
+// with its index: a `Map` over the iterator reads its closure's `requires` at that item in
+// `preservation_inv`, where the sequence is `s.push(e1).push(e2)`.
+#[thrust_macros::context]
+impl<'a, I: Idx + thrust_models::Model, T: thrust_models::Model> IterEnumerated<'a, I, T> {
+    #[thrust_macros::ensures(forall(|s: Seq<<(I, &'a T) as thrust_models::Model>::Ty>, e: <(I, &'a T) as thrust_models::Model>::Ty, o: <Self as thrust_models::Model>::Ty|
+        !<Self as IteratorSpec>::produces(*it, s.push(e), o)
+            || ((*it).1 + s.len() < (*it).0.len()
+                && <I as Idx>::index_is(e.0, (*it).1 + s.len())
+                && e.1 == &(*it).0[(*it).1 + s.len()])))]
+    #[thrust_macros::lemma]
+    pub fn yields_last(it: &Self) {}
+}
+
 #[thrust_macros::context]
 impl<I: Idx, T> IndexSlice<I, T> {
-    // The reinterpretation through a raw pointer has no model; it is the
-    // identity on the sequence, which is what the contract says.
+    // Trusted: the body is an unsafe cast through a raw pointer, which Thrust does not model.
+    // `IndexSlice` is `repr(transparent)` over `[T]`, so the cast is the identity on the
+    // sequence, which is what the contract says.
     #[inline]
     #[thrust::trusted]
     #[thrust_macros::requires(true)]
@@ -157,6 +164,8 @@ impl<I: Idx, T> IndexSlice<I, T> {
         unsafe { &*(ptr as *const Self) }
     }
 
+    // Trusted, as `from_raw`: an unsafe cast of the `&mut` through a raw pointer, the identity
+    // on the sequence before and after the borrow.
     #[inline]
     #[thrust::trusted]
     #[thrust_macros::requires(true)]
@@ -182,7 +191,6 @@ impl<I: Idx, T> IndexSlice<I, T> {
     }
 
     #[inline]
-    #[thrust_macros::ensures(*result.0 == *self && result.1 == 0)]
     pub fn iter(&self) -> SliceIter<'_, T> {
         SliceIter {
             raw: &self.raw,
@@ -191,8 +199,6 @@ impl<I: Idx, T> IndexSlice<I, T> {
     }
 
     #[inline]
-    #[thrust_macros::requires(<I as Idx>::can_new((*self).len()))]
-    #[thrust_macros::ensures(*result.0 == *self && result.1 == 0)]
     pub fn iter_enumerated(&self) -> IterEnumerated<'_, I, T> {
         let _ = I::new(self.len());
         IterEnumerated {
@@ -249,6 +255,9 @@ impl<I: Idx, T: thrust_models::Model, R: IntoSliceIdx<I, [T]>> std::ops::Index<R
 
     #[inline]
     fn index(&self, index: R) -> &Self::Output {
+        #[cfg(thrust_index_body_fail)]
+        panic!();
+        #[cfg(not(thrust_index_body_fail))]
         &self.raw[index.into_slice_idx()]
     }
 }
