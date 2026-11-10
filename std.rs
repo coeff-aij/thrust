@@ -2535,6 +2535,35 @@ where
     );
 }
 
+// std's `TrustedRandomAccessNoCoerce` with its `size`, and `TrustedRandomAccess`
+// (core/src/iter/adapters/zip.rs), as spec traits, so that a spec impl specializes on them where
+// std's impl does. They are implemented for the std iterators std implements them
+// for, with std's bounds. `size` is the number of items left, which std reads instead of calling
+// `next`; the laws tie it to `produces`.
+#[thrust_macros::context]
+trait TrustedRandomAccessNoCoerceSpec: IteratorSpec
+where
+    Self::Item: thrust_models::Model,
+{
+    #[thrust_macros::logic]
+    fn size(self) -> thrust_models::model::Int;
+
+    #[thrust_macros::law]
+    #[thrust_macros::ensures(Self::size(*a) >= 0)]
+    fn size_nonneg(a: &Self);
+
+    #[thrust_macros::law]
+    #[thrust_macros::requires(Self::produces(*a, s, *b))]
+    #[thrust_macros::ensures(Self::size(*b) == Self::size(*a) - s.len())]
+    fn size_produces(a: &Self, s: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>, b: &Self);
+}
+
+trait TrustedRandomAccessSpec: TrustedRandomAccessNoCoerceSpec
+where
+    Self::Item: thrust_models::Model,
+{
+}
+
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(I::inv(*it))]
 #[thrust_macros::ensures(
@@ -2764,6 +2793,33 @@ where
 }
 
 #[thrust_macros::context]
+impl<'a, T> TrustedRandomAccessNoCoerceSpec for core::slice::Iter<'a, T>
+where
+    T: thrust_models::Model,
+{
+    #[thrust_macros::logic]
+    fn size(self) -> thrust_models::model::Int {
+        if self.1 < self.0.len() {
+            // A sum takes the sort of its first operand: `int_lit::<Int>(0)` makes it `Int`.
+            thrust_models::model::int_lit::<thrust_models::model::Int>(0) + self.0.len() - self.1
+        } else {
+            0
+        }
+    }
+
+    fn size_nonneg(a: &Self) {}
+
+    fn size_produces(a: &Self, s: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>, b: &Self) {}
+}
+
+
+impl<'a, T> TrustedRandomAccessSpec for core::slice::Iter<'a, T>
+where
+    T: thrust_models::Model,
+{
+}
+
+#[thrust_macros::context]
 impl<T> IteratorSpec for std::vec::IntoIter<T>
 where
     T: thrust_models::Model,
@@ -2808,6 +2864,28 @@ where
     }
 }
 
+// std's is for `T: NonDrop`, that is `T: Copy` (alloc/src/vec/into_iter.rs), and not `TrustedRandomAccess`.
+#[thrust_macros::context]
+impl<T> TrustedRandomAccessNoCoerceSpec for std::vec::IntoIter<T>
+where
+    T: thrust_models::Model,
+{
+    #[thrust_macros::logic]
+    fn size(self) -> thrust_models::model::Int {
+        if self.1 < self.0.len() {
+            // A sum takes the sort of its first operand: `int_lit::<Int>(0)` makes it `Int`.
+            thrust_models::model::int_lit::<thrust_models::model::Int>(0) + self.0.len() - self.1
+        } else {
+            0
+        }
+    }
+
+    fn size_nonneg(a: &Self) {}
+
+    fn size_produces(a: &Self, s: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>, b: &Self) {}
+}
+
+
 #[thrust_macros::context]
 impl<I> IteratorSpec for core::iter::Enumerate<I>
 where
@@ -2845,6 +2923,30 @@ where
         c: &Self,
     ) {
     }
+}
+
+#[thrust_macros::context]
+impl<I> TrustedRandomAccessNoCoerceSpec for core::iter::Enumerate<I>
+where
+    I: TrustedRandomAccessNoCoerceSpec,
+    I::Item: thrust_models::Model,
+{
+    #[thrust_macros::logic]
+    fn size(self) -> thrust_models::model::Int {
+        I::size(self.0)
+    }
+
+    fn size_nonneg(a: &Self) {}
+
+    fn size_produces(a: &Self, s: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>, b: &Self) {}
+}
+
+
+impl<I> TrustedRandomAccessSpec for core::iter::Enumerate<I>
+where
+    I: TrustedRandomAccessSpec,
+    I::Item: thrust_models::Model,
+{
 }
 
 // std counts with the checked crate's overflow checks, so the count wraps after `usize::MAX`
@@ -2932,6 +3034,34 @@ where
     }
 }
 
+#[thrust_macros::context]
+impl<A, B> TrustedRandomAccessNoCoerceSpec for core::iter::Zip<A, B>
+where
+    A: TrustedRandomAccessNoCoerceSpec,
+    B: TrustedRandomAccessNoCoerceSpec,
+    A::Item: thrust_models::Model,
+    B::Item: thrust_models::Model,
+{
+    #[thrust_macros::logic]
+    fn size(self) -> thrust_models::model::Int {
+        if A::size(self.0) <= B::size(self.1) { A::size(self.0) } else { B::size(self.1) }
+    }
+
+    fn size_nonneg(a: &Self) {}
+
+    fn size_produces(a: &Self, s: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>, b: &Self) {}
+}
+
+
+impl<A, B> TrustedRandomAccessSpec for core::iter::Zip<A, B>
+where
+    A: TrustedRandomAccessSpec,
+    B: TrustedRandomAccessSpec,
+    A::Item: thrust_models::Model,
+    B::Item: thrust_models::Model,
+{
+}
+
 // The adapters below follow Creusot's (creusot-std src/std/iter/skip.rs, take.rs, cloned.rs,
 // copied.rs and the constructors in src/std/iter.rs).
 
@@ -2987,6 +3117,30 @@ where
         c: &Self,
     ) {
     }
+}
+
+#[thrust_macros::context]
+impl<I> TrustedRandomAccessNoCoerceSpec for core::iter::Skip<I>
+where
+    I: TrustedRandomAccessNoCoerceSpec,
+    I::Item: thrust_models::Model,
+{
+    #[thrust_macros::logic]
+    fn size(self) -> thrust_models::model::Int {
+        if I::size(self.0) > self.1 { I::size(self.0) - self.1 } else { 0 }
+    }
+
+    fn size_nonneg(a: &Self) {}
+
+    fn size_produces(a: &Self, s: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>, b: &Self) {}
+}
+
+
+impl<I> TrustedRandomAccessSpec for core::iter::Skip<I>
+where
+    I: TrustedRandomAccessSpec,
+    I::Item: thrust_models::Model,
+{
 }
 
 #[thrust::extern_spec_fn]
@@ -3086,6 +3240,30 @@ where
     }
 }
 
+#[thrust_macros::context]
+impl<'a, I, T> TrustedRandomAccessNoCoerceSpec for core::iter::Cloned<I>
+where
+    I: TrustedRandomAccessNoCoerceSpec<Item = &'a T>,
+    T: thrust_models::Model + Clone + 'a,
+{
+    #[thrust_macros::logic]
+    fn size(self) -> thrust_models::model::Int {
+        I::size(self)
+    }
+
+    fn size_nonneg(a: &Self) {}
+
+    fn size_produces(a: &Self, s: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>, b: &Self) {}
+}
+
+
+impl<'a, I, T> TrustedRandomAccessSpec for core::iter::Cloned<I>
+where
+    I: TrustedRandomAccessSpec<Item = &'a T>,
+    T: thrust_models::Model + Clone + 'a,
+{
+}
+
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(result == it)]
@@ -3131,6 +3309,30 @@ where
         c: &Self,
     ) {
     }
+}
+
+#[thrust_macros::context]
+impl<'a, I, T> TrustedRandomAccessNoCoerceSpec for core::iter::Copied<I>
+where
+    I: TrustedRandomAccessNoCoerceSpec<Item = &'a T>,
+    T: thrust_models::Model + Copy + 'a,
+{
+    #[thrust_macros::logic]
+    fn size(self) -> thrust_models::model::Int {
+        I::size(self)
+    }
+
+    fn size_nonneg(a: &Self) {}
+
+    fn size_produces(a: &Self, s: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>, b: &Self) {}
+}
+
+
+impl<'a, I, T> TrustedRandomAccessSpec for core::iter::Copied<I>
+where
+    I: TrustedRandomAccessSpec<Item = &'a T>,
+    T: thrust_models::Model + Copy + 'a,
+{
 }
 
 #[thrust::extern_spec_fn]
@@ -3187,6 +3389,40 @@ macro_rules! range_iterator_spec {
 }
 
 range_iterator_spec!(i8 i16 i32 i64 i128 isize u8 u16 u32 u64 u128 usize);
+
+// std's `TrustedRandomAccess` impls for ranges (`unsafe_range_trusted_random_access_impl!` in
+// core/src/iter/range.rs), with its lists and cfgs.
+macro_rules! range_trusted_random_access_spec {
+    ($($t:ty)*) => {
+        $(
+            #[allow(warnings)]
+            #[thrust_macros::context]
+            impl TrustedRandomAccessNoCoerceSpec for core::ops::Range<$t> {
+                #[thrust_macros::logic]
+                fn size(self) -> thrust_models::model::Int {
+                    if self.start < self.end {
+                        thrust_models::model::int_lit::<thrust_models::model::Int>(0) + self.end - self.start
+                    } else {
+                        0
+                    }
+                }
+
+                fn size_nonneg(a: &Self) {}
+
+                fn size_produces(a: &Self, s: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>, b: &Self) {}
+            }
+
+
+            impl TrustedRandomAccessSpec for core::ops::Range<$t> {}
+        )*
+    };
+}
+
+range_trusted_random_access_spec!(usize u8 u16 isize i8 i16);
+#[cfg(any(target_pointer_width = "32", target_pointer_width = "64"))]
+range_trusted_random_access_spec!(u32 i32);
+#[cfg(target_pointer_width = "64")]
+range_trusted_random_access_spec!(u64 i64);
 
 // std's `Map`, Creusot's `Map` (creusot-std/src/std/iter/map.rs) in the form of the case study's
 // adapter (fork tests/rustc_coroutine/thrust/iter.rs): `produces` carries the input items and the
@@ -3290,6 +3526,34 @@ where
         c: &Self,
     ) {
     }
+}
+
+#[thrust_macros::context]
+impl<I, B, F> TrustedRandomAccessNoCoerceSpec for core::iter::Map<I, F>
+where
+    I: TrustedRandomAccessNoCoerceSpec,
+    I::Item: thrust_models::Model,
+    B: thrust_models::Model,
+    F: FnMut(I::Item) -> B,
+{
+    #[thrust_macros::logic]
+    fn size(self) -> thrust_models::model::Int {
+        I::size(self.0)
+    }
+
+    fn size_nonneg(a: &Self) {}
+
+    fn size_produces(a: &Self, s: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>, b: &Self) {}
+}
+
+
+impl<I, B, F> TrustedRandomAccessSpec for core::iter::Map<I, F>
+where
+    I: TrustedRandomAccessSpec,
+    I::Item: thrust_models::Model,
+    B: thrust_models::Model,
+    F: FnMut(I::Item) -> B,
+{
 }
 
 // `Iterator::map`, Creusot's (creusot-std/src/std/iter.rs, `map`): the closure may be called on
