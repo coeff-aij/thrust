@@ -17,7 +17,7 @@ fn main() {
     config.threads = std::num::NonZeroUsize::new(threads);
     // THRUST_UI_SKIP_COAR=1 runs only the tests Z3 decides, for a machine without the CoAR image
     // (CI); the others count as filtered out.
-    let skip_coar = std::env::var("THRUST_UI_SKIP_COAR").is_ok_and(|v| v == "1");
+    let skip_coar = env_flag("THRUST_UI_SKIP_COAR");
     if skip_coar {
         let skipped = coar_tests(Path::new("tests/ui"));
         println!(
@@ -28,14 +28,26 @@ fn main() {
             .skip_files
             .extend(skipped.iter().map(|path| path.display().to_string()));
     }
-    // The case study's roots and their twins (tests/ui/{pass,fail}/rustc_coroutine/, its probes
-    // aside) each solve hundreds of parts; they are run with THRUST_UI_CASE_STUDY=1, or by the
-    // evaluation's scripts, and count as filtered out otherwise. They all run CoAR, so
-    // THRUST_UI_SKIP_COAR=1 has skipped them already.
-    if !skip_coar && !std::env::var("THRUST_UI_CASE_STUDY").is_ok_and(|v| v == "1") {
-        let skipped = case_study_roots();
+    // The case study's roots, their twins and its probes (everything under
+    // tests/ui/{pass,fail}/rustc_coroutine/) each solve tens to hundreds of parts; they are run
+    // with THRUST_UI_CASE_STUDY=1, or by the evaluation's scripts, and count as filtered out
+    // otherwise. They all run CoAR, so THRUST_UI_SKIP_COAR=1 has skipped them already.
+    if !skip_coar && !env_flag("THRUST_UI_CASE_STUDY") {
+        let skipped = case_study_tests();
         println!(
-            "skipping the {} case-study roots under rustc_coroutine/ (THRUST_UI_CASE_STUDY=1 runs them)",
+            "skipping the {} case-study tests under rustc_coroutine/ (THRUST_UI_CASE_STUDY=1 runs them)",
+            skipped.len()
+        );
+        config
+            .skip_files
+            .extend(skipped.iter().map(|path| path.display().to_string()));
+    }
+    // A test whose header has a `// slow: <reason>` line takes over 30 s; THRUST_UI_SLOW=1 runs
+    // them. The line names the faster tests that cover the same feature by default.
+    if !env_flag("THRUST_UI_SLOW") {
+        let skipped = slow_tests(Path::new("tests/ui"));
+        println!(
+            "skipping the {} tests marked `// slow:` (THRUST_UI_SLOW=1 runs them)",
             skipped.len()
         );
         config
@@ -114,40 +126,52 @@ fn directory_hash(dir: &Path) -> String {
     format!("{:016x}", hasher.finish())
 }
 
-/// The test files directly under tests/ui/pass/rustc_coroutine/ and tests/ui/fail/rustc_coroutine/:
-/// the case study's roots and their twins, not its probes/ subdirectory.
-fn case_study_roots() -> Vec<PathBuf> {
-    let mut roots = Vec::new();
+fn env_flag(name: &str) -> bool {
+    std::env::var(name).is_ok_and(|v| v == "1")
+}
+
+/// All test files under tests/ui/pass/rustc_coroutine/ and tests/ui/fail/rustc_coroutine/: the
+/// case study's roots and their twins, and its probes.
+fn case_study_tests() -> Vec<PathBuf> {
+    let mut tests = Vec::new();
     for dir in [
         "tests/ui/pass/rustc_coroutine",
         "tests/ui/fail/rustc_coroutine",
     ] {
-        for entry in std::fs::read_dir(dir).unwrap() {
-            let path = entry.unwrap().path();
-            if path.extension().is_some_and(|ext| ext == "rs") {
-                roots.push(path);
-            }
-        }
+        tests.extend(tests_where(Path::new(dir), |_| true));
     }
-    roots
+    tests
 }
 
-/// The test files under `dir` whose header sets `THRUST_SOLVER` to a CoAR wrapper.
-fn coar_tests(dir: &Path) -> Vec<PathBuf> {
+/// The test files under `dir` that have a `// slow:` line in their header.
+fn slow_tests(dir: &Path) -> Vec<PathBuf> {
+    tests_where(dir, |source| {
+        source.lines().any(|line| line.starts_with("// slow:"))
+    })
+}
+
+/// The test files under `dir` whose source satisfies `wanted`.
+fn tests_where(dir: &Path, wanted: fn(&str) -> bool) -> Vec<PathBuf> {
     let mut tests = Vec::new();
     for entry in std::fs::read_dir(dir).unwrap() {
         let path = entry.unwrap().path();
         if path.is_dir() {
-            tests.extend(coar_tests(&path));
-        } else if path.extension().is_some_and(|ext| ext == "rs") && names_coar_wrapper(&path) {
+            tests.extend(tests_where(&path, wanted));
+        } else if path.extension().is_some_and(|ext| ext == "rs")
+            && wanted(&std::fs::read_to_string(&path).unwrap())
+        {
             tests.push(path);
         }
     }
     tests
 }
 
-fn names_coar_wrapper(path: &Path) -> bool {
-    let source = std::fs::read_to_string(path).unwrap();
+/// The test files under `dir` whose header sets `THRUST_SOLVER` to a CoAR wrapper.
+fn coar_tests(dir: &Path) -> Vec<PathBuf> {
+    tests_where(dir, names_coar_wrapper)
+}
+
+fn names_coar_wrapper(source: &str) -> bool {
     source
         .lines()
         .filter(|line| line.starts_with("//@rustc-env:"))

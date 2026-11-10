@@ -1,6 +1,7 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=150
+// The solver takes 62 s alone on one thread (measured 2026-11-10, coar:ce3cea65b); the timeout leaves margin.
 use thrust_models::{exists, model::Mut};
 
 #[thrust_macros::requires(thrust_macros::pre!(f()))]
