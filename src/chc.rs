@@ -2525,6 +2525,24 @@ impl<V> Formula<V> {
         }
     }
 
+    /// Removes each conjunct of `self`, at any depth of its conjunctions, that is one of
+    /// `conjuncts`.
+    pub fn remove_conjuncts(&mut self, conjuncts: &[Formula<V>])
+    where
+        V: PartialEq,
+    {
+        if conjuncts.contains(self) {
+            *self = Formula::top();
+            return;
+        }
+        if let Formula::And(fs) = self {
+            for f in &mut *fs {
+                f.remove_conjuncts(conjuncts);
+            }
+            fs.retain(|f| !f.is_top());
+        }
+    }
+
     pub fn simplify(&mut self) {
         match self {
             Formula::Atom(_atom) => {}
