@@ -17,7 +17,8 @@ fn main() {
     config.threads = std::num::NonZeroUsize::new(threads);
     // THRUST_UI_SKIP_COAR=1 runs only the tests Z3 decides, for a machine without the CoAR image
     // (CI); the others count as filtered out.
-    if std::env::var("THRUST_UI_SKIP_COAR").is_ok_and(|v| v == "1") {
+    let skip_coar = std::env::var("THRUST_UI_SKIP_COAR").is_ok_and(|v| v == "1");
+    if skip_coar {
         let skipped = coar_tests(Path::new("tests/ui"));
         println!(
             "THRUST_UI_SKIP_COAR=1: skipping the {} tests that name a CoAR wrapper",
@@ -29,8 +30,9 @@ fn main() {
     }
     // The case study's roots and their twins (tests/ui/{pass,fail}/rustc_coroutine/, its probes
     // aside) each solve hundreds of parts; they are run with THRUST_UI_CASE_STUDY=1, or by the
-    // evaluation's scripts, and count as filtered out otherwise.
-    if !std::env::var("THRUST_UI_CASE_STUDY").is_ok_and(|v| v == "1") {
+    // evaluation's scripts, and count as filtered out otherwise. They all run CoAR, so
+    // THRUST_UI_SKIP_COAR=1 has skipped them already.
+    if !skip_coar && !std::env::var("THRUST_UI_CASE_STUDY").is_ok_and(|v| v == "1") {
         let skipped = case_study_roots();
         println!(
             "skipping the {} case-study roots under rustc_coroutine/ (THRUST_UI_CASE_STUDY=1 runs them)",
