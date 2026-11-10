@@ -882,8 +882,8 @@ fn assigned_here_at<FieldIdx: Idx + thrust_models::Model, LocalIdx: Idx + thrust
 ) {}
 
 /// The number of the variant's entries before `p` whose local is Assigned to it. Opaque: the
-/// closure of `combine_offsets` ties the zip's position to it, and only the lemmas below read its
-/// definition: `combine_offsets` and the closure see the count through their `ensures`.
+/// closure of `combine_offsets` ties the zip's position to it, and the lemmas below read it, so
+/// that the closure's clauses do not unfold the count.
 #[thrust_macros::logic]
 #[thrust::opaque]
 fn assigned_before<FieldIdx: Idx + thrust_models::Model, LocalIdx: Idx + thrust_models::Model, VariantIdx: Idx + thrust_models::Model>(
@@ -964,7 +964,7 @@ fn assigned_before_skip<FieldIdx: Idx + thrust_models::Model, LocalIdx: Idx + th
 )]
 #[thrust_macros::ensures(true)]
 #[thrust_macros::context]
-#[thrust::reveal(super::super::FieldsShape::arbitrary_of, combine_wf)]
+#[thrust::reveal(super::super::FieldsShape::arbitrary_of, combine_wf, assigned_before)]
 fn combine_offsets<VariantIdx: Idx + thrust_models::Model, FieldIdx: Idx + thrust_models::Model, LocalIdx: Idx + thrust_models::Model>(
     variant_fields: &IndexVec<FieldIdx, LocalIdx>,
     assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
@@ -1113,9 +1113,7 @@ fn combine_offsets<VariantIdx: Idx + thrust_models::Model, FieldIdx: Idx + thrus
                     );
                     // Reachability twin (fail root layout_reach_pair.rs): the path after the
                     // `proof_assert!` is reachable, so the closure's `requires` makes no proof here
-                    // vacuous. `assigned_before` is opaque here, so the refutation may choose the
-                    // count; the real count has such a path too: one entry, Assigned to the
-                    // variant, with 0 entries counted before it and 1 before the next.
+                    // vacuous.
                     #[cfg(thrust_layout_reach_pair)]
                     thrust_macros::proof_assert!(|| false);
                     let (offset, memory_index) = pair.unwrap();
