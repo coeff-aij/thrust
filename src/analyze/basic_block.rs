@@ -43,6 +43,24 @@ pub use drop_point::{DropPoints, MoveState};
 /// needs no precondition of its own. A block that does need one currently models
 /// it with a fresh predicate variable; this is also the set of CFG cutpoints, so
 /// it cuts every cycle (a loop header always has in-degree >= 2).
+fn return_per_edge_enabled() -> bool {
+    matches!(std::env::var("THRUST_RETURN_PER_EDGE").as_deref(), Ok("1"))
+}
+
+/// Whether `bb` does nothing but return: no statement other than storage markers and no-ops.
+fn returns_only(body: &Body<'_>, bb: BasicBlock) -> bool {
+    let data = &body.basic_blocks[bb];
+    matches!(data.terminator().kind, TerminatorKind::Return)
+        && data.statements.iter().all(|stmt| {
+            matches!(
+                stmt.kind,
+                mir::StatementKind::StorageDead(_)
+                    | mir::StatementKind::StorageLive(_)
+                    | mir::StatementKind::Nop
+            )
+        })
+}
+
 pub fn needs_own_precondition(body: &Body<'_>, bb: BasicBlock) -> bool {
     if bb == mir::START_BLOCK {
         return true;
@@ -385,6 +403,12 @@ pub struct Analyzer<'tcx, 'ctx> {
     local_decls: IndexVec<Local, mir::LocalDecl<'tcx>>,
     // TODO: remove this
     prophecy_vars: HashMap<usize, TempVarIdx>,
+
+    /// The function type the body's returns are checked against, set by [`Self::run`]. With
+    /// `THRUST_RETURN_PER_EDGE=1` (prototype) an edge into a block that only returns checks it
+    /// there, so a postcondition reads the edge's environment rather than the joined return
+    /// block's unknown.
+    expected_fn: Option<rty::FunctionType>,
 
     /// The typing environment for resolving associated types, layouts and instances in
     /// `body`. `body` may have been instantiated at a caller's generic arguments and still
@@ -1460,6 +1484,15 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         bb: BasicBlock,
         outer_fn_param_vars: &BTreeMap<rty::FunctionParamIdx, Var>,
     ) {
+        if return_per_edge_enabled()
+            && returns_only(&self.body, bb)
+            && needs_own_precondition(&self.body, bb)
+        {
+            if let Some(expected_fn) = self.expected_fn.clone() {
+                self.type_return(&expected_fn, outer_fn_param_vars);
+                return;
+            }
+        }
         if !needs_own_precondition(&self.body, bb) {
             self.install_inherited_bb_ty(bb, outer_fn_param_vars);
             return;
@@ -3520,6 +3553,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             env,
             local_decls,
             prophecy_vars,
+            expected_fn: None,
             typing_env,
         }
     }
@@ -3541,6 +3575,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     }
 
     pub fn run(&mut self, expected: &BasicBlockType, expected_fn: &rty::FunctionType) {
+        self.expected_fn = Some(expected_fn.clone());
         let span = tracing::info_span!(
             "bb",
             bb = ?self.basic_block,
