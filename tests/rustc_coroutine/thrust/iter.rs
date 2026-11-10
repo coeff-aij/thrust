@@ -10,7 +10,7 @@ use thrust_models::model::{Array, Closure, Int, Mut, Seq};
 use thrust_models::{Ghost, exists, forall};
 
 use crate::IteratorSpec;
-use crate::rustc_index::{Idx, IndexVec};
+use crate::rustc_index::{Idx, IndexSlice, IndexVec, IterEnumerated};
 use crate::case_study::USize;
 
 // Rewrite (rewrites.md R8): a local `Map` in place of `iter::Map`, evaluation 1's adapter
@@ -889,4 +889,51 @@ where
     thrust_macros::assume!(|opt: Option<T>, f: F|
         opt == None || exists(|i: <T as thrust_models::Model>::Ty| opt == Some(i) && thrust_macros::pre!(f(i))));
     opt.map(f)
+}
+
+// `<[T]>::sort_by_key`, its `requires` (std.rs) assumed (`univariant_biased`'s sort of the fields
+// that are not the tail, whose `sort_by_key` goal the solver does not answer); the `ensures` is
+// `sort_by_key`'s.
+#[thrust_macros::context]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(
+    (!slice).len() == (*slice).len()
+        && exists(|p: Seq<Int>|
+            p.len() == (*slice).len()
+                && forall(|i: Int|
+                    (0 <= i && i < (*slice).len())
+                        ==> (0 <= p[i] && p[i] < (*slice).len() && (!slice)[i] == (*slice)[p[i]]))
+                && forall(|i: Int, j: Int|
+                    (0 <= i && i < (*slice).len() && 0 <= j && j < (*slice).len() && i != j)
+                        ==> p[i] != p[j])
+                && forall(|j: Int|
+                    (0 <= j && j < (*slice).len())
+                        ==> exists(|i: Int| 0 <= i && i < (*slice).len() && p[i] == j)))
+)]
+pub fn sort_by_key_assumed<T, K, F>(slice: &mut [T], f: F)
+where
+    T: thrust_models::Model,
+    K: Ord,
+    F: FnMut(&T) -> K,
+{
+    thrust_macros::assume!(|slice: &mut [T], f: F|
+        forall(|c: Closure<F>, i: Int|
+            (thrust_macros::hist_inv!(f, c) && 0 <= i && i < (*slice).len())
+                ==> thrust_macros::pre!(c(&(*slice)[i]))));
+    slice.sort_by_key(f)
+}
+
+// `IndexSlice::iter_enumerated`, trusted on its contract (`univariant_biased`'s open part 61: the
+// solver does not answer the `requires` of `I::new(len)` in its body at that call). The contract
+// is what the body does: it builds `I::new(len)`, and starts at position 0 of the slice.
+#[thrust::trusted]
+#[thrust_macros::context]
+#[thrust_macros::requires(<I as Idx>::can_new((*s).len()))]
+#[thrust_macros::ensures(result.0 == s && result.1 == 0)]
+pub fn iter_enumerated_trusted<'a, I, T>(s: &'a IndexSlice<I, T>) -> IterEnumerated<'a, I, T>
+where
+    I: Idx + thrust_models::Model,
+    T: thrust_models::Model,
+{
+    s.iter_enumerated()
 }
