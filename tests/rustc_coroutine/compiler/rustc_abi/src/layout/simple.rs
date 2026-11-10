@@ -3,7 +3,6 @@ use thrust_models::model::Seq;
 use thrust_models::{exists, forall};
 
 use crate::rustc_hashes::Hash64;
-use crate::case_study::iter::max_by_key;
 use crate::rustc_index::{Idx, IndexVec};
 use crate::case_study::USize;
 use crate::rustc_abi::{
@@ -45,18 +44,17 @@ impl<FieldIdx: Idx, VariantIdx: Idx> LayoutData<FieldIdx, VariantIdx> {
         thrust_macros::proof_assert!(|b_offset: Size| b_offset.raw == 0);
         let size = (b_offset + b.size(dl)).align_to(align);
 
-        // Rewrite (rewrites.md R21): `max_by_key(it, f)` for `it.max_by_key(f)`.
-        let largest_niche = max_by_key(
-            Niche::from_scalar(dl, b_offset, b)
-                .into_iter()
-                .chain(Niche::from_scalar(dl, Size::ZERO, a)),
-            thrust_macros::closure!(
-                captures(dl: &&TargetDataLayout),
+        // `max_by_key`'s `F: FnMut` bound makes the key closure `FnMut`, which holds `dl` behind a
+        // `&mut`.
+        let largest_niche = Niche::from_scalar(dl, b_offset, b)
+            .into_iter()
+            .chain(Niche::from_scalar(dl, Size::ZERO, a))
+            .max_by_key(thrust_macros::closure!(
+                captures(dl: &mut &TargetDataLayout),
                 requires(Niche::wf_in(*niche, **dl)),
                 ensures(true),
                 |niche: &Niche| -> u128 { niche.available(dl) },
-            ),
-        );
+            ));
 
         let combined_seed = a.size(dl).bytes().wrapping_add(b.size(dl).bytes());
 

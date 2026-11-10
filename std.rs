@@ -2677,7 +2677,8 @@ fn _extern_spec_iterator_sum_usize<I>(it: I) -> usize
 // keys are equal (core/src/iter/traits/iterator.rs, `max_by_key`, and `cmp::max_by`), so the
 // result is the last item of greatest key, `None` for no item. `f` is called once per item, in
 // order; the key of an item is one `f` may return for it in some state. `f` is called only on the
-// items `it` yields, so its precondition is required of those, in every state.
+// items `it` yields, in states it reaches from `f` (`hist_inv!`), so its precondition is required
+// of those items in those states, as `sort_by_key`'s is.
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(
     I::inv(it)
@@ -2685,7 +2686,8 @@ fn _extern_spec_iterator_sum_usize<I>(it: I) -> usize
                                   s: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
                                   x: <I::Item as thrust_models::Model>::Ty,
                                   i: <I as thrust_models::Model>::Ty|
-            I::produces(it, s.push(x), i) ==> thrust_macros::pre!(c(&x)))
+            (thrust_macros::hist_inv!(f, c) && I::produces(it, s.push(x), i))
+                ==> thrust_macros::pre!(c(&x)))
 )]
 #[thrust_macros::ensures(
     thrust_models::exists(|prod: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
