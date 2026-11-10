@@ -43,6 +43,13 @@ pub use drop_point::{DropPoints, MoveState};
 /// needs no precondition of its own. A block that does need one currently models
 /// it with a fresh predicate variable; this is also the set of CFG cutpoints, so
 /// it cuts every cycle (a loop header always has in-degree >= 2).
+fn requires_everywhere_enabled() -> bool {
+    matches!(
+        std::env::var("THRUST_REQUIRES_EVERYWHERE").as_deref(),
+        Ok("1")
+    )
+}
+
 fn return_per_edge_enabled() -> bool {
     matches!(std::env::var("THRUST_RETURN_PER_EDGE").as_deref(), Ok("1"))
 }
@@ -3349,6 +3356,60 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 }
 
 impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
+    /// Prototype (`THRUST_REQUIRES_EVERYWHERE=1`): assumes the function's precondition over the
+    /// entry values of its parameters, which this block binds as `outer_fn_param_vars`. The
+    /// precondition holds of the entry values and they do not change, so it holds at every block,
+    /// as VC generators keep it a hypothesis of the whole body. A parameter whose bound value has
+    /// another sort than the contract's (an elaborated `mut` parameter) is left out.
+    fn assume_requires_at_entry_values(
+        &mut self,
+        expected_fn: &rty::FunctionType,
+        outer_fn_param_vars: &BTreeMap<rty::FunctionParamIdx, Var>,
+    ) {
+        let bb_ty = self
+            .basic_block_ty_with_precondition(self.basic_block)
+            .clone();
+        let mut bound_sorts = HashMap::new();
+        for (param_idx, param_rty) in bb_ty.as_ref().params.iter_enumerated() {
+            if let BasicBlockTypeParamKind::OuterFnParam(outer_idx) = bb_ty.param_kind(param_idx) {
+                bound_sorts.insert(outer_idx, param_rty.ty.to_sort());
+            }
+        }
+        let usable = |idx: rty::FunctionParamIdx| {
+            outer_fn_param_vars.contains_key(&idx)
+                && bound_sorts.get(&idx) == Some(&expected_fn.params[idx].ty.to_sort())
+        };
+        for (idx, param) in expected_fn.params.iter_enumerated() {
+            if !usable(idx) {
+                continue;
+            }
+            let rty::Refinement { existentials, body } = param.refinement.clone();
+            let mut complete = true;
+            let body = body.subst_var(|v| match v {
+                rty::RefinedTypeVar::Value => {
+                    chc::Term::var(PlaceTypeVar::Var(outer_fn_param_vars[&idx]))
+                }
+                rty::RefinedTypeVar::Free(j) if usable(j) => {
+                    chc::Term::var(PlaceTypeVar::Var(outer_fn_param_vars[&j]))
+                }
+                rty::RefinedTypeVar::Free(_) => {
+                    complete = false;
+                    chc::Term::Null
+                }
+                rty::RefinedTypeVar::Existential(ev) => {
+                    chc::Term::var(PlaceTypeVar::Existential(ev))
+                }
+            });
+            if !complete {
+                continue;
+            }
+            let mut assumption = Assumption::default();
+            assumption.existentials.extend(existentials);
+            assumption.body.push_conj(body);
+            self.env.assume(assumption);
+        }
+    }
+
     #[tracing::instrument(skip(self, expected_params))]
     fn bind_locals(
         &mut self,
@@ -3589,6 +3650,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.env.set_enum_places_to_expand(places);
 
         let outer_fn_param_vars = self.bind_locals(&expected.as_ref().params);
+        if requires_everywhere_enabled() {
+            self.assume_requires_at_entry_values(expected_fn, &outer_fn_param_vars);
+        }
         self.alloc_prophecies();
         self.analyze_statements();
 
