@@ -1,5 +1,5 @@
 //@ignore-on-host: draft, the step of `ones_assigned_disjoint` and the lemmas over the per-variant `Map` and `Filter` get no answer from the solver (README.md)
-//@compile-flags: -Adead_code -C debug-assertions=off --cfg thrust_counts_proofs
+//@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300 THRUST_TRY_SPECS=1
 //@rustc-env: THRUST_VERIFY_ONLY=case_study::counts,rustc_abi::layout::coroutine::ones_assigned_disjoint,rustc_abi::layout::coroutine::ones_step,rustc_abi::layout::coroutine::card_ones
 // The count of a variant's fields of thrust/counts.rs, which `layout()`'s per-variant closure
