@@ -17,7 +17,8 @@ fn main() {
     config.threads = std::num::NonZeroUsize::new(threads);
     // THRUST_UI_SKIP_COAR=1 runs only the tests Z3 decides, for a machine without the CoAR image
     // (CI); the others count as filtered out.
-    if std::env::var("THRUST_UI_SKIP_COAR").is_ok_and(|v| v == "1") {
+    let skip_coar = std::env::var("THRUST_UI_SKIP_COAR").is_ok_and(|v| v == "1");
+    if skip_coar {
         let skipped = coar_tests(Path::new("tests/ui"));
         println!(
             "THRUST_UI_SKIP_COAR=1: skipping the {} tests that name a CoAR wrapper",
@@ -27,10 +28,23 @@ fn main() {
             .skip_files
             .extend(skipped.iter().map(|path| path.display().to_string()));
     }
+    // The case study's roots and their twins (tests/ui/{pass,fail}/rustc_coroutine/, its probes
+    // aside) each solve hundreds of parts; they are run with THRUST_UI_CASE_STUDY=1, or by the
+    // evaluation's scripts, and count as filtered out otherwise. They all run CoAR, so
+    // THRUST_UI_SKIP_COAR=1 has skipped them already.
+    if !skip_coar && !std::env::var("THRUST_UI_CASE_STUDY").is_ok_and(|v| v == "1") {
+        let skipped = case_study_roots();
+        println!(
+            "skipping the {} case-study roots under rustc_coroutine/ (THRUST_UI_CASE_STUDY=1 runs them)",
+            skipped.len()
+        );
+        config
+            .skip_files
+            .extend(skipped.iter().map(|path| path.display().to_string()));
+    }
     // THRUST_UI_CACHE_DIR=<dir> keeps the sat/unsat verdicts of the tests in <dir>, so that a
     // development run solves only the queries that changed (see the README).
     if let Some(dir) = std::env::var_os("THRUST_UI_CACHE_DIR") {
-        let skip_coar = std::env::var("THRUST_UI_SKIP_COAR").is_ok_and(|v| v == "1");
         let salt = verdict_cache_salt(skip_coar);
         config
             .program
@@ -98,6 +112,24 @@ fn directory_hash(dir: &Path) -> String {
         }
     }
     format!("{:016x}", hasher.finish())
+}
+
+/// The test files directly under tests/ui/pass/rustc_coroutine/ and tests/ui/fail/rustc_coroutine/:
+/// the case study's roots and their twins, not its probes/ subdirectory.
+fn case_study_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    for dir in [
+        "tests/ui/pass/rustc_coroutine",
+        "tests/ui/fail/rustc_coroutine",
+    ] {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_some_and(|ext| ext == "rs") {
+                roots.push(path);
+            }
+        }
+    }
+    roots
 }
 
 /// The test files under `dir` whose header sets `THRUST_SOLVER` to a CoAR wrapper.
