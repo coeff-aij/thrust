@@ -970,7 +970,10 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         #[cfg(thrust_ub_reach = "place_fields_pre")]
         thrust_macros::proof_assert!(|kind: StructKind| false);
         // Rewrite (rewrites.md R19): the field loop as `place_fields`.
-        let unsized_field = Self::place_fields::<FieldIdx, VariantIdx, F>(
+        // Rewrite (rewrites.md, pending): `?` as a `match` that returns the error itself, so that
+        // the error `place_fields`'s contract describes reaches the return without the
+        // `Try::branch` and `FromResidual::from_residual` calls of `?`'s desugaring.
+        let unsized_field = match Self::place_fields::<FieldIdx, VariantIdx, F>(
             fields,
             &in_memory_order,
             kind,
@@ -983,7 +986,10 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
             &mut max_repr_align,
             &mut largest_niche,
             &mut largest_niche_available,
-        )?;
+        ) {
+            Ok(unsized_field) => unsized_field,
+            Err(e) => return Err(e),
+        };
 
         let unadjusted_abi_align = align;
         if let Some(repr_align) = repr.align {
