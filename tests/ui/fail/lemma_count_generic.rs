@@ -1,6 +1,7 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -Adead_code -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60
+// The solver takes 21-27 s alone on one thread (measured 2026-11-10, coar:ce3cea65b) and exceeded 30 s under load; the timeout leaves margin.
 
 use thrust_models::forall;
 use thrust_models::model::{Int, UInt};

@@ -1,6 +1,7 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -A unused-variables -A unused_parens
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300
+// slow: RQ1 input, 42 s; the counter by default: pass/creusot/counter.rs, fail/creusot/counter.rs
 // counter_creusot with the `produces_trans` witnesses written as source-level lemmas, as Creusot's Why3 session gives them by hand.
 use thrust_models::model::{Closure, Int, Mut, Seq};
 use thrust_models::{exists, forall, Ghost, Model};
