@@ -1651,16 +1651,25 @@ fn _extern_spec_i32_is_negative(x: i32) -> bool {
     i32::is_negative(x)
 }
 
-// Bit-counting intrinsics have no bitvector model (integers are plain `Int`, not bitvectors), so
-// the only sound fact stated is the one every caller relies on: the count of a 64-bit value's
-// bits cannot exceed 64.
+// The position of the lowest set bit, 64 for 0, in Creusot's form (creusot-std `src/std/num.rs`,
+// `trailing_zeros_logic`): shifted left by `63 - result`, the value has bit 63 alone set, so bit
+// `result` is set and the bits below it are clear. The value is read as a 64-bit vector.
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(result <= 64)]
+#[thrust_macros::ensures(
+    (result == 64) == (thrust_models::model::BitVec::<64, false>::from_int(x) == thrust_models::model::BitVec::from_int(0))
+)]
+#[thrust_macros::ensures(
+    (result != 64)
+        == ((thrust_models::model::BitVec::<64, false>::from_int(x) << thrust_models::model::BitVec::from_int(63 - result))
+            == (thrust_models::model::BitVec::<64, false>::from_int(1) << thrust_models::model::BitVec::from_int(63)))
+)]
 fn _extern_spec_u64_trailing_zeros(x: u64) -> u32 {
     u64::trailing_zeros(x)
 }
 
+// Only the bound: no proof yet needs which bits are counted.
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(result <= 64)]

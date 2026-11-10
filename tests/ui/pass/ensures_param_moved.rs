@@ -1,6 +1,7 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300
+// The solver takes 109 s alone on one thread (measured 2026-11-10, coar:ce3cea65b); the timeout leaves margin.
 
 // In an `ensures`, a parameter denotes its value at the call, also after the body moves it.
 

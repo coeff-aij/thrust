@@ -1,6 +1,7 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off -A unused-variables -A dead_code
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120
+// slow: RQ1 input, 31 s; Map by default: pass/iterators/std_map_next.rs, pass/iterators/std_map_closure_pre.rs, pass/creusot/map_ext.rs
 // Creusot's `examples/iterators/05_map.rs` (3620de437): `Map`, its `Iterator` impl, the
 // predicates `next_precondition`, `preservation` and `reinitialize`, and the constructor `map`,
 // with Creusot's code and Thrust's annotations. Creusot's proof aids (`produces_one`,

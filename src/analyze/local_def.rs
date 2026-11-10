@@ -942,28 +942,75 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// Conjoins to an `FnMut` closure's postcondition that the call keeps the closure's state
     /// related by `hist_inv!` (each `&mut` capture keeps its prophecy, each `&` capture its value),
     /// as Creusot's `postcondition_mut` of a closure includes `hist_inv(self, ^self)`. The body
-    /// is checked against it, and it makes the law that each call's postcondition implies
-    /// `hist_inv!` hold of every such closure's contract. The closure is taken at the arguments
-    /// the body is analyzed at, so that at an instance the relation is the one of the closure
-    /// there, over the sorts of its receiver there.
+    /// is checked against it but for the conjuncts of the `&` captures
+    /// ([`Self::contract_checked_by_body`]), and it makes the law that each call's postcondition
+    /// implies `hist_inv!` hold of every such closure's contract.
     fn conjoin_fn_mut_hist_inv(&self, fn_ty: &mut rty::FunctionType) {
-        if !self.tcx.is_closure_like(self.local_def_id.to_def_id()) {
+        let Some((closure_ty, upvars_sort, receiver)) = self.fn_mut_receiver(fn_ty) else {
             return;
+        };
+        let formula = self.ctx.closure_hist_inv_definition(
+            closure_ty,
+            &upvars_sort,
+            receiver.clone().mut_current(),
+            receiver.mut_final(),
+        );
+        if formula.is_top() {
+            return;
+        }
+        fn_ty.ret.extend_refinement(formula.into());
+    }
+
+    /// The contract the body is checked against: `expected`, but at an `FnMut` closure without
+    /// the conjuncts of its postcondition that the closure's `&` captures keep their values
+    /// ([`analyze::closure_hist_inv::shared_captures_kept`]), which hold of every state the body
+    /// returns in. Callers still assume them.
+    fn contract_checked_by_body(&self, expected: &rty::RefinedType) -> rty::RefinedType {
+        let mut fn_ty = expected.ty.as_function().unwrap().clone();
+        let Some((closure_ty, upvars_sort, receiver)) = self.fn_mut_receiver(&fn_ty) else {
+            return expected.clone();
+        };
+        let kept = analyze::closure_hist_inv::shared_captures_kept(
+            self.tcx,
+            closure_ty,
+            &upvars_sort,
+            receiver.clone().mut_current(),
+            receiver.mut_final(),
+        );
+        fn_ty.ret.refinement.body.formula.remove_conjuncts(&kept);
+        rty::RefinedType::new(fn_ty.into(), expected.refinement.clone())
+    }
+
+    /// The closure type of this def, at the arguments the body is analyzed at, the sort of its
+    /// upvars and the receiver of `fn_ty`, when the def is an `FnMut` closure whose receiver in
+    /// `fn_ty` is a `&mut`. The closure is taken at those arguments so that at an instance the
+    /// relation `hist_inv!` stands for is the one of the closure there, over the sorts of its
+    /// receiver there.
+    fn fn_mut_receiver(
+        &self,
+        fn_ty: &rty::FunctionType,
+    ) -> Option<(
+        mir_ty::Ty<'tcx>,
+        chc::Sort,
+        chc::Term<rty::RefinedTypeVar<rty::FunctionParamIdx>>,
+    )> {
+        if !self.tcx.is_closure_like(self.local_def_id.to_def_id()) {
+            return None;
         }
         let closure_ty = self
             .tcx
             .type_of(self.local_def_id)
             .instantiate(self.tcx, self.generic_args);
         let mir_ty::TyKind::Closure(_, args) = closure_ty.kind() else {
-            return;
+            return None;
         };
         if args.as_closure().kind() != mir_ty::ClosureKind::FnMut {
-            return;
+            return None;
         }
         let receiver = &fn_ty.params[rty::FunctionParamIdx::from_usize(0)].ty;
         if receiver.as_pointer().map(|ty| ty.kind) != Some(rty::PointerKind::Ref(rty::RefKind::Mut))
         {
-            return;
+            return None;
         }
         let receiver_sort = receiver.to_sort();
         let upvars_sort = receiver_sort.clone().deref();
@@ -976,16 +1023,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 rty::FunctionParamIdx::from_usize(0),
             ))
         };
-        let formula = self.ctx.closure_hist_inv_definition(
-            closure_ty,
-            &upvars_sort,
-            receiver.clone().mut_current(),
-            receiver.mut_final(),
-        );
-        if formula.is_top() {
-            return;
-        }
-        fn_ty.ret.extend_refinement(formula.into());
+        Some((closure_ty, upvars_sort, receiver))
     }
 
     /// Extract the target DefId from `#[thrust::extern_spec_fn]` function.
@@ -2659,7 +2697,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let move_data = self.move_data();
         self.reassign_local_mutabilities(&move_data);
         self.refine_basic_blocks(&move_data);
-        self.analyze_basic_blocks(expected);
+        let checked = self.contract_checked_by_body(expected);
+        self.analyze_basic_blocks(&checked);
         self.assert_entry(expected);
         if analyze::candidate_atoms_enabled() {
             self.declare_candidate_atoms(expected);
