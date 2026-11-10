@@ -2629,12 +2629,9 @@ fn _extern_spec_iterator_find<I, P>(it: &mut I, predicate: P) -> Option<I::Item>
     <I as std::iter::Iterator>::find(it, predicate)
 }
 
-// `all` and `any` call the predicate on the items in order until it returns `stop`, `false` for
-// `all` and `true` for `any`; core's default and `slice::Iter`'s override stop at the same item.
-// The predicate's states `fs` along the items `s` it returned `!stop` for form a chain as
-// `find`'s, whose predicate takes `&Item` where theirs takes `Item`. The result is `!stop` where
-// the iterator completes after `s`, and `stop` where the predicate returned it for the next item.
-// Verus's vstd states the same of `all` and `any` with a single closure state.
+// `all` and `any` call the predicate on the items in order until it returns `stop` (`false` for
+// `all`, `true` for `any`), as core's default and `slice::Iter`'s override do. `fs` is the chain
+// of its states along the items `s` before, as in `find`, with the predicate taking `Item`.
 #[thrust_macros::predicate]
 fn _iter_spec_short_circuit_chain<I, F>(
     iter: I,
