@@ -864,6 +864,86 @@ fn combine_wf_of<VariantIdx: Idx + thrust_models::Model, FieldIdx: Idx + thrust_
     promoted_memory_index: &IndexVec<FieldIdx, u32>,
 ) {}
 
+/// The zip of `combine_offsets`' offsets and memory indices before the variant's entry `p`: its
+/// two parts at one position, the count of the entries before `p` Assigned to the variant, of m
+/// pairs, m the count of all of them, whose memory indices are below m. Opaque: the closure's
+/// `requires` and `ensures` carry it as one atom, which `Map::new`'s `preservation_inv` matches
+/// at the next position, and the lemmas below establish and read it.
+#[thrust_macros::predicate]
+#[thrust::opaque]
+fn zip_at<FieldIdx: Idx + thrust_models::Model, LocalIdx: Idx + thrust_models::Model, VariantIdx: Idx + thrust_models::Model>(
+    z: std::iter::Zip<std::vec::IntoIter<Size>, std::vec::IntoIter<u32>>,
+    variant_fields: &IndexVec<FieldIdx, LocalIdx>,
+    assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
+    index: VariantIdx,
+    p: USize,
+) -> bool {
+    z.0.1 == z.1.1
+        && z.0.0.len() == z.1.0.len()
+        && z.0.1 == counts::acc_cnt::<FieldIdx, LocalIdx, LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>(*variant_fields, *assignments, SavedLocalEligibility::Assigned(index), p)
+        && z.0.0.len() == counts::acc_cnt::<FieldIdx, LocalIdx, LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>(*variant_fields, *assignments, SavedLocalEligibility::Assigned(index), (*variant_fields).len())
+        && forall(|k: USize| !(0 <= k && k < z.1.0.len()) || z.1.0[k] < z.1.0.len())
+}
+
+/// `zip_at` before the first entry, from the zip's facts at the start.
+#[thrust_macros::lemma]
+#[thrust_macros::requires((*z).0.1 == 0 && (*z).1.1 == 0
+    && (*z).0.0.len() == (*z).1.0.len()
+    && (*z).0.0.len() == counts::acc_cnt::<FieldIdx, LocalIdx, LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>(*variant_fields, *assignments, SavedLocalEligibility::Assigned(index), (*variant_fields).len())
+    && forall(|k: USize| 0 <= k && k < (*z).1.0.len() ==> (*z).1.0[k] < (*z).1.0.len()))]
+#[thrust_macros::ensures(forall(|p: USize| !(p == 0) || zip_at::<FieldIdx, LocalIdx, VariantIdx>(*z, variant_fields, assignments, index, p)))]
+#[thrust::reveal(zip_at)]
+fn zip_at_start<FieldIdx: Idx + thrust_models::Model, LocalIdx: Idx + thrust_models::Model, VariantIdx: Idx + thrust_models::Model>(
+    z: &std::iter::Zip<std::vec::IntoIter<Size>, std::vec::IntoIter<u32>>,
+    variant_fields: &IndexVec<FieldIdx, LocalIdx>,
+    assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
+    index: VariantIdx,
+) {}
+
+/// At an entry Assigned to the variant, a zip `zip_at` it has a pair left, both parts at one
+/// position, with its memory index below the number of pairs, and the zip one pair later is
+/// `zip_at` the next entry.
+#[thrust_macros::lemma]
+#[thrust_macros::requires(n == (*variant_fields).len()
+    && <FieldIdx as Idx>::index_logic(i) < (*variant_fields).len()
+    && (*assignments)[<LocalIdx as Idx>::index_logic((*variant_fields)[<FieldIdx as Idx>::index_logic(i)])]
+        == SavedLocalEligibility::Assigned(index))]
+#[thrust_macros::ensures(forall(|z: <std::iter::Zip<std::vec::IntoIter<Size>, std::vec::IntoIter<u32>> as thrust_models::Model>::Ty|
+    zip_at::<FieldIdx, LocalIdx, VariantIdx>(z, variant_fields, assignments, index, <FieldIdx as Idx>::index_logic(i))
+        ==> (z.0.1 < z.0.0.len()
+            && z.0.1 == z.1.1
+            && z.0.0.len() == z.1.0.len()
+            && forall(|k: USize| 0 <= k && k < z.1.0.len() ==> z.1.0[k] < z.1.0.len())
+            && forall(|z2: <std::iter::Zip<std::vec::IntoIter<Size>, std::vec::IntoIter<u32>> as thrust_models::Model>::Ty|
+                z2.0.0 == z.0.0 && z2.1.0 == z.1.0 && z2.0.1 == z.0.1 + 1 && z2.1.1 == z.1.1 + 1
+                    ==> zip_at::<FieldIdx, LocalIdx, VariantIdx>(z2, variant_fields, assignments, index, <FieldIdx as Idx>::index_logic(i) + 1)))))]
+#[thrust::reveal(zip_at)]
+fn zip_at_take<FieldIdx: Idx + thrust_models::Model, LocalIdx: Idx + thrust_models::Model, VariantIdx: Idx + thrust_models::Model>(
+    variant_fields: &IndexVec<FieldIdx, LocalIdx>,
+    assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
+    index: VariantIdx,
+    i: FieldIdx,
+    n: usize,
+) {
+    assigned_entry_counted(variant_fields, assignments, index, i, n);
+}
+
+/// At an entry not Assigned to the variant, a zip `zip_at` it is `zip_at` the next entry.
+#[thrust_macros::lemma]
+#[thrust_macros::requires(<FieldIdx as Idx>::index_logic(i) < (*variant_fields).len()
+    && !((*assignments)[<LocalIdx as Idx>::index_logic((*variant_fields)[<FieldIdx as Idx>::index_logic(i)])]
+        == SavedLocalEligibility::Assigned(index)))]
+#[thrust_macros::ensures(forall(|z: <std::iter::Zip<std::vec::IntoIter<Size>, std::vec::IntoIter<u32>> as thrust_models::Model>::Ty|
+    zip_at::<FieldIdx, LocalIdx, VariantIdx>(z, variant_fields, assignments, index, <FieldIdx as Idx>::index_logic(i))
+        ==> zip_at::<FieldIdx, LocalIdx, VariantIdx>(z, variant_fields, assignments, index, <FieldIdx as Idx>::index_logic(i) + 1)))]
+#[thrust::reveal(zip_at)]
+fn zip_at_skip<FieldIdx: Idx + thrust_models::Model, LocalIdx: Idx + thrust_models::Model, VariantIdx: Idx + thrust_models::Model>(
+    variant_fields: &IndexVec<FieldIdx, LocalIdx>,
+    assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
+    index: VariantIdx,
+    i: FieldIdx,
+) {}
+
 // Rewrite (rewrites.md R12): the part of `layout()`'s per-variant closure that destructures the
 // variant's fields and combines its offsets and memory order with the promoted ones, as a function
 // whose `requires` states what the code reads: the fields are `Arbitrary` with m offsets and a
@@ -881,6 +961,7 @@ fn combine_wf_of<VariantIdx: Idx + thrust_models::Model, FieldIdx: Idx + thrust_
         && combine_wf::<VariantIdx, FieldIdx, LocalIdx>(variant_fields, assignments, promoted_offsets, promoted_memory_index)
         && forall(|f: usize, v: <VariantIdx as thrust_models::Model>::Ty|
             !(0 <= f && f < (*variant_fields).len()
+                && <LocalIdx as Idx>::index_logic((*variant_fields)[f]) < (*assignments).len()
                 && (*assignments)[<LocalIdx as Idx>::index_logic((*variant_fields)[f])] == SavedLocalEligibility::Assigned(v))
             || v == index)
 )]
@@ -916,9 +997,9 @@ fn combine_offsets<VariantIdx: Idx + thrust_models::Model, FieldIdx: Idx + thrus
         IndexVec::from_elem_n(FieldIdx::new(invalid_field_idx), invalid_field_idx);
 
     let mut offsets_and_memory_index = iter::zip(offsets, memory_index);
-    // The closure's `requires` of the zip at the first entry: both parts at 0, the count of the
-    // entries before it, of m pairs (`arbitrary_of` and `invert_bijective_mapping`), m the count
-    // of all the variant's entries Assigned to it (`assigned_count`), memory indices below m.
+    // The zip before the first entry (`zip_at`): both parts at 0, of m pairs (`arbitrary_of` and
+    // `invert_bijective_mapping`), m the count of the variant's entries Assigned to it
+    // (`assigned_count`), memory indices below m.
     thrust_macros::proof_assert!(|offsets_and_memory_index: std::iter::Zip<std::vec::IntoIter<Size>, std::vec::IntoIter<u32>>, variant_fields: &IndexVec<FieldIdx, LocalIdx>,
             assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, index: VariantIdx|
         offsets_and_memory_index.0.1 == 0
@@ -931,15 +1012,14 @@ fn combine_offsets<VariantIdx: Idx + thrust_models::Model, FieldIdx: Idx + thrus
             0 <= k && k < offsets_and_memory_index.1.0.len()
                 ==> offsets_and_memory_index.1.0[k] < offsets_and_memory_index.1.0.len())
             && invalid_field_idx == (*promoted_memory_index).len() + offsets_and_memory_index.1.0.len());
+    thrust_macros::proof!(zip_at_start(&offsets_and_memory_index, variant_fields, assignments, index));
     // Rewrite (rewrites.md R8): `Map::new` and `collect_index_vec` for `map` and `collect`.
     // The closure's contract: its `requires` states what its body reads, of the entry it is given
     // (a local below n that is not `Unassigned`, Assigned to this variant if at all: property 2b)
     // and of its captures (property 3, the promoted memory index below c,
     // `combined_in_memory_order`'s length c + m, and the zip's `inv`, which `next` requires), and
-    // ties the zip to the entry's position p: its two parts are at one position, the count of the
-    // entries Assigned to the variant before p, of m (the count of all of them) pairs, whose memory
-    // indices are below m. Its `ensures` moves the zip to the count before p + 1, as the entry's
-    // class decides whether the body takes a pair. Its `hist_inv` keeps what the `requires` reads
+    // ties the zip to the entry's position p (`zip_at`). Its `ensures` gives `zip_at` at p + 1, as
+    // the entry's class decides whether the body takes a pair. Its `hist_inv` keeps what the `requires` reads
     // of the captures across calls: the shared captures are unchanged and the writes to
     // `combined_in_memory_order` keep its length. `Map::new`'s `next_precondition` follows from
     // `combine_offsets`' `requires` on the variant's entries, with the zip at 0 and
@@ -977,31 +1057,14 @@ fn combine_offsets<VariantIdx: Idx + thrust_models::Model, FieldIdx: Idx + thrus
                     || v == **index)
                 && <FieldIdx as Idx>::index_logic(i) < (**variant_fields).len()
                 && *local == (**variant_fields)[<FieldIdx as Idx>::index_logic(i)]
-                && (**offsets_and_memory_index).0.1 == (**offsets_and_memory_index).1.1
-                && (**offsets_and_memory_index).0.0.len() == (**offsets_and_memory_index).1.0.len()
-                && (**offsets_and_memory_index).0.1 == counts::acc_cnt::<FieldIdx, LocalIdx, LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>(
-                    **variant_fields, **assignments, SavedLocalEligibility::Assigned(**index), <FieldIdx as Idx>::index_logic(i))
-                && (**offsets_and_memory_index).0.0.len() == counts::acc_cnt::<FieldIdx, LocalIdx, LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>(
-                    **variant_fields, **assignments, SavedLocalEligibility::Assigned(**index), (**variant_fields).len())
-                && forall(|k: USize|
-                    !(0 <= k && k < (**offsets_and_memory_index).1.0.len())
-                    || (**offsets_and_memory_index).1.0[k] < (**offsets_and_memory_index).1.0.len())
+                && zip_at::<FieldIdx, LocalIdx, VariantIdx>(
+                    **offsets_and_memory_index, *variant_fields, *assignments, **index, <FieldIdx as Idx>::index_logic(i))
                 && **invalid_field_idx == (**promoted_memory_index).len() + (**offsets_and_memory_index).1.0.len()
         ),
         ensures(
-            (*!offsets_and_memory_index).0.0 == (**offsets_and_memory_index).0.0
-                && (*!offsets_and_memory_index).1.0 == (**offsets_and_memory_index).1.0
-                && (*!offsets_and_memory_index).0.1 == (*!offsets_and_memory_index).1.1
-                && (*!offsets_and_memory_index).0.0.len() == (*!offsets_and_memory_index).1.0.len()
-                && (*!offsets_and_memory_index).0.0.len() == counts::acc_cnt::<FieldIdx, LocalIdx, LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>(
-                    **variant_fields, **assignments, SavedLocalEligibility::Assigned(**index), (**variant_fields).len())
-                && forall(|k: USize|
-                    !(0 <= k && k < (*!offsets_and_memory_index).1.0.len())
-                    || (*!offsets_and_memory_index).1.0[k] < (*!offsets_and_memory_index).1.0.len())
-                && **invalid_field_idx == (**promoted_memory_index).len() + (*!offsets_and_memory_index).1.0.len()
-                && <std::iter::Zip<std::vec::IntoIter<Size>, std::vec::IntoIter<u32>> as crate::IteratorSpec>::inv(*!offsets_and_memory_index)
-                && (*!offsets_and_memory_index).0.1 == counts::acc_cnt::<FieldIdx, LocalIdx, LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>(
-                    **variant_fields, **assignments, SavedLocalEligibility::Assigned(**index), <FieldIdx as Idx>::index_logic(i) + 1)
+            (*!offsets_and_memory_index).1.0 == (**offsets_and_memory_index).1.0
+                && zip_at::<FieldIdx, LocalIdx, VariantIdx>(
+                    *!offsets_and_memory_index, *variant_fields, *assignments, **index, <FieldIdx as Idx>::index_logic(i) + 1)
         ),
         hist_inv(
             *assignments == !assignments
@@ -1019,9 +1082,9 @@ fn combine_offsets<VariantIdx: Idx + thrust_models::Model, FieldIdx: Idx + thrus
                 // Unreachable, as above.
                 Unassigned => unreachable!(),
                 Assigned(_) => {
-                    // The entry is Assigned to this variant (property 2b), so the count before
-                    // p + 1 is the zip's position plus one, at most m.
-                    thrust_macros::proof!(assigned_entry_counted(variant_fields, assignments, index, i, variant_fields.len()));
+                    // The entry is Assigned to this variant (property 2b), so the zip has a pair
+                    // left, and one pair later it is `zip_at` the next entry.
+                    thrust_macros::proof!(zip_at_take(variant_fields, assignments, index, i, variant_fields.len()));
                     // Rewrite (rewrites.md R12): the pair, c and c + m are bound to names, for the
                     // `proof_assert!`, which names local variables only (not a closure's captures).
                     let pair = offsets_and_memory_index.next();
@@ -1044,6 +1107,8 @@ fn combine_offsets<VariantIdx: Idx + thrust_models::Model, FieldIdx: Idx + thrus
                     (offset, promoted_memory_index.len() as u32 + memory_index)
                 }
                 Ineligible(field_idx) => {
+                    // The zip stays, `zip_at` the next entry.
+                    thrust_macros::proof!(zip_at_skip(variant_fields, assignments, index, i));
                     // `.unwrap()`: `field_idx == Some(_)` by eligibility.rs's stage-5
                     // property 3.
                     let field_idx = field_idx.unwrap();
@@ -1779,6 +1844,30 @@ fn variant_fits_wf<
             calc, &fs, &rp, StructKind::Prefixed(prefix_size, prefix_align.abi)))
 }
 
+/// Property 2b of `variant_entries_wf` in the form `combine_offsets` requires: an entry's local
+/// Assigned to some variant is Assigned to this one, as two variants with one index are equal
+/// (`Idx::index_is_injective`).
+#[thrust_macros::lemma]
+#[thrust_macros::requires(variant_entries_wf::<F, VariantIdx, FieldIdx, LocalIdx>(local_layouts, assignments, index, variant_fields))]
+#[thrust_macros::ensures(forall(|f: usize, v: <VariantIdx as thrust_models::Model>::Ty|
+    0 <= f && f < (*variant_fields).len()
+        && <LocalIdx as Idx>::index_logic((*variant_fields)[f]) < (*assignments).len()
+        && (*assignments)[<LocalIdx as Idx>::index_logic((*variant_fields)[f])] == SavedLocalEligibility::Assigned(v)
+        ==> v == index))]
+#[thrust::reveal(variant_entries_wf)]
+fn assigned_here_of<
+    'a,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model,
+    VariantIdx: Idx + thrust_models::Model,
+    FieldIdx: Idx + thrust_models::Model,
+    LocalIdx: Idx + thrust_models::Model,
+>(
+    local_layouts: &IndexSlice<LocalIdx, F>,
+    assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
+    index: VariantIdx,
+    variant_fields: &IndexVec<FieldIdx, LocalIdx>,
+) {}
+
 // Rewrite (rewrites.md R17): the body of `layout()`'s per-variant closure, as a function whose
 // `requires` is the closure's, the four atoms above, which it reveals. The closure keeps the
 // updates of `size` and `align` and the `VariantLayout`, so its `requires` and `Map::new`'s
@@ -1874,13 +1963,8 @@ fn variant_layout<
         FieldsShape::<FieldIdx>::arbitrary_of(variant.fields, m));
     thrust_macros::proof_assert!(|variant_fields: &IndexVec<FieldIdx, LocalIdx>, assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, index: VariantIdx, m: usize|
         assigned_count::<FieldIdx, LocalIdx, VariantIdx>(variant_fields, assignments, index, m));
-    // Property 2b (the `requires`) in the form `combine_offsets` requires: an entry's local
-    // Assigned to some variant is Assigned to this one (`index_is_injective`).
-    thrust_macros::proof_assert!(|variant_fields: &IndexVec<FieldIdx, LocalIdx>, assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, index: VariantIdx|
-        forall(|f: usize, v: <VariantIdx as thrust_models::Model>::Ty|
-            0 <= f && f < (*variant_fields).len()
-                && (*assignments)[<LocalIdx as Idx>::index_logic((*variant_fields)[f])] == SavedLocalEligibility::Assigned(v)
-                ==> v == index));
+    // Property 2b (the `requires`) in the form `combine_offsets` requires.
+    thrust_macros::proof!(assigned_here_of(local_layouts, assignments, index, variant_fields));
 
     // Rewrite (rewrites.md R12): the destructuring of the variant's fields and the
     // combination of its offsets and memory order with the promoted ones are
