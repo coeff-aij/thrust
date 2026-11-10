@@ -2693,6 +2693,98 @@ fn _extern_spec_iterator_find<I, P>(it: &mut I, predicate: P) -> Option<I::Item>
     <I as std::iter::Iterator>::find(it, predicate)
 }
 
+// `all` and `any` call the predicate on the items in order until it returns `stop` (`false` for
+// `all`, `true` for `any`), as core's default and `slice::Iter`'s override do. `fs` is the chain
+// of its states along the items `s` before, as in `find`, with the predicate taking `Item`.
+#[thrust_macros::predicate]
+fn _iter_spec_short_circuit_chain<I, F>(
+    iter: I,
+    f: F,
+    s: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
+    it: I,
+    fs: thrust_models::model::Seq<F>,
+    stop: bool,
+) -> bool
+where
+    I: IteratorSpec,
+    I::Item: thrust_models::Model,
+    F: FnMut(I::Item) -> bool,
+{
+    I::produces(iter, s, it)
+        && fs.len() == s.len() + 1
+        && fs[0] == f
+        && thrust_macros::hist_inv!(f, fs[s.len()])
+        && thrust_models::forall(|k: thrust_models::model::Int| !(0 <= k && k < s.len())
+            || (thrust_macros::hist_inv!(f, fs[k])
+                && thrust_macros::post!(thrust_models::model::Mut::new(fs[k], fs[k + 1])(s[k]), !stop)))
+}
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(
+    I::inv(*it)
+        && thrust_models::forall(|s: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
+                                  it1: <I as thrust_models::Model>::Ty,
+                                  fs: thrust_models::model::Seq<thrust_models::model::Closure<F>>,
+                                  x: <I::Item as thrust_models::Model>::Ty,
+                                  it2: <I as thrust_models::Model>::Ty|
+            (_iter_spec_short_circuit_chain::<I, F>(*it, f, s, it1, fs, false)
+                && I::produces(it1, thrust_models::model::Seq::singleton(x), it2))
+                ==> thrust_macros::pre!(fs[s.len()](x)))
+)]
+#[thrust_macros::ensures(
+    I::inv(!it)
+        && thrust_models::exists(|s: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
+                                  it1: <I as thrust_models::Model>::Ty,
+                                  fs: thrust_models::model::Seq<thrust_models::model::Closure<F>>|
+            _iter_spec_short_circuit_chain::<I, F>(*it, f, s, it1, fs, false)
+                && ((result == true && I::completed(thrust_models::model::Mut::new(it1, !it)))
+                    || thrust_models::exists(|x: <I::Item as thrust_models::Model>::Ty,
+                                              g: thrust_models::model::Closure<F>|
+                        result == false
+                            && I::produces(it1, thrust_models::model::Seq::singleton(x), !it)
+                            && thrust_macros::post!(thrust_models::model::Mut::new(fs[s.len()], g)(x), false))))
+)]
+fn _extern_spec_iterator_all<I, F>(it: &mut I, f: F) -> bool
+    where I: IteratorSpec,
+          I::Item: thrust_models::Model,
+          F: FnMut(I::Item) -> bool
+{
+    <I as std::iter::Iterator>::all(it, f)
+}
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(
+    I::inv(*it)
+        && thrust_models::forall(|s: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
+                                  it1: <I as thrust_models::Model>::Ty,
+                                  fs: thrust_models::model::Seq<thrust_models::model::Closure<F>>,
+                                  x: <I::Item as thrust_models::Model>::Ty,
+                                  it2: <I as thrust_models::Model>::Ty|
+            (_iter_spec_short_circuit_chain::<I, F>(*it, f, s, it1, fs, true)
+                && I::produces(it1, thrust_models::model::Seq::singleton(x), it2))
+                ==> thrust_macros::pre!(fs[s.len()](x)))
+)]
+#[thrust_macros::ensures(
+    I::inv(!it)
+        && thrust_models::exists(|s: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
+                                  it1: <I as thrust_models::Model>::Ty,
+                                  fs: thrust_models::model::Seq<thrust_models::model::Closure<F>>|
+            _iter_spec_short_circuit_chain::<I, F>(*it, f, s, it1, fs, true)
+                && ((result == false && I::completed(thrust_models::model::Mut::new(it1, !it)))
+                    || thrust_models::exists(|x: <I::Item as thrust_models::Model>::Ty,
+                                              g: thrust_models::model::Closure<F>|
+                        result == true
+                            && I::produces(it1, thrust_models::model::Seq::singleton(x), !it)
+                            && thrust_macros::post!(thrust_models::model::Mut::new(fs[s.len()], g)(x), true))))
+)]
+fn _extern_spec_iterator_any<I, F>(it: &mut I, f: F) -> bool
+    where I: IteratorSpec,
+          I::Item: thrust_models::Model,
+          F: FnMut(I::Item) -> bool
+{
+    <I as std::iter::Iterator>::any(it, f)
+}
+
 // The sum of the first `n` items of `s`. It returns `Int`: the definition of a logic function
 // is checked against the facts of its result type without those of a sequence's elements.
 #[thrust_macros::logic]
@@ -2732,7 +2824,8 @@ fn _extern_spec_iterator_sum_usize<I>(it: I) -> usize
 // keys are equal (core/src/iter/traits/iterator.rs, `max_by_key`, and `cmp::max_by`), so the
 // result is the last item of greatest key, `None` for no item. `f` is called once per item, in
 // order; the key of an item is one `f` may return for it in some state. `f` is called only on the
-// items `it` yields, so its precondition is required of those, in every state.
+// items `it` yields, in states it reaches from `f` (`hist_inv!`), so its precondition is required
+// of those items in those states, as `sort_by_key`'s is.
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(
     I::inv(it)
@@ -2740,7 +2833,8 @@ fn _extern_spec_iterator_sum_usize<I>(it: I) -> usize
                                   s: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
                                   x: <I::Item as thrust_models::Model>::Ty,
                                   i: <I as thrust_models::Model>::Ty|
-            I::produces(it, s.push(x), i) ==> thrust_macros::pre!(c(&x)))
+            (thrust_macros::hist_inv!(f, c) && I::produces(it, s.push(x), i))
+                ==> thrust_macros::pre!(c(&x)))
 )]
 #[thrust_macros::ensures(
     thrust_models::exists(|prod: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
