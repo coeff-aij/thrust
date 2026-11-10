@@ -1,7 +1,7 @@
 use crate::thrust_models;
 use std::marker::PhantomData;
 
-use thrust_models::model::{BitVec, Int, Seq};
+use thrust_models::model::{Array, BitVec, Int, Seq};
 use thrust_models::{exists, forall, Ghost};
 
 use crate::rustc_index::{Idx, IdxRange};
@@ -9,7 +9,7 @@ use bits::{
     bit, excess_cleared, full_word_bits, low_mask_bits, masked, masked_def, masked_range, set_bit,
     test_bit, zero_word_bits,
 };
-use count::{ones_full, ones_le, ones_set_bit, zero_bits_ones};
+use count::{ones_full, ones_le, ones_le_upto, ones_set_bit, zero_bits_ones};
 // `ones` for stage 7's counting lemmas in rustc_abi's layout/coroutine.rs.
 pub(crate) use count::ones;
 use crate::IteratorSpec;
@@ -70,9 +70,9 @@ impl<T: Idx> DenseBitSet<T> {
             && forall(|k: USize| !(0 <= k && k < self.1.len()) || (0 <= self.1[k] && self.1[k] <= 18446744073709551615u64))
     }
 
-    /// The number of members: the set bits below `domain_size`. The trusted `iter` relies on the
-    /// bits past `domain_size` being clear, which rustc's `clear_excess_bits` keeps: it yields every
-    /// set bit of the words. No contract states that invariant yet.
+    /// The number of members: the set bits below `domain_size`. The trusted `BitIter::next`
+    /// relies on the bits past `domain_size` being clear, which rustc's `clear_excess_bits` keeps:
+    /// it yields every set bit of the words. No contract states that invariant yet.
     #[thrust_macros::logic]
     #[thrust::opaque]
     pub(crate) fn card(self) -> Int {
@@ -190,20 +190,25 @@ impl<T: Idx> DenseBitSet<T> {
         thrust_macros::proof!(ones_full(t, self.domain_size));
     }
 
-    // Trusted: the iterator's ghost state is the set's members, which `BitIter::new` does not
-    // state. `result.6 == card(*self)` also needs the bits past `domain_size` clear (see `card`),
-    // which no contract states: it holds of every set, as the fields are private to this module
-    // and each function here that writes `words` keeps those bits clear (`new_empty` zeroes the
-    // words, `insert` asserts the bound, `insert_all` calls `clear_excess_bits`).
+    // The ghost state (rewrites.md S11) is the set's members: `left` their count `card`, `rest`
+    // their flags.
     #[inline]
-    #[thrust::trusted]
+    #[thrust::reveal]
     #[thrust_macros::ensures(result.4 == (*self).0 && result.5 == 0)]
     #[thrust_macros::ensures(0 <= result.6 && result.6 <= (*self).0)]
     #[thrust_macros::ensures(result.6 == Self::card(*self))]
     #[thrust_macros::ensures(forall(|k: USize| result.7[k] != 0 ==> (0 <= k && k < (*self).0 && Self::mem(*self, k))))]
     #[thrust_macros::ensures(forall(|k: USize| 0 <= k && k < (*self).0 && Self::mem(*self, k) ==> result.7[k] != 0))]
     pub fn iter(&self) -> BitIter<'_, T> {
-        BitIter::new(&self.words)
+        let words = &self.words;
+        let mut it = BitIter::new(words);
+        let domain_size = self.domain_size;
+        let s = thrust_macros::ghost!(|words: &Vec<Word>| -> Seq<USize> { *words });
+        thrust_macros::proof!(ones_le(s, domain_size));
+        it.bound = thrust_macros::ghost!(|domain_size: usize| -> USize { domain_size });
+        it.left = thrust_macros::ghost!(|words: &Vec<Word>, domain_size: usize| -> USize { ones(*words, domain_size) });
+        it.rest = thrust_macros::ghost!(|words: &Vec<Word>, domain_size: usize| -> Array<USize, Int> { member_flags(*words, domain_size) });
+        it
     }
 }
 
@@ -237,6 +242,7 @@ impl<'a> WordIter<'a> {
         *dist.0 == *self.0
     }
 
+    #[thrust_macros::ensures(result.1 == 0 && *result.0 == *words)]
     pub(crate) fn new(words: &'a [Word]) -> WordIter<'a> {
         WordIter { words, pos: 0 }
     }
@@ -310,12 +316,12 @@ pub struct BitIter<'a, T: Idx> {
 
     // Rewrite (rewrites.md S11): proof-only. A bound on the elements, the number yielded so far,
     // the number still to come, and the members still to come as flags (non-zero at a member).
-    // The trusted `iter` of `DenseBitSet` and of `BitMatrix`, the only callers of `new`, state
-    // them; `new` leaves them empty.
+    // The `iter` of `DenseBitSet` and of `BitMatrix`, the only callers of `new`, set them to the
+    // members (`member_flags`); `new` leaves them empty.
     bound: thrust_models::Ghost<USize>,
     count: thrust_models::Ghost<USize>,
     left: thrust_models::Ghost<USize>,
-    rest: thrust_models::Ghost<Seq<USize>>,
+    rest: thrust_models::Ghost<Array<USize, Int>>,
 }
 
 // `BitIter`'s model is the tuple of its fields' models,
@@ -342,10 +348,11 @@ impl<'a, T: Idx> BitIter<'a, T> {
 }
 
 // Outside the `#[thrust_macros::context]` block, so that `ghost!` adds no `Model` bound on `T`.
-// Its only callers, the two trusted `iter`s, state the ghost fields.
+// Its only callers, the two `iter`s, set the ghost fields.
 impl<'a, T: Idx> BitIter<'a, T> {
     #[inline]
     fn new(words: &'a [Word]) -> BitIter<'a, T> {
+        let rest = thrust_macros::ghost!(|| -> Array<USize, Int> { no_flags() });
         BitIter {
             word: 0,
             offset: usize::MAX - (WORD_BITS - 1),
@@ -354,7 +361,7 @@ impl<'a, T: Idx> BitIter<'a, T> {
             bound: thrust_macros::ghost!(|| -> USize { 0 }),
             count: thrust_macros::ghost!(|| -> USize { 0 }),
             left: thrust_macros::ghost!(|| -> USize { 0 }),
-            rest: thrust_macros::ghost!(|| -> Seq<USize> { Seq::empty() }),
+            rest,
         }
     }
 }
@@ -372,11 +379,9 @@ impl<'a, T: Idx + thrust_models::Model> Iterator for BitIter<'a, T>
 {
     type Item = T;
 
-    // rustc's bit arithmetic, which Thrust does not model, under `IteratorSpec`'s contract. `inv`
-    // does not relate the ghost fields to the words, so the contract holds of the iterators the
-    // two trusted `iter`s build, whose ghost fields are the bits still to come, and of no other:
-    // `new` leaves them empty over any words. It is private to this module, and the `iter`s are
-    // its only callers.
+    // Trusted: `inv` does not tie the ghost fields to the words, and std.rs states only
+    // `u64::trailing_zeros <= 64` (#261). The contract holds of the iterators the two `iter`s
+    // build, over words with no bit set at or past the bound.
     #[thrust::trusted]
     #[thrust_macros::requires(<Self as IteratorSpec>::inv(*self))]
     #[thrust_macros::ensures(
@@ -519,9 +524,9 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
         (start, start + words_per_row)
     }
 
-    // Trusted, as `DenseBitSet::iter`: the iterator's ghost state is the row's members, below the
-    // ghost column bound, which `cols_below` ties to the bits.
-    #[thrust::trusted]
+    // The ghost state is the row's members, below the ghost column bound, which `cols_below`
+    // ties to the bits.
+    #[thrust::reveal]
     #[thrust_macros::requires(Self::wf(*self))]
     #[thrust_macros::requires(Self::cols_below(*self, *(*self).col_bound))]
     #[thrust_macros::requires(forall(|i: USize| <R as Idx>::index_is(row, i) ==> i < (*self).num_rows))]
@@ -530,7 +535,16 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
     pub fn iter(&self, row: R) -> BitIter<'_, C> {
         assert!(row.index() < self.num_rows);
         let (start, end) = self.range(row);
-        BitIter::new(&self.words[start..end])
+        let words = &self.words[start..end];
+        let mut it = BitIter::new(words);
+        // The ghost column bound is at most `num_columns` (`wf`).
+        let s = thrust_macros::ghost!(|words: &[Word]| -> Seq<USize> { *words });
+        thrust_macros::proof!(ones_le_upto(s, self.num_columns));
+        let col_bound = &self.col_bound;
+        it.bound = thrust_macros::ghost!(|col_bound: &Ghost<USize>| -> USize { *col_bound });
+        it.left = thrust_macros::ghost!(|words: &[Word], col_bound: &Ghost<USize>| -> USize { ones(*words, *col_bound) });
+        it.rest = thrust_macros::ghost!(|words: &[Word], col_bound: &Ghost<USize>| -> Array<USize, Int> { member_flags(*words, *col_bound) });
+        it
     }
 
     #[thrust::reveal]
@@ -541,6 +555,29 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
         let (start, end) = self.range(row);
         count_ones(&self.words[start..end])
     }
+}
+
+/// The flags of an iterator with no member to come.
+#[thrust_macros::logic]
+fn no_flags() -> Array<USize, Int> {
+    Array::<USize, Int>::from_fn(|k: USize| no_flag(k))
+}
+
+#[thrust_macros::logic]
+fn no_flag(_k: USize) -> Int {
+    0
+}
+
+/// The members among the first `n` bits of `words` as flags, 1 at a member and 0 elsewhere: the
+/// ghost `rest` of a `BitIter` over `words` that yields the bits below `n`.
+#[thrust_macros::logic]
+fn member_flags(words: Seq<USize>, n: USize) -> Array<USize, Int> {
+    Array::<USize, Int>::from_fn(|k: USize| member_flag(words, n, k))
+}
+
+#[thrust_macros::logic]
+fn member_flag(words: Seq<USize>, n: USize, k: USize) -> Int {
+    if 0 <= k && k < n && bit(words, k) == 1 { 1 } else { 0 }
 }
 
 #[inline]
@@ -757,6 +794,18 @@ mod count {
         if m > 0 {
             ones_le(s, m - 1);
             bit_range(s, m - 1);
+        }
+    }
+
+    /// `ones_le` at every bound up to `m`.
+    #[thrust::reveal]
+    #[thrust_macros::lemma]
+    #[thrust_macros::variant(m)]
+    #[thrust_macros::ensures(forall(|j: USize| 0 <= j && j <= m ==> 0 <= ones(s, j) && ones(s, j) <= j))]
+    pub(crate) fn ones_le_upto(s: Ghost<Seq<USize>>, m: usize) {
+        if m > 0 {
+            ones_le_upto(s, m - 1);
+            ones_le(s, m);
         }
     }
 
