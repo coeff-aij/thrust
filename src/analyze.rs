@@ -3525,6 +3525,23 @@ impl<'tcx> Analyzer<'tcx> {
             .emit();
     }
 
+    /// Keeps the `#[thrust::assumed_ensures]` of `site` for the report, as an `assume!`, and
+    /// warns at it once.
+    pub fn record_assumed_ensures(&mut self, site: AssumeSite) {
+        if self.assumptions.iter().any(|a| a.formula == site.formula) {
+            return;
+        }
+        self.assumptions.push(site);
+        self.tcx
+            .dcx()
+            .struct_span_warn(
+                site.span,
+                "`#[thrust::assumed_ensures]`: the postcondition is assumed without proof at the returns",
+            )
+            .with_note("callers rely on it; the rest of the body is checked")
+            .emit();
+    }
+
     /// See [`BodyChecks`].
     pub fn body_checks(&self) -> BodyChecks {
         self.body_checks.clone()
