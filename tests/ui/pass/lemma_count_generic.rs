@@ -1,6 +1,7 @@
 //@check-pass
 //@compile-flags: -Adead_code -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60
+// The solver took 26.6 s in a timed run of the suite (fptprove ce3cea65b, 6 at a time); 60 s leaves room under load.
 
 use thrust_models::forall;
 use thrust_models::model::{Int, UInt};

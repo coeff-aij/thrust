@@ -9,6 +9,8 @@ crate of three modules), with the case study's own code (the iterator adapters o
 tree is meant to keep the smallest part of rustc's code that compiles with `layout()`: an item nothing
 needs in order to compile is dropped, also where `target.rs` still has it.
 
+`cargo test --test ui` skips these roots and their twins in `tests/ui/fail/rustc_coroutine/` and the probes under `probes/` unless `THRUST_UI_CASE_STUDY=1`; the evaluation's scripts run them by path.
+
 Each file below is a crate root that includes the whole tree and selects one part of rustc's code
 with a `//@rustc-env: THRUST_VERIFY_ONLY=..` header: a module (`rustc_hashes`, the functions of
 `rustc_abi`'s lib.rs, all of `rustc_index`), or one large function with the helpers a rewrite added
