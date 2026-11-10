@@ -2518,6 +2518,34 @@ where
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool;
 
+    // std's `TrustedRandomAccess`, `TrustedRandomAccessNoCoerce` and its `size` (core/src/iter/
+    // adapters/zip.rs). std selects by specialization a path for such iterators that reads their
+    // size and takes nothing from one of size 0, without calling its `next`: `Zip` over two
+    // `TrustedRandomAccess` iterators (`ZipImpl`), `Take::fold` and `for_each` over one (`SpecTake`
+    // in take.rs), and the in-place `collect` into a `Vec` over a `TrustedRandomAccessNoCoerce` one
+    // (`SpecInPlaceCollect` in alloc/src/vec/in_place_collect.rs). As std's helper traits do with
+    // a blanket impl, the defaults say an iterator is neither; the impls of the std types that are
+    // override them, an adapter from its inner iterators as std's conditional impls do. At a type
+    // parameter they stay open, since an impl may override them. `Zip` takes the one path or the
+    // other by `trusted_random_access`, so that must be exact; `collect` only allows the path where
+    // `trusted_random_access_no_coerce` holds, so `true` there is sound where std has no impl.
+    #[thrust_macros::predicate]
+    fn trusted_random_access(self) -> bool {
+        false
+    }
+
+    #[thrust_macros::predicate]
+    fn trusted_random_access_no_coerce(self) -> bool {
+        false
+    }
+
+    // The number of items left, read where either holds. A model of an unsigned or a fixed-width
+    // integer enters it as `int_lit::<Int>(0) + x`, whose sort is `Int`.
+    #[thrust_macros::logic]
+    fn random_access_size(self) -> thrust_models::model::Int {
+        0
+    }
+
     #[thrust_macros::law]
     #[thrust_macros::requires(Self::inv(*a))]
     #[thrust_macros::ensures(Self::produces(*a, thrust_models::model::Seq::empty(), *a))]
@@ -2751,6 +2779,25 @@ where
         (*self).1 >= (*self).0.len() && *self == !self
     }
 
+    #[thrust_macros::predicate]
+    fn trusted_random_access(self) -> bool {
+        true
+    }
+
+    #[thrust_macros::predicate]
+    fn trusted_random_access_no_coerce(self) -> bool {
+        true
+    }
+
+    #[thrust_macros::logic]
+    fn random_access_size(self) -> thrust_models::model::Int {
+        if self.1 < self.0.len() {
+            thrust_models::model::int_lit::<thrust_models::model::Int>(0) + self.0.len() - self.1
+        } else {
+            0
+        }
+    }
+
     fn produces_refl(a: &Self) {}
 
     fn produces_trans(
@@ -2796,6 +2843,27 @@ where
         (*self).1 >= (*self).0.len() && *self == !self
     }
 
+    // std implements only `TrustedRandomAccessNoCoerce`, for `T: Copy` (alloc/src/vec/into_iter.rs);
+    // `true` at every `T` allows more.
+    #[thrust_macros::predicate]
+    fn trusted_random_access(self) -> bool {
+        false
+    }
+
+    #[thrust_macros::predicate]
+    fn trusted_random_access_no_coerce(self) -> bool {
+        true
+    }
+
+    #[thrust_macros::logic]
+    fn random_access_size(self) -> thrust_models::model::Int {
+        if self.1 < self.0.len() {
+            thrust_models::model::int_lit::<thrust_models::model::Int>(0) + self.0.len() - self.1
+        } else {
+            0
+        }
+    }
+
     fn produces_refl(a: &Self) {}
 
     fn produces_trans(
@@ -2833,6 +2901,21 @@ where
     fn completed(&mut self) -> bool {
         I::completed(thrust_models::model::Mut::new((*self).0, (!self).0))
             && (*self).1 == (!self).1
+    }
+
+    #[thrust_macros::predicate]
+    fn trusted_random_access(self) -> bool {
+        I::trusted_random_access(self.0)
+    }
+
+    #[thrust_macros::predicate]
+    fn trusted_random_access_no_coerce(self) -> bool {
+        I::trusted_random_access_no_coerce(self.0)
+    }
+
+    #[thrust_macros::logic]
+    fn random_access_size(self) -> thrust_models::model::Int {
+        I::random_access_size(self.0)
     }
 
     fn produces_refl(a: &Self) {}
@@ -2877,11 +2960,11 @@ fn _extern_spec_iterator_enumerate<I>(it: I) -> core::iter::Enumerate<I>
     <I as std::iter::Iterator>::enumerate(it)
 }
 
-// When both iterators are `TrustedRandomAccess` (slice iterators, ranges and the adapters over
-// them, `Map` included), std's `Zip::next` steps neither of them and answers `None` once it has
-// handed out as many items as the shorter one has (core/src/iter/adapters/zip.rs), so `completed`
-// also allows the zip unchanged at a point where one of the two could complete: a `Map` on the
-// longer side does not run its closure on the item the general `Zip::next` takes from it.
+// When both iterators are `TrustedRandomAccess`, std's `Zip` steps neither of them and answers
+// `None` once it has handed out as many items as the shorter one has (`ZipImpl` in core/src/iter/
+// adapters/zip.rs), so `completed` is then the zip unchanged with one of the sizes 0: a `Map` on the
+// longer side does not run its closure on the item the general `Zip::next` takes from it, and a
+// `Skip` of size 0 does not drop its `n` items. Otherwise it is Creusot's.
 #[thrust_macros::context]
 impl<A, B> IteratorSpec for core::iter::Zip<A, B>
 where
@@ -2908,16 +2991,35 @@ where
 
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
-        (A::completed(thrust_models::model::Mut::new((*self).0, (!self).0))
-            && (*self).1 == (!self).1)
-            || thrust_models::exists(|x: <A::Item as thrust_models::Model>::Ty|
-                A::produces((*self).0, thrust_models::model::Seq::singleton(x), (!self).0)
-                    && B::completed(thrust_models::model::Mut::new((*self).1, (!self).1)))
-            || (*self == !self
-                && (thrust_models::exists(|a: <A as thrust_models::Model>::Ty|
-                        A::completed(thrust_models::model::Mut::new((*self).0, a)))
-                    || thrust_models::exists(|b: <B as thrust_models::Model>::Ty|
-                        B::completed(thrust_models::model::Mut::new((*self).1, b)))))
+        (A::trusted_random_access((*self).0)
+            && B::trusted_random_access((*self).1)
+            && *self == !self
+            && (A::random_access_size((*self).0) == 0 || B::random_access_size((*self).1) == 0))
+            || (!(A::trusted_random_access((*self).0) && B::trusted_random_access((*self).1))
+                && ((A::completed(thrust_models::model::Mut::new((*self).0, (!self).0))
+                        && (*self).1 == (!self).1)
+                    || thrust_models::exists(|x: <A::Item as thrust_models::Model>::Ty|
+                        A::produces((*self).0, thrust_models::model::Seq::singleton(x), (!self).0)
+                            && B::completed(thrust_models::model::Mut::new((*self).1, (!self).1)))))
+    }
+
+    #[thrust_macros::predicate]
+    fn trusted_random_access(self) -> bool {
+        A::trusted_random_access(self.0) && B::trusted_random_access(self.1)
+    }
+
+    #[thrust_macros::predicate]
+    fn trusted_random_access_no_coerce(self) -> bool {
+        A::trusted_random_access_no_coerce(self.0) && B::trusted_random_access_no_coerce(self.1)
+    }
+
+    #[thrust_macros::logic]
+    fn random_access_size(self) -> thrust_models::model::Int {
+        if A::random_access_size(self.0) <= B::random_access_size(self.1) {
+            A::random_access_size(self.0)
+        } else {
+            B::random_access_size(self.1)
+        }
     }
 
     fn produces_refl(a: &Self) {}
@@ -2938,10 +3040,9 @@ where
 // The first `next` drops the `n` items ahead of the first item it hands out (std calls `nth`).
 // `completed` leaves the inner iterator's state after the call open: where `nth` gives up, it can
 // leave the inner iterator elsewhere than `next` would (an inverted `Range` is set to `end..end`).
-// Over a `TrustedRandomAccess` inner, std's `Zip::next`, `Take::fold` and in-place `collect` read
-// the `Skip`'s size, the inner's less `n`, and take nothing from it when that is 0 (core/src/iter/
-// adapters/skip.rs), so `completed` also allows the `Skip` unchanged when the inner cannot produce
-// more than `n` items: a `Map` inside does not run its closure on them.
+// `completed` is Creusot's, without `resolve`. Over a `TrustedRandomAccess` inner, the `Skip` is one
+// too, of the inner's size less `n` (core/src/iter/adapters/skip.rs); the consumers that read that
+// size state that they leave a `Skip` of size 0 unstepped.
 #[thrust_macros::context]
 impl<I> IteratorSpec for core::iter::Skip<I>
 where
@@ -2971,10 +3072,21 @@ where
                 s.len() <= (*self).1
                     && I::produces((*self).0, s, j)
                     && I::completed(thrust_models::model::Mut::new(j, j2)))
-            || (*self == !self
-                && thrust_models::forall(|s: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
-                                          j: I::Ty|
-                    !I::produces((*self).0, s, j) || s.len() <= (*self).1))
+    }
+
+    #[thrust_macros::predicate]
+    fn trusted_random_access(self) -> bool {
+        I::trusted_random_access(self.0)
+    }
+
+    #[thrust_macros::predicate]
+    fn trusted_random_access_no_coerce(self) -> bool {
+        I::trusted_random_access_no_coerce(self.0)
+    }
+
+    #[thrust_macros::logic]
+    fn random_access_size(self) -> thrust_models::model::Int {
+        if I::random_access_size(self.0) > self.1 { I::random_access_size(self.0) - self.1 } else { 0 }
     }
 
     fn produces_refl(a: &Self) {}
@@ -3000,7 +3112,10 @@ fn _extern_spec_iterator_skip<I>(it: I, n: usize) -> core::iter::Skip<I>
 }
 
 // `next` counts down before it asks the inner iterator, but `try_fold` and `advance_by` do not
-// count the call on which the inner iterator runs out, so `completed` allows either count.
+// count the call on which the inner iterator runs out, so `completed` allows either count. Over a
+// `TrustedRandomAccess` inner, `fold` and `for_each` take no more items than its size and then
+// stop without calling its `next` (`SpecTake` in core/src/iter/adapters/take.rs), while `next`
+// asks it, so `completed` also allows the `Take` unchanged where that size is 0.
 #[thrust_macros::context]
 impl<I> IteratorSpec for core::iter::Take<I>
 where
@@ -3019,7 +3134,9 @@ where
 
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
-        ((*self).1 == 0 && *self == !self)
+        (*self == !self
+            && ((*self).1 == 0
+                || (I::trusted_random_access((*self).0) && I::random_access_size((*self).0) == 0)))
             || ((*self).1 > 0
                 && ((*self).1 == (!self).1 + 1 || (*self).1 == (!self).1)
                 && I::completed(thrust_models::model::Mut::new((*self).0, (!self).0)))
@@ -3074,6 +3191,21 @@ where
         I::completed(thrust_models::model::Mut::new(*self, !self))
     }
 
+    #[thrust_macros::predicate]
+    fn trusted_random_access(self) -> bool {
+        I::trusted_random_access(self)
+    }
+
+    #[thrust_macros::predicate]
+    fn trusted_random_access_no_coerce(self) -> bool {
+        I::trusted_random_access_no_coerce(self)
+    }
+
+    #[thrust_macros::logic]
+    fn random_access_size(self) -> thrust_models::model::Int {
+        I::random_access_size(self)
+    }
+
     fn produces_refl(a: &Self) {}
 
     fn produces_trans(
@@ -3121,6 +3253,21 @@ where
         I::completed(thrust_models::model::Mut::new(*self, !self))
     }
 
+    #[thrust_macros::predicate]
+    fn trusted_random_access(self) -> bool {
+        I::trusted_random_access(self)
+    }
+
+    #[thrust_macros::predicate]
+    fn trusted_random_access_no_coerce(self) -> bool {
+        I::trusted_random_access_no_coerce(self)
+    }
+
+    #[thrust_macros::logic]
+    fn random_access_size(self) -> thrust_models::model::Int {
+        I::random_access_size(self)
+    }
+
     fn produces_refl(a: &Self) {}
 
     fn produces_trans(
@@ -3146,7 +3293,7 @@ fn _extern_spec_iterator_copied<'a, I, T>(it: I) -> core::iter::Copied<I>
 // A range of integers yields its start and steps it up to its end, as Creusot's `Range` does
 // (creusot-std/src/std/iter/range.rs).
 macro_rules! range_iterator_spec {
-    ($($t:ty)*) => {
+    ($random_access:literal: $($t:ty)*) => {
         $(
             #[allow(warnings)]
             #[thrust_macros::context]
@@ -3171,6 +3318,25 @@ macro_rules! range_iterator_spec {
                     (*self).start >= (*self).end && *self == !self
                 }
 
+                #[thrust_macros::predicate]
+                fn trusted_random_access(self) -> bool {
+                    $random_access
+                }
+
+                #[thrust_macros::predicate]
+                fn trusted_random_access_no_coerce(self) -> bool {
+                    $random_access
+                }
+
+                #[thrust_macros::logic]
+                fn random_access_size(self) -> thrust_models::model::Int {
+                    if self.start < self.end {
+                        thrust_models::model::int_lit::<thrust_models::model::Int>(0) + self.end - self.start
+                    } else {
+                        0
+                    }
+                }
+
                 fn produces_refl(a: &Self) {}
 
                 fn produces_trans(
@@ -3186,7 +3352,17 @@ macro_rules! range_iterator_spec {
     };
 }
 
-range_iterator_spec!(i8 i16 i32 i64 i128 isize u8 u16 u32 u64 u128 usize);
+// `true` for the ranges std implements `TrustedRandomAccess` for (core/src/iter/range.rs).
+range_iterator_spec!(true: i8 i16 isize u8 u16 usize);
+#[cfg(any(target_pointer_width = "32", target_pointer_width = "64"))]
+range_iterator_spec!(true: i32 u32);
+#[cfg(not(any(target_pointer_width = "32", target_pointer_width = "64")))]
+range_iterator_spec!(false: i32 u32);
+#[cfg(target_pointer_width = "64")]
+range_iterator_spec!(true: i64 u64);
+#[cfg(not(target_pointer_width = "64"))]
+range_iterator_spec!(false: i64 u64);
+range_iterator_spec!(false: i128 u128);
 
 // std's `Map`, Creusot's `Map` (creusot-std/src/std/iter/map.rs) in the form of the case study's
 // adapter (fork tests/rustc_coroutine/thrust/iter.rs): `produces` carries the input items and the
@@ -3278,6 +3454,21 @@ where
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
         I::completed(thrust_models::model::Mut::new((*self).0, (!self).0)) && (*self).1 == (!self).1
+    }
+
+    #[thrust_macros::predicate]
+    fn trusted_random_access(self) -> bool {
+        I::trusted_random_access(self.0)
+    }
+
+    #[thrust_macros::predicate]
+    fn trusted_random_access_no_coerce(self) -> bool {
+        I::trusted_random_access_no_coerce(self.0)
+    }
+
+    #[thrust_macros::logic]
+    fn random_access_size(self) -> thrust_models::model::Int {
+        I::random_access_size(self.0)
     }
 
     fn produces_refl(a: &Self) {}
@@ -4071,6 +4262,9 @@ fn _extern_spec_vec_extend<T, I>(vec: &mut Vec<T>, iter: I)
     <Vec<T> as std::iter::Extend<T>>::extend(vec, iter)
 }
 
+// The in-place `collect` over a `TrustedRandomAccessNoCoerce` iterator takes as many items as its
+// size and does not call its `next` (`SpecInPlaceCollect` in alloc/src/vec/in_place_collect.rs),
+// so `from_iter` and `collect` into a `Vec` also allow it to stop at size 0.
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(
     thrust_models::forall(|it: <I::IntoIter as thrust_models::Model>::Ty|
@@ -4082,7 +4276,9 @@ fn _extern_spec_vec_extend<T, I>(vec: &mut Vec<T>, iter: I)
                            fin: <I::IntoIter as thrust_models::Model>::Ty|
         I::into_iter_is(iter, it)
             && <I::IntoIter as IteratorSpec>::produces(it, result, done)
-            && <I::IntoIter as IteratorSpec>::completed(thrust_models::model::Mut::new(done, fin)))
+            && (<I::IntoIter as IteratorSpec>::completed(thrust_models::model::Mut::new(done, fin))
+                || (<I::IntoIter as IteratorSpec>::trusted_random_access_no_coerce(done)
+                    && <I::IntoIter as IteratorSpec>::random_access_size(done) == 0)))
 )]
 fn _extern_spec_vec_from_iter<T, I>(iter: I) -> Vec<T>
     where T: thrust_models::Model,
@@ -4095,7 +4291,9 @@ fn _extern_spec_vec_from_iter<T, I>(iter: I) -> Vec<T>
 #[thrust_macros::requires(I::inv(it))]
 #[thrust_macros::ensures(
     thrust_models::exists(|done: <I as thrust_models::Model>::Ty, fin: <I as thrust_models::Model>::Ty|
-        I::produces(it, result, done) && I::completed(thrust_models::model::Mut::new(done, fin)))
+        I::produces(it, result, done)
+            && (I::completed(thrust_models::model::Mut::new(done, fin))
+                || (I::trusted_random_access_no_coerce(done) && I::random_access_size(done) == 0)))
 )]
 fn _extern_spec_iterator_collect_vec<I, T>(it: I) -> Vec<T>
     where I: IteratorSpec<Item = T>,
