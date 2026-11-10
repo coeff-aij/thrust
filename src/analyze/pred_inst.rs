@@ -70,7 +70,7 @@ impl<'tcx> analyze::Analyzer<'tcx> {
             .and_then(|item| item.trait_container(self.tcx()));
         if let Some(trait_def_id) = trait_def_id {
             if self.trait_laws.borrow().contains_key(&trait_def_id)
-                && !opaque_by_specialization(self.tcx(), def_id, generic_args)
+                && !opaque_by_specialization(self.tcx(), def_id, generic_args, owner_fn_id)
             {
                 self.pending_laws.borrow_mut().push(PendingLaw {
                     pred: pred.clone(),
@@ -634,33 +634,34 @@ fn final_state_sort(declared: &chc::Sort, fn_ty: &rty::FunctionType) -> Option<c
     (contract_sort == chc::Sort::mut_(declared.clone())).then(|| declared.clone())
 }
 
-/// Whether the trait item `def_id` stands for no body at `generic_args` only because an impl marks
-/// it `default` (`specialization`): the self type is no type parameter or projection, and some impl
-/// of the trait marks its item `default`. Such an item takes no laws: the impl that proves a law
-/// over it proves it at these arguments, with the item opaque, so assuming the law there would
-/// assume what that proof is to show; and no proof can show a law of every override.
+/// Whether the trait item `def_id` stands for no body at `generic_args`, in the parameters of
+/// `owner_fn_id`, only because an impl marks it `default` (`specialization`): an impl, not a
+/// where-clause, is selected there, and the item it takes is marked `default` in an impl. Such
+/// an item takes no laws: the proof of a law over it, which every override takes, is checked at
+/// these arguments with the item opaque, so assuming the law there would assume what that proof
+/// is to show. Where a where-clause is selected, the item stands for every impl, as at a type
+/// parameter, and takes the laws each impl proves.
 fn opaque_by_specialization<'tcx>(
     tcx: mir_ty::TyCtxt<'tcx>,
     def_id: DefId,
     generic_args: mir_ty::GenericArgsRef<'tcx>,
+    owner_fn_id: DefId,
 ) -> bool {
     let Some(trait_def_id) = tcx.trait_of_assoc(def_id) else {
         return false;
     };
-    let through_param = generic_args.types().next().is_none_or(|self_ty| {
-        matches!(
-            self_ty.kind(),
-            mir_ty::Param(_) | mir_ty::Alias(..) | mir_ty::Placeholder(_) | mir_ty::Bound(..)
-        )
-    });
-    if through_param {
+    let trait_args = generic_args.truncate_to(tcx, tcx.generics_of(trait_def_id));
+    let trait_ref = mir_ty::TraitRef::new(tcx, trait_def_id, tcx.erase_regions(trait_args));
+    let typing_env = mir_ty::TypingEnv::post_analysis(tcx, owner_fn_id);
+    let Ok(rustc_middle::traits::ImplSource::UserDefined(data)) =
+        tcx.codegen_select_candidate(typing_env.as_query_input(trait_ref))
+    else {
         return false;
-    }
-    tcx.all_impls(trait_def_id).any(|impl_def_id| {
-        tcx.defaultness(impl_def_id).is_default()
-            || tcx
-                .impl_item_implementor_ids(impl_def_id)
-                .get(&def_id)
-                .is_some_and(|item| tcx.defaultness(*item).is_default())
-    })
+    };
+    let Ok(ancestors) = tcx.trait_def(trait_def_id).ancestors(tcx, data.impl_def_id) else {
+        return false;
+    };
+    ancestors
+        .leaf_def(tcx, def_id)
+        .is_some_and(|leaf| !leaf.defining_node.is_from_trait() && !leaf.is_final())
 }

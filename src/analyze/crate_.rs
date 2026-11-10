@@ -858,17 +858,26 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let resolved = (self.tcx.generics_of(law_def_id).count() == trait_args.len())
             .then(|| mir_ty::Instance::try_resolve(self.tcx, typing_env, law_def_id, trait_args))
             .and_then(|resolved| resolved.ok().flatten());
-        let Some(instance) = resolved else {
-            tracing::warn!(?law_def_id, ?trait_args, "law not resolved at the instance");
-            return;
-        };
-        if let Some(body) = instance.def_id().as_local() {
-            self.check_law_body(
-                body,
-                law_def_id,
-                trait_args,
-                instance.args,
-                instance.def_id(),
+        let checked = resolved.is_some_and(|instance| {
+            instance.def_id().as_local().is_some_and(|body| {
+                self.check_law_body(
+                    body,
+                    law_def_id,
+                    trait_args,
+                    instance.args,
+                    instance.def_id(),
+                )
+            })
+        });
+        // Unchecked, the law would be assumed of the instance's predicates without a proof.
+        if !checked {
+            self.tcx.dcx().span_err(
+                self.tcx.def_span(law_def_id),
+                format!(
+                    "the law `{}` cannot be checked at `{trait_args:?}`, where the selected impl \
+                     takes its proof from an impl it specializes",
+                    self.tcx.def_path_str(law_def_id)
+                ),
             );
         }
     }
