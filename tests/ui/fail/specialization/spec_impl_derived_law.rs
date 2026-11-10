@@ -1,6 +1,8 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -A unused-variables -A dead_code
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60 THRUST_PER_INSTANCE_GENERICS=1
+#![feature(specialization)]
+#![allow(incomplete_features)]
 
 // Fail twin: the specialized `next` yields 1, which the law `only_zero` does not allow.
 // `Wrap<T>` leaves the derived `produces` out, so its laws are checked at each instance

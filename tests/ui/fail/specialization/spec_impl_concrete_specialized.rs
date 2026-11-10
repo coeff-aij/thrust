@@ -1,8 +1,10 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60
+#![feature(specialization)]
+#![allow(incomplete_features)]
 
-// A spec impl specialized as std specializes its impls (`specialization`, which Thrust enables):
+// A spec impl specialized as std specializes its impls (`specialization`):
 // `lim` is `default` in the impl for every `W<T>` and overridden where `T: Fast`. A concrete type
 // takes the most specialized impl's body; at a type parameter `lim` stays opaque, since an impl
 // may override it there, while `base`, which no impl can override, keeps its body.

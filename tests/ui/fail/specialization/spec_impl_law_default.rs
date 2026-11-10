@@ -1,6 +1,8 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60
+#![feature(specialization)]
+#![allow(incomplete_features)]
 
 // A law that reads an item marked `default` is refuted at the impl that proves it, where that
 // item stays opaque: `lim_nonneg` holds of the base impl's `lim` (`x >= 0`) but not of the

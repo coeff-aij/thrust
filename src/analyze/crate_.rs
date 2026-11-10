@@ -1067,6 +1067,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         analyze::lemma::check_lemmas(self.tcx, proof_branch);
         self.check_model_impls();
         self.check_invariant_impls();
+        self.check_sealed_impls();
+        self.check_specialization_in_std_only();
         self.analyze_raw_command_annot();
         self.register_trait_laws();
         self.check_restated_laws();
@@ -1123,6 +1125,71 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                      not `{self_ty}`"
                 ),
             );
+        }
+    }
+
+    /// Stops at an impl, outside the injected `std.rs`, of a `std.rs` trait marked
+    /// `#[thrust::sealed]`. Such a trait stands for a std marker trait, which std's impls
+    /// specialize on, and `std.rs` implements it for the types std implements the marker for;
+    /// another impl would make a spec impl specialized on it claim std's specialized behaviour
+    /// for a type std runs the general impl on.
+    fn check_sealed_impls(&self) {
+        for (trait_did, impls) in self.tcx.all_local_trait_impls(()) {
+            if self
+                .tcx
+                .get_attrs_by_path(*trait_did, &analyze::annot::sealed_path())
+                .next()
+                .is_none()
+            {
+                continue;
+            }
+            for &impl_did in impls {
+                if analyze::is_injected_std(self.tcx, impl_did) {
+                    continue;
+                }
+                self.tcx.dcx().span_fatal(
+                    self.tcx.def_span(impl_did),
+                    format!(
+                        "`{}` stands for a std marker trait and is implemented only in Thrust's \
+                         std.rs",
+                        self.tcx.def_path_str(*trait_did)
+                    ),
+                );
+            }
+        }
+    }
+
+    /// Stops at specialization outside the injected `std.rs` (a `default` item, a `default impl`,
+    /// an impl that specializes another) when the crate does not enable `specialization` itself:
+    /// Thrust enables it for `std.rs`, and rustc would reject the crate's own use without it.
+    fn check_specialization_in_std_only(&self) {
+        if crate::CRATE_ENABLES_SPECIALIZATION.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
+        for (trait_did, impls) in self.tcx.all_local_trait_impls(()) {
+            let Ok(graph) = self.tcx.specialization_graph_of(*trait_did) else {
+                continue;
+            };
+            for &impl_did in impls {
+                if analyze::is_injected_std(self.tcx, impl_did) {
+                    continue;
+                }
+                let impl_def_id = impl_did.to_def_id();
+                let specializes = graph.parent(impl_def_id) != *trait_did;
+                let has_default = self.tcx.defaultness(impl_def_id).is_default()
+                    || self
+                        .tcx
+                        .associated_item_def_ids(impl_def_id)
+                        .iter()
+                        .any(|item| self.tcx.defaultness(*item).is_default());
+                if specializes || has_default {
+                    self.tcx.dcx().span_fatal(
+                        self.tcx.def_span(impl_did),
+                        "specialization needs `#![feature(specialization)]` in the crate; Thrust \
+                         enables it only for its std.rs",
+                    );
+                }
+            }
         }
     }
 

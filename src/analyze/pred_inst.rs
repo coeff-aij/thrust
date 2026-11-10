@@ -641,6 +641,9 @@ fn final_state_sort(declared: &chc::Sort, fn_ty: &rty::FunctionType) -> Option<c
 /// these arguments with the item opaque, so assuming the law there would assume what that proof
 /// is to show. Where a where-clause is selected, the item stands for every impl, as at a type
 /// parameter, and takes the laws each impl proves.
+///
+/// For an item some impl marks `default`, an outcome of selection other than these two (an
+/// ambiguity, an error) also takes no laws, which only leaves out facts.
 fn opaque_by_specialization<'tcx>(
     tcx: mir_ty::TyCtxt<'tcx>,
     def_id: DefId,
@@ -650,18 +653,34 @@ fn opaque_by_specialization<'tcx>(
     let Some(trait_def_id) = tcx.trait_of_assoc(def_id) else {
         return false;
     };
+    if !marked_default_in_some_impl(tcx, trait_def_id, def_id) {
+        return false;
+    }
     let trait_args = generic_args.truncate_to(tcx, tcx.generics_of(trait_def_id));
     let trait_ref = mir_ty::TraitRef::new(tcx, trait_def_id, tcx.erase_regions(trait_args));
     let typing_env = mir_ty::TypingEnv::post_analysis(tcx, owner_fn_id);
-    let Ok(rustc_middle::traits::ImplSource::UserDefined(data)) =
-        tcx.codegen_select_candidate(typing_env.as_query_input(trait_ref))
-    else {
-        return false;
+    let data = match tcx.codegen_select_candidate(typing_env.as_query_input(trait_ref)) {
+        Ok(rustc_middle::traits::ImplSource::UserDefined(data)) => data,
+        Ok(rustc_middle::traits::ImplSource::Param(_)) => return false,
+        _ => return true,
     };
     let Ok(ancestors) = tcx.trait_def(trait_def_id).ancestors(tcx, data.impl_def_id) else {
-        return false;
+        return true;
     };
     ancestors
         .leaf_def(tcx, def_id)
-        .is_some_and(|leaf| !leaf.defining_node.is_from_trait() && !leaf.is_final())
+        .is_none_or(|leaf| !leaf.defining_node.is_from_trait() && !leaf.is_final())
+}
+
+/// Whether an impl of `trait_def_id` marks its definition of the trait item `item` `default`,
+/// itself or as an item of a `default impl`.
+fn marked_default_in_some_impl(tcx: mir_ty::TyCtxt<'_>, trait_def_id: DefId, item: DefId) -> bool {
+    tcx.all_impls(trait_def_id).any(|impl_def_id| {
+        tcx.impl_item_implementor_ids(impl_def_id)
+            .get(&item)
+            .is_some_and(|impl_item| {
+                tcx.defaultness(*impl_item).is_default()
+                    || tcx.defaultness(impl_def_id).is_default()
+            })
+    })
 }

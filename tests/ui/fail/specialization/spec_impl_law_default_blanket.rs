@@ -1,6 +1,8 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60
+#![feature(specialization)]
+#![allow(incomplete_features)]
 
 // `spec_impl_law_default.rs` with a blanket impl, the form most of std's specializations take:
 // the law `lim_nonneg` holds of the blanket impl's `lim` (`x >= 0`) but not of the override for

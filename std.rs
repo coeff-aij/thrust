@@ -2562,7 +2562,9 @@ where
 // (core/src/iter/adapters/zip.rs), as spec traits, so that a spec impl specializes on them where
 // std's impl does (`Zip`'s below). They are implemented for the std iterators std implements them
 // for, with std's bounds. `size` is the number of items left, which std reads instead of calling
-// `next`; the laws tie it to `produces`.
+// `next`; the laws tie it to `produces`. Both are `#[thrust::sealed]`: no other impl can make a
+// spec impl claim std's specialized behaviour for a type std does not specialize on.
+#[thrust::sealed]
 #[thrust_macros::context]
 trait TrustedRandomAccessNoCoerceSpec: IteratorSpec
 where
@@ -2581,6 +2583,7 @@ where
     fn size_produces(a: &Self, s: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>, b: &Self);
 }
 
+#[thrust::sealed]
 trait TrustedRandomAccessSpec: TrustedRandomAccessNoCoerceSpec
 where
     Self::Item: thrust_models::Model,
