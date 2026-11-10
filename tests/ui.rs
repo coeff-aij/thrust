@@ -42,8 +42,8 @@ fn main() {
             .skip_files
             .extend(skipped.iter().map(|path| path.display().to_string()));
     }
-    // A test whose header has a `// slow: <reason>` line takes over 30 s; THRUST_UI_SLOW=1 runs
-    // them. The line names the faster tests that cover the same feature by default.
+    // A test with a line starting with `// slow: <reason>` is slow or has no answer yet;
+    // THRUST_UI_SLOW=1 runs them. The reason names the default tests that cover the same feature.
     if !env_flag("THRUST_UI_SLOW") {
         let skipped = slow_tests(Path::new("tests/ui"));
         println!(
@@ -143,7 +143,7 @@ fn case_study_tests() -> Vec<PathBuf> {
     tests
 }
 
-/// The test files under `dir` that have a `// slow:` line in their header.
+/// The test files under `dir` that have a line starting with `// slow:`.
 fn slow_tests(dir: &Path) -> Vec<PathBuf> {
     tests_where(dir, |source| {
         source.lines().any(|line| line.starts_with("// slow:"))
