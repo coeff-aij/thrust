@@ -412,7 +412,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                     format!("`{}` is not captured by this closure", ident),
                 );
             };
-            self.check_capture_type(subpat, closure_args.as_closure(), idx);
+            self.check_capture_type(subpat, ident, closure_args.as_closure(), idx);
             self.env.insert(hir_id, upvar_terms[idx].clone());
         }
     }
@@ -425,6 +425,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
     fn check_capture_type(
         &self,
         subpat: &'tcx rustc_hir::Pat<'tcx>,
+        ident: rustc_span::Ident,
         closure_args: mir_ty::ClosureArgs<TyCtxt<'tcx>>,
         idx: usize,
     ) {
@@ -443,7 +444,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             format!(
                 "this `{}` closure holds `{}` at type `{}`, which `captures` restates at another type (only shared references and boxes may differ)",
                 closure_args.kind().as_str(),
-                subpat.simple_ident().expect("closure capture is a binding"),
+                ident,
                 self.tcx.erase_regions(held_ty),
             ),
         );
@@ -456,8 +457,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
     /// walked side by side instead: the `&mut`s must pair up, tuples and the arguments of one
     /// ADT are compared part by part, a parameter (or its model `<T as Model>::Ty`, or
     /// `Closure<F>`) matches only the same parameter, and any other projection left
-    /// unnormalized matches anything. Two different shapes where either side names a parameter
-    /// (an ADT against a tuple) are not compared further.
+    /// unnormalized matches anything. Any other two different shapes do not match.
     fn same_emitted_shape(&self, held: mir_ty::Ty<'tcx>, written: mir_ty::Ty<'tcx>) -> bool {
         use rustc_middle::ty::TypeVisitableExt as _;
         if !held.has_param() && !written.has_param() {
@@ -472,7 +472,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         }
         let is_alias = |ty: mir_ty::Ty<'tcx>| matches!(ty.kind(), mir_ty::TyKind::Alias(..));
         match (self.model_param(held), self.model_param(written)) {
-            (Some(h), Some(w)) => return h.name == w.name,
+            (Some(h), Some(w)) => return Self::param_name(h) == Self::param_name(w),
             (Some(_), None) => return is_alias(written),
             (None, Some(_)) => return is_alias(held),
             (None, None) => {}
@@ -492,7 +492,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 .types()
                 .zip(wargs.types())
                 .all(|(h, w)| self.same_emitted_shape(h, w)),
-            _ => true,
+            _ => false,
         }
     }
 
@@ -545,6 +545,15 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         self.tcx
             .try_normalize_erasing_regions(mir_ty::TypingEnv::fully_monomorphized(), ty)
             .unwrap_or(ty)
+    }
+
+    /// The name a clause's type parameter has in the function around it: the macro renames
+    /// `Self` to `__ThrustSelf` where it lifts a clause out of a trait.
+    fn param_name(param: mir_ty::ParamTy) -> rustc_span::Symbol {
+        if param.name.as_str() == "__ThrustSelf" {
+            return rustc_span::Symbol::intern("Self");
+        }
+        param.name
     }
 
     /// The type parameter a model type stands for: the parameter itself, `<T as Model>::Ty`,
