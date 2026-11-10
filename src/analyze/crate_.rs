@@ -663,6 +663,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .tcx
             .impl_item_implementor_ids(impl_def_id)
             .contains_key(&law_def_id)
+            || defined_by_parent_impl(self.tcx, impl_def_id, law_def_id)
         {
             return false;
         }
@@ -832,14 +833,52 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .unwrap_or_default();
         let implemented = self.tcx.impl_item_implementor_ids(impl_def_id);
         for law_def_id in laws {
-            let Some(own) = implemented.get(&law_def_id) else {
+            if let Some(own) = implemented.get(&law_def_id) {
+                // The impl's own proof, at the instance, against the trait's contract there.
+                if let Some(own_local) = own.as_local() {
+                    self.check_law_body(own_local, law_def_id, trait_args, impl_args, *own);
+                }
+            } else if defined_by_parent_impl(self.tcx, impl_def_id, law_def_id) {
+                self.check_parent_impl_law_at(law_def_id, trait_args);
+            } else {
                 self.check_inherited_law(impl_def_id, law_def_id, trait_args);
-                continue;
-            };
-            // The impl's own proof, at the instance, against the trait's contract there.
-            if let Some(own_local) = own.as_local() {
-                self.check_law_body(own_local, law_def_id, trait_args, impl_args, *own);
             }
+        }
+    }
+
+    /// Checks the proof of `law_def_id` that the impl selected at the concrete `trait_args` takes
+    /// from an impl it specializes, at the instance: that impl's items are resolved there to the
+    /// selected impl's overrides, which a check over that impl's own parameters does not see.
+    fn check_parent_impl_law_at(
+        &mut self,
+        law_def_id: DefId,
+        trait_args: mir_ty::GenericArgsRef<'tcx>,
+    ) {
+        let typing_env = mir_ty::TypingEnv::fully_monomorphized();
+        let resolved = (self.tcx.generics_of(law_def_id).count() == trait_args.len())
+            .then(|| mir_ty::Instance::try_resolve(self.tcx, typing_env, law_def_id, trait_args))
+            .and_then(|resolved| resolved.ok().flatten());
+        let checked = resolved.is_some_and(|instance| {
+            instance.def_id().as_local().is_some_and(|body| {
+                self.check_law_body(
+                    body,
+                    law_def_id,
+                    trait_args,
+                    instance.args,
+                    instance.def_id(),
+                )
+            })
+        });
+        // Unchecked, the law would be assumed of the instance's predicates without a proof.
+        if !checked {
+            self.tcx.dcx().span_err(
+                self.tcx.def_span(law_def_id),
+                format!(
+                    "the law `{}` cannot be checked at `{trait_args:?}`, where the selected impl \
+                     takes its proof from an impl it specializes",
+                    self.tcx.def_path_str(law_def_id)
+                ),
+            );
         }
     }
 
@@ -1028,6 +1067,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         analyze::lemma::check_lemmas(self.tcx, proof_branch);
         self.check_model_impls();
         self.check_invariant_impls();
+        self.check_sealed_impls();
+        self.check_specialization_in_std_only();
         self.analyze_raw_command_annot();
         self.register_trait_laws();
         self.check_restated_laws();
@@ -1084,6 +1125,75 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                      not `{self_ty}`"
                 ),
             );
+        }
+    }
+
+    /// Stops at an impl of a trait marked `#[thrust::sealed]` in a file other than the one that
+    /// defines the trait: `std.rs`, injected or compiled as a source file. Such a trait stands for
+    /// a std marker trait, which std's impls specialize on, and `std.rs` implements it for the
+    /// types std implements the marker for; another impl would make a spec impl specialized on it
+    /// claim std's specialized behaviour for a type std runs the general impl on.
+    fn check_sealed_impls(&self) {
+        for (trait_did, impls) in self.tcx.all_local_trait_impls(()) {
+            if self
+                .tcx
+                .get_attrs_by_path(*trait_did, &analyze::annot::sealed_path())
+                .next()
+                .is_none()
+            {
+                continue;
+            }
+            let source_map = self.tcx.sess.source_map();
+            let file_of =
+                |span: rustc_span::Span| source_map.lookup_source_file(span.lo()).name.clone();
+            let trait_file = file_of(self.tcx.def_span(*trait_did));
+            for &impl_did in impls {
+                if file_of(self.tcx.def_span(impl_did)) == trait_file {
+                    continue;
+                }
+                self.tcx.dcx().span_fatal(
+                    self.tcx.def_span(impl_did),
+                    format!(
+                        "`{}` stands for a std marker trait and is implemented only in Thrust's \
+                         std.rs",
+                        self.tcx.def_path_str(*trait_did)
+                    ),
+                );
+            }
+        }
+    }
+
+    /// Stops at specialization outside the injected `std.rs` (a `default` item, a `default impl`,
+    /// an impl that specializes another) when the crate does not enable `specialization` itself:
+    /// Thrust enables it for `std.rs`, and rustc would reject the crate's own use without it.
+    fn check_specialization_in_std_only(&self) {
+        if crate::CRATE_ENABLES_SPECIALIZATION.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
+        for (trait_did, impls) in self.tcx.all_local_trait_impls(()) {
+            let Ok(graph) = self.tcx.specialization_graph_of(*trait_did) else {
+                continue;
+            };
+            for &impl_did in impls {
+                if analyze::is_injected_std(self.tcx, impl_did) {
+                    continue;
+                }
+                let impl_def_id = impl_did.to_def_id();
+                let specializes = graph.parent(impl_def_id) != *trait_did;
+                let has_default = self.tcx.defaultness(impl_def_id).is_default()
+                    || self
+                        .tcx
+                        .associated_item_def_ids(impl_def_id)
+                        .iter()
+                        .any(|item| self.tcx.defaultness(*item).is_default());
+                if specializes || has_default {
+                    self.tcx.dcx().span_fatal(
+                        self.tcx.def_span(impl_did),
+                        "specialization needs `#![feature(specialization)]` in the crate; Thrust \
+                         enables it only for its std.rs",
+                    );
+                }
+            }
         }
     }
 
@@ -1409,6 +1519,25 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             self.ctx.register_trait_law(trait_def_id, def_id);
         }
     }
+}
+
+/// Whether the item that `impl_def_id` takes for the trait item `item_def_id` is defined in an
+/// impl it specializes (`specialization`): that impl's proof of a law, checked at that impl where
+/// the items it may override stay opaque, serves this one too.
+pub(super) fn defined_by_parent_impl(
+    tcx: TyCtxt<'_>,
+    impl_def_id: DefId,
+    item_def_id: DefId,
+) -> bool {
+    let Some(trait_def_id) = tcx.trait_of_assoc(item_def_id) else {
+        return false;
+    };
+    let Ok(ancestors) = tcx.trait_def(trait_def_id).ancestors(tcx, impl_def_id) else {
+        return false;
+    };
+    ancestors.leaf_def(tcx, item_def_id).is_some_and(|leaf| {
+        !leaf.defining_node.is_from_trait() && leaf.defining_node.def_id() != impl_def_id
+    })
 }
 
 /// A `Drop::drop` of the crate is verified once under `requires(true)` and its postcondition

@@ -171,12 +171,18 @@ fn expand_spec_fn(item: TokenStream, kind: SpecFnKind, derived: bool) -> TokenSt
     };
 
     let vis = func.vis();
+    // A `default` item of a specializable impl stays `default`.
+    let defaultness = match &func {
+        FnItemWithSignature::ItemFn(item_fn) => item_fn.modifiers.defaultness,
+        FnItemWithSignature::ImplItemFn(impl_item_fn) => impl_item_fn.modifiers.defaultness,
+        FnItemWithSignature::TraitItemFn(_) => None,
+    };
     let sig = quote! {
         #[allow(dead_code)]
         #formula_fn_attr
         #marker
         #(#opaque)*
-        #vis fn #name #def_generics(#model_ty_params) -> #model_ret #extended_where
+        #vis #defaultness fn #name #def_generics(#model_ty_params) -> #model_ret #extended_where
     };
     let mut block = match func.block() {
         Some(block) => block.clone(),

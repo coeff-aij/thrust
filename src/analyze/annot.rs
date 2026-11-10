@@ -10,6 +10,10 @@ pub fn trusted_path() -> [Symbol; 2] {
     [Symbol::intern("thrust"), Symbol::intern("trusted")]
 }
 
+pub fn sealed_path() -> [Symbol; 2] {
+    [Symbol::intern("thrust"), Symbol::intern("sealed")]
+}
+
 pub fn opaque_path() -> [Symbol; 2] {
     [Symbol::intern("thrust"), Symbol::intern("opaque")]
 }

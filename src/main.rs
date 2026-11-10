@@ -105,8 +105,13 @@ impl Callbacks for CompilerCalls {
         compiler: &Compiler,
         krate: &mut rustc_ast::Crate,
     ) -> Compilation {
+        let enabled = crate_enables_specialization(krate);
+        thrust::CRATE_ENABLES_SPECIALIZATION.store(enabled, std::sync::atomic::Ordering::Relaxed);
         if matches!(std::env::var("THRUST_NO_INJECT_STD").as_deref(), Ok("1")) {
             return Compilation::Continue;
+        }
+        if !enabled {
+            enable_spec_specialization(compiler, krate);
         }
 
         let mut injected = include_str!("../std.rs").to_owned();
@@ -177,6 +182,44 @@ fn track_inputs(psess: &mut rustc_session::parse::ParseSess) {
             .get_mut()
             .insert(rustc_span::Symbol::intern(file));
     }
+}
+
+/// Enables `specialization`, with which std.rs specializes its spec impls on spec traits as std
+/// specializes its impls on marker traits, unless the crate enables it itself, which rustc rejects
+/// twice. std uses `min_specialization`, under which a specializing impl may bound only on traits
+/// marked `#[rustc_specialization_trait]`, whose impls must be always applicable; the spec impls
+/// carry `thrust_models::Model` bounds, which are not. The feature is incomplete, and the lint
+/// that says so is allowed only when Thrust enables it; the analysis then stops at
+/// specialization outside std.rs ([`thrust::CRATE_ENABLES_SPECIALIZATION`]).
+fn enable_spec_specialization(compiler: &Compiler, krate: &mut rustc_ast::Crate) {
+    for (name, word) in [
+        (rustc_span::sym::feature, rustc_span::sym::specialization),
+        (
+            rustc_span::sym::allow,
+            rustc_span::Symbol::intern("incomplete_features"),
+        ),
+    ] {
+        krate.attrs.push(rustc_ast::attr::mk_attr_nested_word(
+            &compiler.sess.psess.attr_id_generator,
+            rustc_ast::AttrStyle::Inner,
+            rustc_ast::Safety::Default,
+            name,
+            word,
+            krate.spans.inner_span.shrink_to_lo(),
+        ));
+    }
+}
+
+/// Whether the crate enables `specialization` itself.
+fn crate_enables_specialization(krate: &rustc_ast::Crate) -> bool {
+    krate.attrs.iter().any(|attr| {
+        attr.has_name(rustc_span::sym::feature)
+            && attr.meta_item_list().is_some_and(|items| {
+                items
+                    .iter()
+                    .any(|item| item.has_name(rustc_span::sym::specialization))
+            })
+    })
 }
 
 /// `#[allow(warnings)]` at `span`, with the tokens an attribute needs before expansion (a derive
