@@ -663,6 +663,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .tcx
             .impl_item_implementor_ids(impl_def_id)
             .contains_key(&law_def_id)
+            || defined_by_parent_impl(self.tcx, impl_def_id, law_def_id)
         {
             return false;
         }
@@ -1409,6 +1410,21 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             self.ctx.register_trait_law(trait_def_id, def_id);
         }
     }
+}
+
+/// Whether the item that `impl_def_id` takes for the trait item `item_def_id` is defined in an
+/// impl it specializes (`min_specialization`): that impl's proof of a law, checked at that impl
+/// where the items it may override stay opaque, serves this one too.
+fn defined_by_parent_impl(tcx: TyCtxt<'_>, impl_def_id: DefId, item_def_id: DefId) -> bool {
+    let Some(trait_def_id) = tcx.trait_of_assoc(item_def_id) else {
+        return false;
+    };
+    let Ok(ancestors) = tcx.trait_def(trait_def_id).ancestors(tcx, impl_def_id) else {
+        return false;
+    };
+    ancestors.leaf_def(tcx, item_def_id).is_some_and(|leaf| {
+        !leaf.defining_node.is_from_trait() && leaf.defining_node.def_id() != impl_def_id
+    })
 }
 
 /// A `Drop::drop` of the crate is verified once under `requires(true)` and its postcondition
