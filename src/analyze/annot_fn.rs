@@ -412,7 +412,193 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                     format!("`{}` is not captured by this closure", ident),
                 );
             };
+            self.check_capture_type(subpat, ident, closure_args.as_closure(), idx);
             self.env.insert(hir_id, upvar_terms[idx].clone());
+        }
+    }
+
+    /// Rejects a `captures` entry whose type does not match the one the closure holds the
+    /// capture at: the capture's own type in an `Fn` or `FnOnce` closure, a `&mut` of it in an
+    /// `FnMut` closure. rustc takes the kind from the bound the closure is passed to when there
+    /// is one, so the same closure can need either. Shared references and boxes are erased from
+    /// the emitted sorts, so they need not match.
+    fn check_capture_type(
+        &self,
+        subpat: &'tcx rustc_hir::Pat<'tcx>,
+        ident: rustc_span::Ident,
+        closure_args: mir_ty::ClosureArgs<TyCtxt<'tcx>>,
+        idx: usize,
+    ) {
+        let capture_ty = closure_args.upvar_tys()[idx];
+        let held_ty = match closure_args.kind() {
+            mir_ty::ClosureKind::FnMut => {
+                mir_ty::Ty::new_mut_ref(self.tcx, self.tcx.lifetimes.re_erased, capture_ty)
+            }
+            mir_ty::ClosureKind::Fn | mir_ty::ClosureKind::FnOnce => capture_ty,
+        };
+        if self.same_emitted_shape(self.model_of(held_ty), self.written_ty(subpat)) {
+            return;
+        }
+        self.tcx.dcx().span_fatal(
+            subpat.span,
+            format!(
+                "this `{}` closure holds `{}` at type `{}`, which `captures` restates at another type (only shared references and boxes may differ)",
+                closure_args.kind().as_str(),
+                ident,
+                self.tcx.erase_regions(held_ty),
+            ),
+        );
+    }
+
+    /// Whether a value of model type `held` can be read at the model type `written` in a
+    /// clause: their sorts agree with `Box` erased, as the query is emitted. `held` is in the
+    /// generics of the function around the closure and `written` in those of the clause, which
+    /// copies them under the same names, so where either names a type parameter the two are
+    /// walked side by side instead: the `&mut`s must pair up, tuples and the arguments of one
+    /// ADT are compared part by part, a parameter (or its model `<T as Model>::Ty`, or
+    /// `Closure<F>`) matches only the same parameter, and any other projection left
+    /// unnormalized matches anything. Any other two different shapes do not match.
+    fn same_emitted_shape(&self, held: mir_ty::Ty<'tcx>, written: mir_ty::Ty<'tcx>) -> bool {
+        use rustc_middle::ty::TypeVisitableExt as _;
+        if !held.has_param() && !written.has_param() {
+            let emitted_sort = |ty| chc::unbox_sort(self.type_builder.build(ty).ty.to_sort());
+            return emitted_sort(self.normalized_ty(held)) == emitted_sort(written);
+        }
+        let (held, written) = (self.skip_shared(held), self.skip_shared(written));
+        match (self.mut_pointee(held), self.mut_pointee(written)) {
+            (Some(held), Some(written)) => return self.same_emitted_shape(held, written),
+            (None, None) => {}
+            _ => return false,
+        }
+        let is_alias = |ty: mir_ty::Ty<'tcx>| matches!(ty.kind(), mir_ty::TyKind::Alias(..));
+        match (self.model_param(held), self.model_param(written)) {
+            (Some(h), Some(w)) => return Self::param_name(h) == Self::param_name(w),
+            (Some(_), None) => return is_alias(written),
+            (None, Some(_)) => return is_alias(held),
+            (None, None) => {}
+        }
+        if is_alias(held) || is_alias(written) {
+            return true;
+        }
+        match (held.kind(), written.kind()) {
+            (mir_ty::TyKind::Tuple(hs), mir_ty::TyKind::Tuple(ws)) => {
+                hs.len() == ws.len()
+                    && hs
+                        .iter()
+                        .zip(ws.iter())
+                        .all(|(h, w)| self.same_emitted_shape(h, w))
+            }
+            (mir_ty::TyKind::Adt(ha, hargs), mir_ty::TyKind::Adt(wa, wargs)) if ha == wa => hargs
+                .types()
+                .zip(wargs.types())
+                .all(|(h, w)| self.same_emitted_shape(h, w)),
+            _ => false,
+        }
+    }
+
+    /// The model type of the closure's type `ty`: `&mut` as `Mut`, `Box` as the model `Box`,
+    /// shared references and tuples part by part, a type parameter `T` as `<T as Model>::Ty`,
+    /// and any other type by its `Model` impl, normalized where the closure is defined.
+    fn model_of(&self, ty: mir_ty::Ty<'tcx>) -> mir_ty::Ty<'tcx> {
+        let tcx = self.tcx;
+        let model_adt = |did: Option<DefId>, inner: mir_ty::Ty<'tcx>| {
+            let did = did.expect("thrust_models defines the model type");
+            mir_ty::Ty::new_adt(tcx, tcx.adt_def(did), tcx.mk_args(&[inner.into()]))
+        };
+        match ty.kind() {
+            mir_ty::TyKind::Ref(region, inner, rustc_hir::Mutability::Not) => {
+                mir_ty::Ty::new_imm_ref(tcx, *region, self.model_of(*inner))
+            }
+            mir_ty::TyKind::Ref(_, inner, rustc_hir::Mutability::Mut) => {
+                model_adt(self.def_ids.mut_model(), self.model_of(*inner))
+            }
+            mir_ty::TyKind::Adt(_, args) if ty.is_box() => {
+                model_adt(self.def_ids.box_model(), self.model_of(args.type_at(0)))
+            }
+            mir_ty::TyKind::Tuple(tys) => {
+                mir_ty::Ty::new_tup_from_iter(tcx, tys.iter().map(|ty| self.model_of(ty)))
+            }
+            _ => {
+                let Some(model_ty) = self.def_ids.model_ty() else {
+                    return ty;
+                };
+                let projection = mir_ty::Ty::new_projection(tcx, model_ty, [ty]);
+                if matches!(ty.kind(), mir_ty::TyKind::Param(_)) {
+                    return projection;
+                }
+                let closure_def_id = tcx.local_parent(self.local_def_id);
+                let typing_env = mir_ty::TypingEnv::post_analysis(
+                    tcx,
+                    tcx.typeck_root_def_id(closure_def_id.to_def_id()),
+                );
+                tcx.try_normalize_erasing_regions(typing_env, projection)
+                    .unwrap_or(projection)
+            }
+        }
+    }
+
+    /// The type a clause's pattern is written at, in the clause's own generics: normalized but
+    /// not instantiated, so that it is compared with the closure's types the same way whether
+    /// the clause is translated over its type parameters or at an instance.
+    fn written_ty(&self, pat: &'tcx rustc_hir::Pat<'tcx>) -> mir_ty::Ty<'tcx> {
+        let ty = self.typeck.pat_ty(pat);
+        self.tcx
+            .try_normalize_erasing_regions(mir_ty::TypingEnv::fully_monomorphized(), ty)
+            .unwrap_or(ty)
+    }
+
+    /// The name a clause's type parameter has in the function around it: the macro renames
+    /// `Self` to `__ThrustSelf` where it lifts a clause out of a trait.
+    fn param_name(param: mir_ty::ParamTy) -> rustc_span::Symbol {
+        if param.name.as_str() == "__ThrustSelf" {
+            return rustc_span::Symbol::intern("Self");
+        }
+        param.name
+    }
+
+    /// The type parameter a model type stands for: the parameter itself, `<T as Model>::Ty`,
+    /// or the model `Closure<F>` of a closure-typed parameter.
+    fn model_param(&self, ty: mir_ty::Ty<'tcx>) -> Option<mir_ty::ParamTy> {
+        let inner = match ty.kind() {
+            mir_ty::TyKind::Adt(adt, args) if Some(adt.did()) == self.def_ids.closure_model() => {
+                args.type_at(0)
+            }
+            mir_ty::TyKind::Alias(mir_ty::AliasTyKind::Projection, alias)
+                if Some(alias.def_id) == self.def_ids.model_ty() =>
+            {
+                alias.args.type_at(0)
+            }
+            _ => ty,
+        };
+        match inner.kind() {
+            mir_ty::TyKind::Param(param) => Some(*param),
+            _ => None,
+        }
+    }
+
+    /// `ty` past the shared references and boxes around it, which the query erases.
+    fn skip_shared(&self, mut ty: mir_ty::Ty<'tcx>) -> mir_ty::Ty<'tcx> {
+        loop {
+            ty = match ty.kind() {
+                mir_ty::TyKind::Ref(_, inner, rustc_hir::Mutability::Not) => *inner,
+                mir_ty::TyKind::Adt(adt, args)
+                    if ty.is_box() || Some(adt.did()) == self.def_ids.box_model() =>
+                {
+                    args.type_at(0)
+                }
+                _ => return ty,
+            };
+        }
+    }
+
+    /// The pointee of a `&mut` or of its model `Mut`.
+    fn mut_pointee(&self, ty: mir_ty::Ty<'tcx>) -> Option<mir_ty::Ty<'tcx>> {
+        match ty.kind() {
+            mir_ty::TyKind::Ref(_, inner, rustc_hir::Mutability::Mut) => Some(*inner),
+            mir_ty::TyKind::Adt(adt, args) if Some(adt.did()) == self.def_ids.mut_model() => {
+                Some(args.type_at(0))
+            }
+            _ => None,
         }
     }
 
