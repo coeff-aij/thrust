@@ -2,7 +2,7 @@
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
-// The tighter, real bound (64) does not follow from the two independent `<= 64` axioms alone.
+// The tighter, real bound (64) does not follow from the two specifications.
 
 #[thrust_macros::context]
 #[thrust_macros::ensures(result <= 64)]

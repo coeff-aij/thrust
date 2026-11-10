@@ -13,7 +13,7 @@ use crate::rustc_index::bit_set::{ones, BitIter, BitMatrix, DenseBitSet};
 use crate::rustc_index::{Idx, IdxRange, IndexSlice, IndexVec, IterEnumerated, SliceIter};
 use crate::case_study::USize;
 use crate::case_study::{counts, lemmas};
-use crate::case_study::iter::{Filter, Map, collect_index_vec, collect_index_vec_assumed, collect_index_vec_result_assumed, iter_all, map_new_assumed};
+use crate::case_study::iter::{Filter, Map, collect_index_vec, collect_index_vec_result, iter_all, map_new_assumed};
 use std::iter::{self, Enumerate};
 use std::slice::IterMut;
 
@@ -134,6 +134,8 @@ fn bit_iter_yields_below<'a, T: Idx + thrust_models::Model>(s: &'a DenseBitSet<T
     // `count(local_b)` takes a column index as a row, so every set bit's column must be below
     // the number of rows: the panic condition, through the matrix's ghost column bound.
     && (*storage_conflicts).num_rows <= nb_locals
+    // `nb_locals` is a `usize`: the domain of `ineligible_locals`, which its iterator needs.
+    && nb_locals <= 18446744073709551615usize
     && *(*storage_conflicts).col_bound <= (*storage_conflicts).num_rows
     && BitMatrix::<LocalIdx, LocalIdx>::cols_below(*storage_conflicts, *(*storage_conflicts).col_bound)
     && BitMatrix::<LocalIdx, LocalIdx>::wf(*storage_conflicts)
@@ -146,6 +148,7 @@ fn bit_iter_yields_below<'a, T: Idx + thrust_models::Model>(s: &'a DenseBitSet<T
     // iterator yields locals below `nb_locals`.
     result.1.len() == nb_locals
     && result.0.0 == nb_locals
+    && DenseBitSet::<LocalIdx>::words_cover_domain(result.0)
     // 1. Unassigned locals never appear in any variant's field list.
     && forall(|l: usize| 0 <= l && l < nb_locals && result.1[l] == SavedLocalEligibility::Unassigned ==> forall(|v: usize, f: usize|
             0 <= v && v < (*variant_fields).len()
@@ -220,6 +223,7 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
                 |assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, ineligible_locals: DenseBitSet<LocalIdx>, iter!('variants): IterEnumerated<VariantIdx, IndexVec<FieldIdx, LocalIdx>>, iter: SliceIter<LocalIdx>, variant_index: VariantIdx, variant_fields: &IndexSlice<VariantIdx, IndexVec<FieldIdx, LocalIdx>>, storage_conflicts: &BitMatrix<LocalIdx, LocalIdx>, nb_locals: thrust_models::FnParam<usize>|
                 assignments.len() == nb_locals.at_entry()
                 && ineligible_locals.0 == nb_locals.at_entry()
+                && nb_locals.at_entry() <= 18446744073709551615usize
                 && DenseBitSet::<LocalIdx>::words_cover_domain(ineligible_locals)
                 && 0 <= DenseBitSet::<LocalIdx>::card(ineligible_locals)
                 && DenseBitSet::<LocalIdx>::card(ineligible_locals) <= ineligible_locals.0
@@ -292,6 +296,7 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
             |assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, ineligible_locals: DenseBitSet<LocalIdx>, iter: IdxRange<LocalIdx>, storage_conflicts: &BitMatrix<LocalIdx, LocalIdx>, variant_fields: &IndexSlice<VariantIdx, IndexVec<FieldIdx, LocalIdx>>, nb_locals: thrust_models::FnParam<usize>|
             assignments.len() == nb_locals.at_entry()
             && ineligible_locals.0 == nb_locals.at_entry()
+            && nb_locals.at_entry() <= 18446744073709551615usize
             && DenseBitSet::<LocalIdx>::words_cover_domain(ineligible_locals)
             && 0 <= DenseBitSet::<LocalIdx>::card(ineligible_locals)
             && DenseBitSet::<LocalIdx>::card(ineligible_locals) <= ineligible_locals.0
@@ -335,6 +340,7 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
                 |assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, ineligible_locals: DenseBitSet<LocalIdx>, iter: BitIter<LocalIdx>, iter!('rows): IdxRange<LocalIdx>, local_a: LocalIdx, storage_conflicts: &BitMatrix<LocalIdx, LocalIdx>, variant_fields: &IndexSlice<VariantIdx, IndexVec<FieldIdx, LocalIdx>>, nb_locals: thrust_models::FnParam<usize>|
                 assignments.len() == nb_locals.at_entry()
                 && ineligible_locals.0 == nb_locals.at_entry()
+                && nb_locals.at_entry() <= 18446744073709551615usize
                 && DenseBitSet::<LocalIdx>::words_cover_domain(ineligible_locals)
                 && 0 <= DenseBitSet::<LocalIdx>::card(ineligible_locals)
                 && DenseBitSet::<LocalIdx>::card(ineligible_locals) <= ineligible_locals.0
@@ -353,6 +359,7 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
                 && forall(|i: USize| <LocalIdx as Idx>::index_is(local_a, i) ==> i < nb_locals.at_entry())
                 && iter.4 == *(*storage_conflicts).col_bound
                 && 0 <= iter.5 && 0 <= iter.6 && iter.5 + iter.6 <= iter.4
+                && BitIter::<LocalIdx>::tracks_words(iter)
             );
             thrust_macros::invariant!(
                 |assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, variant_fields: thrust_models::FnParam<&IndexSlice<VariantIdx, IndexVec<FieldIdx, LocalIdx>>>, nb_locals: thrust_models::FnParam<usize>|
@@ -399,6 +406,7 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
                 && DenseBitSet::<VariantIdx>::words_cover_domain(used_variants)
                 && assignments.len() == nb_locals.at_entry()
                 && ineligible_locals.0 == nb_locals.at_entry()
+                && nb_locals.at_entry() <= 18446744073709551615usize
                 && DenseBitSet::<LocalIdx>::words_cover_domain(ineligible_locals)
                 && 0 <= DenseBitSet::<LocalIdx>::card(ineligible_locals)
                 && DenseBitSet::<LocalIdx>::card(ineligible_locals) <= ineligible_locals.0
@@ -436,6 +444,7 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
                     && assignments == iter.1
                     && forall(|k: USize| 0 <= k && k < iter.2 ==> iter.1[k] == SavedLocalEligibility::Ineligible(None))
                     && ineligible_locals.0 == nb_locals.at_entry()
+                    && nb_locals.at_entry() <= 18446744073709551615usize
                     && DenseBitSet::<LocalIdx>::words_cover_domain(ineligible_locals)
                     && 0 <= DenseBitSet::<LocalIdx>::card(ineligible_locals)
                     && DenseBitSet::<LocalIdx>::card(ineligible_locals) <= ineligible_locals.0
@@ -463,6 +472,7 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
                 && iter.0.4 == ineligible_locals.0 && iter.1 == iter.0.5
                 && 0 <= iter.1 && iter.1 <= iter.0.4
                 && 0 <= iter.0.6 && iter.0.5 + iter.0.6 == DenseBitSet::<LocalIdx>::card(ineligible_locals)
+                && BitIter::<LocalIdx>::tracks_words(iter.0)
                 && forall(|k: USize| 0 <= k && k < nb_locals.at_entry() ==> <LocalIdx as Idx>::can_new(k))
                 && forall(|n: USize| 0 <= n && n <= nb_locals.at_entry() ==> <FieldIdx as Idx>::can_new(n))
                 && forall(|l: USize, v: USize, f: USize|
@@ -732,23 +742,16 @@ fn variant_field_layouts<
     // Each field collected is an entry of `local_layouts`: the map closure's `ensures`.
     thrust_macros::proof!(Map::yields_entries_of(&variant_only_tys, local_layouts));
     // Rewrite (rewrites.md R8): `collect_index_vec` for `collect`; the result is bound to a name,
-    // for the `assume!`. Fallback: through `collect_index_vec_assumed`, which assumes `collect`'s
-    // precondition (the map's `inv`), as the solver does not answer it; call `collect_index_vec`
-    // again once it does.
-    let fields = collect_index_vec_assumed(variant_only_tys);
+    // for the `assume!`. Its precondition, the map's `inv`, is `Map::new`'s `ensures`.
+    let fields = collect_index_vec(variant_only_tys);
     // The fields are as many as the variant's entries Assigned to it, which `combine_offsets`
-    // requires: `map_count_exact` at `collect`'s witness. Assumed (fallback): the solver does not
-    // answer this cut; delete the `assume!` for the `proof_assert!` once it does.
-    thrust_macros::assume!(
+    // requires: `map_count_exact` at `collect`'s witness.
+    thrust_macros::proof_assert!(
         |fields: IndexVec<FieldIdx, F>, variant_fields: &IndexVec<FieldIdx, LocalIdx>,
             assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, index: VariantIdx|
             fields.len() == counts::acc_cnt::<FieldIdx, LocalIdx, LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>(
                 *variant_fields, *assignments, SavedLocalEligibility::Assigned(index), (*variant_fields).len())
     );
-    // Reachability twin of the fallback's assumptions in this function (fail root
-    // layout_reach_fallback.rs).
-    #[cfg(thrust_layout_reach_fallback)]
-    thrust_macros::proof_assert!(|| false);
     thrust_macros::proof!(assigned_count_of(variant_fields, &assignments, index, fields.len()));
     // The `ensures`' selection, at `collect`'s witness.
     thrust_macros::proof_assert!(
@@ -1051,6 +1054,9 @@ fn split_in_memory_order<FieldIdx: Idx + thrust_models::Model>(
     forall(|k: USize|
         0 <= k && k <= (*prefix_layouts).len() + 1 + (*local_layouts).len() ==> <FieldIdx as Idx>::can_new(k))
         && (*ineligible_locals).0 == (*local_layouts).len()
+        // What the set's iterator needs: its words, and its domain a `usize`.
+        && DenseBitSet::<LocalIdx>::words_cover_domain(*ineligible_locals)
+        && (*local_layouts).len() <= 18446744073709551615usize
         // `LocalIdx` reaches every local: the set's iterator's `inv`, which `Map::new` and
         // `extend_from` require.
         && forall(|k: USize| 0 <= k && k < (*local_layouts).len() ==> <LocalIdx as Idx>::can_new(k))
@@ -1584,7 +1590,7 @@ fn prefix_wf_of<C: HasDataLayout>(calc: &LayoutCalculator<C>, prefix_size: Size,
 
 // Fallback: `prefix_wf_of` with its `requires` assumed, for its call in `layout()`, where the
 // solver does not answer that `requires` even right after an `assume!` of it. A checked wrapper,
-// as `collect_index_vec_assumed` of thrust/iter.rs; call `prefix_wf_of` again once the solver
+// as `map_new_assumed` of thrust/iter.rs; call `prefix_wf_of` again once the solver
 // answers it there.
 #[thrust_macros::context]
 #[thrust_macros::lemma]
@@ -1750,18 +1756,6 @@ fn variant_layout<
     let dl = calc.cx.data_layout();
     thrust_macros::proof_assert!(|repr: ReprOptions, kind: StructKind, dl: &TargetDataLayout|
         repr.pack == None && LayoutCalculator::<C>::prefix_fits(&repr, kind));
-    // Assumed (fallback): `univariant`'s precondition at this call, which the solver does not
-    // answer although each conjunct is a cut or a lemma's `ensures` above.
-    thrust_macros::assume!(
-        |calc: &LayoutCalculator<C>, fields: IndexVec<FieldIdx, F>, repr: ReprOptions, kind: StructKind|
-            LayoutCalculator::<C>::layout_pre::<FieldIdx, VariantIdx, F>(*calc, &fields, kind)
-                && LayoutCalculator::<C>::prefix_fits(&repr, kind)
-                && LayoutCalculator::<C>::deref_functional::<FieldIdx, VariantIdx, F>()
-                && LayoutCalculator::<C>::fits_in_any_order::<FieldIdx, VariantIdx, F>(*calc, &fields, &repr, kind)
-    );
-    // Reachability twin of the assumption above (fail root layout_reach_fallback.rs).
-    #[cfg(thrust_layout_reach_fallback)]
-    thrust_macros::proof_assert!(|| false);
     let mut variant = calc.univariant(&fields, &repr, kind)?;
 
     // `combine_offsets` requires `u32` to reach the variant's m fields.
@@ -2080,10 +2074,10 @@ pub fn layout<
     // `hist_inv` bounds `size` and `align`: nothing after the `collect` needs a bound, as
     // `Size::align_to` requires nothing (its body checked by the `values.rs` root) and `max`
     // neither.
-    // Fallback: through `map_new_assumed` and `collect_index_vec_result_assumed`, which assume
-    // `Map::new`'s and `collect`'s preconditions (each the map's `inv`), as the solver does not
-    // answer them; call `Map::new` and `collect_index_vec_result` again once it does.
-    let variants = collect_index_vec_result_assumed::<VariantIdx, _, _, _>(map_new_assumed(
+    // Fallback: through `map_new_assumed`, which assumes `Map::new`'s precondition (the map's
+    // `inv`), as the solver does not answer it; call `Map::new` again once it does. `collect`'s
+    // precondition, the same `inv`, is `map_new_assumed`'s `ensures`.
+    let variants = collect_index_vec_result::<VariantIdx, _, _, _>(map_new_assumed(
         variant_iter,
         thrust_macros::closure!(
         captures(
