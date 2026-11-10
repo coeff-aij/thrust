@@ -1,6 +1,7 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 THRUST_PER_INSTANCE_GENERICS=1
+// slow: 36 s; derived predicates by default: pass/derived_pred/take.rs, pass/derived_pred/generic_law_instance.rs, fail/derived_pred/generic_take_value.rs
 // `creusot/take` with `produces` declared derived and left out of both `Range` and the generic
 // `Take<I>`, each instance analyzed (`THRUST_PER_INSTANCE_GENERICS=1`): `Take<Range>` gets an
 // unknown of its own, constrained by `Take::next` and the inherited laws checked at that instance.
