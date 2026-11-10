@@ -2519,9 +2519,23 @@ where
     fn completed(&mut self) -> bool;
 
     // The state in which `fold` ends once it has handed out its items: `Iterator`'s `fold` calls
-    // `next` until it answers `None`, which is `completed`. An impl whose `fold` std overrides with
-    // another path states it there, specialized as std specializes it (`Zip`, `Take`); `count`,
-    // `sum`, `max_by_key` and `fold` run `fold`, and `extend` and `collect` may.
+    // `next` until it answers `None`, which is `completed`.
+    // - An impl whose `fold` std overrides with another path states it there, specialized as std
+    //   specializes it (`Zip` on `TrustedRandomAccessNoCoerce`, `Take` on `TrustedRandomAccess`).
+    // - An adapter whose `fold` (or `count`) folds its inner iterators states it through theirs
+    //   (`Map`, `Enumerate`, `Cloned`, `Copied`, `Skip`, `Filter`, `Chain`).
+    // - The others keep `completed`: their `fold` ends where `next` does. `Rev`'s runs the inner
+    //   `rfold` and `&mut I`'s the inner `try_fold`, which over the impls here step by `next_back`
+    //   or `next` (`ZipImpl` and `SpecTake` override neither).
+    // `count`, `sum` and `fold` read it; `extend`, `collect` and `Vec::from_iter` allow it or
+    // `completed`, as std runs `for_each` over a `TrustedLen` iterator, `try_fold` in the in-place
+    // `collect` (`SourceIter`), and `next` otherwise; neither trait has a spec trait yet.
+    // Paths with no spec trait yet are covered by `completed` cases that also allow them: `Zip`'s
+    // general `completed` allows the zip unchanged where one side could complete (`SpecFold` over
+    // two `TrustedLen` iterators), and `Skip`'s an unstepped inner iterator with no more than `n`
+    // items. `max_by_key` runs `fold` after one `next` but reads `completed`, which holds at each
+    // `fold_completed` here by those cases: removing them needs `max_by_key` to read
+    // `fold_completed` first.
     #[thrust_macros::predicate]
     fn fold_completed(&mut self) -> bool {
         Self::completed(thrust_models::model::Mut::new(*self, !self))
@@ -2877,7 +2891,7 @@ where
 #[thrust_macros::context]
 impl<T> TrustedRandomAccessNoCoerceSpec for std::vec::IntoIter<T>
 where
-    T: thrust_models::Model,
+    T: thrust_models::Model + Copy,
 {
     #[thrust_macros::logic]
     fn size(self) -> thrust_models::model::Int {
@@ -4024,6 +4038,20 @@ where
             && (*self).1 == (!self).1
     }
 
+    // `fold` folds the inner iterator, and `count` sums a `Map` of it (core/src/iter/adapters/filter.rs).
+    #[thrust_macros::predicate]
+    fn fold_completed(&mut self) -> bool {
+        thrust_models::exists(|s: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
+                               e: <I as thrust_models::Model>::Ty,
+                               e2: <I as thrust_models::Model>::Ty|
+            I::produces((*self).0, s, e)
+                && I::fold_completed(thrust_models::model::Mut::new(e, e2))
+                && thrust_models::forall(|k: thrust_models::model::Int|
+                    !(0 <= k && k < s.len())
+                        || thrust_macros::post!(thrust_models::model::Mut::new((*self).1, (!self).1)(&s[k]), false)))
+            && (*self).1 == (!self).1
+    }
+
     fn produces_refl(a: &Self) {}
 
     // Trusted: PCSat (fptprove 8746111b4) gives no answer on this law in 200 s. Creusot proves it
@@ -4109,6 +4137,18 @@ where
             && (((*self).1 == None && (!self).1 == None)
                 || thrust_models::exists(|y: <B as thrust_models::Model>::Ty, y2: <B as thrust_models::Model>::Ty|
                     (*self).1 == Some(y) && (!self).1 == Some(y2) && B::completed(thrust_models::model::Mut::new(y, y2))))
+    }
+
+    // `fold` folds the first iterator and then the second, and `count` counts each
+    // (core/src/iter/adapters/chain.rs); neither drops the first.
+    #[thrust_macros::predicate]
+    fn fold_completed(&mut self) -> bool {
+        (((*self).0 == None && (!self).0 == None)
+            || thrust_models::exists(|x: <A as thrust_models::Model>::Ty, x2: <A as thrust_models::Model>::Ty|
+                (*self).0 == Some(x) && (!self).0 == Some(x2) && A::fold_completed(thrust_models::model::Mut::new(x, x2))))
+            && (((*self).1 == None && (!self).1 == None)
+                || thrust_models::exists(|y: <B as thrust_models::Model>::Ty, y2: <B as thrust_models::Model>::Ty|
+                    (*self).1 == Some(y) && (!self).1 == Some(y2) && B::fold_completed(thrust_models::model::Mut::new(y, y2))))
     }
 
     fn produces_refl(a: &Self) {}

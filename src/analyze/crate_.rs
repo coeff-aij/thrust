@@ -833,14 +833,43 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .unwrap_or_default();
         let implemented = self.tcx.impl_item_implementor_ids(impl_def_id);
         for law_def_id in laws {
-            let Some(own) = implemented.get(&law_def_id) else {
+            if let Some(own) = implemented.get(&law_def_id) {
+                // The impl's own proof, at the instance, against the trait's contract there.
+                if let Some(own_local) = own.as_local() {
+                    self.check_law_body(own_local, law_def_id, trait_args, impl_args, *own);
+                }
+            } else if defined_by_parent_impl(self.tcx, impl_def_id, law_def_id) {
+                self.check_parent_impl_law_at(law_def_id, trait_args);
+            } else {
                 self.check_inherited_law(impl_def_id, law_def_id, trait_args);
-                continue;
-            };
-            // The impl's own proof, at the instance, against the trait's contract there.
-            if let Some(own_local) = own.as_local() {
-                self.check_law_body(own_local, law_def_id, trait_args, impl_args, *own);
             }
+        }
+    }
+
+    /// Checks the proof of `law_def_id` that the impl selected at the concrete `trait_args` takes
+    /// from an impl it specializes, at the instance: that impl's items are resolved there to the
+    /// selected impl's overrides, which a check over that impl's own parameters does not see.
+    fn check_parent_impl_law_at(
+        &mut self,
+        law_def_id: DefId,
+        trait_args: mir_ty::GenericArgsRef<'tcx>,
+    ) {
+        let typing_env = mir_ty::TypingEnv::fully_monomorphized();
+        let resolved = (self.tcx.generics_of(law_def_id).count() == trait_args.len())
+            .then(|| mir_ty::Instance::try_resolve(self.tcx, typing_env, law_def_id, trait_args))
+            .and_then(|resolved| resolved.ok().flatten());
+        let Some(instance) = resolved else {
+            tracing::warn!(?law_def_id, ?trait_args, "law not resolved at the instance");
+            return;
+        };
+        if let Some(body) = instance.def_id().as_local() {
+            self.check_law_body(
+                body,
+                law_def_id,
+                trait_args,
+                instance.args,
+                instance.def_id(),
+            );
         }
     }
 
@@ -1413,9 +1442,13 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 }
 
 /// Whether the item that `impl_def_id` takes for the trait item `item_def_id` is defined in an
-/// impl it specializes (`min_specialization`): that impl's proof of a law, checked at that impl
-/// where the items it may override stay opaque, serves this one too.
-fn defined_by_parent_impl(tcx: TyCtxt<'_>, impl_def_id: DefId, item_def_id: DefId) -> bool {
+/// impl it specializes (`specialization`): that impl's proof of a law, checked at that impl where
+/// the items it may override stay opaque, serves this one too.
+pub(super) fn defined_by_parent_impl(
+    tcx: TyCtxt<'_>,
+    impl_def_id: DefId,
+    item_def_id: DefId,
+) -> bool {
     let Some(trait_def_id) = tcx.trait_of_assoc(item_def_id) else {
         return false;
     };

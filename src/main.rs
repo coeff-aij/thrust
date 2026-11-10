@@ -183,31 +183,28 @@ fn track_inputs(psess: &mut rustc_session::parse::ParseSess) {
 
 /// Enables `specialization`, with which std.rs specializes its spec impls on spec traits as std
 /// specializes its impls on marker traits, unless the crate enables it itself, which rustc rejects
-/// twice. std uses `min_specialization`, whose marker traits may not have items or impls with
-/// bounds on other traits; the spec traits carry `size` and its laws, and their impls the
-/// `thrust_models::Model` bounds.
+/// twice. std uses `min_specialization`, under which a specializing impl may bound only on traits
+/// marked `#[rustc_specialization_trait]`, whose impls must be always applicable; the spec impls
+/// carry `thrust_models::Model` bounds, which are not.
 fn enable_spec_specialization(compiler: &Compiler, krate: &mut rustc_ast::Crate) {
-    for feature in ["specialization"] {
-        let enabled = krate.attrs.iter().any(|attr| {
-            attr.has_name(rustc_span::sym::feature)
-                && attr.meta_item_list().is_some_and(|items| {
-                    items
-                        .iter()
-                        .any(|item| item.has_name(rustc_span::Symbol::intern(feature)))
-                })
-        });
-        if enabled {
-            continue;
-        }
-        krate.attrs.push(rustc_ast::attr::mk_attr_nested_word(
-            &compiler.sess.psess.attr_id_generator,
-            rustc_ast::AttrStyle::Inner,
-            rustc_ast::Safety::Default,
-            rustc_span::sym::feature,
-            rustc_span::Symbol::intern(feature),
-            krate.spans.inner_span.shrink_to_lo(),
-        ));
+    let feature = rustc_span::sym::specialization;
+    let enabled = krate.attrs.iter().any(|attr| {
+        attr.has_name(rustc_span::sym::feature)
+            && attr
+                .meta_item_list()
+                .is_some_and(|items| items.iter().any(|item| item.has_name(feature)))
+    });
+    if enabled {
+        return;
     }
+    krate.attrs.push(rustc_ast::attr::mk_attr_nested_word(
+        &compiler.sess.psess.attr_id_generator,
+        rustc_ast::AttrStyle::Inner,
+        rustc_ast::Safety::Default,
+        rustc_span::sym::feature,
+        feature,
+        krate.spans.inner_span.shrink_to_lo(),
+    ));
 }
 
 /// `#[allow(warnings)]` at `span`, with the tokens an attribute needs before expansion (a derive

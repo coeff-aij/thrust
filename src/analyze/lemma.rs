@@ -605,8 +605,9 @@ impl<'tcx> Checker<'tcx> {
         uses
     }
 
-    /// The local impls that inherit the trait's default body `law`, each with the arguments
-    /// that body is checked at there: the impl's trait arguments, and the law's own parameters.
+    /// The local impls that inherit the trait's default body `law` (not the body of an impl they
+    /// specialize), each with the arguments that body is checked at there: the impl's trait
+    /// arguments, and the law's own parameters.
     fn inheriting_impls(&self, law: DefId) -> Vec<(DefId, mir_ty::GenericArgsRef<'tcx>)> {
         let Some(trait_did) = self.tcx.trait_of_assoc(law) else {
             return Vec::new();
@@ -621,6 +622,7 @@ impl<'tcx> Checker<'tcx> {
                     .tcx
                     .impl_item_implementor_ids(*impl_did)
                     .contains_key(&law)
+                    && !analyze::crate_::defined_by_parent_impl(self.tcx, *impl_did, law)
             })
             .map(|impl_did| {
                 let trait_ref = self

@@ -69,7 +69,9 @@ impl<'tcx> analyze::Analyzer<'tcx> {
             .opt_associated_item(def_id)
             .and_then(|item| item.trait_container(self.tcx()));
         if let Some(trait_def_id) = trait_def_id {
-            if self.trait_laws.borrow().contains_key(&trait_def_id) {
+            if self.trait_laws.borrow().contains_key(&trait_def_id)
+                && !opaque_by_specialization(self.tcx(), def_id, generic_args)
+            {
                 self.pending_laws.borrow_mut().push(PendingLaw {
                     pred: pred.clone(),
                     trait_def_id,
@@ -630,4 +632,35 @@ fn final_state_sort(declared: &chc::Sort, fn_ty: &rty::FunctionType) -> Option<c
         .ty
         .to_sort();
     (contract_sort == chc::Sort::mut_(declared.clone())).then(|| declared.clone())
+}
+
+/// Whether the trait item `def_id` stands for no body at `generic_args` only because an impl marks
+/// it `default` (`specialization`): the self type is no type parameter or projection, and some impl
+/// of the trait marks its item `default`. Such an item takes no laws: the impl that proves a law
+/// over it proves it at these arguments, with the item opaque, so assuming the law there would
+/// assume what that proof is to show; and no proof can show a law of every override.
+fn opaque_by_specialization<'tcx>(
+    tcx: mir_ty::TyCtxt<'tcx>,
+    def_id: DefId,
+    generic_args: mir_ty::GenericArgsRef<'tcx>,
+) -> bool {
+    let Some(trait_def_id) = tcx.trait_of_assoc(def_id) else {
+        return false;
+    };
+    let through_param = generic_args.types().next().is_none_or(|self_ty| {
+        matches!(
+            self_ty.kind(),
+            mir_ty::Param(_) | mir_ty::Alias(..) | mir_ty::Placeholder(_) | mir_ty::Bound(..)
+        )
+    });
+    if through_param {
+        return false;
+    }
+    tcx.all_impls(trait_def_id).any(|impl_def_id| {
+        tcx.defaultness(impl_def_id).is_default()
+            || tcx
+                .impl_item_implementor_ids(impl_def_id)
+                .get(&def_id)
+                .is_some_and(|item| tcx.defaultness(*item).is_default())
+    })
 }
