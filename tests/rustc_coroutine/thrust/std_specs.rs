@@ -26,6 +26,14 @@ fn _extern_spec_u64_wrapping_add(x: u64, y: u64) -> u64 {
     u64::wrapping_add(x, y)
 }
 
+// `BitIter::next`'s offset, exact over the values of a 64-bit `usize`.
+#[thrust::extern_spec_fn]
+#[thrust_macros::ensures((x + y <= 18446744073709551615usize && result == x + y)
+    || (18446744073709551615usize < x + y && result == x + y - 18446744073709551615usize - 1))]
+fn _extern_spec_usize_wrapping_add(x: usize, y: usize) -> usize {
+    usize::wrapping_add(x, y)
+}
+
 // `fold` over a slice iterator calls the closure on each item from the cursor on. Its result is
 // not stated: the case study only needs that it does not panic.
 #[thrust::extern_spec_fn]

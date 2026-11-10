@@ -134,6 +134,8 @@ fn bit_iter_yields_below<'a, T: Idx + thrust_models::Model>(s: &'a DenseBitSet<T
     // `count(local_b)` takes a column index as a row, so every set bit's column must be below
     // the number of rows: the panic condition, through the matrix's ghost column bound.
     && (*storage_conflicts).num_rows <= nb_locals
+    // `nb_locals` is a `usize`: the domain of `ineligible_locals`, which its iterator needs.
+    && nb_locals <= 18446744073709551615usize
     && *(*storage_conflicts).col_bound <= (*storage_conflicts).num_rows
     && BitMatrix::<LocalIdx, LocalIdx>::cols_below(*storage_conflicts, *(*storage_conflicts).col_bound)
     && BitMatrix::<LocalIdx, LocalIdx>::wf(*storage_conflicts)
@@ -146,6 +148,7 @@ fn bit_iter_yields_below<'a, T: Idx + thrust_models::Model>(s: &'a DenseBitSet<T
     // iterator yields locals below `nb_locals`.
     result.1.len() == nb_locals
     && result.0.0 == nb_locals
+    && DenseBitSet::<LocalIdx>::words_cover_domain(result.0)
     // 1. Unassigned locals never appear in any variant's field list.
     && forall(|l: usize| 0 <= l && l < nb_locals && result.1[l] == SavedLocalEligibility::Unassigned ==> forall(|v: usize, f: usize|
             0 <= v && v < (*variant_fields).len()
@@ -220,6 +223,7 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
                 |assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, ineligible_locals: DenseBitSet<LocalIdx>, iter!('variants): IterEnumerated<VariantIdx, IndexVec<FieldIdx, LocalIdx>>, iter: SliceIter<LocalIdx>, variant_index: VariantIdx, variant_fields: &IndexSlice<VariantIdx, IndexVec<FieldIdx, LocalIdx>>, storage_conflicts: &BitMatrix<LocalIdx, LocalIdx>, nb_locals: thrust_models::FnParam<usize>|
                 assignments.len() == nb_locals.at_entry()
                 && ineligible_locals.0 == nb_locals.at_entry()
+                && nb_locals.at_entry() <= 18446744073709551615usize
                 && DenseBitSet::<LocalIdx>::words_cover_domain(ineligible_locals)
                 && 0 <= DenseBitSet::<LocalIdx>::card(ineligible_locals)
                 && DenseBitSet::<LocalIdx>::card(ineligible_locals) <= ineligible_locals.0
@@ -292,6 +296,7 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
             |assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, ineligible_locals: DenseBitSet<LocalIdx>, iter: IdxRange<LocalIdx>, storage_conflicts: &BitMatrix<LocalIdx, LocalIdx>, variant_fields: &IndexSlice<VariantIdx, IndexVec<FieldIdx, LocalIdx>>, nb_locals: thrust_models::FnParam<usize>|
             assignments.len() == nb_locals.at_entry()
             && ineligible_locals.0 == nb_locals.at_entry()
+            && nb_locals.at_entry() <= 18446744073709551615usize
             && DenseBitSet::<LocalIdx>::words_cover_domain(ineligible_locals)
             && 0 <= DenseBitSet::<LocalIdx>::card(ineligible_locals)
             && DenseBitSet::<LocalIdx>::card(ineligible_locals) <= ineligible_locals.0
@@ -335,6 +340,7 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
                 |assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, ineligible_locals: DenseBitSet<LocalIdx>, iter: BitIter<LocalIdx>, iter!('rows): IdxRange<LocalIdx>, local_a: LocalIdx, storage_conflicts: &BitMatrix<LocalIdx, LocalIdx>, variant_fields: &IndexSlice<VariantIdx, IndexVec<FieldIdx, LocalIdx>>, nb_locals: thrust_models::FnParam<usize>|
                 assignments.len() == nb_locals.at_entry()
                 && ineligible_locals.0 == nb_locals.at_entry()
+                && nb_locals.at_entry() <= 18446744073709551615usize
                 && DenseBitSet::<LocalIdx>::words_cover_domain(ineligible_locals)
                 && 0 <= DenseBitSet::<LocalIdx>::card(ineligible_locals)
                 && DenseBitSet::<LocalIdx>::card(ineligible_locals) <= ineligible_locals.0
@@ -353,6 +359,7 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
                 && forall(|i: USize| <LocalIdx as Idx>::index_is(local_a, i) ==> i < nb_locals.at_entry())
                 && iter.4 == *(*storage_conflicts).col_bound
                 && 0 <= iter.5 && 0 <= iter.6 && iter.5 + iter.6 <= iter.4
+                && BitIter::<LocalIdx>::tracks_words(iter)
             );
             thrust_macros::invariant!(
                 |assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, variant_fields: thrust_models::FnParam<&IndexSlice<VariantIdx, IndexVec<FieldIdx, LocalIdx>>>, nb_locals: thrust_models::FnParam<usize>|
@@ -399,6 +406,7 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
                 && DenseBitSet::<VariantIdx>::words_cover_domain(used_variants)
                 && assignments.len() == nb_locals.at_entry()
                 && ineligible_locals.0 == nb_locals.at_entry()
+                && nb_locals.at_entry() <= 18446744073709551615usize
                 && DenseBitSet::<LocalIdx>::words_cover_domain(ineligible_locals)
                 && 0 <= DenseBitSet::<LocalIdx>::card(ineligible_locals)
                 && DenseBitSet::<LocalIdx>::card(ineligible_locals) <= ineligible_locals.0
@@ -436,6 +444,7 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
                     && assignments == iter.1
                     && forall(|k: USize| 0 <= k && k < iter.2 ==> iter.1[k] == SavedLocalEligibility::Ineligible(None))
                     && ineligible_locals.0 == nb_locals.at_entry()
+                    && nb_locals.at_entry() <= 18446744073709551615usize
                     && DenseBitSet::<LocalIdx>::words_cover_domain(ineligible_locals)
                     && 0 <= DenseBitSet::<LocalIdx>::card(ineligible_locals)
                     && DenseBitSet::<LocalIdx>::card(ineligible_locals) <= ineligible_locals.0
@@ -463,6 +472,7 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
                 && iter.0.4 == ineligible_locals.0 && iter.1 == iter.0.5
                 && 0 <= iter.1 && iter.1 <= iter.0.4
                 && 0 <= iter.0.6 && iter.0.5 + iter.0.6 == DenseBitSet::<LocalIdx>::card(ineligible_locals)
+                && BitIter::<LocalIdx>::tracks_words(iter.0)
                 && forall(|k: USize| 0 <= k && k < nb_locals.at_entry() ==> <LocalIdx as Idx>::can_new(k))
                 && forall(|n: USize| 0 <= n && n <= nb_locals.at_entry() ==> <FieldIdx as Idx>::can_new(n))
                 && forall(|l: USize, v: USize, f: USize|
@@ -1051,6 +1061,9 @@ fn split_in_memory_order<FieldIdx: Idx + thrust_models::Model>(
     forall(|k: USize|
         0 <= k && k <= (*prefix_layouts).len() + 1 + (*local_layouts).len() ==> <FieldIdx as Idx>::can_new(k))
         && (*ineligible_locals).0 == (*local_layouts).len()
+        // What the set's iterator needs: its words, and its domain a `usize`.
+        && DenseBitSet::<LocalIdx>::words_cover_domain(*ineligible_locals)
+        && (*local_layouts).len() <= 18446744073709551615usize
         // `LocalIdx` reaches every local: the set's iterator's `inv`, which `Map::new` and
         // `extend_from` require.
         && forall(|k: USize| 0 <= k && k < (*local_layouts).len() ==> <LocalIdx as Idx>::can_new(k))
