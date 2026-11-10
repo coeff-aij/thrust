@@ -682,6 +682,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         super::Primitive::size_in,
         super::FieldsShape::arbitrary_of
     )]
+    #[thrust::assumed_ensures]
     fn univariant_biased<
         'a,
         FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
