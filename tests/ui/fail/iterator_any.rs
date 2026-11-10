@@ -2,7 +2,7 @@
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
-// `any` returns `false` only where the predicate rejected every item.
+// `any` returns `true` where the predicate accepts an item.
 fn main() {
     let v = [1i64, 5, 3];
     let b = v.iter().any(thrust_macros::closure!(
