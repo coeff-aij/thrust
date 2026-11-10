@@ -2518,6 +2518,15 @@ where
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool;
 
+    // The state in which `fold` ends once it has handed out its items: `Iterator`'s `fold` calls
+    // `next` until it answers `None`, which is `completed`. An impl whose `fold` std overrides with
+    // another path states it there, specialized as std specializes it (`Zip`, `Take`); `count`,
+    // `sum`, `max_by_key` and `fold` run `fold`, and `extend` and `collect` may.
+    #[thrust_macros::predicate]
+    fn fold_completed(&mut self) -> bool {
+        Self::completed(thrust_models::model::Mut::new(*self, !self))
+    }
+
     #[thrust_macros::law]
     #[thrust_macros::requires(Self::inv(*a))]
     #[thrust_macros::ensures(Self::produces(*a, thrust_models::model::Seq::empty(), *a))]
@@ -2693,7 +2702,7 @@ fn seq_sum(
                            done: <I as thrust_models::Model>::Ty,
                            fin: <I as thrust_models::Model>::Ty|
         I::produces(it, prod, done)
-            && I::completed(thrust_models::model::Mut::new(done, fin))
+            && I::fold_completed(thrust_models::model::Mut::new(done, fin))
             && result == seq_sum(prod, prod.len()))
 )]
 fn _extern_spec_iterator_sum_usize<I>(it: I) -> usize
@@ -2913,6 +2922,13 @@ where
             && (*self).1 == (!self).1
     }
 
+    // `fold` folds the inner iterator (core/src/iter/adapters/enumerate.rs).
+    #[thrust_macros::predicate]
+    fn fold_completed(&mut self) -> bool {
+        I::fold_completed(thrust_models::model::Mut::new((*self).0, (!self).0))
+            && (*self).1 == (!self).1
+    }
+
     fn produces_refl(a: &Self) {}
 
     fn produces_trans(
@@ -2979,13 +2995,34 @@ fn _extern_spec_iterator_enumerate<I>(it: I) -> core::iter::Enumerate<I>
     <I as std::iter::Iterator>::enumerate(it)
 }
 
+// `completed` of the general `Zip::next`, Creusot's, which also allows the zip unchanged where one
+// of the two could complete: std's `fold` over two `TrustedRandomAccessNoCoerce` iterators, or two
+// `TrustedLen` ones, takes no item from the longer one once the shorter one is out. The spec impls
+// below take it until one specialized as `ZipImpl::next` is overrides it.
+#[thrust_macros::predicate]
+fn _iter_spec_zip_completed<A, B>(z: &mut core::iter::Zip<A, B>) -> bool
+where
+    A: IteratorSpec,
+    B: IteratorSpec,
+    A::Item: thrust_models::Model,
+    B::Item: thrust_models::Model,
+{
+        (A::completed(thrust_models::model::Mut::new((*z).0, (!z).0))
+        && (*z).1 == (!z).1)
+        || thrust_models::exists(|x: <A::Item as thrust_models::Model>::Ty|
+            A::produces((*z).0, thrust_models::model::Seq::singleton(x), (!z).0)
+                && B::completed(thrust_models::model::Mut::new((*z).1, (!z).1)))
+        || (*z == !z
+            && (thrust_models::exists(|a: <A as thrust_models::Model>::Ty|
+                    A::completed(thrust_models::model::Mut::new((*z).0, a)))
+                || thrust_models::exists(|b: <B as thrust_models::Model>::Ty|
+                    B::completed(thrust_models::model::Mut::new((*z).1, b)))))
+}
+
 // std's `Zip` selects its `next` and `fold` by specialization (`ZipImpl` and `SpecFold` in
-// core/src/iter/adapters/zip.rs). `completed` here is the general `next`'s, Creusot's, and also
-// allows the zip unchanged where one of the two could complete: std's `fold` over two
-// `TrustedRandomAccessNoCoerce` iterators, or two `TrustedLen` ones, takes no item from the longer
-// one once the shorter one is out, which `count`, `sum`, `for_each` and `extend` run and whose
-// contracts read `completed`. Over two `TrustedRandomAccess` iterators, `next` itself does so, and
-// the spec impl below, specialized as `ZipImpl` is, states it alone.
+// core/src/iter/adapters/zip.rs). This impl states the general ones; the two below specialize
+// `fold_completed` on two `TrustedRandomAccessNoCoerce` iterators and `completed` on two
+// `TrustedRandomAccess` ones, as `ZipImpl` does.
 #[thrust_macros::context]
 impl<A, B> IteratorSpec for core::iter::Zip<A, B>
 where
@@ -3012,16 +3049,13 @@ where
 
     #[thrust_macros::predicate]
     default fn completed(&mut self) -> bool {
-        (A::completed(thrust_models::model::Mut::new((*self).0, (!self).0))
-            && (*self).1 == (!self).1)
-            || thrust_models::exists(|x: <A::Item as thrust_models::Model>::Ty|
-                A::produces((*self).0, thrust_models::model::Seq::singleton(x), (!self).0)
-                    && B::completed(thrust_models::model::Mut::new((*self).1, (!self).1)))
-            || (*self == !self
-                && (thrust_models::exists(|a: <A as thrust_models::Model>::Ty|
-                        A::completed(thrust_models::model::Mut::new((*self).0, a)))
-                    || thrust_models::exists(|b: <B as thrust_models::Model>::Ty|
-                        B::completed(thrust_models::model::Mut::new((*self).1, b)))))
+        _iter_spec_zip_completed::<A, B>(self)
+    }
+
+    // The general `fold` calls `next` (`SpecFold`); specialized below as `ZipImpl::fold` is.
+    #[thrust_macros::predicate]
+    default fn fold_completed(&mut self) -> bool {
+        Self::completed(thrust_models::model::Mut::new(*self, !self))
     }
 
     fn produces_refl(a: &Self) {}
@@ -3033,6 +3067,29 @@ where
         bc: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
         c: &Self,
     ) {
+    }
+}
+
+// std's `ZipImpl` for two `TrustedRandomAccessNoCoerce` iterators: `fold`, which `count`, `sum`,
+// `for_each` and `extend` run, hands out the items by index up to the smaller size and stops,
+// stepping neither iterator (core/src/iter/adapters/zip.rs). `completed` stays the general one, which
+// the impl for two `TrustedRandomAccess` iterators below overrides.
+#[thrust_macros::context]
+impl<A, B> IteratorSpec for core::iter::Zip<A, B>
+where
+    A: TrustedRandomAccessNoCoerceSpec,
+    B: TrustedRandomAccessNoCoerceSpec,
+    A::Item: thrust_models::Model,
+    B::Item: thrust_models::Model,
+{
+    #[thrust_macros::predicate]
+    default fn completed(&mut self) -> bool {
+        _iter_spec_zip_completed::<A, B>(self)
+    }
+
+    #[thrust_macros::predicate]
+    fn fold_completed(&mut self) -> bool {
+        *self == !self && (A::size((*self).0) == 0 || B::size((*self).1) == 0)
     }
 }
 
@@ -3127,6 +3184,21 @@ where
                     !I::produces((*self).0, s, j) || s.len() <= (*self).1))
     }
 
+    // `fold` drops the `n` items by `nth`, giving up where the inner iterator has fewer, and then
+    // folds the inner iterator (core/src/iter/adapters/skip.rs).
+    #[thrust_macros::predicate]
+    fn fold_completed(&mut self) -> bool {
+        (!self).1 == 0
+            && (thrust_models::exists(|s: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>, j: I::Ty, j2: I::Ty|
+                    s.len() < (*self).1
+                        && I::produces((*self).0, s, j)
+                        && I::completed(thrust_models::model::Mut::new(j, j2)))
+                || thrust_models::exists(|s: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>, j: I::Ty|
+                    s.len() == (*self).1
+                        && I::produces((*self).0, s, j)
+                        && I::fold_completed(thrust_models::model::Mut::new(j, (!self).0))))
+    }
+
     fn produces_refl(a: &Self) {}
 
     fn produces_trans(
@@ -3199,6 +3271,12 @@ where
                 && I::completed(thrust_models::model::Mut::new((*self).0, (!self).0)))
     }
 
+    // `fold` and `for_each` go through `try_fold` (`SpecTake`); specialized below.
+    #[thrust_macros::predicate]
+    default fn fold_completed(&mut self) -> bool {
+        Self::completed(thrust_models::model::Mut::new(*self, !self))
+    }
+
     fn produces_refl(a: &Self) {}
 
     fn produces_trans(
@@ -3208,6 +3286,21 @@ where
         bc: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
         c: &Self,
     ) {
+    }
+}
+
+// std's `SpecTake` over a `TrustedRandomAccess` iterator: `fold` and `for_each` hand out the items by
+// index up to the smaller of `n` and its size and stop, without calling its `next`
+// (core/src/iter/adapters/take.rs).
+#[thrust_macros::context]
+impl<I> IteratorSpec for core::iter::Take<I>
+where
+    I: TrustedRandomAccessSpec,
+    I::Item: thrust_models::Model,
+{
+    #[thrust_macros::predicate]
+    fn fold_completed(&mut self) -> bool {
+        *self == !self && ((*self).1 == 0 || I::size((*self).0) == 0)
     }
 }
 
@@ -3246,6 +3339,12 @@ where
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
         I::completed(thrust_models::model::Mut::new(*self, !self))
+    }
+
+    // `fold` folds the inner iterator (core/src/iter/adapters/cloned.rs).
+    #[thrust_macros::predicate]
+    fn fold_completed(&mut self) -> bool {
+        I::fold_completed(thrust_models::model::Mut::new(*self, !self))
     }
 
     fn produces_refl(a: &Self) {}
@@ -3317,6 +3416,12 @@ where
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
         I::completed(thrust_models::model::Mut::new(*self, !self))
+    }
+
+    // `fold` folds the inner iterator (core/src/iter/adapters/copied.rs).
+    #[thrust_macros::predicate]
+    fn fold_completed(&mut self) -> bool {
+        I::fold_completed(thrust_models::model::Mut::new(*self, !self))
     }
 
     fn produces_refl(a: &Self) {}
@@ -3534,6 +3639,12 @@ where
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
         I::completed(thrust_models::model::Mut::new((*self).0, (!self).0)) && (*self).1 == (!self).1
+    }
+
+    // `fold` folds the inner iterator (core/src/iter/adapters/map.rs).
+    #[thrust_macros::predicate]
+    fn fold_completed(&mut self) -> bool {
+        I::fold_completed(thrust_models::model::Mut::new((*self).0, (!self).0)) && (*self).1 == (!self).1
     }
 
     fn produces_refl(a: &Self) {}
@@ -4095,7 +4206,7 @@ fn _extern_spec_iterator_by_ref<'a, I>(it: &'a mut I) -> &'a mut I
                            done: <I as thrust_models::Model>::Ty,
                            fin: <I as thrust_models::Model>::Ty|
         I::produces(it, s, done)
-            && I::completed(thrust_models::model::Mut::new(done, fin))
+            && I::fold_completed(thrust_models::model::Mut::new(done, fin))
             && result == s.len())
 )]
 fn _extern_spec_iterator_count<I>(it: I) -> usize
@@ -4158,7 +4269,7 @@ where
                            it2: <I as thrust_models::Model>::Ty|
         _iter_spec_fold_chain::<I, B, F>(it, init, f, s, it1, accs, fs)
             && accs[s.len()] == result
-            && I::completed(thrust_models::model::Mut::new(it1, it2)))
+            && I::fold_completed(thrust_models::model::Mut::new(it1, it2)))
 )]
 fn _extern_spec_iterator_fold<I, B, F>(it: I, init: B, f: F) -> B
     where I: IteratorSpec,
@@ -4332,7 +4443,9 @@ fn _extern_spec_vec_split_off<T>(vec: &mut Vec<T>, at: usize) -> Vec<T>
 // Creusot's `Vec::extend` and `FromIterator::from_iter` (creusot-std src/std/vec.rs, whose
 // `from_iter_post` is `prod == res@`, and src/std/iter.rs): the iterator runs from what
 // `into_iter` gives to completion, and what it produced is appended (`extend`) or is the vector
-// (`from_iter`, `collect`). Each step is `next`, which requires `inv`.
+// (`from_iter`, `collect`). Each step is `next`, which requires `inv`. std runs `for_each`, that is `fold`, over a `TrustedLen`
+// iterator (`SpecExtend`, `SpecFromIterNested` in alloc/src/vec) and `next` otherwise; `TrustedLen` has
+// no spec trait yet, so these contracts allow either end.
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(
     thrust_models::forall(|it: <I::IntoIter as thrust_models::Model>::Ty|
@@ -4345,7 +4458,8 @@ fn _extern_spec_vec_split_off<T>(vec: &mut Vec<T>, at: usize) -> Vec<T>
                            fin: <I::IntoIter as thrust_models::Model>::Ty|
         I::into_iter_is(iter, it)
             && <I::IntoIter as IteratorSpec>::produces(it, prod, done)
-            && <I::IntoIter as IteratorSpec>::completed(thrust_models::model::Mut::new(done, fin))
+            && (<I::IntoIter as IteratorSpec>::completed(thrust_models::model::Mut::new(done, fin))
+                || <I::IntoIter as IteratorSpec>::fold_completed(thrust_models::model::Mut::new(done, fin)))
             && !vec == (*vec).concat(prod))
 )]
 fn _extern_spec_vec_extend<T, I>(vec: &mut Vec<T>, iter: I)
@@ -4366,7 +4480,8 @@ fn _extern_spec_vec_extend<T, I>(vec: &mut Vec<T>, iter: I)
                            fin: <I::IntoIter as thrust_models::Model>::Ty|
         I::into_iter_is(iter, it)
             && <I::IntoIter as IteratorSpec>::produces(it, result, done)
-            && <I::IntoIter as IteratorSpec>::completed(thrust_models::model::Mut::new(done, fin)))
+            && (<I::IntoIter as IteratorSpec>::completed(thrust_models::model::Mut::new(done, fin))
+                || <I::IntoIter as IteratorSpec>::fold_completed(thrust_models::model::Mut::new(done, fin))))
 )]
 fn _extern_spec_vec_from_iter<T, I>(iter: I) -> Vec<T>
     where T: thrust_models::Model,
@@ -4379,7 +4494,8 @@ fn _extern_spec_vec_from_iter<T, I>(iter: I) -> Vec<T>
 #[thrust_macros::requires(I::inv(it))]
 #[thrust_macros::ensures(
     thrust_models::exists(|done: <I as thrust_models::Model>::Ty, fin: <I as thrust_models::Model>::Ty|
-        I::produces(it, result, done) && I::completed(thrust_models::model::Mut::new(done, fin)))
+        I::produces(it, result, done)
+            && (I::completed(thrust_models::model::Mut::new(done, fin)) || I::fold_completed(thrust_models::model::Mut::new(done, fin))))
 )]
 fn _extern_spec_iterator_collect_vec<I, T>(it: I) -> Vec<T>
     where I: IteratorSpec<Item = T>,
