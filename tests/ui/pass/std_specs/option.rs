@@ -1,6 +1,10 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off --cfg thrust_std_conformance
 //@rustc-env: THRUST_NO_INJECT_STD=1 THRUST_TRY_SPECS=1 THRUST_VERIFY_ONLY=std_transcriptions::** THRUST_SOLVER=tests/thrust-pcsat-wrapper
+// std.rs specializes its spec impls, so a crate compiling it as a source file enables
+// `specialization` itself.
+#![feature(specialization)]
+#![allow(incomplete_features)]
 
 // The specs of `Option`'s methods in `std.rs` and `std_try.rs` whose std bodies are safe code,
 // checked against those bodies: under `cfg(thrust_std_conformance)` each spec's target is the

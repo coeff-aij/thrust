@@ -1128,11 +1128,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         }
     }
 
-    /// Stops at an impl, outside the injected `std.rs`, of a `std.rs` trait marked
-    /// `#[thrust::sealed]`. Such a trait stands for a std marker trait, which std's impls
-    /// specialize on, and `std.rs` implements it for the types std implements the marker for;
-    /// another impl would make a spec impl specialized on it claim std's specialized behaviour
-    /// for a type std runs the general impl on.
+    /// Stops at an impl of a trait marked `#[thrust::sealed]` in a file other than the one that
+    /// defines the trait: `std.rs`, injected or compiled as a source file. Such a trait stands for
+    /// a std marker trait, which std's impls specialize on, and `std.rs` implements it for the
+    /// types std implements the marker for; another impl would make a spec impl specialized on it
+    /// claim std's specialized behaviour for a type std runs the general impl on.
     fn check_sealed_impls(&self) {
         for (trait_did, impls) in self.tcx.all_local_trait_impls(()) {
             if self
@@ -1143,8 +1143,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             {
                 continue;
             }
+            let source_map = self.tcx.sess.source_map();
+            let file_of =
+                |span: rustc_span::Span| source_map.lookup_source_file(span.lo()).name.clone();
+            let trait_file = file_of(self.tcx.def_span(*trait_did));
             for &impl_did in impls {
-                if analyze::is_injected_std(self.tcx, impl_did) {
+                if file_of(self.tcx.def_span(impl_did)) == trait_file {
                     continue;
                 }
                 self.tcx.dcx().span_fatal(
