@@ -19,9 +19,9 @@
 -// callee Thrust does not analyze; three of them assume their `ensures` (fallback, README.md).
 -// The code is the module tree under tests/rustc_coroutine/; this file selects the stage and
 -// drives it.
-+// The reachability twin of the fallback's assumptions (each open goal assumed where it is
-+// checked): `proof_assert!(false)` after the last of them in each function is refuted, so they
-+// leave their paths reachable. The cfg is read in layout/coroutine.rs and thrust/counts.rs.
++// The reachability twin of the fallback's assumptions (the two wrappers' preconditions):
++// `proof_assert!(false)` after the last of them in `layout()` is refuted, so they leave its path
++// reachable. The cfg is read in layout/coroutine.rs.
  #![feature(new_range_api)]
  
  #[path = "../../../rustc_coroutine/compiler/rustc_hashes/src/lib.rs"]
