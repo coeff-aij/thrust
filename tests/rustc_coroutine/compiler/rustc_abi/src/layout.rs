@@ -770,7 +770,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                 // as `available` is never negative.
                 // Fallback: `Map::new` and `max` with their preconditions
                 // assumed; restore `Map::new(..).max()` once the solver answers them.
-                let largest_niche_size = crate::case_study::iter::max_assumed(crate::case_study::iter::map_new_assumed(fields_excluding_tail.iter(), thrust_macros::closure!(
+                let largest_niche_size = crate::case_study::assumed_requires::max_assumed(crate::case_study::iter::map_new_assumed(fields_excluding_tail.iter(), thrust_macros::closure!(
                     captures(dl: &mut &&TargetDataLayout),
                     requires(forall(|d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche|
                         !(thrust_macros::post!(<F as core::ops::Deref>::deref(f), d) && (**d).largest_niche == Some(n))
@@ -803,7 +803,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                             let size = layout.size.bytes();
                             // Fallback (open `map` goal): `map` with its precondition assumed;
                             // restore `layout.largest_niche.map(..)` once the solver answers it.
-                            let niche_size = crate::case_study::iter::map_assumed(layout.largest_niche, thrust_macros::closure!(
+                            let niche_size = crate::case_study::assumed_requires::map_assumed(layout.largest_niche, thrust_macros::closure!(
                                 captures(dl: &&TargetDataLayout),
                                 requires(Niche::wf_in(n, **dl)),
                                 ensures(true),
@@ -835,10 +835,10 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                 match kind {
                     StructKind::AlwaysSized | StructKind::MaybeUnsized => {
                         // Fallback: `sort_by_key` with its `requires` assumed, by
-                        // `sort_by_key_assumed` of thrust/iter.rs, as the key closure's type
+                        // `sort_by_key_assumed` of thrust/assumed_requires.rs, as the key closure's type
                         // cannot be written in an `assume!` here; restore `optimizing.sort_by_key`
                         // once the solver answers it.
-                        crate::case_study::iter::sort_by_key_assumed(optimizing, thrust_macros::closure!(
+                        crate::case_study::assumed_requires::sort_by_key_assumed(optimizing, thrust_macros::closure!(
                             captures(fields: &mut &IndexSlice<FieldIdx, F>, dl: &mut &&TargetDataLayout),
                             requires(LayoutCalculator::<Cx>::deref_functional::<FieldIdx, VariantIdx, F>()),
                             requires(forall(|i: USize| !<FieldIdx as Idx>::index_is(x, i) || i < (**fields).len())),
@@ -859,7 +859,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                                 // Fallback (open `map_or` goals): the three `map_or` calls with their
                                 // preconditions assumed; restore `f.largest_niche.map_or(..)` once
                                 // the solver answers them.
-                                let niche_size = crate::case_study::iter::map_or_assumed(f.largest_niche, 0, thrust_macros::closure!(
+                                let niche_size = crate::case_study::assumed_requires::map_or_assumed(f.largest_niche, 0, thrust_macros::closure!(
                                     captures(dl: &&&TargetDataLayout),
                                     requires(Niche::wf_in(n, ***dl)),
                                     ensures(true),
@@ -871,12 +871,12 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                                     NicheBias::End => niche_size,
                                 };
                                 let inner_niche_offset_key = match niche_bias {
-                                    NicheBias::Start => crate::case_study::iter::map_or_assumed(f.largest_niche, 0, thrust_macros::closure!(
+                                    NicheBias::Start => crate::case_study::assumed_requires::map_or_assumed(f.largest_niche, 0, thrust_macros::closure!(
                                         requires(true),
                                         ensures(true),
                                         |n: Niche| -> u64 { n.offset.bytes() },
                                     )),
-                                    NicheBias::End => crate::case_study::iter::map_or_assumed(f.largest_niche, 0, thrust_macros::closure!(
+                                    NicheBias::End => crate::case_study::assumed_requires::map_or_assumed(f.largest_niche, 0, thrust_macros::closure!(
                                         captures(field_size: &u64, dl: &&&TargetDataLayout),
                                         requires(Niche::wf_in(n, ***dl)),
                                         requires(forall(|s: Size| !Primitive::size_in(n.value, ***dl, s) || n.offset.raw + s.raw <= *field_size)),
@@ -1132,7 +1132,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         // Rewrite (rewrites.md R8): `!iter_all(it, |f| !p(f))` for `it.any(p)`.
         // Fallback: `iter_all` with its precondition assumed; restore `iter_all` once
         // the solver answers it.
-        let uninhabited = !crate::case_study::iter::iter_all_assumed(fields.iter(), |f| !f.is_uninhabited());
+        let uninhabited = !crate::case_study::assumed_requires::iter_all_assumed(fields.iter(), |f| !f.is_uninhabited());
         #[cfg(thrust_univariant_biased_reach = "iter_all")]
         thrust_macros::proof_assert!(|kind: StructKind| false);
 
@@ -1217,16 +1217,16 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
             // Fallback: `iter_enumerated` through the trusted
             // `iter_enumerated_trusted` of thrust/iter.rs; restore `fields.iter_enumerated()` once
             // the solver answers its body's goal at this call.
-            let mut non_zst_fields = crate::case_study::iter::filter_new_assumed(crate::case_study::iter::iter_enumerated_trusted(fields), thrust_macros::closure!(
+            let mut non_zst_fields = crate::case_study::assumed_requires::filter_new_assumed(crate::case_study::iter::iter_enumerated_trusted(fields), thrust_macros::closure!(
                 requires(true),
                 ensures(true),
                 |&(_, f): &(FieldIdx, &F)| -> bool { !f.is_zst() },
             ));
 
             match (
-                crate::case_study::iter::filter_next_assumed(&mut non_zst_fields),
-                crate::case_study::iter::filter_next_assumed(&mut non_zst_fields),
-                crate::case_study::iter::filter_next_assumed(&mut non_zst_fields),
+                crate::case_study::assumed_requires::filter_next_assumed(&mut non_zst_fields),
+                crate::case_study::assumed_requires::filter_next_assumed(&mut non_zst_fields),
+                crate::case_study::assumed_requires::filter_next_assumed(&mut non_zst_fields),
             ) {
                 (Some((i, field)), None, None) => {
                     layout_of_single_non_zst_field = Some(field);
