@@ -482,6 +482,22 @@ pub fn assume_marker_path() -> [Symbol; 3] {
     ]
 }
 
+pub fn choose_marker_path() -> [Symbol; 3] {
+    [
+        Symbol::intern("thrust"),
+        Symbol::intern("def"),
+        Symbol::intern("choose_marker"),
+    ]
+}
+
+pub fn witness_path() -> [Symbol; 3] {
+    [
+        Symbol::intern("thrust"),
+        Symbol::intern("def"),
+        Symbol::intern("witness"),
+    ]
+}
+
 pub fn ghost_marker_path() -> [Symbol; 3] {
     [
         Symbol::intern("thrust"),

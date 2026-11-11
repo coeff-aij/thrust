@@ -995,6 +995,16 @@ mod thrust_models {
         unimplemented!()
     }
 
+    /// `formula`, an `exists` or a call of a predicate whose body is one, proved by `witness`
+    /// where it is a conjunct of a `proof_assert!`: that checks the body at `witness` (a tuple
+    /// when the `exists` binds several variables) and assumes `formula`.
+    #[allow(dead_code)]
+    #[thrust::def::witness]
+    #[thrust::ignored]
+    pub fn witness<T>(_formula: bool, _witness: T) -> bool {
+        unimplemented!()
+    }
+
     #[allow(dead_code)]
     #[thrust::def::implies]
     #[thrust::ignored]
@@ -1162,6 +1172,14 @@ mod thrust_models {
     #[thrust::ignored]
     #[inline(never)]
     pub fn __ghost_marker<F, T: ?Sized>(_f: F) -> Ghost<T> {
+        Ghost(std::marker::PhantomData)
+    }
+
+    #[doc(hidden)]
+    #[thrust::def::choose_marker]
+    #[thrust::ignored]
+    #[inline(never)]
+    pub fn __choose_marker<F, T: ?Sized>(_f: F) -> Ghost<T> {
         Ghost(std::marker::PhantomData)
     }
 

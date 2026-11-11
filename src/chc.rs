@@ -2582,6 +2582,17 @@ impl<V> Formula<V> {
         Formula::Forall(vars, Box::new(body))
     }
 
+    /// The formula with each quantified variable `terms` maps replaced by its term.
+    pub fn subst_quantified(self, terms: &HashMap<UserQuantifiedVarId, Term<V>>) -> Self
+    where
+        V: Clone,
+    {
+        candidate_atoms::map_formula_terms(self, &mut |t| match t {
+            Term::UserQuantifiedVar(_, var) if terms.contains_key(&var) => terms[&var].clone(),
+            t => t,
+        })
+    }
+
     pub fn subst_var<F, W>(self, f: F) -> Formula<W>
     where
         F: FnMut(V) -> Term<W>,
