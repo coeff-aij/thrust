@@ -98,7 +98,9 @@ gives the std function and what differs. `advance_by.rs` is the default `Iterato
 (`spec_advance_by`, core) with std's body; `advance_by_ghost.rs` writes the `is_none` test as a
 `match` and records the dropped items in a ghost sequence; `extend_desugared.rs` is
 `Vec::extend_desugared` (alloc) with `push` for the capacity handling and a ghost sequence of the
-items taken. The fail twins return an error one too small (`advance_by*`) or discard each item
+items taken. std runs the `advance_by` loop only for unsized iterators; a `Sized` iterator takes a
+`try_fold` specialisation, so these two verify the fallback loop. `advance_by_ghost.rs` is kept to compare an
+explicit ghost witness with the existential the invariant of `advance_by.rs` infers. The fail twins return an error one too small (`advance_by*`) or discard each item
 (`extend_desugared`).
 
 Weaker variants (`weaker/`, still verify):

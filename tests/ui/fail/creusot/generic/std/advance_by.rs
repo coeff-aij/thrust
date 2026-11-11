@@ -9,6 +9,8 @@
 // `NonZero<usize>` (std builds it with `NonZero::new_unchecked(n - i)`), and the specialisation
 // trait `SpecAdvanceBy`, whose default method is this body, is left out. `Ok(())`: the iterator
 // produced `n` items; `Err(k)`: it produced `n - k` items and then completed, with `0 < k <= n`.
+// std runs this loop only for unsized iterators (`impl<I: Iterator + ?Sized>`); for a `Sized` iterator
+// its `impl<I: Iterator>` specialises it to a `try_fold` over `NonZero`.
 use thrust_models::model::{Mut, Seq};
 use thrust_models::{exists, forall, Ghost, Model};
 

@@ -11,6 +11,8 @@
 // is a `match` that binds the item; and a ghost sequence `taken` records the items taken, which
 // std's body drops. `Ok(())`: the iterator produced `n` items; `Err(k)`: it produced `n - k` items
 // and then completed, with `0 < k <= n`.
+// std runs this loop only for unsized iterators (`impl<I: Iterator + ?Sized>`); for a `Sized` iterator
+// its `impl<I: Iterator>` specialises it to a `try_fold` over `NonZero`.
 use thrust_models::model::{Mut, Seq};
 use thrust_models::{exists, forall, Ghost, Model};
 
