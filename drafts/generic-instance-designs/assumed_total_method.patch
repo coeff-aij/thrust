@@ -1,0 +1,17 @@
+diff --git a/src/analyze/basic_block.rs b/src/analyze/basic_block.rs
+index d2d3782e..45f2403d 100644
+--- a/src/analyze/basic_block.rs
++++ b/src/analyze/basic_block.rs
+@@ -2148,6 +2148,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
+         def_id: DefId,
+         args: mir_ty::GenericArgsRef<'tcx>,
+     ) -> rty::Type<rty::Closed> {
++        eprintln!(
++            "assumed total method: {} at {:?} in {:?}",
++            self.tcx.def_path_str(def_id),
++            args,
++            self.type_builder.owner_fn_id()
++        );
+         self.ctx
+             .record_assumed_total_method(self.type_builder.owner_fn_id(), def_id, args);
+         self.type_builder
