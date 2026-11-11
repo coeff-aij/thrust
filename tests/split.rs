@@ -658,3 +658,39 @@ fn each_conjunct_of_a_postcondition_is_a_goal() {
         "{stderr}"
     );
 }
+
+/// `#[thrust::split_goals]` sets apart the goals of `twice` only: each of its two assertions is a
+/// part with the clauses of `double` it reads, and the assertion of `main` stays in what is left
+/// of the one class; the refuted assertion fails alone.
+#[test]
+fn split_goals_sets_apart_the_goals_of_its_function() {
+    let output = run("goals_apart.rs", Some("2"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("3 parts solved on their own, 0 of them from earlier runs, each goal of a"),
+        "{stderr}"
+    );
+
+    let output = run("goals_apart_fail.rs", Some("2"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert_eq!(stderr.matches("verification error").count(), 1, "{stderr}");
+    assert!(stderr.contains("in part 2 of 3, "), "{stderr}");
+}
+
+/// In a function marked `#[thrust::split_goals]`, each conjunct of a checked postcondition is a
+/// goal of its own, as with `THRUST_SPLIT_GOALS`: the two `ensures` of `succ` are two parts, after
+/// the class with no goal that the run without the attribute has too, and only the second fails.
+#[test]
+fn split_goals_makes_each_conjunct_a_goal() {
+    let output = run("conjunct_goals_marked.rs", Some("2"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("3 parts solved on their own, 0 of them from earlier runs, each goal of a"),
+        "{stderr}"
+    );
+    assert_eq!(stderr.matches("verification error").count(), 1, "{stderr}");
+    assert!(stderr.contains("in part 3 of 3, "), "{stderr}");
+}

@@ -134,7 +134,8 @@ impl ClauseBuilder {
     }
 
     /// The clauses deriving each atom of `head`, and the goal that its formula holds. With
-    /// `THRUST_SPLIT_GOALS=1`, a formula that is a conjunction is one goal per conjunct, as Why3's
+    /// `THRUST_SPLIT_GOALS=1`, or in a function marked `#[thrust::split_goals]` (see
+    /// [`super::conjunct_goals`]), a formula that is a conjunction is one goal per conjunct, as Why3's
     /// `split_goal` splits a goal: `body ⇒ e1 ∧ e2` holds exactly when `body ⇒ e1` and
     /// `body ⇒ e2` do, and each conjunct then has its own cone.
     pub fn head(&self, head: Body<TermVarIdx>, origin: debug::origin::Entry) -> Vec<Clause> {
@@ -143,7 +144,7 @@ impl ClauseBuilder {
             .into_iter()
             .map(|atom| self.clause(atom, &origin))
             .collect::<Vec<_>>();
-        let goals = if super::split_goals() {
+        let goals = if super::goals_by_conjunct() {
             super::conjuncts(&formula)
         } else {
             vec![formula]

@@ -919,6 +919,15 @@ impl<'tcx> crate::refine::TemplateRegistry for Analyzer<'tcx> {
     }
 }
 
+/// Whether `def`, or the function it is a closure in, is marked `#[thrust::split_goals]`: with
+/// `THRUST_SPLIT`, each of its goals is a part of its own (see [`chc::System::goals_apart`]).
+pub fn splits_goals(tcx: mir_ty::TyCtxt<'_>, def: LocalDefId) -> bool {
+    let root = tcx.typeck_root_def_id(def.to_def_id());
+    tcx.get_attrs_by_path(root, &annot::split_goals_path())
+        .next()
+        .is_some()
+}
+
 /// `THRUST_SPLIT`: the number of parts of the system solved at a time, when the parts are solved
 /// on their own; `None` when unset, empty or `0`, and an error for anything but a number.
 fn split_jobs() -> Result<Option<usize>, String> {
@@ -3072,7 +3081,7 @@ impl<'tcx> Analyzer<'tcx> {
     /// `report`, reports the parts as without `THRUST_SPLIT`.
     fn solve_parts(&self, jobs: usize, report: Option<&crate::report::Config>) {
         let system = self.system.borrow();
-        let (clauses, by_goals) = self.parts_to_solve(&system);
+        let (clauses, kind) = self.parts_to_solve(&system);
         let parts = system.solve_parts(jobs, clauses);
         let summaries: Vec<crate::report::Part> = parts
             .iter()
@@ -3105,21 +3114,37 @@ impl<'tcx> Analyzer<'tcx> {
             diag.with_note(summary.error_note(self.tcx, &summaries))
                 .emit();
         }
-        crate::report::emit_part_notes(self.tcx, &summaries, by_goals);
+        crate::report::emit_part_notes(self.tcx, &summaries, kind);
     }
 
     /// The parts of `system` to solve on their own: with `THRUST_SPLIT_GOALS=1`, the cone of each
-    /// goal when every clause is a definite Horn clause, and otherwise, with a note saying why, the
-    /// classes of clauses that share an unknown. Returns whether they are the cones.
-    fn parts_to_solve(&self, system: &chc::System) -> (Vec<Vec<chc::ClauseId>>, bool) {
-        if !chc::split_goals() {
-            return (system.components(), false);
-        }
-        match system.goal_cones() {
-            Ok(cones) => (cones, true),
+    /// goal when every clause is a definite Horn clause; otherwise the classes of clauses that
+    /// share an unknown, with each goal of a function marked `#[thrust::split_goals]` set apart
+    /// in its cone (see [`chc::System::goals_apart`]). When the clauses are not definite, a note
+    /// says why and the parts are the classes.
+    fn parts_to_solve(
+        &self,
+        system: &chc::System,
+    ) -> (Vec<Vec<chc::ClauseId>>, crate::report::Parts) {
+        use crate::report::Parts;
+        let marked = |id: chc::ClauseId| {
+            crate::report::Provenance::of(&system.clauses[id].debug_info)
+                .def
+                .is_some_and(|def| splits_goals(self.tcx, def))
+        };
+        let (parts, asked_by) = if chc::split_goals() {
+            (system.goal_cones(), "`THRUST_SPLIT_GOALS`")
+        } else if system.clauses.indices().any(marked) {
+            (system.goals_apart(marked), "`#[thrust::split_goals]`")
+        } else {
+            return (system.components(), Parts::Classes);
+        };
+        match parts {
+            Ok(parts) if chc::split_goals() => (parts, Parts::GoalCones),
+            Ok(parts) => (parts, Parts::GoalsApart),
             Err(why) => {
-                crate::report::emit_not_horn_note(self.tcx, system, why);
-                (system.components(), false)
+                crate::report::emit_not_horn_note(self.tcx, system, why, asked_by);
+                (system.components(), Parts::Classes)
             }
         }
     }

@@ -2685,6 +2685,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             def_index = self.local_def_id.local_def_index.as_u32()
         );
         let _guard = span.enter();
+        let split = matches!(analyze::split_jobs(), Ok(Some(_)));
+        let _conjunct_goals =
+            (split && analyze::splits_goals(self.tcx, self.local_def_id)).then(chc::conjunct_goals);
 
         self.ctx
             .body_checks()
