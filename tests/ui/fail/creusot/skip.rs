@@ -73,12 +73,7 @@ where
             if n <= 1 || r.is_none() {
                 return r;
             }
-            skipped = thrust_macros::ghost!(|skipped: Ghost<Seq<<<I as Iterator>::Item as Model>::Ty>>, r: Option<I::Item>| -> Seq<<<I as Iterator>::Item as Model>::Ty> {
-                match r {
-                    Some(x) => skipped.push(x),
-                    None => skipped,
-                }
-            });
+            skipped = thrust_macros::ghost!(|skipped: Ghost<Seq<<<I as Iterator>::Item as Model>::Ty>>, r: Option<I::Item>| -> Seq<<<I as Iterator>::Item as Model>::Ty> { match r { Some(x) => skipped.push(x), None => skipped } });
             n -= 1
         }
     }
