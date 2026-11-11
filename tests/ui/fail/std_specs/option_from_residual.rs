@@ -1,6 +1,10 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off --cfg thrust_std_conformance
 //@rustc-env: THRUST_NO_INJECT_STD=1 THRUST_TRY_SPECS=1 THRUST_VERIFY_ONLY=std_transcriptions::** THRUST_SOLVER=tests/thrust-pcsat-wrapper
+// std.rs specializes its spec impls, so a crate compiling it as a source file enables
+// `specialization` itself.
+#![feature(specialization)]
+#![allow(incomplete_features)]
 
 // Fail twin of `tests/ui/pass/std_specs/option.rs`: `from_residual` has no other value
 // to return than `None`, so its body panics instead, which its spec (`requires(true)`) does not

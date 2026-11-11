@@ -40,6 +40,12 @@ pub use chc::debug::SpanFieldsLayer;
 /// The file name `std.rs` is parsed under when it is injected into the analyzed crate.
 pub const INJECTED_STD_FILE_NAME: &str = "thrust std injected";
 
+/// Whether the analyzed crate enables `specialization` itself. Thrust enables it for the
+/// injected `std.rs` otherwise, and then stops at specialization in the crate's own code, which
+/// rustc would reject without the feature.
+pub static CRATE_ENABLES_SPECIALIZATION: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// The environment variables a run of Thrust reads, which decide its result. The driver records
 /// them in the crate's dep-info, so that cargo checks a crate again when one of them changes.
 pub const ENV_VARS: &[&str] = &[

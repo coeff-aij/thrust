@@ -69,7 +69,9 @@ impl<'tcx> analyze::Analyzer<'tcx> {
             .opt_associated_item(def_id)
             .and_then(|item| item.trait_container(self.tcx()));
         if let Some(trait_def_id) = trait_def_id {
-            if self.trait_laws.borrow().contains_key(&trait_def_id) {
+            if self.trait_laws.borrow().contains_key(&trait_def_id)
+                && !opaque_by_specialization(self.tcx(), def_id, generic_args, owner_fn_id)
+            {
                 self.pending_laws.borrow_mut().push(PendingLaw {
                     pred: pred.clone(),
                     trait_def_id,
@@ -630,4 +632,55 @@ fn final_state_sort(declared: &chc::Sort, fn_ty: &rty::FunctionType) -> Option<c
         .ty
         .to_sort();
     (contract_sort == chc::Sort::mut_(declared.clone())).then(|| declared.clone())
+}
+
+/// Whether the trait item `def_id` stands for no body at `generic_args`, in the parameters of
+/// `owner_fn_id`, only because an impl marks it `default` (`specialization`): an impl, not a
+/// where-clause, is selected there, and the item it takes is marked `default` in an impl. Such
+/// an item takes no laws: the proof of a law over it, which every override takes, is checked at
+/// these arguments with the item opaque, so assuming the law there would assume what that proof
+/// is to show. Where a where-clause is selected, the item stands for every impl, as at a type
+/// parameter, and takes the laws each impl proves.
+///
+/// For an item some impl marks `default`, an outcome of selection other than these two (an
+/// ambiguity, an error) also takes no laws, which only leaves out facts.
+fn opaque_by_specialization<'tcx>(
+    tcx: mir_ty::TyCtxt<'tcx>,
+    def_id: DefId,
+    generic_args: mir_ty::GenericArgsRef<'tcx>,
+    owner_fn_id: DefId,
+) -> bool {
+    let Some(trait_def_id) = tcx.trait_of_assoc(def_id) else {
+        return false;
+    };
+    if !marked_default_in_some_impl(tcx, trait_def_id, def_id) {
+        return false;
+    }
+    let trait_args = generic_args.truncate_to(tcx, tcx.generics_of(trait_def_id));
+    let trait_ref = mir_ty::TraitRef::new(tcx, trait_def_id, tcx.erase_regions(trait_args));
+    let typing_env = mir_ty::TypingEnv::post_analysis(tcx, owner_fn_id);
+    let data = match tcx.codegen_select_candidate(typing_env.as_query_input(trait_ref)) {
+        Ok(rustc_middle::traits::ImplSource::UserDefined(data)) => data,
+        Ok(rustc_middle::traits::ImplSource::Param(_)) => return false,
+        _ => return true,
+    };
+    let Ok(ancestors) = tcx.trait_def(trait_def_id).ancestors(tcx, data.impl_def_id) else {
+        return true;
+    };
+    ancestors
+        .leaf_def(tcx, def_id)
+        .is_none_or(|leaf| !leaf.defining_node.is_from_trait() && !leaf.is_final())
+}
+
+/// Whether an impl of `trait_def_id` marks its definition of the trait item `item` `default`,
+/// itself or as an item of a `default impl`.
+fn marked_default_in_some_impl(tcx: mir_ty::TyCtxt<'_>, trait_def_id: DefId, item: DefId) -> bool {
+    tcx.all_impls(trait_def_id).any(|impl_def_id| {
+        tcx.impl_item_implementor_ids(impl_def_id)
+            .get(&item)
+            .is_some_and(|impl_item| {
+                tcx.defaultness(*impl_item).is_default()
+                    || tcx.defaultness(impl_def_id).is_default()
+            })
+    })
 }

@@ -1,6 +1,10 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_INT_RANGE=conversions THRUST_NO_INJECT_STD=1 THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120
+// std.rs specializes its spec impls, so a crate compiling it as a source file enables
+// `specialization` itself.
+#![feature(specialization)]
+#![allow(incomplete_features)]
 
 // `std_iterator_spec_laws.rs` under `THRUST_INT_RANGE`, where the models of `Range` and
 // `Enumerate` count in `UIntN`/`IntN`.
