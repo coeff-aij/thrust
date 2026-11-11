@@ -94,6 +94,17 @@ every state the chain reaches. Each client derives its bound from the chain. The
 result does not reach (the running maximum over `0..10` is 9). The pass side of `try_fold_mapinv.rs` is ignored while the solver gives no
 answer at 300 s.
 
+`generic/std/advance_by.rs`, `advance_by_ghost.rs` and `extend_desugared.rs` are std's loops over
+std.rs's `IteratorSpec`, specified with Creusot's `produces` and `completed`; each file's header
+gives the std function and what differs. `advance_by.rs` is the default `Iterator::advance_by`
+(`spec_advance_by`, core) with std's body; `advance_by_ghost.rs` writes the `is_none` test as a
+`match` and records the dropped items in a ghost sequence; `extend_desugared.rs` is
+`Vec::extend_desugared` (alloc) with `push` for the capacity handling and a ghost sequence of the
+items taken. std runs the `advance_by` loop only for unsized iterators; a `Sized` iterator takes a
+`try_fold` specialisation, so these two verify the fallback loop. `advance_by_ghost.rs` is kept to
+compare an explicit ghost witness with the existential the invariant of `advance_by.rs` infers. The
+fail twins return an error one too small (`advance_by*`) or discard each item (`extend_desugared`).
+
 Weaker variants (`weaker/`, still verify):
 
 | file | weaker than | how |
