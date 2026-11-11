@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use pretty::{termcolor, Pretty};
-use rustc_hir::pat_util::EnumerateAndAdjustIterator as _;
 use rustc_hir::{
     def_id::{DefId, LocalDefId},
     HirId,
@@ -261,6 +260,62 @@ impl<T: Clone> FormulaOrTerm<T> {
         let [cond, then, els] = [cond, then, els]
             .map(|part| part.into_formula().expect("a Boolean has a formula form"));
         cond.clone().and(then).or(cond.not().and(els))
+    }
+}
+
+/// What a pattern requires of the value it matches: the testers of the variants it names,
+/// combined as its nesting (`All`) and its or-patterns (`Any`) combine them.
+enum PatCond<T> {
+    Variant {
+        datatype: chc::DatatypeSymbol,
+        ctor: chc::DatatypeSymbol,
+        discr: num_bigint::BigInt,
+        term: Box<chc::Term<T>>,
+    },
+    All(Vec<PatCond<T>>),
+    Any(Vec<PatCond<T>>),
+}
+
+impl<T> PatCond<T> {
+    /// The condition as a formula, with a variant tested by the datatype tester.
+    fn into_formula(self) -> chc::Formula<T> {
+        let mut formula = match self {
+            PatCond::Variant { ctor, term, .. } => {
+                return chc::Formula::Atom(chc::Atom::new(chc::Pred::Tester(ctor), vec![*term]))
+            }
+            PatCond::All(conds) => {
+                chc::Formula::And(conds.into_iter().map(Self::into_formula).collect())
+            }
+            PatCond::Any(conds) => {
+                chc::Formula::Or(conds.into_iter().map(Self::into_formula).collect())
+            }
+        };
+        formula.simplify();
+        formula
+    }
+
+    /// The condition as a Boolean term, the condition of an `ite`, with a variant tested by
+    /// the discriminant, which is defined by the testers.
+    fn into_term(self) -> chc::Term<T> {
+        match self {
+            PatCond::Variant {
+                datatype,
+                discr,
+                term,
+                ..
+            } => chc::Term::datatype_discr(datatype, *term).eq(chc::Term::int(discr)),
+            PatCond::All(conds) => conds
+                .into_iter()
+                .map(Self::into_term)
+                .filter(|t| !matches!(t, chc::Term::Bool(true)))
+                .reduce(chc::Term::and)
+                .unwrap_or(chc::Term::bool(true)),
+            PatCond::Any(conds) => conds
+                .into_iter()
+                .map(Self::into_term)
+                .reduce(chc::Term::or)
+                .unwrap_or(chc::Term::bool(false)),
+        }
     }
 }
 
@@ -675,45 +730,17 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         }
     }
 
+    /// Binds the variables of `pat`, a parameter's pattern, to the parts of `param` they name.
+    /// A parameter's pattern is irrefutable, so the condition [`Self::pat_cond`] also gives
+    /// holds of every value of its type and is dropped.
     fn build_env_from_pat(
         &mut self,
         param: chc::Term<rty::FunctionParamIdx>,
         pat: &'tcx rustc_hir::Pat<'tcx>,
     ) {
-        use rustc_hir::PatKind;
-
-        let param = self.apply_pat_adjustments(param, pat);
-        match pat.kind {
-            PatKind::Binding(_, hir_id, _, None) => {
-                let term = match self.binding_mode(hir_id, pat.span).0 {
-                    rustc_hir::ByRef::No => param,
-                    rustc_hir::ByRef::Yes(rustc_hir::Mutability::Not) => chc::Term::box_(param),
-                    rustc_hir::ByRef::Yes(rustc_hir::Mutability::Mut) => self.tcx.dcx().span_fatal(
-                        pat.span,
-                        "a pattern in a formula cannot bind by mutable reference",
-                    ),
-                };
-                self.env.insert(hir_id, term);
-            }
-            PatKind::Wild => {}
-            // `&T` models as `&<T as Model>::Ty`, a box in the logic, as a deref in a formula
-            // reads it; `&mut T` models as `model::Mut`, which no `&mut` pattern matches.
-            PatKind::Ref(subpat, rustc_hir::Mutability::Not) => {
-                self.build_env_from_pat(param.box_current(), subpat);
-            }
-            PatKind::TupleStruct(_, subpats, dotdot_pos) | PatKind::Tuple(subpats, dotdot_pos) => {
-                let pat_ty = self.pat_ty(pat);
-                let field_count = match pat_ty.ty_adt_def() {
-                    Some(adt) => adt.non_enum_variant().fields.len(),
-                    None => pat_ty.tuple_fields().len(),
-                };
-                for (idx, subpat) in subpats.iter().enumerate_and_adjust(field_count, dotdot_pos) {
-                    let field_term = param.clone().tuple_proj(idx);
-                    self.build_env_from_pat(field_term, subpat);
-                }
-            }
-            _ => unimplemented!("unsupported pattern in formula: {:?}", pat),
-        }
+        let mut bindings = Vec::new();
+        self.pat_cond(param, pat, &mut bindings);
+        self.env.extend(bindings);
     }
 
     fn instantiate_generics<T>(
@@ -1096,7 +1123,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         let Some(term) = self.to_formula_or_term(hir).into_term() else {
             self.tcx.dcx().span_fatal(
                 hir.span,
-                "thrust: a predicate call, `pre!`, `post!`, quantifier or `match` in a \
+                "thrust: a predicate call, `pre!`, `post!`, quantifier or Boolean `match` in a \
                  specification is a formula, not a value: in a `requires`, `ensures`, predicate or \
                  quantifier body it can be an operand of `&&`, `||`, `!`, `==` or `!=`, or the \
                  condition of an `if` whose branches are Boolean; it cannot be the value of a \
@@ -1960,7 +1987,9 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
     }
 
     /// A `match` whose arm bodies are formulas, `matches!` among them: the disjunction, over
-    /// the arms, of an arm's body under the condition that it is the first arm to match.
+    /// the arms, of an arm's body under the condition that it is the first arm to match. An
+    /// arm's body and guard read its bindings ([`Self::arm_pattern`]) only under its
+    /// condition, which holds the tester of each variant whose fields they read.
     fn match_formula(
         &self,
         scrutinee: &'tcx rustc_hir::Expr<'tcx>,
@@ -1970,11 +1999,12 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         let mut earlier_misses = Vec::new();
         let mut disjuncts = Vec::new();
         for arm in arms {
-            let mut hit = self.pat_test(scrutinee.clone(), arm.pat);
+            let (cond, arm_translator) = self.arm_pattern(scrutinee.clone(), arm.pat);
+            let mut hit = cond.into_formula();
             if let Some(guard) = arm.guard {
-                hit = hit.and(self.to_formula(guard));
+                hit = hit.and(arm_translator.to_formula(guard));
             }
-            let body = self.to_formula(arm.body);
+            let body = arm_translator.to_formula(arm.body);
             if !body.is_bottom() {
                 let mut conjuncts = earlier_misses.clone();
                 conjuncts.extend([hit.clone(), body]);
@@ -1987,28 +2017,101 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         formula
     }
 
-    /// The condition under which `term` matches `pat`, a pattern that binds nothing.
+    /// A `match` whose arm bodies are values of a type other than `bool`: the `ite` over the
+    /// arms in order, each condition testing the variants by the discriminant. The last arm is
+    /// the value where no earlier arm matches, as Verus and Why3 translate a `match`: rustc has
+    /// checked that the arms are exhaustive, so its pattern holds of every Rust value there and
+    /// its selectors are read under their testers. A value of the datatype that no Rust value
+    /// is (a variant whose payload is uninhabited, which rustc lets a `match` omit) also takes
+    /// the last arm, with its fields at unspecified values of their sorts. A guard on the last
+    /// arm is rejected, as Verus rejects one: the arm would then be the fallback of values its
+    /// guard does not hold of.
+    fn match_term(
+        &self,
+        scrutinee: &'tcx rustc_hir::Expr<'tcx>,
+        arms: &'tcx [rustc_hir::Arm<'tcx>],
+    ) -> chc::Term<rty::FunctionParamIdx> {
+        let scrutinee = self.to_term(scrutinee);
+        let (last, earlier) = arms
+            .split_last()
+            .expect("a `match` on an inhabited type has an arm");
+        if let Some(guard) = last.guard {
+            self.tcx.dcx().span_fatal(
+                guard.span,
+                "a guard on the last arm of a `match` of a non-Boolean type is not supported in \
+                 formulas; add an arm after it",
+            );
+        }
+        let (_, last_translator) = self.arm_pattern(scrutinee.clone(), last.pat);
+        let mut term = last_translator.to_term(last.body);
+        for arm in earlier.iter().rev() {
+            let (cond, arm_translator) = self.arm_pattern(scrutinee.clone(), arm.pat);
+            let mut hit = cond.into_term();
+            if let Some(guard) = arm.guard {
+                hit = hit.and(arm_translator.to_term(guard));
+            }
+            term = chc::Term::ite(hit, arm_translator.to_term(arm.body), term);
+        }
+        term
+    }
+
+    /// The condition under which `scrutinee` matches `pat`, and the translator for the arm,
+    /// in which each binding of `pat` names the part of `scrutinee` it binds.
+    fn arm_pattern(
+        &self,
+        scrutinee: chc::Term<rty::FunctionParamIdx>,
+        pat: &'tcx rustc_hir::Pat<'tcx>,
+    ) -> (PatCond<rty::FunctionParamIdx>, Self) {
+        let mut bindings = Vec::new();
+        let cond = self.pat_cond(scrutinee, pat, &mut bindings);
+        let mut arm_translator = self.clone();
+        arm_translator.env.extend(bindings);
+        (cond, arm_translator)
+    }
+
+    /// The condition under which `term` matches `pat`, with the term each binding of `pat`
+    /// stands for pushed onto `bindings`.
     ///
     /// Every enum is encoded as a datatype with one constructor per variant, so a variant
-    /// pattern is the datatype tester of that variant's constructor.
-    fn pat_test(
+    /// pattern is the datatype tester of that variant's constructor, and a variant's field is
+    /// the constructor's selector, which the condition reads only after the tester: a selector
+    /// applied to a value of another constructor is unspecified in SMT-LIB.
+    fn pat_cond(
         &self,
         term: chc::Term<rty::FunctionParamIdx>,
         pat: &'tcx rustc_hir::Pat<'tcx>,
-    ) -> chc::Formula<rty::FunctionParamIdx> {
+        bindings: &mut Vec<(HirId, chc::Term<rty::FunctionParamIdx>)>,
+    ) -> PatCond<rty::FunctionParamIdx> {
         use rustc_hir::PatKind;
 
         let term = self.apply_pat_adjustments(term, pat);
         match pat.kind {
-            PatKind::Wild => chc::Formula::top(),
+            PatKind::Wild => PatCond::All(Vec::new()),
+            PatKind::Binding(_, hir_id, _, subpat) => {
+                bindings.push((hir_id, self.bound_term(hir_id, pat.span, term.clone())));
+                match subpat {
+                    Some(subpat) => self.pat_cond(term, subpat, bindings),
+                    None => PatCond::All(Vec::new()),
+                }
+            }
+            // `&T` models as `&<T as Model>::Ty`, a box in the logic, as a deref in a formula
+            // reads it; `&mut T` models as `model::Mut`, which no `&mut` pattern matches.
+            PatKind::Ref(subpat, rustc_hir::Mutability::Not) => {
+                self.pat_cond(term.box_current(), subpat, bindings)
+            }
             PatKind::Or(pats) => {
-                let mut formula = chc::Formula::Or(
-                    pats.iter()
-                        .map(|p| self.pat_test(term.clone(), p))
-                        .collect(),
-                );
-                formula.simplify();
-                formula
+                let bound = bindings.len();
+                let alternatives = pats
+                    .iter()
+                    .map(|p| self.pat_cond(term.clone(), p, bindings))
+                    .collect();
+                if bindings.len() != bound {
+                    self.tcx.dcx().span_fatal(
+                        pat.span,
+                        "a binding inside an or-pattern is not supported in formulas",
+                    );
+                }
+                PatCond::Any(alternatives)
             }
             PatKind::Expr(rustc_hir::PatExpr {
                 hir_id,
@@ -2016,13 +2119,13 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 ..
             }) => {
                 let res = self.typeck.qpath_res(qpath, *hir_id);
-                self.adt_pat_test(term, pat, res, Vec::new())
+                self.adt_pat_cond(term, pat, res, Vec::new(), bindings)
             }
             PatKind::TupleStruct(qpath, subpats, dotdot) => {
                 let res = self.typeck.qpath_res(&qpath, pat.hir_id);
                 let arity = self.pat_adt(pat).variant_of_res(res).fields.len();
                 let fields = positional_subpats(subpats, dotdot, arity);
-                self.adt_pat_test(term, pat, res, fields)
+                self.adt_pat_cond(term, pat, res, fields, bindings)
             }
             PatKind::Struct(qpath, pat_fields, _) => {
                 let res = self.typeck.qpath_res(&qpath, pat.hir_id);
@@ -2038,69 +2141,118 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                         (idx, f.pat)
                     })
                     .collect();
-                self.adt_pat_test(term, pat, res, fields)
+                self.adt_pat_cond(term, pat, res, fields, bindings)
             }
             PatKind::Tuple(subpats, dotdot) => {
                 let mir_ty::TyKind::Tuple(tys) = self.pat_ty(pat).kind() else {
                     panic!("tuple pattern on a non-tuple type: {:?}", pat);
                 };
                 let fields = positional_subpats(subpats, dotdot, tys.len());
-                self.fields_test(term, fields)
+                let fields = fields
+                    .into_iter()
+                    .map(|(idx, p)| (term.clone().tuple_proj(idx), p))
+                    .collect();
+                self.fields_cond(fields, bindings)
             }
-            PatKind::Binding(..) => self.tcx.dcx().span_fatal(
-                pat.span,
-                "a pattern in a formula cannot bind a variable; only `_`, `..` and variant, \
-                 tuple, struct and or-patterns are supported",
-            ),
             _ => self.tcx.dcx().span_fatal(
                 pat.span,
-                "unsupported pattern in formula; only `_`, `..` and variant, tuple, struct and \
-                 or-patterns are supported",
+                "unsupported pattern in formula; only `_`, `..`, bindings and variant, tuple, \
+                 struct, `&` and or-patterns are supported",
             ),
         }
     }
 
-    /// A variant pattern on an enum is its tester; the fields of an enum variant are not
-    /// reachable in the logic, so they must be `_`. A struct pattern tests its fields.
-    fn adt_pat_test(
+    /// The term a binding of `term` stands for: `term`, or a shared reference to it where
+    /// rustc binds by reference.
+    fn bound_term(
+        &self,
+        hir_id: HirId,
+        span: rustc_span::Span,
+        term: chc::Term<rty::FunctionParamIdx>,
+    ) -> chc::Term<rty::FunctionParamIdx> {
+        match self.binding_mode(hir_id, span).0 {
+            rustc_hir::ByRef::No => term,
+            rustc_hir::ByRef::Yes(rustc_hir::Mutability::Not) => chc::Term::box_(term),
+            rustc_hir::ByRef::Yes(rustc_hir::Mutability::Mut) => self.tcx.dcx().span_fatal(
+                span,
+                "a pattern in a formula cannot bind by mutable reference",
+            ),
+        }
+    }
+
+    /// A variant pattern on an enum is its tester, conjoined with the patterns of its fields
+    /// at the constructor's selectors. A struct pattern matches its fields.
+    fn adt_pat_cond(
         &self,
         term: chc::Term<rty::FunctionParamIdx>,
         pat: &'tcx rustc_hir::Pat<'tcx>,
         res: rustc_hir::def::Res,
         fields: Vec<(usize, &'tcx rustc_hir::Pat<'tcx>)>,
-    ) -> chc::Formula<rty::FunctionParamIdx> {
+        bindings: &mut Vec<(HirId, chc::Term<rty::FunctionParamIdx>)>,
+    ) -> PatCond<rty::FunctionParamIdx> {
         let adt = self.pat_adt(pat);
         if !adt.is_enum() {
-            return self.fields_test(term, fields);
-        }
-        if let Some((_, field)) = fields
-            .iter()
-            .find(|(_, p)| !matches!(p.kind, rustc_hir::PatKind::Wild))
-        {
-            self.tcx.dcx().span_fatal(
-                field.span,
-                "a pattern on an enum variant's field is not supported in formulas; use `_` or `..`",
-            );
-        }
-        let variant_idx = adt.variant_index_with_id(adt.variant_of_res(res).def_id);
-        let enum_def = self.analyzer.get_or_register_enum_def(adt.did());
-        let ctor = enum_def.variants[variant_idx].name.clone();
-        chc::Formula::Atom(chc::Atom::new(chc::Pred::Tester(ctor), vec![term]))
-    }
-
-    fn fields_test(
-        &self,
-        term: chc::Term<rty::FunctionParamIdx>,
-        fields: Vec<(usize, &'tcx rustc_hir::Pat<'tcx>)>,
-    ) -> chc::Formula<rty::FunctionParamIdx> {
-        let mut formula = chc::Formula::And(
-            fields
+            let fields = fields
                 .into_iter()
-                .map(|(idx, p)| self.pat_test(term.clone().tuple_proj(idx), p))
+                .map(|(idx, p)| (term.clone().tuple_proj(idx), p))
+                .collect();
+            return self.fields_cond(fields, bindings);
+        }
+        let mir_ty::TyKind::Adt(_, generic_args) = self.pat_ty(pat).kind() else {
+            panic!("enum pattern on a non-ADT type: {:?}", pat);
+        };
+        let variant = adt.variant_of_res(res);
+        let variant_idx = adt.variant_index_with_id(variant.def_id);
+        let enum_def = self.analyzer.get_or_register_enum_def(adt.did());
+        let variant_def = &enum_def.variants[variant_idx];
+        let sort = chc::DatatypeSort::new(
+            enum_def.name.clone(),
+            generic_args
+                .types()
+                .map(|ty| self.type_builder.build(ty).to_sort())
                 .collect(),
         );
-        formula.simplify();
-        formula
+        // A `_` field reads nothing, so it gets no selector.
+        let fields = fields
+            .into_iter()
+            .filter(|(_, p)| !matches!(p.kind, rustc_hir::PatKind::Wild))
+            .map(|(idx, p)| {
+                let field_ty = variant
+                    .fields
+                    .iter()
+                    .nth(idx)
+                    .expect("field of the variant");
+                let field_ty = self.normalized_ty(field_ty.ty(self.tcx, generic_args));
+                let field = chc::Term::datatype_selector(
+                    sort.clone(),
+                    variant_def.name.clone(),
+                    idx,
+                    self.type_builder.build(field_ty).to_sort(),
+                    term.clone(),
+                );
+                (field, p)
+            })
+            .collect();
+        let tester = PatCond::Variant {
+            datatype: enum_def.name.clone(),
+            ctor: variant_def.name.clone(),
+            discr: variant_def.discr.clone(),
+            term: Box::new(term),
+        };
+        PatCond::All(vec![tester, self.fields_cond(fields, bindings)])
+    }
+
+    fn fields_cond(
+        &self,
+        fields: Vec<(chc::Term<rty::FunctionParamIdx>, &'tcx rustc_hir::Pat<'tcx>)>,
+        bindings: &mut Vec<(HirId, chc::Term<rty::FunctionParamIdx>)>,
+    ) -> PatCond<rty::FunctionParamIdx> {
+        PatCond::All(
+            fields
+                .into_iter()
+                .map(|(field, p)| self.pat_cond(field, p, bindings))
+                .collect(),
+        )
     }
 
     fn pat_adt(&self, pat: &'tcx rustc_hir::Pat<'tcx>) -> mir_ty::AdtDef<'tcx> {
@@ -2752,7 +2904,11 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 unimplemented!("unsupported call in formula: {:?}", func_expr)
             }
             ExprKind::Match(scrutinee, arms, _) => {
-                FormulaOrTerm::Formula(self.match_formula(scrutinee, arms))
+                if self.expr_ty(hir).is_bool() {
+                    FormulaOrTerm::Formula(self.match_formula(scrutinee, arms))
+                } else {
+                    FormulaOrTerm::Term(self.match_term(scrutinee, arms))
+                }
             }
             ExprKind::Block(block, _) => {
                 if block.stmts.is_empty() {
