@@ -1,0 +1,203 @@
+use thrust_models::{exists, forall};
+use thrust_models::model::{Closure, Mut};
+use thrust_models::model::{Int, Seq};
+use thrust_models::Model;
+
+// `tests/ui/pass/creusot/generic/std/find.rs` with `check` written as std writes it: a function
+// nested in `find` that returns `impl FnMut`. `find` states the two `PartialEq` bounds below, which
+// rustc asks for once `try_fold`'s closure type is the opaque type.
+
+// Creusot's `common.rs`, the iterator specification every case shares: the trait predicates
+// `produces(self, visited, o)`, `completed` and `invariant` (`true` unless the impl says otherwise),
+// the laws `produces_refl` and `produces_trans` in Creusot's concatenation form, which every impl
+// inherits and Thrust checks at each impl (Creusot restates them per impl with empty bodies), and
+// `next` with Creusot's contract.
+#[thrust_macros::context]
+trait Iterator
+where
+    Self: Model,
+    Self::Item: Model,
+{
+    type Item;
+
+    #[thrust_macros::predicate]
+    fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool;
+
+    #[thrust_macros::predicate]
+    fn completed(&mut self) -> bool;
+
+    #[thrust_macros::law]
+    #[thrust_macros::requires(Self::invariant(*a))]
+    #[thrust_macros::ensures(Self::produces(*a, Seq::empty(), *a))]
+    fn produces_refl(a: &Self) {}
+
+    #[thrust_macros::law]
+    #[thrust_macros::requires(Self::produces(*a, ab, *b))]
+    #[thrust_macros::requires(Self::produces(*b, bc, *c))]
+    #[thrust_macros::ensures(Self::produces(*a, ab.concat(bc), *c))]
+    fn produces_trans(a: &Self, ab: Seq<<Self::Item as Model>::Ty>, b: &Self, bc: Seq<<Self::Item as Model>::Ty>, c: &Self) {}
+
+    #[thrust_macros::predicate]
+    fn invariant(self) -> bool {
+        true
+    }
+
+    #[thrust_macros::requires(Self::invariant(*self))]
+    #[thrust_macros::ensures(Self::invariant(!self))]
+    #[thrust_macros::ensures(result == None ==> Self::completed(self))]
+    #[thrust_macros::ensures(forall(|i| result == Some(i) ==> Self::produces(*self, Seq::singleton(i), !self)))]
+    fn next(&mut self) -> Option<Self::Item>;
+}
+
+#[derive(PartialEq)]
+struct Range {
+    start: isize,
+    end: isize,
+}
+
+impl Model for Range {
+    type Ty = Range;
+}
+
+#[thrust_macros::context]
+impl Iterator for Range {
+    type Item = isize;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.start < self.end {
+            let item = self.start;
+            self.start += 1;
+            Some(item)
+        } else {
+            None
+        }
+    }
+
+
+
+    #[thrust_macros::predicate]
+    fn completed(&mut self) -> bool {
+        *self == !self && (*self).start >= (*self).end
+    }
+
+    #[thrust_macros::predicate]
+    fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool {
+        self.end == o.end
+            && self.start <= o.start
+            && (!(visited.len() > 0) || o.start <= o.end)
+            && visited.len() == o.start - self.start
+            && forall(|i: Int| !(0 <= i && i < visited.len()) || visited[i] == self.start + i)
+    }
+}
+
+#[derive(PartialEq)]
+enum ControlFlow<B> {
+    Continue(()),
+    Break(B),
+}
+
+impl<B: Model> Model for ControlFlow<B> {
+    type Ty = ControlFlow<<B as Model>::Ty>;
+}
+
+impl<B> ControlFlow<B> {
+    fn break_value(self) -> Option<B> {
+        match self {
+            ControlFlow::Continue(..) => None,
+            ControlFlow::Break(x) => Some(x),
+        }
+    }
+}
+
+// std's default `try_fold` with the `Try` type fixed to `ControlFlow<I::Item>`: the closure may be
+// called on every item in every state. `Continue` means `iter` produced some items and then
+// completed; `Break(v)` means it produced some items and then `x`, on which a call of the closure
+// from a state reachable from `f` returned `Break(v)`.
+#[thrust_macros::context]
+#[thrust_macros::requires(I::invariant(*iter))]
+#[thrust_macros::requires(forall(|c: Closure<F>, x: <<I as Iterator>::Item as Model>::Ty| thrust_macros::pre!(c((), x))))]
+#[thrust_macros::ensures(I::invariant(!iter))]
+#[thrust_macros::ensures(
+    (result == ControlFlow::Continue(())
+        && exists(|s: Seq<<<I as Iterator>::Item as Model>::Ty>, mid: <I as Model>::Ty|
+            I::produces(*iter, s, mid) && I::completed(Mut::new(mid, !iter))))
+    || exists(|s: Seq<<<I as Iterator>::Item as Model>::Ty>, x: <<I as Iterator>::Item as Model>::Ty, v: <<I as Iterator>::Item as Model>::Ty|
+        result == ControlFlow::Break(v)
+            && I::produces(*iter, s.push(x), !iter)
+            && exists(|c: Closure<F>, d: Closure<F>|
+                thrust_macros::hist_inv!(f, c) && thrust_macros::post!(Mut::new(c, d)((), x), ControlFlow::Break(v)))))]
+fn try_fold<I, F>(iter: &mut I, init: (), f: F) -> ControlFlow<I::Item>
+where
+    I: Iterator + Model,
+    F: FnMut((), I::Item) -> ControlFlow<I::Item>,
+    <I as Iterator>::Item: Model,
+    <I as Model>::Ty: Model<Ty = <I as Model>::Ty>,
+    <<I as Iterator>::Item as Model>::Ty: Model<Ty = <<I as Iterator>::Item as Model>::Ty>,
+{
+    let it = iter;
+    let mut g = f;
+    I::produces_refl(it);
+    // The items `it` produced so far.
+    let mut gs = thrust_macros::ghost!(|| -> Seq<<<I as Iterator>::Item as Model>::Ty> { Seq::empty() });
+    while let Some(x) = it.next() {
+        thrust_macros::invariant!(
+            |it: &mut I, g: F, gs: thrust_models::Ghost<Seq<<<I as Iterator>::Item as Model>::Ty>>, f: thrust_models::FnParam<F>, iter: thrust_models::FnParam<&mut I>|
+            !it == !iter.at_entry()
+                && I::invariant(*it)
+                && I::produces(*iter.at_entry(), gs, *it)
+                && thrust_macros::hist_inv!(f.at_entry(), g)
+                && forall(|c: Closure<F>, x: <<I as Iterator>::Item as Model>::Ty| thrust_macros::pre!(c((), x)))
+        );
+        let gx = thrust_macros::ghost!(|x: <I as Iterator>::Item| -> <I as Iterator>::Item { x });
+        match g(init, x) {
+            ControlFlow::Continue(()) => {}
+            ControlFlow::Break(b) => return ControlFlow::Break(b),
+        }
+        gs = thrust_macros::ghost!(|gs: thrust_models::Ghost<Seq<<<I as Iterator>::Item as Model>::Ty>>, gx: thrust_models::Ghost<<I as Iterator>::Item>| -> Seq<<<I as Iterator>::Item as Model>::Ty> { gs.push(gx) });
+    }
+    ControlFlow::Continue(())
+}
+
+// std's `find`, with a weaker specification than std.rs's `Iterator::find`: `None` means `iter`
+// produced some items and then completed; `Some(v)` means it produced some items and then `v`,
+// which the predicate accepted in a state reachable from `predicate`. That it rejected the items
+// before `v`, which std.rs states, is not stated here.
+#[thrust_macros::context]
+#[thrust_macros::requires(I::invariant(*iter))]
+#[thrust_macros::requires(forall(|c: Closure<P>, x: <<I as Iterator>::Item as Model>::Ty| thrust_macros::pre!(c(x))))]
+#[thrust_macros::ensures(I::invariant(!iter))]
+#[thrust_macros::ensures(
+    (result == None
+        && exists(|s: Seq<<<I as Iterator>::Item as Model>::Ty>, mid: <I as Model>::Ty|
+            I::produces(*iter, s, mid) && I::completed(Mut::new(mid, !iter))))
+    || exists(|s: Seq<<<I as Iterator>::Item as Model>::Ty>, v: <<I as Iterator>::Item as Model>::Ty|
+        result == Some(v)
+            && I::produces(*iter, s.push(v), !iter)
+            && exists(|c: Closure<P>, d: Closure<P>|
+                thrust_macros::hist_inv!(predicate, c) && thrust_macros::post!(Mut::new(c, d)(v), true))))]
+fn find<I, P>(iter: &mut I, mut predicate: P) -> Option<I::Item>
+where
+    I: Iterator + Model,
+    P: FnMut(&I::Item) -> bool,
+    <I as Iterator>::Item: Model,
+    <I as Model>::Ty: Model<Ty = <I as Model>::Ty>,
+    <<I as Iterator>::Item as Model>::Ty: Model<Ty = <<I as Iterator>::Item as Model>::Ty>,
+    <I as Model>::Ty: PartialEq,
+    <<I as Iterator>::Item as Model>::Ty: PartialEq,
+{
+    fn check<T>(mut predicate: impl FnMut(&T) -> bool) -> impl FnMut((), T) -> ControlFlow<T> {
+        move |(), x| if predicate(&x) { ControlFlow::Break(x) } else { ControlFlow::Continue(()) }
+    }
+    try_fold(iter, (), check(predicate)).break_value()
+}
+
+fn main() {
+    let c = thrust_macros::closure!(
+        requires(true),
+        ensures(result == (*x >= 5)),
+        |x: &isize| -> bool { *x >= 5 },
+    );
+    let mut it = Range { start: 0, end: 10 };
+    let r = find(&mut it, c);
+    assert!(match r { Some(v) => v >= 5, None => true });
+}
