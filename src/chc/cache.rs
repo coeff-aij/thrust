@@ -3,7 +3,8 @@
 //!
 //! A query is keyed by its text with the comments left out and the unknowns renamed in the order
 //! they first occur, so that numbering the unknowns of other parts of the crate differently does
-//! not change the key (other numbered symbols, such as the forall sorts, still do), and by the
+//! not change the key (a part's query numbers its forall sorts and quantified variables itself,
+//! see [`super::standalone`]; the instances of predicates still change it), and by the
 //! solver it is given to ([`Config::identity`]). An entry keeps the text it was stored for, and a
 //! lookup compares it, so two queries with one hash are never confused; a file name from another
 //! toolchain's hasher only misses. Only `sat` and `unsat` are kept; a timeout or an unknown is

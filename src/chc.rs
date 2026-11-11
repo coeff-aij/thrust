@@ -24,6 +24,7 @@ mod prune;
 pub mod sexp;
 mod smtlib2;
 mod solver;
+mod standalone;
 mod unbox;
 
 pub use candidate_atoms::{conjuncts, instances, CandidateAtoms, CandidateAtomsMode, HeadTerms};
@@ -4289,8 +4290,15 @@ impl System {
     /// names. Its query was saved when its verdict was taken ([`System::solve_parts`]), so this
     /// writes no file.
     pub fn solve_part_with(&self, config: &Config, requests: Requests) -> Answer {
-        let query = self.clone().prepared().query(config).to_string();
+        let query = self.clone().part_query(config);
         self.answer(config, query, requests)
+    }
+
+    /// The query `config`'s solver is given for a part ([`System::part`]) and for a refutation,
+    /// which declares only what its clauses use and numbers its names within it
+    /// ([`standalone::standalone_query`]).
+    fn part_query(self, config: &Config) -> String {
+        standalone::standalone_query(&self.prepared().query(config).to_string())
     }
 
     /// The answer to `query`, the system's, with the evidence `requests` names.
@@ -4318,13 +4326,14 @@ impl System {
     }
 
     /// Asks `config`'s solver for the refutation of the system, which is refuted, with its
-    /// clauses tagged and its goals marked.
+    /// clauses tagged and its goals marked. The query is made as a part's is
+    /// ([`System::part_query`]), so a part is refuted on the text its verdict was taken of; a
+    /// whole query left with fewer declarations is refuted whenever the whole one is.
     fn refute(&self, config: &Config, answer: &mut Answer) {
         let mut marked = self.clone();
         answer.clause_tags = marked.tag_clauses();
         answer.goal_markers = marked.mark_goals();
-        let marked = marked.prepared();
-        match config.refute(marked.query(config)) {
+        match config.refute(marked.part_query(config)) {
             Ok(proof) => answer.proof = Some(proof),
             Err(refused) => answer.z3_refused = Some(refused),
         }
@@ -4377,7 +4386,7 @@ impl System {
         let config = Config::from_env();
         let cache = cache::Cache::from_env();
         let solve = |i: usize| {
-            let query = self.part(&parts[i]).prepared().query(&config).to_string();
+            let query = self.part(&parts[i]).part_query(&config);
             let file = format!("thrust_output_part{}.smt2", i + 1);
             if let Err(err) = config.save_query(&file, &query) {
                 return cache::Verdict {
