@@ -1,6 +1,6 @@
 # Creusot benchmark cases
 
-Fourteen cases from the Creusot artifact's iterator benchmark, each verified with a specification
+Cases from the Creusot artifact's iterator benchmark, each verified with a specification
 equivalent to Creusot's, plus nine additions with no Creusot counterpart (`take_count.rs`,
 `fold.rs`, `try_fold.rs`, `find.rs`, `filter.rs`, and the forms of the last four generic in the
 iterator and the closure, in `generic/`). `<file>.rs` is the pass side;
