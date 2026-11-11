@@ -299,6 +299,12 @@ A `for` loop runs over any type implementing `IteratorSpec`: `into_iter` of an i
 
 Each `assume!` the analysis takes is a warning at it, as Dafny warns at an `assume` and Lean at a `sorry`, and `THRUST_REPORT`'s `functions` item says of each checked function under how many `assume!`s, in its body or in its closures, it is checked (below), as `dafny audit` lists a program's assumptions. A crate that is verified with no `assume!` there is verified outright; with some, it is verified relative to them, and the report lists each.
 
+### Witnesses of existentials
+
+`thrust_models::witness(φ, t)`, written as a `proof_assert!` formula or one of its conjuncts (`a && witness(φ, t)`), proves `φ` by its witness `t`. `φ` is `exists(|x: T| B(x))`, or a call of a predicate whose body is such an `exists`, and `t` is a term of the binder's type over the variables the formula names, a tuple `(t1, t2)` when the `exists` binds several. The `proof_assert!` checks `B(t)`, the body at `t`, with the predicate's definition unfolded once, and then assumes `φ` itself, as Why3's `exists t` transformation removes a goal's quantifier: the solver is not left to find the witness, and what follows is proved from the atom `φ` rather than from its body. Elsewhere, `witness(φ, t)` is `φ`.
+
+`let x = thrust_macros::choose!(|s: &Vec<u64>, w: u64| -> Seq<Int> { weight(*s, w) });` names a witness of such a formula: the closure is that of `ghost!`, with the formula in place of the term. The formula is checked where the statement is, as by `proof_assert!`, and `x`, a `Ghost<Seq<Int>>`, satisfies the body of the `exists` from then on: it is bound with that body as its refinement, as Flux unpacks an existential into a fresh variable, so each later clause quantifies over it under that premise and no choice function is emitted. This is Dafny's `var x :| P(x);`, which also checks that a witness exists; Creusot's `such_that` and Verus's `choose` give one through a choice function instead. Two `choose!`s of one formula give values that may differ. A chosen value is also checked to have the facts its type states (an integer's range) wherever the body holds, as a ghost term's is.
+
 ### Verifying part of a crate
 
 `THRUST_VERIFY_ONLY=a::b,c::**,d::Type::method` verifies only the selected functions and assumes the contracts of the others, so that a large crate can be verified one part at a time. The variable is a comma-separated list of entries, each a path relative to the crate root (a leading `crate::` is allowed, and `crate` alone is the root module):
