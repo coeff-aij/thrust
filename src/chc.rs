@@ -24,6 +24,7 @@ mod prune;
 pub mod sexp;
 mod smtlib2;
 mod solver;
+mod standalone;
 mod unbox;
 
 pub use candidate_atoms::{conjuncts, instances, CandidateAtoms, CandidateAtomsMode, HeadTerms};
@@ -4268,8 +4269,14 @@ impl System {
     /// names. Its query was saved when its verdict was taken ([`System::solve_parts`]), so this
     /// writes no file.
     pub fn solve_part_with(&self, config: &Config, requests: Requests) -> Answer {
-        let query = self.clone().prepared().query(config).to_string();
+        let query = self.clone().part_query(config);
         self.answer(config, query, requests)
+    }
+
+    /// The query of this part ([`System::part`]) `config`'s solver is given, which declares only
+    /// what its clauses use and numbers its names within it ([`standalone::standalone_query`]).
+    fn part_query(self, config: &Config) -> String {
+        standalone::standalone_query(&self.prepared().query(config).to_string())
     }
 
     /// The answer to `query`, the system's, with the evidence `requests` names.
@@ -4356,7 +4363,7 @@ impl System {
         let config = Config::from_env();
         let cache = cache::Cache::from_env();
         let solve = |i: usize| {
-            let query = self.part(&parts[i]).prepared().query(&config).to_string();
+            let query = self.part(&parts[i]).part_query(&config);
             let file = format!("thrust_output_part{}.smt2", i + 1);
             if let Err(err) = config.save_query(&file, &query) {
                 return cache::Verdict {
