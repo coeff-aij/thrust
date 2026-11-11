@@ -124,6 +124,7 @@ pub fn is_formula_macro(path: &syn::Path) -> bool {
     crate::invariant::Marker::of_macro(&name).is_some()
         || crate::invariant::Marker::statement_of_macro(&name).is_some()
         || name == "ghost"
+        || name == "choose"
 }
 
 /// The closure parameters of a formula macro's `tokens`, between the first two `|`, and the
