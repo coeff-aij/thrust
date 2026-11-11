@@ -227,6 +227,12 @@ impl<'ctx, 'a> std::fmt::Display for Term<'ctx, 'a> {
                     )
                 }
             }
+            chc::Term::DatatypeSelector(sel, t) => write!(
+                f,
+                "({} {})",
+                self.ctx.datatype_selector(&sel.sort, &sel.ctor, sel.index),
+                Term::new(self.ctx, self.var_sorts, t)
+            ),
             chc::Term::DatatypeDiscr(_s, t) => {
                 let s = t
                     .sort(|v| self.var_sorts[*v].clone())
