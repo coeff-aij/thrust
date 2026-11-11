@@ -2685,6 +2685,15 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             def_index = self.local_def_id.local_def_index.as_u32()
         );
         let _guard = span.enter();
+        let split = matches!(analyze::split_jobs(), Ok(Some(_)));
+        let marked = analyze::splits_goals(self.tcx, self.local_def_id);
+        if marked && !split {
+            self.tcx.dcx().span_warn(
+                self.tcx.def_span(self.local_def_id),
+                "`#[thrust::split_goals]` takes effect only with `THRUST_SPLIT` set",
+            );
+        }
+        let _split_conjuncts = chc::split_conjuncts_in_body(split && marked);
 
         self.ctx
             .body_checks()

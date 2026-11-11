@@ -18,6 +18,10 @@ pub fn opaque_path() -> [Symbol; 2] {
     [Symbol::intern("thrust"), Symbol::intern("opaque")]
 }
 
+pub fn split_goals_path() -> [Symbol; 2] {
+    [Symbol::intern("thrust"), Symbol::intern("split_goals")]
+}
+
 pub fn reveal_path() -> [Symbol; 2] {
     [Symbol::intern("thrust"), Symbol::intern("reveal")]
 }
