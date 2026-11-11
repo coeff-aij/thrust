@@ -2565,14 +2565,7 @@ impl<V> Formula<V> {
             .into_iter()
             .enumerate()
             .filter(|(i, _)| *i != pos)
-            .map(|(_, f)| {
-                candidate_atoms::map_formula_terms(f, &mut |t| match t {
-                    Term::UserQuantifiedVar(_, var) if selectors.contains_key(&var) => {
-                        selectors[&var].clone()
-                    }
-                    t => t,
-                })
-            });
+            .map(|(_, f)| f.subst_quantified(&selectors));
         std::iter::once(Formula::Atom(tester))
             .chain(rest)
             .fold(Formula::top(), Formula::and)

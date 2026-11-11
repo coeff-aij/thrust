@@ -2228,24 +2228,16 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         );
         self.ctx.extend_clauses(clauses);
         let mut arguments = HashMap::new();
-        let mut ret = ret.subst_var(|idx| {
+        let ret = ret.subst_var(|idx| {
             let var = arguments
                 .entry(idx)
                 .or_insert_with(|| self.env.immut_bind_tmp(expected_args[idx].clone()));
             chc::Term::var(*var)
         });
         // The facts of the result's type, as the template has them from the subtyping: a block
-        // that inherits this one's state takes the refinements of its bindings without them.
-        ret.refinement = ret.formula_with(Some(&self.ctx.enum_defs));
-        // A value of a singleton sort has no clause variable: the refinement, which may still say
-        // what the call does to `&mut` arguments, refers to the sort's only value instead.
-        let sort = ret.ty.to_sort();
-        if sort.is_singleton() {
-            ret.refinement = ret
-                .refinement
-                .subst_value_var(|| chc::Term::default_for(&sort));
-        }
-        ret
+        // that inherits this one's state takes the refinements of its bindings without them. For a
+        // singleton sort, the refinement may still say what the call does to `&mut` arguments.
+        self.with_type_facts(ret)
     }
 
     fn builtin_call(&self, func: &Operand<'tcx>) -> Option<BuiltinCall> {
@@ -2514,20 +2506,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         // made from it are required here to have the facts its type states of them, as an
         // unchecked subtraction is.
         let value_ty = value_rty.ty.clone().strip_refinement();
-        let checks = rty::type_fact_checks(&value_ty, &self.ctx.enum_defs).unwrap_or_else(|ty| {
-            let span = self.body.basic_blocks[self.basic_block]
-                .terminator()
-                .source_info
-                .span;
-            self.tcx.dcx().span_fatal(
-                span,
-                format!(
-                    "a ghost term of type {}: the ranges of the integers a recursive enum holds \
-                     cannot be checked",
-                    ty.display()
-                ),
-            )
-        });
+        let terminator_span = self.body.basic_blocks[self.basic_block]
+            .terminator()
+            .source_info
+            .span;
+        let checks = self.value_fact_checks(&value_ty, "a ghost term", terminator_span);
         let term_check = (!checks.is_top()).then(|| (params.clone(), formula_fn.to_refinement()));
         let func_ty = rty::FunctionType::new(params, value_rty);
         let args =
@@ -2614,16 +2597,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.check_formula(goal);
 
         let value_ty = self.type_builder.build(*value_ty).ty.strip_refinement();
-        let checks = rty::type_fact_checks(&value_ty, &self.ctx.enum_defs).unwrap_or_else(|ty| {
-            self.tcx.dcx().span_fatal(
-                span,
-                format!(
-                    "a chosen value of type {}: the ranges of the integers a recursive enum holds \
-                     cannot be checked",
-                    ty.display()
-                ),
-            )
-        });
+        let checks = self.value_fact_checks(&value_ty, "a chosen value", span);
         let witnessed = formula_fn.to_witnessed_refinement();
         if !checks.is_top() {
             let clauses = self.check_ghost_term(params, args, &value_ty, witnessed.clone(), checks);
@@ -2631,7 +2605,32 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         }
 
         let value = rty::RefinedType::new(value_ty.vacuous(), witnessed);
-        let mut value = value.subst_var(|idx| chc::Term::var(vars[idx]));
+        self.with_type_facts(value.subst_var(|idx| chc::Term::var(vars[idx])))
+    }
+
+    /// The facts of `value_ty` to check of a ghost term or a chosen value (`what`); stops when
+    /// they cannot be stated.
+    fn value_fact_checks(
+        &self,
+        value_ty: &rty::Type<rty::Closed>,
+        what: &str,
+        span: rustc_span::Span,
+    ) -> rty::Formula<rty::RefinedTypeVar<rty::Closed>> {
+        rty::type_fact_checks(value_ty, &self.ctx.enum_defs).unwrap_or_else(|ty| {
+            self.tcx.dcx().span_fatal(
+                span,
+                format!(
+                    "{what} of type {}: the ranges of the integers a recursive enum holds cannot \
+                     be checked",
+                    ty.display()
+                ),
+            )
+        })
+    }
+
+    /// `value` with the facts of its type in its refinement, as a binding takes them; a value of a
+    /// singleton sort has no clause variable, so the refinement refers to the sort's only value.
+    fn with_type_facts(&self, mut value: rty::RefinedType<Var>) -> rty::RefinedType<Var> {
         value.refinement = value.formula_with(Some(&self.ctx.enum_defs));
         let sort = value.ty.to_sort();
         if sort.is_singleton() {
