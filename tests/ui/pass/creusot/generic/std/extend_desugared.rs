@@ -1,6 +1,9 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off -A unused-variables -A dead_code
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300
+// Annotation code beside the invariant: the ghosts `old_vec`, `old_iter` and `produced`, the
+// ghost `x`, the item before it moves into the vector, and a call of the lemma `produces_refl`
+// before the loop.
 
 // std's `Vec::extend_desugared` (`library/alloc/src/vec/mod.rs` of the rust-src of
 // nightly-2025-09-08, the toolchain this repository pins), the loop of `extend` and `collect` for a

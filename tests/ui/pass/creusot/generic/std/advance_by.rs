@@ -1,6 +1,7 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off -A unused-variables -A dead_code
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300
+// Annotation code beside the invariant: the ghost `old_it`, the iterator at entry.
 
 // std's default `Iterator::advance_by` (`spec_advance_by` in `library/core/src/iter/traits/iterator.rs`
 // of the rust-src of nightly-2025-09-08, the toolchain this repository pins), with std's body, as a
