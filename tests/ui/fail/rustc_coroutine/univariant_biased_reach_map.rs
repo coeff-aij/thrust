@@ -4,7 +4,7 @@
 //@compile-flags: -Adead_code -C debug-assertions=off --cfg thrust_univariant_biased_reach="map"
 //@no-rustfix
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300 THRUST_TRY_SPECS=1
-//@rustc-env: THRUST_VERIFY_ONLY=rustc_abi::layout::LayoutCalculator::univariant_biased,rustc_abi::layout::LayoutCalculator::backend_repr_of,rustc_abi::layout::LayoutCalculator::univariant_biased_finish,case_study::iter::map_new_assumed,case_study::assumed_requires::max_assumed,case_study::assumed_requires::filter_new_assumed,case_study::assumed_requires::filter_next_assumed,case_study::assumed_requires::iter_all_assumed,case_study::assumed_requires::map_or_assumed,case_study::assumed_requires::map_assumed,case_study::assumed_requires::sort_by_key_assumed
+//@rustc-env: THRUST_VERIFY_ONLY=rustc_abi::layout::LayoutCalculator::univariant_biased,rustc_abi::layout::LayoutCalculator::backend_repr_of,rustc_abi::layout::LayoutCalculator::univariant_biased_finish,case_study::iter::map_new_assumed,case_study::assumed_requires::filter_new_assumed,case_study::assumed_requires::filter_next_assumed,case_study::assumed_requires::map_or_assumed,case_study::assumed_requires::map_assumed,case_study::assumed_requires::sort_by_key_assumed
 //@rustc-env: THRUST_SPLIT=1 THRUST_SPLIT_GOALS=1 THRUST_CALL_RESULT_DIRECT=1
 // A reachability twin of the fallback's `univariant_biased.rs`: with `cfg(thrust_univariant_biased_reach = "map")`
 // `univariant_biased` asserts `false` right after the assumptions at that point, so the twin is
