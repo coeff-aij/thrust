@@ -1978,7 +1978,10 @@ impl<'tcx> Analyzer<'tcx> {
     /// (`rty::int_range_type_formula`). Its definition has them at every argument
     /// ([`Self::checked_logic_fn_body`]), so they hold of every interpretation an opaque
     /// declaration stands for, as the value of an opaque function in Dafny or Verus keeps the
-    /// constraint of its result type. `None` when the type states none.
+    /// constraint of its result type. `None` when the type states none, and when stating them
+    /// needs an existential (the payload of an enum with `THRUST_INT_RANGE`): a law of the form
+    /// `forall params. exists payload. ..` has no test with PCSat, so that declaration keeps
+    /// no law.
     fn logic_fn_result_facts(
         &self,
         system: &mut chc::System,
@@ -1994,11 +1997,7 @@ impl<'tcx> Analyzer<'tcx> {
             || system.new_user_quantified_var(),
             &self.enum_defs,
         )?;
-        Some(if payloads.is_empty() {
-            facts
-        } else {
-            chc::Formula::exists(payloads, facts)
-        })
+        payloads.is_empty().then_some(facts)
     }
 
     /// The definition of a logic function from its `body`, and the clauses checking that
