@@ -414,9 +414,9 @@ fn a_part_of_several_functions_spans_each() {
     assert!(stderr.contains("`main` is in this part too"), "{stderr}");
 }
 
-/// A part declares only the definitions its clauses reach: the part of `bad`, which has no
-/// sequence, is refuted by `z3` although the part of `count` uses sequences, which `z3` cannot
-/// read, and only that part's error says PCSat reads it.
+/// A part declares only what its assertions use: the part of `bad`, which has no sequence, is
+/// refuted by `z3`, and the part of `count`, whose loop's sequence datatypes no assertion uses,
+/// declares none of them, so `z3` reads it too.
 #[test]
 fn a_part_without_sequences_declares_none() {
     let output = run("sequence_and_not.rs", Some("2"));
@@ -425,11 +425,7 @@ fn a_part_without_sequences_declares_none() {
         stderr.contains("error: verification error: Unsat"),
         "{stderr}"
     );
-    assert_eq!(
-        stderr.matches("which `z3` does not read").count(),
-        1,
-        "{stderr}"
-    );
+    assert_eq!(stderr.matches("verification error").count(), 1, "{stderr}");
 }
 
 /// A failing part's error and the labels of its other functions are at the functions'
