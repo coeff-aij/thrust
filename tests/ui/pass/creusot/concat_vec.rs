@@ -2,7 +2,7 @@
 //@compile-flags: -C debug-assertions=off -A unused-variables -A dead_code
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
-// concat_vec, `extend_index` of the TACAS 2023 artifact's `examples/extend.rs`: `v1.extend` over
+// concat_vec, `extend_index` of the 2022 artifact's `examples/extend.rs`: `v1.extend` over
 // `v2.into_iter()`, std's `Vec::extend` under std.rs's contract (Creusot's, creusot-std
 // src/std/vec.rs at 3620de437), with the artifact's assertion in Thrust syntax. The current
 // Creusot's copy (`08_collect_extend.rs`) calls a local `extend` with a `for` loop instead

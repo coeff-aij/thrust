@@ -14,7 +14,7 @@ impl thrust_models::Model for Hash64 {
     type Ty = Self;
 }
 // `Reverse`'s one field, for the key type of `univariant_biased`'s sort through
-// `sort_by_key_assumed` of thrust/iter.rs.
+// `sort_by_key_assumed` of thrust/assumed_requires.rs.
 impl<T: thrust_models::Model> thrust_models::Model for std::cmp::Reverse<T> {
     type Ty = (<T as thrust_models::Model>::Ty,);
 }
