@@ -101,8 +101,9 @@ fn expand_ghost(
         ));
     };
 
-    // Synthetic, so that a term may name a live variable called `result`.
-    let value = format_ident!("__thrust_ghost_value");
+    // Synthetic, so that a term may name a live variable called `result`; mixed-site, so that the
+    // user's tokens cannot name it.
+    let value = syn::Ident::new("__thrust_ghost_value", proc_macro2::Span::mixed_site());
     let mut params: Vec<FnArg> = vec![syn::parse_quote!(#value: #value_ty)];
     for param in &closure.inputs {
         let syn::Pat::Type(pt) = param else {
