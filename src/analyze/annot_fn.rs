@@ -2019,9 +2019,13 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
 
     /// A `match` whose arm bodies are values of a type other than `bool`: the `ite` over the
     /// arms in order, each condition testing the variants by the discriminant. The last arm is
-    /// the value where no earlier arm matches: rustc has checked that the arms are exhaustive,
-    /// so its pattern holds there (a guarded last arm is never reached), and the selectors it
-    /// reads are read only under their testers.
+    /// the value where no earlier arm matches, as Verus and Why3 translate a `match`: rustc has
+    /// checked that the arms are exhaustive, so its pattern holds of every Rust value there and
+    /// its selectors are read under their testers. A value of the datatype that no Rust value
+    /// is (a variant whose payload is uninhabited, which rustc lets a `match` omit) also takes
+    /// the last arm, with its fields at unspecified values of their sorts. A guard on the last
+    /// arm is rejected, as Verus rejects one: the arm would then be the fallback of values its
+    /// guard does not hold of.
     fn match_term(
         &self,
         scrutinee: &'tcx rustc_hir::Expr<'tcx>,
@@ -2031,6 +2035,13 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         let (last, earlier) = arms
             .split_last()
             .expect("a `match` on an inhabited type has an arm");
+        if let Some(guard) = last.guard {
+            self.tcx.dcx().span_fatal(
+                guard.span,
+                "a guard on the last arm of a `match` of a non-Boolean type is not supported in \
+                 formulas; add an arm after it",
+            );
+        }
         let (_, last_translator) = self.arm_pattern(scrutinee.clone(), last.pat);
         let mut term = last_translator.to_term(last.body);
         for arm in earlier.iter().rev() {
