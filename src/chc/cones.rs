@@ -69,28 +69,30 @@ pub fn split_goals() -> bool {
 }
 
 thread_local! {
-    static CONJUNCT_GOALS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static SPLIT_CONJUNCTS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// While it lives, a goal that is a conjunction is one goal per conjunct, as with
-/// `THRUST_SPLIT_GOALS=1`: held while the body of a function marked `#[thrust::split_goals]` is
-/// analyzed.
-pub struct ConjunctGoals(bool);
+/// Restores, when dropped, whether the body analyzed before it split its goals' conjunctions.
+pub struct SplitConjunctsGuard(bool);
 
-pub fn conjunct_goals() -> ConjunctGoals {
-    ConjunctGoals(CONJUNCT_GOALS.replace(true))
+/// Whether the goals of the body about to be analyzed are split per conjunct, as with
+/// `THRUST_SPLIT_GOALS=1`: those of a function marked `#[thrust::split_goals]` are, and those of
+/// a body analyzed while it is (a callee at an instance) are not unless it is marked too. Holds
+/// until the guard is dropped.
+pub fn split_conjuncts_in_body(split: bool) -> SplitConjunctsGuard {
+    SplitConjunctsGuard(SPLIT_CONJUNCTS.replace(split))
 }
 
-impl Drop for ConjunctGoals {
+impl Drop for SplitConjunctsGuard {
     fn drop(&mut self) {
-        CONJUNCT_GOALS.set(self.0);
+        SPLIT_CONJUNCTS.set(self.0);
     }
 }
 
 /// Whether a goal made now that is a conjunction is one goal per conjunct (see
 /// [`ClauseBuilder::head`]).
 pub fn goals_by_conjunct() -> bool {
-    split_goals() || CONJUNCT_GOALS.get()
+    split_goals() || SPLIT_CONJUNCTS.get()
 }
 
 /// Why a system is not split into the cones of its goals.

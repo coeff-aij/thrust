@@ -2719,6 +2719,7 @@ impl<'tcx> Analyzer<'tcx> {
         }
         self.system.borrow_mut().type_params_reverse = reverse;
         self.mark_opaque_predicates();
+        self.check_split_goals_attributes();
         let config = crate::report::Config::from_env(self.tcx);
         match split_jobs() {
             Ok(None) => {}
@@ -2862,6 +2863,37 @@ impl<'tcx> Analyzer<'tcx> {
             .get_attrs_by_path(def.to_def_id(), path)
             .next()
             .is_some()
+    }
+
+    /// Stops at a `#[thrust::split_goals]` on anything but a function whose body Thrust analyzes
+    /// (not a closure, which takes the attribute of the function it is written in, nor a predicate,
+    /// logic, trusted or ignored function): rustc does not check `thrust::` attributes, and it would
+    /// otherwise change nothing.
+    fn check_split_goals_attributes(&self) {
+        let items = self.tcx.hir_crate_items(()).definitions();
+        let defs: HashSet<LocalDefId> = items.chain(self.tcx.hir_body_owners()).collect();
+        for def in defs {
+            if !self.has_attr(def, &analyze::annot::split_goals_path()) {
+                continue;
+            }
+            let analyzed = matches!(
+                self.tcx.def_kind(def),
+                rustc_hir::def::DefKind::Fn | rustc_hir::def::DefKind::AssocFn
+            ) && ![
+                analyze::annot::trusted_path(),
+                analyze::annot::ignored_path(),
+                analyze::annot::predicate_path(),
+                analyze::annot::logic_path(),
+            ]
+            .iter()
+            .any(|path| self.has_attr(def, path));
+            if !analyzed {
+                self.tcx.dcx().span_err(
+                    self.tcx.def_span(def),
+                    "`#[thrust::split_goals]` applies only to a function whose body Thrust analyzes",
+                );
+            }
+        }
     }
 
     /// Stops at a `#[thrust::opaque]` on anything but a predicate or logic function with a Rust
@@ -3132,16 +3164,23 @@ impl<'tcx> Analyzer<'tcx> {
                 .def
                 .is_some_and(|def| splits_goals(self.tcx, def))
         };
-        let (parts, asked_by) = if chc::split_goals() {
-            (system.goal_cones(), "`THRUST_SPLIT_GOALS`")
+        let (parts, kind, asked_by) = if chc::split_goals() {
+            (
+                system.goal_cones(),
+                Parts::GoalCones,
+                "`THRUST_SPLIT_GOALS`",
+            )
         } else if system.clauses.indices().any(marked) {
-            (system.goals_apart(marked), "`#[thrust::split_goals]`")
+            (
+                system.goals_apart(marked),
+                Parts::GoalsApart,
+                "`#[thrust::split_goals]`",
+            )
         } else {
             return (system.components(), Parts::Classes);
         };
         match parts {
-            Ok(parts) if chc::split_goals() => (parts, Parts::GoalCones),
-            Ok(parts) => (parts, Parts::GoalsApart),
+            Ok(parts) => (parts, kind),
             Err(why) => {
                 crate::report::emit_not_horn_note(self.tcx, system, why, asked_by);
                 (system.components(), Parts::Classes)
