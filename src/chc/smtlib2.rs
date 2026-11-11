@@ -1002,16 +1002,42 @@ impl<'ctx, 'a> std::fmt::Display for OpaquePredDecl<'ctx, 'a> {
         };
         write!(
             f,
-            "(declare-forall-fun {} {} {result})",
+            "(declare-forall-fun {} {} {result}",
             self.inner.symbol,
             List::closed(params)
-        )
+        )?;
+        if let Some(facts) = &self.inner.result_facts {
+            write!(f, " :law {}", self.closed_law(facts))?;
+        }
+        write!(f, ")")
     }
 }
 
 impl<'ctx, 'a> OpaquePredDecl<'ctx, 'a> {
     pub fn new(ctx: &'ctx FormatContext, inner: &'a chc::UserDefinedPredDef) -> Self {
         Self { ctx, inner }
+    }
+
+    /// `facts`, a formula over the function's parameters, closed by a `forall` over them: a law
+    /// written closed is a premise that holds at every argument.
+    fn closed_law(&self, facts: &chc::Formula) -> String {
+        let var_sorts: IndexVec<chc::TermVarIdx, chc::Sort> = self
+            .inner
+            .sig
+            .iter()
+            .map(|(_, sort)| sort.clone())
+            .collect();
+        let body = Formula::new(self.ctx, &var_sorts, facts).to_string();
+        if self.inner.sig.is_empty() {
+            return body;
+        }
+        let binders = List::closed(
+            self.inner
+                .sig
+                .iter()
+                .map(|(name, sort)| format!("({} {})", name, self.ctx.fmt_sort(sort))),
+        );
+        format!("(forall {binders} {body})")
     }
 }
 

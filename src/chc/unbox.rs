@@ -204,6 +204,7 @@ fn unbox_user_defined_pred_def(user_defined_pred_def: UserDefinedPredDef) -> Use
         sort_subst,
         dependencies,
         decreases,
+        result_facts,
     } = user_defined_pred_def;
     let sig = sig
         .into_iter()
@@ -230,6 +231,7 @@ fn unbox_user_defined_pred_def(user_defined_pred_def: UserDefinedPredDef) -> Use
         sort_subst,
         dependencies,
         decreases: decreases.map(unbox_term),
+        result_facts: result_facts.map(unbox_formula),
     }
 }
 

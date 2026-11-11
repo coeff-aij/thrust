@@ -3075,6 +3075,11 @@ pub struct UserDefinedPredDef {
     /// The variant of a recursive logic function, emitted as the `:decreases` annotation of its
     /// body so that the solver can take the function as total.
     pub decreases: Option<Term<TermVarIdx>>,
+    /// The facts of a logic function's result type stated of its value, a formula over its
+    /// parameters that its definition makes true at every argument. Emitted as the `:law` of the
+    /// function's declaration when it is opaque ([`System::make_opaque`]), which would otherwise
+    /// lose them with the definition.
+    pub result_facts: Option<Formula<TermVarIdx>>,
 }
 
 /// The forall predicates and functions `atoms` apply, as predicates or in their arguments, and in
@@ -3531,6 +3536,7 @@ impl System {
             sort_subst: Vec::new(),
             dependencies,
             decreases: None,
+            result_facts: None,
         })
     }
 
@@ -3551,6 +3557,7 @@ impl System {
             sort_subst: Vec::new(),
             dependencies: HashSet::new(),
             decreases: None,
+            result_facts: None,
         })
     }
 
@@ -3573,7 +3580,19 @@ impl System {
             sort_subst: Vec::new(),
             dependencies: HashSet::new(),
             decreases,
+            result_facts: None,
         })
+    }
+
+    /// States `facts`, a formula over the parameters of the logic function `symbol` defined
+    /// before, of its value at every argument ([`UserDefinedPredDef::result_facts`]).
+    pub fn set_result_facts(&mut self, symbol: &UserDefinedPred, facts: Formula<TermVarIdx>) {
+        let def = self
+            .user_defined_pred_defs
+            .iter_mut()
+            .find(|def| &def.symbol == symbol)
+            .expect("the logic function is defined");
+        def.result_facts = Some(facts);
     }
 
     /// Declares `symbol` as an unknown of the system ([`UserDefinedPredBody::Derived`]).
@@ -3585,6 +3604,7 @@ impl System {
             sort_subst: Vec::new(),
             dependencies: HashSet::new(),
             decreases: None,
+            result_facts: None,
         })
     }
 
@@ -3604,6 +3624,7 @@ impl System {
             sort_subst,
             dependencies: HashSet::new(),
             decreases: None,
+            result_facts: None,
         })
     }
 

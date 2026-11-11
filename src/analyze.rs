@@ -1956,6 +1956,7 @@ impl<'tcx> Analyzer<'tcx> {
                     }
                 });
                 let mut system = self.system.borrow_mut();
+                let facts = self.logic_fn_result_facts(&mut system, &pred, &arg_sorts, &ret);
                 system.push_fn_define_term(
                     pred.clone(),
                     arg_sorts,
@@ -1963,10 +1964,41 @@ impl<'tcx> Analyzer<'tcx> {
                     definition,
                     decreases,
                 );
+                if let Some(facts) = facts {
+                    system.set_result_facts(&pred, facts);
+                }
             }
         }
         self.defining_predicates.borrow_mut().pop();
         pred
+    }
+
+    /// The facts of `ret`, the result type of the logic function `pred`, stated of its value at
+    /// its parameters: `>= 0` of an unsigned type, and with `THRUST_INT_RANGE` its range
+    /// (`rty::int_range_type_formula`). Its definition has them at every argument
+    /// ([`Self::checked_logic_fn_body`]), so they hold of every interpretation an opaque
+    /// declaration stands for, as the value of an opaque function in Dafny or Verus keeps the
+    /// constraint of its result type. `None` when the type states none.
+    fn logic_fn_result_facts(
+        &self,
+        system: &mut chc::System,
+        pred: &chc::UserDefinedPred,
+        arg_sorts: &IndexVec<chc::TermVarIdx, chc::Sort>,
+        ret: &rty::Type<rty::Closed>,
+    ) -> Option<chc::Formula> {
+        let args = arg_sorts.indices().map(chc::Term::var).collect();
+        let value = chc::Term::user_defined_fn(pred.clone(), ret.to_sort(), args);
+        let (payloads, facts) = rty::int_range_type_formula(
+            ret,
+            value,
+            || system.new_user_quantified_var(),
+            &self.enum_defs,
+        )?;
+        Some(if payloads.is_empty() {
+            facts
+        } else {
+            chc::Formula::exists(payloads, facts)
+        })
     }
 
     /// The definition of a logic function from its `body`, and the clauses checking that
