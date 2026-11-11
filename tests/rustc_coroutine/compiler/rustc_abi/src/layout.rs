@@ -699,12 +699,6 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
     {
         let dl = self.cx.data_layout();
         let pack = repr.pack;
-        let mut align = if pack.is_some() {
-            dl.i8_align
-        } else {
-            dl.aggregate_align
-        };
-        let mut max_repr_align = repr.align;
         // Rewrite (rewrites.md R8): `collect_index_vec` for `collect`.
         let mut in_memory_order: IndexVec<u32, FieldIdx> = collect_index_vec(fields.indices());
         thrust_macros::proof_assert!(|in_memory_order: IndexVec<u32, FieldIdx>, fields: &IndexSlice<FieldIdx, F>|
@@ -947,6 +941,82 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         });
         thrust_macros::proof!(lemmas::every_index_occurs(order, fields.len(), fields.len()));
 
+        // Fallback: `order_ok`, the order's facts asserted above, assumed exactly (the solver does
+        // not answer it at `place_fields`' call; now `univariant_biased_place`'s `requires`).
+        thrust_macros::assume!(|in_memory_order: IndexVec<u32, FieldIdx>, fields: &IndexSlice<FieldIdx, F>, kind: StructKind|
+            LayoutCalculator::<Cx>::order_ok::<FieldIdx>(in_memory_order, (*fields).len(), kind));
+        // Rewrite (rewrites.md, pending): the field placement and the layout's construction in
+        // `univariant_biased_place`, whose contract is this function's with the order's facts.
+        self.univariant_biased_place::<FieldIdx, VariantIdx, F>(fields, repr, kind, niche_bias, in_memory_order, field_seed)
+    }
+
+    /// `univariant_biased` from the field placement on: the code after the field order is
+    /// chosen, moved here (rewrite, rewrites.md pending) so that `univariant_biased` reaches its
+    /// return by one path and its postcondition is this function's, at the same arguments.
+    #[thrust_macros::requires(Self::layout_pre::<FieldIdx, VariantIdx, F>(*self, fields, kind))]
+    #[thrust_macros::requires(Self::prefix_fits(repr, kind))]
+    #[thrust_macros::requires(Self::deref_functional::<FieldIdx, VariantIdx, F>())]
+    #[thrust_macros::requires(Self::order_ok::<FieldIdx>(in_memory_order, (*fields).len(), kind))]
+    #[thrust_macros::ensures(forall(|l: LayoutData<FieldIdx, VariantIdx>|
+        result != Ok(l) || FieldsShape::<FieldIdx>::arbitrary_of(l.fields, (*fields).len())))]
+    #[thrust_macros::ensures(forall(|l: LayoutData<FieldIdx, VariantIdx>, dl: TargetDataLayout, s: USize, q: USize|
+        result == Ok(l)
+            && Cx::dl_of(*self, dl)
+            && Self::weighs::<FieldIdx, VariantIdx, F>(fields, repr, kind, dl, s)
+            && q == l.align.abi.pow2 ==> (l.size.raw < s && pow2(q) <= s)))]
+    #[thrust_macros::ensures(forall(|l: LayoutData<FieldIdx, VariantIdx>, dl: TargetDataLayout|
+        result == Ok(l) && Cx::dl_of(*self, dl) ==> l.size.raw < super::obj_bound(dl)))]
+    #[thrust_macros::ensures(forall(|e: LayoutCalculatorError<<F as thrust_models::Model>::Ty>|
+        result != Err(e)
+            || e == LayoutCalculatorError::SizeOverflow
+            || exists(|f: <F as thrust_models::Model>::Ty| e == LayoutCalculatorError::UnexpectedUnsized(f))))]
+    #[thrust_macros::ensures(
+        (exists(|f: <F as thrust_models::Model>::Ty| result == Err(LayoutCalculatorError::UnexpectedUnsized(f)))
+            ==> Self::unsized_misplaced::<FieldIdx, VariantIdx, F>(fields, kind))
+        && (Self::unsized_misplaced::<FieldIdx, VariantIdx, F>(fields, kind)
+            ==> (exists(|f: <F as thrust_models::Model>::Ty| result == Err(LayoutCalculatorError::UnexpectedUnsized(f)))
+                || result == Err(LayoutCalculatorError::SizeOverflow))))]
+    #[thrust_macros::ensures(
+        Self::fits_in_any_order::<FieldIdx, VariantIdx, F>(*self, fields, repr, kind) ==> result != Err(LayoutCalculatorError::SizeOverflow))]
+    #[thrust_macros::ensures(forall(|l: LayoutData<FieldIdx, VariantIdx>| result != Ok(l)
+        || ((matches!(niche_bias, NicheBias::Start) && l.largest_niche != None) ==> Self::some_field_niche::<FieldIdx, VariantIdx, F>(fields))
+            && ((matches!(niche_bias, NicheBias::End) && Self::some_field_niche::<FieldIdx, VariantIdx, F>(fields)) ==> l.largest_niche != None)))]
+    #[thrust_macros::ensures(forall(|l: LayoutData<FieldIdx, VariantIdx>, n: Niche, dl: TargetDataLayout, s: Size|
+        result == Ok(l) && l.largest_niche == Some(n) && Cx::dl_of(*self, dl) ==> (Niche::wf_in(n, dl) && (Primitive::size_in(n.value, dl, s) ==> n.offset.raw + s.raw <= l.size.raw))))]
+    #[thrust::reveal(
+        LayoutCalculator::layout_pre,
+        LayoutCalculator::fits_in_any_order,
+        LayoutCalculator::weighs,
+        LayoutCalculator::unsized_misplaced,
+        LayoutCalculator::some_field_niche,
+        super::Primitive::size_in,
+        super::FieldsShape::arbitrary_of
+    )]
+    fn univariant_biased_place<
+        'a,
+        FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
+        VariantIdx: Idx + thrust_models::Model<Ty: PartialEq>,
+        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + thrust_models::Model<Ty: PartialEq>,
+    >(
+        &self,
+        fields: &IndexSlice<FieldIdx, F>,
+        repr: &ReprOptions,
+        kind: StructKind,
+        niche_bias: NicheBias,
+        in_memory_order: IndexVec<u32, FieldIdx>,
+        field_seed: Hash64,
+    ) -> LayoutCalculatorResult<FieldIdx, VariantIdx, F>
+    where
+        Cx: thrust_models::Model<Ty: PartialEq>,
+    {
+        let dl = self.cx.data_layout();
+        let pack = repr.pack;
+        let mut align = if pack.is_some() {
+            dl.i8_align
+        } else {
+            dl.aggregate_align
+        };
+        let mut max_repr_align = repr.align;
         let mut offsets = IndexVec::from_elem(Size::ZERO, fields);
         let mut offset = Size::ZERO;
         let mut largest_niche = None;
@@ -965,8 +1035,6 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         // sort), assumed exactly.
         thrust_macros::assume!(|fields: &IndexSlice<FieldIdx, F>, dl: &TargetDataLayout|
             LayoutCalculator::<Cx>::fields_ok::<FieldIdx, VariantIdx, F>(fields, *dl));
-        thrust_macros::assume!(|in_memory_order: IndexVec<u32, FieldIdx>, fields: &IndexSlice<FieldIdx, F>, kind: StructKind|
-            LayoutCalculator::<Cx>::order_ok::<FieldIdx>(in_memory_order, (*fields).len(), kind));
         #[cfg(thrust_ub_reach = "place_fields_pre")]
         thrust_macros::proof_assert!(|kind: StructKind| false);
         // Rewrite (rewrites.md R19): the field loop as `place_fields`.
