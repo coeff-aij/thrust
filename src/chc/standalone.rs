@@ -12,11 +12,13 @@
 //!   command) is kept. A command names each of its symbols and each piece of a symbol between `<`,
 //!   `-` and `>`, so that a symbol built from a sort's name (`A1_Tuple<Seq<a3>-Int>`,
 //!   `q_len_…<a3>`) keeps the sort's declaration. No kept command names a symbol of a declaration
-//!   left out, so the kept commands say of their symbols what they said in the whole query. A
-//!   declaration left out constrains nothing kept: a sort, a datatype, a definition and an
-//!   unknown constrain only their own symbols, and the law of a universal function is a premise of
-//!   the clauses that apply the function (fptprove's `:law`), none of which is kept. The query
-//!   left is satisfiable exactly when the whole one is. This is the reachability pruning of
+//!   left out, so leaving it out removes only symbols nothing kept reads and the assumptions
+//!   stated of them: when the query left is `sat`, so is the whole part, and the whole part is
+//!   `unsat` only when the query left is. The converse holds when what is left out is satisfiable
+//!   whatever the kept symbols are, as a sort, a datatype, a definition and an unknown are, and
+//!   as a law is to fptprove, which takes the law of a universal function as a premise of the
+//!   clauses that apply the function (`:law`), none of them kept. Otherwise pruning could make a
+//!   part fail that holds, never hold one that fails. This is the reachability pruning of
 //!   Boogie (`/prune`, `Source/VCGeneration/Prune/Pruner.cs`) and Verus
 //!   (`source/vir/src/prune.rs`), where an axiom stands on its own and is kept when it mentions
 //!   a symbol kept; here every law belongs to the universal function it is declared with.
@@ -24,16 +26,16 @@
 //!   `default_a<n>` of a sort's padding) and the quantified variables `q$<n>` are numbered across
 //!   the crate. Each is renumbered in the order its name first occurs outside comments, skipping
 //!   a number whose name the query uses otherwise, and renamed wherever it occurs, comments
-//!   included. The renaming is one-to-one, of universally quantified sorts and bound variables,
-//!   so the query means what it meant. The unknowns `p<n>` keep their numbers, by which the
-//!   solver's models and refutations are read; the cache key renumbers them
-//!   ([`super::cache::canonical`]). An answer is read only from `z3`, which reads no forall sort,
+//!   included; a comment line naming a quantified variable left out goes with it. The renaming
+//!   is one-to-one, of universally quantified sorts and bound variables, so the query means what
+//!   it meant. The unknowns `p<n>` keep their numbers, by which the solver's models and
+//!   refutations are read; the cache key renumbers them ([`super::cache::canonical`]). An answer is read only from `z3`, which reads no forall sort,
 //!   and a quantified variable in it is read by its binder, so no answer needs a name mapped back.
 
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
-use super::sexp::{self, Sexp};
+use super::sexp::{self, Lexeme, Sexp};
 
 /// `query`, the printed query of a part, with the declarations nothing in it needs left out and
 /// its names numbered within it (see the module documentation).
@@ -52,71 +54,6 @@ pub fn standalone_query(query: &str) -> String {
     renumbered(&pruned, &forall_sorts)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Lexeme {
-    Open,
-    Close,
-    /// From `;` to the end of the line.
-    Comment,
-    /// A string or a `|`-quoted symbol.
-    Literal,
-    Symbol,
-    Space,
-}
-
-fn is_delimiter(b: u8) -> bool {
-    b.is_ascii_whitespace() || matches!(b, b'(' | b')' | b';' | b'"' | b'|')
-}
-
-/// The first index from `start` whose byte `stop` holds, or the end.
-fn run_end(bytes: &[u8], start: usize, stop: impl Fn(u8) -> bool) -> usize {
-    bytes[start..]
-        .iter()
-        .position(|&b| stop(b))
-        .map_or(bytes.len(), |n| start + n)
-}
-
-/// The end of the literal `bytes[start]` opens: after its closing quote, where in a string `""`
-/// is an escaped quote. A literal left open runs to the end.
-fn literal_end(bytes: &[u8], start: usize) -> usize {
-    let quote = bytes[start];
-    let mut i = start + 1;
-    while i < bytes.len() {
-        if bytes[i] != quote {
-            i += 1;
-        } else if quote == b'"' && bytes.get(i + 1) == Some(&b'"') {
-            i += 2;
-        } else {
-            return i + 1;
-        }
-    }
-    bytes.len()
-}
-
-/// The lexemes of `text` with their spans. Every delimiter is ASCII, so a span never splits a
-/// character.
-fn lexemes(text: &str) -> Vec<(Lexeme, Range<usize>)> {
-    let bytes = text.as_bytes();
-    let mut lexemes = Vec::new();
-    let mut start = 0;
-    while start < bytes.len() {
-        let (lexeme, end) = match bytes[start] {
-            b'(' => (Lexeme::Open, start + 1),
-            b')' => (Lexeme::Close, start + 1),
-            b';' => (Lexeme::Comment, run_end(bytes, start, |b| b == b'\n')),
-            b'"' | b'|' => (Lexeme::Literal, literal_end(bytes, start)),
-            b if b.is_ascii_whitespace() => (
-                Lexeme::Space,
-                run_end(bytes, start, |b| !b.is_ascii_whitespace()),
-            ),
-            _ => (Lexeme::Symbol, run_end(bytes, start, is_delimiter)),
-        };
-        lexemes.push((lexeme, start..end));
-        start = end;
-    }
-    lexemes
-}
-
 /// A top-level command of a query.
 struct Command {
     /// The command with the comments and the blank lines before it.
@@ -124,13 +61,15 @@ struct Command {
     sexp: Sexp,
 }
 
-/// The top-level commands of `query`, and the text after the last.
+/// The top-level commands of `query`, and the text after the last. Comments above a blank line
+/// before a command, such as the names of the quantified variables, stand on their own: they make
+/// a command with no symbols, which is always kept.
 fn commands(query: &str) -> (Vec<Command>, &str) {
     let mut commands = Vec::new();
     let mut start = 0;
     let mut open = 0;
     let mut depth = 0usize;
-    for (lexeme, span) in lexemes(query) {
+    for (lexeme, span) in sexp::lexemes(query) {
         match lexeme {
             Lexeme::Open if depth == 0 => {
                 open = span.start;
@@ -138,6 +77,16 @@ fn commands(query: &str) -> (Vec<Command>, &str) {
             }
             Lexeme::Open => depth += 1,
             Lexeme::Close if depth == 1 => {
+                let own = query[start..open]
+                    .rfind("\n\n")
+                    .map_or(start, |i| start + i + 1);
+                if query[start..own].contains(';') {
+                    commands.push(Command {
+                        span: start..own,
+                        sexp: Sexp::List(Vec::new()),
+                    });
+                    start = own;
+                }
                 let sexp = sexp::parse_all(&query[open..span.end]).remove(0);
                 commands.push(Command {
                     span: start..span.end,
@@ -362,27 +311,40 @@ fn renaming<'a>(
 }
 
 /// `text` with its forall sorts, `forall_sorts`, and its quantified variables renumbered (see
-/// the module documentation).
+/// the module documentation). A comment line naming a quantified variable the query no longer
+/// has is left out, so that the comments name each variable by its new name only.
 fn renumbered(text: &str, forall_sorts: &HashSet<String>) -> String {
-    let lexemes = lexemes(text);
+    let lexemes = sexp::lexemes(text);
     let symbols = lexemes
         .iter()
         .filter(|(lexeme, _)| *lexeme == Lexeme::Symbol)
         .map(|(_, span)| &text[span.clone()]);
     let renaming = renaming(symbols, forall_sorts);
+    let names_a_variable_left_out = |comment: &str| {
+        pieces(comment)
+            .any(|(p, is_piece)| is_piece && is_numbered(p, "q$") && !renaming.contains_key(p))
+    };
     let mut out = String::with_capacity(text.len());
+    let mut line_left_out = false;
     for (lexeme, span) in lexemes {
         let run = &text[span];
-        if !matches!(lexeme, Lexeme::Symbol | Lexeme::Comment) {
-            out.push_str(run);
-            continue;
-        }
-        for (piece, is_piece) in pieces(run) {
-            match renaming.get(piece).filter(|_| is_piece) {
-                Some(name) => out.push_str(name),
-                None => out.push_str(piece),
+        match lexeme {
+            Lexeme::Comment if names_a_variable_left_out(run) => {
+                line_left_out = true;
+                continue;
             }
+            Lexeme::Symbol | Lexeme::Comment => {
+                for (piece, is_piece) in pieces(run) {
+                    match renaming.get(piece).filter(|_| is_piece) {
+                        Some(name) => out.push_str(name),
+                        None => out.push_str(piece),
+                    }
+                }
+            }
+            Lexeme::Space if line_left_out => out.push_str(run.strip_prefix('\n').unwrap_or(run)),
+            _ => out.push_str(run),
         }
+        line_left_out = false;
     }
     out
 }
@@ -466,6 +428,17 @@ mod tests {
         assert_eq!(
             renumbered(text, &forall_sorts),
             "(declare-forall-sort a1)\n(declare-fun Foo<a0> (a1) Bool)\n"
+        );
+    }
+
+    #[test]
+    fn the_names_of_the_quantified_variables_stay_true() {
+        let query = "(set-logic HORN)\n\n; quantified variables\n;   q$3 = x\n;   q$8 = y\n\n\
+            ; of T\n(declare-forall-sort a2)\n\n(assert (forall ((q$8 Int)) (>= q$8 0)))\n";
+        assert_eq!(
+            standalone_query(query),
+            "(set-logic HORN)\n\n; quantified variables\n;   q$0 = y\n\n\n\
+            (assert (forall ((q$0 Int)) (>= q$0 0)))\n"
         );
     }
 
