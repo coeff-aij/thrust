@@ -1274,8 +1274,8 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                         thrust_macros::assume!(|pair: LayoutData<FieldIdx, VariantIdx>| matches!(pair.fields, FieldsShape::Arbitrary { .. }));
                         #[cfg(thrust_univariant_biased_reach = "scalar_pair")]
                         thrust_macros::proof_assert!(|kind: StructKind| false);
-                        // Fallback: the match on the pair's fields through
-                        // the trusted `arbitrary_parts` at the end of this file.
+                        // Trusted: the match on the pair's fields, through
+                        // `arbitrary_parts` at the end of this file.
                         let pair_offsets = {
                             let (offsets, in_memory_order) = arbitrary_parts(&pair.fields);
                             // `FieldIdx::new(0)` and `FieldIdx::new(1)`'s requires, checked here.
