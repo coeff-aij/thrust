@@ -1078,6 +1078,30 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
 
     /// The bound variables and the body of `formula`, the formula of a `witness`: an `exists`,
     /// or a call of a predicate whose body is one, unfolded at the call's arguments.
+    /// The binders of a call of `thrust_models::exists` with arguments `args` and its body, the
+    /// binders' ranges included.
+    fn exists_binders_and_body(
+        &self,
+        args: &'tcx [rustc_hir::Expr<'tcx>],
+    ) -> (
+        Vec<(chc::UserQuantifiedVarId, chc::Sort)>,
+        chc::Formula<rty::FunctionParamIdx>,
+    ) {
+        let [closure] = args else {
+            panic!("exists takes exactly 1 argument");
+        };
+        let rustc_hir::ExprKind::Closure(closure) = closure.kind else {
+            panic!("exists argument must be a closure");
+        };
+        let (vars, range, body) =
+            self.to_formula_with_quantified_vars(self.tcx.hir_body(closure.body));
+        let body = match range {
+            Some(range) => range.and(body),
+            None => body,
+        };
+        (vars, body)
+    }
+
     fn witnessed_exists(
         &self,
         formula: &'tcx rustc_hir::Expr<'tcx>,
@@ -1096,19 +1120,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             self.not_an_exists(formula.span)
         };
         if Some(def_id) == self.def_ids.exists() {
-            let [closure] = args else {
-                panic!("exists takes exactly 1 argument");
-            };
-            let rustc_hir::ExprKind::Closure(closure) = closure.kind else {
-                panic!("exists argument must be a closure");
-            };
-            let (vars, range, body) =
-                self.to_formula_with_quantified_vars(self.tcx.hir_body(closure.body));
-            let body = match range {
-                Some(range) => range.and(body),
-                None => body,
-            };
-            return (vars, body);
+            return self.exists_binders_and_body(args);
         }
         let is_predicate = self
             .tcx
@@ -2875,21 +2887,9 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                             return self.to_formula_or_term(formula);
                         }
                         if Some(def_id) == self.def_ids.exists() {
-                            assert_eq!(args.len(), 1, "exists takes exactly 1 argument");
-                            let ExprKind::Closure(closure) = args[0].kind else {
-                                panic!("exists argument must be a closure");
-                            };
-                            let closure_body = self.tcx.hir_body(closure.body);
-
-                            let (vars, range, body_formula) =
-                                self.to_formula_with_quantified_vars(closure_body);
-                            let body_formula = match range {
-                                Some(range) => range.and(body_formula),
-                                None => body_formula,
-                            };
+                            let (vars, body) = self.exists_binders_and_body(args);
                             return FormulaOrTerm::Formula(chc::Formula::exists_over_payload(
-                                vars,
-                                body_formula,
+                                vars, body,
                             ));
                         }
                         if Some(def_id) == self.def_ids.forall() {
