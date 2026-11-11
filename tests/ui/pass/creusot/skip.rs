@@ -71,10 +71,12 @@ where
             if n == 0 || r.is_none() {
                 return r;
             }
-            // A formula cannot read an enum's payload, so the item the ghost records is bound here.
-            if let Some(x) = r {
-                skipped = thrust_macros::ghost!(|skipped: Ghost<Seq<<<I as Iterator>::Item as Model>::Ty>>, x: <I as Iterator>::Item| -> Seq<<<I as Iterator>::Item as Model>::Ty> { skipped.push(x) });
-            }
+            skipped = thrust_macros::ghost!(|skipped: Ghost<Seq<<<I as Iterator>::Item as Model>::Ty>>, r: Option<I::Item>| -> Seq<<<I as Iterator>::Item as Model>::Ty> {
+                match r {
+                    Some(x) => skipped.push(x),
+                    None => skipped,
+                }
+            });
             n -= 1
         }
     }
