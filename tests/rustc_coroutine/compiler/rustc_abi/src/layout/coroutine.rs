@@ -645,6 +645,7 @@ fn assigned_count_of<FieldIdx: Idx + thrust_models::Model, LocalIdx: Idx + thrus
             || exists(|i: USize| 0 <= i && i < (*local_layouts).len() && result[k] == (*local_layouts)[i]))
 )]
 #[thrust_macros::context]
+#[thrust::split_goals]
 fn variant_field_layouts<
     'a,
     F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model,
@@ -838,6 +839,7 @@ fn combine_wf_of<VariantIdx: Idx + thrust_models::Model, FieldIdx: Idx + thrust_
 #[thrust_macros::ensures(true)]
 #[thrust_macros::context]
 #[thrust::reveal(super::super::FieldsShape::arbitrary_of, combine_wf)]
+#[thrust::split_goals]
 fn combine_offsets<VariantIdx: Idx + thrust_models::Model, FieldIdx: Idx + thrust_models::Model, LocalIdx: Idx + thrust_models::Model>(
     variant_fields: &IndexVec<FieldIdx, LocalIdx>,
     assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
@@ -1690,6 +1692,7 @@ fn variant_fits_wf<
     result != Ok(l) || matches!(l.fields, FieldsShape::Arbitrary { .. })))]
 #[thrust_macros::context]
 #[thrust::reveal(variant_env_wf, variant_entries_wf, variant_promoted_wf, variant_fits_wf, prefix_wf)]
+#[thrust::split_goals]
 fn variant_layout<
     'a,
     F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + thrust_models::Model<Ty: PartialEq>,
@@ -1893,6 +1896,7 @@ fn variant_layout<
 // `variant_fits_wf` for the variants), and passes
 // `arbitrary_of` from `univariant`'s `ensures` to `split_prefix_fields` and `combine_offsets`,
 // which reveal it, so it reads each as the atom these state.
+#[thrust::split_goals]
 pub fn layout<
     'a,
     // `Ty: PartialEq`, as `fits_in_any_order` bounds it, for the two `assume!`s that state it.
