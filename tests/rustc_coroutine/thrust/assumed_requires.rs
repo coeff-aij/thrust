@@ -3,6 +3,7 @@
 //! `assume!` at the call cannot name the closure's type. Their bodies are checked; only the
 //! callee's `requires` is assumed. They are a module of their own so that a root selecting
 //! `case_study::iter` does not verify them; only the roots that call them select them.
+//! `map_new_assumed` stays in `iter.rs`, because `layout()` calls it.
 
 use crate::thrust_models;
 use thrust_models::model::{Closure, Int, Mut, Seq};
