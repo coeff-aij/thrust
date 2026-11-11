@@ -667,7 +667,7 @@ where
 }
 
 // `Iterator::max`, its `requires` (the iterator's invariant, std_specs.rs) assumed
-// (`univariant_biased`'s open part 15); `max`'s `ensures` states nothing of the result.
+// (a goal of `univariant_biased` the solver does not answer); `max`'s `ensures` states nothing of the result.
 #[thrust_macros::context]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(true)]
@@ -680,7 +680,7 @@ where
     it.max()
 }
 
-// `Filter::new`, its `requires` assumed (`univariant_biased`'s open part 36).
+// `Filter::new`, its `requires` assumed (a goal of `univariant_biased` the solver does not answer).
 #[thrust_macros::context]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(result.0 == iter && result.1 == predicate)]
@@ -696,8 +696,8 @@ where
     Filter::new(iter, predicate)
 }
 
-// `Filter::next`, its `requires` (the filter's invariant) assumed (`univariant_biased`'s open parts
-// 37 to 39); the `ensures` is `next`'s.
+// `Filter::next`, its `requires` (the filter's invariant) assumed (goals of `univariant_biased`
+// the solver does not answer); the `ensures` is `next`'s.
 #[thrust_macros::context]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(
@@ -718,7 +718,7 @@ where
     it.next()
 }
 
-// `iter_all`, its `requires` assumed (`univariant_biased`'s open part 57); the `ensures` is
+// `iter_all`, its `requires` assumed (a goal of `univariant_biased` the solver does not answer); the `ensures` is
 // `iter_all`'s.
 #[thrust_macros::context]
 #[thrust_macros::requires(true)]
@@ -817,7 +817,7 @@ where
     slice.sort_by_key(f)
 }
 
-// `IndexSlice::iter_enumerated`, trusted on its contract (`univariant_biased`'s open part 61: the
+// `IndexSlice::iter_enumerated`, trusted on its contract (a goal of `univariant_biased` the solver does not answer: the
 // solver does not answer the `requires` of `I::new(len)` in its body at that call). The contract
 // is what the body does: it builds `I::new(len)`, and starts at position 0 of the slice.
 #[thrust::trusted]

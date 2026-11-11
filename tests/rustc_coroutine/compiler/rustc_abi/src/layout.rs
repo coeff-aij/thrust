@@ -768,7 +768,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                 // Rewrite (rewrites.md R8): `Map::new` of the niche's `available`, 0 without one,
                 // for `filter_map` of the niche and `map` of `available`: the two maxima agree,
                 // as `available` is never negative.
-                // Fallback (open parts 14 and 15): `Map::new` and `max` with their preconditions
+                // Fallback: `Map::new` and `max` with their preconditions
                 // assumed; restore `Map::new(..).max()` once the solver answers them.
                 let largest_niche_size = crate::case_study::iter::max_assumed(crate::case_study::iter::map_new_assumed(fields_excluding_tail.iter(), thrust_macros::closure!(
                     captures(dl: &mut &&TargetDataLayout),
@@ -787,7 +787,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                 ))
                 )
                 .unwrap_or(0);
-                #[cfg(thrust_ub_reach = "largest_niche")]
+                #[cfg(thrust_univariant_biased_reach = "largest_niche")]
                 thrust_macros::proof_assert!(|kind: StructKind| false);
 
                 // Rewrite (rewrites.md R20): the data layout as a parameter instead of a capture.
@@ -809,7 +809,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                                 ensures(true),
                                 |n: Niche| -> u128 { n.available(dl) },
                             )).unwrap_or(0);
-                            #[cfg(thrust_ub_reach = "map")]
+                            #[cfg(thrust_univariant_biased_reach = "map")]
                             thrust_macros::proof_assert!(|layout: &F| false);
 
                             let size_as_align = align.max(size).trailing_zeros();
@@ -834,7 +834,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
 
                 match kind {
                     StructKind::AlwaysSized | StructKind::MaybeUnsized => {
-                        // Fallback (open part 40): `sort_by_key` with its `requires` assumed, by
+                        // Fallback: `sort_by_key` with its `requires` assumed, by
                         // `sort_by_key_assumed` of thrust/iter.rs, as the key closure's type
                         // cannot be written in an `assume!` here; restore `optimizing.sort_by_key`
                         // once the solver answers it.
@@ -882,7 +882,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                                         requires(forall(|s: Size| !Primitive::size_in(n.value, ***dl, s) || n.offset.raw + s.raw <= *field_size)),
                                         ensures(true),
                                         |n: Niche| -> u64 {
-                                            // Fallback (open parts 98 and 99): the capture and the
+                                            // Fallback: the capture and the
                                             // niche's value size bound to locals so that an `assume!`
                                             // can state that the two subtractions do not underflow.
                                             // They hold in rustc: the niche lies within its field
@@ -893,16 +893,16 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                                             let value_size = n.value.size(dl).bytes();
                                             thrust_macros::assume!(|field_size: u64, value_size: u64| value_size <= field_size);
                                             thrust_macros::assume!(|n: Niche, field_size: u64, value_size: u64| n.offset.raw <= field_size - value_size);
-                                            #[cfg(thrust_ub_reach = "niche_end_key")]
+                                            #[cfg(thrust_univariant_biased_reach = "niche_end_key")]
                                             thrust_macros::proof_assert!(|n: Niche| false);
                                             !(field_size - value_size - n.offset.bytes())
                                         },
                                     )),
                                 };
-                                #[cfg(thrust_ub_reach = "map_or")]
+                                #[cfg(thrust_univariant_biased_reach = "map_or")]
                                 thrust_macros::proof_assert!(|x: FieldIdx| false);
 
-                                // Fallback (open parts 39 and 95): the capture `dl` bound to a
+                                // Fallback: the capture `dl` bound to a
                                 // local by `as_local` (below), so that an `assume!` can state
                                 // `alignment_group_key`'s `requires` at this call. It holds in
                                 // rustc: `f` is the field at `x`, whose niche is well formed by
@@ -913,7 +913,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                                     forall(|d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche|
                                         !(thrust_macros::post!(<F as core::ops::Deref>::deref(f), d) && (**d).largest_niche == Some(n))
                                             || Niche::wf_in(n, *key_dl)));
-                                #[cfg(thrust_ub_reach = "alignment_group_key")]
+                                #[cfg(thrust_univariant_biased_reach = "alignment_group_key")]
                                 thrust_macros::proof_assert!(|x: FieldIdx| false);
                                 (
                                     cmp::Reverse(alignment_group_key(f, key_dl)),
@@ -922,7 +922,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                                 )
                             },
                         ));
-                        #[cfg(thrust_ub_reach = "sort")]
+                        #[cfg(thrust_univariant_biased_reach = "sort")]
                         thrust_macros::proof_assert!(|kind: StructKind| false);
                     }
 
@@ -967,17 +967,15 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         });
         thrust_macros::proof!(lemmas::every_index_occurs(order, fields.len(), fields.len()));
 
-        // Fallback: `order_ok`, the order's facts asserted above, assumed exactly (the solver does
-        // not answer it at `place_fields`' call; now `univariant_biased_place`'s `requires`).
-        thrust_macros::assume!(|in_memory_order: IndexVec<u32, FieldIdx>, fields: &IndexSlice<FieldIdx, F>, kind: StructKind|
-            LayoutCalculator::<Cx>::order_ok::<FieldIdx>(in_memory_order, (*fields).len(), kind));
-        // Rewrite (rewrites.md, pending): the field placement and the layout's construction in
+        // `univariant_biased_place`'s `requires` `order_ok` is the conjunction of the facts asserted
+        // above and of `every_index_occurs`' `ensures`.
+        // Rewrite (rewrites.md R24): the field placement and the layout's construction in
         // `univariant_biased_place`, whose contract is this function's with the order's facts.
         self.univariant_biased_place::<FieldIdx, VariantIdx, F>(fields, repr, kind, niche_bias, in_memory_order, field_seed)
     }
 
     /// `univariant_biased` from the field placement on: the code after the field order is
-    /// chosen, moved here (rewrite, rewrites.md pending) so that `univariant_biased` reaches its
+    /// chosen, moved here (rewrite, rewrites.md R24) so that `univariant_biased` reaches its
     /// return by one path and its postcondition is this function's, at the same arguments.
     #[thrust_macros::requires(Self::layout_pre::<FieldIdx, VariantIdx, F>(*self, fields, kind))]
     #[thrust_macros::requires(Self::prefix_fits(repr, kind))]
@@ -1032,15 +1030,12 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
             align = align.max(prefix_align);
             offset = prefix_size.align_to(prefix_align);
         }
-        // Fallback: the two conjuncts of `place_fields`' `requires` the solver does not answer at
-        // the call (`fields_ok`, from `layout_pre`; `order_ok`, from the facts asserted after the
-        // sort), assumed exactly.
-        thrust_macros::assume!(|fields: &IndexSlice<FieldIdx, F>, dl: &TargetDataLayout|
-            LayoutCalculator::<Cx>::fields_ok::<FieldIdx, VariantIdx, F>(fields, *dl));
-        #[cfg(thrust_ub_reach = "place_fields_pre")]
-        thrust_macros::proof_assert!(|kind: StructKind| false);
+        // This body is trusted (the univariant_biased root does not select it). Checking it would
+        // need `place_fields`' `requires` `fields_ok` here, which the solver does not answer from
+        // `layout_pre` (the fallback of 9060830d assumed it), and `obj_size_bound`'s `requires`
+        // before the size check below.
         // Rewrite (rewrites.md R19): the field loop as `place_fields`.
-        // Rewrite (rewrites.md, pending): `?` as a `match` that returns the error itself, so that
+        // Rewrite (rewrites.md R22): `?` as a `match` that returns the error itself, so that
         // the error `place_fields`'s contract describes reaches the return without the
         // `Try::branch` and `FromResidual::from_residual` calls of `?`'s desugaring.
         let unsized_field = match Self::place_fields::<FieldIdx, VariantIdx, F>(
@@ -1072,17 +1067,10 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         let min_size = offset;
         let size = min_size.align_to(align);
 
-        // Assumed (fallback; open part 34, with fptprove): delete once the solver answers it.
-        // `obj_size_bound`'s requires.
-        thrust_macros::assume!(|dl: &TargetDataLayout| (*dl).default_address_space_pointer_spec.pointer_size.raw == 2
-            || (*dl).default_address_space_pointer_spec.pointer_size.raw == 4
-            || (*dl).default_address_space_pointer_spec.pointer_size.raw == 8);
-        #[cfg(thrust_ub_reach = "obj_size_bound")]
-        thrust_macros::proof_assert!(|kind: StructKind| false);
         if size.bytes() >= dl.obj_size_bound() {
             return Err(LayoutCalculatorError::SizeOverflow);
         }
-        // Rewrite (rewrites.md, pending): the layout from the placed fields in
+        // Rewrite (rewrites.md R24): the layout from the placed fields in
         // `univariant_biased_finish`, whose `ensures` give the fields the postcondition reads.
         Ok(self.univariant_biased_finish::<FieldIdx, VariantIdx, F>(
             fields, repr, kind, offsets, in_memory_order, largest_niche, align, size, max_repr_align,
@@ -1091,9 +1079,10 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
     }
 
     /// `univariant_biased_place`'s layout from the placed fields: the code after the size check,
-    /// moved here (rewrite, rewrites.md pending), checked, with the four fields
+    /// moved here (rewrite, rewrites.md R24), checked, with the four fields
     /// `univariant_biased_post` reads in its `ensures`.
     #[thrust_macros::requires(Self::layout_pre::<FieldIdx, VariantIdx, F>(*self, fields, kind))]
+    #[thrust_macros::requires(offsets.len() == (*fields).len())]
     #[thrust_macros::requires(Self::deref_functional::<FieldIdx, VariantIdx, F>())]
     #[thrust_macros::ensures(exists(|o: IndexVec<FieldIdx, Size>, m: IndexVec<u32, FieldIdx>|
         result.fields == FieldsShape::Arbitrary { offsets: o, in_memory_order: m } && offsets == o && in_memory_order == m))]
@@ -1132,26 +1121,26 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
     where
         Cx: thrust_models::Model<Ty: PartialEq>,
     {
-        // Rewrite (rewrites.md, pending): the backend representation and the unadjusted alignment
+        // Rewrite (rewrites.md R23): the backend representation and the unadjusted alignment
         // by `backend_repr_of`, so that what the postcondition reads reaches the return without
         // the joins of that code.
         let (abi, unadjusted_abi_align) = self.backend_repr_of::<FieldIdx, VariantIdx, F>(
             fields, repr, kind, &offsets, align, size, sized, unadjusted_abi_align,
         );
         // Rewrite (rewrites.md R8): `!iter_all(it, |f| !p(f))` for `it.any(p)`.
-        // Fallback (open part 57): `iter_all` with its precondition assumed; restore `iter_all` once
+        // Fallback: `iter_all` with its precondition assumed; restore `iter_all` once
         // the solver answers it.
         let uninhabited = !crate::case_study::iter::iter_all_assumed(fields.iter(), |f| !f.is_uninhabited());
-        #[cfg(thrust_ub_reach = "iter_all")]
+        #[cfg(thrust_univariant_biased_reach = "iter_all")]
         thrust_macros::proof_assert!(|kind: StructKind| false);
 
 
         let seed = field_seed.wrapping_add(repr.field_shuffle_seed);
 
-        // Assumed (fallback; open part 58, with fptprove): delete once the solver answers it.
+        // Assumed (fallback, with fptprove): delete once the solver answers it.
         // `VariantIdx::new(0)`'s requires.
         thrust_macros::assume!(|kind: StructKind| forall(|z: USize| z == 0usize ==> <VariantIdx as Idx>::can_new(z)));
-        #[cfg(thrust_ub_reach = "variant_index")]
+        #[cfg(thrust_univariant_biased_reach = "variant_index")]
         thrust_macros::proof_assert!(|kind: StructKind| false);
         LayoutData {
             variants: Variants::Single {
@@ -1174,10 +1163,11 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
 
     /// The backend representation of `univariant_biased`'s layout and its unadjusted alignment:
     /// the code `univariant_biased` runs after its size check, moved here (rewrite, rewrites.md
-    /// pending) so that the values its postcondition reads reach its return without this
+    /// R23) so that the values its postcondition reads reach its return without this
     /// code's joins. The body is checked; the contract says nothing of the result, which the
     /// postcondition does not read.
     #[thrust_macros::requires(Self::layout_pre::<FieldIdx, VariantIdx, F>(*self, fields, kind))]
+    #[thrust_macros::requires((*offsets).len() == (*fields).len())]
     #[thrust_macros::requires(Self::deref_functional::<FieldIdx, VariantIdx, F>())]
     #[thrust_macros::ensures(true)]
     #[thrust::reveal(
@@ -1214,15 +1204,15 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         let optimize_abi = !repr.inhibit_newtype_abi_optimization();
 
         if sized && size.bytes() > 0 {
-            // Assumed (fallback; open part 35, with fptprove): delete once the solver answers it.
+            // Assumed (fallback, with fptprove): delete once the solver answers it.
             // `iter_enumerated`'s requires.
             thrust_macros::assume!(|fields: &IndexSlice<FieldIdx, F>| <FieldIdx as Idx>::can_new((*fields).len()));
-            #[cfg(thrust_ub_reach = "iter_enumerated")]
+            #[cfg(thrust_univariant_biased_reach = "iter_enumerated")]
             thrust_macros::proof_assert!(|kind: StructKind| false);
             // Rewrite (rewrites.md R8): `Filter::new(it, p)` for `it.filter(p)`.
-            // Fallback (open parts 36 to 39): `Filter::new` and `next` with their preconditions
+            // Fallback: `Filter::new` and `next` with their preconditions
             // assumed; restore `Filter::new` and `next` once the solver answers them.
-            // Fallback (open part 61): `iter_enumerated` through the trusted
+            // Fallback: `iter_enumerated` through the trusted
             // `iter_enumerated_trusted` of thrust/iter.rs; restore `fields.iter_enumerated()` once
             // the solver answers its body's goal at this call.
             let mut non_zst_fields = crate::case_study::iter::filter_new_assumed(crate::case_study::iter::iter_enumerated_trusted(fields), thrust_macros::closure!(
@@ -1239,11 +1229,6 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                 (Some((i, field)), None, None) => {
                     layout_of_single_non_zst_field = Some(field);
 
-                    // Assumed (fallback; open part 41, with fptprove): delete once the solver answers it.
-                    // The index `offsets[i]`'s requires.
-                    thrust_macros::assume!(|i: FieldIdx, offsets: &IndexVec<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(i) < (*offsets).len());
-                    #[cfg(thrust_ub_reach = "single_field")]
-                    thrust_macros::proof_assert!(|kind: StructKind| false);
                     if offsets[i].bytes() == 0 && align == field.align.abi && size == field.size {
                         match field.backend_repr {
                             BackendRepr::Scalar(_) | BackendRepr::SimdVector { .. }
@@ -1264,15 +1249,16 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                     (BackendRepr::Scalar(a), BackendRepr::Scalar(b)) => {
                         // A step of `scalar_pair`'s `requires`, before the order of the pair is
                         // chosen.
-                        // Assumed (fallback; open part 42, the step's own goal, with fptprove): restore
+                        // Assumed (fallback, with fptprove, the step's own goal): restore
                         // `proof_assert!` once the solver answers it.
                         thrust_macros::assume!(|a: Scalar, b: Scalar, self: &LayoutCalculator<Cx>|
                             forall(|d: TargetDataLayout| !Cx::dl_of(*self, d) || (Scalar::wf_in(a, d) && Scalar::wf_in(b, d))));
-                        // Assumed (fallback; open parts 43 and 44, with fptprove): delete once the solver answers them.
-                        // The indexes `offsets[i]` and `offsets[j]`'s requires.
+                        // Assumed (fallback, with fptprove): the indexes `offsets[i]` and `offsets[j]`'s requires. They
+                        // hold: `i` and `j` are positions of `iter_enumerated(fields)`, and `offsets` has as many
+                        // entries as `fields` (the `requires`).
                         thrust_macros::assume!(|i: FieldIdx, offsets: &IndexVec<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(i) < (*offsets).len());
                         thrust_macros::assume!(|j: FieldIdx, offsets: &IndexVec<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(j) < (*offsets).len());
-                        #[cfg(thrust_ub_reach = "pair")]
+                        #[cfg(thrust_univariant_biased_reach = "pair")]
                         thrust_macros::proof_assert!(|kind: StructKind| false);
                         let ((i, a), (j, b)) = if offsets[i] < offsets[j] {
                             ((i, a), (j, b))
@@ -1286,31 +1272,31 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                                 && forall(|z: USize| z == 0usize ==> <VariantIdx as Idx>::can_new(z))
                                 && forall(|k: USize| k == 0usize || k == 1usize ==> <FieldIdx as Idx>::can_new(k)));
                         let pair = LayoutData::<FieldIdx, VariantIdx>::scalar_pair(&self.cx, a, b);
-                        // Assumed (fallback; open parts 46 and 47, with fptprove): delete once the solver answers them.
+                        // Assumed (fallback, with fptprove): delete once the solver answers them.
                         // The match's panicking arm is unreachable: `scalar_pair`'s `ensures` makes the fields `Arbitrary`.
                         thrust_macros::assume!(|pair: LayoutData<FieldIdx, VariantIdx>| matches!(pair.fields, FieldsShape::Arbitrary { .. }));
-                        #[cfg(thrust_ub_reach = "scalar_pair")]
+                        #[cfg(thrust_univariant_biased_reach = "scalar_pair")]
                         thrust_macros::proof_assert!(|kind: StructKind| false);
-                        // Fallback (open parts 68 and 69): the match on the pair's fields through
+                        // Fallback: the match on the pair's fields through
                         // the trusted `arbitrary_parts` at the end of this file.
                         let pair_offsets = {
                             let (offsets, in_memory_order) = arbitrary_parts(&pair.fields);
-                            // Assumed (fallback; open parts 48 and 49, with fptprove): delete once the solver answers them.
+                            // Assumed (fallback, with fptprove): delete once the solver answers them.
                             // `FieldIdx::new(0)` and `FieldIdx::new(1)`'s requires.
                             thrust_macros::assume!(|kind: StructKind| forall(|z: USize| z == 0usize ==> <FieldIdx as Idx>::can_new(z)));
                             thrust_macros::assume!(|kind: StructKind| forall(|z: USize| z == 1usize ==> <FieldIdx as Idx>::can_new(z)));
                             // Fallback: the expected order is bound to `expected` so that an
                             // `assume!` can state the comparison.
                             let expected = [FieldIdx::new(0), FieldIdx::new(1)];
-                            // Assumed (fallback; open part 50, with fptprove): delete once the solver answers it.
+                            // Assumed (fallback, with fptprove): delete once the solver answers it.
                             // `assert_eq!`'s panic is unreachable.
                             thrust_macros::assume!(|in_memory_order: &IndexVec<u32, FieldIdx>, expected: [FieldIdx; 2]| *in_memory_order == expected);
                             assert_eq!(in_memory_order.raw, expected);
-                            #[cfg(thrust_ub_reach = "arbitrary")]
+                            #[cfg(thrust_univariant_biased_reach = "arbitrary")]
                             thrust_macros::proof_assert!(|kind: StructKind| false);
                             offsets
                         };
-                        // Assumed (fallback; open parts 51 to 56, with fptprove): delete once the solver answers them.
+                        // Assumed (fallback, with fptprove): delete once the solver answers them.
                         // The requires of the indexes and of `FieldIdx::new` in the condition below,
                         // which binds the two indices to `k0` and `k1` so that an `assume!` can state them.
                         thrust_macros::assume!(|i: FieldIdx, offsets: &IndexVec<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(i) < (*offsets).len());
@@ -1321,7 +1307,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                         let k1 = FieldIdx::new(1);
                         thrust_macros::assume!(|k0: FieldIdx, pair_offsets: &IndexVec<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(k0) < (*pair_offsets).len());
                         thrust_macros::assume!(|k1: FieldIdx, pair_offsets: &IndexVec<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(k1) < (*pair_offsets).len());
-                        #[cfg(thrust_ub_reach = "pair_condition")]
+                        #[cfg(thrust_univariant_biased_reach = "pair_condition")]
                         thrust_macros::proof_assert!(|kind: StructKind| false);
                         if offsets[i] == pair_offsets[k0]
                             && offsets[j] == pair_offsets[k1]
@@ -1697,7 +1683,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
     }
 }
 
-// Fallback (open parts 68 and 69 of `univariant_biased`): the match on a scalar pair's fields there,
+// Fallback: the match on a scalar pair's fields there,
 // trusted on its contract. The solver does not answer that its panicking arm is unreachable, even
 // right after the `assume!` that the fields are `Arbitrary`. The contract is what the match does:
 // it panics unless the fields are `Arbitrary`, and gives their offsets and memory order.
