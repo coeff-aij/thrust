@@ -1080,7 +1080,9 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
 
     /// `univariant_biased_place`'s layout from the placed fields: the code after the size check,
     /// moved here (rewrite, rewrites.md R24), checked, with the four fields
-    /// `univariant_biased_post` reads in its `ensures`.
+    /// `univariant_biased_post` reads in its `ensures`. Its `requires` on `offsets`' length is
+    /// established only in `univariant_biased_place`'s trusted body (`IndexVec::from_elem` over
+    /// `fields`, kept by `place_fields`' `ensures`), so it rests on that trust.
     #[thrust_macros::requires(Self::layout_pre::<FieldIdx, VariantIdx, F>(*self, fields, kind))]
     #[thrust_macros::requires(offsets.len() == (*fields).len())]
     #[thrust_macros::requires(Self::deref_functional::<FieldIdx, VariantIdx, F>())]
@@ -1255,7 +1257,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                             forall(|d: TargetDataLayout| !Cx::dl_of(*self, d) || (Scalar::wf_in(a, d) && Scalar::wf_in(b, d))));
                         // Assumed (fallback, with fptprove): the indexes `offsets[i]` and `offsets[j]`'s requires. They
                         // hold: `i` and `j` are positions of `iter_enumerated(fields)`, and `offsets` has as many
-                        // entries as `fields` (the `requires`).
+                        // entries as `fields` (the `requires`). The solver does not answer them under it.
                         thrust_macros::assume!(|i: FieldIdx, offsets: &IndexVec<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(i) < (*offsets).len());
                         thrust_macros::assume!(|j: FieldIdx, offsets: &IndexVec<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(j) < (*offsets).len());
                         #[cfg(thrust_univariant_biased_reach = "pair")]
@@ -1299,6 +1301,8 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                         // Assumed (fallback, with fptprove): delete once the solver answers them.
                         // The requires of the indexes and of `FieldIdx::new` in the condition below,
                         // which binds the two indices to `k0` and `k1` so that an `assume!` can state them.
+                        // They hold: `i` and `j` are positions of `iter_enumerated(fields)`, `offsets` has as
+                        // many entries as `fields` (the `requires`), and `FieldIdx::new(0)` is in range.
                         thrust_macros::assume!(|i: FieldIdx, offsets: &IndexVec<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(i) < (*offsets).len());
                         thrust_macros::assume!(|j: FieldIdx, offsets: &IndexVec<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(j) < (*offsets).len());
                         thrust_macros::assume!(|kind: StructKind| forall(|z: USize| z == 0usize ==> <FieldIdx as Idx>::can_new(z)));
