@@ -4,6 +4,7 @@
 use crate::thrust_models;
 
 pub mod iter;
+pub mod assumed_requires;
 pub mod counts;
 pub mod lemmas;
 pub mod models;
