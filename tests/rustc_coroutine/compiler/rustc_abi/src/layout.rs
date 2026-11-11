@@ -770,7 +770,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                 // as `available` is never negative.
                 // Fallback: `Map::new` and `max` with their preconditions
                 // assumed; restore `Map::new(..).max()` once the solver answers them.
-                let largest_niche_size = crate::case_study::iter::max_assumed(crate::case_study::iter::map_new_assumed(fields_excluding_tail.iter(), thrust_macros::closure!(
+                let largest_niche_size = crate::case_study::assumed_requires::max_assumed(crate::case_study::iter::map_new_assumed(fields_excluding_tail.iter(), thrust_macros::closure!(
                     captures(dl: &mut &&TargetDataLayout),
                     requires(forall(|d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche|
                         !(thrust_macros::post!(<F as core::ops::Deref>::deref(f), d) && (**d).largest_niche == Some(n))

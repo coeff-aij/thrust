@@ -666,20 +666,6 @@ where
     Map::new(iter, func)
 }
 
-// `Iterator::max`, its `requires` (the iterator's invariant, std_specs.rs) assumed
-// (a goal of `univariant_biased` the solver does not answer); `max`'s `ensures` states nothing of the result.
-#[thrust_macros::context]
-#[thrust_macros::requires(true)]
-#[thrust_macros::ensures(true)]
-pub fn max_assumed<I>(it: I) -> Option<I::Item>
-where
-    I: IteratorSpec,
-    I::Item: thrust_models::Model + Ord,
-{
-    thrust_macros::assume!(|it: I| I::inv(it));
-    it.max()
-}
-
 // `IndexSlice::iter_enumerated`, trusted on its contract (a goal of `univariant_biased` the solver does not answer: the
 // solver does not answer the `requires` of `I::new(len)` in its body at that call). The contract
 // is what the body does: it builds `I::new(len)`, and starts at position 0 of the slice.

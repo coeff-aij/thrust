@@ -148,3 +148,17 @@ where
                 ==> thrust_macros::pre!(c(&(*slice)[i]))));
     slice.sort_by_key(f)
 }
+
+// `Iterator::max`, its `requires` (the iterator's invariant, std_specs.rs) assumed
+// (a goal of `univariant_biased` the solver does not answer); `max`'s `ensures` states nothing of the result.
+#[thrust_macros::context]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(true)]
+pub fn max_assumed<I>(it: I) -> Option<I::Item>
+where
+    I: IteratorSpec,
+    I::Item: thrust_models::Model + Ord,
+{
+    thrust_macros::assume!(|it: I| I::inv(it));
+    it.max()
+}
