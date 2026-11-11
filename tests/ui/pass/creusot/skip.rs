@@ -3,8 +3,9 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120
 // Creusot's `examples/iterators/04_skip.rs` (3620de437): `Skip` and its `Iterator` impl, with
 // Creusot's code and Thrust's annotations, except that `next` has the control flow of the 2022
-// artifact's `iterators/skip.rs` (`if n == 0 || r.is_none() { return r; } n -= 1`), with the
-// ghost `skipped` updated after the check. `invariant` states the inner iterator's, which Creusot
+// artifact's `iterators/skip.rs` (`if n == 0 || r.is_none() { return r; } n -= 1`), and the ghost
+// `skipped` updated after the check by a formula `match` on `r`, so that `next`'s executable code
+// is the artifact's. `invariant` states the inner iterator's, which Creusot
 // carries as the type invariant of the field. The loop states Creusot's invariants over the ghost
 // `skipped` as a `partial_invariant!`: what Creusot keeps of the variables the loop does not
 // change (`old_self`, `self.n`, the final value of `self`) is inferred. Creusot's third invariant
@@ -71,10 +72,7 @@ where
             if n == 0 || r.is_none() {
                 return r;
             }
-            // A formula cannot read an enum's payload, so the item the ghost records is bound here.
-            if let Some(x) = r {
-                skipped = thrust_macros::ghost!(|skipped: Ghost<Seq<<<I as Iterator>::Item as Model>::Ty>>, x: <I as Iterator>::Item| -> Seq<<<I as Iterator>::Item as Model>::Ty> { skipped.push(x) });
-            }
+            skipped = thrust_macros::ghost!(|skipped: Ghost<Seq<<<I as Iterator>::Item as Model>::Ty>>, r: Option<I::Item>| -> Seq<<<I as Iterator>::Item as Model>::Ty> { match r { Some(x) => skipped.push(x), None => skipped } });
             n -= 1
         }
     }
