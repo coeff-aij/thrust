@@ -48,11 +48,11 @@ the latter's target in `layout()` times out. So the goals after those assumption
 shown to hold non-vacuously.
 `univariant_biased.rs`'s `assume!`s, and its calls of the fallback's wrappers in `thrust/iter.rs`,
 likewise each have a reachability root, `univariant_biased_reach_<name>.rs`
-(`--cfg thrust_univariant_biased_reach="<name>"`). With fptprove ce3cea65b at 300 s and 16 GB, the target part
-of `univariant_biased_reach_largest_niche.rs` is refuted, and those of the other 13 get no answer
-(the fallback's twins of the two assumptions in `univariant_biased_place`, which is now trusted, are
-gone with them); these results are of 9060830d, before the extraction of R22 to R24. So the goals
-after those assumptions are not shown to hold non-vacuously. A twin after a call of a wrapper of
+(`--cfg thrust_univariant_biased_reach="<name>"`). On f25eb5e0, with fptprove 27431dba0 at 300 s and
+16 GB, solving the parts each twin adds to the pass root's (the goal of its `proof_assert!`), four
+are refuted: `largest_niche`, `alignment_group_key`, `iter_all` and `variant_index`; the other nine
+get no answer. So the goals after the other nine points are not shown to hold non-vacuously.
+A twin after a call of a wrapper of
 `thrust/iter.rs` shows the path reachable under the wrapper's `ensures`, not that the `requires` it
 assumes holds at the call.
 
