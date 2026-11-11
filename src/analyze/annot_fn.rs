@@ -1058,7 +1058,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 ),
             ),
         };
-        let terms = vars
+        let terms: HashMap<_, _> = vars
             .into_iter()
             .zip(components)
             .map(|((var, sort), component)| {
