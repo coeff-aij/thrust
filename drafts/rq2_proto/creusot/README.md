@@ -30,3 +30,19 @@ but neither the method `Iterator::zip` nor `<[T]>::swap`, which the loop calls.
 
 Files: `pass/`, `fail/` and `noinv/` each hold `slice_iter.rs`, `vec_iter.rs`, `sum_range.rs`,
 `enumerate_range.rs`, `sum_range_loop.rs` and `all_zero_loop.rs`.
+
+## Measurements
+
+Fork commit 709c80c3 (main 3ac8d3f5 plus these drafts), fptprove develop a709edee83 with cvc5
+1.4.2, `pcsat_thrust.json`, 2 CPUs and 8 GB per container, 300 s, three runs each, two runs at a
+time, 2026-11-11. Seconds are the median of the solver call. The inferred variant removes every
+`invariant!`; `noinv/enumerate_range.rs` then claims nothing, so its `sat` checks no property.
+
+| loop | written | fail twin | inferred |
+| --- | --- | --- | --- |
+| `slice_iter` | `sat` 3/3, 0.58 s | `unsat` 3/3, 0.64 s | `sat` 3/3, 2.60 s |
+| `vec_iter` | `sat` 3/3, 0.54 s | `unsat` 3/3, 0.60 s | `sat` 3/3, 2.53 s |
+| `sum_range` | `sat` 3/3, 0.55 s | `unsat` 3/3, 0.68 s | `sat` 3/3, 0.53 s |
+| `enumerate_range` | `sat` 3/3, 1.69 s | `unsat` 3/3, 2.60 s | `sat` 3/3, 0.41 s (no claim) |
+| `sum_range_loop` | `sat` 3/3, 0.84 s | `unsat` 3/3, 0.87 s | `sat` 3/3, 1.08 s |
+| `all_zero_loop` | `sat` 3/3, 2.09 s | `unsat` 3/3, 1.67 s | `sat` 3/3, 17.24 s |
