@@ -1,6 +1,6 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -A unused-variables -A unused_parens
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300 THRUST_SPLIT_GOALS=1
 use thrust_models::model::{Array, Closure, Int, Mut, Seq};
 use thrust_models::{exists, forall, Ghost, Model};
 
@@ -115,6 +115,7 @@ where
     // `produces_at` of the joined witnesses: the inner sequences concatenated and the index maps
     // joined, the second shifted past the first's inner sequence (Creusot's `Mapping` built by a
     // closure, here `Array::from_fn`).
+    #[thrust_macros::lemma]
     #[thrust_macros::ensures(forall(|s1: Seq<<<I as Iterator>::Item as Model>::Ty>| forall(|s2: Seq<<<I as Iterator>::Item as Model>::Ty>|
         forall(|f1: Array<Int, Int>| forall(|f2: Array<Int, Int>|
         !(Self::func_invariant()
