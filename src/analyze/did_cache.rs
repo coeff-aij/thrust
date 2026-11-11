@@ -75,6 +75,8 @@ struct DefIds {
     for_loop_history_marker: OnceCell<Option<DefId>>,
     for_loop_history: OnceCell<Option<DefId>>,
     ghost_marker: OnceCell<Option<DefId>>,
+    choose_marker: OnceCell<Option<DefId>>,
+    witness: OnceCell<Option<DefId>>,
     assert_marker: OnceCell<Option<DefId>>,
     assume_marker: OnceCell<Option<DefId>>,
 
@@ -535,6 +537,20 @@ impl<'tcx> DefIdCache<'tcx> {
             .def_ids
             .ghost_marker
             .get_or_init(|| self.annotated_def(&crate::analyze::annot::ghost_marker_path()))
+    }
+
+    pub fn choose_marker(&self) -> Option<DefId> {
+        *self
+            .def_ids
+            .choose_marker
+            .get_or_init(|| self.annotated_def(&crate::analyze::annot::choose_marker_path()))
+    }
+
+    pub fn witness(&self) -> Option<DefId> {
+        *self
+            .def_ids
+            .witness
+            .get_or_init(|| self.annotated_def(&crate::analyze::annot::witness_path()))
     }
 
     pub fn assert_marker(&self) -> Option<DefId> {

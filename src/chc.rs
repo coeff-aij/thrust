@@ -2565,14 +2565,7 @@ impl<V> Formula<V> {
             .into_iter()
             .enumerate()
             .filter(|(i, _)| *i != pos)
-            .map(|(_, f)| {
-                candidate_atoms::map_formula_terms(f, &mut |t| match t {
-                    Term::UserQuantifiedVar(_, var) if selectors.contains_key(&var) => {
-                        selectors[&var].clone()
-                    }
-                    t => t,
-                })
-            });
+            .map(|(_, f)| f.subst_quantified(&selectors));
         std::iter::once(Formula::Atom(tester))
             .chain(rest)
             .fold(Formula::top(), Formula::and)
@@ -2580,6 +2573,17 @@ impl<V> Formula<V> {
 
     pub fn forall(vars: Vec<(UserQuantifiedVarId, Sort)>, body: Self) -> Self {
         Formula::Forall(vars, Box::new(body))
+    }
+
+    /// The formula with each quantified variable `terms` maps replaced by its term.
+    pub fn subst_quantified(self, terms: &HashMap<UserQuantifiedVarId, Term<V>>) -> Self
+    where
+        V: Clone,
+    {
+        candidate_atoms::map_formula_terms(self, &mut |t| match t {
+            Term::UserQuantifiedVar(_, var) if terms.contains_key(&var) => terms[&var].clone(),
+            t => t,
+        })
     }
 
     pub fn subst_var<F, W>(self, f: F) -> Formula<W>

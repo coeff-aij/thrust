@@ -70,7 +70,21 @@ pub fn _closure_with_context(input: TokenStream) -> TokenStream {
 /// See [`mod@ghost`].
 #[proc_macro]
 pub fn ghost(input: TokenStream) -> TokenStream {
-    ghost::expand(input)
+    ghost::expand(input, ghost::Form::Term)
+}
+
+/// Introduces a ghost value that is a witness of a formula, checking that one exists:
+///
+/// ```ignore
+/// let ts = thrust_macros::choose!(|s: &Vec<u64>, w: u64| -> Seq<Int> { weight(*s, w) });
+/// ```
+///
+/// The closure is that of [`ghost`], with a formula in place of the term: an `exists`, or a
+/// call of a predicate whose body is one. The formula is checked where it is written, as by
+/// `proof_assert!`, and the value satisfies the body of the `exists` from then on.
+#[proc_macro]
+pub fn choose(input: TokenStream) -> TokenStream {
+    ghost::expand(input, ghost::Form::Witness)
 }
 
 /// Context-carrying counterpart of `ghost!`, emitted by
@@ -79,7 +93,13 @@ pub fn ghost(input: TokenStream) -> TokenStream {
 /// body is the ghost term closure (see [`ghost`]).
 #[proc_macro]
 pub fn _ghost_with_context(input: TokenStream) -> TokenStream {
-    ghost::expand_with_context(input)
+    ghost::expand_with_context(input, ghost::Form::Term)
+}
+
+/// Context-carrying counterpart of `choose!` (see [`_ghost_with_context`]).
+#[proc_macro]
+pub fn _choose_with_context(input: TokenStream) -> TokenStream {
+    ghost::expand_with_context(input, ghost::Form::Witness)
 }
 
 /// Makes the enclosing context available to the specifications written inside an
