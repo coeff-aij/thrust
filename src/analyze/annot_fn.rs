@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use pretty::{termcolor, Pretty};
-use rustc_hir::pat_util::EnumerateAndAdjustIterator as _;
 use rustc_hir::{
     def_id::{DefId, LocalDefId},
     HirId,
@@ -731,38 +730,17 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         }
     }
 
+    /// Binds the variables of `pat`, a parameter's pattern, to the parts of `param` they name.
+    /// A parameter's pattern is irrefutable, so the condition [`Self::pat_cond`] also gives
+    /// holds of every value of its type and is dropped.
     fn build_env_from_pat(
         &mut self,
         param: chc::Term<rty::FunctionParamIdx>,
         pat: &'tcx rustc_hir::Pat<'tcx>,
     ) {
-        use rustc_hir::PatKind;
-
-        let param = self.apply_pat_adjustments(param, pat);
-        match pat.kind {
-            PatKind::Binding(_, hir_id, _, None) => {
-                let term = self.bound_term(hir_id, pat.span, param);
-                self.env.insert(hir_id, term);
-            }
-            PatKind::Wild => {}
-            // `&T` models as `&<T as Model>::Ty`, a box in the logic, as a deref in a formula
-            // reads it; `&mut T` models as `model::Mut`, which no `&mut` pattern matches.
-            PatKind::Ref(subpat, rustc_hir::Mutability::Not) => {
-                self.build_env_from_pat(param.box_current(), subpat);
-            }
-            PatKind::TupleStruct(_, subpats, dotdot_pos) | PatKind::Tuple(subpats, dotdot_pos) => {
-                let pat_ty = self.pat_ty(pat);
-                let field_count = match pat_ty.ty_adt_def() {
-                    Some(adt) => adt.non_enum_variant().fields.len(),
-                    None => pat_ty.tuple_fields().len(),
-                };
-                for (idx, subpat) in subpats.iter().enumerate_and_adjust(field_count, dotdot_pos) {
-                    let field_term = param.clone().tuple_proj(idx);
-                    self.build_env_from_pat(field_term, subpat);
-                }
-            }
-            _ => unimplemented!("unsupported pattern in formula: {:?}", pat),
-        }
+        let mut bindings = Vec::new();
+        self.pat_cond(param, pat, &mut bindings);
+        self.env.extend(bindings);
     }
 
     fn instantiate_generics<T>(
@@ -2041,9 +2019,13 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
 
     /// A `match` whose arm bodies are values of a type other than `bool`: the `ite` over the
     /// arms in order, each condition testing the variants by the discriminant. The last arm is
-    /// the value where no earlier arm matches: rustc has checked that the arms are exhaustive,
-    /// so its pattern holds there (a guarded last arm is never reached), and the selectors it
-    /// reads are read only under their testers.
+    /// the value where no earlier arm matches, as Verus and Why3 translate a `match`: rustc has
+    /// checked that the arms are exhaustive, so its pattern holds of every Rust value there and
+    /// its selectors are read under their testers. A value of the datatype that no Rust value
+    /// is (a variant whose payload is uninhabited, which rustc lets a `match` omit) also takes
+    /// the last arm, with its fields at unspecified values of their sorts. A guard on the last
+    /// arm is rejected, as Verus rejects one: the arm would then be the fallback of values its
+    /// guard does not hold of.
     fn match_term(
         &self,
         scrutinee: &'tcx rustc_hir::Expr<'tcx>,
@@ -2053,6 +2035,13 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         let (last, earlier) = arms
             .split_last()
             .expect("a `match` on an inhabited type has an arm");
+        if let Some(guard) = last.guard {
+            self.tcx.dcx().span_fatal(
+                guard.span,
+                "a guard on the last arm of a `match` of a non-Boolean type is not supported in \
+                 formulas; add an arm after it",
+            );
+        }
         let (_, last_translator) = self.arm_pattern(scrutinee.clone(), last.pat);
         let mut term = last_translator.to_term(last.body);
         for arm in earlier.iter().rev() {
@@ -2105,6 +2094,8 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                     None => PatCond::All(Vec::new()),
                 }
             }
+            // `&T` models as `&<T as Model>::Ty`, a box in the logic, as a deref in a formula
+            // reads it; `&mut T` models as `model::Mut`, which no `&mut` pattern matches.
             PatKind::Ref(subpat, rustc_hir::Mutability::Not) => {
                 self.pat_cond(term.box_current(), subpat, bindings)
             }

@@ -1,6 +1,5 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -A unused-variables
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // A `match` in an `ensures` binds the fields of tuple-like and struct-like variants.
 enum Shape {
