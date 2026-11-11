@@ -2212,8 +2212,10 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 .map(|ty| self.type_builder.build(ty).to_sort())
                 .collect(),
         );
+        // A `_` field reads nothing, so it gets no selector.
         let fields = fields
             .into_iter()
+            .filter(|(_, p)| !matches!(p.kind, rustc_hir::PatKind::Wild))
             .map(|(idx, p)| {
                 let field_ty = variant
                     .fields
