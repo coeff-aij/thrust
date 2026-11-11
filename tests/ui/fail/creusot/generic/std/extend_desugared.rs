@@ -1,9 +1,6 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -A unused-variables -A dead_code
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300
-// Annotation code beside the invariant: the ghosts `old_vec`, `old_iter` and `produced`, the
-// ghost `x`, the item before it moves into the vector, and a call of the lemma `produces_refl`
-// before the loop.
 
 // The fail twin of extend_desugared.rs: the loop discards each item instead of pushing it.
 // std's `Vec::extend_desugared` (`library/alloc/src/vec/mod.rs` of the rust-src of
@@ -13,6 +10,9 @@
 // write and `set_len`, which together are what `push` does; and a ghost sequence `produced` records
 // the items taken, which Creusot gives a `for` loop and `while let` has none. The contract is
 // Creusot's `extend` (`examples/iterators/08_collect_extend.rs`, 3620de437).
+// Annotation code beside the invariant: the ghosts `old_vec`, `old_iter` and `produced`, the
+// ghost `x`, the item before it moves into the vector, and a call of the lemma `produces_refl`
+// before the loop.
 use thrust_models::model::{Mut, Seq};
 use thrust_models::{exists, Ghost, Model};
 

@@ -1,8 +1,6 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -A unused-variables -A dead_code
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300
-// Annotation code beside the invariant: the ghosts `old_it` (the iterator at entry) and `taken`,
-// and a call of the lemma `produces_refl` before the loop.
 
 // The fail twin of advance_by_ghost.rs: the error counts one item fewer than are left.
 // std's default `Iterator::advance_by` (`spec_advance_by` in `library/core/src/iter/traits/iterator.rs`
@@ -15,6 +13,8 @@
 // and then completed, with `0 < k <= n`.
 // std runs this loop only for unsized iterators (`impl<I: Iterator + ?Sized>`); for a `Sized` iterator
 // its `impl<I: Iterator>` specialises it to a `try_fold` over `NonZero`.
+// Annotation code beside the invariant: the ghosts `old_it` (the iterator at entry) and `taken`,
+// and a call of the lemma `produces_refl` before the loop.
 use thrust_models::model::{Mut, Seq};
 use thrust_models::{exists, forall, Ghost, Model};
 
