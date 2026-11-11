@@ -769,9 +769,9 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                 // Rewrite (rewrites.md R8): `Map::new` of the niche's `available`, 0 without one,
                 // for `filter_map` of the niche and `map` of `available`: the two maxima agree,
                 // as `available` is never negative.
-                // Fallback: `Map::new` and `max` with their preconditions
-                // assumed; restore `Map::new(..).max()` once the solver answers them.
-                let largest_niche_size = crate::case_study::assumed_requires::max_assumed(crate::case_study::iter::map_new_assumed(fields_excluding_tail.iter(), thrust_macros::closure!(
+                // Fallback: `Map::new` with its precondition assumed; restore `Map::new(..)` once
+                // the solver answers it.
+                let largest_niche_size = core::iter::Iterator::max(crate::case_study::iter::map_new_assumed(fields_excluding_tail.iter(), thrust_macros::closure!(
                     captures(dl: &mut &&TargetDataLayout),
                     requires(forall(|d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche|
                         !(thrust_macros::post!(<F as core::ops::Deref>::deref(f), d) && (**d).largest_niche == Some(n))
@@ -883,19 +883,16 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                                         requires(forall(|s: Size| !Primitive::size_in(n.value, ***dl, s) || n.offset.raw + s.raw <= *field_size)),
                                         ensures(true),
                                         |n: Niche| -> u64 {
-                                            // Fallback: the capture and the
-                                            // niche's value size bound to locals so that an `assume!`
-                                            // can state that the two subtractions do not underflow.
-                                            // They hold in rustc: the niche lies within its field
-                                            // (`requires` above, with `Primitive::size`'s
-                                            // `ensures`); the solver does not answer them (killed
-                                            // for memory). Restore the one expression once it does.
+                                            // Rewrite: the capture and the niche's value size
+                                            // bound to locals so that a `proof_assert!` states that
+                                            // the two subtractions do not underflow, as the niche
+                                            // lies within its field (`requires` above, with
+                                            // `Primitive::size`'s `ensures`); the solver does not
+                                            // answer them as one goal.
                                             let field_size: u64 = field_size;
                                             let value_size = n.value.size(dl).bytes();
-                                            thrust_macros::assume!(|field_size: u64, value_size: u64| value_size <= field_size);
-                                            thrust_macros::assume!(|n: Niche, field_size: u64, value_size: u64| n.offset.raw <= field_size - value_size);
-                                            #[cfg(thrust_univariant_biased_reach = "niche_end_key")]
-                                            thrust_macros::proof_assert!(|n: Niche| false);
+                                            thrust_macros::proof_assert!(|field_size: u64, value_size: u64| value_size <= field_size);
+                                            thrust_macros::proof_assert!(|n: Niche, field_size: u64, value_size: u64| n.offset.raw <= field_size - value_size);
                                             !(field_size - value_size - n.offset.bytes())
                                         },
                                     )),
@@ -1131,11 +1128,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
             fields, repr, kind, &offsets, align, size, sized, unadjusted_abi_align,
         );
         // Rewrite (rewrites.md R8): `!iter_all(it, |f| !p(f))` for `it.any(p)`.
-        // Fallback: `iter_all` with its precondition assumed; restore `iter_all` once
-        // the solver answers it.
-        let uninhabited = !crate::case_study::assumed_requires::iter_all_assumed(fields.iter(), |f| !f.is_uninhabited());
-        #[cfg(thrust_univariant_biased_reach = "iter_all")]
-        thrust_macros::proof_assert!(|kind: StructKind| false);
+        let uninhabited = !crate::case_study::iter::iter_all(fields.iter(), |f| !f.is_uninhabited());
 
 
         let seed = field_seed.wrapping_add(repr.field_shuffle_seed);
