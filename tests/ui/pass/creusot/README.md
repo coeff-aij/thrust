@@ -1,6 +1,6 @@
 # Creusot benchmark cases
 
-Fourteen cases from the Creusot artifact's iterator benchmark, each verified with a specification
+Cases from the Creusot artifact's iterator benchmark, each verified with a specification
 equivalent to Creusot's, plus nine additions with no Creusot counterpart (`take_count.rs`,
 `fold.rs`, `try_fold.rs`, `find.rs`, `filter.rs`, and the forms of the last four generic in the
 iterator and the closure, in `generic/`). `<file>.rs` is the pass side;
@@ -11,7 +11,8 @@ assertion). `weaker/` holds
 variants of a case whose property is weaker than Creusot's but still verifies.
 
 `range.rs`, `take.rs`, `skip.rs`, `fuse_produces.rs`, `map.rs`, `map_ext.rs` and `iter_mut.rs` are
-Creusot's code (3620de437) with only the rewrites Thrust needs, without `main`, and share one file,
+Creusot's code (3620de437) with only the rewrites Thrust needs (`skip.rs`'s `next` has the control
+flow of the 2022 artifact), without `main`, and share one file,
 `auxiliary/common.rs`, through `#[path = "auxiliary/common.rs"] mod common;`, as Creusot's cases
 share `common.rs` (the ui harness does not run files under `auxiliary/`). As in Creusot's
 `common.rs`, its `produces_refl` has no premise, where the trait block the other files repeat
@@ -30,7 +31,7 @@ with empty bodies, as Creusot does). The step-form files repeat theirs in the sa
 | --- | --- | --- |
 | `range.rs` | `examples/iterators/01_range.rs` (3620de437) | `produces` |
 | `take.rs` | `examples/iterators/16_take.rs` (3620de437) | `produces` |
-| `skip.rs` | `examples/iterators/04_skip.rs` (3620de437) | `produces`, concatenated |
+| `skip.rs` | `examples/iterators/04_skip.rs` (3620de437), `next` in the control flow of the 2022 artifact's `iterators/skip.rs` | `produces`, concatenated |
 | `fuse.rs` | `iterators/fuse.rs` | `step` |
 | `fuse_produces.rs` | the current Creusot's `examples/iterators/07_fuse.rs` (3620de437) | `produces` + `FusedIterator::is_fused` with its state `Option<I>` and its `completed` and `produces` |
 | `fuse_produces_result.rs` | `iterators/fuse.rs` | `produces` + `FusedIterator::is_fused` with Creusot's state `Result<I, Ghost<I>>`; `next` keeps `iter` live past the ghost of the exhausted iterator, as Creusot's `ghost! { *iter }` reads it |
@@ -44,8 +45,9 @@ with empty bodies, as Creusot does). The step-form files repeat theirs in the sa
 | `counter_creusot.rs` | the current Creusot's `counter` in `examples/iterators/03_std_iterators.rs` (3620de437) | `produces` with Creusot's property over `v.iter()` of a `Vec<u32>` (`x == v`, `cnt == x.len()`), the closure's postconditions (the step and the history fact) written where Creusot takes its contract from the body, its precondition inferred, std's `slice::Iter` through its std.rs model, `MapInv` over an `FnMut` closure whose states are related by `hist_inv!` (Creusot's `hist_inv`), as in creusot-std's `std/iter/map_inv.rs` |
 | `counter_creusot_lemma.rs` | `examples/counter.rs` | `counter_creusot.rs` with the witnesses of `produces_trans` written as source-level lemmas (Creusot's session gives them by hand) |
 | `map_ext.rs` | `examples/iterators/06_map_precond.rs` (3620de437) | `produces` with an existential input sequence, `MapInv`'s ghost history, over an `FnMut` closure with the chain `fs` and `hist_inv!` as `counter_creusot.rs` |
-| `extend.rs` | `examples/extend.rs` of the 2022 artifact | `produces` with a local `Extend` trait; a debugging example, the benchmark's form is `extend_for.rs` |
+| `extend.rs` | `examples/extend.rs` of the 2022 artifact | `produces` with a local `Extend` trait; a debugging example, the benchmark's forms are `concat_vec.rs` and `extend_for.rs` |
 | `collect_for.rs` | the current Creusot's `examples/iterators/08_collect_extend.rs` (3620de437), `collect` and `collect_example` | std.rs's `IteratorSpec`, a `for` loop whose invariant states the vector is `produced` |
+| `concat_vec.rs` | `examples/extend.rs` of the 2022 artifact, `extend_index` | std's `Vec::extend` over `v2.into_iter()` under std.rs's contract of `Vec::extend` (Creusot's) |
 | `extend_for.rs` | the current Creusot's `examples/iterators/08_collect_extend.rs` (3620de437), `extend` and `extend_index` | std.rs's `IteratorSpec`, a `for` loop whose invariant states the vector is its entry value followed by `produced` |
 | `take_count.rs` | no counterpart | `produces`; an extra call site of `take.rs`'s `Take` |
 | `fold.rs` | no counterpart | `produces`; a hand-written `fold` with a closure contract over the accumulator |
