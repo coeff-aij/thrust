@@ -2531,7 +2531,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                                 Some(range) => range.and(body_formula),
                                 None => body_formula,
                             };
-                            return FormulaOrTerm::Formula(chc::Formula::exists(
+                            return FormulaOrTerm::Formula(chc::Formula::exists_over_payload(
                                 vars,
                                 body_formula,
                             ));

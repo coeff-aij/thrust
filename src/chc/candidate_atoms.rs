@@ -328,7 +328,10 @@ fn simplify_term(term: Term) -> Term {
 }
 
 /// Rewrites every term of `formula` bottom-up with `f`.
-fn map_formula_terms(formula: Formula, f: &mut dyn FnMut(Term) -> Term) -> Formula {
+pub(super) fn map_formula_terms<V>(
+    formula: Formula<V>,
+    f: &mut dyn FnMut(Term<V>) -> Term<V>,
+) -> Formula<V> {
     match formula {
         Formula::Atom(atom) => Formula::Atom(map_atom_terms(atom, f)),
         Formula::Not(fo) => Formula::Not(Box::new(map_formula_terms(*fo, f))),
@@ -345,7 +348,7 @@ fn map_formula_terms(formula: Formula, f: &mut dyn FnMut(Term) -> Term) -> Formu
     }
 }
 
-fn map_atom_terms(atom: Atom, f: &mut dyn FnMut(Term) -> Term) -> Atom {
+fn map_atom_terms<V>(atom: Atom<V>, f: &mut dyn FnMut(Term<V>) -> Term<V>) -> Atom<V> {
     let Atom { guard, pred, args } = atom;
     Atom {
         guard: guard.map(|g| Box::new(map_formula_terms(*g, f))),
@@ -354,8 +357,8 @@ fn map_atom_terms(atom: Atom, f: &mut dyn FnMut(Term) -> Term) -> Atom {
     }
 }
 
-fn map_term(term: Term, f: &mut dyn FnMut(Term) -> Term) -> Term {
-    let sub = |t: Box<Term>, f: &mut dyn FnMut(Term) -> Term| Box::new(map_term(*t, f));
+fn map_term<V>(term: Term<V>, f: &mut dyn FnMut(Term<V>) -> Term<V>) -> Term<V> {
+    let sub = |t: Box<Term<V>>, f: &mut dyn FnMut(Term<V>) -> Term<V>| Box::new(map_term(*t, f));
     let term = match term {
         Term::Box(t) => Term::Box(sub(t, f)),
         Term::Mut(t1, t2) => {
@@ -375,6 +378,7 @@ fn map_term(term: Term, f: &mut dyn FnMut(Term) -> Term) -> Term {
             args.into_iter().map(|t| map_term(t, f)).collect(),
         ),
         Term::DatatypeDiscr(sym, t) => Term::DatatypeDiscr(sym, sub(t, f)),
+        Term::DatatypeSelector(sel, t) => Term::DatatypeSelector(sel, sub(t, f)),
         Term::IntToBitVec { width, term } => Term::IntToBitVec {
             width,
             term: sub(term, f),
@@ -670,6 +674,9 @@ impl Definitions {
             Term::TupleProj(a, i) => Term::TupleProj(Box::new(children(a, budget)), *i),
             Term::DatatypeDiscr(sym, a) => {
                 Term::DatatypeDiscr(sym.clone(), Box::new(children(a, budget)))
+            }
+            Term::DatatypeSelector(sel, a) => {
+                Term::DatatypeSelector(sel.clone(), Box::new(children(a, budget)))
             }
             Term::IntToBitVec { width, term } => Term::IntToBitVec {
                 width: *width,

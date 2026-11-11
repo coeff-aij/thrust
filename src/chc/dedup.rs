@@ -46,6 +46,7 @@ enum Op {
     TupleProj(usize),
     Ctor(DatatypeSort, DatatypeSymbol),
     Discr(DatatypeSymbol),
+    Selector(Selector),
     IntToBitVec(u32),
 }
 
@@ -86,6 +87,7 @@ fn decompose(term: &Term) -> Option<(Op, Vec<&Term>)> {
             (Op::Ctor(sort.clone(), sym.clone()), args.iter().collect())
         }
         Term::DatatypeDiscr(sym, t) => (Op::Discr(sym.clone()), vec![&**t]),
+        Term::DatatypeSelector(sel, t) => (Op::Selector((**sel).clone()), vec![&**t]),
         Term::IntToBitVec { width, term } => (Op::IntToBitVec(*width), vec![&**term]),
     };
     Some(decomposed)
@@ -97,6 +99,7 @@ fn projected_component(proj: &Op, ctor: &Op) -> Option<usize> {
         (Op::TupleProj(i), Op::Tuple) => Some(*i),
         (Op::MutCurrent, Op::Mut) | (Op::BoxCurrent, Op::Box) => Some(0),
         (Op::MutFinal, Op::Mut) => Some(1),
+        (Op::Selector(sel), Op::Ctor(_, ctor)) if sel.ctor == *ctor => Some(sel.index),
         _ => None,
     }
 }

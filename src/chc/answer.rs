@@ -225,6 +225,9 @@ impl<'a, V: Clone> Reader<'a, V> {
             (Some(DeclaredSymbol::Current), 1) => return Term::MutCurrent(arg(&mut args)),
             (Some(DeclaredSymbol::Final), 1) => return Term::MutFinal(arg(&mut args)),
             (Some(DeclaredSymbol::Field(i)), 1) => return Term::TupleProj(arg(&mut args), *i),
+            (Some(DeclaredSymbol::Selector(sel)), 1) => {
+                return Term::DatatypeSelector(sel.clone(), arg(&mut args))
+            }
             _ => {}
         }
         if let Some(symbol) = self.symbols.user_defined.get(head) {
