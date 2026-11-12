@@ -32,8 +32,18 @@ pub struct FormulaFn<'tcx> {
     body: FormulaFnBody,
     /// [`FormulaFn::witnessed_formula`], when it differs from the formula.
     witnessed: Option<chc::Formula<rty::FunctionParamIdx>>,
+    /// The binders and the body of the formula when it is an `exists`, as written: the formula
+    /// stores the payload rewrite of some (`Formula::exists_over_payload`), which a `witness`
+    /// instantiates before.
+    exists: Option<ExistsParts>,
     pre_receivers: Vec<mir_ty::Ty<'tcx>>,
 }
+
+/// The binders of an `exists` and its body.
+type ExistsParts = (
+    Vec<(chc::UserQuantifiedVarId, chc::Sort)>,
+    chc::Formula<rty::FunctionParamIdx>,
+);
 
 /// The translated body: a formula, or a term for a `#[thrust_macros::logic]` function.
 #[derive(Debug, Clone)]
@@ -91,6 +101,11 @@ impl<'tcx> FormulaFn<'tcx> {
 
     pub fn body(&self) -> &FormulaFnBody {
         &self.body
+    }
+
+    /// [`FormulaFn::exists`]: the binders and the body of the formula when it is an `exists`.
+    pub fn exists_parts(&self) -> Option<&ExistsParts> {
+        self.exists.as_ref()
     }
 
     /// The formula a `proof_assert!` checks and a `choose!` refines its value by: the formula
@@ -957,15 +972,17 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
 
     /// The translation, with the `pre!` receivers it recorded, its quantifier bodies' included.
     pub fn into_formula_fn(self) -> FormulaFn<'tcx> {
-        let (body, witnessed) = if self.is_logic(self.local_def_id.to_def_id()) {
+        let (body, witnessed, exists) = if self.is_logic(self.local_def_id.to_def_id()) {
             (
                 FormulaFnBody::Term(self.to_term(self.logic_body_expr().0)),
+                None,
                 None,
             )
         } else {
             (
                 FormulaFnBody::Formula(self.to_formula(self.body.value)),
                 self.witnessed_formula(self.body.value),
+                self.exists_call_parts(self.body.value),
             )
         };
         let fn_sig = self.tcx.fn_sig(self.local_def_id.to_def_id());
@@ -988,6 +1005,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             ret,
             body,
             witnessed,
+            exists,
             pre_receivers: self.pre_receivers.borrow().clone(),
         }
     }
@@ -1046,38 +1064,99 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         witness: &'tcx rustc_hir::Expr<'tcx>,
     ) -> chc::Formula<rty::FunctionParamIdx> {
         let (vars, body) = self.witnessed_exists(formula);
-        let components: Vec<&'tcx rustc_hir::Expr<'tcx>> = match witness.kind {
-            _ if vars.len() == 1 => vec![witness],
-            rustc_hir::ExprKind::Tup(elems) if elems.len() == vars.len() => elems.iter().collect(),
-            _ => self.tcx.dcx().span_fatal(
-                witness.span,
-                format!(
-                    "the `exists` binds {} variables, so its witness is a tuple of {} terms",
-                    vars.len(),
-                    vars.len()
-                ),
-            ),
-        };
         let terms: HashMap<_, _> = vars
-            .into_iter()
-            .zip(components)
-            .map(|((var, sort), component)| {
-                let component_ty = self.normalized_ty(self.typeck.expr_ty(component));
-                let component_sort = self.type_builder.build(component_ty).to_sort();
-                if component_sort != sort {
-                    self.tcx.dcx().span_fatal(
-                        component.span,
-                        "this witness does not have the type of the variable the `exists` binds",
-                    );
-                }
-                (var, self.to_term(component))
-            })
+            .iter()
+            .map(|(var, _)| *var)
+            .zip(self.witness_terms(&vars, witness))
             .collect();
         body.subst_quantified(&terms)
     }
 
+    /// The terms `witness` gives the variables `vars` an `exists` binds: the witness itself for one
+    /// variable, the elements of a tuple expression, or the projections of a tuple-typed term
+    /// (a `choose!`'s value of a tuple type); each of the variable's sort.
+    fn witness_terms(
+        &self,
+        vars: &[(chc::UserQuantifiedVarId, chc::Sort)],
+        witness: &'tcx rustc_hir::Expr<'tcx>,
+    ) -> Vec<chc::Term<rty::FunctionParamIdx>> {
+        let sort_of = |e: &'tcx rustc_hir::Expr<'tcx>| {
+            let ty = self.normalized_ty(self.typeck.expr_ty(e));
+            self.type_builder.build(ty).to_sort()
+        };
+        let mismatch = |span| -> ! {
+            self.tcx.dcx().span_fatal(
+                span,
+                "this witness does not have the type of the variable the `exists` binds",
+            )
+        };
+        if vars.len() == 1 {
+            if sort_of(witness) != vars[0].1 {
+                mismatch(witness.span);
+            }
+            return vec![self.to_term(witness)];
+        }
+        if let rustc_hir::ExprKind::Tup(elems) = witness.kind {
+            if elems.len() != vars.len() {
+                self.several_binders(witness.span, vars.len());
+            }
+            return elems
+                .iter()
+                .zip(vars)
+                .map(|(elem, (_, sort))| {
+                    if sort_of(elem) != *sort {
+                        mismatch(elem.span);
+                    }
+                    self.to_term(elem)
+                })
+                .collect();
+        }
+        // A tuple value holds each element in a box (`Sort::Box`), which its projection opens.
+        let chc::Sort::Tuple(elems) = sort_of(witness) else {
+            self.several_binders(witness.span, vars.len())
+        };
+        if elems.len() != vars.len() {
+            self.several_binders(witness.span, vars.len());
+        }
+        let tuple = self.to_term(witness);
+        elems
+            .into_iter()
+            .zip(vars)
+            .enumerate()
+            .map(|(i, (elem, (_, sort)))| match elem {
+                elem if elem == *sort => tuple.clone().tuple_proj(i),
+                chc::Sort::Box(inner) if *inner == *sort => {
+                    tuple.clone().tuple_proj(i).box_current()
+                }
+                _ => mismatch(witness.span),
+            })
+            .collect()
+    }
+
+    fn several_binders(&self, span: rustc_span::Span, n: usize) -> ! {
+        self.tcx.dcx().span_fatal(
+            span,
+            format!("the `exists` binds {n} variables, so its witness is a tuple of {n} terms"),
+        )
+    }
+
     /// The bound variables and the body of `formula`, the formula of a `witness`: an `exists`,
     /// or a call of a predicate whose body is one, unfolded at the call's arguments.
+    /// [`Self::exists_binders_and_body`] of `hir` when it is a call of `thrust_models::exists`.
+    fn exists_call_parts(&self, hir: &'tcx rustc_hir::Expr<'tcx>) -> Option<ExistsParts> {
+        let rustc_hir::ExprKind::Call(func_expr, args) = peel_wrappers(hir).kind else {
+            return None;
+        };
+        let rustc_hir::ExprKind::Path(qpath) = &func_expr.kind else {
+            return None;
+        };
+        let def_id = self
+            .typeck
+            .qpath_res(qpath, func_expr.hir_id)
+            .opt_def_id()?;
+        (Some(def_id) == self.def_ids.exists()).then(|| self.exists_binders_and_body(args))
+    }
+
     /// The binders of a call of `thrust_models::exists` with arguments `args` and its body, the
     /// binders' ranges included.
     fn exists_binders_and_body(
@@ -1143,13 +1222,13 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             .analyzer
             .formula_fn_with_args(local, instance_args, self.type_builder.owner_fn_id())
             .expect("predicate formula function is not registered");
-        let chc::Formula::Exists(vars, body) = definition.formula().clone() else {
+        let Some((vars, body)) = definition.exists_parts().cloned() else {
             self.not_an_exists(formula.span)
         };
         let arg_terms: Vec<_> = args.iter().map(|e| self.to_term(e)).collect();
         (
             vars,
-            (*body).subst_var(|idx| arg_terms[idx.as_usize()].clone()),
+            body.subst_var(|idx| arg_terms[idx.as_usize()].clone()),
         )
     }
 
