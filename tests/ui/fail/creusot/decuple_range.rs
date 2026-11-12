@@ -10,8 +10,8 @@ use thrust_models::{exists, forall, Model};
 // inherited from the trait, as `Range`'s. The rest is `collect` and `FromIterator for Vec<isize>`,
 // as in `weaker/collect_mutref.rs`. Differences from the 2022 artifact's client: the iterator is
 // the local `Range` over `isize`, not std's `0..10` over `u32`, so that it implements the local
-// trait, so the closure's `0 <= x && x < 100` states the lower bound `u32` gives the artifact's
-// `x@ < 100`; `map` is the local `Map`, whose closure takes no history, where the artifact's
+// trait, and the closure's `0 <= x && x < 100` therefore states the lower bound that `u32` gives
+// the artifact's `x@ < 100`; `map` is the local `Map`, whose closure takes no history, where the artifact's
 // `map_inv` passes one that its closure ignores; and the adapter is a struct literal bound to `m`,
 // collected through `&mut m`, where the artifact collects the temporary `map_inv` returns.
 
