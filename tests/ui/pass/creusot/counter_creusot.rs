@@ -1,7 +1,7 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off -A unused-variables -A unused_parens -A dead_code
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300
-// slow: RQ1 input, no answer in 300 s with the ui harness's solver configuration (sat in 35 s with the evaluation's, run.py); the counter by default: pass/creusot/counter.rs, fail/creusot/counter.rs
+// slow: RQ1 input, 35 s on one build of fptprove 28eaca8b6 and no answer in 300 s on another; the counter by default: pass/creusot/counter.rs, fail/creusot/counter.rs
 use thrust_models::model::{Closure, Int, Mut, Seq};
 use thrust_models::{exists, forall, Ghost, Model};
 
