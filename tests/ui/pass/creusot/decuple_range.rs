@@ -7,9 +7,14 @@ use thrust_models::model::{Closure, Int, Mut, Seq};
 use thrust_models::{exists, forall, Model};
 
 // Creusot's `examples/decuple_range` with its positional property `v[i] == 10 * i`, fully checked,
-// with `Map` in its `produces` form: no ghost lemmas, and
-// `produces_refl` and `produces_trans` inherited from the trait, as `Range`'s. The rest is `collect` and `FromIterator for Vec<isize>`, as in
-// `weaker/collect_mutref.rs`.
+// with `Map` in its `produces` form: no ghost lemmas, and `produces_refl` and `produces_trans`
+// inherited from the trait, as `Range`'s. The rest is `collect` and `FromIterator for Vec<isize>`,
+// as in `weaker/collect_mutref.rs`. Differences from the 2022 artifact's client: the iterator is
+// the local `Range` over `isize`, not std's `0..10` over `u32`, so that it implements the local
+// trait, and the closure's `0 <= x && x < 100` therefore states the lower bound that `u32` gives
+// the artifact's `x@ < 100`; `map` is the local `Map`, whose closure takes no history, where the artifact's
+// `map_inv` passes one that its closure ignores; and the adapter is a struct literal bound to `m`,
+// collected through `&mut m`, where the artifact collects the temporary `map_inv` returns.
 
 // Creusot's `common.rs`, the iterator specification every case shares: the trait predicates
 // `produces(self, visited, o)`, `completed` and `invariant` (`true` unless the impl says otherwise),
@@ -238,9 +243,8 @@ impl FromIterator<isize> for Vec<isize> {
     }
 }
 
-// Creusot: `proof_assert! { forall<i : Int> 0 <= i && i < (@v).len() ==> @(@v)[i] == i * 10 }`.
-#[thrust_macros::ensures(forall(|k: Int| 0 <= k && k < result.len() ==> result[k] == k * 10))]
-fn decuple_range() -> Vec<isize> {
+#[thrust::callable]
+pub fn decuple_range() {
     let f = thrust_macros::closure!(
         requires(0 <= x && x < 100),
         ensures(result == x * 10),
@@ -250,5 +254,7 @@ fn decuple_range() -> Vec<isize> {
         iter: Range { start: 0, end: 10 },
         func: f,
     };
-    m.collect::<Vec<isize>>()
+    let v = m.collect::<Vec<isize>>();
+    // Creusot's `proof_assert! { forall<i: Int> 0 <= i && i < v@.len() ==> v[i]@ == i * 10 }`.
+    thrust_macros::proof_assert!(|v: Vec<isize>| forall(|i: Int| 0 <= i && i < v.len() ==> v[i] == i * 10));
 }
