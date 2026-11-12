@@ -20,7 +20,7 @@ mod std_transcriptions {
     use thrust_models::model::{Closure, Seq};
     use thrust_models::Ghost;
 
-    // std: library/core/src/option.rs, `impl<T: [const] PartialEq> const PartialEq for Option<T>`, `fn eq(&self, other: &Self) -> bool`
+    // library/core/src/option.rs, `impl<T: [const] PartialEq> const PartialEq for Option<T>`, `fn eq(&self, other: &Self) -> bool`
     pub fn option_eq<T>(x: &Option<T>, y: &Option<T>) -> bool
     where
         T: thrust_models::Model + thrust_models::ModelEq + PartialEq,
@@ -33,7 +33,7 @@ mod std_transcriptions {
         }
     }
 
-    // std: library/core/src/option.rs, `impl<T> const ops::Try for Option<T>`, `fn branch(self) -> ControlFlow<Self::Residual, Self::Output>`
+    // library/core/src/option.rs, `impl<T> const ops::Try for Option<T>`, `fn branch(self) -> ControlFlow<Self::Residual, Self::Output>`
     pub fn option_branch<T>(opt: Option<T>) -> ControlFlow<Option<Infallible>, T> {
         match opt {
             Some(v) => ControlFlow::Continue(v),
@@ -41,17 +41,16 @@ mod std_transcriptions {
         }
     }
 
-    // std: library/core/src/option.rs, `impl<T> const ops::FromResidual<Option<convert::Infallible>> for Option<T>`, `fn from_residual(residual: Option<convert::Infallible>) -> Self`
+    // library/core/src/option.rs, `impl<T> const ops::FromResidual<Option<convert::Infallible>> for Option<T>`, `fn from_residual(residual: Option<convert::Infallible>) -> Self`
     pub fn option_from_residual<T>(residual: Option<Infallible>) -> Option<T> {
         match residual {
             None => None,
         }
     }
 
-
-    // The transcriptions of `Iterator`'s methods are methods of an impl, where
-    // `#[thrust_macros::context]` adds no `<I as Model>::Ty: PartialEq` bound, which the specs that
-    // call them do not have.
+    // The transcriptions of `Iterator`'s methods are methods of a trait impl, where
+    // `#[thrust_macros::context]` adds no `<T as Model>::Ty: PartialEq` bounds, which the specs
+    // that call them do not have.
     pub trait IteratorMethods<I, F>
     where
         I: crate::IteratorSpec,
@@ -62,16 +61,16 @@ mod std_transcriptions {
         fn iterator_any(it: &mut I, f: F) -> bool;
     }
 
-    pub struct Std;
+    pub struct StdBodies;
 
     #[thrust_macros::context]
-    impl<I, F> IteratorMethods<I, F> for Std
+    impl<I, F> IteratorMethods<I, F> for StdBodies
     where
         I: crate::IteratorSpec,
         I::Item: thrust_models::Model,
         F: FnMut(I::Item) -> bool,
     {
-        // std: library/core/src/slice/iter/macros.rs, `impl<'a, T> Iterator for $name<'a, T>`, `fn all<F>(&mut self, mut f: F) -> bool where Self: Sized, F: FnMut(Self::Item) -> bool,`
+        // library/core/src/slice/iter/macros.rs, `impl<'a, T> Iterator for $name<'a, T>`, `fn all<F>(&mut self, mut f: F) -> bool where Self: Sized, F: FnMut(Self::Item) -> bool,`
         // core's default `all` calls `try_fold` with a closure that breaks where this loop returns.
         // The ghosts `s` and `fs` are the items taken and the predicate's states before each.
         fn iterator_all(it: &mut I, mut f: F) -> bool {
@@ -101,7 +100,7 @@ mod std_transcriptions {
             true
         }
 
-        // std: library/core/src/slice/iter/macros.rs, `impl<'a, T> Iterator for $name<'a, T>`, `fn any<F>(&mut self, mut f: F) -> bool where Self: Sized, F: FnMut(Self::Item) -> bool,`
+        // library/core/src/slice/iter/macros.rs, `impl<'a, T> Iterator for $name<'a, T>`, `fn any<F>(&mut self, mut f: F) -> bool where Self: Sized, F: FnMut(Self::Item) -> bool,`
         // core's default `any` calls `try_fold` with a closure that breaks where this loop returns.
         // The ghosts `s` and `fs` are the items taken and the predicate's states before each.
         fn iterator_any(it: &mut I, mut f: F) -> bool {

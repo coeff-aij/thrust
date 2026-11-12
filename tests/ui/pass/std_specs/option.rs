@@ -6,10 +6,13 @@
 #![feature(specialization)]
 #![allow(incomplete_features)]
 
-// The specs of `Option`'s methods in `std.rs` and `std_try.rs`, and of `Iterator`'s `all` and
-// `any`, whose std bodies are safe code, checked against those bodies: under
+// The specs of `Option`'s methods in `std.rs` and `std_try.rs` whose std bodies are safe code,
+// and of `Iterator`'s `all` and `any`, checked against std bodies: under
 // `cfg(thrust_std_conformance)` each spec's target is the transcription below, a local function
-// whose body Thrust checks against the spec. The query has
+// whose body Thrust checks against the spec. For `all` and `any` that body is `slice::Iter`'s
+// override, a loop over `next`, checked at every `I: IteratorSpec` relative to `next`'s contract;
+// core's default goes through `try_fold`, and an iterator's own `try_fold` is assumed to step it
+// as `next` does (README, the `for`-loop paragraph). The query has
 // forall sorts (the transcriptions are generic), so it needs PCSat; z3 does not read it.
 //
 // Each `// std:` line names the std function a transcription copies: its file in the toolchain's
@@ -58,10 +61,9 @@ mod std_transcriptions {
         }
     }
 
-
-    // The transcriptions of `Iterator`'s methods are methods of an impl, where
-    // `#[thrust_macros::context]` adds no `<I as Model>::Ty: PartialEq` bound, which the specs that
-    // call them do not have.
+    // The transcriptions of `Iterator`'s methods are methods of a trait impl, where
+    // `#[thrust_macros::context]` adds no `<T as Model>::Ty: PartialEq` bounds, which the specs
+    // that call them do not have.
     pub trait IteratorMethods<I, F>
     where
         I: crate::IteratorSpec,
@@ -72,10 +74,10 @@ mod std_transcriptions {
         fn iterator_any(it: &mut I, f: F) -> bool;
     }
 
-    pub struct Std;
+    pub struct StdBodies;
 
     #[thrust_macros::context]
-    impl<I, F> IteratorMethods<I, F> for Std
+    impl<I, F> IteratorMethods<I, F> for StdBodies
     where
         I: crate::IteratorSpec,
         I::Item: thrust_models::Model,

@@ -49,10 +49,9 @@ mod std_transcriptions {
         }
     }
 
-
-    // The transcriptions of `Iterator`'s methods are methods of an impl, where
-    // `#[thrust_macros::context]` adds no `<I as Model>::Ty: PartialEq` bound, which the specs that
-    // call them do not have.
+    // The transcriptions of `Iterator`'s methods are methods of a trait impl, where
+    // `#[thrust_macros::context]` adds no `<T as Model>::Ty: PartialEq` bounds, which the specs
+    // that call them do not have.
     pub trait IteratorMethods<I, F>
     where
         I: crate::IteratorSpec,
@@ -63,16 +62,16 @@ mod std_transcriptions {
         fn iterator_any(it: &mut I, f: F) -> bool;
     }
 
-    pub struct Std;
+    pub struct StdBodies;
 
     #[thrust_macros::context]
-    impl<I, F> IteratorMethods<I, F> for Std
+    impl<I, F> IteratorMethods<I, F> for StdBodies
     where
         I: crate::IteratorSpec,
         I::Item: thrust_models::Model,
         F: FnMut(I::Item) -> bool,
     {
-        // std: library/core/src/slice/iter/macros.rs, `impl<'a, T> Iterator for $name<'a, T>`, `fn all<F>(&mut self, mut f: F) -> bool where Self: Sized, F: FnMut(Self::Item) -> bool,`
+        // library/core/src/slice/iter/macros.rs, `impl<'a, T> Iterator for $name<'a, T>`, `fn all<F>(&mut self, mut f: F) -> bool where Self: Sized, F: FnMut(Self::Item) -> bool,`
         // core's default `all` calls `try_fold` with a closure that breaks where this loop returns.
         // The ghosts `s` and `fs` are the items taken and the predicate's states before each.
         fn iterator_all(it: &mut I, mut f: F) -> bool {
@@ -102,7 +101,7 @@ mod std_transcriptions {
             true
         }
 
-        // std: library/core/src/slice/iter/macros.rs, `impl<'a, T> Iterator for $name<'a, T>`, `fn any<F>(&mut self, mut f: F) -> bool where Self: Sized, F: FnMut(Self::Item) -> bool,`
+        // library/core/src/slice/iter/macros.rs, `impl<'a, T> Iterator for $name<'a, T>`, `fn any<F>(&mut self, mut f: F) -> bool where Self: Sized, F: FnMut(Self::Item) -> bool,`
         // core's default `any` calls `try_fold` with a closure that breaks where this loop returns.
         // The ghosts `s` and `fs` are the items taken and the predicate's states before each.
         fn iterator_any(it: &mut I, mut f: F) -> bool {
