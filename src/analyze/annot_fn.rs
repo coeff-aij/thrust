@@ -32,9 +32,9 @@ pub struct FormulaFn<'tcx> {
     body: FormulaFnBody,
     /// [`FormulaFn::witnessed_formula`], when it differs from the formula.
     witnessed: Option<chc::Formula<rty::FunctionParamIdx>>,
-    /// The binders and the body of the formula when it is an `exists`, as written: the formula
-    /// stores the payload rewrite of some (`Formula::exists_over_payload`), which a `witness`
-    /// instantiates before.
+    /// The binders and the body of the formula when it is a call of `exists`, as written. The
+    /// stored formula may read an enum's payload through selectors instead
+    /// (`Formula::exists_over_payload`); a `witness` instantiates this form.
     exists: Option<ExistsParts>,
     pre_receivers: Vec<mir_ty::Ty<'tcx>>,
 }
@@ -103,7 +103,7 @@ impl<'tcx> FormulaFn<'tcx> {
         &self.body
     }
 
-    /// [`FormulaFn::exists`]: the binders and the body of the formula when it is an `exists`.
+    /// The binders and the body of the formula when it is a call of `exists`, as written.
     pub fn exists_parts(&self) -> Option<&ExistsParts> {
         self.exists.as_ref()
     }
@@ -1140,10 +1140,15 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         )
     }
 
-    /// The bound variables and the body of `formula`, the formula of a `witness`: an `exists`,
-    /// or a call of a predicate whose body is one, unfolded at the call's arguments.
-    /// [`Self::exists_binders_and_body`] of `hir` when it is a call of `thrust_models::exists`.
-    fn exists_call_parts(&self, hir: &'tcx rustc_hir::Expr<'tcx>) -> Option<ExistsParts> {
+    /// The function `hir` calls by path, with the callee expression and the arguments.
+    fn path_call(
+        &self,
+        hir: &'tcx rustc_hir::Expr<'tcx>,
+    ) -> Option<(
+        DefId,
+        &'tcx rustc_hir::Expr<'tcx>,
+        &'tcx [rustc_hir::Expr<'tcx>],
+    )> {
         let rustc_hir::ExprKind::Call(func_expr, args) = peel_wrappers(hir).kind else {
             return None;
         };
@@ -1154,6 +1159,12 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             .typeck
             .qpath_res(qpath, func_expr.hir_id)
             .opt_def_id()?;
+        Some((def_id, func_expr, args))
+    }
+
+    /// [`Self::exists_binders_and_body`] of `hir` when it is a call of `thrust_models::exists`.
+    fn exists_call_parts(&self, hir: &'tcx rustc_hir::Expr<'tcx>) -> Option<ExistsParts> {
+        let (def_id, _, args) = self.path_call(hir)?;
         (Some(def_id) == self.def_ids.exists()).then(|| self.exists_binders_and_body(args))
     }
 
@@ -1181,6 +1192,8 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         (vars, body)
     }
 
+    /// The bound variables and the body of `formula`, the formula of a `witness`: an `exists`,
+    /// or a call of a predicate whose body is one, unfolded at the call's arguments.
     fn witnessed_exists(
         &self,
         formula: &'tcx rustc_hir::Expr<'tcx>,
@@ -1189,13 +1202,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         chc::Formula<rty::FunctionParamIdx>,
     ) {
         let formula = peel_wrappers(formula);
-        let rustc_hir::ExprKind::Call(func_expr, args) = formula.kind else {
-            self.not_an_exists(formula.span)
-        };
-        let rustc_hir::ExprKind::Path(qpath) = &func_expr.kind else {
-            self.not_an_exists(formula.span)
-        };
-        let Some(def_id) = self.typeck.qpath_res(qpath, func_expr.hir_id).opt_def_id() else {
+        let Some((def_id, func_expr, args)) = self.path_call(formula) else {
             self.not_an_exists(formula.span)
         };
         if Some(def_id) == self.def_ids.exists() {

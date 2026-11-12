@@ -7,7 +7,7 @@ use thrust_models::Ghost;
 
 #[thrust_macros::predicate]
 fn halves(n: i64) -> bool {
-    exists(|a: i64, b: i64| n == a + b && a == b)
+    exists(|a: i64, b: i64| n == 2 * a && b == a + 1)
 }
 
 // `choose!` of an `exists` that binds two variables names a tuple of witnesses: `p.0` and `p.1`
@@ -17,7 +17,7 @@ fn halves(n: i64) -> bool {
 #[thrust_macros::ensures(true)]
 fn half(n: i64) {
     let p = thrust_macros::choose!(|n: i64| -> (i64, i64) { halves(n) });
-    thrust_macros::proof_assert!(|n: i64, p: Ghost<(i64, i64)>| n == 2 * p.0 && p.0 == p.1);
+    thrust_macros::proof_assert!(|n: i64, p: Ghost<(i64, i64)>| n == 2 * p.0 && p.1 == p.0 + 1);
 }
 
 fn main() {
