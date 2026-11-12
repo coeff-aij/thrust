@@ -65,6 +65,16 @@ fn pow2_max(q: u64) {
     }
 }
 
+/// `pow2` is positive: layout.rs's `pow2_pos`.
+#[thrust_macros::lemma]
+#[thrust_macros::variant(q)]
+#[thrust_macros::ensures(pow2(q) >= 1)]
+fn pow2_pos(q: u64) {
+    if q > 0 {
+        pow2_pos(q - 1);
+    }
+}
+
 /// `1 << q` on 64-bit words is `2^q` below 64, by induction over `q`.
 #[thrust_macros::lemma]
 #[thrust_macros::variant(q)]
@@ -255,12 +265,14 @@ fn fields_wf(fields: &[FieldLayout], dl: TargetDataLayout) -> bool {
 }
 
 /// `ts` holds each field's size and twice its alignment: the witness of layout.rs's `weight`.
+/// It also states that the size, a `u64`, is not negative: Thrust gives no range to an integer
+/// field of a slice's element.
 #[thrust_macros::predicate]
 #[thrust::opaque]
 fn weights(fields: &[FieldLayout], ts: Seq<Int>) -> bool {
     ts.len() == (*fields).len()
         && forall(|i: Int, q: USize| !(0 <= i && i < ts.len() && q == (*fields)[i].align.abi.pow2)
-            || ts[i] == pow2(q) * 2 + (*fields)[i].size.raw)
+            || (ts[i] == pow2(q) * 2 + (*fields)[i].size.raw && 0 <= (*fields)[i].size.raw))
 }
 
 /// The weights' partial sums grow with the number of fields summed.
@@ -272,6 +284,7 @@ fn weights(fields: &[FieldLayout], ts: Seq<Int>) -> bool {
 fn sum_first_mono(fields: &[FieldLayout], ts: Ghost<Seq<Int>>, k: usize, n: usize) {
     if k < n {
         sum_first_mono(fields, ts, k, n - 1);
+        pow2_pos(fields[n - 1].align.abi.pow2 as u64);
     }
 }
 
