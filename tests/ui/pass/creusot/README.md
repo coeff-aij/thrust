@@ -12,8 +12,7 @@ variants of a case whose property is weaker than Creusot's but still verifies.
 
 `range.rs`, `take.rs`, `skip.rs`, `fuse_produces.rs`, `map.rs`, `map_ext.rs` and `iter_mut.rs` are
 Creusot's code (3620de437) with only the rewrites Thrust needs (`skip.rs`'s `next` has the control
-flow of the 2022 artifact and moves `self` into a local, so that its written loop invariant can name
-`self`'s value at entry through a `FnParam` binder named `self`), without `main`, and share one file,
+flow of the 2022 artifact), without `main`, and share one file,
 `auxiliary/common.rs`, through `#[path = "auxiliary/common.rs"] mod common;`, as Creusot's cases
 share `common.rs` (the ui harness does not run files under `auxiliary/`). As in Creusot's
 `common.rs`, its `produces_refl` has no premise, where the trait block the other files repeat
@@ -103,9 +102,8 @@ gives the std function and what differs. `advance_by.rs` is the default `Iterato
 (`spec_advance_by`, core) with std's body; `advance_by_ghost.rs` writes the `is_none` test as a
 `match` and records the dropped items in a ghost sequence; `extend_desugared.rs` is
 `Vec::extend_desugared` (alloc) with `push` for the capacity handling and a ghost sequence of the
-items taken, its parameters moved into locals for the same reason as in `skip.rs`. std runs the
-`advance_by` loop only for unsized iterators; a `Sized` iterator takes a `try_fold`
-specialisation, so these two verify the fallback loop. `advance_by_ghost.rs` is kept to
+items taken. std runs the `advance_by` loop only for unsized iterators; a `Sized` iterator takes a
+`try_fold` specialisation, so these two verify the fallback loop. `advance_by_ghost.rs` is kept to
 compare an explicit ghost witness with the existential the invariant of `advance_by.rs` infers. The
 fail twins return an error one too small (`advance_by*`) or discard each item (`extend_desugared`).
 
