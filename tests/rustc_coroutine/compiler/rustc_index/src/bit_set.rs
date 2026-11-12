@@ -497,6 +497,12 @@ impl<'a, T: Idx + thrust_models::Model> IteratorSpec for BitIter<'a, T>
                 !(0 <= i && i < visited.len() && <T as Idx>::index_is(visited[i], k))
                     || (k < self.4 && self.7[k] != 0 && o.7[k] == 0))
             && forall(|k: USize| !(o.7[k] != 0) || self.7[k] != 0)
+            // No index is yielded twice: the elements of one `visited` sequence are pairwise
+            // distinct, which a sum over them (`sum_at`) needs to stay below the sum over all
+            // indices.
+            && forall(|i: USize, j: USize, k: USize|
+                !(0 <= i && i < j && j < visited.len()
+                    && <T as Idx>::index_is(visited[i], k) && <T as Idx>::index_is(visited[j], k)))
             && forall(|k: USize|
                 !(self.7[k] != 0
                     && forall(|i: USize| !(0 <= i && i < visited.len()) || !<T as Idx>::index_is(visited[i], k)))
