@@ -10,9 +10,9 @@
 // the items taken, which Creusot gives a `for` loop and `while let` has none. The contract is
 // Creusot's `extend` (`examples/iterators/08_collect_extend.rs`, 3620de437).
 // The loop's `invariant!` states everything the rest of the function needs, the parameters' values
-// at entry among it, as `old!(vec)` and `old!(iterator)`. Annotation code beside the invariant: the ghosts `old_vec`, `old_iter` and `produced`, the
-// ghost `x`, the item before it moves into the vector, and a call of the lemma `produces_refl`
-// before the loop.
+// at entry among it, as `old!(vec)` and `old!(iterator)`. Annotation code beside the invariant:
+// the ghosts `old_vec`, `old_iter` and `produced`, the ghost `x`, the item before it moves into
+// the vector, and a call of the lemma `produces_refl` before the loop.
 use thrust_models::model::{Mut, Seq};
 use thrust_models::{exists, Ghost, Model};
 
