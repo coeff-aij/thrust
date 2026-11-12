@@ -3,11 +3,12 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // Creusot's `all_zero`: every element of the vector is set to zero by a `for` loop over
-// `iter_mut`. The loop's iterator `iter` holds the vector's entry and final sequences, so the
-// invariant quantifies over the positions already passed and the postcondition over all of them;
-// `slice::IterMut` has no `IteratorSpec`, so the invariant names `iter` and not `produced`.
+// `iter_mut`. As in Creusot, the invariant states that every item produced so far ends up zero;
+// the loop's history (`inv(iter)` and `produces(iter_old, produced, iter)`) is conjoined to it.
+// The closure names `iter` with its type, which the history's ghosts take theirs from.
 use thrust_models::forall;
-use thrust_models::model::Int;
+use thrust_models::model::{Int, Seq};
+use thrust_models::{Ghost, Model};
 
 #[thrust_macros::context]
 #[thrust_macros::ensures(
@@ -17,12 +18,8 @@ use thrust_models::model::Int;
 fn all_zero(v: &mut Vec<usize>) {
     for x in v.iter_mut() {
         thrust_macros::invariant!(
-            |iter: core::slice::IterMut<'_, usize>, v: thrust_models::FnParam<&mut Vec<usize>>|
-                iter.0 == *v.at_entry()
-                    && iter.1 == !v.at_entry()
-                    && iter.1.len() == iter.0.len()
-                    && iter.2 <= iter.0.len()
-                    && forall(|j: Int| (0 <= j && j < iter.2) ==> (iter.1[j] == 0))
+            |iter: core::slice::IterMut<'_, usize>, produced: Ghost<Seq<<&mut usize as Model>::Ty>>|
+                forall(|i: Int| (0 <= i && i < produced.len()) ==> (!produced[i] == 0))
         );
         *x = 0;
     }
