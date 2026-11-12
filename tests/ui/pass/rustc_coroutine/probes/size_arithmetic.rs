@@ -272,7 +272,8 @@ fn fields_wf(fields: &[FieldLayout], dl: TargetDataLayout) -> bool {
 fn weights(fields: &[FieldLayout], ts: Seq<Int>) -> bool {
     ts.len() == (*fields).len()
         && forall(|i: Int, q: USize| !(0 <= i && i < ts.len() && q == (*fields)[i].align.abi.pow2)
-            || (ts[i] == pow2(q) * 2 + (*fields)[i].size.raw && 0 <= (*fields)[i].size.raw))
+            || ts[i] == pow2(q) * 2 + (*fields)[i].size.raw)
+        && forall(|i: Int| !(0 <= i && i < ts.len()) || 0 <= (*fields)[i].size.raw)
 }
 
 /// The weights' partial sums grow with the number of fields summed.
