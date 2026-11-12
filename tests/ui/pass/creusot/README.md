@@ -16,9 +16,8 @@ flow of the 2022 artifact), without `main`, and share one file,
 `auxiliary/common.rs`, through `#[path = "auxiliary/common.rs"] mod common;`, as Creusot's cases
 share `common.rs` (the ui harness does not run files under `auxiliary/`). As in Creusot's
 `common.rs`, its `produces_refl` has no premise. Every other file in the `produces` form repeats
-one trait block, whose `produces_refl` requires the impl's `invariant` except in
-`decuple_range.rs` (`counter_creusot.rs`'s pass test is Unsat without it), Creusot's `common.rs`
-in Thrust syntax:
+one trait block, whose `produces_refl` requires the impl's `invariant` (`counter_creusot.rs`'s
+pass test is Unsat without it), Creusot's `common.rs` in Thrust syntax:
 the predicates, the laws `produces_refl` and `produces_trans` in concatenation form (the latter
 without Creusot's invariant premises, which a Thrust loop head cannot supply for its entry state),
 `invariant` defaulting to `true`, and `next` with Creusot's contract. Each law has a default empty
@@ -40,7 +39,7 @@ with empty bodies, as Creusot does). The step-form files repeat theirs in the sa
 | `iter_mut.rs` | the current Creusot's `examples/iterators/02_iter_mut.rs` (3620de437) | `produces` over Creusot's `IterMut { inner: &mut [T] }`, whose `next` (`split_off_first_mut`) is checked, Creusot's constructor `iter_mut(v)` (`IterMut { inner: &mut v[..] }`, with its type invariant, which needs std.rs's length-keeping `IndexMut`); 02's `all_zero` client over this `IterMut` is not ported, and `all_zero.rs` states its property over std's `slice::IterMut` |
 | `collect.rs` | `common.rs` (`collect` / `FromIterator`) | `produces` |
 | `all_zero.rs` | `examples/all_zero.rs` | a `for` loop over std's `slice::IterMut` with its `next` through std.rs, the invariant over the loop's `iter` (`slice::IterMut` has no `IteratorSpec`, so no `produced`; Creusot's own `IterMut` and constructor are in `iter_mut.rs`) |
-| `decuple_range.rs` | `examples/decuple_range.rs` | `produces`, positional property, fully checked |
+| `decuple_range.rs` | `examples/decuple_range.rs` of the 2022 artifact | `produces`, positional property, fully checked: the artifact's code over std's `Range<u32>`, with `counter_creusot.rs`'s `MapInv` and the artifact's `proof_assert!` |
 | `skip_take.rs` | `skip_take` of `examples/iterators/03_std_iterators.rs` (3620de437) | Creusot's client over std's `take` and `skip` through std.rs's `IteratorSpec`, generic in `I`, with Creusot's `proof_assert!` |
 | `counter.rs` | `examples/counter.rs` | `step` + a unary `next_item` guard, `MapInv`'s ghost history |
 | `counter_creusot.rs` | the current Creusot's `counter` in `examples/iterators/03_std_iterators.rs` (3620de437) | `produces` with Creusot's property over `v.iter()` of a `Vec<u32>` (`x == v`, `cnt == x.len()`), the closure's postconditions (the step and the history fact) written where Creusot takes its contract from the body, its precondition inferred, std's `slice::Iter` through its std.rs model, `MapInv` over an `FnMut` closure whose states are related by `hist_inv!` (Creusot's `hist_inv`), as in creusot-std's `std/iter/map_inv.rs` |
