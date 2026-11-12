@@ -6,10 +6,11 @@ use thrust_models::model::{Closure, Mut};
 use thrust_models::model::{Int, Seq};
 use thrust_models::Model;
 
-// std's `Iterator::fold` (its body as std writes it), generic in the iterator, the accumulator `B`
-// and an `FnMut` closure, with a specification in the form of Creusot's `Map` (`map.rs`): the
-// closure states `fs` and the accumulators `accs` along the produced items `s` form a chain in
-// which each step is a call's postcondition, and the closure may be called at every state the
+// std's `Iterator::fold` (its body as std writes it, `mut self` as the parameter `mut iter`, with
+// the ghosts of the chain and a call of the lemma `fold_chain_push` beside it), generic in the
+// iterator, the accumulator `B` and an `FnMut` closure, with a specification in the form of
+// Creusot's `Map` (`map.rs`): the closure states `fs` and the accumulators `accs` along the produced
+// items `s` form a chain in which each step is a call's postcondition, and the closure may be called at every state the
 // chain reaches. The result is the chain's last accumulator once the iterator is completed. The
 // specification says nothing of the client's property; `main` derives it from the chain.
 // Creusot's `common.rs`, the iterator specification every case shares: the trait predicates
@@ -149,7 +150,7 @@ where
     fold_chain::<I, B, F>(iter, init, f, s, it, accs, fs)
         && accs[s.len()] == result
         && I::completed(Mut::new(it, it2))))]
-fn fold<I, B, F>(iter: I, init: B, f: F) -> B
+fn fold<I, B, F>(mut iter: I, init: B, mut f: F) -> B
 where
     I: Iterator + Model,
     B: Model,
@@ -159,46 +160,36 @@ where
     <<I as Iterator>::Item as Model>::Ty: Model<Ty = <<I as Iterator>::Item as Model>::Ty>,
     <B as Model>::Ty: Model<Ty = <B as Model>::Ty>,
 {
-    let mut it = iter;
     let mut accum = init;
-    let mut g = f;
-    I::produces_refl(&it);
+    I::produces_refl(&iter);
     // The chain so far: the produced items, the accumulators and the closure states.
     let mut gs = thrust_macros::ghost!(|| -> Seq<<<I as Iterator>::Item as Model>::Ty> { Seq::empty() });
     let mut gaccs = thrust_macros::ghost!(|accum: B| -> Seq<<B as Model>::Ty> { Seq::singleton(accum) });
-    let mut gfs = thrust_macros::ghost!(|g: F| -> Seq<Closure<F>> { Seq::singleton(g) });
-    loop {
+    let mut gfs = thrust_macros::ghost!(|f: F| -> Seq<Closure<F>> { Seq::singleton(f) });
+    while let Some(x) = iter.next() {
         thrust_macros::invariant!(
-            |it: I, accum: B, g: F, gs: thrust_models::Ghost<Seq<<<I as Iterator>::Item as Model>::Ty>>, gaccs: thrust_models::Ghost<Seq<<B as Model>::Ty>>, gfs: thrust_models::Ghost<Seq<Closure<F>>>, iter: thrust_models::FnParam<I>, init: thrust_models::FnParam<B>, f: thrust_models::FnParam<F>|
-            I::invariant(it)
+            |iter: I, accum: B, f: F, gs: thrust_models::Ghost<Seq<<<I as Iterator>::Item as Model>::Ty>>, gaccs: thrust_models::Ghost<Seq<<B as Model>::Ty>>, gfs: thrust_models::Ghost<Seq<Closure<F>>>, old!(iter): I, old!(init): B, old!(f): F|
+            I::invariant(iter)
                 && forall(|s: Seq<<<I as Iterator>::Item as Model>::Ty>, it1: <I as Model>::Ty, accs: Seq<<B as Model>::Ty>, fs: Seq<Closure<F>>, x: <<I as Iterator>::Item as Model>::Ty, it2: <I as Model>::Ty|
-                    !(fold_chain::<I, B, F>(iter.at_entry(), init.at_entry(), f.at_entry(), s, it1, accs, fs) && I::produces(it1, Seq::singleton(x), it2))
+                    !(fold_chain::<I, B, F>(old!(iter), old!(init), old!(f), s, it1, accs, fs) && I::produces(it1, Seq::singleton(x), it2))
                         || thrust_macros::pre!(fs[s.len()](accs[s.len()], x)))
-                && fold_chain::<I, B, F>(iter.at_entry(), init.at_entry(), f.at_entry(), gs, it, gaccs, gfs)
+                && fold_chain::<I, B, F>(old!(iter), old!(init), old!(f), gs, iter, gaccs, gfs)
                 && gaccs[gs.len()] == accum
-                && gfs[gs.len()] == g
+                && gfs[gs.len()] == f
         );
-        match it.next() {
-            None => {
-                // Keeps the chain live at the loop header.
-                let _live = (&gs, &gaccs, &gfs);
-                return accum;
-            }
-            Some(x) => {
-                let gx = thrust_macros::ghost!(|x: <I as Iterator>::Item| -> <I as Iterator>::Item { x });
-                accum = g(accum, x);
-                fold_chain_push::<I, B, F>();
-                let ngs = thrust_macros::ghost!(|gs: thrust_models::Ghost<Seq<<<I as Iterator>::Item as Model>::Ty>>, gx: thrust_models::Ghost<<I as Iterator>::Item>| -> Seq<<<I as Iterator>::Item as Model>::Ty> { gs.push(gx) });
-                let ngaccs = thrust_macros::ghost!(|gaccs: thrust_models::Ghost<Seq<<B as Model>::Ty>>, accum: B| -> Seq<<B as Model>::Ty> { gaccs.push(accum) });
-                let ngfs = thrust_macros::ghost!(|gfs: thrust_models::Ghost<Seq<Closure<F>>>, g: F| -> Seq<Closure<F>> { gfs.push(g) });
-                // Keeps the previous chain live at the snapshots above.
-                let _live = (&gs, &gaccs, &gfs, &gx);
-                gs = ngs;
-                gaccs = ngaccs;
-                gfs = ngfs;
-            }
-        }
+        let gx = thrust_macros::ghost!(|x: <I as Iterator>::Item| -> <I as Iterator>::Item { x });
+        accum = f(accum, x);
+        fold_chain_push::<I, B, F>();
+        let ngs = thrust_macros::ghost!(|gs: thrust_models::Ghost<Seq<<<I as Iterator>::Item as Model>::Ty>>, gx: thrust_models::Ghost<<I as Iterator>::Item>| -> Seq<<<I as Iterator>::Item as Model>::Ty> { gs.push(gx) });
+        let ngaccs = thrust_macros::ghost!(|gaccs: thrust_models::Ghost<Seq<<B as Model>::Ty>>, accum: B| -> Seq<<B as Model>::Ty> { gaccs.push(accum) });
+        let ngfs = thrust_macros::ghost!(|gfs: thrust_models::Ghost<Seq<Closure<F>>>, f: F| -> Seq<Closure<F>> { gfs.push(f) });
+        // Keeps the previous chain live at the snapshots above.
+        let _live = (&gs, &gaccs, &gfs, &gx);
+        gs = ngs;
+        gaccs = ngaccs;
+        gfs = ngfs;
     }
+    accum
 }
 
 fn main() {
