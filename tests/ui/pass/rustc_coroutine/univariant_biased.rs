@@ -8,8 +8,8 @@
 // rustc_abi's layout.rs, against the contract `univariant` relies on.
 // The code is the module tree under tests/rustc_coroutine/; this file selects the stage.
 // It also selects the fallback's wrappers in thrust/iter.rs (`map_new_assumed`) and
-// thrust/assumed_requires.rs, so that their bodies are checked, and
-// `univariant_biased_finish`; `univariant_biased_place` (the `place_fields` call, the size check and
+// thrust/assumed_requires.rs, so that their bodies are checked, `univariant_biased_finish`,
+// `as_local` and `iter_enumerated_trusted` of thrust/iter.rs; `univariant_biased_place` (the `place_fields` call, the size check and
 // the `Ok`) is trusted on its contract.
 // Each goal of the functions marked `#[thrust::split_goals]` is solved with the clauses it depends
 // on, the other goals in their classes.
