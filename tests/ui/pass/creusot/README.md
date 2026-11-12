@@ -16,8 +16,9 @@ flow of the 2022 artifact and moves `self` into a local, so that its written loo
 `self`'s value at entry through a `FnParam` binder named `self`), without `main`, and share one file,
 `auxiliary/common.rs`, through `#[path = "auxiliary/common.rs"] mod common;`, as Creusot's cases
 share `common.rs` (the ui harness does not run files under `auxiliary/`). As in Creusot's
-`common.rs`, its `produces_refl` has no premise, where the trait block the other files repeat
-requires the impl's `invariant`. Every other file in the
+`common.rs`, its `produces_refl` has no premise, as in `decuple_range.rs`, where the trait block
+the other files repeat requires the impl's `invariant` (`counter_creusot.rs`'s pass test is Unsat
+without it). Every other file in the
 `produces` form repeats one trait block, Creusot's `common.rs` in Thrust syntax:
 the predicates, the laws `produces_refl` and `produces_trans` in concatenation form (the latter
 without Creusot's invariant premises, which a Thrust loop head cannot supply for its entry state),

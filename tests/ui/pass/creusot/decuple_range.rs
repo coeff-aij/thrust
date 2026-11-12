@@ -31,7 +31,6 @@ where
     fn completed(&mut self) -> bool;
 
     #[thrust_macros::law]
-    #[thrust_macros::requires(Self::invariant(*a))]
     #[thrust_macros::ensures(Self::produces(*a, Seq::empty(), *a))]
     fn produces_refl(a: &Self) {}
 
