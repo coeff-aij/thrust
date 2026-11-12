@@ -204,10 +204,10 @@ where
 fn main() {
     let c = thrust_macros::closure!(
         requires(a >= 0),
-        ensures(result >= 0),
+        ensures(result >= a && result >= x && (result == a || result == x)),
         |a: isize, x: isize| -> isize { if x > a { x } else { a } },
     );
     let r = fold(Range { start: 0, end: 10 }, 0, c);
     // Unsat: the running maximum over 0..10 is 9.
-    assert!(r >= 10);
+    assert!(r == 10);
 }

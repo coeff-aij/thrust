@@ -216,10 +216,10 @@ where
 fn main() {
     let c = thrust_macros::closure!(
         requires(a >= 0),
-        ensures(forall(|r: ISize| !(result == Some(r)) || r >= 0)),
+        ensures(exists(|r: ISize| result == Some(r) && r >= a && r >= x && (r == a || r == x))),
         |a: isize, x: isize| -> Option<isize> { if x > a { Some(x) } else { Some(a) } },
     );
     let mut it = Range { start: 0, end: 10 };
     let r = try_fold(&mut it, 0, c);
-    assert!(match r { Some(v) => v >= 0, None => true });
+    assert!(r == Some(9));
 }

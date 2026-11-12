@@ -89,9 +89,11 @@ fixed to `Option<B>`, needing `THRUST_TRY_SPECS=1`), specified in the forms of C
 (`map.rs`) and `MapInv` (`map_ext.rs`, the closure also receiving the ghost history of the items
 before the current one): the closure states and accumulators along the produced items form a chain
 of call postconditions, held in ghost variables across the loop, and the closure may be called at
-every state the chain reaches. Each client derives its bound from the chain. The fail twins of
-`fold_map.rs`, `fold_mapinv.rs`, `try_fold_map.rs` and `try_fold_mapinv.rs` assert a bound the
-result does not reach (the running maximum over `0..10` is 9). The pass side of `try_fold_mapinv.rs` is ignored while the solver gives no
+every state the chain reaches. Each client folds the running maximum over `0..10` and derives a
+property of the result from the chain. In `fold_map.rs` and `try_fold_map.rs` the closure's
+postcondition says the result is the larger of its arguments, and the client asserts the result is
+9 (`Some(9)`); in `fold_mapinv.rs` and `try_fold_mapinv.rs` it says the result is non-negative, and
+the client asserts that bound. The fail twins assert a value the result does not take (10). The pass side of `try_fold_mapinv.rs` is ignored while the solver gives no
 answer at 300 s.
 
 `generic/std/advance_by.rs`, `advance_by_ghost.rs` and `extend_desugared.rs` are std's loops over
