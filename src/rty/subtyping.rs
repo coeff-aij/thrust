@@ -333,7 +333,10 @@ where
                 facts.push_conj(atom.into());
             }
         }
-        (Type::Seq(got), Type::Seq(expected)) if !fits(&got.ty, &expected.ty) => {
+        (Type::Seq(got), Type::Seq(expected))
+            if !fits(&got.ty, &expected.ty)
+                && !both_unsigned_without_range(&got.ty, &expected.ty) =>
+        {
             if let Some(range) = super::seq_elem_range(&expected.ty, value()) {
                 facts.push_conj(range.into());
             }
@@ -512,6 +515,13 @@ pub fn relate_refining_function_type(
 }
 
 /// Whether every value of the integer type `got` is in the range of the integer type `expected`.
+/// Whether an unsigned value enters an unsigned type with no range in use, so it is already `>= 0`
+/// and there is nothing to check.
+fn both_unsigned_without_range<T, U>(got: &Type<T>, expected: &Type<U>) -> bool {
+    super::int_range_mode() == super::IntRange::Off
+        && matches!((got, expected), (Type::UInt(_), Type::UInt(_)))
+}
+
 fn fits<T, U>(got: &Type<T>, expected: &Type<U>) -> bool {
     match (got, expected) {
         (Type::UInt(Some(got)), Type::UInt(Some(expected))) => got <= expected,

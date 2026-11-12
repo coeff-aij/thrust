@@ -1414,18 +1414,13 @@ where
     Some(bounds.lower.into_iter().chain(bounds.upper).collect())
 }
 
-/// The range of a value `x` of the integer type `ty` as a formula, when [`int_range`] is in use for
-/// `ty`; `None` otherwise.
+/// The range of a value `x` of the integer type `ty` as a formula ([`int_range_atoms`]: `0 <=` of an
+/// unsigned type in every mode, and the bounds of [`int_range`] when they are in use); `None` when
+/// there are none.
 pub fn int_range_formula<T, V>(ty: &Type<T>, x: chc::Term<V>) -> Option<chc::Formula<V>>
 where
     V: Clone,
 {
-    let (signed, width) = match ty {
-        Type::Int(width) => (true, *width),
-        Type::UInt(width) => (false, *width),
-        _ => return None,
-    };
-    int_range(signed, width)?;
     int_range_atoms(ty, x)?
         .into_iter()
         .map(chc::Formula::Atom)
@@ -1492,18 +1487,45 @@ fn seq_elem_var() -> chc::UserQuantifiedVarId {
     chc::UserQuantifiedVarId::from_u32(0xFFFF_0000)
 }
 
+/// The facts [`int_range_atoms`] states of the integers a sequence's element `value` of type `ty`
+/// holds through tuples (a struct's fields among them) and pointers; `None` when there are none.
+fn elem_range<T, V>(ty: &Type<T>, value: chc::Term<V>) -> Option<chc::Formula<V>>
+where
+    V: Clone,
+{
+    let parts: Vec<chc::Formula<V>> = match ty {
+        Type::Int(_) | Type::UInt(_) => int_range_atoms(ty, value)?
+            .into_iter()
+            .map(chc::Formula::Atom)
+            .collect(),
+        Type::Tuple(tuple) => tuple
+            .elems
+            .iter()
+            .enumerate()
+            .filter_map(|(index, elem)| elem_range(&elem.ty, value.clone().tuple_proj(index)))
+            .collect(),
+        Type::Pointer(pointer) => [
+            elem_range(&pointer.elem.ty, pointer.kind.deref_term(value.clone())),
+            pointer
+                .is_mut()
+                .then(|| elem_range(&pointer.elem.ty, value.mut_final()))
+                .flatten(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect(),
+        _ => return None,
+    };
+    parts.into_iter().reduce(chc::Formula::and)
+}
+
 /// `forall i. 0 <= i < len(seq) => range(seq[i])` of a sequence whose element type `elem` is an
-/// integer type with a width whose range is in use ([`int_range`]); `None` otherwise.
+/// integer type with facts ([`int_range_atoms`]: `0 <=` of an unsigned type in every mode); `None`
+/// otherwise.
 pub fn seq_elem_range<T, V>(elem: &Type<T>, seq: chc::Term<V>) -> Option<chc::Formula<V>>
 where
     V: Clone,
 {
-    let (signed, width) = match elem {
-        Type::Int(width) => (true, *width),
-        Type::UInt(width) => (false, *width),
-        _ => return None,
-    };
-    int_range(signed, width)?;
     let i = chc::Term::UserQuantifiedVar(chc::Sort::int(), seq_elem_var());
     let in_bounds = chc::Formula::Atom(chc::Atom::new(
         chc::KnownPred::GREATER_THAN_OR_EQUAL.into(),
@@ -1513,10 +1535,7 @@ where
         chc::KnownPred::LESS_THAN.into(),
         vec![i.clone(), seq.clone().seq_len()],
     )));
-    let range = int_range_atoms(elem, seq.seq_nth(i))?
-        .into_iter()
-        .map(chc::Formula::Atom)
-        .reduce(chc::Formula::and)?;
+    let range = elem_range(elem, seq.seq_nth(i))?;
     Some(chc::Formula::forall(
         vec![(seq_elem_var(), chc::Sort::int())],
         in_bounds.implies(range),
