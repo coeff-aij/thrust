@@ -4,6 +4,7 @@ use proc_macro2::{TokenStream as TokenStream2, TokenTree as TokenTree2};
 mod apit;
 mod closure;
 mod context;
+mod entry_value;
 mod fn_outer_item;
 mod for_loop;
 mod formula;

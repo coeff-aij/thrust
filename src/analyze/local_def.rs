@@ -1913,7 +1913,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// loop-carried one. The receiver participates under the name `self`, the name
     /// its debug info carries; the lifted formula function spells it
     /// `__thrust_self`, which [`analyze::annot_fn::lifted_param_source_name`] maps
-    /// back before the lookup.
+    /// back before the lookup. A parameter written `old!(x)` (lifted as `__thrust_old_x`,
+    /// [`analyze::annot_fn::entry_value_param_name`]) stands for the entry value of the
+    /// parameter `x` as well, with `x`'s own type, so that the formula can also name `x`'s
+    /// loop-carried value.
     ///
     /// The history of a `for` loop (`InvariantMarker::ForLoopHistory`) names the loop's ghosts,
     /// which have the same names in every loop; they are resolved in the scope of the marker
@@ -1959,7 +1962,30 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
             let name = analyze::annot_fn::lifted_param_source_name(ident);
 
-            if self.is_fn_param_wrapper(input_ty) {
+            if let Some(param_name) = analyze::annot_fn::entry_value_param_name(ident) {
+                tracing::debug!("entry value: {param_name}");
+                let local = self
+                    .function_param_local_of_name(param_name)
+                    .unwrap_or_else(|| {
+                        self.tcx.dcx().span_fatal(
+                            ident.span,
+                            format!(
+                            "loop invariant refers to `old!({param_name})`, but `{param_name}` \
+                             is not a parameter of the function"
+                        ),
+                        )
+                    });
+                self.check_invariant_param_ty(
+                    ident.span,
+                    rustc_span::Symbol::intern(&format!("old!({param_name})")),
+                    written_ty,
+                    &written_text,
+                    local,
+                    format!("the function parameter `{param_name}`"),
+                );
+                let param_idx = crate::analyze::function_param_of_local(local);
+                mapping.push(bty.param_of_outer_fn_param(param_idx).unwrap());
+            } else if self.is_fn_param_wrapper(input_ty) {
                 tracing::debug!("fn_param_local: {input_ty:?}");
                 let local = self.function_param_local_of_name(name).unwrap_or_else(|| {
                     self.tcx.dcx().fatal(format!(
@@ -2117,8 +2143,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     }
 
     /// The names of the variables the formula of a call of `formula_read_call` reads, leaving
-    /// out the function parameters a loop invariant names through `FnParam`, which are read at
-    /// the function's entry; `None` for any other call.
+    /// out the function parameters a loop invariant names through `FnParam` or `old!`, which are
+    /// read at the function's entry; `None` for any other call.
     fn ghost_term_reads(
         &self,
         func: &mir::Operand<'tcx>,
@@ -2142,10 +2168,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .zip(inputs)
             .skip(first_named_param)
             .filter(|(_, ty)| !self.is_fn_param_wrapper(self.lifted_param_ty(formula_def_id, **ty)))
-            .map(|(ident, _)| {
-                let ident = ident.expect("formula parameters must be named");
-                analyze::annot_fn::lifted_param_source_name(ident)
-            })
+            .map(|(ident, _)| ident.expect("formula parameters must be named"))
+            .filter(|ident| analyze::annot_fn::entry_value_param_name(*ident).is_none())
+            .map(analyze::annot_fn::lifted_param_source_name)
             .collect();
         Some(names)
     }
