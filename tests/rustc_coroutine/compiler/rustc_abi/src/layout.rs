@@ -1209,9 +1209,8 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
             // Rewrite (rewrites.md R8): `Filter::new(it, p)` for `it.filter(p)`.
             // Fallback: `Filter::new` and `next` with their preconditions
             // assumed; restore `Filter::new` and `next` once the solver answers them.
-            // Fallback: `iter_enumerated` through the trusted
-            // `iter_enumerated_trusted` of thrust/iter.rs; restore `fields.iter_enumerated()` once
-            // the solver answers its body's goal at this call.
+            // Rewrite: `iter_enumerated` through `iter_enumerated_trusted` of thrust/iter.rs, whose
+            // contract states the iterator's start and whose body the root checks.
             let mut non_zst_fields = crate::case_study::assumed_requires::filter_new_assumed(crate::case_study::iter::iter_enumerated_trusted(fields), thrust_macros::closure!(
                 requires(true),
                 ensures(true),
