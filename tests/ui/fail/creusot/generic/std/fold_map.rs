@@ -8,9 +8,9 @@ use thrust_models::Model;
 
 // std's `Iterator::fold` (its body as std writes it, `mut self` as the parameter `mut iter`, with
 // the ghosts of the chain and a call of the lemma `fold_chain_push` beside it), generic in the
-// iterator, the accumulator `B` and an `FnMut` closure, with a specification in the form of Creusot's `Map` (`map.rs`): the
-// closure states `fs` and the accumulators `accs` along the produced items `s` form a chain in
-// which each step is a call's postcondition, and the closure may be called at every state the
+// iterator, the accumulator `B` and an `FnMut` closure, with a specification in the form of
+// Creusot's `Map` (`map.rs`): the closure states `fs` and the accumulators `accs` along the produced
+// items `s` form a chain in which each step is a call's postcondition, and the closure may be called at every state the
 // chain reaches. The result is the chain's last accumulator once the iterator is completed. The
 // specification says nothing of the client's property; `main` derives it from the chain.
 // Creusot's `common.rs`, the iterator specification every case shares: the trait predicates
