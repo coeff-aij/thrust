@@ -5,10 +5,12 @@
 // Creusot's code and Thrust's annotations, except that `next` has the control flow of the 2022
 // artifact's `iterators/skip.rs` (`if n == 0 || r.is_none() { return r; } n -= 1`), and the ghost
 // `skipped` updated after the check by a formula `match` on `r`, so that `next`'s executable code
-// is the artifact's. `invariant` states the inner iterator's, which Creusot
-// carries as the type invariant of the field. The loop states Creusot's invariants over the ghost
-// `skipped` as a `partial_invariant!`: what Creusot keeps of the variables the loop does not
-// change (`old_self`, `self.n`, the final value of `self`) is inferred. Creusot's third invariant
+// is the artifact's, apart from moving `self` into `s` first (below). `invariant` states the inner
+// iterator's, which Creusot carries as the type invariant of the field. The loop's `invariant!`
+// states Creusot's invariants over the ghost `skipped` and what Creusot keeps without writing it:
+// `self.n` stays 0, the inner iterator's `invariant`, and `self`'s final value and `old_self` equal
+// to those of the parameter at entry, which only a `FnParam` binder named `self` can name; the
+// loop therefore uses `s`, the `&mut` moved out of `self`. Creusot's third invariant
 // and the `resolve` of the skipped items in `completed` and `produces` have no counterpart: Thrust
 // has no `resolve` predicate (fork issue #156).
 use thrust_models::model::{Mut, Seq};
@@ -59,16 +61,21 @@ where
     }
 
     fn next(&mut self) -> Option<I::Item> {
-        let old_self = thrust_macros::ghost!(|self: &mut Self| -> Self { *self });
-        let mut n = std::mem::take(&mut self.n);
+        let s = self;
+        let old_self = thrust_macros::ghost!(|s: &mut Self| -> Self { *s });
+        let mut n = std::mem::take(&mut s.n);
         let mut skipped = thrust_macros::ghost!(|| -> Seq<<<I as Iterator>::Item as Model>::Ty> { Seq::empty() });
         loop {
-            thrust_macros::partial_invariant!(
-                |self: &mut Self, n: usize, old_self: Ghost<Self>, skipped: Ghost<Seq<<<I as Iterator>::Item as Model>::Ty>>|
+            thrust_macros::invariant!(
+                |s: &mut Self, n: usize, old_self: Ghost<Self>, skipped: Ghost<Seq<<<I as Iterator>::Item as Model>::Ty>>, self: thrust_models::FnParam<&mut Self>|
                     skipped.len() + n == old_self.n
-                        && I::produces(old_self.iter, skipped, (*self).iter)
+                        && I::produces(old_self.iter, skipped, (*s).iter)
+                        && (*s).n == 0
+                        && I::invariant((*s).iter)
+                        && !s == !self.at_entry()
+                        && old_self == *self.at_entry()
             );
-            let r = self.iter.next();
+            let r = s.iter.next();
             // Unsat: one item fewer is skipped.
             if n <= 1 || r.is_none() {
                 return r;
