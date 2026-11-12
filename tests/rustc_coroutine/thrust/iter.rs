@@ -666,10 +666,9 @@ where
     Map::new(iter, func)
 }
 
-// `IndexSlice::iter_enumerated`, trusted on its contract (a goal of `univariant_biased` the solver does not answer: the
-// solver does not answer the `requires` of `I::new(len)` in its body at that call). The contract
-// is what the body does: it builds `I::new(len)`, and starts at position 0 of the slice.
-#[thrust::trusted]
+// `IndexSlice::iter_enumerated` with a contract of its own, for `univariant_biased`: the contract
+// is what the body does (it builds `I::new(len)` and starts at position 0 of the slice), and the
+// root that calls it checks the body against it.
 #[thrust_macros::context]
 #[thrust_macros::requires(<I as Idx>::can_new((*s).len()))]
 #[thrust_macros::ensures(result.0 == s && result.1 == 0)]
