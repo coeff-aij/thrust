@@ -81,7 +81,6 @@ where
     fn collect<B: FromIterator<Self::Item>>(&mut self) -> B
     where
         Self: Sized,
-        <Self as Model>::Ty: PartialEq,
         <Self::Item as Model>::Ty: Model<Ty = <Self::Item as Model>::Ty>,
     {
         B::from_iter(self)
@@ -103,12 +102,12 @@ impl<I: Model, A, F> Model for Map<I, A, F> {
 impl<I, A, B, F> Map<I, A, F>
 where
     I: Iterator + Model,
-    A: Model<Ty = A> + PartialEq,
+    A: Model<Ty = A>,
     B: Model,
     F: FnMut(I::Item, Ghost<Seq<A>>) -> B,
     <I as Iterator>::Item: Model<Ty = A>,
-    <I as Model>::Ty: Model<Ty = <I as Model>::Ty> + PartialEq,
-    <B as Model>::Ty: Model<Ty = <B as Model>::Ty> + PartialEq,
+    <I as Model>::Ty: Model<Ty = <I as Model>::Ty>,
+    <B as Model>::Ty: Model<Ty = <B as Model>::Ty>,
 {
     #[thrust_macros::predicate]
     fn next_precondition(iter: I, func: F, produced: Seq<A>) -> bool {
@@ -130,7 +129,6 @@ where
         forall(|b: <B as Model>::Ty|
             !(thrust_macros::hist_inv!(func, f1)
                 && I::produces(iter, s.push(e1).push(e2), i)
-                && thrust_macros::pre!(f1(e1, produced.concat(s)))
                 && thrust_macros::post!(Mut::new(f1, f2)(e1, produced.concat(s)), b))
                 || thrust_macros::pre!(f2(e2, produced.concat(s).push(e1))))))))))
     }
@@ -261,12 +259,12 @@ where
 impl<I, A, B, F> Iterator for Map<I, A, F>
 where
     I: Iterator + Model,
-    A: Model<Ty = A> + PartialEq,
+    A: Model<Ty = A>,
     B: Model,
     F: FnMut(I::Item, Ghost<Seq<A>>) -> B,
     <I as Iterator>::Item: Model<Ty = A>,
-    <I as Model>::Ty: Model<Ty = <I as Model>::Ty> + PartialEq,
-    <B as Model>::Ty: Model<Ty = <B as Model>::Ty> + PartialEq,
+    <I as Model>::Ty: Model<Ty = <I as Model>::Ty>,
+    <B as Model>::Ty: Model<Ty = <B as Model>::Ty>,
 {
     type Item = B;
 
@@ -374,9 +372,7 @@ where
     #[thrust_macros::requires(I::invariant(*iter))]
     #[thrust_macros::ensures(exists(|pre: <I as Model>::Ty|
         I::produces(*iter, result, pre) && I::completed(Mut::new(pre, !iter))))]
-    fn from_iter<I: Iterator<Item = A> + Model>(iter: &mut I) -> Self
-    where
-        <I as Model>::Ty: PartialEq;
+    fn from_iter<I: Iterator<Item = A> + Model>(iter: &mut I) -> Self;
 }
 
 #[thrust_macros::context]

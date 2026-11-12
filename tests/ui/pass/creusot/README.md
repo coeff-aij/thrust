@@ -15,9 +15,10 @@ Creusot's code (3620de437) with only the rewrites Thrust needs (`skip.rs`'s `nex
 flow of the 2022 artifact), without `main`, and share one file,
 `auxiliary/common.rs`, through `#[path = "auxiliary/common.rs"] mod common;`, as Creusot's cases
 share `common.rs` (the ui harness does not run files under `auxiliary/`). As in Creusot's
-`common.rs`, its `produces_refl` has no premise, where the trait block the other files repeat
-requires the impl's `invariant`. Every other file in the
-`produces` form repeats one trait block, Creusot's `common.rs` in Thrust syntax:
+`common.rs`, its `produces_refl` has no premise. Every other file in the `produces` form repeats
+one trait block, whose `produces_refl` requires the impl's `invariant` except in
+`decuple_range.rs` (`counter_creusot.rs`'s pass test is Unsat without it), Creusot's `common.rs`
+in Thrust syntax:
 the predicates, the laws `produces_refl` and `produces_trans` in concatenation form (the latter
 without Creusot's invariant premises, which a Thrust loop head cannot supply for its entry state),
 `invariant` defaulting to `true`, and `next` with Creusot's contract. Each law has a default empty
