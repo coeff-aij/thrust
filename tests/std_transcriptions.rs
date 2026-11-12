@@ -4,10 +4,22 @@
 //! ``// std: library/<path>, `<impl header>`, `<signature>` ``. The test finds that impl in the
 //! `rust-src` component of the pinned toolchain, the function with that signature inside it, and
 //! checks that its body is the transcription's: comments dropped, whitespace collapsed, and std's
-//! parameters (`self` included) named as the transcription names them, in order. The fail twins
+//! parameters (`self` included) named as the transcription names them, in order. The
+//! transcription's ghost statements are dropped first: a statement that is a call of one of
+//! `GHOST_MACROS`, alone or bound or assigned to a name (a loop invariant, a ghost value, an
+//! assertion), which evaluates nothing of the program, as Creusot and Verus erase ghost code. The fail twins
 //! break a body on purpose and are not read. No solver is involved.
 
 use std::path::{Path, PathBuf};
+
+/// The `thrust_macros` macros whose calls only the analysis reads: they evaluate nothing of the
+/// program (`proof!` evaluates its arguments and is not one of them).
+const GHOST_MACROS: &[&str] = &[
+    "invariant!",
+    "partial_invariant!",
+    "ghost!",
+    "proof_assert!",
+];
 
 fn rust_src() -> PathBuf {
     let out = std::process::Command::new("rustc")
@@ -212,6 +224,97 @@ fn std_body(source: &str, impl_header: &str, signature: &str) -> Result<String, 
     Ok(block_at(impl_body, fn_at).0.to_string())
 }
 
+/// `body` without its ghost statements: each statement that is a call `thrust_macros::<m>(..)` of
+/// a macro `m` of `GHOST_MACROS`, alone or as the value of `let [mut] <name> [: <type>] =` or
+/// `<name> =`, through its `;`. A call in any other position is kept, so that the comparison with
+/// std's body fails. `body` has no comments.
+fn erase_ghost(body: &str) -> String {
+    let mut out = String::new();
+    let mut rest = body;
+    while let Some(at) = rest.find("thrust_macros::") {
+        let start = rest[..at].rfind([';', '{', '}']).map_or(0, |i| i + 1);
+        match ghost_statement_len(&rest[at..]) {
+            Some(len) if is_binding(&rest[start..at]) => {
+                out.push_str(&rest[..start]);
+                rest = &rest[at + len..];
+            }
+            _ => {
+                let kept = at + "thrust_macros::".len();
+                out.push_str(&rest[..kept]);
+                rest = &rest[kept..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Whether `prefix`, the text of a statement before a macro call, is empty, `let [mut] <name>
+/// [: <type>] =` or `<name> =`.
+fn is_binding(prefix: &str) -> bool {
+    let prefix = prefix.trim();
+    if prefix.is_empty() {
+        return true;
+    }
+    let Some(target) = prefix.strip_suffix('=') else {
+        return false;
+    };
+    let target = target.trim();
+    let target = match target.strip_prefix("let ") {
+        Some(binding) => binding.split(':').next().unwrap().trim(),
+        None => target,
+    };
+    let name = target.strip_prefix("mut ").unwrap_or(target).trim();
+    !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_')
+}
+
+/// The length of the statement `call` starts with, if `call` is `thrust_macros::<m>!(..)` of a
+/// macro of `GHOST_MACROS` followed by `;`: through its balanced parentheses, string literals
+/// skipped, and the `;`.
+fn ghost_statement_len(call: &str) -> Option<usize> {
+    let name = &call["thrust_macros::".len()..];
+    let macro_name = GHOST_MACROS.iter().find(|m| name.starts_with(*m))?;
+    let open = "thrust_macros::".len() + macro_name.len();
+    if !call[open..].starts_with('(') {
+        return None;
+    }
+    let close = open + matching_paren(&call[open..])?;
+    let after = &call[close + 1..];
+    let semicolon = after.find(';')?;
+    after[..semicolon]
+        .trim()
+        .is_empty()
+        .then_some(close + 1 + semicolon + 1)
+}
+
+/// The index of the `)` that closes the `(` `text` starts with, string literals skipped.
+fn matching_paren(text: &str) -> Option<usize> {
+    let mut depth = 0;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (i, c) in text.char_indices() {
+        if in_string {
+            match (escaped, c) {
+                (true, _) => escaped = false,
+                (false, '\\') => escaped = true,
+                (false, '"') => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+        match c {
+            '"' => in_string = true,
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            _ => continue,
+        }
+        if depth == 0 {
+            return Some(i);
+        }
+    }
+    None
+}
+
 fn check(t: &Transcription, rust_src: &Path) -> Result<(), String> {
     let source =
         std::fs::read_to_string(rust_src.join(&t.path)).map_err(|e| format!("{}: {e}", t.path))?;
@@ -220,7 +323,7 @@ fn check(t: &Transcription, rust_src: &Path) -> Result<(), String> {
         .into_iter()
         .zip(param_names(&t.copy_signature))
         .collect();
-    if collapsed(&renamed(&body, &renames)) != collapsed(&t.copy_body) {
+    if collapsed(&renamed(&body, &renames)) != collapsed(&erase_ghost(&t.copy_body)) {
         return Err(format!("the body of `{}` is not std's", t.name));
     }
     Ok(())
@@ -244,6 +347,30 @@ fn transcriptions_are_std_bodies() {
     }
     assert!(checked > 0, "no transcription under {}", dir.display());
     assert!(errors.is_empty(), "{}", errors.join("\n"));
+}
+
+#[test]
+fn erase_ghost_keeps_executable_code() {
+    let body = "let mut s = thrust_macros::ghost!(|| -> Seq<Int> { Seq::empty() }); \
+        while let Some(x) = it.next() { thrust_macros::invariant!(|s: Ghost<Seq<Int>>| (s.len() >= 0)); \
+        let c = thrust_macros::closure!(|y: i64| -> i64 { y }); \
+        s = thrust_macros::ghost!(|s: Ghost<Seq<Int>>| -> Seq<Int> { s }); } true";
+    assert_eq!(
+        collapsed(&erase_ghost(body)),
+        "while let Some(x) = it.next() { let c = thrust_macros::closure!(|y: i64| -> i64 { y }); } true"
+    );
+}
+
+#[test]
+fn erase_ghost_keeps_calls_inside_expressions() {
+    let body = "let g = (it.next(), thrust_macros::ghost!(|| -> Int { 0 })); \
+        thrust_macros::proof!(lem(it.next())); \
+        let s: Ghost<Int> = thrust_macros::ghost!(|| -> Int { \"(\" }); true";
+    assert_eq!(
+        collapsed(&erase_ghost(body)),
+        "let g = (it.next(), thrust_macros::ghost!(|| -> Int { 0 })); \
+         thrust_macros::proof!(lem(it.next())); true"
+    );
 }
 
 #[test]

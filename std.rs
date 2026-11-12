@@ -2713,7 +2713,9 @@ fn _extern_spec_iterator_find<I, P>(it: &mut I, predicate: P) -> Option<I::Item>
 
 // `all` and `any` call the predicate on the items in order until it returns `stop` (`false` for
 // `all`, `true` for `any`), as core's default and `slice::Iter`'s override do. `fs` is the chain
-// of its states along the items `s` before, as in `find`, with the predicate taking `Item`.
+// of its states along the items `s` before, as in `find`, with the predicate taking `Item`. The
+// conformance test (tests/ui/pass/std_specs/option.rs) checks `slice::Iter`'s override, a loop
+// over `next`, against these contracts at every `IteratorSpec` type.
 #[thrust_macros::predicate]
 fn _iter_spec_short_circuit_chain<I, F>(
     iter: I,
@@ -2767,7 +2769,10 @@ fn _extern_spec_iterator_all<I, F>(it: &mut I, f: F) -> bool
           I::Item: thrust_models::Model,
           F: FnMut(I::Item) -> bool
 {
-    <I as std::iter::Iterator>::all(it, f)
+    thrust_std_target!(
+        <I as std::iter::Iterator>::all(it, f),
+        <crate::std_transcriptions::StdBodies as crate::std_transcriptions::IteratorMethods<I, F>>::iterator_all(it, f)
+    )
 }
 
 #[thrust::extern_spec_fn]
@@ -2800,7 +2805,10 @@ fn _extern_spec_iterator_any<I, F>(it: &mut I, f: F) -> bool
           I::Item: thrust_models::Model,
           F: FnMut(I::Item) -> bool
 {
-    <I as std::iter::Iterator>::any(it, f)
+    thrust_std_target!(
+        <I as std::iter::Iterator>::any(it, f),
+        <crate::std_transcriptions::StdBodies as crate::std_transcriptions::IteratorMethods<I, F>>::iterator_any(it, f)
+    )
 }
 
 // The sum of the first `n` items of `s`. It returns `Int`: the definition of a logic function
