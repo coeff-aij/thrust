@@ -34,7 +34,7 @@ calls; none was added.
 
 ## Results
 
-fptprove build 358438811 (`coar:latest`), `pcsat_thrust.json`, 2 CPUs and 8 GB, 120 s limit, one run
+fptprove build 358438811, `pcsat_thrust.json`, 2 CPUs and 8 GB, 120 s limit, one run
 each, seconds of wall time of the whole `thrust-rustc` call, so provisional upper bounds. The
 per-function runs use `THRUST_VERIFY_ONLY`, which assumes the contracts of the other functions.
 
