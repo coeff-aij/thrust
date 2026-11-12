@@ -1428,15 +1428,12 @@ where
 }
 
 /// The facts [`RefinedType::formula_with`] states of every value of `ty`, the ranges of the integers
-/// it holds through tuples, pointers, sequences and enum payloads, when [`int_range_mode`] is on;
-/// `None` when it is off.
+/// it holds through tuples, pointers, sequences and enum payloads (`0 <=` of the unsigned ones in
+/// every mode, the bounds of [`int_range`] when they are in use). Always `Some`.
 pub fn int_range_type_facts<FV>(ty: &Type<FV>, defs: &dyn EnumDefProvider) -> Option<Refinement<FV>>
 where
     FV: chc::Var,
 {
-    if int_range_mode() == IntRange::Off {
-        return None;
-    }
     Some(RefinedType::unrefined(ty.clone()).formula_with(Some(defs)))
 }
 
@@ -1771,7 +1768,7 @@ fn enum_value<V: Clone>(
 /// [`ENUM_NESTING_LIMIT`]. Its check is an error ([`type_fact_checks`]) when it holds integers with
 /// facts, so no fact is assumed that is not checked.
 fn enum_payload_facts(ty: &EnumType<Closed>, cx: &mut FactsCx) -> Refinement<Closed> {
-    let Some(defs) = cx.defs.filter(|_| int_range_mode() != IntRange::Off) else {
+    let Some(defs) = cx.defs else {
         return Refinement::top();
     };
     if cx.enclosing.contains(ty) || cx.enclosing.len() >= ENUM_NESTING_LIMIT {

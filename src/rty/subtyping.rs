@@ -360,8 +360,7 @@ where
         // integer type) is checked against them when the type has any; without the enums'
         // definitions that cannot be told, which no analysis scope lacks.
         (Type::Enum(got), Type::Enum(expected))
-            if super::int_range_mode() != super::IntRange::Off
-                && got.clone().strip_refinement() != expected.clone().strip_refinement() =>
+            if got.clone().strip_refinement() != expected.clone().strip_refinement() =>
         {
             let expected = Type::Enum(expected.clone().strip_refinement());
             let Some(defs) = enum_defs else {
