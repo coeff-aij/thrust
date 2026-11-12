@@ -3487,9 +3487,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
                     // XXX: A user-supplied loop invariant replaces the inferred precondition, so
                     // it no longer carries the relationship between a function's entry argument
-                    // (`OuterFnParam`) and its current local. The invariant cannot express both
-                    // views of the same argument with the current syntax. As an ad-hoc workaround,
-                    // equate them when the local is non-flow, since its representation cannot change.
+                    // (`OuterFnParam`) and its current local, unless it states it by naming both,
+                    // the entry value as `old!(x)`. As an ad-hoc workaround for an invariant that
+                    // does not, equate them when the local is non-flow, since its representation
+                    // cannot change.
                     if !param_ty.to_sort().is_singleton() && self.env.is_non_flow_local(local) {
                         assumption.body.push_conj(
                             chc::Term::var(PlaceTypeVar::Var(var))

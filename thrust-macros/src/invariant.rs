@@ -103,7 +103,11 @@ pub fn expand(input: TokenStream, marker: Marker) -> TokenStream {
     if let Some(e) = crate::loop_label::outside_context_error(&input.clone().into()) {
         return e.to_compile_error().into();
     }
-    let input = crate::formula::wrap_closure_body(input.into());
+    let input = match rename_entry_values(input.into(), marker) {
+        Ok(input) => input,
+        Err(e) => return e.to_compile_error().into(),
+    };
+    let input = crate::formula::wrap_closure_body(input);
     let closure = match syn::parse2::<syn::ExprClosure>(input) {
         Ok(closure) => closure,
         Err(e) => return e.to_compile_error().into(),
@@ -117,7 +121,11 @@ pub fn expand(input: TokenStream, marker: Marker) -> TokenStream {
 /// Expands `_invariant_with_context!(#outer_attr #sig; CLOSURE)`, the form
 /// `#[thrust_macros::context]` rewrites each `invariant!` into.
 pub fn expand_with_context(input: TokenStream, marker: Marker) -> TokenStream {
-    let input = crate::formula::wrap_closure_body(input.into());
+    let input = match rename_entry_values(input.into(), marker) {
+        Ok(input) => input,
+        Err(e) => return e.to_compile_error().into(),
+    };
+    let input = crate::formula::wrap_closure_body(input);
     let ClosureWithContext { closure, context } = match syn::parse2::<ClosureWithContext>(input) {
         Ok(parsed) => parsed,
         Err(e) => return e.to_compile_error().into(),
@@ -125,6 +133,18 @@ pub fn expand_with_context(input: TokenStream, marker: Marker) -> TokenStream {
     match expand_invariant(&closure, Some(&context), marker) {
         Ok(expr) => expr.into_token_stream().into(),
         Err(e) => e.to_compile_error().into(),
+    }
+}
+
+/// `input` with the `old!(x)` of a loop invariant renamed ([`mod@crate::entry_value`]); the
+/// statement forms take no `old!`.
+fn rename_entry_values(
+    input: proc_macro2::TokenStream,
+    marker: Marker,
+) -> syn::Result<proc_macro2::TokenStream> {
+    match marker {
+        Marker::Full | Marker::Partial => crate::entry_value::rename(input),
+        Marker::Assert | Marker::Assume => Ok(input),
     }
 }
 

@@ -66,6 +66,17 @@ pub fn lifted_param_source_name(ident: rustc_span::symbol::Ident) -> rustc_span:
     }
 }
 
+/// The parameter of the enclosing function whose entry value a parameter of a lifted loop
+/// invariant names, written `old!(x)` and spelled `__thrust_old_x` by `thrust_macros`; `None` for
+/// any other parameter.
+pub fn entry_value_param_name(ident: rustc_span::symbol::Ident) -> Option<rustc_span::Symbol> {
+    ident
+        .name
+        .as_str()
+        .strip_prefix("__thrust_old_")
+        .map(rustc_span::Symbol::intern)
+}
+
 impl<'a, D> Pretty<'a, D, termcolor::ColorSpec> for &FormulaFn<'_>
 where
     D: pretty::DocAllocator<'a, termcolor::ColorSpec>,
