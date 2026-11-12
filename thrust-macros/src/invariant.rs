@@ -143,8 +143,11 @@ fn rename_entry_values(
     marker: Marker,
 ) -> syn::Result<proc_macro2::TokenStream> {
     match marker {
-        Marker::Full | Marker::Partial => crate::entry_value::rename(input),
-        Marker::Assert | Marker::Assume => Ok(input),
+        Marker::Full | Marker::Partial => crate::entry_value::rename_in_invariant(input),
+        Marker::Assert | Marker::Assume => {
+            crate::entry_value::reject(&input)?;
+            Ok(input)
+        }
     }
 }
 
