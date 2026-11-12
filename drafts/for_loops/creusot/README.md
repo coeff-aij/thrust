@@ -13,7 +13,7 @@ not read `drafts/`; each file is compiled with `--crate-type=lib`.
 | `pass/knights_tour.rs` | `tests/should_succeed/vector/06_knights_tour.rs` | `Point::mov`, `Board::{new, available, count_degree, set}`, `moves` (trusted, as in Creusot), `min` and `knights_tour` |
 | `fail/hillel.rs`, `fail/hillel_insert_unique.rs` | | `unique` claims `result.len() == str.len()`; `insert_unique` claims the element is always appended |
 | `fail/hillel_right_pad.rs`, `fail/hillel_left_pad.rs`, `fail/hillel_fulcrum.rs` | | the pads claim the result always has length `len`; `fulcrum` also claims index 0 |
-| `fail/knights_tour_mov.rs`, `fail/knights_tour_min.rs` | | `mov` claims `result.x == self.x + p.0 + 1`; `min` claims `result == None` |
+| `fail/knights_tour_mov.rs`, `fail/knights_tour_min.rs`, `fail/knights_tour_new.rs` | | `mov` claims `result.x == self.x + p.0 + 1`; `min` claims `result == None`; `new` claims `result.size == size + 1` |
 
 Changes for Thrust, besides the annotations:
 
@@ -30,8 +30,10 @@ Changes for Thrust, besides the annotations:
   has no `dumb_nonlinear_arith`, since overflow is not checked with `debug-assertions=off`.
 - `fulcrum`'s `sum_range`, `score` and lemmas are over `usize` arguments and an `i64` result (a
   `u32` result is checked to be non-negative by induction, which the elements' model does not
-  support); `elem_nonneg` is a trusted lemma that an element of a `u32` slice is not negative, which
-  the model of a slice of `u32` does not state (Creusot's `u32@` is in range). The loops' steps call
+  support); `elem_nonneg` is a trusted lemma that an element of a `u32` slice is not negative: Thrust
+  does not assume it of a value read in a specification (a slice element, a struct's `u32` field, a
+  `usize` bound by `forall`), where Creusot's `u32@` is in range. `wf` writes `0 <= i` for the same
+  reason. The loops' steps call
   `sum_range_snoc`, `sum_range_split` and `sum_range_nonneg`; the first loop has a counter `k`
   (`let mut k: usize = 0`), since a ghost value cannot be passed to a lemma as a `usize`.
 - The `while` loops of `right_pad` and `left_pad` rebind `str` as `s`, keep `old_str` and `c` as
@@ -58,9 +60,9 @@ wall time of the whole `thrust-rustc` call, so provisional upper bounds. The per
 | `knights_tour.rs`, `Board::count_degree` | `sat`, 3.3 s |
 | `knights_tour.rs`, `min` | `sat`, 11.7 s; twin `unsat`, 17.9 s |
 | `knights_tour.rs`, `knights_tour` (others assumed) | `sat`, 6.3 s |
-| `knights_tour.rs`, `Board::available` | `unknown`, 26.8 s; without `ensures(result ==> in_bounds(..))` it is `sat` in 2 s |
-| `knights_tour.rs`, `Board::set` | `unknown`, 59.1 s; without `ensures(wf(&!self))` it is `sat` in 1 s |
-| `knights_tour.rs`, `Board::new` | `unsat`, 2.6 s: the row lengths of `wf`; the same loop returning a `Vec<Vec<usize>>` with `forall i. result[i].len() == size` is `sat` in 2 s, so the refuted goal is the index of the struct's field `result.field[i]` in a specification |
+| `knights_tour.rs`, `Board::available` | `unknown`, 38.8 s: the step from `(p.x as usize) < self.size` to `p.x < self.size` (the cast of an `isize`); without `ensures(result ==> in_bounds(..))` `sat` in 2 s |
+| `knights_tour.rs`, `Board::set` | `sat`, 2.2 s |
+| `knights_tour.rs`, `Board::new` | `sat`, 2.5 s; twin `unsat`, 5.6 s |
 
 `hillel_fulcrum.rs` verifies everything but that last step: with the postcondition through `is_min`
-it is `sat`. The whole of `knights_tour.rs` is not `sat`.
+it is `sat`. The whole of `knights_tour.rs` is a timeout at 115 s because of `Board::available`.

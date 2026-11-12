@@ -48,9 +48,9 @@ fn score(s: &[u32], i: usize) -> i64 {
     }
 }
 
-// A `u32` is not negative; the model of a slice of `u32` does not say so of its elements (the
-// range facts are assumed of scalars and, with `THRUST_INT_RANGE`, of elements), where Creusot's
-// `u32@` is in range.
+// Trusted: an element of a `u32` slice is not negative. Thrust does not assume it of a value read
+// in a specification (a slice element, a struct's `u32` field, a `usize` bound by `forall`), where
+// Creusot's `u32@` is in range; the same fact is not provable without this lemma.
 #[thrust_macros::lemma]
 #[thrust::trusted]
 #[thrust_macros::requires(i < s.len())]

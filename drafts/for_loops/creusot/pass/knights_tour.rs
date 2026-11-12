@@ -46,7 +46,8 @@ impl Model for Board {
 fn wf(b: &Board) -> bool {
     b.size <= 1000
         && b.field.len() == b.size
-        && forall(|i: usize| !(i < b.size) || b.field[i].len() == b.size)
+        // `0 <= i` is needed: Thrust does not assume a `usize` bound by `forall` non-negative.
+        && forall(|i: usize| !(0 <= i && i < b.size) || b.field[i].len() == b.size)
 }
 
 #[thrust_macros::predicate]
