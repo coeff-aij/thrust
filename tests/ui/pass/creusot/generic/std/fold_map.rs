@@ -204,9 +204,9 @@ where
 fn main() {
     let c = thrust_macros::closure!(
         requires(a >= 0),
-        ensures(result >= 0),
+        ensures(result >= a && result >= x && (result == a || result == x)),
         |a: isize, x: isize| -> isize { if x > a { x } else { a } },
     );
     let r = fold(Range { start: 0, end: 10 }, 0, c);
-    assert!(r >= 0);
+    assert!(r == 9);
 }
