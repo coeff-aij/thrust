@@ -1587,8 +1587,8 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         let mut unsized_field = None::<&F>;
         for &i in in_memory_order {
             thrust_macros::invariant!(
-                |iter: crate::rustc_index::SliceIter<'_, FieldIdx>,
-                 iter_old: thrust_models::Ghost<crate::rustc_index::SliceIter<'_, FieldIdx>>,
+                |iter: core::slice::Iter<'_, FieldIdx>,
+                 iter_old: thrust_models::Ghost<core::slice::Iter<'_, FieldIdx>>,
                  produced: thrust_models::Ghost<Seq<&<FieldIdx as thrust_models::Model>::Ty>>,
                  in_memory_order: thrust_models::FnParam<&IndexVec<u32, FieldIdx>>,
                  offset: thrust_models::FnParam<&mut Size>,
@@ -1603,7 +1603,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                  largest_niche: &mut Option<Niche>,
                  largest_niche_available: &mut u128,
                  unsized_field: Option<&F>| {
-                    *iter_old.0 == *in_memory_order.at_entry()
+                    iter_old.0 == *in_memory_order.at_entry()
                         && iter_old.1 == 0
                         && !next_offset == !offset.at_entry()
                         && !struct_align == !align.at_entry()

@@ -16,63 +16,6 @@ pub struct IndexSlice<I: Idx, T> {
     pub raw: [T],
 }
 
-/// Own iterator standing in for `slice::Iter<'a, T>` (whose raw pointer
-/// fields have no model in Thrust): yields `&raw[0]`, ..., `&raw[len - 1]`.
-pub struct SliceIter<'a, T> {
-    pub(crate) raw: &'a [T],
-    pub(crate) pos: usize,
-}
-
-#[thrust_macros::context]
-impl<'a, T: thrust_models::Model> Iterator for SliceIter<'a, T>
-{
-    type Item = &'a T;
-
-    fn next(&mut self) -> Option<&'a T> {
-        if self.pos < self.raw.len() {
-            let item = &self.raw[self.pos];
-            self.pos += 1;
-            Some(item)
-        } else {
-            None
-        }
-    }
-}
-
-#[thrust_macros::context]
-impl<'a, T: thrust_models::Model> IteratorSpec for SliceIter<'a, T>
-{
-    #[thrust_macros::predicate]
-    fn inv(self) -> bool {
-        0 <= self.1 && self.1 <= self.0.len()
-    }
-
-    #[thrust_macros::predicate]
-    fn produces(self, visited: Vec<Self::Item>, o: Self) -> bool {
-        self.0 == o.0
-            && self.1 <= o.1
-            && o.1 <= self.0.len()
-            && visited.len() == o.1 - self.1
-            && forall(|i: USize| !(0 <= i && i < visited.len()) || visited[i] == &self.0[self.1 + i])
-    }
-
-    #[thrust_macros::predicate]
-    fn completed(&mut self) -> bool {
-        (*self).1 >= (*self).0.len() && *self == !self
-    }
-
-    fn produces_refl(a: &Self) {}
-
-    fn produces_trans(
-        a: &Self,
-        ab: Seq<<Self::Item as thrust_models::Model>::Ty>,
-        b: &Self,
-        bc: Seq<<Self::Item as thrust_models::Model>::Ty>,
-        c: &Self,
-    ) {
-    }
-}
-
 /// Own iterator standing in for
 /// `raw.iter().enumerate().map(|(n, t)| (I::new(n), t))`: yields
 /// `(I::new(0), &raw[0])`, ..., `(I::new(len - 1), &raw[len - 1])`.
@@ -191,11 +134,8 @@ impl<I: Idx, T> IndexSlice<I, T> {
     }
 
     #[inline]
-    pub fn iter(&self) -> SliceIter<'_, T> {
-        SliceIter {
-            raw: &self.raw,
-            pos: 0,
-        }
+    pub fn iter(&self) -> std::slice::Iter<'_, T> {
+        self.raw.iter()
     }
 
     #[inline]
