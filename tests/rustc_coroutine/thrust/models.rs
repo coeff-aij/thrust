@@ -37,7 +37,7 @@ impl<R: Idx, C: Idx> thrust_models::Model for BitMatrix<R, C> {
 impl<I: Idx> thrust_models::Model for IdxRange<I> {
     type Ty = Self;
 }
-// The `(raw, pos)` shape of std.rs's `core::slice::Iter`, with the unit of the `PhantomData`.
+// `(raw, pos, marker)`: the slice, the cursor and the unit of the `PhantomData`.
 impl<'a, I: Idx, T: thrust_models::Model> thrust_models::Model for IterEnumerated<'a, I, T> {
     type Ty = (&'a Seq<<T as thrust_models::Model>::Ty>, USize, ());
 }

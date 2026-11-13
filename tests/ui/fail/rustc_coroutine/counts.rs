@@ -80,7 +80,7 @@ fn acc_bound_strict(fields: &IndexVec<u32, u32>, a: &IndexVec<u32, u32>, e: &u32
 // without a proof: refuted only by a run of the filter that yields an entry whose index is
 // `n - 1`, so `produces` and the slice iterator's model are evaluated.
 #[thrust_macros::context]
-#[thrust_macros::requires(forall(|p: case_study::USize, i: case_study::USize|
+#[thrust_macros::requires(forall(|p: Int, i: case_study::USize|
     !((*it).0.1 <= p && p < (*it).0.0.len() && L::index_is((*it).0.0[p], i)) || i < n))]
 #[thrust_macros::ensures(forall(|v: Seq<&<L as thrust_models::Model>::Ty>, o: <Filter<core::slice::Iter<'a, L>, P> as thrust_models::Model>::Ty, j: Int|
     !(<Filter<core::slice::Iter<'a, L>, P> as IteratorSpec>::produces(*it, v, o) && 0 <= j && j < v.len())

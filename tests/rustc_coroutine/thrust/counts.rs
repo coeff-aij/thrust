@@ -618,7 +618,7 @@ pub fn filter_count<'a, J, L, K, T, P, M, B>(
 /// iterator's position, so a bound on the indices of those entries holds of them: `Map::new`'s
 /// `next_precondition` and `preservation_inv` for a map closure that requires the bound.
 #[thrust_macros::context]
-#[thrust_macros::requires(forall(|p: USize, i: USize|
+#[thrust_macros::requires(forall(|p: Int, i: USize|
     !((*it).0.1 <= p && p < (*it).0.0.len() && L::index_is((*it).0.0[p], i)) || i < n))]
 #[thrust_macros::ensures(forall(|v: Seq<&<L as thrust_models::Model>::Ty>, o: <Filter<core::slice::Iter<'a, L>, P> as thrust_models::Model>::Ty, j: Int|
     !(<Filter<core::slice::Iter<'a, L>, P> as IteratorSpec>::produces(*it, v, o) && 0 <= j && j < v.len())
