@@ -1,7 +1,7 @@
 //@check-pass
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300
-//@rustc-env: THRUST_VERIFY_ONLY=rustc_index::vec,rustc_index::slice::IndexSlice,rustc_index::slice::SliceIter,rustc_index::slice::IterEnumerated::next,rustc_index::slice::IterEnumerated::produces_refl,rustc_index::slice::IterEnumerated::produces_trans,filled
+//@rustc-env: THRUST_VERIFY_ONLY=rustc_index::vec,rustc_index::slice::IndexSlice,rustc_index::slice::IterEnumerated::next,rustc_index::slice::IterEnumerated::produces_refl,rustc_index::slice::IterEnumerated::produces_trans,filled
 //@rustc-env: THRUST_INT_RANGE=conversions
 //@rustc-env: THRUST_SPLIT=1
 // rustc_index's `IndexVec` and `IndexSlice` under `THRUST_INT_RANGE=conversions`, where the model

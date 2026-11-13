@@ -22,7 +22,7 @@ use case_study::USize;
 use thrust_models::{exists, forall};
 
 use case_study::iter::{Filter, collect_index_vec};
-use rustc_index::{IndexVec, SliceIter};
+use rustc_index::IndexVec;
 
 // `f` lists in increasing order the positions below `fields.len()` whose entry `flags` accepts,
 // and `m` of them.
@@ -40,24 +40,24 @@ fn enumerates(f: Array<Int, Int>, m: USize, fields: &[usize], flags: &[bool]) ->
 // The witnesses are universally quantified here, so the caller instantiates them with those of
 // `collect`'s postcondition.
 #[thrust_macros::context]
-#[thrust_macros::requires((*it).0.0 == fields && (*it).0.1 == 0)]
+#[thrust_macros::requires((*it).0.0 == *fields && (*it).0.1 == 0)]
 #[thrust_macros::requires(forall(|s: Seq<&USize>, k: Int, r: bool|
-    !(0 <= k && k < s.len() && Filter::<SliceIter<'a, usize>, P>::answers((*it).1, s, k, r))
+    !(0 <= k && k < s.len() && Filter::<core::slice::Iter<'a, usize>, P>::answers((*it).1, s, k, r))
         || r == flags[*s[k]]))]
-#[thrust_macros::ensures(forall(|v: Seq<&USize>, mid: <Filter<SliceIter<'a, usize>, P> as thrust_models::Model>::Ty,
-        fin: <Filter<SliceIter<'a, usize>, P> as thrust_models::Model>::Ty, s: Seq<&USize>, f: Array<Int, Int>|
-    !(Filter::<SliceIter<'a, usize>, P>::produces_at(*it, v, mid, s, f)
-        && <Filter<SliceIter<'a, usize>, P> as IteratorSpec>::completed(Mut::new(mid, fin)))
+#[thrust_macros::ensures(forall(|v: Seq<&USize>, mid: <Filter<core::slice::Iter<'a, usize>, P> as thrust_models::Model>::Ty,
+        fin: <Filter<core::slice::Iter<'a, usize>, P> as thrust_models::Model>::Ty, s: Seq<&USize>, f: Array<Int, Int>|
+    !(Filter::<core::slice::Iter<'a, usize>, P>::produces_at(*it, v, mid, s, f)
+        && <Filter<core::slice::Iter<'a, usize>, P> as IteratorSpec>::completed(Mut::new(mid, fin)))
         || enumerates(f, v.len(), fields, flags)))]
 #[thrust_macros::lemma]
-fn entry_enumerates<'a, P: Fn(&&'a usize) -> bool>(it: &Filter<SliceIter<'a, usize>, P>, fields: &'a [usize], flags: &[bool]) {}
+fn entry_enumerates<'a, P: Fn(&&'a usize) -> bool>(it: &Filter<core::slice::Iter<'a, usize>, P>, fields: &'a [usize], flags: &[bool]) {}
 
 #[thrust_macros::context]
 #[thrust_macros::requires(forall(|k: Int| !(0 <= k && k < fields.len()) || fields[k] < flags.len()))]
 #[thrust_macros::ensures(true)]
 fn take_per_accepted(fields: &[usize], flags: &[bool]) {
     let filter = Filter::new(
-        SliceIter::new(fields),
+        fields.iter(),
         thrust_macros::closure!(
             captures(flags: &[bool]),
             requires(**l < flags.len()),
