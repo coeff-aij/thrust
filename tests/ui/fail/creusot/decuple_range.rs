@@ -14,9 +14,9 @@ type U32 = thrust_models::model::UIntN<32>;
 // The 2022 artifact's `decuple_range` client (`examples/decuple_range.rs`), with its code:
 // `(0..10).map_inv(|x, _| x * 10)` under the closure contract `x < 100` / `result == x * 10`, then
 // `collect()` and `forall i < v.len(). v[i] == i * 10`. `Map` is creusot-std's `MapInv`
-// (`std/iter/map_inv.rs`), as in `counter_creusot.rs`, built by its fields where the artifact calls
-// `map_inv`, and `collect` takes `&mut self` (Thrust has no `resolve`, fork issue #156). The source
-// is std's `Range<u32>`, an iterator of the local spec through std.rs's `IteratorSpec` for it.
+// (`std/iter/map_inv.rs`), as in `counter_creusot.rs`, built by `map_inv`, and `collect` is
+// trusted, as creusot-std's is, and takes `&mut self` (Thrust has no `resolve`, fork issue #156).
+// The source is std's `Range<u32>`, an iterator of the local spec through std.rs's `IteratorSpec` for it.
 
 // Creusot's `common.rs`, the iterator specification every case shares: the trait predicates
 // `produces(self, visited, o)`, `completed` and `invariant` (`true` unless the impl says otherwise),
@@ -60,19 +60,41 @@ where
     #[thrust_macros::ensures(forall(|i| result == Some(i) ==> Self::produces(*self, Seq::singleton(i), !self)))]
     fn next(&mut self) -> Option<Self::Item>;
 
-    // Creusot's `collect` (iter.rs): `exists done prod. resolve(^done) && done.completed()
-    // && self.produces(prod, *done) && B::from_iter_post(prod, result)`, with `from_iter_post`
-    // for `Vec` (vec.rs) `prod == res@` folded in: `result` is the produced sequence. `&mut self`:
-    // the caller keeps the adapter.
+    // Creusot's `collect` (iter.rs), an extern spec and so trusted: `exists done prod.
+    // resolve(^done) && done.completed() && self.produces(prod, *done) && B::from_iter_post(prod,
+    // result)`, with `from_iter_post` for `Vec` (vec.rs) `prod == res@` folded in: `result` is the
+    // produced sequence, a `Vec`, the one collection the cases build. `&mut self`: the caller keeps
+    // the adapter. A loop that builds the `Vec` is checked in `collect_for.rs`, Creusot's `collect`.
+    #[thrust::trusted]
     #[thrust_macros::requires(Self::invariant(*self))]
     #[thrust_macros::ensures(exists(|pre: <Self as Model>::Ty|
         Self::produces(*self, result, pre) && Self::completed(Mut::new(pre, !self))))]
-    fn collect<B: FromIterator<Self::Item>>(&mut self) -> B
+    fn collect(&mut self) -> Vec<Self::Item>
     where
         Self: Sized,
         <Self::Item as Model>::Ty: Model<Ty = <Self::Item as Model>::Ty>,
     {
-        B::from_iter(self)
+        let mut v = Vec::new();
+        while let Some(x) = self.next() {
+            v.push(x);
+        }
+        v
+    }
+
+    // creusot-std's `map_inv` (`std/iter.rs`): the adapter over `self` and `func` with an empty
+    // history. Creusot requires the adapter's type invariant here; `collect` requires it.
+    #[thrust_macros::ensures(result.0 == self && result.1 == func && result.2 == Seq::empty())]
+    fn map_inv<B, F>(self, func: F) -> Map<Self, <Self::Item as Model>::Ty, F>
+    where
+        Self: Sized,
+        <Self::Item as Model>::Ty: Model<Ty = <Self::Item as Model>::Ty>,
+        F: FnMut(Self::Item, Ghost<Seq<<Self::Item as Model>::Ty>>) -> B,
+    {
+        Map {
+            iter: self,
+            func,
+            produced: thrust_macros::ghost!(|| -> Seq<<Self::Item as Model>::Ty> { Seq::empty() }),
+        }
     }
 }
 
@@ -227,49 +249,15 @@ impl Iterator for core::ops::Range<u32> {
     }
 }
 
-// `FromIterator<A>` reduced to `from_iter`; `Self: Model<Ty = Seq<..>>` lets `result` feed `produces`.
-#[thrust_macros::context]
-trait FromIterator<A: Model>: Sized
-where
-    Self: Model<Ty = Seq<<A as Model>::Ty>>,
-    <A as Model>::Ty: Model<Ty = <A as Model>::Ty>,
-{
-    #[thrust_macros::requires(I::invariant(*iter))]
-    #[thrust_macros::ensures(exists(|pre: <I as Model>::Ty|
-        I::produces(*iter, result, pre) && I::completed(Mut::new(pre, !iter))))]
-    fn from_iter<I: Iterator<Item = A> + Model>(iter: &mut I) -> Self;
-}
-
-#[thrust_macros::context]
-impl FromIterator<u32> for Vec<u32> {
-    fn from_iter<I: Iterator<Item = u32> + Model>(iter: &mut I) -> Vec<u32>
-    {
-        let it = iter;
-        let mut v: Vec<u32> = Vec::new();
-        while let Some(x) = it.next() {
-            thrust_macros::invariant!(
-                |it: &mut I, v: Vec<u32>, iter: thrust_models::FnParam<&mut I>|
-                !it == !iter.at_entry() && I::invariant(*it) && I::produces(*iter.at_entry(), v, *it)
-            );
-            v.push(x);
-        }
-        v
-    }
-}
-
 #[thrust_macros::context]
 #[thrust::callable]
 pub fn decuple_range() {
-    let f = thrust_macros::closure!(
-        requires(x < 100),
-        ensures(result == x * 10),
-        |x: u32, produced: Ghost<Seq<U32>>| -> u32 { x * 10 },
-    );
-    let mut m = Map {
-        iter: 0..10,
-        func: f,
-        produced: thrust_macros::ghost!(|| -> Seq<U32> { Seq::empty() }),
-    };
-    let v = m.collect::<Vec<u32>>();
+    let v: Vec<u32> = (0..10)
+        .map_inv(thrust_macros::closure!(
+            requires(x < 100),
+            ensures(result == x * 10),
+            |x: u32, produced: Ghost<Seq<U32>>| -> u32 { x * 10 },
+        ))
+        .collect();
     thrust_macros::proof_assert!(|v: Vec<u32>| forall(|i: Int| 0 <= i && i < v.len() ==> v[i] == i * 10 + 1));
 }
