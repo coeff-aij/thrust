@@ -488,10 +488,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             self.analyze_placeholder(*local_def_id);
         }
         // A def is skipped (D34) when a concrete instantiation has analyzed its body and no
-        // instance has used its generic analysis instead. Only a def whose specification relates
-        // the closure's states by `hist_inv!` can have such an instance
-        // (`Analyzer::reuse_fn_mut_generic`); analyzing a def may add one for a def skipped
-        // before, which is then analyzed too.
+        // instance has used its generic analysis instead: an instance that reuses it through
+        // `Analyzer::reuse_fn_mut_generic` (a `hist_inv!`-specified def), or any instance the
+        // analysis did not analyze at its arguments (`Analyzer::record_fn_mut_generic_reused`,
+        // with the impls of a trait method reached at a type parameter). Analyzing a def may add
+        // one for a def skipped before, which is then analyzed too.
         let mut pending = fn_mut_generic_defs;
         while !pending.is_empty() {
             let mut skipped = Vec::new();
