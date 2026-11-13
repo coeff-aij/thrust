@@ -1,0 +1,125 @@
+#!/bin/sh
+# RUSTC for the extension's `cargo check`: runs the command of THRUST_VSCODE_COMMAND (its words
+# separated by the unit separator, 0x1f) with cargo's arguments, then those of
+# THRUST_VSCODE_ARGS (separated alike), for every crate and for cargo's queries of the compiler
+# (`-vV`, `--print`). For each crate it
+#
+# - writes Thrust's JSON report, which Thrust prints on standard output without
+#   THRUST_REPORT_FILE, to THRUST_VSCODE_REPORT_DIR/<package>.<crate>.<crate type>.jsonl, so a
+#   crate that fails to compile leaves an empty one and a crate cargo finds fresh keeps the one
+#   of the check that made it so;
+# - sets THRUST_VERIFY_ONLY to THRUST_VSCODE_VERIFY_ONLY for the crate THRUST_VSCODE_VERIFY_CRATE
+#   names (`<crate>.<crate type>`) only, so a run of one function of a binary leaves the
+#   package's library whole; the other crates keep cargo's value (empty: everything), so that
+#   what Thrust records for them matches cargo's and they stay fresh;
+# - records in the crate's dep-info, as `env-dep` lines as rustc does for `env!`, what decides
+#   the verdict that Thrust does not record itself (it records its `THRUST_` variables, the
+#   binary that ran and thrust-macros): the command and the identity of its files (another
+#   Thrust build behind the same wrapper), the extra arguments, the identity of the solver
+#   binary, and the variables of `thrust.env` that are not Thrust's, with the values cargo ran it
+#   with, so that cargo checks the crate again when one of them changes.
+#
+# It changes no other variable: Thrust records the values it reads, and cargo compares them with
+# its own. Its own shell variables start with `_tv_`, so that it changes none of the environment
+# it passes on.
+set -eu
+set -f
+
+_tv_sep=$(printf '\037')
+_tv_cr=$(printf '\r')
+
+# The extension's variables for what Thrust does not record.
+_tv_tracked="THRUST_VSCODE_COMMAND THRUST_VSCODE_THRUST_ID THRUST_VSCODE_ARGS THRUST_VSCODE_SOLVER_ID
+THRUST_VSCODE_ENV_KEYS"
+
+# run [args...]: the command with the arguments and the extra arguments.
+run() {
+  IFS=$_tv_sep
+  # shellcheck disable=SC2086
+  set -- $THRUST_VSCODE_COMMAND "$@" ${THRUST_VSCODE_ARGS:-}
+  unset IFS
+  "$@"
+}
+
+# The value of the option `$1` in the arguments after it (`--out-dir x` or `--out-dir=x`).
+option() {
+  _tv_name=$1
+  shift
+  while [ $# -gt 0 ]; do
+    case $1 in
+      "$_tv_name") [ $# -ge 2 ] && { printf '%s' "$2"; return; } ;;
+      "$_tv_name"=*) printf '%s' "${1#"$_tv_name"=}"; return ;;
+    esac
+    shift
+  done
+}
+
+# The value of the codegen option `-C $1=...`.
+codegen() {
+  _tv_name=$1
+  shift
+  _tv_previous=
+  for _tv_arg in "$@"; do
+    case $_tv_previous:$_tv_arg in
+      -C:"$_tv_name"=*) printf '%s' "${_tv_arg#"$_tv_name"=}"; return ;;
+    esac
+    case $_tv_arg in
+      -C"$_tv_name"=*) printf '%s' "${_tv_arg#-C"$_tv_name"=}"; return ;;
+    esac
+    _tv_previous=$_tv_arg
+  done
+}
+
+# The value escaped as rustc escapes an `env-dep` value: `\` as `\\`, a carriage return as `\r`
+# (both by sed), a newline as `\n` (awk joining the lines, printing a fixed string). The `x`
+# keeps a trailing newline from being dropped.
+escape() {
+  printf '%sx' "$1" |
+    sed -e 's/\\/\\\\/g' -e "s/$_tv_cr/\\\\r/g" |
+    awk '{ printf "%s%s", (NR > 1 ? "\\n" : ""), $0 }' |
+    sed 's/x$//'
+}
+
+# The `env-dep` lines of the tracked variables, one per line, as the environment holds them now:
+# the extension's, and those THRUST_VSCODE_ENV_KEYS names.
+env_lines() {
+  _tv_names="$_tv_tracked $(printf '%s' "${THRUST_VSCODE_ENV_KEYS:-}" | tr "$_tv_sep" ' ')"
+  for _tv_var in $_tv_names; do
+    case $_tv_var in
+      '' | [0-9]* | *[!A-Za-z0-9_]*) continue ;;
+    esac
+    if eval "[ -n \"\${$_tv_var+set}\" ]"; then
+      eval "_tv_value=\$$_tv_var"
+      printf '# env-dep:%s=%s\n' "$_tv_var" "$(escape "$_tv_value")"
+    else
+      printf '# env-dep:%s\n' "$_tv_var"
+    fi
+  done
+}
+
+if [ -z "${CARGO_CRATE_NAME:-}" ] || [ -z "${THRUST_VSCODE_REPORT_DIR:-}" ]; then
+  run "$@"
+  exit
+fi
+
+_tv_deps=$(env_lines)
+_tv_crate=$(option --crate-name "$@")
+_tv_crate_type=$(option --crate-type "$@")
+_tv_crate_type=${_tv_crate_type:-bin}
+_tv_out_dir=$(option --out-dir "$@")
+_tv_extra=$(codegen extra-filename "$@")
+_tv_report="$THRUST_VSCODE_REPORT_DIR/${CARGO_PKG_NAME}.${_tv_crate}.${_tv_crate_type}.jsonl"
+mkdir -p "$THRUST_VSCODE_REPORT_DIR"
+
+if [ "${THRUST_VSCODE_VERIFY_CRATE:-}" = "$_tv_crate.$_tv_crate_type" ]; then
+  THRUST_VERIFY_ONLY=${THRUST_VSCODE_VERIFY_ONLY:-}
+  export THRUST_VERIFY_ONLY
+fi
+
+_tv_status=0
+run "$@" > "$_tv_report" || _tv_status=$?
+_tv_dep_info="$_tv_out_dir/$_tv_crate$_tv_extra.d"
+if [ -f "$_tv_dep_info" ]; then
+  printf '%s\n' "$_tv_deps" >> "$_tv_dep_info"
+fi
+exit $_tv_status
