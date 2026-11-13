@@ -844,6 +844,11 @@ impl<'ctx, 'a> std::fmt::Display for UserDefinedPredDef<'ctx, 'a> {
             .collect();
         match &self.inner.body {
             chc::UserDefinedPredBody::Raw(body) => write!(f, "{}", self.raw_body(body))?,
+            chc::UserDefinedPredBody::Formula(formula)
+                if compact_inlining_enabled() && applies_definition(formula) =>
+            {
+                self.fmt_with_reads_bound(f, &var_sorts, formula)?;
+            }
             chc::UserDefinedPredBody::Formula(formula) => {
                 write!(f, "{}", Formula::new(self.ctx, &var_sorts, formula))?;
             }
@@ -864,7 +869,93 @@ impl<'ctx, 'a> std::fmt::Display for UserDefinedPredDef<'ctx, 'a> {
     }
 }
 
+/// Whether the body of a definition that applies another binds each read of a parameter it
+/// repeats once, with `let` (`THRUST_COMPACT_INLINING`), so that a reader that inlines definitions
+/// by substitution, without sharing, builds a body linear in the depth of nested definitions: a
+/// definition that passes `(mut (proj (mut_current x)) (proj (mut_final x)))` to the next level
+/// would otherwise copy the argument into each of the next level's reads of its parameter,
+/// doubling per level. `let` has the meaning of substitution, so the definition is the same. A
+/// definition that applies none is left as it is: nothing nests in it, and PCSat solved a query
+/// whose one such definition was bound this way ten times slower.
+fn compact_inlining_enabled() -> bool {
+    std::env::var_os("THRUST_COMPACT_INLINING").is_some()
+}
+
+/// Whether the formula applies a user-defined predicate or function.
+fn applies_definition(formula: &chc::Formula) -> bool {
+    let mut applies = false;
+    formula.clone().replace_terms(&mut |t| {
+        applies |= matches!(t, chc::Term::UserDefinedFn(..));
+        None
+    });
+    applies
+        || formula
+            .iter_atoms()
+            .any(|atom| matches!(atom.pred, chc::Pred::UserDefined(_)))
+}
+
+/// A read of a parameter: a selector applied to the parameter itself.
+fn is_parameter_read(term: &chc::Term) -> bool {
+    match term {
+        chc::Term::BoxCurrent(t)
+        | chc::Term::MutCurrent(t)
+        | chc::Term::MutFinal(t)
+        | chc::Term::TupleProj(t, _) => matches!(**t, chc::Term::Var(_)),
+        _ => false,
+    }
+}
+
 impl<'ctx, 'a> UserDefinedPredDef<'ctx, 'a> {
+    /// Writes the body with each parameter read that occurs more than once bound by a `let` to a
+    /// variable numbered after the parameters, in the order the reads first occur.
+    fn fmt_with_reads_bound(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+        var_sorts: &IndexVec<chc::TermVarIdx, chc::Sort>,
+        formula: &chc::Formula,
+    ) -> std::fmt::Result {
+        let mut occurrences: Vec<(chc::Term, usize)> = Vec::new();
+        formula.clone().replace_terms(&mut |t| {
+            if !is_parameter_read(t) {
+                return None;
+            }
+            match occurrences.iter_mut().find(|(read, _)| read == t) {
+                Some((_, n)) => *n += 1,
+                None => occurrences.push((t.clone(), 1)),
+            }
+            Some(t.clone())
+        });
+        let reads: Vec<chc::Term> = occurrences
+            .into_iter()
+            .filter(|(_, n)| *n > 1)
+            .map(|(read, _)| read)
+            .collect();
+        if reads.is_empty() {
+            return write!(f, "{}", Formula::new(self.ctx, var_sorts, formula));
+        }
+        let mut bound_sorts = var_sorts.clone();
+        let bound: Vec<chc::TermVarIdx> = reads
+            .iter()
+            .map(|read| bound_sorts.push(read.sort(|v| var_sorts[*v].clone())))
+            .collect();
+        let mut body = formula.clone();
+        body.replace_terms(&mut |t| {
+            let i = reads.iter().position(|read| read == t)?;
+            Some(chc::Term::Var(bound[i]))
+        });
+        let bindings = List::closed(
+            reads
+                .iter()
+                .zip(&bound)
+                .map(|(read, v)| format!("({v} {})", Term::new(self.ctx, var_sorts, read))),
+        );
+        write!(
+            f,
+            "(let {bindings} {})",
+            Formula::new(self.ctx, &bound_sorts, &body)
+        )
+    }
+
     /// A body taken from the source, printed with the definition's forall sorts
     /// replaced by the sorts of the instantiation it is emitted for.
     ///

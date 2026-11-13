@@ -1198,6 +1198,46 @@ impl<V> Term<V> {
         }
     }
 
+    /// The immediate subterms of this term, in the order of [`Term::subterms`].
+    fn subterms_mut(&mut self) -> Vec<&mut Term<V>> {
+        match self {
+            Term::Box(t)
+            | Term::BoxCurrent(t)
+            | Term::MutCurrent(t)
+            | Term::MutFinal(t)
+            | Term::TupleProj(t, _)
+            | Term::DatatypeDiscr(_, t)
+            | Term::ArrayLambda(_, _, t)
+            | Term::IntToBitVec { term: t, .. } => vec![&mut **t],
+            Term::Mut(t1, t2) => vec![&mut **t1, &mut **t2],
+            Term::App(_, args)
+            | Term::Tuple(args)
+            | Term::DatatypeCtor(_, _, args)
+            | Term::UserDefinedFn(_, _, args)
+            | Term::ForallFn(_, args) => args.iter_mut().collect(),
+            Term::Null
+            | Term::ForallDefault(_)
+            | Term::Var(_)
+            | Term::Bool(_)
+            | Term::Int(_)
+            | Term::String(_)
+            | Term::ArrayEmpty(_, _)
+            | Term::SeqEmpty(_)
+            | Term::UserQuantifiedVar(_, _) => Vec::new(),
+        }
+    }
+
+    /// Replaces each outermost subterm for which `f` gives a term by that term.
+    pub fn replace_terms(&mut self, f: &mut impl FnMut(&Term<V>) -> Option<Term<V>>) {
+        if let Some(to) = f(self) {
+            *self = to;
+            return;
+        }
+        for t in self.subterms_mut() {
+            t.replace_terms(f);
+        }
+    }
+
     /// This term and all its subterms, each before its own subterms.
     fn preorder(&self) -> Vec<&Term<V>> {
         let mut terms = vec![self];
@@ -2216,6 +2256,14 @@ impl<V> Atom<V> {
             .for_each(|t| t.rename_user_defined(renaming));
     }
 
+    /// [`Term::replace_terms`] over the guard and the arguments.
+    pub fn replace_terms(&mut self, f: &mut impl FnMut(&Term<V>) -> Option<Term<V>>) {
+        if let Some(guard) = &mut self.guard {
+            guard.replace_terms(f);
+        }
+        self.args.iter_mut().for_each(|t| t.replace_terms(f));
+    }
+
     pub fn new(pred: Pred, args: Vec<Term<V>>) -> Self {
         Atom {
             guard: None,
@@ -2432,6 +2480,21 @@ impl<V> Formula<V> {
             Formula::Implies(lhs, rhs) => {
                 lhs.rename_user_defined(renaming);
                 rhs.rename_user_defined(renaming);
+            }
+        }
+    }
+
+    /// [`Term::replace_terms`] over every term of the formula.
+    pub fn replace_terms(&mut self, f: &mut impl FnMut(&Term<V>) -> Option<Term<V>>) {
+        match self {
+            Formula::Atom(atom) => atom.replace_terms(f),
+            Formula::Not(fo) | Formula::Exists(_, fo) | Formula::Forall(_, fo) => {
+                fo.replace_terms(f)
+            }
+            Formula::And(fs) | Formula::Or(fs) => fs.iter_mut().for_each(|fo| fo.replace_terms(f)),
+            Formula::Implies(lhs, rhs) => {
+                lhs.replace_terms(f);
+                rhs.replace_terms(f);
             }
         }
     }
