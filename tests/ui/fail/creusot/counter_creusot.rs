@@ -10,6 +10,7 @@ type U32 = thrust_models::model::UInt;
 #[cfg(thrust_int_range)]
 type U32 = thrust_models::model::UIntN<32>;
 
+// Fail twin: the client asserts `cnt == x.len() + 1`.
 // Creusot's `counter` (`examples/iterators/03_std_iterators.rs`, 3620de437), with Creusot's
 // client and its three assertions: `v.iter().map_inv(|x, _prod| { cnt += 1; *x }).collect()`, then
 // `x == v` and `cnt == x.len()`. `Map` is creusot-std's `MapInv` (`std/iter/map_inv.rs`), built
