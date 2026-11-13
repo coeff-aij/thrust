@@ -60,7 +60,7 @@ assumes holds at the call.
 | --- | --- | --- |
 | `hashes.rs` | `rustc_hashes` | verified, each goal on its own (`THRUST_SPLIT_GOALS`); `Hash64::new` is checked where `scalar_pair` calls it, in the `scalar_pair.rs` root |
 | `values.rs` | `rustc_abi` (lib.rs) | verified, each goal on its own; `main` reveals `TargetDataLayout::pointer_space_ok` and `pointer_size_is`, which it reads (#132) |
-| `index.rs` | `rustc_index::**` (`Idx`, `IndexVec`, `IndexSlice`, the bit sets, the own iterators `IdxRange`, `WordIter`, `SliceIter`, `IterEnumerated`), and `crate`: the clients `filled`, `two_members` and `column_bound` | verified, each goal on its own |
+| `index.rs` | `rustc_index::**` (`Idx`, `IndexVec`, `IndexSlice`, the bit sets, the own iterators `IdxRange`, `WordIter`, `IterEnumerated`), and `crate`: the clients `filled`, `two_members` and `column_bound` | verified, each goal on its own |
 | `indexvec_int_range.rs` | `rustc_index::vec`, the functions of `rustc_index::slice` but `IterEnumerated::yields_last` (assumed on its contract, which `index.rs` checks; under this option its goal gets no answer), `filled`, under `THRUST_INT_RANGE=conversions` | verified, each class of clauses on its own (`THRUST_SPLIT`); a check of the option, not a run of the case study: with it `count_ones` of bit_set.rs has no specification of `sum` |
 | `simple.rs` | `crate`: `drive`, which reads `LayoutData::scalar_pair`'s fields as `univariant_biased` does; `scalar_pair` assumed on its contract, which the `scalar_pair.rs` root checks | verified |
 | `scalar_pair.rs` | `LayoutData::scalar_pair` (layout/simple.rs), with std's `Iterator::max_by_key` on std.rs's contract; `Niche::from_scalar` and `Scalar::size` assumed on their contracts, which `values.rs` checks | verified, each goal on its own (`THRUST_SPLIT_GOALS`); the fail twin asserts, before the niches are computed, that the second scalar is placed at 0, and false after a call of `max_by_key` on a chain of two concrete options (`drive_max_by_key`), which shows the code after such a call reachable under its contract for `u32` items; that it is reachable for `scalar_pair`'s `Niche` items is inferred from this, not run |
@@ -78,8 +78,9 @@ assumes holds at the call.
 The roots that are not drafts answer over the module tree in the ui suite; the states of the
 drafts are those of the single-file stage files.
 
-The case study's iterators (`IdxRange`, `WordIter`, `BitIter`, `SliceIter`, `IterEnumerated`) and
-the adapters of `thrust/iter.rs` implement std's `Iterator` and std.rs's `IteratorSpec`; `next` of
+The case study's iterators (`IdxRange`, `WordIter`, `BitIter`, `IterEnumerated`) and the adapters
+of `thrust/iter.rs` implement std's `Iterator` and std.rs's `IteratorSpec`; `IndexSlice::iter`
+returns std's `slice::Iter`, as rustc's does; `next` of
 `IdxRange`, `WordIter` and `BitIter` carries a contract of its own, which refines the trait's.
 The probes keep their own copy of Creusot's iterator trait, except `probes/field_closures.rs`,
 which uses std.rs's `IteratorSpec` and copies of the adapters of `thrust/iter.rs`.
