@@ -802,9 +802,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                         } else {
                             let align = layout.align.bytes();
                             let size = layout.size.bytes();
-                            // Fallback (open `map` goal): `map` with its precondition assumed;
-                            // restore `layout.largest_niche.map(..)` once the solver answers it.
-                            let niche_size = crate::case_study::assumed_requires::map_assumed(layout.largest_niche, thrust_macros::closure!(
+                            let niche_size = layout.largest_niche.map(thrust_macros::closure!(
                                 captures(dl: &&TargetDataLayout),
                                 requires(Niche::wf_in(n, **dl)),
                                 ensures(true),

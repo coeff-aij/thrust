@@ -70,26 +70,6 @@ where
     opt.map_or(default, f)
 }
 
-// `Option::map`, its `requires` (std.rs) assumed (`univariant_biased`'s `alignment_group_key`, whose
-// `map` goal the solver does not answer); the `ensures` is `map`'s.
-#[thrust_macros::context]
-#[thrust_macros::requires(true)]
-#[thrust_macros::ensures(
-    (opt == None && result == None)
-        || exists(|i: <T as thrust_models::Model>::Ty, j: <U as thrust_models::Model>::Ty|
-            opt == Some(i) && thrust_macros::post!(f(i), j) && result == Some(j))
-)]
-pub fn map_assumed<T, U, F>(opt: Option<T>, f: F) -> Option<U>
-where
-    T: thrust_models::Model,
-    U: thrust_models::Model,
-    F: FnOnce(T) -> U,
-{
-    thrust_macros::assume!(|opt: Option<T>, f: F|
-        opt == None || exists(|i: <T as thrust_models::Model>::Ty| opt == Some(i) && thrust_macros::pre!(f(i))));
-    opt.map(f)
-}
-
 // `<[T]>::sort_by_key`, its `requires` (std.rs) assumed (`univariant_biased`'s sort of the fields
 // that are not the tail, whose `sort_by_key` goal the solver does not answer); the `ensures` is
 // `sort_by_key`'s.
