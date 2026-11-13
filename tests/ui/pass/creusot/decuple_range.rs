@@ -1,26 +1,29 @@
 //@check-pass
-//@compile-flags: -C debug-assertions=off -A unused-variables -A unused_parens
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120
-// slow: RQ1 input, 30 s; Range by default: pass/creusot/range.rs, fail/creusot/decuple_range.rs
-
+//@compile-flags: -C debug-assertions=off -A unused-variables -A unused_parens -A dead_code
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300
+// slow: RQ1 input, 33 s; this code by default: fail/creusot/decuple_range.rs (20 s)
 use thrust_models::model::{Closure, Int, Mut, Seq};
-use thrust_models::{exists, forall, Model};
+use thrust_models::{exists, forall, Ghost, Model};
 
-// Creusot's `examples/decuple_range` with its positional property `v[i] == 10 * i`, fully checked,
-// with `Map` in its `produces` form: no ghost lemmas, and `produces_refl` and `produces_trans`
-// inherited from the trait, as `Range`'s. The rest is `collect` and `FromIterator for Vec<isize>`,
-// as in `weaker/collect_mutref.rs`. Differences from the 2022 artifact's client: the iterator is
-// the local `Range` over `isize`, not std's `0..10` over `u32`, so that it implements the local
-// trait, and the closure's `0 <= x && x < 100` therefore states the lower bound that `u32` gives
-// the artifact's `x@ < 100`; `map` is the local `Map`, whose closure takes no history, where the artifact's
-// `map_inv` passes one that its closure ignores; and the adapter is a struct literal bound to `m`,
-// collected through `&mut m`, where the artifact collects the temporary `map_inv` returns.
+/// The model of `u32`, which carries its width while `THRUST_INT_RANGE` is set.
+#[cfg(not(thrust_int_range))]
+type U32 = thrust_models::model::UInt;
+#[cfg(thrust_int_range)]
+type U32 = thrust_models::model::UIntN<32>;
+
+// The 2022 artifact's `decuple_range` client (`examples/decuple_range.rs`), with its code:
+// `(0..10).map_inv(|x, _| x * 10)` under the closure contract `x < 100` / `result == x * 10`, then
+// `collect()` and `forall i < v.len(). v[i] == i * 10`. `Map` is creusot-std's `MapInv`
+// (`std/iter/map_inv.rs`), as in `counter_creusot.rs`, built by its fields where the artifact calls
+// `map_inv`, and `collect` takes `&mut self` (Thrust has no `resolve`, fork issue #156). The source
+// is std's `Range<u32>`, an iterator of the local spec through std.rs's `IteratorSpec` for it.
 
 // Creusot's `common.rs`, the iterator specification every case shares: the trait predicates
 // `produces(self, visited, o)`, `completed` and `invariant` (`true` unless the impl says otherwise),
 // the laws `produces_refl` and `produces_trans` in Creusot's concatenation form, which every impl
 // inherits and Thrust checks at each impl (Creusot restates them per impl with empty bodies), and
-// `next` with Creusot's contract.
+// `next` with Creusot's contract. `produces_refl` keeps `requires(Self::invariant(*a))`, as
+// std.rs's `IteratorSpec` does, where the shared `auxiliary/common.rs` has no premise.
 #[thrust_macros::context]
 trait Iterator
 where
@@ -36,6 +39,7 @@ where
     fn completed(&mut self) -> bool;
 
     #[thrust_macros::law]
+    #[thrust_macros::requires(Self::invariant(*a))]
     #[thrust_macros::ensures(Self::produces(*a, Seq::empty(), *a))]
     fn produces_refl(a: &Self) {}
 
@@ -58,156 +62,168 @@ where
 
     // Creusot's `collect` (iter.rs): `exists done prod. resolve(^done) && done.completed()
     // && self.produces(prod, *done) && B::from_iter_post(prod, result)`, with `from_iter_post`
-    // for `Vec` (vec.rs) `prod == res@` folded in: `result` is the produced sequence. `&mut self`
-    // as in `creusot/weaker/collect_mutref.rs`.
+    // for `Vec` (vec.rs) `prod == res@` folded in: `result` is the produced sequence. `&mut self`:
+    // the caller keeps the adapter.
     #[thrust_macros::requires(Self::invariant(*self))]
     #[thrust_macros::ensures(exists(|pre: <Self as Model>::Ty|
         Self::produces(*self, result, pre) && Self::completed(Mut::new(pre, !self))))]
     fn collect<B: FromIterator<Self::Item>>(&mut self) -> B
     where
         Self: Sized,
-        <Self as Model>::Ty: PartialEq,
         <Self::Item as Model>::Ty: Model<Ty = <Self::Item as Model>::Ty>,
     {
         B::from_iter(self)
     }
 }
 
-#[derive(PartialEq)]
-struct Map<I, F> {
+struct Map<I, A, F> {
     iter: I,
     func: F,
+    produced: Ghost<Seq<A>>,
 }
 
-impl<I: Model, F> Model for Map<I, F> {
-    type Ty = Map<<I as Model>::Ty, Closure<F>>;
+// The model is the tuple (iter, func, produced), read as `.0`, `.1`, `.2` in the specifications.
+impl<I: Model, A, F> Model for Map<I, A, F> {
+    type Ty = (<I as Model>::Ty, Closure<F>, Seq<A>);
 }
 
 #[thrust_macros::context]
-impl<I, B, F> Map<I, F>
+impl<I, A, B, F> Map<I, A, F>
 where
     I: Iterator + Model,
+    A: Model<Ty = A>,
     B: Model,
-    F: Fn(I::Item) -> B,
-    <I as Iterator>::Item: Model,
+    F: FnMut(I::Item, Ghost<Seq<A>>) -> B,
+    <I as Iterator>::Item: Model<Ty = A>,
     <I as Model>::Ty: Model<Ty = <I as Model>::Ty>,
-    <<I as Iterator>::Item as Model>::Ty: Model<Ty = <<I as Iterator>::Item as Model>::Ty>,
     <B as Model>::Ty: Model<Ty = <B as Model>::Ty>,
 {
     #[thrust_macros::predicate]
-    fn next_precondition(iter: I, func: F) -> bool {
-        forall(|e: <<I as Iterator>::Item as Model>::Ty| forall(|i: <I as Model>::Ty|
-            !I::produces(iter, Seq::singleton(e), i) || thrust_macros::pre!(func(e))))
+    fn next_precondition(iter: I, func: F, produced: Seq<A>) -> bool {
+        forall(|e: A| forall(|i: <I as Model>::Ty|
+            !I::produces(iter, Seq::singleton(e), i) || thrust_macros::pre!(func(e, produced))))
     }
 
+    // Creusot's `preservation_inv` (and, at `produced == []`, `preservation`), over every closure
+    // state `f1` that `func` reaches (`func.hist_inv(*f)`) and its successor `f2` (Creusot's
+    // `f: &mut F`).
     #[thrust_macros::predicate]
-    fn preservation(iter: I, func: F) -> bool {
-        forall(|s: Seq<<<I as Iterator>::Item as Model>::Ty>|
-        forall(|e1: <<I as Iterator>::Item as Model>::Ty|
-        forall(|e2: <<I as Iterator>::Item as Model>::Ty|
+    fn preservation_inv(iter: I, func: F, produced: Seq<A>) -> bool {
+        forall(|s: Seq<A>|
+        forall(|e1: A|
+        forall(|e2: A|
         forall(|i: <I as Model>::Ty|
+        forall(|f1: Closure<F>|
+        forall(|f2: Closure<F>|
         forall(|b: <B as Model>::Ty|
-            !(I::produces(iter, s.push(e1).push(e2), i) && thrust_macros::post!(func(e1), b))
-                || thrust_macros::pre!(func(e2)))))))
+            !(thrust_macros::hist_inv!(func, f1)
+                && I::produces(iter, s.push(e1).push(e2), i)
+                && thrust_macros::post!(Mut::new(f1, f2)(e1, produced.concat(s)), b))
+                || thrust_macros::pre!(f2(e2, produced.concat(s).push(e1))))))))))
     }
 
+    // Creusot's `reinitialize`: after completion (`produced` reset to []), the next item's
+    // precondition and preservation hold again, for every closure state.
     #[thrust_macros::predicate]
-    fn reinitialize(func: F) -> bool {
-        forall(|cur: <I as Model>::Ty| forall(|fin: <I as Model>::Ty|
+    fn reinitialize() -> bool {
+        forall(|cur: <I as Model>::Ty| forall(|fin: <I as Model>::Ty| forall(|f: Closure<F>|
             !I::completed(Mut::new(cur, fin))
-                || (Self::next_precondition(fin, func) && Self::preservation(fin, func))))
+                || (Self::next_precondition(fin, f, Seq::empty())
+                    && Self::preservation_inv(fin, f, Seq::empty())))))
     }
 
 }
 
 #[thrust_macros::context]
-impl<I, B, F> Iterator for Map<I, F>
+impl<I, A, B, F> Iterator for Map<I, A, F>
 where
     I: Iterator + Model,
+    A: Model<Ty = A>,
     B: Model,
-    F: Fn(I::Item) -> B,
-    <I as Iterator>::Item: Model,
-    <I as Model>::Ty: Model<Ty = <I as Model>::Ty> + PartialEq,
-    <<I as Iterator>::Item as Model>::Ty: Model<Ty = <<I as Iterator>::Item as Model>::Ty> + PartialEq,
-    <B as Model>::Ty: Model<Ty = <B as Model>::Ty> + PartialEq,
+    F: FnMut(I::Item, Ghost<Seq<A>>) -> B,
+    <I as Iterator>::Item: Model<Ty = A>,
+    <I as Model>::Ty: Model<Ty = <I as Model>::Ty>,
+    <B as Model>::Ty: Model<Ty = <B as Model>::Ty>,
 {
     type Item = B;
 
+    // Creusot's `next`: the closure is called with the history before `v`, then `v` is pushed;
+    // on `None` the history is reset.
     fn next(&mut self) -> Option<B> {
-        let r = self.iter.next();
-        match r {
+        match self.iter.next() {
             Some(v) => {
-                let b = (self.func)(v);
-                Some(b)
+                let produced = thrust_macros::ghost!(
+                    |self: &mut Self, v: <I as Iterator>::Item| -> Seq<A> { (*self).2.push(v) });
+                let r = (self.func)(v, self.produced);
+                self.produced = produced;
+                Some(r)
             }
-            None => None,
+            None => {
+                self.produced = thrust_macros::ghost!(|| -> Seq<A> { Seq::empty() });
+                None
+            }
         }
     }
-
 
 
     #[thrust_macros::predicate]
     fn invariant(self) -> bool {
-        I::invariant(self.iter)
-            && Self::next_precondition(self.iter, self.func)
-            && Self::preservation(self.iter, self.func)
-            && Self::reinitialize(self.func)
+        Self::reinitialize()
+            && Self::preservation_inv(self.0, self.1, self.2)
+            && I::invariant(self.0)
+            && Self::next_precondition(self.0, self.1, self.2)
     }
 
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
-        I::completed(Mut::new((*self).iter, (!self).iter)) && (*self).func == (!self).func
+        (!self).2 == Seq::empty()
+            && I::completed(Mut::new((*self).0, (!self).0))
+            && (*self).1 == (!self).1
     }
 
+    // Creusot's `produces`: the inner items `s`, the closure states `fs` with `fs[k]` before and
+    // `fs[k + 1]` after the `k`-th call (Creusot's `fs: Seq<&mut F>` read as `*fs[k]` and
+    // `^fs[k]`), and the history `produced ++ s[..k]` at the `k`-th call.
     #[thrust_macros::predicate]
     fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool {
-        self.func == o.func
-            && exists(|s: Seq<<<I as Iterator>::Item as Model>::Ty>|
-                s.len() == visited.len()
-                    && I::produces(self.iter, s, o.iter)
-                    && forall(|k: thrust_models::model::Int|
-                        !(0 <= k && k < visited.len())
-                            || thrust_macros::post!((self.func)(s[k]), visited[k])))
+        thrust_macros::hist_inv!(self.1, o.1)
+            && exists(|s: Seq<A>| exists(|fs: Seq<Closure<F>>|
+            s.len() == visited.len()
+                && I::produces(self.0, s, o.0)
+                && o.2 == self.2.concat(s)
+                && fs.len() == visited.len() + 1
+                && fs[0] == self.1
+                && fs[visited.len()] == o.1
+                && forall(|k: Int|
+                    !(0 <= k && k < visited.len())
+                        || (thrust_macros::hist_inv!(self.1, fs[k])
+                            && thrust_macros::post!(Mut::new(fs[k], fs[k + 1])(s[k], self.2.concat(s.subsequence(0, k))), visited[k])))))
     }
 }
-#[derive(PartialEq)]
-struct Range {
-    start: isize,
-    end: isize,
-}
 
-impl Model for Range {
-    type Ty = Range;
-}
-
+// `Range<u32>` as an iterator of the local spec; `next` is std's, through its extern spec, and
+// the predicates are std.rs's `IteratorSpec` ones for it.
 #[thrust_macros::context]
-impl Iterator for Range {
-    type Item = isize;
+impl Iterator for core::ops::Range<u32> {
+    type Item = u32;
 
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.start < self.end {
-            let item = self.start;
-            self.start += 1;
-            Some(item)
-        } else {
-            None
-        }
+    fn next(&mut self) -> Option<u32> {
+        std::iter::Iterator::next(self)
     }
 
-
+    #[thrust_macros::predicate]
+    fn invariant(self) -> bool {
+        <Self as IteratorSpec>::inv(self)
+    }
 
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
-        *self == !self && (*self).start >= (*self).end
+        <Self as IteratorSpec>::completed(self)
     }
 
     #[thrust_macros::predicate]
     fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool {
-        self.end == o.end
-            && self.start <= o.start
-            && (!(visited.len() > 0) || o.start <= o.end)
-            && visited.len() == o.start - self.start
-            && forall(|i: Int| !(0 <= i && i < visited.len()) || visited[i] == self.start + i)
+        <Self as IteratorSpec>::produces(self, visited, o)
     }
 }
 
@@ -221,20 +237,18 @@ where
     #[thrust_macros::requires(I::invariant(*iter))]
     #[thrust_macros::ensures(exists(|pre: <I as Model>::Ty|
         I::produces(*iter, result, pre) && I::completed(Mut::new(pre, !iter))))]
-    fn from_iter<I: Iterator<Item = A> + Model>(iter: &mut I) -> Self
-    where
-        <I as Model>::Ty: PartialEq;
+    fn from_iter<I: Iterator<Item = A> + Model>(iter: &mut I) -> Self;
 }
 
 #[thrust_macros::context]
-impl FromIterator<isize> for Vec<isize> {
-    fn from_iter<I: Iterator<Item = isize> + Model>(iter: &mut I) -> Vec<isize>
+impl FromIterator<u32> for Vec<u32> {
+    fn from_iter<I: Iterator<Item = u32> + Model>(iter: &mut I) -> Vec<u32>
     {
         let it = iter;
-        let mut v: Vec<isize> = Vec::new();
+        let mut v: Vec<u32> = Vec::new();
         while let Some(x) = it.next() {
             thrust_macros::invariant!(
-                |it: &mut I, v: Vec<isize>, iter: thrust_models::FnParam<&mut I>|
+                |it: &mut I, v: Vec<u32>, iter: thrust_models::FnParam<&mut I>|
                 !it == !iter.at_entry() && I::invariant(*it) && I::produces(*iter.at_entry(), v, *it)
             );
             v.push(x);
@@ -243,18 +257,19 @@ impl FromIterator<isize> for Vec<isize> {
     }
 }
 
+#[thrust_macros::context]
 #[thrust::callable]
 pub fn decuple_range() {
     let f = thrust_macros::closure!(
-        requires(0 <= x && x < 100),
+        requires(x < 100),
         ensures(result == x * 10),
-        |x: isize| -> isize { x * 10 }
+        |x: u32, produced: Ghost<Seq<U32>>| -> u32 { x * 10 },
     );
     let mut m = Map {
-        iter: Range { start: 0, end: 10 },
+        iter: 0..10,
         func: f,
+        produced: thrust_macros::ghost!(|| -> Seq<U32> { Seq::empty() }),
     };
-    let v = m.collect::<Vec<isize>>();
-    // Creusot's `proof_assert! { forall<i: Int> 0 <= i && i < v@.len() ==> v[i]@ == i * 10 }`.
-    thrust_macros::proof_assert!(|v: Vec<isize>| forall(|i: Int| 0 <= i && i < v.len() ==> v[i] == i * 10));
+    let v = m.collect::<Vec<u32>>();
+    thrust_macros::proof_assert!(|v: Vec<u32>| forall(|i: Int| 0 <= i && i < v.len() ==> v[i] == i * 10));
 }
