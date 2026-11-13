@@ -1638,15 +1638,31 @@ fn _extern_spec_i32_abs(x: i32) -> i32 {
     i32::abs(x)
 }
 
-#[thrust::extern_spec_fn]
-#[thrust_macros::requires(true)]
-#[thrust_macros::ensures(
-    (x >= y && result == (x - y))
-    || (x < y && result == (y - x))
-)]
-fn _extern_spec_i32_abs_diff(x: i32, y: i32) -> u32 {
-    i32::abs_diff(x, y)
+// `abs_diff` is the distance of the two values, in the unsigned type of the same width.
+macro_rules! abs_diff_spec {
+    ($T:ty, $U:ty, $name:ident) => {
+        #[thrust::extern_spec_fn]
+        #[thrust_macros::requires(true)]
+        #[thrust_macros::ensures(
+            (x >= y && result == (x - y))
+            || (x < y && result == (y - x))
+        )]
+        fn $name(x: $T, y: $T) -> $U {
+            <$T>::abs_diff(x, y)
+        }
+    };
 }
+
+abs_diff_spec!(i8, u8, _extern_spec_i8_abs_diff);
+abs_diff_spec!(i16, u16, _extern_spec_i16_abs_diff);
+abs_diff_spec!(i32, u32, _extern_spec_i32_abs_diff);
+abs_diff_spec!(i64, u64, _extern_spec_i64_abs_diff);
+abs_diff_spec!(isize, usize, _extern_spec_isize_abs_diff);
+abs_diff_spec!(u8, u8, _extern_spec_u8_abs_diff);
+abs_diff_spec!(u16, u16, _extern_spec_u16_abs_diff);
+abs_diff_spec!(u32, u32, _extern_spec_u32_abs_diff);
+abs_diff_spec!(u64, u64, _extern_spec_u64_abs_diff);
+abs_diff_spec!(usize, usize, _extern_spec_usize_abs_diff);
 
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
@@ -4577,6 +4593,18 @@ fn _extern_spec_iterator_zip<A, B>(a: A, b: B) -> core::iter::Zip<A::IntoIter, B
           B::Item: thrust_models::Model
 {
     std::iter::zip(a, b)
+}
+
+// `Vec::insert` panics when `index > len`; the result is the prefix, the element and the suffix.
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(index <= (*vec).len())]
+#[thrust_macros::ensures(
+    !vec == (*vec).subsequence(0, index).push(element).concat((*vec).subsequence(index, (*vec).len()))
+)]
+fn _extern_spec_vec_insert<T>(vec: &mut Vec<T>, index: usize, element: T)
+    where T: thrust_models::Model
+{
+    Vec::insert(vec, index, element)
 }
 
 // `vec![elem; n]` expands to a call to this function.
