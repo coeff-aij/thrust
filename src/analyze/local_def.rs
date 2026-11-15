@@ -471,17 +471,32 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// functions the contract calls are followed, at the instance each call resolves to, since
     /// their bodies may name functions too.
     fn precompute_named_fn_contracts(&mut self) {
-        let formula_fns: Vec<_> = [
+        let mut walk = NamedContractWalk::default();
+        for path in [
             analyze::annot::requires_path_path(),
             analyze::annot::ensures_path_path(),
-        ]
-        .iter()
-        .filter_map(|path| self.ctx.extract_path_with_attr(self.local_def_id, path))
-        .filter_map(|def_id| def_id.as_local())
-        .collect();
-        let mut walk = NamedContractWalk::default();
-        for formula_fn in formula_fns {
-            self.precompute_contracts_named_in(formula_fn, self.generic_args, &mut walk);
+        ] {
+            let Some((formula_fn, path_args)) = self
+                .ctx
+                .extract_path_and_args_with_attr(self.local_def_id, &path)
+            else {
+                continue;
+            };
+            let Some(formula_fn) = formula_fn.as_local() else {
+                continue;
+            };
+            // A closure's contract is written at the enclosing function's parameters, in the
+            // order the formula function declares them (as `extract_require_annot` reads it).
+            let args = if self.tcx.is_closure_like(self.local_def_id.to_def_id()) {
+                self.ctx.closure_spec_args(
+                    path_args,
+                    self.local_def_id.to_def_id(),
+                    self.generic_args,
+                )
+            } else {
+                self.generic_args
+            };
+            self.precompute_contracts_named_in(formula_fn, args, &mut walk);
         }
     }
 
