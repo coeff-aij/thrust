@@ -10,6 +10,7 @@ pub mod counts;
 pub mod lemmas;
 pub mod models;
 pub mod std_specs;
+pub mod weights;
 
 /// The model of `usize` and `u64`, which carries its width while `THRUST_INT_RANGE` is set.
 #[cfg(not(thrust_int_range))]
