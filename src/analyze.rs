@@ -1286,7 +1286,9 @@ impl<'tcx> Analyzer<'tcx> {
     /// reads when the path resolves to `instance`, in the order a call takes them: the impl's own
     /// contract (an extern spec of a std impl, a local impl method's contract), then the
     /// trait-level spec, which describes std's impls and the crate's own, whose bodies are
-    /// checked against it. An impl of another crate is checked by nothing, so it has none.
+    /// checked against it, then the type inferred for a local impl method that has no contract
+    /// of its own, which a call falls back to when the trait gives none. An impl of another
+    /// crate is checked by nothing, so it has none.
     pub fn named_contract_sources(
         &self,
         def_id: DefId,
@@ -1306,6 +1308,11 @@ impl<'tcx> Analyzer<'tcx> {
             fatal_ignored_call(self.tcx, resolved, instance.args);
         }
         sources.push((def_id, args));
+        // A local impl method that takes the trait's contract falls back to its own inferred
+        // type when the trait has no spec to give (`Deref::deref` of a local impl), as a call does.
+        if resolved != def_id && self.takes_trait_contract(def_id, resolved) {
+            sources.push((resolved, instance.args));
+        }
         sources
     }
 
