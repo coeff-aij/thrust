@@ -1289,7 +1289,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                         let pair = LayoutData::<FieldIdx, VariantIdx>::scalar_pair(&self.cx, a, b);
                         // Assumed (fallback, with fptprove): delete once the solver answers them.
                         // The match's panicking arm is unreachable: `scalar_pair`'s `ensures` makes the fields `Arbitrary`.
-                        thrust_macros::assume!(|pair: LayoutData<FieldIdx, VariantIdx>| matches!(pair.fields, FieldsShape::Arbitrary { .. }));
+                        thrust_macros::proof_assert!(|pair: LayoutData<FieldIdx, VariantIdx>| matches!(pair.fields, FieldsShape::Arbitrary { .. }));
                         #[cfg(thrust_univariant_biased_reach = "scalar_pair")]
                         thrust_macros::proof_assert!(|kind: StructKind| false);
                         // Trusted: the match on the pair's fields, through
@@ -1703,7 +1703,6 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
 // trusted on its contract. The solver does not answer that its panicking arm is unreachable, even
 // right after the `assume!` that the fields are `Arbitrary`. The contract is what the match does:
 // it panics unless the fields are `Arbitrary`, and gives their offsets and memory order.
-#[thrust::trusted]
 #[thrust_macros::requires(matches!(*fields, FieldsShape::Arbitrary { .. }))]
 #[thrust_macros::ensures(exists(|o: IndexVec<FieldIdx, Size>, m: IndexVec<u32, FieldIdx>,
         os: Seq<Size>, ms: Seq<<FieldIdx as thrust_models::Model>::Ty>|
