@@ -1,5 +1,6 @@
 //@ignore-on-host: diagnostic of the fallback branch, run part by part (see the pass root)
 //@error-in-other-file: Unsat
+//@error-in-other-file: Unsat
 //@edition: 2024
 //@compile-flags: -Adead_code -C debug-assertions=off --cfg 'thrust_univariant_biased_reach="alignment_group_key"'
 //@no-rustfix
