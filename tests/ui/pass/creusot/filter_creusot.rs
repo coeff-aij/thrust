@@ -10,9 +10,11 @@
 // predicates of the closure type, over every closure state, and `invariant` states them with the
 // inner iterator's. `next`'s loop invariant restates what Creusot carries implicitly (the
 // prophecy of the reborrow, as in `skip.rs`, and the type invariant), and keeps Creusot's `produced`
-// as the existential `t`. `produces_trans` calls the lemma `produces_trans_at`, which names the joined
-// witness: the inner sequences concatenated and the index maps joined by `Array::from_fn`, Creusot's
-// `Mapping` built by a closure. The `resolve` of Creusot's `completed` has no counterpart: Thrust
+// as the existential `t`. `produces_trans` calls three added lemmas, all proved here:
+// `produces_trans_at` names the joined witness (the inner sequences concatenated and the index maps
+// joined by `Array::from_fn`, Creusot's `Mapping` built by a closure), and `produces_join_intro` and
+// `produces_trans_split` introduce and split the existential. Creusot proves `produces_trans` with an
+// empty body. The `resolve` of Creusot's `completed` has no counterpart: Thrust
 // has no `resolve` predicate (fork issue #156). The client calls `next` at `Range` where Creusot's
 // `less_than` collects a `Vec` from std's `filter`.
 use thrust_models::model::{Array, Closure, Int, Mut, Seq};

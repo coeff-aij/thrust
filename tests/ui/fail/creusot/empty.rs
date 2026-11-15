@@ -2,7 +2,8 @@
 //@compile-flags: -C debug-assertions=off -A unused-variables -A dead_code
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120
 // Creusot's `examples/iterators/09_empty.rs` (3620de437): `Empty` and its `Iterator` impl, with
-// Creusot's code and Thrust's annotations. `resolve(self)` in `completed` is `*self == !self`.
+// Creusot's code and Thrust's annotations. `resolve(self)` in `completed` is `*self == !self` on the pass side.
+// Fail twin: `completed` is `false`, so `next` returning `None` breaks its contract; `produces` is as on the pass side.
 use thrust_models::model::Seq;
 use thrust_models::Model;
 
@@ -22,13 +23,13 @@ impl<T: Model> Iterator for Empty<T> {
 
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
-        *self == !self
+        // Unsat: `completed` is false, so `next` returning `None` breaks its contract.
+        false
     }
 
     #[thrust_macros::predicate]
     fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool {
-        // Unsat: `produces` demands a non-empty `visited`, so `produces_refl` fails.
-        visited != Seq::empty() && self == o
+        visited == Seq::empty() && self == o
     }
 
     fn next(&mut self) -> Option<T> {

@@ -3,7 +3,8 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120
 // Creusot's `examples/iterators/14_copied.rs` (3620de437): `Copied` and its `Iterator` impl, with
 // Creusot's code and Thrust's annotations. `invariant` states the inner iterator's, which Creusot
-// carries as the type invariant of the field; `resolve(self)` in `completed` is spelled out.
+// carries as the type invariant of the field; `completed` is the inner iterator's, as in Creusot (no `resolve`).
+// Fail twin: `next` returns `None` for an item the inner iterator produced; the predicates are as on the pass side.
 // `next` matches the inner `next()` where Creusot calls `Option::copied`, which std.rs does not specify.
 // `visited[i] == *s[i]` is `s[i] == &visited[i]` (the model of `&T` is a reference to `T`'s).
 use thrust_models::forall;
@@ -45,8 +46,7 @@ where
     fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool {
         exists(|s: Seq<&'a <T as Model>::Ty>| {
             I::produces(self.iter, s, o.iter)
-                // Unsat: `visited` is one longer than `s`, so `next` does not produce its item.
-                && visited.len() == s.len() + 1
+                && visited.len() == s.len()
                 && forall(|i: Int| !(0 <= i && i < s.len()) || s[i] == &visited[i])
         })
     }
@@ -54,7 +54,8 @@ where
     fn next(&mut self) -> Option<T> {
         match self.iter.next() {
             None => None,
-            Some(x) => Some(*x),
+            // Unsat: the inner iterator produced `x`, so `next` returning `None` breaks its contract.
+            Some(x) => None,
         }
     }
 }

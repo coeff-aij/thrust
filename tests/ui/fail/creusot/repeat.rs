@@ -31,8 +31,7 @@ impl<A: Clone + Model> Iterator for Repeat<A> {
 
     #[thrust_macros::predicate]
     fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool {
-        // Unsat: `produces` demands a changed state, so `produces_refl` fails.
-        self != o
+        self == o
             && forall(|i: Int| {
                 !(0 <= i && i < visited.len())
                     || visited[i] == self.element
@@ -40,6 +39,7 @@ impl<A: Clone + Model> Iterator for Repeat<A> {
     }
 
     fn next(&mut self) -> Option<A> {
-        Some(self.element.clone())
+        // Unsat: `completed` is false, so `next` returning `None` breaks its contract.
+        None
     }
 }

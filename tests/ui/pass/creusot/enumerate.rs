@@ -6,6 +6,8 @@
 // Creusot's `Invariant` impl is the `invariant` predicate of the `Iterator` impl, with the inner
 // iterator's invariant added (Creusot's type invariant of the field); `resolve(&mut self.count)` in
 // `completed` is `(*self).count == (!self).count`; `x@` of a `usize` is the integer itself.
+// The constructor `enumerate` adds `requires(I::invariant(iter))` and
+// `ensures(<Enumerate<I> as Iterator>::invariant(result))`, which Creusot gets from the type invariants.
 // The struct has no `I: Iterator` bound: its model `Enumerate<I::Ty>` would need `I::Ty: Iterator`.
 use thrust_models::model::{Int, Mut, Seq};
 use thrust_models::{exists, forall, Model};

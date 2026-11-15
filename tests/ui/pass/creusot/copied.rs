@@ -3,7 +3,7 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120
 // Creusot's `examples/iterators/14_copied.rs` (3620de437): `Copied` and its `Iterator` impl, with
 // Creusot's code and Thrust's annotations. `invariant` states the inner iterator's, which Creusot
-// carries as the type invariant of the field; `resolve(self)` in `completed` is spelled out.
+// carries as the type invariant of the field; `completed` is the inner iterator's, as in Creusot (no `resolve`).
 // `next` matches the inner `next()` where Creusot calls `Option::copied`, which std.rs does not specify.
 // `visited[i] == *s[i]` is `s[i] == &visited[i]` (the model of `&T` is a reference to `T`'s).
 use thrust_models::forall;

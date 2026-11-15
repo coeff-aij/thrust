@@ -1,7 +1,10 @@
 # Creusot benchmark cases
 
 Cases from the Creusot artifact's iterator benchmark, each verified with a specification
-equivalent to Creusot's, plus nine additions with no Creusot counterpart (`take_count.rs`,
+equivalent to Creusot's, `empty.rs`, `once.rs`, `repeat.rs`, `zip.rs`, `cloned.rs`, `copied.rs`, `enumerate.rs`,
+`collect_creusot.rs` and `filter_creusot.rs` (Creusot's `examples/iterators/` cases that had no port;
+`zip.rs`, `collect_creusot.rs` and `filter_creusot.rs` drop Creusot's `resolve` of a generic value,
+fork #156; each header lists its other differences), plus nine additions with no Creusot counterpart (`take_count.rs`,
 `fold.rs`, `try_fold.rs`, `find.rs`, `filter.rs`, and the forms of the last four generic in the
 iterator and the closure, in `generic/`). `<file>.rs` is the pass side;
 `tests/ui/fail/creusot/<file>.rs` is its fail twin (two extra fail-only files:
@@ -49,6 +52,15 @@ with empty bodies, as Creusot does). The step-form files repeat theirs in the sa
 | `collect_for.rs` | the current Creusot's `examples/iterators/08_collect_extend.rs` (3620de437), `collect` and `collect_example` | std.rs's `IteratorSpec`, a `for` loop whose invariant states the vector is `produced` |
 | `concat_vec.rs` | `examples/extend.rs` of the 2022 artifact, `extend_index` | std's `Vec::extend` over `v2.into_iter()` under std.rs's contract of `Vec::extend` (Creusot's) |
 | `extend_for.rs` | the current Creusot's `examples/iterators/08_collect_extend.rs` (3620de437), `extend` and `extend_index` | std.rs's `IteratorSpec`, a `for` loop whose invariant states the vector is its entry value followed by `produced` |
+| `empty.rs` | `examples/iterators/09_empty.rs` (3620de437) | `produces` |
+| `once.rs` | `examples/iterators/10_once.rs` (3620de437) | `produces` |
+| `repeat.rs` | `examples/iterators/11_repeat.rs` (3620de437) | `produces` |
+| `zip.rs` | `examples/iterators/12_zip.rs` (3620de437) | `produces`, without Creusot's `resolve` of the inner iterators' states |
+| `cloned.rs` | `examples/iterators/13_cloned.rs` (3620de437) | `produces` over an inner iterator's items by reference |
+| `copied.rs` | `examples/iterators/14_copied.rs` (3620de437) | `produces` over an inner iterator's items by reference |
+| `enumerate.rs` | `examples/iterators/15_enumerate.rs` (3620de437) | `produces` with the constructor `enumerate` and its invariant |
+| `collect_creusot.rs` | `examples/iterators/08_collect_extend.rs` (3620de437) | `produces`, without Creusot's `resolve` of a generic value |
+| `filter_creusot.rs` | `examples/iterators/17_filter.rs` (3620de437) | `produces` with Creusot's monotone index map; slow (300 s) |
 | `take_count.rs` | no counterpart | `produces`; an extra call site of `take.rs`'s `Take` |
 | `fold.rs` | no counterpart | `produces`; a hand-written `fold` with a closure contract over the accumulator |
 | `try_fold.rs` | no counterpart | `produces`; a hand-written `try_fold` that returns `None` on an early bound crossing |
