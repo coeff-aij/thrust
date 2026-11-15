@@ -55,6 +55,11 @@ eight get no answer. So the goals after those eight points are not shown to hold
 A twin after a call of a wrapper of `thrust/iter.rs` or
 `thrust/assumed_requires.rs` shows the path reachable under the wrapper's `ensures`, not that the `requires` it
 assumes holds at the call.
+The twins are `//@ignore-on-host` diagnostics run on demand; one runs with
+`THRUST_UI_CASE_STUDY=1 COAR_IMAGE=<image> cargo test --test ui -- --ignored univariant_biased_reach_<name>`
+(`THRUST_PCSAT_CPUS` sets the CPUs per solver container, `THRUST_UI_THREADS` how many twins run at once).
+Their `--cfg` value is single-quoted in the `//@compile-flags` header (`--cfg 'thrust_univariant_biased_reach="<name>"'`),
+because the harness splits the header like a shell and drops unquoted double quotes.
 
 | file | selection | state |
 | --- | --- | --- |
