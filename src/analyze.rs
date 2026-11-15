@@ -458,6 +458,19 @@ pub fn is_ignored_crate_fn(tcx: mir_ty::TyCtxt<'_>, def_id: DefId) -> bool {
         && is_ignored(tcx, def_id)
 }
 
+/// Whether `resolved`, the impl method a call of the trait method `def_id` resolves to, is from
+/// a crate other than the one analyzed and `std`/`core`/`alloc`: nothing checks its body against
+/// a trait-level spec of `std.rs`, which describes std's impls and the crate's own, so it takes
+/// none.
+pub fn is_unchecked_foreign_impl(tcx: mir_ty::TyCtxt<'_>, def_id: DefId, resolved: DefId) -> bool {
+    resolved != def_id
+        && !resolved.is_local()
+        && !matches!(
+            tcx.crate_name(resolved.krate).as_str(),
+            "std" | "core" | "alloc"
+        )
+}
+
 /// Stops at a call that resolves to an ignored function of the crate, which has no checked type.
 pub fn fatal_ignored_call<'tcx>(
     tcx: mir_ty::TyCtxt<'tcx>,
@@ -1285,15 +1298,14 @@ impl<'tcx> Analyzer<'tcx> {
         if resolved != def_id && !self.takes_trait_contract(def_id, resolved) {
             sources.push((resolved, instance.args));
         }
-        let unchecked_foreign_impl = resolved != def_id
-            && !resolved.is_local()
-            && !matches!(
-                self.tcx.crate_name(resolved.krate).as_str(),
-                "std" | "core" | "alloc"
-            );
-        if !unchecked_foreign_impl {
-            sources.push((def_id, args));
+        if is_unchecked_foreign_impl(self.tcx, def_id, resolved) {
+            return sources;
         }
+        // An ignored impl method's body is not checked against the trait-level spec.
+        if resolved != def_id && is_ignored_crate_fn(self.tcx, resolved) {
+            fatal_ignored_call(self.tcx, resolved, instance.args);
+        }
+        sources.push((def_id, args));
         sources
     }
 
