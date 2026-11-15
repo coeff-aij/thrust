@@ -1237,9 +1237,9 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
             ));
 
             match (
-                crate::case_study::assumed_requires::filter_next_assumed(&mut non_zst_fields),
-                crate::case_study::assumed_requires::filter_next_assumed(&mut non_zst_fields),
-                crate::case_study::assumed_requires::filter_next_assumed(&mut non_zst_fields),
+                crate::case_study::assumed_requires::filter_next_enumerated(&mut non_zst_fields),
+                crate::case_study::assumed_requires::filter_next_enumerated(&mut non_zst_fields),
+                crate::case_study::assumed_requires::filter_next_enumerated(&mut non_zst_fields),
             ) {
                 (Some((i, field)), None, None) => {
                     layout_of_single_non_zst_field = Some(field);
@@ -1268,11 +1268,9 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                         // `proof_assert!` once the solver answers it.
                         thrust_macros::assume!(|a: Scalar, b: Scalar, self: &LayoutCalculator<Cx>|
                             forall(|d: TargetDataLayout| !Cx::dl_of(*self, d) || (Scalar::wf_in(a, d) && Scalar::wf_in(b, d))));
-                        // Assumed (fallback, with fptprove): the indexes `offsets[i]` and `offsets[j]`'s requires. They
-                        // hold: `i` and `j` are positions of `iter_enumerated(fields)`, and `offsets` has as many
-                        // entries as `fields` (the `requires`). The solver does not answer them under it.
-                        thrust_macros::assume!(|i: FieldIdx, offsets: &IndexVec<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(i) < (*offsets).len());
-                        thrust_macros::assume!(|j: FieldIdx, offsets: &IndexVec<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(j) < (*offsets).len());
+                        // The indexes `offsets[i]` and `offsets[j]`'s requires hold: `i` and `j` are positions
+                        // of `iter_enumerated(fields)` (`filter_next_enumerated`'s `ensures`), and `offsets` has as
+                        // many entries as `fields` (the `requires`).
                         #[cfg(thrust_univariant_biased_reach = "pair")]
                         thrust_macros::proof_assert!(|kind: StructKind| false);
                         let ((i, a), (j, b)) = if offsets[i] < offsets[j] {

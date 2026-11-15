@@ -12,6 +12,8 @@ use thrust_models::{exists, forall};
 use crate::IteratorSpec;
 use crate::case_study::USize;
 use super::iter::Filter;
+use crate::rustc_index::{Idx, IterEnumerated};
+use thrust_models::witness;
 
 // `Filter::new`, its `requires` assumed (a goal of `univariant_biased` the solver does not answer).
 #[thrust_macros::context]
@@ -49,6 +51,41 @@ where
 {
     thrust_macros::assume!(|it: &mut Filter<I, P>| <Filter<I, P> as IteratorSpec>::inv(*it));
     it.next()
+}
+
+// `filter_next_assumed` over `IterEnumerated`, with the position bound: an item the filter yields
+// is the entry of the slice at some position below its length, with that index (Creusot's
+// `Filter::next` and `Enumerate::next` state the same through the inner iterator's `produces`).
+// The `requires` of `Filter::next` stays assumed, inside `filter_next_assumed`; the bound comes from
+// `IterEnumerated::yields_last` at the state before the call and the inner `produces` that
+// `filter_next_assumed` ensures. The slice does not change across the call.
+#[thrust_macros::context]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(
+    <Filter<IterEnumerated<'a, I, T>, P> as IteratorSpec>::inv(!it)
+        && (result == None ==> <Filter<IterEnumerated<'a, I, T>, P> as IteratorSpec>::completed(it))
+        && (!it).0.0 == (*it).0.0
+        && forall(|x: <(I, &'a T) as thrust_models::Model>::Ty| result == Some(x)
+            ==> (<Filter<IterEnumerated<'a, I, T>, P> as IteratorSpec>::produces(*it, Seq::singleton(x), !it)
+                && exists(|k: USize| <I as Idx>::index_is(x.0, k)
+                    && k < (*it).0.0.len() && x.1 == &(*it).0.0[k])))
+)]
+pub fn filter_next_enumerated<'a, I, T, P>(it: &mut Filter<IterEnumerated<'a, I, T>, P>) -> Option<(I, &'a T)>
+where
+    I: Idx + thrust_models::Model,
+    T: thrust_models::Model,
+    P: Fn(&(I, &'a T)) -> bool,
+{
+    let pre = thrust_macros::ghost!(|it: &mut Filter<IterEnumerated<'a, I, T>, P>| -> Filter<IterEnumerated<'a, I, T>, P> { *it });
+    thrust_macros::proof!(IterEnumerated::yields_last(&it.iter));
+    let r = filter_next_assumed(it);
+    match r {
+        Some(v) => {
+            let e = thrust_macros::ghost!(|v: (I, &'a T)| -> (I, &'a T) { v });
+            Some(v)
+        }
+        None => None,
+    }
 }
 
 // `Option::map_or`, its `requires` (std.rs) assumed (`univariant_biased`'s sort key closure, whose

@@ -207,7 +207,7 @@ where
 // places it in the inner items at its index map's position, and later items there may be
 // rejected ones, so it does not give the last; `univariant_biased`'s `next` calls read that form.
 pub struct Filter<I, P> {
-    iter: I,
+    pub(super) iter: I,
     predicate: P,
 }
 
