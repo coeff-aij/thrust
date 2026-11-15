@@ -467,15 +467,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
     /// Analyses, at this analysis's arguments, the functions this def's contract names by path
     /// in `pre!`/`post!` (`<F as Deref>::deref` at `F` instantiated), so that the translation
-    /// finds their contracts as it finds a callable parameter's.
+    /// finds their contracts as it finds a callable parameter's. The predicates and logic
+    /// functions the contract calls are followed, at the instance each call resolves to, since
+    /// their bodies may name functions too.
     fn precompute_named_fn_contracts(&mut self) {
-        use mir_ty::TypeVisitableExt as _;
-
-        let def_ids = self.ctx.def_ids();
-        let markers = [
-            def_ids.closure_precondition(),
-            def_ids.closure_postcondition(),
-        ];
         let formula_fns: Vec<_> = [
             analyze::annot::requires_path_path(),
             analyze::annot::ensures_path_path(),
@@ -484,51 +479,117 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         .filter_map(|path| self.ctx.extract_path_with_attr(self.local_def_id, path))
         .filter_map(|def_id| def_id.as_local())
         .collect();
+        let mut walk = NamedContractWalk::default();
         for formula_fn in formula_fns {
-            let typeck = self.tcx.typeck(formula_fn);
-            let named: Vec<_> = typeck
-                .node_types()
-                .items_in_stable_order()
-                .into_iter()
-                .filter_map(|(_, ty)| match ty.kind() {
-                    mir_ty::TyKind::FnDef(marker, args) if markers.contains(&Some(*marker)) => {
-                        match args.type_at(0).kind() {
-                            mir_ty::TyKind::FnDef(def_id, args) => Some((*def_id, *args)),
-                            _ => None,
-                        }
-                    }
-                    _ => None,
-                })
-                .collect();
-            for (def_id, args) in named {
-                let args = if self.generic_args.is_empty() {
-                    args
-                } else {
-                    mir_ty::EarlyBinder::bind(args).instantiate(self.tcx, self.generic_args)
-                };
-                // Resolved as the translation resolves it (`annot_fn`'s `fn_item_contract`):
-                // under the owner's bounds, so that an impl applying whatever the owner's type
-                // parameters are, such as the reflexive `From`, is found at arguments naming them.
-                let typing_env =
-                    analyze::predicate_typing_env(self.tcx, self.owner_fn_id, def_ids.model_ty());
-                let Ok(Some(instance)) =
-                    mir_ty::Instance::try_resolve(self.tcx, typing_env, def_id, args)
-                else {
-                    if args.has_param() {
-                        // A trait-level spec, as a call at the type parameters takes.
-                        let _ = self.ctx.def_ty_with_args(def_id, args, self.owner_fn_id);
-                    }
-                    continue;
-                };
-                if instance.def_id() != self.local_def_id.to_def_id() {
-                    let _ = self.ctx.def_ty_with_args(
-                        instance.def_id(),
-                        instance.args,
-                        self.owner_fn_id,
-                    );
-                }
+            self.precompute_contracts_named_in(formula_fn, self.generic_args, &mut walk);
+        }
+    }
+
+    /// The part of [`Self::precompute_named_fn_contracts`] for the body of `formula_fn` read at
+    /// `args` (this analysis's arguments for a contract, the call's for a predicate).
+    fn precompute_contracts_named_in(
+        &mut self,
+        formula_fn: LocalDefId,
+        args: mir_ty::GenericArgsRef<'tcx>,
+        walk: &mut NamedContractWalk<'tcx>,
+    ) {
+        // A def already on the path is a recursive call, possibly at growing type arguments
+        // (polymorphic recursion); translating it reports that, so it is not followed here.
+        if walk.path.contains(&formula_fn) || !walk.done.insert((formula_fn, args)) {
+            return;
+        }
+        walk.path.push(formula_fn);
+        let (named, called) = self.fn_items_in_formula_fn(formula_fn, args);
+        self.analyze_named_fn_contracts(named);
+        for (def_id, args) in called {
+            if let Some((local, args)) = self.formula_fn_called(def_id, args) {
+                self.precompute_contracts_named_in(local, args, walk);
             }
         }
+        walk.path.pop();
+    }
+
+    /// The function items `formula_fn`'s body, read at `args`, names in `pre!`/`post!` and the
+    /// ones it calls.
+    fn fn_items_in_formula_fn(
+        &self,
+        formula_fn: LocalDefId,
+        args: mir_ty::GenericArgsRef<'tcx>,
+    ) -> FnItems<'tcx> {
+        let def_ids = self.ctx.def_ids();
+        let markers = [
+            def_ids.closure_precondition(),
+            def_ids.closure_postcondition(),
+        ];
+        let instantiate = |fn_args: mir_ty::GenericArgsRef<'tcx>| {
+            if args.is_empty() {
+                fn_args
+            } else {
+                mir_ty::EarlyBinder::bind(fn_args).instantiate(self.tcx, args)
+            }
+        };
+        let typeck = self.tcx.typeck(formula_fn);
+        let mut named = Vec::new();
+        let mut called = Vec::new();
+        for (_, ty) in typeck.node_types().items_in_stable_order() {
+            let mir_ty::TyKind::FnDef(def_id, fn_args) = ty.kind() else {
+                continue;
+            };
+            if !markers.contains(&Some(*def_id)) {
+                called.push((*def_id, instantiate(fn_args)));
+                continue;
+            }
+            if let mir_ty::TyKind::FnDef(named_id, named_args) = fn_args.type_at(0).kind() {
+                named.push((*named_id, instantiate(named_args)));
+            }
+        }
+        (named, called)
+    }
+
+    /// Analyses the functions named in `pre!`/`post!`, resolved as the translation resolves them
+    /// (`annot_fn`'s `fn_item_contract`): under the owner's bounds, so that an impl applying
+    /// whatever the owner's type parameters are, such as the reflexive `From`, is found at
+    /// arguments naming them.
+    fn analyze_named_fn_contracts(&mut self, named: Vec<(DefId, mir_ty::GenericArgsRef<'tcx>)>) {
+        use mir_ty::TypeVisitableExt as _;
+
+        let model_ty = self.ctx.def_ids().model_ty();
+        let typing_env = analyze::predicate_typing_env(self.tcx, self.owner_fn_id, model_ty);
+        for (def_id, args) in named {
+            let Ok(Some(instance)) =
+                mir_ty::Instance::try_resolve(self.tcx, typing_env, def_id, args)
+            else {
+                if args.has_param() {
+                    // A trait-level spec, as a call at the type parameters takes.
+                    let _ = self.ctx.def_ty_with_args(def_id, args, self.owner_fn_id);
+                }
+                continue;
+            };
+            if instance.def_id() != self.local_def_id.to_def_id() {
+                let _ =
+                    self.ctx
+                        .def_ty_with_args(instance.def_id(), instance.args, self.owner_fn_id);
+            }
+        }
+    }
+
+    /// The predicate or logic function with a Rust body that a call of `def_id` at `args`
+    /// resolves to, with its arguments.
+    fn formula_fn_called(
+        &self,
+        def_id: DefId,
+        args: mir_ty::GenericArgsRef<'tcx>,
+    ) -> Option<(LocalDefId, mir_ty::GenericArgsRef<'tcx>)> {
+        let model_ty = self.ctx.def_ids().model_ty();
+        let typing_env = analyze::predicate_typing_env(self.tcx, self.owner_fn_id, model_ty);
+        let Ok(Some(instance)) = mir_ty::Instance::try_resolve(self.tcx, typing_env, def_id, args)
+        else {
+            return None;
+        };
+        let local = instance.def_id().as_local()?;
+        self.ctx
+            .is_formula_fn(local)
+            .then_some((local, instance.args))
     }
 
     /// Walks `impl_local_def_id`'s `predicates_of` and registers any
@@ -3115,3 +3176,17 @@ pub(crate) fn spec_param_compared_ty<'tcx>(
         dyn_model: ctx.def_ids().dyn_model(),
     })
 }
+
+/// The formula functions [`Analyzer::precompute_named_fn_contracts`] has read: those on the
+/// current path of calls, and those done at their arguments.
+#[derive(Default)]
+struct NamedContractWalk<'tcx> {
+    path: Vec<LocalDefId>,
+    done: std::collections::HashSet<(LocalDefId, mir_ty::GenericArgsRef<'tcx>)>,
+}
+
+/// The function items a formula function names in `pre!`/`post!`, and those it calls.
+type FnItems<'tcx> = (
+    Vec<(DefId, mir_ty::GenericArgsRef<'tcx>)>,
+    Vec<(DefId, mir_ty::GenericArgsRef<'tcx>)>,
+);

@@ -1938,6 +1938,14 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             if let Some(fn_ty) = known {
                 return fn_ty;
             }
+            if self.analyzer.has_def_ty(def_id) {
+                // A trait method with a contract (written or a std.rs spec) is promised it here; a miss would silently
+                // leave the call unconstrained.
+                self.tcx.dcx().span_fatal(
+                    span,
+                    format!("`pre!`/`post!` names `{def_id:?}` at its type parameters, whose contract was not found"),
+                );
+            }
             if names_precondition {
                 self.analyzer
                     .record_assumed_total_method(owner_fn_id, def_id, generic_args);

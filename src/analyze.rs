@@ -2554,6 +2554,17 @@ impl<'tcx> Analyzer<'tcx> {
         reach
     }
 
+    /// Whether `def_id` has a contract of its own (a written one or a spec); the error for a
+    /// `pre!`/`post!` that finds none is narrowed to methods with a contract of their own.
+    pub fn has_def_ty(&self, def_id: DefId) -> bool {
+        self.defs.contains_key(&def_id)
+    }
+
+    /// Whether `local_def_id` is a predicate or logic function with a Rust body.
+    pub fn is_formula_fn(&self, local_def_id: LocalDefId) -> bool {
+        self.formula_fns.contains_key(&local_def_id)
+    }
+
     pub fn register_formula_fn(&mut self, local_def_id: LocalDefId) {
         tracing::info!(?local_def_id, "register_formula_fn");
         self.formula_fns.insert(

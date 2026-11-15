@@ -3,8 +3,8 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120
 // Creusot's `examples/iterators/11_repeat.rs` (3620de437): `Repeat` and its `Iterator` impl, with
 // Creusot's code and Thrust's annotations. Creusot's `Self::Item::clone.postcondition((&self.element,), v)`
-// is `v == self.element`, std.rs's contract of `Clone::clone` (`post!` of `clone` at the type
-// parameter `A` does not verify here).
+// is written as `post!(<A as Clone>::clone(&self.element), v)`, which takes std.rs's contract of
+// `Clone::clone` at the type parameter `A`.
 use thrust_models::model::{Int, Seq};
 use thrust_models::{forall, Model};
 
@@ -34,7 +34,7 @@ impl<A: Clone + Model> Iterator for Repeat<A> {
         self == o
             && forall(|i: Int| {
                 !(0 <= i && i < visited.len())
-                    || visited[i] == self.element
+                    || thrust_macros::post!(<A as Clone>::clone(&self.element), visited[i])
             })
     }
 
