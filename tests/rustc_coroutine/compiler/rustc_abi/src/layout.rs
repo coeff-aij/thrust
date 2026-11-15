@@ -499,6 +499,26 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                         || (Niche::wf_in(n, dl) && (!Primitive::size_in(n.value, dl, s) || n.offset.raw + s.raw <= l.size.raw)))))
     }
 
+    /// `fields_ok` for the data layout `dl` of `self`, from `layout_pre`: the conjuncts of
+    /// `layout_pre` over the fields' layouts, stated at `dl`. A lemma of its own, so that its goal
+    /// does not read the unknowns of a caller's code before the call.
+    #[thrust_macros::requires(Self::layout_pre::<FieldIdx, VariantIdx, F>(*self, fields, kind))]
+    #[thrust_macros::requires(Cx::dl_of(*self, *dl))]
+    #[thrust_macros::ensures(Self::fields_ok::<FieldIdx, VariantIdx, F>(fields, *dl))]
+    #[thrust::reveal(LayoutCalculator::layout_pre)]
+    fn fields_ok_of_layout_pre<
+        'a,
+        FieldIdx: Idx + thrust_models::Model,
+        VariantIdx: Idx,
+        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model,
+    >(
+        &self,
+        fields: &IndexSlice<FieldIdx, F>,
+        kind: StructKind,
+        dl: &TargetDataLayout,
+    ) {
+    }
+
     /// `ts` holds each field's weight: its size and twice its alignment's bytes.
     #[thrust_macros::predicate]
     fn weights_are<
@@ -1034,6 +1054,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         // Rewrite (rewrites.md R22): `?` as a `match` that returns the error itself, so that
         // the error `place_fields`'s contract describes reaches the return without the
         // `Try::branch` and `FromResidual::from_residual` calls of `?`'s desugaring.
+        Self::fields_ok_of_layout_pre::<FieldIdx, VariantIdx, F>(self, fields, kind, dl);
         let unsized_field = match Self::place_fields::<FieldIdx, VariantIdx, F>(
             fields,
             &in_memory_order,
