@@ -565,10 +565,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 }
                 continue;
             };
-            if instance.def_id() != self.local_def_id.to_def_id() {
-                let _ =
-                    self.ctx
-                        .def_ty_with_args(instance.def_id(), instance.args, self.owner_fn_id);
+            for (source, source_args) in self.ctx.named_contract_sources(def_id, args, instance) {
+                if source != self.local_def_id.to_def_id() {
+                    let _ = self
+                        .ctx
+                        .def_ty_with_args(source, source_args, self.owner_fn_id);
+                }
             }
         }
     }

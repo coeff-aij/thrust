@@ -4,8 +4,7 @@
 // A `post!` of a trait method at a type parameter, written in the body of a predicate, takes the
 // method's trait-level contract, so a postcondition that contradicts it is refuted.
 use thrust_models::Model;
-// `f` is verified once over `A`; a call at `i32` is not made, since `<i32 as Clone>::clone` resolves to
-// core's impl, which a `post!` names without a contract (the same in an `ensures`).
+// `f` is verified once over `A`; `post_at_concrete_type_generic.rs` calls a function whose `ensures` names the method at `i32`.
 
 #[thrust_macros::predicate]
 fn rel<A: Clone>(x: A, y: A) -> bool {

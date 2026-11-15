@@ -1931,12 +1931,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 // A trait-level spec of `std.rs` describes std's impls and the crate's own, whose
                 // bodies are checked against it; an impl from another crate is checked by
                 // nothing, so it takes no trait-level spec.
-                let unchecked_foreign_impl = resolved_def_id != def_id
-                    && !resolved_def_id.is_local()
-                    && !matches!(
-                        self.tcx.crate_name(resolved_def_id.krate).as_str(),
-                        "std" | "core" | "alloc"
-                    );
+                let unchecked_foreign_impl =
+                    analyze::is_unchecked_foreign_impl(self.tcx, def_id, resolved_def_id);
                 if unchecked_foreign_impl {
                     return self.unspecified_extern_ty(def_id, resolved_def_id, resolved_args);
                 }

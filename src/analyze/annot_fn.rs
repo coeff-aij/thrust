@@ -1954,11 +1954,14 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 .type_builder
                 .build_unspecified_method_type(def_id, generic_args);
         };
-        let fn_ty = self.analyzer.known_function_ty_with_args(
-            instance.def_id(),
-            instance.args,
-            owner_fn_id,
-        );
+        let fn_ty = self
+            .analyzer
+            .named_contract_sources(def_id, generic_args, instance)
+            .into_iter()
+            .find_map(|(source, args)| {
+                self.analyzer
+                    .known_function_ty_with_args(source, args, owner_fn_id)
+            });
         fn_ty.unwrap_or_else(|| {
             self.tcx.dcx().span_fatal(
                 span,
