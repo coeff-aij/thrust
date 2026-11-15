@@ -519,6 +519,24 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
     ) {
     }
 
+    /// The index constructions `layout_pre` allows: `FieldIdx::new(k)` up to the number of fields
+    /// and `VariantIdx::new(0)`. A lemma of its own, as `fields_ok_of_layout_pre`.
+    #[thrust_macros::requires(Self::layout_pre::<FieldIdx, VariantIdx, F>(*self, fields, kind))]
+    #[thrust_macros::ensures(forall(|k: USize| !(0 <= k && k <= (*fields).len()) || <FieldIdx as Idx>::can_new(k)))]
+    #[thrust_macros::ensures(forall(|z: USize| !(z == 0usize) || <VariantIdx as Idx>::can_new(z)))]
+    #[thrust::reveal(LayoutCalculator::layout_pre)]
+    fn can_new_of_layout_pre<
+        'a,
+        FieldIdx: Idx + thrust_models::Model,
+        VariantIdx: Idx,
+        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model,
+    >(
+        &self,
+        fields: &IndexSlice<FieldIdx, F>,
+        kind: StructKind,
+    ) {
+    }
+
     /// `ts` holds each field's weight: its size and twice its alignment's bytes.
     #[thrust_macros::predicate]
     fn weights_are<
@@ -918,14 +936,12 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                                 #[cfg(thrust_univariant_biased_reach = "map_or")]
                                 thrust_macros::proof_assert!(|x: FieldIdx| false);
 
-                                // Fallback: the capture `dl` bound to a
-                                // local by `as_local` (below), so that an `assume!` can state
-                                // `alignment_group_key`'s `requires` at this call. It holds in
-                                // rustc: `f` is the field at `x`, whose niche is well formed by
-                                // this closure's `requires`; the solver does not answer it (killed
-                                // for memory).
+                                // The capture `dl` bound to a local by `as_local` (below), so that a
+                                // `proof_assert!` can state `alignment_group_key`'s `requires` at
+                                // this call: `f` is the field at `x`, whose niche is well formed by
+                                // this closure's `requires`.
                                 let key_dl: &TargetDataLayout = as_local(dl);
-                                thrust_macros::assume!(|f: &F, key_dl: &TargetDataLayout|
+                                thrust_macros::proof_assert!(|f: &F, key_dl: &TargetDataLayout|
                                     forall(|d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche|
                                         !(thrust_macros::post!(<F as core::ops::Deref>::deref(f), d) && (**d).largest_niche == Some(n))
                                             || Niche::wf_in(n, *key_dl)));
@@ -1152,9 +1168,9 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
 
         let seed = field_seed.wrapping_add(repr.field_shuffle_seed);
 
-        // Assumed (fallback, with fptprove): delete once the solver answers it.
-        // `VariantIdx::new(0)`'s requires.
-        thrust_macros::assume!(|kind: StructKind| forall(|z: USize| z == 0usize ==> <VariantIdx as Idx>::can_new(z)));
+        // `VariantIdx::new(0)`'s requires, from `layout_pre` by `can_new_of_layout_pre`.
+        self.can_new_of_layout_pre::<FieldIdx, VariantIdx, F>(fields, kind);
+        thrust_macros::proof_assert!(|kind: StructKind| forall(|z: USize| z == 0usize ==> <VariantIdx as Idx>::can_new(z)));
         #[cfg(thrust_univariant_biased_reach = "variant_index")]
         thrust_macros::proof_assert!(|kind: StructKind| false);
         LayoutData {
@@ -1220,9 +1236,9 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         let optimize_abi = !repr.inhibit_newtype_abi_optimization();
 
         if sized && size.bytes() > 0 {
-            // Assumed (fallback, with fptprove): delete once the solver answers it.
-            // `iter_enumerated`'s requires.
-            thrust_macros::assume!(|fields: &IndexSlice<FieldIdx, F>| <FieldIdx as Idx>::can_new((*fields).len()));
+            // `iter_enumerated`'s requires, from `layout_pre` by `can_new_of_layout_pre`.
+            self.can_new_of_layout_pre::<FieldIdx, VariantIdx, F>(fields, kind);
+            thrust_macros::proof_assert!(|fields: &IndexSlice<FieldIdx, F>| <FieldIdx as Idx>::can_new((*fields).len()));
             #[cfg(thrust_univariant_biased_reach = "iter_enumerated")]
             thrust_macros::proof_assert!(|kind: StructKind| false);
             // Rewrite (rewrites.md R8): `Filter::new(it, p)` for `it.filter(p)`.
