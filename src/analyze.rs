@@ -1269,6 +1269,34 @@ impl<'tcx> Analyzer<'tcx> {
             && self.trait_method_contract_written(def_id)
     }
 
+    /// The functions whose contract a `pre!`/`post!` naming the trait method `def_id` at `args`
+    /// reads when the path resolves to `instance`, in the order a call takes them: the impl's own
+    /// contract (an extern spec of a std impl, a local impl method's contract), then the
+    /// trait-level spec, which describes std's impls and the crate's own, whose bodies are
+    /// checked against it. An impl of another crate is checked by nothing, so it has none.
+    pub fn named_contract_sources(
+        &self,
+        def_id: DefId,
+        args: mir_ty::GenericArgsRef<'tcx>,
+        instance: mir_ty::Instance<'tcx>,
+    ) -> Vec<(DefId, mir_ty::GenericArgsRef<'tcx>)> {
+        let resolved = instance.def_id();
+        let mut sources = Vec::new();
+        if resolved != def_id && !self.takes_trait_contract(def_id, resolved) {
+            sources.push((resolved, instance.args));
+        }
+        let unchecked_foreign_impl = resolved != def_id
+            && !resolved.is_local()
+            && !matches!(
+                self.tcx.crate_name(resolved.krate).as_str(),
+                "std" | "core" | "alloc"
+            );
+        if !unchecked_foreign_impl {
+            sources.push((def_id, args));
+        }
+        sources
+    }
+
     /// Stops if a function Thrust verifies can run an ignored function of the crate, as Verus's
     /// verified code may not use an `#[verifier::external]` item. An ignored function is
     /// invisible to the analysis, so a contract the verified code relies on it to meet (the
