@@ -2242,6 +2242,10 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 );
             };
             let param_ty = self.pat_ty(param.pat);
+            // The enums in the variable's type may occur nowhere else in the function or
+            // predicate, yet the query declares their datatypes.
+            self.analyzer
+                .register_enum_defs([param_ty], self.type_builder.clone());
             let param_rty = self.type_builder.build(param_ty);
             let sort = param_rty.to_sort();
             let var = self
