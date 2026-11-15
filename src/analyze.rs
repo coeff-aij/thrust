@@ -2554,7 +2554,8 @@ impl<'tcx> Analyzer<'tcx> {
         reach
     }
 
-    /// Whether `def_id` has a contract of its own (a written one or a spec).
+    /// Whether `def_id` has a contract of its own (a written one or a spec); the error for a
+    /// `pre!`/`post!` that finds none is narrowed to methods with a contract of their own.
     pub fn has_def_ty(&self, def_id: DefId) -> bool {
         self.defs.contains_key(&def_id)
     }
