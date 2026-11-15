@@ -1287,13 +1287,13 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                                 && forall(|z: USize| z == 0usize ==> <VariantIdx as Idx>::can_new(z))
                                 && forall(|k: USize| k == 0usize || k == 1usize ==> <FieldIdx as Idx>::can_new(k)));
                         let pair = LayoutData::<FieldIdx, VariantIdx>::scalar_pair(&self.cx, a, b);
-                        // Assumed (fallback, with fptprove): delete once the solver answers them.
-                        // The match's panicking arm is unreachable: `scalar_pair`'s `ensures` makes the fields `Arbitrary`.
+                        // Checked: the match's panicking arm is unreachable, because `scalar_pair`'s
+                        // `ensures` makes the fields `Arbitrary`; this is `arbitrary_parts`'s `requires`.
                         thrust_macros::proof_assert!(|pair: LayoutData<FieldIdx, VariantIdx>| matches!(pair.fields, FieldsShape::Arbitrary { .. }));
                         #[cfg(thrust_univariant_biased_reach = "scalar_pair")]
                         thrust_macros::proof_assert!(|kind: StructKind| false);
-                        // Trusted: the match on the pair's fields, through
-                        // `arbitrary_parts` at the end of this file.
+                        // The match on the pair's fields, through `arbitrary_parts` at the end of
+                        // this file (checked against its contract).
                         let pair_offsets = {
                             let (offsets, in_memory_order) = arbitrary_parts(&pair.fields);
                             // `FieldIdx::new(0)` and `FieldIdx::new(1)`'s requires, checked here.
@@ -1699,10 +1699,10 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
     }
 }
 
-// Fallback: the match on a scalar pair's fields there,
-// trusted on its contract. The solver does not answer that its panicking arm is unreachable, even
-// right after the `assume!` that the fields are `Arbitrary`. The contract is what the match does:
-// it panics unless the fields are `Arbitrary`, and gives their offsets and memory order.
+// The match on a scalar pair's fields, split out of `univariant_biased` so that its contract names
+// what it does: it panics unless the fields are `Arbitrary`, and gives their offsets and memory
+// order. It is checked against that contract, where `univariant_biased.rs` selects it; its
+// `requires` is the `proof_assert!` after the call of `scalar_pair`.
 #[thrust_macros::requires(matches!(*fields, FieldsShape::Arbitrary { .. }))]
 #[thrust_macros::ensures(exists(|o: IndexVec<FieldIdx, Size>, m: IndexVec<u32, FieldIdx>,
         os: Seq<Size>, ms: Seq<<FieldIdx as thrust_models::Model>::Ty>|
