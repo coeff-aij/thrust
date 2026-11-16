@@ -1006,6 +1006,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         super::Primitive::size_in,
         super::FieldsShape::arbitrary_of
     )]
+    #[thrust::split_goals]
     fn univariant_biased_place<
         'a,
         FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
@@ -1053,6 +1054,8 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         // the error `place_fields`'s contract describes reaches the return without the
         // `Try::branch` and `FromResidual::from_residual` calls of `?`'s desugaring.
         Self::fields_ok_of_layout_pre::<FieldIdx, VariantIdx, F>(self, fields, kind, dl);
+        let offset0 = offset;
+        let align0 = align;
         let unsized_field = match Self::place_fields::<FieldIdx, VariantIdx, F>(
             fields,
             &in_memory_order,
@@ -1071,6 +1074,98 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
             Err(e) => return Err(e),
         };
 
+        // Rewrite (rewrites.md R25): the code after the field loop in `univariant_biased_close`,
+        // whose `requires` restate what `place_fields` ensures when it returns `Ok`.
+        Self::univariant_biased_close::<FieldIdx, VariantIdx, F>(
+            self, fields, repr, kind, niche_bias, dl, offsets, in_memory_order, largest_niche, align0, offset0,
+            align, offset, max_repr_align, unsized_field.is_none(), field_seed,
+        )
+    }
+
+    /// `univariant_biased_place` from the end of the field loop on: the alignment and size of the
+    /// placed fields and the size check. Its `requires` are what `place_fields` ensures when it
+    /// returns `Ok`, with `align0` and `offset0` the alignment and offset before the loop.
+    #[thrust_macros::requires(Self::layout_pre::<FieldIdx, VariantIdx, F>(*self, fields, kind))]
+    #[thrust_macros::requires(Self::deref_functional::<FieldIdx, VariantIdx, F>())]
+    #[thrust_macros::requires(Cx::dl_of(*self, *dl))]
+    #[thrust_macros::requires((*dl).default_address_space_pointer_spec.pointer_size.raw == 2
+        || (*dl).default_address_space_pointer_spec.pointer_size.raw == 4
+        || (*dl).default_address_space_pointer_spec.pointer_size.raw == 8)]
+    #[thrust_macros::requires(offsets.len() == (*fields).len())]
+    #[thrust_macros::requires(!Self::unsized_misplaced::<FieldIdx, VariantIdx, F>(fields, kind))]
+    #[thrust_macros::requires(offset.raw <= 4611686018427387904u64 && niche_ends_by(largest_niche, *dl, offset))]
+    #[thrust_macros::requires(forall(|ts: Seq<Int>, q: USize, q0: USize|
+        !(Self::weights_are::<FieldIdx, VariantIdx, F>(fields, ts) && q == align.pow2 && q0 == align0.pow2)
+        || offset.raw + pow2(q) <= offset0.raw + pow2(q0) + sum_first(ts, (*fields).len())))]
+    #[thrust_macros::requires(largest_niche != None ==> Self::some_field_niche::<FieldIdx, VariantIdx, F>(fields))]
+    #[thrust_macros::requires(!(matches!(niche_bias, NicheBias::End) && Self::some_field_niche::<FieldIdx, VariantIdx, F>(fields))
+        || largest_niche != None)]
+    #[thrust_macros::ensures(forall(|l: LayoutData<FieldIdx, VariantIdx>|
+        result != Ok(l) || FieldsShape::<FieldIdx>::arbitrary_of(l.fields, (*fields).len())))]
+    #[thrust_macros::ensures(forall(|l: LayoutData<FieldIdx, VariantIdx>, dl: TargetDataLayout, s: USize, q: USize|
+        !(result == Ok(l)
+            && Cx::dl_of(*self, dl)
+            && Self::weighs::<FieldIdx, VariantIdx, F>(fields, repr, kind, dl, s)
+            && q == l.align.abi.pow2)
+            || (l.size.raw < s && pow2(q) <= s)))]
+    #[thrust_macros::ensures(forall(|l: LayoutData<FieldIdx, VariantIdx>, dl: TargetDataLayout|
+        !(result == Ok(l) && Cx::dl_of(*self, dl)) || l.size.raw < super::obj_bound(dl)))]
+    #[thrust_macros::ensures(forall(|e: LayoutCalculatorError<<F as thrust_models::Model>::Ty>|
+        result != Err(e)
+            || e == LayoutCalculatorError::SizeOverflow
+            || exists(|f: <F as thrust_models::Model>::Ty| e == LayoutCalculatorError::UnexpectedUnsized(f))))]
+    #[thrust_macros::ensures(!exists(|f: <F as thrust_models::Model>::Ty| result == Err(LayoutCalculatorError::UnexpectedUnsized(f)))
+        || Self::unsized_misplaced::<FieldIdx, VariantIdx, F>(fields, kind))]
+    #[thrust_macros::ensures(!Self::unsized_misplaced::<FieldIdx, VariantIdx, F>(fields, kind)
+        || exists(|f: <F as thrust_models::Model>::Ty| result == Err(LayoutCalculatorError::UnexpectedUnsized(f)))
+        || result == Err(LayoutCalculatorError::SizeOverflow))]
+    #[thrust_macros::ensures(!Self::fits_in_any_order::<FieldIdx, VariantIdx, F>(*self, fields, repr, kind)
+        || result != Err(LayoutCalculatorError::SizeOverflow))]
+    #[thrust_macros::ensures(forall(|l: LayoutData<FieldIdx, VariantIdx>| result != Ok(l)
+        || ((!(matches!(niche_bias, NicheBias::Start) && l.largest_niche != None)
+                || Self::some_field_niche::<FieldIdx, VariantIdx, F>(fields))
+            && (!(matches!(niche_bias, NicheBias::End) && Self::some_field_niche::<FieldIdx, VariantIdx, F>(fields))
+                || l.largest_niche != None))))]
+    #[thrust_macros::ensures(forall(|l: LayoutData<FieldIdx, VariantIdx>, n: Niche, dl: TargetDataLayout, s: Size|
+        !(result == Ok(l) && l.largest_niche == Some(n) && Cx::dl_of(*self, dl))
+            || (Niche::wf_in(n, dl) && (!Primitive::size_in(n.value, dl, s) || n.offset.raw + s.raw <= l.size.raw))))]
+    #[thrust::reveal(
+        LayoutCalculator::univariant_biased_post,
+        LayoutCalculator::layout_pre,
+        LayoutCalculator::fits_in_any_order,
+        LayoutCalculator::weighs,
+        LayoutCalculator::unsized_misplaced,
+        LayoutCalculator::some_field_niche,
+        super::Primitive::size_in,
+        super::FieldsShape::arbitrary_of
+    )]
+    #[thrust::split_goals]
+    fn univariant_biased_close<
+        'a,
+        FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
+        VariantIdx: Idx + thrust_models::Model<Ty: PartialEq>,
+        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + thrust_models::Model<Ty: PartialEq>,
+    >(
+        &self,
+        fields: &IndexSlice<FieldIdx, F>,
+        repr: &ReprOptions,
+        kind: StructKind,
+        niche_bias: NicheBias,
+        dl: &TargetDataLayout,
+        offsets: IndexVec<FieldIdx, Size>,
+        in_memory_order: IndexVec<u32, FieldIdx>,
+        largest_niche: Option<Niche>,
+        align0: Align,
+        offset0: Size,
+        mut align: Align,
+        offset: Size,
+        max_repr_align: Option<Align>,
+        sized: bool,
+        field_seed: Hash64,
+    ) -> LayoutCalculatorResult<FieldIdx, VariantIdx, F>
+    where
+        Cx: thrust_models::Model<Ty: PartialEq>,
+    {
         let unadjusted_abi_align = align;
         if let Some(repr_align) = repr.align {
             align = align.max(repr_align);
@@ -1089,7 +1184,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         // `univariant_biased_finish`, whose `ensures` give the fields the postcondition reads.
         Ok(self.univariant_biased_finish::<FieldIdx, VariantIdx, F>(
             fields, repr, kind, offsets, in_memory_order, largest_niche, align, size, max_repr_align,
-            unadjusted_abi_align, unsized_field.is_none(), field_seed,
+            unadjusted_abi_align, sized, field_seed,
         ))
     }
 
