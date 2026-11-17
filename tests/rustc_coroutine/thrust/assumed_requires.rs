@@ -23,7 +23,7 @@ where
     P: Fn(&I::Item) -> bool,
     I::Item: thrust_models::Model,
 {
-    thrust_macros::assume!(|iter: I, predicate: P| I::inv(iter)
+    thrust_macros::proof_assert!(|iter: I, predicate: P| I::inv(iter)
         && Filter::<I, P>::reinitialize()
         && Filter::<I, P>::pre_all(iter, predicate));
     Filter::new(iter, predicate)
@@ -47,7 +47,7 @@ where
     P: Fn(&I::Item) -> bool,
     I::Item: thrust_models::Model,
 {
-    thrust_macros::assume!(|it: &mut Filter<I, P>| <Filter<I, P> as IteratorSpec>::inv(*it));
+    thrust_macros::proof_assert!(|it: &mut Filter<I, P>| <Filter<I, P> as IteratorSpec>::inv(*it));
     it.next()
 }
 
@@ -65,7 +65,7 @@ where
     U: thrust_models::Model,
     F: FnOnce(T) -> U,
 {
-    thrust_macros::assume!(|opt: Option<T>, f: F|
+    thrust_macros::proof_assert!(|opt: Option<T>, f: F|
         opt == None || exists(|i: <T as thrust_models::Model>::Ty| opt == Some(i) && thrust_macros::pre!(f(i))));
     opt.map_or(default, f)
 }
@@ -95,7 +95,7 @@ where
     K: Ord,
     F: FnMut(&T) -> K,
 {
-    thrust_macros::assume!(|slice: &mut [T], f: F|
+    thrust_macros::proof_assert!(|slice: &mut [T], f: F|
         forall(|c: Closure<F>, i: Int|
             (thrust_macros::hist_inv!(f, c) && 0 <= i && i < (*slice).len())
                 ==> thrust_macros::pre!(c(&(*slice)[i]))));
