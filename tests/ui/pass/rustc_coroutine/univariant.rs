@@ -41,7 +41,7 @@ fn drive<
     Cx: HasDataLayout + thrust_models::Model<Ty: PartialEq>,
     FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
     VariantIdx: Idx + thrust_models::Model<Ty: PartialEq>,
-    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + thrust_models::Model<Ty: PartialEq>,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + rustc_abi::Weighted + thrust_models::Model<Ty: PartialEq>,
 >(
     calc: &LayoutCalculator<Cx>,
     fields: &IndexSlice<FieldIdx, F>,

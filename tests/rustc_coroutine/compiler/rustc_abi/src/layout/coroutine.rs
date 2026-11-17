@@ -648,7 +648,7 @@ fn assigned_count_of<FieldIdx: Idx + thrust_models::Model, LocalIdx: Idx + thrus
 #[thrust::split_goals]
 fn variant_field_layouts<
     'a,
-    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + super::Weighted + thrust_models::Model,
     VariantIdx: Idx + thrust_models::Model,
     FieldIdx: Idx + thrust_models::Model,
     LocalIdx: Idx + thrust_models::Model,
@@ -1082,7 +1082,7 @@ fn split_in_memory_order<FieldIdx: Idx + thrust_models::Model>(
 #[thrust::reveal(layouts_wf)]
 fn promote_locals<
     'a,
-    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + super::Weighted + thrust_models::Model,
     VariantIdx: Idx + thrust_models::Model,
     FieldIdx: Idx + thrust_models::Model,
     LocalIdx: Idx + thrust_models::Model,
@@ -1188,7 +1188,7 @@ fn split_prefix_fields<FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>>(
 #[thrust::opaque]
 fn layout_wf<
     'a,
-    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + super::Weighted + thrust_models::Model,
     FieldIdx: Idx + thrust_models::Model,
     VariantIdx: Idx + thrust_models::Model,
     C: HasDataLayout,
@@ -1224,7 +1224,7 @@ fn layout_wf<
 fn layouts_wf<
     'a,
     I: Idx + thrust_models::Model,
-    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + super::Weighted + thrust_models::Model,
     FieldIdx: Idx + thrust_models::Model,
     VariantIdx: Idx + thrust_models::Model,
     C: HasDataLayout,
@@ -1251,7 +1251,7 @@ fn layouts_wf<
 #[thrust::reveal(layouts_wf)]
 fn layouts_wf_of_entries<
     'a,
-    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + super::Weighted + thrust_models::Model,
     VariantIdx: Idx + thrust_models::Model,
     FieldIdx: Idx + thrust_models::Model,
     LocalIdx: Idx + thrust_models::Model,
@@ -1284,7 +1284,7 @@ fn layouts_wf_of_entries<
 #[thrust::reveal(super::LayoutCalculator::layout_pre, layouts_wf, layout_wf)]
 fn layout_pre_of_wf<
     'a,
-    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + super::Weighted + thrust_models::Model,
     VariantIdx: Idx + thrust_models::Model,
     FieldIdx: Idx + thrust_models::Model,
     C: HasDataLayout,
@@ -1337,7 +1337,7 @@ fn layout_pre_of_wf<
 #[thrust::opaque]
 fn variant_env_wf<
     'a,
-    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + super::Weighted + thrust_models::Model,
     VariantIdx: Idx + thrust_models::Model,
     FieldIdx: Idx + thrust_models::Model,
     LocalIdx: Idx + thrust_models::Model,
@@ -1365,7 +1365,7 @@ fn variant_env_wf<
 #[thrust::opaque]
 fn variant_entries_wf<
     'a,
-    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + super::Weighted + thrust_models::Model,
     VariantIdx: Idx + thrust_models::Model,
     FieldIdx: Idx + thrust_models::Model,
     LocalIdx: Idx + thrust_models::Model,
@@ -1444,7 +1444,7 @@ fn variant_promoted_wf<VariantIdx: Idx + thrust_models::Model, FieldIdx: Idx + t
 #[thrust::reveal(variant_env_wf)]
 fn variant_env_of<
     'a,
-    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + super::Weighted + thrust_models::Model,
     VariantIdx: Idx + thrust_models::Model,
     FieldIdx: Idx + thrust_models::Model,
     LocalIdx: Idx + thrust_models::Model,
@@ -1496,7 +1496,7 @@ fn variant_env_of<
 #[thrust::reveal(variant_entries_wf)]
 fn variant_entries_of<
     'a,
-    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + super::Weighted + thrust_models::Model,
     VariantIdx: Idx + thrust_models::Model,
     FieldIdx: Idx + thrust_models::Model,
     LocalIdx: Idx + thrust_models::Model,
@@ -1608,7 +1608,7 @@ fn prefix_wf_of<C: HasDataLayout>(calc: &LayoutCalculator<C>, prefix_size: Size,
 #[thrust::reveal(super::LayoutCalculator::fits_in_any_order)]
 fn prefix_fits_bound<
     'a,
-    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model<Ty: PartialEq>,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + super::Weighted + thrust_models::Model<Ty: PartialEq>,
     VariantIdx: Idx,
     FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
     C: HasDataLayout,
@@ -1633,7 +1633,7 @@ fn prefix_fits_bound<
 #[thrust::opaque]
 fn variant_fits_wf<
     'a,
-    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + thrust_models::Model<Ty: PartialEq>,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + super::Weighted + thrust_models::Model<Ty: PartialEq>,
     VariantIdx: Idx + thrust_models::Model,
     FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
     LocalIdx: Idx + thrust_models::Model,
@@ -1673,7 +1673,7 @@ fn variant_fits_wf<
 #[thrust::split_goals]
 fn variant_layout<
     'a,
-    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + thrust_models::Model<Ty: PartialEq>,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + super::Weighted + thrust_models::Model<Ty: PartialEq>,
     VariantIdx: Idx + thrust_models::Model,
     FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
     LocalIdx: Idx + thrust_models::Model,
@@ -1878,7 +1878,7 @@ fn variant_layout<
 pub fn layout<
     'a,
     // `Ty: PartialEq`, as `fits_in_any_order` bounds it, for the two `assume!`s that state it.
-    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + thrust_models::Model<Ty: PartialEq>,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + super::Weighted + thrust_models::Model<Ty: PartialEq>,
     VariantIdx: Idx + thrust_models::Model,
     FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
     LocalIdx: Idx + thrust_models::Model,
