@@ -115,6 +115,17 @@ pub(crate) fn weight_seq_len<F: Weighted>(k: usize) {
     }
 }
 
+/// The weights of the first `k` fields of `s` are `k` weights.
+#[thrust_macros::context]
+#[thrust_macros::lemma]
+#[thrust_macros::variant(k)]
+#[thrust_macros::ensures(weight_seq::<F>(s, k).len() == k)]
+pub(crate) fn weight_seq_len_of<F: Weighted>(s: Ghost<Seq<<F as thrust_models::Model>::Ty>>, k: usize) {
+    if k > 0 {
+        weight_seq_len_of::<F>(s, k - 1);
+    }
+}
+
 /// Entry `i` of the weights of the first `k` fields is field `i`'s weight.
 #[thrust_macros::context]
 #[thrust_macros::lemma]
@@ -141,10 +152,11 @@ pub(crate) fn weight_first_is_sum_first(k: usize) {
 /// A sequence pushed with one more entry keeps the sum of its first `k` entries.
 #[thrust_macros::lemma]
 #[thrust_macros::variant(k)]
-#[thrust_macros::ensures(forall(|ts: Seq<Int>, w: Int| k <= ts.len() ==> sum_first(ts.push(w), k) == sum_first(ts, k)))]
-pub(crate) fn sum_first_push_prefix(k: usize) {
+#[thrust_macros::requires(k <= ts.len())]
+#[thrust_macros::ensures(sum_first(ts.push(w), k) == sum_first(ts, k))]
+pub(crate) fn sum_first_push_prefix(ts: Ghost<Seq<Int>>, w: Ghost<Int>, k: usize) {
     if k > 0 {
-        sum_first_push_prefix(k - 1);
+        sum_first_push_prefix(ts, w, k - 1);
     }
 }
 
@@ -152,11 +164,11 @@ pub(crate) fn sum_first_push_prefix(k: usize) {
 #[thrust_macros::context]
 #[thrust_macros::lemma]
 #[thrust_macros::variant(k)]
-#[thrust_macros::ensures(forall(|s: Seq<<F as thrust_models::Model>::Ty>, x: <F as thrust_models::Model>::Ty|
-    k <= s.len() ==> weight_seq::<F>(s.push(x), k) == weight_seq::<F>(s, k)))]
-pub(crate) fn weight_seq_push_prefix<F: Weighted>(k: usize) {
+#[thrust_macros::requires(k <= s.len())]
+#[thrust_macros::ensures(weight_seq::<F>(s.push(x), k) == weight_seq::<F>(s, k))]
+pub(crate) fn weight_seq_push_prefix<F: Weighted>(s: Ghost<Seq<<F as thrust_models::Model>::Ty>>, x: F, k: usize) {
     if k > 0 {
-        weight_seq_push_prefix::<F>(k - 1);
+        weight_seq_push_prefix::<F>(s, x, k - 1);
     }
 }
 
@@ -168,8 +180,11 @@ pub(crate) fn weight_seq_push_prefix<F: Weighted>(k: usize) {
     sum_first(weight_seq::<F>(s.push(x), s.len() + 1), s.len() + 1)
         == sum_first(weight_seq::<F>(s, s.len()), s.len()) + F::weight_of(x))]
 pub(crate) fn weight_total_push<F: Weighted>(s: Ghost<Seq<<F as thrust_models::Model>::Ty>>, x: F, n: usize) {
-    weight_seq_push_prefix::<F>(n);
-    sum_first_push_prefix(n);
+    weight_seq_push_prefix::<F>(s, x, n);
+    weight_seq_len_of::<F>(s, n);
+    let ts = thrust_macros::ghost!(|s: Ghost<Seq<<F as thrust_models::Model>::Ty>>, n: usize| -> Seq<Int> { weight_seq::<F>(s, n) });
+    let w = thrust_macros::ghost!(|x: F| -> Int { F::weight_of(x) });
+    sum_first_push_prefix(ts, w, n);
 }
 
 /// The sum of the first `k` entries of `ts`. A sum, it is an `Int` over `Int`s, as `ones` is: at
@@ -622,7 +637,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         'a,
         FieldIdx: Idx + thrust_models::Model,
         VariantIdx: Idx,
-        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model,
+        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + Weighted + thrust_models::Model,
     >(
         &self,
         fields: &IndexSlice<FieldIdx, F>,

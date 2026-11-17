@@ -1992,7 +1992,7 @@ fn assigned_here<FieldIdx: Idx + thrust_models::Model, LocalIdx: Idx + thrust_mo
 #[thrust::reveal(variant_entries_wf, assigned_here)]
 fn assigned_here_of<
     'a,
-    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + super::Weighted + thrust_models::Model,
     VariantIdx: Idx + thrust_models::Model,
     FieldIdx: Idx + thrust_models::Model,
     LocalIdx: Idx + thrust_models::Model,
