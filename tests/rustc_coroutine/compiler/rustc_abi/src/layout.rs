@@ -853,12 +853,11 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
 
                 match kind {
                     StructKind::AlwaysSized | StructKind::MaybeUnsized => {
-                        // Fallback: `sort_by_key` with its `requires` assumed, by
-                        // `sort_by_key_assumed` of thrust/assumed_requires.rs, as the key closure's type
-                        // cannot be written in an `assume!` here; restore `optimizing.sort_by_key`
-                        // once the solver answers it.
-                        crate::case_study::assumed_requires::sort_by_key_assumed(optimizing, thrust_macros::closure!(
-                            captures(fields: &mut &IndexSlice<FieldIdx, F>, dl: &mut &&TargetDataLayout),
+                        // Fallback: `sort_by_key` with its `requires` assumed (a goal of
+                        // `univariant_biased` the solver does not answer); restore it without the
+                        // `assume!` once the solver answers it.
+                        let sort_key = thrust_macros::closure!(
+                            captures(fields: &&IndexSlice<FieldIdx, F>, dl: &&&TargetDataLayout),
                             requires(LayoutCalculator::<Cx>::deref_functional::<FieldIdx, VariantIdx, F>()),
                             requires(forall(|i: USize| !<FieldIdx as Idx>::index_is(x, i) || i < (**fields).len())),
                             requires(forall(|i: USize, d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche|
@@ -878,24 +877,36 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                                 // Fallback (open `map_or` goals): the three `map_or` calls with their
                                 // preconditions assumed; restore `f.largest_niche.map_or(..)` once
                                 // the solver answers them.
-                                let niche_size = crate::case_study::assumed_requires::map_or_assumed(f.largest_niche, 0, thrust_macros::closure!(
+                                let niche = f.largest_niche;
+                                let size_of_niche = thrust_macros::closure!(
                                     captures(dl: &&&TargetDataLayout),
                                     requires(Niche::wf_in(n, ***dl)),
                                     ensures(true),
                                     |n: Niche| -> u128 { n.available(dl) },
-                                ));
+                                );
+                                thrust_macros::assume!(|niche: Option<Niche>, size_of_niche: _|
+                                    niche == None || exists(|i: <Niche as thrust_models::Model>::Ty| niche == Some(i) && thrust_macros::pre!(size_of_niche(i))));
+                                let niche_size = niche.map_or(0, size_of_niche);
                                 let niche_size_key = match niche_bias {
                                     NicheBias::Start => !niche_size,
 
                                     NicheBias::End => niche_size,
                                 };
                                 let inner_niche_offset_key = match niche_bias {
-                                    NicheBias::Start => crate::case_study::assumed_requires::map_or_assumed(f.largest_niche, 0, thrust_macros::closure!(
-                                        requires(true),
-                                        ensures(true),
-                                        |n: Niche| -> u64 { n.offset.bytes() },
-                                    )),
-                                    NicheBias::End => crate::case_study::assumed_requires::map_or_assumed(f.largest_niche, 0, thrust_macros::closure!(
+                                    NicheBias::Start => {
+                                        let niche = f.largest_niche;
+                                        let offset_of_niche = thrust_macros::closure!(
+                                            requires(true),
+                                            ensures(true),
+                                            |n: Niche| -> u64 { n.offset.bytes() },
+                                        );
+                                        thrust_macros::assume!(|niche: Option<Niche>, offset_of_niche: _|
+                                            niche == None || exists(|i: <Niche as thrust_models::Model>::Ty| niche == Some(i) && thrust_macros::pre!(offset_of_niche(i))));
+                                        niche.map_or(0, offset_of_niche)
+                                    }
+                                    NicheBias::End => {
+                                        let niche = f.largest_niche;
+                                        let end_offset_of_niche = thrust_macros::closure!(
                                         captures(field_size: &u64, dl: &&&TargetDataLayout),
                                         requires(Niche::wf_in(n, ***dl)),
                                         requires(forall(|s: Size| !Primitive::size_in(n.value, ***dl, s) || n.offset.raw + s.raw <= *field_size)),
@@ -913,7 +924,11 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                                             thrust_macros::proof_assert!(|n: Niche, field_size: u64, value_size: u64| n.offset.raw <= field_size - value_size);
                                             !(field_size - value_size - n.offset.bytes())
                                         },
-                                    )),
+                                        );
+                                        thrust_macros::assume!(|niche: Option<Niche>, end_offset_of_niche: _|
+                                            niche == None || exists(|i: <Niche as thrust_models::Model>::Ty| niche == Some(i) && thrust_macros::pre!(end_offset_of_niche(i))));
+                                        niche.map_or(0, end_offset_of_niche)
+                                    }
                                 };
                                 #[cfg(thrust_univariant_biased_reach = "map_or")]
                                 thrust_macros::proof_assert!(|x: FieldIdx| false);
@@ -935,7 +950,12 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                                     inner_niche_offset_key,
                                 )
                             },
-                        ));
+                        );
+                        thrust_macros::assume!(|optimizing: &mut [FieldIdx], sort_key: _|
+                            forall(|c: thrust_models::model::Closure<_>, i: Int|
+                                (thrust_macros::hist_inv!(sort_key, c) && 0 <= i && i < (*optimizing).len())
+                                    ==> thrust_macros::pre!(c(&(*optimizing)[i]))));
+                        optimizing.sort_by_key(sort_key);
                         #[cfg(thrust_univariant_biased_reach = "sort")]
                         thrust_macros::proof_assert!(|kind: StructKind| false);
                     }
