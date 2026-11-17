@@ -4237,6 +4237,105 @@ where
             b == Some(x) && b2 == Some(x2) && B::produces(x, ys, x2))
 }
 
+// The three ways `Chain` produces a sequence: the first iterator is gone and the second produces it,
+// the first produces it and stays, or the first produces a part and completes, and the second produces
+// the rest.
+#[thrust_macros::predicate]
+fn _iter_spec_chain_second_only<A, B>(
+    s: core::iter::Chain<A, B>,
+    visited: thrust_models::model::Seq<<A::Item as thrust_models::Model>::Ty>,
+    o: core::iter::Chain<A, B>,
+) -> bool
+where
+    A: IteratorSpec,
+    B: IteratorSpec<Item = A::Item>,
+    A::Item: thrust_models::Model,
+{
+    s.0 == None && o.0 == None && _iter_spec_chain_second::<B>(s.1, visited, o.1)
+}
+
+#[thrust_macros::predicate]
+fn _iter_spec_chain_first_stays<A, B>(
+    s: core::iter::Chain<A, B>,
+    visited: thrust_models::model::Seq<<A::Item as thrust_models::Model>::Ty>,
+    o: core::iter::Chain<A, B>,
+) -> bool
+where
+    A: IteratorSpec,
+    B: IteratorSpec<Item = A::Item>,
+    A::Item: thrust_models::Model,
+{
+    thrust_models::exists(|x: <A as thrust_models::Model>::Ty, x2: <A as thrust_models::Model>::Ty|
+        s.0 == Some(x) && o.0 == Some(x2) && A::produces(x, visited, x2) && o.1 == s.1)
+}
+
+#[thrust_macros::predicate]
+fn _iter_spec_chain_first_ends<A, B>(
+    s: core::iter::Chain<A, B>,
+    visited: thrust_models::model::Seq<<A::Item as thrust_models::Model>::Ty>,
+    o: core::iter::Chain<A, B>,
+) -> bool
+where
+    A: IteratorSpec,
+    B: IteratorSpec<Item = A::Item>,
+    A::Item: thrust_models::Model,
+{
+    thrust_models::exists(|x: <A as thrust_models::Model>::Ty,
+                          x2: <A as thrust_models::Model>::Ty,
+                          x3: <A as thrust_models::Model>::Ty,
+                          xs: thrust_models::model::Seq<<A::Item as thrust_models::Model>::Ty>,
+                          ys: thrust_models::model::Seq<<A::Item as thrust_models::Model>::Ty>|
+        s.0 == Some(x)
+            && o.0 == None
+            && visited == xs.concat(ys)
+            && A::produces(x, xs, x2)
+            && A::completed(thrust_models::model::Mut::new(x2, x3))
+            && _iter_spec_chain_second::<B>(s.1, ys, o.1))
+}
+
+// What the second iterator contributes composes: B's law, by cases on whether it is still there.
+#[thrust_macros::lemma]
+#[thrust_macros::ensures(_iter_spec_chain_second::<B>(b1, ys, b2) && _iter_spec_chain_second::<B>(b2, zs, b3)
+    ==> _iter_spec_chain_second::<B>(b1, ys.concat(zs), b3))]
+fn _iter_spec_chain_second_trans<B>(
+    b1: thrust_models::Ghost<Option<B>>,
+    ys: thrust_models::Ghost<thrust_models::model::Seq<<B::Item as thrust_models::Model>::Ty>>,
+    b2: thrust_models::Ghost<Option<B>>,
+    zs: thrust_models::Ghost<thrust_models::model::Seq<<B::Item as thrust_models::Model>::Ty>>,
+    b3: thrust_models::Ghost<Option<B>>,
+)
+where
+    B: IteratorSpec,
+    B::Item: thrust_models::Model,
+{
+}
+
+// The cases of `Chain`'s `produces_trans`; the other pairs are ruled out by which iterator is still there.
+#[thrust_macros::lemma]
+#[thrust_macros::ensures(
+    (_iter_spec_chain_second_only::<A, B>(a, ab, b) && _iter_spec_chain_second_only::<A, B>(b, bc, c)
+        ==> _iter_spec_chain_second_only::<A, B>(a, ab.concat(bc), c))
+    && (_iter_spec_chain_first_stays::<A, B>(a, ab, b) && _iter_spec_chain_first_stays::<A, B>(b, bc, c)
+        ==> _iter_spec_chain_first_stays::<A, B>(a, ab.concat(bc), c))
+    && (_iter_spec_chain_first_stays::<A, B>(a, ab, b) && _iter_spec_chain_first_ends::<A, B>(b, bc, c)
+        ==> _iter_spec_chain_first_ends::<A, B>(a, ab.concat(bc), c))
+    && (_iter_spec_chain_first_ends::<A, B>(a, ab, b) && _iter_spec_chain_second_only::<A, B>(b, bc, c)
+        ==> _iter_spec_chain_first_ends::<A, B>(a, ab.concat(bc), c))
+)]
+fn _iter_spec_chain_trans_cases<A, B>(
+    a: thrust_models::Ghost<core::iter::Chain<A, B>>,
+    ab: thrust_models::Ghost<thrust_models::model::Seq<<A::Item as thrust_models::Model>::Ty>>,
+    b: thrust_models::Ghost<core::iter::Chain<A, B>>,
+    bc: thrust_models::Ghost<thrust_models::model::Seq<<A::Item as thrust_models::Model>::Ty>>,
+    c: thrust_models::Ghost<core::iter::Chain<A, B>>,
+)
+where
+    A: IteratorSpec,
+    B: IteratorSpec<Item = A::Item>,
+    A::Item: thrust_models::Model,
+{
+}
+
 #[thrust_macros::context]
 impl<A, B> IteratorSpec for core::iter::Chain<A, B>
 where
@@ -4252,20 +4351,9 @@ where
 
     #[thrust_macros::predicate]
     fn produces(self, visited: Vec<A::Item>, o: Self) -> bool {
-        (self.0 == None && o.0 == None && _iter_spec_chain_second::<B>(self.1, visited, o.1))
-            || thrust_models::exists(|x: <A as thrust_models::Model>::Ty, x2: <A as thrust_models::Model>::Ty|
-                self.0 == Some(x) && o.0 == Some(x2) && A::produces(x, visited, x2) && o.1 == self.1)
-            || thrust_models::exists(|x: <A as thrust_models::Model>::Ty,
-                                      x2: <A as thrust_models::Model>::Ty,
-                                      x3: <A as thrust_models::Model>::Ty,
-                                      xs: thrust_models::model::Seq<<A::Item as thrust_models::Model>::Ty>,
-                                      ys: thrust_models::model::Seq<<A::Item as thrust_models::Model>::Ty>|
-                self.0 == Some(x)
-                    && o.0 == None
-                    && visited == xs.concat(ys)
-                    && A::produces(x, xs, x2)
-                    && A::completed(thrust_models::model::Mut::new(x2, x3))
-                    && _iter_spec_chain_second::<B>(self.1, ys, o.1))
+        _iter_spec_chain_second_only::<A, B>(self, visited, o)
+            || _iter_spec_chain_first_stays::<A, B>(self, visited, o)
+            || _iter_spec_chain_first_ends::<A, B>(self, visited, o)
     }
 
     #[thrust_macros::predicate]
@@ -4293,11 +4381,8 @@ where
 
     fn produces_refl(a: &Self) {}
 
-    // Trusted: PCSat gives no answer on this law; its proof needs witnesses for the existential
-    // split points, which Thrust cannot give. It follows from the laws of `A` and `B` by cases on
-    // whether each of the two steps leaves the first iterator in place, with the steps that stay
-    // in `b` composed by `_iter_spec_chain_second` (B's law and the associativity of `concat`).
-    #[thrust::trusted]
+    // By the cases of `_iter_spec_chain_trans_cases`: the two steps leave the first iterator in place
+    // or not, and what the second iterator contributes composes by `_iter_spec_chain_second_trans`.
     fn produces_trans(
         a: &Self,
         ab: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
@@ -4305,6 +4390,14 @@ where
         bc: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
         c: &Self,
     ) {
+        let ga = thrust_macros::ghost!(|a: &Self| -> Self { *a });
+        let gb = thrust_macros::ghost!(|b: &Self| -> Self { *b });
+        let gc = thrust_macros::ghost!(|c: &Self| -> Self { *c });
+        let gab = thrust_macros::ghost!(|ab: thrust_models::model::Seq<<A::Item as thrust_models::Model>::Ty>| -> thrust_models::model::Seq<<A::Item as thrust_models::Model>::Ty> { ab });
+        let gbc = thrust_macros::ghost!(|bc: thrust_models::model::Seq<<A::Item as thrust_models::Model>::Ty>| -> thrust_models::model::Seq<<A::Item as thrust_models::Model>::Ty> { bc });
+        thrust_macros::proof!(_iter_spec_chain_trans_cases::<A, B>(ga, gab, gb, gbc, gc));
+        // Keeps the parameters live at the snapshots above.
+        let _live = (a, &ab, b, &bc, c);
     }
 }
 

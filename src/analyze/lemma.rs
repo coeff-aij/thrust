@@ -308,11 +308,21 @@ impl<'tcx> Checker<'tcx> {
             analyze::annot::predicate_path(),
             analyze::annot::formula_fn_path(),
         ];
-        let model_operation = def_id
+        let injected_std = def_id
             .as_local()
-            .is_some_and(|local| analyze::is_injected_std(self.tcx, local))
-            && (analyze::is_ignored(self.tcx, def_id) || Some(def_id) == self.proof_branch);
-        spec.iter().any(|path| self.has_attr(def_id, path)) || model_operation
+            .is_some_and(|local| analyze::is_injected_std(self.tcx, local));
+        // The branch `proof!` takes and the markers `ghost!` and `choose!` expand to are model
+        // operations wherever they are defined: `std.rs` compiled as a source file
+        // (THRUST_NO_INJECT_STD) defines its own, which its laws' proofs use.
+        let model_operation = (injected_std && analyze::is_ignored(self.tcx, def_id))
+            || Some(def_id) == self.proof_branch;
+        let marker = [
+            analyze::annot::ghost_marker_path(),
+            analyze::annot::choose_marker_path(),
+        ]
+        .iter()
+        .any(|path| self.has_attr(def_id, path));
+        spec.iter().any(|path| self.has_attr(def_id, path)) || marker || model_operation
     }
 
     /// The lemmas and the laws `lemma` calls, after checking that it calls nothing else that
