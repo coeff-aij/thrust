@@ -1349,20 +1349,6 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         (abi, unadjusted_abi_align)
     }
 
-    /// The write of a field's offset in `univariant_biased`'s field loop.
-    #[thrust_macros::requires(forall(|j: USize| !<FieldIdx as Idx>::index_is(i, j) || j < (*offsets).len()))]
-    #[thrust_macros::ensures((!offsets).len() == (*offsets).len())]
-    #[thrust_macros::ensures(forall(|j: USize| !<FieldIdx as Idx>::index_is(i, j) || (!offsets)[j] == value))]
-    #[thrust_macros::ensures(forall(|j: USize|
-        !(0 <= j && j < (*offsets).len() && !<FieldIdx as Idx>::index_is(i, j)) || (!offsets)[j] == (*offsets)[j]))]
-    fn set_offset<FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>>(
-        offsets: &mut IndexVec<FieldIdx, Size>,
-        i: FieldIdx,
-        value: Size,
-    ) {
-        offsets[i] = value;
-    }
-
     /// The niche choice of `univariant_biased`'s field loop for `field` placed at `offset`: the
     /// chosen niche ends by the field's end; it stays when the field has none and is never
     /// dropped, and with `End` the field's niche is taken while none has been.
@@ -1521,7 +1507,26 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         *max_repr_align = (*max_repr_align).max(field.max_repr_align);
 
         // debug!("univariant offset: {:?} field: {:#?}", offset, field);
-        Self::set_offset::<FieldIdx>(offsets, i, *offset);
+        // Rewrite (rewrites.md R18): a block contract on rustc's write of the offset, which the
+        // rest of the body reads in place of the result of `index_mut`. The assignment evaluates
+        // `*offset` before the place, as the call evaluated its argument before the body.
+        let offsets_before = thrust_macros::ghost!(|offsets: &mut IndexVec<FieldIdx, Size>| -> IndexVec<FieldIdx, Size> {
+            *offsets
+        });
+        thrust_macros::block_requires!(
+            |offsets: &mut IndexVec<FieldIdx, Size>, i: FieldIdx, offsets_before: thrust_models::Ghost<IndexVec<FieldIdx, Size>>|
+            offsets_before == *offsets
+            && forall(|j: USize| !<FieldIdx as Idx>::index_is(i, j) || j < (*offsets).len())
+        );
+        offsets[i] = *offset;
+        thrust_macros::block_ensures!(
+            |offsets: &mut IndexVec<FieldIdx, Size>, i: FieldIdx, offset: &mut Size,
+             offsets_before: thrust_models::Ghost<IndexVec<FieldIdx, Size>>|
+            (*offsets).len() == offsets_before.len()
+            && forall(|j: USize| !<FieldIdx as Idx>::index_is(i, j) || (*offsets)[j] == *offset)
+            && forall(|j: USize|
+                !(0 <= j && j < offsets_before.len() && !<FieldIdx as Idx>::index_is(i, j)) || (*offsets)[j] == offsets_before[j])
+        );
 
         Self::offer_niche::<FieldIdx, VariantIdx, F>(largest_niche, largest_niche_available, field, *offset, niche_bias, dl);
 
