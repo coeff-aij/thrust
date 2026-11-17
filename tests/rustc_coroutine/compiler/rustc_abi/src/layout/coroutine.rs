@@ -388,7 +388,39 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
             } else {
                 (local_b, local_a)
             };
-            make_ineligible(&mut ineligible_locals, &mut assignments, remove);
+            // Rewrite (rewrites.md R10): a block contract on rustc's two writes, which the loop
+            // reads in place of the results of `insert`, `deref_mut` and `index_mut`.
+            let ineligible_before = thrust_macros::ghost!(|ineligible_locals: DenseBitSet<LocalIdx>| -> DenseBitSet<LocalIdx> {
+                ineligible_locals
+            });
+            let assignments_before = thrust_macros::ghost!(|assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>| -> IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>> {
+                assignments
+            });
+            thrust_macros::block_requires!(
+                |ineligible_locals: DenseBitSet<LocalIdx>, assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, remove: LocalIdx,
+                 ineligible_before: thrust_models::Ghost<DenseBitSet<LocalIdx>>, assignments_before: thrust_models::Ghost<IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>>|
+                ineligible_before == ineligible_locals && assignments_before == assignments
+                && DenseBitSet::<LocalIdx>::words_cover_domain(ineligible_locals)
+                && forall(|i: USize| <LocalIdx as Idx>::index_is(remove, i) ==> i < ineligible_locals.0 && i < assignments.len())
+            );
+            ineligible_locals.insert(remove);
+            assignments[remove] = Ineligible(None);
+            thrust_macros::block_ensures!(
+                |ineligible_locals: DenseBitSet<LocalIdx>, assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, remove: LocalIdx,
+                 ineligible_before: thrust_models::Ghost<DenseBitSet<LocalIdx>>, assignments_before: thrust_models::Ghost<IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>>|
+                ineligible_locals.0 == ineligible_before.0
+                && DenseBitSet::<LocalIdx>::words_cover_domain(ineligible_locals)
+                && DenseBitSet::<LocalIdx>::card(ineligible_locals) <= ineligible_locals.0
+                && DenseBitSet::<LocalIdx>::card(ineligible_before) <= DenseBitSet::<LocalIdx>::card(ineligible_locals)
+                && forall(|i: USize| <LocalIdx as Idx>::index_is(remove, i) ==> DenseBitSet::<LocalIdx>::mem(ineligible_locals, i))
+                && forall(|i: USize, j: USize| <LocalIdx as Idx>::index_is(remove, i) && 0 <= j && j < ineligible_before.0 && j != i
+                    ==> (DenseBitSet::<LocalIdx>::mem(ineligible_locals, j) == DenseBitSet::<LocalIdx>::mem(ineligible_before, j)))
+                && assignments.len() == assignments_before.len()
+                && forall(|l: USize| 0 <= l && l < assignments.len() && <LocalIdx as Idx>::index_is(remove, l)
+                    ==> assignments[l] == SavedLocalEligibility::Ineligible(None))
+                && forall(|l: USize| 0 <= l && l < assignments.len() && !<LocalIdx as Idx>::index_is(remove, l)
+                    ==> assignments[l] == assignments_before[l])
+            );
         }
     }
 
@@ -496,50 +528,42 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
                     || exists(|k: <FieldIdx as thrust_models::Model>::Ty| assignments[l] == SavedLocalEligibility::Ineligible(Some(k))
                         && forall(|i: USize| <FieldIdx as Idx>::index_is(k, i) ==> i < DenseBitSet::<LocalIdx>::card(ineligible_locals))))
             );
-            set_assignment(&mut assignments, local, Ineligible(Some(FieldIdx::new(idx))));
+            // Rewrite (rewrites.md R10): a block contract on rustc's write, which the loop reads
+            // in place of the results of `deref_mut` and `index_mut`. The written value is bound
+            // first, as the assignment evaluates it before the place.
+            let value = Ineligible(Some(FieldIdx::new(idx)));
+            let assignments_before = thrust_macros::ghost!(|assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>| -> IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>> {
+                assignments
+            });
+            thrust_macros::block_requires!(
+                |assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, local: LocalIdx, assignments_before: thrust_models::Ghost<IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>>|
+                assignments_before == assignments
+                && forall(|i: USize| <LocalIdx as Idx>::index_is(local, i) ==> i < assignments.len())
+            );
+            assignments[local] = value;
+            #[cfg(not(thrust_eligibility_fail))]
+            thrust_macros::block_ensures!(
+                |assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, local: LocalIdx, value: SavedLocalEligibility<VariantIdx, FieldIdx>,
+                 assignments_before: thrust_models::Ghost<IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>>|
+                assignments.len() == assignments_before.len()
+                && forall(|l: USize| 0 <= l && l < assignments.len() && <LocalIdx as Idx>::index_is(local, l)
+                    ==> assignments[l] == value)
+                && forall(|l: USize| 0 <= l && l < assignments.len() && !<LocalIdx as Idx>::index_is(local, l)
+                    ==> assignments[l] == assignments_before[l])
+            );
+            // The fail twin of the eligibility root sets this cfg: the write leaves the other
+            // locals as they are, so a contract that every local gets `value` is refuted.
+            #[cfg(thrust_eligibility_fail)]
+            thrust_macros::block_ensures!(
+                |assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, value: SavedLocalEligibility<VariantIdx, FieldIdx>,
+                 assignments_before: thrust_models::Ghost<IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>>|
+                assignments.len() == assignments_before.len()
+                && forall(|l: USize| 0 <= l && l < assignments.len() ==> assignments[l] == value)
+            );
         }
     }
 
     (ineligible_locals, assignments)
-}
-
-// Rewrite (rewrites.md R10): the two writes that make `remove` ineligible in the storage-conflict
-// loop, as a function. Its inferred contract relates only its parameters, so the loop's back edge
-// reads one call result instead of the results of `insert`, `deref_mut` and `index_mut`, each a
-// template over every live variable.
-#[thrust_macros::context]
-fn make_ineligible<VariantIdx: Idx + thrust_models::Model, FieldIdx: Idx + thrust_models::Model, LocalIdx: Idx + thrust_models::Model<Ty: PartialEq>>(
-    ineligible_locals: &mut DenseBitSet<LocalIdx>,
-    assignments: &mut IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
-    remove: LocalIdx,
-) {
-    ineligible_locals.insert(remove);
-    assignments[remove] = SavedLocalEligibility::Ineligible(None);
-}
-
-// Rewrite (rewrites.md R10): the write of the last loop, as a function whose contract states
-// what it does, so that the loop's back edge reads one call result instead of the results of
-// `deref_mut` and `index_mut`.
-#[thrust_macros::requires(forall(|i: USize| <LocalIdx as Idx>::index_is(local, i) ==> i < (*assignments).len()))]
-#[thrust_macros::ensures(
-    (!assignments).len() == (*assignments).len()
-    && forall(|l: USize| 0 <= l && l < (*assignments).len() && <LocalIdx as Idx>::index_is(local, l)
-        ==> (!assignments)[l] == value)
-    && forall(|l: USize| 0 <= l && l < (*assignments).len() && !<LocalIdx as Idx>::index_is(local, l)
-        ==> (!assignments)[l] == (*assignments)[l])
-)]
-// The fail twin of the eligibility root sets this cfg: the write leaves the other locals as they
-// are, so a contract that every local gets `value` is refuted.
-#[cfg_attr(thrust_eligibility_fail, thrust_macros::ensures(
-    forall(|l: USize| 0 <= l && l < (*assignments).len() ==> (!assignments)[l] == value)
-))]
-#[thrust_macros::context]
-fn set_assignment<VariantIdx: Idx + thrust_models::Model, FieldIdx: Idx + thrust_models::Model, LocalIdx: Idx>(
-    assignments: &mut IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
-    local: LocalIdx,
-    value: SavedLocalEligibility<VariantIdx, FieldIdx>,
-) {
-    assignments[local] = value;
 }
 
 /// Property 3 at the promoted fields: an `Ineligible` local's field index is below the lengths of
