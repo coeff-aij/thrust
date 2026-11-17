@@ -1306,6 +1306,49 @@ fn layouts_wf_of_promoted<
 ) {
 }
 
+// `univariant`'s `fits_in_any_order` for the prefix of `layout()`: the prefix after the promotion
+// weighs at most the entry fields, the tag and all of `local_layouts` (`promote_locals`' `ensures`),
+// which the size bound of `layout()`'s `requires` keeps below the object size bound together with
+// the aggregate and `i8` alignments. `repr` has no alignment and the kind is `AlwaysSized`, so
+// `weighs`' sum is the weight and those two alignments' bytes.
+#[thrust_macros::lemma]
+#[thrust_macros::requires(
+    forall(|dl: TargetDataLayout| !C::dl_of(*calc, dl)
+        || exists(|b: USize, qa: USize, qi: USize|
+            qa == dl.aggregate_align.pow2 && qi == dl.i8_align.pow2
+            && ((dl.default_address_space_pointer_spec.pointer_size.raw == 2 && b == 32768u64)
+                || (dl.default_address_space_pointer_spec.pointer_size.raw == 4 && b == 2147483648u64)
+                || (dl.default_address_space_pointer_spec.pointer_size.raw == 8 && b == 2305843009213693952u64))
+            && 3 * (super::weight_total::<FieldIdx, F>(&entry) + F::weight_of(tag_layout)
+                    + super::weight_total::<LocalIdx, F>(local_layouts)
+                    + pow2(qa) + pow2(qi))
+                + pow2(qa) + pow2(qi) < b))
+        && super::weight_total::<FieldIdx, F>(new)
+            <= super::weight_total::<FieldIdx, F>(&entry) + F::weight_of(tag_layout)
+                + super::weight_total::<LocalIdx, F>(local_layouts)
+        && (*repr).align == None
+)]
+#[thrust_macros::ensures(
+    LayoutCalculator::<C>::fits_in_any_order::<FieldIdx, VariantIdx, F>(*calc, new, repr, StructKind::AlwaysSized)
+)]
+#[thrust::reveal(LayoutCalculator::fits_in_any_order, LayoutCalculator::weighs)]
+fn prefix_fits_in_any_order<
+    'a,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + super::Weighted + thrust_models::Model<Ty: PartialEq>,
+    FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
+    VariantIdx: Idx + thrust_models::Model,
+    LocalIdx: Idx + thrust_models::Model,
+    C: HasDataLayout,
+>(
+    calc: &LayoutCalculator<C>,
+    entry: thrust_models::Ghost<IndexVec<FieldIdx, F>>,
+    new: &IndexVec<FieldIdx, F>,
+    tag_layout: F,
+    local_layouts: &IndexSlice<LocalIdx, F>,
+    repr: &ReprOptions,
+) {
+}
+
 // Rewrite (rewrites.md R15): the steps of `layout()` that append the tag's layout and the promoted
 // locals' layouts to the prefix's fields (`push`, and `extend` by the map of the ineligible set),
 // as a function whose contract states what `layout()` reads of them: P + 1 + c fields, c the set's
@@ -2176,6 +2219,9 @@ fn variant_layout<
 //     locals' weight plus 3 S_p + 2^qa + 2^qi; its Assigned locals appear once each
 //     (eligibility's property 2c) and are not promoted (property 4), so with the promoted ones
 //     they weigh at most `local_layouts`' weight, and the sum is below 3T + 2^qa + 2^qi.
+//   - The tag's layout dereferences: `deref` has a result for the layout `tag_to_layout` returns
+//     (rustc's `Layout` dereferences to its interned `&LayoutData`), so its weight is that of the
+//     layout `deref` returns (`deref_functional`) and the size bound bounds it.
 #[thrust_macros::requires(
     (*variant_fields).len() > 0
         && LayoutCalculator::<C>::deref_functional::<FieldIdx, VariantIdx, F>()
@@ -2202,6 +2248,10 @@ fn variant_layout<
         && forall(|ti: Integer, tg: WrappingRange, s: Scalar, r: <F as thrust_models::Model>::Ty|
             s == Scalar::Initialized { value: Primitive::Int(ti, false), valid_range: tg }
                 && thrust_macros::post!(tag_to_layout(s), r) ==> layout_wf::<F, FieldIdx, VariantIdx, C>(*calc, r))
+        && forall(|ti: Integer, tg: WrappingRange, s: Scalar, r: <F as thrust_models::Model>::Ty|
+            s == Scalar::Initialized { value: Primitive::Int(ti, false), valid_range: tg }
+                && thrust_macros::post!(tag_to_layout(s), r)
+                ==> exists(|d: &&LayoutData<FieldIdx, VariantIdx>| thrust_macros::post!(<F as core::ops::Deref>::deref(&r), d)))
         && forall(|ti: Integer, tg: WrappingRange| thrust_macros::pre!(tag_to_layout(Scalar::Initialized { value: Primitive::Int(ti, false), valid_range: tg })))
         && forall(|dl: TargetDataLayout, ti: Integer, tg: WrappingRange, s: Scalar, r: <F as thrust_models::Model>::Ty, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>|
             C::dl_of(*calc, dl) && tg.start == 0 && tg.end + 1 == (*variant_fields).len()
@@ -2278,24 +2328,33 @@ pub fn layout<
     // locals' layouts are `promote_locals`. Its `requires` holds by `layout()`'s `requires`
     // (`FieldIdx` reaches P + 1 + n; `layouts_wf` of the entry fields and of `local_layouts`),
     // eligibility's `ensures` (the set is over the n locals) and the step above.
+    let entry = thrust_macros::ghost!(|prefix_layouts: IndexVec<FieldIdx, F>| -> IndexVec<FieldIdx, F> { prefix_layouts });
     promote_locals(calc, &mut prefix_layouts, tag_layout, &ineligible_locals, local_layouts);
     // Rewrite (rewrites.md R13): the `repr` argument is bound to a name, for the `assume!`.
     let repr = ReprOptions::default();
-    // Assumed (not proved): `univariant`'s `fits_in_any_order` for the prefix. rustc's code makes
-    // it true under `layout()`'s size bound: the prefix's fields are the entry `prefix_layouts`,
-    // the tag's layout and the promoted locals, which are distinct locals (the set's members,
-    // each yielded once, increasing), so their weight is at most that of `prefix_layouts`, the tag
-    // and all of `local_layouts`, T in the size bound, and 3T + 2^qa + 2^qi < b gives the prefix's
-    // weighs sum below b. Not proved: `weight` is an existential over a `Seq<Int>` of the fields'
-    // weights (a field's weight is read through `deref`'s postcondition, a relation), and the
-    // solver does not answer such a goal even with its witness named (fork issue #278), nor can a
-    // proof name the witness of the `weight`s `layout()` requires.
-    thrust_macros::assume!(
-        |calc: &LayoutCalculator<C>, prefix_layouts: IndexVec<FieldIdx, F>, repr: ReprOptions|
-            LayoutCalculator::<C>::fits_in_any_order::<FieldIdx, VariantIdx, F>(*calc, &prefix_layouts, &repr, StructKind::AlwaysSized)
+    // `univariant`'s `fits_in_any_order` for the prefix. rustc's code makes it true under
+    // `layout()`'s size bound: the prefix's fields are the entry `prefix_layouts`, the tag's layout
+    // and the promoted locals, which are distinct locals (the set's members, each yielded once),
+    // so their weight is at most that of `prefix_layouts`, the tag and all of `local_layouts`
+    // (`promote_locals`' `ensures`), T in the size bound, and 3T + 2^qa + 2^qi < b gives the
+    // prefix's weighs sum below b. The tag's weight is that of the layout `deref` returns for it
+    // (`deref_functional`), which `layout()`'s `requires` says exists.
+    thrust_macros::proof_assert!(
+        |calc: &LayoutCalculator<C>, entry: thrust_models::Ghost<IndexVec<FieldIdx, F>>, tag_layout: F, local_layouts: &IndexSlice<LocalIdx, F>|
+            forall(|dl: TargetDataLayout| !C::dl_of(*calc, dl)
+                || exists(|b: USize, qa: USize, qi: USize|
+                    qa == dl.aggregate_align.pow2 && qi == dl.i8_align.pow2
+                    && ((dl.default_address_space_pointer_spec.pointer_size.raw == 2 && b == 32768u64)
+                        || (dl.default_address_space_pointer_spec.pointer_size.raw == 4 && b == 2147483648u64)
+                        || (dl.default_address_space_pointer_spec.pointer_size.raw == 8 && b == 2305843009213693952u64))
+                    && 3 * (super::weight_total::<FieldIdx, F>(&entry) + F::weight_of(tag_layout)
+                            + super::weight_total::<LocalIdx, F>(local_layouts)
+                            + pow2(qa) + pow2(qi))
+                        + pow2(qa) + pow2(qi) < b))
     );
-    // Reachability twin of the `assume!` (fail root layout_reach_prefix.rs): the path after it is
-    // reachable, so the `assume!` makes no proof here vacuous.
+    thrust_macros::proof!(prefix_fits_in_any_order(calc, entry, &prefix_layouts, tag_layout, local_layouts, &repr));
+    // Reachability twin of the proof above (fail root layout_reach_prefix.rs): the path after it is
+    // reachable, so no proof here is vacuous.
     #[cfg(thrust_layout_reach_prefix)]
     thrust_macros::proof_assert!(|| false);
     thrust_macros::proof!(layout_pre_of_wf(calc, &prefix_layouts, StructKind::AlwaysSized));
