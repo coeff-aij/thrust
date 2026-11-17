@@ -28,10 +28,9 @@ mod closure_escape;
 mod drop_point;
 mod trait_object;
 mod visitor;
-use drop_point::MovedOut;
 
 use crate::analyze::block_contract::{BlockContract, Change};
-pub use drop_point::{DropPoints, MoveState};
+pub use drop_point::{DropPoints, MoveState, MovedOut};
 
 /// Whether a basic block needs a precondition of its own, rather than
 /// inheriting its predecessor's outgoing env state.
@@ -2494,8 +2493,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// past a call to a function with that contract: each local the code may change takes a
     /// fresh value, a `&mut` written only through it keeping its final value, the `ensures`
     /// formula is assumed of the values, and the other locals keep theirs. A local the code
-    /// leaves unchanged and no longer needs ends with the code, as it ends where the code drops
-    /// it.
+    /// leaves unchanged and drops is dropped here, with the parts moved out of it before.
     fn pass_over_block_contract(
         &mut self,
         contract: &BlockContract,
@@ -2548,6 +2546,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             }
             let decl_ty = self.local_decls[local].ty;
             if defined && !self.is_mut_local(local) && !decl_ty.is_mutable_ptr() {
+                // A local bound immutably holds one value, which a move or a drop leaves as it
+                // is; any other change makes `reassign_local_mutabilities` bind it mutably.
+                assert_eq!(change, Change::Moved, "an immutable local is changed");
                 continue;
             }
             let old = defined.then(|| self.env.local_type(local));
@@ -2610,13 +2611,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let formula = formula_fn.formula().clone().map_var(|idx| vars[idx]);
         self.env.assume(formula.map_var(PlaceTypeVar::Var));
 
-        for local in self.local_decls.indices() {
-            let ends_in_code = self.is_defined(local)
-                && !live_after(local)
-                && contract.changed.get(&local) != Some(&Change::Whole);
-            if ends_in_code {
-                self.drop_local(local, MovedOut::new());
+        for (local, moved_out) in &contract.ends {
+            if live_after(*local) || contract.changed.get(local) == Some(&Change::Whole) {
+                continue;
             }
+            self.drop_local(*local, moved_out.clone());
         }
         self.type_goto(contract.exit, outer_fn_param_vars);
     }

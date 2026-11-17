@@ -9,21 +9,24 @@
 //! a call's result and its `&mut` arguments are given in RustHorn. The other locals keep the
 //! values and the facts they had at the opening, which is the frame of the contract.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use rustc_middle::mir::visit::{MutatingUseContext, NonMutatingUseContext, PlaceContext, Visitor};
 use rustc_middle::mir::{self, BasicBlock, Body, Local, TerminatorKind};
 
 use crate::analyze;
-use crate::analyze::basic_block::{formula_marker_call, FormulaMarker};
+use crate::analyze::basic_block::{formula_marker_call, DropPoints, FormulaMarker, MovedOut};
 
 /// A local the code under a contract may change.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Ordered from the change that keeps the most of a local to the one that keeps the least.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Change {
-    /// Assigned, moved, borrowed mutably or dropped as a whole or in a part of its own.
-    Whole,
+    /// Only moved out of or dropped, which leaves its value as it is.
+    Moved,
     /// Written only through a dereference of it: a `&mut` keeps its final value.
     ThroughDeref,
+    /// Assigned or borrowed mutably as a whole or in a part of its own.
+    Whole,
 }
 
 #[derive(Debug, Clone)]
@@ -40,6 +43,9 @@ pub struct BlockContract {
     pub blocks: HashSet<BasicBlock>,
     /// The locals the code under the contract may change.
     pub changed: BTreeMap<Local, Change>,
+    /// The locals the code under the contract drops, with the parts moved out of each, as the
+    /// drop points of its blocks give them.
+    pub ends: Vec<(Local, MovedOut)>,
 }
 
 fn marker_of<'tcx>(
@@ -211,6 +217,7 @@ fn contract_opened_at<'tcx>(
         exit,
         blocks,
         changed: changed.0,
+        ends: Vec::new(),
     }
 }
 
@@ -221,24 +228,50 @@ struct ChangedLocals(BTreeMap<Local, Change>);
 
 impl<'tcx> Visitor<'tcx> for ChangedLocals {
     fn visit_place(&mut self, place: &mir::Place<'tcx>, context: PlaceContext, _: mir::Location) {
-        let changes = match context {
-            PlaceContext::MutatingUse(MutatingUseContext::Retag) => false,
-            PlaceContext::MutatingUse(_) => true,
-            PlaceContext::NonMutatingUse(NonMutatingUseContext::Move) => true,
-            PlaceContext::NonMutatingUse(_) | PlaceContext::NonUse(_) => false,
-        };
-        if !changes {
-            return;
-        }
-        let change = match place.projection.first() {
-            Some(mir::ProjectionElem::Deref) => Change::ThroughDeref,
-            _ => Change::Whole,
+        let change = match context {
+            PlaceContext::MutatingUse(MutatingUseContext::Retag) => return,
+            PlaceContext::MutatingUse(MutatingUseContext::Drop)
+            | PlaceContext::NonMutatingUse(NonMutatingUseContext::Move) => Change::Moved,
+            PlaceContext::MutatingUse(_) => match place.projection.first() {
+                Some(mir::ProjectionElem::Deref) => Change::ThroughDeref,
+                _ => Change::Whole,
+            },
+            PlaceContext::NonMutatingUse(_) | PlaceContext::NonUse(_) => return,
         };
         let entry = self.0.entry(place.local).or_insert(change);
-        if change == Change::Whole {
-            *entry = Change::Whole;
+        *entry = (*entry).max(change);
+    }
+}
+
+/// The locals the blocks `blocks` drop, each once, with the parts moved out of it where it is
+/// dropped.
+pub fn drops_in_code(
+    body: &Body<'_>,
+    drop_points: &HashMap<BasicBlock, DropPoints>,
+    blocks: &HashSet<BasicBlock>,
+) -> Vec<(Local, MovedOut)> {
+    let mut ends: BTreeMap<Local, MovedOut> = BTreeMap::new();
+    let mut blocks: Vec<_> = blocks.iter().copied().collect();
+    blocks.sort();
+    for bb in blocks {
+        let points = &drop_points[&bb];
+        let data = &body.basic_blocks[bb];
+        for statement_index in 0..data.statements.len() {
+            for local in points.after_statement(statement_index).iter() {
+                ends.entry(local)
+                    .or_insert_with(|| points.moved_out(statement_index, local));
+            }
+        }
+        for target in data.terminator().successors() {
+            if body.basic_blocks[target].is_cleanup {
+                continue;
+            }
+            for (local, moved_out) in points.after_terminator(&target) {
+                ends.entry(local).or_insert(moved_out);
+            }
         }
     }
+    ends.into_iter().collect()
 }
 
 /// `body` with each contract's closing marker call going nowhere, so that the liveness of the

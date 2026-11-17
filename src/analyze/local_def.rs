@@ -2519,6 +2519,13 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             };
             self.ctx.leave_template_site(previous);
         }
+        for contract in &mut self.block_contracts {
+            contract.ends = analyze::block_contract::drops_in_code(
+                &self.body,
+                &self.drop_points,
+                &contract.blocks,
+            );
+        }
     }
 
     fn analyze_basic_blocks(&mut self, expected_fn_ty: &rty::RefinedType) {
