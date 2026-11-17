@@ -85,6 +85,16 @@ the adapters of `thrust/iter.rs` implement std's `Iterator` and std.rs's `Iterat
 The probes keep their own copy of Creusot's iterator trait, except `probes/field_closures.rs`,
 which uses std.rs's `IteratorSpec` and copies of the adapters of `thrust/iter.rs`.
 
+A field's weight (its size and twice its alignment's bytes) is `Weighted::weight_of` of the field
+(layout.rs), a total logic function that the trait declares without a body, as Creusot's `View::view`
+and a Verus trait `spec fn` are. `weight` of a field list is the sum of `weight_seq`, so it has no
+existential over a sequence to give a witness for. Its meaning comes from `deref_functional`, which
+`layout()`, `univariant` and the field loop require: `weight_of` of a value is the weight of every
+layout `post!` of `deref` allows for it, and is non-negative. No root instantiates `F`, so no root
+discharges it; a real field type satisfies it (rustc's `Layout`, which dereferences to an interned
+`&LayoutData`, with `weight_of` the weight of that referent). `tests/ui/pass/weight_sum_of_push.rs`
+and its fail twin show the pattern on a small example: the weight of a pushed list follows by unfolding.
+
 `probes/` holds one small pass/fail pair per language feature the stages rely on (a `forall` over a
 `Vec`, nested `Vec`s, an enum payload equality, an `Option` existential, a generic predicate in a
 free function, the layout a generic `Deref` gives through `post!` and the requirement that its

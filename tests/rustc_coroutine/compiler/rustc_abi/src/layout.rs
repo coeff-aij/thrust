@@ -460,18 +460,12 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                     && s < b))
     }
 
-    /// `F`'s `deref` is a function and `F::weight_of` is the weight of the layout it returns: each
-    /// value of `F` dereferences to one layout, and `weight_of` of that value is its size plus
-    /// twice its alignment's bytes, at every layout `post!` allows (a read of a field gives such a
-    /// layout, so the field's weight is that of the layout read), and is non-negative. `post!` of a
+    /// `F`'s `deref` is a function: each value of `F` dereferences to one layout. `post!` of a
     /// generic `Deref::deref` is a relation, as Creusot's `T::deref.postcondition` is, so a
     /// contract that names a field's layout by `exists d. post!(.., d) && **d == l` speaks of every
     /// layout the relation allows; this predicate makes that the one layout `deref` returns.
-    /// It is a scope restriction on `F`, satisfied by rustc's `Layout`, which dereferences to the
-    /// interned `&LayoutData`: `weight_of` of it is the weight of that referent, a function of the
-    /// field's value as `deref` is, and a size and an alignment's bytes are non-negative.
     #[thrust_macros::predicate]
-    pub(crate) fn deref_functional<
+    pub(crate) fn deref_unique<
         'a,
         FieldIdx: Idx + thrust_models::Model,
         VariantIdx: Idx,
@@ -481,6 +475,25 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
             !(thrust_macros::post!(<F as core::ops::Deref>::deref(&x), d1)
                 && thrust_macros::post!(<F as core::ops::Deref>::deref(&x), d2))
                 || **d1 == **d2)
+    }
+
+    /// `F`'s `deref` is a function (`deref_unique`) and `F::weight_of` is the weight of the layout
+    /// it returns: `weight_of` of a value is its layout's size plus twice its alignment's bytes at
+    /// every layout `post!` allows (a read of a field gives such a layout, so the field's weight
+    /// is that of the layout read), and is non-negative. It is a requirement on `F` that the
+    /// verified functions state and no root discharges, as `deref_unique` is. A real field type
+    /// satisfies it: rustc's `Layout` dereferences to the interned `&LayoutData`, `weight_of` of
+    /// it is the weight of that referent, a function of the field's value as `deref` is, and a
+    /// size and an alignment's bytes are non-negative. Functions that do not read weights
+    /// (`place_field`) require `deref_unique` alone.
+    #[thrust_macros::predicate]
+    pub(crate) fn deref_functional<
+        'a,
+        FieldIdx: Idx + thrust_models::Model,
+        VariantIdx: Idx,
+        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + Weighted + thrust_models::Model,
+    >() -> bool {
+        Self::deref_unique::<FieldIdx, VariantIdx, F>()
             && forall(|x: <F as thrust_models::Model>::Ty, d: &&LayoutData<FieldIdx, VariantIdx>, q: USize|
                 !(thrust_macros::post!(<F as core::ops::Deref>::deref(&x), d) && q == (**d).align.abi.pow2)
                     || F::weight_of(x) == pow2(q) * 2 + (**d).size.raw)
@@ -1386,7 +1399,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
     /// The niche choice of `univariant_biased`'s field loop for `field` placed at `offset`: the
     /// chosen niche ends by the field's end; it stays when the field has none and is never
     /// dropped, and with `End` the field's niche is taken while none has been.
-    #[thrust_macros::requires(Self::deref_functional::<FieldIdx, VariantIdx, F>())]
+    #[thrust_macros::requires(Self::deref_unique::<FieldIdx, VariantIdx, F>())]
     #[thrust_macros::requires(forall(|d: &&LayoutData<FieldIdx, VariantIdx>|
         !thrust_macros::post!(<F as core::ops::Deref>::deref(field), d) || Self::field_wf::<FieldIdx, VariantIdx>(**d, *dl)))]
     #[thrust_macros::requires(offset.raw < 13835058055282163712u64)]
@@ -1440,7 +1453,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
     /// offset and the alignment's bytes grow by less than the field's weight, and the step fails
     /// only with `SizeOverflow`, when the padded field reaches the object size bound. The niche
     /// changes as `offer_niche` changes it.
-    #[thrust_macros::requires(Self::deref_functional::<FieldIdx, VariantIdx, F>())]
+    #[thrust_macros::requires(Self::deref_unique::<FieldIdx, VariantIdx, F>())]
     #[thrust_macros::requires(forall(|d: &&LayoutData<FieldIdx, VariantIdx>|
         !thrust_macros::post!(<F as core::ops::Deref>::deref(field), d) || Self::field_wf::<FieldIdx, VariantIdx>(**d, *dl)))]
     #[thrust_macros::requires((*dl).default_address_space_pointer_spec.pointer_size.raw == 2
