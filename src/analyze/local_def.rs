@@ -2218,24 +2218,23 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         for data in body.basic_blocks.as_mut() {
             let terminator = data.terminator_mut();
             let scope = terminator.source_info.scope;
+            let span = terminator.source_info.span;
             let mir::TerminatorKind::Call { func, args, .. } = &mut terminator.kind else {
                 continue;
             };
-            let Some(names) = self.ghost_term_reads(func, args) else {
+            let Some(names) = self.ghost_term_reads(func, args, scope, span) else {
                 continue;
             };
             let mut operands = args.to_vec();
             for name in names {
                 let bindings = analyze::basic_block::bindings_in_scope(&self.body, name, scope);
-                let locals = bindings.into_iter().filter_map(|vdi| match &vdi.value {
-                    mir::VarDebugInfoContents::Place(place) if place.projection.is_empty() => {
-                        Some(place.local)
-                    }
+                let places = bindings.into_iter().filter_map(|vdi| match &vdi.value {
+                    mir::VarDebugInfoContents::Place(place) => Some(*place),
                     _ => None,
                 });
-                for local in locals {
+                for place in places {
                     let span = operands[0].span;
-                    let node = mir::Operand::Copy(local.into());
+                    let node = mir::Operand::Copy(place);
                     operands.push(rustc_span::source_map::Spanned { node, span });
                 }
             }
@@ -2302,21 +2301,43 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         &self,
         func: &mir::Operand<'tcx>,
         args: &[rustc_span::source_map::Spanned<mir::Operand<'tcx>>],
+        scope: mir::SourceScope,
+        span: rustc_span::Span,
     ) -> Option<Vec<rustc_span::Symbol>> {
         let (formula_def_id, generic_args, first_named_param) =
             self.formula_read_call(func, args)?;
-        let formula_fn = self
-            .ctx
-            .formula_fn_with_args(formula_def_id, generic_args, self.owner_fn_id)
-            .expect("marker formula function is not registered");
+        let generic_args = analyze::basic_block::resolve_closure_local_args(
+            self.ctx,
+            &self.body,
+            scope,
+            span,
+            formula_def_id,
+            generic_args,
+        );
+        // Read from the signature, not from a translation of the formula: a closure of a generic
+        // body that the formula names has no function type before the body is analyzed. A
+        // formula without `|f: _|` is translated here as before, which fixes the order in which
+        // its predicates are numbered.
+        if !self
+            .tcx
+            .generics_of(formula_def_id.to_def_id())
+            .own_params
+            .iter()
+            .any(|param| param.name.as_str().starts_with("__ThrustClosureOf_"))
+        {
+            self.ctx
+                .formula_fn_with_args(formula_def_id, generic_args, self.owner_fn_id)
+                .expect("marker formula function is not registered");
+        }
         let inputs = self
             .tcx
             .fn_sig(formula_def_id.to_def_id())
             .instantiate(self.tcx, generic_args)
             .skip_binder()
             .inputs();
-        let names = formula_fn
-            .param_idents()
+        let names = self
+            .tcx
+            .fn_arg_idents(formula_def_id.to_def_id())
             .iter()
             .zip(inputs)
             .skip(first_named_param)
