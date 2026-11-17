@@ -820,5 +820,7 @@ pub fn map_wbound<J: Idx + thrust_models::Model, L: Idx + thrust_models::Model, 
     if k > 0 {
         map_wbound(fields, a, e, ts, k - 1);
         selects_step(fields, a, e, k - 1);
+    } else {
+        selects_base(fields, a, e);
     }
 }
