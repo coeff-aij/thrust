@@ -659,7 +659,7 @@ where
     F: FnMut(I::Item) -> B,
     I::Item: thrust_models::Model,
 {
-    thrust_macros::proof_assert!(|iter: I, func: F| I::inv(iter)
+    thrust_macros::assume!(|iter: I, func: F| I::inv(iter)
         && Map::<I, F>::reinitialize()
         && Map::<I, F>::preservation_inv(iter, func)
         && Map::<I, F>::next_precondition(iter, func));

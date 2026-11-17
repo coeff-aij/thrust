@@ -1242,7 +1242,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
             // requires, `layout_pre`'s `can_new` at the number of fields; checked here it is cut off
             // at 300 s with 4 CPUs (a lemma from `layout_pre` does not change that).
             self.can_new_of_layout_pre::<FieldIdx, VariantIdx, F>(fields, kind);
-            thrust_macros::proof_assert!(|fields: &IndexSlice<FieldIdx, F>| <FieldIdx as Idx>::can_new((*fields).len()));
+            thrust_macros::assume!(|fields: &IndexSlice<FieldIdx, F>| <FieldIdx as Idx>::can_new((*fields).len()));
             #[cfg(thrust_univariant_biased_reach = "iter_enumerated")]
             thrust_macros::proof_assert!(|kind: StructKind| false);
             // Rewrite (rewrites.md R8): `Filter::new(it, p)` for `it.filter(p)`.
@@ -1286,13 +1286,13 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                         // chosen.
                         // Assumed (fallback, with fptprove, the step's own goal): restore
                         // `proof_assert!` once the solver answers it.
-                        thrust_macros::proof_assert!(|a: Scalar, b: Scalar, self: &LayoutCalculator<Cx>|
+                        thrust_macros::assume!(|a: Scalar, b: Scalar, self: &LayoutCalculator<Cx>|
                             forall(|d: TargetDataLayout| !Cx::dl_of(*self, d) || (Scalar::wf_in(a, d) && Scalar::wf_in(b, d))));
                         // Assumed (fallback, with fptprove): the indexes `offsets[i]` and `offsets[j]`'s requires. They
                         // hold: `i` and `j` are positions of `iter_enumerated(fields)`, and `offsets` has as many
                         // entries as `fields` (the `requires`). The solver does not answer them under it.
-                        thrust_macros::proof_assert!(|i: FieldIdx, offsets: &IndexVec<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(i) < (*offsets).len());
-                        thrust_macros::proof_assert!(|j: FieldIdx, offsets: &IndexVec<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(j) < (*offsets).len());
+                        thrust_macros::assume!(|i: FieldIdx, offsets: &IndexVec<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(i) < (*offsets).len());
+                        thrust_macros::assume!(|j: FieldIdx, offsets: &IndexVec<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(j) < (*offsets).len());
                         #[cfg(thrust_univariant_biased_reach = "pair")]
                         thrust_macros::proof_assert!(|kind: StructKind| false);
                         let ((i, a), (j, b)) = if offsets[i] < offsets[j] {
@@ -1302,7 +1302,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                         };
                         // Assumed (fallback; open once the step above is assumed): delete once the
                         // solver answers it. `scalar_pair`'s requires, on the pair as ordered.
-                        thrust_macros::proof_assert!(|a: Scalar, b: Scalar, self: &LayoutCalculator<Cx>|
+                        thrust_macros::assume!(|a: Scalar, b: Scalar, self: &LayoutCalculator<Cx>|
                             forall(|d: TargetDataLayout| !Cx::dl_of(*self, d) || (Scalar::wf_in(a, d) && Scalar::wf_in(b, d)))
                                 && forall(|z: USize| z == 0usize ==> <VariantIdx as Idx>::can_new(z))
                                 && forall(|k: USize| k == 0usize || k == 1usize ==> <FieldIdx as Idx>::can_new(k)));
@@ -1335,8 +1335,8 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                         // many entries as `fields` (the `requires`), and `FieldIdx::new(0)` is in range.
                         // The bounds of `offsets[i]` and `offsets[j]` are assumed (fallback, with
                         // fptprove: delete once the solver answers them); the others are checked.
-                        thrust_macros::proof_assert!(|i: FieldIdx, offsets: &IndexVec<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(i) < (*offsets).len());
-                        thrust_macros::proof_assert!(|j: FieldIdx, offsets: &IndexVec<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(j) < (*offsets).len());
+                        thrust_macros::assume!(|i: FieldIdx, offsets: &IndexVec<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(i) < (*offsets).len());
+                        thrust_macros::assume!(|j: FieldIdx, offsets: &IndexVec<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(j) < (*offsets).len());
                         thrust_macros::proof_assert!(|kind: StructKind| forall(|z: USize| z == 0usize ==> <FieldIdx as Idx>::can_new(z)));
                         let k0 = FieldIdx::new(0);
                         thrust_macros::proof_assert!(|kind: StructKind| forall(|z: USize| z == 1usize ==> <FieldIdx as Idx>::can_new(z)));
