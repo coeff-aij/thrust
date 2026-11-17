@@ -1196,7 +1196,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// `Box` optimizations make of one, and the transmuted pointer of a `Box`) with the place it
     /// copies, unless that place may change
     /// between the copy and a use of the temporary. Optimizations make that possible: a
-    /// reborrow `q = &mut *_k` becomes `q = copy _k` and `q` is merged into `_k`.
+    /// reborrow `q = &mut *_k` becomes `q = copy _k` and `q` is merged into `_k`. A formula
+    /// that names the variable a temporary holds (`let k: &T = c;` of a capture `c`) uses it
+    /// at its marker, so the variable is read at the place only where the place holds the
+    /// copied value there, and at the kept temporary otherwise.
     fn unelaborate_derefs(&mut self) {
         let original = self.body.clone();
         let replaced = self.replace_deref_temps(&HashSet::new());
@@ -1246,6 +1249,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 v.visit_terminator(tmnt);
             }
         }
+        for info in &mut self.body.var_debug_info {
+            mir::visit::MutVisitor::visit_var_debug_info(&mut v, info);
+        }
         replaced
     }
 
@@ -1258,6 +1264,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         replaced: &[(Local, mir::Location, mir::Place<'tcx>)],
     ) -> HashSet<Local> {
         let mut uses = local_mentions(original);
+        let formula_reads = self.formula_name_reads(original);
+        for (local, loc, _) in &formula_reads {
+            uses.entry(*local).or_default().push(*loc);
+        }
         let mut defs: HashMap<Local, Vec<mir::Location>> = HashMap::new();
         for (temp, def, _) in replaced {
             defs.entry(*temp).or_default().push(*def);
@@ -1269,20 +1279,93 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let mentions = local_mentions(&self.body);
         let mut kept = HashSet::new();
         for (temp, def, place) in replaced {
-            let index_locals = place.projection.iter().filter_map(|elem| match elem {
-                mir::ProjectionElem::Index(local) => Some(mir::Place::from(local)),
-                _ => None,
-            });
+            self.reject_formula_read_of_changed_mut(*temp, *def, place, &formula_reads, &mentions);
             if defs[temp].len() != 1
                 || self.has_unknown_aliases(place)
-                || std::iter::once(*place)
-                    .chain(index_locals)
-                    .any(|read| self.written_before_use(&read, *def, &uses[temp], &mentions))
+                || self.changed_before_use(place, *def, &uses[temp], &mentions)
             {
                 kept.insert(*temp);
             }
         }
         kept
+    }
+
+    /// Whether `place`, or an index local it is read at, may be written between `def` and a use
+    /// in `uses` ([`Self::written_before_use`]).
+    fn changed_before_use(
+        &self,
+        place: &mir::Place<'tcx>,
+        def: mir::Location,
+        uses: &[mir::Location],
+        mentions: &HashMap<Local, Vec<mir::Location>>,
+    ) -> bool {
+        let index_locals = place.projection.iter().filter_map(|elem| match elem {
+            mir::ProjectionElem::Index(local) => Some(mir::Place::from(local)),
+            _ => None,
+        });
+        std::iter::once(*place)
+            .chain(index_locals)
+            .any(|read| self.written_before_use(&read, def, uses, mentions))
+    }
+
+    /// Stops at a formula that names a `&mut` deref temporary whose place may change between the
+    /// copy and the formula. The borrow checker does not see the formula's read, so the
+    /// program may write the referent through another `&mut` after the copy's last use, which
+    /// a kept copy, a second `&mut` the model keeps apart, would not see.
+    fn reject_formula_read_of_changed_mut(
+        &self,
+        temp: Local,
+        def: mir::Location,
+        place: &mir::Place<'tcx>,
+        formula_reads: &[(Local, mir::Location, rustc_span::Symbol)],
+        mentions: &HashMap<Local, Vec<mir::Location>>,
+    ) {
+        if self.body.local_decls[temp].ty.ref_mutability() != Some(mir::Mutability::Mut) {
+            return;
+        }
+        for (_, loc, name) in formula_reads.iter().filter(|(local, ..)| *local == temp) {
+            if self.changed_before_use(place, def, &[*loc], mentions) {
+                self.tcx.dcx().span_fatal(
+                    self.body.source_info(*loc).span,
+                    format!(
+                        "a formula refers to `{name}`, a `&mut` copied from a place that may \
+                         change between the copy and here"
+                    ),
+                );
+            }
+        }
+    }
+
+    /// The local each name of a formula over live variables resolves to in `body`, with the
+    /// location of the formula's marker call, which reads the variable there, and the name
+    /// ([`Self::body_with_ghost_reads`]).
+    fn formula_name_reads(
+        &self,
+        body: &Body<'tcx>,
+    ) -> Vec<(Local, mir::Location, rustc_span::Symbol)> {
+        let mut reads = Vec::new();
+        for (block, data) in body.basic_blocks.iter_enumerated() {
+            let terminator = data.terminator();
+            let mir::TerminatorKind::Call { func, args, .. } = &terminator.kind else {
+                continue;
+            };
+            let Some((formula_def_id, _, first_named_param)) = self.formula_read_call(func, args)
+            else {
+                continue;
+            };
+            let location = body.terminator_loc(block);
+            let idents = self.tcx.fn_arg_idents(formula_def_id.to_def_id());
+            for ident in idents.iter().skip(first_named_param).flatten() {
+                let name = analyze::annot_fn::lifted_param_source_name(*ident);
+                let scope = terminator.source_info.scope;
+                for info in analyze::basic_block::bindings_in_scope(body, name, scope) {
+                    if let mir::VarDebugInfoContents::Place(place) = info.value {
+                        reads.push((place.local, location, name));
+                    }
+                }
+            }
+        }
+        reads
     }
 
     fn has_unknown_aliases(&self, place: &mir::Place<'tcx>) -> bool {
