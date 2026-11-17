@@ -48,7 +48,7 @@ the latter's target in `layout()` times out. So the goals after those assumption
 shown to hold non-vacuously.
 Four of `univariant_biased.rs`'s goals are `proof_assert!`s that were `assume!`s: the index bounds
 `offsets[i]` and `offsets[j]` of the pair step (layout.rs 1274, 1275), `scalar_pair`'s `requires` on the
-ordered pair (1285) and `offsets[j]` of the condition (1319). The four `assume!`s left are listed in the
+ordered pair (1284) and `offsets[j]` of the condition (1318). The four `assume!`s left are listed in the
 table's `univariant_biased.rs` row.
 `univariant_biased.rs`'s `assume!`s, and its calls of the fallback's wrappers in `thrust/iter.rs`
 and `thrust/assumed_requires.rs`, likewise each have a reachability root, `univariant_biased_reach_<name>.rs`
