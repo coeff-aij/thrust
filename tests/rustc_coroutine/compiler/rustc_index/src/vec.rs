@@ -6,7 +6,7 @@ use std::vec;
 
 use thrust_models::forall;
 
-use crate::rustc_index::{Idx, IndexSlice, SliceIter};
+use crate::rustc_index::{Idx, IndexSlice};
 use crate::{IntoIteratorSpec, IteratorSpec};
 use crate::case_study::USize;
 
@@ -124,13 +124,12 @@ impl<I: Idx, T> IntoIterator for IndexVec<I, T> {
     }
 }
 
-// Rewrite (rewrites.md R4): `SliceIter` for `slice::Iter`, as `IndexSlice::iter` returns.
 impl<'a, I: Idx, T: thrust_models::Model> IntoIterator for &'a IndexVec<I, T> {
     type Item = &'a T;
-    type IntoIter = SliceIter<'a, T>;
+    type IntoIter = std::slice::Iter<'a, T>;
 
     #[inline]
-    fn into_iter(self) -> SliceIter<'a, T> {
+    fn into_iter(self) -> std::slice::Iter<'a, T> {
         self.iter()
     }
 }
@@ -159,8 +158,8 @@ impl<I: Idx + thrust_models::Model, T: thrust_models::Model> IntoIteratorSpec fo
 impl<'a, I: Idx + thrust_models::Model, T: thrust_models::Model + 'a> IntoIteratorSpec for &'a IndexVec<I, T>
 {
     #[thrust_macros::predicate]
-    fn into_iter_is(self, it: SliceIter<'a, T>) -> bool {
-        *it.0 == *self && it.1 == 0 && <SliceIter<'a, T> as IteratorSpec>::inv(it)
+    fn into_iter_is(self, it: std::slice::Iter<'a, T>) -> bool {
+        it.0 == *self && it.1 == 0 && <std::slice::Iter<'a, T> as IteratorSpec>::inv(it)
     }
 }
 

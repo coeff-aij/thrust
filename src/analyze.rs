@@ -27,6 +27,7 @@ use crate::rty;
 pub(crate) mod annot;
 mod annot_fn;
 mod basic_block;
+mod block_contract;
 mod closure_hist_inv;
 mod crate_;
 mod derive;
@@ -456,6 +457,19 @@ pub fn is_ignored_crate_fn(tcx: mir_ty::TyCtxt<'_>, def_id: DefId) -> bool {
         .as_local()
         .is_some_and(|local| !is_injected_std(tcx, local))
         && is_ignored(tcx, def_id)
+}
+
+/// Whether `resolved`, the impl method a call of the trait method `def_id` resolves to, is from
+/// a crate other than the one analyzed and `std`/`core`/`alloc`: nothing checks its body against
+/// a trait-level spec of `std.rs`, which describes std's impls and the crate's own, so it takes
+/// none.
+pub fn is_unchecked_foreign_impl(tcx: mir_ty::TyCtxt<'_>, def_id: DefId, resolved: DefId) -> bool {
+    resolved != def_id
+        && !resolved.is_local()
+        && !matches!(
+            tcx.crate_name(resolved.krate).as_str(),
+            "std" | "core" | "alloc"
+        )
 }
 
 /// Stops at a call that resolves to an ignored function of the crate, which has no checked type.
@@ -1267,6 +1281,40 @@ impl<'tcx> Analyzer<'tcx> {
             && resolved_def_id.is_local()
             && !self.has_own_impl_contract(resolved_def_id)
             && self.trait_method_contract_written(def_id)
+    }
+
+    /// The functions whose contract a `pre!`/`post!` naming the trait method `def_id` at `args`
+    /// reads when the path resolves to `instance`, in the order a call takes them: the impl's own
+    /// contract (an extern spec of a std impl, a local impl method's contract), then the
+    /// trait-level spec, which describes std's impls and the crate's own, whose bodies are
+    /// checked against it, then the type inferred for a local impl method that has no contract
+    /// of its own, which a call falls back to when the trait gives none. An impl of another
+    /// crate is checked by nothing, so it has none.
+    pub fn named_contract_sources(
+        &self,
+        def_id: DefId,
+        args: mir_ty::GenericArgsRef<'tcx>,
+        instance: mir_ty::Instance<'tcx>,
+    ) -> Vec<(DefId, mir_ty::GenericArgsRef<'tcx>)> {
+        let resolved = instance.def_id();
+        let mut sources = Vec::new();
+        if resolved != def_id && !self.takes_trait_contract(def_id, resolved) {
+            sources.push((resolved, instance.args));
+        }
+        if is_unchecked_foreign_impl(self.tcx, def_id, resolved) {
+            return sources;
+        }
+        // An ignored impl method's body is not checked against the trait-level spec.
+        if resolved != def_id && is_ignored_crate_fn(self.tcx, resolved) {
+            fatal_ignored_call(self.tcx, resolved, instance.args);
+        }
+        sources.push((def_id, args));
+        // A local impl method that takes the trait's contract falls back to its own inferred
+        // type when the trait has no spec to give (`Deref::deref` of a local impl), as a call does.
+        if resolved != def_id && self.takes_trait_contract(def_id, resolved) {
+            sources.push((resolved, instance.args));
+        }
+        sources
     }
 
     /// Stops if a function Thrust verifies can run an ignored function of the crate, as Verus's
@@ -2552,6 +2600,17 @@ impl<'tcx> Analyzer<'tcx> {
             reach.found
         });
         reach
+    }
+
+    /// Whether `def_id` has a contract of its own (a written one or a spec); the error for a
+    /// `pre!`/`post!` that finds none is narrowed to methods with a contract of their own.
+    pub fn has_def_ty(&self, def_id: DefId) -> bool {
+        self.defs.contains_key(&def_id)
+    }
+
+    /// Whether `local_def_id` is a predicate or logic function with a Rust body.
+    pub fn is_formula_fn(&self, local_def_id: LocalDefId) -> bool {
+        self.formula_fns.contains_key(&local_def_id)
     }
 
     pub fn register_formula_fn(&mut self, local_def_id: LocalDefId) {

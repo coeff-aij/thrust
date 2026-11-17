@@ -1938,6 +1938,14 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             if let Some(fn_ty) = known {
                 return fn_ty;
             }
+            if self.analyzer.has_def_ty(def_id) {
+                // A trait method with a contract (written or a std.rs spec) is promised it here; a miss would silently
+                // leave the call unconstrained.
+                self.tcx.dcx().span_fatal(
+                    span,
+                    format!("`pre!`/`post!` names `{def_id:?}` at its type parameters, whose contract was not found"),
+                );
+            }
             if names_precondition {
                 self.analyzer
                     .record_assumed_total_method(owner_fn_id, def_id, generic_args);
@@ -1946,11 +1954,14 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 .type_builder
                 .build_unspecified_method_type(def_id, generic_args);
         };
-        let fn_ty = self.analyzer.known_function_ty_with_args(
-            instance.def_id(),
-            instance.args,
-            owner_fn_id,
-        );
+        let fn_ty = self
+            .analyzer
+            .named_contract_sources(def_id, generic_args, instance)
+            .into_iter()
+            .find_map(|(source, args)| {
+                self.analyzer
+                    .known_function_ty_with_args(source, args, owner_fn_id)
+            });
         fn_ty.unwrap_or_else(|| {
             self.tcx.dcx().span_fatal(
                 span,
@@ -2242,6 +2253,10 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 );
             };
             let param_ty = self.pat_ty(param.pat);
+            // The enums in the variable's type may occur nowhere else in the function or
+            // predicate, yet the query declares their datatypes.
+            self.analyzer
+                .register_enum_defs([param_ty], self.type_builder.clone());
             let param_rty = self.type_builder.build(param_ty);
             let sort = param_rty.to_sort();
             let var = self

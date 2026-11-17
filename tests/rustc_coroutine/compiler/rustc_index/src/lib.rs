@@ -10,4 +10,4 @@ pub use vec::IndexVec;
 
 // The own iterators of rewrites.md R3 and R4, which rustc does not have.
 pub use idx::IdxRange;
-pub use slice::{IterEnumerated, SliceIter};
+pub use slice::IterEnumerated;
