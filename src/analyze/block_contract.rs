@@ -277,7 +277,11 @@ pub fn drops_in_code(
 /// `body` with each contract's closing marker call going nowhere, so that the liveness of the
 /// code under a contract is that of the code and the `ensures` formula alone: a local neither
 /// uses is no parameter of its blocks, as a variable a helper function is not passed is not one
-/// of its parameters.
+/// of its parameters. The opening marker call goes on to a block that branches to the code and
+/// to the block after the contract, as the opening block does in the analysis, so that the code
+/// after a contract stays reachable: a backward dataflow analysis starts from the blocks the
+/// start reaches, and a contract that follows another on every path would otherwise have no
+/// liveness from the blocks after its first.
 pub fn body_ending_at_closings<'tcx>(
     mut body: Body<'tcx>,
     contracts: &[BlockContract],
@@ -289,6 +293,22 @@ pub fn body_ending_at_closings<'tcx>(
         };
         *target = None;
         *unwind = mir::UnwindAction::Unreachable;
+        let source_info = body.basic_blocks[contract.opening].terminator().source_info;
+        let branch = body.basic_blocks.as_mut().push(mir::BasicBlockData::new(
+            Some(mir::Terminator {
+                source_info,
+                kind: TerminatorKind::FalseEdge {
+                    real_target: contract.entry,
+                    imaginary_target: contract.exit,
+                },
+            }),
+            false,
+        ));
+        let terminator = body.basic_blocks.as_mut()[contract.opening].terminator_mut();
+        let TerminatorKind::Call { target, .. } = &mut terminator.kind else {
+            unreachable!("an opening block ends in the marker call");
+        };
+        *target = Some(branch);
     }
     body
 }
