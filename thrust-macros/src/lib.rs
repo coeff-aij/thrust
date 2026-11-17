@@ -183,6 +183,40 @@ pub fn assume(input: TokenStream) -> TokenStream {
     invariant::expand(input, invariant::Marker::Assume)
 }
 
+/// Opens a block contract: the code from here to the next `block_ensures!` is checked once
+/// against the contract, under this formula, and the code after it reads only the contract:
+///
+/// ```ignore
+/// thrust_macros::block_requires!(|i: usize, v: &Vec<i64>| i < v.len());
+/// v[i] = 0;
+/// thrust_macros::block_ensures!(|i: usize, v: &Vec<i64>, v0: Ghost<Vec<i64>>| ...);
+/// ```
+///
+/// The argument is a closure as for [`proof_assert`]. It runs nothing.
+#[proc_macro]
+pub fn block_requires(input: TokenStream) -> TokenStream {
+    invariant::expand(input, invariant::Marker::BlockRequires)
+}
+
+/// Closes the block contract the last `block_requires!` opened (see [`block_requires`]). The
+/// argument is a closure as for [`proof_assert`]. It runs nothing.
+#[proc_macro]
+pub fn block_ensures(input: TokenStream) -> TokenStream {
+    invariant::expand(input, invariant::Marker::BlockEnsures)
+}
+
+/// Context-carrying counterpart of `block_requires!` (see [`_invariant_with_context`]).
+#[proc_macro]
+pub fn _block_requires_with_context(input: TokenStream) -> TokenStream {
+    invariant::expand_with_context(input, invariant::Marker::BlockRequires)
+}
+
+/// Context-carrying counterpart of `block_ensures!` (see [`_invariant_with_context`]).
+#[proc_macro]
+pub fn _block_ensures_with_context(input: TokenStream) -> TokenStream {
+    invariant::expand_with_context(input, invariant::Marker::BlockEnsures)
+}
+
 /// Context-carrying counterpart of `proof_assert!` (see [`_invariant_with_context`]).
 #[proc_macro]
 pub fn _proof_assert_with_context(input: TokenStream) -> TokenStream {
