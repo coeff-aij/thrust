@@ -1,7 +1,7 @@
 // `thrust_eligibility_fail` is set only by the fail twin of the eligibility root (`set_assignment`).
 #![allow(unexpected_cfgs)]
 use crate::thrust_models;
-use thrust_models::model::BitVec;
+use thrust_models::model::{BitVec, Int, Seq};
 use thrust_models::{exists, forall};
 
 use crate::rustc_abi::layout::{LayoutCalculator, LayoutCalculatorResult, pow2};
@@ -12,7 +12,7 @@ use crate::rustc_abi::{
 use crate::rustc_index::bit_set::{ones, BitIter, BitMatrix, DenseBitSet};
 use crate::rustc_index::{Idx, IdxRange, IndexSlice, IndexVec, IterEnumerated, SliceIter};
 use crate::case_study::USize;
-use crate::case_study::{counts, lemmas};
+use crate::case_study::{counts, lemmas, weights};
 use crate::case_study::iter::{Filter, Map, collect_index_vec, collect_index_vec_result, iter_all, map_new_assumed};
 use std::iter::{self, Enumerate};
 use std::slice::IterMut;
@@ -1047,6 +1047,59 @@ fn split_in_memory_order<FieldIdx: Idx + thrust_models::Model>(
 }
 
 
+// The entries after the tag are layouts of `local_layouts`, as the set's members `picked` index
+// them.
+#[thrust_macros::lemma]
+#[thrust_macros::requires(
+    current.len() == entry.len() + 1 + picked.len()
+        && forall(|j: USize| !(0 <= j && j < picked.len())
+            || (<LocalIdx as Idx>::index_logic(picked[j]) < (*local_layouts).len()
+                && current[entry.len() + 1 + j] == (*local_layouts)[<LocalIdx as Idx>::index_logic(picked[j])]))
+)]
+#[thrust_macros::ensures(forall(|k: USize|
+    !(entry.len() < k && k < current.len())
+        || exists(|i: USize| 0 <= i && i < (*local_layouts).len() && current[k] == (*local_layouts)[i])))]
+fn promoted_entries_exist<'a, F: Copy + thrust_models::Model, FieldIdx: Idx + thrust_models::Model, LocalIdx: Idx + thrust_models::Model>(
+    current: thrust_models::Ghost<IndexVec<FieldIdx, F>>,
+    entry: thrust_models::Ghost<IndexVec<FieldIdx, F>>,
+    picked: thrust_models::Ghost<IndexVec<u32, LocalIdx>>,
+    local_layouts: &IndexSlice<LocalIdx, F>,
+) {
+}
+
+// `layouts_wf` of the prefix after the promotion: the entry fields, the tag's layout and layouts
+// of `local_layouts`.
+#[thrust_macros::lemma]
+#[thrust_macros::requires(
+    layouts_wf::<FieldIdx, F, FieldIdx, VariantIdx, C>(*calc, &entry)
+        && layout_wf::<F, FieldIdx, VariantIdx, C>(*calc, tag_layout)
+        && layouts_wf::<LocalIdx, F, FieldIdx, VariantIdx, C>(*calc, local_layouts)
+        && current.len() == entry.len() + 1 + picked.len()
+        && forall(|k: USize| !(0 <= k && k < entry.len()) || current[k] == entry[k])
+        && current[entry.len()] == tag_layout
+        && forall(|j: USize| !(0 <= j && j < picked.len())
+            || (<LocalIdx as Idx>::index_logic(picked[j]) < (*local_layouts).len()
+                && current[entry.len() + 1 + j] == (*local_layouts)[<LocalIdx as Idx>::index_logic(picked[j])]))
+)]
+#[thrust_macros::ensures(layouts_wf::<FieldIdx, F, FieldIdx, VariantIdx, C>(*calc, &current))]
+#[thrust::reveal(layouts_wf)]
+fn layouts_wf_of_promoted<
+    'a,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + super::Weighted + thrust_models::Model,
+    FieldIdx: Idx + thrust_models::Model,
+    VariantIdx: Idx + thrust_models::Model,
+    LocalIdx: Idx + thrust_models::Model,
+    C: HasDataLayout,
+>(
+    calc: &LayoutCalculator<C>,
+    current: thrust_models::Ghost<IndexVec<FieldIdx, F>>,
+    entry: thrust_models::Ghost<IndexVec<FieldIdx, F>>,
+    tag_layout: F,
+    picked: thrust_models::Ghost<IndexVec<u32, LocalIdx>>,
+    local_layouts: &IndexSlice<LocalIdx, F>,
+) {
+}
+
 // Rewrite (rewrites.md R15): the steps of `layout()` that append the tag's layout and the promoted
 // locals' layouts to the prefix's fields (`push`, and `extend` by the map of the ineligible set),
 // as a function whose contract states what `layout()` reads of them: P + 1 + c fields, c the set's
@@ -1065,7 +1118,10 @@ fn split_in_memory_order<FieldIdx: Idx + thrust_models::Model>(
         && layouts_wf::<FieldIdx, F, FieldIdx, VariantIdx, C>(*calc, &*prefix_layouts)
         && layouts_wf::<LocalIdx, F, FieldIdx, VariantIdx, C>(*calc, local_layouts)
         && layout_wf::<F, FieldIdx, VariantIdx, C>(*calc, tag_layout)
+        && LayoutCalculator::<C>::deref_functional::<FieldIdx, VariantIdx, F>()
 )]
+#[thrust_macros::ensures(super::weight_total::<FieldIdx, F>(&!prefix_layouts)
+    <= super::weight_total::<FieldIdx, F>(&*prefix_layouts) + F::weight_of(tag_layout) + super::weight_total::<LocalIdx, F>(local_layouts))]
 #[thrust_macros::ensures(
     (!prefix_layouts).len() == (*prefix_layouts).len() + 1 + DenseBitSet::<LocalIdx>::card(*ineligible_locals)
         && 0 <= DenseBitSet::<LocalIdx>::card(*ineligible_locals)
@@ -1079,7 +1135,7 @@ fn split_in_memory_order<FieldIdx: Idx + thrust_models::Model>(
 #[thrust_macros::ensures(forall(|k: USize| !(0 <= k && k <= (!prefix_layouts).len()) || <FieldIdx as Idx>::can_new(k)))]
 #[thrust_macros::ensures(layouts_wf::<FieldIdx, F, FieldIdx, VariantIdx, C>(*calc, &!prefix_layouts))]
 #[thrust_macros::context]
-#[thrust::reveal(layouts_wf)]
+#[thrust::split_goals]
 fn promote_locals<
     'a,
     F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + super::Weighted + thrust_models::Model,
@@ -1094,30 +1150,78 @@ fn promote_locals<
     ineligible_locals: &DenseBitSet<LocalIdx>,
     local_layouts: &IndexSlice<LocalIdx, F>,
 ) {
-    // Rewrite (rewrites.md R8): `Map::new(it, f)` for `it.map(f)`, `extend_from` for `extend`.
-    // The closure's contract, as that of the per-variant closure's map closure in `layout()`: a
-    // member of the set is a local below n, and the closure returns its layout. `Map::new`'s
-    // precondition reads the members through `bit_iter_yields_below`.
+    // Rewrite (rewrites.md R15, with R8's `Map::new` and `extend_from` as a loop): the tag's layout
+    // is pushed, then the layout of each member of the set in the order its iterator yields them.
+    // `picked` keeps those members (it is read only by the proof): they are pairwise distinct and
+    // below n (`produces` of `BitIter`, `bit_iter_yields_below`), so the weights pushed are at most
+    // those of all of `local_layouts`.
     thrust_macros::proof!(bit_iter_yields_below(ineligible_locals));
-    let promoted_layouts = Map::new(
-        ineligible_locals.iter(),
-        thrust_macros::closure!(
-            captures(local_layouts: &mut &IndexSlice<LocalIdx, F>),
-            requires(<LocalIdx as Idx>::index_logic(local) < (**local_layouts).len()),
-            // The bound is the `requires`', restated for `Map::yields_entries_of`.
-            ensures(<LocalIdx as Idx>::index_logic(local) < (**local_layouts).len()
-                && result == (**local_layouts)[<LocalIdx as Idx>::index_logic(local)]),
-            |local: LocalIdx| -> F { local_layouts[local] },
-        ),
-    );
-    // The promoted layouts are entries of `local_layouts`.
-    thrust_macros::proof!(Map::yields_entries_of(&promoted_layouts, local_layouts));
-    // `push` and `extend_from` give P + 1 + c fields, c the items `ineligible_locals.iter()` yields
-    // (`Map` keeps the length), which is the set's count `card`: `iter` starts `BitIter`'s `left`
-    // at it, and the iterator completes with nothing left. The fields after the tag are layouts of
-    // `local_layouts` (the closure's `ensures`).
-    prefix_layouts.push(tag_layout);
-    prefix_layouts.extend_from(promoted_layouts);
+    let ts = thrust_macros::ghost!(|local_layouts: &IndexSlice<LocalIdx, F>| -> Seq<Int> {
+        super::weight_seq::<F>(*local_layouts, (*local_layouts).len())
+    });
+    thrust_macros::proof!(super::weight_seq_len::<F>((*local_layouts).len()));
+    thrust_macros::proof!(super::weight_seq_nth::<F>((*local_layouts).len()));
+    thrust_macros::proof!(super::weight_first_is_sum_first((*local_layouts).len()));
+    let entry_ghost = thrust_macros::ghost!(|prefix_layouts: &mut IndexVec<FieldIdx, F>| -> IndexVec<FieldIdx, F> { *prefix_layouts });
+    let current = prefix_layouts;
+    let current_before = thrust_macros::ghost!(|current: &mut IndexVec<FieldIdx, F>| -> Seq<<F as thrust_models::Model>::Ty> { *current });
+    thrust_macros::proof!(super::weight_total_push::<F>(current_before, tag_layout, current.len()));
+    current.push(tag_layout);
+    let mut picked = IndexVec::<u32, LocalIdx>::new();
+    for local in ineligible_locals.iter() {
+        thrust_macros::invariant!(
+            |iter: BitIter<LocalIdx>,
+             iter_old: thrust_models::Ghost<BitIter<LocalIdx>>,
+             produced: thrust_models::Ghost<thrust_models::model::Seq<<LocalIdx as thrust_models::Model>::Ty>>,
+             prefix_layouts: thrust_models::FnParam<&mut IndexVec<FieldIdx, F>>,
+             current: &mut IndexVec<FieldIdx, F>,
+             picked: IndexVec<u32, LocalIdx>,
+             tag_layout: F,
+             local_layouts: &IndexSlice<LocalIdx, F>,
+             ineligible_locals: &DenseBitSet<LocalIdx>,
+             ts: thrust_models::Ghost<Seq<Int>>| {
+                0 <= DenseBitSet::<LocalIdx>::card(*ineligible_locals)
+                    && DenseBitSet::<LocalIdx>::card(*ineligible_locals) <= (*local_layouts).len()
+                    && forall(|k: USize|
+                        0 <= k && k <= (*prefix_layouts.at_entry()).len() + 1 + (*local_layouts).len() ==> <FieldIdx as Idx>::can_new(k))
+                    && iter_old.4 == (*ineligible_locals).0
+                    && iter_old.5 == 0
+                    && iter_old.6 == DenseBitSet::<LocalIdx>::card(*ineligible_locals)
+                    && BitIter::<LocalIdx>::tracks_words(iter_old)
+                    && iter.4 == (*ineligible_locals).0
+                    && 0 <= iter.5 && 0 <= iter.6
+                    && iter.5 + iter.6 == DenseBitSet::<LocalIdx>::card(*ineligible_locals)
+                    && BitIter::<LocalIdx>::tracks_words(iter)
+                    && (*ineligible_locals).0 == (*local_layouts).len()
+                    && forall(|k: USize| 0 <= k && k < (*local_layouts).len() ==> <LocalIdx as Idx>::can_new(k))
+                    && (*current).len() == (*prefix_layouts.at_entry()).len() + 1 + produced.len()
+                    && picked.len() == produced.len()
+                    && lemmas::distinct::<LocalIdx>(picked, picked.len())
+                    && forall(|k: USize| !(0 <= k && k < (*prefix_layouts.at_entry()).len())
+                        || (*current)[k] == (*prefix_layouts.at_entry())[k])
+                    && (*current)[(*prefix_layouts.at_entry()).len()] == tag_layout
+                    && forall(|j: USize| !(0 <= j && j < produced.len())
+                        || (picked[j] == produced[j]
+                            && <LocalIdx as Idx>::index_logic(picked[j]) < (*local_layouts).len()
+                            && (*current)[(*prefix_layouts.at_entry()).len() + 1 + j]
+                                == (*local_layouts)[<LocalIdx as Idx>::index_logic(picked[j])]))
+                    && ts == super::weight_seq::<F>(*local_layouts, (*local_layouts).len())
+                    && super::weight_total::<FieldIdx, F>(&*current)
+                        == super::weight_total::<FieldIdx, F>(&*prefix_layouts.at_entry())
+                            + F::weight_of(tag_layout)
+                            + weights::weight_at::<LocalIdx>(ts, picked, picked.len())
+            }
+        );
+        let current_before = thrust_macros::ghost!(|current: &mut IndexVec<FieldIdx, F>| -> Seq<<F as thrust_models::Model>::Ty> { *current });
+        thrust_macros::proof!(super::weight_total_push::<F>(current_before, local_layouts[local], current.len()));
+        current.push(local_layouts[local]);
+        picked.push(local);
+    }
+    let picked_ghost = thrust_macros::ghost!(|picked: IndexVec<u32, LocalIdx>| -> IndexVec<u32, LocalIdx> { picked });
+    thrust_macros::proof!(weights::weight_at_le_distinct(picked_ghost, ts, picked.len(), (*local_layouts).len()));
+    let current_ghost = thrust_macros::ghost!(|current: &mut IndexVec<FieldIdx, F>| -> IndexVec<FieldIdx, F> { *current });
+    thrust_macros::proof!(promoted_entries_exist(current_ghost, entry_ghost, picked_ghost, local_layouts));
+    thrust_macros::proof!(layouts_wf_of_promoted::<F, FieldIdx, VariantIdx, LocalIdx, C>(calc, current_ghost, entry_ghost, tag_layout, picked_ghost, local_layouts));
 }
 
 // Rewrite (rewrites.md R16): the `match` of `layout()` on the prefix's fields, which splits the

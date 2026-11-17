@@ -97,6 +97,81 @@ fn weight_seq<F: Weighted>(s: Seq<<F as thrust_models::Model>::Ty>, k: USize) ->
     if k <= 0 { Seq::empty() } else { weight_seq::<F>(s, k - 1).push(F::weight_of(s[k - 1])) }
 }
 
+/// The weight of a list of fields: the sum of its entries' weights, which `weight` states of `w`.
+#[thrust_macros::context]
+#[thrust_macros::logic]
+pub(crate) fn weight_total<I: Idx, F: Weighted>(fields: &IndexSlice<I, F>) -> Int {
+    sum_first(weight_seq::<F>(*fields, (*fields).len()), (*fields).len())
+}
+
+/// The first `k` entries of `weight_seq` are `k` weights.
+#[thrust_macros::context]
+#[thrust_macros::lemma]
+#[thrust_macros::variant(k)]
+#[thrust_macros::ensures(forall(|s: Seq<<F as thrust_models::Model>::Ty>| weight_seq::<F>(s, k).len() == k))]
+pub(crate) fn weight_seq_len<F: Weighted>(k: usize) {
+    if k > 0 {
+        weight_seq_len::<F>(k - 1);
+    }
+}
+
+/// Entry `i` of the weights of the first `k` fields is field `i`'s weight.
+#[thrust_macros::context]
+#[thrust_macros::lemma]
+#[thrust_macros::variant(k)]
+#[thrust_macros::ensures(forall(|s: Seq<<F as thrust_models::Model>::Ty>, i: USize|
+    !(0 <= i && i < k && k <= s.len()) || weight_seq::<F>(s, k)[i] == F::weight_of(s[i])))]
+pub(crate) fn weight_seq_nth<F: Weighted>(k: usize) {
+    if k > 0 {
+        weight_seq_len::<F>(k - 1);
+        weight_seq_nth::<F>(k - 1);
+    }
+}
+
+/// `weights::weight_first` is `sum_first`.
+#[thrust_macros::lemma]
+#[thrust_macros::variant(k)]
+#[thrust_macros::ensures(forall(|ts: Seq<Int>| crate::case_study::weights::weight_first(ts, k) == sum_first(ts, k)))]
+pub(crate) fn weight_first_is_sum_first(k: usize) {
+    if k > 0 {
+        weight_first_is_sum_first(k - 1);
+    }
+}
+
+/// A sequence pushed with one more entry keeps the sum of its first `k` entries.
+#[thrust_macros::lemma]
+#[thrust_macros::variant(k)]
+#[thrust_macros::ensures(forall(|ts: Seq<Int>, w: Int| k <= ts.len() ==> sum_first(ts.push(w), k) == sum_first(ts, k)))]
+pub(crate) fn sum_first_push_prefix(k: usize) {
+    if k > 0 {
+        sum_first_push_prefix(k - 1);
+    }
+}
+
+/// A list pushed with one more field keeps the weights of its first `k` fields.
+#[thrust_macros::context]
+#[thrust_macros::lemma]
+#[thrust_macros::variant(k)]
+#[thrust_macros::ensures(forall(|s: Seq<<F as thrust_models::Model>::Ty>, x: <F as thrust_models::Model>::Ty|
+    k <= s.len() ==> weight_seq::<F>(s.push(x), k) == weight_seq::<F>(s, k)))]
+pub(crate) fn weight_seq_push_prefix<F: Weighted>(k: usize) {
+    if k > 0 {
+        weight_seq_push_prefix::<F>(k - 1);
+    }
+}
+
+/// The weight of a list pushed with one field is the list's weight plus the field's.
+#[thrust_macros::context]
+#[thrust_macros::lemma]
+#[thrust_macros::requires(n == s.len())]
+#[thrust_macros::ensures(
+    sum_first(weight_seq::<F>(s.push(x), s.len() + 1), s.len() + 1)
+        == sum_first(weight_seq::<F>(s, s.len()), s.len()) + F::weight_of(x))]
+pub(crate) fn weight_total_push<F: Weighted>(s: Ghost<Seq<<F as thrust_models::Model>::Ty>>, x: F, n: usize) {
+    weight_seq_push_prefix::<F>(n);
+    sum_first_push_prefix(n);
+}
+
 /// The sum of the first `k` entries of `ts`. A sum, it is an `Int` over `Int`s, as `ones` is: at
 /// `u64` its result would be checked `>= 0` without the facts of the sequence's elements, which
 /// the README says such a sum cannot be shown.
