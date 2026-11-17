@@ -36,7 +36,7 @@ use proc_macro::TokenStream;
 use quote::{format_ident, ToTokens};
 use syn::FnArg;
 
-use crate::formula_fn_lifting::{self, ClosureWithContext, EnclosingContext, LiftedFormulaFn};
+use crate::formula_fn_lifting::{self, ClosureWithLocalTypes, EnclosingContext, LiftedFormulaFn};
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -128,11 +128,14 @@ pub fn expand(input: TokenStream, marker: Marker) -> TokenStream {
         Err(e) => return e.to_compile_error().into(),
     };
     let input = crate::formula::wrap_closure_body(input);
-    let closure = match syn::parse2::<syn::ExprClosure>(input) {
-        Ok(closure) => closure,
+    let ClosureWithLocalTypes {
+        local_types,
+        closure,
+    } = match syn::parse2::<ClosureWithLocalTypes>(input) {
+        Ok(parsed) => parsed,
         Err(e) => return e.to_compile_error().into(),
     };
-    match expand_invariant(&closure, None, marker) {
+    match expand_invariant(&closure, &local_types, None, marker) {
         Ok(expr) => expr.into_token_stream().into(),
         Err(e) => e.to_compile_error().into(),
     }
@@ -146,11 +149,22 @@ pub fn expand_with_context(input: TokenStream, marker: Marker) -> TokenStream {
         Err(e) => return e.to_compile_error().into(),
     };
     let input = crate::formula::wrap_closure_body(input);
-    let ClosureWithContext { closure, context } = match syn::parse2::<ClosureWithContext>(input) {
+    let parser = |input: syn::parse::ParseStream| {
+        let context: EnclosingContext = input.parse()?;
+        let closure: ClosureWithLocalTypes = input.parse()?;
+        Ok((context, closure))
+    };
+    let (
+        context,
+        ClosureWithLocalTypes {
+            local_types,
+            closure,
+        },
+    ) = match syn::parse::Parser::parse2(parser, input) {
         Ok(parsed) => parsed,
         Err(e) => return e.to_compile_error().into(),
     };
-    match expand_invariant(&closure, Some(&context), marker) {
+    match expand_invariant(&closure, &local_types, Some(&context), marker) {
         Ok(expr) => expr.into_token_stream().into(),
         Err(e) => e.to_compile_error().into(),
     }
@@ -174,9 +188,16 @@ fn rename_entry_values(
 /// Expands a predicate closure into a `#[thrust::formula_fn]` plus a marker call.
 fn expand_invariant(
     closure: &syn::ExprClosure,
+    local_types: &syn::Generics,
     context: Option<&EnclosingContext>,
     marker: Marker,
 ) -> syn::Result<syn::Expr> {
+    if !marker.is_statement() && !local_types.params.is_empty() {
+        return Err(syn::Error::new_spanned(
+            local_types,
+            "only `proof_assert!` and `assume!` leave a type to a local",
+        ));
+    }
     let mut params: Vec<FnArg> = Vec::new();
     for param in &closure.inputs {
         let syn::Pat::Type(pt) = param else {
@@ -193,7 +214,7 @@ fn expand_invariant(
     let id = COUNTER.fetch_add(1, Ordering::Relaxed);
     let name = format_ident!("{}_{}", marker.item_prefix(), id);
     let lifted = if marker.is_statement() {
-        formula_fn_lifting::lift_statement(&name, &params, &closure.body, context)
+        formula_fn_lifting::lift_statement(&name, &params, &closure.body, context, local_types)
     } else {
         formula_fn_lifting::lift(&name, &params, &closure.body, context)
     };
