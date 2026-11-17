@@ -142,7 +142,7 @@ pub fn formula_marker_call<'tcx>(
 /// parameter declared before the closure (`thrust-macros/src/formula_fn_lifting.rs`).
 const ELIDED_CLOSURE_LOCAL_PREFIX: &str = "__ThrustClosureOf_";
 
-fn is_closure_local_param(param: &mir_ty::GenericParamDef) -> bool {
+pub fn is_closure_local_param(param: &mir_ty::GenericParamDef) -> bool {
     param.name.as_str().starts_with(ELIDED_CLOSURE_LOCAL_PREFIX)
 }
 
@@ -208,7 +208,9 @@ pub fn resolve_closure_local_args<'tcx>(
         };
         args[param.index as usize] = ty.into();
     }
-    tcx.mk_args(&args)
+    let args = tcx.mk_args(&args);
+    check_closure_local_bounds(tcx, body, span, def_id, args);
+    args
 }
 
 /// The type of the local `var` names in `scope`, or why it names none.
@@ -255,9 +257,54 @@ fn hole_name(name: rustc_span::Symbol) -> String {
         .as_str()
         .strip_prefix(ELIDED_CLOSURE_LOCAL_PREFIX)
         .unwrap_or_default();
-    match rest.strip_prefix("_") {
-        Some(_) => "_".to_owned(),
-        None => rest.to_owned(),
+    if rest.starts_with(|c: char| c.is_ascii_digit()) {
+        "_".to_owned()
+    } else {
+        rest.to_owned()
+    }
+}
+
+/// Rejects a closure that does not meet a bound the formula declares for the type parameter it
+/// stands for: rustc checked the formula only at the placeholder, and it is translated at the
+/// closure's type.
+fn check_closure_local_bounds<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    body: &mir::Body<'tcx>,
+    span: rustc_span::Span,
+    formula_def_id: DefId,
+    args: mir_ty::GenericArgsRef<'tcx>,
+) {
+    use rustc_infer::infer::TyCtxtInferExt as _;
+    use rustc_trait_selection::traits::query::evaluate_obligation::InferCtxtExt as _;
+    use rustc_trait_selection::traits::{Obligation, ObligationCause};
+
+    let typing_env = mir_ty::TypingEnv::post_analysis(tcx, body.source.def_id());
+    let (infcx, param_env) = tcx.infer_ctxt().build_with_typing_env(typing_env);
+    for &(clause, _) in tcx.predicates_of(formula_def_id).predicates {
+        let self_ty = match clause.kind().skip_binder() {
+            mir_ty::ClauseKind::Trait(pred) => pred.self_ty(),
+            mir_ty::ClauseKind::Projection(pred) => pred.self_ty(),
+            _ => continue,
+        };
+        let mir_ty::TyKind::Param(hole) = self_ty.kind() else {
+            continue;
+        };
+        if !hole.name.as_str().starts_with(ELIDED_CLOSURE_LOCAL_PREFIX) {
+            continue;
+        }
+        let clause = mir_ty::EarlyBinder::bind(clause).instantiate(tcx, args);
+        let obligation = Obligation::new(tcx, ObligationCause::dummy(), param_env, clause);
+        if infcx.predicate_must_hold_modulo_regions(&obligation) {
+            continue;
+        }
+        tcx.dcx().span_fatal(
+            span,
+            format!(
+                "`{}` stands for `{}`, which does not meet its bound: `{clause}` does not hold",
+                hole_name(hole.name),
+                args.type_at(hole.index as usize),
+            ),
+        );
     }
 }
 

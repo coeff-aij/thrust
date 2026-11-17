@@ -145,8 +145,8 @@ impl Parse for ClosureWithLocalTypes {
 }
 
 /// The prefix of the name of a type parameter left to a local; the analyzer recognizes them by
-/// it (`resolve_closure_local_args`). A `_` gets the prefix and `_<n>`, a declared `P` the
-/// prefix and `P`.
+/// it (`resolve_closure_local_args`). The `n`-th `_` gets the prefix and `n`, a declared `P` the
+/// prefix and `P`, which cannot start with a digit.
 const ELIDED_CLOSURE_LOCAL_PREFIX: &str = "__ThrustClosureOf_";
 
 /// A type parameter left to a local: its name in the item, its bounds, and the placeholder the
@@ -215,25 +215,40 @@ impl VisitMut for LocalTypeRenamer<'_> {
     }
 }
 
-/// `tokens` with each identifier `from` renamed to `to`.
+/// `tokens` with each identifier `from` that starts a path renamed to `to`, as
+/// [`LocalTypeRenamer`] renames: one after `::` or `.` is another item's segment or a field.
 fn rename_ident(tokens: TokenStream2, from: &syn::Ident, to: &syn::Ident) -> TokenStream2 {
-    tokens
-        .into_iter()
-        .map(|tt| match tt {
-            proc_macro2::TokenTree::Ident(ident) if ident == *from => {
+    let mut renamed = Vec::new();
+    let mut after_separator = false;
+    let mut after_joint_colon = false;
+    for tt in tokens {
+        let (separator, joint_colon) = match &tt {
+            proc_macro2::TokenTree::Punct(p) if p.as_char() == '.' => (true, false),
+            proc_macro2::TokenTree::Punct(p) if p.as_char() == ':' => (
+                after_joint_colon,
+                p.spacing() == proc_macro2::Spacing::Joint,
+            ),
+            _ => (false, false),
+        };
+        let tt = match tt {
+            proc_macro2::TokenTree::Ident(ident) if ident == *from && !after_separator => {
                 proc_macro2::TokenTree::Ident(to.clone())
             }
             proc_macro2::TokenTree::Group(group) => {
-                let mut renamed = proc_macro2::Group::new(
+                let mut inner = proc_macro2::Group::new(
                     group.delimiter(),
                     rename_ident(group.stream(), from, to),
                 );
-                renamed.set_span(group.span());
-                proc_macro2::TokenTree::Group(renamed)
+                inner.set_span(group.span());
+                proc_macro2::TokenTree::Group(inner)
             }
             tt => tt,
-        })
-        .collect()
+        };
+        after_separator = separator;
+        after_joint_colon = joint_colon;
+        renamed.push(tt);
+    }
+    renamed.into_iter().collect()
 }
 
 /// Replaces each `_` of a type with a fresh type parameter left to a local.
@@ -247,7 +262,7 @@ impl VisitMut for InferredTypeCollector<'_> {
             syn::visit_mut::visit_type_mut(self, ty);
             return;
         }
-        let ident = format_ident!("{}_{}", ELIDED_CLOSURE_LOCAL_PREFIX, self.holes.len());
+        let ident = format_ident!("{}{}", ELIDED_CLOSURE_LOCAL_PREFIX, self.holes.len());
         *ty = syn::parse_quote!(#ident);
         self.holes.push(ClosureLocalType {
             ident,
@@ -263,6 +278,7 @@ fn closure_local_types(
     params: &mut [FnArg],
     body: &mut syn::Expr,
     local_types: &syn::Generics,
+    context: Option<&EnclosingContext>,
 ) -> syn::Result<Vec<ClosureLocalType>> {
     if let Some(where_clause) = &local_types.where_clause {
         return Err(syn::Error::new_spanned(
@@ -279,6 +295,16 @@ fn closure_local_types(
                 "only type parameters can be left to a local",
             ));
         };
+        let shadows_context = context
+            .into_iter()
+            .flat_map(EnclosingContext::generic_params)
+            .any(|param| matches!(param, GenericParam::Type(outer) if outer.ident == tp.ident));
+        if shadows_context {
+            return Err(syn::Error::new_spanned(
+                &tp.ident,
+                "a type parameter of the enclosing function has this name; give the closure's type another",
+            ));
+        }
         let ident = format_ident!("{}{}", ELIDED_CLOSURE_LOCAL_PREFIX, tp.ident);
         let bounds: Vec<syn::TypeParamBound> = tp.bounds.iter().cloned().collect();
         let placeholder = closure_local_placeholder(&tp.ident, &bounds)?;
@@ -334,7 +360,7 @@ fn lift_inner(
     let mut params = params.to_vec();
     let mut body = body.clone();
     let closure_locals = match local_types {
-        Some(local_types) => closure_local_types(&mut params, &mut body, local_types)?,
+        Some(local_types) => closure_local_types(&mut params, &mut body, local_types, context)?,
         None => Vec::new(),
     };
 
