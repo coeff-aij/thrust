@@ -519,24 +519,6 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
     ) {
     }
 
-    /// The index constructions `layout_pre` allows: `FieldIdx::new(k)` up to the number of fields
-    /// and `VariantIdx::new(0)`. A lemma of its own, as `fields_ok_of_layout_pre`.
-    #[thrust_macros::requires(Self::layout_pre::<FieldIdx, VariantIdx, F>(*self, fields, kind))]
-    #[thrust_macros::ensures(forall(|k: USize| !(0 <= k && k <= (*fields).len()) || <FieldIdx as Idx>::can_new(k)))]
-    #[thrust_macros::ensures(forall(|z: USize| !(z == 0usize) || <VariantIdx as Idx>::can_new(z)))]
-    #[thrust::reveal(LayoutCalculator::layout_pre)]
-    fn can_new_of_layout_pre<
-        'a,
-        FieldIdx: Idx + thrust_models::Model,
-        VariantIdx: Idx,
-        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model,
-    >(
-        &self,
-        fields: &IndexSlice<FieldIdx, F>,
-        kind: StructKind,
-    ) {
-    }
-
     /// `ts` holds each field's weight: its size and twice its alignment's bytes.
     #[thrust_macros::predicate]
     fn weights_are<
@@ -1237,10 +1219,10 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         let optimize_abi = !repr.inhibit_newtype_abi_optimization();
 
         if sized && size.bytes() > 0 {
-            // `iter_enumerated`'s requires, `layout_pre`'s `can_new` at the number of fields, from
-            // `layout_pre` by `can_new_of_layout_pre`.
-            self.can_new_of_layout_pre::<FieldIdx, VariantIdx, F>(fields, kind);
-            thrust_macros::proof_assert!(|fields: &IndexSlice<FieldIdx, F>| <FieldIdx as Idx>::can_new((*fields).len()));
+            // Assumed (fallback, with fptprove): delete once the solver answers it. `iter_enumerated`'s
+            // requires, `layout_pre`'s `can_new` at the number of fields; checked from `layout_pre` by a
+            // lemma it makes the key closures' part (`Size::bytes`, `deref`, `is_zst`) unanswered.
+            thrust_macros::assume!(|fields: &IndexSlice<FieldIdx, F>| <FieldIdx as Idx>::can_new((*fields).len()));
             #[cfg(thrust_univariant_biased_reach = "iter_enumerated")]
             thrust_macros::proof_assert!(|kind: StructKind| false);
             // Rewrite (rewrites.md R8): `Filter::new(it, p)` for `it.filter(p)`.

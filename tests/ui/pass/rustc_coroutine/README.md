@@ -46,7 +46,7 @@ cvc5 1.4.1, `layout_reach_pair.rs` is refuted. The target parts of `layout_reach
 (`unknown`), `layout_reach_variant.rs` (timeout) and `layout_reach_fallback.rs` get no answer:
 the latter's target in `layout()` times out. So the goals after those assumptions are not
 shown to hold non-vacuously.
-Five of `univariant_biased.rs`'s goals are proved, not assumed: `iter_enumerated`'s `can_new`, the index bounds `offsets[i]` and `offsets[j]` of the pair step and `offsets[j]` of the condition and `scalar_pair`'s `requires` on the ordered pair; the others stay assumed below.
+Four of `univariant_biased.rs`'s goals are proved, not assumed: the index bounds `offsets[i]` and `offsets[j]` of the pair step and `offsets[j]` of the condition and `scalar_pair`'s `requires` on the ordered pair; the others stay assumed below.
 `univariant_biased.rs`'s `assume!`s, and its calls of the fallback's wrappers in `thrust/iter.rs`
 and `thrust/assumed_requires.rs`, likewise each have a reachability root, `univariant_biased_reach_<name>.rs`
 (`--cfg thrust_univariant_biased_reach="<name>"`). On f25eb5e0, with fptprove 27431dba0 at 300 s and
