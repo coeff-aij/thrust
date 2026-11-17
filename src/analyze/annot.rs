@@ -482,6 +482,22 @@ pub fn assume_marker_path() -> [Symbol; 3] {
     ]
 }
 
+pub fn block_requires_marker_path() -> [Symbol; 3] {
+    [
+        Symbol::intern("thrust"),
+        Symbol::intern("def"),
+        Symbol::intern("block_requires_marker"),
+    ]
+}
+
+pub fn block_ensures_marker_path() -> [Symbol; 3] {
+    [
+        Symbol::intern("thrust"),
+        Symbol::intern("def"),
+        Symbol::intern("block_ensures_marker"),
+    ]
+}
+
 pub fn choose_marker_path() -> [Symbol; 3] {
     [
         Symbol::intern("thrust"),

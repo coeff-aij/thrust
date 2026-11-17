@@ -79,6 +79,8 @@ struct DefIds {
     witness: OnceCell<Option<DefId>>,
     assert_marker: OnceCell<Option<DefId>>,
     assume_marker: OnceCell<Option<DefId>>,
+    block_requires_marker: OnceCell<Option<DefId>>,
+    block_ensures_marker: OnceCell<Option<DefId>>,
 
     fn_param_wrapper: OnceCell<Option<DefId>>,
     fn_param_at_entry: OnceCell<Option<DefId>>,
@@ -565,6 +567,19 @@ impl<'tcx> DefIdCache<'tcx> {
             .def_ids
             .assume_marker
             .get_or_init(|| self.annotated_def(&crate::analyze::annot::assume_marker_path()))
+    }
+
+    pub fn block_requires_marker(&self) -> Option<DefId> {
+        *self.def_ids.block_requires_marker.get_or_init(|| {
+            self.annotated_def(&crate::analyze::annot::block_requires_marker_path())
+        })
+    }
+
+    pub fn block_ensures_marker(&self) -> Option<DefId> {
+        *self
+            .def_ids
+            .block_ensures_marker
+            .get_or_init(|| self.annotated_def(&crate::analyze::annot::block_ensures_marker_path()))
     }
 
     pub fn fn_param_wrapper(&self) -> Option<DefId> {
