@@ -898,7 +898,10 @@ fn promote_locals<
 // function whose contract states what `layout()` reads of the parts: the promoted offsets and
 // memory index have n - (P + 1) = c entries, and each entry of the memory index is below c
 // (`invert_bijective_mapping`), which `combine_offsets` requires. `u32` reaches n, for
-// `invert_bijective_mapping`.
+// `invert_bijective_mapping`. It stays a function: in place under a block contract, `layout()`
+// would have to reveal `arbitrary_of`, which it reads as an atom, for the `match`'s unreachable
+// arm, and the block contract on the split of the memory order (R11) would nest in it, which
+// block contracts do not allow.
 #[thrust_macros::requires(
     FieldsShape::<FieldIdx>::arbitrary_of(fields, n)
         && forall(|t: USize| <FieldIdx as Idx>::index_is(tag_index, t) ==> t + 1 <= n)
